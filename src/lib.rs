@@ -31,6 +31,6 @@ pub use data_config::{
 };
 pub use renderer::{
     clamp_export_scale, dpi_to_scale, encode_png, ChartDrawItem, ChartStyle, ChartView,
-    RasterImage, Renderer, Series, WindowedRenderer,
+    RasterImage, Renderer, RendererDevice, Series, WindowedRenderer,
     MAX_EXPORT_SCALE, MIN_EXPORT_SCALE,
 };

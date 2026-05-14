@@ -31,7 +31,8 @@ use figgy::layout::{ChartArea, Rect};
 use figgy::line::LineStylePreset;
 use figgy::{
     dpi_to_scale, Chart, ChartDrawItem, ChartStyle, ChartView, DataLineStyleConfig,
-    DataRenderType, Renderer, Series, SeriesConfig, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE,
+    DataRenderType, Renderer, RendererDevice, Series, SeriesConfig, MAX_EXPORT_SCALE,
+    MIN_EXPORT_SCALE,
 };
 
 const POOL_CAPACITY: u64 = 16 * 1024 * 1024;
@@ -47,6 +48,15 @@ fn col_f64(index: usize, data: Vec<f64>) -> Column<f64> {
 const FG: Color = Color { r: 0.92, g: 0.92, b: 0.92, a: 1.0 };
 const GRID_MAJOR: Color = Color { r: 0.40, g: 0.40, b: 0.45, a: 1.0 };
 const GRID_MINOR: Color = Color { r: 0.30, g: 0.30, b: 0.35, a: 1.0 };
+const EGUI_BG: egui::Color32 = egui::Color32::from_rgb(18, 18, 22);
+
+fn force_dark_theme(ctx: &egui::Context) {
+    let mut visuals = egui::Visuals::dark();
+    visuals.panel_fill = EGUI_BG;
+    visuals.window_fill = EGUI_BG;
+    visuals.faint_bg_color = egui::Color32::from_rgb(28, 28, 34);
+    ctx.set_visuals(visuals);
+}
 
 fn paint_axis_dark(axis: &mut AxisOptions) {
     axis.line_color = FG;
@@ -87,6 +97,19 @@ struct PanelEntry {
 struct FiggyState {
     renderer: Renderer,
     panels: Vec<PanelEntry>,
+}
+
+impl FiggyState {
+    fn shutdown(&mut self) {
+        self.renderer.wait_idle();
+        self.panels.clear();
+    }
+}
+
+impl Drop for FiggyState {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
 }
 
 // ============================================================================
@@ -290,26 +313,67 @@ struct DemoApp {
     initialized: bool,
     /// User-entered DPI. figgy converts to scale = dpi/96 internally and clamps.
     export_dpi: u32,
+    render_state: Option<egui_wgpu::RenderState>,
 }
 
 impl Default for DemoApp {
     fn default() -> Self {
-        Self { initialized: false, export_dpi: 192 }
+        Self { initialized: false, export_dpi: 192, render_state: None }
+    }
+}
+
+impl DemoApp {
+    fn cleanup_figgy_state(&mut self) {
+        let Some(render_state) = self.render_state.take() else {
+            self.initialized = false;
+            return;
+        };
+
+        {
+            let mut renderer_guard = render_state.renderer.write();
+            if let Some(mut state) = renderer_guard.callback_resources.remove::<FiggyState>() {
+                state.shutdown();
+            }
+        }
+
+        let _ = render_state.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+        self.initialized = false;
+    }
+}
+
+impl Drop for DemoApp {
+    fn drop(&mut self) {
+        self.cleanup_figgy_state();
     }
 }
 
 impl eframe::App for DemoApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        force_dark_theme(ctx);
+
         // 1) Lazy init: build figgy::Renderer + register columns + Chart on the first frame.
         let render_state = match frame.wgpu_render_state() {
             Some(r) => r,
             None => {
-                egui::CentralPanel::default().show(ctx, |ui| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::default().fill(EGUI_BG))
+                    .show(ctx, |ui| {
                     ui.label("No eframe wgpu_render_state — wgpu backend must be enabled.");
                 });
                 return;
             }
         };
+        if self
+            .render_state
+            .as_ref()
+            .is_some_and(|state| state.target_format != render_state.target_format)
+        {
+            self.cleanup_figgy_state();
+        }
+        self.render_state.get_or_insert_with(|| render_state.clone());
 
         if !self.initialized {
             // figgy needs Arc<Device/Queue>. Wrap RenderState's owned values in Arc
@@ -318,7 +382,11 @@ impl eframe::App for DemoApp {
             let queue = Arc::new(render_state.queue.clone());
             let format = render_state.target_format;
 
-            let mut renderer = Renderer::try_new(device, queue, format, POOL_CAPACITY)
+            let mut renderer = Renderer::try_new(
+                RendererDevice::new(device, queue),
+                format,
+                POOL_CAPACITY,
+            )
                 .expect("Renderer::try_new");
 
             // Initial panel rect — guess for the first frame; prepare overwrites it
@@ -341,7 +409,9 @@ impl eframe::App for DemoApp {
         // 2) UI.
         let pixels_per_point = ctx.pixels_per_point();
         let render_state_clone = render_state.clone();
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::default().fill(EGUI_BG))
+            .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("figgy + egui_wgpu — sine / RC / cross-section");
                 // DPI input — figgy maps dpi/96 → scale → clamp internally.
@@ -400,6 +470,10 @@ impl eframe::App for DemoApp {
                 }
             });
         });
+    }
+
+    fn on_exit(&mut self) {
+        self.cleanup_figgy_state();
     }
 }
 

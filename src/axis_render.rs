@@ -152,7 +152,8 @@ fn draw_legend(canvas: &Canvas, config: &Config, da: &crate::layout::DataArea) {
     // Measure label widths to size the box.
     let mut label_w_max: f32 = 0.0;
     for e in &lg.entries {
-        let m = measure_plain_text(&e.label, "", lg.font_size, false, false);
+        let label = legend_label_text(e.label.clone(), lg.font_size);
+        let m = measure_rich_text(&label);
         if m.width > label_w_max { label_w_max = m.width; }
     }
     let inner_w = lg.sample_width + lg.sample_text_gap + label_w_max;
@@ -244,15 +245,17 @@ fn draw_legend(canvas: &Canvas, config: &Config, da: &crate::layout::DataArea) {
         }
 
         // Label — baseline-aligned.
-        let m = measure_plain_text(&e.label, "", lg.font_size, false, false);
+        let label = legend_label_text(e.label.clone(), lg.font_size);
+        let m = measure_rich_text(&label);
         let label_x = sample_x1 + lg.sample_text_gap;
         let label_y = row_y_center + (m.ascent - m.descent) * 0.5;
-        draw_plain_text(
-            canvas, &e.label, (label_x, label_y),
-            crate::color::Color::BLACK,
-            "", lg.font_size, false, false,
-        );
+        draw_rich_text(canvas, &label, (label_x, label_y));
     }
+}
+
+fn legend_label_text(mut label: RichText, font_size: f32) -> RichText {
+    label.font_size = font_size;
+    label
 }
 
 // Grid rendering.

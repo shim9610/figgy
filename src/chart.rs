@@ -11,7 +11,7 @@ use crate::config::{AxisScale, Config, LegendEntry, LegendEntryKind};
 use crate::data_render::ColumnPool;
 use crate::error::{FiggyError, Result};
 use crate::format::LabelFormat;
-use crate::text::{RichSegment, RichText};
+use crate::text::{rich_segments_from_text, RichText};
 
 /// Apply min/max and scale-appropriate tick settings to one axis.
 fn apply_axis_range(axis: &mut crate::config::AxisOptions, min: f64, max: f64, log: bool) {
@@ -32,18 +32,7 @@ fn apply_axis_range(axis: &mut crate::config::AxisOptions, min: f64, max: f64, l
 
 /// Fill `rt.segments` with one plain RichSegment per char (all style flags off).
 fn fill_plain_segments(rt: &mut RichText, s: &str) {
-    rt.segments = s
-        .chars()
-        .map(|c| RichSegment {
-            text: c,
-            bold: false,
-            italic: false,
-            underline: false,
-            superscript: false,
-            subscript: false,
-            greek: false,
-        })
-        .collect();
+    rt.segments = rich_segments_from_text(s);
 }
 
 /// Major spacing for a logarithmic axis, in decades.
@@ -202,8 +191,14 @@ impl Chart {
         kind: LegendEntryKind,
     ) -> Self {
         self.config.legend.visible = true;
+        let label = RichText::plain(
+            label,
+            Color::BLACK,
+            self.config.legend.font_size,
+            String::new(),
+        );
         self.config.legend.entries.push(LegendEntry {
-            label: label.to_string(),
+            label,
             color,
             line_width,
             kind,

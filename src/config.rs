@@ -188,7 +188,7 @@ pub enum LegendEntryKind {
 /// One legend row (sample + label).
 #[derive(Debug, Clone, PartialEq)]
 pub struct LegendEntry {
-    pub label: String,
+    pub label: crate::text::RichText,
     pub color: crate::color::Color,
     pub line_width: f32,
     pub kind: LegendEntryKind,

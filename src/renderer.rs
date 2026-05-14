@@ -29,6 +29,29 @@ use crate::data_render::{
 use crate::error::{FiggyError, Result};
 use crate::layout::Rect;
 
+/// A wgpu device/queue pair used by figgy.
+///
+/// wgpu does not expose a public parent-device id on `Queue`, so figgy cannot
+/// prove at runtime that arbitrary handles came from the same logical device.
+/// Passing them as one value keeps the pair together throughout the renderer
+/// API and avoids accepting loose device/queue arguments at every call site.
+#[derive(Clone)]
+pub struct RendererDevice {
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+}
+
+impl RendererDevice {
+    /// Bundle a wgpu device and queue that came from the same `request_device`
+    /// result or host render state.
+    pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Self {
+        Self { device, queue }
+    }
+
+    pub fn device(&self) -> &Arc<wgpu::Device> { &self.device }
+    pub fn queue(&self) -> &Arc<wgpu::Queue> { &self.queue }
+}
+
 /// Facade bundling every figgy GPU resource.
 pub struct Renderer {
     device: Arc<wgpu::Device>,
@@ -53,18 +76,46 @@ pub struct Renderer {
     surface_format: wgpu::TextureFormat,
 }
 
+fn validate_target_format(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+) -> Result<()> {
+    let features = format.guaranteed_format_features(device.features());
+    if !features
+        .allowed_usages
+        .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+    {
+        return Err(FiggyError::UnsupportedSurfaceFormat {
+            format,
+            reason: "format is not guaranteed to support RENDER_ATTACHMENT".into(),
+        });
+    }
+    if !features
+        .flags
+        .contains(wgpu::TextureFormatFeatureFlags::BLENDABLE)
+    {
+        return Err(FiggyError::UnsupportedSurfaceFormat {
+            format,
+            reason: "figgy pipelines require alpha blending into the target".into(),
+        });
+    }
+    Ok(())
+}
+
 impl Renderer {
-    /// Initialize every figgy GPU resource against the given device/queue.
+    /// Initialize every figgy GPU resource against the given device/queue pair.
     ///
     /// `pool_capacity_bytes` is the total size of the GPU column pool
     /// (sum of all chart data). `surface_format` is the final render target
     /// color format; every graphics pipeline is compiled against it.
     pub fn try_new(
-        device: Arc<wgpu::Device>,
-        queue: Arc<wgpu::Queue>,
+        gpu: RendererDevice,
         surface_format: wgpu::TextureFormat,
         pool_capacity_bytes: u64,
     ) -> Result<Self> {
+        let RendererDevice { device, queue } = gpu;
+        validate_target_format(&device, surface_format)?;
+
         let pool = ColumnPool::new(&device, pool_capacity_bytes);
 
         let texture_bgl = data_render::create_texture_bind_group_layout(&device);
@@ -111,6 +162,18 @@ impl Renderer {
     pub fn pool(&self) -> &ColumnPool { &self.pool }
     pub fn pool_mut(&mut self) -> &mut ColumnPool { &mut self.pool }
     pub fn surface_format(&self) -> wgpu::TextureFormat { self.surface_format }
+
+    /// Block until submitted work on this device has completed.
+    ///
+    /// This is useful during shutdown in embedder examples, where dropping
+    /// callback-owned GPU resources after the host surface/window has started
+    /// tearing down can expose backend or driver lifetime bugs.
+    pub fn wait_idle(&self) {
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+    }
 
     pub fn texture_bind_group_layout(&self) -> &wgpu::BindGroupLayout { &self.texture_bgl }
     pub fn transform_bind_group_layout(&self) -> &wgpu::BindGroupLayout { &self.transform_bgl }
@@ -177,21 +240,26 @@ impl Renderer {
         pool_capacity_bytes: u64,
     ) -> Result<WindowedRenderer<'w>> {
         let instance = data_render::create_instance();
-        let surface = data_render::create_surface_for_window(&instance, target)
-            .map_err(|e| FiggyError::SurfaceCreationFailed { reason: format!("{e}") })?;
+        let surface = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            data_render::create_surface_for_window(&instance, target)
+        }))
+        .map_err(|_| FiggyError::SurfaceCreationFailed {
+            reason: "wgpu surface creation panicked; check platform window/canvas/thread constraints"
+                .into(),
+        })?
+        .map_err(|e| FiggyError::SurfaceCreationFailed { reason: format!("{e}") })?;
         let adapter = data_render::request_adapter_for_surface(&instance, &surface)
             .map_err(|_| FiggyError::AdapterUnavailable)?;
         let (device, queue) = data_render::request_device(&adapter)
             .map_err(|e| FiggyError::DeviceCreationFailed { reason: format!("{e}") })?;
         let device = Arc::new(device);
         let queue = Arc::new(queue);
-        let surface_config = data_render::configure_surface(
+        let surface_config = data_render::try_configure_surface(
             &surface, &adapter, &device, size.0.max(1), size.1.max(1),
-        );
+        )?;
 
         let inner = Renderer::try_new(
-            Arc::clone(&device),
-            Arc::clone(&queue),
+            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
             surface_config.format,
             pool_capacity_bytes,
         )?;
@@ -931,6 +999,12 @@ impl<'w> std::ops::DerefMut for WindowedRenderer<'w> {
     fn deref_mut(&mut self) -> &mut Renderer { &mut self.inner }
 }
 
+impl Drop for WindowedRenderer<'_> {
+    fn drop(&mut self) {
+        self.inner.wait_idle();
+    }
+}
+
 impl<'w> WindowedRenderer<'w> {
     pub fn surface_size(&self) -> (u32, u32) {
         (self.surface_config.width, self.surface_config.height)
@@ -959,11 +1033,11 @@ impl<'w> WindowedRenderer<'w> {
     pub fn draw(&mut self, clear: crate::color::Color, items: &[ChartDrawItem<'_>]) -> Result<()> {
         let frame = match self.surface.get_current_texture() {
             Ok(t) => t,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                // Swap chain invalid — resize on the next frame will recover.
-                return Ok(());
+            Err(error @ (wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated)) => {
+                // Let the caller decide whether to resize, retry, or exit.
+                return Err(FiggyError::SurfaceAcquireFailed { error });
             }
-            Err(_) => return Ok(()),
+            Err(error) => return Err(FiggyError::SurfaceAcquireFailed { error }),
         };
         let target = frame
             .texture
@@ -1031,8 +1105,7 @@ mod tests {
         let queue = Arc::new(queue);
 
         let mut r = Renderer::try_new(
-            Arc::clone(&device),
-            Arc::clone(&queue),
+            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
             wgpu::TextureFormat::Bgra8Unorm,
             1024 * 1024,
         ).unwrap();

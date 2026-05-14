@@ -79,6 +79,21 @@ impl App {
     fn new() -> Self {
         Self { window: None, renderer: None, panels: Vec::new() }
     }
+
+    fn shutdown_gpu(&mut self) {
+        if let Some(renderer) = self.renderer.as_ref() {
+            renderer.wait_idle();
+        }
+        self.panels.clear();
+        self.renderer.take();
+        self.window.take();
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        self.shutdown_gpu();
+    }
 }
 
 fn compute_panel_rects(w: u32, h: u32) -> [Rect; 3] {
@@ -284,12 +299,18 @@ impl ApplicationHandler for App {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                self.shutdown_gpu();
+                event_loop.exit();
+            }
             WindowEvent::KeyboardInput {
                 event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
                 ..
             } => match logical_key {
-                Key::Named(NamedKey::Escape) => event_loop.exit(),
+                Key::Named(NamedKey::Escape) => {
+                    self.shutdown_gpu();
+                    event_loop.exit();
+                }
                 Key::Character(s) if s.as_str() == "s" || s.as_str() == "S" => {
                     self.export_pngs();
                 }
@@ -375,7 +396,9 @@ impl App {
         }).collect();
 
         // ---- single draw call — surface/encoder/pass/submit/present all internal. ----
-        renderer.draw(Color::WHITE, &items).expect("draw");
+        if let Err(e) = renderer.draw(Color::WHITE, &items) {
+            eprintln!("[draw] {e}");
+        }
     }
 }
 

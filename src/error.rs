@@ -30,6 +30,15 @@ pub enum FiggyError {
     /// wgpu surface creation failed (window handle incompatibility).
     SurfaceCreationFailed { reason: String },
 
+    /// wgpu surface configuration failed (unsupported/empty capabilities).
+    SurfaceConfigurationFailed { reason: String },
+
+    /// Acquiring the next surface texture failed.
+    SurfaceAcquireFailed { error: wgpu::SurfaceError },
+
+    /// The render target format cannot be used by figgy's blended pipelines.
+    UnsupportedSurfaceFormat { format: wgpu::TextureFormat, reason: String },
+
     /// Referenced column id is not in the pool.
     UnknownColumn { id: String },
 
@@ -54,6 +63,15 @@ impl std::fmt::Display for FiggyError {
             }
             Self::SurfaceCreationFailed { reason } => {
                 write!(f, "wgpu surface creation failed: {reason}")
+            }
+            Self::SurfaceConfigurationFailed { reason } => {
+                write!(f, "wgpu surface configuration failed: {reason}")
+            }
+            Self::SurfaceAcquireFailed { error } => {
+                write!(f, "wgpu surface acquire failed: {error:?}")
+            }
+            Self::UnsupportedSurfaceFormat { format, reason } => {
+                write!(f, "unsupported surface format {format:?}: {reason}")
             }
             Self::UnknownColumn { id } => write!(f, "unknown column id: {id}"),
             Self::StaleHandle { generation, current } => write!(

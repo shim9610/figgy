@@ -83,6 +83,112 @@ pub fn request_device(
 /// The format selection prefers a **non-sRGB** format. See `upload_rgba_texture`
 /// for why: we want pixel-level parity with skia's gamma-incorrect blending,
 /// which requires the GPU side to also blend bytes directly.
+fn target_format_is_supported(
+    adapter: &wgpu::Adapter,
+    format: wgpu::TextureFormat,
+) -> bool {
+    let features = adapter.get_texture_format_features(format);
+    features
+        .allowed_usages
+        .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+        && features
+            .flags
+            .contains(wgpu::TextureFormatFeatureFlags::BLENDABLE)
+}
+
+fn choose_surface_format(
+    adapter: &wgpu::Adapter,
+    caps: &wgpu::SurfaceCapabilities,
+) -> Option<wgpu::TextureFormat> {
+    caps.formats
+        .iter()
+        .copied()
+        .filter(|f| target_format_is_supported(adapter, *f))
+        .find(|f| !f.is_srgb())
+        .or_else(|| {
+            caps.formats
+                .iter()
+                .copied()
+                .find(|f| target_format_is_supported(adapter, *f))
+        })
+}
+
+fn choose_present_mode(caps: &wgpu::SurfaceCapabilities) -> Option<wgpu::PresentMode> {
+    #[cfg(target_arch = "wasm32")]
+    const PREFERRED: &[wgpu::PresentMode] = &[
+        wgpu::PresentMode::Fifo,
+        wgpu::PresentMode::AutoVsync,
+    ];
+
+    #[cfg(not(target_arch = "wasm32"))]
+    const PREFERRED: &[wgpu::PresentMode] = &[
+        wgpu::PresentMode::Fifo,
+        wgpu::PresentMode::AutoVsync,
+        wgpu::PresentMode::FifoRelaxed,
+        wgpu::PresentMode::AutoNoVsync,
+        wgpu::PresentMode::Mailbox,
+        wgpu::PresentMode::Immediate,
+    ];
+
+    let preferred = PREFERRED
+        .iter()
+        .copied()
+        .find(|mode| caps.present_modes.contains(mode));
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        preferred
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        preferred.or_else(|| caps.present_modes.first().copied())
+    }
+}
+
+pub fn try_configure_surface(
+    surface: &wgpu::Surface<'_>,
+    adapter: &wgpu::Adapter,
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+) -> crate::Result<wgpu::SurfaceConfiguration> {
+    let caps = surface.get_capabilities(adapter);
+
+    // Prefer non-sRGB so GPU blending matches skia's gamma-incorrect path.
+    let format = choose_surface_format(adapter, &caps).ok_or_else(|| {
+        crate::FiggyError::SurfaceConfigurationFailed {
+            reason: "surface reported no renderable/blendable texture formats".into(),
+        }
+    })?;
+    let present_mode = choose_present_mode(&caps).ok_or_else(|| {
+        crate::FiggyError::SurfaceConfigurationFailed {
+            reason: "surface reported no supported present modes".into(),
+        }
+    })?;
+
+    let config = wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format,
+        width: width.max(1),
+        height: height.max(1),
+        present_mode,
+        alpha_mode: wgpu::CompositeAlphaMode::Auto,
+        view_formats: Vec::new(),
+        desired_maximum_frame_latency: 2,
+    };
+
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        surface.configure(device, &config);
+    }))
+    .map_err(|_| crate::FiggyError::SurfaceConfigurationFailed {
+        reason: "wgpu Surface::configure panicked".into(),
+    })?;
+
+    Ok(config)
+}
+
+#[allow(clippy::expect_used)]
 pub fn configure_surface(
     surface: &wgpu::Surface<'_>,
     adapter: &wgpu::Adapter,
@@ -90,29 +196,8 @@ pub fn configure_surface(
     width: u32,
     height: u32,
 ) -> wgpu::SurfaceConfiguration {
-    let caps = surface.get_capabilities(adapter);
-
-    // Prefer non-sRGB so GPU blending matches skia's gamma-incorrect path.
-    let format = caps
-        .formats
-        .iter()
-        .copied()
-        .find(|f| !f.is_srgb())
-        .unwrap_or_else(|| caps.formats[0]);
-
-    let config = wgpu::SurfaceConfiguration {
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        format,
-        width: width.max(1),
-        height: height.max(1),
-        present_mode: wgpu::PresentMode::Fifo,
-        alpha_mode: caps.alpha_modes[0],
-        view_formats: Vec::new(),
-        desired_maximum_frame_latency: 2,
-    };
-
-    surface.configure(device, &config);
-    config
+    try_configure_surface(surface, adapter, device, width, height)
+        .expect("surface configuration failed")
 }
 
 /// Update only width/height on the existing config and reconfigure. Other
@@ -1114,7 +1199,17 @@ fn issue_series_data(
     series: &SeriesLayers<'_>,
 ) {
     if let Some(eb) = series.errorbar.as_ref() {
-        let count = eb.x.len_values as u32;
+        let count = [
+            eb.x.len_values,
+            eb.y.len_values,
+            eb.err_y_lo.len_values,
+            eb.err_y_hi.len_values,
+            eb.err_x_lo.len_values,
+            eb.err_x_hi.len_values,
+        ]
+        .into_iter()
+        .min()
+        .unwrap_or(0) as u32;
         if count > 0 {
             pass.set_pipeline(eb.pipeline);
             pass.set_bind_group(0, eb.transform_bg, &[]);

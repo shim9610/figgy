@@ -37,7 +37,8 @@ use figgy::layout::{ChartArea, Rect};
 use figgy::line::LineStylePreset;
 use figgy::{
     dpi_to_scale, Chart, ChartDrawItem, ChartStyle, ChartView, DataLineStyleConfig,
-    DataRenderType, Renderer, Series, SeriesConfig, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE,
+    DataRenderType, Renderer, RendererDevice, Series, SeriesConfig, MAX_EXPORT_SCALE,
+    MIN_EXPORT_SCALE,
 };
 
 const POOL_CAPACITY: u64 = 16 * 1024 * 1024;
@@ -69,7 +70,11 @@ impl FiggyPipeline {
     fn build(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         let device = Arc::new(device.clone());
         let queue = Arc::new(queue.clone());
-        let mut renderer = Renderer::try_new(device, queue, format, POOL_CAPACITY)
+        let mut renderer = Renderer::try_new(
+            RendererDevice::new(device, queue),
+            format,
+            POOL_CAPACITY,
+        )
             .expect("Renderer init");
 
         let placeholder = Rect { x: 0, y: 0, width: 480, height: 480 };
@@ -79,6 +84,17 @@ impl FiggyPipeline {
             build_xs_panel(&mut renderer, placeholder),
         ];
         Self { renderer, panels }
+    }
+
+    fn shutdown(&mut self) {
+        self.renderer.wait_idle();
+        self.panels.clear();
+    }
+}
+
+impl Drop for FiggyPipeline {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 
