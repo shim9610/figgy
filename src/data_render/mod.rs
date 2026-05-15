@@ -84,10 +84,13 @@ pub fn request_device(
 /// for why: we want pixel-level parity with skia's gamma-incorrect blending,
 /// which requires the GPU side to also blend bytes directly.
 fn target_format_is_supported(
-    adapter: &wgpu::Adapter,
+    device_features: wgpu::Features,
     format: wgpu::TextureFormat,
 ) -> bool {
-    let features = adapter.get_texture_format_features(format);
+    if !device_features.contains(format.required_features()) {
+        return false;
+    }
+    let features = format.guaranteed_format_features(device_features);
     features
         .allowed_usages
         .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
@@ -96,20 +99,38 @@ fn target_format_is_supported(
             .contains(wgpu::TextureFormatFeatureFlags::BLENDABLE)
 }
 
+fn is_rgba8_surface_format(format: wgpu::TextureFormat) -> bool {
+    matches!(
+        format,
+        wgpu::TextureFormat::Rgba8Unorm
+            | wgpu::TextureFormat::Rgba8UnormSrgb
+            | wgpu::TextureFormat::Bgra8Unorm
+            | wgpu::TextureFormat::Bgra8UnormSrgb
+    )
+}
+
 fn choose_surface_format(
-    adapter: &wgpu::Adapter,
+    device_features: wgpu::Features,
     caps: &wgpu::SurfaceCapabilities,
 ) -> Option<wgpu::TextureFormat> {
-    caps.formats
-        .iter()
-        .copied()
-        .filter(|f| target_format_is_supported(adapter, *f))
+    let supported = || {
+        caps.formats
+            .iter()
+            .copied()
+            .filter(|f| target_format_is_supported(device_features, *f))
+    };
+
+    supported()
+        .filter(|f| is_rgba8_surface_format(*f))
         .find(|f| !f.is_srgb())
+        .or_else(|| supported().find(|f| is_rgba8_surface_format(*f)))
+        .or_else(|| supported().find(|f| *f == wgpu::TextureFormat::Rgb10a2Unorm))
+        .or_else(|| supported().find(|f| !f.is_srgb()))
         .or_else(|| {
             caps.formats
                 .iter()
                 .copied()
-                .find(|f| target_format_is_supported(adapter, *f))
+                .find(|f| target_format_is_supported(device_features, *f))
         })
 }
 
@@ -146,6 +167,19 @@ fn choose_present_mode(caps: &wgpu::SurfaceCapabilities) -> Option<wgpu::Present
     }
 }
 
+fn choose_alpha_mode(caps: &wgpu::SurfaceCapabilities) -> Option<wgpu::CompositeAlphaMode> {
+    [
+        wgpu::CompositeAlphaMode::Auto,
+        wgpu::CompositeAlphaMode::Opaque,
+        wgpu::CompositeAlphaMode::PreMultiplied,
+        wgpu::CompositeAlphaMode::PostMultiplied,
+        wgpu::CompositeAlphaMode::Inherit,
+    ]
+    .into_iter()
+    .find(|mode| caps.alpha_modes.contains(mode))
+    .or_else(|| caps.alpha_modes.first().copied())
+}
+
 pub fn try_configure_surface(
     surface: &wgpu::Surface<'_>,
     adapter: &wgpu::Adapter,
@@ -154,16 +188,22 @@ pub fn try_configure_surface(
     height: u32,
 ) -> crate::Result<wgpu::SurfaceConfiguration> {
     let caps = surface.get_capabilities(adapter);
+    let device_features = device.features();
 
     // Prefer non-sRGB so GPU blending matches skia's gamma-incorrect path.
-    let format = choose_surface_format(adapter, &caps).ok_or_else(|| {
+    let format = choose_surface_format(device_features, &caps).ok_or_else(|| {
         crate::FiggyError::SurfaceConfigurationFailed {
-            reason: "surface reported no renderable/blendable texture formats".into(),
+            reason: "surface reported no figgy-compatible renderable/blendable texture formats".into(),
         }
     })?;
     let present_mode = choose_present_mode(&caps).ok_or_else(|| {
         crate::FiggyError::SurfaceConfigurationFailed {
             reason: "surface reported no supported present modes".into(),
+        }
+    })?;
+    let alpha_mode = choose_alpha_mode(&caps).ok_or_else(|| {
+        crate::FiggyError::SurfaceConfigurationFailed {
+            reason: "surface reported no supported alpha modes".into(),
         }
     })?;
 
@@ -173,7 +213,7 @@ pub fn try_configure_surface(
         width: width.max(1),
         height: height.max(1),
         present_mode,
-        alpha_mode: wgpu::CompositeAlphaMode::Auto,
+        alpha_mode,
         view_formats: Vec::new(),
         desired_maximum_frame_latency: 2,
     };
@@ -188,30 +228,28 @@ pub fn try_configure_surface(
     Ok(config)
 }
 
-#[allow(clippy::expect_used)]
 pub fn configure_surface(
     surface: &wgpu::Surface<'_>,
     adapter: &wgpu::Adapter,
     device: &wgpu::Device,
     width: u32,
     height: u32,
-) -> wgpu::SurfaceConfiguration {
+) -> crate::Result<wgpu::SurfaceConfiguration> {
     try_configure_surface(surface, adapter, device, width, height)
-        .expect("surface configuration failed")
 }
 
 /// Update only width/height on the existing config and reconfigure. Other
 /// fields (format/present_mode/...) are preserved.
 pub fn reconfigure_surface(
     surface: &wgpu::Surface<'_>,
+    adapter: &wgpu::Adapter,
     device: &wgpu::Device,
     config: &mut wgpu::SurfaceConfiguration,
     width: u32,
     height: u32,
-) {
-    config.width = width.max(1);
-    config.height = height.max(1);
-    surface.configure(device, config);
+) -> crate::Result<()> {
+    *config = try_configure_surface(surface, adapter, device, width, height)?;
+    Ok(())
 }
 
 /// Result of a render call. The caller branches on this to decide whether to
@@ -290,15 +328,30 @@ pub fn render_clear(
 /// gamma-incorrect blend path pixel-for-pixel. Switching either side to an
 /// sRGB-aware format would break that parity (most visible at AA edges).
 ///
+/// Returns an error if the texture exceeds the cached device 2D texture limit.
+///
 /// # Panics
-/// If `rgba.len() != width * height * 4`.
+/// If `rgba.len() != width * height * 4`; callers already own that CPU buffer
+/// and this remains an internal shape invariant rather than a hardware check.
 pub fn upload_rgba_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
+    max_texture_dimension_2d: u32,
     width: u32,
     height: u32,
     rgba: &[u8],
-) -> wgpu::Texture {
+) -> crate::Result<wgpu::Texture> {
+    if width == 0 || height == 0 {
+        return Err(crate::FiggyError::InvalidChartArea { width, height });
+    }
+    let max_dim = width.max(height);
+    if max_dim > max_texture_dimension_2d {
+        return Err(crate::FiggyError::GpuResourceLimit {
+            resource: "rgba texture dimension",
+            requested: max_dim as u64,
+            limit: max_texture_dimension_2d as u64,
+        });
+    }
     let expected = (width as usize) * (height as usize) * 4;
     assert_eq!(
         rgba.len(),
@@ -316,7 +369,7 @@ pub fn upload_rgba_texture(
         depth_or_array_layers: 1,
     };
 
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
+    let texture_desc = wgpu::TextureDescriptor {
         label: Some("figgy rgba texture"),
         size,
         mip_level_count: 1,
@@ -325,7 +378,14 @@ pub fn upload_rgba_texture(
         format: wgpu::TextureFormat::Rgba8Unorm,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
-    });
+    };
+    let texture = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        device.create_texture(&texture_desc)
+    }))
+    .map_err(|_| crate::FiggyError::GpuResourceAllocationFailed {
+        resource: "rgba texture",
+        reason: "wgpu Device::create_texture panicked".into(),
+    })?;
 
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
@@ -343,7 +403,7 @@ pub fn upload_rgba_texture(
         size,
     );
 
-    texture
+    Ok(texture)
 }
 
 /// Linear sampler for the overlay quad. `ClampToEdge` avoids edge fringing
@@ -1358,7 +1418,14 @@ mod tests {
             0, 0, 255, 255, // blue
             255, 255, 0, 255, // yellow
         ];
-        let tex = upload_rgba_texture(&device, &queue, 2, 2, &rgba);
+        let tex = upload_rgba_texture(
+            &device,
+            &queue,
+            device.limits().max_texture_dimension_2d,
+            2,
+            2,
+            &rgba,
+        ).expect("upload texture");
 
         // Wait for the queued write_texture to complete; validation errors
         // surface during this poll.
@@ -1407,7 +1474,14 @@ mod tests {
         let rgba: [u8; 16] = [
             255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255,
         ];
-        let texture = upload_rgba_texture(&device, &queue, 2, 2, &rgba);
+        let texture = upload_rgba_texture(
+            &device,
+            &queue,
+            device.limits().max_texture_dimension_2d,
+            2,
+            2,
+            &rgba,
+        ).expect("upload texture");
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let sampler = create_linear_sampler(&device);

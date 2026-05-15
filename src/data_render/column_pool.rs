@@ -41,6 +41,11 @@ fn align_up(x: u64, a: u64) -> u64 {
     (x + a - 1) & !(a - 1)
 }
 
+#[inline]
+fn try_align_up(x: u64, a: u64) -> Option<u64> {
+    x.checked_add(a - 1).map(|v| v & !(a - 1))
+}
+
 /// One column's occupied region inside the pool.
 #[derive(Debug, Clone)]
 pub struct ColumnSlot {
@@ -95,6 +100,10 @@ impl ColumnHandle {
 pub enum AllocError {
     /// No free region is large enough (try defrag then retry).
     OutOfSpace { requested: u64, largest_free: u64, total_free: u64 },
+    /// Requested GPU buffer is larger than the device can allocate.
+    ResourceLimit { resource: &'static str, requested: u64, limit: u64 },
+    /// Resource creation failed despite satisfying static device limits.
+    AllocationFailed { resource: &'static str, reason: String },
     /// A column with this id already exists.
     DuplicateId(ColumnId),
     /// Source has length zero.
@@ -109,6 +118,13 @@ impl std::fmt::Display for AllocError {
                 "ColumnPool out of space: need {} bytes, largest free = {}, total free = {}",
                 requested, largest_free, total_free
             ),
+            AllocError::ResourceLimit { resource, requested, limit } => write!(
+                f,
+                "{resource} exceeds GPU buffer limit: requested {requested}, limit {limit}"
+            ),
+            AllocError::AllocationFailed { resource, reason } => {
+                write!(f, "{resource} allocation failed: {reason}")
+            }
             AllocError::DuplicateId(id) => write!(f, "ColumnPool duplicate id: {id}"),
             AllocError::EmptySource => write!(f, "ColumnPool: empty source not allowed"),
         }
@@ -117,10 +133,23 @@ impl std::fmt::Display for AllocError {
 
 impl std::error::Error for AllocError {}
 
+fn create_buffer_checked(
+    device: &Device,
+    desc: &BufferDescriptor<'_>,
+    resource: &'static str,
+) -> Result<Buffer, AllocError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.create_buffer(desc)))
+        .map_err(|_| AllocError::AllocationFailed {
+            resource,
+            reason: "wgpu Device::create_buffer panicked".into(),
+        })
+}
+
 /// GPU column slab + CPU-side offset table.
 pub struct ColumnPool {
     primary: Buffer,
     capacity: u64,
+    max_buffer_size: u64,
     slots: HashMap<ColumnId, ColumnSlot>,
     /// Kept sorted by offset (coalesce and first-fit both rely on this).
     free: Vec<FreeRegion>,
@@ -134,9 +163,22 @@ pub struct ColumnPool {
 
 impl ColumnPool {
     /// New pool. `capacity_bytes` is rounded up to a multiple of `ALIGN`.
-    pub fn new(device: &Device, capacity_bytes: u64) -> Self {
-        let capacity = align_up(capacity_bytes.max(ALIGN), ALIGN);
-        let primary = device.create_buffer(&BufferDescriptor {
+    pub fn new(device: &Device, capacity_bytes: u64) -> Result<Self, AllocError> {
+        let max_buffer_size = device.limits().max_buffer_size;
+        let requested = capacity_bytes.max(ALIGN);
+        let capacity = try_align_up(requested, ALIGN).ok_or(AllocError::ResourceLimit {
+            resource: "column pool buffer",
+            requested,
+            limit: max_buffer_size,
+        })?;
+        if capacity > max_buffer_size {
+            return Err(AllocError::ResourceLimit {
+                resource: "column pool buffer",
+                requested: capacity,
+                limit: max_buffer_size,
+            });
+        }
+        let primary_desc = BufferDescriptor {
             label: Some("figgy column pool primary"),
             size: capacity,
             // VERTEX | STORAGE so the pool can serve both binding kinds.
@@ -147,16 +189,18 @@ impl ColumnPool {
                 | BufferUsages::COPY_DST
                 | BufferUsages::COPY_SRC,
             mapped_at_creation: false,
-        });
-        Self {
+        };
+        let primary = create_buffer_checked(device, &primary_desc, "column pool buffer")?;
+        Ok(Self {
             primary,
             capacity,
+            max_buffer_size,
             slots: HashMap::new(),
             free: vec![FreeRegion { offset: 0, size: capacity }],
             generation: 0,
             backup: None,
             defrag_policy: DefragPolicy::Manual,
-        }
+        })
     }
 
     pub fn capacity(&self) -> u64 {
@@ -229,7 +273,7 @@ impl ColumnPool {
             Ok(h) => Ok(h),
             Err(e @ AllocError::OutOfSpace { .. }) => match retry_id {
                 Some(rid) => {
-                    self.defragment(device, queue);
+                    self.defragment(device, queue)?;
                     self.try_add_column(rid, source, device, queue)
                 }
                 None => Err(e),
@@ -260,18 +304,36 @@ impl ColumnPool {
             return Err(AllocError::EmptySource);
         }
 
-        let raw_bytes = (n as u64) * 4;
-        let byte_size = align_up(raw_bytes, ALIGN);
+        let raw_bytes = (n as u64)
+            .checked_mul(4)
+            .ok_or(AllocError::ResourceLimit {
+                resource: "column staging buffer",
+                requested: u64::MAX,
+                limit: self.max_buffer_size,
+            })?;
+        let byte_size = try_align_up(raw_bytes, ALIGN).ok_or(AllocError::ResourceLimit {
+            resource: "column staging buffer",
+            requested: raw_bytes,
+            limit: self.max_buffer_size,
+        })?;
+        if byte_size > self.max_buffer_size {
+            return Err(AllocError::ResourceLimit {
+                resource: "column staging buffer",
+                requested: byte_size,
+                limit: self.max_buffer_size,
+            });
+        }
 
         let region_offset = self.alloc_region(byte_size)?;
 
         // Staging buffer — write into mapped memory directly, no Vec.
-        let staging = device.create_buffer(&BufferDescriptor {
+        let staging_desc = BufferDescriptor {
             label: Some("figgy column staging"),
             size: byte_size,
             usage: BufferUsages::COPY_SRC,
             mapped_at_creation: true,
-        });
+        };
+        let staging = create_buffer_checked(device, &staging_desc, "column staging buffer")?;
         {
             // wgpu 27's BufferViewMut derefs to `&mut [u8]`, so the column
             // can serialize itself straight into staging memory.
@@ -337,19 +399,19 @@ impl ColumnPool {
     ///
     /// Returns true iff something actually moved (caller must re-fetch
     /// handles via `handle_for`).
-    pub fn defragment(&mut self, device: &Device, queue: &Queue) -> bool {
+    pub fn defragment(&mut self, device: &Device, queue: &Queue) -> Result<bool, AllocError> {
         // Empty pool: just normalize the free list.
         if self.slots.is_empty() {
             let already = self.free.len() == 1
                 && self.free[0].offset == 0
                 && self.free[0].size == self.capacity;
             if already {
-                return false;
+                return Ok(false);
             }
             self.free.clear();
             self.free.push(FreeRegion { offset: 0, size: self.capacity });
             self.generation = self.generation.wrapping_add(1);
-            return true;
+            return Ok(true);
         }
 
         // Pack in the current offset order.
@@ -377,12 +439,12 @@ impl ColumnPool {
                     self.free.push(FreeRegion { offset: next, size: self.capacity - next });
                 }
             }
-            return false;
+            return Ok(false);
         }
 
         // Lazily create backup with the same capacity/usage as primary.
         if self.backup.is_none() {
-            self.backup = Some(device.create_buffer(&BufferDescriptor {
+            let backup_desc = BufferDescriptor {
                 label: Some("figgy column pool backup"),
                 size: self.capacity,
                 usage: BufferUsages::VERTEX
@@ -390,7 +452,8 @@ impl ColumnPool {
                     | BufferUsages::COPY_DST
                     | BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
-            }));
+            };
+            self.backup = Some(create_buffer_checked(device, &backup_desc, "column pool backup")?);
         }
 
         // primary[old_off..] -> backup[new_off..] (GPU-internal copy).
@@ -398,7 +461,7 @@ impl ColumnPool {
         // graceful exit below exists only to handle invariant violations.
         {
             let Some(backup) = self.backup.as_ref() else {
-                return false;
+                return Ok(false);
             };
             let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("figgy column pool defrag"),
@@ -412,7 +475,7 @@ impl ColumnPool {
 
         // primary <-> backup ping-pong swap.
         let Some(new_primary) = self.backup.take() else {
-            return false;
+            return Ok(false);
         };
         let old_primary = std::mem::replace(&mut self.primary, new_primary);
         self.backup = Some(old_primary);
@@ -431,7 +494,7 @@ impl ColumnPool {
         if next < self.capacity {
             self.free.push(FreeRegion { offset: next, size: self.capacity - next });
         }
-        true
+        Ok(true)
     }
 
     /// Sort `free` by offset and merge adjacent regions.
@@ -491,7 +554,7 @@ mod tests {
         let inst = create_instance();
         let adapter = request_adapter(&inst).ok()?;
         let (device, queue) = request_device(&adapter).ok()?;
-        let pool = ColumnPool::new(&device, cap);
+        let pool = ColumnPool::new(&device, cap).ok()?;
         Some((device, queue, pool))
     }
 
@@ -630,7 +693,7 @@ mod tests {
         assert_eq!(pool.free[0].size, 256);
 
         // After defrag → a@0, c@256, free is a single tail region.
-        let moved = pool.defragment(&device, &queue);
+        let moved = pool.defragment(&device, &queue).unwrap();
         assert!(moved);
         assert_eq!(pool.slots["a"].offset, 0);
         assert_eq!(pool.slots["c"].offset, 256);
@@ -659,7 +722,7 @@ mod tests {
         pool.add_column("b".into(), &b, &device, &queue).unwrap();
         let g0 = pool.generation();
 
-        let moved = pool.defragment(&device, &queue);
+        let moved = pool.defragment(&device, &queue).unwrap();
         assert!(!moved);
         assert_eq!(pool.generation(), g0); // no-op leaves generation alone.
     }

@@ -8,9 +8,8 @@
 //! device can be shared with the host (egui_wgpu, iced_wgpu, etc.) without
 //! lifetime gymnastics.
 //!
-//! `try_new` returns `Result<_, FiggyError>` for forward compatibility — no
-//! current sub-helper can fail, but keeping the signature fallible means
-//! adding a fallible helper later won't break callers.
+//! `try_new` returns `Result<_, FiggyError>` so unsupported target formats and
+//! device resource limits are reported before wgpu validation can abort.
 
 use std::sync::Arc;
 
@@ -52,10 +51,29 @@ impl RendererDevice {
     pub fn queue(&self) -> &Arc<wgpu::Queue> { &self.queue }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct RendererDeviceCaps {
+    features: wgpu::Features,
+    max_texture_dimension_2d: u32,
+    max_buffer_size: u64,
+}
+
+impl RendererDeviceCaps {
+    fn from_device(device: &wgpu::Device) -> Self {
+        let limits = device.limits();
+        Self {
+            features: device.features(),
+            max_texture_dimension_2d: limits.max_texture_dimension_2d,
+            max_buffer_size: limits.max_buffer_size,
+        }
+    }
+}
+
 /// Facade bundling every figgy GPU resource.
 pub struct Renderer {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
+    caps: RendererDeviceCaps,
     pool: ColumnPool,
 
     // Bind group layouts (exposed so callers can build per-panel bind groups).
@@ -77,10 +95,16 @@ pub struct Renderer {
 }
 
 fn validate_target_format(
-    device: &wgpu::Device,
+    caps: RendererDeviceCaps,
     format: wgpu::TextureFormat,
 ) -> Result<()> {
-    let features = format.guaranteed_format_features(device.features());
+    if !caps.features.contains(format.required_features()) {
+        return Err(FiggyError::UnsupportedSurfaceFormat {
+            format,
+            reason: "format requires device features that were not enabled".into(),
+        });
+    }
+    let features = format.guaranteed_format_features(caps.features);
     if !features
         .allowed_usages
         .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
@@ -102,6 +126,100 @@ fn validate_target_format(
     Ok(())
 }
 
+fn create_target_pipelines(
+    device: &wgpu::Device,
+    texture_bgl: &wgpu::BindGroupLayout,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    surface_format: wgpu::TextureFormat,
+) -> (
+    wgpu::RenderPipeline,
+    wgpu::RenderPipeline,
+    wgpu::RenderPipeline,
+    wgpu::RenderPipeline,
+) {
+    let axis_pipeline = data_render::create_fullscreen_textured_pipeline(
+        device, texture_bgl, surface_format,
+    );
+    let line_pipeline = data_render::create_line_columnar_pipeline(
+        device, transform_bgl, style_bgl, surface_format,
+    );
+    let scatter_pipeline = data_render::create_scatter_columnar_pipeline(
+        device, transform_bgl, style_bgl, surface_format,
+    );
+    let errorbar_pipeline = data_render::create_errorbar_columnar_pipeline(
+        device, transform_bgl, style_bgl, surface_format,
+    );
+    (axis_pipeline, line_pipeline, scatter_pipeline, errorbar_pipeline)
+}
+
+#[derive(Clone, Copy)]
+struct TargetPipelineRefs<'a> {
+    axis: &'a wgpu::RenderPipeline,
+    line: &'a wgpu::RenderPipeline,
+    scatter: &'a wgpu::RenderPipeline,
+    errorbar: &'a wgpu::RenderPipeline,
+}
+
+fn validate_texture_extent(
+    caps: RendererDeviceCaps,
+    resource: &'static str,
+    width: u32,
+    height: u32,
+) -> Result<()> {
+    if width == 0 || height == 0 {
+        return Err(FiggyError::InvalidChartArea { width, height });
+    }
+    let max_dim = width.max(height);
+    if max_dim > caps.max_texture_dimension_2d {
+        return Err(FiggyError::GpuResourceLimit {
+            resource,
+            requested: max_dim as u64,
+            limit: caps.max_texture_dimension_2d as u64,
+        });
+    }
+    Ok(())
+}
+
+fn validate_buffer_size(
+    caps: RendererDeviceCaps,
+    resource: &'static str,
+    size: u64,
+) -> Result<()> {
+    if size > caps.max_buffer_size {
+        return Err(FiggyError::GpuResourceLimit {
+            resource,
+            requested: size,
+            limit: caps.max_buffer_size,
+        });
+    }
+    Ok(())
+}
+
+fn create_texture_checked(
+    device: &wgpu::Device,
+    desc: &wgpu::TextureDescriptor<'_>,
+    resource: &'static str,
+) -> Result<wgpu::Texture> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.create_texture(desc)))
+        .map_err(|_| FiggyError::GpuResourceAllocationFailed {
+            resource,
+            reason: "wgpu Device::create_texture panicked".into(),
+        })
+}
+
+fn create_buffer_checked(
+    device: &wgpu::Device,
+    desc: &wgpu::BufferDescriptor<'_>,
+    resource: &'static str,
+) -> Result<wgpu::Buffer> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.create_buffer(desc)))
+        .map_err(|_| FiggyError::GpuResourceAllocationFailed {
+            resource,
+            reason: "wgpu Device::create_buffer panicked".into(),
+        })
+}
+
 impl Renderer {
     /// Initialize every figgy GPU resource against the given device/queue pair.
     ///
@@ -114,9 +232,10 @@ impl Renderer {
         pool_capacity_bytes: u64,
     ) -> Result<Self> {
         let RendererDevice { device, queue } = gpu;
-        validate_target_format(&device, surface_format)?;
+        let caps = RendererDeviceCaps::from_device(&device);
+        validate_target_format(caps, surface_format)?;
 
-        let pool = ColumnPool::new(&device, pool_capacity_bytes);
+        let pool = ColumnPool::new(&device, pool_capacity_bytes)?;
 
         let texture_bgl = data_render::create_texture_bind_group_layout(&device);
         let transform_bgl = data_render::create_scatter_transform_bind_group_layout(&device);
@@ -125,22 +244,19 @@ impl Renderer {
         let sampler = data_render::create_linear_sampler(&device);
         let quad_vb = data_render::create_unit_centered_quad_vertex_buffer(&device);
 
-        let axis_pipeline = data_render::create_fullscreen_textured_pipeline(
-            &device, &texture_bgl, surface_format,
-        );
-        let line_pipeline = data_render::create_line_columnar_pipeline(
-            &device, &transform_bgl, &style_bgl, surface_format,
-        );
-        let scatter_pipeline = data_render::create_scatter_columnar_pipeline(
-            &device, &transform_bgl, &style_bgl, surface_format,
-        );
-        let errorbar_pipeline = data_render::create_errorbar_columnar_pipeline(
-            &device, &transform_bgl, &style_bgl, surface_format,
-        );
+        let (axis_pipeline, line_pipeline, scatter_pipeline, errorbar_pipeline) =
+            create_target_pipelines(
+                &device,
+                &texture_bgl,
+                &transform_bgl,
+                &style_bgl,
+                surface_format,
+            );
 
         Ok(Self {
             device,
             queue,
+            caps,
             pool,
             texture_bgl,
             transform_bgl,
@@ -162,6 +278,32 @@ impl Renderer {
     pub fn pool(&self) -> &ColumnPool { &self.pool }
     pub fn pool_mut(&mut self) -> &mut ColumnPool { &mut self.pool }
     pub fn surface_format(&self) -> wgpu::TextureFormat { self.surface_format }
+
+    /// Rebuild render-target pipelines if the host swap-chain format changed.
+    ///
+    /// Column data, chart views, textures, bind groups, styles, and buffers do
+    /// not depend on the final color attachment format, so embedders can call
+    /// this instead of tearing down the whole renderer state.
+    pub fn ensure_target_format(&mut self, surface_format: wgpu::TextureFormat) -> Result<bool> {
+        if self.surface_format == surface_format {
+            return Ok(false);
+        }
+        validate_target_format(self.caps, surface_format)?;
+        let (axis_pipeline, line_pipeline, scatter_pipeline, errorbar_pipeline) =
+            create_target_pipelines(
+                &self.device,
+                &self.texture_bgl,
+                &self.transform_bgl,
+                &self.style_bgl,
+                surface_format,
+            );
+        self.axis_pipeline = axis_pipeline;
+        self.line_pipeline = line_pipeline;
+        self.scatter_pipeline = scatter_pipeline;
+        self.errorbar_pipeline = errorbar_pipeline;
+        self.surface_format = surface_format;
+        Ok(true)
+    }
 
     /// Block until submitted work on this device has completed.
     ///
@@ -204,8 +346,8 @@ impl Renderer {
 
     /// Compact every live column to the start of the pool. `true` iff
     /// anything actually moved.
-    pub fn defragment(&mut self) -> bool {
-        self.pool.defragment(&self.device, &self.queue)
+    pub fn defragment(&mut self) -> Result<bool> {
+        Ok(self.pool.defragment(&self.device, &self.queue)?)
     }
 
     pub fn set_defrag_policy(&mut self, policy: DefragPolicy) {
@@ -364,7 +506,14 @@ impl Renderer {
         let grid_rgba = axis_render::try_raster_chart_layer_to_rgba(
             chart.config(), axis_render::AxisLayerKind::Grid,
         )?;
-        let grid_tex = data_render::upload_rgba_texture(&self.device, &self.queue, w, h, &grid_rgba);
+        let grid_tex = data_render::upload_rgba_texture(
+            &self.device,
+            &self.queue,
+            self.caps.max_texture_dimension_2d,
+            w,
+            h,
+            &grid_rgba,
+        )?;
         let grid_view_t = grid_tex.create_view(&wgpu::TextureViewDescriptor::default());
         let grid_bg = data_render::create_texture_bind_group(
             &self.device, &self.texture_bgl, &grid_view_t, &self.sampler,
@@ -374,7 +523,14 @@ impl Renderer {
         let dec_rgba = axis_render::try_raster_chart_layer_to_rgba(
             chart.config(), axis_render::AxisLayerKind::Decoration,
         )?;
-        let dec_tex = data_render::upload_rgba_texture(&self.device, &self.queue, w, h, &dec_rgba);
+        let dec_tex = data_render::upload_rgba_texture(
+            &self.device,
+            &self.queue,
+            self.caps.max_texture_dimension_2d,
+            w,
+            h,
+            &dec_rgba,
+        )?;
         let dec_view_t = dec_tex.create_view(&wgpu::TextureViewDescriptor::default());
         let dec_bg = data_render::create_texture_bind_group(
             &self.device, &self.texture_bgl, &dec_view_t, &self.sampler,
@@ -427,11 +583,11 @@ impl Renderer {
         self.refresh_one_layer(
             &mut view.grid_texture, &mut view.grid_bind_group,
             &grid_rgba, w, h,
-        );
+        )?;
         self.refresh_one_layer(
             &mut view.decoration_texture, &mut view.decoration_bind_group,
             &dec_rgba, w, h,
-        );
+        )?;
         view.panel_rect = panel_rect;
 
         self.update_transform(view, chart);
@@ -446,7 +602,7 @@ impl Renderer {
         bg: &mut wgpu::BindGroup,
         rgba: &[u8],
         w: u32, h: u32,
-    ) {
+    ) -> Result<()> {
         let same_size = tex.width() == w && tex.height() == h;
         if same_size {
             self.queue.write_texture(
@@ -461,7 +617,14 @@ impl Renderer {
                 wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
             );
         } else {
-            let new_tex = data_render::upload_rgba_texture(&self.device, &self.queue, w, h, rgba);
+            let new_tex = data_render::upload_rgba_texture(
+                &self.device,
+                &self.queue,
+                self.caps.max_texture_dimension_2d,
+                w,
+                h,
+                rgba,
+            )?;
             let new_view_t = new_tex.create_view(&wgpu::TextureViewDescriptor::default());
             let new_bg = data_render::create_texture_bind_group(
                 &self.device, &self.texture_bgl, &new_view_t, &self.sampler,
@@ -469,6 +632,7 @@ impl Renderer {
             *tex = new_tex;
             *bg = new_bg;
         }
+        Ok(())
     }
 
     /// Draw multiple chart panels into one RenderPass.
@@ -490,6 +654,22 @@ impl Renderer {
         target_size: (u32, u32),
         items: &[ChartDrawItem<'_>],
     ) -> Result<()> {
+        let pipelines = TargetPipelineRefs {
+            axis: &self.axis_pipeline,
+            line: &self.line_pipeline,
+            scatter: &self.scatter_pipeline,
+            errorbar: &self.errorbar_pipeline,
+        };
+        self.paint_with_pipelines(pass, target_size, items, pipelines)
+    }
+
+    fn paint_with_pipelines<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'_>,
+        target_size: (u32, u32),
+        items: &[ChartDrawItem<'a>],
+        pipelines: TargetPipelineRefs<'a>,
+    ) -> Result<()> {
         for item in items {
             let panel_rect = item.view.panel_rect;
             let data_area = item
@@ -499,16 +679,16 @@ impl Renderer {
                 .unwrap_or(panel_rect);
 
             // Bundle every series's primitives for the panel into one call.
-            let series_list = self.build_series_layers(item.view, item.series)?;
+            let series_list = self.build_series_layers(item.view, item.series, pipelines)?;
 
             data_render::draw_chart_panel_columnar(
                 pass,
                 target_size,
                 panel_rect,
                 data_area,
-                AxisLayer { pipeline: &self.axis_pipeline, bind_group: &item.view.grid_bind_group },
+                AxisLayer { pipeline: pipelines.axis, bind_group: &item.view.grid_bind_group },
                 &series_list,
-                AxisLayer { pipeline: &self.axis_pipeline, bind_group: &item.view.decoration_bind_group },
+                AxisLayer { pipeline: pipelines.axis, bind_group: &item.view.decoration_bind_group },
             );
         }
         Ok(())
@@ -522,6 +702,7 @@ impl Renderer {
         &'a self,
         view: &'a ChartView,
         series_specs: &[Series<'a>],
+        pipelines: TargetPipelineRefs<'a>,
     ) -> Result<Vec<data_render::SeriesLayers<'a>>> {
         let pool = &self.pool;
         let lookup = |id: &ColumnId| -> Result<ColumnHandle> {
@@ -538,7 +719,7 @@ impl Renderer {
 
             let line = if has_line(rt) {
                 Some(ColumnLineLayer {
-                    pipeline: &self.line_pipeline,
+                    pipeline: pipelines.line,
                     transform_bg: &view.transform_bg,
                     style_bg: &series.style.line_bg,
                     pool_buffer: pool.buffer(),
@@ -548,7 +729,7 @@ impl Renderer {
 
             let scatter = if has_scatter(rt) {
                 Some(ColumnScatterLayer {
-                    pipeline: &self.scatter_pipeline,
+                    pipeline: pipelines.scatter,
                     transform_bg: &view.transform_bg,
                     style_bg: &series.style.scatter_bg,
                     quad_vb: &self.quad_vb,
@@ -580,7 +761,7 @@ impl Renderer {
                         None => (zero, zero),
                     };
                     Some(ColumnErrorBarDraw {
-                        pipeline: &self.errorbar_pipeline,
+                        pipeline: pipelines.errorbar,
                         transform_bg: &view.transform_bg,
                         style_bg: &series.style.errorbar_bg,
                         pool_buffer: pool.buffer(),
@@ -628,6 +809,19 @@ impl Renderer {
         let orig = chart.config().chart_area.0;
         let w = ((orig.width as f32) * scale).round().max(1.0) as u32;
         let h = ((orig.height as f32) * scale).round().max(1.0) as u32;
+        validate_texture_extent(self.caps, "figgy export target dimension", w, h)?;
+        let export_format = wgpu::TextureFormat::Rgba8Unorm;
+        validate_target_format(self.caps, export_format)?;
+        let export_features = export_format.guaranteed_format_features(self.caps.features);
+        if !export_features
+            .allowed_usages
+            .contains(wgpu::TextureUsages::COPY_SRC)
+        {
+            return Err(FiggyError::UnsupportedSurfaceFormat {
+                format: export_format,
+                reason: "figgy export target is not guaranteed to support COPY_SRC".into(),
+            });
+        }
 
         // 1) Scaled config with chart_area overridden to (0,0,w,h) → temp chart.
         let mut scaled_config = chart.config().scaled(scale);
@@ -648,29 +842,78 @@ impl Renderer {
             .collect();
 
         // 4) Offscreen target.
-        let target_tex = self.device.create_texture(&wgpu::TextureDescriptor {
+        let target_desc = wgpu::TextureDescriptor {
             label: Some("figgy export target"),
             size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: self.surface_format,
+            format: export_format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
-        });
+        };
+        let target_tex = create_texture_checked(&self.device, &target_desc, "figgy export target")?;
         let target_view = target_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let (
+            export_axis_pipeline,
+            export_line_pipeline,
+            export_scatter_pipeline,
+            export_errorbar_pipeline,
+        ) = create_target_pipelines(
+            &self.device,
+            &self.texture_bgl,
+            &self.transform_bgl,
+            &self.style_bgl,
+            export_format,
+        );
+        let export_pipelines = TargetPipelineRefs {
+            axis: &export_axis_pipeline,
+            line: &export_line_pipeline,
+            scatter: &export_scatter_pipeline,
+            errorbar: &export_errorbar_pipeline,
+        };
 
-        // 5) Readback buffer.
-        let bpp = 4u32;
-        let unpadded_bpr = w * bpp;
-        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let padded_bpr = ((unpadded_bpr + align - 1) / align) * align;
-        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("figgy export readback"),
-            size: (padded_bpr as u64) * (h as u64),
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+        // 5) Readback buffer. Allocate at most the hardware limit and read rows
+        // sequentially if the full image would exceed it.
+        let unpadded_bpr_u64 = u64::from(w) * 4;
+        let align = u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let padded_bpr_u64 = ((unpadded_bpr_u64 + align - 1) / align) * align;
+        if padded_bpr_u64 > u64::from(u32::MAX) {
+            return Err(FiggyError::GpuResourceLimit {
+                resource: "figgy export bytes_per_row",
+                requested: padded_bpr_u64,
+                limit: u64::from(u32::MAX),
+            });
+        }
+        let unpadded_bpr = unpadded_bpr_u64 as u32;
+        let padded_bpr = padded_bpr_u64 as u32;
+        let max_rows = (self.caps.max_buffer_size / padded_bpr_u64).min(u64::from(h));
+        if max_rows == 0 {
+            return Err(FiggyError::GpuResourceLimit {
+                resource: "figgy export readback row",
+                requested: padded_bpr_u64,
+                limit: self.caps.max_buffer_size,
+            });
+        }
+        let mut rows_per_chunk = max_rows.min(u64::from(u32::MAX)) as u32;
+        let readback = loop {
+            let size = padded_bpr_u64 * u64::from(rows_per_chunk);
+            validate_buffer_size(self.caps, "figgy export readback buffer", size)?;
+            let desc = wgpu::BufferDescriptor {
+                label: Some("figgy export readback"),
+                size,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            };
+            match create_buffer_checked(&self.device, &desc, "figgy export readback buffer") {
+                Ok(buffer) => break buffer,
+                Err(e) if rows_per_chunk > 1 => {
+                    rows_per_chunk = (rows_per_chunk / 2).max(1);
+                    let _ = e;
+                }
+                Err(e) => return Err(e),
+            }
+        };
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("figgy export encoder"),
@@ -698,74 +941,94 @@ impl Renderer {
                 chart_config: scaled_chart.config(),
                 series: &series_objs,
             }];
-            self.paint(&mut pass, (w, h), &items)?;
+            self.paint_with_pipelines(&mut pass, (w, h), &items, export_pipelines)?;
         }
-
-        // 7) Texture → readback buffer.
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &target_tex,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &readback,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padded_bpr),
-                    rows_per_image: Some(h),
-                },
-            },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        );
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        // 8) Map + sync wait.
-        let slice = readback.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-        let _ = self.device.poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: None,
-        });
-        rx.recv()
-            .expect("map_async sender dropped")
-            .map_err(|e| FiggyError::DeviceCreationFailed { reason: format!("map_async: {e:?}") })?;
-        let mapped = slice.get_mapped_range();
+        // 7) Texture → readback buffer in row chunks.
+        let bgra = false;
+        let rgba_len = u64::from(w)
+            .checked_mul(u64::from(h))
+            .and_then(|px| px.checked_mul(4))
+            .and_then(|bytes| usize::try_from(bytes).ok())
+            .ok_or(FiggyError::GpuResourceLimit {
+                resource: "figgy export rgba output",
+                requested: u64::from(w).saturating_mul(u64::from(h)).saturating_mul(4),
+                limit: usize::MAX as u64,
+            })?;
+        let mut rgba = vec![0u8; rgba_len];
+        let mut y0 = 0;
+        while y0 < h {
+            let rows = rows_per_chunk.min(h - y0);
+            let chunk_size = padded_bpr_u64 * u64::from(rows);
+            let mut copy_encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("figgy export copy encoder"),
+            });
+            copy_encoder.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &target_tex,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: 0, y: y0, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &readback,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(padded_bpr),
+                        rows_per_image: Some(rows),
+                    },
+                },
+                wgpu::Extent3d { width: w, height: rows, depth_or_array_layers: 1 },
+            );
+            self.queue.submit(std::iter::once(copy_encoder.finish()));
 
-        // 9) tight RGBA + (BGRA→RGBA) + premul→straight.
-        let bgra = matches!(
-            self.surface_format,
-            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb,
-        );
-        let mut rgba = vec![0u8; (w * h * 4) as usize];
-        for y in 0..h {
-            let src_off = (y * padded_bpr) as usize;
-            let dst_off = (y * unpadded_bpr) as usize;
-            let row = &mapped[src_off..src_off + unpadded_bpr as usize];
-            for i in 0..(w as usize) {
-                let p = i * 4;
-                let (b0, b1, b2, b3) = (row[p], row[p + 1], row[p + 2], row[p + 3]);
-                let (r, g, b, a) = if bgra { (b2, b1, b0, b3) } else { (b0, b1, b2, b3) };
-                let (or, og, ob) = if a == 0 || a == 255 {
-                    (r, g, b)
-                } else {
-                    let a_f = a as f32 / 255.0;
-                    (
-                        ((r as f32 / a_f).round().clamp(0.0, 255.0)) as u8,
-                        ((g as f32 / a_f).round().clamp(0.0, 255.0)) as u8,
-                        ((b as f32 / a_f).round().clamp(0.0, 255.0)) as u8,
-                    )
-                };
-                rgba[dst_off + p] = or;
-                rgba[dst_off + p + 1] = og;
-                rgba[dst_off + p + 2] = ob;
-                rgba[dst_off + p + 3] = a;
+            let slice = readback.slice(..chunk_size);
+            let (tx, rx) = std::sync::mpsc::channel();
+            slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+            let _ = self.device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            });
+            rx.recv()
+                .map_err(|e| FiggyError::GpuResourceAllocationFailed {
+                    resource: "figgy export readback mapping",
+                    reason: format!("map_async sender dropped: {e}"),
+                })?
+                .map_err(|e| FiggyError::GpuResourceAllocationFailed {
+                    resource: "figgy export readback mapping",
+                    reason: format!("map_async: {e:?}"),
+                })?;
+            let mapped = slice.get_mapped_range();
+
+            for local_y in 0..rows {
+                let src_off = (local_y * padded_bpr) as usize;
+                let dst_off = ((y0 + local_y) * unpadded_bpr) as usize;
+                let row = &mapped[src_off..src_off + unpadded_bpr as usize];
+                for i in 0..(w as usize) {
+                    let p = i * 4;
+                    let (b0, b1, b2, b3) = (row[p], row[p + 1], row[p + 2], row[p + 3]);
+                    let (r, g, b, a) = if bgra { (b2, b1, b0, b3) } else { (b0, b1, b2, b3) };
+                    let (or, og, ob) = if a == 0 || a == 255 {
+                        (r, g, b)
+                    } else {
+                        let a_f = a as f32 / 255.0;
+                        (
+                            ((r as f32 / a_f).round().clamp(0.0, 255.0)) as u8,
+                            ((g as f32 / a_f).round().clamp(0.0, 255.0)) as u8,
+                            ((b as f32 / a_f).round().clamp(0.0, 255.0)) as u8,
+                        )
+                    };
+                    rgba[dst_off + p] = or;
+                    rgba[dst_off + p + 1] = og;
+                    rgba[dst_off + p + 2] = ob;
+                    rgba[dst_off + p + 3] = a;
+                }
             }
+            drop(mapped);
+            readback.unmap();
+            y0 += rows;
         }
-        drop(mapped);
-        readback.unmap();
 
         Ok(RasterImage { width: w, height: h, rgba })
     }
@@ -1017,11 +1280,13 @@ impl<'w> WindowedRenderer<'w> {
     /// Reconfigure the swap chain after a window resize. The caller is then
     /// responsible for updating each chart's `chart_area` — figgy doesn't
     /// know your panel layout policy.
-    pub fn resize(&mut self, w: u32, h: u32) {
+    pub fn resize(&mut self, w: u32, h: u32) -> Result<()> {
         data_render::reconfigure_surface(
-            &self.surface, self.inner.device(),
+            &self.surface, &self._adapter, self.inner.device(),
             &mut self.surface_config, w.max(1), h.max(1),
-        );
+        )?;
+        self.inner.ensure_target_format(self.surface_config.format)?;
+        Ok(())
     }
 
     /// Draw one frame.

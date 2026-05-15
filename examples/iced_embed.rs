@@ -62,20 +62,31 @@ struct PanelEntry {
 }
 
 struct FiggyPipeline {
-    renderer: Renderer,
+    renderer: Option<Renderer>,
     panels: Vec<PanelEntry>,
+    init_error: Option<String>,
 }
 
 impl FiggyPipeline {
     fn build(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         let device = Arc::new(device.clone());
         let queue = Arc::new(queue.clone());
-        let mut renderer = Renderer::try_new(
+        let mut renderer = match Renderer::try_new(
             RendererDevice::new(device, queue),
             format,
             POOL_CAPACITY,
-        )
-            .expect("Renderer init");
+        ) {
+            Ok(renderer) => renderer,
+            Err(e) => {
+                let message = format!("Renderer init failed: {e}");
+                eprintln!("[figgy] {message}");
+                return Self {
+                    renderer: None,
+                    panels: Vec::new(),
+                    init_error: Some(message),
+                };
+            }
+        };
 
         let placeholder = Rect { x: 0, y: 0, width: 480, height: 480 };
         let panels = vec![
@@ -83,11 +94,13 @@ impl FiggyPipeline {
             build_rc_panel(&mut renderer, placeholder),
             build_xs_panel(&mut renderer, placeholder),
         ];
-        Self { renderer, panels }
+        Self { renderer: Some(renderer), panels, init_error: None }
     }
 
     fn shutdown(&mut self) {
-        self.renderer.wait_idle();
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.wait_idle();
+        }
         self.panels.clear();
     }
 }
@@ -249,24 +262,34 @@ impl shader::Primitive for FiggyPrimitive {
         _bounds: &Rectangle,
         _viewport: &Viewport,
     ) {
-        let panel = &mut pipeline.panels[self.panel_idx];
+        let Some(renderer) = pipeline.renderer.as_mut() else {
+            if self.panel_idx == 0 {
+                if let Some(message) = pipeline.init_error.as_deref() {
+                    eprintln!("[figgy] {message}");
+                }
+            }
+            return;
+        };
+        let Some(panel) = pipeline.panels.get_mut(self.panel_idx) else {
+            return;
+        };
         let cur = panel.view.panel_rect();
         if cur != self.panel_rect_px {
             panel.chart.config_mut().chart_area = ChartArea(self.panel_rect_px);
-            pipeline
-                .renderer
-                .refresh_axis(&mut panel.view, &panel.chart, self.panel_rect_px)
-                .expect("refresh_axis");
+            if let Err(e) = renderer.refresh_axis(&mut panel.view, &panel.chart, self.panel_rect_px) {
+                eprintln!("[figgy] refresh_axis failed: {e}");
+                return;
+            }
             let _ = panel.chart.consume_data_dirty();
             let _ = panel.chart.consume_raster_dirty();
         } else if panel.chart.consume_raster_dirty() {
-            pipeline
-                .renderer
-                .refresh_axis(&mut panel.view, &panel.chart, cur)
-                .expect("refresh_axis");
+            if let Err(e) = renderer.refresh_axis(&mut panel.view, &panel.chart, cur) {
+                eprintln!("[figgy] refresh_axis failed: {e}");
+                return;
+            }
             let _ = panel.chart.consume_data_dirty();
         } else if panel.chart.consume_data_dirty() {
-            pipeline.renderer.update_transform(&panel.view, &panel.chart);
+            renderer.update_transform(&panel.view, &panel.chart);
         }
 
         // Export every panel separately, but only once — from panel_idx == 0's prepare.
@@ -275,7 +298,7 @@ impl shader::Primitive for FiggyPrimitive {
             let dpi = EXPORT_DPI.load(Ordering::Relaxed) as f32;
             let scale = dpi_to_scale(dpi);
             for (i, p) in pipeline.panels.iter().enumerate() {
-                match pipeline.renderer.export_panel_png_bytes(
+                match renderer.export_panel_png_bytes(
                     &p.chart, &p.series, scale,
                 ) {
                     Ok(bytes) => {
@@ -296,7 +319,12 @@ impl shader::Primitive for FiggyPrimitive {
 
     /// `draw` is the efficient path — slots into the RenderPass iced already built.
     fn draw(&self, pipeline: &Self::Pipeline, render_pass: &mut wgpu::RenderPass<'_>) -> bool {
-        let panel = &pipeline.panels[self.panel_idx];
+        let Some(renderer) = pipeline.renderer.as_ref() else {
+            return false;
+        };
+        let Some(panel) = pipeline.panels.get(self.panel_idx) else {
+            return false;
+        };
         let series: Vec<Series<'_>> = panel.series.iter().zip(panel.styles.iter())
             .map(|(cfg, style)| Series { config: cfg, style })
             .collect();
@@ -313,11 +341,13 @@ impl shader::Primitive for FiggyPrimitive {
             self.panel_rect_px.x + self.panel_rect_px.width,
             self.panel_rect_px.y + self.panel_rect_px.height,
         );
-        pipeline
-            .renderer
-            .paint(render_pass, target_size, &items)
-            .expect("paint");
-        true
+        match renderer.paint(render_pass, target_size, &items) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("[figgy] paint failed: {e}");
+                false
+            }
+        }
     }
 }
 

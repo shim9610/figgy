@@ -274,11 +274,18 @@ impl ApplicationHandler for App {
         let size = window.inner_size();
 
         // One-line setup — figgy owns surface / device / queue / pipelines.
-        let mut renderer = Renderer::for_window(
+        let mut renderer = match Renderer::for_window(
             Arc::clone(&window),
             (size.width, size.height),
             POOL_CAPACITY,
-        ).expect("Renderer::for_window");
+        ) {
+            Ok(renderer) => renderer,
+            Err(e) => {
+                eprintln!("[init] {e}");
+                event_loop.exit();
+                return;
+            }
+        };
 
         let rects = compute_panel_rects(size.width, size.height);
         let mut panels = vec![
@@ -353,13 +360,18 @@ impl App {
         let Some(renderer) = self.renderer.as_mut() else { return; };
         let w = w.max(1);
         let h = h.max(1);
-        renderer.resize(w, h);
+        if let Err(e) = renderer.resize(w, h) {
+            eprintln!("[resize] {e}");
+            return;
+        }
 
         let rects = compute_panel_rects(w, h);
         for (panel, rect) in self.panels.iter_mut().zip(rects.iter()) {
             panel.chart.config_mut().chart_area = ChartArea(*rect);
-            renderer.refresh_axis(&mut panel.view, &panel.chart, *rect)
-                .expect("refresh_axis");
+            if let Err(e) = renderer.refresh_axis(&mut panel.view, &panel.chart, *rect) {
+                eprintln!("[refresh_axis] {e}");
+                return;
+            }
             let _ = panel.chart.consume_data_dirty();
             let _ = panel.chart.consume_raster_dirty();
         }
@@ -373,8 +385,10 @@ impl App {
         for panel in self.panels.iter_mut() {
             let panel_rect = panel.view.panel_rect();
             if panel.chart.consume_raster_dirty() {
-                renderer.refresh_axis(&mut panel.view, &panel.chart, panel_rect)
-                    .expect("refresh_axis");
+                if let Err(e) = renderer.refresh_axis(&mut panel.view, &panel.chart, panel_rect) {
+                    eprintln!("[refresh_axis] {e}");
+                    return;
+                }
                 let _ = panel.chart.consume_data_dirty();
             } else if panel.chart.consume_data_dirty() {
                 renderer.update_transform(&panel.view, &panel.chart);

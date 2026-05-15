@@ -39,6 +39,12 @@ pub enum FiggyError {
     /// The render target format cannot be used by figgy's blended pipelines.
     UnsupportedSurfaceFormat { format: wgpu::TextureFormat, reason: String },
 
+    /// A requested GPU resource exceeds the current device's limits.
+    GpuResourceLimit { resource: &'static str, requested: u64, limit: u64 },
+
+    /// A GPU resource allocation failed after passing static device limits.
+    GpuResourceAllocationFailed { resource: &'static str, reason: String },
+
     /// Referenced column id is not in the pool.
     UnknownColumn { id: String },
 
@@ -72,6 +78,13 @@ impl std::fmt::Display for FiggyError {
             }
             Self::UnsupportedSurfaceFormat { format, reason } => {
                 write!(f, "unsupported surface format {format:?}: {reason}")
+            }
+            Self::GpuResourceLimit { resource, requested, limit } => write!(
+                f,
+                "{resource} exceeds GPU limit: requested {requested}, limit {limit}"
+            ),
+            Self::GpuResourceAllocationFailed { resource, reason } => {
+                write!(f, "{resource} GPU allocation failed: {reason}")
             }
             Self::UnknownColumn { id } => write!(f, "unknown column id: {id}"),
             Self::StaleHandle { generation, current } => write!(

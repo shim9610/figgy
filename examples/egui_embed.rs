@@ -259,23 +259,27 @@ impl CallbackTrait for FiggyCallback {
         callback_resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         let Some(state) = callback_resources.get_mut::<FiggyState>() else { return Vec::new() };
-        let panel = &mut state.panels[self.panel_idx];
+        let Some(panel) = state.panels.get_mut(self.panel_idx) else {
+            return Vec::new();
+        };
 
         // If the panel rect changed (or on first grading), re-raster the axis and refresh the transform.
         let cur_rect = panel.view.panel_rect();
         if cur_rect != self.panel_rect_px {
             panel.chart.config_mut().chart_area = ChartArea(self.panel_rect_px);
-            state
-                .renderer
-                .refresh_axis(&mut panel.view, &panel.chart, self.panel_rect_px)
-                .expect("refresh_axis");
+            if let Err(e) = state.renderer.refresh_axis(
+                &mut panel.view, &panel.chart, self.panel_rect_px,
+            ) {
+                eprintln!("[figgy] refresh_axis failed: {e}");
+                return Vec::new();
+            }
             let _ = panel.chart.consume_data_dirty();
             let _ = panel.chart.consume_raster_dirty();
         } else if panel.chart.consume_raster_dirty() {
-            state
-                .renderer
-                .refresh_axis(&mut panel.view, &panel.chart, cur_rect)
-                .expect("refresh_axis");
+            if let Err(e) = state.renderer.refresh_axis(&mut panel.view, &panel.chart, cur_rect) {
+                eprintln!("[figgy] refresh_axis failed: {e}");
+                return Vec::new();
+            }
             let _ = panel.chart.consume_data_dirty();
         } else if panel.chart.consume_data_dirty() {
             state.renderer.update_transform(&panel.view, &panel.chart);
@@ -290,7 +294,9 @@ impl CallbackTrait for FiggyCallback {
         callback_resources: &egui_wgpu::CallbackResources,
     ) {
         let Some(state) = callback_resources.get::<FiggyState>() else { return };
-        let panel = &state.panels[self.panel_idx];
+        let Some(panel) = state.panels.get(self.panel_idx) else {
+            return;
+        };
         let series: Vec<Series<'_>> = panel.series.iter().zip(panel.styles.iter())
             .map(|(cfg, style)| Series { config: cfg, style })
             .collect();
@@ -301,7 +307,9 @@ impl CallbackTrait for FiggyCallback {
         }];
         // target = pixel size of the color attachment the current render pass draws into (egui's swap chain).
         let target_size = (info.screen_size_px[0], info.screen_size_px[1]);
-        state.renderer.paint(render_pass, target_size, &items).expect("paint");
+        if let Err(e) = state.renderer.paint(render_pass, target_size, &items) {
+            eprintln!("[figgy] paint failed: {e}");
+        }
     }
 }
 
@@ -314,15 +322,29 @@ struct DemoApp {
     /// User-entered DPI. figgy converts to scale = dpi/96 internally and clamps.
     export_dpi: u32,
     render_state: Option<egui_wgpu::RenderState>,
+    renderer_error: Option<String>,
 }
 
 impl Default for DemoApp {
     fn default() -> Self {
-        Self { initialized: false, export_dpi: 192, render_state: None }
+        Self {
+            initialized: false,
+            export_dpi: 192,
+            render_state: None,
+            renderer_error: None,
+        }
     }
 }
 
 impl DemoApp {
+    fn show_renderer_error(ctx: &egui::Context, message: &str) {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::default().fill(EGUI_BG))
+            .show(ctx, |ui| {
+                ui.label(message);
+            });
+    }
+
     fn cleanup_figgy_state(&mut self) {
         let Some(render_state) = self.render_state.take() else {
             self.initialized = false;
@@ -366,14 +388,7 @@ impl eframe::App for DemoApp {
                 return;
             }
         };
-        if self
-            .render_state
-            .as_ref()
-            .is_some_and(|state| state.target_format != render_state.target_format)
-        {
-            self.cleanup_figgy_state();
-        }
-        self.render_state.get_or_insert_with(|| render_state.clone());
+        self.render_state = Some(render_state.clone());
 
         if !self.initialized {
             // figgy needs Arc<Device/Queue>. Wrap RenderState's owned values in Arc
@@ -382,12 +397,21 @@ impl eframe::App for DemoApp {
             let queue = Arc::new(render_state.queue.clone());
             let format = render_state.target_format;
 
-            let mut renderer = Renderer::try_new(
+            let mut renderer = match Renderer::try_new(
                 RendererDevice::new(device, queue),
                 format,
                 POOL_CAPACITY,
-            )
-                .expect("Renderer::try_new");
+            ) {
+                Ok(renderer) => renderer,
+                Err(e) => {
+                    let message = format!("Renderer init failed: {e}");
+                    self.renderer_error = Some(message);
+                    if let Some(message) = self.renderer_error.as_deref() {
+                        Self::show_renderer_error(ctx, message);
+                    }
+                    return;
+                }
+            };
 
             // Initial panel rect — guess for the first frame; prepare overwrites it
             // with the real egui rect.
@@ -404,6 +428,25 @@ impl eframe::App for DemoApp {
                 .callback_resources
                 .insert(FiggyState { renderer, panels });
             self.initialized = true;
+            self.renderer_error = None;
+        } else {
+            let mut renderer_guard = render_state.renderer.write();
+            if let Some(state) = renderer_guard.callback_resources.get_mut::<FiggyState>() {
+                if let Err(e) = state
+                    .renderer
+                    .ensure_target_format(render_state.target_format)
+                {
+                    let message = format!("Renderer target format failed: {e}");
+                    self.renderer_error = Some(message);
+                    if let Some(message) = self.renderer_error.as_deref() {
+                        Self::show_renderer_error(ctx, message);
+                    }
+                    return;
+                }
+                self.renderer_error = None;
+            } else {
+                self.initialized = false;
+            }
         }
 
         // 2) UI.
