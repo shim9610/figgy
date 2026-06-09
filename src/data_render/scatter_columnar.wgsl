@@ -4,6 +4,12 @@
 // slot 1: X column (per-instance, f32).
 // slot 2: Y column (per-instance, f32).
 
+// ───── BEGIN common block (SHADER_COMMON.md) ─────
+// WGSL has no import. The Transform/Style/binding/maybe_log definitions
+// below are duplicated across scatter/line/errorbar shaders. To modify
+// any of them, FIRST edit src/data_render/SHADER_COMMON.md, then mirror
+// the change into every sibling shader. Do not edit only one file —
+// silent drift here causes very hard-to-debug rendering bugs.
 struct Transform {
     data_min: vec2<f32>,
     data_max: vec2<f32>,
@@ -13,12 +19,13 @@ struct Transform {
     _pad: vec2<f32>,
 };
 
+@group(0) @binding(0) var<uniform> transform: Transform;
+
 struct Style {
     color_premul: vec4<f32>,
     line_width_px: f32,
 };
 
-@group(0) @binding(0) var<uniform> transform: Transform;
 @group(1) @binding(0) var<uniform> style: Style;
 
 struct VsIn {
@@ -36,6 +43,11 @@ fn maybe_log(v: f32, is_log: f32) -> f32 {
     let lv = log(max(v, 1e-30)) / log(10.0);
     return mix(v, lv, is_log);
 }
+// ───── END common block ─────
+//
+// Note: this shader inlines the `data_to_ndc` mapping inside `vs_main`
+// rather than defining it as a function. The inline formula must match
+// SHADER_COMMON.md §4 (4a / 4b are equivalent).
 
 @vertex
 fn vs_main(in: VsIn) -> VsOut {

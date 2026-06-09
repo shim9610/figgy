@@ -14,6 +14,12 @@
 // stays constant across panels with different X/Y pixel ratios.
 // Zero-length segments collapse the quad and become invisible.
 
+// ───── BEGIN common block (SHADER_COMMON.md) ─────
+// WGSL has no import. The Transform/Style/binding/maybe_log/data_to_ndc
+// definitions below are duplicated across scatter/line/errorbar shaders.
+// To modify any of them, FIRST edit src/data_render/SHADER_COMMON.md,
+// then mirror the change into every sibling shader. Do not edit only one
+// file — silent drift here causes very hard-to-debug rendering bugs.
 struct Transform {
     data_min: vec2<f32>,
     data_max: vec2<f32>,
@@ -23,12 +29,13 @@ struct Transform {
     _pad: vec2<f32>,
 };
 
+@group(0) @binding(0) var<uniform> transform: Transform;
+
 struct Style {
     color_premul: vec4<f32>,
     line_width_px: f32,
 };
 
-@group(0) @binding(0) var<uniform> transform: Transform;
 @group(1) @binding(0) var<uniform> style: Style;
 
 struct VsIn {
@@ -50,6 +57,7 @@ fn data_to_ndc(xv: f32, yv: f32) -> vec2<f32> {
     let t = (vec2<f32>(xv2, yv2) - transform.data_min) / range;
     return t * 2.0 - 1.0;
 }
+// ───── END common block ─────
 
 @vertex
 fn vs_main(in: VsIn, @builtin(vertex_index) vid: u32) -> @builtin(position) vec4<f32> {

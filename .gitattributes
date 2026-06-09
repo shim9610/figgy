@@ -1,0 +1,10 @@
+# Force LF on shell scripts and git hooks regardless of host OS.
+# Required because Git Bash on Windows must be able to parse the hook's
+# `#!/usr/bin/env bash` shebang — a stray CR breaks it on macOS/Linux clones.
+.githooks/*       text eol=lf
+*.sh              text eol=lf
+
+# Shader source is UTF-8 with LF line endings — keep them stable across OSes
+# so the byte-for-byte SHADER_COMMON.md SSoT check is reproducible.
+*.wgsl            text eol=lf
+SHADER_COMMON.md  text eol=lf

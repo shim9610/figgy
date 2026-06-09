@@ -10,21 +10,28 @@
 // `scale_log.{x,y}` = 1.0 applies log10 to both the input coords and the
 // computed err endpoints.
 
+// ───── BEGIN common block (SHADER_COMMON.md) ─────
+// WGSL has no import. The Transform/Style/binding/maybe_log/data_to_ndc
+// definitions below are duplicated across scatter/line/errorbar shaders.
+// To modify any of them, FIRST edit src/data_render/SHADER_COMMON.md,
+// then mirror the change into every sibling shader. Do not edit only one
+// file — silent drift here causes very hard-to-debug rendering bugs.
 struct Transform {
     data_min: vec2<f32>,
     data_max: vec2<f32>,
-    point_size_ndc: vec2<f32>, // cap half-widths (rx, ry)
+    point_size_ndc: vec2<f32>,
     scale_log: vec2<f32>,
     pixel_to_ndc: vec2<f32>,
     _pad: vec2<f32>,
 };
+
+@group(0) @binding(0) var<uniform> transform: Transform;
 
 struct Style {
     color_premul: vec4<f32>,
     line_width_px: f32,
 };
 
-@group(0) @binding(0) var<uniform> transform: Transform;
 @group(1) @binding(0) var<uniform> style: Style;
 
 struct VsIn {
@@ -49,6 +56,7 @@ fn data_to_ndc(v: vec2<f32>) -> vec2<f32> {
     let t = (vec2<f32>(xv, yv) - transform.data_min) / range;
     return t * 2.0 - 1.0;
 }
+// ───── END common block ─────
 
 @vertex
 fn vs_main(in: VsIn) -> @builtin(position) vec4<f32> {

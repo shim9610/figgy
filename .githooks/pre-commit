@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# figgy pre-commit hook.
+#
+# Runs `cargo test --test shader_consistency` whenever any WGSL shader file or
+# the SHADER_COMMON.md SSoT is staged. Blocks the commit on drift between the
+# SSoT document and the shader common blocks.
+#
+# Install once per clone:
+#     git config core.hooksPath .githooks
+#
+# Skip manually with `git commit --no-verify` (do NOT do this for shader edits).
+
+set -e
+
+# Files staged for commit (added, modified, copied, renamed).
+changed=$(git diff --cached --name-only --diff-filter=ACMR)
+
+shader_touched=0
+for f in $changed; do
+    case "$f" in
+        src/data_render/SHADER_COMMON.md|*.wgsl)
+            shader_touched=1
+            break
+            ;;
+    esac
+done
+
+if [ "$shader_touched" -eq 0 ]; then
+    exit 0
+fi
+
+echo "[pre-commit] WGSL / SHADER_COMMON.md changed — verifying SSoT consistency..."
+
+# --quiet keeps output minimal on success; failures still print the full report.
+if ! cargo test --test shader_consistency --quiet 2>&1; then
+    cat >&2 <<'EOF'
+
+[pre-commit] BLOCKED — shader_consistency test failed.
+
+Either:
+  1) Open src/data_render/SHADER_COMMON.md and confirm the canonical text.
+  2) Mirror that exact text into the BEGIN/END common region of each shader
+     listed in the failing test output.
+  3) cargo test --test shader_consistency
+  4) git add + git commit again.
+
+To bypass (NOT recommended for shader edits): git commit --no-verify
+EOF
+    exit 1
+fi
+
+echo "[pre-commit] shader SSoT OK."
+exit 0
