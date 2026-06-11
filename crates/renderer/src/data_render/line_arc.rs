@@ -123,9 +123,9 @@ pub fn create_arc_scan_pipelines(device: &wgpu::Device) -> ArcScanPipelines {
 pub struct ArcScratch {
     pub arc: Arc<wgpu::Buffer>,
     transform_buf: wgpu::Buffer,
-    p_main: wgpu::Buffer,
-    p_s0: wgpu::Buffer,
-    p_s1: wgpu::Buffer,
+    // The params uniforms and sums buffers live inside the bind groups —
+    // wgpu keeps bound resources alive, so only what dispatch() writes
+    // (transform_buf) needs a named field.
     bg_transform: wgpu::BindGroup,
     bg_arc: wgpu::BindGroup,
     bg_s0: wgpu::BindGroup,
@@ -230,9 +230,6 @@ impl ArcScratch {
         Self {
             arc,
             transform_buf,
-            p_main,
-            p_s0,
-            p_s1,
             bg_transform,
             bg_arc,
             bg_s0,
