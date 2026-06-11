@@ -68,7 +68,7 @@ fn registered_db() -> &'static Mutex<fontdb::Database> {
 /// parse to no usable face. Re-registering a family replaces nothing —
 /// fontdb keeps both and the query picks the best style match.
 pub fn register_font_bytes(bytes: Vec<u8>) -> Result<Vec<String>, String> {
-    let mut db = registered_db().lock().unwrap();
+    let mut db = registered_db().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let before: Vec<fontdb::ID> = db.faces().map(|f| f.id).collect();
     db.load_font_data(bytes);
     let mut families: Vec<String> = db
@@ -83,12 +83,12 @@ pub fn register_font_bytes(bytes: Vec<u8>) -> Result<Vec<String>, String> {
     // A family that previously missed (and was cached as the bundled
     // fallback) may now resolve — drop the resolution cache. Glyph caches
     // key on each font's own CacheKey, so they stay valid.
-    resolved_cache().lock().unwrap().clear();
+    resolved_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
     Ok(families)
 }
 
 fn lookup_registered_font(family: &str, bold: bool, italic: bool) -> Option<(&'static [u8], u32)> {
-    let db = registered_db().lock().unwrap();
+    let db = registered_db().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let query = fontdb::Query {
         families: &[fontdb::Family::Name(family)],
         weight: if bold { fontdb::Weight::BOLD } else { fontdb::Weight::NORMAL },
@@ -159,14 +159,14 @@ fn resolve_font(family: &str, bold: bool, italic: bool) -> FontRef<'static> {
         return embedded_font(bold, italic);
     }
     let key = (family.to_string(), bold, italic);
-    if let Some(hit) = resolved_cache().lock().unwrap().get(&key) {
+    if let Some(hit) = resolved_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&key) {
         return *hit;
     }
     let resolved = lookup_registered_font(family, bold, italic)
         .or_else(|| lookup_system_font(family, bold, italic))
         .and_then(|(bytes, index)| FontRef::from_index(bytes, index as usize))
         .unwrap_or_else(|| embedded_font(bold, italic));
-    resolved_cache().lock().unwrap().insert(key, resolved);
+    resolved_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(key, resolved);
     resolved
 }
 

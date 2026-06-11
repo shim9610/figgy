@@ -27,10 +27,42 @@ use wgpu::util::DeviceExt;
 
 use super::ScatterTransform;
 
-const WG: u32 = 256;
+/// Workgroup width of every kernel in `line_arc.wgsl`. Public so the
+/// renderer can refuse downlevel adapters that cannot run 256-wide
+/// workgroups instead of panicking at pipeline creation.
+pub const WG: u32 = 256;
 
 fn blocks(n: u32) -> u32 {
     n.div_ceil(WG)
+}
+
+/// Largest point count one scan supports on a device with the given
+/// per-dimension dispatch limit. Two constraints, both hard validation
+/// errors if exceeded: the first scan dispatches `ceil(n/256)` workgroups
+/// (≤ device limit), and the two-level block-sum chain needs
+/// `ceil(n/256²) ≤ 256`.
+pub fn max_points(max_workgroups_per_dimension: u32) -> u64 {
+    let by_dispatch = u64::from(max_workgroups_per_dimension) * u64::from(WG);
+    let by_levels = u64::from(WG) * u64::from(WG) * u64::from(WG);
+    by_dispatch.min(by_levels)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Capacity ceiling honors BOTH the dispatch limit and the fixed
+    /// two-level scan depth — exceeding either must come back as a graceful
+    /// refusal upstream, never a wgpu validation panic.
+    #[test]
+    fn max_points_respects_dispatch_and_level_limits() {
+        // Spec-minimum dispatch limit: bound by dispatch count.
+        assert_eq!(max_points(65_535), 65_535 * 256);
+        // Huge dispatch limit: bound by the 256³ two-level scan depth.
+        assert_eq!(max_points(u32::MAX), 256 * 256 * 256);
+        // Degenerate adapter.
+        assert_eq!(max_points(0), 0);
+    }
 }
 
 /// Compute pipelines + bind group layouts, created once per `Renderer`.
@@ -154,6 +186,10 @@ impl ArcScratch {
             && self.pool_generation == pool_generation
     }
 
+    /// `None` when `n` exceeds [`max_points`] for this device — the caller
+    /// degrades the series to a solid stroke instead of hitting a dispatch
+    /// validation panic. (Reaching this needs a pool larger than ~64 MiB per
+    /// column or a sub-spec adapter; both are survivable, not bugs.)
     pub fn build(
         device: &wgpu::Device,
         pipelines: &ArcScanPipelines,
@@ -162,10 +198,13 @@ impl ArcScratch {
         x_base: u32,
         y_base: u32,
         pool_generation: u32,
-    ) -> Self {
+        max_workgroups_per_dimension: u32,
+    ) -> Option<Self> {
+        if u64::from(n) > max_points(max_workgroups_per_dimension) {
+            return None;
+        }
         let b0 = blocks(n);
         let b1 = blocks(b0);
-        assert!(b1 <= WG, "arc scan supports up to {} points", WG * WG * WG);
 
         let storage_buf = |label: &str, len: u32, vertex: bool| {
             let mut usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC;
@@ -227,7 +266,7 @@ impl ArcScratch {
         let bg_s0 = storage_bg("figgy arc bg(s0)", &sums0, &sums1, &p_s0);
         let bg_s1 = storage_bg("figgy arc bg(s1)", &sums1, &sums2, &p_s1);
 
-        Self {
+        Some(Self {
             arc,
             transform_buf,
             bg_transform,
@@ -238,7 +277,7 @@ impl ArcScratch {
             x_base,
             y_base,
             pool_generation,
-        }
+        })
     }
 
     /// Write the current transform and record the full scan chain. The caller

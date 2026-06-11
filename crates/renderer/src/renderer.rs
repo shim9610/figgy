@@ -59,6 +59,11 @@ struct RendererDeviceCaps {
     features: wgpu::Features,
     max_texture_dimension_2d: u32,
     max_buffer_size: u64,
+    /// Per-dimension dispatch ceiling for the arc-length compute scan.
+    max_compute_workgroups_per_dimension: u32,
+    /// The arc scan needs 256-wide workgroups; downlevel (GL-class)
+    /// adapters report smaller/zero compute limits.
+    max_compute_invocations_per_workgroup: u32,
 }
 
 impl RendererDeviceCaps {
@@ -68,6 +73,8 @@ impl RendererDeviceCaps {
             features: device.features(),
             max_texture_dimension_2d: limits.max_texture_dimension_2d,
             max_buffer_size: limits.max_buffer_size,
+            max_compute_workgroups_per_dimension: limits.max_compute_workgroups_per_dimension,
+            max_compute_invocations_per_workgroup: limits.max_compute_invocations_per_workgroup,
         }
     }
 }
@@ -244,6 +251,19 @@ impl Renderer {
     ) -> Result<Self> {
         let RendererDevice { device, queue } = gpu;
         let caps = RendererDeviceCaps::from_device(&device);
+        // Downlevel (GL-class) adapters report compute limits below what the
+        // dashed-line arc scan needs; creating its pipelines there is a
+        // validation panic. Refuse early with a real error instead.
+        if caps.max_compute_invocations_per_workgroup < data_render::line_arc::WG
+            || caps.max_compute_workgroups_per_dimension == 0
+        {
+            return Err(FiggyError::GpuResourceLimit {
+                resource: "compute workgroup (figgy requires WebGPU-class compute; \
+                           GL-downlevel adapters are not supported)",
+                requested: u64::from(data_render::line_arc::WG),
+                limit: u64::from(caps.max_compute_invocations_per_workgroup),
+            });
+        }
         validate_target_format(caps, surface_format)?;
 
         let pool = ColumnPool::new(&device, pool_capacity_bytes)?;
@@ -885,7 +905,12 @@ impl Renderer {
         let generation = self.pool.generation();
         let t = data_render::scatter_transform_from_config(chart_config);
 
-        let mut cache = self.arc_cache.lock().unwrap();
+        // Cache mutexes only guard derived state — recover from poisoning
+        // instead of propagating an unrelated panic into every later frame.
+        let mut cache = self
+            .arc_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Runaway-churn backstop: ids of long-removed series would otherwise
         // pin GPU memory forever. Rebuilt on demand, so clearing is safe.
         if cache.len() > 256 {
@@ -895,20 +920,19 @@ impl Renderer {
             .get(series_id)
             .is_none_or(|s| !s.matches(n, x_base, y_base, generation));
         if stale {
-            cache.insert(
-                series_id.to_string(),
-                data_render::line_arc::ArcScratch::build(
-                    &self.device,
-                    &self.arc_pipelines,
-                    self.pool.buffer(),
-                    n,
-                    x_base,
-                    y_base,
-                    generation,
-                ),
-            );
+            let scratch = data_render::line_arc::ArcScratch::build(
+                &self.device,
+                &self.arc_pipelines,
+                self.pool.buffer(),
+                n,
+                x_base,
+                y_base,
+                generation,
+                self.caps.max_compute_workgroups_per_dimension,
+            )?; // None → series too large for one scan: degrade to solid.
+            cache.insert(series_id.to_string(), scratch);
         }
-        let scratch = cache.get(series_id).expect("just inserted");
+        let scratch = cache.get(series_id)?;
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("figgy line arc encoder"),
