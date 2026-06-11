@@ -81,9 +81,10 @@ pub fn register_font_bytes(bytes: Vec<u8>) -> Result<Vec<String>, String> {
         return Err("font data contains no usable face".to_string());
     }
     // A family that previously missed (and was cached as the bundled
-    // fallback) may now resolve — drop the resolution cache. Glyph caches
-    // key on each font's own CacheKey, so they stay valid.
-    resolved_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+    // fallback) may now resolve — invalidate every thread's resolution
+    // cache via the generation counter. Glyph caches key on each font's
+    // own CacheKey, so they stay valid.
+    FONT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Release);
     Ok(families)
 }
 
@@ -120,14 +121,20 @@ fn embedded_font(bold: bool, italic: bool) -> FontRef<'static> {
     })
 }
 
-/// Resolved `FontRef` per (family, bold, italic). System faces are copied out
-/// of fontdb once and leaked — font data lives for the process lifetime
-/// anyway (the bundled statics set the precedent) — and the parsed `FontRef`
-/// is cached so its `CacheKey` stays stable for the glyph caches.
-fn resolved_cache() -> &'static Mutex<HashMap<(String, bool, bool), FontRef<'static>>> {
-    static CACHE: OnceLock<Mutex<HashMap<(String, bool, bool), FontRef<'static>>>> =
-        OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+/// Bumped on every `register_font_bytes` — thread-local resolution caches
+/// compare against it and clear themselves, so a newly registered family
+/// wins over a previously cached fallback on EVERY thread without any
+/// cross-thread locking on the hot path.
+static FONT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+thread_local! {
+    /// Resolved `FontRef` per (family, bold, italic), per thread — the hot
+    /// path of measure/draw (called per segment, including during pointer
+    /// hit-testing) stays lock-free. Faces are copied out of fontdb and
+    /// leaked once per thread on first miss; realistic hosts run text on
+    /// one or two threads, so the duplication is a few families at most.
+    static RESOLVED: RefCell<(u64, HashMap<(String, bool, bool), FontRef<'static>>)> =
+        RefCell::new((0, HashMap::new()));
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -158,16 +165,24 @@ fn resolve_font(family: &str, bold: bool, italic: bool) -> FontRef<'static> {
     if family.is_empty() {
         return embedded_font(bold, italic);
     }
-    let key = (family.to_string(), bold, italic);
-    if let Some(hit) = resolved_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&key) {
-        return *hit;
-    }
-    let resolved = lookup_registered_font(family, bold, italic)
-        .or_else(|| lookup_system_font(family, bold, italic))
-        .and_then(|(bytes, index)| FontRef::from_index(bytes, index as usize))
-        .unwrap_or_else(|| embedded_font(bold, italic));
-    resolved_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(key, resolved);
-    resolved
+    RESOLVED.with(|cell| {
+        let mut cache = cell.borrow_mut();
+        let generation = FONT_GENERATION.load(std::sync::atomic::Ordering::Acquire);
+        if cache.0 != generation {
+            cache.0 = generation;
+            cache.1.clear();
+        }
+        let key = (family.to_string(), bold, italic);
+        if let Some(hit) = cache.1.get(&key) {
+            return *hit;
+        }
+        let resolved = lookup_registered_font(family, bold, italic)
+            .or_else(|| lookup_system_font(family, bold, italic))
+            .and_then(|(bytes, index)| FontRef::from_index(bytes, index as usize))
+            .unwrap_or_else(|| embedded_font(bold, italic));
+        cache.1.insert(key, resolved);
+        resolved
+    })
 }
 
 // Glyph primitives (swash) — everything below is cached per glyph because the
