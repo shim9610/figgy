@@ -290,7 +290,6 @@ impl Renderer {
     pub fn device(&self) -> &Arc<wgpu::Device> { &self.device }
     pub fn queue(&self) -> &Arc<wgpu::Queue> { &self.queue }
     pub fn pool(&self) -> &ColumnPool { &self.pool }
-    pub fn pool_mut(&mut self) -> &mut ColumnPool { &mut self.pool }
     pub fn surface_format(&self) -> wgpu::TextureFormat { self.surface_format }
 
     /// Rebuild render-target pipelines if the host swap-chain format changed.
@@ -524,25 +523,8 @@ impl Renderer {
         self.create_style_from_primitives(line, scatter, errorbar)
     }
 
-    /// Lower-level: build a `ChartStyle` from explicit colors and line width,
-    /// bypassing `DataRenderType`. Non-color options keep the
-    /// `PrimitiveStyle` neutral defaults.
-    pub fn create_style(
-        &self,
-        line_color: Color,
-        line_width_px: f32,
-        scatter_color: Color,
-        errorbar_color: Color,
-    ) -> ChartStyle {
-        self.create_style_from_primitives(
-            PrimitiveStyle::from_color_with_width(line_color, line_width_px),
-            PrimitiveStyle::from_color(scatter_color),
-            PrimitiveStyle::from_color(errorbar_color),
-        )
-    }
-
-    /// Shared tail of `create_style*`: allocate the three style uniform
-    /// buffers and bind groups from fully-built values.
+    /// Shared tail of `create_style_for_series*`: allocate the three style
+    /// uniform buffers and bind groups from fully-built values.
     fn create_style_from_primitives(
         &self,
         line: PrimitiveStyle,
@@ -557,9 +539,6 @@ impl Renderer {
             line_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &line_buf),
             scatter_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &sc_buf),
             errorbar_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &eb_buf),
-            line_buf,
-            scatter_buf: sc_buf,
-            errorbar_buf: eb_buf,
         }
     }
 
@@ -1314,35 +1293,16 @@ impl ChartView {
     pub fn panel_rect(&self) -> Rect { self.panel_rect.clone() }
 }
 
-/// Bundle of style uniform buffers + bind groups for line, scatter, and
-/// errorbar primitives. Built via `Renderer::create_style*`. Multiple series
-/// in one chart can share a single `ChartStyle` (`Series.style: &ChartStyle`).
+/// Bundle of style bind groups for line, scatter, and errorbar primitives.
+/// Built via `Renderer::create_style_for_series*`. Multiple series in one
+/// chart can share a single `ChartStyle` (`Series.style: &ChartStyle`).
+///
+/// The style uniform buffers live inside the bind groups — wgpu keeps bound
+/// resources alive, so no named buffer fields are needed.
 pub struct ChartStyle {
-    line_buf: wgpu::Buffer,
-    scatter_buf: wgpu::Buffer,
-    errorbar_buf: wgpu::Buffer,
     line_bg: wgpu::BindGroup,
     scatter_bg: wgpu::BindGroup,
     errorbar_bg: wgpu::BindGroup,
-}
-
-impl ChartStyle {
-    /// Change the line color via a single uniform write; bind group is reused.
-    pub fn update_line_color(&self, queue: &wgpu::Queue, color: Color) {
-        Self::write(queue, &self.line_buf, color);
-    }
-    pub fn update_scatter_color(&self, queue: &wgpu::Queue, color: Color) {
-        Self::write(queue, &self.scatter_buf, color);
-    }
-    pub fn update_errorbar_color(&self, queue: &wgpu::Queue, color: Color) {
-        Self::write(queue, &self.errorbar_buf, color);
-    }
-    fn write(queue: &wgpu::Queue, buf: &wgpu::Buffer, color: Color) {
-        // Partial write of `color_premul` only (16 bytes at offset 0) so the
-        // width/size/dash fields set at creation survive color updates.
-        let s = PrimitiveStyle::from_color(color);
-        queue.write_buffer(buf, 0, bytemuck::bytes_of(&s.color_premul));
-    }
 }
 
 /// One drawable series — `data_config::SeriesConfig` (declarative) plus a
@@ -1442,7 +1402,7 @@ fn extract_err_x(rt: &DataRenderType) -> Option<&ErrorRef> {
 /// surface config, encoder, or render pass — just calls `draw` per frame.
 ///
 /// `Deref<Target = Renderer>` is implemented, so `add_column`,
-/// `create_chart_view`, `create_style`, … are callable directly.
+/// `create_chart_view`, `create_style_for_series`, … are callable directly.
 pub struct WindowedRenderer<'w> {
     inner: Renderer,
     surface: wgpu::Surface<'w>,
@@ -1554,10 +1514,10 @@ mod tests {
     use crate::data::Column;
     use crate::data_render::{create_instance, request_adapter, request_device};
 
-    fn col_f64(idx: usize, data: Vec<f64>) -> Column<f64> {
+    fn col_f64(data: Vec<f64>) -> Column<f64> {
         let min = data.iter().copied().fold(f64::INFINITY, f64::min);
         let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        Column { index: idx, data, min, max }
+        Column { data, min, max }
     }
 
     /// Two line series on distinct column pairs must BOTH render — this
@@ -1582,10 +1542,10 @@ mod tests {
         let ys: Vec<f64> = xs.iter().map(|x| x.sin()).collect();
         let ts: Vec<f64> = (0..n).map(|i| i as f64 * 5.0 / n as f64).collect();
         let vs: Vec<f64> = ts.iter().map(|t| 1.0 - (-t).exp()).collect();
-        r.add_column("x", &col_f64(0, xs)).unwrap();
-        r.add_column("y", &col_f64(1, ys)).unwrap();
-        r.add_column("t", &col_f64(2, ts)).unwrap();
-        r.add_column("v", &col_f64(3, vs)).unwrap();
+        r.add_column("x", &col_f64(xs)).unwrap();
+        r.add_column("y", &col_f64(ys)).unwrap();
+        r.add_column("t", &col_f64(ts)).unwrap();
+        r.add_column("v", &col_f64(vs)).unwrap();
 
         let mut config = crate::default::default_config();
         config.chart_area = crate::layout::ChartArea(Rect { x: 0, y: 0, width: 640, height: 480 });
@@ -1652,8 +1612,8 @@ mod tests {
             let ys: Vec<f64> = (0..n).map(|i| (i as f64 * 0.37).sin()).collect();
             let xid = format!("ax_{case}");
             let yid = format!("ay_{case}");
-            r.add_column(&xid, &col_f64(0, xs.clone())).unwrap();
-            r.add_column(&yid, &col_f64(1, ys.clone())).unwrap();
+            r.add_column(&xid, &col_f64(xs.clone())).unwrap();
+            r.add_column(&yid, &col_f64(ys.clone())).unwrap();
 
             let (arc_buf, len_bytes) = r
                 .ensure_arc_prefix(&format!("s_{case}"), &xid, &yid, chart.config())
@@ -1722,7 +1682,7 @@ mod tests {
         ).unwrap();
         // Data spans 0..1000 with smallest positive 0.04.
         let vals = vec![0.0, 0.04, 1.0, 50.0, 1000.0];
-        r.add_column("v", &col_f64(0, vals)).unwrap();
+        r.add_column("v", &col_f64(vals)).unwrap();
 
         let mut config = crate::default::default_config();
         config.left_y.scale = crate::config::AxisScale::Logarithmic;
@@ -1764,8 +1724,8 @@ mod tests {
                 10.0 + tri * 80.0
             })
             .collect();
-        r.add_column("x", &col_f64(0, xs)).unwrap();
-        r.add_column("y", &col_f64(1, ys)).unwrap();
+        r.add_column("x", &col_f64(xs)).unwrap();
+        r.add_column("y", &col_f64(ys)).unwrap();
 
         let mut config = crate::default::default_config();
         config.chart_area = crate::layout::ChartArea(Rect { x: 0, y: 0, width: 800, height: 600 });
@@ -1856,8 +1816,8 @@ mod tests {
             .enumerate()
             .map(|(i, x)| (-6.0 * x).exp() + if i % 2 == 0 { 0.0008 } else { -0.0008 })
             .collect();
-        r.add_column("dx", &col_f64(0, xs)).unwrap();
-        r.add_column("dy", &col_f64(1, ys)).unwrap();
+        r.add_column("dx", &col_f64(xs)).unwrap();
+        r.add_column("dy", &col_f64(ys)).unwrap();
 
         let mut config = crate::default::default_config();
         config.chart_area = crate::layout::ChartArea(Rect { x: 0, y: 0, width: 800, height: 400 });
@@ -1986,8 +1946,8 @@ mod tests {
                 }
             })
             .collect();
-        r.add_column("gx", &col_f64(0, xs)).unwrap();
-        r.add_column("gy", &col_f64(1, ys)).unwrap();
+        r.add_column("gx", &col_f64(xs)).unwrap();
+        r.add_column("gy", &col_f64(ys)).unwrap();
 
         let series = [line_cfg("gap", "gx", "gy")];
         let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
@@ -2023,8 +1983,8 @@ mod tests {
                 base + if i % 2 == 0 { 0.0008 } else { -0.0008 }
             })
             .collect();
-        r.add_column("mx", &col_f64(0, xs2)).unwrap();
-        r.add_column("my", &col_f64(1, ys2)).unwrap();
+        r.add_column("mx", &col_f64(xs2)).unwrap();
+        r.add_column("my", &col_f64(ys2)).unwrap();
 
         let series2 = [line_cfg("loop", "mx", "my")];
         let img2 = r.export_panel_rgba(&chart, &series2, 1.0).unwrap();
@@ -2076,8 +2036,8 @@ mod tests {
         let n = 64;
         let ts: Vec<f64> = (0..n).map(|i| i as f64 * 6.28 / (n - 1) as f64).collect();
         let vs: Vec<f64> = ts.iter().map(|t| t.sin()).collect();
-        r.add_column("t", &col_f64(0, ts)).unwrap();
-        r.add_column("v", &col_f64(1, vs)).unwrap();
+        r.add_column("t", &col_f64(ts)).unwrap();
+        r.add_column("v", &col_f64(vs)).unwrap();
 
         let mut config = crate::default::default_config();
         config.chart_area = crate::layout::ChartArea(Rect { x: 0, y: 0, width: 1000, height: 600 });
@@ -2188,7 +2148,7 @@ mod tests {
             1024 * 1024,
         ).unwrap();
 
-        let c = col_f64(0, (0..100).map(|i| i as f64).collect());
+        let c = col_f64((0..100).map(|i| i as f64).collect());
         let h = r.add_column("x", &c).unwrap();
         assert_eq!(h.len_values, 100);
 

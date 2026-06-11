@@ -18,9 +18,6 @@ pub enum FiggyError {
     /// CPU raster target allocation failed — typically a zero/oversized area.
     RasterWrapFailed { reason: String },
 
-    /// `Config.data_area()` failed — margins exceed chart area.
-    DataAreaUnavailable,
-
     /// No compatible wgpu adapter found.
     AdapterUnavailable,
 
@@ -60,9 +57,6 @@ impl std::fmt::Display for FiggyError {
                 write!(f, "invalid chart area: {width}x{height}")
             }
             Self::RasterWrapFailed { reason } => write!(f, "raster wrap failed: {reason}"),
-            Self::DataAreaUnavailable => {
-                write!(f, "data area unavailable (margins exceed chart area)")
-            }
             Self::AdapterUnavailable => write!(f, "no compatible wgpu adapter"),
             Self::DeviceCreationFailed { reason } => {
                 write!(f, "wgpu device creation failed: {reason}")

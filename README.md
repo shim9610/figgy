@@ -114,19 +114,14 @@ renderer.draw(Color::WHITE, &items).unwrap();   // acquire surface frame → enc
 
 ```rust
 pub trait ColumnSource {
-    fn index(&self) -> usize;
     fn len(&self) -> usize;
+    fn is_empty(&self) -> bool { self.len() == 0 }  // default
     fn min(&self) -> f64;
     fn max(&self) -> f64;
-    fn numeric_range(&self) -> Option<(f64, f64)>;
-    fn iter_f64_nullable(&self) -> Box<dyn Iterator<Item = Option<f64>> + '_>;
-    fn to_f32_nan_null(&self) -> Vec<f32>;          // legacy / non-zero-copy path
 
     /// **Key**: write little-endian f32 values directly into the GPU mapped staging buffer (`&mut [u8]`).
     /// Caller guarantees `dst.len() == self.len() * 4`. null → `f32::NAN`.
     fn write_f32_le_into(&self, dst: &mut [u8]);
-
-    fn iter_f64_log_safe(&self) -> Box<dyn Iterator<Item = Option<f64>> + '_> { /* default */ }
 }
 ```
 
@@ -136,26 +131,15 @@ pub trait ColumnSource {
 
 ```rust
 struct MyTimeSeries {
-    idx: usize,
     samples: Vec<f64>,    // or Arc<[f64]>, ndarray::ArrayView, polars::Series, ...
     cached_min: f64,
     cached_max: f64,
 }
 
 impl renderer::ColumnSource for MyTimeSeries {
-    fn index(&self) -> usize { self.idx }
     fn len(&self) -> usize { self.samples.len() }
     fn min(&self) -> f64 { self.cached_min }
     fn max(&self) -> f64 { self.cached_max }
-    fn numeric_range(&self) -> Option<(f64, f64)> {
-        (!self.samples.is_empty()).then_some((self.cached_min, self.cached_max))
-    }
-    fn iter_f64_nullable(&self) -> Box<dyn Iterator<Item = Option<f64>> + '_> {
-        Box::new(self.samples.iter().copied().map(Some))
-    }
-    fn to_f32_nan_null(&self) -> Vec<f32> {
-        self.samples.iter().map(|&v| v as f32).collect()
-    }
     fn write_f32_le_into(&self, dst: &mut [u8]) {
         debug_assert_eq!(dst.len(), self.samples.len() * 4);
         for (i, &v) in self.samples.iter().enumerate() {
@@ -232,7 +216,6 @@ When scaling, every pixel-based dimension (font / line / margin / grid / legend)
 ```rust
 pub struct Config {
     pub chart_area: ChartArea,           // panel pixel rect (inside the host viewport)
-    pub chart: Chart,                    // chart_id + ChartType
     pub top_x: AxisOptions,              // 4-side axes — top/right labels & titles disabled by default
     pub bottom_x: AxisOptions,
     pub left_y: AxisOptions,
@@ -560,19 +543,14 @@ renderer.draw(Color::WHITE, &items).unwrap();   // surface frame 획득 → enco
 
 ```rust
 pub trait ColumnSource {
-    fn index(&self) -> usize;
     fn len(&self) -> usize;
+    fn is_empty(&self) -> bool { self.len() == 0 }  // 디폴트 제공
     fn min(&self) -> f64;
     fn max(&self) -> f64;
-    fn numeric_range(&self) -> Option<(f64, f64)>;
-    fn iter_f64_nullable(&self) -> Box<dyn Iterator<Item = Option<f64>> + '_>;
-    fn to_f32_nan_null(&self) -> Vec<f32>;          // legacy / 비-zero-copy 경로
 
     /// **핵심**: GPU mapped staging buffer 의 `&mut [u8]` 에 little-endian f32 로 직접 채움.
     /// 호출자는 `dst.len() == self.len() * 4` 보장. null → `f32::NAN`.
     fn write_f32_le_into(&self, dst: &mut [u8]);
-
-    fn iter_f64_log_safe(&self) -> Box<dyn Iterator<Item = Option<f64>> + '_> { /* default */ }
 }
 ```
 
@@ -582,26 +560,15 @@ pub trait ColumnSource {
 
 ```rust
 struct MyTimeSeries {
-    idx: usize,
     samples: Vec<f64>,    // 또는 Arc<[f64]>, ndarray::ArrayView, polars::Series, ...
     cached_min: f64,
     cached_max: f64,
 }
 
 impl renderer::ColumnSource for MyTimeSeries {
-    fn index(&self) -> usize { self.idx }
     fn len(&self) -> usize { self.samples.len() }
     fn min(&self) -> f64 { self.cached_min }
     fn max(&self) -> f64 { self.cached_max }
-    fn numeric_range(&self) -> Option<(f64, f64)> {
-        (!self.samples.is_empty()).then_some((self.cached_min, self.cached_max))
-    }
-    fn iter_f64_nullable(&self) -> Box<dyn Iterator<Item = Option<f64>> + '_> {
-        Box::new(self.samples.iter().copied().map(Some))
-    }
-    fn to_f32_nan_null(&self) -> Vec<f32> {
-        self.samples.iter().map(|&v| v as f32).collect()
-    }
     fn write_f32_le_into(&self, dst: &mut [u8]) {
         debug_assert_eq!(dst.len(), self.samples.len() * 4);
         for (i, &v) in self.samples.iter().enumerate() {
@@ -678,7 +645,6 @@ let img = renderer.export_panel_rgba(&chart, &series_configs, scale)?;
 ```rust
 pub struct Config {
     pub chart_area: ChartArea,           // 패널 픽셀 영역 (호스트 viewport 안)
-    pub chart: Chart,                    // chart_id + ChartType
     pub top_x: AxisOptions,              // 4 변 축 — 디폴트는 top/right 라벨/타이틀 비활성
     pub bottom_x: AxisOptions,
     pub left_y: AxisOptions,

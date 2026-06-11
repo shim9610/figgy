@@ -54,10 +54,10 @@ use renderer::{
 const POOL_CAPACITY: u64 = 16 * 1024 * 1024;
 const N: usize = 1024;
 
-fn col_f64(index: usize, data: Vec<f64>) -> Column<f64> {
+fn col_f64(data: Vec<f64>) -> Column<f64> {
     let min = data.iter().copied().fold(f64::INFINITY, f64::min);
     let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { index, data, min, max }
+    Column { data, min, max }
 }
 
 // ============================================================================
@@ -141,8 +141,8 @@ impl iced_wgpu::primitive::Pipeline for FiggyPipeline {
 
 fn build_sine_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     let (xs, ys) = demo::sine_data(N);
-    renderer.add_column("sine_x", &col_f64(0, xs)).unwrap();
-    renderer.add_column("sine_y", &col_f64(1, ys)).unwrap();
+    renderer.add_column("sine_x", &col_f64(xs)).unwrap();
+    renderer.add_column("sine_y", &col_f64(ys)).unwrap();
     let mut config = default::default_config();
     config.chart_area = ChartArea(rect);
     config.grid.show_major_x = false;
@@ -176,9 +176,9 @@ fn build_sine_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
 fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     let (ts, vs_charge) = demo::rc_data(N);
     let (_, vs_discharge) = demo::rc_discharge_data(N);
-    renderer.add_column("rc_t", &col_f64(0, ts)).unwrap();
-    renderer.add_column("rc_charge", &col_f64(1, vs_charge)).unwrap();
-    renderer.add_column("rc_discharge", &col_f64(2, vs_discharge)).unwrap();
+    renderer.add_column("rc_t", &col_f64(ts)).unwrap();
+    renderer.add_column("rc_charge", &col_f64(vs_charge)).unwrap();
+    renderer.add_column("rc_discharge", &col_f64(vs_discharge)).unwrap();
     let mut config = default::default_config();
     config.chart_area = ChartArea(rect);
     config.grid.show_major_x = true;
@@ -223,8 +223,8 @@ fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
 
 fn build_xs_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     let (es, sigmas) = demo::cross_section_data(N);
-    renderer.add_column("xs_e", &col_f64(0, es)).unwrap();
-    renderer.add_column("xs_sigma", &col_f64(1, sigmas)).unwrap();
+    renderer.add_column("xs_e", &col_f64(es)).unwrap();
+    renderer.add_column("xs_sigma", &col_f64(sigmas)).unwrap();
     let mut config = default::default_config();
     config.chart_area = ChartArea(rect);
     config.left_y.scale = AxisScale::Logarithmic;

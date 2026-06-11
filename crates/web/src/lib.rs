@@ -345,7 +345,7 @@ mod web {
                 if v < min { min = v; }
                 if v > max { max = v; }
             }
-            let column = Column { index: 0, data: data.to_vec(), min, max };
+            let column = Column { data: data.to_vec(), min, max };
             self.renderer.add_column(id, &column).map_err(js_err)?;
             self.columns.insert(id.to_string(), signature);
             Ok(())

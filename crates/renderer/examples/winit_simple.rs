@@ -13,7 +13,7 @@
 //!    `auto_fit_x/y` or `set_x_range/set_y_range`. Log scale is a one-liner
 //!    via `config.left_y.scale = AxisScale::Logarithmic`.
 //! 5. **ChartView / ChartStyle**: `renderer.create_chart_view(chart, rect)`,
-//!    `create_style(...)`.
+//!    `create_style_for_series(...)`.
 //! 6. **Draw**: a single `renderer.draw(clear, &items)` call — handles
 //!    surface frame acquire → encoder → render pass → paint → submit →
 //!    present internally.
@@ -82,10 +82,10 @@ const GAP: u32 = 8;
 // Vec<f64> → Column<f64>
 // ============================================================================
 
-fn col_f64(index: usize, data: Vec<f64>) -> Column<f64> {
+fn col_f64(data: Vec<f64>) -> Column<f64> {
     let min = data.iter().copied().fold(f64::INFINITY, f64::min);
     let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { index, data, min, max }
+    Column { data, min, max }
 }
 
 // ============================================================================
@@ -170,8 +170,8 @@ fn compute_panel_rects(w: u32, h: u32) -> [Rect; 3] {
 
 fn build_sine_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     let (xs, ys) = demo::sine_data(N);
-    renderer.add_column("sine_x", &col_f64(0, xs)).expect("add x");
-    renderer.add_column("sine_y", &col_f64(1, ys)).expect("add y");
+    renderer.add_column("sine_x", &col_f64(xs)).expect("add x");
+    renderer.add_column("sine_y", &col_f64(ys)).expect("add y");
 
     let mut config = default::default_config();
     config.chart_area = ChartArea(rect);
@@ -217,9 +217,9 @@ fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     // Charge + discharge — same t, two V columns.
     let (ts, vs_charge) = demo::rc_data(N);
     let (_, vs_discharge) = demo::rc_discharge_data(N);
-    renderer.add_column("rc_t", &col_f64(0, ts)).expect("add t");
-    renderer.add_column("rc_charge", &col_f64(1, vs_charge)).expect("add charge");
-    renderer.add_column("rc_discharge", &col_f64(2, vs_discharge)).expect("add discharge");
+    renderer.add_column("rc_t", &col_f64(ts)).expect("add t");
+    renderer.add_column("rc_charge", &col_f64(vs_charge)).expect("add charge");
+    renderer.add_column("rc_discharge", &col_f64(vs_discharge)).expect("add discharge");
 
     let mut config = default::default_config();
     config.chart_area = ChartArea(rect);
@@ -270,8 +270,8 @@ fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
 
 fn build_cross_section_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     let (es, sigmas) = demo::cross_section_data(N);
-    renderer.add_column("xs_e", &col_f64(0, es)).expect("add E");
-    renderer.add_column("xs_sigma", &col_f64(1, sigmas)).expect("add sigma");
+    renderer.add_column("xs_e", &col_f64(es)).expect("add E");
+    renderer.add_column("xs_sigma", &col_f64(sigmas)).expect("add sigma");
 
     // Log scale is one line in Config. set_y_range / auto_fit_y automatically picks
     // (a) decade major spacing (b) Power label format (c) multiplicative padding.

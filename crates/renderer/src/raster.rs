@@ -155,30 +155,6 @@ impl Canvas {
         }
     }
 
-    pub fn draw_circle(&mut self, cx: f32, cy: f32, r: f32, paint: &Paint) {
-        let Some(path) = PathBuilder::from_circle(cx, cy, r) else { return };
-        match paint.style {
-            PaintStyle::Fill => {
-                self.pix.fill_path(
-                    &path,
-                    &paint.shader_paint(),
-                    tiny_skia::FillRule::Winding,
-                    self.ts,
-                    None,
-                );
-            }
-            PaintStyle::Stroke => {
-                self.pix.stroke_path(
-                    &path,
-                    &paint.shader_paint(),
-                    &paint.stroke_params(),
-                    self.ts,
-                    None,
-                );
-            }
-        }
-    }
-
     /// The current transform's translation, or `None` when it rotates/scales.
     /// Text uses this to pick the resample-free integer blit path.
     pub fn translation(&self) -> Option<(f32, f32)> {

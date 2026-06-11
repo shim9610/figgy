@@ -579,10 +579,10 @@ mod tests {
         Some((device, queue, pool))
     }
 
-    fn col_f64(index: usize, data: Vec<f64>) -> Column<f64> {
+    fn col_f64(data: Vec<f64>) -> Column<f64> {
         let min = data.iter().copied().fold(f64::INFINITY, f64::min);
         let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        Column { index, data, min, max }
+        Column { data, min, max }
     }
 
     #[test]
@@ -592,7 +592,7 @@ mod tests {
             return;
         };
 
-        let c = col_f64(0, (0..100).map(|i| i as f64).collect());
+        let c = col_f64((0..100).map(|i| i as f64).collect());
         let h = pool.add_column("x".to_string(), &c, &device, &queue).unwrap();
 
         // 100 * 4 = 400 bytes, rounded up to ALIGN(256) → 512.
@@ -615,9 +615,9 @@ mod tests {
         let Some((device, queue, mut pool)) = mk_pool(64 * 1024) else {
             return;
         };
-        let a = col_f64(0, (0..50).map(|i| i as f64).collect());     // 200 → 256
-        let b = col_f64(1, (0..200).map(|i| i as f64).collect());    // 800 → 1024
-        let c = col_f64(2, (0..10).map(|i| i as f64).collect());     // 40 → 256
+        let a = col_f64((0..50).map(|i| i as f64).collect());     // 200 → 256
+        let b = col_f64((0..200).map(|i| i as f64).collect());    // 800 → 1024
+        let c = col_f64((0..10).map(|i| i as f64).collect());     // 40 → 256
 
         let ha = pool.add_column("a".into(), &a, &device, &queue).unwrap();
         let hb = pool.add_column("b".into(), &b, &device, &queue).unwrap();
@@ -634,9 +634,9 @@ mod tests {
         let Some((device, queue, mut pool)) = mk_pool(8 * 1024) else {
             return;
         };
-        let a = col_f64(0, (0..50).map(|i| i as f64).collect()); // 256
-        let b = col_f64(1, (0..50).map(|i| i as f64).collect()); // 256
-        let c = col_f64(2, (0..50).map(|i| i as f64).collect()); // 256
+        let a = col_f64((0..50).map(|i| i as f64).collect()); // 256
+        let b = col_f64((0..50).map(|i| i as f64).collect()); // 256
+        let c = col_f64((0..50).map(|i| i as f64).collect()); // 256
 
         pool.add_column("a".into(), &a, &device, &queue).unwrap();
         pool.add_column("b".into(), &b, &device, &queue).unwrap();
@@ -664,7 +664,7 @@ mod tests {
         let Some((device, queue, mut pool)) = mk_pool(1024) else {
             return;
         };
-        let big = col_f64(0, (0..500).map(|i| i as f64).collect()); // 2000 → 2048
+        let big = col_f64((0..500).map(|i| i as f64).collect()); // 2000 → 2048
         let res = pool.add_column("big".into(), &big, &device, &queue);
         assert!(matches!(res, Err(AllocError::OutOfSpace { .. })));
     }
@@ -674,7 +674,7 @@ mod tests {
         let Some((device, queue, mut pool)) = mk_pool(8 * 1024) else {
             return;
         };
-        let a = col_f64(0, (0..10).map(|i| i as f64).collect());
+        let a = col_f64((0..10).map(|i| i as f64).collect());
         pool.add_column("dup".into(), &a, &device, &queue).unwrap();
         let res = pool.add_column("dup".into(), &a, &device, &queue);
         assert!(matches!(res, Err(AllocError::DuplicateId(_))));
@@ -685,7 +685,7 @@ mod tests {
         let Some((device, queue, mut pool)) = mk_pool(8 * 1024) else {
             return;
         };
-        let c = col_f64(0, (0..100).map(|i| i as f64).collect());
+        let c = col_f64((0..100).map(|i| i as f64).collect());
         let h = pool.add_column("x".into(), &c, &device, &queue).unwrap();
         let r = h.byte_range();
         assert_eq!(r.start, 0);
@@ -697,9 +697,9 @@ mod tests {
         let Some((device, queue, mut pool)) = mk_pool(8 * 1024) else {
             return;
         };
-        let a = col_f64(0, (0..50).map(|i| i as f64).collect()); // 256
-        let b = col_f64(1, (0..50).map(|i| i as f64).collect()); // 256
-        let c = col_f64(2, (0..50).map(|i| i as f64).collect()); // 256
+        let a = col_f64((0..50).map(|i| i as f64).collect()); // 256
+        let b = col_f64((0..50).map(|i| i as f64).collect()); // 256
+        let c = col_f64((0..50).map(|i| i as f64).collect()); // 256
 
         let _ = pool.add_column("a".into(), &a, &device, &queue).unwrap();
         let _ = pool.add_column("b".into(), &b, &device, &queue).unwrap();
@@ -737,8 +737,8 @@ mod tests {
         let Some((device, queue, mut pool)) = mk_pool(8 * 1024) else {
             return;
         };
-        let a = col_f64(0, (0..50).map(|i| i as f64).collect());
-        let b = col_f64(1, (0..50).map(|i| i as f64).collect());
+        let a = col_f64((0..50).map(|i| i as f64).collect());
+        let b = col_f64((0..50).map(|i| i as f64).collect());
         pool.add_column("a".into(), &a, &device, &queue).unwrap();
         pool.add_column("b".into(), &b, &device, &queue).unwrap();
         let g0 = pool.generation();
@@ -756,10 +756,10 @@ mod tests {
         };
         pool.defrag_policy = DefragPolicy::OnAllocFailure;
 
-        let a = col_f64(0, (0..50).map(|i| i as f64).collect());
-        let b = col_f64(1, (0..50).map(|i| i as f64).collect());
-        let c = col_f64(2, (0..50).map(|i| i as f64).collect());
-        let d = col_f64(3, (0..50).map(|i| i as f64).collect());
+        let a = col_f64((0..50).map(|i| i as f64).collect());
+        let b = col_f64((0..50).map(|i| i as f64).collect());
+        let c = col_f64((0..50).map(|i| i as f64).collect());
+        let d = col_f64((0..50).map(|i| i as f64).collect());
 
         pool.add_column("a".into(), &a, &device, &queue).unwrap();
         pool.add_column("b".into(), &b, &device, &queue).unwrap();
@@ -785,10 +785,10 @@ mod tests {
         };
         pool.defrag_policy = DefragPolicy::OnAllocFailure;
 
-        let small_a = col_f64(0, (0..50).map(|i| i as f64).collect()); // 256
-        let small_b = col_f64(1, (0..50).map(|i| i as f64).collect()); // 256
-        let small_c = col_f64(2, (0..50).map(|i| i as f64).collect()); // 256
-        let big = col_f64(3, (0..120).map(|i| i as f64).collect());    // 480 → 512
+        let small_a = col_f64((0..50).map(|i| i as f64).collect()); // 256
+        let small_b = col_f64((0..50).map(|i| i as f64).collect()); // 256
+        let small_c = col_f64((0..50).map(|i| i as f64).collect()); // 256
+        let big = col_f64((0..120).map(|i| i as f64).collect());    // 480 → 512
 
         pool.add_column("a".into(), &small_a, &device, &queue).unwrap();
         pool.add_column("b".into(), &small_b, &device, &queue).unwrap();
@@ -809,10 +809,10 @@ mod tests {
             return;
         };
         // Default policy is Manual.
-        let small_a = col_f64(0, (0..50).map(|i| i as f64).collect());
-        let small_b = col_f64(1, (0..50).map(|i| i as f64).collect());
-        let small_c = col_f64(2, (0..50).map(|i| i as f64).collect());
-        let big = col_f64(3, (0..120).map(|i| i as f64).collect());
+        let small_a = col_f64((0..50).map(|i| i as f64).collect());
+        let small_b = col_f64((0..50).map(|i| i as f64).collect());
+        let small_c = col_f64((0..50).map(|i| i as f64).collect());
+        let big = col_f64((0..120).map(|i| i as f64).collect());
 
         pool.add_column("a".into(), &small_a, &device, &queue).unwrap();
         pool.add_column("b".into(), &small_b, &device, &queue).unwrap();

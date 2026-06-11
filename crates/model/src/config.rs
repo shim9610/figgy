@@ -16,19 +16,6 @@ pub struct ChartTitleOptions {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum ChartType {
-    ScatterLine,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct Chart {
-    pub chart_id: String,
-    pub chart_type: ChartType,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GridOptions {
     pub show_major_x: bool,
     pub major_x_color: Color,
@@ -127,7 +114,6 @@ pub struct AxisOptions {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Config {
     pub chart_area: ChartArea,
-    pub chart: Chart,
     pub top_x: AxisOptions,
     pub bottom_x: AxisOptions,
     pub left_y: AxisOptions,
@@ -201,18 +187,4 @@ pub use crate::legend::{
     append_legend_entry, scatter_shape_char, series_symbol_segments, symbol_segments, Legend,
     LegendCorner, LegendEntryKind,
 };
-
-
-
-pub struct ChartResistry {
-    pub chart_id: String,
-    pub chart_type: ChartType,
-    pub chart_xy_index : Vec<(usize,usize)>,
-}
-
-
-pub struct ColumnResistry {
-    pub rander_target: Vec<(ChartArea,ChartResistry)>,
-   // pub column_index_map: HashMap<ColumnId,usize>
-}
 

@@ -27,6 +27,9 @@ serde_json = "1"
 wgpu = "27"
 
 wasm-bindgen = "0.2"
+# No literal `wasm_bindgen_futures` use in src, but the `#[wasm_bindgen]`
+# macro expands `pub async fn` exports (FiggyChart::create / export_png)
+# into wasm_bindgen_futures calls — the crate must stay linkable.
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 web-sys = { version = "0.3", features = ["HtmlCanvasElement"] }

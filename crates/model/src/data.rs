@@ -22,20 +22,7 @@ pub struct DataCell<T> {
 /// y_column` and `DataRenderType`'s `ErrorRef` reference columns by id.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Column<T> {
-    pub index: usize,
     pub data: Vec<T>,
     pub min: T,
     pub max: T,
-}
-
-/// Type-erased column metadata: index, range, length only — no payload.
-///
-/// Used for axis auto-scaling and GPU upload sizing. The actual upload is
-/// handled by the renderer's `ColumnPool`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ErasedColumn {
-    pub index: usize,
-    pub min: f64,
-    pub max: f64,
-    pub len_values: usize,
 }

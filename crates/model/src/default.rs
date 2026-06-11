@@ -16,8 +16,8 @@
 
 use crate::color::Color;
 use crate::config::{
-    AxisOptions, AxisScale, AxisTitleOptions, Chart, ChartTitleOptions, ChartType, Config,
-    GridOptions, LabelStyle, Legend, LegendCorner, TickVisibility,
+    AxisOptions, AxisScale, AxisTitleOptions, ChartTitleOptions, Config, GridOptions, LabelStyle,
+    Legend, LegendCorner, TickVisibility,
 };
 use crate::format::LabelFormat;
 use crate::layout::{ChartArea, Rect};
@@ -159,14 +159,6 @@ pub fn default_grid_options() -> GridOptions {
     }
 }
 
-/// Chart metadata. `chart_id` is a placeholder.
-pub fn default_chart() -> Chart {
-    Chart {
-        chart_id: String::from("chart"),
-        chart_type: ChartType::ScatterLine,
-    }
-}
-
 /// Legend defaults — hidden, top-right corner, standard padding. Content
 /// starts empty; its font/font_size are live and consumed at draw time.
 pub fn default_legend() -> Legend {
@@ -214,7 +206,6 @@ pub fn default_config() -> Config {
 
     Config {
         chart_area: default_chart_area(),
-        chart: default_chart(),
         top_x,
         bottom_x: default_axis_options_x(),
         left_y: default_axis_options_y(),

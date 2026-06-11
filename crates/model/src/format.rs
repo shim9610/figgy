@@ -143,7 +143,6 @@ mod tests {
         assert!(cfg.left_y.label_style.significant_digits >= 1);
         assert!(cfg.right_y.label_style.significant_digits >= 1);
         assert_eq!(cfg.chart_area, before.chart_area);
-        assert_eq!(cfg.chart, before.chart);
         assert_eq!(cfg.grid, before.grid);
         assert_eq!(cfg.chart_title, before.chart_title);
     }
