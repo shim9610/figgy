@@ -1,0 +1,33 @@
+# The wasm-bindgen wrapper — the outward-facing build artifact. The package
+# is named `figgy` (the project name) because that's what the generated
+# JS/wasm files are called: `figgy.js`, `figgy_bg.wasm`, `figgy.d.ts`.
+[package]
+name = "figgy"
+version = "0.1.0"
+edition = "2024"
+description = "figgy chart component for the web — wasm-bindgen wrapper over the renderer."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/shim9610/figgy"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# wasm-pack's bundled wasm-opt crashes on wasm features emitted by current
+# rustc (binaryen Precompute UNREACHABLE). Rust's own release optimization
+# already applies; size trimming can come back later with an updated binaryen.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[dependencies]
+renderer = { path = "../renderer" }
+# Direct model dep just to switch on its `serde` feature (same crate instance
+# as the one renderer re-exports — cargo unifies features workspace-wide).
+model = { path = "../model", features = ["serde"] }
+serde_json = "1"
+wgpu = "27"
+
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["HtmlCanvasElement"] }
+console_error_panic_hook = "0.1"

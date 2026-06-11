@@ -1,14 +1,22 @@
 # figgy
 
-Rust scientific chart library. **CPU skia (axes / labels / grid) + GPU wgpu (large data) hybrid** rendering.
+Rust scientific chart library. **CPU raster (axes / labels / grid — tiny-skia + swash) + GPU wgpu (large data) hybrid** rendering.
 Embed in egui / iced / winit / any other wgpu host.
 
 > [한국어 문서](#한국어-문서) is available below.
 
-- **GPU columnar pool**: all data columns share a single GPU buffer with first-fit alloc + ping-pong defrag on fragmentation.
+> This is the workspace root README. The workspace has three crates:
+> **`crates/model`** — the pure chart model: option SSoT (`Config`, `SeriesConfig`), the rich-text/legend document model, interaction policies (`Selectable`/`Draggable`/`Resizable`, `HitMap`, the single `Config::nudge` movement path), presets (`AxisPreset`, `ColorCycle`). Dependency-free; optional `serde` feature.
+> **`crates/renderer`** — the wgpu + CPU-raster machinery documented below. Depends on `model` and re-exports every module, so all `renderer::…` paths keep working unchanged.
+> **`crates/web`** — the `wasm-bindgen` wrapper (package name `figgy`, one chart per `<canvas>`, id-keyed register/unregister lifecycle). Browser I/O: [WASM.md](crates/renderer/WASM.md) · full Config JSON schema: [SCHEMA.md](crates/web/SCHEMA.md). Build artifacts (`crates/web/pkg/`) are gitignored — build with `npx wasm-pack build crates/web --release --target web`.
+
+- **GPU columnar pool**: all data columns share a single GPU buffer with first-fit alloc + ping-pong defrag on fragmentation. Upload caches scalar stats (min / max / smallest-positive) for auto-fit; per-point geometry such as the dashed-line arc-length prefix is computed in place by a compute scan (`line_arc.wgsl`).
 - **Layered compositing**: grid → data → axis/label/legend, so grid never covers the data.
-- **Headless PNG export**: GPU offscreen raster at arbitrary DPI → RGBA / PNG bytes in memory.
+- **Headless PNG export**: GPU offscreen raster at arbitrary DPI → RGBA / PNG bytes in memory (async-first; blocking wrappers on native).
+- **Interaction layer (opt-in)**: hit-testing, selection boxes, drag (axes constrained to their perpendicular, detached-axis `line_offset`), PPT-style 8-handle resize of the data area — all policy in `model`, fed by host pointer events; never runs if you don't wire it.
+- **Rich-text everywhere**: titles, tick labels, and the legend share one engine — per-segment bold/italic/underline/sub/superscript/greek, per-segment color & size overrides, `'\n'` line breaks, `'\t'` table columns, fixed-width legend symbol fields.
 - **Single wgpu major (27)**: aligned with iced 0.14 + eframe 0.33 ecosystem.
+- **WebAssembly-ready**: pure-Rust raster stack (tiny-skia + fontdb + swash), async init/export, runtime font registration (`register_font`) for CJK and custom families.
 
 ---
 
@@ -18,8 +26,8 @@ Embed in egui / iced / winit / any other wgpu host.
 
 ```toml
 [dependencies]
-figgy = { path = "..." }   # or git URL — currently 0.1.0, not on crates.io.
-wgpu  = "27"
+renderer = { path = "crates/renderer" }   # or git URL — currently 0.1.0, not on crates.io.
+wgpu     = "27"
 ```
 
 The library itself depends on neither winit, egui, nor iced. Pull in only the host you actually use:
@@ -42,7 +50,7 @@ iced_wgpu = "0.14"
 
 ```rust
 use std::sync::Arc;
-use figgy::{
+use renderer::{
     Chart, ChartDrawItem, DataLineStyleConfig, DataRenderType, Renderer, Series, SeriesConfig,
     color::Color, default, layout::{ChartArea, Rect}, line::LineStylePreset,
 };
@@ -102,7 +110,7 @@ renderer.draw(Color::WHITE, &items).unwrap();   // acquire surface frame → enc
 
 ### `ColumnSource` — the data adapter trait
 
-`Renderer::add_column` takes `&dyn ColumnSource` — implement the trait on any container of yours and the data lands in the GPU pool with zero copy (no intermediate `Vec` allocation).
+`Renderer::add_column` takes `&dyn ColumnSource` — implement the trait on any container of yours and the data lands in the GPU pool with zero copy (no intermediate `Vec` allocation). The upload pass reads the freshly written bytes once to cache scalar stats (min / max / smallest-positive) for auto-fit.
 
 ```rust
 pub trait ColumnSource {
@@ -134,7 +142,7 @@ struct MyTimeSeries {
     cached_max: f64,
 }
 
-impl figgy::ColumnSource for MyTimeSeries {
+impl renderer::ColumnSource for MyTimeSeries {
     fn index(&self) -> usize { self.idx }
     fn len(&self) -> usize { self.samples.len() }
     fn min(&self) -> f64 { self.cached_min }
@@ -164,9 +172,9 @@ If your container is already native `f32`, a single `bytemuck::cast_slice` lets 
 ### Three examples — sine / RC / cross-section
 
 ```bash
-cargo run --example winit_simple
-cargo run --example egui_embed   --features egui_demo
-cargo run --example iced_embed   --features iced_demo
+cargo run -p renderer --example winit_simple
+cargo run -p renderer --example egui_embed --features egui_demo
+cargo run -p renderer --example iced_embed --features iced_demo
 ```
 
 Each example shows:
@@ -179,7 +187,7 @@ Each example shows:
 ### egui integration pattern (summary)
 
 ```rust
-struct FiggyState { renderer: figgy::Renderer, panels: Vec<...> }
+struct FiggyState { renderer: renderer::Renderer, panels: Vec<...> }
 
 impl egui_wgpu::CallbackTrait for FiggyCallback {
     fn prepare(&self, _device, _queue, _screen, _enc, resources) -> Vec<...> {
@@ -195,11 +203,11 @@ impl egui_wgpu::CallbackTrait for FiggyCallback {
 }
 ```
 
-Full version: [examples/egui_embed.rs](examples/egui_embed.rs).
+Full version: [examples/egui_embed.rs](crates/renderer/examples/egui_embed.rs).
 
 ### iced integration pattern
 
-`iced_wgpu::primitive::Pipeline` (one-time init) + `shader::Primitive` (per frame) — keep figgy's `Renderer` inside the Pipeline, call `renderer.paint(pass, ...)` from `draw`. See [examples/iced_embed.rs](examples/iced_embed.rs).
+`iced_wgpu::primitive::Pipeline` (one-time init) + `shader::Primitive` (per frame) — keep figgy's `Renderer` inside the Pipeline, call `renderer.paint(pass, ...)` from `draw`. See [examples/iced_embed.rs](crates/renderer/examples/iced_embed.rs).
 
 ### PNG export (memory only — saving is the caller's job)
 
@@ -212,8 +220,8 @@ let img = renderer.export_panel_rgba(&chart, &series_configs, scale)?;
 // img.width, img.height, img.rgba (straight alpha, length = w * h * 4)
 ```
 
-`scale` bounds: `figgy::MIN_EXPORT_SCALE` (0.25) ~ `figgy::MAX_EXPORT_SCALE` (8.0), automatically clamped.
-Convert from standard 96 DPI via `figgy::dpi_to_scale(dpi)`.
+`scale` bounds: `renderer::MIN_EXPORT_SCALE` (0.25) ~ `renderer::MAX_EXPORT_SCALE` (8.0), automatically clamped.
+Convert from standard 96 DPI via `renderer::dpi_to_scale(dpi)`.
 
 When scaling, every pixel-based dimension (font / line / margin / grid / legend) scales proportionally → the visual is identical, just denser pixels.
 
@@ -254,6 +262,7 @@ pub struct Config {
 | `title_option` | `AxisTitleOptions` | Axis title text / visibility / offset |
 | `out_margin` | f32 | Outer (label + title band) pixel margin |
 | `line_visible / color / width / style` | mixed | Axis line appearance |
+| `line_offset` | f32 | Detached-axis offset: shifts the axis chrome (line/ticks/labels) perpendicular to itself while the data area stays put. Layout-neutral; the drag system's axis movement lands here |
 | `major_tick_length / minor_tick_length` | f32 | Tick mark length (px) |
 
 ### `LabelStyle`
@@ -284,18 +293,23 @@ pub struct Config {
 | `show_minor_x/y` | bool | Minor grid lines |
 | `minor_x/y_color, _width, _style` | mixed | Minor line appearance |
 
-### `Legend` / `LegendEntry`
+### `Legend`
 | Field | Type | Meaning |
 |---|---|---|
 | `visible` | bool | |
-| `entries` | `Vec<LegendEntry>` | Per row: `label`, `color`, `line_width`, `kind: Line / Scatter / LineScatter` |
+| `content` | `RichText` | The whole legend as **one rich document**: `'\n'` segments break lines, symbols are inline segments (glyph char + per-segment `color` override) — breaks, symbol positions, and mid-text symbols are all explicit in the SSoT. `font` / `font_size` are live at draw time |
 | `corner` | `LegendCorner` | `TopLeft / TopRight / BottomLeft / BottomRight` |
 | `padding` | f32 | data_area inner-corner inset + box internal padding |
-| `font_size` | f32 | Label font size |
-| `line_height` | f32 | Per-entry row height |
-| `sample_width` | f32 | Left-side color sample (line/dot) width |
-| `sample_text_gap` | f32 | sample ↔ label gap |
 | `bg_color, border_color` | `Color` | Box background / border |
+
+Symbols are **fixed-width field segments** (`field_em`): every form spans
+exactly `SYMBOL_FIELD_EM` (2.0 em × font size) regardless of shape — a line
+mark is a drawn rule (`rule: true`) filling the whole field, a scatter mark
+is the shape glyph (`● ■ ▲ …`) centered in it, and line+scatter is
+rule–glyph–rule summing to the same width. Auto-built entries are
+`symbol + ' ' + '\t' + label`, so labels also align via the tab column.
+Composition helpers: `symbol_segments(kind, color)`,
+`series_symbol_segments(cfg)`, `append_legend_entry(content, symbol, label)`.
 
 ### `data_config` — declarative series schema (the active API)
 
@@ -325,12 +339,12 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::paint` branches 
 
 **`Renderer::create_style_for_series(cfg)`** extracts color/width/shape from `cfg.render_type`'s sub-styles and builds a GPU `ChartStyle` for screen paint. For export, `create_style_for_series_scaled(cfg, scale)` scales pixel widths only.
 
-**Single-direction errorbar** (`ScatterErrorbarY` etc.): you must pre-register a zero-filled column under id `__zero` to fill the unused dimension. Without it, paint returns `FiggyError::UnknownColumn`. (Symmetric variants automatically reuse the same column for lo/hi — no special handling needed.)
+**Single-direction errorbar** (`ScatterErrorbarY` etc.): the unused dimension binds a zero-filled column under id `__zero`. Native callers pre-register it (`renderer.add_column("__zero", &zero_col)`) — without it, paint returns `FiggyError::UnknownColumn`. The wasm wrapper provisions it automatically on `set_series`. (Symmetric variants reuse the same column for lo/hi — no special handling.)
 
 ### `Config::scaled(scale)` / `Config::scale_in_place(s)`
 Multiplies every pixel-based dim by `scale`. `min/max/major_spacing`, scale enum, and colors are untouched. Used for resolution-invariant high-DPI export.
 
-### Default builder — `figgy::default::default_config()`
+### Default builder — `renderer::default::default_config()`
 - bottom_x / left_y: axis line + ticks + labels + title enabled, text starts as empty segments.
 - top_x / right_y: axis line only, labels + title disabled, `out_margin = 8` (narrow gap).
 - chart_title: visible, `top_margin = 32`, text empty.
@@ -343,9 +357,35 @@ Empty text is filled in via the `Chart::with_title / with_x_title / with_y_title
 
 ## 3. Internal memory data flow
 
-![figgy data flow (English)](assets/architecture-en.png)
+![figgy data flow (English)](crates/renderer/assets/architecture-en.png)
 
-> Source: `assets/architecture-en.png` — covers the path from a user's `ColumnSource` through `ColumnPool` and `Renderer`, plus the per-panel `ChartView` / `ChartStyle` resources and the grid → data → decoration paint order.
+> Source: `crates/renderer/assets/architecture-en.png` — the `model` /
+> `renderer` / `web` crate split, the `ColumnSource` → `ColumnPool` upload
+> path (scalar stats at upload), the GPU arc scan for dashed lines, the
+> per-panel `ChartView` / `ChartStyle` resources, dirty-flag handling, the
+> grid → data → decoration paint order, and the window / export paths.
+
+### Dashed-line arc scan (GPU)
+
+The dash phase needs the cumulative pixel arc length at every point, which
+depends on the live data→pixel transform. It is produced entirely on the GPU,
+per dashed series, on every draw that uses it:
+
+```
+pool columns (x, y) ──┐                       Transform uniform (40 B write)
+                      ▼                                   │
+   seg_init           dst[i] = |px(pᵢ) − px(pᵢ₋₁)|   ◄────┘
+   scan_block         256-block inclusive scans (Hillis–Steele, shared mem)
+   scan_block/add     block-sum levels (dst → sums0 → sums1, n ≤ 256³)
+                      ▼
+   arc prefix buffer ──► line pipeline vertex slots 4/5 (dash phase)
+```
+
+The compute encoder is submitted before the host's render pass, so queue
+order sequences it under every embedding (winit / egui / iced / web) without
+API changes. Scratch buffers and bind groups are cached per series and
+rebuilt only when the series layout (length, column offsets, pool
+generation) changes.
 
 ### Dirty flags
 
@@ -378,14 +418,16 @@ export_panel_rgba(chart, &[SeriesConfig], scale):
     temp ChartView (scaled axis textures)
     temp ChartStyles ← create_style_for_series_scaled(cfg, scale) per cfg
         ↓
-    offscreen wgpu::Texture (surface_format, COPY_SRC, transparent clear)
+    offscreen wgpu::Texture (fixed Rgba8Unorm, COPY_SRC, transparent clear)
     paint(items) — same compositing order (grid → data → decoration)
         ↓
-    copy_texture_to_buffer (256-byte aligned padding)
+    copy_texture_to_buffer in ROW CHUNKS (256-byte aligned padding; chunk
+    height adapts to the device's max buffer size, so huge exports survive)
         ↓
-    map_async + Wait poll
+    map_async (+ inline Wait poll on native, browser-yielding await on wasm)
         ↓
-    BGRA→RGBA channel swap, premul→straight α conversion, padding row removed
+    premul→straight α conversion, padding rows removed (no channel swap —
+    the target is RGBA already)
         ↓
     RasterImage { width, height, rgba: Vec<u8> }   ← API return
         ↓
@@ -398,7 +440,7 @@ export_panel_rgba(chart, &[SeriesConfig], scale):
 
 ## License / fonts
 
-Bundled font: Liberation Sans (SIL OFL 1.1) — `fonts/LICENSE-LiberationSans.txt`.
+Bundled font: Liberation Sans (SIL OFL 1.1) — `crates/renderer/fonts/LICENSE-LiberationSans.txt`. Hosts can register additional fonts at runtime (`register_font` on wasm, `text_render::register_font_bytes` on native).
 
 ---
 
@@ -406,13 +448,21 @@ Bundled font: Liberation Sans (SIL OFL 1.1) — `fonts/LICENSE-LiberationSans.tx
 
 # figgy (한국어 문서)
 
-Rust 과학 차트 라이브러리. **CPU skia (축 / 라벨 / 그리드) + GPU wgpu (대량 데이터) 하이브리드** 렌더링.
+Rust 과학 차트 라이브러리. **CPU 라스터 (축 / 라벨 / 그리드 — tiny-skia + swash) + GPU wgpu (대량 데이터) 하이브리드** 렌더링.
 egui / iced / winit / 기타 wgpu 호스트 어디든 임베드 가능.
 
-- **GPU columnar pool**: 모든 데이터 컬럼을 하나의 GPU buffer 에 first-fit + 단편화 시 핑퐁 defrag.
+> 워크스페이스 루트 README. crate 3개로 구성:
+> **`crates/model`** — 순수 차트 모델: 옵션 SSoT(`Config`, `SeriesConfig`), 리치텍스트/범례 문서 모델, 상호작용 정책(`Selectable`/`Draggable`/`Resizable`, `HitMap`, 단일 이동 경로 `Config::nudge`), 프리셋(`AxisPreset`, `ColorCycle`). 의존성 0, `serde` 는 선택 피쳐.
+> **`crates/renderer`** — 아래에서 문서화하는 wgpu + CPU 라스터 장치. `model` 을 의존하며 전 모듈 re-export — `renderer::…` 경로 전부 유효.
+> **`crates/web`** — `wasm-bindgen` 래퍼 (패키지명 `figgy`, `<canvas>` 당 차트 1개, id 기반 등록/해제 수명주기). 브라우저 I/O: [WASM.md](crates/renderer/WASM.md) · Config JSON 스키마: [SCHEMA.md](crates/web/SCHEMA.md). 빌드 산출물(`crates/web/pkg/`)은 gitignore — `npx wasm-pack build crates/web --release --target web` 로 빌드.
+
+- **GPU columnar pool**: 모든 데이터 컬럼을 하나의 GPU buffer 에 first-fit + 단편화 시 핑퐁 defrag. 업로드 시 auto-fit 용 스칼라 통계(min / max / 최소 양수)를 캐싱하고, 점선 호장 prefix 같은 per-point 지오메트리는 컴퓨트 스캔(`line_arc.wgsl`)이 제자리에서 계산.
 - **분리 합성**: grid → data → axis/label/legend 순으로 합성 → 그리드가 데이터를 가리지 않음.
-- **헤드리스 PNG export**: 임의 DPI 로 GPU offscreen 라스터 → 메모리 RGBA / PNG 바이트 반환.
+- **헤드리스 PNG export**: 임의 DPI 로 GPU offscreen 라스터 → 메모리 RGBA / PNG 바이트 반환 (async 우선, native 는 blocking 래퍼 제공).
+- **상호작용 레이어 (opt-in)**: 히트테스트, 선택 박스, 드래그(축은 수직 방향 제약 + 분리 축 `line_offset`), 데이터 영역 PPT 식 8핸들 리사이즈 — 정책은 전부 `model`, 호스트가 포인터 이벤트를 넣을 때만 동작.
+- **리치텍스트 일원화**: 제목·틱 라벨·범례가 한 엔진 공유 — 세그먼트별 bold/italic/밑줄/첨자/그리스, 세그먼트별 색·크기 오버라이드, `'\n'` 줄바꿈, `'\t'` 표 열, 고정폭 범례 심볼 필드.
 - **단일 wgpu 메이저 (27)**: iced 0.14 + eframe 0.33 ecosystem 정렬.
+- **WebAssembly 지원**: 순수 Rust 라스터 스택(tiny-skia + fontdb + swash), async 초기화/export, 런타임 폰트 등록(`register_font`) 으로 CJK·커스텀 패밀리 지원.
 
 ---
 
@@ -422,8 +472,8 @@ egui / iced / winit / 기타 wgpu 호스트 어디든 임베드 가능.
 
 ```toml
 [dependencies]
-figgy = { path = "..." }   # 또는 git URL — 현재 0.1.0, crates.io 미배포.
-wgpu  = "27"
+renderer = { path = "crates/renderer" }   # 또는 git URL — 현재 0.1.0, crates.io 미배포.
+wgpu     = "27"
 ```
 
 라이브러리 자체는 winit / egui / iced 어느 것에도 의존하지 않습니다. 사용하는 호스트만 추가:
@@ -446,7 +496,7 @@ iced_wgpu = "0.14"
 
 ```rust
 use std::sync::Arc;
-use figgy::{
+use renderer::{
     Chart, ChartDrawItem, DataLineStyleConfig, DataRenderType, Renderer, Series, SeriesConfig,
     color::Color, default, layout::{ChartArea, Rect}, line::LineStylePreset,
 };
@@ -506,7 +556,7 @@ renderer.draw(Color::WHITE, &items).unwrap();   // surface frame 획득 → enco
 
 ### `ColumnSource` — 데이터 어댑터 trait
 
-`Renderer::add_column` 의 시그니처는 `&dyn ColumnSource` 입니다 — 어떤 데이터 컨테이너든 본인 타입에 trait 구현하면 GPU pool 에 zero-copy 로 들어갑니다 (`Vec` 중간 alloc 0).
+`Renderer::add_column` 의 시그니처는 `&dyn ColumnSource` 입니다 — 어떤 데이터 컨테이너든 본인 타입에 trait 구현하면 GPU pool 에 zero-copy 로 들어갑니다 (`Vec` 중간 alloc 0). 업로드 패스가 갓 쓴 바이트를 한 번 읽어 auto-fit 용 스칼라 통계(min / max / 최소 양수)를 캐싱합니다.
 
 ```rust
 pub trait ColumnSource {
@@ -538,7 +588,7 @@ struct MyTimeSeries {
     cached_max: f64,
 }
 
-impl figgy::ColumnSource for MyTimeSeries {
+impl renderer::ColumnSource for MyTimeSeries {
     fn index(&self) -> usize { self.idx }
     fn len(&self) -> usize { self.samples.len() }
     fn min(&self) -> f64 { self.cached_min }
@@ -568,9 +618,9 @@ renderer.add_column("temperature", &my_series)?;   // ↘ mapped staging memory 
 ### example 3 종 — 사인 / RC / cross-section
 
 ```bash
-cargo run --example winit_simple
-cargo run --example egui_embed   --features egui_demo
-cargo run --example iced_embed   --features iced_demo
+cargo run -p renderer --example winit_simple
+cargo run -p renderer --example egui_embed --features egui_demo
+cargo run -p renderer --example iced_embed --features iced_demo
 ```
 
 각 example 은:
@@ -583,7 +633,7 @@ cargo run --example iced_embed   --features iced_demo
 ### egui 통합 패턴 (요약)
 
 ```rust
-struct FiggyState { renderer: figgy::Renderer, panels: Vec<...> }
+struct FiggyState { renderer: renderer::Renderer, panels: Vec<...> }
 
 impl egui_wgpu::CallbackTrait for FiggyCallback {
     fn prepare(&self, _device, _queue, _screen, _enc, resources) -> Vec<...> {
@@ -599,11 +649,11 @@ impl egui_wgpu::CallbackTrait for FiggyCallback {
 }
 ```
 
-자세한 건 [examples/egui_embed.rs](examples/egui_embed.rs).
+자세한 건 [examples/egui_embed.rs](crates/renderer/examples/egui_embed.rs).
 
 ### iced 통합 패턴
 
-`iced_wgpu::primitive::Pipeline` (1회 init) + `shader::Primitive` (frame 별) — figgy 의 `Renderer` 를 Pipeline 안에 보관, draw 에서 `renderer.paint(pass, ...)`. [examples/iced_embed.rs](examples/iced_embed.rs).
+`iced_wgpu::primitive::Pipeline` (1회 init) + `shader::Primitive` (frame 별) — figgy 의 `Renderer` 를 Pipeline 안에 보관, draw 에서 `renderer.paint(pass, ...)`. [examples/iced_embed.rs](crates/renderer/examples/iced_embed.rs).
 
 ### PNG export (메모리 only — 저장은 caller)
 
@@ -616,8 +666,8 @@ let img = renderer.export_panel_rgba(&chart, &series_configs, scale)?;
 // img.width, img.height, img.rgba (straight alpha, 길이 = w * h * 4)
 ```
 
-`scale` 한계: `figgy::MIN_EXPORT_SCALE` (0.25) ~ `figgy::MAX_EXPORT_SCALE` (8.0) 자동 clamp.
-`figgy::dpi_to_scale(dpi)` 로 표준 DPI(96) 기준 변환.
+`scale` 한계: `renderer::MIN_EXPORT_SCALE` (0.25) ~ `renderer::MAX_EXPORT_SCALE` (8.0) 자동 clamp.
+`renderer::dpi_to_scale(dpi)` 로 표준 DPI(96) 기준 변환.
 
 스케일 시 모든 픽셀 dim (폰트 / 선 / 마진 / 그리드 / 범례) 비례 확대 → 시각적 동치, 픽셀만 더 촘촘.
 
@@ -658,6 +708,7 @@ pub struct Config {
 | `title_option` | `AxisTitleOptions` | 축 타이틀 텍스트 / 가시성 / 오프셋 |
 | `out_margin` | f32 | 축 바깥쪽 (라벨+타이틀 band) 픽셀 마진 |
 | `line_visible / color / width / style` | mixed | 축 선 외형 |
+| `line_offset` | f32 | 분리 축 오프셋: 데이터 영역은 그대로 두고 축 chrome(선/틱/라벨)만 수직 방향으로 평행이동. 레이아웃 비기여 — 드래그 시스템의 축 이동이 여기에 기록됨 |
 | `major_tick_length / minor_tick_length` | f32 | tick 길이 (px) |
 
 ### `LabelStyle`
@@ -688,18 +739,22 @@ pub struct Config {
 | `show_minor_x/y` | bool | minor 그리드 라인 |
 | `minor_x/y_color, _width, _style` | mixed | minor 라인 외형 |
 
-### `Legend` / `LegendEntry`
+### `Legend`
 | 필드 | 타입 | 의미 |
 |---|---|---|
 | `visible` | bool | |
-| `entries` | `Vec<LegendEntry>` | 각 줄: `label`, `color`, `line_width`, `kind: Line / Scatter / LineScatter` |
+| `content` | `RichText` | 범례 전체가 **하나의 리치 문서**: `'\n'` 세그먼트가 줄바꿈, 심볼은 세그먼트별 `color` 오버라이드를 가진 인라인 세그먼트 — 줄바꿈·심볼 위치·글자 중간 심볼이 전부 SSoT에 명시적. `font` / `font_size` 는 그리기 시점에 적용 |
 | `corner` | `LegendCorner` | `TopLeft / TopRight / BottomLeft / BottomRight` |
 | `padding` | f32 | data_area 안쪽 모서리 inset + 박스 내부 padding |
-| `font_size` | f32 | 라벨 폰트 |
-| `line_height` | f32 | 한 엔트리 줄 높이 |
-| `sample_width` | f32 | 좌측 색 sample (선/점) 너비 |
-| `sample_text_gap` | f32 | sample ↔ 라벨 갭 |
 | `bg_color, border_color` | `Color` | 박스 배경 / 테두리 |
+
+심볼은 **고정폭 필드 세그먼트**(`field_em`)다: 형태와 무관하게 모든 심볼이
+정확히 `SYMBOL_FIELD_EM`(2.0 em × 폰트 크기)을 차지한다 — 선 마크는 필드를
+가득 채우는 그려진 선(`rule: true`), scatter 마크는 필드 중앙의 shape
+글리프(`● ■ ▲ …`), 선+점은 rule–글리프–rule 합계가 같은 폭. 자동 구성
+엔트리는 `심볼 + ' ' + '\t' + 라벨` 형태라 라벨도 탭 열로 정렬된다.
+구성 헬퍼: `symbol_segments(kind, color)`, `series_symbol_segments(cfg)`,
+`append_legend_entry(content, symbol, label)`.
 
 ### `data_config` — series 선언형 스키마 (활성 API)
 
@@ -729,12 +784,12 @@ pub struct Config {
 
 **`Renderer::create_style_for_series(cfg)`** 가 `cfg.render_type` 의 sub-style 에서 색/두께/shape 자동 추출 → GPU `ChartStyle` 빌드. 화면 paint 시 사용. export 는 `create_style_for_series_scaled(cfg, scale)` 로 두께만 픽셀 스케일.
 
-**한쪽 차원만 errorbar 시** (`ScatterErrorbarY` 등): 반대 차원 fill 용으로 `__zero` id 의 zero column 을 사전 등록 필요. 미등록 시 `FiggyError::UnknownColumn`. (Symmetric 변종은 같은 컬럼을 lo/hi 양쪽에 자동 사용 — 별도 처리 X.)
+**한쪽 차원만 errorbar 시** (`ScatterErrorbarY` 등): 미사용 차원은 `__zero` id 의 zero column 을 바인딩. native 호출자는 사전 등록 필요 (`renderer.add_column("__zero", &zero_col)`, 미등록 시 `FiggyError::UnknownColumn`). wasm 래퍼는 `set_series` 에서 자동 공급. (Symmetric 변종은 같은 컬럼을 lo/hi 양쪽에 자동 사용 — 별도 처리 X.)
 
 ### `Config::scaled(scale)` / `Config::scale_in_place(s)`
 모든 픽셀 dim 을 `scale` 배. `min/max/major_spacing`, scale enum, 색은 무변경. 고해상도 export 시 시각적 동치 보장.
 
-### 기본값 빌더 — `figgy::default::default_config()`
+### 기본값 빌더 — `renderer::default::default_config()`
 - bottom_x / left_y: 축선 + 눈금 + 라벨 + 타이틀 활성, 텍스트는 빈 segments.
 - top_x / right_y: 축선만, 라벨 + 타이틀 비활성, `out_margin = 8` (좁은 gap).
 - chart_title: visible, top_margin 32, 텍스트 빈 segments.
@@ -747,9 +802,33 @@ pub struct Config {
 
 ## 3. 내부 메모리 데이터 흐름
 
-![figgy 데이터 흐름 (한국어)](assets/architecture-kr.png)
+![figgy 데이터 흐름 (한국어)](crates/renderer/assets/architecture-kr.png)
 
-> 출처: `assets/architecture-kr.png` — 사용자 `ColumnSource` 부터 `ColumnPool`, `Renderer` 까지의 흐름 + panel 별 `ChartView` / `ChartStyle` 자원 + grid → data → decoration 합성 순서.
+> 출처: `crates/renderer/assets/architecture-kr.png` — `model` / `renderer` /
+> `web` crate 분리, `ColumnSource` → `ColumnPool` 업로드 경로(업로드 시
+> 스칼라 통계 캐싱), 점선용 GPU 호장 스캔, panel 별 `ChartView` /
+> `ChartStyle` 자원, dirty-flag 처리, grid → data → decoration 합성 순서,
+> 윈도우 / export 경로.
+
+### 점선 호장 스캔 (GPU)
+
+dash 위상은 매 점의 누적 픽셀 호장이 필요하고, 이는 라이브 데이터→픽셀
+변환에 의존한다. dashed 시리즈마다, 사용하는 draw 마다 GPU 에서 전부 생산:
+
+```
+pool 컬럼 (x, y) ──┐                        Transform uniform (40 B write)
+                   ▼                                   │
+   seg_init        dst[i] = |px(pᵢ) − px(pᵢ₋₁)|   ◄────┘
+   scan_block      256-블록 inclusive 스캔 (Hillis–Steele, 공유 메모리)
+   scan_block/add  블록 합 레벨 (dst → sums0 → sums1, n ≤ 256³)
+                   ▼
+   호장 prefix buffer ──► 라인 파이프라인 정점 슬롯 4/5 (dash 위상)
+```
+
+컴퓨트 인코더는 호스트의 렌더 패스보다 먼저 submit 되므로 큐 순서가 모든
+임베딩(winit / egui / iced / web)에서 API 변경 없이 순서를 보장한다.
+스크래치 버퍼/바인드 그룹은 시리즈별 캐싱되며 시리즈 레이아웃(길이, 컬럼
+오프셋, 풀 세대)이 바뀔 때만 재구축된다.
 
 ### 더티 플래그
 
@@ -782,14 +861,15 @@ export_panel_rgba(chart, &[SeriesConfig], scale):
     임시 ChartView (스케일된 axis 텍스처)
     임시 ChartStyle 들 ← create_style_for_series_scaled(cfg, scale) per cfg
         ↓
-    offscreen wgpu::Texture (surface_format, COPY_SRC, transparent clear)
+    offscreen wgpu::Texture (고정 Rgba8Unorm, COPY_SRC, transparent clear)
     paint(items) — 동일 합성 순서 (grid → data → decoration)
         ↓
-    copy_texture_to_buffer (256 byte 정렬 padding)
+    copy_texture_to_buffer 를 **행 청크** 로 (256 byte 정렬 padding; 청크
+    높이가 디바이스 max buffer size 에 맞춰 적응 — 초대형 export 도 동작)
         ↓
-    map_async + Wait poll
+    map_async (native 는 inline Wait poll, wasm 은 브라우저 yield await)
         ↓
-    BGRA→RGBA channel swap, premul→straight α 변환, 패딩 행 제거
+    premul→straight α 변환, 패딩 행 제거 (채널 스왑 없음 — 타겟이 이미 RGBA)
         ↓
     RasterImage { width, height, rgba: Vec<u8> }   ← API 반환
         ↓
@@ -802,4 +882,4 @@ export_panel_rgba(chart, &[SeriesConfig], scale):
 
 ## 라이선스 / 폰트
 
-번들 폰트: Liberation Sans (SIL OFL 1.1) — `fonts/LICENSE-LiberationSans.txt`.
+번들 폰트: Liberation Sans (SIL OFL 1.1) — `crates/renderer/fonts/LICENSE-LiberationSans.txt`. 추가 폰트는 런타임 등록 (wasm `register_font`, native `text_render::register_font_bytes`).

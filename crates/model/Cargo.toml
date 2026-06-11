@@ -1,0 +1,20 @@
+[package]
+name = "model"
+version = "0.1.0"
+edition = "2024"
+description = "figgy chart model — option SSoT, interaction contracts, preset policies."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/shim9610/figgy"
+
+# Definitions only — dependency-free by default. The optional `serde` feature
+# adds Serialize/Deserialize across the SSoT tree so hosts (e.g. the wasm
+# wrapper) can round-trip the whole Config as JSON.
+[dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
+
+[dev-dependencies]
+# For the SCHEMA.md sync test (runs with `--features serde`).
+serde_json = "1"
+
+[features]
+serde = ["dep:serde"]

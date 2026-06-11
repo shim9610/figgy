@@ -1,0 +1,54 @@
+[package]
+name = "renderer"
+version = "0.1.0"
+edition = "2024"
+description = "wgpu + CPU-raster hybrid chart renderer for the figgy workspace."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/shim9610/figgy"
+
+[dependencies]
+model = { path = "../model" }
+
+bytemuck = { version = "1.19", features = ["derive"] }
+# Awaitable buffer-map signal for the async export path (works on wasm too).
+futures-channel = "0.3"
+png = "0.17"
+wgpu = "27"
+
+# Pure-Rust CPU raster stack (axis chrome + text) — compiles on every target
+# including wasm32-unknown-unknown.
+fontdb = "0.23"
+swash = "0.2"
+tiny-skia = "0.11"
+
+# Blocking executor for the sync convenience wrappers — never on wasm, where
+# blocking the single thread would deadlock; use the *_async variants there.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = "0.4.0"
+
+eframe = { version = "0.33", optional = true, default-features = false, features = ["wgpu"] }
+egui = { version = "0.33", optional = true }
+egui-wgpu = { version = "0.33", optional = true }
+iced = { version = "0.14", optional = true, features = ["wgpu"] }
+iced_wgpu = { version = "0.14", optional = true }
+
+[dev-dependencies]
+winit = "0.30.13"
+
+[features]
+egui_demo = ["dep:eframe", "dep:egui", "dep:egui-wgpu"]
+iced_demo = ["dep:iced", "dep:iced_wgpu"]
+
+[[example]]
+name = "winit_simple"
+path = "examples/winit_simple.rs"
+
+[[example]]
+name = "egui_embed"
+path = "examples/egui_embed.rs"
+required-features = ["egui_demo"]
+
+[[example]]
+name = "iced_embed"
+path = "examples/iced_embed.rs"
+required-features = ["iced_demo"]
