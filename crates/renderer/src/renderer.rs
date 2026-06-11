@@ -12,7 +12,7 @@
 //! device resource limits are reported before wgpu validation can abort.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::axis_render;
 use crate::chart::Chart;
@@ -79,6 +79,10 @@ impl RendererDeviceCaps {
     }
 }
 
+/// A dashed series' GPU arc-length prefix: the buffer (bound as the line
+/// pipeline's vertex slots 4/5) and its used byte length.
+type ArcPrefix = (Arc<wgpu::Buffer>, u64);
+
 /// Facade bundling every figgy GPU resource.
 pub struct Renderer {
     device: Arc<wgpu::Device>,
@@ -105,9 +109,15 @@ pub struct Renderer {
     /// The prefix is re-dispatched on every draw that uses it (it depends on
     /// the data→pixel transform); buffers/bind groups are reused while the
     /// series layout (length, column offsets, pool generation) is stable.
-    /// Interior mutability because `paint` takes `&self`.
-    arc_cache: Mutex<HashMap<String, data_render::line_arc::ArcScratch>>,
+    /// Mutated only in the `&mut self` prepare phase of `paint`/export — the
+    /// renderer holds no locks; hosts that need shared access wrap the whole
+    /// renderer (see the host-integration notes above `paint`).
+    arc_cache: HashMap<String, data_render::line_arc::ArcScratch>,
     arc_pipelines: data_render::line_arc::ArcScanPipelines,
+    /// Test-only narrowing of the arc-scan chunk size so the multi-chunk
+    /// carry path is exercisable with small `n`. Always `None` in release.
+    #[cfg(test)]
+    arc_chunk_override: Option<u32>,
 
     surface_format: wgpu::TextureFormat,
 }
@@ -299,8 +309,10 @@ impl Renderer {
             errorbar_pipeline,
             sampler,
             quad_vb,
-            arc_cache: Mutex::new(HashMap::new()),
+            arc_cache: HashMap::new(),
             arc_pipelines,
+            #[cfg(test)]
+            arc_chunk_override: None,
             surface_format,
         })
     }
@@ -480,18 +492,28 @@ impl Renderer {
     //      is the "prepare" stage where `device`/`queue` are accessible.
     //   3. The host hands a `&mut RenderPass` to `renderer.paint(pass, items)`.
     //
+    // Locking is the HOST's responsibility. `paint` takes `&mut self` (it
+    // refreshes per-series GPU scan state); the renderer itself holds no
+    // locks. Hosts that own the renderer exclusively (winit loop, wasm
+    // wrapper) call it directly. Hosts whose paint callback only hands out
+    // `&self` (egui's `CallbackTrait::paint`, iced's `shader::Primitive`)
+    // wrap their state in a `Mutex` and lock around the call — see
+    // `examples/egui_embed.rs` / `examples/iced_embed.rs`.
+    //
     // egui pseudocode:
     // ```ignore
+    // // resources own Mutex<FiggyState> (state.renderer + chart/view/items)
     // let cb = egui_wgpu::CallbackFn::new()
     //     .prepare(|device, queue, _enc, res| {
-    //         let r: &mut Renderer = res.get_mut().unwrap();
-    //         if chart.consume_data_dirty() { r.update_transform(&view, &chart); }
-    //         if chart.consume_raster_dirty() { r.refresh_axis(&mut view, &chart, rect)?; }
+    //         let s = res.get_mut::<Mutex<FiggyState>>().unwrap().get_mut().unwrap();
+    //         if s.chart.consume_data_dirty() { s.renderer.update_transform(&s.view, &s.chart); }
+    //         if s.chart.consume_raster_dirty() { s.renderer.refresh_axis(&mut s.view, &s.chart, rect)?; }
     //         vec![]
     //     })
     //     .paint(|_info, pass, res| {
-    //         let r: &Renderer = res.get().unwrap();
-    //         r.paint(pass, &items).unwrap();
+    //         let mut s = res.get::<Mutex<FiggyState>>().unwrap().lock().unwrap();
+    //         let (renderer, items) = s.split_for_paint();
+    //         renderer.paint(pass, target_size, &items).unwrap();
     //     });
     // ```
 
@@ -735,19 +757,55 @@ impl Renderer {
     /// panel_rect / data_area are clamped to it because wgpu validation would
     /// otherwise abort. Pass the surface pixel size reported by the host
     /// (winit, egui CallbackInfo, iced shader::Primitive, …).
+    ///
+    /// Takes `&mut self`: the call starts with a prepare phase that refreshes
+    /// per-series GPU scan state (dashed-line arc prefixes) before recording
+    /// into the pass. The renderer holds no internal locks — hosts whose
+    /// paint callback only provides `&self` wrap their state in a `Mutex`
+    /// (see the host-integration notes above).
     pub fn paint(
-        &self,
+        &mut self,
         pass: &mut wgpu::RenderPass<'_>,
         target_size: (u32, u32),
         items: &[ChartDrawItem<'_>],
     ) -> Result<()> {
+        let arcs = self.ensure_arc_prefixes(items);
         let pipelines = TargetPipelineRefs {
             axis: &self.axis_pipeline,
             line: &self.line_pipeline,
             scatter: &self.scatter_pipeline,
             errorbar: &self.errorbar_pipeline,
         };
-        self.paint_with_pipelines(pass, target_size, items, pipelines)
+        self.paint_with_pipelines(pass, target_size, items, pipelines, &arcs)
+    }
+
+    /// Prepare phase of `paint`/export — the only mutable step. Ensures and
+    /// dispatches the GPU arc-length prefix for every dashed line series;
+    /// the immutable draw phase then only looks the buffers up, so it can
+    /// coexist with the pipeline references the pass needs.
+    fn ensure_arc_prefixes(&mut self, items: &[ChartDrawItem<'_>]) -> Vec<Vec<Option<ArcPrefix>>> {
+        let mut arcs = Vec::with_capacity(items.len());
+        for item in items {
+            let mut per_series = Vec::with_capacity(item.series.len());
+            for series in item.series {
+                let cfg = series.config;
+                let dashed = has_line(&cfg.render_type)
+                    && extract_line(&cfg.render_type)
+                        .is_some_and(|l| !matches!(l.line_style, LineStylePreset::Solid));
+                per_series.push(if dashed {
+                    self.ensure_arc_prefix(
+                        &cfg.series_id,
+                        &cfg.x_column,
+                        &cfg.y_column,
+                        item.chart_config,
+                    )
+                } else {
+                    None
+                });
+            }
+            arcs.push(per_series);
+        }
+        arcs
     }
 
     fn paint_with_pipelines<'a>(
@@ -756,8 +814,9 @@ impl Renderer {
         target_size: (u32, u32),
         items: &[ChartDrawItem<'a>],
         pipelines: TargetPipelineRefs<'a>,
+        arcs: &[Vec<Option<ArcPrefix>>],
     ) -> Result<()> {
-        for item in items {
+        for (item, item_arcs) in items.iter().zip(arcs) {
             let panel_rect = item.view.panel_rect;
             let data_area = item
                 .chart_config
@@ -767,7 +826,7 @@ impl Renderer {
 
             // Bundle every series's primitives for the panel into one call.
             let series_list =
-                self.build_series_layers(item.view, item.chart_config, item.series, pipelines)?;
+                self.build_series_layers(item.view, item.series, pipelines, item_arcs)?;
 
             data_render::draw_chart_panel_columnar(
                 pass,
@@ -785,14 +844,15 @@ impl Renderer {
     /// Convert one panel's `Series` list into `SeriesLayers` ready for
     /// drawing. The `config.render_type` enum variant decides which of
     /// line/scatter/errorbar each series needs; column ids are resolved to
-    /// handles via the pool. `chart_config` supplies the data→pixel
-    /// transform that dashed lines need for their arc-length prefix.
+    /// handles via the pool. `arcs` is this panel's slice of the prepare
+    /// phase's output ([`Self::ensure_arc_prefixes`]), aligned with
+    /// `series_specs` — dashed lines pick up their arc-length prefix there.
     fn build_series_layers<'a>(
         &'a self,
         view: &'a ChartView,
-        chart_config: &Config,
         series_specs: &[Series<'a>],
         pipelines: TargetPipelineRefs<'a>,
+        arcs: &[Option<ArcPrefix>],
     ) -> Result<Vec<data_render::SeriesLayers<'a>>> {
         let pool = &self.pool;
         let lookup = |id: &ColumnId| -> Result<ColumnHandle> {
@@ -801,20 +861,14 @@ impl Renderer {
         };
 
         let mut out = Vec::with_capacity(series_specs.len());
-        for series in series_specs {
+        for (idx, series) in series_specs.iter().enumerate() {
             let cfg = series.config;
             let rt = &cfg.render_type;
             let x_h = lookup(&cfg.x_column)?;
             let y_h = lookup(&cfg.y_column)?;
 
             let line = if has_line(rt) {
-                let dashed = extract_line(rt)
-                    .is_some_and(|l| !matches!(l.line_style, LineStylePreset::Solid));
-                let arc = if dashed {
-                    self.ensure_arc_prefix(&cfg.series_id, &cfg.x_column, &cfg.y_column, chart_config)
-                } else {
-                    None
-                };
+                let arc = arcs.get(idx).cloned().flatten();
                 Some(ColumnLineLayer {
                     pipeline: pipelines.line,
                     transform_bg: &view.transform_bg,
@@ -879,6 +933,8 @@ impl Renderer {
     /// the buffer slice info. The whole computation runs on the GPU
     /// (`line_arc.wgsl` compute scan over the pool columns) — the data never
     /// returns to the CPU, keeping the pool's no-CPU-copy contract intact.
+    /// Series longer than one chunk's dispatch capacity scan as sequential
+    /// chunks linked by a carry buffer, so any pool-resident `n` is fine.
     ///
     /// The scan is re-dispatched on every draw that needs it (the prefix
     /// depends on the data→pixel transform): a handful of tiny compute
@@ -886,40 +942,47 @@ impl Renderer {
     /// then sequences correctly. Buffers/bind groups are cached per series
     /// and rebuilt only when the series layout changes.
     fn ensure_arc_prefix(
-        &self,
+        &mut self,
         series_id: &str,
         x_id: &str,
         y_id: &str,
         chart_config: &Config,
-    ) -> Option<(Arc<wgpu::Buffer>, u64)> {
-        let x = self.pool.slot(x_id)?;
-        let y = self.pool.slot(y_id)?;
-        let n = x.len_values.min(y.len_values);
+    ) -> Option<ArcPrefix> {
+        // Copy the layout scalars out so the pool borrow ends before the
+        // cache mutation below.
+        let (x_offset, x_len) = {
+            let s = self.pool.slot(x_id)?;
+            (s.offset, s.len_values)
+        };
+        let (y_offset, y_len) = {
+            let s = self.pool.slot(y_id)?;
+            (s.offset, s.len_values)
+        };
+        let n = x_len.min(y_len);
         if n < 2 {
             return None;
         }
         let n = u32::try_from(n).ok()?;
         // Pool offsets are 256-aligned bytes → exact f32 element indices.
-        let x_base = u32::try_from(x.offset / 4).ok()?;
-        let y_base = u32::try_from(y.offset / 4).ok()?;
+        let x_base = u32::try_from(x_offset / 4).ok()?;
+        let y_base = u32::try_from(y_offset / 4).ok()?;
         let generation = self.pool.generation();
         let t = data_render::scatter_transform_from_config(chart_config);
 
-        // Cache mutexes only guard derived state — recover from poisoning
-        // instead of propagating an unrelated panic into every later frame.
-        let mut cache = self
-            .arc_cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Runaway-churn backstop: ids of long-removed series would otherwise
         // pin GPU memory forever. Rebuilt on demand, so clearing is safe.
-        if cache.len() > 256 {
-            cache.clear();
+        if self.arc_cache.len() > 256 {
+            self.arc_cache.clear();
         }
-        let stale = cache
+        let stale = self
+            .arc_cache
             .get(series_id)
             .is_none_or(|s| !s.matches(n, x_base, y_base, generation));
         if stale {
+            #[cfg(test)]
+            let chunk_override = self.arc_chunk_override;
+            #[cfg(not(test))]
+            let chunk_override = None;
             let scratch = data_render::line_arc::ArcScratch::build(
                 &self.device,
                 &self.arc_pipelines,
@@ -929,10 +992,11 @@ impl Renderer {
                 y_base,
                 generation,
                 self.caps.max_compute_workgroups_per_dimension,
-            )?; // None → series too large for one scan: degrade to solid.
-            cache.insert(series_id.to_string(), scratch);
+                chunk_override,
+            )?; // None only on a zero-dispatch-limit adapter; try_new rejects those.
+            self.arc_cache.insert(series_id.to_string(), scratch);
         }
-        let scratch = cache.get(series_id)?;
+        let scratch = self.arc_cache.get(series_id)?;
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("figgy line arc encoder"),
@@ -945,8 +1009,9 @@ impl Renderer {
 
     /// Handle of the zero-filled column used to pad the unused dimension of
     /// asymmetric errorbars. Caller must pre-register `"__zero"` via
-    /// `renderer.add_column("__zero", &zero_col)`. Auto-registering would
-    /// require `&mut self`, which conflicts with `paint`'s `&self` signature.
+    /// `renderer.add_column("__zero", &zero_col)` (the web wrapper does this
+    /// automatically). Lookup happens in the immutable draw phase, so the
+    /// column cannot be created lazily here.
     fn zero_handle(&self) -> Result<ColumnHandle> {
         self.pool.handle_for("__zero").ok_or_else(|| FiggyError::UnknownColumn {
             id: "__zero (zero-fill column for the unused dim of an errorbar series; \
@@ -969,9 +1034,10 @@ impl Renderer {
     /// Async because the GPU→CPU readback must yield to the browser on wasm;
     /// on native the await resolves immediately (the device is polled to
     /// completion inline). Native callers can use the blocking
-    /// [`Self::export_panel_rgba`] wrapper instead.
+    /// [`Self::export_panel_rgba`] wrapper instead. `&mut self` for the same
+    /// reason as [`Self::paint`]: the arc-prefix prepare phase.
     pub async fn export_panel_rgba_async(
-        &self,
+        &mut self,
         chart: &Chart,
         series: &[SeriesConfig],
         scale: f32,
@@ -1011,6 +1077,15 @@ impl Renderer {
         let series_objs: Vec<Series<'_>> = series.iter().zip(scaled_styles.iter())
             .map(|(cfg, st)| Series { config: cfg, style: st })
             .collect();
+        let items = [ChartDrawItem {
+            view: &view,
+            chart_config: scaled_chart.config(),
+            series: &series_objs,
+        }];
+
+        // 3.5) Arc-prefix prepare phase (the only mutable step) — submitted
+        // before the render pass below, so queue order sequences them.
+        let arcs = self.ensure_arc_prefixes(&items);
 
         // 4) Offscreen target.
         let target_desc = wgpu::TextureDescriptor {
@@ -1107,12 +1182,7 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            let items = [ChartDrawItem {
-                view: &view,
-                chart_config: scaled_chart.config(),
-                series: &series_objs,
-            }];
-            self.paint_with_pipelines(&mut pass, (w, h), &items, export_pipelines)?;
+            self.paint_with_pipelines(&mut pass, (w, h), &items, export_pipelines, &arcs)?;
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
@@ -1211,7 +1281,7 @@ impl Renderer {
     /// Convenience wrapper: export panel RGBA, then encode PNG bytes in
     /// memory. Saving the bytes to disk is up to the caller.
     pub async fn export_panel_png_bytes_async(
-        &self,
+        &mut self,
         chart: &Chart,
         series: &[SeriesConfig],
         scale: f32,
@@ -1225,7 +1295,7 @@ impl Renderer {
     /// loop instead.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn export_panel_rgba(
-        &self,
+        &mut self,
         chart: &Chart,
         series: &[SeriesConfig],
         scale: f32,
@@ -1237,7 +1307,7 @@ impl Renderer {
     /// [`Self::export_panel_png_bytes_async`]. Native only.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn export_panel_png_bytes(
-        &self,
+        &mut self,
         chart: &Chart,
         series: &[SeriesConfig],
         scale: f32,
@@ -1608,9 +1678,11 @@ mod tests {
     }
 
     /// The GPU arc-length scan must equal a sequential CPU reference for
-    /// every dispatch shape: single block (n ≤ 256), one sums level, and two
-    /// sums levels (n > 65 536). This is the correctness proof that lets the
-    /// pool keep NO CPU copy of column data.
+    /// every dispatch shape: single block (n ≤ 256), one sums level, two
+    /// sums levels (n > 65 536), and the sequential multi-chunk path (forced
+    /// via a narrowed chunk size) that makes n unlimited — both an
+    /// exact-multiple boundary and a ragged tail. This is the correctness
+    /// proof that lets the pool keep NO CPU copy of column data.
     #[test]
     fn gpu_arc_prefix_matches_cpu_reference() {
         let inst = create_instance();
@@ -1631,7 +1703,16 @@ mod tests {
         chart.set_x_range(0.0, 1.0);
         chart.set_y_range(-1.2, 1.2);
 
-        for (case, n) in [("tiny", 3usize), ("one-level", 1000), ("two-level", 70_000)] {
+        for (case, n, chunk) in [
+            ("tiny", 3usize, None),
+            ("one-level", 1000, None),
+            ("two-level", 70_000, None),
+            // Forced multi-chunk shapes: an exact-multiple boundary and a
+            // ragged tail both exercise the sequential carry chain.
+            ("chunked-even", 2_000, Some(1_000)),
+            ("chunked-ragged", 2_500, Some(1_000)),
+        ] {
+            r.arc_chunk_override = chunk;
             let xs: Vec<f64> = (0..n).map(|i| i as f64 / n as f64).collect();
             let ys: Vec<f64> = (0..n).map(|i| (i as f64 * 0.37).sin()).collect();
             let xid = format!("ax_{case}");

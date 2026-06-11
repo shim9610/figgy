@@ -12,7 +12,7 @@
 //! `cargo run -p renderer --example iced_embed --features iced_demo`
 
 use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use std::sync::atomic::AtomicU32;
@@ -74,7 +74,12 @@ struct PanelEntry {
 }
 
 struct FiggyPipeline {
-    renderer: Option<Renderer>,
+    /// Host-responsibility lock: `Renderer::paint` takes `&mut self`, but
+    /// iced's `shader::Primitive::draw` only hands out `&Pipeline`. `prepare`
+    /// (which gets `&mut Pipeline`) reaches inside with `get_mut()` — no
+    /// locking; only `draw` actually locks, uncontended on iced's single
+    /// render thread. The renderer itself holds no locks.
+    renderer: Option<Mutex<Renderer>>,
     panels: Vec<PanelEntry>,
     init_error: Option<String>,
     /// Currently selected element: (panel index, hit-map id).
@@ -112,12 +117,21 @@ impl FiggyPipeline {
             build_rc_panel(&mut renderer, placeholder),
             build_xs_panel(&mut renderer, placeholder),
         ];
-        Self { renderer: Some(renderer), panels, init_error: None, selected: None, active_resize: None }
+        Self {
+            renderer: Some(Mutex::new(renderer)),
+            panels,
+            init_error: None,
+            selected: None,
+            active_resize: None,
+        }
     }
 
     fn shutdown(&mut self) {
         if let Some(renderer) = self.renderer.as_mut() {
-            renderer.wait_idle();
+            renderer
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner)
+                .wait_idle();
         }
         self.panels.clear();
     }
@@ -349,6 +363,8 @@ impl shader::Primitive for FiggyPrimitive {
             }
             return;
         };
+        // `&mut Pipeline` → exclusive access; `get_mut` skips the lock.
+        let renderer = renderer.get_mut().unwrap_or_else(PoisonError::into_inner);
         let Some(panel) = pipeline.panels.get_mut(self.panel_idx) else {
             return;
         };
@@ -413,6 +429,8 @@ impl shader::Primitive for FiggyPrimitive {
         let Some(renderer) = pipeline.renderer.as_ref() else {
             return false;
         };
+        // Host lock around `paint(&mut self)` — see the field doc.
+        let mut renderer = renderer.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(panel) = pipeline.panels.get(self.panel_idx) else {
             return false;
         };

@@ -719,7 +719,10 @@ mod web {
 
         /// Export the panel as PNG bytes at `scale ×` resolution.
         /// JS: `const png = await chart.export_png(2.0);`
-        pub async fn export_png(&self, scale: f32) -> Result<js_sys::Uint8Array, JsValue> {
+        /// (`&mut self`: the renderer's export runs an arc-prefix prepare
+        /// phase; wasm-bindgen serializes access, so this changes nothing
+        /// for JS callers.)
+        pub async fn export_png(&mut self, scale: f32) -> Result<js_sys::Uint8Array, JsValue> {
             let bytes = self
                 .renderer
                 .export_panel_png_bytes_async(&self.chart, &self.series_cfgs, scale)

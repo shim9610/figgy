@@ -170,19 +170,27 @@ Each example shows:
 
 ### egui integration pattern (summary)
 
+`Renderer::paint` takes `&mut self` and the renderer holds no internal locks;
+when a host's paint callback only provides shared access, the host wraps the
+state in a `Mutex` (uncontended on the render thread):
+
 ```rust
+// stored in CallbackResources as Mutex<FiggyState>
 struct FiggyState { renderer: renderer::Renderer, panels: Vec<...> }
 
 impl egui_wgpu::CallbackTrait for FiggyCallback {
     fn prepare(&self, _device, _queue, _screen, _enc, resources) -> Vec<...> {
-        let state = resources.get_mut::<FiggyState>().unwrap();
+        // &mut CallbackResources → get_mut reaches the data without locking.
+        let state = resources.get_mut::<Mutex<FiggyState>>().unwrap().get_mut().unwrap();
         // dirty handling: refresh_axis / update_transform
         Vec::new()
     }
     fn paint(&self, info, render_pass, resources) {
-        let state = resources.get::<FiggyState>().unwrap();
+        let mut state = resources.get::<Mutex<FiggyState>>().unwrap().lock().unwrap();
+        let state = &mut *state;
+        let (renderer, panels) = (&mut state.renderer, &state.panels);
         let target = (info.screen_size_px[0], info.screen_size_px[1]);
-        state.renderer.paint(render_pass, target, &items).unwrap();
+        renderer.paint(render_pass, target, &items).unwrap();
     }
 }
 ```
@@ -191,7 +199,7 @@ Full version: [examples/egui_embed.rs](crates/renderer/examples/egui_embed.rs).
 
 ### iced integration pattern
 
-`iced_wgpu::primitive::Pipeline` (one-time init) + `shader::Primitive` (per frame) — keep figgy's `Renderer` inside the Pipeline, call `renderer.paint(pass, ...)` from `draw`. See [examples/iced_embed.rs](crates/renderer/examples/iced_embed.rs).
+`iced_wgpu::primitive::Pipeline` (one-time init) + `shader::Primitive` (per frame) — keep figgy's `Renderer` inside the Pipeline as `Mutex<Renderer>`: `prepare` (`&mut Pipeline`) reaches it via `get_mut()` with no locking, `draw` (`&Pipeline`) locks around `renderer.paint(pass, ...)`. See [examples/iced_embed.rs](crates/renderer/examples/iced_embed.rs).
 
 ### PNG export (memory only — saving is the caller's job)
 
@@ -359,7 +367,11 @@ pool columns (x, y) ──┐                       Transform uniform (40 B writ
                       ▼                                   │
    seg_init           dst[i] = |px(pᵢ) − px(pᵢ₋₁)|   ◄────┘
    scan_block         256-block inclusive scans (Hillis–Steele, shared mem)
-   scan_block/add     block-sum levels (dst → sums0 → sums1, n ≤ 256³)
+   scan_block/add     block-sum levels (dst → sums0 → sums1)
+   carry chain        chunks of min(dispatch limit × 256, 256³) points run
+                      sequentially; a 1-element carry buffer folds each
+                      chunk's total into the next — n is bounded only by
+                      pool memory, with no readback at any size
                       ▼
    arc prefix buffer ──► line pipeline vertex slots 4/5 (dash phase)
 ```
@@ -599,19 +611,27 @@ cargo run -p renderer --example iced_embed --features iced_demo
 
 ### egui 통합 패턴 (요약)
 
+`Renderer::paint` 는 `&mut self` 를 받고 렌더러는 내부 락을 들지 않는다.
+호스트의 paint 콜백이 공유 참조만 제공하는 경우, 잠금은 호스트의 책임이다
+(렌더 스레드 단독 경로라 경합 없음):
+
 ```rust
+// CallbackResources 에 Mutex<FiggyState> 로 저장
 struct FiggyState { renderer: renderer::Renderer, panels: Vec<...> }
 
 impl egui_wgpu::CallbackTrait for FiggyCallback {
     fn prepare(&self, _device, _queue, _screen, _enc, resources) -> Vec<...> {
-        let state = resources.get_mut::<FiggyState>().unwrap();
+        // &mut CallbackResources → get_mut 은 잠금 없이 내부 접근.
+        let state = resources.get_mut::<Mutex<FiggyState>>().unwrap().get_mut().unwrap();
         // dirty 처리: refresh_axis / update_transform
         Vec::new()
     }
     fn paint(&self, info, render_pass, resources) {
-        let state = resources.get::<FiggyState>().unwrap();
+        let mut state = resources.get::<Mutex<FiggyState>>().unwrap().lock().unwrap();
+        let state = &mut *state;
+        let (renderer, panels) = (&mut state.renderer, &state.panels);
         let target = (info.screen_size_px[0], info.screen_size_px[1]);
-        state.renderer.paint(render_pass, target, &items).unwrap();
+        renderer.paint(render_pass, target, &items).unwrap();
     }
 }
 ```
@@ -620,7 +640,7 @@ impl egui_wgpu::CallbackTrait for FiggyCallback {
 
 ### iced 통합 패턴
 
-`iced_wgpu::primitive::Pipeline` (1회 init) + `shader::Primitive` (frame 별) — figgy 의 `Renderer` 를 Pipeline 안에 보관, draw 에서 `renderer.paint(pass, ...)`. [examples/iced_embed.rs](crates/renderer/examples/iced_embed.rs).
+`iced_wgpu::primitive::Pipeline` (1회 init) + `shader::Primitive` (frame 별) — figgy 의 `Renderer` 를 Pipeline 안에 `Mutex<Renderer>` 로 보관: `prepare` (`&mut Pipeline`) 는 `get_mut()` 으로 잠금 없이, `draw` (`&Pipeline`) 만 `renderer.paint(pass, ...)` 주위를 잠근다. [examples/iced_embed.rs](crates/renderer/examples/iced_embed.rs).
 
 ### PNG export (메모리 only — 저장은 caller)
 
@@ -786,7 +806,10 @@ pool 컬럼 (x, y) ──┐                        Transform uniform (40 B writ
                    ▼                                   │
    seg_init        dst[i] = |px(pᵢ) − px(pᵢ₋₁)|   ◄────┘
    scan_block      256-블록 inclusive 스캔 (Hillis–Steele, 공유 메모리)
-   scan_block/add  블록 합 레벨 (dst → sums0 → sums1, n ≤ 256³)
+   scan_block/add  블록 합 레벨 (dst → sums0 → sums1)
+   carry 체인      min(디스패치 한계 × 256, 256³) 점 단위 청크를 순차 실행;
+                   1-원소 carry 버퍼가 각 청크의 누계를 다음 청크에 전파 —
+                   n 의 상한은 풀 메모리뿐, 어떤 크기에서도 readback 없음
                    ▼
    호장 prefix buffer ──► 라인 파이프라인 정점 슬롯 4/5 (dash 위상)
 ```

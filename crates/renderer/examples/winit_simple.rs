@@ -550,9 +550,9 @@ impl App {
 
     /// 'S' key — export each panel separately as in-memory PNG bytes (scale=2 = 2x DPI);
     /// the caller (this fn) writes the files. figgy itself only handles memory.
-    fn export_pngs(&self) {
+    fn export_pngs(&mut self) {
         const EXPORT_SCALE: f32 = 2.0;
-        let Some(renderer) = self.renderer.as_ref() else { return; };
+        let Some(renderer) = self.renderer.as_mut() else { return; };
         for (i, panel) in self.panels.iter().enumerate() {
             match renderer.export_panel_png_bytes(&panel.chart, &panel.series, EXPORT_SCALE) {
                 Ok(bytes) => {

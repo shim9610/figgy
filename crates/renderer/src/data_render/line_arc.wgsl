@@ -6,17 +6,25 @@
 // come back to the CPU (the column pool keeps no CPU copies — that contract
 // is load-bearing; do not reintroduce shadows to "simplify" this).
 //
-// Three entry points, dispatched by `line_arc.rs`:
-//   1. `seg_init`    — dst[i] = pixel length of segment (i-1, i); 0 at i=0.
-//                      Non-finite endpoints (NaN gaps, log of ≤0) contribute 0
-//                      so the phase stays continuous across gaps.
-//   2. `scan_block`  — in-place per-256-block inclusive scan of `dst`,
-//                      block totals written to `sums` (Hillis–Steele in
-//                      workgroup memory).
-//   3. `add_offsets` — dst[i] += scanned_sums[block(i) - 1] for block > 0.
+// Entry points, dispatched by `line_arc.rs`:
+//   1. `seg_init`     — dst[start+i] = pixel length of segment (g-1, g) at
+//                       global index g = start+i; 0 at g=0. Non-finite
+//                       endpoints (NaN gaps, log of ≤0) contribute 0 so the
+//                       phase stays continuous across gaps.
+//   2. `scan_block`   — in-place per-256-block inclusive scan of the chunk,
+//                       block totals written to `sums` (Hillis–Steele in
+//                       workgroup memory).
+//   3. `add_offsets`  — dst[start+i] += scanned_sums[block(i) - 1], block > 0.
+//   4. `apply_carry`  — dst[start+i] += carry[0]: folds the running total of
+//                       every previous chunk into this one.
+//   5. `update_carry` — carry[0] = dst[start+len-1] (single thread), run
+//                       AFTER apply_carry so the total stays cumulative.
 //
-// Applied recursively (dst → sums0 → sums1) this scans any n the pool can
-// hold. The result buffer doubles as the line pipeline's vertex slots 4/5.
+// One chunk covers up to min(dispatch-limit × 256, 256³) points via the
+// recursive scan (dst → sums0 → sums1); larger polylines are processed as
+// SEQUENTIAL chunks in one encoder with the carry chain linking them — n is
+// bounded only by pool memory, never by dispatch limits. The result buffer
+// doubles as the line pipeline's vertex slots 4/5.
 
 // ───── BEGIN common block (SHADER_COMMON.md) ─────
 // WGSL has no import. The Transform/maybe_log/data_to_ndc definitions below
@@ -48,19 +56,23 @@ fn data_to_ndc(v: vec2<f32>) -> vec2<f32> {
 // ───── END common block ─────
 
 struct ArcParams {
-    // Element count of `dst` for this dispatch.
+    // Element count of this dispatch's window into `dst`.
     len: u32,
     // Element offsets of the X / Y columns inside the shared pool buffer
     // (seg_init only; scan/add ignore them).
     x_base: u32,
     y_base: u32,
-    _pad: u32,
+    // First element of the window: kernels address dst[start + i]. Zero for
+    // the sums buffers; the chunk offset for windows into the arc buffer.
+    start: u32,
 };
 
 @group(1) @binding(0) var<storage, read> pool: array<f32>;
 @group(1) @binding(1) var<storage, read_write> dst: array<f32>;
 @group(1) @binding(2) var<storage, read_write> sums: array<f32>;
 @group(1) @binding(3) var<uniform> params: ArcParams;
+// Running total across chunks — one f32, zeroed before the first chunk.
+@group(1) @binding(4) var<storage, read_write> carry: array<f32>;
 
 const WG: u32 = 256u;
 
@@ -77,13 +89,14 @@ fn seg_init(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (i >= params.len) {
         return;
     }
-    if (i == 0u) {
+    let g = params.start + i;
+    if (g == 0u) {
         dst[0] = 0.0;
         return;
     }
-    let d = distance(point_px(i - 1u), point_px(i));
+    let d = distance(point_px(g - 1u), point_px(g));
     // Finite guard: NaN fails `d == d`, infinities fail the magnitude check.
-    dst[i] = select(0.0, d, d == d && d < 1e30);
+    dst[g] = select(0.0, d, d == d && d < 1e30);
 }
 
 @compute @workgroup_size(256)
@@ -96,7 +109,7 @@ fn scan_block(
     let lid = lid_v.x;
     var v = 0.0;
     if (i < params.len) {
-        v = dst[i];
+        v = dst[params.start + i];
     }
     scan_shared[lid] = v;
     workgroupBarrier();
@@ -117,7 +130,7 @@ fn scan_block(
     }
 
     if (i < params.len) {
-        dst[i] = scan_shared[lid];
+        dst[params.start + i] = scan_shared[lid];
     }
     if (lid == WG - 1u) {
         sums[wid.x] = scan_shared[lid];
@@ -133,5 +146,21 @@ fn add_offsets(
     if (i >= params.len || wid.x == 0u) {
         return;
     }
-    dst[i] = dst[i] + sums[wid.x - 1u];
+    dst[params.start + i] = dst[params.start + i] + sums[wid.x - 1u];
+}
+
+@compute @workgroup_size(256)
+fn apply_carry(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if (i >= params.len) {
+        return;
+    }
+    dst[params.start + i] = dst[params.start + i] + carry[0];
+}
+
+@compute @workgroup_size(256)
+fn update_carry(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x == 0u) {
+        carry[0] = dst[params.start + params.len - 1u];
+    }
 }

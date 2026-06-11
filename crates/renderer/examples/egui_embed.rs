@@ -7,17 +7,19 @@
 //!
 //! 1. Get device/queue/format from eframe's `wgpu_render_state`.
 //! 2. On first update, build `renderer::Renderer`, register columns, set up
-//!    Charts, and store the result in `CallbackResources`.
+//!    Charts, and store the result in `CallbackResources` as
+//!    `Mutex<FiggyState>` (host-responsibility locking — see the struct doc).
 //! 3. Each frame: allocate 3 panel regions in egui, register an
 //!    `egui_wgpu::Callback` for each.
 //! 4. Callback `prepare`: `refresh_axis` if the panel rect changed,
-//!    `update_transform` if dirty.
-//! 5. Callback `paint`: a single `renderer::Renderer::paint(pass, items)` call.
+//!    `update_transform` if dirty (`get_mut` — no locking).
+//! 5. Callback `paint`: lock, then a single
+//!    `renderer::Renderer::paint(pass, items)` call.
 //!
 //! Run with:
 //! `cargo run -p renderer --example egui_embed --features egui_demo`
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use eframe::egui_wgpu::{self, CallbackTrait};
 use eframe::wgpu;
@@ -96,6 +98,14 @@ struct PanelEntry {
     hitmap: HitMap,
 }
 
+/// All figgy state, stored in `CallbackResources` as `Mutex<FiggyState>`.
+///
+/// The lock is the HOST's (this example's) responsibility: `Renderer::paint`
+/// takes `&mut self`, but egui's `CallbackTrait::paint` only hands out
+/// `&CallbackResources`. Wrapping the state in a `Mutex` bridges that —
+/// `prepare`/`update` use `get_mut()` (exclusive access, no actual locking),
+/// and only `paint` takes the lock, uncontended in egui's single render
+/// thread. The renderer itself holds no locks.
 struct FiggyState {
     renderer: Renderer,
     panels: Vec<PanelEntry>,
@@ -319,7 +329,11 @@ impl CallbackTrait for FiggyCallback {
         _egui_encoder: &mut wgpu::CommandEncoder,
         callback_resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        let Some(state) = callback_resources.get_mut::<FiggyState>() else { return Vec::new() };
+        let Some(state) = callback_resources.get_mut::<Mutex<FiggyState>>() else {
+            return Vec::new();
+        };
+        // Exclusive access — `get_mut` reaches the data without locking.
+        let state = state.get_mut().unwrap_or_else(PoisonError::into_inner);
         let selected = state.selected;
         let Some(panel) = state.panels.get_mut(self.panel_idx) else {
             return Vec::new();
@@ -365,8 +379,15 @@ impl CallbackTrait for FiggyCallback {
         render_pass: &mut wgpu::RenderPass<'static>,
         callback_resources: &egui_wgpu::CallbackResources,
     ) {
-        let Some(state) = callback_resources.get::<FiggyState>() else { return };
-        let Some(panel) = state.panels.get(self.panel_idx) else {
+        let Some(state) = callback_resources.get::<Mutex<FiggyState>>() else { return };
+        // Host-responsibility lock: egui only hands `&CallbackResources` to
+        // paint, but `Renderer::paint` needs `&mut self`. Uncontended —
+        // egui's render thread is the only path here.
+        let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
+        // Split the borrow: renderer mutably, panels immutably.
+        let state = &mut *state;
+        let (renderer, panels) = (&mut state.renderer, &state.panels);
+        let Some(panel) = panels.get(self.panel_idx) else {
             return;
         };
         let series: Vec<Series<'_>> = panel.series.iter().zip(panel.styles.iter())
@@ -379,7 +400,7 @@ impl CallbackTrait for FiggyCallback {
         }];
         // target = pixel size of the color attachment the current render pass draws into (egui's swap chain).
         let target_size = (info.screen_size_px[0], info.screen_size_px[1]);
-        if let Err(e) = state.renderer.paint(render_pass, target_size, &items) {
+        if let Err(e) = renderer.paint(render_pass, target_size, &items) {
             eprintln!("[figgy] paint failed: {e}");
         }
     }
@@ -425,8 +446,11 @@ impl DemoApp {
 
         {
             let mut renderer_guard = render_state.renderer.write();
-            if let Some(mut state) = renderer_guard.callback_resources.remove::<FiggyState>() {
-                state.shutdown();
+            if let Some(state) = renderer_guard.callback_resources.remove::<Mutex<FiggyState>>() {
+                state
+                    .into_inner()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .shutdown();
             }
         }
 
@@ -498,12 +522,18 @@ impl eframe::App for DemoApp {
                 .renderer
                 .write()
                 .callback_resources
-                .insert(FiggyState { renderer, panels, selected: None, active_resize: None });
+                .insert(Mutex::new(FiggyState {
+                    renderer,
+                    panels,
+                    selected: None,
+                    active_resize: None,
+                }));
             self.initialized = true;
             self.renderer_error = None;
         } else {
             let mut renderer_guard = render_state.renderer.write();
-            if let Some(state) = renderer_guard.callback_resources.get_mut::<FiggyState>() {
+            if let Some(state) = renderer_guard.callback_resources.get_mut::<Mutex<FiggyState>>() {
+                let state = state.get_mut().unwrap_or_else(PoisonError::into_inner);
                 if let Err(e) = state
                     .renderer
                     .ensure_target_format(render_state.target_format)
@@ -541,13 +571,16 @@ impl eframe::App for DemoApp {
                 ui.label(format!("(min {dpi_min} / max {dpi_max})"));
                 if ui.button("Save PNG").clicked() {
                     let scale = dpi_to_scale(self.export_dpi as f32);
-                    let renderer_guard = render_state_clone.renderer.write();
+                    let mut renderer_guard = render_state_clone.renderer.write();
                     let state = renderer_guard
                         .callback_resources
-                        .get::<FiggyState>()
-                        .expect("FiggyState");
-                    for (i, panel) in state.panels.iter().enumerate() {
-                        match state.renderer.export_panel_png_bytes(
+                        .get_mut::<Mutex<FiggyState>>()
+                        .expect("FiggyState")
+                        .get_mut()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    let (renderer, panels) = (&mut state.renderer, &state.panels);
+                    for (i, panel) in panels.iter().enumerate() {
+                        match renderer.export_panel_png_bytes(
                             &panel.chart, &panel.series, scale,
                         ) {
                             Ok(bytes) => {
@@ -609,7 +642,8 @@ impl eframe::App for DemoApp {
             });
             if pressed.is_some() || dragged.is_some() || drag_ended {
                 let mut renderer_guard = render_state_clone.renderer.write();
-                if let Some(state) = renderer_guard.callback_resources.get_mut::<FiggyState>() {
+                if let Some(state) = renderer_guard.callback_resources.get_mut::<Mutex<FiggyState>>() {
+                    let state = state.get_mut().unwrap_or_else(PoisonError::into_inner);
                     if let Some((i, x, y)) = pressed {
                         state.handle_click(i, x, y);
                     }
