@@ -16,7 +16,9 @@ use eframe::wgpu;
 use renderer::color::Color;
 use renderer::config::{ConstellationOptions, DrawStyle};
 use renderer::data::Column;
-use renderer::data_config::{DataLineStyleConfig, DataRenderType, SeriesConfig};
+use renderer::data_config::{
+    DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ScatterShape, SeriesConfig,
+};
 use renderer::default;
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
@@ -87,9 +89,29 @@ fn build_state(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>, format: wgpu:
             },
         },
     };
+    // Sparse third series of ringed planets so planet_rim is reviewable.
+    let pn = 9;
+    let pxs: Vec<f64> = (0..pn).map(|i| 0.08 + 0.84 * i as f64 / (pn - 1) as f64).collect();
+    let pys: Vec<f64> = (0..pn).map(|i| 90.0 - 5.0 * ((i as f64) * 1.9).sin().abs() - 4.0).collect();
+    renderer.add_column("planet_x", &col_f64(pxs)).map_err(|e| e.to_string())?;
+    renderer.add_column("planet_y", &col_f64(pys)).map_err(|e| e.to_string())?;
+
     let series = vec![
         line("nebula_warm", "warm", Color::from_rgb8(255, 142, 92)),
         line("nebula_cool", "cool", Color::from_rgb8(96, 168, 255)),
+        SeriesConfig {
+            series_id: "planets".into(),
+            label: None,
+            x_column: "planet_x".into(),
+            y_column: "planet_y".into(),
+            render_type: DataRenderType::Scatter {
+                scatter: DataScatterStyleConfig {
+                    point_color: Color::from_rgb8(140, 230, 160),
+                    point_shape: ScatterShape::Triangle,
+                    point_size: 13.0,
+                },
+            },
+        },
     ];
     let styles: Vec<ChartStyle> =
         series.iter().map(|cfg| renderer.create_style_for_series(cfg)).collect();
@@ -300,6 +322,10 @@ impl eframe::App for LabApp {
                     "star_scale" => &mut o.star_scale,
                     "spread_px" => &mut o.spread_px,
                     "faint_bias" => &mut o.faint_bias,
+                    "glow" => &mut o.glow,
+                    "nebula" => &mut o.nebula,
+                    "dust" => &mut o.dust,
+                    "planet_rim" => &mut o.planet_rim,
                     other => {
                         ui.label(format!("(unbound spec: {other})"));
                         continue;

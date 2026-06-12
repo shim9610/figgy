@@ -27,7 +27,7 @@ struct Transform {
     // ACTIVE style's shader entries; the precise entries never read them.
     // sketch:        [0] = (amplitude_px, wavelength_px, seed(f32), 0)
     // constellation: [0] = (star_density, ribbon_width_px, ribbon_intensity,
-    //                seed(f32)), [1] = (star_scale, spread_px, faint_bias, 0)
+    //                seed(f32)), [1] = (star_scale, spread_px, faint_bias, planet_rim)
     style_params: array<vec4<f32>, 2>,
 };  // 64 B (vec4 array at offset 32, stride 16 — alignment unchanged)
 
@@ -302,6 +302,9 @@ struct VsPlanetOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) local_pos: vec2<f32>,
     @location(1) @interpolate(flat) seed_inst: u32,
+    // Atmospheric rim-glow strength (ConstellationOptions.planet_rim) —
+    // forwarded by the vertex stage; the transform group is vertex-only.
+    @location(2) @interpolate(flat) rim_gain: f32,
 };
 
 @vertex
@@ -319,6 +322,7 @@ fn vs_planet(in: VsIn, @builtin(instance_index) inst: u32) -> VsPlanetOut {
     out.pos = vec4<f32>(world, 0.0, 1.0);
     out.local_pos = in.quad_pos;
     out.seed_inst = u32(transform.style_params[0].w) + inst;
+    out.rim_gain = clamp(transform.style_params[1].w, 0.0, 2.0);
     return out;
 }
 
@@ -427,7 +431,7 @@ fn fs_planet(in: VsPlanetOut) -> @location(0) vec4<f32> {
     let rim_d = max(dist - r_planet, 0.0);
     let rim = select(
         0.0,
-        0.34 * exp(-rim_d / max(r_planet * 0.10, 1.0)),
+        in.rim_gain * exp(-rim_d / max(r_planet * 0.10, 1.0)),
         dist > r_planet - aa,
     );
     let rim_rgb = style.color_premul.rgb * rim;

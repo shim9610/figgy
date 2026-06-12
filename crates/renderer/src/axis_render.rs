@@ -94,10 +94,10 @@ pub fn try_raster_chart_layer_to_rgba_with_selection(
     }
     // Constellation: the axis chrome reads as line-light — bloom it. Runs
     // BEFORE the selection overlay so interaction chrome stays crisp.
-    if matches!(config.draw_style, crate::config::DrawStyle::Constellation(_))
-        && matches!(layer, AxisLayerKind::Decoration | AxisLayerKind::All)
-    {
-        apply_decoration_glow(&mut canvas);
+    if let crate::config::DrawStyle::Constellation(c) = &config.draw_style {
+        if matches!(layer, AxisLayerKind::Decoration | AxisLayerKind::All) {
+            apply_decoration_glow(&mut canvas, c.glow);
+        }
     }
     if !selection.is_empty()
         && matches!(layer, AxisLayerKind::Decoration | AxisLayerKind::All)
@@ -226,9 +226,12 @@ fn draw_space_background(
             let edge = ((dx * dx + dy * dy).sqrt() / max_r).clamp(0.0, 1.0);
             let vig = 0.35 + 0.65 * edge * edge;
 
-            // Peak nebula contribution stays ≤ ~12/255 per channel.
-            let nc = sample(&cool, px, py) * vig;
-            let nw = sample(&warm, px, py) * vig;
+            // Peak nebula contribution stays ≤ ~12/255 per channel at the
+            // default `nebula = 1.0`; the slider scales within the same
+            // legibility-bounded design.
+            let neb = c.nebula.clamp(0.0, 2.0);
+            let nc = sample(&cool, px, py) * vig * neb;
+            let nw = sample(&warm, px, py) * vig * neb;
             let r = SPACE_BASE[0] + nc * 4.0 + nw * 9.0;
             let g = SPACE_BASE[1] + nc * 6.0 + nw * 5.0;
             let b = SPACE_BASE[2] + nc * 12.0 + nw * 4.0;
@@ -242,7 +245,8 @@ fn draw_space_background(
     }
 
     // Background dust: sparse, dim, 1 px — unmistakably "behind" the data.
-    let n_dust = ((w as u64 * h as u64) / 1400).max(8) as u32;
+    let n_dust =
+        (((w as u64 * h as u64) / 1400) as f32 * c.dust.clamp(0.0, 4.0)).max(0.0) as u32;
     for k in 0..n_dust {
         let hx = crate::sketch::hash01(k, seed ^ 0xD057_0001);
         let hy = crate::sketch::hash01(k, seed ^ 0xD057_0002);
@@ -263,9 +267,12 @@ fn draw_space_background(
 // AFTER this in the raster entry, so the interaction overlay stays crisp.
 const GLOW_PASSES: u32 = 3;
 const GLOW_RADIUS: usize = 3;
-const GLOW_GAIN: f32 = 0.55;
 
-pub(crate) fn apply_decoration_glow(canvas: &mut Canvas) {
+pub(crate) fn apply_decoration_glow(canvas: &mut Canvas, gain: f32) {
+    let gain = gain.clamp(0.0, 2.0);
+    if gain <= 0.0 {
+        return;
+    }
     let (w, h) = canvas.size();
     if w == 0 || h == 0 {
         return;
@@ -337,7 +344,7 @@ pub(crate) fn apply_decoration_glow(canvas: &mut Canvas) {
     }
 
     for (d, s) in src.iter_mut().zip(halo.iter()) {
-        *d = (*d as f32 + *s as f32 * GLOW_GAIN).min(255.0) as u8;
+        *d = (*d as f32 + *s as f32 * gain).min(255.0) as u8;
     }
 }
 

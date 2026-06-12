@@ -65,7 +65,7 @@ struct Transform {
     // ACTIVE style's shader entries; the precise entries never read them.
     // sketch:        [0] = (amplitude_px, wavelength_px, seed(f32), 0)
     // constellation: [0] = (star_density, ribbon_width_px, ribbon_intensity,
-    //                seed(f32)), [1] = (star_scale, spread_px, faint_bias, 0)
+    //                seed(f32)), [1] = (star_scale, spread_px, faint_bias, planet_rim)
     style_params: array<vec4<f32>, 2>,
 };  // 64 B (vec4 array at offset 32, stride 16 — alignment unchanged)
 

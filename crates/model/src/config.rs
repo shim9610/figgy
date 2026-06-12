@@ -157,6 +157,19 @@ pub struct ConstellationOptions {
     /// Higher → a larger fraction of faint small stars per bright anchor
     /// (real fields sit faint-heavy). Sensible range ~1.5..6. Default 3.0.
     pub faint_bias: f32,
+    /// Decoration glow (line-light bloom) gain on axes/ticks/labels/titles.
+    /// 0 disables the bloom. Default 0.55.
+    pub glow: f32,
+    /// Nebula cloud intensity multiplier for the space backdrop. 1.0 is the
+    /// legibility-calibrated default (peak ≤ ~12/255 per channel); the
+    /// painter keeps the panel center cleanest at any setting. Default 1.0.
+    pub nebula: f32,
+    /// Background dust-star density multiplier (1 px, far dimmer than data
+    /// stars). 0 removes the dust. Default 1.0.
+    pub dust: f32,
+    /// Planet atmospheric rim-glow strength (the series color's only
+    /// appearance on scatter planets). Default 0.34.
+    pub planet_rim: f32,
     /// Global seed. Same (config, data) → identical output. Default 0.
     pub seed: u32,
 }
@@ -170,6 +183,10 @@ impl Default for ConstellationOptions {
             star_scale: 1.0,
             spread_px: 2.5,
             faint_bias: 3.0,
+            glow: 0.55,
+            nebula: 1.0,
+            dust: 1.0,
+            planet_rim: 0.34,
             seed: 0,
         }
     }
@@ -220,6 +237,10 @@ impl ConstellationOptions {
         spec("star_scale", 0.3, 3.0, 1.0),
         spec("spread_px", 0.0, 10.0, 2.5),
         spec("faint_bias", 0.5, 10.0, 3.0),
+        spec("glow", 0.0, 1.5, 0.55),
+        spec("nebula", 0.0, 1.5, 1.0),
+        spec("dust", 0.0, 3.0, 1.0),
+        spec("planet_rim", 0.0, 1.0, 0.34),
         spec_int("seed", 0.0, 9999.0, 0.0),
     ];
 }
@@ -534,6 +555,10 @@ mod draw_style_serde_tests {
             star_scale: 1.3,
             spread_px: 3.5,
             faint_bias: 4.5,
+            glow: 0.8,
+            nebula: 0.7,
+            dust: 1.5,
+            planet_rim: 0.5,
             seed: 9,
         });
         let json = serde_json::to_value(&cfg).expect("serialize");

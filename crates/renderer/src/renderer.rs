@@ -179,12 +179,13 @@ fn pack_sketch_params(style: &DrawStyle) -> [f32; 8] {
 }
 
 /// constellation: `[0] = (star_density, ribbon_width_px, ribbon_intensity,
-/// seed)`, `[1] = (star_scale, spread_px, faint_bias, 0)`.
+/// seed)`, `[1] = (star_scale, spread_px, faint_bias, planet_rim)`.
+/// `glow`/`nebula`/`dust` are CPU-raster parameters and never reach the GPU.
 fn pack_constellation_params(style: &DrawStyle) -> [f32; 8] {
     match style.constellation() {
         Some(c) => [
             c.star_density, c.ribbon_width_px, c.ribbon_intensity, c.seed as f32,
-            c.star_scale, c.spread_px, c.faint_bias, 0.0,
+            c.star_scale, c.spread_px, c.faint_bias, c.planet_rim,
         ],
         None => [0.0; 8],
     }
