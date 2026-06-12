@@ -1026,6 +1026,9 @@ pub(crate) struct ConstellationSet {
     /// Ringed-planet scatter pass (Step 2) — premultiplied blend, occludes
     /// the additive star field behind it.
     pub(crate) planets: wgpu::RenderPipeline,
+    /// Bipolar-jet errorbars — additive beams + terminal shock knots over
+    /// the precise errorbar geometry.
+    pub(crate) jets: wgpu::RenderPipeline,
     pub(crate) star_tex_bg: wgpu::BindGroup,
 }
 
@@ -1376,8 +1379,13 @@ pub(crate) fn create_constellation_set(
         Some(&tex_bgl),
         "figgy constellation planets pipeline",
     );
+    let jets = create_errorbar_columnar_pipeline_full(
+        device, transform_bgl, style_bgl, target_format,
+        "vs_jet", "fs_jet", additive,
+        "figgy constellation jets pipeline",
+    );
 
-    ConstellationSet { ribbon, stars, planets, star_tex_bg }
+    ConstellationSet { ribbon, stars, planets, jets, star_tex_bg }
 }
 
 /// Entry-point-parameterized line pipeline builder. Styled variants share
@@ -1687,6 +1695,27 @@ pub(crate) fn create_errorbar_columnar_pipeline_with_entries(
     vs_entry: &str,
     label: &str,
 ) -> wgpu::RenderPipeline {
+    create_errorbar_columnar_pipeline_full(
+        device, transform_bgl, style_bgl, target_format,
+        vs_entry, "fs_main",
+        wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+        label,
+    )
+}
+
+/// Full-control errorbar builder — the constellation jet variant needs its
+/// own fragment entry and additive blending.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_errorbar_columnar_pipeline_full(
+    device: &wgpu::Device,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    vs_entry: &str,
+    fs_entry: &str,
+    blend: wgpu::BlendState,
+    label: &str,
+) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("figgy errorbar columnar shader"),
         source: wgpu::ShaderSource::Wgsl(include_str!("errorbar_columnar.wgsl").into()),
@@ -1765,11 +1794,11 @@ pub(crate) fn create_errorbar_columnar_pipeline_with_entries(
         },
         fragment: Some(wgpu::FragmentState {
             module: &shader,
-            entry_point: Some("fs_main"),
+            entry_point: Some(fs_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format: target_format,
-                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                blend: Some(blend),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),

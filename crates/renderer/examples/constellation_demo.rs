@@ -10,7 +10,8 @@ use renderer::color::Color;
 use renderer::config::{ConstellationOptions, DrawStyle};
 use renderer::data::Column;
 use renderer::data_config::{
-    DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ScatterShape, SeriesConfig,
+    DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterStyleConfig,
+    ErrorRef, ScatterShape, SeriesConfig,
 };
 use renderer::data_render::{create_instance, request_adapter, request_device};
 use renderer::default;
@@ -245,5 +246,38 @@ fn main() {
         &build_chart(DrawStyle::Constellation(ConstellationOptions::default())),
         &combo,
         "target/constellation_demo/planets_combo.png",
+    );
+
+    // Errorbars as bipolar jets: planets with ±σ rendered as glowing jet
+    // beams terminating in shock knots at the exact interval bounds.
+    let m2 = 11;
+    let jerr: Vec<f64> = (0..m2).map(|i| 4.5 + 2.5 * ((i as f64) * 1.1).cos().abs()).collect();
+    r.add_column("perr", &col(jerr)).unwrap();
+    r.add_column("__zero", &col(vec![0.0; m2])).unwrap();
+    let jets = [SeriesConfig {
+        series_id: "jets".into(),
+        label: None,
+        x_column: "px".into(),
+        y_column: "pb".into(),
+        render_type: DataRenderType::ScatterErrorbarY {
+            scatter: DataScatterStyleConfig {
+                point_color: Color::from_rgb8(255, 142, 92),
+                point_shape: ScatterShape::Circle,
+                point_size: 13.0,
+            },
+            err_y: ErrorRef::Symmetric { column: "perr".into() },
+            err_style: DataErrorBarStyleConfig {
+                error_bar_color: Color::from_rgb8(255, 160, 110),
+                error_bar_width: 2.0,
+                error_bar_cap_size: 7.0,
+                cap_width: 2.0,
+            },
+        },
+    }];
+    export(
+        &mut r,
+        &build_chart(DrawStyle::Constellation(ConstellationOptions::default())),
+        &jets,
+        "target/constellation_demo/jets.png",
     );
 }

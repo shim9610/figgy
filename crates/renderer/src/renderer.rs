@@ -1034,9 +1034,8 @@ impl Renderer {
                 errorbar,
             ),
             // Constellation: line = ribbon + star pass, scatter = ringed
-            // planets (premultiplied — they occlude the star field);
-            // errorbar falls back to precise until its celestial treatment
-            // lands (docs/CONSTELLATION_DESIGN.md §3d).
+            // planets (premultiplied — they occlude the star field),
+            // errorbar = bipolar jets with terminal shock knots.
             Some(StyleSet::Constellation(c)) => (
                 LinePick {
                     pipeline: &c.ribbon,
@@ -1049,7 +1048,7 @@ impl Renderer {
                     texture_bg: Some(&c.star_tex_bg),
                 }),
                 ScatterPick { pipeline: &c.planets, texture_bg: Some(&c.star_tex_bg) },
-                &pipelines.errorbar,
+                &c.jets,
             ),
         };
 
