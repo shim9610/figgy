@@ -109,6 +109,17 @@ impl Canvas {
         self.pix.take()
     }
 
+    /// Mutable access to the premultiplied RGBA8 pixels — used by style
+    /// post-processing (the constellation glow bloom and space backdrop)
+    /// that operates on raw bytes between draw calls.
+    pub(crate) fn pixels_mut(&mut self) -> &mut [u8] {
+        self.pix.data_mut()
+    }
+
+    pub(crate) fn size(&self) -> (u32, u32) {
+        (self.pix.width(), self.pix.height())
+    }
+
     // Transform stack — same accumulation semantics as a skia canvas: a
     // transform pushed later applies to drawn coordinates first.
 

@@ -1043,7 +1043,7 @@ fn bake_hash2(ix: i64, iy: i64, seed: u32) -> f64 {
 }
 
 /// 2D value noise, [0,1], smoothstep-interpolated.
-fn vnoise2(x: f64, y: f64, seed: u32) -> f64 {
+pub(crate) fn vnoise2(x: f64, y: f64, seed: u32) -> f64 {
     let (ix, iy) = (x.floor() as i64, y.floor() as i64);
     let (fx, fy) = (x - x.floor(), y - y.floor());
     let (ux, uy) = (fx * fx * (3.0 - 2.0 * fx), fy * fy * (3.0 - 2.0 * fy));
@@ -1055,7 +1055,7 @@ fn vnoise2(x: f64, y: f64, seed: u32) -> f64 {
 }
 
 /// Fractal Brownian motion over `vnoise2`, [0,1]-ish.
-fn fbm2(x: f64, y: f64, octaves: u32, seed: u32) -> f64 {
+pub(crate) fn fbm2(x: f64, y: f64, octaves: u32, seed: u32) -> f64 {
     let mut acc = 0.0;
     let mut amp = 0.5;
     let (mut fx, mut fy) = (x, y);

@@ -92,6 +92,13 @@ pub fn try_raster_chart_layer_to_rgba_with_selection(
         AxisLayerKind::Decoration => draw_decoration_layer(&mut canvas, &raster_cfg),
         AxisLayerKind::All => draw_axes(&mut canvas, &raster_cfg),
     }
+    // Constellation: the axis chrome reads as line-light — bloom it. Runs
+    // BEFORE the selection overlay so interaction chrome stays crisp.
+    if matches!(config.draw_style, crate::config::DrawStyle::Constellation(_))
+        && matches!(layer, AxisLayerKind::Decoration | AxisLayerKind::All)
+    {
+        apply_decoration_glow(&mut canvas);
+    }
     if !selection.is_empty()
         && matches!(layer, AxisLayerKind::Decoration | AxisLayerKind::All)
     {
@@ -139,9 +146,199 @@ pub fn raster_chart_to_rgba(config: &Config) -> Vec<u8> {
 }
 
 /// Grid layer — only the parts that should sit below the data layer.
+///
+/// The constellation style repurposes this slot as its deep-space backdrop
+/// (the compositing order already puts it under the data): grid lines are
+/// not drawn in that mode — the style declares its own background instead.
 pub fn draw_grid_layer(canvas: &mut Canvas, config: &Config) {
+    if let crate::config::DrawStyle::Constellation(c) = &config.draw_style {
+        draw_space_background(canvas, config, c);
+        return;
+    }
     let Ok(da) = config.data_area() else { return };
     draw_grid(canvas, config, &da);
+}
+
+// ── Constellation backdrop + glow (style-specific CPU post-processing) ──
+//
+// LEGIBILITY CONTRACT: this is a science-presentation tool — the backdrop
+// must never compete with data ink. Hard rules encoded below:
+//   - nebula peak adds ≤ ~12/255 luminance over the base, low-frequency only
+//   - a soft vignette keeps the panel CENTER (where data lives) the cleanest
+//   - background dust stars are 1 px and far dimmer than any data star
+//     (data stars have PSF cores + halos and sit on series ribbons)
+
+/// Deep-space base color (premultiplied; alpha 255 — the panel owns its
+/// background in this style, no host compositing needed).
+const SPACE_BASE: [f32; 3] = [11.0, 15.0, 23.0];
+
+fn draw_space_background(
+    canvas: &mut Canvas,
+    _config: &Config,
+    c: &crate::config::ConstellationOptions,
+) {
+    use crate::data_render::fbm2;
+
+    let (w, h) = canvas.size();
+    if w == 0 || h == 0 {
+        return;
+    }
+    let seed = c.seed;
+
+    // Nebula sampled on a quarter-res lattice (it is low-frequency by
+    // design) and bilinearly upsampled — 16× cheaper than per-pixel fBm.
+    let gw = (w / 4 + 2) as usize;
+    let gh = (h / 4 + 2) as usize;
+    let mut cool = vec![0.0f32; gw * gh];
+    let mut warm = vec![0.0f32; gw * gh];
+    for gy in 0..gh {
+        for gx in 0..gw {
+            let x = gx as f64 * 4.0 / w.max(1) as f64 * 3.0;
+            let y = gy as f64 * 4.0 / h.max(1) as f64 * 2.0;
+            cool[gy * gw + gx] =
+                ((fbm2(x + 7.1, y + 3.7, 5, seed ^ 0x0EB1) - 0.42).max(0.0) * 2.0).min(1.0) as f32;
+            warm[gy * gw + gx] =
+                ((fbm2(x * 0.7 + 21.0, y * 0.7 + 9.0, 4, seed ^ 0x0EB2) - 0.50).max(0.0) * 2.2)
+                    .min(1.0) as f32;
+        }
+    }
+    let sample = |grid: &[f32], px: u32, py: u32| -> f32 {
+        let fx = px as f32 / 4.0;
+        let fy = py as f32 / 4.0;
+        let x0 = fx.floor() as usize;
+        let y0 = fy.floor() as usize;
+        let (tx, ty) = (fx.fract(), fy.fract());
+        let i = |x: usize, y: usize| grid[(y.min(gh - 1)) * gw + x.min(gw - 1)];
+        let a = i(x0, y0) * (1.0 - tx) + i(x0 + 1, y0) * tx;
+        let b = i(x0, y0 + 1) * (1.0 - tx) + i(x0 + 1, y0 + 1) * tx;
+        a * (1.0 - ty) + b * ty
+    };
+
+    let (cx, cy) = (w as f32 * 0.5, h as f32 * 0.5);
+    let max_r = (cx * cx + cy * cy).sqrt().max(1.0);
+    let data = canvas.pixels_mut();
+    for py in 0..h {
+        for px in 0..w {
+            // Vignette: nebula fades toward the panel center so the data
+            // region stays the cleanest part of the frame.
+            let dx = px as f32 - cx;
+            let dy = py as f32 - cy;
+            let edge = ((dx * dx + dy * dy).sqrt() / max_r).clamp(0.0, 1.0);
+            let vig = 0.35 + 0.65 * edge * edge;
+
+            // Peak nebula contribution stays ≤ ~12/255 per channel.
+            let nc = sample(&cool, px, py) * vig;
+            let nw = sample(&warm, px, py) * vig;
+            let r = SPACE_BASE[0] + nc * 4.0 + nw * 9.0;
+            let g = SPACE_BASE[1] + nc * 6.0 + nw * 5.0;
+            let b = SPACE_BASE[2] + nc * 12.0 + nw * 4.0;
+
+            let i = ((py * w + px) * 4) as usize;
+            data[i] = r.min(255.0) as u8;
+            data[i + 1] = g.min(255.0) as u8;
+            data[i + 2] = b.min(255.0) as u8;
+            data[i + 3] = 255;
+        }
+    }
+
+    // Background dust: sparse, dim, 1 px — unmistakably "behind" the data.
+    let n_dust = ((w as u64 * h as u64) / 1400).max(8) as u32;
+    for k in 0..n_dust {
+        let hx = crate::sketch::hash01(k, seed ^ 0xD057_0001);
+        let hy = crate::sketch::hash01(k, seed ^ 0xD057_0002);
+        let hb = crate::sketch::hash01(k, seed ^ 0xD057_0003);
+        let px = (hx * w as f32) as u32 % w;
+        let py = (hy * h as f32) as u32 % h;
+        let add = 14.0 + 52.0 * hb * hb;
+        let i = ((py * w + px) * 4) as usize;
+        data[i] = (data[i] as f32 + add).min(255.0) as u8;
+        data[i + 1] = (data[i + 1] as f32 + add).min(255.0) as u8;
+        data[i + 2] = (data[i + 2] as f32 + add * 1.06).min(255.0) as u8;
+    }
+}
+
+// Glow bloom for the decoration layer (axes / ticks / labels / titles read
+// as line-light sources): one blurred copy added back under the crisp
+// original. Premultiplied-additive with clamp; selection boxes are drawn
+// AFTER this in the raster entry, so the interaction overlay stays crisp.
+const GLOW_PASSES: u32 = 3;
+const GLOW_RADIUS: usize = 3;
+const GLOW_GAIN: f32 = 0.55;
+
+pub(crate) fn apply_decoration_glow(canvas: &mut Canvas) {
+    let (w, h) = canvas.size();
+    if w == 0 || h == 0 {
+        return;
+    }
+    let (w, h) = (w as usize, h as usize);
+    let src = canvas.pixels_mut();
+    let mut halo: Vec<u8> = src.to_vec();
+    let mut tmp = vec![0u8; halo.len()];
+
+    // Separable box blur ×3 ≈ gaussian. Premultiplied RGBA blurs channel-wise.
+    let window = (2 * GLOW_RADIUS + 1) as u32;
+    for _ in 0..GLOW_PASSES {
+        // Horizontal.
+        for y in 0..h {
+            let row = y * w * 4;
+            let mut acc = [0u32; 4];
+            for x in 0..w.min(GLOW_RADIUS + 1) {
+                for c in 0..4 {
+                    acc[c] += halo[row + x * 4 + c] as u32;
+                }
+            }
+            let mut count = w.min(GLOW_RADIUS + 1) as u32;
+            for x in 0..w {
+                for c in 0..4 {
+                    tmp[row + x * 4 + c] = (acc[c] / count.max(1)) as u8;
+                }
+                let _ = window;
+                if x + GLOW_RADIUS + 1 < w {
+                    for c in 0..4 {
+                        acc[c] += halo[row + (x + GLOW_RADIUS + 1) * 4 + c] as u32;
+                    }
+                    count += 1;
+                }
+                if x >= GLOW_RADIUS {
+                    for c in 0..4 {
+                        acc[c] -= halo[row + (x - GLOW_RADIUS) * 4 + c] as u32;
+                    }
+                    count -= 1;
+                }
+            }
+        }
+        // Vertical.
+        for x in 0..w {
+            let mut acc = [0u32; 4];
+            for y in 0..h.min(GLOW_RADIUS + 1) {
+                for c in 0..4 {
+                    acc[c] += tmp[(y * w + x) * 4 + c] as u32;
+                }
+            }
+            let mut count = h.min(GLOW_RADIUS + 1) as u32;
+            for y in 0..h {
+                for c in 0..4 {
+                    halo[(y * w + x) * 4 + c] = (acc[c] / count.max(1)) as u8;
+                }
+                if y + GLOW_RADIUS + 1 < h {
+                    for c in 0..4 {
+                        acc[c] += tmp[((y + GLOW_RADIUS + 1) * w + x) * 4 + c] as u32;
+                    }
+                    count += 1;
+                }
+                if y >= GLOW_RADIUS {
+                    for c in 0..4 {
+                        acc[c] -= tmp[((y - GLOW_RADIUS) * w + x) * 4 + c] as u32;
+                    }
+                    count -= 1;
+                }
+            }
+        }
+    }
+
+    for (d, s) in src.iter_mut().zip(halo.iter()) {
+        *d = (*d as f32 + *s as f32 * GLOW_GAIN).min(255.0) as u8;
+    }
 }
 
 /// Decoration layer — axis lines, tick labels, axis titles, chart title,
