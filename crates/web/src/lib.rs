@@ -30,8 +30,8 @@ mod web {
     use renderer::line::LineStylePreset;
     use renderer::text::rich_segments_from_text;
     use renderer::{
-        Chart, ChartDrawItem, ChartStyle, ChartView, Color, CpuTextMeasure, DataLineStyleConfig,
-        DataRenderType, DefragPolicy, HitId, HitMap, Renderer,
+        errorbar_extent, Chart, ChartDrawItem, ChartStyle, ChartView, Color, CpuTextMeasure,
+        DataLineStyleConfig, DataRenderType, DefragPolicy, FitExtent, HitId, HitMap, Renderer,
         ResizeHandle as ModelResizeHandle, SelectionBox, Series, SeriesConfig, WindowedRenderer,
     };
 
@@ -105,6 +105,42 @@ mod web {
             }
         }
         ids
+    }
+
+    /// The (x, y) errorbar refs of a render type, when present.
+    fn err_refs(rt: &DataRenderType) -> (Option<&ErrorRef>, Option<&ErrorRef>) {
+        match rt {
+            DataRenderType::Scatter { .. }
+            | DataRenderType::Line { .. }
+            | DataRenderType::ScatterLine { .. } => (None, None),
+            DataRenderType::ScatterErrorbarX { err_x, .. }
+            | DataRenderType::LineScatterErrorbarX { err_x, .. } => (Some(err_x), None),
+            DataRenderType::ScatterErrorbarY { err_y, .. }
+            | DataRenderType::LineScatterErrorbarY { err_y, .. } => (None, Some(err_y)),
+            DataRenderType::ScatterErrorbarXY { err_x, err_y, .. }
+            | DataRenderType::LineScatterErrorbarXY { err_x, err_y, .. } => {
+                (Some(err_x), Some(err_y))
+            }
+        }
+    }
+
+    /// (lower, upper) error column ids of one ref — symmetric refs read the
+    /// same column for both offsets, exactly like the GPU binding.
+    fn err_cols(r: &ErrorRef) -> (&str, &str) {
+        match r {
+            ErrorRef::Symmetric { column } => (column, column),
+            ErrorRef::Asymmetric { lower, upper } => (lower, upper),
+        }
+    }
+
+    /// One series' errorbar fit extents + the column-content signatures they
+    /// were computed from. See `FiggyChart::err_fit`.
+    struct ErrFitEntry {
+        /// (column id, (len, content hash)) of every involved column, in a
+        /// fixed derivation order — wholesale equality is the validity test.
+        sigs: Vec<(String, (usize, u64))>,
+        x: Option<FitExtent>,
+        y: Option<FitExtent>,
     }
 
     // ------------------------------------------------------------------
@@ -191,6 +227,18 @@ mod web {
         labels: Vec<Option<String>>,
         /// Registered columns: id → (len, content hash) for upsert skipping.
         columns: HashMap<String, (usize, u64)>,
+        /// CPU mirror of every registered column (the same f32 values the
+        /// pool holds). The renderer keeps no CPU copies of pool data, but
+        /// errorbar-aware fitting needs value±err PAIRS, which per-column
+        /// scalars cannot reconstruct — the upload path's staging Vec lands
+        /// here instead of being dropped (no extra copy; bounded by the
+        /// same data volume as the pool).
+        col_data: HashMap<String, Vec<f32>>,
+        /// Per-series errorbar fit extents, computed once per (series,
+        /// column contents) and revalidated against `columns` signatures at
+        /// fit time — column re-upserts and series redefinitions need no
+        /// invalidation hooks.
+        err_fit: HashMap<String, ErrFitEntry>,
         /// A removal happened — defragment once on the next frame.
         needs_defrag: bool,
         /// Monotonic color assignment for newly registered series.
@@ -241,6 +289,51 @@ mod web {
                 .iter()
                 .map(|cfg| self.renderer.create_style_for_series(cfg))
                 .collect();
+        }
+
+        /// Errorbar contribution of one series to the (x, y) fit extents —
+        /// the pairwise value±err pass that per-column min/max scalars
+        /// cannot express. Walks the CPU column mirror once per (series,
+        /// data) combination and caches the result; the cache is validated
+        /// by column content signature, so re-upserted data or a redefined
+        /// series recomputes automatically. Returns `(None, None)` for
+        /// series without errorbars; a column missing from the mirror skips
+        /// the extension (slot min/max only — the pre-errorbar behavior,
+        /// never a wrong range). Associated fn (split borrows): called from
+        /// `auto_fit_all` while other fields are also borrowed.
+        fn series_err_extents(
+            cfg: &SeriesConfig,
+            columns: &HashMap<String, (usize, u64)>,
+            col_data: &HashMap<String, Vec<f32>>,
+            err_fit: &mut HashMap<String, ErrFitEntry>,
+        ) -> (Option<FitExtent>, Option<FitExtent>) {
+            let (err_x, err_y) = err_refs(&cfg.render_type);
+            if err_x.is_none() && err_y.is_none() {
+                return (None, None);
+            }
+
+            let sigs: Vec<(String, (usize, u64))> = referenced_columns(cfg)
+                .into_iter()
+                .map(|id| (id.to_string(), columns.get(id).copied().unwrap_or((0, 0))))
+                .collect();
+            if let Some(e) = err_fit.get(&cfg.series_id)
+                && e.sigs == sigs
+            {
+                return (e.x, e.y);
+            }
+
+            let pair = |vals_id: &str, r: &ErrorRef| -> Option<FitExtent> {
+                let (lo_id, hi_id) = err_cols(r);
+                errorbar_extent(
+                    col_data.get(vals_id)?,
+                    col_data.get(lo_id)?,
+                    col_data.get(hi_id)?,
+                )
+            };
+            let x = err_x.and_then(|r| pair(&cfg.x_column, r));
+            let y = err_y.and_then(|r| pair(&cfg.y_column, r));
+            err_fit.insert(cfg.series_id.clone(), ErrFitEntry { sigs, x, y });
+            (x, y)
         }
 
         fn ensure_columns_exist(&self, cfg: &SeriesConfig) -> Result<(), JsValue> {
@@ -318,6 +411,8 @@ mod web {
                 styles: Vec::new(),
                 labels: Vec::new(),
                 columns: HashMap::new(),
+                col_data: HashMap::new(),
+                err_fit: HashMap::new(),
                 needs_defrag: false,
                 color_seq: 0,
                 hitmap: HitMap::standard_chart(),
@@ -372,6 +467,10 @@ mod web {
             }
             let column = Column { data: data.to_vec(), min, max };
             self.renderer.add_column(id, &column).map_err(js_err)?;
+            // The renderer keeps no CPU copies of pool data; this Vec was
+            // headed for the drop. Keep it as the fit mirror instead —
+            // errorbar-aware auto-fit re-reads value/err pairs from it.
+            self.col_data.insert(id.to_string(), column.data);
             self.columns.insert(id.to_string(), signature);
             Ok(())
         }
@@ -383,6 +482,7 @@ mod web {
             if self.columns.remove(id).is_none() {
                 return false;
             }
+            self.col_data.remove(id);
             self.renderer.remove_column(id);
             self.needs_defrag = true;
 
@@ -487,6 +587,7 @@ mod web {
             self.series_cfgs.remove(i);
             self.styles.remove(i);
             self.labels.remove(i);
+            self.err_fit.remove(series_id);
             self.rebuild_legend();
             true
         }
@@ -506,20 +607,38 @@ mod web {
         /// This is the whole fit policy — no rounding of the range ends;
         /// ticks land on nice values inside the range by themselves. Hosts
         /// should call this instead of re-deriving ranges.
+        ///
+        /// Errorbar series contribute their full bar extents
+        /// (`value − err_lo .. value + err_hi`, the exact GPU arithmetic),
+        /// so caps never clip against an auto-fitted range. That pairwise
+        /// pass runs once per (series, data) and is cached — repeat fits
+        /// stay metadata-cheap.
         pub fn auto_fit_all(&mut self, padding: f64) -> Result<(), JsValue> {
             if self.series_cfgs.is_empty() {
                 return Ok(());
             }
-            let xs: Vec<&str> =
-                self.series_cfgs.iter().map(|c| c.x_column.as_str()).collect();
-            let ys: Vec<&str> =
-                self.series_cfgs.iter().map(|c| c.y_column.as_str()).collect();
-            self.chart
-                .auto_fit_x_union(self.renderer.pool(), &xs, padding)
-                .map_err(js_err)?;
-            self.chart
-                .auto_fit_y_union(self.renderer.pool(), &ys, padding)
-                .map_err(js_err)
+            let mut x_ext = FitExtent::EMPTY;
+            let mut y_ext = FitExtent::EMPTY;
+            for cfg in &self.series_cfgs {
+                let pool = self.renderer.pool();
+                x_ext.union(&Chart::slot_extent(pool, &cfg.x_column).map_err(js_err)?);
+                y_ext.union(&Chart::slot_extent(pool, &cfg.y_column).map_err(js_err)?);
+                let (ex, ey) = Self::series_err_extents(
+                    cfg,
+                    &self.columns,
+                    &self.col_data,
+                    &mut self.err_fit,
+                );
+                if let Some(e) = ex {
+                    x_ext.union(&e);
+                }
+                if let Some(e) = ey {
+                    y_ext.union(&e);
+                }
+            }
+            self.chart.auto_fit_x_extent(&x_ext, padding);
+            self.chart.auto_fit_y_extent(&y_ext, padding);
+            Ok(())
         }
 
         // ---- titles ----

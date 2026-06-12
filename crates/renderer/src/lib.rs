@@ -23,7 +23,7 @@ pub use ::model::{
 };
 
 // Public API re-exports.
-pub use chart::Chart;
+pub use chart::{errorbar_extent, Chart, FitExtent};
 pub use color::Color;
 pub use config::Config;
 pub use data::{Column, ColumnSource};

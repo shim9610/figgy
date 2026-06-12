@@ -334,7 +334,7 @@ cd crates/web && python -m http.server 8137   # wasm은 file:// 불가
 | 시리즈 등록/해제 | `add_line_series(id, x, y, width, label)` *(업서트)* · `remove_series(id)` |
 | 범례 | `set_series_label(id, label)` — `'\n'` 줄바꿈·유니코드 첨자 지원, 빈 문자열 = 행 제거 (시리즈 기반 자동 구성). 자유 편집은 SSoT `legend.content` 하나의 리치 문서로: 줄바꿈은 `"\n"` 세그먼트, `"\t"` 는 표형 열 구분자, 심볼은 **고정폭 필드 세그먼트**(`field_em` — 어떤 형태든 정확히 2.0 em; 선 마크는 `rule:true` 로 필드를 채우는 그려진 선) + 색 오버라이드라 위치·줄배치·폭이 전부 명시적. `content.font` / `content.font_size` / 세그먼트별 오버라이드는 그리기 시점에 그대로 적용 |
 | 히트테스트 | `hit_test(x, y)` → 요소 id 문자열 또는 `null` (`"data_area"` · `"axis_bottom"` · `"tick_labels_left"` · `"axis_title_left"` · `"legend"` · `"chart_title"` …). 선택 상태 무변경 — 렌더러 자체 레이아웃이 답하므로 호스트가 박스 위치를 복제할 필요 없음 |
-| 범위 | `auto_fit_all(pad)` — **등록된 전 시리즈** x/y 합집합에 4방 균일 비율 마진(`0.0` = 딱 맞춤, `0.05` = 5%). 범위 끝 라운딩 없음 — 틱은 범위 안 nice 값에 자동으로 떨어지므로 호스트가 범위를 재가공하지 말 것 · `auto_fit_x/y(col, pad)` (단일 컬럼) · `load_demo()` *(멱등)* |
+| 범위 | `auto_fit_all(pad)` — **등록된 전 시리즈** x/y 합집합에 4방 균일 비율 마진(`0.0` = 딱 맞춤, `0.05` = 5%). **에러바 시리즈는 막대 전체 범위(`값−err_lo … 값+err_hi`, GPU와 동일 산술)가 합집합에 포함**되어 캡이 잘리지 않음 — 쌍별 패스는 (시리즈, 데이터) 조합당 1회 계산·캐싱. 범위 끝 라운딩 없음 — 틱은 범위 안 nice 값에 자동으로 떨어지므로 호스트가 범위를 재가공하지 말 것 · `auto_fit_x/y(col, pad)` (단일 컬럼, 에러바 미반영) · `load_demo()` *(멱등)* |
 | SSoT I/O | `get_config()` / `set_config(json)` · `get_series()` / `set_series(json)` |
 | 프리셋 | `apply_axis_preset(AxisPreset)` · `apply_color_cycle(ColorCycle)` · `color_cycle_css(cycle)` |
 | 상호작용 | `on_press(x, y)` · `on_move(dx, dy)` · `on_release()` · `has_selection()` |

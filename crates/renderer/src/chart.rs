@@ -85,6 +85,76 @@ pub(crate) fn nice_spacing(span: f64) -> f64 {
     }
 }
 
+/// One axis' fit input: the union of everything that must stay visible.
+/// `min_positive` carries the log-axis safe floor (smallest positive bound)
+/// so log fitting works even when the extent dips to zero or below.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FitExtent {
+    pub min: f64,
+    pub max: f64,
+    pub min_positive: Option<f64>,
+}
+
+impl FitExtent {
+    /// Neutral element for [`Self::union`] — folds away.
+    pub const EMPTY: Self = Self {
+        min: f64::INFINITY,
+        max: f64::NEG_INFINITY,
+        min_positive: None,
+    };
+
+    /// Widen to also cover `other`.
+    pub fn union(&mut self, other: &FitExtent) {
+        if other.min < self.min { self.min = other.min; }
+        if other.max > self.max { self.max = other.max; }
+        self.min_positive = match (self.min_positive, other.min_positive) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+    }
+
+    /// Widen to also cover the single bound `v`.
+    fn include(&mut self, v: f64) {
+        if v < self.min { self.min = v; }
+        if v > self.max { self.max = v; }
+        if v > 0.0 && self.min_positive.is_none_or(|p| v < p) {
+            self.min_positive = Some(v);
+        }
+    }
+
+    /// A fit is only meaningful over a finite, non-degenerate span — the
+    /// same gate the column-union fitters have always applied.
+    fn is_fittable(&self) -> bool {
+        self.min.is_finite() && self.max.is_finite() && self.max > self.min
+    }
+}
+
+/// Pairwise fit extent of a value column with errorbar offsets, matching the
+/// GPU arithmetic exactly (`errorbar_columnar.wgsl`: `lo = v - err_lo`,
+/// `hi = v + err_hi`). This cannot be derived from per-column min/max — the
+/// widest bound is not necessarily at a value extreme — so it needs one pass
+/// over the actual pairs. Non-finite values are skipped (NaN-gap
+/// convention); a non-finite error entry contributes the bare value (the
+/// shader draws no bar there but the marker still shows). Offsets past the
+/// error columns' length default to 0, mirroring "no bar". Returns `None`
+/// when no finite value exists.
+pub fn errorbar_extent(vals: &[f32], err_lo: &[f32], err_hi: &[f32]) -> Option<FitExtent> {
+    let mut ext = FitExtent::EMPTY;
+    let mut any = false;
+    for (i, &v) in vals.iter().enumerate() {
+        let v = v as f64;
+        if !v.is_finite() {
+            continue;
+        }
+        let lo_off = err_lo.get(i).map(|&e| e as f64).filter(|e| e.is_finite()).unwrap_or(0.0);
+        let hi_off = err_hi.get(i).map(|&e| e as f64).filter(|e| e.is_finite()).unwrap_or(0.0);
+        ext.include(v - lo_off);
+        ext.include(v + hi_off);
+        any = true;
+    }
+    any.then_some(ext)
+}
+
 /// A single figgy chart panel: a `Config` plus dirty-flag tracking.
 pub struct Chart {
     config: Config,
@@ -242,20 +312,60 @@ impl Chart {
         (min - pad, max + pad)
     }
 
-    /// Log-axis fit lower bound: when the column min is ≤ 0 (zeros or
-    /// negatives in the data), fall back to the smallest POSITIVE value —
-    /// log10 of the raw min would be undefined and would wreck the decade
-    /// ticks. Reads the `min_positive` scalar cached at upload (no data
-    /// rescan). `None` when no positive value exists in any column.
-    fn log_safe_lo(pool: &ColumnPool, ids: &[&str], lo: f64) -> Option<f64> {
-        if lo > 0.0 {
-            return Some(lo);
+    /// One column's contribution to a fit: min/max plus the cached
+    /// `min_positive` scalar (the log-axis safe floor when the raw min is
+    /// ≤ 0 — log10 of it would be undefined and would wreck decade ticks).
+    /// All scalars were computed at upload; no data rescan. Public so hosts
+    /// aggregating their own [`FitExtent`] unions (wasm `auto_fit_all`)
+    /// build them from the same source.
+    pub fn slot_extent(pool: &ColumnPool, id: &str) -> Result<FitExtent> {
+        let slot = pool
+            .slot(id)
+            .ok_or_else(|| FiggyError::UnknownColumn { id: id.to_string() })?;
+        Ok(FitExtent { min: slot.min, max: slot.max, min_positive: slot.min_positive })
+    }
+
+    /// Fit the X axis to a prepared [`FitExtent`] — the shared tail of every
+    /// auto-fit path. Hosts that aggregate extents themselves (e.g. the wasm
+    /// `auto_fit_all`, which folds errorbar bounds into the union) call this
+    /// directly. No-op on a degenerate extent (non-finite or zero span) and
+    /// on a log axis with no positive bound to anchor to.
+    pub fn auto_fit_x_extent(&mut self, ext: &FitExtent, padding_ratio: f64) {
+        if !ext.is_fittable() {
+            return;
         }
-        let best = ids
-            .iter()
-            .filter_map(|id| pool.slot(id).and_then(|s| s.min_positive))
-            .fold(f64::INFINITY, f64::min);
-        best.is_finite().then_some(best)
+        let log = matches!(self.config.bottom_x.scale, AxisScale::Logarithmic);
+        let (lo, hi) = if log {
+            let safe = if ext.min > 0.0 {
+                ext.min
+            } else {
+                match ext.min_positive { Some(p) => p, None => return }
+            };
+            log_padded(safe, ext.max, padding_ratio)
+        } else {
+            Self::padded(ext.min, ext.max, padding_ratio)
+        };
+        self.set_x_range(lo, hi);
+    }
+
+    /// Fit the Y axis to a prepared [`FitExtent`] — see
+    /// [`Self::auto_fit_x_extent`].
+    pub fn auto_fit_y_extent(&mut self, ext: &FitExtent, padding_ratio: f64) {
+        if !ext.is_fittable() {
+            return;
+        }
+        let log = matches!(self.config.left_y.scale, AxisScale::Logarithmic);
+        let (lo, hi) = if log {
+            let safe = if ext.min > 0.0 {
+                ext.min
+            } else {
+                match ext.min_positive { Some(p) => p, None => return }
+            };
+            log_padded(safe, ext.max, padding_ratio)
+        } else {
+            Self::padded(ext.min, ext.max, padding_ratio)
+        };
+        self.set_y_range(lo, hi);
     }
 
     /// Auto-fit the X axis range from the pool's column metadata for `x_id`.
@@ -266,19 +376,8 @@ impl Chart {
         x_id: &str,
         padding_ratio: f64,
     ) -> Result<()> {
-        let slot = pool
-            .slot(x_id)
-            .ok_or_else(|| FiggyError::UnknownColumn { id: x_id.to_string() })?;
-        let log = matches!(self.config.bottom_x.scale, AxisScale::Logarithmic);
-        let (lo, hi) = if log {
-            let Some(safe) = Self::log_safe_lo(pool, &[x_id], slot.min) else {
-                return Ok(());
-            };
-            log_padded(safe, slot.max, padding_ratio)
-        } else {
-            Self::padded(slot.min, slot.max, padding_ratio)
-        };
-        self.set_x_range(lo, hi);
+        let ext = Self::slot_extent(pool, x_id)?;
+        self.auto_fit_x_extent(&ext, padding_ratio);
         Ok(())
     }
 
@@ -290,19 +389,8 @@ impl Chart {
         y_id: &str,
         padding_ratio: f64,
     ) -> Result<()> {
-        let slot = pool
-            .slot(y_id)
-            .ok_or_else(|| FiggyError::UnknownColumn { id: y_id.to_string() })?;
-        let log = matches!(self.config.left_y.scale, AxisScale::Logarithmic);
-        let (lo, hi) = if log {
-            let Some(safe) = Self::log_safe_lo(pool, &[y_id], slot.min) else {
-                return Ok(());
-            };
-            log_padded(safe, slot.max, padding_ratio)
-        } else {
-            Self::padded(slot.min, slot.max, padding_ratio)
-        };
-        self.set_y_range(lo, hi);
+        let ext = Self::slot_extent(pool, y_id)?;
+        self.auto_fit_y_extent(&ext, padding_ratio);
         Ok(())
     }
 
@@ -314,28 +402,11 @@ impl Chart {
         x_ids: &[&str],
         padding_ratio: f64,
     ) -> Result<()> {
-        let mut lo = f64::INFINITY;
-        let mut hi = f64::NEG_INFINITY;
+        let mut ext = FitExtent::EMPTY;
         for id in x_ids {
-            let slot = pool
-                .slot(id)
-                .ok_or_else(|| FiggyError::UnknownColumn { id: id.to_string() })?;
-            if slot.min < lo { lo = slot.min; }
-            if slot.max > hi { hi = slot.max; }
+            ext.union(&Self::slot_extent(pool, id)?);
         }
-        if !(lo.is_finite() && hi.is_finite()) || hi <= lo {
-            return Ok(());
-        }
-        let log = matches!(self.config.bottom_x.scale, AxisScale::Logarithmic);
-        let (lo, hi) = if log {
-            let Some(safe) = Self::log_safe_lo(pool, x_ids, lo) else {
-                return Ok(());
-            };
-            log_padded(safe, hi, padding_ratio)
-        } else {
-            Self::padded(lo, hi, padding_ratio)
-        };
-        self.set_x_range(lo, hi);
+        self.auto_fit_x_extent(&ext, padding_ratio);
         Ok(())
     }
 
@@ -347,28 +418,11 @@ impl Chart {
         y_ids: &[&str],
         padding_ratio: f64,
     ) -> Result<()> {
-        let mut lo = f64::INFINITY;
-        let mut hi = f64::NEG_INFINITY;
+        let mut ext = FitExtent::EMPTY;
         for id in y_ids {
-            let slot = pool
-                .slot(id)
-                .ok_or_else(|| FiggyError::UnknownColumn { id: id.to_string() })?;
-            if slot.min < lo { lo = slot.min; }
-            if slot.max > hi { hi = slot.max; }
+            ext.union(&Self::slot_extent(pool, id)?);
         }
-        if !(lo.is_finite() && hi.is_finite()) || hi <= lo {
-            return Ok(());
-        }
-        let log = matches!(self.config.left_y.scale, AxisScale::Logarithmic);
-        let (lo, hi) = if log {
-            let Some(safe) = Self::log_safe_lo(pool, y_ids, lo) else {
-                return Ok(());
-            };
-            log_padded(safe, hi, padding_ratio)
-        } else {
-            Self::padded(lo, hi, padding_ratio)
-        };
-        self.set_y_range(lo, hi);
+        self.auto_fit_y_extent(&ext, padding_ratio);
         Ok(())
     }
 }
@@ -436,5 +490,76 @@ mod tests {
         let (a, b) = Chart::padded(5.0, 5.0, 0.1);
         assert_eq!(a, 5.0);
         assert_eq!(b, 5.0);
+    }
+
+    /// The widest bound is not at a value extreme — per-column min/max
+    /// composition would get this wrong (0−5 = −5), the pairwise pass right.
+    #[test]
+    fn errorbar_extent_is_pairwise_not_minmax_composed() {
+        let ext = errorbar_extent(&[0.0, 10.0], &[1.0, 5.0], &[1.0, 5.0]).unwrap();
+        assert_eq!(ext.min, -1.0);
+        assert_eq!(ext.max, 15.0);
+    }
+
+    /// NaN values are gaps (skipped); NaN errors draw no bar, so they
+    /// contribute the bare value. Offsets past the error column's end
+    /// default to zero.
+    #[test]
+    fn errorbar_extent_nan_and_length_conventions() {
+        let nan = f32::NAN;
+        let ext = errorbar_extent(&[nan, 2.0, 4.0], &[100.0, nan], &[100.0, nan]).unwrap();
+        assert_eq!(ext.min, 2.0);
+        assert_eq!(ext.max, 4.0);
+
+        assert!(errorbar_extent(&[nan, nan], &[1.0, 1.0], &[1.0, 1.0]).is_none());
+    }
+
+    #[test]
+    fn errorbar_extent_asymmetric_and_min_positive() {
+        let ext = errorbar_extent(&[10.0], &[2.0], &[7.0]).unwrap();
+        assert_eq!(ext.min, 8.0);
+        assert_eq!(ext.max, 17.0);
+        assert_eq!(ext.min_positive, Some(8.0));
+
+        // Bound dips below zero: min_positive keeps the smallest positive
+        // bound for the log-axis safe floor.
+        let ext = errorbar_extent(&[1.0, 3.0], &[2.0, 1.0], &[0.0, 0.0]).unwrap();
+        assert_eq!(ext.min, -1.0);
+        assert_eq!(ext.min_positive, Some(1.0));
+    }
+
+    #[test]
+    fn auto_fit_y_extent_linear_pads_both_sides() {
+        let mut c = Chart::new(dummy_config());
+        let ext = FitExtent { min: 0.0, max: 10.0, min_positive: Some(0.5) };
+        c.auto_fit_y_extent(&ext, 0.1);
+        assert!((c.config().left_y.min - (-1.0)).abs() < 1e-9);
+        assert!((c.config().left_y.max - 11.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn auto_fit_y_extent_log_falls_back_to_min_positive() {
+        let mut c = Chart::new(dummy_config());
+        c.config_mut().left_y.scale = AxisScale::Logarithmic;
+        let ext = FitExtent { min: -5.0, max: 100.0, min_positive: Some(0.5) };
+        c.auto_fit_y_extent(&ext, 0.0);
+        assert!((c.config().left_y.min - 0.5).abs() < 1e-9);
+        assert!((c.config().left_y.max - 100.0).abs() < 1e-9);
+
+        // No positive bound at all: the fit must decline, not panic or set
+        // an unusable range.
+        let before = (c.config().left_y.min, c.config().left_y.max);
+        let ext = FitExtent { min: -5.0, max: -1.0, min_positive: None };
+        c.auto_fit_y_extent(&ext, 0.0);
+        assert_eq!((c.config().left_y.min, c.config().left_y.max), before);
+    }
+
+    #[test]
+    fn auto_fit_extent_degenerate_is_noop() {
+        let mut c = Chart::new(dummy_config());
+        let before = (c.config().bottom_x.min, c.config().bottom_x.max);
+        c.auto_fit_x_extent(&FitExtent::EMPTY, 0.1);
+        c.auto_fit_x_extent(&FitExtent { min: 3.0, max: 3.0, min_positive: Some(3.0) }, 0.1);
+        assert_eq!((c.config().bottom_x.min, c.config().bottom_x.max), before);
     }
 }
