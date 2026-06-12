@@ -718,8 +718,9 @@ fn value_to_screen(value: f64, axis: &AxisOptions, side: Side, da: &DataArea) ->
             }
         }
         AxisScale::Logarithmic => {
-            let log_min = axis.min.log10();
-            let log_max = axis.max.log10();
+            let (min, max) = crate::chart::guarded_log_range(axis.min, axis.max);
+            let log_min = min.log10();
+            let log_max = max.log10();
             let range = log_max - log_min;
             if range == 0.0 || value <= 0.0 {
                 0.0
@@ -783,11 +784,11 @@ fn walkable_range(axis: &AxisOptions) -> bool {
 
 fn major_tick_values(axis: &AxisOptions) -> Vec<f64> {
     let mut out = Vec::new();
-    if !walkable_range(axis) {
-        return out;
-    }
     match axis.scale {
         AxisScale::Linear => {
+            if !walkable_range(axis) {
+                return out;
+            }
             // Anchor ticks to ABSOLUTE multiples of the spacing, not to
             // axis.min: uniform-margin fits make the range ends arbitrary
             // (0.137…), but tick values must stay nice regardless.
@@ -800,9 +801,14 @@ fn major_tick_values(axis: &AxisOptions) -> Vec<f64> {
         }
         AxisScale::Logarithmic => {
             // major_spacing = decade step.
-            let step = axis.major_spacing.max(1.0);
-            let start_exp = axis.min.log10().ceil() as i64;
-            let end_exp = axis.max.log10().floor() as i64;
+            let (min, max) = crate::chart::guarded_log_range(axis.min, axis.max);
+            let step = if axis.major_spacing.is_finite() {
+                axis.major_spacing.max(1.0)
+            } else {
+                1.0
+            };
+            let start_exp = min.log10().ceil() as i64;
+            let end_exp = max.log10().floor() as i64;
             let step_i = step as i64;
             let mut e = start_exp;
             while e <= end_exp {
@@ -820,13 +826,16 @@ fn major_tick_values(axis: &AxisOptions) -> Vec<f64> {
 /// between consecutive majors left those edge strips empty).
 fn minor_tick_values(axis: &AxisOptions) -> Vec<f64> {
     let mut out = Vec::new();
-    if axis.minor_count == 0 || !walkable_range(axis) {
+    if axis.minor_count == 0 {
         return out;
     }
     match axis.scale {
         AxisScale::Linear => {
             // The subdivision count is SSoT input too — clamp it so the
             // walk stays O(majors × subdivisions) no matter what arrives.
+            if !walkable_range(axis) {
+                return out;
+            }
             let subdivisions = (axis.minor_count.min(99) + 1) as i64;
             let step = effective_major_spacing(axis) / subdivisions as f64;
             if !step.is_finite() || step <= 0.0 {
@@ -846,14 +855,14 @@ fn minor_tick_values(axis: &AxisOptions) -> Vec<f64> {
             // 2a..9a for EVERY decade overlapping the range, anchored at the
             // decade powers — not at the majors, so partial edge decades
             // (and multi-decade major steps) keep their minors.
-            let lo = axis.min.max(f64::MIN_POSITIVE);
-            let first_decade = lo.log10().floor() as i32;
-            let last_decade = axis.max.log10().floor() as i32;
+            let (min, max) = crate::chart::guarded_log_range(axis.min, axis.max);
+            let first_decade = min.log10().floor() as i32;
+            let last_decade = max.log10().floor() as i32;
             for e in first_decade..=last_decade {
                 let a = 10f64.powi(e);
                 for k in 2..=9 {
                     let v = a * (k as f64);
-                    if v >= axis.min && v <= axis.max {
+                    if v >= min && v <= max {
                         out.push(v);
                     }
                 }
@@ -1315,6 +1324,43 @@ mod tests {
         axis.max = 10.0;
         assert!(major_tick_values(&axis).is_empty());
         assert!(minor_tick_values(&axis).is_empty());
+    }
+
+    #[test]
+    fn log_tick_walkers_guard_manual_ranges() {
+        let close = |a: f64, b: f64| (a - b).abs() <= b.abs() * 1.0e-9 + 1.0e-30;
+        let mut axis = default_config().bottom_x.clone();
+        axis.scale = AxisScale::Logarithmic;
+        axis.major_spacing = 1.0;
+        axis.minor_count = 8;
+        axis.min = 0.0;
+        axis.max = 1000.0;
+
+        let majors = major_tick_values(&axis);
+        assert!(majors.iter().all(|v| v.is_finite() && *v > 0.0));
+        assert!(close(majors[0], 1.0e-12), "{majors:?}");
+        assert!(majors.iter().any(|v| close(*v, 1.0)), "{majors:?}");
+
+        let minors = minor_tick_values(&axis);
+        assert!(minors.iter().all(|v| v.is_finite() && *v > 0.0));
+        assert!(minors.iter().any(|v| close(*v, 2.0e-12)), "{minors:?}");
+
+        let da = DataArea(crate::layout::Rect { x: 10, y: 20, width: 100, height: 50 });
+        let (x, _) = value_to_screen(1.0, &axis, Side::Bottom, &da);
+        assert!(x.is_finite() && x > 10.0 && x < 110.0, "x={x}");
+
+        axis.min = 1.0e-15;
+        axis.max = 1.0e-12;
+        let majors = major_tick_values(&axis);
+        assert!(close(majors[0], 1.0e-15), "{majors:?}");
+        assert!(close(*majors.last().unwrap(), 1.0e-12), "{majors:?}");
+
+        axis.min = 10.0;
+        axis.max = 1.0;
+        let majors = major_tick_values(&axis);
+        assert_eq!(majors.len(), 2, "{majors:?}");
+        assert!(close(majors[0], 10.0), "{majors:?}");
+        assert!(close(majors[1], 100.0), "{majors:?}");
     }
 
     /// One axis, one decimal form: every tick label shares the spacing-derived

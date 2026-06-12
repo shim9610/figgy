@@ -11,7 +11,7 @@ Embed in egui / iced / winit / any other wgpu host.
 > **`crates/web`** — the `wasm-bindgen` wrapper (package name `figgy`, one chart per `<canvas>`, id-keyed register/unregister lifecycle). Browser I/O: [WASM.md](crates/renderer/WASM.md) · full Config JSON schema: [SCHEMA.md](crates/web/SCHEMA.md). Build artifacts (`crates/web/pkg/`) are gitignored — build with `npx wasm-pack build crates/web --release --target web`.
 
 - **GPU columnar pool**: all data columns share a single GPU buffer with first-fit alloc + ping-pong defrag on fragmentation. Upload caches scalar stats (min / max / smallest-positive) for auto-fit; per-point geometry such as the dashed-line arc-length prefix is computed in place by a compute scan (`line_arc.wgsl`).
-- **Layered compositing**: grid → data → axis/label/legend, so grid never covers the data.
+- **Layered compositing**: grid → data → axis/label/legend, so grid never covers the data. Axis raster can be produced as `Grid` and `Decoration` layers; `AxisLayerKind::All` remains a legacy single-pass helper.
 - **Headless PNG export**: GPU offscreen raster at arbitrary DPI → RGBA / PNG bytes in memory (async-first; blocking wrappers on native).
 - **Interaction layer (opt-in)**: hit-testing, selection boxes, drag (axes constrained to their perpendicular, detached-axis `line_offset`), PPT-style 8-handle resize of the data area — all policy in `model`, fed by host pointer events; never runs if you don't wire it.
 - **Rich-text everywhere**: titles, tick labels, and the legend share one engine — per-segment bold/italic/underline/sub/superscript/greek, per-segment color & size overrides, `'\n'` line breaks, `'\t'` table columns, fixed-width legend symbol fields.
@@ -28,7 +28,7 @@ Embed in egui / iced / winit / any other wgpu host.
 
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # or git URL — currently 0.1.0, not on crates.io.
+renderer = { path = "crates/renderer" }   # or git URL — currently 0.5.1, not on crates.io.
 wgpu     = "27"
 ```
 
@@ -233,6 +233,7 @@ pub struct Config {
     pub chart_title: ChartTitleOptions,
     pub grid: GridOptions,
     pub legend: Legend,
+    pub draw_style: DrawStyle,
 }
 ```
 
@@ -240,13 +241,13 @@ pub struct Config {
 | Field | Type | Meaning |
 |---|---|---|
 | `x, y` | u32 | Top-left pixel position relative to the host surface |
-| `width, height` | u32 | Panel pixel size. 0 → raster fails (`InvalidChartArea`) |
+| `width, height` | u32 | Panel pixel size. 0 → live raster fails (`InvalidChartArea`); callers should keep export chart areas non-zero too. Export's current 1 px clamp is a compatibility guard and may become an explicit error |
 
 ### `AxisOptions` (top_x / bottom_x / left_y / right_y)
 | Field | Type | Meaning |
 |---|---|---|
 | `scale` | `AxisScale` | `Linear` or `Logarithmic` (log10) |
-| `min, max` | f64 | Data-space range. Must be positive for log scale |
+| `min, max` | f64 | Data-space range. For log scale, positive bounds are used as-is; manual non-positive/non-finite bounds are guarded to `1e-12` on renderer/axis paths. Non-positive data samples are skipped/NaN-handled rather than making the whole range invalid |
 | `major_spacing` | f64 | linear: data units; log: decade step (1, 2, …) |
 | `minor_count` | usize | minors per major (linear) or sub-decade 2..9 (8 recommended for log) |
 | `inverted` | bool | (reserved, not implemented) |
@@ -254,7 +255,7 @@ pub struct Config {
 | `tick` | `TickVisibility` | `None / Outside / Inside / Both` |
 | `title_option` | `AxisTitleOptions` | Axis title text / visibility / offset |
 | `out_margin` | f32 | Outer (label + title band) pixel margin |
-| `line_visible / color / width / style` | mixed | Axis line appearance |
+| `line_visible / color / width / style` | mixed | Axis line appearance. CPU raster strokes floor to 1 px, so sub-pixel widths do not disappear |
 | `line_offset` | f32 | Detached-axis offset: shifts the axis chrome (line/ticks/labels) perpendicular to itself while the data area stays put. Layout-neutral; the drag system's axis movement lands here |
 | `major_tick_length / minor_tick_length` | f32 | Tick mark length (px) |
 
@@ -267,7 +268,7 @@ pub struct Config {
 | `label_visible` | bool | Number labels themselves (separate from `visible`, e.g. show the axis but hide labels) |
 | `label_font` | String | Font family. Empty string → bundled Liberation Sans |
 | `label_offset_x / y` | f32 | Fine nudge offset (px) |
-| `format` | `LabelFormat` | `Decimal / Power / Scientific` (Power recommended for log) |
+| `format` | `LabelFormat` | `Decimal / Power / Scientific` (Power recommended for log). Tick labels are numeric text today; rich tick labels are a future extension |
 | `significant_digits` | u8 | |
 
 ### `AxisTitleOptions` / `ChartTitleOptions`
@@ -286,13 +287,20 @@ pub struct Config {
 | `show_minor_x/y` | bool | Minor grid lines |
 | `minor_x/y_color, _width, _style` | mixed | Minor line appearance |
 
+### `DrawStyle`
+| Variant / JSON mode | Meaning |
+|---|---|
+| `Precise` / omitted or `{ "mode": "precise" }` | Default scientific renderer; serialized default omits `draw_style` |
+| `Sketch` / `{ "mode": "sketch", ... }` | Hand-drawn chart-wide style |
+| `Constellation` / `{ "mode": "constellation", ... }` | Astrophotograph chart-wide style. Parameter metadata comes from `draw_style_param_specs("constellation")` |
+
 ### `Legend`
 | Field | Type | Meaning |
 |---|---|---|
 | `visible` | bool | |
 | `content` | `RichText` | The whole legend as **one rich document**: `'\n'` segments break lines, symbols are inline segments (glyph char + per-segment `color` override) — breaks, symbol positions, and mid-text symbols are all explicit in the SSoT. `font` / `font_size` are live at draw time |
 | `corner` | `LegendCorner` | `TopLeft / TopRight / BottomLeft / BottomRight` |
-| `padding` | f32 | data_area inner-corner inset + box internal padding |
+| `padding` | f32 | Legend box internal padding. Corner placement uses the fixed data-area inset plus `offset_x / offset_y` |
 | `bg_color, border_color` | `Color` | Box background / border |
 
 Symbols are **fixed-width field segments** (`field_em`): every form spans
@@ -310,7 +318,7 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::paint` branches 
 
 | Type | Fields | Role |
 |---|---|---|
-| `SeriesConfig` | `series_id, label, x_column: ColumnId, y_column: ColumnId, render_type` | Full series declaration. `x_column / y_column` are pool-registered ids |
+| `SeriesConfig` | `series_id, label, x_column: ColumnId, y_column: ColumnId, render_type` | Full series declaration. `x_column / y_column` are pool-registered ids. In the web editing flow, `legend.content` is the label authority; `SeriesConfig.label` is not authoritative once the legend is freely edited |
 | `DataRenderType` | enum, 9 variants | One independent draw path per variant. Optional struct merging avoided |
 | `ErrorRef` | `Symmetric { column }` or `Asymmetric { lower, upper }` | Errorbar column reference. Symmetric = ±σ, Asymmetric = lower/upper split |
 | `DataLineStyleConfig` | `line_style, line_color, line_width` | Line appearance |
@@ -339,7 +347,7 @@ Multiplies every pixel-based dim by `scale`. `min/max/major_spacing`, scale enum
 
 ### Default builder — `renderer::default::default_config()`
 - bottom_x / left_y: axis line + ticks + labels + title enabled, text starts as empty segments.
-- top_x / right_y: axis line only, labels + title disabled, `out_margin = 8` (narrow gap).
+- top_x / right_y: axis line + ticks enabled, labels + title disabled, `out_margin = 8` (narrow gap).
 - chart_title: visible, `top_margin = 32`, text empty.
 - grid: major only, light gray.
 - legend: disabled.
@@ -382,7 +390,11 @@ The compute encoder is submitted before the host's render pass, so queue
 order sequences it under every embedding (winit / egui / iced / web) without
 API changes. Scratch buffers and bind groups are cached per series and
 rebuilt only when the series layout (length, column offsets, pool
-generation) changes.
+generation) changes. The current arc-prefix scan is u32-addressable
+(`u32::MAX = 4,294,967,295`); if a series length or pool element offset cannot
+fit in `u32`, the dashed arc prefix is skipped. As a runaway-churn backstop,
+the per-series arc cache is cleared when it grows past 256 entries and rebuilt
+on demand.
 
 ### Dirty flags
 
@@ -390,8 +402,8 @@ generation) changes.
 
 | Flag | Triggers | Handling |
 |---|---|---|
-| `data_dirty` | `set_x/y_range`, `auto_fit_*`, `invalidate()`, chart_area change, first frame | `Renderer::update_transform` (one UB write) |
-| `raster_dirty` | Decoration changes (`with_title`, decoration fields, …), chart_area change, first frame | `Renderer::refresh_axis` (re-rasterizes both grid + decoration textures, re-uploads, also refreshes the transform) |
+| `data_dirty` | `set_x/y_range`, `auto_fit_*`, `invalidate()`, `config_mut()` / `set_config`, chart_area change, first frame | `Renderer::update_transform` (one UB write) |
+| `raster_dirty` | `set_x/y_range`, `auto_fit_*` (ticks/grid depend on the range), decoration changes (`with_title`, decoration fields, …), `config_mut()` / `set_config`, chart_area change, first frame | `Renderer::refresh_axis` (re-rasterizes both grid + decoration textures, re-uploads, also refreshes the transform) |
 
 Caller per frame:
 ```rust
@@ -402,8 +414,10 @@ else if chart.consume_data_dirty() { renderer.update_transform(view, chart); }
 ### Log scale on the GPU
 
 When `AxisOptions.scale = Logarithmic`:
-- CPU: `scatter_transform_from_config` pre-converts `data_min/max` to log10 and sets `scale_log[2] = 1.0`.
-- GPU shader: `mix(v, log10(v), is_log)` — branch-free ALU.
+- Auto-fit uses the cached smallest-positive value when data contains zero or negative samples.
+- Manual non-positive/non-finite range bounds are guarded in renderer/axis paths with `1e-12`; valid positive bounds, even below `1e-12`, are preserved.
+- CPU: `scatter_transform_from_config` pre-converts the guarded range to log10 and sets the relevant `scale_log` axis flag.
+- GPU shader: `mix(v, log10(v), is_log)` — branch-free ALU. Non-positive data samples become NaN/ignored by the data path, not a config validation failure.
 
 ### Export pipeline
 
@@ -454,7 +468,7 @@ egui / iced / winit / 기타 wgpu 호스트 어디든 임베드 가능.
 > **`crates/web`** — `wasm-bindgen` 래퍼 (패키지명 `figgy`, `<canvas>` 당 차트 1개, id 기반 등록/해제 수명주기). 브라우저 I/O: [WASM.md](crates/renderer/WASM.md) · Config JSON 스키마: [SCHEMA.md](crates/web/SCHEMA.md). 빌드 산출물(`crates/web/pkg/`)은 gitignore — `npx wasm-pack build crates/web --release --target web` 로 빌드.
 
 - **GPU columnar pool**: 모든 데이터 컬럼을 하나의 GPU buffer 에 first-fit + 단편화 시 핑퐁 defrag. 업로드 시 auto-fit 용 스칼라 통계(min / max / 최소 양수)를 캐싱하고, 점선 호장 prefix 같은 per-point 지오메트리는 컴퓨트 스캔(`line_arc.wgsl`)이 제자리에서 계산.
-- **분리 합성**: grid → data → axis/label/legend 순으로 합성 → 그리드가 데이터를 가리지 않음.
+- **분리 합성**: grid → data → axis/label/legend 순으로 합성 → 그리드가 데이터를 가리지 않음. axis raster는 `Grid` / `Decoration` 분리 레이어가 기본이고, `AxisLayerKind::All`은 legacy 단일 패스 helper로 남아 있음.
 - **헤드리스 PNG export**: 임의 DPI 로 GPU offscreen 라스터 → 메모리 RGBA / PNG 바이트 반환 (async 우선, native 는 blocking 래퍼 제공).
 - **상호작용 레이어 (opt-in)**: 히트테스트, 선택 박스, 드래그(축은 수직 방향 제약 + 분리 축 `line_offset`), 데이터 영역 PPT 식 8핸들 리사이즈 — 정책은 전부 `model`, 호스트가 포인터 이벤트를 넣을 때만 동작.
 - **리치텍스트 일원화**: 제목·틱 라벨·범례가 한 엔진 공유 — 세그먼트별 bold/italic/밑줄/첨자/그리스, 세그먼트별 색·크기 오버라이드, `'\n'` 줄바꿈, `'\t'` 표 열, 고정폭 범례 심볼 필드.
@@ -471,7 +485,7 @@ egui / iced / winit / 기타 wgpu 호스트 어디든 임베드 가능.
 
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # 또는 git URL — 현재 0.1.0, crates.io 미배포.
+renderer = { path = "crates/renderer" }   # 또는 git URL — 현재 0.5.1, crates.io 미배포.
 wgpu     = "27"
 ```
 
@@ -676,6 +690,7 @@ pub struct Config {
     pub chart_title: ChartTitleOptions,
     pub grid: GridOptions,
     pub legend: Legend,
+    pub draw_style: DrawStyle,
 }
 ```
 
@@ -683,13 +698,13 @@ pub struct Config {
 | 필드 | 타입 | 의미 |
 |---|---|---|
 | `x, y` | u32 | 호스트 surface 좌상단 기준 패널 픽셀 위치 |
-| `width, height` | u32 | 패널 픽셀 크기. 0 이면 raster 실패 (`InvalidChartArea`) |
+| `width, height` | u32 | 패널 픽셀 크기. 0 이면 live raster 실패 (`InvalidChartArea`). export chart area도 0이 되지 않게 호출자가 보장해야 하며, 현재 1px clamp는 호환 guard이고 추후 명시 오류로 바뀔 수 있음 |
 
 ### `AxisOptions` (top_x / bottom_x / left_y / right_y)
 | 필드 | 타입 | 의미 |
 |---|---|---|
 | `scale` | `AxisScale` | `Linear` 또는 `Logarithmic` (log10) |
-| `min, max` | f64 | 데이터 공간 범위. log scale 시 양수만 |
+| `min, max` | f64 | 데이터 공간 범위. log scale에서는 양수 bound를 그대로 쓰고, 수동으로 들어온 0 이하/비정상 bound는 렌더러/축 경로에서 `1e-12`로 guard한다. 0 이하 데이터 샘플은 전체 range 오류가 아니라 skip/NaN 처리된다 |
 | `major_spacing` | f64 | linear: 데이터 단위, log: decade 단위 (1, 2, …) |
 | `minor_count` | usize | major 사이 minor 개수 (linear) 또는 decade 내 2..9 (log 시 8 추천) |
 | `inverted` | bool | (예약, 미구현) |
@@ -697,7 +712,7 @@ pub struct Config {
 | `tick` | `TickVisibility` | `None / Outside / Inside / Both` |
 | `title_option` | `AxisTitleOptions` | 축 타이틀 텍스트 / 가시성 / 오프셋 |
 | `out_margin` | f32 | 축 바깥쪽 (라벨+타이틀 band) 픽셀 마진 |
-| `line_visible / color / width / style` | mixed | 축 선 외형 |
+| `line_visible / color / width / style` | mixed | 축 선 외형. CPU raster stroke는 최소 1px로 floor되어 sub-pixel 폭이 사라지지 않음 |
 | `line_offset` | f32 | 분리 축 오프셋: 데이터 영역은 그대로 두고 축 chrome(선/틱/라벨)만 수직 방향으로 평행이동. 레이아웃 비기여 — 드래그 시스템의 축 이동이 여기에 기록됨 |
 | `major_tick_length / minor_tick_length` | f32 | tick 길이 (px) |
 
@@ -710,7 +725,7 @@ pub struct Config {
 | `label_visible` | bool | 숫자 라벨 자체 표시 여부 (visible 과 별개로 axis 자체는 켜고 라벨만 끄기) |
 | `label_font` | String | 폰트 패밀리. 빈 문자열 → 번들 Liberation Sans |
 | `label_offset_x / y` | f32 | nudge용 미세 오프셋 (px) |
-| `format` | `LabelFormat` | `Decimal / Power / Scientific` (log scale 권장: Power) |
+| `format` | `LabelFormat` | `Decimal / Power / Scientific` (log scale 권장: Power). 현재 tick label은 숫자 텍스트만 지원하며 RichText tick label은 추후 확장 계획 |
 | `significant_digits` | u8 | 유효 숫자 |
 
 ### `AxisTitleOptions` / `ChartTitleOptions`
@@ -729,13 +744,20 @@ pub struct Config {
 | `show_minor_x/y` | bool | minor 그리드 라인 |
 | `minor_x/y_color, _width, _style` | mixed | minor 라인 외형 |
 
+### `DrawStyle`
+| 변종 / JSON mode | 의미 |
+|---|---|
+| `Precise` / 생략 또는 `{ "mode": "precise" }` | 기본 정밀 렌더러. 기본 직렬화에서는 `draw_style` 키가 생략됨 |
+| `Sketch` / `{ "mode": "sketch", ... }` | 차트 전체 손그림 스타일 |
+| `Constellation` / `{ "mode": "constellation", ... }` | 차트 전체 천체사진 스타일. 파라미터 메타데이터는 `draw_style_param_specs("constellation")` 에서 제공 |
+
 ### `Legend`
 | 필드 | 타입 | 의미 |
 |---|---|---|
 | `visible` | bool | |
 | `content` | `RichText` | 범례 전체가 **하나의 리치 문서**: `'\n'` 세그먼트가 줄바꿈, 심볼은 세그먼트별 `color` 오버라이드를 가진 인라인 세그먼트 — 줄바꿈·심볼 위치·글자 중간 심볼이 전부 SSoT에 명시적. `font` / `font_size` 는 그리기 시점에 적용 |
 | `corner` | `LegendCorner` | `TopLeft / TopRight / BottomLeft / BottomRight` |
-| `padding` | f32 | data_area 안쪽 모서리 inset + 박스 내부 padding |
+| `padding` | f32 | legend box 내부 padding. corner 배치는 고정 data-area inset과 `offset_x / offset_y`를 사용 |
 | `bg_color, border_color` | `Color` | 박스 배경 / 테두리 |
 
 심볼은 **고정폭 필드 세그먼트**(`field_em`)다: 형태와 무관하게 모든 심볼이
@@ -752,7 +774,7 @@ pub struct Config {
 
 | 타입 | 필드 | 역할 |
 |---|---|---|
-| `SeriesConfig` | `series_id, label, x_column: ColumnId, y_column: ColumnId, render_type` | 한 시리즈의 모든 선언. `x_column / y_column` 은 pool 에 등록된 id |
+| `SeriesConfig` | `series_id, label, x_column: ColumnId, y_column: ColumnId, render_type` | 한 시리즈의 모든 선언. `x_column / y_column` 은 pool 에 등록된 id. web 편집 플로우에서는 `legend.content`가 라벨 권위이며, 자유 편집 이후 `SeriesConfig.label`은 권위가 아니다 |
 | `DataRenderType` | 9 변종 enum | 변종별 독립 draw path. 옵셔널 struct 안 합침 |
 | `ErrorRef` | `Symmetric { column }` 또는 `Asymmetric { lower, upper }` | 에러바 컬럼 참조. Symmetric 은 ±σ, Asymmetric 은 lower/upper 분리 |
 | `DataLineStyleConfig` | `line_style, line_color, line_width` | 라인 외형 |
@@ -781,7 +803,7 @@ pub struct Config {
 
 ### 기본값 빌더 — `renderer::default::default_config()`
 - bottom_x / left_y: 축선 + 눈금 + 라벨 + 타이틀 활성, 텍스트는 빈 segments.
-- top_x / right_y: 축선만, 라벨 + 타이틀 비활성, `out_margin = 8` (좁은 gap).
+- top_x / right_y: 축선 + tick 활성, 라벨 + 타이틀 비활성, `out_margin = 8` (좁은 gap).
 - chart_title: visible, top_margin 32, 텍스트 빈 segments.
 - grid: major 만 활성, 옅은 회색.
 - legend: 비활성.
@@ -821,7 +843,11 @@ pool 컬럼 (x, y) ──┐                        Transform uniform (40 B writ
 컴퓨트 인코더는 호스트의 렌더 패스보다 먼저 submit 되므로 큐 순서가 모든
 임베딩(winit / egui / iced / web)에서 API 변경 없이 순서를 보장한다.
 스크래치 버퍼/바인드 그룹은 시리즈별 캐싱되며 시리즈 레이아웃(길이, 컬럼
-오프셋, 풀 세대)이 바뀔 때만 재구축된다.
+오프셋, 풀 세대)이 바뀔 때만 재구축된다. 현재 arc-prefix scan은
+u32-addressable 범위(`u32::MAX = 4,294,967,295`) 안에서 동작한다.
+시리즈 길이나 pool element offset이 `u32`에 들어가지 않으면 dashed arc
+prefix는 생략된다. 제거된 시리즈 id가 GPU 메모리를 붙잡지 않도록 시리즈별
+arc cache가 256개를 넘으면 전체 clear 후 필요 시 다시 구축한다.
 
 ### 더티 플래그
 
@@ -829,8 +855,8 @@ pool 컬럼 (x, y) ──┐                        Transform uniform (40 B writ
 
 | 플래그 | 트리거 | 처리 |
 |---|---|---|
-| `data_dirty` | `set_x/y_range`, `auto_fit_*`, `invalidate()`, chart_area 변경, 첫 frame | `Renderer::update_transform` (UB 1회 write) |
-| `raster_dirty` | 데코레이션 변경 (`with_title`, decoration field 등), chart_area 변경, 첫 frame | `Renderer::refresh_axis` (grid + decoration 두 텍스처 모두 재라스터 + 업로드 + transform 도 갱신) |
+| `data_dirty` | `set_x/y_range`, `auto_fit_*`, `invalidate()`, `config_mut()` / `set_config`, chart_area 변경, 첫 frame | `Renderer::update_transform` (UB 1회 write) |
+| `raster_dirty` | `set_x/y_range`, `auto_fit_*` (tick/grid가 range에 의존), 데코레이션 변경 (`with_title`, decoration field 등), `config_mut()` / `set_config`, chart_area 변경, 첫 frame | `Renderer::refresh_axis` (grid + decoration 두 텍스처 모두 재라스터 + 업로드 + transform 도 갱신) |
 
 호출자 매 frame:
 ```rust
@@ -841,8 +867,10 @@ else if chart.consume_data_dirty() { renderer.update_transform(view, chart); }
 ### Log scale GPU 처리
 
 `AxisOptions.scale = Logarithmic` 시:
-- CPU: `scatter_transform_from_config` 가 `data_min/max` 를 log10 으로 미리 변환, `scale_log[2] = 1.0`.
-- GPU shader: `mix(v, log10(v), is_log)` — 분기 없이 ALU로 처리.
+- auto-fit은 데이터에 0/음수가 섞여도 캐시된 최소 양수를 log 하한으로 사용.
+- 수동 range의 0 이하/비정상 bound는 렌더러/축 경로에서 `1e-12`로 guard한다. 단, `1e-12`보다 작은 유효 양수 bound는 그대로 보존.
+- CPU: `scatter_transform_from_config` 가 guard된 range를 log10 으로 미리 변환하고 해당 축의 `scale_log` 플래그를 설정.
+- GPU shader: `mix(v, log10(v), is_log)` — 분기 없이 ALU로 처리. 0 이하 데이터 샘플은 data path에서 NaN/skip 처리되며 config validation 실패가 아니다.
 
 ### Export 파이프라인
 

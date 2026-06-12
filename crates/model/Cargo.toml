@@ -1,6 +1,6 @@
 [package]
 name = "model"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 description = "figgy chart model — option SSoT, interaction contracts, preset policies."
 license = "MIT OR Apache-2.0"
@@ -13,7 +13,7 @@ repository = "https://github.com/shim9610/figgy"
 serde = { version = "1", features = ["derive"], optional = true }
 
 [dev-dependencies]
-# For the SCHEMA.md sync test (runs with `--features serde`).
+# For serde round-trip tests (runs with `--features serde`).
 serde_json = "1"
 
 [features]

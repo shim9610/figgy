@@ -1183,7 +1183,6 @@ impl Renderer {
             let errorbar = match (extract_err_y(rt), extract_err_x(rt)) {
                 (None, None) => None,
                 (ey_opt, ex_opt) => {
-                    let zero = self.zero_handle()?;
                     let (ey_lo, ey_hi) = match ey_opt {
                         Some(ErrorRef::Symmetric { column }) => {
                             let h = lookup(column)?; (h, h)
@@ -1191,7 +1190,10 @@ impl Renderer {
                         Some(ErrorRef::Asymmetric { lower, upper }) => {
                             (lookup(lower)?, lookup(upper)?)
                         }
-                        None => (zero, zero),
+                        None => {
+                            let zero = self.zero_handle()?;
+                            (zero, zero)
+                        }
                     };
                     let (ex_lo, ex_hi) = match ex_opt {
                         Some(ErrorRef::Symmetric { column }) => {
@@ -1200,7 +1202,10 @@ impl Renderer {
                         Some(ErrorRef::Asymmetric { lower, upper }) => {
                             (lookup(lower)?, lookup(upper)?)
                         }
-                        None => (zero, zero),
+                        None => {
+                            let zero = self.zero_handle()?;
+                            (zero, zero)
+                        }
                     };
                     Some(ColumnErrorBarDraw {
                         pipeline: errorbar_pipe,
@@ -1907,6 +1912,108 @@ mod tests {
         let min = data.iter().copied().fold(f64::INFINITY, f64::min);
         let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         Column { data, min, max }
+    }
+
+    fn test_scatter_style() -> DataScatterStyleConfig {
+        DataScatterStyleConfig {
+            point_color: Color::new(0.0, 0.0, 0.0, 1.0),
+            point_shape: crate::data_config::ScatterShape::CircleFilled,
+            point_size: 5.0,
+        }
+    }
+
+    fn test_errorbar_style() -> DataErrorBarStyleConfig {
+        DataErrorBarStyleConfig {
+            error_bar_color: Color::new(1.0, 0.0, 0.0, 1.0),
+            error_bar_width: 1.0,
+            error_bar_cap_size: 4.0,
+            cap_width: 1.0,
+        }
+    }
+
+    fn basic_errorbar_chart() -> Chart {
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(Rect { x: 0, y: 0, width: 320, height: 240 });
+        config.legend.visible = false;
+        let mut chart = Chart::new(config);
+        chart.set_x_range(0.0, 4.0);
+        chart.set_y_range(0.0, 5.0);
+        chart
+    }
+
+    #[test]
+    fn xy_errorbar_does_not_require_zero_column() {
+        let inst = create_instance();
+        let Ok(adapter) = request_adapter(&inst) else { return; };
+        let Ok((device, queue)) = request_device(&adapter) else { return; };
+        let device = Arc::new(device);
+        let queue = Arc::new(queue);
+
+        let mut r = Renderer::try_new(
+            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+            wgpu::TextureFormat::Bgra8Unorm,
+            1024 * 1024,
+        ).unwrap();
+        r.add_column("x", &col_f64(vec![1.0, 2.0, 3.0])).unwrap();
+        r.add_column("y", &col_f64(vec![1.0, 3.0, 2.0])).unwrap();
+        r.add_column("ex", &col_f64(vec![0.1, 0.2, 0.1])).unwrap();
+        r.add_column("ey", &col_f64(vec![0.3, 0.1, 0.2])).unwrap();
+
+        let chart = basic_errorbar_chart();
+        let series = [SeriesConfig {
+            series_id: "xy".into(),
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            render_type: DataRenderType::ScatterErrorbarXY {
+                scatter: test_scatter_style(),
+                err_x: ErrorRef::Symmetric { column: "ex".into() },
+                err_y: ErrorRef::Symmetric { column: "ey".into() },
+                err_style: test_errorbar_style(),
+            },
+        }];
+
+        r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    }
+
+    #[test]
+    fn single_direction_errorbar_still_requires_zero_column() {
+        let inst = create_instance();
+        let Ok(adapter) = request_adapter(&inst) else { return; };
+        let Ok((device, queue)) = request_device(&adapter) else { return; };
+        let device = Arc::new(device);
+        let queue = Arc::new(queue);
+
+        let mut r = Renderer::try_new(
+            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+            wgpu::TextureFormat::Bgra8Unorm,
+            1024 * 1024,
+        ).unwrap();
+        r.add_column("x", &col_f64(vec![1.0, 2.0, 3.0])).unwrap();
+        r.add_column("y", &col_f64(vec![1.0, 3.0, 2.0])).unwrap();
+        r.add_column("ey", &col_f64(vec![0.3, 0.1, 0.2])).unwrap();
+
+        let chart = basic_errorbar_chart();
+        let series = [SeriesConfig {
+            series_id: "y".into(),
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            render_type: DataRenderType::ScatterErrorbarY {
+                scatter: test_scatter_style(),
+                err_y: ErrorRef::Symmetric { column: "ey".into() },
+                err_style: test_errorbar_style(),
+            },
+        }];
+
+        let err = match r.export_panel_rgba(&chart, &series, 1.0) {
+            Ok(_) => panic!("Y-only errorbar must still need __zero for the missing X side"),
+            Err(err) => err,
+        };
+        match err {
+            FiggyError::UnknownColumn { id } => assert!(id.contains("__zero"), "{id}"),
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     /// Two line series on distinct column pairs must BOTH render — this

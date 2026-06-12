@@ -257,8 +257,7 @@ chart.set_series(JSON.stringify(series));  // GPU 스타일 재빌드 포함
 `Config`/`SeriesConfig` 전 필드의 직렬화 형태, enum 허용 문자열, serde
 표현 규칙(externally-tagged enum 등), 편집 시 의미 결합 주의사항을
 담는다. 이 문서의 JSON 블록은 Rust 소스에서 생성되며 동기화 테스트
-(`cargo test -p model --features serde --test schema_sync`)가 드리프트를
-막는다.
+관련 검증은 `cargo test -p model --features serde`로 수행한다.
 
 ### 3.9 async 메서드와 객체 잠금 (필독)
 

@@ -51,6 +51,27 @@ pub(crate) fn log_decade_step(min: f64, max: f64) -> f64 {
     else { (decades / 6.0).ceil() }
 }
 
+/// Fallback lower bound for invalid manual log-axis ranges.
+pub(crate) const LOG_RANGE_FALLBACK_MIN: f64 = 1.0e-12;
+
+/// Renderer-side guard for log-axis ranges.
+pub(crate) fn guarded_log_range(min: f64, max: f64) -> (f64, f64) {
+    let min = if min.is_finite() && min > 0.0 {
+        min
+    } else {
+        LOG_RANGE_FALLBACK_MIN
+    };
+    let mut max = if max.is_finite() && max > 0.0 {
+        max
+    } else {
+        min * 10.0
+    };
+    if max <= min {
+        max = min * 10.0;
+    }
+    (min, max)
+}
+
 /// Positive-preserving padding for a log-scale axis: pad by
 /// `padding_ratio · span` in log space on each side, then back to linear.
 pub(crate) fn log_padded(min: f64, max: f64, padding_ratio: f64) -> (f64, f64) {

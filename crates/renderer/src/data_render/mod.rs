@@ -908,14 +908,24 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
     let log_x = matches!(config.bottom_x.scale, AxisScale::Logarithmic);
     let log_y = matches!(config.left_y.scale, AxisScale::Logarithmic);
 
-    // For log axes, convert min/max into log10 space. Non-positive data
-    // becomes -inf/NaN in the shader — callers must supply positive values.
-    let to_log = |v: f64| (v.max(f64::MIN_POSITIVE)).log10() as f32;
+    // For log axes, guard only the axis range. Data values still follow the
+    // shader's NaN/non-positive handling.
+    let to_log = |v: f64| v.log10() as f32;
+    let (x_min, x_max) = if log_x {
+        crate::chart::guarded_log_range(config.bottom_x.min, config.bottom_x.max)
+    } else {
+        (config.bottom_x.min, config.bottom_x.max)
+    };
+    let (y_min, y_max) = if log_y {
+        crate::chart::guarded_log_range(config.left_y.min, config.left_y.max)
+    } else {
+        (config.left_y.min, config.left_y.max)
+    };
 
-    let data_min_x = if log_x { to_log(config.bottom_x.min) } else { config.bottom_x.min as f32 };
-    let data_max_x = if log_x { to_log(config.bottom_x.max) } else { config.bottom_x.max as f32 };
-    let data_min_y = if log_y { to_log(config.left_y.min)   } else { config.left_y.min as f32 };
-    let data_max_y = if log_y { to_log(config.left_y.max)   } else { config.left_y.max as f32 };
+    let data_min_x = if log_x { to_log(x_min) } else { x_min as f32 };
+    let data_max_x = if log_x { to_log(x_max) } else { x_max as f32 };
+    let data_min_y = if log_y { to_log(y_min) } else { y_min as f32 };
+    let data_max_y = if log_y { to_log(y_max) } else { y_max as f32 };
 
     let scale_log = [if log_x { 1.0 } else { 0.0 }, if log_y { 1.0 } else { 0.0 }];
 
@@ -2066,6 +2076,42 @@ mod tests {
                 println!("no adapter available in this environment: {e}");
             }
         }
+    }
+
+    #[test]
+    fn log_transform_guards_manual_range_without_raising_tiny_positive_min() {
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(Rect { x: 0, y: 0, width: 100, height: 100 });
+        config.chart_title.top_margin = 0.0;
+        for axis in [
+            &mut config.top_x,
+            &mut config.bottom_x,
+            &mut config.left_y,
+            &mut config.right_y,
+        ] {
+            axis.out_margin = 0.0;
+            axis.major_tick_length = 0.0;
+        }
+
+        config.bottom_x.scale = crate::config::AxisScale::Logarithmic;
+        config.bottom_x.min = 0.0;
+        config.bottom_x.max = 1000.0;
+        let t = scatter_transform_from_config(&config);
+        assert_eq!(t.scale_log[0], 1.0);
+        assert!((t.data_min[0] + 12.0).abs() < 1.0e-6, "{:?}", t.data_min);
+        assert!((t.data_max[0] - 3.0).abs() < 1.0e-6, "{:?}", t.data_max);
+
+        config.bottom_x.min = 1.0e-15;
+        config.bottom_x.max = 1.0e-12;
+        let t = scatter_transform_from_config(&config);
+        assert!((t.data_min[0] + 15.0).abs() < 1.0e-6, "{:?}", t.data_min);
+        assert!((t.data_max[0] + 12.0).abs() < 1.0e-6, "{:?}", t.data_max);
+
+        config.bottom_x.min = 10.0;
+        config.bottom_x.max = 1.0;
+        let t = scatter_transform_from_config(&config);
+        assert!((t.data_min[0] - 1.0).abs() < 1.0e-6, "{:?}", t.data_min);
+        assert!((t.data_max[0] - 2.0).abs() < 1.0e-6, "{:?}", t.data_max);
     }
 
     /// Smoke-test the texture-upload API path (no readback). Validation
