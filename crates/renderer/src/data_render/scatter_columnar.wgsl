@@ -257,3 +257,172 @@ fn fs_sketch(in: VsSketchOut) -> @location(0) vec4<f32> {
     }
     return style.color_premul * alpha;
 }
+
+// ────────────── constellation mode (NOT part of the common block) ───────────
+// Ringed-planet markers — docs/CONSTELLATION_DESIGN.md Step 2.
+//   - The ring's POSITION ANGLE encodes the series: the existing
+//     ScatterShape SSoT maps to a tilt (see cons_ring_angle) — no new
+//     per-series fields.
+//   - The planet surface samples a baked procedural atlas (2×2 archetypes,
+//     picked per point); shading is sphere lambert + limb darkening.
+//   - The series point_color appears ONLY as a thin atmospheric rim glow,
+//     like the line ribbon: bodies stay physical, identity stays visible.
+// Blending is premultiplied alpha (planets occlude the star field), unlike
+// the additive line passes.
+
+@group(2) @binding(2) var cons_samp: sampler;
+@group(2) @binding(3) var cons_planet_atlas: texture_2d<f32>;
+@group(2) @binding(4) var cons_ring_tex: texture_2d<f32>;
+
+// Ring radii relative to the planet radius, and the apparent inclination of
+// the ring plane (minor/major axis ratio of the projected ellipse).
+const RING_INNER: f32 = 1.45;
+const RING_OUTER: f32 = 2.3;
+const RING_INCL: f32 = 0.32;
+// Quad half-extent multiplier — room for the ring + rim glow + AA.
+const PLANET_QUAD_EXTENT: f32 = 2.5;
+
+// ScatterShape (style.shape_id, declaration order) → ring position angle.
+// Spread across distinct orientations so any two series read differently.
+fn cons_ring_angle(shape_id: u32) -> f32 {
+    switch shape_id {
+        case 0u: { return 0.0; }          // Circle
+        case 1u: { return 0.52; }         // Square        (+30°)
+        case 2u: { return 1.05; }         // Triangle      (+60°)
+        case 3u: { return -0.52; }        // Diamond       (−30°)
+        case 4u: { return -1.05; }        // Cross         (−60°)
+        case 5u: { return 0.26; }         // CircleFilled  (+15°)
+        case 6u: { return 0.79; }         // SquareFilled  (+45°)
+        case 7u: { return -0.26; }        // TriangleFilled(−15°)
+        default: { return -0.79; }        // DiamondFilled (−45°)
+    }
+}
+
+struct VsPlanetOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) local_pos: vec2<f32>,
+    @location(1) @interpolate(flat) seed_inst: u32,
+};
+
+@vertex
+fn vs_planet(in: VsIn, @builtin(instance_index) inst: u32) -> VsPlanetOut {
+    let xv = maybe_log(in.x, transform.scale_log.x);
+    let yv = maybe_log(in.y, transform.scale_log.y);
+    let range = transform.data_max - transform.data_min;
+    let t = (vec2<f32>(xv, yv) - transform.data_min) / range;
+    let center_ndc = t * 2.0 - 1.0;
+
+    let half_px = style.point_radius_px * PLANET_QUAD_EXTENT + QUAD_MARGIN_PX;
+    let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
+
+    var out: VsPlanetOut;
+    out.pos = vec4<f32>(world, 0.0, 1.0);
+    out.local_pos = in.quad_pos;
+    out.seed_inst = u32(transform.style_params[0].w) + inst;
+    return out;
+}
+
+@fragment
+fn fs_planet(in: VsPlanetOut) -> @location(0) vec4<f32> {
+    let r_planet = max(style.point_radius_px, 1.0);
+    let p = in.local_pos * (r_planet * PLANET_QUAD_EXTENT + QUAD_MARGIN_PX);
+    let dist = length(p);
+    let aa = max(fwidth(dist), 0.5);
+
+    // Per-point variation channels.
+    let h_arch = sketch_hash01(in.seed_inst, 0xA2C4u);
+    let h_spin = sketch_hash01(in.seed_inst, 0x591Eu);
+    let h_jit = sketch_hash01(in.seed_inst, 0x717Au);
+
+    // Ring frame: rotate into the ring plane. Position angle = series shape
+    // mapping ± a small per-point jitter (real systems aren't aligned).
+    let phi = cons_ring_angle(style.shape_id) + (h_jit - 0.5) * 0.12;
+    let cphi = cos(phi);
+    let sphi = sin(phi);
+    let q = vec2<f32>(p.x * cphi + p.y * sphi, -p.x * sphi + p.y * cphi);
+
+    // Projected ring ellipse: radial coordinate in ring-plane units.
+    let rho = length(vec2<f32>(q.x, q.y / RING_INCL)) / r_planet;
+    let in_band = rho > RING_INNER && rho < RING_OUTER;
+    var ring_a = 0.0;
+    var ring_rgb = vec3<f32>(0.0);
+    if (in_band) {
+        let u = (rho - RING_INNER) / (RING_OUTER - RING_INNER);
+        let s = textureSample(cons_ring_tex, cons_samp, vec2<f32>(u, 0.5));
+        // Edge AA along the band borders.
+        let band_aa = smoothstep(RING_INNER, RING_INNER + 0.06, rho)
+            * (1.0 - smoothstep(RING_OUTER - 0.06, RING_OUTER, rho));
+        ring_a = s.a * band_aa;
+        ring_rgb = s.rgb;
+        // Planet shadow on the ring: the far (behind) half darkens near the
+        // body — a soft contact shadow that sells the 3D read.
+        if (q.y < 0.0) {
+            ring_rgb = ring_rgb * mix(0.25, 1.0, smoothstep(RING_INNER, 2.0, rho));
+        }
+    }
+    // Near half (q.y >= 0) passes in FRONT of the planet, far half behind.
+    let ring_front = q.y >= 0.0;
+
+    // Planet disc + sphere shading.
+    let disc = 1.0 - smoothstep(r_planet - aa, r_planet + aa, dist);
+    var planet_rgb = vec3<f32>(0.0);
+    if (disc > 0.0) {
+        let pr = min(dist / r_planet, 0.9999);
+        let z = sqrt(1.0 - pr * pr);
+        let n = vec3<f32>(p.x / r_planet, p.y / r_planet, z);
+        // Light from the upper-left, slightly toward the viewer.
+        let l = normalize(vec3<f32>(-0.55, 0.5, 0.62));
+        let diff = max(dot(n, l), 0.0);
+        let limb = pow(max(z, 0.0), 0.45);
+
+        // Surface UV: spin the sphere per point, tilt the texture axis to
+        // the ring plane so bands align with the ring.
+        let spin = h_spin * 6.2831853;
+        let xr = q.x / r_planet;
+        let lon = atan2(xr * cos(spin) - z * sin(spin), xr * sin(spin) + z * cos(spin));
+        let lat = asin(clamp(q.y / r_planet, -1.0, 1.0));
+        let arch = u32(h_arch * 4.0) % 4u;
+        let tile = vec2<f32>(f32(arch % 2u), f32(arch / 2u));
+        let inner_uv = vec2<f32>(
+            fract(lon / 6.2831853 + 0.5),
+            lat / 3.1415927 + 0.5,
+        ) * 0.94 + vec2<f32>(0.03, 0.03);
+        let uv = (tile + inner_uv) * 0.5;
+        let albedo = textureSample(cons_planet_atlas, cons_samp, uv).rgb;
+
+        planet_rgb = albedo * (0.18 + 0.88 * diff) * limb;
+    }
+
+    // Atmospheric rim glow — the series color's only appearance. Soft
+    // exponential falloff outside the disc, not a hard shell.
+    let rim_d = max(dist - r_planet, 0.0);
+    let rim = select(
+        0.0,
+        0.34 * exp(-rim_d / max(r_planet * 0.10, 1.0)),
+        dist > r_planet - aa,
+    );
+    let rim_rgb = style.color_premul.rgb * rim;
+
+    // Compose, premultiplied: back ring (occluded by the disc) → planet →
+    // front ring over the planet → rim glow outside.
+    var rgb = vec3<f32>(0.0);
+    var a = 0.0;
+    if (!ring_front) {
+        let behind_a = ring_a * (1.0 - disc);
+        rgb = ring_rgb * behind_a;
+        a = behind_a;
+    }
+    rgb = rgb * (1.0 - disc) + planet_rgb * disc;
+    a = a * (1.0 - disc) + disc;
+    if (ring_front) {
+        rgb = rgb * (1.0 - ring_a) + ring_rgb * ring_a;
+        a = a * (1.0 - ring_a) + ring_a;
+    }
+    rgb = rgb + rim_rgb * (1.0 - a);
+    a = a + rim * (1.0 - a);
+
+    if (a <= 0.003) {
+        discard;
+    }
+    return vec4<f32>(rgb, a);
+}

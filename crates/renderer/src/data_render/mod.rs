@@ -1018,12 +1018,159 @@ pub const CONSTELLATION_RIBBON_VERTICES: u32 = 18;
 pub const CONSTELLATION_STAR_VERTICES: u32 = 144;
 
 /// Constellation pipelines + baked style textures for one target format —
-/// cached inside the renderer's lazy style set (docs/CONSTELLATION_DESIGN.md
+/// cached inside the renderer's lazy style set (docs/CONSTELLATION_DESIGN.MD
 /// §3c/§3d). The bind group keeps the textures alive.
 pub(crate) struct ConstellationSet {
     pub(crate) ribbon: wgpu::RenderPipeline,
     pub(crate) stars: wgpu::RenderPipeline,
+    /// Ringed-planet scatter pass (Step 2) — premultiplied blend, occludes
+    /// the additive star field behind it.
+    pub(crate) planets: wgpu::RenderPipeline,
     pub(crate) star_tex_bg: wgpu::BindGroup,
+}
+
+// ── Procedural bakes for the planet atlas (Step 2). Heavy math is fine —
+// this runs once per style-set creation and the results are GPU-cached.
+
+fn bake_hash2(ix: i64, iy: i64, seed: u32) -> f64 {
+    let mut h = (ix as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ (iy as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F)
+        ^ (seed as u64).wrapping_mul(0x1656_67B1_9E37_79F9);
+    h ^= h >> 33;
+    h = h.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+    h ^= h >> 33;
+    (h >> 11) as f64 / (1u64 << 53) as f64
+}
+
+/// 2D value noise, [0,1], smoothstep-interpolated.
+fn vnoise2(x: f64, y: f64, seed: u32) -> f64 {
+    let (ix, iy) = (x.floor() as i64, y.floor() as i64);
+    let (fx, fy) = (x - x.floor(), y - y.floor());
+    let (ux, uy) = (fx * fx * (3.0 - 2.0 * fx), fy * fy * (3.0 - 2.0 * fy));
+    let a = bake_hash2(ix, iy, seed);
+    let b = bake_hash2(ix + 1, iy, seed);
+    let c = bake_hash2(ix, iy + 1, seed);
+    let d = bake_hash2(ix + 1, iy + 1, seed);
+    a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy
+}
+
+/// Fractal Brownian motion over `vnoise2`, [0,1]-ish.
+fn fbm2(x: f64, y: f64, octaves: u32, seed: u32) -> f64 {
+    let mut acc = 0.0;
+    let mut amp = 0.5;
+    let (mut fx, mut fy) = (x, y);
+    for o in 0..octaves {
+        acc += amp * vnoise2(fx, fy, seed.wrapping_add(o * 131));
+        amp *= 0.5;
+        fx *= 2.03;
+        fy *= 2.03;
+    }
+    acc
+}
+
+/// Planet albedo atlas: 2×2 archetype tiles (each `tile`² px, equirect).
+/// Longitude-seamless: noise is sampled on the unit cylinder (cos θ, sin θ).
+/// Archetypes: 0 gas giant (domain-warped bands), 1 ice giant, 2 rocky,
+/// 3 cratered gray.
+fn bake_planet_atlas(tile: u32) -> Vec<u8> {
+    let size = tile * 2;
+    let mut out = vec![0u8; (size * size * 4) as usize];
+    let mix3 = |a: [f64; 3], b: [f64; 3], t: f64| -> [f64; 3] {
+        let t = t.clamp(0.0, 1.0);
+        [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
+    };
+    for ty in 0..2u32 {
+        for tx in 0..2u32 {
+            let arch = ty * 2 + tx;
+            for py in 0..tile {
+                for px in 0..tile {
+                    let u = px as f64 / (tile - 1) as f64; // longitude 0..1
+                    let v = py as f64 / (tile - 1) as f64; // latitude 0..1
+                    let th = u * std::f64::consts::TAU;
+                    let (cx, sx) = (th.cos(), th.sin());
+
+                    let rgb: [f64; 3] = match arch {
+                        // Gas giant: latitude bands, domain-warped by
+                        // cylinder-sampled fBm — the Jupiter look.
+                        0 => {
+                            let warp = fbm2(cx * 2.2 + 11.0, sx * 2.2 + v * 5.0, 5, 7) - 0.5;
+                            let band_t = v * 9.0 + warp * 2.6;
+                            let s = 0.5 + 0.5 * (band_t * std::f64::consts::TAU * 0.5).sin();
+                            let turb = fbm2(cx * 5.0, sx * 5.0 + v * 14.0, 5, 23) - 0.5;
+                            let cream = [0.88, 0.80, 0.66];
+                            let rust = [0.58, 0.36, 0.24];
+                            let mut c = mix3(cream, rust, s * 0.85 + turb * 0.3);
+                            // One dark belt accent.
+                            let belt = (-(v - 0.62).powi(2) / 0.002).exp();
+                            c = mix3(c, [0.42, 0.26, 0.18], belt * 0.55);
+                            c
+                        }
+                        // Ice giant: smooth teal with faint streaks.
+                        1 => {
+                            let s = fbm2(cx * 1.6, sx * 1.6 + v * 7.0, 4, 41) - 0.5;
+                            let base = mix3([0.34, 0.52, 0.86], [0.55, 0.72, 0.95], v * 0.5 + s * 0.25);
+                            let streak = (-(v - 0.35).powi(2) / 0.004).exp();
+                            mix3(base, [0.85, 0.92, 1.0], streak * 0.35)
+                        }
+                        // Rocky: ochre terrain patches + polar caps.
+                        2 => {
+                            let t1 = fbm2(cx * 3.0, sx * 3.0 + v * 6.0, 6, 67);
+                            let mut c =
+                                mix3([0.72, 0.46, 0.28], [0.44, 0.27, 0.17], (t1 - 0.35) * 2.0);
+                            let polar = ((v - 0.5).abs() * 2.0 - 0.78).max(0.0) / 0.22;
+                            c = mix3(c, [0.92, 0.90, 0.86], polar.min(1.0) * 0.8);
+                            c
+                        }
+                        // Cratered gray: maria blotches over regolith noise.
+                        _ => {
+                            let t1 = fbm2(cx * 3.4, sx * 3.4 + v * 7.0, 6, 97);
+                            let t2 = fbm2(cx * 1.4 + 5.0, sx * 1.4 + v * 3.0, 4, 113);
+                            let g = 0.58 + (t1 - 0.5) * 0.30 - if t2 > 0.62 { 0.18 } else { 0.0 };
+                            [g, g, g * 1.02]
+                        }
+                    };
+
+                    let x = tx * tile + px;
+                    let y = ty * tile + py;
+                    let i = ((y * size + x) * 4) as usize;
+                    out[i] = (rgb[0].clamp(0.0, 1.0) * 255.0).round() as u8;
+                    out[i + 1] = (rgb[1].clamp(0.0, 1.0) * 255.0).round() as u8;
+                    out[i + 2] = (rgb[2].clamp(0.0, 1.0) * 255.0).round() as u8;
+                    out[i + 3] = 255;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Ring radial strip (256×1): C ring (faint) → B ring (bright) → Cassini
+/// gap → A ring, with fine radial density noise. RGB is the straight ring
+/// color; A is the density the shader composes with.
+fn bake_ring_strip() -> Vec<u8> {
+    let mut out = vec![0u8; 256 * 4];
+    for i in 0..256usize {
+        let u = i as f64 / 255.0;
+        let base = if u < 0.16 {
+            0.22
+        } else if u < 0.52 {
+            0.85
+        } else if u < 0.60 {
+            0.04
+        } else if u < 0.93 {
+            0.60 * (1.0 - (u - 0.60) / 0.33 * 0.35)
+        } else {
+            0.0
+        };
+        let fine = (fbm2(u * 60.0, 0.5, 4, 151) - 0.5) * 0.35;
+        let a = (base * (1.0 + fine)).clamp(0.0, 1.0);
+        let rgb: [f64; 3] = [0.80, 0.74, 0.63];
+        out[i * 4] = (rgb[0] * 255.0).round() as u8;
+        out[i * 4 + 1] = (rgb[1] * 255.0).round() as u8;
+        out[i * 4 + 2] = (rgb[2] * 255.0).round() as u8;
+        out[i * 4 + 3] = (a * 255.0).round() as u8;
+    }
+    out
 }
 
 /// Bake the star PSF sprite (R = saturating core, G = halo wings + one faint
@@ -1122,8 +1269,16 @@ pub(crate) fn create_constellation_set(
         tex.create_view(&wgpu::TextureViewDescriptor::default())
     };
     const PSF_SIZE: u32 = 128;
+    const ATLAS_TILE: u32 = 128;
     let psf_view = make_tex("figgy constellation psf", PSF_SIZE, PSF_SIZE, &bake_psf_rgba(PSF_SIZE));
     let lut_view = make_tex("figgy constellation blackbody lut", 256, 1, &bake_blackbody_lut());
+    let atlas_view = make_tex(
+        "figgy constellation planet atlas",
+        ATLAS_TILE * 2,
+        ATLAS_TILE * 2,
+        &bake_planet_atlas(ATLAS_TILE),
+    );
+    let ring_view = make_tex("figgy constellation ring strip", 256, 1, &bake_ring_strip());
 
     let tex_entry = |binding| wgpu::BindGroupLayoutEntry {
         binding,
@@ -1138,14 +1293,16 @@ pub(crate) fn create_constellation_set(
     let tex_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("figgy constellation texture bgl"),
         entries: &[
-            tex_entry(0),
-            tex_entry(1),
+            tex_entry(0), // PSF (stars)
+            tex_entry(1), // blackbody LUT (stars)
             wgpu::BindGroupLayoutEntry {
                 binding: 2,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
+            tex_entry(3), // planet atlas (planets)
+            tex_entry(4), // ring strip (planets)
         ],
     });
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -1163,6 +1320,8 @@ pub(crate) fn create_constellation_set(
             wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&psf_view) },
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&lut_view) },
             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&sampler) },
+            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&atlas_view) },
+            wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&ring_view) },
         ],
     });
 
@@ -1207,8 +1366,16 @@ pub(crate) fn create_constellation_set(
         Some(&tex_bgl),
         "figgy constellation stars pipeline",
     );
+    // Planets keep the scatter builder's premultiplied blend — bodies
+    // occlude the additive star field behind them.
+    let planets = create_scatter_columnar_pipeline_full(
+        device, transform_bgl, style_bgl, target_format,
+        "vs_planet", "fs_planet",
+        Some(&tex_bgl),
+        "figgy constellation planets pipeline",
+    );
 
-    ConstellationSet { ribbon, stars, star_tex_bg }
+    ConstellationSet { ribbon, stars, planets, star_tex_bg }
 }
 
 /// Entry-point-parameterized line pipeline builder. Styled variants share
@@ -1363,16 +1530,13 @@ pub fn create_scatter_columnar_pipeline(
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
-    create_scatter_columnar_pipeline_with_entries(
+    create_scatter_columnar_pipeline_full(
         device, transform_bgl, style_bgl, target_format,
-        "vs_main", "fs_main", "figgy scatter columnar pipeline",
+        "vs_main", "fs_main", None, "figgy scatter columnar pipeline",
     )
 }
 
-/// Entry-point-parameterized scatter pipeline builder. Styled variants (e.g.
-/// the sketch `vs_sketch`/`fs_sketch` — the instance index travels as a flat
-/// varying, so both stages differ) share the precise pipeline's layout and
-/// state; the renderer's style table supplies the entry strings.
+/// Two-entry convenience used by the sketch style (shared layout/state).
 pub(crate) fn create_scatter_columnar_pipeline_with_entries(
     device: &wgpu::Device,
     transform_bgl: &wgpu::BindGroupLayout,
@@ -1382,14 +1546,37 @@ pub(crate) fn create_scatter_columnar_pipeline_with_entries(
     fs_entry: &str,
     label: &str,
 ) -> wgpu::RenderPipeline {
+    create_scatter_columnar_pipeline_full(
+        device, transform_bgl, style_bgl, target_format, vs_entry, fs_entry, None, label,
+    )
+}
+
+/// Entry-point-parameterized scatter pipeline builder. Styled variants share
+/// the precise pipeline's three vertex slots; the constellation planet
+/// variant additionally binds the style textures as group 2.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_scatter_columnar_pipeline_full(
+    device: &wgpu::Device,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    vs_entry: &str,
+    fs_entry: &str,
+    texture_bgl: Option<&wgpu::BindGroupLayout>,
+    label: &str,
+) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("figgy scatter columnar shader"),
         source: wgpu::ShaderSource::Wgsl(include_str!("scatter_columnar.wgsl").into()),
     });
 
+    let mut bgls: Vec<&wgpu::BindGroupLayout> = vec![transform_bgl, style_bgl];
+    if let Some(t) = texture_bgl {
+        bgls.push(t);
+    }
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("figgy scatter columnar layout"),
-        bind_group_layouts: &[transform_bgl, style_bgl],
+        bind_group_layouts: &bgls,
         push_constant_ranges: &[],
     });
 
@@ -1621,6 +1808,9 @@ pub struct ColumnScatterLayer<'a> {
     pub pool_buffer: &'a wgpu::Buffer,
     pub x: ColumnHandle,
     pub y: ColumnHandle,
+    /// Style textures (group 2) when `pipeline`'s layout includes them —
+    /// the constellation planet atlas/ring bind group. `None` otherwise.
+    pub texture_bg: Option<&'a wgpu::BindGroup>,
 }
 
 /// One series' data primitives. A panel can hold multiple of these.
@@ -1744,6 +1934,9 @@ fn issue_series_data(
             pass.set_pipeline(s.pipeline);
             pass.set_bind_group(0, s.transform_bg, &[]);
             pass.set_bind_group(1, s.style_bg, &[]);
+            if let Some(tex) = s.texture_bg {
+                pass.set_bind_group(2, tex, &[]);
+            }
             pass.set_vertex_buffer(0, s.quad_vb.slice(..));
             pass.set_vertex_buffer(1, s.pool_buffer.slice(s.x.byte_range()));
             pass.set_vertex_buffer(2, s.pool_buffer.slice(s.y.byte_range()));

@@ -1015,22 +1015,27 @@ impl Renderer {
             verts: u32,
             texture_bg: Option<&'p wgpu::BindGroup>,
         }
-        let (line_pick, stars_pick, scatter_pipe, errorbar_pipe) = match styled {
+        struct ScatterPick<'p> {
+            pipeline: &'p wgpu::RenderPipeline,
+            texture_bg: Option<&'p wgpu::BindGroup>,
+        }
+        let (line_pick, stars_pick, scatter_pick, errorbar_pipe) = match styled {
             None => (
                 LinePick { pipeline: &pipelines.line, verts: 4, texture_bg: None },
                 None,
-                &pipelines.scatter,
+                ScatterPick { pipeline: &pipelines.scatter, texture_bg: None },
                 &pipelines.errorbar,
             ),
             Some(StyleSet::Sketch { line, scatter, errorbar, line_verts }) => (
                 LinePick { pipeline: line, verts: *line_verts, texture_bg: None },
                 None,
-                scatter,
+                ScatterPick { pipeline: scatter, texture_bg: None },
                 errorbar,
             ),
-            // Step 1: constellation styles the LINE element (ribbon + stars);
-            // scatter/errorbar fall back to precise until their celestial
-            // treatments land (docs/CONSTELLATION_DESIGN.md §3d).
+            // Constellation: line = ribbon + star pass, scatter = ringed
+            // planets (premultiplied — they occlude the star field);
+            // errorbar falls back to precise until its celestial treatment
+            // lands (docs/CONSTELLATION_DESIGN.md §3d).
             Some(StyleSet::Constellation(c)) => (
                 LinePick {
                     pipeline: &c.ribbon,
@@ -1042,7 +1047,7 @@ impl Renderer {
                     verts: data_render::CONSTELLATION_STAR_VERTICES,
                     texture_bg: Some(&c.star_tex_bg),
                 }),
-                &pipelines.scatter,
+                ScatterPick { pipeline: &c.planets, texture_bg: Some(&c.star_tex_bg) },
                 &pipelines.errorbar,
             ),
         };
@@ -1084,12 +1089,13 @@ impl Renderer {
 
             let scatter = if has_scatter(rt) {
                 Some(ColumnScatterLayer {
-                    pipeline: scatter_pipe,
+                    pipeline: scatter_pick.pipeline,
                     transform_bg: &view.transform_bg,
                     style_bg: &series.style.scatter_bg,
                     quad_vb: &self.quad_vb,
                     pool_buffer: pool.buffer(),
                     x: x_h, y: y_h,
+                    texture_bg: scatter_pick.texture_bg,
                 })
             } else { None };
 

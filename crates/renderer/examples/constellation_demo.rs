@@ -9,7 +9,9 @@ use std::sync::Arc;
 use renderer::color::Color;
 use renderer::config::{ConstellationOptions, DrawStyle};
 use renderer::data::Column;
-use renderer::data_config::{DataLineStyleConfig, DataRenderType, SeriesConfig};
+use renderer::data_config::{
+    DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ScatterShape, SeriesConfig,
+};
 use renderer::data_render::{create_instance, request_adapter, request_device};
 use renderer::default;
 use renderer::layout::{ChartArea, Rect};
@@ -166,4 +168,56 @@ fn main() {
             &format!("target/constellation_demo/{name}.png"),
         );
     }
+
+    // ── Step 2: ringed planets (scatter). Ring angle = ScatterShape. ──
+    let planet_series = |id: &str, x: &str, y: &str, shape: ScatterShape, size: f32, color: Color| SeriesConfig {
+        series_id: id.into(),
+        label: None,
+        x_column: x.into(),
+        y_column: y.into(),
+        render_type: DataRenderType::Scatter {
+            scatter: DataScatterStyleConfig {
+                point_color: color,
+                point_shape: shape,
+                point_size: size,
+            },
+        },
+    };
+
+    // Three scatter series, distinct ring angles, chart-scale markers.
+    let m = 11;
+    let pxs: Vec<f64> = (0..m).map(|i| 0.06 + 0.88 * i as f64 / (m - 1) as f64).collect();
+    let pa: Vec<f64> = pxs.iter().enumerate().map(|(i, _)| 74.0 + 12.0 * ((i as f64) * 1.7).sin()).collect();
+    let pb: Vec<f64> = pxs.iter().enumerate().map(|(i, _)| 48.0 + 11.0 * ((i as f64) * 2.3 + 1.0).cos()).collect();
+    let pc: Vec<f64> = pxs.iter().enumerate().map(|(i, _)| 21.0 + 9.0 * ((i as f64) * 1.3 + 2.0).sin()).collect();
+    r.add_column("px", &col(pxs)).unwrap();
+    r.add_column("pa", &col(pa)).unwrap();
+    r.add_column("pb", &col(pb)).unwrap();
+    r.add_column("pc", &col(pc)).unwrap();
+    let chart_planets = [
+        planet_series("p_a", "px", "pa", ScatterShape::Circle, 13.0, Color::from_rgb8(255, 142, 92)),
+        planet_series("p_b", "px", "pb", ScatterShape::Triangle, 13.0, Color::from_rgb8(96, 168, 255)),
+        planet_series("p_c", "px", "pc", ScatterShape::DiamondFilled, 13.0, Color::from_rgb8(120, 220, 150)),
+    ];
+    export(
+        &mut r,
+        &build_chart(DrawStyle::Constellation(ConstellationOptions::default())),
+        &chart_planets,
+        "target/constellation_demo/planets_chart.png",
+    );
+
+    // Close-up showcase: few big planets to inspect the baked surfaces.
+    let bx: Vec<f64> = vec![0.14, 0.38, 0.62, 0.86, 0.26, 0.74];
+    let by: Vec<f64> = vec![70.0, 76.0, 68.0, 74.0, 30.0, 26.0];
+    r.add_column("bx", &col(bx)).unwrap();
+    r.add_column("by", &col(by)).unwrap();
+    let big = [planet_series(
+        "big", "bx", "by", ScatterShape::Square, 44.0, Color::from_rgb8(255, 170, 110),
+    )];
+    export(
+        &mut r,
+        &build_chart(DrawStyle::Constellation(ConstellationOptions::default())),
+        &big,
+        "target/constellation_demo/planets_big.png",
+    );
 }
