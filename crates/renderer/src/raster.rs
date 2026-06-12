@@ -60,6 +60,17 @@ impl Paint {
         self
     }
 
+    /// Raise the stroke width to at least `min` px (no-op for fills). The
+    /// sketch stroker uses this: a wobbled 1 px hairline drifts across pixel
+    /// rows and alternates between sharp and 50/50-blurred coverage, reading
+    /// as a broken line — a hand-drawn pen stroke needs some body.
+    pub fn with_min_stroke_width(mut self, min: f32) -> Self {
+        if matches!(self.style, PaintStyle::Stroke) {
+            self.stroke_width = self.stroke_width.max(min);
+        }
+        self
+    }
+
     fn shader_paint(&self) -> tiny_skia::Paint<'static> {
         let mut p = tiny_skia::Paint::default();
         p.set_color(self.color);
@@ -155,6 +166,61 @@ impl Canvas {
                 pen_down = true;
             }
         }
+        let Some(path) = pb.finish() else { return };
+        self.pix.stroke_path(
+            &path,
+            &paint.shader_paint(),
+            &paint.stroke_params(),
+            self.ts,
+            None,
+        );
+    }
+
+    /// [`Self::draw_polyline`] but with a smooth Catmull–Rom spline through
+    /// the points (cubic Bézier segments) instead of straight joins — the
+    /// pen-stroke look the sketch stroker needs: a straight polyline through
+    /// noise samples reads as angular facets, a spline reads as a drawn
+    /// curve. Same subpath split on non-finite points; dashes run along the
+    /// curve continuously.
+    pub fn draw_polyline_smooth(&mut self, points: &[(f32, f32)], paint: &Paint) {
+        let mut pb = PathBuilder::new();
+        let mut run: Vec<(f32, f32)> = Vec::new();
+        let flush = |pb: &mut PathBuilder, run: &mut Vec<(f32, f32)>| {
+            match run.len() {
+                0 => {}
+                1 => {
+                    pb.move_to(run[0].0, run[0].1);
+                    pb.line_to(run[0].0, run[0].1);
+                }
+                2 => {
+                    pb.move_to(run[0].0, run[0].1);
+                    pb.line_to(run[1].0, run[1].1);
+                }
+                n => {
+                    pb.move_to(run[0].0, run[0].1);
+                    for i in 0..n - 1 {
+                        // Uniform Catmull–Rom: tangents from the neighbors,
+                        // end tangents from the duplicated end points.
+                        let p0 = run[i.saturating_sub(1)];
+                        let p1 = run[i];
+                        let p2 = run[i + 1];
+                        let p3 = run[(i + 2).min(n - 1)];
+                        let c1 = (p1.0 + (p2.0 - p0.0) / 6.0, p1.1 + (p2.1 - p0.1) / 6.0);
+                        let c2 = (p2.0 - (p3.0 - p1.0) / 6.0, p2.1 - (p3.1 - p1.1) / 6.0);
+                        pb.cubic_to(c1.0, c1.1, c2.0, c2.1, p2.0, p2.1);
+                    }
+                }
+            }
+            run.clear();
+        };
+        for &(x, y) in points {
+            if !x.is_finite() || !y.is_finite() {
+                flush(&mut pb, &mut run);
+            } else {
+                run.push((x, y));
+            }
+        }
+        flush(&mut pb, &mut run);
         let Some(path) = pb.finish() else { return };
         self.pix.stroke_path(
             &path,

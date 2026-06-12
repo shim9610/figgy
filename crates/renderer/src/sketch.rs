@@ -233,11 +233,20 @@ pub(crate) fn sketch_rect_outline(
 
 // Decoration stroke strategy — STYLE_REGISTRY.md §4.
 
+/// Minimum stroke width (px) for sketch-mode decoration strokes. A wobbled
+/// 1 px hairline drifts across pixel rows and alternates between crisp and
+/// 50/50-blurred AA coverage — it reads as a broken line. Hand-drawn pen
+/// strokes have body; this floor restores it without touching user widths
+/// that are already thicker.
+const SKETCH_MIN_STROKE_PX: f32 = 1.4;
+
 /// Decoration-layer stroke strategy, derived once per raster pass from the
 /// chart's [`DrawStyle`]. `Precise` is a pure passthrough to the plain canvas
 /// calls — byte-identical to pre-stroker rendering. `Sketch` replaces each
-/// stroke with its seeded wobble polyline; the paint (width / color / dash)
-/// is untouched, so dashes run along the wobbled path.
+/// stroke with its seeded wobble path, drawn as a smooth Catmull–Rom spline
+/// ([`Canvas::draw_polyline_smooth`]) with a [`SKETCH_MIN_STROKE_PX`] width
+/// floor; color and dash come through unchanged, so dashes run along the
+/// wobbled curve.
 ///
 /// `tag` is a stable element tag (`"axis_left"`, `"tick_left_3"`,
 /// `"grid_major_x_2"`, `"legend_box"`) mixed into the global seed as
@@ -282,7 +291,8 @@ impl DecoStroker {
             DecoStroker::Sketch { amplitude_px, wavelength_px, seed } => {
                 let pts =
                     sketch_line(p0, p1, *amplitude_px, *wavelength_px, seed ^ fnv1a(tag));
-                canvas.draw_polyline(&pts, paint);
+                let paint = paint.clone().with_min_stroke_width(SKETCH_MIN_STROKE_PX);
+                canvas.draw_polyline_smooth(&pts, &paint);
             }
         }
     }
@@ -314,7 +324,8 @@ impl DecoStroker {
                     *wavelength_px,
                     seed ^ fnv1a(tag),
                 );
-                canvas.draw_polyline(&pts, paint);
+                let paint = paint.clone().with_min_stroke_width(SKETCH_MIN_STROKE_PX);
+                canvas.draw_polyline_smooth(&pts, &paint);
             }
         }
     }

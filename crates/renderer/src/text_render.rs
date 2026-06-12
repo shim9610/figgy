@@ -280,6 +280,27 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
+/// True for the bundled handwritten face (either weight). It rasterizes with
+/// two deviations from the standard faces:
+/// - UNHINTED — grid-fitting visibly disfigures Comic Neue's irregular
+///   strokes into lumpy outlines; unhinted keeps the drawn shapes smooth.
+/// - Slightly EMBOLDENED — the face is thin at chart label sizes, and the
+///   sketch stroker draws lines with pen body; a small synthetic embolden
+///   gives the glyphs the same ink weight.
+fn is_handwritten(font: FontRef<'static>) -> bool {
+    font.key == handwritten_font(false).key || font.key == handwritten_font(true).key
+}
+
+fn font_hinting(font: FontRef<'static>) -> bool {
+    !is_handwritten(font)
+}
+
+/// Synthetic embolden strength (px) for the handwritten face — ~2% of the
+/// font size, i.e. ≈0.4 px at typical label sizes.
+fn font_embolden(font: FontRef<'static>, size: f32) -> f32 {
+    if is_handwritten(font) { size * 0.02 } else { 0.0 }
+}
+
 fn glyph_extents(font: FontRef<'static>, size: f32, ch: char) -> GlyphExtents {
     let key = (font.key, size.to_bits(), ch);
     if let Some(hit) = METRICS_CACHE.with(|c| c.borrow().get(&key).copied()) {
@@ -289,7 +310,7 @@ fn glyph_extents(font: FontRef<'static>, size: f32, ch: char) -> GlyphExtents {
     let advance = font.glyph_metrics(&[]).scale(size).advance_width(glyph);
     let (ink_top, ink_bottom) = SCALE_CTX.with(|cx| {
         let mut cx = cx.borrow_mut();
-        let mut scaler = cx.builder(font).size(size).hint(true).build();
+        let mut scaler = cx.builder(font).size(size).hint(font_hinting(font)).build();
         match scaler.scale_outline(glyph) {
             // zeno bounds are y-up; flip into the y-down baseline convention.
             Some(outline) => {
@@ -322,9 +343,13 @@ fn with_glyph_mask(
             let glyph = font.charmap().map(ch);
             SCALE_CTX.with(|cx| {
                 let mut cx = cx.borrow_mut();
-                let mut scaler = cx.builder(font).size(size).hint(true).build();
+                let mut scaler = cx.builder(font).size(size).hint(font_hinting(font)).build();
                 let mut render = Render::new(&[Source::Outline]);
                 render.offset(swash::zeno::Vector::new(xbin as f32 * 0.25, 0.0));
+                let embolden = font_embolden(font, size);
+                if embolden > 0.0 {
+                    render.embolden(embolden);
+                }
                 render.render(&mut scaler, glyph).and_then(|image| {
                     let p = image.placement;
                     if p.width == 0 || p.height == 0 {
