@@ -14,7 +14,7 @@ use crate::select::SelectionBox;
 use crate::sketch::DecoStroker;
 use crate::text::{RichSegment, RichText};
 use crate::text_render::{
-    draw_plain_text, draw_rich_text, measure_plain_text, measure_rich_text,
+    draw_plain_text, draw_rich_text, measure_plain_text, measure_rich_text, FontPolicy,
 };
 
 // Public entry.
@@ -151,25 +151,29 @@ pub fn draw_decoration_layer(canvas: &mut Canvas, config: &Config) {
 
     // The decoration stroke strategy is derived once per layer entry and
     // threaded down (STYLE_REGISTRY §4): `Precise` keeps every draw below on
-    // the plain pre-stroker canvas calls.
+    // the plain pre-stroker canvas calls. The font policy is its text twin —
+    // sketch mode forces the bundled handwritten face (with per-character
+    // fallback for glyphs it lacks), threaded through every measure + draw so
+    // layout and raster always agree.
     let stroker = DecoStroker::from_style(&config.draw_style);
+    let fp = FontPolicy::for_style(&config.draw_style);
 
-    draw_axis(canvas, &config.top_x, Side::Top, &da, &stroker);
-    draw_axis(canvas, &config.bottom_x, Side::Bottom, &da, &stroker);
-    draw_axis(canvas, &config.left_y, Side::Left, &da, &stroker);
-    draw_axis(canvas, &config.right_y, Side::Right, &da, &stroker);
+    draw_axis(canvas, &config.top_x, Side::Top, &da, &stroker, fp);
+    draw_axis(canvas, &config.bottom_x, Side::Bottom, &da, &stroker, fp);
+    draw_axis(canvas, &config.left_y, Side::Left, &da, &stroker, fp);
+    draw_axis(canvas, &config.right_y, Side::Right, &da, &stroker, fp);
 
-    draw_axis_title(canvas, config, &da, Side::Top);
-    draw_axis_title(canvas, config, &da, Side::Bottom);
-    draw_axis_title(canvas, config, &da, Side::Left);
-    draw_axis_title(canvas, config, &da, Side::Right);
+    draw_axis_title(canvas, config, &da, Side::Top, fp);
+    draw_axis_title(canvas, config, &da, Side::Bottom, fp);
+    draw_axis_title(canvas, config, &da, Side::Left, fp);
+    draw_axis_title(canvas, config, &da, Side::Right, fp);
 
     if config.chart_title.visible {
-        draw_chart_title(canvas, config);
+        draw_chart_title(canvas, config, fp);
     }
 
     if config.legend.visible && !config.legend.content.segments.is_empty() {
-        draw_legend(canvas, config, &da, &stroker);
+        draw_legend(canvas, config, &da, &stroker, fp);
     }
 }
 
@@ -192,13 +196,14 @@ fn draw_legend(
     config: &Config,
     da: &crate::layout::DataArea,
     stroker: &DecoStroker,
+    fp: FontPolicy,
 ) {
     use crate::config::LegendCorner;
 
     let lg = &config.legend;
     if !lg.visible || lg.content.segments.is_empty() { return; }
 
-    let m = measure_rich_text(&lg.content);
+    let m = measure_rich_text(&lg.content, fp);
     let box_w = m.width + lg.padding * 2.0;
     let box_h = m.height() + lg.padding * 2.0;
 
@@ -234,6 +239,7 @@ fn draw_legend(
         canvas,
         &lg.content,
         (box_x + lg.padding, box_y + lg.padding + m.ascent),
+        fp,
     );
 }
 
@@ -313,6 +319,7 @@ fn draw_axis(
     side: Side,
     da: &DataArea,
     stroker: &DecoStroker,
+    fp: FontPolicy,
 ) {
     // Detached-axis offset: shift the whole axis chrome (line + ticks +
     // labels) perpendicular to the axis. The data area and grid stay put;
@@ -364,7 +371,7 @@ fn draw_axis(
             match ls.format {
                 LabelFormat::Power => {
                     let rt = format_tick_power(*v, ls.significant_digits, ls);
-                    draw_tick_label_rich(canvas, &rt, pos, side.clone(), axis);
+                    draw_tick_label_rich(canvas, &rt, pos, side.clone(), axis, fp);
                 }
                 _ => {
                     let text = format_tick_value(
@@ -374,7 +381,7 @@ fn draw_axis(
                         &axis.scale,
                         axis.major_spacing,
                     );
-                    draw_tick_label(canvas, &text, pos, side.clone(), axis);
+                    draw_tick_label(canvas, &text, pos, side.clone(), axis, fp);
                 }
             }
         }
@@ -703,9 +710,10 @@ fn draw_tick_label(
     tick_pos: (f32, f32),
     side: Side,
     axis: &AxisOptions,
+    fp: FontPolicy,
 ) {
     let ls: &LabelStyle = &axis.label_style;
-    let m = measure_plain_text(text, &ls.label_font, ls.font_size, false, false);
+    let m = measure_plain_text(text, &ls.label_font, ls.font_size, false, false, fp);
 
     // The label's natural anchor sits one tick-length outward (plus a gap).
     // `label_offset_{x,y}` is added on top in screen coordinates.
@@ -744,6 +752,7 @@ fn draw_tick_label(
         ls.font_size,
         false,
         false,
+        fp,
     );
 }
 
@@ -755,8 +764,9 @@ fn draw_tick_label_rich(
     tick_pos: (f32, f32),
     side: Side,
     axis: &AxisOptions,
+    fp: FontPolicy,
 ) {
-    let m = measure_rich_text(rt);
+    let m = measure_rich_text(rt, fp);
     let outward = axis.major_tick_length;
 
     let (base_x, base_y) = match side {
@@ -784,12 +794,12 @@ fn draw_tick_label_rich(
         base_y + ls.label_offset_y,
     );
 
-    draw_rich_text(canvas, rt, origin);
+    draw_rich_text(canvas, rt, origin, fp);
 }
 
 // Axis title (RichText).
 
-fn draw_axis_title(canvas: &mut Canvas, config: &Config, da: &DataArea, side: Side) {
+fn draw_axis_title(canvas: &mut Canvas, config: &Config, da: &DataArea, side: Side, fp: FontPolicy) {
     let axis = match side {
         Side::Top => &config.top_x,
         Side::Bottom => &config.bottom_x,
@@ -801,7 +811,7 @@ fn draw_axis_title(canvas: &mut Canvas, config: &Config, da: &DataArea, side: Si
         return;
     }
 
-    let m = measure_rich_text(&to.text);
+    let m = measure_rich_text(&to.text, fp);
     let ca = &config.chart_area;
 
     match side {
@@ -815,6 +825,7 @@ fn draw_axis_title(canvas: &mut Canvas, config: &Config, da: &DataArea, side: Si
                 canvas,
                 &to.text,
                 (x + to.offset_x, baseline + to.offset_y),
+                fp,
             );
         }
         Side::Bottom => {
@@ -825,6 +836,7 @@ fn draw_axis_title(canvas: &mut Canvas, config: &Config, da: &DataArea, side: Si
                 canvas,
                 &to.text,
                 (x + to.offset_x, baseline + to.offset_y),
+                fp,
             );
         }
         // Vertical text: Left (-90° CCW), Right (+90° CW).
@@ -832,12 +844,12 @@ fn draw_axis_title(canvas: &mut Canvas, config: &Config, da: &DataArea, side: Si
         Side::Left => {
             let center_x = ca.x as f32 + axis.out_margin * 0.5;
             let center_y = da.y as f32 + da.height as f32 * 0.5;
-            draw_rotated_centered(canvas, &to.text, (center_x, center_y), -90.0, to, &m);
+            draw_rotated_centered(canvas, &to.text, (center_x, center_y), -90.0, to, &m, fp);
         }
         Side::Right => {
             let center_x = (ca.x + ca.width) as f32 - axis.out_margin * 0.5;
             let center_y = da.y as f32 + da.height as f32 * 0.5;
-            draw_rotated_centered(canvas, &to.text, (center_x, center_y), 90.0, to, &m);
+            draw_rotated_centered(canvas, &to.text, (center_x, center_y), 90.0, to, &m, fp);
         }
     }
 }
@@ -845,6 +857,7 @@ fn draw_axis_title(canvas: &mut Canvas, config: &Config, da: &DataArea, side: Si
 // Rotate text by `degrees` around `(cx, cy)` and center it on that point.
 // `to.offset_{x,y}` is applied in the pre-rotation local frame (so it stays
 // aligned with the text direction after the rotation).
+#[allow(clippy::too_many_arguments)]
 fn draw_rotated_centered(
     canvas: &mut Canvas,
     rt: &crate::text::RichText,
@@ -852,6 +865,7 @@ fn draw_rotated_centered(
     degrees: f32,
     to: &crate::config::AxisTitleOptions,
     m: &crate::text_render::TextMetrics,
+    fp: FontPolicy,
 ) {
     let (cx, cy) = center;
     canvas.save();
@@ -864,15 +878,16 @@ fn draw_rotated_centered(
         canvas,
         rt,
         (text_x + to.offset_x, text_baseline + to.offset_y),
+        fp,
     );
     canvas.restore();
 }
 
 // Chart title (RichText).
 
-fn draw_chart_title(canvas: &mut Canvas, config: &Config) {
+fn draw_chart_title(canvas: &mut Canvas, config: &Config, fp: FontPolicy) {
     let ct = &config.chart_title;
-    let m = measure_rich_text(&ct.text);
+    let m = measure_rich_text(&ct.text, fp);
     let ca = &config.chart_area;
 
     // Vertically centered inside the top_margin band.
@@ -882,7 +897,7 @@ fn draw_chart_title(canvas: &mut Canvas, config: &Config) {
     let origin_x = x + ct.offset_x;
     let origin_y = baseline + ct.offset_y;
 
-    draw_rich_text(canvas, &ct.text, (origin_x, origin_y));
+    draw_rich_text(canvas, &ct.text, (origin_x, origin_y), fp);
 }
 
 // Skia Paint helpers.
@@ -982,7 +997,7 @@ mod tests {
 
         let config = default_config();
         let sel = DataAreaElement
-            .selection_box(&config, &CpuTextMeasure)
+            .selection_box(&config, &CpuTextMeasure::for_style(&config.draw_style))
             .expect("data area selection box");
 
         let plain =
@@ -1012,7 +1027,7 @@ mod tests {
 
         let config = default_config();
         let sel = DataAreaElement
-            .selection_box(&config, &CpuTextMeasure)
+            .selection_box(&config, &CpuTextMeasure::for_style(&config.draw_style))
             .unwrap();
         let grid = try_raster_chart_layer_to_rgba_with_selection(
             &config,

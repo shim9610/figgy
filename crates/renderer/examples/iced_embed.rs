@@ -308,7 +308,7 @@ impl shader::Primitive for FiggyPrimitive {
                         p.hitmap
                             .get(id)?
                             .as_resizable()?
-                            .hit_resize_handle(p.chart.config(), &CpuTextMeasure, x, y)
+                            .hit_resize_handle(p.chart.config(), &CpuTextMeasure::for_style(&p.chart.config().draw_style), x, y)
                     },
                 );
                 if let Some(handle) = on_handle {
@@ -319,7 +319,7 @@ impl shader::Primitive for FiggyPrimitive {
                         .panels
                         .get(pi)
                         .and_then(|p| {
-                            p.hitmap.hit_test(p.chart.config(), &CpuTextMeasure, x, y)
+                            p.hitmap.hit_test(p.chart.config(), &CpuTextMeasure::for_style(&p.chart.config().draw_style), x, y)
                         })
                         .map(|id| (pi, id));
                     if new_sel != pipeline.selected {
@@ -371,7 +371,7 @@ impl shader::Primitive for FiggyPrimitive {
         let sel_boxes: Vec<SelectionBox> = match selected {
             Some((pi, id)) if pi == self.panel_idx => panel
                 .hitmap
-                .selection_box(id, panel.chart.config(), &CpuTextMeasure)
+                .selection_box(id, panel.chart.config(), &CpuTextMeasure::for_style(&panel.chart.config().draw_style))
                 .into_iter()
                 .collect(),
             _ => Vec::new(),

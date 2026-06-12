@@ -125,7 +125,7 @@ impl FiggyState {
             && let Some(panel) = self.panels.get(pi)
             && let Some(rz) = panel.hitmap.get(id).and_then(|el| el.as_resizable())
             && let Some(handle) =
-                rz.hit_resize_handle(panel.chart.config(), &CpuTextMeasure, x, y)
+                rz.hit_resize_handle(panel.chart.config(), &CpuTextMeasure::for_style(&panel.chart.config().draw_style), x, y)
         {
             self.active_resize = Some(handle);
             return;
@@ -135,7 +135,7 @@ impl FiggyState {
         let new_sel = self
             .panels
             .get(panel_idx)
-            .and_then(|p| p.hitmap.hit_test(p.chart.config(), &CpuTextMeasure, x, y))
+            .and_then(|p| p.hitmap.hit_test(p.chart.config(), &CpuTextMeasure::for_style(&p.chart.config().draw_style), x, y))
             .map(|id| (panel_idx, id));
         if new_sel == self.selected {
             return;
@@ -341,7 +341,7 @@ impl CallbackTrait for FiggyCallback {
         let sel_boxes: Vec<SelectionBox> = match selected {
             Some((pi, id)) if pi == self.panel_idx => panel
                 .hitmap
-                .selection_box(id, panel.chart.config(), &CpuTextMeasure)
+                .selection_box(id, panel.chart.config(), &CpuTextMeasure::for_style(&panel.chart.config().draw_style))
                 .into_iter()
                 .collect(),
             _ => Vec::new(),

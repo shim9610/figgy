@@ -438,7 +438,7 @@ impl App {
             && let Some(panel) = self.panels.get(pi)
             && let Some(rz) = panel.hitmap.get(id).and_then(|el| el.as_resizable())
             && let Some(handle) =
-                rz.hit_resize_handle(panel.chart.config(), &CpuTextMeasure, cx, cy)
+                rz.hit_resize_handle(panel.chart.config(), &CpuTextMeasure::for_style(&panel.chart.config().draw_style), cx, cy)
         {
             self.resizing = Some(handle);
             self.dragging = false;
@@ -448,7 +448,7 @@ impl App {
 
         let mut new_sel = None;
         for (i, panel) in self.panels.iter().enumerate() {
-            if let Some(id) = panel.hitmap.hit_test(panel.chart.config(), &CpuTextMeasure, cx, cy)
+            if let Some(id) = panel.hitmap.hit_test(panel.chart.config(), &CpuTextMeasure::for_style(&panel.chart.config().draw_style), cx, cy)
             {
                 new_sel = Some((i, id));
                 break; // Panels don't overlap — first hit wins.
@@ -586,7 +586,7 @@ impl App {
             let sel_boxes: Vec<SelectionBox> = match selected {
                 Some((pi, id)) if pi == i => panel
                     .hitmap
-                    .selection_box(id, panel.chart.config(), &CpuTextMeasure)
+                    .selection_box(id, panel.chart.config(), &CpuTextMeasure::for_style(&panel.chart.config().draw_style))
                     .into_iter()
                     .collect(),
                 _ => Vec::new(),
@@ -614,7 +614,7 @@ impl App {
                 let sel_boxes: Vec<SelectionBox> = match selected {
                     Some((pi, id)) if pi == i => panel
                         .hitmap
-                        .selection_box(id, panel.chart.config(), &CpuTextMeasure)
+                        .selection_box(id, panel.chart.config(), &CpuTextMeasure::for_style(&panel.chart.config().draw_style))
                         .into_iter()
                         .collect(),
                     _ => Vec::new(),

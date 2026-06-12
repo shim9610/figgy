@@ -35,7 +35,7 @@ pub use select::{
     HitMap, LegendElement, Selectable, SelectionBox,
 };
 pub use text::MeasureText;
-pub use text_render::CpuTextMeasure;
+pub use text_render::{CpuTextMeasure, FontPolicy};
 pub use data_render::{
     AllocError, ColumnHandle, ColumnId, ColumnPool, DefragPolicy,
 };

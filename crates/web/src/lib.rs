@@ -601,7 +601,7 @@ mod web {
         /// re-derive box positions for hover cursors / context UI.
         pub fn hit_test(&self, x: f32, y: f32) -> Option<String> {
             self.hitmap
-                .hit_test(self.chart.config(), &CpuTextMeasure, x, y)
+                .hit_test(self.chart.config(), &CpuTextMeasure::for_style(&self.chart.config().draw_style), x, y)
                 .and_then(|id| self.hitmap.get(id))
                 .map(|el| el.element_id())
         }
@@ -613,7 +613,7 @@ mod web {
             if let Some(id) = self.selected
                 && let Some(rz) = self.hitmap.get(id).and_then(|el| el.as_resizable())
                 && let Some(handle) =
-                    rz.hit_resize_handle(self.chart.config(), &CpuTextMeasure, x, y)
+                    rz.hit_resize_handle(self.chart.config(), &CpuTextMeasure::for_style(&self.chart.config().draw_style), x, y)
             {
                 self.resizing = Some(handle);
                 self.dragging = false;
@@ -621,7 +621,7 @@ mod web {
             }
             self.resizing = None;
 
-            let new_sel = self.hitmap.hit_test(self.chart.config(), &CpuTextMeasure, x, y);
+            let new_sel = self.hitmap.hit_test(self.chart.config(), &CpuTextMeasure::for_style(&self.chart.config().draw_style), x, y);
             self.dragging = new_sel.is_some_and(|id| {
                 self.hitmap.get(id).is_some_and(|el| el.as_draggable().is_some())
             });
@@ -677,7 +677,7 @@ mod web {
                 let sel_boxes: Vec<SelectionBox> = self
                     .selected
                     .and_then(|id| {
-                        self.hitmap.selection_box(id, self.chart.config(), &CpuTextMeasure)
+                        self.hitmap.selection_box(id, self.chart.config(), &CpuTextMeasure::for_style(&self.chart.config().draw_style))
                     })
                     .into_iter()
                     .collect();
