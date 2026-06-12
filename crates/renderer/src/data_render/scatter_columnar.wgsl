@@ -368,11 +368,26 @@ fn fs_planet(in: VsPlanetOut) -> @location(0) vec4<f32> {
             * (1.0 - smoothstep(RING_OUTER - 0.06, RING_OUTER, rho));
         ring_a = s.a * band_aa;
         ring_rgb = s.rgb;
-        // Planet shadow on the ring: the far (behind, upper) half darkens
-        // near the body — a soft contact shadow that sells the 3D read.
-        if (q.y >= 0.0) {
-            ring_rgb = ring_rgb * mix(0.25, 1.0, smoothstep(RING_INNER, 2.0, rho));
-        }
+
+        // Planet shadow on the ring — the REAL model: the shadow is the
+        // planet's anti-light cylinder cutting the ring plane, not "the
+        // whole back half" (a binary front/back gate puts a hard seam where
+        // the ring crosses the major axis). Reconstruct the ring point in
+        // 3D (ring plane: depth z = −u2·cos i with u2 = q.y / sin i), put
+        // the light in the same rotated frame, and shade smoothly inside
+        // the cylinder behind the body.
+        let ring_p3 = vec3<f32>(q.x, q.y, -q.y * cos_i / max(sin_i, 1e-4)) / r_planet;
+        let l0 = normalize(vec3<f32>(-0.55, 0.5, 0.62));
+        let lq = vec3<f32>(
+            l0.x * cphi + l0.y * sphi,
+            -l0.x * sphi + l0.y * cphi,
+            l0.z,
+        );
+        let t_axis = dot(ring_p3, lq);
+        let d_perp = length(ring_p3 - lq * t_axis);
+        let umbra = (1.0 - smoothstep(0.92, 1.18, d_perp))
+            * smoothstep(0.05, 0.45, -t_axis);
+        ring_rgb = ring_rgb * (1.0 - 0.8 * umbra);
     }
     // Lower half (q.y < 0) passes in FRONT of the planet, upper half behind.
     let ring_front = q.y < 0.0;
