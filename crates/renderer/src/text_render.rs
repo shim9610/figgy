@@ -291,8 +291,19 @@ fn is_handwritten(font: FontRef<'static>) -> bool {
     font.key == handwritten_font(false).key || font.key == handwritten_font(true).key
 }
 
-fn font_hinting(font: FontRef<'static>) -> bool {
-    !is_handwritten(font)
+/// Hinting (TrueType grid-fitting) is small-text technology: above this
+/// size it adds nothing visually, but it still EXECUTES the font's hint
+/// bytecode per (glyph, ppem) — and exotic hint programs in system fonts
+/// can catastrophically displace outline points at specific pixel sizes
+/// (field report: macOS-resolved font blew up 'e'/'t' to several times
+/// their size at font_size 51 / retina 102 only; FreeType tracks the same
+/// class upstream). Cutting hinting off above the threshold removes the
+/// bug class for every font; chart labels stay below it and keep their
+/// grid fit.
+const HINT_MAX_SIZE_PX: f32 = 32.0;
+
+fn font_hinting(font: FontRef<'static>, size: f32) -> bool {
+    !is_handwritten(font) && size <= HINT_MAX_SIZE_PX
 }
 
 /// Synthetic embolden strength (px) for the handwritten face — ~2% of the
@@ -310,7 +321,7 @@ fn glyph_extents(font: FontRef<'static>, size: f32, ch: char) -> GlyphExtents {
     let advance = font.glyph_metrics(&[]).scale(size).advance_width(glyph);
     let (ink_top, ink_bottom) = SCALE_CTX.with(|cx| {
         let mut cx = cx.borrow_mut();
-        let mut scaler = cx.builder(font).size(size).hint(font_hinting(font)).build();
+        let mut scaler = cx.builder(font).size(size).hint(font_hinting(font, size)).build();
         match scaler.scale_outline(glyph) {
             // zeno bounds are y-up; flip into the y-down baseline convention.
             Some(outline) => {
@@ -343,7 +354,7 @@ fn with_glyph_mask(
             let glyph = font.charmap().map(ch);
             SCALE_CTX.with(|cx| {
                 let mut cx = cx.borrow_mut();
-                let mut scaler = cx.builder(font).size(size).hint(font_hinting(font)).build();
+                let mut scaler = cx.builder(font).size(size).hint(font_hinting(font, size)).build();
                 let mut render = Render::new(&[Source::Outline]);
                 render.offset(swash::zeno::Vector::new(xbin as f32 * 0.25, 0.0));
                 let embolden = font_embolden(font, size);
@@ -860,6 +871,31 @@ mod tests {
 
     // The bundled-font glyph path must produce real ink: positive metrics
     // from measurement and non-transparent pixels from drawing.
+    /// Glyph ink must scale ~linearly with the requested size across the
+    /// hinting cutoff — the regression shape of the macOS field report
+    /// where a hint program blew specific glyphs ('e', 't') up to several
+    /// times their size at one specific ppem (51 / retina 102). A healthy
+    /// pipeline keeps mask_height / size inside loose cap-height bounds at
+    /// EVERY size; a hinting blowup lands far outside them.
+    #[test]
+    fn glyph_ink_stays_proportional_across_sizes() {
+        for ch in ['e', 't', 'R', 'z'] {
+            for size in [12.0_f32, 24.0, 32.0, 33.0, 40.0, 51.0, 64.0, 102.0] {
+                let font = glyph_font(FontPolicy::Standard, "", false, false, ch);
+                let mut seen = None;
+                with_glyph_mask(font, size, ch, 0, |m| seen = Some((m.width, m.height)));
+                let (w, h) = seen.expect("basic Latin glyph must rasterize");
+                let rel_h = h as f32 / size;
+                let rel_w = w as f32 / size;
+                assert!(
+                    (0.2..=1.2).contains(&rel_h) && (0.1..=1.2).contains(&rel_w),
+                    "glyph '{ch}' at size {size}: mask {w}x{h} is out of proportion \
+                     (rel {rel_w:.2}x{rel_h:.2}) — hinting blowup?"
+                );
+            }
+        }
+    }
+
     #[test]
     fn plain_text_measures_and_rasterizes_ink() {
         let m = measure_plain_text("123", "", 18.0, false, false, FontPolicy::Standard);
