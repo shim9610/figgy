@@ -13,15 +13,17 @@
 //! matches any class predicate.
 //!
 //! §7 V2 item 6 (JSON default round-trip) is intentionally NOT duplicated
-//! here: it already exists as `sketch_serde_tests` in
-//! `crates/model/src/config.rs` (config_without_sketch_key_deserializes_to_none,
-//! empty_sketch_object_yields_all_defaults,
-//! partial_sketch_object_fills_remaining_defaults,
-//! none_sketch_serializes_without_key).
+//! here: it already exists as `draw_style_serde_tests` in
+//! `crates/model/src/config.rs` (config_without_draw_style_key_deserializes_to_precise,
+//! sketch_tag_alone_yields_all_defaults,
+//! partial_sketch_fields_fill_remaining_defaults,
+//! sketch_round_trips_with_inline_fields,
+//! explicit_precise_mode_deserializes_to_precise,
+//! precise_serializes_without_key).
 
 use std::sync::Arc;
 
-use renderer::config::SketchOptions;
+use renderer::config::{DrawStyle, SketchOptions};
 use renderer::data::Column;
 use renderer::data_render::{create_instance, request_adapter, request_device};
 use renderer::layout::{ChartArea, Rect};
@@ -234,7 +236,7 @@ fn sketch_diverges_from_precise() {
     let (mut chart, series) = build_combined(&mut r);
 
     let img_p = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
-    chart.config_mut().sketch = Some(SketchOptions::default());
+    chart.config_mut().draw_style = DrawStyle::Sketch(SketchOptions::default());
     let img_s = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
 
     assert!(
@@ -266,7 +268,7 @@ fn sketch_diverges_from_precise() {
         chart.set_y_range(-1.2, 1.2);
         let one = [cfg];
         let p = r.export_panel_rgba(&chart, &one, 1.0).unwrap();
-        chart.config_mut().sketch = Some(SketchOptions::default());
+        chart.config_mut().draw_style = DrawStyle::Sketch(SketchOptions::default());
         let s = r.export_panel_rgba(&chart, &one, 1.0).unwrap();
         let (cp, cs) = (count_class(&p, pred), count_class(&s, pred));
         assert!(cp > min_ink, "{name}: precise ink missing ({cp} px)");
@@ -284,7 +286,7 @@ fn sketch_diverges_from_precise() {
 fn sketch_is_deterministic() {
     let Some(mut r) = try_renderer() else { return };
     let (mut chart, series) = build_combined(&mut r);
-    chart.config_mut().sketch = Some(SketchOptions::default());
+    chart.config_mut().draw_style = DrawStyle::Sketch(SketchOptions::default());
 
     let a = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
     let b = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
@@ -292,7 +294,7 @@ fn sketch_is_deterministic() {
 
     let Some(mut r2) = try_renderer() else { return };
     let (mut chart2, series2) = build_combined(&mut r2);
-    chart2.config_mut().sketch = Some(SketchOptions::default());
+    chart2.config_mut().draw_style = DrawStyle::Sketch(SketchOptions::default());
     let c = r2.export_panel_rgba(&chart2, &series2, 1.0).unwrap();
     assert_bytes_eq(&a, &c, "fresh renderer instance, identical inputs");
 }
@@ -305,9 +307,11 @@ fn sketch_seed_separates() {
     let Some(mut r) = try_renderer() else { return };
     let (mut chart, series) = build_combined(&mut r);
 
-    chart.config_mut().sketch = Some(SketchOptions { seed: 0, ..SketchOptions::default() });
+    chart.config_mut().draw_style =
+        DrawStyle::Sketch(SketchOptions { seed: 0, ..SketchOptions::default() });
     let s0 = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
-    chart.config_mut().sketch = Some(SketchOptions { seed: 1, ..SketchOptions::default() });
+    chart.config_mut().draw_style =
+        DrawStyle::Sketch(SketchOptions { seed: 1, ..SketchOptions::default() });
     let s1 = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
 
     assert!(s0.rgba != s1.rgba, "seed 0 and seed 1 produced identical exports");
@@ -360,8 +364,8 @@ fn sketch_amplitude_is_bounded() {
     let (pmin, pmax) = red_rows(&img_p).expect("precise horizontal line drew no ink");
 
     const AMP: f32 = 3.0;
-    chart.config_mut().sketch =
-        Some(SketchOptions { amplitude_px: AMP, ..SketchOptions::default() });
+    chart.config_mut().draw_style =
+        DrawStyle::Sketch(SketchOptions { amplitude_px: AMP, ..SketchOptions::default() });
     let img_s = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
     let (smin, smax) = red_rows(&img_s).expect("sketch horizontal line drew no ink");
 
@@ -406,7 +410,7 @@ fn sketch_preserves_nan_gaps() {
     let mut chart = bare_chart(800, 400);
     chart.set_x_range(0.0, 1.0);
     chart.set_y_range(-0.1, 1.1);
-    chart.config_mut().sketch = Some(SketchOptions::default());
+    chart.config_mut().draw_style = DrawStyle::Sketch(SketchOptions::default());
     let series = [line_series("gap", "gx", "gy", RED, LineStylePreset::Solid)];
     let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
 
@@ -453,7 +457,7 @@ fn sketch_composes_with_dash() {
     let mut chart = bare_chart(640, 480);
     chart.set_x_range(0.0, 6.5);
     chart.set_y_range(-1.2, 1.2);
-    chart.config_mut().sketch = Some(SketchOptions::default());
+    chart.config_mut().draw_style = DrawStyle::Sketch(SketchOptions::default());
 
     let solid = [line_series("ds", "dx", "dy", RED, LineStylePreset::Solid)];
     let img_solid = r.export_panel_rgba(&chart, &solid, 1.0).unwrap();

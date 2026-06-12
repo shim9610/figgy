@@ -27,9 +27,11 @@ struct Transform {
     data_max: vec2<f32>,
     scale_log: vec2<f32>,
     pixel_to_ndc: vec2<f32>,
-    sketch_amp_wave: vec2<f32>,
-    sketch_seed: vec2<f32>,
-};
+    // Generic per-panel style parameter slot. Interpretation belongs to the
+    // ACTIVE style's shader entries; the precise entries never read it.
+    // sketch: x=amplitude_px, y=wavelength_px, z=seed(f32), w=reserved(0)
+    style_params: vec4<f32>,
+};  // 48 B (vec4 at offset 32 — alignment unchanged)
 
 @group(0) @binding(0) var<uniform> transform: Transform;
 
@@ -276,8 +278,8 @@ fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> @builtin(position)
     let at_a = corner < 2u;
     let side = select(1.0, -1.0, (corner & 1u) == 0u);
 
-    let amp = max(transform.sketch_amp_wave.x, 0.0);
-    let seed = u32(transform.sketch_seed.x) + inst;
+    let amp = max(transform.style_params.x, 0.0);
+    let seed = u32(transform.style_params.z) + inst;
     let lattice = f32(seg * 2u + select(1u, 0u, at_a));
     let disp = amp * sketch_noise(lattice, seed);
 

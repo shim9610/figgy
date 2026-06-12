@@ -17,7 +17,7 @@ use std::sync::Arc;
 use crate::axis_render;
 use crate::chart::Chart;
 use crate::color::Color;
-use crate::config::Config;
+use crate::config::{Config, DrawStyle};
 use crate::line::LineStylePreset;
 use crate::data::ColumnSource;
 use crate::data_config::{
@@ -95,7 +95,8 @@ pub struct Renderer {
     transform_bgl: wgpu::BindGroupLayout,
     style_bgl: wgpu::BindGroupLayout,
 
-    // Pipelines (precise + sketch variants), all against `surface_format`.
+    // Pipelines (precise + lazily-cached styled variants), all against
+    // `surface_format`.
     pipelines: TargetPipelines,
 
     // Shared resources.
@@ -151,21 +152,75 @@ fn validate_target_format(
     Ok(())
 }
 
+// Style descriptor table (docs/STYLE_REGISTRY.md §3). One descriptor fully
+// describes a stylized render mode; the precise path is the absence of one
+// (`style_variant` → `None`) and never routes through this table.
+
+/// Discriminant for cached per-style pipeline sets.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) enum StyleKey { Sketch }
+
+/// Everything the renderer needs to know about one stylized mode.
+/// Adding a style = one descriptor + its shader entries + a stroker arm.
+pub(crate) struct StyleVariant {
+    pub(crate) key: StyleKey,
+    pub(crate) line_entry: &'static str,            // "vs_sketch"
+    pub(crate) line_verts_per_instance: u32,        // LINE_SKETCH_VERTICES_PER_INSTANCE
+    pub(crate) scatter_entries: (&'static str, &'static str), // ("vs_sketch","fs_sketch")
+    pub(crate) errorbar_entry: &'static str,        // "vs_sketch"
+    pub(crate) needs_arc_prefix: bool,              // true
+    pub(crate) pack_params: fn(&DrawStyle) -> [f32; 4],
+}
+
+/// `Transform.style_params` packing for the sketch style — layout per
+/// SHADER_COMMON.md §1: x=amplitude_px, y=wavelength_px, z=seed(f32), w=0.
+fn pack_sketch_params(style: &DrawStyle) -> [f32; 4] {
+    match style.sketch() {
+        Some(s) => [s.amplitude_px, s.wavelength_px, s.seed as f32, 0.0],
+        None => [0.0; 4],
+    }
+}
+
+static SKETCH_VARIANT: StyleVariant = StyleVariant {
+    key: StyleKey::Sketch,
+    line_entry: "vs_sketch",
+    line_verts_per_instance: data_render::LINE_SKETCH_VERTICES_PER_INSTANCE,
+    scatter_entries: ("vs_sketch", "fs_sketch"),
+    errorbar_entry: "vs_sketch",
+    needs_arc_prefix: true,
+    pack_params: pack_sketch_params,
+};
+
+/// Style lookup. None for Precise.
+pub(crate) fn style_variant(style: &DrawStyle) -> Option<&'static StyleVariant> {
+    match style {
+        DrawStyle::Precise => None,
+        DrawStyle::Sketch(_) => Some(&SKETCH_VARIANT),
+    }
+}
+
+/// One style's compiled data pipelines (line / scatter / errorbar variants
+/// against one target format) plus the line strip's per-instance vertex
+/// count, copied out of the [`StyleVariant`] at compile time.
+struct StyleSet {
+    line: wgpu::RenderPipeline,
+    scatter: wgpu::RenderPipeline,
+    errorbar: wgpu::RenderPipeline,
+    line_verts: u32,
+}
+
 /// Every pipeline compiled against one render-target format: the four
-/// precise pipelines plus the three sketch (hand-drawn) data variants.
-/// Sketch variants share layouts and differ only in shader entry points.
-/// They are `Option` so short-lived pipeline sets (the per-call export set)
-/// can skip compiling them when the exported chart doesn't use sketch mode —
-/// the persistent renderer set always carries them, because the live config
-/// can turn sketch on at any frame.
+/// precise pipelines (created eagerly, as before) plus a lazy per-style
+/// cache. A style's set is compiled the first time the prepare phase of
+/// `paint`/export sees an item drawn in that style; charts that stay precise
+/// never pay for any styled compile. Rebuilding for a new target format
+/// starts from an empty cache — the next prepare phase recompiles on use.
 struct TargetPipelines {
     axis: wgpu::RenderPipeline,
     line: wgpu::RenderPipeline,
     scatter: wgpu::RenderPipeline,
     errorbar: wgpu::RenderPipeline,
-    line_sketch: Option<wgpu::RenderPipeline>,
-    scatter_sketch: Option<wgpu::RenderPipeline>,
-    errorbar_sketch: Option<wgpu::RenderPipeline>,
+    styled: HashMap<StyleKey, StyleSet>,
 }
 
 fn create_target_pipelines(
@@ -174,7 +229,6 @@ fn create_target_pipelines(
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
     surface_format: wgpu::TextureFormat,
-    with_sketch: bool,
 ) -> TargetPipelines {
     TargetPipelines {
         axis: data_render::create_fullscreen_textured_pipeline(
@@ -189,43 +243,49 @@ fn create_target_pipelines(
         errorbar: data_render::create_errorbar_columnar_pipeline(
             device, transform_bgl, style_bgl, surface_format,
         ),
-        line_sketch: with_sketch.then(|| data_render::create_line_sketch_pipeline(
-            device, transform_bgl, style_bgl, surface_format,
-        )),
-        scatter_sketch: with_sketch.then(|| data_render::create_scatter_sketch_pipeline(
-            device, transform_bgl, style_bgl, surface_format,
-        )),
-        errorbar_sketch: with_sketch.then(|| data_render::create_errorbar_sketch_pipeline(
-            device, transform_bgl, style_bgl, surface_format,
-        )),
+        styled: HashMap::new(),
     }
 }
 
-#[derive(Clone, Copy)]
-struct TargetPipelineRefs<'a> {
-    axis: &'a wgpu::RenderPipeline,
-    line: &'a wgpu::RenderPipeline,
-    scatter: &'a wgpu::RenderPipeline,
-    errorbar: &'a wgpu::RenderPipeline,
-    /// `None` only in a set built with `with_sketch: false`, which callers
-    /// only do when no drawn item uses sketch mode. The draw-side fallback is
-    /// the precise pipeline (graceful, never a panic).
-    line_sketch: Option<&'a wgpu::RenderPipeline>,
-    scatter_sketch: Option<&'a wgpu::RenderPipeline>,
-    errorbar_sketch: Option<&'a wgpu::RenderPipeline>,
-}
-
 impl TargetPipelines {
-    fn refs(&self) -> TargetPipelineRefs<'_> {
-        TargetPipelineRefs {
-            axis: &self.axis,
-            line: &self.line,
-            scatter: &self.scatter,
-            errorbar: &self.errorbar,
-            line_sketch: self.line_sketch.as_ref(),
-            scatter_sketch: self.scatter_sketch.as_ref(),
-            errorbar_sketch: self.errorbar_sketch.as_ref(),
+    /// Prepare-phase ensure (`&mut`): compile and cache the pipeline set of
+    /// every style that `items` draw with and the cache doesn't hold yet.
+    /// Run before pass recording so the draw phase (`&self`) only looks up.
+    fn ensure_styles_for_items(
+        &mut self,
+        device: &wgpu::Device,
+        transform_bgl: &wgpu::BindGroupLayout,
+        style_bgl: &wgpu::BindGroupLayout,
+        surface_format: wgpu::TextureFormat,
+        items: &[ChartDrawItem<'_>],
+    ) {
+        for item in items {
+            let Some(v) = style_variant(&item.chart_config.draw_style) else { continue };
+            self.styled.entry(v.key).or_insert_with(|| StyleSet {
+                line: data_render::create_line_columnar_pipeline_with_entries(
+                    device, transform_bgl, style_bgl, surface_format,
+                    v.line_entry, "figgy line styled pipeline",
+                ),
+                scatter: data_render::create_scatter_columnar_pipeline_with_entries(
+                    device, transform_bgl, style_bgl, surface_format,
+                    v.scatter_entries.0, v.scatter_entries.1,
+                    "figgy scatter styled pipeline",
+                ),
+                errorbar: data_render::create_errorbar_columnar_pipeline_with_entries(
+                    device, transform_bgl, style_bgl, surface_format,
+                    v.errorbar_entry, "figgy errorbar styled pipeline",
+                ),
+                line_verts: v.line_verts_per_instance,
+            });
         }
+    }
+
+    /// Draw-phase lookup: the cached set for the item's style, `None` for
+    /// precise mode. A cache miss (impossible once the prepare phase ran)
+    /// also yields `None` — callers then fall back to the precise pipelines
+    /// instead of panicking.
+    fn style_set(&self, style: &DrawStyle) -> Option<&StyleSet> {
+        style_variant(style).and_then(|v| self.styled.get(&v.key))
     }
 }
 
@@ -325,15 +385,14 @@ impl Renderer {
         let sampler = data_render::create_linear_sampler(&device);
         let quad_vb = data_render::create_unit_centered_quad_vertex_buffer(&device);
 
-        // Persistent set: sketch variants always present — the live config
-        // can enable sketch mode on any later frame.
+        // Precise pipelines compile eagerly; styled variants compile lazily
+        // in the prepare phase of the first `paint`/export that uses them.
         let pipelines = create_target_pipelines(
             &device,
             &texture_bgl,
             &transform_bgl,
             &style_bgl,
             surface_format,
-            true,
         );
         let arc_pipelines = data_render::line_arc::create_arc_scan_pipelines(&device);
 
@@ -373,13 +432,14 @@ impl Renderer {
             return Ok(false);
         }
         validate_target_format(self.caps, surface_format)?;
+        // Fresh set with an empty styled cache — any styled pipelines the
+        // next frame needs are recompiled by its prepare phase.
         self.pipelines = create_target_pipelines(
             &self.device,
             &self.texture_bgl,
             &self.transform_bgl,
             &self.style_bgl,
             surface_format,
-            true,
         );
         self.surface_format = surface_format;
         Ok(true)
@@ -793,32 +853,40 @@ impl Renderer {
     /// otherwise abort. Pass the surface pixel size reported by the host
     /// (winit, egui CallbackInfo, iced shader::Primitive, …).
     ///
-    /// Takes `&mut self`: the call starts with a prepare phase that refreshes
-    /// per-series GPU scan state (dashed-line arc prefixes) before recording
-    /// into the pass. The renderer holds no internal locks — hosts whose
-    /// paint callback only provides `&self` wrap their state in a `Mutex`
-    /// (see the host-integration notes above).
+    /// Takes `&mut self`: the call starts with a prepare phase that compiles
+    /// any styled pipeline sets the items need but the cache lacks, and
+    /// refreshes per-series GPU scan state (dashed-line arc prefixes) before
+    /// recording into the pass. The renderer holds no internal locks — hosts
+    /// whose paint callback only provides `&self` wrap their state in a
+    /// `Mutex` (see the host-integration notes above).
     pub fn paint(
         &mut self,
         pass: &mut wgpu::RenderPass<'_>,
         target_size: (u32, u32),
         items: &[ChartDrawItem<'_>],
     ) -> Result<()> {
+        self.pipelines.ensure_styles_for_items(
+            &self.device,
+            &self.transform_bgl,
+            &self.style_bgl,
+            self.surface_format,
+            items,
+        );
         let arcs = self.ensure_arc_prefixes(items);
-        let pipelines = self.pipelines.refs();
-        self.paint_with_pipelines(pass, target_size, items, pipelines, &arcs)
+        self.paint_with_pipelines(pass, target_size, items, &self.pipelines, &arcs)
     }
 
-    /// Prepare phase of `paint`/export — the only mutable step. Ensures and
-    /// dispatches the GPU arc-length prefix for every line series that needs
-    /// one — dashed lines (dash phase) and, in sketch mode, every line (the
+    /// Arc half of the prepare phase of `paint`/export (the styled-pipeline
+    /// ensure is the other half). Ensures and dispatches the GPU arc-length
+    /// prefix for every line series that needs one — dashed lines (dash
+    /// phase) and every line of a style with `needs_arc_prefix` (sketch: the
     /// wobble is parameterized by arc length, so solid sketch lines need the
     /// prefix too). The immutable draw phase then only looks the buffers up,
     /// so it can coexist with the pipeline references the pass needs.
     fn ensure_arc_prefixes(&mut self, items: &[ChartDrawItem<'_>]) -> Vec<Vec<Option<ArcPrefix>>> {
         let mut arcs = Vec::with_capacity(items.len());
         for item in items {
-            let sketch = item.chart_config.sketch.is_some();
+            let variant = style_variant(&item.chart_config.draw_style);
             let mut per_series = Vec::with_capacity(item.series.len());
             for series in item.series {
                 let cfg = series.config;
@@ -826,16 +894,18 @@ impl Renderer {
                 let dashed = line
                     && extract_line(&cfg.render_type)
                         .is_some_and(|l| !matches!(l.line_style, LineStylePreset::Solid));
-                per_series.push(if dashed || (sketch && line) {
-                    self.ensure_arc_prefix(
-                        &cfg.series_id,
-                        &cfg.x_column,
-                        &cfg.y_column,
-                        item.chart_config,
-                    )
-                } else {
-                    None
-                });
+                per_series.push(
+                    if dashed || (variant.is_some_and(|v| v.needs_arc_prefix) && line) {
+                        self.ensure_arc_prefix(
+                            &cfg.series_id,
+                            &cfg.x_column,
+                            &cfg.y_column,
+                            item.chart_config,
+                        )
+                    } else {
+                        None
+                    },
+                );
             }
             arcs.push(per_series);
         }
@@ -847,7 +917,7 @@ impl Renderer {
         pass: &mut wgpu::RenderPass<'_>,
         target_size: (u32, u32),
         items: &[ChartDrawItem<'a>],
-        pipelines: TargetPipelineRefs<'a>,
+        pipelines: &'a TargetPipelines,
         arcs: &[Vec<Option<ArcPrefix>>],
     ) -> Result<()> {
         for (item, item_arcs) in items.iter().zip(arcs) {
@@ -858,23 +928,24 @@ impl Renderer {
                 .map(|da| da.0)
                 .unwrap_or(panel_rect);
 
-            // The single sketch-mode branch (SKETCH_DESIGN.md §2): it only
-            // decides which pipeline variant (and line vertex count) the
-            // series layers reference — the precise path stays untouched.
-            let sketch = item.chart_config.sketch.is_some();
+            // The single style decision per panel: the chart's `DrawStyle`
+            // resolves to a cached styled pipeline set (compiled by the
+            // prepare phase) or `None` for precise — the precise path stays
+            // untouched.
+            let styled = pipelines.style_set(&item.chart_config.draw_style);
 
             // Bundle every series's primitives for the panel into one call.
             let series_list =
-                self.build_series_layers(item.view, item.series, pipelines, item_arcs, sketch)?;
+                self.build_series_layers(item.view, item.series, pipelines, item_arcs, styled)?;
 
             data_render::draw_chart_panel_columnar(
                 pass,
                 target_size,
                 panel_rect,
                 data_area,
-                AxisLayer { pipeline: pipelines.axis, bind_group: &item.view.grid_bind_group },
+                AxisLayer { pipeline: &pipelines.axis, bind_group: &item.view.grid_bind_group },
                 &series_list,
-                AxisLayer { pipeline: pipelines.axis, bind_group: &item.view.decoration_bind_group },
+                AxisLayer { pipeline: &pipelines.axis, bind_group: &item.view.decoration_bind_group },
             );
         }
         Ok(())
@@ -885,17 +956,19 @@ impl Renderer {
     /// line/scatter/errorbar each series needs; column ids are resolved to
     /// handles via the pool. `arcs` is this panel's slice of the prepare
     /// phase's output ([`Self::ensure_arc_prefixes`]), aligned with
-    /// `series_specs` — dashed lines (and every sketch-mode line) pick up
-    /// their arc-length prefix there. `sketch` selects the hand-drawn
-    /// pipeline variants (and the line strip's vertex count); everything
-    /// else is identical between the modes.
+    /// `series_specs` — dashed lines (and every line of an arc-needing
+    /// style) pick up their arc-length prefix there. `styled` is the panel's
+    /// resolved [`StyleSet`] — it selects the stylized pipeline variants
+    /// (and the line strip's vertex count); `None` (precise mode, or the
+    /// theoretically-impossible cache miss) selects the precise pipelines.
+    /// Everything else is identical between the modes.
     fn build_series_layers<'a>(
         &'a self,
         view: &'a ChartView,
         series_specs: &[Series<'a>],
-        pipelines: TargetPipelineRefs<'a>,
+        pipelines: &'a TargetPipelines,
         arcs: &[Option<ArcPrefix>],
-        sketch: bool,
+        styled: Option<&'a StyleSet>,
     ) -> Result<Vec<data_render::SeriesLayers<'a>>> {
         let pool = &self.pool;
         let lookup = |id: &ColumnId| -> Result<ColumnHandle> {
@@ -910,39 +983,22 @@ impl Renderer {
             let x_h = lookup(&cfg.x_column)?;
             let y_h = lookup(&cfg.y_column)?;
 
-            // Sketch pipeline lookups fall back to the precise pipeline if
-            // the set was built without sketch variants — callers only build
-            // such sets when no item uses sketch mode, so the fallback is
-            // unreachable in practice but keeps this a non-panic path.
             let line = if has_line(rt) {
                 let arc = arcs.get(idx).cloned().flatten();
-                let sketch_line = sketch && pipelines.line_sketch.is_some();
                 Some(ColumnLineLayer {
-                    pipeline: if sketch_line {
-                        pipelines.line_sketch.unwrap_or(pipelines.line)
-                    } else {
-                        pipelines.line
-                    },
+                    pipeline: styled.map_or(&pipelines.line, |s| &s.line),
                     transform_bg: &view.transform_bg,
                     style_bg: &series.style.line_bg,
                     pool_buffer: pool.buffer(),
                     x: x_h, y: y_h,
                     arc,
-                    verts_per_instance: if sketch_line {
-                        data_render::LINE_SKETCH_VERTICES_PER_INSTANCE
-                    } else {
-                        4
-                    },
+                    verts_per_instance: styled.map_or(4, |s| s.line_verts),
                 })
             } else { None };
 
             let scatter = if has_scatter(rt) {
                 Some(ColumnScatterLayer {
-                    pipeline: if sketch {
-                        pipelines.scatter_sketch.unwrap_or(pipelines.scatter)
-                    } else {
-                        pipelines.scatter
-                    },
+                    pipeline: styled.map_or(&pipelines.scatter, |s| &s.scatter),
                     transform_bg: &view.transform_bg,
                     style_bg: &series.style.scatter_bg,
                     quad_vb: &self.quad_vb,
@@ -974,11 +1030,7 @@ impl Renderer {
                         None => (zero, zero),
                     };
                     Some(ColumnErrorBarDraw {
-                        pipeline: if sketch {
-                            pipelines.errorbar_sketch.unwrap_or(pipelines.errorbar)
-                        } else {
-                            pipelines.errorbar
-                        },
+                        pipeline: styled.map_or(&pipelines.errorbar, |s| &s.errorbar),
                         transform_bg: &view.transform_bg,
                         style_bg: &series.style.errorbar_bg,
                         pool_buffer: pool.buffer(),
@@ -1100,7 +1152,8 @@ impl Renderer {
     /// on native the await resolves immediately (the device is polled to
     /// completion inline). Native callers can use the blocking
     /// [`Self::export_panel_rgba`] wrapper instead. `&mut self` for the same
-    /// reason as [`Self::paint`]: the arc-prefix prepare phase.
+    /// reason as [`Self::paint`]: the prepare phase (arc prefixes; the
+    /// export's styled pipelines live in a per-call set instead).
     pub async fn export_panel_rgba_async(
         &mut self,
         chart: &Chart,
@@ -1148,8 +1201,8 @@ impl Renderer {
             series: &series_objs,
         }];
 
-        // 3.5) Arc-prefix prepare phase (the only mutable step) — submitted
-        // before the render pass below, so queue order sequences them.
+        // 3.5) Arc-prefix prepare phase — submitted before the render pass
+        // below, so queue order sequences them.
         let arcs = self.ensure_arc_prefixes(&items);
 
         // 4) Offscreen target.
@@ -1165,17 +1218,23 @@ impl Renderer {
         };
         let target_tex = create_texture_checked(&self.device, &target_desc, "figgy export target")?;
         let target_view = target_tex.create_view(&wgpu::TextureViewDescriptor::default());
-        // Per-call set: compile the sketch variants only when this export
-        // actually draws in sketch mode.
-        let export_target_pipelines = create_target_pipelines(
+        // Per-call set against the export format. The same prepare-phase
+        // ensure as `paint` fills the styled cache, so styled variants
+        // compile only when this export actually draws with them.
+        let mut export_target_pipelines = create_target_pipelines(
             &self.device,
             &self.texture_bgl,
             &self.transform_bgl,
             &self.style_bgl,
             export_format,
-            scaled_chart.config().sketch.is_some(),
         );
-        let export_pipelines = export_target_pipelines.refs();
+        export_target_pipelines.ensure_styles_for_items(
+            &self.device,
+            &self.transform_bgl,
+            &self.style_bgl,
+            export_format,
+            &items,
+        );
 
         // 5) Readback buffer. Allocate at most the hardware limit and read rows
         // sequentially if the full image would exceed it.
@@ -1240,7 +1299,7 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            self.paint_with_pipelines(&mut pass, (w, h), &items, export_pipelines, &arcs)?;
+            self.paint_with_pipelines(&mut pass, (w, h), &items, &export_target_pipelines, &arcs)?;
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 

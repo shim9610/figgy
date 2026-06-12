@@ -35,9 +35,11 @@ struct Transform {
     data_max: vec2<f32>,
     scale_log: vec2<f32>,
     pixel_to_ndc: vec2<f32>,
-    sketch_amp_wave: vec2<f32>,
-    sketch_seed: vec2<f32>,
-};
+    // Generic per-panel style parameter slot. Interpretation belongs to the
+    // ACTIVE style's shader entries; the precise entries never read it.
+    // sketch: x=amplitude_px, y=wavelength_px, z=seed(f32), w=reserved(0)
+    style_params: vec4<f32>,
+};  // 48 B (vec4 at offset 32 — alignment unchanged)
 
 @group(0) @binding(0) var<uniform> transform: Transform;
 
@@ -240,9 +242,9 @@ fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
     if (k == SKETCH_SUBDIV) { cap = half_w; }
 
     let arc_at = mix(arc.arc_a, arc.arc_b, t);
-    let amp = max(transform.sketch_amp_wave.x, 0.0);
-    let wav = transform.sketch_amp_wave.y;
-    let seed = u32(transform.sketch_seed.x);
+    let amp = max(transform.style_params.x, 0.0);
+    let wav = transform.style_params.y;
+    let seed = u32(transform.style_params.z);
     let wobble = amp * sketch_noise(arc_at / max(wav, 1e-6), seed);
     // wavelength <= 0 disables the wobble — mirrors the CPU stroker's guard
     // (sketch.rs) so GPU and deco layers degrade identically.

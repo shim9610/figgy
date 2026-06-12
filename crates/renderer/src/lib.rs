@@ -6,8 +6,9 @@ pub mod demo;
 pub mod error;
 pub mod raster;
 pub mod renderer;
-// Hand-drawn geometry helpers — consumed by the deco layer (`axis_render`)
-// when `Config::sketch` is enabled.
+// Hand-drawn geometry helpers + the `DecoStroker` strategy — consumed by the
+// deco layer (`axis_render`) when `Config::draw_style` selects a stylized
+// mode (`DrawStyle::Sketch`, …).
 mod sketch;
 pub mod text_render;
 

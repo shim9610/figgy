@@ -6,14 +6,12 @@
 use crate::raster::{Canvas, Paint};
 
 use crate::color::Color;
-use crate::config::{
-    AxisOptions, AxisScale, Config, LabelStyle, SketchOptions, TickVisibility,
-};
+use crate::config::{AxisOptions, AxisScale, Config, LabelStyle, TickVisibility};
 use crate::format::LabelFormat;
 use crate::layout::{DataArea, Side};
 use crate::line::LineStylePreset;
 use crate::select::SelectionBox;
-use crate::sketch::{fnv1a, sketch_line, sketch_rect_outline};
+use crate::sketch::DecoStroker;
 use crate::text::{RichSegment, RichText};
 use crate::text_render::{
     draw_plain_text, draw_rich_text, measure_plain_text, measure_rich_text,
@@ -151,14 +149,15 @@ pub fn draw_grid_layer(canvas: &mut Canvas, config: &Config) {
 pub fn draw_decoration_layer(canvas: &mut Canvas, config: &Config) {
     let Ok(da) = config.data_area() else { return };
 
-    // Sketch mode is extracted once here and threaded down (design §2):
-    // `None` keeps every draw below on the precise pre-sketch code path.
-    let sketch = config.sketch.as_ref();
+    // The decoration stroke strategy is derived once per layer entry and
+    // threaded down (STYLE_REGISTRY §4): `Precise` keeps every draw below on
+    // the plain pre-stroker canvas calls.
+    let stroker = DecoStroker::from_style(&config.draw_style);
 
-    draw_axis(canvas, &config.top_x, Side::Top, &da, sketch);
-    draw_axis(canvas, &config.bottom_x, Side::Bottom, &da, sketch);
-    draw_axis(canvas, &config.left_y, Side::Left, &da, sketch);
-    draw_axis(canvas, &config.right_y, Side::Right, &da, sketch);
+    draw_axis(canvas, &config.top_x, Side::Top, &da, &stroker);
+    draw_axis(canvas, &config.bottom_x, Side::Bottom, &da, &stroker);
+    draw_axis(canvas, &config.left_y, Side::Left, &da, &stroker);
+    draw_axis(canvas, &config.right_y, Side::Right, &da, &stroker);
 
     draw_axis_title(canvas, config, &da, Side::Top);
     draw_axis_title(canvas, config, &da, Side::Bottom);
@@ -170,7 +169,7 @@ pub fn draw_decoration_layer(canvas: &mut Canvas, config: &Config) {
     }
 
     if config.legend.visible && !config.legend.content.segments.is_empty() {
-        draw_legend(canvas, config, &da);
+        draw_legend(canvas, config, &da, &stroker);
     }
 }
 
@@ -188,7 +187,12 @@ pub fn draw_axes(canvas: &mut Canvas, config: &Config) {
 /// overrides, and the document's font/font_size apply at draw time. The box
 /// is the measured envelope plus `padding`, with the same formulas as the
 /// model's `LegendElement` bounds (`model::select`) — change them together.
-fn draw_legend(canvas: &mut Canvas, config: &Config, da: &crate::layout::DataArea) {
+fn draw_legend(
+    canvas: &mut Canvas,
+    config: &Config,
+    da: &crate::layout::DataArea,
+    stroker: &DecoStroker,
+) {
     use crate::config::LegendCorner;
 
     let lg = &config.legend;
@@ -218,26 +222,12 @@ fn draw_legend(canvas: &mut Canvas, config: &Config, da: &crate::layout::DataAre
     };
     let (box_x, box_y) = (box_x + lg.offset_x, box_y + lg.offset_y);
 
-    // Box background + border. Sketch mode wobbles only the border outline;
-    // the fill stays a precise rect (§5a) — perturbing the fill too would
-    // visibly disagree with the independently wobbled border.
+    // Box background + border. The sketch stroker wobbles only the border
+    // outline; the fill stays a precise rect (§5a) — perturbing the fill too
+    // would visibly disagree with the independently wobbled border.
     canvas.draw_rect(box_x, box_y, box_w, box_h, &Paint::fill(&lg.bg_color));
     let border = Paint::stroke(&lg.border_color, 1.0);
-    match config.sketch.as_ref() {
-        None => canvas.draw_rect(box_x, box_y, box_w, box_h, &border),
-        Some(s) => {
-            let pts = sketch_rect_outline(
-                box_x,
-                box_y,
-                box_w,
-                box_h,
-                s.amplitude_px,
-                s.wavelength_px,
-                s.seed ^ fnv1a("legend_box"),
-            );
-            canvas.draw_polyline(&pts, &border);
-        }
-    }
+    stroker.stroke_rect_outline(canvas, box_x, box_y, box_w, box_h, &border, "legend_box");
 
     // Content: first baseline sits `ascent` below the padded top-left corner.
     draw_rich_text(
@@ -247,50 +237,18 @@ fn draw_legend(canvas: &mut Canvas, config: &Config, da: &crate::layout::DataAre
     );
 }
 
-// Sketch (hand-drawn) mode plumbing — design §2/§5a.
+// Decoration stroke plumbing — STYLE_REGISTRY §4.
 //
-// `config.sketch` is extracted once at each layer entry and threaded down as
-// an `Option`. Precise mode (`None`) must execute the exact pre-sketch code
-// path: every sketch call (including the per-element tag `format!`) lives
-// inside a `Some` arm or an `Option::map` closure, so `None` runs zero
-// sketch code. Per-element seeds are `s.seed ^ fnv1a(tag)` with stable
-// kind+index tags ("axis_left", "tick_left_3", "grid_major_x_2",
-// "legend_box") so every element wobbles differently but identically across
-// re-rasters.
+// Each layer entry (`draw_grid` / `draw_decoration_layer`) derives one
+// [`DecoStroker`] from `config.draw_style` and threads it down by reference.
+// `Precise` executes the exact pre-stroker code path (plain `draw_line` /
+// `draw_rect`); the sketch arm mixes stable kind+index element tags
+// ("axis_left", "tick_left_3", "grid_major_x_2", "legend_box") into the
+// global seed so every element wobbles differently but identically across
+// re-rasters. The selection overlay and all text stay off the stroker —
+// unconditionally precise.
 
-/// Per-element sketch parameters: global options + this element's mixed seed.
-type ElementSketch<'a> = Option<(&'a SketchOptions, u32)>;
-
-/// Mix an element tag into the global seed (design §5a). `tag` is lazy so
-/// precise mode never pays for the string.
-fn element_sketch<'a>(
-    sketch: Option<&'a SketchOptions>,
-    tag: impl FnOnce() -> String,
-) -> ElementSketch<'a> {
-    sketch.map(|s| (s, s.seed ^ fnv1a(&tag())))
-}
-
-/// Stroke one straight deco segment. `None` is the precise path — a single
-/// [`Canvas::draw_line`], identical to pre-sketch rendering. `Some` replaces
-/// the segment with its seeded wobble polyline; the paint (width / color /
-/// dash) is untouched, so dashes run along the wobbled path.
-fn stroke_deco_segment(
-    canvas: &mut Canvas,
-    p0: (f32, f32),
-    p1: (f32, f32),
-    paint: &Paint,
-    sketch: ElementSketch<'_>,
-) {
-    match sketch {
-        None => canvas.draw_line(p0, p1, paint),
-        Some((s, seed)) => {
-            let pts = sketch_line(p0, p1, s.amplitude_px, s.wavelength_px, seed);
-            canvas.draw_polyline(&pts, paint);
-        }
-    }
-}
-
-/// Stable side name used in sketch element tags.
+/// Stable side name used in stroker element tags.
 fn side_tag(side: &Side) -> &'static str {
     match side {
         Side::Top => "top",
@@ -307,7 +265,7 @@ fn side_tag(side: &Side) -> &'static str {
 
 fn draw_grid(canvas: &mut Canvas, config: &Config, da: &DataArea) {
     let g = &config.grid;
-    let sketch = config.sketch.as_ref();
+    let stroker = DecoStroker::from_style(&config.draw_style);
     let x_top = da.y as f32;
     let x_bot = (da.y + da.height) as f32;
     let y_left = da.x as f32;
@@ -318,16 +276,16 @@ fn draw_grid(canvas: &mut Canvas, config: &Config, da: &DataArea) {
         let paint = stroke_paint(&g.minor_x_color, g.minor_x_width, &g.minor_x_style);
         for (i, v) in minor_tick_values(&config.bottom_x).into_iter().enumerate() {
             let pos = value_to_screen(v, &config.bottom_x, Side::Bottom, da);
-            let sk = element_sketch(sketch, || format!("grid_minor_x_{i}"));
-            stroke_deco_segment(canvas, (pos.0, x_top), (pos.0, x_bot), &paint, sk);
+            let tag = format!("grid_minor_x_{i}");
+            stroker.stroke_segment(canvas, (pos.0, x_top), (pos.0, x_bot), &paint, &tag);
         }
     }
     if g.show_minor_y {
         let paint = stroke_paint(&g.minor_y_color, g.minor_y_width, &g.minor_y_style);
         for (i, v) in minor_tick_values(&config.left_y).into_iter().enumerate() {
             let pos = value_to_screen(v, &config.left_y, Side::Left, da);
-            let sk = element_sketch(sketch, || format!("grid_minor_y_{i}"));
-            stroke_deco_segment(canvas, (y_left, pos.1), (y_right, pos.1), &paint, sk);
+            let tag = format!("grid_minor_y_{i}");
+            stroker.stroke_segment(canvas, (y_left, pos.1), (y_right, pos.1), &paint, &tag);
         }
     }
 
@@ -335,16 +293,16 @@ fn draw_grid(canvas: &mut Canvas, config: &Config, da: &DataArea) {
         let paint = stroke_paint(&g.major_x_color, g.major_x_width, &g.major_x_style);
         for (i, v) in major_tick_values(&config.bottom_x).into_iter().enumerate() {
             let pos = value_to_screen(v, &config.bottom_x, Side::Bottom, da);
-            let sk = element_sketch(sketch, || format!("grid_major_x_{i}"));
-            stroke_deco_segment(canvas, (pos.0, x_top), (pos.0, x_bot), &paint, sk);
+            let tag = format!("grid_major_x_{i}");
+            stroker.stroke_segment(canvas, (pos.0, x_top), (pos.0, x_bot), &paint, &tag);
         }
     }
     if g.show_major_y {
         let paint = stroke_paint(&g.major_y_color, g.major_y_width, &g.major_y_style);
         for (i, v) in major_tick_values(&config.left_y).into_iter().enumerate() {
             let pos = value_to_screen(v, &config.left_y, Side::Left, da);
-            let sk = element_sketch(sketch, || format!("grid_major_y_{i}"));
-            stroke_deco_segment(canvas, (y_left, pos.1), (y_right, pos.1), &paint, sk);
+            let tag = format!("grid_major_y_{i}");
+            stroker.stroke_segment(canvas, (y_left, pos.1), (y_right, pos.1), &paint, &tag);
         }
     }
 }
@@ -354,7 +312,7 @@ fn draw_axis(
     axis: &AxisOptions,
     side: Side,
     da: &DataArea,
-    sketch: Option<&SketchOptions>,
+    stroker: &DecoStroker,
 ) {
     // Detached-axis offset: shift the whole axis chrome (line + ticks +
     // labels) perpendicular to the axis. The data area and grid stay put;
@@ -374,8 +332,8 @@ fn draw_axis(
     // 1) Axis line.
     if axis.line_visible {
         let paint = stroke_paint(&axis.line_color, axis.line_width, &axis.line_style);
-        let sk = element_sketch(sketch, || format!("axis_{}", side_tag(&side)));
-        stroke_deco_segment(canvas, p0, p1, &paint, sk);
+        let tag = format!("axis_{}", side_tag(&side));
+        stroker.stroke_segment(canvas, p0, p1, &paint, &tag);
     }
 
     // 2) Major / minor ticks
@@ -384,18 +342,17 @@ fn draw_axis(
 
     if axis.tick != TickVisibility::None {
         let tick_paint = stroke_paint(&axis.line_color, axis.line_width, &LineStylePreset::Solid);
-        // Tick sketch tags share one running index per side (majors first,
+        // Tick stroker tags share one running index per side (majors first,
         // minors after) so every tick gets its own wobble shape.
         for (i, v) in majors.iter().enumerate() {
             let pos = value_to_screen(*v, axis, side.clone(), da);
-            let sk = element_sketch(sketch, || format!("tick_{}_{i}", side_tag(&side)));
-            draw_tick(canvas, pos, side.clone(), axis.major_tick_length, &axis.tick, &tick_paint, sk);
+            let tag = format!("tick_{}_{i}", side_tag(&side));
+            draw_tick(canvas, pos, side.clone(), axis.major_tick_length, &axis.tick, &tick_paint, stroker, &tag);
         }
         for (i, v) in minors.iter().enumerate() {
             let pos = value_to_screen(*v, axis, side.clone(), da);
-            let sk =
-                element_sketch(sketch, || format!("tick_{}_{}", side_tag(&side), majors.len() + i));
-            draw_tick(canvas, pos, side.clone(), axis.minor_tick_length, &axis.tick, &tick_paint, sk);
+            let tag = format!("tick_{}_{}", side_tag(&side), majors.len() + i);
+            draw_tick(canvas, pos, side.clone(), axis.minor_tick_length, &axis.tick, &tick_paint, stroker, &tag);
         }
     }
 
@@ -576,6 +533,7 @@ fn minor_tick_values(axis: &AxisOptions) -> Vec<f64> {
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_tick(
     canvas: &mut Canvas,
     pos: (f32, f32),
@@ -583,7 +541,8 @@ fn draw_tick(
     length: f32,
     visibility: &TickVisibility,
     paint: &Paint,
-    sketch: ElementSketch<'_>,
+    stroker: &DecoStroker,
+    tag: &str,
 ) {
     // outward direction = away from the data area.
     let (dx_out, dy_out) = match side {
@@ -597,13 +556,13 @@ fn draw_tick(
     match visibility {
         TickVisibility::None => {}
         TickVisibility::Outside => {
-            stroke_deco_segment(canvas, pos, outside, paint, sketch);
+            stroker.stroke_segment(canvas, pos, outside, paint, tag);
         }
         TickVisibility::Inside => {
-            stroke_deco_segment(canvas, pos, inside, paint, sketch);
+            stroker.stroke_segment(canvas, pos, inside, paint, tag);
         }
         TickVisibility::Both => {
-            stroke_deco_segment(canvas, inside, outside, paint, sketch);
+            stroker.stroke_segment(canvas, inside, outside, paint, tag);
         }
     }
 }
@@ -935,6 +894,7 @@ fn stroke_paint(color: &Color, width: f32, style: &LineStylePreset) -> Paint {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{DrawStyle, SketchOptions};
     use crate::default::default_config;
 
     /// Majors anchor to absolute spacing multiples (nice values even when
@@ -1074,7 +1034,7 @@ mod tests {
         cfg.legend.content = RichText::plain("series A", Color::BLACK, 14.0, "");
         cfg.grid.show_minor_x = true;
         cfg.grid.show_minor_y = true;
-        cfg.sketch = Some(SketchOptions { seed, ..SketchOptions::default() });
+        cfg.draw_style = DrawStyle::Sketch(SketchOptions { seed, ..SketchOptions::default() });
         cfg
     }
 
@@ -1083,7 +1043,7 @@ mod tests {
     fn sketch_mode_diverges_from_precise() {
         let sketched = sketch_test_config(0);
         let mut precise = sketched.clone();
-        precise.sketch = None;
+        precise.draw_style = DrawStyle::Precise;
         for layer in [AxisLayerKind::Grid, AxisLayerKind::Decoration] {
             let a = try_raster_chart_layer_to_rgba(&precise, layer).unwrap();
             let b = try_raster_chart_layer_to_rgba(&sketched, layer).unwrap();
@@ -1123,7 +1083,7 @@ mod tests {
 
         let sketched = sketch_test_config(0);
         let mut precise = sketched.clone();
-        precise.sketch = None;
+        precise.draw_style = DrawStyle::Precise;
 
         let sel = SelectionBox {
             rect: RectF { x: 300.0, y: 350.0, width: 120.0, height: 80.0 },

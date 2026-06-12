@@ -111,7 +111,8 @@ pub struct AxisOptions {
 }
 
 /// Hand-drawn ("sketch") render-mode parameters. Every field has a default —
-/// JSON `{}` alone enables the mode with stock values (`serde(default)`).
+/// JSON `{"mode":"sketch"}` alone enables the mode with stock values
+/// (`serde(default)`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
@@ -131,6 +132,27 @@ impl Default for SketchOptions {
     }
 }
 
+/// Chart-global render style. `Precise` is the default scientific path;
+/// every other variant is an opt-in stylized mode with its own GPU
+/// pipeline variants and decoration stroker.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(tag = "mode", rename_all = "snake_case"))]
+pub enum DrawStyle {
+    #[default]
+    Precise,
+    Sketch(SketchOptions),
+}
+
+impl DrawStyle {
+    /// True for the default scientific path (used by serde skip).
+    pub fn is_precise(&self) -> bool { matches!(self, DrawStyle::Precise) }
+    /// Sketch parameters when the sketch style is active.
+    pub fn sketch(&self) -> Option<&SketchOptions> {
+        match self { DrawStyle::Sketch(s) => Some(s), _ => None }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Config {
@@ -142,10 +164,11 @@ pub struct Config {
     pub chart_title: ChartTitleOptions,
     pub grid: GridOptions,
     pub legend: Legend,
-    /// `None` = precise mode (default — identical to current rendering).
-    /// `Some` = hand-drawn sketch mode. Chart-global — no per-series mixing.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
-    pub sketch: Option<SketchOptions>,
+    /// Chart-global render style. `Precise` (default, key absent in JSON) is
+    /// identical to current rendering; every other variant is an opt-in
+    /// stylized mode. No per-series mixing.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "DrawStyle::is_precise"))]
+    pub draw_style: DrawStyle,
 }
 
 impl Config {
@@ -194,8 +217,9 @@ impl Config {
         scale_rich_text(&mut self.legend.content, s);
 
         // Sketch wobble dims are pixel-based visual dims too. Scaled only in
-        // sketch mode — `None` stays `None`, the precise path sees no change.
-        if let Some(sketch) = &mut self.sketch {
+        // sketch mode — `Precise` carries no dims, so the precise path sees
+        // no change.
+        if let DrawStyle::Sketch(sketch) = &mut self.draw_style {
             sketch.amplitude_px *= s;
             sketch.wavelength_px *= s;
         }
@@ -220,33 +244,37 @@ pub use crate::legend::{
     LegendCorner, LegendEntryKind,
 };
 
-// `sketch` is additive schema: configs serialized before the field existed
-// must still parse (→ `None` = precise mode), and `None` must not serialize —
-// the same discipline as `RichSegment`'s per-segment overrides (text.rs).
+// `draw_style` is additive schema: configs serialized before the field
+// existed must still parse (→ `Precise` mode), and `Precise` must not
+// serialize — the same discipline as `RichSegment`'s per-segment overrides
+// (text.rs). The enum is internally tagged (`"mode"`), so a style's
+// parameters sit INLINE next to the tag.
 #[cfg(all(test, feature = "serde"))]
-mod sketch_serde_tests {
-    use super::{Config, SketchOptions};
+mod draw_style_serde_tests {
+    use super::{Config, DrawStyle, SketchOptions};
     use crate::default::default_config;
 
-    /// Serialized default config — `sketch` is `None`, so the JSON has no
-    /// `"sketch"` key: exactly the shape of pre-sketch documents.
+    /// Serialized default config — `draw_style` is `Precise`, so the JSON has
+    /// no `"draw_style"` key: exactly the shape of pre-sketch documents.
     fn default_config_json() -> serde_json::Value {
         serde_json::to_value(default_config()).expect("serialize Config")
     }
 
     #[test]
-    fn config_without_sketch_key_deserializes_to_none() {
+    fn config_without_draw_style_key_deserializes_to_precise() {
         let cfg: Config =
             serde_json::from_value(default_config_json()).expect("pre-sketch document parses");
-        assert_eq!(cfg.sketch, None);
+        assert_eq!(cfg.draw_style, DrawStyle::Precise);
     }
 
     #[test]
-    fn empty_sketch_object_yields_all_defaults() {
+    fn sketch_tag_alone_yields_all_defaults() {
         let mut json = default_config_json();
-        json.as_object_mut().unwrap().insert("sketch".into(), serde_json::json!({}));
-        let cfg: Config = serde_json::from_value(json).expect("empty sketch object parses");
-        let s = cfg.sketch.expect("sketch enabled");
+        json.as_object_mut()
+            .unwrap()
+            .insert("draw_style".into(), serde_json::json!({ "mode": "sketch" }));
+        let cfg: Config = serde_json::from_value(json).expect("tag-only sketch object parses");
+        let s = *cfg.draw_style.sketch().expect("sketch enabled");
         assert_eq!(s, SketchOptions::default());
         // Pin the stock values themselves, not just Default == Default.
         assert_eq!(s.amplitude_px, 1.5);
@@ -255,19 +283,54 @@ mod sketch_serde_tests {
     }
 
     #[test]
-    fn partial_sketch_object_fills_remaining_defaults() {
+    fn partial_sketch_fields_fill_remaining_defaults() {
         let mut json = default_config_json();
-        json.as_object_mut().unwrap().insert("sketch".into(), serde_json::json!({ "seed": 7 }));
+        json.as_object_mut()
+            .unwrap()
+            .insert("draw_style".into(), serde_json::json!({ "mode": "sketch", "seed": 7 }));
         let cfg: Config = serde_json::from_value(json).expect("partial sketch object parses");
-        assert_eq!(cfg.sketch, Some(SketchOptions { seed: 7, ..SketchOptions::default() }));
+        assert_eq!(
+            cfg.draw_style,
+            DrawStyle::Sketch(SketchOptions { seed: 7, ..SketchOptions::default() })
+        );
     }
 
     #[test]
-    fn none_sketch_serializes_without_key() {
+    fn sketch_round_trips_with_inline_fields() {
+        let mut cfg = default_config();
+        cfg.draw_style = DrawStyle::Sketch(SketchOptions {
+            amplitude_px: 2.5,
+            wavelength_px: 42.0,
+            seed: 9,
+        });
+        let json = serde_json::to_value(&cfg).expect("serialize Config");
+        // Internally tagged: the SketchOptions fields are inline siblings of
+        // `"mode"`, not a nested object.
+        let ds = json.get("draw_style").expect("draw_style key present");
+        assert_eq!(ds.get("mode"), Some(&serde_json::json!("sketch")));
+        assert_eq!(ds.get("amplitude_px"), Some(&serde_json::json!(2.5)));
+        assert_eq!(ds.get("wavelength_px"), Some(&serde_json::json!(42.0)));
+        assert_eq!(ds.get("seed"), Some(&serde_json::json!(9)));
+        let back: Config = serde_json::from_value(json).expect("round-trip parses");
+        assert_eq!(back.draw_style, cfg.draw_style);
+    }
+
+    #[test]
+    fn explicit_precise_mode_deserializes_to_precise() {
+        let mut json = default_config_json();
+        json.as_object_mut()
+            .unwrap()
+            .insert("draw_style".into(), serde_json::json!({ "mode": "precise" }));
+        let cfg: Config = serde_json::from_value(json).expect("explicit precise parses");
+        assert_eq!(cfg.draw_style, DrawStyle::Precise);
+    }
+
+    #[test]
+    fn precise_serializes_without_key() {
         let json = default_config_json();
         assert!(
-            json.get("sketch").is_none(),
-            "None sketch must be skipped in serialization: {json}"
+            json.get("draw_style").is_none(),
+            "Precise draw_style must be skipped in serialization: {json}"
         );
     }
 }

@@ -3,8 +3,9 @@
 //! The `Default` trait is intentionally not implemented for the chart types;
 //! values that carry user intent (titles, data ranges) must go through builders
 //! like `Chart::with_title`. This module only provides visual / layout defaults
-//! that work for any chart. (Sole exception: `SketchOptions` — pure visual
-//! parameters with no user intent, and `serde(default)` requires the impl.)
+//! that work for any chart. (Sole exceptions: `DrawStyle` / `SketchOptions` —
+//! pure visual parameters with no user intent, and `serde(default)` requires
+//! the impls.)
 //!
 //! Included: visual style (colors, widths, font sizes, tick lengths, grid),
 //! axis visibility policy (top/right labels and titles off, bottom/left on),
@@ -17,8 +18,8 @@
 
 use crate::color::Color;
 use crate::config::{
-    AxisOptions, AxisScale, AxisTitleOptions, ChartTitleOptions, Config, GridOptions, LabelStyle,
-    Legend, LegendCorner, TickVisibility,
+    AxisOptions, AxisScale, AxisTitleOptions, ChartTitleOptions, Config, DrawStyle, GridOptions,
+    LabelStyle, Legend, LegendCorner, TickVisibility,
 };
 use crate::format::LabelFormat;
 use crate::layout::{ChartArea, Rect};
@@ -214,7 +215,7 @@ pub fn default_config() -> Config {
         chart_title: default_chart_title_options(),
         grid: default_grid_options(),
         legend: default_legend(),
-        // Precise mode. Sketch mode is opt-in (`Some(SketchOptions)`).
-        sketch: None,
+        // Precise mode. Stylized modes are opt-in (`DrawStyle::Sketch(..)`).
+        draw_style: DrawStyle::Precise,
     }
 }

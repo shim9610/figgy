@@ -1,13 +1,20 @@
 //! Hand-drawn ("sketch") geometry helpers — deterministic polyline wobble.
 //!
 //! Implements the noise specification of `docs/SKETCH_DESIGN.md` §3 (PCG-style
-//! integer hash → 1D smoothstep value noise) and the subdivision rules of §5a,
-//! as pure functions over primitive parameters: no wgpu, tiny-skia, or model
-//! types here. Coordinates are pixel-space (y-down), matching the raster/deco
-//! consumers. Everything is `f32`, with no runtime randomness or clocks —
-//! identical inputs yield bit-identical outputs (§3 determinism contract).
+//! integer hash → 1D smoothstep value noise) and the subdivision rules of §5a.
+//! The noise/geometry layer ([`hash01`] … [`sketch_rect_outline`]) is pure
+//! functions over primitive parameters — no wgpu, tiny-skia, or model types.
+//! Coordinates are pixel-space (y-down), matching the raster/deco consumers.
+//! Everything is `f32`, with no runtime randomness or clocks — identical
+//! inputs yield bit-identical outputs (§3 determinism contract).
 //!
-//! Consumed by the deco layer (design §5a) starting with work package A3/A4.
+//! [`DecoStroker`] (STYLE_REGISTRY.md §4) is the deco layer's entry point: a
+//! per-raster-pass stroke strategy that routes each decoration stroke either
+//! to the plain [`Canvas`] calls (`Precise`) or through the wobble functions
+//! above (`Sketch`). It is the one raster-facing piece of this module.
+
+use crate::config::DrawStyle;
+use crate::raster::{Canvas, Paint};
 
 /// Spacing between subdivision points never exceeds this many pixels
 /// (design §5a: "min 2 subdivisions, at most ~16 px per subdivision").
@@ -222,6 +229,95 @@ pub(crate) fn sketch_rect_outline(
         (x, y), // revisit start: closes the outline
     ];
     sketch_polyline(&corners, amplitude_px, wavelength_px, seed)
+}
+
+// Decoration stroke strategy — STYLE_REGISTRY.md §4.
+
+/// Decoration-layer stroke strategy, derived once per raster pass from the
+/// chart's [`DrawStyle`]. `Precise` is a pure passthrough to the plain canvas
+/// calls — byte-identical to pre-stroker rendering. `Sketch` replaces each
+/// stroke with its seeded wobble polyline; the paint (width / color / dash)
+/// is untouched, so dashes run along the wobbled path.
+///
+/// `tag` is a stable element tag (`"axis_left"`, `"tick_left_3"`,
+/// `"grid_major_x_2"`, `"legend_box"`) mixed into the global seed as
+/// `seed ^ fnv1a(tag)` (design §5a), so every element wobbles differently but
+/// identically across re-rasters.
+pub(crate) enum DecoStroker {
+    Precise,
+    Sketch {
+        amplitude_px: f32,
+        wavelength_px: f32,
+        seed: u32,
+    },
+}
+
+impl DecoStroker {
+    /// Derive the stroker for a chart style: `Sketch` copies the wobble
+    /// parameters, every other style strokes precisely.
+    pub(crate) fn from_style(style: &DrawStyle) -> Self {
+        match style {
+            DrawStyle::Sketch(s) => DecoStroker::Sketch {
+                amplitude_px: s.amplitude_px,
+                wavelength_px: s.wavelength_px,
+                seed: s.seed,
+            },
+            _ => DecoStroker::Precise,
+        }
+    }
+
+    /// Stroke one straight deco segment. `Precise` is a single
+    /// [`Canvas::draw_line`], identical to pre-stroker rendering; `Sketch`
+    /// replaces the segment with its seeded wobble polyline.
+    pub(crate) fn stroke_segment(
+        &self,
+        canvas: &mut Canvas,
+        p0: (f32, f32),
+        p1: (f32, f32),
+        paint: &Paint,
+        tag: &str,
+    ) {
+        match self {
+            DecoStroker::Precise => canvas.draw_line(p0, p1, paint),
+            DecoStroker::Sketch { amplitude_px, wavelength_px, seed } => {
+                let pts =
+                    sketch_line(p0, p1, *amplitude_px, *wavelength_px, seed ^ fnv1a(tag));
+                canvas.draw_polyline(&pts, paint);
+            }
+        }
+    }
+
+    /// Stroke a rectangle outline (e.g. the legend border). `Precise` is a
+    /// single [`Canvas::draw_rect`] with the given (stroke) paint; `Sketch`
+    /// chains the four edges into one arc-continuous wobble polyline via
+    /// [`sketch_rect_outline`].
+    #[allow(clippy::too_many_arguments)] // signature fixed by STYLE_REGISTRY §4
+    pub(crate) fn stroke_rect_outline(
+        &self,
+        canvas: &mut Canvas,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        paint: &Paint,
+        tag: &str,
+    ) {
+        match self {
+            DecoStroker::Precise => canvas.draw_rect(x, y, w, h, paint),
+            DecoStroker::Sketch { amplitude_px, wavelength_px, seed } => {
+                let pts = sketch_rect_outline(
+                    x,
+                    y,
+                    w,
+                    h,
+                    *amplitude_px,
+                    *wavelength_px,
+                    seed ^ fnv1a(tag),
+                );
+                canvas.draw_polyline(&pts, paint);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

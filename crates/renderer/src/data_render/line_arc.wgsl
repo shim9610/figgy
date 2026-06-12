@@ -36,9 +36,11 @@ struct Transform {
     data_max: vec2<f32>,
     scale_log: vec2<f32>,
     pixel_to_ndc: vec2<f32>,
-    sketch_amp_wave: vec2<f32>,
-    sketch_seed: vec2<f32>,
-};
+    // Generic per-panel style parameter slot. Interpretation belongs to the
+    // ACTIVE style's shader entries; the precise entries never read it.
+    // sketch: x=amplitude_px, y=wavelength_px, z=seed(f32), w=reserved(0)
+    style_params: vec4<f32>,
+};  // 48 B (vec4 at offset 32 — alignment unchanged)
 
 @group(0) @binding(0) var<uniform> transform: Transform;
 

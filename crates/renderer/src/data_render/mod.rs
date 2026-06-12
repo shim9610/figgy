@@ -671,9 +671,9 @@ pub fn create_unit_centered_quad_vertex_buffer(device: &wgpu::Device) -> wgpu::B
 
 /// Shared transform uniform for scatter / line / errorbar shaders.
 ///
-/// 48 bytes (six `vec2<f32>` fields, 8-byte aligned in WGSL uniform layout).
-/// Pixel sizes (point radius, cap half-length) live in [`PrimitiveStyle`];
-/// shaders convert them to NDC via `pixel_to_ndc`.
+/// 48 bytes (four `vec2<f32>` fields plus one `vec4<f32>` at offset 32,
+/// WGSL uniform layout). Pixel sizes (point radius, cap half-length) live in
+/// [`PrimitiveStyle`]; shaders convert them to NDC via `pixel_to_ndc`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ScatterTransform {
@@ -684,13 +684,13 @@ pub struct ScatterTransform {
     /// `(2 / chart_w, 2 / chart_h)` — 1 pixel in NDC. Shaders multiply pixel
     /// sizes (line width, point radius, cap half-length) by this.
     pub pixel_to_ndc: [f32; 2],   // offset 24
-    /// Sketch-mode wobble: `[amplitude_px, wavelength_px]`
-    /// (docs/SKETCH_DESIGN.md §4). All zeros in precise mode — the precise
-    /// entry points never read it.
-    pub sketch_amp_wave: [f32; 2], // offset 32
-    /// Sketch-mode seed: `[seed as f32, 0.0]`. Stored as f32 (exact up to
-    /// 2^24); shaders recover it via `u32(transform.sketch_seed.x)`.
-    pub sketch_seed: [f32; 2],    // offset 40 → 48 byte
+    /// Generic per-panel style parameter slot (SHADER_COMMON.md §1), packed
+    /// by the renderer's style table (`StyleVariant::pack_params`). All zeros
+    /// in precise mode — the precise entry points never read it. Sketch:
+    /// `[amplitude_px, wavelength_px, seed as f32, 0.0]`; the seed is stored
+    /// as f32 (exact up to 2^24) and shaders recover it via
+    /// `u32(transform.style_params.z)`.
+    pub style_params: [f32; 4],   // offset 32 → 48 byte
 }
 
 // WGSL mirror size guards (SHADER_COMMON.md §1 / §2). Update both the doc and
@@ -911,13 +911,14 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
     // 1 px in NDC: NDC spans 2 across chart_w pixels.
     let pixel_to_ndc = [2.0 / chart_w, 2.0 / chart_h];
 
-    // Sketch-mode wobble parameters (docs/SKETCH_DESIGN.md §4). Precise mode
-    // (`None`) writes zeros — the precise entry points never read these, so
-    // the output is unaffected. The export path's `Config::scaled` already
-    // multiplied amplitude/wavelength by the DPI scale; read them as-is.
-    let (sketch_amp_wave, sketch_seed) = match &config.sketch {
-        Some(s) => ([s.amplitude_px, s.wavelength_px], [s.seed as f32, 0.0]),
-        None => ([0.0; 2], [0.0; 2]),
+    // Per-style shader parameters, packed by the style table's `pack_params`
+    // (renderer.rs). Precise mode writes zeros — the precise entry points
+    // never read them, so the output is unaffected. The export path's
+    // `Config::scaled` already multiplied the style's pixel dims (e.g. sketch
+    // amplitude/wavelength) by the DPI scale; pack functions read them as-is.
+    let style_params = match crate::renderer::style_variant(&config.draw_style) {
+        Some(v) => (v.pack_params)(&config.draw_style),
+        None => [0.0; 4],
     };
 
     // No data_area → use the data range directly (no extension).
@@ -929,8 +930,7 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
                 data_max: [data_max_x, data_max_y],
                 scale_log,
                 pixel_to_ndc,
-                sketch_amp_wave,
-                sketch_seed,
+                style_params,
             };
         }
     };
@@ -967,8 +967,7 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
         data_max: [max_x_ext, max_y_ext],
         scale_log,
         pixel_to_ndc,
-        sketch_amp_wave,
-        sketch_seed,
+        style_params,
     }
 }
 
@@ -997,22 +996,11 @@ pub fn create_line_columnar_pipeline(
 /// `SKETCH_SUBDIV` in `line_columnar.wgsl`.
 pub const LINE_SKETCH_VERTICES_PER_INSTANCE: u32 = 18;
 
-/// Sketch (hand-drawn) variant of the line pipeline: identical layout and
-/// state, `vs_sketch` entry instead of `vs_main` (fragment stage shared).
-/// Draw [`LINE_SKETCH_VERTICES_PER_INSTANCE`] vertices per instance.
-pub fn create_line_sketch_pipeline(
-    device: &wgpu::Device,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-) -> wgpu::RenderPipeline {
-    create_line_columnar_pipeline_with_entries(
-        device, transform_bgl, style_bgl, target_format,
-        "vs_sketch", "figgy line sketch pipeline",
-    )
-}
-
-fn create_line_columnar_pipeline_with_entries(
+/// Entry-point-parameterized line pipeline builder. Styled variants (e.g.
+/// the sketch `vs_sketch`) share the precise pipeline's layout and state and
+/// differ only in `vs_entry` — the renderer's style table supplies the
+/// string (and the matching strip vertex count).
+pub(crate) fn create_line_columnar_pipeline_with_entries(
     device: &wgpu::Device,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
@@ -1155,22 +1143,11 @@ pub fn create_scatter_columnar_pipeline(
     )
 }
 
-/// Sketch (hand-drawn) variant of the scatter pipeline: identical layout and
-/// state, `vs_sketch`/`fs_sketch` entries (the instance index travels as a
-/// flat varying, so both stages differ).
-pub fn create_scatter_sketch_pipeline(
-    device: &wgpu::Device,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-) -> wgpu::RenderPipeline {
-    create_scatter_columnar_pipeline_with_entries(
-        device, transform_bgl, style_bgl, target_format,
-        "vs_sketch", "fs_sketch", "figgy scatter sketch pipeline",
-    )
-}
-
-fn create_scatter_columnar_pipeline_with_entries(
+/// Entry-point-parameterized scatter pipeline builder. Styled variants (e.g.
+/// the sketch `vs_sketch`/`fs_sketch` — the instance index travels as a flat
+/// varying, so both stages differ) share the precise pipeline's layout and
+/// state; the renderer's style table supplies the entry strings.
+pub(crate) fn create_scatter_columnar_pipeline_with_entries(
     device: &wgpu::Device,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
@@ -1283,22 +1260,11 @@ pub fn create_errorbar_columnar_pipeline(
     )
 }
 
-/// Sketch (hand-drawn) variant of the errorbar pipeline: identical layout
-/// and state, `vs_sketch` entry instead of `vs_main` (fragment stage shared;
-/// vertex count is unchanged at 36 per instance).
-pub fn create_errorbar_sketch_pipeline(
-    device: &wgpu::Device,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-) -> wgpu::RenderPipeline {
-    create_errorbar_columnar_pipeline_with_entries(
-        device, transform_bgl, style_bgl, target_format,
-        "vs_sketch", "figgy errorbar sketch pipeline",
-    )
-}
-
-fn create_errorbar_columnar_pipeline_with_entries(
+/// Entry-point-parameterized errorbar pipeline builder. Styled variants
+/// (e.g. the sketch `vs_sketch` — fragment stage shared, vertex count
+/// unchanged at 36 per instance) share the precise pipeline's layout and
+/// state; the renderer's style table supplies the entry string.
+pub(crate) fn create_errorbar_columnar_pipeline_with_entries(
     device: &wgpu::Device,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
