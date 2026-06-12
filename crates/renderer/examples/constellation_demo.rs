@@ -240,6 +240,37 @@ fn main() {
     .expect("write");
     println!("wrote target/constellation_demo/spectrum_x2.png");
 
+    // Sampling invariance: the same curve sampled coarsely (10 pts) vs
+    // densely (400 pts) must get the same star treatment. The old
+    // per-segment quad budget made sparse polylines star-thin and deaf to
+    // the density knob; the arc-driven indirect pass budgets by total arc.
+    let curve = |n: usize, lift: f64| -> (Vec<f64>, Vec<f64>) {
+        let xs: Vec<f64> = (0..n).map(|i| i as f64 / (n - 1) as f64).collect();
+        let ys: Vec<f64> =
+            xs.iter().map(|x| lift + 22.0 * (x * 4.6).sin()).collect();
+        (xs, ys)
+    };
+    let (cx, cy) = curve(10, 70.0);
+    let (fx, fy) = curve(400, 30.0);
+    r.add_column("coarse_x", &col(cx)).unwrap();
+    r.add_column("coarse_y", &col(cy)).unwrap();
+    r.add_column("fine_x", &col(fx)).unwrap();
+    r.add_column("fine_y", &col(fy)).unwrap();
+    let sampling = [
+        line_series("samp_coarse", "coarse_x", "coarse_y", Color::from_rgb8(120, 190, 255)),
+        line_series("samp_fine", "fine_x", "fine_y", Color::from_rgb8(120, 190, 255)),
+    ];
+    let style = DrawStyle::Constellation(ConstellationOptions {
+        star_density: 30.0,
+        ..ConstellationOptions::default()
+    });
+    export(
+        &mut r,
+        &build_chart(style),
+        &sampling,
+        "target/constellation_demo/sampling_match.png",
+    );
+
     // ── Step 2: ringed planets (scatter). Ring angle = ScatterShape. ──
     let planet_series = |id: &str, x: &str, y: &str, shape: ScatterShape, size: f32, color: Color| SeriesConfig {
         series_id: id.into(),

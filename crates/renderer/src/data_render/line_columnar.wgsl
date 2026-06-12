@@ -291,10 +291,10 @@ fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
 // brightness, star density, and population temperature — sharing one noise
 // channel is what makes dense knots simultaneously brighter and warmer.
 const CONS_CLUMP_WAVELENGTH_PX: f32 = 90.0;
-// CPU draw-count twins live in mod.rs: CONSTELLATION_RIBBON_VERTICES =
-// 2·(SUBDIV+1), CONSTELLATION_STAR_VERTICES = 6·STARS_PER_SEGMENT.
+// CPU draw-count twin lives in mod.rs: CONSTELLATION_RIBBON_VERTICES =
+// 2·(SUBDIV+1). The star pass has no fixed vertex count — it draws via
+// DrawIndirect args the arc-scan kernel fills (line_arc.wgsl star_indirect).
 const CONS_RIBBON_SUBDIV: u32 = 8u;
-const CONS_STARS_PER_SEGMENT: u32 = 24u;
 
 // Resolution-invariance factor for px-denominated structure constants
 // (style_params[2].x = structure_scale, 1.0 live / export scale on export).
@@ -394,56 +394,101 @@ struct StarOut {
     @location(2) brightness: f32,
 };
 
-// Per-star hash channel: one lattice index per (segment, k), salted per
+// Per-star hash channel: one lattice index per candidate slot, salted per
 // attribute so channels are independent.
 fn cons_h(id: u32, salt: u32, seed: u32) -> f32 {
     return sketch_hash01(id, seed ^ salt);
 }
 
+// Arc-driven star pass data (group 3). The star pass binds NO vertex
+// buffers: each instance is one candidate slot along the polyline's TOTAL
+// arc, and the VS locates its segment by binary search over the arc-length
+// prefix, fetching endpoints straight from the column pool. Star density is
+// therefore independent of how densely the data samples the line — the old
+// per-segment quad budget saturated on sparse polylines (a single long
+// segment capped at 24 stars no matter the requested density).
+struct StarVsParams {
+    n_points: u32,
+    x_base: u32,
+    y_base: u32,
+    _pad: u32,
+};
+@group(3) @binding(0) var<storage, read> star_arc: array<f32>;
+@group(3) @binding(1) var<storage, read> star_pool: array<f32>;
+@group(3) @binding(2) var<uniform> star_vsp: StarVsParams;
+
+// Candidate slot pitch in arc px. CPU twin: line_arc.rs
+// STAR_SLOT_PITCH_FACTOR sizes the indirect dispatch with the same formula —
+// the two must agree or slot positions and the dispatch count diverge.
+// Pitch scales with structure_scale, so the slot grid (and with it the
+// whole star pattern) is resolution-invariant, and density changes only
+// flip the existence of FIXED candidates instead of reshuffling them.
+fn cons_star_pitch() -> f32 {
+    return max(0.5 * cons_structure_scale(), 1e-3);
+}
+
 @vertex
 fn vs_stars(
-    in: VsIn,
-    arc: VsArc,
     @builtin(vertex_index) vid: u32,
-    @builtin(instance_index) inst: u32,
+    @builtin(instance_index) slot: u32,
 ) -> StarOut {
-    let k = vid / 6u;
     let corner = vid % 6u;
 
     let density = max(transform.style_params[0].x, 0.0); // stars / 100 px arc
     let seed = u32(transform.style_params[0].w) ^ style.series_salt;
     let star_scale = max(transform.style_params[1].x, 0.0);
     let spread = max(transform.style_params[1].y, 0.0);
+    let pitch = cons_star_pitch();
 
-    let a_px = data_to_ndc(in.x_a, in.y_a) / transform.pixel_to_ndc;
-    let b_px = data_to_ndc(in.x_b, in.y_b) / transform.pixel_to_ndc;
-    let delta = b_px - a_px;
-    let len = length(delta);
-    let dir = select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6);
-    let normal_px = vec2<f32>(-dir.y, dir.x);
-    let seg_arc = max(arc.arc_b - arc.arc_a, 0.0);
-
-    let id = inst * CONS_STARS_PER_SEGMENT + k;
+    let n = star_vsp.n_points;
+    let total = star_arc[n - 1u];
 
     // ~22% of slots re-anchor beside the PREVIOUS slot's star as a dim close
     // companion — re-deriving the primary's hashes is deterministic and free,
     // and binary pairs are a strong realism cue.
-    let is_companion = cons_h(id, 0x0B17u, seed) < 0.22 && k > 0u;
-    let primary_id = select(id, id - 1u, is_companion);
+    let is_companion = cons_h(slot, 0x0B17u, seed) < 0.22 && slot > 0u;
+    let primary_id = select(slot, slot - 1u, is_companion);
 
-    let t = cons_h(primary_id, 0x0701u, seed);
-    let arc_here = mix(arc.arc_a, arc.arc_b, t);
+    // Stratified arc position: one candidate per `pitch` px of arc, jittered
+    // inside its stratum. Attributes hash slot IDS (not positions), so the
+    // pattern upstream of a data edit stays put.
+    let arc_here =
+        (f32(primary_id) + 0.5 + 0.8 * (cons_h(primary_id, 0x0701u, seed) - 0.5)) * pitch;
 
-    // Existence gate: expected stars per segment = density·arc/100, spread
-    // over the fixed K quad budget, modulated by the local clump. A segment
-    // longer than ~K·100/density px of arc saturates the budget (documented
-    // Step-1 cap).
-    let p_exist = clamp(
-        density * seg_arc / (100.0 * f32(CONS_STARS_PER_SEGMENT)),
-        0.0,
-        1.0,
-    ) * clamp(cons_clump(arc_here, seed), 0.0, 1.6);
-    let alive = cons_h(id, 0x0E15u, seed) < p_exist && len > 1e-6;
+    // Existence gate: expected stars per slot = density·pitch/100, modulated
+    // by the local clump. Saturation would need density·structure_scale·
+    // clump > 200 — far outside the spec ranges.
+    let p_exist = clamp(density * pitch / 100.0, 0.0, 1.0)
+        * clamp(cons_clump(arc_here, seed), 0.0, 1.6);
+    var alive = cons_h(slot, 0x0E15u, seed) < p_exist && arc_here < total;
+
+    // Binary search: greatest g with prefix[g] <= arc_here; segment (g, g+1).
+    var lo = 0u;
+    var hi = n - 1u;
+    loop {
+        if (hi - lo <= 1u) { break; }
+        let mid = (lo + hi) >> 1u;
+        if (star_arc[mid] <= arc_here) { lo = mid; } else { hi = mid; }
+    }
+    let seg_a = star_arc[lo];
+    let seg_len = star_arc[lo + 1u] - seg_a;
+    // NaN-gap segments contribute zero prefix advance — a slot landing on a
+    // flat span (boundary ties) dies instead of drawing inside a gap.
+    if (seg_len <= 0.0) { alive = false; }
+    let t = clamp((arc_here - seg_a) / max(seg_len, 1e-6), 0.0, 1.0);
+
+    let a_px = data_to_ndc(star_pool[star_vsp.x_base + lo], star_pool[star_vsp.y_base + lo])
+        / transform.pixel_to_ndc;
+    let b_px = data_to_ndc(
+        star_pool[star_vsp.x_base + lo + 1u],
+        star_pool[star_vsp.y_base + lo + 1u],
+    ) / transform.pixel_to_ndc;
+    let delta = b_px - a_px;
+    let len = length(delta);
+    let dir = select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6);
+    let normal_px = vec2<f32>(-dir.y, dir.x);
+    // Also kills non-finite endpoints (NaN comparisons are false).
+    if (!(len > 1e-6)) { alive = false; }
 
     // Perpendicular scatter: sum of two uniforms → triangular ≈ gaussian-ish.
     let g1 = cons_h(primary_id, 0x0FF1u, seed);
@@ -478,10 +523,10 @@ fn vs_stars(
 
     var center = mix(a_px, b_px, t) + normal_px * off;
     if (is_companion) {
-        let ang = cons_h(id, 0x0A46u, seed) * 6.2831853;
+        let ang = cons_h(slot, 0x0A46u, seed) * 6.2831853;
         // px-denominated structure constant — scales with the resolution
         // factor so binary pairs keep their separation relative to the stars.
-        let sep = (2.0 + 2.0 * cons_h(id, 0x0D15u, seed)) * cons_structure_scale();
+        let sep = (2.0 + 2.0 * cons_h(slot, 0x0D15u, seed)) * cons_structure_scale();
         center = center + vec2<f32>(cos(ang), sin(ang)) * sep;
     }
 
@@ -492,7 +537,7 @@ fn vs_stars(
         case 2u, 4u: { c = vec2<f32>(1.0, 1.0); }
         default: { c = vec2<f32>(-1.0, 1.0); }
     }
-    // Dead slots collapse to zero area; NaN endpoints propagate and clip.
+    // Dead slots collapse to zero area.
     let q = quad_half * select(0.0, 1.0, alive);
     let corner_px = center + c * q;
 

@@ -888,6 +888,41 @@ pub fn update_style(queue: &wgpu::Queue, buffer: &wgpu::Buffer, style: &Primitiv
     queue.write_buffer(buffer, 0, bytemuck::bytes_of(style));
 }
 
+/// Bind group layout for the constellation star pass's per-series data
+/// (group 3 of the stars pipeline): the arc-length prefix and the column
+/// pool as read-only storage plus a small offsets uniform. Read-only storage
+/// in the vertex stage is core WebGPU; the GL-downlevel adapters that lack
+/// it are already rejected at renderer construction.
+pub fn create_star_data_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    let storage = |binding| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::VERTEX,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    };
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("figgy star data bgl"),
+        entries: &[
+            storage(0), // arc-length prefix
+            storage(1), // column pool (x/y bases in the uniform)
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    })
+}
+
 pub struct AxisLayer<'a> {
     pub pipeline: &'a wgpu::RenderPipeline,
     pub bind_group: &'a wgpu::BindGroup,
@@ -1029,11 +1064,6 @@ pub const LINE_SKETCH_VERTICES_PER_INSTANCE: u32 = 18;
 /// Constellation ribbon strip vertices per instance — `2·(S+1)`, twin of
 /// `CONS_RIBBON_SUBDIV` in `line_columnar.wgsl`.
 pub const CONSTELLATION_RIBBON_VERTICES: u32 = 18;
-/// Constellation star quads per segment instance — `6·K`, twin of
-/// `CONS_STARS_PER_SEGMENT` in `line_columnar.wgsl`. K is a per-segment
-/// budget: a single segment saturates once `density·arc/100 > K` (documented
-/// Step-1 cap; typical charts sit far below it).
-pub const CONSTELLATION_STAR_VERTICES: u32 = 144;
 
 /// Constellation pipelines + baked style textures for one target format —
 /// cached inside the renderer's lazy style set (docs/CONSTELLATION_DESIGN.MD
@@ -1261,6 +1291,7 @@ pub(crate) fn create_constellation_set(
     queue: &wgpu::Queue,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
+    star_data_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> ConstellationSet {
     let make_tex = |label: &str, w: u32, h: u32, data: &[u8]| {
@@ -1382,13 +1413,51 @@ pub(crate) fn create_constellation_set(
         Some(&tex_bgl),
         "figgy constellation ribbon pipeline",
     );
-    let stars = create_line_columnar_pipeline_with_entries(
-        device, transform_bgl, style_bgl, target_format,
-        "vs_stars", "fs_stars", additive,
-        wgpu::PrimitiveTopology::TriangleList,
-        Some(&tex_bgl),
-        "figgy constellation stars pipeline",
-    );
+    // Arc-driven star pass: NO vertex buffers — the VS reads the arc-length
+    // prefix and the column pool as storage (group 3) and is drawn via
+    // DrawIndirect args computed on the GPU from the polyline's total arc.
+    let star_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("figgy constellation star shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("line_columnar.wgsl").into()),
+    });
+    let star_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("figgy constellation star layout"),
+        bind_group_layouts: &[transform_bgl, style_bgl, &tex_bgl, star_data_bgl],
+        push_constant_ranges: &[],
+    });
+    let stars = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("figgy constellation stars pipeline"),
+        layout: Some(&star_layout),
+        vertex: wgpu::VertexState {
+            module: &star_shader,
+            entry_point: Some("vs_stars"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            unclipped_depth: false,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            conservative: false,
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
+        fragment: Some(wgpu::FragmentState {
+            module: &star_shader,
+            entry_point: Some("fs_stars"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: target_format,
+                blend: Some(additive),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview: None,
+        cache: None,
+    });
     // Planets keep the scatter builder's premultiplied blend — bodies
     // occlude the additive star field behind them.
     let planets = create_scatter_columnar_pipeline_full(
@@ -1841,8 +1910,8 @@ pub struct ColumnLineLayer<'a> {
     pub arc: Option<(std::sync::Arc<wgpu::Buffer>, u64)>,
     /// Strip vertices per instance — must match `pipeline`'s vertex entry:
     /// 4 for the precise `vs_main`, [`LINE_SKETCH_VERTICES_PER_INSTANCE`]
-    /// for the sketch `vs_sketch`, [`CONSTELLATION_RIBBON_VERTICES`] /
-    /// [`CONSTELLATION_STAR_VERTICES`] for the constellation entries.
+    /// for the sketch `vs_sketch`, [`CONSTELLATION_RIBBON_VERTICES`] for
+    /// the constellation ribbon.
     pub verts_per_instance: u32,
     /// Style textures (group 2) when `pipeline`'s layout includes them —
     /// the constellation PSF/LUT bind group. `None` for precise/sketch.
@@ -1866,11 +1935,24 @@ pub struct ColumnScatterLayer<'a> {
 pub struct SeriesLayers<'a> {
     pub errorbar: Option<ColumnErrorBarDraw<'a>>,
     pub line: Option<ColumnLineLayer<'a>>,
-    /// Second line-slot draw over the same columns — the constellation style
-    /// uses it for the star pass on top of the ribbon in `line`. Drawn right
-    /// after `line`, before `scatter`. `None` everywhere else.
-    pub line_extra: Option<ColumnLineLayer<'a>>,
+    /// Constellation star pass over the same polyline as `line` — drawn
+    /// right after it, before `scatter`. `None` everywhere else.
+    pub line_extra: Option<ColumnStarLayer<'a>>,
     pub scatter: Option<ColumnScatterLayer<'a>>,
+}
+
+/// Constellation star pass — an arc-driven indirect draw. No vertex
+/// buffers: the vertex shader walks the arc-length prefix (binary search)
+/// and fetches segment endpoints from the pool, both bound as read-only
+/// storage in `star_bg`; `indirect` holds the GPU-computed DrawIndirect
+/// args (instance count = candidate slots over the total arc).
+pub struct ColumnStarLayer<'a> {
+    pub pipeline: &'a wgpu::RenderPipeline,
+    pub transform_bg: &'a wgpu::BindGroup,
+    pub style_bg: &'a wgpu::BindGroup,
+    pub texture_bg: &'a wgpu::BindGroup,
+    pub star_bg: &'a wgpu::BindGroup,
+    pub indirect: &'a wgpu::Buffer,
 }
 
 pub struct ColumnErrorBarDraw<'a> {
@@ -1933,7 +2015,7 @@ fn draw_line_layer(pass: &mut wgpu::RenderPass<'_>, l: &ColumnLineLayer<'_>) {
         }
     }
     // Per-instance vertex count decided where the pipeline variant was
-    // picked: 4 (precise) / 18 (sketch, ribbon) / 144 (stars).
+    // picked: 4 (precise) / 18 (sketch, constellation ribbon).
     pass.draw(0..l.verts_per_instance, 0..(count - 1));
 }
 
@@ -1973,8 +2055,16 @@ fn issue_series_data(
     if let Some(l) = series.line.as_ref() {
         draw_line_layer(pass, l);
     }
-    if let Some(l) = series.line_extra.as_ref() {
-        draw_line_layer(pass, l);
+    if let Some(s) = series.line_extra.as_ref() {
+        // Constellation star pass: indirect draw — the instance count was
+        // computed on the GPU from the polyline's total arc (line_arc.wgsl
+        // star_indirect), so the CPU never sees, nor caps, the star count.
+        pass.set_pipeline(s.pipeline);
+        pass.set_bind_group(0, s.transform_bg, &[]);
+        pass.set_bind_group(1, s.style_bg, &[]);
+        pass.set_bind_group(2, s.texture_bg, &[]);
+        pass.set_bind_group(3, s.star_bg, &[]);
+        pass.draw_indirect(s.indirect, 0);
     }
 
     if let Some(s) = series.scatter.as_ref() {

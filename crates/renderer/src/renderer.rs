@@ -94,6 +94,9 @@ pub struct Renderer {
     texture_bgl: wgpu::BindGroupLayout,
     transform_bgl: wgpu::BindGroupLayout,
     style_bgl: wgpu::BindGroupLayout,
+    /// Constellation star-pass data layout (arc prefix + pool + offsets) —
+    /// shared by the stars pipeline and every per-series star bind group.
+    star_data_bgl: wgpu::BindGroupLayout,
 
     // Pipelines (precise + lazily-cached styled variants), all against
     // `surface_format`.
@@ -304,12 +307,14 @@ impl TargetPipelines {
     /// Prepare-phase ensure (`&mut`): compile and cache the pipeline set of
     /// every style that `items` draw with and the cache doesn't hold yet.
     /// Run before pass recording so the draw phase (`&self`) only looks up.
+    #[allow(clippy::too_many_arguments)]
     fn ensure_styles_for_items(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         transform_bgl: &wgpu::BindGroupLayout,
         style_bgl: &wgpu::BindGroupLayout,
+        star_data_bgl: &wgpu::BindGroupLayout,
         surface_format: wgpu::TextureFormat,
         items: &[ChartDrawItem<'_>],
     ) {
@@ -340,7 +345,8 @@ impl TargetPipelines {
                 // the pipelines) — docs/CONSTELLATION_DESIGN.md §3c.
                 StyleKey::Constellation => StyleSet::Constellation(
                     data_render::create_constellation_set(
-                        device, queue, transform_bgl, style_bgl, surface_format,
+                        device, queue, transform_bgl, style_bgl, star_data_bgl,
+                        surface_format,
                     ),
                 ),
             });
@@ -448,6 +454,7 @@ impl Renderer {
         let texture_bgl = data_render::create_texture_bind_group_layout(&device);
         let transform_bgl = data_render::create_scatter_transform_bind_group_layout(&device);
         let style_bgl = data_render::create_style_bind_group_layout(&device);
+        let star_data_bgl = data_render::create_star_data_bind_group_layout(&device);
 
         let sampler = data_render::create_linear_sampler(&device);
         let quad_vb = data_render::create_unit_centered_quad_vertex_buffer(&device);
@@ -471,6 +478,7 @@ impl Renderer {
             texture_bgl,
             transform_bgl,
             style_bgl,
+            star_data_bgl,
             pipelines,
             sampler,
             quad_vb,
@@ -983,6 +991,7 @@ impl Renderer {
             &self.queue,
             &self.transform_bgl,
             &self.style_bgl,
+            &self.star_data_bgl,
             self.surface_format,
             items,
         );
@@ -1001,6 +1010,16 @@ impl Renderer {
         let mut arcs = Vec::with_capacity(items.len());
         for item in items {
             let variant = style_variant(&item.chart_config.draw_style);
+            // Constellation lines also get the arc-driven star pass: the
+            // candidate-slot pitch the indirect kernel sizes the dispatch
+            // with (the star VS derives the same value from the transform).
+            let star_pitch = match &item.chart_config.draw_style {
+                crate::config::DrawStyle::Constellation(c) => Some(
+                    (data_render::line_arc::STAR_SLOT_PITCH_FACTOR * c.structure_scale)
+                        .max(1e-3),
+                ),
+                _ => None,
+            };
             let mut per_series = Vec::with_capacity(item.series.len());
             for series in item.series {
                 let cfg = series.config;
@@ -1015,6 +1034,7 @@ impl Renderer {
                             &cfg.x_column,
                             &cfg.y_column,
                             item.chart_config,
+                            if line { star_pitch } else { None },
                         )
                     } else {
                         None
@@ -1091,11 +1111,15 @@ impl Renderer {
         };
 
         // Resolve the style set into per-primitive picks once. `stars` is the
-        // constellation's second line-slot pass (over the same columns).
+        // constellation's arc-driven indirect star pass over the same polyline.
         struct LinePick<'p> {
             pipeline: &'p wgpu::RenderPipeline,
             verts: u32,
             texture_bg: Option<&'p wgpu::BindGroup>,
+        }
+        struct StarsPick<'p> {
+            pipeline: &'p wgpu::RenderPipeline,
+            texture_bg: &'p wgpu::BindGroup,
         }
         struct ScatterPick<'p> {
             pipeline: &'p wgpu::RenderPipeline,
@@ -1123,11 +1147,7 @@ impl Renderer {
                     verts: data_render::CONSTELLATION_RIBBON_VERTICES,
                     texture_bg: Some(&c.star_tex_bg),
                 },
-                Some(LinePick {
-                    pipeline: &c.stars,
-                    verts: data_render::CONSTELLATION_STAR_VERTICES,
-                    texture_bg: Some(&c.star_tex_bg),
-                }),
+                Some(StarsPick { pipeline: &c.stars, texture_bg: &c.star_tex_bg }),
                 ScatterPick { pipeline: &c.planets, texture_bg: Some(&c.star_tex_bg) },
                 &c.jets,
             ),
@@ -1154,17 +1174,23 @@ impl Renderer {
                 })
             } else { None };
 
+            // Star pass: per-series GPU state lives in the arc scratch the
+            // prepare phase built (indirect args + VS bind group). Missing
+            // scratch/star (n < 2, or a theoretically-impossible prepare
+            // miss) just skips the stars — the ribbon still draws.
             let line_extra = match (&line, &stars_pick) {
-                (Some(_), Some(sp)) => Some(ColumnLineLayer {
-                    pipeline: sp.pipeline,
-                    transform_bg: &view.transform_bg,
-                    style_bg: &series.style.line_bg,
-                    pool_buffer: pool.buffer(),
-                    x: x_h, y: y_h,
-                    arc: arcs.get(idx).cloned().flatten(),
-                    verts_per_instance: sp.verts,
-                    texture_bg: sp.texture_bg,
-                }),
+                (Some(_), Some(sp)) => self
+                    .arc_cache
+                    .get(cfg.series_id.as_str())
+                    .and_then(|s| s.star.as_ref())
+                    .map(|star| data_render::ColumnStarLayer {
+                        pipeline: sp.pipeline,
+                        transform_bg: &view.transform_bg,
+                        style_bg: &series.style.line_bg,
+                        texture_bg: sp.texture_bg,
+                        star_bg: &star.vs_bg,
+                        indirect: &star.indirect,
+                    }),
                 _ => None,
             };
 
@@ -1236,12 +1262,15 @@ impl Renderer {
     /// dispatches submitted before the host's render pass, which queue order
     /// then sequences correctly. Buffers/bind groups are cached per series
     /// and rebuilt only when the series layout changes.
+    /// `star_pitch`: `Some` adds the constellation star pass to the scratch
+    /// (indirect args + VS bind group) and runs its kernel after the scan.
     fn ensure_arc_prefix(
         &mut self,
         series_id: &str,
         x_id: &str,
         y_id: &str,
         chart_config: &Config,
+        star_pitch: Option<f32>,
     ) -> Option<ArcPrefix> {
         // Copy the layout scalars out so the pool borrow ends before the
         // cache mutation below.
@@ -1269,10 +1298,10 @@ impl Renderer {
         if self.arc_cache.len() > 256 {
             self.arc_cache.clear();
         }
-        let stale = self
-            .arc_cache
-            .get(series_id)
-            .is_none_or(|s| !s.matches(n, x_base, y_base, generation));
+        let stale = self.arc_cache.get(series_id).is_none_or(|s| {
+            !s.matches(n, x_base, y_base, generation)
+                || s.star.is_some() != star_pitch.is_some()
+        });
         if stale {
             #[cfg(test)]
             let chunk_override = self.arc_chunk_override;
@@ -1288,6 +1317,7 @@ impl Renderer {
                 generation,
                 self.caps.max_compute_workgroups_per_dimension,
                 chunk_override,
+                star_pitch.is_some().then_some(&self.star_data_bgl),
             )?; // None only on a zero-dispatch-limit adapter; try_new rejects those.
             self.arc_cache.insert(series_id.to_string(), scratch);
         }
@@ -1296,7 +1326,7 @@ impl Renderer {
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("figgy line arc encoder"),
         });
-        scratch.dispatch(&self.queue, &mut encoder, &self.arc_pipelines, &t);
+        scratch.dispatch(&self.queue, &mut encoder, &self.arc_pipelines, &t, star_pitch);
         self.queue.submit(std::iter::once(encoder.finish()));
 
         Some((Arc::clone(&scratch.arc), u64::from(n) * 4))
@@ -1411,6 +1441,7 @@ impl Renderer {
             &self.queue,
             &self.transform_bgl,
             &self.style_bgl,
+            &self.star_data_bgl,
             export_format,
             &items,
         );
@@ -2079,6 +2110,93 @@ mod tests {
         assert!(red > 300, "rc (red) curve missing: {red} px");
     }
 
+    /// Star density must be a property of the polyline's ARC, not of how
+    /// densely the data samples it — the field-reported failure mode of the
+    /// old per-segment quad budget, where a sparse polyline saturated at 24
+    /// stars per segment and then ignored the density knob entirely. The
+    /// same curve sampled at 8 vs 480 points must produce comparable star
+    /// ink (the indirect pass budgets by total arc; the 8-point chord arc is
+    /// only a few % shorter).
+    #[test]
+    fn constellation_star_density_is_sampling_invariant() {
+        let inst = create_instance();
+        let Ok(adapter) = request_adapter(&inst) else { return; };
+        let Ok((device, queue)) = request_device(&adapter) else { return; };
+
+        let mut r = Renderer::try_new(
+            RendererDevice::new(Arc::new(device), Arc::new(queue)),
+            wgpu::TextureFormat::Bgra8Unorm,
+            4 * 1024 * 1024,
+        ).unwrap();
+
+        let curve = |n: usize| -> (Vec<f64>, Vec<f64>) {
+            let xs: Vec<f64> = (0..n).map(|i| i as f64 / (n - 1) as f64).collect();
+            let ys: Vec<f64> = xs.iter().map(|x| 50.0 + 30.0 * (x * 4.2).sin()).collect();
+            (xs, ys)
+        };
+        let (sx, sy) = curve(8);
+        let (dx, dy) = curve(480);
+        r.add_column("inv_sx", &col_f64(sx)).unwrap();
+        r.add_column("inv_sy", &col_f64(sy)).unwrap();
+        r.add_column("inv_dx", &col_f64(dx)).unwrap();
+        r.add_column("inv_dy", &col_f64(dy)).unwrap();
+
+        let mut config = crate::default::default_config();
+        config.chart_area =
+            crate::layout::ChartArea(Rect { x: 0, y: 0, width: 640, height: 400 });
+        // Stars only: ribbon/backdrop/glow off so the ink count measures the
+        // star field alone. Density 60 needs ~540 stars over this arc — the
+        // old per-segment budget would cap the 8-point series at 7·24 = 168.
+        config.draw_style = crate::config::DrawStyle::Constellation(
+            crate::config::ConstellationOptions {
+                star_density: 60.0,
+                ribbon_intensity: 0.0,
+                nebula: 0.0,
+                dust: 0.0,
+                glow: 0.0,
+                ..Default::default()
+            },
+        );
+        let mut chart = Chart::new(config);
+        chart.set_x_range(-0.05, 1.05);
+        chart.set_y_range(0.0, 100.0);
+
+        let line_cfg = |id: &str, x: &str, y: &str| SeriesConfig {
+            series_id: id.into(),
+            label: None,
+            x_column: x.into(),
+            y_column: y.into(),
+            render_type: DataRenderType::Line {
+                line: crate::data_config::DataLineStyleConfig {
+                    line_style: crate::line::LineStylePreset::Solid,
+                    line_color: Color::new(1.0, 1.0, 1.0, 1.0),
+                    line_width: 2.0,
+                },
+            },
+        };
+        let mut star_ink = |id: &str, x: &str, y: &str| -> usize {
+            let series = [line_cfg(id, x, y)];
+            let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+            img.rgba
+                .chunks_exact(4)
+                .filter(|p| p[3] > 0 && (p[0] > 40 || p[1] > 40 || p[2] > 40))
+                .count()
+        };
+        // Same series id on purpose: identical salt isolates sampling as the
+        // only variable.
+        let sparse = star_ink("inv", "inv_sx", "inv_sy");
+        let dense = star_ink("inv", "inv_dx", "inv_dy");
+
+        assert!(sparse > 1_000, "sparse star field missing ({sparse} px)");
+        assert!(dense > 1_000, "dense star field missing ({dense} px)");
+        let ratio = sparse as f64 / dense as f64;
+        assert!(
+            (0.65..=1.55).contains(&ratio),
+            "star ink must not depend on sampling density: sparse {sparse} px \
+             vs dense {dense} px (ratio {ratio:.2})"
+        );
+    }
+
     /// The constellation backdrop cache must rebake only when its key
     /// (panel size, nebula, dust, seed) changes: range-only refreshes hit
     /// the cache, and a view already holding the baked generation skips the
@@ -2185,7 +2303,7 @@ mod tests {
             r.add_column(&yid, &col_f64(ys.clone())).unwrap();
 
             let (arc_buf, len_bytes) = r
-                .ensure_arc_prefix(&format!("s_{case}"), &xid, &yid, chart.config())
+                .ensure_arc_prefix(&format!("s_{case}"), &xid, &yid, chart.config(), None)
                 .expect("arc prefix");
 
             // Read the GPU result back.

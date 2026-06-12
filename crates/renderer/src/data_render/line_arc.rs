@@ -96,12 +96,24 @@ mod tests {
 pub struct ArcScanPipelines {
     transform_bgl: wgpu::BindGroupLayout,
     storage_bgl: wgpu::BindGroupLayout,
+    star_args_bgl: wgpu::BindGroupLayout,
     seg_init: wgpu::ComputePipeline,
     scan_block: wgpu::ComputePipeline,
     add_offsets: wgpu::ComputePipeline,
     apply_carry: wgpu::ComputePipeline,
     update_carry: wgpu::ComputePipeline,
+    star_indirect: wgpu::ComputePipeline,
 }
+
+/// Candidate star slots per arc px = 1 / (this factor × structure_scale).
+/// CPU twin of the star vertex shader's `cons_star_pitch` — the indirect
+/// dispatch count and the VS slot mapping must agree on the pitch.
+pub const STAR_SLOT_PITCH_FACTOR: f32 = 0.5;
+
+/// Hard ceiling on candidate star slots per series — a render budget
+/// backstop (≈12M quad vertices), far above any chart-scale arc, NOT a data
+/// limit: the polyline itself stays unlimited-n via the chunked scan.
+pub const STAR_MAX_SLOTS: u32 = 2_000_000;
 
 pub fn create_arc_scan_pipelines(device: &wgpu::Device) -> ArcScanPipelines {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -153,15 +165,42 @@ pub fn create_arc_scan_pipelines(device: &wgpu::Device) -> ArcScanPipelines {
         ],
     });
 
+    // Star indirect-args kernel: reads the scan result through the already
+    // bound group(1) window (last chunk) and writes only its own group(2)
+    // buffers — no aliased rebinding of the arc buffer.
+    let star_args_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("figgy star args bgl"),
+        entries: &[
+            storage(0, false), // DrawIndirect args (4 × u32)
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    });
+
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("figgy arc scan layout"),
         bind_group_layouts: &[&transform_bgl, &storage_bgl],
         push_constant_ranges: &[],
     });
-    let pipeline = |entry: &str| {
+    // Same first two groups (compatible prefix keeps them bound), plus the
+    // star args group.
+    let star_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("figgy star indirect layout"),
+        bind_group_layouts: &[&transform_bgl, &storage_bgl, &star_args_bgl],
+        push_constant_ranges: &[],
+    });
+    let pipeline = |layout: &wgpu::PipelineLayout, entry: &str| {
         device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("figgy arc scan pipeline"),
-            layout: Some(&layout),
+            layout: Some(layout),
             module: &shader,
             entry_point: Some(entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -170,13 +209,15 @@ pub fn create_arc_scan_pipelines(device: &wgpu::Device) -> ArcScanPipelines {
     };
 
     ArcScanPipelines {
+        seg_init: pipeline(&layout, "seg_init"),
+        scan_block: pipeline(&layout, "scan_block"),
+        add_offsets: pipeline(&layout, "add_offsets"),
+        apply_carry: pipeline(&layout, "apply_carry"),
+        update_carry: pipeline(&layout, "update_carry"),
+        star_indirect: pipeline(&star_layout, "star_indirect"),
         transform_bgl,
         storage_bgl,
-        seg_init: pipeline("seg_init"),
-        scan_block: pipeline("scan_block"),
-        add_offsets: pipeline("add_offsets"),
-        apply_carry: pipeline("apply_carry"),
-        update_carry: pipeline("update_carry"),
+        star_args_bgl,
     }
 }
 
@@ -202,10 +243,23 @@ pub struct ArcScratch {
     // (transform_buf, carry_buf) needs a named field.
     bg_transform: wgpu::BindGroup,
     chunks: Vec<ChunkBinds>,
+    /// Constellation star pass state — built only for styles that draw the
+    /// arc-driven star pass (`build`'s `star_data_bgl` argument).
+    pub star: Option<StarPass>,
     n: u32,
     x_base: u32,
     y_base: u32,
     pool_generation: u32,
+}
+
+/// Per-series GPU state of the constellation star pass: the DrawIndirect
+/// args the scan-side kernel fills, the kernel's bind group, and the bind
+/// group the star vertex shader reads (arc prefix + pool + offsets).
+pub struct StarPass {
+    pub indirect: wgpu::Buffer,
+    pub vs_bg: wgpu::BindGroup,
+    kernel_bg: wgpu::BindGroup,
+    kernel_params_buf: wgpu::Buffer,
 }
 
 #[repr(C)]
@@ -215,6 +269,22 @@ struct ArcParams {
     x_base: u32,
     y_base: u32,
     start: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct StarIndirectParams {
+    slot_pitch_px: f32,
+    max_slots: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct StarVsParams {
+    n_points: u32,
+    x_base: u32,
+    y_base: u32,
+    _pad: u32,
 }
 
 impl ArcScratch {
@@ -234,6 +304,10 @@ impl ArcScratch {
     /// `chunk_capacity_override` narrows the chunk size below the device's
     /// natural `chunk_capacity(...)` — tests use it to exercise the
     /// multi-chunk carry path with small `n`.
+    /// `star_data_bgl`: pass the renderer's star-data layout to also build
+    /// the constellation star pass (indirect args + the VS bind group);
+    /// `None` for styles without it.
+    #[allow(clippy::too_many_arguments)]
     pub fn build(
         device: &wgpu::Device,
         pipelines: &ArcScanPipelines,
@@ -244,6 +318,7 @@ impl ArcScratch {
         pool_generation: u32,
         max_workgroups_per_dimension: u32,
         chunk_capacity_override: Option<u32>,
+        star_data_bgl: Option<&wgpu::BindGroupLayout>,
     ) -> Option<Self> {
         let natural = chunk_capacity(max_workgroups_per_dimension);
         let cap = match chunk_capacity_override {
@@ -342,12 +417,59 @@ impl ArcScratch {
             start += len;
         }
 
+        let star = star_data_bgl.map(|vs_bgl| {
+            let indirect = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("figgy star indirect args"),
+                size: 16,
+                usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::STORAGE,
+                mapped_at_creation: false,
+            });
+            let kernel_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("figgy star indirect params"),
+                size: std::mem::size_of::<StarIndirectParams>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let kernel_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("figgy star args bg"),
+                layout: &pipelines.star_args_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: indirect.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: kernel_params_buf.as_entire_binding(),
+                    },
+                ],
+            });
+            let vs_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("figgy star vs params"),
+                contents: bytemuck::bytes_of(&StarVsParams {
+                    n_points: n,
+                    x_base,
+                    y_base,
+                    _pad: 0,
+                }),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            let vs_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("figgy star vs bg"),
+                layout: vs_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: arc.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: pool_buffer.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: vs_params.as_entire_binding() },
+                ],
+            });
+            StarPass { indirect, vs_bg, kernel_bg, kernel_params_buf }
+        });
+
         Some(Self {
             arc,
             transform_buf,
             carry_buf,
             bg_transform,
             chunks,
+            star,
             n,
             x_base,
             y_base,
@@ -359,18 +481,33 @@ impl ArcScratch {
     /// chunk in sequence, carry linking them. The caller submits the encoder;
     /// queue order makes the result visible to any later-submitted render
     /// pass that reads `self.arc` as vertex data.
+    /// `star_pitch_px`: when the constellation star pass is built, the
+    /// candidate-slot pitch (`STAR_SLOT_PITCH_FACTOR × structure_scale`) —
+    /// the indirect-args kernel runs after the scan with it. Ignored when
+    /// the scratch has no star pass.
     pub fn dispatch(
         &self,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         pipelines: &ArcScanPipelines,
         transform: &ScatterTransform,
+        star_pitch_px: Option<f32>,
     ) {
         queue.write_buffer(&self.transform_buf, 0, bytemuck::bytes_of(transform));
         if self.chunks.len() > 1 {
             // Reset the running total; write_buffer lands before this
             // encoder's commands at submit time.
             queue.write_buffer(&self.carry_buf, 0, &0f32.to_le_bytes());
+        }
+        if let (Some(star), Some(pitch)) = (self.star.as_ref(), star_pitch_px) {
+            queue.write_buffer(
+                &star.kernel_params_buf,
+                0,
+                bytemuck::bytes_of(&StarIndirectParams {
+                    slot_pitch_px: pitch.max(1e-3),
+                    max_slots: STAR_MAX_SLOTS,
+                }),
+            );
         }
 
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -419,6 +556,20 @@ impl ArcScratch {
             if k < last {
                 pass.set_pipeline(&pipelines.update_carry);
                 pass.set_bind_group(1, &chunk.bg_arc, &[]);
+                pass.dispatch_workgroups(1, 1, 1);
+            }
+        }
+
+        // Constellation star pass: convert the completed prefix's total arc
+        // into DrawIndirect args. Group(1) re-binds the LAST chunk so the
+        // kernel's `dst[start+len-1]` reads the full-polyline total; the
+        // kernel touches the arc buffer only through that already-tracked
+        // binding (no aliased rebind).
+        if let (Some(star), Some(_)) = (self.star.as_ref(), star_pitch_px) {
+            if let Some(last_chunk) = self.chunks.last() {
+                pass.set_pipeline(&pipelines.star_indirect);
+                pass.set_bind_group(1, &last_chunk.bg_arc, &[]);
+                pass.set_bind_group(2, &star.kernel_bg, &[]);
                 pass.dispatch_workgroups(1, 1, 1);
             }
         }

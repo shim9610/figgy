@@ -173,3 +173,36 @@ fn update_carry(@builtin(global_invocation_id) gid: vec3<u32>) {
         carry[0] = dst[params.start + params.len - 1u];
     }
 }
+
+// ── Constellation star-pass indirect args (NOT part of the common block) ──
+// After the scan, dst[start+len-1] of the LAST chunk is the polyline's total
+// pixel arc. One thread converts it into DrawIndirect args for the
+// arc-driven star pass: candidate star slots are budgeted by TOTAL arc (one
+// slot per `slot_pitch_px`), not per segment — which is what makes star
+// density independent of how densely the data samples the line (the old
+// per-segment quad budget saturated on sparse polylines). Dispatched with
+// group(1) re-bound to the last chunk so `dst`/`params` window the tail.
+struct StarIndirectParams {
+    // Arc px per candidate star slot — must equal the value the star vertex
+    // shader derives (0.5 · structure_scale; see line_columnar.wgsl
+    // cons_star_pitch), or slot positions and the dispatch count disagree.
+    slot_pitch_px: f32,
+    // Runaway backstop for degenerate pitch / pathological arc lengths.
+    max_slots: u32,
+};
+
+@group(2) @binding(0) var<storage, read_write> star_args: array<u32>;
+@group(2) @binding(1) var<uniform> star_params: StarIndirectParams;
+
+@compute @workgroup_size(1)
+fn star_indirect() {
+    let total = dst[params.start + params.len - 1u];
+    var slots = 0u;
+    if (total > 0.0 && total < 1e30 && star_params.slot_pitch_px > 0.0) {
+        slots = min(u32(ceil(total / star_params.slot_pitch_px)), star_params.max_slots);
+    }
+    star_args[0] = 6u;    // vertex_count: one quad per slot
+    star_args[1] = slots; // instance_count: candidate star slots
+    star_args[2] = 0u;    // first_vertex
+    star_args[3] = 0u;    // first_instance
+}
