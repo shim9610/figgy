@@ -175,6 +175,55 @@ impl Default for ConstellationOptions {
     }
 }
 
+/// UI-facing metadata for one stylized-mode parameter — the single source
+/// for host slider ranges, so frontends never hardcode them. The range is
+/// the RECOMMENDED span (what a slider should cover), not a hard limit:
+/// the SSoT stores whatever the host sets, and the renderer applies only
+/// its own safety guards (non-negative sizes, shader-side clamps).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct StyleParamSpec {
+    /// JSON field name inside the `draw_style` object.
+    pub key: &'static str,
+    pub min: f64,
+    pub max: f64,
+    pub default: f64,
+    /// Integer-valued (e.g. `seed`) — hosts render a stepper, not a slider.
+    pub integer: bool,
+}
+
+const fn spec(key: &'static str, min: f64, max: f64, default: f64) -> StyleParamSpec {
+    StyleParamSpec { key, min, max, default, integer: false }
+}
+
+const fn spec_int(key: &'static str, min: f64, max: f64, default: f64) -> StyleParamSpec {
+    StyleParamSpec { key, min, max, default, integer: true }
+}
+
+impl SketchOptions {
+    /// Parameter metadata for hosts — see [`StyleParamSpec`]. A model test
+    /// pins each `default` to [`Default`], so the two cannot drift.
+    pub const PARAM_SPECS: &'static [StyleParamSpec] = &[
+        spec("amplitude_px", 0.0, 8.0, 1.5),
+        spec("wavelength_px", 10.0, 200.0, 60.0),
+        spec_int("seed", 0.0, 9999.0, 0.0),
+    ];
+}
+
+impl ConstellationOptions {
+    /// Parameter metadata for hosts — see [`StyleParamSpec`]. A model test
+    /// pins each `default` to [`Default`], so the two cannot drift.
+    pub const PARAM_SPECS: &'static [StyleParamSpec] = &[
+        spec("star_density", 0.0, 60.0, 14.0),
+        spec("ribbon_width_px", 2.0, 40.0, 14.0),
+        spec("ribbon_intensity", 0.0, 1.0, 0.30),
+        spec("star_scale", 0.3, 3.0, 1.0),
+        spec("spread_px", 0.0, 10.0, 2.5),
+        spec("faint_bias", 0.5, 10.0, 3.0),
+        spec_int("seed", 0.0, 9999.0, 0.0),
+    ];
+}
+
 /// Chart-global render style. `Precise` is the default scientific path;
 /// every other variant is an opt-in stylized mode with its own GPU
 /// pipeline variants and decoration stroker.
@@ -198,6 +247,25 @@ impl DrawStyle {
     /// Constellation parameters when the constellation style is active.
     pub fn constellation(&self) -> Option<&ConstellationOptions> {
         match self { DrawStyle::Constellation(c) => Some(c), _ => None }
+    }
+
+    /// Every mode tag, in declaration order — the values valid as the JSON
+    /// `"mode"` of `draw_style`.
+    pub fn mode_tags() -> &'static [&'static str] {
+        &["precise", "sketch", "constellation"]
+    }
+
+    /// Parameter metadata for one mode tag. `precise` has no parameters
+    /// (empty slice); unknown tags yield `None`. Hosts generate their
+    /// parameter UI (sliders/steppers) from this instead of hardcoding
+    /// ranges.
+    pub fn param_specs_for_mode(mode: &str) -> Option<&'static [StyleParamSpec]> {
+        match mode {
+            "precise" => Some(&[]),
+            "sketch" => Some(SketchOptions::PARAM_SPECS),
+            "constellation" => Some(ConstellationOptions::PARAM_SPECS),
+            _ => None,
+        }
     }
 }
 
@@ -401,6 +469,59 @@ mod draw_style_serde_tests {
             cfg.draw_style,
             super::DrawStyle::Constellation(super::ConstellationOptions::default()),
         );
+    }
+
+    /// PARAM_SPECS defaults are literals (const context) — pin them to the
+    /// `Default` impls so the two sources cannot drift, and pin every spec
+    /// key to a real serde field by writing it through `draw_style` JSON.
+    #[test]
+    fn param_specs_match_defaults_and_serde_fields() {
+        use super::{ConstellationOptions, SketchOptions};
+
+        let check = |mode: &str, specs: &[super::StyleParamSpec], defaults: serde_json::Value| {
+            for s in specs {
+                let d = defaults
+                    .get(s.key)
+                    .unwrap_or_else(|| panic!("{mode}: spec key {} is not a serde field", s.key))
+                    .as_f64()
+                    .expect("numeric field");
+                assert!(
+                    (d - s.default).abs() < 1e-6,
+                    "{mode}.{}: spec default {} != Default impl {}",
+                    s.key, s.default, d
+                );
+                assert!(s.min <= s.default && s.default <= s.max, "{mode}.{}: default outside range", s.key);
+
+                // Round-trip the key through the tagged enum to prove it is
+                // accepted (a typo'd key would be silently ignored). Integer
+                // specs must be written as JSON integers — u32 fields reject
+                // a float literal.
+                let mut style = serde_json::json!({ "mode": mode });
+                style[s.key] = if s.integer {
+                    serde_json::json!(s.max as i64)
+                } else {
+                    serde_json::json!(s.max)
+                };
+                let parsed: super::DrawStyle =
+                    serde_json::from_value(style).expect("spec key parses in draw_style");
+                let back = serde_json::to_value(parsed).expect("serialize");
+                let v = back.get(s.key).expect("key survives round trip").as_f64().unwrap();
+                assert!((v - s.max).abs() < 1e-4, "{mode}.{}: value did not stick", s.key);
+            }
+        };
+
+        check(
+            "sketch",
+            SketchOptions::PARAM_SPECS,
+            serde_json::to_value(SketchOptions::default()).unwrap(),
+        );
+        check(
+            "constellation",
+            ConstellationOptions::PARAM_SPECS,
+            serde_json::to_value(ConstellationOptions::default()).unwrap(),
+        );
+        assert_eq!(super::DrawStyle::param_specs_for_mode("nope"), None);
+        assert_eq!(super::DrawStyle::param_specs_for_mode("precise"), Some(&[][..]));
     }
 
     #[test]

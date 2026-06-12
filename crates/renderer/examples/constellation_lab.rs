@@ -281,19 +281,34 @@ impl eframe::App for LabApp {
         egui::SidePanel::left("controls").min_width(250.0).show(ctx, |ui| {
             ui.heading("Constellation");
             ui.add_space(8.0);
+            // Sliders are GENERATED from the SSoT's parameter metadata —
+            // ranges live in exactly one place (model PARAM_SPECS), shared
+            // with the wasm `draw_style_param_specs` export.
             let o = &mut self.opts;
-            ui.add(egui::Slider::new(&mut o.star_density, 0.0..=60.0).text("star_density"));
-            ui.add(egui::Slider::new(&mut o.faint_bias, 0.5..=10.0).text("faint_bias"));
-            ui.add(egui::Slider::new(&mut o.star_scale, 0.3..=3.0).text("star_scale"));
-            ui.add(egui::Slider::new(&mut o.spread_px, 0.0..=10.0).text("spread_px"));
-            ui.separator();
-            ui.add(egui::Slider::new(&mut o.ribbon_width_px, 2.0..=40.0).text("ribbon_width_px"));
-            ui.add(egui::Slider::new(&mut o.ribbon_intensity, 0.0..=1.0).text("ribbon_intensity"));
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.label("seed");
-                ui.add(egui::DragValue::new(&mut o.seed).speed(1));
-            });
+            for spec in ConstellationOptions::PARAM_SPECS {
+                if spec.integer {
+                    ui.horizontal(|ui| {
+                        ui.label(spec.key);
+                        ui.add(egui::DragValue::new(&mut o.seed).speed(1));
+                    });
+                    continue;
+                }
+                let field: &mut f32 = match spec.key {
+                    "star_density" => &mut o.star_density,
+                    "ribbon_width_px" => &mut o.ribbon_width_px,
+                    "ribbon_intensity" => &mut o.ribbon_intensity,
+                    "star_scale" => &mut o.star_scale,
+                    "spread_px" => &mut o.spread_px,
+                    "faint_bias" => &mut o.faint_bias,
+                    other => {
+                        ui.label(format!("(unbound spec: {other})"));
+                        continue;
+                    }
+                };
+                ui.add(
+                    egui::Slider::new(field, spec.min as f32..=spec.max as f32).text(spec.key),
+                );
+            }
             ui.add_space(8.0);
             if ui.button("Reset to defaults").clicked() {
                 *o = ConstellationOptions::default();

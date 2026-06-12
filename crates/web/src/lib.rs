@@ -41,6 +41,31 @@ mod web {
         JsValue::from_str(&e.to_string())
     }
 
+    /// Parameter metadata for one `draw_style` mode — a JSON array of
+    /// `{key, min, max, default, integer}`. Ranges are the RECOMMENDED
+    /// slider spans (the SSoT accepts values beyond them; the renderer
+    /// applies only safety guards), and they come from the model crate, so
+    /// hosts never hardcode them.
+    ///
+    /// JS: `const specs = JSON.parse(draw_style_param_specs("constellation"));`
+    /// Valid modes: `draw_style_modes()`.
+    #[wasm_bindgen]
+    pub fn draw_style_param_specs(mode: &str) -> Result<String, JsValue> {
+        let specs = renderer::config::DrawStyle::param_specs_for_mode(mode).ok_or_else(|| {
+            js_err(format!(
+                "unknown draw_style mode {mode:?} (valid: {})",
+                renderer::config::DrawStyle::mode_tags().join(", ")
+            ))
+        })?;
+        serde_json::to_string(specs).map_err(js_err)
+    }
+
+    /// Every valid `draw_style` mode tag, as a JSON string array.
+    #[wasm_bindgen]
+    pub fn draw_style_modes() -> Result<String, JsValue> {
+        serde_json::to_string(renderer::config::DrawStyle::mode_tags()).map_err(js_err)
+    }
+
     /// 64-bit FNV-1a-style mix over the f32 bit patterns — cheap identity
     /// check so `set_column_f32` can skip re-uploading unchanged data.
     fn hash_f32s(data: &[f32]) -> u64 {
