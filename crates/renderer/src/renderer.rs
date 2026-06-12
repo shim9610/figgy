@@ -179,12 +179,12 @@ fn pack_sketch_params(style: &DrawStyle) -> [f32; 8] {
 }
 
 /// constellation: `[0] = (star_density, ribbon_width_px, ribbon_intensity,
-/// seed)`, `[1] = (star_scale, spread_px, 0, 0)`.
+/// seed)`, `[1] = (star_scale, spread_px, faint_bias, 0)`.
 fn pack_constellation_params(style: &DrawStyle) -> [f32; 8] {
     match style.constellation() {
         Some(c) => [
             c.star_density, c.ribbon_width_px, c.ribbon_intensity, c.seed as f32,
-            c.star_scale, c.spread_px, 0.0, 0.0,
+            c.star_scale, c.spread_px, c.faint_bias, 0.0,
         ],
         None => [0.0; 8],
     }

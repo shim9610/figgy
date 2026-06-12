@@ -139,7 +139,26 @@ fn main() {
         ("dbg_ribbon_only", cons(0.0, 14.0, 0.30, 0)),
         ("dbg_stars_only", cons(14.0, 14.0, 0.0, 0)),
     ];
+    let faint_cases = [
+        // Luminosity-function slope sweep: more faint dust per anchor.
+        ("faint_default", 14.0, 3.0),
+        ("faint_heavy", 26.0, 5.5),
+        ("faint_extreme", 40.0, 8.0),
+    ];
     for (name, style) in cases {
+        export(
+            &mut r,
+            &build_chart(style),
+            &series,
+            &format!("target/constellation_demo/{name}.png"),
+        );
+    }
+    for (name, density, bias) in faint_cases {
+        let style = DrawStyle::Constellation(ConstellationOptions {
+            star_density: density,
+            faint_bias: bias,
+            ..ConstellationOptions::default()
+        });
         export(
             &mut r,
             &build_chart(style),

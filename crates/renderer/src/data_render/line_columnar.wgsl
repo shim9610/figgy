@@ -39,7 +39,7 @@ struct Transform {
     // ACTIVE style's shader entries; the precise entries never read them.
     // sketch:        [0] = (amplitude_px, wavelength_px, seed(f32), 0)
     // constellation: [0] = (star_density, ribbon_width_px, ribbon_intensity,
-    //                seed(f32)), [1] = (star_scale, spread_px, 0, 0)
+    //                seed(f32)), [1] = (star_scale, spread_px, faint_bias, 0)
     style_params: array<vec4<f32>, 2>,
 };  // 64 B (vec4 array at offset 32, stride 16 — alignment unchanged)
 
@@ -432,9 +432,12 @@ fn vs_stars(
     let g2 = cons_h(primary_id, 0x0FF2u, seed);
     let off = (g1 + g2 - 1.0) * spread * 1.7;
 
-    // Brightness: steep power law — most stars faint, rare bright anchors.
+    // Brightness power law — most stars faint, rare bright anchors. The
+    // exponent (faint_bias, style_params[1].z) is the luminosity-function
+    // slope: higher = more faint dust per anchor.
+    let faint_bias = clamp(transform.style_params[1].z, 0.5, 12.0);
     let u_b = cons_h(primary_id, 0x86A9u, seed);
-    var b = 0.12 + 0.88 * pow(u_b, 3.0);
+    var b = 0.12 + 0.88 * pow(u_b, faint_bias);
     if (is_companion) {
         b = b * 0.35;
     }

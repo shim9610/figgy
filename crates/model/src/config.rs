@@ -153,6 +153,10 @@ pub struct ConstellationOptions {
     /// Perpendicular star scatter σ from the path, in px. Larger reads more
     /// like a loose cluster, smaller tracks the data tighter. Default 2.5.
     pub spread_px: f32,
+    /// Luminosity-function slope: the exponent of the brightness power law.
+    /// Higher → a larger fraction of faint small stars per bright anchor
+    /// (real fields sit faint-heavy). Sensible range ~1.5..6. Default 3.0.
+    pub faint_bias: f32,
     /// Global seed. Same (config, data) → identical output. Default 0.
     pub seed: u32,
 }
@@ -165,6 +169,7 @@ impl Default for ConstellationOptions {
             ribbon_intensity: 0.30,
             star_scale: 1.0,
             spread_px: 2.5,
+            faint_bias: 3.0,
             seed: 0,
         }
     }
@@ -407,6 +412,7 @@ mod draw_style_serde_tests {
             ribbon_intensity: 0.4,
             star_scale: 1.3,
             spread_px: 3.5,
+            faint_bias: 4.5,
             seed: 9,
         });
         let json = serde_json::to_value(&cfg).expect("serialize");
