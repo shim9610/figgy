@@ -663,12 +663,15 @@ fn draw_axis(
                     draw_tick_label_rich(canvas, &rt, pos, side.clone(), axis, fp);
                 }
                 _ => {
+                    // Decimals must derive from the spacing the walker
+                    // actually used, or a guarded fallback would emit ticks
+                    // at 0.5 steps with 0-decimal labels.
                     let text = format_tick_value(
                         *v,
                         &ls.format,
                         ls.significant_digits,
                         &axis.scale,
-                        axis.major_spacing,
+                        effective_major_spacing(axis),
                     );
                     draw_tick_label(canvas, &text, pos, side.clone(), axis, fp);
                 }
@@ -749,9 +752,38 @@ fn value_to_screen(value: f64, axis: &AxisOptions, side: Side, da: &DataArea) ->
     }
 }
 
+/// Hard ceiling on majors the linear walker may emit. A finite-but-tiny
+/// spacing (a mis-typed magnitude arriving through the SSoT) would otherwise
+/// walk the whole range in near-zero steps — millions of pushes on the
+/// raster path, which reads as a frozen chart.
+const MAX_MAJOR_TICKS: f64 = 1000.0;
+
+/// The major spacing the raster actually walks. The SSoT accepts whatever
+/// the host sends (a live spacing input passes through 0 mid-edit), so the
+/// guard lives here — in the one place shared by tick marks, grid lines,
+/// minors, and label decimals, which therefore can never disagree. A
+/// non-finite or ≤ 0 spacing, or one that would emit an absurd tick count,
+/// falls back to the auto spacing for the current range instead of blanking
+/// the axis. Callers must have validated the range as finite and non-empty.
+fn effective_major_spacing(axis: &AxisOptions) -> f64 {
+    let sp = axis.major_spacing;
+    let span = axis.max - axis.min;
+    if sp.is_finite() && sp > 0.0 && span / sp <= MAX_MAJOR_TICKS {
+        return sp;
+    }
+    crate::chart::nice_spacing(span)
+}
+
+/// Range a tick walker may iterate: finite ends, positive span. NaN/±inf
+/// ends otherwise slip past plain `max <= min` comparisons and saturate the
+/// integer step bounds (`inf as i64` = i64::MAX — an unbounded walk).
+fn walkable_range(axis: &AxisOptions) -> bool {
+    axis.min.is_finite() && axis.max.is_finite() && axis.max > axis.min
+}
+
 fn major_tick_values(axis: &AxisOptions) -> Vec<f64> {
     let mut out = Vec::new();
-    if axis.major_spacing <= 0.0 || axis.max <= axis.min {
+    if !walkable_range(axis) {
         return out;
     }
     match axis.scale {
@@ -759,7 +791,7 @@ fn major_tick_values(axis: &AxisOptions) -> Vec<f64> {
             // Anchor ticks to ABSOLUTE multiples of the spacing, not to
             // axis.min: uniform-margin fits make the range ends arbitrary
             // (0.137…), but tick values must stay nice regardless.
-            let sp = axis.major_spacing;
+            let sp = effective_major_spacing(axis);
             let first = ((axis.min / sp) - 1e-9).ceil() as i64;
             let last = ((axis.max / sp) + 1e-9).floor() as i64;
             for i in first..=last {
@@ -788,13 +820,15 @@ fn major_tick_values(axis: &AxisOptions) -> Vec<f64> {
 /// between consecutive majors left those edge strips empty).
 fn minor_tick_values(axis: &AxisOptions) -> Vec<f64> {
     let mut out = Vec::new();
-    if axis.minor_count == 0 || axis.max <= axis.min {
+    if axis.minor_count == 0 || !walkable_range(axis) {
         return out;
     }
     match axis.scale {
         AxisScale::Linear => {
-            let subdivisions = (axis.minor_count + 1) as i64;
-            let step = axis.major_spacing / subdivisions as f64;
+            // The subdivision count is SSoT input too — clamp it so the
+            // walk stays O(majors × subdivisions) no matter what arrives.
+            let subdivisions = (axis.minor_count.min(99) + 1) as i64;
+            let step = effective_major_spacing(axis) / subdivisions as f64;
             if !step.is_finite() || step <= 0.0 {
                 return out;
             }
@@ -1231,6 +1265,56 @@ mod tests {
         axis.major_spacing = 0.5;
         let majors = major_tick_values(&axis);
         assert_eq!(majors, vec![0.5, 1.0, 1.5, 2.0, 2.5]);
+    }
+
+    /// Spacing and minor_count are host SSoT input — 0 (a live input
+    /// passing through mid-edit), a mis-typed magnitude, or a non-finite
+    /// range must neither blank the axis nor let a walker run away.
+    #[test]
+    fn tick_walkers_guard_hostile_spacing() {
+        let mut axis = default_config().bottom_x.clone();
+        axis.min = 0.0;
+        axis.max = 10.0;
+        axis.minor_count = 4;
+
+        // Zero spacing falls back to the auto spacing, not a blank axis.
+        axis.major_spacing = 0.0;
+        let majors = major_tick_values(&axis);
+        assert_eq!(majors, vec![0.0, 2.0, 4.0, 6.0, 8.0, 10.0]);
+
+        // A tiny positive spacing would walk ~10^10 steps — capped to auto.
+        axis.major_spacing = 1e-9;
+        let majors = major_tick_values(&axis);
+        assert!(
+            !majors.is_empty() && majors.len() <= 12,
+            "tiny spacing must cap to auto, got {} ticks",
+            majors.len()
+        );
+
+        // Dense but sane custom spacing is honored verbatim.
+        axis.major_spacing = 0.05;
+        assert_eq!(major_tick_values(&axis).len(), 201);
+
+        // Hostile minor_count stays bounded (and must not overflow).
+        axis.major_spacing = 1.0;
+        axis.minor_count = usize::MAX - 1;
+        let minors = minor_tick_values(&axis);
+        assert!(
+            !minors.is_empty() && minors.len() <= 1_100,
+            "minor walk must stay bounded, got {}",
+            minors.len()
+        );
+
+        // Non-finite range ends: nothing to walk — `inf as i64` saturation
+        // must never reach the loop bounds.
+        axis.minor_count = 4;
+        axis.max = f64::INFINITY;
+        assert!(major_tick_values(&axis).is_empty());
+        assert!(minor_tick_values(&axis).is_empty());
+        axis.min = f64::NAN;
+        axis.max = 10.0;
+        assert!(major_tick_values(&axis).is_empty());
+        assert!(minor_tick_values(&axis).is_empty());
     }
 
     /// One axis, one decimal form: every tick label shares the spacing-derived
