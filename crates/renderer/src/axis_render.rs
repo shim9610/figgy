@@ -263,10 +263,13 @@ fn draw_space_background(
 
 // Glow bloom for the decoration layer (axes / ticks / labels / titles read
 // as line-light sources): one blurred copy added back under the crisp
-// original. Premultiplied-additive with clamp; selection boxes are drawn
-// AFTER this in the raster entry, so the interaction overlay stays crisp.
-const GLOW_PASSES: u32 = 3;
-const GLOW_RADIUS: usize = 3;
+// original. The whole bloom runs at HALF resolution — a soft halo can't
+// show the difference, and it cuts the blur cost ~12× (this runs on every
+// decoration re-raster, so it must stay light). Premultiplied-additive with
+// clamp; selection boxes are drawn AFTER this in the raster entry, so the
+// interaction overlay stays crisp.
+const GLOW_PASSES: u32 = 2;
+const GLOW_RADIUS: usize = 2;
 
 pub(crate) fn apply_decoration_glow(canvas: &mut Canvas, gain: f32) {
     let gain = gain.clamp(0.0, 2.0);
@@ -274,33 +277,46 @@ pub(crate) fn apply_decoration_glow(canvas: &mut Canvas, gain: f32) {
         return;
     }
     let (w, h) = canvas.size();
-    if w == 0 || h == 0 {
+    if w < 2 || h < 2 {
         return;
     }
     let (w, h) = (w as usize, h as usize);
+    let (hw, hh) = (w.div_ceil(2), h.div_ceil(2));
     let src = canvas.pixels_mut();
-    let mut halo: Vec<u8> = src.to_vec();
-    let mut tmp = vec![0u8; halo.len()];
 
-    // Separable box blur ×3 ≈ gaussian. Premultiplied RGBA blurs channel-wise.
-    let window = (2 * GLOW_RADIUS + 1) as u32;
+    // Downsample 2×2 average into the half-res halo buffer.
+    let mut halo = vec![0u8; hw * hh * 4];
+    let mut tmp = vec![0u8; hw * hh * 4];
+    for y in 0..hh {
+        for x in 0..hw {
+            let (x0, y0) = (x * 2, y * 2);
+            let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(h - 1));
+            for c in 0..4 {
+                let sum = src[(y0 * w + x0) * 4 + c] as u32
+                    + src[(y0 * w + x1) * 4 + c] as u32
+                    + src[(y1 * w + x0) * 4 + c] as u32
+                    + src[(y1 * w + x1) * 4 + c] as u32;
+                halo[(y * hw + x) * 4 + c] = (sum / 4) as u8;
+            }
+        }
+    }
+
+    // Separable box blur ×2 ≈ gaussian, at half res.
     for _ in 0..GLOW_PASSES {
-        // Horizontal.
-        for y in 0..h {
-            let row = y * w * 4;
+        for y in 0..hh {
+            let row = y * hw * 4;
             let mut acc = [0u32; 4];
-            for x in 0..w.min(GLOW_RADIUS + 1) {
+            for x in 0..hw.min(GLOW_RADIUS + 1) {
                 for c in 0..4 {
                     acc[c] += halo[row + x * 4 + c] as u32;
                 }
             }
-            let mut count = w.min(GLOW_RADIUS + 1) as u32;
-            for x in 0..w {
+            let mut count = hw.min(GLOW_RADIUS + 1) as u32;
+            for x in 0..hw {
                 for c in 0..4 {
                     tmp[row + x * 4 + c] = (acc[c] / count.max(1)) as u8;
                 }
-                let _ = window;
-                if x + GLOW_RADIUS + 1 < w {
+                if x + GLOW_RADIUS + 1 < hw {
                     for c in 0..4 {
                         acc[c] += halo[row + (x + GLOW_RADIUS + 1) * 4 + c] as u32;
                     }
@@ -314,28 +330,27 @@ pub(crate) fn apply_decoration_glow(canvas: &mut Canvas, gain: f32) {
                 }
             }
         }
-        // Vertical.
-        for x in 0..w {
+        for x in 0..hw {
             let mut acc = [0u32; 4];
-            for y in 0..h.min(GLOW_RADIUS + 1) {
+            for y in 0..hh.min(GLOW_RADIUS + 1) {
                 for c in 0..4 {
-                    acc[c] += tmp[(y * w + x) * 4 + c] as u32;
+                    acc[c] += tmp[(y * hw + x) * 4 + c] as u32;
                 }
             }
-            let mut count = h.min(GLOW_RADIUS + 1) as u32;
-            for y in 0..h {
+            let mut count = hh.min(GLOW_RADIUS + 1) as u32;
+            for y in 0..hh {
                 for c in 0..4 {
-                    halo[(y * w + x) * 4 + c] = (acc[c] / count.max(1)) as u8;
+                    halo[(y * hw + x) * 4 + c] = (acc[c] / count.max(1)) as u8;
                 }
-                if y + GLOW_RADIUS + 1 < h {
+                if y + GLOW_RADIUS + 1 < hh {
                     for c in 0..4 {
-                        acc[c] += tmp[((y + GLOW_RADIUS + 1) * w + x) * 4 + c] as u32;
+                        acc[c] += tmp[((y + GLOW_RADIUS + 1) * hw + x) * 4 + c] as u32;
                     }
                     count += 1;
                 }
                 if y >= GLOW_RADIUS {
                     for c in 0..4 {
-                        acc[c] -= tmp[((y - GLOW_RADIUS) * w + x) * 4 + c] as u32;
+                        acc[c] -= tmp[((y - GLOW_RADIUS) * hw + x) * 4 + c] as u32;
                     }
                     count -= 1;
                 }
@@ -343,8 +358,27 @@ pub(crate) fn apply_decoration_glow(canvas: &mut Canvas, gain: f32) {
         }
     }
 
-    for (d, s) in src.iter_mut().zip(halo.iter()) {
-        *d = (*d as f32 + *s as f32 * gain).min(255.0) as u8;
+    // Bilinear upsample + additive merge.
+    for y in 0..h {
+        let fy = (y as f32 * 0.5).min(hh as f32 - 1.0);
+        let y0 = fy.floor() as usize;
+        let y1 = (y0 + 1).min(hh - 1);
+        let ty = fy.fract();
+        for x in 0..w {
+            let fx = (x as f32 * 0.5).min(hw as f32 - 1.0);
+            let x0 = fx.floor() as usize;
+            let x1 = (x0 + 1).min(hw - 1);
+            let tx = fx.fract();
+            for c in 0..4 {
+                let a = halo[(y0 * hw + x0) * 4 + c] as f32 * (1.0 - tx)
+                    + halo[(y0 * hw + x1) * 4 + c] as f32 * tx;
+                let b = halo[(y1 * hw + x0) * 4 + c] as f32 * (1.0 - tx)
+                    + halo[(y1 * hw + x1) * 4 + c] as f32 * tx;
+                let v = a * (1.0 - ty) + b * ty;
+                let i = (y * w + x) * 4 + c;
+                src[i] = (src[i] as f32 + v * gain).min(255.0) as u8;
+            }
+        }
     }
 }
 

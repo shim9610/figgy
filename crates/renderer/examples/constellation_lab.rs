@@ -172,9 +172,26 @@ impl CallbackTrait for LabCallback {
         let state = state.get_mut().unwrap_or_else(PoisonError::into_inner);
 
         // Slider → SSoT. Only on change, so the dirty bits don't spin.
+        // `config_mut` flags BOTH dirty bits, but most constellation knobs
+        // are GPU-side (they ride the transform rewrite) — re-rastering the
+        // CPU backdrop + glow every drag frame is what makes scrubbing
+        // stutter. Cancel the raster bit unless a CPU-raster parameter
+        // (glow / nebula / dust / seed) actually changed.
         let wanted = DrawStyle::Constellation(self.opts);
         if state.chart.config().draw_style != wanted {
+            let raster_changed = match state.chart.config().draw_style {
+                DrawStyle::Constellation(old) => {
+                    old.glow != self.opts.glow
+                        || old.nebula != self.opts.nebula
+                        || old.dust != self.opts.dust
+                        || old.seed != self.opts.seed
+                }
+                _ => true,
+            };
             state.chart.config_mut().draw_style = wanted;
+            if !raster_changed {
+                let _ = state.chart.consume_raster_dirty();
+            }
         }
 
         let cur_rect = state.view.panel_rect();
