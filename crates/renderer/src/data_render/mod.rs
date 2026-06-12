@@ -1091,15 +1091,17 @@ fn bake_planet_atlas(tile: u32) -> Vec<u8> {
 
                     let rgb: [f64; 3] = match arch {
                         // Gas giant: latitude bands, domain-warped by
-                        // cylinder-sampled fBm — the Jupiter look.
+                        // cylinder-sampled fBm — the Jupiter look. Warp is
+                        // kept mild so the bands stay BANDS (strong warp
+                        // reads as marble, not a gas giant).
                         0 => {
                             let warp = fbm2(cx * 2.2 + 11.0, sx * 2.2 + v * 5.0, 5, 7) - 0.5;
-                            let band_t = v * 9.0 + warp * 2.6;
+                            let band_t = v * 9.0 + warp * 1.1;
                             let s = 0.5 + 0.5 * (band_t * std::f64::consts::TAU * 0.5).sin();
                             let turb = fbm2(cx * 5.0, sx * 5.0 + v * 14.0, 5, 23) - 0.5;
                             let cream = [0.88, 0.80, 0.66];
                             let rust = [0.58, 0.36, 0.24];
-                            let mut c = mix3(cream, rust, s * 0.85 + turb * 0.3);
+                            let mut c = mix3(cream, rust, s * 0.9 + turb * 0.18);
                             // One dark belt accent.
                             let belt = (-(v - 0.62).powi(2) / 0.002).exp();
                             c = mix3(c, [0.42, 0.26, 0.18], belt * 0.55);

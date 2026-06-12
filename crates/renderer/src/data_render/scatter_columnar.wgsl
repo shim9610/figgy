@@ -341,6 +341,20 @@ fn fs_planet(in: VsPlanetOut) -> @location(0) vec4<f32> {
     let sphi = sin(phi);
     let q = vec2<f32>(p.x * cphi + p.y * sphi, -p.x * sphi + p.y * cphi);
 
+    // ── Physically consistent ring/planet frame ──
+    // The ring lies in the planet's EQUATORIAL plane. With the projected
+    // ellipse ratio RING_INCL = sin(i), the spin pole is
+    //   P  = (0, cos i, sin i)   (screen-up in ring frame, tipped toward
+    //                             the viewer — the north pole is visible)
+    // and the equatorial basis is
+    //   e1 = (1, 0, 0),  e2 = P × e1 = (0, sin i, −cos i).
+    // e2's far hemisphere projects to +q.y, so the UPPER ring half is the
+    // far (occluded) one and the lower half passes in front — and surface
+    // latitude derives from the same pole, which is what makes the bands
+    // bow with exactly the ring's curvature family (the Saturn look).
+    let sin_i = RING_INCL;
+    let cos_i = sqrt(1.0 - sin_i * sin_i);
+
     // Projected ring ellipse: radial coordinate in ring-plane units.
     let rho = length(vec2<f32>(q.x, q.y / RING_INCL)) / r_planet;
     let in_band = rho > RING_INNER && rho < RING_OUTER;
@@ -354,14 +368,14 @@ fn fs_planet(in: VsPlanetOut) -> @location(0) vec4<f32> {
             * (1.0 - smoothstep(RING_OUTER - 0.06, RING_OUTER, rho));
         ring_a = s.a * band_aa;
         ring_rgb = s.rgb;
-        // Planet shadow on the ring: the far (behind) half darkens near the
-        // body — a soft contact shadow that sells the 3D read.
-        if (q.y < 0.0) {
+        // Planet shadow on the ring: the far (behind, upper) half darkens
+        // near the body — a soft contact shadow that sells the 3D read.
+        if (q.y >= 0.0) {
             ring_rgb = ring_rgb * mix(0.25, 1.0, smoothstep(RING_INNER, 2.0, rho));
         }
     }
-    // Near half (q.y >= 0) passes in FRONT of the planet, far half behind.
-    let ring_front = q.y >= 0.0;
+    // Lower half (q.y < 0) passes in FRONT of the planet, upper half behind.
+    let ring_front = q.y < 0.0;
 
     // Planet disc + sphere shading.
     let disc = 1.0 - smoothstep(r_planet - aa, r_planet + aa, dist);
@@ -375,16 +389,16 @@ fn fs_planet(in: VsPlanetOut) -> @location(0) vec4<f32> {
         let diff = max(dot(n, l), 0.0);
         let limb = pow(max(z, 0.0), 0.45);
 
-        // Surface UV: spin the sphere per point, tilt the texture axis to
-        // the ring plane so bands align with the ring.
-        let spin = h_spin * 6.2831853;
-        let xr = q.x / r_planet;
-        let lon = atan2(xr * cos(spin) - z * sin(spin), xr * sin(spin) + z * cos(spin));
-        let lat = asin(clamp(q.y / r_planet, -1.0, 1.0));
+        // Sphere point in the ring frame (q.x, q.y, z toward viewer).
+        let nq = vec3<f32>(q.x / r_planet, q.y / r_planet, z);
+        // Latitude about the ring-plane pole; longitude in the equatorial
+        // basis, spun per point.
+        let lat = asin(clamp(nq.y * cos_i + nq.z * sin_i, -1.0, 1.0));
+        let lon = atan2(nq.y * sin_i - nq.z * cos_i, nq.x);
         let arch = u32(h_arch * 4.0) % 4u;
         let tile = vec2<f32>(f32(arch % 2u), f32(arch / 2u));
         let inner_uv = vec2<f32>(
-            fract(lon / 6.2831853 + 0.5),
+            fract(lon / 6.2831853 + 0.5 + h_spin),
             lat / 3.1415927 + 0.5,
         ) * 0.94 + vec2<f32>(0.03, 0.03);
         let uv = (tile + inner_uv) * 0.5;
