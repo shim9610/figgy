@@ -984,7 +984,7 @@ dependencies = [
 
 [[package]]
 name = "figgy"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "console_error_panic_hook",
  "js-sys",
@@ -1985,7 +1985,7 @@ dependencies = [
 
 [[package]]
 name = "model"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2829,7 +2829,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "renderer"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bytemuck",
  "eframe",
