@@ -39,9 +39,13 @@ struct Transform {
     // ACTIVE style's shader entries; the precise entries never read them.
     // sketch:        [0] = (amplitude_px, wavelength_px, seed(f32), 0)
     // constellation: [0] = (star_density, ribbon_width_px, ribbon_intensity,
-    //                seed(f32)), [1] = (star_scale, spread_px, faint_bias, planet_rim)
-    style_params: array<vec4<f32>, 2>,
-};  // 64 B (vec4 array at offset 32, stride 16 — alignment unchanged)
+    //                seed(f32)), [1] = (star_scale, spread_px, faint_bias, planet_rim),
+    //                [2] = (structure_scale, 0, 0, 0) — multiplier on the
+    //                style's px-denominated structure constants (clump
+    //                wavelength, binary separation); keeps the star texture
+    //                resolution-invariant under DPI/export scaling.
+    style_params: array<vec4<f32>, 3>,
+};  // 80 B (vec4 array at offset 32, stride 16 — alignment unchanged)
 
 @group(0) @binding(0) var<uniform> transform: Transform;
 
@@ -292,14 +296,24 @@ const CONS_CLUMP_WAVELENGTH_PX: f32 = 90.0;
 const CONS_RIBBON_SUBDIV: u32 = 8u;
 const CONS_STARS_PER_SEGMENT: u32 = 24u;
 
+// Resolution-invariance factor for px-denominated structure constants
+// (style_params[2].x = structure_scale, 1.0 live / export scale on export).
+// Without it a 2× export halves the clump wavelength relative to the data
+// and the chains read as a different, busier texture.
+fn cons_structure_scale() -> f32 {
+    return max(transform.style_params[2].x, 1e-3);
+}
+
 // Local density/brightness modulation, 0.35 .. 1.65.
 fn cons_clump(arc_px: f32, seed: u32) -> f32 {
-    return 1.0 + 0.65 * sketch_noise(arc_px / CONS_CLUMP_WAVELENGTH_PX, seed ^ 0xC10Du);
+    let wavelength = CONS_CLUMP_WAVELENGTH_PX * cons_structure_scale();
+    return 1.0 + 0.65 * sketch_noise(arc_px / wavelength, seed ^ 0xC10Du);
 }
 
 // Stellar population mix 0..1: 0 = old/warm (dense knots), 1 = young/hot.
 fn cons_pop(arc_px: f32, seed: u32) -> f32 {
-    return 0.5 + 0.5 * sketch_noise(arc_px / CONS_CLUMP_WAVELENGTH_PX, seed ^ 0x090Bu);
+    let wavelength = CONS_CLUMP_WAVELENGTH_PX * cons_structure_scale();
+    return 0.5 + 0.5 * sketch_noise(arc_px / wavelength, seed ^ 0x090Bu);
 }
 
 struct RibbonOut {
@@ -465,7 +479,9 @@ fn vs_stars(
     var center = mix(a_px, b_px, t) + normal_px * off;
     if (is_companion) {
         let ang = cons_h(id, 0x0A46u, seed) * 6.2831853;
-        let sep = 2.0 + 2.0 * cons_h(id, 0x0D15u, seed);
+        // px-denominated structure constant — scales with the resolution
+        // factor so binary pairs keep their separation relative to the stars.
+        let sep = (2.0 + 2.0 * cons_h(id, 0x0D15u, seed)) * cons_structure_scale();
         center = center + vec2<f32>(cos(ang), sin(ang)) * sep;
     }
 

@@ -367,6 +367,7 @@ impl eframe::App for LabApp {
                     "ribbon_intensity" => &mut o.ribbon_intensity,
                     "star_scale" => &mut o.star_scale,
                     "spread_px" => &mut o.spread_px,
+                    "structure_scale" => &mut o.structure_scale,
                     "faint_bias" => &mut o.faint_bias,
                     "glow" => &mut o.glow,
                     "nebula" => &mut o.nebula,

@@ -40,9 +40,13 @@ struct Transform {
     // ACTIVE style's shader entries; the precise entries never read them.
     // sketch:        [0] = (amplitude_px, wavelength_px, seed(f32), 0)
     // constellation: [0] = (star_density, ribbon_width_px, ribbon_intensity,
-    //                seed(f32)), [1] = (star_scale, spread_px, faint_bias, planet_rim)
-    style_params: array<vec4<f32>, 2>,
-};  // 64 B (vec4 array at offset 32, stride 16 — alignment unchanged)
+    //                seed(f32)), [1] = (star_scale, spread_px, faint_bias, planet_rim),
+    //                [2] = (structure_scale, 0, 0, 0) — multiplier on the
+    //                style's px-denominated structure constants (clump
+    //                wavelength, binary separation); keeps the star texture
+    //                resolution-invariant under DPI/export scaling.
+    style_params: array<vec4<f32>, 3>,
+};  // 80 B (vec4 array at offset 32, stride 16 — alignment unchanged)
 
 @group(0) @binding(0) var<uniform> transform: Transform;
 

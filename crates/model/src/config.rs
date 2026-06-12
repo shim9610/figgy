@@ -153,6 +153,13 @@ pub struct ConstellationOptions {
     /// Perpendicular star scatter σ from the path, in px. Larger reads more
     /// like a loose cluster, smaller tracks the data tighter. Default 2.5.
     pub spread_px: f32,
+    /// Multiplier on the style's px-denominated STRUCTURE constants — the
+    /// clump/population noise wavelength (90 px base) and binary-companion
+    /// separation. This is what keeps the star texture resolution-invariant:
+    /// export scaling multiplies it (and divides `star_density`)
+    /// automatically; hosts that render a larger physical canvas (dpr > 1)
+    /// should do the same. Default 1.0.
+    pub structure_scale: f32,
     /// Luminosity-function slope: the exponent of the brightness power law.
     /// Higher → a larger fraction of faint small stars per bright anchor
     /// (real fields sit faint-heavy). Sensible range ~1.5..6. Default 3.0.
@@ -182,6 +189,7 @@ impl Default for ConstellationOptions {
             ribbon_intensity: 0.30,
             star_scale: 1.0,
             spread_px: 2.5,
+            structure_scale: 1.0,
             faint_bias: 3.0,
             glow: 0.55,
             nebula: 1.0,
@@ -236,6 +244,7 @@ impl ConstellationOptions {
         spec("ribbon_intensity", 0.0, 1.0, 0.30),
         spec("star_scale", 0.3, 3.0, 1.0),
         spec("spread_px", 0.0, 10.0, 2.5),
+        spec("structure_scale", 0.25, 4.0, 1.0),
         spec("faint_bias", 0.5, 10.0, 3.0),
         spec("glow", 0.0, 1.5, 0.55),
         spec("nebula", 0.0, 1.5, 1.0),
@@ -355,9 +364,13 @@ impl Config {
 
         // Sketch wobble dims are pixel-based visual dims too. Scaled only in
         // Stylized modes — `Precise` carries no dims, so the precise path
-        // sees no change. Constellation's `star_density` is per arc-px and
-        // scales implicitly with the arc itself; `star_scale` multiplies
-        // px-sized star sprites, so it scales like a px dim.
+        // sees no change. Constellation must come out RESOLUTION-INVARIANT:
+        // px-sized dims (ribbon width, spread, star size, structure
+        // constants via structure_scale) multiply, and `star_density`
+        // (stars per arc-PX) divides — the arc itself gains px with the
+        // scale, so dividing keeps the star COUNT per data span identical.
+        // Without the division a 2× export doubles the stars and the chains
+        // bloat into overexposed blobs (field report).
         match &mut self.draw_style {
             DrawStyle::Sketch(sketch) => {
                 sketch.amplitude_px *= s;
@@ -367,6 +380,10 @@ impl Config {
                 c.ribbon_width_px *= s;
                 c.spread_px *= s;
                 c.star_scale *= s;
+                c.structure_scale *= s;
+                if s > 0.0 {
+                    c.star_density /= s;
+                }
             }
             DrawStyle::Precise => {}
         }
@@ -554,6 +571,7 @@ mod draw_style_serde_tests {
             ribbon_intensity: 0.4,
             star_scale: 1.3,
             spread_px: 3.5,
+            structure_scale: 1.25,
             faint_bias: 4.5,
             glow: 0.8,
             nebula: 0.7,

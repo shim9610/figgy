@@ -192,29 +192,37 @@ pub(crate) enum StyleKey { Sketch, Constellation }
 pub(crate) struct StyleVariant {
     pub(crate) key: StyleKey,
     pub(crate) needs_arc_prefix: bool,
-    /// `Transform.style_params` packing — both vec4 slots, layout per
+    /// `Transform.style_params` packing — all three vec4 slots, layout per
     /// SHADER_COMMON.md §1.
-    pub(crate) pack_params: fn(&DrawStyle) -> [f32; 8],
+    pub(crate) pack_params: fn(&DrawStyle) -> [f32; 12],
 }
 
-/// sketch: `[0] = (amplitude_px, wavelength_px, seed, 0)`, `[1] = 0`.
-fn pack_sketch_params(style: &DrawStyle) -> [f32; 8] {
+/// sketch: `[0] = (amplitude_px, wavelength_px, seed, 0)`, rest 0.
+fn pack_sketch_params(style: &DrawStyle) -> [f32; 12] {
     match style.sketch() {
-        Some(s) => [s.amplitude_px, s.wavelength_px, s.seed as f32, 0.0, 0.0, 0.0, 0.0, 0.0],
-        None => [0.0; 8],
+        Some(s) => {
+            let mut p = [0.0; 12];
+            p[0] = s.amplitude_px;
+            p[1] = s.wavelength_px;
+            p[2] = s.seed as f32;
+            p
+        }
+        None => [0.0; 12],
     }
 }
 
 /// constellation: `[0] = (star_density, ribbon_width_px, ribbon_intensity,
-/// seed)`, `[1] = (star_scale, spread_px, faint_bias, planet_rim)`.
+/// seed)`, `[1] = (star_scale, spread_px, faint_bias, planet_rim)`,
+/// `[2] = (structure_scale, 0, 0, 0)`.
 /// `glow`/`nebula`/`dust` are CPU-raster parameters and never reach the GPU.
-fn pack_constellation_params(style: &DrawStyle) -> [f32; 8] {
+fn pack_constellation_params(style: &DrawStyle) -> [f32; 12] {
     match style.constellation() {
         Some(c) => [
             c.star_density, c.ribbon_width_px, c.ribbon_intensity, c.seed as f32,
             c.star_scale, c.spread_px, c.faint_bias, c.planet_rim,
+            c.structure_scale, 0.0, 0.0, 0.0,
         ],
-        None => [0.0; 8],
+        None => [0.0; 12],
     }
 }
 

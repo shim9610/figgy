@@ -687,19 +687,20 @@ pub struct ScatterTransform {
     pub pixel_to_ndc: [f32; 2],   // offset 24
     /// Generic per-panel style parameter slots (SHADER_COMMON.md §1), packed
     /// by the renderer's style table (`StyleVariant::pack_params`, flat
-    /// `[f32; 8]` split into two vec4 slots). All zeros in precise mode —
+    /// `[f32; 12]` split into three vec4 slots). All zeros in precise mode —
     /// the precise entry points never read them. Sketch:
-    /// `[0] = [amplitude_px, wavelength_px, seed as f32, 0.0]`, `[1] = 0`;
+    /// `[0] = [amplitude_px, wavelength_px, seed as f32, 0.0]`, rest 0;
     /// constellation: `[0] = [star_density, ribbon_width_px,
-    /// ribbon_intensity, seed as f32]`, `[1] = [star_scale, spread_px, 0,
-    /// 0]`. Seeds are stored as f32 (exact up to 2^24) and shaders recover
-    /// them via `u32(...)`.
-    pub style_params: [[f32; 4]; 2],   // offset 32 → 64 byte
+    /// ribbon_intensity, seed as f32]`, `[1] = [star_scale, spread_px,
+    /// faint_bias, planet_rim]`, `[2] = [structure_scale, 0, 0, 0]`. Seeds
+    /// are stored as f32 (exact up to 2^24) and shaders recover them via
+    /// `u32(...)`.
+    pub style_params: [[f32; 4]; 3],   // offset 32 → 80 byte
 }
 
 // WGSL mirror size guards (SHADER_COMMON.md §1 / §2). Update both the doc and
 // every shader's common block before touching these.
-const _: () = assert!(std::mem::size_of::<ScatterTransform>() == 64);
+const _: () = assert!(std::mem::size_of::<ScatterTransform>() == 80);
 
 /// Allocate the transform uniform buffer with `COPY_DST` so subsequent
 /// updates can use `queue.write_buffer` instead of recreating it.
@@ -928,11 +929,12 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
     // amplitude/wavelength) by the DPI scale; pack functions read them as-is.
     let packed = match crate::renderer::style_variant(&config.draw_style) {
         Some(v) => (v.pack_params)(&config.draw_style),
-        None => [0.0; 8],
+        None => [0.0; 12],
     };
     let style_params = [
         [packed[0], packed[1], packed[2], packed[3]],
         [packed[4], packed[5], packed[6], packed[7]],
+        [packed[8], packed[9], packed[10], packed[11]],
     ];
 
     // No data_area → use the data range directly (no extension).

@@ -227,6 +227,19 @@ fn main() {
         "target/constellation_demo/spectrum.png",
     );
 
+    // Resolution invariance: the same chart at a 2× export scale must read
+    // as the 1× render upscaled — same star count per data span, same clump
+    // structure — NOT a denser, blown-out chain (field report). The scaled
+    // config divides star_density and multiplies structure_scale.
+    let mut img = r.export_panel_rgba(&spec_chart(), &spec_distinct, 2.0).expect("export");
+    over_space(&mut img);
+    std::fs::write(
+        "target/constellation_demo/spectrum_x2.png",
+        encode_png(&img).expect("png"),
+    )
+    .expect("write");
+    println!("wrote target/constellation_demo/spectrum_x2.png");
+
     // ── Step 2: ringed planets (scatter). Ring angle = ScatterShape. ──
     let planet_series = |id: &str, x: &str, y: &str, shape: ScatterShape, size: f32, color: Color| SeriesConfig {
         series_id: id.into(),
