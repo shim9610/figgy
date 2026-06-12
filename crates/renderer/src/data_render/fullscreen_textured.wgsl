@@ -42,5 +42,8 @@ fn vs_main(@builtin(vertex_index) idx: u32) -> VsOut {
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    return textureSample(src_texture, src_sampler, in.uv);
+    // Explicit LOD by repo rule (shader_consistency lint): every figgy
+    // texture is single-mip, and bare textureSample is a browser-WGSL
+    // foot-gun (Tint rejects it in non-uniform control flow).
+    return textureSampleLevel(src_texture, src_sampler, in.uv, 0.0);
 }

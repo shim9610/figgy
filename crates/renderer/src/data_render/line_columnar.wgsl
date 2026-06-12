@@ -490,7 +490,8 @@ fn vs_stars(
 
 @fragment
 fn fs_stars(in: StarOut) -> @location(0) vec4<f32> {
-    let s = textureSample(cons_psf_tex, cons_samp, in.uv);
+    // Explicit LOD by repo rule (shader_consistency lint) — single-mip PSF.
+    let s = textureSampleLevel(cons_psf_tex, cons_samp, in.uv, 0.0);
     // White saturated core + blackbody-tinted halo — star color lives in the
     // halo, exactly like a saturated sensor (§2.1).
     let col = (vec3<f32>(1.0) * s.r + in.tint * s.g) * in.brightness;

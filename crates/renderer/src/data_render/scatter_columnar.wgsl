@@ -370,7 +370,12 @@ fn fs_planet(in: VsPlanetOut) -> @location(0) vec4<f32> {
     var ring_rgb = vec3<f32>(0.0);
     if (in_band) {
         let u = (rho - RING_INNER) / (RING_OUTER - RING_INNER);
-        let s = textureSample(cons_ring_tex, cons_samp, vec2<f32>(u, 0.5));
+        // textureSampleLevel, NOT textureSample: this branch is non-uniform
+        // (fragment-position dependent), and browser WGSL (Tint) hard-rejects
+        // implicit-derivative sampling there — the whole module fails to
+        // compile, which blanks every scatter draw on wasm. The bake
+        // textures are single-mip, so explicit LOD 0 is pixel-identical.
+        let s = textureSampleLevel(cons_ring_tex, cons_samp, vec2<f32>(u, 0.5), 0.0);
         // Edge AA along the band borders.
         let band_aa = smoothstep(RING_INNER, RING_INNER + 0.06, rho)
             * (1.0 - smoothstep(RING_OUTER - 0.06, RING_OUTER, rho));
@@ -425,7 +430,8 @@ fn fs_planet(in: VsPlanetOut) -> @location(0) vec4<f32> {
             lat / 3.1415927 + 0.5,
         ) * 0.94 + vec2<f32>(0.03, 0.03);
         let uv = (tile + inner_uv) * 0.5;
-        let albedo = textureSample(cons_planet_atlas, cons_samp, uv).rgb;
+        // Explicit LOD for the same Tint uniformity rule as the ring sample.
+        let albedo = textureSampleLevel(cons_planet_atlas, cons_samp, uv, 0.0).rgb;
 
         planet_rgb = albedo * (0.18 + 0.88 * diff) * limb;
     }

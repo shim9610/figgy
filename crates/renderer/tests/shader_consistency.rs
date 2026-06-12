@@ -226,6 +226,43 @@ fn shader_common_blocks_match_ssot() {
     }
 }
 
+/// Browser-WGSL portability lint: bare `textureSample` is FORBIDDEN in every
+/// figgy shader — use `textureSampleLevel(..., 0.0)`.
+///
+/// Implicit-derivative sampling inside non-uniform control flow is a hard
+/// COMPILE error in the browser's WGSL compiler (Tint), while native naga
+/// accepts it — the v0.4.0 planet shader shipped exactly that, and on wasm
+/// the invalid module took down every pipeline in the file: any chart with a
+/// scatter primitive rendered a black canvas in all three draw styles.
+/// figgy's textures are all single-mip, so explicit LOD 0 is always
+/// pixel-identical and there is no legitimate use of the implicit form.
+#[test]
+fn no_bare_texture_sample_in_any_shader() {
+    let dir = workspace_root().join("src/data_render");
+    let mut offenders = Vec::new();
+    for entry in fs::read_dir(&dir).expect("read data_render dir") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("wgsl") {
+            continue;
+        }
+        let src = fs::read_to_string(&path).expect("read shader");
+        for (i, line) in src.lines().enumerate() {
+            // `textureSampleLevel` must not match; the lint targets the
+            // implicit-derivative form only.
+            if line.contains("textureSample(") {
+                offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "bare textureSample() found — use textureSampleLevel(..., 0.0) \
+         (Tint rejects implicit derivatives in non-uniform control flow; \
+         on wasm the whole shader module fails and scatter charts go black):\n{}",
+        offenders.join("\n")
+    );
+}
+
 #[test]
 fn every_targeted_shader_has_begin_end_markers() {
     for short in ["scatter", "line", "errorbar", "arc"] {
