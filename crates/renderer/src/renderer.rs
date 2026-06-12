@@ -117,7 +117,34 @@ pub struct Renderer {
     #[cfg(test)]
     arc_chunk_override: Option<u32>,
 
+    /// Constellation deep-space backdrop cache. The backdrop depends only on
+    /// the panel size and the (nebula, dust, seed) options — NOT on axis
+    /// ranges — so pan/zoom/`set_config` refreshes reuse the baked bytes
+    /// instead of re-running the fBm lattice over the whole panel (~40 ms at
+    /// 2000×1600). Single slot: multi-panel hosts with differing sizes fall
+    /// back to re-baking per refresh, same as before the cache. Mutated only
+    /// in `&mut self` entry points, like `arc_cache`.
+    space_bg: Option<SpaceBgCache>,
+
     surface_format: wgpu::TextureFormat,
+}
+
+/// Key + bytes of one baked constellation backdrop. `bake_gen` is a
+/// monotonically increasing stamp; a `ChartView` whose grid texture already
+/// holds this generation skips the (w·h·4)-byte re-upload too.
+struct SpaceBgCache {
+    key: SpaceBgKey,
+    bake_gen: u64,
+    rgba: Vec<u8>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SpaceBgKey {
+    w: u32,
+    h: u32,
+    nebula: u32,
+    dust: u32,
+    seed: u32,
 }
 
 fn validate_target_format(
@@ -443,6 +470,7 @@ impl Renderer {
             arc_pipelines,
             #[cfg(test)]
             arc_chunk_override: None,
+            space_bg: None,
             surface_format,
         })
     }
@@ -654,6 +682,11 @@ impl Renderer {
     /// width, dash lengths, point radius, errorbar widths/cap) is multiplied
     /// by `scale` (used by the high-DPI export path).
     pub fn create_style_for_series_scaled(&self, cfg: &SeriesConfig, scale: f32) -> ChartStyle {
+        // Decorrelates per-series hash patterns in the styled shader entries
+        // (star placement, sketch wobble). Derived from the series id, so the
+        // result stays deterministic for a given config; renaming a series
+        // re-rolls its pattern.
+        let series_salt = crate::sketch::fnv1a(&cfg.series_id);
         let line = match extract_line(&cfg.render_type) {
             Some(l) => {
                 let mut s =
@@ -689,6 +722,10 @@ impl Renderer {
             }
             None => PrimitiveStyle::from_color(Color::BLACK),
         };
+        let (mut line, mut scatter, mut errorbar) = (line, scatter, errorbar);
+        line.series_salt = series_salt;
+        scatter.series_salt = series_salt;
+        errorbar.series_salt = series_salt;
         self.create_style_from_primitives(line, scatter, errorbar)
     }
 
@@ -772,6 +809,7 @@ impl Renderer {
             transform_buffer,
             transform_bg,
             panel_rect,
+            grid_space_gen: None,
         })
     }
 
@@ -786,8 +824,12 @@ impl Renderer {
     /// Re-rasterize both grid and decoration textures. Updates in place via
     /// `write_texture` when the size matches; allocates new textures
     /// otherwise. Also refreshes the transform UB (chart_area feeds it).
+    ///
+    /// `&mut self`: the constellation backdrop cache (`space_bg`) lives on
+    /// the renderer and may be (re)baked here — same prepare-phase mutability
+    /// rule as `paint`.
     pub fn refresh_axis(
-        &self,
+        &mut self,
         view: &mut ChartView,
         chart: &Chart,
         panel_rect: Rect,
@@ -800,7 +842,7 @@ impl Renderer {
     /// `selection` comes from `Selectable::selection_box` / `HitMap` and is in
     /// absolute surface coordinates.
     pub fn refresh_axis_with_selection(
-        &self,
+        &mut self,
         view: &mut ChartView,
         chart: &Chart,
         panel_rect: Rect,
@@ -809,17 +851,48 @@ impl Renderer {
         let w = panel_rect.width.max(1);
         let h = panel_rect.height.max(1);
 
-        let grid_rgba = axis_render::try_raster_chart_layer_to_rgba(
-            chart.config(), axis_render::AxisLayerKind::Grid,
-        )?;
         let dec_rgba = axis_render::try_raster_chart_layer_to_rgba_with_selection(
             chart.config(), axis_render::AxisLayerKind::Decoration, selection,
         )?;
 
-        self.refresh_one_layer(
-            &mut view.grid_texture, &mut view.grid_bind_group,
-            &grid_rgba, w, h,
-        )?;
+        // Grid layer. The constellation backdrop is axis-range independent,
+        // so it is cached by (size, nebula, dust, seed): a pan/zoom/config
+        // commit re-rasters only the decoration layer, and a view whose grid
+        // texture already holds the cached generation skips the upload too.
+        if let crate::config::DrawStyle::Constellation(c) = &chart.config().draw_style {
+            let key = SpaceBgKey {
+                w,
+                h,
+                nebula: c.nebula.to_bits(),
+                dust: c.dust.to_bits(),
+                seed: c.seed,
+            };
+            if !self.space_bg.as_ref().is_some_and(|s| s.key == key) {
+                let rgba = axis_render::try_raster_chart_layer_to_rgba(
+                    chart.config(), axis_render::AxisLayerKind::Grid,
+                )?;
+                let bake_gen = self.space_bg.as_ref().map_or(1, |s| s.bake_gen + 1);
+                self.space_bg = Some(SpaceBgCache { key, bake_gen, rgba });
+            }
+            let cache = self.space_bg.as_ref().expect("space_bg baked above");
+            if view.grid_space_gen != Some(cache.bake_gen) {
+                self.refresh_one_layer(
+                    &mut view.grid_texture, &mut view.grid_bind_group,
+                    &cache.rgba, w, h,
+                )?;
+                view.grid_space_gen = Some(cache.bake_gen);
+            }
+        } else {
+            let grid_rgba = axis_render::try_raster_chart_layer_to_rgba(
+                chart.config(), axis_render::AxisLayerKind::Grid,
+            )?;
+            self.refresh_one_layer(
+                &mut view.grid_texture, &mut view.grid_bind_group,
+                &grid_rgba, w, h,
+            )?;
+            view.grid_space_gen = None;
+        }
+
         self.refresh_one_layer(
             &mut view.decoration_texture, &mut view.decoration_bind_group,
             &dec_rgba, w, h,
@@ -1591,6 +1664,10 @@ pub struct ChartView {
     transform_bg: wgpu::BindGroup,
     /// Panel pixel rect in surface coordinates.
     panel_rect: Rect,
+    /// Generation of the renderer's cached constellation backdrop currently
+    /// uploaded into `grid_texture` (`None` = non-cached content). Lets
+    /// `refresh_axis` skip the full-panel texture write on cache hits.
+    grid_space_gen: Option<u64>,
 }
 
 impl ChartView {
@@ -1885,6 +1962,68 @@ mod tests {
         }
         assert!(black > 300, "sine (black) curve missing: {black} px");
         assert!(red > 300, "rc (red) curve missing: {red} px");
+    }
+
+    /// The constellation backdrop cache must rebake only when its key
+    /// (panel size, nebula, dust, seed) changes: range-only refreshes hit
+    /// the cache, and a view already holding the baked generation skips the
+    /// texture re-upload (`grid_space_gen` stamp).
+    #[test]
+    fn space_background_rebakes_only_on_key_change() {
+        let inst = create_instance();
+        let Ok(adapter) = request_adapter(&inst) else { return; };
+        let Ok((device, queue)) = request_device(&adapter) else { return; };
+
+        let mut r = Renderer::try_new(
+            RendererDevice::new(Arc::new(device), Arc::new(queue)),
+            wgpu::TextureFormat::Bgra8Unorm,
+            1024 * 1024,
+        ).unwrap();
+
+        let rect = Rect { x: 0, y: 0, width: 320, height: 200 };
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(rect.clone());
+        config.draw_style = crate::config::DrawStyle::Constellation(
+            crate::config::ConstellationOptions::default(),
+        );
+        let mut chart = Chart::new(config);
+        chart.set_x_range(0.0, 1.0);
+        chart.set_y_range(0.0, 1.0);
+
+        let mut view = r.create_chart_view(&chart, rect.clone()).unwrap();
+        assert_eq!(view.grid_space_gen, None, "fresh view starts unstamped");
+
+        r.refresh_axis(&mut view, &chart, rect.clone()).unwrap();
+        assert_eq!(r.space_bg.as_ref().map(|s| s.bake_gen), Some(1));
+        assert_eq!(view.grid_space_gen, Some(1));
+
+        // Range-only change (pan/zoom): cache hit — no rebake, no restamp.
+        chart.set_x_range(0.0, 2.0);
+        r.refresh_axis(&mut view, &chart, rect.clone()).unwrap();
+        assert_eq!(
+            r.space_bg.as_ref().map(|s| s.bake_gen),
+            Some(1),
+            "range-only refresh must not rebake the backdrop"
+        );
+        assert_eq!(view.grid_space_gen, Some(1));
+
+        // Backdrop parameter change: rebake + re-upload.
+        if let crate::config::DrawStyle::Constellation(c) = &mut chart.config_mut().draw_style {
+            c.seed = 7;
+        }
+        r.refresh_axis(&mut view, &chart, rect.clone()).unwrap();
+        assert_eq!(
+            r.space_bg.as_ref().map(|s| s.bake_gen),
+            Some(2),
+            "seed change must rebake the backdrop"
+        );
+        assert_eq!(view.grid_space_gen, Some(2));
+
+        // Leaving the style un-stamps the view; the slot itself is retained.
+        chart.config_mut().draw_style = crate::config::DrawStyle::Precise;
+        r.refresh_axis(&mut view, &chart, rect).unwrap();
+        assert_eq!(view.grid_space_gen, None);
+        assert_eq!(r.space_bg.as_ref().map(|s| s.bake_gen), Some(2));
     }
 
     /// The GPU arc-length scan must equal a sequential CPU reference for

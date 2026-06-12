@@ -53,7 +53,11 @@ struct Style {
     cap_width_px: f32,
     shape_id: u32,
     dash_len: u32,
-    _pad: vec2<f32>,
+    // Per-series decorrelation salt (FNV-1a of series_id). Styled entries
+    // (sketch/constellation) XOR it into their hash seeds so two series never
+    // share a star/wobble pattern; precise entries never read it.
+    series_salt: u32,
+    _pad: u32,
     dash: array<vec4<f32>, 2>,
 };
 
@@ -246,7 +250,7 @@ fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
     let arc_at = mix(arc.arc_a, arc.arc_b, t);
     let amp = max(transform.style_params[0].x, 0.0);
     let wav = transform.style_params[0].y;
-    let seed = u32(transform.style_params[0].z);
+    let seed = u32(transform.style_params[0].z) ^ style.series_salt;
     let wobble = amp * sketch_noise(arc_at / max(wav, 1e-6), seed);
     // wavelength <= 0 disables the wobble — mirrors the CPU stroker's guard
     // (sketch.rs) so GPU and deco layers degrade identically.
@@ -344,7 +348,7 @@ fn vs_ribbon(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> RibbonOut
     let center_px = mix(a_px, b_px, t) + dir * cap;
     let corner_px = center_px + normal_px * half_geom * side;
 
-    let seed = u32(transform.style_params[0].w);
+    let seed = u32(transform.style_params[0].w) ^ style.series_salt;
     let intensity_cfg = max(transform.style_params[0].z, 0.0);
     let arc_px = mix(arc.arc_a, arc.arc_b, t);
 
@@ -393,7 +397,7 @@ fn vs_stars(
     let corner = vid % 6u;
 
     let density = max(transform.style_params[0].x, 0.0); // stars / 100 px arc
-    let seed = u32(transform.style_params[0].w);
+    let seed = u32(transform.style_params[0].w) ^ style.series_salt;
     let star_scale = max(transform.style_params[1].x, 0.0);
     let spread = max(transform.style_params[1].y, 0.0);
 

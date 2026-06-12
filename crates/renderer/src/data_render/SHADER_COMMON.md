@@ -99,7 +99,11 @@ struct Style {
     cap_width_px: f32,
     shape_id: u32,
     dash_len: u32,
-    _pad: vec2<f32>,
+    // Per-series decorrelation salt (FNV-1a of series_id). Styled entries
+    // (sketch/constellation) XOR it into their hash seeds so two series never
+    // share a star/wobble pattern; precise entries never read it.
+    series_salt: u32,
+    _pad: u32,
     dash: array<vec4<f32>, 2>,
 };
 
@@ -115,6 +119,7 @@ struct Style {
 | `cap_width_px` | errorbar cap 스트로크 두께(픽셀) |
 | `shape_id` | `ScatterShape` 선언 순서 인덱스 0..8 — 0 Circle, 1 Square, 2 Triangle, 3 Diamond, 4 Cross, 5 CircleFilled, 6 SquareFilled, 7 TriangleFilled, 8 DiamondFilled |
 | `dash_len` | `dash`의 유효 스칼라 개수. 0 = solid |
+| `series_salt` | 시리즈 간 해시 탈상관 솔트 — `fnv1a(series_id)` (renderer.rs `create_style_for_series*`가 기록). 스케치/성좌 entry가 자기 해시 시드에 XOR한다. 같은 x 격자를 쓰는 시리즈들이 wobble/별 패턴을 공유하지 않게 하는 장치. 정밀 entry는 읽지 않음 |
 | `_pad` | `dash`의 16바이트 정렬 유지용 |
 | `dash` | 최대 8개의 순차 `[on, off, ...]` 픽셀 길이 — `dash[0].xyzw` 먼저, 이어서 `dash[1].xyzw` |
 

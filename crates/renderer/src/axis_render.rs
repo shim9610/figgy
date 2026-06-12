@@ -263,13 +263,19 @@ fn draw_space_background(
 
 // Glow bloom for the decoration layer (axes / ticks / labels / titles read
 // as line-light sources): one blurred copy added back under the crisp
-// original. The whole bloom runs at HALF resolution — a soft halo can't
-// show the difference, and it cuts the blur cost ~12× (this runs on every
-// decoration re-raster, so it must stay light). Premultiplied-additive with
-// clamp; selection boxes are drawn AFTER this in the raster entry, so the
-// interaction overlay stays crisp.
+// original. This runs on every decoration re-raster (= every pan / zoom /
+// config commit), so it must stay light:
+//   - the halo lives at QUARTER resolution (a soft halo can't show the
+//     difference; box radius 1 × 2 passes there ≈ the old half-res blur),
+//   - the downsample tests each 4×4 block's alpha first — the deco layer is
+//     transparent everywhere but the chrome, so most blocks skip the sum,
+//   - the upsample-add walks 4-px spans and skips spans whose four
+//     contributing quarter-cells are all zero, with 8-bit fixed-point math
+//     on the spans that remain.
+// Premultiplied-additive with clamp; selection boxes are drawn AFTER this in
+// the raster entry, so the interaction overlay stays crisp.
 const GLOW_PASSES: u32 = 2;
-const GLOW_RADIUS: usize = 2;
+const GLOW_RADIUS: usize = 1;
 
 pub(crate) fn apply_decoration_glow(canvas: &mut Canvas, gain: f32) {
     let gain = gain.clamp(0.0, 2.0);
@@ -277,46 +283,67 @@ pub(crate) fn apply_decoration_glow(canvas: &mut Canvas, gain: f32) {
         return;
     }
     let (w, h) = canvas.size();
-    if w < 2 || h < 2 {
+    if w < 4 || h < 4 {
         return;
     }
     let (w, h) = (w as usize, h as usize);
-    let (hw, hh) = (w.div_ceil(2), h.div_ceil(2));
+    let (qw, qh) = (w.div_ceil(4), h.div_ceil(4));
     let src = canvas.pixels_mut();
 
-    // Downsample 2×2 average into the half-res halo buffer.
-    let mut halo = vec![0u8; hw * hh * 4];
-    let mut tmp = vec![0u8; hw * hh * 4];
-    for y in 0..hh {
-        for x in 0..hw {
-            let (x0, y0) = (x * 2, y * 2);
-            let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(h - 1));
+    // Downsample 4×4 average into the quarter-res halo buffer. Blocks whose
+    // alpha is all zero keep the buffer's zero fill without summing.
+    let mut halo = vec![0u8; qw * qh * 4];
+    let mut tmp = vec![0u8; qw * qh * 4];
+    for qy in 0..qh {
+        for qx in 0..qw {
+            let (x_lo, y_lo) = (qx * 4, qy * 4);
+            let (x_hi, y_hi) = ((x_lo + 4).min(w), (y_lo + 4).min(h));
+            let mut any = false;
+            'probe: for y in y_lo..y_hi {
+                let row = y * w * 4;
+                for x in x_lo..x_hi {
+                    if src[row + x * 4 + 3] != 0 {
+                        any = true;
+                        break 'probe;
+                    }
+                }
+            }
+            if !any {
+                continue;
+            }
+            let mut sum = [0u32; 4];
+            let mut n = 0u32;
+            for y in y_lo..y_hi {
+                let row = y * w * 4;
+                for x in x_lo..x_hi {
+                    for c in 0..4 {
+                        sum[c] += src[row + x * 4 + c] as u32;
+                    }
+                    n += 1;
+                }
+            }
             for c in 0..4 {
-                let sum = src[(y0 * w + x0) * 4 + c] as u32
-                    + src[(y0 * w + x1) * 4 + c] as u32
-                    + src[(y1 * w + x0) * 4 + c] as u32
-                    + src[(y1 * w + x1) * 4 + c] as u32;
-                halo[(y * hw + x) * 4 + c] = (sum / 4) as u8;
+                halo[(qy * qw + qx) * 4 + c] = (sum[c] / n.max(1)) as u8;
             }
         }
     }
 
-    // Separable box blur ×2 ≈ gaussian, at half res.
+    // Separable box blur ×2 ≈ gaussian, at quarter res.
     for _ in 0..GLOW_PASSES {
-        for y in 0..hh {
-            let row = y * hw * 4;
+        for y in 0..qh {
+            let row = y * qw * 4;
             let mut acc = [0u32; 4];
-            for x in 0..hw.min(GLOW_RADIUS + 1) {
+            for x in 0..qw.min(GLOW_RADIUS + 1) {
                 for c in 0..4 {
                     acc[c] += halo[row + x * 4 + c] as u32;
                 }
             }
-            let mut count = hw.min(GLOW_RADIUS + 1) as u32;
-            for x in 0..hw {
+            let mut count = qw.min(GLOW_RADIUS + 1) as u32;
+            for x in 0..qw {
                 for c in 0..4 {
                     tmp[row + x * 4 + c] = (acc[c] / count.max(1)) as u8;
                 }
-                if x + GLOW_RADIUS + 1 < hw {
+                if x + GLOW_RADIUS + 1 < qw {
                     for c in 0..4 {
                         acc[c] += halo[row + (x + GLOW_RADIUS + 1) * 4 + c] as u32;
                     }
@@ -330,27 +357,27 @@ pub(crate) fn apply_decoration_glow(canvas: &mut Canvas, gain: f32) {
                 }
             }
         }
-        for x in 0..hw {
+        for x in 0..qw {
             let mut acc = [0u32; 4];
-            for y in 0..hh.min(GLOW_RADIUS + 1) {
+            for y in 0..qh.min(GLOW_RADIUS + 1) {
                 for c in 0..4 {
-                    acc[c] += tmp[(y * hw + x) * 4 + c] as u32;
+                    acc[c] += tmp[(y * qw + x) * 4 + c] as u32;
                 }
             }
-            let mut count = hh.min(GLOW_RADIUS + 1) as u32;
-            for y in 0..hh {
+            let mut count = qh.min(GLOW_RADIUS + 1) as u32;
+            for y in 0..qh {
                 for c in 0..4 {
-                    halo[(y * hw + x) * 4 + c] = (acc[c] / count.max(1)) as u8;
+                    halo[(y * qw + x) * 4 + c] = (acc[c] / count.max(1)) as u8;
                 }
-                if y + GLOW_RADIUS + 1 < hh {
+                if y + GLOW_RADIUS + 1 < qh {
                     for c in 0..4 {
-                        acc[c] += tmp[((y + GLOW_RADIUS + 1) * hw + x) * 4 + c] as u32;
+                        acc[c] += tmp[((y + GLOW_RADIUS + 1) * qw + x) * 4 + c] as u32;
                     }
                     count += 1;
                 }
                 if y >= GLOW_RADIUS {
                     for c in 0..4 {
-                        acc[c] -= tmp[((y - GLOW_RADIUS) * hw + x) * 4 + c] as u32;
+                        acc[c] -= tmp[((y - GLOW_RADIUS) * qw + x) * 4 + c] as u32;
                     }
                     count -= 1;
                 }
@@ -358,25 +385,49 @@ pub(crate) fn apply_decoration_glow(canvas: &mut Canvas, gain: f32) {
         }
     }
 
-    // Bilinear upsample + additive merge.
+    // Per-cell occupancy of the blurred halo — the span skip below reads
+    // this instead of re-testing four bytes per cell per span.
+    let mut occupied = vec![false; qw * qh];
+    for (cell, occ) in halo.chunks_exact(4).zip(occupied.iter_mut()) {
+        *occ = cell.iter().any(|&b| b != 0);
+    }
+
+    // Bilinear upsample + additive merge, in 8-bit fixed point. Output is
+    // walked in 4-px spans sharing one quarter-cell column pair; a span whose
+    // four contributing cells are all zero adds nothing and is skipped — on a
+    // chart-sized canvas that's most of the data area.
+    let gain_fp = (gain * 256.0) as u32;
     for y in 0..h {
-        let fy = (y as f32 * 0.5).min(hh as f32 - 1.0);
-        let y0 = fy.floor() as usize;
-        let y1 = (y0 + 1).min(hh - 1);
-        let ty = fy.fract();
-        for x in 0..w {
-            let fx = (x as f32 * 0.5).min(hw as f32 - 1.0);
-            let x0 = fx.floor() as usize;
-            let x1 = (x0 + 1).min(hw - 1);
-            let tx = fx.fract();
-            for c in 0..4 {
-                let a = halo[(y0 * hw + x0) * 4 + c] as f32 * (1.0 - tx)
-                    + halo[(y0 * hw + x1) * 4 + c] as f32 * tx;
-                let b = halo[(y1 * hw + x0) * 4 + c] as f32 * (1.0 - tx)
-                    + halo[(y1 * hw + x1) * 4 + c] as f32 * tx;
-                let v = a * (1.0 - ty) + b * ty;
-                let i = (y * w + x) * 4 + c;
-                src[i] = (src[i] as f32 + v * gain).min(255.0) as u8;
+        let y0 = (y / 4).min(qh - 1);
+        let y1 = (y0 + 1).min(qh - 1);
+        let ty = ((y % 4) * 64) as u32; // fraction in /256
+        let (row0, row1) = (y0 * qw, y1 * qw);
+        let out_row = y * w * 4;
+        let mut x = 0usize;
+        while x < w {
+            let x0 = (x / 4).min(qw - 1);
+            let x1 = (x0 + 1).min(qw - 1);
+            let span_end = (x0 * 4 + 4).min(w);
+            if !occupied[row0 + x0]
+                && !occupied[row0 + x1]
+                && !occupied[row1 + x0]
+                && !occupied[row1 + x1]
+            {
+                x = span_end;
+                continue;
+            }
+            let (c00, c01) = ((row0 + x0) * 4, (row0 + x1) * 4);
+            let (c10, c11) = ((row1 + x0) * 4, (row1 + x1) * 4);
+            while x < span_end {
+                let tx = ((x % 4) * 64) as u32;
+                for c in 0..4 {
+                    let a = halo[c00 + c] as u32 * (256 - tx) + halo[c01 + c] as u32 * tx;
+                    let b = halo[c10 + c] as u32 * (256 - tx) + halo[c11 + c] as u32 * tx;
+                    let v = (a * (256 - ty) + b * ty) >> 16; // back to 0..=255
+                    let i = out_row + x * 4 + c;
+                    src[i] = (src[i] as u32 + ((v * gain_fp) >> 8)).min(255) as u8;
+                }
+                x += 1;
             }
         }
     }

@@ -45,7 +45,11 @@ struct Style {
     cap_width_px: f32,
     shape_id: u32,
     dash_len: u32,
-    _pad: vec2<f32>,
+    // Per-series decorrelation salt (FNV-1a of series_id). Styled entries
+    // (sketch/constellation) XOR it into their hash seeds so two series never
+    // share a star/wobble pattern; precise entries never read it.
+    series_salt: u32,
+    _pad: u32,
     dash: array<vec4<f32>, 2>,
 };
 
@@ -281,7 +285,7 @@ fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> @builtin(position)
     let side = select(1.0, -1.0, (corner & 1u) == 0u);
 
     let amp = max(transform.style_params[0].x, 0.0);
-    let seed = u32(transform.style_params[0].z) + inst;
+    let seed = (u32(transform.style_params[0].z) ^ style.series_salt) + inst;
     let lattice = f32(seg * 2u + select(1u, 0u, at_a));
     let disp = amp * sketch_noise(lattice, seed);
 
@@ -323,7 +327,7 @@ fn vs_jet(in: VsIn, @builtin(instance_index) inst: u32) -> JetOut {
     let seg = in.vi / 6u;
 
     var out: JetOut;
-    out.seed_inst = u32(transform.style_params[0].w) + inst;
+    out.seed_inst = (u32(transform.style_params[0].w) ^ style.series_salt) + inst;
     out.kind = select(1u, 0u, seg == 0u || seg == 3u);
     out.t_src = 0.5;
     out.local = vec2<f32>(0.0, 0.0);

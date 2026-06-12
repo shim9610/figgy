@@ -170,6 +170,63 @@ fn main() {
         );
     }
 
+    // ── Per-series decorrelation: same-x spectrum stack. Real spectra are
+    // scaled copies on one x grid, so before the Style.series_salt fix every
+    // series shared one bright-star pattern (vertically aligned anchors).
+    // Control arm: all five series share ONE series_id — identical salt
+    // reproduces the correlated look. Real arm: distinct ids.
+    let sn = 700;
+    let sxs: Vec<f64> = (0..sn).map(|i| 1200.0 + 360.0 * i as f64 / (sn - 1) as f64).collect();
+    let peak = |x: f64, c: f64, w: f64| (-((x - c) / w) * ((x - c) / w)).exp();
+    let base: Vec<f64> = sxs
+        .iter()
+        .map(|&x| {
+            0.012
+                + 0.115 * peak(x, 1242.0, 14.0)
+                + 0.16 * peak(x, 1345.0, 22.0)
+                + 0.05 * peak(x, 1455.0, 40.0)
+                + 0.62 * peak(x, 1585.0, 28.0)
+        })
+        .collect();
+    r.add_column("spec_x", &col(sxs)).unwrap();
+    let spec_scales = [1.0, 0.55, 0.10, 0.05, 0.02];
+    for (i, k) in spec_scales.iter().enumerate() {
+        let ys: Vec<f64> = base.iter().map(|b| b * k).collect();
+        r.add_column(&format!("spec_{i}"), &col(ys)).unwrap();
+    }
+    let spec_colors = [
+        Color::from_rgb8(110, 200, 255),
+        Color::from_rgb8(150, 235, 170),
+        Color::from_rgb8(235, 215, 130),
+        Color::from_rgb8(255, 150, 100),
+        Color::from_rgb8(220, 140, 255),
+    ];
+    let mut spec_correlated = Vec::new();
+    let mut spec_distinct = Vec::new();
+    for (i, &color) in spec_colors.iter().enumerate() {
+        let y = format!("spec_{i}");
+        spec_correlated.push(line_series("spec_same", "spec_x", &y, color));
+        spec_distinct.push(line_series(&format!("spec_s{i}"), "spec_x", &y, color));
+    }
+    let spec_chart = || {
+        let mut c = build_chart(DrawStyle::Constellation(ConstellationOptions::default()));
+        c.set_x_range(1195.0, 1565.0);
+        c.set_y_range(0.0, 0.72);
+        c
+    };
+    export(
+        &mut r,
+        &spec_chart(),
+        &spec_correlated,
+        "target/constellation_demo/spectrum_correlated.png",
+    );
+    export(
+        &mut r,
+        &spec_chart(),
+        &spec_distinct,
+        "target/constellation_demo/spectrum.png",
+    );
+
     // ── Step 2: ringed planets (scatter). Ring angle = ScatterShape. ──
     let planet_series = |id: &str, x: &str, y: &str, shape: ScatterShape, size: f32, color: Color| SeriesConfig {
         series_id: id.into(),

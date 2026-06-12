@@ -41,7 +41,11 @@ struct Style {
     cap_width_px: f32,
     shape_id: u32,
     dash_len: u32,
-    _pad: vec2<f32>,
+    // Per-series decorrelation salt (FNV-1a of series_id). Styled entries
+    // (sketch/constellation) XOR it into their hash seeds so two series never
+    // share a star/wobble pattern; precise entries never read it.
+    series_salt: u32,
+    _pad: u32,
     dash: array<vec4<f32>, 2>,
 };
 
@@ -222,7 +226,7 @@ fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> VsSketchOut {
     var out: VsSketchOut;
     out.pos = vec4<f32>(world, 0.0, 1.0);
     out.local_pos = in.quad_pos;
-    out.seed_inst = u32(transform.style_params[0].z) + inst;
+    out.seed_inst = (u32(transform.style_params[0].z) ^ style.series_salt) + inst;
     out.wobble_px = wobble;
     return out;
 }
@@ -321,7 +325,7 @@ fn vs_planet(in: VsIn, @builtin(instance_index) inst: u32) -> VsPlanetOut {
     var out: VsPlanetOut;
     out.pos = vec4<f32>(world, 0.0, 1.0);
     out.local_pos = in.quad_pos;
-    out.seed_inst = u32(transform.style_params[0].w) + inst;
+    out.seed_inst = (u32(transform.style_params[0].w) ^ style.series_salt) + inst;
     out.rim_gain = clamp(transform.style_params[1].w, 0.0, 2.0);
     return out;
 }

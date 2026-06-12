@@ -782,8 +782,13 @@ pub struct PrimitiveStyle {
     pub shape_id: u32,            // offset 32
     /// Number of valid scalars in `dash`; 0 = solid.
     pub dash_len: u32,            // offset 36
+    /// Per-series decorrelation salt (FNV-1a of `series_id`, written by
+    /// `Renderer::create_style_for_series*`). Sketch/constellation shader
+    /// entries XOR it into their hash seeds so series with identical
+    /// sampling don't share star/wobble patterns; precise entries ignore it.
+    pub series_salt: u32,         // offset 40
     /// Keeps `dash` 16-byte aligned.
-    pub _pad: [f32; 2],           // offset 40
+    pub _pad: u32,                // offset 44
     /// Up to 8 sequential `[on, off, ...]` pixel lengths: `dash[0]` first,
     /// then `dash[1]`.
     pub dash: [[f32; 4]; 2],      // offset 48 → 80 byte
@@ -811,7 +816,8 @@ impl PrimitiveStyle {
             cap_width_px: 1.0,
             shape_id: shape_id(&ScatterShape::CircleFilled),
             dash_len: 0,
-            _pad: [0.0; 2],
+            series_salt: 0,
+            _pad: 0,
             dash: [[0.0; 4]; 2],
         }
     }
