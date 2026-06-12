@@ -35,11 +35,13 @@ struct Transform {
     data_max: vec2<f32>,
     scale_log: vec2<f32>,
     pixel_to_ndc: vec2<f32>,
-    // Generic per-panel style parameter slot. Interpretation belongs to the
-    // ACTIVE style's shader entries; the precise entries never read it.
-    // sketch: x=amplitude_px, y=wavelength_px, z=seed(f32), w=reserved(0)
-    style_params: vec4<f32>,
-};  // 48 B (vec4 at offset 32 — alignment unchanged)
+    // Generic per-panel style parameter slots. Interpretation belongs to the
+    // ACTIVE style's shader entries; the precise entries never read them.
+    // sketch:        [0] = (amplitude_px, wavelength_px, seed(f32), 0)
+    // constellation: [0] = (star_density, ribbon_width_px, ribbon_intensity,
+    //                seed(f32)), [1] = (star_scale, spread_px, 0, 0)
+    style_params: array<vec4<f32>, 2>,
+};  // 64 B (vec4 array at offset 32, stride 16 — alignment unchanged)
 
 @group(0) @binding(0) var<uniform> transform: Transform;
 
@@ -242,9 +244,9 @@ fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
     if (k == SKETCH_SUBDIV) { cap = half_w; }
 
     let arc_at = mix(arc.arc_a, arc.arc_b, t);
-    let amp = max(transform.style_params.x, 0.0);
-    let wav = transform.style_params.y;
-    let seed = u32(transform.style_params.z);
+    let amp = max(transform.style_params[0].x, 0.0);
+    let wav = transform.style_params[0].y;
+    let seed = u32(transform.style_params[0].z);
     let wobble = amp * sketch_noise(arc_at / max(wav, 1e-6), seed);
     // wavelength <= 0 disables the wobble — mirrors the CPU stroker's guard
     // (sketch.rs) so GPU and deco layers degrade identically.
@@ -258,4 +260,233 @@ fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
     // The cap extension keeps advancing the dash phase, like vs_main.
     out.dist_px = arc_at + cap;
     return out;
+}
+
+// ────────────── constellation mode (NOT part of the common block) ───────────
+// Star-chain line style — design SSoT: docs/CONSTELLATION_DESIGN.md.
+// Two entries reuse the line pipeline's six instance slots:
+//   vs_ribbon/fs_ribbon — the unresolved-starlight haze (series-colored
+//                         nebula band; this is what separates two series),
+//   vs_stars/fs_stars   — individual stars scattered along the arc.
+// Both render ADDITIVELY onto a dark backdrop; alpha is written as the max
+// channel so straight-alpha consumers (the PNG export) unpremultiply sanely.
+// Every star attribute derives from (arc length, seed) hashes in-shader —
+// the column pool keeps no CPU copies and nothing here changes that.
+
+// Style-texture bindings (group 2). Only the constellation entries reference
+// them; pipelines built for the other entries omit this bind group layout.
+@group(2) @binding(0) var cons_psf_tex: texture_2d<f32>; // R=core, G=halo
+@group(2) @binding(1) var cons_lut_tex: texture_2d<f32>; // 256×1 blackbody
+@group(2) @binding(2) var cons_samp: sampler;
+
+// Arc wavelength (px) of the slow "clump" modulation shared by ribbon
+// brightness, star density, and population temperature — sharing one noise
+// channel is what makes dense knots simultaneously brighter and warmer.
+const CONS_CLUMP_WAVELENGTH_PX: f32 = 90.0;
+// CPU draw-count twins live in mod.rs: CONSTELLATION_RIBBON_VERTICES =
+// 2·(SUBDIV+1), CONSTELLATION_STAR_VERTICES = 6·STARS_PER_SEGMENT.
+const CONS_RIBBON_SUBDIV: u32 = 8u;
+const CONS_STARS_PER_SEGMENT: u32 = 24u;
+
+// Local density/brightness modulation, 0.35 .. 1.65.
+fn cons_clump(arc_px: f32, seed: u32) -> f32 {
+    return 1.0 + 0.65 * sketch_noise(arc_px / CONS_CLUMP_WAVELENGTH_PX, seed ^ 0xC10Du);
+}
+
+// Stellar population mix 0..1: 0 = old/warm (dense knots), 1 = young/hot.
+fn cons_pop(arc_px: f32, seed: u32) -> f32 {
+    return 0.5 + 0.5 * sketch_noise(arc_px / CONS_CLUMP_WAVELENGTH_PX, seed ^ 0x090Bu);
+}
+
+struct RibbonOut {
+    @builtin(position) pos: vec4<f32>,
+    // Cross-strip coordinate in [-1, 1] (edge = one full ribbon width from
+    // the centerline — see the geometric-width note in vs_ribbon).
+    @location(0) cross_d: f32,
+    // Centerline intensity (config intensity × clump noise), computed in the
+    // vertex stage: the shared transform bind group is vertex-visible only,
+    // and the clump wavelength (90 px) is far above the subdivision spacing,
+    // so linear interpolation across the strip is lossless in practice.
+    @location(1) center_i: f32,
+    // Longitudinal cap coordinate: 0 over the segment body, →1 at the tip of
+    // the square-cap extension. Fades the cap so true polyline ends finish
+    // softly; at interior joints the neighbor's full-intensity body wins
+    // under the ribbon's MAX blending.
+    @location(2) cap_d: f32,
+};
+
+@vertex
+fn vs_ribbon(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> RibbonOut {
+    let a_px = data_to_ndc(in.x_a, in.y_a) / transform.pixel_to_ndc;
+    let b_px = data_to_ndc(in.x_b, in.y_b) / transform.pixel_to_ndc;
+    let delta = b_px - a_px;
+    let len = length(delta);
+    let dir = select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6);
+    let normal_px = vec2<f32>(-dir.y, dir.x);
+
+    // Geometric half-extent = one FULL ribbon width: the gaussian profile in
+    // fs_ribbon reaches ~6% of peak at the strip edge, so the geometric cut
+    // is invisible under additive blending.
+    let half_geom = max(transform.style_params[0].y, 1.0);
+
+    let k = vid / 2u;
+    let t = f32(k) / f32(CONS_RIBBON_SUBDIV);
+    let side = select(-1.0, 1.0, (vid & 1u) == 1u);
+
+    // Square-cap extension on both strip ends, like vs_main: adjacent
+    // segments then overlap at every joint, sealing the outer-bend wedge
+    // gaps a butt-ended strip leaves on curves. The ribbon pipeline blends
+    // with MAX (not ADD), so the overlap cannot double-brighten.
+    var cap = 0.0;
+    if (k == 0u) { cap = -half_geom; }
+    if (k == CONS_RIBBON_SUBDIV) { cap = half_geom; }
+
+    let center_px = mix(a_px, b_px, t) + dir * cap;
+    let corner_px = center_px + normal_px * half_geom * side;
+
+    let seed = u32(transform.style_params[0].w);
+    let intensity_cfg = max(transform.style_params[0].z, 0.0);
+    let arc_px = mix(arc.arc_a, arc.arc_b, t);
+
+    var out: RibbonOut;
+    out.pos = vec4<f32>(corner_px * transform.pixel_to_ndc, 0.0, 1.0);
+    out.cross_d = side;
+    out.center_i = intensity_cfg * cons_clump(arc_px, seed);
+    out.cap_d = abs(cap) / max(half_geom, 1e-6);
+    return out;
+}
+
+@fragment
+fn fs_ribbon(in: RibbonOut) -> @location(0) vec4<f32> {
+    // FWHM = ribbon_width_px: cross_d is in strip units where the edge sits
+    // one full width out, so exp(-2.77 d²) halves at d = 0.5 (= width/2).
+    // The same falloff runs along the cap extension so free polyline ends
+    // fade out instead of cutting square.
+    let gauss = exp(-2.77 * (in.cross_d * in.cross_d + in.cap_d * in.cap_d));
+    let i = in.center_i * gauss;
+    return vec4<f32>(style.color_premul.rgb * i, i);
+}
+
+struct StarOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    // Blackbody tint and power-law brightness — constant across the star's
+    // quad (flat-ish via plain interpolation of equal corner values).
+    @location(1) tint: vec3<f32>,
+    @location(2) brightness: f32,
+};
+
+// Per-star hash channel: one lattice index per (segment, k), salted per
+// attribute so channels are independent.
+fn cons_h(id: u32, salt: u32, seed: u32) -> f32 {
+    return sketch_hash01(id, seed ^ salt);
+}
+
+@vertex
+fn vs_stars(
+    in: VsIn,
+    arc: VsArc,
+    @builtin(vertex_index) vid: u32,
+    @builtin(instance_index) inst: u32,
+) -> StarOut {
+    let k = vid / 6u;
+    let corner = vid % 6u;
+
+    let density = max(transform.style_params[0].x, 0.0); // stars / 100 px arc
+    let seed = u32(transform.style_params[0].w);
+    let star_scale = max(transform.style_params[1].x, 0.0);
+    let spread = max(transform.style_params[1].y, 0.0);
+
+    let a_px = data_to_ndc(in.x_a, in.y_a) / transform.pixel_to_ndc;
+    let b_px = data_to_ndc(in.x_b, in.y_b) / transform.pixel_to_ndc;
+    let delta = b_px - a_px;
+    let len = length(delta);
+    let dir = select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6);
+    let normal_px = vec2<f32>(-dir.y, dir.x);
+    let seg_arc = max(arc.arc_b - arc.arc_a, 0.0);
+
+    let id = inst * CONS_STARS_PER_SEGMENT + k;
+
+    // ~22% of slots re-anchor beside the PREVIOUS slot's star as a dim close
+    // companion — re-deriving the primary's hashes is deterministic and free,
+    // and binary pairs are a strong realism cue.
+    let is_companion = cons_h(id, 0x0B17u, seed) < 0.22 && k > 0u;
+    let primary_id = select(id, id - 1u, is_companion);
+
+    let t = cons_h(primary_id, 0x0701u, seed);
+    let arc_here = mix(arc.arc_a, arc.arc_b, t);
+
+    // Existence gate: expected stars per segment = density·arc/100, spread
+    // over the fixed K quad budget, modulated by the local clump. A segment
+    // longer than ~K·100/density px of arc saturates the budget (documented
+    // Step-1 cap).
+    let p_exist = clamp(
+        density * seg_arc / (100.0 * f32(CONS_STARS_PER_SEGMENT)),
+        0.0,
+        1.0,
+    ) * clamp(cons_clump(arc_here, seed), 0.0, 1.6);
+    let alive = cons_h(id, 0x0E15u, seed) < p_exist && len > 1e-6;
+
+    // Perpendicular scatter: sum of two uniforms → triangular ≈ gaussian-ish.
+    let g1 = cons_h(primary_id, 0x0FF1u, seed);
+    let g2 = cons_h(primary_id, 0x0FF2u, seed);
+    let off = (g1 + g2 - 1.0) * spread * 1.7;
+
+    // Brightness: steep power law — most stars faint, rare bright anchors.
+    let u_b = cons_h(primary_id, 0x86A9u, seed);
+    var b = 0.12 + 0.88 * pow(u_b, 3.0);
+    if (is_companion) {
+        b = b * 0.35;
+    }
+
+    // Temperature: population mix by local density (§2.6), then blackbody
+    // LUT. textureLoad — vertex stages have no implicit derivatives.
+    let pop = clamp(cons_pop(arc_here, seed), 0.0, 1.0);
+    let h_t = cons_h(primary_id, 0x7E47u, seed);
+    let t_norm = mix(mix(0.04, 0.30, h_t), mix(0.45, 0.95, h_t), pop);
+    let tint = textureLoad(
+        cons_lut_tex,
+        vec2<i32>(i32(clamp(t_norm, 0.0, 1.0) * 255.0), 0),
+        0,
+    ).rgb;
+
+    // Star radius (px): brighter → bigger (PSF wings cross the saturation
+    // threshold further out). The quad leaves 4× room for the halo.
+    let r_star = star_scale * (0.9 + 3.4 * pow(b, 0.7));
+    let quad_half = r_star * 4.0;
+
+    var center = mix(a_px, b_px, t) + normal_px * off;
+    if (is_companion) {
+        let ang = cons_h(id, 0x0A46u, seed) * 6.2831853;
+        let sep = 2.0 + 2.0 * cons_h(id, 0x0D15u, seed);
+        center = center + vec2<f32>(cos(ang), sin(ang)) * sep;
+    }
+
+    var c: vec2<f32>;
+    switch corner {
+        case 0u, 3u: { c = vec2<f32>(-1.0, -1.0); }
+        case 1u: { c = vec2<f32>(1.0, -1.0); }
+        case 2u, 4u: { c = vec2<f32>(1.0, 1.0); }
+        default: { c = vec2<f32>(-1.0, 1.0); }
+    }
+    // Dead slots collapse to zero area; NaN endpoints propagate and clip.
+    let q = quad_half * select(0.0, 1.0, alive);
+    let corner_px = center + c * q;
+
+    var out: StarOut;
+    out.pos = vec4<f32>(corner_px * transform.pixel_to_ndc, 0.0, 1.0);
+    out.uv = c * 0.5 + vec2<f32>(0.5, 0.5);
+    out.tint = tint;
+    out.brightness = b;
+    return out;
+}
+
+@fragment
+fn fs_stars(in: StarOut) -> @location(0) vec4<f32> {
+    let s = textureSample(cons_psf_tex, cons_samp, in.uv);
+    // White saturated core + blackbody-tinted halo — star color lives in the
+    // halo, exactly like a saturated sensor (§2.1).
+    let col = (vec3<f32>(1.0) * s.r + in.tint * s.g) * in.brightness;
+    let a = max(col.r, max(col.g, col.b));
+    return vec4<f32>(col, a);
 }

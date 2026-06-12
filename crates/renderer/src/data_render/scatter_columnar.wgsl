@@ -23,11 +23,13 @@ struct Transform {
     data_max: vec2<f32>,
     scale_log: vec2<f32>,
     pixel_to_ndc: vec2<f32>,
-    // Generic per-panel style parameter slot. Interpretation belongs to the
-    // ACTIVE style's shader entries; the precise entries never read it.
-    // sketch: x=amplitude_px, y=wavelength_px, z=seed(f32), w=reserved(0)
-    style_params: vec4<f32>,
-};  // 48 B (vec4 at offset 32 — alignment unchanged)
+    // Generic per-panel style parameter slots. Interpretation belongs to the
+    // ACTIVE style's shader entries; the precise entries never read them.
+    // sketch:        [0] = (amplitude_px, wavelength_px, seed(f32), 0)
+    // constellation: [0] = (star_density, ribbon_width_px, ribbon_intensity,
+    //                seed(f32)), [1] = (star_scale, spread_px, 0, 0)
+    style_params: array<vec4<f32>, 2>,
+};  // 64 B (vec4 array at offset 32, stride 16 — alignment unchanged)
 
 @group(0) @binding(0) var<uniform> transform: Transform;
 
@@ -212,7 +214,7 @@ fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> VsSketchOut {
     let t = (vec2<f32>(xv, yv) - transform.data_min) / range;
     let center_ndc = t * 2.0 - 1.0;
 
-    let amp = max(transform.style_params.x, 0.0);
+    let amp = max(transform.style_params[0].x, 0.0);
     let wobble = min(amp * 0.5, style.point_radius_px * 0.35);
     let half_px = style.point_radius_px + QUAD_MARGIN_PX + wobble;
     let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
@@ -220,7 +222,7 @@ fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> VsSketchOut {
     var out: VsSketchOut;
     out.pos = vec4<f32>(world, 0.0, 1.0);
     out.local_pos = in.quad_pos;
-    out.seed_inst = u32(transform.style_params.z) + inst;
+    out.seed_inst = u32(transform.style_params[0].z) + inst;
     out.wobble_px = wobble;
     return out;
 }

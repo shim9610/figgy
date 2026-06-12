@@ -158,37 +158,49 @@ fn validate_target_format(
 
 /// Discriminant for cached per-style pipeline sets.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub(crate) enum StyleKey { Sketch }
+pub(crate) enum StyleKey { Sketch, Constellation }
 
-/// Everything the renderer needs to know about one stylized mode.
-/// Adding a style = one descriptor + its shader entries + a stroker arm.
+/// Everything the renderer needs to know about one stylized mode up front;
+/// the per-format GPU objects live in the [`StyleSet`] the key maps to.
 pub(crate) struct StyleVariant {
     pub(crate) key: StyleKey,
-    pub(crate) line_entry: &'static str,            // "vs_sketch"
-    pub(crate) line_verts_per_instance: u32,        // LINE_SKETCH_VERTICES_PER_INSTANCE
-    pub(crate) scatter_entries: (&'static str, &'static str), // ("vs_sketch","fs_sketch")
-    pub(crate) errorbar_entry: &'static str,        // "vs_sketch"
-    pub(crate) needs_arc_prefix: bool,              // true
-    pub(crate) pack_params: fn(&DrawStyle) -> [f32; 4],
+    pub(crate) needs_arc_prefix: bool,
+    /// `Transform.style_params` packing — both vec4 slots, layout per
+    /// SHADER_COMMON.md §1.
+    pub(crate) pack_params: fn(&DrawStyle) -> [f32; 8],
 }
 
-/// `Transform.style_params` packing for the sketch style — layout per
-/// SHADER_COMMON.md §1: x=amplitude_px, y=wavelength_px, z=seed(f32), w=0.
-fn pack_sketch_params(style: &DrawStyle) -> [f32; 4] {
+/// sketch: `[0] = (amplitude_px, wavelength_px, seed, 0)`, `[1] = 0`.
+fn pack_sketch_params(style: &DrawStyle) -> [f32; 8] {
     match style.sketch() {
-        Some(s) => [s.amplitude_px, s.wavelength_px, s.seed as f32, 0.0],
-        None => [0.0; 4],
+        Some(s) => [s.amplitude_px, s.wavelength_px, s.seed as f32, 0.0, 0.0, 0.0, 0.0, 0.0],
+        None => [0.0; 8],
+    }
+}
+
+/// constellation: `[0] = (star_density, ribbon_width_px, ribbon_intensity,
+/// seed)`, `[1] = (star_scale, spread_px, 0, 0)`.
+fn pack_constellation_params(style: &DrawStyle) -> [f32; 8] {
+    match style.constellation() {
+        Some(c) => [
+            c.star_density, c.ribbon_width_px, c.ribbon_intensity, c.seed as f32,
+            c.star_scale, c.spread_px, 0.0, 0.0,
+        ],
+        None => [0.0; 8],
     }
 }
 
 static SKETCH_VARIANT: StyleVariant = StyleVariant {
     key: StyleKey::Sketch,
-    line_entry: "vs_sketch",
-    line_verts_per_instance: data_render::LINE_SKETCH_VERTICES_PER_INSTANCE,
-    scatter_entries: ("vs_sketch", "fs_sketch"),
-    errorbar_entry: "vs_sketch",
     needs_arc_prefix: true,
     pack_params: pack_sketch_params,
+};
+
+static CONSTELLATION_VARIANT: StyleVariant = StyleVariant {
+    key: StyleKey::Constellation,
+    // Ribbon profile and every star attribute are arc-length parameterized.
+    needs_arc_prefix: true,
+    pack_params: pack_constellation_params,
 };
 
 /// Style lookup. None for Precise.
@@ -196,17 +208,22 @@ pub(crate) fn style_variant(style: &DrawStyle) -> Option<&'static StyleVariant> 
     match style {
         DrawStyle::Precise => None,
         DrawStyle::Sketch(_) => Some(&SKETCH_VARIANT),
+        DrawStyle::Constellation(_) => Some(&CONSTELLATION_VARIANT),
     }
 }
 
-/// One style's compiled data pipelines (line / scatter / errorbar variants
-/// against one target format) plus the line strip's per-instance vertex
-/// count, copied out of the [`StyleVariant`] at compile time.
-struct StyleSet {
-    line: wgpu::RenderPipeline,
-    scatter: wgpu::RenderPipeline,
-    errorbar: wgpu::RenderPipeline,
-    line_verts: u32,
+/// One style's compiled GPU objects against one target format. Styles differ
+/// structurally (sketch swaps entry points; constellation draws two additive
+/// passes over the line slots and carries baked textures), so the set is an
+/// enum and the draw side matches once.
+enum StyleSet {
+    Sketch {
+        line: wgpu::RenderPipeline,
+        scatter: wgpu::RenderPipeline,
+        errorbar: wgpu::RenderPipeline,
+        line_verts: u32,
+    },
+    Constellation(data_render::ConstellationSet),
 }
 
 /// Every pipeline compiled against one render-target format: the four
@@ -254,6 +271,7 @@ impl TargetPipelines {
     fn ensure_styles_for_items(
         &mut self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         transform_bgl: &wgpu::BindGroupLayout,
         style_bgl: &wgpu::BindGroupLayout,
         surface_format: wgpu::TextureFormat,
@@ -261,21 +279,34 @@ impl TargetPipelines {
     ) {
         for item in items {
             let Some(v) = style_variant(&item.chart_config.draw_style) else { continue };
-            self.styled.entry(v.key).or_insert_with(|| StyleSet {
-                line: data_render::create_line_columnar_pipeline_with_entries(
-                    device, transform_bgl, style_bgl, surface_format,
-                    v.line_entry, "figgy line styled pipeline",
+            self.styled.entry(v.key).or_insert_with(|| match v.key {
+                StyleKey::Sketch => StyleSet::Sketch {
+                    line: data_render::create_line_columnar_pipeline_with_entries(
+                        device, transform_bgl, style_bgl, surface_format,
+                        "vs_sketch", "fs_main",
+                        wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+                        wgpu::PrimitiveTopology::TriangleStrip,
+                        None,
+                        "figgy line styled pipeline",
+                    ),
+                    scatter: data_render::create_scatter_columnar_pipeline_with_entries(
+                        device, transform_bgl, style_bgl, surface_format,
+                        "vs_sketch", "fs_sketch",
+                        "figgy scatter styled pipeline",
+                    ),
+                    errorbar: data_render::create_errorbar_columnar_pipeline_with_entries(
+                        device, transform_bgl, style_bgl, surface_format,
+                        "vs_sketch", "figgy errorbar styled pipeline",
+                    ),
+                    line_verts: data_render::LINE_SKETCH_VERTICES_PER_INSTANCE,
+                },
+                // Bakes the PSF + blackbody textures (once, then cached with
+                // the pipelines) — docs/CONSTELLATION_DESIGN.md §3c.
+                StyleKey::Constellation => StyleSet::Constellation(
+                    data_render::create_constellation_set(
+                        device, queue, transform_bgl, style_bgl, surface_format,
+                    ),
                 ),
-                scatter: data_render::create_scatter_columnar_pipeline_with_entries(
-                    device, transform_bgl, style_bgl, surface_format,
-                    v.scatter_entries.0, v.scatter_entries.1,
-                    "figgy scatter styled pipeline",
-                ),
-                errorbar: data_render::create_errorbar_columnar_pipeline_with_entries(
-                    device, transform_bgl, style_bgl, surface_format,
-                    v.errorbar_entry, "figgy errorbar styled pipeline",
-                ),
-                line_verts: v.line_verts_per_instance,
             });
         }
     }
@@ -867,6 +898,7 @@ impl Renderer {
     ) -> Result<()> {
         self.pipelines.ensure_styles_for_items(
             &self.device,
+            &self.queue,
             &self.transform_bgl,
             &self.style_bgl,
             self.surface_format,
@@ -976,6 +1008,45 @@ impl Renderer {
                 .ok_or_else(|| FiggyError::UnknownColumn { id: id.clone() })
         };
 
+        // Resolve the style set into per-primitive picks once. `stars` is the
+        // constellation's second line-slot pass (over the same columns).
+        struct LinePick<'p> {
+            pipeline: &'p wgpu::RenderPipeline,
+            verts: u32,
+            texture_bg: Option<&'p wgpu::BindGroup>,
+        }
+        let (line_pick, stars_pick, scatter_pipe, errorbar_pipe) = match styled {
+            None => (
+                LinePick { pipeline: &pipelines.line, verts: 4, texture_bg: None },
+                None,
+                &pipelines.scatter,
+                &pipelines.errorbar,
+            ),
+            Some(StyleSet::Sketch { line, scatter, errorbar, line_verts }) => (
+                LinePick { pipeline: line, verts: *line_verts, texture_bg: None },
+                None,
+                scatter,
+                errorbar,
+            ),
+            // Step 1: constellation styles the LINE element (ribbon + stars);
+            // scatter/errorbar fall back to precise until their celestial
+            // treatments land (docs/CONSTELLATION_DESIGN.md §3d).
+            Some(StyleSet::Constellation(c)) => (
+                LinePick {
+                    pipeline: &c.ribbon,
+                    verts: data_render::CONSTELLATION_RIBBON_VERTICES,
+                    texture_bg: Some(&c.star_tex_bg),
+                },
+                Some(LinePick {
+                    pipeline: &c.stars,
+                    verts: data_render::CONSTELLATION_STAR_VERTICES,
+                    texture_bg: Some(&c.star_tex_bg),
+                }),
+                &pipelines.scatter,
+                &pipelines.errorbar,
+            ),
+        };
+
         let mut out = Vec::with_capacity(series_specs.len());
         for (idx, series) in series_specs.iter().enumerate() {
             let cfg = series.config;
@@ -986,19 +1057,34 @@ impl Renderer {
             let line = if has_line(rt) {
                 let arc = arcs.get(idx).cloned().flatten();
                 Some(ColumnLineLayer {
-                    pipeline: styled.map_or(&pipelines.line, |s| &s.line),
+                    pipeline: line_pick.pipeline,
                     transform_bg: &view.transform_bg,
                     style_bg: &series.style.line_bg,
                     pool_buffer: pool.buffer(),
                     x: x_h, y: y_h,
                     arc,
-                    verts_per_instance: styled.map_or(4, |s| s.line_verts),
+                    verts_per_instance: line_pick.verts,
+                    texture_bg: line_pick.texture_bg,
                 })
             } else { None };
 
+            let line_extra = match (&line, &stars_pick) {
+                (Some(_), Some(sp)) => Some(ColumnLineLayer {
+                    pipeline: sp.pipeline,
+                    transform_bg: &view.transform_bg,
+                    style_bg: &series.style.line_bg,
+                    pool_buffer: pool.buffer(),
+                    x: x_h, y: y_h,
+                    arc: arcs.get(idx).cloned().flatten(),
+                    verts_per_instance: sp.verts,
+                    texture_bg: sp.texture_bg,
+                }),
+                _ => None,
+            };
+
             let scatter = if has_scatter(rt) {
                 Some(ColumnScatterLayer {
-                    pipeline: styled.map_or(&pipelines.scatter, |s| &s.scatter),
+                    pipeline: scatter_pipe,
                     transform_bg: &view.transform_bg,
                     style_bg: &series.style.scatter_bg,
                     quad_vb: &self.quad_vb,
@@ -1030,7 +1116,7 @@ impl Renderer {
                         None => (zero, zero),
                     };
                     Some(ColumnErrorBarDraw {
-                        pipeline: styled.map_or(&pipelines.errorbar, |s| &s.errorbar),
+                        pipeline: errorbar_pipe,
                         transform_bg: &view.transform_bg,
                         style_bg: &series.style.errorbar_bg,
                         pool_buffer: pool.buffer(),
@@ -1041,7 +1127,7 @@ impl Renderer {
                 }
             };
 
-            out.push(data_render::SeriesLayers { errorbar, line, scatter });
+            out.push(data_render::SeriesLayers { errorbar, line, line_extra, scatter });
         }
         Ok(out)
     }
@@ -1230,6 +1316,7 @@ impl Renderer {
         );
         export_target_pipelines.ensure_styles_for_items(
             &self.device,
+            &self.queue,
             &self.transform_bgl,
             &self.style_bgl,
             export_format,

@@ -36,11 +36,13 @@ struct Transform {
     data_max: vec2<f32>,
     scale_log: vec2<f32>,
     pixel_to_ndc: vec2<f32>,
-    // Generic per-panel style parameter slot. Interpretation belongs to the
-    // ACTIVE style's shader entries; the precise entries never read it.
-    // sketch: x=amplitude_px, y=wavelength_px, z=seed(f32), w=reserved(0)
-    style_params: vec4<f32>,
-};  // 48 B (vec4 at offset 32 — alignment unchanged)
+    // Generic per-panel style parameter slots. Interpretation belongs to the
+    // ACTIVE style's shader entries; the precise entries never read them.
+    // sketch:        [0] = (amplitude_px, wavelength_px, seed(f32), 0)
+    // constellation: [0] = (star_density, ribbon_width_px, ribbon_intensity,
+    //                seed(f32)), [1] = (star_scale, spread_px, 0, 0)
+    style_params: array<vec4<f32>, 2>,
+};  // 64 B (vec4 array at offset 32, stride 16 — alignment unchanged)
 
 @group(0) @binding(0) var<uniform> transform: Transform;
 

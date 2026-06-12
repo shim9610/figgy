@@ -132,6 +132,44 @@ impl Default for SketchOptions {
     }
 }
 
+/// Constellation draw-style parameters. All fields have defaults — JSON
+/// `{"mode":"constellation"}` alone works. Lines render as star chains over
+/// a soft nebula ribbon tinted with the series `line_color` (that ribbon is
+/// what keeps multiple series distinguishable); star colors stay physical
+/// (blackbody locus, population mix follows local density).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct ConstellationOptions {
+    /// Stars per 100 px of arc length. Default 14.0.
+    pub star_density: f32,
+    /// Nebula ribbon full width, in px ("두께"). Default 14.0.
+    pub ribbon_width_px: f32,
+    /// Ribbon brightness 0..1 — how strongly the series-colored haze shows
+    /// behind the stars. Default 0.30 (thin).
+    pub ribbon_intensity: f32,
+    /// Global star size multiplier. Default 1.0.
+    pub star_scale: f32,
+    /// Perpendicular star scatter σ from the path, in px. Larger reads more
+    /// like a loose cluster, smaller tracks the data tighter. Default 2.5.
+    pub spread_px: f32,
+    /// Global seed. Same (config, data) → identical output. Default 0.
+    pub seed: u32,
+}
+
+impl Default for ConstellationOptions {
+    fn default() -> Self {
+        Self {
+            star_density: 14.0,
+            ribbon_width_px: 14.0,
+            ribbon_intensity: 0.30,
+            star_scale: 1.0,
+            spread_px: 2.5,
+            seed: 0,
+        }
+    }
+}
+
 /// Chart-global render style. `Precise` is the default scientific path;
 /// every other variant is an opt-in stylized mode with its own GPU
 /// pipeline variants and decoration stroker.
@@ -142,6 +180,7 @@ pub enum DrawStyle {
     #[default]
     Precise,
     Sketch(SketchOptions),
+    Constellation(ConstellationOptions),
 }
 
 impl DrawStyle {
@@ -150,6 +189,10 @@ impl DrawStyle {
     /// Sketch parameters when the sketch style is active.
     pub fn sketch(&self) -> Option<&SketchOptions> {
         match self { DrawStyle::Sketch(s) => Some(s), _ => None }
+    }
+    /// Constellation parameters when the constellation style is active.
+    pub fn constellation(&self) -> Option<&ConstellationOptions> {
+        match self { DrawStyle::Constellation(c) => Some(c), _ => None }
     }
 }
 
@@ -217,11 +260,21 @@ impl Config {
         scale_rich_text(&mut self.legend.content, s);
 
         // Sketch wobble dims are pixel-based visual dims too. Scaled only in
-        // sketch mode — `Precise` carries no dims, so the precise path sees
-        // no change.
-        if let DrawStyle::Sketch(sketch) = &mut self.draw_style {
-            sketch.amplitude_px *= s;
-            sketch.wavelength_px *= s;
+        // Stylized modes — `Precise` carries no dims, so the precise path
+        // sees no change. Constellation's `star_density` is per arc-px and
+        // scales implicitly with the arc itself; `star_scale` multiplies
+        // px-sized star sprites, so it scales like a px dim.
+        match &mut self.draw_style {
+            DrawStyle::Sketch(sketch) => {
+                sketch.amplitude_px *= s;
+                sketch.wavelength_px *= s;
+            }
+            DrawStyle::Constellation(c) => {
+                c.ribbon_width_px *= s;
+                c.spread_px *= s;
+                c.star_scale *= s;
+            }
+            DrawStyle::Precise => {}
         }
     }
 }
@@ -332,6 +385,35 @@ mod draw_style_serde_tests {
             json.get("draw_style").is_none(),
             "Precise draw_style must be skipped in serialization: {json}"
         );
+    }
+
+    #[test]
+    fn constellation_tag_alone_yields_all_defaults() {
+        let mut json = default_config_json();
+        json["draw_style"] = serde_json::json!({ "mode": "constellation" });
+        let cfg: Config = serde_json::from_value(json).expect("tag-only constellation parses");
+        assert_eq!(
+            cfg.draw_style,
+            super::DrawStyle::Constellation(super::ConstellationOptions::default()),
+        );
+    }
+
+    #[test]
+    fn constellation_round_trips_with_inline_fields() {
+        let mut cfg = default_config();
+        cfg.draw_style = super::DrawStyle::Constellation(super::ConstellationOptions {
+            star_density: 22.0,
+            ribbon_width_px: 20.0,
+            ribbon_intensity: 0.4,
+            star_scale: 1.3,
+            spread_px: 3.5,
+            seed: 9,
+        });
+        let json = serde_json::to_value(&cfg).expect("serialize");
+        assert_eq!(json["draw_style"]["mode"], "constellation");
+        assert_eq!(json["draw_style"]["star_density"], 22.0);
+        let back: Config = serde_json::from_value(json).expect("parse back");
+        assert_eq!(back.draw_style, cfg.draw_style);
     }
 }
 

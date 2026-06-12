@@ -671,9 +671,10 @@ pub fn create_unit_centered_quad_vertex_buffer(device: &wgpu::Device) -> wgpu::B
 
 /// Shared transform uniform for scatter / line / errorbar shaders.
 ///
-/// 48 bytes (four `vec2<f32>` fields plus one `vec4<f32>` at offset 32,
-/// WGSL uniform layout). Pixel sizes (point radius, cap half-length) live in
-/// [`PrimitiveStyle`]; shaders convert them to NDC via `pixel_to_ndc`.
+/// 64 bytes (four `vec2<f32>` fields plus one `array<vec4<f32>, 2>` at
+/// offset 32, stride 16, WGSL uniform layout). Pixel sizes (point radius,
+/// cap half-length) live in [`PrimitiveStyle`]; shaders convert them to NDC
+/// via `pixel_to_ndc`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ScatterTransform {
@@ -684,18 +685,21 @@ pub struct ScatterTransform {
     /// `(2 / chart_w, 2 / chart_h)` — 1 pixel in NDC. Shaders multiply pixel
     /// sizes (line width, point radius, cap half-length) by this.
     pub pixel_to_ndc: [f32; 2],   // offset 24
-    /// Generic per-panel style parameter slot (SHADER_COMMON.md §1), packed
-    /// by the renderer's style table (`StyleVariant::pack_params`). All zeros
-    /// in precise mode — the precise entry points never read it. Sketch:
-    /// `[amplitude_px, wavelength_px, seed as f32, 0.0]`; the seed is stored
-    /// as f32 (exact up to 2^24) and shaders recover it via
-    /// `u32(transform.style_params.z)`.
-    pub style_params: [f32; 4],   // offset 32 → 48 byte
+    /// Generic per-panel style parameter slots (SHADER_COMMON.md §1), packed
+    /// by the renderer's style table (`StyleVariant::pack_params`, flat
+    /// `[f32; 8]` split into two vec4 slots). All zeros in precise mode —
+    /// the precise entry points never read them. Sketch:
+    /// `[0] = [amplitude_px, wavelength_px, seed as f32, 0.0]`, `[1] = 0`;
+    /// constellation: `[0] = [star_density, ribbon_width_px,
+    /// ribbon_intensity, seed as f32]`, `[1] = [star_scale, spread_px, 0,
+    /// 0]`. Seeds are stored as f32 (exact up to 2^24) and shaders recover
+    /// them via `u32(...)`.
+    pub style_params: [[f32; 4]; 2],   // offset 32 → 64 byte
 }
 
 // WGSL mirror size guards (SHADER_COMMON.md §1 / §2). Update both the doc and
 // every shader's common block before touching these.
-const _: () = assert!(std::mem::size_of::<ScatterTransform>() == 48);
+const _: () = assert!(std::mem::size_of::<ScatterTransform>() == 64);
 
 /// Allocate the transform uniform buffer with `COPY_DST` so subsequent
 /// updates can use `queue.write_buffer` instead of recreating it.
@@ -916,10 +920,14 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
     // never read them, so the output is unaffected. The export path's
     // `Config::scaled` already multiplied the style's pixel dims (e.g. sketch
     // amplitude/wavelength) by the DPI scale; pack functions read them as-is.
-    let style_params = match crate::renderer::style_variant(&config.draw_style) {
+    let packed = match crate::renderer::style_variant(&config.draw_style) {
         Some(v) => (v.pack_params)(&config.draw_style),
-        None => [0.0; 4],
+        None => [0.0; 8],
     };
+    let style_params = [
+        [packed[0], packed[1], packed[2], packed[3]],
+        [packed[4], packed[5], packed[6], packed[7]],
+    ];
 
     // No data_area → use the data range directly (no extension).
     let da: Rect = match config.data_area() {
@@ -987,7 +995,11 @@ pub fn create_line_columnar_pipeline(
 ) -> wgpu::RenderPipeline {
     create_line_columnar_pipeline_with_entries(
         device, transform_bgl, style_bgl, target_format,
-        "vs_main", "figgy line columnar pipeline",
+        "vs_main", "fs_main",
+        wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+        wgpu::PrimitiveTopology::TriangleStrip,
+        None,
+        "figgy line columnar pipeline",
     )
 }
 
@@ -996,16 +1008,225 @@ pub fn create_line_columnar_pipeline(
 /// `SKETCH_SUBDIV` in `line_columnar.wgsl`.
 pub const LINE_SKETCH_VERTICES_PER_INSTANCE: u32 = 18;
 
-/// Entry-point-parameterized line pipeline builder. Styled variants (e.g.
-/// the sketch `vs_sketch`) share the precise pipeline's layout and state and
-/// differ only in `vs_entry` — the renderer's style table supplies the
-/// string (and the matching strip vertex count).
+/// Constellation ribbon strip vertices per instance — `2·(S+1)`, twin of
+/// `CONS_RIBBON_SUBDIV` in `line_columnar.wgsl`.
+pub const CONSTELLATION_RIBBON_VERTICES: u32 = 18;
+/// Constellation star quads per segment instance — `6·K`, twin of
+/// `CONS_STARS_PER_SEGMENT` in `line_columnar.wgsl`. K is a per-segment
+/// budget: a single segment saturates once `density·arc/100 > K` (documented
+/// Step-1 cap; typical charts sit far below it).
+pub const CONSTELLATION_STAR_VERTICES: u32 = 144;
+
+/// Constellation pipelines + baked style textures for one target format —
+/// cached inside the renderer's lazy style set (docs/CONSTELLATION_DESIGN.md
+/// §3c/§3d). The bind group keeps the textures alive.
+pub(crate) struct ConstellationSet {
+    pub(crate) ribbon: wgpu::RenderPipeline,
+    pub(crate) stars: wgpu::RenderPipeline,
+    pub(crate) star_tex_bg: wgpu::BindGroup,
+}
+
+/// Bake the star PSF sprite (R = saturating core, G = halo wings + one faint
+/// Airy-style ring) — runs once per style-set creation; expensive math is
+/// fine here (CONSTELLATION_DESIGN.md §0 "bake, then sample").
+fn bake_psf_rgba(size: u32) -> Vec<u8> {
+    let mut out = vec![0u8; (size * size * 4) as usize];
+    let half = (size as f32 - 1.0) * 0.5;
+    for y in 0..size {
+        for x in 0..size {
+            let dx = (x as f32 - half) / half; // -1..1
+            let dy = (y as f32 - half) / half;
+            let r = (dx * dx + dy * dy).sqrt();
+            // Flat saturated core with a steep gaussian shoulder.
+            let core = (-(r / 0.11).powf(2.6)).exp().min(1.0);
+            // Exponential halo wings + one faint ring at 0.45.
+            let halo = 0.85 * (-r / 0.28).exp()
+                + 0.08 * (-((r - 0.45) / 0.06).powi(2)).exp();
+            let i = ((y * size + x) * 4) as usize;
+            out[i] = (core.clamp(0.0, 1.0) * 255.0).round() as u8;
+            out[i + 1] = (halo.clamp(0.0, 1.0) * 255.0).round() as u8;
+            out[i + 2] = 0;
+            out[i + 3] = 255;
+        }
+    }
+    out
+}
+
+/// Bake the 256×1 blackbody LUT, 2,500 K → 12,000 K (Tanner Helland's
+/// piecewise fit — visually faithful Planckian locus, never green).
+fn bake_blackbody_lut() -> Vec<u8> {
+    let mut out = vec![0u8; 256 * 4];
+    for i in 0..256usize {
+        let kelvin = 2500.0 + 9500.0 * (i as f64 / 255.0);
+        let t = kelvin / 100.0;
+        let r = if t <= 66.0 {
+            255.0
+        } else {
+            329.698_727_446 * (t - 60.0).powf(-0.133_204_759_2)
+        };
+        let g = if t <= 66.0 {
+            99.470_802_586_1 * t.ln() - 161.119_568_166_1
+        } else {
+            288.122_169_528_3 * (t - 60.0).powf(-0.075_514_849_2)
+        };
+        let b = if t >= 66.0 {
+            255.0
+        } else if t <= 19.0 {
+            0.0
+        } else {
+            138.517_731_223_1 * (t - 10.0).ln() - 305.044_792_730_7
+        };
+        out[i * 4] = r.clamp(0.0, 255.0).round() as u8;
+        out[i * 4 + 1] = g.clamp(0.0, 255.0).round() as u8;
+        out[i * 4 + 2] = b.clamp(0.0, 255.0).round() as u8;
+        out[i * 4 + 3] = 255;
+    }
+    out
+}
+
+/// Build the constellation style set: bake PSF + blackbody LUT, upload them,
+/// and compile the additive ribbon/star pipelines (group 2 = the textures).
+pub(crate) fn create_constellation_set(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+) -> ConstellationSet {
+    let make_tex = |label: &str, w: u32, h: u32, data: &[u8]| {
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(w * 4),
+                rows_per_image: Some(h),
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        tex.create_view(&wgpu::TextureViewDescriptor::default())
+    };
+    const PSF_SIZE: u32 = 128;
+    let psf_view = make_tex("figgy constellation psf", PSF_SIZE, PSF_SIZE, &bake_psf_rgba(PSF_SIZE));
+    let lut_view = make_tex("figgy constellation blackbody lut", 256, 1, &bake_blackbody_lut());
+
+    let tex_entry = |binding| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
+    };
+    let tex_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("figgy constellation texture bgl"),
+        entries: &[
+            tex_entry(0),
+            tex_entry(1),
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("figgy constellation sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
+    let star_tex_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("figgy constellation texture bg"),
+        layout: &tex_bgl,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&psf_view) },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&lut_view) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&sampler) },
+        ],
+    });
+
+    let additive = wgpu::BlendState {
+        color: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Add,
+        },
+        alpha: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Add,
+        },
+    };
+    // MAX, not ADD: the ribbon seals curve joints by overlapping square-cap
+    // extensions (vs_ribbon), and max() keeps that overlap from
+    // double-brightening — the haze is a field, not an accumulation.
+    let max_blend = wgpu::BlendState {
+        color: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Max,
+        },
+        alpha: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Max,
+        },
+    };
+    let ribbon = create_line_columnar_pipeline_with_entries(
+        device, transform_bgl, style_bgl, target_format,
+        "vs_ribbon", "fs_ribbon", max_blend,
+        wgpu::PrimitiveTopology::TriangleStrip,
+        Some(&tex_bgl),
+        "figgy constellation ribbon pipeline",
+    );
+    let stars = create_line_columnar_pipeline_with_entries(
+        device, transform_bgl, style_bgl, target_format,
+        "vs_stars", "fs_stars", additive,
+        wgpu::PrimitiveTopology::TriangleList,
+        Some(&tex_bgl),
+        "figgy constellation stars pipeline",
+    );
+
+    ConstellationSet { ribbon, stars, star_tex_bg }
+}
+
+/// Entry-point-parameterized line pipeline builder. Styled variants share
+/// the precise pipeline's six instance slots and differ in entry points,
+/// blend state (constellation is additive), topology (star quads are a
+/// TriangleList), and an optional third bind group (style textures) — the
+/// renderer's style table supplies all of it.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn create_line_columnar_pipeline_with_entries(
     device: &wgpu::Device,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
     vs_entry: &str,
+    fs_entry: &str,
+    blend: wgpu::BlendState,
+    topology: wgpu::PrimitiveTopology,
+    texture_bgl: Option<&wgpu::BindGroupLayout>,
     label: &str,
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -1013,9 +1234,13 @@ pub(crate) fn create_line_columnar_pipeline_with_entries(
         source: wgpu::ShaderSource::Wgsl(include_str!("line_columnar.wgsl").into()),
     });
 
+    let mut bgls: Vec<&wgpu::BindGroupLayout> = vec![transform_bgl, style_bgl];
+    if let Some(t) = texture_bgl {
+        bgls.push(t);
+    }
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("figgy line columnar layout"),
-        bind_group_layouts: &[transform_bgl, style_bgl],
+        bind_group_layouts: &bgls,
         push_constant_ranges: &[],
     });
 
@@ -1098,9 +1323,10 @@ pub(crate) fn create_line_columnar_pipeline_with_entries(
             ],
         },
         primitive: wgpu::PrimitiveState {
-            // One ribbon strip per instance: 4 vertices for `vs_main`,
-            // [`LINE_SKETCH_VERTICES_PER_INSTANCE`] for `vs_sketch`.
-            topology: wgpu::PrimitiveTopology::TriangleStrip,
+            // Strip per instance for the line entries (4 vertices for
+            // `vs_main`, 2·(S+1) for `vs_sketch`/`vs_ribbon`), TriangleList
+            // for `vs_stars` quads — the caller picks.
+            topology,
             strip_index_format: None,
             front_face: wgpu::FrontFace::Ccw,
             cull_mode: None,
@@ -1116,11 +1342,11 @@ pub(crate) fn create_line_columnar_pipeline_with_entries(
         },
         fragment: Some(wgpu::FragmentState {
             module: &shader,
-            entry_point: Some("fs_main"),
+            entry_point: Some(fs_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format: target_format,
-                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                blend: Some(blend),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
@@ -1379,8 +1605,12 @@ pub struct ColumnLineLayer<'a> {
     pub arc: Option<(std::sync::Arc<wgpu::Buffer>, u64)>,
     /// Strip vertices per instance — must match `pipeline`'s vertex entry:
     /// 4 for the precise `vs_main`, [`LINE_SKETCH_VERTICES_PER_INSTANCE`]
-    /// for the sketch `vs_sketch`.
+    /// for the sketch `vs_sketch`, [`CONSTELLATION_RIBBON_VERTICES`] /
+    /// [`CONSTELLATION_STAR_VERTICES`] for the constellation entries.
     pub verts_per_instance: u32,
+    /// Style textures (group 2) when `pipeline`'s layout includes them —
+    /// the constellation PSF/LUT bind group. `None` for precise/sketch.
+    pub texture_bg: Option<&'a wgpu::BindGroup>,
 }
 
 pub struct ColumnScatterLayer<'a> {
@@ -1397,6 +1627,10 @@ pub struct ColumnScatterLayer<'a> {
 pub struct SeriesLayers<'a> {
     pub errorbar: Option<ColumnErrorBarDraw<'a>>,
     pub line: Option<ColumnLineLayer<'a>>,
+    /// Second line-slot draw over the same columns — the constellation style
+    /// uses it for the star pass on top of the ribbon in `line`. Drawn right
+    /// after `line`, before `scatter`. `None` everywhere else.
+    pub line_extra: Option<ColumnLineLayer<'a>>,
     pub scatter: Option<ColumnScatterLayer<'a>>,
 }
 
@@ -1424,6 +1658,44 @@ fn clamp_rect_to_target(r: Rect, target: (u32, u32)) -> Option<Rect> {
     let w = x1.saturating_sub(x0);
     let h = y1.saturating_sub(y0);
     if w == 0 || h == 0 { None } else { Some(Rect { x: x0, y: y0, width: w, height: h }) }
+}
+
+/// Issue one line-slot draw (the shared 6-slot binding scheme). Used for the
+/// main line layer and the constellation star pass.
+fn draw_line_layer(pass: &mut wgpu::RenderPass<'_>, l: &ColumnLineLayer<'_>) {
+    let count = l.x.len_values.min(l.y.len_values) as u32;
+    if count < 2 {
+        return;
+    }
+    pass.set_pipeline(l.pipeline);
+    pass.set_bind_group(0, l.transform_bg, &[]);
+    pass.set_bind_group(1, l.style_bg, &[]);
+    if let Some(tex) = l.texture_bg {
+        pass.set_bind_group(2, tex, &[]);
+    }
+    let x_full = l.x.byte_range();
+    let y_full = l.y.byte_range();
+    let x_shift = (x_full.start + 4)..x_full.end;
+    let y_shift = (y_full.start + 4)..y_full.end;
+    pass.set_vertex_buffer(0, l.pool_buffer.slice(x_full.clone()));
+    pass.set_vertex_buffer(1, l.pool_buffer.slice(y_full));
+    pass.set_vertex_buffer(2, l.pool_buffer.slice(x_shift.clone()));
+    pass.set_vertex_buffer(3, l.pool_buffer.slice(y_shift));
+    // Arc-length prefix (dash phase / constellation arc); solid precise lines
+    // reuse the X column as filler (read by the VS, ignored by the FS).
+    match l.arc.as_ref() {
+        Some((buf, len_bytes)) => {
+            pass.set_vertex_buffer(4, buf.slice(0..*len_bytes));
+            pass.set_vertex_buffer(5, buf.slice(4..*len_bytes));
+        }
+        None => {
+            pass.set_vertex_buffer(4, l.pool_buffer.slice(x_full));
+            pass.set_vertex_buffer(5, l.pool_buffer.slice(x_shift));
+        }
+    }
+    // Per-instance vertex count decided where the pipeline variant was
+    // picked: 4 (precise) / 18 (sketch, ribbon) / 144 (stars).
+    pass.draw(0..l.verts_per_instance, 0..(count - 1));
 }
 
 /// Issue draw calls for one series' data primitives. The caller must have
@@ -1460,35 +1732,10 @@ fn issue_series_data(
     }
 
     if let Some(l) = series.line.as_ref() {
-        let count = l.x.len_values.min(l.y.len_values) as u32;
-        if count >= 2 {
-            pass.set_pipeline(l.pipeline);
-            pass.set_bind_group(0, l.transform_bg, &[]);
-            pass.set_bind_group(1, l.style_bg, &[]);
-            let x_full = l.x.byte_range();
-            let y_full = l.y.byte_range();
-            let x_shift = (x_full.start + 4)..x_full.end;
-            let y_shift = (y_full.start + 4)..y_full.end;
-            pass.set_vertex_buffer(0, l.pool_buffer.slice(x_full.clone()));
-            pass.set_vertex_buffer(1, l.pool_buffer.slice(y_full));
-            pass.set_vertex_buffer(2, l.pool_buffer.slice(x_shift.clone()));
-            pass.set_vertex_buffer(3, l.pool_buffer.slice(y_shift));
-            // Arc-length prefix for the dash phase; solid lines reuse the X
-            // column as filler (read by the VS, ignored by the FS).
-            match l.arc.as_ref() {
-                Some((buf, len_bytes)) => {
-                    pass.set_vertex_buffer(4, buf.slice(0..*len_bytes));
-                    pass.set_vertex_buffer(5, buf.slice(4..*len_bytes));
-                }
-                None => {
-                    pass.set_vertex_buffer(4, l.pool_buffer.slice(x_full));
-                    pass.set_vertex_buffer(5, l.pool_buffer.slice(x_shift));
-                }
-            }
-            // 4 strip vertices per segment (precise) or 2·(S+1) (sketch) —
-            // decided where the pipeline variant was picked.
-            pass.draw(0..l.verts_per_instance, 0..(count - 1));
-        }
+        draw_line_layer(pass, l);
+    }
+    if let Some(l) = series.line_extra.as_ref() {
+        draw_line_layer(pass, l);
     }
 
     if let Some(s) = series.scatter.as_ref() {

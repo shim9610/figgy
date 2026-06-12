@@ -48,11 +48,11 @@
 ## 1. `Transform` uniform — group 0, binding 0
 
 데이터 좌표 → NDC 변환, 로그 축 플래그, 픽셀↔NDC 환산 비율, 그리고
-활성 렌더 스타일(스케치 등)의 범용 파라미터 슬롯을 셰이더에 전달하는
-유니폼. **48바이트** (`vec2<f32>` 4개 + `vec4<f32>` 1개 — vec4는 offset
-32, WGSL uniform layout). 픽셀 단위 크기(점 반지름, cap 길이 등)는
-`Style`로 이동했다 — 픽셀→NDC 환산은 셰이더가 `pixel_to_ndc`로 직접
-수행한다.
+활성 렌더 스타일(스케치/성좌 등)의 범용 파라미터 슬롯을 셰이더에 전달하는
+유니폼. **64바이트** (`vec2<f32>` 4개 + `array<vec4<f32>, 2>` 1개 —
+배열은 offset 32, 원소 stride 16, WGSL uniform layout). 픽셀 단위
+크기(점 반지름, cap 길이 등)는 `Style`로 이동했다 — 픽셀→NDC 환산은
+셰이더가 `pixel_to_ndc`로 직접 수행한다.
 
 <!-- shader-common: applies-to=scatter,line,errorbar,arc -->
 ```wgsl
@@ -61,11 +61,13 @@ struct Transform {
     data_max: vec2<f32>,
     scale_log: vec2<f32>,
     pixel_to_ndc: vec2<f32>,
-    // Generic per-panel style parameter slot. Interpretation belongs to the
-    // ACTIVE style's shader entries; the precise entries never read it.
-    // sketch: x=amplitude_px, y=wavelength_px, z=seed(f32), w=reserved(0)
-    style_params: vec4<f32>,
-};  // 48 B (vec4 at offset 32 — alignment unchanged)
+    // Generic per-panel style parameter slots. Interpretation belongs to the
+    // ACTIVE style's shader entries; the precise entries never read them.
+    // sketch:        [0] = (amplitude_px, wavelength_px, seed(f32), 0)
+    // constellation: [0] = (star_density, ribbon_width_px, ribbon_intensity,
+    //                seed(f32)), [1] = (star_scale, spread_px, 0, 0)
+    style_params: array<vec4<f32>, 2>,
+};  // 64 B (vec4 array at offset 32, stride 16 — alignment unchanged)
 
 @group(0) @binding(0) var<uniform> transform: Transform;
 ```
@@ -75,7 +77,7 @@ struct Transform {
 | `data_min`, `data_max` | NDC로 매핑할 데이터 좌표 범위(X, Y) |
 | `scale_log` | per-axis 로그 플래그. 0.0 = linear, 1.0 = log10 |
 | `pixel_to_ndc` | `(2/chart_w, 2/chart_h)` — 1픽셀이 NDC에서 몇인지. 픽셀 단위 크기(line 두께, 점 반지름, cap 길이) 환산에 쓰임 |
-| `style_params` | 범용 스타일 파라미터 슬롯. 해석은 활성 스타일의 스케치 계열 entry 몫 — 스케치 모드: x=amplitude_px, y=wavelength_px, z=시드(`f32(seed)`로 저장 — WGSL에서 `u32(transform.style_params.z)` 복원, 정수 2^24까지 정확), w=예약(0). CPU 측 패킹은 renderer.rs 스타일 테이블(`StyleVariant::pack_params`). 정밀 entry(`vs_main`/`fs_main`)는 읽지 않는다 — 정밀 모드에서는 전부 0.0 |
+| `style_params` | 범용 스타일 파라미터 슬롯 2개. 해석은 활성 스타일의 스타일 entry 몫 — 스케치: `[0].x`=amplitude_px, `[0].y`=wavelength_px, `[0].z`=시드(`f32(seed)`로 저장 — WGSL에서 `u32(transform.style_params[0].z)` 복원, 정수 2^24까지 정확), `[0].w`=예약(0), `[1]`=0. 성좌(constellation): `[0]`=(star_density, ribbon_width_px, ribbon_intensity, seed(f32)), `[1]`=(star_scale, spread_px, 0, 0). CPU 측 패킹은 renderer.rs 스타일 테이블(`StyleVariant::pack_params`, `[f32; 8]` 반환). 정밀 entry(`vs_main`/`fs_main`)는 읽지 않는다 — 정밀 모드에서는 전부 0.0 |
 
 **CPU 측 짝:** `src/data_render/mod.rs::ScatterTransform`
 (`#[repr(C)]`, `bytemuck::Pod`). 필드 순서·크기 1:1 일치해야 한다.
