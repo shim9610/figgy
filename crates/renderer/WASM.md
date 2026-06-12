@@ -286,6 +286,9 @@ use of an object" 예외가 난다. 호스트 규약:
   호스트가 `register_font(Uint8Array)` 로 폰트 파일(TTF/OTF)을 가져와
   등록해야 한다 (등록 후 SSoT `font` 가족명으로 사용; 반환값이 가족명).
   woff2는 fontdb가 파싱하지 못하므로 TTF/OTF를 받을 것.
+  손그림(sketch) 모드는 폰트와 직교라 폰트를 강제하지 않는다 — 손글씨
+  느낌을 원하면 Comic Neue(OFL) 같은 손글씨 폰트를 `register_font`로
+  등록해 함께 쓰는 것을 권장.
 - **pollster 함정**: 직접 wgpu 코드를 추가할 때 wasm에서 `block_on`을
   쓰면 데드락이다. 이 저장소의 규약대로 — 블로킹 변형은
   `#[cfg(not(target_arch = "wasm32"))]`, 본 구현은 async — 를 따를 것.

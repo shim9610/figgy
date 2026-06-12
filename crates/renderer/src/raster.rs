@@ -135,6 +135,36 @@ impl Canvas {
         );
     }
 
+    /// Stroke a connected polyline through `points` as **one** path: vertices
+    /// get proper line joins and a dash pattern runs continuously along the
+    /// whole path instead of restarting at every vertex (which a chain of
+    /// [`Self::draw_line`] calls would do). Non-finite points split the path
+    /// into separate subpaths — the gap semantics the rest of figgy uses.
+    pub fn draw_polyline(&mut self, points: &[(f32, f32)], paint: &Paint) {
+        let mut pb = PathBuilder::new();
+        let mut pen_down = false;
+        for &(x, y) in points {
+            if !x.is_finite() || !y.is_finite() {
+                pen_down = false;
+                continue;
+            }
+            if pen_down {
+                pb.line_to(x, y);
+            } else {
+                pb.move_to(x, y);
+                pen_down = true;
+            }
+        }
+        let Some(path) = pb.finish() else { return };
+        self.pix.stroke_path(
+            &path,
+            &paint.shader_paint(),
+            &paint.stroke_params(),
+            self.ts,
+            None,
+        );
+    }
+
     pub fn draw_rect(&mut self, x: f32, y: f32, w: f32, h: f32, paint: &Paint) {
         match paint.style {
             PaintStyle::Fill => {

@@ -27,7 +27,8 @@ struct Transform {
     data_max: vec2<f32>,
     scale_log: vec2<f32>,
     pixel_to_ndc: vec2<f32>,
-    _pad: vec2<f32>,
+    sketch_amp_wave: vec2<f32>,
+    sketch_seed: vec2<f32>,
 };
 
 @group(0) @binding(0) var<uniform> transform: Transform;
@@ -165,4 +166,124 @@ fn vs_main(in: VsIn) -> @builtin(position) vec4<f32> {
 @fragment
 fn fs_main() -> @location(0) vec4<f32> {
     return style.color_premul;
+}
+
+// ──────────────── sketch mode (NOT part of the common block) ────────────────
+// Hand-drawn entry point — design SSoT: docs/SKETCH_DESIGN.md (§3 noise,
+// §5d errorbar). Selected as a separate pipeline variant; the precise entries
+// above are never modified and never read the sketch Transform fields.
+// fs_main is shared (it reads no varyings).
+
+// 1D value-noise pair — original formula: docs/SKETCH_DESIGN.md §3.
+// Deliberately duplicated per data shader (scatter/line/errorbar) and NOT in
+// the SHADER_COMMON.md common block: line_arc.wgsl shares that block but has
+// no use for noise. Keep the three copies in sync with the design doc.
+fn sketch_hash01(i: u32, seed: u32) -> f32 {
+    var h = (i * 0x9E3779B9u) ^ (seed * 0x85EBCA6Bu);
+    h = (h ^ (h >> 16u)) * 0x45D9F3Bu;
+    h = h ^ (h >> 16u);
+    return f32(h) / 4294967296.0;
+}
+
+// [-1, 1], C1-continuous. Negative t is fine: the lattice index wraps in u32
+// (floor(-0.3) → -1 → 0xFFFFFFFF, and +1u wraps back to 0), so continuity at
+// integer boundaries is preserved.
+fn sketch_noise(t: f32, seed: u32) -> f32 {
+    let i = u32(i32(floor(t)));
+    let f = fract(t);
+    let u = f * f * (3.0 - 2.0 * f);
+    return mix(sketch_hash01(i, seed), sketch_hash01(i + 1u, seed), u) * 2.0 - 1.0;
+}
+
+// Sketch errorbar vertex stage (docs/SKETCH_DESIGN.md §5d): same six-quad
+// construction as vs_main, but each quad END (A/B, along the bar-length
+// parameter) is displaced perpendicular to its stroke by
+// amplitude · noise(2·seg + end, seed + instance_index). The integer lattice
+// input samples the noise at lattice points, giving every one of the 12 quad
+// ends an independent deterministic offset; both corners of an end share it,
+// so strokes tilt without changing width. No subdivision — bars are short,
+// corner perturbation suffices. A disabled direction stays collapsed to the
+// anchor WITHOUT wobble (a displaced zero-area quad would gain area and
+// rasterize).
+@vertex
+fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> @builtin(position) vec4<f32> {
+    // segment: 0 Y-stem, 1 cap@y_lo, 2 cap@y_hi, 3 X-stem, 4 cap@x_lo,
+    // 5 cap@x_hi.
+    let seg = in.vi / 6u;
+
+    let has_y = (in.err_y_lo + in.err_y_hi) > 0.0;
+    let has_x = (in.err_x_lo + in.err_x_hi) > 0.0;
+    let dir_enabled = select(has_x, has_y, seg < 3u);
+    if (!dir_enabled) {
+        let anchor = data_to_ndc(vec2<f32>(in.x, in.y));
+        return vec4<f32>(anchor, 0.0, 1.0);
+    }
+
+    let y_lo = in.y - in.err_y_lo;
+    let y_hi = in.y + in.err_y_hi;
+    let x_lo = in.x - in.err_x_lo;
+    let x_hi = in.x + in.err_x_hi;
+
+    var a_data: vec2<f32>;
+    var b_data: vec2<f32>;
+    var a_px = vec2<f32>(0.0, 0.0);
+    var b_px = vec2<f32>(0.0, 0.0);
+    var perp: vec2<f32>;
+    var half_stroke: f32;
+
+    if (seg == 0u) {
+        a_data = vec2<f32>(in.x, y_lo);
+        b_data = vec2<f32>(in.x, y_hi);
+        perp = vec2<f32>(1.0, 0.0);
+        half_stroke = style.line_width_px * 0.5;
+    } else if (seg == 1u) {
+        a_data = vec2<f32>(in.x, y_lo);
+        b_data = a_data;
+        a_px = vec2<f32>(-style.cap_half_px, 0.0);
+        b_px = vec2<f32>( style.cap_half_px, 0.0);
+        perp = vec2<f32>(0.0, 1.0);
+        half_stroke = style.cap_width_px * 0.5;
+    } else if (seg == 2u) {
+        a_data = vec2<f32>(in.x, y_hi);
+        b_data = a_data;
+        a_px = vec2<f32>(-style.cap_half_px, 0.0);
+        b_px = vec2<f32>( style.cap_half_px, 0.0);
+        perp = vec2<f32>(0.0, 1.0);
+        half_stroke = style.cap_width_px * 0.5;
+    } else if (seg == 3u) {
+        a_data = vec2<f32>(x_lo, in.y);
+        b_data = vec2<f32>(x_hi, in.y);
+        perp = vec2<f32>(0.0, 1.0);
+        half_stroke = style.line_width_px * 0.5;
+    } else if (seg == 4u) {
+        a_data = vec2<f32>(x_lo, in.y);
+        b_data = a_data;
+        a_px = vec2<f32>(0.0, -style.cap_half_px);
+        b_px = vec2<f32>(0.0,  style.cap_half_px);
+        perp = vec2<f32>(1.0, 0.0);
+        half_stroke = style.cap_width_px * 0.5;
+    } else {
+        a_data = vec2<f32>(x_hi, in.y);
+        b_data = a_data;
+        a_px = vec2<f32>(0.0, -style.cap_half_px);
+        b_px = vec2<f32>(0.0,  style.cap_half_px);
+        perp = vec2<f32>(1.0, 0.0);
+        half_stroke = style.cap_width_px * 0.5;
+    }
+
+    var corner_map = array<u32, 6>(0u, 1u, 2u, 2u, 1u, 3u);
+    let corner = corner_map[in.vi % 6u];
+    let at_a = corner < 2u;
+    let side = select(1.0, -1.0, (corner & 1u) == 0u);
+
+    let amp = max(transform.sketch_amp_wave.x, 0.0);
+    let seed = u32(transform.sketch_seed.x) + inst;
+    let lattice = f32(seg * 2u + select(1u, 0u, at_a));
+    let disp = amp * sketch_noise(lattice, seed);
+
+    let end_data = select(b_data, a_data, at_a);
+    let end_px = select(b_px, a_px, at_a);
+    let offset_px = end_px + perp * (side * half_stroke + disp);
+    let ndc = data_to_ndc(end_data) + offset_px * transform.pixel_to_ndc;
+    return vec4<f32>(ndc, 0.0, 1.0);
 }

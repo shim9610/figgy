@@ -6,6 +6,9 @@ pub mod demo;
 pub mod error;
 pub mod raster;
 pub mod renderer;
+// Hand-drawn geometry helpers — consumed by the deco layer (`axis_render`)
+// when `Config::sketch` is enabled.
+mod sketch;
 pub mod text_render;
 
 // Model layer (chart option SSoT, data containers, preset policies) lives in

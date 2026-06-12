@@ -110,6 +110,27 @@ pub struct AxisOptions {
     pub minor_tick_length: f32,
 }
 
+/// Hand-drawn ("sketch") render-mode parameters. Every field has a default —
+/// JSON `{}` alone enables the mode with stock values (`serde(default)`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct SketchOptions {
+    /// Perpendicular path-displacement amplitude, in px. Default 1.5.
+    pub amplitude_px: f32,
+    /// Displacement wavelength, in px — one wobble per this arc length along
+    /// the path. Default 60.0.
+    pub wavelength_px: f32,
+    /// Global seed. Same (config, data) → byte-identical output. Default 0.
+    pub seed: u32,
+}
+
+impl Default for SketchOptions {
+    fn default() -> Self {
+        Self { amplitude_px: 1.5, wavelength_px: 60.0, seed: 0 }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Config {
@@ -121,6 +142,10 @@ pub struct Config {
     pub chart_title: ChartTitleOptions,
     pub grid: GridOptions,
     pub legend: Legend,
+    /// `None` = precise mode (default — identical to current rendering).
+    /// `Some` = hand-drawn sketch mode. Chart-global — no per-series mixing.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub sketch: Option<SketchOptions>,
 }
 
 impl Config {
@@ -167,6 +192,13 @@ impl Config {
         self.legend.offset_y *= s;
         self.legend.padding *= s;
         scale_rich_text(&mut self.legend.content, s);
+
+        // Sketch wobble dims are pixel-based visual dims too. Scaled only in
+        // sketch mode — `None` stays `None`, the precise path sees no change.
+        if let Some(sketch) = &mut self.sketch {
+            sketch.amplitude_px *= s;
+            sketch.wavelength_px *= s;
+        }
     }
 }
 
@@ -187,4 +219,56 @@ pub use crate::legend::{
     append_legend_entry, scatter_shape_char, series_symbol_segments, symbol_segments, Legend,
     LegendCorner, LegendEntryKind,
 };
+
+// `sketch` is additive schema: configs serialized before the field existed
+// must still parse (→ `None` = precise mode), and `None` must not serialize —
+// the same discipline as `RichSegment`'s per-segment overrides (text.rs).
+#[cfg(all(test, feature = "serde"))]
+mod sketch_serde_tests {
+    use super::{Config, SketchOptions};
+    use crate::default::default_config;
+
+    /// Serialized default config — `sketch` is `None`, so the JSON has no
+    /// `"sketch"` key: exactly the shape of pre-sketch documents.
+    fn default_config_json() -> serde_json::Value {
+        serde_json::to_value(default_config()).expect("serialize Config")
+    }
+
+    #[test]
+    fn config_without_sketch_key_deserializes_to_none() {
+        let cfg: Config =
+            serde_json::from_value(default_config_json()).expect("pre-sketch document parses");
+        assert_eq!(cfg.sketch, None);
+    }
+
+    #[test]
+    fn empty_sketch_object_yields_all_defaults() {
+        let mut json = default_config_json();
+        json.as_object_mut().unwrap().insert("sketch".into(), serde_json::json!({}));
+        let cfg: Config = serde_json::from_value(json).expect("empty sketch object parses");
+        let s = cfg.sketch.expect("sketch enabled");
+        assert_eq!(s, SketchOptions::default());
+        // Pin the stock values themselves, not just Default == Default.
+        assert_eq!(s.amplitude_px, 1.5);
+        assert_eq!(s.wavelength_px, 60.0);
+        assert_eq!(s.seed, 0);
+    }
+
+    #[test]
+    fn partial_sketch_object_fills_remaining_defaults() {
+        let mut json = default_config_json();
+        json.as_object_mut().unwrap().insert("sketch".into(), serde_json::json!({ "seed": 7 }));
+        let cfg: Config = serde_json::from_value(json).expect("partial sketch object parses");
+        assert_eq!(cfg.sketch, Some(SketchOptions { seed: 7, ..SketchOptions::default() }));
+    }
+
+    #[test]
+    fn none_sketch_serializes_without_key() {
+        let json = default_config_json();
+        assert!(
+            json.get("sketch").is_none(),
+            "None sketch must be skipped in serialization: {json}"
+        );
+    }
+}
 

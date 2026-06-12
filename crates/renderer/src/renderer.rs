@@ -95,11 +95,8 @@ pub struct Renderer {
     transform_bgl: wgpu::BindGroupLayout,
     style_bgl: wgpu::BindGroupLayout,
 
-    // Pipelines.
-    axis_pipeline: wgpu::RenderPipeline,
-    line_pipeline: wgpu::RenderPipeline,
-    scatter_pipeline: wgpu::RenderPipeline,
-    errorbar_pipeline: wgpu::RenderPipeline,
+    // Pipelines (precise + sketch variants), all against `surface_format`.
+    pipelines: TargetPipelines,
 
     // Shared resources.
     sampler: wgpu::Sampler,
@@ -154,31 +151,54 @@ fn validate_target_format(
     Ok(())
 }
 
+/// Every pipeline compiled against one render-target format: the four
+/// precise pipelines plus the three sketch (hand-drawn) data variants.
+/// Sketch variants share layouts and differ only in shader entry points.
+/// They are `Option` so short-lived pipeline sets (the per-call export set)
+/// can skip compiling them when the exported chart doesn't use sketch mode —
+/// the persistent renderer set always carries them, because the live config
+/// can turn sketch on at any frame.
+struct TargetPipelines {
+    axis: wgpu::RenderPipeline,
+    line: wgpu::RenderPipeline,
+    scatter: wgpu::RenderPipeline,
+    errorbar: wgpu::RenderPipeline,
+    line_sketch: Option<wgpu::RenderPipeline>,
+    scatter_sketch: Option<wgpu::RenderPipeline>,
+    errorbar_sketch: Option<wgpu::RenderPipeline>,
+}
+
 fn create_target_pipelines(
     device: &wgpu::Device,
     texture_bgl: &wgpu::BindGroupLayout,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
     surface_format: wgpu::TextureFormat,
-) -> (
-    wgpu::RenderPipeline,
-    wgpu::RenderPipeline,
-    wgpu::RenderPipeline,
-    wgpu::RenderPipeline,
-) {
-    let axis_pipeline = data_render::create_fullscreen_textured_pipeline(
-        device, texture_bgl, surface_format,
-    );
-    let line_pipeline = data_render::create_line_columnar_pipeline(
-        device, transform_bgl, style_bgl, surface_format,
-    );
-    let scatter_pipeline = data_render::create_scatter_columnar_pipeline(
-        device, transform_bgl, style_bgl, surface_format,
-    );
-    let errorbar_pipeline = data_render::create_errorbar_columnar_pipeline(
-        device, transform_bgl, style_bgl, surface_format,
-    );
-    (axis_pipeline, line_pipeline, scatter_pipeline, errorbar_pipeline)
+    with_sketch: bool,
+) -> TargetPipelines {
+    TargetPipelines {
+        axis: data_render::create_fullscreen_textured_pipeline(
+            device, texture_bgl, surface_format,
+        ),
+        line: data_render::create_line_columnar_pipeline(
+            device, transform_bgl, style_bgl, surface_format,
+        ),
+        scatter: data_render::create_scatter_columnar_pipeline(
+            device, transform_bgl, style_bgl, surface_format,
+        ),
+        errorbar: data_render::create_errorbar_columnar_pipeline(
+            device, transform_bgl, style_bgl, surface_format,
+        ),
+        line_sketch: with_sketch.then(|| data_render::create_line_sketch_pipeline(
+            device, transform_bgl, style_bgl, surface_format,
+        )),
+        scatter_sketch: with_sketch.then(|| data_render::create_scatter_sketch_pipeline(
+            device, transform_bgl, style_bgl, surface_format,
+        )),
+        errorbar_sketch: with_sketch.then(|| data_render::create_errorbar_sketch_pipeline(
+            device, transform_bgl, style_bgl, surface_format,
+        )),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -187,6 +207,26 @@ struct TargetPipelineRefs<'a> {
     line: &'a wgpu::RenderPipeline,
     scatter: &'a wgpu::RenderPipeline,
     errorbar: &'a wgpu::RenderPipeline,
+    /// `None` only in a set built with `with_sketch: false`, which callers
+    /// only do when no drawn item uses sketch mode. The draw-side fallback is
+    /// the precise pipeline (graceful, never a panic).
+    line_sketch: Option<&'a wgpu::RenderPipeline>,
+    scatter_sketch: Option<&'a wgpu::RenderPipeline>,
+    errorbar_sketch: Option<&'a wgpu::RenderPipeline>,
+}
+
+impl TargetPipelines {
+    fn refs(&self) -> TargetPipelineRefs<'_> {
+        TargetPipelineRefs {
+            axis: &self.axis,
+            line: &self.line,
+            scatter: &self.scatter,
+            errorbar: &self.errorbar,
+            line_sketch: self.line_sketch.as_ref(),
+            scatter_sketch: self.scatter_sketch.as_ref(),
+            errorbar_sketch: self.errorbar_sketch.as_ref(),
+        }
+    }
 }
 
 fn validate_texture_extent(
@@ -285,14 +325,16 @@ impl Renderer {
         let sampler = data_render::create_linear_sampler(&device);
         let quad_vb = data_render::create_unit_centered_quad_vertex_buffer(&device);
 
-        let (axis_pipeline, line_pipeline, scatter_pipeline, errorbar_pipeline) =
-            create_target_pipelines(
-                &device,
-                &texture_bgl,
-                &transform_bgl,
-                &style_bgl,
-                surface_format,
-            );
+        // Persistent set: sketch variants always present — the live config
+        // can enable sketch mode on any later frame.
+        let pipelines = create_target_pipelines(
+            &device,
+            &texture_bgl,
+            &transform_bgl,
+            &style_bgl,
+            surface_format,
+            true,
+        );
         let arc_pipelines = data_render::line_arc::create_arc_scan_pipelines(&device);
 
         Ok(Self {
@@ -303,10 +345,7 @@ impl Renderer {
             texture_bgl,
             transform_bgl,
             style_bgl,
-            axis_pipeline,
-            line_pipeline,
-            scatter_pipeline,
-            errorbar_pipeline,
+            pipelines,
             sampler,
             quad_vb,
             arc_cache: HashMap::new(),
@@ -334,18 +373,14 @@ impl Renderer {
             return Ok(false);
         }
         validate_target_format(self.caps, surface_format)?;
-        let (axis_pipeline, line_pipeline, scatter_pipeline, errorbar_pipeline) =
-            create_target_pipelines(
-                &self.device,
-                &self.texture_bgl,
-                &self.transform_bgl,
-                &self.style_bgl,
-                surface_format,
-            );
-        self.axis_pipeline = axis_pipeline;
-        self.line_pipeline = line_pipeline;
-        self.scatter_pipeline = scatter_pipeline;
-        self.errorbar_pipeline = errorbar_pipeline;
+        self.pipelines = create_target_pipelines(
+            &self.device,
+            &self.texture_bgl,
+            &self.transform_bgl,
+            &self.style_bgl,
+            surface_format,
+            true,
+        );
         self.surface_format = surface_format;
         Ok(true)
     }
@@ -373,10 +408,10 @@ impl Renderer {
     pub fn transform_bind_group_layout(&self) -> &wgpu::BindGroupLayout { &self.transform_bgl }
     pub fn style_bind_group_layout(&self) -> &wgpu::BindGroupLayout { &self.style_bgl }
 
-    pub fn axis_pipeline(&self) -> &wgpu::RenderPipeline { &self.axis_pipeline }
-    pub fn line_pipeline(&self) -> &wgpu::RenderPipeline { &self.line_pipeline }
-    pub fn scatter_pipeline(&self) -> &wgpu::RenderPipeline { &self.scatter_pipeline }
-    pub fn errorbar_pipeline(&self) -> &wgpu::RenderPipeline { &self.errorbar_pipeline }
+    pub fn axis_pipeline(&self) -> &wgpu::RenderPipeline { &self.pipelines.axis }
+    pub fn line_pipeline(&self) -> &wgpu::RenderPipeline { &self.pipelines.line }
+    pub fn scatter_pipeline(&self) -> &wgpu::RenderPipeline { &self.pipelines.scatter }
+    pub fn errorbar_pipeline(&self) -> &wgpu::RenderPipeline { &self.pipelines.errorbar }
 
     pub fn sampler(&self) -> &wgpu::Sampler { &self.sampler }
     pub fn quad_vertex_buffer(&self) -> &wgpu::Buffer { &self.quad_vb }
@@ -770,29 +805,28 @@ impl Renderer {
         items: &[ChartDrawItem<'_>],
     ) -> Result<()> {
         let arcs = self.ensure_arc_prefixes(items);
-        let pipelines = TargetPipelineRefs {
-            axis: &self.axis_pipeline,
-            line: &self.line_pipeline,
-            scatter: &self.scatter_pipeline,
-            errorbar: &self.errorbar_pipeline,
-        };
+        let pipelines = self.pipelines.refs();
         self.paint_with_pipelines(pass, target_size, items, pipelines, &arcs)
     }
 
     /// Prepare phase of `paint`/export — the only mutable step. Ensures and
-    /// dispatches the GPU arc-length prefix for every dashed line series;
-    /// the immutable draw phase then only looks the buffers up, so it can
-    /// coexist with the pipeline references the pass needs.
+    /// dispatches the GPU arc-length prefix for every line series that needs
+    /// one — dashed lines (dash phase) and, in sketch mode, every line (the
+    /// wobble is parameterized by arc length, so solid sketch lines need the
+    /// prefix too). The immutable draw phase then only looks the buffers up,
+    /// so it can coexist with the pipeline references the pass needs.
     fn ensure_arc_prefixes(&mut self, items: &[ChartDrawItem<'_>]) -> Vec<Vec<Option<ArcPrefix>>> {
         let mut arcs = Vec::with_capacity(items.len());
         for item in items {
+            let sketch = item.chart_config.sketch.is_some();
             let mut per_series = Vec::with_capacity(item.series.len());
             for series in item.series {
                 let cfg = series.config;
-                let dashed = has_line(&cfg.render_type)
+                let line = has_line(&cfg.render_type);
+                let dashed = line
                     && extract_line(&cfg.render_type)
                         .is_some_and(|l| !matches!(l.line_style, LineStylePreset::Solid));
-                per_series.push(if dashed {
+                per_series.push(if dashed || (sketch && line) {
                     self.ensure_arc_prefix(
                         &cfg.series_id,
                         &cfg.x_column,
@@ -824,9 +858,14 @@ impl Renderer {
                 .map(|da| da.0)
                 .unwrap_or(panel_rect);
 
+            // The single sketch-mode branch (SKETCH_DESIGN.md §2): it only
+            // decides which pipeline variant (and line vertex count) the
+            // series layers reference — the precise path stays untouched.
+            let sketch = item.chart_config.sketch.is_some();
+
             // Bundle every series's primitives for the panel into one call.
             let series_list =
-                self.build_series_layers(item.view, item.series, pipelines, item_arcs)?;
+                self.build_series_layers(item.view, item.series, pipelines, item_arcs, sketch)?;
 
             data_render::draw_chart_panel_columnar(
                 pass,
@@ -846,13 +885,17 @@ impl Renderer {
     /// line/scatter/errorbar each series needs; column ids are resolved to
     /// handles via the pool. `arcs` is this panel's slice of the prepare
     /// phase's output ([`Self::ensure_arc_prefixes`]), aligned with
-    /// `series_specs` — dashed lines pick up their arc-length prefix there.
+    /// `series_specs` — dashed lines (and every sketch-mode line) pick up
+    /// their arc-length prefix there. `sketch` selects the hand-drawn
+    /// pipeline variants (and the line strip's vertex count); everything
+    /// else is identical between the modes.
     fn build_series_layers<'a>(
         &'a self,
         view: &'a ChartView,
         series_specs: &[Series<'a>],
         pipelines: TargetPipelineRefs<'a>,
         arcs: &[Option<ArcPrefix>],
+        sketch: bool,
     ) -> Result<Vec<data_render::SeriesLayers<'a>>> {
         let pool = &self.pool;
         let lookup = |id: &ColumnId| -> Result<ColumnHandle> {
@@ -867,21 +910,39 @@ impl Renderer {
             let x_h = lookup(&cfg.x_column)?;
             let y_h = lookup(&cfg.y_column)?;
 
+            // Sketch pipeline lookups fall back to the precise pipeline if
+            // the set was built without sketch variants — callers only build
+            // such sets when no item uses sketch mode, so the fallback is
+            // unreachable in practice but keeps this a non-panic path.
             let line = if has_line(rt) {
                 let arc = arcs.get(idx).cloned().flatten();
+                let sketch_line = sketch && pipelines.line_sketch.is_some();
                 Some(ColumnLineLayer {
-                    pipeline: pipelines.line,
+                    pipeline: if sketch_line {
+                        pipelines.line_sketch.unwrap_or(pipelines.line)
+                    } else {
+                        pipelines.line
+                    },
                     transform_bg: &view.transform_bg,
                     style_bg: &series.style.line_bg,
                     pool_buffer: pool.buffer(),
                     x: x_h, y: y_h,
                     arc,
+                    verts_per_instance: if sketch_line {
+                        data_render::LINE_SKETCH_VERTICES_PER_INSTANCE
+                    } else {
+                        4
+                    },
                 })
             } else { None };
 
             let scatter = if has_scatter(rt) {
                 Some(ColumnScatterLayer {
-                    pipeline: pipelines.scatter,
+                    pipeline: if sketch {
+                        pipelines.scatter_sketch.unwrap_or(pipelines.scatter)
+                    } else {
+                        pipelines.scatter
+                    },
                     transform_bg: &view.transform_bg,
                     style_bg: &series.style.scatter_bg,
                     quad_vb: &self.quad_vb,
@@ -913,7 +974,11 @@ impl Renderer {
                         None => (zero, zero),
                     };
                     Some(ColumnErrorBarDraw {
-                        pipeline: pipelines.errorbar,
+                        pipeline: if sketch {
+                            pipelines.errorbar_sketch.unwrap_or(pipelines.errorbar)
+                        } else {
+                            pipelines.errorbar
+                        },
                         transform_bg: &view.transform_bg,
                         style_bg: &series.style.errorbar_bg,
                         pool_buffer: pool.buffer(),
@@ -1100,24 +1165,17 @@ impl Renderer {
         };
         let target_tex = create_texture_checked(&self.device, &target_desc, "figgy export target")?;
         let target_view = target_tex.create_view(&wgpu::TextureViewDescriptor::default());
-        let (
-            export_axis_pipeline,
-            export_line_pipeline,
-            export_scatter_pipeline,
-            export_errorbar_pipeline,
-        ) = create_target_pipelines(
+        // Per-call set: compile the sketch variants only when this export
+        // actually draws in sketch mode.
+        let export_target_pipelines = create_target_pipelines(
             &self.device,
             &self.texture_bgl,
             &self.transform_bgl,
             &self.style_bgl,
             export_format,
+            scaled_chart.config().sketch.is_some(),
         );
-        let export_pipelines = TargetPipelineRefs {
-            axis: &export_axis_pipeline,
-            line: &export_line_pipeline,
-            scatter: &export_scatter_pipeline,
-            errorbar: &export_errorbar_pipeline,
-        };
+        let export_pipelines = export_target_pipelines.refs();
 
         // 5) Readback buffer. Allocate at most the hardware limit and read rows
         // sequentially if the full image would exceed it.

@@ -36,7 +36,8 @@ struct Transform {
     data_max: vec2<f32>,
     scale_log: vec2<f32>,
     pixel_to_ndc: vec2<f32>,
-    _pad: vec2<f32>,
+    sketch_amp_wave: vec2<f32>,
+    sketch_seed: vec2<f32>,
 };
 
 @group(0) @binding(0) var<uniform> transform: Transform;

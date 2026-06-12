@@ -43,9 +43,10 @@ cargo test -p model --features serde --test schema_sync print_schema -- --ignore
   "color":{...}}`, 점 = `{"text":"●","field_em":2.0,...}`, 선+점 =
   rule(0.65) + 글리프(0.7) + rule(0.65).
 - **색은 0..1 float RGBA**: `{ "r": 0.8, "g": 0.1, "b": 0.1, "a": 1.0 }`.
-- `label: null` 가능 (`Option`), 세그먼트 오버라이드 키는 생략 가능 — 그 외
-  필드는 전부 항상 존재한다. 부분 업데이트가 아니라 **전체 트리 교체**
-  이므로, `get_config()` 결과를 고쳐서 되돌리는 패턴을 쓸 것.
+- `label: null` 가능 (`Option`), 세그먼트 오버라이드 키와 Config의 `sketch`
+  키는 생략 가능 (`None` = 키 자체가 생략, 아래 [`sketch` 절](#sketch--손그림-모드-config-선택-키)
+  참고) — 그 외 필드는 전부 항상 존재한다. 부분 업데이트가 아니라 **전체
+  트리 교체**이므로, `get_config()` 결과를 고쳐서 되돌리는 패턴을 쓸 것.
 
 ## enum 허용값
 
@@ -78,6 +79,26 @@ cargo test -p model --features serde --test schema_sync print_schema -- --ignore
   시리즈 변경에 덮일 수 있다. 직접 편집 모드로 쓰려면 시리즈 변경 후
   content 를 다시 적용할 것. (`content.font` / `font_size` / `color` 문서
   속성은 재구성에서도 보존된다.)
+
+## `sketch` — 손그림 모드 (Config 선택 키)
+
+`Config.sketch`는 `Option<SketchOptions>`다 (`crates/model/src/config.rs`).
+**키 부재(또는 `null`) = `None` = 정밀 모드** — 디폴트이며 현행 렌더와
+동일하다. `None`은 직렬화에서 키 자체가 생략되므로 아래 기본값 JSON
+블록에도 나타나지 않는다. 객체를 주면 손그림(hand-drawn) 모드가 켜진다.
+모드는 **차트 전역**(Config 레벨) — 시리즈별 혼합은 없다.
+
+모든 하위 필드에 디폴트가 있어 (`serde(default)`) 부분 지정이 가능하다 —
+`"sketch": {}` 만으로 전부 디폴트로 켜진다.
+
+| 필드 | 타입 | 디폴트 | 의미 |
+|---|---|---|---|
+| `amplitude_px` | f32 | `1.5` | 경로 수직 교란 진폭 (px) |
+| `wavelength_px` | f32 | `60.0` | 교란 파장 (px) — 경로를 따라 이 간격마다 굴곡 1회 |
+| `seed` | u32 | `0` | 전역 시드 — 같은 (config, 데이터)면 결과 픽셀 동일 |
+
+전체 형태: `"sketch": { "amplitude_px": 1.5, "wavelength_px": 60.0, "seed": 0 }`
+— 정밀 모드로 되돌리려면 키를 제거한다.
 
 ## `get_config()` 전체 형태 — 기본값 기준
 

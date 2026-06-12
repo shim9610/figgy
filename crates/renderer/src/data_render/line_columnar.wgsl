@@ -35,7 +35,8 @@ struct Transform {
     data_max: vec2<f32>,
     scale_log: vec2<f32>,
     pixel_to_ndc: vec2<f32>,
-    _pad: vec2<f32>,
+    sketch_amp_wave: vec2<f32>,
+    sketch_seed: vec2<f32>,
 };
 
 @group(0) @binding(0) var<uniform> transform: Transform;
@@ -169,4 +170,90 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // phase == period can occur from float rounding; that point is the
     // start of the next repetition, which always opens with an "on" span.
     return style.color_premul;
+}
+
+// ──────────────── sketch mode (NOT part of the common block) ────────────────
+// Hand-drawn entry point — design SSoT: docs/SKETCH_DESIGN.md (§3 noise,
+// §5b line). Selected as a separate pipeline variant; the precise entries
+// above are never modified and never read the sketch Transform fields.
+
+// 1D value-noise pair — original formula: docs/SKETCH_DESIGN.md §3.
+// Deliberately duplicated per data shader (scatter/line/errorbar) and NOT in
+// the SHADER_COMMON.md common block: line_arc.wgsl shares that block but has
+// no use for noise. Keep the three copies in sync with the design doc.
+fn sketch_hash01(i: u32, seed: u32) -> f32 {
+    var h = (i * 0x9E3779B9u) ^ (seed * 0x85EBCA6Bu);
+    h = (h ^ (h >> 16u)) * 0x45D9F3Bu;
+    h = h ^ (h >> 16u);
+    return f32(h) / 4294967296.0;
+}
+
+// [-1, 1], C1-continuous. Negative t is fine: the lattice index wraps in u32
+// (floor(-0.3) → -1 → 0xFFFFFFFF, and +1u wraps back to 0), so continuity at
+// integer boundaries is preserved.
+fn sketch_noise(t: f32, seed: u32) -> f32 {
+    let i = u32(i32(floor(t)));
+    let f = fract(t);
+    let u = f * f * (3.0 - 2.0 * f);
+    return mix(sketch_hash01(i, seed), sketch_hash01(i + 1u, seed), u) * 2.0 - 1.0;
+}
+
+// Subdivision count S per segment instance: the sketch pipeline draws
+// 2*(S+1) strip vertices per instance. The CPU-side draw count lives in
+// mod.rs (`LINE_SKETCH_VERTICES_PER_INSTANCE`) — keep the two in sync.
+const SKETCH_SUBDIV: u32 = 8u;
+
+// Sketch line vertex stage (docs/SKETCH_DESIGN.md §5b): subdivide each
+// segment into S spans (k = vid/2 ∈ 0..=S, side = vid%2, t = k/S), displace
+// the midline perpendicularly by amplitude · noise(arc_px/wavelength, seed),
+// then extrude ±half_w. Arc-length parameterization makes the displacement
+// continuous across the shared endpoint of adjacent segments. The outer
+// points keep vs_main's square-cap extension so joints stay seamless, and
+// dist_px advances exactly like vs_main's — fs_main is shared, so
+// dashed+sketch composes for free. Non-finite endpoints (NaN gaps, log of
+// ≤ 0) propagate through mix() and clip, same as the precise path.
+@vertex
+fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
+    let a_ndc = data_to_ndc(in.x_a, in.y_a);
+    let b_ndc = data_to_ndc(in.x_b, in.y_b);
+
+    let a_px = a_ndc / transform.pixel_to_ndc;
+    let b_px = b_ndc / transform.pixel_to_ndc;
+
+    let delta = b_px - a_px;
+    let len = length(delta);
+    let dir = select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6);
+    let normal_px = vec2<f32>(-dir.y, dir.x);
+
+    let half_w = max(style.line_width_px, 1.0) * 0.5;
+
+    let k = vid / 2u;
+    let on_pos = (vid & 1u) == 1u;
+    let t = f32(k) / f32(SKETCH_SUBDIV);
+    let center_px = mix(a_px, b_px, t);
+    let side = select(-1.0, 1.0, on_pos);
+
+    // Square caps on the outer subdivision points only (same rule and same
+    // rationale as vs_main).
+    var cap = 0.0;
+    if (k == 0u) { cap = -half_w; }
+    if (k == SKETCH_SUBDIV) { cap = half_w; }
+
+    let arc_at = mix(arc.arc_a, arc.arc_b, t);
+    let amp = max(transform.sketch_amp_wave.x, 0.0);
+    let wav = transform.sketch_amp_wave.y;
+    let seed = u32(transform.sketch_seed.x);
+    let wobble = amp * sketch_noise(arc_at / max(wav, 1e-6), seed);
+    // wavelength <= 0 disables the wobble — mirrors the CPU stroker's guard
+    // (sketch.rs) so GPU and deco layers degrade identically.
+    let disp = select(0.0, wobble, wav > 0.0);
+
+    let corner_px = center_px + dir * cap + normal_px * (half_w * side + disp);
+    let corner_ndc = corner_px * transform.pixel_to_ndc;
+
+    var out: VsOut;
+    out.pos = vec4<f32>(corner_ndc, 0.0, 1.0);
+    // The cap extension keeps advancing the dash phase, like vs_main.
+    out.dist_px = arc_at + cap;
+    return out;
 }

@@ -671,7 +671,7 @@ pub fn create_unit_centered_quad_vertex_buffer(device: &wgpu::Device) -> wgpu::B
 
 /// Shared transform uniform for scatter / line / errorbar shaders.
 ///
-/// 40 bytes (five `vec2<f32>` fields, 8-byte aligned in WGSL uniform layout).
+/// 48 bytes (six `vec2<f32>` fields, 8-byte aligned in WGSL uniform layout).
 /// Pixel sizes (point radius, cap half-length) live in [`PrimitiveStyle`];
 /// shaders convert them to NDC via `pixel_to_ndc`.
 #[repr(C)]
@@ -684,13 +684,18 @@ pub struct ScatterTransform {
     /// `(2 / chart_w, 2 / chart_h)` — 1 pixel in NDC. Shaders multiply pixel
     /// sizes (line width, point radius, cap half-length) by this.
     pub pixel_to_ndc: [f32; 2],   // offset 24
-    /// Reserved — currently unused.
-    pub _pad: [f32; 2],           // offset 32 → 40 byte
+    /// Sketch-mode wobble: `[amplitude_px, wavelength_px]`
+    /// (docs/SKETCH_DESIGN.md §4). All zeros in precise mode — the precise
+    /// entry points never read it.
+    pub sketch_amp_wave: [f32; 2], // offset 32
+    /// Sketch-mode seed: `[seed as f32, 0.0]`. Stored as f32 (exact up to
+    /// 2^24); shaders recover it via `u32(transform.sketch_seed.x)`.
+    pub sketch_seed: [f32; 2],    // offset 40 → 48 byte
 }
 
 // WGSL mirror size guards (SHADER_COMMON.md §1 / §2). Update both the doc and
 // every shader's common block before touching these.
-const _: () = assert!(std::mem::size_of::<ScatterTransform>() == 40);
+const _: () = assert!(std::mem::size_of::<ScatterTransform>() == 48);
 
 /// Allocate the transform uniform buffer with `COPY_DST` so subsequent
 /// updates can use `queue.write_buffer` instead of recreating it.
@@ -906,6 +911,15 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
     // 1 px in NDC: NDC spans 2 across chart_w pixels.
     let pixel_to_ndc = [2.0 / chart_w, 2.0 / chart_h];
 
+    // Sketch-mode wobble parameters (docs/SKETCH_DESIGN.md §4). Precise mode
+    // (`None`) writes zeros — the precise entry points never read these, so
+    // the output is unaffected. The export path's `Config::scaled` already
+    // multiplied amplitude/wavelength by the DPI scale; read them as-is.
+    let (sketch_amp_wave, sketch_seed) = match &config.sketch {
+        Some(s) => ([s.amplitude_px, s.wavelength_px], [s.seed as f32, 0.0]),
+        None => ([0.0; 2], [0.0; 2]),
+    };
+
     // No data_area → use the data range directly (no extension).
     let da: Rect = match config.data_area() {
         Ok(d) => d.0,
@@ -915,7 +929,8 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
                 data_max: [data_max_x, data_max_y],
                 scale_log,
                 pixel_to_ndc,
-                _pad: [0.0; 2],
+                sketch_amp_wave,
+                sketch_seed,
             };
         }
     };
@@ -952,7 +967,8 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
         data_max: [max_x_ext, max_y_ext],
         scale_log,
         pixel_to_ndc,
-        _pad: [0.0; 2],
+        sketch_amp_wave,
+        sketch_seed,
     }
 }
 
@@ -970,6 +986,40 @@ pub fn create_line_columnar_pipeline(
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
+    create_line_columnar_pipeline_with_entries(
+        device, transform_bgl, style_bgl, target_format,
+        "vs_main", "figgy line columnar pipeline",
+    )
+}
+
+/// Strip vertex count per instance for the sketch line pipeline:
+/// `2 * (S + 1)` with the subdivision constant `S = 8` — must match
+/// `SKETCH_SUBDIV` in `line_columnar.wgsl`.
+pub const LINE_SKETCH_VERTICES_PER_INSTANCE: u32 = 18;
+
+/// Sketch (hand-drawn) variant of the line pipeline: identical layout and
+/// state, `vs_sketch` entry instead of `vs_main` (fragment stage shared).
+/// Draw [`LINE_SKETCH_VERTICES_PER_INSTANCE`] vertices per instance.
+pub fn create_line_sketch_pipeline(
+    device: &wgpu::Device,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    create_line_columnar_pipeline_with_entries(
+        device, transform_bgl, style_bgl, target_format,
+        "vs_sketch", "figgy line sketch pipeline",
+    )
+}
+
+fn create_line_columnar_pipeline_with_entries(
+    device: &wgpu::Device,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    vs_entry: &str,
+    label: &str,
+) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("figgy line columnar shader"),
         source: wgpu::ShaderSource::Wgsl(include_str!("line_columnar.wgsl").into()),
@@ -984,11 +1034,11 @@ pub fn create_line_columnar_pipeline(
     let f32_stride = std::mem::size_of::<f32>() as wgpu::BufferAddress;
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("figgy line columnar pipeline"),
+        label: Some(label),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
             module: &shader,
-            entry_point: Some("vs_main"),
+            entry_point: Some(vs_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             // 4 per-instance f32 slots: x_a, y_a, x_b, y_b. The same X/Y
             // columns are bound twice; the second pair starts 4 bytes (one
@@ -1060,7 +1110,8 @@ pub fn create_line_columnar_pipeline(
             ],
         },
         primitive: wgpu::PrimitiveState {
-            // 4 vertices per instance — a 2-triangle strip.
+            // One ribbon strip per instance: 4 vertices for `vs_main`,
+            // [`LINE_SKETCH_VERTICES_PER_INSTANCE`] for `vs_sketch`.
             topology: wgpu::PrimitiveTopology::TriangleStrip,
             strip_index_format: None,
             front_face: wgpu::FrontFace::Ccw,
@@ -1098,6 +1149,36 @@ pub fn create_scatter_columnar_pipeline(
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
+    create_scatter_columnar_pipeline_with_entries(
+        device, transform_bgl, style_bgl, target_format,
+        "vs_main", "fs_main", "figgy scatter columnar pipeline",
+    )
+}
+
+/// Sketch (hand-drawn) variant of the scatter pipeline: identical layout and
+/// state, `vs_sketch`/`fs_sketch` entries (the instance index travels as a
+/// flat varying, so both stages differ).
+pub fn create_scatter_sketch_pipeline(
+    device: &wgpu::Device,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    create_scatter_columnar_pipeline_with_entries(
+        device, transform_bgl, style_bgl, target_format,
+        "vs_sketch", "fs_sketch", "figgy scatter sketch pipeline",
+    )
+}
+
+fn create_scatter_columnar_pipeline_with_entries(
+    device: &wgpu::Device,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    vs_entry: &str,
+    fs_entry: &str,
+    label: &str,
+) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("figgy scatter columnar shader"),
         source: wgpu::ShaderSource::Wgsl(include_str!("scatter_columnar.wgsl").into()),
@@ -1113,11 +1194,11 @@ pub fn create_scatter_columnar_pipeline(
     let vec2_stride = (std::mem::size_of::<f32>() * 2) as wgpu::BufferAddress;
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("figgy scatter columnar pipeline"),
+        label: Some(label),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
             module: &shader,
-            entry_point: Some("vs_main"),
+            entry_point: Some(vs_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             buffers: &[
                 // slot 0: unit quad (per-vertex, vec2)
@@ -1169,7 +1250,7 @@ pub fn create_scatter_columnar_pipeline(
         },
         fragment: Some(wgpu::FragmentState {
             module: &shader,
-            entry_point: Some("fs_main"),
+            entry_point: Some(fs_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format: target_format,
@@ -1195,6 +1276,35 @@ pub fn create_errorbar_columnar_pipeline(
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    create_errorbar_columnar_pipeline_with_entries(
+        device, transform_bgl, style_bgl, target_format,
+        "vs_main", "figgy errorbar columnar pipeline",
+    )
+}
+
+/// Sketch (hand-drawn) variant of the errorbar pipeline: identical layout
+/// and state, `vs_sketch` entry instead of `vs_main` (fragment stage shared;
+/// vertex count is unchanged at 36 per instance).
+pub fn create_errorbar_sketch_pipeline(
+    device: &wgpu::Device,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    create_errorbar_columnar_pipeline_with_entries(
+        device, transform_bgl, style_bgl, target_format,
+        "vs_sketch", "figgy errorbar sketch pipeline",
+    )
+}
+
+fn create_errorbar_columnar_pipeline_with_entries(
+    device: &wgpu::Device,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    vs_entry: &str,
+    label: &str,
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("figgy errorbar columnar shader"),
@@ -1249,11 +1359,11 @@ pub fn create_errorbar_columnar_pipeline(
     ];
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("figgy errorbar columnar pipeline"),
+        label: Some(label),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
             module: &shader,
-            entry_point: Some("vs_main"),
+            entry_point: Some(vs_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             buffers: &buffers,
         },
@@ -1301,6 +1411,10 @@ pub struct ColumnLineLayer<'a> {
     /// filler instead. `Arc` because the buffer lives in the renderer's
     /// per-series cache while the layer is a per-frame view.
     pub arc: Option<(std::sync::Arc<wgpu::Buffer>, u64)>,
+    /// Strip vertices per instance — must match `pipeline`'s vertex entry:
+    /// 4 for the precise `vs_main`, [`LINE_SKETCH_VERTICES_PER_INSTANCE`]
+    /// for the sketch `vs_sketch`.
+    pub verts_per_instance: u32,
 }
 
 pub struct ColumnScatterLayer<'a> {
@@ -1405,7 +1519,9 @@ fn issue_series_data(
                     pass.set_vertex_buffer(5, l.pool_buffer.slice(x_shift));
                 }
             }
-            pass.draw(0..4, 0..(count - 1));
+            // 4 strip vertices per segment (precise) or 2·(S+1) (sketch) —
+            // decided where the pipeline variant was picked.
+            pass.draw(0..l.verts_per_instance, 0..(count - 1));
         }
     }
 

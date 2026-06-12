@@ -1,9 +1,10 @@
 //! Reasonable default builders for a figgy chart.
 //!
-//! The `Default` trait is intentionally not implemented anywhere in the crate;
+//! The `Default` trait is intentionally not implemented for the chart types;
 //! values that carry user intent (titles, data ranges) must go through builders
 //! like `Chart::with_title`. This module only provides visual / layout defaults
-//! that work for any chart.
+//! that work for any chart. (Sole exception: `SketchOptions` — pure visual
+//! parameters with no user intent, and `serde(default)` requires the impl.)
 //!
 //! Included: visual style (colors, widths, font sizes, tick lengths, grid),
 //! axis visibility policy (top/right labels and titles off, bottom/left on),
@@ -213,5 +214,7 @@ pub fn default_config() -> Config {
         chart_title: default_chart_title_options(),
         grid: default_grid_options(),
         legend: default_legend(),
+        // Precise mode. Sketch mode is opt-in (`Some(SketchOptions)`).
+        sketch: None,
     }
 }
