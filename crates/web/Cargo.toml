@@ -3,7 +3,7 @@
 # JS/wasm files are called: `figgy.js`, `figgy_bg.wasm`, `figgy.d.ts`.
 [package]
 name = "figgy"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 description = "figgy chart component for the web — wasm-bindgen wrapper over the renderer."
 license = "MIT OR Apache-2.0"
