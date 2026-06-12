@@ -99,16 +99,23 @@ fn build_state(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>, format: wgpu:
     let series = vec![
         line("nebula_warm", "warm", Color::from_rgb8(255, 142, 92)),
         line("nebula_cool", "cool", Color::from_rgb8(96, 168, 255)),
+        // Line + scatter combined: ringed planets riding their own star
+        // chain — the style composes per primitive, so one series gets both.
         SeriesConfig {
             series_id: "planets".into(),
             label: None,
             x_column: "planet_x".into(),
             y_column: "planet_y".into(),
-            render_type: DataRenderType::Scatter {
+            render_type: DataRenderType::ScatterLine {
                 scatter: DataScatterStyleConfig {
                     point_color: Color::from_rgb8(140, 230, 160),
                     point_shape: ScatterShape::Triangle,
                     point_size: 13.0,
+                },
+                line: DataLineStyleConfig {
+                    line_style: LineStylePreset::Solid,
+                    line_color: Color::from_rgb8(140, 230, 160),
+                    line_width: 2.0,
                 },
             },
         },

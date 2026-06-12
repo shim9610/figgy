@@ -220,4 +220,30 @@ fn main() {
         &big,
         "target/constellation_demo/planets_big.png",
     );
+
+    // Line + scatter combined: planets riding their own star chain.
+    let combo = [SeriesConfig {
+        series_id: "combo".into(),
+        label: None,
+        x_column: "px".into(),
+        y_column: "pb".into(),
+        render_type: DataRenderType::ScatterLine {
+            scatter: DataScatterStyleConfig {
+                point_color: Color::from_rgb8(255, 142, 92),
+                point_shape: ScatterShape::Circle,
+                point_size: 15.0,
+            },
+            line: DataLineStyleConfig {
+                line_style: LineStylePreset::Solid,
+                line_color: Color::from_rgb8(255, 142, 92),
+                line_width: 2.0,
+            },
+        },
+    }];
+    export(
+        &mut r,
+        &build_chart(DrawStyle::Constellation(ConstellationOptions::default())),
+        &combo,
+        "target/constellation_demo/planets_combo.png",
+    );
 }
