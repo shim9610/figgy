@@ -44,6 +44,11 @@ name = "winit_simple"
 path = "examples/winit_simple.rs"
 
 [[example]]
+name = "constellation_lab"
+path = "examples/constellation_lab.rs"
+required-features = ["egui_demo"]
+
+[[example]]
 name = "egui_embed"
 path = "examples/egui_embed.rs"
 required-features = ["egui_demo"]
