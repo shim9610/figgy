@@ -162,6 +162,10 @@ fn build_state(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>, format: wgpu:
 struct LabCallback {
     panel_rect_px: Rect,
     opts: ConstellationOptions,
+    /// Planet series point_size — a PER-SERIES SSoT field
+    /// (DataScatterStyleConfig.point_size), not a style option; applying it
+    /// rebuilds that series' GPU style.
+    planet_size: f32,
 }
 
 impl CallbackTrait for LabCallback {
@@ -198,6 +202,22 @@ impl CallbackTrait for LabCallback {
             state.chart.config_mut().draw_style = wanted;
             if !raster_changed {
                 let _ = state.chart.consume_raster_dirty();
+            }
+        }
+
+        // Planet size slider → series SSoT + GPU style rebuild on change.
+        if let Some(idx) = state.series.iter().position(|s| s.series_id == "planets") {
+            let cur = match &state.series[idx].render_type {
+                DataRenderType::ScatterLine { scatter, .. } => scatter.point_size,
+                _ => self.planet_size,
+            };
+            if (cur - self.planet_size).abs() > f32::EPSILON {
+                if let DataRenderType::ScatterLine { scatter, .. } =
+                    &mut state.series[idx].render_type
+                {
+                    scatter.point_size = self.planet_size;
+                }
+                state.styles[idx] = state.renderer.create_style_for_series(&state.series[idx]);
             }
         }
 
@@ -252,6 +272,7 @@ struct LabApp {
     initialized: bool,
     failed: Option<String>,
     opts: ConstellationOptions,
+    planet_size: f32,
     render_state: Option<egui_wgpu::RenderState>,
 }
 
@@ -261,6 +282,7 @@ impl Default for LabApp {
             initialized: false,
             failed: None,
             opts: ConstellationOptions::default(),
+            planet_size: 13.0,
             render_state: None,
         }
     }
@@ -359,9 +381,15 @@ impl eframe::App for LabApp {
                     egui::Slider::new(field, spec.min as f32..=spec.max as f32).text(spec.key),
                 );
             }
+            ui.separator();
+            // Per-series SSoT, not a style option — included so the planet
+            // look is fully reviewable from one panel.
+            ui.label("series: planets");
+            ui.add(egui::Slider::new(&mut self.planet_size, 5.0..=44.0).text("point_size"));
             ui.add_space(8.0);
             if ui.button("Reset to defaults").clicked() {
                 *o = ConstellationOptions::default();
+                self.planet_size = 13.0;
             }
             ui.add_space(12.0);
             ui.label(
@@ -383,7 +411,7 @@ impl eframe::App for LabApp {
                 };
                 let cb = egui_wgpu::Callback::new_paint_callback(
                     rect,
-                    LabCallback { panel_rect_px, opts: self.opts },
+                    LabCallback { panel_rect_px, opts: self.opts, planet_size: self.planet_size },
                 );
                 ui.painter().add(cb);
             });
