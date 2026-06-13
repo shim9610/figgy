@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use renderer::axis_render::{try_raster_chart_layer_to_rgba, AxisLayerKind};
 use renderer::color::Color;
-use renderer::config::{ConstellationOptions, DrawStyle};
+use renderer::config::{DrawStyle, MilkywayOptions};
 use renderer::default;
 use renderer::layout::{ChartArea, Rect};
 
@@ -46,8 +46,8 @@ fn main() {
         for (name, style) in [
             ("precise", DrawStyle::Precise),
             (
-                "constellation",
-                DrawStyle::Constellation(ConstellationOptions::default()),
+                "milkyway",
+                DrawStyle::Milkyway(MilkywayOptions::default()),
             ),
         ] {
             let config = build_config(w, h, style);

@@ -17,6 +17,76 @@
 //!
 //! See `crates/renderer/WASM.md` for the I/O architecture this implements.
 
+#[cfg(any(target_arch = "wasm32", test))]
+fn fit_display_panel(
+    logical_size: (u32, u32),
+    surface_size: (u32, u32),
+) -> (f32, renderer::layout::Rect) {
+    let doc_w = logical_size.0.max(1) as f32;
+    let doc_h = logical_size.1.max(1) as f32;
+    let surface_w = surface_size.0.max(1);
+    let surface_h = surface_size.1.max(1);
+    let scale = ((surface_w as f32) / doc_w).min((surface_h as f32) / doc_h);
+    let panel_w = ((doc_w * scale).round().max(1.0) as u32).min(surface_w);
+    let panel_h = ((doc_h * scale).round().max(1.0) as u32).min(surface_h);
+    let x = (surface_w - panel_w) / 2;
+    let y = (surface_h - panel_h) / 2;
+    (scale, renderer::layout::Rect { x, y, width: panel_w, height: panel_h })
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn display_config_for_surface(
+    config: &renderer::Config,
+    surface_size: (u32, u32),
+) -> (renderer::Config, renderer::layout::Rect, f32) {
+    let logical = config.chart_area.0;
+    let (scale, panel_rect) =
+        fit_display_panel((logical.width, logical.height), surface_size);
+    let mut display_config = config.scaled(scale);
+    display_config.chart_area = renderer::layout::ChartArea(panel_rect);
+    (display_config, panel_rect, scale)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{display_config_for_surface, fit_display_panel};
+
+    #[test]
+    fn display_panel_uniformly_scales_document() {
+        let (scale, panel) = fit_display_panel((1000, 800), (2000, 1600));
+        assert!((scale - 2.0).abs() < 1e-6);
+        assert_eq!((panel.x, panel.y, panel.width, panel.height), (0, 0, 2000, 1600));
+    }
+
+    #[test]
+    fn display_panel_letterboxes_aspect_ratio_changes() {
+        let (scale, panel) = fit_display_panel((1000, 800), (1600, 800));
+        assert!((scale - 1.0).abs() < 1e-6);
+        assert_eq!((panel.x, panel.y, panel.width, panel.height), (300, 0, 1000, 800));
+    }
+
+    #[test]
+    fn display_config_scales_without_mutating_logical_document() {
+        let mut config = renderer::default::default_config();
+        config.chart_area = renderer::layout::ChartArea(renderer::layout::Rect {
+            x: 0,
+            y: 0,
+            width: 1000,
+            height: 800,
+        });
+        let original = config.clone();
+
+        let (display, panel, scale) = display_config_for_surface(&config, (500, 400));
+
+        assert!((scale - 0.5).abs() < 1e-6);
+        assert_eq!((panel.x, panel.y, panel.width, panel.height), (0, 0, 500, 400));
+        assert_eq!(config.chart_area, original.chart_area);
+        assert_eq!(config.bottom_x.label_style.font_size, original.bottom_x.label_style.font_size);
+        assert_eq!(display.chart_area.0.width, 500);
+        assert!((display.bottom_x.label_style.font_size - 9.0).abs() < 1e-6);
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 mod web {
     use std::collections::HashMap;
@@ -222,6 +292,9 @@ mod web {
         renderer: WindowedRenderer<'static>,
         chart: Chart,
         view: ChartView,
+        /// Current WebGPU surface size in physical canvas pixels. This is a
+        /// viewport property, not the exported document size.
+        surface_size: (u32, u32),
         series_cfgs: Vec<SeriesConfig>,
         styles: Vec<ChartStyle>,
         /// 1:1 with `series_cfgs` — legend label text (None = no legend row).
@@ -253,9 +326,29 @@ mod web {
         dragging: bool,
         resizing: Option<ModelResizeHandle>,
         cycle: renderer::ColorCycle,
+        clear_color: Color,
+        view_dirty: bool,
     }
 
     impl FiggyChart {
+        fn display_scale_and_panel(&self) -> (f32, Rect) {
+            let logical = self.chart.config().chart_area.0;
+            super::fit_display_panel((logical.width, logical.height), self.surface_size)
+        }
+
+        fn display_config(&self) -> (renderer::config::Config, Rect, f32) {
+            super::display_config_for_surface(self.chart.config(), self.surface_size)
+        }
+
+        fn display_delta_to_document(&self, dx: f32, dy: f32) -> (f32, f32) {
+            let (scale, _) = self.display_scale_and_panel();
+            if scale > 0.0 {
+                (dx / scale, dy / scale)
+            } else {
+                (dx, dy)
+            }
+        }
+
         fn label_text(&self, label: &str) -> RichText {
             let content = &self.chart.config().legend.content;
             RichText {
@@ -366,10 +459,11 @@ mod web {
         }
 
         fn rebuild_styles(&mut self) {
+            let (scale, _) = self.display_scale_and_panel();
             self.styles = self
                 .series_cfgs
                 .iter()
-                .map(|cfg| self.renderer.create_style_for_series(cfg))
+                .map(|cfg| self.renderer.create_style_for_series_scaled(cfg, scale))
                 .collect();
         }
 
@@ -502,6 +596,7 @@ mod web {
                 renderer,
                 chart,
                 view,
+                surface_size: (w, h),
                 series_cfgs: Vec::new(),
                 styles: Vec::new(),
                 labels: Vec::new(),
@@ -516,6 +611,8 @@ mod web {
                 dragging: false,
                 resizing: None,
                 cycle: renderer::ColorCycle::Classic,
+                clear_color: Color::WHITE,
+                view_dirty: false,
             })
         }
 
@@ -674,7 +771,8 @@ mod web {
                 },
             };
             self.ensure_columns_exist(&cfg)?;
-            let style = self.renderer.create_style_for_series(&cfg);
+            let (scale, _) = self.display_scale_and_panel();
+            let style = self.renderer.create_style_for_series_scaled(&cfg, scale);
 
             match existing {
                 Some(i) => {
@@ -864,6 +962,8 @@ mod web {
             if legend_content_changed {
                 self.legend_auto_managed = false;
             }
+            self.view_dirty = true;
+            self.rebuild_styles();
             Ok(())
         }
 
@@ -917,10 +1017,11 @@ mod web {
         /// change: the renderer's own layout answers, so hosts don't have to
         /// re-derive box positions for hover cursors / context UI.
         pub fn hit_test(&self, x: f32, y: f32) -> Option<String> {
+            let (display_config, _, _) = self.display_config();
             self.hitmap
                 .hit_test(
-                    self.chart.config(),
-                    &CpuTextMeasure::for_style(&self.chart.config().draw_style),
+                    &display_config,
+                    &CpuTextMeasure::for_style(&display_config.draw_style),
                     x,
                     y,
                 )
@@ -931,12 +1032,13 @@ mod web {
         /// Pointer press. Returns `true` while something is selected — the
         /// host can mirror that state in its own UI.
         pub fn on_press(&mut self, x: f32, y: f32) -> bool {
+            let (display_config, _, _) = self.display_config();
             // Resize handles on the selected element win over hit-testing.
             if let Some(id) = self.selected
                 && let Some(rz) = self.hitmap.get(id).and_then(|el| el.as_resizable())
                 && let Some(handle) = rz.hit_resize_handle(
-                    self.chart.config(),
-                    &CpuTextMeasure::for_style(&self.chart.config().draw_style),
+                    &display_config,
+                    &CpuTextMeasure::for_style(&display_config.draw_style),
                     x,
                     y,
                 )
@@ -948,8 +1050,8 @@ mod web {
             self.resizing = None;
 
             let new_sel = self.hitmap.hit_test(
-                self.chart.config(),
-                &CpuTextMeasure::for_style(&self.chart.config().draw_style),
+                &display_config,
+                &CpuTextMeasure::for_style(&display_config.draw_style),
                 x,
                 y,
             );
@@ -968,6 +1070,7 @@ mod web {
         /// Pointer move with frame delta — drags or resizes the selection.
         pub fn on_move(&mut self, dx: f32, dy: f32) {
             let Some(id) = self.selected else { return };
+            let (dx, dy) = self.display_delta_to_document(dx, dy);
             if let Some(handle) = self.resizing {
                 if let Some(rz) = self.hitmap.get(id).and_then(|el| el.as_resizable()) {
                     let _ = rz.resize_by(self.chart.config_mut(), handle, dx, dy);
@@ -1003,17 +1106,21 @@ mod web {
                 self.renderer.defragment().map_err(js_err)?;
             }
 
-            // chart_area is the panel-rect SSoT — set_config / resize may
-            // have moved it, so derive the rect from the config, not the view.
-            let panel_rect = self.chart.config().chart_area.0;
-            if self.chart.consume_raster_dirty() {
+            // Browser resize is preview zoom, not a document mutation. The
+            // stored chart remains the export SSoT; the live canvas renders a
+            // scaled/letterboxed display chart derived from it.
+            let (display_config, panel_rect, _) = self.display_config();
+            let display_chart = Chart::new(display_config);
+            let raster_dirty = self.chart.consume_raster_dirty();
+            if self.view_dirty || raster_dirty {
+                self.view_dirty = false;
                 let sel_boxes: Vec<SelectionBox> = self
                     .selected
                     .and_then(|id| {
                         self.hitmap.selection_box(
                             id,
-                            self.chart.config(),
-                            &CpuTextMeasure::for_style(&self.chart.config().draw_style),
+                            display_chart.config(),
+                            &CpuTextMeasure::for_style(&display_chart.config().draw_style),
                         )
                     })
                     .into_iter()
@@ -1021,14 +1128,14 @@ mod web {
                 self.renderer
                     .refresh_axis_with_selection(
                         &mut self.view,
-                        &self.chart,
+                        &display_chart,
                         panel_rect,
                         &sel_boxes,
                     )
                     .map_err(js_err)?;
                 let _ = self.chart.consume_data_dirty();
             } else if self.chart.consume_data_dirty() {
-                self.renderer.update_transform(&self.view, &self.chart);
+                self.renderer.update_transform(&self.view, &display_chart);
             }
 
             let series: Vec<Series<'_>> = self
@@ -1039,22 +1146,33 @@ mod web {
                 .collect();
             let items = [ChartDrawItem {
                 view: &self.view,
-                chart_config: self.chart.config(),
+                chart_config: display_chart.config(),
                 series: &series,
             }];
-            self.renderer.draw(Color::WHITE, &items).map_err(js_err)
+            self.renderer.draw(self.clear_color, &items).map_err(js_err)
         }
 
-        /// Resize the swap chain + chart area to new canvas pixel dimensions.
+        /// Set the WebGPU surface clear color used behind the chart panel.
+        /// Components are linear 0..1 RGBA floats. This is host/app state:
+        /// it does not change the chart Config JSON.
+        pub fn set_clear_color(&mut self, r: f32, g: f32, b: f32, a: f32) {
+            self.clear_color = Color::from_rgba(
+                r.clamp(0.0, 1.0),
+                g.clamp(0.0, 1.0),
+                b.clamp(0.0, 1.0),
+                a.clamp(0.0, 1.0),
+            );
+        }
+
+        /// Resize the swap chain viewport. The chart Config keeps its
+        /// document/export `chart_area`; live rendering scales that logical
+        /// document into this surface.
         pub fn resize(&mut self, width: u32, height: u32) -> Result<(), JsValue> {
             let (w, h) = (width.max(1), height.max(1));
             self.renderer.resize(w, h).map_err(js_err)?;
-            self.chart.config_mut().chart_area = ChartArea(Rect {
-                x: 0,
-                y: 0,
-                width: w,
-                height: h,
-            });
+            self.surface_size = (w, h);
+            self.view_dirty = true;
+            self.rebuild_styles();
             Ok(())
         }
 
@@ -1066,7 +1184,12 @@ mod web {
         pub async fn export_png(&mut self, scale: f32) -> Result<js_sys::Uint8Array, JsValue> {
             let bytes = self
                 .renderer
-                .export_panel_png_bytes_async(&self.chart, &self.series_cfgs, scale)
+                .export_panel_png_bytes_with_clear_async(
+                    &self.chart,
+                    &self.series_cfgs,
+                    scale,
+                    self.clear_color,
+                )
                 .await
                 .map_err(js_err)?;
             Ok(js_sys::Uint8Array::from(bytes.as_slice()))

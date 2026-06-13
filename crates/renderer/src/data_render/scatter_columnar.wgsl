@@ -26,12 +26,13 @@ struct Transform {
     // Generic per-panel style parameter slots. Interpretation belongs to the
     // ACTIVE style's shader entries; the precise entries never read them.
     // sketch:        [0] = (amplitude_px, wavelength_px, seed(f32), 0)
-    // constellation: [0] = (star_density, ribbon_width_px, ribbon_intensity,
+    // milkyway:      [0] = (star_density, ribbon_width_px, ribbon_intensity,
     //                seed(f32)), [1] = (star_scale, spread_px, faint_bias, planet_rim),
-    //                [2] = (structure_scale, 0, 0, 0) — multiplier on the
+    //                [2] = (structure_scale, star_brightness, 0, 0) — multiplier on the
     //                style's px-denominated structure constants (clump
     //                wavelength, binary separation); keeps the star texture
     //                resolution-invariant under DPI/export scaling.
+    // constellation: [0] = (star_opacity, line_opacity, 0, 0)
     style_params: array<vec4<f32>, 3>,
 };  // 80 B (vec4 array at offset 32, stride 16 — alignment unchanged)
 
@@ -46,7 +47,7 @@ struct Style {
     shape_id: u32,
     dash_len: u32,
     // Per-series decorrelation salt (FNV-1a of series_id). Styled entries
-    // (sketch/constellation) XOR it into their hash seeds so two series never
+    // (sketch/milkyway/constellation) XOR it into their hash seeds so two series never
     // share a star/wobble pattern; precise entries never read it.
     series_salt: u32,
     _pad: u32,
@@ -278,9 +279,67 @@ fn fs_sketch(in: VsSketchOut) -> @location(0) vec4<f32> {
 // Blending is premultiplied alpha (planets occlude the star field), unlike
 // the additive line passes.
 
+@group(2) @binding(0) var cons_psf_tex: texture_2d<f32>; // R=core, G=halo
+@group(2) @binding(1) var cons_lut_tex: texture_2d<f32>; // 256x1 blackbody
 @group(2) @binding(2) var cons_samp: sampler;
 @group(2) @binding(3) var cons_planet_atlas: texture_2d<f32>;
 @group(2) @binding(4) var cons_ring_tex: texture_2d<f32>;
+
+const CONSTELLATION_POINT_STAR_GAIN: f32 = 1.0;
+
+struct VsConstellationStarOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) tint: vec3<f32>,
+    @location(2) brightness: f32,
+};
+
+@vertex
+fn vs_constellation_star(in: VsIn, @builtin(instance_index) inst: u32) -> VsConstellationStarOut {
+    let xv = maybe_log(in.x, transform.scale_log.x);
+    let yv = maybe_log(in.y, transform.scale_log.y);
+    let range = transform.data_max - transform.data_min;
+    let t = (vec2<f32>(xv, yv) - transform.data_min) / range;
+    let center_ndc = t * 2.0 - 1.0;
+
+    let seed = style.series_salt;
+
+    let u_b = sketch_hash01(inst, seed ^ 0x86A9u);
+    let brightness = 0.22 + 0.78 * pow(u_b, 2.4);
+    let size_jitter = 0.86 + 0.30 * sketch_hash01(inst, seed ^ 0x51A7u);
+    let star_radius = max(style.point_radius_px * CONSTELLATION_POINT_STAR_GAIN * size_jitter, 0.5);
+    let half_px = star_radius * 4.0 + QUAD_MARGIN_PX;
+    let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
+
+    let h_t = sketch_hash01(inst, seed ^ 0x7E47u);
+    let t_norm = mix(0.08, 0.92, h_t);
+    let tint = textureLoad(
+        cons_lut_tex,
+        vec2<i32>(i32(clamp(t_norm, 0.0, 1.0) * 255.0), 0),
+        0,
+    ).rgb;
+
+    var out: VsConstellationStarOut;
+    out.pos = vec4<f32>(world, 0.0, 1.0);
+    out.uv = in.quad_pos * 0.5 + vec2<f32>(0.5, 0.5);
+    out.tint = tint;
+    out.brightness = brightness;
+    return out;
+}
+
+@fragment
+fn fs_constellation_star(in: VsConstellationStarOut) -> @location(0) vec4<f32> {
+    let s = textureSampleLevel(cons_psf_tex, cons_samp, in.uv, 0.0);
+    let col = (vec3<f32>(1.0) * s.r + in.tint * s.g) * in.brightness;
+    let a = clamp(max(col.r, max(col.g, col.b)), 0.0, 1.0);
+    let marker_opacity = clamp(style.color_premul.a, 0.0, 1.0);
+    let star_opacity = clamp(transform.style_params[0].x, 0.0, 1.0) * marker_opacity;
+    let out_a = a * star_opacity;
+    if (out_a <= 0.002) {
+        discard;
+    }
+    return vec4<f32>(min(col, vec3<f32>(a)) * star_opacity, out_a);
+}
 
 // Ring radii relative to the planet radius, and the apparent inclination of
 // the ring plane (minor/major axis ratio of the projected ellipse).
@@ -310,7 +369,7 @@ struct VsPlanetOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) local_pos: vec2<f32>,
     @location(1) @interpolate(flat) seed_inst: u32,
-    // Atmospheric rim-glow strength (ConstellationOptions.planet_rim) —
+    // Atmospheric rim-glow strength (MilkywayOptions.planet_rim) —
     // forwarded by the vertex stage; the transform group is vertex-only.
     @location(2) @interpolate(flat) rim_gain: f32,
 };

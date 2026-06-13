@@ -180,8 +180,11 @@ pub fn on_move(&mut self, dx: f32, dy: f32) { /* drag_by / resize_by */ }
 pub fn on_release(&mut self) { /* 드래그/리사이즈 해제 */ }
 ```
 
-좌표 변환은 `devicePixelRatio` 곱 (egui 데모의 `pixels_per_point`와 같은
-역할). `chart_area`가 캔버스 물리 픽셀 기준이면 끝.
+호스트는 `devicePixelRatio`를 곱한 canvas physical pixel 좌표를 넘긴다.
+`FiggyChart`는 저장된 logical `chart_area`를 현재 surface에 uniform scale +
+letterbox로 맞춰 그리고, drag/resize delta는 내부에서 logical document
+좌표로 되돌린다. 따라서 브라우저 viewport resize는 preview zoom이며,
+Export 문서 크기나 폰트 크기를 바꾸지 않는다.
 
 ### 3.5 이벤트 출력 — CustomEvent로 프레임워크 중립
 

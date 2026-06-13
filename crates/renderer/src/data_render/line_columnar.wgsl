@@ -38,12 +38,13 @@ struct Transform {
     // Generic per-panel style parameter slots. Interpretation belongs to the
     // ACTIVE style's shader entries; the precise entries never read them.
     // sketch:        [0] = (amplitude_px, wavelength_px, seed(f32), 0)
-    // constellation: [0] = (star_density, ribbon_width_px, ribbon_intensity,
+    // milkyway:      [0] = (star_density, ribbon_width_px, ribbon_intensity,
     //                seed(f32)), [1] = (star_scale, spread_px, faint_bias, planet_rim),
-    //                [2] = (structure_scale, 0, 0, 0) — multiplier on the
+    //                [2] = (structure_scale, star_brightness, 0, 0) — multiplier on the
     //                style's px-denominated structure constants (clump
     //                wavelength, binary separation); keeps the star texture
     //                resolution-invariant under DPI/export scaling.
+    // constellation: [0] = (star_opacity, line_opacity, 0, 0)
     style_params: array<vec4<f32>, 3>,
 };  // 80 B (vec4 array at offset 32, stride 16 — alignment unchanged)
 
@@ -58,7 +59,7 @@ struct Style {
     shape_id: u32,
     dash_len: u32,
     // Per-series decorrelation salt (FNV-1a of series_id). Styled entries
-    // (sketch/constellation) XOR it into their hash seeds so two series never
+    // (sketch/milkyway/constellation) XOR it into their hash seeds so two series never
     // share a star/wobble pattern; precise entries never read it.
     series_salt: u32,
     _pad: u32,
@@ -148,10 +149,9 @@ fn dash_scalar(i: u32) -> f32 {
     return style.dash[i / 4u][i % 4u];
 }
 
-@fragment
-fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+fn line_fragment_color(in: VsOut, color: vec4<f32>) -> vec4<f32> {
     if style.dash_len == 0u {
-        return style.color_premul;
+        return color;
     }
     // Clamp to the 8-scalar capacity so a bad CPU-side count cannot index
     // past the array.
@@ -162,7 +162,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
     // Degenerate pattern (all spans zero/negative) — treat as solid.
     if period <= 0.0 {
-        return style.color_premul;
+        return color;
     }
     // The square-cap extension can push dist_px slightly negative at the
     // polyline start — wrap into [0, period) with the sign-safe form.
@@ -176,12 +176,23 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             if (i & 1u) == 1u {
                 discard;
             }
-            return style.color_premul;
+            return color;
         }
     }
     // phase == period can occur from float rounding; that point is the
     // start of the next repetition, which always opens with an "on" span.
-    return style.color_premul;
+    return color;
+}
+
+@fragment
+fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    return line_fragment_color(in, style.color_premul);
+}
+
+@fragment
+fn fs_constellation_line(in: VsOut) -> @location(0) vec4<f32> {
+    let a = clamp(transform.style_params[0].y, 0.0, 1.0);
+    return line_fragment_color(in, vec4<f32>(style.color_premul.rgb * a, style.color_premul.a * a));
 }
 
 // ──────────────── sketch mode (NOT part of the common block) ────────────────
@@ -288,10 +299,10 @@ fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
 @group(2) @binding(2) var cons_samp: sampler;
 
 // Arc wavelength (px) of the slow "clump" modulation shared by ribbon
-// brightness, star density, and population temperature — sharing one noise
-// channel is what makes dense knots simultaneously brighter and warmer.
+// brightness and population temperature. Star counts stay uniform per arc
+// length so data-sampling density does not look like extra stars.
 const CONS_CLUMP_WAVELENGTH_PX: f32 = 90.0;
-// CPU draw-count twin lives in mod.rs: CONSTELLATION_RIBBON_VERTICES =
+// CPU draw-count twin lives in mod.rs: MILKYWAY_RIBBON_VERTICES =
 // 2·(SUBDIV+1). The star pass has no fixed vertex count — it draws via
 // DrawIndirect args the arc-scan kernel fills (line_arc.wgsl star_indirect).
 const CONS_RIBBON_SUBDIV: u32 = 8u;
@@ -304,7 +315,7 @@ fn cons_structure_scale() -> f32 {
     return max(transform.style_params[2].x, 1e-3);
 }
 
-// Local density/brightness modulation, 0.35 .. 1.65.
+// Local ribbon/temperature modulation, 0.35 .. 1.65.
 fn cons_clump(arc_px: f32, seed: u32) -> f32 {
     let wavelength = CONS_CLUMP_WAVELENGTH_PX * cons_structure_scale();
     return 1.0 + 0.65 * sketch_noise(arc_px / wavelength, seed ^ 0xC10Du);
@@ -438,6 +449,7 @@ fn vs_stars(
     let seed = u32(transform.style_params[0].w) ^ style.series_salt;
     let star_scale = max(transform.style_params[1].x, 0.0);
     let spread = max(transform.style_params[1].y, 0.0);
+    let star_brightness = clamp(transform.style_params[2].y, 0.0, 8.0);
     let pitch = cons_star_pitch();
 
     let n = star_vsp.n_points;
@@ -455,11 +467,10 @@ fn vs_stars(
     let arc_here =
         (f32(primary_id) + 0.5 + 0.8 * (cons_h(primary_id, 0x0701u, seed) - 0.5)) * pitch;
 
-    // Existence gate: expected stars per slot = density·pitch/100, modulated
-    // by the local clump. Saturation would need density·structure_scale·
-    // clump > 200 — far outside the spec ranges.
-    let p_exist = clamp(density * pitch / 100.0, 0.0, 1.0)
-        * clamp(cons_clump(arc_here, seed), 0.0, 1.6);
+    // Existence gate: expected stars per slot = density * pitch / 100.
+    // Keep this independent of the clump field so the line is sewn uniformly
+    // by arc length rather than looking denser around particular samples.
+    let p_exist = clamp(density * pitch / 100.0, 0.0, 1.0);
     var alive = cons_h(slot, 0x0E15u, seed) < p_exist && arc_here < total;
 
     // Binary search: greatest g with prefix[g] <= arc_here; segment (g, g+1).
@@ -498,7 +509,7 @@ fn vs_stars(
     // Brightness power law — most stars faint, rare bright anchors. The
     // exponent (faint_bias, style_params[1].z) is the luminosity-function
     // slope: higher = more faint dust per anchor.
-    let faint_bias = clamp(transform.style_params[1].z, 0.5, 12.0);
+    let faint_bias = clamp(transform.style_params[1].z, 0.5, 24.0);
     let u_b = cons_h(primary_id, 0x86A9u, seed);
     var b = 0.12 + 0.88 * pow(u_b, faint_bias);
     if (is_companion) {
@@ -545,7 +556,7 @@ fn vs_stars(
     out.pos = vec4<f32>(corner_px * transform.pixel_to_ndc, 0.0, 1.0);
     out.uv = c * 0.5 + vec2<f32>(0.5, 0.5);
     out.tint = tint;
-    out.brightness = b;
+    out.brightness = b * star_brightness;
     return out;
 }
 

@@ -9,6 +9,7 @@ Embed in egui / iced / winit / any other wgpu host.
 > **`crates/model`** — the pure chart model: option SSoT (`Config`, `SeriesConfig`), the rich-text/legend document model, interaction policies (`Selectable`/`Draggable`/`Resizable`, `HitMap`, the single `Config::nudge` movement path), presets (`AxisPreset`, `ColorCycle`). Dependency-free; optional `serde` feature.
 > **`crates/renderer`** — the wgpu + CPU-raster machinery documented below. Depends on `model` and re-exports every module, so all `renderer::…` paths keep working unchanged.
 > **`crates/web`** — the `wasm-bindgen` wrapper (package name `figgy`, one chart per `<canvas>`, id-keyed register/unregister lifecycle). Browser I/O: [WASM.md](crates/renderer/WASM.md) · full Config JSON schema: [SCHEMA.md](crates/web/SCHEMA.md). Build artifacts (`crates/web/pkg/`) are gitignored — build with `npx wasm-pack build crates/web --release --target web`.
+> **Online studio** — [figgyplot.com](https://figgyplot.com/) hosts the public web editor. It runs in-browser with local chart data, imports CSV/TSV/Excel, opens `.figgy` project files, and exports PNGs from the same wasm/WebGPU surface.
 
 - **GPU columnar pool**: all data columns share a single GPU buffer with first-fit alloc + ping-pong defrag on fragmentation. Upload caches scalar stats (min / max / smallest-positive) for auto-fit; per-point geometry such as the dashed-line arc-length prefix is computed in place by a compute scan (`line_arc.wgsl`).
 - **Layered compositing**: grid → data → axis/label/legend, so grid never covers the data. Axis raster can be produced as `Grid` and `Decoration` layers; `AxisLayerKind::All` remains a legacy single-pass helper.
@@ -16,9 +17,25 @@ Embed in egui / iced / winit / any other wgpu host.
 - **Interaction layer (opt-in)**: hit-testing, selection boxes, drag (axes constrained to their perpendicular, detached-axis `line_offset`), PPT-style 8-handle resize of the data area — all policy in `model`, fed by host pointer events; never runs if you don't wire it.
 - **Rich-text everywhere**: titles, tick labels, and the legend share one engine — per-segment bold/italic/underline/sub/superscript/greek, per-segment color & size overrides, `'\n'` line breaks, `'\t'` table columns, fixed-width legend symbol fields.
 - **Hand-drawn sketch mode (opt-in)**: `draw_style: { mode: "sketch", amplitude_px, wavelength_px, seed }` renders the whole chart xkcd-style — axes/ticks/grid/legend wobble on the CPU raster, data lines/markers/errorbars wobble in dedicated GPU shader variants driven by the arc-length scan, and chart text automatically switches to the bundled handwritten face (Comic Neue, OFL) with per-character fallback for glyphs it lacks (CJK keeps your registered font). Deterministic (seeded), composes with dashes, and the field's absence means the precise path runs completely untouched.
-- **Constellation mode (opt-in)**: `draw_style: { mode: "constellation", ... }` renders the chart as an astrophotograph — lines become star chains (blackbody-colored stars with white saturated cores, power-law magnitudes, clumping and binaries) over a series-colored nebula ribbon; scatter markers become ringed planets whose ring angle encodes the series via the existing point shape; errorbars become bipolar jets with terminal shock knots at the exact bounds; axis chrome blooms as line-light over a deep-space backdrop with a legibility-first vignette (data stays the brightest content). Everything expensive bakes once per style set (PSF sprite, blackbody LUT, procedural planet atlas, ring strip) and every parameter is live-tunable (see `examples/constellation_lab.rs`); parameter ranges ship as machine-readable metadata (`draw_style_param_specs`).
+- **Milkyway mode (opt-in)**: `draw_style: { mode: "milkyway", ... }` renders the chart as an astrophotograph — lines become star chains over a series-colored nebula ribbon; scatter markers become ringed planets; errorbars become bipolar jets over a deep-space backdrop.
+- **Constellation mode (opt-in)**: `draw_style: { mode: "constellation", ... }` supports `ScatterLine` series only: PSF-rendered stars sit at scatter data positions and a translucent line connects them. Parameter ranges ship as machine-readable metadata (`draw_style_param_specs`).
 - **Single wgpu major (27)**: aligned with iced 0.14 + eframe 0.33 ecosystem.
 - **WebAssembly-ready**: pure-Rust raster stack (tiny-skia + fontdb + swash), async init/export, runtime font registration (`register_font`) for CJK and custom families.
+
+### Draw style preview
+
+Same growth-response data, rendered through the four chart styles:
+
+<table>
+  <tr>
+    <td width="50%"><strong>Precise</strong><br><img src="crates/renderer/assets/style-growth-response-precise.png" alt="Precise style growth-response chart" width="420"></td>
+    <td width="50%"><strong>Sketch</strong><br><img src="crates/renderer/assets/style-growth-response-sketch.png" alt="Sketch style growth-response chart" width="420"></td>
+  </tr>
+  <tr>
+    <td width="50%"><strong>Milkyway</strong><br><img src="crates/renderer/assets/style-growth-response-milkyway.png" alt="Milkyway style growth-response chart" width="420"></td>
+    <td width="50%"><strong>Constellation</strong><br><img src="crates/renderer/assets/style-growth-response-constellation.png" alt="Constellation style growth-response chart" width="420"></td>
+  </tr>
+</table>
 
 ---
 
@@ -28,7 +45,7 @@ Embed in egui / iced / winit / any other wgpu host.
 
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # or git URL — currently 0.5.1, not on crates.io.
+renderer = { path = "crates/renderer" }   # or git URL — currently 0.6.1, not on crates.io.
 wgpu     = "27"
 ```
 
@@ -292,7 +309,8 @@ pub struct Config {
 |---|---|
 | `Precise` / omitted or `{ "mode": "precise" }` | Default scientific renderer; serialized default omits `draw_style` |
 | `Sketch` / `{ "mode": "sketch", ... }` | Hand-drawn chart-wide style |
-| `Constellation` / `{ "mode": "constellation", ... }` | Astrophotograph chart-wide style. Parameter metadata comes from `draw_style_param_specs("constellation")` |
+| `Milkyway` / `{ "mode": "milkyway", ... }` | Astrophotograph chart-wide style. Parameter metadata comes from `draw_style_param_specs("milkyway")` |
+| `Constellation` / `{ "mode": "constellation", ... }` | ScatterLine-only star chart style. Parameter metadata comes from `draw_style_param_specs("constellation")` |
 
 ### `Legend`
 | Field | Type | Meaning |
@@ -468,6 +486,7 @@ egui / iced / winit / 기타 wgpu 호스트 어디든 임베드 가능.
 > **`crates/model`** — 순수 차트 모델: 옵션 SSoT(`Config`, `SeriesConfig`), 리치텍스트/범례 문서 모델, 상호작용 정책(`Selectable`/`Draggable`/`Resizable`, `HitMap`, 단일 이동 경로 `Config::nudge`), 프리셋(`AxisPreset`, `ColorCycle`). 의존성 0, `serde` 는 선택 피쳐.
 > **`crates/renderer`** — 아래에서 문서화하는 wgpu + CPU 라스터 장치. `model` 을 의존하며 전 모듈 re-export — `renderer::…` 경로 전부 유효.
 > **`crates/web`** — `wasm-bindgen` 래퍼 (패키지명 `figgy`, `<canvas>` 당 차트 1개, id 기반 등록/해제 수명주기). 브라우저 I/O: [WASM.md](crates/renderer/WASM.md) · Config JSON 스키마: [SCHEMA.md](crates/web/SCHEMA.md). 빌드 산출물(`crates/web/pkg/`)은 gitignore — `npx wasm-pack build crates/web --release --target web` 로 빌드.
+> **웹 스튜디오** — [figgyplot.com](https://figgyplot.com/) 에 공개 웹 편집기가 있다. 브라우저 안에서 로컬 차트 데이터를 처리하고, CSV/TSV/Excel import, `.figgy` 프로젝트 열기, 같은 wasm/WebGPU 표면 기반 PNG export를 제공한다.
 
 - **GPU columnar pool**: 모든 데이터 컬럼을 하나의 GPU buffer 에 first-fit + 단편화 시 핑퐁 defrag. 업로드 시 auto-fit 용 스칼라 통계(min / max / 최소 양수)를 캐싱하고, 점선 호장 prefix 같은 per-point 지오메트리는 컴퓨트 스캔(`line_arc.wgsl`)이 제자리에서 계산.
 - **분리 합성**: grid → data → axis/label/legend 순으로 합성 → 그리드가 데이터를 가리지 않음. axis raster는 `Grid` / `Decoration` 분리 레이어가 기본이고, `AxisLayerKind::All`은 legacy 단일 패스 helper로 남아 있음.
@@ -475,9 +494,25 @@ egui / iced / winit / 기타 wgpu 호스트 어디든 임베드 가능.
 - **상호작용 레이어 (opt-in)**: 히트테스트, 선택 박스, 드래그(축은 수직 방향 제약 + 분리 축 `line_offset`), 데이터 영역 PPT 식 8핸들 리사이즈 — 정책은 전부 `model`, 호스트가 포인터 이벤트를 넣을 때만 동작.
 - **리치텍스트 일원화**: 제목·틱 라벨·범례가 한 엔진 공유 — 세그먼트별 bold/italic/밑줄/첨자/그리스, 세그먼트별 색·크기 오버라이드, `'\n'` 줄바꿈, `'\t'` 표 열, 고정폭 범례 심볼 필드.
 - **손그림 스케치 모드 (opt-in)**: `draw_style: { mode: "sketch", amplitude_px, wavelength_px, seed }` 한 필드로 차트 전체를 xkcd 풍으로 — 축/틱/그리드/범례는 CPU 라스터에서, 데이터 라인/마커/에러바는 호장 스캔을 입력으로 받는 전용 GPU 셰이더 변형에서 흔들리고, 차트 텍스트는 번들 손글씨 폰트(Comic Neue, OFL)로 자동 전환된다(글리프 없는 문자는 문자 단위 폴백 — CJK는 등록 폰트 유지). 시드 기반 결정적, 점선과 합성 가능, 필드가 없으면 정밀 경로가 한 바이트도 달라지지 않는다.
-- **성좌(constellation) 모드 (opt-in)**: `draw_style: { mode: "constellation", ... }` — 차트를 천체사진처럼: 라인은 시리즈색 성운 리본 위 별 사슬(흑체색·흰 포화 코어·멱법칙 등급·클럼핑·쌍성), scatter는 기존 point shape가 고리 각도로 매핑되는 고리 행성, 에러바는 경계에 충격파 매듭이 맺히는 양극 제트, 축 크롬은 선광원 블룸, 배경은 가독성 우선 비네팅이 걸린 심우주(데이터가 항상 가장 밝다). 무거운 생성물(PSF·흑체 LUT·절차적 행성 아틀라스·고리 스트립)은 스타일 첫 사용 시 1회 베이크 후 캐싱, 전 파라미터 라이브 튜닝 가능(`examples/constellation_lab.rs`), 슬라이더 범위는 기계가 읽는 메타데이터(`draw_style_param_specs`)로 제공.
+- **은하수(milkyway) 모드 (opt-in)**: `draw_style: { mode: "milkyway", ... }` — 차트를 천체사진처럼 렌더링한다. 라인은 시리즈색 성운 리본 위 별 사슬(흑체색·흰 포화 코어·멱법칙 등급·클럼핑·쌍성), scatter는 기존 point shape가 고리 각도로 매핑되는 고리 행성, 에러바는 경계에 충격파 매듭이 맺히는 양극 제트, 축 크롬은 선광원 블룸, 배경은 가독성 우선 비네팅이 걸린 심우주(데이터가 항상 가장 밝다). 무거운 생성물(PSF·흑체 LUT·절차적 행성 아틀라스·고리 스트립)은 스타일 첫 사용 시 1회 베이크 후 캐싱, 전 파라미터 라이브 튜닝 가능(`examples/constellation_demo.rs`, `examples/constellation_lab.rs`), 슬라이더 범위는 기계가 읽는 메타데이터(`draw_style_param_specs`)로 제공.
+- **성좌(constellation) 모드 (opt-in)**: `draw_style: { mode: "constellation", ... }` — 5~10개 안팎의 드문 `ScatterLine` 데이터를 위한 혼합 스타일. scatter 위치에는 PSF 별 스프라이트를 놓고, line은 별자리를 잇는 선처럼 낮은 투명도로 연결한다. 별 크기는 scatter `point_size`를 따르며 별/선 투명도는 `ConstellationOptions.star_opacity` / `line_opacity`로 분리 제어한다.
 - **단일 wgpu 메이저 (27)**: iced 0.14 + eframe 0.33 ecosystem 정렬.
 - **WebAssembly 지원**: 순수 Rust 라스터 스택(tiny-skia + fontdb + swash), async 초기화/export, 런타임 폰트 등록(`register_font`) 으로 CJK·커스텀 패밀리 지원.
+
+### 렌더링 스타일 미리보기
+
+같은 growth-response 데이터를 네 가지 차트 스타일로 렌더링한 비교:
+
+<table>
+  <tr>
+    <td width="50%"><strong>정밀(Precise)</strong><br><img src="crates/renderer/assets/style-growth-response-precise.png" alt="정밀 스타일 growth-response 차트" width="420"></td>
+    <td width="50%"><strong>스케치(Sketch)</strong><br><img src="crates/renderer/assets/style-growth-response-sketch.png" alt="스케치 스타일 growth-response 차트" width="420"></td>
+  </tr>
+  <tr>
+    <td width="50%"><strong>은하수(Milkyway)</strong><br><img src="crates/renderer/assets/style-growth-response-milkyway.png" alt="은하수 스타일 growth-response 차트" width="420"></td>
+    <td width="50%"><strong>성좌(Constellation)</strong><br><img src="crates/renderer/assets/style-growth-response-constellation.png" alt="성좌 스타일 growth-response 차트" width="420"></td>
+  </tr>
+</table>
 
 ---
 
@@ -487,7 +522,7 @@ egui / iced / winit / 기타 wgpu 호스트 어디든 임베드 가능.
 
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # 또는 git URL — 현재 0.5.1, crates.io 미배포.
+renderer = { path = "crates/renderer" }   # 또는 git URL — 현재 0.6.1, crates.io 미배포.
 wgpu     = "27"
 ```
 
@@ -751,7 +786,8 @@ pub struct Config {
 |---|---|
 | `Precise` / 생략 또는 `{ "mode": "precise" }` | 기본 정밀 렌더러. 기본 직렬화에서는 `draw_style` 키가 생략됨 |
 | `Sketch` / `{ "mode": "sketch", ... }` | 차트 전체 손그림 스타일 |
-| `Constellation` / `{ "mode": "constellation", ... }` | 차트 전체 천체사진 스타일. 파라미터 메타데이터는 `draw_style_param_specs("constellation")` 에서 제공 |
+| `Milkyway` / `{ "mode": "milkyway", ... }` | 차트 전체 천체사진 스타일. 파라미터 메타데이터는 `draw_style_param_specs("milkyway")` 에서 제공 |
+| `Constellation` / `{ "mode": "constellation", ... }` | `ScatterLine` 전용 별자리 스타일. scatter 위치의 별과 이를 잇는 투명한 선만 렌더링하며, 별 크기는 scatter `point_size`를 따른다. 파라미터 메타데이터는 `draw_style_param_specs("constellation")` 에서 제공 |
 
 ### `Legend`
 | 필드 | 타입 | 의미 |

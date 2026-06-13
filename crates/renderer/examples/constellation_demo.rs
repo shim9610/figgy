@@ -1,5 +1,5 @@
-//! Constellation Step-1 demo — line element as a star chain over a nebula
-//! ribbon. Exports parameter-sweep PNGs for visual review.
+//! Milkyway demo — line element as a star chain over a nebula ribbon.
+//! Exports parameter-sweep PNGs for visual review.
 //!
 //! Run: `cargo run -p renderer --example constellation_demo`
 //! Output: `target/constellation_demo/*.png`
@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use renderer::color::Color;
-use renderer::config::{ConstellationOptions, DrawStyle};
+use renderer::config::{DrawStyle, MilkywayOptions};
 use renderer::data::Column;
 use renderer::data_config::{
     DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterStyleConfig,
@@ -83,7 +83,7 @@ fn build_chart(style: DrawStyle) -> Chart {
     config.legend.visible = false;
 
     let mut chart = Chart::new(config)
-        .with_title("Constellation — line as star chain")
+        .with_title("Milkyway — line as star chain")
         .with_x_title("t")
         .with_y_title("value");
     chart.set_x_range(-0.03, 1.03);
@@ -122,12 +122,12 @@ fn main() {
     ];
 
     let cons = |density: f32, width: f32, intensity: f32, seed: u32| {
-        DrawStyle::Constellation(ConstellationOptions {
+        DrawStyle::Milkyway(MilkywayOptions {
             star_density: density,
             ribbon_width_px: width,
             ribbon_intensity: intensity,
             seed,
-            ..ConstellationOptions::default()
+            ..MilkywayOptions::default()
         })
     };
 
@@ -157,10 +157,10 @@ fn main() {
         );
     }
     for (name, density, bias) in faint_cases {
-        let style = DrawStyle::Constellation(ConstellationOptions {
+        let style = DrawStyle::Milkyway(MilkywayOptions {
             star_density: density,
             faint_bias: bias,
-            ..ConstellationOptions::default()
+            ..MilkywayOptions::default()
         });
         export(
             &mut r,
@@ -209,7 +209,7 @@ fn main() {
         spec_distinct.push(line_series(&format!("spec_s{i}"), "spec_x", &y, color));
     }
     let spec_chart = || {
-        let mut c = build_chart(DrawStyle::Constellation(ConstellationOptions::default()));
+        let mut c = build_chart(DrawStyle::Milkyway(MilkywayOptions::default()));
         c.set_x_range(1195.0, 1565.0);
         c.set_y_range(0.0, 0.72);
         c
@@ -260,9 +260,9 @@ fn main() {
         line_series("samp_coarse", "coarse_x", "coarse_y", Color::from_rgb8(120, 190, 255)),
         line_series("samp_fine", "fine_x", "fine_y", Color::from_rgb8(120, 190, 255)),
     ];
-    let style = DrawStyle::Constellation(ConstellationOptions {
+    let style = DrawStyle::Milkyway(MilkywayOptions {
         star_density: 30.0,
-        ..ConstellationOptions::default()
+        ..MilkywayOptions::default()
     });
     export(
         &mut r,
@@ -303,7 +303,7 @@ fn main() {
     ];
     export(
         &mut r,
-        &build_chart(DrawStyle::Constellation(ConstellationOptions::default())),
+        &build_chart(DrawStyle::Milkyway(MilkywayOptions::default())),
         &chart_planets,
         "target/constellation_demo/planets_chart.png",
     );
@@ -318,7 +318,7 @@ fn main() {
     )];
     export(
         &mut r,
-        &build_chart(DrawStyle::Constellation(ConstellationOptions::default())),
+        &build_chart(DrawStyle::Milkyway(MilkywayOptions::default())),
         &big,
         "target/constellation_demo/planets_big.png",
     );
@@ -344,7 +344,7 @@ fn main() {
     }];
     export(
         &mut r,
-        &build_chart(DrawStyle::Constellation(ConstellationOptions::default())),
+        &build_chart(DrawStyle::Milkyway(MilkywayOptions::default())),
         &combo,
         "target/constellation_demo/planets_combo.png",
     );
@@ -377,7 +377,7 @@ fn main() {
     }];
     export(
         &mut r,
-        &build_chart(DrawStyle::Constellation(ConstellationOptions::default())),
+        &build_chart(DrawStyle::Milkyway(MilkywayOptions::default())),
         &jets,
         "target/constellation_demo/jets.png",
     );

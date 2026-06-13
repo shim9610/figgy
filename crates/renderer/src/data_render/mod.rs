@@ -690,11 +690,12 @@ pub struct ScatterTransform {
     /// `[f32; 12]` split into three vec4 slots). All zeros in precise mode —
     /// the precise entry points never read them. Sketch:
     /// `[0] = [amplitude_px, wavelength_px, seed as f32, 0.0]`, rest 0;
-    /// constellation: `[0] = [star_density, ribbon_width_px,
+    /// milkyway: `[0] = [star_density, ribbon_width_px,
     /// ribbon_intensity, seed as f32]`, `[1] = [star_scale, spread_px,
-    /// faint_bias, planet_rim]`, `[2] = [structure_scale, 0, 0, 0]`. Seeds
-    /// are stored as f32 (exact up to 2^24) and shaders recover them via
-    /// `u32(...)`.
+    /// faint_bias, planet_rim]`, `[2] = [structure_scale, star_brightness,
+    /// 0, 0]`; constellation: `[0] = [star_opacity, line_opacity, 0.0,
+    /// 0.0]`, rest 0. Seeds are stored as f32 (exact up to 2^24) and shaders
+    /// recover them via `u32(...)`.
     pub style_params: [[f32; 4]; 3],   // offset 32 → 80 byte
 }
 
@@ -733,7 +734,7 @@ pub fn create_scatter_transform_bind_group_layout(
         label: Some("figgy scatter transform bgl"),
         entries: &[wgpu::BindGroupLayoutEntry {
             binding: 0,
-            visibility: wgpu::ShaderStages::VERTEX,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
                 has_dynamic_offset: false,
@@ -1061,14 +1062,14 @@ pub fn create_line_columnar_pipeline(
 /// `SKETCH_SUBDIV` in `line_columnar.wgsl`.
 pub const LINE_SKETCH_VERTICES_PER_INSTANCE: u32 = 18;
 
-/// Constellation ribbon strip vertices per instance — `2·(S+1)`, twin of
+/// Milkyway ribbon strip vertices per instance — `2·(S+1)`, twin of
 /// `CONS_RIBBON_SUBDIV` in `line_columnar.wgsl`.
-pub const CONSTELLATION_RIBBON_VERTICES: u32 = 18;
+pub const MILKYWAY_RIBBON_VERTICES: u32 = 18;
 
-/// Constellation pipelines + baked style textures for one target format —
+/// Milkyway pipelines + baked style textures for one target format —
 /// cached inside the renderer's lazy style set (docs/CONSTELLATION_DESIGN.MD
 /// §3c/§3d). The bind group keeps the textures alive.
-pub(crate) struct ConstellationSet {
+pub(crate) struct MilkywaySet {
     pub(crate) ribbon: wgpu::RenderPipeline,
     pub(crate) stars: wgpu::RenderPipeline,
     /// Ringed-planet scatter pass (Step 2) — premultiplied blend, occludes
@@ -1077,6 +1078,15 @@ pub(crate) struct ConstellationSet {
     /// Bipolar-jet errorbars — additive beams + terminal shock knots over
     /// the precise errorbar geometry.
     pub(crate) jets: wgpu::RenderPipeline,
+    pub(crate) star_tex_bg: wgpu::BindGroup,
+}
+
+/// Point-constellation pipelines + baked star textures for one target format.
+/// The style intentionally supports only `ScatterLine`: `line` connects the
+/// data points and `stars` renders PSF sprites at the scatter positions.
+pub(crate) struct PointConstellationSet {
+    pub(crate) line: wgpu::RenderPipeline,
+    pub(crate) stars: wgpu::RenderPipeline,
     pub(crate) star_tex_bg: wgpu::BindGroup,
 }
 
@@ -1237,11 +1247,15 @@ fn bake_psf_rgba(size: u32) -> Vec<u8> {
             let dx = (x as f32 - half) / half; // -1..1
             let dy = (y as f32 - half) / half;
             let r = (dx * dx + dy * dy).sqrt();
+            let edge_t = ((r - 0.82) / (0.98 - 0.82)).clamp(0.0, 1.0);
+            let aperture = 1.0 - edge_t * edge_t * (3.0 - 2.0 * edge_t);
             // Flat saturated core with a steep gaussian shoulder.
-            let core = (-(r / 0.11).powf(2.6)).exp().min(1.0);
+            let core = (-(r / 0.11).powf(2.6)).exp().min(1.0) * aperture;
             // Exponential halo wings + one faint ring at 0.45.
-            let halo = 0.85 * (-r / 0.28).exp()
-                + 0.08 * (-((r - 0.45) / 0.06).powi(2)).exp();
+            let halo = (
+                0.85 * (-r / 0.28).exp()
+                    + 0.08 * (-((r - 0.45) / 0.06).powi(2)).exp()
+            ) * aperture;
             let i = ((y * size + x) * 4) as usize;
             out[i] = (core.clamp(0.0, 1.0) * 255.0).round() as u8;
             out[i + 1] = (halo.clamp(0.0, 1.0) * 255.0).round() as u8;
@@ -1284,16 +1298,16 @@ fn bake_blackbody_lut() -> Vec<u8> {
     out
 }
 
-/// Build the constellation style set: bake PSF + blackbody LUT, upload them,
+/// Build the milkyway style set: bake PSF + blackbody LUT, upload them,
 /// and compile the additive ribbon/star pipelines (group 2 = the textures).
-pub(crate) fn create_constellation_set(
+pub(crate) fn create_milkyway_set(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
     star_data_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
-) -> ConstellationSet {
+) -> MilkywaySet {
     let make_tex = |label: &str, w: u32, h: u32, data: &[u8]| {
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
@@ -1324,15 +1338,15 @@ pub(crate) fn create_constellation_set(
     };
     const PSF_SIZE: u32 = 128;
     const ATLAS_TILE: u32 = 128;
-    let psf_view = make_tex("figgy constellation psf", PSF_SIZE, PSF_SIZE, &bake_psf_rgba(PSF_SIZE));
-    let lut_view = make_tex("figgy constellation blackbody lut", 256, 1, &bake_blackbody_lut());
+    let psf_view = make_tex("figgy milkyway psf", PSF_SIZE, PSF_SIZE, &bake_psf_rgba(PSF_SIZE));
+    let lut_view = make_tex("figgy milkyway blackbody lut", 256, 1, &bake_blackbody_lut());
     let atlas_view = make_tex(
-        "figgy constellation planet atlas",
+        "figgy milkyway planet atlas",
         ATLAS_TILE * 2,
         ATLAS_TILE * 2,
         &bake_planet_atlas(ATLAS_TILE),
     );
-    let ring_view = make_tex("figgy constellation ring strip", 256, 1, &bake_ring_strip());
+    let ring_view = make_tex("figgy milkyway ring strip", 256, 1, &bake_ring_strip());
 
     let tex_entry = |binding| wgpu::BindGroupLayoutEntry {
         binding,
@@ -1345,7 +1359,7 @@ pub(crate) fn create_constellation_set(
         count: None,
     };
     let tex_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("figgy constellation texture bgl"),
+        label: Some("figgy milkyway texture bgl"),
         entries: &[
             tex_entry(0), // PSF (stars)
             tex_entry(1), // blackbody LUT (stars)
@@ -1360,7 +1374,7 @@ pub(crate) fn create_constellation_set(
         ],
     });
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-        label: Some("figgy constellation sampler"),
+        label: Some("figgy milkyway sampler"),
         address_mode_u: wgpu::AddressMode::ClampToEdge,
         address_mode_v: wgpu::AddressMode::ClampToEdge,
         mag_filter: wgpu::FilterMode::Linear,
@@ -1368,7 +1382,7 @@ pub(crate) fn create_constellation_set(
         ..Default::default()
     });
     let star_tex_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("figgy constellation texture bg"),
+        label: Some("figgy milkyway texture bg"),
         layout: &tex_bgl,
         entries: &[
             wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&psf_view) },
@@ -1411,22 +1425,22 @@ pub(crate) fn create_constellation_set(
         "vs_ribbon", "fs_ribbon", max_blend,
         wgpu::PrimitiveTopology::TriangleStrip,
         Some(&tex_bgl),
-        "figgy constellation ribbon pipeline",
+        "figgy milkyway ribbon pipeline",
     );
     // Arc-driven star pass: NO vertex buffers — the VS reads the arc-length
     // prefix and the column pool as storage (group 3) and is drawn via
     // DrawIndirect args computed on the GPU from the polyline's total arc.
     let star_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("figgy constellation star shader"),
+        label: Some("figgy milkyway star shader"),
         source: wgpu::ShaderSource::Wgsl(include_str!("line_columnar.wgsl").into()),
     });
     let star_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("figgy constellation star layout"),
+        label: Some("figgy milkyway star layout"),
         bind_group_layouts: &[transform_bgl, style_bgl, &tex_bgl, star_data_bgl],
         push_constant_ranges: &[],
     });
     let stars = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("figgy constellation stars pipeline"),
+        label: Some("figgy milkyway stars pipeline"),
         layout: Some(&star_layout),
         vertex: wgpu::VertexState {
             module: &star_shader,
@@ -1464,15 +1478,133 @@ pub(crate) fn create_constellation_set(
         device, transform_bgl, style_bgl, target_format,
         "vs_planet", "fs_planet",
         Some(&tex_bgl),
-        "figgy constellation planets pipeline",
+        "figgy milkyway planets pipeline",
     );
     let jets = create_errorbar_columnar_pipeline_full(
         device, transform_bgl, style_bgl, target_format,
         "vs_jet", "fs_jet", additive,
-        "figgy constellation jets pipeline",
+        "figgy milkyway jets pipeline",
     );
 
-    ConstellationSet { ribbon, stars, planets, jets, star_tex_bg }
+    MilkywaySet { ribbon, stars, planets, jets, star_tex_bg }
+}
+
+/// Build the lightweight constellation style set: PSF stars at scatter
+/// positions plus a translucent connecting line. No arc-prefix star pass,
+/// planets, or jets are compiled for this mode.
+pub(crate) fn create_point_constellation_set(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+) -> PointConstellationSet {
+    let make_tex = |label: &str, w: u32, h: u32, data: &[u8]| {
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(w * 4),
+                rows_per_image: Some(h),
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        tex.create_view(&wgpu::TextureViewDescriptor::default())
+    };
+    const PSF_SIZE: u32 = 128;
+    const ATLAS_TILE: u32 = 128;
+    let psf_view =
+        make_tex("figgy point constellation psf", PSF_SIZE, PSF_SIZE, &bake_psf_rgba(PSF_SIZE));
+    let lut_view =
+        make_tex("figgy point constellation blackbody lut", 256, 1, &bake_blackbody_lut());
+    // These two are unused by point constellation entries, but keeping the
+    // five-binding texture layout identical lets the shared scatter WGSL
+    // module declare both star and planet resources.
+    let atlas_view = make_tex(
+        "figgy point constellation planet atlas",
+        ATLAS_TILE * 2,
+        ATLAS_TILE * 2,
+        &bake_planet_atlas(ATLAS_TILE),
+    );
+    let ring_view = make_tex("figgy point constellation ring strip", 256, 1, &bake_ring_strip());
+
+    let tex_entry = |binding| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
+    };
+    let tex_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("figgy point constellation texture bgl"),
+        entries: &[
+            tex_entry(0),
+            tex_entry(1),
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            tex_entry(3),
+            tex_entry(4),
+        ],
+    });
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("figgy point constellation sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
+    let star_tex_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("figgy point constellation texture bg"),
+        layout: &tex_bgl,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&psf_view) },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&lut_view) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&sampler) },
+            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&atlas_view) },
+            wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&ring_view) },
+        ],
+    });
+
+    let line = create_line_columnar_pipeline_with_entries(
+        device, transform_bgl, style_bgl, target_format,
+        "vs_main", "fs_constellation_line",
+        wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+        wgpu::PrimitiveTopology::TriangleStrip,
+        None,
+        "figgy point constellation line pipeline",
+    );
+    let stars = create_scatter_columnar_pipeline_full(
+        device, transform_bgl, style_bgl, target_format,
+        "vs_constellation_star", "fs_constellation_star",
+        Some(&tex_bgl),
+        "figgy point constellation stars pipeline",
+    );
+
+    PointConstellationSet { line, stars, star_tex_bg }
 }
 
 /// Entry-point-parameterized line pipeline builder. Styled variants share
@@ -1910,11 +2042,11 @@ pub struct ColumnLineLayer<'a> {
     pub arc: Option<(std::sync::Arc<wgpu::Buffer>, u64)>,
     /// Strip vertices per instance — must match `pipeline`'s vertex entry:
     /// 4 for the precise `vs_main`, [`LINE_SKETCH_VERTICES_PER_INSTANCE`]
-    /// for the sketch `vs_sketch`, [`CONSTELLATION_RIBBON_VERTICES`] for
-    /// the constellation ribbon.
+    /// for the sketch `vs_sketch`, [`MILKYWAY_RIBBON_VERTICES`] for
+    /// the milkyway ribbon.
     pub verts_per_instance: u32,
     /// Style textures (group 2) when `pipeline`'s layout includes them —
-    /// the constellation PSF/LUT bind group. `None` for precise/sketch.
+    /// the milkyway/constellation PSF/LUT bind group. `None` for precise/sketch.
     pub texture_bg: Option<&'a wgpu::BindGroup>,
 }
 
@@ -2165,6 +2297,23 @@ mod tests {
             Err(e) => {
                 println!("no adapter available in this environment: {e}");
             }
+        }
+    }
+
+    #[test]
+    fn psf_sprite_fades_to_zero_at_square_edges() {
+        let psf = bake_psf_rgba(128);
+        let px = |x: usize, y: usize, c: usize| psf[(y * 128 + x) * 4 + c];
+
+        for i in 0..128 {
+            assert_eq!(px(i, 0, 0), 0, "top edge core leaked at x={i}");
+            assert_eq!(px(i, 0, 1), 0, "top edge halo leaked at x={i}");
+            assert_eq!(px(i, 127, 0), 0, "bottom edge core leaked at x={i}");
+            assert_eq!(px(i, 127, 1), 0, "bottom edge halo leaked at x={i}");
+            assert_eq!(px(0, i, 0), 0, "left edge core leaked at y={i}");
+            assert_eq!(px(0, i, 1), 0, "left edge halo leaked at y={i}");
+            assert_eq!(px(127, i, 0), 0, "right edge core leaked at y={i}");
+            assert_eq!(px(127, i, 1), 0, "right edge halo leaked at y={i}");
         }
     }
 

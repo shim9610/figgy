@@ -54,8 +54,9 @@
     const wrap = document.getElementById("chart-wrap");
     const dpr = window.devicePixelRatio || 1;
 
-    // Canvas backing store = CSS size × DPR; chart coordinates are these
-    // physical pixels (pointer events must be scaled the same way).
+    // Canvas backing store = CSS size x DPR. Pointer events are passed in
+    // these physical pixels; FiggyChart maps them back to its logical
+    // document when the responsive viewport is scaled/letterboxed.
     canvas.width = Math.round(wrap.clientWidth * dpr);
     canvas.height = Math.round(wrap.clientHeight * dpr);
 

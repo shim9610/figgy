@@ -30,12 +30,13 @@ struct Transform {
     // Generic per-panel style parameter slots. Interpretation belongs to the
     // ACTIVE style's shader entries; the precise entries never read them.
     // sketch:        [0] = (amplitude_px, wavelength_px, seed(f32), 0)
-    // constellation: [0] = (star_density, ribbon_width_px, ribbon_intensity,
+    // milkyway:      [0] = (star_density, ribbon_width_px, ribbon_intensity,
     //                seed(f32)), [1] = (star_scale, spread_px, faint_bias, planet_rim),
-    //                [2] = (structure_scale, 0, 0, 0) — multiplier on the
+    //                [2] = (structure_scale, star_brightness, 0, 0) — multiplier on the
     //                style's px-denominated structure constants (clump
     //                wavelength, binary separation); keeps the star texture
     //                resolution-invariant under DPI/export scaling.
+    // constellation: [0] = (star_opacity, line_opacity, 0, 0)
     style_params: array<vec4<f32>, 3>,
 };  // 80 B (vec4 array at offset 32, stride 16 — alignment unchanged)
 
@@ -50,7 +51,7 @@ struct Style {
     shape_id: u32,
     dash_len: u32,
     // Per-series decorrelation salt (FNV-1a of series_id). Styled entries
-    // (sketch/constellation) XOR it into their hash seeds so two series never
+    // (sketch/milkyway/constellation) XOR it into their hash seeds so two series never
     // share a star/wobble pattern; precise entries never read it.
     series_salt: u32,
     _pad: u32,

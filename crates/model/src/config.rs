@@ -136,15 +136,16 @@ impl Default for SketchOptions {
     }
 }
 
-/// Constellation draw-style parameters. All fields have defaults — JSON
-/// `{"mode":"constellation"}` alone works. Lines render as star chains over
+/// Milkyway draw-style parameters. All fields have defaults — JSON
+/// `{"mode":"milkyway"}` alone works. Lines render as star chains over
 /// a soft nebula ribbon tinted with the series `line_color` (that ribbon is
-/// what keeps multiple series distinguishable); star colors stay physical
-/// (blackbody locus, population mix follows local density).
+/// what keeps multiple series distinguishable); star counts stay uniform per
+/// arc length, while star colors stay physical (blackbody locus, population
+/// mix follows the clump field).
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
-pub struct ConstellationOptions {
+pub struct MilkywayOptions {
     /// Stars per 100 px of arc length. Default 14.0.
     pub star_density: f32,
     /// Nebula ribbon full width, in px ("두께"). Default 14.0.
@@ -154,6 +155,8 @@ pub struct ConstellationOptions {
     pub ribbon_intensity: f32,
     /// Global star size multiplier. Default 1.0.
     pub star_scale: f32,
+    /// Global star brightness multiplier. Default 1.0.
+    pub star_brightness: f32,
     /// Perpendicular star scatter σ from the path, in px. Larger reads more
     /// like a loose cluster, smaller tracks the data tighter. Default 2.5.
     pub spread_px: f32,
@@ -185,13 +188,14 @@ pub struct ConstellationOptions {
     pub seed: u32,
 }
 
-impl Default for ConstellationOptions {
+impl Default for MilkywayOptions {
     fn default() -> Self {
         Self {
             star_density: 14.0,
             ribbon_width_px: 14.0,
             ribbon_intensity: 0.30,
             star_scale: 1.0,
+            star_brightness: 1.0,
             spread_px: 2.5,
             structure_scale: 1.0,
             faint_bias: 3.0,
@@ -204,11 +208,29 @@ impl Default for ConstellationOptions {
     }
 }
 
-/// UI-facing metadata for one stylized-mode parameter — the single source
-/// for host slider ranges, so frontends never hardcode them. The range is
-/// the RECOMMENDED span (what a slider should cover), not a hard limit:
-/// the SSoT stores whatever the host sets, and the renderer applies only
-/// its own safety guards (non-negative sizes, shader-side clamps).
+/// Constellation draw-style parameters. All fields have defaults. Only
+/// `ScatterLine` series are drawn: PSF-rendered stars sit at the scatter data
+/// points, connected by a translucent line.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct ConstellationOptions {
+    /// Opacity applied to the point stars. Default 1.0.
+    pub star_opacity: f32,
+    /// Opacity applied to the connecting line. Default 0.45.
+    pub line_opacity: f32,
+}
+
+impl Default for ConstellationOptions {
+    fn default() -> Self {
+        Self {
+            star_opacity: 1.0,
+            line_opacity: 0.45,
+        }
+    }
+}
+
+/// UI-facing metadata for one stylized-mode parameter.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct StyleParamSpec {
@@ -251,22 +273,32 @@ impl SketchOptions {
     ];
 }
 
-impl ConstellationOptions {
+impl MilkywayOptions {
     /// Parameter metadata for hosts — see [`StyleParamSpec`]. A model test
     /// pins each `default` to [`Default`], so the two cannot drift.
     pub const PARAM_SPECS: &'static [StyleParamSpec] = &[
-        spec("star_density", 0.0, 60.0, 14.0),
+        spec("star_density", 0.0, 120.0, 14.0),
         spec("ribbon_width_px", 2.0, 40.0, 14.0),
         spec("ribbon_intensity", 0.0, 1.0, 0.30),
         spec("star_scale", 0.3, 3.0, 1.0),
+        spec("star_brightness", 0.0, 4.0, 1.0),
         spec("spread_px", 0.0, 10.0, 2.5),
         spec("structure_scale", 0.25, 4.0, 1.0),
-        spec("faint_bias", 0.5, 10.0, 3.0),
+        spec("faint_bias", 0.5, 24.0, 3.0),
         spec("glow", 0.0, 1.5, 0.55),
         spec("nebula", 0.0, 1.5, 1.0),
         spec("dust", 0.0, 3.0, 1.0),
         spec("planet_rim", 0.0, 1.0, 0.34),
         spec_int("seed", 0.0, 9999.0, 0.0),
+    ];
+}
+
+impl ConstellationOptions {
+    /// Parameter metadata for hosts -- see [`StyleParamSpec`]. A model test
+    /// pins each `default` to [`Default`], so the two cannot drift.
+    pub const PARAM_SPECS: &'static [StyleParamSpec] = &[
+        spec("star_opacity", 0.0, 1.0, 1.0),
+        spec("line_opacity", 0.0, 1.0, 0.45),
     ];
 }
 
@@ -280,6 +312,7 @@ pub enum DrawStyle {
     #[default]
     Precise,
     Sketch(SketchOptions),
+    Milkyway(MilkywayOptions),
     Constellation(ConstellationOptions),
 }
 
@@ -295,6 +328,13 @@ impl DrawStyle {
             _ => None,
         }
     }
+    /// Milkyway parameters when the milkyway style is active.
+    pub fn milkyway(&self) -> Option<&MilkywayOptions> {
+        match self {
+            DrawStyle::Milkyway(c) => Some(c),
+            _ => None,
+        }
+    }
     /// Constellation parameters when the constellation style is active.
     pub fn constellation(&self) -> Option<&ConstellationOptions> {
         match self {
@@ -306,7 +346,7 @@ impl DrawStyle {
     /// Every mode tag, in declaration order — the values valid as the JSON
     /// `"mode"` of `draw_style`.
     pub fn mode_tags() -> &'static [&'static str] {
-        &["precise", "sketch", "constellation"]
+        &["precise", "sketch", "milkyway", "constellation"]
     }
 
     /// Parameter metadata for one mode tag. `precise` has no parameters
@@ -317,6 +357,7 @@ impl DrawStyle {
         match mode {
             "precise" => Some(&[]),
             "sketch" => Some(SketchOptions::PARAM_SPECS),
+            "milkyway" => Some(MilkywayOptions::PARAM_SPECS),
             "constellation" => Some(ConstellationOptions::PARAM_SPECS),
             _ => None,
         }
@@ -396,7 +437,7 @@ impl Config {
 
         // Sketch wobble dims are pixel-based visual dims too. Scaled only in
         // Stylized modes — `Precise` carries no dims, so the precise path
-        // sees no change. Constellation must come out RESOLUTION-INVARIANT:
+        // sees no change. Milkyway must come out RESOLUTION-INVARIANT:
         // px-sized dims (ribbon width, spread, star size, structure
         // constants via structure_scale) multiply, and `star_density`
         // (stars per arc-PX) divides — the arc itself gains px with the
@@ -408,7 +449,7 @@ impl Config {
                 sketch.amplitude_px *= s;
                 sketch.wavelength_px *= s;
             }
-            DrawStyle::Constellation(c) => {
+            DrawStyle::Milkyway(c) => {
                 c.ribbon_width_px *= s;
                 c.spread_px *= s;
                 c.star_scale *= s;
@@ -417,6 +458,7 @@ impl Config {
                     c.star_density /= s;
                 }
             }
+            DrawStyle::Constellation(_) => {}
             DrawStyle::Precise => {}
         }
     }
@@ -547,12 +589,23 @@ mod draw_style_serde_tests {
         );
     }
 
+    #[test]
+    fn milkyway_tag_alone_yields_all_defaults() {
+        let mut json = default_config_json();
+        json["draw_style"] = serde_json::json!({ "mode": "milkyway" });
+        let cfg: Config = serde_json::from_value(json).expect("tag-only milkyway parses");
+        assert_eq!(
+            cfg.draw_style,
+            super::DrawStyle::Milkyway(super::MilkywayOptions::default()),
+        );
+    }
+
     /// PARAM_SPECS defaults are literals (const context) — pin them to the
     /// `Default` impls so the two sources cannot drift, and pin every spec
     /// key to a real serde field by writing it through `draw_style` JSON.
     #[test]
     fn param_specs_match_defaults_and_serde_fields() {
-        use super::{ConstellationOptions, SketchOptions};
+        use super::{ConstellationOptions, MilkywayOptions, SketchOptions};
 
         let check = |mode: &str, specs: &[super::StyleParamSpec], defaults: serde_json::Value| {
             for s in specs {
@@ -606,6 +659,11 @@ mod draw_style_serde_tests {
             serde_json::to_value(SketchOptions::default()).unwrap(),
         );
         check(
+            "milkyway",
+            MilkywayOptions::PARAM_SPECS,
+            serde_json::to_value(MilkywayOptions::default()).unwrap(),
+        );
+        check(
             "constellation",
             ConstellationOptions::PARAM_SPECS,
             serde_json::to_value(ConstellationOptions::default()).unwrap(),
@@ -621,10 +679,26 @@ mod draw_style_serde_tests {
     fn constellation_round_trips_with_inline_fields() {
         let mut cfg = default_config();
         cfg.draw_style = super::DrawStyle::Constellation(super::ConstellationOptions {
+            star_opacity: 0.75,
+            line_opacity: 0.25,
+        });
+        let json = serde_json::to_value(&cfg).expect("serialize");
+        assert_eq!(json["draw_style"]["mode"], "constellation");
+        assert_eq!(json["draw_style"]["star_opacity"], 0.75);
+        assert_eq!(json["draw_style"]["line_opacity"], 0.25);
+        let back: Config = serde_json::from_value(json).expect("parse back");
+        assert_eq!(back.draw_style, cfg.draw_style);
+    }
+
+    #[test]
+    fn milkyway_round_trips_with_inline_fields() {
+        let mut cfg = default_config();
+        cfg.draw_style = super::DrawStyle::Milkyway(super::MilkywayOptions {
             star_density: 22.0,
             ribbon_width_px: 20.0,
             ribbon_intensity: 0.4,
             star_scale: 1.3,
+            star_brightness: 1.8,
             spread_px: 3.5,
             structure_scale: 1.25,
             faint_bias: 4.5,
@@ -635,7 +709,7 @@ mod draw_style_serde_tests {
             seed: 9,
         });
         let json = serde_json::to_value(&cfg).expect("serialize");
-        assert_eq!(json["draw_style"]["mode"], "constellation");
+        assert_eq!(json["draw_style"]["mode"], "milkyway");
         assert_eq!(json["draw_style"]["star_density"], 22.0);
         let back: Config = serde_json::from_value(json).expect("parse back");
         assert_eq!(back.draw_style, cfg.draw_style);

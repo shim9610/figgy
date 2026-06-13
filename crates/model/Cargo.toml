@@ -1,6 +1,6 @@
 [package]
 name = "model"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 description = "figgy chart model — option SSoT, interaction contracts, preset policies."
 license = "MIT OR Apache-2.0"

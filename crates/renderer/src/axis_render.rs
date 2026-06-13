@@ -92,9 +92,9 @@ pub fn try_raster_chart_layer_to_rgba_with_selection(
         AxisLayerKind::Decoration => draw_decoration_layer(&mut canvas, &raster_cfg),
         AxisLayerKind::All => draw_axes(&mut canvas, &raster_cfg),
     }
-    // Constellation: the axis chrome reads as line-light — bloom it. Runs
+    // Milkyway: the axis chrome reads as line-light — bloom it. Runs
     // BEFORE the selection overlay so interaction chrome stays crisp.
-    if let crate::config::DrawStyle::Constellation(c) = &config.draw_style {
+    if let crate::config::DrawStyle::Milkyway(c) = &config.draw_style {
         if matches!(layer, AxisLayerKind::Decoration | AxisLayerKind::All) {
             apply_decoration_glow(&mut canvas, c.glow);
         }
@@ -151,7 +151,7 @@ pub fn raster_chart_to_rgba(config: &Config) -> Vec<u8> {
 /// (the compositing order already puts it under the data): grid lines are
 /// not drawn in that mode — the style declares its own background instead.
 pub fn draw_grid_layer(canvas: &mut Canvas, config: &Config) {
-    if let crate::config::DrawStyle::Constellation(c) = &config.draw_style {
+    if let crate::config::DrawStyle::Milkyway(c) = &config.draw_style {
         draw_space_background(canvas, config, c);
         return;
     }
@@ -175,7 +175,7 @@ const SPACE_BASE: [f32; 3] = [11.0, 15.0, 23.0];
 fn draw_space_background(
     canvas: &mut Canvas,
     _config: &Config,
-    c: &crate::config::ConstellationOptions,
+    c: &crate::config::MilkywayOptions,
 ) {
     use crate::data_render::fbm2;
 

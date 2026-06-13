@@ -188,7 +188,7 @@ fn validate_target_format(
 
 /// Discriminant for cached per-style pipeline sets.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub(crate) enum StyleKey { Sketch, Constellation }
+pub(crate) enum StyleKey { Sketch, Milkyway, Constellation }
 
 /// Everything the renderer needs to know about one stylized mode up front;
 /// the per-format GPU objects live in the [`StyleSet`] the key maps to.
@@ -214,16 +214,30 @@ fn pack_sketch_params(style: &DrawStyle) -> [f32; 12] {
     }
 }
 
-/// constellation: `[0] = (star_density, ribbon_width_px, ribbon_intensity,
+/// milkyway: `[0] = (star_density, ribbon_width_px, ribbon_intensity,
 /// seed)`, `[1] = (star_scale, spread_px, faint_bias, planet_rim)`,
-/// `[2] = (structure_scale, 0, 0, 0)`.
+/// `[2] = (structure_scale, star_brightness, 0, 0)`.
 /// `glow`/`nebula`/`dust` are CPU-raster parameters and never reach the GPU.
-fn pack_constellation_params(style: &DrawStyle) -> [f32; 12] {
-    match style.constellation() {
+fn pack_milkyway_params(style: &DrawStyle) -> [f32; 12] {
+    match style.milkyway() {
         Some(c) => [
             c.star_density, c.ribbon_width_px, c.ribbon_intensity, c.seed as f32,
             c.star_scale, c.spread_px, c.faint_bias, c.planet_rim,
-            c.structure_scale, 0.0, 0.0, 0.0,
+            c.structure_scale, c.star_brightness, 0.0, 0.0,
+        ],
+        None => [0.0; 12],
+    }
+}
+
+/// constellation: `[0] = (star_opacity, line_opacity, 0, 0)`,
+/// `[1]`/`[2]` = 0.
+/// Only ScatterLine series use this style.
+fn pack_constellation_params(style: &DrawStyle) -> [f32; 12] {
+    match style.constellation() {
+        Some(c) => [
+            c.star_opacity, c.line_opacity, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0,
         ],
         None => [0.0; 12],
     }
@@ -235,10 +249,16 @@ static SKETCH_VARIANT: StyleVariant = StyleVariant {
     pack_params: pack_sketch_params,
 };
 
-static CONSTELLATION_VARIANT: StyleVariant = StyleVariant {
-    key: StyleKey::Constellation,
+static MILKYWAY_VARIANT: StyleVariant = StyleVariant {
+    key: StyleKey::Milkyway,
     // Ribbon profile and every star attribute are arc-length parameterized.
     needs_arc_prefix: true,
+    pack_params: pack_milkyway_params,
+};
+
+static CONSTELLATION_VARIANT: StyleVariant = StyleVariant {
+    key: StyleKey::Constellation,
+    needs_arc_prefix: false,
     pack_params: pack_constellation_params,
 };
 
@@ -247,14 +267,16 @@ pub(crate) fn style_variant(style: &DrawStyle) -> Option<&'static StyleVariant> 
     match style {
         DrawStyle::Precise => None,
         DrawStyle::Sketch(_) => Some(&SKETCH_VARIANT),
+        DrawStyle::Milkyway(_) => Some(&MILKYWAY_VARIANT),
         DrawStyle::Constellation(_) => Some(&CONSTELLATION_VARIANT),
     }
 }
 
 /// One style's compiled GPU objects against one target format. Styles differ
-/// structurally (sketch swaps entry points; constellation draws two additive
-/// passes over the line slots and carries baked textures), so the set is an
-/// enum and the draw side matches once.
+/// structurally (sketch swaps entry points; milkyway draws additive star
+/// passes and carries baked textures; constellation renders scatter stars
+/// plus a connecting line), so the set is an enum and the draw side matches
+/// once.
 enum StyleSet {
     Sketch {
         line: wgpu::RenderPipeline,
@@ -262,7 +284,8 @@ enum StyleSet {
         errorbar: wgpu::RenderPipeline,
         line_verts: u32,
     },
-    Constellation(data_render::ConstellationSet),
+    Milkyway(data_render::MilkywaySet),
+    Constellation(data_render::PointConstellationSet),
 }
 
 /// Every pipeline compiled against one render-target format: the four
@@ -341,12 +364,17 @@ impl TargetPipelines {
                     ),
                     line_verts: data_render::LINE_SKETCH_VERTICES_PER_INSTANCE,
                 },
-                // Bakes the PSF + blackbody textures (once, then cached with
+                // Bakes the milkyway PSF + blackbody textures (once, then cached with
                 // the pipelines) — docs/CONSTELLATION_DESIGN.md §3c.
-                StyleKey::Constellation => StyleSet::Constellation(
-                    data_render::create_constellation_set(
+                StyleKey::Milkyway => StyleSet::Milkyway(
+                    data_render::create_milkyway_set(
                         device, queue, transform_bgl, style_bgl, star_data_bgl,
                         surface_format,
+                    ),
+                ),
+                StyleKey::Constellation => StyleSet::Constellation(
+                    data_render::create_point_constellation_set(
+                        device, queue, transform_bgl, style_bgl, surface_format,
                     ),
                 ),
             });
@@ -875,7 +903,7 @@ impl Renderer {
         // so it is cached by (size, nebula, dust, seed): a pan/zoom/config
         // commit re-rasters only the decoration layer, and a view whose grid
         // texture already holds the cached generation skips the upload too.
-        if let crate::config::DrawStyle::Constellation(c) = &chart.config().draw_style {
+        if let crate::config::DrawStyle::Milkyway(c) = &chart.config().draw_style {
             let key = SpaceBgKey {
                 w,
                 h,
@@ -1010,11 +1038,11 @@ impl Renderer {
         let mut arcs = Vec::with_capacity(items.len());
         for item in items {
             let variant = style_variant(&item.chart_config.draw_style);
-            // Constellation lines also get the arc-driven star pass: the
+            // Milkyway lines also get the arc-driven star pass: the
             // candidate-slot pitch the indirect kernel sizes the dispatch
             // with (the star VS derives the same value from the transform).
             let star_pitch = match &item.chart_config.draw_style {
-                crate::config::DrawStyle::Constellation(c) => Some(
+                crate::config::DrawStyle::Milkyway(c) => Some(
                     (data_render::line_arc::STAR_SLOT_PITCH_FACTOR * c.structure_scale)
                         .max(1e-3),
                 ),
@@ -1138,18 +1166,27 @@ impl Renderer {
                 ScatterPick { pipeline: scatter, texture_bg: None },
                 errorbar,
             ),
-            // Constellation: line = ribbon + star pass, scatter = ringed
+            // Milkyway: line = ribbon + star pass, scatter = ringed
             // planets (premultiplied — they occlude the star field),
             // errorbar = bipolar jets with terminal shock knots.
-            Some(StyleSet::Constellation(c)) => (
+            Some(StyleSet::Milkyway(c)) => (
                 LinePick {
                     pipeline: &c.ribbon,
-                    verts: data_render::CONSTELLATION_RIBBON_VERTICES,
+                    verts: data_render::MILKYWAY_RIBBON_VERTICES,
                     texture_bg: Some(&c.star_tex_bg),
                 },
                 Some(StarsPick { pipeline: &c.stars, texture_bg: &c.star_tex_bg }),
                 ScatterPick { pipeline: &c.planets, texture_bg: Some(&c.star_tex_bg) },
                 &c.jets,
+            ),
+            // Constellation: only ScatterLine is supported. The line is the
+            // regular columnar stroke with style-level alpha; the scatter
+            // layer renders PSF stars at the data points.
+            Some(StyleSet::Constellation(c)) => (
+                LinePick { pipeline: &c.line, verts: 4, texture_bg: None },
+                None,
+                ScatterPick { pipeline: &c.stars, texture_bg: Some(&c.star_tex_bg) },
+                &pipelines.errorbar,
             ),
         };
 
@@ -1157,10 +1194,12 @@ impl Renderer {
         for (idx, series) in series_specs.iter().enumerate() {
             let cfg = series.config;
             let rt = &cfg.render_type;
+            let constellation_only = matches!(styled, Some(StyleSet::Constellation(_)));
+            let constellation_supported = matches!(rt, DataRenderType::ScatterLine { .. });
             let x_h = lookup(&cfg.x_column)?;
             let y_h = lookup(&cfg.y_column)?;
 
-            let line = if has_line(rt) {
+            let line = if has_line(rt) && (!constellation_only || constellation_supported) {
                 let arc = arcs.get(idx).cloned().flatten();
                 Some(ColumnLineLayer {
                     pipeline: line_pick.pipeline,
@@ -1194,7 +1233,7 @@ impl Renderer {
                 _ => None,
             };
 
-            let scatter = if has_scatter(rt) {
+            let scatter = if has_scatter(rt) && (!constellation_only || constellation_supported) {
                 Some(ColumnScatterLayer {
                     pipeline: scatter_pick.pipeline,
                     transform_bg: &view.transform_bg,
@@ -1206,7 +1245,9 @@ impl Renderer {
                 })
             } else { None };
 
-            let errorbar = match (extract_err_y(rt), extract_err_x(rt)) {
+            let errorbar = if constellation_only {
+                None
+            } else { match (extract_err_y(rt), extract_err_x(rt)) {
                 (None, None) => None,
                 (ey_opt, ex_opt) => {
                     let (ey_lo, ey_hi) = match ey_opt {
@@ -1243,7 +1284,7 @@ impl Renderer {
                         err_x_lo: ex_lo, err_x_hi: ex_hi,
                     })
                 }
-            };
+            }};
 
             out.push(data_render::SeriesLayers { errorbar, line, line_extra, scatter });
         }
@@ -1367,6 +1408,23 @@ impl Renderer {
         chart: &Chart,
         series: &[SeriesConfig],
         scale: f32,
+    ) -> Result<RasterImage> {
+        self.export_panel_rgba_with_clear_async(
+            chart,
+            series,
+            scale,
+            crate::color::Color::from_rgba(0.0, 0.0, 0.0, 0.0),
+        )
+        .await
+    }
+
+    /// Export a panel with an explicit clear color behind the chart.
+    pub async fn export_panel_rgba_with_clear_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+        clear: crate::color::Color,
     ) -> Result<RasterImage> {
         let scale = clamp_export_scale(scale);
         let orig = chart.config().chart_area.0;
@@ -1492,7 +1550,7 @@ impl Renderer {
             label: Some("figgy export encoder"),
         });
 
-        // 6) Render pass — transparent clear + a single paint.
+        // 6) Render pass — configured clear + a single paint.
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("figgy export pass"),
@@ -1501,7 +1559,12 @@ impl Renderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: clear.r as f64,
+                            g: clear.g as f64,
+                            b: clear.b as f64,
+                            a: clear.a as f64,
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -1614,6 +1677,20 @@ impl Renderer {
         scale: f32,
     ) -> Result<Vec<u8>> {
         let img = self.export_panel_rgba_async(chart, series, scale).await?;
+        encode_png(&img)
+    }
+
+    /// Convenience wrapper: export panel PNG with an explicit clear color.
+    pub async fn export_panel_png_bytes_with_clear_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+        clear: crate::color::Color,
+    ) -> Result<Vec<u8>> {
+        let img = self
+            .export_panel_rgba_with_clear_async(chart, series, scale, clear)
+            .await?;
         encode_png(&img)
     }
 
@@ -1973,6 +2050,53 @@ mod tests {
     }
 
     #[test]
+    fn point_constellation_scatterline_exports() {
+        let inst = create_instance();
+        let Ok(adapter) = request_adapter(&inst) else { return; };
+        let Ok((device, queue)) = request_device(&adapter) else { return; };
+
+        let mut r = Renderer::try_new(
+            RendererDevice::new(Arc::new(device), Arc::new(queue)),
+            wgpu::TextureFormat::Bgra8Unorm,
+            1024 * 1024,
+        ).unwrap();
+        r.add_column("pc_x", &col_f64(vec![0.0, 0.25, 0.5, 0.75, 1.0])).unwrap();
+        r.add_column("pc_y", &col_f64(vec![0.2, 0.75, 0.35, 0.9, 0.5])).unwrap();
+
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(Rect { x: 0, y: 0, width: 320, height: 240 });
+        config.legend.visible = false;
+        config.draw_style = crate::config::DrawStyle::Constellation(
+            crate::config::ConstellationOptions::default(),
+        );
+        let mut chart = Chart::new(config);
+        chart.set_x_range(-0.05, 1.05);
+        chart.set_y_range(0.0, 1.0);
+
+        let series = [SeriesConfig {
+            series_id: "pc".into(),
+            label: None,
+            x_column: "pc_x".into(),
+            y_column: "pc_y".into(),
+            render_type: DataRenderType::ScatterLine {
+                scatter: DataScatterStyleConfig {
+                    point_color: Color::new(1.0, 1.0, 1.0, 1.0),
+                    point_shape: crate::data_config::ScatterShape::CircleFilled,
+                    point_size: 5.0,
+                },
+                line: DataLineStyleConfig {
+                    line_style: crate::line::LineStylePreset::Solid,
+                    line_color: Color::new(0.4, 0.7, 1.0, 1.0),
+                    line_width: 2.0,
+                },
+            },
+        }];
+        let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+        let lit = img.rgba.chunks_exact(4).filter(|p| p[3] > 0).count();
+        assert!(lit > 100, "point constellation export produced too little ink: {lit}");
+    }
+
+    #[test]
     fn xy_errorbar_does_not_require_zero_column() {
         let inst = create_instance();
         let Ok(adapter) = request_adapter(&inst) else { return; };
@@ -2110,7 +2234,7 @@ mod tests {
         assert!(red > 300, "rc (red) curve missing: {red} px");
     }
 
-    /// Star density must be a property of the polyline's ARC, not of how
+    /// Milkyway arc-star density must be a property of the polyline's ARC, not of how
     /// densely the data samples it — the field-reported failure mode of the
     /// old per-segment quad budget, where a sparse polyline saturated at 24
     /// stars per segment and then ignored the density knob entirely. The
@@ -2118,7 +2242,7 @@ mod tests {
     /// ink (the indirect pass budgets by total arc; the 8-point chord arc is
     /// only a few % shorter).
     #[test]
-    fn constellation_star_density_is_sampling_invariant() {
+    fn milkyway_arc_star_density_is_sampling_invariant() {
         let inst = create_instance();
         let Ok(adapter) = request_adapter(&inst) else { return; };
         let Ok((device, queue)) = request_device(&adapter) else { return; };
@@ -2147,8 +2271,8 @@ mod tests {
         // Stars only: ribbon/backdrop/glow off so the ink count measures the
         // star field alone. Density 60 needs ~540 stars over this arc — the
         // old per-segment budget would cap the 8-point series at 7·24 = 168.
-        config.draw_style = crate::config::DrawStyle::Constellation(
-            crate::config::ConstellationOptions {
+        config.draw_style = crate::config::DrawStyle::Milkyway(
+            crate::config::MilkywayOptions {
                 star_density: 60.0,
                 ribbon_intensity: 0.0,
                 nebula: 0.0,
@@ -2216,8 +2340,8 @@ mod tests {
         let rect = Rect { x: 0, y: 0, width: 320, height: 200 };
         let mut config = crate::default::default_config();
         config.chart_area = crate::layout::ChartArea(rect.clone());
-        config.draw_style = crate::config::DrawStyle::Constellation(
-            crate::config::ConstellationOptions::default(),
+        config.draw_style = crate::config::DrawStyle::Milkyway(
+            crate::config::MilkywayOptions::default(),
         );
         let mut chart = Chart::new(config);
         chart.set_x_range(0.0, 1.0);
@@ -2241,7 +2365,7 @@ mod tests {
         assert_eq!(view.grid_space_gen, Some(1));
 
         // Backdrop parameter change: rebake + re-upload.
-        if let crate::config::DrawStyle::Constellation(c) = &mut chart.config_mut().draw_style {
+        if let crate::config::DrawStyle::Milkyway(c) = &mut chart.config_mut().draw_style {
             c.seed = 7;
         }
         r.refresh_axis(&mut view, &chart, rect.clone()).unwrap();

@@ -1,9 +1,9 @@
-//! Constellation parameter lab — live sliders over one figgy panel.
+//! Sparse constellation lab — live sliders over one figgy panel.
 //!
 //! Every `ConstellationOptions` field is bound to an egui slider; moving one
 //! rewrites `config.draw_style`, which flips the chart's dirty bits, which
 //! rewrites the Transform uniform on the next frame — the GPU picks the new
-//! parameters up immediately (star/ribbon attributes are derived in-shader).
+//! parameters up immediately (star/line attributes are derived in-shader).
 //!
 //! Run with:
 //! `cargo run -p renderer --example constellation_lab --features egui_demo`
@@ -25,7 +25,7 @@ use renderer::line::LineStylePreset;
 use renderer::{Chart, ChartDrawItem, ChartStyle, ChartView, Renderer, RendererDevice, Series};
 
 const POOL_CAPACITY: u64 = 8 * 1024 * 1024;
-/// Deep-space backdrop behind the additive star field.
+/// Dark host backdrop behind the translucent line + PSF stars.
 const SPACE_BG: egui::Color32 = egui::Color32::from_rgb(11, 15, 23);
 
 fn col_f64(data: Vec<f64>) -> Column<f64> {
@@ -56,32 +56,40 @@ impl Drop for FiggyState {
     }
 }
 
-fn build_state(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>, format: wgpu::TextureFormat) -> Result<FiggyState, String> {
-    let mut renderer = Renderer::try_new(
-        RendererDevice::new(device, queue),
-        format,
-        POOL_CAPACITY,
-    )
-    .map_err(|e| format!("Renderer init failed: {e}"))?;
+fn build_state(
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+    format: wgpu::TextureFormat,
+) -> Result<FiggyState, String> {
+    let mut renderer = Renderer::try_new(RendererDevice::new(device, queue), format, POOL_CAPACITY)
+        .map_err(|e| format!("Renderer init failed: {e}"))?;
 
-    // Two smooth curves (same data as the headless demo).
-    let n = 90;
-    let ts: Vec<f64> = (0..n).map(|i| i as f64 / (n - 1) as f64).collect();
-    let warm: Vec<f64> = ts.iter().map(|&t| 62.0 + 26.0 * (t * 5.2).sin()).collect();
-    let cool: Vec<f64> = ts
-        .iter()
-        .map(|&t| 14.0 + 30.0 * t + 9.0 * (t * 8.0 + 1.0).cos())
-        .collect();
-    renderer.add_column("t", &col_f64(ts)).map_err(|e| e.to_string())?;
-    renderer.add_column("warm", &col_f64(warm)).map_err(|e| e.to_string())?;
-    renderer.add_column("cool", &col_f64(cool)).map_err(|e| e.to_string())?;
+    // Sparse constellation data: the intended use case is 5-10 source points,
+    // not a densely sampled curve.
+    let ts = vec![0.04, 0.16, 0.31, 0.44, 0.58, 0.70, 0.84, 0.96];
+    let warm = vec![62.0, 77.0, 68.0, 88.0, 74.0, 92.0, 79.0, 86.0];
+    let cool = vec![24.0, 39.0, 31.0, 48.0, 43.0, 60.0, 52.0, 67.0];
+    renderer
+        .add_column("sample_x", &col_f64(ts.clone()))
+        .map_err(|e| e.to_string())?;
+    renderer
+        .add_column("warm", &col_f64(warm))
+        .map_err(|e| e.to_string())?;
+    renderer
+        .add_column("cool", &col_f64(cool.clone()))
+        .map_err(|e| e.to_string())?;
 
-    let line = |id: &str, y: &str, color: Color| SeriesConfig {
+    let scatter_line = |id: &str, y: &str, color: Color, point_size: f32| SeriesConfig {
         series_id: id.into(),
         label: None,
-        x_column: "t".into(),
+        x_column: "sample_x".into(),
         y_column: y.into(),
-        render_type: DataRenderType::Line {
+        render_type: DataRenderType::ScatterLine {
+            scatter: DataScatterStyleConfig {
+                point_color: color,
+                point_shape: ScatterShape::CircleFilled,
+                point_size,
+            },
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color: color,
@@ -89,48 +97,32 @@ fn build_state(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>, format: wgpu:
             },
         },
     };
-    // Sparse third series of ringed planets so planet_rim is reviewable.
-    let pn = 9;
-    let pxs: Vec<f64> = (0..pn).map(|i| 0.08 + 0.84 * i as f64 / (pn - 1) as f64).collect();
-    let pys: Vec<f64> = (0..pn).map(|i| 90.0 - 5.0 * ((i as f64) * 1.9).sin().abs() - 4.0).collect();
-    renderer.add_column("planet_x", &col_f64(pxs)).map_err(|e| e.to_string())?;
-    renderer.add_column("planet_y", &col_f64(pys)).map_err(|e| e.to_string())?;
 
     let series = vec![
-        line("nebula_warm", "warm", Color::from_rgb8(255, 142, 92)),
-        line("nebula_cool", "cool", Color::from_rgb8(96, 168, 255)),
-        // Line + scatter combined: ringed planets riding their own star
-        // chain — the style composes per primitive, so one series gets both.
-        SeriesConfig {
-            series_id: "planets".into(),
-            label: None,
-            x_column: "planet_x".into(),
-            y_column: "planet_y".into(),
-            render_type: DataRenderType::ScatterLine {
-                scatter: DataScatterStyleConfig {
-                    point_color: Color::from_rgb8(140, 230, 160),
-                    point_shape: ScatterShape::Triangle,
-                    point_size: 13.0,
-                },
-                line: DataLineStyleConfig {
-                    line_style: LineStylePreset::Solid,
-                    line_color: Color::from_rgb8(140, 230, 160),
-                    line_width: 2.0,
-                },
-            },
-        },
+        scatter_line("sparse_warm", "warm", Color::from_rgb8(255, 142, 92), 6.0),
+        scatter_line("sparse_cool", "cool", Color::from_rgb8(96, 168, 255), 6.0),
     ];
-    let styles: Vec<ChartStyle> =
-        series.iter().map(|cfg| renderer.create_style_for_series(cfg)).collect();
+    let styles: Vec<ChartStyle> = series
+        .iter()
+        .map(|cfg| renderer.create_style_for_series(cfg))
+        .collect();
 
     let mut config = default::default_config();
-    let placeholder = Rect { x: 0, y: 0, width: 800, height: 600 };
+    let placeholder = Rect {
+        x: 0,
+        y: 0,
+        width: 800,
+        height: 600,
+    };
     config.chart_area = ChartArea(placeholder);
     config.draw_style = DrawStyle::Constellation(ConstellationOptions::default());
     // Light chrome on the dark backdrop; no grid; no legend box.
     let chrome = Color::from_rgb8(186, 194, 210);
     for axis in [
-        &mut config.top_x, &mut config.bottom_x, &mut config.left_y, &mut config.right_y,
+        &mut config.top_x,
+        &mut config.bottom_x,
+        &mut config.left_y,
+        &mut config.right_y,
     ] {
         axis.line_color = chrome;
         axis.label_style.color = chrome;
@@ -144,8 +136,8 @@ fn build_state(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>, format: wgpu:
     config.legend.visible = false;
 
     let mut chart = Chart::new(config)
-        .with_title("Constellation lab")
-        .with_x_title("t")
+        .with_title("Sparse constellation")
+        .with_x_title("8 source points")
         .with_y_title("value");
     chart.set_x_range(-0.03, 1.03);
     chart.set_y_range(0.0, 100.0);
@@ -154,7 +146,13 @@ fn build_state(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>, format: wgpu:
         .create_chart_view(&chart, placeholder)
         .map_err(|e| format!("create_chart_view failed: {e}"))?;
 
-    Ok(FiggyState { renderer, chart, view, series, styles })
+    Ok(FiggyState {
+        renderer,
+        chart,
+        view,
+        series,
+        styles,
+    })
 }
 
 /// Per-frame callback: carries the panel rect and the CURRENT slider values
@@ -162,10 +160,9 @@ fn build_state(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>, format: wgpu:
 struct LabCallback {
     panel_rect_px: Rect,
     opts: ConstellationOptions,
-    /// Planet series point_size — a PER-SERIES SSoT field
-    /// (DataScatterStyleConfig.point_size), not a style option; applying it
-    /// rebuilds that series' GPU style.
-    planet_size: f32,
+    /// Base ScatterLine point_size — a PER-SERIES SSoT field
+    /// (DataScatterStyleConfig.point_size), not a style option.
+    point_size: f32,
 }
 
 impl CallbackTrait for LabCallback {
@@ -185,38 +182,22 @@ impl CallbackTrait for LabCallback {
         // Slider → SSoT. Only on change, so the dirty bits don't spin.
         // `config_mut` flags BOTH dirty bits, but most constellation knobs
         // are GPU-side (they ride the transform rewrite) — re-rastering the
-        // CPU backdrop + glow every drag frame is what makes scrubbing
-        // stutter. Cancel the raster bit unless a CPU-raster parameter
-        // (glow / nebula / dust / seed) actually changed.
+        // No CPU backdrop/glow is tied to this style, so cancel the raster bit.
         let wanted = DrawStyle::Constellation(self.opts);
         if state.chart.config().draw_style != wanted {
-            let raster_changed = match state.chart.config().draw_style {
-                DrawStyle::Constellation(old) => {
-                    old.glow != self.opts.glow
-                        || old.nebula != self.opts.nebula
-                        || old.dust != self.opts.dust
-                        || old.seed != self.opts.seed
-                }
-                _ => true,
-            };
             state.chart.config_mut().draw_style = wanted;
-            if !raster_changed {
-                let _ = state.chart.consume_raster_dirty();
-            }
+            let _ = state.chart.consume_raster_dirty();
         }
 
-        // Planet size slider → series SSoT + GPU style rebuild on change.
-        if let Some(idx) = state.series.iter().position(|s| s.series_id == "planets") {
-            let cur = match &state.series[idx].render_type {
-                DataRenderType::ScatterLine { scatter, .. } => scatter.point_size,
-                _ => self.planet_size,
-            };
-            if (cur - self.planet_size).abs() > f32::EPSILON {
-                if let DataRenderType::ScatterLine { scatter, .. } =
-                    &mut state.series[idx].render_type
-                {
-                    scatter.point_size = self.planet_size;
+        for idx in 0..state.series.len() {
+            let mut changed = false;
+            if let DataRenderType::ScatterLine { scatter, .. } = &mut state.series[idx].render_type {
+                if (scatter.point_size - self.point_size).abs() > f32::EPSILON {
+                    scatter.point_size = self.point_size;
+                    changed = true;
                 }
+            }
+            if changed {
                 state.styles[idx] = state.renderer.create_style_for_series(&state.series[idx]);
             }
         }
@@ -225,7 +206,9 @@ impl CallbackTrait for LabCallback {
         if cur_rect != self.panel_rect_px {
             state.chart.config_mut().chart_area = ChartArea(self.panel_rect_px);
             if let Err(e) =
-                state.renderer.refresh_axis(&mut state.view, &state.chart, self.panel_rect_px)
+                state
+                    .renderer
+                    .refresh_axis(&mut state.view, &state.chart, self.panel_rect_px)
             {
                 eprintln!("[lab] refresh_axis failed: {e}");
                 return Vec::new();
@@ -233,7 +216,10 @@ impl CallbackTrait for LabCallback {
             let _ = state.chart.consume_data_dirty();
             let _ = state.chart.consume_raster_dirty();
         } else if state.chart.consume_raster_dirty() {
-            if let Err(e) = state.renderer.refresh_axis(&mut state.view, &state.chart, cur_rect) {
+            if let Err(e) = state
+                .renderer
+                .refresh_axis(&mut state.view, &state.chart, cur_rect)
+            {
                 eprintln!("[lab] refresh_axis failed: {e}");
                 return Vec::new();
             }
@@ -250,7 +236,9 @@ impl CallbackTrait for LabCallback {
         render_pass: &mut wgpu::RenderPass<'static>,
         callback_resources: &egui_wgpu::CallbackResources,
     ) {
-        let Some(state) = callback_resources.get::<Mutex<FiggyState>>() else { return };
+        let Some(state) = callback_resources.get::<Mutex<FiggyState>>() else {
+            return;
+        };
         let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
         let state = &mut *state;
         let (renderer, chart, view) = (&mut state.renderer, &state.chart, &state.view);
@@ -260,7 +248,11 @@ impl CallbackTrait for LabCallback {
             .zip(state.styles.iter())
             .map(|(cfg, style)| Series { config: cfg, style })
             .collect();
-        let items = [ChartDrawItem { view, chart_config: chart.config(), series: &series }];
+        let items = [ChartDrawItem {
+            view,
+            chart_config: chart.config(),
+            series: &series,
+        }];
         let target_size = (info.screen_size_px[0], info.screen_size_px[1]);
         if let Err(e) = renderer.paint(render_pass, target_size, &items) {
             eprintln!("[lab] paint failed: {e}");
@@ -272,7 +264,7 @@ struct LabApp {
     initialized: bool,
     failed: Option<String>,
     opts: ConstellationOptions,
-    planet_size: f32,
+    point_size: f32,
     render_state: Option<egui_wgpu::RenderState>,
 }
 
@@ -282,7 +274,7 @@ impl Default for LabApp {
             initialized: false,
             failed: None,
             opts: ConstellationOptions::default(),
-            planet_size: 13.0,
+            point_size: 6.0,
             render_state: None,
         }
     }
@@ -290,11 +282,16 @@ impl Default for LabApp {
 
 impl LabApp {
     fn cleanup(&mut self) {
-        let Some(render_state) = self.render_state.take() else { return };
+        let Some(render_state) = self.render_state.take() else {
+            return;
+        };
         {
             let mut guard = render_state.renderer.write();
             if let Some(state) = guard.callback_resources.remove::<Mutex<FiggyState>>() {
-                state.into_inner().unwrap_or_else(PoisonError::into_inner).shutdown();
+                state
+                    .into_inner()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .shutdown();
             }
         }
         let _ = render_state.device.poll(wgpu::PollType::Wait {
@@ -340,64 +337,57 @@ impl eframe::App for LabApp {
         }
         if let Some(msg) = &self.failed {
             let msg = msg.clone();
-            egui::CentralPanel::default().show(ctx, |ui| { ui.label(msg); });
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.label(msg);
+            });
             return;
         }
 
         let pixels_per_point = ctx.pixels_per_point();
 
-        egui::SidePanel::left("controls").min_width(250.0).show(ctx, |ui| {
-            ui.heading("Constellation");
-            ui.add_space(8.0);
-            // Sliders are GENERATED from the SSoT's parameter metadata —
-            // ranges live in exactly one place (model PARAM_SPECS), shared
-            // with the wasm `draw_style_param_specs` export.
-            let o = &mut self.opts;
-            for spec in ConstellationOptions::PARAM_SPECS {
-                if spec.integer {
-                    ui.horizontal(|ui| {
-                        ui.label(spec.key);
-                        ui.add(egui::DragValue::new(&mut o.seed).speed(1));
-                    });
-                    continue;
-                }
-                let field: &mut f32 = match spec.key {
-                    "star_density" => &mut o.star_density,
-                    "ribbon_width_px" => &mut o.ribbon_width_px,
-                    "ribbon_intensity" => &mut o.ribbon_intensity,
-                    "star_scale" => &mut o.star_scale,
-                    "spread_px" => &mut o.spread_px,
-                    "structure_scale" => &mut o.structure_scale,
-                    "faint_bias" => &mut o.faint_bias,
-                    "glow" => &mut o.glow,
-                    "nebula" => &mut o.nebula,
-                    "dust" => &mut o.dust,
-                    "planet_rim" => &mut o.planet_rim,
-                    other => {
-                        ui.label(format!("(unbound spec: {other})"));
+        egui::SidePanel::left("controls")
+            .min_width(250.0)
+            .show(ctx, |ui| {
+                ui.heading("Sparse constellation");
+                ui.add_space(8.0);
+                // Sliders are GENERATED from the SSoT's parameter metadata —
+                // ranges live in exactly one place (model PARAM_SPECS), shared
+                // with the wasm `draw_style_param_specs` export.
+                let o = &mut self.opts;
+                for spec in ConstellationOptions::PARAM_SPECS {
+                    if spec.integer {
+                        ui.label(format!("(unbound integer spec: {})", spec.key));
                         continue;
                     }
-                };
+                    let field: &mut f32 = match spec.key {
+                        "star_opacity" => &mut o.star_opacity,
+                        "line_opacity" => &mut o.line_opacity,
+                        other => {
+                            ui.label(format!("(unbound spec: {other})"));
+                            continue;
+                        }
+                    };
+                    ui.add(
+                        egui::Slider::new(field, spec.min as f32..=spec.max as f32).text(spec.key),
+                    );
+                }
+                ui.separator();
+                // Per-series SSoT, not a style option.
+                ui.label("series: ScatterLine");
                 ui.add(
-                    egui::Slider::new(field, spec.min as f32..=spec.max as f32).text(spec.key),
+                    egui::Slider::new(&mut self.point_size, 1.0..=18.0).text("point_size"),
                 );
-            }
-            ui.separator();
-            // Per-series SSoT, not a style option — included so the planet
-            // look is fully reviewable from one panel.
-            ui.label("series: planets");
-            ui.add(egui::Slider::new(&mut self.planet_size, 5.0..=44.0).text("point_size"));
-            ui.add_space(8.0);
-            if ui.button("Reset to defaults").clicked() {
-                *o = ConstellationOptions::default();
-                self.planet_size = 13.0;
-            }
-            ui.add_space(12.0);
-            ui.label(
-                "Every slider writes config.draw_style; star/ribbon\n\
+                ui.add_space(8.0);
+                if ui.button("Reset to defaults").clicked() {
+                    *o = ConstellationOptions::default();
+                    self.point_size = 6.0;
+                }
+                ui.add_space(12.0);
+                ui.label(
+                    "Every slider writes config.draw_style; star/line\n\
                  attributes re-derive in-shader the same frame.",
-            );
-        });
+                );
+            });
 
         egui::CentralPanel::default()
             .frame(egui::Frame::default().fill(SPACE_BG))
@@ -412,7 +402,11 @@ impl eframe::App for LabApp {
                 };
                 let cb = egui_wgpu::Callback::new_paint_callback(
                     rect,
-                    LabCallback { panel_rect_px, opts: self.opts, planet_size: self.planet_size },
+                    LabCallback {
+                        panel_rect_px,
+                        opts: self.opts,
+                        point_size: self.point_size,
+                    },
                 );
                 ui.painter().add(cb);
             });
@@ -430,12 +424,12 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 760.0])
-            .with_title("figgy constellation lab"),
+            .with_title("figgy sparse constellation lab"),
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
     eframe::run_native(
-        "figgy constellation lab",
+        "figgy sparse constellation lab",
         options,
         Box::new(|_cc| Ok(Box::new(LabApp::default()))),
     )
