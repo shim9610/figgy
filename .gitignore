@@ -1,4 +1,9 @@
 /target
-CLAUDE.MD
-/docs
-/.claude
+
+# Private local/LLM operator guidance. Keep these out of the public repo.
+/CLAUDE.md
+/CLAUDE.MD
+/AGENTS.md
+/docs/
+/.claude/
+/.codex/
