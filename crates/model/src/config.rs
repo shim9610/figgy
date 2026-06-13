@@ -128,7 +128,11 @@ pub struct SketchOptions {
 
 impl Default for SketchOptions {
     fn default() -> Self {
-        Self { amplitude_px: 1.5, wavelength_px: 60.0, seed: 0 }
+        Self {
+            amplitude_px: 1.5,
+            wavelength_px: 60.0,
+            seed: 0,
+        }
     }
 }
 
@@ -218,11 +222,23 @@ pub struct StyleParamSpec {
 }
 
 const fn spec(key: &'static str, min: f64, max: f64, default: f64) -> StyleParamSpec {
-    StyleParamSpec { key, min, max, default, integer: false }
+    StyleParamSpec {
+        key,
+        min,
+        max,
+        default,
+        integer: false,
+    }
 }
 
 const fn spec_int(key: &'static str, min: f64, max: f64, default: f64) -> StyleParamSpec {
-    StyleParamSpec { key, min, max, default, integer: true }
+    StyleParamSpec {
+        key,
+        min,
+        max,
+        default,
+        integer: true,
+    }
 }
 
 impl SketchOptions {
@@ -269,14 +285,22 @@ pub enum DrawStyle {
 
 impl DrawStyle {
     /// True for the default scientific path (used by serde skip).
-    pub fn is_precise(&self) -> bool { matches!(self, DrawStyle::Precise) }
+    pub fn is_precise(&self) -> bool {
+        matches!(self, DrawStyle::Precise)
+    }
     /// Sketch parameters when the sketch style is active.
     pub fn sketch(&self) -> Option<&SketchOptions> {
-        match self { DrawStyle::Sketch(s) => Some(s), _ => None }
+        match self {
+            DrawStyle::Sketch(s) => Some(s),
+            _ => None,
+        }
     }
     /// Constellation parameters when the constellation style is active.
     pub fn constellation(&self) -> Option<&ConstellationOptions> {
-        match self { DrawStyle::Constellation(c) => Some(c), _ => None }
+        match self {
+            DrawStyle::Constellation(c) => Some(c),
+            _ => None,
+        }
     }
 
     /// Every mode tag, in declaration order — the values valid as the JSON
@@ -313,7 +337,10 @@ pub struct Config {
     /// Chart-global render style. `Precise` (default, key absent in JSON) is
     /// identical to current rendering; every other variant is an opt-in
     /// stylized mode. No per-series mixing.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "DrawStyle::is_precise"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "DrawStyle::is_precise")
+    )]
     pub draw_style: DrawStyle,
 }
 
@@ -338,7 +365,12 @@ impl Config {
         self.chart_title.offset_x *= s;
         self.chart_title.offset_y *= s;
 
-        for axis in [&mut self.top_x, &mut self.bottom_x, &mut self.left_y, &mut self.right_y] {
+        for axis in [
+            &mut self.top_x,
+            &mut self.bottom_x,
+            &mut self.left_y,
+            &mut self.right_y,
+        ] {
             axis.label_style.font_size *= s;
             axis.label_style.label_offset_x *= s;
             axis.label_style.label_offset_y *= s;
@@ -404,8 +436,9 @@ fn scale_rich_text(rt: &mut RichText, s: f32) {
 // Legend types live in `crate::legend`; re-exported here so existing
 // `config::Legend…` paths keep working.
 pub use crate::legend::{
-    append_legend_entry, scatter_shape_char, series_symbol_segments, symbol_segments, Legend,
-    LegendCorner, LegendEntryKind,
+    Legend, LegendCorner, LegendEntryKind, append_legend_entry, append_legend_entry_rich,
+    legend_entry_count, remove_legend_entry, scatter_shape_char, series_symbol_segments,
+    set_legend_entry_label, symbol_segments, update_legend_symbols_preserving_text,
 };
 
 // `draw_style` is additive schema: configs serialized before the field
@@ -449,13 +482,17 @@ mod draw_style_serde_tests {
     #[test]
     fn partial_sketch_fields_fill_remaining_defaults() {
         let mut json = default_config_json();
-        json.as_object_mut()
-            .unwrap()
-            .insert("draw_style".into(), serde_json::json!({ "mode": "sketch", "seed": 7 }));
+        json.as_object_mut().unwrap().insert(
+            "draw_style".into(),
+            serde_json::json!({ "mode": "sketch", "seed": 7 }),
+        );
         let cfg: Config = serde_json::from_value(json).expect("partial sketch object parses");
         assert_eq!(
             cfg.draw_style,
-            DrawStyle::Sketch(SketchOptions { seed: 7, ..SketchOptions::default() })
+            DrawStyle::Sketch(SketchOptions {
+                seed: 7,
+                ..SketchOptions::default()
+            })
         );
     }
 
@@ -482,9 +519,10 @@ mod draw_style_serde_tests {
     #[test]
     fn explicit_precise_mode_deserializes_to_precise() {
         let mut json = default_config_json();
-        json.as_object_mut()
-            .unwrap()
-            .insert("draw_style".into(), serde_json::json!({ "mode": "precise" }));
+        json.as_object_mut().unwrap().insert(
+            "draw_style".into(),
+            serde_json::json!({ "mode": "precise" }),
+        );
         let cfg: Config = serde_json::from_value(json).expect("explicit precise parses");
         assert_eq!(cfg.draw_style, DrawStyle::Precise);
     }
@@ -526,9 +564,15 @@ mod draw_style_serde_tests {
                 assert!(
                     (d - s.default).abs() < 1e-6,
                     "{mode}.{}: spec default {} != Default impl {}",
-                    s.key, s.default, d
+                    s.key,
+                    s.default,
+                    d
                 );
-                assert!(s.min <= s.default && s.default <= s.max, "{mode}.{}: default outside range", s.key);
+                assert!(
+                    s.min <= s.default && s.default <= s.max,
+                    "{mode}.{}: default outside range",
+                    s.key
+                );
 
                 // Round-trip the key through the tagged enum to prove it is
                 // accepted (a typo'd key would be silently ignored). Integer
@@ -543,8 +587,16 @@ mod draw_style_serde_tests {
                 let parsed: super::DrawStyle =
                     serde_json::from_value(style).expect("spec key parses in draw_style");
                 let back = serde_json::to_value(parsed).expect("serialize");
-                let v = back.get(s.key).expect("key survives round trip").as_f64().unwrap();
-                assert!((v - s.max).abs() < 1e-4, "{mode}.{}: value did not stick", s.key);
+                let v = back
+                    .get(s.key)
+                    .expect("key survives round trip")
+                    .as_f64()
+                    .unwrap();
+                assert!(
+                    (v - s.max).abs() < 1e-4,
+                    "{mode}.{}: value did not stick",
+                    s.key
+                );
             }
         };
 
@@ -559,7 +611,10 @@ mod draw_style_serde_tests {
             serde_json::to_value(ConstellationOptions::default()).unwrap(),
         );
         assert_eq!(super::DrawStyle::param_specs_for_mode("nope"), None);
-        assert_eq!(super::DrawStyle::param_specs_for_mode("precise"), Some(&[][..]));
+        assert_eq!(
+            super::DrawStyle::param_specs_for_mode("precise"),
+            Some(&[][..])
+        );
     }
 
     #[test]
@@ -586,4 +641,3 @@ mod draw_style_serde_tests {
         assert_eq!(back.draw_style, cfg.draw_style);
     }
 }
-

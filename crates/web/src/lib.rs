@@ -28,11 +28,12 @@ mod web {
     use renderer::data_config::ErrorRef;
     use renderer::layout::{ChartArea, Rect};
     use renderer::line::LineStylePreset;
-    use renderer::text::rich_segments_from_text;
+    use renderer::text::{RichText, rich_segments_from_text};
     use renderer::{
-        errorbar_extent, Chart, ChartDrawItem, ChartStyle, ChartView, Color, CpuTextMeasure,
-        DataLineStyleConfig, DataRenderType, DefragPolicy, FitExtent, HitId, HitMap, Renderer,
+        Chart, ChartDrawItem, ChartStyle, ChartView, Color, CpuTextMeasure, DataLineStyleConfig,
+        DataRenderType, DefragPolicy, FitExtent, HitId, HitMap, Renderer,
         ResizeHandle as ModelResizeHandle, SelectionBox, Series, SeriesConfig, WindowedRenderer,
+        errorbar_extent,
     };
 
     const POOL_CAPACITY: u64 = 16 * 1024 * 1024;
@@ -225,6 +226,10 @@ mod web {
         styles: Vec<ChartStyle>,
         /// 1:1 with `series_cfgs` — legend label text (None = no legend row).
         labels: Vec<Option<String>>,
+        /// True while the legend follows the wrapper's auto row layout.
+        /// Direct `set_config` legend edits turn this off so later series
+        /// changes preserve user-authored text instead of deleting rows.
+        legend_auto_managed: bool,
         /// Registered columns: id → (len, content hash) for upsert skipping.
         columns: HashMap<String, (usize, u64)>,
         /// CPU mirror of every registered column (the same f32 values the
@@ -251,36 +256,113 @@ mod web {
     }
 
     impl FiggyChart {
-        /// Rebuild the legend from the series registry — the legend always
-        /// mirrors the registered series (one line per labeled series,
-        /// composed into the legend's one-document content with explicit
-        /// `'\n'` segments between entries). The symbol is derived from each
-        /// series' render type (`—`, `●`, …) as inline segments carrying the
-        /// series color override; labels keep `'\n'` line breaks and the
-        /// unicode sub/superscript mapping. The user's legend font,
-        /// font_size, and color survive the rebuild — only the segments are
-        /// recomposed.
-        fn rebuild_legend(&mut self) {
-            let entries: Vec<(SeriesConfig, String)> = self
+        fn label_text(&self, label: &str) -> RichText {
+            let content = &self.chart.config().legend.content;
+            RichText {
+                segments: rich_segments_from_text(label),
+                color: content.color,
+                font_size: content.font_size,
+                font: content.font.clone(),
+            }
+        }
+
+        fn rich_text_to_plain(rt: &RichText) -> String {
+            rt.segments.iter().map(|s| s.text).collect()
+        }
+
+        fn fallback_label(&self, i: usize) -> Option<RichText> {
+            self.series_cfgs
+                .get(i)
+                .and_then(|cfg| cfg.label.clone())
+                .or_else(|| self.labels.get(i)?.as_ref().map(|s| self.label_text(s)))
+        }
+
+        fn append_legend_entry_for(&mut self, i: usize) {
+            let Some(cfg) = self.series_cfgs.get(i).cloned() else {
+                return;
+            };
+            let Some(label) = self.fallback_label(i) else {
+                return;
+            };
+            self.chart.with_decoration_change(|c| {
+                renderer::config::append_legend_entry_rich(
+                    &mut c.legend.content,
+                    renderer::config::series_symbol_segments(&cfg),
+                    label.segments,
+                );
+                c.legend.visible = true;
+            });
+        }
+
+        fn set_legend_entry_for(&mut self, i: usize, label: RichText) {
+            let Some(cfg) = self.series_cfgs.get(i).cloned() else {
+                return;
+            };
+            self.chart.with_decoration_change(|c| {
+                renderer::config::set_legend_entry_label(
+                    &mut c.legend.content,
+                    i,
+                    renderer::config::series_symbol_segments(&cfg),
+                    label.segments,
+                );
+                c.legend.visible = true;
+            });
+        }
+
+        fn remove_legend_entry_for(&mut self, i: usize) {
+            self.chart.with_decoration_change(|c| {
+                if renderer::config::remove_legend_entry(&mut c.legend.content, i)
+                    && c.legend.content.segments.is_empty()
+                {
+                    c.legend.visible = false;
+                }
+            });
+        }
+
+        fn sync_legend_symbols(&mut self, append_missing: bool) {
+            let existing =
+                renderer::config::legend_entry_count(&self.chart.config().legend.content);
+            self.chart.with_decoration_change(|c| {
+                renderer::config::update_legend_symbols_preserving_text(
+                    &mut c.legend.content,
+                    &self.series_cfgs,
+                );
+            });
+            if append_missing {
+                if existing > self.series_cfgs.len() {
+                    for i in (self.series_cfgs.len()..existing).rev() {
+                        self.remove_legend_entry_for(i);
+                    }
+                }
+                for i in existing..self.series_cfgs.len() {
+                    self.append_legend_entry_for(i);
+                }
+            }
+        }
+
+        /// Explicit reset: rebuild every auto legend row from SeriesConfig.label
+        /// first, falling back to the wrapper's legacy string labels.
+        fn rebuild_legend_from_series_labels(&mut self) {
+            let entries: Vec<(SeriesConfig, RichText)> = self
                 .series_cfgs
                 .iter()
-                .zip(self.labels.iter())
-                .filter_map(|(cfg, label)| Some((cfg.clone(), label.clone()?)))
+                .cloned()
+                .enumerate()
+                .filter_map(|(i, cfg)| Some((cfg, self.fallback_label(i)?)))
                 .collect();
 
             self.chart.with_decoration_change(|c| {
-                let mut content = c.legend.content.clone();
-                content.segments.clear();
-                for (cfg, label) in &entries {
-                    renderer::config::append_legend_entry(
-                        &mut content,
-                        renderer::config::series_symbol_segments(cfg),
-                        label,
+                c.legend.content.segments.clear();
+                for (cfg, label) in entries {
+                    renderer::config::append_legend_entry_rich(
+                        &mut c.legend.content,
+                        renderer::config::series_symbol_segments(&cfg),
+                        label.segments,
                     );
                 }
-                c.legend.visible = !content.segments.is_empty();
-                c.legend.content = content;
+                c.legend.visible = !c.legend.content.segments.is_empty();
             });
+            self.legend_auto_managed = true;
         }
 
         fn rebuild_styles(&mut self) {
@@ -397,10 +479,23 @@ mod web {
             renderer.set_defrag_policy(DefragPolicy::OnAllocFailure);
 
             let mut config = renderer::default::default_config();
-            config.chart_area = ChartArea(Rect { x: 0, y: 0, width: w, height: h });
+            config.chart_area = ChartArea(Rect {
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+            });
             let chart = Chart::new(config);
             let view = renderer
-                .create_chart_view(&chart, Rect { x: 0, y: 0, width: w, height: h })
+                .create_chart_view(
+                    &chart,
+                    Rect {
+                        x: 0,
+                        y: 0,
+                        width: w,
+                        height: h,
+                    },
+                )
                 .map_err(js_err)?;
 
             Ok(FiggyChart {
@@ -410,6 +505,7 @@ mod web {
                 series_cfgs: Vec::new(),
                 styles: Vec::new(),
                 labels: Vec::new(),
+                legend_auto_managed: true,
                 columns: HashMap::new(),
                 col_data: HashMap::new(),
                 err_fit: HashMap::new(),
@@ -462,10 +558,18 @@ mod web {
 
             let (mut min, mut max) = (f32::INFINITY, f32::NEG_INFINITY);
             for &v in data {
-                if v < min { min = v; }
-                if v > max { max = v; }
+                if v < min {
+                    min = v;
+                }
+                if v > max {
+                    max = v;
+                }
             }
-            let column = Column { data: data.to_vec(), min, max };
+            let column = Column {
+                data: data.to_vec(),
+                min,
+                max,
+            };
             self.renderer.add_column(id, &column).map_err(js_err)?;
             // The renderer keeps no CPU copies of pool data; this Vec was
             // headed for the drop. Keep it as the fit mirror instead —
@@ -492,13 +596,24 @@ mod web {
                 .map(|cfg| !referenced_columns(cfg).contains(&id))
                 .collect();
             if keep.iter().any(|k| !k) {
+                let removed: Vec<usize> = keep
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, keep)| (!keep).then_some(i))
+                    .collect();
                 let mut it = keep.iter();
                 self.series_cfgs.retain(|_| *it.next().unwrap());
                 let mut it = keep.iter();
                 self.styles.retain(|_| *it.next().unwrap());
                 let mut it = keep.iter();
                 self.labels.retain(|_| *it.next().unwrap());
-                self.rebuild_legend();
+                if self.legend_auto_managed {
+                    for i in removed.into_iter().rev() {
+                        self.remove_legend_entry_for(i);
+                    }
+                } else {
+                    self.sync_legend_symbols(false);
+                }
             }
             true
         }
@@ -518,7 +633,10 @@ mod web {
             line_width: f32,
             label: &str,
         ) -> Result<(), JsValue> {
-            let existing = self.series_cfgs.iter().position(|c| c.series_id == series_id);
+            let existing = self
+                .series_cfgs
+                .iter()
+                .position(|c| c.series_id == series_id);
             let color = match existing {
                 Some(i) => match &self.series_cfgs[i].render_type {
                     DataRenderType::Line { line } => line.line_color,
@@ -530,9 +648,21 @@ mod web {
                     c
                 }
             };
+            let label_changed = !label.is_empty();
+            let rich_label = if label_changed {
+                Some(self.label_text(label))
+            } else {
+                existing.and_then(|i| self.series_cfgs[i].label.clone())
+            };
+            let plain_label = if label_changed {
+                Some(label.to_string())
+            } else {
+                existing.and_then(|i| self.labels[i].clone())
+            };
+
             let cfg = SeriesConfig {
                 series_id: series_id.into(),
-                label: None,
+                label: rich_label.clone(),
                 x_column: x_column.into(),
                 y_column: y_column.into(),
                 render_type: DataRenderType::Line {
@@ -545,21 +675,29 @@ mod web {
             };
             self.ensure_columns_exist(&cfg)?;
             let style = self.renderer.create_style_for_series(&cfg);
-            let label = (!label.is_empty()).then(|| label.to_string());
 
             match existing {
                 Some(i) => {
                     self.series_cfgs[i] = cfg;
                     self.styles[i] = style;
-                    self.labels[i] = label;
+                    self.labels[i] = plain_label;
+                    if label_changed
+                        && let Some(label) = rich_label
+                    {
+                        self.set_legend_entry_for(i, label);
+                    } else {
+                        self.sync_legend_symbols(false);
+                    }
                 }
                 None => {
                     self.series_cfgs.push(cfg);
                     self.styles.push(style);
-                    self.labels.push(label);
+                    self.labels.push(plain_label);
+                    if label_changed && rich_label.is_some() {
+                        self.append_legend_entry_for(self.series_cfgs.len() - 1);
+                    }
                 }
             }
-            self.rebuild_legend();
             Ok(())
         }
 
@@ -568,19 +706,33 @@ mod web {
         /// Empty string removes the legend row. Returns `true` when the
         /// series exists.
         pub fn set_series_label(&mut self, series_id: &str, label: &str) -> bool {
-            let Some(i) = self.series_cfgs.iter().position(|c| c.series_id == series_id)
+            let Some(i) = self
+                .series_cfgs
+                .iter()
+                .position(|c| c.series_id == series_id)
             else {
                 return false;
             };
-            self.labels[i] = (!label.is_empty()).then(|| label.to_string());
-            self.rebuild_legend();
+            if label.is_empty() {
+                self.labels[i] = None;
+                self.series_cfgs[i].label = None;
+                self.remove_legend_entry_for(i);
+            } else {
+                let label = self.label_text(label);
+                self.labels[i] = Some(Self::rich_text_to_plain(&label));
+                self.series_cfgs[i].label = Some(label.clone());
+                self.set_legend_entry_for(i, label);
+            }
             true
         }
 
         /// Unregister a series (and its legend row). Columns stay registered.
         /// Returns `true` when the series existed.
         pub fn remove_series(&mut self, series_id: &str) -> bool {
-            let Some(i) = self.series_cfgs.iter().position(|c| c.series_id == series_id)
+            let Some(i) = self
+                .series_cfgs
+                .iter()
+                .position(|c| c.series_id == series_id)
             else {
                 return false;
             };
@@ -588,17 +740,25 @@ mod web {
             self.styles.remove(i);
             self.labels.remove(i);
             self.err_fit.remove(series_id);
-            self.rebuild_legend();
+            if self.legend_auto_managed {
+                self.remove_legend_entry_for(i);
+            } else {
+                self.sync_legend_symbols(false);
+            }
             true
         }
 
         /// Fit the x axis to a column's range with proportional padding.
         pub fn auto_fit_x(&mut self, column: &str, padding: f64) -> Result<(), JsValue> {
-            self.chart.auto_fit_x(self.renderer.pool(), column, padding).map_err(js_err)
+            self.chart
+                .auto_fit_x(self.renderer.pool(), column, padding)
+                .map_err(js_err)
         }
 
         pub fn auto_fit_y(&mut self, column: &str, padding: f64) -> Result<(), JsValue> {
-            self.chart.auto_fit_y(self.renderer.pool(), column, padding).map_err(js_err)
+            self.chart
+                .auto_fit_y(self.renderer.pool(), column, padding)
+                .map_err(js_err)
         }
 
         /// Fit BOTH axes to the union of every registered series, leaving a
@@ -623,12 +783,8 @@ mod web {
                 let pool = self.renderer.pool();
                 x_ext.union(&Chart::slot_extent(pool, &cfg.x_column).map_err(js_err)?);
                 y_ext.union(&Chart::slot_extent(pool, &cfg.y_column).map_err(js_err)?);
-                let (ex, ey) = Self::series_err_extents(
-                    cfg,
-                    &self.columns,
-                    &self.col_data,
-                    &mut self.err_fit,
-                );
+                let (ex, ey) =
+                    Self::series_err_extents(cfg, &self.columns, &self.col_data, &mut self.err_fit);
                 if let Some(e) = ex {
                     x_ext.union(&e);
                 }
@@ -666,7 +822,8 @@ mod web {
         /// Apply an axis frame preset to all four axes (decoration-only).
         pub fn apply_axis_preset(&mut self, preset: AxisPreset) {
             let p: renderer::AxisPreset = preset.into();
-            self.chart.with_decoration_change(|c| c.apply_axis_preset(p));
+            self.chart
+                .with_decoration_change(|c| c.apply_axis_preset(p));
         }
 
         /// Switch the series color rotation: recolors every series in order,
@@ -678,7 +835,7 @@ mod web {
             }
             self.color_seq = self.series_cfgs.len();
             self.rebuild_styles();
-            self.rebuild_legend();
+            self.sync_legend_symbols(false);
         }
 
         // ---- SSoT I/O ----
@@ -701,7 +858,12 @@ mod web {
         /// JS: `chart.set_config(JSON.stringify(cfg));`
         pub fn set_config(&mut self, json: &str) -> Result<(), JsValue> {
             let new_cfg: renderer::Config = serde_json::from_str(json).map_err(js_err)?;
+            let legend_content_changed =
+                self.chart.config().legend.content != new_cfg.legend.content;
             *self.chart.config_mut() = new_cfg;
+            if legend_content_changed {
+                self.legend_auto_managed = false;
+            }
             Ok(())
         }
 
@@ -721,18 +883,29 @@ mod web {
             self.labels = new_series
                 .iter()
                 .map(|cfg| {
-                    self.series_cfgs
-                        .iter()
-                        .position(|old| old.series_id == cfg.series_id)
-                        .and_then(|i| self.labels[i].clone())
+                    cfg.label
+                        .as_ref()
+                        .map(Self::rich_text_to_plain)
+                        .or_else(|| {
+                            self.series_cfgs
+                                .iter()
+                                .position(|old| old.series_id == cfg.series_id)
+                                .and_then(|i| self.labels[i].clone())
+                        })
                 })
                 .collect();
             self.series_cfgs = new_series;
             self.color_seq = self.series_cfgs.len().max(self.color_seq);
             self.ensure_zero_column()?;
             self.rebuild_styles();
-            self.rebuild_legend();
+            self.sync_legend_symbols(self.legend_auto_managed);
             Ok(())
+        }
+
+        /// Explicitly rebuild the auto legend from `SeriesConfig.label`.
+        /// Legacy string labels are used only when a series has no rich label.
+        pub fn reset_legend_from_series_labels(&mut self) {
+            self.rebuild_legend_from_series_labels();
         }
 
         // ---- pointer interaction (coordinates in canvas pixels) ----
@@ -745,7 +918,12 @@ mod web {
         /// re-derive box positions for hover cursors / context UI.
         pub fn hit_test(&self, x: f32, y: f32) -> Option<String> {
             self.hitmap
-                .hit_test(self.chart.config(), &CpuTextMeasure::for_style(&self.chart.config().draw_style), x, y)
+                .hit_test(
+                    self.chart.config(),
+                    &CpuTextMeasure::for_style(&self.chart.config().draw_style),
+                    x,
+                    y,
+                )
                 .and_then(|id| self.hitmap.get(id))
                 .map(|el| el.element_id())
         }
@@ -756,8 +934,12 @@ mod web {
             // Resize handles on the selected element win over hit-testing.
             if let Some(id) = self.selected
                 && let Some(rz) = self.hitmap.get(id).and_then(|el| el.as_resizable())
-                && let Some(handle) =
-                    rz.hit_resize_handle(self.chart.config(), &CpuTextMeasure::for_style(&self.chart.config().draw_style), x, y)
+                && let Some(handle) = rz.hit_resize_handle(
+                    self.chart.config(),
+                    &CpuTextMeasure::for_style(&self.chart.config().draw_style),
+                    x,
+                    y,
+                )
             {
                 self.resizing = Some(handle);
                 self.dragging = false;
@@ -765,9 +947,16 @@ mod web {
             }
             self.resizing = None;
 
-            let new_sel = self.hitmap.hit_test(self.chart.config(), &CpuTextMeasure::for_style(&self.chart.config().draw_style), x, y);
+            let new_sel = self.hitmap.hit_test(
+                self.chart.config(),
+                &CpuTextMeasure::for_style(&self.chart.config().draw_style),
+                x,
+                y,
+            );
             self.dragging = new_sel.is_some_and(|id| {
-                self.hitmap.get(id).is_some_and(|el| el.as_draggable().is_some())
+                self.hitmap
+                    .get(id)
+                    .is_some_and(|el| el.as_draggable().is_some())
             });
             if new_sel != self.selected {
                 self.selected = new_sel;
@@ -821,7 +1010,11 @@ mod web {
                 let sel_boxes: Vec<SelectionBox> = self
                     .selected
                     .and_then(|id| {
-                        self.hitmap.selection_box(id, self.chart.config(), &CpuTextMeasure::for_style(&self.chart.config().draw_style))
+                        self.hitmap.selection_box(
+                            id,
+                            self.chart.config(),
+                            &CpuTextMeasure::for_style(&self.chart.config().draw_style),
+                        )
                     })
                     .into_iter()
                     .collect();
@@ -856,8 +1049,12 @@ mod web {
         pub fn resize(&mut self, width: u32, height: u32) -> Result<(), JsValue> {
             let (w, h) = (width.max(1), height.max(1));
             self.renderer.resize(w, h).map_err(js_err)?;
-            self.chart.config_mut().chart_area =
-                ChartArea(Rect { x: 0, y: 0, width: w, height: h });
+            self.chart.config_mut().chart_area = ChartArea(Rect {
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+            });
             Ok(())
         }
 

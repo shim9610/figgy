@@ -331,7 +331,7 @@ cd crates/web && python -m http.server 8137   # wasm은 file:// 불가
 | 스타일 파라미터 | *(free 함수)* `draw_style_modes()` → 모드 태그 JSON 배열 · `draw_style_param_specs(mode)` → `{key, min, max, default, integer}` JSON 배열. **슬라이더 범위의 단일 진실 원본** — min/max는 권장 범위(SSoT는 그 밖의 값도 수용, 렌더러는 안전 가드만 적용), default는 model의 `Default` 구현과 테스트로 고정. 호스트는 이걸로 스타일 UI를 자동 생성하고 범위를 하드코딩하지 말 것 |
 | 컬럼 등록/해제 | `set_column_f32(id, Float32Array)` *(업서트)* · `remove_column(id)` |
 | 시리즈 등록/해제 | `add_line_series(id, x, y, width, label)` *(업서트)* · `remove_series(id)` |
-| 범례 | `set_series_label(id, label)` — `'\n'` 줄바꿈·유니코드 첨자 지원, 빈 문자열 = 행 제거 (시리즈 기반 자동 구성). 자유 편집은 SSoT `legend.content` 하나의 리치 문서로: 줄바꿈은 `"\n"` 세그먼트, `"\t"` 는 표형 열 구분자, 심볼은 **고정폭 필드 세그먼트**(`field_em` — 어떤 형태든 정확히 2.0 em; 선 마크는 `rule:true` 로 필드를 채우는 그려진 선) + 색 오버라이드라 위치·줄배치·폭이 전부 명시적. `content.font` / `content.font_size` / 세그먼트별 오버라이드는 그리기 시점에 그대로 적용 |
+| 범례 | `set_series_label(id, label)` — `'\n'` 줄바꿈·유니코드 첨자 지원, 빈 문자열 = 해당 행 제거. `set_series` / `apply_color_cycle` 은 자유 편집된 텍스트를 덮지 않고 인식 가능한 자동 엔트리의 심볼만 갱신한다. 전체 재작성은 `reset_legend_from_series_labels()` 를 명시 호출할 때만 수행한다. 자유 편집은 SSoT `legend.content` 하나의 리치 문서로: 줄바꿈은 `"\n"` 세그먼트, `"\t"` 는 표형 열 구분자, 심볼은 **고정폭 필드 세그먼트**(`field_em` — 어떤 형태든 정확히 2.0 em; 선 마크는 `rule:true`, 점선은 `rule_dash` em 패턴) + 색 오버라이드라 위치·줄배치·폭이 전부 명시적. `content.font` / `content.font_size` / 세그먼트별 오버라이드는 그리기 시점에 그대로 적용 |
 | 히트테스트 | `hit_test(x, y)` → 요소 id 문자열 또는 `null` (`"data_area"` · `"axis_bottom"` · `"tick_labels_left"` · `"axis_title_left"` · `"legend"` · `"chart_title"` …). 선택 상태 무변경 — 렌더러 자체 레이아웃이 답하므로 호스트가 박스 위치를 복제할 필요 없음 |
 | 범위 | `auto_fit_all(pad)` — **등록된 전 시리즈** x/y 합집합에 4방 균일 비율 마진(`0.0` = 딱 맞춤, `0.05` = 5%). **에러바 시리즈는 막대 전체 범위(`값−err_lo … 값+err_hi`, GPU와 동일 산술)가 합집합에 포함**되어 캡이 잘리지 않음 — 쌍별 패스는 (시리즈, 데이터) 조합당 1회 계산·캐싱. 범위 끝 라운딩 없음 — 틱은 범위 안 nice 값에 자동으로 떨어지므로 호스트가 범위를 재가공하지 말 것 · `auto_fit_x/y(col, pad)` (단일 컬럼, 에러바 미반영) · `load_demo()` *(멱등)* |
 | SSoT I/O | `get_config()` / `set_config(json)` · `get_series()` / `set_series(json)` |
@@ -356,14 +356,17 @@ cd crates/web && python -m http.server 8137   # wasm은 file:// 불가
   errorbar 변종(`ScatterErrorbarY` 등)이 `set_series`로 들어오면, 미사용
   차원에 바인딩되는 내부 `"__zero"` 컬럼을 래퍼가 알아서 등록·확장한다.
   호스트가 이 컨벤션을 알 필요 없음.
-- **`remove_column(id)`** 은 그 컬럼을 참조하는 시리즈(및 범례 행)까지
-  자동으로 내려서, 해제된 데이터를 가리키는 프레임이 존재할 수 없다.
+- **`remove_column(id)`** 은 그 컬럼을 참조하는 시리즈까지 자동으로 내려서,
+  해제된 데이터를 가리키는 프레임이 존재할 수 없다. 자동 관리 범례에서는
+  대응 행도 제거하고, `set_config` 로 자유 편집된 범례에서는 사용자 텍스트를
+  보존한 채 남은 인식 가능 심볼만 갱신한다.
 - **defrag 자동**: 제거/교체로 생긴 풀 구멍은 다음 `frame()` 시작에서
   1회로 통합 압축되고(GPU 내부 복사), 연속 교체 중 일시 단편화는
   `OnAllocFailure` 정책이 흡수한다.
 - **`add_line_series`도 series_id 업서트** — 기존 id는 제자리 교체(색
-  유지), 새 id는 색 로테이션의 다음 색. 범례는 시리즈 레지스트리를
-  항상 따라간다.
+  유지), 새 id는 색 로테이션의 다음 색. 빈 label 로 기존 id를 업서트해도
+  기존 범례 텍스트는 제거되지 않는다. 비어 있지 않은 label 은 해당 행의
+  텍스트만 갱신한다.
 - **인스턴스 해제 = `free()`** (wasm-bindgen 자동 생성): drop 체인이 풀
   버퍼·파이프라인·텍스처·surface까지 내린다. GC FinalizationRegistry
   폴백이 있지만 비결정적이므로 **SPA 언마운트 시 `free()` 명시 호출**이

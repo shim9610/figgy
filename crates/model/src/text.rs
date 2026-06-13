@@ -24,23 +24,42 @@ pub struct RichSegment {
     pub subscript: bool,
     pub greek: bool,
     /// Per-segment ink color. `None` inherits `RichText.color`.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub color: Option<Color>,
     /// Per-segment base font size. `None` inherits `RichText.font_size`;
     /// the sub/superscript ratio applies on top of the effective size.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub font_size: Option<f32>,
     /// Fixed advance in em (× effective font size). The glyph ink is drawn
     /// horizontally centered inside the field; the advance itself ignores
     /// glyph metrics entirely. This is what gives legend marks an exact,
     /// font-size-relative width no glyph combination could guarantee.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub field_em: Option<f32>,
     /// Render as a horizontal rule (drawn bar) spanning the full advance
     /// instead of a glyph — the line part of legend marks. `text` stays as
     /// a fallback character for consumers that ignore the flag.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "std::ops::Not::not"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "std::ops::Not::not")
+    )]
     pub rule: bool,
+    /// Optional dash pattern for a rule segment, in em units. Values are
+    /// multiplied by the effective segment font size at draw time.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub rule_dash: Option<Vec<f32>>,
 }
 
 impl RichSegment {
@@ -59,6 +78,7 @@ impl RichSegment {
             font_size: None,
             field_em: None,
             rule: false,
+            rule_dash: None,
         }
     }
 
@@ -71,6 +91,15 @@ impl RichSegment {
             rule: true,
             color,
             ..Self::plain('—')
+        }
+    }
+
+    /// A drawn horizontal rule with an optional dash pattern. Dash entries are
+    /// expressed in em units so the pattern follows the legend font size.
+    pub fn dashed_rule(width_em: f32, color: Option<Color>, dash_em: Vec<f32>) -> Self {
+        Self {
+            rule_dash: (!dash_em.is_empty()).then_some(dash_em),
+            ..Self::rule(width_em, color)
         }
     }
 
@@ -173,17 +202,57 @@ fn rich_segment_from_char(c: char) -> RichSegment {
 /// encoding. Other input (digits, whitespace, already-Greek, etc.) passes through unchanged.
 pub fn greek_char(c: char) -> char {
     match c {
-        'a' => 'α', 'b' => 'β', 'c' => 'χ', 'd' => 'δ', 'e' => 'ε',
-        'f' => 'φ', 'g' => 'γ', 'h' => 'η', 'i' => 'ι', 'j' => 'ϕ',
-        'k' => 'κ', 'l' => 'λ', 'm' => 'μ', 'n' => 'ν', 'o' => 'ο',
-        'p' => 'π', 'q' => 'θ', 'r' => 'ρ', 's' => 'σ', 't' => 'τ',
-        'u' => 'υ', 'v' => 'ϖ', 'w' => 'ω', 'x' => 'ξ', 'y' => 'ψ',
+        'a' => 'α',
+        'b' => 'β',
+        'c' => 'χ',
+        'd' => 'δ',
+        'e' => 'ε',
+        'f' => 'φ',
+        'g' => 'γ',
+        'h' => 'η',
+        'i' => 'ι',
+        'j' => 'ϕ',
+        'k' => 'κ',
+        'l' => 'λ',
+        'm' => 'μ',
+        'n' => 'ν',
+        'o' => 'ο',
+        'p' => 'π',
+        'q' => 'θ',
+        'r' => 'ρ',
+        's' => 'σ',
+        't' => 'τ',
+        'u' => 'υ',
+        'v' => 'ϖ',
+        'w' => 'ω',
+        'x' => 'ξ',
+        'y' => 'ψ',
         'z' => 'ζ',
-        'A' => 'Α', 'B' => 'Β', 'C' => 'Χ', 'D' => 'Δ', 'E' => 'Ε',
-        'F' => 'Φ', 'G' => 'Γ', 'H' => 'Η', 'I' => 'Ι', 'J' => 'ϑ',
-        'K' => 'Κ', 'L' => 'Λ', 'M' => 'Μ', 'N' => 'Ν', 'O' => 'Ο',
-        'P' => 'Π', 'Q' => 'Θ', 'R' => 'Ρ', 'S' => 'Σ', 'T' => 'Τ',
-        'U' => 'Υ', 'V' => 'ς', 'W' => 'Ω', 'X' => 'Ξ', 'Y' => 'Ψ',
+        'A' => 'Α',
+        'B' => 'Β',
+        'C' => 'Χ',
+        'D' => 'Δ',
+        'E' => 'Ε',
+        'F' => 'Φ',
+        'G' => 'Γ',
+        'H' => 'Η',
+        'I' => 'Ι',
+        'J' => 'ϑ',
+        'K' => 'Κ',
+        'L' => 'Λ',
+        'M' => 'Μ',
+        'N' => 'Ν',
+        'O' => 'Ο',
+        'P' => 'Π',
+        'Q' => 'Θ',
+        'R' => 'Ρ',
+        'S' => 'Σ',
+        'T' => 'Τ',
+        'U' => 'Υ',
+        'V' => 'ς',
+        'W' => 'Ω',
+        'X' => 'Ξ',
+        'Y' => 'Ψ',
         'Z' => 'Ζ',
         other => other,
     }
@@ -196,11 +265,31 @@ mod tests {
     #[test]
     fn lowercase_full_table() {
         let pairs: &[(char, char)] = &[
-            ('a', 'α'), ('b', 'β'), ('c', 'χ'), ('d', 'δ'), ('e', 'ε'),
-            ('f', 'φ'), ('g', 'γ'), ('h', 'η'), ('i', 'ι'), ('j', 'ϕ'),
-            ('k', 'κ'), ('l', 'λ'), ('m', 'μ'), ('n', 'ν'), ('o', 'ο'),
-            ('p', 'π'), ('q', 'θ'), ('r', 'ρ'), ('s', 'σ'), ('t', 'τ'),
-            ('u', 'υ'), ('v', 'ϖ'), ('w', 'ω'), ('x', 'ξ'), ('y', 'ψ'),
+            ('a', 'α'),
+            ('b', 'β'),
+            ('c', 'χ'),
+            ('d', 'δ'),
+            ('e', 'ε'),
+            ('f', 'φ'),
+            ('g', 'γ'),
+            ('h', 'η'),
+            ('i', 'ι'),
+            ('j', 'ϕ'),
+            ('k', 'κ'),
+            ('l', 'λ'),
+            ('m', 'μ'),
+            ('n', 'ν'),
+            ('o', 'ο'),
+            ('p', 'π'),
+            ('q', 'θ'),
+            ('r', 'ρ'),
+            ('s', 'σ'),
+            ('t', 'τ'),
+            ('u', 'υ'),
+            ('v', 'ϖ'),
+            ('w', 'ω'),
+            ('x', 'ξ'),
+            ('y', 'ψ'),
             ('z', 'ζ'),
         ];
         for &(l, g) in pairs {
@@ -211,11 +300,31 @@ mod tests {
     #[test]
     fn uppercase_full_table() {
         let pairs: &[(char, char)] = &[
-            ('A', 'Α'), ('B', 'Β'), ('C', 'Χ'), ('D', 'Δ'), ('E', 'Ε'),
-            ('F', 'Φ'), ('G', 'Γ'), ('H', 'Η'), ('I', 'Ι'), ('J', 'ϑ'),
-            ('K', 'Κ'), ('L', 'Λ'), ('M', 'Μ'), ('N', 'Ν'), ('O', 'Ο'),
-            ('P', 'Π'), ('Q', 'Θ'), ('R', 'Ρ'), ('S', 'Σ'), ('T', 'Τ'),
-            ('U', 'Υ'), ('V', 'ς'), ('W', 'Ω'), ('X', 'Ξ'), ('Y', 'Ψ'),
+            ('A', 'Α'),
+            ('B', 'Β'),
+            ('C', 'Χ'),
+            ('D', 'Δ'),
+            ('E', 'Ε'),
+            ('F', 'Φ'),
+            ('G', 'Γ'),
+            ('H', 'Η'),
+            ('I', 'Ι'),
+            ('J', 'ϑ'),
+            ('K', 'Κ'),
+            ('L', 'Λ'),
+            ('M', 'Μ'),
+            ('N', 'Ν'),
+            ('O', 'Ο'),
+            ('P', 'Π'),
+            ('Q', 'Θ'),
+            ('R', 'Ρ'),
+            ('S', 'Σ'),
+            ('T', 'Τ'),
+            ('U', 'Υ'),
+            ('V', 'ς'),
+            ('W', 'Ω'),
+            ('X', 'Ξ'),
+            ('Y', 'Ψ'),
             ('Z', 'Ζ'),
         ];
         for &(l, g) in pairs {
@@ -240,7 +349,13 @@ mod tests {
         assert_eq!(seg, RichSegment::plain('a'));
 
         let json = serde_json::to_string(&seg).unwrap();
-        assert!(!json.contains("color"), "None color must be skipped: {json}");
-        assert!(!json.contains("font_size"), "None font_size must be skipped: {json}");
+        assert!(
+            !json.contains("color"),
+            "None color must be skipped: {json}"
+        );
+        assert!(
+            !json.contains("font_size"),
+            "None font_size must be skipped: {json}"
+        );
     }
 }

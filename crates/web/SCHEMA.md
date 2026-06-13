@@ -40,10 +40,13 @@ cargo test -p model --features serde
 - **고정폭 심볼 필드**: 세그먼트의 `field_em` (선택 키) 은 글리프 폭과
   무관하게 advance 를 `field_em × 폰트크기` 로 고정하고 잉크를 필드
   중앙에 둔다. `rule: true` (선택 키) 는 글리프 대신 필드 전체를 채우는
-  **그려진 수평선**이다. 범례 심볼은 이 조합으로 어떤 형태든 정확히
-  같은 길이(2.0 em)가 된다: 선 = `{"text":"—","rule":true,"field_em":2.0,
-  "color":{...}}`, 점 = `{"text":"●","field_em":2.0,...}`, 선+점 =
-  rule(0.65) + 글리프(0.7) + rule(0.65).
+  **그려진 수평선**이다. `rule_dash` (선택 키) 는 rule 전용 dash/gap
+  패턴이며 em 단위라 폰트 크기와 함께 스케일된다. 범례 심볼은 이
+  조합으로 어떤 형태든 정확히 같은 길이(2.0 em)가 된다: 선 =
+  `{"text":"—","rule":true,"field_em":2.0,"color":{...}}`, 점 =
+  `{"text":"●","field_em":2.0,...}`, 점선 =
+  `{"text":"—","rule":true,"field_em":2.0,"rule_dash":[0.571,0.286],...}`,
+  선+점 = rule(0.65) + 글리프(0.7) + rule(0.65).
 - **색은 0..1 float RGBA**: `{ "r": 0.8, "g": 0.1, "b": 0.1, "a": 1.0 }`.
 - `label: null` 가능 (`Option`), 세그먼트 오버라이드 키와 Config의
   `draw_style` 키는 생략 가능 (`precise` = 키 자체가 생략, 아래
@@ -75,13 +78,17 @@ cargo test -p model --features serde
 - `inverted`는 예약 필드 (미구현).
 - `chart_area`는 캔버스 픽셀 기준 패널 사각형 — 보통 `resize()`가 관리하므로
   직접 만지지 말 것.
-- `set_series` / `set_series_label` / `apply_color_cycle` 은 범례를 시리즈
-  레지스트리에서 **자동 재구성**한다 — 심볼 색은 시리즈 색을 따라온다.
-  단 이 재구성은 `legend.content` 의 **세그먼트를 통째로 다시 쓰므로**,
-  `set_config` 로 직접 편집한 content (한 줄 배치, 중간 심볼 등) 는 이후의
-  시리즈 변경에 덮일 수 있다. 직접 편집 모드로 쓰려면 시리즈 변경 후
-  content 를 다시 적용할 것. (`content.font` / `font_size` / `color` 문서
-  속성은 재구성에서도 보존된다.)
+- `set_series` / `apply_color_cycle` 같은 일반 시리즈 변경은 인식 가능한
+  자동 범례 엔트리의 **심볼 세그먼트만 갱신**한다. `'\t'` 앞의 고정폭
+  심볼 필드가 기호 영역이고, `'\t'` 뒤 텍스트는 사용자 작성 영역으로
+  보존된다. 선 색뿐 아니라 `line_style` 의 dash/dot 패턴도 기호에 반영된다.
+- `set_series_label(id, label)` 은 해당 엔트리 텍스트만 바꾸고, 빈 문자열은
+  해당 행만 제거한다. `set_config` 로 직접 편집한 `legend.content` 는 이후
+  시리즈 변경에서도 전체 재작성되지 않는다.
+- 전체 범례를 `SeriesConfig.label` 기준으로 다시 만들고 싶을 때만
+  `reset_legend_from_series_labels()` 를 명시 호출한다. 이때 legacy
+  `add_line_series(..., label)` 로 저장된 wrapper label 은 rich label 이 없는
+  시리즈의 fallback 으로만 쓰인다.
 
 ## `draw_style` — 렌더 스타일 (Config 선택 키)
 

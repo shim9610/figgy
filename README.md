@@ -307,7 +307,9 @@ Symbols are **fixed-width field segments** (`field_em`): every form spans
 exactly `SYMBOL_FIELD_EM` (2.0 em × font size) regardless of shape — a line
 mark is a drawn rule (`rule: true`) filling the whole field, a scatter mark
 is the shape glyph (`● ■ ▲ …`) centered in it, and line+scatter is
-rule–glyph–rule summing to the same width. Auto-built entries are
+rule–glyph–rule summing to the same width. Dashed/dotted line styles are
+carried by `rule_dash` on rule segments, so legend marks reflect
+`LineStylePreset` as well as color and shape. Auto-built entries are
 `symbol + ' ' + '\t' + label`, so labels also align via the tab column.
 Composition helpers: `symbol_segments(kind, color)`,
 `series_symbol_segments(cfg)`, `append_legend_entry(content, symbol, label)`.
@@ -318,7 +320,7 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::paint` branches 
 
 | Type | Fields | Role |
 |---|---|---|
-| `SeriesConfig` | `series_id, label, x_column: ColumnId, y_column: ColumnId, render_type` | Full series declaration. `x_column / y_column` are pool-registered ids. In the web editing flow, `legend.content` is the label authority; `SeriesConfig.label` is not authoritative once the legend is freely edited |
+| `SeriesConfig` | `series_id, label, x_column: ColumnId, y_column: ColumnId, render_type` | Full series declaration. `x_column / y_column` are pool-registered ids. In the web editing flow, `legend.content` is the live label authority; ordinary series edits update recognized legend symbols only and preserve user text. `SeriesConfig.label` becomes authoritative only for an explicit `reset_legend_from_series_labels()` rebuild |
 | `DataRenderType` | enum, 9 variants | One independent draw path per variant. Optional struct merging avoided |
 | `ErrorRef` | `Symmetric { column }` or `Asymmetric { lower, upper }` | Errorbar column reference. Symmetric = ±σ, Asymmetric = lower/upper split |
 | `DataLineStyleConfig` | `line_style, line_color, line_width` | Line appearance |
@@ -763,7 +765,9 @@ pub struct Config {
 심볼은 **고정폭 필드 세그먼트**(`field_em`)다: 형태와 무관하게 모든 심볼이
 정확히 `SYMBOL_FIELD_EM`(2.0 em × 폰트 크기)을 차지한다 — 선 마크는 필드를
 가득 채우는 그려진 선(`rule: true`), scatter 마크는 필드 중앙의 shape
-글리프(`● ■ ▲ …`), 선+점은 rule–글리프–rule 합계가 같은 폭. 자동 구성
+글리프(`● ■ ▲ …`), 선+점은 rule–글리프–rule 합계가 같은 폭. 점선/도트
+선 스타일은 rule 세그먼트의 `rule_dash` 로 보존되어 범례 기호도
+`LineStylePreset` 을 반영한다. 자동 구성
 엔트리는 `심볼 + ' ' + '\t' + 라벨` 형태라 라벨도 탭 열로 정렬된다.
 구성 헬퍼: `symbol_segments(kind, color)`, `series_symbol_segments(cfg)`,
 `append_legend_entry(content, symbol, label)`.
@@ -774,7 +778,7 @@ pub struct Config {
 
 | 타입 | 필드 | 역할 |
 |---|---|---|
-| `SeriesConfig` | `series_id, label, x_column: ColumnId, y_column: ColumnId, render_type` | 한 시리즈의 모든 선언. `x_column / y_column` 은 pool 에 등록된 id. web 편집 플로우에서는 `legend.content`가 라벨 권위이며, 자유 편집 이후 `SeriesConfig.label`은 권위가 아니다 |
+| `SeriesConfig` | `series_id, label, x_column: ColumnId, y_column: ColumnId, render_type` | 한 시리즈의 모든 선언. `x_column / y_column` 은 pool 에 등록된 id. web 편집 플로우에서는 `legend.content`가 live 라벨 권위이며, 일반 시리즈 편집은 인식 가능한 범례 심볼만 갱신하고 사용자 텍스트를 보존한다. `SeriesConfig.label`은 명시적 `reset_legend_from_series_labels()` 재작성에서만 권위가 된다 |
 | `DataRenderType` | 9 변종 enum | 변종별 독립 draw path. 옵셔널 struct 안 합침 |
 | `ErrorRef` | `Symmetric { column }` 또는 `Asymmetric { lower, upper }` | 에러바 컬럼 참조. Symmetric 은 ±σ, Asymmetric 은 lower/upper 분리 |
 | `DataLineStyleConfig` | `line_style, line_color, line_width` | 라인 외형 |

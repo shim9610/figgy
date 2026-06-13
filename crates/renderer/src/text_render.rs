@@ -15,26 +15,22 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use swash::scale::{Render, ScaleContext, Source};
 use swash::FontRef;
+use swash::scale::{Render, ScaleContext, Source};
 
 use crate::color::Color;
 use crate::raster::Canvas;
-use crate::text::{greek_char, RichSegment, RichText};
+use crate::text::{RichSegment, RichText, greek_char};
 
 // Bundled fonts (SIL OFL 1.1):
 //   - Liberation Sans — the default face (fonts/LICENSE-LiberationSans.txt).
 //   - Comic Neue — the handwritten face forced by the sketch draw style
 //     (fonts/LICENSE-ComicNeue.txt).
 
-static EMBEDDED_REGULAR: &[u8] =
-    include_bytes!("../fonts/LiberationSans-Regular.ttf");
-static EMBEDDED_BOLD: &[u8] =
-    include_bytes!("../fonts/LiberationSans-Bold.ttf");
-static EMBEDDED_ITALIC: &[u8] =
-    include_bytes!("../fonts/LiberationSans-Italic.ttf");
-static EMBEDDED_BOLD_ITALIC: &[u8] =
-    include_bytes!("../fonts/LiberationSans-BoldItalic.ttf");
+static EMBEDDED_REGULAR: &[u8] = include_bytes!("../fonts/LiberationSans-Regular.ttf");
+static EMBEDDED_BOLD: &[u8] = include_bytes!("../fonts/LiberationSans-Bold.ttf");
+static EMBEDDED_ITALIC: &[u8] = include_bytes!("../fonts/LiberationSans-Italic.ttf");
+static EMBEDDED_BOLD_ITALIC: &[u8] = include_bytes!("../fonts/LiberationSans-BoldItalic.ttf");
 static HANDWRITTEN_REGULAR: &[u8] = include_bytes!("../fonts/ComicNeue-Regular.ttf");
 static HANDWRITTEN_BOLD: &[u8] = include_bytes!("../fonts/ComicNeue-Bold.ttf");
 
@@ -73,7 +69,9 @@ fn registered_db() -> &'static Mutex<fontdb::Database> {
 /// parse to no usable face. Re-registering a family replaces nothing —
 /// fontdb keeps both and the query picks the best style match.
 pub fn register_font_bytes(bytes: Vec<u8>) -> Result<Vec<String>, String> {
-    let mut db = registered_db().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut db = registered_db()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let before: Vec<fontdb::ID> = db.faces().map(|f| f.id).collect();
     db.load_font_data(bytes);
     let mut families: Vec<String> = db
@@ -94,12 +92,22 @@ pub fn register_font_bytes(bytes: Vec<u8>) -> Result<Vec<String>, String> {
 }
 
 fn lookup_registered_font(family: &str, bold: bool, italic: bool) -> Option<(&'static [u8], u32)> {
-    let db = registered_db().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let db = registered_db()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let query = fontdb::Query {
         families: &[fontdb::Family::Name(family)],
-        weight: if bold { fontdb::Weight::BOLD } else { fontdb::Weight::NORMAL },
+        weight: if bold {
+            fontdb::Weight::BOLD
+        } else {
+            fontdb::Weight::NORMAL
+        },
         stretch: fontdb::Stretch::Normal,
-        style: if italic { fontdb::Style::Italic } else { fontdb::Style::Normal },
+        style: if italic {
+            fontdb::Style::Italic
+        } else {
+            fontdb::Style::Normal
+        },
     };
     let id = db.query(&query)?;
     db.with_face_data(id, |data, index| {
@@ -150,7 +158,13 @@ fn handwritten_font(bold: bool) -> FontRef<'static> {
 /// Resolve the font for ONE glyph under `policy`. The handwritten policy
 /// checks the glyph's coverage first and falls back to the standard chain
 /// per character — never to a notdef box.
-fn glyph_font(policy: FontPolicy, family: &str, bold: bool, italic: bool, ch: char) -> FontRef<'static> {
+fn glyph_font(
+    policy: FontPolicy,
+    family: &str,
+    bold: bool,
+    italic: bool,
+    ch: char,
+) -> FontRef<'static> {
     if policy == FontPolicy::Handwritten {
         let hand = handwritten_font(bold);
         if hand.charmap().map(ch) != 0 {
@@ -200,9 +214,17 @@ fn lookup_system_font(family: &str, bold: bool, italic: bool) -> Option<(&'stati
     let db = font_db();
     let query = fontdb::Query {
         families: &[fontdb::Family::Name(family)],
-        weight: if bold { fontdb::Weight::BOLD } else { fontdb::Weight::NORMAL },
+        weight: if bold {
+            fontdb::Weight::BOLD
+        } else {
+            fontdb::Weight::NORMAL
+        },
         stretch: fontdb::Stretch::Normal,
-        style: if italic { fontdb::Style::Italic } else { fontdb::Style::Normal },
+        style: if italic {
+            fontdb::Style::Italic
+        } else {
+            fontdb::Style::Normal
+        },
     };
     let id = db.query(&query)?;
     db.with_face_data(id, |data, index| {
@@ -309,7 +331,11 @@ fn font_hinting(font: FontRef<'static>, size: f32) -> bool {
 /// Synthetic embolden strength (px) for the handwritten face — ~2% of the
 /// font size, i.e. ≈0.4 px at typical label sizes.
 fn font_embolden(font: FontRef<'static>, size: f32) -> f32 {
-    if is_handwritten(font) { size * 0.02 } else { 0.0 }
+    if is_handwritten(font) {
+        size * 0.02
+    } else {
+        0.0
+    }
 }
 
 fn glyph_extents(font: FontRef<'static>, size: f32, ch: char) -> GlyphExtents {
@@ -321,7 +347,11 @@ fn glyph_extents(font: FontRef<'static>, size: f32, ch: char) -> GlyphExtents {
     let advance = font.glyph_metrics(&[]).scale(size).advance_width(glyph);
     let (ink_top, ink_bottom) = SCALE_CTX.with(|cx| {
         let mut cx = cx.borrow_mut();
-        let mut scaler = cx.builder(font).size(size).hint(font_hinting(font, size)).build();
+        let mut scaler = cx
+            .builder(font)
+            .size(size)
+            .hint(font_hinting(font, size))
+            .build();
         match scaler.scale_outline(glyph) {
             // zeno bounds are y-up; flip into the y-down baseline convention.
             Some(outline) => {
@@ -331,7 +361,11 @@ fn glyph_extents(font: FontRef<'static>, size: f32, ch: char) -> GlyphExtents {
             None => (0.0, 0.0),
         }
     });
-    let extents = GlyphExtents { advance, ink_top, ink_bottom };
+    let extents = GlyphExtents {
+        advance,
+        ink_top,
+        ink_bottom,
+    };
     METRICS_CACHE.with(|c| c.borrow_mut().insert(key, extents));
     extents
 }
@@ -354,7 +388,11 @@ fn with_glyph_mask(
             let glyph = font.charmap().map(ch);
             SCALE_CTX.with(|cx| {
                 let mut cx = cx.borrow_mut();
-                let mut scaler = cx.builder(font).size(size).hint(font_hinting(font, size)).build();
+                let mut scaler = cx
+                    .builder(font)
+                    .size(size)
+                    .hint(font_hinting(font, size))
+                    .build();
                 let mut render = Render::new(&[Source::Outline]);
                 render.offset(swash::zeno::Vector::new(xbin as f32 * 0.25, 0.0));
                 let embolden = font_embolden(font, size);
@@ -519,11 +557,19 @@ fn layout_doc(rt: &RichText, policy: FontPolicy) -> DocLayout<'_> {
                 + cells.last().map(|m| m.width).unwrap_or(0.0);
             let ascent = cells.iter().map(|m| m.ascent).fold(0.0, f32::max);
             let descent = cells.iter().map(|m| m.descent).fold(0.0, f32::max);
-            TextMetrics { width, ascent, descent }
+            TextMetrics {
+                width,
+                ascent,
+                descent,
+            }
         })
         .collect();
 
-    DocLayout { line_cells, line_metrics, col_starts }
+    DocLayout {
+        line_cells,
+        line_metrics,
+        col_starts,
+    }
 }
 
 /// Envelope of one line. Empty lines fall back to a font-size-derived height
@@ -546,7 +592,11 @@ fn measure_line(segments: &[RichSegment], rt: &RichText, policy: FontPolicy) -> 
             let center = y_offset - base * RULE_Y_RATIO;
             (field, center - t * 0.5, center + t * 0.5)
         } else {
-            let ch = if seg.greek { greek_char(seg.text) } else { seg.text };
+            let ch = if seg.greek {
+                greek_char(seg.text)
+            } else {
+                seg.text
+            };
             let font = glyph_font(policy, &rt.font, seg.bold, seg.italic, ch);
             let g = glyph_extents(font, size, ch);
             // A fixed field replaces both the kern and the glyph advance.
@@ -573,7 +623,11 @@ fn measure_line(segments: &[RichSegment], rt: &RichText, policy: FontPolicy) -> 
         max_ascent = rt.font_size * 0.75;
         max_descent = rt.font_size * 0.25;
     }
-    TextMetrics { width: total_w, ascent: max_ascent, descent: max_descent }
+    TextMetrics {
+        width: total_w,
+        ascent: max_ascent,
+        descent: max_descent,
+    }
 }
 
 /// Baseline-to-baseline advance between two lines. Ink envelopes alone make
@@ -603,10 +657,18 @@ fn draw_line_segments(
             let field = seg.field_em.unwrap_or(1.0) * base;
             let t = (base * RULE_THICKNESS_RATIO).max(1.0);
             let ry = y - base * RULE_Y_RATIO - t * 0.5;
-            canvas.draw_rect(pen_x, ry, field, t, &crate::raster::Paint::fill(&color));
+            if let Some(pattern) = &seg.rule_dash {
+                draw_dashed_rule(canvas, pen_x, ry, field, t, &color, pattern, base);
+            } else {
+                canvas.draw_rect(pen_x, ry, field, t, &crate::raster::Paint::fill(&color));
+            }
             field
         } else {
-            let ch = if seg.greek { greek_char(seg.text) } else { seg.text };
+            let ch = if seg.greek {
+                greek_char(seg.text)
+            } else {
+                seg.text
+            };
             let font = glyph_font(policy, &rt.font, seg.bold, seg.italic, ch);
             match seg.field_em {
                 Some(f) => {
@@ -631,6 +693,81 @@ fn draw_line_segments(
         }
 
         pen_x += advance;
+    }
+}
+
+fn draw_dashed_rule(
+    canvas: &mut Canvas,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    color: &Color,
+    dash_em: &[f32],
+    base: f32,
+) {
+    let pattern: Vec<f32> = dash_em
+        .iter()
+        .filter_map(|v| {
+            let px = *v * base;
+            (px.is_finite() && px > 0.0).then_some(px)
+        })
+        .collect();
+    if pattern.is_empty() {
+        canvas.draw_rect(x, y, width, height, &crate::raster::Paint::fill(color));
+        return;
+    }
+
+    let mut offset = 0.0;
+    let mut pattern_i = 0usize;
+    let mut ink = true;
+    while offset < width {
+        let len = pattern[pattern_i % pattern.len()].min(width - offset);
+        if ink {
+            canvas.draw_rect(
+                x + offset,
+                y,
+                len,
+                height,
+                &crate::raster::Paint::fill(color),
+            );
+        }
+        offset += len;
+        pattern_i += 1;
+        ink = !ink;
+    }
+}
+
+#[cfg(test)]
+mod dashed_rule_tests {
+    use super::*;
+
+    #[test]
+    fn dashed_rule_renders_visible_gaps_inside_fixed_field() {
+        let rt = RichText {
+            segments: vec![RichSegment::dashed_rule(
+                2.0,
+                Some(Color::BLACK),
+                vec![0.25, 0.25],
+            )],
+            color: Color::BLACK,
+            font_size: 16.0,
+            font: String::new(),
+        };
+        let mut canvas = Canvas::new(48, 32).unwrap();
+        draw_rich_text(&mut canvas, &rt, (4.0, 20.0), FontPolicy::Standard);
+        let rgba = canvas.into_rgba();
+        let ink_cols: Vec<u32> = (0..48u32)
+            .filter(|&x| (0..32u32).any(|y| rgba[((y * 48 + x) * 4 + 3) as usize] > 0))
+            .collect();
+        let first = *ink_cols.first().unwrap();
+        let last = *ink_cols.last().unwrap();
+        let gap =
+            (first..=last).any(|x| !(0..32u32).any(|y| rgba[((y * 48 + x) * 4 + 3) as usize] > 0));
+        assert!(
+            gap,
+            "dashed legend rule should leave at least one transparent gap"
+        );
     }
 }
 
@@ -692,7 +829,9 @@ pub struct CpuTextMeasure {
 impl CpuTextMeasure {
     /// Measure with the font the given draw style actually renders.
     pub fn for_style(style: &crate::config::DrawStyle) -> Self {
-        Self { policy: FontPolicy::for_style(style) }
+        Self {
+            policy: FontPolicy::for_style(style),
+        }
     }
 }
 
@@ -712,7 +851,11 @@ impl crate::text::MeasureText for CpuTextMeasure {
 /// underline, and `'\n'` line breaks.
 pub fn measure_rich_text(rt: &RichText, policy: FontPolicy) -> TextMetrics {
     if rt.segments.is_empty() {
-        return TextMetrics { width: 0.0, ascent: 0.0, descent: 0.0 };
+        return TextMetrics {
+            width: 0.0,
+            ascent: 0.0,
+            descent: 0.0,
+        };
     }
 
     let metrics = layout_doc(rt, policy).line_metrics;
@@ -726,7 +869,11 @@ pub fn measure_rich_text(rt: &RichText, policy: FontPolicy) -> TextMetrics {
     }
     let descent = below + metrics.last().map(|m| m.descent).unwrap_or(0.0);
 
-    TextMetrics { width, ascent, descent }
+    TextMetrics {
+        width,
+        ascent,
+        descent,
+    }
 }
 
 // Private helpers.
@@ -809,7 +956,11 @@ pub fn measure_plain_text(
         max_ascent = max_ascent.max(-g.ink_top);
         max_descent = max_descent.max(g.ink_bottom);
     }
-    TextMetrics { width, ascent: max_ascent, descent: max_descent }
+    TextMetrics {
+        width,
+        ascent: max_ascent,
+        descent: max_descent,
+    }
 }
 
 #[cfg(test)]
@@ -833,15 +984,18 @@ mod tests {
         assert!(
             (std_m.width - hand_m.width).abs() > 0.5,
             "handwritten policy must change latin advance: std {} vs hand {}",
-            std_m.width, hand_m.width
+            std_m.width,
+            hand_m.width
         );
 
         // Comic Neue has no Hangul coverage — per-char fallback must yield
         // the exact standard-chain metrics.
         let std_k = measure_plain_text("가나다", "", 20.0, false, false, FontPolicy::Standard);
-        let hand_k =
-            measure_plain_text("가나다", "", 20.0, false, false, FontPolicy::Handwritten);
-        assert_eq!(std_k, hand_k, "uncovered glyphs must fall back per character");
+        let hand_k = measure_plain_text("가나다", "", 20.0, false, false, FontPolicy::Handwritten);
+        assert_eq!(
+            std_k, hand_k,
+            "uncovered glyphs must fall back per character"
+        );
 
         // Glyph-level: covered chars resolve to the handwritten face, the
         // rest to the standard resolution.
@@ -862,7 +1016,10 @@ mod tests {
     #[test]
     fn font_policy_follows_draw_style() {
         use crate::config::{DrawStyle, SketchOptions};
-        assert_eq!(FontPolicy::for_style(&DrawStyle::Precise), FontPolicy::Standard);
+        assert_eq!(
+            FontPolicy::for_style(&DrawStyle::Precise),
+            FontPolicy::Standard
+        );
         assert_eq!(
             FontPolicy::for_style(&DrawStyle::Sketch(SketchOptions::default())),
             FontPolicy::Handwritten,
@@ -904,7 +1061,15 @@ mod tests {
 
         let mut canvas = Canvas::new(60, 30).unwrap();
         draw_plain_text(
-            &mut canvas, "123", (5.0, 22.0), Color::BLACK, "", 18.0, false, false, FontPolicy::Standard,
+            &mut canvas,
+            "123",
+            (5.0, 22.0),
+            Color::BLACK,
+            "",
+            18.0,
+            false,
+            false,
+            FontPolicy::Standard,
         );
         let rgba = canvas.into_rgba();
         let inked = rgba.chunks_exact(4).filter(|p| p[3] > 0).count();
@@ -923,8 +1088,14 @@ mod tests {
         };
         let plain = measure_rich_text_std(&mk("V0"));
         let sub = measure_rich_text_std(&mk("V₀"));
-        assert!(sub.descent > plain.descent, "subscript must extend below the baseline");
-        assert!(sub.width < plain.width, "subscript digit renders at reduced size");
+        assert!(
+            sub.descent > plain.descent,
+            "subscript must extend below the baseline"
+        );
+        assert!(
+            sub.width < plain.width,
+            "subscript digit renders at reduced size"
+        );
     }
 
     // register_font_bytes makes a family resolvable at runtime: before
@@ -933,7 +1104,10 @@ mod tests {
     // Liberation Sans bytes double as the fixture under an alias-free name.
     #[test]
     fn register_font_bytes_resolves_new_family() {
-        assert!(register_font_bytes(vec![1, 2, 3]).is_err(), "garbage must not register");
+        assert!(
+            register_font_bytes(vec![1, 2, 3]).is_err(),
+            "garbage must not register"
+        );
 
         let fallback = resolve_font("Liberation Sans", false, false);
         let families = register_font_bytes(EMBEDDED_REGULAR.to_vec()).unwrap();
@@ -955,7 +1129,7 @@ mod tests {
     // same font size — fixed fields, not glyph metrics, set the advance.
     #[test]
     fn legend_symbol_forms_share_exact_width() {
-        use crate::config::{symbol_segments, LegendEntryKind};
+        use crate::config::{LegendEntryKind, symbol_segments};
         let mk = |kind: &LegendEntryKind| RichText {
             segments: symbol_segments(kind, Color::BLACK),
             color: Color::BLACK,
@@ -965,14 +1139,23 @@ mod tests {
         let line = measure_rich_text_std(&mk(&LegendEntryKind::Line));
         let scatter = measure_rich_text_std(&mk(&LegendEntryKind::Scatter));
         let combo = measure_rich_text_std(&mk(&LegendEntryKind::LineScatter));
-        assert!((line.width - 32.0).abs() < 0.01, "field = 2.0 em × 16 px, got {}", line.width);
+        assert!(
+            (line.width - 32.0).abs() < 0.01,
+            "field = 2.0 em × 16 px, got {}",
+            line.width
+        );
         assert!((line.width - scatter.width).abs() < 0.01);
         assert!((line.width - combo.width).abs() < 0.01);
 
         // The rule must actually ink (nearly) the whole field — a drawn bar,
         // not a short dash glyph centered in space.
         let mut canvas = Canvas::new(48, 32).unwrap();
-        draw_rich_text(&mut canvas, &mk(&LegendEntryKind::Line), (4.0, 20.0), FontPolicy::Standard);
+        draw_rich_text(
+            &mut canvas,
+            &mk(&LegendEntryKind::Line),
+            (4.0, 20.0),
+            FontPolicy::Standard,
+        );
         let rgba = canvas.into_rgba();
         let ink_cols: Vec<u32> = (0..48u32)
             .filter(|&x| (0..32u32).any(|y| rgba[((y * 48 + x) * 4 + 3) as usize] > 0))
@@ -1003,7 +1186,9 @@ mod tests {
         assert!(
             (m.width - (wide.width + x_w.width)).abs() < 0.5,
             "doc width {} must be widest cell0 {} + cell1 {}",
-            m.width, wide.width, x_w.width
+            m.width,
+            wide.width,
+            x_w.width
         );
 
         // Drawing: the leftmost ink of each line's second cell must agree.
@@ -1011,16 +1196,12 @@ mod tests {
         draw_rich_text(&mut canvas, &rt, (4.0, 18.0), FontPolicy::Standard);
         let rgba = canvas.into_rgba();
         let leftmost_ink = |y0: u32, y1: u32| -> Option<u32> {
-            (0..120u32).find(|&x| {
-                (y0..y1).any(|y| rgba[((y * 120 + x) * 4 + 3) as usize] > 0)
-            })
+            (0..120u32).find(|&x| (y0..y1).any(|y| rgba[((y * 120 + x) * 4 + 3) as usize] > 0))
         };
         // Second-cell x ranges: scan only right of the widest first cell.
         let cut = (4.0 + wide.width - 0.5) as u32;
         let second_ink = |y0: u32, y1: u32| -> Option<u32> {
-            (cut..120u32).find(|&x| {
-                (y0..y1).any(|y| rgba[((y * 120 + x) * 4 + 3) as usize] > 0)
-            })
+            (cut..120u32).find(|&x| (y0..y1).any(|y| rgba[((y * 120 + x) * 4 + 3) as usize] > 0))
         };
         let line1_x = second_ink(4, 22).expect("line 1 second cell ink");
         let line2_x = second_ink(24, 45).expect("line 2 second cell ink");
@@ -1043,15 +1224,24 @@ mod tests {
         };
         let one = measure_rich_text_std(&mk("abc"));
         let two = measure_rich_text_std(&mk("abc\nde"));
-        assert!(two.height() > one.height() * 1.7, "second line must add a full line");
-        assert!((two.width - one.width).abs() < 0.01, "width is the widest line (abc)");
+        assert!(
+            two.height() > one.height() * 1.7,
+            "second line must add a full line"
+        );
+        assert!(
+            (two.width - one.width).abs() < 0.01,
+            "width is the widest line (abc)"
+        );
 
         let mut canvas = Canvas::new(60, 60).unwrap();
-        draw_rich_text(&mut canvas, &mk("ab\nab"), (5.0, 18.0), FontPolicy::Standard);
+        draw_rich_text(
+            &mut canvas,
+            &mk("ab\nab"),
+            (5.0, 18.0),
+            FontPolicy::Standard,
+        );
         let rgba = canvas.into_rgba();
-        let row_has_ink = |y: u32| {
-            (0..60u32).any(|x| rgba[((y * 60 + x) * 4 + 3) as usize] > 0)
-        };
+        let row_has_ink = |y: u32| (0..60u32).any(|x| rgba[((y * 60 + x) * 4 + 3) as usize] > 0);
         // Ink near the first baseline, a gap is not guaranteed (descenders),
         // but there must be ink well below one line's extent too.
         assert!(row_has_ink(12), "first line ink");
@@ -1084,8 +1274,14 @@ mod tests {
             .chunks_exact(4)
             .filter(|p| p[3] > 200 && p[0] < 50 && p[1] < 50 && p[2] < 50)
             .count();
-        assert!(red_ink > 5, "override segment must ink red, got {red_ink} px");
-        assert!(black_ink > 5, "non-override segment keeps the default, got {black_ink} px");
+        assert!(
+            red_ink > 5,
+            "override segment must ink red, got {red_ink} px"
+        );
+        assert!(
+            black_ink > 5,
+            "non-override segment keeps the default, got {black_ink} px"
+        );
     }
 
     // A per-segment font_size override must change metrics: wider advance and
@@ -1138,7 +1334,10 @@ mod tests {
         };
         let m_plain = measure_rich_text_std(&plain);
         let m_sup = measure_rich_text_std(&sup);
-        assert!(m_sup.ascent > m_plain.ascent, "superscript must raise the envelope");
+        assert!(
+            m_sup.ascent > m_plain.ascent,
+            "superscript must raise the envelope"
+        );
 
         let mut canvas = Canvas::new(80, 40).unwrap();
         draw_rich_text(&mut canvas, &sup, (5.0, 30.0), FontPolicy::Standard);
