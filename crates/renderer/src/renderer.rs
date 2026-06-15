@@ -89,6 +89,7 @@ pub struct Renderer {
     queue: Arc<wgpu::Queue>,
     caps: RendererDeviceCaps,
     pool: ColumnPool,
+    target_sample_count: u32,
 
     // Bind group layouts (exposed so callers can build per-panel bind groups).
     texture_bgl: wgpu::BindGroupLayout,
@@ -185,6 +186,48 @@ fn validate_target_format(
 // Style descriptor table (docs/STYLE_REGISTRY.md §3). One descriptor fully
 // describes a stylized render mode; the precise path is the absence of one
 // (`style_variant` → `None`) and never routes through this table.
+
+fn validate_target_sample_count(
+    caps: RendererDeviceCaps,
+    format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> Result<()> {
+    validate_target_format(caps, format)?;
+    if sample_count == 1 {
+        return Ok(());
+    }
+    let features = format.guaranteed_format_features(caps.features);
+    if !features.flags.sample_count_supported(sample_count) {
+        return Err(FiggyError::UnsupportedSurfaceFormat {
+            format,
+            reason: format!("format does not support {sample_count}x MSAA"),
+        });
+    }
+    if !features
+        .flags
+        .contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE)
+    {
+        return Err(FiggyError::UnsupportedSurfaceFormat {
+            format,
+            reason: "format does not support MSAA resolve targets".into(),
+        });
+    }
+    Ok(())
+}
+
+fn preferred_msaa_sample_count(caps: RendererDeviceCaps, format: wgpu::TextureFormat) -> u32 {
+    let features = format.guaranteed_format_features(caps.features);
+    let can_resolve = features
+        .flags
+        .contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE);
+    if can_resolve && features.flags.sample_count_supported(4) {
+        4
+    } else if can_resolve && features.flags.sample_count_supported(2) {
+        2
+    } else {
+        1
+    }
+}
 
 /// Discriminant for cached per-style pipeline sets.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -299,6 +342,7 @@ struct TargetPipelines {
     line: wgpu::RenderPipeline,
     scatter: wgpu::RenderPipeline,
     errorbar: wgpu::RenderPipeline,
+    sample_count: u32,
     styled: HashMap<StyleKey, StyleSet>,
 }
 
@@ -308,20 +352,22 @@ fn create_target_pipelines(
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
     surface_format: wgpu::TextureFormat,
+    sample_count: u32,
 ) -> TargetPipelines {
     TargetPipelines {
-        axis: data_render::create_fullscreen_textured_pipeline(
-            device, texture_bgl, surface_format,
+        axis: data_render::create_fullscreen_textured_pipeline_with_sample_count(
+            device, texture_bgl, surface_format, sample_count,
         ),
-        line: data_render::create_line_columnar_pipeline(
-            device, transform_bgl, style_bgl, surface_format,
+        line: data_render::create_line_columnar_pipeline_with_sample_count(
+            device, transform_bgl, style_bgl, surface_format, sample_count,
         ),
-        scatter: data_render::create_scatter_columnar_pipeline(
-            device, transform_bgl, style_bgl, surface_format,
+        scatter: data_render::create_scatter_columnar_pipeline_with_sample_count(
+            device, transform_bgl, style_bgl, surface_format, sample_count,
         ),
-        errorbar: data_render::create_errorbar_columnar_pipeline(
-            device, transform_bgl, style_bgl, surface_format,
+        errorbar: data_render::create_errorbar_columnar_pipeline_with_sample_count(
+            device, transform_bgl, style_bgl, surface_format, sample_count,
         ),
+        sample_count,
         styled: HashMap::new(),
     }
 }
@@ -347,6 +393,7 @@ impl TargetPipelines {
                 StyleKey::Sketch => StyleSet::Sketch {
                     line: data_render::create_line_columnar_pipeline_with_entries(
                         device, transform_bgl, style_bgl, surface_format,
+                        self.sample_count,
                         "vs_sketch", "fs_main",
                         wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
                         wgpu::PrimitiveTopology::TriangleStrip,
@@ -355,11 +402,13 @@ impl TargetPipelines {
                     ),
                     scatter: data_render::create_scatter_columnar_pipeline_with_entries(
                         device, transform_bgl, style_bgl, surface_format,
+                        self.sample_count,
                         "vs_sketch", "fs_sketch",
                         "figgy scatter styled pipeline",
                     ),
                     errorbar: data_render::create_errorbar_columnar_pipeline_with_entries(
                         device, transform_bgl, style_bgl, surface_format,
+                        self.sample_count,
                         "vs_sketch", "figgy errorbar styled pipeline",
                     ),
                     line_verts: data_render::LINE_SKETCH_VERTICES_PER_INSTANCE,
@@ -369,12 +418,13 @@ impl TargetPipelines {
                 StyleKey::Milkyway => StyleSet::Milkyway(
                     data_render::create_milkyway_set(
                         device, queue, transform_bgl, style_bgl, star_data_bgl,
-                        surface_format,
+                        surface_format, self.sample_count,
                     ),
                 ),
                 StyleKey::Constellation => StyleSet::Constellation(
                     data_render::create_point_constellation_set(
                         device, queue, transform_bgl, style_bgl, surface_format,
+                        self.sample_count,
                     ),
                 ),
             });
@@ -449,6 +499,40 @@ fn create_buffer_checked(
         })
 }
 
+struct MsaaTarget {
+    _texture: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
+fn create_msaa_target(
+    device: &wgpu::Device,
+    caps: RendererDeviceCaps,
+    label: &'static str,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> Result<Option<MsaaTarget>> {
+    if sample_count <= 1 {
+        return Ok(None);
+    }
+    validate_target_sample_count(caps, format, sample_count)?;
+    validate_texture_extent(caps, label, width, height)?;
+    let desc = wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    };
+    let texture = create_texture_checked(device, &desc, label)?;
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    Ok(Some(MsaaTarget { _texture: texture, view }))
+}
+
 impl Renderer {
     /// Initialize every figgy GPU resource against the given device/queue pair.
     ///
@@ -459,6 +543,15 @@ impl Renderer {
         gpu: RendererDevice,
         surface_format: wgpu::TextureFormat,
         pool_capacity_bytes: u64,
+    ) -> Result<Self> {
+        Self::try_new_with_sample_count(gpu, surface_format, pool_capacity_bytes, 1)
+    }
+
+    fn try_new_with_sample_count(
+        gpu: RendererDevice,
+        surface_format: wgpu::TextureFormat,
+        pool_capacity_bytes: u64,
+        target_sample_count: u32,
     ) -> Result<Self> {
         let RendererDevice { device, queue } = gpu;
         let caps = RendererDeviceCaps::from_device(&device);
@@ -475,7 +568,7 @@ impl Renderer {
                 limit: u64::from(caps.max_compute_invocations_per_workgroup),
             });
         }
-        validate_target_format(caps, surface_format)?;
+        validate_target_sample_count(caps, surface_format, target_sample_count)?;
 
         let pool = ColumnPool::new(&device, pool_capacity_bytes)?;
 
@@ -495,6 +588,7 @@ impl Renderer {
             &transform_bgl,
             &style_bgl,
             surface_format,
+            target_sample_count,
         );
         let arc_pipelines = data_render::line_arc::create_arc_scan_pipelines(&device);
 
@@ -503,6 +597,7 @@ impl Renderer {
             queue,
             caps,
             pool,
+            target_sample_count,
             texture_bgl,
             transform_bgl,
             style_bgl,
@@ -532,10 +627,20 @@ impl Renderer {
     /// not depend on the final color attachment format, so embedders can call
     /// this instead of tearing down the whole renderer state.
     pub fn ensure_target_format(&mut self, surface_format: wgpu::TextureFormat) -> Result<bool> {
-        if self.surface_format == surface_format {
+        self.ensure_target(surface_format, self.target_sample_count)
+    }
+
+    fn ensure_target(
+        &mut self,
+        surface_format: wgpu::TextureFormat,
+        target_sample_count: u32,
+    ) -> Result<bool> {
+        if self.surface_format == surface_format
+            && self.target_sample_count == target_sample_count
+        {
             return Ok(false);
         }
-        validate_target_format(self.caps, surface_format)?;
+        validate_target_sample_count(self.caps, surface_format, target_sample_count)?;
         // Fresh set with an empty styled cache — any styled pipelines the
         // next frame needs are recompiled by its prepare phase.
         self.pipelines = create_target_pipelines(
@@ -544,8 +649,10 @@ impl Renderer {
             &self.transform_bgl,
             &self.style_bgl,
             surface_format,
+            target_sample_count,
         );
         self.surface_format = surface_format;
+        self.target_sample_count = target_sample_count;
         Ok(true)
     }
 
@@ -654,16 +761,34 @@ impl Renderer {
             &surface, &adapter, &device, size.0.max(1), size.1.max(1),
         )?;
 
-        let inner = Renderer::try_new(
+        let caps = RendererDeviceCaps::from_device(&device);
+        let preferred_sample_count = preferred_msaa_sample_count(caps, surface_config.format);
+        let (target_sample_count, msaa_target) = match create_msaa_target(
+            &device,
+            caps,
+            "figgy frame msaa target",
+            surface_config.width,
+            surface_config.height,
+            surface_config.format,
+            preferred_sample_count,
+        ) {
+            Ok(target) => (preferred_sample_count, target),
+            Err(_) if preferred_sample_count > 1 => (1, None),
+            Err(e) => return Err(e),
+        };
+
+        let inner = Renderer::try_new_with_sample_count(
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
             surface_config.format,
             pool_capacity_bytes,
+            target_sample_count,
         )?;
 
         Ok(WindowedRenderer {
             inner,
             surface,
             surface_config,
+            msaa_target,
             _instance: instance,
             _adapter: adapter,
         })
@@ -1432,7 +1557,8 @@ impl Renderer {
         let h = ((orig.height as f32) * scale).round().max(1.0) as u32;
         validate_texture_extent(self.caps, "figgy export target dimension", w, h)?;
         let export_format = wgpu::TextureFormat::Rgba8Unorm;
-        validate_target_format(self.caps, export_format)?;
+        let mut export_sample_count = preferred_msaa_sample_count(self.caps, export_format);
+        validate_target_sample_count(self.caps, export_format, export_sample_count)?;
         let export_features = export_format.guaranteed_format_features(self.caps.features);
         if !export_features
             .allowed_usages
@@ -1484,6 +1610,26 @@ impl Renderer {
         };
         let target_tex = create_texture_checked(&self.device, &target_desc, "figgy export target")?;
         let target_view = target_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let msaa_export_target = match create_msaa_target(
+            &self.device,
+            self.caps,
+            "figgy export msaa target",
+            w,
+            h,
+            export_format,
+            export_sample_count,
+        ) {
+            Ok(target) => target,
+            Err(_) if export_sample_count > 1 => {
+                export_sample_count = 1;
+                None
+            }
+            Err(e) => return Err(e),
+        };
+        let (render_view, resolve_target, store) = match msaa_export_target.as_ref() {
+            Some(msaa) => (&msaa.view, Some(&target_view), wgpu::StoreOp::Discard),
+            None => (&target_view, None, wgpu::StoreOp::Store),
+        };
         // Per-call set against the export format. The same prepare-phase
         // ensure as `paint` fills the styled cache, so styled variants
         // compile only when this export actually draws with them.
@@ -1493,6 +1639,7 @@ impl Renderer {
             &self.transform_bgl,
             &self.style_bgl,
             export_format,
+            export_sample_count,
         );
         export_target_pipelines.ensure_styles_for_items(
             &self.device,
@@ -1555,9 +1702,9 @@ impl Renderer {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("figgy export pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target_view,
+                    view: render_view,
                     depth_slice: None,
-                    resolve_target: None,
+                    resolve_target,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: clear.r as f64,
@@ -1565,7 +1712,7 @@ impl Renderer {
                             b: clear.b as f64,
                             a: clear.a as f64,
                         }),
-                        store: wgpu::StoreOp::Store,
+                        store,
                     },
                 })],
                 depth_stencil_attachment: None,
@@ -1909,6 +2056,7 @@ pub struct WindowedRenderer<'w> {
     inner: Renderer,
     surface: wgpu::Surface<'w>,
     surface_config: wgpu::SurfaceConfiguration,
+    msaa_target: Option<MsaaTarget>,
     /// Instance and adapter must outlive the surface; keep them pinned here.
     _instance: wgpu::Instance,
     _adapter: wgpu::Adapter,
@@ -1946,7 +2094,24 @@ impl<'w> WindowedRenderer<'w> {
             &self.surface, &self._adapter, self.inner.device(),
             &mut self.surface_config, w.max(1), h.max(1),
         )?;
-        self.inner.ensure_target_format(self.surface_config.format)?;
+        let preferred_sample_count =
+            preferred_msaa_sample_count(self.inner.caps, self.surface_config.format);
+        let (target_sample_count, msaa_target) = match create_msaa_target(
+            self.inner.device(),
+            self.inner.caps,
+            "figgy frame msaa target",
+            self.surface_config.width,
+            self.surface_config.height,
+            self.surface_config.format,
+            preferred_sample_count,
+        ) {
+            Ok(target) => (preferred_sample_count, target),
+            Err(_) if preferred_sample_count > 1 => (1, None),
+            Err(e) => return Err(e),
+        };
+        self.inner
+            .ensure_target(self.surface_config.format, target_sample_count)?;
+        self.msaa_target = msaa_target;
         Ok(())
     }
 
@@ -1968,6 +2133,10 @@ impl<'w> WindowedRenderer<'w> {
         let target = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        let (color_view, resolve_target, store) = match self.msaa_target.as_ref() {
+            Some(msaa) => (&msaa.view, Some(&target), wgpu::StoreOp::Discard),
+            None => (&target, None, wgpu::StoreOp::Store),
+        };
 
         let mut encoder = self
             .inner
@@ -1979,9 +2148,9 @@ impl<'w> WindowedRenderer<'w> {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("figgy frame pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target,
+                    view: color_view,
                     depth_slice: None,
-                    resolve_target: None,
+                    resolve_target,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: clear.r as f64,
@@ -1989,7 +2158,7 @@ impl<'w> WindowedRenderer<'w> {
                             b: clear.b as f64,
                             a: clear.a as f64,
                         }),
-                        store: wgpu::StoreOp::Store,
+                        store,
                     },
                 })],
                 depth_stencil_attachment: None,
@@ -2877,7 +3046,7 @@ mod tests {
         let is_red = |x: usize, y: usize| {
             let i = (y * w + x) * 4;
             let p = &img.rgba[i..i + 4];
-            p[3] > 16 && p[0] > 120 && p[1] < 90 && p[2] < 90
+            p[3] > 128 && p[0] > 120 && p[1] < 90 && p[2] < 90
         };
 
         // Trace the x-monotonic curve column by column: ink centroid y per

@@ -506,6 +506,14 @@ pub fn create_texture_bind_group(
     })
 }
 
+fn multisample_state(sample_count: u32) -> wgpu::MultisampleState {
+    wgpu::MultisampleState {
+        count: sample_count,
+        mask: !0,
+        alpha_to_coverage_enabled: false,
+    }
+}
+
 /// Build the fullscreen textured-quad pipeline. The shader emits its own
 /// vertices via `vertex_index`, so no vertex buffers are needed.
 ///
@@ -516,6 +524,20 @@ pub fn create_fullscreen_textured_pipeline(
     device: &wgpu::Device,
     bind_group_layout: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    create_fullscreen_textured_pipeline_with_sample_count(
+        device,
+        bind_group_layout,
+        target_format,
+        1,
+    )
+}
+
+pub(crate) fn create_fullscreen_textured_pipeline_with_sample_count(
+    device: &wgpu::Device,
+    bind_group_layout: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("figgy fullscreen textured shader"),
@@ -553,11 +575,7 @@ pub fn create_fullscreen_textured_pipeline(
 
         depth_stencil: None,
 
-        multisample: wgpu::MultisampleState {
-            count: 1,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
+        multisample: multisample_state(sample_count),
 
         fragment: Some(wgpu::FragmentState {
             module: &shader,
@@ -1047,8 +1065,25 @@ pub fn create_line_columnar_pipeline(
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
+    create_line_columnar_pipeline_with_sample_count(
+        device,
+        transform_bgl,
+        style_bgl,
+        target_format,
+        1,
+    )
+}
+
+pub(crate) fn create_line_columnar_pipeline_with_sample_count(
+    device: &wgpu::Device,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
     create_line_columnar_pipeline_with_entries(
         device, transform_bgl, style_bgl, target_format,
+        sample_count,
         "vs_main", "fs_main",
         wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
         wgpu::PrimitiveTopology::TriangleStrip,
@@ -1307,6 +1342,7 @@ pub(crate) fn create_milkyway_set(
     style_bgl: &wgpu::BindGroupLayout,
     star_data_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
+    sample_count: u32,
 ) -> MilkywaySet {
     let make_tex = |label: &str, w: u32, h: u32, data: &[u8]| {
         let tex = device.create_texture(&wgpu::TextureDescriptor {
@@ -1422,6 +1458,7 @@ pub(crate) fn create_milkyway_set(
     };
     let ribbon = create_line_columnar_pipeline_with_entries(
         device, transform_bgl, style_bgl, target_format,
+        sample_count,
         "vs_ribbon", "fs_ribbon", max_blend,
         wgpu::PrimitiveTopology::TriangleStrip,
         Some(&tex_bgl),
@@ -1458,7 +1495,7 @@ pub(crate) fn create_milkyway_set(
             conservative: false,
         },
         depth_stencil: None,
-        multisample: wgpu::MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
+        multisample: multisample_state(sample_count),
         fragment: Some(wgpu::FragmentState {
             module: &star_shader,
             entry_point: Some("fs_stars"),
@@ -1476,12 +1513,14 @@ pub(crate) fn create_milkyway_set(
     // occlude the additive star field behind them.
     let planets = create_scatter_columnar_pipeline_full(
         device, transform_bgl, style_bgl, target_format,
+        sample_count,
         "vs_planet", "fs_planet",
         Some(&tex_bgl),
         "figgy milkyway planets pipeline",
     );
     let jets = create_errorbar_columnar_pipeline_full(
         device, transform_bgl, style_bgl, target_format,
+        sample_count,
         "vs_jet", "fs_jet", additive,
         "figgy milkyway jets pipeline",
     );
@@ -1498,6 +1537,7 @@ pub(crate) fn create_point_constellation_set(
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
+    sample_count: u32,
 ) -> PointConstellationSet {
     let make_tex = |label: &str, w: u32, h: u32, data: &[u8]| {
         let tex = device.create_texture(&wgpu::TextureDescriptor {
@@ -1591,6 +1631,7 @@ pub(crate) fn create_point_constellation_set(
 
     let line = create_line_columnar_pipeline_with_entries(
         device, transform_bgl, style_bgl, target_format,
+        sample_count,
         "vs_main", "fs_constellation_line",
         wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
         wgpu::PrimitiveTopology::TriangleStrip,
@@ -1599,6 +1640,7 @@ pub(crate) fn create_point_constellation_set(
     );
     let stars = create_scatter_columnar_pipeline_full(
         device, transform_bgl, style_bgl, target_format,
+        sample_count,
         "vs_constellation_star", "fs_constellation_star",
         Some(&tex_bgl),
         "figgy point constellation stars pipeline",
@@ -1618,6 +1660,7 @@ pub(crate) fn create_line_columnar_pipeline_with_entries(
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
+    sample_count: u32,
     vs_entry: &str,
     fs_entry: &str,
     blend: wgpu::BlendState,
@@ -1731,11 +1774,7 @@ pub(crate) fn create_line_columnar_pipeline_with_entries(
             conservative: false,
         },
         depth_stencil: None,
-        multisample: wgpu::MultisampleState {
-            count: 1,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
+        multisample: multisample_state(sample_count),
         fragment: Some(wgpu::FragmentState {
             module: &shader,
             entry_point: Some(fs_entry),
@@ -1759,8 +1798,24 @@ pub fn create_scatter_columnar_pipeline(
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
+    create_scatter_columnar_pipeline_with_sample_count(
+        device,
+        transform_bgl,
+        style_bgl,
+        target_format,
+        1,
+    )
+}
+
+pub(crate) fn create_scatter_columnar_pipeline_with_sample_count(
+    device: &wgpu::Device,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
     create_scatter_columnar_pipeline_full(
-        device, transform_bgl, style_bgl, target_format,
+        device, transform_bgl, style_bgl, target_format, sample_count,
         "vs_main", "fs_main", None, "figgy scatter columnar pipeline",
     )
 }
@@ -1771,12 +1826,14 @@ pub(crate) fn create_scatter_columnar_pipeline_with_entries(
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
+    sample_count: u32,
     vs_entry: &str,
     fs_entry: &str,
     label: &str,
 ) -> wgpu::RenderPipeline {
     create_scatter_columnar_pipeline_full(
-        device, transform_bgl, style_bgl, target_format, vs_entry, fs_entry, None, label,
+        device, transform_bgl, style_bgl, target_format, sample_count,
+        vs_entry, fs_entry, None, label,
     )
 }
 
@@ -1789,6 +1846,7 @@ pub(crate) fn create_scatter_columnar_pipeline_full(
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
+    sample_count: u32,
     vs_entry: &str,
     fs_entry: &str,
     texture_bgl: Option<&wgpu::BindGroupLayout>,
@@ -1862,11 +1920,7 @@ pub(crate) fn create_scatter_columnar_pipeline_full(
             conservative: false,
         },
         depth_stencil: None,
-        multisample: wgpu::MultisampleState {
-            count: 1,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
+        multisample: multisample_state(sample_count),
         fragment: Some(wgpu::FragmentState {
             module: &shader,
             entry_point: Some(fs_entry),
@@ -1896,8 +1950,24 @@ pub fn create_errorbar_columnar_pipeline(
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
+    create_errorbar_columnar_pipeline_with_sample_count(
+        device,
+        transform_bgl,
+        style_bgl,
+        target_format,
+        1,
+    )
+}
+
+pub(crate) fn create_errorbar_columnar_pipeline_with_sample_count(
+    device: &wgpu::Device,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
     create_errorbar_columnar_pipeline_with_entries(
-        device, transform_bgl, style_bgl, target_format,
+        device, transform_bgl, style_bgl, target_format, sample_count,
         "vs_main", "figgy errorbar columnar pipeline",
     )
 }
@@ -1911,11 +1981,12 @@ pub(crate) fn create_errorbar_columnar_pipeline_with_entries(
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
+    sample_count: u32,
     vs_entry: &str,
     label: &str,
 ) -> wgpu::RenderPipeline {
     create_errorbar_columnar_pipeline_full(
-        device, transform_bgl, style_bgl, target_format,
+        device, transform_bgl, style_bgl, target_format, sample_count,
         vs_entry, "fs_main",
         wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
         label,
@@ -1930,6 +2001,7 @@ pub(crate) fn create_errorbar_columnar_pipeline_full(
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
+    sample_count: u32,
     vs_entry: &str,
     fs_entry: &str,
     blend: wgpu::BlendState,
@@ -2006,11 +2078,7 @@ pub(crate) fn create_errorbar_columnar_pipeline_full(
             conservative: false,
         },
         depth_stencil: None,
-        multisample: wgpu::MultisampleState {
-            count: 1,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
+        multisample: multisample_state(sample_count),
         fragment: Some(wgpu::FragmentState {
             module: &shader,
             entry_point: Some(fs_entry),

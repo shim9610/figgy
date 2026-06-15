@@ -114,6 +114,11 @@ if chart.consume_raster_dirty() {
 renderer.draw(clear, &items)?;
 ```
 
+`WindowedRenderer`는 WebGPU surface format이 지원하면 내부 4x(또는 2x) MSAA
+color target에 먼저 그리고 surface frame으로 resolve한다. 미지원 브라우저/포맷은
+1x로 fallback한다. 이 처리는 선분 rasterization coverage만 바꾸며 데이터 값,
+포인트 위치, dash arc length를 smoothing하지 않는다.
+
 dirty가 없으면 프레임 비용이 0에 수렴하므로 rAF 상시 구동도 무방하고,
 이벤트 시점에만 rAF를 예약하는 절전형도 그대로 성립한다.
 
@@ -212,6 +217,8 @@ pub async fn export_png(&self, scale: f32) -> Result<js_sys::Uint8Array, JsValue
 
 블로킹 `export_panel_png_bytes`는 웹에 존재하지 않는다(컴파일 제외) —
 실수로 메인 스레드를 데드락시킬 방법 자체가 없다.
+export도 지원 시 MSAA color target을 거친 뒤 single-sample `COPY_SRC` texture로
+resolve하고, 그 resolved texture만 `map_async` readback 대상으로 삼는다.
 
 ### 3.7 프리셋 — fieldless enum 그대로 노출
 

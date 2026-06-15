@@ -13,6 +13,7 @@ Embed in egui / iced / winit / any other wgpu host.
 
 - **GPU columnar pool**: all data columns share a single GPU buffer with first-fit alloc + ping-pong defrag on fragmentation. Upload caches scalar stats (min / max / smallest-positive) for auto-fit; per-point geometry such as the dashed-line arc-length prefix is computed in place by a compute scan (`line_arc.wgsl`).
 - **Layered compositing**: grid → data → axis/label/legend, so grid never covers the data. Axis raster can be produced as `Grid` and `Decoration` layers; `AxisLayerKind::All` remains a legacy single-pass helper.
+- **MSAA resolve quality**: `WindowedRenderer` live frames and offscreen PNG export use a 4x (or 2x) MSAA render target when the adapter/format supports resolve, falling back to 1x. This changes only rasterization coverage at primitive edges; data points, line segments, dash arc lengths, and export scale semantics are unchanged.
 - **Headless PNG export**: GPU offscreen raster at arbitrary DPI → RGBA / PNG bytes in memory (async-first; blocking wrappers on native).
 - **Interaction layer (opt-in)**: hit-testing, selection boxes, drag (axes constrained to their perpendicular, detached-axis `line_offset`), PPT-style 8-handle resize of the data area — all policy in `model`, fed by host pointer events; never runs if you don't wire it.
 - **Rich-text everywhere**: titles, tick labels, and the legend share one engine — per-segment bold/italic/underline/sub/superscript/greek, per-segment color & size overrides, `'\n'` line breaks, `'\t'` table columns, fixed-width legend symbol fields.
@@ -127,6 +128,8 @@ let items  = [ChartDrawItem {
 renderer.draw(Color::WHITE, &items).unwrap();   // acquire surface frame → encoder → pass → paint → submit → present
 ```
 
+`WindowedRenderer` may insert an internal MSAA color target before the surface and resolve into the acquired frame. Hosts that call `Renderer::paint` directly still own their render pass sample count.
+
 ### `ColumnSource` — the data adapter trait
 
 `Renderer::add_column` takes `&dyn ColumnSource` — implement the trait on any container of yours and the data lands in the GPU pool with zero copy (no intermediate `Vec` allocation). The upload pass reads the freshly written bytes once to cache scalar stats (min / max / smallest-positive) for auto-fit.
@@ -235,6 +238,7 @@ let img = renderer.export_panel_rgba(&chart, &series_configs, scale)?;
 Convert from standard 96 DPI via `renderer::dpi_to_scale(dpi)`.
 
 When scaling, every pixel-based dimension (font / line / margin / grid / legend) scales proportionally → the visual is identical, just denser pixels.
+When the target format supports it, export renders into an MSAA color target and resolves into the single-sample `COPY_SRC` texture used for readback. The source data and geometry are not smoothed.
 
 ---
 
@@ -449,7 +453,8 @@ export_panel_rgba(chart, &[SeriesConfig], scale):
     temp ChartView (scaled axis textures)
     temp ChartStyles ← create_style_for_series_scaled(cfg, scale) per cfg
         ↓
-    offscreen wgpu::Texture (fixed Rgba8Unorm, COPY_SRC, transparent clear)
+    offscreen wgpu::Texture (fixed Rgba8Unorm, COPY_SRC, transparent clear;
+    optional MSAA color target resolves into this readback texture)
     paint(items) — same compositing order (grid → data → decoration)
         ↓
     copy_texture_to_buffer in ROW CHUNKS (256-byte aligned padding; chunk
@@ -490,6 +495,7 @@ egui / iced / winit / 기타 wgpu 호스트 어디든 임베드 가능.
 
 - **GPU columnar pool**: 모든 데이터 컬럼을 하나의 GPU buffer 에 first-fit + 단편화 시 핑퐁 defrag. 업로드 시 auto-fit 용 스칼라 통계(min / max / 최소 양수)를 캐싱하고, 점선 호장 prefix 같은 per-point 지오메트리는 컴퓨트 스캔(`line_arc.wgsl`)이 제자리에서 계산.
 - **분리 합성**: grid → data → axis/label/legend 순으로 합성 → 그리드가 데이터를 가리지 않음. axis raster는 `Grid` / `Decoration` 분리 레이어가 기본이고, `AxisLayerKind::All`은 legacy 단일 패스 helper로 남아 있음.
+- **MSAA resolve 품질**: `WindowedRenderer` live frame과 offscreen PNG export는 adapter/format이 resolve를 지원하면 4x(또는 2x) MSAA render target을 쓰고, 미지원 시 1x로 fallback한다. 바뀌는 것은 primitive edge의 rasterization coverage뿐이며 데이터 포인트, 선분, dash arc length, export scale 의미는 바뀌지 않는다.
 - **헤드리스 PNG export**: 임의 DPI 로 GPU offscreen 라스터 → 메모리 RGBA / PNG 바이트 반환 (async 우선, native 는 blocking 래퍼 제공).
 - **상호작용 레이어 (opt-in)**: 히트테스트, 선택 박스, 드래그(축은 수직 방향 제약 + 분리 축 `line_offset`), 데이터 영역 PPT 식 8핸들 리사이즈 — 정책은 전부 `model`, 호스트가 포인터 이벤트를 넣을 때만 동작.
 - **리치텍스트 일원화**: 제목·틱 라벨·범례가 한 엔진 공유 — 세그먼트별 bold/italic/밑줄/첨자/그리스, 세그먼트별 색·크기 오버라이드, `'\n'` 줄바꿈, `'\t'` 표 열, 고정폭 범례 심볼 필드.
@@ -604,6 +610,8 @@ let items  = [ChartDrawItem {
 renderer.draw(Color::WHITE, &items).unwrap();   // surface frame 획득 → encoder → pass → paint → submit → present
 ```
 
+`WindowedRenderer` 는 내부 MSAA color target을 surface 앞에 두고 획득한 frame으로 resolve할 수 있다. `Renderer::paint`를 직접 호출하는 host는 여전히 자신이 여는 render pass의 sample count를 직접 소유한다.
+
 ### `ColumnSource` — 데이터 어댑터 trait
 
 `Renderer::add_column` 의 시그니처는 `&dyn ColumnSource` 입니다 — 어떤 데이터 컨테이너든 본인 타입에 trait 구현하면 GPU pool 에 zero-copy 로 들어갑니다 (`Vec` 중간 alloc 0). 업로드 패스가 갓 쓴 바이트를 한 번 읽어 auto-fit 용 스칼라 통계(min / max / 최소 양수)를 캐싱합니다.
@@ -712,6 +720,7 @@ let img = renderer.export_panel_rgba(&chart, &series_configs, scale)?;
 `renderer::dpi_to_scale(dpi)` 로 표준 DPI(96) 기준 변환.
 
 스케일 시 모든 픽셀 dim (폰트 / 선 / 마진 / 그리드 / 범례) 비례 확대 → 시각적 동치, 픽셀만 더 촘촘.
+target format이 지원하면 export는 MSAA color target에 렌더한 뒤 readback용 single-sample `COPY_SRC` texture로 resolve한다. 원본 데이터와 지오메트리는 smoothing하지 않는다.
 
 ---
 
@@ -922,7 +931,8 @@ export_panel_rgba(chart, &[SeriesConfig], scale):
     임시 ChartView (스케일된 axis 텍스처)
     임시 ChartStyle 들 ← create_style_for_series_scaled(cfg, scale) per cfg
         ↓
-    offscreen wgpu::Texture (고정 Rgba8Unorm, COPY_SRC, transparent clear)
+    offscreen wgpu::Texture (고정 Rgba8Unorm, COPY_SRC, transparent clear;
+    선택적 MSAA color target이 이 readback texture로 resolve)
     paint(items) — 동일 합성 순서 (grid → data → decoration)
         ↓
     copy_texture_to_buffer 를 **행 청크** 로 (256 byte 정렬 padding; 청크
