@@ -86,6 +86,7 @@ impl RendererDeviceCaps {
 /// A dashed series' GPU arc-length prefix: the buffer (bound as the line
 /// pipeline's vertex slots 4/5) and its used byte length.
 type ArcPrefix = (Arc<wgpu::Buffer>, u64);
+const ARC_PREFIX_CACHE_LIMIT: usize = 256;
 
 /// Facade bundling every figgy GPU resource.
 pub struct Renderer {
@@ -1854,8 +1855,12 @@ impl Renderer {
         let t = data_render::scatter_transform_from_config(chart_config);
 
         // Runaway-churn backstop: ids of long-removed series would otherwise
-        // pin GPU memory forever. Rebuilt on demand, so clearing is safe.
-        if self.arc_cache.len() > 256 {
+        // pin GPU memory forever. Existing-key rebuilds replace in place, but
+        // new-key inserts must not let the cache grow past the cap.
+        let has_cached_series = self.arc_cache.contains_key(series_id);
+        if self.arc_cache.len() > ARC_PREFIX_CACHE_LIMIT
+            || (!has_cached_series && self.arc_cache.len() >= ARC_PREFIX_CACHE_LIMIT)
+        {
             self.arc_cache.clear();
         }
         let stale = self.arc_cache.get(series_id).is_none_or(|s| {
@@ -3346,6 +3351,60 @@ mod tests {
                     "{case}: arc[{i}] gpu={g} cpu={c} (total {total})"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn arc_prefix_cache_never_exceeds_limit_on_new_series_churn() {
+        let inst = create_instance();
+        let Ok(adapter) = request_adapter(&inst) else {
+            return;
+        };
+        let Ok((device, queue)) = request_device(&adapter) else {
+            return;
+        };
+        let device = Arc::new(device);
+        let queue = Arc::new(queue);
+
+        let mut r = Renderer::try_new(
+            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+            wgpu::TextureFormat::Bgra8Unorm,
+            1024 * 1024,
+        )
+        .unwrap();
+        r.add_column("arc_cache_x", &col_f64(vec![0.0, 0.5, 1.0]))
+            .unwrap();
+        r.add_column("arc_cache_y", &col_f64(vec![0.0, 1.0, 0.25]))
+            .unwrap();
+
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 240,
+        });
+        let mut chart = Chart::new(config);
+        chart.set_x_range(0.0, 1.0);
+        chart.set_y_range(0.0, 1.0);
+
+        for i in 0..=ARC_PREFIX_CACHE_LIMIT {
+            let series_id = format!("arc-cache-series-{i}");
+            assert!(
+                r.ensure_arc_prefix(
+                    &series_id,
+                    "arc_cache_x",
+                    "arc_cache_y",
+                    chart.config(),
+                    None,
+                )
+                .is_some()
+            );
+            assert!(
+                r.arc_cache.len() <= ARC_PREFIX_CACHE_LIMIT,
+                "arc cache exceeded limit after inserting {series_id}: {}",
+                r.arc_cache.len()
+            );
         }
     }
 
