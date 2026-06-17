@@ -27,10 +27,6 @@
 // doubles as the line pipeline's vertex slots 4/5.
 
 // ───── BEGIN common block (SHADER_COMMON.md) ─────
-// WGSL has no import. The Transform/maybe_log/data_to_ndc definitions below
-// are duplicated across the data shaders. To modify any of them, FIRST edit
-// src/data_render/SHADER_COMMON.md, then mirror the change into every
-// sibling shader. Do not edit only one file.
 struct Transform {
     data_min: vec2<f32>,
     data_max: vec2<f32>,

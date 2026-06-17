@@ -17,11 +17,6 @@
 // computed err endpoints.
 
 // ───── BEGIN common block (SHADER_COMMON.md) ─────
-// WGSL has no import. The Transform/Style/binding/maybe_log/data_to_ndc
-// definitions below are duplicated across scatter/line/errorbar shaders.
-// To modify any of them, FIRST edit src/data_render/SHADER_COMMON.md,
-// then mirror the change into every sibling shader. Do not edit only one
-// file — silent drift here causes very hard-to-debug rendering bugs.
 struct Transform {
     data_min: vec2<f32>,
     data_max: vec2<f32>,
@@ -60,16 +55,6 @@ struct Style {
 
 @group(1) @binding(0) var<uniform> style: Style;
 
-struct VsIn {
-    @builtin(vertex_index) vi: u32,
-    @location(0) x: f32,
-    @location(1) y: f32,
-    @location(2) err_y_lo: f32,
-    @location(3) err_y_hi: f32,
-    @location(4) err_x_lo: f32,
-    @location(5) err_x_hi: f32,
-};
-
 fn maybe_log(v: f32, is_log: f32) -> f32 {
     let lv = log(max(v, 1e-30)) / log(10.0);
     return mix(v, lv, is_log);
@@ -83,6 +68,16 @@ fn data_to_ndc(v: vec2<f32>) -> vec2<f32> {
     return t * 2.0 - 1.0;
 }
 // ───── END common block ─────
+
+struct VsIn {
+    @builtin(vertex_index) vi: u32,
+    @location(0) x: f32,
+    @location(1) y: f32,
+    @location(2) err_y_lo: f32,
+    @location(3) err_y_hi: f32,
+    @location(4) err_x_lo: f32,
+    @location(5) err_x_hi: f32,
+};
 
 @vertex
 fn vs_main(in: VsIn) -> @builtin(position) vec4<f32> {

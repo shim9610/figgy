@@ -2,9 +2,9 @@
 //!
 //! WGSL has no `import`/`include`. The `Transform` / `Style` / `maybe_log` /
 //! `data_to_ndc` definitions are therefore duplicated across
-//! `scatter_columnar.wgsl`, `line_columnar.wgsl`, and `errorbar_columnar.wgsl`.
-//! `src/data_render/SHADER_COMMON.md` is the single source of truth for those
-//! duplicates.
+//! `scatter_columnar.wgsl`, `line_columnar.wgsl`, `errorbar_columnar.wgsl`,
+//! and the `line_arc.wgsl` compute shader. `src/data_render/SHADER_COMMON.md`
+//! is the single source of truth for those duplicates.
 //!
 //! This test parses SHADER_COMMON.md for fenced WGSL blocks that are marked
 //! with a metadata comment of the form
@@ -12,9 +12,10 @@
 //!     <!-- shader-common: applies-to=scatter,line,errorbar -->
 //!
 //! immediately before the fence. For each such block it verifies that every
-//! listed shader file contains the same block, byte-for-byte, inside its
-//! `BEGIN common block` / `END common block` region. Any drift fails the test
-//! with a clear diff-style report.
+//! listed shader file's `BEGIN common block` / `END common block` region
+//! exactly equals the SSoT blocks that apply to that shader, concatenated in
+//! SSoT order. Extra local structs, comments, or stale definitions inside the
+//! region fail the test with a clear diff-style report.
 //!
 //! Run manually with:
 //!     cargo test --test shader_consistency
@@ -29,6 +30,7 @@ use std::path::PathBuf;
 const SSOT_PATH: &str = "src/data_render/SHADER_COMMON.md";
 const BEGIN_MARKER: &str = "// ───── BEGIN common block";
 const END_MARKER: &str = "// ───── END common block";
+const TARGETS: &[&str] = &["scatter", "line", "errorbar", "arc"];
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -60,9 +62,6 @@ fn shader_path_for(short: &str) -> &'static str {
 struct CommonBlock {
     applies_to: Vec<String>,
     body: String,
-    /// 1-based line number in SHADER_COMMON.md where this block opens.
-    /// Used to make error messages locatable.
-    md_line: usize,
 }
 
 /// Parse all `<!-- shader-common: applies-to=... -->` markers followed by a
@@ -110,7 +109,6 @@ fn parse_ssot_blocks(md: &str) -> Vec<CommonBlock> {
             blocks.push(CommonBlock {
                 applies_to: applies,
                 body,
-                md_line: marker_line,
             });
             i = k + 1;
         } else {
@@ -168,6 +166,25 @@ fn shader_common_region(shader: &str, path: &str) -> String {
     shader[after_begin..end].to_string()
 }
 
+fn expected_region_for(blocks: &[CommonBlock], short: &str) -> String {
+    let chunks: Vec<&str> = blocks
+        .iter()
+        .filter(|block| block.applies_to.iter().any(|target| target == short))
+        .map(|block| block.body.as_str())
+        .collect();
+    assert!(
+        !chunks.is_empty(),
+        "{} contains no SSoT block for shader target `{}`",
+        SSOT_PATH,
+        short
+    );
+    chunks.join("\n\n")
+}
+
+fn trim_outer_blank_lines(s: &str) -> &str {
+    s.trim_matches('\n')
+}
+
 #[test]
 fn shader_common_blocks_match_ssot() {
     let md = read(SSOT_PATH);
@@ -178,45 +195,42 @@ fn shader_common_blocks_match_ssot() {
         SSOT_PATH
     );
 
-    // Cache each shader's common region — we'll probe it multiple times.
     let mut shader_cache: HashMap<&str, String> = HashMap::new();
     let mut failures: Vec<String> = Vec::new();
 
-    for block in &blocks {
-        for short in &block.applies_to {
-            let path = shader_path_for(short);
-            let region = shader_cache.entry(path).or_insert_with(|| {
-                let raw = read(path);
-                shader_common_region(&raw, path)
-            });
+    for short in TARGETS {
+        let path = shader_path_for(short);
+        let region = shader_cache.entry(path).or_insert_with(|| {
+            let raw = read(path);
+            shader_common_region(&raw, path)
+        });
+        let expected = expected_region_for(&blocks, short);
+        let actual = trim_outer_blank_lines(region);
 
-            if !region.contains(&block.body) {
-                failures.push(format!(
-                    "----------------------------------------------------------------\n\
-                     SHADER_COMMON.md (line {}) → {}\n\
-                     Block does NOT appear verbatim inside the BEGIN/END common region.\n\
-                     \n\
-                     --- Expected (from SSoT) ---\n\
-                     {}\n\
-                     --- Actual common region of {} ---\n\
-                     {}\n",
-                    block.md_line,
-                    path,
-                    block.body,
-                    path,
-                    region.trim_end()
-                ));
-            }
+        if actual != expected {
+            failures.push(format!(
+                "----------------------------------------------------------------\n\
+                 SHADER_COMMON.md → {}\n\
+                 Common region does NOT exactly equal the SSoT blocks for `{}`.\n\
+                 Extra local WGSL inside the common block is not allowed.\n\
+                 \n\
+                 --- Expected common region (SSoT order) ---\n\
+                 {}\n\
+                 --- Actual common region of {} ---\n\
+                 {}\n",
+                path, short, expected, path, actual
+            ));
         }
     }
 
     if !failures.is_empty() {
         panic!(
-            "\nSHADER_COMMON.md SSoT check failed for {} block-shader pair(s).\n\
+            "\nSHADER_COMMON.md SSoT check failed for {} shader(s).\n\
              Fix order:\n  \
              1. Open src/data_render/SHADER_COMMON.md and confirm the canonical text.\n  \
-             2. Copy that exact text into the BEGIN/END common region of each named shader.\n  \
-             3. Re-run `cargo test --test shader_consistency`.\n\n{}",
+             2. Copy only the SSoT blocks for that shader into its BEGIN/END common region.\n  \
+             3. Move shader-local structs/comments outside the common region.\n  \
+             4. Re-run `cargo test --test shader_consistency`.\n\n{}",
             failures.len(),
             failures.join("\n")
         );
@@ -262,7 +276,7 @@ fn no_bare_texture_sample_in_any_shader() {
 
 #[test]
 fn every_targeted_shader_has_begin_end_markers() {
-    for short in ["scatter", "line", "errorbar", "arc"] {
+    for short in TARGETS {
         let path = shader_path_for(short);
         let raw = read(path);
         assert!(

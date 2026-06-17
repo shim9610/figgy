@@ -25,11 +25,6 @@
 // dash_len == 0.
 
 // ───── BEGIN common block (SHADER_COMMON.md) ─────
-// WGSL has no import. The Transform/Style/binding/maybe_log/data_to_ndc
-// definitions below are duplicated across scatter/line/errorbar shaders.
-// To modify any of them, FIRST edit src/data_render/SHADER_COMMON.md,
-// then mirror the change into every sibling shader. Do not edit only one
-// file — silent drift here causes very hard-to-debug rendering bugs.
 struct Transform {
     data_min: vec2<f32>,
     data_max: vec2<f32>,
@@ -68,13 +63,6 @@ struct Style {
 
 @group(1) @binding(0) var<uniform> style: Style;
 
-struct VsIn {
-    @location(0) x_a: f32,
-    @location(1) y_a: f32,
-    @location(2) x_b: f32,
-    @location(3) y_b: f32,
-};
-
 fn maybe_log(v: f32, is_log: f32) -> f32 {
     let lv = log(max(v, 1e-30)) / log(10.0);
     return mix(v, lv, is_log);
@@ -88,6 +76,13 @@ fn data_to_ndc(xv: f32, yv: f32) -> vec2<f32> {
     return t * 2.0 - 1.0;
 }
 // ───── END common block ─────
+
+struct VsIn {
+    @location(0) x_a: f32,
+    @location(1) y_a: f32,
+    @location(2) x_b: f32,
+    @location(3) y_b: f32,
+};
 
 // Line-only extra instance inputs (outside the common block): cumulative
 // arc length at the segment's two endpoints, from the CPU-built prefix.
