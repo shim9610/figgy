@@ -348,7 +348,7 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::paint` branches 
 | `DataLineStyleConfig` | `line_style, line_color, line_width` | Line appearance |
 | `DataScatterStyleConfig` | `point_color, point_shape, point_size` | Point appearance |
 | `DataErrorBarStyleConfig` | `error_bar_color, _width, _cap_size, cap_width` | Errorbar appearance |
-| `ScatterShape` | enum, 9 variants | Circle / Square / Triangle / Diamond / Cross + filled variants |
+| `ScatterShape` | enum, 26 variants | Circle / Square / Triangle directions / Diamond / Cross / Plus / Pentagon / Hexagon / Octagon / Star + filled variants |
 
 **The 9 `DataRenderType` variants**:
 
@@ -829,7 +829,7 @@ pub struct Config {
 | `DataLineStyleConfig` | `line_style, line_color, line_width` | 라인 외형 |
 | `DataScatterStyleConfig` | `point_color, point_shape, point_size` | 점 외형 |
 | `DataErrorBarStyleConfig` | `error_bar_color, _width, _cap_size, cap_width` | 에러바 외형 |
-| `ScatterShape` | enum 9 변종 | Circle / Square / Triangle / Diamond / Cross + filled 변형 |
+| `ScatterShape` | enum 26 변종 | Circle / Square / Triangle directions / Diamond / Cross / Plus / Pentagon / Hexagon / Octagon / Star + filled variants |
 
 **`DataRenderType` 변종 9 개**:
 

@@ -798,7 +798,7 @@ pub struct PrimitiveStyle {
     pub cap_half_px: f32,         // offset 24
     /// Errorbar cap stroke thickness in pixels.
     pub cap_width_px: f32,        // offset 28
-    /// `ScatterShape` declaration-order index — see [`shape_id`].
+    /// Stable GPU marker-shape code — see [`shape_id`].
     pub shape_id: u32,            // offset 32
     /// Number of valid scalars in `dash`; 0 = solid.
     pub dash_len: u32,            // offset 36
@@ -843,8 +843,7 @@ impl PrimitiveStyle {
     }
 }
 
-/// Map a [`ScatterShape`] to the `Style.shape_id` uniform value — the
-/// declaration-order index of the variant in the model enum.
+/// Map a [`ScatterShape`] to the stable `Style.shape_id` uniform value.
 pub fn shape_id(shape: &ScatterShape) -> u32 {
     match shape {
         ScatterShape::Circle => 0,
@@ -856,6 +855,23 @@ pub fn shape_id(shape: &ScatterShape) -> u32 {
         ScatterShape::SquareFilled => 6,
         ScatterShape::TriangleFilled => 7,
         ScatterShape::DiamondFilled => 8,
+        ScatterShape::TriangleDown => 9,
+        ScatterShape::TriangleLeft => 10,
+        ScatterShape::TriangleRight => 11,
+        ScatterShape::Plus => 12,
+        ScatterShape::Pentagon => 13,
+        ScatterShape::Hexagon => 14,
+        ScatterShape::Octagon => 15,
+        ScatterShape::Star => 16,
+        ScatterShape::TriangleDownFilled => 17,
+        ScatterShape::TriangleLeftFilled => 18,
+        ScatterShape::TriangleRightFilled => 19,
+        ScatterShape::PlusFilled => 20,
+        ScatterShape::CrossFilled => 21,
+        ScatterShape::PentagonFilled => 22,
+        ScatterShape::HexagonFilled => 23,
+        ScatterShape::OctagonFilled => 24,
+        ScatterShape::StarFilled => 25,
     }
 }
 

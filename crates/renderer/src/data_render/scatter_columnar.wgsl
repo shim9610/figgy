@@ -4,13 +4,10 @@
 // slot 1: X column (per-instance, f32).
 // slot 2: Y column (per-instance, f32).
 //
-// Marker shapes — style.shape_id, ScatterShape declaration order
-// (see mod.rs::shape_id()):
-//   0 Circle   1 Square   2 Triangle   3 Diamond   4 Cross (×)
-//   5 CircleFilled   6 SquareFilled   7 TriangleFilled   8 DiamondFilled
-// 0..3 stroke a ~1.5 px outline on the shape contour, 4 strokes the two
-// diagonals, 5..8 fill the interior. All shapes are evaluated as signed
-// distances in pixel space (see fs_main).
+// Marker shapes — style.shape_id is the stable code from mod.rs::shape_id().
+// Existing ids 0..8 are kept compatible; newer scientific-plot symbols append
+// after them. Shape decoding below maps those ids to compact SDF base shapes
+// plus an open/filled flag.
 
 // ───── BEGIN common block (SHADER_COMMON.md) ─────
 // WGSL has no import. The Transform/Style/binding/maybe_log definitions
@@ -77,7 +74,10 @@ fn maybe_log(v: f32, is_log: f32) -> f32 {
 // rather than defining it as a function. The inline formula must match
 // SHADER_COMMON.md §4 (4a / 4b are equivalent).
 
-// Quad half-extent in pixels = point_radius_px + QUAD_MARGIN_PX. Outline
+// Quad half-extent in pixels = shape-specific axis extent + QUAD_MARGIN_PX.
+// `point_radius_px` is the circle reference radius; non-circular shapes are
+// normalized below so the same marker size has a similar visual weight.
+// Outline
 // strokes are centered on the shape contour, so they reach up to
 // STROKE_HALF_PX plus the AA feather (~1 px) beyond the radius; without
 // the margin the quad edge would clip them. fs_main must reconstruct
@@ -86,6 +86,64 @@ const QUAD_MARGIN_PX: f32 = 2.0;
 // Half-width of the ~1.5 px contour stroke (outline shapes and Cross).
 const STROKE_HALF_PX: f32 = 0.75;
 
+const MARKER_PI: f32 = 3.14159265359;
+const MARKER_HALF_PI: f32 = 1.57079632679;
+const STAR_INNER_RATIO: f32 = 0.5;
+
+fn shape_is_filled(shape_id: u32) -> bool {
+    return (shape_id >= 5u && shape_id <= 8u) || shape_id >= 17u;
+}
+
+fn base_shape_id(shape_id: u32) -> u32 {
+    switch shape_id {
+        case 5u: { return 0u; }   // CircleFilled
+        case 6u: { return 1u; }   // SquareFilled
+        case 7u: { return 2u; }   // TriangleFilled
+        case 8u: { return 3u; }   // DiamondFilled
+        case 9u: { return 5u; }   // TriangleDown
+        case 10u: { return 6u; }  // TriangleLeft
+        case 11u: { return 7u; }  // TriangleRight
+        case 12u: { return 8u; }  // Plus
+        case 13u: { return 9u; }  // Pentagon
+        case 14u: { return 10u; } // Hexagon
+        case 15u: { return 11u; } // Octagon
+        case 16u: { return 12u; } // Star
+        case 17u: { return 5u; }  // TriangleDownFilled
+        case 18u: { return 6u; }  // TriangleLeftFilled
+        case 19u: { return 7u; }  // TriangleRightFilled
+        case 20u: { return 8u; }  // PlusFilled
+        case 21u: { return 4u; }  // CrossFilled
+        case 22u: { return 9u; }  // PentagonFilled
+        case 23u: { return 10u; } // HexagonFilled
+        case 24u: { return 11u; } // OctagonFilled
+        case 25u: { return 12u; } // StarFilled
+        default: { return shape_id; }
+    }
+}
+
+// Shape-local radius/half-extent relative to the circle reference radius.
+// Filled polygon markers are area-matched to a circle of radius r.
+fn visual_shape_radius(base: u32, r: f32) -> f32 {
+    var scale = 1.0;
+    switch base {
+        case 1u: { scale = 0.88622695; }  // square sqrt(pi)/2
+        case 2u, 5u, 6u, 7u: { scale = 1.55512030; } // triangles
+        case 3u: { scale = 1.25331414; }  // diamond sqrt(pi/2)
+        case 9u: { scale = 1.14913986; }  // pentagon
+        case 10u: { scale = 1.09963611; } // hexagon
+        case 11u: { scale = 1.05390737; } // octagon
+        case 12u: { scale = 1.46285033; } // 5-point star, inner ratio 0.5
+        default: {}
+    }
+    return r * scale;
+}
+
+fn rotate2(p: vec2<f32>, a: f32) -> vec2<f32> {
+    let c = cos(a);
+    let s = sin(a);
+    return vec2<f32>(c * p.x - s * p.y, s * p.x + c * p.y);
+}
+
 @vertex
 fn vs_main(in: VsIn) -> VsOut {
     let xv = maybe_log(in.x, transform.scale_log.x);
@@ -93,7 +151,8 @@ fn vs_main(in: VsIn) -> VsOut {
     let range = transform.data_max - transform.data_min;
     let t = (vec2<f32>(xv, yv) - transform.data_min) / range;
     let center_ndc = t * 2.0 - 1.0;
-    let half_px = style.point_radius_px + QUAD_MARGIN_PX;
+    let half_px =
+        visual_shape_radius(base_shape_id(style.shape_id), style.point_radius_px) + QUAD_MARGIN_PX;
     let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
 
     var out: VsOut;
@@ -112,6 +171,66 @@ fn sd_segment(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
     return length(pa - ba * h);
 }
 
+fn sd_box(p: vec2<f32>, b: vec2<f32>) -> f32 {
+    let q = abs(p) - b;
+    return length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0);
+}
+
+fn regular_vertex(i: u32, n: u32, r: f32, rot: f32) -> vec2<f32> {
+    let a = rot + f32(i) * (2.0 * MARKER_PI / f32(n));
+    return vec2<f32>(cos(a), sin(a)) * r;
+}
+
+fn star_vertex(i: u32, r: f32) -> vec2<f32> {
+    let outer = (i % 2u) == 0u;
+    let rr = select(r * STAR_INNER_RATIO, r, outer);
+    let a = MARKER_HALF_PI + f32(i) * MARKER_PI / 5.0;
+    return vec2<f32>(cos(a), sin(a)) * rr;
+}
+
+fn sd_regular_polygon(p: vec2<f32>, n: u32, r: f32, rot: f32) -> f32 {
+    var min_d = 1e20;
+    var inside = false;
+    var prev = regular_vertex(n - 1u, n, r, rot);
+    for (var i = 0u; i < n; i = i + 1u) {
+        let curr = regular_vertex(i, n, r, rot);
+        min_d = min(min_d, sd_segment(p, prev, curr));
+        if ((curr.y > p.y) != (prev.y > p.y)) {
+            let x_at_y = (prev.x - curr.x) * (p.y - curr.y) / (prev.y - curr.y) + curr.x;
+            if (p.x < x_at_y) {
+                inside = !inside;
+            }
+        }
+        prev = curr;
+    }
+    return select(min_d, -min_d, inside);
+}
+
+fn sd_star(p: vec2<f32>, r: f32) -> f32 {
+    var min_d = 1e20;
+    var inside = false;
+    var prev = star_vertex(9u, r);
+    for (var i = 0u; i < 10u; i = i + 1u) {
+        let curr = star_vertex(i, r);
+        min_d = min(min_d, sd_segment(p, prev, curr));
+        if ((curr.y > p.y) != (prev.y > p.y)) {
+            let x_at_y = (prev.x - curr.x) * (p.y - curr.y) / (prev.y - curr.y) + curr.x;
+            if (p.x < x_at_y) {
+                inside = !inside;
+            }
+        }
+        prev = curr;
+    }
+    return select(min_d, -min_d, inside);
+}
+
+fn sd_plus_filled(p: vec2<f32>, r: f32) -> f32 {
+    let arm = max(r * 0.32, STROKE_HALF_PX);
+    let h = sd_box(p, vec2<f32>(r, arm));
+    let v = sd_box(p, vec2<f32>(arm, r));
+    return min(h, v);
+}
+
 // Exact SDF of an equilateral point-up triangle centered on the origin,
 // vertices on the circle of radius `r` (same inscribed sizing as the
 // diamond). `p_in` is y-up (NDC orientation), so the apex points up on
@@ -127,24 +246,44 @@ fn sd_triangle(p_in: vec2<f32>, r: f32) -> f32 {
     return -length(p) * sign(p.y);
 }
 
-// Signed pixel distance from `p` to the contour of `base` shape
-// (0 circle, 1 square, 2 triangle, 3 diamond, 4 cross). Circle and square
-// use radius r directly; triangle and diamond put their vertices on the
-// radius-r circle. The cross is the two diagonals of the square inscribed
-// in that circle; its distance is unsigned (zero on the strokes), which
-// is exactly what the contour-stroke alpha needs.
-fn shape_distance(base: u32, p: vec2<f32>, r: f32) -> f32 {
+// Signed pixel distance from `p` to the contour of `base` shape. For open
+// plus/cross, the distance is unsigned to the center strokes; the outline
+// alpha path below turns that into a visible stroke.
+fn shape_distance(base: u32, p: vec2<f32>, r: f32, filled: bool) -> f32 {
     var d: f32;
     switch base {
         case 0u: { d = length(p) - r; }
         case 1u: { d = max(abs(p.x), abs(p.y)) - r; }
         case 2u: { d = sd_triangle(p, r); }
         case 3u: { d = abs(p.x) + abs(p.y) - r; }
-        default: { // 4u: Cross
-            let c = r * 0.70710678; // r / sqrt(2)
-            let d1 = sd_segment(p, vec2<f32>(-c, -c), vec2<f32>(c, c));
-            let d2 = sd_segment(p, vec2<f32>(-c, c), vec2<f32>(c, -c));
-            d = min(d1, d2);
+        case 4u: { // Cross / x
+            let c = r;
+            if (filled) {
+                d = sd_plus_filled(rotate2(p, MARKER_PI * 0.25), c);
+            } else {
+                let d1 = sd_segment(p, vec2<f32>(-c, -c), vec2<f32>(c, c));
+                let d2 = sd_segment(p, vec2<f32>(-c, c), vec2<f32>(c, -c));
+                d = min(d1, d2);
+            }
+        }
+        case 5u: { d = sd_triangle(-p, r); }
+        case 6u: { d = sd_triangle(rotate2(p, -MARKER_HALF_PI), r); }
+        case 7u: { d = sd_triangle(rotate2(p, MARKER_HALF_PI), r); }
+        case 8u: { // Plus / +
+            let c = r;
+            if (filled) {
+                d = sd_plus_filled(p, c);
+            } else {
+                let d1 = sd_segment(p, vec2<f32>(-c, 0.0), vec2<f32>(c, 0.0));
+                let d2 = sd_segment(p, vec2<f32>(0.0, -c), vec2<f32>(0.0, c));
+                d = min(d1, d2);
+            }
+        }
+        case 9u: { d = sd_regular_polygon(p, 5u, r, MARKER_HALF_PI); }
+        case 10u: { d = sd_regular_polygon(p, 6u, r, MARKER_HALF_PI); }
+        case 11u: { d = sd_regular_polygon(p, 8u, r, MARKER_HALF_PI); }
+        default: { // 12u: Star
+            d = sd_star(p, r);
         }
     }
     return d;
@@ -153,15 +292,14 @@ fn shape_distance(base: u32, p: vec2<f32>, r: f32) -> f32 {
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let r = style.point_radius_px;
+    let filled = shape_is_filled(style.shape_id);
+    let base = base_shape_id(style.shape_id);
+    let visual_r = visual_shape_radius(base, r);
     // Pixel-space position — same expanded scale as the vs_main quad, so
     // one unit here is one screen pixel.
-    let p = in.local_pos * (r + QUAD_MARGIN_PX);
+    let p = in.local_pos * (visual_r + QUAD_MARGIN_PX);
 
-    // shape_id 5..8 are the filled twins of 0..3; 4 (Cross) is stroke-only.
-    let filled = style.shape_id >= 5u;
-    let base = select(style.shape_id, style.shape_id - 5u, filled);
-
-    let d = shape_distance(base, p, r);
+    let d = shape_distance(base, p, visual_r, filled);
     let aa = fwidth(d);
     // Filled: cover d < 0. Outline/Cross: ~1.5 px stroke centered on the
     // d == 0 contour.
@@ -225,7 +363,9 @@ fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> VsSketchOut {
 
     let amp = max(transform.style_params[0].x, 0.0);
     let wobble = min(amp * 0.5, style.point_radius_px * 0.35);
-    let half_px = style.point_radius_px + QUAD_MARGIN_PX + wobble;
+    let half_px = visual_shape_radius(base_shape_id(style.shape_id), style.point_radius_px)
+        + QUAD_MARGIN_PX
+        + wobble;
     let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
 
     var out: VsSketchOut;
@@ -248,14 +388,14 @@ const SKETCH_CONTOUR_WOBBLES: f32 = 6.0;
 @fragment
 fn fs_sketch(in: VsSketchOut) -> @location(0) vec4<f32> {
     let r = style.point_radius_px;
+    let filled = shape_is_filled(style.shape_id);
+    let base = base_shape_id(style.shape_id);
+    let visual_r = visual_shape_radius(base, r);
     // Pixel-space position — same expanded scale as the vs_sketch quad.
-    let p = in.local_pos * (r + QUAD_MARGIN_PX + in.wobble_px);
-
-    let filled = style.shape_id >= 5u;
-    let base = select(style.shape_id, style.shape_id - 5u, filled);
+    let p = in.local_pos * (visual_r + QUAD_MARGIN_PX + in.wobble_px);
 
     let theta = atan2(p.y, p.x); // [-π, π]
-    let d = shape_distance(base, p, r)
+    let d = shape_distance(base, p, visual_r, filled)
         + in.wobble_px * sketch_noise(theta / SKETCH_TAU * SKETCH_CONTOUR_WOBBLES, in.seed_inst);
 
     let aa = fwidth(d);
@@ -349,8 +489,8 @@ const RING_INCL: f32 = 0.32;
 // Quad half-extent multiplier — room for the ring + rim glow + AA.
 const PLANET_QUAD_EXTENT: f32 = 2.5;
 
-// ScatterShape (style.shape_id, declaration order) → ring position angle.
-// Spread across distinct orientations so any two series read differently.
+// ScatterShape code → ring position angle. The first legacy shapes get hand-
+// picked angles; newer marker codes share a deterministic fallback.
 fn cons_ring_angle(shape_id: u32) -> f32 {
     switch shape_id {
         case 0u: { return 0.0; }          // Circle
@@ -361,7 +501,10 @@ fn cons_ring_angle(shape_id: u32) -> f32 {
         case 5u: { return 0.26; }         // CircleFilled  (+15°)
         case 6u: { return 0.79; }         // SquareFilled  (+45°)
         case 7u: { return -0.26; }        // TriangleFilled(−15°)
-        default: { return -0.79; }        // DiamondFilled (−45°)
+        case 8u: { return -0.79; }        // DiamondFilled (−45°)
+        default: {
+            return -1.2 + f32(shape_id % 11u) * 0.24;
+        }
     }
 }
 

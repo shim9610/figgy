@@ -122,7 +122,7 @@ struct Style {
 | `point_radius_px` | scatter 점 반지름(픽셀) |
 | `cap_half_px` | errorbar cap 반-길이(픽셀) |
 | `cap_width_px` | errorbar cap 스트로크 두께(픽셀) |
-| `shape_id` | `ScatterShape` 선언 순서 인덱스 0..8 — 0 Circle, 1 Square, 2 Triangle, 3 Diamond, 4 Cross, 5 CircleFilled, 6 SquareFilled, 7 TriangleFilled, 8 DiamondFilled |
+| `shape_id` | `ScatterShape` GPU 코드 — 0 Circle, 1 Square, 2 Triangle, 3 Diamond, 4 Cross, 5 CircleFilled, 6 SquareFilled, 7 TriangleFilled, 8 DiamondFilled, 9 TriangleDown, 10 TriangleLeft, 11 TriangleRight, 12 Plus, 13 Pentagon, 14 Hexagon, 15 Octagon, 16 Star, 17 TriangleDownFilled, 18 TriangleLeftFilled, 19 TriangleRightFilled, 20 PlusFilled, 21 CrossFilled, 22 PentagonFilled, 23 HexagonFilled, 24 OctagonFilled, 25 StarFilled |
 | `dash_len` | `dash`의 유효 스칼라 개수. 0 = solid |
 | `series_salt` | 시리즈 간 해시 탈상관 솔트 — `fnv1a(series_id)` (renderer.rs `create_style_for_series*`가 기록). 스케치/성좌 entry가 자기 해시 시드에 XOR한다. 같은 x 격자를 쓰는 시리즈들이 wobble/별 패턴을 공유하지 않게 하는 장치. 정밀 entry는 읽지 않음 |
 | `_pad` | `dash`의 16바이트 정렬 유지용 |

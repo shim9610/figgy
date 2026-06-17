@@ -46,19 +46,37 @@ pub enum LegendEntryKind {
     LineScatter,
 }
 
-/// The character form of a [`ScatterShape`] (Liberation Sans covers the
-/// geometric-shapes glyphs used here).
+/// The compact legend character for a [`ScatterShape`]. Exact geometric
+/// glyphs are used only when the bundled Liberation Sans face covers them;
+/// pentagon/hexagon/octagon fall back to familiar marker-code letters.
 pub fn scatter_shape_char(shape: &ScatterShape) -> char {
     match shape {
         ScatterShape::Circle => '○',
         ScatterShape::CircleFilled => '●',
         ScatterShape::Square => '□',
         ScatterShape::SquareFilled => '■',
-        ScatterShape::Triangle => '△',
+        ScatterShape::Triangle => '▲',
         ScatterShape::TriangleFilled => '▲',
-        ScatterShape::Diamond => '◇',
-        ScatterShape::DiamondFilled => '◆',
+        ScatterShape::TriangleDown => '▼',
+        ScatterShape::TriangleDownFilled => '▼',
+        ScatterShape::TriangleLeft => '◄',
+        ScatterShape::TriangleLeftFilled => '◄',
+        ScatterShape::TriangleRight => '►',
+        ScatterShape::TriangleRightFilled => '►',
+        ScatterShape::Diamond => '◊',
+        ScatterShape::DiamondFilled => '♦',
         ScatterShape::Cross => '×',
+        ScatterShape::CrossFilled => '×',
+        ScatterShape::Plus => '+',
+        ScatterShape::PlusFilled => '+',
+        ScatterShape::Pentagon => 'p',
+        ScatterShape::PentagonFilled => 'p',
+        ScatterShape::Hexagon => 'h',
+        ScatterShape::HexagonFilled => 'h',
+        ScatterShape::Octagon => '8',
+        ScatterShape::OctagonFilled => '8',
+        ScatterShape::Star => '*',
+        ScatterShape::StarFilled => '*',
     }
 }
 
@@ -515,15 +533,32 @@ mod tests {
             ScatterShape::Circle,
             ScatterShape::Square,
             ScatterShape::Triangle,
+            ScatterShape::TriangleDown,
+            ScatterShape::TriangleLeft,
+            ScatterShape::TriangleRight,
             ScatterShape::Diamond,
             ScatterShape::Cross,
+            ScatterShape::Plus,
+            ScatterShape::Pentagon,
+            ScatterShape::Hexagon,
+            ScatterShape::Octagon,
+            ScatterShape::Star,
             ScatterShape::CircleFilled,
             ScatterShape::SquareFilled,
             ScatterShape::TriangleFilled,
+            ScatterShape::TriangleDownFilled,
+            ScatterShape::TriangleLeftFilled,
+            ScatterShape::TriangleRightFilled,
             ScatterShape::DiamondFilled,
+            ScatterShape::CrossFilled,
+            ScatterShape::PlusFilled,
+            ScatterShape::PentagonFilled,
+            ScatterShape::HexagonFilled,
+            ScatterShape::OctagonFilled,
+            ScatterShape::StarFilled,
         ] {
             let c = scatter_shape_char(&shape);
-            assert!(!c.is_ascii_alphanumeric(), "{shape:?} → {c}");
+            assert!(!c.is_control(), "{shape:?} → {c}");
         }
     }
 

@@ -2266,6 +2266,86 @@ mod tests {
     }
 
     #[test]
+    fn all_scatter_shapes_export_visible_markers() {
+        let inst = create_instance();
+        let Ok(adapter) = request_adapter(&inst) else { return; };
+        let Ok((device, queue)) = request_device(&adapter) else { return; };
+
+        let mut r = Renderer::try_new(
+            RendererDevice::new(Arc::new(device), Arc::new(queue)),
+            wgpu::TextureFormat::Bgra8Unorm,
+            1024 * 1024,
+        ).unwrap();
+
+        let shapes = [
+            crate::data_config::ScatterShape::Circle,
+            crate::data_config::ScatterShape::Square,
+            crate::data_config::ScatterShape::Triangle,
+            crate::data_config::ScatterShape::Diamond,
+            crate::data_config::ScatterShape::Cross,
+            crate::data_config::ScatterShape::CircleFilled,
+            crate::data_config::ScatterShape::SquareFilled,
+            crate::data_config::ScatterShape::TriangleFilled,
+            crate::data_config::ScatterShape::DiamondFilled,
+            crate::data_config::ScatterShape::TriangleDown,
+            crate::data_config::ScatterShape::TriangleLeft,
+            crate::data_config::ScatterShape::TriangleRight,
+            crate::data_config::ScatterShape::Plus,
+            crate::data_config::ScatterShape::Pentagon,
+            crate::data_config::ScatterShape::Hexagon,
+            crate::data_config::ScatterShape::Octagon,
+            crate::data_config::ScatterShape::Star,
+            crate::data_config::ScatterShape::TriangleDownFilled,
+            crate::data_config::ScatterShape::TriangleLeftFilled,
+            crate::data_config::ScatterShape::TriangleRightFilled,
+            crate::data_config::ScatterShape::PlusFilled,
+            crate::data_config::ScatterShape::CrossFilled,
+            crate::data_config::ScatterShape::PentagonFilled,
+            crate::data_config::ScatterShape::HexagonFilled,
+            crate::data_config::ScatterShape::OctagonFilled,
+            crate::data_config::ScatterShape::StarFilled,
+        ];
+
+        let mut series = Vec::new();
+        for (i, shape) in shapes.iter().enumerate() {
+            let x = (i % 7) as f64;
+            let y = (i / 7) as f64;
+            let x_id = format!("shape_x_{i}");
+            let y_id = format!("shape_y_{i}");
+            r.add_column(&x_id, &col_f64(vec![x])).unwrap();
+            r.add_column(&y_id, &col_f64(vec![y])).unwrap();
+            series.push(SeriesConfig {
+                series_id: format!("shape_{i}"),
+                label: None,
+                x_column: x_id,
+                y_column: y_id,
+                render_type: DataRenderType::Scatter {
+                    scatter: DataScatterStyleConfig {
+                        point_color: Color::new(1.0, 0.0, 0.0, 1.0),
+                        point_shape: shape.clone(),
+                        point_size: 8.0,
+                    },
+                },
+            });
+        }
+
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(Rect { x: 0, y: 0, width: 700, height: 400 });
+        config.legend.visible = false;
+        let mut chart = Chart::new(config);
+        chart.set_x_range(-0.5, 6.5);
+        chart.set_y_range(-0.5, 3.8);
+
+        let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+        let red_ink = img
+            .rgba
+            .chunks_exact(4)
+            .filter(|p| p[0] > 150 && p[1] < 80 && p[2] < 80 && p[3] > 100)
+            .count();
+        assert!(red_ink > 600, "scatter shape export produced too little red ink: {red_ink}");
+    }
+
+    #[test]
     fn xy_errorbar_does_not_require_zero_column() {
         let inst = create_instance();
         let Ok(adapter) = request_adapter(&inst) else { return; };
