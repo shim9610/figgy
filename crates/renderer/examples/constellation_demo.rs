@@ -10,14 +10,14 @@ use renderer::color::Color;
 use renderer::config::{DrawStyle, MilkywayOptions};
 use renderer::data::Column;
 use renderer::data_config::{
-    DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterStyleConfig,
-    ErrorRef, ScatterShape, SeriesConfig,
+    DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorRef,
+    ScatterShape, SeriesConfig,
 };
 use renderer::data_render::{create_instance, request_adapter, request_device};
 use renderer::default;
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
-use renderer::{encode_png, Chart, RasterImage, Renderer, RendererDevice};
+use renderer::{Chart, RasterImage, Renderer, RendererDevice, encode_png};
 
 fn col(data: Vec<f64>) -> Column<f64> {
     let min = data.iter().copied().fold(f64::INFINITY, f64::min);
@@ -40,7 +40,11 @@ fn over_space(img: &mut RasterImage) {
 fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], path: &str) {
     let mut img = r.export_panel_rgba(chart, series, 1.0).expect("export");
     over_space(&mut img);
-    let ink = img.rgba.chunks_exact(4).filter(|p| p[0] > 30 || p[1] > 35 || p[2] > 45).count();
+    let ink = img
+        .rgba
+        .chunks_exact(4)
+        .filter(|p| p[0] > 30 || p[1] > 35 || p[2] > 45)
+        .count();
     std::fs::write(path, encode_png(&img).expect("png")).expect("write");
     println!("wrote {path} (bright px: {ink})");
 }
@@ -48,6 +52,7 @@ fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], path: &str) 
 fn line_series(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
     SeriesConfig {
         series_id: id.into(),
+        source_id: None,
         label: None,
         x_column: x.into(),
         y_column: y.into(),
@@ -63,13 +68,21 @@ fn line_series(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
 
 fn build_chart(style: DrawStyle) -> Chart {
     let mut config = default::default_config();
-    config.chart_area = ChartArea(Rect { x: 0, y: 0, width: 960, height: 620 });
+    config.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: 960,
+        height: 620,
+    });
     config.draw_style = style;
     // Dark-backdrop chrome: light axis/label/title colors via plain SSoT
     // fields; no grid; no legend box (its white fill fights the backdrop).
     let chrome = Color::from_rgb8(186, 194, 210);
     for axis in [
-        &mut config.top_x, &mut config.bottom_x, &mut config.left_y, &mut config.right_y,
+        &mut config.top_x,
+        &mut config.bottom_x,
+        &mut config.left_y,
+        &mut config.right_y,
     ] {
         axis.line_color = chrome;
         axis.label_style.color = chrome;
@@ -176,7 +189,9 @@ fn main() {
     // Control arm: all five series share ONE series_id — identical salt
     // reproduces the correlated look. Real arm: distinct ids.
     let sn = 700;
-    let sxs: Vec<f64> = (0..sn).map(|i| 1200.0 + 360.0 * i as f64 / (sn - 1) as f64).collect();
+    let sxs: Vec<f64> = (0..sn)
+        .map(|i| 1200.0 + 360.0 * i as f64 / (sn - 1) as f64)
+        .collect();
     let peak = |x: f64, c: f64, w: f64| (-((x - c) / w) * ((x - c) / w)).exp();
     let base: Vec<f64> = sxs
         .iter()
@@ -231,7 +246,9 @@ fn main() {
     // as the 1× render upscaled — same star count per data span, same clump
     // structure — NOT a denser, blown-out chain (field report). The scaled
     // config divides star_density and multiplies structure_scale.
-    let mut img = r.export_panel_rgba(&spec_chart(), &spec_distinct, 2.0).expect("export");
+    let mut img = r
+        .export_panel_rgba(&spec_chart(), &spec_distinct, 2.0)
+        .expect("export");
     over_space(&mut img);
     std::fs::write(
         "target/constellation_demo/spectrum_x2.png",
@@ -246,8 +263,7 @@ fn main() {
     // the density knob; the arc-driven indirect pass budgets by total arc.
     let curve = |n: usize, lift: f64| -> (Vec<f64>, Vec<f64>) {
         let xs: Vec<f64> = (0..n).map(|i| i as f64 / (n - 1) as f64).collect();
-        let ys: Vec<f64> =
-            xs.iter().map(|x| lift + 22.0 * (x * 4.6).sin()).collect();
+        let ys: Vec<f64> = xs.iter().map(|x| lift + 22.0 * (x * 4.6).sin()).collect();
         (xs, ys)
     };
     let (cx, cy) = curve(10, 70.0);
@@ -257,8 +273,18 @@ fn main() {
     r.add_column("fine_x", &col(fx)).unwrap();
     r.add_column("fine_y", &col(fy)).unwrap();
     let sampling = [
-        line_series("samp_coarse", "coarse_x", "coarse_y", Color::from_rgb8(120, 190, 255)),
-        line_series("samp_fine", "fine_x", "fine_y", Color::from_rgb8(120, 190, 255)),
+        line_series(
+            "samp_coarse",
+            "coarse_x",
+            "coarse_y",
+            Color::from_rgb8(120, 190, 255),
+        ),
+        line_series(
+            "samp_fine",
+            "fine_x",
+            "fine_y",
+            Color::from_rgb8(120, 190, 255),
+        ),
     ];
     let style = DrawStyle::Milkyway(MilkywayOptions {
         star_density: 30.0,
@@ -272,34 +298,74 @@ fn main() {
     );
 
     // ── Step 2: ringed planets (scatter). Ring angle = ScatterShape. ──
-    let planet_series = |id: &str, x: &str, y: &str, shape: ScatterShape, size: f32, color: Color| SeriesConfig {
-        series_id: id.into(),
-        label: None,
-        x_column: x.into(),
-        y_column: y.into(),
-        render_type: DataRenderType::Scatter {
-            scatter: DataScatterStyleConfig {
-                point_color: color,
-                point_shape: shape,
-                point_size: size,
+    let planet_series =
+        |id: &str, x: &str, y: &str, shape: ScatterShape, size: f32, color: Color| SeriesConfig {
+            series_id: id.into(),
+            source_id: None,
+            label: None,
+            x_column: x.into(),
+            y_column: y.into(),
+            render_type: DataRenderType::Scatter {
+                scatter: DataScatterStyleConfig {
+                    point_color: color,
+                    point_shape: shape,
+                    point_size: size,
+                    point_style_table: None,
+                    point_style_index_column: None,
+                    point_style_overrides: None,
+                },
             },
-        },
-    };
+        };
 
     // Three scatter series, distinct ring angles, chart-scale markers.
     let m = 11;
-    let pxs: Vec<f64> = (0..m).map(|i| 0.06 + 0.88 * i as f64 / (m - 1) as f64).collect();
-    let pa: Vec<f64> = pxs.iter().enumerate().map(|(i, _)| 74.0 + 12.0 * ((i as f64) * 1.7).sin()).collect();
-    let pb: Vec<f64> = pxs.iter().enumerate().map(|(i, _)| 48.0 + 11.0 * ((i as f64) * 2.3 + 1.0).cos()).collect();
-    let pc: Vec<f64> = pxs.iter().enumerate().map(|(i, _)| 21.0 + 9.0 * ((i as f64) * 1.3 + 2.0).sin()).collect();
+    let pxs: Vec<f64> = (0..m)
+        .map(|i| 0.06 + 0.88 * i as f64 / (m - 1) as f64)
+        .collect();
+    let pa: Vec<f64> = pxs
+        .iter()
+        .enumerate()
+        .map(|(i, _)| 74.0 + 12.0 * ((i as f64) * 1.7).sin())
+        .collect();
+    let pb: Vec<f64> = pxs
+        .iter()
+        .enumerate()
+        .map(|(i, _)| 48.0 + 11.0 * ((i as f64) * 2.3 + 1.0).cos())
+        .collect();
+    let pc: Vec<f64> = pxs
+        .iter()
+        .enumerate()
+        .map(|(i, _)| 21.0 + 9.0 * ((i as f64) * 1.3 + 2.0).sin())
+        .collect();
     r.add_column("px", &col(pxs)).unwrap();
     r.add_column("pa", &col(pa)).unwrap();
     r.add_column("pb", &col(pb)).unwrap();
     r.add_column("pc", &col(pc)).unwrap();
     let chart_planets = [
-        planet_series("p_a", "px", "pa", ScatterShape::Circle, 13.0, Color::from_rgb8(255, 142, 92)),
-        planet_series("p_b", "px", "pb", ScatterShape::Triangle, 13.0, Color::from_rgb8(96, 168, 255)),
-        planet_series("p_c", "px", "pc", ScatterShape::DiamondFilled, 13.0, Color::from_rgb8(120, 220, 150)),
+        planet_series(
+            "p_a",
+            "px",
+            "pa",
+            ScatterShape::Circle,
+            13.0,
+            Color::from_rgb8(255, 142, 92),
+        ),
+        planet_series(
+            "p_b",
+            "px",
+            "pb",
+            ScatterShape::Triangle,
+            13.0,
+            Color::from_rgb8(96, 168, 255),
+        ),
+        planet_series(
+            "p_c",
+            "px",
+            "pc",
+            ScatterShape::DiamondFilled,
+            13.0,
+            Color::from_rgb8(120, 220, 150),
+        ),
     ];
     export(
         &mut r,
@@ -314,7 +380,12 @@ fn main() {
     r.add_column("bx", &col(bx)).unwrap();
     r.add_column("by", &col(by)).unwrap();
     let big = [planet_series(
-        "big", "bx", "by", ScatterShape::Square, 44.0, Color::from_rgb8(255, 170, 110),
+        "big",
+        "bx",
+        "by",
+        ScatterShape::Square,
+        44.0,
+        Color::from_rgb8(255, 170, 110),
     )];
     export(
         &mut r,
@@ -326,6 +397,7 @@ fn main() {
     // Line + scatter combined: planets riding their own star chain.
     let combo = [SeriesConfig {
         series_id: "combo".into(),
+        source_id: None,
         label: None,
         x_column: "px".into(),
         y_column: "pb".into(),
@@ -334,6 +406,9 @@ fn main() {
                 point_color: Color::from_rgb8(255, 142, 92),
                 point_shape: ScatterShape::Circle,
                 point_size: 15.0,
+                point_style_table: None,
+                point_style_index_column: None,
+                point_style_overrides: None,
             },
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
@@ -352,11 +427,14 @@ fn main() {
     // Errorbars as bipolar jets: planets with ±σ rendered as glowing jet
     // beams terminating in shock knots at the exact interval bounds.
     let m2 = 11;
-    let jerr: Vec<f64> = (0..m2).map(|i| 4.5 + 2.5 * ((i as f64) * 1.1).cos().abs()).collect();
+    let jerr: Vec<f64> = (0..m2)
+        .map(|i| 4.5 + 2.5 * ((i as f64) * 1.1).cos().abs())
+        .collect();
     r.add_column("perr", &col(jerr)).unwrap();
     r.add_column("__zero", &col(vec![0.0; m2])).unwrap();
     let jets = [SeriesConfig {
         series_id: "jets".into(),
+        source_id: None,
         label: None,
         x_column: "px".into(),
         y_column: "pb".into(),
@@ -365,8 +443,13 @@ fn main() {
                 point_color: Color::from_rgb8(255, 142, 92),
                 point_shape: ScatterShape::Circle,
                 point_size: 13.0,
+                point_style_table: None,
+                point_style_index_column: None,
+                point_style_overrides: None,
             },
-            err_y: ErrorRef::Symmetric { column: "perr".into() },
+            err_y: ErrorRef::Symmetric {
+                column: "perr".into(),
+            },
             err_style: DataErrorBarStyleConfig {
                 error_bar_color: Color::from_rgb8(255, 160, 110),
                 error_bar_width: 2.0,

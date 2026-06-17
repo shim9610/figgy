@@ -6,7 +6,7 @@
 
 use std::time::Instant;
 
-use renderer::axis_render::{try_raster_chart_layer_to_rgba, AxisLayerKind};
+use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba};
 use renderer::color::Color;
 use renderer::config::{DrawStyle, MilkywayOptions};
 use renderer::default;
@@ -14,11 +14,19 @@ use renderer::layout::{ChartArea, Rect};
 
 fn build_config(w: u32, h: u32, style: DrawStyle) -> renderer::config::Config {
     let mut config = default::default_config();
-    config.chart_area = ChartArea(Rect { x: 0, y: 0, width: w, height: h });
+    config.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: w,
+        height: h,
+    });
     config.draw_style = style;
     let chrome = Color::from_rgb8(186, 194, 210);
     for axis in [
-        &mut config.top_x, &mut config.bottom_x, &mut config.left_y, &mut config.right_y,
+        &mut config.top_x,
+        &mut config.bottom_x,
+        &mut config.left_y,
+        &mut config.right_y,
     ] {
         axis.line_color = chrome;
         axis.label_style.color = chrome;
@@ -45,10 +53,7 @@ fn main() {
     for (w, h) in [(960u32, 620u32), (2000, 1600)] {
         for (name, style) in [
             ("precise", DrawStyle::Precise),
-            (
-                "milkyway",
-                DrawStyle::Milkyway(MilkywayOptions::default()),
-            ),
+            ("milkyway", DrawStyle::Milkyway(MilkywayOptions::default())),
         ] {
             let config = build_config(w, h, style);
             let grid = time_layer(&config, AxisLayerKind::Grid);

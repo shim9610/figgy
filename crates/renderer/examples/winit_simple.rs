@@ -49,13 +49,13 @@ use renderer::config::{AxisScale, LegendEntryKind};
 use renderer::data::Column;
 use renderer::default;
 use renderer::demo;
+use renderer::layout::NudgeResult;
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
-use renderer::layout::NudgeResult;
 use renderer::{
-    encode_png, AxisPreset, Chart, ChartDrawItem, ChartStyle, ChartView, ColorCycle,
-    CpuTextMeasure, DataLineStyleConfig, DataRenderType, HitId, HitMap, Renderer, ResizeHandle,
-    SelectionBox, Series, SeriesConfig, WindowedRenderer,
+    AxisPreset, Chart, ChartDrawItem, ChartStyle, ChartView, ColorCycle, CpuTextMeasure,
+    DataLineStyleConfig, DataRenderType, HitId, HitMap, Renderer, ResizeHandle, SelectionBox,
+    Series, SeriesConfig, WindowedRenderer, encode_png,
 };
 
 const AXIS_PRESETS: [AxisPreset; 5] = [
@@ -157,9 +157,24 @@ fn compute_panel_rects(w: u32, h: u32) -> [Rect; 3] {
     let pw = avail_w / 3;
     let ph = h.saturating_sub(GAP * 2);
     [
-        Rect { x: GAP, y: GAP, width: pw, height: ph },
-        Rect { x: GAP * 2 + pw, y: GAP, width: pw, height: ph },
-        Rect { x: GAP * 3 + pw * 2, y: GAP, width: pw, height: ph },
+        Rect {
+            x: GAP,
+            y: GAP,
+            width: pw,
+            height: ph,
+        },
+        Rect {
+            x: GAP * 2 + pw,
+            y: GAP,
+            width: pw,
+            height: ph,
+        },
+        Rect {
+            x: GAP * 3 + pw * 2,
+            y: GAP,
+            width: pw,
+            height: ph,
+        },
     ]
 }
 
@@ -188,25 +203,32 @@ fn build_sine_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
         .with_x_title("x [rad]")
         .with_y_title("y")
         .with_legend_entry("sin(x)", line_color, line_w, LegendEntryKind::Line);
-    chart.auto_fit_x(renderer.pool(), "sine_x", 0.02).expect("fit x");
-    chart.auto_fit_y(renderer.pool(), "sine_y", 0.10).expect("fit y");
+    chart
+        .auto_fit_x(renderer.pool(), "sine_x", 0.02)
+        .expect("fit x");
+    chart
+        .auto_fit_y(renderer.pool(), "sine_y", 0.10)
+        .expect("fit y");
 
     let view = renderer.create_chart_view(&chart, rect).expect("view");
     let cfg_sin = SeriesConfig {
         series_id: "sin".into(),
+        source_id: None,
         label: None,
         x_column: "sine_x".into(),
         y_column: "sine_y".into(),
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
-                line_color, line_width: line_w,
+                line_color,
+                line_width: line_w,
             },
         },
     };
     let style = renderer.create_style_for_series(&cfg_sin);
     PanelEntry {
-        chart, view,
+        chart,
+        view,
         series: vec![cfg_sin],
         styles: vec![style],
         hitmap: HitMap::standard_chart(),
@@ -218,8 +240,12 @@ fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     let (ts, vs_charge) = demo::rc_data(N);
     let (_, vs_discharge) = demo::rc_discharge_data(N);
     renderer.add_column("rc_t", &col_f64(ts)).expect("add t");
-    renderer.add_column("rc_charge", &col_f64(vs_charge)).expect("add charge");
-    renderer.add_column("rc_discharge", &col_f64(vs_discharge)).expect("add discharge");
+    renderer
+        .add_column("rc_charge", &col_f64(vs_charge))
+        .expect("add charge");
+    renderer
+        .add_column("rc_discharge", &col_f64(vs_discharge))
+        .expect("add discharge");
 
     let mut config = default::default_config();
     config.chart_area = ChartArea(rect);
@@ -236,23 +262,38 @@ fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
         .with_x_title("t [s]")
         .with_y_title("V [V]")
         // '₀' (U+2080) renders as a subscript segment; plain '0' would not.
-        .with_legend_entry("Charging V₀(1−e⁻ᵗ)", charge_color, line_w, LegendEntryKind::Line)
-        .with_legend_entry("Discharging V₀·e⁻ᵗ", discharge_color, line_w, LegendEntryKind::Line);
-    chart.auto_fit_x(renderer.pool(), "rc_t", 0.02).expect("fit t");
+        .with_legend_entry(
+            "Charging V₀(1−e⁻ᵗ)",
+            charge_color,
+            line_w,
+            LegendEntryKind::Line,
+        )
+        .with_legend_entry(
+            "Discharging V₀·e⁻ᵗ",
+            discharge_color,
+            line_w,
+            LegendEntryKind::Line,
+        );
+    chart
+        .auto_fit_x(renderer.pool(), "rc_t", 0.02)
+        .expect("fit t");
     // Y range is the union of both series (both span 0..V0 here, but uses the unified API).
-    chart.auto_fit_y_union(renderer.pool(), &["rc_charge", "rc_discharge"], 0.05)
+    chart
+        .auto_fit_y_union(renderer.pool(), &["rc_charge", "rc_discharge"], 0.05)
         .expect("fit v");
 
     let view = renderer.create_chart_view(&chart, rect).expect("view");
     let mk = |id: &str, x: &str, y: &str, color: Color| SeriesConfig {
         series_id: id.into(),
+        source_id: None,
         label: None,
         x_column: x.into(),
         y_column: y.into(),
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
-                line_color: color, line_width: line_w,
+                line_color: color,
+                line_width: line_w,
             },
         },
     };
@@ -261,7 +302,8 @@ fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     let style_charge = renderer.create_style_for_series(&cfg_charge);
     let style_discharge = renderer.create_style_for_series(&cfg_discharge);
     PanelEntry {
-        chart, view,
+        chart,
+        view,
         series: vec![cfg_charge, cfg_discharge],
         styles: vec![style_charge, style_discharge],
         hitmap: HitMap::standard_chart(),
@@ -271,7 +313,9 @@ fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
 fn build_cross_section_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     let (es, sigmas) = demo::cross_section_data(N);
     renderer.add_column("xs_e", &col_f64(es)).expect("add E");
-    renderer.add_column("xs_sigma", &col_f64(sigmas)).expect("add sigma");
+    renderer
+        .add_column("xs_sigma", &col_f64(sigmas))
+        .expect("add sigma");
 
     // Log scale is one line in Config. set_y_range / auto_fit_y automatically picks
     // (a) decade major spacing (b) Power label format (c) multiplicative padding.
@@ -294,25 +338,32 @@ fn build_cross_section_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry 
         .with_x_title("E [keV]")
         .with_y_title("σ [barn]")
         .with_legend_entry("σ(E)", line_color, line_w, LegendEntryKind::Line);
-    chart.auto_fit_x(renderer.pool(), "xs_e", 0.0).expect("fit E");
-    chart.auto_fit_y(renderer.pool(), "xs_sigma", 0.10).expect("fit sigma");
+    chart
+        .auto_fit_x(renderer.pool(), "xs_e", 0.0)
+        .expect("fit E");
+    chart
+        .auto_fit_y(renderer.pool(), "xs_sigma", 0.10)
+        .expect("fit sigma");
 
     let view = renderer.create_chart_view(&chart, rect).expect("view");
     let cfg_xs = SeriesConfig {
         series_id: "sigma".into(),
+        source_id: None,
         label: None,
         x_column: "xs_e".into(),
         y_column: "xs_sigma".into(),
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
-                line_color, line_width: line_w,
+                line_color,
+                line_width: line_w,
             },
         },
     };
     let style = renderer.create_style_for_series(&cfg_xs);
     PanelEntry {
-        chart, view,
+        chart,
+        view,
         series: vec![cfg_xs],
         styles: vec![style],
         hitmap: HitMap::standard_chart(),
@@ -325,7 +376,9 @@ fn build_cross_section_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry 
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() { return; }
+        if self.window.is_some() {
+            return;
+        }
 
         let attrs = Window::default_attributes()
             .with_title("figgy demo (winit) — sine / RC / cross-section")
@@ -361,7 +414,9 @@ impl ApplicationHandler for App {
         self.window = Some(window);
         self.renderer = Some(renderer);
         self.panels = panels;
-        if let Some(w) = self.window.as_ref() { w.request_redraw(); }
+        if let Some(w) = self.window.as_ref() {
+            w.request_redraw();
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -371,7 +426,12 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::KeyboardInput {
-                event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
                 ..
             } => match logical_key {
                 Key::Named(NamedKey::Escape) => {
@@ -391,7 +451,9 @@ impl ApplicationHandler for App {
             },
             WindowEvent::Resized(s) => {
                 self.handle_resize(s.width, s.height);
-                if let Some(w) = self.window.as_ref() { w.request_redraw(); }
+                if let Some(w) = self.window.as_ref() {
+                    w.request_redraw();
+                }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let new_pos = (position.x as f32, position.y as f32);
@@ -437,8 +499,12 @@ impl App {
         if let Some((pi, id)) = self.selected
             && let Some(panel) = self.panels.get(pi)
             && let Some(rz) = panel.hitmap.get(id).and_then(|el| el.as_resizable())
-            && let Some(handle) =
-                rz.hit_resize_handle(panel.chart.config(), &CpuTextMeasure::for_style(&panel.chart.config().draw_style), cx, cy)
+            && let Some(handle) = rz.hit_resize_handle(
+                panel.chart.config(),
+                &CpuTextMeasure::for_style(&panel.chart.config().draw_style),
+                cx,
+                cy,
+            )
         {
             self.resizing = Some(handle);
             self.dragging = false;
@@ -448,8 +514,12 @@ impl App {
 
         let mut new_sel = None;
         for (i, panel) in self.panels.iter().enumerate() {
-            if let Some(id) = panel.hitmap.hit_test(panel.chart.config(), &CpuTextMeasure::for_style(&panel.chart.config().draw_style), cx, cy)
-            {
+            if let Some(id) = panel.hitmap.hit_test(
+                panel.chart.config(),
+                &CpuTextMeasure::for_style(&panel.chart.config().draw_style),
+                cx,
+                cy,
+            ) {
                 new_sel = Some((i, id));
                 break; // Panels don't overlap — first hit wins.
             }
@@ -474,16 +544,24 @@ impl App {
             }
         }
         self.selected = new_sel;
-        if let Some(w) = self.window.as_ref() { w.request_redraw(); }
+        if let Some(w) = self.window.as_ref() {
+            w.request_redraw();
+        }
     }
 
     /// Apply a pointer delta to the selected element via its drag policy.
     /// `config_mut` flags both dirty bits — axis drags move the data area, so
     /// the transform must refresh along with the raster.
     fn drag_selected(&mut self, dx: f32, dy: f32) {
-        let Some((pi, id)) = self.selected else { return };
-        let Some(panel) = self.panels.get_mut(pi) else { return };
-        let Some(drag) = panel.hitmap.get(id).and_then(|el| el.as_draggable()) else { return };
+        let Some((pi, id)) = self.selected else {
+            return;
+        };
+        let Some(panel) = self.panels.get_mut(pi) else {
+            return;
+        };
+        let Some(drag) = panel.hitmap.get(id).and_then(|el| el.as_draggable()) else {
+            return;
+        };
         if drag.drag_by(panel.chart.config_mut(), dx, dy) == NudgeResult::Moved
             && let Some(w) = self.window.as_ref()
         {
@@ -493,9 +571,15 @@ impl App {
 
     /// Apply a pointer delta to one of the selected element's resize handles.
     fn resize_selected(&mut self, handle: ResizeHandle, dx: f32, dy: f32) {
-        let Some((pi, id)) = self.selected else { return };
-        let Some(panel) = self.panels.get_mut(pi) else { return };
-        let Some(rz) = panel.hitmap.get(id).and_then(|el| el.as_resizable()) else { return };
+        let Some((pi, id)) = self.selected else {
+            return;
+        };
+        let Some(panel) = self.panels.get_mut(pi) else {
+            return;
+        };
+        let Some(rz) = panel.hitmap.get(id).and_then(|el| el.as_resizable()) else {
+            return;
+        };
         if rz.resize_by(panel.chart.config_mut(), handle, dx, dy) == NudgeResult::Moved
             && let Some(w) = self.window.as_ref()
         {
@@ -510,16 +594,22 @@ impl App {
         let preset = AXIS_PRESETS[self.axis_preset_idx];
         eprintln!("[preset] axis = {preset:?}");
         for panel in self.panels.iter_mut() {
-            panel.chart.with_decoration_change(|cfg| cfg.apply_axis_preset(preset));
+            panel
+                .chart
+                .with_decoration_change(|cfg| cfg.apply_axis_preset(preset));
         }
-        if let Some(w) = self.window.as_ref() { w.request_redraw(); }
+        if let Some(w) = self.window.as_ref() {
+            w.request_redraw();
+        }
     }
 
     /// 'C' key — cycle through the series color rotations. Recolors every
     /// panel's series declarations, rebuilds their GPU styles, and keeps the
     /// legend swatches in sync (demo convention: legend entry i == series i).
     fn cycle_color_cycle(&mut self) {
-        let Some(renderer) = self.renderer.as_ref() else { return };
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
         self.color_cycle_idx = (self.color_cycle_idx + 1) % COLOR_CYCLES.len();
         let cycle = COLOR_CYCLES[self.color_cycle_idx];
         eprintln!("[preset] colors = {cycle:?}");
@@ -545,14 +635,18 @@ impl App {
                 }
             });
         }
-        if let Some(w) = self.window.as_ref() { w.request_redraw(); }
+        if let Some(w) = self.window.as_ref() {
+            w.request_redraw();
+        }
     }
 
     /// 'S' key — export each panel separately as in-memory PNG bytes (scale=2 = 2x DPI);
     /// the caller (this fn) writes the files. figgy itself only handles memory.
     fn export_pngs(&mut self) {
         const EXPORT_SCALE: f32 = 2.0;
-        let Some(renderer) = self.renderer.as_mut() else { return; };
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
         for (i, panel) in self.panels.iter().enumerate() {
             match renderer.export_panel_png_bytes(&panel.chart, &panel.series, EXPORT_SCALE) {
                 Ok(bytes) => {
@@ -571,7 +665,9 @@ impl App {
     }
 
     fn handle_resize(&mut self, w: u32, h: u32) {
-        let Some(renderer) = self.renderer.as_mut() else { return; };
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
         let w = w.max(1);
         let h = h.max(1);
         if let Err(e) = renderer.resize(w, h) {
@@ -586,13 +682,20 @@ impl App {
             let sel_boxes: Vec<SelectionBox> = match selected {
                 Some((pi, id)) if pi == i => panel
                     .hitmap
-                    .selection_box(id, panel.chart.config(), &CpuTextMeasure::for_style(&panel.chart.config().draw_style))
+                    .selection_box(
+                        id,
+                        panel.chart.config(),
+                        &CpuTextMeasure::for_style(&panel.chart.config().draw_style),
+                    )
                     .into_iter()
                     .collect(),
                 _ => Vec::new(),
             };
             if let Err(e) = renderer.refresh_axis_with_selection(
-                &mut panel.view, &panel.chart, *rect, &sel_boxes,
+                &mut panel.view,
+                &panel.chart,
+                *rect,
+                &sel_boxes,
             ) {
                 eprintln!("[refresh_axis] {e}");
                 return;
@@ -604,8 +707,12 @@ impl App {
 
     fn render_frame(&mut self) {
         let selected = self.selected;
-        let Some(renderer) = self.renderer.as_mut() else { return; };
-        if self.panels.is_empty() { return; }
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+        if self.panels.is_empty() {
+            return;
+        }
 
         // ---- prepare: handle dirty flags ----
         for (i, panel) in self.panels.iter_mut().enumerate() {
@@ -614,13 +721,20 @@ impl App {
                 let sel_boxes: Vec<SelectionBox> = match selected {
                     Some((pi, id)) if pi == i => panel
                         .hitmap
-                        .selection_box(id, panel.chart.config(), &CpuTextMeasure::for_style(&panel.chart.config().draw_style))
+                        .selection_box(
+                            id,
+                            panel.chart.config(),
+                            &CpuTextMeasure::for_style(&panel.chart.config().draw_style),
+                        )
                         .into_iter()
                         .collect(),
                     _ => Vec::new(),
                 };
                 if let Err(e) = renderer.refresh_axis_with_selection(
-                    &mut panel.view, &panel.chart, panel_rect, &sel_boxes,
+                    &mut panel.view,
+                    &panel.chart,
+                    panel_rect,
+                    &sel_boxes,
                 ) {
                     eprintln!("[refresh_axis] {e}");
                     return;
@@ -632,18 +746,27 @@ impl App {
         }
 
         // ---- Series + ChartDrawItem slices ----
-        let series_per_panel: Vec<Vec<Series<'_>>> = self.panels.iter().map(|p| {
-            p.series.iter().zip(p.styles.iter())
-                .map(|(cfg, style)| Series { config: cfg, style })
-                .collect()
-        }).collect();
-        let items: Vec<ChartDrawItem<'_>> = self.panels.iter().zip(series_per_panel.iter()).map(|(p, ss)| {
-            ChartDrawItem {
+        let series_per_panel: Vec<Vec<Series<'_>>> = self
+            .panels
+            .iter()
+            .map(|p| {
+                p.series
+                    .iter()
+                    .zip(p.styles.iter())
+                    .map(|(cfg, style)| Series { config: cfg, style })
+                    .collect()
+            })
+            .collect();
+        let items: Vec<ChartDrawItem<'_>> = self
+            .panels
+            .iter()
+            .zip(series_per_panel.iter())
+            .map(|(p, ss)| ChartDrawItem {
                 view: &p.view,
                 chart_config: p.chart.config(),
                 series: ss.as_slice(),
-            }
-        }).collect();
+            })
+            .collect();
 
         // ---- single draw call — surface/encoder/pass/submit/present all internal. ----
         if let Err(e) = renderer.draw(Color::WHITE, &items) {

@@ -12,8 +12,8 @@
 //! `cargo run -p renderer --example iced_embed --features iced_demo`
 
 use std::sync::Arc;
-use std::sync::{Mutex, PoisonError};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 use std::sync::atomic::AtomicU32;
 
@@ -46,9 +46,9 @@ use renderer::demo;
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{
-    dpi_to_scale, Chart, ChartDrawItem, ChartStyle, ChartView, DataLineStyleConfig,
-    DataRenderType, HitId, HitMap, Renderer, RendererDevice, ResizeHandle, SelectionBox, Series,
-    SeriesConfig, CpuTextMeasure, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE,
+    Chart, ChartDrawItem, ChartStyle, ChartView, CpuTextMeasure, DataLineStyleConfig,
+    DataRenderType, HitId, HitMap, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE, Renderer, RendererDevice,
+    ResizeHandle, SelectionBox, Series, SeriesConfig, dpi_to_scale,
 };
 
 const POOL_CAPACITY: u64 = 16 * 1024 * 1024;
@@ -92,26 +92,28 @@ impl FiggyPipeline {
     fn build(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         let device = Arc::new(device.clone());
         let queue = Arc::new(queue.clone());
-        let mut renderer = match Renderer::try_new(
-            RendererDevice::new(device, queue),
-            format,
-            POOL_CAPACITY,
-        ) {
-            Ok(renderer) => renderer,
-            Err(e) => {
-                let message = format!("Renderer init failed: {e}");
-                eprintln!("[figgy] {message}");
-                return Self {
-                    renderer: None,
-                    panels: Vec::new(),
-                    init_error: Some(message),
-                    selected: None,
-                    active_resize: None,
-                };
-            }
-        };
+        let mut renderer =
+            match Renderer::try_new(RendererDevice::new(device, queue), format, POOL_CAPACITY) {
+                Ok(renderer) => renderer,
+                Err(e) => {
+                    let message = format!("Renderer init failed: {e}");
+                    eprintln!("[figgy] {message}");
+                    return Self {
+                        renderer: None,
+                        panels: Vec::new(),
+                        init_error: Some(message),
+                        selected: None,
+                        active_resize: None,
+                    };
+                }
+            };
 
-        let placeholder = Rect { x: 0, y: 0, width: 480, height: 480 };
+        let placeholder = Rect {
+            x: 0,
+            y: 0,
+            width: 480,
+            height: 480,
+        };
         let panels = vec![
             build_sine_panel(&mut renderer, placeholder),
             build_rc_panel(&mut renderer, placeholder),
@@ -174,25 +176,39 @@ fn build_sine_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     chart.auto_fit_y(renderer.pool(), "sine_y", 0.10).unwrap();
     let view = renderer.create_chart_view(&chart, rect).unwrap();
     let cfg = SeriesConfig {
-        series_id: "sin".into(), label: None,
-        x_column: "sine_x".into(), y_column: "sine_y".into(),
+        series_id: "sin".into(),
+        label: None,
+        source_id: None,
+        x_column: "sine_x".into(),
+        y_column: "sine_y".into(),
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
-                line_color, line_width: line_w,
+                line_color,
+                line_width: line_w,
             },
         },
     };
     let style = renderer.create_style_for_series(&cfg);
-    PanelEntry { chart, view, series: vec![cfg], styles: vec![style], hitmap: HitMap::standard_chart() }
+    PanelEntry {
+        chart,
+        view,
+        series: vec![cfg],
+        styles: vec![style],
+        hitmap: HitMap::standard_chart(),
+    }
 }
 
 fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     let (ts, vs_charge) = demo::rc_data(N);
     let (_, vs_discharge) = demo::rc_discharge_data(N);
     renderer.add_column("rc_t", &col_f64(ts)).unwrap();
-    renderer.add_column("rc_charge", &col_f64(vs_charge)).unwrap();
-    renderer.add_column("rc_discharge", &col_f64(vs_discharge)).unwrap();
+    renderer
+        .add_column("rc_charge", &col_f64(vs_charge))
+        .unwrap();
+    renderer
+        .add_column("rc_discharge", &col_f64(vs_discharge))
+        .unwrap();
     let mut config = default::default_config();
     config.chart_area = ChartArea(rect);
     config.grid.show_major_x = true;
@@ -208,18 +224,29 @@ fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
         .with_x_title("t [s]")
         .with_y_title("V [V]")
         .with_legend_entry("Charging", charge_color, line_w, LegendEntryKind::Line)
-        .with_legend_entry("Discharging", discharge_color, line_w, LegendEntryKind::Line);
+        .with_legend_entry(
+            "Discharging",
+            discharge_color,
+            line_w,
+            LegendEntryKind::Line,
+        );
     chart.auto_fit_x(renderer.pool(), "rc_t", 0.02).unwrap();
-    chart.auto_fit_y_union(renderer.pool(), &["rc_charge", "rc_discharge"], 0.05).unwrap();
+    chart
+        .auto_fit_y_union(renderer.pool(), &["rc_charge", "rc_discharge"], 0.05)
+        .unwrap();
 
     let view = renderer.create_chart_view(&chart, rect).unwrap();
     let mk = |id: &str, x: &str, y: &str, color: Color| SeriesConfig {
-        series_id: id.into(), label: None,
-        x_column: x.into(), y_column: y.into(),
+        series_id: id.into(),
+        label: None,
+        source_id: None,
+        x_column: x.into(),
+        y_column: y.into(),
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
-                line_color: color, line_width: line_w,
+                line_color: color,
+                line_width: line_w,
             },
         },
     };
@@ -228,7 +255,8 @@ fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     let style_charge = renderer.create_style_for_series(&cfg_charge);
     let style_discharge = renderer.create_style_for_series(&cfg_discharge);
     PanelEntry {
-        chart, view,
+        chart,
+        view,
         series: vec![cfg_charge, cfg_discharge],
         styles: vec![style_charge, style_discharge],
         hitmap: HitMap::standard_chart(),
@@ -261,17 +289,27 @@ fn build_xs_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     chart.auto_fit_y(renderer.pool(), "xs_sigma", 0.10).unwrap();
     let view = renderer.create_chart_view(&chart, rect).unwrap();
     let cfg = SeriesConfig {
-        series_id: "sigma".into(), label: None,
-        x_column: "xs_e".into(), y_column: "xs_sigma".into(),
+        series_id: "sigma".into(),
+        label: None,
+        source_id: None,
+        x_column: "xs_e".into(),
+        y_column: "xs_sigma".into(),
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
-                line_color, line_width: line_w,
+                line_color,
+                line_width: line_w,
             },
         },
     };
     let style = renderer.create_style_for_series(&cfg);
-    PanelEntry { chart, view, series: vec![cfg], styles: vec![style], hitmap: HitMap::standard_chart() }
+    PanelEntry {
+        chart,
+        view,
+        series: vec![cfg],
+        styles: vec![style],
+        hitmap: HitMap::standard_chart(),
+    }
 }
 
 // ============================================================================
@@ -302,15 +340,19 @@ impl shader::Primitive for FiggyPrimitive {
             if let Some((pi, x, y)) = CLICK_EVENT.lock().unwrap().take() {
                 // Resize handles on the selected element win over plain
                 // hit-testing.
-                let on_handle = pipeline.selected.filter(|(spi, _)| *spi == pi).and_then(
-                    |(spi, id)| {
-                        let p = pipeline.panels.get(spi)?;
-                        p.hitmap
-                            .get(id)?
-                            .as_resizable()?
-                            .hit_resize_handle(p.chart.config(), &CpuTextMeasure::for_style(&p.chart.config().draw_style), x, y)
-                    },
-                );
+                let on_handle =
+                    pipeline
+                        .selected
+                        .filter(|(spi, _)| *spi == pi)
+                        .and_then(|(spi, id)| {
+                            let p = pipeline.panels.get(spi)?;
+                            p.hitmap.get(id)?.as_resizable()?.hit_resize_handle(
+                                p.chart.config(),
+                                &CpuTextMeasure::for_style(&p.chart.config().draw_style),
+                                x,
+                                y,
+                            )
+                        });
                 if let Some(handle) = on_handle {
                     pipeline.active_resize = Some(handle);
                 } else {
@@ -319,7 +361,12 @@ impl shader::Primitive for FiggyPrimitive {
                         .panels
                         .get(pi)
                         .and_then(|p| {
-                            p.hitmap.hit_test(p.chart.config(), &CpuTextMeasure::for_style(&p.chart.config().draw_style), x, y)
+                            p.hitmap.hit_test(
+                                p.chart.config(),
+                                &CpuTextMeasure::for_style(&p.chart.config().draw_style),
+                                x,
+                                y,
+                            )
                         })
                         .map(|id| (pi, id));
                     if new_sel != pipeline.selected {
@@ -344,8 +391,7 @@ impl shader::Primitive for FiggyPrimitive {
                     if let Some(rz) = panel.hitmap.get(id).and_then(|el| el.as_resizable()) {
                         let _ = rz.resize_by(panel.chart.config_mut(), handle, dx, dy);
                     }
-                } else if let Some(drag) = panel.hitmap.get(id).and_then(|el| el.as_draggable())
-                {
+                } else if let Some(drag) = panel.hitmap.get(id).and_then(|el| el.as_draggable()) {
                     let _ = drag.drag_by(panel.chart.config_mut(), dx, dy);
                 }
             }
@@ -371,7 +417,11 @@ impl shader::Primitive for FiggyPrimitive {
         let sel_boxes: Vec<SelectionBox> = match selected {
             Some((pi, id)) if pi == self.panel_idx => panel
                 .hitmap
-                .selection_box(id, panel.chart.config(), &CpuTextMeasure::for_style(&panel.chart.config().draw_style))
+                .selection_box(
+                    id,
+                    panel.chart.config(),
+                    &CpuTextMeasure::for_style(&panel.chart.config().draw_style),
+                )
                 .into_iter()
                 .collect(),
             _ => Vec::new(),
@@ -380,7 +430,10 @@ impl shader::Primitive for FiggyPrimitive {
         if cur != self.panel_rect_px {
             panel.chart.config_mut().chart_area = ChartArea(self.panel_rect_px);
             if let Err(e) = renderer.refresh_axis_with_selection(
-                &mut panel.view, &panel.chart, self.panel_rect_px, &sel_boxes,
+                &mut panel.view,
+                &panel.chart,
+                self.panel_rect_px,
+                &sel_boxes,
             ) {
                 eprintln!("[figgy] refresh_axis failed: {e}");
                 return;
@@ -388,9 +441,9 @@ impl shader::Primitive for FiggyPrimitive {
             let _ = panel.chart.consume_data_dirty();
             let _ = panel.chart.consume_raster_dirty();
         } else if panel.chart.consume_raster_dirty() {
-            if let Err(e) = renderer.refresh_axis_with_selection(
-                &mut panel.view, &panel.chart, cur, &sel_boxes,
-            ) {
+            if let Err(e) =
+                renderer.refresh_axis_with_selection(&mut panel.view, &panel.chart, cur, &sel_boxes)
+            {
                 eprintln!("[figgy] refresh_axis failed: {e}");
                 return;
             }
@@ -405,9 +458,7 @@ impl shader::Primitive for FiggyPrimitive {
             let dpi = EXPORT_DPI.load(Ordering::Relaxed) as f32;
             let scale = dpi_to_scale(dpi);
             for (i, p) in pipeline.panels.iter().enumerate() {
-                match renderer.export_panel_png_bytes(
-                    &p.chart, &p.series, scale,
-                ) {
+                match renderer.export_panel_png_bytes(&p.chart, &p.series, scale) {
                     Ok(bytes) => {
                         let path = format!("/tmp/figgy_iced_panel_{i}.png");
                         match std::fs::write(&path, &bytes) {
@@ -434,7 +485,10 @@ impl shader::Primitive for FiggyPrimitive {
         let Some(panel) = pipeline.panels.get(self.panel_idx) else {
             return false;
         };
-        let series: Vec<Series<'_>> = panel.series.iter().zip(panel.styles.iter())
+        let series: Vec<Series<'_>> = panel
+            .series
+            .iter()
+            .zip(panel.styles.iter())
             .map(|(cfg, style)| Series { config: cfg, style })
             .collect();
         let items = [ChartDrawItem {
@@ -464,7 +518,9 @@ impl shader::Primitive for FiggyPrimitive {
 // shader::Program — issues the Primitive.
 // ============================================================================
 
-struct ChartCanvas { panel_idx: usize }
+struct ChartCanvas {
+    panel_idx: usize,
+}
 
 /// Per-widget pointer state: pressed flag + last cursor position, used to
 /// turn CursorMoved events into drag deltas while the button is down.
@@ -535,7 +591,10 @@ impl<Message> shader::Program<Message> for ChartCanvas {
             width: bounds.width.round().max(1.0) as u32,
             height: bounds.height.round().max(1.0) as u32,
         };
-        FiggyPrimitive { panel_idx: self.panel_idx, panel_rect_px }
+        FiggyPrimitive {
+            panel_idx: self.panel_idx,
+            panel_rect_px,
+        }
     }
 }
 
@@ -555,7 +614,12 @@ enum Message {
 
 impl App {
     fn new() -> (Self, Task<Message>) {
-        (App { dpi_text: "192".to_string() }, Task::none())
+        (
+            App {
+                dpi_text: "192".to_string(),
+            },
+            Task::none(),
+        )
     }
 
     fn update(&mut self, msg: Message) -> Task<Message> {
@@ -592,7 +656,8 @@ impl App {
                     .on_input(Message::DpiChanged)
                     .width(80),
                 button("Save PNG").on_press(Message::SavePng),
-            ].spacing(12),
+            ]
+            .spacing(12),
             row![
                 container(chart(0)).width(Length::FillPortion(1)),
                 container(chart(1)).width(Length::FillPortion(1)),
@@ -606,7 +671,9 @@ impl App {
     }
 }
 
-fn theme_fn(_state: &App) -> Theme { Theme::Light }
+fn theme_fn(_state: &App) -> Theme {
+    Theme::Light
+}
 
 fn main() -> iced::Result {
     iced::application(App::new, App::update, App::view)

@@ -81,6 +81,7 @@ fn build_state(
 
     let scatter_line = |id: &str, y: &str, color: Color, point_size: f32| SeriesConfig {
         series_id: id.into(),
+        source_id: None,
         label: None,
         x_column: "sample_x".into(),
         y_column: y.into(),
@@ -89,6 +90,9 @@ fn build_state(
                 point_color: color,
                 point_shape: ScatterShape::CircleFilled,
                 point_size,
+                point_style_table: None,
+                point_style_index_column: None,
+                point_style_overrides: None,
             },
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
@@ -191,7 +195,8 @@ impl CallbackTrait for LabCallback {
 
         for idx in 0..state.series.len() {
             let mut changed = false;
-            if let DataRenderType::ScatterLine { scatter, .. } = &mut state.series[idx].render_type {
+            if let DataRenderType::ScatterLine { scatter, .. } = &mut state.series[idx].render_type
+            {
                 if (scatter.point_size - self.point_size).abs() > f32::EPSILON {
                     scatter.point_size = self.point_size;
                     changed = true;
@@ -374,9 +379,7 @@ impl eframe::App for LabApp {
                 ui.separator();
                 // Per-series SSoT, not a style option.
                 ui.label("series: ScatterLine");
-                ui.add(
-                    egui::Slider::new(&mut self.point_size, 1.0..=18.0).text("point_size"),
-                );
+                ui.add(egui::Slider::new(&mut self.point_size, 1.0..=18.0).text("point_size"));
                 ui.add_space(8.0);
                 if ui.button("Reset to defaults").clicked() {
                     *o = ConstellationOptions::default();

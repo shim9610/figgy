@@ -32,9 +32,9 @@ use renderer::demo;
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{
-    dpi_to_scale, Chart, ChartDrawItem, ChartStyle, ChartView, DataLineStyleConfig,
-    DataRenderType, HitId, HitMap, Renderer, RendererDevice, ResizeHandle, SelectionBox, Series,
-    SeriesConfig, CpuTextMeasure, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE,
+    Chart, ChartDrawItem, ChartStyle, ChartView, CpuTextMeasure, DataLineStyleConfig,
+    DataRenderType, HitId, HitMap, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE, Renderer, RendererDevice,
+    ResizeHandle, SelectionBox, Series, SeriesConfig, dpi_to_scale,
 };
 
 const POOL_CAPACITY: u64 = 16 * 1024 * 1024;
@@ -47,9 +47,24 @@ fn col_f64(data: Vec<f64>) -> Column<f64> {
 }
 
 // Use light foreground for axes / labels / titles so they read on dark egui backgrounds.
-const FG: Color = Color { r: 0.92, g: 0.92, b: 0.92, a: 1.0 };
-const GRID_MAJOR: Color = Color { r: 0.40, g: 0.40, b: 0.45, a: 1.0 };
-const GRID_MINOR: Color = Color { r: 0.30, g: 0.30, b: 0.35, a: 1.0 };
+const FG: Color = Color {
+    r: 0.92,
+    g: 0.92,
+    b: 0.92,
+    a: 1.0,
+};
+const GRID_MAJOR: Color = Color {
+    r: 0.40,
+    g: 0.40,
+    b: 0.45,
+    a: 1.0,
+};
+const GRID_MINOR: Color = Color {
+    r: 0.30,
+    g: 0.30,
+    b: 0.35,
+    a: 1.0,
+};
 const EGUI_BG: egui::Color32 = egui::Color32::from_rgb(18, 18, 22);
 
 fn force_dark_theme(ctx: &egui::Context) {
@@ -124,8 +139,12 @@ impl FiggyState {
             && pi == panel_idx
             && let Some(panel) = self.panels.get(pi)
             && let Some(rz) = panel.hitmap.get(id).and_then(|el| el.as_resizable())
-            && let Some(handle) =
-                rz.hit_resize_handle(panel.chart.config(), &CpuTextMeasure::for_style(&panel.chart.config().draw_style), x, y)
+            && let Some(handle) = rz.hit_resize_handle(
+                panel.chart.config(),
+                &CpuTextMeasure::for_style(&panel.chart.config().draw_style),
+                x,
+                y,
+            )
         {
             self.active_resize = Some(handle);
             return;
@@ -135,7 +154,14 @@ impl FiggyState {
         let new_sel = self
             .panels
             .get(panel_idx)
-            .and_then(|p| p.hitmap.hit_test(p.chart.config(), &CpuTextMeasure::for_style(&p.chart.config().draw_style), x, y))
+            .and_then(|p| {
+                p.hitmap.hit_test(
+                    p.chart.config(),
+                    &CpuTextMeasure::for_style(&p.chart.config().draw_style),
+                    x,
+                    y,
+                )
+            })
             .map(|id| (panel_idx, id));
         if new_sel == self.selected {
             return;
@@ -153,18 +179,24 @@ impl FiggyState {
     /// dirty bits — axis drags / resizes move the data area, so the transform
     /// refreshes along with the raster.
     fn handle_drag(&mut self, panel_idx: usize, dx: f32, dy: f32) {
-        let Some((pi, id)) = self.selected else { return };
+        let Some((pi, id)) = self.selected else {
+            return;
+        };
         if pi != panel_idx {
             return;
         }
-        let Some(panel) = self.panels.get_mut(pi) else { return };
+        let Some(panel) = self.panels.get_mut(pi) else {
+            return;
+        };
         if let Some(handle) = self.active_resize {
             if let Some(rz) = panel.hitmap.get(id).and_then(|el| el.as_resizable()) {
                 let _ = rz.resize_by(panel.chart.config_mut(), handle, dx, dy);
             }
             return;
         }
-        let Some(drag) = panel.hitmap.get(id).and_then(|el| el.as_draggable()) else { return };
+        let Some(drag) = panel.hitmap.get(id).and_then(|el| el.as_draggable()) else {
+            return;
+        };
         let _ = drag.drag_by(panel.chart.config_mut(), dx, dy);
     }
 }
@@ -209,25 +241,39 @@ fn build_sine_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     chart.auto_fit_y(renderer.pool(), "sine_y", 0.10).unwrap();
     let view = renderer.create_chart_view(&chart, rect).unwrap();
     let cfg = SeriesConfig {
-        series_id: "sin".into(), label: None,
-        x_column: "sine_x".into(), y_column: "sine_y".into(),
+        series_id: "sin".into(),
+        label: None,
+        source_id: None,
+        x_column: "sine_x".into(),
+        y_column: "sine_y".into(),
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
-                line_color, line_width: line_w,
+                line_color,
+                line_width: line_w,
             },
         },
     };
     let style = renderer.create_style_for_series(&cfg);
-    PanelEntry { chart, view, series: vec![cfg], styles: vec![style], hitmap: HitMap::standard_chart() }
+    PanelEntry {
+        chart,
+        view,
+        series: vec![cfg],
+        styles: vec![style],
+        hitmap: HitMap::standard_chart(),
+    }
 }
 
 fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     let (ts, vs_charge) = demo::rc_data(N);
     let (_, vs_discharge) = demo::rc_discharge_data(N);
     renderer.add_column("rc_t", &col_f64(ts)).unwrap();
-    renderer.add_column("rc_charge", &col_f64(vs_charge)).unwrap();
-    renderer.add_column("rc_discharge", &col_f64(vs_discharge)).unwrap();
+    renderer
+        .add_column("rc_charge", &col_f64(vs_charge))
+        .unwrap();
+    renderer
+        .add_column("rc_discharge", &col_f64(vs_discharge))
+        .unwrap();
 
     let mut config = dark_config();
     config.chart_area = ChartArea(rect);
@@ -244,18 +290,29 @@ fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
         .with_x_title("t [s]")
         .with_y_title("V [V]")
         .with_legend_entry("Charging", charge_color, line_w, LegendEntryKind::Line)
-        .with_legend_entry("Discharging", discharge_color, line_w, LegendEntryKind::Line);
+        .with_legend_entry(
+            "Discharging",
+            discharge_color,
+            line_w,
+            LegendEntryKind::Line,
+        );
     chart.auto_fit_x(renderer.pool(), "rc_t", 0.02).unwrap();
-    chart.auto_fit_y_union(renderer.pool(), &["rc_charge", "rc_discharge"], 0.05).unwrap();
+    chart
+        .auto_fit_y_union(renderer.pool(), &["rc_charge", "rc_discharge"], 0.05)
+        .unwrap();
 
     let view = renderer.create_chart_view(&chart, rect).unwrap();
     let mk = |id: &str, x: &str, y: &str, color: Color| SeriesConfig {
-        series_id: id.into(), label: None,
-        x_column: x.into(), y_column: y.into(),
+        series_id: id.into(),
+        label: None,
+        source_id: None,
+        x_column: x.into(),
+        y_column: y.into(),
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
-                line_color: color, line_width: line_w,
+                line_color: color,
+                line_width: line_w,
             },
         },
     };
@@ -264,7 +321,8 @@ fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     let style_charge = renderer.create_style_for_series(&cfg_charge);
     let style_discharge = renderer.create_style_for_series(&cfg_discharge);
     PanelEntry {
-        chart, view,
+        chart,
+        view,
         series: vec![cfg_charge, cfg_discharge],
         styles: vec![style_charge, style_discharge],
         hitmap: HitMap::standard_chart(),
@@ -298,17 +356,27 @@ fn build_xs_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     chart.auto_fit_y(renderer.pool(), "xs_sigma", 0.10).unwrap();
     let view = renderer.create_chart_view(&chart, rect).unwrap();
     let cfg = SeriesConfig {
-        series_id: "sigma".into(), label: None,
-        x_column: "xs_e".into(), y_column: "xs_sigma".into(),
+        series_id: "sigma".into(),
+        label: None,
+        source_id: None,
+        x_column: "xs_e".into(),
+        y_column: "xs_sigma".into(),
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
-                line_color, line_width: line_w,
+                line_color,
+                line_width: line_w,
             },
         },
     };
     let style = renderer.create_style_for_series(&cfg);
-    PanelEntry { chart, view, series: vec![cfg], styles: vec![style], hitmap: HitMap::standard_chart() }
+    PanelEntry {
+        chart,
+        view,
+        series: vec![cfg],
+        styles: vec![style],
+        hitmap: HitMap::standard_chart(),
+    }
 }
 
 // ============================================================================
@@ -317,7 +385,7 @@ fn build_xs_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
 
 struct FiggyCallback {
     panel_idx: usize,
-    panel_rect_px: Rect,  // physical pixels (egui logical * pixels_per_point).
+    panel_rect_px: Rect, // physical pixels (egui logical * pixels_per_point).
 }
 
 impl CallbackTrait for FiggyCallback {
@@ -341,7 +409,11 @@ impl CallbackTrait for FiggyCallback {
         let sel_boxes: Vec<SelectionBox> = match selected {
             Some((pi, id)) if pi == self.panel_idx => panel
                 .hitmap
-                .selection_box(id, panel.chart.config(), &CpuTextMeasure::for_style(&panel.chart.config().draw_style))
+                .selection_box(
+                    id,
+                    panel.chart.config(),
+                    &CpuTextMeasure::for_style(&panel.chart.config().draw_style),
+                )
                 .into_iter()
                 .collect(),
             _ => Vec::new(),
@@ -352,7 +424,10 @@ impl CallbackTrait for FiggyCallback {
         if cur_rect != self.panel_rect_px {
             panel.chart.config_mut().chart_area = ChartArea(self.panel_rect_px);
             if let Err(e) = state.renderer.refresh_axis_with_selection(
-                &mut panel.view, &panel.chart, self.panel_rect_px, &sel_boxes,
+                &mut panel.view,
+                &panel.chart,
+                self.panel_rect_px,
+                &sel_boxes,
             ) {
                 eprintln!("[figgy] refresh_axis failed: {e}");
                 return Vec::new();
@@ -361,7 +436,10 @@ impl CallbackTrait for FiggyCallback {
             let _ = panel.chart.consume_raster_dirty();
         } else if panel.chart.consume_raster_dirty() {
             if let Err(e) = state.renderer.refresh_axis_with_selection(
-                &mut panel.view, &panel.chart, cur_rect, &sel_boxes,
+                &mut panel.view,
+                &panel.chart,
+                cur_rect,
+                &sel_boxes,
             ) {
                 eprintln!("[figgy] refresh_axis failed: {e}");
                 return Vec::new();
@@ -379,7 +457,9 @@ impl CallbackTrait for FiggyCallback {
         render_pass: &mut wgpu::RenderPass<'static>,
         callback_resources: &egui_wgpu::CallbackResources,
     ) {
-        let Some(state) = callback_resources.get::<Mutex<FiggyState>>() else { return };
+        let Some(state) = callback_resources.get::<Mutex<FiggyState>>() else {
+            return;
+        };
         // Host-responsibility lock: egui only hands `&CallbackResources` to
         // paint, but `Renderer::paint` needs `&mut self`. Uncontended —
         // egui's render thread is the only path here.
@@ -390,7 +470,10 @@ impl CallbackTrait for FiggyCallback {
         let Some(panel) = panels.get(self.panel_idx) else {
             return;
         };
-        let series: Vec<Series<'_>> = panel.series.iter().zip(panel.styles.iter())
+        let series: Vec<Series<'_>> = panel
+            .series
+            .iter()
+            .zip(panel.styles.iter())
             .map(|(cfg, style)| Series { config: cfg, style })
             .collect();
         let items = [ChartDrawItem {
@@ -446,7 +529,10 @@ impl DemoApp {
 
         {
             let mut renderer_guard = render_state.renderer.write();
-            if let Some(state) = renderer_guard.callback_resources.remove::<Mutex<FiggyState>>() {
+            if let Some(state) = renderer_guard
+                .callback_resources
+                .remove::<Mutex<FiggyState>>()
+            {
                 state
                     .into_inner()
                     .unwrap_or_else(PoisonError::into_inner)
@@ -479,8 +565,8 @@ impl eframe::App for DemoApp {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::default().fill(EGUI_BG))
                     .show(ctx, |ui| {
-                    ui.label("No eframe wgpu_render_state — wgpu backend must be enabled.");
-                });
+                        ui.label("No eframe wgpu_render_state — wgpu backend must be enabled.");
+                    });
                 return;
             }
         };
@@ -511,7 +597,12 @@ impl eframe::App for DemoApp {
 
             // Initial panel rect — guess for the first frame; prepare overwrites it
             // with the real egui rect.
-            let placeholder = Rect { x: 0, y: 0, width: 400, height: 300 };
+            let placeholder = Rect {
+                x: 0,
+                y: 0,
+                width: 400,
+                height: 300,
+            };
             let panels = vec![
                 build_sine_panel(&mut renderer, placeholder),
                 build_rc_panel(&mut renderer, placeholder),
@@ -532,7 +623,10 @@ impl eframe::App for DemoApp {
             self.renderer_error = None;
         } else {
             let mut renderer_guard = render_state.renderer.write();
-            if let Some(state) = renderer_guard.callback_resources.get_mut::<Mutex<FiggyState>>() {
+            if let Some(state) = renderer_guard
+                .callback_resources
+                .get_mut::<Mutex<FiggyState>>()
+            {
                 let state = state.get_mut().unwrap_or_else(PoisonError::into_inner);
                 if let Err(e) = state
                     .renderer
@@ -557,105 +651,114 @@ impl eframe::App for DemoApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::default().fill(EGUI_BG))
             .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("figgy + egui_wgpu — sine / RC / cross-section");
-                // DPI input — figgy maps dpi/96 → scale → clamp internally.
-                ui.label("DPI:");
-                let dpi_min = (MIN_EXPORT_SCALE * 96.0).round() as u32;
-                let dpi_max = (MAX_EXPORT_SCALE * 96.0).round() as u32;
-                ui.add(
-                    egui::DragValue::new(&mut self.export_dpi)
-                        .range(dpi_min..=dpi_max)
-                        .speed(1.0),
-                );
-                ui.label(format!("(min {dpi_min} / max {dpi_max})"));
-                if ui.button("Save PNG").clicked() {
-                    let scale = dpi_to_scale(self.export_dpi as f32);
+                ui.horizontal(|ui| {
+                    ui.heading("figgy + egui_wgpu — sine / RC / cross-section");
+                    // DPI input — figgy maps dpi/96 → scale → clamp internally.
+                    ui.label("DPI:");
+                    let dpi_min = (MIN_EXPORT_SCALE * 96.0).round() as u32;
+                    let dpi_max = (MAX_EXPORT_SCALE * 96.0).round() as u32;
+                    ui.add(
+                        egui::DragValue::new(&mut self.export_dpi)
+                            .range(dpi_min..=dpi_max)
+                            .speed(1.0),
+                    );
+                    ui.label(format!("(min {dpi_min} / max {dpi_max})"));
+                    if ui.button("Save PNG").clicked() {
+                        let scale = dpi_to_scale(self.export_dpi as f32);
+                        let mut renderer_guard = render_state_clone.renderer.write();
+                        let state = renderer_guard
+                            .callback_resources
+                            .get_mut::<Mutex<FiggyState>>()
+                            .expect("FiggyState")
+                            .get_mut()
+                            .unwrap_or_else(PoisonError::into_inner);
+                        let (renderer, panels) = (&mut state.renderer, &state.panels);
+                        for (i, panel) in panels.iter().enumerate() {
+                            match renderer.export_panel_png_bytes(
+                                &panel.chart,
+                                &panel.series,
+                                scale,
+                            ) {
+                                Ok(bytes) => {
+                                    let path = format!("/tmp/figgy_egui_panel_{i}.png");
+                                    match std::fs::write(&path, &bytes) {
+                                        Ok(_) => eprintln!(
+                                            "[export] saved {path} (DPI={}, scale={:.3}, {} bytes)",
+                                            self.export_dpi,
+                                            scale,
+                                            bytes.len(),
+                                        ),
+                                        Err(e) => eprintln!("[export] write {path} failed: {e}"),
+                                    }
+                                }
+                                Err(e) => eprintln!("[export] panel {i} failed: {e}"),
+                            }
+                        }
+                    }
+                });
+                ui.add_space(4.0);
+                // Pointer input → (panel index, surface-pixel data); resolved after
+                // the closure so the CallbackResources lock isn't held inside the
+                // UI pass. Press (click or drag start) selects; drag moves.
+                let mut pressed: Option<(usize, f32, f32)> = None;
+                let mut dragged: Option<(usize, f32, f32)> = None;
+                let mut drag_ended = false;
+                ui.columns(3, |cols| {
+                    for (i, col_ui) in cols.iter_mut().enumerate() {
+                        let avail = col_ui.available_size();
+                        let (rect, resp) =
+                            col_ui.allocate_exact_size(avail, egui::Sense::click_and_drag());
+                        if (resp.clicked() || resp.drag_started())
+                            && let Some(pos) = resp.interact_pointer_pos()
+                        {
+                            // egui points → physical pixels (chart_area space).
+                            pressed = Some((i, pos.x * pixels_per_point, pos.y * pixels_per_point));
+                        }
+                        if resp.dragged() {
+                            let d = resp.drag_delta();
+                            if d != egui::Vec2::ZERO {
+                                dragged = Some((i, d.x * pixels_per_point, d.y * pixels_per_point));
+                            }
+                        }
+                        if resp.drag_stopped() {
+                            drag_ended = true;
+                        }
+
+                        let panel_rect_px = Rect {
+                            x: (rect.min.x * pixels_per_point).round().max(0.0) as u32,
+                            y: (rect.min.y * pixels_per_point).round().max(0.0) as u32,
+                            width: (rect.width() * pixels_per_point).max(1.0) as u32,
+                            height: (rect.height() * pixels_per_point).max(1.0) as u32,
+                        };
+                        let cb = egui_wgpu::Callback::new_paint_callback(
+                            rect,
+                            FiggyCallback {
+                                panel_idx: i,
+                                panel_rect_px,
+                            },
+                        );
+                        col_ui.painter().add(cb);
+                    }
+                });
+                if pressed.is_some() || dragged.is_some() || drag_ended {
                     let mut renderer_guard = render_state_clone.renderer.write();
-                    let state = renderer_guard
+                    if let Some(state) = renderer_guard
                         .callback_resources
                         .get_mut::<Mutex<FiggyState>>()
-                        .expect("FiggyState")
-                        .get_mut()
-                        .unwrap_or_else(PoisonError::into_inner);
-                    let (renderer, panels) = (&mut state.renderer, &state.panels);
-                    for (i, panel) in panels.iter().enumerate() {
-                        match renderer.export_panel_png_bytes(
-                            &panel.chart, &panel.series, scale,
-                        ) {
-                            Ok(bytes) => {
-                                let path = format!("/tmp/figgy_egui_panel_{i}.png");
-                                match std::fs::write(&path, &bytes) {
-                                    Ok(_) => eprintln!(
-                                        "[export] saved {path} (DPI={}, scale={:.3}, {} bytes)",
-                                        self.export_dpi, scale, bytes.len(),
-                                    ),
-                                    Err(e) => eprintln!("[export] write {path} failed: {e}"),
-                                }
-                            }
-                            Err(e) => eprintln!("[export] panel {i} failed: {e}"),
-                        }
-                    }
-                }
-            });
-            ui.add_space(4.0);
-            // Pointer input → (panel index, surface-pixel data); resolved after
-            // the closure so the CallbackResources lock isn't held inside the
-            // UI pass. Press (click or drag start) selects; drag moves.
-            let mut pressed: Option<(usize, f32, f32)> = None;
-            let mut dragged: Option<(usize, f32, f32)> = None;
-            let mut drag_ended = false;
-            ui.columns(3, |cols| {
-                for (i, col_ui) in cols.iter_mut().enumerate() {
-                    let avail = col_ui.available_size();
-                    let (rect, resp) =
-                        col_ui.allocate_exact_size(avail, egui::Sense::click_and_drag());
-                    if (resp.clicked() || resp.drag_started())
-                        && let Some(pos) = resp.interact_pointer_pos()
                     {
-                        // egui points → physical pixels (chart_area space).
-                        pressed = Some((i, pos.x * pixels_per_point, pos.y * pixels_per_point));
-                    }
-                    if resp.dragged() {
-                        let d = resp.drag_delta();
-                        if d != egui::Vec2::ZERO {
-                            dragged =
-                                Some((i, d.x * pixels_per_point, d.y * pixels_per_point));
+                        let state = state.get_mut().unwrap_or_else(PoisonError::into_inner);
+                        if let Some((i, x, y)) = pressed {
+                            state.handle_click(i, x, y);
+                        }
+                        if let Some((i, dx, dy)) = dragged {
+                            state.handle_drag(i, dx, dy);
+                        }
+                        if drag_ended {
+                            state.active_resize = None;
                         }
                     }
-                    if resp.drag_stopped() {
-                        drag_ended = true;
-                    }
-
-                    let panel_rect_px = Rect {
-                        x: (rect.min.x * pixels_per_point).round().max(0.0) as u32,
-                        y: (rect.min.y * pixels_per_point).round().max(0.0) as u32,
-                        width: (rect.width() * pixels_per_point).max(1.0) as u32,
-                        height: (rect.height() * pixels_per_point).max(1.0) as u32,
-                    };
-                    let cb = egui_wgpu::Callback::new_paint_callback(
-                        rect,
-                        FiggyCallback { panel_idx: i, panel_rect_px },
-                    );
-                    col_ui.painter().add(cb);
                 }
             });
-            if pressed.is_some() || dragged.is_some() || drag_ended {
-                let mut renderer_guard = render_state_clone.renderer.write();
-                if let Some(state) = renderer_guard.callback_resources.get_mut::<Mutex<FiggyState>>() {
-                    let state = state.get_mut().unwrap_or_else(PoisonError::into_inner);
-                    if let Some((i, x, y)) = pressed {
-                        state.handle_click(i, x, y);
-                    }
-                    if let Some((i, dx, dy)) = dragged {
-                        state.handle_drag(i, dx, dy);
-                    }
-                    if drag_ended {
-                        state.active_resize = None;
-                    }
-                }
-            }
-        });
     }
 
     fn on_exit(&mut self) {

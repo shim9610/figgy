@@ -9,14 +9,14 @@ use renderer::color::Color;
 use renderer::config::{DrawStyle, LegendEntryKind, SketchOptions};
 use renderer::data::Column;
 use renderer::data_config::{
-    DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterStyleConfig,
-    ErrorRef, ScatterShape, SeriesConfig,
+    DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorRef,
+    ScatterShape, SeriesConfig,
 };
 use renderer::data_render::{create_instance, request_adapter, request_device};
 use renderer::default;
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
-use renderer::{encode_png, Chart, RasterImage, Renderer, RendererDevice};
+use renderer::{Chart, RasterImage, Renderer, RendererDevice, encode_png};
 
 fn col(data: Vec<f64>) -> Column<f64> {
     let min = data.iter().copied().fold(f64::INFINITY, f64::min);
@@ -71,6 +71,7 @@ fn main() {
     let accent = Color::from_rgb8(214, 86, 54);
     let star_series = [SeriesConfig {
         series_id: "stars".into(),
+        source_id: None,
         label: None,
         x_column: "x".into(),
         y_column: "stars".into(),
@@ -79,6 +80,9 @@ fn main() {
                 point_color: accent,
                 point_shape: ScatterShape::CircleFilled,
                 point_size: 6.5,
+                point_style_table: None,
+                point_style_index_column: None,
+                point_style_overrides: None,
             },
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
@@ -90,7 +94,12 @@ fn main() {
 
     let star_chart = |style: DrawStyle| {
         let mut config = default::default_config();
-        config.chart_area = ChartArea(Rect { x: 0, y: 0, width: 920, height: 600 });
+        config.chart_area = ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 920,
+            height: 600,
+        });
         config.draw_style = style;
         let mut chart = Chart::new(config)
             .with_title("Star history")
@@ -102,7 +111,12 @@ fn main() {
         chart
     };
 
-    export(&mut r, &star_chart(DrawStyle::Precise), &star_series, "target/sketch_demo/precise.png");
+    export(
+        &mut r,
+        &star_chart(DrawStyle::Precise),
+        &star_series,
+        "target/sketch_demo/precise.png",
+    );
     export(
         &mut r,
         &star_chart(DrawStyle::Sketch(SketchOptions {
@@ -118,9 +132,18 @@ fn main() {
     let m = 36;
     let txs: Vec<f64> = (0..m).map(|i| i as f64 / (m - 1) as f64).collect();
     let ya: Vec<f64> = txs.iter().map(|&x| 60.0 + 24.0 * (x * 6.0).sin()).collect();
-    let yb: Vec<f64> = txs.iter().map(|&x| 36.0 + 22.0 * x - 8.0 * (x * 9.0).cos()).collect();
-    let yc: Vec<f64> = txs.iter().map(|&x| 12.0 + 9.0 * (x * 4.5 + 1.2).sin()).collect();
-    let err: Vec<f64> = txs.iter().map(|&x| 2.2 + 1.3 * (x * 7.0).cos().abs()).collect();
+    let yb: Vec<f64> = txs
+        .iter()
+        .map(|&x| 36.0 + 22.0 * x - 8.0 * (x * 9.0).cos())
+        .collect();
+    let yc: Vec<f64> = txs
+        .iter()
+        .map(|&x| 12.0 + 9.0 * (x * 4.5 + 1.2).sin())
+        .collect();
+    let err: Vec<f64> = txs
+        .iter()
+        .map(|&x| 2.2 + 1.3 * (x * 7.0).cos().abs())
+        .collect();
     r.add_column("t", &col(txs)).unwrap();
     r.add_column("ya", &col(ya)).unwrap();
     r.add_column("yb", &col(yb)).unwrap();
@@ -133,6 +156,7 @@ fn main() {
     let tour_series = [
         SeriesConfig {
             series_id: "wave".into(),
+            source_id: None,
             label: None,
             x_column: "t".into(),
             y_column: "ya".into(),
@@ -141,6 +165,9 @@ fn main() {
                     point_color: accent,
                     point_shape: ScatterShape::CircleFilled,
                     point_size: 5.5,
+                    point_style_table: None,
+                    point_style_index_column: None,
+                    point_style_overrides: None,
                 },
                 line: DataLineStyleConfig {
                     line_style: LineStylePreset::Solid,
@@ -151,6 +178,7 @@ fn main() {
         },
         SeriesConfig {
             series_id: "trend".into(),
+            source_id: None,
             label: None,
             x_column: "t".into(),
             y_column: "yb".into(),
@@ -164,6 +192,7 @@ fn main() {
         },
         SeriesConfig {
             series_id: "meas".into(),
+            source_id: None,
             label: None,
             x_column: "t".into(),
             y_column: "yc".into(),
@@ -172,8 +201,13 @@ fn main() {
                     point_color: green,
                     point_shape: ScatterShape::Diamond,
                     point_size: 5.0,
+                    point_style_table: None,
+                    point_style_index_column: None,
+                    point_style_overrides: None,
                 },
-                err_y: ErrorRef::Symmetric { column: "err".into() },
+                err_y: ErrorRef::Symmetric {
+                    column: "err".into(),
+                },
                 err_style: DataErrorBarStyleConfig {
                     error_bar_color: green,
                     error_bar_width: 1.6,
@@ -185,7 +219,12 @@ fn main() {
     ];
 
     let mut config = default::default_config();
-    config.chart_area = ChartArea(Rect { x: 0, y: 0, width: 920, height: 600 });
+    config.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: 920,
+        height: 600,
+    });
     config.grid.show_major_x = true;
     config.grid.show_major_y = true;
     config.grid.show_minor_x = true;
@@ -207,5 +246,10 @@ fn main() {
     chart.set_x_range(-0.03, 1.03);
     chart.set_y_range(0.0, 95.0);
 
-    export(&mut r, &chart, &tour_series, "target/sketch_demo/sketch_tour.png");
+    export(
+        &mut r,
+        &chart,
+        &tour_series,
+        "target/sketch_demo/sketch_tour.png",
+    );
 }
