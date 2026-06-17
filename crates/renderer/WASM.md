@@ -105,10 +105,12 @@ impl FiggyChart {
 `requestAnimationFrame` 콜백에서 데스크톱 데모와 동일한 패턴을 돈다:
 
 ```rust
-if chart.consume_raster_dirty() {
+let raster_dirty = chart.consume_raster_dirty();
+let data_dirty = chart.consume_data_dirty();
+if raster_dirty {
     renderer.refresh_axis_with_selection(&mut view, &chart, rect, &sel_boxes)?;
-    let _ = chart.consume_data_dirty();
-} else if chart.consume_data_dirty() {
+}
+if data_dirty {
     renderer.update_transform(&view, &chart);
 }
 renderer.draw(clear, &items)?;
@@ -257,8 +259,8 @@ series[0].render_type.Line.line.line_color = { r: 1, g: 0, b: 1, a: 1 };
 chart.set_series(JSON.stringify(series));  // GPU 스타일 재빌드 포함
 ```
 
-`set_config`는 `config_mut()` 경유라 양쪽 dirty가 서고, 다음 `frame()`
-이 데코 재래스터 + transform 갱신을 처리한다 — 데스크톱과 동일 규약.
+`set_config`는 `config_mut()` 경유라 양쪽 dirty가 서고, 다음 `frame()`이
+데코 재래스터와 transform 갱신을 각각 명시 처리한다 — 데스크톱과 동일 규약.
 **주의**: 스케일을 바꾸면 `major_spacing` 해석도 바뀐다 (Linear = 데이터
 단위, Logarithmic = decade 단위). `set_x_range`류 헬퍼는 자동으로 맞춰
 주지만 SSoT 직접 편집은 호출자가 함께 고쳐야 한다.

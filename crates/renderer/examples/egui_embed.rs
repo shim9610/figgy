@@ -419,7 +419,8 @@ impl CallbackTrait for FiggyCallback {
             _ => Vec::new(),
         };
 
-        // If the panel rect changed (or on first grading), re-raster the axis and refresh the transform.
+        // If the panel rect changed (or on first grading), refresh raster and
+        // transform separately; `refresh_axis` does not update data uniforms.
         let cur_rect = panel.view.panel_rect();
         if cur_rect != self.panel_rect_px {
             panel.chart.config_mut().chart_area = ChartArea(self.panel_rect_px);
@@ -432,21 +433,26 @@ impl CallbackTrait for FiggyCallback {
                 eprintln!("[figgy] refresh_axis failed: {e}");
                 return Vec::new();
             }
+            state.renderer.update_transform(&panel.view, &panel.chart);
             let _ = panel.chart.consume_data_dirty();
             let _ = panel.chart.consume_raster_dirty();
-        } else if panel.chart.consume_raster_dirty() {
-            if let Err(e) = state.renderer.refresh_axis_with_selection(
-                &mut panel.view,
-                &panel.chart,
-                cur_rect,
-                &sel_boxes,
-            ) {
-                eprintln!("[figgy] refresh_axis failed: {e}");
-                return Vec::new();
+        } else {
+            let raster_dirty = panel.chart.consume_raster_dirty();
+            let data_dirty = panel.chart.consume_data_dirty();
+            if raster_dirty {
+                if let Err(e) = state.renderer.refresh_axis_with_selection(
+                    &mut panel.view,
+                    &panel.chart,
+                    cur_rect,
+                    &sel_boxes,
+                ) {
+                    eprintln!("[figgy] refresh_axis failed: {e}");
+                    return Vec::new();
+                }
             }
-            let _ = panel.chart.consume_data_dirty();
-        } else if panel.chart.consume_data_dirty() {
-            state.renderer.update_transform(&panel.view, &panel.chart);
+            if data_dirty {
+                state.renderer.update_transform(&panel.view, &panel.chart);
+            }
         }
         Vec::new()
     }

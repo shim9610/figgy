@@ -700,6 +700,7 @@ impl App {
                 eprintln!("[refresh_axis] {e}");
                 return;
             }
+            renderer.update_transform(&panel.view, &panel.chart);
             let _ = panel.chart.consume_data_dirty();
             let _ = panel.chart.consume_raster_dirty();
         }
@@ -717,7 +718,9 @@ impl App {
         // ---- prepare: handle dirty flags ----
         for (i, panel) in self.panels.iter_mut().enumerate() {
             let panel_rect = panel.view.panel_rect();
-            if panel.chart.consume_raster_dirty() {
+            let raster_dirty = panel.chart.consume_raster_dirty();
+            let data_dirty = panel.chart.consume_data_dirty();
+            if raster_dirty {
                 let sel_boxes: Vec<SelectionBox> = match selected {
                     Some((pi, id)) if pi == i => panel
                         .hitmap
@@ -739,8 +742,8 @@ impl App {
                     eprintln!("[refresh_axis] {e}");
                     return;
                 }
-                let _ = panel.chart.consume_data_dirty();
-            } else if panel.chart.consume_data_dirty() {
+            }
+            if data_dirty {
                 renderer.update_transform(&panel.view, &panel.chart);
             }
         }

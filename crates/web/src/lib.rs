@@ -1210,9 +1210,10 @@ mod web {
             // scaled/letterboxed display chart derived from it.
             let (display_config, panel_rect, _) = self.display_config();
             let display_chart = Chart::new(display_config);
+            let view_dirty = self.view_dirty;
             let raster_dirty = self.chart.consume_raster_dirty();
-            if self.view_dirty || raster_dirty {
-                self.view_dirty = false;
+            let data_dirty = self.chart.consume_data_dirty();
+            if view_dirty || raster_dirty {
                 let sel_boxes: Vec<SelectionBox> = self
                     .selected
                     .and_then(|id| {
@@ -1232,8 +1233,9 @@ mod web {
                         &sel_boxes,
                     )
                     .map_err(js_err)?;
-                let _ = self.chart.consume_data_dirty();
-            } else if self.chart.consume_data_dirty() {
+                self.view_dirty = false;
+            }
+            if view_dirty || data_dirty {
                 self.renderer.update_transform(&self.view, &display_chart);
             }
 

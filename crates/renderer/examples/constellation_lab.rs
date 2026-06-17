@@ -184,9 +184,9 @@ impl CallbackTrait for LabCallback {
         let state = state.get_mut().unwrap_or_else(PoisonError::into_inner);
 
         // Slider → SSoT. Only on change, so the dirty bits don't spin.
-        // `config_mut` flags BOTH dirty bits, but most constellation knobs
-        // are GPU-side (they ride the transform rewrite) — re-rastering the
-        // No CPU backdrop/glow is tied to this style, so cancel the raster bit.
+        // `config_mut` flags BOTH dirty bits, but constellation knobs here are
+        // GPU-side uniform parameters. No CPU backdrop/glow is tied to this
+        // lab style, so cancel the raster bit and let update_transform carry it.
         let wanted = DrawStyle::Constellation(self.opts);
         if state.chart.config().draw_style != wanted {
             state.chart.config_mut().draw_style = wanted;
@@ -218,19 +218,24 @@ impl CallbackTrait for LabCallback {
                 eprintln!("[lab] refresh_axis failed: {e}");
                 return Vec::new();
             }
+            state.renderer.update_transform(&state.view, &state.chart);
             let _ = state.chart.consume_data_dirty();
             let _ = state.chart.consume_raster_dirty();
-        } else if state.chart.consume_raster_dirty() {
-            if let Err(e) = state
-                .renderer
-                .refresh_axis(&mut state.view, &state.chart, cur_rect)
-            {
-                eprintln!("[lab] refresh_axis failed: {e}");
-                return Vec::new();
+        } else {
+            let raster_dirty = state.chart.consume_raster_dirty();
+            let data_dirty = state.chart.consume_data_dirty();
+            if raster_dirty {
+                if let Err(e) = state
+                    .renderer
+                    .refresh_axis(&mut state.view, &state.chart, cur_rect)
+                {
+                    eprintln!("[lab] refresh_axis failed: {e}");
+                    return Vec::new();
+                }
             }
-            let _ = state.chart.consume_data_dirty();
-        } else if state.chart.consume_data_dirty() {
-            state.renderer.update_transform(&state.view, &state.chart);
+            if data_dirty {
+                state.renderer.update_transform(&state.view, &state.chart);
+            }
         }
         Vec::new()
     }

@@ -969,9 +969,10 @@ impl Renderer {
     // host (egui, iced, a wgpu app) manages those. Per-frame flow:
     //   1. Host calls `surface.get_current_texture()` or enters its paint
     //      callback.
-    //   2. If needed, the host invokes `update_transform` / `refresh_axis`
-    //      after `chart.consume_data_dirty` / `consume_raster_dirty` — this
-    //      is the "prepare" stage where `device`/`queue` are accessible.
+    //   2. If needed, the host invokes `refresh_axis` and/or `update_transform`
+    //      after independently consuming `chart.consume_raster_dirty()` /
+    //      `consume_data_dirty()` — this is the "prepare" stage where
+    //      `device`/`queue` are accessible.
     //   3. The host hands a `&mut RenderPass` to `renderer.paint(pass, items)`.
     //
     // Locking is the HOST's responsibility. `paint` takes `&mut self` (it
@@ -988,8 +989,10 @@ impl Renderer {
     // let cb = egui_wgpu::CallbackFn::new()
     //     .prepare(|device, queue, _enc, res| {
     //         let s = res.get_mut::<Mutex<FiggyState>>().unwrap().get_mut().unwrap();
-    //         if s.chart.consume_data_dirty() { s.renderer.update_transform(&s.view, &s.chart); }
-    //         if s.chart.consume_raster_dirty() { s.renderer.refresh_axis(&mut s.view, &s.chart, rect)?; }
+    //         let raster_dirty = s.chart.consume_raster_dirty();
+    //         let data_dirty = s.chart.consume_data_dirty();
+    //         if raster_dirty { s.renderer.refresh_axis(&mut s.view, &s.chart, rect)?; }
+    //         if data_dirty { s.renderer.update_transform(&s.view, &s.chart); }
     //         vec![]
     //     })
     //     .paint(|_info, pass, res| {
@@ -1215,7 +1218,8 @@ impl Renderer {
 
     /// Re-rasterize both grid and decoration textures. Updates in place via
     /// `write_texture` when the size matches; allocates new textures
-    /// otherwise. Also refreshes the transform UB (chart_area feeds it).
+    /// otherwise. Data transform updates are the caller's responsibility via
+    /// [`Self::update_transform`].
     ///
     /// `&mut self`: the constellation backdrop cache (`space_bg`) lives on
     /// the renderer and may be (re)baked here — same prepare-phase mutability
@@ -1308,7 +1312,6 @@ impl Renderer {
         )?;
         view.panel_rect = panel_rect;
 
-        self.update_transform(view, chart);
         Ok(())
     }
 

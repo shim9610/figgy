@@ -430,12 +430,14 @@ on demand.
 | Flag | Triggers | Handling |
 |---|---|---|
 | `data_dirty` | `set_x/y_range`, `auto_fit_*`, `invalidate()`, `config_mut()` / `set_config`, chart_area change, first frame | `Renderer::update_transform` (one UB write) |
-| `raster_dirty` | `set_x/y_range`, `auto_fit_*` (ticks/grid depend on the range), decoration changes (`with_title`, decoration fields, …), `config_mut()` / `set_config`, chart_area change, first frame | `Renderer::refresh_axis` (re-rasterizes both grid + decoration textures, re-uploads, also refreshes the transform) |
+| `raster_dirty` | `set_x/y_range`, `auto_fit_*` (ticks/grid depend on the range), decoration changes (`with_title`, decoration fields, …), `config_mut()` / `set_config`, chart_area change, first frame | `Renderer::refresh_axis` (re-rasterizes both grid + decoration textures and re-uploads them) |
 
 Caller per frame:
 ```rust
-if chart.consume_raster_dirty() { renderer.refresh_axis(view, chart, panel_rect)?; }
-else if chart.consume_data_dirty() { renderer.update_transform(view, chart); }
+let raster_dirty = chart.consume_raster_dirty();
+let data_dirty = chart.consume_data_dirty();
+if raster_dirty { renderer.refresh_axis(view, chart, panel_rect)?; }
+if data_dirty { renderer.update_transform(view, chart); }
 ```
 
 ### Log scale on the GPU
@@ -909,12 +911,14 @@ arc cache가 256개를 넘으면 전체 clear 후 필요 시 다시 구축한다
 | 플래그 | 트리거 | 처리 |
 |---|---|---|
 | `data_dirty` | `set_x/y_range`, `auto_fit_*`, `invalidate()`, `config_mut()` / `set_config`, chart_area 변경, 첫 frame | `Renderer::update_transform` (UB 1회 write) |
-| `raster_dirty` | `set_x/y_range`, `auto_fit_*` (tick/grid가 range에 의존), 데코레이션 변경 (`with_title`, decoration field 등), `config_mut()` / `set_config`, chart_area 변경, 첫 frame | `Renderer::refresh_axis` (grid + decoration 두 텍스처 모두 재라스터 + 업로드 + transform 도 갱신) |
+| `raster_dirty` | `set_x/y_range`, `auto_fit_*` (tick/grid가 range에 의존), 데코레이션 변경 (`with_title`, decoration field 등), `config_mut()` / `set_config`, chart_area 변경, 첫 frame | `Renderer::refresh_axis` (grid + decoration 두 텍스처 모두 재라스터 + 업로드) |
 
 호출자 매 frame:
 ```rust
-if chart.consume_raster_dirty() { renderer.refresh_axis(view, chart, panel_rect)?; }
-else if chart.consume_data_dirty() { renderer.update_transform(view, chart); }
+let raster_dirty = chart.consume_raster_dirty();
+let data_dirty = chart.consume_data_dirty();
+if raster_dirty { renderer.refresh_axis(view, chart, panel_rect)?; }
+if data_dirty { renderer.update_transform(view, chart); }
 ```
 
 ### Log scale GPU 처리

@@ -438,18 +438,26 @@ impl shader::Primitive for FiggyPrimitive {
                 eprintln!("[figgy] refresh_axis failed: {e}");
                 return;
             }
+            renderer.update_transform(&panel.view, &panel.chart);
             let _ = panel.chart.consume_data_dirty();
             let _ = panel.chart.consume_raster_dirty();
-        } else if panel.chart.consume_raster_dirty() {
-            if let Err(e) =
-                renderer.refresh_axis_with_selection(&mut panel.view, &panel.chart, cur, &sel_boxes)
-            {
-                eprintln!("[figgy] refresh_axis failed: {e}");
-                return;
+        } else {
+            let raster_dirty = panel.chart.consume_raster_dirty();
+            let data_dirty = panel.chart.consume_data_dirty();
+            if raster_dirty {
+                if let Err(e) = renderer.refresh_axis_with_selection(
+                    &mut panel.view,
+                    &panel.chart,
+                    cur,
+                    &sel_boxes,
+                ) {
+                    eprintln!("[figgy] refresh_axis failed: {e}");
+                    return;
+                }
             }
-            let _ = panel.chart.consume_data_dirty();
-        } else if panel.chart.consume_data_dirty() {
-            renderer.update_transform(&panel.view, &panel.chart);
+            if data_dirty {
+                renderer.update_transform(&panel.view, &panel.chart);
+            }
         }
 
         // Export every panel separately, but only once — from panel_idx == 0's prepare.
