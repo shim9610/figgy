@@ -9,7 +9,7 @@
 //! wasm32-unknown-unknown.
 
 use tiny_skia::{
-    FilterQuality, Pixmap, PixmapPaint, PathBuilder, PremultipliedColorU8, Stroke, StrokeDash,
+    FilterQuality, PathBuilder, Pixmap, PixmapPaint, PremultipliedColorU8, Stroke, StrokeDash,
     Transform,
 };
 
@@ -42,7 +42,12 @@ fn ts_color(c: &Color) -> tiny_skia::Color {
 
 impl Paint {
     pub fn fill(color: &Color) -> Self {
-        Self { color: ts_color(color), style: PaintStyle::Fill, stroke_width: 1.0, dash: None }
+        Self {
+            color: ts_color(color),
+            style: PaintStyle::Fill,
+            stroke_width: 1.0,
+            dash: None,
+        }
     }
 
     pub fn stroke(color: &Color, width: f32) -> Self {
@@ -56,7 +61,11 @@ impl Paint {
 
     /// Attach a dash pattern (`[on, off, …]`, even length). Empty = solid.
     pub fn with_dash(mut self, pattern: &[f32]) -> Self {
-        self.dash = if pattern.is_empty() { None } else { Some(pattern.to_vec()) };
+        self.dash = if pattern.is_empty() {
+            None
+        } else {
+            Some(pattern.to_vec())
+        };
         self
     }
 
@@ -81,7 +90,10 @@ impl Paint {
     fn stroke_params(&self) -> Stroke {
         Stroke {
             width: self.stroke_width,
-            dash: self.dash.as_ref().and_then(|d| StrokeDash::new(d.clone(), 0.0)),
+            dash: self
+                .dash
+                .as_ref()
+                .and_then(|d| StrokeDash::new(d.clone(), 0.0)),
             ..Stroke::default()
         }
     }
@@ -138,7 +150,9 @@ impl Canvas {
     }
 
     pub fn rotate_at(&mut self, degrees: f32, cx: f32, cy: f32) {
-        self.ts = self.ts.pre_concat(Transform::from_rotate_at(degrees, cx, cy));
+        self.ts = self
+            .ts
+            .pre_concat(Transform::from_rotate_at(degrees, cx, cy));
     }
 
     // Primitives.
@@ -245,11 +259,16 @@ impl Canvas {
     pub fn draw_rect(&mut self, x: f32, y: f32, w: f32, h: f32, paint: &Paint) {
         match paint.style {
             PaintStyle::Fill => {
-                let Some(rect) = tiny_skia::Rect::from_xywh(x, y, w, h) else { return };
-                self.pix.fill_rect(rect, &paint.shader_paint(), self.ts, None);
+                let Some(rect) = tiny_skia::Rect::from_xywh(x, y, w, h) else {
+                    return;
+                };
+                self.pix
+                    .fill_rect(rect, &paint.shader_paint(), self.ts, None);
             }
             PaintStyle::Stroke => {
-                let Some(rect) = tiny_skia::Rect::from_xywh(x, y, w, h) else { return };
+                let Some(rect) = tiny_skia::Rect::from_xywh(x, y, w, h) else {
+                    return;
+                };
                 let path = PathBuilder::from_rect(rect);
                 self.pix.stroke_path(
                     &path,
@@ -330,7 +349,9 @@ impl Canvas {
         if w == 0 || h == 0 || alpha.len() < (w as usize * h as usize) {
             return;
         }
-        let Some(mut glyph) = Pixmap::new(w, h) else { return };
+        let Some(mut glyph) = Pixmap::new(w, h) else {
+            return;
+        };
         let c = ts_color(color);
         let (cr, cg, cb, ca) = (c.red(), c.green(), c.blue(), c.alpha());
         let px = glyph.pixels_mut();
@@ -353,6 +374,7 @@ impl Canvas {
             ..PixmapPaint::default()
         };
         let full_ts = self.ts.pre_concat(Transform::from_translate(x, y));
-        self.pix.draw_pixmap(0, 0, glyph.as_ref(), &paint, full_ts, None);
+        self.pix
+            .draw_pixmap(0, 0, glyph.as_ref(), &paint, full_ts, None);
     }
 }

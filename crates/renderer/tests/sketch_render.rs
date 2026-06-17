@@ -46,8 +46,12 @@ fn col_f64(data: Vec<f64>) -> Column<f64> {
 /// (the caller early-returns — same skip pattern as the in-crate GPU tests).
 fn try_renderer() -> Option<Renderer> {
     let inst = create_instance();
-    let Ok(adapter) = request_adapter(&inst) else { return None };
-    let Ok((device, queue)) = request_device(&adapter) else { return None };
+    let Ok(adapter) = request_adapter(&inst) else {
+        return None;
+    };
+    let Ok((device, queue)) = request_device(&adapter) else {
+        return None;
+    };
     Some(
         Renderer::try_new(
             RendererDevice::new(Arc::new(device), Arc::new(queue)),
@@ -62,7 +66,12 @@ fn try_renderer() -> Option<Renderer> {
 /// axis/tick/title deco, which no color-class predicate matches.
 fn bare_chart(width: u32, height: u32) -> Chart {
     let mut config = renderer::default::default_config();
-    config.chart_area = ChartArea(Rect { x: 0, y: 0, width, height });
+    config.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width,
+        height,
+    });
     config.legend.visible = false;
     config.grid.show_major_x = false;
     config.grid.show_major_y = false;
@@ -71,13 +80,29 @@ fn bare_chart(width: u32, height: u32) -> Chart {
     Chart::new(config)
 }
 
-const RED: Color = Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 };
-const GREEN: Color = Color { r: 0.0, g: 1.0, b: 0.0, a: 1.0 };
-const BLUE: Color = Color { r: 0.0, g: 0.0, b: 1.0, a: 1.0 };
+const RED: Color = Color {
+    r: 1.0,
+    g: 0.0,
+    b: 0.0,
+    a: 1.0,
+};
+const GREEN: Color = Color {
+    r: 0.0,
+    g: 1.0,
+    b: 0.0,
+    a: 1.0,
+};
+const BLUE: Color = Color {
+    r: 0.0,
+    g: 0.0,
+    b: 1.0,
+    a: 1.0,
+};
 
 fn line_series(id: &str, x: &str, y: &str, color: Color, style: LineStylePreset) -> SeriesConfig {
     SeriesConfig {
         series_id: id.into(),
+        source_id: None,
         label: None,
         x_column: x.into(),
         y_column: y.into(),
@@ -94,6 +119,7 @@ fn line_series(id: &str, x: &str, y: &str, color: Color, style: LineStylePreset)
 fn scatter_series(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
     SeriesConfig {
         series_id: id.into(),
+        source_id: None,
         label: None,
         x_column: x.into(),
         y_column: y.into(),
@@ -102,6 +128,9 @@ fn scatter_series(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
                 point_color: color,
                 point_shape: ScatterShape::CircleFilled,
                 point_size: 7.0,
+                point_style_table: None,
+                point_style_index_column: None,
+                point_style_overrides: None,
             },
         },
     }
@@ -112,14 +141,23 @@ fn scatter_series(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
 fn errorbar_series(id: &str, x: &str, y: &str, err: &str, color: Color) -> SeriesConfig {
     SeriesConfig {
         series_id: id.into(),
+        source_id: None,
         label: None,
         x_column: x.into(),
         y_column: y.into(),
         render_type: DataRenderType::ScatterErrorbarY {
             scatter: DataScatterStyleConfig {
-                point_color: Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 },
+                point_color: Color {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 0.0,
+                },
                 point_shape: ScatterShape::CircleFilled,
                 point_size: 3.0,
+                point_style_table: None,
+                point_style_index_column: None,
+                point_style_overrides: None,
             },
             err_y: ErrorRef::Symmetric { column: err.into() },
             err_style: DataErrorBarStyleConfig {
@@ -143,7 +181,9 @@ fn build_combined(r: &mut Renderer) -> (Chart, Vec<SeriesConfig>) {
     let lx: Vec<f64> = (0..n).map(|i| i as f64 * 6.28 / (n - 1) as f64).collect();
     let ly: Vec<f64> = lx.iter().map(|x| 0.8 + 0.3 * x.sin()).collect();
     let m = 33;
-    let sx: Vec<f64> = (0..m).map(|i| 0.15 + i as f64 * 6.0 / (m - 1) as f64).collect();
+    let sx: Vec<f64> = (0..m)
+        .map(|i| 0.15 + i as f64 * 6.0 / (m - 1) as f64)
+        .collect();
     let sy: Vec<f64> = sx.iter().map(|x| 0.2 * (x * 1.3).cos()).collect();
     let ey: Vec<f64> = sx.iter().map(|x| -0.7 + 0.2 * (x * 0.9).sin()).collect();
     let ee: Vec<f64> = vec![0.15; m];
@@ -208,7 +248,12 @@ fn class_diff(a: &RasterImage, b: &RasterImage, pred: fn(&[u8]) -> bool) -> usiz
 fn assert_bytes_eq(a: &RasterImage, b: &RasterImage, what: &str) {
     assert_eq!((a.width, a.height), (b.width, b.height), "{what}: dims");
     if a.rgba != b.rgba {
-        let i = a.rgba.iter().zip(&b.rgba).position(|(x, y)| x != y).unwrap();
+        let i = a
+            .rgba
+            .iter()
+            .zip(&b.rgba)
+            .position(|(x, y)| x != y)
+            .unwrap();
         let px = i / 4;
         let (x, y) = (px % a.width as usize, px / a.width as usize);
         panic!(
@@ -252,15 +297,33 @@ fn sketch_diverges_from_precise() {
             "{name}: sketch ink quantity implausible (precise {cp} px vs sketch {cs} px)"
         );
         let d = class_diff(&img_p, &img_s, pred);
-        assert!(d > 0, "{name}: ink identical under sketch — wobble not applied");
+        assert!(
+            d > 0,
+            "{name}: ink identical under sketch — wobble not applied"
+        );
     }
 
     // Single-series isolation: one chart per primitive, fresh precise/sketch
     // pair each, diff restricted to that primitive's color class.
     let singles: [(SeriesConfig, fn(&[u8]) -> bool, &str, usize); 3] = [
-        (line_series("only_l", "lx", "ly", RED, LineStylePreset::Solid), is_red, "line-only", 300),
-        (scatter_series("only_s", "sx", "sy", GREEN), is_green, "scatter-only", 200),
-        (errorbar_series("only_e", "sx", "ey", "ee", BLUE), is_blue, "errorbar-only", 300),
+        (
+            line_series("only_l", "lx", "ly", RED, LineStylePreset::Solid),
+            is_red,
+            "line-only",
+            300,
+        ),
+        (
+            scatter_series("only_s", "sx", "sy", GREEN),
+            is_green,
+            "scatter-only",
+            200,
+        ),
+        (
+            errorbar_series("only_e", "sx", "ey", "ee", BLUE),
+            is_blue,
+            "errorbar-only",
+            300,
+        ),
     ];
     for (cfg, pred, name, min_ink) in singles {
         let mut chart = bare_chart(640, 480);
@@ -274,7 +337,10 @@ fn sketch_diverges_from_precise() {
         assert!(cp > min_ink, "{name}: precise ink missing ({cp} px)");
         assert!(cs > min_ink, "{name}: sketch ink missing ({cs} px)");
         let d = class_diff(&p, &s, pred);
-        assert!(d > 0, "{name}: ink identical under sketch — wobble not applied");
+        assert!(
+            d > 0,
+            "{name}: ink identical under sketch — wobble not applied"
+        );
     }
 }
 
@@ -307,17 +373,27 @@ fn sketch_seed_separates() {
     let Some(mut r) = try_renderer() else { return };
     let (mut chart, series) = build_combined(&mut r);
 
-    chart.config_mut().draw_style =
-        DrawStyle::Sketch(SketchOptions { seed: 0, ..SketchOptions::default() });
+    chart.config_mut().draw_style = DrawStyle::Sketch(SketchOptions {
+        seed: 0,
+        ..SketchOptions::default()
+    });
     let s0 = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
-    chart.config_mut().draw_style =
-        DrawStyle::Sketch(SketchOptions { seed: 1, ..SketchOptions::default() });
+    chart.config_mut().draw_style = DrawStyle::Sketch(SketchOptions {
+        seed: 1,
+        ..SketchOptions::default()
+    });
     let s1 = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
 
-    assert!(s0.rgba != s1.rgba, "seed 0 and seed 1 produced identical exports");
+    assert!(
+        s0.rgba != s1.rgba,
+        "seed 0 and seed 1 produced identical exports"
+    );
     for (name, pred, _) in CLASSES {
         let d = class_diff(&s0, &s1, pred);
-        assert!(d > 0, "{name}: seed change did not affect this primitive's ink");
+        assert!(
+            d > 0,
+            "{name}: seed change did not affect this primitive's ink"
+        );
     }
 }
 
@@ -364,8 +440,10 @@ fn sketch_amplitude_is_bounded() {
     let (pmin, pmax) = red_rows(&img_p).expect("precise horizontal line drew no ink");
 
     const AMP: f32 = 3.0;
-    chart.config_mut().draw_style =
-        DrawStyle::Sketch(SketchOptions { amplitude_px: AMP, ..SketchOptions::default() });
+    chart.config_mut().draw_style = DrawStyle::Sketch(SketchOptions {
+        amplitude_px: AMP,
+        ..SketchOptions::default()
+    });
     let img_s = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
     let (smin, smax) = red_rows(&img_s).expect("sketch horizontal line drew no ink");
 
@@ -424,8 +502,10 @@ fn sketch_preserves_nan_gaps() {
     let to_px = |v: f64| da.x as f64 + v * da.width as f64;
     let (gap_a, gap_b) = (to_px(0.40), to_px(0.45));
     let (probe_a, probe_b) = ((gap_a + 5.0) as usize, (gap_b - 5.0) as usize);
-    let leaked: Vec<&usize> =
-        red_cols.iter().filter(|&&x| x >= probe_a && x <= probe_b).collect();
+    let leaked: Vec<&usize> = red_cols
+        .iter()
+        .filter(|&&x| x >= probe_a && x <= probe_b)
+        .collect();
     assert!(
         leaked.is_empty(),
         "sketch bridged the NaN gap: line ink at columns {leaked:?} inside probe \
@@ -464,7 +544,10 @@ fn sketch_composes_with_dash() {
     let dashed = [line_series("dd", "dx", "dy", RED, LineStylePreset::Dash)];
     let img_dash = r.export_panel_rgba(&chart, &dashed, 1.0).unwrap();
 
-    let (cs, cd) = (count_class(&img_solid, is_red), count_class(&img_dash, is_red));
+    let (cs, cd) = (
+        count_class(&img_solid, is_red),
+        count_class(&img_dash, is_red),
+    );
     assert!(cs > 300, "sketch solid line missing ({cs} px)");
     assert!(cd > 0, "sketch+dash drew nothing — dash erased the line");
     assert!(

@@ -17,19 +17,19 @@ use std::sync::Arc;
 use crate::axis_render;
 use crate::chart::Chart;
 use crate::color::Color;
-use crate::config::{Config, DrawStyle};
-use crate::line::LineStylePreset;
+use crate::config::{Config, DrawStyle, PickedPointRef};
 use crate::data::ColumnSource;
 use crate::data_config::{
-    DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterStyleConfig,
-    ErrorRef, SeriesConfig,
+    DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterPointStyleConfig,
+    DataScatterStyleConfig, ErrorRef, ScatterShape, SeriesConfig,
 };
 use crate::data_render::{
     self, AxisLayer, ColumnErrorBarDraw, ColumnHandle, ColumnId, ColumnLineLayer,
-    ColumnPool, ColumnScatterLayer, DefragPolicy, PrimitiveStyle,
+    ColumnPickRingLayer, ColumnPool, ColumnScatterLayer, DefragPolicy, PrimitiveStyle,
 };
 use crate::error::{FiggyError, Result};
 use crate::layout::Rect;
+use crate::line::LineStylePreset;
 
 /// A wgpu device/queue pair used by figgy.
 ///
@@ -50,8 +50,12 @@ impl RendererDevice {
         Self { device, queue }
     }
 
-    pub fn device(&self) -> &Arc<wgpu::Device> { &self.device }
-    pub fn queue(&self) -> &Arc<wgpu::Queue> { &self.queue }
+    pub fn device(&self) -> &Arc<wgpu::Device> {
+        &self.device
+    }
+    pub fn queue(&self) -> &Arc<wgpu::Queue> {
+        &self.queue
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -95,6 +99,7 @@ pub struct Renderer {
     texture_bgl: wgpu::BindGroupLayout,
     transform_bgl: wgpu::BindGroupLayout,
     style_bgl: wgpu::BindGroupLayout,
+    scatter_style_map_bgl: wgpu::BindGroupLayout,
     /// Constellation star-pass data layout (arc prefix + pool + offsets) —
     /// shared by the stars pipeline and every per-series star bind group.
     star_data_bgl: wgpu::BindGroupLayout,
@@ -151,10 +156,7 @@ struct SpaceBgKey {
     seed: u32,
 }
 
-fn validate_target_format(
-    caps: RendererDeviceCaps,
-    format: wgpu::TextureFormat,
-) -> Result<()> {
+fn validate_target_format(caps: RendererDeviceCaps, format: wgpu::TextureFormat) -> Result<()> {
     if !caps.features.contains(format.required_features()) {
         return Err(FiggyError::UnsupportedSurfaceFormat {
             format,
@@ -231,7 +233,11 @@ fn preferred_msaa_sample_count(caps: RendererDeviceCaps, format: wgpu::TextureFo
 
 /// Discriminant for cached per-style pipeline sets.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub(crate) enum StyleKey { Sketch, Milkyway, Constellation }
+pub(crate) enum StyleKey {
+    Sketch,
+    Milkyway,
+    Constellation,
+}
 
 /// Everything the renderer needs to know about one stylized mode up front;
 /// the per-format GPU objects live in the [`StyleSet`] the key maps to.
@@ -264,9 +270,18 @@ fn pack_sketch_params(style: &DrawStyle) -> [f32; 12] {
 fn pack_milkyway_params(style: &DrawStyle) -> [f32; 12] {
     match style.milkyway() {
         Some(c) => [
-            c.star_density, c.ribbon_width_px, c.ribbon_intensity, c.seed as f32,
-            c.star_scale, c.spread_px, c.faint_bias, c.planet_rim,
-            c.structure_scale, c.star_brightness, 0.0, 0.0,
+            c.star_density,
+            c.ribbon_width_px,
+            c.ribbon_intensity,
+            c.seed as f32,
+            c.star_scale,
+            c.spread_px,
+            c.faint_bias,
+            c.planet_rim,
+            c.structure_scale,
+            c.star_brightness,
+            0.0,
+            0.0,
         ],
         None => [0.0; 12],
     }
@@ -278,9 +293,18 @@ fn pack_milkyway_params(style: &DrawStyle) -> [f32; 12] {
 fn pack_constellation_params(style: &DrawStyle) -> [f32; 12] {
     match style.constellation() {
         Some(c) => [
-            c.star_opacity, c.line_opacity, 0.0, 0.0,
-            0.0, 0.0, 0.0, 0.0,
-            0.0, 0.0, 0.0, 0.0,
+            c.star_opacity,
+            c.line_opacity,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
         ],
         None => [0.0; 12],
     }
@@ -341,6 +365,8 @@ struct TargetPipelines {
     axis: wgpu::RenderPipeline,
     line: wgpu::RenderPipeline,
     scatter: wgpu::RenderPipeline,
+    scatter_mapped: wgpu::RenderPipeline,
+    pick_ring: wgpu::RenderPipeline,
     errorbar: wgpu::RenderPipeline,
     sample_count: u32,
     styled: HashMap<StyleKey, StyleSet>,
@@ -351,6 +377,7 @@ fn create_target_pipelines(
     texture_bgl: &wgpu::BindGroupLayout,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
+    scatter_style_map_bgl: &wgpu::BindGroupLayout,
     surface_format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> TargetPipelines {
@@ -363,6 +390,24 @@ fn create_target_pipelines(
         ),
         scatter: data_render::create_scatter_columnar_pipeline_with_sample_count(
             device, transform_bgl, style_bgl, surface_format, sample_count,
+        ),
+        scatter_mapped: data_render::create_scatter_columnar_mapped_pipeline(
+            device,
+            transform_bgl,
+            style_bgl,
+            scatter_style_map_bgl,
+            surface_format,
+            sample_count,
+        ),
+        pick_ring: data_render::create_scatter_columnar_pipeline_with_entries(
+            device,
+            transform_bgl,
+            style_bgl,
+            surface_format,
+            sample_count,
+            "vs_pick_ring",
+            "fs_pick_ring",
+            "figgy picked point ring pipeline",
         ),
         errorbar: data_render::create_errorbar_columnar_pipeline_with_sample_count(
             device, transform_bgl, style_bgl, surface_format, sample_count,
@@ -388,28 +433,42 @@ impl TargetPipelines {
         items: &[ChartDrawItem<'_>],
     ) {
         for item in items {
-            let Some(v) = style_variant(&item.chart_config.draw_style) else { continue };
+            let Some(v) = style_variant(&item.chart_config.draw_style) else {
+                continue;
+            };
             self.styled.entry(v.key).or_insert_with(|| match v.key {
                 StyleKey::Sketch => StyleSet::Sketch {
                     line: data_render::create_line_columnar_pipeline_with_entries(
-                        device, transform_bgl, style_bgl, surface_format,
+                        device,
+                        transform_bgl,
+                        style_bgl,
+                        surface_format,
                         self.sample_count,
-                        "vs_sketch", "fs_main",
+                        "vs_sketch",
+                        "fs_main",
                         wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
                         wgpu::PrimitiveTopology::TriangleStrip,
                         None,
                         "figgy line styled pipeline",
                     ),
                     scatter: data_render::create_scatter_columnar_pipeline_with_entries(
-                        device, transform_bgl, style_bgl, surface_format,
+                        device,
+                        transform_bgl,
+                        style_bgl,
+                        surface_format,
                         self.sample_count,
-                        "vs_sketch", "fs_sketch",
+                        "vs_sketch",
+                        "fs_sketch",
                         "figgy scatter styled pipeline",
                     ),
                     errorbar: data_render::create_errorbar_columnar_pipeline_with_entries(
-                        device, transform_bgl, style_bgl, surface_format,
+                        device,
+                        transform_bgl,
+                        style_bgl,
+                        surface_format,
                         self.sample_count,
-                        "vs_sketch", "figgy errorbar styled pipeline",
+                        "vs_sketch",
+                        "figgy errorbar styled pipeline",
                     ),
                     line_verts: data_render::LINE_SKETCH_VERTICES_PER_INSTANCE,
                 },
@@ -460,11 +519,7 @@ fn validate_texture_extent(
     Ok(())
 }
 
-fn validate_buffer_size(
-    caps: RendererDeviceCaps,
-    resource: &'static str,
-    size: u64,
-) -> Result<()> {
+fn validate_buffer_size(caps: RendererDeviceCaps, resource: &'static str, size: u64) -> Result<()> {
     if size > caps.max_buffer_size {
         return Err(FiggyError::GpuResourceLimit {
             resource,
@@ -480,11 +535,12 @@ fn create_texture_checked(
     desc: &wgpu::TextureDescriptor<'_>,
     resource: &'static str,
 ) -> Result<wgpu::Texture> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.create_texture(desc)))
-        .map_err(|_| FiggyError::GpuResourceAllocationFailed {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.create_texture(desc))).map_err(
+        |_| FiggyError::GpuResourceAllocationFailed {
             resource,
             reason: "wgpu Device::create_texture panicked".into(),
-        })
+        },
+    )
 }
 
 fn create_buffer_checked(
@@ -492,11 +548,71 @@ fn create_buffer_checked(
     desc: &wgpu::BufferDescriptor<'_>,
     resource: &'static str,
 ) -> Result<wgpu::Buffer> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.create_buffer(desc)))
-        .map_err(|_| FiggyError::GpuResourceAllocationFailed {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.create_buffer(desc))).map_err(
+        |_| FiggyError::GpuResourceAllocationFailed {
             resource,
             reason: "wgpu Device::create_buffer panicked".into(),
-        })
+        },
+    )
+}
+
+fn premul_rgba(c: Color) -> [f32; 4] {
+    let a = c.a.clamp(0.0, 1.0);
+    [c.r * a, c.g * a, c.b * a, a]
+}
+
+fn scatter_style_slot_gpu(
+    slot: &DataScatterPointStyleConfig,
+    scale: f32,
+    mask_color: u32,
+    mask_radius: u32,
+    mask_shape: u32,
+) -> data_render::ScatterStyleSlotGpu {
+    let mut mask = 0u32;
+    let mut color_premul = [0.0; 4];
+    let mut radius_px = 0.0;
+    let mut shape_id = 0.0;
+    if let Some(c) = slot.point_color {
+        mask |= mask_color;
+        color_premul = premul_rgba(c);
+    }
+    if let Some(size) = slot.point_size {
+        mask |= mask_radius;
+        radius_px = size * scale;
+    }
+    if let Some(shape) = &slot.point_shape {
+        mask |= mask_shape;
+        shape_id = data_render::shape_id(shape) as f32;
+    }
+    data_render::ScatterStyleSlotGpu {
+        color_premul,
+        meta: [radius_px, shape_id, mask as f32, 0.0],
+    }
+}
+
+fn single_point_handle(handle: ColumnHandle, index: usize) -> Option<ColumnHandle> {
+    if index >= handle.len_values {
+        return None;
+    }
+    let offset = handle
+        .offset
+        .checked_add(u64::try_from(index).ok()?.checked_mul(4)?)?;
+    Some(ColumnHandle {
+        generation: handle.generation,
+        offset,
+        byte_size: 4,
+        len_values: 1,
+    })
+}
+
+fn picked_ref_matches_series(series: &SeriesConfig, picked: &PickedPointRef) -> bool {
+    if picked.series_id != series.series_id {
+        return false;
+    }
+    match picked.source_id.as_deref() {
+        Some(source_id) => series.source_id.as_deref() == Some(source_id),
+        None => true,
+    }
 }
 
 struct MsaaTarget {
@@ -575,6 +691,8 @@ impl Renderer {
         let texture_bgl = data_render::create_texture_bind_group_layout(&device);
         let transform_bgl = data_render::create_scatter_transform_bind_group_layout(&device);
         let style_bgl = data_render::create_style_bind_group_layout(&device);
+        let scatter_style_map_bgl =
+            data_render::create_scatter_style_map_bind_group_layout(&device);
         let star_data_bgl = data_render::create_star_data_bind_group_layout(&device);
 
         let sampler = data_render::create_linear_sampler(&device);
@@ -587,6 +705,7 @@ impl Renderer {
             &texture_bgl,
             &transform_bgl,
             &style_bgl,
+            &scatter_style_map_bgl,
             surface_format,
             target_sample_count,
         );
@@ -601,6 +720,7 @@ impl Renderer {
             texture_bgl,
             transform_bgl,
             style_bgl,
+            scatter_style_map_bgl,
             star_data_bgl,
             pipelines,
             sampler,
@@ -616,10 +736,18 @@ impl Renderer {
 
     // Handle / accessor methods.
 
-    pub fn device(&self) -> &Arc<wgpu::Device> { &self.device }
-    pub fn queue(&self) -> &Arc<wgpu::Queue> { &self.queue }
-    pub fn pool(&self) -> &ColumnPool { &self.pool }
-    pub fn surface_format(&self) -> wgpu::TextureFormat { self.surface_format }
+    pub fn device(&self) -> &Arc<wgpu::Device> {
+        &self.device
+    }
+    pub fn queue(&self) -> &Arc<wgpu::Queue> {
+        &self.queue
+    }
+    pub fn pool(&self) -> &ColumnPool {
+        &self.pool
+    }
+    pub fn surface_format(&self) -> wgpu::TextureFormat {
+        self.surface_format
+    }
 
     /// Rebuild render-target pipelines if the host swap-chain format changed.
     ///
@@ -648,6 +776,7 @@ impl Renderer {
             &self.texture_bgl,
             &self.transform_bgl,
             &self.style_bgl,
+            &self.scatter_style_map_bgl,
             surface_format,
             target_sample_count,
         );
@@ -675,17 +804,35 @@ impl Renderer {
         }
     }
 
-    pub fn texture_bind_group_layout(&self) -> &wgpu::BindGroupLayout { &self.texture_bgl }
-    pub fn transform_bind_group_layout(&self) -> &wgpu::BindGroupLayout { &self.transform_bgl }
-    pub fn style_bind_group_layout(&self) -> &wgpu::BindGroupLayout { &self.style_bgl }
+    pub fn texture_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.texture_bgl
+    }
+    pub fn transform_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.transform_bgl
+    }
+    pub fn style_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.style_bgl
+    }
 
-    pub fn axis_pipeline(&self) -> &wgpu::RenderPipeline { &self.pipelines.axis }
-    pub fn line_pipeline(&self) -> &wgpu::RenderPipeline { &self.pipelines.line }
-    pub fn scatter_pipeline(&self) -> &wgpu::RenderPipeline { &self.pipelines.scatter }
-    pub fn errorbar_pipeline(&self) -> &wgpu::RenderPipeline { &self.pipelines.errorbar }
+    pub fn axis_pipeline(&self) -> &wgpu::RenderPipeline {
+        &self.pipelines.axis
+    }
+    pub fn line_pipeline(&self) -> &wgpu::RenderPipeline {
+        &self.pipelines.line
+    }
+    pub fn scatter_pipeline(&self) -> &wgpu::RenderPipeline {
+        &self.pipelines.scatter
+    }
+    pub fn errorbar_pipeline(&self) -> &wgpu::RenderPipeline {
+        &self.pipelines.errorbar
+    }
 
-    pub fn sampler(&self) -> &wgpu::Sampler { &self.sampler }
-    pub fn quad_vertex_buffer(&self) -> &wgpu::Buffer { &self.quad_vb }
+    pub fn sampler(&self) -> &wgpu::Sampler {
+        &self.sampler
+    }
+    pub fn quad_vertex_buffer(&self) -> &wgpu::Buffer {
+        &self.quad_vb
+    }
 
     // Column management (returns Result).
 
@@ -695,7 +842,9 @@ impl Renderer {
         id: impl Into<ColumnId>,
         source: &dyn ColumnSource,
     ) -> Result<ColumnHandle> {
-        Ok(self.pool.add_column(id.into(), source, &self.device, &self.queue)?)
+        Ok(self
+            .pool
+            .add_column(id.into(), source, &self.device, &self.queue)?)
     }
 
     pub fn remove_column(&mut self, id: &str) -> bool {
@@ -745,20 +894,29 @@ impl Renderer {
             data_render::create_surface_for_window(&instance, target)
         }))
         .map_err(|_| FiggyError::SurfaceCreationFailed {
-            reason: "wgpu surface creation panicked; check platform window/canvas/thread constraints"
-                .into(),
+            reason:
+                "wgpu surface creation panicked; check platform window/canvas/thread constraints"
+                    .into(),
         })?
-        .map_err(|e| FiggyError::SurfaceCreationFailed { reason: format!("{e}") })?;
+        .map_err(|e| FiggyError::SurfaceCreationFailed {
+            reason: format!("{e}"),
+        })?;
         let adapter = data_render::request_adapter_for_surface_async(&instance, &surface)
             .await
             .map_err(|_| FiggyError::AdapterUnavailable)?;
         let (device, queue) = data_render::request_device_async(&adapter)
             .await
-            .map_err(|e| FiggyError::DeviceCreationFailed { reason: format!("{e}") })?;
+            .map_err(|e| FiggyError::DeviceCreationFailed {
+                reason: format!("{e}"),
+            })?;
         let device = Arc::new(device);
         let queue = Arc::new(queue);
         let surface_config = data_render::try_configure_surface(
-            &surface, &adapter, &device, size.0.max(1), size.1.max(1),
+            &surface,
+            &adapter,
+            &device,
+            size.0.max(1),
+            size.1.max(1),
         )?;
 
         let caps = RendererDeviceCaps::from_device(&device);
@@ -895,7 +1053,9 @@ impl Renderer {
         line.series_salt = series_salt;
         scatter.series_salt = series_salt;
         errorbar.series_salt = series_salt;
-        self.create_style_from_primitives(line, scatter, errorbar)
+        let scatter_map = extract_scatter(&cfg.render_type)
+            .and_then(|sc| self.create_scatter_style_map_for(sc, scale));
+        self.create_style_from_primitives(line, scatter, errorbar, scatter_map)
     }
 
     /// Shared tail of `create_style_for_series*`: allocate the three style
@@ -905,8 +1065,10 @@ impl Renderer {
         line: PrimitiveStyle,
         scatter: PrimitiveStyle,
         errorbar: PrimitiveStyle,
+        scatter_map: Option<data_render::ScatterStyleMap>,
     ) -> ChartStyle {
         let dev = &self.device;
+        let scatter_radius_px = scatter.point_radius_px;
         let line_buf = data_render::create_style_uniform_buffer(dev, &line);
         let sc_buf = data_render::create_style_uniform_buffer(dev, &scatter);
         let eb_buf = data_render::create_style_uniform_buffer(dev, &errorbar);
@@ -914,7 +1076,61 @@ impl Renderer {
             line_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &line_buf),
             scatter_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &sc_buf),
             errorbar_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &eb_buf),
+            scatter_map,
+            scatter_radius_px,
         }
+    }
+
+    fn create_scatter_style_map_for(
+        &self,
+        scatter: &DataScatterStyleConfig,
+        scale: f32,
+    ) -> Option<data_render::ScatterStyleMap> {
+        const MASK_COLOR: u32 = 1;
+        const MASK_RADIUS: u32 = 2;
+        const MASK_SHAPE: u32 = 4;
+
+        let has_index = scatter.point_style_index_column.is_some();
+        let style_slots: Vec<data_render::ScatterStyleSlotGpu> = scatter
+            .point_style_table
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(|slot| scatter_style_slot_gpu(slot, scale, MASK_COLOR, MASK_RADIUS, MASK_SHAPE))
+            .collect();
+        let overrides: Vec<data_render::ScatterStyleOverrideGpu> = scatter
+            .point_style_overrides
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|ov| {
+                let point_index = u32::try_from(ov.index).ok()?;
+                let slot =
+                    scatter_style_slot_gpu(&ov.style, scale, MASK_COLOR, MASK_RADIUS, MASK_SHAPE);
+                Some(data_render::ScatterStyleOverrideGpu {
+                    point_index,
+                    _pad: [0; 3],
+                    color_premul: slot.color_premul,
+                    meta: slot.meta,
+                })
+            })
+            .collect();
+
+        if !has_index && style_slots.is_empty() && overrides.is_empty() {
+            return None;
+        }
+        Some(data_render::create_scatter_style_map(
+            &self.device,
+            &self.scatter_style_map_bgl,
+            &style_slots,
+            &overrides,
+            data_render::ScatterStyleMapMeta {
+                style_count: style_slots.len().min(u32::MAX as usize) as u32,
+                override_count: overrides.len().min(u32::MAX as usize) as u32,
+                has_index: u32::from(has_index),
+                _pad: 0,
+            },
+        ))
     }
 
     /// Build the per-panel GPU resources: grid + decoration textures and
@@ -922,17 +1138,14 @@ impl Renderer {
     /// `panel_rect` is the panel's pixel rect in surface coordinates.
     /// `chart.config_mut().chart_area` must match `panel_rect` before this
     /// call so the axis raster is drawn correctly.
-    pub fn create_chart_view(
-        &self,
-        chart: &Chart,
-        panel_rect: Rect,
-    ) -> Result<ChartView> {
+    pub fn create_chart_view(&self, chart: &Chart, panel_rect: Rect) -> Result<ChartView> {
         let w = panel_rect.width.max(1);
         let h = panel_rect.height.max(1);
 
         // Grid layer (drawn below data): raster + texture + bind group.
         let grid_rgba = axis_render::try_raster_chart_layer_to_rgba(
-            chart.config(), axis_render::AxisLayerKind::Grid,
+            chart.config(),
+            axis_render::AxisLayerKind::Grid,
         )?;
         let grid_tex = data_render::upload_rgba_texture(
             &self.device,
@@ -944,12 +1157,16 @@ impl Renderer {
         )?;
         let grid_view_t = grid_tex.create_view(&wgpu::TextureViewDescriptor::default());
         let grid_bg = data_render::create_texture_bind_group(
-            &self.device, &self.texture_bgl, &grid_view_t, &self.sampler,
+            &self.device,
+            &self.texture_bgl,
+            &grid_view_t,
+            &self.sampler,
         );
 
         // Decoration layer (drawn above data).
         let dec_rgba = axis_render::try_raster_chart_layer_to_rgba(
-            chart.config(), axis_render::AxisLayerKind::Decoration,
+            chart.config(),
+            axis_render::AxisLayerKind::Decoration,
         )?;
         let dec_tex = data_render::upload_rgba_texture(
             &self.device,
@@ -961,13 +1178,19 @@ impl Renderer {
         )?;
         let dec_view_t = dec_tex.create_view(&wgpu::TextureViewDescriptor::default());
         let dec_bg = data_render::create_texture_bind_group(
-            &self.device, &self.texture_bgl, &dec_view_t, &self.sampler,
+            &self.device,
+            &self.texture_bgl,
+            &dec_view_t,
+            &self.sampler,
         );
 
         let t = data_render::scatter_transform_from_config(chart.config());
-        let transform_buffer = data_render::create_scatter_transform_uniform_buffer(&self.device, &t);
+        let transform_buffer =
+            data_render::create_scatter_transform_uniform_buffer(&self.device, &t);
         let transform_bg = data_render::create_scatter_transform_bind_group(
-            &self.device, &self.transform_bgl, &transform_buffer,
+            &self.device,
+            &self.transform_bgl,
+            &transform_buffer,
         );
 
         Ok(ChartView {
@@ -1021,7 +1244,9 @@ impl Renderer {
         let h = panel_rect.height.max(1);
 
         let dec_rgba = axis_render::try_raster_chart_layer_to_rgba_with_selection(
-            chart.config(), axis_render::AxisLayerKind::Decoration, selection,
+            chart.config(),
+            axis_render::AxisLayerKind::Decoration,
+            selection,
         )?;
 
         // Grid layer. The constellation backdrop is axis-range independent,
@@ -1038,33 +1263,48 @@ impl Renderer {
             };
             if !self.space_bg.as_ref().is_some_and(|s| s.key == key) {
                 let rgba = axis_render::try_raster_chart_layer_to_rgba(
-                    chart.config(), axis_render::AxisLayerKind::Grid,
+                    chart.config(),
+                    axis_render::AxisLayerKind::Grid,
                 )?;
                 let bake_gen = self.space_bg.as_ref().map_or(1, |s| s.bake_gen + 1);
-                self.space_bg = Some(SpaceBgCache { key, bake_gen, rgba });
+                self.space_bg = Some(SpaceBgCache {
+                    key,
+                    bake_gen,
+                    rgba,
+                });
             }
             let cache = self.space_bg.as_ref().expect("space_bg baked above");
             if view.grid_space_gen != Some(cache.bake_gen) {
                 self.refresh_one_layer(
-                    &mut view.grid_texture, &mut view.grid_bind_group,
-                    &cache.rgba, w, h,
+                    &mut view.grid_texture,
+                    &mut view.grid_bind_group,
+                    &cache.rgba,
+                    w,
+                    h,
                 )?;
                 view.grid_space_gen = Some(cache.bake_gen);
             }
         } else {
             let grid_rgba = axis_render::try_raster_chart_layer_to_rgba(
-                chart.config(), axis_render::AxisLayerKind::Grid,
+                chart.config(),
+                axis_render::AxisLayerKind::Grid,
             )?;
             self.refresh_one_layer(
-                &mut view.grid_texture, &mut view.grid_bind_group,
-                &grid_rgba, w, h,
+                &mut view.grid_texture,
+                &mut view.grid_bind_group,
+                &grid_rgba,
+                w,
+                h,
             )?;
             view.grid_space_gen = None;
         }
 
         self.refresh_one_layer(
-            &mut view.decoration_texture, &mut view.decoration_bind_group,
-            &dec_rgba, w, h,
+            &mut view.decoration_texture,
+            &mut view.decoration_bind_group,
+            &dec_rgba,
+            w,
+            h,
         )?;
         view.panel_rect = panel_rect;
 
@@ -1079,20 +1319,29 @@ impl Renderer {
         tex: &mut wgpu::Texture,
         bg: &mut wgpu::BindGroup,
         rgba: &[u8],
-        w: u32, h: u32,
+        w: u32,
+        h: u32,
     ) -> Result<()> {
         let same_size = tex.width() == w && tex.height() == h;
         if same_size {
             self.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
-                    texture: tex, mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All,
+                    texture: tex,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
                 },
                 rgba,
                 wgpu::TexelCopyBufferLayout {
-                    offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h),
+                    offset: 0,
+                    bytes_per_row: Some(w * 4),
+                    rows_per_image: Some(h),
                 },
-                wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
             );
         } else {
             let new_tex = data_render::upload_rgba_texture(
@@ -1105,7 +1354,10 @@ impl Renderer {
             )?;
             let new_view_t = new_tex.create_view(&wgpu::TextureViewDescriptor::default());
             let new_bg = data_render::create_texture_bind_group(
-                &self.device, &self.texture_bgl, &new_view_t, &self.sampler,
+                &self.device,
+                &self.texture_bgl,
+                &new_view_t,
+                &self.sampler,
             );
             *tex = new_tex;
             *bg = new_bg;
@@ -1168,8 +1420,7 @@ impl Renderer {
             // with (the star VS derives the same value from the transform).
             let star_pitch = match &item.chart_config.draw_style {
                 crate::config::DrawStyle::Milkyway(c) => Some(
-                    (data_render::line_arc::STAR_SLOT_PITCH_FACTOR * c.structure_scale)
-                        .max(1e-3),
+                    (data_render::line_arc::STAR_SLOT_PITCH_FACTOR * c.structure_scale).max(1e-3),
                 ),
                 _ => None,
             };
@@ -1222,17 +1473,29 @@ impl Renderer {
             let styled = pipelines.style_set(&item.chart_config.draw_style);
 
             // Bundle every series's primitives for the panel into one call.
-            let series_list =
-                self.build_series_layers(item.view, item.series, pipelines, item_arcs, styled)?;
+            let series_list = self.build_series_layers(
+                item.view,
+                item.chart_config,
+                item.series,
+                pipelines,
+                item_arcs,
+                styled,
+            )?;
 
             data_render::draw_chart_panel_columnar(
                 pass,
                 target_size,
                 panel_rect,
                 data_area,
-                AxisLayer { pipeline: &pipelines.axis, bind_group: &item.view.grid_bind_group },
+                AxisLayer {
+                    pipeline: &pipelines.axis,
+                    bind_group: &item.view.grid_bind_group,
+                },
                 &series_list,
-                AxisLayer { pipeline: &pipelines.axis, bind_group: &item.view.decoration_bind_group },
+                AxisLayer {
+                    pipeline: &pipelines.axis,
+                    bind_group: &item.view.decoration_bind_group,
+                },
             );
         }
         Ok(())
@@ -1252,6 +1515,7 @@ impl Renderer {
     fn build_series_layers<'a>(
         &'a self,
         view: &'a ChartView,
+        chart_config: &'a Config,
         series_specs: &[Series<'a>],
         pipelines: &'a TargetPipelines,
         arcs: &[Option<ArcPrefix>],
@@ -1280,15 +1544,34 @@ impl Renderer {
         }
         let (line_pick, stars_pick, scatter_pick, errorbar_pipe) = match styled {
             None => (
-                LinePick { pipeline: &pipelines.line, verts: 4, texture_bg: None },
+                LinePick {
+                    pipeline: &pipelines.line,
+                    verts: 4,
+                    texture_bg: None,
+                },
                 None,
-                ScatterPick { pipeline: &pipelines.scatter, texture_bg: None },
+                ScatterPick {
+                    pipeline: &pipelines.scatter,
+                    texture_bg: None,
+                },
                 &pipelines.errorbar,
             ),
-            Some(StyleSet::Sketch { line, scatter, errorbar, line_verts }) => (
-                LinePick { pipeline: line, verts: *line_verts, texture_bg: None },
+            Some(StyleSet::Sketch {
+                line,
+                scatter,
+                errorbar,
+                line_verts,
+            }) => (
+                LinePick {
+                    pipeline: line,
+                    verts: *line_verts,
+                    texture_bg: None,
+                },
                 None,
-                ScatterPick { pipeline: scatter, texture_bg: None },
+                ScatterPick {
+                    pipeline: scatter,
+                    texture_bg: None,
+                },
                 errorbar,
             ),
             // Milkyway: line = ribbon + star pass, scatter = ringed
@@ -1300,17 +1583,30 @@ impl Renderer {
                     verts: data_render::MILKYWAY_RIBBON_VERTICES,
                     texture_bg: Some(&c.star_tex_bg),
                 },
-                Some(StarsPick { pipeline: &c.stars, texture_bg: &c.star_tex_bg }),
-                ScatterPick { pipeline: &c.planets, texture_bg: Some(&c.star_tex_bg) },
+                Some(StarsPick {
+                    pipeline: &c.stars,
+                    texture_bg: &c.star_tex_bg,
+                }),
+                ScatterPick {
+                    pipeline: &c.planets,
+                    texture_bg: Some(&c.star_tex_bg),
+                },
                 &c.jets,
             ),
             // Constellation: only ScatterLine is supported. The line is the
             // regular columnar stroke with style-level alpha; the scatter
             // layer renders PSF stars at the data points.
             Some(StyleSet::Constellation(c)) => (
-                LinePick { pipeline: &c.line, verts: 4, texture_bg: None },
+                LinePick {
+                    pipeline: &c.line,
+                    verts: 4,
+                    texture_bg: None,
+                },
                 None,
-                ScatterPick { pipeline: &c.stars, texture_bg: Some(&c.star_tex_bg) },
+                ScatterPick {
+                    pipeline: &c.stars,
+                    texture_bg: Some(&c.star_tex_bg),
+                },
                 &pipelines.errorbar,
             ),
         };
@@ -1331,12 +1627,15 @@ impl Renderer {
                     transform_bg: &view.transform_bg,
                     style_bg: &series.style.line_bg,
                     pool_buffer: pool.buffer(),
-                    x: x_h, y: y_h,
+                    x: x_h,
+                    y: y_h,
                     arc,
                     verts_per_instance: line_pick.verts,
                     texture_bg: line_pick.texture_bg,
                 })
-            } else { None };
+            } else {
+                None
+            };
 
             // Star pass: per-series GPU state lives in the arc scratch the
             // prepare phase built (indirect args + VS bind group). Missing
@@ -1359,59 +1658,151 @@ impl Renderer {
             };
 
             let scatter = if has_scatter(rt) && (!constellation_only || constellation_supported) {
+                let precise_style_map = if styled.is_none() {
+                    series.style.scatter_map.as_ref()
+                } else {
+                    None
+                };
+                let style_index = match (precise_style_map, extract_scatter(rt)) {
+                    (Some(map), Some(sc)) if map.has_index => {
+                        let Some(column) = sc.point_style_index_column.as_ref() else {
+                            return Err(FiggyError::InvalidSeriesConfig {
+                                series_id: cfg.series_id.clone(),
+                                reason: "scatter style map expects an index column".into(),
+                            });
+                        };
+                        let h = lookup(column)?;
+                        let count = x_h.len_values.min(y_h.len_values);
+                        if h.len_values < count {
+                            return Err(FiggyError::InvalidSeriesConfig {
+                                series_id: cfg.series_id.clone(),
+                                reason: format!(
+                                    "style index column {column:?} has {} values, but scatter uses {count}",
+                                    h.len_values
+                                ),
+                            });
+                        }
+                        Some(h)
+                    }
+                    _ => None,
+                };
                 Some(ColumnScatterLayer {
-                    pipeline: scatter_pick.pipeline,
+                    pipeline: precise_style_map
+                        .map_or(scatter_pick.pipeline, |_| &pipelines.scatter_mapped),
                     transform_bg: &view.transform_bg,
                     style_bg: &series.style.scatter_bg,
+                    style_map_bg: precise_style_map.map(|m| &m.bind_group),
                     quad_vb: &self.quad_vb,
                     pool_buffer: pool.buffer(),
-                    x: x_h, y: y_h,
+                    x: x_h,
+                    y: y_h,
+                    style_index,
                     texture_bg: scatter_pick.texture_bg,
                 })
-            } else { None };
+            } else {
+                None
+            };
 
             let errorbar = if constellation_only {
                 None
-            } else { match (extract_err_y(rt), extract_err_x(rt)) {
-                (None, None) => None,
-                (ey_opt, ex_opt) => {
-                    let (ey_lo, ey_hi) = match ey_opt {
-                        Some(ErrorRef::Symmetric { column }) => {
-                            let h = lookup(column)?; (h, h)
-                        }
-                        Some(ErrorRef::Asymmetric { lower, upper }) => {
-                            (lookup(lower)?, lookup(upper)?)
-                        }
-                        None => {
-                            let zero = self.zero_handle()?;
-                            (zero, zero)
-                        }
-                    };
-                    let (ex_lo, ex_hi) = match ex_opt {
-                        Some(ErrorRef::Symmetric { column }) => {
-                            let h = lookup(column)?; (h, h)
-                        }
-                        Some(ErrorRef::Asymmetric { lower, upper }) => {
-                            (lookup(lower)?, lookup(upper)?)
-                        }
-                        None => {
-                            let zero = self.zero_handle()?;
-                            (zero, zero)
-                        }
-                    };
-                    Some(ColumnErrorBarDraw {
-                        pipeline: errorbar_pipe,
-                        transform_bg: &view.transform_bg,
-                        style_bg: &series.style.errorbar_bg,
-                        pool_buffer: pool.buffer(),
-                        x: x_h, y: y_h,
-                        err_y_lo: ey_lo, err_y_hi: ey_hi,
-                        err_x_lo: ex_lo, err_x_hi: ex_hi,
-                    })
+            } else {
+                match (extract_err_y(rt), extract_err_x(rt)) {
+                    (None, None) => None,
+                    (ey_opt, ex_opt) => {
+                        let (ey_lo, ey_hi) = match ey_opt {
+                            Some(ErrorRef::Symmetric { column }) => {
+                                let h = lookup(column)?;
+                                (h, h)
+                            }
+                            Some(ErrorRef::Asymmetric { lower, upper }) => {
+                                (lookup(lower)?, lookup(upper)?)
+                            }
+                            None => {
+                                let zero = self.zero_handle()?;
+                                (zero, zero)
+                            }
+                        };
+                        let (ex_lo, ex_hi) = match ex_opt {
+                            Some(ErrorRef::Symmetric { column }) => {
+                                let h = lookup(column)?;
+                                (h, h)
+                            }
+                            Some(ErrorRef::Asymmetric { lower, upper }) => {
+                                (lookup(lower)?, lookup(upper)?)
+                            }
+                            None => {
+                                let zero = self.zero_handle()?;
+                                (zero, zero)
+                            }
+                        };
+                        Some(ColumnErrorBarDraw {
+                            pipeline: errorbar_pipe,
+                            transform_bg: &view.transform_bg,
+                            style_bg: &series.style.errorbar_bg,
+                            pool_buffer: pool.buffer(),
+                            x: x_h,
+                            y: y_h,
+                            err_y_lo: ey_lo,
+                            err_y_hi: ey_hi,
+                            err_x_lo: ex_lo,
+                            err_x_hi: ex_hi,
+                        })
+                    }
                 }
-            }};
+            };
 
-            out.push(data_render::SeriesLayers { errorbar, line, line_extra, scatter });
+            let mut picked = Vec::new();
+            if let Some(picked_cfg) = chart_config
+                .picked_points
+                .as_ref()
+                .filter(|cfg| cfg.visible && !cfg.refs.is_empty())
+            {
+                let visible_in_style = !constellation_only || constellation_supported;
+                if visible_in_style {
+                    for picked_ref in &picked_cfg.refs {
+                        if !picked_ref_matches_series(cfg, picked_ref) {
+                            continue;
+                        }
+                        let (Some(x), Some(y)) = (
+                            single_point_handle(x_h, picked_ref.point_index),
+                            single_point_handle(y_h, picked_ref.point_index),
+                        ) else {
+                            continue;
+                        };
+                        let mut ring_style = PrimitiveStyle::from_color_with_width(
+                            picked_cfg.ring_color,
+                            picked_cfg.ring_width_px,
+                        );
+                        ring_style.point_radius_px =
+                            (series.style.scatter_radius_px + picked_cfg.radius_extra_px).max(0.0);
+                        ring_style.shape_id = data_render::shape_id(&ScatterShape::Circle);
+                        let ring_buf =
+                            data_render::create_style_uniform_buffer(&self.device, &ring_style);
+                        let style_bg = data_render::create_style_bind_group(
+                            &self.device,
+                            &self.style_bgl,
+                            &ring_buf,
+                        );
+                        picked.push(ColumnPickRingLayer {
+                            pipeline: &pipelines.pick_ring,
+                            transform_bg: &view.transform_bg,
+                            style_bg,
+                            quad_vb: &self.quad_vb,
+                            pool_buffer: pool.buffer(),
+                            x,
+                            y,
+                        });
+                    }
+                }
+            }
+
+            out.push(data_render::SeriesLayers {
+                errorbar,
+                line,
+                line_extra,
+                scatter,
+                picked,
+            });
         }
         Ok(out)
     }
@@ -1465,8 +1856,7 @@ impl Renderer {
             self.arc_cache.clear();
         }
         let stale = self.arc_cache.get(series_id).is_none_or(|s| {
-            !s.matches(n, x_base, y_base, generation)
-                || s.star.is_some() != star_pitch.is_some()
+            !s.matches(n, x_base, y_base, generation) || s.star.is_some() != star_pitch.is_some()
         });
         if stale {
             #[cfg(test)]
@@ -1489,10 +1879,18 @@ impl Renderer {
         }
         let scratch = self.arc_cache.get(series_id)?;
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("figgy line arc encoder"),
-        });
-        scratch.dispatch(&self.queue, &mut encoder, &self.arc_pipelines, &t, star_pitch);
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("figgy line arc encoder"),
+            });
+        scratch.dispatch(
+            &self.queue,
+            &mut encoder,
+            &self.arc_pipelines,
+            &t,
+            star_pitch,
+        );
         self.queue.submit(std::iter::once(encoder.finish()));
 
         Some((Arc::clone(&scratch.arc), u64::from(n) * 4))
@@ -1504,10 +1902,13 @@ impl Renderer {
     /// automatically). Lookup happens in the immutable draw phase, so the
     /// column cannot be created lazily here.
     fn zero_handle(&self) -> Result<ColumnHandle> {
-        self.pool.handle_for("__zero").ok_or_else(|| FiggyError::UnknownColumn {
-            id: "__zero (zero-fill column for the unused dim of an errorbar series; \
-                 pre-register via `renderer.add_column(\"__zero\", &zero_col)`)".into(),
-        })
+        self.pool
+            .handle_for("__zero")
+            .ok_or_else(|| FiggyError::UnknownColumn {
+                id: "__zero (zero-fill column for the unused dim of an errorbar series; \
+                 pre-register via `renderer.add_column(\"__zero\", &zero_col)`)"
+                    .into(),
+            })
     }
 
     // Headless PNG export.
@@ -1573,19 +1974,36 @@ impl Renderer {
         // 1) Scaled config with chart_area overridden to (0,0,w,h) → temp chart.
         let mut scaled_config = chart.config().scaled(scale);
         scaled_config.chart_area = crate::layout::ChartArea(Rect {
-            x: 0, y: 0, width: w, height: h,
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
         });
         let scaled_chart = Chart::new(scaled_config);
 
         // 2) Temp ChartView with scaled axis textures.
-        let view = self.create_chart_view(&scaled_chart, Rect { x: 0, y: 0, width: w, height: h })?;
+        let view = self.create_chart_view(
+            &scaled_chart,
+            Rect {
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+            },
+        )?;
 
         // 3) Series styles — line_width also scales (extracted from render_type).
-        let scaled_styles: Vec<ChartStyle> = series.iter()
+        let scaled_styles: Vec<ChartStyle> = series
+            .iter()
             .map(|cfg| self.create_style_for_series_scaled(cfg, scale))
             .collect();
-        let series_objs: Vec<Series<'_>> = series.iter().zip(scaled_styles.iter())
-            .map(|(cfg, st)| Series { config: cfg, style: st })
+        let series_objs: Vec<Series<'_>> = series
+            .iter()
+            .zip(scaled_styles.iter())
+            .map(|(cfg, st)| Series {
+                config: cfg,
+                style: st,
+            })
             .collect();
         let items = [ChartDrawItem {
             view: &view,
@@ -1600,7 +2018,11 @@ impl Renderer {
         // 4) Offscreen target.
         let target_desc = wgpu::TextureDescriptor {
             label: Some("figgy export target"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -1638,6 +2060,7 @@ impl Renderer {
             &self.texture_bgl,
             &self.transform_bgl,
             &self.style_bgl,
+            &self.scatter_style_map_bgl,
             export_format,
             export_sample_count,
         );
@@ -1693,9 +2116,11 @@ impl Renderer {
             }
         };
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("figgy export encoder"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("figgy export encoder"),
+            });
 
         // 6) Render pass — configured clear + a single paint.
         {
@@ -1739,9 +2164,11 @@ impl Renderer {
         while y0 < h {
             let rows = rows_per_chunk.min(h - y0);
             let chunk_size = padded_bpr_u64 * u64::from(rows);
-            let mut copy_encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("figgy export copy encoder"),
-            });
+            let mut copy_encoder =
+                self.device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("figgy export copy encoder"),
+                    });
             copy_encoder.copy_texture_to_buffer(
                 wgpu::TexelCopyTextureInfo {
                     texture: &target_tex,
@@ -1757,13 +2184,19 @@ impl Renderer {
                         rows_per_image: Some(rows),
                     },
                 },
-                wgpu::Extent3d { width: w, height: rows, depth_or_array_layers: 1 },
+                wgpu::Extent3d {
+                    width: w,
+                    height: rows,
+                    depth_or_array_layers: 1,
+                },
             );
             self.queue.submit(std::iter::once(copy_encoder.finish()));
 
             let slice = readback.slice(..chunk_size);
             let (tx, rx) = futures_channel::oneshot::channel();
-            slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+            slice.map_async(wgpu::MapMode::Read, move |r| {
+                let _ = tx.send(r);
+            });
             // Native: drive the device to completion so the await below
             // resolves immediately. On wasm the browser polls the device and
             // the await yields to the JS event loop instead.
@@ -1790,7 +2223,11 @@ impl Renderer {
                 for i in 0..(w as usize) {
                     let p = i * 4;
                     let (b0, b1, b2, b3) = (row[p], row[p + 1], row[p + 2], row[p + 3]);
-                    let (r, g, b, a) = if bgra { (b2, b1, b0, b3) } else { (b0, b1, b2, b3) };
+                    let (r, g, b, a) = if bgra {
+                        (b2, b1, b0, b3)
+                    } else {
+                        (b0, b1, b2, b3)
+                    };
                     let (or, og, ob) = if a == 0 || a == 255 {
                         (r, g, b)
                     } else {
@@ -1812,7 +2249,11 @@ impl Renderer {
             y0 += rows;
         }
 
-        Ok(RasterImage { width: w, height: h, rgba })
+        Ok(RasterImage {
+            width: w,
+            height: h,
+            rgba,
+        })
     }
 
     /// Convenience wrapper: export panel RGBA, then encode PNG bytes in
@@ -1907,10 +2348,14 @@ pub fn encode_png(img: &RasterImage) -> Result<Vec<u8>> {
         enc.set_depth(png::BitDepth::Eight);
         let mut writer = enc
             .write_header()
-            .map_err(|e| FiggyError::RasterWrapFailed { reason: format!("png header: {e}") })?;
+            .map_err(|e| FiggyError::RasterWrapFailed {
+                reason: format!("png header: {e}"),
+            })?;
         writer
             .write_image_data(&img.rgba)
-            .map_err(|e| FiggyError::RasterWrapFailed { reason: format!("png write: {e}") })?;
+            .map_err(|e| FiggyError::RasterWrapFailed {
+                reason: format!("png write: {e}"),
+            })?;
     }
     Ok(buf)
 }
@@ -1939,7 +2384,9 @@ pub struct ChartView {
 }
 
 impl ChartView {
-    pub fn panel_rect(&self) -> Rect { self.panel_rect.clone() }
+    pub fn panel_rect(&self) -> Rect {
+        self.panel_rect.clone()
+    }
 }
 
 /// Bundle of style bind groups for line, scatter, and errorbar primitives.
@@ -1952,6 +2399,8 @@ pub struct ChartStyle {
     line_bg: wgpu::BindGroup,
     scatter_bg: wgpu::BindGroup,
     errorbar_bg: wgpu::BindGroup,
+    scatter_map: Option<data_render::ScatterStyleMap>,
+    scatter_radius_px: f32,
 }
 
 /// One drawable series — `data_config::SeriesConfig` (declarative) plus a
@@ -2064,11 +2513,15 @@ pub struct WindowedRenderer<'w> {
 
 impl<'w> std::ops::Deref for WindowedRenderer<'w> {
     type Target = Renderer;
-    fn deref(&self) -> &Renderer { &self.inner }
+    fn deref(&self) -> &Renderer {
+        &self.inner
+    }
 }
 
 impl<'w> std::ops::DerefMut for WindowedRenderer<'w> {
-    fn deref_mut(&mut self) -> &mut Renderer { &mut self.inner }
+    fn deref_mut(&mut self) -> &mut Renderer {
+        &mut self.inner
+    }
 }
 
 impl Drop for WindowedRenderer<'_> {
@@ -2091,8 +2544,12 @@ impl<'w> WindowedRenderer<'w> {
     /// know your panel layout policy.
     pub fn resize(&mut self, w: u32, h: u32) -> Result<()> {
         data_render::reconfigure_surface(
-            &self.surface, &self._adapter, self.inner.device(),
-            &mut self.surface_config, w.max(1), h.max(1),
+            &self.surface,
+            &self._adapter,
+            self.inner.device(),
+            &mut self.surface_config,
+            w.max(1),
+            h.max(1),
         )?;
         let preferred_sample_count =
             preferred_msaa_sample_count(self.inner.caps, self.surface_config.format);
@@ -2138,12 +2595,12 @@ impl<'w> WindowedRenderer<'w> {
             None => (&target, None, wgpu::StoreOp::Store),
         };
 
-        let mut encoder = self
-            .inner
-            .device()
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("figgy frame encoder"),
-            });
+        let mut encoder =
+            self.inner
+                .device()
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("figgy frame encoder"),
+                });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("figgy frame pass"),
@@ -2171,9 +2628,7 @@ impl<'w> WindowedRenderer<'w> {
                 items,
             )?;
         }
-        self.inner
-            .queue()
-            .submit(std::iter::once(encoder.finish()));
+        self.inner.queue().submit(std::iter::once(encoder.finish()));
         frame.present();
         Ok(())
     }
@@ -2196,6 +2651,9 @@ mod tests {
             point_color: Color::new(0.0, 0.0, 0.0, 1.0),
             point_shape: crate::data_config::ScatterShape::CircleFilled,
             point_size: 5.0,
+            point_style_table: None,
+            point_style_index_column: None,
+            point_style_overrides: None,
         }
     }
 
@@ -2210,7 +2668,12 @@ mod tests {
 
     fn basic_errorbar_chart() -> Chart {
         let mut config = crate::default::default_config();
-        config.chart_area = crate::layout::ChartArea(Rect { x: 0, y: 0, width: 320, height: 240 });
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 240,
+        });
         config.legend.visible = false;
         let mut chart = Chart::new(config);
         chart.set_x_range(0.0, 4.0);
@@ -2221,29 +2684,41 @@ mod tests {
     #[test]
     fn point_constellation_scatterline_exports() {
         let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else { return; };
-        let Ok((device, queue)) = request_device(&adapter) else { return; };
+        let Ok(adapter) = request_adapter(&inst) else {
+            return;
+        };
+        let Ok((device, queue)) = request_device(&adapter) else {
+            return;
+        };
 
         let mut r = Renderer::try_new(
             RendererDevice::new(Arc::new(device), Arc::new(queue)),
             wgpu::TextureFormat::Bgra8Unorm,
             1024 * 1024,
-        ).unwrap();
-        r.add_column("pc_x", &col_f64(vec![0.0, 0.25, 0.5, 0.75, 1.0])).unwrap();
-        r.add_column("pc_y", &col_f64(vec![0.2, 0.75, 0.35, 0.9, 0.5])).unwrap();
+        )
+        .unwrap();
+        r.add_column("pc_x", &col_f64(vec![0.0, 0.25, 0.5, 0.75, 1.0]))
+            .unwrap();
+        r.add_column("pc_y", &col_f64(vec![0.2, 0.75, 0.35, 0.9, 0.5]))
+            .unwrap();
 
         let mut config = crate::default::default_config();
-        config.chart_area = crate::layout::ChartArea(Rect { x: 0, y: 0, width: 320, height: 240 });
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 240,
+        });
         config.legend.visible = false;
-        config.draw_style = crate::config::DrawStyle::Constellation(
-            crate::config::ConstellationOptions::default(),
-        );
+        config.draw_style =
+            crate::config::DrawStyle::Constellation(crate::config::ConstellationOptions::default());
         let mut chart = Chart::new(config);
         chart.set_x_range(-0.05, 1.05);
         chart.set_y_range(0.0, 1.0);
 
         let series = [SeriesConfig {
             series_id: "pc".into(),
+            source_id: None,
             label: None,
             x_column: "pc_x".into(),
             y_column: "pc_y".into(),
@@ -2252,6 +2727,9 @@ mod tests {
                     point_color: Color::new(1.0, 1.0, 1.0, 1.0),
                     point_shape: crate::data_config::ScatterShape::CircleFilled,
                     point_size: 5.0,
+                    point_style_table: None,
+                    point_style_index_column: None,
+                    point_style_overrides: None,
                 },
                 line: DataLineStyleConfig {
                     line_style: crate::line::LineStylePreset::Solid,
@@ -2262,20 +2740,28 @@ mod tests {
         }];
         let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
         let lit = img.rgba.chunks_exact(4).filter(|p| p[3] > 0).count();
-        assert!(lit > 100, "point constellation export produced too little ink: {lit}");
+        assert!(
+            lit > 100,
+            "point constellation export produced too little ink: {lit}"
+        );
     }
 
     #[test]
     fn all_scatter_shapes_export_visible_markers() {
         let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else { return; };
-        let Ok((device, queue)) = request_device(&adapter) else { return; };
+        let Ok(adapter) = request_adapter(&inst) else {
+            return;
+        };
+        let Ok((device, queue)) = request_device(&adapter) else {
+            return;
+        };
 
         let mut r = Renderer::try_new(
             RendererDevice::new(Arc::new(device), Arc::new(queue)),
             wgpu::TextureFormat::Bgra8Unorm,
             1024 * 1024,
-        ).unwrap();
+        )
+        .unwrap();
 
         let shapes = [
             crate::data_config::ScatterShape::Circle,
@@ -2316,6 +2802,7 @@ mod tests {
             r.add_column(&y_id, &col_f64(vec![y])).unwrap();
             series.push(SeriesConfig {
                 series_id: format!("shape_{i}"),
+                source_id: None,
                 label: None,
                 x_column: x_id,
                 y_column: y_id,
@@ -2324,13 +2811,21 @@ mod tests {
                         point_color: Color::new(1.0, 0.0, 0.0, 1.0),
                         point_shape: shape.clone(),
                         point_size: 8.0,
+                        point_style_table: None,
+                        point_style_index_column: None,
+                        point_style_overrides: None,
                     },
                 },
             });
         }
 
         let mut config = crate::default::default_config();
-        config.chart_area = crate::layout::ChartArea(Rect { x: 0, y: 0, width: 700, height: 400 });
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 700,
+            height: 400,
+        });
         config.legend.visible = false;
         let mut chart = Chart::new(config);
         chart.set_x_range(-0.5, 6.5);
@@ -2342,14 +2837,21 @@ mod tests {
             .chunks_exact(4)
             .filter(|p| p[0] > 150 && p[1] < 80 && p[2] < 80 && p[3] > 100)
             .count();
-        assert!(red_ink > 600, "scatter shape export produced too little red ink: {red_ink}");
+        assert!(
+            red_ink > 600,
+            "scatter shape export produced too little red ink: {red_ink}"
+        );
     }
 
     #[test]
     fn xy_errorbar_does_not_require_zero_column() {
         let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else { return; };
-        let Ok((device, queue)) = request_device(&adapter) else { return; };
+        let Ok(adapter) = request_adapter(&inst) else {
+            return;
+        };
+        let Ok((device, queue)) = request_device(&adapter) else {
+            return;
+        };
         let device = Arc::new(device);
         let queue = Arc::new(queue);
 
@@ -2357,7 +2859,8 @@ mod tests {
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
             wgpu::TextureFormat::Bgra8Unorm,
             1024 * 1024,
-        ).unwrap();
+        )
+        .unwrap();
         r.add_column("x", &col_f64(vec![1.0, 2.0, 3.0])).unwrap();
         r.add_column("y", &col_f64(vec![1.0, 3.0, 2.0])).unwrap();
         r.add_column("ex", &col_f64(vec![0.1, 0.2, 0.1])).unwrap();
@@ -2366,13 +2869,18 @@ mod tests {
         let chart = basic_errorbar_chart();
         let series = [SeriesConfig {
             series_id: "xy".into(),
+            source_id: None,
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
             render_type: DataRenderType::ScatterErrorbarXY {
                 scatter: test_scatter_style(),
-                err_x: ErrorRef::Symmetric { column: "ex".into() },
-                err_y: ErrorRef::Symmetric { column: "ey".into() },
+                err_x: ErrorRef::Symmetric {
+                    column: "ex".into(),
+                },
+                err_y: ErrorRef::Symmetric {
+                    column: "ey".into(),
+                },
                 err_style: test_errorbar_style(),
             },
         }];
@@ -2383,8 +2891,12 @@ mod tests {
     #[test]
     fn single_direction_errorbar_still_requires_zero_column() {
         let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else { return; };
-        let Ok((device, queue)) = request_device(&adapter) else { return; };
+        let Ok(adapter) = request_adapter(&inst) else {
+            return;
+        };
+        let Ok((device, queue)) = request_device(&adapter) else {
+            return;
+        };
         let device = Arc::new(device);
         let queue = Arc::new(queue);
 
@@ -2392,7 +2904,8 @@ mod tests {
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
             wgpu::TextureFormat::Bgra8Unorm,
             1024 * 1024,
-        ).unwrap();
+        )
+        .unwrap();
         r.add_column("x", &col_f64(vec![1.0, 2.0, 3.0])).unwrap();
         r.add_column("y", &col_f64(vec![1.0, 3.0, 2.0])).unwrap();
         r.add_column("ey", &col_f64(vec![0.3, 0.1, 0.2])).unwrap();
@@ -2400,12 +2913,15 @@ mod tests {
         let chart = basic_errorbar_chart();
         let series = [SeriesConfig {
             series_id: "y".into(),
+            source_id: None,
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
             render_type: DataRenderType::ScatterErrorbarY {
                 scatter: test_scatter_style(),
-                err_y: ErrorRef::Symmetric { column: "ey".into() },
+                err_y: ErrorRef::Symmetric {
+                    column: "ey".into(),
+                },
                 err_style: test_errorbar_style(),
             },
         }];
@@ -2426,8 +2942,12 @@ mod tests {
     #[test]
     fn two_line_series_both_render() {
         let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else { return; };
-        let Ok((device, queue)) = request_device(&adapter) else { return; };
+        let Ok(adapter) = request_adapter(&inst) else {
+            return;
+        };
+        let Ok((device, queue)) = request_device(&adapter) else {
+            return;
+        };
         let device = Arc::new(device);
         let queue = Arc::new(queue);
 
@@ -2435,7 +2955,8 @@ mod tests {
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
             wgpu::TextureFormat::Bgra8Unorm,
             4 * 1024 * 1024,
-        ).unwrap();
+        )
+        .unwrap();
 
         let n = 512;
         let xs: Vec<f64> = (0..n).map(|i| i as f64 * 6.28 / n as f64).collect();
@@ -2448,13 +2969,19 @@ mod tests {
         r.add_column("v", &col_f64(vs)).unwrap();
 
         let mut config = crate::default::default_config();
-        config.chart_area = crate::layout::ChartArea(Rect { x: 0, y: 0, width: 640, height: 480 });
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 640,
+            height: 480,
+        });
         let mut chart = Chart::new(config);
         chart.set_x_range(0.0, 6.5);
         chart.set_y_range(-1.2, 1.2);
 
         let line_cfg = |id: &str, x: &str, y: &str, color: Color| SeriesConfig {
             series_id: id.into(),
+            source_id: None,
             label: None,
             x_column: x.into(),
             y_column: y.into(),
@@ -2475,8 +3002,12 @@ mod tests {
         let (mut red, mut black) = (0usize, 0usize);
         for px in img.rgba.chunks_exact(4) {
             if px[3] > 16 {
-                if px[0] > 120 && px[1] < 90 && px[2] < 90 { red += 1; }
-                if px[0] < 90 && px[1] < 90 && px[2] < 90 { black += 1; }
+                if px[0] > 120 && px[1] < 90 && px[2] < 90 {
+                    red += 1;
+                }
+                if px[0] < 90 && px[1] < 90 && px[2] < 90 {
+                    black += 1;
+                }
             }
         }
         assert!(black > 300, "sine (black) curve missing: {black} px");
@@ -2493,14 +3024,19 @@ mod tests {
     #[test]
     fn milkyway_arc_star_density_is_sampling_invariant() {
         let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else { return; };
-        let Ok((device, queue)) = request_device(&adapter) else { return; };
+        let Ok(adapter) = request_adapter(&inst) else {
+            return;
+        };
+        let Ok((device, queue)) = request_device(&adapter) else {
+            return;
+        };
 
         let mut r = Renderer::try_new(
             RendererDevice::new(Arc::new(device), Arc::new(queue)),
             wgpu::TextureFormat::Bgra8Unorm,
             4 * 1024 * 1024,
-        ).unwrap();
+        )
+        .unwrap();
 
         let curve = |n: usize| -> (Vec<f64>, Vec<f64>) {
             let xs: Vec<f64> = (0..n).map(|i| i as f64 / (n - 1) as f64).collect();
@@ -2515,27 +3051,30 @@ mod tests {
         r.add_column("inv_dy", &col_f64(dy)).unwrap();
 
         let mut config = crate::default::default_config();
-        config.chart_area =
-            crate::layout::ChartArea(Rect { x: 0, y: 0, width: 640, height: 400 });
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 640,
+            height: 400,
+        });
         // Stars only: ribbon/backdrop/glow off so the ink count measures the
         // star field alone. Density 60 needs ~540 stars over this arc — the
         // old per-segment budget would cap the 8-point series at 7·24 = 168.
-        config.draw_style = crate::config::DrawStyle::Milkyway(
-            crate::config::MilkywayOptions {
-                star_density: 60.0,
-                ribbon_intensity: 0.0,
-                nebula: 0.0,
-                dust: 0.0,
-                glow: 0.0,
-                ..Default::default()
-            },
-        );
+        config.draw_style = crate::config::DrawStyle::Milkyway(crate::config::MilkywayOptions {
+            star_density: 60.0,
+            ribbon_intensity: 0.0,
+            nebula: 0.0,
+            dust: 0.0,
+            glow: 0.0,
+            ..Default::default()
+        });
         let mut chart = Chart::new(config);
         chart.set_x_range(-0.05, 1.05);
         chart.set_y_range(0.0, 100.0);
 
         let line_cfg = |id: &str, x: &str, y: &str| SeriesConfig {
             series_id: id.into(),
+            source_id: None,
             label: None,
             x_column: x.into(),
             y_column: y.into(),
@@ -2577,21 +3116,30 @@ mod tests {
     #[test]
     fn space_background_rebakes_only_on_key_change() {
         let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else { return; };
-        let Ok((device, queue)) = request_device(&adapter) else { return; };
+        let Ok(adapter) = request_adapter(&inst) else {
+            return;
+        };
+        let Ok((device, queue)) = request_device(&adapter) else {
+            return;
+        };
 
         let mut r = Renderer::try_new(
             RendererDevice::new(Arc::new(device), Arc::new(queue)),
             wgpu::TextureFormat::Bgra8Unorm,
             1024 * 1024,
-        ).unwrap();
+        )
+        .unwrap();
 
-        let rect = Rect { x: 0, y: 0, width: 320, height: 200 };
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 200,
+        };
         let mut config = crate::default::default_config();
         config.chart_area = crate::layout::ChartArea(rect.clone());
-        config.draw_style = crate::config::DrawStyle::Milkyway(
-            crate::config::MilkywayOptions::default(),
-        );
+        config.draw_style =
+            crate::config::DrawStyle::Milkyway(crate::config::MilkywayOptions::default());
         let mut chart = Chart::new(config);
         chart.set_x_range(0.0, 1.0);
         chart.set_y_range(0.0, 1.0);
@@ -2632,6 +3180,70 @@ mod tests {
         assert_eq!(r.space_bg.as_ref().map(|s| s.bake_gen), Some(2));
     }
 
+    #[test]
+    fn milkyway_export_zero_dust_zero_nebula_has_plain_background() {
+        let inst = create_instance();
+        let Ok(adapter) = request_adapter(&inst) else {
+            return;
+        };
+        let Ok((device, queue)) = request_device(&adapter) else {
+            return;
+        };
+
+        let mut r = Renderer::try_new(
+            RendererDevice::new(Arc::new(device), Arc::new(queue)),
+            wgpu::TextureFormat::Bgra8Unorm,
+            1024 * 1024,
+        )
+        .unwrap();
+
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 96,
+            height: 64,
+        });
+        config.chart_title.visible = false;
+        config.legend.visible = false;
+        for axis in [
+            &mut config.top_x,
+            &mut config.bottom_x,
+            &mut config.left_y,
+            &mut config.right_y,
+        ] {
+            axis.label_style.visible = false;
+            axis.title_option.visible = false;
+            axis.tick = crate::config::TickVisibility::None;
+            axis.line_visible = false;
+        }
+        config.draw_style = crate::config::DrawStyle::Milkyway(crate::config::MilkywayOptions {
+            nebula: 0.0,
+            dust: 0.0,
+            glow: 0.0,
+            ..Default::default()
+        });
+        let chart = Chart::new(config);
+
+        for scale in [1.0, 2.0] {
+            let img = r.export_panel_rgba(&chart, &[], scale).unwrap();
+            let off_base = img
+                .rgba
+                .chunks_exact(4)
+                .filter(|p| {
+                    (p[0] as i16 - 11).abs() > 1
+                        || (p[1] as i16 - 15).abs() > 1
+                        || (p[2] as i16 - 23).abs() > 1
+                        || p[3] != 255
+                })
+                .count();
+            assert_eq!(
+                off_base, 0,
+                "dust=0 and nebula=0 must export a plain space background at {scale}x"
+            );
+        }
+    }
+
     /// The GPU arc-length scan must equal a sequential CPU reference for
     /// every dispatch shape: single block (n ≤ 256), one sums level, two
     /// sums levels (n > 65 536), and the sequential multi-chunk path (forced
@@ -2641,8 +3253,12 @@ mod tests {
     #[test]
     fn gpu_arc_prefix_matches_cpu_reference() {
         let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else { return; };
-        let Ok((device, queue)) = request_device(&adapter) else { return; };
+        let Ok(adapter) = request_adapter(&inst) else {
+            return;
+        };
+        let Ok((device, queue)) = request_device(&adapter) else {
+            return;
+        };
         let device = Arc::new(device);
         let queue = Arc::new(queue);
 
@@ -2650,10 +3266,16 @@ mod tests {
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
             wgpu::TextureFormat::Bgra8Unorm,
             4 * 1024 * 1024,
-        ).unwrap();
+        )
+        .unwrap();
 
         let mut config = crate::default::default_config();
-        config.chart_area = crate::layout::ChartArea(Rect { x: 0, y: 0, width: 900, height: 600 });
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 900,
+            height: 600,
+        });
         let mut chart = Chart::new(config);
         chart.set_x_range(0.0, 1.0);
         chart.set_y_range(-1.2, 1.2);
@@ -2730,8 +3352,12 @@ mod tests {
     #[test]
     fn log_auto_fit_clamps_to_smallest_positive() {
         let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else { return; };
-        let Ok((device, queue)) = request_device(&adapter) else { return; };
+        let Ok(adapter) = request_adapter(&inst) else {
+            return;
+        };
+        let Ok((device, queue)) = request_device(&adapter) else {
+            return;
+        };
         let device = Arc::new(device);
         let queue = Arc::new(queue);
 
@@ -2739,7 +3365,8 @@ mod tests {
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
             wgpu::TextureFormat::Bgra8Unorm,
             1024 * 1024,
-        ).unwrap();
+        )
+        .unwrap();
         // Data spans 0..1000 with smallest positive 0.04.
         let vals = vec![0.0, 0.04, 1.0, 50.0, 1000.0];
         r.add_column("v", &col_f64(vals)).unwrap();
@@ -2763,8 +3390,12 @@ mod tests {
     #[test]
     fn auto_fit_margins_are_uniform_on_all_sides() {
         let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else { return; };
-        let Ok((device, queue)) = request_device(&adapter) else { return; };
+        let Ok(adapter) = request_adapter(&inst) else {
+            return;
+        };
+        let Ok((device, queue)) = request_device(&adapter) else {
+            return;
+        };
         let device = Arc::new(device);
         let queue = Arc::new(queue);
 
@@ -2772,7 +3403,8 @@ mod tests {
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
             wgpu::TextureFormat::Bgra8Unorm,
             4 * 1024 * 1024,
-        ).unwrap();
+        )
+        .unwrap();
 
         let n = 400;
         let xs: Vec<f64> = (0..n).map(|i| i as f64).collect();
@@ -2788,7 +3420,12 @@ mod tests {
         r.add_column("y", &col_f64(ys)).unwrap();
 
         let mut config = crate::default::default_config();
-        config.chart_area = crate::layout::ChartArea(Rect { x: 0, y: 0, width: 800, height: 600 });
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 800,
+            height: 600,
+        });
         config.legend.visible = false;
         // Bare data area: no grid/tick ink inside to pollute the bbox.
         config.grid.show_major_x = false;
@@ -2802,6 +3439,7 @@ mod tests {
 
         let series = [SeriesConfig {
             series_id: "s".into(),
+            source_id: None,
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
@@ -2824,8 +3462,10 @@ mod tests {
                 let i = (y * w + x) * 4;
                 let p = &img.rgba[i..i + 4];
                 if p[3] > 16 && p[0] > 120 && p[1] < 90 && p[2] < 90 {
-                    min_x = min_x.min(x); max_x = max_x.max(x);
-                    min_y = min_y.min(y); max_y = max_y.max(y);
+                    min_x = min_x.min(x);
+                    max_x = max_x.max(x);
+                    min_y = min_y.min(y);
+                    max_y = max_y.max(y);
                 }
             }
         }
@@ -2855,8 +3495,12 @@ mod tests {
     #[test]
     fn dense_line_has_no_gaps() {
         let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else { return; };
-        let Ok((device, queue)) = request_device(&adapter) else { return; };
+        let Ok(adapter) = request_adapter(&inst) else {
+            return;
+        };
+        let Ok((device, queue)) = request_device(&adapter) else {
+            return;
+        };
         let device = Arc::new(device);
         let queue = Arc::new(queue);
 
@@ -2864,7 +3508,8 @@ mod tests {
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
             wgpu::TextureFormat::Bgra8Unorm,
             4 * 1024 * 1024,
-        ).unwrap();
+        )
+        .unwrap();
 
         let n = 50_000;
         let xs: Vec<f64> = (0..n).map(|i| i as f64 / (n - 1) as f64).collect();
@@ -2880,7 +3525,12 @@ mod tests {
         r.add_column("dy", &col_f64(ys)).unwrap();
 
         let mut config = crate::default::default_config();
-        config.chart_area = crate::layout::ChartArea(Rect { x: 0, y: 0, width: 800, height: 400 });
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 800,
+            height: 400,
+        });
         config.legend.visible = false;
         let mut chart = Chart::new(config);
         chart.set_x_range(0.0, 1.0);
@@ -2888,6 +3538,7 @@ mod tests {
 
         let series = [SeriesConfig {
             series_id: "dense".into(),
+            source_id: None,
             label: None,
             x_column: "dx".into(),
             y_column: "dy".into(),
@@ -2909,7 +3560,9 @@ mod tests {
                 p[3] > 16 && p[0] > 120 && p[1] < 90 && p[2] < 90
             })
         };
-        let first = (0..w).find(|&x| col_has_red(x)).expect("curve drew nothing");
+        let first = (0..w)
+            .find(|&x| col_has_red(x))
+            .expect("curve drew nothing");
         let last = (0..w).rev().find(|&x| col_has_red(x)).unwrap();
         let gaps: Vec<usize> = (first..=last).filter(|&x| !col_has_red(x)).collect();
         assert!(
@@ -2946,8 +3599,12 @@ mod tests {
     #[test]
     fn caps_preserve_nan_breaks_and_nonmonotonic_paths() {
         let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else { return; };
-        let Ok((device, queue)) = request_device(&adapter) else { return; };
+        let Ok(adapter) = request_adapter(&inst) else {
+            return;
+        };
+        let Ok((device, queue)) = request_device(&adapter) else {
+            return;
+        };
         let device = Arc::new(device);
         let queue = Arc::new(queue);
 
@@ -2955,10 +3612,16 @@ mod tests {
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
             wgpu::TextureFormat::Bgra8Unorm,
             4 * 1024 * 1024,
-        ).unwrap();
+        )
+        .unwrap();
 
         let mut config = crate::default::default_config();
-        config.chart_area = crate::layout::ChartArea(Rect { x: 0, y: 0, width: 800, height: 400 });
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 800,
+            height: 400,
+        });
         config.legend.visible = false;
         let mut chart = Chart::new(config);
         chart.set_x_range(0.0, 1.0);
@@ -2966,6 +3629,7 @@ mod tests {
 
         let line_cfg = |id: &str, x: &str, y: &str| SeriesConfig {
             series_id: id.into(),
+            source_id: None,
             label: None,
             x_column: x.into(),
             y_column: y.into(),
@@ -3017,15 +3681,20 @@ mod tests {
         let (gap_a, gap_b) = (to_px(0.40), to_px(0.45));
         let mid_a = (gap_a + 4.0) as usize;
         let mid_b = (gap_b - 4.0) as usize;
-        let leaked: Vec<&usize> =
-            cols.iter().filter(|&&x| x >= mid_a && x <= mid_b).collect();
+        let leaked: Vec<&usize> = cols.iter().filter(|&&x| x >= mid_a && x <= mid_b).collect();
         assert!(
             leaked.is_empty(),
             "NaN break was bridged: ink at columns {leaked:?} inside the gap ({mid_a}..{mid_b})"
         );
         // Both sides of the gap still drew.
-        assert!(cols.iter().any(|&x| (x as f64) < gap_a - 2.0), "left of gap missing");
-        assert!(cols.iter().any(|&x| (x as f64) > gap_b + 2.0), "right of gap missing");
+        assert!(
+            cols.iter().any(|&x| (x as f64) < gap_a - 2.0),
+            "left of gap missing"
+        );
+        assert!(
+            cols.iter().any(|&x| (x as f64) > gap_b + 2.0),
+            "right of gap missing"
+        );
 
         // 2) Non-monotonic path: x sweeps 0→1 then back 1→0 at a higher y.
         //    Every column the path covers must have ink in BOTH passes.
@@ -3079,8 +3748,12 @@ mod tests {
     #[test]
     fn dashed_curve_runs_match_pattern() {
         let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else { return; };
-        let Ok((device, queue)) = request_device(&adapter) else { return; };
+        let Ok(adapter) = request_adapter(&inst) else {
+            return;
+        };
+        let Ok((device, queue)) = request_device(&adapter) else {
+            return;
+        };
         let device = Arc::new(device);
         let queue = Arc::new(queue);
 
@@ -3088,7 +3761,8 @@ mod tests {
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
             wgpu::TextureFormat::Bgra8Unorm,
             4 * 1024 * 1024,
-        ).unwrap();
+        )
+        .unwrap();
 
         // Worst case for joint phase errors: a SPARSE sine (large direction
         // change per segment) on a WIDE panel (fragments far from the origin
@@ -3100,7 +3774,12 @@ mod tests {
         r.add_column("v", &col_f64(vs)).unwrap();
 
         let mut config = crate::default::default_config();
-        config.chart_area = crate::layout::ChartArea(Rect { x: 0, y: 0, width: 1000, height: 600 });
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 1000,
+            height: 600,
+        });
         // Hide chrome that could add red-ish AA pixels; keep it minimal.
         config.legend.visible = false;
         let mut chart = Chart::new(config);
@@ -3109,6 +3788,7 @@ mod tests {
 
         let series = [SeriesConfig {
             series_id: "rc".into(),
+            source_id: None,
             label: None,
             x_column: "t".into(),
             y_column: "v".into(),
@@ -3136,12 +3816,17 @@ mod tests {
         let col_y: Vec<Option<f64>> = (0..w)
             .map(|x| {
                 let ys: Vec<usize> = (0..h).filter(|&y| is_red(x, y)).collect();
-                if ys.is_empty() { None } else {
+                if ys.is_empty() {
+                    None
+                } else {
                     Some(ys.iter().sum::<usize>() as f64 / ys.len() as f64)
                 }
             })
             .collect();
-        let x0 = col_y.iter().position(|c| c.is_some()).expect("dashed curve drew nothing");
+        let x0 = col_y
+            .iter()
+            .position(|c| c.is_some())
+            .expect("dashed curve drew nothing");
         let x1 = col_y.iter().rposition(|c| c.is_some()).unwrap();
 
         let mut runs_on: Vec<f64> = Vec::new();
@@ -3163,12 +3848,20 @@ mod tests {
             if on == cur_on {
                 run += ds;
             } else {
-                if cur_on { runs_on.push(run) } else { runs_off.push(run) }
+                if cur_on {
+                    runs_on.push(run)
+                } else {
+                    runs_off.push(run)
+                }
                 cur_on = on;
                 run = ds;
             }
         }
-        if cur_on { runs_on.push(run) } else { runs_off.push(run) }
+        if cur_on {
+            runs_on.push(run)
+        } else {
+            runs_off.push(run)
+        }
 
         let median = |v: &mut Vec<f64>| -> f64 {
             v.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -3197,8 +3890,12 @@ mod tests {
     #[test]
     fn renderer_init_and_add_column() {
         let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else { return; };
-        let Ok((device, queue)) = request_device(&adapter) else { return; };
+        let Ok(adapter) = request_adapter(&inst) else {
+            return;
+        };
+        let Ok((device, queue)) = request_device(&adapter) else {
+            return;
+        };
         let device = Arc::new(device);
         let queue = Arc::new(queue);
 
@@ -3206,7 +3903,8 @@ mod tests {
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
             wgpu::TextureFormat::Bgra8Unorm,
             1024 * 1024,
-        ).unwrap();
+        )
+        .unwrap();
 
         let c = col_f64((0..100).map(|i| i as f64).collect());
         let h = r.add_column("x", &c).unwrap();

@@ -168,10 +168,8 @@ fn choose_surface_format(
 
 fn choose_present_mode(caps: &wgpu::SurfaceCapabilities) -> Option<wgpu::PresentMode> {
     #[cfg(target_arch = "wasm32")]
-    const PREFERRED: &[wgpu::PresentMode] = &[
-        wgpu::PresentMode::Fifo,
-        wgpu::PresentMode::AutoVsync,
-    ];
+    const PREFERRED: &[wgpu::PresentMode] =
+        &[wgpu::PresentMode::Fifo, wgpu::PresentMode::AutoVsync];
 
     #[cfg(not(target_arch = "wasm32"))]
     const PREFERRED: &[wgpu::PresentMode] = &[
@@ -225,7 +223,8 @@ pub fn try_configure_surface(
     // Prefer non-sRGB so GPU blending matches the CPU raster's gamma-incorrect path.
     let format = choose_surface_format(device_features, &caps).ok_or_else(|| {
         crate::FiggyError::SurfaceConfigurationFailed {
-            reason: "surface reported no figgy-compatible renderable/blendable texture formats".into(),
+            reason: "surface reported no figgy-compatible renderable/blendable texture formats"
+                .into(),
         }
     })?;
     let present_mode = choose_present_mode(&caps).ok_or_else(|| {
@@ -233,11 +232,10 @@ pub fn try_configure_surface(
             reason: "surface reported no supported present modes".into(),
         }
     })?;
-    let alpha_mode = choose_alpha_mode(&caps).ok_or_else(|| {
-        crate::FiggyError::SurfaceConfigurationFailed {
+    let alpha_mode =
+        choose_alpha_mode(&caps).ok_or_else(|| crate::FiggyError::SurfaceConfigurationFailed {
             reason: "surface reported no supported alpha modes".into(),
-        }
-    })?;
+        })?;
 
     let config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -541,9 +539,7 @@ pub(crate) fn create_fullscreen_textured_pipeline_with_sample_count(
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("figgy fullscreen textured shader"),
-        source: wgpu::ShaderSource::Wgsl(
-            include_str!("fullscreen_textured.wgsl").into(),
-        ),
+        source: wgpu::ShaderSource::Wgsl(include_str!("fullscreen_textured.wgsl").into()),
     });
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -666,9 +662,9 @@ pub fn make_uv_gradient(width: u32, height: u32) -> Vec<u8> {
 pub fn create_unit_centered_quad_vertex_buffer(device: &wgpu::Device) -> wgpu::Buffer {
     let vertices: [f32; 8] = [
         -1.0, -1.0, // LB
-         1.0, -1.0, // RB
-        -1.0,  1.0, // LT
-         1.0,  1.0, // RT
+        1.0, -1.0, // RB
+        -1.0, 1.0, // LT
+        1.0, 1.0, // RT
     ];
     let bytes: &[u8] = unsafe {
         std::slice::from_raw_parts(
@@ -696,13 +692,13 @@ pub fn create_unit_centered_quad_vertex_buffer(device: &wgpu::Device) -> wgpu::B
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ScatterTransform {
-    pub data_min: [f32; 2],       // offset 0
-    pub data_max: [f32; 2],       // offset 8
+    pub data_min: [f32; 2], // offset 0
+    pub data_max: [f32; 2], // offset 8
     /// Per-axis flag: 0.0 = linear, 1.0 = log10.
-    pub scale_log: [f32; 2],      // offset 16
+    pub scale_log: [f32; 2], // offset 16
     /// `(2 / chart_w, 2 / chart_h)` — 1 pixel in NDC. Shaders multiply pixel
     /// sizes (line width, point radius, cap half-length) by this.
-    pub pixel_to_ndc: [f32; 2],   // offset 24
+    pub pixel_to_ndc: [f32; 2], // offset 24
     /// Generic per-panel style parameter slots (SHADER_COMMON.md §1), packed
     /// by the renderer's style table (`StyleVariant::pack_params`, flat
     /// `[f32; 12]` split into three vec4 slots). All zeros in precise mode —
@@ -714,7 +710,7 @@ pub struct ScatterTransform {
     /// 0, 0]`; constellation: `[0] = [star_opacity, line_opacity, 0.0,
     /// 0.0]`, rest 0. Seeds are stored as f32 (exact up to 2^24) and shaders
     /// recover them via `u32(...)`.
-    pub style_params: [[f32; 4]; 3],   // offset 32 → 80 byte
+    pub style_params: [[f32; 4]; 3], // offset 32 → 80 byte
 }
 
 // WGSL mirror size guards (SHADER_COMMON.md §1 / §2). Update both the doc and
@@ -745,9 +741,7 @@ pub fn update_scatter_transform(
 
 /// Bind-group layout for the transform uniform. Vertex-only — the data→NDC
 /// mapping happens in the vertex stage.
-pub fn create_scatter_transform_bind_group_layout(
-    device: &wgpu::Device,
-) -> wgpu::BindGroupLayout {
+pub fn create_scatter_transform_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("figgy scatter transform bgl"),
         entries: &[wgpu::BindGroupLayoutEntry {
@@ -789,29 +783,29 @@ pub fn create_scatter_transform_bind_group(
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PrimitiveStyle {
-    pub color_premul: [f32; 4],   // offset 0
+    pub color_premul: [f32; 4], // offset 0
     /// Line / errorbar stem thickness in pixels.
-    pub line_width_px: f32,       // offset 16
+    pub line_width_px: f32, // offset 16
     /// Scatter point radius in pixels.
-    pub point_radius_px: f32,     // offset 20
+    pub point_radius_px: f32, // offset 20
     /// Errorbar cap half-length in pixels.
-    pub cap_half_px: f32,         // offset 24
+    pub cap_half_px: f32, // offset 24
     /// Errorbar cap stroke thickness in pixels.
-    pub cap_width_px: f32,        // offset 28
+    pub cap_width_px: f32, // offset 28
     /// Stable GPU marker-shape code — see [`shape_id`].
-    pub shape_id: u32,            // offset 32
+    pub shape_id: u32, // offset 32
     /// Number of valid scalars in `dash`; 0 = solid.
-    pub dash_len: u32,            // offset 36
+    pub dash_len: u32, // offset 36
     /// Per-series decorrelation salt (FNV-1a of `series_id`, written by
     /// `Renderer::create_style_for_series*`). Sketch/constellation shader
     /// entries XOR it into their hash seeds so series with identical
     /// sampling don't share star/wobble patterns; precise entries ignore it.
-    pub series_salt: u32,         // offset 40
+    pub series_salt: u32, // offset 40
     /// Keeps `dash` 16-byte aligned.
-    pub _pad: u32,                // offset 44
+    pub _pad: u32, // offset 44
     /// Up to 8 sequential `[on, off, ...]` pixel lengths: `dash[0]` first,
     /// then `dash[1]`.
-    pub dash: [[f32; 4]; 2],      // offset 48 → 80 byte
+    pub dash: [[f32; 4]; 2], // offset 48 → 80 byte
 }
 
 const _: () = assert!(std::mem::size_of::<PrimitiveStyle>() == 80);
@@ -893,10 +887,7 @@ pub fn create_style_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupL
     })
 }
 
-pub fn create_style_uniform_buffer(
-    device: &wgpu::Device,
-    style: &PrimitiveStyle,
-) -> wgpu::Buffer {
+pub fn create_style_uniform_buffer(device: &wgpu::Device, style: &PrimitiveStyle) -> wgpu::Buffer {
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("figgy primitive style uniform"),
         contents: bytemuck::bytes_of(style),
@@ -921,6 +912,148 @@ pub fn create_style_bind_group(
 
 pub fn update_style(queue: &wgpu::Queue, buffer: &wgpu::Buffer, style: &PrimitiveStyle) {
     queue.write_buffer(buffer, 0, bytemuck::bytes_of(style));
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ScatterStyleSlotGpu {
+    pub color_premul: [f32; 4],
+    /// `(radius_px, shape_id as f32, mask_bits as f32, 0)`.
+    pub meta: [f32; 4],
+}
+
+const _: () = assert!(std::mem::size_of::<ScatterStyleSlotGpu>() == 32);
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ScatterStyleOverrideGpu {
+    pub point_index: u32,
+    pub _pad: [u32; 3],
+    pub color_premul: [f32; 4],
+    /// `(radius_px, shape_id as f32, mask_bits as f32, 0)`.
+    pub meta: [f32; 4],
+}
+
+const _: () = assert!(std::mem::size_of::<ScatterStyleOverrideGpu>() == 48);
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ScatterStyleMapMeta {
+    pub style_count: u32,
+    pub override_count: u32,
+    pub has_index: u32,
+    pub _pad: u32,
+}
+
+const _: () = assert!(std::mem::size_of::<ScatterStyleMapMeta>() == 16);
+
+/// GPU-side scatter style map. The bind group keeps all backing buffers alive.
+///
+/// Layout (group 2 in the mapped precise scatter pipeline). Bindings 0..4
+/// are already used by the constellation scatter entries in the same WGSL
+/// module, so the mapped precise entry uses bindings 5..7.
+/// - binding 5: [`ScatterStyleSlotGpu`] array.
+/// - binding 6: [`ScatterStyleOverrideGpu`] array.
+/// - binding 7: [`ScatterStyleMapMeta`].
+pub struct ScatterStyleMap {
+    pub bind_group: wgpu::BindGroup,
+    pub has_index: bool,
+}
+
+pub fn create_scatter_style_map_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    let storage = |binding| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::VERTEX,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    };
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("figgy scatter style map bgl"),
+        entries: &[
+            storage(5),
+            storage(6),
+            wgpu::BindGroupLayoutEntry {
+                binding: 7,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    })
+}
+
+pub fn create_scatter_style_map(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    style_slots: &[ScatterStyleSlotGpu],
+    overrides: &[ScatterStyleOverrideGpu],
+    meta: ScatterStyleMapMeta,
+) -> ScatterStyleMap {
+    let dummy_style = [ScatterStyleSlotGpu {
+        color_premul: [0.0; 4],
+        meta: [0.0; 4],
+    }];
+    let dummy_override = [ScatterStyleOverrideGpu {
+        point_index: 0,
+        _pad: [0; 3],
+        color_premul: [0.0; 4],
+        meta: [0.0; 4],
+    }];
+    let style_slots = if style_slots.is_empty() {
+        &dummy_style[..]
+    } else {
+        style_slots
+    };
+    let overrides = if overrides.is_empty() {
+        &dummy_override[..]
+    } else {
+        overrides
+    };
+    let style_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("figgy scatter style rows"),
+        contents: bytemuck::cast_slice(style_slots),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+    let override_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("figgy scatter style override rows"),
+        contents: bytemuck::cast_slice(overrides),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+    let meta_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("figgy scatter style map meta"),
+        contents: bytemuck::bytes_of(&meta),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("figgy scatter style map bg"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: style_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: override_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 7,
+                resource: meta_buf.as_entire_binding(),
+            },
+        ],
+    });
+    ScatterStyleMap {
+        bind_group,
+        has_index: meta.has_index != 0,
+    }
 }
 
 /// Bind group layout for the constellation star pass's per-series data
@@ -1098,9 +1231,13 @@ pub(crate) fn create_line_columnar_pipeline_with_sample_count(
     sample_count: u32,
 ) -> wgpu::RenderPipeline {
     create_line_columnar_pipeline_with_entries(
-        device, transform_bgl, style_bgl, target_format,
+        device,
+        transform_bgl,
+        style_bgl,
+        target_format,
         sample_count,
-        "vs_main", "fs_main",
+        "vs_main",
+        "fs_main",
         wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
         wgpu::PrimitiveTopology::TriangleStrip,
         None,
@@ -1189,7 +1326,11 @@ fn bake_planet_atlas(tile: u32) -> Vec<u8> {
     let mut out = vec![0u8; (size * size * 4) as usize];
     let mix3 = |a: [f64; 3], b: [f64; 3], t: f64| -> [f64; 3] {
         let t = t.clamp(0.0, 1.0);
-        [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
+        [
+            a[0] + (b[0] - a[0]) * t,
+            a[1] + (b[1] - a[1]) * t,
+            a[2] + (b[2] - a[2]) * t,
+        ]
     };
     for ty in 0..2u32 {
         for tx in 0..2u32 {
@@ -1222,7 +1363,8 @@ fn bake_planet_atlas(tile: u32) -> Vec<u8> {
                         // Ice giant: smooth teal with faint streaks.
                         1 => {
                             let s = fbm2(cx * 1.6, sx * 1.6 + v * 7.0, 4, 41) - 0.5;
-                            let base = mix3([0.34, 0.52, 0.86], [0.55, 0.72, 0.95], v * 0.5 + s * 0.25);
+                            let base =
+                                mix3([0.34, 0.52, 0.86], [0.55, 0.72, 0.95], v * 0.5 + s * 0.25);
                             let streak = (-(v - 0.35).powi(2) / 0.004).exp();
                             mix3(base, [0.85, 0.92, 1.0], streak * 0.35)
                         }
@@ -1303,10 +1445,8 @@ fn bake_psf_rgba(size: u32) -> Vec<u8> {
             // Flat saturated core with a steep gaussian shoulder.
             let core = (-(r / 0.11).powf(2.6)).exp().min(1.0) * aperture;
             // Exponential halo wings + one faint ring at 0.45.
-            let halo = (
-                0.85 * (-r / 0.28).exp()
-                    + 0.08 * (-((r - 0.45) / 0.06).powi(2)).exp()
-            ) * aperture;
+            let halo =
+                (0.85 * (-r / 0.28).exp() + 0.08 * (-((r - 0.45) / 0.06).powi(2)).exp()) * aperture;
             let i = ((y * size + x) * 4) as usize;
             out[i] = (core.clamp(0.0, 1.0) * 255.0).round() as u8;
             out[i + 1] = (halo.clamp(0.0, 1.0) * 255.0).round() as u8;
@@ -1363,7 +1503,11 @@ pub(crate) fn create_milkyway_set(
     let make_tex = |label: &str, w: u32, h: u32, data: &[u8]| {
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -1384,14 +1528,28 @@ pub(crate) fn create_milkyway_set(
                 bytes_per_row: Some(w * 4),
                 rows_per_image: Some(h),
             },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
         );
         tex.create_view(&wgpu::TextureViewDescriptor::default())
     };
     const PSF_SIZE: u32 = 128;
     const ATLAS_TILE: u32 = 128;
-    let psf_view = make_tex("figgy milkyway psf", PSF_SIZE, PSF_SIZE, &bake_psf_rgba(PSF_SIZE));
-    let lut_view = make_tex("figgy milkyway blackbody lut", 256, 1, &bake_blackbody_lut());
+    let psf_view = make_tex(
+        "figgy milkyway psf",
+        PSF_SIZE,
+        PSF_SIZE,
+        &bake_psf_rgba(PSF_SIZE),
+    );
+    let lut_view = make_tex(
+        "figgy milkyway blackbody lut",
+        256,
+        1,
+        &bake_blackbody_lut(),
+    );
     let atlas_view = make_tex(
         "figgy milkyway planet atlas",
         ATLAS_TILE * 2,
@@ -1437,11 +1595,26 @@ pub(crate) fn create_milkyway_set(
         label: Some("figgy milkyway texture bg"),
         layout: &tex_bgl,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&psf_view) },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&lut_view) },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&sampler) },
-            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&atlas_view) },
-            wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&ring_view) },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&psf_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&lut_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(&atlas_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::TextureView(&ring_view),
+            },
         ],
     });
 
@@ -1473,9 +1646,14 @@ pub(crate) fn create_milkyway_set(
         },
     };
     let ribbon = create_line_columnar_pipeline_with_entries(
-        device, transform_bgl, style_bgl, target_format,
+        device,
+        transform_bgl,
+        style_bgl,
+        target_format,
         sample_count,
-        "vs_ribbon", "fs_ribbon", max_blend,
+        "vs_ribbon",
+        "fs_ribbon",
+        max_blend,
         wgpu::PrimitiveTopology::TriangleStrip,
         Some(&tex_bgl),
         "figgy milkyway ribbon pipeline",
@@ -1528,20 +1706,35 @@ pub(crate) fn create_milkyway_set(
     // Planets keep the scatter builder's premultiplied blend — bodies
     // occlude the additive star field behind them.
     let planets = create_scatter_columnar_pipeline_full(
-        device, transform_bgl, style_bgl, target_format,
+        device,
+        transform_bgl,
+        style_bgl,
+        target_format,
         sample_count,
-        "vs_planet", "fs_planet",
+        "vs_planet",
+        "fs_planet",
         Some(&tex_bgl),
         "figgy milkyway planets pipeline",
     );
     let jets = create_errorbar_columnar_pipeline_full(
-        device, transform_bgl, style_bgl, target_format,
+        device,
+        transform_bgl,
+        style_bgl,
+        target_format,
         sample_count,
-        "vs_jet", "fs_jet", additive,
+        "vs_jet",
+        "fs_jet",
+        additive,
         "figgy milkyway jets pipeline",
     );
 
-    MilkywaySet { ribbon, stars, planets, jets, star_tex_bg }
+    MilkywaySet {
+        ribbon,
+        stars,
+        planets,
+        jets,
+        star_tex_bg,
+    }
 }
 
 /// Build the lightweight constellation style set: PSF stars at scatter
@@ -1558,7 +1751,11 @@ pub(crate) fn create_point_constellation_set(
     let make_tex = |label: &str, w: u32, h: u32, data: &[u8]| {
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -1579,16 +1776,28 @@ pub(crate) fn create_point_constellation_set(
                 bytes_per_row: Some(w * 4),
                 rows_per_image: Some(h),
             },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
         );
         tex.create_view(&wgpu::TextureViewDescriptor::default())
     };
     const PSF_SIZE: u32 = 128;
     const ATLAS_TILE: u32 = 128;
-    let psf_view =
-        make_tex("figgy point constellation psf", PSF_SIZE, PSF_SIZE, &bake_psf_rgba(PSF_SIZE));
-    let lut_view =
-        make_tex("figgy point constellation blackbody lut", 256, 1, &bake_blackbody_lut());
+    let psf_view = make_tex(
+        "figgy point constellation psf",
+        PSF_SIZE,
+        PSF_SIZE,
+        &bake_psf_rgba(PSF_SIZE),
+    );
+    let lut_view = make_tex(
+        "figgy point constellation blackbody lut",
+        256,
+        1,
+        &bake_blackbody_lut(),
+    );
     // These two are unused by point constellation entries, but keeping the
     // five-binding texture layout identical lets the shared scatter WGSL
     // module declare both star and planet resources.
@@ -1598,7 +1807,12 @@ pub(crate) fn create_point_constellation_set(
         ATLAS_TILE * 2,
         &bake_planet_atlas(ATLAS_TILE),
     );
-    let ring_view = make_tex("figgy point constellation ring strip", 256, 1, &bake_ring_strip());
+    let ring_view = make_tex(
+        "figgy point constellation ring strip",
+        256,
+        1,
+        &bake_ring_strip(),
+    );
 
     let tex_entry = |binding| wgpu::BindGroupLayoutEntry {
         binding,
@@ -1637,32 +1851,59 @@ pub(crate) fn create_point_constellation_set(
         label: Some("figgy point constellation texture bg"),
         layout: &tex_bgl,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&psf_view) },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&lut_view) },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&sampler) },
-            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&atlas_view) },
-            wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&ring_view) },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&psf_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&lut_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(&atlas_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::TextureView(&ring_view),
+            },
         ],
     });
 
     let line = create_line_columnar_pipeline_with_entries(
-        device, transform_bgl, style_bgl, target_format,
+        device,
+        transform_bgl,
+        style_bgl,
+        target_format,
         sample_count,
-        "vs_main", "fs_constellation_line",
+        "vs_main",
+        "fs_constellation_line",
         wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
         wgpu::PrimitiveTopology::TriangleStrip,
         None,
         "figgy point constellation line pipeline",
     );
     let stars = create_scatter_columnar_pipeline_full(
-        device, transform_bgl, style_bgl, target_format,
+        device,
+        transform_bgl,
+        style_bgl,
+        target_format,
         sample_count,
-        "vs_constellation_star", "fs_constellation_star",
+        "vs_constellation_star",
+        "fs_constellation_star",
         Some(&tex_bgl),
         "figgy point constellation stars pipeline",
     );
 
-    PointConstellationSet { line, stars, star_tex_bg }
+    PointConstellationSet {
+        line,
+        stars,
+        star_tex_bg,
+    }
 }
 
 /// Entry-point-parameterized line pipeline builder. Styled variants share
@@ -1831,9 +2072,113 @@ pub(crate) fn create_scatter_columnar_pipeline_with_sample_count(
     sample_count: u32,
 ) -> wgpu::RenderPipeline {
     create_scatter_columnar_pipeline_full(
-        device, transform_bgl, style_bgl, target_format, sample_count,
-        "vs_main", "fs_main", None, "figgy scatter columnar pipeline",
+        device,
+        transform_bgl,
+        style_bgl,
+        target_format,
+        sample_count,
+        "vs_main",
+        "fs_main",
+        None,
+        "figgy scatter columnar pipeline",
     )
+}
+
+/// Precise scatter pipeline variant that resolves per-point style slots.
+/// It keeps the common WGSL block untouched by using separate `vs_mapped` /
+/// `fs_mapped` entry points and a fourth per-instance f32 vertex slot for
+/// `point_style_index_column` when present. Sparse-only mappings bind the X
+/// column into that slot as inert filler.
+pub fn create_scatter_columnar_mapped_pipeline(
+    device: &wgpu::Device,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    style_map_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("figgy scatter mapped shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("scatter_columnar.wgsl").into()),
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("figgy scatter mapped layout"),
+        bind_group_layouts: &[transform_bgl, style_bgl, style_map_bgl],
+        push_constant_ranges: &[],
+    });
+
+    let f32_stride = std::mem::size_of::<f32>() as wgpu::BufferAddress;
+    let vec2_stride = (std::mem::size_of::<f32>() * 2) as wgpu::BufferAddress;
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("figgy scatter mapped pipeline"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_mapped"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[
+                wgpu::VertexBufferLayout {
+                    array_stride: vec2_stride,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x2,
+                        offset: 0,
+                        shader_location: 0,
+                    }],
+                },
+                wgpu::VertexBufferLayout {
+                    array_stride: f32_stride,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &[wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32,
+                        offset: 0,
+                        shader_location: 1,
+                    }],
+                },
+                wgpu::VertexBufferLayout {
+                    array_stride: f32_stride,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &[wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32,
+                        offset: 0,
+                        shader_location: 2,
+                    }],
+                },
+                wgpu::VertexBufferLayout {
+                    array_stride: f32_stride,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &[wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32,
+                        offset: 0,
+                        shader_location: 3,
+                    }],
+                },
+            ],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleStrip,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            unclipped_depth: false,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            conservative: false,
+        },
+        depth_stencil: None,
+        multisample: multisample_state(sample_count),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_mapped"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: target_format,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview: None,
+        cache: None,
+    })
 }
 
 /// Two-entry convenience used by the sketch style (shared layout/state).
@@ -1848,8 +2193,15 @@ pub(crate) fn create_scatter_columnar_pipeline_with_entries(
     label: &str,
 ) -> wgpu::RenderPipeline {
     create_scatter_columnar_pipeline_full(
-        device, transform_bgl, style_bgl, target_format, sample_count,
-        vs_entry, fs_entry, None, label,
+        device,
+        transform_bgl,
+        style_bgl,
+        target_format,
+        sample_count,
+        vs_entry,
+        fs_entry,
+        None,
+        label,
     )
 }
 
@@ -1983,8 +2335,13 @@ pub(crate) fn create_errorbar_columnar_pipeline_with_sample_count(
     sample_count: u32,
 ) -> wgpu::RenderPipeline {
     create_errorbar_columnar_pipeline_with_entries(
-        device, transform_bgl, style_bgl, target_format, sample_count,
-        "vs_main", "figgy errorbar columnar pipeline",
+        device,
+        transform_bgl,
+        style_bgl,
+        target_format,
+        sample_count,
+        "vs_main",
+        "figgy errorbar columnar pipeline",
     )
 }
 
@@ -2002,8 +2359,13 @@ pub(crate) fn create_errorbar_columnar_pipeline_with_entries(
     label: &str,
 ) -> wgpu::RenderPipeline {
     create_errorbar_columnar_pipeline_full(
-        device, transform_bgl, style_bgl, target_format, sample_count,
-        vs_entry, "fs_main",
+        device,
+        transform_bgl,
+        style_bgl,
+        target_format,
+        sample_count,
+        vs_entry,
+        "fs_main",
         wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
         label,
     )
@@ -2037,41 +2399,65 @@ pub(crate) fn create_errorbar_columnar_pipeline_full(
     let f32_stride = std::mem::size_of::<f32>() as wgpu::BufferAddress;
     // Hold attributes in const arrays to avoid temporary-lifetime issues.
     const ATTR0: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32, offset: 0, shader_location: 0,
+        format: wgpu::VertexFormat::Float32,
+        offset: 0,
+        shader_location: 0,
     }];
     const ATTR1: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32, offset: 0, shader_location: 1,
+        format: wgpu::VertexFormat::Float32,
+        offset: 0,
+        shader_location: 1,
     }];
     const ATTR2: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32, offset: 0, shader_location: 2,
+        format: wgpu::VertexFormat::Float32,
+        offset: 0,
+        shader_location: 2,
     }];
     const ATTR3: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32, offset: 0, shader_location: 3,
+        format: wgpu::VertexFormat::Float32,
+        offset: 0,
+        shader_location: 3,
     }];
     const ATTR4: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32, offset: 0, shader_location: 4,
+        format: wgpu::VertexFormat::Float32,
+        offset: 0,
+        shader_location: 4,
     }];
     const ATTR5: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32, offset: 0, shader_location: 5,
+        format: wgpu::VertexFormat::Float32,
+        offset: 0,
+        shader_location: 5,
     }];
     let buffers = [
         wgpu::VertexBufferLayout {
-            array_stride: f32_stride, step_mode: wgpu::VertexStepMode::Instance, attributes: &ATTR0,
+            array_stride: f32_stride,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &ATTR0,
         },
         wgpu::VertexBufferLayout {
-            array_stride: f32_stride, step_mode: wgpu::VertexStepMode::Instance, attributes: &ATTR1,
+            array_stride: f32_stride,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &ATTR1,
         },
         wgpu::VertexBufferLayout {
-            array_stride: f32_stride, step_mode: wgpu::VertexStepMode::Instance, attributes: &ATTR2,
+            array_stride: f32_stride,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &ATTR2,
         },
         wgpu::VertexBufferLayout {
-            array_stride: f32_stride, step_mode: wgpu::VertexStepMode::Instance, attributes: &ATTR3,
+            array_stride: f32_stride,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &ATTR3,
         },
         wgpu::VertexBufferLayout {
-            array_stride: f32_stride, step_mode: wgpu::VertexStepMode::Instance, attributes: &ATTR4,
+            array_stride: f32_stride,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &ATTR4,
         },
         wgpu::VertexBufferLayout {
-            array_stride: f32_stride, step_mode: wgpu::VertexStepMode::Instance, attributes: &ATTR5,
+            array_stride: f32_stride,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &ATTR5,
         },
     ];
 
@@ -2138,13 +2524,25 @@ pub struct ColumnScatterLayer<'a> {
     pub pipeline: &'a wgpu::RenderPipeline,
     pub transform_bg: &'a wgpu::BindGroup,
     pub style_bg: &'a wgpu::BindGroup,
+    pub style_map_bg: Option<&'a wgpu::BindGroup>,
     pub quad_vb: &'a wgpu::Buffer,
     pub pool_buffer: &'a wgpu::Buffer,
     pub x: ColumnHandle,
     pub y: ColumnHandle,
+    pub style_index: Option<ColumnHandle>,
     /// Style textures (group 2) when `pipeline`'s layout includes them —
     /// the constellation planet atlas/ring bind group. `None` otherwise.
     pub texture_bg: Option<&'a wgpu::BindGroup>,
+}
+
+pub struct ColumnPickRingLayer<'a> {
+    pub pipeline: &'a wgpu::RenderPipeline,
+    pub transform_bg: &'a wgpu::BindGroup,
+    pub style_bg: wgpu::BindGroup,
+    pub quad_vb: &'a wgpu::Buffer,
+    pub pool_buffer: &'a wgpu::Buffer,
+    pub x: ColumnHandle,
+    pub y: ColumnHandle,
 }
 
 /// One series' data primitives. A panel can hold multiple of these.
@@ -2155,6 +2553,7 @@ pub struct SeriesLayers<'a> {
     /// right after it, before `scatter`. `None` everywhere else.
     pub line_extra: Option<ColumnStarLayer<'a>>,
     pub scatter: Option<ColumnScatterLayer<'a>>,
+    pub picked: Vec<ColumnPickRingLayer<'a>>,
 }
 
 /// Constellation star pass — an arc-driven indirect draw. No vertex
@@ -2194,7 +2593,16 @@ fn clamp_rect_to_target(r: Rect, target: (u32, u32)) -> Option<Rect> {
     let y1 = r.y.saturating_add(r.height).min(th);
     let w = x1.saturating_sub(x0);
     let h = y1.saturating_sub(y0);
-    if w == 0 || h == 0 { None } else { Some(Rect { x: x0, y: y0, width: w, height: h }) }
+    if w == 0 || h == 0 {
+        None
+    } else {
+        Some(Rect {
+            x: x0,
+            y: y0,
+            width: w,
+            height: h,
+        })
+    }
 }
 
 /// Issue one line-slot draw (the shared 6-slot binding scheme). Used for the
@@ -2237,10 +2645,7 @@ fn draw_line_layer(pass: &mut wgpu::RenderPass<'_>, l: &ColumnLineLayer<'_>) {
 
 /// Issue draw calls for one series' data primitives. The caller must have
 /// already set the viewport (panel) and scissor (data_area).
-fn issue_series_data(
-    pass: &mut wgpu::RenderPass<'_>,
-    series: &SeriesLayers<'_>,
-) {
+fn issue_series_data(pass: &mut wgpu::RenderPass<'_>, series: &SeriesLayers<'_>) {
     if let Some(eb) = series.errorbar.as_ref() {
         let count = [
             eb.x.len_values,
@@ -2289,12 +2694,18 @@ fn issue_series_data(
             pass.set_pipeline(s.pipeline);
             pass.set_bind_group(0, s.transform_bg, &[]);
             pass.set_bind_group(1, s.style_bg, &[]);
-            if let Some(tex) = s.texture_bg {
+            if let Some(map) = s.style_map_bg {
+                pass.set_bind_group(2, map, &[]);
+            } else if let Some(tex) = s.texture_bg {
                 pass.set_bind_group(2, tex, &[]);
             }
             pass.set_vertex_buffer(0, s.quad_vb.slice(..));
             pass.set_vertex_buffer(1, s.pool_buffer.slice(s.x.byte_range()));
             pass.set_vertex_buffer(2, s.pool_buffer.slice(s.y.byte_range()));
+            if s.style_map_bg.is_some() {
+                let style_index = s.style_index.as_ref().unwrap_or(&s.x);
+                pass.set_vertex_buffer(3, s.pool_buffer.slice(style_index.byte_range()));
+            }
             pass.draw(0..4, 0..count);
         }
     }
@@ -2306,6 +2717,18 @@ fn issue_series_data(
 /// `target_size` is the pixel size of the current color attachment;
 /// `panel_rect` / `data_area` are clamped to it to avoid wgpu validation
 /// errors when a panel partially exits the surface.
+fn issue_series_picked(pass: &mut wgpu::RenderPass<'_>, series: &SeriesLayers<'_>) {
+    for p in &series.picked {
+        pass.set_pipeline(p.pipeline);
+        pass.set_bind_group(0, p.transform_bg, &[]);
+        pass.set_bind_group(1, &p.style_bg, &[]);
+        pass.set_vertex_buffer(0, p.quad_vb.slice(..));
+        pass.set_vertex_buffer(1, p.pool_buffer.slice(p.x.byte_range()));
+        pass.set_vertex_buffer(2, p.pool_buffer.slice(p.y.byte_range()));
+        pass.draw(0..4, 0..1);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn draw_chart_panel_columnar(
     pass: &mut wgpu::RenderPass<'_>,
@@ -2316,20 +2739,28 @@ pub fn draw_chart_panel_columnar(
     series_list: &[SeriesLayers<'_>],
     decoration: AxisLayer<'_>,
 ) {
-    let Some(panel_clamped) = clamp_rect_to_target(panel_rect, target_size) else { return };
-    let Some(data_clamped) = clamp_rect_to_target(data_area, target_size) else { return };
+    let Some(panel_clamped) = clamp_rect_to_target(panel_rect, target_size) else {
+        return;
+    };
+    let Some(data_clamped) = clamp_rect_to_target(data_area, target_size) else {
+        return;
+    };
 
     pass.set_viewport(
         panel_clamped.x as f32,
         panel_clamped.y as f32,
         panel_clamped.width as f32,
         panel_clamped.height as f32,
-        0.0, 1.0,
+        0.0,
+        1.0,
     );
 
     // 1) Grid layer (under data).
     pass.set_scissor_rect(
-        panel_clamped.x, panel_clamped.y, panel_clamped.width, panel_clamped.height,
+        panel_clamped.x,
+        panel_clamped.y,
+        panel_clamped.width,
+        panel_clamped.height,
     );
     pass.set_pipeline(grid.pipeline);
     pass.set_bind_group(0, grid.bind_group, &[]);
@@ -2337,15 +2768,24 @@ pub fn draw_chart_panel_columnar(
 
     // 2) Data primitives — scissor once to data_area, then issue every series.
     pass.set_scissor_rect(
-        data_clamped.x, data_clamped.y, data_clamped.width, data_clamped.height,
+        data_clamped.x,
+        data_clamped.y,
+        data_clamped.width,
+        data_clamped.height,
     );
     for s in series_list {
         issue_series_data(pass, s);
     }
+    for s in series_list {
+        issue_series_picked(pass, s);
+    }
 
     // 3) Decoration layer (over data).
     pass.set_scissor_rect(
-        panel_clamped.x, panel_clamped.y, panel_clamped.width, panel_clamped.height,
+        panel_clamped.x,
+        panel_clamped.y,
+        panel_clamped.width,
+        panel_clamped.height,
     );
     pass.set_pipeline(decoration.pipeline);
     pass.set_bind_group(0, decoration.bind_group, &[]);
@@ -2404,7 +2844,12 @@ mod tests {
     #[test]
     fn log_transform_guards_manual_range_without_raising_tiny_positive_min() {
         let mut config = crate::default::default_config();
-        config.chart_area = crate::layout::ChartArea(Rect { x: 0, y: 0, width: 100, height: 100 });
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+        });
         config.chart_title.top_margin = 0.0;
         for axis in [
             &mut config.top_x,
@@ -2462,7 +2907,8 @@ mod tests {
             2,
             2,
             &rgba,
-        ).expect("upload texture");
+        )
+        .expect("upload texture");
 
         // Wait for the queued write_texture to complete; validation errors
         // surface during this poll.
@@ -2472,7 +2918,6 @@ mod tests {
         assert_eq!(tex.height(), 2);
         assert_eq!(tex.format(), wgpu::TextureFormat::Rgba8Unorm);
     }
-
 
     /// Compile the WGSL and build the fullscreen textured pipeline. Shader
     /// or layout mismatches would panic during creation.
@@ -2497,6 +2942,45 @@ mod tests {
         let _ = device.poll(wgpu::PollType::wait_indefinitely());
     }
 
+    /// Compile the scatter WGSL entries added outside the common block for
+    /// per-point style mapping and picked-point decoration. This catches WGSL
+    /// syntax/layout drift without running a full render snapshot.
+    #[test]
+    fn scatter_mapped_and_pick_ring_pipelines_compile() {
+        let instance = create_instance();
+        let Ok(adapter) = request_adapter(&instance) else {
+            println!("no adapter ??skipping scatter entry pipeline test");
+            return;
+        };
+        let (device, _queue) = request_device(&adapter).expect("device");
+
+        let transform_bgl = create_scatter_transform_bind_group_layout(&device);
+        let style_bgl = create_style_bind_group_layout(&device);
+        let style_map_bgl = create_scatter_style_map_bind_group_layout(&device);
+
+        let mapped = create_scatter_columnar_mapped_pipeline(
+            &device,
+            &transform_bgl,
+            &style_bgl,
+            &style_map_bgl,
+            wgpu::TextureFormat::Bgra8Unorm,
+            1,
+        );
+        let picked = create_scatter_columnar_pipeline_with_entries(
+            &device,
+            &transform_bgl,
+            &style_bgl,
+            wgpu::TextureFormat::Bgra8Unorm,
+            1,
+            "vs_pick_ring",
+            "fs_pick_ring",
+            "figgy picked point ring pipeline test",
+        );
+
+        let _ = (mapped, picked);
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+    }
+
     /// Wire up sampler + bind-group layout + bind group end-to-end; a
     /// slot-type mismatch would panic in `create_bind_group`.
     #[test]
@@ -2518,7 +3002,8 @@ mod tests {
             2,
             2,
             &rgba,
-        ).expect("upload texture");
+        )
+        .expect("upload texture");
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let sampler = create_linear_sampler(&device);
@@ -2541,7 +3026,10 @@ mod tests {
             Ok((device, _queue)) => {
                 let limits = device.limits();
                 println!("device opened OK");
-                println!("  max_texture_dim_2d     : {}", limits.max_texture_dimension_2d);
+                println!(
+                    "  max_texture_dim_2d     : {}",
+                    limits.max_texture_dimension_2d
+                );
                 println!("  max_buffer_size        : {}", limits.max_buffer_size);
                 println!("  max_bind_groups        : {}", limits.max_bind_groups);
             }

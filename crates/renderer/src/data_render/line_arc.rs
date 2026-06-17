@@ -78,7 +78,13 @@ mod tests {
     /// lengths never exceed the capacity that sized the shared scratch.
     #[test]
     fn chunk_layout_is_exact_and_bounded() {
-        for (n, cap) in [(1u32, 1000u32), (1000, 1000), (1001, 1000), (2500, 1000), (3000, 1000)] {
+        for (n, cap) in [
+            (1u32, 1000u32),
+            (1000, 1000),
+            (1001, 1000),
+            (2500, 1000),
+            (3000, 1000),
+        ] {
             let mut covered = 0u32;
             let mut start = 0u32;
             while start < n {
@@ -382,19 +388,35 @@ impl ArcScratch {
             }],
         });
 
-        let storage_bg = |label: &str, dst: &wgpu::Buffer, sums: &wgpu::Buffer, params: &wgpu::Buffer| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some(label),
-                layout: &pipelines.storage_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: pool_buffer.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: dst.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: sums.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 3, resource: params.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 4, resource: carry_buf.as_entire_binding() },
-                ],
-            })
-        };
+        let storage_bg =
+            |label: &str, dst: &wgpu::Buffer, sums: &wgpu::Buffer, params: &wgpu::Buffer| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some(label),
+                    layout: &pipelines.storage_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: pool_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: dst.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: sums.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: params.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 4,
+                            resource: carry_buf.as_entire_binding(),
+                        },
+                    ],
+                })
+            };
 
         let mut chunks = Vec::new();
         let mut start = 0u32;
@@ -402,12 +424,33 @@ impl ArcScratch {
             let len = (n - start).min(cap);
             let b0 = blocks(len);
             let b1 = blocks(b0);
-            let p_main =
-                params_buf("figgy arc params main", ArcParams { len, x_base, y_base, start });
-            let p_s0 =
-                params_buf("figgy arc params s0", ArcParams { len: b0, x_base: 0, y_base: 0, start: 0 });
-            let p_s1 =
-                params_buf("figgy arc params s1", ArcParams { len: b1, x_base: 0, y_base: 0, start: 0 });
+            let p_main = params_buf(
+                "figgy arc params main",
+                ArcParams {
+                    len,
+                    x_base,
+                    y_base,
+                    start,
+                },
+            );
+            let p_s0 = params_buf(
+                "figgy arc params s0",
+                ArcParams {
+                    len: b0,
+                    x_base: 0,
+                    y_base: 0,
+                    start: 0,
+                },
+            );
+            let p_s1 = params_buf(
+                "figgy arc params s1",
+                ArcParams {
+                    len: b1,
+                    x_base: 0,
+                    y_base: 0,
+                    start: 0,
+                },
+            );
             chunks.push(ChunkBinds {
                 bg_arc: storage_bg("figgy arc bg(arc)", &arc, &sums0, &p_main),
                 bg_s0: storage_bg("figgy arc bg(s0)", &sums0, &sums1, &p_s0),
@@ -434,7 +477,10 @@ impl ArcScratch {
                 label: Some("figgy star args bg"),
                 layout: &pipelines.star_args_bgl,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: indirect.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: indirect.as_entire_binding(),
+                    },
                     wgpu::BindGroupEntry {
                         binding: 1,
                         resource: kernel_params_buf.as_entire_binding(),
@@ -455,12 +501,26 @@ impl ArcScratch {
                 label: Some("figgy star vs bg"),
                 layout: vs_bgl,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: arc.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: pool_buffer.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: vs_params.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: arc.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: pool_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: vs_params.as_entire_binding(),
+                    },
                 ],
             });
-            StarPass { indirect, vs_bg, kernel_bg, kernel_params_buf }
+            StarPass {
+                indirect,
+                vs_bg,
+                kernel_bg,
+                kernel_params_buf,
+            }
         });
 
         Some(Self {

@@ -320,6 +320,164 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 // Deliberately duplicated per data shader (scatter/line/errorbar) and NOT in
 // the SHADER_COMMON.md common block: line_arc.wgsl shares that block but has
 // no use for noise. Keep the three copies in sync with the design doc.
+// Per-point style mapping (NOT part of the common block). The default precise
+// path above remains the three-slot fast path; this entry is selected only for
+// scatter series with a style table, style-index column, or sparse overrides.
+struct VsMappedIn {
+    @location(0) quad_pos: vec2<f32>,
+    @location(1) x: f32,
+    @location(2) y: f32,
+    @location(3) style_index: f32,
+};
+
+struct ScatterStyleSlot {
+    color_premul: vec4<f32>,
+    params: vec4<f32>,
+};
+
+struct ScatterStyleOverride {
+    point_index: u32,
+    _pad: vec3<u32>,
+    color_premul: vec4<f32>,
+    params: vec4<f32>,
+};
+
+struct ScatterStyleMapMeta {
+    style_count: u32,
+    override_count: u32,
+    has_index: u32,
+    _pad: u32,
+};
+
+@group(2) @binding(5) var<storage, read> scatter_style_slots: array<ScatterStyleSlot>;
+@group(2) @binding(6) var<storage, read> scatter_style_overrides: array<ScatterStyleOverride>;
+@group(2) @binding(7) var<uniform> scatter_style_meta: ScatterStyleMapMeta;
+
+struct ResolvedMappedStyle {
+    color_premul: vec4<f32>,
+    radius_px: f32,
+    shape_id: u32,
+};
+
+struct VsMappedOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) local_pos: vec2<f32>,
+    @location(1) color_premul: vec4<f32>,
+    @location(2) radius_px: f32,
+    @location(3) @interpolate(flat) shape_id: u32,
+};
+
+const STYLE_MASK_COLOR: u32 = 1u;
+const STYLE_MASK_RADIUS: u32 = 2u;
+const STYLE_MASK_SHAPE: u32 = 4u;
+
+fn valid_style_index(v: f32) -> bool {
+    return v >= 0.0 && v <= 16777216.0 && abs(v - round(v)) <= 0.001;
+}
+
+fn apply_style_slot(base: ResolvedMappedStyle, slot: ScatterStyleSlot) -> ResolvedMappedStyle {
+    let mask = u32(slot.params.z);
+    var out = base;
+    if ((mask & STYLE_MASK_COLOR) != 0u) {
+        out.color_premul = slot.color_premul;
+    }
+    if ((mask & STYLE_MASK_RADIUS) != 0u) {
+        out.radius_px = max(slot.params.x, 0.0);
+    }
+    if ((mask & STYLE_MASK_SHAPE) != 0u) {
+        out.shape_id = u32(max(slot.params.y, 0.0));
+    }
+    return out;
+}
+
+fn resolve_mapped_style(style_index: f32, inst: u32) -> ResolvedMappedStyle {
+    var out = ResolvedMappedStyle(style.color_premul, style.point_radius_px, style.shape_id);
+
+    if (scatter_style_meta.has_index != 0u && valid_style_index(style_index)) {
+        let idx = u32(round(style_index));
+        if (idx < scatter_style_meta.style_count) {
+            out = apply_style_slot(out, scatter_style_slots[idx]);
+        }
+    }
+
+    for (var i = 0u; i < scatter_style_meta.override_count; i = i + 1u) {
+        let ov = scatter_style_overrides[i];
+        if (ov.point_index == inst) {
+            out = apply_style_slot(out, ScatterStyleSlot(ov.color_premul, ov.params));
+        }
+    }
+    return out;
+}
+
+@vertex
+fn vs_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> VsMappedOut {
+    let resolved = resolve_mapped_style(in.style_index, inst);
+    let xv = maybe_log(in.x, transform.scale_log.x);
+    let yv = maybe_log(in.y, transform.scale_log.y);
+    let range = transform.data_max - transform.data_min;
+    let t = (vec2<f32>(xv, yv) - transform.data_min) / range;
+    let center_ndc = t * 2.0 - 1.0;
+    let half_px =
+        visual_shape_radius(base_shape_id(resolved.shape_id), resolved.radius_px) + QUAD_MARGIN_PX;
+    let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
+
+    var out: VsMappedOut;
+    out.pos = vec4<f32>(world, 0.0, 1.0);
+    out.local_pos = in.quad_pos;
+    out.color_premul = resolved.color_premul;
+    out.radius_px = resolved.radius_px;
+    out.shape_id = resolved.shape_id;
+    return out;
+}
+
+@fragment
+fn fs_mapped(in: VsMappedOut) -> @location(0) vec4<f32> {
+    let filled = shape_is_filled(in.shape_id);
+    let base = base_shape_id(in.shape_id);
+    let visual_r = visual_shape_radius(base, in.radius_px);
+    let p = in.local_pos * (visual_r + QUAD_MARGIN_PX);
+
+    let d = shape_distance(base, p, visual_r, filled);
+    let aa = fwidth(d);
+    let edge = select(abs(d) - STROKE_HALF_PX, d, filled);
+    let alpha = 1.0 - smoothstep(-aa, aa, edge);
+    if (alpha <= 0.0) {
+        discard;
+    }
+    return in.color_premul * alpha;
+}
+
+@vertex
+fn vs_pick_ring(in: VsIn) -> VsOut {
+    let xv = maybe_log(in.x, transform.scale_log.x);
+    let yv = maybe_log(in.y, transform.scale_log.y);
+    let range = transform.data_max - transform.data_min;
+    let t = (vec2<f32>(xv, yv) - transform.data_min) / range;
+    let center_ndc = t * 2.0 - 1.0;
+    let radius = max(style.point_radius_px, 0.0);
+    let half_px = radius + max(style.line_width_px, 0.0) * 0.5 + QUAD_MARGIN_PX;
+    let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
+
+    var out: VsOut;
+    out.pos = vec4<f32>(world, 0.0, 1.0);
+    out.local_pos = in.quad_pos;
+    return out;
+}
+
+@fragment
+fn fs_pick_ring(in: VsOut) -> @location(0) vec4<f32> {
+    let radius = max(style.point_radius_px, 0.0);
+    let stroke = max(style.line_width_px, 0.5);
+    let half_px = radius + stroke * 0.5 + QUAD_MARGIN_PX;
+    let d = abs(length(in.local_pos * half_px) - radius) - stroke * 0.5;
+    let aa = max(fwidth(d), 0.5);
+    let alpha = 1.0 - smoothstep(-aa, aa, d);
+    if (alpha <= 0.0) {
+        discard;
+    }
+    return style.color_premul * alpha;
+}
+
 fn sketch_hash01(i: u32, seed: u32) -> f32 {
     var h = (i * 0x9E3779B9u) ^ (seed * 0x85EBCA6Bu);
     h = (h ^ (h >> 16u)) * 0x45D9F3Bu;

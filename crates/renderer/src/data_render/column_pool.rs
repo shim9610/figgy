@@ -108,11 +108,22 @@ impl ColumnHandle {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AllocError {
     /// No free region is large enough (try defrag then retry).
-    OutOfSpace { requested: u64, largest_free: u64, total_free: u64 },
+    OutOfSpace {
+        requested: u64,
+        largest_free: u64,
+        total_free: u64,
+    },
     /// Requested GPU buffer is larger than the device can allocate.
-    ResourceLimit { resource: &'static str, requested: u64, limit: u64 },
+    ResourceLimit {
+        resource: &'static str,
+        requested: u64,
+        limit: u64,
+    },
     /// Resource creation failed despite satisfying static device limits.
-    AllocationFailed { resource: &'static str, reason: String },
+    AllocationFailed {
+        resource: &'static str,
+        reason: String,
+    },
     /// A column with this id already exists.
     DuplicateId(ColumnId),
     /// Source has length zero.
@@ -122,12 +133,20 @@ pub enum AllocError {
 impl std::fmt::Display for AllocError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AllocError::OutOfSpace { requested, largest_free, total_free } => write!(
+            AllocError::OutOfSpace {
+                requested,
+                largest_free,
+                total_free,
+            } => write!(
                 f,
                 "ColumnPool out of space: need {} bytes, largest free = {}, total free = {}",
                 requested, largest_free, total_free
             ),
-            AllocError::ResourceLimit { resource, requested, limit } => write!(
+            AllocError::ResourceLimit {
+                resource,
+                requested,
+                limit,
+            } => write!(
                 f,
                 "{resource} exceeds GPU buffer limit: requested {requested}, limit {limit}"
             ),
@@ -147,11 +166,12 @@ fn create_buffer_checked(
     desc: &BufferDescriptor<'_>,
     resource: &'static str,
 ) -> Result<Buffer, AllocError> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.create_buffer(desc)))
-        .map_err(|_| AllocError::AllocationFailed {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.create_buffer(desc))).map_err(
+        |_| AllocError::AllocationFailed {
             resource,
             reason: "wgpu Device::create_buffer panicked".into(),
-        })
+        },
+    )
 }
 
 /// GPU column slab + CPU-side offset table.
@@ -205,7 +225,10 @@ impl ColumnPool {
             capacity,
             max_buffer_size,
             slots: HashMap::new(),
-            free: vec![FreeRegion { offset: 0, size: capacity }],
+            free: vec![FreeRegion {
+                offset: 0,
+                size: capacity,
+            }],
             generation: 0,
             backup: None,
             defrag_policy: DefragPolicy::Manual,
@@ -236,13 +259,15 @@ impl ColumnPool {
         self.slots.get(id)
     }
 
-
     /// Drop all columns. The primary buffer is reused (capacity unchanged).
     /// Bumps `generation` so any outstanding handles become stale.
     pub fn clear(&mut self) {
         self.slots.clear();
         self.free.clear();
-        self.free.push(FreeRegion { offset: 0, size: self.capacity });
+        self.free.push(FreeRegion {
+            offset: 0,
+            size: self.capacity,
+        });
         self.generation = self.generation.wrapping_add(1);
     }
 
@@ -314,13 +339,11 @@ impl ColumnPool {
             return Err(AllocError::EmptySource);
         }
 
-        let raw_bytes = (n as u64)
-            .checked_mul(4)
-            .ok_or(AllocError::ResourceLimit {
-                resource: "column staging buffer",
-                requested: u64::MAX,
-                limit: self.max_buffer_size,
-            })?;
+        let raw_bytes = (n as u64).checked_mul(4).ok_or(AllocError::ResourceLimit {
+            resource: "column staging buffer",
+            requested: u64::MAX,
+            limit: self.max_buffer_size,
+        })?;
         let byte_size = try_align_up(raw_bytes, ALIGN).ok_or(AllocError::ResourceLimit {
             resource: "column staging buffer",
             requested: raw_bytes,
@@ -430,7 +453,10 @@ impl ColumnPool {
                 return Ok(false);
             }
             self.free.clear();
-            self.free.push(FreeRegion { offset: 0, size: self.capacity });
+            self.free.push(FreeRegion {
+                offset: 0,
+                size: self.capacity,
+            });
             self.generation = self.generation.wrapping_add(1);
             return Ok(true);
         }
@@ -453,11 +479,17 @@ impl ColumnPool {
             .all(|(id, &n)| self.slots[id].offset == n);
         if already_packed {
             let tail_ok = self.free.len() <= 1
-                && self.free.first().is_none_or(|r| r.offset == next && r.offset + r.size == self.capacity);
+                && self
+                    .free
+                    .first()
+                    .is_none_or(|r| r.offset == next && r.offset + r.size == self.capacity);
             if !tail_ok {
                 self.free.clear();
                 if next < self.capacity {
-                    self.free.push(FreeRegion { offset: next, size: self.capacity - next });
+                    self.free.push(FreeRegion {
+                        offset: next,
+                        size: self.capacity - next,
+                    });
                 }
             }
             return Ok(false);
@@ -474,7 +506,11 @@ impl ColumnPool {
                     | BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             };
-            self.backup = Some(create_buffer_checked(device, &backup_desc, "column pool backup")?);
+            self.backup = Some(create_buffer_checked(
+                device,
+                &backup_desc,
+                "column pool backup",
+            )?);
         }
 
         // primary[old_off..] -> backup[new_off..] (GPU-internal copy).
@@ -489,7 +525,13 @@ impl ColumnPool {
             });
             for (id, &new_off) in order.iter().zip(new_offsets.iter()) {
                 let slot = &self.slots[id];
-                enc.copy_buffer_to_buffer(&self.primary, slot.offset, backup, new_off, slot.byte_size);
+                enc.copy_buffer_to_buffer(
+                    &self.primary,
+                    slot.offset,
+                    backup,
+                    new_off,
+                    slot.byte_size,
+                );
             }
             queue.submit(std::iter::once(enc.finish()));
         }
@@ -513,7 +555,10 @@ impl ColumnPool {
         // Free list collapses to a single tail region.
         self.free.clear();
         if next < self.capacity {
-            self.free.push(FreeRegion { offset: next, size: self.capacity - next });
+            self.free.push(FreeRegion {
+                offset: next,
+                size: self.capacity - next,
+            });
         }
         Ok(true)
     }
@@ -593,7 +638,9 @@ mod tests {
         };
 
         let c = col_f64((0..100).map(|i| i as f64).collect());
-        let h = pool.add_column("x".to_string(), &c, &device, &queue).unwrap();
+        let h = pool
+            .add_column("x".to_string(), &c, &device, &queue)
+            .unwrap();
 
         // 100 * 4 = 400 bytes, rounded up to ALIGN(256) → 512.
         assert_eq!(h.byte_size, 512);
@@ -615,9 +662,9 @@ mod tests {
         let Some((device, queue, mut pool)) = mk_pool(64 * 1024) else {
             return;
         };
-        let a = col_f64((0..50).map(|i| i as f64).collect());     // 200 → 256
-        let b = col_f64((0..200).map(|i| i as f64).collect());    // 800 → 1024
-        let c = col_f64((0..10).map(|i| i as f64).collect());     // 40 → 256
+        let a = col_f64((0..50).map(|i| i as f64).collect()); // 200 → 256
+        let b = col_f64((0..200).map(|i| i as f64).collect()); // 800 → 1024
+        let c = col_f64((0..10).map(|i| i as f64).collect()); // 40 → 256
 
         let ha = pool.add_column("a".into(), &a, &device, &queue).unwrap();
         let hb = pool.add_column("b".into(), &b, &device, &queue).unwrap();
@@ -788,17 +835,23 @@ mod tests {
         let small_a = col_f64((0..50).map(|i| i as f64).collect()); // 256
         let small_b = col_f64((0..50).map(|i| i as f64).collect()); // 256
         let small_c = col_f64((0..50).map(|i| i as f64).collect()); // 256
-        let big = col_f64((0..120).map(|i| i as f64).collect());    // 480 → 512
+        let big = col_f64((0..120).map(|i| i as f64).collect()); // 480 → 512
 
-        pool.add_column("a".into(), &small_a, &device, &queue).unwrap();
-        pool.add_column("b".into(), &small_b, &device, &queue).unwrap();
-        pool.add_column("c".into(), &small_c, &device, &queue).unwrap();
+        pool.add_column("a".into(), &small_a, &device, &queue)
+            .unwrap();
+        pool.add_column("b".into(), &small_b, &device, &queue)
+            .unwrap();
+        pool.add_column("c".into(), &small_c, &device, &queue)
+            .unwrap();
         // free = [768..1024]. Remove b → free = [256..512] + [768..1024].
         pool.remove_column("b");
         // big needs 512 contiguous. First-fit fails (largest free is 256),
         // defrag fuses the hole and tail into [512..1024], retry succeeds.
         let res = pool.add_column("big".into(), &big, &device, &queue);
-        assert!(res.is_ok(), "auto defrag retry should have succeeded: {res:?}");
+        assert!(
+            res.is_ok(),
+            "auto defrag retry should have succeeded: {res:?}"
+        );
         // big lands right after a/c, at offset 512.
         assert_eq!(pool.slots["big"].offset, 512);
     }
@@ -814,9 +867,12 @@ mod tests {
         let small_c = col_f64((0..50).map(|i| i as f64).collect());
         let big = col_f64((0..120).map(|i| i as f64).collect());
 
-        pool.add_column("a".into(), &small_a, &device, &queue).unwrap();
-        pool.add_column("b".into(), &small_b, &device, &queue).unwrap();
-        pool.add_column("c".into(), &small_c, &device, &queue).unwrap();
+        pool.add_column("a".into(), &small_a, &device, &queue)
+            .unwrap();
+        pool.add_column("b".into(), &small_b, &device, &queue)
+            .unwrap();
+        pool.add_column("c".into(), &small_c, &device, &queue)
+            .unwrap();
         pool.remove_column("b");
         // Manual policy: no retry → OutOfSpace.
         let res = pool.add_column("big".into(), &big, &device, &queue);

@@ -34,16 +34,30 @@ pub enum FiggyError {
     SurfaceAcquireFailed { error: wgpu::SurfaceError },
 
     /// The render target format cannot be used by figgy's blended pipelines.
-    UnsupportedSurfaceFormat { format: wgpu::TextureFormat, reason: String },
+    UnsupportedSurfaceFormat {
+        format: wgpu::TextureFormat,
+        reason: String,
+    },
 
     /// A requested GPU resource exceeds the current device's limits.
-    GpuResourceLimit { resource: &'static str, requested: u64, limit: u64 },
+    GpuResourceLimit {
+        resource: &'static str,
+        requested: u64,
+        limit: u64,
+    },
 
     /// A GPU resource allocation failed after passing static device limits.
-    GpuResourceAllocationFailed { resource: &'static str, reason: String },
+    GpuResourceAllocationFailed {
+        resource: &'static str,
+        reason: String,
+    },
 
     /// Referenced column id is not in the pool.
     UnknownColumn { id: String },
+
+    /// A series declaration is internally inconsistent for the requested
+    /// render path.
+    InvalidSeriesConfig { series_id: String, reason: String },
 
     /// Handle's generation no longer matches the pool (stale after defrag / clear).
     StaleHandle { generation: u32, current: u32 },
@@ -73,7 +87,11 @@ impl std::fmt::Display for FiggyError {
             Self::UnsupportedSurfaceFormat { format, reason } => {
                 write!(f, "unsupported surface format {format:?}: {reason}")
             }
-            Self::GpuResourceLimit { resource, requested, limit } => write!(
+            Self::GpuResourceLimit {
+                resource,
+                requested,
+                limit,
+            } => write!(
                 f,
                 "{resource} exceeds GPU limit: requested {requested}, limit {limit}"
             ),
@@ -81,7 +99,13 @@ impl std::fmt::Display for FiggyError {
                 write!(f, "{resource} GPU allocation failed: {reason}")
             }
             Self::UnknownColumn { id } => write!(f, "unknown column id: {id}"),
-            Self::StaleHandle { generation, current } => write!(
+            Self::InvalidSeriesConfig { series_id, reason } => {
+                write!(f, "invalid series config for {series_id}: {reason}")
+            }
+            Self::StaleHandle {
+                generation,
+                current,
+            } => write!(
                 f,
                 "stale column handle (handle generation {generation}, pool generation {current})"
             ),

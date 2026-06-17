@@ -14,7 +14,7 @@ use crate::select::SelectionBox;
 use crate::sketch::DecoStroker;
 use crate::text::{RichSegment, RichText};
 use crate::text_render::{
-    draw_plain_text, draw_rich_text, measure_plain_text, measure_rich_text, FontPolicy,
+    FontPolicy, draw_plain_text, draw_rich_text, measure_plain_text, measure_rich_text,
 };
 
 // Public entry.
@@ -71,7 +71,10 @@ pub fn try_raster_chart_layer_to_rgba_with_selection(
     let w = config.chart_area.0.width;
     let h = config.chart_area.0.height;
     if w == 0 || h == 0 {
-        return Err(crate::FiggyError::InvalidChartArea { width: w, height: h });
+        return Err(crate::FiggyError::InvalidChartArea {
+            width: w,
+            height: h,
+        });
     }
 
     let mut raster_cfg = config.clone();
@@ -99,9 +102,7 @@ pub fn try_raster_chart_layer_to_rgba_with_selection(
             apply_decoration_glow(&mut canvas, c.glow);
         }
     }
-    if !selection.is_empty()
-        && matches!(layer, AxisLayerKind::Decoration | AxisLayerKind::All)
-    {
+    if !selection.is_empty() && matches!(layer, AxisLayerKind::Decoration | AxisLayerKind::All) {
         let ox = config.chart_area.0.x as f32;
         let oy = config.chart_area.0.y as f32;
         let local: Vec<SelectionBox> = selection
@@ -245,8 +246,7 @@ fn draw_space_background(
     }
 
     // Background dust: sparse, dim, 1 px — unmistakably "behind" the data.
-    let n_dust =
-        (((w as u64 * h as u64) / 1400) as f32 * c.dust.clamp(0.0, 4.0)).max(0.0) as u32;
+    let n_dust = (((w as u64 * h as u64) / 1400) as f32 * c.dust.clamp(0.0, 4.0)).max(0.0) as u32;
     for k in 0..n_dust {
         let hx = crate::sketch::hash01(k, seed ^ 0xD057_0001);
         let hy = crate::sketch::hash01(k, seed ^ 0xD057_0002);
@@ -490,7 +490,9 @@ fn draw_legend(
     use crate::config::LegendCorner;
 
     let lg = &config.legend;
-    if !lg.visible || lg.content.segments.is_empty() { return; }
+    if !lg.visible || lg.content.segments.is_empty() {
+        return;
+    }
 
     let m = measure_rich_text(&lg.content, fp);
     let box_w = m.width + lg.padding * 2.0;
@@ -643,12 +645,30 @@ fn draw_axis(
         for (i, v) in majors.iter().enumerate() {
             let pos = value_to_screen(*v, axis, side.clone(), da);
             let tag = format!("tick_{}_{i}", side_tag(&side));
-            draw_tick(canvas, pos, side.clone(), axis.major_tick_length, &axis.tick, &tick_paint, stroker, &tag);
+            draw_tick(
+                canvas,
+                pos,
+                side.clone(),
+                axis.major_tick_length,
+                &axis.tick,
+                &tick_paint,
+                stroker,
+                &tag,
+            );
         }
         for (i, v) in minors.iter().enumerate() {
             let pos = value_to_screen(*v, axis, side.clone(), da);
             let tag = format!("tick_{}_{}", side_tag(&side), majors.len() + i);
-            draw_tick(canvas, pos, side.clone(), axis.minor_tick_length, &axis.tick, &tick_paint, stroker, &tag);
+            draw_tick(
+                canvas,
+                pos,
+                side.clone(),
+                axis.minor_tick_length,
+                &axis.tick,
+                &tick_paint,
+                stroker,
+                &tag,
+            );
         }
     }
 
@@ -1121,17 +1141,20 @@ fn draw_tick_label_rich(
     };
 
     let ls = &axis.label_style;
-    let origin = (
-        base_x + ls.label_offset_x,
-        base_y + ls.label_offset_y,
-    );
+    let origin = (base_x + ls.label_offset_x, base_y + ls.label_offset_y);
 
     draw_rich_text(canvas, rt, origin, fp);
 }
 
 // Axis title (RichText).
 
-fn draw_axis_title(canvas: &mut Canvas, config: &Config, da: &DataArea, side: Side, fp: FontPolicy) {
+fn draw_axis_title(
+    canvas: &mut Canvas,
+    config: &Config,
+    da: &DataArea,
+    side: Side,
+    fp: FontPolicy,
+) {
     let axis = match side {
         Side::Top => &config.top_x,
         Side::Bottom => &config.bottom_x,
@@ -1265,8 +1288,10 @@ mod tests {
                 "edge minor {m} missing: {minors:?}"
             );
         }
-        assert!(minors.iter().all(|v| (v / 200.0).fract().abs() > 1e-9),
-            "majors leaked into minors: {minors:?}");
+        assert!(
+            minors.iter().all(|v| (v / 200.0).fract().abs() > 1e-9),
+            "majors leaked into minors: {minors:?}"
+        );
 
         // Arbitrary (uniform-margin) range ends: tick VALUES stay nice.
         axis.min = 0.137;
@@ -1345,7 +1370,12 @@ mod tests {
         assert!(minors.iter().all(|v| v.is_finite() && *v > 0.0));
         assert!(minors.iter().any(|v| close(*v, 2.0e-12)), "{minors:?}");
 
-        let da = DataArea(crate::layout::Rect { x: 10, y: 20, width: 100, height: 50 });
+        let da = DataArea(crate::layout::Rect {
+            x: 10,
+            y: 20,
+            width: 100,
+            height: 50,
+        });
         let (x, _) = value_to_screen(1.0, &axis, Side::Bottom, &da);
         assert!(x.is_finite() && x > 10.0 && x < 110.0, "x={x}");
 
@@ -1397,7 +1427,10 @@ mod tests {
 
         // Background is transparent, so any axis/label pixel must lift alpha above 0.
         let any_opaque = rgba.chunks_exact(4).any(|px| px[3] > 0);
-        assert!(any_opaque, "expected at least some non-transparent pixel (axes drawn)");
+        assert!(
+            any_opaque,
+            "expected at least some non-transparent pixel (axes drawn)"
+        );
     }
 
     /// Selection-blue (b dominant over r and g) — axis chrome is black/gray
@@ -1419,8 +1452,7 @@ mod tests {
             .selection_box(&config, &CpuTextMeasure::for_style(&config.draw_style))
             .expect("data area selection box");
 
-        let plain =
-            try_raster_chart_layer_to_rgba(&config, AxisLayerKind::Decoration).unwrap();
+        let plain = try_raster_chart_layer_to_rgba(&config, AxisLayerKind::Decoration).unwrap();
         assert!(
             !has_selection_blue(&plain),
             "no blue-dominant pixels expected without a selection overlay"
@@ -1448,12 +1480,9 @@ mod tests {
         let sel = DataAreaElement
             .selection_box(&config, &CpuTextMeasure::for_style(&config.draw_style))
             .unwrap();
-        let grid = try_raster_chart_layer_to_rgba_with_selection(
-            &config,
-            AxisLayerKind::Grid,
-            &[sel],
-        )
-        .unwrap();
+        let grid =
+            try_raster_chart_layer_to_rgba_with_selection(&config, AxisLayerKind::Grid, &[sel])
+                .unwrap();
         assert!(!has_selection_blue(&grid));
     }
 
@@ -1468,7 +1497,10 @@ mod tests {
         cfg.legend.content = RichText::plain("series A", Color::BLACK, 14.0, "");
         cfg.grid.show_minor_x = true;
         cfg.grid.show_minor_y = true;
-        cfg.draw_style = DrawStyle::Sketch(SketchOptions { seed, ..SketchOptions::default() });
+        cfg.draw_style = DrawStyle::Sketch(SketchOptions {
+            seed,
+            ..SketchOptions::default()
+        });
         cfg
     }
 
@@ -1481,7 +1513,10 @@ mod tests {
         for layer in [AxisLayerKind::Grid, AxisLayerKind::Decoration] {
             let a = try_raster_chart_layer_to_rgba(&precise, layer).unwrap();
             let b = try_raster_chart_layer_to_rgba(&sketched, layer).unwrap();
-            assert_ne!(a, b, "{layer:?} raster must change when sketch mode is enabled");
+            assert_ne!(
+                a, b,
+                "{layer:?} raster must change when sketch mode is enabled"
+            );
         }
     }
 
@@ -1520,17 +1555,31 @@ mod tests {
         precise.draw_style = DrawStyle::Precise;
 
         let sel = SelectionBox {
-            rect: RectF { x: 300.0, y: 350.0, width: 120.0, height: 80.0 },
-            color: Color { r: 0.0, g: 0.4, b: 1.0, a: 1.0 },
+            rect: RectF {
+                x: 300.0,
+                y: 350.0,
+                width: 120.0,
+                height: 80.0,
+            },
+            color: Color {
+                r: 0.0,
+                g: 0.4,
+                b: 1.0,
+                a: 1.0,
+            },
             stroke_width: 2.0,
-            handles: vec![RectF { x: 296.0, y: 346.0, width: 8.0, height: 8.0 }],
+            handles: vec![RectF {
+                x: 296.0,
+                y: 346.0,
+                width: 8.0,
+                height: 8.0,
+            }],
         };
 
         let layer = AxisLayerKind::Decoration;
         let base_p = try_raster_chart_layer_to_rgba(&precise, layer).unwrap();
         let with_p =
-            try_raster_chart_layer_to_rgba_with_selection(&precise, layer, &[sel.clone()])
-                .unwrap();
+            try_raster_chart_layer_to_rgba_with_selection(&precise, layer, &[sel.clone()]).unwrap();
         let base_s = try_raster_chart_layer_to_rgba(&sketched, layer).unwrap();
         let with_s =
             try_raster_chart_layer_to_rgba_with_selection(&sketched, layer, &[sel]).unwrap();
@@ -1547,7 +1596,10 @@ mod tests {
         let fp_p = footprint(&base_p, &with_p);
         let fp_s = footprint(&base_s, &with_s);
         assert!(!fp_p.is_empty(), "selection overlay must draw something");
-        assert_eq!(fp_p, fp_s, "selection footprint must not move in sketch mode");
+        assert_eq!(
+            fp_p, fp_s,
+            "selection footprint must not move in sketch mode"
+        );
         for &i in &fp_p {
             assert_eq!(
                 with_p[i], with_s[i],

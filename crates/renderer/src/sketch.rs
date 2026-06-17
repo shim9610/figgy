@@ -137,7 +137,14 @@ pub(crate) fn sketch_polyline(
         if run.len() == 1 {
             out.push(run[0]); // isolated point: no travel direction
         } else {
-            sketch_finite_run(run, amplitude_px, wavelength_px, seed, &mut arc_px, &mut out);
+            sketch_finite_run(
+                run,
+                amplitude_px,
+                wavelength_px,
+                seed,
+                &mut arc_px,
+                &mut out,
+            );
         }
     }
     out
@@ -288,9 +295,12 @@ impl DecoStroker {
     ) {
         match self {
             DecoStroker::Precise => canvas.draw_line(p0, p1, paint),
-            DecoStroker::Sketch { amplitude_px, wavelength_px, seed } => {
-                let pts =
-                    sketch_line(p0, p1, *amplitude_px, *wavelength_px, seed ^ fnv1a(tag));
+            DecoStroker::Sketch {
+                amplitude_px,
+                wavelength_px,
+                seed,
+            } => {
+                let pts = sketch_line(p0, p1, *amplitude_px, *wavelength_px, seed ^ fnv1a(tag));
                 let paint = paint.clone().with_min_stroke_width(SKETCH_MIN_STROKE_PX);
                 canvas.draw_polyline_smooth(&pts, &paint);
             }
@@ -314,7 +324,11 @@ impl DecoStroker {
     ) {
         match self {
             DecoStroker::Precise => canvas.draw_rect(x, y, w, h, paint),
-            DecoStroker::Sketch { amplitude_px, wavelength_px, seed } => {
+            DecoStroker::Sketch {
+                amplitude_px,
+                wavelength_px,
+                seed,
+            } => {
                 let pts = sketch_rect_outline(
                     x,
                     y,
@@ -401,7 +415,11 @@ mod tests {
         // 16 px spacing rule kicks in when wavelength/4 is coarser:
         // L = 100, wavelength = 400 → ceil(100/16) = 7 segments → 8 points.
         let coarse = sketch_line((0.0, 0.0), (100.0, 0.0), 1.0, 400.0, 0);
-        assert!(coarse.len() >= 8, "spacing cap violated: {} points", coarse.len());
+        assert!(
+            coarse.len() >= 8,
+            "spacing cap violated: {} points",
+            coarse.len()
+        );
     }
 
     // (f) noise1 is C1-continuous: adjacent samples differ by ≪ 0.05
@@ -413,7 +431,10 @@ mod tests {
                 let t = k as f32 * 1e-3;
                 let v0 = noise1(t, seed);
                 let v1 = noise1(t + 1e-3, seed);
-                assert!((-1.0..=1.0).contains(&v0), "noise1({t}) = {v0} out of range");
+                assert!(
+                    (-1.0..=1.0).contains(&v0),
+                    "noise1({t}) = {v0} out of range"
+                );
                 assert!(
                     (v1 - v0).abs() < 0.05,
                     "seed {seed}: jump {} at t = {t}",
@@ -459,7 +480,10 @@ mod tests {
         let nan_count = out.iter().filter(|p| p.0.is_nan() || p.1.is_nan()).count();
         assert_eq!(nan_count, 1, "gap sentinel must survive exactly once");
         for p in out.iter().filter(|p| p.0.is_finite()) {
-            assert!(p.1.abs() <= 1.5 + 1e-4, "finite point escaped amplitude: {p:?}");
+            assert!(
+                p.1.abs() <= 1.5 + 1e-4,
+                "finite point escaped amplitude: {p:?}"
+            );
         }
         // Bitwise determinism (NaN breaks PartialEq comparison).
         let again = sketch_polyline(&pts, 1.5, 60.0, 0);

@@ -127,10 +127,7 @@ fn parse_applies_marker(line: &str) -> Option<Vec<String>> {
     let inner = trimmed.strip_prefix(prefix)?.strip_suffix(suffix)?.trim();
     let names: Vec<String> = inner.split(',').map(|s| s.trim().to_string()).collect();
     if names.iter().any(|n| n.is_empty()) {
-        panic!(
-            "shader-common marker has empty target name: {:?}",
-            trimmed
-        );
+        panic!("shader-common marker has empty target name: {:?}", trimmed);
     }
     Some(names)
 }
@@ -271,12 +268,14 @@ fn every_targeted_shader_has_begin_end_markers() {
         assert!(
             raw.contains(BEGIN_MARKER),
             "{}: missing `{}` marker.",
-            path, BEGIN_MARKER
+            path,
+            BEGIN_MARKER
         );
         assert!(
             raw.contains(END_MARKER),
             "{}: missing `{}` marker.",
-            path, END_MARKER
+            path,
+            END_MARKER
         );
     }
 }
