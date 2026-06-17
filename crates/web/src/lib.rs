@@ -1,5 +1,11 @@
-//! figgy for the web — a `wasm-bindgen` wrapper exposing one chart panel per
-//! `<canvas>` as the `FiggyChart` JS class.
+//! figgy for the web.
+//!
+//! The public browser surface is the `figgy-chart.js` Custom Element
+//! (`<figgy-chart>`). It owns the canvas, async initialization, rAF loop,
+//! resize/DPR handling, pointer wiring, busy gate, and CustomEvent output.
+//! This Rust module exposes the raw `FiggyChart` wasm class that the Custom
+//! Element uses as its low-level kernel; advanced hosts may call it directly
+//! when they intentionally want to own those browser responsibilities.
 //!
 //! Lifecycle model: **one instance, register/unregister**. Columns and series
 //! are managed by id — `set_column_f32` is an upsert that skips re-uploading
@@ -373,7 +379,7 @@ mod web {
     }
 
     // ------------------------------------------------------------------
-    // FiggyChart — one panel bound to one canvas.
+    // FiggyChart — low-level wasm kernel bound to one canvas.
     // ------------------------------------------------------------------
 
     #[wasm_bindgen]
@@ -644,7 +650,9 @@ mod web {
 
     #[wasm_bindgen]
     impl FiggyChart {
-        /// Bind a chart to `canvas` (uses the canvas's current pixel size).
+        /// Bind the low-level chart kernel to `canvas` (uses the canvas's
+        /// current pixel size). Ordinary web hosts should prefer
+        /// `figgy-chart.js` and its `<figgy-chart>` Custom Element.
         /// JS: `const chart = await FiggyChart.create(canvas);`
         pub async fn create(canvas: HtmlCanvasElement) -> Result<FiggyChart, JsValue> {
             console_error_panic_hook::set_once();

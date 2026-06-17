@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!--
-  figgy web demo — reference wiring for the wasm artifact in ./pkg/.
+  figgy web demo - reference wiring for the wasm artifact in ./pkg/.
 
   Serve over HTTP (wasm modules don't load from file://):
       cd crates/web && npx serve .        # or: python -m http.server
@@ -10,12 +10,12 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>figgy — wasm demo</title>
+  <title>figgy - wasm demo</title>
   <style>
     body { font-family: system-ui, sans-serif; margin: 24px; }
     #toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
     #chart-wrap { width: min(960px, 95vw); height: 540px; border: 1px solid #ddd; }
-    canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+    figgy-chart { width: 100%; height: 100%; display: block; }
     #swatches span { display: inline-block; width: 14px; height: 14px; border-radius: 3px; margin-right: 2px; vertical-align: middle; }
   </style>
 </head>
@@ -40,30 +40,16 @@
       </select>
     </label>
     <span id="swatches"></span>
-    <button id="export">Export PNG ×2</button>
+    <button id="export">Export PNG x2</button>
     <span id="status"></span>
   </div>
-  <div id="chart-wrap"><canvas id="chart"></canvas></div>
+  <div id="chart-wrap"><figgy-chart id="chart"></figgy-chart></div>
 
   <script type="module">
-    import init, { FiggyChart, AxisPreset, ColorCycle, color_cycle_css } from "./pkg/figgy.js?v=scatter-markers";
+    import { AxisPreset, ColorCycle, color_cycle_css } from "./figgy-chart.js?v=scatter-markers";
 
     const status = document.getElementById("status");
-
-    try {
-    await init();
-
-    const canvas = document.getElementById("chart");
-    const wrap = document.getElementById("chart-wrap");
-    const dpr = window.devicePixelRatio || 1;
-
-    // Canvas backing store = CSS size x DPR. Pointer events are passed in
-    // these physical pixels; FiggyChart maps them back to its logical
-    // document when the responsive viewport is scaled/letterboxed.
-    canvas.width = Math.round(wrap.clientWidth * dpr);
-    canvas.height = Math.round(wrap.clientHeight * dpr);
-
-    const chart = await FiggyChart.create(canvas);
+    const chart = document.getElementById("chart");
     const markerShapes = [
       "Circle", "Square", "Triangle", "Diamond", "Cross",
       "CircleFilled", "SquareFilled", "TriangleFilled", "DiamondFilled",
@@ -78,129 +64,93 @@
       [0.76, 0.40, 0.05], [0.45, 0.25, 0.78], [0.05, 0.55, 0.62],
       [0.70, 0.18, 0.42], [0.32, 0.38, 0.46],
     ];
+    const markerLabel = `${markerShapes.length} scatter markers`;
+
+    chart.addEventListener("figgy-select", (event) => {
+      status.textContent = event.detail.selected ? "selected" : markerLabel;
+    });
+    chart.addEventListener("figgy-error", (event) => {
+      const message = event.detail.error?.message ?? event.detail.error;
+      status.textContent = `error: ${message}`;
+    });
+
     const color = (i) => {
       const [r, g, b] = palette[i % palette.length];
       return { r, g, b, a: 1.0 };
     };
-    const markerSeries = markerShapes.map((shape, i) => {
-      const x = i % 7;
-      const y = 3 - Math.floor(i / 7);
-      const xId = `marker_x_${i}`;
-      const yId = `marker_y_${i}`;
-      chart.set_column_f32(xId, new Float32Array([x]));
-      chart.set_column_f32(yId, new Float32Array([y]));
-      return {
-        series_id: `marker_${i}_${shape}`,
-        label: null,
-        x_column: xId,
-        y_column: yId,
-        render_type: {
-          Scatter: {
-            scatter: {
-              point_color: color(i),
-              point_shape: shape,
-              point_size: 12.0,
-            },
-          },
-        },
-      };
-    });
-    chart.set_series(JSON.stringify(markerSeries));
-    chart.auto_fit_all(0.12);
-    chart.set_title("Scatter marker shape showcase");
-    chart.set_x_title("shape column");
-    chart.set_y_title("shape row");
-    window.figgyChart = chart; // debugging convenience
-    status.textContent = `${markerShapes.length} scatter markers`;
 
-    // While an async chart method (export_png) is pending, the wasm object
-    // is locked — calling any other method on it throws ("recursive use of
-    // an object"). Gate every call on `busy`, and schedule the next frame
-    // BEFORE calling into wasm so one exception can never kill the loop.
-    let busy = false;
-
-    const tick = () => {
-      requestAnimationFrame(tick);
-      if (busy) return;
-      try {
-        chart.frame();
-      } catch (e) {
-        console.error("frame:", e);
-      }
-    };
-    requestAnimationFrame(tick);
-
-    // Pointer → selection / drag / resize (canvas-pixel coordinates).
-    let last = null;
-    canvas.addEventListener("pointerdown", (e) => {
-      if (busy) return;
-      canvas.setPointerCapture(e.pointerId);
-      last = [e.offsetX * dpr, e.offsetY * dpr];
-      const selected = chart.on_press(last[0], last[1]);
-      status.textContent = selected ? "selected" : `${markerShapes.length} scatter markers`;
-    });
-    canvas.addEventListener("pointermove", (e) => {
-      if (!last || busy) return;
-      const now = [e.offsetX * dpr, e.offsetY * dpr];
-      chart.on_move(now[0] - last[0], now[1] - last[1]);
-      last = now;
-    });
-    const release = () => {
-      last = null;
-      if (!busy) chart.on_release();
-    };
-    canvas.addEventListener("pointerup", release);
-    canvas.addEventListener("pointercancel", release);
-
-    // Presets.
-    document.getElementById("axis-preset").addEventListener("change", (e) => {
-      chart.apply_axis_preset(AxisPreset[e.target.value]);
-    });
-    const swatches = document.getElementById("swatches");
     const showSwatches = (name) => {
-      swatches.innerHTML = color_cycle_css(ColorCycle[name])
+      document.getElementById("swatches").innerHTML = color_cycle_css(ColorCycle[name])
         .map((c) => `<span style="background:${c}"></span>`)
         .join("");
     };
-    document.getElementById("color-cycle").addEventListener("change", (e) => {
-      chart.apply_color_cycle(ColorCycle[e.target.value]);
-      showSwatches(e.target.value);
-    });
-    showSwatches("Classic");
 
-    // PNG export → download. `busy` pauses frame/pointer calls while the
-    // export promise holds the wasm object.
-    const exportBtn = document.getElementById("export");
-    exportBtn.addEventListener("click", async () => {
-      if (busy) return;
-      busy = true;
-      exportBtn.disabled = true;
-      try {
-        const png = await chart.export_png(2.0);
-        const url = URL.createObjectURL(new Blob([png], { type: "image/png" }));
-        const a = Object.assign(document.createElement("a"), { href: url, download: "figgy.png" });
-        a.click();
-        URL.revokeObjectURL(url);
-      } catch (e) {
-        console.error("export:", e);
-      } finally {
-        busy = false;
-        exportBtn.disabled = false;
-      }
-    });
+    try {
+      await chart.ready;
 
-    // Responsive resize.
-    new ResizeObserver(() => {
-      const w = Math.round(wrap.clientWidth * dpr);
-      const h = Math.round(wrap.clientHeight * dpr);
-      canvas.width = w;
-      canvas.height = h;
-      chart.resize(w, h);
-    }).observe(wrap);
-    } catch (e) {
-      console.error("init:", e);
-      status.textContent = `init failed: ${e?.message ?? e}`;
-      throw e;
+      const markerSeries = markerShapes.map((shape, i) => {
+        const x = i % 7;
+        const y = 3 - Math.floor(i / 7);
+        const xId = `marker_x_${i}`;
+        const yId = `marker_y_${i}`;
+        chart.set_column_f32(xId, new Float32Array([x]));
+        chart.set_column_f32(yId, new Float32Array([y]));
+        return {
+          series_id: `marker_${i}_${shape}`,
+          label: null,
+          x_column: xId,
+          y_column: yId,
+          render_type: {
+            Scatter: {
+              scatter: {
+                point_color: color(i),
+                point_shape: shape,
+                point_size: 12.0,
+              },
+            },
+          },
+        };
+      });
+
+      chart.set_series(JSON.stringify(markerSeries));
+      chart.auto_fit_all(0.12);
+      chart.set_title("Scatter marker shape showcase");
+      chart.set_x_title("shape column");
+      chart.set_y_title("shape row");
+      window.figgyChart = chart;
+      window.figgyKernel = chart.kernel;
+      status.textContent = markerLabel;
+
+      document.getElementById("axis-preset").addEventListener("change", (event) => {
+        chart.apply_axis_preset(AxisPreset[event.target.value]);
+      });
+      document.getElementById("color-cycle").addEventListener("change", (event) => {
+        chart.apply_color_cycle(ColorCycle[event.target.value]);
+        showSwatches(event.target.value);
+      });
+      showSwatches("Classic");
+
+      const exportBtn = document.getElementById("export");
+      exportBtn.addEventListener("click", async () => {
+        if (chart.busy) return;
+        exportBtn.disabled = true;
+        try {
+          const png = await chart.export_png(2.0);
+          const url = URL.createObjectURL(new Blob([png], { type: "image/png" }));
+          const a = Object.assign(document.createElement("a"), { href: url, download: "figgy.png" });
+          a.click();
+          URL.revokeObjectURL(url);
+        } catch (error) {
+          console.error("export:", error);
+          status.textContent = `export failed: ${error?.message ?? error}`;
+        } finally {
+          exportBtn.disabled = false;
+        }
+      });
+    } catch (error) {
+      console.error("init:", error);
+      status.textContent = `init failed: ${error?.message ?? error}`;
+      throw error;
     }
   </script>
 </body>
