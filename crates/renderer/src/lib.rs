@@ -19,8 +19,8 @@ pub mod text_render;
 // (`chart` and `data` are renderer modules: dirty-flag tracking and the
 // `ColumnSource` upload adapter are render-side machinery.)
 pub use ::model::{
-    color, config, data_config, default, drag, format, layout, line, preset, resize, select, text,
-    tick,
+    color, config, data_config, default, drag, format, layout, legend, line, preset, resize,
+    select, text, tick,
 };
 
 // Public API re-exports.
