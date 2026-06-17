@@ -16,6 +16,8 @@ pub struct PickedPoint {
     pub source_id: Option<String>,
     pub series_id: String,
     pub point_index: usize,
+    pub data_x: f32,
+    pub data_y: f32,
     pub distance_px: f32,
 }
 
@@ -90,6 +92,8 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
                         source_id: cfg.source_id.clone(),
                         series_id: cfg.series_id.clone(),
                         point_index: i,
+                        data_x: x,
+                        data_y: y,
                         distance_px: dist_sq.sqrt(),
                     },
                 ));
@@ -261,6 +265,8 @@ mod tests {
         assert_eq!(picked.series_id, "nearest");
         assert_eq!(picked.source_id, None);
         assert_eq!(picked.point_index, 0);
+        assert_eq!(picked.data_x, 7.0);
+        assert_eq!(picked.data_y, 7.0);
     }
 
     #[test]
@@ -294,6 +300,8 @@ mod tests {
 
         assert_eq!(picked.series_id, "log");
         assert_eq!(picked.point_index, 0);
+        assert_eq!(picked.data_x, 10.0);
+        assert_eq!(picked.data_y, 5.0);
         assert_eq!(picked.distance_px, 0.0);
     }
 
@@ -316,5 +324,7 @@ mod tests {
         assert_eq!(picked.series_id, "late");
         assert_eq!(picked.source_id, Some("src-b".into()));
         assert_eq!(picked.point_index, 0);
+        assert_eq!(picked.data_x, 5.0);
+        assert_eq!(picked.data_y, 5.0);
     }
 }

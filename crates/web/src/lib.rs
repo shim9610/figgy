@@ -54,9 +54,21 @@ fn display_config_for_surface(
     (display_config, panel_rect, scale)
 }
 
+#[cfg(any(target_arch = "wasm32", test))]
+fn picked_point_json_string(picked: &renderer::PickedPoint) -> serde_json::Result<String> {
+    serde_json::to_string(&serde_json::json!({
+        "source_id": picked.source_id.as_ref(),
+        "series_id": &picked.series_id,
+        "point_index": picked.point_index,
+        "data_x": picked.data_x,
+        "data_y": picked.data_y,
+        "distance_px": picked.distance_px,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{display_config_for_surface, fit_display_panel};
+    use super::{display_config_for_surface, fit_display_panel, picked_point_json_string};
 
     #[test]
     fn display_panel_uniformly_scales_document() {
@@ -103,6 +115,28 @@ mod tests {
         );
         assert_eq!(display.chart_area.0.width, 500);
         assert!((display.bottom_x.label_style.font_size - 9.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn picked_point_json_includes_data_coordinates() {
+        let picked = renderer::PickedPoint {
+            source_id: Some("source-a".into()),
+            series_id: "series-a".into(),
+            point_index: 7,
+            data_x: 12.5,
+            data_y: -3.25,
+            distance_px: 4.0,
+        };
+
+        let json: serde_json::Value =
+            serde_json::from_str(&picked_point_json_string(&picked).unwrap()).unwrap();
+
+        assert_eq!(json["source_id"], "source-a");
+        assert_eq!(json["series_id"], "series-a");
+        assert_eq!(json["point_index"], 7);
+        assert_eq!(json["data_x"], 12.5);
+        assert_eq!(json["data_y"], -3.25);
+        assert_eq!(json["distance_px"], 4.0);
     }
 }
 
@@ -1084,8 +1118,8 @@ mod web {
         }
 
         /// Pick the nearest data point to canvas pixel `(x, y)`.
-        /// Returns a JSON `PickedPoint` string, or `null` when no point is
-        /// within `max_distance_px`.
+        /// Returns JSON `{ source_id, series_id, point_index, data_x, data_y,
+        /// distance_px }`, or `null` when no point is within `max_distance_px`.
         pub fn pick_point(
             &self,
             x: f32,
@@ -1107,14 +1141,9 @@ mod web {
                 return Ok(None);
             };
 
-            serde_json::to_string(&serde_json::json!({
-                "source_id": picked.source_id,
-                "series_id": picked.series_id,
-                "point_index": picked.point_index,
-                "distance_px": picked.distance_px,
-            }))
-            .map(Some)
-            .map_err(js_err)
+            crate::picked_point_json_string(&picked)
+                .map(Some)
+                .map_err(js_err)
         }
 
         /// Replace the picked-point overlay config. Passing JSON `null`
