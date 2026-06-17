@@ -75,7 +75,9 @@ cargo test -p model --features serde
 - `min` / `max`: Logarithmic에서는 양수만.
 - `out_margin`을 줄이면 라벨/타이틀이 잘릴 수 있다 (레이아웃 기여 마진).
 - `line_offset`은 분리 축 오프셋 — 레이아웃 비기여, 데이터 영역 불변.
-- `inverted`는 예약 필드 (미구현).
+- `inverted`는 축의 시각 방향을 반전한다. tick/grid, 데이터 렌더링,
+  `pick_point`는 같은 반전 mapping을 사용하며 `min`/`max`는 데이터 공간
+  bound로 유지된다.
 - `chart_area`는 저장/Export 기준의 논리 문서 사각형이다. Web wrapper의
   `resize(w, h)`는 캔버스 surface만 바꾸고, 이 논리 문서를 현재 viewport에
   uniform scale + letterbox로 맞춰 보여준다. 브라우저 창 크기 변경을

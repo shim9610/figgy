@@ -264,6 +264,8 @@ chart.set_series(JSON.stringify(series));  // GPU 스타일 재빌드 포함
 **주의**: 스케일을 바꾸면 `major_spacing` 해석도 바뀐다 (Linear = 데이터
 단위, Logarithmic = decade 단위). `set_x_range`류 헬퍼는 자동으로 맞춰
 주지만 SSoT 직접 편집은 호출자가 함께 고쳐야 한다.
+`AxisOptions.inverted` 역시 별도 wasm 메서드가 아니라 Config JSON 필드이며,
+축 라스터·데이터 렌더링·`pick_point`가 같은 반전 mapping을 사용한다.
 
 **전체 JSON 스키마는 [`crates/web/SCHEMA.md`](../web/SCHEMA.md)** —
 `Config`/`SeriesConfig` 전 필드의 직렬화 형태, enum 허용 문자열, serde

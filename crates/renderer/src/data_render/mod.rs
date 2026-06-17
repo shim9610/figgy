@@ -1149,11 +1149,18 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
         [packed[4], packed[5], packed[6], packed[7]],
         [packed[8], packed[9], packed[10], packed[11]],
     ];
+    let orient_axis = |min: f32, max: f32, inverted: bool| {
+        if inverted { (max, min) } else { (min, max) }
+    };
 
     // No data_area → use the data range directly (no extension).
     let da: Rect = match config.data_area() {
         Ok(d) => d.0,
         Err(_) => {
+            let (data_min_x, data_max_x) =
+                orient_axis(data_min_x, data_max_x, config.bottom_x.inverted);
+            let (data_min_y, data_max_y) =
+                orient_axis(data_min_y, data_max_y, config.left_y.inverted);
             return ScatterTransform {
                 data_min: [data_min_x, data_min_y],
                 data_max: [data_max_x, data_max_y],
@@ -1190,6 +1197,8 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
 
     let (min_x_ext, max_x_ext) = extend(data_min_x, data_max_x, sx, ex);
     let (min_y_ext, max_y_ext) = extend(data_min_y, data_max_y, sy, ey);
+    let (min_x_ext, max_x_ext) = orient_axis(min_x_ext, max_x_ext, config.bottom_x.inverted);
+    let (min_y_ext, max_y_ext) = orient_axis(min_y_ext, max_y_ext, config.left_y.inverted);
 
     ScatterTransform {
         data_min: [min_x_ext, min_y_ext],
@@ -2880,6 +2889,46 @@ mod tests {
         let t = scatter_transform_from_config(&config);
         assert!((t.data_min[0] - 1.0).abs() < 1.0e-6, "{:?}", t.data_min);
         assert!((t.data_max[0] - 2.0).abs() < 1.0e-6, "{:?}", t.data_max);
+    }
+
+    #[test]
+    fn scatter_transform_inverted_axes_swap_final_ranges() {
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 160,
+            height: 120,
+        });
+        config.chart_title.top_margin = 0.0;
+        for axis in [
+            &mut config.top_x,
+            &mut config.bottom_x,
+            &mut config.left_y,
+            &mut config.right_y,
+        ] {
+            axis.out_margin = 8.0;
+            axis.major_tick_length = 0.0;
+        }
+        config.bottom_x.scale = crate::config::AxisScale::Logarithmic;
+        config.bottom_x.min = 1.0;
+        config.bottom_x.max = 100.0;
+        config.left_y.min = -5.0;
+        config.left_y.max = 5.0;
+
+        let normal = scatter_transform_from_config(&config);
+        config.bottom_x.inverted = true;
+        config.left_y.inverted = true;
+        let inverted = scatter_transform_from_config(&config);
+
+        assert_eq!(inverted.scale_log, normal.scale_log);
+        assert!((inverted.data_min[0] - normal.data_max[0]).abs() < 1.0e-6);
+        assert!((inverted.data_max[0] - normal.data_min[0]).abs() < 1.0e-6);
+        assert!((inverted.data_min[1] - normal.data_max[1]).abs() < 1.0e-6);
+        assert!((inverted.data_max[1] - normal.data_min[1]).abs() < 1.0e-6);
+        for v in inverted.data_min.into_iter().chain(inverted.data_max) {
+            assert!(v.is_finite(), "{inverted:?}");
+        }
     }
 
     /// Smoke-test the texture-upload API path (no readback). Validation

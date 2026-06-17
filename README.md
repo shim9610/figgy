@@ -274,7 +274,7 @@ pub struct Config {
 | `min, max` | f64 | Data-space range. For log scale, positive bounds are used as-is; manual non-positive/non-finite bounds are guarded to `1e-12` on renderer/axis paths. Non-positive data samples are skipped/NaN-handled rather than making the whole range invalid |
 | `major_spacing` | f64 | linear: data units; log: decade step (1, 2, …) |
 | `minor_count` | usize | minors per major (linear) or sub-decade 2..9 (8 recommended for log) |
-| `inverted` | bool | (reserved, not implemented) |
+| `inverted` | bool | Reverses the visual direction of this axis. Tick/grid placement, data rendering, and picking all use the same reversed mapping; `min`/`max` remain the data-space bounds |
 | `label_style` | `LabelStyle` | Tick-label styling |
 | `tick` | `TickVisibility` | `None / Outside / Inside / Both` |
 | `title_option` | `AxisTitleOptions` | Axis title text / visibility / offset |
@@ -759,7 +759,7 @@ pub struct Config {
 | `min, max` | f64 | 데이터 공간 범위. log scale에서는 양수 bound를 그대로 쓰고, 수동으로 들어온 0 이하/비정상 bound는 렌더러/축 경로에서 `1e-12`로 guard한다. 0 이하 데이터 샘플은 전체 range 오류가 아니라 skip/NaN 처리된다 |
 | `major_spacing` | f64 | linear: 데이터 단위, log: decade 단위 (1, 2, …) |
 | `minor_count` | usize | major 사이 minor 개수 (linear) 또는 decade 내 2..9 (log 시 8 추천) |
-| `inverted` | bool | (예약, 미구현) |
+| `inverted` | bool | 축의 시각 방향을 반전한다. tick/grid 위치, 데이터 렌더링, picking 이 모두 같은 반전 mapping을 사용하며 `min`/`max`는 데이터 공간 bound로 유지된다 |
 | `label_style` | `LabelStyle` | 눈금 라벨 스타일 |
 | `tick` | `TickVisibility` | `None / Outside / Inside / Both` |
 | `title_option` | `AxisTitleOptions` | 축 타이틀 텍스트 / 가시성 / 오프셋 |

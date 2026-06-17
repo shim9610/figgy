@@ -306,6 +306,24 @@ mod tests {
     }
 
     #[test]
+    fn inverted_axes_match_visible_position() {
+        let mut config = config();
+        config.bottom_x.inverted = true;
+        config.left_y.inverted = true;
+        let columns = Columns::new(&[("x", &[2.0]), ("y", &[8.0])]);
+        let series = [scatter_series("inverted", "x", "y", Some("src-inv"))];
+
+        let picked = pick(&config, &series, &columns, 90.0, 100.0, 0.0).unwrap();
+
+        assert_eq!(picked.source_id, Some("src-inv".into()));
+        assert_eq!(picked.series_id, "inverted");
+        assert_eq!(picked.point_index, 0);
+        assert_eq!(picked.data_x, 2.0);
+        assert_eq!(picked.data_y, 8.0);
+        assert_eq!(picked.distance_px, 0.0);
+    }
+
+    #[test]
     fn exact_tie_prefers_later_series_and_lower_index_within_series() {
         let config = config();
         let columns = Columns::new(&[
