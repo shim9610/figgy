@@ -71,24 +71,64 @@ impl Config {
         // (labeled = bottom/left, unlabeled = top/right) side styles.
         let (labeled, unlabeled) = match preset {
             AxisPreset::BoxedInward => (
-                SideStyle { line: true, tick: Inside, labels: true },
-                SideStyle { line: true, tick: Inside, labels: false },
+                SideStyle {
+                    line: true,
+                    tick: Inside,
+                    labels: true,
+                },
+                SideStyle {
+                    line: true,
+                    tick: Inside,
+                    labels: false,
+                },
             ),
             AxisPreset::BoxedOutward => (
-                SideStyle { line: true, tick: Outside, labels: true },
-                SideStyle { line: true, tick: NoTick, labels: false },
+                SideStyle {
+                    line: true,
+                    tick: Outside,
+                    labels: true,
+                },
+                SideStyle {
+                    line: true,
+                    tick: NoTick,
+                    labels: false,
+                },
             ),
             AxisPreset::OpenOutward => (
-                SideStyle { line: true, tick: Outside, labels: true },
-                SideStyle { line: false, tick: NoTick, labels: false },
+                SideStyle {
+                    line: true,
+                    tick: Outside,
+                    labels: true,
+                },
+                SideStyle {
+                    line: false,
+                    tick: NoTick,
+                    labels: false,
+                },
             ),
             AxisPreset::OpenInward => (
-                SideStyle { line: true, tick: Inside, labels: true },
-                SideStyle { line: false, tick: NoTick, labels: false },
+                SideStyle {
+                    line: true,
+                    tick: Inside,
+                    labels: true,
+                },
+                SideStyle {
+                    line: false,
+                    tick: NoTick,
+                    labels: false,
+                },
             ),
             AxisPreset::Minimal => (
-                SideStyle { line: false, tick: NoTick, labels: true },
-                SideStyle { line: false, tick: NoTick, labels: false },
+                SideStyle {
+                    line: false,
+                    tick: NoTick,
+                    labels: true,
+                },
+                SideStyle {
+                    line: false,
+                    tick: NoTick,
+                    labels: false,
+                },
             ),
         };
 
@@ -124,29 +164,29 @@ pub enum ColorCycle {
 }
 
 const CLASSIC: &[Color] = &[
-    rgb8(0, 0, 0),       // black
-    rgb8(255, 0, 0),     // red
-    rgb8(0, 128, 0),     // green
-    rgb8(0, 0, 255),     // blue
-    rgb8(255, 0, 255),   // magenta
-    rgb8(0, 139, 139),   // dark cyan
-    rgb8(184, 134, 11),  // dark yellow
-    rgb8(0, 0, 128),     // navy
-    rgb8(128, 0, 128),   // purple
-    rgb8(128, 0, 0),     // wine
-    rgb8(128, 128, 0),   // olive
-    rgb8(255, 102, 0),   // orange
+    rgb8(0, 0, 0),      // black
+    rgb8(255, 0, 0),    // red
+    rgb8(0, 128, 0),    // green
+    rgb8(0, 0, 255),    // blue
+    rgb8(255, 0, 255),  // magenta
+    rgb8(0, 139, 139),  // dark cyan
+    rgb8(184, 134, 11), // dark yellow
+    rgb8(0, 0, 128),    // navy
+    rgb8(128, 0, 128),  // purple
+    rgb8(128, 0, 0),    // wine
+    rgb8(128, 128, 0),  // olive
+    rgb8(255, 102, 0),  // orange
 ];
 
 const VIVID: &[Color] = &[
-    rgb8(0, 32, 240),    // blue
-    rgb8(230, 16, 16),   // red
-    rgb8(0, 153, 0),     // green
-    rgb8(128, 0, 192),   // purple
-    rgb8(255, 128, 0),   // orange
-    rgb8(0, 0, 0),       // black
-    rgb8(230, 0, 172),   // pink
-    rgb8(0, 153, 153),   // teal
+    rgb8(0, 32, 240),  // blue
+    rgb8(230, 16, 16), // red
+    rgb8(0, 153, 0),   // green
+    rgb8(128, 0, 192), // purple
+    rgb8(255, 128, 0), // orange
+    rgb8(0, 0, 0),     // black
+    rgb8(230, 0, 172), // pink
+    rgb8(0, 153, 153), // teal
 ];
 
 const BALANCED: &[Color] = &[
@@ -224,15 +264,36 @@ impl ColorCycle {
                 scatter.point_color = c;
                 line.line_color = c;
             }
-            DataRenderType::ScatterErrorbarX { scatter, err_style, .. }
-            | DataRenderType::ScatterErrorbarY { scatter, err_style, .. }
-            | DataRenderType::ScatterErrorbarXY { scatter, err_style, .. } => {
+            DataRenderType::ScatterErrorbarX {
+                scatter, err_style, ..
+            }
+            | DataRenderType::ScatterErrorbarY {
+                scatter, err_style, ..
+            }
+            | DataRenderType::ScatterErrorbarXY {
+                scatter, err_style, ..
+            } => {
                 scatter.point_color = c;
                 err_style.error_bar_color = c;
             }
-            DataRenderType::LineScatterErrorbarX { scatter, line, err_style, .. }
-            | DataRenderType::LineScatterErrorbarY { scatter, line, err_style, .. }
-            | DataRenderType::LineScatterErrorbarXY { scatter, line, err_style, .. } => {
+            DataRenderType::LineScatterErrorbarX {
+                scatter,
+                line,
+                err_style,
+                ..
+            }
+            | DataRenderType::LineScatterErrorbarY {
+                scatter,
+                line,
+                err_style,
+                ..
+            }
+            | DataRenderType::LineScatterErrorbarXY {
+                scatter,
+                line,
+                err_style,
+                ..
+            } => {
                 scatter.point_color = c;
                 line.line_color = c;
                 err_style.error_bar_color = c;
@@ -304,7 +365,10 @@ mod tests {
         assert_eq!(cfg.bottom_x.min, before.bottom_x.min);
         assert_eq!(cfg.bottom_x.max, before.bottom_x.max);
         assert_eq!(cfg.bottom_x.out_margin, before.bottom_x.out_margin);
-        assert_eq!(cfg.left_y.major_tick_length, before.left_y.major_tick_length);
+        assert_eq!(
+            cfg.left_y.major_tick_length,
+            before.left_y.major_tick_length
+        );
         assert_eq!(cfg.chart_title, before.chart_title);
         assert_eq!(cfg.grid, before.grid);
         assert_eq!(cfg.data_area().unwrap(), before.data_area().unwrap());
@@ -331,6 +395,7 @@ mod tests {
     fn full_series() -> SeriesConfig {
         SeriesConfig {
             series_id: "s".into(),
+            source_id: None,
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
@@ -339,14 +404,21 @@ mod tests {
                     point_color: Color::BLACK,
                     point_shape: ScatterShape::Circle,
                     point_size: 4.0,
+                    point_style_table: None,
+                    point_style_index_column: None,
+                    point_style_overrides: None,
                 },
                 line: DataLineStyleConfig {
                     line_style: LineStylePreset::Solid,
                     line_color: Color::BLACK,
                     line_width: 1.0,
                 },
-                err_x: ErrorRef::Symmetric { column: "ex".into() },
-                err_y: ErrorRef::Symmetric { column: "ey".into() },
+                err_x: ErrorRef::Symmetric {
+                    column: "ex".into(),
+                },
+                err_y: ErrorRef::Symmetric {
+                    column: "ey".into(),
+                },
                 err_style: DataErrorBarStyleConfig {
                     error_bar_color: Color::BLACK,
                     error_bar_width: 1.0,
@@ -362,8 +434,12 @@ mod tests {
         let mut s = full_series();
         ColorCycle::Balanced.apply_to_series(&mut s, 2);
         let expected = ColorCycle::Balanced.color(2);
-        let DataRenderType::LineScatterErrorbarXY { scatter, line, err_style, .. } =
-            &s.render_type
+        let DataRenderType::LineScatterErrorbarXY {
+            scatter,
+            line,
+            err_style,
+            ..
+        } = &s.render_type
         else {
             unreachable!()
         };

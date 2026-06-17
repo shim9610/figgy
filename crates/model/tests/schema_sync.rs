@@ -11,12 +11,12 @@
 use model::color::Color;
 use model::config::Config;
 use model::data_config::{
-    DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterStyleConfig,
-    ErrorRef, ScatterShape, SeriesConfig,
+    DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterPointStyleConfig,
+    DataScatterPointStyleOverride, DataScatterStyleConfig, ErrorRef, ScatterShape, SeriesConfig,
 };
 use model::default::default_config;
 use model::line::LineStylePreset;
-use model::text::{rich_segments_from_text, RichText};
+use model::text::{RichText, rich_segments_from_text};
 
 fn canonical_config() -> Config {
     default_config()
@@ -27,6 +27,7 @@ fn canonical_config() -> Config {
 fn canonical_series() -> Vec<SeriesConfig> {
     vec![SeriesConfig {
         series_id: "example".into(),
+        source_id: Some("source-a".into()),
         label: Some(RichText {
             segments: rich_segments_from_text("V₀"),
             color: Color::BLACK,
@@ -40,14 +41,40 @@ fn canonical_series() -> Vec<SeriesConfig> {
                 point_color: Color::BLACK,
                 point_shape: ScatterShape::CircleFilled,
                 point_size: 4.0,
+                point_style_table: Some(vec![
+                    DataScatterPointStyleConfig {
+                        point_color: Some(Color::from_rgb8(230, 57, 70)),
+                        point_shape: Some(ScatterShape::CircleFilled),
+                        point_size: Some(5.0),
+                    },
+                    DataScatterPointStyleConfig {
+                        point_color: Some(Color::from_rgb8(29, 53, 87)),
+                        point_shape: Some(ScatterShape::DiamondFilled),
+                        point_size: None,
+                    },
+                ]),
+                point_style_index_column: Some("style_index".into()),
+                point_style_overrides: Some(vec![DataScatterPointStyleOverride {
+                    index: 3,
+                    style: DataScatterPointStyleConfig {
+                        point_color: None,
+                        point_shape: Some(ScatterShape::StarFilled),
+                        point_size: Some(7.0),
+                    },
+                }]),
             },
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color: Color::BLACK,
                 line_width: 2.0,
             },
-            err_x: ErrorRef::Asymmetric { lower: "ex_lo".into(), upper: "ex_hi".into() },
-            err_y: ErrorRef::Symmetric { column: "ey".into() },
+            err_x: ErrorRef::Asymmetric {
+                lower: "ex_lo".into(),
+                upper: "ex_hi".into(),
+            },
+            err_y: ErrorRef::Symmetric {
+                column: "ey".into(),
+            },
             err_style: DataErrorBarStyleConfig {
                 error_bar_color: Color::BLACK,
                 error_bar_width: 1.0,
@@ -68,8 +95,7 @@ fn series_json() -> String {
 
 /// Extract the fenced ```json blocks from SCHEMA.md, in order.
 fn schema_md_json_blocks() -> Vec<String> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../web/SCHEMA.md");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/SCHEMA.md");
     let md = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("read {path:?}: {e}"))
         .replace("\r\n", "\n");

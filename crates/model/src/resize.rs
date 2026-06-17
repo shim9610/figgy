@@ -13,7 +13,7 @@
 
 use crate::config::Config;
 use crate::layout::{Element, NudgeReject, NudgeResult, RectF, Side};
-use crate::select::{DataAreaElement, Selectable, SELECTION_PADDING};
+use crate::select::{DataAreaElement, SELECTION_PADDING, Selectable};
 use crate::text::MeasureText;
 
 /// Edge length of a square resize handle, px.
@@ -104,13 +104,7 @@ pub trait Resizable: Selectable {
     /// Default resize pipeline: each motion component routes through
     /// [`Config::nudge`] on its target element, so resize obeys exactly the
     /// same feasibility rules as dragging those elements directly.
-    fn resize_by(
-        &self,
-        cfg: &mut Config,
-        handle: ResizeHandle,
-        dx: f32,
-        dy: f32,
-    ) -> NudgeResult {
+    fn resize_by(&self, cfg: &mut Config, handle: ResizeHandle, dx: f32, dy: f32) -> NudgeResult {
         let (h_target, v_target) = self.resize_targets(handle);
         let mut moved = false;
         let mut attempted = false;
@@ -162,20 +156,32 @@ mod tests {
     struct FixedMeasure;
     impl MeasureText for FixedMeasure {
         fn measure_rich(&self, rt: &RichText) -> TextExtents {
-            TextExtents { width: rt.segments.len() as f32 * 8.0, ascent: 10.0, descent: 3.0 }
+            TextExtents {
+                width: rt.segments.len() as f32 * 8.0,
+                ascent: 10.0,
+                descent: 3.0,
+            }
         }
     }
 
     fn cfg_800x600() -> Config {
         let mut cfg = default_config();
-        cfg.chart_area = ChartArea(Rect { x: 0, y: 0, width: 800, height: 600 });
+        cfg.chart_area = ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 800,
+            height: 600,
+        });
         cfg
     }
 
     #[test]
     fn handles_sit_on_selection_box_corners_and_midpoints() {
         let cfg = cfg_800x600();
-        let b = DataAreaElement.bounds(&cfg, &FixedMeasure).unwrap().expanded(SELECTION_PADDING);
+        let b = DataAreaElement
+            .bounds(&cfg, &FixedMeasure)
+            .unwrap()
+            .expanded(SELECTION_PADDING);
         let handles = DataAreaElement.resize_handles(&cfg, &FixedMeasure).unwrap();
         assert_eq!(handles.len(), 8);
 
@@ -201,7 +207,11 @@ mod tests {
             )
             .unwrap();
         assert_eq!(hit, kind);
-        assert!(DataAreaElement.hit_resize_handle(&cfg, &FixedMeasure, -100.0, -100.0).is_none());
+        assert!(
+            DataAreaElement
+                .hit_resize_handle(&cfg, &FixedMeasure, -100.0, -100.0)
+                .is_none()
+        );
     }
 
     // Dragging the east handle left shrinks the data area by growing the

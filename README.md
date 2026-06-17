@@ -16,6 +16,8 @@ Embed in egui / iced / winit / any other wgpu host.
 - **MSAA resolve quality**: `WindowedRenderer` live frames and offscreen PNG export use a 4x (or 2x) MSAA render target when the adapter/format supports resolve, falling back to 1x. This changes only rasterization coverage at primitive edges; data points, line segments, dash arc lengths, and export scale semantics are unchanged.
 - **Headless PNG export**: GPU offscreen raster at arbitrary DPI → RGBA / PNG bytes in memory (async-first; blocking wrappers on native).
 - **Interaction layer (opt-in)**: hit-testing, selection boxes, drag (axes constrained to their perpendicular, detached-axis `line_offset`), PPT-style 8-handle resize of the data area — all policy in `model`, fed by host pointer events; never runs if you don't wire it.
+- **Data picking (opt-in)**: hosts can ask for the nearest data point at a canvas coordinate and receive only `{ source_id?, series_id, point_index, data_x, data_y, distance_px }`; picked-point decoration is driven back through `Config.picked_points` so UI state stays outside the renderer.
+- **Per-point scatter style mapping (opt-in)**: precise scatter can bind a compact style table plus a `point_style_index_column`, with sparse `point_style_overrides` for exceptions. Styled modes keep their own visual shaders and ignore the mapping.
 - **Rich-text everywhere**: titles, tick labels, and the legend share one engine — per-segment bold/italic/underline/sub/superscript/greek, per-segment color & size overrides, `'\n'` line breaks, `'\t'` table columns, fixed-width legend symbol fields.
 - **Hand-drawn sketch mode (opt-in)**: `draw_style: { mode: "sketch", amplitude_px, wavelength_px, seed }` renders the whole chart xkcd-style — axes/ticks/grid/legend wobble on the CPU raster, data lines/markers/errorbars wobble in dedicated GPU shader variants driven by the arc-length scan, and chart text automatically switches to the bundled handwritten face (Comic Neue, OFL) with per-character fallback for glyphs it lacks (CJK keeps your registered font). Deterministic (seeded), composes with dashes, and the field's absence means the precise path runs completely untouched.
 - **Milkyway mode (opt-in)**: `draw_style: { mode: "milkyway", ... }` renders the chart as an astrophotograph — lines become star chains over a series-colored nebula ribbon; scatter markers become ringed planets; errorbars become bipolar jets over a deep-space backdrop.
@@ -106,6 +108,7 @@ chart.auto_fit_y(renderer.pool(), "y", 0.10).unwrap();
 // Series = SeriesConfig (declaration) + ChartStyle (GPU style auto-built from that declaration).
 let cfg = SeriesConfig {
     series_id: "sin".into(), label: None,
+    source_id: None,
     x_column: "x".into(), y_column: "y".into(),
     render_type: DataRenderType::Line {
         line: DataLineStyleConfig {
@@ -342,11 +345,11 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::paint` branches 
 
 | Type | Fields | Role |
 |---|---|---|
-| `SeriesConfig` | `series_id, label, x_column: ColumnId, y_column: ColumnId, render_type` | Full series declaration. `x_column / y_column` are pool-registered ids. In the web editing flow, `legend.content` is the live label authority; ordinary series edits update recognized legend symbols only and preserve user text. `SeriesConfig.label` becomes authoritative only for an explicit `reset_legend_from_series_labels()` rebuild |
+| `SeriesConfig` | `series_id, source_id?, label, x_column: ColumnId, y_column: ColumnId, render_type` | Full series declaration. `source_id` is optional host provenance for picking; `x_column / y_column` are pool-registered ids. In the web editing flow, `legend.content` is the live label authority; ordinary series edits update recognized legend symbols only and preserve user text. `SeriesConfig.label` becomes authoritative only for an explicit `reset_legend_from_series_labels()` rebuild |
 | `DataRenderType` | enum, 9 variants | One independent draw path per variant. Optional struct merging avoided |
 | `ErrorRef` | `Symmetric { column }` or `Asymmetric { lower, upper }` | Errorbar column reference. Symmetric = ±σ, Asymmetric = lower/upper split |
 | `DataLineStyleConfig` | `line_style, line_color, line_width` | Line appearance |
-| `DataScatterStyleConfig` | `point_color, point_shape, point_size` | Point appearance |
+| `DataScatterStyleConfig` | `point_color, point_shape, point_size, point_style_table?, point_style_index_column?, point_style_overrides?` | Point appearance. The optional style map applies only to precise scatter; each table/override slot can replace color, shape, size, or any subset |
 | `DataErrorBarStyleConfig` | `error_bar_color, _width, _cap_size, cap_width` | Errorbar appearance |
 | `ScatterShape` | enum, 26 variants | Circle / Square / Triangle directions / Diamond / Cross / Plus / Pentagon / Hexagon / Octagon / Star + filled variants |
 
@@ -588,6 +591,7 @@ chart.auto_fit_y(renderer.pool(), "y", 0.10).unwrap();
 // 시리즈 = SeriesConfig (선언) + ChartStyle (그 선언에서 자동 빌드된 GPU 스타일).
 let cfg = SeriesConfig {
     series_id: "sin".into(), label: None,
+    source_id: None,
     x_column: "x".into(), y_column: "y".into(),
     render_type: DataRenderType::Line {
         line: DataLineStyleConfig {
@@ -823,11 +827,11 @@ pub struct Config {
 
 | 타입 | 필드 | 역할 |
 |---|---|---|
-| `SeriesConfig` | `series_id, label, x_column: ColumnId, y_column: ColumnId, render_type` | 한 시리즈의 모든 선언. `x_column / y_column` 은 pool 에 등록된 id. web 편집 플로우에서는 `legend.content`가 live 라벨 권위이며, 일반 시리즈 편집은 인식 가능한 범례 심볼만 갱신하고 사용자 텍스트를 보존한다. `SeriesConfig.label`은 명시적 `reset_legend_from_series_labels()` 재작성에서만 권위가 된다 |
+| `SeriesConfig` | `series_id, source_id?, label, x_column: ColumnId, y_column: ColumnId, render_type` | 한 시리즈의 모든 선언. `source_id`는 picking용 선택적 host provenance이고, `x_column / y_column` 은 pool 에 등록된 id. web 편집 플로우에서는 `legend.content`가 live 라벨 권위이며, 일반 시리즈 편집은 인식 가능한 범례 심볼만 갱신하고 사용자 텍스트를 보존한다. `SeriesConfig.label`은 명시적 `reset_legend_from_series_labels()` 재작성에서만 권위가 된다 |
 | `DataRenderType` | 9 변종 enum | 변종별 독립 draw path. 옵셔널 struct 안 합침 |
 | `ErrorRef` | `Symmetric { column }` 또는 `Asymmetric { lower, upper }` | 에러바 컬럼 참조. Symmetric 은 ±σ, Asymmetric 은 lower/upper 분리 |
 | `DataLineStyleConfig` | `line_style, line_color, line_width` | 라인 외형 |
-| `DataScatterStyleConfig` | `point_color, point_shape, point_size` | 점 외형 |
+| `DataScatterStyleConfig` | `point_color, point_shape, point_size, point_style_table?, point_style_index_column?, point_style_overrides?` | 점 외형. optional style map은 precise scatter에만 적용되며 table/override slot이 색, shape, 크기 또는 일부만 대체할 수 있다 |
 | `DataErrorBarStyleConfig` | `error_bar_color, _width, _cap_size, cap_width` | 에러바 외형 |
 | `ScatterShape` | enum 26 변종 | Circle / Square / Triangle directions / Diamond / Cross / Plus / Pentagon / Hexagon / Octagon / Star + filled variants |
 

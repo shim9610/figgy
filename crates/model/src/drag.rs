@@ -89,7 +89,12 @@ mod tests {
 
     fn cfg_800x600() -> Config {
         let mut cfg = default_config();
-        cfg.chart_area = ChartArea(Rect { x: 0, y: 0, width: 800, height: 600 });
+        cfg.chart_area = ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 800,
+            height: 600,
+        });
         cfg.chart_title.text.segments = rich_segments_from_text("Title");
         cfg
     }
@@ -180,7 +185,11 @@ mod tests {
         struct FixedMeasure;
         impl MeasureText for FixedMeasure {
             fn measure_rich(&self, rt: &RichText) -> TextExtents {
-                TextExtents { width: rt.segments.len() as f32 * 8.0, ascent: 10.0, descent: 3.0 }
+                TextExtents {
+                    width: rt.segments.len() as f32 * 8.0,
+                    ascent: 10.0,
+                    descent: 3.0,
+                }
             }
         }
 
@@ -192,14 +201,25 @@ mod tests {
         let id = map
             .hit_test(&cfg, &FixedMeasure, tb.x + 1.0, tb.y + 1.0)
             .unwrap();
-        let drag = map.get(id).unwrap().as_draggable().expect("title is draggable");
+        let drag = map
+            .get(id)
+            .unwrap()
+            .as_draggable()
+            .expect("title is draggable");
         assert_eq!(drag.drag_by(&mut cfg, 4.0, 2.0), NudgeResult::Moved);
         assert_eq!(cfg.chart_title.offset_x, 4.0);
 
         // The data area is draggable too (whole-area translation).
-        let db = crate::select::DataAreaElement.bounds(&cfg, &FixedMeasure).unwrap();
+        let db = crate::select::DataAreaElement
+            .bounds(&cfg, &FixedMeasure)
+            .unwrap();
         let id2 = map
-            .hit_test(&cfg, &FixedMeasure, db.x + db.width * 0.5, db.y + db.height * 0.5)
+            .hit_test(
+                &cfg,
+                &FixedMeasure,
+                db.x + db.width * 0.5,
+                db.y + db.height * 0.5,
+            )
             .unwrap();
         assert!(map.get(id2).unwrap().as_draggable().is_some());
     }
@@ -232,7 +252,10 @@ mod tests {
         let r = DataAreaElement.drag_by(&mut cfg, right_margin + 50.0, 3.0);
         assert_eq!(r, NudgeResult::Moved);
         let da_after = cfg.data_area().unwrap();
-        assert_eq!(da_after.x, da_before.x, "blocked horizontal component must not apply");
+        assert_eq!(
+            da_after.x, da_before.x,
+            "blocked horizontal component must not apply"
+        );
         assert_eq!(da_after.y, da_before.y + 3);
     }
 
@@ -241,7 +264,10 @@ mod tests {
         let mut cfg = cfg_800x600();
         let before = cfg.clone();
         let r = DataAreaElement.drag_by(&mut cfg, 1e6, -1e6);
-        assert_eq!(r, NudgeResult::Rejected(crate::layout::NudgeReject::OutOfBounds));
+        assert_eq!(
+            r,
+            NudgeResult::Rejected(crate::layout::NudgeReject::OutOfBounds)
+        );
         assert_eq!(cfg, before);
     }
 }

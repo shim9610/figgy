@@ -109,6 +109,7 @@ mod legend_update_tests {
     fn line_cfg(color: Color, line_style: LineStylePreset) -> SeriesConfig {
         SeriesConfig {
             series_id: "s".into(),
+            source_id: None,
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
@@ -495,6 +496,7 @@ mod tests {
     fn line_cfg_style(color: Color, line_style: LineStylePreset) -> SeriesConfig {
         SeriesConfig {
             series_id: "s".into(),
+            source_id: None,
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),

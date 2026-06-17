@@ -316,6 +316,41 @@ pub enum DrawStyle {
     Constellation(ConstellationOptions),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct PickedPointRef {
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub source_id: Option<String>,
+    pub series_id: String,
+    pub point_index: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct PickedPointsConfig {
+    pub visible: bool,
+    pub refs: Vec<PickedPointRef>,
+    pub ring_color: Color,
+    pub ring_width_px: f32,
+    pub radius_extra_px: f32,
+}
+
+impl Default for PickedPointsConfig {
+    fn default() -> Self {
+        Self {
+            visible: true,
+            refs: Vec::new(),
+            ring_color: Color::from_rgb8(255, 215, 0),
+            ring_width_px: 2.0,
+            radius_extra_px: 3.0,
+        }
+    }
+}
+
 impl DrawStyle {
     /// True for the default scientific path (used by serde skip).
     pub fn is_precise(&self) -> bool {
@@ -375,6 +410,11 @@ pub struct Config {
     pub chart_title: ChartTitleOptions,
     pub grid: GridOptions,
     pub legend: Legend,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub picked_points: Option<PickedPointsConfig>,
     /// Chart-global render style. `Precise` (default, key absent in JSON) is
     /// identical to current rendering; every other variant is an opt-in
     /// stylized mode. No per-series mixing.
@@ -435,6 +475,11 @@ impl Config {
         self.legend.padding *= s;
         scale_rich_text(&mut self.legend.content, s);
 
+        if let Some(picked_points) = self.picked_points.as_mut() {
+            picked_points.ring_width_px *= s;
+            picked_points.radius_extra_px *= s;
+        }
+
         // Sketch wobble dims are pixel-based visual dims too. Scaled only in
         // Stylized modes — `Precise` carries no dims, so the precise path
         // sees no change. Milkyway must come out RESOLUTION-INVARIANT:
@@ -490,7 +535,7 @@ pub use crate::legend::{
 // parameters sit INLINE next to the tag.
 #[cfg(all(test, feature = "serde"))]
 mod draw_style_serde_tests {
-    use super::{Config, DrawStyle, SketchOptions};
+    use super::{Config, DrawStyle, PickedPointRef, PickedPointsConfig, SketchOptions};
     use crate::default::default_config;
 
     /// Serialized default config — `draw_style` is `Precise`, so the JSON has
@@ -576,6 +621,59 @@ mod draw_style_serde_tests {
             json.get("draw_style").is_none(),
             "Precise draw_style must be skipped in serialization: {json}"
         );
+    }
+
+    #[test]
+    fn config_without_picked_points_key_deserializes_to_none() {
+        let cfg: Config =
+            serde_json::from_value(default_config_json()).expect("pre-picker document parses");
+        assert_eq!(cfg.picked_points, None);
+    }
+
+    #[test]
+    fn picked_points_empty_object_yields_defaults() {
+        let mut json = default_config_json();
+        json.as_object_mut()
+            .unwrap()
+            .insert("picked_points".into(), serde_json::json!({}));
+        let cfg: Config = serde_json::from_value(json).expect("tag-only picked_points parses");
+        assert_eq!(cfg.picked_points, Some(PickedPointsConfig::default()));
+    }
+
+    #[test]
+    fn picked_point_refs_skip_absent_source_id() {
+        let mut cfg = default_config();
+        cfg.picked_points = Some(PickedPointsConfig {
+            refs: vec![
+                PickedPointRef {
+                    source_id: None,
+                    series_id: "series-a".into(),
+                    point_index: 2,
+                },
+                PickedPointRef {
+                    source_id: Some("source-a".into()),
+                    series_id: "series-b".into(),
+                    point_index: 4,
+                },
+            ],
+            ..PickedPointsConfig::default()
+        });
+
+        let json = serde_json::to_value(&cfg).expect("serialize Config");
+        assert!(json["picked_points"]["refs"][0].get("source_id").is_none());
+        assert_eq!(json["picked_points"]["refs"][1]["source_id"], "source-a");
+        let back: Config = serde_json::from_value(json).expect("parse back");
+        assert_eq!(back.picked_points, cfg.picked_points);
+    }
+
+    #[test]
+    fn scale_scales_picked_point_pixel_dimensions() {
+        let mut cfg = default_config();
+        cfg.picked_points = Some(PickedPointsConfig::default());
+        cfg.scale_in_place(2.0);
+        let picked = cfg.picked_points.expect("picked points");
+        assert_eq!(picked.ring_width_px, 4.0);
+        assert_eq!(picked.radius_extra_px, 6.0);
     }
 
     #[test]

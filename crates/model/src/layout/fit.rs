@@ -1,6 +1,6 @@
 use super::{
-    chart_title_contribution, tick_contribution, ChartArea, Config, DataArea, LayoutError,
-    Margins, Rect, Side,
+    ChartArea, Config, DataArea, LayoutError, Margins, Rect, Side, chart_title_contribution,
+    tick_contribution,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -20,9 +20,9 @@ pub enum FitStrategy {
 
 #[derive(Clone)]
 struct SideComponents {
-    out_margin: f32,            // flex
-    chart_title: Option<f32>,   // flex, Top only
-    major_tick_length: f32,     // fixed
+    out_margin: f32,          // flex
+    chart_title: Option<f32>, // flex, Top only
+    major_tick_length: f32,   // fixed
 }
 
 fn read_side(cfg: &Config, side: &Side) -> SideComponents {
@@ -221,10 +221,7 @@ impl Config {
         }
     }
 
-    pub fn resize_chart_area_scaled(
-        &mut self,
-        new_area: ChartArea,
-    ) -> Result<(), LayoutError> {
+    pub fn resize_chart_area_scaled(&mut self, new_area: ChartArea) -> Result<(), LayoutError> {
         let old_w = self.chart_area.width as f32;
         let old_h = self.chart_area.height as f32;
         if old_w <= 0.0 || old_h <= 0.0 {
@@ -237,7 +234,10 @@ impl Config {
         // Tick is fixed; only flex (out_margin / chart_title) is scaled.
         let scaled_sides: [(Side, SideComponents); 4] = [
             (Side::Top, scale_flex(&read_side(self, &Side::Top), ry)),
-            (Side::Bottom, scale_flex(&read_side(self, &Side::Bottom), ry)),
+            (
+                Side::Bottom,
+                scale_flex(&read_side(self, &Side::Bottom), ry),
+            ),
             (Side::Left, scale_flex(&read_side(self, &Side::Left), rx)),
             (Side::Right, scale_flex(&read_side(self, &Side::Right), rx)),
         ];
@@ -391,7 +391,11 @@ mod tests {
         // Flex scales by 2x.
         assert!(approx_eq(cfg.top_x.out_margin, out0_top * 2.0, 1e-3));
         assert!(approx_eq(cfg.left_y.out_margin, out0_left * 2.0, 1e-3));
-        assert!(approx_eq(cfg.chart_title.top_margin, chart_title0 * 2.0, 1e-3));
+        assert!(approx_eq(
+            cfg.chart_title.top_margin,
+            chart_title0 * 2.0,
+            1e-3
+        ));
         // Tick stays fixed.
         assert!(approx_eq(cfg.top_x.major_tick_length, tick0_top, 1e-3));
         assert!(approx_eq(cfg.left_y.major_tick_length, tick0_left, 1e-3));

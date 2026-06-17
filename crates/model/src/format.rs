@@ -83,9 +83,7 @@ mod tests {
             (100.0, 110.0, 2.0),
             (0.0, 0.0, 0.0),
         ] {
-            let s = LabelStyle::compute_auto_significant_digits(
-                AxisScale::Linear, min, max, step,
-            );
+            let s = LabelStyle::compute_auto_significant_digits(AxisScale::Linear, min, max, step);
             assert!((1..=15).contains(&s), "sig out of bounds: {}", s);
         }
     }
@@ -100,18 +98,16 @@ mod tests {
             (100.0, 110.0, 2.0, 3),
         ];
         for &(min, max, step, expected) in cases {
-            let got = LabelStyle::compute_auto_significant_digits(
-                AxisScale::Linear, min, max, step,
-            );
+            let got =
+                LabelStyle::compute_auto_significant_digits(AxisScale::Linear, min, max, step);
             assert_eq!(got, expected, "min={}, max={}, step={}", min, max, step);
         }
     }
 
     #[test]
     fn log_sig_digits_default_2() {
-        let s = LabelStyle::compute_auto_significant_digits(
-            AxisScale::Logarithmic, 0.001, 1000.0, 1.0,
-        );
+        let s =
+            LabelStyle::compute_auto_significant_digits(AxisScale::Logarithmic, 0.001, 1000.0, 1.0);
         assert_eq!(s, 2);
     }
 
@@ -122,13 +118,12 @@ mod tests {
         let before = cfg.clone();
         cfg.top_x.auto_significant_digits();
         let mut expected = before.clone();
-        expected.top_x.label_style.significant_digits =
-            LabelStyle::compute_auto_significant_digits(
-                AxisScale::Linear,
-                expected.top_x.min,
-                expected.top_x.max,
-                expected.top_x.major_spacing,
-            );
+        expected.top_x.label_style.significant_digits = LabelStyle::compute_auto_significant_digits(
+            AxisScale::Linear,
+            expected.top_x.min,
+            expected.top_x.max,
+            expected.top_x.major_spacing,
+        );
         assert_eq!(cfg, expected);
     }
 

@@ -1,4 +1,4 @@
-use super::{axis_mut, axis_ref, Config, Side};
+use super::{Config, Side, axis_mut, axis_ref};
 
 // Nudge types.
 
@@ -95,18 +95,17 @@ fn element_anchor(cfg: &Config, element: &Element) -> Option<(f32, f32)> {
         Element::Legend => {
             let inset = 6.0;
             match cfg.legend.corner {
-                crate::config::LegendCorner::TopLeft => {
-                    (da.x as f32 + inset, da.y as f32 + inset)
-                }
+                crate::config::LegendCorner::TopLeft => (da.x as f32 + inset, da.y as f32 + inset),
                 crate::config::LegendCorner::TopRight => {
                     ((da.x + da.width) as f32 - inset, da.y as f32 + inset)
                 }
                 crate::config::LegendCorner::BottomLeft => {
                     (da.x as f32 + inset, (da.y + da.height) as f32 - inset)
                 }
-                crate::config::LegendCorner::BottomRight => {
-                    ((da.x + da.width) as f32 - inset, (da.y + da.height) as f32 - inset)
-                }
+                crate::config::LegendCorner::BottomRight => (
+                    (da.x + da.width) as f32 - inset,
+                    (da.y + da.height) as f32 - inset,
+                ),
             }
         }
         // Axis / data-area moves have their own rules — dispatched before
@@ -395,7 +394,10 @@ mod tests {
         let r = cfg.nudge(Element::Axis(Side::Bottom), 999.0, -8.0);
         assert_eq!(r, NudgeResult::Moved);
         assert_eq!(cfg.bottom_x.line_offset, -8.0);
-        assert_eq!(cfg.bottom_x.out_margin, default_config().bottom_x.out_margin);
+        assert_eq!(
+            cfg.bottom_x.out_margin,
+            default_config().bottom_x.out_margin
+        );
     }
 
     // The detached axis may cross INTO the data area (e.g. y-axis at x = 0)

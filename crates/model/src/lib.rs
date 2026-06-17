@@ -25,11 +25,11 @@ pub mod tick;
 
 // Public API re-exports.
 pub use color::Color;
-pub use config::Config;
+pub use config::{Config, PickedPointRef, PickedPointsConfig};
 pub use data::{Column, ColumnId, DataCell};
 pub use data_config::{
-    DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterStyleConfig,
-    ErrorRef, ScatterShape, SeriesConfig,
+    DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterPointStyleConfig,
+    DataScatterPointStyleOverride, DataScatterStyleConfig, ErrorRef, ScatterShape, SeriesConfig,
 };
 pub use drag::Draggable;
 pub use preset::{AxisPreset, ColorCycle};

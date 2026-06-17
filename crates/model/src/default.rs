@@ -176,14 +176,29 @@ pub fn default_legend() -> Legend {
         offset_x: 0.0,
         offset_y: 0.0,
         padding: 8.0,
-        bg_color: Color { r: 1.0, g: 1.0, b: 1.0, a: 0.85 },
-        border_color: Color { r: 0.6, g: 0.6, b: 0.6, a: 1.0 },
+        bg_color: Color {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 0.85,
+        },
+        border_color: Color {
+            r: 0.6,
+            g: 0.6,
+            b: 0.6,
+            a: 1.0,
+        },
     }
 }
 
 /// chart_area placeholder — caller resizes to match the host viewport.
 pub fn default_chart_area() -> ChartArea {
-    ChartArea(Rect { x: 0, y: 0, width: 1000, height: 800 })
+    ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: 1000,
+        height: 800,
+    })
 }
 
 /// Reasonable default Config.
@@ -215,6 +230,7 @@ pub fn default_config() -> Config {
         chart_title: default_chart_title_options(),
         grid: default_grid_options(),
         legend: default_legend(),
+        picked_points: None,
         // Precise mode. Stylized modes are opt-in (`DrawStyle::Sketch(..)`).
         draw_style: DrawStyle::Precise,
     }

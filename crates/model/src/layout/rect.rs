@@ -63,7 +63,11 @@ impl RectF {
     }
 
     pub fn translated(&self, dx: f32, dy: f32) -> Self {
-        Self { x: self.x + dx, y: self.y + dy, ..*self }
+        Self {
+            x: self.x + dx,
+            y: self.y + dy,
+            ..*self
+        }
     }
 }
 

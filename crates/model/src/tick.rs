@@ -19,15 +19,25 @@ fn nice_num(range: f64, round: bool) -> f64 {
     let exp = range.log10().floor();
     let frac = range / 10f64.powf(exp);
     let nice_frac = if round {
-        if frac < 1.5 { 1.0 }
-        else if frac < 3.0 { 2.0 }
-        else if frac < 7.0 { 5.0 }
-        else { 10.0 }
+        if frac < 1.5 {
+            1.0
+        } else if frac < 3.0 {
+            2.0
+        } else if frac < 7.0 {
+            5.0
+        } else {
+            10.0
+        }
     } else {
-        if frac <= 1.0 { 1.0 }
-        else if frac <= 2.0 { 2.0 }
-        else if frac <= 5.0 { 5.0 }
-        else { 10.0 }
+        if frac <= 1.0 {
+            1.0
+        } else if frac <= 2.0 {
+            2.0
+        } else if frac <= 5.0 {
+            5.0
+        } else {
+            10.0
+        }
     };
     nice_frac * 10f64.powf(exp)
 }
@@ -50,11 +60,7 @@ fn compute_linear(
     })
 }
 
-fn compute_log(
-    data_min: f64,
-    data_max: f64,
-    target_count: usize,
-) -> Result<TickPlan, TickError> {
+fn compute_log(data_min: f64, data_max: f64, target_count: usize) -> Result<TickPlan, TickError> {
     if data_min <= 0.0 {
         return Err(TickError::NonPositiveLog);
     }
@@ -96,12 +102,8 @@ impl AxisOptions {
         data_max: f64,
         target_count: usize,
     ) -> Result<(), TickError> {
-        let plan = AxisOptions::compute_nice_ticks(
-            self.scale.clone(),
-            data_min,
-            data_max,
-            target_count,
-        )?;
+        let plan =
+            AxisOptions::compute_nice_ticks(self.scale.clone(), data_min, data_max, target_count)?;
         self.min = plan.min;
         self.max = plan.max;
         self.major_spacing = plan.major_spacing;
@@ -121,13 +123,29 @@ impl Config {
     ) -> Result<(), TickError> {
         // Compute all plans first (transactional).
         let plan_top = AxisOptions::compute_nice_ticks(
-            self.top_x.scale.clone(), top_x.0, top_x.1, target_count)?;
+            self.top_x.scale.clone(),
+            top_x.0,
+            top_x.1,
+            target_count,
+        )?;
         let plan_bottom = AxisOptions::compute_nice_ticks(
-            self.bottom_x.scale.clone(), bottom_x.0, bottom_x.1, target_count)?;
+            self.bottom_x.scale.clone(),
+            bottom_x.0,
+            bottom_x.1,
+            target_count,
+        )?;
         let plan_left = AxisOptions::compute_nice_ticks(
-            self.left_y.scale.clone(), left_y.0, left_y.1, target_count)?;
+            self.left_y.scale.clone(),
+            left_y.0,
+            left_y.1,
+            target_count,
+        )?;
         let plan_right = AxisOptions::compute_nice_ticks(
-            self.right_y.scale.clone(), right_y.0, right_y.1, target_count)?;
+            self.right_y.scale.clone(),
+            right_y.0,
+            right_y.1,
+            target_count,
+        )?;
 
         // Commit.
         apply_plan(&mut self.top_x, plan_top);
@@ -155,9 +173,7 @@ mod tests {
     // plan.min <= data_min, plan.max >= data_max.
     #[test]
     fn linear_plan_contains_range() {
-        let p = AxisOptions::compute_nice_ticks(
-            AxisScale::Linear, 0.3, 9.7, 6,
-        ).unwrap();
+        let p = AxisOptions::compute_nice_ticks(AxisScale::Linear, 0.3, 9.7, 6).unwrap();
         assert!(p.min <= 0.3);
         assert!(p.max >= 9.7);
     }
@@ -165,18 +181,14 @@ mod tests {
     // plan.max > plan.min, plan.major_spacing > 0.
     #[test]
     fn linear_plan_non_degenerate() {
-        let p = AxisOptions::compute_nice_ticks(
-            AxisScale::Linear, -50.0, 50.0, 5,
-        ).unwrap();
+        let p = AxisOptions::compute_nice_ticks(AxisScale::Linear, -50.0, 50.0, 5).unwrap();
         assert!(p.max > p.min);
         assert!(p.major_spacing > 0.0);
     }
 
     #[test]
     fn log_plan_contains_range() {
-        let p = AxisOptions::compute_nice_ticks(
-            AxisScale::Logarithmic, 0.003, 250.0, 5,
-        ).unwrap();
+        let p = AxisOptions::compute_nice_ticks(AxisScale::Logarithmic, 0.003, 250.0, 5).unwrap();
         assert!(p.min <= 0.003);
         assert!(p.max >= 250.0);
         assert!(p.max > p.min);
@@ -185,25 +197,19 @@ mod tests {
 
     #[test]
     fn log_rejects_non_positive() {
-        let e = AxisOptions::compute_nice_ticks(
-            AxisScale::Logarithmic, 0.0, 100.0, 5,
-        ).unwrap_err();
+        let e = AxisOptions::compute_nice_ticks(AxisScale::Logarithmic, 0.0, 100.0, 5).unwrap_err();
         assert_eq!(e, TickError::NonPositiveLog);
     }
 
     #[test]
     fn rejects_invalid_range() {
-        let e = AxisOptions::compute_nice_ticks(
-            AxisScale::Linear, 5.0, 5.0, 5,
-        ).unwrap_err();
+        let e = AxisOptions::compute_nice_ticks(AxisScale::Linear, 5.0, 5.0, 5).unwrap_err();
         assert_eq!(e, TickError::InvalidRange);
     }
 
     #[test]
     fn rejects_zero_target_count() {
-        let e = AxisOptions::compute_nice_ticks(
-            AxisScale::Linear, 0.0, 10.0, 0,
-        ).unwrap_err();
+        let e = AxisOptions::compute_nice_ticks(AxisScale::Linear, 0.0, 10.0, 0).unwrap_err();
         assert_eq!(e, TickError::ZeroTargetCount);
     }
 
@@ -223,9 +229,7 @@ mod tests {
         let mut cfg = default_config();
         let before = cfg.clone();
         // Invalid range passed for left_y.
-        let r = cfg.auto_ticks_all(
-            (0.0, 10.0), (0.0, 10.0), (5.0, 5.0), (0.0, 10.0), 5,
-        );
+        let r = cfg.auto_ticks_all((0.0, 10.0), (0.0, 10.0), (5.0, 5.0), (0.0, 10.0), 5);
         assert!(r.is_err());
         assert_eq!(cfg, before);
     }
@@ -233,12 +237,8 @@ mod tests {
     // compute_nice_ticks is pure.
     #[test]
     fn compute_nice_ticks_pure() {
-        let a = AxisOptions::compute_nice_ticks(
-            AxisScale::Linear, 0.0, 100.0, 6,
-        ).unwrap();
-        let b = AxisOptions::compute_nice_ticks(
-            AxisScale::Linear, 0.0, 100.0, 6,
-        ).unwrap();
+        let a = AxisOptions::compute_nice_ticks(AxisScale::Linear, 0.0, 100.0, 6).unwrap();
+        let b = AxisOptions::compute_nice_ticks(AxisScale::Linear, 0.0, 100.0, 6).unwrap();
         assert_eq!(a, b);
     }
 }

@@ -20,7 +20,12 @@ use crate::resize::Resizable;
 use crate::text::MeasureText;
 
 /// Selection highlight color (blue).
-pub const SELECTION_COLOR: Color = Color { r: 0.13, g: 0.47, b: 0.95, a: 1.0 };
+pub const SELECTION_COLOR: Color = Color {
+    r: 0.13,
+    g: 0.47,
+    b: 0.95,
+    a: 1.0,
+};
 /// Stroke width of the highlight box, px.
 pub const SELECTION_STROKE_WIDTH: f32 = 1.5;
 /// Gap between the element bounds and the highlight box, px.
@@ -57,7 +62,10 @@ pub trait Selectable {
     fn selection_box(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<SelectionBox> {
         let rect = self.bounds(cfg, measure)?.expanded(SELECTION_PADDING);
         let handles = match self.as_resizable() {
-            Some(_) => crate::resize::handle_rects(&rect).iter().map(|(_, r)| *r).collect(),
+            Some(_) => crate::resize::handle_rects(&rect)
+                .iter()
+                .map(|(_, r)| *r)
+                .collect(),
             None => Vec::new(),
         };
         Some(SelectionBox {
@@ -70,8 +78,7 @@ pub trait Selectable {
 
     /// Default hit test: point-in-bounds.
     fn contains(&self, cfg: &Config, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
-        self.bounds(cfg, measure)
-            .is_some_and(|b| b.contains(x, y))
+        self.bounds(cfg, measure).is_some_and(|b| b.contains(x, y))
     }
 
     /// Default registration: every `Selectable` can enter a [`HitMap`] the
@@ -135,7 +142,9 @@ pub struct HitMap {
 
 impl HitMap {
     pub fn new() -> Self {
-        Self { entries: Vec::new() }
+        Self {
+            entries: Vec::new(),
+        }
     }
 
     /// The standard registration set for a single chart panel, back-to-front:
@@ -267,21 +276,35 @@ impl Selectable for AxisElement {
             TickVisibility::Inside => (t, 0.0),
             TickVisibility::Both => (t, t),
         };
-        let half_line = if axis.line_visible { axis.line_width.max(1.0) * 0.5 } else { 0.0 };
+        let half_line = if axis.line_visible {
+            axis.line_width.max(1.0) * 0.5
+        } else {
+            0.0
+        };
         let in_ext = inward.max(half_line);
         let out_ext = outward.max(half_line);
 
         let (dax, day) = (da.x as f32, da.y as f32);
         let (daw, dah) = (da.width as f32, da.height as f32);
         let band = match self.side {
-            Side::Top => RectF { x: dax, y: day - out_ext, width: daw, height: in_ext + out_ext },
+            Side::Top => RectF {
+                x: dax,
+                y: day - out_ext,
+                width: daw,
+                height: in_ext + out_ext,
+            },
             Side::Bottom => RectF {
                 x: dax,
                 y: day + dah - in_ext,
                 width: daw,
                 height: in_ext + out_ext,
             },
-            Side::Left => RectF { x: dax - out_ext, y: day, width: in_ext + out_ext, height: dah },
+            Side::Left => RectF {
+                x: dax - out_ext,
+                y: day,
+                width: in_ext + out_ext,
+                height: dah,
+            },
             Side::Right => RectF {
                 x: dax + daw - in_ext,
                 y: day,
@@ -521,12 +544,14 @@ impl Selectable for LegendElement {
         let inset = 6.0;
         let (x, y) = match lg.corner {
             LegendCorner::TopLeft => (da.x as f32 + inset, da.y as f32 + inset),
-            LegendCorner::TopRight => {
-                ((da.x + da.width) as f32 - box_w - inset, da.y as f32 + inset)
-            }
-            LegendCorner::BottomLeft => {
-                (da.x as f32 + inset, (da.y + da.height) as f32 - box_h - inset)
-            }
+            LegendCorner::TopRight => (
+                (da.x + da.width) as f32 - box_w - inset,
+                da.y as f32 + inset,
+            ),
+            LegendCorner::BottomLeft => (
+                da.x as f32 + inset,
+                (da.y + da.height) as f32 - box_h - inset,
+            ),
             LegendCorner::BottomRight => (
                 (da.x + da.width) as f32 - box_w - inset,
                 (da.y + da.height) as f32 - box_h - inset,
@@ -550,7 +575,7 @@ mod tests {
     use super::*;
     use crate::default::default_config;
     use crate::layout::{ChartArea, Rect};
-    use crate::text::{rich_segments_from_text, RichText, TextExtents};
+    use crate::text::{RichText, TextExtents, rich_segments_from_text};
 
     /// `element_id` gives every standard element a distinct, stable name —
     /// hosts key hover/context UI on these strings.
@@ -603,7 +628,12 @@ mod tests {
 
     fn cfg_800x600() -> Config {
         let mut cfg = default_config();
-        cfg.chart_area = ChartArea(Rect { x: 0, y: 0, width: 800, height: 600 });
+        cfg.chart_area = ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 800,
+            height: 600,
+        });
         cfg
     }
 
@@ -644,7 +674,9 @@ mod tests {
     fn bottom_axis_bounds_hug_data_area_edge() {
         let cfg = cfg_800x600();
         let da = cfg.data_area().unwrap();
-        let b = AxisElement { side: Side::Bottom }.bounds(&cfg, &FixedMeasure).unwrap();
+        let b = AxisElement { side: Side::Bottom }
+            .bounds(&cfg, &FixedMeasure)
+            .unwrap();
         assert_eq!(b.x, da.x as f32);
         assert_eq!(b.width, da.width as f32);
         let axis_y = (da.y + da.height) as f32;
@@ -656,7 +688,9 @@ mod tests {
         let mut cfg = cfg_800x600();
         cfg.left_y.title_option.text.segments = rich_segments_from_text("Volt"); // 4 chars
 
-        let b = AxisTitleElement { side: Side::Left }.bounds(&cfg, &FixedMeasure).unwrap();
+        let b = AxisTitleElement { side: Side::Left }
+            .bounds(&cfg, &FixedMeasure)
+            .unwrap();
         // Rotated 90°: screen width = text height (13), screen height = text width (32).
         assert_eq!(b.width, 13.0);
         assert_eq!(b.height, 32.0);
@@ -691,7 +725,12 @@ mod tests {
         // (earlier-registered) bands behind it.
         let tb = ChartTitleElement.bounds(&cfg, &FixedMeasure).unwrap();
         let id = map
-            .hit_test(&cfg, &FixedMeasure, tb.x + tb.width * 0.5, tb.y + tb.height * 0.5)
+            .hit_test(
+                &cfg,
+                &FixedMeasure,
+                tb.x + tb.width * 0.5,
+                tb.y + tb.height * 0.5,
+            )
             .unwrap();
         let sb = map.selection_box(id, &cfg, &FixedMeasure).unwrap();
         assert_eq!(sb.rect, tb.expanded(SELECTION_PADDING));
@@ -699,7 +738,12 @@ mod tests {
         // Center of the data area → data area element.
         let db = DataAreaElement.bounds(&cfg, &FixedMeasure).unwrap();
         let id2 = map
-            .hit_test(&cfg, &FixedMeasure, db.x + db.width * 0.5, db.y + db.height * 0.5)
+            .hit_test(
+                &cfg,
+                &FixedMeasure,
+                db.x + db.width * 0.5,
+                db.y + db.height * 0.5,
+            )
             .unwrap();
         assert_ne!(id, id2);
 
@@ -711,10 +755,15 @@ mod tests {
     fn bottom_axis_label_strip_hugs_glyph_extent() {
         let cfg = cfg_800x600();
         let da = cfg.data_area().unwrap();
-        let b = AxisLabelElement { side: Side::Bottom }.bounds(&cfg, &FixedMeasure).unwrap();
+        let b = AxisLabelElement { side: Side::Bottom }
+            .bounds(&cfg, &FixedMeasure)
+            .unwrap();
         // Starts past the tick + LABEL_GAP; thickness is the measured glyph
         // height (FixedMeasure: ascent 10 + descent 3), not the whole margin.
-        assert_eq!(b.y, (da.y + da.height) as f32 + cfg.bottom_x.major_tick_length + 4.0);
+        assert_eq!(
+            b.y,
+            (da.y + da.height) as f32 + cfg.bottom_x.major_tick_length + 4.0
+        );
         assert_eq!(b.height, 13.0);
         assert!(b.height < cfg.bottom_x.out_margin);
         assert_eq!(b.x, da.x as f32);
@@ -725,7 +774,9 @@ mod tests {
     fn left_axis_label_strip_width_scales_with_digits() {
         let cfg = cfg_800x600();
         let da = cfg.data_area().unwrap();
-        let b = AxisLabelElement { side: Side::Left }.bounds(&cfg, &FixedMeasure).unwrap();
+        let b = AxisLabelElement { side: Side::Left }
+            .bounds(&cfg, &FixedMeasure)
+            .unwrap();
         // Width = (significant_digits + 2) digits × 8 px under FixedMeasure.
         let digits = cfg.left_y.label_style.significant_digits.max(1) as f32 + 2.0;
         assert_eq!(b.width, digits * 8.0);
@@ -738,7 +789,7 @@ mod tests {
 
     #[test]
     fn legend_drag_offset_moves_bounds() {
-        use crate::legend::{append_legend_entry, symbol_segments, LegendEntryKind};
+        use crate::legend::{LegendEntryKind, append_legend_entry, symbol_segments};
         let mut cfg = cfg_800x600();
         cfg.legend.visible = true;
         append_legend_entry(
@@ -750,7 +801,10 @@ mod tests {
 
         // Drag through the trait-object route hosts use.
         let drag = LegendElement.as_draggable().expect("legend is draggable");
-        assert_eq!(drag.drag_by(&mut cfg, 9.0, -5.0), crate::layout::NudgeResult::Moved);
+        assert_eq!(
+            drag.drag_by(&mut cfg, 9.0, -5.0),
+            crate::layout::NudgeResult::Moved
+        );
         let after = LegendElement.bounds(&cfg, &FixedMeasure).unwrap();
         assert_eq!(after.x, before.x + 9.0);
         assert_eq!(after.y, before.y - 5.0);
@@ -772,12 +826,16 @@ mod tests {
     fn hidden_axis_labels_have_no_bounds() {
         let mut cfg = cfg_800x600();
         cfg.left_y.label_style.label_visible = false;
-        assert!(AxisLabelElement { side: Side::Left }.bounds(&cfg, &FixedMeasure).is_none());
+        assert!(
+            AxisLabelElement { side: Side::Left }
+                .bounds(&cfg, &FixedMeasure)
+                .is_none()
+        );
     }
 
     #[test]
     fn legend_bounds_mirror_renderer_box() {
-        use crate::legend::{append_legend_entry, symbol_segments, LegendCorner, LegendEntryKind};
+        use crate::legend::{LegendCorner, LegendEntryKind, append_legend_entry, symbol_segments};
 
         let mut cfg = cfg_800x600();
         cfg.legend.visible = true;
@@ -809,7 +867,7 @@ mod tests {
 
     #[test]
     fn legend_bounds_multiline_content_grows_taller() {
-        use crate::legend::{append_legend_entry, symbol_segments, LegendEntryKind};
+        use crate::legend::{LegendEntryKind, append_legend_entry, symbol_segments};
 
         let mut cfg = cfg_800x600();
         cfg.legend.visible = true;
