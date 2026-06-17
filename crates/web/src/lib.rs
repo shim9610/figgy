@@ -31,7 +31,15 @@ fn fit_display_panel(
     let panel_h = ((doc_h * scale).round().max(1.0) as u32).min(surface_h);
     let x = (surface_w - panel_w) / 2;
     let y = (surface_h - panel_h) / 2;
-    (scale, renderer::layout::Rect { x, y, width: panel_w, height: panel_h })
+    (
+        scale,
+        renderer::layout::Rect {
+            x,
+            y,
+            width: panel_w,
+            height: panel_h,
+        },
+    )
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
@@ -40,8 +48,7 @@ fn display_config_for_surface(
     surface_size: (u32, u32),
 ) -> (renderer::Config, renderer::layout::Rect, f32) {
     let logical = config.chart_area.0;
-    let (scale, panel_rect) =
-        fit_display_panel((logical.width, logical.height), surface_size);
+    let (scale, panel_rect) = fit_display_panel((logical.width, logical.height), surface_size);
     let mut display_config = config.scaled(scale);
     display_config.chart_area = renderer::layout::ChartArea(panel_rect);
     (display_config, panel_rect, scale)
@@ -55,14 +62,20 @@ mod tests {
     fn display_panel_uniformly_scales_document() {
         let (scale, panel) = fit_display_panel((1000, 800), (2000, 1600));
         assert!((scale - 2.0).abs() < 1e-6);
-        assert_eq!((panel.x, panel.y, panel.width, panel.height), (0, 0, 2000, 1600));
+        assert_eq!(
+            (panel.x, panel.y, panel.width, panel.height),
+            (0, 0, 2000, 1600)
+        );
     }
 
     #[test]
     fn display_panel_letterboxes_aspect_ratio_changes() {
         let (scale, panel) = fit_display_panel((1000, 800), (1600, 800));
         assert!((scale - 1.0).abs() < 1e-6);
-        assert_eq!((panel.x, panel.y, panel.width, panel.height), (300, 0, 1000, 800));
+        assert_eq!(
+            (panel.x, panel.y, panel.width, panel.height),
+            (300, 0, 1000, 800)
+        );
     }
 
     #[test]
@@ -79,9 +92,15 @@ mod tests {
         let (display, panel, scale) = display_config_for_surface(&config, (500, 400));
 
         assert!((scale - 0.5).abs() < 1e-6);
-        assert_eq!((panel.x, panel.y, panel.width, panel.height), (0, 0, 500, 400));
+        assert_eq!(
+            (panel.x, panel.y, panel.width, panel.height),
+            (0, 0, 500, 400)
+        );
         assert_eq!(config.chart_area, original.chart_area);
-        assert_eq!(config.bottom_x.label_style.font_size, original.bottom_x.label_style.font_size);
+        assert_eq!(
+            config.bottom_x.label_style.font_size,
+            original.bottom_x.label_style.font_size
+        );
         assert_eq!(display.chart_area.0.width, 500);
         assert!((display.bottom_x.label_style.font_size - 9.0).abs() < 1e-6);
     }
@@ -101,9 +120,9 @@ mod web {
     use renderer::text::{RichText, rich_segments_from_text};
     use renderer::{
         Chart, ChartDrawItem, ChartStyle, ChartView, Color, CpuTextMeasure, DataLineStyleConfig,
-        DataRenderType, DefragPolicy, FitExtent, HitId, HitMap, Renderer,
-        ResizeHandle as ModelResizeHandle, SelectionBox, Series, SeriesConfig, WindowedRenderer,
-        errorbar_extent,
+        DataRenderType, DefragPolicy, FitExtent, HitId, HitMap, PointColumnLookup,
+        PointPickOptions, Renderer, ResizeHandle as ModelResizeHandle, SelectionBox, Series,
+        SeriesConfig, WindowedRenderer, errorbar_extent,
     };
 
     const POOL_CAPACITY: u64 = 16 * 1024 * 1024;
@@ -160,17 +179,43 @@ mod web {
             }
         }
 
+        fn push_scatter_ref<'a>(
+            ids: &mut Vec<&'a str>,
+            scatter: &'a renderer::DataScatterStyleConfig,
+        ) {
+            if let Some(column) = &scatter.point_style_index_column {
+                ids.push(column);
+            }
+        }
+
         let mut ids: Vec<&str> = vec![&cfg.x_column, &cfg.y_column];
         match &cfg.render_type {
-            DataRenderType::Scatter { .. }
-            | DataRenderType::Line { .. }
-            | DataRenderType::ScatterLine { .. } => {}
-            DataRenderType::ScatterErrorbarX { err_x, .. }
-            | DataRenderType::LineScatterErrorbarX { err_x, .. } => push_ref(&mut ids, err_x),
-            DataRenderType::ScatterErrorbarY { err_y, .. }
-            | DataRenderType::LineScatterErrorbarY { err_y, .. } => push_ref(&mut ids, err_y),
-            DataRenderType::ScatterErrorbarXY { err_x, err_y, .. }
-            | DataRenderType::LineScatterErrorbarXY { err_x, err_y, .. } => {
+            DataRenderType::Scatter { scatter } => push_scatter_ref(&mut ids, scatter),
+            DataRenderType::Line { .. } => {}
+            DataRenderType::ScatterLine { scatter, .. } => push_scatter_ref(&mut ids, scatter),
+            DataRenderType::ScatterErrorbarX { scatter, err_x, .. }
+            | DataRenderType::LineScatterErrorbarX { scatter, err_x, .. } => {
+                push_scatter_ref(&mut ids, scatter);
+                push_ref(&mut ids, err_x);
+            }
+            DataRenderType::ScatterErrorbarY { scatter, err_y, .. }
+            | DataRenderType::LineScatterErrorbarY { scatter, err_y, .. } => {
+                push_scatter_ref(&mut ids, scatter);
+                push_ref(&mut ids, err_y);
+            }
+            DataRenderType::ScatterErrorbarXY {
+                scatter,
+                err_x,
+                err_y,
+                ..
+            }
+            | DataRenderType::LineScatterErrorbarXY {
+                scatter,
+                err_x,
+                err_y,
+                ..
+            } => {
+                push_scatter_ref(&mut ids, scatter);
                 push_ref(&mut ids, err_x);
                 push_ref(&mut ids, err_y);
             }
@@ -212,6 +257,16 @@ mod web {
         sigs: Vec<(String, (usize, u64))>,
         x: Option<FitExtent>,
         y: Option<FitExtent>,
+    }
+
+    struct WebPointColumns<'a> {
+        col_data: &'a HashMap<String, Vec<f32>>,
+    }
+
+    impl PointColumnLookup for WebPointColumns<'_> {
+        fn get_f32_column(&self, id: &renderer::ColumnId) -> Option<&[f32]> {
+            self.col_data.get(id).map(Vec::as_slice)
+        }
     }
 
     // ------------------------------------------------------------------
@@ -759,6 +814,7 @@ mod web {
 
             let cfg = SeriesConfig {
                 series_id: series_id.into(),
+                source_id: None,
                 label: rich_label.clone(),
                 x_column: x_column.into(),
                 y_column: y_column.into(),
@@ -779,9 +835,7 @@ mod web {
                     self.series_cfgs[i] = cfg;
                     self.styles[i] = style;
                     self.labels[i] = plain_label;
-                    if label_changed
-                        && let Some(label) = rich_label
-                    {
+                    if label_changed && let Some(label) = rich_label {
                         self.set_legend_entry_for(i, label);
                     } else {
                         self.sync_legend_symbols(false);
@@ -1029,8 +1083,53 @@ mod web {
                 .map(|el| el.element_id())
         }
 
-        /// Pointer press. Returns `true` while something is selected — the
-        /// host can mirror that state in its own UI.
+        /// Pick the nearest data point to canvas pixel `(x, y)`.
+        /// Returns a JSON `PickedPoint` string, or `null` when no point is
+        /// within `max_distance_px`.
+        pub fn pick_point(
+            &self,
+            x: f32,
+            y: f32,
+            max_distance_px: f32,
+        ) -> Result<Option<String>, JsValue> {
+            let (display_config, _, _) = self.display_config();
+            let columns = WebPointColumns {
+                col_data: &self.col_data,
+            };
+            let Some(picked) = renderer::pick_nearest_point(
+                &display_config,
+                &self.series_cfgs,
+                &columns,
+                x,
+                y,
+                PointPickOptions { max_distance_px },
+            ) else {
+                return Ok(None);
+            };
+
+            serde_json::to_string(&serde_json::json!({
+                "source_id": picked.source_id,
+                "series_id": picked.series_id,
+                "point_index": picked.point_index,
+                "distance_px": picked.distance_px,
+            }))
+            .map(Some)
+            .map_err(js_err)
+        }
+
+        /// Replace the picked-point overlay config. Passing JSON `null`
+        /// clears it.
+        pub fn set_picked_points(&mut self, json: &str) -> Result<(), JsValue> {
+            let picked: Option<renderer::config::PickedPointsConfig> =
+                serde_json::from_str(json).map_err(js_err)?;
+            self.chart.with_decoration_change(|c| {
+                c.picked_points = picked;
+            });
+            Ok(())
+        }
+
+        /// Pointer press. Returns `true` while something is selected.
+        /// The host can mirror that state in its own UI.
         pub fn on_press(&mut self, x: f32, y: f32) -> bool {
             let (display_config, _, _) = self.display_config();
             // Resize handles on the selected element win over hit-testing.

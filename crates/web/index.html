@@ -46,8 +46,11 @@
   <div id="chart-wrap"><canvas id="chart"></canvas></div>
 
   <script type="module">
-    import init, { FiggyChart, AxisPreset, ColorCycle, color_cycle_css } from "./pkg/figgy.js";
+    import init, { FiggyChart, AxisPreset, ColorCycle, color_cycle_css } from "./pkg/figgy.js?v=scatter-markers";
 
+    const status = document.getElementById("status");
+
+    try {
     await init();
 
     const canvas = document.getElementById("chart");
@@ -61,8 +64,54 @@
     canvas.height = Math.round(wrap.clientHeight * dpr);
 
     const chart = await FiggyChart.create(canvas);
-    chart.load_demo();
+    const markerShapes = [
+      "Circle", "Square", "Triangle", "Diamond", "Cross",
+      "CircleFilled", "SquareFilled", "TriangleFilled", "DiamondFilled",
+      "TriangleDown", "TriangleLeft", "TriangleRight", "Plus",
+      "Pentagon", "Hexagon", "Octagon", "Star",
+      "TriangleDownFilled", "TriangleLeftFilled", "TriangleRightFilled",
+      "PlusFilled", "CrossFilled", "PentagonFilled", "HexagonFilled",
+      "OctagonFilled", "StarFilled",
+    ];
+    const palette = [
+      [0.10, 0.34, 0.85], [0.85, 0.20, 0.18], [0.10, 0.58, 0.34],
+      [0.76, 0.40, 0.05], [0.45, 0.25, 0.78], [0.05, 0.55, 0.62],
+      [0.70, 0.18, 0.42], [0.32, 0.38, 0.46],
+    ];
+    const color = (i) => {
+      const [r, g, b] = palette[i % palette.length];
+      return { r, g, b, a: 1.0 };
+    };
+    const markerSeries = markerShapes.map((shape, i) => {
+      const x = i % 7;
+      const y = 3 - Math.floor(i / 7);
+      const xId = `marker_x_${i}`;
+      const yId = `marker_y_${i}`;
+      chart.set_column_f32(xId, new Float32Array([x]));
+      chart.set_column_f32(yId, new Float32Array([y]));
+      return {
+        series_id: `marker_${i}_${shape}`,
+        label: null,
+        x_column: xId,
+        y_column: yId,
+        render_type: {
+          Scatter: {
+            scatter: {
+              point_color: color(i),
+              point_shape: shape,
+              point_size: 12.0,
+            },
+          },
+        },
+      };
+    });
+    chart.set_series(JSON.stringify(markerSeries));
+    chart.auto_fit_all(0.12);
+    chart.set_title("Scatter marker shape showcase");
+    chart.set_x_title("shape column");
+    chart.set_y_title("shape row");
     window.figgyChart = chart; // debugging convenience
+    status.textContent = `${markerShapes.length} scatter markers`;
 
     // While an async chart method (export_png) is pending, the wasm object
     // is locked — calling any other method on it throws ("recursive use of
@@ -88,7 +137,7 @@
       canvas.setPointerCapture(e.pointerId);
       last = [e.offsetX * dpr, e.offsetY * dpr];
       const selected = chart.on_press(last[0], last[1]);
-      document.getElementById("status").textContent = selected ? "selected" : "";
+      status.textContent = selected ? "selected" : `${markerShapes.length} scatter markers`;
     });
     canvas.addEventListener("pointermove", (e) => {
       if (!last || busy) return;
@@ -148,6 +197,11 @@
       canvas.height = h;
       chart.resize(w, h);
     }).observe(wrap);
+    } catch (e) {
+      console.error("init:", e);
+      status.textContent = `init failed: ${e?.message ?? e}`;
+      throw e;
+    }
   </script>
 </body>
 </html>
