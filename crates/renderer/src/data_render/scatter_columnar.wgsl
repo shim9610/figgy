@@ -332,7 +332,12 @@ struct ScatterStyleSlot {
 
 struct ScatterStyleOverride {
     point_index: u32,
-    _pad: vec3<u32>,
+    // Keep this layout byte-for-byte with Rust's ScatterStyleOverrideGpu:
+    // u32 + three scalar u32 pads, then two vec4<f32> fields (48 bytes).
+    // A WGSL vec3<u32> would align to 16 bytes and shift color_premul.
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
     color_premul: vec4<f32>,
     params: vec4<f32>,
 };
