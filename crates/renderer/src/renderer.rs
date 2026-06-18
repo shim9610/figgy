@@ -384,13 +384,24 @@ fn create_target_pipelines(
 ) -> TargetPipelines {
     TargetPipelines {
         axis: data_render::create_fullscreen_textured_pipeline_with_sample_count(
-            device, texture_bgl, surface_format, sample_count,
+            device,
+            texture_bgl,
+            surface_format,
+            sample_count,
         ),
         line: data_render::create_line_columnar_pipeline_with_sample_count(
-            device, transform_bgl, style_bgl, surface_format, sample_count,
+            device,
+            transform_bgl,
+            style_bgl,
+            surface_format,
+            sample_count,
         ),
         scatter: data_render::create_scatter_columnar_pipeline_with_sample_count(
-            device, transform_bgl, style_bgl, surface_format, sample_count,
+            device,
+            transform_bgl,
+            style_bgl,
+            surface_format,
+            sample_count,
         ),
         scatter_mapped: data_render::create_scatter_columnar_mapped_pipeline(
             device,
@@ -411,7 +422,11 @@ fn create_target_pipelines(
             "figgy picked point ring pipeline",
         ),
         errorbar: data_render::create_errorbar_columnar_pipeline_with_sample_count(
-            device, transform_bgl, style_bgl, surface_format, sample_count,
+            device,
+            transform_bgl,
+            style_bgl,
+            surface_format,
+            sample_count,
         ),
         sample_count,
         styled: HashMap::new(),
@@ -475,18 +490,25 @@ impl TargetPipelines {
                 },
                 // Bakes the milkyway PSF + blackbody textures (once, then cached with
                 // the pipelines) — docs/CONSTELLATION_DESIGN.md §3c.
-                StyleKey::Milkyway => StyleSet::Milkyway(
-                    data_render::create_milkyway_set(
-                        device, queue, transform_bgl, style_bgl, star_data_bgl,
-                        surface_format, self.sample_count,
-                    ),
-                ),
-                StyleKey::Constellation => StyleSet::Constellation(
-                    data_render::create_point_constellation_set(
-                        device, queue, transform_bgl, style_bgl, surface_format,
+                StyleKey::Milkyway => StyleSet::Milkyway(data_render::create_milkyway_set(
+                    device,
+                    queue,
+                    transform_bgl,
+                    style_bgl,
+                    star_data_bgl,
+                    surface_format,
+                    self.sample_count,
+                )),
+                StyleKey::Constellation => {
+                    StyleSet::Constellation(data_render::create_point_constellation_set(
+                        device,
+                        queue,
+                        transform_bgl,
+                        style_bgl,
+                        surface_format,
                         self.sample_count,
-                    ),
-                ),
+                    ))
+                }
             });
         }
     }
@@ -637,7 +659,11 @@ fn create_msaa_target(
     validate_texture_extent(caps, label, width, height)?;
     let desc = wgpu::TextureDescriptor {
         label: Some(label),
-        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count,
         dimension: wgpu::TextureDimension::D2,
@@ -647,7 +673,10 @@ fn create_msaa_target(
     };
     let texture = create_texture_checked(device, &desc, label)?;
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    Ok(Some(MsaaTarget { _texture: texture, view }))
+    Ok(Some(MsaaTarget {
+        _texture: texture,
+        view,
+    }))
 }
 
 impl Renderer {
@@ -764,8 +793,7 @@ impl Renderer {
         surface_format: wgpu::TextureFormat,
         target_sample_count: u32,
     ) -> Result<bool> {
-        if self.surface_format == surface_format
-            && self.target_sample_count == target_sample_count
+        if self.surface_format == surface_format && self.target_sample_count == target_sample_count
         {
             return Ok(false);
         }
