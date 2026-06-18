@@ -8,7 +8,7 @@ Embed in egui / iced / winit / any other wgpu host.
 > This is the workspace root README. The workspace has three crates:
 > **`crates/model`** — the pure chart model and schema authority: option/data SSoT (`Config`, `SeriesConfig`), the rich-text/legend document model, interaction policies (`Selectable`/`Draggable`/`Resizable`, `HitMap`, the single `Config::nudge` movement path), presets (`AxisPreset`, `ColorCycle`). Dependency-free; optional `serde` feature.
 > **`crates/renderer`** — the wgpu + CPU-raster machinery documented below. Depends on `model` and re-exports every module, so all `renderer::…` paths keep working unchanged.
-> **`crates/web`** — the browser package (`figgy`): public `<figgy-chart>` Custom Element facade plus a raw `FiggyChart` wasm kernel for advanced hosts. The facade owns the internal canvas, ready/event lifecycle, rAF loop, ResizeObserver/DPR handling, pointer mapping, export busy gate, and id-keyed register/unregister lifecycle. Browser I/O: [WASM.md](crates/renderer/WASM.md) · full Config JSON schema: [SCHEMA.md](crates/web/SCHEMA.md). Build artifacts (`crates/web/pkg/`) are gitignored — build with `npx wasm-pack build crates/web --release --target web`.
+> **`crates/web`** — the browser package (`figgy`): public `<figgy-chart>` Custom Element facade plus a raw `FiggyChart` wasm kernel as an advanced escape hatch. The facade owns the shadow canvas, ready promise/event lifecycle, rAF loop, ResizeObserver/DPR handling, pointer mapping, export busy gate, and id-keyed register/unregister lifecycle. Browser I/O: [WASM.md](crates/renderer/WASM.md) · full Config JSON schema: [SCHEMA.md](crates/web/SCHEMA.md). Build artifacts (`crates/web/pkg/`) are gitignored — build with `npx wasm-pack build crates/web --release --target web`.
 > **Online studio** — [figgyplot.com](https://figgyplot.com/) hosts the public web editor. It runs in-browser with local chart data, imports CSV/TSV/Excel, opens `.figgy` project files, and exports PNGs from the same wasm/WebGPU surface.
 
 - **GPU columnar pool**: all data columns share a single GPU buffer with first-fit alloc + ping-pong defrag on fragmentation. Upload caches scalar stats (min / max / smallest-positive) for auto-fit; per-point geometry such as the dashed-line arc-length prefix is computed in place by a compute scan (`line_arc.wgsl`).
@@ -406,6 +406,32 @@ Empty text is filled in via the `Chart::with_title / with_x_title / with_y_title
 > per-panel `ChartView` / `ChartStyle` resources, dirty-flag handling, the
 > grid → data → decoration paint order, and the window / export paths.
 
+### Ownership and lifetime boundaries
+
+`Renderer` owns the lifetime of GPU-side state: the `ColumnPool`,
+render/compute pipelines, bind groups, per-panel GPU resources such as
+`ChartView` / `ChartStyle`, and the shared `Arc<wgpu::Device>` /
+`Arc<wgpu::Queue>`. `Renderer::paint` and the export prepare path run behind
+an `&mut self` boundary and do not introduce a shared lock inside the
+renderer. If a host needs shared access, it wraps the whole renderer at its
+own UI/runtime lifetime boundary.
+
+`ColumnSource` data is borrowed only during upload. The long-lived records are
+the GPU-pool column and the scalar stats cached for auto-fit (min / max /
+smallest-positive); source references and CPU-side per-point geometry are not
+kept. Per-point geometry such as dashed-line and constellation arc prefixes is
+derived from the GPU pool by compute scans.
+
+The browser public surface follows the same boundary. The `<figgy-chart>`
+facade owns the shadow canvas, ready promise, rAF loop, ResizeObserver/DPR
+handling, pointer mapping, export busy gate, and id register/unregister
+lifecycle. The raw `FiggyChart` wasm kernel remains available as an advanced
+escape hatch.
+
+These ownership rules support the data fidelity contract: renderer/web keep
+source columns intact, and clipping, log-domain skips, NaN skips, and
+antialiasing limits stay rendering decisions rather than data rewrites.
+
 ### Dashed-line arc scan (GPU)
 
 The dash phase needs the cumulative pixel arc length at every point, which
@@ -428,13 +454,14 @@ pool columns (x, y) ──┐                       Transform uniform (80 B writ
 
 The compute encoder is submitted before the host's render pass, so queue
 order sequences it under every embedding (winit / egui / iced / web) without
-API changes. Scratch buffers and bind groups are cached per series and
-rebuilt only when the series layout (length, column offsets, pool
-generation) changes. The current arc-prefix scan is u32-addressable
-(`u32::MAX = 4,294,967,295`); if a series length or pool element offset cannot
-fit in `u32`, the dashed arc prefix is skipped. As a runaway-churn backstop,
-the per-series arc cache is cleared when it grows past 256 entries and rebuilt
-on demand.
+API changes. Arc scratch buffers and bind groups are cached per series and
+reused only when the pool generation, column offsets, length, and star-pass
+shape match. The current arc-prefix scan is u32-addressable (`u32::MAX =
+4,294,967,295`); if a series length or pool element offset cannot fit in
+`u32`, the dashed arc prefix is skipped. As a runaway-churn backstop, a new
+series id clears the per-series arc cache before insertion when it already
+holds 256 entries. Stale rebuilds for an existing id replace that entry in
+place, so the cache does not retain more than 256 entries.
 
 ### Dirty flags
 
@@ -508,7 +535,7 @@ egui / iced / winit / 기타 wgpu 호스트 어디든 임베드 가능.
 > 워크스페이스 루트 README. crate 3개로 구성:
 > **`crates/model`** — 순수 차트 모델이자 스키마 권위: 옵션/데이터 SSoT(`Config`, `SeriesConfig`), 리치텍스트/범례 문서 모델, 상호작용 정책(`Selectable`/`Draggable`/`Resizable`, `HitMap`, 단일 이동 경로 `Config::nudge`), 프리셋(`AxisPreset`, `ColorCycle`). 의존성 0, `serde` 는 선택 피쳐.
 > **`crates/renderer`** — 아래에서 문서화하는 wgpu + CPU 라스터 장치. `model` 을 의존하며 전 모듈 re-export — `renderer::…` 경로 전부 유효.
-> **`crates/web`** — 브라우저 패키지(`figgy`): public `<figgy-chart>` Custom Element facade와 고급 호스트용 raw `FiggyChart` wasm kernel. facade가 내부 canvas, ready/event 수명주기, rAF loop, ResizeObserver/DPR 처리, pointer mapping, export busy gate, id 기반 등록/해제 수명주기를 소유한다. 브라우저 I/O: [WASM.md](crates/renderer/WASM.md) · Config JSON 스키마: [SCHEMA.md](crates/web/SCHEMA.md). 빌드 산출물(`crates/web/pkg/`)은 gitignore — `npx wasm-pack build crates/web --release --target web` 로 빌드.
+> **`crates/web`** — 브라우저 패키지(`figgy`): public `<figgy-chart>` Custom Element facade와 advanced escape hatch로 남는 raw `FiggyChart` wasm kernel. facade가 shadow canvas, ready promise/event 수명주기, rAF loop, ResizeObserver/DPR 처리, pointer mapping, export busy gate, id 기반 등록/해제 수명주기를 소유한다. 브라우저 I/O: [WASM.md](crates/renderer/WASM.md) · Config JSON 스키마: [SCHEMA.md](crates/web/SCHEMA.md). 빌드 산출물(`crates/web/pkg/`)은 gitignore — `npx wasm-pack build crates/web --release --target web` 로 빌드.
 > **웹 스튜디오** — [figgyplot.com](https://figgyplot.com/) 에 공개 웹 편집기가 있다. 브라우저 안에서 로컬 차트 데이터를 처리하고, CSV/TSV/Excel import, `.figgy` 프로젝트 열기, 같은 wasm/WebGPU 표면 기반 PNG export를 제공한다.
 
 - **GPU columnar pool**: 모든 데이터 컬럼을 하나의 GPU buffer 에 first-fit + 단편화 시 핑퐁 defrag. 업로드 시 auto-fit 용 스칼라 통계(min / max / 최소 양수)를 캐싱하고, 점선 호장 prefix 같은 per-point 지오메트리는 컴퓨트 스캔(`line_arc.wgsl`)이 제자리에서 계산.
@@ -903,6 +930,30 @@ pub struct Config {
 > `ChartStyle` 자원, dirty-flag 처리, grid → data → decoration 합성 순서,
 > 윈도우 / export 경로.
 
+### 소유권과 수명 경계
+
+`Renderer` 는 GPU 측 상태의 수명 소유자다. `ColumnPool`,
+render/compute pipeline, bind group, panel 별 `ChartView` / `ChartStyle`
+GPU 자원, 공유 `Arc<wgpu::Device>` / `Arc<wgpu::Queue>` 를 보관한다.
+`Renderer::paint` 와 export prepare 경로는 `&mut self` 경계에서 실행되고,
+renderer 내부에 새 공유 락을 만들지 않는다. host가 공유 접근을 필요로
+하면 renderer 전체를 자신의 UI/runtime 수명주기 경계에서 감싼다.
+
+`ColumnSource` 데이터는 upload 순간에만 빌려 읽힌다. 장기 보관되는 것은
+GPU pool column과 auto-fit 용 scalar stats(min / max / 최소 양수)뿐이며,
+원본 source 참조나 CPU 측 per-point geometry는 유지하지 않는다. dashed line
+또는 constellation arc prefix 같은 per-point geometry는 GPU pool을 compute
+scan해서 만든다.
+
+web public surface도 같은 경계를 따른다. `<figgy-chart>` facade가 shadow
+canvas, ready promise, rAF loop, ResizeObserver/DPR 처리, pointer mapping,
+export busy gate, id 등록/해제 수명주기를 소유한다. raw `FiggyChart` wasm
+kernel은 advanced escape hatch로 남는다.
+
+이 소유권 규칙은 데이터 무왜곡 계약과 연결된다. renderer/web은 source
+column을 변형 저장하지 않고, clipping, log-domain skip, NaN skip,
+antialiasing 한계는 데이터 재작성이 아닌 렌더링 결정으로만 적용된다.
+
 ### 점선 호장 스캔 (GPU)
 
 dash 위상은 매 점의 누적 픽셀 호장이 필요하고, 이는 라이브 데이터→픽셀
@@ -923,12 +974,13 @@ pool 컬럼 (x, y) ──┐                        Transform uniform (80 B writ
 
 컴퓨트 인코더는 호스트의 렌더 패스보다 먼저 submit 되므로 큐 순서가 모든
 임베딩(winit / egui / iced / web)에서 API 변경 없이 순서를 보장한다.
-스크래치 버퍼/바인드 그룹은 시리즈별 캐싱되며 시리즈 레이아웃(길이, 컬럼
-오프셋, 풀 세대)이 바뀔 때만 재구축된다. 현재 arc-prefix scan은
-u32-addressable 범위(`u32::MAX = 4,294,967,295`) 안에서 동작한다.
+arc scratch buffer/바인드 그룹은 시리즈별 캐싱되며 pool generation, column
+offset, length, star-pass shape가 모두 맞을 때만 재사용된다. 현재 arc-prefix
+scan은 u32-addressable 범위(`u32::MAX = 4,294,967,295`) 안에서 동작한다.
 시리즈 길이나 pool element offset이 `u32`에 들어가지 않으면 dashed arc
-prefix는 생략된다. 제거된 시리즈 id가 GPU 메모리를 붙잡지 않도록 시리즈별
-arc cache가 256개를 넘으면 전체 clear 후 필요 시 다시 구축한다.
+prefix는 생략된다. 새 series id를 삽입할 때 시리즈별 arc cache가 이미
+256개이면 삽입 전에 clear한다. 기존 id의 stale rebuild는 같은 key를 제자리에서
+교체하므로 불필요하게 clear하지 않으며, cache는 256개를 넘겨 보관하지 않는다.
 
 ### 더티 플래그
 
