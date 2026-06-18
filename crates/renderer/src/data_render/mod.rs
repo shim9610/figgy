@@ -685,7 +685,7 @@ pub fn create_unit_centered_quad_vertex_buffer(device: &wgpu::Device) -> wgpu::B
 
 /// Shared transform uniform for scatter / line / errorbar shaders.
 ///
-/// 64 bytes (four `vec2<f32>` fields plus one `array<vec4<f32>, 2>` at
+/// 80 bytes (four `vec2<f32>` fields plus one `array<vec4<f32>, 3>` at
 /// offset 32, stride 16, WGSL uniform layout). Pixel sizes (point radius,
 /// cap half-length) live in [`PrimitiveStyle`]; shaders convert them to NDC
 /// via `pixel_to_ndc`.

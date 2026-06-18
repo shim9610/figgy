@@ -15,7 +15,7 @@
 // Zero-length segments collapse the quad and become invisible.
 //
 // Dash patterns (Style.dash / Style.dash_len) are evaluated per fragment
-// against the polyline's CUMULATIVE ARC LENGTH: slots 4/5 carry a CPU-built
+// against the polyline's CUMULATIVE ARC LENGTH: slots 4/5 carry a GPU-computed
 // prefix (pixels from the first point to point i), bound twice with a
 // one-f32 shift like x/y, so the phase is exact and continuous across every
 // joint regardless of curvature or sampling density. (A screen-position
@@ -85,7 +85,7 @@ struct VsIn {
 };
 
 // Line-only extra instance inputs (outside the common block): cumulative
-// arc length at the segment's two endpoints, from the CPU-built prefix.
+// arc length at the segment's two endpoints, from the GPU-computed prefix.
 struct VsArc {
     @location(4) arc_a: f32,
     @location(5) arc_b: f32,
