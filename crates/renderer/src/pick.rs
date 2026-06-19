@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::data_config::SeriesConfig;
+use crate::data_config::{DataLineStyleConfig, DataRenderType, SeriesConfig};
 use crate::data_render::{self, ColumnId};
 
 pub trait PointColumnLookup {
@@ -77,31 +77,131 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
                 continue;
             }
 
-            let replace = match &best {
-                None => true,
-                Some((best_series, best_dist_sq, _)) => {
-                    dist_sq < *best_dist_sq
-                        || (dist_sq == *best_dist_sq && series_index > *best_series)
-                }
-            };
-            if replace {
-                best = Some((
-                    series_index,
-                    dist_sq,
-                    PickedPoint {
-                        source_id: cfg.source_id.clone(),
-                        series_id: cfg.series_id.clone(),
-                        point_index: i,
-                        data_x: x,
-                        data_y: y,
-                        distance_px: dist_sq.sqrt(),
-                    },
-                ));
+            maybe_replace_best(
+                &mut best,
+                series_index,
+                dist_sq,
+                PickedPoint {
+                    source_id: cfg.source_id.clone(),
+                    series_id: cfg.series_id.clone(),
+                    point_index: i,
+                    data_x: x,
+                    data_y: y,
+                    distance_px: dist_sq.sqrt(),
+                },
+            );
+        }
+
+        let Some(line) = extract_line(&cfg.render_type) else {
+            continue;
+        };
+        let half_width = (line.line_width.max(0.0) * 0.5).max(0.0);
+        for i in 0..xs.len().min(ys.len()).saturating_sub(1) {
+            let ax = xs[i];
+            let ay = ys[i];
+            let bx = xs[i + 1];
+            let by = ys[i + 1];
+            if !ax.is_finite() || !ay.is_finite() || !bx.is_finite() || !by.is_finite() {
+                continue;
             }
+
+            let Some((a_px, a_py)) = project_data_to_canvas_px(config, &transform, ax, ay) else {
+                continue;
+            };
+            let Some((b_px, b_py)) = project_data_to_canvas_px(config, &transform, bx, by) else {
+                continue;
+            };
+            let Some((dist_sq, point_index)) =
+                line_segment_pick(canvas_x, canvas_y, a_px, a_py, b_px, b_py, half_width, i)
+            else {
+                continue;
+            };
+            if !dist_sq.is_finite() || dist_sq > max_dist_sq {
+                continue;
+            }
+
+            let data_x = xs[point_index];
+            let data_y = ys[point_index];
+            maybe_replace_best(
+                &mut best,
+                series_index,
+                dist_sq,
+                PickedPoint {
+                    source_id: cfg.source_id.clone(),
+                    series_id: cfg.series_id.clone(),
+                    point_index,
+                    data_x,
+                    data_y,
+                    distance_px: dist_sq.sqrt(),
+                },
+            );
         }
     }
 
     best.map(|(_, _, p)| p)
+}
+
+fn maybe_replace_best(
+    best: &mut Option<(usize, f32, PickedPoint)>,
+    series_index: usize,
+    dist_sq: f32,
+    picked: PickedPoint,
+) {
+    let replace = match best {
+        None => true,
+        Some((best_series, best_dist_sq, _)) => {
+            dist_sq < *best_dist_sq || (dist_sq == *best_dist_sq && series_index > *best_series)
+        }
+    };
+    if replace {
+        *best = Some((series_index, dist_sq, picked));
+    }
+}
+
+fn extract_line(rt: &DataRenderType) -> Option<&DataLineStyleConfig> {
+    match rt {
+        DataRenderType::Line { line }
+        | DataRenderType::ScatterLine { line, .. }
+        | DataRenderType::LineScatterErrorbarX { line, .. }
+        | DataRenderType::LineScatterErrorbarY { line, .. }
+        | DataRenderType::LineScatterErrorbarXY { line, .. } => Some(line),
+        _ => None,
+    }
+}
+
+fn line_segment_pick(
+    x: f32,
+    y: f32,
+    ax: f32,
+    ay: f32,
+    bx: f32,
+    by: f32,
+    half_width: f32,
+    point_index: usize,
+) -> Option<(f32, usize)> {
+    let sx = bx - ax;
+    let sy = by - ay;
+    let len_sq = sx.mul_add(sx, sy * sy);
+    if !len_sq.is_finite() || len_sq <= f32::EPSILON {
+        return None;
+    }
+
+    let t = (((x - ax) * sx + (y - ay) * sy) / len_sq).clamp(0.0, 1.0);
+    let closest_x = ax + sx * t;
+    let closest_y = ay + sy * t;
+    let dx = closest_x - x;
+    let dy = closest_y - y;
+    let center_dist = dx.mul_add(dx, dy * dy).sqrt();
+    if !center_dist.is_finite() {
+        return None;
+    }
+    let hit_dist = (center_dist - half_width.max(0.0)).max(0.0);
+    let snapped_index = if t <= 0.5 {
+        point_index
+    } else {
+        point_index + 1
+    };
+    Some((hit_dist * hit_dist, snapped_index))
 }
 
 fn project_data_to_canvas_px(
@@ -276,6 +376,51 @@ mod tests {
         let series = [scatter_series("s", "x", "y", None)];
 
         assert_eq!(pick(&config, &series, &columns, 70.0, 70.0, 5.0), None);
+    }
+
+    #[test]
+    fn line_series_picks_nearest_endpoint_from_segment_hit() {
+        let config = config();
+        let columns = Columns::new(&[("x", &[0.0, 10.0]), ("y", &[0.0, 10.0])]);
+        let series = [line_series("line", "x", "y")];
+
+        let picked = pick(&config, &series, &columns, 80.0, 50.0, 0.0).unwrap();
+
+        assert_eq!(picked.series_id, "line");
+        assert_eq!(picked.point_index, 1);
+        assert_eq!(picked.data_x, 10.0);
+        assert_eq!(picked.data_y, 10.0);
+        assert_eq!(picked.distance_px, 0.0);
+    }
+
+    #[test]
+    fn line_width_counts_as_pickable_stroke_area() {
+        let mut config = config();
+        config.bottom_x.min = 0.0;
+        config.bottom_x.max = 10.0;
+        config.left_y.min = 0.0;
+        config.left_y.max = 10.0;
+        let columns = Columns::new(&[("x", &[0.0, 10.0]), ("y", &[5.0, 5.0])]);
+        let mut series = line_series("wide", "x", "y");
+        let DataRenderType::Line { line } = &mut series.render_type else {
+            unreachable!();
+        };
+        line.line_width = 10.0;
+
+        let picked = pick(&config, &[series], &columns, 80.0, 74.0, 0.0).unwrap();
+
+        assert_eq!(picked.series_id, "wide");
+        assert_eq!(picked.point_index, 1);
+        assert_eq!(picked.distance_px, 0.0);
+    }
+
+    #[test]
+    fn scatter_series_does_not_pick_between_points() {
+        let config = config();
+        let columns = Columns::new(&[("x", &[0.0, 10.0]), ("y", &[0.0, 10.0])]);
+        let series = [scatter_series("scatter", "x", "y", None)];
+
+        assert_eq!(pick(&config, &series, &columns, 80.0, 50.0, 0.0), None);
     }
 
     #[test]

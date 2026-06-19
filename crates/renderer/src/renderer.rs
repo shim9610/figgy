@@ -3682,6 +3682,82 @@ mod tests {
         );
     }
 
+    /// Precise solid lines are rendered into a single-sample export target, so
+    /// smooth edges must come from the line shader itself. A shallow 1 px line
+    /// should therefore contain both strong stroke coverage and partial alpha
+    /// fringe pixels.
+    #[test]
+    fn solid_line_exports_analytic_aa_fringe() {
+        let inst = create_instance();
+        let Ok(adapter) = request_adapter(&inst) else {
+            return;
+        };
+        let Ok((device, queue)) = request_device(&adapter) else {
+            return;
+        };
+        let device = Arc::new(device);
+        let queue = Arc::new(queue);
+
+        let mut r = Renderer::try_new(
+            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+            wgpu::TextureFormat::Bgra8Unorm,
+            4 * 1024 * 1024,
+        )
+        .unwrap();
+
+        r.add_column("aa_x", &col_f64(vec![0.0, 10.0])).unwrap();
+        r.add_column("aa_y", &col_f64(vec![4.8, 5.2])).unwrap();
+
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 220,
+            height: 90,
+        });
+        config.legend.visible = false;
+        config.grid.show_major_x = false;
+        config.grid.show_major_y = false;
+        config.grid.show_minor_x = false;
+        config.grid.show_minor_y = false;
+        let mut chart = Chart::new(config);
+        chart.set_x_range(0.0, 10.0);
+        chart.set_y_range(0.0, 10.0);
+
+        let series = [SeriesConfig {
+            series_id: "aa".into(),
+            source_id: None,
+            label: None,
+            x_column: "aa_x".into(),
+            y_column: "aa_y".into(),
+            render_type: DataRenderType::Line {
+                line: crate::data_config::DataLineStyleConfig {
+                    line_style: crate::line::LineStylePreset::Solid,
+                    line_color: Color::new(1.0, 0.0, 0.0, 1.0),
+                    line_width: 1.0,
+                },
+            },
+        }];
+
+        let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+        let red_alphas: Vec<u8> = img
+            .rgba
+            .chunks_exact(4)
+            .filter_map(|p| (p[0] > 200 && p[1] < 40 && p[2] < 40 && p[3] > 0).then_some(p[3]))
+            .collect();
+
+        assert!(!red_alphas.is_empty(), "line drew no red pixels");
+        let max_alpha = red_alphas.iter().copied().max().unwrap_or(0);
+        assert!(
+            max_alpha >= 180,
+            "line has no strong stroke coverage, max alpha {max_alpha}: {red_alphas:?}"
+        );
+        assert!(
+            red_alphas.iter().any(|&a| (16..=239).contains(&a)),
+            "line has no partial-alpha AA fringe pixels: {red_alphas:?}"
+        );
+    }
+
     /// The square-cap fix must NOT change line semantics: NaN values still
     /// break the line (the caps may narrow a gap by ~line_width, never close
     /// a real one), and nothing assumes monotonic x — a path that doubles
@@ -3896,7 +3972,9 @@ mod tests {
         let is_red = |x: usize, y: usize| {
             let i = (y * w + x) * 4;
             let p = &img.rgba[i..i + 4];
-            p[3] > 128 && p[0] > 120 && p[1] < 90 && p[2] < 90
+            // Dash run statistics should follow the solid core of the stroke,
+            // not the intentionally-added analytic AA fringe.
+            p[3] > 96 && p[0] > 120 && p[1] < 90 && p[2] < 90
         };
 
         // Trace the x-monotonic curve column by column: ink centroid y per

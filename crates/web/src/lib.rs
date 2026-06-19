@@ -1125,9 +1125,12 @@ mod web {
                 .map(|el| el.element_id())
         }
 
-        /// Pick the nearest data point to canvas pixel `(x, y)`.
+        /// Pick the nearest visible data primitive to canvas pixel `(x, y)`.
+        /// Line strokes snap to the nearest endpoint data point on the hit
+        /// segment; point/scatter hits return the nearest data point directly.
         /// Returns JSON `{ source_id, series_id, point_index, data_x, data_y,
-        /// distance_px }`, or `null` when no point is within `max_distance_px`.
+        /// distance_px }`, or `null` when no visible primitive is within
+        /// `max_distance_px`.
         pub fn pick_point(
             &self,
             x: f32,

@@ -1,4 +1,5 @@
-// Columnar line shader — variable-thickness via quad extrusion.
+// Columnar line shader — variable-thickness via quad extrusion plus analytic
+// path-stroke coverage.
 //
 // One line segment = one instance, 4 vertices per instance (TriangleStrip).
 // The X and Y columns are bound twice: the second binding starts at a 4-byte
@@ -11,7 +12,10 @@
 //   vid 3 : at B, +normal
 //
 // The normal is computed in pixel space and converted back to NDC, so width
-// stays constant across panels with different X/Y pixel ratios.
+// stays constant across panels with different X/Y pixel ratios. The geometric
+// quad is inflated by one AA pixel; the fragment stage evaluates the local
+// square-cap stroke SDF so side edges, caps, and dash cuts get smooth coverage
+// even when the render target itself is single-sample.
 // Zero-length segments collapse the quad and become invisible.
 //
 // Dash patterns (Style.dash / Style.dash_len) are evaluated per fragment
@@ -97,7 +101,15 @@ struct VsOut {
     // corners, arc_b at the two B-side corners — interpolation yields the
     // per-fragment arc position the dash pattern walks.
     @location(0) dist_px: f32,
+    // Local segment-space coordinates in pixels. The fragment stage treats
+    // the whole segment stroke as one square-cap rectangle:
+    //   along_px ∈ [-half_w, len + half_w], side_px ∈ [-half_w, half_w].
+    @location(1) along_px: f32,
+    @location(2) side_px: f32,
+    @location(3) segment_len_px: f32,
 };
+
+const LINE_AA_EXTENT_PX: f32 = 0.5;
 
 @vertex
 fn vs_main(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
@@ -115,6 +127,11 @@ fn vs_main(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
     let normal_px = vec2<f32>(-dir.y, dir.x);
 
     let half_w = max(style.line_width_px, 1.0) * 0.5;
+    // Dashed lines keep their historical geometry so the dash pattern's
+    // measured on/off lengths do not shift. Solid strokes get an inflated
+    // fringe that the fragment SDF turns into analytic AA.
+    let aa_extent = select(LINE_AA_EXTENT_PX, 0.0, style.dash_len > 0u);
+    let geom_half_w = half_w + aa_extent;
 
     let at_b = vid >= 2u;
     let on_pos = (vid & 1u) == 1u;
@@ -126,15 +143,16 @@ fn vs_main(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
     // stroke CONTINUOUS when segments are sub-pixel (dense / noisy data
     // flips the direction at every point; butt-ended quads degenerate into
     // disconnected slivers there — the "stippled line" artifact).
-    let cap = select(-half_w, half_w, at_b);
-    let corner_px = center_px + dir * cap + normal_px * half_w * side;
+    let cap = select(-geom_half_w, geom_half_w, at_b);
+    let corner_px = center_px + dir * cap + normal_px * geom_half_w * side;
     let corner_ndc = corner_px * transform.pixel_to_ndc;
 
     var out: VsOut;
     out.pos = vec4<f32>(corner_ndc, 0.0, 1.0);
-    // The cap extension keeps advancing the arc coordinate, so dash cuts
-    // stay put in arc space (and the first cap can go slightly negative).
     out.dist_px = select(arc.arc_a - half_w, arc.arc_b + half_w, at_b);
+    out.along_px = select(-geom_half_w, len + geom_half_w, at_b);
+    out.side_px = geom_half_w * side;
+    out.segment_len_px = len;
     return out;
 }
 
@@ -144,9 +162,20 @@ fn dash_scalar(i: u32) -> f32 {
     return style.dash[i / 4u][i % 4u];
 }
 
-fn line_fragment_color(in: VsOut, color: vec4<f32>) -> vec4<f32> {
+fn stroke_alpha(in: VsOut) -> f32 {
+    let half_w = max(style.line_width_px, 1.0) * 0.5;
+    let p = vec2<f32>(in.along_px - in.segment_len_px * 0.5, in.side_px);
+    let half_rect = vec2<f32>(in.segment_len_px * 0.5 + half_w, half_w);
+    let q = abs(p) - half_rect;
+    let outside = max(q, vec2<f32>(0.0, 0.0));
+    let signed_dist = length(outside) + min(max(q.x, q.y), 0.0);
+    let aa = max(fwidth(signed_dist), 0.5);
+    return 1.0 - smoothstep(-aa, aa, signed_dist);
+}
+
+fn dash_alpha(in: VsOut) -> f32 {
     if style.dash_len == 0u {
-        return color;
+        return 1.0;
     }
     // Clamp to the 8-scalar capacity so a bad CPU-side count cannot index
     // past the array.
@@ -157,26 +186,35 @@ fn line_fragment_color(in: VsOut, color: vec4<f32>) -> vec4<f32> {
     }
     // Degenerate pattern (all spans zero/negative) — treat as solid.
     if period <= 0.0 {
-        return color;
+        return 1.0;
     }
     // The square-cap extension can push dist_px slightly negative at the
     // polyline start — wrap into [0, period) with the sign-safe form.
     let phase = ((in.dist_px % period) + period) % period;
     var acc = 0.0;
     for (var i = 0u; i < n; i = i + 1u) {
-        acc = acc + max(dash_scalar(i), 0.0);
-        if phase < acc {
-            // Even spans are "on", odd spans are "off". Hard cut — the
-            // line edge has no AA today either.
-            if (i & 1u) == 1u {
-                discard;
-            }
-            return color;
+        let span = max(dash_scalar(i), 0.0);
+        let start = acc;
+        let end = acc + span;
+        acc = end;
+        if phase <= end || i == n - 1u {
+            // Even spans are "on", odd spans are "off". Dash membership is
+            // intentionally binary so the requested pattern length stays
+            // stable; antialiasing is applied to the stroke outline itself.
+            return select(0.0, 1.0, (i & 1u) == 0u);
         }
     }
     // phase == period can occur from float rounding; that point is the
     // start of the next repetition, which always opens with an "on" span.
-    return color;
+    return 1.0;
+}
+
+fn line_fragment_color(in: VsOut, color: vec4<f32>) -> vec4<f32> {
+    let alpha = stroke_alpha(in) * dash_alpha(in);
+    if alpha <= 0.0 {
+        discard;
+    }
+    return color * alpha;
 }
 
 @fragment
@@ -227,7 +265,7 @@ const SKETCH_SUBDIV: u32 = 8u;
 // then extrude ±half_w. Arc-length parameterization makes the displacement
 // continuous across the shared endpoint of adjacent segments. The outer
 // points keep vs_main's square-cap extension so joints stay seamless, and
-// dist_px advances exactly like vs_main's — fs_main is shared, so
+// dash phase still comes from the same cumulative arc interpolation as vs_main, so
 // dashed+sketch composes for free. Non-finite endpoints (NaN gaps, log of
 // ≤ 0) propagate through mix() and clip, same as the precise path.
 @vertex
@@ -244,6 +282,8 @@ fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
     let normal_px = vec2<f32>(-dir.y, dir.x);
 
     let half_w = max(style.line_width_px, 1.0) * 0.5;
+    let aa_extent = select(LINE_AA_EXTENT_PX, 0.0, style.dash_len > 0u);
+    let geom_half_w = half_w + aa_extent;
 
     let k = vid / 2u;
     let on_pos = (vid & 1u) == 1u;
@@ -254,8 +294,8 @@ fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
     // Square caps on the outer subdivision points only (same rule and same
     // rationale as vs_main).
     var cap = 0.0;
-    if (k == 0u) { cap = -half_w; }
-    if (k == SKETCH_SUBDIV) { cap = half_w; }
+    if (k == 0u) { cap = -geom_half_w; }
+    if (k == SKETCH_SUBDIV) { cap = geom_half_w; }
 
     let arc_at = mix(arc.arc_a, arc.arc_b, t);
     let amp = max(transform.style_params[0].x, 0.0);
@@ -266,13 +306,18 @@ fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
     // (sketch.rs) so GPU and deco layers degrade identically.
     let disp = select(0.0, wobble, wav > 0.0);
 
-    let corner_px = center_px + dir * cap + normal_px * (half_w * side + disp);
+    let corner_px = center_px + dir * cap + normal_px * (geom_half_w * side + disp);
     let corner_ndc = corner_px * transform.pixel_to_ndc;
 
     var out: VsOut;
     out.pos = vec4<f32>(corner_ndc, 0.0, 1.0);
-    // The cap extension keeps advancing the dash phase, like vs_main.
-    out.dist_px = arc_at + cap;
+    out.dist_px = arc_at + select(0.0, cap, style.dash_len == 0u);
+    if (style.dash_len > 0u) {
+        out.dist_px = arc_at + select(0.0, -half_w, k == 0u) + select(0.0, half_w, k == SKETCH_SUBDIV);
+    }
+    out.along_px = t * len + cap;
+    out.side_px = geom_half_w * side;
+    out.segment_len_px = len;
     return out;
 }
 

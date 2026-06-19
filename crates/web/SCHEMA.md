@@ -79,6 +79,9 @@ cargo test -p model --features serde
 - `inverted`는 축의 시각 방향을 반전한다. tick/grid, 데이터 렌더링,
   `pick_point`는 같은 반전 mapping을 사용하며 `min`/`max`는 데이터 공간
   bound로 유지된다.
+- `pick_point`는 point/scatter의 데이터 점뿐 아니라 line 계열의 stroke도
+  hit 대상에 포함한다. line stroke 근처 클릭은 hit segment의 가까운
+  endpoint 데이터 점으로 스냅되고, 반환 좌표는 항상 원본 데이터 좌표다.
 - `chart_area`는 저장/Export 기준의 논리 문서 사각형이다. Web wrapper의
   `resize(w, h)`는 캔버스 surface만 바꾸고, 이 논리 문서를 현재 viewport에
   uniform scale + letterbox로 맞춰 보여준다. 브라우저 창 크기 변경을
