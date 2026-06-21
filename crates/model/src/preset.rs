@@ -424,6 +424,9 @@ mod tests {
                     error_bar_width: 1.0,
                     error_bar_cap_size: 3.0,
                     cap_width: 1.0,
+                    error_bar_style_table: None,
+                    error_bar_style_index_column: None,
+                    error_bar_style_overrides: None,
                 },
             },
         }

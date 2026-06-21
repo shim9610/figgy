@@ -455,6 +455,9 @@ fn main() {
                 error_bar_width: 2.0,
                 error_bar_cap_size: 7.0,
                 cap_width: 2.0,
+                error_bar_style_table: None,
+                error_bar_style_index_column: None,
+                error_bar_style_overrides: None,
             },
         },
     }];

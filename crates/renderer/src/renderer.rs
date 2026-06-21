@@ -20,8 +20,8 @@ use crate::color::Color;
 use crate::config::{Config, DrawStyle, PickedPointRef};
 use crate::data::ColumnSource;
 use crate::data_config::{
-    DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterPointStyleConfig,
-    DataScatterStyleConfig, ErrorRef, ScatterShape, SeriesConfig,
+    DataErrorBarPointStyleConfig, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
+    DataScatterPointStyleConfig, DataScatterStyleConfig, ErrorRef, ScatterShape, SeriesConfig,
 };
 use crate::data_render::{
     self, AxisLayer, ColumnErrorBarDraw, ColumnHandle, ColumnId, ColumnLineLayer,
@@ -100,7 +100,7 @@ pub struct Renderer {
     texture_bgl: wgpu::BindGroupLayout,
     transform_bgl: wgpu::BindGroupLayout,
     style_bgl: wgpu::BindGroupLayout,
-    scatter_style_map_bgl: wgpu::BindGroupLayout,
+    per_point_style_map_bgl: wgpu::BindGroupLayout,
     /// Constellation star-pass data layout (arc prefix + pool + offsets) —
     /// shared by the stars pipeline and every per-series star bind group.
     star_data_bgl: wgpu::BindGroupLayout,
@@ -368,7 +368,9 @@ struct TargetPipelines {
     scatter: wgpu::RenderPipeline,
     scatter_mapped: wgpu::RenderPipeline,
     pick_ring: wgpu::RenderPipeline,
+    pick_ring_mapped: wgpu::RenderPipeline,
     errorbar: wgpu::RenderPipeline,
+    errorbar_mapped: wgpu::RenderPipeline,
     sample_count: u32,
     styled: HashMap<StyleKey, StyleSet>,
 }
@@ -378,7 +380,7 @@ fn create_target_pipelines(
     texture_bgl: &wgpu::BindGroupLayout,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
-    scatter_style_map_bgl: &wgpu::BindGroupLayout,
+    per_point_style_map_bgl: &wgpu::BindGroupLayout,
     surface_format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> TargetPipelines {
@@ -407,7 +409,7 @@ fn create_target_pipelines(
             device,
             transform_bgl,
             style_bgl,
-            scatter_style_map_bgl,
+            per_point_style_map_bgl,
             surface_format,
             sample_count,
         ),
@@ -421,10 +423,29 @@ fn create_target_pipelines(
             "fs_pick_ring",
             "figgy picked point ring pipeline",
         ),
+        pick_ring_mapped: data_render::create_scatter_columnar_mapped_pipeline_with_entries(
+            device,
+            transform_bgl,
+            style_bgl,
+            per_point_style_map_bgl,
+            surface_format,
+            sample_count,
+            "vs_pick_ring_mapped",
+            "fs_pick_ring",
+            "figgy picked point mapped ring pipeline",
+        ),
         errorbar: data_render::create_errorbar_columnar_pipeline_with_sample_count(
             device,
             transform_bgl,
             style_bgl,
+            surface_format,
+            sample_count,
+        ),
+        errorbar_mapped: data_render::create_errorbar_columnar_mapped_pipeline(
+            device,
+            transform_bgl,
+            style_bgl,
+            per_point_style_map_bgl,
             surface_format,
             sample_count,
         ),
@@ -613,19 +634,39 @@ fn scatter_style_slot_gpu(
     }
 }
 
-fn single_point_handle(handle: ColumnHandle, index: usize) -> Option<ColumnHandle> {
-    if index >= handle.len_values {
-        return None;
+fn errorbar_style_slot_gpu(
+    slot: &DataErrorBarPointStyleConfig,
+    scale: f32,
+    mask_color: u32,
+    mask_stem_width: u32,
+    mask_cap_half: u32,
+    mask_cap_width: u32,
+) -> data_render::ErrorBarStyleSlotGpu {
+    let mut mask = 0u32;
+    let mut color_premul = [0.0; 4];
+    let mut stem_width = 0.0;
+    let mut cap_half = 0.0;
+    let mut cap_width = 0.0;
+    if let Some(c) = slot.error_bar_color {
+        mask |= mask_color;
+        color_premul = premul_rgba(c);
     }
-    let offset = handle
-        .offset
-        .checked_add(u64::try_from(index).ok()?.checked_mul(4)?)?;
-    Some(ColumnHandle {
-        generation: handle.generation,
-        offset,
-        byte_size: 4,
-        len_values: 1,
-    })
+    if let Some(width) = slot.error_bar_width {
+        mask |= mask_stem_width;
+        stem_width = width * scale;
+    }
+    if let Some(size) = slot.error_bar_cap_size {
+        mask |= mask_cap_half;
+        cap_half = size * scale;
+    }
+    if let Some(width) = slot.cap_width {
+        mask |= mask_cap_width;
+        cap_width = width * scale;
+    }
+    data_render::ErrorBarStyleSlotGpu {
+        color_premul,
+        meta: [stem_width, cap_half, mask as f32, cap_width],
+    }
 }
 
 fn picked_ref_matches_series(series: &SeriesConfig, picked: &PickedPointRef) -> bool {
@@ -679,6 +720,37 @@ fn create_msaa_target(
     }))
 }
 
+fn scatter_config_radius_px(
+    scatter: &DataScatterStyleConfig,
+    point_index: usize,
+    use_style_mapping: bool,
+) -> f32 {
+    let mut radius = scatter.point_size;
+    if use_style_mapping && scatter.point_style_index_column.is_none() {
+        // A style table has no effect without an index column. Sparse
+        // overrides are explicit by point index and can be resolved here.
+        if let Some(overrides) = scatter.point_style_overrides.as_deref() {
+            for ov in overrides {
+                if ov.index == point_index {
+                    if let Some(size) = ov.style.point_size {
+                        radius = size;
+                    }
+                }
+            }
+        }
+    }
+    radius.max(0.0)
+}
+
+fn scatter_pick_anchor_may_be_visible(
+    scatter: &DataScatterStyleConfig,
+    point_index: usize,
+    use_style_mapping: bool,
+) -> bool {
+    (use_style_mapping && scatter.point_style_index_column.is_some())
+        || scatter_config_radius_px(scatter, point_index, use_style_mapping) > 0.0
+}
+
 impl Renderer {
     /// Initialize every figgy GPU resource against the given device/queue pair.
     ///
@@ -721,8 +793,8 @@ impl Renderer {
         let texture_bgl = data_render::create_texture_bind_group_layout(&device);
         let transform_bgl = data_render::create_scatter_transform_bind_group_layout(&device);
         let style_bgl = data_render::create_style_bind_group_layout(&device);
-        let scatter_style_map_bgl =
-            data_render::create_scatter_style_map_bind_group_layout(&device);
+        let per_point_style_map_bgl =
+            data_render::create_per_point_style_map_bind_group_layout(&device);
         let star_data_bgl = data_render::create_star_data_bind_group_layout(&device);
 
         let sampler = data_render::create_linear_sampler(&device);
@@ -735,7 +807,7 @@ impl Renderer {
             &texture_bgl,
             &transform_bgl,
             &style_bgl,
-            &scatter_style_map_bgl,
+            &per_point_style_map_bgl,
             surface_format,
             target_sample_count,
         );
@@ -750,7 +822,7 @@ impl Renderer {
             texture_bgl,
             transform_bgl,
             style_bgl,
-            scatter_style_map_bgl,
+            per_point_style_map_bgl,
             star_data_bgl,
             pipelines,
             sampler,
@@ -805,7 +877,7 @@ impl Renderer {
             &self.texture_bgl,
             &self.transform_bgl,
             &self.style_bgl,
-            &self.scatter_style_map_bgl,
+            &self.per_point_style_map_bgl,
             surface_format,
             target_sample_count,
         );
@@ -1087,7 +1159,9 @@ impl Renderer {
         errorbar.series_salt = series_salt;
         let scatter_map = extract_scatter(&cfg.render_type)
             .and_then(|sc| self.create_scatter_style_map_for(sc, scale));
-        self.create_style_from_primitives(line, scatter, errorbar, scatter_map)
+        let errorbar_map = extract_errorbar_style(&cfg.render_type)
+            .and_then(|eb| self.create_errorbar_style_map_for(eb, scale));
+        self.create_style_from_primitives(line, scatter, errorbar, scatter_map, errorbar_map)
     }
 
     /// Shared tail of `create_style_for_series*`: allocate the three style
@@ -1098,6 +1172,7 @@ impl Renderer {
         scatter: PrimitiveStyle,
         errorbar: PrimitiveStyle,
         scatter_map: Option<data_render::ScatterStyleMap>,
+        errorbar_map: Option<data_render::ErrorBarStyleMap>,
     ) -> ChartStyle {
         let dev = &self.device;
         let scatter_radius_px = scatter.point_radius_px;
@@ -1109,6 +1184,7 @@ impl Renderer {
             scatter_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &sc_buf),
             errorbar_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &eb_buf),
             scatter_map,
+            errorbar_map,
             scatter_radius_px,
         }
     }
@@ -1153,10 +1229,78 @@ impl Renderer {
         }
         Some(data_render::create_scatter_style_map(
             &self.device,
-            &self.scatter_style_map_bgl,
+            &self.per_point_style_map_bgl,
             &style_slots,
             &overrides,
             data_render::ScatterStyleMapMeta {
+                style_count: style_slots.len().min(u32::MAX as usize) as u32,
+                override_count: overrides.len().min(u32::MAX as usize) as u32,
+                has_index: u32::from(has_index),
+                _pad: 0,
+            },
+        ))
+    }
+
+    fn create_errorbar_style_map_for(
+        &self,
+        errorbar: &DataErrorBarStyleConfig,
+        scale: f32,
+    ) -> Option<data_render::ErrorBarStyleMap> {
+        const MASK_COLOR: u32 = 1;
+        const MASK_STEM_WIDTH: u32 = 2;
+        const MASK_CAP_HALF: u32 = 4;
+        const MASK_CAP_WIDTH: u32 = 8;
+
+        let has_index = errorbar.error_bar_style_index_column.is_some();
+        let style_slots: Vec<data_render::ErrorBarStyleSlotGpu> = errorbar
+            .error_bar_style_table
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(|slot| {
+                errorbar_style_slot_gpu(
+                    slot,
+                    scale,
+                    MASK_COLOR,
+                    MASK_STEM_WIDTH,
+                    MASK_CAP_HALF,
+                    MASK_CAP_WIDTH,
+                )
+            })
+            .collect();
+        let overrides: Vec<data_render::ErrorBarStyleOverrideGpu> = errorbar
+            .error_bar_style_overrides
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|ov| {
+                let point_index = u32::try_from(ov.index).ok()?;
+                let slot = errorbar_style_slot_gpu(
+                    &ov.style,
+                    scale,
+                    MASK_COLOR,
+                    MASK_STEM_WIDTH,
+                    MASK_CAP_HALF,
+                    MASK_CAP_WIDTH,
+                );
+                Some(data_render::ErrorBarStyleOverrideGpu {
+                    point_index,
+                    _pad: [0; 3],
+                    color_premul: slot.color_premul,
+                    meta: slot.meta,
+                })
+            })
+            .collect();
+
+        if !has_index && style_slots.is_empty() && overrides.is_empty() {
+            return None;
+        }
+        Some(data_render::create_errorbar_style_map(
+            &self.device,
+            &self.per_point_style_map_bgl,
+            &style_slots,
+            &overrides,
+            data_render::ErrorBarStyleMapMeta {
                 style_count: style_slots.len().min(u32::MAX as usize) as u32,
                 override_count: overrides.len().min(u32::MAX as usize) as u32,
                 has_index: u32::from(has_index),
@@ -1767,10 +1911,53 @@ impl Renderer {
                                 (zero, zero)
                             }
                         };
+                        let precise_errorbar_style_map = if styled.is_none() {
+                            series.style.errorbar_map.as_ref()
+                        } else {
+                            None
+                        };
+                        let errorbar_style_index = match (
+                            precise_errorbar_style_map,
+                            extract_errorbar_style(rt),
+                        ) {
+                            (Some(map), Some(eb)) if map.has_index => {
+                                let Some(column) = eb.error_bar_style_index_column.as_ref() else {
+                                    return Err(FiggyError::InvalidSeriesConfig {
+                                        series_id: cfg.series_id.clone(),
+                                        reason: "errorbar style map expects an index column".into(),
+                                    });
+                                };
+                                let h = lookup(column)?;
+                                let count = [
+                                    x_h.len_values,
+                                    y_h.len_values,
+                                    ey_lo.len_values,
+                                    ey_hi.len_values,
+                                    ex_lo.len_values,
+                                    ex_hi.len_values,
+                                ]
+                                .into_iter()
+                                .min()
+                                .unwrap_or(0);
+                                if h.len_values < count {
+                                    return Err(FiggyError::InvalidSeriesConfig {
+                                        series_id: cfg.series_id.clone(),
+                                        reason: format!(
+                                            "errorbar style index column {column:?} has {} values, but errorbar uses {count}",
+                                            h.len_values
+                                        ),
+                                    });
+                                }
+                                Some(h)
+                            }
+                            _ => None,
+                        };
                         Some(ColumnErrorBarDraw {
-                            pipeline: errorbar_pipe,
+                            pipeline: precise_errorbar_style_map
+                                .map_or(errorbar_pipe, |_| &pipelines.errorbar_mapped),
                             transform_bg: &view.transform_bg,
                             style_bg: &series.style.errorbar_bg,
+                            style_map_bg: precise_errorbar_style_map.map(|m| &m.bind_group),
                             pool_buffer: pool.buffer(),
                             x: x_h,
                             y: y_h,
@@ -1778,6 +1965,7 @@ impl Renderer {
                             err_y_hi: ey_hi,
                             err_x_lo: ex_lo,
                             err_x_hi: ex_hi,
+                            style_index: errorbar_style_index,
                         })
                     }
                 }
@@ -1795,18 +1983,79 @@ impl Renderer {
                         if !picked_ref_matches_series(cfg, picked_ref) {
                             continue;
                         }
-                        let (Some(x), Some(y)) = (
-                            single_point_handle(x_h, picked_ref.point_index),
-                            single_point_handle(y_h, picked_ref.point_index),
-                        ) else {
+                        if picked_ref.point_index >= x_h.len_values
+                            || picked_ref.point_index >= y_h.len_values
+                        {
+                            continue;
+                        }
+                        let Some(instance) = u32::try_from(picked_ref.point_index).ok() else {
                             continue;
                         };
+
+                        let scatter_cfg = extract_scatter(rt);
+                        let has_line_anchor = extract_line(rt).is_some();
+                        let use_scatter_style_mapping = styled.is_none();
+                        let has_scatter_anchor = scatter_cfg.is_some_and(|scatter| {
+                            scatter_pick_anchor_may_be_visible(
+                                scatter,
+                                picked_ref.point_index,
+                                use_scatter_style_mapping,
+                            )
+                        });
+                        if !has_line_anchor && !has_scatter_anchor {
+                            continue;
+                        }
+
+                        let precise_pick_style_map = if styled.is_none() {
+                            series.style.scatter_map.as_ref()
+                        } else {
+                            None
+                        };
+                        let style_index = match (precise_pick_style_map, scatter_cfg) {
+                            (Some(map), Some(scatter)) if map.has_index => {
+                                let Some(column) = scatter.point_style_index_column.as_ref() else {
+                                    return Err(FiggyError::InvalidSeriesConfig {
+                                        series_id: cfg.series_id.clone(),
+                                        reason: "scatter style map expects an index column".into(),
+                                    });
+                                };
+                                let h = lookup(column)?;
+                                let count = x_h.len_values.min(y_h.len_values);
+                                if h.len_values < count {
+                                    return Err(FiggyError::InvalidSeriesConfig {
+                                        series_id: cfg.series_id.clone(),
+                                        reason: format!(
+                                            "style index column {column:?} has {} values, but scatter uses {count}",
+                                            h.len_values
+                                        ),
+                                    });
+                                }
+                                Some(h)
+                            }
+                            _ => None,
+                        };
+
                         let mut ring_style = PrimitiveStyle::from_color_with_width(
                             picked_cfg.ring_color,
                             picked_cfg.ring_width_px,
                         );
-                        ring_style.point_radius_px =
-                            (series.style.scatter_radius_px + picked_cfg.radius_extra_px).max(0.0);
+                        let uses_mapped_pick = precise_pick_style_map.is_some();
+                        if uses_mapped_pick {
+                            ring_style.point_radius_px = series.style.scatter_radius_px;
+                            ring_style.cap_half_px = picked_cfg.radius_extra_px;
+                        } else {
+                            let scatter_radius = scatter_cfg
+                                .map(|scatter| {
+                                    scatter_config_radius_px(
+                                        scatter,
+                                        picked_ref.point_index,
+                                        use_scatter_style_mapping,
+                                    )
+                                })
+                                .unwrap_or(0.0);
+                            ring_style.point_radius_px =
+                                (scatter_radius + picked_cfg.radius_extra_px).max(0.0);
+                        }
                         ring_style.shape_id = data_render::shape_id(&ScatterShape::Circle);
                         let ring_buf =
                             data_render::create_style_uniform_buffer(&self.device, &ring_style);
@@ -1816,13 +2065,20 @@ impl Renderer {
                             &ring_buf,
                         );
                         picked.push(ColumnPickRingLayer {
-                            pipeline: &pipelines.pick_ring,
+                            pipeline: if uses_mapped_pick {
+                                &pipelines.pick_ring_mapped
+                            } else {
+                                &pipelines.pick_ring
+                            },
                             transform_bg: &view.transform_bg,
                             style_bg,
+                            style_map_bg: precise_pick_style_map.map(|map| &map.bind_group),
                             quad_vb: &self.quad_vb,
                             pool_buffer: pool.buffer(),
-                            x,
-                            y,
+                            x: x_h,
+                            y: y_h,
+                            style_index,
+                            instance,
                         });
                     }
                 }
@@ -2096,7 +2352,7 @@ impl Renderer {
             &self.texture_bgl,
             &self.transform_bgl,
             &self.style_bgl,
-            &self.scatter_style_map_bgl,
+            &self.per_point_style_map_bgl,
             export_format,
             export_sample_count,
         );
@@ -2436,6 +2692,7 @@ pub struct ChartStyle {
     scatter_bg: wgpu::BindGroup,
     errorbar_bg: wgpu::BindGroup,
     scatter_map: Option<data_render::ScatterStyleMap>,
+    errorbar_map: Option<data_render::ErrorBarStyleMap>,
     scatter_radius_px: f32,
 }
 
@@ -2699,6 +2956,9 @@ mod tests {
             error_bar_width: 1.0,
             error_bar_cap_size: 4.0,
             cap_width: 1.0,
+            error_bar_style_table: None,
+            error_bar_style_index_column: None,
+            error_bar_style_overrides: None,
         }
     }
 
@@ -2922,6 +3182,146 @@ mod tests {
         }];
 
         r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    }
+
+    #[test]
+    fn picked_overlay_skips_zero_size_scatter_errorbar_anchor() {
+        let inst = create_instance();
+        let Ok(adapter) = request_adapter(&inst) else {
+            return;
+        };
+        let Ok((device, queue)) = request_device(&adapter) else {
+            return;
+        };
+        let device = Arc::new(device);
+        let queue = Arc::new(queue);
+
+        let mut r = Renderer::try_new(
+            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+            wgpu::TextureFormat::Bgra8Unorm,
+            1024 * 1024,
+        )
+        .unwrap();
+        r.add_column("x", &col_f64(vec![2.0])).unwrap();
+        r.add_column("y", &col_f64(vec![2.5])).unwrap();
+        r.add_column("ey", &col_f64(vec![1.0])).unwrap();
+        r.add_column("__zero", &col_f64(vec![0.0])).unwrap();
+
+        let mut chart = basic_errorbar_chart();
+        chart.config_mut().picked_points = Some(crate::config::PickedPointsConfig {
+            visible: true,
+            refs: vec![crate::config::PickedPointRef {
+                source_id: None,
+                series_id: "err".into(),
+                point_index: 0,
+            }],
+            ring_color: Color::new(0.0, 1.0, 0.0, 1.0),
+            ring_width_px: 3.0,
+            radius_extra_px: 8.0,
+        });
+        let mut scatter = test_scatter_style();
+        scatter.point_size = 0.0;
+        let series = [SeriesConfig {
+            series_id: "err".into(),
+            source_id: None,
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            render_type: DataRenderType::ScatterErrorbarY {
+                scatter,
+                err_y: ErrorRef::Symmetric {
+                    column: "ey".into(),
+                },
+                err_style: test_errorbar_style(),
+            },
+        }];
+
+        let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+        let green_ring_ink = img
+            .rgba
+            .chunks_exact(4)
+            .filter(|p| p[0] < 80 && p[1] > 160 && p[2] < 80 && p[3] > 80)
+            .count();
+
+        assert_eq!(
+            green_ring_ink, 0,
+            "hidden scatter marker over errorbar must not draw picked overlay"
+        );
+    }
+
+    #[test]
+    fn errorbar_style_index_colors_points_independently() {
+        let inst = create_instance();
+        let Ok(adapter) = request_adapter(&inst) else {
+            return;
+        };
+        let Ok((device, queue)) = request_device(&adapter) else {
+            return;
+        };
+        let device = Arc::new(device);
+        let queue = Arc::new(queue);
+
+        let mut r = Renderer::try_new(
+            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+            wgpu::TextureFormat::Bgra8Unorm,
+            1024 * 1024,
+        )
+        .unwrap();
+        r.add_column("x", &col_f64(vec![1.0, 3.0])).unwrap();
+        r.add_column("y", &col_f64(vec![2.5, 2.5])).unwrap();
+        r.add_column("ey", &col_f64(vec![1.0, 1.0])).unwrap();
+        r.add_column("err_style", &col_f64(vec![0.0, 1.0])).unwrap();
+        r.add_column("__zero", &col_f64(vec![0.0, 0.0])).unwrap();
+
+        let chart = basic_errorbar_chart();
+        let mut scatter = test_scatter_style();
+        scatter.point_size = 0.0;
+        let series = [SeriesConfig {
+            series_id: "mapped-errorbar".into(),
+            source_id: None,
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            render_type: DataRenderType::ScatterErrorbarY {
+                scatter,
+                err_y: ErrorRef::Symmetric {
+                    column: "ey".into(),
+                },
+                err_style: DataErrorBarStyleConfig {
+                    error_bar_color: Color::BLACK,
+                    error_bar_width: 2.0,
+                    error_bar_cap_size: 7.0,
+                    cap_width: 2.0,
+                    error_bar_style_table: Some(vec![
+                        DataErrorBarPointStyleConfig {
+                            error_bar_color: Some(Color::new(0.0, 1.0, 0.0, 1.0)),
+                            ..Default::default()
+                        },
+                        DataErrorBarPointStyleConfig {
+                            error_bar_color: Some(Color::new(0.0, 0.0, 1.0, 1.0)),
+                            ..Default::default()
+                        },
+                    ]),
+                    error_bar_style_index_column: Some("err_style".into()),
+                    error_bar_style_overrides: None,
+                },
+            },
+        }];
+
+        let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+        let green = img
+            .rgba
+            .chunks_exact(4)
+            .filter(|p| p[0] < 80 && p[1] > 150 && p[2] < 80 && p[3] > 100)
+            .count();
+        let blue = img
+            .rgba
+            .chunks_exact(4)
+            .filter(|p| p[0] < 80 && p[1] < 80 && p[2] > 150 && p[3] > 100)
+            .count();
+
+        assert!(green > 20, "mapped errorbar style produced no green ink");
+        assert!(blue > 20, "mapped errorbar style produced no blue ink");
     }
 
     #[test]

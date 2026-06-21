@@ -947,11 +947,11 @@ pub struct ScatterStyleMapMeta {
 
 const _: () = assert!(std::mem::size_of::<ScatterStyleMapMeta>() == 16);
 
-/// GPU-side scatter style map. The bind group keeps all backing buffers alive.
+/// GPU-side per-point style map. The bind group keeps all backing buffers alive.
 ///
-/// Layout (group 2 in the mapped precise scatter pipeline). Bindings 0..4
-/// are already used by the constellation scatter entries in the same WGSL
-/// module, so the mapped precise entry uses bindings 5..7.
+/// Layout (group 2 in the mapped precise scatter/errorbar pipelines). Bindings
+/// 0..4 are already used by the constellation scatter entries in the same WGSL
+/// module, so mapped precise entries use bindings 5..7.
 /// - binding 5: [`ScatterStyleSlotGpu`] array.
 /// - binding 6: [`ScatterStyleOverrideGpu`] array.
 /// - binding 7: [`ScatterStyleMapMeta`].
@@ -960,7 +960,14 @@ pub struct ScatterStyleMap {
     pub has_index: bool,
 }
 
-pub fn create_scatter_style_map_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+pub type ErrorBarStyleSlotGpu = ScatterStyleSlotGpu;
+pub type ErrorBarStyleOverrideGpu = ScatterStyleOverrideGpu;
+pub type ErrorBarStyleMapMeta = ScatterStyleMapMeta;
+pub type ErrorBarStyleMap = ScatterStyleMap;
+
+pub fn create_per_point_style_map_bind_group_layout(
+    device: &wgpu::Device,
+) -> wgpu::BindGroupLayout {
     let storage = |binding| wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::VERTEX,
@@ -972,7 +979,7 @@ pub fn create_scatter_style_map_bind_group_layout(device: &wgpu::Device) -> wgpu
         count: None,
     };
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("figgy scatter style map bgl"),
+        label: Some("figgy per-point style map bgl"),
         entries: &[
             storage(5),
             storage(6),
@@ -988,6 +995,10 @@ pub fn create_scatter_style_map_bind_group_layout(device: &wgpu::Device) -> wgpu
             },
         ],
     })
+}
+
+pub fn create_scatter_style_map_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    create_per_point_style_map_bind_group_layout(device)
 }
 
 pub fn create_scatter_style_map(
@@ -1054,6 +1065,16 @@ pub fn create_scatter_style_map(
         bind_group,
         has_index: meta.has_index != 0,
     }
+}
+
+pub fn create_errorbar_style_map(
+    device: &wgpu::Device,
+    bgl: &wgpu::BindGroupLayout,
+    style_slots: &[ErrorBarStyleSlotGpu],
+    overrides: &[ErrorBarStyleOverrideGpu],
+    meta: ErrorBarStyleMapMeta,
+) -> ErrorBarStyleMap {
+    create_scatter_style_map(device, bgl, style_slots, overrides, meta)
 }
 
 /// Bind group layout for the constellation star pass's per-series data
@@ -2106,12 +2127,36 @@ pub fn create_scatter_columnar_mapped_pipeline(
     target_format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> wgpu::RenderPipeline {
+    create_scatter_columnar_mapped_pipeline_with_entries(
+        device,
+        transform_bgl,
+        style_bgl,
+        style_map_bgl,
+        target_format,
+        sample_count,
+        "vs_mapped",
+        "fs_mapped",
+        "figgy scatter mapped pipeline",
+    )
+}
+
+pub(crate) fn create_scatter_columnar_mapped_pipeline_with_entries(
+    device: &wgpu::Device,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    style_map_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+    vs_entry: &str,
+    fs_entry: &str,
+    label: &str,
+) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("figgy scatter mapped shader"),
+        label: Some(label),
         source: wgpu::ShaderSource::Wgsl(include_str!("scatter_columnar.wgsl").into()),
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("figgy scatter mapped layout"),
+        label: Some(label),
         bind_group_layouts: &[transform_bgl, style_bgl, style_map_bgl],
         push_constant_ranges: &[],
     });
@@ -2119,11 +2164,11 @@ pub fn create_scatter_columnar_mapped_pipeline(
     let f32_stride = std::mem::size_of::<f32>() as wgpu::BufferAddress;
     let vec2_stride = (std::mem::size_of::<f32>() * 2) as wgpu::BufferAddress;
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("figgy scatter mapped pipeline"),
+        label: Some(label),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
             module: &shader,
-            entry_point: Some("vs_mapped"),
+            entry_point: Some(vs_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             buffers: &[
                 wgpu::VertexBufferLayout {
@@ -2177,7 +2222,7 @@ pub fn create_scatter_columnar_mapped_pipeline(
         multisample: multisample_state(sample_count),
         fragment: Some(wgpu::FragmentState {
             module: &shader,
-            entry_point: Some("fs_mapped"),
+            entry_point: Some(fs_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format: target_format,
@@ -2352,6 +2397,134 @@ pub(crate) fn create_errorbar_columnar_pipeline_with_sample_count(
         "vs_main",
         "figgy errorbar columnar pipeline",
     )
+}
+
+pub fn create_errorbar_columnar_mapped_pipeline(
+    device: &wgpu::Device,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    style_map_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("figgy errorbar mapped shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("errorbar_columnar.wgsl").into()),
+    });
+
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("figgy errorbar mapped layout"),
+        bind_group_layouts: &[transform_bgl, style_bgl, style_map_bgl],
+        push_constant_ranges: &[],
+    });
+
+    let f32_stride = std::mem::size_of::<f32>() as wgpu::BufferAddress;
+    const ATTR0: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32,
+        offset: 0,
+        shader_location: 0,
+    }];
+    const ATTR1: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32,
+        offset: 0,
+        shader_location: 1,
+    }];
+    const ATTR2: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32,
+        offset: 0,
+        shader_location: 2,
+    }];
+    const ATTR3: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32,
+        offset: 0,
+        shader_location: 3,
+    }];
+    const ATTR4: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32,
+        offset: 0,
+        shader_location: 4,
+    }];
+    const ATTR5: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32,
+        offset: 0,
+        shader_location: 5,
+    }];
+    const ATTR6: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32,
+        offset: 0,
+        shader_location: 6,
+    }];
+    let buffers = [
+        wgpu::VertexBufferLayout {
+            array_stride: f32_stride,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &ATTR0,
+        },
+        wgpu::VertexBufferLayout {
+            array_stride: f32_stride,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &ATTR1,
+        },
+        wgpu::VertexBufferLayout {
+            array_stride: f32_stride,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &ATTR2,
+        },
+        wgpu::VertexBufferLayout {
+            array_stride: f32_stride,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &ATTR3,
+        },
+        wgpu::VertexBufferLayout {
+            array_stride: f32_stride,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &ATTR4,
+        },
+        wgpu::VertexBufferLayout {
+            array_stride: f32_stride,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &ATTR5,
+        },
+        wgpu::VertexBufferLayout {
+            array_stride: f32_stride,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &ATTR6,
+        },
+    ];
+
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("figgy errorbar mapped pipeline"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_mapped"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &buffers,
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            unclipped_depth: false,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            conservative: false,
+        },
+        depth_stencil: None,
+        multisample: multisample_state(sample_count),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_mapped"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: target_format,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview: None,
+        cache: None,
+    })
 }
 
 /// Entry-point-parameterized errorbar pipeline builder. Styled variants
@@ -2548,10 +2721,13 @@ pub struct ColumnPickRingLayer<'a> {
     pub pipeline: &'a wgpu::RenderPipeline,
     pub transform_bg: &'a wgpu::BindGroup,
     pub style_bg: wgpu::BindGroup,
+    pub style_map_bg: Option<&'a wgpu::BindGroup>,
     pub quad_vb: &'a wgpu::Buffer,
     pub pool_buffer: &'a wgpu::Buffer,
     pub x: ColumnHandle,
     pub y: ColumnHandle,
+    pub style_index: Option<ColumnHandle>,
+    pub instance: u32,
 }
 
 /// One series' data primitives. A panel can hold multiple of these.
@@ -2583,6 +2759,7 @@ pub struct ColumnErrorBarDraw<'a> {
     pub pipeline: &'a wgpu::RenderPipeline,
     pub transform_bg: &'a wgpu::BindGroup,
     pub style_bg: &'a wgpu::BindGroup,
+    pub style_map_bg: Option<&'a wgpu::BindGroup>,
     pub pool_buffer: &'a wgpu::Buffer,
     pub x: ColumnHandle,
     pub y: ColumnHandle,
@@ -2590,6 +2767,7 @@ pub struct ColumnErrorBarDraw<'a> {
     pub err_y_hi: ColumnHandle,
     pub err_x_lo: ColumnHandle,
     pub err_x_hi: ColumnHandle,
+    pub style_index: Option<ColumnHandle>,
 }
 
 /// Clamp a rect into `(0..target.0, 0..target.1)`. Returns `None` if the
@@ -2671,12 +2849,19 @@ fn issue_series_data(pass: &mut wgpu::RenderPass<'_>, series: &SeriesLayers<'_>)
             pass.set_pipeline(eb.pipeline);
             pass.set_bind_group(0, eb.transform_bg, &[]);
             pass.set_bind_group(1, eb.style_bg, &[]);
+            if let Some(map) = eb.style_map_bg {
+                pass.set_bind_group(2, map, &[]);
+            }
             pass.set_vertex_buffer(0, eb.pool_buffer.slice(eb.x.byte_range()));
             pass.set_vertex_buffer(1, eb.pool_buffer.slice(eb.y.byte_range()));
             pass.set_vertex_buffer(2, eb.pool_buffer.slice(eb.err_y_lo.byte_range()));
             pass.set_vertex_buffer(3, eb.pool_buffer.slice(eb.err_y_hi.byte_range()));
             pass.set_vertex_buffer(4, eb.pool_buffer.slice(eb.err_x_lo.byte_range()));
             pass.set_vertex_buffer(5, eb.pool_buffer.slice(eb.err_x_hi.byte_range()));
+            if eb.style_map_bg.is_some() {
+                let style_index = eb.style_index.as_ref().unwrap_or(&eb.x);
+                pass.set_vertex_buffer(6, eb.pool_buffer.slice(style_index.byte_range()));
+            }
             // 36 vertices = 6 quads × 2 triangles (see errorbar_columnar.wgsl).
             pass.draw(0..36, 0..count);
         }
@@ -2731,10 +2916,17 @@ fn issue_series_picked(pass: &mut wgpu::RenderPass<'_>, series: &SeriesLayers<'_
         pass.set_pipeline(p.pipeline);
         pass.set_bind_group(0, p.transform_bg, &[]);
         pass.set_bind_group(1, &p.style_bg, &[]);
+        if let Some(map) = p.style_map_bg {
+            pass.set_bind_group(2, map, &[]);
+        }
         pass.set_vertex_buffer(0, p.quad_vb.slice(..));
         pass.set_vertex_buffer(1, p.pool_buffer.slice(p.x.byte_range()));
         pass.set_vertex_buffer(2, p.pool_buffer.slice(p.y.byte_range()));
-        pass.draw(0..4, 0..1);
+        if p.style_map_bg.is_some() {
+            let style_index = p.style_index.as_ref().unwrap_or(&p.x);
+            pass.set_vertex_buffer(3, p.pool_buffer.slice(style_index.byte_range()));
+        }
+        pass.draw(0..4, p.instance..p.instance + 1);
     }
 }
 
@@ -3025,8 +3217,27 @@ mod tests {
             "fs_pick_ring",
             "figgy picked point ring pipeline test",
         );
+        let picked_mapped = create_scatter_columnar_mapped_pipeline_with_entries(
+            &device,
+            &transform_bgl,
+            &style_bgl,
+            &style_map_bgl,
+            wgpu::TextureFormat::Bgra8Unorm,
+            1,
+            "vs_pick_ring_mapped",
+            "fs_pick_ring",
+            "figgy picked point mapped ring pipeline test",
+        );
+        let errorbar_mapped = create_errorbar_columnar_mapped_pipeline(
+            &device,
+            &transform_bgl,
+            &style_bgl,
+            &style_map_bgl,
+            wgpu::TextureFormat::Bgra8Unorm,
+            1,
+        );
 
-        let _ = (mapped, picked);
+        let _ = (mapped, picked, picked_mapped, errorbar_mapped);
         let _ = device.poll(wgpu::PollType::wait_indefinitely());
     }
 

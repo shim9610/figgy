@@ -165,6 +165,9 @@ fn errorbar_series(id: &str, x: &str, y: &str, err: &str, color: Color) -> Serie
                 error_bar_width: 2.0,
                 error_bar_cap_size: 4.0,
                 cap_width: 2.0,
+                error_bar_style_table: None,
+                error_bar_style_index_column: None,
+                error_bar_style_overrides: None,
             },
         },
     }

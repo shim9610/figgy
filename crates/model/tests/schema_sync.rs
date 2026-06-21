@@ -11,7 +11,8 @@
 use model::color::Color;
 use model::config::Config;
 use model::data_config::{
-    DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterPointStyleConfig,
+    DataErrorBarPointStyleConfig, DataErrorBarPointStyleOverride, DataErrorBarStyleConfig,
+    DataLineStyleConfig, DataRenderType, DataScatterPointStyleConfig,
     DataScatterPointStyleOverride, DataScatterStyleConfig, ErrorRef, ScatterShape, SeriesConfig,
 };
 use model::default::default_config;
@@ -80,6 +81,30 @@ fn canonical_series() -> Vec<SeriesConfig> {
                 error_bar_width: 1.0,
                 error_bar_cap_size: 3.0,
                 cap_width: 1.0,
+                error_bar_style_table: Some(vec![
+                    DataErrorBarPointStyleConfig {
+                        error_bar_color: Some(Color::from_rgb8(217, 36, 36)),
+                        error_bar_width: Some(2.0),
+                        error_bar_cap_size: None,
+                        cap_width: None,
+                    },
+                    DataErrorBarPointStyleConfig {
+                        error_bar_color: None,
+                        error_bar_width: None,
+                        error_bar_cap_size: Some(6.0),
+                        cap_width: Some(2.0),
+                    },
+                ]),
+                error_bar_style_index_column: Some("err_style_index".into()),
+                error_bar_style_overrides: Some(vec![DataErrorBarPointStyleOverride {
+                    index: 2,
+                    style: DataErrorBarPointStyleConfig {
+                        error_bar_color: Some(Color::from_rgb8(29, 53, 87)),
+                        error_bar_width: None,
+                        error_bar_cap_size: None,
+                        cap_width: Some(3.0),
+                    },
+                }]),
             },
         },
     }]

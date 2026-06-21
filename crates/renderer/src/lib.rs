@@ -29,8 +29,9 @@ pub use color::Color;
 pub use config::Config;
 pub use data::{Column, ColumnSource};
 pub use data_config::{
-    DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorRef,
-    ScatterShape, SeriesConfig,
+    DataErrorBarPointStyleConfig, DataErrorBarPointStyleOverride, DataErrorBarStyleConfig,
+    DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorRef, ScatterShape,
+    SeriesConfig,
 };
 pub use data_render::{AllocError, ColumnHandle, ColumnId, ColumnPool, DefragPolicy};
 pub use drag::Draggable;

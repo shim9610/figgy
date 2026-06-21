@@ -447,8 +447,14 @@ fn fs_mapped(in: VsMappedOut) -> @location(0) vec4<f32> {
     return in.color_premul * alpha;
 }
 
+struct VsPickRingOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) local_pos: vec2<f32>,
+    @location(1) radius_px: f32,
+};
+
 @vertex
-fn vs_pick_ring(in: VsIn) -> VsOut {
+fn vs_pick_ring(in: VsIn) -> VsPickRingOut {
     let xv = maybe_log(in.x, transform.scale_log.x);
     let yv = maybe_log(in.y, transform.scale_log.y);
     let range = transform.data_max - transform.data_min;
@@ -458,15 +464,38 @@ fn vs_pick_ring(in: VsIn) -> VsOut {
     let half_px = radius + max(style.line_width_px, 0.0) * 0.5 + QUAD_MARGIN_PX;
     let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
 
-    var out: VsOut;
+    var out: VsPickRingOut;
     out.pos = vec4<f32>(world, 0.0, 1.0);
     out.local_pos = in.quad_pos;
+    out.radius_px = radius;
+    return out;
+}
+
+@vertex
+fn vs_pick_ring_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> VsPickRingOut {
+    let resolved = resolve_mapped_style(in.style_index, inst);
+    let xv = maybe_log(in.x, transform.scale_log.x);
+    let yv = maybe_log(in.y, transform.scale_log.y);
+    let range = transform.data_max - transform.data_min;
+    let t = (vec2<f32>(xv, yv) - transform.data_min) / range;
+    let center_ndc = t * 2.0 - 1.0;
+    // Pick-ring mapped mode uses style.cap_half_px as radius_extra_px. The
+    // errorbar shader is not involved in this pipeline, so the slot is local
+    // to this decoration entry.
+    let radius = max(resolved.radius_px + style.cap_half_px, 0.0);
+    let half_px = radius + max(style.line_width_px, 0.0) * 0.5 + QUAD_MARGIN_PX;
+    let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
+
+    var out: VsPickRingOut;
+    out.pos = vec4<f32>(world, 0.0, 1.0);
+    out.local_pos = in.quad_pos;
+    out.radius_px = radius;
     return out;
 }
 
 @fragment
-fn fs_pick_ring(in: VsOut) -> @location(0) vec4<f32> {
-    let radius = max(style.point_radius_px, 0.0);
+fn fs_pick_ring(in: VsPickRingOut) -> @location(0) vec4<f32> {
+    let radius = max(in.radius_px, 0.0);
     let stroke = max(style.line_width_px, 0.5);
     let half_px = radius + stroke * 0.5 + QUAD_MARGIN_PX;
     let d = abs(length(in.local_pos * half_px) - radius) - stroke * 0.5;

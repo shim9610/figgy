@@ -161,6 +161,39 @@ pub struct DataScatterPointStyleOverride {
     pub style: DataScatterPointStyleConfig,
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct DataErrorBarPointStyleConfig {
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub error_bar_color: Option<Color>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub error_bar_width: Option<f32>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub error_bar_cap_size: Option<f32>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub cap_width: Option<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct DataErrorBarPointStyleOverride {
+    pub index: usize,
+    #[cfg_attr(feature = "serde", serde(flatten))]
+    pub style: DataErrorBarPointStyleConfig,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DataErrorBarStyleConfig {
@@ -168,6 +201,21 @@ pub struct DataErrorBarStyleConfig {
     pub error_bar_width: f32,
     pub error_bar_cap_size: f32,
     pub cap_width: f32,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub error_bar_style_table: Option<Vec<DataErrorBarPointStyleConfig>>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub error_bar_style_index_column: Option<ColumnId>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub error_bar_style_overrides: Option<Vec<DataErrorBarPointStyleOverride>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -204,6 +252,7 @@ pub enum ScatterShape {
 #[cfg(all(test, feature = "serde"))]
 mod serde_tests {
     use super::{
+        DataErrorBarPointStyleConfig, DataErrorBarPointStyleOverride, DataErrorBarStyleConfig,
         DataRenderType, DataScatterPointStyleConfig, DataScatterPointStyleOverride,
         DataScatterStyleConfig, ScatterShape, SeriesConfig,
     };
@@ -289,5 +338,50 @@ mod serde_tests {
         let back: DataScatterStyleConfig =
             serde_json::from_value(json).expect("parse scatter style");
         assert_eq!(back, scatter);
+    }
+
+    #[test]
+    fn errorbar_style_mapping_round_trips_with_flattened_override() {
+        let err = DataErrorBarStyleConfig {
+            error_bar_color: Color::BLACK,
+            error_bar_width: 1.0,
+            error_bar_cap_size: 3.0,
+            cap_width: 1.0,
+            error_bar_style_table: Some(vec![
+                DataErrorBarPointStyleConfig {
+                    error_bar_color: Some(Color::from_rgb8(255, 0, 0)),
+                    error_bar_width: Some(2.0),
+                    error_bar_cap_size: None,
+                    cap_width: None,
+                },
+                DataErrorBarPointStyleConfig {
+                    error_bar_color: None,
+                    error_bar_width: None,
+                    error_bar_cap_size: Some(8.0),
+                    cap_width: Some(3.0),
+                },
+            ]),
+            error_bar_style_index_column: Some("err_style_idx".into()),
+            error_bar_style_overrides: Some(vec![DataErrorBarPointStyleOverride {
+                index: 4,
+                style: DataErrorBarPointStyleConfig {
+                    error_bar_color: None,
+                    error_bar_width: Some(4.0),
+                    error_bar_cap_size: None,
+                    cap_width: Some(2.0),
+                },
+            }]),
+        };
+
+        let json = serde_json::to_value(&err).expect("serialize errorbar style");
+        assert_eq!(json["error_bar_style_index_column"], "err_style_idx");
+        assert_eq!(json["error_bar_style_overrides"][0]["index"], 4);
+        assert_eq!(json["error_bar_style_overrides"][0]["error_bar_width"], 4.0);
+        assert_eq!(json["error_bar_style_overrides"][0]["cap_width"], 2.0);
+        assert!(json["error_bar_style_overrides"][0].get("style").is_none());
+
+        let back: DataErrorBarStyleConfig =
+            serde_json::from_value(json).expect("parse errorbar style");
+        assert_eq!(back, err);
     }
 }

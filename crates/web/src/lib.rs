@@ -228,34 +228,66 @@ mod web {
             }
         }
 
+        fn push_errorbar_style_ref<'a>(
+            ids: &mut Vec<&'a str>,
+            err_style: &'a renderer::DataErrorBarStyleConfig,
+        ) {
+            if let Some(column) = &err_style.error_bar_style_index_column {
+                ids.push(column);
+            }
+        }
+
         let mut ids: Vec<&str> = vec![&cfg.x_column, &cfg.y_column];
         match &cfg.render_type {
             DataRenderType::Scatter { scatter } => push_scatter_ref(&mut ids, scatter),
             DataRenderType::Line { .. } => {}
             DataRenderType::ScatterLine { scatter, .. } => push_scatter_ref(&mut ids, scatter),
-            DataRenderType::ScatterErrorbarX { scatter, err_x, .. }
-            | DataRenderType::LineScatterErrorbarX { scatter, err_x, .. } => {
+            DataRenderType::ScatterErrorbarX {
+                scatter,
+                err_x,
+                err_style,
+            }
+            | DataRenderType::LineScatterErrorbarX {
+                scatter,
+                err_x,
+                err_style,
+                ..
+            } => {
                 push_scatter_ref(&mut ids, scatter);
+                push_errorbar_style_ref(&mut ids, err_style);
                 push_ref(&mut ids, err_x);
             }
-            DataRenderType::ScatterErrorbarY { scatter, err_y, .. }
-            | DataRenderType::LineScatterErrorbarY { scatter, err_y, .. } => {
+            DataRenderType::ScatterErrorbarY {
+                scatter,
+                err_y,
+                err_style,
+            }
+            | DataRenderType::LineScatterErrorbarY {
+                scatter,
+                err_y,
+                err_style,
+                ..
+            } => {
                 push_scatter_ref(&mut ids, scatter);
+                push_errorbar_style_ref(&mut ids, err_style);
                 push_ref(&mut ids, err_y);
             }
             DataRenderType::ScatterErrorbarXY {
                 scatter,
                 err_x,
                 err_y,
+                err_style,
                 ..
             }
             | DataRenderType::LineScatterErrorbarXY {
                 scatter,
                 err_x,
                 err_y,
+                err_style,
                 ..
             } => {
                 push_scatter_ref(&mut ids, scatter);
+                push_errorbar_style_ref(&mut ids, err_style);
                 push_ref(&mut ids, err_x);
                 push_ref(&mut ids, err_y);
             }
@@ -1126,8 +1158,9 @@ mod web {
         }
 
         /// Pick the nearest visible data primitive to canvas pixel `(x, y)`.
-        /// Line strokes snap to the nearest endpoint data point on the hit
-        /// segment; point/scatter hits return the nearest data point directly.
+        /// Scatter hits use the visible marker size, including per-point style
+        /// mapping; line strokes snap to the nearest endpoint data point on
+        /// the hit segment. Errorbar stems/caps are not pick targets.
         /// Returns JSON `{ source_id, series_id, point_index, data_x, data_y,
         /// distance_px }`, or `null` when no visible primitive is within
         /// `max_distance_px`.

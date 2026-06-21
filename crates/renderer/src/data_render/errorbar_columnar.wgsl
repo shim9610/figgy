@@ -176,11 +176,203 @@ fn fs_main() -> @location(0) vec4<f32> {
     return style.color_premul;
 }
 
+// Per-point errorbar style mapping (NOT part of the common block). The mapped
+// precise path adds a seventh per-instance f32 slot for
+// error_bar_style_index_column and group 2 bindings 5..7 for style rows.
+struct VsMappedIn {
+    @builtin(vertex_index) vi: u32,
+    @location(0) x: f32,
+    @location(1) y: f32,
+    @location(2) err_y_lo: f32,
+    @location(3) err_y_hi: f32,
+    @location(4) err_x_lo: f32,
+    @location(5) err_x_hi: f32,
+    @location(6) style_index: f32,
+};
+
+struct ErrorBarStyleSlot {
+    color_premul: vec4<f32>,
+    // x = stem width, y = cap half-size, z = mask, w = cap width.
+    params: vec4<f32>,
+};
+
+struct ErrorBarStyleOverride {
+    point_index: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+    color_premul: vec4<f32>,
+    params: vec4<f32>,
+};
+
+struct ErrorBarStyleMapMeta {
+    style_count: u32,
+    override_count: u32,
+    has_index: u32,
+    _pad: u32,
+};
+
+@group(2) @binding(5) var<storage, read> errorbar_style_slots: array<ErrorBarStyleSlot>;
+@group(2) @binding(6) var<storage, read> errorbar_style_overrides: array<ErrorBarStyleOverride>;
+@group(2) @binding(7) var<uniform> errorbar_style_meta: ErrorBarStyleMapMeta;
+
+struct ResolvedErrorBarStyle {
+    color_premul: vec4<f32>,
+    line_width_px: f32,
+    cap_half_px: f32,
+    cap_width_px: f32,
+};
+
+struct MappedOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) color_premul: vec4<f32>,
+};
+
+const ERRORBAR_STYLE_MASK_COLOR: u32 = 1u;
+const ERRORBAR_STYLE_MASK_STEM_WIDTH: u32 = 2u;
+const ERRORBAR_STYLE_MASK_CAP_HALF: u32 = 4u;
+const ERRORBAR_STYLE_MASK_CAP_WIDTH: u32 = 8u;
+
+fn valid_errorbar_style_index(v: f32) -> bool {
+    return v >= 0.0 && v <= 16777216.0 && abs(v - round(v)) <= 0.001;
+}
+
+fn apply_errorbar_style_slot(
+    base: ResolvedErrorBarStyle,
+    slot: ErrorBarStyleSlot,
+) -> ResolvedErrorBarStyle {
+    let mask = u32(slot.params.z);
+    var out = base;
+    if ((mask & ERRORBAR_STYLE_MASK_COLOR) != 0u) {
+        out.color_premul = slot.color_premul;
+    }
+    if ((mask & ERRORBAR_STYLE_MASK_STEM_WIDTH) != 0u) {
+        out.line_width_px = max(slot.params.x, 0.0);
+    }
+    if ((mask & ERRORBAR_STYLE_MASK_CAP_HALF) != 0u) {
+        out.cap_half_px = max(slot.params.y, 0.0);
+    }
+    if ((mask & ERRORBAR_STYLE_MASK_CAP_WIDTH) != 0u) {
+        out.cap_width_px = max(slot.params.w, 0.0);
+    }
+    return out;
+}
+
+fn resolve_errorbar_mapped_style(style_index: f32, inst: u32) -> ResolvedErrorBarStyle {
+    var out = ResolvedErrorBarStyle(
+        style.color_premul,
+        style.line_width_px,
+        style.cap_half_px,
+        style.cap_width_px,
+    );
+
+    if (errorbar_style_meta.has_index != 0u && valid_errorbar_style_index(style_index)) {
+        let idx = u32(round(style_index));
+        if (idx < errorbar_style_meta.style_count) {
+            out = apply_errorbar_style_slot(out, errorbar_style_slots[idx]);
+        }
+    }
+
+    for (var i = 0u; i < errorbar_style_meta.override_count; i = i + 1u) {
+        let ov = errorbar_style_overrides[i];
+        if (ov.point_index == inst) {
+            out = apply_errorbar_style_slot(out, ErrorBarStyleSlot(ov.color_premul, ov.params));
+        }
+    }
+    return out;
+}
+
+@vertex
+fn vs_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> MappedOut {
+    let resolved = resolve_errorbar_mapped_style(in.style_index, inst);
+    let seg = in.vi / 6u;
+
+    var out: MappedOut;
+    out.color_premul = resolved.color_premul;
+
+    let has_y = (in.err_y_lo + in.err_y_hi) > 0.0;
+    let has_x = (in.err_x_lo + in.err_x_hi) > 0.0;
+    let dir_enabled = select(has_x, has_y, seg < 3u);
+    if (!dir_enabled) {
+        let anchor = data_to_ndc(vec2<f32>(in.x, in.y));
+        out.pos = vec4<f32>(anchor, 0.0, 1.0);
+        return out;
+    }
+
+    let y_lo = in.y - in.err_y_lo;
+    let y_hi = in.y + in.err_y_hi;
+    let x_lo = in.x - in.err_x_lo;
+    let x_hi = in.x + in.err_x_hi;
+
+    var a_data: vec2<f32>;
+    var b_data: vec2<f32>;
+    var a_px = vec2<f32>(0.0, 0.0);
+    var b_px = vec2<f32>(0.0, 0.0);
+    var perp: vec2<f32>;
+    var half_stroke: f32;
+
+    if (seg == 0u) {
+        a_data = vec2<f32>(in.x, y_lo);
+        b_data = vec2<f32>(in.x, y_hi);
+        perp = vec2<f32>(1.0, 0.0);
+        half_stroke = resolved.line_width_px * 0.5;
+    } else if (seg == 1u) {
+        a_data = vec2<f32>(in.x, y_lo);
+        b_data = a_data;
+        a_px = vec2<f32>(-resolved.cap_half_px, 0.0);
+        b_px = vec2<f32>( resolved.cap_half_px, 0.0);
+        perp = vec2<f32>(0.0, 1.0);
+        half_stroke = resolved.cap_width_px * 0.5;
+    } else if (seg == 2u) {
+        a_data = vec2<f32>(in.x, y_hi);
+        b_data = a_data;
+        a_px = vec2<f32>(-resolved.cap_half_px, 0.0);
+        b_px = vec2<f32>( resolved.cap_half_px, 0.0);
+        perp = vec2<f32>(0.0, 1.0);
+        half_stroke = resolved.cap_width_px * 0.5;
+    } else if (seg == 3u) {
+        a_data = vec2<f32>(x_lo, in.y);
+        b_data = vec2<f32>(x_hi, in.y);
+        perp = vec2<f32>(0.0, 1.0);
+        half_stroke = resolved.line_width_px * 0.5;
+    } else if (seg == 4u) {
+        a_data = vec2<f32>(x_lo, in.y);
+        b_data = a_data;
+        a_px = vec2<f32>(0.0, -resolved.cap_half_px);
+        b_px = vec2<f32>(0.0,  resolved.cap_half_px);
+        perp = vec2<f32>(1.0, 0.0);
+        half_stroke = resolved.cap_width_px * 0.5;
+    } else {
+        a_data = vec2<f32>(x_hi, in.y);
+        b_data = a_data;
+        a_px = vec2<f32>(0.0, -resolved.cap_half_px);
+        b_px = vec2<f32>(0.0,  resolved.cap_half_px);
+        perp = vec2<f32>(1.0, 0.0);
+        half_stroke = resolved.cap_width_px * 0.5;
+    }
+
+    var corner_map = array<u32, 6>(0u, 1u, 2u, 2u, 1u, 3u);
+    let corner = corner_map[in.vi % 6u];
+    let at_a = corner < 2u;
+    let side = select(1.0, -1.0, (corner & 1u) == 0u);
+
+    let end_data = select(b_data, a_data, at_a);
+    let end_px = select(b_px, a_px, at_a);
+    let offset_px = end_px + perp * (side * half_stroke);
+    let ndc = data_to_ndc(end_data) + offset_px * transform.pixel_to_ndc;
+    out.pos = vec4<f32>(ndc, 0.0, 1.0);
+    return out;
+}
+
+@fragment
+fn fs_mapped(in: MappedOut) -> @location(0) vec4<f32> {
+    return in.color_premul;
+}
+
 // ──────────────── sketch mode (NOT part of the common block) ────────────────
 // Hand-drawn entry point — design SSoT: docs/SKETCH_DESIGN.md (§3 noise,
 // §5d errorbar). Selected as a separate pipeline variant; the precise entries
 // above are never modified and never read the sketch Transform fields.
-// fs_main is shared (it reads no varyings).
 
 // 1D value-noise pair — original formula: docs/SKETCH_DESIGN.md §3.
 // Deliberately duplicated per data shader (scatter/line/errorbar) and NOT in

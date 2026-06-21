@@ -28,7 +28,8 @@ pub use color::Color;
 pub use config::{Config, PickedPointRef, PickedPointsConfig};
 pub use data::{Column, ColumnId, DataCell};
 pub use data_config::{
-    DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterPointStyleConfig,
+    DataErrorBarPointStyleConfig, DataErrorBarPointStyleOverride, DataErrorBarStyleConfig,
+    DataLineStyleConfig, DataRenderType, DataScatterPointStyleConfig,
     DataScatterPointStyleOverride, DataScatterStyleConfig, ErrorRef, ScatterShape, SeriesConfig,
 };
 pub use drag::Draggable;
