@@ -61,12 +61,48 @@ cargo test -p model --features serde
 |---|---|
 | `scale` (AxisScale) | `"Linear"` `"Logarithmic"` |
 | `tick` (TickVisibility) | `"None"` `"Outside"` `"Inside"` `"Both"` |
-| `format` (LabelFormat) | `"Decimal"` `"Scientific"` `"Power"` |
+| `format` (LabelFormat) | `"Decimal"` `"Scientific"` `"Power"` `{ "Timestamp": { ... } }` |
 | `line_style` (LineStylePreset) | `"Solid"` `"Dash"` `"Dot"` `"DashDot"` `"DashDotDot"` `"ShortDash"` `"ShortDot"` `"ShortDashDot"` `"LongDash"` `"LongDashDot"` `"LongDashDotDot"` |
 | `corner` (LegendCorner) | `"TopLeft"` `"TopRight"` `"BottomLeft"` `"BottomRight"` |
 | `point_shape` (ScatterShape) | `"Circle"` `"Square"` `"Triangle"` `"Diamond"` `"Cross"` `"CircleFilled"` `"SquareFilled"` `"TriangleFilled"` `"DiamondFilled"` `"TriangleDown"` `"TriangleLeft"` `"TriangleRight"` `"Plus"` `"Pentagon"` `"Hexagon"` `"Octagon"` `"Star"` `"TriangleDownFilled"` `"TriangleLeftFilled"` `"TriangleRightFilled"` `"PlusFilled"` `"CrossFilled"` `"PentagonFilled"` `"HexagonFilled"` `"OctagonFilled"` `"StarFilled"` |
 | `render_type` (DataRenderType, 태그) | `"Scatter"` `"Line"` `"ScatterLine"` `"ScatterErrorbarX"` `"ScatterErrorbarY"` `"ScatterErrorbarXY"` `"LineScatterErrorbarX"` `"LineScatterErrorbarY"` `"LineScatterErrorbarXY"` |
 | `err_x` / `err_y` (ErrorRef, 태그) | `"Symmetric"` (`{column}`) / `"Asymmetric"` (`{lower, upper}`) |
+
+### Timestamp label format
+
+Timestamp labels are configured through `LabelFormat`, not through a new axis
+scale. Data coordinates remain numeric and timestamp calendar ticks are used
+only on linear axes.
+
+Default timestamp shape:
+
+```text
+{
+  "Timestamp": {
+    "unit": "Seconds",
+    "timezone": "Utc",
+    "label": "Auto",
+    "fractional": "Auto",
+    "tick_policy": "AutoCalendar"
+  }
+}
+```
+
+Use `"unit": "Milliseconds"` for JS timestamps. Use
+`"timezone": { "FixedOffsetMinutes": 540 }` for KST-like fixed offsets.
+Custom labels can use `"label": { "Pattern": "%Y-%m-%d %H:%M:%S.%f" }`;
+supported tokens are `%Y`, `%m`, `%d`, `%H`, `%M`, `%S`, `%f`, and `%%`.
+`AutoCalendar` measures label text and chooses coarser calendar tick units when
+needed so adjacent labels do not overlap.
+
+For large absolute Unix timestamps, upload browser data with
+`set_column_f64(id, Float64Array)` so the renderer can preserve sub-f32 deltas
+as GPU `(hi: f32, lo: f32)` pairs. `set_column_f32` is still appropriate for
+ordinary numeric coordinates or already-relative time values.
+
+The local demo [timestamp-demo.html](timestamp-demo.html) wires this path end to
+end: `Float64Array` timestamp upload, `LabelFormat::Timestamp`, `AutoCalendar`
+tick planning, chart-width changes, and export scale changes.
 
 ## 편집 시 의미 결합 주의
 

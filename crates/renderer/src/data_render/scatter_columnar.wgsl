@@ -1,8 +1,8 @@
 // Columnar SDF scatter shader.
 //
 // slot 0: unit quad (per-vertex, ±1 NDC).
-// slot 1: X column (per-instance, f32).
-// slot 2: Y column (per-instance, f32).
+// slot 1: X column (per-instance, f32 hi/lo pair).
+// slot 2: Y column (per-instance, f32 hi/lo pair).
 //
 // Marker shapes — style.shape_id is the stable code from mod.rs::shape_id().
 // Existing ids 0..8 are kept compatible; newer scientific-plot symbols append
@@ -13,6 +13,8 @@
 struct Transform {
     data_min: vec2<f32>,
     data_max: vec2<f32>,
+    data_min_lo: vec2<f32>,
+    data_max_lo: vec2<f32>,
     scale_log: vec2<f32>,
     pixel_to_ndc: vec2<f32>,
     // Generic per-panel style parameter slots. Interpretation belongs to the
@@ -26,7 +28,7 @@ struct Transform {
     //                resolution-invariant under DPI/export scaling.
     // constellation: [0] = (star_opacity, line_opacity, 0, 0)
     style_params: array<vec4<f32>, 3>,
-};  // 80 B (vec4 array at offset 32, stride 16 — alignment unchanged)
+};  // 96 B (vec4 array at offset 48, stride 16 — alignment unchanged)
 
 @group(0) @binding(0) var<uniform> transform: Transform;
 
@@ -52,16 +54,26 @@ fn maybe_log(v: f32, is_log: f32) -> f32 {
     let lv = log(max(v, 1e-30)) / log(10.0);
     return mix(v, lv, is_log);
 }
+
+fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f32, is_log: f32) -> f32 {
+    let raw = v.x + v.y;
+    let linear_num = (v.x - min_hi) + (v.y - min_lo);
+    let range = (max_hi - min_hi) + (max_lo - min_lo);
+    let log_num = (maybe_log(raw, is_log) - min_hi) - min_lo;
+    return mix(linear_num / range, log_num / range, is_log);
+}
+
+fn data_to_ndc(xv: vec2<f32>, yv: vec2<f32>) -> vec2<f32> {
+    let tx = axis_pair_to_t(xv, transform.data_min.x, transform.data_max.x, transform.data_min_lo.x, transform.data_max_lo.x, transform.scale_log.x);
+    let ty = axis_pair_to_t(yv, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y);
+    return vec2<f32>(tx, ty) * 2.0 - 1.0;
+}
 // ───── END common block ─────
-//
-// Note: this shader inlines the `data_to_ndc` mapping inside `vs_main`
-// rather than defining it as a function. The inline formula must match
-// SHADER_COMMON.md §4 (4a / 4b are equivalent).
 
 struct VsIn {
     @location(0) quad_pos: vec2<f32>,
-    @location(1) x: f32,
-    @location(2) y: f32,
+    @location(1) x: vec2<f32>,
+    @location(2) y: vec2<f32>,
 };
 
 struct VsOut {
@@ -141,11 +153,7 @@ fn rotate2(p: vec2<f32>, a: f32) -> vec2<f32> {
 
 @vertex
 fn vs_main(in: VsIn) -> VsOut {
-    let xv = maybe_log(in.x, transform.scale_log.x);
-    let yv = maybe_log(in.y, transform.scale_log.y);
-    let range = transform.data_max - transform.data_min;
-    let t = (vec2<f32>(xv, yv) - transform.data_min) / range;
-    let center_ndc = t * 2.0 - 1.0;
+    let center_ndc = data_to_ndc(in.x, in.y);
     let half_px =
         visual_shape_radius(base_shape_id(style.shape_id), style.point_radius_px) + QUAD_MARGIN_PX;
     let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
@@ -320,8 +328,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 // scatter series with a style table, style-index column, or sparse overrides.
 struct VsMappedIn {
     @location(0) quad_pos: vec2<f32>,
-    @location(1) x: f32,
-    @location(2) y: f32,
+    @location(1) x: vec2<f32>,
+    @location(2) y: vec2<f32>,
     @location(3) style_index: f32,
 };
 
@@ -412,11 +420,7 @@ fn resolve_mapped_style(style_index: f32, inst: u32) -> ResolvedMappedStyle {
 @vertex
 fn vs_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> VsMappedOut {
     let resolved = resolve_mapped_style(in.style_index, inst);
-    let xv = maybe_log(in.x, transform.scale_log.x);
-    let yv = maybe_log(in.y, transform.scale_log.y);
-    let range = transform.data_max - transform.data_min;
-    let t = (vec2<f32>(xv, yv) - transform.data_min) / range;
-    let center_ndc = t * 2.0 - 1.0;
+    let center_ndc = data_to_ndc(in.x, in.y);
     let half_px =
         visual_shape_radius(base_shape_id(resolved.shape_id), resolved.radius_px) + QUAD_MARGIN_PX;
     let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
@@ -455,11 +459,7 @@ struct VsPickRingOut {
 
 @vertex
 fn vs_pick_ring(in: VsIn) -> VsPickRingOut {
-    let xv = maybe_log(in.x, transform.scale_log.x);
-    let yv = maybe_log(in.y, transform.scale_log.y);
-    let range = transform.data_max - transform.data_min;
-    let t = (vec2<f32>(xv, yv) - transform.data_min) / range;
-    let center_ndc = t * 2.0 - 1.0;
+    let center_ndc = data_to_ndc(in.x, in.y);
     let radius = max(style.point_radius_px, 0.0);
     let half_px = radius + max(style.line_width_px, 0.0) * 0.5 + QUAD_MARGIN_PX;
     let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
@@ -474,11 +474,7 @@ fn vs_pick_ring(in: VsIn) -> VsPickRingOut {
 @vertex
 fn vs_pick_ring_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> VsPickRingOut {
     let resolved = resolve_mapped_style(in.style_index, inst);
-    let xv = maybe_log(in.x, transform.scale_log.x);
-    let yv = maybe_log(in.y, transform.scale_log.y);
-    let range = transform.data_max - transform.data_min;
-    let t = (vec2<f32>(xv, yv) - transform.data_min) / range;
-    let center_ndc = t * 2.0 - 1.0;
+    let center_ndc = data_to_ndc(in.x, in.y);
     // Pick-ring mapped mode uses style.cap_half_px as radius_extra_px. The
     // errorbar shader is not involved in this pipeline, so the slot is local
     // to this decoration entry.
@@ -542,11 +538,7 @@ struct VsSketchOut {
 // same expanded scale.
 @vertex
 fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> VsSketchOut {
-    let xv = maybe_log(in.x, transform.scale_log.x);
-    let yv = maybe_log(in.y, transform.scale_log.y);
-    let range = transform.data_max - transform.data_min;
-    let t = (vec2<f32>(xv, yv) - transform.data_min) / range;
-    let center_ndc = t * 2.0 - 1.0;
+    let center_ndc = data_to_ndc(in.x, in.y);
 
     let amp = max(transform.style_params[0].x, 0.0);
     let wobble = min(amp * 0.5, style.point_radius_px * 0.35);
@@ -623,11 +615,7 @@ struct VsConstellationStarOut {
 
 @vertex
 fn vs_constellation_star(in: VsIn, @builtin(instance_index) inst: u32) -> VsConstellationStarOut {
-    let xv = maybe_log(in.x, transform.scale_log.x);
-    let yv = maybe_log(in.y, transform.scale_log.y);
-    let range = transform.data_max - transform.data_min;
-    let t = (vec2<f32>(xv, yv) - transform.data_min) / range;
-    let center_ndc = t * 2.0 - 1.0;
+    let center_ndc = data_to_ndc(in.x, in.y);
 
     let seed = style.series_salt;
 
@@ -706,11 +694,7 @@ struct VsPlanetOut {
 
 @vertex
 fn vs_planet(in: VsIn, @builtin(instance_index) inst: u32) -> VsPlanetOut {
-    let xv = maybe_log(in.x, transform.scale_log.x);
-    let yv = maybe_log(in.y, transform.scale_log.y);
-    let range = transform.data_max - transform.data_min;
-    let t = (vec2<f32>(xv, yv) - transform.data_min) / range;
-    let center_ndc = t * 2.0 - 1.0;
+    let center_ndc = data_to_ndc(in.x, in.y);
 
     let half_px = style.point_radius_px * PLANET_QUAD_EXTENT + QUAD_MARGIN_PX;
     let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);

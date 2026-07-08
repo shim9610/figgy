@@ -9,6 +9,103 @@ pub enum LabelFormat {
     Scientific,
     /// Typographic superscript exponent (RichText): `10³`, `1.5×10⁻³`, `10⁻¹`.
     Power,
+    /// Unix-epoch timestamp labels. Data values stay numeric; this only
+    /// changes tick planning and label text on linear axes.
+    Timestamp(TimestampLabelFormat),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum TimestampUnit {
+    Seconds,
+    Milliseconds,
+    Microseconds,
+    Nanoseconds,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum TimestampZone {
+    Utc,
+    /// Fixed offset from UTC in minutes. Korea Standard Time is 540.
+    FixedOffsetMinutes(i32),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum TimestampLabelMode {
+    Auto,
+    /// Minimal strftime-like pattern: %Y %m %d %H %M %S %f and %%.
+    Pattern(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum FractionalSecondDigits {
+    Auto,
+    Fixed(u8),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum TimestampTickPolicy {
+    /// Calendar-aware ticks such as minutes, hours, days, months, and years.
+    AutoCalendar,
+    /// Reuse the numeric `major_spacing` / `minor_count` tick walkers.
+    NumericSpacing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct TimestampLabelFormat {
+    pub unit: TimestampUnit,
+    pub timezone: TimestampZone,
+    pub label: TimestampLabelMode,
+    pub fractional: FractionalSecondDigits,
+    pub tick_policy: TimestampTickPolicy,
+}
+
+impl Default for TimestampUnit {
+    fn default() -> Self {
+        Self::Seconds
+    }
+}
+
+impl Default for TimestampZone {
+    fn default() -> Self {
+        Self::Utc
+    }
+}
+
+impl Default for TimestampLabelMode {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+impl Default for FractionalSecondDigits {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+impl Default for TimestampTickPolicy {
+    fn default() -> Self {
+        Self::AutoCalendar
+    }
+}
+
+impl Default for TimestampLabelFormat {
+    fn default() -> Self {
+        Self {
+            unit: TimestampUnit::default(),
+            timezone: TimestampZone::default(),
+            label: TimestampLabelMode::default(),
+            fractional: FractionalSecondDigits::default(),
+            tick_policy: TimestampTickPolicy::default(),
+        }
+    }
 }
 
 fn auto_sig_linear(min: f64, max: f64, step: f64) -> u8 {
@@ -109,6 +206,21 @@ mod tests {
         let s =
             LabelStyle::compute_auto_significant_digits(AxisScale::Logarithmic, 0.001, 1000.0, 1.0);
         assert_eq!(s, 2);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn timestamp_format_serde_roundtrip() {
+        let fmt = LabelFormat::Timestamp(TimestampLabelFormat {
+            unit: TimestampUnit::Milliseconds,
+            timezone: TimestampZone::FixedOffsetMinutes(540),
+            label: TimestampLabelMode::Pattern("%Y-%m-%d %H:%M:%S.%f".into()),
+            fractional: FractionalSecondDigits::Fixed(3),
+            tick_policy: TimestampTickPolicy::NumericSpacing,
+        });
+        let json = serde_json::to_string(&fmt).unwrap();
+        let got: LabelFormat = serde_json::from_str(&json).unwrap();
+        assert_eq!(got, fmt);
     }
 
     // auto_significant_digits should mutate only the sig field.

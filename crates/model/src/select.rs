@@ -350,9 +350,15 @@ impl Selectable for AxisLabelElement {
         // Representative label extents at the label font/size. Digits share
         // one height; width approximates a `significant_digits`-long number
         // (+2 for a sign / decimal point).
-        let digits = (ls.significant_digits.max(1) as usize) + 2;
+        let sample_text = match &ls.format {
+            crate::format::LabelFormat::Timestamp(_) => "0000-00-00 00:00:00.000".to_string(),
+            _ => {
+                let digits = (ls.significant_digits.max(1) as usize) + 2;
+                "0".repeat(digits)
+            }
+        };
         let sample = crate::text::RichText {
-            segments: crate::text::rich_segments_from_text(&"0".repeat(digits)),
+            segments: crate::text::rich_segments_from_text(&sample_text),
             color: ls.color,
             font_size: ls.font_size,
             font: ls.label_font.clone(),

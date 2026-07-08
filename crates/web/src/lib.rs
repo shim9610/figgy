@@ -8,8 +8,8 @@
 //! when they intentionally want to own those browser responsibilities.
 //!
 //! Lifecycle model: **one instance, register/unregister**. Columns and series
-//! are managed by id — `set_column_f32` is an upsert that skips re-uploading
-//! identical data, `remove_*` unregisters (and drops dependents), and pool
+//! are managed by id — `set_column_f32` / `set_column_f64` are upserts that
+//! skip re-uploading identical data, `remove_*` unregisters (and drops dependents), and pool
 //! defragmentation runs automatically after removals. Pool internals
 //! (capacity stats, defrag policy) are intentionally not exposed.
 //!
@@ -202,6 +202,15 @@ mod web {
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
         for v in data {
             h ^= v.to_bits() as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        h
+    }
+
+    fn hash_f64s(data: &[f64]) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for v in data {
+            h ^= v.to_bits();
             h = h.wrapping_mul(0x0000_0100_0000_01b3);
         }
         h
@@ -801,6 +810,49 @@ mod web {
             // headed for the drop. Keep it as the fit mirror instead —
             // errorbar-aware auto-fit re-reads value/err pairs from it.
             self.col_data.insert(id.to_string(), column.data);
+            self.columns.insert(id.to_string(), signature);
+            Ok(())
+        }
+
+        /// Register or update a high-precision data column under `id`
+        /// (`Float64Array`).
+        ///
+        /// The GPU pool stores each logical value as two f32 lanes `(hi, lo)`.
+        /// Use this for large absolute timestamps or coordinates where
+        /// `Float32Array` would lose sub-unit deltas before upload.
+        pub fn set_column_f64(&mut self, id: &str, data: &[f64]) -> Result<(), JsValue> {
+            let signature = (data.len(), hash_f64s(data));
+            if self.columns.get(id) == Some(&signature) {
+                return Ok(());
+            }
+            if self.columns.contains_key(id) {
+                self.renderer.remove_column(id);
+                self.needs_defrag = true;
+            }
+
+            let (mut min, mut max) = (f64::INFINITY, f64::NEG_INFINITY);
+            for &v in data {
+                if v < min {
+                    min = v;
+                }
+                if v > max {
+                    max = v;
+                }
+            }
+            let column = Column {
+                data: data.to_vec(),
+                min,
+                max,
+            };
+            self.renderer.add_hilo_column(id, &column).map_err(js_err)?;
+            // Picking/errorbar-fit mirrors are still f32-oriented; rendering
+            // uses the hi/lo GPU path above, while these mirrors preserve the
+            // existing browser interaction contract until picker lookup grows
+            // a high-precision accessor.
+            self.col_data.insert(
+                id.to_string(),
+                column.data.iter().map(|&v| v as f32).collect(),
+            );
             self.columns.insert(id.to_string(), signature);
             Ok(())
         }

@@ -30,6 +30,8 @@
 struct Transform {
     data_min: vec2<f32>,
     data_max: vec2<f32>,
+    data_min_lo: vec2<f32>,
+    data_max_lo: vec2<f32>,
     scale_log: vec2<f32>,
     pixel_to_ndc: vec2<f32>,
     // Generic per-panel style parameter slots. Interpretation belongs to the
@@ -43,7 +45,7 @@ struct Transform {
     //                resolution-invariant under DPI/export scaling.
     // constellation: [0] = (star_opacity, line_opacity, 0, 0)
     style_params: array<vec4<f32>, 3>,
-};  // 80 B (vec4 array at offset 32, stride 16 — alignment unchanged)
+};  // 96 B (vec4 array at offset 48, stride 16 — alignment unchanged)
 
 @group(0) @binding(0) var<uniform> transform: Transform;
 
@@ -52,12 +54,18 @@ fn maybe_log(v: f32, is_log: f32) -> f32 {
     return mix(v, lv, is_log);
 }
 
-fn data_to_ndc(v: vec2<f32>) -> vec2<f32> {
-    let xv = maybe_log(v.x, transform.scale_log.x);
-    let yv = maybe_log(v.y, transform.scale_log.y);
-    let range = transform.data_max - transform.data_min;
-    let t = (vec2<f32>(xv, yv) - transform.data_min) / range;
-    return t * 2.0 - 1.0;
+fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f32, is_log: f32) -> f32 {
+    let raw = v.x + v.y;
+    let linear_num = (v.x - min_hi) + (v.y - min_lo);
+    let range = (max_hi - min_hi) + (max_lo - min_lo);
+    let log_num = (maybe_log(raw, is_log) - min_hi) - min_lo;
+    return mix(linear_num / range, log_num / range, is_log);
+}
+
+fn data_to_ndc(xv: vec2<f32>, yv: vec2<f32>) -> vec2<f32> {
+    let tx = axis_pair_to_t(xv, transform.data_min.x, transform.data_max.x, transform.data_min_lo.x, transform.data_max_lo.x, transform.scale_log.x);
+    let ty = axis_pair_to_t(yv, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y);
+    return vec2<f32>(tx, ty) * 2.0 - 1.0;
 }
 // ───── END common block ─────
 
@@ -85,8 +93,11 @@ const WG: u32 = 256u;
 var<workgroup> scan_shared: array<f32, 256>;
 
 fn point_px(i: u32) -> vec2<f32> {
-    let p = vec2<f32>(pool[params.x_base + i], pool[params.y_base + i]);
-    return data_to_ndc(p) / transform.pixel_to_ndc;
+    let xi = params.x_base + i * 2u;
+    let yi = params.y_base + i * 2u;
+    let x = vec2<f32>(pool[xi], pool[xi + 1u]);
+    let y = vec2<f32>(pool[yi], pool[yi + 1u]);
+    return data_to_ndc(x, y) / transform.pixel_to_ndc;
 }
 
 @compute @workgroup_size(256)

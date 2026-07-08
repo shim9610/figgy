@@ -2,8 +2,8 @@
 // path-stroke coverage.
 //
 // One line segment = one instance, 4 vertices per instance (TriangleStrip).
-// The X and Y columns are bound twice: the second binding starts at a 4-byte
-// (one f32) offset, so instance `i` sees points [i] and [i+1] at once.
+// The X and Y columns are bound twice: the second binding starts one logical
+// f32-pair value later, so instance `i` sees points [i] and [i+1] at once.
 //
 // Corner mapping per segment:
 //   vid 0 : at A, −normal
@@ -32,6 +32,8 @@
 struct Transform {
     data_min: vec2<f32>,
     data_max: vec2<f32>,
+    data_min_lo: vec2<f32>,
+    data_max_lo: vec2<f32>,
     scale_log: vec2<f32>,
     pixel_to_ndc: vec2<f32>,
     // Generic per-panel style parameter slots. Interpretation belongs to the
@@ -45,7 +47,7 @@ struct Transform {
     //                resolution-invariant under DPI/export scaling.
     // constellation: [0] = (star_opacity, line_opacity, 0, 0)
     style_params: array<vec4<f32>, 3>,
-};  // 80 B (vec4 array at offset 32, stride 16 — alignment unchanged)
+};  // 96 B (vec4 array at offset 48, stride 16 — alignment unchanged)
 
 @group(0) @binding(0) var<uniform> transform: Transform;
 
@@ -72,20 +74,26 @@ fn maybe_log(v: f32, is_log: f32) -> f32 {
     return mix(v, lv, is_log);
 }
 
-fn data_to_ndc(xv: f32, yv: f32) -> vec2<f32> {
-    let xv2 = maybe_log(xv, transform.scale_log.x);
-    let yv2 = maybe_log(yv, transform.scale_log.y);
-    let range = transform.data_max - transform.data_min;
-    let t = (vec2<f32>(xv2, yv2) - transform.data_min) / range;
-    return t * 2.0 - 1.0;
+fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f32, is_log: f32) -> f32 {
+    let raw = v.x + v.y;
+    let linear_num = (v.x - min_hi) + (v.y - min_lo);
+    let range = (max_hi - min_hi) + (max_lo - min_lo);
+    let log_num = (maybe_log(raw, is_log) - min_hi) - min_lo;
+    return mix(linear_num / range, log_num / range, is_log);
+}
+
+fn data_to_ndc(xv: vec2<f32>, yv: vec2<f32>) -> vec2<f32> {
+    let tx = axis_pair_to_t(xv, transform.data_min.x, transform.data_max.x, transform.data_min_lo.x, transform.data_max_lo.x, transform.scale_log.x);
+    let ty = axis_pair_to_t(yv, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y);
+    return vec2<f32>(tx, ty) * 2.0 - 1.0;
 }
 // ───── END common block ─────
 
 struct VsIn {
-    @location(0) x_a: f32,
-    @location(1) y_a: f32,
-    @location(2) x_b: f32,
-    @location(3) y_b: f32,
+    @location(0) x_a: vec2<f32>,
+    @location(1) y_a: vec2<f32>,
+    @location(2) x_b: vec2<f32>,
+    @location(3) y_b: vec2<f32>,
 };
 
 // Line-only extra instance inputs (outside the common block): cumulative
@@ -468,6 +476,11 @@ struct StarVsParams {
 @group(3) @binding(1) var<storage, read> star_pool: array<f32>;
 @group(3) @binding(2) var<uniform> star_vsp: StarVsParams;
 
+fn star_pool_pair(base: u32, i: u32) -> vec2<f32> {
+    let j = base + i * 2u;
+    return vec2<f32>(star_pool[j], star_pool[j + 1u]);
+}
+
 // Candidate slot pitch in arc px. CPU twin: line_arc.rs
 // STAR_SLOT_PITCH_FACTOR sizes the indirect dispatch with the same formula —
 // the two must agree or slot positions and the dispatch count diverge.
@@ -528,11 +541,11 @@ fn vs_stars(
     if (seg_len <= 0.0) { alive = false; }
     let t = clamp((arc_here - seg_a) / max(seg_len, 1e-6), 0.0, 1.0);
 
-    let a_px = data_to_ndc(star_pool[star_vsp.x_base + lo], star_pool[star_vsp.y_base + lo])
+    let a_px = data_to_ndc(star_pool_pair(star_vsp.x_base, lo), star_pool_pair(star_vsp.y_base, lo))
         / transform.pixel_to_ndc;
     let b_px = data_to_ndc(
-        star_pool[star_vsp.x_base + lo + 1u],
-        star_pool[star_vsp.y_base + lo + 1u],
+        star_pool_pair(star_vsp.x_base, lo + 1u),
+        star_pool_pair(star_vsp.y_base, lo + 1u),
     ) / transform.pixel_to_ndc;
     let delta = b_px - a_px;
     let len = length(delta);

@@ -270,6 +270,7 @@ export class FiggyChartElement extends HTMLElement {
 
   register_font(bytes) { return this.#kernelForCall().register_font(bytes); }
   set_column_f32(id, data) { return this.#kernelForCall().set_column_f32(id, data); }
+  set_column_f64(id, data) { return this.#kernelForCall().set_column_f64(id, data); }
   remove_column(id) { return this.#kernelForCall().remove_column(id); }
   add_line_series(seriesId, xColumn, yColumn, lineWidth, label) {
     return this.#kernelForCall().add_line_series(seriesId, xColumn, yColumn, lineWidth, label);

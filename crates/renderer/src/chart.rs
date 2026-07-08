@@ -25,7 +25,9 @@ fn apply_axis_range(axis: &mut crate::config::AxisOptions, min: f64, max: f64, l
     } else {
         axis.major_spacing = nice_spacing(max - min);
         axis.minor_count = 4;
-        axis.label_style.format = LabelFormat::Decimal;
+        if !matches!(axis.label_style.format, LabelFormat::Timestamp(_)) {
+            axis.label_style.format = LabelFormat::Decimal;
+        }
         axis.label_style.significant_digits = 3;
     }
 }
@@ -510,6 +512,26 @@ mod tests {
         assert_eq!(c.config().bottom_x.max, 100.0);
         assert_eq!(c.config().top_x.min, 0.0);
         assert_eq!(c.config().top_x.max, 100.0);
+    }
+
+    #[test]
+    fn linear_range_preserves_timestamp_label_format() {
+        let mut c = Chart::new(dummy_config());
+        c.config_mut().bottom_x.label_style.format =
+            LabelFormat::Timestamp(crate::format::TimestampLabelFormat::default());
+        c.config_mut().top_x.label_style.format =
+            LabelFormat::Timestamp(crate::format::TimestampLabelFormat::default());
+
+        c.set_x_range(0.0, 100.0);
+
+        assert!(matches!(
+            c.config().bottom_x.label_style.format,
+            LabelFormat::Timestamp(_)
+        ));
+        assert!(matches!(
+            c.config().top_x.label_style.format,
+            LabelFormat::Timestamp(_)
+        ));
     }
 
     #[test]

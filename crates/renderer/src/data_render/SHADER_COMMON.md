@@ -59,6 +59,8 @@
 struct Transform {
     data_min: vec2<f32>,
     data_max: vec2<f32>,
+    data_min_lo: vec2<f32>,
+    data_max_lo: vec2<f32>,
     scale_log: vec2<f32>,
     pixel_to_ndc: vec2<f32>,
     // Generic per-panel style parameter slots. Interpretation belongs to the
@@ -72,7 +74,7 @@ struct Transform {
     //                resolution-invariant under DPI/export scaling.
     // constellation: [0] = (star_opacity, line_opacity, 0, 0)
     style_params: array<vec4<f32>, 3>,
-};  // 80 B (vec4 array at offset 32, stride 16 — alignment unchanged)
+};  // 96 B (vec4 array at offset 48, stride 16 — alignment unchanged)
 
 @group(0) @binding(0) var<uniform> transform: Transform;
 ```
@@ -152,43 +154,30 @@ fn maybe_log(v: f32, is_log: f32) -> f32 {
 
 ---
 
-## 4. `data_to_ndc` — 데이터 좌표 → NDC
+## 4. `axis_pair_to_t` / `data_to_ndc` — hi/lo 데이터 좌표 → NDC
 
-X·Y에 각각 `maybe_log`을 적용한 뒤 `[data_min, data_max] → [-1, 1]`로
-선형 매핑.
+Column pool logical values are `vec2<f32>(hi, lo)`. Linear axes compute the
+range-local numerator as `(value_hi - min_hi) + (value_lo - min_lo)` so large
+absolute timestamps still preserve small deltas after upload. Log axes use the
+recombined display value (`hi + lo`) before comparing against the log-transformed
+axis bounds.
 
-`line_columnar.wgsl`은 `(x: f32, y: f32)` 두 인자 형태, `errorbar_columnar.wgsl`은
-`vec2<f32>` 한 인자 형태로 약간 다른 시그니처를 쓴다(둘 다 SSoT). 의미는
-동일하니, 어느 한쪽을 바꾸면 다른 쪽도 같은 의미로 바꾼다.
-
-### 4a. `vec2<f32>` 인자 형태 (errorbar, arc)
-
-<!-- shader-common: applies-to=errorbar,arc -->
+<!-- shader-common: applies-to=scatter,line,errorbar,arc -->
 ```wgsl
-fn data_to_ndc(v: vec2<f32>) -> vec2<f32> {
-    let xv = maybe_log(v.x, transform.scale_log.x);
-    let yv = maybe_log(v.y, transform.scale_log.y);
-    let range = transform.data_max - transform.data_min;
-    let t = (vec2<f32>(xv, yv) - transform.data_min) / range;
-    return t * 2.0 - 1.0;
+fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f32, is_log: f32) -> f32 {
+    let raw = v.x + v.y;
+    let linear_num = (v.x - min_hi) + (v.y - min_lo);
+    let range = (max_hi - min_hi) + (max_lo - min_lo);
+    let log_num = (maybe_log(raw, is_log) - min_hi) - min_lo;
+    return mix(linear_num / range, log_num / range, is_log);
+}
+
+fn data_to_ndc(xv: vec2<f32>, yv: vec2<f32>) -> vec2<f32> {
+    let tx = axis_pair_to_t(xv, transform.data_min.x, transform.data_max.x, transform.data_min_lo.x, transform.data_max_lo.x, transform.scale_log.x);
+    let ty = axis_pair_to_t(yv, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y);
+    return vec2<f32>(tx, ty) * 2.0 - 1.0;
 }
 ```
-
-### 4b. `(f32, f32)` 인자 형태 (line)
-
-<!-- shader-common: applies-to=line -->
-```wgsl
-fn data_to_ndc(xv: f32, yv: f32) -> vec2<f32> {
-    let xv2 = maybe_log(xv, transform.scale_log.x);
-    let yv2 = maybe_log(yv, transform.scale_log.y);
-    let range = transform.data_max - transform.data_min;
-    let t = (vec2<f32>(xv2, yv2) - transform.data_min) / range;
-    return t * 2.0 - 1.0;
-}
-```
-
-`scatter_columnar.wgsl`은 `vs_main` 본체에 같은 식을 인라인해 두었다
-(별도 함수로 분리하지 않음). 수정 시 인라인 식도 같은 의미로 갱신할 것.
 
 ---
 

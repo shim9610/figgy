@@ -20,6 +20,8 @@
 struct Transform {
     data_min: vec2<f32>,
     data_max: vec2<f32>,
+    data_min_lo: vec2<f32>,
+    data_max_lo: vec2<f32>,
     scale_log: vec2<f32>,
     pixel_to_ndc: vec2<f32>,
     // Generic per-panel style parameter slots. Interpretation belongs to the
@@ -33,7 +35,7 @@ struct Transform {
     //                resolution-invariant under DPI/export scaling.
     // constellation: [0] = (star_opacity, line_opacity, 0, 0)
     style_params: array<vec4<f32>, 3>,
-};  // 80 B (vec4 array at offset 32, stride 16 — alignment unchanged)
+};  // 96 B (vec4 array at offset 48, stride 16 — alignment unchanged)
 
 @group(0) @binding(0) var<uniform> transform: Transform;
 
@@ -60,23 +62,54 @@ fn maybe_log(v: f32, is_log: f32) -> f32 {
     return mix(v, lv, is_log);
 }
 
-fn data_to_ndc(v: vec2<f32>) -> vec2<f32> {
-    let xv = maybe_log(v.x, transform.scale_log.x);
-    let yv = maybe_log(v.y, transform.scale_log.y);
-    let range = transform.data_max - transform.data_min;
-    let t = (vec2<f32>(xv, yv) - transform.data_min) / range;
-    return t * 2.0 - 1.0;
+fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f32, is_log: f32) -> f32 {
+    let raw = v.x + v.y;
+    let linear_num = (v.x - min_hi) + (v.y - min_lo);
+    let range = (max_hi - min_hi) + (max_lo - min_lo);
+    let log_num = (maybe_log(raw, is_log) - min_hi) - min_lo;
+    return mix(linear_num / range, log_num / range, is_log);
+}
+
+fn data_to_ndc(xv: vec2<f32>, yv: vec2<f32>) -> vec2<f32> {
+    let tx = axis_pair_to_t(xv, transform.data_min.x, transform.data_max.x, transform.data_min_lo.x, transform.data_max_lo.x, transform.scale_log.x);
+    let ty = axis_pair_to_t(yv, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y);
+    return vec2<f32>(tx, ty) * 2.0 - 1.0;
 }
 // ───── END common block ─────
 
+struct DataPoint {
+    x: vec2<f32>,
+    y: vec2<f32>,
+};
+
+fn pair_value(v: vec2<f32>) -> f32 {
+    return v.x + v.y;
+}
+
+fn pair_add(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(a.x + b.x, a.y + b.y);
+}
+
+fn pair_sub(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(a.x - b.x, a.y - b.y);
+}
+
+fn point_ndc(p: DataPoint) -> vec2<f32> {
+    return data_to_ndc(p.x, p.y);
+}
+
+fn select_point(b: DataPoint, a: DataPoint, pick_a: bool) -> DataPoint {
+    return DataPoint(select(b.x, a.x, pick_a), select(b.y, a.y, pick_a));
+}
+
 struct VsIn {
     @builtin(vertex_index) vi: u32,
-    @location(0) x: f32,
-    @location(1) y: f32,
-    @location(2) err_y_lo: f32,
-    @location(3) err_y_hi: f32,
-    @location(4) err_x_lo: f32,
-    @location(5) err_x_hi: f32,
+    @location(0) x: vec2<f32>,
+    @location(1) y: vec2<f32>,
+    @location(2) err_y_lo: vec2<f32>,
+    @location(3) err_y_hi: vec2<f32>,
+    @location(4) err_x_lo: vec2<f32>,
+    @location(5) err_x_hi: vec2<f32>,
 };
 
 @vertex
@@ -87,25 +120,25 @@ fn vs_main(in: VsIn) -> @builtin(position) vec4<f32> {
 
     // Zero-filled err columns disable a whole direction, caps included:
     // collapse its segments to the anchor so every triangle has zero area.
-    let has_y = (in.err_y_lo + in.err_y_hi) > 0.0;
-    let has_x = (in.err_x_lo + in.err_x_hi) > 0.0;
+    let has_y = (pair_value(in.err_y_lo) + pair_value(in.err_y_hi)) > 0.0;
+    let has_x = (pair_value(in.err_x_lo) + pair_value(in.err_x_hi)) > 0.0;
     let dir_enabled = select(has_x, has_y, seg < 3u);
     if (!dir_enabled) {
-        let anchor = data_to_ndc(vec2<f32>(in.x, in.y));
+        let anchor = data_to_ndc(in.x, in.y);
         return vec4<f32>(anchor, 0.0, 1.0);
     }
 
-    let y_lo = in.y - in.err_y_lo;
-    let y_hi = in.y + in.err_y_hi;
-    let x_lo = in.x - in.err_x_lo;
-    let x_hi = in.x + in.err_x_hi;
+    let y_lo = pair_sub(in.y, in.err_y_lo);
+    let y_hi = pair_add(in.y, in.err_y_hi);
+    let x_lo = pair_sub(in.x, in.err_x_lo);
+    let x_hi = pair_add(in.x, in.err_x_hi);
 
     // Each segment is a quad between endpoints A and B: a data-space
     // position plus a pixel-space offset (caps run ±cap_half_px from a
     // single data point). `perp` is the pixel-space expansion axis; all
     // segments are axis-aligned, so no normalization is needed.
-    var a_data: vec2<f32>;
-    var b_data: vec2<f32>;
+    var a_data: DataPoint;
+    var b_data: DataPoint;
     var a_px = vec2<f32>(0.0, 0.0);
     var b_px = vec2<f32>(0.0, 0.0);
     var perp: vec2<f32>;
@@ -113,13 +146,13 @@ fn vs_main(in: VsIn) -> @builtin(position) vec4<f32> {
 
     if (seg == 0u) {
         // Y stem: vertical in data space, expand along X.
-        a_data = vec2<f32>(in.x, y_lo);
-        b_data = vec2<f32>(in.x, y_hi);
+        a_data = DataPoint(in.x, y_lo);
+        b_data = DataPoint(in.x, y_hi);
         perp = vec2<f32>(1.0, 0.0);
         half_stroke = style.line_width_px * 0.5;
     } else if (seg == 1u) {
         // Cap @ y_lo: horizontal, expand along Y.
-        a_data = vec2<f32>(in.x, y_lo);
+        a_data = DataPoint(in.x, y_lo);
         b_data = a_data;
         a_px = vec2<f32>(-style.cap_half_px, 0.0);
         b_px = vec2<f32>( style.cap_half_px, 0.0);
@@ -127,7 +160,7 @@ fn vs_main(in: VsIn) -> @builtin(position) vec4<f32> {
         half_stroke = style.cap_width_px * 0.5;
     } else if (seg == 2u) {
         // Cap @ y_hi: horizontal, expand along Y.
-        a_data = vec2<f32>(in.x, y_hi);
+        a_data = DataPoint(in.x, y_hi);
         b_data = a_data;
         a_px = vec2<f32>(-style.cap_half_px, 0.0);
         b_px = vec2<f32>( style.cap_half_px, 0.0);
@@ -135,13 +168,13 @@ fn vs_main(in: VsIn) -> @builtin(position) vec4<f32> {
         half_stroke = style.cap_width_px * 0.5;
     } else if (seg == 3u) {
         // X stem: horizontal in data space, expand along Y.
-        a_data = vec2<f32>(x_lo, in.y);
-        b_data = vec2<f32>(x_hi, in.y);
+        a_data = DataPoint(x_lo, in.y);
+        b_data = DataPoint(x_hi, in.y);
         perp = vec2<f32>(0.0, 1.0);
         half_stroke = style.line_width_px * 0.5;
     } else if (seg == 4u) {
         // Cap @ x_lo: vertical, expand along X.
-        a_data = vec2<f32>(x_lo, in.y);
+        a_data = DataPoint(x_lo, in.y);
         b_data = a_data;
         a_px = vec2<f32>(0.0, -style.cap_half_px);
         b_px = vec2<f32>(0.0,  style.cap_half_px);
@@ -149,7 +182,7 @@ fn vs_main(in: VsIn) -> @builtin(position) vec4<f32> {
         half_stroke = style.cap_width_px * 0.5;
     } else {
         // Cap @ x_hi: vertical, expand along X.
-        a_data = vec2<f32>(x_hi, in.y);
+        a_data = DataPoint(x_hi, in.y);
         b_data = a_data;
         a_px = vec2<f32>(0.0, -style.cap_half_px);
         b_px = vec2<f32>(0.0,  style.cap_half_px);
@@ -164,10 +197,10 @@ fn vs_main(in: VsIn) -> @builtin(position) vec4<f32> {
     let at_a = corner < 2u;
     let side = select(1.0, -1.0, (corner & 1u) == 0u);
 
-    let end_data = select(b_data, a_data, at_a);
+    let end_data = select_point(b_data, a_data, at_a);
     let end_px = select(b_px, a_px, at_a);
     let offset_px = end_px + perp * (side * half_stroke);
-    let ndc = data_to_ndc(end_data) + offset_px * transform.pixel_to_ndc;
+    let ndc = point_ndc(end_data) + offset_px * transform.pixel_to_ndc;
     return vec4<f32>(ndc, 0.0, 1.0);
 }
 
@@ -181,12 +214,12 @@ fn fs_main() -> @location(0) vec4<f32> {
 // error_bar_style_index_column and group 2 bindings 5..7 for style rows.
 struct VsMappedIn {
     @builtin(vertex_index) vi: u32,
-    @location(0) x: f32,
-    @location(1) y: f32,
-    @location(2) err_y_lo: f32,
-    @location(3) err_y_hi: f32,
-    @location(4) err_x_lo: f32,
-    @location(5) err_x_hi: f32,
+    @location(0) x: vec2<f32>,
+    @location(1) y: vec2<f32>,
+    @location(2) err_y_lo: vec2<f32>,
+    @location(3) err_y_hi: vec2<f32>,
+    @location(4) err_x_lo: vec2<f32>,
+    @location(5) err_x_hi: vec2<f32>,
     @location(6) style_index: f32,
 };
 
@@ -290,60 +323,60 @@ fn vs_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> MappedOut {
     var out: MappedOut;
     out.color_premul = resolved.color_premul;
 
-    let has_y = (in.err_y_lo + in.err_y_hi) > 0.0;
-    let has_x = (in.err_x_lo + in.err_x_hi) > 0.0;
+    let has_y = (pair_value(in.err_y_lo) + pair_value(in.err_y_hi)) > 0.0;
+    let has_x = (pair_value(in.err_x_lo) + pair_value(in.err_x_hi)) > 0.0;
     let dir_enabled = select(has_x, has_y, seg < 3u);
     if (!dir_enabled) {
-        let anchor = data_to_ndc(vec2<f32>(in.x, in.y));
+        let anchor = data_to_ndc(in.x, in.y);
         out.pos = vec4<f32>(anchor, 0.0, 1.0);
         return out;
     }
 
-    let y_lo = in.y - in.err_y_lo;
-    let y_hi = in.y + in.err_y_hi;
-    let x_lo = in.x - in.err_x_lo;
-    let x_hi = in.x + in.err_x_hi;
+    let y_lo = pair_sub(in.y, in.err_y_lo);
+    let y_hi = pair_add(in.y, in.err_y_hi);
+    let x_lo = pair_sub(in.x, in.err_x_lo);
+    let x_hi = pair_add(in.x, in.err_x_hi);
 
-    var a_data: vec2<f32>;
-    var b_data: vec2<f32>;
+    var a_data: DataPoint;
+    var b_data: DataPoint;
     var a_px = vec2<f32>(0.0, 0.0);
     var b_px = vec2<f32>(0.0, 0.0);
     var perp: vec2<f32>;
     var half_stroke: f32;
 
     if (seg == 0u) {
-        a_data = vec2<f32>(in.x, y_lo);
-        b_data = vec2<f32>(in.x, y_hi);
+        a_data = DataPoint(in.x, y_lo);
+        b_data = DataPoint(in.x, y_hi);
         perp = vec2<f32>(1.0, 0.0);
         half_stroke = resolved.line_width_px * 0.5;
     } else if (seg == 1u) {
-        a_data = vec2<f32>(in.x, y_lo);
+        a_data = DataPoint(in.x, y_lo);
         b_data = a_data;
         a_px = vec2<f32>(-resolved.cap_half_px, 0.0);
         b_px = vec2<f32>( resolved.cap_half_px, 0.0);
         perp = vec2<f32>(0.0, 1.0);
         half_stroke = resolved.cap_width_px * 0.5;
     } else if (seg == 2u) {
-        a_data = vec2<f32>(in.x, y_hi);
+        a_data = DataPoint(in.x, y_hi);
         b_data = a_data;
         a_px = vec2<f32>(-resolved.cap_half_px, 0.0);
         b_px = vec2<f32>( resolved.cap_half_px, 0.0);
         perp = vec2<f32>(0.0, 1.0);
         half_stroke = resolved.cap_width_px * 0.5;
     } else if (seg == 3u) {
-        a_data = vec2<f32>(x_lo, in.y);
-        b_data = vec2<f32>(x_hi, in.y);
+        a_data = DataPoint(x_lo, in.y);
+        b_data = DataPoint(x_hi, in.y);
         perp = vec2<f32>(0.0, 1.0);
         half_stroke = resolved.line_width_px * 0.5;
     } else if (seg == 4u) {
-        a_data = vec2<f32>(x_lo, in.y);
+        a_data = DataPoint(x_lo, in.y);
         b_data = a_data;
         a_px = vec2<f32>(0.0, -resolved.cap_half_px);
         b_px = vec2<f32>(0.0,  resolved.cap_half_px);
         perp = vec2<f32>(1.0, 0.0);
         half_stroke = resolved.cap_width_px * 0.5;
     } else {
-        a_data = vec2<f32>(x_hi, in.y);
+        a_data = DataPoint(x_hi, in.y);
         b_data = a_data;
         a_px = vec2<f32>(0.0, -resolved.cap_half_px);
         b_px = vec2<f32>(0.0,  resolved.cap_half_px);
@@ -356,10 +389,10 @@ fn vs_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> MappedOut {
     let at_a = corner < 2u;
     let side = select(1.0, -1.0, (corner & 1u) == 0u);
 
-    let end_data = select(b_data, a_data, at_a);
+    let end_data = select_point(b_data, a_data, at_a);
     let end_px = select(b_px, a_px, at_a);
     let offset_px = end_px + perp * (side * half_stroke);
-    let ndc = data_to_ndc(end_data) + offset_px * transform.pixel_to_ndc;
+    let ndc = point_ndc(end_data) + offset_px * transform.pixel_to_ndc;
     out.pos = vec4<f32>(ndc, 0.0, 1.0);
     return out;
 }
@@ -411,59 +444,59 @@ fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> @builtin(position)
     // 5 cap@x_hi.
     let seg = in.vi / 6u;
 
-    let has_y = (in.err_y_lo + in.err_y_hi) > 0.0;
-    let has_x = (in.err_x_lo + in.err_x_hi) > 0.0;
+    let has_y = (pair_value(in.err_y_lo) + pair_value(in.err_y_hi)) > 0.0;
+    let has_x = (pair_value(in.err_x_lo) + pair_value(in.err_x_hi)) > 0.0;
     let dir_enabled = select(has_x, has_y, seg < 3u);
     if (!dir_enabled) {
-        let anchor = data_to_ndc(vec2<f32>(in.x, in.y));
+        let anchor = data_to_ndc(in.x, in.y);
         return vec4<f32>(anchor, 0.0, 1.0);
     }
 
-    let y_lo = in.y - in.err_y_lo;
-    let y_hi = in.y + in.err_y_hi;
-    let x_lo = in.x - in.err_x_lo;
-    let x_hi = in.x + in.err_x_hi;
+    let y_lo = pair_sub(in.y, in.err_y_lo);
+    let y_hi = pair_add(in.y, in.err_y_hi);
+    let x_lo = pair_sub(in.x, in.err_x_lo);
+    let x_hi = pair_add(in.x, in.err_x_hi);
 
-    var a_data: vec2<f32>;
-    var b_data: vec2<f32>;
+    var a_data: DataPoint;
+    var b_data: DataPoint;
     var a_px = vec2<f32>(0.0, 0.0);
     var b_px = vec2<f32>(0.0, 0.0);
     var perp: vec2<f32>;
     var half_stroke: f32;
 
     if (seg == 0u) {
-        a_data = vec2<f32>(in.x, y_lo);
-        b_data = vec2<f32>(in.x, y_hi);
+        a_data = DataPoint(in.x, y_lo);
+        b_data = DataPoint(in.x, y_hi);
         perp = vec2<f32>(1.0, 0.0);
         half_stroke = style.line_width_px * 0.5;
     } else if (seg == 1u) {
-        a_data = vec2<f32>(in.x, y_lo);
+        a_data = DataPoint(in.x, y_lo);
         b_data = a_data;
         a_px = vec2<f32>(-style.cap_half_px, 0.0);
         b_px = vec2<f32>( style.cap_half_px, 0.0);
         perp = vec2<f32>(0.0, 1.0);
         half_stroke = style.cap_width_px * 0.5;
     } else if (seg == 2u) {
-        a_data = vec2<f32>(in.x, y_hi);
+        a_data = DataPoint(in.x, y_hi);
         b_data = a_data;
         a_px = vec2<f32>(-style.cap_half_px, 0.0);
         b_px = vec2<f32>( style.cap_half_px, 0.0);
         perp = vec2<f32>(0.0, 1.0);
         half_stroke = style.cap_width_px * 0.5;
     } else if (seg == 3u) {
-        a_data = vec2<f32>(x_lo, in.y);
-        b_data = vec2<f32>(x_hi, in.y);
+        a_data = DataPoint(x_lo, in.y);
+        b_data = DataPoint(x_hi, in.y);
         perp = vec2<f32>(0.0, 1.0);
         half_stroke = style.line_width_px * 0.5;
     } else if (seg == 4u) {
-        a_data = vec2<f32>(x_lo, in.y);
+        a_data = DataPoint(x_lo, in.y);
         b_data = a_data;
         a_px = vec2<f32>(0.0, -style.cap_half_px);
         b_px = vec2<f32>(0.0,  style.cap_half_px);
         perp = vec2<f32>(1.0, 0.0);
         half_stroke = style.cap_width_px * 0.5;
     } else {
-        a_data = vec2<f32>(x_hi, in.y);
+        a_data = DataPoint(x_hi, in.y);
         b_data = a_data;
         a_px = vec2<f32>(0.0, -style.cap_half_px);
         b_px = vec2<f32>(0.0,  style.cap_half_px);
@@ -481,10 +514,10 @@ fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> @builtin(position)
     let lattice = f32(seg * 2u + select(1u, 0u, at_a));
     let disp = amp * sketch_noise(lattice, seed);
 
-    let end_data = select(b_data, a_data, at_a);
+    let end_data = select_point(b_data, a_data, at_a);
     let end_px = select(b_px, a_px, at_a);
     let offset_px = end_px + perp * (side * half_stroke + disp);
-    let ndc = data_to_ndc(end_data) + offset_px * transform.pixel_to_ndc;
+    let ndc = point_ndc(end_data) + offset_px * transform.pixel_to_ndc;
     return vec4<f32>(ndc, 0.0, 1.0);
 }
 
@@ -524,22 +557,22 @@ fn vs_jet(in: VsIn, @builtin(instance_index) inst: u32) -> JetOut {
     out.t_src = 0.5;
     out.local = vec2<f32>(0.0, 0.0);
 
-    let has_y = (in.err_y_lo + in.err_y_hi) > 0.0;
-    let has_x = (in.err_x_lo + in.err_x_hi) > 0.0;
+    let has_y = (pair_value(in.err_y_lo) + pair_value(in.err_y_hi)) > 0.0;
+    let has_x = (pair_value(in.err_x_lo) + pair_value(in.err_x_hi)) > 0.0;
     let dir_enabled = select(has_x, has_y, seg < 3u);
     if (!dir_enabled) {
-        let anchor = data_to_ndc(vec2<f32>(in.x, in.y));
+        let anchor = data_to_ndc(in.x, in.y);
         out.pos = vec4<f32>(anchor, 0.0, 1.0);
         return out;
     }
 
-    let y_lo = in.y - in.err_y_lo;
-    let y_hi = in.y + in.err_y_hi;
-    let x_lo = in.x - in.err_x_lo;
-    let x_hi = in.x + in.err_x_hi;
+    let y_lo = pair_sub(in.y, in.err_y_lo);
+    let y_hi = pair_add(in.y, in.err_y_hi);
+    let x_lo = pair_sub(in.x, in.err_x_lo);
+    let x_hi = pair_add(in.x, in.err_x_hi);
 
-    var a_data: vec2<f32>;
-    var b_data: vec2<f32>;
+    var a_data: DataPoint;
+    var b_data: DataPoint;
     var a_px = vec2<f32>(0.0, 0.0);
     var b_px = vec2<f32>(0.0, 0.0);
     var perp: vec2<f32>;
@@ -549,40 +582,40 @@ fn vs_jet(in: VsIn, @builtin(instance_index) inst: u32) -> JetOut {
     let knot_half = max(style.cap_half_px, 3.0) * JET_KNOT_HALO;
 
     if (seg == 0u) {
-        a_data = vec2<f32>(in.x, y_lo);
-        b_data = vec2<f32>(in.x, y_hi);
+        a_data = DataPoint(in.x, y_lo);
+        b_data = DataPoint(in.x, y_hi);
         perp = vec2<f32>(1.0, 0.0);
         half_stroke = beam_half;
-        out.t_src = in.err_y_lo / max(in.err_y_lo + in.err_y_hi, 1e-6);
+        out.t_src = pair_value(in.err_y_lo) / max(pair_value(in.err_y_lo) + pair_value(in.err_y_hi), 1e-6);
     } else if (seg == 1u) {
-        a_data = vec2<f32>(in.x, y_lo);
+        a_data = DataPoint(in.x, y_lo);
         b_data = a_data;
         a_px = vec2<f32>(-knot_half, 0.0);
         b_px = vec2<f32>(knot_half, 0.0);
         perp = vec2<f32>(0.0, 1.0);
         half_stroke = knot_half;
     } else if (seg == 2u) {
-        a_data = vec2<f32>(in.x, y_hi);
+        a_data = DataPoint(in.x, y_hi);
         b_data = a_data;
         a_px = vec2<f32>(-knot_half, 0.0);
         b_px = vec2<f32>(knot_half, 0.0);
         perp = vec2<f32>(0.0, 1.0);
         half_stroke = knot_half;
     } else if (seg == 3u) {
-        a_data = vec2<f32>(x_lo, in.y);
-        b_data = vec2<f32>(x_hi, in.y);
+        a_data = DataPoint(x_lo, in.y);
+        b_data = DataPoint(x_hi, in.y);
         perp = vec2<f32>(0.0, 1.0);
         half_stroke = beam_half;
-        out.t_src = in.err_x_lo / max(in.err_x_lo + in.err_x_hi, 1e-6);
+        out.t_src = pair_value(in.err_x_lo) / max(pair_value(in.err_x_lo) + pair_value(in.err_x_hi), 1e-6);
     } else if (seg == 4u) {
-        a_data = vec2<f32>(x_lo, in.y);
+        a_data = DataPoint(x_lo, in.y);
         b_data = a_data;
         a_px = vec2<f32>(0.0, -knot_half);
         b_px = vec2<f32>(0.0, knot_half);
         perp = vec2<f32>(1.0, 0.0);
         half_stroke = knot_half;
     } else {
-        a_data = vec2<f32>(x_hi, in.y);
+        a_data = DataPoint(x_hi, in.y);
         b_data = a_data;
         a_px = vec2<f32>(0.0, -knot_half);
         b_px = vec2<f32>(0.0, knot_half);
@@ -595,10 +628,10 @@ fn vs_jet(in: VsIn, @builtin(instance_index) inst: u32) -> JetOut {
     let at_a = corner < 2u;
     let side = select(1.0, -1.0, (corner & 1u) == 0u);
 
-    let end_data = select(b_data, a_data, at_a);
+    let end_data = select_point(b_data, a_data, at_a);
     let end_px = select(b_px, a_px, at_a);
     let offset_px = end_px + perp * (side * half_stroke);
-    let ndc = data_to_ndc(end_data) + offset_px * transform.pixel_to_ndc;
+    let ndc = point_ndc(end_data) + offset_px * transform.pixel_to_ndc;
 
     out.pos = vec4<f32>(ndc, 0.0, 1.0);
     // Beams: (cross side, longitudinal 0/1). Knots: square corner coords —

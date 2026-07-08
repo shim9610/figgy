@@ -12,6 +12,7 @@ pub mod renderer;
 // mode (`DrawStyle::Sketch`, …).
 mod sketch;
 pub mod text_render;
+mod time_axis;
 
 // Model layer (chart option SSoT, data containers, preset policies) lives in
 // the sibling `model` crate. Re-exported module-by-module so every path keeps
@@ -27,7 +28,7 @@ pub use ::model::{
 pub use chart::{Chart, FitExtent, errorbar_extent};
 pub use color::Color;
 pub use config::Config;
-pub use data::{Column, ColumnSource};
+pub use data::{Column, ColumnSource, HiLoColumnSource};
 pub use data_config::{
     DataErrorBarPointStyleConfig, DataErrorBarPointStyleOverride, DataErrorBarStyleConfig,
     DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorRef, ScatterShape,

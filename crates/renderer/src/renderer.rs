@@ -18,7 +18,7 @@ use crate::axis_render;
 use crate::chart::Chart;
 use crate::color::Color;
 use crate::config::{Config, DrawStyle, PickedPointRef};
-use crate::data::ColumnSource;
+use crate::data::{ColumnSource, HiLoColumnSource};
 use crate::data_config::{
     DataErrorBarPointStyleConfig, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
     DataScatterPointStyleConfig, DataScatterStyleConfig, ErrorRef, ScatterShape, SeriesConfig,
@@ -1069,6 +1069,16 @@ impl Renderer {
         Ok(self
             .pool
             .add_column(id.into(), source, &self.device, &self.queue)?)
+    }
+
+    pub fn add_hilo_column(
+        &mut self,
+        id: impl Into<ColumnId>,
+        source: &dyn HiLoColumnSource,
+    ) -> Result<ColumnHandle> {
+        Ok(self
+            .pool
+            .add_hilo_column(id.into(), source, &self.device, &self.queue)?)
     }
 
     pub fn remove_column(&mut self, id: &str) -> bool {
@@ -2442,6 +2452,8 @@ impl Renderer {
         }
         let n = u32::try_from(n).ok()?;
         // Pool offsets are 256-aligned bytes → exact f32 element indices.
+        // Arc WGSL views the pool as f32 lanes; each logical value occupies
+        // two lanes `(hi, lo)`, so `point_px(i)` applies the `i * 2` stride.
         let x_base = u32::try_from(x_offset / 4).ok()?;
         let y_base = u32::try_from(y_offset / 4).ok()?;
         Some((x_base, y_base, n))

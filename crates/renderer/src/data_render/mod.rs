@@ -710,20 +710,22 @@ pub fn create_unit_centered_quad_vertex_buffer(device: &wgpu::Device) -> wgpu::B
 
 /// Shared transform uniform for scatter / line / errorbar shaders.
 ///
-/// 80 bytes (four `vec2<f32>` fields plus one `array<vec4<f32>, 3>` at
-/// offset 32, stride 16, WGSL uniform layout). Pixel sizes (point radius,
+/// 96 bytes (six `vec2<f32>` fields plus one `array<vec4<f32>, 3>` at
+/// offset 48, stride 16, WGSL uniform layout). Pixel sizes (point radius,
 /// cap half-length) live in [`PrimitiveStyle`]; shaders convert them to NDC
 /// via `pixel_to_ndc`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ScatterTransform {
-    pub data_min: [f32; 2], // offset 0
-    pub data_max: [f32; 2], // offset 8
+    pub data_min: [f32; 2],    // offset 0
+    pub data_max: [f32; 2],    // offset 8
+    pub data_min_lo: [f32; 2], // offset 16
+    pub data_max_lo: [f32; 2], // offset 24
     /// Per-axis flag: 0.0 = linear, 1.0 = log10.
-    pub scale_log: [f32; 2], // offset 16
+    pub scale_log: [f32; 2], // offset 32
     /// `(2 / chart_w, 2 / chart_h)` — 1 pixel in NDC. Shaders multiply pixel
     /// sizes (line width, point radius, cap half-length) by this.
-    pub pixel_to_ndc: [f32; 2], // offset 24
+    pub pixel_to_ndc: [f32; 2], // offset 40
     /// Generic per-panel style parameter slots (SHADER_COMMON.md §1), packed
     /// by the renderer's style table (`StyleVariant::pack_params`, flat
     /// `[f32; 12]` split into three vec4 slots). All zeros in precise mode —
@@ -735,12 +737,12 @@ pub struct ScatterTransform {
     /// 0, 0]`; constellation: `[0] = [star_opacity, line_opacity, 0.0,
     /// 0.0]`, rest 0. Seeds are stored as f32 (exact up to 2^24) and shaders
     /// recover them via `u32(...)`.
-    pub style_params: [[f32; 4]; 3], // offset 32 → 80 byte
+    pub style_params: [[f32; 4]; 3], // offset 48 → 96 byte
 }
 
 // WGSL mirror size guards (SHADER_COMMON.md §1 / §2). Update both the doc and
 // every shader's common block before touching these.
-const _: () = assert!(std::mem::size_of::<ScatterTransform>() == 80);
+const _: () = assert!(std::mem::size_of::<ScatterTransform>() == 96);
 
 /// Allocate the transform uniform buffer with `COPY_DST` so subsequent
 /// updates can use `queue.write_buffer` instead of recreating it.
@@ -1159,7 +1161,7 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
 
     // For log axes, guard only the axis range. Data values still follow the
     // shader's NaN/non-positive handling.
-    let to_log = |v: f64| v.log10() as f32;
+    let to_log = |v: f64| v.log10();
     let (x_min, x_max) = if log_x {
         crate::chart::guarded_log_range(config.bottom_x.min, config.bottom_x.max)
     } else {
@@ -1171,10 +1173,10 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
         (config.left_y.min, config.left_y.max)
     };
 
-    let data_min_x = if log_x { to_log(x_min) } else { x_min as f32 };
-    let data_max_x = if log_x { to_log(x_max) } else { x_max as f32 };
-    let data_min_y = if log_y { to_log(y_min) } else { y_min as f32 };
-    let data_max_y = if log_y { to_log(y_max) } else { y_max as f32 };
+    let data_min_x = if log_x { to_log(x_min) } else { x_min };
+    let data_max_x = if log_x { to_log(x_max) } else { x_max };
+    let data_min_y = if log_y { to_log(y_min) } else { y_min };
+    let data_max_y = if log_y { to_log(y_max) } else { y_max };
 
     let scale_log = [if log_x { 1.0 } else { 0.0 }, if log_y { 1.0 } else { 0.0 }];
 
@@ -1195,8 +1197,23 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
         [packed[4], packed[5], packed[6], packed[7]],
         [packed[8], packed[9], packed[10], packed[11]],
     ];
-    let orient_axis = |min: f32, max: f32, inverted: bool| {
+    let orient_axis = |min: f64, max: f64, inverted: bool| {
         if inverted { (max, min) } else { (min, max) }
+    };
+    let build_transform = |min_x: f64, max_x: f64, min_y: f64, max_y: f64| -> ScatterTransform {
+        let (min_x_hi, min_x_lo) = crate::data::split_f64_to_f32_pair(min_x);
+        let (max_x_hi, max_x_lo) = crate::data::split_f64_to_f32_pair(max_x);
+        let (min_y_hi, min_y_lo) = crate::data::split_f64_to_f32_pair(min_y);
+        let (max_y_hi, max_y_lo) = crate::data::split_f64_to_f32_pair(max_y);
+        ScatterTransform {
+            data_min: [min_x_hi, min_y_hi],
+            data_max: [max_x_hi, max_y_hi],
+            data_min_lo: [min_x_lo, min_y_lo],
+            data_max_lo: [max_x_lo, max_y_lo],
+            scale_log,
+            pixel_to_ndc,
+            style_params,
+        }
     };
 
     // No data_area → use the data range directly (no extension).
@@ -1207,32 +1224,28 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
                 orient_axis(data_min_x, data_max_x, config.bottom_x.inverted);
             let (data_min_y, data_max_y) =
                 orient_axis(data_min_y, data_max_y, config.left_y.inverted);
-            return ScatterTransform {
-                data_min: [data_min_x, data_min_y],
-                data_max: [data_max_x, data_max_y],
-                scale_log,
-                pixel_to_ndc,
-                style_params,
-            };
+            return build_transform(data_min_x, data_max_x, data_min_y, data_max_y);
         }
     };
 
     // Relative to chart_area origin (drop the panel's global offset).
     let rel_x = da.x as i64 - ca.x as i64;
     let rel_y = da.y as i64 - ca.y as i64;
-    let rel_x = rel_x as f32;
-    let rel_y = rel_y as f32;
+    let rel_x = rel_x as f64;
+    let rel_y = rel_y as f64;
 
     // Fractions of chart_area covered by data_area, in NDC orientation
     // (X left/right, Y bottom/top — screen is Y-down, NDC is Y-up).
-    let sx = rel_x / chart_w;
-    let ex = (rel_x + da.width as f32) / chart_w;
-    let sy = (chart_h - (rel_y + da.height as f32)) / chart_h;
-    let ey = (chart_h - rel_y) / chart_h;
+    let chart_w64 = chart_w as f64;
+    let chart_h64 = chart_h as f64;
+    let sx = rel_x / chart_w64;
+    let ex = (rel_x + da.width as f64) / chart_w64;
+    let sy = (chart_h64 - (rel_y + da.height as f64)) / chart_h64;
+    let ey = (chart_h64 - rel_y) / chart_h64;
 
-    let extend = |min: f32, max: f32, s: f32, e: f32| -> (f32, f32) {
+    let extend = |min: f64, max: f64, s: f64, e: f64| -> (f64, f64) {
         let span = e - s;
-        if span.abs() < f32::EPSILON {
+        if span.abs() < f64::EPSILON {
             return (min, max);
         }
         let range_ext = (max - min) / span;
@@ -1246,13 +1259,7 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
     let (min_x_ext, max_x_ext) = orient_axis(min_x_ext, max_x_ext, config.bottom_x.inverted);
     let (min_y_ext, max_y_ext) = orient_axis(min_y_ext, max_y_ext, config.left_y.inverted);
 
-    ScatterTransform {
-        data_min: [min_x_ext, min_y_ext],
-        data_max: [max_x_ext, max_y_ext],
-        scale_log,
-        pixel_to_ndc,
-        style_params,
-    }
+    build_transform(min_x_ext, max_x_ext, min_y_ext, max_y_ext)
 }
 
 // Columnar pipelines backed by ColumnPool.
@@ -1996,6 +2003,7 @@ pub(crate) fn create_line_columnar_pipeline_with_entries(
     });
 
     let f32_stride = std::mem::size_of::<f32>() as wgpu::BufferAddress;
+    let column_stride = crate::data::COLUMN_VALUE_BYTES as wgpu::BufferAddress;
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(label),
@@ -2005,46 +2013,46 @@ pub(crate) fn create_line_columnar_pipeline_with_entries(
             entry_point: Some(vs_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             // 4 per-instance f32 slots: x_a, y_a, x_b, y_b. The same X/Y
-            // columns are bound twice; the second pair starts 4 bytes (one
-            // f32) later, so instance i sees points [i] and [i+1] together.
+            // columns are bound twice; the second pair starts one logical
+            // value later, so instance i sees points [i] and [i+1] together.
             // Each instance emits a 4-vertex quad strip for one segment.
             buffers: &[
                 // slot 0: x_a (X column from offset 0)
                 wgpu::VertexBufferLayout {
-                    array_stride: f32_stride,
+                    array_stride: column_stride,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32,
+                        format: wgpu::VertexFormat::Float32x2,
                         offset: 0,
                         shader_location: 0,
                     }],
                 },
                 // slot 1: y_a
                 wgpu::VertexBufferLayout {
-                    array_stride: f32_stride,
+                    array_stride: column_stride,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32,
+                        format: wgpu::VertexFormat::Float32x2,
                         offset: 0,
                         shader_location: 1,
                     }],
                 },
-                // slot 2: x_b (X column from offset 4)
+                // slot 2: x_b (X column from the next value)
                 wgpu::VertexBufferLayout {
-                    array_stride: f32_stride,
+                    array_stride: column_stride,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32,
+                        format: wgpu::VertexFormat::Float32x2,
                         offset: 0,
                         shader_location: 2,
                     }],
                 },
                 // slot 3: y_b
                 wgpu::VertexBufferLayout {
-                    array_stride: f32_stride,
+                    array_stride: column_stride,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32,
+                        format: wgpu::VertexFormat::Float32x2,
                         offset: 0,
                         shader_location: 3,
                     }],
@@ -2186,8 +2194,8 @@ pub(crate) fn create_scatter_columnar_mapped_pipeline_with_entries(
         push_constant_ranges: &[],
     });
 
-    let f32_stride = std::mem::size_of::<f32>() as wgpu::BufferAddress;
     let vec2_stride = (std::mem::size_of::<f32>() * 2) as wgpu::BufferAddress;
+    let column_stride = crate::data::COLUMN_VALUE_BYTES as wgpu::BufferAddress;
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(label),
         layout: Some(&layout),
@@ -2206,25 +2214,25 @@ pub(crate) fn create_scatter_columnar_mapped_pipeline_with_entries(
                     }],
                 },
                 wgpu::VertexBufferLayout {
-                    array_stride: f32_stride,
+                    array_stride: column_stride,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32,
+                        format: wgpu::VertexFormat::Float32x2,
                         offset: 0,
                         shader_location: 1,
                     }],
                 },
                 wgpu::VertexBufferLayout {
-                    array_stride: f32_stride,
+                    array_stride: column_stride,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32,
+                        format: wgpu::VertexFormat::Float32x2,
                         offset: 0,
                         shader_location: 2,
                     }],
                 },
                 wgpu::VertexBufferLayout {
-                    array_stride: f32_stride,
+                    array_stride: column_stride,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[wgpu::VertexAttribute {
                         format: wgpu::VertexFormat::Float32,
@@ -2314,8 +2322,8 @@ pub(crate) fn create_scatter_columnar_pipeline_full(
         push_constant_ranges: &[],
     });
 
-    let f32_stride = std::mem::size_of::<f32>() as wgpu::BufferAddress;
     let vec2_stride = (std::mem::size_of::<f32>() * 2) as wgpu::BufferAddress;
+    let column_stride = crate::data::COLUMN_VALUE_BYTES as wgpu::BufferAddress;
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(label),
@@ -2337,20 +2345,20 @@ pub(crate) fn create_scatter_columnar_pipeline_full(
                 },
                 // slot 1: X column (per-instance, f32)
                 wgpu::VertexBufferLayout {
-                    array_stride: f32_stride,
+                    array_stride: column_stride,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32,
+                        format: wgpu::VertexFormat::Float32x2,
                         offset: 0,
                         shader_location: 1,
                     }],
                 },
                 // slot 2: Y column (per-instance, f32)
                 wgpu::VertexBufferLayout {
-                    array_stride: f32_stride,
+                    array_stride: column_stride,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32,
+                        format: wgpu::VertexFormat::Float32x2,
                         offset: 0,
                         shader_location: 2,
                     }],
@@ -2443,34 +2451,34 @@ pub fn create_errorbar_columnar_mapped_pipeline(
         push_constant_ranges: &[],
     });
 
-    let f32_stride = std::mem::size_of::<f32>() as wgpu::BufferAddress;
+    let column_stride = crate::data::COLUMN_VALUE_BYTES as wgpu::BufferAddress;
     const ATTR0: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32,
+        format: wgpu::VertexFormat::Float32x2,
         offset: 0,
         shader_location: 0,
     }];
     const ATTR1: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32,
+        format: wgpu::VertexFormat::Float32x2,
         offset: 0,
         shader_location: 1,
     }];
     const ATTR2: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32,
+        format: wgpu::VertexFormat::Float32x2,
         offset: 0,
         shader_location: 2,
     }];
     const ATTR3: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32,
+        format: wgpu::VertexFormat::Float32x2,
         offset: 0,
         shader_location: 3,
     }];
     const ATTR4: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32,
+        format: wgpu::VertexFormat::Float32x2,
         offset: 0,
         shader_location: 4,
     }];
     const ATTR5: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32,
+        format: wgpu::VertexFormat::Float32x2,
         offset: 0,
         shader_location: 5,
     }];
@@ -2481,37 +2489,37 @@ pub fn create_errorbar_columnar_mapped_pipeline(
     }];
     let buffers = [
         wgpu::VertexBufferLayout {
-            array_stride: f32_stride,
+            array_stride: column_stride,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTR0,
         },
         wgpu::VertexBufferLayout {
-            array_stride: f32_stride,
+            array_stride: column_stride,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTR1,
         },
         wgpu::VertexBufferLayout {
-            array_stride: f32_stride,
+            array_stride: column_stride,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTR2,
         },
         wgpu::VertexBufferLayout {
-            array_stride: f32_stride,
+            array_stride: column_stride,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTR3,
         },
         wgpu::VertexBufferLayout {
-            array_stride: f32_stride,
+            array_stride: column_stride,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTR4,
         },
         wgpu::VertexBufferLayout {
-            array_stride: f32_stride,
+            array_stride: column_stride,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTR5,
         },
         wgpu::VertexBufferLayout {
-            array_stride: f32_stride,
+            array_stride: column_stride,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTR6,
         },
@@ -2603,66 +2611,66 @@ pub(crate) fn create_errorbar_columnar_pipeline_full(
         push_constant_ranges: &[],
     });
 
-    let f32_stride = std::mem::size_of::<f32>() as wgpu::BufferAddress;
+    let column_stride = crate::data::COLUMN_VALUE_BYTES as wgpu::BufferAddress;
     // Hold attributes in const arrays to avoid temporary-lifetime issues.
     const ATTR0: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32,
+        format: wgpu::VertexFormat::Float32x2,
         offset: 0,
         shader_location: 0,
     }];
     const ATTR1: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32,
+        format: wgpu::VertexFormat::Float32x2,
         offset: 0,
         shader_location: 1,
     }];
     const ATTR2: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32,
+        format: wgpu::VertexFormat::Float32x2,
         offset: 0,
         shader_location: 2,
     }];
     const ATTR3: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32,
+        format: wgpu::VertexFormat::Float32x2,
         offset: 0,
         shader_location: 3,
     }];
     const ATTR4: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32,
+        format: wgpu::VertexFormat::Float32x2,
         offset: 0,
         shader_location: 4,
     }];
     const ATTR5: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32,
+        format: wgpu::VertexFormat::Float32x2,
         offset: 0,
         shader_location: 5,
     }];
     let buffers = [
         wgpu::VertexBufferLayout {
-            array_stride: f32_stride,
+            array_stride: column_stride,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTR0,
         },
         wgpu::VertexBufferLayout {
-            array_stride: f32_stride,
+            array_stride: column_stride,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTR1,
         },
         wgpu::VertexBufferLayout {
-            array_stride: f32_stride,
+            array_stride: column_stride,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTR2,
         },
         wgpu::VertexBufferLayout {
-            array_stride: f32_stride,
+            array_stride: column_stride,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTR3,
         },
         wgpu::VertexBufferLayout {
-            array_stride: f32_stride,
+            array_stride: column_stride,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTR4,
         },
         wgpu::VertexBufferLayout {
-            array_stride: f32_stride,
+            array_stride: column_stride,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTR5,
         },
@@ -2832,12 +2840,13 @@ fn draw_line_layer(pass: &mut wgpu::RenderPass<'_>, l: &ColumnLineLayer<'_>) {
     }
     let x_full = l.x.byte_range();
     let y_full = l.y.byte_range();
-    let x_shift = (x_full.start + 4)..x_full.end;
-    let y_shift = (y_full.start + 4)..y_full.end;
+    let x_next = (x_full.start + crate::data::COLUMN_VALUE_BYTES as u64)..x_full.end;
+    let y_next = (y_full.start + crate::data::COLUMN_VALUE_BYTES as u64)..y_full.end;
+    let x_f32_shift = (x_full.start + 4)..x_full.end;
     pass.set_vertex_buffer(0, l.pool_buffer.slice(x_full.clone()));
     pass.set_vertex_buffer(1, l.pool_buffer.slice(y_full));
-    pass.set_vertex_buffer(2, l.pool_buffer.slice(x_shift.clone()));
-    pass.set_vertex_buffer(3, l.pool_buffer.slice(y_shift));
+    pass.set_vertex_buffer(2, l.pool_buffer.slice(x_next));
+    pass.set_vertex_buffer(3, l.pool_buffer.slice(y_next));
     // Arc-length prefix (dash phase / constellation arc); solid precise lines
     // reuse the X column as filler (read by the VS, ignored by the FS).
     match l.arc.as_ref() {
@@ -2847,7 +2856,7 @@ fn draw_line_layer(pass: &mut wgpu::RenderPass<'_>, l: &ColumnLineLayer<'_>) {
         }
         None => {
             pass.set_vertex_buffer(4, l.pool_buffer.slice(x_full));
-            pass.set_vertex_buffer(5, l.pool_buffer.slice(x_shift));
+            pass.set_vertex_buffer(5, l.pool_buffer.slice(x_f32_shift));
         }
     }
     // Per-instance vertex count decided where the pipeline variant was

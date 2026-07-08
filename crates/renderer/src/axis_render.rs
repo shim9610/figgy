@@ -157,7 +157,8 @@ pub fn draw_grid_layer(canvas: &mut Canvas, config: &Config) {
         return;
     }
     let Ok(da) = config.data_area() else { return };
-    draw_grid(canvas, config, &da);
+    let fp = FontPolicy::for_style(&config.draw_style);
+    draw_grid(canvas, config, &da, fp);
 }
 
 // ── Constellation backdrop + glow (style-specific CPU post-processing) ──
@@ -560,7 +561,7 @@ fn side_tag(side: &Side) -> &'static str {
 // Vertical grid lines use bottom_x tick positions; horizontal lines use
 // left_y. Lines are confined to the data_area (just inside the axis lines).
 
-fn draw_grid(canvas: &mut Canvas, config: &Config, da: &DataArea) {
+fn draw_grid(canvas: &mut Canvas, config: &Config, da: &DataArea, fp: FontPolicy) {
     let g = &config.grid;
     let stroker = DecoStroker::from_style(&config.draw_style);
     let x_top = da.y as f32;
@@ -571,7 +572,10 @@ fn draw_grid(canvas: &mut Canvas, config: &Config, da: &DataArea) {
     // Draw minor first so major can paint over it.
     if g.show_minor_x {
         let paint = stroke_paint(&g.minor_x_color, g.minor_x_width, &g.minor_x_style);
-        for (i, v) in minor_tick_values(&config.bottom_x).into_iter().enumerate() {
+        for (i, v) in minor_tick_values_for_axis(&config.bottom_x, Side::Bottom, da, fp)
+            .into_iter()
+            .enumerate()
+        {
             let pos = value_to_screen(v, &config.bottom_x, Side::Bottom, da);
             let tag = format!("grid_minor_x_{i}");
             stroker.stroke_segment(canvas, (pos.0, x_top), (pos.0, x_bot), &paint, &tag);
@@ -579,7 +583,10 @@ fn draw_grid(canvas: &mut Canvas, config: &Config, da: &DataArea) {
     }
     if g.show_minor_y {
         let paint = stroke_paint(&g.minor_y_color, g.minor_y_width, &g.minor_y_style);
-        for (i, v) in minor_tick_values(&config.left_y).into_iter().enumerate() {
+        for (i, v) in minor_tick_values_for_axis(&config.left_y, Side::Left, da, fp)
+            .into_iter()
+            .enumerate()
+        {
             let pos = value_to_screen(v, &config.left_y, Side::Left, da);
             let tag = format!("grid_minor_y_{i}");
             stroker.stroke_segment(canvas, (y_left, pos.1), (y_right, pos.1), &paint, &tag);
@@ -588,7 +595,10 @@ fn draw_grid(canvas: &mut Canvas, config: &Config, da: &DataArea) {
 
     if g.show_major_x {
         let paint = stroke_paint(&g.major_x_color, g.major_x_width, &g.major_x_style);
-        for (i, v) in major_tick_values(&config.bottom_x).into_iter().enumerate() {
+        for (i, v) in major_tick_values_for_axis(&config.bottom_x, Side::Bottom, da, fp)
+            .into_iter()
+            .enumerate()
+        {
             let pos = value_to_screen(v, &config.bottom_x, Side::Bottom, da);
             let tag = format!("grid_major_x_{i}");
             stroker.stroke_segment(canvas, (pos.0, x_top), (pos.0, x_bot), &paint, &tag);
@@ -596,7 +606,10 @@ fn draw_grid(canvas: &mut Canvas, config: &Config, da: &DataArea) {
     }
     if g.show_major_y {
         let paint = stroke_paint(&g.major_y_color, g.major_y_width, &g.major_y_style);
-        for (i, v) in major_tick_values(&config.left_y).into_iter().enumerate() {
+        for (i, v) in major_tick_values_for_axis(&config.left_y, Side::Left, da, fp)
+            .into_iter()
+            .enumerate()
+        {
             let pos = value_to_screen(v, &config.left_y, Side::Left, da);
             let tag = format!("grid_major_y_{i}");
             stroker.stroke_segment(canvas, (y_left, pos.1), (y_right, pos.1), &paint, &tag);
@@ -635,8 +648,8 @@ fn draw_axis(
     }
 
     // 2) Major / minor ticks
-    let majors = major_tick_values(axis);
-    let minors = minor_tick_values(axis);
+    let majors = major_tick_values_for_axis(axis, side.clone(), da, fp);
+    let minors = minor_tick_values_for_axis(axis, side.clone(), da, fp);
 
     if axis.tick != TickVisibility::None {
         let tick_paint = stroke_paint(&axis.line_color, axis.line_width, &LineStylePreset::Solid);
@@ -675,25 +688,32 @@ fn draw_axis(
     // 3) Major tick labels
     let ls = &axis.label_style;
     if ls.visible && ls.label_visible {
-        for v in &majors {
-            let pos = value_to_screen(*v, axis, side.clone(), da);
-            match ls.format {
-                LabelFormat::Power => {
-                    let rt = format_tick_power(*v, ls.significant_digits, ls);
-                    draw_tick_label_rich(canvas, &rt, pos, side.clone(), axis, fp);
-                }
-                _ => {
-                    // Decimals must derive from the spacing the walker
-                    // actually used, or a guarded fallback would emit ticks
-                    // at 0.5 steps with 0-decimal labels.
-                    let text = format_tick_value(
-                        *v,
-                        &ls.format,
-                        ls.significant_digits,
-                        &axis.scale,
-                        effective_major_spacing(axis),
-                    );
-                    draw_tick_label(canvas, &text, pos, side.clone(), axis, fp);
+        if let LabelFormat::Timestamp(_) = &ls.format {
+            for label in visible_timestamp_labels(axis, side.clone(), da, fp, &majors) {
+                let pos = value_to_screen(label.value, axis, side.clone(), da);
+                draw_tick_label(canvas, &label.text, pos, side.clone(), axis, fp);
+            }
+        } else {
+            for v in &majors {
+                let pos = value_to_screen(*v, axis, side.clone(), da);
+                match ls.format {
+                    LabelFormat::Power => {
+                        let rt = format_tick_power(*v, ls.significant_digits, ls);
+                        draw_tick_label_rich(canvas, &rt, pos, side.clone(), axis, fp);
+                    }
+                    _ => {
+                        // Decimals must derive from the spacing the walker
+                        // actually used, or a guarded fallback would emit ticks
+                        // at 0.5 steps with 0-decimal labels.
+                        let text = format_tick_value(
+                            *v,
+                            &ls.format,
+                            ls.significant_digits,
+                            &axis.scale,
+                            effective_major_spacing(axis),
+                        );
+                        draw_tick_label(canvas, &text, pos, side.clone(), axis, fp);
+                    }
                 }
             }
         }
@@ -800,6 +820,60 @@ fn effective_major_spacing(axis: &AxisOptions) -> f64 {
 /// integer step bounds (`inf as i64` = i64::MAX — an unbounded walk).
 fn walkable_range(axis: &AxisOptions) -> bool {
     axis.min.is_finite() && axis.max.is_finite() && axis.max > axis.min
+}
+
+fn major_tick_values_for_axis(
+    axis: &AxisOptions,
+    side: Side,
+    da: &DataArea,
+    fp: FontPolicy,
+) -> Vec<f64> {
+    if let Some(plan) = timestamp_tick_plan(axis, side, da, fp) {
+        return plan.majors.into_iter().map(|tick| tick.value).collect();
+    }
+    major_tick_values(axis)
+}
+
+fn minor_tick_values_for_axis(
+    axis: &AxisOptions,
+    side: Side,
+    da: &DataArea,
+    fp: FontPolicy,
+) -> Vec<f64> {
+    if let Some(plan) = timestamp_tick_plan(axis, side, da, fp) {
+        return plan.minor_values;
+    }
+    minor_tick_values(axis)
+}
+
+const LABEL_COLLISION_GAP: f32 = 8.0;
+
+fn timestamp_tick_plan(
+    axis: &AxisOptions,
+    side: Side,
+    da: &DataArea,
+    fp: FontPolicy,
+) -> Option<crate::time_axis::TimestampTickPlan> {
+    let ls = &axis.label_style;
+    crate::time_axis::build_timestamp_tick_plan(
+        axis,
+        axis_pixel_len(side.clone(), da),
+        LABEL_COLLISION_GAP,
+        |text| {
+            let m = measure_plain_text(text, &ls.label_font, ls.font_size, false, false, fp);
+            match side {
+                Side::Top | Side::Bottom => m.width,
+                Side::Left | Side::Right => m.height(),
+            }
+        },
+    )
+}
+
+fn axis_pixel_len(side: Side, da: &DataArea) -> f32 {
+    match side {
+        Side::Top | Side::Bottom => da.width as f32,
+        Side::Left | Side::Right => da.height as f32,
+    }
 }
 
 fn major_tick_values(axis: &AxisOptions) -> Vec<f64> {
@@ -964,12 +1038,21 @@ fn format_tick_value(
         return match format {
             LabelFormat::Decimal | LabelFormat::Power => format!("{}", value),
             LabelFormat::Scientific => format!("{:e}", value),
+            LabelFormat::Timestamp(_) => format!("{}", value),
         };
     }
 
     let sig = sig_digits.max(1) as usize;
     match format {
         LabelFormat::Scientific => format!("{:.*e}", sig.saturating_sub(1), value),
+        LabelFormat::Timestamp(cfg) => crate::time_axis::format_timestamp_numeric_tick(
+            value,
+            cfg,
+            value - major_spacing,
+            value + major_spacing,
+            major_spacing,
+        )
+        .unwrap_or_else(|| format!("{}", value)),
         // Power uses the RichText path; if we end up here, treat as Decimal.
         // Uniform per-axis decimals from the spacing — sig_digits stays in
         // charge of the Scientific form only.
@@ -979,6 +1062,117 @@ fn format_tick_value(
             }
             format!("{:.*}", decimals_from_spacing(major_spacing), value)
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PlainTickLabel {
+    value: f64,
+    text: String,
+}
+
+fn visible_timestamp_labels(
+    axis: &AxisOptions,
+    side: Side,
+    da: &DataArea,
+    fp: FontPolicy,
+    majors: &[f64],
+) -> Vec<PlainTickLabel> {
+    let Some(cfg) = crate::time_axis::timestamp_format(axis) else {
+        return Vec::new();
+    };
+    let labels: Vec<PlainTickLabel> =
+        if let Some(plan) = timestamp_tick_plan(axis, side.clone(), da, fp) {
+            plan.majors
+                .into_iter()
+                .map(|tick| PlainTickLabel {
+                    value: tick.value,
+                    text: tick.label,
+                })
+                .collect()
+        } else {
+            majors
+                .iter()
+                .filter_map(|v| {
+                    crate::time_axis::format_timestamp_numeric_tick(
+                        *v,
+                        cfg,
+                        axis.min,
+                        axis.max,
+                        effective_major_spacing(axis),
+                    )
+                    .map(|text| PlainTickLabel { value: *v, text })
+                })
+                .collect()
+        };
+
+    prune_overlapping_plain_labels(axis, side, da, fp, labels)
+}
+
+fn prune_overlapping_plain_labels(
+    axis: &AxisOptions,
+    side: Side,
+    da: &DataArea,
+    fp: FontPolicy,
+    labels: Vec<PlainTickLabel>,
+) -> Vec<PlainTickLabel> {
+    let mut intervals: Vec<(f32, f32, PlainTickLabel)> = labels
+        .into_iter()
+        .map(|label| {
+            let pos = value_to_screen(label.value, axis, side.clone(), da);
+            let (start, end) = plain_tick_label_interval(&label.text, pos, side.clone(), axis, fp);
+            (start, end, label)
+        })
+        .filter(|(start, end, _)| start.is_finite() && end.is_finite())
+        .collect();
+    intervals.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    let mut out = Vec::new();
+    let mut last_end = f32::NEG_INFINITY;
+    for (start, end, label) in intervals {
+        if start >= last_end + LABEL_COLLISION_GAP {
+            last_end = end;
+            out.push(label);
+        }
+    }
+    out
+}
+
+fn plain_tick_label_interval(
+    text: &str,
+    tick_pos: (f32, f32),
+    side: Side,
+    axis: &AxisOptions,
+    fp: FontPolicy,
+) -> (f32, f32) {
+    let ls: &LabelStyle = &axis.label_style;
+    let m = measure_plain_text(text, &ls.label_font, ls.font_size, false, false, fp);
+    let outward = axis.major_tick_length;
+
+    let (base_x, base_y) = match side {
+        Side::Top => (
+            tick_pos.0 - m.width * 0.5,
+            tick_pos.1 - outward - LABEL_GAP - m.descent,
+        ),
+        Side::Bottom => (
+            tick_pos.0 - m.width * 0.5,
+            tick_pos.1 + outward + LABEL_GAP + m.ascent,
+        ),
+        Side::Left => (
+            tick_pos.0 - outward - LABEL_GAP - m.width,
+            tick_pos.1 + (m.ascent - m.descent) * 0.5,
+        ),
+        Side::Right => (
+            tick_pos.0 + outward + LABEL_GAP,
+            tick_pos.1 + (m.ascent - m.descent) * 0.5,
+        ),
+    };
+
+    let origin_x = base_x + ls.label_offset_x;
+    let origin_y = base_y + ls.label_offset_y;
+    match side {
+        Side::Top | Side::Bottom => (origin_x, origin_x + m.width),
+        Side::Left | Side::Right => (origin_y - m.ascent, origin_y + m.descent),
     }
 }
 

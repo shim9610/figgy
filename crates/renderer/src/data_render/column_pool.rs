@@ -5,9 +5,9 @@
 //! - `slots: HashMap<ColumnId, ColumnSlot>` is the SSoT mapping id → byte
 //!   range; `free: Vec<FreeRegion>` tracks holes (first-fit on add, coalesce
 //!   with neighbors on remove).
-//! - `add_column` is a zero-copy stream upload: a staging buffer created
-//!   with `mapped_at_creation` lets `ColumnSource::write_f32_le_into` fill
-//!   bytes directly with no intermediate `Vec`.
+//! - `add_hilo_column` is a zero-copy stream upload: a staging buffer created
+//!   with `mapped_at_creation` lets `HiLoColumnSource::write_f32_pair_le_into`
+//!   fill split `(hi, lo)` bytes directly with no intermediate `Vec`.
 //! - `defragment` packs survivors into a backup buffer with GPU-internal
 //!   copies (no PCIe traffic) then swaps `primary <-> backup`.
 //!
@@ -27,7 +27,7 @@ use std::collections::HashMap;
 
 use wgpu::{Buffer, BufferDescriptor, BufferUsages, Device, Queue};
 
-use crate::data::ColumnSource;
+use crate::data::{COLUMN_VALUE_BYTES, ColumnSource, HiLoColumnSource};
 
 // Defined in the model crate (`model::data`); re-exported here so
 // `data_render::ColumnId` stays a valid path.
@@ -85,6 +85,18 @@ pub enum DefragPolicy {
     /// On `add_column`'s `OutOfSpace`, attempt one defrag and retry. If that
     /// still fails, the original `OutOfSpace` is returned.
     OnAllocFailure,
+}
+
+fn write_scalar_source_as_pairs(source: &dyn ColumnSource, dst: &mut [u8]) {
+    let n = source.len();
+    debug_assert_eq!(dst.len(), n * COLUMN_VALUE_BYTES);
+    let mut scalar = vec![0u8; n * std::mem::size_of::<f32>()];
+    source.write_f32_le_into(&mut scalar);
+    for (i, chunk) in scalar.chunks_exact(4).enumerate() {
+        let base = i * COLUMN_VALUE_BYTES;
+        dst[base..base + 4].copy_from_slice(chunk);
+        dst[base + 4..base + 8].copy_from_slice(&0.0f32.to_le_bytes());
+    }
 }
 
 /// Lightweight handle handed out to the chart layer. `generation` lets
@@ -317,6 +329,31 @@ impl ColumnPool {
         }
     }
 
+    pub fn add_hilo_column(
+        &mut self,
+        id: ColumnId,
+        source: &dyn HiLoColumnSource,
+        device: &Device,
+        queue: &Queue,
+    ) -> Result<ColumnHandle, AllocError> {
+        let retry_id = if self.defrag_policy == DefragPolicy::OnAllocFailure {
+            Some(id.clone())
+        } else {
+            None
+        };
+        match self.try_add_hilo_column(id, source, device, queue) {
+            Ok(h) => Ok(h),
+            Err(e @ AllocError::OutOfSpace { .. }) => match retry_id {
+                Some(rid) => {
+                    self.defragment(device, queue)?;
+                    self.try_add_hilo_column(rid, source, device, queue)
+                }
+                None => Err(e),
+            },
+            Err(e) => Err(e),
+        }
+    }
+
     /// Single attempt without auto-retry. Internal + test use.
     ///
     /// 1. First-fit allocation from the free list.
@@ -331,19 +368,60 @@ impl ColumnPool {
         device: &Device,
         queue: &Queue,
     ) -> Result<ColumnHandle, AllocError> {
+        self.try_add_column_pairs(
+            id,
+            source.len(),
+            source.min(),
+            source.max(),
+            device,
+            queue,
+            |dst| write_scalar_source_as_pairs(source, dst),
+        )
+    }
+
+    fn try_add_hilo_column(
+        &mut self,
+        id: ColumnId,
+        source: &dyn HiLoColumnSource,
+        device: &Device,
+        queue: &Queue,
+    ) -> Result<ColumnHandle, AllocError> {
+        self.try_add_column_pairs(
+            id,
+            source.len(),
+            source.min(),
+            source.max(),
+            device,
+            queue,
+            |dst| source.write_f32_pair_le_into(dst),
+        )
+    }
+
+    fn try_add_column_pairs(
+        &mut self,
+        id: ColumnId,
+        n: usize,
+        min: f64,
+        max: f64,
+        device: &Device,
+        queue: &Queue,
+        write_pairs: impl FnOnce(&mut [u8]),
+    ) -> Result<ColumnHandle, AllocError> {
         if self.slots.contains_key(&id) {
             return Err(AllocError::DuplicateId(id));
         }
-        let n = source.len();
         if n == 0 {
             return Err(AllocError::EmptySource);
         }
 
-        let raw_bytes = (n as u64).checked_mul(4).ok_or(AllocError::ResourceLimit {
-            resource: "column staging buffer",
-            requested: u64::MAX,
-            limit: self.max_buffer_size,
-        })?;
+        let raw_bytes =
+            (n as u64)
+                .checked_mul(COLUMN_VALUE_BYTES as u64)
+                .ok_or(AllocError::ResourceLimit {
+                    resource: "column staging buffer",
+                    requested: u64::MAX,
+                    limit: self.max_buffer_size,
+                })?;
         let byte_size = try_align_up(raw_bytes, ALIGN).ok_or(AllocError::ResourceLimit {
             resource: "column staging buffer",
             requested: raw_bytes,
@@ -367,17 +445,19 @@ impl ColumnPool {
             mapped_at_creation: true,
         };
         let staging = create_buffer_checked(device, &staging_desc, "column staging buffer")?;
-        let mut min_positive = f32::INFINITY;
+        let mut min_positive = f64::INFINITY;
         {
             // wgpu 27's BufferViewMut derefs to `&mut [u8]`, so the column
             // can serialize itself straight into staging memory.
             let mut view = staging.slice(..).get_mapped_range_mut();
-            source.write_f32_le_into(&mut view[..raw_bytes as usize]);
+            write_pairs(&mut view[..raw_bytes as usize]);
             // Scalar stats only — read the freshly written bytes once, retain
             // nothing (the upload path stays zero-copy and the pool keeps no
             // CPU shadow of the data).
-            for b in view[..raw_bytes as usize].chunks_exact(4) {
-                let v = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+            for b in view[..raw_bytes as usize].chunks_exact(COLUMN_VALUE_BYTES) {
+                let hi = f32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f64;
+                let lo = f32::from_le_bytes([b[4], b[5], b[6], b[7]]) as f64;
+                let v = hi + lo;
                 if v > 0.0 && v < min_positive {
                     min_positive = v;
                 }
@@ -398,9 +478,9 @@ impl ColumnPool {
             byte_size,
             len_values: n,
             generation: self.generation,
-            min: source.min(),
-            max: source.max(),
-            min_positive: min_positive.is_finite().then_some(min_positive as f64),
+            min,
+            max,
+            min_positive: min_positive.is_finite().then_some(min_positive),
         };
         let handle = ColumnHandle {
             generation: slot.generation,
@@ -646,13 +726,13 @@ mod tests {
             .add_column("x".to_string(), &c, &device, &queue)
             .unwrap();
 
-        // 100 * 4 = 400 bytes, rounded up to ALIGN(256) → 512.
-        assert_eq!(h.byte_size, 512);
+        // 100 logical f32-pair values = 800 bytes, rounded up to ALIGN(256) -> 1024.
+        assert_eq!(h.byte_size, 1024);
         assert_eq!(h.offset, 0);
         assert_eq!(h.len_values, 100);
 
         assert!(pool.handle_for("x").is_some());
-        assert_eq!(pool.used_bytes(), 512);
+        assert_eq!(pool.used_bytes(), 1024);
 
         let removed = pool.remove_column("x");
         assert!(removed);
@@ -666,9 +746,9 @@ mod tests {
         let Some((device, queue, mut pool)) = mk_pool(64 * 1024) else {
             return;
         };
-        let a = col_f64((0..50).map(|i| i as f64).collect()); // 200 → 256
-        let b = col_f64((0..200).map(|i| i as f64).collect()); // 800 → 1024
-        let c = col_f64((0..10).map(|i| i as f64).collect()); // 40 → 256
+        let a = col_f64((0..25).map(|i| i as f64).collect()); // 200 -> 256
+        let b = col_f64((0..120).map(|i| i as f64).collect()); // 960 -> 1024
+        let c = col_f64((0..10).map(|i| i as f64).collect()); // 80 -> 256
 
         let ha = pool.add_column("a".into(), &a, &device, &queue).unwrap();
         let hb = pool.add_column("b".into(), &b, &device, &queue).unwrap();
@@ -685,9 +765,9 @@ mod tests {
         let Some((device, queue, mut pool)) = mk_pool(8 * 1024) else {
             return;
         };
-        let a = col_f64((0..50).map(|i| i as f64).collect()); // 256
-        let b = col_f64((0..50).map(|i| i as f64).collect()); // 256
-        let c = col_f64((0..50).map(|i| i as f64).collect()); // 256
+        let a = col_f64((0..25).map(|i| i as f64).collect()); // 256
+        let b = col_f64((0..25).map(|i| i as f64).collect()); // 256
+        let c = col_f64((0..25).map(|i| i as f64).collect()); // 256
 
         pool.add_column("a".into(), &a, &device, &queue).unwrap();
         pool.add_column("b".into(), &b, &device, &queue).unwrap();
@@ -715,7 +795,7 @@ mod tests {
         let Some((device, queue, mut pool)) = mk_pool(1024) else {
             return;
         };
-        let big = col_f64((0..500).map(|i| i as f64).collect()); // 2000 → 2048
+        let big = col_f64((0..500).map(|i| i as f64).collect()); // 4000 -> 4096
         let res = pool.add_column("big".into(), &big, &device, &queue);
         assert!(matches!(res, Err(AllocError::OutOfSpace { .. })));
     }
@@ -736,7 +816,7 @@ mod tests {
         let Some((device, queue, mut pool)) = mk_pool(8 * 1024) else {
             return;
         };
-        let c = col_f64((0..100).map(|i| i as f64).collect());
+        let c = col_f64((0..50).map(|i| i as f64).collect());
         let h = pool.add_column("x".into(), &c, &device, &queue).unwrap();
         let r = h.byte_range();
         assert_eq!(r.start, 0);
@@ -748,9 +828,9 @@ mod tests {
         let Some((device, queue, mut pool)) = mk_pool(8 * 1024) else {
             return;
         };
-        let a = col_f64((0..50).map(|i| i as f64).collect()); // 256
-        let b = col_f64((0..50).map(|i| i as f64).collect()); // 256
-        let c = col_f64((0..50).map(|i| i as f64).collect()); // 256
+        let a = col_f64((0..25).map(|i| i as f64).collect()); // 256
+        let b = col_f64((0..25).map(|i| i as f64).collect()); // 256
+        let c = col_f64((0..25).map(|i| i as f64).collect()); // 256
 
         let _ = pool.add_column("a".into(), &a, &device, &queue).unwrap();
         let _ = pool.add_column("b".into(), &b, &device, &queue).unwrap();
@@ -788,8 +868,8 @@ mod tests {
         let Some((device, queue, mut pool)) = mk_pool(8 * 1024) else {
             return;
         };
-        let a = col_f64((0..50).map(|i| i as f64).collect());
-        let b = col_f64((0..50).map(|i| i as f64).collect());
+        let a = col_f64((0..25).map(|i| i as f64).collect());
+        let b = col_f64((0..25).map(|i| i as f64).collect());
         pool.add_column("a".into(), &a, &device, &queue).unwrap();
         pool.add_column("b".into(), &b, &device, &queue).unwrap();
         let g0 = pool.generation();
@@ -807,10 +887,10 @@ mod tests {
         };
         pool.defrag_policy = DefragPolicy::OnAllocFailure;
 
-        let a = col_f64((0..50).map(|i| i as f64).collect());
-        let b = col_f64((0..50).map(|i| i as f64).collect());
-        let c = col_f64((0..50).map(|i| i as f64).collect());
-        let d = col_f64((0..50).map(|i| i as f64).collect());
+        let a = col_f64((0..25).map(|i| i as f64).collect());
+        let b = col_f64((0..25).map(|i| i as f64).collect());
+        let c = col_f64((0..25).map(|i| i as f64).collect());
+        let d = col_f64((0..25).map(|i| i as f64).collect());
 
         pool.add_column("a".into(), &a, &device, &queue).unwrap();
         pool.add_column("b".into(), &b, &device, &queue).unwrap();
@@ -836,10 +916,10 @@ mod tests {
         };
         pool.defrag_policy = DefragPolicy::OnAllocFailure;
 
-        let small_a = col_f64((0..50).map(|i| i as f64).collect()); // 256
-        let small_b = col_f64((0..50).map(|i| i as f64).collect()); // 256
-        let small_c = col_f64((0..50).map(|i| i as f64).collect()); // 256
-        let big = col_f64((0..120).map(|i| i as f64).collect()); // 480 → 512
+        let small_a = col_f64((0..25).map(|i| i as f64).collect()); // 256
+        let small_b = col_f64((0..25).map(|i| i as f64).collect()); // 256
+        let small_c = col_f64((0..25).map(|i| i as f64).collect()); // 256
+        let big = col_f64((0..50).map(|i| i as f64).collect()); // 400 -> 512
 
         pool.add_column("a".into(), &small_a, &device, &queue)
             .unwrap();
@@ -866,10 +946,10 @@ mod tests {
             return;
         };
         // Default policy is Manual.
-        let small_a = col_f64((0..50).map(|i| i as f64).collect());
-        let small_b = col_f64((0..50).map(|i| i as f64).collect());
-        let small_c = col_f64((0..50).map(|i| i as f64).collect());
-        let big = col_f64((0..120).map(|i| i as f64).collect());
+        let small_a = col_f64((0..25).map(|i| i as f64).collect());
+        let small_b = col_f64((0..25).map(|i| i as f64).collect());
+        let small_c = col_f64((0..25).map(|i| i as f64).collect());
+        let big = col_f64((0..50).map(|i| i as f64).collect());
 
         pool.add_column("a".into(), &small_a, &device, &queue)
             .unwrap();

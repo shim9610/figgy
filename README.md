@@ -11,7 +11,7 @@ Embed in egui / iced / winit / any other wgpu host.
 > **`crates/web`** — the browser package (`figgy`): public `<figgy-chart>` Custom Element facade plus a raw `FiggyChart` wasm kernel as an advanced escape hatch. The facade owns the shadow canvas, ready promise/event lifecycle, rAF loop, ResizeObserver/DPR handling, pointer mapping, export busy gate, and id-keyed register/unregister lifecycle. Browser I/O: [WASM.md](crates/renderer/WASM.md) · full Config JSON schema: [SCHEMA.md](crates/web/SCHEMA.md). Build artifacts (`crates/web/pkg/`) are gitignored — build with `npx wasm-pack build crates/web --release --target web`.
 > **Online studio** — [figgyplot.com](https://figgyplot.com/) hosts the public web editor. It runs in-browser with local chart data, imports CSV/TSV/Excel, opens `.figgy` project files, and exports PNGs from the same wasm/WebGPU surface.
 
-- **GPU columnar pool**: all data columns share a single GPU buffer with first-fit alloc + ping-pong defrag on fragmentation. Upload caches scalar stats (min / max / smallest-positive) for auto-fit; per-point geometry such as the dashed-line arc-length prefix is computed in place by a compute scan (`line_arc.wgsl`).
+- **GPU columnar pool**: all data columns share a single GPU buffer with first-fit alloc + ping-pong defrag on fragmentation. Logical values are stored as f32 hi/lo pairs when uploaded through `HiLoColumnSource`, preserving timestamp-sized offsets on the GPU. Upload caches scalar stats (min / max / smallest-positive) for auto-fit; per-point geometry such as the dashed-line arc-length prefix is computed in place by a compute scan (`line_arc.wgsl`).
 - **Layered compositing**: grid → data → axis/label/legend, so grid never covers the data. Axis raster can be produced as `Grid` and `Decoration` layers; `AxisLayerKind::All` remains a legacy single-pass helper.
 - **MSAA resolve quality**: `WindowedRenderer` live frames and offscreen PNG export use a 4x (or 2x) MSAA render target when the adapter/format supports resolve, falling back to 1x. This changes only rasterization coverage at primitive edges; data points, line segments, dash arc lengths, and export scale semantics are unchanged.
 - **Data fidelity contract**: renderer/web consume the model contract without silently changing original coordinates, provenance, or axis↔data correspondence. Explicit clipping, log-domain skips, NaN skips, and antialiasing limits are rendering contracts rather than data rewrites.
@@ -136,7 +136,7 @@ renderer.draw(Color::WHITE, &items).unwrap();   // acquire surface frame → pre
 
 ### `ColumnSource` — the data adapter trait
 
-`Renderer::add_column` takes `&dyn ColumnSource` — implement the trait on any container of yours and the data lands in the GPU pool with zero copy (no intermediate `Vec` allocation). The upload pass reads the freshly written bytes once to cache scalar stats (min / max / smallest-positive) for auto-fit.
+`Renderer::add_column` takes `&dyn ColumnSource` — implement the trait on any container of yours and the data lands in the GPU pool with zero copy (no intermediate `Vec` allocation). The upload pass reads the freshly written bytes once to cache scalar stats (min / max / smallest-positive) for auto-fit. Use `Renderer::add_hilo_column` with `&dyn HiLoColumnSource` for large absolute timestamps or coordinates that must preserve sub-f32 deltas; it uploads each logical value as `(hi: f32, lo: f32)`.
 
 ```rust
 pub trait ColumnSource {
@@ -152,6 +152,23 @@ pub trait ColumnSource {
 ```
 
 **Built-in implementors**: `Column<f64>`, `Column<f32>`, `Column<Option<f64>>` (null → NaN).
+
+```rust
+pub trait HiLoColumnSource {
+    fn len(&self) -> usize;
+    fn is_empty(&self) -> bool { self.len() == 0 }
+    fn min(&self) -> f64;
+    fn max(&self) -> f64;
+
+    /// Write little-endian `(hi: f32, lo: f32)` pairs into `dst`.
+    /// Caller guarantees `dst.len() == self.len() * 8`.
+    fn write_f32_pair_le_into(&self, dst: &mut [u8]);
+}
+```
+
+`Column<f64>` implements `HiLoColumnSource`; browser hosts should pass
+`Float64Array` via `set_column_f64` when using timestamp axes with large Unix
+epoch values.
 
 **Custom — time series / DataFrame / mmap / FFI data, anything**:
 
@@ -193,6 +210,21 @@ Each example shows:
 - Line widths of 1 / 2 / 3.5 px across panels
 - Legends
 - DPI input + Save PNG button (egui / iced) or `S` key (winit) → per-panel PNG bytes in memory → written by the example to `/tmp/figgy_*_panel_{i}.png`
+
+### Browser timestamp-axis demo
+
+`crates/web/timestamp-demo.html` exercises the browser timestamp path with
+absolute Unix time values uploaded through `set_column_f64(Float64Array)`.
+It lets you change the visible time window, data unit, timezone, fractional
+second policy, label pattern, chart width, and export scale while the x axis
+uses `LabelFormat::Timestamp` + `AutoCalendar` to choose non-overlapping labels.
+
+```bash
+npx wasm-pack build crates/web --release --target web
+cd crates/web
+python -m http.server 8142 --bind 127.0.0.1
+# open http://127.0.0.1:8142/timestamp-demo.html
+```
 
 ### Live SSoT lab — the split API at pool scale
 
@@ -322,8 +354,19 @@ pub struct Config {
 | `label_visible` | bool | Number labels themselves (separate from `visible`, e.g. show the axis but hide labels) |
 | `label_font` | String | Font family. Empty string → bundled Liberation Sans |
 | `label_offset_x / y` | f32 | Fine nudge offset (px) |
-| `format` | `LabelFormat` | `Decimal / Power / Scientific` (Power recommended for log). Tick labels are numeric text today; rich tick labels are a future extension |
+| `format` | `LabelFormat` | `Decimal / Power / Scientific / Timestamp`. `Timestamp` interprets numeric values as Unix epoch time on linear axes and can use calendar-aware ticks |
 | `significant_digits` | u8 | |
+
+`LabelFormat::Timestamp` keeps data coordinates numeric. Its default config is
+UTC Unix seconds with `AutoCalendar` tick planning; use
+`unit = Milliseconds` for JS timestamps and `FixedOffsetMinutes(540)` for KST.
+`AutoCalendar` measures tick-label text and coarsens the calendar step so labels
+do not overlap. Use `Renderer::add_hilo_column` (native) or `set_column_f64`
+(web `Float64Array`) for high-resolution absolute Unix timestamps; those paths
+preserve sub-f32 deltas on the GPU as f32 hi/lo pairs.
+The browser demo at [crates/web/timestamp-demo.html](crates/web/timestamp-demo.html)
+is the quickest visual check for range changes, chart-width changes, and export
+scale against that contract.
 
 ### `AxisTitleOptions` / `ChartTitleOptions`
 | Field | Type | Meaning |
@@ -471,7 +514,7 @@ depends on the live data→pixel transform. It is produced entirely on the GPU,
 per dashed series, on every draw that uses it:
 
 ```
-pool columns (x, y) ──┐                       Transform uniform (80 B write)
+pool columns (x, y) ──┐                       Transform uniform (96 B write)
                       ▼                                   │
    seg_init           dst[i] = |px(pᵢ) − px(pᵢ₋₁)|   ◄────┘
    scan_block         256-block inclusive scans (Hillis–Steele, shared mem)
@@ -751,6 +794,21 @@ cargo run -p renderer --example iced_embed --features iced_demo
 - 범례 표시
 - DPI 입력 + Save PNG 버튼 (egui / iced) 또는 `S` 키 (winit) 으로 panel 별 PNG 메모리 export → `/tmp/figgy_*_panel_{i}.png`
 
+### 브라우저 timestamp 축 데모
+
+`crates/web/timestamp-demo.html` 은 absolute Unix time 값을
+`set_column_f64(Float64Array)` 로 올리는 브라우저 timestamp 경로를 확인하는
+데모다. 시간 범위, 데이터 단위, 시간대, 소수 초 정책, 라벨 패턴, 차트 폭,
+export scale 을 바꾸면서 x 축이 `LabelFormat::Timestamp` + `AutoCalendar` 로
+겹치지 않는 라벨을 고르는지 볼 수 있다.
+
+```bash
+npx wasm-pack build crates/web --release --target web
+cd crates/web
+python -m http.server 8142 --bind 127.0.0.1
+# http://127.0.0.1:8142/timestamp-demo.html 열기
+```
+
 ### 라이브 SSoT lab — 풀 스케일에서 본 분리 API
 
 ```bash
@@ -879,8 +937,19 @@ pub struct Config {
 | `label_visible` | bool | 숫자 라벨 자체 표시 여부 (visible 과 별개로 axis 자체는 켜고 라벨만 끄기) |
 | `label_font` | String | 폰트 패밀리. 빈 문자열 → 번들 Liberation Sans |
 | `label_offset_x / y` | f32 | nudge용 미세 오프셋 (px) |
-| `format` | `LabelFormat` | `Decimal / Power / Scientific` (log scale 권장: Power). 현재 tick label은 숫자 텍스트만 지원하며 RichText tick label은 추후 확장 계획 |
+| `format` | `LabelFormat` | `Decimal / Power / Scientific / Timestamp`. `Timestamp`는 linear axis에서 숫자 좌표를 Unix epoch 시간으로 해석하고 calendar-aware tick을 사용할 수 있음 |
 | `significant_digits` | u8 | 유효 숫자 |
+
+`LabelFormat::Timestamp`는 데이터 좌표를 계속 숫자로 유지한다. 기본값은 UTC
+Unix seconds + `AutoCalendar` tick 계획이며, JS timestamp에는 `unit =
+Milliseconds`, 한국 시간 같은 고정 오프셋에는 `FixedOffsetMinutes(540)`을 쓴다.
+`AutoCalendar`는 tick label 폭을 측정해서 label이 겹치지 않도록 calendar step을
+자동으로 성글게 만든다. 고해상도 absolute Unix timestamp는 native에서
+`Renderer::add_hilo_column`, web에서 `set_column_f64(Float64Array)`를 사용하면
+GPU에서 `(hi: f32, lo: f32)` pair로 보존된다.
+[crates/web/timestamp-demo.html](crates/web/timestamp-demo.html) 데모는 이 계약을
+시간 범위 변경, 차트 폭 변경, export scale 변경과 함께 가장 빨리 눈으로
+확인하는 경로다.
 
 ### `AxisTitleOptions` / `ChartTitleOptions`
 | 필드 | 타입 | 의미 |
@@ -1025,7 +1094,7 @@ dash 위상은 매 점의 누적 픽셀 호장이 필요하고, 이는 라이브
 변환에 의존한다. dashed 시리즈마다, 사용하는 draw 마다 GPU 에서 전부 생산:
 
 ```
-pool 컬럼 (x, y) ──┐                        Transform uniform (80 B write)
+pool 컬럼 (x, y) ──┐                        Transform uniform (96 B write)
                    ▼                                   │
    seg_init        dst[i] = |px(pᵢ) − px(pᵢ₋₁)|   ◄────┘
    scan_block      256-블록 inclusive 스캔 (Hillis–Steele, 공유 메모리)
