@@ -12,8 +12,8 @@
 //! `cargo run -p renderer --example iced_embed --features iced_demo`
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, PoisonError};
 
 use std::sync::atomic::AtomicU32;
 
@@ -47,8 +47,8 @@ use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{
     Chart, ChartDrawItem, ChartStyle, ChartView, CpuTextMeasure, DataLineStyleConfig,
-    DataRenderType, HitId, HitMap, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE, Renderer, RendererDevice,
-    ResizeHandle, SelectionBox, Series, SeriesConfig, dpi_to_scale,
+    DataRenderType, HitId, HitMap, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE, PreparedFrame, Renderer,
+    RendererDevice, ResizeHandle, SelectionBox, Series, SeriesConfig, dpi_to_scale,
 };
 
 const POOL_CAPACITY: u64 = 16 * 1024 * 1024;
@@ -71,15 +71,21 @@ struct PanelEntry {
     styles: Vec<ChartStyle>,
     /// Selectable elements of this panel (axes / titles / data area).
     hitmap: HitMap,
+    /// Token from `Renderer::prepare` plus the surface physical size captured
+    /// at prepare time (iced's `Primitive::draw` doesn't receive the
+    /// viewport). Consumed by this panel's `Primitive::draw`; `None` until
+    /// the first successful prepare.
+    prepared: Option<(PreparedFrame, (u32, u32))>,
 }
 
 struct FiggyPipeline {
-    /// Host-responsibility lock: `Renderer::paint` takes `&mut self`, but
-    /// iced's `shader::Primitive::draw` only hands out `&Pipeline`. `prepare`
-    /// (which gets `&mut Pipeline`) reaches inside with `get_mut()` — no
-    /// locking; only `draw` actually locks, uncontended on iced's single
-    /// render thread. The renderer itself holds no locks.
-    renderer: Option<Mutex<Renderer>>,
+    /// No lock needed: iced's phases map directly onto figgy's split frame
+    /// API. `shader::Primitive::prepare` hands out `&mut Pipeline` →
+    /// `Renderer::prepare(&mut self)`, and `shader::Primitive::draw` hands
+    /// out `&Pipeline` → `Renderer::paint_prepared(&self)`, so the
+    /// `Mutex<Renderer>` wrapper the old `paint(&mut self)` facade required
+    /// is gone.
+    renderer: Option<Renderer>,
     panels: Vec<PanelEntry>,
     init_error: Option<String>,
     /// Currently selected element: (panel index, hit-map id).
@@ -120,7 +126,7 @@ impl FiggyPipeline {
             build_xs_panel(&mut renderer, placeholder),
         ];
         Self {
-            renderer: Some(Mutex::new(renderer)),
+            renderer: Some(renderer),
             panels,
             init_error: None,
             selected: None,
@@ -130,10 +136,7 @@ impl FiggyPipeline {
 
     fn shutdown(&mut self) {
         if let Some(renderer) = self.renderer.as_mut() {
-            renderer
-                .get_mut()
-                .unwrap_or_else(PoisonError::into_inner)
-                .wait_idle();
+            renderer.wait_idle();
         }
         self.panels.clear();
     }
@@ -196,6 +199,7 @@ fn build_sine_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
         series: vec![cfg],
         styles: vec![style],
         hitmap: HitMap::standard_chart(),
+        prepared: None,
     }
 }
 
@@ -260,6 +264,7 @@ fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
         series: vec![cfg_charge, cfg_discharge],
         styles: vec![style_charge, style_discharge],
         hitmap: HitMap::standard_chart(),
+        prepared: None,
     }
 }
 
@@ -309,6 +314,7 @@ fn build_xs_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
         series: vec![cfg],
         styles: vec![style],
         hitmap: HitMap::standard_chart(),
+        prepared: None,
     }
 }
 
@@ -331,7 +337,7 @@ impl shader::Primitive for FiggyPrimitive {
         _device: &wgpu::Device,
         _queue: &wgpu::Queue,
         _bounds: &Rectangle,
-        _viewport: &Viewport,
+        viewport: &Viewport,
     ) {
         // Pending pointer input → selection / resize / drag. Processed once
         // per frame from panel 0's prepare (panels render in order), before
@@ -409,11 +415,12 @@ impl shader::Primitive for FiggyPrimitive {
             }
             return;
         };
-        // `&mut Pipeline` → exclusive access; `get_mut` skips the lock.
-        let renderer = renderer.get_mut().unwrap_or_else(PoisonError::into_inner);
         let Some(panel) = pipeline.panels.get_mut(self.panel_idx) else {
             return;
         };
+        // Cleared up-front so an early return below can't leave `draw` with
+        // a token from an older frame; repopulated at the end on success.
+        panel.prepared = None;
         let sel_boxes: Vec<SelectionBox> = match selected {
             Some((pi, id)) if pi == self.panel_idx => panel
                 .hitmap
@@ -438,12 +445,14 @@ impl shader::Primitive for FiggyPrimitive {
                 eprintln!("[figgy] refresh_axis failed: {e}");
                 return;
             }
-            renderer.update_transform(&panel.view, &panel.chart);
             let _ = panel.chart.consume_data_dirty();
             let _ = panel.chart.consume_raster_dirty();
         } else {
             let raster_dirty = panel.chart.consume_raster_dirty();
-            let data_dirty = panel.chart.consume_data_dirty();
+            // `Renderer::prepare` below rewrites the transform uniform from
+            // the current config every frame, so a data-dirty flag needs no
+            // separate `update_transform` call — just consume it.
+            let _ = panel.chart.consume_data_dirty();
             if raster_dirty {
                 if let Err(e) = renderer.refresh_axis_with_selection(
                     &mut panel.view,
@@ -454,9 +463,6 @@ impl shader::Primitive for FiggyPrimitive {
                     eprintln!("[figgy] refresh_axis failed: {e}");
                     return;
                 }
-            }
-            if data_dirty {
-                renderer.update_transform(&panel.view, &panel.chart);
             }
         }
 
@@ -481,17 +487,14 @@ impl shader::Primitive for FiggyPrimitive {
                 }
             }
         }
-    }
 
-    /// `draw` is the efficient path — slots into the RenderPass iced already built.
-    fn draw(&self, pipeline: &Self::Pipeline, render_pass: &mut wgpu::RenderPass<'_>) -> bool {
-        let Some(renderer) = pipeline.renderer.as_ref() else {
-            return false;
-        };
-        // Host lock around `paint(&mut self)` — see the field doc.
-        let mut renderer = renderer.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(panel) = pipeline.panels.get(self.panel_idx) else {
-            return false;
+        // Mutable half of the frame: build this panel's draw items and run
+        // `Renderer::prepare`. `draw` rebuilds the identical items (same
+        // order) and replays them through `paint_prepared(&self)`. Overlap
+        // with the other panels' live tokens — or with the export above — is
+        // safe: buffers referenced by a live token are copy-on-write.
+        let Some(panel) = pipeline.panels.get_mut(self.panel_idx) else {
+            return;
         };
         let series: Vec<Series<'_>> = panel
             .series
@@ -504,18 +507,59 @@ impl shader::Primitive for FiggyPrimitive {
             chart_config: panel.chart.config(),
             series: &series,
         }];
-        // iced has already set viewport / scissor to the Primitive bounds, but
-        // figgy sets its own viewport / scissor based on panel_rect.
-        // target_size is the surface pixel size — not exposed to Primitive,
-        // so the bounding box of panel_rect_px is enough (clamp trims overflow).
-        let target_size = (
-            self.panel_rect_px.x + self.panel_rect_px.width,
-            self.panel_rect_px.y + self.panel_rect_px.height,
-        );
-        match renderer.paint(render_pass, target_size, &items) {
+        match renderer.prepare(&items) {
+            // `paint_prepared` clamps its viewport/scissor against the real
+            // surface pixel size; `draw` doesn't receive the viewport, so
+            // capture it here alongside the token.
+            Ok(token) => {
+                panel.prepared = Some((
+                    token,
+                    (viewport.physical_width(), viewport.physical_height()),
+                ));
+            }
+            Err(e) => eprintln!("[figgy] prepare failed: {e}"),
+        }
+    }
+
+    /// `draw` is the efficient path — pure command recording of the token
+    /// `prepare` made, into the RenderPass iced already built. `&Pipeline`
+    /// is all it needs: `paint_prepared` takes `&self`, so no renderer lock.
+    fn draw(&self, pipeline: &Self::Pipeline, render_pass: &mut wgpu::RenderPass<'_>) -> bool {
+        let Some(renderer) = pipeline.renderer.as_ref() else {
+            return false;
+        };
+        let Some(panel) = pipeline.panels.get(self.panel_idx) else {
+            return false;
+        };
+        let Some((prepared, target_size)) = panel.prepared.as_ref() else {
+            eprintln!(
+                "[figgy] panel {}: draw without a prepared frame — skipping",
+                self.panel_idx
+            );
+            return false;
+        };
+        // The same items, in the same order, as at `prepare`. iced has
+        // already set viewport / scissor to the Primitive bounds, but figgy
+        // sets its own from panel_rect, clamped to `target_size` — the real
+        // surface pixel size captured at prepare time.
+        let series: Vec<Series<'_>> = panel
+            .series
+            .iter()
+            .zip(panel.styles.iter())
+            .map(|(cfg, style)| Series { config: cfg, style })
+            .collect();
+        let items = [ChartDrawItem {
+            view: &panel.view,
+            chart_config: panel.chart.config(),
+            series: &series,
+        }];
+        match renderer.paint_prepared(render_pass, *target_size, &items, prepared) {
             Ok(()) => true,
             Err(e) => {
-                eprintln!("[figgy] paint failed: {e}");
+                // Includes `StalePreparedFrame` if an invalidating `&mut`
+                // call interleaved — skip this frame; the next `prepare`
+                // recovers.
+                eprintln!("[figgy] paint_prepared failed: {e}");
                 false
             }
         }

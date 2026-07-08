@@ -61,6 +61,13 @@ pub enum FiggyError {
 
     /// Handle's generation no longer matches the pool (stale after defrag / clear).
     StaleHandle { generation: u32, current: u32 },
+
+    /// A `PreparedFrame` no longer matches the renderer state or the items it
+    /// was prepared for — something invalidating interleaved between
+    /// `Renderer::prepare` and `Renderer::paint_prepared` (pool layout change,
+    /// target-format change, edited chart config, or reordered items/series).
+    /// Recovery: call `prepare` again with the current items.
+    StalePreparedFrame { reason: String },
 }
 
 impl std::fmt::Display for FiggyError {
@@ -109,6 +116,9 @@ impl std::fmt::Display for FiggyError {
                 f,
                 "stale column handle (handle generation {generation}, pool generation {current})"
             ),
+            Self::StalePreparedFrame { reason } => {
+                write!(f, "stale prepared frame: {reason}")
+            }
         }
     }
 }

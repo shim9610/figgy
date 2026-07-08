@@ -129,7 +129,7 @@ let items  = [ChartDrawItem {
     chart_config: chart.config(),
     series: &series,
 }];
-renderer.draw(Color::WHITE, &items).unwrap();   // acquire surface frame → encoder → pass → paint → submit → present
+renderer.draw(Color::WHITE, &items).unwrap();   // acquire surface frame → prepare → encoder → pass → paint_prepared → submit → present
 ```
 
 `WindowedRenderer` may insert an internal MSAA color target before the surface and resolve into the acquired frame. Hosts that call `Renderer::paint` directly still own their render pass sample count.
@@ -194,38 +194,66 @@ Each example shows:
 - Legends
 - DPI input + Save PNG button (egui / iced) or `S` key (winit) → per-panel PNG bytes in memory → written by the example to `/tmp/figgy_*_panel_{i}.png`
 
+### Live SSoT lab — the split API at pool scale
+
+```bash
+cargo run --release -p renderer --example ssot_lab --features egui_demo
+```
+
+A 2×2 grid, one draw style per panel (Precise dashed / Sketch / Milkyway /
+Constellation), all four series reading a single shared `x` pool column. The
+sidebar edits the SSoT live — pan direction per x-linked column pair, window
+width, and point density up to 3M/series (12M total, 5 columns). Every edit
+flows through `Renderer::prepare` → `Renderer::paint_prepared` with no
+`Mutex` and no per-frame `update_transform`; the status box's `frames
+skipped` stays at 0, proving the token never goes stale under live edits.
+
 ### egui integration pattern (summary)
 
-`Renderer::paint` takes `&mut self` and the renderer holds no internal locks;
-when a host's paint callback only provides shared access, the host wraps the
-state in a `Mutex` (uncontended on the render thread):
+The frame is split to match host callback shapes: every mutation lives in
+`Renderer::prepare` (`&mut self`), pure command recording lives in
+`Renderer::paint_prepared` (`&self`) — so the paint callback needs no
+`Mutex` around the renderer:
 
 ```rust
-// stored in CallbackResources as Mutex<FiggyState>
-struct FiggyState { renderer: renderer::Renderer, panels: Vec<...> }
+// stored in CallbackResources as plain FiggyState — no Mutex
+struct FiggyState { renderer: renderer::Renderer, panels: Vec<PanelEntry> }
+struct PanelEntry { /* chart, view, … */ prepared: Option<renderer::PreparedFrame> }
+struct FiggyCallback { panel_idx: usize /* one callback per panel */ }
 
 impl egui_wgpu::CallbackTrait for FiggyCallback {
     fn prepare(&self, _device, _queue, _screen, _enc, resources) -> Vec<...> {
-        // &mut CallbackResources → get_mut reaches the data without locking.
-        let state = resources.get_mut::<Mutex<FiggyState>>().unwrap().get_mut().unwrap();
-        // dirty handling: refresh_axis / update_transform
+        let state = resources.get_mut::<FiggyState>().unwrap();
+        // dirty handling: refresh_axis (raster). No per-frame update_transform —
+        // prepare writes the transform uniform itself.
+        let prepared = state.renderer.prepare(&items).unwrap();
+        // store the token per panel — egui runs every callback's prepare before
+        // any paint, so one shared token would be overwritten by later panels
+        state.panels[self.panel_idx].prepared = Some(prepared);
         Vec::new()
     }
     fn paint(&self, info, render_pass, resources) {
-        let mut state = resources.get::<Mutex<FiggyState>>().unwrap().lock().unwrap();
-        let state = &mut *state;
-        let (renderer, panels) = (&mut state.renderer, &state.panels);
+        let state = resources.get::<FiggyState>().unwrap();
+        let prepared = state.panels[self.panel_idx].prepared.as_ref().unwrap();
         let target = (info.screen_size_px[0], info.screen_size_px[1]);
-        renderer.paint(render_pass, target, &items).unwrap();
+        state.renderer.paint_prepared(render_pass, target, &items, prepared).unwrap();
     }
 }
 ```
+
+`paint_prepared` is repeatable (the same token may be recorded into more than
+one pass) and requires `items` unchanged, in prepare order. If an invalidating
+`&mut` call interleaved between the two phases it records nothing and returns
+`FiggyError::StalePreparedFrame` — recover with a fresh `prepare` next frame.
+The one-shot `Renderer::paint(&mut self, …)` facade remains for hosts that own
+the renderer exclusively during their frame (winit loop, wasm wrapper): it
+runs both phases back to back.
 
 Full version: [examples/egui_embed.rs](crates/renderer/examples/egui_embed.rs).
 
 ### iced integration pattern
 
-`iced_wgpu::primitive::Pipeline` (one-time init) + `shader::Primitive` (per frame) — keep figgy's `Renderer` inside the Pipeline as `Mutex<Renderer>`: `prepare` (`&mut Pipeline`) reaches it via `get_mut()` with no locking, `draw` (`&Pipeline`) locks around `renderer.paint(pass, ...)`. See [examples/iced_embed.rs](crates/renderer/examples/iced_embed.rs).
+`iced_wgpu::primitive::Pipeline` (one-time init) + `shader::Primitive` (per frame) — keep figgy's `Renderer` inside the Pipeline directly, no `Mutex`: `prepare` (`&mut Storage`) runs dirty handling plus `renderer.prepare(&items)` and stores the returned `PreparedFrame` token alongside the Pipeline, `draw` (`&Storage`) calls `renderer.paint_prepared(pass, target, &items, &prepared)` through shared access only. See [examples/iced_embed.rs](crates/renderer/examples/iced_embed.rs).
 
 ### PNG export (memory only — saving is the caller's job)
 
@@ -412,10 +440,13 @@ Empty text is filled in via the `Chart::with_title / with_x_title / with_y_title
 `Renderer` owns the lifetime of GPU-side state: the `ColumnPool`,
 render/compute pipelines, bind groups, per-panel GPU resources such as
 `ChartView` / `ChartStyle`, and the shared `Arc<wgpu::Device>` /
-`Arc<wgpu::Queue>`. `Renderer::paint` and the export prepare path run behind
-an `&mut self` boundary and do not introduce a shared lock inside the
-renderer. If a host needs shared access, it wraps the whole renderer at its
-own UI/runtime lifetime boundary.
+`Arc<wgpu::Queue>`. Every mutation — `Renderer::prepare` and the export
+prepare path — runs behind an `&mut self` boundary and does not introduce a
+shared lock inside the renderer. `Renderer::paint_prepared` records through
+`&self` against an owned `PreparedFrame` token, so host paint callbacks that
+only hand out shared access need no wrapper lock either (`Renderer` is
+`Send + Sync`). Overlapping prepares are safe: buffers still referenced by a
+live token are copy-on-write protected, never rewritten in place.
 
 `ColumnSource` data is borrowed only during upload. The long-lived records are
 the GPU-pool column and the scalar stats cached for auto-fit (min / max /
@@ -470,15 +501,15 @@ place, so the cache does not retain more than 256 entries.
 
 | Flag | Triggers | Handling |
 |---|---|---|
-| `data_dirty` | `set_x/y_range`, `auto_fit_*`, `invalidate()`, `config_mut()` / `set_config`, chart_area change, first frame | `Renderer::update_transform` (one UB write) |
+| `data_dirty` | `set_x/y_range`, `auto_fit_*`, `invalidate()`, `config_mut()` / `set_config`, chart_area change, first frame | handled by `Renderer::prepare` (one UB write per panel per frame — also runs inside the `paint` / `draw` facades), so no explicit call is needed; `Renderer::update_transform` remains available but is no longer required per frame |
 | `raster_dirty` | `set_x/y_range`, `auto_fit_*` (ticks/grid depend on the range), decoration changes (`with_title`, decoration fields, …), `config_mut()` / `set_config`, chart_area change, first frame | `Renderer::refresh_axis` (re-rasterizes both grid + decoration textures and re-uploads them) |
 
 Caller per frame:
 ```rust
 let raster_dirty = chart.consume_raster_dirty();
-let data_dirty = chart.consume_data_dirty();
 if raster_dirty { renderer.refresh_axis(view, chart, panel_rect)?; }
-if data_dirty { renderer.update_transform(view, chart); }
+// data_dirty needs no explicit call: prepare rewrites the transform
+// uniform from the live chart config every frame.
 ```
 
 ### Log scale on the GPU
@@ -655,7 +686,7 @@ let items  = [ChartDrawItem {
     chart_config: chart.config(),
     series: &series,
 }];
-renderer.draw(Color::WHITE, &items).unwrap();   // surface frame 획득 → encoder → pass → paint → submit → present
+renderer.draw(Color::WHITE, &items).unwrap();   // surface frame 획득 → prepare → encoder → pass → paint_prepared → submit → present
 ```
 
 `WindowedRenderer` 는 내부 MSAA color target을 surface 앞에 두고 획득한 frame으로 resolve할 수 있다. `Renderer::paint`를 직접 호출하는 host는 여전히 자신이 여는 render pass의 sample count를 직접 소유한다.
@@ -720,38 +751,66 @@ cargo run -p renderer --example iced_embed --features iced_demo
 - 범례 표시
 - DPI 입력 + Save PNG 버튼 (egui / iced) 또는 `S` 키 (winit) 으로 panel 별 PNG 메모리 export → `/tmp/figgy_*_panel_{i}.png`
 
+### 라이브 SSoT lab — 풀 스케일에서 본 분리 API
+
+```bash
+cargo run --release -p renderer --example ssot_lab --features egui_demo
+```
+
+2×2 grid, panel 마다 draw style 하나씩 (Precise dashed / Sketch / Milkyway /
+Constellation), 네 시리즈가 공유 `x` 풀 컬럼 하나를 함께 읽는다. 사이드바가
+SSoT 를 라이브로 편집한다 — x 연동된 열 쌍별 pan 방향, window 폭, 시리즈당
+포인트 밀도 최대 3M (합계 12M, 5 컬럼). 모든 편집이 `Renderer::prepare` →
+`Renderer::paint_prepared` 로 흐르며 `Mutex` 도 frame 별 `update_transform`
+도 없다. 상태창의 `frames skipped` 가 0 으로 유지되어, 라이브 편집 중에도
+토큰이 stale 되지 않음을 증명한다.
+
 ### egui 통합 패턴 (요약)
 
-`Renderer::paint` 는 `&mut self` 를 받고 렌더러는 내부 락을 들지 않는다.
-호스트의 paint 콜백이 공유 참조만 제공하는 경우, 잠금은 호스트의 책임이다
-(렌더 스레드 단독 경로라 경합 없음):
+프레임이 호스트 콜백 형태에 맞게 둘로 나뉜다: 모든 변경은
+`Renderer::prepare` (`&mut self`), 순수 커맨드 기록은
+`Renderer::paint_prepared` (`&self`) — paint 콜백에서 렌더러를 `Mutex` 로
+감쌀 필요가 없다:
 
 ```rust
-// CallbackResources 에 Mutex<FiggyState> 로 저장
-struct FiggyState { renderer: renderer::Renderer, panels: Vec<...> }
+// CallbackResources 에 FiggyState 그대로 저장 — Mutex 없음
+struct FiggyState { renderer: renderer::Renderer, panels: Vec<PanelEntry> }
+struct PanelEntry { /* chart, view, … */ prepared: Option<renderer::PreparedFrame> }
+struct FiggyCallback { panel_idx: usize /* panel 당 콜백 하나 */ }
 
 impl egui_wgpu::CallbackTrait for FiggyCallback {
     fn prepare(&self, _device, _queue, _screen, _enc, resources) -> Vec<...> {
-        // &mut CallbackResources → get_mut 은 잠금 없이 내부 접근.
-        let state = resources.get_mut::<Mutex<FiggyState>>().unwrap().get_mut().unwrap();
-        // dirty 처리: refresh_axis / update_transform
+        let state = resources.get_mut::<FiggyState>().unwrap();
+        // dirty 처리: refresh_axis (raster). frame 별 update_transform 은 불필요 —
+        // prepare 가 transform uniform 을 직접 쓴다.
+        let prepared = state.renderer.prepare(&items).unwrap();
+        // 토큰은 panel 별로 저장 — egui 는 모든 콜백의 prepare 를 먼저 돌린 뒤
+        // paint 를 돌리므로, 공유 토큰 하나면 뒤 panel 의 prepare 가 덮어쓴다
+        state.panels[self.panel_idx].prepared = Some(prepared);
         Vec::new()
     }
     fn paint(&self, info, render_pass, resources) {
-        let mut state = resources.get::<Mutex<FiggyState>>().unwrap().lock().unwrap();
-        let state = &mut *state;
-        let (renderer, panels) = (&mut state.renderer, &state.panels);
+        let state = resources.get::<FiggyState>().unwrap();
+        let prepared = state.panels[self.panel_idx].prepared.as_ref().unwrap();
         let target = (info.screen_size_px[0], info.screen_size_px[1]);
-        renderer.paint(render_pass, target, &items).unwrap();
+        state.renderer.paint_prepared(render_pass, target, &items, prepared).unwrap();
     }
 }
 ```
+
+`paint_prepared` 는 반복 가능하고(같은 토큰을 여러 pass 에 기록 가능),
+`items` 는 prepare 때와 같은 순서·같은 내용이어야 한다. 두 단계 사이에
+무효화하는 `&mut` 호출이 끼어들면 아무것도 기록하지 않고
+`FiggyError::StalePreparedFrame` 을 반환한다 — 다음 frame 에 새로 `prepare`
+하면 복구된다. 렌더러를 frame 동안 단독 소유하는 호스트(winit 루프, wasm
+래퍼)는 두 단계를 연달아 실행하는 원샷 `Renderer::paint(&mut self, …)`
+facade 를 그대로 쓰면 된다.
 
 자세한 건 [examples/egui_embed.rs](crates/renderer/examples/egui_embed.rs).
 
 ### iced 통합 패턴
 
-`iced_wgpu::primitive::Pipeline` (1회 init) + `shader::Primitive` (frame 별) — figgy 의 `Renderer` 를 Pipeline 안에 `Mutex<Renderer>` 로 보관: `prepare` (`&mut Pipeline`) 는 `get_mut()` 으로 잠금 없이, `draw` (`&Pipeline`) 만 `renderer.paint(pass, ...)` 주위를 잠근다. [examples/iced_embed.rs](crates/renderer/examples/iced_embed.rs).
+`iced_wgpu::primitive::Pipeline` (1회 init) + `shader::Primitive` (frame 별) — figgy 의 `Renderer` 를 Pipeline 에 그대로 보관, `Mutex` 없음: `prepare` (`&mut Storage`) 가 dirty 처리와 `renderer.prepare(&items)` 를 실행해 반환된 `PreparedFrame` 토큰을 Pipeline 옆에 저장하고, `draw` (`&Storage`) 는 공유 참조만으로 `renderer.paint_prepared(pass, target, &items, &prepared)` 를 호출한다. [examples/iced_embed.rs](crates/renderer/examples/iced_embed.rs).
 
 ### PNG export (메모리 only — 저장은 caller)
 
@@ -937,9 +996,13 @@ overlay ring은 선택된 scatter marker 반지름을 따른다(포인트별 스
 `Renderer` 는 GPU 측 상태의 수명 소유자다. `ColumnPool`,
 render/compute pipeline, bind group, panel 별 `ChartView` / `ChartStyle`
 GPU 자원, 공유 `Arc<wgpu::Device>` / `Arc<wgpu::Queue>` 를 보관한다.
-`Renderer::paint` 와 export prepare 경로는 `&mut self` 경계에서 실행되고,
-renderer 내부에 새 공유 락을 만들지 않는다. host가 공유 접근을 필요로
-하면 renderer 전체를 자신의 UI/runtime 수명주기 경계에서 감싼다.
+모든 변경 — `Renderer::prepare` 와 export prepare 경로 — 은 `&mut self`
+경계에서 실행되고, renderer 내부에 새 공유 락을 만들지 않는다.
+`Renderer::paint_prepared` 는 owned `PreparedFrame` 토큰을 상대로 `&self`
+로 기록하므로, 공유 참조만 제공하는 host paint 콜백에도 wrapper 락이
+필요 없다 (`Renderer` 는 `Send + Sync`). 겹치는 prepare 도 안전하다:
+살아 있는 토큰이 참조하는 버퍼는 copy-on-write 로 보호되어 제자리에서
+다시 쓰이지 않는다.
 
 `ColumnSource` 데이터는 upload 순간에만 빌려 읽힌다. 장기 보관되는 것은
 GPU pool column과 auto-fit 용 scalar stats(min / max / 최소 양수)뿐이며,
@@ -990,15 +1053,15 @@ prefix는 생략된다. 새 series id를 삽입할 때 시리즈별 arc cache가
 
 | 플래그 | 트리거 | 처리 |
 |---|---|---|
-| `data_dirty` | `set_x/y_range`, `auto_fit_*`, `invalidate()`, `config_mut()` / `set_config`, chart_area 변경, 첫 frame | `Renderer::update_transform` (UB 1회 write) |
+| `data_dirty` | `set_x/y_range`, `auto_fit_*`, `invalidate()`, `config_mut()` / `set_config`, chart_area 변경, 첫 frame | `Renderer::prepare` 가 처리 (panel 당 매 frame UB 1회 write — `paint` / `draw` facade 안에서도 실행) → 명시적 호출 불필요. `Renderer::update_transform` 은 남아 있지만 frame 별 호출은 더 이상 필요 없다 |
 | `raster_dirty` | `set_x/y_range`, `auto_fit_*` (tick/grid가 range에 의존), 데코레이션 변경 (`with_title`, decoration field 등), `config_mut()` / `set_config`, chart_area 변경, 첫 frame | `Renderer::refresh_axis` (grid + decoration 두 텍스처 모두 재라스터 + 업로드) |
 
 호출자 매 frame:
 ```rust
 let raster_dirty = chart.consume_raster_dirty();
-let data_dirty = chart.consume_data_dirty();
 if raster_dirty { renderer.refresh_axis(view, chart, panel_rect)?; }
-if data_dirty { renderer.update_transform(view, chart); }
+// data_dirty 는 별도 호출 불필요: prepare 가 매 frame 라이브 chart config
+// 로부터 transform uniform 을 다시 쓴다.
 ```
 
 ### Log scale GPU 처리

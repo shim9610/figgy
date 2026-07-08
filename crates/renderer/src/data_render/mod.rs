@@ -109,6 +109,31 @@ pub fn request_device(
     pollster::block_on(request_device_async(adapter))
 }
 
+/// One wgpu device+queue shared by every unit test in this binary.
+///
+/// libtest runs tests on up to `num_cpus` threads; if each GPU test built its
+/// own instance/adapter/device (as they used to), a many-core machine spun up
+/// 20+ live devices on one physical GPU at once, and under that contention a
+/// submission would occasionally stall — leaving the test's indefinite
+/// `poll(Wait)` spinning forever. Sharing a single device (wgpu resources are
+/// `Send + Sync` and safe to use concurrently) removes the device-creation
+/// storm while keeping test parallelism. Built once, lazily; `None` on a
+/// machine with no usable adapter so tests skip exactly as before.
+#[cfg(test)]
+pub(crate) fn shared_device() -> Option<(std::sync::Arc<wgpu::Device>, std::sync::Arc<wgpu::Queue>)>
+{
+    use std::sync::{Arc, OnceLock};
+    static SHARED: OnceLock<Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)>> = OnceLock::new();
+    SHARED
+        .get_or_init(|| {
+            let inst = create_instance();
+            let adapter = request_adapter(&inst).ok()?;
+            let (device, queue) = request_device(&adapter).ok()?;
+            Some((Arc::new(device), Arc::new(queue)))
+        })
+        .clone()
+}
+
 /// Build and apply a `SurfaceConfiguration` for the given size. Callers should
 /// keep the returned config so they can call [`reconfigure_surface`] on resize.
 ///
@@ -3127,12 +3152,10 @@ mod tests {
     /// would surface here if the call shape were wrong.
     #[test]
     fn rgba_texture_upload_roundtrips_api() {
-        let instance = create_instance();
-        let Ok(adapter) = request_adapter(&instance) else {
+        let Some((device, queue)) = shared_device() else {
             println!("no adapter — skipping texture upload test");
             return;
         };
-        let (device, queue) = request_device(&adapter).expect("device");
 
         // 2x2 checkerboard: 4 RGBA pixels = 16 bytes.
         let rgba: [u8; 16] = [
@@ -3153,7 +3176,10 @@ mod tests {
 
         // Wait for the queued write_texture to complete; validation errors
         // surface during this poll.
-        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(std::time::Duration::from_secs(30)),
+        });
 
         assert_eq!(tex.width(), 2);
         assert_eq!(tex.height(), 2);
@@ -3164,12 +3190,10 @@ mod tests {
     /// or layout mismatches would panic during creation.
     #[test]
     fn fullscreen_textured_pipeline_compiles_and_creates() {
-        let instance = create_instance();
-        let Ok(adapter) = request_adapter(&instance) else {
+        let Some((device, _queue)) = shared_device() else {
             println!("no adapter — skipping pipeline test");
             return;
         };
-        let (device, _queue) = request_device(&adapter).expect("device");
 
         let bgl = create_texture_bind_group_layout(&device);
         let pipeline = create_fullscreen_textured_pipeline(
@@ -3180,7 +3204,10 @@ mod tests {
         );
 
         let _ = pipeline;
-        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(std::time::Duration::from_secs(30)),
+        });
     }
 
     /// Compile the scatter WGSL entries added outside the common block for
@@ -3188,13 +3215,10 @@ mod tests {
     /// syntax/layout drift without running a full render snapshot.
     #[test]
     fn scatter_mapped_and_pick_ring_pipelines_compile() {
-        let instance = create_instance();
-        let Ok(adapter) = request_adapter(&instance) else {
+        let Some((device, _queue)) = shared_device() else {
             println!("no adapter ??skipping scatter entry pipeline test");
             return;
         };
-        let (device, _queue) = request_device(&adapter).expect("device");
-
         let transform_bgl = create_scatter_transform_bind_group_layout(&device);
         let style_bgl = create_style_bind_group_layout(&device);
         let style_map_bgl = create_scatter_style_map_bind_group_layout(&device);
@@ -3238,19 +3262,20 @@ mod tests {
         );
 
         let _ = (mapped, picked, picked_mapped, errorbar_mapped);
-        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(std::time::Duration::from_secs(30)),
+        });
     }
 
     /// Wire up sampler + bind-group layout + bind group end-to-end; a
     /// slot-type mismatch would panic in `create_bind_group`.
     #[test]
     fn texture_sampler_bind_group_wires_up() {
-        let instance = create_instance();
-        let Ok(adapter) = request_adapter(&instance) else {
+        let Some((device, queue)) = shared_device() else {
             println!("no adapter — skipping bind group test");
             return;
         };
-        let (device, queue) = request_device(&adapter).expect("device");
 
         let rgba: [u8; 16] = [
             255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255,
@@ -3270,7 +3295,10 @@ mod tests {
         let layout = create_texture_bind_group_layout(&device);
         let _bind_group = create_texture_bind_group(&device, &layout, &view, &sampler);
 
-        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(std::time::Duration::from_secs(30)),
+        });
     }
 
     /// Open a device + queue without a surface and print a few limits.

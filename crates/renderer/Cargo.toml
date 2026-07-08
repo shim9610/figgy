@@ -57,3 +57,8 @@ required-features = ["egui_demo"]
 name = "iced_embed"
 path = "examples/iced_embed.rs"
 required-features = ["iced_demo"]
+
+[[example]]
+name = "ssot_lab"
+path = "examples/ssot_lab.rs"
+required-features = ["egui_demo"]

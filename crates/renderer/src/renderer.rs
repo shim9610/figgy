@@ -63,6 +63,12 @@ struct RendererDeviceCaps {
     features: wgpu::Features,
     max_texture_dimension_2d: u32,
     max_buffer_size: u64,
+    /// The arc-length scan and star pass bind the WHOLE pool as a single
+    /// storage-buffer binding, so the pool can never exceed this. A request
+    /// above it is clamped at construction (see [`effective_pool_capacity`])
+    /// rather than deferred into a wgpu validation panic on the first
+    /// dashed/sketch/milkyway line.
+    max_storage_buffer_binding_size: u32,
     /// Per-dimension dispatch ceiling for the arc-length compute scan.
     max_compute_workgroups_per_dimension: u32,
     /// The arc scan needs 256-wide workgroups; downlevel (GL-class)
@@ -77,16 +83,112 @@ impl RendererDeviceCaps {
             features: device.features(),
             max_texture_dimension_2d: limits.max_texture_dimension_2d,
             max_buffer_size: limits.max_buffer_size,
+            max_storage_buffer_binding_size: limits.max_storage_buffer_binding_size,
             max_compute_workgroups_per_dimension: limits.max_compute_workgroups_per_dimension,
             max_compute_invocations_per_workgroup: limits.max_compute_invocations_per_workgroup,
         }
     }
 }
 
+/// The largest pool the renderer can actually bind, given the device.
+///
+/// The arc-scan compute and the constellation star pass bind the entire pool
+/// buffer as one storage binding, so the pool is capped by BOTH
+/// `max_storage_buffer_binding_size` and `max_buffer_size`. `try_new` clamps
+/// the caller's requested capacity to this instead of letting an oversized
+/// pool become a runtime validation panic — a caller that needs a bigger
+/// pool must request higher device limits when creating the device (wgpu's
+/// defaults are only 128 MiB / 256 MiB). Callers can read the granted size
+/// back via `renderer.pool().capacity()`.
+fn effective_pool_capacity(requested: u64, caps: RendererDeviceCaps) -> u64 {
+    requested
+        .min(u64::from(caps.max_storage_buffer_binding_size))
+        .min(caps.max_buffer_size)
+}
+
 /// A dashed series' GPU arc-length prefix: the buffer (bound as the line
 /// pipeline's vertex slots 4/5) and its used byte length.
 type ArcPrefix = (Arc<wgpu::Buffer>, u64);
 const ARC_PREFIX_CACHE_LIMIT: usize = 256;
+
+/// Owned snapshot of one series' constellation/milkyway star pass, cloned
+/// out of the arc scratch by the prepare phase. wgpu resources are
+/// internally refcounted, so these clones keep the GPU objects alive (and
+/// the draw phase cache-independent) even if `arc_cache` evicts or rebuilds
+/// the entry before `paint_prepared` runs.
+struct PreparedStar {
+    indirect: wgpu::Buffer,
+    vs_bg: wgpu::BindGroup,
+}
+
+/// One series' arc-scan snapshot inside a token: the prefix buffer slice
+/// the line binds, the star pass (when the style has one), and the
+/// `(x_base, y_base, n)` layout the scan ran over. The layout is
+/// revalidated at paint time — a remove+re-add of a column id does not
+/// bump the pool generation, so without this stamp fresh column handles
+/// could silently pair with an arc computed over the old bytes.
+struct PreparedArc {
+    prefix: ArcPrefix,
+    star: Option<PreparedStar>,
+    source: (u32, u32, u32),
+}
+
+/// Per-series output of the prepare phase, index-aligned with the
+/// `ChartDrawItem.series` slice it was prepared from. `series_id` is kept
+/// for the identity check in `paint_prepared` — the arc/star state is
+/// positional, so reordered items must be detected, not mis-assigned.
+/// `arc_wanted` records whether prepare decided this series needs an arc
+/// scan (dashed, or an arc-parameterized style); paint recomputes the same
+/// decision to catch render-type / line-style edits at an unchanged id.
+struct PreparedSeries {
+    series_id: String,
+    arc_wanted: bool,
+    arc: Option<PreparedArc>,
+}
+
+/// Per-panel output of the prepare phase. `transform` is the exact
+/// data→NDC transform snapshot that was written to the panel's transform
+/// uniform AND used for the arc-prefix dispatch; `paint_prepared`
+/// recomputes it from the items it receives and rejects a mismatch (the
+/// chart config changed between the two calls).
+struct PreparedItem {
+    transform: data_render::ScatterTransform,
+    series: Vec<PreparedSeries>,
+}
+
+/// Token returned by [`Renderer::prepare`] and consumed (by reference,
+/// repeatably) by [`Renderer::paint_prepared`].
+///
+/// Owned and `'static`: it holds refcounted wgpu handles, never borrows the
+/// renderer, so hosts can store it across callback boundaries (egui
+/// `CallbackResources`, iced `Storage`) — exactly where a `&`-borrowing
+/// token would be rejected by the compiler. The price of that ownership is
+/// that misuse cannot be a compile error; instead the stamps below turn
+/// "renderer changed under the token" into
+/// [`FiggyError::StalePreparedFrame`] at paint time.
+#[derive(Debug)]
+pub struct PreparedFrame {
+    items: Vec<PreparedItem>,
+    /// Pool layout stamp — a defrag/clear between prepare and paint moves
+    /// column bytes, so positional handles resolved at paint would read
+    /// garbage. `add_column`/`remove_column` alone do NOT bump this stamp;
+    /// the arc-consistency hazard they pose is covered by the per-series
+    /// source-layout stamps ([`PreparedArc::source`]), and non-arc series
+    /// intentionally resolve live pool state at paint (same as `paint`).
+    pool_generation: u32,
+    /// Format the styled-pipeline cache was compiled against; an
+    /// `ensure_target_format` between the calls rebuilds that cache and
+    /// recording old-format pipelines would abort in wgpu validation.
+    surface_format: wgpu::TextureFormat,
+}
+
+impl std::fmt::Debug for PreparedItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedItem")
+            .field("series", &self.series.len())
+            .finish_non_exhaustive()
+    }
+}
 
 /// Facade bundling every figgy GPU resource.
 pub struct Renderer {
@@ -113,14 +215,17 @@ pub struct Renderer {
     sampler: wgpu::Sampler,
     quad_vb: wgpu::Buffer,
 
-    /// Per-series GPU arc-scan state for dashed lines, keyed by series id.
-    /// The prefix is re-dispatched on every draw that uses it (it depends on
-    /// the data→pixel transform); buffers/bind groups are reused while the
-    /// series layout (length, column offsets, pool generation) is stable.
-    /// Mutated only in the `&mut self` prepare phase of `paint`/export — the
-    /// renderer holds no locks; hosts that need shared access wrap the whole
-    /// renderer (see the host-integration notes above `paint`).
-    arc_cache: HashMap<String, data_render::line_arc::ArcScratch>,
+    /// Per-series GPU arc-scan slot pool for dashed lines, keyed by series
+    /// id. The prefix is re-dispatched on every prepare that uses it (it
+    /// depends on the data→pixel transform); a slot is reused in place only
+    /// while the series layout (length, column offsets, pool generation) is
+    /// stable AND no live `PreparedFrame` still references it (copy-on-write
+    /// — see `ensure_arc_prefix`). Retained-token hosts settle on two slots
+    /// per series that alternate frame over frame. Mutated only in
+    /// `&mut self` prepare-phase entry points (`prepare`/`paint`/export);
+    /// the `&self` draw phase reads the token's owned snapshot, never this
+    /// cache.
+    arc_cache: HashMap<String, Vec<data_render::line_arc::ArcScratch>>,
     arc_pipelines: data_render::line_arc::ArcScanPipelines,
     /// Test-only narrowing of the arc-scan chunk size so the multi-chunk
     /// carry path is exercisable with small `n`. Always `None` in release.
@@ -754,9 +859,15 @@ fn scatter_pick_anchor_may_be_visible(
 impl Renderer {
     /// Initialize every figgy GPU resource against the given device/queue pair.
     ///
-    /// `pool_capacity_bytes` is the total size of the GPU column pool
-    /// (sum of all chart data). `surface_format` is the final render target
-    /// color format; every graphics pipeline is compiled against it.
+    /// `pool_capacity_bytes` is the requested total size of the GPU column
+    /// pool (sum of all chart data). It is clamped to what the device can
+    /// bind — the arc-scan compute binds the whole pool as one storage
+    /// binding, so a request above `max_storage_buffer_binding_size` (or
+    /// `max_buffer_size`) is reduced instead of panicking later; read the
+    /// granted size back via [`Self::pool`]`().capacity()`. To get a larger
+    /// pool, raise those limits when requesting the wgpu device (the defaults
+    /// are only 128 MiB / 256 MiB). `surface_format` is the final render
+    /// target color format; every graphics pipeline is compiled against it.
     pub fn try_new(
         gpu: RendererDevice,
         surface_format: wgpu::TextureFormat,
@@ -788,7 +899,19 @@ impl Renderer {
         }
         validate_target_sample_count(caps, surface_format, target_sample_count)?;
 
-        let pool = ColumnPool::new(&device, pool_capacity_bytes)?;
+        // Clamp the pool to what the arc-scan / star-pass storage bindings
+        // can address — graceful fallback instead of a first-dashed-line
+        // panic. The caller can read the granted size back via `pool()`.
+        let pool_capacity = effective_pool_capacity(pool_capacity_bytes, caps);
+        if pool_capacity < pool_capacity_bytes {
+            eprintln!(
+                "[figgy] pool capacity {pool_capacity_bytes} B exceeds device limits \
+                 (max_storage_buffer_binding_size {}, max_buffer_size {}); \
+                 clamped to {pool_capacity} B",
+                caps.max_storage_buffer_binding_size, caps.max_buffer_size
+            );
+        }
+        let pool = ColumnPool::new(&device, pool_capacity)?;
 
         let texture_bgl = data_render::create_texture_bind_group_layout(&device);
         let transform_bgl = data_render::create_scatter_transform_bind_group_layout(&device);
@@ -1067,41 +1190,62 @@ impl Renderer {
     // Host-integration API (egui_wgpu / iced_wgpu / standalone).
     //
     // `Renderer` does NOT own the surface, swap chain, or event loop — the
-    // host (egui, iced, a wgpu app) manages those. Per-frame flow:
-    //   1. Host calls `surface.get_current_texture()` or enters its paint
-    //      callback.
-    //   2. If needed, the host invokes `refresh_axis` and/or `update_transform`
-    //      after independently consuming `chart.consume_raster_dirty()` /
-    //      `consume_data_dirty()` — this is the "prepare" stage where
-    //      `device`/`queue` are accessible.
-    //   3. The host hands a `&mut RenderPass` to `renderer.paint(pass, items)`.
+    // host (egui, iced, a wgpu app) manages those. The frame is split to
+    // match host callback shapes: every mutation lives in `prepare`
+    // (`&mut self`), recording lives in `paint_prepared` (`&self`).
+    // Per-frame flow:
+    //   1. Host prepare stage (`&mut` access is available): data uploads
+    //      (`add_column`), `ensure_target_format` on format change, and
+    //      `refresh_axis` after consuming `chart.consume_raster_dirty()`.
+    //      (`update_transform` is no longer needed per frame — `prepare`
+    //      writes the transform uniform itself.)
+    //   2. `let prepared = renderer.prepare(&items)?` — compiles missing
+    //      styled pipelines, writes per-panel transforms, dispatches arc
+    //      scans, returns an owned `'static` token. Store it wherever the
+    //      host carries state into its paint callback (egui
+    //      `CallbackResources`, iced `Storage`, or a local for winit).
+    //   3. Host paint stage (only `&self` is available):
+    //      `renderer.paint_prepared(pass, target_size, &items, &prepared)`
+    //      — pure recording, repeatable, no lock required. Returns
+    //      `FiggyError::StalePreparedFrame` if an invalidating `&mut` call
+    //      interleaved; recover by re-preparing next frame.
     //
-    // Locking is the HOST's responsibility. `paint` takes `&mut self` (it
-    // refreshes per-series GPU scan state); the renderer itself holds no
-    // locks. Hosts that own the renderer exclusively (winit loop, wasm
-    // wrapper) call it directly. Hosts whose paint callback only hands out
-    // `&self` (egui's `CallbackTrait::paint`, iced's `shader::Primitive`)
-    // wrap their state in a `Mutex` and lock around the call — see
-    // `examples/egui_embed.rs` / `examples/iced_embed.rs`.
+    // No `Mutex` is needed for the paint callback: `Renderer` is Send + Sync
+    // and `paint_prepared` never mutates. Hosts that own the renderer
+    // exclusively during their frame (winit loop, wasm wrapper) can keep
+    // calling the one-shot `paint(&mut self, …)` facade, which runs both
+    // phases back to back.
     //
-    // egui pseudocode:
+    // egui pseudocode (`CallbackTrait`). Items are built by a FREE function
+    // over the state's non-renderer fields so `s.renderer` stays free for
+    // the `&mut` prepare call (disjoint field borrows) — a `&self` method
+    // returning items would keep all of `*s` borrowed and fail to compile.
+    // The token lives in a state field, crossing the callback boundary:
     // ```ignore
-    // // resources own Mutex<FiggyState> (state.renderer + chart/view/items)
-    // let cb = egui_wgpu::CallbackFn::new()
-    //     .prepare(|device, queue, _enc, res| {
-    //         let s = res.get_mut::<Mutex<FiggyState>>().unwrap().get_mut().unwrap();
-    //         let raster_dirty = s.chart.consume_raster_dirty();
-    //         let data_dirty = s.chart.consume_data_dirty();
-    //         if raster_dirty { s.renderer.refresh_axis(&mut s.view, &s.chart, rect)?; }
-    //         if data_dirty { s.renderer.update_transform(&s.view, &s.chart); }
-    //         vec![]
-    //     })
-    //     .paint(|_info, pass, res| {
-    //         let mut s = res.get::<Mutex<FiggyState>>().unwrap().lock().unwrap();
-    //         let (renderer, items) = s.split_for_paint();
-    //         renderer.paint(pass, target_size, &items).unwrap();
-    //     });
+    // fn build_items<'a>(view: &'a ChartView, chart: &'a Chart, series: &'a [Series<'a>])
+    //     -> Vec<ChartDrawItem<'a>> { /* same shape in both callbacks */ }
+    //
+    // fn prepare(&self, _dev, _queue, _enc, res: &mut CallbackResources) -> Vec<CommandBuffer> {
+    //     let s = res.get_mut::<FiggyState>().unwrap();
+    //     if s.chart.consume_raster_dirty() {
+    //         s.renderer.refresh_axis(&mut s.view, &s.chart, rect).unwrap();
+    //     }
+    //     let items = build_items(&s.view, &s.chart, &s.series);
+    //     s.prepared = s.renderer.prepare(&items).ok(); // token into a state field
+    //     vec![]
+    // }
+    // fn paint(&self, info, pass, res: &CallbackResources) {
+    //     let s = res.get::<FiggyState>().unwrap();
+    //     let items = build_items(&s.view, &s.chart, &s.series);
+    //     if let Some(prepared) = &s.prepared {
+    //         let _ = s.renderer.paint_prepared(pass, target_size, &items, prepared);
+    //     }
+    // }
     // ```
+    // (One figgy widget per egui callback: with several callbacks sharing a
+    // renderer, store one token per widget/panel — egui runs every
+    // callback's prepare before any paint, so a single shared token would
+    // be overwritten before the first paint. See examples/egui_embed.rs.)
 
     /// Build a `ChartStyle` from `cfg.render_type`'s line/scatter/errorbar
     /// styles. Missing components default to BLACK / 1 px.
@@ -1391,8 +1535,10 @@ impl Renderer {
 
     /// Re-rasterize both grid and decoration textures. Updates in place via
     /// `write_texture` when the size matches; allocates new textures
-    /// otherwise. Data transform updates are the caller's responsibility via
-    /// [`Self::update_transform`].
+    /// otherwise. The data transform uniform needs no separate call in the
+    /// prepare/paint flow — [`Self::prepare`] (and the `paint`/`draw`
+    /// facades) writes it every frame; [`Self::update_transform`] remains
+    /// for imperative one-off updates outside that flow.
     ///
     /// `&mut self`: the constellation backdrop cache (`space_bg`) lives on
     /// the renderer and may be (re)baked here — same prepare-phase mutability
@@ -1543,6 +1689,15 @@ impl Renderer {
 
     /// Draw multiple chart panels into one RenderPass.
     ///
+    /// Facade over [`Self::prepare`] + [`Self::paint_prepared`] for hosts
+    /// that own the renderer exclusively during their frame (winit loop,
+    /// wasm wrapper, export): both phases run back to back under one
+    /// `&mut self`, so no interleaving is possible and no token handling is
+    /// needed. Hosts whose paint callback only provides `&self` (egui's
+    /// `CallbackTrait::paint`, iced's `shader::Primitive::draw`) should call
+    /// the two phases separately instead of wrapping the renderer in a
+    /// `Mutex` — see the host-integration notes above.
+    ///
     /// Takes a pass already opened by the host via `begin_render_pass`.
     /// `Renderer` owns the pool buffer, pipelines, and bind groups, so no
     /// external resources are needed.
@@ -1554,19 +1709,47 @@ impl Renderer {
     /// panel_rect / data_area are clamped to it because wgpu validation would
     /// otherwise abort. Pass the surface pixel size reported by the host
     /// (winit, egui CallbackInfo, iced shader::Primitive, …).
-    ///
-    /// Takes `&mut self`: the call starts with a prepare phase that compiles
-    /// any styled pipeline sets the items need but the cache lacks, and
-    /// refreshes per-series GPU scan state (dashed-line arc prefixes) before
-    /// recording into the pass. The renderer holds no internal locks — hosts
-    /// whose paint callback only provides `&self` wrap their state in a
-    /// `Mutex` (see the host-integration notes above).
     pub fn paint(
         &mut self,
         pass: &mut wgpu::RenderPass<'_>,
         target_size: (u32, u32),
         items: &[ChartDrawItem<'_>],
     ) -> Result<()> {
+        let prepared = self.prepare(items)?;
+        self.paint_prepared(pass, target_size, items, &prepared)
+    }
+
+    /// Mutable half of the frame: finish every state change the draw needs,
+    /// before any render pass opens.
+    ///
+    /// Runs the styled-pipeline ensure (compiles pipeline sets the items
+    /// need but the cache lacks), writes each panel's data→NDC transform
+    /// uniform from `item.chart_config`, and (re)dispatches the per-series
+    /// GPU arc-length scans — submitting their compute encoder on the queue,
+    /// which orders it before the host's later pass submission. Returns an
+    /// owned [`PreparedFrame`] token snapshotting everything the immutable
+    /// draw phase will reference.
+    ///
+    /// Because the transform uniform and the arc dispatch are written here
+    /// from the same config snapshot, they cannot desync — calling
+    /// [`Self::update_transform`] per frame becomes unnecessary (though
+    /// harmless) for callers of this API.
+    ///
+    /// Contract: call after this frame's data uploads (`add_column`),
+    /// `ensure_target_format`, and `refresh_axis`; before the host submits
+    /// the command buffer containing the render pass. `paint_prepared`
+    /// detects and rejects ([`FiggyError::StalePreparedFrame`]): target
+    /// format changes, pool defrag/clear, chart-config edits, item/series
+    /// list changes (count, order, ids, render type, line style), and
+    /// remove+re-add of an arc series' source columns (when the re-added
+    /// layout differs — a re-add landing at the identical offset and length
+    /// is indistinguishable from untouched data and self-heals at the next
+    /// prepare). Column changes that only affect plain (non-arc) data are
+    /// picked up live at paint, exactly like the one-shot `paint`. Re-preparing (even for the same series
+    /// from another panel or an interleaved export) is always safe: buffers
+    /// still referenced by a live token are never rewritten in place, a
+    /// fresh slot is used instead.
+    pub fn prepare(&mut self, items: &[ChartDrawItem<'_>]) -> Result<PreparedFrame> {
         self.pipelines.ensure_styles_for_items(
             &self.device,
             &self.queue,
@@ -1576,20 +1759,148 @@ impl Renderer {
             self.surface_format,
             items,
         );
-        let arcs = self.ensure_arc_prefixes(items);
-        self.paint_with_pipelines(pass, target_size, items, &self.pipelines, &arcs)
+        let items = self.prepare_items(items);
+        Ok(PreparedFrame {
+            items,
+            pool_generation: self.pool.generation(),
+            surface_format: self.surface_format,
+        })
     }
 
-    /// Arc half of the prepare phase of `paint`/export (the styled-pipeline
-    /// ensure is the other half). Ensures and dispatches the GPU arc-length
-    /// prefix for every line series that needs one — dashed lines (dash
-    /// phase) and every line of a style with `needs_arc_prefix` (sketch: the
-    /// wobble is parameterized by arc length, so solid sketch lines need the
-    /// prefix too). The immutable draw phase then only looks the buffers up,
-    /// so it can coexist with the pipeline references the pass needs.
-    fn ensure_arc_prefixes(&mut self, items: &[ChartDrawItem<'_>]) -> Vec<Vec<Option<ArcPrefix>>> {
-        let mut arcs = Vec::with_capacity(items.len());
+    /// Immutable half of the frame: pure command recording against a
+    /// [`PreparedFrame`] from [`Self::prepare`].
+    ///
+    /// `&self` — safe to call from host paint callbacks that only hand out
+    /// shared access (egui `CallbackTrait::paint` via `&CallbackResources`,
+    /// iced `shader::Primitive::draw` via `&Storage`), with no lock around
+    /// the renderer. Repeatable: the same token may be recorded into more
+    /// than one pass (egui re-record, iced mid-frame pass restart).
+    ///
+    /// `items` must be the same slice, in the same order, that produced
+    /// `prepared` — per-series identity and the per-panel transform are
+    /// verified, and renderer-level stamps (pool generation, target format)
+    /// detect invalidating `&mut self` calls since `prepare`. On mismatch
+    /// nothing is recorded and [`FiggyError::StalePreparedFrame`] is
+    /// returned; recovery is a fresh `prepare`.
+    pub fn paint_prepared(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        target_size: (u32, u32),
+        items: &[ChartDrawItem<'_>],
+        prepared: &PreparedFrame,
+    ) -> Result<()> {
+        self.validate_prepared(items, prepared)?;
+        self.paint_with_pipelines(pass, target_size, items, &self.pipelines, &prepared.items)
+    }
+
+    /// Stamp checks guarding `paint_prepared` — see [`PreparedFrame`] field
+    /// docs for what each stamp catches. Kept separate from recording so a
+    /// stale token fails before any pass state is touched.
+    fn validate_prepared(
+        &self,
+        items: &[ChartDrawItem<'_>],
+        prepared: &PreparedFrame,
+    ) -> Result<()> {
+        let stale = |reason: String| FiggyError::StalePreparedFrame { reason };
+        if prepared.surface_format != self.surface_format {
+            return Err(stale(format!(
+                "prepared for target format {:?}, renderer now targets {:?} \
+                 (ensure_target_format was called between prepare and paint_prepared)",
+                prepared.surface_format, self.surface_format
+            )));
+        }
+        if prepared.pool_generation != self.pool.generation() {
+            return Err(stale(format!(
+                "prepared at pool generation {}, pool is now at {} \
+                 (the pool was defragmented or cleared between prepare and paint_prepared)",
+                prepared.pool_generation,
+                self.pool.generation()
+            )));
+        }
+        if prepared.items.len() != items.len() {
+            return Err(stale(format!(
+                "prepared {} panel(s), paint received {}",
+                prepared.items.len(),
+                items.len()
+            )));
+        }
+        for (idx, (pi, item)) in prepared.items.iter().zip(items).enumerate() {
+            if pi.series.len() != item.series.len() {
+                return Err(stale(format!(
+                    "panel {idx}: prepared {} series, paint received {}",
+                    pi.series.len(),
+                    item.series.len()
+                )));
+            }
+            let t = data_render::scatter_transform_from_config(item.chart_config);
+            if bytemuck::bytes_of(&t) != bytemuck::bytes_of(&pi.transform) {
+                return Err(stale(format!(
+                    "panel {idx}: chart config (axis ranges / chart area / style params) \
+                     changed between prepare and paint_prepared"
+                )));
+            }
+            let variant = style_variant(&item.chart_config.draw_style);
+            for (ps, s) in pi.series.iter().zip(item.series) {
+                let cfg = s.config;
+                if ps.series_id != cfg.series_id {
+                    return Err(stale(format!(
+                        "panel {idx}: prepared series {:?}, paint received {:?} \
+                         (items must be passed to paint_prepared unchanged and in prepare order)",
+                        ps.series_id, cfg.series_id
+                    )));
+                }
+                // Recompute prepare's arc decision: a render-type or
+                // line-style edit at an unchanged series id would otherwise
+                // pair the wrong (or no) arc snapshot with the new pipeline.
+                let line = has_line(&cfg.render_type);
+                let dashed = line
+                    && extract_line(&cfg.render_type)
+                        .is_some_and(|l| !matches!(l.line_style, LineStylePreset::Solid));
+                let arc_wanted = dashed || (variant.is_some_and(|v| v.needs_arc_prefix) && line);
+                if arc_wanted != ps.arc_wanted {
+                    return Err(stale(format!(
+                        "panel {idx}, series {:?}: render type or line style changed \
+                         between prepare and paint_prepared",
+                        cfg.series_id
+                    )));
+                }
+                // The pool generation only tracks defrag/clear — a
+                // remove+re-add of a column id keeps the generation, so the
+                // arc's source layout must be revalidated structurally.
+                if let Some(a) = &ps.arc {
+                    if self.arc_source_layout(&cfg.x_column, &cfg.y_column) != Some(a.source) {
+                        return Err(stale(format!(
+                            "panel {idx}, series {:?}: the series' x/y columns changed \
+                             layout between prepare and paint_prepared (column \
+                             removed/re-added or resized)",
+                            cfg.series_id
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Per-item body of the prepare phase (also reused by export). For each
+    /// panel: computes ONE transform snapshot from `item.chart_config`,
+    /// writes it to the panel's transform uniform, dispatches the arc-length
+    /// scan of every line series that needs one with that same snapshot —
+    /// dashed lines (dash phase) and every line of a style with
+    /// `needs_arc_prefix` (sketch: the wobble is parameterized by arc
+    /// length, so solid sketch lines need the prefix too) — and snapshots
+    /// owned handles (arc buffer, star pass) into the returned
+    /// `PreparedItem`s. The immutable draw phase reads only that snapshot,
+    /// never `arc_cache`, so it survives any cache eviction or rebuild.
+    fn prepare_items(&mut self, items: &[ChartDrawItem<'_>]) -> Vec<PreparedItem> {
+        let mut prepared = Vec::with_capacity(items.len());
         for item in items {
+            let t = data_render::scatter_transform_from_config(item.chart_config);
+            // Same snapshot for both GPU consumers of the transform: the
+            // uniform the vertex shaders read and the arc dispatch below.
+            // Written here (not via `update_transform`) so they cannot
+            // desync within a frame.
+            data_render::update_scatter_transform(&self.queue, &item.view.transform_buffer, &t);
             let variant = style_variant(&item.chart_config.draw_style);
             // Milkyway lines also get the arc-driven star pass: the
             // candidate-slot pitch the indirect kernel sizes the dispatch
@@ -1607,23 +1918,30 @@ impl Renderer {
                 let dashed = line
                     && extract_line(&cfg.render_type)
                         .is_some_and(|l| !matches!(l.line_style, LineStylePreset::Solid));
-                per_series.push(
-                    if dashed || (variant.is_some_and(|v| v.needs_arc_prefix) && line) {
-                        self.ensure_arc_prefix(
-                            &cfg.series_id,
-                            &cfg.x_column,
-                            &cfg.y_column,
-                            item.chart_config,
-                            if line { star_pitch } else { None },
-                        )
-                    } else {
-                        None
-                    },
-                );
+                let arc_wanted = dashed || (variant.is_some_and(|v| v.needs_arc_prefix) && line);
+                let arc = if arc_wanted {
+                    self.ensure_arc_prefix(
+                        &cfg.series_id,
+                        &cfg.x_column,
+                        &cfg.y_column,
+                        &t,
+                        if line { star_pitch } else { None },
+                    )
+                } else {
+                    None
+                };
+                per_series.push(PreparedSeries {
+                    series_id: cfg.series_id.clone(),
+                    arc_wanted,
+                    arc,
+                });
             }
-            arcs.push(per_series);
+            prepared.push(PreparedItem {
+                transform: t,
+                series: per_series,
+            });
         }
-        arcs
+        prepared
     }
 
     fn paint_with_pipelines<'a>(
@@ -1632,9 +1950,9 @@ impl Renderer {
         target_size: (u32, u32),
         items: &[ChartDrawItem<'a>],
         pipelines: &'a TargetPipelines,
-        arcs: &[Vec<Option<ArcPrefix>>],
+        prepared: &'a [PreparedItem],
     ) -> Result<()> {
-        for (item, item_arcs) in items.iter().zip(arcs) {
+        for (item, prepared_item) in items.iter().zip(prepared) {
             let panel_rect = item.view.panel_rect;
             let data_area = item
                 .chart_config
@@ -1654,7 +1972,7 @@ impl Renderer {
                 item.chart_config,
                 item.series,
                 pipelines,
-                item_arcs,
+                &prepared_item.series,
                 styled,
             )?;
 
@@ -1680,10 +1998,12 @@ impl Renderer {
     /// Convert one panel's `Series` list into `SeriesLayers` ready for
     /// drawing. The `config.render_type` enum variant decides which of
     /// line/scatter/errorbar each series needs; column ids are resolved to
-    /// handles via the pool. `arcs` is this panel's slice of the prepare
-    /// phase's output ([`Self::ensure_arc_prefixes`]), aligned with
+    /// handles via the pool. `prepared` is this panel's slice of the prepare
+    /// phase's output ([`Self::prepare_items`]), aligned with
     /// `series_specs` — dashed lines (and every line of an arc-needing
-    /// style) pick up their arc-length prefix there. `styled` is the panel's
+    /// style) pick up their arc-length prefix there, and the star pass its
+    /// owned handle snapshot (never a live `arc_cache` read — the cache may
+    /// have been evicted or rebuilt since prepare). `styled` is the panel's
     /// resolved [`StyleSet`] — it selects the stylized pipeline variants
     /// (and the line strip's vertex count); `None` (precise mode, or the
     /// theoretically-impossible cache miss) selects the precise pipelines.
@@ -1694,7 +2014,7 @@ impl Renderer {
         chart_config: &'a Config,
         series_specs: &[Series<'a>],
         pipelines: &'a TargetPipelines,
-        arcs: &[Option<ArcPrefix>],
+        prepared: &'a [PreparedSeries],
         styled: Option<&'a StyleSet>,
     ) -> Result<Vec<data_render::SeriesLayers<'a>>> {
         let pool = &self.pool;
@@ -1797,7 +2117,10 @@ impl Renderer {
             let y_h = lookup(&cfg.y_column)?;
 
             let line = if has_line(rt) && (!constellation_only || constellation_supported) {
-                let arc = arcs.get(idx).cloned().flatten();
+                let arc = prepared
+                    .get(idx)
+                    .and_then(|p| p.arc.as_ref())
+                    .map(|a| a.prefix.clone());
                 Some(ColumnLineLayer {
                     pipeline: line_pick.pipeline,
                     transform_bg: &view.transform_bg,
@@ -1813,15 +2136,18 @@ impl Renderer {
                 None
             };
 
-            // Star pass: per-series GPU state lives in the arc scratch the
-            // prepare phase built (indirect args + VS bind group). Missing
-            // scratch/star (n < 2, or a theoretically-impossible prepare
-            // miss) just skips the stars — the ribbon still draws.
+            // Star pass: per-series GPU state is the owned snapshot the
+            // prepare phase cloned out of the arc scratch (indirect args +
+            // VS bind group) — read from the token, never from `arc_cache`,
+            // so an eviction/rebuild between prepare and paint cannot drop
+            // or desync it. A missing star (n < 2, or a
+            // theoretically-impossible prepare miss) just skips the stars —
+            // the ribbon still draws.
             let line_extra = match (&line, &stars_pick) {
-                (Some(_), Some(sp)) => self
-                    .arc_cache
-                    .get(cfg.series_id.as_str())
-                    .and_then(|s| s.star.as_ref())
+                (Some(_), Some(sp)) => prepared
+                    .get(idx)
+                    .and_then(|p| p.arc.as_ref())
+                    .and_then(|a| a.star.as_ref())
                     .map(|star| data_render::ColumnStarLayer {
                         pipeline: sp.pipeline,
                         transform_bg: &view.transform_bg,
@@ -2095,30 +2421,13 @@ impl Renderer {
         Ok(out)
     }
 
-    /// Ensure the GPU arc-length prefix for one dashed line series and return
-    /// the buffer slice info. The whole computation runs on the GPU
-    /// (`line_arc.wgsl` compute scan over the pool columns) — the data never
-    /// returns to the CPU, keeping the pool's no-CPU-copy contract intact.
-    /// Series longer than one chunk's dispatch capacity scan as sequential
-    /// chunks linked by a carry buffer, so any pool-resident `n` is fine.
-    ///
-    /// The scan is re-dispatched on every draw that needs it (the prefix
-    /// depends on the data→pixel transform): a handful of tiny compute
-    /// dispatches submitted before the host's render pass, which queue order
-    /// then sequences correctly. Buffers/bind groups are cached per series
-    /// and rebuilt only when the series layout changes.
-    /// `star_pitch`: `Some` adds the constellation star pass to the scratch
-    /// (indirect args + VS bind group) and runs its kernel after the scan.
-    fn ensure_arc_prefix(
-        &mut self,
-        series_id: &str,
-        x_id: &str,
-        y_id: &str,
-        chart_config: &Config,
-        star_pitch: Option<f32>,
-    ) -> Option<ArcPrefix> {
-        // Copy the layout scalars out so the pool borrow ends before the
-        // cache mutation below.
+    /// The `(x_base, y_base, n)` layout an arc scan over these columns runs
+    /// on right now — `None` when a column is missing or shorter than two
+    /// points. Factored out so `validate_prepared` applies the exact same
+    /// resolution as the prepare phase did (a remove+re-add of a column id
+    /// does not bump the pool generation, so the token's arc source must be
+    /// revalidated structurally).
+    fn arc_source_layout(&self, x_id: &str, y_id: &str) -> Option<(u32, u32, u32)> {
         let (x_offset, x_len) = {
             let s = self.pool.slot(x_id)?;
             (s.offset, s.len_values)
@@ -2135,8 +2444,41 @@ impl Renderer {
         // Pool offsets are 256-aligned bytes → exact f32 element indices.
         let x_base = u32::try_from(x_offset / 4).ok()?;
         let y_base = u32::try_from(y_offset / 4).ok()?;
+        Some((x_base, y_base, n))
+    }
+
+    /// Ensure the GPU arc-length prefix for one dashed line series and return
+    /// the token-side snapshot: the prefix buffer slice, the owned star-pass
+    /// handles (when the scratch has one), and the source-column layout the
+    /// scan ran over. The whole computation runs on the GPU
+    /// (`line_arc.wgsl` compute scan over the pool columns) — the data never
+    /// returns to the CPU, keeping the pool's no-CPU-copy contract intact.
+    /// Series longer than one chunk's dispatch capacity scan as sequential
+    /// chunks linked by a carry buffer, so any pool-resident `n` is fine.
+    ///
+    /// The scan is re-dispatched on every prepare that needs it (the prefix
+    /// depends on the data→pixel transform `t`): a handful of tiny compute
+    /// dispatches submitted before the host's render pass, which queue order
+    /// then sequences correctly. Buffers/bind groups are cached per series
+    /// and rebuilt only when the series layout changes — or when a live
+    /// [`PreparedFrame`] still references the cached buffer (its refcount is
+    /// > 1): `dispatch` rewrites contents in place, so instead of clobbering
+    /// what an outstanding token will draw, the scratch is rebuilt with
+    /// fresh buffers (copy-on-write). This makes overlapping prepares — a
+    /// second panel with the same series, an export between a host's
+    /// prepare and paint — safe by construction.
+    /// `star_pitch`: `Some` adds the constellation star pass to the scratch
+    /// (indirect args + VS bind group) and runs its kernel after the scan.
+    fn ensure_arc_prefix(
+        &mut self,
+        series_id: &str,
+        x_id: &str,
+        y_id: &str,
+        t: &data_render::ScatterTransform,
+        star_pitch: Option<f32>,
+    ) -> Option<PreparedArc> {
+        let (x_base, y_base, n) = self.arc_source_layout(x_id, y_id)?;
         let generation = self.pool.generation();
-        let t = data_render::scatter_transform_from_config(chart_config);
 
         // Runaway-churn backstop: ids of long-removed series would otherwise
         // pin GPU memory forever. Existing-key rebuilds replace in place, but
@@ -2147,29 +2489,47 @@ impl Renderer {
         {
             self.arc_cache.clear();
         }
-        let stale = self.arc_cache.get(series_id).is_none_or(|s| {
-            !s.matches(n, x_base, y_base, generation) || s.star.is_some() != star_pitch.is_some()
+        let slots = self.arc_cache.entry(series_id.to_string()).or_default();
+        // Slots whose layout no longer matches are useless for reuse; any
+        // live token that still draws from one owns clones of its handles,
+        // so dropping the slot here never invalidates a token.
+        slots.retain(|s| {
+            s.matches(n, x_base, y_base, generation) && s.star.is_some() == star_pitch.is_some()
         });
-        if stale {
-            #[cfg(test)]
-            let chunk_override = self.arc_chunk_override;
-            #[cfg(not(test))]
-            let chunk_override = None;
-            let scratch = data_render::line_arc::ArcScratch::build(
-                &self.device,
-                &self.arc_pipelines,
-                self.pool.buffer(),
-                n,
-                x_base,
-                y_base,
-                generation,
-                self.caps.max_compute_workgroups_per_dimension,
-                chunk_override,
-                star_pitch.is_some().then_some(&self.star_data_bgl),
-            )?; // None only on a zero-dispatch-limit adapter; try_new rejects those.
-            self.arc_cache.insert(series_id.to_string(), scratch);
-        }
-        let scratch = self.arc_cache.get(series_id)?;
+        // Copy-on-write slot pool: `dispatch` rewrites buffer contents in
+        // place, and a strong count > 1 means a live PreparedFrame (or an
+        // in-flight sibling within this same prepare) still references the
+        // slot's arc buffer — its contents must survive until that token's
+        // pass is submitted. Reuse the first free slot; only when every slot
+        // is pinned is a fresh one built. Retained-token hosts (replace last
+        // frame's token after the next prepare returns) settle on two slots
+        // that alternate, so the steady state allocates nothing. A transient
+        // over-count from a token dropping on another thread only costs a
+        // spurious slot, never a clobber.
+        let idx = match slots.iter().position(|s| Arc::strong_count(&s.arc) == 1) {
+            Some(idx) => idx,
+            None => {
+                #[cfg(test)]
+                let chunk_override = self.arc_chunk_override;
+                #[cfg(not(test))]
+                let chunk_override = None;
+                let scratch = data_render::line_arc::ArcScratch::build(
+                    &self.device,
+                    &self.arc_pipelines,
+                    self.pool.buffer(),
+                    n,
+                    x_base,
+                    y_base,
+                    generation,
+                    self.caps.max_compute_workgroups_per_dimension,
+                    chunk_override,
+                    star_pitch.is_some().then_some(&self.star_data_bgl),
+                )?; // None only on a zero-dispatch-limit adapter; try_new rejects those.
+                slots.push(scratch);
+                slots.len() - 1
+            }
+        };
+        let scratch = &slots[idx];
 
         let mut encoder = self
             .device
@@ -2180,12 +2540,23 @@ impl Renderer {
             &self.queue,
             &mut encoder,
             &self.arc_pipelines,
-            &t,
+            t,
             star_pitch,
         );
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        Some((Arc::clone(&scratch.arc), u64::from(n) * 4))
+        // Snapshot AFTER the dispatch is submitted: the token's handles are
+        // owned clones (wgpu resources are refcounted), so the draw phase
+        // never has to reach back into `arc_cache`.
+        let star = scratch.star.as_ref().map(|s| PreparedStar {
+            indirect: s.indirect.clone(),
+            vs_bg: s.vs_bg.clone(),
+        });
+        Some(PreparedArc {
+            prefix: (Arc::clone(&scratch.arc), u64::from(n) * 4),
+            star,
+            source: (x_base, y_base, n),
+        })
     }
 
     /// Handle of the zero-filled column used to pad the unused dimension of
@@ -2303,9 +2674,10 @@ impl Renderer {
             series: &series_objs,
         }];
 
-        // 3.5) Arc-prefix prepare phase — submitted before the render pass
-        // below, so queue order sequences them.
-        let arcs = self.ensure_arc_prefixes(&items);
+        // 3.5) Per-item prepare phase (transform uniform write + arc-prefix
+        // dispatch) — submitted before the render pass below, so queue order
+        // sequences them.
+        let prepared_items = self.prepare_items(&items);
 
         // 4) Offscreen target.
         let target_desc = wgpu::TextureDescriptor {
@@ -2436,7 +2808,13 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            self.paint_with_pipelines(&mut pass, (w, h), &items, &export_target_pipelines, &arcs)?;
+            self.paint_with_pipelines(
+                &mut pass,
+                (w, h),
+                &items,
+                &export_target_pipelines,
+                &prepared_items,
+            )?;
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
@@ -2867,10 +3245,11 @@ impl<'w> WindowedRenderer<'w> {
 
     /// Draw one frame.
     ///
-    /// Acquires the current swap-chain texture, builds an encoder + render
-    /// pass, calls `paint(items)`, then submits and presents. The caller is
-    /// only responsible for processing per-panel dirty flags
-    /// (`chart.consume_*_dirty()` → `refresh_axis` / `update_transform`).
+    /// Acquires the current swap-chain texture, runs the mutable prepare
+    /// phase (`prepare(items)`) before any pass opens, then builds an
+    /// encoder + render pass, records via `paint_prepared`, and submits and
+    /// presents. The caller is only responsible for processing per-panel
+    /// dirty flags (`chart.consume_*_dirty()` → `refresh_axis`).
     pub fn draw(&mut self, clear: crate::color::Color, items: &[ChartDrawItem<'_>]) -> Result<()> {
         let frame = match self.surface.get_current_texture() {
             Ok(t) => t,
@@ -2888,6 +3267,7 @@ impl<'w> WindowedRenderer<'w> {
             None => (&target, None, wgpu::StoreOp::Store),
         };
 
+        let prepared = self.inner.prepare(items)?;
         let mut encoder =
             self.inner
                 .device()
@@ -2915,10 +3295,11 @@ impl<'w> WindowedRenderer<'w> {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            self.inner.paint(
+            self.inner.paint_prepared(
                 &mut pass,
                 (self.surface_config.width, self.surface_config.height),
                 items,
+                &prepared,
             )?;
         }
         self.inner.queue().submit(std::iter::once(encoder.finish()));
@@ -2931,7 +3312,6 @@ impl<'w> WindowedRenderer<'w> {
 mod tests {
     use super::*;
     use crate::data::Column;
-    use crate::data_render::{create_instance, request_adapter, request_device};
 
     fn col_f64(data: Vec<f64>) -> Column<f64> {
         let min = data.iter().copied().fold(f64::INFINITY, f64::min);
@@ -2977,18 +3357,52 @@ mod tests {
         chart
     }
 
+    fn caps_with_limits(storage_binding: u32, buffer_size: u64) -> RendererDeviceCaps {
+        RendererDeviceCaps {
+            features: wgpu::Features::empty(),
+            max_texture_dimension_2d: 8192,
+            max_buffer_size: buffer_size,
+            max_storage_buffer_binding_size: storage_binding,
+            max_compute_workgroups_per_dimension: 65_535,
+            max_compute_invocations_per_workgroup: 256,
+        }
+    }
+
+    /// The pool must be clamped to whatever the arc-scan / star-pass storage
+    /// binding can address, so an oversized request degrades gracefully
+    /// instead of panicking on the first dashed line. No GPU needed — this
+    /// pins the clamp arithmetic `try_new` relies on.
+    #[test]
+    fn pool_capacity_clamps_to_storage_and_buffer_limits() {
+        let mb = 1024 * 1024;
+        let caps = caps_with_limits(128 * mb as u32, 1024 * mb);
+        // Comfortably under both limits — untouched.
+        assert_eq!(effective_pool_capacity(64 * mb, caps), 64 * mb);
+        // Exactly at the storage-binding limit — untouched.
+        assert_eq!(effective_pool_capacity(128 * mb, caps), 128 * mb);
+        // Over the storage-binding limit (wgpu default) — clamped to it,
+        // even though max_buffer_size is far higher. This is the 256 MB pool
+        // that used to panic on the first dashed/sketch/milkyway line.
+        assert_eq!(effective_pool_capacity(256 * mb, caps), 128 * mb);
+        // When max_buffer_size is the tighter of the two, it wins.
+        let caps_small_buffer = caps_with_limits(u32::MAX, 32 * mb);
+        assert_eq!(
+            effective_pool_capacity(256 * mb, caps_small_buffer),
+            32 * mb
+        );
+        // A device with a generous binding limit keeps a large pool intact.
+        let caps_big = caps_with_limits(u32::MAX, 4 * 1024 * mb);
+        assert_eq!(effective_pool_capacity(512 * mb, caps_big), 512 * mb);
+    }
+
     #[test]
     fn point_constellation_scatterline_exports() {
-        let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else {
-            return;
-        };
-        let Ok((device, queue)) = request_device(&adapter) else {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
 
         let mut r = Renderer::try_new(
-            RendererDevice::new(Arc::new(device), Arc::new(queue)),
+            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
             wgpu::TextureFormat::Bgra8Unorm,
             1024 * 1024,
         )
@@ -3044,16 +3458,12 @@ mod tests {
 
     #[test]
     fn all_scatter_shapes_export_visible_markers() {
-        let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else {
-            return;
-        };
-        let Ok((device, queue)) = request_device(&adapter) else {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
 
         let mut r = Renderer::try_new(
-            RendererDevice::new(Arc::new(device), Arc::new(queue)),
+            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
             wgpu::TextureFormat::Bgra8Unorm,
             1024 * 1024,
         )
@@ -3141,15 +3551,9 @@ mod tests {
 
     #[test]
     fn xy_errorbar_does_not_require_zero_column() {
-        let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
-        let Ok((device, queue)) = request_device(&adapter) else {
-            return;
-        };
-        let device = Arc::new(device);
-        let queue = Arc::new(queue);
 
         let mut r = Renderer::try_new(
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
@@ -3186,15 +3590,9 @@ mod tests {
 
     #[test]
     fn picked_overlay_skips_zero_size_scatter_errorbar_anchor() {
-        let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
-        let Ok((device, queue)) = request_device(&adapter) else {
-            return;
-        };
-        let device = Arc::new(device);
-        let queue = Arc::new(queue);
 
         let mut r = Renderer::try_new(
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
@@ -3251,15 +3649,9 @@ mod tests {
 
     #[test]
     fn errorbar_style_index_colors_points_independently() {
-        let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
-        let Ok((device, queue)) = request_device(&adapter) else {
-            return;
-        };
-        let device = Arc::new(device);
-        let queue = Arc::new(queue);
 
         let mut r = Renderer::try_new(
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
@@ -3326,15 +3718,9 @@ mod tests {
 
     #[test]
     fn single_direction_errorbar_still_requires_zero_column() {
-        let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
-        let Ok((device, queue)) = request_device(&adapter) else {
-            return;
-        };
-        let device = Arc::new(device);
-        let queue = Arc::new(queue);
 
         let mut r = Renderer::try_new(
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
@@ -3377,15 +3763,9 @@ mod tests {
     /// second-series draw path end to end via headless export.
     #[test]
     fn two_line_series_both_render() {
-        let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
-        let Ok((device, queue)) = request_device(&adapter) else {
-            return;
-        };
-        let device = Arc::new(device);
-        let queue = Arc::new(queue);
 
         let mut r = Renderer::try_new(
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
@@ -3459,16 +3839,12 @@ mod tests {
     /// only a few % shorter).
     #[test]
     fn milkyway_arc_star_density_is_sampling_invariant() {
-        let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else {
-            return;
-        };
-        let Ok((device, queue)) = request_device(&adapter) else {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
 
         let mut r = Renderer::try_new(
-            RendererDevice::new(Arc::new(device), Arc::new(queue)),
+            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
             wgpu::TextureFormat::Bgra8Unorm,
             4 * 1024 * 1024,
         )
@@ -3551,16 +3927,12 @@ mod tests {
     /// texture re-upload (`grid_space_gen` stamp).
     #[test]
     fn space_background_rebakes_only_on_key_change() {
-        let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else {
-            return;
-        };
-        let Ok((device, queue)) = request_device(&adapter) else {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
 
         let mut r = Renderer::try_new(
-            RendererDevice::new(Arc::new(device), Arc::new(queue)),
+            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
             wgpu::TextureFormat::Bgra8Unorm,
             1024 * 1024,
         )
@@ -3618,16 +3990,12 @@ mod tests {
 
     #[test]
     fn milkyway_export_zero_dust_zero_nebula_has_plain_background() {
-        let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else {
-            return;
-        };
-        let Ok((device, queue)) = request_device(&adapter) else {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
 
         let mut r = Renderer::try_new(
-            RendererDevice::new(Arc::new(device), Arc::new(queue)),
+            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
             wgpu::TextureFormat::Bgra8Unorm,
             1024 * 1024,
         )
@@ -3688,15 +4056,9 @@ mod tests {
     /// proof that lets the pool keep NO CPU copy of column data.
     #[test]
     fn gpu_arc_prefix_matches_cpu_reference() {
-        let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
-        let Ok((device, queue)) = request_device(&adapter) else {
-            return;
-        };
-        let device = Arc::new(device);
-        let queue = Arc::new(queue);
 
         let mut r = Renderer::try_new(
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
@@ -3733,9 +4095,11 @@ mod tests {
             r.add_column(&xid, &col_f64(xs.clone())).unwrap();
             r.add_column(&yid, &col_f64(ys.clone())).unwrap();
 
+            let t = data_render::scatter_transform_from_config(chart.config());
             let (arc_buf, len_bytes) = r
-                .ensure_arc_prefix(&format!("s_{case}"), &xid, &yid, chart.config(), None)
-                .expect("arc prefix");
+                .ensure_arc_prefix(&format!("s_{case}"), &xid, &yid, &t, None)
+                .expect("arc prefix")
+                .prefix;
 
             // Read the GPU result back.
             let readback = device.create_buffer(&wgpu::BufferDescriptor {
@@ -3749,14 +4113,15 @@ mod tests {
             queue.submit(std::iter::once(enc.finish()));
             let slice = readback.slice(..);
             slice.map_async(wgpu::MapMode::Read, |_| {});
+            // Bounded so a stalled submission fails the test instead of
+            // spinning forever (see `data_render::shared_device`).
             let _ = device.poll(wgpu::PollType::Wait {
                 submission_index: None,
-                timeout: None,
+                timeout: Some(std::time::Duration::from_secs(30)),
             });
             let gpu: Vec<f32> = bytemuck::cast_slice(&slice.get_mapped_range()).to_vec();
 
             // Sequential CPU reference mirroring the shader math.
-            let t = data_render::scatter_transform_from_config(chart.config());
             let px = |x: f64, y: f64| -> (f32, f32) {
                 let nx = ((x as f32) - t.data_min[0]) / (t.data_max[0] - t.data_min[0]) * 2.0 - 1.0;
                 let ny = ((y as f32) - t.data_min[1]) / (t.data_max[1] - t.data_min[1]) * 2.0 - 1.0;
@@ -3784,15 +4149,9 @@ mod tests {
 
     #[test]
     fn arc_prefix_cache_never_exceeds_limit_on_new_series_churn() {
-        let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
-        let Ok((device, queue)) = request_device(&adapter) else {
-            return;
-        };
-        let device = Arc::new(device);
-        let queue = Arc::new(queue);
 
         let mut r = Renderer::try_new(
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
@@ -3816,17 +4175,12 @@ mod tests {
         chart.set_x_range(0.0, 1.0);
         chart.set_y_range(0.0, 1.0);
 
+        let t = data_render::scatter_transform_from_config(chart.config());
         for i in 0..=ARC_PREFIX_CACHE_LIMIT {
             let series_id = format!("arc-cache-series-{i}");
             assert!(
-                r.ensure_arc_prefix(
-                    &series_id,
-                    "arc_cache_x",
-                    "arc_cache_y",
-                    chart.config(),
-                    None,
-                )
-                .is_some()
+                r.ensure_arc_prefix(&series_id, "arc_cache_x", "arc_cache_y", &t, None,)
+                    .is_some()
             );
             assert!(
                 r.arc_cache.len() <= ARC_PREFIX_CACHE_LIMIT,
@@ -3836,20 +4190,487 @@ mod tests {
         }
     }
 
+    /// Two overlapping prepares for the same dashed series (egui's
+    /// all-prepares-before-any-paint schedule with a shared renderer, or an
+    /// export interleaved between a host's prepare and paint) must not share
+    /// an arc buffer: `dispatch` rewrites contents in place, so a buffer
+    /// referenced by a live token is never reused (copy-on-write). Once no
+    /// token holds the buffer, the cached scratch is reused again.
+    #[test]
+    fn overlapping_prepares_get_isolated_arc_buffers() {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+
+        let mut r = Renderer::try_new(
+            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+            wgpu::TextureFormat::Bgra8Unorm,
+            1024 * 1024,
+        )
+        .unwrap();
+        r.add_column("cow_x", &col_f64(vec![0.0, 0.5, 1.0]))
+            .unwrap();
+        r.add_column("cow_y", &col_f64(vec![0.0, 1.0, 0.25]))
+            .unwrap();
+
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 240,
+        });
+        config.legend.visible = false;
+        let mut chart = Chart::new(config);
+        chart.set_x_range(0.0, 1.0);
+        chart.set_y_range(0.0, 1.0);
+
+        let series_cfg = SeriesConfig {
+            series_id: "cow".into(),
+            source_id: None,
+            label: None,
+            x_column: "cow_x".into(),
+            y_column: "cow_y".into(),
+            render_type: DataRenderType::Line {
+                line: DataLineStyleConfig {
+                    line_style: crate::line::LineStylePreset::Dash,
+                    line_color: Color::new(1.0, 1.0, 1.0, 1.0),
+                    line_width: 2.0,
+                },
+            },
+        };
+        let style = r.create_style_for_series(&series_cfg);
+        let series = [Series {
+            config: &series_cfg,
+            style: &style,
+        }];
+        let view = r
+            .create_chart_view(&chart, chart.config().chart_area.0.clone())
+            .unwrap();
+        let items = [ChartDrawItem {
+            view: &view,
+            chart_config: chart.config(),
+            series: &series,
+        }];
+
+        let arc_of = |p: &PreparedFrame| -> Arc<wgpu::Buffer> {
+            Arc::clone(
+                &p.items[0].series[0]
+                    .arc
+                    .as_ref()
+                    .expect("dashed series has an arc prefix")
+                    .prefix
+                    .0,
+            )
+        };
+
+        let p1 = r.prepare(&items).unwrap();
+        let a1 = arc_of(&p1);
+        let p2 = r.prepare(&items).unwrap();
+        let a2 = arc_of(&p2);
+        assert!(
+            !Arc::ptr_eq(&a1, &a2),
+            "a prepare must not rewrite the arc buffer a live token references"
+        );
+
+        // Both tokens stay individually paintable.
+        assert!(r.validate_prepared(&items, &p1).is_ok());
+        assert!(r.validate_prepared(&items, &p2).is_ok());
+
+        // With no token left alive, an existing slot is reused in place.
+        let a1_raw = Arc::as_ptr(&a1);
+        let a2_raw = Arc::as_ptr(&a2);
+        drop((p1, a1, p2, a2));
+        let p3 = r.prepare(&items).unwrap();
+        let a3_raw = Arc::as_ptr(&arc_of(&p3));
+        assert!(
+            a3_raw == a1_raw || a3_raw == a2_raw,
+            "an unreferenced slot should be reused, not rebuilt"
+        );
+        drop(p3);
+
+        // Retained-token steady state (hosts replace last frame's token only
+        // AFTER the next prepare returns): the slot pool must settle on two
+        // alternating slots — no per-frame rebuild, no growth.
+        let mut held = r.prepare(&items).unwrap();
+        let mut seen = std::collections::HashSet::new();
+        seen.insert(Arc::as_ptr(&arc_of(&held)));
+        for _ in 0..6 {
+            let next = r.prepare(&items).unwrap();
+            seen.insert(Arc::as_ptr(&arc_of(&next)));
+            held = next;
+        }
+        drop(held);
+        assert!(
+            seen.len() <= 2,
+            "retained-token steady state must alternate between two slots, saw {} distinct buffers",
+            seen.len()
+        );
+        assert_eq!(
+            r.arc_cache.get("cow").map(|slots| slots.len()),
+            Some(2),
+            "slot pool should hold exactly two slots after retained-token frames"
+        );
+    }
+
+    /// `paint_prepared` must reject a token when an invalidating change
+    /// interleaved between `prepare` and `paint_prepared`: an edited chart
+    /// config (transform stamp), reordered series (identity stamp), and a
+    /// target-format switch (pipeline-cache stamp).
+    #[test]
+    fn paint_prepared_rejects_stale_tokens() {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+
+        let mut r = Renderer::try_new(
+            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+            wgpu::TextureFormat::Bgra8Unorm,
+            1024 * 1024,
+        )
+        .unwrap();
+        r.add_column("st_x", &col_f64(vec![0.0, 0.5, 1.0])).unwrap();
+        r.add_column("st_y", &col_f64(vec![0.0, 1.0, 0.25]))
+            .unwrap();
+
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 240,
+        });
+        config.legend.visible = false;
+        let mut chart = Chart::new(config);
+        chart.set_x_range(0.0, 1.0);
+        chart.set_y_range(0.0, 1.0);
+
+        let mk_cfg = |id: &str| SeriesConfig {
+            series_id: id.into(),
+            source_id: None,
+            label: None,
+            x_column: "st_x".into(),
+            y_column: "st_y".into(),
+            render_type: DataRenderType::Line {
+                line: DataLineStyleConfig {
+                    line_style: crate::line::LineStylePreset::Solid,
+                    line_color: Color::new(1.0, 1.0, 1.0, 1.0),
+                    line_width: 1.0,
+                },
+            },
+        };
+        let (cfg_a, cfg_b) = (mk_cfg("st_a"), mk_cfg("st_b"));
+        let style = r.create_style_for_series(&cfg_a);
+        let view = r
+            .create_chart_view(&chart, chart.config().chart_area.0.clone())
+            .unwrap();
+        let series_ab = [
+            Series {
+                config: &cfg_a,
+                style: &style,
+            },
+            Series {
+                config: &cfg_b,
+                style: &style,
+            },
+        ];
+        let series_ba = [
+            Series {
+                config: &cfg_b,
+                style: &style,
+            },
+            Series {
+                config: &cfg_a,
+                style: &style,
+            },
+        ];
+
+        let prepared = {
+            let items = [ChartDrawItem {
+                view: &view,
+                chart_config: chart.config(),
+                series: &series_ab,
+            }];
+            let p = r.prepare(&items).unwrap();
+            assert!(
+                r.validate_prepared(&items, &p).is_ok(),
+                "fresh token validates"
+            );
+            p
+        };
+
+        // (1) Reordered series → identity stamp.
+        {
+            let items = [ChartDrawItem {
+                view: &view,
+                chart_config: chart.config(),
+                series: &series_ba,
+            }];
+            assert!(matches!(
+                r.validate_prepared(&items, &prepared),
+                Err(FiggyError::StalePreparedFrame { .. })
+            ));
+        }
+
+        // (2) Chart config edited between prepare and paint → transform stamp.
+        chart.set_x_range(0.0, 2.0);
+        {
+            let items = [ChartDrawItem {
+                view: &view,
+                chart_config: chart.config(),
+                series: &series_ab,
+            }];
+            assert!(matches!(
+                r.validate_prepared(&items, &prepared),
+                Err(FiggyError::StalePreparedFrame { .. })
+            ));
+        }
+        chart.set_x_range(0.0, 1.0);
+
+        // (3) remove + re-add of an arc series' source column with a new
+        // layout — pool generation stays put (only defrag/clear bump it), so
+        // this must be caught by the per-series source stamp instead.
+        let cfg_dash = SeriesConfig {
+            series_id: "st_dash".into(),
+            source_id: None,
+            label: None,
+            x_column: "st_x".into(),
+            y_column: "st_y".into(),
+            render_type: DataRenderType::Line {
+                line: DataLineStyleConfig {
+                    line_style: crate::line::LineStylePreset::Dash,
+                    line_color: Color::new(1.0, 1.0, 1.0, 1.0),
+                    line_width: 1.0,
+                },
+            },
+        };
+        let style_dash = r.create_style_for_series(&cfg_dash);
+        let series_dash = [Series {
+            config: &cfg_dash,
+            style: &style_dash,
+        }];
+        let prepared_dash = {
+            let items = [ChartDrawItem {
+                view: &view,
+                chart_config: chart.config(),
+                series: &series_dash,
+            }];
+            r.prepare(&items).unwrap()
+        };
+        assert!(r.remove_column("st_y"));
+        r.add_column("st_y", &col_f64(vec![0.0, 1.0])).unwrap(); // n: 3 → 2
+        {
+            let items = [ChartDrawItem {
+                view: &view,
+                chart_config: chart.config(),
+                series: &series_dash,
+            }];
+            assert!(matches!(
+                r.validate_prepared(&items, &prepared_dash),
+                Err(FiggyError::StalePreparedFrame { .. })
+            ));
+        }
+        // Non-arc series intentionally resolve live pool state at paint —
+        // the solid-series token stays valid across the same remove+re-add.
+        {
+            let items = [ChartDrawItem {
+                view: &view,
+                chart_config: chart.config(),
+                series: &series_ab,
+            }];
+            assert!(r.validate_prepared(&items, &prepared).is_ok());
+        }
+
+        // (4) Target-format switch rebuilds the pipeline cache → format stamp.
+        assert!(
+            r.ensure_target_format(wgpu::TextureFormat::Rgba8Unorm)
+                .unwrap()
+        );
+        {
+            let items = [ChartDrawItem {
+                view: &view,
+                chart_config: chart.config(),
+                series: &series_ab,
+            }];
+            assert!(matches!(
+                r.validate_prepared(&items, &prepared),
+                Err(FiggyError::StalePreparedFrame { .. })
+            ));
+        }
+    }
+
+    /// End-to-end split under the adversarial host schedule: prepare, then
+    /// an interleaved second prepare (which rebuilds the cache entry via
+    /// copy-on-write), then record with the FIRST token into an offscreen
+    /// pass. The token's owned arc/star snapshot must survive the
+    /// interleaving and still put ink on the target.
+    #[test]
+    fn paint_prepared_draws_after_interleaved_prepare() {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+
+        let mut r = Renderer::try_new(
+            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+            wgpu::TextureFormat::Rgba8Unorm,
+            4 * 1024 * 1024,
+        )
+        .unwrap();
+        r.add_column("mw_x", &col_f64(vec![0.0, 0.25, 0.5, 0.75, 1.0]))
+            .unwrap();
+        r.add_column("mw_y", &col_f64(vec![0.2, 0.75, 0.35, 0.9, 0.5]))
+            .unwrap();
+
+        let (w, h) = (320u32, 240u32);
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        });
+        config.legend.visible = false;
+        config.draw_style =
+            crate::config::DrawStyle::Milkyway(crate::config::MilkywayOptions::default());
+        let mut chart = Chart::new(config);
+        chart.set_x_range(-0.05, 1.05);
+        chart.set_y_range(0.0, 1.0);
+
+        let series_cfg = SeriesConfig {
+            series_id: "mw".into(),
+            source_id: None,
+            label: None,
+            x_column: "mw_x".into(),
+            y_column: "mw_y".into(),
+            render_type: DataRenderType::ScatterLine {
+                scatter: test_scatter_style(),
+                line: DataLineStyleConfig {
+                    line_style: crate::line::LineStylePreset::Solid,
+                    line_color: Color::new(0.4, 0.7, 1.0, 1.0),
+                    line_width: 2.0,
+                },
+            },
+        };
+        let style = r.create_style_for_series(&series_cfg);
+        let series = [Series {
+            config: &series_cfg,
+            style: &style,
+        }];
+        let view = r
+            .create_chart_view(&chart, chart.config().chart_area.0.clone())
+            .unwrap();
+        let items = [ChartDrawItem {
+            view: &view,
+            chart_config: chart.config(),
+            series: &series,
+        }];
+
+        // egui-style schedule: both prepares run before any paint. The
+        // second one rebuilds the arc scratch (COW), so painting with `p1`
+        // exercises the token's cache-independent snapshot.
+        let p1 = r.prepare(&items).unwrap();
+        assert!(
+            p1.items[0].series[0]
+                .arc
+                .as_ref()
+                .is_some_and(|a| a.star.is_some()),
+            "milkyway line series must carry a star-pass snapshot"
+        );
+        let p2 = r.prepare(&items).unwrap();
+
+        let target_desc = wgpu::TextureDescriptor {
+            label: Some("prepare split test target"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        };
+
+        let paint_once = |prepared: &PreparedFrame| -> Vec<u8> {
+            let tex = device.create_texture(&target_desc);
+            let tv = tex.create_view(&wgpu::TextureViewDescriptor::default());
+            let mut enc = device.create_command_encoder(&Default::default());
+            {
+                let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: None,
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &tv,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                r.paint_prepared(&mut pass, (w, h), &items, prepared)
+                    .expect("paint_prepared with a valid token");
+            }
+            // 320 * 4 = 1280 bytes/row, already 256-aligned.
+            let readback = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: u64::from(w) * 4 * u64::from(h),
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            enc.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &tex,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &readback,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(w * 4),
+                        rows_per_image: Some(h),
+                    },
+                },
+                target_desc.size,
+            );
+            queue.submit(std::iter::once(enc.finish()));
+            let slice = readback.slice(..);
+            slice.map_async(wgpu::MapMode::Read, |_| {});
+            // Bounded so a stalled submission fails the test instead of
+            // spinning forever (see `data_render::shared_device`).
+            let _ = device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(30)),
+            });
+            let out = slice.get_mapped_range().to_vec();
+            out
+        };
+
+        for (label, prepared) in [("stale-cache token p1", &p1), ("fresh token p2", &p2)] {
+            let rgba = paint_once(prepared);
+            let lit = rgba.chunks_exact(4).filter(|p| p[3] > 0).count();
+            assert!(
+                lit > 100,
+                "{label}: milkyway split paint produced too little ink: {lit}"
+            );
+        }
+    }
+
     /// Log-axis auto-fit with zeros in the data must clamp the lower bound
     /// to the smallest POSITIVE value (via the pool's CPU shadow) instead of
     /// feeding log10 a non-positive min.
     #[test]
     fn log_auto_fit_clamps_to_smallest_positive() {
-        let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
-        let Ok((device, queue)) = request_device(&adapter) else {
-            return;
-        };
-        let device = Arc::new(device);
-        let queue = Arc::new(queue);
 
         let mut r = Renderer::try_new(
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
@@ -3879,15 +4700,9 @@ mod tests {
     /// wave touching its exact min/max so the ink bbox equals the data bbox.
     #[test]
     fn auto_fit_margins_are_uniform_on_all_sides() {
-        let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
-        let Ok((device, queue)) = request_device(&adapter) else {
-            return;
-        };
-        let device = Arc::new(device);
-        let queue = Arc::new(queue);
 
         let mut r = Renderer::try_new(
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
@@ -3984,15 +4799,9 @@ mod tests {
     /// crosses must contain ink.
     #[test]
     fn dense_line_has_no_gaps() {
-        let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
-        let Ok((device, queue)) = request_device(&adapter) else {
-            return;
-        };
-        let device = Arc::new(device);
-        let queue = Arc::new(queue);
 
         let mut r = Renderer::try_new(
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
@@ -4088,15 +4897,9 @@ mod tests {
     /// fringe pixels.
     #[test]
     fn solid_line_exports_analytic_aa_fringe() {
-        let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
-        let Ok((device, queue)) = request_device(&adapter) else {
-            return;
-        };
-        let device = Arc::new(device);
-        let queue = Arc::new(queue);
 
         let mut r = Renderer::try_new(
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
@@ -4164,15 +4967,9 @@ mod tests {
     /// back stays continuous.
     #[test]
     fn caps_preserve_nan_breaks_and_nonmonotonic_paths() {
-        let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
-        let Ok((device, queue)) = request_device(&adapter) else {
-            return;
-        };
-        let device = Arc::new(device);
-        let queue = Arc::new(queue);
 
         let mut r = Renderer::try_new(
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
@@ -4313,15 +5110,9 @@ mod tests {
     /// pattern into irregular fragments and fails the run statistics.
     #[test]
     fn dashed_curve_runs_match_pattern() {
-        let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
-        let Ok((device, queue)) = request_device(&adapter) else {
-            return;
-        };
-        let device = Arc::new(device);
-        let queue = Arc::new(queue);
 
         let mut r = Renderer::try_new(
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
@@ -4457,15 +5248,9 @@ mod tests {
 
     #[test]
     fn renderer_init_and_add_column() {
-        let inst = create_instance();
-        let Ok(adapter) = request_adapter(&inst) else {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
-        let Ok((device, queue)) = request_device(&adapter) else {
-            return;
-        };
-        let device = Arc::new(device);
-        let queue = Arc::new(queue);
 
         let mut r = Renderer::try_new(
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),

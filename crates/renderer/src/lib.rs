@@ -39,9 +39,9 @@ pub use error::{FiggyError, Result};
 pub use pick::{PickedPoint, PointColumnLookup, PointPickOptions, pick_nearest_point};
 pub use preset::{AxisPreset, ColorCycle};
 pub use renderer::{
-    ChartDrawItem, ChartStyle, ChartView, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE, RasterImage,
-    Renderer, RendererDevice, Series, WindowedRenderer, clamp_export_scale, dpi_to_scale,
-    encode_png,
+    ChartDrawItem, ChartStyle, ChartView, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE, PreparedFrame,
+    RasterImage, Renderer, RendererDevice, Series, WindowedRenderer, clamp_export_scale,
+    dpi_to_scale, encode_png,
 };
 pub use resize::{Resizable, ResizeHandle};
 pub use select::{

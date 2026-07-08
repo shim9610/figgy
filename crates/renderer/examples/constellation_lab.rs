@@ -1,14 +1,15 @@
 //! Sparse constellation lab — live sliders over one figgy panel.
 //!
 //! Every `ConstellationOptions` field is bound to an egui slider; moving one
-//! rewrites `config.draw_style`, which flips the chart's dirty bits, which
-//! rewrites the Transform uniform on the next frame — the GPU picks the new
-//! parameters up immediately (star/line attributes are derived in-shader).
+//! rewrites `config.draw_style`, and `Renderer::prepare` (run each frame in
+//! the callback's prepare phase) rewrites the Transform uniform from the
+//! current config — the GPU picks the new parameters up immediately
+//! (star/line attributes are derived in-shader).
 //!
 //! Run with:
 //! `cargo run -p renderer --example constellation_lab --features egui_demo`
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
 use eframe::egui_wgpu::{self, CallbackTrait};
 use eframe::wgpu;
@@ -22,7 +23,9 @@ use renderer::data_config::{
 use renderer::default;
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
-use renderer::{Chart, ChartDrawItem, ChartStyle, ChartView, Renderer, RendererDevice, Series};
+use renderer::{
+    Chart, ChartDrawItem, ChartStyle, ChartView, PreparedFrame, Renderer, RendererDevice, Series,
+};
 
 const POOL_CAPACITY: u64 = 8 * 1024 * 1024;
 /// Dark host backdrop behind the translucent line + PSF stars.
@@ -34,14 +37,33 @@ fn col_f64(data: Vec<f64>) -> Column<f64> {
     Column { data, min, max }
 }
 
-/// All figgy state, stored in `CallbackResources` as `Mutex<FiggyState>` —
-/// the same host-responsibility locking pattern as `egui_embed`.
+/// All figgy state, stored directly in `CallbackResources` — no `Mutex`.
+///
+/// The split frame API makes the lock unnecessary: the `&mut` half
+/// (`Renderer::prepare`) runs in `CallbackTrait::prepare`, which hands out
+/// `&mut CallbackResources`, and stores its token in `prepared`; the
+/// immutable half (`Renderer::paint_prepared`) takes `&self`, so
+/// `CallbackTrait::paint`'s `&CallbackResources` is enough.
 struct FiggyState {
     renderer: Renderer,
     chart: Chart,
     view: ChartView,
     series: Vec<SeriesConfig>,
     styles: Vec<ChartStyle>,
+    /// Frame token from `Renderer::prepare`, consumed by `paint_prepared`.
+    /// `None` until the first prepare, or after a failed one.
+    prepared: Option<PreparedFrame>,
+}
+
+/// Series bundles for the draw items — shared by BOTH callback halves so the
+/// items passed to `Renderer::prepare` and `Renderer::paint_prepared` are
+/// identical and in the same order (a `paint_prepared` contract).
+fn build_series<'a>(series: &'a [SeriesConfig], styles: &'a [ChartStyle]) -> Vec<Series<'a>> {
+    series
+        .iter()
+        .zip(styles.iter())
+        .map(|(cfg, style)| Series { config: cfg, style })
+        .collect()
 }
 
 impl FiggyState {
@@ -156,6 +178,7 @@ fn build_state(
         view,
         series,
         styles,
+        prepared: None,
     })
 }
 
@@ -178,15 +201,15 @@ impl CallbackTrait for LabCallback {
         _egui_encoder: &mut wgpu::CommandEncoder,
         callback_resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        let Some(state) = callback_resources.get_mut::<Mutex<FiggyState>>() else {
+        let Some(state) = callback_resources.get_mut::<FiggyState>() else {
             return Vec::new();
         };
-        let state = state.get_mut().unwrap_or_else(PoisonError::into_inner);
 
         // Slider → SSoT. Only on change, so the dirty bits don't spin.
         // `config_mut` flags BOTH dirty bits, but constellation knobs here are
         // GPU-side uniform parameters. No CPU backdrop/glow is tied to this
-        // lab style, so cancel the raster bit and let update_transform carry it.
+        // lab style, so cancel the raster bit and let `Renderer::prepare`
+        // below carry it (it rewrites the transform uniform every frame).
         let wanted = DrawStyle::Constellation(self.opts);
         if state.chart.config().draw_style != wanted {
             state.chart.config_mut().draw_style = wanted;
@@ -216,27 +239,49 @@ impl CallbackTrait for LabCallback {
                     .refresh_axis(&mut state.view, &state.chart, self.panel_rect_px)
             {
                 eprintln!("[lab] refresh_axis failed: {e}");
+                state.prepared = None;
                 return Vec::new();
             }
-            state.renderer.update_transform(&state.view, &state.chart);
             let _ = state.chart.consume_data_dirty();
             let _ = state.chart.consume_raster_dirty();
         } else {
             let raster_dirty = state.chart.consume_raster_dirty();
-            let data_dirty = state.chart.consume_data_dirty();
+            // The transform (data) dirty bit needs no explicit handling:
+            // `Renderer::prepare` below rewrites the transform uniform from
+            // the current config every frame.
+            let _ = state.chart.consume_data_dirty();
             if raster_dirty {
                 if let Err(e) = state
                     .renderer
                     .refresh_axis(&mut state.view, &state.chart, cur_rect)
                 {
                     eprintln!("[lab] refresh_axis failed: {e}");
+                    state.prepared = None;
                     return Vec::new();
                 }
             }
-            if data_dirty {
-                state.renderer.update_transform(&state.view, &state.chart);
-            }
         }
+
+        // Mutable half of the frame: compiles missing styled pipelines,
+        // writes the panel's transform uniform, dispatches arc-length
+        // compute. The token is stored for `paint` to consume; the items
+        // must be rebuilt there identically (same helper, same order).
+        let prepared = {
+            let series = build_series(&state.series, &state.styles);
+            let items = [ChartDrawItem {
+                view: &state.view,
+                chart_config: state.chart.config(),
+                series: &series,
+            }];
+            state.renderer.prepare(&items)
+        };
+        state.prepared = match prepared {
+            Ok(token) => Some(token),
+            Err(e) => {
+                eprintln!("[lab] prepare failed: {e}");
+                None
+            }
+        };
         Vec::new()
     }
 
@@ -246,26 +291,29 @@ impl CallbackTrait for LabCallback {
         render_pass: &mut wgpu::RenderPass<'static>,
         callback_resources: &egui_wgpu::CallbackResources,
     ) {
-        let Some(state) = callback_resources.get::<Mutex<FiggyState>>() else {
+        let Some(state) = callback_resources.get::<FiggyState>() else {
             return;
         };
-        let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
-        let state = &mut *state;
-        let (renderer, chart, view) = (&mut state.renderer, &state.chart, &state.view);
-        let series: Vec<Series<'_>> = state
-            .series
-            .iter()
-            .zip(state.styles.iter())
-            .map(|(cfg, style)| Series { config: cfg, style })
-            .collect();
+        let Some(prepared) = state.prepared.as_ref() else {
+            eprintln!("[lab] paint skipped: no prepared frame");
+            return;
+        };
+        // Same items, in the same order, as at prepare — a `paint_prepared`
+        // contract, enforced by the shared `build_series` helper.
+        let series = build_series(&state.series, &state.styles);
         let items = [ChartDrawItem {
-            view,
-            chart_config: chart.config(),
+            view: &state.view,
+            chart_config: state.chart.config(),
             series: &series,
         }];
         let target_size = (info.screen_size_px[0], info.screen_size_px[1]);
-        if let Err(e) = renderer.paint(render_pass, target_size, &items) {
-            eprintln!("[lab] paint failed: {e}");
+        if let Err(e) = state
+            .renderer
+            .paint_prepared(render_pass, target_size, &items, prepared)
+        {
+            // StalePreparedFrame and friends: skip this frame; the next
+            // callback prepare rebuilds the token.
+            eprintln!("[lab] paint skipped: {e}");
         }
     }
 }
@@ -297,11 +345,8 @@ impl LabApp {
         };
         {
             let mut guard = render_state.renderer.write();
-            if let Some(state) = guard.callback_resources.remove::<Mutex<FiggyState>>() {
-                state
-                    .into_inner()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .shutdown();
+            if let Some(mut state) = guard.callback_resources.remove::<FiggyState>() {
+                state.shutdown();
             }
         }
         let _ = render_state.device.poll(wgpu::PollType::Wait {
@@ -339,7 +384,7 @@ impl eframe::App for LabApp {
                         .renderer
                         .write()
                         .callback_resources
-                        .insert(Mutex::new(state));
+                        .insert(state);
                     self.initialized = true;
                 }
                 Err(e) => self.failed = Some(e),

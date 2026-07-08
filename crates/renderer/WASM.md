@@ -122,20 +122,26 @@ impl FiggyChart {
 
 ```rust
 let raster_dirty = chart.consume_raster_dirty();
-let data_dirty = chart.consume_data_dirty();
 if raster_dirty {
     renderer.refresh_axis_with_selection(&mut view, &chart, rect, &sel_boxes)?;
 }
-if data_dirty {
-    renderer.update_transform(&view, &chart);
-}
+// data dirty 는 별도 처리 불필요 — draw 내부의 prepare 단계가 매 frame
+// 현재 config로 transform uniform을 다시 쓴다.
 renderer.draw(clear, &items)?;
 ```
 
-`WindowedRenderer`는 WebGPU surface format이 지원하면 내부 4x(또는 2x) MSAA
-color target에 먼저 그리고 surface frame으로 resolve한다. 미지원 브라우저/포맷은
-1x로 fallback한다. 이 처리는 선분 rasterization coverage만 바꾸며 데이터 값,
-포인트 위치, dash arc length를 smoothing하지 않는다.
+`WindowedRenderer` uses the WebGPU surface format and, when the adapter supports it,
+draws into an internal 4x or 2x MSAA color target before resolving to the surface frame;
+unsupported browsers or formats fall back to 1x. This changes only raster coverage, not
+data values, point positions, or dash arc-lengths.
+
+`WindowedRenderer::draw`는 `Renderer::prepare`(`&mut` — pipeline 준비,
+transform uniform write, arc-length compute dispatch)와
+`Renderer::paint_prepared`(`&self` — 순수 기록)를 한 `&mut self` 아래
+연달아 실행하는 원샷 facade다. wasm 래퍼처럼 렌더러를 단독 소유하는
+호스트에는 이 facade가 자연스럽고, paint 콜백이 공유 참조만 주는
+호스트(egui/iced embed)는 두 단계를 분리 호출한다 — 자세한 계약은
+데스크톱 README의 통합 패턴 절 참조.
 
 dirty가 없으면 프레임 비용이 0에 수렴하므로 rAF 상시 구동도 무방하고,
 이벤트 시점에만 rAF를 예약하는 절전형도 그대로 성립한다.
@@ -239,8 +245,6 @@ pub async fn export_png(&self, scale: f32) -> Result<js_sys::Uint8Array, JsValue
 
 블로킹 `export_panel_png_bytes`는 웹에 존재하지 않는다(컴파일 제외) —
 실수로 메인 스레드를 데드락시킬 방법 자체가 없다.
-export도 지원 시 MSAA color target을 거친 뒤 single-sample `COPY_SRC` texture로
-resolve하고, 그 resolved texture만 `map_async` readback 대상으로 삼는다.
 
 ### 3.7 프리셋 — fieldless enum 그대로 노출
 

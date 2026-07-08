@@ -7,19 +7,24 @@
 //!
 //! 1. Get device/queue/format from eframe's `wgpu_render_state`.
 //! 2. On first update, build `renderer::Renderer`, register columns, set up
-//!    Charts, and store the result in `CallbackResources` as
-//!    `Mutex<FiggyState>` (host-responsibility locking — see the struct doc).
+//!    Charts, and store the result in `CallbackResources` as a plain
+//!    `FiggyState` — no `Mutex`; the split frame API never needs
+//!    `&mut Renderer` in paint (see the struct doc).
 //! 3. Each frame: allocate 3 panel regions in egui, register an
 //!    `egui_wgpu::Callback` for each.
-//! 4. Callback `prepare`: `refresh_axis` if the panel rect changed,
-//!    `update_transform` if dirty (`get_mut` — no locking).
-//! 5. Callback `paint`: lock, then a single
-//!    `renderer::Renderer::paint(pass, items)` call.
+//! 4. Callback `prepare` (`&mut CallbackResources`): `refresh_axis` if the
+//!    panel rect changed or the raster is dirty, then
+//!    `renderer::Renderer::prepare(items)` — which also writes the panel's
+//!    data→NDC transform uniform — and stash the returned `PreparedFrame`
+//!    token on the panel.
+//! 5. Callback `paint` (`&CallbackResources`): rebuild the same items and
+//!    record with `renderer::Renderer::paint_prepared(pass, target, items,
+//!    token)` — pure `&self` command recording.
 //!
 //! Run with:
 //! `cargo run -p renderer --example egui_embed --features egui_demo`
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
 use eframe::egui_wgpu::{self, CallbackTrait};
 use eframe::wgpu;
@@ -33,8 +38,8 @@ use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{
     Chart, ChartDrawItem, ChartStyle, ChartView, CpuTextMeasure, DataLineStyleConfig,
-    DataRenderType, HitId, HitMap, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE, Renderer, RendererDevice,
-    ResizeHandle, SelectionBox, Series, SeriesConfig, dpi_to_scale,
+    DataRenderType, HitId, HitMap, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE, PreparedFrame, Renderer,
+    RendererDevice, ResizeHandle, SelectionBox, Series, SeriesConfig, dpi_to_scale,
 };
 
 const POOL_CAPACITY: u64 = 16 * 1024 * 1024;
@@ -111,16 +116,23 @@ struct PanelEntry {
     styles: Vec<ChartStyle>,
     /// Selectable elements of this panel (axes / titles / data area).
     hitmap: HitMap,
+    /// Frame token from `Renderer::prepare`, consumed by `paint_prepared`.
+    /// Written by `CallbackTrait::prepare` (`&mut CallbackResources`), read
+    /// by `CallbackTrait::paint` (`&CallbackResources`). Per-panel because
+    /// egui runs every callback's `prepare` before any `paint` — a single
+    /// shared token would be overwritten by the other panels' prepares.
+    prepared: Option<PreparedFrame>,
 }
 
-/// All figgy state, stored in `CallbackResources` as `Mutex<FiggyState>`.
+/// All figgy state, stored directly in `CallbackResources` (no `Mutex`).
 ///
-/// The lock is the HOST's (this example's) responsibility: `Renderer::paint`
-/// takes `&mut self`, but egui's `CallbackTrait::paint` only hands out
-/// `&CallbackResources`. Wrapping the state in a `Mutex` bridges that —
-/// `prepare`/`update` use `get_mut()` (exclusive access, no actual locking),
-/// and only `paint` takes the lock, uncontended in egui's single render
-/// thread. The renderer itself holds no locks.
+/// egui's `CallbackTrait::paint` only hands out `&CallbackResources`, and
+/// the split frame API fits that exactly: `prepare` (called with
+/// `&mut CallbackResources`) does every `&mut Renderer` step — pipeline
+/// compiles, transform-uniform writes, arc-length dispatch — and stores a
+/// [`PreparedFrame`] token per panel; `paint` then records commands through
+/// `Renderer::paint_prepared(&self, ..)` with shared access only.
+/// `Renderer` is `Send + Sync`, so no host-side locking is needed.
 struct FiggyState {
     renderer: Renderer,
     panels: Vec<PanelEntry>,
@@ -261,6 +273,7 @@ fn build_sine_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
         series: vec![cfg],
         styles: vec![style],
         hitmap: HitMap::standard_chart(),
+        prepared: None,
     }
 }
 
@@ -326,6 +339,7 @@ fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
         series: vec![cfg_charge, cfg_discharge],
         styles: vec![style_charge, style_discharge],
         hitmap: HitMap::standard_chart(),
+        prepared: None,
     }
 }
 
@@ -376,12 +390,35 @@ fn build_xs_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
         series: vec![cfg],
         styles: vec![style],
         hitmap: HitMap::standard_chart(),
+        prepared: None,
     }
 }
 
 // ============================================================================
 // CallbackTrait — bridge between egui_wgpu and figgy.
 // ============================================================================
+
+/// Series list for one panel. Shared by `prepare` and `paint` so the items
+/// passed to `Renderer::prepare` and `Renderer::paint_prepared` are
+/// deterministic and identical (per-series identity is verified at paint).
+fn panel_series(panel: &PanelEntry) -> Vec<Series<'_>> {
+    panel
+        .series
+        .iter()
+        .zip(panel.styles.iter())
+        .map(|(cfg, style)| Series { config: cfg, style })
+        .collect()
+}
+
+/// The single `ChartDrawItem` slice for one panel, over `panel_series`
+/// output. Same helper on both halves of the frame — see `panel_series`.
+fn panel_draw_items<'a>(panel: &'a PanelEntry, series: &'a [Series<'a>]) -> [ChartDrawItem<'a>; 1] {
+    [ChartDrawItem {
+        view: &panel.view,
+        chart_config: panel.chart.config(),
+        series,
+    }]
+}
 
 struct FiggyCallback {
     panel_idx: usize,
@@ -397,11 +434,9 @@ impl CallbackTrait for FiggyCallback {
         _egui_encoder: &mut wgpu::CommandEncoder,
         callback_resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        let Some(state) = callback_resources.get_mut::<Mutex<FiggyState>>() else {
+        let Some(state) = callback_resources.get_mut::<FiggyState>() else {
             return Vec::new();
         };
-        // Exclusive access — `get_mut` reaches the data without locking.
-        let state = state.get_mut().unwrap_or_else(PoisonError::into_inner);
         let selected = state.selected;
         let Some(panel) = state.panels.get_mut(self.panel_idx) else {
             return Vec::new();
@@ -419,8 +454,10 @@ impl CallbackTrait for FiggyCallback {
             _ => Vec::new(),
         };
 
-        // If the panel rect changed (or on first grading), refresh raster and
-        // transform separately; `refresh_axis` does not update data uniforms.
+        // If the panel rect changed (or on first grading) or the raster is
+        // dirty, refresh the raster; the data→NDC transform uniform is
+        // written unconditionally by `Renderer::prepare` below, so no
+        // separate `update_transform` call is needed.
         let cur_rect = panel.view.panel_rect();
         if cur_rect != self.panel_rect_px {
             panel.chart.config_mut().chart_area = ChartArea(self.panel_rect_px);
@@ -431,29 +468,43 @@ impl CallbackTrait for FiggyCallback {
                 &sel_boxes,
             ) {
                 eprintln!("[figgy] refresh_axis failed: {e}");
+                panel.prepared = None;
                 return Vec::new();
             }
-            state.renderer.update_transform(&panel.view, &panel.chart);
             let _ = panel.chart.consume_data_dirty();
             let _ = panel.chart.consume_raster_dirty();
         } else {
             let raster_dirty = panel.chart.consume_raster_dirty();
-            let data_dirty = panel.chart.consume_data_dirty();
-            if raster_dirty {
-                if let Err(e) = state.renderer.refresh_axis_with_selection(
+            // `Renderer::prepare` refreshes the transform every frame; the
+            // flag only needs resetting.
+            let _ = panel.chart.consume_data_dirty();
+            if raster_dirty
+                && let Err(e) = state.renderer.refresh_axis_with_selection(
                     &mut panel.view,
                     &panel.chart,
                     cur_rect,
                     &sel_boxes,
-                ) {
-                    eprintln!("[figgy] refresh_axis failed: {e}");
-                    return Vec::new();
-                }
-            }
-            if data_dirty {
-                state.renderer.update_transform(&panel.view, &panel.chart);
+                )
+            {
+                eprintln!("[figgy] refresh_axis failed: {e}");
+                panel.prepared = None;
+                return Vec::new();
             }
         }
+
+        // Mutable half of the frame: compile any missing pipelines, write
+        // this panel's transform uniform, dispatch arc-length compute. The
+        // returned token is what `paint` records against.
+        let series = panel_series(panel);
+        let items = panel_draw_items(panel, &series);
+        let prepared = state.renderer.prepare(&items);
+        panel.prepared = match prepared {
+            Ok(token) => Some(token),
+            Err(e) => {
+                eprintln!("[figgy] prepare failed: {e}");
+                None
+            }
+        };
         Vec::new()
     }
 
@@ -463,34 +514,33 @@ impl CallbackTrait for FiggyCallback {
         render_pass: &mut wgpu::RenderPass<'static>,
         callback_resources: &egui_wgpu::CallbackResources,
     ) {
-        let Some(state) = callback_resources.get::<Mutex<FiggyState>>() else {
+        // Shared access is enough: `paint_prepared` takes `&self`, so no
+        // lock bridges egui's `&CallbackResources` to the renderer.
+        let Some(state) = callback_resources.get::<FiggyState>() else {
             return;
         };
-        // Host-responsibility lock: egui only hands `&CallbackResources` to
-        // paint, but `Renderer::paint` needs `&mut self`. Uncontended —
-        // egui's render thread is the only path here.
-        let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
-        // Split the borrow: renderer mutably, panels immutably.
-        let state = &mut *state;
-        let (renderer, panels) = (&mut state.renderer, &state.panels);
-        let Some(panel) = panels.get(self.panel_idx) else {
+        let Some(panel) = state.panels.get(self.panel_idx) else {
             return;
         };
-        let series: Vec<Series<'_>> = panel
-            .series
-            .iter()
-            .zip(panel.styles.iter())
-            .map(|(cfg, style)| Series { config: cfg, style })
-            .collect();
-        let items = [ChartDrawItem {
-            view: &panel.view,
-            chart_config: panel.chart.config(),
-            series: &series,
-        }];
+        let Some(prepared) = panel.prepared.as_ref() else {
+            eprintln!(
+                "[figgy] panel {}: no prepared frame; skipping paint",
+                self.panel_idx
+            );
+            return;
+        };
+        // Rebuild the exact items `prepare` used — same helpers, same order.
+        let series = panel_series(panel);
+        let items = panel_draw_items(panel, &series);
         // target = pixel size of the color attachment the current render pass draws into (egui's swap chain).
         let target_size = (info.screen_size_px[0], info.screen_size_px[1]);
-        if let Err(e) = renderer.paint(render_pass, target_size, &items) {
-            eprintln!("[figgy] paint failed: {e}");
+        // A stale token (invalidating `&mut` call between prepare and paint)
+        // is recoverable: skip this frame, the next prepare re-issues it.
+        if let Err(e) = state
+            .renderer
+            .paint_prepared(render_pass, target_size, &items, prepared)
+        {
+            eprintln!("[figgy] paint_prepared failed (skipping frame): {e}");
         }
     }
 }
@@ -535,14 +585,8 @@ impl DemoApp {
 
         {
             let mut renderer_guard = render_state.renderer.write();
-            if let Some(state) = renderer_guard
-                .callback_resources
-                .remove::<Mutex<FiggyState>>()
-            {
-                state
-                    .into_inner()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .shutdown();
+            if let Some(mut state) = renderer_guard.callback_resources.remove::<FiggyState>() {
+                state.shutdown();
             }
         }
 
@@ -619,21 +663,17 @@ impl eframe::App for DemoApp {
                 .renderer
                 .write()
                 .callback_resources
-                .insert(Mutex::new(FiggyState {
+                .insert(FiggyState {
                     renderer,
                     panels,
                     selected: None,
                     active_resize: None,
-                }));
+                });
             self.initialized = true;
             self.renderer_error = None;
         } else {
             let mut renderer_guard = render_state.renderer.write();
-            if let Some(state) = renderer_guard
-                .callback_resources
-                .get_mut::<Mutex<FiggyState>>()
-            {
-                let state = state.get_mut().unwrap_or_else(PoisonError::into_inner);
+            if let Some(state) = renderer_guard.callback_resources.get_mut::<FiggyState>() {
                 if let Err(e) = state
                     .renderer
                     .ensure_target_format(render_state.target_format)
@@ -674,10 +714,8 @@ impl eframe::App for DemoApp {
                         let mut renderer_guard = render_state_clone.renderer.write();
                         let state = renderer_guard
                             .callback_resources
-                            .get_mut::<Mutex<FiggyState>>()
-                            .expect("FiggyState")
-                            .get_mut()
-                            .unwrap_or_else(PoisonError::into_inner);
+                            .get_mut::<FiggyState>()
+                            .expect("FiggyState");
                         let (renderer, panels) = (&mut state.renderer, &state.panels);
                         for (i, panel) in panels.iter().enumerate() {
                             match renderer.export_panel_png_bytes(
@@ -748,11 +786,7 @@ impl eframe::App for DemoApp {
                 });
                 if pressed.is_some() || dragged.is_some() || drag_ended {
                     let mut renderer_guard = render_state_clone.renderer.write();
-                    if let Some(state) = renderer_guard
-                        .callback_resources
-                        .get_mut::<Mutex<FiggyState>>()
-                    {
-                        let state = state.get_mut().unwrap_or_else(PoisonError::into_inner);
+                    if let Some(state) = renderer_guard.callback_resources.get_mut::<FiggyState>() {
                         if let Some((i, x, y)) = pressed {
                             state.handle_click(i, x, y);
                         }

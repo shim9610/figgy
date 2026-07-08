@@ -719,7 +719,10 @@ impl App {
         for (i, panel) in self.panels.iter_mut().enumerate() {
             let panel_rect = panel.view.panel_rect();
             let raster_dirty = panel.chart.consume_raster_dirty();
-            let data_dirty = panel.chart.consume_data_dirty();
+            // `Renderer::prepare` (inside `draw` below) rewrites the transform
+            // uniform from the current config every frame; the data-dirty flag
+            // only needs resetting.
+            let _ = panel.chart.consume_data_dirty();
             if raster_dirty {
                 let sel_boxes: Vec<SelectionBox> = match selected {
                     Some((pi, id)) if pi == i => panel
@@ -742,9 +745,6 @@ impl App {
                     eprintln!("[refresh_axis] {e}");
                     return;
                 }
-            }
-            if data_dirty {
-                renderer.update_transform(&panel.view, &panel.chart);
             }
         }
 

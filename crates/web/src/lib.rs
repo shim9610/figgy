@@ -1285,7 +1285,10 @@ mod web {
             let display_chart = Chart::new(display_config);
             let view_dirty = self.view_dirty;
             let raster_dirty = self.chart.consume_raster_dirty();
-            let data_dirty = self.chart.consume_data_dirty();
+            // `Renderer::prepare` (inside `draw` below) rewrites the transform
+            // uniform from the current config every frame; the data-dirty flag
+            // only needs resetting.
+            let _ = self.chart.consume_data_dirty();
             if view_dirty || raster_dirty {
                 let sel_boxes: Vec<SelectionBox> = self
                     .selected
@@ -1307,9 +1310,6 @@ mod web {
                     )
                     .map_err(js_err)?;
                 self.view_dirty = false;
-            }
-            if view_dirty || data_dirty {
-                self.renderer.update_transform(&self.view, &display_chart);
             }
 
             let series: Vec<Series<'_>> = self
@@ -1352,9 +1352,9 @@ mod web {
 
         /// Export the panel as PNG bytes at `scale ×` resolution.
         /// JS: `const png = await chart.export_png(2.0);`
-        /// (`&mut self`: the renderer's export runs an arc-prefix prepare
-        /// phase; wasm-bindgen serializes access, so this changes nothing
-        /// for JS callers.)
+        /// (`&mut self`: the renderer's export runs its prepare phase —
+        /// transform uniforms + arc-prefix compute; wasm-bindgen serializes
+        /// access, so this changes nothing for JS callers.)
         pub async fn export_png(&mut self, scale: f32) -> Result<js_sys::Uint8Array, JsValue> {
             let bytes = self
                 .renderer

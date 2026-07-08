@@ -614,12 +614,16 @@ impl ColumnPool {
 mod tests {
     use super::*;
     use crate::data::Column;
-    use crate::data_render::{create_instance, request_adapter, request_device};
 
-    fn mk_pool(cap: u64) -> Option<(wgpu::Device, wgpu::Queue, ColumnPool)> {
-        let inst = create_instance();
-        let adapter = request_adapter(&inst).ok()?;
-        let (device, queue) = request_device(&adapter).ok()?;
+    fn mk_pool(
+        cap: u64,
+    ) -> Option<(
+        std::sync::Arc<wgpu::Device>,
+        std::sync::Arc<wgpu::Queue>,
+        ColumnPool,
+    )> {
+        // Shared device across the test binary — see `data_render::shared_device`.
+        let (device, queue) = crate::data_render::shared_device()?;
         let pool = ColumnPool::new(&device, cap).ok()?;
         Some((device, queue, pool))
     }
