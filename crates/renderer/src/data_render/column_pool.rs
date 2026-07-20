@@ -46,6 +46,49 @@ fn try_align_up(x: u64, a: u64) -> Option<u64> {
     x.checked_add(a - 1).map(|v| v & !(a - 1))
 }
 
+fn out_of_space(requested: u64, free: &[FreeRegion]) -> AllocError {
+    AllocError::OutOfSpace {
+        requested,
+        largest_free: free.iter().map(|region| region.size).max().unwrap_or(0),
+        total_free: free.iter().map(|region| region.size).sum(),
+    }
+}
+
+fn alloc_region_from(free: &mut Vec<FreeRegion>, size: u64) -> Result<u64, AllocError> {
+    let Some(index) = free.iter().position(|region| region.size >= size) else {
+        return Err(out_of_space(size, free));
+    };
+    let region = free[index];
+    let offset = region.offset;
+    if region.size == size {
+        free.remove(index);
+    } else {
+        free[index] = FreeRegion {
+            offset: region.offset + size,
+            size: region.size - size,
+        };
+    }
+    Ok(offset)
+}
+
+fn coalesce_regions(free: &mut Vec<FreeRegion>) {
+    if free.len() < 2 {
+        return;
+    }
+    free.sort_by_key(|region| region.offset);
+    let mut merged: Vec<FreeRegion> = Vec::with_capacity(free.len());
+    for region in free.drain(..) {
+        if let Some(last) = merged.last_mut()
+            && last.offset + last.size == region.offset
+        {
+            last.size += region.size;
+            continue;
+        }
+        merged.push(region);
+    }
+    *free = merged;
+}
+
 /// One column's occupied region inside the pool.
 #[derive(Debug, Clone)]
 pub struct ColumnSlot {
@@ -192,6 +235,111 @@ pub struct ColumnPool {
     backup: Option<Buffer>,
     /// Whether to auto-defrag on alloc failure. Default `Manual`.
     pub defrag_policy: DefragPolicy,
+}
+
+enum UpsertBufferRollback {
+    /// The upload used a region that was free before the transaction.  Bytes
+    /// belonging to the old slot (when any) were never touched.
+    InPlace,
+    /// The provisional pool uses a candidate primary.  The old primary and
+    /// backup are retained until commit so dropping the guard can restore the
+    /// exact pre-transaction pool.
+    Candidate {
+        old_primary: Option<Buffer>,
+        old_backup: Option<Buffer>,
+        candidate_was_backup: bool,
+    },
+}
+
+struct UpsertRollback {
+    slots: HashMap<ColumnId, ColumnSlot>,
+    free: Vec<FreeRegion>,
+    generation: u32,
+    buffer: UpsertBufferRollback,
+}
+
+enum PreparedUpsertTarget {
+    InPlace,
+    FreshCandidate(Buffer),
+    BackupCandidate,
+}
+
+/// A provisionally-installed column upsert.
+///
+/// The upload has already been submitted when this guard is returned, but it
+/// targets either a previously-free range or a candidate primary buffer.  The
+/// old column bytes therefore remain intact.  Callers may build all dependent
+/// GPU batches against [`Self::pool`]; [`Self::commit`] then publishes the
+/// provisional state without any fallible work or allocation.  Dropping the
+/// guard restores the exact old allocator, slots, generation, and buffers.
+#[must_use = "dropping a ColumnUpsert rolls the provisional pool state back"]
+pub struct ColumnUpsert<'a> {
+    pool: &'a mut ColumnPool,
+    rollback: Option<UpsertRollback>,
+    handle: ColumnHandle,
+    replaced_existing: bool,
+}
+
+impl ColumnUpsert<'_> {
+    /// The exact pool view that will remain live after [`Self::commit`].
+    pub fn pool(&self) -> &ColumnPool {
+        self.pool
+    }
+
+    /// Handle for the provisionally-installed column.
+    pub fn handle(&self) -> ColumnHandle {
+        self.handle
+    }
+
+    /// Whether this upsert replaced an existing id rather than inserting one.
+    pub fn replaced_existing(&self) -> bool {
+        self.replaced_existing
+    }
+
+    /// Publish the provisional state.
+    ///
+    /// All fallible preparation and the upload submission happened in
+    /// `begin_upsert_*`; this path only moves already-owned values.
+    pub fn commit(mut self) -> ColumnHandle {
+        if let Some(mut rollback) = self.rollback.take()
+            && let UpsertBufferRollback::Candidate { old_primary, .. } = &mut rollback.buffer
+        {
+            // Keep the displaced primary as the next defragmentation target.
+            // Replacing an Option and dropping the superseded backup cannot
+            // allocate or return an error.
+            self.pool.backup = old_primary.take();
+        }
+        self.handle
+    }
+}
+
+impl Drop for ColumnUpsert<'_> {
+    fn drop(&mut self) {
+        let Some(mut rollback) = self.rollback.take() else {
+            return;
+        };
+
+        std::mem::swap(&mut self.pool.slots, &mut rollback.slots);
+        std::mem::swap(&mut self.pool.free, &mut rollback.free);
+        self.pool.generation = rollback.generation;
+
+        if let UpsertBufferRollback::Candidate {
+            old_primary,
+            old_backup,
+            candidate_was_backup,
+        } = &mut rollback.buffer
+        {
+            let Some(old_primary) = old_primary.take() else {
+                return;
+            };
+            let candidate = std::mem::replace(&mut self.pool.primary, old_primary);
+            if *candidate_was_backup {
+                self.pool.backup = Some(candidate);
+            } else {
+                self.pool.backup = old_backup.take();
+            }
+        }
+    }
 }
 
 impl ColumnPool {
@@ -344,6 +492,357 @@ impl ColumnPool {
             },
             Err(e) => Err(e),
         }
+    }
+
+    /// Begin a failure-atomic scalar insert or same-id replacement.
+    ///
+    /// The returned guard exposes the exact post-commit pool view.  Dropping
+    /// it restores the old view; committing it is infallible and allocation
+    /// free.  Unlike `add_column`, an existing id is replaced.
+    pub fn begin_upsert_column<'a>(
+        &'a mut self,
+        id: ColumnId,
+        source: &dyn ColumnSource,
+        device: &Device,
+        queue: &Queue,
+    ) -> Result<ColumnUpsert<'a>, AllocError> {
+        self.begin_upsert_column_pairs_with(
+            id,
+            source.len(),
+            source.min(),
+            source.max(),
+            device,
+            queue,
+            |dst| write_scalar_source_as_pairs(source, dst),
+            |byte_size| {
+                create_buffer_checked(
+                    device,
+                    &BufferDescriptor {
+                        label: Some("figgy column upsert staging"),
+                        size: byte_size,
+                        usage: BufferUsages::COPY_SRC,
+                        mapped_at_creation: true,
+                    },
+                    "column staging buffer",
+                )
+            },
+        )
+    }
+
+    /// Begin a failure-atomic hi/lo insert or same-id replacement.
+    pub fn begin_upsert_hilo_column<'a>(
+        &'a mut self,
+        id: ColumnId,
+        source: &dyn HiLoColumnSource,
+        device: &Device,
+        queue: &Queue,
+    ) -> Result<ColumnUpsert<'a>, AllocError> {
+        self.begin_upsert_column_pairs_with(
+            id,
+            source.len(),
+            source.min(),
+            source.max(),
+            device,
+            queue,
+            |dst| source.write_f32_pair_le_into(dst),
+            |byte_size| {
+                create_buffer_checked(
+                    device,
+                    &BufferDescriptor {
+                        label: Some("figgy column upsert staging"),
+                        size: byte_size,
+                        usage: BufferUsages::COPY_SRC,
+                        mapped_at_creation: true,
+                    },
+                    "column staging buffer",
+                )
+            },
+        )
+    }
+
+    /// Failure-atomic scalar upsert when no dependent batch preparation is
+    /// needed between prepare and commit.
+    pub fn upsert_column(
+        &mut self,
+        id: ColumnId,
+        source: &dyn ColumnSource,
+        device: &Device,
+        queue: &Queue,
+    ) -> Result<ColumnHandle, AllocError> {
+        Ok(self
+            .begin_upsert_column(id, source, device, queue)?
+            .commit())
+    }
+
+    /// Failure-atomic hi/lo upsert when no dependent batch preparation is
+    /// needed between prepare and commit.
+    pub fn upsert_hilo_column(
+        &mut self,
+        id: ColumnId,
+        source: &dyn HiLoColumnSource,
+        device: &Device,
+        queue: &Queue,
+    ) -> Result<ColumnHandle, AllocError> {
+        Ok(self
+            .begin_upsert_hilo_column(id, source, device, queue)?
+            .commit())
+    }
+
+    fn begin_upsert_column_pairs_with<'a>(
+        &'a mut self,
+        id: ColumnId,
+        n: usize,
+        min: f64,
+        max: f64,
+        device: &Device,
+        queue: &Queue,
+        write_pairs: impl FnOnce(&mut [u8]),
+        create_staging: impl FnOnce(u64) -> Result<Buffer, AllocError>,
+    ) -> Result<ColumnUpsert<'a>, AllocError> {
+        if n == 0 {
+            return Err(AllocError::EmptySource);
+        }
+
+        let raw_bytes =
+            (n as u64)
+                .checked_mul(COLUMN_VALUE_BYTES as u64)
+                .ok_or(AllocError::ResourceLimit {
+                    resource: "column staging buffer",
+                    requested: u64::MAX,
+                    limit: self.max_buffer_size,
+                })?;
+        let byte_size = try_align_up(raw_bytes, ALIGN).ok_or(AllocError::ResourceLimit {
+            resource: "column staging buffer",
+            requested: raw_bytes,
+            limit: self.max_buffer_size,
+        })?;
+        if byte_size > self.max_buffer_size {
+            return Err(AllocError::ResourceLimit {
+                resource: "column staging buffer",
+                requested: byte_size,
+                limit: self.max_buffer_size,
+            });
+        }
+
+        // Complete every source-dependent/fallible staging operation before
+        // touching allocator metadata or the live primary buffer.
+        let staging = create_staging(byte_size)?;
+        let mut min_positive = f64::INFINITY;
+        {
+            let mut view = staging.slice(..).get_mapped_range_mut();
+            write_pairs(&mut view[..raw_bytes as usize]);
+            for bytes in view[..raw_bytes as usize].chunks_exact(COLUMN_VALUE_BYTES) {
+                let hi = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64;
+                let lo = f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as f64;
+                let value = hi + lo;
+                if value > 0.0 && value < min_positive {
+                    min_positive = value;
+                }
+            }
+        }
+        staging.unmap();
+        let min_positive = min_positive.is_finite().then_some(min_positive);
+
+        let old_slot = self.slots.get(&id).cloned();
+        let replaced_existing = old_slot.is_some();
+        let mut planned_slots = self.slots.clone();
+        let mut planned_free = self.free.clone();
+
+        let direct_offset = alloc_region_from(&mut planned_free, byte_size);
+        let (target, new_offset, mut command_encoder) = match direct_offset {
+            Ok(offset) => {
+                if let Some(old) = old_slot.as_ref() {
+                    planned_free.push(FreeRegion {
+                        offset: old.offset,
+                        size: old.byte_size,
+                    });
+                    coalesce_regions(&mut planned_free);
+                }
+                let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("figgy column atomic upsert"),
+                });
+                (PreparedUpsertTarget::InPlace, offset, encoder)
+            }
+            Err(direct_error) => {
+                let mut virtual_free = self.free.clone();
+                if let Some(old) = old_slot.as_ref() {
+                    virtual_free.push(FreeRegion {
+                        offset: old.offset,
+                        size: old.byte_size,
+                    });
+                    coalesce_regions(&mut virtual_free);
+                }
+                let total_final_free: u64 = virtual_free.iter().map(|region| region.size).sum();
+                let may_compact =
+                    replaced_existing || self.defrag_policy == DefragPolicy::OnAllocFailure;
+                if !may_compact {
+                    return Err(direct_error);
+                }
+                if total_final_free < byte_size {
+                    return Err(out_of_space(byte_size, &virtual_free));
+                }
+
+                // A same-primary copy could overwrite old bytes before the
+                // caller's dependent batches are ready.  Pack survivors into
+                // a candidate instead; the old primary stays live in the
+                // rollback record until commit.
+                planned_slots.remove(&id);
+                let mut order: Vec<ColumnId> = planned_slots.keys().cloned().collect();
+                order.sort_by_key(|column_id| self.slots[column_id].offset);
+                let next_generation = self.generation.wrapping_add(1);
+                let mut next = 0;
+                for column_id in &order {
+                    let slot = planned_slots
+                        .get_mut(column_id)
+                        .expect("planned survivor remains present");
+                    slot.offset = next;
+                    slot.generation = next_generation;
+                    next = align_up(next + slot.byte_size, ALIGN);
+                }
+                let offset = next;
+                next = align_up(next + byte_size, ALIGN);
+                if next > self.capacity {
+                    return Err(out_of_space(byte_size, &virtual_free));
+                }
+                planned_free.clear();
+                if next < self.capacity {
+                    planned_free.push(FreeRegion {
+                        offset: next,
+                        size: self.capacity - next,
+                    });
+                }
+
+                let fresh_candidate = if self.backup.is_none() {
+                    Some(create_buffer_checked(
+                        device,
+                        &BufferDescriptor {
+                            label: Some("figgy column pool atomic upsert candidate"),
+                            size: self.capacity,
+                            usage: BufferUsages::VERTEX
+                                | BufferUsages::STORAGE
+                                | BufferUsages::COPY_DST
+                                | BufferUsages::COPY_SRC,
+                            mapped_at_creation: false,
+                        },
+                        "column pool upsert candidate",
+                    )?)
+                } else {
+                    None
+                };
+                let candidate = fresh_candidate
+                    .as_ref()
+                    .or(self.backup.as_ref())
+                    .expect("atomic upsert candidate was prepared");
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("figgy column atomic upsert candidate"),
+                });
+                for column_id in &order {
+                    let old = &self.slots[column_id];
+                    let new = &planned_slots[column_id];
+                    encoder.copy_buffer_to_buffer(
+                        &self.primary,
+                        old.offset,
+                        candidate,
+                        new.offset,
+                        old.byte_size,
+                    );
+                }
+                let target = match fresh_candidate {
+                    Some(candidate) => PreparedUpsertTarget::FreshCandidate(candidate),
+                    None => PreparedUpsertTarget::BackupCandidate,
+                };
+                (target, offset, encoder)
+            }
+        };
+
+        let next_generation =
+            if replaced_existing || !matches!(&target, PreparedUpsertTarget::InPlace) {
+                self.generation.wrapping_add(1)
+            } else {
+                self.generation
+            };
+        if next_generation != self.generation {
+            for slot in planned_slots.values_mut() {
+                slot.generation = next_generation;
+            }
+        }
+        let slot = ColumnSlot {
+            id: id.clone(),
+            offset: new_offset,
+            byte_size,
+            len_values: n,
+            generation: next_generation,
+            min,
+            max,
+            min_positive,
+        };
+        let handle = ColumnHandle {
+            generation: slot.generation,
+            offset: slot.offset,
+            byte_size: slot.byte_size,
+            len_values: slot.len_values,
+        };
+        planned_slots.insert(id, slot);
+        command_encoder.copy_buffer_to_buffer(
+            &staging,
+            0,
+            match &target {
+                PreparedUpsertTarget::InPlace => &self.primary,
+                PreparedUpsertTarget::FreshCandidate(candidate) => candidate,
+                PreparedUpsertTarget::BackupCandidate => self
+                    .backup
+                    .as_ref()
+                    .expect("atomic upsert backup candidate remains available"),
+            },
+            new_offset,
+            byte_size,
+        );
+        let upload = command_encoder.finish();
+
+        // queue.submit/device loss is deliberately outside the Result
+        // rollback boundary.  Every Result-returning and allocating operation
+        // is complete; only ownership moves follow this submission.
+        queue.submit(std::iter::once(upload));
+
+        let buffer_rollback = match target {
+            PreparedUpsertTarget::InPlace => UpsertBufferRollback::InPlace,
+            PreparedUpsertTarget::FreshCandidate(candidate) => {
+                let old_backup = self.backup.take();
+                let old_primary = std::mem::replace(&mut self.primary, candidate);
+                UpsertBufferRollback::Candidate {
+                    old_primary: Some(old_primary),
+                    old_backup,
+                    candidate_was_backup: false,
+                }
+            }
+            PreparedUpsertTarget::BackupCandidate => {
+                let candidate = self
+                    .backup
+                    .take()
+                    .expect("submitted backup candidate remains available");
+                let old_primary = std::mem::replace(&mut self.primary, candidate);
+                UpsertBufferRollback::Candidate {
+                    old_primary: Some(old_primary),
+                    old_backup: None,
+                    candidate_was_backup: true,
+                }
+            }
+        };
+        let old_slots = std::mem::replace(&mut self.slots, planned_slots);
+        let old_free = std::mem::replace(&mut self.free, planned_free);
+        let old_generation = std::mem::replace(&mut self.generation, next_generation);
+
+        Ok(ColumnUpsert {
+            pool: self,
+            rollback: Some(UpsertRollback {
+                slots: old_slots,
+                free: old_free,
+                generation: old_generation,
+                buffer: buffer_rollback,
+            }),
+            handle,
+            replaced_existing,
+        })
     }
 
     /// Single attempt without auto-retry. Internal + test use.
@@ -770,6 +1269,249 @@ mod tests {
         let min = data.iter().copied().fold(f64::INFINITY, f64::min);
         let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         Column { data, min, max }
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct PoolState {
+        buffer: usize,
+        generation: u32,
+        used: u64,
+        free_bytes: u64,
+        free: Vec<(u64, u64)>,
+        slot: Option<(u64, u64, usize, u32, u64, u64, Option<u64>)>,
+        handle: Option<(u32, u64, u64, usize)>,
+    }
+
+    fn pool_state(pool: &ColumnPool, id: &str) -> PoolState {
+        PoolState {
+            buffer: pool.buffer() as *const Buffer as usize,
+            generation: pool.generation(),
+            used: pool.used_bytes(),
+            free_bytes: pool.free_bytes(),
+            free: pool
+                .free
+                .iter()
+                .map(|region| (region.offset, region.size))
+                .collect(),
+            slot: pool.slot(id).map(|slot| {
+                (
+                    slot.offset,
+                    slot.byte_size,
+                    slot.len_values,
+                    slot.generation,
+                    slot.min.to_bits(),
+                    slot.max.to_bits(),
+                    slot.min_positive.map(f64::to_bits),
+                )
+            }),
+            handle: pool.handle_for(id).map(|handle| {
+                (
+                    handle.generation,
+                    handle.offset,
+                    handle.byte_size,
+                    handle.len_values,
+                )
+            }),
+        }
+    }
+
+    fn read_column_values(
+        device: &Device,
+        queue: &Queue,
+        pool: &ColumnPool,
+        handle: ColumnHandle,
+    ) -> Vec<f64> {
+        let readback = device.create_buffer(&BufferDescriptor {
+            label: Some("figgy column pool test readback"),
+            size: handle.byte_size,
+            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("figgy column pool test readback"),
+        });
+        encoder.copy_buffer_to_buffer(pool.buffer(), handle.offset, &readback, 0, handle.byte_size);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        encoder.map_buffer_on_submit(
+            &readback,
+            wgpu::MapMode::Read,
+            0..handle.byte_size,
+            move |result| {
+                let _ = sender.send(result);
+            },
+        );
+        let submission = queue.submit(std::iter::once(encoder.finish()));
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submission),
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .expect("readback poll");
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("readback callback")
+            .expect("map readback");
+        let mapped = readback.slice(..handle.byte_size).get_mapped_range();
+        let values = mapped[..handle.len_values * COLUMN_VALUE_BYTES]
+            .chunks_exact(COLUMN_VALUE_BYTES)
+            .map(|bytes| {
+                let hi = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64;
+                let lo = f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as f64;
+                hi + lo
+            })
+            .collect();
+        drop(mapped);
+        readback.unmap();
+        values
+    }
+
+    #[test]
+    fn upsert_prepare_failures_leave_old_state_and_retry() {
+        let Some((device, queue, mut pool)) = mk_pool(2 * ALIGN) else {
+            return;
+        };
+        let old = col_f64(vec![1.0, 2.0, 3.0]);
+        pool.add_column("x".into(), &old, &device, &queue).unwrap();
+        let blocker = col_f64(vec![10.0, 11.0, 12.0]);
+        pool.add_column("blocker".into(), &blocker, &device, &queue)
+            .unwrap();
+        let before = pool_state(&pool, "x");
+
+        let replacement = col_f64(vec![4.0, 5.0, 6.0]);
+        let staging_error = match pool.begin_upsert_column_pairs_with(
+            "x".into(),
+            replacement.data.len(),
+            replacement.min,
+            replacement.max,
+            &device,
+            &queue,
+            |dst| write_scalar_source_as_pairs(&replacement, dst),
+            |_| {
+                Err(AllocError::AllocationFailed {
+                    resource: "column staging buffer",
+                    reason: "injected test failure".into(),
+                })
+            },
+        ) {
+            Ok(_) => panic!("injected staging failure unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert!(matches!(staging_error, AllocError::AllocationFailed { .. }));
+        assert_eq!(pool_state(&pool, "x"), before);
+
+        let empty = col_f64(Vec::new());
+        let validation_error = match pool.begin_upsert_column("x".into(), &empty, &device, &queue) {
+            Ok(_) => panic!("empty replacement unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert_eq!(validation_error, AllocError::EmptySource);
+        assert_eq!(pool_state(&pool, "x"), before);
+
+        let too_large = col_f64((0..50).map(|value| value as f64).collect());
+        let capacity_error = match pool.begin_upsert_column("x".into(), &too_large, &device, &queue)
+        {
+            Ok(_) => panic!("oversized replacement unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert!(matches!(capacity_error, AllocError::OutOfSpace { .. }));
+        assert_eq!(pool_state(&pool, "x"), before);
+
+        let handle = pool
+            .upsert_column("x".into(), &replacement, &device, &queue)
+            .unwrap();
+        assert_eq!(handle.len_values, replacement.data.len());
+        assert_eq!(pool.slot("x").unwrap().min, 4.0);
+    }
+
+    #[test]
+    fn dropped_upsert_restores_old_mapping_stats_and_bytes() {
+        let Some((device, queue, mut pool)) = mk_pool(ALIGN) else {
+            return;
+        };
+        let old = col_f64(vec![1.25, 2.5, 4.75]);
+        let old_handle = pool.add_column("x".into(), &old, &device, &queue).unwrap();
+        let before = pool_state(&pool, "x");
+
+        {
+            let replacement = col_f64(vec![100.0, 200.0, 300.0]);
+            let pending = pool
+                .begin_upsert_column("x".into(), &replacement, &device, &queue)
+                .unwrap();
+            assert_ne!(pending.handle().generation, old_handle.generation);
+            assert_eq!(pending.pool().slot("x").unwrap().min, 100.0);
+        }
+
+        assert_eq!(pool_state(&pool, "x"), before);
+        assert!(pool.is_valid_handle(&old_handle));
+        assert_eq!(
+            read_column_values(&device, &queue, &pool, old_handle),
+            old.data
+        );
+    }
+
+    #[test]
+    fn same_size_replacement_reuses_full_capacity_and_updates_stats() {
+        let Some((device, queue, mut pool)) = mk_pool(ALIGN) else {
+            return;
+        };
+        let old = col_f64(vec![-4.0, -2.0, 8.0]);
+        let old_handle = pool.add_column("x".into(), &old, &device, &queue).unwrap();
+        assert_eq!(pool.free_bytes(), 0);
+
+        let replacement = col_f64(vec![-10.0, 0.0, 3.5]);
+        let pending = pool
+            .begin_upsert_column("x".into(), &replacement, &device, &queue)
+            .unwrap();
+        assert!(pending.replaced_existing());
+        assert_eq!(pending.pool().free_bytes(), 0);
+        let new_handle = pending.commit();
+
+        assert_eq!(pool.capacity(), ALIGN);
+        assert_eq!(pool.used_bytes(), ALIGN);
+        assert_eq!(pool.free_bytes(), 0);
+        assert_ne!(new_handle.generation, old_handle.generation);
+        assert!(!pool.is_valid_handle(&old_handle));
+        let slot = pool.slot("x").unwrap();
+        assert_eq!(
+            (slot.min, slot.max, slot.min_positive),
+            (-10.0, 3.5, Some(3.5))
+        );
+        assert_eq!(
+            read_column_values(&device, &queue, &pool, new_handle),
+            replacement.data
+        );
+    }
+
+    #[test]
+    fn upsert_inserts_and_replaces_larger_and_smaller_columns() {
+        let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+            return;
+        };
+        let small = col_f64((0..20).map(|value| value as f64).collect());
+        let inserted = pool
+            .upsert_column("x".into(), &small, &device, &queue)
+            .unwrap();
+        assert_eq!(inserted.byte_size, ALIGN);
+
+        let larger = col_f64((0..50).map(|value| value as f64).collect());
+        let larger_handle = pool
+            .upsert_hilo_column("x".into(), &larger, &device, &queue)
+            .unwrap();
+        assert_eq!(larger_handle.byte_size, 2 * ALIGN);
+        assert_eq!(pool.used_bytes(), 2 * ALIGN);
+        assert_eq!(pool.slot("x").unwrap().len_values, 50);
+
+        let smaller = col_f64(vec![7.0, 8.0]);
+        let smaller_handle = pool
+            .upsert_column("x".into(), &smaller, &device, &queue)
+            .unwrap();
+        assert_eq!(smaller_handle.byte_size, ALIGN);
+        assert_eq!(pool.used_bytes(), ALIGN);
+        assert_eq!(pool.free_bytes(), 3 * ALIGN);
+        assert_eq!(
+            read_column_values(&device, &queue, &pool, smaller_handle),
+            smaller.data
+        );
     }
 
     #[test]

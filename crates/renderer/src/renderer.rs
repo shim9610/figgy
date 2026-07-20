@@ -245,6 +245,100 @@ pub struct Renderer {
     surface_format: wgpu::TextureFormat,
 }
 
+/// Renderer-level guard for an atomic scalar or hi/lo column upsert.
+///
+/// The provisional pool is available for picker/bind-group preparation.  A
+/// dropped guard restores the previous column mapping; `commit` is infallible
+/// and allocation-free.
+#[must_use = "dropping a RendererColumnUpsert rolls the provisional pool state back"]
+pub struct RendererColumnUpsert<'a> {
+    inner: data_render::column_pool::ColumnUpsert<'a>,
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    errorbar_extent_engine: &'a crate::gpu_errorbar::GpuErrorbarExtentEngine,
+}
+
+impl RendererColumnUpsert<'_> {
+    pub fn pool(&self) -> &ColumnPool {
+        self.inner.pool()
+    }
+
+    pub fn handle(&self) -> ColumnHandle {
+        self.inner.handle()
+    }
+
+    pub fn replaced_existing(&self) -> bool {
+        self.inner.replaced_existing()
+    }
+
+    /// Begin an extent job against the provisional mappings.  The column
+    /// upload was submitted before this guard was returned, so queue ordering
+    /// makes the new bytes visible to the reduction.
+    pub fn begin_errorbar_extent(
+        &self,
+        value_id: &str,
+        lower_id: &str,
+        upper_id: &str,
+    ) -> std::result::Result<
+        crate::gpu_errorbar::GpuErrorbarExtentTicket,
+        crate::gpu_errorbar::GpuErrorbarError,
+    > {
+        begin_errorbar_extent_from_pool(
+            self.errorbar_extent_engine,
+            self.device,
+            self.queue,
+            self.pool(),
+            value_id,
+            lower_id,
+            upper_id,
+        )
+    }
+
+    pub fn commit(self) -> ColumnHandle {
+        self.inner.commit()
+    }
+}
+
+fn begin_errorbar_extent_from_pool(
+    engine: &crate::gpu_errorbar::GpuErrorbarExtentEngine,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pool: &ColumnPool,
+    value_id: &str,
+    lower_id: &str,
+    upper_id: &str,
+) -> std::result::Result<
+    crate::gpu_errorbar::GpuErrorbarExtentTicket,
+    crate::gpu_errorbar::GpuErrorbarError,
+> {
+    let current_handle = |role: &'static str, id: &str| {
+        let handle = pool.handle_for(id).ok_or_else(|| {
+            crate::gpu_errorbar::GpuErrorbarError::UnknownColumn {
+                role,
+                id: id.to_string(),
+            }
+        })?;
+        if !pool.is_valid_handle(&handle) {
+            return Err(crate::gpu_errorbar::GpuErrorbarError::StaleHandle {
+                role,
+                id: id.to_string(),
+                generation: handle.generation,
+                current: pool.generation(),
+            });
+        }
+        Ok(handle)
+    };
+
+    engine.begin(
+        device,
+        queue,
+        pool.buffer(),
+        current_handle("value", value_id)?,
+        current_handle("lower error", lower_id)?,
+        current_handle("upper error", upper_id)?,
+    )
+}
+
 /// Key + bytes of one baked constellation backdrop. `bake_gen` is a
 /// monotonically increasing stamp; a `ChartView` whose grid texture already
 /// holds this generation skips the (w·h·4)-byte re-upload too.
@@ -1084,6 +1178,67 @@ impl Renderer {
             .add_hilo_column(id.into(), source, &self.device, &self.queue)?)
     }
 
+    /// Begin a failure-atomic scalar insert or same-id replacement.
+    pub fn begin_upsert_column(
+        &mut self,
+        id: impl Into<ColumnId>,
+        source: &dyn ColumnSource,
+    ) -> Result<RendererColumnUpsert<'_>> {
+        let inner = self.pool.begin_upsert_column(
+            id.into(),
+            source,
+            self.device.as_ref(),
+            self.queue.as_ref(),
+        )?;
+        Ok(RendererColumnUpsert {
+            inner,
+            device: self.device.as_ref(),
+            queue: self.queue.as_ref(),
+            errorbar_extent_engine: &self.errorbar_extent_engine,
+        })
+    }
+
+    /// Begin a failure-atomic hi/lo insert or same-id replacement.
+    pub fn begin_upsert_hilo_column(
+        &mut self,
+        id: impl Into<ColumnId>,
+        source: &dyn HiLoColumnSource,
+    ) -> Result<RendererColumnUpsert<'_>> {
+        let inner = self.pool.begin_upsert_hilo_column(
+            id.into(),
+            source,
+            self.device.as_ref(),
+            self.queue.as_ref(),
+        )?;
+        Ok(RendererColumnUpsert {
+            inner,
+            device: self.device.as_ref(),
+            queue: self.queue.as_ref(),
+            errorbar_extent_engine: &self.errorbar_extent_engine,
+        })
+    }
+
+    /// Failure-atomic scalar upsert without an intermediate batch-preparation
+    /// step.  Web integrations that rebuild picker/errorbar state should use
+    /// [`Self::begin_upsert_column`] and commit its guard explicitly.
+    pub fn upsert_column(
+        &mut self,
+        id: impl Into<ColumnId>,
+        source: &dyn ColumnSource,
+    ) -> Result<ColumnHandle> {
+        Ok(self.begin_upsert_column(id, source)?.commit())
+    }
+
+    /// Failure-atomic hi/lo upsert without an intermediate batch-preparation
+    /// step.
+    pub fn upsert_hilo_column(
+        &mut self,
+        id: impl Into<ColumnId>,
+        source: &dyn HiLoColumnSource,
+    ) -> Result<ColumnHandle> {
+        Ok(self.begin_upsert_hilo_column(id, source)?.commit())
+    }
+
     pub fn remove_column(&mut self, id: &str) -> bool {
         self.pool.remove_column(id)
     }
@@ -1120,34 +1275,14 @@ impl Renderer {
         crate::gpu_errorbar::GpuErrorbarExtentTicket,
         crate::gpu_errorbar::GpuErrorbarError,
     > {
-        let current_handle = |role: &'static str, id: &str| {
-            let handle = self.pool.handle_for(id).ok_or_else(|| {
-                crate::gpu_errorbar::GpuErrorbarError::UnknownColumn {
-                    role,
-                    id: id.to_string(),
-                }
-            })?;
-            if !self.pool.is_valid_handle(&handle) {
-                return Err(crate::gpu_errorbar::GpuErrorbarError::StaleHandle {
-                    role,
-                    id: id.to_string(),
-                    generation: handle.generation,
-                    current: self.pool.generation(),
-                });
-            }
-            Ok(handle)
-        };
-
-        let values = current_handle("value", value_id)?;
-        let lower_errors = current_handle("lower error", lower_id)?;
-        let upper_errors = current_handle("upper error", upper_id)?;
-        self.errorbar_extent_engine.begin(
+        begin_errorbar_extent_from_pool(
+            &self.errorbar_extent_engine,
             &self.device,
             &self.queue,
-            self.pool.buffer(),
-            values,
-            lower_errors,
-            upper_errors,
+            &self.pool,
+            value_id,
+            lower_id,
+            upper_id,
         )
     }
 

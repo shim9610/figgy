@@ -75,6 +75,9 @@ pub enum GpuPickError {
         index: usize,
         len: usize,
     },
+    DuplicateSeriesIndex {
+        index: usize,
+    },
 }
 
 impl fmt::Display for GpuPickError {
@@ -125,6 +128,12 @@ impl fmt::Display for GpuPickError {
                 f,
                 "GPU pick series index {index} is out of bounds for {len} registered series"
             ),
+            Self::DuplicateSeriesIndex { index } => {
+                write!(
+                    f,
+                    "GPU pick series index {index} occurs more than once in a batch"
+                )
+            }
         }
     }
 }
@@ -162,6 +171,17 @@ pub struct GpuPickSeriesDescriptor<'a> {
     pub scatter: Option<GpuPickScatter<'a>>,
     /// Full production picker line width.  The engine applies `max(0) / 2`.
     pub line_width_px: Option<f32>,
+}
+
+/// One positional replacement in an atomic GPU-pick registry batch.
+///
+/// `gpu_index` is an index in [`GpuPickEngine`]'s compact registry, not the
+/// logical index in a chart's complete series list. Descriptors borrow style
+/// slices only while [`GpuPickEngine::prepare_series_batch`] is running; the
+/// prepared batch owns every resulting GPU resource and identity string.
+pub struct GpuPickSeriesReplacement<'a> {
+    pub gpu_index: usize,
+    pub descriptor: GpuPickSeriesDescriptor<'a>,
 }
 
 /// Query state which integration can derive directly from `Config`.
@@ -287,6 +307,32 @@ pub struct GpuPickEngine {
     queue: Arc<wgpu::Queue>,
     pipelines: PickPipelines,
     series: Vec<PickSeriesGpu>,
+    identities: Arc<[PickIdentity]>,
+    reduce: ReduceResources,
+}
+
+struct PickSeriesRebind {
+    x_handle: ColumnHandle,
+    y_handle: ColumnHandle,
+    style_index_handle: Option<ColumnHandle>,
+    style_index_base: u32,
+    style_index_len: u32,
+    query_data_bg: wgpu::BindGroup,
+}
+
+enum PreparedGpuPickSeriesSlot {
+    Replacement(PickSeriesGpu),
+    Rebind(PickSeriesRebind),
+}
+
+/// Fully prepared atomic replacement/rebind transaction for a GPU picker.
+///
+/// The plan is opaque so callers cannot partially install its resources. It
+/// must be committed to the engine that prepared it before any other registry
+/// mutation. Dropping it leaves that engine unchanged.
+#[must_use = "a prepared GPU-pick batch has no effect until it is committed"]
+pub struct PreparedGpuPickSeriesBatch {
+    slots: Vec<PreparedGpuPickSeriesSlot>,
     identities: Arc<[PickIdentity]>,
     reduce: ReduceResources,
 }
@@ -427,6 +473,17 @@ fn create_buffer_init_checked(
             contents,
             usage,
         })
+    }))
+    .map_err(|_| GpuPickError::AllocationFailed { resource })
+}
+
+fn create_bind_group_checked(
+    device: &wgpu::Device,
+    desc: &wgpu::BindGroupDescriptor<'_>,
+    resource: &'static str,
+) -> Result<wgpu::BindGroup, GpuPickError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        device.create_bind_group(desc)
     }))
     .map_err(|_| GpuPickError::AllocationFailed { resource })
 }
@@ -648,20 +705,24 @@ impl GpuPickEngine {
             },
             "final pick scalar buffer",
         )?;
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("figgy GPU pick reduction bg"),
-            layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: candidates.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: final_result.as_entire_binding(),
-                },
-            ],
-        });
+        let bind_group = create_bind_group_checked(
+            device,
+            &wgpu::BindGroupDescriptor {
+                label: Some("figgy GPU pick reduction bg"),
+                layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: candidates.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: final_result.as_entire_binding(),
+                    },
+                ],
+            },
+            "reduction bind group",
+        )?;
         Ok(ReduceResources {
             candidates,
             final_result,
@@ -680,6 +741,22 @@ impl GpuPickEngine {
         pool: &ColumnPool,
         descriptor: GpuPickSeriesDescriptor<'_>,
     ) -> Result<GpuPickSeriesId, GpuPickError> {
+        let prepared = self.build_series(pool, descriptor)?;
+        let next_count = self.series.len() + 1;
+        let next_reduce =
+            Self::create_reduce_resources(&self.device, &self.pipelines.reduce_bgl, next_count)?;
+        let id = GpuPickSeriesId(self.series.len() as u32);
+        self.series.push(prepared);
+        self.reduce = next_reduce;
+        self.refresh_identities();
+        Ok(id)
+    }
+
+    fn build_series(
+        &self,
+        pool: &ColumnPool,
+        descriptor: GpuPickSeriesDescriptor<'_>,
+    ) -> Result<PickSeriesGpu, GpuPickError> {
         let limits = self.device.limits();
         if pool.capacity() > u64::from(limits.max_storage_buffer_binding_size) {
             return Err(GpuPickError::DeviceLimit {
@@ -918,24 +995,28 @@ impl GpuPickEngine {
                     wgpu::BufferUsages::UNIFORM,
                     "BVH build uniform",
                 )?;
-                let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("figgy GPU pick build bg"),
-                    layout: &self.pipelines.build_bgl,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: pool.buffer().as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: nodes.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: params_buffer.as_entire_binding(),
-                        },
-                    ],
-                });
+                let bind_group = create_bind_group_checked(
+                    &self.device,
+                    &wgpu::BindGroupDescriptor {
+                        label: Some("figgy GPU pick build bg"),
+                        layout: &self.pipelines.build_bgl,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: pool.buffer().as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: nodes.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: params_buffer.as_entire_binding(),
+                            },
+                        ],
+                    },
+                    "BVH build bind group",
+                )?;
                 dispatches.push(BuildDispatch {
                     internal,
                     bind_group,
@@ -978,61 +1059,65 @@ impl GpuPickEngine {
         }
         self.queue.submit(std::iter::once(build_encoder.finish()));
 
-        let query_data_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("figgy GPU pick query data bg"),
-            layout: &self.pipelines.query_data_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: pool.buffer().as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: nodes.as_entire_binding(),
-                },
-            ],
-        });
-        let query_work_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("figgy GPU pick query work bg"),
-            layout: &self.pipelines.query_work_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: node_queue.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: queue_state.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: query_params.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: style_slots.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: style_overrides.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: result.as_entire_binding(),
-                },
-            ],
-        });
+        let query_data_bg = create_bind_group_checked(
+            &self.device,
+            &wgpu::BindGroupDescriptor {
+                label: Some("figgy GPU pick query data bg"),
+                layout: &self.pipelines.query_data_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: pool.buffer().as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: nodes.as_entire_binding(),
+                    },
+                ],
+            },
+            "query data bind group",
+        )?;
+        let query_work_bg = create_bind_group_checked(
+            &self.device,
+            &wgpu::BindGroupDescriptor {
+                label: Some("figgy GPU pick query work bg"),
+                layout: &self.pipelines.query_work_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: node_queue.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: queue_state.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: query_params.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: style_slots.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: style_overrides.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: result.as_entire_binding(),
+                    },
+                ],
+            },
+            "query work bind group",
+        )?;
 
-        let next_count = self.series.len() + 1;
-        let next_reduce =
-            Self::create_reduce_resources(&self.device, &self.pipelines.reduce_bgl, next_count)?;
         let identity = PickIdentity {
             source_id: descriptor.source_id,
             series_id: descriptor.series_id,
         };
-        let id = GpuPickSeriesId(self.series.len() as u32);
-        self.series.push(PickSeriesGpu {
-            identity: identity.clone(),
+        Ok(PickSeriesGpu {
+            identity,
             x_column: descriptor.x_column,
             y_column: descriptor.y_column,
             style_index_column,
@@ -1056,10 +1141,114 @@ impl GpuPickEngine {
             override_count,
             style_index_base,
             style_index_len,
-        });
-        self.reduce = next_reduce;
-        self.refresh_identities();
-        Ok(id)
+        })
+    }
+
+    /// Prepare positional replacements and any pool-wide rebind as one batch.
+    ///
+    /// `pool` must be the provisional [`ColumnPool`] view whose buffer and
+    /// handle layout will become the committed final view. Every affected BVH
+    /// is built against that view before this method returns. At the same time,
+    /// every unaffected slot gets a fully allocated data-bind-group/handle
+    /// update, so a backing-buffer or layout change does not invalidate it.
+    ///
+    /// Each [`GpuPickSeriesReplacement::gpu_index`] addresses the engine's
+    /// compact GPU registry. Indices must be in bounds and unique. Any error
+    /// drops all provisional resources and leaves the registry, identities,
+    /// reduction resources, and existing query bindings untouched.
+    pub fn prepare_series_batch<'a>(
+        &self,
+        pool: &ColumnPool,
+        replacements: impl IntoIterator<Item = GpuPickSeriesReplacement<'a>>,
+    ) -> Result<PreparedGpuPickSeriesBatch, GpuPickError> {
+        let storage_limit = u64::from(self.device.limits().max_storage_buffer_binding_size);
+        if pool.capacity() > storage_limit {
+            return Err(GpuPickError::DeviceLimit {
+                resource: "column-pool storage binding",
+                requested: pool.capacity(),
+                limit: storage_limit,
+            });
+        }
+
+        let replacements: Vec<_> = replacements.into_iter().collect();
+        let len = self.series.len();
+        let mut seen = vec![false; len];
+        for replacement in &replacements {
+            if replacement.gpu_index >= len {
+                return Err(GpuPickError::InvalidSeriesIndex {
+                    index: replacement.gpu_index,
+                    len,
+                });
+            }
+            if std::mem::replace(&mut seen[replacement.gpu_index], true) {
+                return Err(GpuPickError::DuplicateSeriesIndex {
+                    index: replacement.gpu_index,
+                });
+            }
+        }
+
+        let mut built: Vec<Option<PickSeriesGpu>> = (0..len).map(|_| None).collect();
+        for replacement in replacements {
+            let gpu_index = replacement.gpu_index;
+            built[gpu_index] = Some(self.build_series(pool, replacement.descriptor)?);
+        }
+
+        let mut slots = Vec::with_capacity(len);
+        for (index, current) in self.series.iter().enumerate() {
+            if let Some(replacement) = built[index].take() {
+                slots.push(PreparedGpuPickSeriesSlot::Replacement(replacement));
+            } else {
+                slots.push(PreparedGpuPickSeriesSlot::Rebind(
+                    self.prepare_rebind_update(pool, current)?,
+                ));
+            }
+        }
+
+        let identities: Arc<[PickIdentity]> = slots
+            .iter()
+            .enumerate()
+            .map(|(index, slot)| match slot {
+                PreparedGpuPickSeriesSlot::Replacement(series) => series.identity.clone(),
+                PreparedGpuPickSeriesSlot::Rebind(_) => self.series[index].identity.clone(),
+            })
+            .collect::<Vec<_>>()
+            .into();
+        let reduce = Self::create_reduce_resources(&self.device, &self.pipelines.reduce_bgl, len)?;
+
+        Ok(PreparedGpuPickSeriesBatch {
+            slots,
+            identities,
+            reduce,
+        })
+    }
+
+    /// Install a batch returned by [`Self::prepare_series_batch`].
+    ///
+    /// This performs no allocation and has no fallible step. The pool
+    /// transaction that supplied the provisional view must already have been
+    /// committed, and this engine must not have been registry-mutated since
+    /// preparation.
+    pub fn commit_series_batch(&mut self, prepared: PreparedGpuPickSeriesBatch) {
+        let PreparedGpuPickSeriesBatch {
+            slots,
+            identities,
+            reduce,
+        } = prepared;
+        for (series, slot) in self.series.iter_mut().zip(slots) {
+            match slot {
+                PreparedGpuPickSeriesSlot::Replacement(replacement) => *series = replacement,
+                PreparedGpuPickSeriesSlot::Rebind(update) => {
+                    series.x_handle = update.x_handle;
+                    series.y_handle = update.y_handle;
+                    series.style_index_handle = update.style_index_handle;
+                    series.style_index_base = update.style_index_base;
+                    series.style_index_len = update.style_index_len;
+                    series.query_data_bg = update.query_data_bg;
+                }
+            }
+        }
+        self.identities = identities;
+        self.reduce = reduce;
     }
 
     /// Replace one registry slot without rebuilding any other series BVH.
@@ -1128,6 +1317,81 @@ impl GpuPickEngine {
         self.refresh_identities();
     }
 
+    fn prepare_rebind_update(
+        &self,
+        pool: &ColumnPool,
+        series: &PickSeriesGpu,
+    ) -> Result<PickSeriesRebind, GpuPickError> {
+        let relocated = |id: &ColumnId,
+                         expected: ColumnHandle|
+         -> Result<ColumnHandle, GpuPickError> {
+            let Some(current) = pool.handle_for(id) else {
+                return Err(GpuPickError::StaleColumn {
+                    series_id: series.identity.series_id.clone(),
+                    column_id: id.clone(),
+                });
+            };
+            if current.len_values != expected.len_values || current.byte_size != expected.byte_size
+            {
+                return Err(GpuPickError::StaleColumn {
+                    series_id: series.identity.series_id.clone(),
+                    column_id: id.clone(),
+                });
+            }
+            Ok(current)
+        };
+
+        let x_handle = relocated(&series.x_column, series.x_handle)?;
+        let y_handle = relocated(&series.y_column, series.y_handle)?;
+        let _ = lane_base(x_handle, &series.identity.series_id)?;
+        let _ = lane_base(y_handle, &series.identity.series_id)?;
+
+        let (style_index_handle, style_index_base, style_index_len) =
+            if let Some(id) = series.style_index_column.as_ref() {
+                let expected = series
+                    .style_index_handle
+                    .ok_or(GpuPickError::InvalidGpuResult)?;
+                let current = relocated(id, expected)?;
+                let base = lane_base(current, &series.identity.series_id)?;
+                let len =
+                    u32::try_from(current.len_values).map_err(|_| GpuPickError::TooManyValues {
+                        series_id: series.identity.series_id.clone(),
+                        count: current.len_values,
+                    })?;
+                (Some(current), base, len)
+            } else {
+                (None, 0, 0)
+            };
+
+        let query_data_bg = create_bind_group_checked(
+            &self.device,
+            &wgpu::BindGroupDescriptor {
+                label: Some("figgy GPU pick rebound query data bg"),
+                layout: &self.pipelines.query_data_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: pool.buffer().as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: series.nodes.as_entire_binding(),
+                    },
+                ],
+            },
+            "rebound query data bind group",
+        )?;
+
+        Ok(PickSeriesRebind {
+            x_handle,
+            y_handle,
+            style_index_handle,
+            style_index_base,
+            style_index_len,
+            query_data_bg,
+        })
+    }
+
     /// Rebind registered columns after an in-place [`ColumnPool::defragment`].
     ///
     /// Defragmentation changes the backing buffer, offsets, and generations,
@@ -1149,81 +1413,9 @@ impl GpuPickEngine {
             });
         }
 
-        struct RebindUpdate {
-            x_handle: ColumnHandle,
-            y_handle: ColumnHandle,
-            style_index_handle: Option<ColumnHandle>,
-            style_index_base: u32,
-            style_index_len: u32,
-            query_data_bg: wgpu::BindGroup,
-        }
-
         let mut updates = Vec::with_capacity(self.series.len());
         for series in &self.series {
-            let relocated =
-                |id: &ColumnId, expected: ColumnHandle| -> Result<ColumnHandle, GpuPickError> {
-                    let Some(current) = pool.handle_for(id) else {
-                        return Err(GpuPickError::StaleColumn {
-                            series_id: series.identity.series_id.clone(),
-                            column_id: id.clone(),
-                        });
-                    };
-                    if current.len_values != expected.len_values
-                        || current.byte_size != expected.byte_size
-                    {
-                        return Err(GpuPickError::StaleColumn {
-                            series_id: series.identity.series_id.clone(),
-                            column_id: id.clone(),
-                        });
-                    }
-                    Ok(current)
-                };
-
-            let x_handle = relocated(&series.x_column, series.x_handle)?;
-            let y_handle = relocated(&series.y_column, series.y_handle)?;
-            let _ = lane_base(x_handle, &series.identity.series_id)?;
-            let _ = lane_base(y_handle, &series.identity.series_id)?;
-
-            let (style_index_handle, style_index_base, style_index_len) = if let Some(id) =
-                series.style_index_column.as_ref()
-            {
-                let expected = series
-                    .style_index_handle
-                    .ok_or(GpuPickError::InvalidGpuResult)?;
-                let current = relocated(id, expected)?;
-                let base = lane_base(current, &series.identity.series_id)?;
-                let len =
-                    u32::try_from(current.len_values).map_err(|_| GpuPickError::TooManyValues {
-                        series_id: series.identity.series_id.clone(),
-                        count: current.len_values,
-                    })?;
-                (Some(current), base, len)
-            } else {
-                (None, 0, 0)
-            };
-
-            let query_data_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("figgy GPU pick rebound query data bg"),
-                layout: &self.pipelines.query_data_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: pool.buffer().as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: series.nodes.as_entire_binding(),
-                    },
-                ],
-            });
-            updates.push(RebindUpdate {
-                x_handle,
-                y_handle,
-                style_index_handle,
-                style_index_base,
-                style_index_len,
-                query_data_bg,
-            });
+            updates.push(self.prepare_rebind_update(pool, series)?);
         }
 
         for (series, update) in self.series.iter_mut().zip(updates) {
@@ -1730,6 +1922,141 @@ mod tests {
         }
     }
 
+    fn handle_snapshot(handle: ColumnHandle) -> (u32, u64, u64, usize) {
+        (
+            handle.generation,
+            handle.offset,
+            handle.byte_size,
+            handle.len_values,
+        )
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct PickSeriesMetadataSnapshot {
+        source_id: Option<String>,
+        series_id: String,
+        x_column: ColumnId,
+        y_column: ColumnId,
+        style_index_column: Option<ColumnId>,
+        x_handle: (u32, u64, u64, usize),
+        y_handle: (u32, u64, u64, usize),
+        style_index_handle: Option<(u32, u64, u64, usize)>,
+        point_count: u32,
+        node_count: u32,
+        root_index: u32,
+        flags: u32,
+        base_radius_bits: u32,
+        base_shape_id: u32,
+        line_half_width_bits: u32,
+        max_extent_bits: u32,
+        style_count: u32,
+        override_count: u32,
+        style_index_base: u32,
+        style_index_len: u32,
+    }
+
+    impl PickSeriesMetadataSnapshot {
+        fn capture(series: &PickSeriesGpu) -> Self {
+            Self {
+                source_id: series.identity.source_id.clone(),
+                series_id: series.identity.series_id.clone(),
+                x_column: series.x_column.clone(),
+                y_column: series.y_column.clone(),
+                style_index_column: series.style_index_column.clone(),
+                x_handle: handle_snapshot(series.x_handle),
+                y_handle: handle_snapshot(series.y_handle),
+                style_index_handle: series.style_index_handle.map(handle_snapshot),
+                point_count: series.point_count,
+                node_count: series.node_count,
+                root_index: series.root_index,
+                flags: series.flags,
+                base_radius_bits: series.base_radius_px.to_bits(),
+                base_shape_id: series.base_shape_id,
+                line_half_width_bits: series.line_half_width_px.to_bits(),
+                max_extent_bits: series.max_extent_px.to_bits(),
+                style_count: series.style_count,
+                override_count: series.override_count,
+                style_index_base: series.style_index_base,
+                style_index_len: series.style_index_len,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct PickSeriesResourceSnapshot {
+        query_params: wgpu::Buffer,
+        nodes: wgpu::Buffer,
+        query_data_bg: wgpu::BindGroup,
+        query_work_bg: wgpu::BindGroup,
+        result: wgpu::Buffer,
+    }
+
+    impl PickSeriesResourceSnapshot {
+        fn capture(series: &PickSeriesGpu) -> Self {
+            Self {
+                query_params: series.query_params.clone(),
+                nodes: series.nodes.clone(),
+                query_data_bg: series.query_data_bg.clone(),
+                query_work_bg: series.query_work_bg.clone(),
+                result: series.result.clone(),
+            }
+        }
+    }
+
+    struct PickEngineSnapshot {
+        identities: Arc<[PickIdentity]>,
+        metadata: Vec<PickSeriesMetadataSnapshot>,
+        resources: Vec<PickSeriesResourceSnapshot>,
+        reduce_candidates: wgpu::Buffer,
+        reduce_final_result: wgpu::Buffer,
+        reduce_bind_group: wgpu::BindGroup,
+    }
+
+    impl PickEngineSnapshot {
+        fn capture(engine: &GpuPickEngine) -> Self {
+            Self {
+                identities: Arc::clone(&engine.identities),
+                metadata: engine
+                    .series
+                    .iter()
+                    .map(PickSeriesMetadataSnapshot::capture)
+                    .collect(),
+                resources: engine
+                    .series
+                    .iter()
+                    .map(PickSeriesResourceSnapshot::capture)
+                    .collect(),
+                reduce_candidates: engine.reduce.candidates.clone(),
+                reduce_final_result: engine.reduce.final_result.clone(),
+                reduce_bind_group: engine.reduce.bind_group.clone(),
+            }
+        }
+
+        fn assert_unchanged(&self, engine: &GpuPickEngine) {
+            assert!(Arc::ptr_eq(&self.identities, &engine.identities));
+            assert_eq!(engine.series.len(), self.metadata.len());
+            assert_eq!(
+                engine
+                    .series
+                    .iter()
+                    .map(PickSeriesMetadataSnapshot::capture)
+                    .collect::<Vec<_>>(),
+                self.metadata
+            );
+            assert_eq!(
+                engine
+                    .series
+                    .iter()
+                    .map(PickSeriesResourceSnapshot::capture)
+                    .collect::<Vec<_>>(),
+                self.resources
+            );
+            assert_eq!(engine.reduce.candidates, self.reduce_candidates);
+            assert_eq!(engine.reduce.final_result, self.reduce_final_result);
+            assert_eq!(engine.reduce.bind_group, self.reduce_bind_group);
+        }
+    }
+
     #[test]
     fn exact_gpu_scatter_style_mapping_matches_cpu_exhaustive_picker() {
         let Some((device, queue)) = crate::data_render::shared_device() else {
@@ -2177,6 +2504,295 @@ mod tests {
                 (expected_pair.0 + expected_pair.1).to_bits()
             );
         }
+    }
+
+    #[test]
+    fn batch_prepare_failure_at_each_affected_position_preserves_registry_and_queries() {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let mut pool = ColumnPool::new(&device, 64 * 1024).unwrap();
+        pool.add_column(
+            "pick-batch-x".into(),
+            &f32_column(vec![5.0]),
+            &device,
+            &queue,
+        )
+        .unwrap();
+        pool.add_column(
+            "pick-batch-y".into(),
+            &f32_column(vec![5.0]),
+            &device,
+            &queue,
+        )
+        .unwrap();
+
+        let mut engine = GpuPickEngine::new(device, queue).unwrap();
+        for series_id in ["batch-old-0", "batch-old-1", "batch-old-2"] {
+            engine
+                .add_series(
+                    &pool,
+                    scatter_descriptor(series_id, "pick-batch-x", "pick-batch-y"),
+                )
+                .unwrap();
+        }
+        let snapshot = PickEngineSnapshot::capture(&engine);
+        let baseline = resolve_pick(&engine, &pool, test_query([50.0, 50.0])).unwrap();
+        assert_eq!(baseline.series_id, "batch-old-2");
+
+        for failure_at in 0..3 {
+            let replacements = (0..3)
+                .map(|gpu_index| GpuPickSeriesReplacement {
+                    gpu_index,
+                    descriptor: scatter_descriptor(
+                        &format!("batch-next-{failure_at}-{gpu_index}"),
+                        if gpu_index == failure_at {
+                            "pick-batch-missing"
+                        } else {
+                            "pick-batch-x"
+                        },
+                        "pick-batch-y",
+                    ),
+                })
+                .collect::<Vec<_>>();
+            let error = match engine.prepare_series_batch(&pool, replacements) {
+                Ok(_) => panic!("batch unexpectedly prepared with failure at {failure_at}"),
+                Err(error) => error,
+            };
+            assert!(
+                matches!(error, GpuPickError::MissingColumn(ref id) if id == "pick-batch-missing")
+            );
+            snapshot.assert_unchanged(&engine);
+            assert_eq!(
+                resolve_pick(&engine, &pool, test_query([50.0, 50.0])),
+                Some(baseline.clone())
+            );
+        }
+    }
+
+    #[test]
+    fn batch_rebind_prepare_failure_leaves_built_replacement_uninstalled() {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let mut old_pool = ColumnPool::new(&device, 64 * 1024).unwrap();
+        for (id, value) in [
+            ("pick-rf-ax", 2.0),
+            ("pick-rf-ay", 5.0),
+            ("pick-rf-bx", 8.0),
+            ("pick-rf-by", 5.0),
+        ] {
+            old_pool
+                .add_column(id.into(), &f32_column(vec![value]), &device, &queue)
+                .unwrap();
+        }
+        let mut provisional_pool = ColumnPool::new(&device, 64 * 1024).unwrap();
+        for (id, value) in [
+            ("pick-rf-ax", 3.0),
+            ("pick-rf-ay", 5.0),
+            ("pick-rf-bx", 8.0),
+        ] {
+            provisional_pool
+                .add_column(id.into(), &f32_column(vec![value]), &device, &queue)
+                .unwrap();
+        }
+
+        let mut engine = GpuPickEngine::new(device, queue).unwrap();
+        engine
+            .add_series(
+                &old_pool,
+                scatter_descriptor("rebind-old-a", "pick-rf-ax", "pick-rf-ay"),
+            )
+            .unwrap();
+        engine
+            .add_series(
+                &old_pool,
+                scatter_descriptor("rebind-old-b", "pick-rf-bx", "pick-rf-by"),
+            )
+            .unwrap();
+        let snapshot = PickEngineSnapshot::capture(&engine);
+        let baseline = resolve_pick(&engine, &old_pool, test_query([80.0, 50.0]));
+
+        let error = match engine.prepare_series_batch(
+            &provisional_pool,
+            [GpuPickSeriesReplacement {
+                gpu_index: 0,
+                descriptor: scatter_descriptor("rebind-next-a", "pick-rf-ax", "pick-rf-ay"),
+            }],
+        ) {
+            Ok(_) => panic!("batch unexpectedly prepared without an unaffected y column"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            GpuPickError::StaleColumn {
+                series_id,
+                column_id
+            } if series_id == "rebind-old-b" && column_id == "pick-rf-by"
+        ));
+        snapshot.assert_unchanged(&engine);
+        assert_eq!(
+            resolve_pick(&engine, &old_pool, test_query([80.0, 50.0])),
+            baseline
+        );
+    }
+
+    #[test]
+    fn batch_commit_replaces_only_affected_bvhs_and_rebinds_every_survivor() {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let mut old_pool = ColumnPool::new(&device, 64 * 1024).unwrap();
+        for index in 0..5 {
+            old_pool
+                .add_column(
+                    format!("pick-success-x{index}"),
+                    &f32_column(vec![index as f32 + 1.0]),
+                    &device,
+                    &queue,
+                )
+                .unwrap();
+            old_pool
+                .add_column(
+                    format!("pick-success-y{index}"),
+                    &f32_column(vec![5.0]),
+                    &device,
+                    &queue,
+                )
+                .unwrap();
+        }
+
+        let mut provisional_pool = ColumnPool::new(&device, 64 * 1024).unwrap();
+        provisional_pool
+            .add_column(
+                "pick-success-layout-prefix".into(),
+                &f32_column(vec![0.0]),
+                &device,
+                &queue,
+            )
+            .unwrap();
+        for index in 0..5 {
+            let x = match index {
+                0 => 1.5,
+                2 => 3.5,
+                _ => index as f32 + 1.0,
+            };
+            provisional_pool
+                .add_column(
+                    format!("pick-success-x{index}"),
+                    &f32_column(vec![x]),
+                    &device,
+                    &queue,
+                )
+                .unwrap();
+            provisional_pool
+                .add_column(
+                    format!("pick-success-y{index}"),
+                    &f32_column(vec![5.0]),
+                    &device,
+                    &queue,
+                )
+                .unwrap();
+        }
+
+        let mut engine = GpuPickEngine::new(device, queue).unwrap();
+        for index in 0..5 {
+            engine
+                .add_series(
+                    &old_pool,
+                    scatter_descriptor(
+                        &format!("success-old-{index}"),
+                        &format!("pick-success-x{index}"),
+                        &format!("pick-success-y{index}"),
+                    ),
+                )
+                .unwrap();
+        }
+        let before_metadata = engine
+            .series
+            .iter()
+            .map(PickSeriesMetadataSnapshot::capture)
+            .collect::<Vec<_>>();
+        let before_resources = engine
+            .series
+            .iter()
+            .map(PickSeriesResourceSnapshot::capture)
+            .collect::<Vec<_>>();
+        let before_identities = Arc::clone(&engine.identities);
+        let before_reduce = engine.reduce.candidates.clone();
+
+        let prepared = engine
+            .prepare_series_batch(
+                &provisional_pool,
+                [0usize, 2, 4].map(|gpu_index| GpuPickSeriesReplacement {
+                    gpu_index,
+                    descriptor: scatter_descriptor(
+                        &format!("success-next-{gpu_index}"),
+                        &format!("pick-success-x{gpu_index}"),
+                        &format!("pick-success-y{gpu_index}"),
+                    ),
+                }),
+            )
+            .unwrap();
+        engine.commit_series_batch(prepared);
+
+        assert_eq!(engine.series.len(), 5);
+        assert!(!Arc::ptr_eq(&before_identities, &engine.identities));
+        assert_ne!(engine.reduce.candidates, before_reduce);
+        assert_eq!(
+            engine
+                .series
+                .iter()
+                .map(|series| series.identity.series_id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "success-next-0",
+                "success-old-1",
+                "success-next-2",
+                "success-old-3",
+                "success-next-4",
+            ]
+        );
+
+        for index in [0usize, 2, 4] {
+            assert_ne!(engine.series[index].nodes, before_resources[index].nodes);
+            assert_ne!(
+                engine.series[index].query_work_bg,
+                before_resources[index].query_work_bg
+            );
+            assert_ne!(engine.series[index].result, before_resources[index].result);
+        }
+        for index in [1usize, 3] {
+            let series = &engine.series[index];
+            assert_eq!(series.nodes, before_resources[index].nodes);
+            assert_eq!(series.query_params, before_resources[index].query_params);
+            assert_ne!(series.query_data_bg, before_resources[index].query_data_bg);
+            assert_eq!(series.query_work_bg, before_resources[index].query_work_bg);
+            assert_eq!(series.result, before_resources[index].result);
+
+            let mut rebound_metadata = PickSeriesMetadataSnapshot::capture(series);
+            rebound_metadata.x_handle = before_metadata[index].x_handle;
+            rebound_metadata.y_handle = before_metadata[index].y_handle;
+            rebound_metadata.style_index_handle = before_metadata[index].style_index_handle;
+            rebound_metadata.style_index_base = before_metadata[index].style_index_base;
+            assert_eq!(rebound_metadata, before_metadata[index]);
+            assert!(same_handle(
+                series.x_handle,
+                provisional_pool
+                    .handle_for(&series.x_column)
+                    .expect("rebound x handle")
+            ));
+            assert!(same_handle(
+                series.y_handle,
+                provisional_pool
+                    .handle_for(&series.y_column)
+                    .expect("rebound y handle")
+            ));
+        }
+
+        let picked = resolve_pick(&engine, &provisional_pool, test_query([50.0, 50.0])).unwrap();
+        assert_eq!(picked.series_id, "success-next-4");
+        assert_eq!([picked.data_x, picked.data_y], [5.0, 5.0]);
     }
 
     #[test]

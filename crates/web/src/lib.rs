@@ -79,9 +79,205 @@ fn picked_point_json_string(picked: &renderer::PickedPoint) -> serde_json::Resul
     }))
 }
 
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct RevisionedColumn {
+    id: String,
+    revision: u64,
+}
+
+/// Exact GPU extent identity for one value/error association.
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ErrorbarExtentKey {
+    value: RevisionedColumn,
+    lower: RevisionedColumn,
+    upper: RevisionedColumn,
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn checked_column_revision(next: u64) -> Result<(u64, u64), &'static str> {
+    next.checked_add(1)
+        .map(|successor| (next, successor))
+        .ok_or("column revision counter exhausted")
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn err_refs(
+    rt: &renderer::DataRenderType,
+) -> (
+    Option<&renderer::data_config::ErrorRef>,
+    Option<&renderer::data_config::ErrorRef>,
+) {
+    use renderer::DataRenderType;
+
+    match rt {
+        DataRenderType::Scatter { .. }
+        | DataRenderType::Line { .. }
+        | DataRenderType::ScatterLine { .. } => (None, None),
+        DataRenderType::ScatterErrorbarX { err_x, .. }
+        | DataRenderType::LineScatterErrorbarX { err_x, .. } => (Some(err_x), None),
+        DataRenderType::ScatterErrorbarY { err_y, .. }
+        | DataRenderType::LineScatterErrorbarY { err_y, .. } => (None, Some(err_y)),
+        DataRenderType::ScatterErrorbarXY { err_x, err_y, .. }
+        | DataRenderType::LineScatterErrorbarXY { err_x, err_y, .. } => (Some(err_x), Some(err_y)),
+    }
+}
+
+/// (lower, upper) error column ids of one ref. Symmetric refs use one column.
+#[cfg(any(target_arch = "wasm32", test))]
+fn err_cols(errors: &renderer::data_config::ErrorRef) -> (&str, &str) {
+    use renderer::data_config::ErrorRef;
+
+    match errors {
+        ErrorRef::Symmetric { column } => (column, column),
+        ErrorRef::Asymmetric { lower, upper } => (lower, upper),
+    }
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn revisioned_column_from(
+    revisions: &std::collections::HashMap<String, u64>,
+    id: &str,
+) -> Option<RevisionedColumn> {
+    Some(RevisionedColumn {
+        id: id.to_string(),
+        revision: *revisions.get(id)?,
+    })
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn errorbar_extent_key_from(
+    revisions: &std::collections::HashMap<String, u64>,
+    value_id: &str,
+    errors: &renderer::data_config::ErrorRef,
+) -> Option<ErrorbarExtentKey> {
+    let (lower_id, upper_id) = err_cols(errors);
+    Some(ErrorbarExtentKey {
+        value: revisioned_column_from(revisions, value_id)?,
+        lower: revisioned_column_from(revisions, lower_id)?,
+        upper: revisioned_column_from(revisions, upper_id)?,
+    })
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn active_errorbar_extent_keys(
+    series_cfgs: &[renderer::SeriesConfig],
+    revisions: &std::collections::HashMap<String, u64>,
+) -> Result<Vec<ErrorbarExtentKey>, std::collections::TryReserveError> {
+    use std::collections::HashSet;
+
+    let capacity = series_cfgs.len().saturating_mul(2);
+    let mut active = HashSet::new();
+    active.try_reserve(capacity)?;
+    let mut ordered = Vec::new();
+    ordered.try_reserve(capacity)?;
+
+    for cfg in series_cfgs {
+        let (err_x, err_y) = err_refs(&cfg.render_type);
+        for key in [
+            err_x.and_then(|errors| errorbar_extent_key_from(revisions, &cfg.x_column, errors)),
+            err_y.and_then(|errors| errorbar_extent_key_from(revisions, &cfg.y_column, errors)),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if active.insert(key.clone()) {
+                ordered.push(key);
+            }
+        }
+    }
+    Ok(ordered)
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn select_errorbar_extent_map<T: Clone>(
+    ordered_keys: Vec<ErrorbarExtentKey>,
+    existing: &std::collections::HashMap<ErrorbarExtentKey, T>,
+    mut make_pending: impl FnMut() -> T,
+) -> Result<
+    (
+        std::collections::HashMap<ErrorbarExtentKey, T>,
+        Vec<ErrorbarExtentKey>,
+    ),
+    std::collections::TryReserveError,
+> {
+    use std::collections::HashMap;
+
+    let mut selected = HashMap::new();
+    selected.try_reserve(ordered_keys.len())?;
+    let mut pending = Vec::new();
+    pending.try_reserve(ordered_keys.len())?;
+    for key in ordered_keys {
+        let value = if let Some(value) = existing.get(&key) {
+            value.clone()
+        } else {
+            pending.push(key.clone());
+            make_pending()
+        };
+        selected.insert(key, value);
+    }
+    Ok((selected, pending))
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+struct PreparedColumnMetadata {
+    columns: std::collections::HashMap<String, (usize, u64)>,
+    revisions: std::collections::HashMap<String, u64>,
+    next_revision: u64,
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn prepare_column_metadata(
+    columns: &std::collections::HashMap<String, (usize, u64)>,
+    revisions: &std::collections::HashMap<String, u64>,
+    next_revision: u64,
+    id: &str,
+    signature: (usize, u64),
+) -> Result<PreparedColumnMetadata, &'static str> {
+    use std::collections::HashMap;
+
+    let (revision, successor) = checked_column_revision(next_revision)?;
+    let capacity = columns
+        .len()
+        .checked_add(1)
+        .ok_or("column metadata capacity exhausted")?;
+    let mut future_columns = HashMap::new();
+    future_columns
+        .try_reserve(capacity)
+        .map_err(|_| "column metadata allocation failed")?;
+    future_columns.extend(columns.iter().map(|(id, value)| (id.clone(), *value)));
+    future_columns.insert(id.to_string(), signature);
+
+    let capacity = revisions
+        .len()
+        .checked_add(1)
+        .ok_or("column revision metadata capacity exhausted")?;
+    let mut future_revisions = HashMap::new();
+    future_revisions
+        .try_reserve(capacity)
+        .map_err(|_| "column revision metadata allocation failed")?;
+    future_revisions.extend(revisions.iter().map(|(id, value)| (id.clone(), *value)));
+    future_revisions.insert(id.to_string(), revision);
+
+    Ok(PreparedColumnMetadata {
+        columns: future_columns,
+        revisions: future_revisions,
+        next_revision: successor,
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{display_config_for_surface, fit_display_panel, picked_point_json_string};
+    use std::{collections::HashMap, rc::Rc};
+
+    use renderer::data_config::ErrorRef;
+
+    use super::{
+        active_errorbar_extent_keys, checked_column_revision, display_config_for_surface,
+        errorbar_extent_key_from, fit_display_panel, picked_point_json_string,
+        prepare_column_metadata, select_errorbar_extent_map,
+    };
 
     #[test]
     fn display_panel_uniformly_scales_document() {
@@ -151,6 +347,87 @@ mod tests {
         assert_eq!(json["data_y"], -3.25);
         assert_eq!(json["distance_px"], 4.0);
     }
+
+    #[test]
+    fn column_revision_successor_rejects_overflow() {
+        assert_eq!(checked_column_revision(41), Ok((41, 42)));
+        assert_eq!(
+            checked_column_revision(u64::MAX),
+            Err("column revision counter exhausted")
+        );
+    }
+
+    #[test]
+    fn future_errorbar_map_reuses_only_identical_revision_keys() {
+        let symmetric = |id: &str| ErrorRef::Symmetric {
+            column: id.to_string(),
+        };
+        let old_revisions = HashMap::from([
+            ("stable-value".to_string(), 1),
+            ("stable-error".to_string(), 2),
+            ("changed-value".to_string(), 3),
+            ("changed-error".to_string(), 4),
+        ]);
+        let mut future_revisions = old_revisions.clone();
+        future_revisions.insert("changed-value".to_string(), 5);
+        assert!(
+            active_errorbar_extent_keys(&[], &future_revisions)
+                .unwrap()
+                .is_empty()
+        );
+
+        let stable_key = errorbar_extent_key_from(
+            &future_revisions,
+            "stable-value",
+            &symmetric("stable-error"),
+        )
+        .unwrap();
+        let old_changed_key =
+            errorbar_extent_key_from(&old_revisions, "changed-value", &symmetric("changed-error"))
+                .unwrap();
+        let future_changed_key = errorbar_extent_key_from(
+            &future_revisions,
+            "changed-value",
+            &symmetric("changed-error"),
+        )
+        .unwrap();
+        let stable_job = Rc::new(10u8);
+        let old_changed_job = Rc::new(20u8);
+        let existing = HashMap::from([
+            (stable_key.clone(), Rc::clone(&stable_job)),
+            (old_changed_key, Rc::clone(&old_changed_job)),
+        ]);
+
+        let (selected, pending) = select_errorbar_extent_map(
+            vec![stable_key.clone(), future_changed_key.clone()],
+            &existing,
+            || Rc::new(30u8),
+        )
+        .unwrap();
+
+        assert!(Rc::ptr_eq(selected.get(&stable_key).unwrap(), &stable_job));
+        assert!(!Rc::ptr_eq(
+            selected.get(&future_changed_key).unwrap(),
+            &old_changed_job
+        ));
+        assert_eq!(pending, vec![future_changed_key]);
+    }
+
+    #[test]
+    fn metadata_preflight_does_not_publish_before_commit() {
+        let columns = HashMap::from([("x".to_string(), (2, 11))]);
+        let revisions = HashMap::from([("x".to_string(), 7)]);
+        let original_columns = columns.clone();
+        let original_revisions = revisions.clone();
+
+        let prepared = prepare_column_metadata(&columns, &revisions, 8, "x", (3, 12)).unwrap();
+
+        assert_eq!(columns, original_columns);
+        assert_eq!(revisions, original_revisions);
+        assert_eq!(prepared.columns.get("x"), Some(&(3, 12)));
+        assert_eq!(prepared.revisions.get("x"), Some(&8));
+        assert_eq!(prepared.next_revision, 9);
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -167,14 +444,18 @@ mod web {
     use web_sys::HtmlCanvasElement;
 
     use renderer::data_config::ErrorRef;
-    use renderer::gpu_pick::{GpuPickEngine, GpuPickQuery};
+    use renderer::data_render::ColumnPool;
+    use renderer::gpu_pick::{
+        GpuPickEngine, GpuPickQuery, GpuPickSeriesReplacement, PreparedGpuPickSeriesBatch,
+    };
     use renderer::layout::{ChartArea, Rect};
     use renderer::line::LineStylePreset;
     use renderer::text::{RichText, rich_segments_from_text};
     use renderer::{
-        Chart, ChartDrawItem, ChartStyle, ChartView, Color, CpuTextMeasure, DataLineStyleConfig,
-        DataRenderType, DefragPolicy, FitExtent, HitId, HitMap, Renderer,
-        ResizeHandle as ModelResizeHandle, SelectionBox, Series, SeriesConfig, WindowedRenderer,
+        Chart, ChartDrawItem, ChartStyle, ChartView, Color, ColumnSource, CpuTextMeasure,
+        DataLineStyleConfig, DataRenderType, DefragPolicy, FitExtent, HiLoColumnSource, HitId,
+        HitMap, Renderer, ResizeHandle as ModelResizeHandle, SelectionBox, Series, SeriesConfig,
+        WindowedRenderer,
     };
 
     use crate::borrowed_column::{
@@ -183,6 +464,10 @@ mod web {
     };
     use crate::gpu_pick_style::OwnedGpuPickSeriesDescriptor;
     use crate::scalar_job::ScalarExtentJob;
+    use crate::{
+        ErrorbarExtentKey, active_errorbar_extent_keys, err_refs, errorbar_extent_key_from,
+        prepare_column_metadata, select_errorbar_extent_map,
+    };
 
     const POOL_CAPACITY: u64 = 16 * 1024 * 1024;
 
@@ -303,44 +588,24 @@ mod web {
         ids
     }
 
-    /// The (x, y) errorbar refs of a render type, when present.
-    fn err_refs(rt: &DataRenderType) -> (Option<&ErrorRef>, Option<&ErrorRef>) {
-        match rt {
-            DataRenderType::Scatter { .. }
-            | DataRenderType::Line { .. }
-            | DataRenderType::ScatterLine { .. } => (None, None),
-            DataRenderType::ScatterErrorbarX { err_x, .. }
-            | DataRenderType::LineScatterErrorbarX { err_x, .. } => (Some(err_x), None),
-            DataRenderType::ScatterErrorbarY { err_y, .. }
-            | DataRenderType::LineScatterErrorbarY { err_y, .. } => (None, Some(err_y)),
-            DataRenderType::ScatterErrorbarXY { err_x, err_y, .. }
-            | DataRenderType::LineScatterErrorbarXY { err_x, err_y, .. } => {
-                (Some(err_x), Some(err_y))
-            }
-        }
+    enum ColumnUploadSource<'a> {
+        Scalar(&'a dyn ColumnSource),
+        HiLo(&'a dyn HiLoColumnSource),
     }
 
-    /// (lower, upper) error column ids of one ref — symmetric refs read the
-    /// same column for both offsets, exactly like the GPU binding.
-    fn err_cols(r: &ErrorRef) -> (&str, &str) {
-        match r {
-            ErrorRef::Symmetric { column } => (column, column),
-            ErrorRef::Asymmetric { lower, upper } => (lower, upper),
-        }
+    struct PickerReplacementPlan {
+        gpu_index: usize,
+        descriptor: OwnedGpuPickSeriesDescriptor,
     }
 
-    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-    struct RevisionedColumn {
-        id: String,
-        revision: u64,
+    enum PickerUploadPlan {
+        Rebuild(Vec<OwnedGpuPickSeriesDescriptor>),
+        Batch(Vec<PickerReplacementPlan>),
     }
 
-    /// Exact GPU extent identity for one value/error association.
-    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-    struct ErrorbarExtentKey {
-        value: RevisionedColumn,
-        lower: RevisionedColumn,
-        upper: RevisionedColumn,
+    enum PreparedColumnPicker {
+        Rebuild(GpuPickEngine),
+        Batch(PreparedGpuPickSeriesBatch),
     }
 
     // ------------------------------------------------------------------
@@ -645,6 +910,71 @@ mod web {
             Ok(picker)
         }
 
+        fn build_gpu_picker_from_descriptors(
+            device: Arc<wgpu::Device>,
+            queue: Arc<wgpu::Queue>,
+            pool: &ColumnPool,
+            descriptors: &[OwnedGpuPickSeriesDescriptor],
+        ) -> Result<GpuPickEngine, JsValue> {
+            let mut picker = GpuPickEngine::new(device, queue).map_err(js_err)?;
+            for owned in descriptors {
+                owned.with_descriptor(|descriptor| {
+                    let active = pool
+                        .handle_for(&descriptor.x_column)
+                        .zip(pool.handle_for(&descriptor.y_column))
+                        .is_some_and(|(x, y)| x.len_values.min(y.len_values) > 0);
+                    if active {
+                        picker
+                            .add_series(pool, descriptor)
+                            .map(|_| ())
+                            .map_err(js_err)
+                    } else {
+                        Ok(())
+                    }
+                })?;
+            }
+            Ok(picker)
+        }
+
+        fn prepare_picker_upload_plan(
+            &self,
+            id: &str,
+            precise: bool,
+        ) -> Result<PickerUploadPlan, JsValue> {
+            if self.gpu_picker_dirty {
+                let mut descriptors = Vec::new();
+                descriptors
+                    .try_reserve(self.series_cfgs.len())
+                    .map_err(js_err)?;
+                descriptors.extend(
+                    self.series_cfgs
+                        .iter()
+                        .map(|cfg| OwnedGpuPickSeriesDescriptor::from_series(cfg, precise)),
+                );
+                return Ok(PickerUploadPlan::Rebuild(descriptors));
+            }
+
+            let mut replacements = Vec::new();
+            replacements
+                .try_reserve(self.series_cfgs.len())
+                .map_err(js_err)?;
+            let mut gpu_index = 0usize;
+            for cfg in &self.series_cfgs {
+                if !self.pick_series_active_in_metadata(cfg) {
+                    continue;
+                }
+                let descriptor = OwnedGpuPickSeriesDescriptor::from_series(cfg, precise);
+                if descriptor.references_column(id) {
+                    replacements.push(PickerReplacementPlan {
+                        gpu_index,
+                        descriptor,
+                    });
+                }
+                gpu_index += 1;
+            }
+            Ok(PickerUploadPlan::Batch(replacements))
+        }
+
         fn repair_gpu_picker_if_dirty(&mut self) -> Result<(), JsValue> {
             if !self.gpu_picker_dirty {
                 return Ok(());
@@ -659,20 +989,6 @@ mod web {
             self.gpu_picker = picker;
             self.gpu_picker_dirty = false;
             Ok(())
-        }
-
-        fn finish_column_upload(
-            &mut self,
-            id: &str,
-            signature: (usize, u64),
-            picker_result: Result<(), JsValue>,
-        ) -> Result<(), JsValue> {
-            if picker_result.is_err() {
-                self.gpu_picker_dirty = true;
-            }
-            self.columns.insert(id.to_string(), signature);
-            self.commit_column_revision(id)?;
-            picker_result
         }
 
         fn update_gpu_picker_series(
@@ -708,75 +1024,9 @@ mod web {
             }
         }
 
-        fn refresh_gpu_picker_after_column_upload(&mut self, id: &str) -> Result<(), JsValue> {
-            let precise = self.chart.borrow().config().draw_style.is_precise();
-            let mut gpu_index = 0usize;
-            for logical_index in 0..self.series_cfgs.len() {
-                let (owned, old_active, new_active) = {
-                    let cfg = &self.series_cfgs[logical_index];
-                    (
-                        OwnedGpuPickSeriesDescriptor::from_series(cfg, precise),
-                        self.pick_series_active_in_metadata(cfg),
-                        self.pick_series_active_in_pool(cfg),
-                    )
-                };
-                let affected = owned.references_column(id);
-                if affected {
-                    let pool = self.renderer.pool();
-                    let picker = &mut self.gpu_picker;
-                    match (old_active, new_active) {
-                        (true, true) => {
-                            owned
-                                .with_descriptor(|descriptor| {
-                                    picker.replace_series_at(gpu_index, pool, descriptor)
-                                })
-                                .map_err(js_err)?;
-                        }
-                        (true, false) => picker.remove_series_at(gpu_index).map_err(js_err)?,
-                        (false, true) => {
-                            owned
-                                .with_descriptor(|descriptor| {
-                                    picker.insert_series_at(gpu_index, pool, descriptor)
-                                })
-                                .map_err(js_err)?;
-                        }
-                        (false, false) => {}
-                    }
-                } else if old_active != new_active {
-                    return Err(js_err(
-                        "GPU picker activity changed for a series that does not reference the uploaded column",
-                    ));
-                }
-                if new_active {
-                    gpu_index += 1;
-                }
-            }
-            self.gpu_picker
-                .rebind_columns(self.renderer.pool())
-                .map_err(js_err)
-        }
-
         /// Invalidate an in-flight fit when a later mutation wins call order.
         fn bump_fit_epoch(&self) {
             self.fit_epoch.set(self.fit_epoch.get().wrapping_add(1));
-        }
-
-        fn commit_column_revision(&mut self, id: &str) -> Result<(), JsValue> {
-            let revision = self.next_column_revision;
-            self.next_column_revision = revision
-                .checked_add(1)
-                .ok_or_else(|| js_err("column revision counter exhausted"))?;
-            self.column_revisions.insert(id.to_string(), revision);
-            self.bump_fit_epoch();
-            self.reconcile_errorbar_extents();
-            Ok(())
-        }
-
-        fn revisioned_column(&self, id: &str) -> Option<RevisionedColumn> {
-            Some(RevisionedColumn {
-                id: id.to_string(),
-                revision: *self.column_revisions.get(id)?,
-            })
         }
 
         fn errorbar_extent_key(
@@ -784,12 +1034,7 @@ mod web {
             value_id: &str,
             errors: &ErrorRef,
         ) -> Option<ErrorbarExtentKey> {
-            let (lower_id, upper_id) = err_cols(errors);
-            Some(ErrorbarExtentKey {
-                value: self.revisioned_column(value_id)?,
-                lower: self.revisioned_column(lower_id)?,
-                upper: self.revisioned_column(upper_id)?,
-            })
+            errorbar_extent_key_from(&self.column_revisions, value_id, errors)
         }
 
         fn errorbar_job(
@@ -855,22 +1100,131 @@ mod web {
             }
         }
 
+        fn spawn_errorbar_extent(
+            ticket: renderer::GpuErrorbarExtentTicket,
+            job: Rc<ScalarExtentJob>,
+        ) {
+            spawn_local(async move {
+                let result = ticket
+                    .resolve()
+                    .await
+                    .map(|extent| {
+                        extent.map(|extent| FitExtent {
+                            min: extent.min,
+                            max: extent.max,
+                            min_positive: extent.min_positive,
+                        })
+                    })
+                    .map_err(|error| error.to_string());
+                job.complete(result);
+            });
+        }
+
+        fn upsert_column_atomic(
+            &mut self,
+            id: &str,
+            signature: (usize, u64),
+            source: ColumnUploadSource<'_>,
+        ) -> Result<(), JsValue> {
+            // Everything installed after the renderer commit is prepared here,
+            // including the checked revision successor and collection capacity.
+            let metadata = prepare_column_metadata(
+                &self.columns,
+                &self.column_revisions,
+                self.next_column_revision,
+                id,
+                signature,
+            )
+            .map_err(js_err)?;
+            let ordered_keys = active_errorbar_extent_keys(&self.series_cfgs, &metadata.revisions)
+                .map_err(js_err)?;
+            let (future_errorbar_extents, pending_errorbars) = select_errorbar_extent_map(
+                ordered_keys,
+                &self.errorbar_extents,
+                ScalarExtentJob::pending,
+            )
+            .map_err(js_err)?;
+            let precise = self.chart.borrow().config().draw_style.is_precise();
+            let picker_plan = self.prepare_picker_upload_plan(id, precise)?;
+            let device = Arc::clone(self.renderer.device());
+            let queue = Arc::clone(self.renderer.queue());
+            let mut ticket_jobs = Vec::new();
+            ticket_jobs
+                .try_reserve(pending_errorbars.len())
+                .map_err(js_err)?;
+
+            let guard = match source {
+                ColumnUploadSource::Scalar(source) => self.renderer.begin_upsert_column(id, source),
+                ColumnUploadSource::HiLo(source) => {
+                    self.renderer.begin_upsert_hilo_column(id, source)
+                }
+            }
+            .map_err(js_err)?;
+            let replaced_existing = guard.replaced_existing();
+
+            let prepared_picker = match &picker_plan {
+                PickerUploadPlan::Rebuild(descriptors) => {
+                    PreparedColumnPicker::Rebuild(Self::build_gpu_picker_from_descriptors(
+                        device,
+                        queue,
+                        guard.pool(),
+                        descriptors,
+                    )?)
+                }
+                PickerUploadPlan::Batch(replacements) => {
+                    let batch = self
+                        .gpu_picker
+                        .prepare_series_batch(
+                            guard.pool(),
+                            replacements
+                                .iter()
+                                .map(|replacement| GpuPickSeriesReplacement {
+                                    gpu_index: replacement.gpu_index,
+                                    descriptor: replacement.descriptor.descriptor(),
+                                }),
+                        )
+                        .map_err(js_err)?;
+                    PreparedColumnPicker::Batch(batch)
+                }
+            };
+
+            for key in &pending_errorbars {
+                let ticket = guard
+                    .begin_errorbar_extent(&key.value.id, &key.lower.id, &key.upper.id)
+                    .map_err(js_err)?;
+                let job = Rc::clone(
+                    future_errorbar_extents
+                        .get(key)
+                        .expect("pending errorbar key must have a prepared job"),
+                );
+                ticket_jobs.push((ticket, job));
+            }
+
+            guard.commit();
+            match prepared_picker {
+                PreparedColumnPicker::Rebuild(picker) => self.gpu_picker = picker,
+                PreparedColumnPicker::Batch(batch) => self.gpu_picker.commit_series_batch(batch),
+            }
+            self.gpu_picker_dirty = false;
+            self.columns = metadata.columns;
+            self.column_revisions = metadata.revisions;
+            self.errorbar_extents = future_errorbar_extents;
+            self.next_column_revision = metadata.next_revision;
+            self.needs_defrag |= replaced_existing;
+            self.bump_fit_epoch();
+            for (ticket, job) in ticket_jobs {
+                Self::spawn_errorbar_extent(ticket, job);
+            }
+            Ok(())
+        }
+
         fn upsert_zero_column(&mut self, len: usize) -> Result<(), JsValue> {
             let signature = (len, hash_zero_f32s(len));
             if self.columns.get("__zero") == Some(&signature) {
                 return Ok(());
             }
-            if self.columns.contains_key("__zero") {
-                self.renderer.remove_column("__zero");
-                self.needs_defrag = true;
-            }
             let source = ZeroColumnSource::new(len);
-            self.renderer
-                .add_column("__zero", &source)
-                .map_err(js_err)?;
-            self.gpu_picker_dirty = true;
-            self.columns.insert("__zero".to_string(), signature);
-            self.commit_column_revision("__zero")
+            self.upsert_column_atomic("__zero", signature, ColumnUploadSource::Scalar(&source))
         }
 
         fn set_column_f64_as_f32(&mut self, id: &str, data: &[f64]) -> Result<(), JsValue> {
@@ -878,20 +1232,8 @@ mod web {
             if self.columns.get(id) == Some(&signature) {
                 return self.repair_gpu_picker_if_dirty();
             }
-            let was_dirty = self.gpu_picker_dirty;
-            if self.columns.contains_key(id) {
-                self.renderer.remove_column(id);
-                self.needs_defrag = true;
-            }
-
             let column = BorrowedCastF32Column::new(data);
-            self.renderer.add_column(id, &column).map_err(js_err)?;
-            let picker_result = if was_dirty {
-                self.rebuild_gpu_picker_now()
-            } else {
-                self.refresh_gpu_picker_after_column_upload(id)
-            };
-            self.finish_column_upload(id, signature, picker_result)
+            self.upsert_column_atomic(id, signature, ColumnUploadSource::Scalar(&column))
         }
 
         fn ensure_columns_exist(&self, cfg: &SeriesConfig) -> Result<(), JsValue> {
@@ -1047,20 +1389,8 @@ mod web {
             if self.columns.get(id) == Some(&signature) {
                 return self.repair_gpu_picker_if_dirty();
             }
-            let was_dirty = self.gpu_picker_dirty;
-            if self.columns.contains_key(id) {
-                self.renderer.remove_column(id);
-                self.needs_defrag = true;
-            }
-
             let column = BorrowedF32Column::new(data);
-            self.renderer.add_column(id, &column).map_err(js_err)?;
-            let picker_result = if was_dirty {
-                self.rebuild_gpu_picker_now()
-            } else {
-                self.refresh_gpu_picker_after_column_upload(id)
-            };
-            self.finish_column_upload(id, signature, picker_result)
+            self.upsert_column_atomic(id, signature, ColumnUploadSource::Scalar(&column))
         }
 
         /// Register or update a high-precision data column under `id`
@@ -1074,20 +1404,8 @@ mod web {
             if self.columns.get(id) == Some(&signature) {
                 return self.repair_gpu_picker_if_dirty();
             }
-            let was_dirty = self.gpu_picker_dirty;
-            if self.columns.contains_key(id) {
-                self.renderer.remove_column(id);
-                self.needs_defrag = true;
-            }
-
             let column = BorrowedF64Column::new(data);
-            self.renderer.add_hilo_column(id, &column).map_err(js_err)?;
-            let picker_result = if was_dirty {
-                self.rebuild_gpu_picker_now()
-            } else {
-                self.refresh_gpu_picker_after_column_upload(id)
-            };
-            self.finish_column_upload(id, signature, picker_result)
+            self.upsert_column_atomic(id, signature, ColumnUploadSource::HiLo(&column))
         }
 
         /// Unregister a column. Series referencing it are removed too (with
