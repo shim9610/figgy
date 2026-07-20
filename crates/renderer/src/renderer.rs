@@ -123,14 +123,14 @@ struct PreparedStar {
 
 /// One series' arc-scan snapshot inside a token: the prefix buffer slice
 /// the line binds, the star pass (when the style has one), and the
-/// `(x_base, y_base, n)` layout the scan ran over. The layout is
-/// revalidated at paint time — a remove+re-add of a column id does not
-/// bump the pool generation, so without this stamp fresh column handles
-/// could silently pair with an arc computed over the old bytes.
+/// `(x_base, y_base, n, x_epoch, y_epoch)` source stamp. It is
+/// revalidated at paint time with source allocation epochs, so fresh handles
+/// at a reused offset and length cannot silently pair with an arc computed
+/// over the previous allocation's bytes.
 struct PreparedArc {
     prefix: ArcPrefix,
     star: Option<PreparedStar>,
-    source: (u32, u32, u32),
+    source: (u32, u32, u32, u64, u64),
 }
 
 /// Per-series output of the prepare phase, index-aligned with the
@@ -169,13 +169,12 @@ struct PreparedItem {
 #[derive(Debug)]
 pub struct PreparedFrame {
     items: Vec<PreparedItem>,
-    /// Pool layout stamp — a defrag/clear between prepare and paint moves
-    /// column bytes, so positional handles resolved at paint would read
-    /// garbage. `add_column`/`remove_column` alone do NOT bump this stamp;
-    /// the arc-consistency hazard they pose is covered by the per-series
-    /// source-layout stamps ([`PreparedArc::source`]), and non-arc series
-    /// intentionally resolve live pool state at paint (same as `paint`).
-    pool_generation: u32,
+    /// Pool layout stamp — defrag, clear, or a buffer-relocating upsert can
+    /// move column bytes or replace the backing buffer. Simple insertion and
+    /// removal do not bump this stamp; arc source allocation epochs cover
+    /// same-layout replacement, while non-arc series intentionally resolve
+    /// live pool state at paint (same as `paint`).
+    pool_layout_generation: u64,
     /// Format the styled-pipeline cache was compiled against; an
     /// `ensure_target_format` between the calls rebuilds that cache and
     /// recording old-format pipelines would abort in wgpu validation.
@@ -219,8 +218,9 @@ pub struct Renderer {
     /// Per-series GPU arc-scan slot pool for dashed lines, keyed by series
     /// id. The prefix is re-dispatched on every prepare that uses it (it
     /// depends on the data→pixel transform); a slot is reused in place only
-    /// while the series layout (length, column offsets, pool generation) is
-    /// stable AND no live `PreparedFrame` still references it (copy-on-write
+    /// while the series layout (length, column offsets, pool layout
+    /// generation) is stable AND no live `PreparedFrame` still references it
+    /// (copy-on-write
     /// — see `ensure_arc_prefix`). Retained-token hosts settle on two slots
     /// per series that alternate frame over frame. Mutated only in
     /// `&mut self` prepare-phase entry points (`prepare`/`paint`/export);
@@ -1239,8 +1239,8 @@ impl Renderer {
         Ok(self.begin_upsert_hilo_column(id, source)?.commit())
     }
 
-    pub fn remove_column(&mut self, id: &str) -> bool {
-        self.pool.remove_column(id)
+    pub fn remove_column(&mut self, id: &str) -> Result<bool> {
+        Ok(self.pool.remove_column(id)?)
     }
 
     /// Compact every live column to the start of the pool. `true` iff
@@ -1930,12 +1930,11 @@ impl Renderer {
     /// `ensure_target_format`, and `refresh_axis`; before the host submits
     /// the command buffer containing the render pass. `paint_prepared`
     /// detects and rejects ([`FiggyError::StalePreparedFrame`]): target
-    /// format changes, pool defrag/clear, chart-config edits, item/series
+    /// format changes, pool layout changes, chart-config edits, item/series
     /// list changes (count, order, ids, render type, line style), and
-    /// remove+re-add of an arc series' source columns (when the re-added
-    /// layout differs — a re-add landing at the identical offset and length
-    /// is indistinguishable from untouched data and self-heals at the next
-    /// prepare). Column changes that only affect plain (non-arc) data are
+    /// remove+re-add of an arc series' source columns, including reuse of an
+    /// identical offset and length. Column changes that only affect plain
+    /// (non-arc) data are
     /// picked up live at paint, exactly like the one-shot `paint`. Re-preparing (even for the same series
     /// from another panel or an interleaved export) is always safe: buffers
     /// still referenced by a live token are never rewritten in place, a
@@ -1953,7 +1952,7 @@ impl Renderer {
         let items = self.prepare_items(items);
         Ok(PreparedFrame {
             items,
-            pool_generation: self.pool.generation(),
+            pool_layout_generation: self.pool.layout_generation(),
             surface_format: self.surface_format,
         })
     }
@@ -1969,8 +1968,8 @@ impl Renderer {
     ///
     /// `items` must be the same slice, in the same order, that produced
     /// `prepared` — per-series identity and the per-panel transform are
-    /// verified, and renderer-level stamps (pool generation, target format)
-    /// detect invalidating `&mut self` calls since `prepare`. On mismatch
+    /// verified, and renderer-level stamps (pool layout generation, target
+    /// format) detect invalidating `&mut self` calls since `prepare`. On mismatch
     /// nothing is recorded and [`FiggyError::StalePreparedFrame`] is
     /// returned; recovery is a fresh `prepare`.
     pub fn paint_prepared(
@@ -2000,12 +1999,12 @@ impl Renderer {
                 prepared.surface_format, self.surface_format
             )));
         }
-        if prepared.pool_generation != self.pool.generation() {
+        if prepared.pool_layout_generation != self.pool.layout_generation() {
             return Err(stale(format!(
-                "prepared at pool generation {}, pool is now at {} \
-                 (the pool was defragmented or cleared between prepare and paint_prepared)",
-                prepared.pool_generation,
-                self.pool.generation()
+                "prepared at pool layout generation {}, pool is now at {} \
+                 (the pool layout changed between prepare and paint_prepared)",
+                prepared.pool_layout_generation,
+                self.pool.layout_generation()
             )));
         }
         if prepared.items.len() != items.len() {
@@ -2055,15 +2054,15 @@ impl Renderer {
                         cfg.series_id
                     )));
                 }
-                // The pool generation only tracks defrag/clear — a
-                // remove+re-add of a column id keeps the generation, so the
-                // arc's source layout must be revalidated structurally.
+                // The layout stamp catches buffer or offset relocation; the
+                // source allocation epochs independently catch same-layout
+                // remove+re-add before an old arc snapshot can be recorded.
                 if let Some(a) = &ps.arc {
                     if self.arc_source_layout(&cfg.x_column, &cfg.y_column) != Some(a.source) {
                         return Err(stale(format!(
                             "panel {idx}, series {:?}: the series' x/y columns changed \
-                             layout between prepare and paint_prepared (column \
-                             removed/re-added or resized)",
+                             allocation or layout between prepare and paint_prepared \
+                             (column removed/re-added or resized)",
                             cfg.series_id
                         )));
                     }
@@ -2612,13 +2611,12 @@ impl Renderer {
         Ok(out)
     }
 
-    /// The `(x_base, y_base, n)` layout an arc scan over these columns runs
-    /// on right now — `None` when a column is missing or shorter than two
-    /// points. Factored out so `validate_prepared` applies the exact same
-    /// resolution as the prepare phase did (a remove+re-add of a column id
-    /// does not bump the pool generation, so the token's arc source must be
-    /// revalidated structurally).
-    fn arc_source_layout(&self, x_id: &str, y_id: &str) -> Option<(u32, u32, u32)> {
+    /// The `(x_base, y_base, n, x_epoch, y_epoch)` source stamp for an arc
+    /// scan over these columns right now — `None` when a column is missing
+    /// or shorter than two points. `validate_prepared` uses the same
+    /// resolution as prepare, including allocation epochs that distinguish
+    /// remove+re-add at an identical offset and length.
+    fn arc_source_layout(&self, x_id: &str, y_id: &str) -> Option<(u32, u32, u32, u64, u64)> {
         let (x_offset, x_len) = {
             let s = self.pool.slot(x_id)?;
             (s.offset, s.len_values)
@@ -2627,6 +2625,8 @@ impl Renderer {
             let s = self.pool.slot(y_id)?;
             (s.offset, s.len_values)
         };
+        let x_epoch = self.pool.allocation_epoch(x_id)?;
+        let y_epoch = self.pool.allocation_epoch(y_id)?;
         let n = x_len.min(y_len);
         if n < 2 {
             return None;
@@ -2637,7 +2637,7 @@ impl Renderer {
         // two lanes `(hi, lo)`, so `point_px(i)` applies the `i * 2` stride.
         let x_base = u32::try_from(x_offset / 4).ok()?;
         let y_base = u32::try_from(y_offset / 4).ok()?;
-        Some((x_base, y_base, n))
+        Some((x_base, y_base, n, x_epoch, y_epoch))
     }
 
     /// Ensure the GPU arc-length prefix for one dashed line series and return
@@ -2670,8 +2670,8 @@ impl Renderer {
         t: &data_render::ScatterTransform,
         star_pitch: Option<f32>,
     ) -> Option<PreparedArc> {
-        let (x_base, y_base, n) = self.arc_source_layout(x_id, y_id)?;
-        let generation = self.pool.generation();
+        let (x_base, y_base, n, x_epoch, y_epoch) = self.arc_source_layout(x_id, y_id)?;
+        let layout_generation = self.pool.layout_generation();
 
         // Runaway-churn backstop: ids of long-removed series would otherwise
         // pin GPU memory forever. Existing-key rebuilds replace in place, but
@@ -2687,7 +2687,8 @@ impl Renderer {
         // live token that still draws from one owns clones of its handles,
         // so dropping the slot here never invalidates a token.
         slots.retain(|s| {
-            s.matches(n, x_base, y_base, generation) && s.star.is_some() == star_pitch.is_some()
+            s.matches(n, x_base, y_base, layout_generation)
+                && s.star.is_some() == star_pitch.is_some()
         });
         // Copy-on-write slot pool: `dispatch` rewrites buffer contents in
         // place, and a strong count > 1 means a live PreparedFrame (or an
@@ -2713,7 +2714,7 @@ impl Renderer {
                     n,
                     x_base,
                     y_base,
-                    generation,
+                    layout_generation,
                     self.caps.max_compute_workgroups_per_dimension,
                     chunk_override,
                     star_pitch.is_some().then_some(&self.star_data_bgl),
@@ -2748,7 +2749,7 @@ impl Renderer {
         Some(PreparedArc {
             prefix: (Arc::clone(&scratch.arc), u64::from(n) * 4),
             star,
-            source: (x_base, y_base, n),
+            source: (x_base, y_base, n, x_epoch, y_epoch),
         })
     }
 
@@ -4658,9 +4659,9 @@ mod tests {
         }
         chart.set_x_range(0.0, 1.0);
 
-        // (3) remove + re-add of an arc series' source column with a new
-        // layout — pool generation stays put (only defrag/clear bump it), so
-        // this must be caught by the per-series source stamp instead.
+        // (3) Remove + re-add an arc source at the same physical layout.
+        // Layout generation stays put, so the source allocation epoch must
+        // invalidate the retained arc snapshot.
         let cfg_dash = SeriesConfig {
             series_id: "st_dash".into(),
             source_id: None,
@@ -4680,6 +4681,7 @@ mod tests {
             config: &cfg_dash,
             style: &style_dash,
         }];
+        r.add_column("st_unrelated", &col_f64(vec![9.0])).unwrap();
         let prepared_dash = {
             let items = [ChartDrawItem {
                 view: &view,
@@ -4688,8 +4690,25 @@ mod tests {
             }];
             r.prepare(&items).unwrap()
         };
-        assert!(r.remove_column("st_y"));
-        r.add_column("st_y", &col_f64(vec![0.0, 1.0])).unwrap(); // n: 3 → 2
+        assert!(r.remove_column("st_unrelated").unwrap());
+        {
+            let items = [ChartDrawItem {
+                view: &view,
+                chart_config: chart.config(),
+                series: &series_dash,
+            }];
+            assert!(r.validate_prepared(&items, &prepared_dash).is_ok());
+        }
+        let old_y_handle = r.handle_for("st_y").unwrap();
+        let old_y_epoch = r.pool().allocation_epoch("st_y").unwrap();
+        assert!(r.remove_column("st_y").unwrap());
+        let new_y_handle = r
+            .add_column("st_y", &col_f64(vec![0.0, 1.0, 0.25]))
+            .unwrap();
+        assert_eq!(new_y_handle.offset, old_y_handle.offset);
+        assert_eq!(new_y_handle.byte_size, old_y_handle.byte_size);
+        assert_eq!(new_y_handle.len_values, old_y_handle.len_values);
+        assert_ne!(r.pool().allocation_epoch("st_y"), Some(old_y_epoch));
         {
             let items = [ChartDrawItem {
                 view: &view,

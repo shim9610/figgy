@@ -276,6 +276,10 @@ struct PickSeriesGpu {
     x_handle: ColumnHandle,
     y_handle: ColumnHandle,
     style_index_handle: Option<ColumnHandle>,
+    pool_layout_generation: u64,
+    x_allocation_epoch: u64,
+    y_allocation_epoch: u64,
+    style_index_allocation_epoch: Option<u64>,
     query_params: wgpu::Buffer,
     nodes: wgpu::Buffer,
     query_data_bg: wgpu::BindGroup,
@@ -315,6 +319,7 @@ struct PickSeriesRebind {
     x_handle: ColumnHandle,
     y_handle: ColumnHandle,
     style_index_handle: Option<ColumnHandle>,
+    pool_layout_generation: u64,
     style_index_base: u32,
     style_index_len: u32,
     query_data_bg: wgpu::BindGroup,
@@ -611,11 +616,8 @@ fn packed_level_counts(point_count: u32) -> Vec<u32> {
     levels
 }
 
-fn same_handle(a: ColumnHandle, b: ColumnHandle) -> bool {
-    a.generation == b.generation
-        && a.offset == b.offset
-        && a.byte_size == b.byte_size
-        && a.len_values == b.len_values
+fn same_storage(a: ColumnHandle, b: ColumnHandle) -> bool {
+    a.offset == b.offset && a.byte_size == b.byte_size && a.len_values == b.len_values
 }
 
 impl GpuPickEngine {
@@ -733,9 +735,9 @@ impl GpuPickEngine {
     /// Build one persistent exact index from `pool`.
     ///
     /// Every later [`Self::pick`] must receive that same pool instance. Rebuild
-    /// this series after any referenced column content replacement, including a
-    /// remove+readd that reuses the same offset, length, and pool generation;
-    /// a positional handle cannot distinguish that replacement by itself.
+    /// this series after any referenced column content replacement. Allocation
+    /// epochs distinguish remove+readd even when the replacement reuses the
+    /// same offset and length.
     pub fn add_series(
         &mut self,
         pool: &ColumnPool,
@@ -771,6 +773,12 @@ impl GpuPickEngine {
         let y_handle = pool
             .handle_for(&descriptor.y_column)
             .ok_or_else(|| GpuPickError::MissingColumn(descriptor.y_column.clone()))?;
+        let x_allocation_epoch = pool
+            .allocation_epoch(&descriptor.x_column)
+            .ok_or_else(|| GpuPickError::MissingColumn(descriptor.x_column.clone()))?;
+        let y_allocation_epoch = pool
+            .allocation_epoch(&descriptor.y_column)
+            .ok_or_else(|| GpuPickError::MissingColumn(descriptor.y_column.clone()))?;
         let paired_len = x_handle.len_values.min(y_handle.len_values);
         if paired_len == 0 {
             return Err(GpuPickError::EmptySeries(descriptor.series_id));
@@ -788,6 +796,7 @@ impl GpuPickEngine {
         let mut override_count = 0u32;
         let mut style_index_column = None;
         let mut style_index_handle = None;
+        let mut style_index_allocation_epoch = None;
         let mut style_index_base = 0u32;
         let mut style_index_len = 0u32;
 
@@ -824,10 +833,14 @@ impl GpuPickEngine {
                     let handle = pool
                         .handle_for(column_id)
                         .ok_or_else(|| GpuPickError::MissingColumn(column_id.clone()))?;
+                    let allocation_epoch = pool
+                        .allocation_epoch(column_id)
+                        .ok_or_else(|| GpuPickError::MissingColumn(column_id.clone()))?;
                     style_index_base = lane_base(handle, &descriptor.series_id)?;
                     style_index_len = u32::try_from(handle.len_values).unwrap_or(u32::MAX);
                     style_index_column = Some(column_id.clone());
                     style_index_handle = Some(handle);
+                    style_index_allocation_epoch = Some(allocation_epoch);
                 }
             }
         }
@@ -1124,6 +1137,10 @@ impl GpuPickEngine {
             x_handle,
             y_handle,
             style_index_handle,
+            pool_layout_generation: pool.layout_generation(),
+            x_allocation_epoch,
+            y_allocation_epoch,
+            style_index_allocation_epoch,
             query_params,
             nodes,
             query_data_bg,
@@ -1241,6 +1258,7 @@ impl GpuPickEngine {
                     series.x_handle = update.x_handle;
                     series.y_handle = update.y_handle;
                     series.style_index_handle = update.style_index_handle;
+                    series.pool_layout_generation = update.pool_layout_generation;
                     series.style_index_base = update.style_index_base;
                     series.style_index_len = update.style_index_len;
                     series.query_data_bg = update.query_data_bg;
@@ -1323,7 +1341,8 @@ impl GpuPickEngine {
         series: &PickSeriesGpu,
     ) -> Result<PickSeriesRebind, GpuPickError> {
         let relocated = |id: &ColumnId,
-                         expected: ColumnHandle|
+                         expected: ColumnHandle,
+                         expected_epoch: u64|
          -> Result<ColumnHandle, GpuPickError> {
             let Some(current) = pool.handle_for(id) else {
                 return Err(GpuPickError::StaleColumn {
@@ -1331,7 +1350,9 @@ impl GpuPickEngine {
                     column_id: id.clone(),
                 });
             };
-            if current.len_values != expected.len_values || current.byte_size != expected.byte_size
+            if pool.allocation_epoch(id) != Some(expected_epoch)
+                || current.len_values != expected.len_values
+                || current.byte_size != expected.byte_size
             {
                 return Err(GpuPickError::StaleColumn {
                     series_id: series.identity.series_id.clone(),
@@ -1341,8 +1362,8 @@ impl GpuPickEngine {
             Ok(current)
         };
 
-        let x_handle = relocated(&series.x_column, series.x_handle)?;
-        let y_handle = relocated(&series.y_column, series.y_handle)?;
+        let x_handle = relocated(&series.x_column, series.x_handle, series.x_allocation_epoch)?;
+        let y_handle = relocated(&series.y_column, series.y_handle, series.y_allocation_epoch)?;
         let _ = lane_base(x_handle, &series.identity.series_id)?;
         let _ = lane_base(y_handle, &series.identity.series_id)?;
 
@@ -1351,7 +1372,10 @@ impl GpuPickEngine {
                 let expected = series
                     .style_index_handle
                     .ok_or(GpuPickError::InvalidGpuResult)?;
-                let current = relocated(id, expected)?;
+                let expected_epoch = series
+                    .style_index_allocation_epoch
+                    .ok_or(GpuPickError::InvalidGpuResult)?;
+                let current = relocated(id, expected, expected_epoch)?;
                 let base = lane_base(current, &series.identity.series_id)?;
                 let len =
                     u32::try_from(current.len_values).map_err(|_| GpuPickError::TooManyValues {
@@ -1386,6 +1410,7 @@ impl GpuPickEngine {
             x_handle,
             y_handle,
             style_index_handle,
+            pool_layout_generation: pool.layout_generation(),
             style_index_base,
             style_index_len,
             query_data_bg,
@@ -1422,6 +1447,7 @@ impl GpuPickEngine {
             series.x_handle = update.x_handle;
             series.y_handle = update.y_handle;
             series.style_index_handle = update.style_index_handle;
+            series.pool_layout_generation = update.pool_layout_generation;
             series.style_index_base = update.style_index_base;
             series.style_index_len = update.style_index_len;
             series.query_data_bg = update.query_data_bg;
@@ -1433,9 +1459,16 @@ impl GpuPickEngine {
         pool: &ColumnPool,
         series: &PickSeriesGpu,
     ) -> Result<(), GpuPickError> {
-        for (id, expected) in [
-            (&series.x_column, series.x_handle),
-            (&series.y_column, series.y_handle),
+        if pool.layout_generation() != series.pool_layout_generation {
+            return Err(GpuPickError::StaleColumn {
+                series_id: series.identity.series_id.clone(),
+                column_id: series.x_column.clone(),
+            });
+        }
+
+        for (id, expected, expected_epoch) in [
+            (&series.x_column, series.x_handle, series.x_allocation_epoch),
+            (&series.y_column, series.y_handle, series.y_allocation_epoch),
         ] {
             let Some(current) = pool.handle_for(id) else {
                 return Err(GpuPickError::StaleColumn {
@@ -1443,16 +1476,18 @@ impl GpuPickEngine {
                     column_id: id.clone(),
                 });
             };
-            if !same_handle(current, expected) {
+            if pool.allocation_epoch(id) != Some(expected_epoch) || !same_storage(current, expected)
+            {
                 return Err(GpuPickError::StaleColumn {
                     series_id: series.identity.series_id.clone(),
                     column_id: id.clone(),
                 });
             }
         }
-        if let (Some(id), Some(expected)) = (
+        if let (Some(id), Some(expected), Some(expected_epoch)) = (
             series.style_index_column.as_ref(),
             series.style_index_handle,
+            series.style_index_allocation_epoch,
         ) {
             let Some(current) = pool.handle_for(id) else {
                 return Err(GpuPickError::StaleColumn {
@@ -1460,7 +1495,8 @@ impl GpuPickEngine {
                     column_id: id.clone(),
                 });
             };
-            if !same_handle(current, expected) {
+            if pool.allocation_epoch(id) != Some(expected_epoch) || !same_storage(current, expected)
+            {
                 return Err(GpuPickError::StaleColumn {
                     series_id: series.identity.series_id.clone(),
                     column_id: id.clone(),
@@ -1941,6 +1977,10 @@ mod tests {
         x_handle: (u32, u64, u64, usize),
         y_handle: (u32, u64, u64, usize),
         style_index_handle: Option<(u32, u64, u64, usize)>,
+        pool_layout_generation: u64,
+        x_allocation_epoch: u64,
+        y_allocation_epoch: u64,
+        style_index_allocation_epoch: Option<u64>,
         point_count: u32,
         node_count: u32,
         root_index: u32,
@@ -1966,6 +2006,10 @@ mod tests {
                 x_handle: handle_snapshot(series.x_handle),
                 y_handle: handle_snapshot(series.y_handle),
                 style_index_handle: series.style_index_handle.map(handle_snapshot),
+                pool_layout_generation: series.pool_layout_generation,
+                x_allocation_epoch: series.x_allocation_epoch,
+                y_allocation_epoch: series.y_allocation_epoch,
+                style_index_allocation_epoch: series.style_index_allocation_epoch,
                 point_count: series.point_count,
                 node_count: series.node_count,
                 root_index: series.root_index,
@@ -2643,6 +2687,14 @@ mod tests {
             return;
         };
         let mut old_pool = ColumnPool::new(&device, 64 * 1024).unwrap();
+        old_pool
+            .add_column(
+                "pick-success-layout-prefix".into(),
+                &f32_column(vec![0.0]),
+                &device,
+                &queue,
+            )
+            .unwrap();
         for index in 0..5 {
             old_pool
                 .add_column(
@@ -2662,40 +2714,7 @@ mod tests {
                 .unwrap();
         }
 
-        let mut provisional_pool = ColumnPool::new(&device, 64 * 1024).unwrap();
-        provisional_pool
-            .add_column(
-                "pick-success-layout-prefix".into(),
-                &f32_column(vec![0.0]),
-                &device,
-                &queue,
-            )
-            .unwrap();
-        for index in 0..5 {
-            let x = match index {
-                0 => 1.5,
-                2 => 3.5,
-                _ => index as f32 + 1.0,
-            };
-            provisional_pool
-                .add_column(
-                    format!("pick-success-x{index}"),
-                    &f32_column(vec![x]),
-                    &device,
-                    &queue,
-                )
-                .unwrap();
-            provisional_pool
-                .add_column(
-                    format!("pick-success-y{index}"),
-                    &f32_column(vec![5.0]),
-                    &device,
-                    &queue,
-                )
-                .unwrap();
-        }
-
-        let mut engine = GpuPickEngine::new(device, queue).unwrap();
+        let mut engine = GpuPickEngine::new(Arc::clone(&device), Arc::clone(&queue)).unwrap();
         for index in 0..5 {
             engine
                 .add_series(
@@ -2720,10 +2739,32 @@ mod tests {
             .collect::<Vec<_>>();
         let before_identities = Arc::clone(&engine.identities);
         let before_reduce = engine.reduce.candidates.clone();
+        assert!(
+            old_pool
+                .remove_column("pick-success-layout-prefix")
+                .unwrap()
+        );
+        assert!(old_pool.defragment(&device, &queue).unwrap());
+        old_pool
+            .upsert_column(
+                "pick-success-x0".into(),
+                &f32_column(vec![1.5]),
+                &device,
+                &queue,
+            )
+            .unwrap();
+        old_pool
+            .upsert_column(
+                "pick-success-x2".into(),
+                &f32_column(vec![3.5]),
+                &device,
+                &queue,
+            )
+            .unwrap();
 
         let prepared = engine
             .prepare_series_batch(
-                &provisional_pool,
+                &old_pool,
                 [0usize, 2, 4].map(|gpu_index| GpuPickSeriesReplacement {
                     gpu_index,
                     descriptor: scatter_descriptor(
@@ -2755,6 +2796,22 @@ mod tests {
         );
 
         for index in [0usize, 2, 4] {
+            assert_eq!(
+                engine.series[index].pool_layout_generation,
+                old_pool.layout_generation()
+            );
+            assert_eq!(
+                engine.series[index].x_allocation_epoch,
+                old_pool
+                    .allocation_epoch(&format!("pick-success-x{index}"))
+                    .unwrap()
+            );
+            if index != 4 {
+                assert_ne!(
+                    engine.series[index].x_allocation_epoch,
+                    before_metadata[index].x_allocation_epoch
+                );
+            }
             assert_ne!(engine.series[index].nodes, before_resources[index].nodes);
             assert_ne!(
                 engine.series[index].query_work_bg,
@@ -2769,28 +2826,38 @@ mod tests {
             assert_ne!(series.query_data_bg, before_resources[index].query_data_bg);
             assert_eq!(series.query_work_bg, before_resources[index].query_work_bg);
             assert_eq!(series.result, before_resources[index].result);
+            assert_eq!(series.pool_layout_generation, old_pool.layout_generation());
+            assert_eq!(
+                series.x_allocation_epoch,
+                before_metadata[index].x_allocation_epoch
+            );
+            assert_eq!(
+                series.y_allocation_epoch,
+                before_metadata[index].y_allocation_epoch
+            );
 
             let mut rebound_metadata = PickSeriesMetadataSnapshot::capture(series);
             rebound_metadata.x_handle = before_metadata[index].x_handle;
             rebound_metadata.y_handle = before_metadata[index].y_handle;
             rebound_metadata.style_index_handle = before_metadata[index].style_index_handle;
+            rebound_metadata.pool_layout_generation = before_metadata[index].pool_layout_generation;
             rebound_metadata.style_index_base = before_metadata[index].style_index_base;
             assert_eq!(rebound_metadata, before_metadata[index]);
-            assert!(same_handle(
+            assert!(same_storage(
                 series.x_handle,
-                provisional_pool
+                old_pool
                     .handle_for(&series.x_column)
                     .expect("rebound x handle")
             ));
-            assert!(same_handle(
+            assert!(same_storage(
                 series.y_handle,
-                provisional_pool
+                old_pool
                     .handle_for(&series.y_column)
                     .expect("rebound y handle")
             ));
         }
 
-        let picked = resolve_pick(&engine, &provisional_pool, test_query([50.0, 50.0])).unwrap();
+        let picked = resolve_pick(&engine, &old_pool, test_query([50.0, 50.0])).unwrap();
         assert_eq!(picked.series_id, "success-next-4");
         assert_eq!([picked.data_x, picked.data_y], [5.0, 5.0]);
     }
@@ -3017,8 +3084,11 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(before.series_id, "relocated");
+        let x_epoch = pool.allocation_epoch("pick-rx").unwrap();
+        let y_epoch = pool.allocation_epoch("pick-ry").unwrap();
+        let style_epoch = pool.allocation_epoch("pick-rstyle").unwrap();
 
-        assert!(pool.remove_column("pick-hole"));
+        assert!(pool.remove_column("pick-hole").unwrap());
         assert!(pool.defragment(&device, &queue).unwrap());
         assert!(matches!(
             engine.pick(&pool, test_query([40.0, 40.0])),
@@ -3036,6 +3106,33 @@ mod tests {
         .unwrap();
         assert_eq!(after.series_id, "relocated");
         assert_eq!([after.data_x, after.data_y], [4.0, 6.0]);
+        assert_eq!(pool.allocation_epoch("pick-rx"), Some(x_epoch));
+        assert_eq!(pool.allocation_epoch("pick-ry"), Some(y_epoch));
+        assert_eq!(pool.allocation_epoch("pick-rstyle"), Some(style_epoch));
+
+        let nodes = engine.series[0].nodes.clone();
+        let layout_generation = pool.layout_generation();
+        let old_style_handle = pool.handle_for("pick-rstyle").unwrap();
+        assert!(pool.remove_column("pick-rstyle").unwrap());
+        let new_style_handle = pool
+            .add_column(
+                "pick-rstyle".into(),
+                &f32_column(vec![1.0]),
+                &device,
+                &queue,
+            )
+            .unwrap();
+        assert_eq!(new_style_handle.offset, old_style_handle.offset);
+        assert_eq!(new_style_handle.byte_size, old_style_handle.byte_size);
+        assert_eq!(new_style_handle.len_values, old_style_handle.len_values);
+        assert_ne!(pool.allocation_epoch("pick-rstyle"), Some(style_epoch));
+        assert_eq!(pool.layout_generation(), layout_generation);
+        assert_eq!(engine.series[0].nodes, nodes);
+        assert!(matches!(
+            engine.pick(&pool, test_query([40.0, 40.0])),
+            Err(GpuPickError::StaleColumn { column_id, .. })
+                if column_id == "pick-rstyle"
+        ));
     }
 
     #[test]
@@ -3140,5 +3237,67 @@ mod tests {
             submission_index: None,
             timeout: None,
         });
+    }
+
+    #[test]
+    fn unrelated_remove_keeps_exact_bvh_while_reused_source_epoch_stales_it() {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let mut pool = ColumnPool::new(&device, 4 * 256).unwrap();
+        let values = f32_column(vec![5.0]);
+
+        let original_x = pool
+            .add_column("epoch-pick-x".into(), &values, &device, &queue)
+            .unwrap();
+        let original_x_epoch = pool.allocation_epoch("epoch-pick-x").unwrap();
+        pool.add_column("epoch-pick-y".into(), &values, &device, &queue)
+            .unwrap();
+        pool.add_column(
+            "epoch-pick-unrelated".into(),
+            &f32_column(vec![0.0]),
+            &device,
+            &queue,
+        )
+        .unwrap();
+
+        let mut engine = GpuPickEngine::new(Arc::clone(&device), Arc::clone(&queue)).unwrap();
+        engine
+            .add_series(
+                &pool,
+                scatter_descriptor("epoch-pick-series", "epoch-pick-x", "epoch-pick-y"),
+            )
+            .unwrap();
+        let nodes = engine.series[0].nodes.clone();
+        let layout_generation = pool.layout_generation();
+        let baseline = resolve_pick(&engine, &pool, test_query([50.0, 50.0]));
+        assert!(baseline.is_some());
+
+        assert!(pool.remove_column("epoch-pick-unrelated").unwrap());
+        assert_eq!(pool.layout_generation(), layout_generation);
+        assert_eq!(engine.series[0].nodes, nodes);
+        assert!(GpuPickEngine::validate_series_columns(&pool, &engine.series[0]).is_ok());
+        assert_eq!(
+            resolve_pick(&engine, &pool, test_query([50.0, 50.0])),
+            baseline
+        );
+
+        assert!(pool.remove_column("epoch-pick-x").unwrap());
+        let replacement_x = pool
+            .add_column("epoch-pick-x".into(), &values, &device, &queue)
+            .unwrap();
+        assert_eq!(replacement_x.offset, original_x.offset);
+        assert_eq!(replacement_x.len_values, original_x.len_values);
+        assert_ne!(
+            pool.allocation_epoch("epoch-pick-x"),
+            Some(original_x_epoch)
+        );
+        assert_eq!(pool.layout_generation(), layout_generation);
+        assert_eq!(engine.series[0].nodes, nodes);
+        assert!(matches!(
+            GpuPickEngine::validate_series_columns(&pool, &engine.series[0]),
+            Err(GpuPickError::StaleColumn { column_id, .. })
+                if column_id == "epoch-pick-x"
+        ));
     }
 }

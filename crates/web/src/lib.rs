@@ -1411,9 +1411,12 @@ mod web {
         /// Unregister a column. Series referencing it are removed too (with
         /// their legend rows) so the chart can never point at freed data.
         /// Returns `true` when the column existed.
-        pub fn remove_column(&mut self, id: &str) -> bool {
+        pub fn remove_column(&mut self, id: &str) -> Result<bool, JsValue> {
             if !self.columns.contains_key(id) {
-                return false;
+                return Ok(false);
+            }
+            if !self.renderer.remove_column(id).map_err(js_err)? {
+                return Ok(false);
             }
             let was_dirty = self.gpu_picker_dirty;
             let keep: Vec<bool> = self
@@ -1431,7 +1434,8 @@ mod web {
                     if self.pick_series_active_in_metadata(&self.series_cfgs[logical_index]) {
                         let gpu_index = self.gpu_pick_index_before(logical_index);
                         if self.gpu_picker.remove_series_at(gpu_index).is_err() {
-                            return false;
+                            self.gpu_picker_dirty = true;
+                            break;
                         }
                     }
                 }
@@ -1439,7 +1443,7 @@ mod web {
 
             self.columns.remove(id);
             self.column_revisions.remove(id);
-            self.renderer.remove_column(id);
+            debug_assert!(self.renderer.pool().slot(id).is_none());
             self.needs_defrag = true;
 
             if keep.iter().any(|k| !k) {
@@ -1457,12 +1461,12 @@ mod web {
                     self.sync_legend_symbols(false);
                 }
             }
-            if was_dirty {
+            if self.gpu_picker_dirty {
                 let _ = self.rebuild_gpu_picker_now();
             }
             self.bump_fit_epoch();
             self.reconcile_errorbar_extents();
-            true
+            Ok(true)
         }
 
         // ---- series registry (id-keyed upsert / unregister) ----

@@ -175,9 +175,15 @@ impl LabState {
             self.data_variant += 1;
         }
         let xs = lab_xs(n);
-        self.renderer.remove_column(X_ID);
+        if let Err(e) = self.renderer.remove_column(X_ID) {
+            self.last_error = Some(format!("regen remove_column {X_ID}: {e}"));
+            return;
+        }
         for y_id in Y_IDS {
-            self.renderer.remove_column(y_id);
+            if let Err(e) = self.renderer.remove_column(y_id) {
+                self.last_error = Some(format!("regen remove_column {y_id}: {e}"));
+                return;
+            }
         }
         if let Err(e) = self.renderer.add_column(X_ID, &col_f64(xs.clone())) {
             self.last_error = Some(format!("regen add_column x: {e}"));

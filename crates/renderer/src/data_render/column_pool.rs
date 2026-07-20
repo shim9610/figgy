@@ -11,9 +11,10 @@
 //! - `defragment` packs survivors into a backup buffer with GPU-internal
 //!   copies (no PCIe traffic) then swaps `primary <-> backup`.
 //!
-//! `ColumnHandle` carries a `generation` value; defrag and `clear` bump
-//! `generation`, so callers detect staleness via `is_valid_handle` and
-//! re-fetch with `handle_for`.
+//! `ColumnHandle` carries a public `generation` value. Mutations that can
+//! invalidate positional handles, including removal, replacement, relocation,
+//! and clear, bump it so callers can detect staleness with `is_valid_handle`
+//! and re-fetch with `handle_for`.
 //!
 //! Auto-defrag is opt-in via [`DefragPolicy`] (default `Manual`). With
 //! `OnAllocFailure`, an `OutOfSpace` from `add_column` triggers one
@@ -206,7 +207,7 @@ fn write_scalar_source_as_pairs(source: &dyn ColumnSource, dst: &mut [u8]) {
 }
 
 /// Lightweight handle handed out to the chart layer. `generation` lets
-/// callers detect a stale handle after a defrag.
+/// callers detect a stale handle after any invalidating pool mutation.
 #[derive(Debug, Clone, Copy)]
 pub struct ColumnHandle {
     pub generation: u32,
@@ -246,6 +247,8 @@ pub enum AllocError {
     DuplicateId(ColumnId),
     /// Source has length zero.
     EmptySource,
+    /// A monotonic identity counter cannot advance without wrapping.
+    CounterExhausted { counter: &'static str },
 }
 
 impl std::fmt::Display for AllocError {
@@ -273,6 +276,9 @@ impl std::fmt::Display for AllocError {
             }
             AllocError::DuplicateId(id) => write!(f, "ColumnPool duplicate id: {id}"),
             AllocError::EmptySource => write!(f, "ColumnPool: empty source not allowed"),
+            AllocError::CounterExhausted { counter } => {
+                write!(f, "ColumnPool {counter} exhausted")
+            }
         }
     }
 }
@@ -301,6 +307,9 @@ pub struct ColumnPool {
     /// Kept sorted by offset (coalesce and first-fit both rely on this).
     free: Vec<FreeRegion>,
     generation: u32,
+    allocation_epochs: HashMap<ColumnId, u64>,
+    allocation_epoch_counter: u64,
+    layout_generation: u64,
     /// Ping-pong target for defrag. Lazily created on the first defrag,
     /// then alternates with `primary`.
     backup: Option<Buffer>,
@@ -326,6 +335,9 @@ struct UpsertRollback {
     slots: HashMap<ColumnId, ColumnSlot>,
     free: Vec<FreeRegion>,
     generation: u32,
+    allocation_epochs: HashMap<ColumnId, u64>,
+    allocation_epoch_counter: u64,
+    layout_generation: u64,
     buffer: UpsertBufferRollback,
 }
 
@@ -342,7 +354,7 @@ enum PreparedUpsertTarget {
 /// old column bytes therefore remain intact.  Callers may build all dependent
 /// GPU batches against [`Self::pool`]; [`Self::commit`] then publishes the
 /// provisional state without any fallible work or allocation.  Dropping the
-/// guard restores the exact old allocator, slots, generation, and buffers.
+/// guard restores the exact old allocator, slots, identity stamps, and buffers.
 #[must_use = "dropping a ColumnUpsert rolls the provisional pool state back"]
 pub struct ColumnUpsert<'a> {
     pool: &'a mut ColumnPool,
@@ -392,7 +404,13 @@ impl Drop for ColumnUpsert<'_> {
 
         std::mem::swap(&mut self.pool.slots, &mut rollback.slots);
         std::mem::swap(&mut self.pool.free, &mut rollback.free);
+        std::mem::swap(
+            &mut self.pool.allocation_epochs,
+            &mut rollback.allocation_epochs,
+        );
         self.pool.generation = rollback.generation;
+        self.pool.allocation_epoch_counter = rollback.allocation_epoch_counter;
+        self.pool.layout_generation = rollback.layout_generation;
 
         if let UpsertBufferRollback::Candidate {
             old_primary,
@@ -453,6 +471,9 @@ impl ColumnPool {
                 size: capacity,
             }],
             generation: 0,
+            allocation_epochs: HashMap::new(),
+            allocation_epoch_counter: 0,
+            layout_generation: 0,
             backup: None,
             defrag_policy: DefragPolicy::Manual,
         })
@@ -469,6 +490,37 @@ impl ColumnPool {
     pub fn generation(&self) -> u32 {
         self.generation
     }
+    pub(crate) fn layout_generation(&self) -> u64 {
+        self.layout_generation
+    }
+
+    pub(crate) fn allocation_epoch(&self, id: &str) -> Option<u64> {
+        self.allocation_epochs.get(id).copied()
+    }
+
+    fn checked_generation_successor(&self) -> Result<u32, AllocError> {
+        self.generation
+            .checked_add(1)
+            .ok_or(AllocError::CounterExhausted {
+                counter: "public generation",
+            })
+    }
+
+    fn checked_layout_successor(&self) -> Result<u64, AllocError> {
+        self.layout_generation
+            .checked_add(1)
+            .ok_or(AllocError::CounterExhausted {
+                counter: "layout generation",
+            })
+    }
+
+    fn checked_allocation_epoch_successor(&self) -> Result<u64, AllocError> {
+        self.allocation_epoch_counter
+            .checked_add(1)
+            .ok_or(AllocError::CounterExhausted {
+                counter: "allocation epoch",
+            })
+    }
 
     pub fn used_bytes(&self) -> u64 {
         self.slots.values().map(|s| s.byte_size).sum()
@@ -483,15 +535,21 @@ impl ColumnPool {
     }
 
     /// Drop all columns. The primary buffer is reused (capacity unchanged).
-    /// Bumps `generation` so any outstanding handles become stale.
-    pub fn clear(&mut self) {
+    /// Bumps public and layout generations; allocation epochs are removed
+    /// without resetting their monotonic issuer.
+    pub fn clear(&mut self) -> Result<(), AllocError> {
+        let next_generation = self.checked_generation_successor()?;
+        let next_layout_generation = self.checked_layout_successor()?;
         self.slots.clear();
+        self.allocation_epochs.clear();
         self.free.clear();
         self.free.push(FreeRegion {
             offset: 0,
             size: self.capacity,
         });
-        self.generation = self.generation.wrapping_add(1);
+        self.generation = next_generation;
+        self.layout_generation = next_layout_generation;
+        Ok(())
     }
 
     pub fn handle_for(&self, id: &str) -> Option<ColumnHandle> {
@@ -503,8 +561,9 @@ impl ColumnPool {
         })
     }
 
-    /// True if the handle is still valid for the current pool state.
-    /// After a defrag or clear, returns false.
+    /// True if the handle is still valid for the current public pool state.
+    /// Removal, replacement, relocation, or clear invalidates previously
+    /// issued handles.
     pub fn is_valid_handle(&self, h: &ColumnHandle) -> bool {
         h.generation == self.generation
     }
@@ -694,6 +753,7 @@ impl ColumnPool {
                 limit: self.max_buffer_size,
             });
         }
+        let allocation_epoch = self.checked_allocation_epoch_successor()?;
 
         // Complete every source-dependent/fallible staging operation before
         // touching allocator metadata or the live primary buffer.
@@ -718,6 +778,7 @@ impl ColumnPool {
         let replaced_existing = old_slot.is_some();
         let mut planned_slots = self.slots.clone();
         let mut planned_free = self.free.clone();
+        let mut planned_allocation_epochs = self.allocation_epochs.clone();
 
         let direct_offset = alloc_region_from(&mut planned_free, byte_size);
         let (target, new_offset, mut command_encoder) = match direct_offset {
@@ -727,7 +788,7 @@ impl ColumnPool {
                         offset: old.offset,
                         size: old.byte_size,
                     });
-                    coalesce_regions(&mut planned_free);
+                    Self::coalesce_free(&mut planned_free);
                 }
                 let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("figgy column atomic upsert"),
@@ -760,14 +821,12 @@ impl ColumnPool {
                 planned_slots.remove(&id);
                 let mut order: Vec<ColumnId> = planned_slots.keys().cloned().collect();
                 order.sort_by_key(|column_id| self.slots[column_id].offset);
-                let next_generation = self.generation.wrapping_add(1);
                 let mut next = 0;
                 for column_id in &order {
                     let slot = planned_slots
                         .get_mut(column_id)
                         .expect("planned survivor remains present");
                     slot.offset = next;
-                    slot.generation = next_generation;
                     next = align_up(next + slot.byte_size, ALIGN);
                 }
                 let offset = next;
@@ -826,17 +885,24 @@ impl ColumnPool {
             }
         };
 
-        let next_generation =
-            if replaced_existing || !matches!(&target, PreparedUpsertTarget::InPlace) {
-                self.generation.wrapping_add(1)
-            } else {
-                self.generation
-            };
-        if next_generation != self.generation {
+        let relocates = !matches!(&target, PreparedUpsertTarget::InPlace);
+        let invalidates_handles = replaced_existing || relocates;
+        let next_generation = if invalidates_handles {
+            self.checked_generation_successor()?
+        } else {
+            self.generation
+        };
+        let next_layout_generation = if relocates {
+            self.checked_layout_successor()?
+        } else {
+            self.layout_generation
+        };
+        if invalidates_handles {
             for slot in planned_slots.values_mut() {
                 slot.generation = next_generation;
             }
         }
+
         let slot = ColumnSlot {
             id: id.clone(),
             offset: new_offset,
@@ -853,6 +919,7 @@ impl ColumnPool {
             byte_size: slot.byte_size,
             len_values: slot.len_values,
         };
+        planned_allocation_epochs.insert(id.clone(), allocation_epoch);
         planned_slots.insert(id, slot);
         command_encoder.copy_buffer_to_buffer(
             &staging,
@@ -902,6 +969,12 @@ impl ColumnPool {
         let old_slots = std::mem::replace(&mut self.slots, planned_slots);
         let old_free = std::mem::replace(&mut self.free, planned_free);
         let old_generation = std::mem::replace(&mut self.generation, next_generation);
+        let old_allocation_epochs =
+            std::mem::replace(&mut self.allocation_epochs, planned_allocation_epochs);
+        let old_allocation_epoch_counter =
+            std::mem::replace(&mut self.allocation_epoch_counter, allocation_epoch);
+        let old_layout_generation =
+            std::mem::replace(&mut self.layout_generation, next_layout_generation);
 
         Ok(ColumnUpsert {
             pool: self,
@@ -909,6 +982,9 @@ impl ColumnPool {
                 slots: old_slots,
                 free: old_free,
                 generation: old_generation,
+                allocation_epochs: old_allocation_epochs,
+                allocation_epoch_counter: old_allocation_epoch_counter,
+                layout_generation: old_layout_generation,
                 buffer: buffer_rollback,
             }),
             handle,
@@ -1021,6 +1097,7 @@ impl ColumnPool {
                 limit: self.max_buffer_size,
             });
         }
+        let allocation_epoch = self.checked_allocation_epoch_successor()?;
 
         let reservation = alloc_region(&mut self.free, byte_size)?;
         let region_offset = reservation.offset();
@@ -1047,13 +1124,6 @@ impl ColumnPool {
         }
         staging.unmap();
 
-        // staging → primary[region_offset..] (GPU-internal copy).
-        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("figgy column upload encoder"),
-        });
-        enc.copy_buffer_to_buffer(&staging, 0, &self.primary, region_offset, byte_size);
-        queue.submit(std::iter::once(enc.finish()));
-
         let slot = ColumnSlot {
             id: id.clone(),
             offset: region_offset,
@@ -1070,23 +1140,52 @@ impl ColumnPool {
             byte_size: slot.byte_size,
             len_values: slot.len_values,
         };
-        self.slots.insert(id, slot);
+        let mut planned_slots = self.slots.clone();
+        let mut planned_allocation_epochs = self.allocation_epochs.clone();
+        planned_allocation_epochs.insert(id.clone(), allocation_epoch);
+        planned_slots.insert(id, slot);
+
+        // staging → primary[region_offset..] (GPU-internal copy).
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("figgy column upload encoder"),
+        });
+        enc.copy_buffer_to_buffer(&staging, 0, &self.primary, region_offset, byte_size);
+        queue.submit(std::iter::once(enc.finish()));
+
+        self.slots = planned_slots;
+        self.allocation_epochs = planned_allocation_epochs;
+        self.allocation_epoch_counter = allocation_epoch;
         reservation.commit();
         Ok(handle)
     }
 
     /// Remove a column. Returns its region to the free list and coalesces
-    /// with neighbors.
-    pub fn remove_column(&mut self, id: &str) -> bool {
-        let Some(slot) = self.slots.remove(id) else {
-            return false;
+    /// with neighbors. Public handles are invalidated, the removed allocation
+    /// epoch is discarded, and the layout generation remains unchanged.
+    pub fn remove_column(&mut self, id: &str) -> Result<bool, AllocError> {
+        let Some(slot) = self.slots.get(id).cloned() else {
+            return Ok(false);
         };
-        self.free.push(FreeRegion {
+        let next_generation = self.checked_generation_successor()?;
+        let mut planned_slots = self.slots.clone();
+        planned_slots.remove(id);
+        for slot in planned_slots.values_mut() {
+            slot.generation = next_generation;
+        }
+        let mut planned_free = self.free.clone();
+        planned_free.push(FreeRegion {
             offset: slot.offset,
             size: slot.byte_size,
         });
-        self.coalesce_free();
-        true
+        Self::coalesce_free(&mut planned_free);
+        let mut planned_allocation_epochs = self.allocation_epochs.clone();
+        planned_allocation_epochs.remove(id);
+
+        self.slots = planned_slots;
+        self.free = planned_free;
+        self.allocation_epochs = planned_allocation_epochs;
+        self.generation = next_generation;
+        Ok(true)
     }
 
     /// Pack every live column tightly from offset 0 of `primary` (ping-pong).
@@ -1100,7 +1199,7 @@ impl ColumnPool {
     /// 5. `copy_buffer_to_buffer` each slot from `primary[old_off..]` into
     ///    `backup[new_off..]` — all GPU-internal, no PCIe traffic.
     /// 6. Submit, then swap `primary <-> backup`.
-    /// 7. Bump `generation`, invalidating outstanding handles.
+    /// 7. Bump public and layout generations, invalidating outstanding handles.
     /// 8. Update slot offsets/generation; free list = single tail region
     ///    `[next..capacity)`.
     ///
@@ -1115,12 +1214,15 @@ impl ColumnPool {
             if already {
                 return Ok(false);
             }
-            self.free.clear();
-            self.free.push(FreeRegion {
+            let next_generation = self.checked_generation_successor()?;
+            let next_layout_generation = self.checked_layout_successor()?;
+            let normalized_free = vec![FreeRegion {
                 offset: 0,
                 size: self.capacity,
-            });
-            self.generation = self.generation.wrapping_add(1);
+            }];
+            self.free = normalized_free;
+            self.generation = next_generation;
+            self.layout_generation = next_layout_generation;
             return Ok(true);
         }
 
@@ -1157,6 +1259,8 @@ impl ColumnPool {
             }
             return Ok(false);
         }
+        let next_generation = self.checked_generation_successor()?;
+        let next_layout_generation = self.checked_layout_successor()?;
 
         // Lazily create backup with the same capacity/usage as primary.
         if self.backup.is_none() {
@@ -1207,7 +1311,8 @@ impl ColumnPool {
         self.backup = Some(old_primary);
 
         // Bump generation and update slots.
-        self.generation = self.generation.wrapping_add(1);
+        self.generation = next_generation;
+        self.layout_generation = next_layout_generation;
         for (id, &new_off) in order.iter().zip(new_offsets.iter()) {
             if let Some(slot) = self.slots.get_mut(id) {
                 slot.offset = new_off;
@@ -1227,13 +1332,13 @@ impl ColumnPool {
     }
 
     /// Sort `free` by offset and merge adjacent regions.
-    fn coalesce_free(&mut self) {
-        if self.free.len() < 2 {
+    fn coalesce_free(free: &mut Vec<FreeRegion>) {
+        if free.len() < 2 {
             return;
         }
-        self.free.sort_by_key(|r| r.offset);
-        let mut merged: Vec<FreeRegion> = Vec::with_capacity(self.free.len());
-        for r in self.free.drain(..) {
+        free.sort_by_key(|r| r.offset);
+        let mut merged: Vec<FreeRegion> = Vec::with_capacity(free.len());
+        for r in free.drain(..) {
             if let Some(last) = merged.last_mut() {
                 if last.offset + last.size == r.offset {
                     last.size += r.size;
@@ -1242,7 +1347,7 @@ impl ColumnPool {
             }
             merged.push(r);
         }
-        self.free = merged;
+        *free = merged;
     }
 }
 
@@ -1450,6 +1555,9 @@ mod tests {
     struct PoolState {
         buffer: usize,
         generation: u32,
+        layout_generation: u64,
+        allocation_epoch_counter: u64,
+        allocation_epochs: Vec<(ColumnId, u64)>,
         used: u64,
         free_bytes: u64,
         free: Vec<(u64, u64)>,
@@ -1458,9 +1566,19 @@ mod tests {
     }
 
     fn pool_state(pool: &ColumnPool, id: &str) -> PoolState {
+        let mut allocation_epochs = pool
+            .allocation_epochs
+            .iter()
+            .map(|(id, epoch)| (id.clone(), *epoch))
+            .collect::<Vec<_>>();
+        allocation_epochs.sort_by(|a, b| a.0.cmp(&b.0));
+
         PoolState {
             buffer: pool.buffer() as *const Buffer as usize,
             generation: pool.generation(),
+            layout_generation: pool.layout_generation(),
+            allocation_epoch_counter: pool.allocation_epoch_counter,
+            allocation_epochs,
             used: pool.used_bytes(),
             free_bytes: pool.free_bytes(),
             free: pool
@@ -1778,7 +1896,7 @@ mod tests {
         assert!(pool.handle_for("x").is_some());
         assert_eq!(pool.used_bytes(), 1024);
 
-        let removed = pool.remove_column("x");
+        let removed = pool.remove_column("x").unwrap();
         assert!(removed);
         assert!(pool.handle_for("x").is_none());
         assert_eq!(pool.used_bytes(), 0);
@@ -1818,17 +1936,17 @@ mod tests {
         pool.add_column("c".into(), &c, &device, &queue).unwrap();
 
         // Remove middle b → free = [256..512] + [768..end] (not adjacent).
-        pool.remove_column("b");
+        pool.remove_column("b").unwrap();
         assert_eq!(pool.free.len(), 2);
 
         // Remove a → [0..512] (coalesced with b's hole) + [768..end].
-        pool.remove_column("a");
+        pool.remove_column("a").unwrap();
         assert_eq!(pool.free.len(), 2);
         assert_eq!(pool.free[0].offset, 0);
         assert_eq!(pool.free[0].size, 512);
 
         // Remove c → everything coalesces back to one free region.
-        pool.remove_column("c");
+        pool.remove_column("c").unwrap();
         assert_eq!(pool.free.len(), 1);
         assert_eq!(pool.free[0].offset, 0);
         assert_eq!(pool.free[0].size, pool.capacity());
@@ -1882,7 +2000,7 @@ mod tests {
         let gen_before = pool.generation();
 
         // Remove middle b → hole at [256..512]; tail free region unchanged.
-        pool.remove_column("b");
+        pool.remove_column("b").unwrap();
         assert_eq!(pool.slots["c"].offset, 512);
         assert_eq!(pool.free.len(), 2);
         assert_eq!(pool.free[0].offset, 256);
@@ -1941,7 +2059,7 @@ mod tests {
         pool.add_column("c".into(), &c, &device, &queue).unwrap();
 
         // Remove middle b → free [256..512] (256 bytes).
-        pool.remove_column("b");
+        pool.remove_column("b").unwrap();
 
         // Adding d uses the [256..512] hole via plain first-fit, so this
         // path doesn't actually exercise the OnAllocFailure retry — it
@@ -1972,7 +2090,7 @@ mod tests {
         pool.add_column("c".into(), &small_c, &device, &queue)
             .unwrap();
         // free = [768..1024]. Remove b → free = [256..512] + [768..1024].
-        pool.remove_column("b");
+        pool.remove_column("b").unwrap();
         // big needs 512 contiguous. First-fit fails (largest free is 256),
         // defrag fuses the hole and tail into [512..1024], retry succeeds.
         let res = pool.add_column("big".into(), &big, &device, &queue);
@@ -2001,9 +2119,355 @@ mod tests {
             .unwrap();
         pool.add_column("c".into(), &small_c, &device, &queue)
             .unwrap();
-        pool.remove_column("b");
+        pool.remove_column("b").unwrap();
         // Manual policy: no retry → OutOfSpace.
         let res = pool.add_column("big".into(), &big, &device, &queue);
         assert!(matches!(res, Err(AllocError::OutOfSpace { .. })));
+    }
+
+    #[test]
+    fn remove_epochs_prevent_offset_reuse_aba() {
+        let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+            return;
+        };
+        let values = col_f64(vec![1.0]);
+
+        let a_handle = pool
+            .add_column("epoch-a".into(), &values, &device, &queue)
+            .unwrap();
+        let a_epoch = pool.allocation_epoch("epoch-a").unwrap();
+        let b_handle = pool
+            .add_column("epoch-b".into(), &values, &device, &queue)
+            .unwrap();
+        let b_epoch = pool.allocation_epoch("epoch-b").unwrap();
+        let layout_generation = pool.layout_generation();
+
+        assert!(pool.remove_column("epoch-a").unwrap());
+        assert_eq!(pool.layout_generation(), layout_generation);
+        assert_eq!(pool.allocation_epoch("epoch-b"), Some(b_epoch));
+        assert!(!pool.is_valid_handle(&a_handle));
+        assert!(!pool.is_valid_handle(&b_handle));
+        assert!(pool.is_valid_handle(&pool.handle_for("epoch-b").unwrap()));
+
+        let c_handle = pool
+            .add_column("epoch-c".into(), &values, &device, &queue)
+            .unwrap();
+        assert_eq!(c_handle.offset, a_handle.offset);
+        assert_ne!(pool.allocation_epoch("epoch-c"), Some(a_epoch));
+        assert!(!pool.is_valid_handle(&a_handle));
+
+        assert!(pool.remove_column("epoch-c").unwrap());
+        let a_readded = pool
+            .add_column("epoch-a".into(), &values, &device, &queue)
+            .unwrap();
+        assert_eq!(a_readded.offset, a_handle.offset);
+        assert_ne!(pool.allocation_epoch("epoch-a"), Some(a_epoch));
+        assert!(!pool.is_valid_handle(&a_handle));
+    }
+
+    #[test]
+    fn defragment_preserves_allocation_epochs_and_bumps_layout() {
+        let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+            return;
+        };
+        let values = col_f64(vec![1.0]);
+
+        pool.add_column("layout-a".into(), &values, &device, &queue)
+            .unwrap();
+        pool.add_column("layout-b".into(), &values, &device, &queue)
+            .unwrap();
+        pool.add_column("layout-c".into(), &values, &device, &queue)
+            .unwrap();
+        assert!(pool.remove_column("layout-b").unwrap());
+
+        let a_epoch = pool.allocation_epoch("layout-a");
+        let c_epoch = pool.allocation_epoch("layout-c");
+        let c_handle = pool.handle_for("layout-c").unwrap();
+        let generation = pool.generation();
+        let layout_generation = pool.layout_generation();
+
+        assert!(pool.defragment(&device, &queue).unwrap());
+        assert_eq!(pool.generation(), generation.checked_add(1).unwrap());
+        assert_eq!(
+            pool.layout_generation(),
+            layout_generation.checked_add(1).unwrap()
+        );
+        assert_eq!(pool.allocation_epoch("layout-a"), a_epoch);
+        assert_eq!(pool.allocation_epoch("layout-c"), c_epoch);
+        assert!(!pool.is_valid_handle(&c_handle));
+        assert!(pool.is_valid_handle(&pool.handle_for("layout-c").unwrap()));
+    }
+
+    #[test]
+    fn clear_and_counter_exhaustion_preserve_stamp_contracts() {
+        let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+            return;
+        };
+        let values = col_f64(vec![1.0]);
+
+        let old_handle = pool
+            .add_column("clear-a".into(), &values, &device, &queue)
+            .unwrap();
+        let old_epoch = pool.allocation_epoch("clear-a").unwrap();
+        let allocation_epoch_counter = pool.allocation_epoch_counter;
+        let generation = pool.generation();
+        let layout_generation = pool.layout_generation();
+        pool.clear().unwrap();
+        assert_eq!(pool.generation(), generation.checked_add(1).unwrap());
+        assert_eq!(
+            pool.layout_generation(),
+            layout_generation.checked_add(1).unwrap()
+        );
+        assert_eq!(pool.allocation_epoch_counter, allocation_epoch_counter);
+        assert_eq!(pool.allocation_epoch("clear-a"), None);
+        assert!(!pool.is_valid_handle(&old_handle));
+        pool.add_column("clear-a".into(), &values, &device, &queue)
+            .unwrap();
+        assert!(pool.allocation_epoch("clear-a").unwrap() > old_epoch);
+
+        pool.generation = u32::MAX;
+        for slot in pool.slots.values_mut() {
+            slot.generation = u32::MAX;
+        }
+        let before_public_exhaustion = pool_state(&pool, "clear-a");
+        assert_eq!(
+            pool.remove_column("clear-a").unwrap_err(),
+            AllocError::CounterExhausted {
+                counter: "public generation"
+            }
+        );
+        assert_eq!(pool_state(&pool, "clear-a"), before_public_exhaustion);
+        assert_eq!(
+            pool.clear().unwrap_err(),
+            AllocError::CounterExhausted {
+                counter: "public generation"
+            }
+        );
+        assert_eq!(pool_state(&pool, "clear-a"), before_public_exhaustion);
+        let replacement_error =
+            match pool.begin_upsert_column("clear-a".into(), &values, &device, &queue) {
+                Err(error) => error,
+                Ok(_) => panic!("replacement must fail when public generation is exhausted"),
+            };
+        assert_eq!(
+            replacement_error,
+            AllocError::CounterExhausted {
+                counter: "public generation"
+            }
+        );
+        assert_eq!(pool_state(&pool, "clear-a"), before_public_exhaustion);
+
+        let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+            return;
+        };
+        pool.add_column("epoch-full-a".into(), &values, &device, &queue)
+            .unwrap();
+        pool.allocation_epoch_counter = u64::MAX;
+        let before_epoch_exhaustion = pool_state(&pool, "epoch-full-a");
+        assert_eq!(
+            pool.add_column("epoch-full-b".into(), &values, &device, &queue)
+                .unwrap_err(),
+            AllocError::CounterExhausted {
+                counter: "allocation epoch"
+            }
+        );
+        assert_eq!(pool_state(&pool, "epoch-full-a"), before_epoch_exhaustion);
+
+        let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+            return;
+        };
+        pool.add_column("layout-prefix".into(), &values, &device, &queue)
+            .unwrap();
+        pool.add_column("layout-live".into(), &values, &device, &queue)
+            .unwrap();
+        assert!(pool.remove_column("layout-prefix").unwrap());
+        pool.layout_generation = u64::MAX;
+        let before_layout_exhaustion = pool_state(&pool, "layout-live");
+        assert_eq!(
+            pool.defragment(&device, &queue).unwrap_err(),
+            AllocError::CounterExhausted {
+                counter: "layout generation"
+            }
+        );
+        assert_eq!(pool_state(&pool, "layout-live"), before_layout_exhaustion);
+        assert_eq!(
+            pool.clear().unwrap_err(),
+            AllocError::CounterExhausted {
+                counter: "layout generation"
+            }
+        );
+        assert_eq!(pool_state(&pool, "layout-live"), before_layout_exhaustion);
+    }
+
+    #[test]
+    fn every_relocating_counter_failure_is_fail_closed() {
+        let values = col_f64(vec![1.0]);
+
+        let Some((device, queue, mut pool)) = mk_pool(2 * ALIGN) else {
+            return;
+        };
+        pool.add_column("epoch-upsert-a".into(), &values, &device, &queue)
+            .unwrap();
+        pool.allocation_epoch_counter = u64::MAX;
+        let before_epoch_upsert = pool_state(&pool, "epoch-upsert-a");
+        let epoch_error =
+            match pool.begin_upsert_column("epoch-upsert-a".into(), &values, &device, &queue) {
+                Err(error) => error,
+                Ok(_) => panic!("upsert must fail when allocation epoch is exhausted"),
+            };
+        assert_eq!(
+            epoch_error,
+            AllocError::CounterExhausted {
+                counter: "allocation epoch"
+            }
+        );
+        assert_eq!(pool_state(&pool, "epoch-upsert-a"), before_epoch_upsert);
+
+        let Some((device, queue, mut pool)) = mk_pool(2 * ALIGN) else {
+            return;
+        };
+        for id in ["public-compact-a", "public-compact-b"] {
+            pool.add_column(id.into(), &values, &device, &queue)
+                .unwrap();
+        }
+        pool.generation = u32::MAX;
+        for slot in pool.slots.values_mut() {
+            slot.generation = u32::MAX;
+        }
+        let before_public_compaction = pool_state(&pool, "public-compact-a");
+        let public_compaction_error =
+            match pool.begin_upsert_column("public-compact-a".into(), &values, &device, &queue) {
+                Err(error) => error,
+                Ok(_) => panic!("compacting upsert must fail when public generation is exhausted"),
+            };
+        assert_eq!(
+            public_compaction_error,
+            AllocError::CounterExhausted {
+                counter: "public generation"
+            }
+        );
+        assert_eq!(
+            pool_state(&pool, "public-compact-a"),
+            before_public_compaction
+        );
+
+        let Some((device, queue, mut pool)) = mk_pool(2 * ALIGN) else {
+            return;
+        };
+        for id in ["layout-compact-a", "layout-compact-b"] {
+            pool.add_column(id.into(), &values, &device, &queue)
+                .unwrap();
+        }
+        pool.layout_generation = u64::MAX;
+        let before_layout_compaction = pool_state(&pool, "layout-compact-a");
+        let layout_compaction_error =
+            match pool.begin_upsert_column("layout-compact-a".into(), &values, &device, &queue) {
+                Err(error) => error,
+                Ok(_) => panic!("compacting upsert must fail when layout generation is exhausted"),
+            };
+        assert_eq!(
+            layout_compaction_error,
+            AllocError::CounterExhausted {
+                counter: "layout generation"
+            }
+        );
+        assert_eq!(
+            pool_state(&pool, "layout-compact-a"),
+            before_layout_compaction
+        );
+
+        let Some((device, queue, mut pool)) = mk_pool(3 * ALIGN) else {
+            return;
+        };
+        for id in ["public-defrag-a", "public-defrag-b", "public-defrag-c"] {
+            pool.add_column(id.into(), &values, &device, &queue)
+                .unwrap();
+        }
+        assert!(pool.remove_column("public-defrag-a").unwrap());
+        pool.generation = u32::MAX;
+        for slot in pool.slots.values_mut() {
+            slot.generation = u32::MAX;
+        }
+        let before_public_defrag = pool_state(&pool, "public-defrag-b");
+        assert_eq!(
+            pool.defragment(&device, &queue).unwrap_err(),
+            AllocError::CounterExhausted {
+                counter: "public generation"
+            }
+        );
+        assert_eq!(pool_state(&pool, "public-defrag-b"), before_public_defrag);
+    }
+
+    #[test]
+    fn successful_stamp_transitions_separate_replacement_from_pool_relocation() {
+        let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+            return;
+        };
+        let first = col_f64(vec![1.0]);
+        let replacement = col_f64(vec![2.0]);
+        pool.add_column("direct-target".into(), &first, &device, &queue)
+            .unwrap();
+        pool.add_column("direct-survivor".into(), &first, &device, &queue)
+            .unwrap();
+        let old_target_handle = pool.handle_for("direct-target").unwrap();
+        let old_survivor_handle = pool.handle_for("direct-survivor").unwrap();
+        let old_target_epoch = pool.allocation_epoch("direct-target").unwrap();
+        let survivor_epoch = pool.allocation_epoch("direct-survivor").unwrap();
+        let generation = pool.generation();
+        let layout_generation = pool.layout_generation();
+
+        let new_target_handle = pool
+            .upsert_column("direct-target".into(), &replacement, &device, &queue)
+            .unwrap();
+
+        assert_eq!(pool.generation(), generation.checked_add(1).unwrap());
+        assert_eq!(pool.layout_generation(), layout_generation);
+        assert_ne!(
+            pool.allocation_epoch("direct-target"),
+            Some(old_target_epoch)
+        );
+        assert_eq!(
+            pool.allocation_epoch("direct-survivor"),
+            Some(survivor_epoch)
+        );
+        assert!(!pool.is_valid_handle(&old_target_handle));
+        assert!(!pool.is_valid_handle(&old_survivor_handle));
+        assert!(pool.is_valid_handle(&new_target_handle));
+        assert!(pool.is_valid_handle(&pool.handle_for("direct-survivor").unwrap()));
+
+        let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+            return;
+        };
+        for id in ["relocate-a", "relocate-b", "relocate-c", "relocate-d"] {
+            pool.add_column(id.into(), &first, &device, &queue).unwrap();
+        }
+        assert!(pool.remove_column("relocate-b").unwrap());
+        assert!(pool.remove_column("relocate-d").unwrap());
+        pool.defrag_policy = DefragPolicy::OnAllocFailure;
+        let a_handle = pool.handle_for("relocate-a").unwrap();
+        let c_handle = pool.handle_for("relocate-c").unwrap();
+        let a_epoch = pool.allocation_epoch("relocate-a").unwrap();
+        let c_epoch = pool.allocation_epoch("relocate-c").unwrap();
+        let generation = pool.generation();
+        let layout_generation = pool.layout_generation();
+        let large = col_f64(vec![3.0; 33]);
+
+        let new_handle = pool
+            .upsert_column("relocate-new".into(), &large, &device, &queue)
+            .unwrap();
+
+        assert_eq!(pool.generation(), generation.checked_add(1).unwrap());
+        assert_eq!(
+            pool.layout_generation(),
+            layout_generation.checked_add(1).unwrap()
+        );
+        assert_eq!(pool.allocation_epoch("relocate-a"), Some(a_epoch));
+        assert_eq!(pool.allocation_epoch("relocate-c"), Some(c_epoch));
+        assert!(pool.allocation_epoch("relocate-new").is_some());
+        assert!(!pool.is_valid_handle(&a_handle));
+        assert!(!pool.is_valid_handle(&c_handle));
+        assert!(pool.is_valid_handle(&new_handle));
+        assert!(pool.is_valid_handle(&pool.handle_for("relocate-a").unwrap()));
+        assert!(pool.is_valid_handle(&pool.handle_for("relocate-c").unwrap()));
     }
 }

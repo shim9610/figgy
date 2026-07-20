@@ -238,8 +238,8 @@ struct ChunkBinds {
 
 /// Per-series GPU state: the arc buffer (consumed as vertex data by the line
 /// pipeline), scan scratch, params, and bind groups. Rebuilt when the series'
-/// length, column offsets, or pool generation change; the transform uniform
-/// is rewritten on every use (it follows the live data→pixel mapping).
+/// length, column offsets, or pool layout generation change; the transform
+/// uniform is rewritten on every use (it follows the live data→pixel mapping).
 pub struct ArcScratch {
     pub arc: Arc<wgpu::Buffer>,
     transform_buf: wgpu::Buffer,
@@ -255,7 +255,7 @@ pub struct ArcScratch {
     n: u32,
     x_base: u32,
     y_base: u32,
-    pool_generation: u32,
+    pool_layout_generation: u64,
 }
 
 /// Per-series GPU state of the constellation star pass: the DrawIndirect
@@ -295,11 +295,11 @@ struct StarVsParams {
 
 impl ArcScratch {
     /// True when the cached state still matches the series' current layout.
-    pub fn matches(&self, n: u32, x_base: u32, y_base: u32, pool_generation: u32) -> bool {
+    pub fn matches(&self, n: u32, x_base: u32, y_base: u32, pool_layout_generation: u64) -> bool {
         self.n == n
             && self.x_base == x_base
             && self.y_base == y_base
-            && self.pool_generation == pool_generation
+            && self.pool_layout_generation == pool_layout_generation
     }
 
     /// `None` only on an adapter whose dispatch limit is zero — already
@@ -321,7 +321,7 @@ impl ArcScratch {
         n: u32,
         x_base: u32,
         y_base: u32,
-        pool_generation: u32,
+        pool_layout_generation: u64,
         max_workgroups_per_dimension: u32,
         chunk_capacity_override: Option<u32>,
         star_data_bgl: Option<&wgpu::BindGroupLayout>,
@@ -533,7 +533,7 @@ impl ArcScratch {
             n,
             x_base,
             y_base,
-            pool_generation,
+            pool_layout_generation,
         })
     }
 

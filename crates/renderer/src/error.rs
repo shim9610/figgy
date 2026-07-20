@@ -59,7 +59,7 @@ pub enum FiggyError {
     /// render path.
     InvalidSeriesConfig { series_id: String, reason: String },
 
-    /// Handle's generation no longer matches the pool (stale after defrag / clear).
+    /// Handle generation no longer matches after an invalidating pool mutation.
     StaleHandle { generation: u32, current: u32 },
 
     /// A `PreparedFrame` no longer matches the renderer state or the items it
