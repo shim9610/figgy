@@ -119,6 +119,77 @@ pub struct FreeRegion {
     pub size: u64,
 }
 
+enum RegionReservationRollback {
+    ExactFit,
+    Split,
+}
+
+/// A first-fit allocation that restores the free list unless committed.
+///
+/// This guard deliberately borrows only the free-list field. The upload path
+/// can therefore prepare staging data and publish the slot while the
+/// reservation remains armed, and any error or unwind before publication
+/// restores the allocator to its exact prior ordering and contents.
+#[must_use = "dropping an uncommitted reservation restores the free list"]
+struct RegionReservation<'a> {
+    free: &'a mut Vec<FreeRegion>,
+    index: usize,
+    original: FreeRegion,
+    rollback: Option<RegionReservationRollback>,
+}
+
+impl RegionReservation<'_> {
+    fn offset(&self) -> u64 {
+        self.original.offset
+    }
+
+    fn commit(mut self) {
+        self.rollback = None;
+    }
+}
+
+impl Drop for RegionReservation<'_> {
+    fn drop(&mut self) {
+        match self.rollback.take() {
+            Some(RegionReservationRollback::ExactFit) => {
+                // `remove` retained enough Vec capacity for this insertion,
+                // so rollback itself does not allocate.
+                self.free.insert(self.index, self.original);
+            }
+            Some(RegionReservationRollback::Split) => {
+                self.free[self.index] = self.original;
+            }
+            None => {}
+        }
+    }
+}
+
+fn alloc_region(
+    free: &mut Vec<FreeRegion>,
+    size: u64,
+) -> Result<RegionReservation<'_>, AllocError> {
+    let Some(index) = free.iter().position(|region| region.size >= size) else {
+        return Err(out_of_space(size, free));
+    };
+    let original = free[index];
+    let rollback = if original.size == size {
+        free.remove(index);
+        RegionReservationRollback::ExactFit
+    } else {
+        free[index] = FreeRegion {
+            offset: original.offset + size,
+            size: original.size - size,
+        };
+        RegionReservationRollback::Split
+    };
+    Ok(RegionReservation {
+        free,
+        index,
+        original,
+        rollback: Some(rollback),
+    })
+}
+
 /// Auto-defrag policy. No `Default` impl — figgy avoids the `Default` trait;
 /// callers set this explicitly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -898,6 +969,31 @@ impl ColumnPool {
         queue: &Queue,
         write_pairs: impl FnOnce(&mut [u8]),
     ) -> Result<ColumnHandle, AllocError> {
+        self.try_add_column_pairs_with(id, n, min, max, device, queue, write_pairs, |byte_size| {
+            create_buffer_checked(
+                device,
+                &BufferDescriptor {
+                    label: Some("figgy column staging"),
+                    size: byte_size,
+                    usage: BufferUsages::COPY_SRC,
+                    mapped_at_creation: true,
+                },
+                "column staging buffer",
+            )
+        })
+    }
+
+    fn try_add_column_pairs_with(
+        &mut self,
+        id: ColumnId,
+        n: usize,
+        min: f64,
+        max: f64,
+        device: &Device,
+        queue: &Queue,
+        write_pairs: impl FnOnce(&mut [u8]),
+        create_staging: impl FnOnce(u64) -> Result<Buffer, AllocError>,
+    ) -> Result<ColumnHandle, AllocError> {
         if self.slots.contains_key(&id) {
             return Err(AllocError::DuplicateId(id));
         }
@@ -926,16 +1022,11 @@ impl ColumnPool {
             });
         }
 
-        let region_offset = self.alloc_region(byte_size)?;
+        let reservation = alloc_region(&mut self.free, byte_size)?;
+        let region_offset = reservation.offset();
 
         // Staging buffer — write into mapped memory directly, no Vec.
-        let staging_desc = BufferDescriptor {
-            label: Some("figgy column staging"),
-            size: byte_size,
-            usage: BufferUsages::COPY_SRC,
-            mapped_at_creation: true,
-        };
-        let staging = create_buffer_checked(device, &staging_desc, "column staging buffer")?;
+        let staging = create_staging(byte_size)?;
         let mut min_positive = f64::INFINITY;
         {
             // wgpu 27's BufferViewMut derefs to `&mut [u8]`, so the column
@@ -980,6 +1071,7 @@ impl ColumnPool {
             len_values: slot.len_values,
         };
         self.slots.insert(id, slot);
+        reservation.commit();
         Ok(handle)
     }
 
@@ -1152,33 +1244,6 @@ impl ColumnPool {
         }
         self.free = merged;
     }
-
-    /// First-fit allocation. Splits the chosen region and updates the free
-    /// list. On failure returns the largest free region size and the total
-    /// free size for diagnostics.
-    fn alloc_region(&mut self, size: u64) -> Result<u64, AllocError> {
-        let idx = self.free.iter().position(|r| r.size >= size);
-        let Some(idx) = idx else {
-            let largest = self.free.iter().map(|r| r.size).max().unwrap_or(0);
-            let total = self.free.iter().map(|r| r.size).sum();
-            return Err(AllocError::OutOfSpace {
-                requested: size,
-                largest_free: largest,
-                total_free: total,
-            });
-        };
-        let region = self.free[idx];
-        let chosen = region.offset;
-        if region.size == size {
-            self.free.remove(idx);
-        } else {
-            self.free[idx] = FreeRegion {
-                offset: region.offset + size,
-                size: region.size - size,
-            };
-        }
-        Ok(chosen)
-    }
 }
 
 #[cfg(test)]
@@ -1211,6 +1276,116 @@ mod tests {
                 chunk.copy_from_slice(&bits.to_le_bytes());
             }
         }
+    }
+
+    struct PanickingScalarSource;
+
+    impl ColumnSource for PanickingScalarSource {
+        fn len(&self) -> usize {
+            1
+        }
+
+        fn min(&self) -> f64 {
+            1.0
+        }
+
+        fn max(&self) -> f64 {
+            1.0
+        }
+
+        fn write_f32_le_into(&self, _dst: &mut [u8]) {
+            panic!("injected scalar writer panic");
+        }
+
+        fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
+            dst[0] = 0xa5;
+            panic!("injected scalar writer panic");
+        }
+    }
+
+    struct PanickingHiLoSource;
+
+    impl HiLoColumnSource for PanickingHiLoSource {
+        fn len(&self) -> usize {
+            1
+        }
+
+        fn min(&self) -> f64 {
+            1.0
+        }
+
+        fn max(&self) -> f64 {
+            1.0
+        }
+
+        fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
+            dst[0] = 0x5a;
+            panic!("injected hi/lo writer panic");
+        }
+    }
+
+    fn free_state(free: &[FreeRegion]) -> Vec<(u64, u64)> {
+        free.iter()
+            .map(|region| (region.offset, region.size))
+            .collect()
+    }
+
+    #[test]
+    fn region_reservation_restores_or_commits_exact_free_list_edit() {
+        let original = vec![
+            FreeRegion {
+                offset: 0,
+                size: ALIGN,
+            },
+            FreeRegion {
+                offset: 3 * ALIGN,
+                size: 2 * ALIGN,
+            },
+            FreeRegion {
+                offset: 8 * ALIGN,
+                size: ALIGN,
+            },
+        ];
+
+        let mut exact = original.clone();
+        {
+            let reservation = alloc_region(&mut exact, ALIGN).unwrap();
+            assert_eq!(reservation.offset(), 0);
+        }
+        assert_eq!(free_state(&exact), free_state(&original));
+
+        let reservation = alloc_region(&mut exact, ALIGN).unwrap();
+        assert_eq!(reservation.offset(), 0);
+        reservation.commit();
+        assert_eq!(
+            free_state(&exact),
+            vec![(3 * ALIGN, 2 * ALIGN), (8 * ALIGN, ALIGN)]
+        );
+
+        let mut split = vec![
+            FreeRegion {
+                offset: ALIGN,
+                size: 3 * ALIGN,
+            },
+            FreeRegion {
+                offset: 8 * ALIGN,
+                size: ALIGN,
+            },
+        ];
+        let split_original = free_state(&split);
+        {
+            let reservation = alloc_region(&mut split, ALIGN).unwrap();
+            assert_eq!(reservation.offset(), ALIGN);
+        }
+        assert_eq!(free_state(&split), split_original);
+
+        let reservation = alloc_region(&mut split, ALIGN).unwrap();
+        assert_eq!(reservation.offset(), ALIGN);
+        reservation.commit();
+        assert_eq!(
+            free_state(&split),
+            vec![(2 * ALIGN, 2 * ALIGN), (8 * ALIGN, ALIGN)]
+        );
     }
 
     #[test]
@@ -1313,6 +1488,75 @@ mod tests {
                 )
             }),
         }
+    }
+
+    #[test]
+    fn legacy_staging_failure_restores_allocator_and_allows_retry() {
+        let Some((device, queue, mut pool)) = mk_pool(ALIGN) else {
+            return;
+        };
+        let column = col_f64(vec![1.0, 2.0, 3.0]);
+        let before = pool_state(&pool, "x");
+
+        let error = pool
+            .try_add_column_pairs_with(
+                "x".into(),
+                column.data.len(),
+                column.min,
+                column.max,
+                &device,
+                &queue,
+                |dst| write_scalar_source_as_pairs(&column, dst),
+                |_| {
+                    Err(AllocError::AllocationFailed {
+                        resource: "column staging buffer",
+                        reason: "injected legacy staging failure".into(),
+                    })
+                },
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, AllocError::AllocationFailed { .. }));
+        assert_eq!(pool_state(&pool, "x"), before);
+
+        let handle = pool
+            .add_column("x".into(), &column, &device, &queue)
+            .unwrap();
+        assert_eq!(handle.offset, 0);
+        assert_eq!(pool.slot("x").unwrap().len_values, column.data.len());
+    }
+
+    #[test]
+    fn legacy_writer_panics_restore_scalar_and_hilo_allocator_state() {
+        let Some((device, queue, mut scalar_pool)) = mk_pool(2 * ALIGN) else {
+            return;
+        };
+        let scalar_before = pool_state(&scalar_pool, "scalar");
+        let scalar_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ =
+                scalar_pool.add_column("scalar".into(), &PanickingScalarSource, &device, &queue);
+        }));
+        assert!(scalar_result.is_err());
+        assert_eq!(pool_state(&scalar_pool, "scalar"), scalar_before);
+
+        let retry = col_f64(vec![2.0]);
+        let scalar_handle = scalar_pool
+            .add_column("scalar".into(), &retry, &device, &queue)
+            .unwrap();
+        assert_eq!(scalar_handle.offset, 0);
+
+        let mut hilo_pool = ColumnPool::new(&device, 2 * ALIGN).unwrap();
+        let hilo_before = pool_state(&hilo_pool, "hilo");
+        let hilo_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = hilo_pool.add_hilo_column("hilo".into(), &PanickingHiLoSource, &device, &queue);
+        }));
+        assert!(hilo_result.is_err());
+        assert_eq!(pool_state(&hilo_pool, "hilo"), hilo_before);
+
+        let hilo_handle = hilo_pool
+            .add_hilo_column("hilo".into(), &retry, &device, &queue)
+            .unwrap();
+        assert_eq!(hilo_handle.offset, 0);
     }
 
     fn read_column_values(
