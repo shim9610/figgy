@@ -4,6 +4,8 @@ pub mod data;
 pub mod data_render;
 pub mod demo;
 pub mod error;
+pub mod gpu_errorbar;
+pub mod gpu_pick;
 pub mod pick;
 pub mod raster;
 pub mod renderer;
@@ -37,6 +39,7 @@ pub use data_config::{
 pub use data_render::{AllocError, ColumnHandle, ColumnId, ColumnPool, DefragPolicy};
 pub use drag::Draggable;
 pub use error::{FiggyError, Result};
+pub use gpu_errorbar::{GpuErrorbarError, GpuErrorbarExtent, GpuErrorbarExtentTicket};
 pub use pick::{PickedPoint, PointColumnLookup, PointPickOptions, pick_nearest_point};
 pub use preset::{AxisPreset, ColorCycle};
 pub use renderer::{

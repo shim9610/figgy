@@ -24,6 +24,13 @@
 //! See `crates/renderer/WASM.md` for the I/O architecture this implements.
 
 #[cfg(any(target_arch = "wasm32", test))]
+mod borrowed_column;
+#[cfg(any(target_arch = "wasm32", test))]
+mod gpu_pick_style;
+#[cfg(any(target_arch = "wasm32", test))]
+mod scalar_job;
+
+#[cfg(any(target_arch = "wasm32", test))]
 fn fit_display_panel(
     logical_size: (u32, u32),
     surface_size: (u32, u32),
@@ -148,22 +155,34 @@ mod tests {
 
 #[cfg(target_arch = "wasm32")]
 mod web {
-    use std::collections::HashMap;
+    use std::{
+        cell::{Cell, RefCell},
+        collections::{HashMap, HashSet},
+        rc::Rc,
+        sync::Arc,
+    };
 
     use wasm_bindgen::prelude::*;
+    use wasm_bindgen_futures::{future_to_promise, spawn_local};
     use web_sys::HtmlCanvasElement;
 
-    use renderer::data::Column;
     use renderer::data_config::ErrorRef;
+    use renderer::gpu_pick::{GpuPickEngine, GpuPickQuery};
     use renderer::layout::{ChartArea, Rect};
     use renderer::line::LineStylePreset;
     use renderer::text::{RichText, rich_segments_from_text};
     use renderer::{
         Chart, ChartDrawItem, ChartStyle, ChartView, Color, CpuTextMeasure, DataLineStyleConfig,
-        DataRenderType, DefragPolicy, FitExtent, HitId, HitMap, PointColumnLookup,
-        PointPickOptions, Renderer, ResizeHandle as ModelResizeHandle, SelectionBox, Series,
-        SeriesConfig, WindowedRenderer, errorbar_extent,
+        DataRenderType, DefragPolicy, FitExtent, HitId, HitMap, Renderer,
+        ResizeHandle as ModelResizeHandle, SelectionBox, Series, SeriesConfig, WindowedRenderer,
     };
+
+    use crate::borrowed_column::{
+        BorrowedCastF32Column, BorrowedF32Column, BorrowedF64Column, ZeroColumnSource, hash_f32s,
+        hash_f64s, hash_f64s_as_f32, hash_zero_f32s,
+    };
+    use crate::gpu_pick_style::OwnedGpuPickSeriesDescriptor;
+    use crate::scalar_job::ScalarExtentJob;
 
     const POOL_CAPACITY: u64 = 16 * 1024 * 1024;
 
@@ -194,26 +213,6 @@ mod web {
     #[wasm_bindgen]
     pub fn draw_style_modes() -> Result<String, JsValue> {
         serde_json::to_string(renderer::config::DrawStyle::mode_tags()).map_err(js_err)
-    }
-
-    /// 64-bit FNV-1a-style mix over the f32 bit patterns — cheap identity
-    /// check so `set_column_f32` can skip re-uploading unchanged data.
-    fn hash_f32s(data: &[f32]) -> u64 {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for v in data {
-            h ^= v.to_bits() as u64;
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        h
-    }
-
-    fn hash_f64s(data: &[f64]) -> u64 {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for v in data {
-            h ^= v.to_bits();
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        h
     }
 
     /// Every column id a series' render type references (x/y + error refs).
@@ -330,24 +329,18 @@ mod web {
         }
     }
 
-    /// One series' errorbar fit extents + the column-content signatures they
-    /// were computed from. See `FiggyChart::err_fit`.
-    struct ErrFitEntry {
-        /// (column id, (len, content hash)) of every involved column, in a
-        /// fixed derivation order — wholesale equality is the validity test.
-        sigs: Vec<(String, (usize, u64))>,
-        x: Option<FitExtent>,
-        y: Option<FitExtent>,
+    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+    struct RevisionedColumn {
+        id: String,
+        revision: u64,
     }
 
-    struct WebPointColumns<'a> {
-        col_data: &'a HashMap<String, Vec<f32>>,
-    }
-
-    impl PointColumnLookup for WebPointColumns<'_> {
-        fn get_f32_column(&self, id: &renderer::ColumnId) -> Option<&[f32]> {
-            self.col_data.get(id).map(Vec::as_slice)
-        }
+    /// Exact GPU extent identity for one value/error association.
+    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+    struct ErrorbarExtentKey {
+        value: RevisionedColumn,
+        lower: RevisionedColumn,
+        upper: RevisionedColumn,
     }
 
     // ------------------------------------------------------------------
@@ -426,7 +419,9 @@ mod web {
     #[wasm_bindgen]
     pub struct FiggyChart {
         renderer: WindowedRenderer<'static>,
-        chart: Chart,
+        gpu_picker: GpuPickEngine,
+        gpu_picker_dirty: bool,
+        chart: Rc<RefCell<Chart>>,
         view: ChartView,
         /// Current WebGPU surface size in physical canvas pixels. This is a
         /// viewport property, not the exported document size.
@@ -441,18 +436,15 @@ mod web {
         legend_auto_managed: bool,
         /// Registered columns: id → (len, content hash) for upsert skipping.
         columns: HashMap<String, (usize, u64)>,
-        /// CPU mirror of every registered column (the same f32 values the
-        /// pool holds). The renderer keeps no CPU copies of pool data, but
-        /// errorbar-aware fitting needs value±err PAIRS, which per-column
-        /// scalars cannot reconstruct — the upload path's staging Vec lands
-        /// here instead of being dropped (no extra copy; bounded by the
-        /// same data volume as the pool).
-        col_data: HashMap<String, Vec<f32>>,
-        /// Per-series errorbar fit extents, computed once per (series,
-        /// column contents) and revalidated against `columns` signatures at
-        /// fit time — column re-upserts and series redefinitions need no
-        /// invalidation hooks.
-        err_fit: HashMap<String, ErrFitEntry>,
+        /// Successful changed-upload revision for each live GPU column.
+        column_revisions: HashMap<String, u64>,
+        next_column_revision: u64,
+        /// Already-submitted GPU errorbar reductions, keyed only by the three
+        /// current column revisions. Each job retains one scalar extent.
+        errorbar_extents: HashMap<ErrorbarExtentKey, Rc<ScalarExtentJob>>,
+        /// Invalidates an async fit if a later data/series/range mutation wins.
+        fit_epoch: Rc<Cell<u64>>,
+        alive: Rc<Cell<bool>>,
         /// A removal happened — defragment once on the next frame.
         needs_defrag: bool,
         /// Monotonic color assignment for newly registered series.
@@ -468,12 +460,13 @@ mod web {
 
     impl FiggyChart {
         fn display_scale_and_panel(&self) -> (f32, Rect) {
-            let logical = self.chart.config().chart_area.0;
+            let logical = self.chart.borrow().config().chart_area.0;
             super::fit_display_panel((logical.width, logical.height), self.surface_size)
         }
 
         fn display_config(&self) -> (renderer::config::Config, Rect, f32) {
-            super::display_config_for_surface(self.chart.config(), self.surface_size)
+            let chart = self.chart.borrow();
+            super::display_config_for_surface(chart.config(), self.surface_size)
         }
 
         fn display_delta_to_document(&self, dx: f32, dy: f32) -> (f32, f32) {
@@ -486,7 +479,8 @@ mod web {
         }
 
         fn label_text(&self, label: &str) -> RichText {
-            let content = &self.chart.config().legend.content;
+            let chart = self.chart.borrow();
+            let content = &chart.config().legend.content;
             RichText {
                 segments: rich_segments_from_text(label),
                 color: content.color,
@@ -513,7 +507,7 @@ mod web {
             let Some(label) = self.fallback_label(i) else {
                 return;
             };
-            self.chart.with_decoration_change(|c| {
+            self.chart.borrow_mut().with_decoration_change(|c| {
                 renderer::config::append_legend_entry_rich(
                     &mut c.legend.content,
                     renderer::config::series_symbol_segments(&cfg),
@@ -527,7 +521,7 @@ mod web {
             let Some(cfg) = self.series_cfgs.get(i).cloned() else {
                 return;
             };
-            self.chart.with_decoration_change(|c| {
+            self.chart.borrow_mut().with_decoration_change(|c| {
                 renderer::config::set_legend_entry_label(
                     &mut c.legend.content,
                     i,
@@ -539,7 +533,7 @@ mod web {
         }
 
         fn remove_legend_entry_for(&mut self, i: usize) {
-            self.chart.with_decoration_change(|c| {
+            self.chart.borrow_mut().with_decoration_change(|c| {
                 if renderer::config::remove_legend_entry(&mut c.legend.content, i)
                     && c.legend.content.segments.is_empty()
                 {
@@ -549,9 +543,11 @@ mod web {
         }
 
         fn sync_legend_symbols(&mut self, append_missing: bool) {
-            let existing =
-                renderer::config::legend_entry_count(&self.chart.config().legend.content);
-            self.chart.with_decoration_change(|c| {
+            let existing = {
+                let chart = self.chart.borrow();
+                renderer::config::legend_entry_count(&chart.config().legend.content)
+            };
+            self.chart.borrow_mut().with_decoration_change(|c| {
                 renderer::config::update_legend_symbols_preserving_text(
                     &mut c.legend.content,
                     &self.series_cfgs,
@@ -580,7 +576,7 @@ mod web {
                 .filter_map(|(i, cfg)| Some((cfg, self.fallback_label(i)?)))
                 .collect();
 
-            self.chart.with_decoration_change(|c| {
+            self.chart.borrow_mut().with_decoration_change(|c| {
                 c.legend.content.segments.clear();
                 for (cfg, label) in entries {
                     renderer::config::append_legend_entry_rich(
@@ -603,49 +599,299 @@ mod web {
                 .collect();
         }
 
-        /// Errorbar contribution of one series to the (x, y) fit extents —
-        /// the pairwise value±err pass that per-column min/max scalars
-        /// cannot express. Walks the CPU column mirror once per (series,
-        /// data) combination and caches the result; the cache is validated
-        /// by column content signature, so re-upserted data or a redefined
-        /// series recomputes automatically. Returns `(None, None)` for
-        /// series without errorbars; a column missing from the mirror skips
-        /// the extension (slot min/max only — the pre-errorbar behavior,
-        /// never a wrong range). Associated fn (split borrows): called from
-        /// `auto_fit_all` while other fields are also borrowed.
-        fn series_err_extents(
+        fn pick_series_active_in_metadata(&self, cfg: &SeriesConfig) -> bool {
+            self.columns
+                .get(&cfg.x_column)
+                .zip(self.columns.get(&cfg.y_column))
+                .is_some_and(|((x_len, _), (y_len, _))| (*x_len).min(*y_len) > 0)
+        }
+
+        fn pick_series_active_in_pool(&self, cfg: &SeriesConfig) -> bool {
+            self.renderer
+                .pool()
+                .handle_for(&cfg.x_column)
+                .zip(self.renderer.pool().handle_for(&cfg.y_column))
+                .is_some_and(|(x, y)| x.len_values.min(y.len_values) > 0)
+        }
+
+        fn gpu_pick_index_before(&self, logical_index: usize) -> usize {
+            self.series_cfgs[..logical_index]
+                .iter()
+                .filter(|cfg| self.pick_series_active_in_metadata(cfg))
+                .count()
+        }
+
+        fn build_gpu_picker_for(
+            &self,
+            series_cfgs: &[SeriesConfig],
+            precise: bool,
+        ) -> Result<GpuPickEngine, JsValue> {
+            let mut picker = GpuPickEngine::new(
+                Arc::clone(self.renderer.device()),
+                Arc::clone(self.renderer.queue()),
+            )
+            .map_err(js_err)?;
+            for cfg in series_cfgs {
+                if !self.pick_series_active_in_pool(cfg) {
+                    continue;
+                }
+                let owned = OwnedGpuPickSeriesDescriptor::from_series(cfg, precise);
+                owned
+                    .with_descriptor(|descriptor| {
+                        picker.add_series(self.renderer.pool(), descriptor)
+                    })
+                    .map_err(js_err)?;
+            }
+            Ok(picker)
+        }
+
+        fn repair_gpu_picker_if_dirty(&mut self) -> Result<(), JsValue> {
+            if !self.gpu_picker_dirty {
+                return Ok(());
+            }
+            self.rebuild_gpu_picker_now()
+        }
+
+        fn rebuild_gpu_picker_now(&mut self) -> Result<(), JsValue> {
+            self.gpu_picker.clear_series();
+            let precise = self.chart.borrow().config().draw_style.is_precise();
+            let picker = self.build_gpu_picker_for(&self.series_cfgs, precise)?;
+            self.gpu_picker = picker;
+            self.gpu_picker_dirty = false;
+            Ok(())
+        }
+
+        fn finish_column_upload(
+            &mut self,
+            id: &str,
+            signature: (usize, u64),
+            picker_result: Result<(), JsValue>,
+        ) -> Result<(), JsValue> {
+            if picker_result.is_err() {
+                self.gpu_picker_dirty = true;
+            }
+            self.columns.insert(id.to_string(), signature);
+            self.commit_column_revision(id)?;
+            picker_result
+        }
+
+        fn update_gpu_picker_series(
+            &mut self,
+            existing: Option<usize>,
             cfg: &SeriesConfig,
-            columns: &HashMap<String, (usize, u64)>,
-            col_data: &HashMap<String, Vec<f32>>,
-            err_fit: &mut HashMap<String, ErrFitEntry>,
-        ) -> (Option<FitExtent>, Option<FitExtent>) {
-            let (err_x, err_y) = err_refs(&cfg.render_type);
-            if err_x.is_none() && err_y.is_none() {
-                return (None, None);
-            }
+        ) -> Result<(), JsValue> {
+            let logical_index = existing.unwrap_or(self.series_cfgs.len());
+            let gpu_index = self.gpu_pick_index_before(logical_index);
+            let old_active = existing
+                .is_some_and(|index| self.pick_series_active_in_metadata(&self.series_cfgs[index]));
+            let new_active = self.pick_series_active_in_pool(cfg);
+            let precise = self.chart.borrow().config().draw_style.is_precise();
+            let owned = OwnedGpuPickSeriesDescriptor::from_series(cfg, precise);
+            let pool = self.renderer.pool();
+            let picker = &mut self.gpu_picker;
 
-            let sigs: Vec<(String, (usize, u64))> = referenced_columns(cfg)
+            match (old_active, new_active) {
+                (true, true) => owned
+                    .with_descriptor(|descriptor| {
+                        picker.replace_series_at(gpu_index, pool, descriptor)
+                    })
+                    .map(|_| ())
+                    .map_err(js_err),
+                (true, false) => picker.remove_series_at(gpu_index).map_err(js_err),
+                (false, true) => owned
+                    .with_descriptor(|descriptor| {
+                        picker.insert_series_at(gpu_index, pool, descriptor)
+                    })
+                    .map(|_| ())
+                    .map_err(js_err),
+                (false, false) => Ok(()),
+            }
+        }
+
+        fn refresh_gpu_picker_after_column_upload(&mut self, id: &str) -> Result<(), JsValue> {
+            let precise = self.chart.borrow().config().draw_style.is_precise();
+            let mut gpu_index = 0usize;
+            for logical_index in 0..self.series_cfgs.len() {
+                let (owned, old_active, new_active) = {
+                    let cfg = &self.series_cfgs[logical_index];
+                    (
+                        OwnedGpuPickSeriesDescriptor::from_series(cfg, precise),
+                        self.pick_series_active_in_metadata(cfg),
+                        self.pick_series_active_in_pool(cfg),
+                    )
+                };
+                let affected = owned.references_column(id);
+                if affected {
+                    let pool = self.renderer.pool();
+                    let picker = &mut self.gpu_picker;
+                    match (old_active, new_active) {
+                        (true, true) => {
+                            owned
+                                .with_descriptor(|descriptor| {
+                                    picker.replace_series_at(gpu_index, pool, descriptor)
+                                })
+                                .map_err(js_err)?;
+                        }
+                        (true, false) => picker.remove_series_at(gpu_index).map_err(js_err)?,
+                        (false, true) => {
+                            owned
+                                .with_descriptor(|descriptor| {
+                                    picker.insert_series_at(gpu_index, pool, descriptor)
+                                })
+                                .map_err(js_err)?;
+                        }
+                        (false, false) => {}
+                    }
+                } else if old_active != new_active {
+                    return Err(js_err(
+                        "GPU picker activity changed for a series that does not reference the uploaded column",
+                    ));
+                }
+                if new_active {
+                    gpu_index += 1;
+                }
+            }
+            self.gpu_picker
+                .rebind_columns(self.renderer.pool())
+                .map_err(js_err)
+        }
+
+        /// Invalidate an in-flight fit when a later mutation wins call order.
+        fn bump_fit_epoch(&self) {
+            self.fit_epoch.set(self.fit_epoch.get().wrapping_add(1));
+        }
+
+        fn commit_column_revision(&mut self, id: &str) -> Result<(), JsValue> {
+            let revision = self.next_column_revision;
+            self.next_column_revision = revision
+                .checked_add(1)
+                .ok_or_else(|| js_err("column revision counter exhausted"))?;
+            self.column_revisions.insert(id.to_string(), revision);
+            self.bump_fit_epoch();
+            self.reconcile_errorbar_extents();
+            Ok(())
+        }
+
+        fn revisioned_column(&self, id: &str) -> Option<RevisionedColumn> {
+            Some(RevisionedColumn {
+                id: id.to_string(),
+                revision: *self.column_revisions.get(id)?,
+            })
+        }
+
+        fn errorbar_extent_key(
+            &self,
+            value_id: &str,
+            errors: &ErrorRef,
+        ) -> Option<ErrorbarExtentKey> {
+            let (lower_id, upper_id) = err_cols(errors);
+            Some(ErrorbarExtentKey {
+                value: self.revisioned_column(value_id)?,
+                lower: self.revisioned_column(lower_id)?,
+                upper: self.revisioned_column(upper_id)?,
+            })
+        }
+
+        fn errorbar_job(
+            &self,
+            value_id: &str,
+            errors: &ErrorRef,
+        ) -> Result<Rc<ScalarExtentJob>, JsValue> {
+            let key = self
+                .errorbar_extent_key(value_id, errors)
+                .ok_or_else(|| js_err("errorbar references a column without a live revision"))?;
+            self.errorbar_extents.get(&key).cloned().ok_or_else(|| {
+                js_err("errorbar GPU extent was not submitted at data/series mutation time")
+            })
+        }
+
+        fn reconcile_errorbar_extents(&mut self) {
+            let mut active = HashSet::new();
+            let mut ordered = Vec::new();
+            for cfg in &self.series_cfgs {
+                let (err_x, err_y) = err_refs(&cfg.render_type);
+                for key in [
+                    err_x.and_then(|errors| self.errorbar_extent_key(&cfg.x_column, errors)),
+                    err_y.and_then(|errors| self.errorbar_extent_key(&cfg.y_column, errors)),
+                ]
                 .into_iter()
-                .map(|id| (id.to_string(), columns.get(id).copied().unwrap_or((0, 0))))
-                .collect();
-            if let Some(e) = err_fit.get(&cfg.series_id)
-                && e.sigs == sigs
-            {
-                return (e.x, e.y);
+                .flatten()
+                {
+                    if active.insert(key.clone()) {
+                        ordered.push(key);
+                    }
+                }
             }
 
-            let pair = |vals_id: &str, r: &ErrorRef| -> Option<FitExtent> {
-                let (lo_id, hi_id) = err_cols(r);
-                errorbar_extent(
-                    col_data.get(vals_id)?,
-                    col_data.get(lo_id)?,
-                    col_data.get(hi_id)?,
-                )
+            self.errorbar_extents.retain(|key, _| active.contains(key));
+            for key in ordered {
+                if self.errorbar_extents.contains_key(&key) {
+                    continue;
+                }
+                let job = ScalarExtentJob::pending();
+                let ticket = self.renderer.begin_errorbar_extent(
+                    &key.value.id,
+                    &key.lower.id,
+                    &key.upper.id,
+                );
+                self.errorbar_extents.insert(key, Rc::clone(&job));
+                match ticket {
+                    Ok(ticket) => spawn_local(async move {
+                        let result = ticket
+                            .resolve()
+                            .await
+                            .map(|extent| {
+                                extent.map(|extent| FitExtent {
+                                    min: extent.min,
+                                    max: extent.max,
+                                    min_positive: extent.min_positive,
+                                })
+                            })
+                            .map_err(|error| error.to_string());
+                        job.complete(result);
+                    }),
+                    Err(error) => job.complete(Err(error.to_string())),
+                }
+            }
+        }
+
+        fn upsert_zero_column(&mut self, len: usize) -> Result<(), JsValue> {
+            let signature = (len, hash_zero_f32s(len));
+            if self.columns.get("__zero") == Some(&signature) {
+                return Ok(());
+            }
+            if self.columns.contains_key("__zero") {
+                self.renderer.remove_column("__zero");
+                self.needs_defrag = true;
+            }
+            let source = ZeroColumnSource::new(len);
+            self.renderer
+                .add_column("__zero", &source)
+                .map_err(js_err)?;
+            self.gpu_picker_dirty = true;
+            self.columns.insert("__zero".to_string(), signature);
+            self.commit_column_revision("__zero")
+        }
+
+        fn set_column_f64_as_f32(&mut self, id: &str, data: &[f64]) -> Result<(), JsValue> {
+            let signature = (data.len(), hash_f64s_as_f32(data));
+            if self.columns.get(id) == Some(&signature) {
+                return self.repair_gpu_picker_if_dirty();
+            }
+            let was_dirty = self.gpu_picker_dirty;
+            if self.columns.contains_key(id) {
+                self.renderer.remove_column(id);
+                self.needs_defrag = true;
+            }
+
+            let column = BorrowedCastF32Column::new(data);
+            self.renderer.add_column(id, &column).map_err(js_err)?;
+            let picker_result = if was_dirty {
+                self.rebuild_gpu_picker_now()
+            } else {
+                self.refresh_gpu_picker_after_column_upload(id)
             };
-            let x = err_x.and_then(|r| pair(&cfg.x_column, r));
-            let y = err_y.and_then(|r| pair(&cfg.y_column, r));
-            err_fit.insert(cfg.series_id.clone(), ErrFitEntry { sigs, x, y });
-            (x, y)
+            self.finish_column_upload(id, signature, picker_result)
         }
 
         fn ensure_columns_exist(&self, cfg: &SeriesConfig) -> Result<(), JsValue> {
@@ -664,9 +910,9 @@ mod web {
         /// dimension. Provision it transparently (sized to the longest column
         /// any errorbar series references) so hosts never learn the
         /// convention. Upsert semantics make repeat calls free.
-        fn ensure_zero_column(&mut self) -> Result<(), JsValue> {
+        fn ensure_zero_column_for(&mut self, series_cfgs: &[SeriesConfig]) -> Result<(), JsValue> {
             let mut needed = 0usize;
-            for cfg in &self.series_cfgs {
+            for cfg in series_cfgs {
                 let is_plain = matches!(
                     cfg.render_type,
                     DataRenderType::Line { .. }
@@ -683,9 +929,16 @@ mod web {
             }
             let existing = self.columns.get("__zero").map(|&(len, _)| len).unwrap_or(0);
             if needed > 0 && existing < needed {
-                self.set_column_f32("__zero", &vec![0.0; needed])?;
+                self.upsert_zero_column(needed)?;
             }
             Ok(())
+        }
+    }
+
+    impl Drop for FiggyChart {
+        fn drop(&mut self) {
+            self.alive.set(false);
+            self.bump_fit_epoch();
         }
     }
 
@@ -709,6 +962,9 @@ mod web {
             // Replace-heavy hosts can hit transient fragmentation between the
             // remove and the next frame's defrag — let the pool self-heal.
             renderer.set_defrag_policy(DefragPolicy::OnAllocFailure);
+            let gpu_picker =
+                GpuPickEngine::new(Arc::clone(renderer.device()), Arc::clone(renderer.queue()))
+                    .map_err(js_err)?;
 
             let mut config = renderer::default::default_config();
             config.chart_area = ChartArea(Rect {
@@ -732,7 +988,9 @@ mod web {
 
             Ok(FiggyChart {
                 renderer,
-                chart,
+                gpu_picker,
+                gpu_picker_dirty: false,
+                chart: Rc::new(RefCell::new(chart)),
                 view,
                 surface_size: (w, h),
                 series_cfgs: Vec::new(),
@@ -740,8 +998,11 @@ mod web {
                 labels: Vec::new(),
                 legend_auto_managed: true,
                 columns: HashMap::new(),
-                col_data: HashMap::new(),
-                err_fit: HashMap::new(),
+                column_revisions: HashMap::new(),
+                next_column_revision: 1,
+                errorbar_extents: HashMap::new(),
+                fit_epoch: Rc::new(Cell::new(0)),
+                alive: Rc::new(Cell::new(true)),
                 needs_defrag: false,
                 color_seq: 0,
                 hitmap: HitMap::standard_chart(),
@@ -766,7 +1027,7 @@ mod web {
                 renderer::text_render::register_font_bytes(bytes.to_vec()).map_err(js_err)?;
             // Text may already be on screen in the fallback font — force a
             // decoration re-raster so the registration is visible.
-            self.chart.with_decoration_change(|_| {});
+            self.chart.borrow_mut().with_decoration_change(|_| {});
             Ok(families)
         }
 
@@ -784,34 +1045,22 @@ mod web {
         pub fn set_column_f32(&mut self, id: &str, data: &[f32]) -> Result<(), JsValue> {
             let signature = (data.len(), hash_f32s(data));
             if self.columns.get(id) == Some(&signature) {
-                return Ok(());
+                return self.repair_gpu_picker_if_dirty();
             }
+            let was_dirty = self.gpu_picker_dirty;
             if self.columns.contains_key(id) {
                 self.renderer.remove_column(id);
                 self.needs_defrag = true;
             }
 
-            let (mut min, mut max) = (f32::INFINITY, f32::NEG_INFINITY);
-            for &v in data {
-                if v < min {
-                    min = v;
-                }
-                if v > max {
-                    max = v;
-                }
-            }
-            let column = Column {
-                data: data.to_vec(),
-                min,
-                max,
-            };
+            let column = BorrowedF32Column::new(data);
             self.renderer.add_column(id, &column).map_err(js_err)?;
-            // The renderer keeps no CPU copies of pool data; this Vec was
-            // headed for the drop. Keep it as the fit mirror instead —
-            // errorbar-aware auto-fit re-reads value/err pairs from it.
-            self.col_data.insert(id.to_string(), column.data);
-            self.columns.insert(id.to_string(), signature);
-            Ok(())
+            let picker_result = if was_dirty {
+                self.rebuild_gpu_picker_now()
+            } else {
+                self.refresh_gpu_picker_after_column_upload(id)
+            };
+            self.finish_column_upload(id, signature, picker_result)
         }
 
         /// Register or update a high-precision data column under `id`
@@ -823,62 +1072,59 @@ mod web {
         pub fn set_column_f64(&mut self, id: &str, data: &[f64]) -> Result<(), JsValue> {
             let signature = (data.len(), hash_f64s(data));
             if self.columns.get(id) == Some(&signature) {
-                return Ok(());
+                return self.repair_gpu_picker_if_dirty();
             }
+            let was_dirty = self.gpu_picker_dirty;
             if self.columns.contains_key(id) {
                 self.renderer.remove_column(id);
                 self.needs_defrag = true;
             }
 
-            let (mut min, mut max) = (f64::INFINITY, f64::NEG_INFINITY);
-            for &v in data {
-                if v < min {
-                    min = v;
-                }
-                if v > max {
-                    max = v;
-                }
-            }
-            let column = Column {
-                data: data.to_vec(),
-                min,
-                max,
-            };
+            let column = BorrowedF64Column::new(data);
             self.renderer.add_hilo_column(id, &column).map_err(js_err)?;
-            // Picking/errorbar-fit mirrors are still f32-oriented; rendering
-            // uses the hi/lo GPU path above, while these mirrors preserve the
-            // existing browser interaction contract until picker lookup grows
-            // a high-precision accessor.
-            self.col_data.insert(
-                id.to_string(),
-                column.data.iter().map(|&v| v as f32).collect(),
-            );
-            self.columns.insert(id.to_string(), signature);
-            Ok(())
+            let picker_result = if was_dirty {
+                self.rebuild_gpu_picker_now()
+            } else {
+                self.refresh_gpu_picker_after_column_upload(id)
+            };
+            self.finish_column_upload(id, signature, picker_result)
         }
 
         /// Unregister a column. Series referencing it are removed too (with
         /// their legend rows) so the chart can never point at freed data.
         /// Returns `true` when the column existed.
         pub fn remove_column(&mut self, id: &str) -> bool {
-            if self.columns.remove(id).is_none() {
+            if !self.columns.contains_key(id) {
                 return false;
             }
-            self.col_data.remove(id);
-            self.renderer.remove_column(id);
-            self.needs_defrag = true;
-
+            let was_dirty = self.gpu_picker_dirty;
             let keep: Vec<bool> = self
                 .series_cfgs
                 .iter()
                 .map(|cfg| !referenced_columns(cfg).contains(&id))
                 .collect();
+            let removed: Vec<usize> = keep
+                .iter()
+                .enumerate()
+                .filter_map(|(i, keep)| (!keep).then_some(i))
+                .collect();
+            if !was_dirty {
+                for &logical_index in removed.iter().rev() {
+                    if self.pick_series_active_in_metadata(&self.series_cfgs[logical_index]) {
+                        let gpu_index = self.gpu_pick_index_before(logical_index);
+                        if self.gpu_picker.remove_series_at(gpu_index).is_err() {
+                            return false;
+                        }
+                    }
+                }
+            }
+
+            self.columns.remove(id);
+            self.column_revisions.remove(id);
+            self.renderer.remove_column(id);
+            self.needs_defrag = true;
+
             if keep.iter().any(|k| !k) {
-                let removed: Vec<usize> = keep
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, keep)| (!keep).then_some(i))
-                    .collect();
                 let mut it = keep.iter();
                 self.series_cfgs.retain(|_| *it.next().unwrap());
                 let mut it = keep.iter();
@@ -893,6 +1139,11 @@ mod web {
                     self.sync_legend_symbols(false);
                 }
             }
+            if was_dirty {
+                let _ = self.rebuild_gpu_picker_now();
+            }
+            self.bump_fit_epoch();
+            self.reconcile_errorbar_extents();
             true
         }
 
@@ -955,6 +1206,20 @@ mod web {
             self.ensure_columns_exist(&cfg)?;
             let (scale, _) = self.display_scale_and_panel();
             let style = self.renderer.create_style_for_series_scaled(&cfg, scale);
+            if self.gpu_picker_dirty {
+                self.gpu_picker.clear_series();
+                let mut proposed = self.series_cfgs.clone();
+                if let Some(index) = existing {
+                    proposed[index] = cfg.clone();
+                } else {
+                    proposed.push(cfg.clone());
+                }
+                let precise = self.chart.borrow().config().draw_style.is_precise();
+                self.gpu_picker = self.build_gpu_picker_for(&proposed, precise)?;
+                self.gpu_picker_dirty = false;
+            } else {
+                self.update_gpu_picker_series(existing, &cfg)?;
+            }
 
             match existing {
                 Some(i) => {
@@ -976,6 +1241,8 @@ mod web {
                     }
                 }
             }
+            self.bump_fit_epoch();
+            self.reconcile_errorbar_extents();
             Ok(())
         }
 
@@ -1014,29 +1281,52 @@ mod web {
             else {
                 return false;
             };
+            let was_dirty = self.gpu_picker_dirty;
+            if !was_dirty && self.pick_series_active_in_metadata(&self.series_cfgs[i]) {
+                let gpu_index = self.gpu_pick_index_before(i);
+                if self.gpu_picker.remove_series_at(gpu_index).is_err() {
+                    return false;
+                }
+            }
             self.series_cfgs.remove(i);
             self.styles.remove(i);
             self.labels.remove(i);
-            self.err_fit.remove(series_id);
             if self.legend_auto_managed {
                 self.remove_legend_entry_for(i);
             } else {
                 self.sync_legend_symbols(false);
             }
+            if was_dirty {
+                let _ = self.rebuild_gpu_picker_now();
+            }
+            self.bump_fit_epoch();
+            self.reconcile_errorbar_extents();
             true
         }
 
         /// Fit the x axis to a column's range with proportional padding.
         pub fn auto_fit_x(&mut self, column: &str, padding: f64) -> Result<(), JsValue> {
-            self.chart
+            let result = self
+                .chart
+                .borrow_mut()
                 .auto_fit_x(self.renderer.pool(), column, padding)
-                .map_err(js_err)
+                .map_err(js_err);
+            if result.is_ok() {
+                self.bump_fit_epoch();
+            }
+            result
         }
 
         pub fn auto_fit_y(&mut self, column: &str, padding: f64) -> Result<(), JsValue> {
-            self.chart
+            let result = self
+                .chart
+                .borrow_mut()
                 .auto_fit_y(self.renderer.pool(), column, padding)
-                .map_err(js_err)
+                .map_err(js_err);
+            if result.is_ok() {
+                self.bump_fit_epoch();
+            }
+            result
         }
 
         /// Fit BOTH axes to the union of every registered series, leaving a
@@ -1051,46 +1341,80 @@ mod web {
         /// so caps never clip against an auto-fitted range. That pairwise
         /// pass runs once per (series, data) and is cached — repeat fits
         /// stay metadata-cheap.
-        pub fn auto_fit_all(&mut self, padding: f64) -> Result<(), JsValue> {
-            if self.series_cfgs.is_empty() {
-                return Ok(());
-            }
-            let mut x_ext = FitExtent::EMPTY;
-            let mut y_ext = FitExtent::EMPTY;
-            for cfg in &self.series_cfgs {
-                let pool = self.renderer.pool();
-                x_ext.union(&Chart::slot_extent(pool, &cfg.x_column).map_err(js_err)?);
-                y_ext.union(&Chart::slot_extent(pool, &cfg.y_column).map_err(js_err)?);
-                let (ex, ey) =
-                    Self::series_err_extents(cfg, &self.columns, &self.col_data, &mut self.err_fit);
-                if let Some(e) = ex {
-                    x_ext.union(&e);
+        pub fn auto_fit_all(&self, padding: f64) -> js_sys::Promise {
+            let snapshot = (|| -> Result<_, JsValue> {
+                let mut x_ext = FitExtent::EMPTY;
+                let mut y_ext = FitExtent::EMPTY;
+                let mut jobs = Vec::new();
+                for cfg in &self.series_cfgs {
+                    let pool = self.renderer.pool();
+                    x_ext.union(&Chart::slot_extent(pool, &cfg.x_column).map_err(js_err)?);
+                    y_ext.union(&Chart::slot_extent(pool, &cfg.y_column).map_err(js_err)?);
+                    let (err_x, err_y) = err_refs(&cfg.render_type);
+                    if let Some(errors) = err_x {
+                        jobs.push((true, self.errorbar_job(&cfg.x_column, errors)?));
+                    }
+                    if let Some(errors) = err_y {
+                        jobs.push((false, self.errorbar_job(&cfg.y_column, errors)?));
+                    }
                 }
-                if let Some(e) = ey {
-                    y_ext.union(&e);
+                Ok((x_ext, y_ext, jobs))
+            })();
+
+            let (mut x_ext, mut y_ext, jobs) = match snapshot {
+                Ok(snapshot) => snapshot,
+                Err(error) => return js_sys::Promise::reject(&error),
+            };
+            let chart = Rc::clone(&self.chart);
+            let fit_epoch = Rc::clone(&self.fit_epoch);
+            let alive = Rc::clone(&self.alive);
+            let expected_epoch = fit_epoch.get().wrapping_add(1);
+            fit_epoch.set(expected_epoch);
+
+            future_to_promise(async move {
+                for (is_x, job) in jobs {
+                    let extent = job.wait().await.map_err(js_err)?;
+                    if let Some(extent) = extent {
+                        if is_x {
+                            x_ext.union(&extent);
+                        } else {
+                            y_ext.union(&extent);
+                        }
+                    }
                 }
-            }
-            self.chart.auto_fit_x_extent(&x_ext, padding);
-            self.chart.auto_fit_y_extent(&y_ext, padding);
-            Ok(())
+                if !alive.get() {
+                    return Err(js_err("chart was dropped while auto_fit_all was pending"));
+                }
+                if fit_epoch.get() != expected_epoch {
+                    return Err(js_err(
+                        "auto_fit_all was superseded by a later data, series, or axis mutation",
+                    ));
+                }
+                let mut chart = chart
+                    .try_borrow_mut()
+                    .map_err(|_| js_err("chart is busy applying another synchronous mutation"))?;
+                chart.auto_fit_x_extent(&x_ext, padding);
+                chart.auto_fit_y_extent(&y_ext, padding);
+                Ok(JsValue::UNDEFINED)
+            })
         }
 
         // ---- titles ----
 
         pub fn set_title(&mut self, text: &str) {
-            self.chart.with_decoration_change(|c| {
+            self.chart.borrow_mut().with_decoration_change(|c| {
                 c.chart_title.text.segments = rich_segments_from_text(text);
             });
         }
 
         pub fn set_x_title(&mut self, text: &str) {
-            self.chart.with_decoration_change(|c| {
+            self.chart.borrow_mut().with_decoration_change(|c| {
                 c.bottom_x.title_option.text.segments = rich_segments_from_text(text);
             });
         }
 
         pub fn set_y_title(&mut self, text: &str) {
-            self.chart.with_decoration_change(|c| {
+            self.chart.borrow_mut().with_decoration_change(|c| {
                 c.left_y.title_option.text.segments = rich_segments_from_text(text);
             });
         }
@@ -1101,6 +1425,7 @@ mod web {
         pub fn apply_axis_preset(&mut self, preset: AxisPreset) {
             let p: renderer::AxisPreset = preset.into();
             self.chart
+                .borrow_mut()
                 .with_decoration_change(|c| c.apply_axis_preset(p));
         }
 
@@ -1127,7 +1452,7 @@ mod web {
         /// Serialize the full chart option SSoT to a JSON string.
         /// JS: `const cfg = JSON.parse(chart.get_config());`
         pub fn get_config(&self) -> Result<String, JsValue> {
-            serde_json::to_string(self.chart.config()).map_err(js_err)
+            serde_json::to_string(self.chart.borrow().config()).map_err(js_err)
         }
 
         /// Replace the whole option SSoT from JSON. Marks everything dirty —
@@ -1136,9 +1461,28 @@ mod web {
         /// JS: `chart.set_config(JSON.stringify(cfg));`
         pub fn set_config(&mut self, json: &str) -> Result<(), JsValue> {
             let new_cfg: renderer::Config = serde_json::from_str(json).map_err(js_err)?;
-            let legend_content_changed =
-                self.chart.config().legend.content != new_cfg.legend.content;
-            *self.chart.config_mut() = new_cfg;
+            let (legend_content_changed, old_precise) = {
+                let chart = self.chart.borrow();
+                (
+                    chart.config().legend.content != new_cfg.legend.content,
+                    chart.config().draw_style.is_precise(),
+                )
+            };
+            let new_precise = new_cfg.draw_style.is_precise();
+            let next_gpu_picker = if old_precise != new_precise {
+                if self.gpu_picker_dirty {
+                    self.gpu_picker.clear_series();
+                }
+                Some(self.build_gpu_picker_for(&self.series_cfgs, new_precise)?)
+            } else {
+                None
+            };
+            *self.chart.borrow_mut().config_mut() = new_cfg;
+            if let Some(next_gpu_picker) = next_gpu_picker {
+                self.gpu_picker = next_gpu_picker;
+                self.gpu_picker_dirty = false;
+            }
+            self.bump_fit_epoch();
             if legend_content_changed {
                 self.legend_auto_managed = false;
             }
@@ -1160,7 +1504,13 @@ mod web {
             for cfg in &new_series {
                 self.ensure_columns_exist(cfg)?;
             }
-            self.labels = new_series
+            self.ensure_zero_column_for(&new_series)?;
+            if self.gpu_picker_dirty {
+                self.gpu_picker.clear_series();
+            }
+            let precise = self.chart.borrow().config().draw_style.is_precise();
+            let next_gpu_picker = self.build_gpu_picker_for(&new_series, precise)?;
+            let new_labels = new_series
                 .iter()
                 .map(|cfg| {
                     cfg.label
@@ -1174,9 +1524,13 @@ mod web {
                         })
                 })
                 .collect();
+            self.labels = new_labels;
             self.series_cfgs = new_series;
+            self.gpu_picker = next_gpu_picker;
+            self.gpu_picker_dirty = false;
             self.color_seq = self.series_cfgs.len().max(self.color_seq);
-            self.ensure_zero_column()?;
+            self.bump_fit_epoch();
+            self.reconcile_errorbar_extents();
             self.rebuild_styles();
             self.sync_legend_symbols(self.legend_auto_managed);
             Ok(())
@@ -1216,30 +1570,47 @@ mod web {
         /// Returns JSON `{ source_id, series_id, point_index, data_x, data_y,
         /// distance_px }`, or `null` when no visible primitive is within
         /// `max_distance_px`.
-        pub fn pick_point(
-            &self,
-            x: f32,
-            y: f32,
-            max_distance_px: f32,
-        ) -> Result<Option<String>, JsValue> {
+        pub fn pick_point(&self, x: f32, y: f32, max_distance_px: f32) -> js_sys::Promise {
+            if self.gpu_picker_dirty {
+                return js_sys::Promise::reject(&js_err(
+                    "GPU picker rebuild is required after a failed column-index update",
+                ));
+            }
             let (display_config, _, _) = self.display_config();
-            let columns = WebPointColumns {
-                col_data: &self.col_data,
+            let chart_rect = display_config.chart_area.0;
+            let data_area_px = display_config.data_area().ok().map(|area| {
+                let rect = area.0;
+                [
+                    rect.x as f32,
+                    rect.y as f32,
+                    rect.width as f32,
+                    rect.height as f32,
+                ]
+            });
+            let query = GpuPickQuery {
+                transform: renderer::data_render::scatter_transform_from_config(&display_config),
+                chart_rect_px: [
+                    chart_rect.x as f32,
+                    chart_rect.y as f32,
+                    chart_rect.width as f32,
+                    chart_rect.height as f32,
+                ],
+                data_area_px,
+                canvas_position_px: [x, y],
+                max_distance_px,
             };
-            let Some(picked) = renderer::pick_nearest_point(
-                &display_config,
-                &self.series_cfgs,
-                &columns,
-                x,
-                y,
-                PointPickOptions { max_distance_px },
-            ) else {
-                return Ok(None);
+            let ticket = match self.gpu_picker.pick(self.renderer.pool(), query) {
+                Ok(ticket) => ticket,
+                Err(error) => return js_sys::Promise::reject(&js_err(error)),
             };
 
-            crate::picked_point_json_string(&picked)
-                .map(Some)
-                .map_err(js_err)
+            future_to_promise(async move {
+                let Some(picked) = ticket.resolve().await.map_err(js_err)? else {
+                    return Ok(JsValue::UNDEFINED);
+                };
+                let json = crate::picked_point_json_string(&picked).map_err(js_err)?;
+                Ok(JsValue::from_str(&json))
+            })
         }
 
         /// Replace the picked-point overlay config. Passing JSON `null`
@@ -1247,7 +1618,7 @@ mod web {
         pub fn set_picked_points(&mut self, json: &str) -> Result<(), JsValue> {
             let picked: Option<renderer::config::PickedPointsConfig> =
                 serde_json::from_str(json).map_err(js_err)?;
-            self.chart.with_decoration_change(|c| {
+            self.chart.borrow_mut().with_decoration_change(|c| {
                 c.picked_points = picked;
             });
             Ok(())
@@ -1286,7 +1657,7 @@ mod web {
             });
             if new_sel != self.selected {
                 self.selected = new_sel;
-                self.chart.with_decoration_change(|_| {});
+                self.chart.borrow_mut().with_decoration_change(|_| {});
             }
             self.selected.is_some()
         }
@@ -1297,14 +1668,14 @@ mod web {
             let (dx, dy) = self.display_delta_to_document(dx, dy);
             if let Some(handle) = self.resizing {
                 if let Some(rz) = self.hitmap.get(id).and_then(|el| el.as_resizable()) {
-                    let _ = rz.resize_by(self.chart.config_mut(), handle, dx, dy);
+                    let _ = rz.resize_by(self.chart.borrow_mut().config_mut(), handle, dx, dy);
                 }
                 return;
             }
             if self.dragging
                 && let Some(drag) = self.hitmap.get(id).and_then(|el| el.as_draggable())
             {
-                let _ = drag.drag_by(self.chart.config_mut(), dx, dy);
+                let _ = drag.drag_by(self.chart.borrow_mut().config_mut(), dx, dy);
             }
         }
 
@@ -1327,7 +1698,12 @@ mod web {
             // into one compaction pass (GPU-internal copies only).
             if self.needs_defrag {
                 self.needs_defrag = false;
-                self.renderer.defragment().map_err(js_err)?;
+                let relocated = self.renderer.defragment().map_err(js_err)?;
+                if relocated && !self.gpu_picker_dirty {
+                    self.gpu_picker
+                        .rebind_columns(self.renderer.pool())
+                        .map_err(js_err)?;
+                }
             }
 
             // Browser resize is preview zoom, not a document mutation. The
@@ -1336,11 +1712,15 @@ mod web {
             let (display_config, panel_rect, _) = self.display_config();
             let display_chart = Chart::new(display_config);
             let view_dirty = self.view_dirty;
-            let raster_dirty = self.chart.consume_raster_dirty();
-            // `Renderer::prepare` (inside `draw` below) rewrites the transform
-            // uniform from the current config every frame; the data-dirty flag
-            // only needs resetting.
-            let _ = self.chart.consume_data_dirty();
+            let raster_dirty = {
+                let mut chart = self.chart.borrow_mut();
+                let raster_dirty = chart.consume_raster_dirty();
+                // `Renderer::prepare` (inside `draw` below) rewrites the transform
+                // uniform from the current config every frame; the data-dirty flag
+                // only needs resetting.
+                let _ = chart.consume_data_dirty();
+                raster_dirty
+            };
             if view_dirty || raster_dirty {
                 let sel_boxes: Vec<SelectionBox> = self
                     .selected
@@ -1408,10 +1788,14 @@ mod web {
         /// transform uniforms + arc-prefix compute; wasm-bindgen serializes
         /// access, so this changes nothing for JS callers.)
         pub async fn export_png(&mut self, scale: f32) -> Result<js_sys::Uint8Array, JsValue> {
+            let export_chart = {
+                let chart = self.chart.borrow();
+                Chart::new(chart.config().clone())
+            };
             let bytes = self
                 .renderer
                 .export_panel_png_bytes_with_clear_async(
-                    &self.chart,
+                    &export_chart,
                     &self.series_cfgs,
                     scale,
                     self.clear_color,
@@ -1427,13 +1811,11 @@ mod web {
         pub fn load_demo(&mut self) -> Result<(), JsValue> {
             let (xs, ys) = renderer::demo::sine_data(512);
             let (ts, vs) = renderer::demo::rc_data(512);
-            let to_f32 = |v: Vec<f64>| v.into_iter().map(|x| x as f32).collect::<Vec<f32>>();
-            let (xs, ys, ts, vs) = (to_f32(xs), to_f32(ys), to_f32(ts), to_f32(vs));
 
-            self.set_column_f32("demo_x", &xs)?;
-            self.set_column_f32("demo_sin", &ys)?;
-            self.set_column_f32("demo_t", &ts)?;
-            self.set_column_f32("demo_rc", &vs)?;
+            self.set_column_f64_as_f32("demo_x", &xs)?;
+            self.set_column_f64_as_f32("demo_sin", &ys)?;
+            self.set_column_f64_as_f32("demo_t", &ts)?;
+            self.set_column_f64_as_f32("demo_rc", &vs)?;
             self.add_line_series("sine", "demo_x", "demo_sin", 2.0, "sin(x)")?;
             self.add_line_series("rc", "demo_t", "demo_rc", 2.0, "RC charge")?;
             self.auto_fit_x("demo_x", 0.02)?;

@@ -1,0 +1,489 @@
+//! Borrowed adapters for streaming web column inputs into renderer staging
+//! buffers without constructing an owned per-value mirror.
+
+use renderer::data::{COLUMN_VALUE_BYTES, split_f64_to_f32_pair};
+use renderer::{ColumnSource, HiLoColumnSource};
+
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// Borrowed `f32` column with upload-time scalar statistics.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BorrowedF32Column<'a> {
+    data: &'a [f32],
+    min: f32,
+    max: f32,
+}
+
+impl<'a> BorrowedF32Column<'a> {
+    pub(crate) fn new(data: &'a [f32]) -> Self {
+        let (mut min, mut max) = (f32::INFINITY, f32::NEG_INFINITY);
+        for &value in data {
+            if value < min {
+                min = value;
+            }
+            if value > max {
+                max = value;
+            }
+        }
+        Self { data, min, max }
+    }
+}
+
+impl ColumnSource for BorrowedF32Column<'_> {
+    fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    fn min(&self) -> f64 {
+        self.min as f64
+    }
+
+    fn max(&self) -> f64 {
+        self.max as f64
+    }
+
+    fn write_f32_le_into(&self, dst: &mut [u8]) {
+        debug_assert_eq!(dst.len(), std::mem::size_of_val(self.data));
+        for (bytes, &value) in dst.chunks_exact_mut(size_of::<f32>()).zip(self.data) {
+            bytes.copy_from_slice(&value.to_le_bytes());
+        }
+    }
+
+    fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
+        HiLoColumnSource::write_f32_pair_le_into(self, dst);
+    }
+}
+
+impl HiLoColumnSource for BorrowedF32Column<'_> {
+    fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    fn min(&self) -> f64 {
+        self.min as f64
+    }
+
+    fn max(&self) -> f64 {
+        self.max as f64
+    }
+
+    fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
+        debug_assert_eq!(dst.len(), self.data.len() * COLUMN_VALUE_BYTES);
+        for (pair, &hi) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(self.data) {
+            pair[..4].copy_from_slice(&hi.to_le_bytes());
+            pair[4..].copy_from_slice(&0.0f32.to_le_bytes());
+        }
+    }
+}
+
+/// Borrowed f64 input uploaded with the legacy per-value f32 cast semantics.
+///
+/// This exists for internally generated f64 demo data: it avoids constructing
+/// a second f32 value vector while preserving the exact bytes previously
+/// produced by converting each f64 value to f32.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BorrowedCastF32Column<'a> {
+    data: &'a [f64],
+    min: f32,
+    max: f32,
+}
+
+impl<'a> BorrowedCastF32Column<'a> {
+    pub(crate) fn new(data: &'a [f64]) -> Self {
+        let (mut min, mut max) = (f32::INFINITY, f32::NEG_INFINITY);
+        for &value in data {
+            let value = value as f32;
+            if value < min {
+                min = value;
+            }
+            if value > max {
+                max = value;
+            }
+        }
+        Self { data, min, max }
+    }
+}
+
+impl ColumnSource for BorrowedCastF32Column<'_> {
+    fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    fn min(&self) -> f64 {
+        self.min as f64
+    }
+
+    fn max(&self) -> f64 {
+        self.max as f64
+    }
+
+    fn write_f32_le_into(&self, dst: &mut [u8]) {
+        debug_assert_eq!(dst.len(), self.data.len() * size_of::<f32>());
+        for (bytes, &value) in dst.chunks_exact_mut(size_of::<f32>()).zip(self.data) {
+            bytes.copy_from_slice(&(value as f32).to_le_bytes());
+        }
+    }
+
+    fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
+        debug_assert_eq!(dst.len(), self.data.len() * COLUMN_VALUE_BYTES);
+        for (pair, &value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(self.data) {
+            pair[..4].copy_from_slice(&(value as f32).to_le_bytes());
+            pair[4..].fill(0);
+        }
+    }
+}
+
+/// Borrowed f64 column with upload-time scalar statistics.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BorrowedF64Column<'a> {
+    data: &'a [f64],
+    min: f64,
+    max: f64,
+}
+
+impl<'a> BorrowedF64Column<'a> {
+    pub(crate) fn new(data: &'a [f64]) -> Self {
+        let (mut min, mut max) = (f64::INFINITY, f64::NEG_INFINITY);
+        for &value in data {
+            if value < min {
+                min = value;
+            }
+            if value > max {
+                max = value;
+            }
+        }
+        Self { data, min, max }
+    }
+}
+
+impl ColumnSource for BorrowedF64Column<'_> {
+    fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    fn min(&self) -> f64 {
+        self.min
+    }
+
+    fn max(&self) -> f64 {
+        self.max
+    }
+
+    fn write_f32_le_into(&self, dst: &mut [u8]) {
+        debug_assert_eq!(dst.len(), self.data.len() * size_of::<f32>());
+        for (bytes, &value) in dst.chunks_exact_mut(size_of::<f32>()).zip(self.data) {
+            bytes.copy_from_slice(&(value as f32).to_le_bytes());
+        }
+    }
+
+    fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
+        debug_assert_eq!(dst.len(), self.data.len() * COLUMN_VALUE_BYTES);
+        for (pair, &value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(self.data) {
+            pair[..4].copy_from_slice(&(value as f32).to_le_bytes());
+            pair[4..].fill(0);
+        }
+    }
+}
+
+impl HiLoColumnSource for BorrowedF64Column<'_> {
+    fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    fn min(&self) -> f64 {
+        self.min
+    }
+
+    fn max(&self) -> f64 {
+        self.max
+    }
+
+    fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
+        debug_assert_eq!(dst.len(), self.data.len() * COLUMN_VALUE_BYTES);
+        for (pair, &value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(self.data) {
+            let (hi, lo) = split_f64_to_f32_pair(value);
+            pair[..4].copy_from_slice(&hi.to_le_bytes());
+            pair[4..].copy_from_slice(&lo.to_le_bytes());
+        }
+    }
+}
+
+/// A logical all-zero column that stores only its length.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ZeroColumnSource {
+    len: usize,
+}
+
+impl ZeroColumnSource {
+    pub(crate) fn new(len: usize) -> Self {
+        Self { len }
+    }
+
+    fn min_max(&self) -> (f64, f64) {
+        if self.len == 0 {
+            (f64::INFINITY, f64::NEG_INFINITY)
+        } else {
+            (0.0, 0.0)
+        }
+    }
+}
+
+impl ColumnSource for ZeroColumnSource {
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn min(&self) -> f64 {
+        self.min_max().0
+    }
+
+    fn max(&self) -> f64 {
+        self.min_max().1
+    }
+
+    fn write_f32_le_into(&self, dst: &mut [u8]) {
+        debug_assert_eq!(dst.len(), self.len * size_of::<f32>());
+        dst.fill(0);
+    }
+
+    fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
+        debug_assert_eq!(dst.len(), self.len * COLUMN_VALUE_BYTES);
+        dst.fill(0);
+    }
+}
+
+impl HiLoColumnSource for ZeroColumnSource {
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn min(&self) -> f64 {
+        self.min_max().0
+    }
+
+    fn max(&self) -> f64 {
+        self.min_max().1
+    }
+
+    fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
+        debug_assert_eq!(dst.len(), self.len * COLUMN_VALUE_BYTES);
+        dst.fill(0);
+    }
+}
+
+/// Content signature used by the existing same-data upsert fast path.
+pub(crate) fn hash_f32s(data: &[f32]) -> u64 {
+    let mut hash = FNV_OFFSET_BASIS;
+    for value in data {
+        hash ^= value.to_bits() as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+/// Content signature used by the existing same-data upsert fast path.
+pub(crate) fn hash_f64s(data: &[f64]) -> u64 {
+    let mut hash = FNV_OFFSET_BASIS;
+    for value in data {
+        hash ^= value.to_bits();
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+pub(crate) fn hash_f64s_as_f32(data: &[f64]) -> u64 {
+    let mut hash = FNV_OFFSET_BASIS;
+    for value in data {
+        hash ^= (*value as f32).to_bits() as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+/// Signature of `len` positive f32 zeroes without constructing or walking an
+/// all-zero value array. Each zero lane leaves the xor unchanged, so this is
+/// exactly `FNV_OFFSET_BASIS * FNV_PRIME.pow(len)` modulo 2^64.
+pub(crate) fn hash_zero_f32s(len: usize) -> u64 {
+    let mut exponent = len;
+    let mut factor = FNV_PRIME;
+    let mut power = 1_u64;
+    while exponent != 0 {
+        if exponent & 1 != 0 {
+            power = power.wrapping_mul(factor);
+        }
+        factor = factor.wrapping_mul(factor);
+        exponent >>= 1;
+    }
+    FNV_OFFSET_BASIS.wrapping_mul(power)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scalar_bytes<T: ColumnSource>(source: &T) -> Vec<u8> {
+        let mut bytes = vec![0; source.len() * size_of::<f32>()];
+        source.write_f32_le_into(&mut bytes);
+        bytes
+    }
+
+    fn scalar_pair_bytes<T: ColumnSource>(source: &T) -> Vec<u8> {
+        let mut bytes = vec![0; source.len() * COLUMN_VALUE_BYTES];
+        source.write_f32_zero_lo_pair_le_into(&mut bytes);
+        bytes
+    }
+
+    fn pair_bytes<T: HiLoColumnSource>(source: &T) -> Vec<u8> {
+        let mut bytes = vec![0; source.len() * COLUMN_VALUE_BYTES];
+        source.write_f32_pair_le_into(&mut bytes);
+        bytes
+    }
+
+    #[test]
+    fn borrowed_f32_preserves_stats_and_bits() {
+        let values = [
+            f32::from_bits(0x7fc0_0042),
+            -0.0,
+            4.5,
+            -2.25,
+            f32::from_bits(0xffc0_0011),
+        ];
+        let source = BorrowedF32Column::new(&values);
+
+        assert_eq!(source.data.as_ptr(), values.as_ptr());
+        assert_eq!(ColumnSource::min(&source), -2.25);
+        assert_eq!(ColumnSource::max(&source), 4.5);
+
+        let expected: Vec<u8> = values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        assert_eq!(scalar_bytes(&source), expected);
+
+        let expected_pairs: Vec<u8> = values
+            .iter()
+            .flat_map(|value| [value.to_le_bytes(), 0.0f32.to_le_bytes()].concat())
+            .collect();
+        assert_eq!(scalar_pair_bytes(&source), expected_pairs);
+        assert_eq!(pair_bytes(&source), expected_pairs);
+    }
+
+    #[test]
+    fn borrowed_f64_preserves_stats_scalar_cast_and_split_pairs() {
+        let values = [
+            f64::from_bits(0x7ff8_0000_0000_0042),
+            -0.0,
+            1_700_000_000_000.125,
+            1_700_000_000_000.875,
+            -8.5,
+        ];
+        let source = BorrowedF64Column::new(&values);
+
+        assert_eq!(source.data.as_ptr(), values.as_ptr());
+        assert_eq!(ColumnSource::min(&source), -8.5);
+        assert_eq!(ColumnSource::max(&source), 1_700_000_000_000.875);
+
+        let expected_scalar: Vec<u8> = values
+            .iter()
+            .flat_map(|&value| (value as f32).to_le_bytes())
+            .collect();
+        assert_eq!(scalar_bytes(&source), expected_scalar);
+        let expected_scalar_pairs: Vec<u8> = values
+            .iter()
+            .flat_map(|&value| [(value as f32).to_le_bytes(), 0.0f32.to_le_bytes()].concat())
+            .collect();
+        assert_eq!(scalar_pair_bytes(&source), expected_scalar_pairs);
+
+        let expected_pairs: Vec<u8> = values
+            .iter()
+            .flat_map(|&value| {
+                let (hi, lo) = split_f64_to_f32_pair(value);
+                [hi.to_le_bytes(), lo.to_le_bytes()].concat()
+            })
+            .collect();
+        assert_eq!(pair_bytes(&source), expected_pairs);
+    }
+
+    #[test]
+    fn borrowed_f64_cast_source_matches_the_previous_f32_vector() {
+        let values = [
+            f64::from_bits(0x7ff8_0000_0000_0042),
+            -0.0,
+            1_700_000_000_000.125,
+            1_700_000_000_000.875,
+            -8.5,
+        ];
+        let expected = values.map(|value| value as f32);
+        let source = BorrowedCastF32Column::new(&values);
+
+        assert_eq!(source.data.as_ptr(), values.as_ptr());
+        assert_eq!(
+            ColumnSource::min(&source),
+            expected.iter().copied().fold(f32::INFINITY, f32::min) as f64
+        );
+        assert_eq!(
+            ColumnSource::max(&source),
+            expected.iter().copied().fold(f32::NEG_INFINITY, f32::max) as f64
+        );
+        assert_eq!(
+            scalar_bytes(&source),
+            expected
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect::<Vec<_>>()
+        );
+        let expected_pairs: Vec<u8> = expected
+            .iter()
+            .flat_map(|value| [value.to_le_bytes(), 0.0f32.to_le_bytes()].concat())
+            .collect();
+        assert_eq!(scalar_pair_bytes(&source), expected_pairs);
+        assert_eq!(hash_f64s_as_f32(&values), hash_f32s(&expected));
+    }
+
+    #[test]
+    fn empty_and_zero_sources_match_existing_scan_semantics() {
+        let empty_f32 = BorrowedF32Column::new(&[]);
+        assert_eq!(ColumnSource::min(&empty_f32), f64::INFINITY);
+        assert_eq!(ColumnSource::max(&empty_f32), f64::NEG_INFINITY);
+
+        let empty_f64 = BorrowedF64Column::new(&[]);
+        assert_eq!(ColumnSource::min(&empty_f64), f64::INFINITY);
+        assert_eq!(ColumnSource::max(&empty_f64), f64::NEG_INFINITY);
+
+        let zeros = ZeroColumnSource::new(3);
+        assert_eq!(ColumnSource::min(&zeros).to_bits(), 0.0f64.to_bits());
+        assert_eq!(ColumnSource::max(&zeros).to_bits(), 0.0f64.to_bits());
+        assert_eq!(scalar_bytes(&zeros), vec![0; 3 * size_of::<f32>()]);
+        assert_eq!(scalar_pair_bytes(&zeros), vec![0; 3 * COLUMN_VALUE_BYTES]);
+        assert_eq!(pair_bytes(&zeros), vec![0; 3 * COLUMN_VALUE_BYTES]);
+
+        let empty_zeros = ZeroColumnSource::new(0);
+        assert_eq!(ColumnSource::min(&empty_zeros), f64::INFINITY);
+        assert_eq!(ColumnSource::max(&empty_zeros), f64::NEG_INFINITY);
+    }
+
+    #[test]
+    fn hashes_preserve_the_existing_fnv_policy() {
+        let f32_values = [0.0, -0.0, f32::from_bits(0x7fc0_0042), 3.25];
+        let mut expected_f32 = 0xcbf2_9ce4_8422_2325_u64;
+        for value in f32_values {
+            expected_f32 ^= value.to_bits() as u64;
+            expected_f32 = expected_f32.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        assert_eq!(hash_f32s(&f32_values), expected_f32);
+
+        let f64_values = [0.0, -0.0, f64::from_bits(0x7ff8_0000_0000_0042), 3.25];
+        let mut expected_f64 = 0xcbf2_9ce4_8422_2325_u64;
+        for value in f64_values {
+            expected_f64 ^= value.to_bits();
+            expected_f64 = expected_f64.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        assert_eq!(hash_f64s(&f64_values), expected_f64);
+
+        for len in [0, 1, 2, 3, 127, 128, 129, 10_000] {
+            let zeros = vec![0.0_f32; len];
+            assert_eq!(hash_zero_f32s(len), hash_f32s(&zeros));
+        }
+    }
+}

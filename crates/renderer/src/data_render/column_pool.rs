@@ -88,15 +88,7 @@ pub enum DefragPolicy {
 }
 
 fn write_scalar_source_as_pairs(source: &dyn ColumnSource, dst: &mut [u8]) {
-    let n = source.len();
-    debug_assert_eq!(dst.len(), n * COLUMN_VALUE_BYTES);
-    let mut scalar = vec![0u8; n * std::mem::size_of::<f32>()];
-    source.write_f32_le_into(&mut scalar);
-    for (i, chunk) in scalar.chunks_exact(4).enumerate() {
-        let base = i * COLUMN_VALUE_BYTES;
-        dst[base..base + 4].copy_from_slice(chunk);
-        dst[base + 4..base + 8].copy_from_slice(&0.0f32.to_le_bytes());
-    }
+    source.write_f32_zero_lo_pair_le_into(dst);
 }
 
 /// Lightweight handle handed out to the chart layer. `generation` lets
@@ -358,8 +350,8 @@ impl ColumnPool {
     ///
     /// 1. First-fit allocation from the free list.
     /// 2. Create a `mapped_at_creation: true` staging buffer.
-    /// 3. `ColumnSource::write_f32_le_into` writes bytes directly into the
-    ///    mapped slice (no intermediate Vec).
+    /// 3. `ColumnSource::write_f32_zero_lo_pair_le_into` writes bytes directly
+    ///    into the mapped slice (no intermediate Vec).
     /// 4. Unmap, encode a staging→primary copy, submit.
     fn try_add_column(
         &mut self,
@@ -694,6 +686,72 @@ impl ColumnPool {
 mod tests {
     use super::*;
     use crate::data::Column;
+
+    struct RawScalarSource<'a> {
+        bits: &'a [u32],
+        write_address: std::cell::Cell<usize>,
+    }
+
+    impl ColumnSource for RawScalarSource<'_> {
+        fn len(&self) -> usize {
+            self.bits.len()
+        }
+
+        fn min(&self) -> f64 {
+            0.0
+        }
+
+        fn max(&self) -> f64 {
+            0.0
+        }
+
+        fn write_f32_le_into(&self, dst: &mut [u8]) {
+            self.write_address.set(dst.as_ptr() as usize);
+            assert_eq!(dst.len(), self.bits.len() * std::mem::size_of::<f32>());
+            for (chunk, bits) in dst.chunks_exact_mut(4).zip(self.bits) {
+                chunk.copy_from_slice(&bits.to_le_bytes());
+            }
+        }
+    }
+
+    #[test]
+    fn scalar_source_expands_to_pairs_without_changing_bits() {
+        let bits = [
+            0x0000_0000,
+            0x8000_0000,
+            0x3f80_0001,
+            0x7fc1_2345,
+            0x7f80_0000,
+            0xff80_0000,
+        ];
+        let mut dst = vec![0xa5; bits.len() * COLUMN_VALUE_BYTES];
+        let dst_address = dst.as_ptr() as usize;
+        let source = RawScalarSource {
+            bits: &bits,
+            write_address: std::cell::Cell::new(0),
+        };
+
+        write_scalar_source_as_pairs(&source, &mut dst);
+
+        assert_eq!(source.write_address.get(), dst_address);
+        for (pair, bits) in dst.chunks_exact(COLUMN_VALUE_BYTES).zip(bits) {
+            assert_eq!(&pair[..4], &bits.to_le_bytes());
+            assert_eq!(&pair[4..], &0.0f32.to_le_bytes());
+        }
+    }
+
+    #[test]
+    fn scalar_source_expansion_accepts_empty_input() {
+        let source = RawScalarSource {
+            bits: &[],
+            write_address: std::cell::Cell::new(0),
+        };
+        let mut dst = [];
+
+        write_scalar_source_as_pairs(&source, &mut dst);
+
+        assert!(dst.is_empty());
+    }
 
     fn mk_pool(
         cap: u64,

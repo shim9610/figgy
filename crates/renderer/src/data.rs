@@ -41,6 +41,26 @@ pub trait ColumnSource {
     /// encoded as `f32::NAN`. Conversion (f64 → f32, Option → f32) happens
     /// element-wise inline — no intermediate `Vec`.
     fn write_f32_le_into(&self, dst: &mut [u8]);
+
+    /// Write the scalar GPU representation directly as `(value, 0)` f32
+    /// pairs. Implementors should override this to keep mapped staging writes
+    /// sequential. The fallback preserves source compatibility and expands in
+    /// place without allocating a per-value buffer.
+    fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
+        let n = self.len();
+        debug_assert_eq!(dst.len(), n * COLUMN_VALUE_BYTES);
+        let scalar_bytes = n * std::mem::size_of::<f32>();
+        self.write_f32_le_into(&mut dst[..scalar_bytes]);
+        if n == 0 {
+            return;
+        }
+        let words: &mut [u32] = bytemuck::cast_slice_mut(dst);
+        for i in (0..n).rev() {
+            let scalar_bits = words[i];
+            words[i * 2] = scalar_bits;
+            words[i * 2 + 1] = 0;
+        }
+    }
 }
 
 /// High-precision column upload path.
@@ -77,6 +97,13 @@ impl ColumnSource for Column<f64> {
         debug_assert_eq!(dst.len(), self.data.len() * 4);
         for (i, &v) in self.data.iter().enumerate() {
             dst[i * 4..i * 4 + 4].copy_from_slice(&(v as f32).to_le_bytes());
+        }
+    }
+    fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
+        debug_assert_eq!(dst.len(), self.data.len() * COLUMN_VALUE_BYTES);
+        for (pair, &value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(&self.data) {
+            pair[..4].copy_from_slice(&(value as f32).to_le_bytes());
+            pair[4..].fill(0);
         }
     }
 }
@@ -118,6 +145,9 @@ impl ColumnSource for Column<f32> {
         let dst_f32: &mut [f32] = bytemuck::cast_slice_mut(dst);
         dst_f32.copy_from_slice(&self.data);
     }
+    fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
+        <Self as HiLoColumnSource>::write_f32_pair_le_into(self, dst);
+    }
 }
 
 impl HiLoColumnSource for Column<f32> {
@@ -155,6 +185,14 @@ impl ColumnSource for Column<Option<f64>> {
         for (i, opt) in self.data.iter().enumerate() {
             let v = opt.map(|x| x as f32).unwrap_or(f32::NAN);
             dst[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+        }
+    }
+    fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
+        debug_assert_eq!(dst.len(), self.data.len() * COLUMN_VALUE_BYTES);
+        for (pair, value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(&self.data) {
+            let value = value.map(|value| value as f32).unwrap_or(f32::NAN);
+            pair[..4].copy_from_slice(&value.to_le_bytes());
+            pair[4..].fill(0);
         }
     }
 }

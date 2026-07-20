@@ -196,6 +196,7 @@ pub struct Renderer {
     queue: Arc<wgpu::Queue>,
     caps: RendererDeviceCaps,
     pool: ColumnPool,
+    errorbar_extent_engine: crate::gpu_errorbar::GpuErrorbarExtentEngine,
     target_sample_count: u32,
 
     // Bind group layouts (exposed so callers can build per-panel bind groups).
@@ -912,6 +913,7 @@ impl Renderer {
             );
         }
         let pool = ColumnPool::new(&device, pool_capacity)?;
+        let errorbar_extent_engine = crate::gpu_errorbar::GpuErrorbarExtentEngine::new(&device);
 
         let texture_bgl = data_render::create_texture_bind_group_layout(&device);
         let transform_bgl = data_render::create_scatter_transform_bind_group_layout(&device);
@@ -941,6 +943,7 @@ impl Renderer {
             queue,
             caps,
             pool,
+            errorbar_extent_engine,
             target_sample_count,
             texture_bgl,
             transform_bgl,
@@ -1103,6 +1106,49 @@ impl Renderer {
 
     pub fn is_valid_handle(&self, h: &ColumnHandle) -> bool {
         self.pool.is_valid_handle(h)
+    }
+
+    /// Submit one exact errorbar-inclusive extent reduction from the current
+    /// GPU column-pool mappings. The returned ticket owns its readback and
+    /// does not borrow this renderer.
+    pub fn begin_errorbar_extent(
+        &self,
+        value_id: &str,
+        lower_id: &str,
+        upper_id: &str,
+    ) -> std::result::Result<
+        crate::gpu_errorbar::GpuErrorbarExtentTicket,
+        crate::gpu_errorbar::GpuErrorbarError,
+    > {
+        let current_handle = |role: &'static str, id: &str| {
+            let handle = self.pool.handle_for(id).ok_or_else(|| {
+                crate::gpu_errorbar::GpuErrorbarError::UnknownColumn {
+                    role,
+                    id: id.to_string(),
+                }
+            })?;
+            if !self.pool.is_valid_handle(&handle) {
+                return Err(crate::gpu_errorbar::GpuErrorbarError::StaleHandle {
+                    role,
+                    id: id.to_string(),
+                    generation: handle.generation,
+                    current: self.pool.generation(),
+                });
+            }
+            Ok(handle)
+        };
+
+        let values = current_handle("value", value_id)?;
+        let lower_errors = current_handle("lower error", lower_id)?;
+        let upper_errors = current_handle("upper error", upper_id)?;
+        self.errorbar_extent_engine.begin(
+            &self.device,
+            &self.queue,
+            self.pool.buffer(),
+            values,
+            lower_errors,
+            upper_errors,
+        )
     }
 
     // Standalone path — figgy owns instance / adapter / device / queue / surface.
@@ -3405,6 +3451,44 @@ mod tests {
         // A device with a generous binding limit keeps a large pool intact.
         let caps_big = caps_with_limits(u32::MAX, 4 * 1024 * mb);
         assert_eq!(effective_pool_capacity(512 * mb, caps_big), 512 * mb);
+    }
+
+    #[test]
+    fn renderer_begins_errorbar_extent_from_current_column_ids() {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let mut renderer = Renderer::try_new(
+            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+            wgpu::TextureFormat::Bgra8Unorm,
+            1024 * 1024,
+        )
+        .unwrap();
+        renderer
+            .add_column("fit-value", &col_f64(vec![0.0, 10.0]))
+            .unwrap();
+        renderer
+            .add_column("fit-lower", &col_f64(vec![1.0, 5.0]))
+            .unwrap();
+        renderer
+            .add_column("fit-upper", &col_f64(vec![1.0, 5.0]))
+            .unwrap();
+
+        match renderer.begin_errorbar_extent("fit-value", "missing", "fit-upper") {
+            Err(crate::gpu_errorbar::GpuErrorbarError::UnknownColumn { role, id }) => {
+                assert_eq!(role, "lower error");
+                assert_eq!(id, "missing");
+            }
+            _ => panic!("missing lower error column must be reported before submission"),
+        }
+
+        let ticket = renderer
+            .begin_errorbar_extent("fit-value", "fit-lower", "fit-upper")
+            .unwrap();
+        let extent = pollster::block_on(ticket.resolve()).unwrap().unwrap();
+        assert_eq!(extent.min, -1.0);
+        assert_eq!(extent.max, 15.0);
+        assert_eq!(extent.min_positive, Some(1.0));
     }
 
     #[test]
