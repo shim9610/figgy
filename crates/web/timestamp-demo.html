@@ -240,6 +240,8 @@
     const widthInput = document.getElementById("chart-width");
     const exportScaleSelect = document.getElementById("export-scale");
     const exportButton = document.getElementById("export");
+    let timestampColumnRegistered = false;
+    let signalColumnRegistered = false;
 
     const unitDivisor = {
       Seconds: 1000,
@@ -341,8 +343,18 @@
       const unit = unitSelect.value;
       const data = generateData(startMs, endMs, unit);
 
-      chart.set_column_f64("timestamp_x", data.x);
-      chart.set_column_f32("signal_y", data.y);
+      if (timestampColumnRegistered) {
+        chart.update_register_column_f64("timestamp_x", data.x);
+      } else {
+        chart.register_column_f64("timestamp_x", data.x);
+        timestampColumnRegistered = true;
+      }
+      if (signalColumnRegistered) {
+        chart.update_register_column_f32("signal_y", data.y);
+      } else {
+        chart.register_column_f32("signal_y", data.y);
+        signalColumnRegistered = true;
+      }
       chart.add_line_series("timestamp_signal", "timestamp_x", "signal_y", 2.0, "signal");
       updateConfig(data.min, data.max);
       chart.set_title("Timestamp axis scaling");

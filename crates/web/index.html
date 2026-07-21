@@ -93,8 +93,8 @@
         const y = 3 - Math.floor(i / 7);
         const xId = `marker_x_${i}`;
         const yId = `marker_y_${i}`;
-        chart.set_column_f32(xId, new Float32Array([x]));
-        chart.set_column_f32(yId, new Float32Array([y]));
+        chart.register_column_f32(xId, new Float32Array([x]));
+        chart.register_column_f32(yId, new Float32Array([y]));
         return {
           series_id: `marker_${i}_${shape}`,
           label: null,

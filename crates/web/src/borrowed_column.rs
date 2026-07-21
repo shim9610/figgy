@@ -4,9 +4,6 @@
 use renderer::data::{COLUMN_VALUE_BYTES, split_f64_to_f32_pair};
 use renderer::{ColumnSource, HiLoColumnSource};
 
-const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-
 /// Borrowed `f32` column with upload-time scalar statistics.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BorrowedF32Column<'a> {
@@ -272,52 +269,6 @@ impl HiLoColumnSource for ZeroColumnSource {
     }
 }
 
-/// Content signature used by the existing same-data upsert fast path.
-pub(crate) fn hash_f32s(data: &[f32]) -> u64 {
-    let mut hash = FNV_OFFSET_BASIS;
-    for value in data {
-        hash ^= value.to_bits() as u64;
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    hash
-}
-
-/// Content signature used by the existing same-data upsert fast path.
-pub(crate) fn hash_f64s(data: &[f64]) -> u64 {
-    let mut hash = FNV_OFFSET_BASIS;
-    for value in data {
-        hash ^= value.to_bits();
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    hash
-}
-
-pub(crate) fn hash_f64s_as_f32(data: &[f64]) -> u64 {
-    let mut hash = FNV_OFFSET_BASIS;
-    for value in data {
-        hash ^= (*value as f32).to_bits() as u64;
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    hash
-}
-
-/// Signature of `len` positive f32 zeroes without constructing or walking an
-/// all-zero value array. Each zero lane leaves the xor unchanged, so this is
-/// exactly `FNV_OFFSET_BASIS * FNV_PRIME.pow(len)` modulo 2^64.
-pub(crate) fn hash_zero_f32s(len: usize) -> u64 {
-    let mut exponent = len;
-    let mut factor = FNV_PRIME;
-    let mut power = 1_u64;
-    while exponent != 0 {
-        if exponent & 1 != 0 {
-            power = power.wrapping_mul(factor);
-        }
-        factor = factor.wrapping_mul(factor);
-        exponent >>= 1;
-    }
-    FNV_OFFSET_BASIS.wrapping_mul(power)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,7 +389,6 @@ mod tests {
             .flat_map(|value| [value.to_le_bytes(), 0.0f32.to_le_bytes()].concat())
             .collect();
         assert_eq!(scalar_pair_bytes(&source), expected_pairs);
-        assert_eq!(hash_f64s_as_f32(&values), hash_f32s(&expected));
     }
 
     #[test]
@@ -461,29 +411,5 @@ mod tests {
         let empty_zeros = ZeroColumnSource::new(0);
         assert_eq!(ColumnSource::min(&empty_zeros), f64::INFINITY);
         assert_eq!(ColumnSource::max(&empty_zeros), f64::NEG_INFINITY);
-    }
-
-    #[test]
-    fn hashes_preserve_the_existing_fnv_policy() {
-        let f32_values = [0.0, -0.0, f32::from_bits(0x7fc0_0042), 3.25];
-        let mut expected_f32 = 0xcbf2_9ce4_8422_2325_u64;
-        for value in f32_values {
-            expected_f32 ^= value.to_bits() as u64;
-            expected_f32 = expected_f32.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        assert_eq!(hash_f32s(&f32_values), expected_f32);
-
-        let f64_values = [0.0, -0.0, f64::from_bits(0x7ff8_0000_0000_0042), 3.25];
-        let mut expected_f64 = 0xcbf2_9ce4_8422_2325_u64;
-        for value in f64_values {
-            expected_f64 ^= value.to_bits();
-            expected_f64 = expected_f64.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        assert_eq!(hash_f64s(&f64_values), expected_f64);
-
-        for len in [0, 1, 2, 3, 127, 128, 129, 10_000] {
-            let zeros = vec![0.0_f32; len];
-            assert_eq!(hash_zero_f32s(len), hash_f32s(&zeros));
-        }
     }
 }

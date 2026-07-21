@@ -8,10 +8,10 @@
 //! when they intentionally want to own those browser responsibilities.
 //!
 //! Lifecycle model: **one instance, register/unregister**. Columns and series
-//! are managed by id — `set_column_f32` / `set_column_f64` are upserts that
-//! skip re-uploading identical data, `remove_*` unregisters (and drops dependents), and pool
-//! defragmentation runs automatically after removals. Pool internals
-//! (capacity stats, defrag policy) are intentionally not exposed.
+//! are managed by id. Column registration and explicit registration updates
+//! are separate operations; `set_series` only selects registered columns for
+//! drawing. `remove_*` unregisters (and drops dependents), and pool
+//! defragmentation runs automatically after removals.
 //!
 //! The whole implementation is gated to `wasm32`: on native targets this
 //! crate compiles to an empty library so `cargo test --workspace` stays
@@ -222,18 +222,96 @@ fn select_errorbar_extent_map<T: Clone>(
 
 #[cfg(any(target_arch = "wasm32", test))]
 struct PreparedColumnMetadata {
-    columns: std::collections::HashMap<String, (usize, u64)>,
+    columns: std::collections::HashMap<String, usize>,
     revisions: std::collections::HashMap<String, u64>,
     next_revision: u64,
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
+const INTERNAL_ZERO_COLUMN_ID: &str = "__zero";
+
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ColumnRegistryAction {
+    Register,
+    Update,
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn validate_column_registry_action(
+    is_registered: bool,
+    action: ColumnRegistryAction,
+) -> Result<(), &'static str> {
+    match (action, is_registered) {
+        (ColumnRegistryAction::Register, false) | (ColumnRegistryAction::Update, true) => Ok(()),
+        (ColumnRegistryAction::Register, true) => Err("is already registered"),
+        (ColumnRegistryAction::Update, false) => Err("is not registered"),
+    }
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn validate_public_column_id(id: &str) -> Result<(), &'static str> {
+    if id == INTERNAL_ZERO_COLUMN_ID {
+        Err("is reserved for internal errorbar rendering")
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn column_update_invalidates_fit(id: &str) -> bool {
+    id != INTERNAL_ZERO_COLUMN_ID
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn validate_column_data_len(len: usize) -> Result<(), &'static str> {
+    if len == 0 {
+        Err("data must not be empty")
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn required_internal_zero_column_len(
+    columns: &std::collections::HashMap<String, usize>,
+    series_cfgs: &[renderer::SeriesConfig],
+) -> usize {
+    use renderer::data_config::ErrorRef;
+
+    let mut needed = 0usize;
+    for cfg in series_cfgs {
+        let errors = match err_refs(&cfg.render_type) {
+            (Some(errors), None) | (None, Some(errors)) => errors,
+            (None, None) | (Some(_), Some(_)) => continue,
+        };
+        let mut count = columns
+            .get(&cfg.x_column)
+            .copied()
+            .unwrap_or(0)
+            .min(columns.get(&cfg.y_column).copied().unwrap_or(0));
+        match errors {
+            ErrorRef::Symmetric { column } => {
+                count = count.min(columns.get(column).copied().unwrap_or(0));
+            }
+            ErrorRef::Asymmetric { lower, upper } => {
+                count = count
+                    .min(columns.get(lower).copied().unwrap_or(0))
+                    .min(columns.get(upper).copied().unwrap_or(0));
+            }
+        }
+        needed = needed.max(count);
+    }
+    needed
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
 fn prepare_column_metadata(
-    columns: &std::collections::HashMap<String, (usize, u64)>,
+    columns: &std::collections::HashMap<String, usize>,
     revisions: &std::collections::HashMap<String, u64>,
     next_revision: u64,
     id: &str,
-    signature: (usize, u64),
+    len: usize,
 ) -> Result<PreparedColumnMetadata, &'static str> {
     use std::collections::HashMap;
 
@@ -247,7 +325,7 @@ fn prepare_column_metadata(
         .try_reserve(capacity)
         .map_err(|_| "column metadata allocation failed")?;
     future_columns.extend(columns.iter().map(|(id, value)| (id.clone(), *value)));
-    future_columns.insert(id.to_string(), signature);
+    future_columns.insert(id.to_string(), len);
 
     let capacity = revisions
         .len()
@@ -272,12 +350,52 @@ mod tests {
     use std::{collections::HashMap, rc::Rc};
 
     use renderer::data_config::ErrorRef;
+    use renderer::{
+        Color, DataErrorBarStyleConfig, DataRenderType, DataScatterStyleConfig, ScatterShape,
+        SeriesConfig,
+    };
 
     use super::{
-        active_errorbar_extent_keys, checked_column_revision, display_config_for_surface,
+        ColumnRegistryAction, INTERNAL_ZERO_COLUMN_ID, active_errorbar_extent_keys,
+        checked_column_revision, column_update_invalidates_fit, display_config_for_surface,
         errorbar_extent_key_from, fit_display_panel, picked_point_json_string,
-        prepare_column_metadata, select_errorbar_extent_map,
+        prepare_column_metadata, required_internal_zero_column_len, select_errorbar_extent_map,
+        validate_column_data_len, validate_column_registry_action, validate_public_column_id,
     };
+
+    fn scatter_style() -> DataScatterStyleConfig {
+        DataScatterStyleConfig {
+            point_color: Color::BLACK,
+            point_shape: ScatterShape::Circle,
+            point_size: 4.0,
+            point_style_table: None,
+            point_style_index_column: None,
+            point_style_overrides: None,
+        }
+    }
+
+    fn errorbar_style() -> DataErrorBarStyleConfig {
+        DataErrorBarStyleConfig {
+            error_bar_color: Color::BLACK,
+            error_bar_width: 1.0,
+            error_bar_cap_size: 2.0,
+            cap_width: 1.0,
+            error_bar_style_table: None,
+            error_bar_style_index_column: None,
+            error_bar_style_overrides: None,
+        }
+    }
+
+    fn series_config(series_id: &str, render_type: DataRenderType) -> SeriesConfig {
+        SeriesConfig {
+            series_id: series_id.to_string(),
+            source_id: None,
+            label: None,
+            x_column: "x".to_string(),
+            y_column: "y".to_string(),
+            render_type,
+        }
+    }
 
     #[test]
     fn display_panel_uniformly_scales_document() {
@@ -415,18 +533,112 @@ mod tests {
 
     #[test]
     fn metadata_preflight_does_not_publish_before_commit() {
-        let columns = HashMap::from([("x".to_string(), (2, 11))]);
+        let columns = HashMap::from([("x".to_string(), 2)]);
         let revisions = HashMap::from([("x".to_string(), 7)]);
         let original_columns = columns.clone();
         let original_revisions = revisions.clone();
 
-        let prepared = prepare_column_metadata(&columns, &revisions, 8, "x", (3, 12)).unwrap();
+        let prepared = prepare_column_metadata(&columns, &revisions, 8, "x", 3).unwrap();
 
         assert_eq!(columns, original_columns);
         assert_eq!(revisions, original_revisions);
-        assert_eq!(prepared.columns.get("x"), Some(&(3, 12)));
+        assert_eq!(prepared.columns.get("x"), Some(&3));
         assert_eq!(prepared.revisions.get("x"), Some(&8));
         assert_eq!(prepared.next_revision, 9);
+    }
+
+    #[test]
+    fn same_length_update_still_issues_a_new_revision() {
+        let columns = HashMap::from([("x".to_string(), 2)]);
+        let revisions = HashMap::from([("x".to_string(), 7)]);
+
+        let prepared = prepare_column_metadata(&columns, &revisions, 8, "x", 2).unwrap();
+
+        assert_eq!(prepared.columns.get("x"), Some(&2));
+        assert_eq!(prepared.revisions.get("x"), Some(&8));
+        assert_eq!(prepared.next_revision, 9);
+    }
+
+    #[test]
+    fn column_registry_actions_fail_closed() {
+        assert_eq!(
+            validate_column_registry_action(false, ColumnRegistryAction::Register),
+            Ok(())
+        );
+        assert_eq!(
+            validate_column_registry_action(true, ColumnRegistryAction::Register),
+            Err("is already registered")
+        );
+        assert_eq!(
+            validate_column_registry_action(true, ColumnRegistryAction::Update),
+            Ok(())
+        );
+        assert_eq!(
+            validate_column_registry_action(false, ColumnRegistryAction::Update),
+            Err("is not registered")
+        );
+    }
+
+    #[test]
+    fn internal_zero_column_id_is_not_publicly_mutable() {
+        assert_eq!(
+            validate_public_column_id(INTERNAL_ZERO_COLUMN_ID),
+            Err("is reserved for internal errorbar rendering")
+        );
+        assert_eq!(validate_public_column_id("x"), Ok(()));
+        assert!(!column_update_invalidates_fit(INTERNAL_ZERO_COLUMN_ID));
+        assert!(column_update_invalidates_fit("x"));
+        assert_eq!(validate_column_data_len(0), Err("data must not be empty"));
+        assert_eq!(validate_column_data_len(1), Ok(()));
+    }
+
+    #[test]
+    fn internal_zero_length_matches_single_axis_draw_count_only() {
+        let columns = HashMap::from([
+            ("x".to_string(), 100),
+            ("y".to_string(), 80),
+            ("x_lo".to_string(), 60),
+            ("x_hi".to_string(), 70),
+            ("y_err".to_string(), 50),
+        ]);
+        let x_only = series_config(
+            "x-only",
+            DataRenderType::ScatterErrorbarX {
+                scatter: scatter_style(),
+                err_x: ErrorRef::Asymmetric {
+                    lower: "x_lo".to_string(),
+                    upper: "x_hi".to_string(),
+                },
+                err_style: errorbar_style(),
+            },
+        );
+        let y_only = series_config(
+            "y-only",
+            DataRenderType::ScatterErrorbarY {
+                scatter: scatter_style(),
+                err_y: ErrorRef::Symmetric {
+                    column: "y_err".to_string(),
+                },
+                err_style: errorbar_style(),
+            },
+        );
+        let xy = series_config(
+            "xy",
+            DataRenderType::ScatterErrorbarXY {
+                scatter: scatter_style(),
+                err_x: ErrorRef::Symmetric {
+                    column: "x_lo".to_string(),
+                },
+                err_y: ErrorRef::Symmetric {
+                    column: "y_err".to_string(),
+                },
+                err_style: errorbar_style(),
+            },
+        );
+
+        assert_eq!(required_internal_zero_column_len(&columns, &[x_only]), 60);
+        assert_eq!(required_internal_zero_column_len(&columns, &[y_only]), 50);
+        assert_eq!(required_internal_zero_column_len(&columns, &[xy]), 0);
     }
 }
 
@@ -459,14 +671,16 @@ mod web {
     };
 
     use crate::borrowed_column::{
-        BorrowedCastF32Column, BorrowedF32Column, BorrowedF64Column, ZeroColumnSource, hash_f32s,
-        hash_f64s, hash_f64s_as_f32, hash_zero_f32s,
+        BorrowedCastF32Column, BorrowedF32Column, BorrowedF64Column, ZeroColumnSource,
     };
     use crate::gpu_pick_style::OwnedGpuPickSeriesDescriptor;
     use crate::scalar_job::ScalarExtentJob;
     use crate::{
-        ErrorbarExtentKey, active_errorbar_extent_keys, err_refs, errorbar_extent_key_from,
-        prepare_column_metadata, select_errorbar_extent_map,
+        ColumnRegistryAction, ErrorbarExtentKey, INTERNAL_ZERO_COLUMN_ID,
+        active_errorbar_extent_keys, column_update_invalidates_fit, err_refs,
+        errorbar_extent_key_from, prepare_column_metadata, required_internal_zero_column_len,
+        select_errorbar_extent_map, validate_column_data_len, validate_column_registry_action,
+        validate_public_column_id,
     };
 
     const POOL_CAPACITY: u64 = 16 * 1024 * 1024;
@@ -699,8 +913,8 @@ mod web {
         /// Direct `set_config` legend edits turn this off so later series
         /// changes preserve user-authored text instead of deleting rows.
         legend_auto_managed: bool,
-        /// Registered columns: id → (len, content hash) for upsert skipping.
-        columns: HashMap<String, (usize, u64)>,
+        /// Registered columns: id to logical value count.
+        columns: HashMap<String, usize>,
         /// Successful changed-upload revision for each live GPU column.
         column_revisions: HashMap<String, u64>,
         next_column_revision: u64,
@@ -865,10 +1079,14 @@ mod web {
         }
 
         fn pick_series_active_in_metadata(&self, cfg: &SeriesConfig) -> bool {
-            self.columns
+            Self::pick_series_active_in(&self.columns, cfg)
+        }
+
+        fn pick_series_active_in(columns: &HashMap<String, usize>, cfg: &SeriesConfig) -> bool {
+            columns
                 .get(&cfg.x_column)
-                .zip(self.columns.get(&cfg.y_column))
-                .is_some_and(|((x_len, _), (y_len, _))| (*x_len).min(*y_len) > 0)
+                .zip(columns.get(&cfg.y_column))
+                .is_some_and(|(x_len, y_len)| (*x_len).min(*y_len) > 0)
         }
 
         fn pick_series_active_in_pool(&self, cfg: &SeriesConfig) -> bool {
@@ -976,10 +1194,10 @@ mod web {
         }
 
         fn repair_gpu_picker_if_dirty(&mut self) -> Result<(), JsValue> {
-            if !self.gpu_picker_dirty {
-                return Ok(());
+            if self.gpu_picker_dirty {
+                self.rebuild_gpu_picker_now()?;
             }
-            self.rebuild_gpu_picker_now()
+            Ok(())
         }
 
         fn rebuild_gpu_picker_now(&mut self) -> Result<(), JsValue> {
@@ -1123,7 +1341,7 @@ mod web {
         fn upsert_column_atomic(
             &mut self,
             id: &str,
-            signature: (usize, u64),
+            len: usize,
             source: ColumnUploadSource<'_>,
         ) -> Result<(), JsValue> {
             // Everything installed after the renderer commit is prepared here,
@@ -1133,7 +1351,7 @@ mod web {
                 &self.column_revisions,
                 self.next_column_revision,
                 id,
-                signature,
+                len,
             )
             .map_err(js_err)?;
             let ordered_keys = active_errorbar_extent_keys(&self.series_cfgs, &metadata.revisions)
@@ -1211,7 +1429,9 @@ mod web {
             self.errorbar_extents = future_errorbar_extents;
             self.next_column_revision = metadata.next_revision;
             self.needs_defrag |= replaced_existing;
-            self.bump_fit_epoch();
+            if column_update_invalidates_fit(id) {
+                self.bump_fit_epoch();
+            }
             for (ticket, job) in ticket_jobs {
                 Self::spawn_errorbar_extent(ticket, job);
             }
@@ -1219,25 +1439,26 @@ mod web {
         }
 
         fn upsert_zero_column(&mut self, len: usize) -> Result<(), JsValue> {
-            let signature = (len, hash_zero_f32s(len));
-            if self.columns.get("__zero") == Some(&signature) {
+            if self.columns.get(INTERNAL_ZERO_COLUMN_ID) == Some(&len) {
                 return Ok(());
             }
             let source = ZeroColumnSource::new(len);
-            self.upsert_column_atomic("__zero", signature, ColumnUploadSource::Scalar(&source))
+            self.upsert_column_atomic(
+                INTERNAL_ZERO_COLUMN_ID,
+                len,
+                ColumnUploadSource::Scalar(&source),
+            )
         }
 
-        fn set_column_f64_as_f32(&mut self, id: &str, data: &[f64]) -> Result<(), JsValue> {
-            let signature = (data.len(), hash_f64s_as_f32(data));
-            if self.columns.get(id) == Some(&signature) {
-                return self.repair_gpu_picker_if_dirty();
-            }
+        fn upsert_column_f64_as_f32(&mut self, id: &str, data: &[f64]) -> Result<(), JsValue> {
             let column = BorrowedCastF32Column::new(data);
-            self.upsert_column_atomic(id, signature, ColumnUploadSource::Scalar(&column))
+            self.upsert_column_atomic(id, data.len(), ColumnUploadSource::Scalar(&column))
         }
 
         fn ensure_columns_exist(&self, cfg: &SeriesConfig) -> Result<(), JsValue> {
             for id in referenced_columns(cfg) {
+                validate_public_column_id(id)
+                    .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
                 if !self.columns.contains_key(id) {
                     return Err(js_err(format!(
                         "series '{}' references unregistered column '{id}'",
@@ -1248,28 +1469,16 @@ mod web {
             Ok(())
         }
 
-        /// Errorbar variants bind the `"__zero"` column for their unused error
-        /// dimension. Provision it transparently (sized to the longest column
-        /// any errorbar series references) so hosts never learn the
-        /// convention. Upsert semantics make repeat calls free.
-        fn ensure_zero_column_for(&mut self, series_cfgs: &[SeriesConfig]) -> Result<(), JsValue> {
-            let mut needed = 0usize;
-            for cfg in series_cfgs {
-                let is_plain = matches!(
-                    cfg.render_type,
-                    DataRenderType::Line { .. }
-                        | DataRenderType::Scatter { .. }
-                        | DataRenderType::ScatterLine { .. }
-                );
-                if !is_plain {
-                    for id in referenced_columns(cfg) {
-                        if let Some(&(len, _)) = self.columns.get(id) {
-                            needed = needed.max(len);
-                        }
-                    }
-                }
-            }
-            let existing = self.columns.get("__zero").map(|&(len, _)| len).unwrap_or(0);
+        /// Errorbar variants bind the internal `"__zero"` column for their
+        /// unused error dimension. Rendering preparation owns this resource;
+        /// changing the active series never uploads column data.
+        fn ensure_zero_column_for_render(&mut self) -> Result<(), JsValue> {
+            let needed = required_internal_zero_column_len(&self.columns, &self.series_cfgs);
+            let existing = self
+                .columns
+                .get(INTERNAL_ZERO_COLUMN_ID)
+                .copied()
+                .unwrap_or(0);
             if needed > 0 && existing < needed {
                 self.upsert_zero_column(needed)?;
             }
@@ -1373,45 +1582,85 @@ mod web {
             Ok(families)
         }
 
-        // ---- column registry (id-keyed upsert / unregister) ----
+        // ---- column registry (explicit register / update / unregister) ----
 
-        /// Register or update a data column under `id` (`Float32Array`).
-        ///
-        /// Upsert semantics, fully automatic:
-        /// - new id → upload;
-        /// - same id + **identical data** (length + content hash) → no-op,
-        ///   the existing GPU mapping is kept — callers can stream their whole
-        ///   dataset every time without redundant uploads;
-        /// - same id + different data → replace (the old region is freed and
-        ///   the pool defragments on the next frame).
-        pub fn set_column_f32(&mut self, id: &str, data: &[f32]) -> Result<(), JsValue> {
-            let signature = (data.len(), hash_f32s(data));
-            if self.columns.get(id) == Some(&signature) {
-                return self.repair_gpu_picker_if_dirty();
-            }
+        /// Register a new `Float32Array` column. Existing ids are rejected.
+        pub fn register_column_f32(&mut self, id: &str, data: &[f32]) -> Result<(), JsValue> {
+            validate_public_column_id(id)
+                .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
+            validate_column_registry_action(
+                self.columns.contains_key(id),
+                ColumnRegistryAction::Register,
+            )
+            .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
+            validate_column_data_len(data.len())
+                .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
             let column = BorrowedF32Column::new(data);
-            self.upsert_column_atomic(id, signature, ColumnUploadSource::Scalar(&column))
+            self.upsert_column_atomic(id, data.len(), ColumnUploadSource::Scalar(&column))
         }
 
-        /// Register or update a high-precision data column under `id`
-        /// (`Float64Array`).
-        ///
-        /// The GPU pool stores each logical value as two f32 lanes `(hi, lo)`.
-        /// Use this for large absolute timestamps or coordinates where
-        /// `Float32Array` would lose sub-unit deltas before upload.
-        pub fn set_column_f64(&mut self, id: &str, data: &[f64]) -> Result<(), JsValue> {
-            let signature = (data.len(), hash_f64s(data));
-            if self.columns.get(id) == Some(&signature) {
-                return self.repair_gpu_picker_if_dirty();
-            }
+        /// Register a new `Float64Array` column as GPU `(hi, lo)` pairs.
+        /// Existing ids are rejected.
+        pub fn register_column_f64(&mut self, id: &str, data: &[f64]) -> Result<(), JsValue> {
+            validate_public_column_id(id)
+                .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
+            validate_column_registry_action(
+                self.columns.contains_key(id),
+                ColumnRegistryAction::Register,
+            )
+            .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
+            validate_column_data_len(data.len())
+                .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
             let column = BorrowedF64Column::new(data);
-            self.upsert_column_atomic(id, signature, ColumnUploadSource::HiLo(&column))
+            self.upsert_column_atomic(id, data.len(), ColumnUploadSource::HiLo(&column))
+        }
+
+        /// Atomically replace an existing column from a `Float32Array`.
+        /// Missing ids are rejected; every accepted call performs an upload.
+        pub fn update_register_column_f32(
+            &mut self,
+            id: &str,
+            data: &[f32],
+        ) -> Result<(), JsValue> {
+            validate_public_column_id(id)
+                .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
+            validate_column_registry_action(
+                self.columns.contains_key(id),
+                ColumnRegistryAction::Update,
+            )
+            .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
+            validate_column_data_len(data.len())
+                .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
+            let column = BorrowedF32Column::new(data);
+            self.upsert_column_atomic(id, data.len(), ColumnUploadSource::Scalar(&column))
+        }
+
+        /// Atomically replace an existing column from a `Float64Array` as
+        /// GPU `(hi, lo)` pairs. Every accepted call performs an upload.
+        pub fn update_register_column_f64(
+            &mut self,
+            id: &str,
+            data: &[f64],
+        ) -> Result<(), JsValue> {
+            validate_public_column_id(id)
+                .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
+            validate_column_registry_action(
+                self.columns.contains_key(id),
+                ColumnRegistryAction::Update,
+            )
+            .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
+            validate_column_data_len(data.len())
+                .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
+            let column = BorrowedF64Column::new(data);
+            self.upsert_column_atomic(id, data.len(), ColumnUploadSource::HiLo(&column))
         }
 
         /// Unregister a column. Series referencing it are removed too (with
         /// their legend rows) so the chart can never point at freed data.
         /// Returns `true` when the column existed.
         pub fn remove_column(&mut self, id: &str) -> Result<bool, JsValue> {
+            validate_public_column_id(id)
+                .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
             if !self.columns.contains_key(id) {
                 return Ok(false);
             }
@@ -1826,7 +2075,6 @@ mod web {
             for cfg in &new_series {
                 self.ensure_columns_exist(cfg)?;
             }
-            self.ensure_zero_column_for(&new_series)?;
             if self.gpu_picker_dirty {
                 self.gpu_picker.clear_series();
             }
@@ -1892,11 +2140,9 @@ mod web {
         /// Returns JSON `{ source_id, series_id, point_index, data_x, data_y,
         /// distance_px }`, or `null` when no visible primitive is within
         /// `max_distance_px`.
-        pub fn pick_point(&self, x: f32, y: f32, max_distance_px: f32) -> js_sys::Promise {
-            if self.gpu_picker_dirty {
-                return js_sys::Promise::reject(&js_err(
-                    "GPU picker rebuild is required after a failed column-index update",
-                ));
+        pub fn pick_point(&mut self, x: f32, y: f32, max_distance_px: f32) -> js_sys::Promise {
+            if let Err(error) = self.repair_gpu_picker_if_dirty() {
+                return js_sys::Promise::reject(&error);
             }
             let (display_config, _, _) = self.display_config();
             let chart_rect = display_config.chart_area.0;
@@ -2016,6 +2262,8 @@ mod web {
         /// frame. Call from `requestAnimationFrame`; with nothing dirty the
         /// raster cost is skipped and only the GPU pass runs.
         pub fn frame(&mut self) -> Result<(), JsValue> {
+            self.ensure_zero_column_for_render()?;
+
             // Coalesced auto-defrag: removals since the last frame collapse
             // into one compaction pass (GPU-internal copies only).
             if self.needs_defrag {
@@ -2110,6 +2358,7 @@ mod web {
         /// transform uniforms + arc-prefix compute; wasm-bindgen serializes
         /// access, so this changes nothing for JS callers.)
         pub async fn export_png(&mut self, scale: f32) -> Result<js_sys::Uint8Array, JsValue> {
+            self.ensure_zero_column_for_render()?;
             let export_chart = {
                 let chart = self.chart.borrow();
                 Chart::new(chart.config().clone())
@@ -2128,16 +2377,16 @@ mod web {
         }
 
         /// Load the bundled demo (sine + RC charge curves) — lets a frontend
-        /// see a real chart without wiring data first. Idempotent: columns
-        /// and series are upserts, so calling it twice changes nothing.
+        /// see a real chart without wiring data first. Repeated calls replace
+        /// the demo registrations and keep the same series declarations.
         pub fn load_demo(&mut self) -> Result<(), JsValue> {
             let (xs, ys) = renderer::demo::sine_data(512);
             let (ts, vs) = renderer::demo::rc_data(512);
 
-            self.set_column_f64_as_f32("demo_x", &xs)?;
-            self.set_column_f64_as_f32("demo_sin", &ys)?;
-            self.set_column_f64_as_f32("demo_t", &ts)?;
-            self.set_column_f64_as_f32("demo_rc", &vs)?;
+            self.upsert_column_f64_as_f32("demo_x", &xs)?;
+            self.upsert_column_f64_as_f32("demo_sin", &ys)?;
+            self.upsert_column_f64_as_f32("demo_t", &ts)?;
+            self.upsert_column_f64_as_f32("demo_rc", &vs)?;
             self.add_line_series("sine", "demo_x", "demo_sin", 2.0, "sin(x)")?;
             self.add_line_series("rc", "demo_t", "demo_rc", 2.0, "RC charge")?;
             self.auto_fit_x("demo_x", 0.02)?;
