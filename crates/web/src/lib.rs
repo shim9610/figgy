@@ -221,6 +221,24 @@ fn select_errorbar_extent_map<T: Clone>(
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
+fn errorbar_extent_needs_submission(
+    status: Option<crate::scalar_job::ScalarExtentStatus>,
+    retry_failed: bool,
+) -> bool {
+    status.is_none()
+        || retry_failed && status == Some(crate::scalar_job::ScalarExtentStatus::RetryableFailed)
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn prepare_errorbar_extent_submission(
+    existing: Option<&std::rc::Rc<crate::scalar_job::ScalarExtentJob>>,
+    retry_failed: bool,
+) -> Option<std::rc::Rc<crate::scalar_job::ScalarExtentJob>> {
+    errorbar_extent_needs_submission(existing.map(|job| job.status()), retry_failed)
+        .then(crate::scalar_job::ScalarExtentJob::pending)
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
 struct PreparedColumnMetadata {
     columns: std::collections::HashMap<String, usize>,
     revisions: std::collections::HashMap<String, u64>,
@@ -358,10 +376,12 @@ mod tests {
     use super::{
         ColumnRegistryAction, INTERNAL_ZERO_COLUMN_ID, active_errorbar_extent_keys,
         checked_column_revision, column_update_invalidates_fit, display_config_for_surface,
-        errorbar_extent_key_from, fit_display_panel, picked_point_json_string,
-        prepare_column_metadata, required_internal_zero_column_len, select_errorbar_extent_map,
-        validate_column_data_len, validate_column_registry_action, validate_public_column_id,
+        errorbar_extent_key_from, errorbar_extent_needs_submission, fit_display_panel,
+        picked_point_json_string, prepare_column_metadata, prepare_errorbar_extent_submission,
+        required_internal_zero_column_len, select_errorbar_extent_map, validate_column_data_len,
+        validate_column_registry_action, validate_public_column_id,
     };
+    use crate::scalar_job::{ScalarExtentJob, ScalarExtentStatus};
 
     fn scatter_style() -> DataScatterStyleConfig {
         DataScatterStyleConfig {
@@ -532,6 +552,52 @@ mod tests {
     }
 
     #[test]
+    fn errorbar_retry_policy_replaces_only_retryable_failures() {
+        assert!(errorbar_extent_needs_submission(None, false));
+        assert!(!errorbar_extent_needs_submission(
+            Some(ScalarExtentStatus::RetryableFailed),
+            false
+        ));
+        assert!(errorbar_extent_needs_submission(
+            Some(ScalarExtentStatus::RetryableFailed),
+            true
+        ));
+        assert!(!errorbar_extent_needs_submission(
+            Some(ScalarExtentStatus::Pending),
+            true
+        ));
+        assert!(!errorbar_extent_needs_submission(
+            Some(ScalarExtentStatus::Succeeded),
+            true
+        ));
+        assert!(!errorbar_extent_needs_submission(
+            Some(ScalarExtentStatus::TerminalFailed),
+            true
+        ));
+
+        assert!(prepare_errorbar_extent_submission(None, false).is_some());
+
+        let pending = ScalarExtentJob::pending();
+        assert!(prepare_errorbar_extent_submission(Some(&pending), true).is_none());
+
+        let succeeded = ScalarExtentJob::pending();
+        succeeded.complete_success(None);
+        assert!(prepare_errorbar_extent_submission(Some(&succeeded), true).is_none());
+
+        let terminal = ScalarExtentJob::pending();
+        terminal.complete_terminal_failure("invalid binding".to_string());
+        assert!(prepare_errorbar_extent_submission(Some(&terminal), true).is_none());
+
+        let failed = ScalarExtentJob::pending();
+        failed.complete_retryable_failure("readback failed".to_string());
+        assert!(prepare_errorbar_extent_submission(Some(&failed), false).is_none());
+        let replacement = prepare_errorbar_extent_submission(Some(&failed), true).unwrap();
+        assert!(!Rc::ptr_eq(&failed, &replacement));
+        assert_eq!(failed.result(), Some(Err("readback failed".to_string())));
+        assert_eq!(replacement.status(), ScalarExtentStatus::Pending);
+    }
+
+    #[test]
     fn metadata_preflight_does_not_publish_before_commit() {
         let columns = HashMap::from([("x".to_string(), 2)]);
         let revisions = HashMap::from([("x".to_string(), 7)]);
@@ -678,9 +744,9 @@ mod web {
     use crate::{
         ColumnRegistryAction, ErrorbarExtentKey, INTERNAL_ZERO_COLUMN_ID,
         active_errorbar_extent_keys, column_update_invalidates_fit, err_refs,
-        errorbar_extent_key_from, prepare_column_metadata, required_internal_zero_column_len,
-        select_errorbar_extent_map, validate_column_data_len, validate_column_registry_action,
-        validate_public_column_id,
+        errorbar_extent_key_from, prepare_column_metadata, prepare_errorbar_extent_submission,
+        required_internal_zero_column_len, select_errorbar_extent_map, validate_column_data_len,
+        validate_column_registry_action, validate_public_column_id,
     };
 
     const POOL_CAPACITY: u64 = 16 * 1024 * 1024;
@@ -1268,7 +1334,7 @@ mod web {
             })
         }
 
-        fn reconcile_errorbar_extents(&mut self) {
+        fn reconcile_errorbar_extents(&mut self, retry_failed: bool) {
             let mut active = HashSet::new();
             let mut ordered = Vec::new();
             for cfg in &self.series_cfgs {
@@ -1288,10 +1354,12 @@ mod web {
 
             self.errorbar_extents.retain(|key, _| active.contains(key));
             for key in ordered {
-                if self.errorbar_extents.contains_key(&key) {
+                let Some(job) = prepare_errorbar_extent_submission(
+                    self.errorbar_extents.get(&key),
+                    retry_failed,
+                ) else {
                     continue;
-                }
-                let job = ScalarExtentJob::pending();
+                };
                 let ticket = self.renderer.begin_errorbar_extent(
                     &key.value.id,
                     &key.lower.id,
@@ -1299,21 +1367,8 @@ mod web {
                 );
                 self.errorbar_extents.insert(key, Rc::clone(&job));
                 match ticket {
-                    Ok(ticket) => spawn_local(async move {
-                        let result = ticket
-                            .resolve()
-                            .await
-                            .map(|extent| {
-                                extent.map(|extent| FitExtent {
-                                    min: extent.min,
-                                    max: extent.max,
-                                    min_positive: extent.min_positive,
-                                })
-                            })
-                            .map_err(|error| error.to_string());
-                        job.complete(result);
-                    }),
-                    Err(error) => job.complete(Err(error.to_string())),
+                    Ok(ticket) => Self::spawn_errorbar_extent(ticket, job),
+                    Err(error) => job.complete_terminal_failure(error.to_string()),
                 }
             }
         }
@@ -1323,18 +1378,14 @@ mod web {
             job: Rc<ScalarExtentJob>,
         ) {
             spawn_local(async move {
-                let result = ticket
-                    .resolve()
-                    .await
-                    .map(|extent| {
-                        extent.map(|extent| FitExtent {
-                            min: extent.min,
-                            max: extent.max,
-                            min_positive: extent.min_positive,
-                        })
-                    })
-                    .map_err(|error| error.to_string());
-                job.complete(result);
+                match ticket.resolve().await {
+                    Ok(extent) => job.complete_success(extent.map(|extent| FitExtent {
+                        min: extent.min,
+                        max: extent.max,
+                        min_positive: extent.min_positive,
+                    })),
+                    Err(error) => job.complete_retryable_failure(error.to_string()),
+                }
             });
         }
 
@@ -1714,7 +1765,7 @@ mod web {
                 let _ = self.rebuild_gpu_picker_now();
             }
             self.bump_fit_epoch();
-            self.reconcile_errorbar_extents();
+            self.reconcile_errorbar_extents(false);
             Ok(true)
         }
 
@@ -1813,7 +1864,7 @@ mod web {
                 }
             }
             self.bump_fit_epoch();
-            self.reconcile_errorbar_extents();
+            self.reconcile_errorbar_extents(false);
             Ok(())
         }
 
@@ -1871,7 +1922,7 @@ mod web {
                 let _ = self.rebuild_gpu_picker_now();
             }
             self.bump_fit_epoch();
-            self.reconcile_errorbar_extents();
+            self.reconcile_errorbar_extents(false);
             true
         }
 
@@ -1912,7 +1963,8 @@ mod web {
         /// so caps never clip against an auto-fitted range. That pairwise
         /// pass runs once per (series, data) and is cached — repeat fits
         /// stay metadata-cheap.
-        pub fn auto_fit_all(&self, padding: f64) -> js_sys::Promise {
+        pub fn auto_fit_all(&mut self, padding: f64) -> js_sys::Promise {
+            self.reconcile_errorbar_extents(true);
             let snapshot = (|| -> Result<_, JsValue> {
                 let mut x_ext = FitExtent::EMPTY;
                 let mut y_ext = FitExtent::EMPTY;
@@ -2100,7 +2152,7 @@ mod web {
             self.gpu_picker_dirty = false;
             self.color_seq = self.series_cfgs.len().max(self.color_seq);
             self.bump_fit_epoch();
-            self.reconcile_errorbar_extents();
+            self.reconcile_errorbar_extents(false);
             self.rebuild_styles();
             self.sync_legend_symbols(self.legend_auto_managed);
             Ok(())
