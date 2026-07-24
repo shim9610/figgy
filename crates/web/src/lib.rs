@@ -68,6 +68,41 @@ fn display_config_for_surface(
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
+fn gpu_pick_query_for_surface(
+    config: &renderer::Config,
+    surface_size: (u32, u32),
+    canvas_position_px: [f32; 2],
+    max_distance_px: f32,
+) -> (renderer::gpu_pick::GpuPickQuery, f32) {
+    let (display_config, _, display_scale) = display_config_for_surface(config, surface_size);
+    let chart_rect = display_config.chart_area.0;
+    let data_area_px = display_config.data_area().ok().map(|area| {
+        let rect = area.0;
+        [
+            rect.x as f32,
+            rect.y as f32,
+            rect.width as f32,
+            rect.height as f32,
+        ]
+    });
+    (
+        renderer::gpu_pick::GpuPickQuery {
+            transform: renderer::data_render::scatter_transform_from_config(&display_config),
+            chart_rect_px: [
+                chart_rect.x as f32,
+                chart_rect.y as f32,
+                chart_rect.width as f32,
+                chart_rect.height as f32,
+            ],
+            data_area_px,
+            canvas_position_px,
+            max_distance_px,
+        },
+        display_scale,
+    )
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
 fn picked_point_json_string(picked: &renderer::PickedPoint) -> serde_json::Result<String> {
     serde_json::to_string(&serde_json::json!({
         "source_id": picked.source_id.as_ref(),
@@ -377,9 +412,10 @@ mod tests {
         ColumnRegistryAction, INTERNAL_ZERO_COLUMN_ID, active_errorbar_extent_keys,
         checked_column_revision, column_update_invalidates_fit, display_config_for_surface,
         errorbar_extent_key_from, errorbar_extent_needs_submission, fit_display_panel,
-        picked_point_json_string, prepare_column_metadata, prepare_errorbar_extent_submission,
-        required_internal_zero_column_len, select_errorbar_extent_map, validate_column_data_len,
-        validate_column_registry_action, validate_public_column_id,
+        gpu_pick_query_for_surface, picked_point_json_string, prepare_column_metadata,
+        prepare_errorbar_extent_submission, required_internal_zero_column_len,
+        select_errorbar_extent_map, validate_column_data_len, validate_column_registry_action,
+        validate_public_column_id,
     };
     use crate::scalar_job::{ScalarExtentJob, ScalarExtentStatus};
 
@@ -462,6 +498,31 @@ mod tests {
         );
         assert_eq!(display.chart_area.0.width, 500);
         assert!((display.bottom_x.label_style.font_size - 9.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn gpu_pick_query_preserves_surface_scale_and_physical_distance_contract() {
+        let mut config = renderer::default::default_config();
+        config.chart_area = renderer::layout::ChartArea(renderer::layout::Rect {
+            x: 0,
+            y: 0,
+            width: 1000,
+            height: 800,
+        });
+
+        for (surface, expected_scale, expected_rect) in [
+            ((500, 400), 0.5, [0.0, 0.0, 500.0, 400.0]),
+            ((1000, 800), 1.0, [0.0, 0.0, 1000.0, 800.0]),
+            ((2000, 1600), 2.0, [0.0, 0.0, 2000.0, 1600.0]),
+            ((1600, 800), 1.0, [300.0, 0.0, 1000.0, 800.0]),
+        ] {
+            let (query, display_scale) =
+                gpu_pick_query_for_surface(&config, surface, [17.0, 23.0], 7.5);
+            assert!((display_scale - expected_scale).abs() < 1e-6);
+            assert_eq!(query.chart_rect_px, expected_rect);
+            assert_eq!(query.canvas_position_px, [17.0, 23.0]);
+            assert_eq!(query.max_distance_px, 7.5);
+        }
     }
 
     #[test]
@@ -723,9 +784,7 @@ mod web {
 
     use renderer::data_config::ErrorRef;
     use renderer::data_render::ColumnPool;
-    use renderer::gpu_pick::{
-        GpuPickEngine, GpuPickQuery, GpuPickSeriesReplacement, PreparedGpuPickSeriesBatch,
-    };
+    use renderer::gpu_pick::{GpuPickEngine, GpuPickSeriesReplacement, PreparedGpuPickSeriesBatch};
     use renderer::layout::{ChartArea, Rect};
     use renderer::line::LineStylePreset;
     use renderer::text::{RichText, rich_segments_from_text};
@@ -2196,30 +2255,20 @@ mod web {
             if let Err(error) = self.repair_gpu_picker_if_dirty() {
                 return js_sys::Promise::reject(&error);
             }
-            let (display_config, _, _) = self.display_config();
-            let chart_rect = display_config.chart_area.0;
-            let data_area_px = display_config.data_area().ok().map(|area| {
-                let rect = area.0;
-                [
-                    rect.x as f32,
-                    rect.y as f32,
-                    rect.width as f32,
-                    rect.height as f32,
-                ]
-            });
-            let query = GpuPickQuery {
-                transform: renderer::data_render::scatter_transform_from_config(&display_config),
-                chart_rect_px: [
-                    chart_rect.x as f32,
-                    chart_rect.y as f32,
-                    chart_rect.width as f32,
-                    chart_rect.height as f32,
-                ],
-                data_area_px,
-                canvas_position_px: [x, y],
-                max_distance_px,
+            let (query, display_scale) = {
+                let chart = self.chart.borrow();
+                super::gpu_pick_query_for_surface(
+                    chart.config(),
+                    self.surface_size,
+                    [x, y],
+                    max_distance_px,
+                )
             };
-            let ticket = match self.gpu_picker.pick(self.renderer.pool(), query) {
+            let ticket = match self.gpu_picker.pick_with_display_scale(
+                self.renderer.pool(),
+                query,
+                display_scale,
+            ) {
                 Ok(ticket) => ticket,
                 Err(error) => return js_sys::Promise::reject(&js_err(error)),
             };

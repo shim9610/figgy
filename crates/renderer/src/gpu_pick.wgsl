@@ -65,7 +65,7 @@ struct PickQueryParams {
     // center extent).  The final component is only a conservative BVH
     // expansion; exact radii/widths are resolved in leaves.
     chart_limits: vec4<f32>,
-    // (base scatter radius, line half width, unused, unused).
+    // (base scatter radius, line half width, display scale, unused).
     scatter_line: vec4<f32>,
     // (point count, x f32-lane base, y f32-lane base, style-index lane base).
     data: vec4<u32>,
@@ -366,7 +366,10 @@ fn pick_node_may_hit(node: PickBvhNode) -> bool {
     let dx = max(max(px.lo - cursor.x, cursor.x - px.hi), 0.0);
     let dy = max(max(py.lo - cursor.y, cursor.y - py.hi), 0.0);
     let center_distance = sqrt(fma(dx, dx, dy * dy));
-    let threshold = pick_next_up(pick_query_params.chart_limits.z + pick_query_params.chart_limits.w);
+    let threshold = pick_next_up(
+        pick_query_params.chart_limits.z
+            + pick_query_params.chart_limits.w * pick_query_params.scatter_line.z,
+    );
     return !pick_is_finite(center_distance) || center_distance <= threshold;
 }
 
@@ -483,7 +486,7 @@ fn pick_resolve_scatter_radius(point_index: u32) -> f32 {
             }
         }
     }
-    return pick_visual_shape_radius(shape, radius);
+    return pick_visual_shape_radius(shape, radius) * pick_query_params.scatter_line.z;
 }
 
 fn pick_invalid_candidate(series_order: u32) -> PickCandidate {
@@ -587,7 +590,9 @@ fn pick_line_candidate(segment_index: u32) -> PickCandidate {
     if !pick_is_finite(center_distance) {
         return pick_invalid_candidate(series_order);
     }
-    let hit_distance = max(center_distance - pick_query_params.scatter_line.y, 0.0);
+    let line_half_width =
+        pick_query_params.scatter_line.y * pick_query_params.scatter_line.z;
+    let hit_distance = max(center_distance - line_half_width, 0.0);
     let distance_sq = hit_distance * hit_distance;
     let maximum_sq = pick_query_params.chart_limits.z * pick_query_params.chart_limits.z;
     if !pick_is_finite(distance_sq) || distance_sq > maximum_sq {

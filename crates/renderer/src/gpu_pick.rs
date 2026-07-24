@@ -1512,8 +1512,26 @@ impl GpuPickEngine {
         pool: &ColumnPool,
         query: GpuPickQuery,
     ) -> Result<GpuPickTicket, GpuPickError> {
+        self.pick_with_display_scale(pool, query, 1.0)
+    }
+
+    /// Submit one exact pick query using the display's uniform pixel scale.
+    ///
+    /// Series descriptors remain in logical-document pixels. This scale is
+    /// applied once by the query shader to scatter radii, line half-widths,
+    /// and the matching conservative BVH expansion. Cursor coordinates,
+    /// `max_distance_px`, and returned distances remain physical canvas
+    /// pixels.
+    pub fn pick_with_display_scale(
+        &self,
+        pool: &ColumnPool,
+        query: GpuPickQuery,
+        display_scale: f32,
+    ) -> Result<GpuPickTicket, GpuPickError> {
         let [cursor_x, cursor_y] = query.canvas_position_px;
-        if !cursor_x.is_finite()
+        if !display_scale.is_finite()
+            || display_scale <= 0.0
+            || !cursor_x.is_finite()
             || !cursor_y.is_finite()
             || !query.max_distance_px.is_finite()
             || query.max_distance_px < 0.0
@@ -1560,7 +1578,12 @@ impl GpuPickEngine {
                     query.max_distance_px,
                     series.max_extent_px,
                 ],
-                scatter_line: [series.base_radius_px, series.line_half_width_px, 0.0, 0.0],
+                scatter_line: [
+                    series.base_radius_px,
+                    series.line_half_width_px,
+                    display_scale,
+                    0.0,
+                ],
                 data: [
                     series.point_count,
                     lane_base(series.x_handle, &series.identity.series_id)?,
@@ -1842,6 +1865,21 @@ mod tests {
         query: GpuPickQuery,
     ) -> Option<PickedPoint> {
         pollster::block_on(engine.pick(pool, query).unwrap().resolve()).unwrap()
+    }
+
+    fn resolve_pick_scaled(
+        engine: &GpuPickEngine,
+        pool: &ColumnPool,
+        query: GpuPickQuery,
+        display_scale: f32,
+    ) -> Option<PickedPoint> {
+        pollster::block_on(
+            engine
+                .pick_with_display_scale(pool, query, display_scale)
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap()
     }
 
     fn cpu_pick(
@@ -2232,6 +2270,197 @@ mod tests {
         let cpu = cpu_pick(&config, &cpu_series, &cpu_columns, cursor, 0.0);
         let gpu = resolve_pick(&engine, &pool, query_from_config(&config, cursor, 0.0));
         assert_pick_parity(cpu, gpu);
+    }
+
+    #[test]
+    fn display_scale_applies_once_to_pick_geometry_but_not_pick_distance() {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let config = parity_config(200, 100, (0.0, 20.0), (0.0, 10.0));
+        let base_x = [2.0];
+        let base_y = [5.0];
+        let mapped_x = [10.0];
+        let mapped_y = [5.0];
+        let mapped_style = [0.0];
+        let line_x = [15.0, 17.0];
+        let line_y = [2.0, 2.0];
+
+        let mut pool = ColumnPool::new(&device, 64 * 1024).unwrap();
+        for (id, values) in [
+            ("scale-base-x", base_x.as_slice()),
+            ("scale-base-y", base_y.as_slice()),
+            ("scale-mapped-x", mapped_x.as_slice()),
+            ("scale-mapped-y", mapped_y.as_slice()),
+            ("scale-style", mapped_style.as_slice()),
+            ("scale-line-x", line_x.as_slice()),
+            ("scale-line-y", line_y.as_slice()),
+        ] {
+            pool.add_column(id.into(), &f32_column(values.to_vec()), &device, &queue)
+                .unwrap();
+        }
+
+        let mapped_slots = [ScatterStyleSlotGpu {
+            color_premul: [0.0; 4],
+            meta: [6.0, 0.0, STYLE_MASK_RADIUS as f32, 0.0],
+        }];
+        let mapped_overrides = [ScatterStyleOverrideGpu {
+            point_index: 0,
+            _pad: [0; 3],
+            color_premul: [0.0; 4],
+            meta: [
+                0.0,
+                crate::data_render::shape_id(&ScatterShape::Triangle) as f32,
+                STYLE_MASK_SHAPE as f32,
+                0.0,
+            ],
+        }];
+        let mut engine = GpuPickEngine::new(device, queue).unwrap();
+        engine
+            .add_series(
+                &pool,
+                GpuPickSeriesDescriptor {
+                    source_id: None,
+                    series_id: "scaled-base".into(),
+                    x_column: "scale-base-x".into(),
+                    y_column: "scale-base-y".into(),
+                    scatter: Some(GpuPickScatter {
+                        base_radius_px: 4.0,
+                        base_shape_id: crate::data_render::shape_id(&ScatterShape::Circle),
+                        style_map: None,
+                    }),
+                    line_width_px: None,
+                },
+            )
+            .unwrap();
+        engine
+            .add_series(
+                &pool,
+                GpuPickSeriesDescriptor {
+                    source_id: None,
+                    series_id: "scaled-mapped".into(),
+                    x_column: "scale-mapped-x".into(),
+                    y_column: "scale-mapped-y".into(),
+                    scatter: Some(GpuPickScatter {
+                        base_radius_px: 1.0,
+                        base_shape_id: crate::data_render::shape_id(&ScatterShape::Circle),
+                        style_map: Some(GpuPickScatterStyle {
+                            style_index_column: Some("scale-style".into()),
+                            style_slots: &mapped_slots,
+                            style_overrides: &mapped_overrides,
+                            style_meta: ScatterStyleMapMeta {
+                                style_count: 1,
+                                override_count: 1,
+                                has_index: 1,
+                                _pad: 0,
+                            },
+                        }),
+                    }),
+                    line_width_px: None,
+                },
+            )
+            .unwrap();
+        engine
+            .add_series(
+                &pool,
+                GpuPickSeriesDescriptor {
+                    source_id: None,
+                    series_id: "scaled-line".into(),
+                    x_column: "scale-line-x".into(),
+                    y_column: "scale-line-y".into(),
+                    scatter: None,
+                    line_width_px: Some(6.0),
+                },
+            )
+            .unwrap();
+
+        for display_scale in [0.5, 1.0, 2.0] {
+            let base_radius = 4.0 * display_scale;
+            let base_inside = query_from_config(&config, [20.0 + base_radius - 0.25, 50.0], 0.0);
+            let base_outside = query_from_config(&config, [20.0 + base_radius + 0.25, 50.0], 0.0);
+            assert_eq!(
+                resolve_pick_scaled(&engine, &pool, base_inside, display_scale)
+                    .unwrap()
+                    .series_id,
+                "scaled-base"
+            );
+            assert!(resolve_pick_scaled(&engine, &pool, base_outside, display_scale).is_none());
+
+            let mapped_radius = 6.0 * MAX_SHAPE_SCALE * display_scale;
+            let mapped_inside =
+                query_from_config(&config, [100.0 + mapped_radius - 0.25, 50.0], 0.0);
+            let mapped_outside =
+                query_from_config(&config, [100.0 + mapped_radius + 0.25, 50.0], 0.0);
+            assert_eq!(
+                resolve_pick_scaled(&engine, &pool, mapped_inside, display_scale)
+                    .unwrap()
+                    .series_id,
+                "scaled-mapped"
+            );
+            assert!(resolve_pick_scaled(&engine, &pool, mapped_outside, display_scale).is_none());
+
+            let line_half_width = 3.0 * display_scale;
+            let line_inside =
+                query_from_config(&config, [160.0, 80.0 + line_half_width - 0.25], 0.0);
+            let line_outside =
+                query_from_config(&config, [160.0, 80.0 + line_half_width + 0.25], 0.0);
+            assert_eq!(
+                resolve_pick_scaled(&engine, &pool, line_inside, display_scale)
+                    .unwrap()
+                    .series_id,
+                "scaled-line"
+            );
+            assert!(resolve_pick_scaled(&engine, &pool, line_outside, display_scale).is_none());
+
+            let physical_gap = 2.5;
+            let max_distance_miss =
+                query_from_config(&config, [20.0 + base_radius + physical_gap, 50.0], 2.0);
+            let max_distance_hit =
+                query_from_config(&config, [20.0 + base_radius + physical_gap, 50.0], 3.0);
+            assert!(
+                resolve_pick_scaled(&engine, &pool, max_distance_miss, display_scale).is_none()
+            );
+            let picked =
+                resolve_pick_scaled(&engine, &pool, max_distance_hit, display_scale).unwrap();
+            assert_eq!(picked.series_id, "scaled-base");
+            assert!((picked.distance_px - physical_gap).abs() <= 0.001);
+        }
+    }
+
+    #[test]
+    fn invalid_display_scales_fail_closed_without_gpu_submission() {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let mut pool = ColumnPool::new(&device, 64 * 1024).unwrap();
+        pool.add_column(
+            "invalid-scale-x".into(),
+            &f32_column(vec![5.0]),
+            &device,
+            &queue,
+        )
+        .unwrap();
+        pool.add_column(
+            "invalid-scale-y".into(),
+            &f32_column(vec![5.0]),
+            &device,
+            &queue,
+        )
+        .unwrap();
+        let mut engine = GpuPickEngine::new(device, queue).unwrap();
+        engine
+            .add_series(
+                &pool,
+                scatter_descriptor("invalid-scale", "invalid-scale-x", "invalid-scale-y"),
+            )
+            .unwrap();
+
+        for display_scale in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(
+                resolve_pick_scaled(&engine, &pool, test_query([50.0, 50.0]), display_scale,)
+                    .is_none()
+            );
+        }
     }
 
     #[test]
