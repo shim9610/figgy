@@ -25,13 +25,14 @@ export class FiggyChartElement extends HTMLElement {
   #kernel = null;
   #resizeObserver = null;
   #raf = 0;
-  #busy = false;
   #started = false;
+  #lifecycleGeneration = 0;
+  #readyToken = null;
+  #exportToken = null;
   #lastPoint = null;
   #dpr = 1;
   #pendingResize = null;
-  #readyResolve = null;
-  #readyReject = null;
+  #pendingRelease = null;
 
   constructor() {
     super();
@@ -61,7 +62,13 @@ export class FiggyChartElement extends HTMLElement {
   connectedCallback() {
     if (!this.#started) {
       this.#started = true;
-      this.#connect().catch((error) => this.#fail(error));
+      const generation = ++this.#lifecycleGeneration;
+      const readyToken = this.#readyToken;
+      this.#connect(generation, readyToken).catch((error) => {
+        if (this.#isCurrentConnection(generation, readyToken)) {
+          this.#fail(error, readyToken);
+        }
+      });
     }
   }
 
@@ -81,38 +88,86 @@ export class FiggyChartElement extends HTMLElement {
   }
 
   get busy() {
-    return this.#busy;
+    return this.#exportToken !== null;
   }
 
-  async #connect() {
+  #isCurrentConnection(generation, readyToken = this.#readyToken) {
+    return this.#started
+      && this.isConnected
+      && this.#lifecycleGeneration === generation
+      && this.#readyToken === readyToken;
+  }
+
+  #isCurrentKernel(token) {
+    return this.#exportToken === token
+      && this.#lifecycleGeneration === token.generation
+      && this.#kernel === token.kernel;
+  }
+
+  async #connect(generation, readyToken) {
     await ensureWasm();
-    if (!this.isConnected) {
+    if (!this.#isCurrentConnection(generation, readyToken)) {
       return;
     }
     this.#resizeCanvas(false);
+    if (!this.#isCurrentConnection(generation, readyToken)) {
+      return;
+    }
     const kernel = await RawFiggyChart.create(this.#canvas);
-    if (!this.isConnected) {
+    if (!this.#isCurrentConnection(generation, readyToken)) {
+      kernel.free();
+      return;
+    }
+    let resizeObserver;
+    try {
+      resizeObserver = new ResizeObserver(() => this.#resizeCanvas(true));
+      resizeObserver.observe(this);
+    } catch (error) {
+      kernel.free();
+      throw error;
+    }
+    if (!this.#isCurrentConnection(generation, readyToken)) {
+      resizeObserver.disconnect();
       kernel.free();
       return;
     }
     this.#kernel = kernel;
-    this.#resizeObserver = new ResizeObserver(() => this.#resizeCanvas(true));
-    this.#resizeObserver.observe(this);
-    this.#readyResolve(this);
-    dispatchFiggyEvent(this, "figgy-ready", { chart: this, kernel: this.#kernel });
-    this.#startLoop();
+    this.#resizeObserver = resizeObserver;
+    this.#pendingResize = null;
+    this.#pendingRelease = null;
+    readyToken.state = "fulfilled";
+    readyToken.resolve(this);
+    dispatchFiggyEvent(this, "figgy-ready", { chart: this, kernel });
+    if (this.#isCurrentConnection(generation, readyToken) && this.#kernel === kernel) {
+      this.#startLoop();
+    }
   }
 
   #resetReady() {
-    this.ready = new Promise((resolve, reject) => {
-      this.#readyResolve = resolve;
-      this.#readyReject = reject;
+    const token = {
+      state: "pending",
+      resolve: null,
+      reject: null,
+      promise: null,
+    };
+    token.promise = new Promise((resolve, reject) => {
+      token.resolve = resolve;
+      token.reject = reject;
     });
+    // A disconnect is a normal custom-element lifecycle event. Keep the
+    // rejected Promise observable to callers without generating a page-level
+    // unhandledrejection when nobody retained that connection's `ready`.
+    token.promise.catch(() => {});
+    this.#readyToken = token;
+    this.ready = token.promise;
   }
 
-  #fail(error) {
+  #fail(error, readyToken) {
     console.error("figgy-chart:", error);
-    this.#readyReject(error);
+    if (this.#readyToken === readyToken && readyToken.state === "pending") {
+      readyToken.state = "rejected";
+      readyToken.reject(error);
+    }
     dispatchFiggyEvent(this, "figgy-error", { error });
   }
 
@@ -124,7 +179,7 @@ export class FiggyChartElement extends HTMLElement {
 
   #tick = () => {
     this.#raf = requestAnimationFrame(this.#tick);
-    if (!this.#kernel || this.#busy) {
+    if (!this.#kernel || this.busy) {
       return;
     }
     if ((window.devicePixelRatio || 1) !== this.#dpr) {
@@ -154,8 +209,12 @@ export class FiggyChartElement extends HTMLElement {
     this.#canvas.width = width;
     this.#canvas.height = height;
     if (notifyKernel && this.#kernel) {
-      if (this.#busy) {
-        this.#pendingResize = [width, height];
+      if (this.busy) {
+        this.#pendingResize = {
+          token: this.#exportToken,
+          width,
+          height,
+        };
       } else {
         this.#kernel.resize(width, height);
         this.#pendingResize = null;
@@ -172,7 +231,7 @@ export class FiggyChartElement extends HTMLElement {
 
   #installPointerHandlers() {
     this.#canvas.addEventListener("pointerdown", (event) => {
-      if (!this.#kernel || this.#busy) {
+      if (!this.#kernel || this.busy) {
         return;
       }
       this.#canvas.setPointerCapture(event.pointerId);
@@ -183,7 +242,7 @@ export class FiggyChartElement extends HTMLElement {
     });
 
     this.#canvas.addEventListener("pointermove", (event) => {
-      if (!this.#kernel || !this.#lastPoint || this.#busy) {
+      if (!this.#kernel || !this.#lastPoint || this.busy) {
         return;
       }
       const [x, y] = this.#eventPoint(event);
@@ -194,14 +253,20 @@ export class FiggyChartElement extends HTMLElement {
     });
 
     const release = () => {
-      if (!this.#kernel) {
+      if (!this.#kernel || !this.#lastPoint) {
         return;
       }
       this.#lastPoint = null;
-      if (!this.#busy) {
-        this.#kernel.on_release();
+      const token = this.#exportToken;
+      if (token) {
+        if (this.#isCurrentKernel(token) && !this.#pendingRelease) {
+          this.#pendingRelease = { token };
+        }
+        return;
       }
-      dispatchFiggyEvent(this, "figgy-release", { selected: this.#kernel.has_selection() });
+      const kernel = this.#kernel;
+      kernel.on_release();
+      dispatchFiggyEvent(this, "figgy-release", { selected: kernel.has_selection() });
     };
     this.#canvas.addEventListener("pointerup", release);
     this.#canvas.addEventListener("pointercancel", release);
@@ -215,7 +280,7 @@ export class FiggyChartElement extends HTMLElement {
   }
 
   #kernelForCall() {
-    if (this.#busy) {
+    if (this.busy) {
       throw new Error("figgy chart is busy");
     }
     return this.kernel;
@@ -226,29 +291,79 @@ export class FiggyChartElement extends HTMLElement {
   }
 
   frame() {
-    if (!this.#busy) {
+    if (!this.busy) {
       this.kernel.frame();
     }
   }
 
   async export_png(scale = 1.0) {
-    if (this.#busy) {
+    if (this.busy) {
       throw new Error("figgy chart is busy");
     }
-    this.#busy = true;
+    const token = {
+      generation: this.#lifecycleGeneration,
+      kernel: this.kernel,
+    };
+    this.#exportToken = token;
     try {
-      return await this.kernel.export_png(scale);
+      return await token.kernel.export_png(scale);
     } finally {
-      this.#busy = false;
-      if (this.#pendingResize && this.#kernel) {
-        const [width, height] = this.#pendingResize;
-        this.#pendingResize = null;
-        this.#kernel.resize(width, height);
+      this.#settleExport(token);
+    }
+  }
+
+  #settleExport(token) {
+    if (!this.#isCurrentKernel(token)) {
+      return;
+    }
+
+    let cleanupError = null;
+    if (this.#pendingRelease?.token === token) {
+      this.#pendingRelease = null;
+      try {
+        token.kernel.on_release();
+        const selected = token.kernel.has_selection();
+        dispatchFiggyEvent(this, "figgy-release", { selected });
+      } catch (error) {
+        cleanupError = error;
       }
+    }
+
+    if (this.#isCurrentKernel(token) && this.#pendingResize?.token === token) {
+      const { width, height } = this.#pendingResize;
+      this.#pendingResize = null;
+      try {
+        token.kernel.resize(width, height);
+      } catch (error) {
+        cleanupError ??= error;
+      }
+    }
+
+    if (this.#exportToken === token) {
+      this.#exportToken = null;
+    }
+    if (cleanupError) {
+      throw cleanupError;
     }
   }
 
   free() {
+    const active = this.#started
+      || this.#kernel !== null
+      || this.#resizeObserver !== null
+      || this.#raf !== 0
+      || this.#exportToken !== null;
+    if (!active) {
+      return;
+    }
+
+    ++this.#lifecycleGeneration;
+    this.#started = false;
+    this.#lastPoint = null;
+    this.#pendingResize = null;
+    this.#pendingRelease = null;
+    this.#exportToken = null;
+
     if (this.#raf) {
       cancelAnimationFrame(this.#raf);
       this.#raf = 0;
@@ -257,15 +372,23 @@ export class FiggyChartElement extends HTMLElement {
       this.#resizeObserver.disconnect();
       this.#resizeObserver = null;
     }
-    if (this.#kernel) {
-      this.#kernel.free();
-      this.#kernel = null;
+    const kernel = this.#kernel;
+    this.#kernel = null;
+
+    const readyToken = this.#readyToken;
+    if (readyToken.state === "pending") {
+      const error = new DOMException(
+        "figgy chart connection ended before it became ready",
+        "AbortError",
+      );
+      readyToken.state = "rejected";
+      readyToken.reject(error);
     }
-    this.#busy = false;
-    this.#started = false;
-    this.#lastPoint = null;
-    this.#pendingResize = null;
     this.#resetReady();
+
+    if (kernel) {
+      kernel.free();
+    }
   }
 
   register_font(bytes) { return this.#kernelForCall().register_font(bytes); }

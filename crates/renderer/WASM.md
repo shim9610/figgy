@@ -68,6 +68,12 @@ wasm async init/create, `ready` promise와 `figgy-ready` event,
 쓰는 low-level kernel이며, 브라우저 수명주기를 직접 소유하려는 advanced
 host만 직접 호출한다.
 
+`ready`는 element의 **연결 세대별 Promise**다. 준비되기 전에 disconnect하거나
+`free()`하면 그 세대의 Promise는 `AbortError`로 종료되고 다음 연결용 pending
+Promise가 설치된다. `free()`는 terminal teardown이므로 다시 DOM에 연결하기
+전까지 새 `ready`는 pending이며, 같은 비활성 element에 반복 호출해도 세대나
+Promise가 다시 바뀌지 않는다.
+
 ```
 JS / 웹 프레임워크                      wasm (figgy)
 ┌──────────────────────┐             ┌─────────────────────────────┐
