@@ -294,9 +294,52 @@ impl RendererColumnUpsert<'_> {
         )
     }
 
+    /// Begin an exact drawable-series extent job against the provisional
+    /// mappings. Inactive error directions are `None`; active directions
+    /// require both lower and upper ids.
+    pub fn begin_series_extent(
+        &self,
+        mode: crate::gpu_errorbar::GpuSeriesExtentMode,
+        columns: crate::gpu_errorbar::GpuSeriesExtentColumnIds<'_>,
+    ) -> std::result::Result<
+        crate::gpu_errorbar::GpuSeriesExtentTicket,
+        crate::gpu_errorbar::GpuErrorbarError,
+    > {
+        begin_series_extent_from_pool(
+            self.errorbar_extent_engine,
+            self.device,
+            self.queue,
+            self.pool(),
+            mode,
+            columns,
+        )
+    }
+
     pub fn commit(self) -> ColumnHandle {
         self.inner.commit()
     }
+}
+
+fn current_extent_handle(
+    pool: &ColumnPool,
+    role: &'static str,
+    id: &str,
+) -> std::result::Result<ColumnHandle, crate::gpu_errorbar::GpuErrorbarError> {
+    let handle = pool.handle_for(id).ok_or_else(|| {
+        crate::gpu_errorbar::GpuErrorbarError::UnknownColumn {
+            role,
+            id: id.to_string(),
+        }
+    })?;
+    if !pool.is_valid_handle(&handle) {
+        return Err(crate::gpu_errorbar::GpuErrorbarError::StaleHandle {
+            role,
+            id: id.to_string(),
+            generation: handle.generation,
+            current: pool.generation(),
+        });
+    }
+    Ok(handle)
 }
 
 fn begin_errorbar_extent_from_pool(
@@ -311,31 +354,44 @@ fn begin_errorbar_extent_from_pool(
     crate::gpu_errorbar::GpuErrorbarExtentTicket,
     crate::gpu_errorbar::GpuErrorbarError,
 > {
-    let current_handle = |role: &'static str, id: &str| {
-        let handle = pool.handle_for(id).ok_or_else(|| {
-            crate::gpu_errorbar::GpuErrorbarError::UnknownColumn {
-                role,
-                id: id.to_string(),
-            }
-        })?;
-        if !pool.is_valid_handle(&handle) {
-            return Err(crate::gpu_errorbar::GpuErrorbarError::StaleHandle {
-                role,
-                id: id.to_string(),
-                generation: handle.generation,
-                current: pool.generation(),
-            });
-        }
-        Ok(handle)
-    };
-
     engine.begin(
         device,
         queue,
         pool.buffer(),
-        current_handle("value", value_id)?,
-        current_handle("lower error", lower_id)?,
-        current_handle("upper error", upper_id)?,
+        current_extent_handle(pool, "value", value_id)?,
+        current_extent_handle(pool, "lower error", lower_id)?,
+        current_extent_handle(pool, "upper error", upper_id)?,
+    )
+}
+
+fn begin_series_extent_from_pool(
+    engine: &crate::gpu_errorbar::GpuErrorbarExtentEngine,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pool: &ColumnPool,
+    mode: crate::gpu_errorbar::GpuSeriesExtentMode,
+    ids: crate::gpu_errorbar::GpuSeriesExtentColumnIds<'_>,
+) -> std::result::Result<
+    crate::gpu_errorbar::GpuSeriesExtentTicket,
+    crate::gpu_errorbar::GpuErrorbarError,
+> {
+    let optional_handle = |role, id: Option<&str>| {
+        id.map(|id| current_extent_handle(pool, role, id))
+            .transpose()
+    };
+    engine.begin_series(
+        device,
+        queue,
+        pool.buffer(),
+        mode,
+        crate::gpu_errorbar::GpuSeriesExtentColumns {
+            x: current_extent_handle(pool, "x", ids.x)?,
+            y: current_extent_handle(pool, "y", ids.y)?,
+            x_lower: optional_handle("x lower error", ids.x_lower)?,
+            x_upper: optional_handle("x upper error", ids.x_upper)?,
+            y_lower: optional_handle("y lower error", ids.y_lower)?,
+            y_upper: optional_handle("y upper error", ids.y_upper)?,
+        },
     )
 }
 
@@ -1283,6 +1339,27 @@ impl Renderer {
             value_id,
             lower_id,
             upper_id,
+        )
+    }
+
+    /// Submit one exact x/y extent reduction over the primitive rows that
+    /// the current series mode can draw. The returned ticket owns its
+    /// readback and does not borrow this renderer.
+    pub fn begin_series_extent(
+        &self,
+        mode: crate::gpu_errorbar::GpuSeriesExtentMode,
+        columns: crate::gpu_errorbar::GpuSeriesExtentColumnIds<'_>,
+    ) -> std::result::Result<
+        crate::gpu_errorbar::GpuSeriesExtentTicket,
+        crate::gpu_errorbar::GpuErrorbarError,
+    > {
+        begin_series_extent_from_pool(
+            &self.errorbar_extent_engine,
+            &self.device,
+            &self.queue,
+            &self.pool,
+            mode,
+            columns,
         )
     }
 
@@ -3625,6 +3702,90 @@ mod tests {
         assert_eq!(extent.min, -1.0);
         assert_eq!(extent.max, 15.0);
         assert_eq!(extent.min_positive, Some(1.0));
+    }
+
+    #[test]
+    fn renderer_series_extent_uses_role_checked_provisional_mappings() {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let mut renderer = Renderer::try_new(
+            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+            wgpu::TextureFormat::Bgra8Unorm,
+            1024 * 1024,
+        )
+        .unwrap();
+        renderer
+            .add_column("series-fit-x", &col_f64(vec![1.0, 2.0]))
+            .unwrap();
+        renderer
+            .add_column("series-fit-y", &col_f64(vec![10.0, 20.0]))
+            .unwrap();
+        let ids = crate::gpu_errorbar::GpuSeriesExtentColumnIds {
+            x: "series-fit-x",
+            y: "series-fit-y",
+            x_lower: None,
+            x_upper: None,
+            y_lower: None,
+            y_upper: None,
+        };
+
+        match renderer.begin_series_extent(
+            crate::gpu_errorbar::GpuSeriesExtentMode::Points,
+            crate::gpu_errorbar::GpuSeriesExtentColumnIds {
+                x: "missing",
+                ..ids
+            },
+        ) {
+            Err(crate::gpu_errorbar::GpuErrorbarError::UnknownColumn { role, id }) => {
+                assert_eq!(role, "x");
+                assert_eq!(id, "missing");
+            }
+            _ => panic!("missing x column must be reported before submission"),
+        }
+        match renderer.begin_series_extent(crate::gpu_errorbar::GpuSeriesExtentMode::PointsX, ids) {
+            Err(crate::gpu_errorbar::GpuErrorbarError::MissingSeriesColumn { role, .. }) => {
+                assert_eq!(role, "x lower error");
+            }
+            _ => panic!("active x errors require role-labelled lower and upper columns"),
+        }
+
+        let rollback_ticket = {
+            let upsert = renderer
+                .begin_upsert_hilo_column("series-fit-x", &col_f64(vec![100.0, 200.0]))
+                .unwrap();
+            upsert
+                .begin_series_extent(crate::gpu_errorbar::GpuSeriesExtentMode::Points, ids)
+                .unwrap()
+        };
+        let provisional = pollster::block_on(rollback_ticket.resolve())
+            .unwrap()
+            .unwrap();
+        assert_eq!((provisional.x.min, provisional.x.max), (100.0, 200.0));
+        let rolled_back = pollster::block_on(
+            renderer
+                .begin_series_extent(crate::gpu_errorbar::GpuSeriesExtentMode::Points, ids)
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!((rolled_back.x.min, rolled_back.x.max), (1.0, 2.0));
+
+        let committed_ticket = {
+            let upsert = renderer
+                .begin_upsert_hilo_column("series-fit-x", &col_f64(vec![300.0, 400.0]))
+                .unwrap();
+            let ticket = upsert
+                .begin_series_extent(crate::gpu_errorbar::GpuSeriesExtentMode::Points, ids)
+                .unwrap();
+            upsert.commit();
+            ticket
+        };
+        let committed = pollster::block_on(committed_ticket.resolve())
+            .unwrap()
+            .unwrap();
+        assert_eq!((committed.x.min, committed.x.max), (300.0, 400.0));
     }
 
     #[test]

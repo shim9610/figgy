@@ -362,9 +362,10 @@ impl Chart {
     /// One column's contribution to a fit: min/max plus the cached
     /// `min_positive` scalar (the log-axis safe floor when the raw min is
     /// ≤ 0 — log10 of it would be undefined and would wreck decade ticks).
-    /// All scalars were computed at upload; no data rescan. Public so hosts
-    /// aggregating their own [`FitExtent`] unions (wasm `auto_fit_all`)
-    /// build them from the same source.
+    /// All scalars were computed at upload; no data rescan. This is the
+    /// single-column metadata path used by `auto_fit_x` / `auto_fit_y`.
+    /// The web `auto_fit_all` path instead reduces each series' exact
+    /// drawable x/y domain directly from the GPU column pool.
     pub fn slot_extent(pool: &ColumnPool, id: &str) -> Result<FitExtent> {
         let slot = pool
             .slot(id)
@@ -377,10 +378,10 @@ impl Chart {
     }
 
     /// Fit the X axis to a prepared [`FitExtent`] — the shared tail of every
-    /// auto-fit path. Hosts that aggregate extents themselves (e.g. the wasm
-    /// `auto_fit_all`, which folds errorbar bounds into the union) call this
-    /// directly. No-op on a degenerate extent (non-finite or zero span) and
-    /// on a log axis with no positive bound to anchor to.
+    /// auto-fit path. Hosts with an already-prepared extent, including the
+    /// web exact-series reducer, call this directly. No-op on a degenerate
+    /// extent (non-finite or zero span) and on a log axis with no positive
+    /// bound to anchor to.
     pub fn auto_fit_x_extent(&mut self, ext: &FitExtent, padding_ratio: f64) {
         if !ext.is_fittable() {
             return;

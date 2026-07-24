@@ -39,7 +39,10 @@ pub use data_config::{
 pub use data_render::{AllocError, ColumnHandle, ColumnId, ColumnPool, DefragPolicy};
 pub use drag::Draggable;
 pub use error::{FiggyError, Result};
-pub use gpu_errorbar::{GpuErrorbarError, GpuErrorbarExtent, GpuErrorbarExtentTicket};
+pub use gpu_errorbar::{
+    GpuErrorbarError, GpuErrorbarExtent, GpuErrorbarExtentTicket, GpuSeriesExtent,
+    GpuSeriesExtentColumnIds, GpuSeriesExtentMode, GpuSeriesExtentTicket,
+};
 pub use pick::{PickedPoint, PointColumnLookup, PointPickOptions, pick_nearest_point};
 pub use preset::{AxisPreset, ColorCycle};
 pub use renderer::{
