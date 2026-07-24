@@ -419,8 +419,15 @@ export class FiggyChartElement extends HTMLElement {
   get_series() { return this.#kernelForCall().get_series(); }
   set_series(json) { return this.#kernelForCall().set_series(json); }
   reset_legend_from_series_labels() { return this.#kernelForCall().reset_legend_from_series_labels(); }
-  hit_test(x, y) { return this.#kernelForCall().hit_test(x, y); }
-  pick_point(x, y, maxDistancePx) { return this.#kernelForCall().pick_point(x, y, maxDistancePx); }
+  hit_test(x, y) {
+    const hit = this.#kernelForCall().hit_test(x, y);
+    return hit === undefined ? null : hit;
+  }
+  pick_point(x, y, maxDistancePx) {
+    return this.#kernelForCall().pick_point(x, y, maxDistancePx).then((hit) => (
+      hit === undefined ? null : JSON.parse(hit)
+    ));
+  }
   set_picked_points(json) { return this.#kernelForCall().set_picked_points(json); }
   set_clear_color(r, g, b, a) { return this.#kernelForCall().set_clear_color(r, g, b, a); }
   load_demo() { return this.#kernelForCall().load_demo(); }

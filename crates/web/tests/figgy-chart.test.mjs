@@ -657,3 +657,59 @@ test("stale export settle cannot clear a reconnected kernel export token", async
   await newPromise;
   assert.equal(element.busy, false);
 });
+
+test("facade normalizes hit and pick results without changing rejection reasons", async () => {
+  const kernel = makeKernel("contract");
+  const { Element } = await loadFacade({
+    createImpl: () => Promise.resolve(kernel),
+  });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+
+  kernel.hitValue = undefined;
+  assert.equal(element.hit_test(1, 2), null);
+  kernel.hitValue = "legend";
+  assert.equal(element.hit_test(1, 2), "legend");
+
+  kernel.pickImpl = () => Promise.resolve(undefined);
+  assert.equal(await element.pick_point(1, 2, 3), null);
+  kernel.pickImpl = () => Promise.resolve(JSON.stringify({
+    source_id: null,
+    series_id: "series-a",
+    point_index: 4,
+    data_x: 1.25,
+    data_y: -2,
+    distance_px: 0.5,
+  }));
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(await element.pick_point(1, 2, 3))),
+    {
+      source_id: null,
+      series_id: "series-a",
+      point_index: 4,
+      data_x: 1.25,
+      data_y: -2,
+      distance_px: 0.5,
+    },
+  );
+  kernel.pickImpl = () => Promise.resolve(JSON.stringify({
+    source_id: "source-a",
+    series_id: "series-a",
+    point_index: 5,
+    data_x: 2,
+    data_y: 3,
+    distance_px: 1,
+  }));
+  assert.equal((await element.pick_point(1, 2, 3)).source_id, "source-a");
+
+  kernel.pickImpl = () => Promise.resolve("{not json");
+  await assert.rejects(
+    element.pick_point(1, 2, 3),
+    (error) => error?.name === "SyntaxError",
+  );
+
+  const rawError = new Error("raw pick failed");
+  kernel.pickImpl = () => Promise.reject(rawError);
+  await assert.rejects(element.pick_point(1, 2, 3), (error) => error === rawError);
+});
