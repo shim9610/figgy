@@ -124,16 +124,32 @@ impl FiggyChart {
 
 `<figgy-chart>` facade가 `requestAnimationFrame` 콜백에서 데스크톱 데모와
 동일한 패턴을 돈다. raw kernel을 직접 쓰는 advanced host는 같은 루프를
-직접 구현해야 한다:
+직접 구현해야 한다. 아래는 실제 `frame()`의 상태 전이만 줄인 의사 코드다:
 
 ```rust
-let raster_dirty = chart.consume_raster_dirty();
-if raster_dirty {
+let data_dirty = chart.data_dirty();
+let raster_dirty = chart.raster_dirty();
+let visual_dirty = data_dirty || raster_dirty || view_dirty || redraw_pending;
+
+if !visual_dirty {
+    if needs_defrag {
+        process_pending_defrag()?; // surface acquire/draw 없음
+    }
+    return Ok(());
+}
+
+ensure_internal_render_columns()?;
+process_pending_defrag()?;
+if raster_dirty || view_dirty {
     renderer.refresh_axis_with_selection(&mut view, &chart, rect, &sel_boxes)?;
 }
-// data dirty 는 별도 처리 불필요 — draw 내부의 prepare 단계가 매 frame
-// 현재 config로 transform uniform을 다시 쓴다.
 renderer.draw(clear, &items)?;
+
+// refresh/draw가 모두 성공한 뒤에만 현재 visual snapshot을 소비한다.
+chart.consume_data_dirty();
+chart.consume_raster_dirty();
+view_dirty = false;
+redraw_pending = false;
 ```
 
 `WindowedRenderer` uses the WebGPU surface format and, when the adapter supports it,
@@ -149,8 +165,11 @@ transform uniform write, arc-length compute dispatch)와
 호스트(egui/iced embed)는 두 단계를 분리 호출한다 — 자세한 계약은
 데스크톱 README의 통합 패턴 절 참조.
 
-dirty가 없으면 프레임 비용이 0에 수렴하므로 rAF 상시 구동도 무방하고,
-이벤트 시점에만 rAF를 예약하는 절전형도 그대로 성립한다.
+clean rAF에도 facade의 다음 콜백 예약, DPR 비교, wasm 상태 확인은 남지만
+GPU column 준비, surface acquire, draw/submit/present는 전부 생략한다.
+실패한 refresh/draw는 dirty를 소비하지 않아 다음 rAF에서 재시도한다.
+이 최적화는 이전 canvas가 그대로 유효한 프레임만 건너뛰며, 원본 데이터의
+sampling·LOD·decimation이나 시간 기반 프레임 누락은 수행하지 않는다.
 
 ### 3.3 데이터 입력 — 업로드는 이미 제로카피, 경계 횡단만 플랫폼 비용
 

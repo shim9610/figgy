@@ -103,6 +103,88 @@ fn gpu_pick_query_for_surface(
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FrameDecision {
+    Clean,
+    MaintenanceOnly,
+    Draw { refresh_raster: bool },
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RedrawSource {
+    PublicColumnUpsert,
+    InternalZeroUpsert,
+    RemoveColumn,
+    AddSeries,
+    RemoveSeries,
+    SetSeries,
+    ColorCycle,
+    ClearColor,
+    #[cfg(test)]
+    Getter,
+    #[cfg(test)]
+    Pick,
+    #[cfg(test)]
+    Export,
+    #[cfg(test)]
+    FailedMutation,
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn redraw_source_wakes(source: RedrawSource) -> bool {
+    matches!(
+        source,
+        RedrawSource::PublicColumnUpsert
+            | RedrawSource::RemoveColumn
+            | RedrawSource::AddSeries
+            | RedrawSource::RemoveSeries
+            | RedrawSource::SetSeries
+            | RedrawSource::ColorCycle
+            | RedrawSource::ClearColor
+    )
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn column_upsert_redraw_source(id: &str) -> RedrawSource {
+    if id == INTERNAL_ZERO_COLUMN_ID {
+        RedrawSource::InternalZeroUpsert
+    } else {
+        RedrawSource::PublicColumnUpsert
+    }
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn consume_successful_frame(
+    chart: &mut renderer::Chart,
+    view_dirty: &mut bool,
+    redraw_pending: &mut bool,
+) {
+    let _ = chart.consume_data_dirty();
+    let _ = chart.consume_raster_dirty();
+    *view_dirty = false;
+    *redraw_pending = false;
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn frame_decision(
+    data_dirty: bool,
+    raster_dirty: bool,
+    view_dirty: bool,
+    redraw_pending: bool,
+    needs_defrag: bool,
+) -> FrameDecision {
+    let visual_pending = data_dirty || raster_dirty || view_dirty || redraw_pending;
+    match (visual_pending, needs_defrag) {
+        (false, false) => FrameDecision::Clean,
+        (false, true) => FrameDecision::MaintenanceOnly,
+        (true, _) => FrameDecision::Draw {
+            refresh_raster: raster_dirty || view_dirty,
+        },
+    }
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
 fn picked_point_json_string(picked: &renderer::PickedPoint) -> serde_json::Result<String> {
     serde_json::to_string(&serde_json::json!({
         "source_id": picked.source_id.as_ref(),
@@ -570,13 +652,14 @@ mod tests {
     };
 
     use super::{
-        ColumnRegistryAction, ErrorRefKind, INTERNAL_ZERO_COLUMN_ID, active_series_extent_requests,
-        checked_column_revision, column_update_invalidates_fit, display_config_for_surface,
-        fit_display_panel, gpu_pick_query_for_surface, picked_point_json_string,
-        prepare_column_metadata, required_internal_zero_column_len, select_series_extent_job_map,
-        series_extent_key_matches_config, series_extent_mode, series_extent_needs_submission,
-        series_extent_request_from, validate_column_data_len, validate_column_registry_action,
-        validate_public_column_id,
+        ColumnRegistryAction, ErrorRefKind, FrameDecision, INTERNAL_ZERO_COLUMN_ID, RedrawSource,
+        active_series_extent_requests, checked_column_revision, column_update_invalidates_fit,
+        column_upsert_redraw_source, consume_successful_frame, display_config_for_surface,
+        fit_display_panel, frame_decision, gpu_pick_query_for_surface, picked_point_json_string,
+        prepare_column_metadata, redraw_source_wakes, required_internal_zero_column_len,
+        select_series_extent_job_map, series_extent_key_matches_config, series_extent_mode,
+        series_extent_needs_submission, series_extent_request_from, validate_column_data_len,
+        validate_column_registry_action, validate_public_column_id,
     };
     use crate::scalar_job::{SeriesExtentJob, SeriesExtentStatus};
 
@@ -620,6 +703,111 @@ mod tests {
             y_column: "y".to_string(),
             render_type,
         }
+    }
+
+    #[test]
+    fn frame_decision_covers_every_dirty_source_without_surface_work_when_clean() {
+        for bits in 0u8..32 {
+            let data_dirty = bits & 1 != 0;
+            let raster_dirty = bits & 2 != 0;
+            let view_dirty = bits & 4 != 0;
+            let redraw_pending = bits & 8 != 0;
+            let needs_defrag = bits & 16 != 0;
+            let visual_pending = data_dirty || raster_dirty || view_dirty || redraw_pending;
+            let expected = if !visual_pending {
+                if needs_defrag {
+                    FrameDecision::MaintenanceOnly
+                } else {
+                    FrameDecision::Clean
+                }
+            } else {
+                FrameDecision::Draw {
+                    refresh_raster: raster_dirty || view_dirty,
+                }
+            };
+
+            assert_eq!(
+                frame_decision(
+                    data_dirty,
+                    raster_dirty,
+                    view_dirty,
+                    redraw_pending,
+                    needs_defrag,
+                ),
+                expected,
+                "dirty-state mask {bits:05b}"
+            );
+        }
+    }
+
+    #[test]
+    fn gpu_only_redraw_source_matrix_is_explicit() {
+        assert_eq!(
+            column_upsert_redraw_source("public-column"),
+            RedrawSource::PublicColumnUpsert
+        );
+        assert_eq!(
+            column_upsert_redraw_source(INTERNAL_ZERO_COLUMN_ID),
+            RedrawSource::InternalZeroUpsert
+        );
+
+        for source in [
+            RedrawSource::PublicColumnUpsert,
+            RedrawSource::RemoveColumn,
+            RedrawSource::AddSeries,
+            RedrawSource::RemoveSeries,
+            RedrawSource::SetSeries,
+            RedrawSource::ColorCycle,
+            RedrawSource::ClearColor,
+        ] {
+            assert!(redraw_source_wakes(source), "{source:?}");
+        }
+        for source in [
+            RedrawSource::InternalZeroUpsert,
+            RedrawSource::Getter,
+            RedrawSource::Pick,
+            RedrawSource::Export,
+            RedrawSource::FailedMutation,
+        ] {
+            assert!(!redraw_source_wakes(source), "{source:?}");
+        }
+    }
+
+    #[test]
+    fn initial_chart_and_redraw_state_require_the_first_draw() {
+        let chart = renderer::Chart::new(renderer::default::default_config());
+        assert!(chart.data_dirty());
+        assert!(chart.raster_dirty());
+        assert_eq!(
+            frame_decision(chart.data_dirty(), chart.raster_dirty(), false, true, false,),
+            FrameDecision::Draw {
+                refresh_raster: true
+            }
+        );
+    }
+
+    #[test]
+    fn successful_frame_consumes_visual_state_but_failed_frame_preserves_it() {
+        let mut successful_chart = renderer::Chart::new(renderer::default::default_config());
+        let mut successful_view_dirty = true;
+        let mut successful_redraw_pending = true;
+        consume_successful_frame(
+            &mut successful_chart,
+            &mut successful_view_dirty,
+            &mut successful_redraw_pending,
+        );
+        assert!(!successful_chart.data_dirty());
+        assert!(!successful_chart.raster_dirty());
+        assert!(!successful_view_dirty);
+        assert!(!successful_redraw_pending);
+
+        let failed_chart = renderer::Chart::new(renderer::default::default_config());
+        let failed_view_dirty = true;
+        let failed_redraw_pending = true;
+        assert!(failed_chart.data_dirty());
+        assert!(failed_chart.raster_dirty());
+        assert!(failed_view_dirty);
+        assert!(failed_redraw_pending);
     }
 
     #[test]
@@ -1284,10 +1472,11 @@ mod web {
     use crate::gpu_pick_style::OwnedGpuPickSeriesDescriptor;
     use crate::scalar_job::{SeriesExtentJob, SeriesFitExtent};
     use crate::{
-        ColumnRegistryAction, INTERNAL_ZERO_COLUMN_ID, SeriesExtentKey,
-        active_series_extent_requests, column_update_invalidates_fit, prepare_column_metadata,
-        required_internal_zero_column_len, select_series_extent_job_map,
-        series_extent_key_matches_config, validate_column_data_len,
+        ColumnRegistryAction, FrameDecision, INTERNAL_ZERO_COLUMN_ID, RedrawSource,
+        SeriesExtentKey, active_series_extent_requests, column_update_invalidates_fit,
+        column_upsert_redraw_source, consume_successful_frame, frame_decision,
+        prepare_column_metadata, redraw_source_wakes, required_internal_zero_column_len,
+        select_series_extent_job_map, series_extent_key_matches_config, validate_column_data_len,
         validate_column_registry_action, validate_public_column_id,
     };
 
@@ -1549,6 +1738,9 @@ mod web {
         cycle: renderer::ColorCycle,
         clear_color: Color,
         view_dirty: bool,
+        /// GPU-only visual mutations that are not represented by Chart dirty
+        /// flags. Starts true so the initial surface frame is never skipped.
+        redraw_pending: bool,
     }
 
     impl FiggyChart {
@@ -1861,6 +2053,12 @@ mod web {
             self.fit_epoch.set(self.fit_epoch.get().wrapping_add(1));
         }
 
+        fn request_redraw(&mut self, source: RedrawSource) {
+            if redraw_source_wakes(source) {
+                self.redraw_pending = true;
+            }
+        }
+
         fn prepare_series_extent_cache(
             &self,
             series_cfgs: &[SeriesConfig],
@@ -2029,6 +2227,7 @@ mod web {
                 self.bump_fit_epoch();
             }
             self.publish_series_extent_cache(prepared_series_extents);
+            self.request_redraw(column_upsert_redraw_source(id));
             Ok(())
         }
 
@@ -2075,6 +2274,23 @@ mod web {
                 .unwrap_or(0);
             if needed > 0 && existing < needed {
                 self.upsert_zero_column(needed)?;
+            }
+            Ok(())
+        }
+
+        fn process_pending_defrag(&mut self) -> Result<(), JsValue> {
+            if !self.needs_defrag {
+                return Ok(());
+            }
+            // Preserve the existing R2-04 behavior: maintenance is consumed
+            // before defrag/rebind. Visual dirty state is handled separately
+            // and is never consumed here.
+            self.needs_defrag = false;
+            let relocated = self.renderer.defragment().map_err(js_err)?;
+            if relocated && !self.gpu_picker_dirty {
+                self.gpu_picker
+                    .rebind_columns(self.renderer.pool())
+                    .map_err(js_err)?;
             }
             Ok(())
         }
@@ -2157,6 +2373,7 @@ mod web {
                 cycle: renderer::ColorCycle::Classic,
                 clear_color: Color::WHITE,
                 view_dirty: false,
+                redraw_pending: true,
             })
         }
 
@@ -2309,6 +2526,7 @@ mod web {
             }
             self.bump_fit_epoch();
             self.retire_series_extent_cache();
+            self.request_redraw(RedrawSource::RemoveColumn);
             Ok(true)
         }
 
@@ -2423,6 +2641,7 @@ mod web {
             }
             self.bump_fit_epoch();
             self.publish_series_extent_cache(prepared_extents);
+            self.request_redraw(RedrawSource::AddSeries);
             Ok(())
         }
 
@@ -2481,6 +2700,7 @@ mod web {
             }
             self.bump_fit_epoch();
             self.retire_series_extent_cache();
+            self.request_redraw(RedrawSource::RemoveSeries);
             true
         }
 
@@ -2612,6 +2832,7 @@ mod web {
             self.color_seq = self.series_cfgs.len();
             self.rebuild_styles();
             self.sync_legend_symbols(false);
+            self.request_redraw(RedrawSource::ColorCycle);
         }
 
         // ---- SSoT I/O ----
@@ -2712,6 +2933,7 @@ mod web {
             self.bump_fit_epoch();
             self.publish_series_extent_cache(prepared_extents);
             self.sync_legend_symbols(self.legend_auto_managed);
+            self.request_redraw(RedrawSource::SetSeries);
             Ok(())
         }
 
@@ -2857,40 +3079,41 @@ mod web {
 
         // ---- frame / resize / export ----
 
-        /// Process pending pool maintenance + dirty flags, then draw one
-        /// frame. Call from `requestAnimationFrame`; with nothing dirty the
-        /// raster cost is skipped and only the GPU pass runs.
+        /// Process pending pool maintenance and draw only when visual state is
+        /// dirty. A clean rAF tick returns before touching the pool or surface.
         pub fn frame(&mut self) -> Result<(), JsValue> {
-            self.ensure_zero_column_for_render()?;
-
-            // Coalesced auto-defrag: removals since the last frame collapse
-            // into one compaction pass (GPU-internal copies only).
-            if self.needs_defrag {
-                self.needs_defrag = false;
-                let relocated = self.renderer.defragment().map_err(js_err)?;
-                if relocated && !self.gpu_picker_dirty {
-                    self.gpu_picker
-                        .rebind_columns(self.renderer.pool())
-                        .map_err(js_err)?;
+            let (data_dirty, raster_dirty) = {
+                let chart = self.chart.borrow();
+                (chart.data_dirty(), chart.raster_dirty())
+            };
+            let decision = frame_decision(
+                data_dirty,
+                raster_dirty,
+                self.view_dirty,
+                self.redraw_pending,
+                self.needs_defrag,
+            );
+            let refresh_raster = match decision {
+                FrameDecision::Clean => return Ok(()),
+                FrameDecision::MaintenanceOnly => {
+                    self.process_pending_defrag()?;
+                    return Ok(());
                 }
-            }
+                FrameDecision::Draw { refresh_raster } => refresh_raster,
+            };
+
+            // Rendering preparation owns the internal inactive error lane.
+            // It is never scanned or uploaded on a clean or maintenance-only
+            // frame.
+            self.ensure_zero_column_for_render()?;
+            self.process_pending_defrag()?;
 
             // Browser resize is preview zoom, not a document mutation. The
             // stored chart remains the export SSoT; the live canvas renders a
             // scaled/letterboxed display chart derived from it.
             let (display_config, panel_rect, _) = self.display_config();
             let display_chart = Chart::new(display_config);
-            let view_dirty = self.view_dirty;
-            let raster_dirty = {
-                let mut chart = self.chart.borrow_mut();
-                let raster_dirty = chart.consume_raster_dirty();
-                // `Renderer::prepare` (inside `draw` below) rewrites the transform
-                // uniform from the current config every frame; the data-dirty flag
-                // only needs resetting.
-                let _ = chart.consume_data_dirty();
-                raster_dirty
-            };
-            if view_dirty || raster_dirty {
+            if refresh_raster {
                 let sel_boxes: Vec<SelectionBox> = self
                     .selected
                     .and_then(|id| {
@@ -2910,7 +3133,6 @@ mod web {
                         &sel_boxes,
                     )
                     .map_err(js_err)?;
-                self.view_dirty = false;
             }
 
             let series: Vec<Series<'_>> = self
@@ -2924,7 +3146,16 @@ mod web {
                 chart_config: display_chart.config(),
                 series: &series,
             }];
-            self.renderer.draw(self.clear_color, &items).map_err(js_err)
+            self.renderer
+                .draw(self.clear_color, &items)
+                .map_err(js_err)?;
+
+            // Only a successfully submitted/presented draw consumes the
+            // visual snapshot. Any earlier failure leaves every visual source
+            // dirty so the next persistent rAF retries it.
+            let mut chart = self.chart.borrow_mut();
+            consume_successful_frame(&mut chart, &mut self.view_dirty, &mut self.redraw_pending);
+            Ok(())
         }
 
         /// Set the WebGPU surface clear color used behind the chart panel.
@@ -2937,6 +3168,7 @@ mod web {
                 b.clamp(0.0, 1.0),
                 a.clamp(0.0, 1.0),
             );
+            self.request_redraw(RedrawSource::ClearColor);
         }
 
         /// Resize the swap chain viewport. The chart Config keeps its
