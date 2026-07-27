@@ -190,8 +190,6 @@ fn picked_point_json_string(picked: &renderer::PickedPoint) -> serde_json::Resul
         "source_id": picked.source_id.as_ref(),
         "series_id": &picked.series_id,
         "point_index": picked.point_index,
-        "data_x": picked.data_x,
-        "data_y": picked.data_y,
         "distance_px": picked.distance_px,
     }))
 }
@@ -883,25 +881,26 @@ mod tests {
     }
 
     #[test]
-    fn picked_point_json_includes_data_coordinates() {
+    fn picked_point_json_matches_public_contract() {
         let picked = renderer::PickedPoint {
-            source_id: Some("source-a".into()),
+            source_id: None,
             series_id: "series-a".into(),
             point_index: 7,
-            data_x: 12.5,
-            data_y: -3.25,
             distance_px: 4.0,
         };
 
         let json: serde_json::Value =
             serde_json::from_str(&picked_point_json_string(&picked).unwrap()).unwrap();
 
-        assert_eq!(json["source_id"], "source-a");
-        assert_eq!(json["series_id"], "series-a");
-        assert_eq!(json["point_index"], 7);
-        assert_eq!(json["data_x"], 12.5);
-        assert_eq!(json["data_y"], -3.25);
-        assert_eq!(json["distance_px"], 4.0);
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "source_id": null,
+                "series_id": "series-a",
+                "point_index": 7,
+                "distance_px": 4.0,
+            })
+        );
     }
 
     #[test]
@@ -2968,8 +2967,8 @@ mod web {
         /// Scatter hits use the visible marker size, including per-point style
         /// mapping; line strokes snap to the nearest endpoint data point on
         /// the hit segment. Errorbar stems/caps are not pick targets.
-        /// Returns JSON `{ source_id, series_id, point_index, data_x, data_y,
-        /// distance_px }`, or `null` when no visible primitive is within
+        /// Returns JSON `{ source_id, series_id, point_index, distance_px }`,
+        /// or `null` when no visible primitive is within
         /// `max_distance_px`.
         pub fn pick_point(&mut self, x: f32, y: f32, max_distance_px: f32) -> js_sys::Promise {
             if let Err(error) = self.repair_gpu_picker_if_dirty() {

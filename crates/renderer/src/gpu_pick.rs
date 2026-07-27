@@ -1730,18 +1730,13 @@ impl GpuPickTicket {
                 let identity = identities
                     .get(candidate.series_order as usize)
                     .ok_or(GpuPickError::InvalidGpuResult)?;
-                if !candidate.data_x.is_finite()
-                    || !candidate.data_y.is_finite()
-                    || !candidate.distance_px.is_finite()
-                {
+                if !candidate.distance_px.is_finite() {
                     return Err(GpuPickError::InvalidGpuResult);
                 }
                 Ok(Some(PickedPoint {
                     source_id: identity.source_id.clone(),
                     series_id: identity.series_id.clone(),
                     point_index: candidate.point_index as usize,
-                    data_x: candidate.data_x,
-                    data_y: candidate.data_y,
                     distance_px: candidate.distance_px,
                 }))
             }
@@ -1906,8 +1901,6 @@ mod tests {
                 assert_eq!(gpu.source_id, cpu.source_id);
                 assert_eq!(gpu.series_id, cpu.series_id);
                 assert_eq!(gpu.point_index, cpu.point_index);
-                assert_eq!(gpu.data_x.to_bits(), cpu.data_x.to_bits());
-                assert_eq!(gpu.data_y.to_bits(), cpu.data_y.to_bits());
                 assert!(
                     (gpu.distance_px - cpu.distance_px).abs() <= 0.001,
                     "GPU distance {} differs from CPU distance {}",
@@ -2717,7 +2710,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_gpu_f64_residual_selects_point_but_returns_existing_f32_scalar() {
+    fn exact_gpu_f64_residual_selects_point_index() {
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
@@ -2764,18 +2757,10 @@ mod tests {
             )
             .unwrap();
 
-        for (cursor, expected_index, expected_pair) in [
-            ([25.0, 50.0], 0, (x0_hi, x0_lo)),
-            ([75.0, 50.0], 1, (x1_hi, x1_lo)),
-        ] {
+        for (cursor, expected_index) in [([25.0, 50.0], 0), ([75.0, 50.0], 1)] {
             let picked =
                 resolve_pick(&engine, &pool, query_from_config(&config, cursor, 0.0)).unwrap();
             assert_eq!(picked.point_index, expected_index);
-            let public_scalar: f32 = picked.data_x;
-            assert_eq!(
-                public_scalar.to_bits(),
-                (expected_pair.0 + expected_pair.1).to_bits()
-            );
         }
     }
 
@@ -3088,7 +3073,7 @@ mod tests {
 
         let picked = resolve_pick(&engine, &old_pool, test_query([50.0, 50.0])).unwrap();
         assert_eq!(picked.series_id, "success-next-4");
-        assert_eq!([picked.data_x, picked.data_y], [5.0, 5.0]);
+        assert_eq!(picked.point_index, 0);
     }
 
     #[test]
@@ -3334,7 +3319,7 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(after.series_id, "relocated");
-        assert_eq!([after.data_x, after.data_y], [4.0, 6.0]);
+        assert_eq!(after.point_index, before.point_index);
         assert_eq!(pool.allocation_epoch("pick-rx"), Some(x_epoch));
         assert_eq!(pool.allocation_epoch("pick-ry"), Some(y_epoch));
         assert_eq!(pool.allocation_epoch("pick-rstyle"), Some(style_epoch));

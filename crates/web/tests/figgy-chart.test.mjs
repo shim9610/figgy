@@ -774,8 +774,6 @@ test("facade normalizes hit and pick results without changing rejection reasons"
     source_id: null,
     series_id: "series-a",
     point_index: 4,
-    data_x: 1.25,
-    data_y: -2,
     distance_px: 0.5,
   }));
   assert.deepEqual(
@@ -784,8 +782,6 @@ test("facade normalizes hit and pick results without changing rejection reasons"
       source_id: null,
       series_id: "series-a",
       point_index: 4,
-      data_x: 1.25,
-      data_y: -2,
       distance_px: 0.5,
     },
   );
@@ -793,8 +789,6 @@ test("facade normalizes hit and pick results without changing rejection reasons"
     source_id: "source-a",
     series_id: "series-a",
     point_index: 5,
-    data_x: 2,
-    data_y: 3,
     distance_px: 1,
   }));
   assert.equal((await element.pick_point(1, 2, 3)).source_id, "source-a");
