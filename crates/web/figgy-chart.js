@@ -303,6 +303,7 @@ export class FiggyChartElement extends HTMLElement {
     const token = {
       generation: this.#lifecycleGeneration,
       kernel: this.kernel,
+      disposal: "attached",
     };
     this.#exportToken = token;
     try {
@@ -313,12 +314,8 @@ export class FiggyChartElement extends HTMLElement {
   }
 
   #settleExport(token) {
-    if (!this.#isCurrentKernel(token)) {
-      return;
-    }
-
     let cleanupError = null;
-    if (this.#pendingRelease?.token === token) {
+    if (this.#isCurrentKernel(token) && this.#pendingRelease?.token === token) {
       this.#pendingRelease = null;
       try {
         token.kernel.on_release();
@@ -342,12 +339,21 @@ export class FiggyChartElement extends HTMLElement {
     if (this.#exportToken === token) {
       this.#exportToken = null;
     }
+    if (token.disposal === "deferred") {
+      token.disposal = "freed";
+      try {
+        token.kernel.free();
+      } catch (error) {
+        cleanupError ??= error;
+      }
+    }
     if (cleanupError) {
       throw cleanupError;
     }
   }
 
   free() {
+    const exportToken = this.#exportToken;
     const active = this.#started
       || this.#kernel !== null
       || this.#resizeObserver !== null
@@ -387,7 +393,11 @@ export class FiggyChartElement extends HTMLElement {
     this.#resetReady();
 
     if (kernel) {
-      kernel.free();
+      if (exportToken?.kernel === kernel && exportToken.disposal === "attached") {
+        exportToken.disposal = "deferred";
+      } else {
+        kernel.free();
+      }
     }
   }
 

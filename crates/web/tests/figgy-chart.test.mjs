@@ -586,6 +586,7 @@ test("release cleanup cannot strand busy and listener teardown suppresses stale 
     let reconnectedReady;
     element.addEventListener("figgy-release", () => {
       disconnect(element);
+      assert.equal(kernel.freeCalls, 0, "exporting kernel must remain alive during settle");
       reconnectedReady = element.ready;
       connect(element);
     });
@@ -643,19 +644,114 @@ test("stale export settle cannot clear a reconnected kernel export token", async
   const oldPromise = element.export_png();
 
   disconnect(element);
+  assert.equal(oldKernel.freeCalls, 0, "disconnect must defer disposal until export settles");
   const newReady = element.ready;
   connect(element);
   await newReady;
   const newPromise = element.export_png();
   assert.equal(element.busy, true);
+  assert.equal(oldKernel.freeCalls, 0);
+  assert.equal(newKernel.freeCalls, 0);
 
   oldExport.resolve(new Uint8Array([1]));
   await oldPromise;
   assert.equal(element.busy, true, "old finally must not release the new export");
+  assert.equal(oldKernel.freeCalls, 1);
+  assert.equal(newKernel.freeCalls, 0);
 
   newExport.resolve(new Uint8Array([2]));
   await newPromise;
   assert.equal(element.busy, false);
+  assert.equal(oldKernel.freeCalls, 1);
+  assert.equal(newKernel.freeCalls, 0);
+});
+
+test("disconnect defers exporting kernel disposal exactly once on resolve and reject", async () => {
+  {
+    const operation = deferred();
+    const kernel = makeKernel("resolve-after-disconnect", {
+      exportImpl: () => operation.promise,
+    });
+    const { Element, state } = await loadFacade({
+      createImpl: () => Promise.resolve(kernel),
+    });
+    const element = new Element();
+    connect(element);
+    await element.ready;
+
+    const exported = element.export_png();
+    disconnect(element);
+    element.free();
+
+    assert.equal(kernel.freeCalls, 0);
+    assert.equal(state.rafs.size, 0);
+    assert.equal(state.observers.filter((observer) => observer.target === element).length, 0);
+    assert.throws(() => element.kernel, /not ready/);
+
+    operation.resolve(new Uint8Array([7]));
+    assert.deepEqual(Array.from(await exported), [7]);
+    assert.equal(kernel.freeCalls, 1);
+    element.free();
+    assert.equal(kernel.freeCalls, 1);
+  }
+
+  {
+    const operation = deferred();
+    const exportError = new Error("export rejected after disconnect");
+    const kernel = makeKernel("reject-after-disconnect", {
+      exportImpl: () => operation.promise,
+    });
+    const { Element } = await loadFacade({
+      createImpl: () => Promise.resolve(kernel),
+    });
+    const element = new Element();
+    connect(element);
+    await element.ready;
+
+    const exported = element.export_png();
+    disconnect(element);
+    assert.equal(kernel.freeCalls, 0);
+
+    operation.reject(exportError);
+    await assert.rejects(exported, (error) => error === exportError);
+    assert.equal(kernel.freeCalls, 1);
+  }
+});
+
+test("deferred exports from separate generations dispose independently out of order", async () => {
+  const oldExport = deferred();
+  const newExport = deferred();
+  const oldKernel = makeKernel("old-deferred", { exportImpl: () => oldExport.promise });
+  const newKernel = makeKernel("new-deferred", { exportImpl: () => newExport.promise });
+  const kernels = [oldKernel, newKernel];
+  const { Element } = await loadFacade({
+    createImpl: () => Promise.resolve(kernels.shift()),
+  });
+  const element = new Element();
+
+  connect(element);
+  await element.ready;
+  const oldPromise = element.export_png();
+  disconnect(element);
+
+  const newReady = element.ready;
+  connect(element);
+  await newReady;
+  const newPromise = element.export_png();
+  disconnect(element);
+
+  assert.equal(oldKernel.freeCalls, 0);
+  assert.equal(newKernel.freeCalls, 0);
+
+  newExport.resolve(new Uint8Array([2]));
+  assert.deepEqual(Array.from(await newPromise), [2]);
+  assert.equal(oldKernel.freeCalls, 0);
+  assert.equal(newKernel.freeCalls, 1);
+
+  oldExport.resolve(new Uint8Array([1]));
+  assert.deepEqual(Array.from(await oldPromise), [1]);
+  assert.equal(oldKernel.freeCalls, 1);
+  assert.equal(newKernel.freeCalls, 1);
 });
 
 test("facade normalizes hit and pick results without changing rejection reasons", async () => {
