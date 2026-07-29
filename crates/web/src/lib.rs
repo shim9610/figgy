@@ -111,70 +111,20 @@ enum FrameDecision {
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RedrawSource {
-    PublicColumnUpsert,
-    InternalZeroUpsert,
-    RemoveColumn,
-    AddSeries,
-    RemoveSeries,
-    SetSeries,
-    ColorCycle,
-    ClearColor,
-    #[cfg(test)]
-    Getter,
-    #[cfg(test)]
-    Pick,
-    #[cfg(test)]
-    Export,
-    #[cfg(test)]
-    FailedMutation,
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-fn redraw_source_wakes(source: RedrawSource) -> bool {
-    matches!(
-        source,
-        RedrawSource::PublicColumnUpsert
-            | RedrawSource::RemoveColumn
-            | RedrawSource::AddSeries
-            | RedrawSource::RemoveSeries
-            | RedrawSource::SetSeries
-            | RedrawSource::ColorCycle
-            | RedrawSource::ClearColor
-    )
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-fn column_upsert_redraw_source(id: &str) -> RedrawSource {
-    if id == INTERNAL_ZERO_COLUMN_ID {
-        RedrawSource::InternalZeroUpsert
-    } else {
-        RedrawSource::PublicColumnUpsert
-    }
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-fn consume_successful_frame(
-    chart: &mut renderer::Chart,
-    view_dirty: &mut bool,
-    redraw_pending: &mut bool,
-) {
-    let _ = chart.consume_data_dirty();
-    let _ = chart.consume_raster_dirty();
+fn consume_successful_frame(view_dirty: &mut bool, redraw_pending: &mut bool) {
     *view_dirty = false;
     *redraw_pending = false;
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
 fn frame_decision(
-    data_dirty: bool,
+    renderer_dirty: bool,
     raster_dirty: bool,
     view_dirty: bool,
     redraw_pending: bool,
     needs_defrag: bool,
 ) -> FrameDecision {
-    let visual_pending = data_dirty || raster_dirty || view_dirty || redraw_pending;
+    let visual_pending = renderer_dirty || raster_dirty || view_dirty || redraw_pending;
     match (visual_pending, needs_defrag) {
         (false, false) => FrameDecision::Clean,
         (false, true) => FrameDecision::MaintenanceOnly,
@@ -650,14 +600,14 @@ mod tests {
     };
 
     use super::{
-        ColumnRegistryAction, ErrorRefKind, FrameDecision, INTERNAL_ZERO_COLUMN_ID, RedrawSource,
+        ColumnRegistryAction, ErrorRefKind, FrameDecision, INTERNAL_ZERO_COLUMN_ID,
         active_series_extent_requests, checked_column_revision, column_update_invalidates_fit,
-        column_upsert_redraw_source, consume_successful_frame, display_config_for_surface,
-        fit_display_panel, frame_decision, gpu_pick_query_for_surface, picked_point_json_string,
-        prepare_column_metadata, redraw_source_wakes, required_internal_zero_column_len,
-        select_series_extent_job_map, series_extent_key_matches_config, series_extent_mode,
-        series_extent_needs_submission, series_extent_request_from, validate_column_data_len,
-        validate_column_registry_action, validate_public_column_id,
+        consume_successful_frame, display_config_for_surface, fit_display_panel, frame_decision,
+        gpu_pick_query_for_surface, picked_point_json_string, prepare_column_metadata,
+        required_internal_zero_column_len, select_series_extent_job_map,
+        series_extent_key_matches_config, series_extent_mode, series_extent_needs_submission,
+        series_extent_request_from, validate_column_data_len, validate_column_registry_action,
+        validate_public_column_id,
     };
     use crate::scalar_job::{SeriesExtentJob, SeriesExtentStatus};
 
@@ -706,12 +656,12 @@ mod tests {
     #[test]
     fn frame_decision_covers_every_dirty_source_without_surface_work_when_clean() {
         for bits in 0u8..32 {
-            let data_dirty = bits & 1 != 0;
+            let renderer_dirty = bits & 1 != 0;
             let raster_dirty = bits & 2 != 0;
             let view_dirty = bits & 4 != 0;
             let redraw_pending = bits & 8 != 0;
             let needs_defrag = bits & 16 != 0;
-            let visual_pending = data_dirty || raster_dirty || view_dirty || redraw_pending;
+            let visual_pending = renderer_dirty || raster_dirty || view_dirty || redraw_pending;
             let expected = if !visual_pending {
                 if needs_defrag {
                     FrameDecision::MaintenanceOnly
@@ -726,7 +676,7 @@ mod tests {
 
             assert_eq!(
                 frame_decision(
-                    data_dirty,
+                    renderer_dirty,
                     raster_dirty,
                     view_dirty,
                     redraw_pending,
@@ -739,45 +689,9 @@ mod tests {
     }
 
     #[test]
-    fn gpu_only_redraw_source_matrix_is_explicit() {
+    fn initial_state_requires_the_first_draw() {
         assert_eq!(
-            column_upsert_redraw_source("public-column"),
-            RedrawSource::PublicColumnUpsert
-        );
-        assert_eq!(
-            column_upsert_redraw_source(INTERNAL_ZERO_COLUMN_ID),
-            RedrawSource::InternalZeroUpsert
-        );
-
-        for source in [
-            RedrawSource::PublicColumnUpsert,
-            RedrawSource::RemoveColumn,
-            RedrawSource::AddSeries,
-            RedrawSource::RemoveSeries,
-            RedrawSource::SetSeries,
-            RedrawSource::ColorCycle,
-            RedrawSource::ClearColor,
-        ] {
-            assert!(redraw_source_wakes(source), "{source:?}");
-        }
-        for source in [
-            RedrawSource::InternalZeroUpsert,
-            RedrawSource::Getter,
-            RedrawSource::Pick,
-            RedrawSource::Export,
-            RedrawSource::FailedMutation,
-        ] {
-            assert!(!redraw_source_wakes(source), "{source:?}");
-        }
-    }
-
-    #[test]
-    fn initial_chart_and_redraw_state_require_the_first_draw() {
-        let chart = renderer::Chart::new(renderer::default::default_config());
-        assert!(chart.data_dirty());
-        assert!(chart.raster_dirty());
-        assert_eq!(
-            frame_decision(chart.data_dirty(), chart.raster_dirty(), false, true, false,),
+            frame_decision(true, true, false, true, false),
             FrameDecision::Draw {
                 refresh_raster: true
             }
@@ -786,24 +700,14 @@ mod tests {
 
     #[test]
     fn successful_frame_consumes_visual_state_but_failed_frame_preserves_it() {
-        let mut successful_chart = renderer::Chart::new(renderer::default::default_config());
         let mut successful_view_dirty = true;
         let mut successful_redraw_pending = true;
-        consume_successful_frame(
-            &mut successful_chart,
-            &mut successful_view_dirty,
-            &mut successful_redraw_pending,
-        );
-        assert!(!successful_chart.data_dirty());
-        assert!(!successful_chart.raster_dirty());
+        consume_successful_frame(&mut successful_view_dirty, &mut successful_redraw_pending);
         assert!(!successful_view_dirty);
         assert!(!successful_redraw_pending);
 
-        let failed_chart = renderer::Chart::new(renderer::default::default_config());
         let failed_view_dirty = true;
         let failed_redraw_pending = true;
-        assert!(failed_chart.data_dirty());
-        assert!(failed_chart.raster_dirty());
         assert!(failed_view_dirty);
         assert!(failed_redraw_pending);
     }
@@ -1441,12 +1345,7 @@ mod tests {
 
 #[cfg(target_arch = "wasm32")]
 mod web {
-    use std::{
-        cell::{Cell, RefCell},
-        collections::HashMap,
-        rc::Rc,
-        sync::Arc,
-    };
+    use std::{cell::Cell, collections::HashMap, rc::Rc, sync::Arc};
 
     use wasm_bindgen::prelude::*;
     use wasm_bindgen_futures::{future_to_promise, spawn_local};
@@ -1455,26 +1354,23 @@ mod web {
     use renderer::data_config::ErrorRef;
     use renderer::data_render::ColumnPool;
     use renderer::gpu_pick::{GpuPickEngine, GpuPickSeriesReplacement, PreparedGpuPickSeriesBatch};
-    use renderer::layout::{ChartArea, Rect};
+    use renderer::layout::{ChartArea, NudgeResult, Rect};
     use renderer::line::LineStylePreset;
     use renderer::text::{RichText, rich_segments_from_text};
     use renderer::{
-        Chart, ChartDrawItem, ChartStyle, ChartView, Color, ColumnSource, CpuTextMeasure,
-        DataLineStyleConfig, DataRenderType, DefragPolicy, FitExtent, HiLoColumnSource, HitId,
-        HitMap, Renderer, ResizeHandle as ModelResizeHandle, SelectionBox, Series, SeriesConfig,
-        WindowedRenderer,
+        Chart, ChartDrawItem, ChartId, ChartRenderStamp, ChartStyle, ChartView, Color,
+        ColumnSource, CpuTextMeasure, DataLineStyleConfig, DataRenderType, DefragPolicy, FitExtent,
+        HiLoColumnSource, HitId, HitMap, Renderer, ResizeHandle as ModelResizeHandle, SelectionBox,
+        Series, SeriesConfig, WindowedRenderer,
     };
 
-    use crate::borrowed_column::{
-        BorrowedCastF32Column, BorrowedF32Column, BorrowedF64Column, ZeroColumnSource,
-    };
+    use crate::borrowed_column::{BorrowedCastF32Column, BorrowedF32Column, BorrowedF64Column};
     use crate::gpu_pick_style::OwnedGpuPickSeriesDescriptor;
     use crate::scalar_job::{SeriesExtentJob, SeriesFitExtent};
     use crate::{
-        ColumnRegistryAction, FrameDecision, INTERNAL_ZERO_COLUMN_ID, RedrawSource,
-        SeriesExtentKey, active_series_extent_requests, column_update_invalidates_fit,
-        column_upsert_redraw_source, consume_successful_frame, frame_decision,
-        prepare_column_metadata, redraw_source_wakes, required_internal_zero_column_len,
+        ColumnRegistryAction, FrameDecision, INTERNAL_ZERO_COLUMN_ID, SeriesExtentKey,
+        active_series_extent_requests, column_update_invalidates_fit, consume_successful_frame,
+        frame_decision, prepare_column_metadata, required_internal_zero_column_len,
         select_series_extent_job_map, series_extent_key_matches_config, validate_column_data_len,
         validate_column_registry_action, validate_public_column_id,
     };
@@ -1623,6 +1519,15 @@ mod web {
         ticket_jobs: Vec<(renderer::GpuSeriesExtentTicket, Rc<SeriesExtentJob>)>,
     }
 
+    struct PendingFitCommit {
+        token: renderer::FitCommitToken,
+        expected_epoch: u64,
+        x_extent: FitExtent,
+        y_extent: FitExtent,
+        padding: f64,
+        completion: futures_channel::oneshot::Sender<Result<(), String>>,
+    }
+
     // ------------------------------------------------------------------
     // Preset mirrors — fieldless enums cross the boundary as integers.
     // ------------------------------------------------------------------
@@ -1699,16 +1604,16 @@ mod web {
     #[wasm_bindgen]
     pub struct FiggyChart {
         renderer: WindowedRenderer<'static>,
+        chart_id: ChartId,
         gpu_picker: GpuPickEngine,
         gpu_picker_dirty: bool,
-        chart: Rc<RefCell<Chart>>,
         view: ChartView,
         /// Current WebGPU surface size in physical canvas pixels. This is a
         /// viewport property, not the exported document size.
         surface_size: (u32, u32),
-        series_cfgs: Vec<SeriesConfig>,
         styles: Vec<ChartStyle>,
-        /// 1:1 with `series_cfgs` — legend label text (None = no legend row).
+        /// 1:1 with renderer-owned series order. Legacy plain-label fallback
+        /// for explicit legend reset; rendered series/config remain the SSoT.
         labels: Vec<Option<String>>,
         /// True while the legend follows the wrapper's auto row layout.
         /// Direct `set_config` legend edits turn this off so later series
@@ -1726,31 +1631,69 @@ mod web {
         /// Invalidates an async fit if a later data/series/range mutation wins.
         fit_epoch: Rc<Cell<u64>>,
         alive: Rc<Cell<bool>>,
+        /// Async readback completion mailbox. `frame()` is the only owner that
+        /// mutates the renderer and commits a still-current fit token.
+        pending_fit_commit: Rc<Cell<Option<PendingFitCommit>>>,
         /// A removal happened — defragment once on the next frame.
         needs_defrag: bool,
         /// Monotonic color assignment for newly registered series.
         color_seq: usize,
         hitmap: HitMap,
-        selected: Option<HitId>,
         dragging: bool,
         resizing: Option<ModelResizeHandle>,
         cycle: renderer::ColorCycle,
         clear_color: Color,
         view_dirty: bool,
-        /// GPU-only visual mutations that are not represented by Chart dirty
-        /// flags. Starts true so the initial surface frame is never skipped.
+        /// Host-owned surface state not represented by renderer chart
+        /// revisions (currently the clear color). Starts true so the initial
+        /// surface frame is never skipped.
         redraw_pending: bool,
+        /// Renderer-issued identity of the state last presented onscreen.
+        last_presented_stamp: Option<ChartRenderStamp>,
     }
 
     impl FiggyChart {
+        fn chart_config(&self) -> &renderer::Config {
+            self.renderer
+                .chart_config(self.chart_id)
+                .expect("FiggyChart keeps its renderer-owned chart registered")
+        }
+
+        fn chart_series(&self) -> &[SeriesConfig] {
+            self.renderer
+                .chart_series(self.chart_id)
+                .expect("FiggyChart keeps its renderer-owned chart registered")
+        }
+
+        fn chart_selection(&self) -> Option<HitId> {
+            self.renderer
+                .chart_selection(self.chart_id)
+                .expect("FiggyChart keeps its renderer-owned chart registered")
+        }
+
+        fn replace_chart_config(&mut self, config: renderer::Config) -> Result<(), JsValue> {
+            self.renderer
+                .set_chart_config(self.chart_id, config)
+                .map_err(js_err)
+        }
+
+        fn replace_chart_state(
+            &mut self,
+            config: renderer::Config,
+            series: Vec<SeriesConfig>,
+        ) -> Result<(), JsValue> {
+            self.renderer
+                .set_chart_state(self.chart_id, config, series)
+                .map_err(js_err)
+        }
+
         fn display_scale_and_panel(&self) -> (f32, Rect) {
-            let logical = self.chart.borrow().config().chart_area.0;
+            let logical = self.chart_config().chart_area.0;
             super::fit_display_panel((logical.width, logical.height), self.surface_size)
         }
 
         fn display_config(&self) -> (renderer::config::Config, Rect, f32) {
-            let chart = self.chart.borrow();
-            super::display_config_for_surface(chart.config(), self.surface_size)
+            super::display_config_for_surface(self.chart_config(), self.surface_size)
         }
 
         fn display_delta_to_document(&self, dx: f32, dy: f32) -> (f32, f32) {
@@ -1763,8 +1706,7 @@ mod web {
         }
 
         fn label_text(&self, label: &str) -> RichText {
-            let chart = self.chart.borrow();
-            let content = &chart.config().legend.content;
+            let content = &self.chart_config().legend.content;
             RichText {
                 segments: rich_segments_from_text(label),
                 color: content.color,
@@ -1778,106 +1720,91 @@ mod web {
         }
 
         fn fallback_label(&self, i: usize) -> Option<RichText> {
-            self.series_cfgs
+            self.chart_series()
                 .get(i)
                 .and_then(|cfg| cfg.label.clone())
                 .or_else(|| self.labels.get(i)?.as_ref().map(|s| self.label_text(s)))
         }
 
-        fn append_legend_entry_for(&mut self, i: usize) {
-            let Some(cfg) = self.series_cfgs.get(i).cloned() else {
-                return;
+        fn append_legend_entry_for(&mut self, i: usize) -> Result<(), JsValue> {
+            let Some(cfg) = self.chart_series().get(i).cloned() else {
+                return Ok(());
             };
             let Some(label) = self.fallback_label(i) else {
-                return;
+                return Ok(());
             };
-            self.chart.borrow_mut().with_decoration_change(|c| {
-                renderer::config::append_legend_entry_rich(
-                    &mut c.legend.content,
-                    renderer::config::series_symbol_segments(&cfg),
-                    label.segments,
-                );
-                c.legend.visible = true;
-            });
+            let mut config = self.chart_config().clone();
+            renderer::config::append_legend_entry_rich(
+                &mut config.legend.content,
+                renderer::config::series_symbol_segments(&cfg),
+                label.segments,
+            );
+            config.legend.visible = true;
+            self.replace_chart_config(config)
         }
 
-        fn set_legend_entry_for(&mut self, i: usize, label: RichText) {
-            let Some(cfg) = self.series_cfgs.get(i).cloned() else {
-                return;
-            };
-            self.chart.borrow_mut().with_decoration_change(|c| {
-                renderer::config::set_legend_entry_label(
-                    &mut c.legend.content,
-                    i,
-                    renderer::config::series_symbol_segments(&cfg),
-                    label.segments,
-                );
-                c.legend.visible = true;
-            });
+        fn remove_legend_entry_for(&mut self, i: usize) -> Result<(), JsValue> {
+            let mut config = self.chart_config().clone();
+            if renderer::config::remove_legend_entry(&mut config.legend.content, i)
+                && config.legend.content.segments.is_empty()
+            {
+                config.legend.visible = false;
+            }
+            self.replace_chart_config(config)
         }
 
-        fn remove_legend_entry_for(&mut self, i: usize) {
-            self.chart.borrow_mut().with_decoration_change(|c| {
-                if renderer::config::remove_legend_entry(&mut c.legend.content, i)
-                    && c.legend.content.segments.is_empty()
-                {
-                    c.legend.visible = false;
-                }
-            });
-        }
-
-        fn sync_legend_symbols(&mut self, append_missing: bool) {
-            let existing = {
-                let chart = self.chart.borrow();
-                renderer::config::legend_entry_count(&chart.config().legend.content)
-            };
-            self.chart.borrow_mut().with_decoration_change(|c| {
-                renderer::config::update_legend_symbols_preserving_text(
-                    &mut c.legend.content,
-                    &self.series_cfgs,
-                );
-            });
+        fn sync_legend_symbols(&mut self, append_missing: bool) -> Result<(), JsValue> {
+            let series = self.chart_series().to_vec();
+            let mut config = self.chart_config().clone();
+            let existing = renderer::config::legend_entry_count(&config.legend.content);
+            renderer::config::update_legend_symbols_preserving_text(
+                &mut config.legend.content,
+                &series,
+            );
+            self.replace_chart_config(config)?;
             if append_missing {
-                if existing > self.series_cfgs.len() {
-                    for i in (self.series_cfgs.len()..existing).rev() {
-                        self.remove_legend_entry_for(i);
+                if existing > series.len() {
+                    for i in (series.len()..existing).rev() {
+                        self.remove_legend_entry_for(i)?;
                     }
                 }
-                for i in existing..self.series_cfgs.len() {
-                    self.append_legend_entry_for(i);
+                for i in existing..series.len() {
+                    self.append_legend_entry_for(i)?;
                 }
             }
+            Ok(())
         }
 
         /// Explicit reset: rebuild every auto legend row from SeriesConfig.label
         /// first, falling back to the wrapper's legacy string labels.
-        fn rebuild_legend_from_series_labels(&mut self) {
+        fn rebuild_legend_from_series_labels(&mut self) -> Result<(), JsValue> {
             let entries: Vec<(SeriesConfig, RichText)> = self
-                .series_cfgs
+                .chart_series()
                 .iter()
                 .cloned()
                 .enumerate()
                 .filter_map(|(i, cfg)| Some((cfg, self.fallback_label(i)?)))
                 .collect();
 
-            self.chart.borrow_mut().with_decoration_change(|c| {
-                c.legend.content.segments.clear();
-                for (cfg, label) in entries {
-                    renderer::config::append_legend_entry_rich(
-                        &mut c.legend.content,
-                        renderer::config::series_symbol_segments(&cfg),
-                        label.segments,
-                    );
-                }
-                c.legend.visible = !c.legend.content.segments.is_empty();
-            });
+            let mut config = self.chart_config().clone();
+            config.legend.content.segments.clear();
+            for (cfg, label) in entries {
+                renderer::config::append_legend_entry_rich(
+                    &mut config.legend.content,
+                    renderer::config::series_symbol_segments(&cfg),
+                    label.segments,
+                );
+            }
+            config.legend.visible = !config.legend.content.segments.is_empty();
+            self.replace_chart_config(config)?;
             self.legend_auto_managed = true;
+            Ok(())
         }
 
         fn rebuild_styles(&mut self) {
             let (scale, _) = self.display_scale_and_panel();
             self.styles = self
-                .series_cfgs
+                .chart_series()
                 .iter()
                 .map(|cfg| self.renderer.create_style_for_series_scaled(cfg, scale))
                 .collect();
@@ -1900,13 +1827,6 @@ mod web {
                 .handle_for(&cfg.x_column)
                 .zip(self.renderer.pool().handle_for(&cfg.y_column))
                 .is_some_and(|(x, y)| x.len_values.min(y.len_values) > 0)
-        }
-
-        fn gpu_pick_index_before(&self, logical_index: usize) -> usize {
-            self.series_cfgs[..logical_index]
-                .iter()
-                .filter(|cfg| self.pick_series_active_in_metadata(cfg))
-                .count()
         }
 
         fn build_gpu_picker_for(
@@ -1965,12 +1885,11 @@ mod web {
             precise: bool,
         ) -> Result<PickerUploadPlan, JsValue> {
             if self.gpu_picker_dirty {
+                let series = self.chart_series();
                 let mut descriptors = Vec::new();
-                descriptors
-                    .try_reserve(self.series_cfgs.len())
-                    .map_err(js_err)?;
+                descriptors.try_reserve(series.len()).map_err(js_err)?;
                 descriptors.extend(
-                    self.series_cfgs
+                    series
                         .iter()
                         .map(|cfg| OwnedGpuPickSeriesDescriptor::from_series(cfg, precise)),
                 );
@@ -1979,10 +1898,10 @@ mod web {
 
             let mut replacements = Vec::new();
             replacements
-                .try_reserve(self.series_cfgs.len())
+                .try_reserve(self.chart_series().len())
                 .map_err(js_err)?;
             let mut gpu_index = 0usize;
-            for cfg in &self.series_cfgs {
+            for cfg in self.chart_series() {
                 if !self.pick_series_active_in_metadata(cfg) {
                     continue;
                 }
@@ -2007,44 +1926,11 @@ mod web {
 
         fn rebuild_gpu_picker_now(&mut self) -> Result<(), JsValue> {
             self.gpu_picker.clear_series();
-            let precise = self.chart.borrow().config().draw_style.is_precise();
-            let picker = self.build_gpu_picker_for(&self.series_cfgs, precise)?;
+            let precise = self.chart_config().draw_style.is_precise();
+            let picker = self.build_gpu_picker_for(self.chart_series(), precise)?;
             self.gpu_picker = picker;
             self.gpu_picker_dirty = false;
             Ok(())
-        }
-
-        fn update_gpu_picker_series(
-            &mut self,
-            existing: Option<usize>,
-            cfg: &SeriesConfig,
-        ) -> Result<(), JsValue> {
-            let logical_index = existing.unwrap_or(self.series_cfgs.len());
-            let gpu_index = self.gpu_pick_index_before(logical_index);
-            let old_active = existing
-                .is_some_and(|index| self.pick_series_active_in_metadata(&self.series_cfgs[index]));
-            let new_active = self.pick_series_active_in_pool(cfg);
-            let precise = self.chart.borrow().config().draw_style.is_precise();
-            let owned = OwnedGpuPickSeriesDescriptor::from_series(cfg, precise);
-            let pool = self.renderer.pool();
-            let picker = &mut self.gpu_picker;
-
-            match (old_active, new_active) {
-                (true, true) => owned
-                    .with_descriptor(|descriptor| {
-                        picker.replace_series_at(gpu_index, pool, descriptor)
-                    })
-                    .map(|_| ())
-                    .map_err(js_err),
-                (true, false) => picker.remove_series_at(gpu_index).map_err(js_err),
-                (false, true) => owned
-                    .with_descriptor(|descriptor| {
-                        picker.insert_series_at(gpu_index, pool, descriptor)
-                    })
-                    .map(|_| ())
-                    .map_err(js_err),
-                (false, false) => Ok(()),
-            }
         }
 
         /// Invalidate an in-flight fit when a later mutation wins call order.
@@ -2052,12 +1938,31 @@ mod web {
             self.fit_epoch.set(self.fit_epoch.get().wrapping_add(1));
         }
 
-        fn request_redraw(&mut self, source: RedrawSource) {
-            if redraw_source_wakes(source) {
-                self.redraw_pending = true;
-            }
+        fn commit_pending_fit(&mut self) {
+            let Some(pending) = self.pending_fit_commit.take() else {
+                return;
+            };
+            let result = if self.fit_epoch.get() != pending.expected_epoch {
+                Err(
+                    "auto_fit_all was superseded by a later fit, data, series, or axis mutation"
+                        .to_string(),
+                )
+            } else {
+                self.renderer
+                    .commit_auto_fit_all_if_current(
+                        &pending.token,
+                        &pending.x_extent,
+                        &pending.y_extent,
+                        pending.padding,
+                    )
+                    .map_err(|error| error.to_string())
+            };
+            let _ = pending.completion.send(result);
         }
 
+        fn request_host_redraw(&mut self) {
+            self.redraw_pending = true;
+        }
         fn prepare_series_extent_cache(
             &self,
             series_cfgs: &[SeriesConfig],
@@ -2100,7 +2005,7 @@ mod web {
         /// Removing series cannot create a new extent identity. Retire stale
         /// jobs without allocating or submitting new GPU work.
         fn retire_series_extent_cache(&mut self) {
-            let series_cfgs = &self.series_cfgs;
+            let series_cfgs = self.chart_series().to_vec();
             let revisions = &self.column_revisions;
             self.series_extents.retain(|key, _| {
                 series_cfgs
@@ -2146,12 +2051,12 @@ mod web {
             )
             .map_err(js_err)?;
             let ordered_requests =
-                active_series_extent_requests(&self.series_cfgs, &metadata.revisions)
+                active_series_extent_requests(self.chart_series(), &metadata.revisions)
                     .map_err(js_err)?;
             let (future_series_extents, pending_series_extents) =
                 select_series_extent_job_map(ordered_requests, &self.series_extents, false)
                     .map_err(js_err)?;
-            let precise = self.chart.borrow().config().draw_style.is_precise();
+            let precise = self.chart_config().draw_style.is_precise();
             let picker_plan = self.prepare_picker_upload_plan(id, precise)?;
             let device = Arc::clone(self.renderer.device());
             let queue = Arc::clone(self.renderer.queue());
@@ -2226,7 +2131,6 @@ mod web {
                 self.bump_fit_epoch();
             }
             self.publish_series_extent_cache(prepared_series_extents);
-            self.request_redraw(column_upsert_redraw_source(id));
             Ok(())
         }
 
@@ -2234,12 +2138,23 @@ mod web {
             if self.columns.get(INTERNAL_ZERO_COLUMN_ID) == Some(&len) {
                 return Ok(());
             }
-            let source = ZeroColumnSource::new(len);
-            self.upsert_column_atomic(
+            let metadata = prepare_column_metadata(
+                &self.columns,
+                &self.column_revisions,
+                self.next_column_revision,
                 INTERNAL_ZERO_COLUMN_ID,
                 len,
-                ColumnUploadSource::Scalar(&source),
             )
+            .map_err(js_err)?;
+            let replaced_existing = self.columns.contains_key(INTERNAL_ZERO_COLUMN_ID);
+            self.renderer
+                .ensure_internal_zero_column(len)
+                .map_err(js_err)?;
+            self.columns = metadata.columns;
+            self.column_revisions = metadata.revisions;
+            self.next_column_revision = metadata.next_revision;
+            self.needs_defrag |= replaced_existing;
+            Ok(())
         }
 
         fn upsert_column_f64_as_f32(&mut self, id: &str, data: &[f64]) -> Result<(), JsValue> {
@@ -2265,7 +2180,7 @@ mod web {
         /// unused error dimension. Rendering preparation owns this resource;
         /// changing the active series never uploads column data.
         fn ensure_zero_column_for_render(&mut self) -> Result<(), JsValue> {
-            let needed = required_internal_zero_column_len(&self.columns, &self.series_cfgs);
+            let needed = required_internal_zero_column_len(&self.columns, self.chart_series());
             let existing = self
                 .columns
                 .get(INTERNAL_ZERO_COLUMN_ID)
@@ -2277,21 +2192,23 @@ mod web {
             Ok(())
         }
 
-        fn process_pending_defrag(&mut self) -> Result<(), JsValue> {
+        fn process_pending_defrag(&mut self) -> Result<bool, JsValue> {
             if !self.needs_defrag {
-                return Ok(());
+                return Ok(false);
             }
             // Preserve the existing R2-04 behavior: maintenance is consumed
             // before defrag/rebind. Visual dirty state is handled separately
             // and is never consumed here.
             self.needs_defrag = false;
             let relocated = self.renderer.defragment().map_err(js_err)?;
-            if relocated && !self.gpu_picker_dirty {
-                self.gpu_picker
-                    .rebind_columns(self.renderer.pool())
-                    .map_err(js_err)?;
+            if relocated {
+                if !self.gpu_picker_dirty {
+                    self.gpu_picker
+                        .rebind_columns(self.renderer.pool())
+                        .map_err(js_err)?;
+                }
             }
-            Ok(())
+            Ok(relocated)
         }
     }
 
@@ -2299,6 +2216,11 @@ mod web {
         fn drop(&mut self) {
             self.alive.set(false);
             self.bump_fit_epoch();
+            if let Some(pending) = self.pending_fit_commit.take() {
+                let _ = pending.completion.send(Err(
+                    "chart was dropped while auto_fit_all was pending".into(),
+                ));
+            }
         }
     }
 
@@ -2333,6 +2255,9 @@ mod web {
                 width: w,
                 height: h,
             });
+            let chart_id = renderer
+                .register_chart(config.clone(), Vec::new())
+                .map_err(js_err)?;
             let chart = Chart::new(config);
             let view = renderer
                 .create_chart_view(
@@ -2348,12 +2273,11 @@ mod web {
 
             Ok(FiggyChart {
                 renderer,
+                chart_id,
                 gpu_picker,
                 gpu_picker_dirty: false,
-                chart: Rc::new(RefCell::new(chart)),
                 view,
                 surface_size: (w, h),
-                series_cfgs: Vec::new(),
                 styles: Vec::new(),
                 labels: Vec::new(),
                 legend_auto_managed: true,
@@ -2363,16 +2287,17 @@ mod web {
                 series_extents: HashMap::new(),
                 fit_epoch: Rc::new(Cell::new(0)),
                 alive: Rc::new(Cell::new(true)),
+                pending_fit_commit: Rc::new(Cell::new(None)),
                 needs_defrag: false,
                 color_seq: 0,
                 hitmap: HitMap::standard_chart(),
-                selected: None,
                 dragging: false,
                 resizing: None,
                 cycle: renderer::ColorCycle::Classic,
                 clear_color: Color::WHITE,
                 view_dirty: false,
                 redraw_pending: true,
+                last_presented_stamp: None,
             })
         }
 
@@ -2388,7 +2313,6 @@ mod web {
                 renderer::text_render::register_font_bytes(bytes.to_vec()).map_err(js_err)?;
             // Text may already be on screen in the fallback font — force a
             // decoration re-raster so the registration is visible.
-            self.chart.borrow_mut().with_decoration_change(|_| {});
             Ok(families)
         }
 
@@ -2465,8 +2389,10 @@ mod web {
             self.upsert_column_atomic(id, data.len(), ColumnUploadSource::HiLo(&column))
         }
 
-        /// Unregister a column. Series referencing it are removed too (with
-        /// their legend rows) so the chart can never point at freed data.
+        /// Unregister a column. Series referencing it are removed too so the
+        /// chart can never point at freed data. Auto-managed legends remove
+        /// the corresponding rows; freely edited legends preserve their text
+        /// and only synchronize recognized series symbols.
         /// Returns `true` when the column existed.
         pub fn remove_column(&mut self, id: &str) -> Result<bool, JsValue> {
             validate_public_column_id(id)
@@ -2474,12 +2400,12 @@ mod web {
             if !self.columns.contains_key(id) {
                 return Ok(false);
             }
+            let old_series = self.chart_series().to_vec();
             if !self.renderer.remove_column(id).map_err(js_err)? {
                 return Ok(false);
             }
             let was_dirty = self.gpu_picker_dirty;
-            let keep: Vec<bool> = self
-                .series_cfgs
+            let keep: Vec<bool> = old_series
                 .iter()
                 .map(|cfg| !referenced_columns(cfg).contains(&id))
                 .collect();
@@ -2490,8 +2416,11 @@ mod web {
                 .collect();
             if !was_dirty {
                 for &logical_index in removed.iter().rev() {
-                    if self.pick_series_active_in_metadata(&self.series_cfgs[logical_index]) {
-                        let gpu_index = self.gpu_pick_index_before(logical_index);
+                    if self.pick_series_active_in_metadata(&old_series[logical_index]) {
+                        let gpu_index = old_series[..logical_index]
+                            .iter()
+                            .filter(|cfg| self.pick_series_active_in_metadata(cfg))
+                            .count();
                         if self.gpu_picker.remove_series_at(gpu_index).is_err() {
                             self.gpu_picker_dirty = true;
                             break;
@@ -2507,17 +2436,15 @@ mod web {
 
             if keep.iter().any(|k| !k) {
                 let mut it = keep.iter();
-                self.series_cfgs.retain(|_| *it.next().unwrap());
-                let mut it = keep.iter();
                 self.styles.retain(|_| *it.next().unwrap());
                 let mut it = keep.iter();
                 self.labels.retain(|_| *it.next().unwrap());
                 if self.legend_auto_managed {
                     for i in removed.into_iter().rev() {
-                        self.remove_legend_entry_for(i);
+                        self.remove_legend_entry_for(i)?;
                     }
                 } else {
-                    self.sync_legend_symbols(false);
+                    self.sync_legend_symbols(false)?;
                 }
             }
             if self.gpu_picker_dirty {
@@ -2525,7 +2452,6 @@ mod web {
             }
             self.bump_fit_epoch();
             self.retire_series_extent_cache();
-            self.request_redraw(RedrawSource::RemoveColumn);
             Ok(true)
         }
 
@@ -2544,12 +2470,10 @@ mod web {
             line_width: f32,
             label: &str,
         ) -> Result<(), JsValue> {
-            let existing = self
-                .series_cfgs
-                .iter()
-                .position(|c| c.series_id == series_id);
+            let current = self.chart_series().to_vec();
+            let existing = current.iter().position(|c| c.series_id == series_id);
             let color = match existing {
-                Some(i) => match &self.series_cfgs[i].render_type {
+                Some(i) => match &current[i].render_type {
                     DataRenderType::Line { line } => line.line_color,
                     _ => self.cycle.color(i),
                 },
@@ -2566,7 +2490,7 @@ mod web {
             let rich_label = if label_changed {
                 Some(self.label_text(label))
             } else {
-                existing.and_then(|i| self.series_cfgs[i].label.clone())
+                existing.and_then(|i| current[i].label.clone())
             };
             let plain_label = if label_changed {
                 Some(label.to_string())
@@ -2590,57 +2514,60 @@ mod web {
             };
             self.ensure_columns_exist(&cfg)?;
             let (scale, _) = self.display_scale_and_panel();
-            let style = self.renderer.create_style_for_series_scaled(&cfg, scale);
-            let mut proposed = self.series_cfgs.clone();
+            let mut proposed = current;
             if let Some(index) = existing {
                 proposed[index] = cfg.clone();
             } else {
                 proposed.try_reserve(1).map_err(js_err)?;
                 proposed.push(cfg.clone());
-                self.series_cfgs.try_reserve(1).map_err(js_err)?;
-                self.styles.try_reserve(1).map_err(js_err)?;
-                self.labels.try_reserve(1).map_err(js_err)?;
             }
-            let precise = self.chart.borrow().config().draw_style.is_precise();
-            let next_gpu_picker = if self.gpu_picker_dirty {
-                Some(self.build_gpu_picker_for(&proposed, precise)?)
-            } else {
-                None
-            };
+            let precise = self.chart_config().draw_style.is_precise();
+            let next_gpu_picker = self.build_gpu_picker_for(&proposed, precise)?;
             let prepared_extents =
                 self.prepare_series_extent_cache(&proposed, &self.column_revisions, false)?;
-
-            if let Some(next_gpu_picker) = next_gpu_picker {
-                self.gpu_picker = next_gpu_picker;
-                self.gpu_picker_dirty = false;
+            let mut next_styles = Vec::new();
+            next_styles.try_reserve(proposed.len()).map_err(js_err)?;
+            for series in &proposed {
+                next_styles.push(self.renderer.create_style_for_series_scaled(series, scale));
+            }
+            let mut next_labels = self.labels.clone();
+            if let Some(index) = existing {
+                next_labels[index] = plain_label;
             } else {
-                self.update_gpu_picker_series(existing, &cfg)?;
+                next_labels.try_reserve(1).map_err(js_err)?;
+                next_labels.push(plain_label);
+            }
+            let mut next_config = self.chart_config().clone();
+            if label_changed && let Some(label) = rich_label {
+                match existing {
+                    Some(index) => renderer::config::set_legend_entry_label(
+                        &mut next_config.legend.content,
+                        index,
+                        renderer::config::series_symbol_segments(&cfg),
+                        label.segments,
+                    ),
+                    None => renderer::config::append_legend_entry_rich(
+                        &mut next_config.legend.content,
+                        renderer::config::series_symbol_segments(&cfg),
+                        label.segments,
+                    ),
+                }
+                next_config.legend.visible = true;
+            } else {
+                renderer::config::update_legend_symbols_preserving_text(
+                    &mut next_config.legend.content,
+                    &proposed,
+                );
             }
 
-            match existing {
-                Some(i) => {
-                    self.series_cfgs[i] = cfg;
-                    self.styles[i] = style;
-                    self.labels[i] = plain_label;
-                    if label_changed && let Some(label) = rich_label {
-                        self.set_legend_entry_for(i, label);
-                    } else {
-                        self.sync_legend_symbols(false);
-                    }
-                }
-                None => {
-                    self.series_cfgs.push(cfg);
-                    self.styles.push(style);
-                    self.labels.push(plain_label);
-                    self.color_seq = next_color_seq;
-                    if label_changed && rich_label.is_some() {
-                        self.append_legend_entry_for(self.series_cfgs.len() - 1);
-                    }
-                }
-            }
+            self.replace_chart_state(next_config, proposed)?;
+            self.styles = next_styles;
+            self.labels = next_labels;
+            self.gpu_picker = next_gpu_picker;
+            self.gpu_picker_dirty = false;
+            self.color_seq = next_color_seq;
             self.bump_fit_epoch();
             self.publish_series_extent_cache(prepared_extents);
-            self.request_redraw(RedrawSource::AddSeries);
             Ok(())
         }
 
@@ -2648,84 +2575,92 @@ mod web {
         /// unicode sub/superscripts (`₀`, `⁻`, …) map to styled segments.
         /// Empty string removes the legend row. Returns `true` when the
         /// series exists.
-        pub fn set_series_label(&mut self, series_id: &str, label: &str) -> bool {
-            let Some(i) = self
-                .series_cfgs
-                .iter()
-                .position(|c| c.series_id == series_id)
-            else {
-                return false;
+        pub fn set_series_label(&mut self, series_id: &str, label: &str) -> Result<bool, JsValue> {
+            let mut series = self.chart_series().to_vec();
+            let Some(i) = series.iter().position(|c| c.series_id == series_id) else {
+                return Ok(false);
             };
+            let mut config = self.chart_config().clone();
+            let mut labels = self.labels.clone();
             if label.is_empty() {
-                self.labels[i] = None;
-                self.series_cfgs[i].label = None;
-                self.remove_legend_entry_for(i);
+                labels[i] = None;
+                series[i].label = None;
+                if renderer::config::remove_legend_entry(&mut config.legend.content, i)
+                    && config.legend.content.segments.is_empty()
+                {
+                    config.legend.visible = false;
+                }
             } else {
                 let label = self.label_text(label);
-                self.labels[i] = Some(Self::rich_text_to_plain(&label));
-                self.series_cfgs[i].label = Some(label.clone());
-                self.set_legend_entry_for(i, label);
+                labels[i] = Some(Self::rich_text_to_plain(&label));
+                series[i].label = Some(label.clone());
+                renderer::config::set_legend_entry_label(
+                    &mut config.legend.content,
+                    i,
+                    renderer::config::series_symbol_segments(&series[i]),
+                    label.segments,
+                );
+                config.legend.visible = true;
             }
-            true
+            self.replace_chart_state(config, series)?;
+            self.labels = labels;
+            Ok(true)
         }
 
-        /// Unregister a series (and its legend row). Columns stay registered.
+        /// Unregister a series. Columns stay registered. Auto-managed legends
+        /// remove its row; freely edited legends preserve their text and only
+        /// synchronize recognized series symbols.
         /// Returns `true` when the series existed.
-        pub fn remove_series(&mut self, series_id: &str) -> bool {
-            let Some(i) = self
-                .series_cfgs
-                .iter()
-                .position(|c| c.series_id == series_id)
-            else {
-                return false;
+        pub fn remove_series(&mut self, series_id: &str) -> Result<bool, JsValue> {
+            let mut series = self.chart_series().to_vec();
+            let Some(i) = series.iter().position(|c| c.series_id == series_id) else {
+                return Ok(false);
             };
-            let was_dirty = self.gpu_picker_dirty;
-            if !was_dirty && self.pick_series_active_in_metadata(&self.series_cfgs[i]) {
-                let gpu_index = self.gpu_pick_index_before(i);
-                if self.gpu_picker.remove_series_at(gpu_index).is_err() {
-                    return false;
+            series.remove(i);
+            let precise = self.chart_config().draw_style.is_precise();
+            let next_gpu_picker = self.build_gpu_picker_for(&series, precise)?;
+            let mut config = self.chart_config().clone();
+            if self.legend_auto_managed {
+                if renderer::config::remove_legend_entry(&mut config.legend.content, i)
+                    && config.legend.content.segments.is_empty()
+                {
+                    config.legend.visible = false;
                 }
+            } else {
+                renderer::config::update_legend_symbols_preserving_text(
+                    &mut config.legend.content,
+                    &series,
+                );
             }
-            self.series_cfgs.remove(i);
+            self.replace_chart_state(config, series)?;
             self.styles.remove(i);
             self.labels.remove(i);
-            if self.legend_auto_managed {
-                self.remove_legend_entry_for(i);
-            } else {
-                self.sync_legend_symbols(false);
-            }
-            if was_dirty {
-                let _ = self.rebuild_gpu_picker_now();
-            }
+            self.gpu_picker = next_gpu_picker;
+            self.gpu_picker_dirty = false;
             self.bump_fit_epoch();
             self.retire_series_extent_cache();
-            self.request_redraw(RedrawSource::RemoveSeries);
-            true
+            Ok(true)
         }
 
         /// Fit the x axis to a column's range with proportional padding.
         pub fn auto_fit_x(&mut self, column: &str, padding: f64) -> Result<(), JsValue> {
-            let result = self
-                .chart
-                .borrow_mut()
+            let mut chart = Chart::new(self.chart_config().clone());
+            chart
                 .auto_fit_x(self.renderer.pool(), column, padding)
-                .map_err(js_err);
-            if result.is_ok() {
-                self.bump_fit_epoch();
-            }
-            result
+                .map_err(js_err)?;
+            self.replace_chart_config(chart.config().clone())?;
+            self.bump_fit_epoch();
+            Ok(())
         }
 
         pub fn auto_fit_y(&mut self, column: &str, padding: f64) -> Result<(), JsValue> {
-            let result = self
-                .chart
-                .borrow_mut()
+            let mut chart = Chart::new(self.chart_config().clone());
+            chart
                 .auto_fit_y(self.renderer.pool(), column, padding)
-                .map_err(js_err);
-            if result.is_ok() {
-                self.bump_fit_epoch();
-            }
-            result
+                .map_err(js_err)?;
+            self.replace_chart_config(chart.config().clone())?;
+            self.bump_fit_epoch();
+            Ok(())
         }
 
         /// Fit BOTH axes to the union of every registered series, leaving a
@@ -2742,26 +2677,30 @@ mod web {
         /// by the normalized mode plus role-specific column revisions.
         pub fn auto_fit_all(&mut self, padding: f64) -> js_sys::Promise {
             let snapshot = (|| -> Result<_, JsValue> {
-                let prepared = self.prepare_series_extent_cache(
-                    &self.series_cfgs,
-                    &self.column_revisions,
-                    true,
-                )?;
+                let token = self
+                    .renderer
+                    .begin_fit_commit(self.chart_id)
+                    .map_err(js_err)?;
+                let series = self.chart_series().to_vec();
+                let prepared =
+                    self.prepare_series_extent_cache(&series, &self.column_revisions, true)?;
                 let mut jobs = Vec::new();
                 jobs.try_reserve(prepared.extents.len()).map_err(js_err)?;
                 jobs.extend(prepared.extents.values().cloned());
-                Ok((prepared, jobs))
+                Ok((token, prepared, jobs))
             })();
 
-            let (prepared, jobs) = match snapshot {
+            let (token, prepared, jobs) = match snapshot {
                 Ok(snapshot) => snapshot,
                 Err(error) => return js_sys::Promise::reject(&error),
             };
             self.publish_series_extent_cache(prepared);
-            let chart = Rc::clone(&self.chart);
             let fit_epoch = Rc::clone(&self.fit_epoch);
             let alive = Rc::clone(&self.alive);
-            let expected_epoch = fit_epoch.get().wrapping_add(1);
+            let pending_fit_commit = Rc::clone(&self.pending_fit_commit);
+            let Some(expected_epoch) = fit_epoch.get().checked_add(1) else {
+                return js_sys::Promise::reject(&js_err("fit epoch counter exhausted"));
+            };
             fit_epoch.set(expected_epoch);
 
             future_to_promise(async move {
@@ -2782,56 +2721,81 @@ mod web {
                         "auto_fit_all was superseded by a later data, series, or axis mutation",
                     ));
                 }
-                let mut chart = chart
-                    .try_borrow_mut()
-                    .map_err(|_| js_err("chart is busy applying another synchronous mutation"))?;
-                chart.auto_fit_x_extent(&x_ext, padding);
-                chart.auto_fit_y_extent(&y_ext, padding);
+                let (completion, receiver) = futures_channel::oneshot::channel();
+                if let Some(previous) = pending_fit_commit.replace(Some(PendingFitCommit {
+                    token,
+                    expected_epoch,
+                    x_extent: x_ext,
+                    y_extent: y_ext,
+                    padding,
+                    completion,
+                })) {
+                    let _ = previous
+                        .completion
+                        .send(Err("auto_fit_all was superseded by a later fit".into()));
+                }
+                receiver
+                    .await
+                    .map_err(|_| js_err("auto_fit_all commit channel closed"))?
+                    .map_err(js_err)?;
                 Ok(JsValue::UNDEFINED)
             })
         }
 
         // ---- titles ----
 
-        pub fn set_title(&mut self, text: &str) {
-            self.chart.borrow_mut().with_decoration_change(|c| {
-                c.chart_title.text.segments = rich_segments_from_text(text);
-            });
+        pub fn set_title(&mut self, text: &str) -> Result<(), JsValue> {
+            let mut config = self.chart_config().clone();
+            config.chart_title.text.segments = rich_segments_from_text(text);
+            self.replace_chart_config(config)
         }
 
-        pub fn set_x_title(&mut self, text: &str) {
-            self.chart.borrow_mut().with_decoration_change(|c| {
-                c.bottom_x.title_option.text.segments = rich_segments_from_text(text);
-            });
+        pub fn set_x_title(&mut self, text: &str) -> Result<(), JsValue> {
+            let mut config = self.chart_config().clone();
+            config.bottom_x.title_option.text.segments = rich_segments_from_text(text);
+            self.replace_chart_config(config)
         }
 
-        pub fn set_y_title(&mut self, text: &str) {
-            self.chart.borrow_mut().with_decoration_change(|c| {
-                c.left_y.title_option.text.segments = rich_segments_from_text(text);
-            });
+        pub fn set_y_title(&mut self, text: &str) -> Result<(), JsValue> {
+            let mut config = self.chart_config().clone();
+            config.left_y.title_option.text.segments = rich_segments_from_text(text);
+            self.replace_chart_config(config)
         }
 
         // ---- presets ----
 
         /// Apply an axis frame preset to all four axes (decoration-only).
-        pub fn apply_axis_preset(&mut self, preset: AxisPreset) {
+        pub fn apply_axis_preset(&mut self, preset: AxisPreset) -> Result<(), JsValue> {
             let p: renderer::AxisPreset = preset.into();
-            self.chart
-                .borrow_mut()
-                .with_decoration_change(|c| c.apply_axis_preset(p));
+            let mut config = self.chart_config().clone();
+            config.apply_axis_preset(p);
+            self.replace_chart_config(config)
         }
 
         /// Switch the series color rotation: recolors every series in order,
         /// rebuilds their GPU styles, and keeps legend swatches in sync.
-        pub fn apply_color_cycle(&mut self, cycle: ColorCycle) {
-            self.cycle = cycle.into();
-            for (i, cfg) in self.series_cfgs.iter_mut().enumerate() {
-                self.cycle.apply_to_series(cfg, i);
+        pub fn apply_color_cycle(&mut self, cycle: ColorCycle) -> Result<(), JsValue> {
+            let cycle = renderer::ColorCycle::from(cycle);
+            let mut series = self.chart_series().to_vec();
+            for (i, cfg) in series.iter_mut().enumerate() {
+                cycle.apply_to_series(cfg, i);
             }
-            self.color_seq = self.series_cfgs.len();
-            self.rebuild_styles();
-            self.sync_legend_symbols(false);
-            self.request_redraw(RedrawSource::ColorCycle);
+            let (scale, _) = self.display_scale_and_panel();
+            let mut styles = Vec::new();
+            styles.try_reserve(series.len()).map_err(js_err)?;
+            for cfg in &series {
+                styles.push(self.renderer.create_style_for_series_scaled(cfg, scale));
+            }
+            let mut config = self.chart_config().clone();
+            renderer::config::update_legend_symbols_preserving_text(
+                &mut config.legend.content,
+                &series,
+            );
+            self.replace_chart_state(config, series)?;
+            self.cycle = cycle;
+            self.color_seq = styles.len();
+            self.styles = styles;
+            Ok(())
         }
 
         // ---- SSoT I/O ----
@@ -2845,7 +2809,7 @@ mod web {
         /// Serialize the full chart option SSoT to a JSON string.
         /// JS: `const cfg = JSON.parse(chart.get_config());`
         pub fn get_config(&self) -> Result<String, JsValue> {
-            serde_json::to_string(self.chart.borrow().config()).map_err(js_err)
+            serde_json::to_string(self.chart_config()).map_err(js_err)
         }
 
         /// Replace the whole option SSoT from JSON. Marks everything dirty —
@@ -2854,23 +2818,23 @@ mod web {
         /// JS: `chart.set_config(JSON.stringify(cfg));`
         pub fn set_config(&mut self, json: &str) -> Result<(), JsValue> {
             let new_cfg: renderer::Config = serde_json::from_str(json).map_err(js_err)?;
-            let (legend_content_changed, old_precise) = {
-                let chart = self.chart.borrow();
-                (
-                    chart.config().legend.content != new_cfg.legend.content,
-                    chart.config().draw_style.is_precise(),
-                )
-            };
+            let old_config = self.chart_config();
+            let legend_content_changed = old_config.legend.content != new_cfg.legend.content;
+            let old_precise = old_config.draw_style.is_precise();
             let new_precise = new_cfg.draw_style.is_precise();
+            let series = self.chart_series().to_vec();
             let next_gpu_picker = if old_precise != new_precise {
-                if self.gpu_picker_dirty {
-                    self.gpu_picker.clear_series();
-                }
-                Some(self.build_gpu_picker_for(&self.series_cfgs, new_precise)?)
+                Some(self.build_gpu_picker_for(&series, new_precise)?)
             } else {
                 None
             };
-            *self.chart.borrow_mut().config_mut() = new_cfg;
+            let (_, _, scale) = super::display_config_for_surface(&new_cfg, self.surface_size);
+            let mut new_styles = Vec::new();
+            new_styles.try_reserve(series.len()).map_err(js_err)?;
+            for cfg in &series {
+                new_styles.push(self.renderer.create_style_for_series_scaled(cfg, scale));
+            }
+            self.replace_chart_config(new_cfg)?;
             if let Some(next_gpu_picker) = next_gpu_picker {
                 self.gpu_picker = next_gpu_picker;
                 self.gpu_picker_dirty = false;
@@ -2879,14 +2843,13 @@ mod web {
             if legend_content_changed {
                 self.legend_auto_managed = false;
             }
-            self.view_dirty = true;
-            self.rebuild_styles();
+            self.styles = new_styles;
             Ok(())
         }
 
         /// Serialize the series declarations (columns, render type, styles).
         pub fn get_series(&self) -> Result<String, JsValue> {
-            serde_json::to_string(&self.series_cfgs).map_err(js_err)
+            serde_json::to_string(self.chart_series()).map_err(js_err)
         }
 
         /// Replace the series declarations from JSON. Column references must
@@ -2897,8 +2860,9 @@ mod web {
             for cfg in &new_series {
                 self.ensure_columns_exist(cfg)?;
             }
-            let precise = self.chart.borrow().config().draw_style.is_precise();
+            let precise = self.chart_config().draw_style.is_precise();
             let next_gpu_picker = self.build_gpu_picker_for(&new_series, precise)?;
+            let old_series = self.chart_series().to_vec();
             let mut new_labels = Vec::new();
             new_labels.try_reserve(new_series.len()).map_err(js_err)?;
             for cfg in &new_series {
@@ -2907,7 +2871,7 @@ mod web {
                         .as_ref()
                         .map(Self::rich_text_to_plain)
                         .or_else(|| {
-                            self.series_cfgs
+                            old_series
                                 .iter()
                                 .position(|old| old.series_id == cfg.series_id)
                                 .and_then(|i| self.labels[i].clone())
@@ -2922,24 +2886,50 @@ mod web {
             }
             let prepared_extents =
                 self.prepare_series_extent_cache(&new_series, &self.column_revisions, false)?;
-
+            let mut config = self.chart_config().clone();
+            if self.legend_auto_managed {
+                let existing = renderer::config::legend_entry_count(&config.legend.content);
+                renderer::config::update_legend_symbols_preserving_text(
+                    &mut config.legend.content,
+                    &new_series,
+                );
+                if existing > new_series.len() {
+                    for index in (new_series.len()..existing).rev() {
+                        renderer::config::remove_legend_entry(&mut config.legend.content, index);
+                    }
+                }
+                for index in existing..new_series.len() {
+                    let label = new_series[index].label.clone().or_else(|| {
+                        new_labels[index]
+                            .as_ref()
+                            .map(|label| self.label_text(label))
+                    });
+                    if let Some(label) = label {
+                        renderer::config::append_legend_entry_rich(
+                            &mut config.legend.content,
+                            renderer::config::series_symbol_segments(&new_series[index]),
+                            label.segments,
+                        );
+                    }
+                }
+                config.legend.visible = !config.legend.content.segments.is_empty();
+            }
+            let new_len = new_series.len();
+            self.replace_chart_state(config, new_series)?;
             self.labels = new_labels;
-            self.series_cfgs = new_series;
             self.styles = new_styles;
             self.gpu_picker = next_gpu_picker;
             self.gpu_picker_dirty = false;
-            self.color_seq = self.series_cfgs.len().max(self.color_seq);
+            self.color_seq = new_len.max(self.color_seq);
             self.bump_fit_epoch();
             self.publish_series_extent_cache(prepared_extents);
-            self.sync_legend_symbols(self.legend_auto_managed);
-            self.request_redraw(RedrawSource::SetSeries);
             Ok(())
         }
 
         /// Explicitly rebuild the auto legend from `SeriesConfig.label`.
         /// Legacy string labels are used only when a series has no rich label.
-        pub fn reset_legend_from_series_labels(&mut self) {
-            self.rebuild_legend_from_series_labels();
+        pub fn reset_legend_from_series_labels(&mut self) -> Result<(), JsValue> {
+            self.rebuild_legend_from_series_labels()
         }
 
         // ---- pointer interaction (coordinates in canvas pixels) ----
@@ -2967,22 +2957,21 @@ mod web {
         /// Scatter hits use the visible marker size, including per-point style
         /// mapping; line strokes snap to the nearest endpoint data point on
         /// the hit segment. Errorbar stems/caps are not pick targets.
-        /// Returns JSON `{ source_id, series_id, point_index, distance_px }`,
-        /// or `null` when no visible primitive is within
-        /// `max_distance_px`.
+        /// Resolves to a JSON string
+        /// `{ source_id, series_id, point_index, distance_px }`, or
+        /// `undefined` when no visible primitive is within `max_distance_px`.
+        /// The `<figgy-chart>` facade parses the string and normalizes
+        /// `undefined` to `null`.
         pub fn pick_point(&mut self, x: f32, y: f32, max_distance_px: f32) -> js_sys::Promise {
             if let Err(error) = self.repair_gpu_picker_if_dirty() {
                 return js_sys::Promise::reject(&error);
             }
-            let (query, display_scale) = {
-                let chart = self.chart.borrow();
-                super::gpu_pick_query_for_surface(
-                    chart.config(),
-                    self.surface_size,
-                    [x, y],
-                    max_distance_px,
-                )
-            };
+            let (query, display_scale) = super::gpu_pick_query_for_surface(
+                self.chart_config(),
+                self.surface_size,
+                [x, y],
+                max_distance_px,
+            );
             let ticket = match self.gpu_picker.pick_with_display_scale(
                 self.renderer.pool(),
                 query,
@@ -3006,18 +2995,18 @@ mod web {
         pub fn set_picked_points(&mut self, json: &str) -> Result<(), JsValue> {
             let picked: Option<renderer::config::PickedPointsConfig> =
                 serde_json::from_str(json).map_err(js_err)?;
-            self.chart.borrow_mut().with_decoration_change(|c| {
-                c.picked_points = picked;
-            });
-            Ok(())
+            let mut config = self.chart_config().clone();
+            config.picked_points = picked;
+            self.replace_chart_config(config)
         }
 
         /// Pointer press. Returns `true` while something is selected.
         /// The host can mirror that state in its own UI.
-        pub fn on_press(&mut self, x: f32, y: f32) -> bool {
+        pub fn on_press(&mut self, x: f32, y: f32) -> Result<bool, JsValue> {
             let (display_config, _, _) = self.display_config();
+            let selected = self.chart_selection();
             // Resize handles on the selected element win over hit-testing.
-            if let Some(id) = self.selected
+            if let Some(id) = selected
                 && let Some(rz) = self.hitmap.get(id).and_then(|el| el.as_resizable())
                 && let Some(handle) = rz.hit_resize_handle(
                     &display_config,
@@ -3028,9 +3017,8 @@ mod web {
             {
                 self.resizing = Some(handle);
                 self.dragging = false;
-                return true;
+                return Ok(true);
             }
-            self.resizing = None;
 
             let new_sel = self.hitmap.hit_test(
                 &display_config,
@@ -3038,33 +3026,44 @@ mod web {
                 x,
                 y,
             );
-            self.dragging = new_sel.is_some_and(|id| {
+            let dragging = new_sel.is_some_and(|id| {
                 self.hitmap
                     .get(id)
                     .is_some_and(|el| el.as_draggable().is_some())
             });
-            if new_sel != self.selected {
-                self.selected = new_sel;
-                self.chart.borrow_mut().with_decoration_change(|_| {});
+            if new_sel != selected {
+                self.renderer
+                    .set_chart_selection(self.chart_id, new_sel)
+                    .map_err(js_err)?;
             }
-            self.selected.is_some()
+            self.resizing = None;
+            self.dragging = dragging;
+            Ok(new_sel.is_some())
         }
 
         /// Pointer move with frame delta — drags or resizes the selection.
-        pub fn on_move(&mut self, dx: f32, dy: f32) {
-            let Some(id) = self.selected else { return };
+        pub fn on_move(&mut self, dx: f32, dy: f32) -> Result<(), JsValue> {
+            let Some(id) = self.chart_selection() else {
+                return Ok(());
+            };
             let (dx, dy) = self.display_delta_to_document(dx, dy);
+            let mut config = self.chart_config().clone();
             if let Some(handle) = self.resizing {
                 if let Some(rz) = self.hitmap.get(id).and_then(|el| el.as_resizable()) {
-                    let _ = rz.resize_by(self.chart.borrow_mut().config_mut(), handle, dx, dy);
+                    if rz.resize_by(&mut config, handle, dx, dy) == NudgeResult::Moved {
+                        self.replace_chart_config(config)?;
+                    }
                 }
-                return;
+                return Ok(());
             }
             if self.dragging
                 && let Some(drag) = self.hitmap.get(id).and_then(|el| el.as_draggable())
             {
-                let _ = drag.drag_by(self.chart.borrow_mut().config_mut(), dx, dy);
+                if drag.drag_by(&mut config, dx, dy) == NudgeResult::Moved {
+                    self.replace_chart_config(config)?;
+                }
             }
+            Ok(())
         }
 
         pub fn on_release(&mut self) {
@@ -3073,7 +3072,7 @@ mod web {
         }
 
         pub fn has_selection(&self) -> bool {
-            self.selected.is_some()
+            self.chart_selection().is_some()
         }
 
         // ---- frame / resize / export ----
@@ -3081,12 +3080,18 @@ mod web {
         /// Process pending pool maintenance and draw only when visual state is
         /// dirty. A clean rAF tick returns before touching the pool or surface.
         pub fn frame(&mut self) -> Result<(), JsValue> {
-            let (data_dirty, raster_dirty) = {
-                let chart = self.chart.borrow();
-                (chart.data_dirty(), chart.raster_dirty())
-            };
+            self.commit_pending_fit();
+            self.renderer
+                .sync_external_invalidations()
+                .map_err(js_err)?;
+            let current_stamp = self
+                .renderer
+                .chart_render_stamp(self.chart_id)
+                .map_err(js_err)?;
+            let renderer_dirty = current_stamp.needs_draw_since(self.last_presented_stamp.as_ref());
+            let raster_dirty = current_stamp.needs_raster_since(self.last_presented_stamp.as_ref());
             let decision = frame_decision(
-                data_dirty,
+                renderer_dirty,
                 raster_dirty,
                 self.view_dirty,
                 self.redraw_pending,
@@ -3095,7 +3100,7 @@ mod web {
             let refresh_raster = match decision {
                 FrameDecision::Clean => return Ok(()),
                 FrameDecision::MaintenanceOnly => {
-                    self.process_pending_defrag()?;
+                    let _ = self.process_pending_defrag()?;
                     return Ok(());
                 }
                 FrameDecision::Draw { refresh_raster } => refresh_raster,
@@ -3105,7 +3110,11 @@ mod web {
             // It is never scanned or uploaded on a clean or maintenance-only
             // frame.
             self.ensure_zero_column_for_render()?;
-            self.process_pending_defrag()?;
+            let _ = self.process_pending_defrag()?;
+            let current_stamp = self
+                .renderer
+                .chart_render_stamp(self.chart_id)
+                .map_err(js_err)?;
 
             // Browser resize is preview zoom, not a document mutation. The
             // stored chart remains the export SSoT; the live canvas renders a
@@ -3114,7 +3123,7 @@ mod web {
             let display_chart = Chart::new(display_config);
             if refresh_raster {
                 let sel_boxes: Vec<SelectionBox> = self
-                    .selected
+                    .chart_selection()
                     .and_then(|id| {
                         self.hitmap.selection_box(
                             id,
@@ -3134,11 +3143,12 @@ mod web {
                     .map_err(js_err)?;
             }
 
+            let series_configs = self.chart_series().to_vec();
             let series: Vec<Series<'_>> = self
-                .series_cfgs
+                .styles
                 .iter()
-                .zip(self.styles.iter())
-                .map(|(cfg, style)| Series { config: cfg, style })
+                .zip(series_configs.iter())
+                .map(|(style, config)| Series { config, style })
                 .collect();
             let items = [ChartDrawItem {
                 view: &self.view,
@@ -3149,11 +3159,11 @@ mod web {
                 .draw(self.clear_color, &items)
                 .map_err(js_err)?;
 
-            // Only a successfully submitted/presented draw consumes the
-            // visual snapshot. Any earlier failure leaves every visual source
-            // dirty so the next persistent rAF retries it.
-            let mut chart = self.chart.borrow_mut();
-            consume_successful_frame(&mut chart, &mut self.view_dirty, &mut self.redraw_pending);
+            // Only a successfully submitted/presented draw advances the
+            // renderer-issued onscreen stamp. Any earlier failure leaves the
+            // frame dirty so the next persistent rAF retries it.
+            consume_successful_frame(&mut self.view_dirty, &mut self.redraw_pending);
+            self.last_presented_stamp = Some(current_stamp);
             Ok(())
         }
 
@@ -3167,7 +3177,7 @@ mod web {
                 b.clamp(0.0, 1.0),
                 a.clamp(0.0, 1.0),
             );
-            self.request_redraw(RedrawSource::ClearColor);
+            self.request_host_redraw();
         }
 
         /// Resize the swap chain viewport. The chart Config keeps its
@@ -3189,15 +3199,13 @@ mod web {
         /// access, so this changes nothing for JS callers.)
         pub async fn export_png(&mut self, scale: f32) -> Result<js_sys::Uint8Array, JsValue> {
             self.ensure_zero_column_for_render()?;
-            let export_chart = {
-                let chart = self.chart.borrow();
-                Chart::new(chart.config().clone())
-            };
+            let export_chart = Chart::new(self.chart_config().clone());
+            let series = self.chart_series().to_vec();
             let bytes = self
                 .renderer
                 .export_panel_png_bytes_with_clear_async(
                     &export_chart,
-                    &self.series_cfgs,
+                    &series,
                     scale,
                     self.clear_color,
                 )
@@ -3221,9 +3229,9 @@ mod web {
             self.add_line_series("rc", "demo_t", "demo_rc", 2.0, "RC charge")?;
             self.auto_fit_x("demo_x", 0.02)?;
             self.auto_fit_y("demo_sin", 0.10)?;
-            self.set_title("figgy");
-            self.set_x_title("x");
-            self.set_y_title("y");
+            self.set_title("figgy")?;
+            self.set_x_title("x")?;
+            self.set_y_title("y")?;
             Ok(())
         }
     }

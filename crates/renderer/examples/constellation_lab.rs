@@ -55,9 +55,7 @@ struct FiggyState {
     prepared: Option<PreparedFrame>,
 }
 
-/// Series bundles for the draw items — shared by BOTH callback halves so the
-/// items passed to `Renderer::prepare` and `Renderer::paint_prepared` are
-/// identical and in the same order (a `paint_prepared` contract).
+/// Series bundles used to build the prepare-only draw items.
 fn build_series<'a>(series: &'a [SeriesConfig], styles: &'a [ChartStyle]) -> Vec<Series<'a>> {
     series
         .iter()
@@ -264,8 +262,8 @@ impl CallbackTrait for LabCallback {
 
         // Mutable half of the frame: compiles missing styled pipelines,
         // writes the panel's transform uniform, dispatches arc-length
-        // compute. The token is stored for `paint` to consume; the items
-        // must be rebuilt there identically (same helper, same order).
+        // compute, and resolves the draw inputs into the token that `paint`
+        // consumes without rebuilding them.
         let prepared = {
             let series = build_series(&state.series, &state.styles);
             let items = [ChartDrawItem {
@@ -298,18 +296,10 @@ impl CallbackTrait for LabCallback {
             eprintln!("[lab] paint skipped: no prepared frame");
             return;
         };
-        // Same items, in the same order, as at prepare — a `paint_prepared`
-        // contract, enforced by the shared `build_series` helper.
-        let series = build_series(&state.series, &state.styles);
-        let items = [ChartDrawItem {
-            view: &state.view,
-            chart_config: state.chart.config(),
-            series: &series,
-        }];
         let target_size = (info.screen_size_px[0], info.screen_size_px[1]);
         if let Err(e) = state
             .renderer
-            .paint_prepared(render_pass, target_size, &items, prepared)
+            .paint_prepared(render_pass, target_size, prepared)
         {
             // StalePreparedFrame and friends: skip this frame; the next
             // callback prepare rebuilds the token.

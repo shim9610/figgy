@@ -489,8 +489,7 @@ impl shader::Primitive for FiggyPrimitive {
         }
 
         // Mutable half of the frame: build this panel's draw items and run
-        // `Renderer::prepare`. `draw` rebuilds the identical items (same
-        // order) and replays them through `paint_prepared(&self)`. Overlap
+        // `Renderer::prepare`. `draw` records only the resulting token. Overlap
         // with the other panels' live tokens — or with the export above — is
         // safe: buffers referenced by a live token are copy-on-write.
         let Some(panel) = pipeline.panels.get_mut(self.panel_idx) else {
@@ -538,22 +537,10 @@ impl shader::Primitive for FiggyPrimitive {
             );
             return false;
         };
-        // The same items, in the same order, as at `prepare`. iced has
-        // already set viewport / scissor to the Primitive bounds, but figgy
+        // iced has already set viewport / scissor to the Primitive bounds, but figgy
         // sets its own from panel_rect, clamped to `target_size` — the real
         // surface pixel size captured at prepare time.
-        let series: Vec<Series<'_>> = panel
-            .series
-            .iter()
-            .zip(panel.styles.iter())
-            .map(|(cfg, style)| Series { config: cfg, style })
-            .collect();
-        let items = [ChartDrawItem {
-            view: &panel.view,
-            chart_config: panel.chart.config(),
-            series: &series,
-        }];
-        match renderer.paint_prepared(render_pass, *target_size, &items, prepared) {
+        match renderer.paint_prepared(render_pass, *target_size, prepared) {
             Ok(()) => true,
             Err(e) => {
                 // Includes `StalePreparedFrame` if an invalidating `&mut`

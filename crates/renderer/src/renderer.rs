@@ -17,7 +17,7 @@ use std::sync::Arc;
 use crate::axis_render;
 use crate::chart::Chart;
 use crate::color::Color;
-use crate::config::{Config, DrawStyle, PickedPointRef};
+use crate::config::{AxisOptions, AxisScale, Config, DrawStyle, PickedPointRef};
 use crate::data::{ColumnSource, HiLoColumnSource};
 use crate::data_config::{
     DataErrorBarPointStyleConfig, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
@@ -30,6 +30,7 @@ use crate::data_render::{
 use crate::error::{FiggyError, Result};
 use crate::layout::Rect;
 use crate::line::LineStylePreset;
+use crate::select::HitId;
 
 /// A wgpu device/queue pair used by figgy.
 ///
@@ -106,10 +107,377 @@ fn effective_pool_capacity(requested: u64, caps: RendererDeviceCaps) -> u64 {
         .min(caps.max_buffer_size)
 }
 
+fn issue_renderer_identity() -> Result<u64> {
+    static NEXT_RENDERER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    NEXT_RENDERER_ID
+        .fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |current| current.checked_add(1),
+        )
+        .map(|previous| previous + 1)
+        .map_err(|_| FiggyError::CounterExhausted {
+            counter: "renderer identity",
+        })
+}
+
 /// A dashed series' GPU arc-length prefix: the buffer (bound as the line
 /// pipeline's vertex slots 4/5) and its used byte length.
 type ArcPrefix = (Arc<wgpu::Buffer>, u64);
 const ARC_PREFIX_CACHE_LIMIT: usize = 256;
+const INTERNAL_ZERO_COLUMN_ID: &str = "__zero";
+
+#[derive(Clone, Copy, Debug)]
+struct InternalZeroColumn {
+    len: usize,
+}
+
+impl ColumnSource for InternalZeroColumn {
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn min(&self) -> f64 {
+        0.0
+    }
+
+    fn max(&self) -> f64 {
+        0.0
+    }
+
+    fn write_f32_le_into(&self, dst: &mut [u8]) {
+        debug_assert_eq!(dst.len(), self.len * std::mem::size_of::<f32>());
+        dst.fill(0);
+    }
+
+    fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
+        debug_assert_eq!(dst.len(), self.len * crate::data::COLUMN_VALUE_BYTES);
+        dst.fill(0);
+    }
+}
+
+/// Stable identity for one renderer-owned chart state.
+///
+/// Values are issued monotonically by a [`Renderer`] and are never reused.
+/// The inner value is intentionally private so hosts cannot synthesize ids.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ChartId {
+    renderer_identity: u64,
+    sequence: u64,
+}
+
+/// Opaque checked identity for renderer-owned visual state.
+///
+/// Hosts may compare or hash this value, but cannot construct one or perform
+/// arithmetic on it. All successors are issued by `Renderer` with overflow
+/// checks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RenderRevision {
+    renderer_identity: u64,
+    sequence: u64,
+}
+
+impl RenderRevision {
+    fn initial(renderer_identity: u64) -> Self {
+        Self {
+            renderer_identity,
+            sequence: 0,
+        }
+    }
+
+    fn successor(self, counter: &'static str) -> Result<Self> {
+        self.sequence
+            .checked_add(1)
+            .map(|sequence| Self {
+                renderer_identity: self.renderer_identity,
+                sequence,
+            })
+            .ok_or(FiggyError::CounterExhausted { counter })
+    }
+}
+
+/// Opaque O(1) identity for all renderer-visible output, including fonts
+/// registered through the process-global font registry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RendererVisualStamp {
+    revision: RenderRevision,
+    font_generation: u64,
+}
+
+/// Opaque O(1) identity for one renderer-owned chart's draw dependencies.
+///
+/// Hosts compare this value instead of cloning `Config` or `SeriesConfig`.
+/// The renderer remains the sole owner and decides which revision changes
+/// require a draw or raster refresh.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ChartRenderStamp {
+    renderer_identity: u64,
+    chart_id: ChartId,
+    desired: RenderRevision,
+    raster: RenderRevision,
+}
+
+impl ChartRenderStamp {
+    pub fn needs_draw_since(&self, previous: Option<&Self>) -> bool {
+        previous != Some(self)
+    }
+
+    pub fn needs_raster_since(&self, previous: Option<&Self>) -> bool {
+        previous.is_none_or(|previous| {
+            previous.renderer_identity != self.renderer_identity
+                || previous.chart_id != self.chart_id
+                || previous.raster != self.raster
+        })
+    }
+}
+
+/// Logical data-to-screen state derived from the renderer-owned `Config`.
+///
+/// This value is never stored as a parallel truth source. The getter derives
+/// it from `Config`; the setter applies it back to those same four axes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChartViewState {
+    pub chart_area: Rect,
+    pub top_x: AxisViewState,
+    pub bottom_x: AxisViewState,
+    pub left_y: AxisViewState,
+    pub right_y: AxisViewState,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AxisViewState {
+    pub scale: AxisScale,
+    pub min: f64,
+    pub max: f64,
+    pub inverted: bool,
+}
+
+impl AxisViewState {
+    fn from_axis(axis: &AxisOptions) -> Self {
+        Self {
+            scale: axis.scale.clone(),
+            min: axis.min,
+            max: axis.max,
+            inverted: axis.inverted,
+        }
+    }
+
+    fn apply_to(&self, axis: &mut AxisOptions) {
+        axis.scale = self.scale.clone();
+        crate::chart::apply_axis_range(
+            axis,
+            self.min,
+            self.max,
+            matches!(&self.scale, AxisScale::Logarithmic),
+        );
+        axis.inverted = self.inverted;
+    }
+}
+
+impl ChartViewState {
+    fn from_config(config: &Config) -> Self {
+        Self {
+            chart_area: config.chart_area.0,
+            top_x: AxisViewState::from_axis(&config.top_x),
+            bottom_x: AxisViewState::from_axis(&config.bottom_x),
+            left_y: AxisViewState::from_axis(&config.left_y),
+            right_y: AxisViewState::from_axis(&config.right_y),
+        }
+    }
+
+    fn apply_to(&self, config: &mut Config) {
+        config.chart_area.0 = self.chart_area;
+        self.top_x.apply_to(&mut config.top_x);
+        self.bottom_x.apply_to(&mut config.bottom_x);
+        self.left_y.apply_to(&mut config.left_y);
+        self.right_y.apply_to(&mut config.right_y);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ColumnContentStamp {
+    id: ColumnId,
+    allocation_epoch: u64,
+}
+
+/// Atomic identity for all renderer state used by web-owned derived caches.
+///
+/// Fields stay private so the web wrapper cannot reconstruct or increment
+/// renderer counters independently.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct WebDerivedStamp {
+    renderer_identity: u64,
+    chart_id: ChartId,
+    view: RenderRevision,
+    data: RenderRevision,
+    pool_layout_generation: u64,
+    columns: Vec<ColumnContentStamp>,
+}
+
+/// One coherent, owned read of renderer state for browser-only derived work.
+#[derive(Clone, Debug)]
+pub struct WebDerivedSnapshot {
+    stamp: WebDerivedStamp,
+    fit_token: FitCommitToken,
+    config: Config,
+    series: Vec<SeriesConfig>,
+}
+
+impl WebDerivedSnapshot {
+    pub fn stamp(&self) -> &WebDerivedStamp {
+        &self.stamp
+    }
+
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
+    pub fn series(&self) -> &[SeriesConfig] {
+        &self.series
+    }
+
+    pub fn fit_token(&self) -> &FitCommitToken {
+        &self.fit_token
+    }
+}
+
+/// Invocation identity for an atomic two-axis auto-fit commit.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FitCommitToken {
+    renderer_identity: u64,
+    chart_id: ChartId,
+    axes: FitAxisStamp,
+    series: Vec<FitSeriesStamp>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct FitAxisStamp {
+    top_x: (u8, u64, u64),
+    bottom_x: (u8, u64, u64),
+    left_y: (u8, u64, u64),
+    right_y: (u8, u64, u64),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct FitSeriesStamp {
+    series_id: String,
+    mode: crate::gpu_errorbar::GpuSeriesExtentMode,
+    columns: Vec<FitColumnStamp>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct FitColumnStamp {
+    role: u8,
+    id: ColumnId,
+    allocation_epoch: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ChartRevisions {
+    desired: RenderRevision,
+    config: RenderRevision,
+    series: RenderRevision,
+    data: RenderRevision,
+    view: RenderRevision,
+    selection: RenderRevision,
+    raster: RenderRevision,
+}
+
+impl ChartRevisions {
+    fn initial(revision: RenderRevision) -> Self {
+        Self {
+            desired: revision,
+            config: revision,
+            series: revision,
+            data: revision,
+            view: revision,
+            selection: revision,
+            raster: revision,
+        }
+    }
+}
+
+struct ChartRenderState {
+    config: Config,
+    series: Vec<SeriesConfig>,
+    selected: Option<HitId>,
+    revisions: ChartRevisions,
+}
+
+struct ChartColumnInvalidation {
+    id: ChartId,
+    desired: RenderRevision,
+    data: RenderRevision,
+}
+
+struct ColumnInvalidationPlan {
+    charts: Vec<ChartColumnInvalidation>,
+    visual: Option<RenderRevision>,
+}
+
+impl ColumnInvalidationPlan {
+    fn prospective_data_revision(&self, id: ChartId, current: RenderRevision) -> RenderRevision {
+        self.charts
+            .iter()
+            .find(|update| update.id == id)
+            .map_or(current, |update| update.data)
+    }
+
+    fn publish(
+        self,
+        chart_states: &mut HashMap<ChartId, ChartRenderState>,
+        visual_revision: &mut RenderRevision,
+    ) {
+        for update in self.charts {
+            let state = chart_states
+                .get_mut(&update.id)
+                .expect("column invalidation chart remains registered");
+            state.revisions.desired = update.desired;
+            state.revisions.data = update.data;
+        }
+        if let Some(visual) = self.visual {
+            *visual_revision = visual;
+        }
+    }
+}
+
+struct ChartSeriesRemoval {
+    id: ChartId,
+    desired: RenderRevision,
+    series_revision: RenderRevision,
+    data: RenderRevision,
+    raster: RenderRevision,
+}
+
+struct ColumnRemovalPlan {
+    charts: Vec<ChartSeriesRemoval>,
+    visual: Option<RenderRevision>,
+}
+
+impl ColumnRemovalPlan {
+    fn publish(
+        self,
+        chart_states: &mut HashMap<ChartId, ChartRenderState>,
+        visual_revision: &mut RenderRevision,
+        removed_column: &str,
+    ) {
+        for update in self.charts {
+            let state = chart_states
+                .get_mut(&update.id)
+                .expect("column removal chart remains registered");
+            state
+                .series
+                .retain(|series| !series_references_column(series, removed_column));
+            state.revisions.desired = update.desired;
+            state.revisions.series = update.series_revision;
+            state.revisions.data = update.data;
+            state.revisions.raster = update.raster;
+        }
+        if let Some(visual) = self.visual {
+            *visual_revision = visual;
+        }
+    }
+}
 
 /// Owned snapshot of one series' constellation/milkyway star pass, cloned
 /// out of the arc scratch by the prepare phase. wgpu resources are
@@ -121,64 +489,134 @@ struct PreparedStar {
     vs_bg: wgpu::BindGroup,
 }
 
-/// One series' arc-scan snapshot inside a token: the prefix buffer slice
-/// the line binds, the star pass (when the style has one), and the
-/// `(x_base, y_base, n, x_epoch, y_epoch)` source stamp. It is
-/// revalidated at paint time with source allocation epochs, so fresh handles
-/// at a reused offset and length cannot silently pair with an arc computed
-/// over the previous allocation's bytes.
+/// One series' arc-scan snapshot inside a token: the prefix buffer slice the
+/// line binds and the star pass when the style has one. The frame's captured
+/// column allocation epochs guard the source identity at paint time.
 struct PreparedArc {
     prefix: ArcPrefix,
     star: Option<PreparedStar>,
-    source: (u32, u32, u32, u64, u64),
 }
 
-/// Per-series output of the prepare phase, index-aligned with the
-/// `ChartDrawItem.series` slice it was prepared from. `series_id` is kept
-/// for the identity check in `paint_prepared` — the arc/star state is
-/// positional, so reordered items must be detected, not mis-assigned.
-/// `arc_wanted` records whether prepare decided this series needs an arc
-/// scan (dashed, or an arc-parameterized style); paint recomputes the same
-/// decision to catch render-type / line-style edits at an unchanged id.
-struct PreparedSeries {
-    series_id: String,
-    arc_wanted: bool,
+struct PreparedArcSeries {
     arc: Option<PreparedArc>,
 }
 
-/// Per-panel output of the prepare phase. `transform` is the exact
-/// data→NDC transform snapshot that was written to the panel's transform
-/// uniform AND used for the arc-prefix dispatch; `paint_prepared`
-/// recomputes it from the items it receives and rejects a mismatch (the
-/// chart config changed between the two calls).
+struct PreparedArcItem {
+    view_revision: u64,
+    series: Vec<PreparedArcSeries>,
+}
+
+struct PreparedLineLayer {
+    pipeline: wgpu::RenderPipeline,
+    transform_bg: wgpu::BindGroup,
+    style_bg: wgpu::BindGroup,
+    pool_buffer: wgpu::Buffer,
+    x: ColumnHandle,
+    y: ColumnHandle,
+    arc: Option<ArcPrefix>,
+    verts_per_instance: u32,
+    texture_bg: Option<wgpu::BindGroup>,
+}
+
+struct PreparedScatterLayer {
+    pipeline: wgpu::RenderPipeline,
+    transform_bg: wgpu::BindGroup,
+    style_bg: wgpu::BindGroup,
+    style_map_bg: Option<wgpu::BindGroup>,
+    quad_vb: wgpu::Buffer,
+    pool_buffer: wgpu::Buffer,
+    x: ColumnHandle,
+    y: ColumnHandle,
+    style_index: Option<ColumnHandle>,
+    texture_bg: Option<wgpu::BindGroup>,
+}
+
+struct PreparedPickRingLayer {
+    pipeline: wgpu::RenderPipeline,
+    transform_bg: wgpu::BindGroup,
+    style_bg: wgpu::BindGroup,
+    style_map_bg: Option<wgpu::BindGroup>,
+    quad_vb: wgpu::Buffer,
+    pool_buffer: wgpu::Buffer,
+    x: ColumnHandle,
+    y: ColumnHandle,
+    style_index: Option<ColumnHandle>,
+    instance: u32,
+}
+
+struct PreparedStarLayer {
+    pipeline: wgpu::RenderPipeline,
+    transform_bg: wgpu::BindGroup,
+    style_bg: wgpu::BindGroup,
+    texture_bg: wgpu::BindGroup,
+    star_bg: wgpu::BindGroup,
+    indirect: wgpu::Buffer,
+}
+
+struct PreparedErrorBarLayer {
+    pipeline: wgpu::RenderPipeline,
+    transform_bg: wgpu::BindGroup,
+    style_bg: wgpu::BindGroup,
+    style_map_bg: Option<wgpu::BindGroup>,
+    pool_buffer: wgpu::Buffer,
+    x: ColumnHandle,
+    y: ColumnHandle,
+    err_y_lo: ColumnHandle,
+    err_y_hi: ColumnHandle,
+    err_x_lo: ColumnHandle,
+    err_x_hi: ColumnHandle,
+    style_index: Option<ColumnHandle>,
+}
+
+/// Complete owned draw packet for one series. Every pipeline, bind group,
+/// buffer, and column handle needed by paint is resolved during prepare.
+struct PreparedSeries {
+    errorbar: Option<PreparedErrorBarLayer>,
+    line: Option<PreparedLineLayer>,
+    line_extra: Option<PreparedStarLayer>,
+    scatter: Option<PreparedScatterLayer>,
+    picked: Vec<PreparedPickRingLayer>,
+}
+
+/// Refcounted GPU view bindings captured by `prepare`. Bind groups keep their
+/// backing textures/buffers alive, so paint needs no `ChartView` borrow.
+struct PreparedView {
+    grid_bind_group: wgpu::BindGroup,
+    decoration_bind_group: wgpu::BindGroup,
+    content_revision: Arc<std::sync::atomic::AtomicU64>,
+    expected_content_revision: u64,
+    panel_rect: Rect,
+}
+
+/// Complete owned render input for one panel.
 struct PreparedItem {
-    transform: data_render::ScatterTransform,
+    view: PreparedView,
+    data_area: Rect,
+    axis_pipeline: wgpu::RenderPipeline,
     series: Vec<PreparedSeries>,
 }
 
 /// Token returned by [`Renderer::prepare`] and consumed (by reference,
 /// repeatably) by [`Renderer::paint_prepared`].
 ///
-/// Owned and `'static`: it holds refcounted wgpu handles, never borrows the
-/// renderer, so hosts can store it across callback boundaries (egui
-/// `CallbackResources`, iced `Storage`) — exactly where a `&`-borrowing
-/// token would be rejected by the compiler. The price of that ownership is
-/// that misuse cannot be a compile error; instead the stamps below turn
-/// "renderer changed under the token" into
-/// [`FiggyError::StalePreparedFrame`] at paint time.
+/// Owned and `'static`: it captures the resolved pipelines, bind groups,
+/// buffers, column handles, panel geometry, and prepare-only GPU products.
+/// Hosts pass only this token to the immutable paint phase.
 #[derive(Debug)]
 pub struct PreparedFrame {
+    /// Prevents a token from being recorded through a different renderer,
+    /// even when both renderers happen to have matching pool generations.
+    renderer_identity: u64,
     items: Vec<PreparedItem>,
+    column_sources: HashMap<ColumnId, u64>,
     /// Pool layout stamp — defrag, clear, or a buffer-relocating upsert can
-    /// move column bytes or replace the backing buffer. Simple insertion and
-    /// removal do not bump this stamp; arc source allocation epochs cover
-    /// same-layout replacement, while non-arc series intentionally resolve
-    /// live pool state at paint (same as `paint`).
+    /// move column bytes or replace the backing buffer. Per-column allocation
+    /// epochs above catch same-layout replacement of any captured draw input
+    /// without invalidating a token for an unrelated column mutation.
     pool_layout_generation: u64,
-    /// Format the styled-pipeline cache was compiled against; an
-    /// `ensure_target_format` between the calls rebuilds that cache and
-    /// recording old-format pipelines would abort in wgpu validation.
-    surface_format: wgpu::TextureFormat,
+    /// Monotonic identity of the target pipeline set. This detects format
+    /// ABA and sample-count changes, not just a different current format.
+    target_pipeline_generation: u64,
 }
 
 impl std::fmt::Debug for PreparedItem {
@@ -189,14 +627,159 @@ impl std::fmt::Debug for PreparedItem {
     }
 }
 
+impl PreparedSeries {
+    fn from_layers(layers: data_render::SeriesLayers<'_>) -> Self {
+        Self {
+            errorbar: layers.errorbar.map(|layer| PreparedErrorBarLayer {
+                pipeline: layer.pipeline.clone(),
+                transform_bg: layer.transform_bg.clone(),
+                style_bg: layer.style_bg.clone(),
+                style_map_bg: layer.style_map_bg.cloned(),
+                pool_buffer: layer.pool_buffer.clone(),
+                x: layer.x,
+                y: layer.y,
+                err_y_lo: layer.err_y_lo,
+                err_y_hi: layer.err_y_hi,
+                err_x_lo: layer.err_x_lo,
+                err_x_hi: layer.err_x_hi,
+                style_index: layer.style_index,
+            }),
+            line: layers.line.map(|layer| PreparedLineLayer {
+                pipeline: layer.pipeline.clone(),
+                transform_bg: layer.transform_bg.clone(),
+                style_bg: layer.style_bg.clone(),
+                pool_buffer: layer.pool_buffer.clone(),
+                x: layer.x,
+                y: layer.y,
+                arc: layer.arc,
+                verts_per_instance: layer.verts_per_instance,
+                texture_bg: layer.texture_bg.cloned(),
+            }),
+            line_extra: layers.line_extra.map(|layer| PreparedStarLayer {
+                pipeline: layer.pipeline.clone(),
+                transform_bg: layer.transform_bg.clone(),
+                style_bg: layer.style_bg.clone(),
+                texture_bg: layer.texture_bg.clone(),
+                star_bg: layer.star_bg.clone(),
+                indirect: layer.indirect.clone(),
+            }),
+            scatter: layers.scatter.map(|layer| PreparedScatterLayer {
+                pipeline: layer.pipeline.clone(),
+                transform_bg: layer.transform_bg.clone(),
+                style_bg: layer.style_bg.clone(),
+                style_map_bg: layer.style_map_bg.cloned(),
+                quad_vb: layer.quad_vb.clone(),
+                pool_buffer: layer.pool_buffer.clone(),
+                x: layer.x,
+                y: layer.y,
+                style_index: layer.style_index,
+                texture_bg: layer.texture_bg.cloned(),
+            }),
+            picked: layers
+                .picked
+                .into_iter()
+                .map(|layer| PreparedPickRingLayer {
+                    pipeline: layer.pipeline.clone(),
+                    transform_bg: layer.transform_bg.clone(),
+                    style_bg: layer.style_bg,
+                    style_map_bg: layer.style_map_bg.cloned(),
+                    quad_vb: layer.quad_vb.clone(),
+                    pool_buffer: layer.pool_buffer.clone(),
+                    x: layer.x,
+                    y: layer.y,
+                    style_index: layer.style_index,
+                    instance: layer.instance,
+                })
+                .collect(),
+        }
+    }
+
+    fn layers(&self) -> data_render::SeriesLayers<'_> {
+        data_render::SeriesLayers {
+            errorbar: self.errorbar.as_ref().map(|layer| ColumnErrorBarDraw {
+                pipeline: &layer.pipeline,
+                transform_bg: &layer.transform_bg,
+                style_bg: &layer.style_bg,
+                style_map_bg: layer.style_map_bg.as_ref(),
+                pool_buffer: &layer.pool_buffer,
+                x: layer.x,
+                y: layer.y,
+                err_y_lo: layer.err_y_lo,
+                err_y_hi: layer.err_y_hi,
+                err_x_lo: layer.err_x_lo,
+                err_x_hi: layer.err_x_hi,
+                style_index: layer.style_index,
+            }),
+            line: self.line.as_ref().map(|layer| ColumnLineLayer {
+                pipeline: &layer.pipeline,
+                transform_bg: &layer.transform_bg,
+                style_bg: &layer.style_bg,
+                pool_buffer: &layer.pool_buffer,
+                x: layer.x,
+                y: layer.y,
+                arc: layer.arc.clone(),
+                verts_per_instance: layer.verts_per_instance,
+                texture_bg: layer.texture_bg.as_ref(),
+            }),
+            line_extra: self
+                .line_extra
+                .as_ref()
+                .map(|layer| data_render::ColumnStarLayer {
+                    pipeline: &layer.pipeline,
+                    transform_bg: &layer.transform_bg,
+                    style_bg: &layer.style_bg,
+                    texture_bg: &layer.texture_bg,
+                    star_bg: &layer.star_bg,
+                    indirect: &layer.indirect,
+                }),
+            scatter: self.scatter.as_ref().map(|layer| ColumnScatterLayer {
+                pipeline: &layer.pipeline,
+                transform_bg: &layer.transform_bg,
+                style_bg: &layer.style_bg,
+                style_map_bg: layer.style_map_bg.as_ref(),
+                quad_vb: &layer.quad_vb,
+                pool_buffer: &layer.pool_buffer,
+                x: layer.x,
+                y: layer.y,
+                style_index: layer.style_index,
+                texture_bg: layer.texture_bg.as_ref(),
+            }),
+            picked: self
+                .picked
+                .iter()
+                .map(|layer| ColumnPickRingLayer {
+                    pipeline: &layer.pipeline,
+                    transform_bg: &layer.transform_bg,
+                    style_bg: layer.style_bg.clone(),
+                    style_map_bg: layer.style_map_bg.as_ref(),
+                    quad_vb: &layer.quad_vb,
+                    pool_buffer: &layer.pool_buffer,
+                    x: layer.x,
+                    y: layer.y,
+                    style_index: layer.style_index,
+                    instance: layer.instance,
+                })
+                .collect(),
+        }
+    }
+}
+
 /// Facade bundling every figgy GPU resource.
 pub struct Renderer {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     caps: RendererDeviceCaps,
     pool: ColumnPool,
+    chart_states: HashMap<ChartId, ChartRenderState>,
+    chart_order: Vec<ChartId>,
+    next_chart_id: u64,
+    visual_revision: RenderRevision,
+    renderer_identity: u64,
+    observed_font_generation: u64,
+    pending_defrag: bool,
     errorbar_extent_engine: crate::gpu_errorbar::GpuErrorbarExtentEngine,
     target_sample_count: u32,
+    target_pipeline_generation: u64,
 
     // Bind group layouts (exposed so callers can build per-panel bind groups).
     texture_bgl: wgpu::BindGroupLayout,
@@ -252,23 +835,58 @@ pub struct Renderer {
 /// and allocation-free.
 #[must_use = "dropping a RendererColumnUpsert rolls the provisional pool state back"]
 pub struct RendererColumnUpsert<'a> {
-    inner: data_render::column_pool::ColumnUpsert<'a>,
+    inner: Option<data_render::column_pool::ColumnUpsert<'a>>,
+    chart_states: &'a mut HashMap<ChartId, ChartRenderState>,
+    visual_revision: &'a mut RenderRevision,
+    pending_defrag: &'a mut bool,
+    invalidation: Option<ColumnInvalidationPlan>,
+    renderer_identity: u64,
     device: &'a wgpu::Device,
     queue: &'a wgpu::Queue,
     errorbar_extent_engine: &'a crate::gpu_errorbar::GpuErrorbarExtentEngine,
 }
 
 impl RendererColumnUpsert<'_> {
+    fn inner(&self) -> &data_render::column_pool::ColumnUpsert<'_> {
+        self.inner
+            .as_ref()
+            .expect("renderer column upsert remains live")
+    }
+
     pub fn pool(&self) -> &ColumnPool {
-        self.inner.pool()
+        self.inner().pool()
     }
 
     pub fn handle(&self) -> ColumnHandle {
-        self.inner.handle()
+        self.inner().handle()
     }
 
     pub fn replaced_existing(&self) -> bool {
-        self.inner.replaced_existing()
+        self.inner().replaced_existing()
+    }
+
+    /// Coherent prospective snapshot for cache preparation before commit.
+    ///
+    /// The stamp reflects the provisional pool mapping and the checked data
+    /// revision that `commit` will publish. Dropping this guard rolls the pool
+    /// back, so the returned stamp never becomes current.
+    pub fn web_derived_snapshot(&self, id: ChartId) -> Result<WebDerivedSnapshot> {
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        let data_revision = self
+            .invalidation
+            .as_ref()
+            .expect("renderer column invalidation plan remains live")
+            .prospective_data_revision(id, state.revisions.data);
+        build_web_derived_snapshot_from_state(
+            self.pool(),
+            self.renderer_identity,
+            id,
+            state,
+            data_revision,
+        )
     }
 
     /// Begin an extent job against the provisional mappings.  The column
@@ -315,8 +933,21 @@ impl RendererColumnUpsert<'_> {
         )
     }
 
-    pub fn commit(self) -> ColumnHandle {
-        self.inner.commit()
+    pub fn commit(mut self) -> ColumnHandle {
+        let replaced_existing = self.replaced_existing();
+        let handle = self
+            .inner
+            .take()
+            .expect("renderer column upsert remains live")
+            .commit();
+        self.invalidation
+            .take()
+            .expect("renderer column invalidation plan remains live")
+            .publish(self.chart_states, self.visual_revision);
+        if replaced_existing {
+            *self.pending_defrag = true;
+        }
+        handle
     }
 }
 
@@ -1007,6 +1638,350 @@ fn scatter_pick_anchor_may_be_visible(
         || scatter_config_radius_px(scatter, point_index, use_style_mapping) > 0.0
 }
 
+fn validate_registered_column(pool: &ColumnPool, id: &str) -> Result<()> {
+    validate_host_column_id(id)?;
+    if pool.slot(id).is_some() {
+        Ok(())
+    } else {
+        Err(FiggyError::UnknownColumn { id: id.to_owned() })
+    }
+}
+
+fn validate_host_column_id(id: &str) -> Result<()> {
+    if id == INTERNAL_ZERO_COLUMN_ID {
+        Err(FiggyError::ReservedColumnId { id: id.to_owned() })
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_axis_view_state(field: &'static str, axis: &AxisViewState) -> Result<()> {
+    if !axis.min.is_finite() || !axis.max.is_finite() {
+        return Err(FiggyError::InvalidConfig {
+            field,
+            reason: "axis bounds must be finite",
+        });
+    }
+    if axis.max <= axis.min {
+        return Err(FiggyError::InvalidConfig {
+            field,
+            reason: "axis max must be greater than min",
+        });
+    }
+    if matches!(axis.scale, AxisScale::Logarithmic) && axis.min <= 0.0 {
+        return Err(FiggyError::InvalidConfig {
+            field,
+            reason: "logarithmic axis bounds must be positive",
+        });
+    }
+    Ok(())
+}
+
+fn validate_chart_view_state(view: &ChartViewState) -> Result<()> {
+    if view.chart_area.width == 0 || view.chart_area.height == 0 {
+        return Err(FiggyError::InvalidChartArea {
+            width: view.chart_area.width,
+            height: view.chart_area.height,
+        });
+    }
+    validate_axis_view_state("top_x", &view.top_x)?;
+    validate_axis_view_state("bottom_x", &view.bottom_x)?;
+    validate_axis_view_state("left_y", &view.left_y)?;
+    validate_axis_view_state("right_y", &view.right_y)
+}
+
+fn validate_error_ref_columns(pool: &ColumnPool, error: &ErrorRef) -> Result<()> {
+    match error {
+        ErrorRef::Symmetric { column } => validate_registered_column(pool, column),
+        ErrorRef::Asymmetric { lower, upper } => {
+            validate_registered_column(pool, lower)?;
+            validate_registered_column(pool, upper)
+        }
+    }
+}
+
+fn error_ref_references_column(error: &ErrorRef, id: &str) -> bool {
+    match error {
+        ErrorRef::Symmetric { column } => column == id,
+        ErrorRef::Asymmetric { lower, upper } => lower == id || upper == id,
+    }
+}
+
+fn series_references_column(series: &SeriesConfig, id: &str) -> bool {
+    if series.x_column == id || series.y_column == id {
+        return true;
+    }
+    if extract_scatter(&series.render_type)
+        .and_then(|scatter| scatter.point_style_index_column.as_deref())
+        == Some(id)
+    {
+        return true;
+    }
+    if extract_errorbar_style(&series.render_type)
+        .and_then(|errorbar| errorbar.error_bar_style_index_column.as_deref())
+        == Some(id)
+    {
+        return true;
+    }
+    extract_err_x(&series.render_type).is_some_and(|error| error_ref_references_column(error, id))
+        || extract_err_y(&series.render_type)
+            .is_some_and(|error| error_ref_references_column(error, id))
+}
+
+fn data_series_declarations_equal(left: &[SeriesConfig], right: &[SeriesConfig]) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(left, right)| {
+            left.series_id == right.series_id
+                && left.source_id == right.source_id
+                && left.x_column == right.x_column
+                && left.y_column == right.y_column
+                && left.render_type == right.render_type
+        })
+}
+
+fn visit_error_ref_columns(error: &ErrorRef, visit: &mut impl FnMut(&str)) {
+    match error {
+        ErrorRef::Symmetric { column } => visit(column),
+        ErrorRef::Asymmetric { lower, upper } => {
+            visit(lower);
+            visit(upper);
+        }
+    }
+}
+
+fn visit_series_columns(series: &SeriesConfig, visit: &mut impl FnMut(&str)) {
+    visit(&series.x_column);
+    visit(&series.y_column);
+    if let Some(column) = extract_scatter(&series.render_type)
+        .and_then(|scatter| scatter.point_style_index_column.as_deref())
+    {
+        visit(column);
+    }
+    if let Some(column) = extract_errorbar_style(&series.render_type)
+        .and_then(|errorbar| errorbar.error_bar_style_index_column.as_deref())
+    {
+        visit(column);
+    }
+    if let Some(error) = extract_err_x(&series.render_type) {
+        visit_error_ref_columns(error, visit);
+    }
+    if let Some(error) = extract_err_y(&series.render_type) {
+        visit_error_ref_columns(error, visit);
+    }
+}
+
+fn validate_renderer_series(pool: &ColumnPool, series: &[SeriesConfig]) -> Result<()> {
+    for (index, item) in series.iter().enumerate() {
+        if item.series_id.is_empty() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: item.series_id.clone(),
+                reason: "series_id must not be empty".to_string(),
+            });
+        }
+        if series[..index]
+            .iter()
+            .any(|earlier| earlier.series_id == item.series_id)
+        {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: item.series_id.clone(),
+                reason: "series_id must be unique within a chart".to_string(),
+            });
+        }
+
+        validate_registered_column(pool, &item.x_column)?;
+        validate_registered_column(pool, &item.y_column)?;
+        if let Some(scatter) = extract_scatter(&item.render_type)
+            && let Some(column) = scatter.point_style_index_column.as_deref()
+        {
+            validate_registered_column(pool, column)?;
+        }
+        if let Some(errorbar) = extract_errorbar_style(&item.render_type)
+            && let Some(column) = errorbar.error_bar_style_index_column.as_deref()
+        {
+            validate_registered_column(pool, column)?;
+        }
+        if let Some(error) = extract_err_x(&item.render_type) {
+            validate_error_ref_columns(pool, error)?;
+        }
+        if let Some(error) = extract_err_y(&item.render_type) {
+            validate_error_ref_columns(pool, error)?;
+        }
+    }
+    Ok(())
+}
+
+fn axis_fit_stamp(axis: &AxisOptions) -> (u8, u64, u64) {
+    let scale = match axis.scale {
+        AxisScale::Linear => 0,
+        AxisScale::Logarithmic => 1,
+    };
+    (scale, axis.min.to_bits(), axis.max.to_bits())
+}
+
+fn push_fit_column_stamp(
+    pool: &ColumnPool,
+    columns: &mut Vec<FitColumnStamp>,
+    role: u8,
+    id: &str,
+) -> Result<()> {
+    let allocation_epoch = pool
+        .allocation_epoch(id)
+        .ok_or_else(|| FiggyError::UnknownColumn { id: id.to_string() })?;
+    columns.push(FitColumnStamp {
+        role,
+        id: id.to_string(),
+        allocation_epoch,
+    });
+    Ok(())
+}
+
+fn push_fit_error_stamps(
+    pool: &ColumnPool,
+    columns: &mut Vec<FitColumnStamp>,
+    error: &ErrorRef,
+    lower_role: u8,
+    upper_role: u8,
+) -> Result<()> {
+    match error {
+        ErrorRef::Symmetric { column } => {
+            push_fit_column_stamp(pool, columns, lower_role, column)?;
+            push_fit_column_stamp(pool, columns, upper_role, column)
+        }
+        ErrorRef::Asymmetric { lower, upper } => {
+            push_fit_column_stamp(pool, columns, lower_role, lower)?;
+            push_fit_column_stamp(pool, columns, upper_role, upper)
+        }
+    }
+}
+
+fn build_fit_token_from_state(
+    pool: &ColumnPool,
+    renderer_identity: u64,
+    chart_id: ChartId,
+    state: &ChartRenderState,
+) -> Result<FitCommitToken> {
+    let mut series = Vec::new();
+    series
+        .try_reserve(state.series.len())
+        .map_err(|error| FiggyError::StateAllocationFailed {
+            resource: "fit series stamps",
+            reason: error.to_string(),
+        })?;
+    for item in &state.series {
+        let mut columns = Vec::new();
+        columns
+            .try_reserve(6)
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "fit role-column stamps",
+                reason: error.to_string(),
+            })?;
+        push_fit_column_stamp(pool, &mut columns, 0, &item.x_column)?;
+        push_fit_column_stamp(pool, &mut columns, 1, &item.y_column)?;
+        if let Some(error) = extract_err_x(&item.render_type) {
+            push_fit_error_stamps(pool, &mut columns, error, 2, 3)?;
+        }
+        if let Some(error) = extract_err_y(&item.render_type) {
+            push_fit_error_stamps(pool, &mut columns, error, 4, 5)?;
+        }
+        series.push(FitSeriesStamp {
+            series_id: item.series_id.clone(),
+            mode: crate::gpu_errorbar::GpuSeriesExtentMode::from_render_type(&item.render_type),
+            columns,
+        });
+    }
+
+    Ok(FitCommitToken {
+        renderer_identity,
+        chart_id,
+        axes: FitAxisStamp {
+            top_x: axis_fit_stamp(&state.config.top_x),
+            bottom_x: axis_fit_stamp(&state.config.bottom_x),
+            left_y: axis_fit_stamp(&state.config.left_y),
+            right_y: axis_fit_stamp(&state.config.right_y),
+        },
+        series,
+    })
+}
+
+fn build_web_derived_stamp_from_state(
+    pool: &ColumnPool,
+    renderer_identity: u64,
+    chart_id: ChartId,
+    state: &ChartRenderState,
+    data_revision: RenderRevision,
+) -> Result<WebDerivedStamp> {
+    let mut ids: Vec<String> = Vec::new();
+    ids.try_reserve(state.series.len().saturating_mul(8))
+        .map_err(|error| FiggyError::StateAllocationFailed {
+            resource: "derived column identities",
+            reason: error.to_string(),
+        })?;
+    for series in &state.series {
+        visit_series_columns(series, &mut |column| {
+            if !ids.iter().any(|existing| existing == column) {
+                ids.push(column.to_string());
+            }
+        });
+    }
+
+    let mut columns = Vec::new();
+    columns
+        .try_reserve(ids.len())
+        .map_err(|error| FiggyError::StateAllocationFailed {
+            resource: "derived column stamps",
+            reason: error.to_string(),
+        })?;
+    for column in ids {
+        let allocation_epoch = pool
+            .allocation_epoch(&column)
+            .ok_or_else(|| FiggyError::UnknownColumn { id: column.clone() })?;
+        columns.push(ColumnContentStamp {
+            id: column,
+            allocation_epoch,
+        });
+    }
+
+    Ok(WebDerivedStamp {
+        renderer_identity,
+        chart_id,
+        view: state.revisions.view,
+        data: data_revision,
+        pool_layout_generation: pool.layout_generation(),
+        columns,
+    })
+}
+
+fn build_web_derived_snapshot_from_state(
+    pool: &ColumnPool,
+    renderer_identity: u64,
+    chart_id: ChartId,
+    state: &ChartRenderState,
+    data_revision: RenderRevision,
+) -> Result<WebDerivedSnapshot> {
+    let stamp = build_web_derived_stamp_from_state(
+        pool,
+        renderer_identity,
+        chart_id,
+        state,
+        data_revision,
+    )?;
+    let fit_token = build_fit_token_from_state(pool, renderer_identity, chart_id, state)?;
+    let mut series = Vec::new();
+    series
+        .try_reserve(state.series.len())
+        .map_err(|error| FiggyError::StateAllocationFailed {
+            resource: "web derived series snapshot",
+            reason: error.to_string(),
+        })?;
+    series.extend(state.series.iter().cloned());
+    Ok(WebDerivedSnapshot {
+        stamp,
+        fit_token,
+        config: state.config.clone(),
+        series,
+    })
+}
+
 impl Renderer {
     /// Initialize every figgy GPU resource against the given device/queue pair.
     ///
@@ -1087,14 +2062,23 @@ impl Renderer {
             target_sample_count,
         );
         let arc_pipelines = data_render::line_arc::create_arc_scan_pipelines(&device);
+        let renderer_identity = issue_renderer_identity()?;
 
         Ok(Self {
             device,
             queue,
             caps,
             pool,
+            chart_states: HashMap::new(),
+            chart_order: Vec::new(),
+            next_chart_id: 0,
+            visual_revision: RenderRevision::initial(renderer_identity),
+            renderer_identity,
+            observed_font_generation: crate::text_render::font_generation(),
+            pending_defrag: false,
             errorbar_extent_engine,
             target_sample_count,
+            target_pipeline_generation: 1,
             texture_bgl,
             transform_bgl,
             style_bgl,
@@ -1127,6 +2111,509 @@ impl Renderer {
         self.surface_format
     }
 
+    /// Current renderer-owned visual state identity.
+    pub fn visual_revision(&self) -> RenderRevision {
+        self.visual_revision
+    }
+
+    pub fn visual_stamp(&self) -> RendererVisualStamp {
+        RendererVisualStamp {
+            revision: self.visual_revision,
+            font_generation: crate::text_render::font_generation(),
+        }
+    }
+
+    /// Chart composition order. This slice, never `HashMap` iteration order,
+    /// defines panel ordering for renderer-owned composition.
+    pub fn chart_order(&self) -> &[ChartId] {
+        &self.chart_order
+    }
+
+    pub fn chart_config(&self, id: ChartId) -> Result<&Config> {
+        self.chart_states
+            .get(&id)
+            .map(|state| &state.config)
+            .ok_or(FiggyError::UnknownChart { id })
+    }
+
+    pub fn chart_series(&self, id: ChartId) -> Result<&[SeriesConfig]> {
+        self.chart_states
+            .get(&id)
+            .map(|state| state.series.as_slice())
+            .ok_or(FiggyError::UnknownChart { id })
+    }
+
+    pub fn chart_selection(&self, id: ChartId) -> Result<Option<HitId>> {
+        self.chart_states
+            .get(&id)
+            .map(|state| state.selected)
+            .ok_or(FiggyError::UnknownChart { id })
+    }
+
+    pub fn chart_render_stamp(&self, id: ChartId) -> Result<ChartRenderStamp> {
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        Ok(ChartRenderStamp {
+            renderer_identity: self.renderer_identity,
+            chart_id: id,
+            desired: state.revisions.desired,
+            raster: state.revisions.raster,
+        })
+    }
+
+    pub fn chart_view_state(&self, id: ChartId) -> Result<ChartViewState> {
+        self.chart_states
+            .get(&id)
+            .map(|state| ChartViewState::from_config(&state.config))
+            .ok_or(FiggyError::UnknownChart { id })
+    }
+
+    /// Register one renderer-owned chart. The id issuer and visual revision
+    /// are checked before any state is published.
+    pub fn register_chart(&mut self, config: Config, series: Vec<SeriesConfig>) -> Result<ChartId> {
+        crate::chart::validate_renderer_config(&config)?;
+        validate_renderer_series(&self.pool, &series)?;
+        let id_value = self
+            .next_chart_id
+            .checked_add(1)
+            .ok_or(FiggyError::CounterExhausted {
+                counter: "chart id",
+            })?;
+        let visual_revision = self.visual_revision.successor("renderer visual revision")?;
+        let chart_revision =
+            RenderRevision::initial(self.renderer_identity).successor("chart revision")?;
+        self.chart_states
+            .try_reserve(1)
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "chart registry",
+                reason: error.to_string(),
+            })?;
+        self.chart_order
+            .try_reserve(1)
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "chart order",
+                reason: error.to_string(),
+            })?;
+
+        let id = ChartId {
+            renderer_identity: self.renderer_identity,
+            sequence: id_value,
+        };
+        let previous = self.chart_states.insert(
+            id,
+            ChartRenderState {
+                config,
+                series,
+                selected: None,
+                revisions: ChartRevisions::initial(chart_revision),
+            },
+        );
+        debug_assert!(previous.is_none());
+        self.chart_order.push(id);
+        self.next_chart_id = id_value;
+        self.visual_revision = visual_revision;
+        Ok(id)
+    }
+
+    pub fn remove_chart(&mut self, id: ChartId) -> Result<()> {
+        if !self.chart_states.contains_key(&id) {
+            return Err(FiggyError::UnknownChart { id });
+        }
+        let visual_revision = self.visual_revision.successor("renderer visual revision")?;
+        self.chart_states.remove(&id);
+        self.chart_order.retain(|candidate| *candidate != id);
+        self.visual_revision = visual_revision;
+        Ok(())
+    }
+
+    pub fn set_chart_config(&mut self, id: ChartId, config: Config) -> Result<()> {
+        crate::chart::validate_renderer_config(&config)?;
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        let desired = state
+            .revisions
+            .desired
+            .successor("chart desired revision")?;
+        let config_revision = state.revisions.config.successor("chart config revision")?;
+        let view = if ChartViewState::from_config(&state.config)
+            != ChartViewState::from_config(&config)
+            || state.config.draw_style != config.draw_style
+        {
+            state.revisions.view.successor("chart view revision")?
+        } else {
+            state.revisions.view
+        };
+        let raster = state.revisions.raster.successor("chart raster revision")?;
+        let visual = self.visual_revision.successor("renderer visual revision")?;
+
+        let state = self
+            .chart_states
+            .get_mut(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        state.config = config;
+        state.revisions.desired = desired;
+        state.revisions.config = config_revision;
+        state.revisions.view = view;
+        state.revisions.raster = raster;
+        self.visual_revision = visual;
+        Ok(())
+    }
+
+    pub fn set_chart_series(&mut self, id: ChartId, series: Vec<SeriesConfig>) -> Result<()> {
+        validate_renderer_series(&self.pool, &series)?;
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        let desired = state
+            .revisions
+            .desired
+            .successor("chart desired revision")?;
+        let series_revision = state.revisions.series.successor("chart series revision")?;
+        let data = if data_series_declarations_equal(&state.series, &series) {
+            state.revisions.data
+        } else {
+            state.revisions.data.successor("chart data revision")?
+        };
+        let raster = state.revisions.raster.successor("chart raster revision")?;
+        let visual = self.visual_revision.successor("renderer visual revision")?;
+
+        let state = self
+            .chart_states
+            .get_mut(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        state.series = series;
+        state.revisions.desired = desired;
+        state.revisions.series = series_revision;
+        state.revisions.data = data;
+        state.revisions.raster = raster;
+        self.visual_revision = visual;
+        Ok(())
+    }
+
+    /// Atomically replace the renderer-owned config and ordered series.
+    ///
+    /// This is the mutation boundary for hosts whose one logical edit affects
+    /// both declarations, such as an auto-managed legend update. Validation
+    /// and every revision successor complete before either value is replaced.
+    pub fn set_chart_state(
+        &mut self,
+        id: ChartId,
+        config: Config,
+        series: Vec<SeriesConfig>,
+    ) -> Result<()> {
+        crate::chart::validate_renderer_config(&config)?;
+        validate_renderer_series(&self.pool, &series)?;
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        let desired = state
+            .revisions
+            .desired
+            .successor("chart desired revision")?;
+        let config_revision = state.revisions.config.successor("chart config revision")?;
+        let series_revision = state.revisions.series.successor("chart series revision")?;
+        let data = if data_series_declarations_equal(&state.series, &series) {
+            state.revisions.data
+        } else {
+            state.revisions.data.successor("chart data revision")?
+        };
+        let view = if ChartViewState::from_config(&state.config)
+            != ChartViewState::from_config(&config)
+            || state.config.draw_style != config.draw_style
+        {
+            state.revisions.view.successor("chart view revision")?
+        } else {
+            state.revisions.view
+        };
+        let raster = state.revisions.raster.successor("chart raster revision")?;
+        let visual = self.visual_revision.successor("renderer visual revision")?;
+
+        let state = self
+            .chart_states
+            .get_mut(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        state.config = config;
+        state.series = series;
+        state.revisions.desired = desired;
+        state.revisions.config = config_revision;
+        state.revisions.series = series_revision;
+        state.revisions.data = data;
+        state.revisions.view = view;
+        state.revisions.raster = raster;
+        self.visual_revision = visual;
+        Ok(())
+    }
+
+    pub fn set_chart_view_state(&mut self, id: ChartId, view: ChartViewState) -> Result<()> {
+        validate_chart_view_state(&view)?;
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        let mut prospective_config = state.config.clone();
+        view.apply_to(&mut prospective_config);
+        crate::chart::validate_renderer_config(&prospective_config)?;
+        let desired = state
+            .revisions
+            .desired
+            .successor("chart desired revision")?;
+        let config = state.revisions.config.successor("chart config revision")?;
+        let view_revision = state.revisions.view.successor("chart view revision")?;
+        let raster = state.revisions.raster.successor("chart raster revision")?;
+        let visual = self.visual_revision.successor("renderer visual revision")?;
+
+        let state = self
+            .chart_states
+            .get_mut(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        view.apply_to(&mut state.config);
+        state.revisions.desired = desired;
+        state.revisions.config = config;
+        state.revisions.view = view_revision;
+        state.revisions.raster = raster;
+        self.visual_revision = visual;
+        Ok(())
+    }
+
+    pub fn set_chart_selection(&mut self, id: ChartId, selected: Option<HitId>) -> Result<()> {
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        let desired = state
+            .revisions
+            .desired
+            .successor("chart desired revision")?;
+        let selection = state
+            .revisions
+            .selection
+            .successor("chart selection revision")?;
+        let raster = state.revisions.raster.successor("chart raster revision")?;
+        let visual = self.visual_revision.successor("renderer visual revision")?;
+
+        let state = self
+            .chart_states
+            .get_mut(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        state.selected = selected;
+        state.revisions.desired = desired;
+        state.revisions.selection = selection;
+        state.revisions.raster = raster;
+        self.visual_revision = visual;
+        Ok(())
+    }
+
+    /// Observe global font registration without adding a lock to frame or
+    /// raster hot paths. All chart revision successors are preflighted before
+    /// any state is changed.
+    pub fn sync_external_invalidations(&mut self) -> Result<bool> {
+        let generation = crate::text_render::font_generation();
+        if generation == self.observed_font_generation {
+            return Ok(false);
+        }
+        if self.chart_order.is_empty() {
+            self.observed_font_generation = generation;
+            return Ok(false);
+        }
+
+        let visual = self.visual_revision.successor("renderer visual revision")?;
+        let mut updates = Vec::new();
+        updates
+            .try_reserve(self.chart_order.len())
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "font invalidation revisions",
+                reason: error.to_string(),
+            })?;
+        for id in &self.chart_order {
+            let state = self
+                .chart_states
+                .get(id)
+                .ok_or(FiggyError::UnknownChart { id: *id })?;
+            updates.push((
+                *id,
+                state
+                    .revisions
+                    .desired
+                    .successor("chart desired revision")?,
+                state.revisions.raster.successor("chart raster revision")?,
+            ));
+        }
+
+        for (id, desired, raster) in updates {
+            let state = self
+                .chart_states
+                .get_mut(&id)
+                .ok_or(FiggyError::UnknownChart { id })?;
+            state.revisions.desired = desired;
+            state.revisions.raster = raster;
+        }
+        self.visual_revision = visual;
+        self.observed_font_generation = generation;
+        Ok(true)
+    }
+
+    pub fn web_derived_snapshot(&self, id: ChartId) -> Result<WebDerivedSnapshot> {
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        build_web_derived_snapshot_from_state(
+            &self.pool,
+            self.renderer_identity,
+            id,
+            state,
+            state.revisions.data,
+        )
+    }
+
+    pub fn begin_fit_commit(&self, id: ChartId) -> Result<FitCommitToken> {
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        build_fit_token_from_state(&self.pool, self.renderer_identity, id, state)
+    }
+
+    pub fn commit_auto_fit_all_if_current(
+        &mut self,
+        token: &FitCommitToken,
+        x_extent: &crate::chart::FitExtent,
+        y_extent: &crate::chart::FitExtent,
+        padding: f64,
+    ) -> Result<()> {
+        if token.renderer_identity != self.renderer_identity
+            || !self.chart_states.contains_key(&token.chart_id)
+        {
+            return Err(FiggyError::StaleStateToken {
+                reason: "fit token belongs to another renderer or a removed chart".to_string(),
+            });
+        }
+        let state = self
+            .chart_states
+            .get(&token.chart_id)
+            .ok_or(FiggyError::UnknownChart { id: token.chart_id })?;
+        let current_fit =
+            build_fit_token_from_state(&self.pool, self.renderer_identity, token.chart_id, state)?;
+        if current_fit != *token {
+            return Err(FiggyError::StaleStateToken {
+                reason: "axis range/scale, ordered fit geometry, or source column content changed"
+                    .to_string(),
+            });
+        }
+
+        let state = self
+            .chart_states
+            .get(&token.chart_id)
+            .ok_or(FiggyError::UnknownChart { id: token.chart_id })?;
+        let desired = state
+            .revisions
+            .desired
+            .successor("chart desired revision")?;
+        let config = state.revisions.config.successor("chart config revision")?;
+        let view = state.revisions.view.successor("chart view revision")?;
+        let raster = state.revisions.raster.successor("chart raster revision")?;
+        let visual = self.visual_revision.successor("renderer visual revision")?;
+
+        let state = self
+            .chart_states
+            .get_mut(&token.chart_id)
+            .ok_or(FiggyError::UnknownChart { id: token.chart_id })?;
+        crate::chart::apply_auto_fit_all(&mut state.config, x_extent, y_extent, padding);
+        state.revisions.desired = desired;
+        state.revisions.config = config;
+        state.revisions.view = view;
+        state.revisions.raster = raster;
+        self.visual_revision = visual;
+        Ok(())
+    }
+
+    fn prepare_column_invalidation(&self, id: &str) -> Result<ColumnInvalidationPlan> {
+        let mut charts = Vec::new();
+        charts
+            .try_reserve(self.chart_order.len())
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "column invalidation revisions",
+                reason: error.to_string(),
+            })?;
+        for chart_id in &self.chart_order {
+            let state = self
+                .chart_states
+                .get(chart_id)
+                .ok_or(FiggyError::UnknownChart { id: *chart_id })?;
+            if state
+                .series
+                .iter()
+                .any(|series| series_references_column(series, id))
+            {
+                charts.push(ChartColumnInvalidation {
+                    id: *chart_id,
+                    desired: state
+                        .revisions
+                        .desired
+                        .successor("chart desired revision")?,
+                    data: state.revisions.data.successor("chart data revision")?,
+                });
+            }
+        }
+        let visual = if charts.is_empty() {
+            None
+        } else {
+            Some(self.visual_revision.successor("renderer visual revision")?)
+        };
+        Ok(ColumnInvalidationPlan { charts, visual })
+    }
+
+    fn prepare_column_removal(&self, id: &str) -> Result<ColumnRemovalPlan> {
+        let mut charts = Vec::new();
+        charts
+            .try_reserve(self.chart_order.len())
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "column removal candidates",
+                reason: error.to_string(),
+            })?;
+        for chart_id in &self.chart_order {
+            let state = self
+                .chart_states
+                .get(chart_id)
+                .ok_or(FiggyError::UnknownChart { id: *chart_id })?;
+            let removed_count = state
+                .series
+                .iter()
+                .filter(|series| series_references_column(series, id))
+                .count();
+            if removed_count == 0 {
+                continue;
+            }
+
+            let desired = state
+                .revisions
+                .desired
+                .successor("chart desired revision")?;
+            let series_revision = state.revisions.series.successor("chart series revision")?;
+            let data = state.revisions.data.successor("chart data revision")?;
+            let raster = state.revisions.raster.successor("chart raster revision")?;
+            charts.push(ChartSeriesRemoval {
+                id: *chart_id,
+                desired,
+                series_revision,
+                data,
+                raster,
+            });
+        }
+        let visual = if charts.is_empty() {
+            None
+        } else {
+            Some(self.visual_revision.successor("renderer visual revision")?)
+        };
+        Ok(ColumnRemovalPlan { charts, visual })
+    }
+
     /// Rebuild render-target pipelines if the host swap-chain format changed.
     ///
     /// Column data, chart views, textures, bind groups, styles, and buffers do
@@ -1146,6 +2633,12 @@ impl Renderer {
             return Ok(false);
         }
         validate_target_sample_count(self.caps, surface_format, target_sample_count)?;
+        let target_pipeline_generation =
+            self.target_pipeline_generation
+                .checked_add(1)
+                .ok_or(FiggyError::CounterExhausted {
+                    counter: "target pipeline generation",
+                })?;
         // Fresh set with an empty styled cache — any styled pipelines the
         // next frame needs are recompiled by its prepare phase.
         self.pipelines = create_target_pipelines(
@@ -1159,6 +2652,7 @@ impl Renderer {
         );
         self.surface_format = surface_format;
         self.target_sample_count = target_sample_count;
+        self.target_pipeline_generation = target_pipeline_generation;
         Ok(true)
     }
 
@@ -1219,9 +2713,11 @@ impl Renderer {
         id: impl Into<ColumnId>,
         source: &dyn ColumnSource,
     ) -> Result<ColumnHandle> {
+        let id = id.into();
+        validate_host_column_id(&id)?;
         Ok(self
             .pool
-            .add_column(id.into(), source, &self.device, &self.queue)?)
+            .add_column(id, source, &self.device, &self.queue)?)
     }
 
     pub fn add_hilo_column(
@@ -1229,9 +2725,11 @@ impl Renderer {
         id: impl Into<ColumnId>,
         source: &dyn HiLoColumnSource,
     ) -> Result<ColumnHandle> {
+        let id = id.into();
+        validate_host_column_id(&id)?;
         Ok(self
             .pool
-            .add_hilo_column(id.into(), source, &self.device, &self.queue)?)
+            .add_hilo_column(id, source, &self.device, &self.queue)?)
     }
 
     /// Begin a failure-atomic scalar insert or same-id replacement.
@@ -1240,14 +2738,19 @@ impl Renderer {
         id: impl Into<ColumnId>,
         source: &dyn ColumnSource,
     ) -> Result<RendererColumnUpsert<'_>> {
-        let inner = self.pool.begin_upsert_column(
-            id.into(),
-            source,
-            self.device.as_ref(),
-            self.queue.as_ref(),
-        )?;
+        let id = id.into();
+        validate_host_column_id(&id)?;
+        let invalidation = self.prepare_column_invalidation(&id)?;
+        let inner =
+            self.pool
+                .begin_upsert_column(id, source, self.device.as_ref(), self.queue.as_ref())?;
         Ok(RendererColumnUpsert {
-            inner,
+            inner: Some(inner),
+            chart_states: &mut self.chart_states,
+            visual_revision: &mut self.visual_revision,
+            pending_defrag: &mut self.pending_defrag,
+            invalidation: Some(invalidation),
+            renderer_identity: self.renderer_identity,
             device: self.device.as_ref(),
             queue: self.queue.as_ref(),
             errorbar_extent_engine: &self.errorbar_extent_engine,
@@ -1260,14 +2763,22 @@ impl Renderer {
         id: impl Into<ColumnId>,
         source: &dyn HiLoColumnSource,
     ) -> Result<RendererColumnUpsert<'_>> {
+        let id = id.into();
+        validate_host_column_id(&id)?;
+        let invalidation = self.prepare_column_invalidation(&id)?;
         let inner = self.pool.begin_upsert_hilo_column(
-            id.into(),
+            id,
             source,
             self.device.as_ref(),
             self.queue.as_ref(),
         )?;
         Ok(RendererColumnUpsert {
-            inner,
+            inner: Some(inner),
+            chart_states: &mut self.chart_states,
+            visual_revision: &mut self.visual_revision,
+            pending_defrag: &mut self.pending_defrag,
+            invalidation: Some(invalidation),
+            renderer_identity: self.renderer_identity,
             device: self.device.as_ref(),
             queue: self.queue.as_ref(),
             errorbar_extent_engine: &self.errorbar_extent_engine,
@@ -1295,14 +2806,74 @@ impl Renderer {
         Ok(self.begin_upsert_hilo_column(id, source)?.commit())
     }
 
+    /// Ensure the renderer-owned filler column can cover `len` points.
+    ///
+    /// The column grows only when necessary and is uploaded without a
+    /// temporary scalar vector. It is maintenance data, not a public chart
+    /// column or a second source of truth.
+    pub fn ensure_internal_zero_column(&mut self, len: usize) -> Result<()> {
+        if len == 0
+            || self
+                .pool
+                .slot(INTERNAL_ZERO_COLUMN_ID)
+                .is_some_and(|slot| slot.len_values >= len)
+        {
+            return Ok(());
+        }
+        let replaced_existing = self.pool.slot(INTERNAL_ZERO_COLUMN_ID).is_some();
+        self.pool
+            .begin_upsert_column(
+                INTERNAL_ZERO_COLUMN_ID.to_string(),
+                &InternalZeroColumn { len },
+                self.device.as_ref(),
+                self.queue.as_ref(),
+            )?
+            .commit();
+        if replaced_existing {
+            self.pending_defrag = true;
+        }
+        Ok(())
+    }
+
+    /// Remove a column and cascade-remove every renderer-owned series that
+    /// references it, so no registered chart can retain a freed data id.
+    ///
+    /// The core renderer does not rewrite `Config::legend`; legend document
+    /// policy belongs to the host. The web wrapper removes rows for its
+    /// auto-managed legend and preserves freely edited legend text.
     pub fn remove_column(&mut self, id: &str) -> Result<bool> {
-        Ok(self.pool.remove_column(id)?)
+        validate_host_column_id(id)?;
+        if self.pool.slot(id).is_none() {
+            return Ok(false);
+        }
+        let removal = self.prepare_column_removal(id)?;
+        if !self.pool.remove_column(id)? {
+            return Ok(false);
+        }
+        removal.publish(&mut self.chart_states, &mut self.visual_revision, id);
+        self.pending_defrag = true;
+        Ok(true)
     }
 
     /// Compact every live column to the start of the pool. `true` iff
     /// anything actually moved.
     pub fn defragment(&mut self) -> Result<bool> {
-        Ok(self.pool.defragment(&self.device, &self.queue)?)
+        let moved = self.pool.defragment(&self.device, &self.queue)?;
+        self.pending_defrag = false;
+        Ok(moved)
+    }
+
+    pub fn has_pending_maintenance(&self) -> bool {
+        self.pending_defrag
+    }
+
+    pub fn process_pending_maintenance(&mut self) -> Result<bool> {
+        if !self.pending_defrag {
+            return Ok(false);
+        }
+        let moved = self.pool.defragment(&self.device, &self.queue)?;
+        self.pending_defrag = false;
+        Ok(moved)
     }
 
     pub fn set_defrag_policy(&mut self, policy: DefragPolicy) {
@@ -1473,7 +3044,7 @@ impl Renderer {
     //      host carries state into its paint callback (egui
     //      `CallbackResources`, iced `Storage`, or a local for winit).
     //   3. Host paint stage (only `&self` is available):
-    //      `renderer.paint_prepared(pass, target_size, &items, &prepared)`
+    //      `renderer.paint_prepared(pass, target_size, &prepared)`
     //      — pure recording, repeatable, no lock required. Returns
     //      `FiggyError::StalePreparedFrame` if an invalidating `&mut` call
     //      interleaved; recover by re-preparing next frame.
@@ -1491,7 +3062,7 @@ impl Renderer {
     // The token lives in a state field, crossing the callback boundary:
     // ```ignore
     // fn build_items<'a>(view: &'a ChartView, chart: &'a Chart, series: &'a [Series<'a>])
-    //     -> Vec<ChartDrawItem<'a>> { /* same shape in both callbacks */ }
+    //     -> Vec<ChartDrawItem<'a>> { /* prepare-only input */ }
     //
     // fn prepare(&self, _dev, _queue, _enc, res: &mut CallbackResources) -> Vec<CommandBuffer> {
     //     let s = res.get_mut::<FiggyState>().unwrap();
@@ -1504,9 +3075,8 @@ impl Renderer {
     // }
     // fn paint(&self, info, pass, res: &CallbackResources) {
     //     let s = res.get::<FiggyState>().unwrap();
-    //     let items = build_items(&s.view, &s.chart, &s.series);
     //     if let Some(prepared) = &s.prepared {
-    //         let _ = s.renderer.paint_prepared(pass, target_size, &items, prepared);
+    //         let _ = s.renderer.paint_prepared(pass, target_size, prepared);
     //     }
     // }
     // ```
@@ -1788,6 +3358,7 @@ impl Renderer {
             decoration_bind_group: dec_bg,
             transform_buffer,
             transform_bg,
+            content_revision: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             panel_rect,
             grid_space_gen: None,
         })
@@ -1796,9 +3367,11 @@ impl Renderer {
     /// When only the axis range (`AxisOptions { scale, min, max }`) changes,
     /// only the transform uniform buffer needs to be rewritten. No CPU
     /// raster, no texture rebuild — one GPU write.
-    pub fn update_transform(&self, view: &ChartView, chart: &Chart) {
+    pub fn update_transform(&mut self, view: &ChartView, chart: &Chart) -> Result<()> {
         let t = data_render::scatter_transform_from_config(chart.config());
+        view.advance_content_revision()?;
         data_render::update_scatter_transform(&self.queue, &view.transform_buffer, &t);
+        Ok(())
     }
 
     /// Re-rasterize both grid and decoration textures. Updates in place via
@@ -1839,6 +3412,7 @@ impl Renderer {
             axis_render::AxisLayerKind::Decoration,
             selection,
         )?;
+        view.advance_content_revision()?;
 
         // Grid layer. The constellation backdrop is axis-range independent,
         // so it is cached by (size, nebula, dust, seed): a pan/zoom/config
@@ -1984,7 +3558,7 @@ impl Renderer {
         items: &[ChartDrawItem<'_>],
     ) -> Result<()> {
         let prepared = self.prepare(items)?;
-        self.paint_prepared(pass, target_size, items, &prepared)
+        self.paint_prepared(pass, target_size, &prepared)
     }
 
     /// Mutable half of the frame: finish every state change the draw needs,
@@ -2005,17 +3579,12 @@ impl Renderer {
     ///
     /// Contract: call after this frame's data uploads (`add_column`),
     /// `ensure_target_format`, and `refresh_axis`; before the host submits
-    /// the command buffer containing the render pass. `paint_prepared`
-    /// detects and rejects ([`FiggyError::StalePreparedFrame`]): target
-    /// format changes, pool layout changes, chart-config edits, item/series
-    /// list changes (count, order, ids, render type, line style), and
-    /// remove+re-add of an arc series' source columns, including reuse of an
-    /// identical offset and length. Column changes that only affect plain
-    /// (non-arc) data are
-    /// picked up live at paint, exactly like the one-shot `paint`. Re-preparing (even for the same series
-    /// from another panel or an interleaved export) is always safe: buffers
-    /// still referenced by a live token are never rewritten in place, a
-    /// fresh slot is used instead.
+    /// the command buffer containing the render pass. The returned token owns
+    /// the resolved draw input. `paint_prepared` therefore receives no second
+    /// copy of chart/view/series/style inputs. It rejects renderer resource
+    /// changes that invalidate the captured GPU work: target-pipeline rebuild,
+    /// pool layout change, replacement of any captured column allocation, or
+    /// another transform/axis write to a captured `ChartView`.
     pub fn prepare(&mut self, items: &[ChartDrawItem<'_>]) -> Result<PreparedFrame> {
         self.pipelines.ensure_styles_for_items(
             &self.device,
@@ -2026,11 +3595,15 @@ impl Renderer {
             self.surface_format,
             items,
         );
-        let items = self.prepare_items(items);
+        let prepared_arcs = self.prepare_arc_items(items)?;
+        let (items, column_sources) =
+            self.resolve_prepared_items(items, &prepared_arcs, &self.pipelines)?;
         Ok(PreparedFrame {
+            renderer_identity: self.renderer_identity,
             items,
+            column_sources,
             pool_layout_generation: self.pool.layout_generation(),
-            surface_format: self.surface_format,
+            target_pipeline_generation: self.target_pipeline_generation,
         })
     }
 
@@ -2043,37 +3616,36 @@ impl Renderer {
     /// the renderer. Repeatable: the same token may be recorded into more
     /// than one pass (egui re-record, iced mid-frame pass restart).
     ///
-    /// `items` must be the same slice, in the same order, that produced
-    /// `prepared` — per-series identity and the per-panel transform are
-    /// verified, and renderer-level stamps (pool layout generation, target
-    /// format) detect invalidating `&mut self` calls since `prepare`. On mismatch
-    /// nothing is recorded and [`FiggyError::StalePreparedFrame`] is
-    /// returned; recovery is a fresh `prepare`.
+    /// All chart/view/series/style input comes from `prepared`; the host does
+    /// not reconstruct or pass it again. Renderer-level stamps detect
+    /// invalidating `&mut self` calls since `prepare`. On mismatch nothing is
+    /// recorded and [`FiggyError::StalePreparedFrame`] is returned; recovery
+    /// is a fresh `prepare`.
     pub fn paint_prepared(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         target_size: (u32, u32),
-        items: &[ChartDrawItem<'_>],
         prepared: &PreparedFrame,
     ) -> Result<()> {
-        self.validate_prepared(items, prepared)?;
-        self.paint_with_pipelines(pass, target_size, items, &self.pipelines, &prepared.items)
+        self.validate_prepared(prepared)?;
+        self.paint_prepared_items(pass, target_size, &prepared.items)
     }
 
     /// Stamp checks guarding `paint_prepared` — see [`PreparedFrame`] field
     /// docs for what each stamp catches. Kept separate from recording so a
     /// stale token fails before any pass state is touched.
-    fn validate_prepared(
-        &self,
-        items: &[ChartDrawItem<'_>],
-        prepared: &PreparedFrame,
-    ) -> Result<()> {
+    fn validate_prepared(&self, prepared: &PreparedFrame) -> Result<()> {
         let stale = |reason: String| FiggyError::StalePreparedFrame { reason };
-        if prepared.surface_format != self.surface_format {
+        if prepared.renderer_identity != self.renderer_identity {
+            return Err(stale(
+                "prepared frame belongs to a different renderer".into(),
+            ));
+        }
+        if prepared.target_pipeline_generation != self.target_pipeline_generation {
             return Err(stale(format!(
-                "prepared for target format {:?}, renderer now targets {:?} \
-                 (ensure_target_format was called between prepare and paint_prepared)",
-                prepared.surface_format, self.surface_format
+                "prepared at target pipeline generation {}, renderer is now at {} \
+                 (the target format or sample count changed between prepare and paint_prepared)",
+                prepared.target_pipeline_generation, self.target_pipeline_generation
             )));
         }
         if prepared.pool_layout_generation != self.pool.layout_generation() {
@@ -2084,66 +3656,23 @@ impl Renderer {
                 self.pool.layout_generation()
             )));
         }
-        if prepared.items.len() != items.len() {
-            return Err(stale(format!(
-                "prepared {} panel(s), paint received {}",
-                prepared.items.len(),
-                items.len()
-            )));
+        for (idx, item) in prepared.items.iter().enumerate() {
+            let current = item
+                .view
+                .content_revision
+                .load(std::sync::atomic::Ordering::Acquire);
+            if current != item.view.expected_content_revision {
+                return Err(stale(format!(
+                    "panel {idx} view changed between prepare and paint_prepared"
+                )));
+            }
         }
-        for (idx, (pi, item)) in prepared.items.iter().zip(items).enumerate() {
-            if pi.series.len() != item.series.len() {
+        for (id, allocation_epoch) in &prepared.column_sources {
+            if self.pool.allocation_epoch(id) != Some(*allocation_epoch) {
                 return Err(stale(format!(
-                    "panel {idx}: prepared {} series, paint received {}",
-                    pi.series.len(),
-                    item.series.len()
+                    "column {:?} changed allocation between prepare and paint_prepared",
+                    id
                 )));
-            }
-            let t = data_render::scatter_transform_from_config(item.chart_config);
-            if bytemuck::bytes_of(&t) != bytemuck::bytes_of(&pi.transform) {
-                return Err(stale(format!(
-                    "panel {idx}: chart config (axis ranges / chart area / style params) \
-                     changed between prepare and paint_prepared"
-                )));
-            }
-            let variant = style_variant(&item.chart_config.draw_style);
-            for (ps, s) in pi.series.iter().zip(item.series) {
-                let cfg = s.config;
-                if ps.series_id != cfg.series_id {
-                    return Err(stale(format!(
-                        "panel {idx}: prepared series {:?}, paint received {:?} \
-                         (items must be passed to paint_prepared unchanged and in prepare order)",
-                        ps.series_id, cfg.series_id
-                    )));
-                }
-                // Recompute prepare's arc decision: a render-type or
-                // line-style edit at an unchanged series id would otherwise
-                // pair the wrong (or no) arc snapshot with the new pipeline.
-                let line = has_line(&cfg.render_type);
-                let dashed = line
-                    && extract_line(&cfg.render_type)
-                        .is_some_and(|l| !matches!(l.line_style, LineStylePreset::Solid));
-                let arc_wanted = dashed || (variant.is_some_and(|v| v.needs_arc_prefix) && line);
-                if arc_wanted != ps.arc_wanted {
-                    return Err(stale(format!(
-                        "panel {idx}, series {:?}: render type or line style changed \
-                         between prepare and paint_prepared",
-                        cfg.series_id
-                    )));
-                }
-                // The layout stamp catches buffer or offset relocation; the
-                // source allocation epochs independently catch same-layout
-                // remove+re-add before an old arc snapshot can be recorded.
-                if let Some(a) = &ps.arc {
-                    if self.arc_source_layout(&cfg.x_column, &cfg.y_column) != Some(a.source) {
-                        return Err(stale(format!(
-                            "panel {idx}, series {:?}: the series' x/y columns changed \
-                             allocation or layout between prepare and paint_prepared \
-                             (column removed/re-added or resized)",
-                            cfg.series_id
-                        )));
-                    }
-                }
             }
         }
         Ok(())
@@ -2155,11 +3684,9 @@ impl Renderer {
     /// scan of every line series that needs one with that same snapshot —
     /// dashed lines (dash phase) and every line of a style with
     /// `needs_arc_prefix` (sketch: the wobble is parameterized by arc
-    /// length, so solid sketch lines need the prefix too) — and snapshots
-    /// owned handles (arc buffer, star pass) into the returned
-    /// `PreparedItem`s. The immutable draw phase reads only that snapshot,
-    /// never `arc_cache`, so it survives any cache eviction or rebuild.
-    fn prepare_items(&mut self, items: &[ChartDrawItem<'_>]) -> Vec<PreparedItem> {
+    /// length, so solid sketch lines need the prefix too). The immutable draw
+    /// phase later reads the owned result, never the live `arc_cache`.
+    fn prepare_arc_items(&mut self, items: &[ChartDrawItem<'_>]) -> Result<Vec<PreparedArcItem>> {
         let mut prepared = Vec::with_capacity(items.len());
         for item in items {
             let t = data_render::scatter_transform_from_config(item.chart_config);
@@ -2167,6 +3694,7 @@ impl Renderer {
             // uniform the vertex shaders read and the arc dispatch below.
             // Written here (not via `update_transform`) so they cannot
             // desync within a frame.
+            let view_revision = item.view.advance_content_revision()?;
             data_render::update_scatter_transform(&self.queue, &item.view.transform_buffer, &t);
             let variant = style_variant(&item.chart_config.draw_style);
             // Milkyway lines also get the arc-driven star pass: the
@@ -2197,64 +3725,91 @@ impl Renderer {
                 } else {
                     None
                 };
-                per_series.push(PreparedSeries {
-                    series_id: cfg.series_id.clone(),
-                    arc_wanted,
-                    arc,
-                });
+                per_series.push(PreparedArcSeries { arc });
             }
-            prepared.push(PreparedItem {
-                transform: t,
+            prepared.push(PreparedArcItem {
+                view_revision,
                 series: per_series,
             });
         }
-        prepared
+        Ok(prepared)
     }
 
-    fn paint_with_pipelines<'a>(
+    fn resolve_prepared_items(
+        &self,
+        items: &[ChartDrawItem<'_>],
+        prepared_arcs: &[PreparedArcItem],
+        pipelines: &TargetPipelines,
+    ) -> Result<(Vec<PreparedItem>, HashMap<ColumnId, u64>)> {
+        let mut prepared = Vec::with_capacity(items.len());
+        let mut column_sources = HashMap::new();
+
+        for (item, prepared_arc) in items.iter().zip(prepared_arcs) {
+            let styled = pipelines.style_set(&item.chart_config.draw_style);
+            let (layers, sources) = self.build_series_layers(
+                item.view,
+                item.chart_config,
+                item.series,
+                pipelines,
+                &prepared_arc.series,
+                styled,
+            )?;
+
+            for (id, allocation_epoch) in sources {
+                column_sources.entry(id).or_insert(allocation_epoch);
+            }
+
+            prepared.push(PreparedItem {
+                view: PreparedView {
+                    grid_bind_group: item.view.grid_bind_group.clone(),
+                    decoration_bind_group: item.view.decoration_bind_group.clone(),
+                    content_revision: Arc::clone(&item.view.content_revision),
+                    expected_content_revision: prepared_arc.view_revision,
+                    panel_rect: item.view.panel_rect,
+                },
+                data_area: item
+                    .chart_config
+                    .data_area()
+                    .map(|area| area.0)
+                    .unwrap_or(item.view.panel_rect),
+                axis_pipeline: pipelines.axis.clone(),
+                series: layers
+                    .into_iter()
+                    .map(PreparedSeries::from_layers)
+                    .collect(),
+            });
+        }
+        Ok((prepared, column_sources))
+    }
+
+    fn paint_prepared_items<'a>(
         &'a self,
         pass: &mut wgpu::RenderPass<'_>,
         target_size: (u32, u32),
-        items: &[ChartDrawItem<'a>],
-        pipelines: &'a TargetPipelines,
         prepared: &'a [PreparedItem],
     ) -> Result<()> {
-        for (item, prepared_item) in items.iter().zip(prepared) {
+        for item in prepared {
             let panel_rect = item.view.panel_rect;
-            let data_area = item
-                .chart_config
-                .data_area()
-                .map(|da| da.0)
-                .unwrap_or(panel_rect);
+            let series_list: Vec<_> = item.series.iter().map(PreparedSeries::layers).collect();
 
             // The single style decision per panel: the chart's `DrawStyle`
             // resolves to a cached styled pipeline set (compiled by the
             // prepare phase) or `None` for precise — the precise path stays
             // untouched.
-            let styled = pipelines.style_set(&item.chart_config.draw_style);
-
             // Bundle every series's primitives for the panel into one call.
-            let series_list = self.build_series_layers(
-                item.view,
-                item.chart_config,
-                item.series,
-                pipelines,
-                &prepared_item.series,
-                styled,
-            )?;
 
             data_render::draw_chart_panel_columnar(
                 pass,
                 target_size,
                 panel_rect,
-                data_area,
+                item.data_area,
                 AxisLayer {
-                    pipeline: &pipelines.axis,
+                    pipeline: &item.axis_pipeline,
                     bind_group: &item.view.grid_bind_group,
                 },
                 &series_list,
                 AxisLayer {
-                    pipeline: &pipelines.axis,
+                    pipeline: &item.axis_pipeline,
                     bind_group: &item.view.decoration_bind_group,
                 },
             );
@@ -2265,12 +3820,8 @@ impl Renderer {
     /// Convert one panel's `Series` list into `SeriesLayers` ready for
     /// drawing. The `config.render_type` enum variant decides which of
     /// line/scatter/errorbar each series needs; column ids are resolved to
-    /// handles via the pool. `prepared` is this panel's slice of the prepare
-    /// phase's output ([`Self::prepare_items`]), aligned with
-    /// `series_specs` — dashed lines (and every line of an arc-needing
-    /// style) pick up their arc-length prefix there, and the star pass its
-    /// owned handle snapshot (never a live `arc_cache` read — the cache may
-    /// have been evicted or rebuilt since prepare). `styled` is the panel's
+    /// handles via the pool. `prepared` supplies prepare-time arc and star
+    /// products without a live `arc_cache` read. `styled` is the panel's
     /// resolved [`StyleSet`] — it selects the stylized pipeline variants
     /// (and the line strip's vertex count); `None` (precise mode, or the
     /// theoretically-impossible cache miss) selects the precise pipelines.
@@ -2281,13 +3832,20 @@ impl Renderer {
         chart_config: &'a Config,
         series_specs: &[Series<'a>],
         pipelines: &'a TargetPipelines,
-        prepared: &'a [PreparedSeries],
+        prepared: &'a [PreparedArcSeries],
         styled: Option<&'a StyleSet>,
-    ) -> Result<Vec<data_render::SeriesLayers<'a>>> {
+    ) -> Result<(Vec<data_render::SeriesLayers<'a>>, HashMap<ColumnId, u64>)> {
         let pool = &self.pool;
-        let lookup = |id: &ColumnId| -> Result<ColumnHandle> {
-            pool.handle_for(id)
-                .ok_or_else(|| FiggyError::UnknownColumn { id: id.clone() })
+        let mut column_sources = HashMap::new();
+        let mut lookup = |id: &str| -> Result<ColumnHandle> {
+            let handle = pool
+                .handle_for(id)
+                .ok_or_else(|| FiggyError::UnknownColumn { id: id.into() })?;
+            let allocation_epoch = pool
+                .allocation_epoch(id)
+                .ok_or_else(|| FiggyError::UnknownColumn { id: id.into() })?;
+            column_sources.entry(id.into()).or_insert(allocation_epoch);
+            Ok(handle)
         };
 
         // Resolve the style set into per-primitive picks once. `stars` is the
@@ -2386,8 +3944,8 @@ impl Renderer {
             let line = if has_line(rt) && (!constellation_only || constellation_supported) {
                 let arc = prepared
                     .get(idx)
-                    .and_then(|p| p.arc.as_ref())
-                    .map(|a| a.prefix.clone());
+                    .and_then(|series| series.arc.as_ref())
+                    .map(|arc| arc.prefix.clone());
                 Some(ColumnLineLayer {
                     pipeline: line_pick.pipeline,
                     transform_bg: &view.transform_bg,
@@ -2413,7 +3971,7 @@ impl Renderer {
             let line_extra = match (&line, &stars_pick) {
                 (Some(_), Some(sp)) => prepared
                     .get(idx)
-                    .and_then(|p| p.arc.as_ref())
+                    .and_then(|series| series.arc.as_ref())
                     .and_then(|a| a.star.as_ref())
                     .map(|star| data_render::ColumnStarLayer {
                         pipeline: sp.pipeline,
@@ -2487,7 +4045,7 @@ impl Renderer {
                                 (lookup(lower)?, lookup(upper)?)
                             }
                             None => {
-                                let zero = self.zero_handle()?;
+                                let zero = lookup(INTERNAL_ZERO_COLUMN_ID)?;
                                 (zero, zero)
                             }
                         };
@@ -2500,7 +4058,7 @@ impl Renderer {
                                 (lookup(lower)?, lookup(upper)?)
                             }
                             None => {
-                                let zero = self.zero_handle()?;
+                                let zero = lookup(INTERNAL_ZERO_COLUMN_ID)?;
                                 (zero, zero)
                             }
                         };
@@ -2685,15 +4243,13 @@ impl Renderer {
                 picked,
             });
         }
-        Ok(out)
+        Ok((out, column_sources))
     }
 
-    /// The `(x_base, y_base, n, x_epoch, y_epoch)` source stamp for an arc
-    /// scan over these columns right now — `None` when a column is missing
-    /// or shorter than two points. `validate_prepared` uses the same
-    /// resolution as prepare, including allocation epochs that distinguish
-    /// remove+re-add at an identical offset and length.
-    fn arc_source_layout(&self, x_id: &str, y_id: &str) -> Option<(u32, u32, u32, u64, u64)> {
+    /// The `(x_base, y_base, n)` source layout for an arc scan over these
+    /// columns right now — `None` when a column is missing or shorter than
+    /// two points.
+    fn arc_source_layout(&self, x_id: &str, y_id: &str) -> Option<(u32, u32, u32)> {
         let (x_offset, x_len) = {
             let s = self.pool.slot(x_id)?;
             (s.offset, s.len_values)
@@ -2702,8 +4258,6 @@ impl Renderer {
             let s = self.pool.slot(y_id)?;
             (s.offset, s.len_values)
         };
-        let x_epoch = self.pool.allocation_epoch(x_id)?;
-        let y_epoch = self.pool.allocation_epoch(y_id)?;
         let n = x_len.min(y_len);
         if n < 2 {
             return None;
@@ -2714,7 +4268,7 @@ impl Renderer {
         // two lanes `(hi, lo)`, so `point_px(i)` applies the `i * 2` stride.
         let x_base = u32::try_from(x_offset / 4).ok()?;
         let y_base = u32::try_from(y_offset / 4).ok()?;
-        Some((x_base, y_base, n, x_epoch, y_epoch))
+        Some((x_base, y_base, n))
     }
 
     /// Ensure the GPU arc-length prefix for one dashed line series and return
@@ -2747,7 +4301,7 @@ impl Renderer {
         t: &data_render::ScatterTransform,
         star_pitch: Option<f32>,
     ) -> Option<PreparedArc> {
-        let (x_base, y_base, n, x_epoch, y_epoch) = self.arc_source_layout(x_id, y_id)?;
+        let (x_base, y_base, n) = self.arc_source_layout(x_id, y_id)?;
         let layout_generation = self.pool.layout_generation();
 
         // Runaway-churn backstop: ids of long-removed series would otherwise
@@ -2826,23 +4380,7 @@ impl Renderer {
         Some(PreparedArc {
             prefix: (Arc::clone(&scratch.arc), u64::from(n) * 4),
             star,
-            source: (x_base, y_base, n, x_epoch, y_epoch),
         })
-    }
-
-    /// Handle of the zero-filled column used to pad the unused dimension of
-    /// asymmetric errorbars. Caller must pre-register `"__zero"` via
-    /// `renderer.add_column("__zero", &zero_col)` (the web wrapper does this
-    /// automatically). Lookup happens in the immutable draw phase, so the
-    /// column cannot be created lazily here.
-    fn zero_handle(&self) -> Result<ColumnHandle> {
-        self.pool
-            .handle_for("__zero")
-            .ok_or_else(|| FiggyError::UnknownColumn {
-                id: "__zero (zero-fill column for the unused dim of an errorbar series; \
-                 pre-register via `renderer.add_column(\"__zero\", &zero_col)`)"
-                    .into(),
-            })
     }
 
     // Headless PNG export.
@@ -2948,8 +4486,6 @@ impl Renderer {
         // 3.5) Per-item prepare phase (transform uniform write + arc-prefix
         // dispatch) — submitted before the render pass below, so queue order
         // sequences them.
-        let prepared_items = self.prepare_items(&items);
-
         // 4) Offscreen target.
         let target_desc = wgpu::TextureDescriptor {
             label: Some("figgy export target"),
@@ -3008,6 +4544,9 @@ impl Renderer {
             export_format,
             &items,
         );
+        let prepared_arcs = self.prepare_arc_items(&items)?;
+        let (prepared_items, _) =
+            self.resolve_prepared_items(&items, &prepared_arcs, &export_target_pipelines)?;
 
         // 5) Readback buffer. Allocate at most the hardware limit and read rows
         // sequentially if the full image would exceed it.
@@ -3079,13 +4618,7 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            self.paint_with_pipelines(
-                &mut pass,
-                (w, h),
-                &items,
-                &export_target_pipelines,
-                &prepared_items,
-            )?;
+            self.paint_prepared_items(&mut pass, (w, h), &prepared_items)?;
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
@@ -3316,6 +4849,7 @@ pub struct ChartView {
     decoration_bind_group: wgpu::BindGroup,
     transform_buffer: wgpu::Buffer,
     transform_bg: wgpu::BindGroup,
+    content_revision: Arc<std::sync::atomic::AtomicU64>,
     /// Panel pixel rect in surface coordinates.
     panel_rect: Rect,
     /// Generation of the renderer's cached constellation backdrop currently
@@ -3327,6 +4861,19 @@ pub struct ChartView {
 impl ChartView {
     pub fn panel_rect(&self) -> Rect {
         self.panel_rect.clone()
+    }
+
+    fn advance_content_revision(&self) -> Result<u64> {
+        self.content_revision
+            .fetch_update(
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+                |current| current.checked_add(1),
+            )
+            .map(|previous| previous + 1)
+            .map_err(|_| FiggyError::CounterExhausted {
+                counter: "chart view content revision",
+            })
     }
 }
 
@@ -3441,8 +4988,9 @@ fn extract_err_x(rt: &DataRenderType) -> Option<&ErrorRef> {
 /// Returned by `Renderer::for_window`. The caller never touches the surface,
 /// surface config, encoder, or render pass — just calls `draw` per frame.
 ///
-/// `Deref<Target = Renderer>` is implemented, so `add_column`,
-/// `create_chart_view`, `create_style_for_series`, … are callable directly.
+/// Immutable renderer access is available through `Deref<Target = Renderer>`.
+/// Mutations use explicit forwarding methods so surface-sensitive operations
+/// cannot bypass this owner.
 pub struct WindowedRenderer<'w> {
     inner: Renderer,
     surface: wgpu::Surface<'w>,
@@ -3460,12 +5008,6 @@ impl<'w> std::ops::Deref for WindowedRenderer<'w> {
     }
 }
 
-impl<'w> std::ops::DerefMut for WindowedRenderer<'w> {
-    fn deref_mut(&mut self) -> &mut Renderer {
-        &mut self.inner
-    }
-}
-
 impl Drop for WindowedRenderer<'_> {
     fn drop(&mut self) {
         self.inner.wait_idle();
@@ -3479,6 +5021,216 @@ impl<'w> WindowedRenderer<'w> {
 
     pub fn surface_format(&self) -> wgpu::TextureFormat {
         self.surface_config.format
+    }
+
+    pub fn add_column(
+        &mut self,
+        id: impl Into<ColumnId>,
+        source: &dyn ColumnSource,
+    ) -> Result<ColumnHandle> {
+        self.inner.add_column(id, source)
+    }
+
+    pub fn add_hilo_column(
+        &mut self,
+        id: impl Into<ColumnId>,
+        source: &dyn HiLoColumnSource,
+    ) -> Result<ColumnHandle> {
+        self.inner.add_hilo_column(id, source)
+    }
+
+    pub fn begin_upsert_column(
+        &mut self,
+        id: impl Into<ColumnId>,
+        source: &dyn ColumnSource,
+    ) -> Result<RendererColumnUpsert<'_>> {
+        self.inner.begin_upsert_column(id, source)
+    }
+
+    pub fn begin_upsert_hilo_column(
+        &mut self,
+        id: impl Into<ColumnId>,
+        source: &dyn HiLoColumnSource,
+    ) -> Result<RendererColumnUpsert<'_>> {
+        self.inner.begin_upsert_hilo_column(id, source)
+    }
+
+    pub fn upsert_column(
+        &mut self,
+        id: impl Into<ColumnId>,
+        source: &dyn ColumnSource,
+    ) -> Result<ColumnHandle> {
+        self.inner.upsert_column(id, source)
+    }
+
+    pub fn upsert_hilo_column(
+        &mut self,
+        id: impl Into<ColumnId>,
+        source: &dyn HiLoColumnSource,
+    ) -> Result<ColumnHandle> {
+        self.inner.upsert_hilo_column(id, source)
+    }
+
+    pub fn remove_column(&mut self, id: &str) -> Result<bool> {
+        self.inner.remove_column(id)
+    }
+
+    pub fn defragment(&mut self) -> Result<bool> {
+        self.inner.defragment()
+    }
+
+    pub fn process_pending_maintenance(&mut self) -> Result<bool> {
+        self.inner.process_pending_maintenance()
+    }
+
+    pub fn ensure_internal_zero_column(&mut self, len: usize) -> Result<()> {
+        self.inner.ensure_internal_zero_column(len)
+    }
+
+    pub fn set_defrag_policy(&mut self, policy: DefragPolicy) {
+        self.inner.set_defrag_policy(policy);
+    }
+
+    pub fn register_chart(&mut self, config: Config, series: Vec<SeriesConfig>) -> Result<ChartId> {
+        self.inner.register_chart(config, series)
+    }
+
+    pub fn remove_chart(&mut self, id: ChartId) -> Result<()> {
+        self.inner.remove_chart(id)
+    }
+
+    pub fn set_chart_config(&mut self, id: ChartId, config: Config) -> Result<()> {
+        self.inner.set_chart_config(id, config)
+    }
+
+    pub fn set_chart_series(&mut self, id: ChartId, series: Vec<SeriesConfig>) -> Result<()> {
+        self.inner.set_chart_series(id, series)
+    }
+
+    pub fn set_chart_state(
+        &mut self,
+        id: ChartId,
+        config: Config,
+        series: Vec<SeriesConfig>,
+    ) -> Result<()> {
+        self.inner.set_chart_state(id, config, series)
+    }
+
+    pub fn set_chart_view_state(&mut self, id: ChartId, view: ChartViewState) -> Result<()> {
+        self.inner.set_chart_view_state(id, view)
+    }
+
+    pub fn set_chart_selection(&mut self, id: ChartId, selected: Option<HitId>) -> Result<()> {
+        self.inner.set_chart_selection(id, selected)
+    }
+
+    pub fn sync_external_invalidations(&mut self) -> Result<bool> {
+        self.inner.sync_external_invalidations()
+    }
+
+    pub fn commit_auto_fit_all_if_current(
+        &mut self,
+        token: &FitCommitToken,
+        x_extent: &crate::chart::FitExtent,
+        y_extent: &crate::chart::FitExtent,
+        padding: f64,
+    ) -> Result<()> {
+        self.inner
+            .commit_auto_fit_all_if_current(token, x_extent, y_extent, padding)
+    }
+
+    pub fn refresh_axis(
+        &mut self,
+        view: &mut ChartView,
+        chart: &Chart,
+        panel_rect: Rect,
+    ) -> Result<()> {
+        self.inner.refresh_axis(view, chart, panel_rect)
+    }
+
+    pub fn refresh_axis_with_selection(
+        &mut self,
+        view: &mut ChartView,
+        chart: &Chart,
+        panel_rect: Rect,
+        selection: &[crate::select::SelectionBox],
+    ) -> Result<()> {
+        self.inner
+            .refresh_axis_with_selection(view, chart, panel_rect, selection)
+    }
+
+    pub fn update_transform(&mut self, view: &ChartView, chart: &Chart) -> Result<()> {
+        self.inner.update_transform(view, chart)
+    }
+
+    pub fn prepare(&mut self, items: &[ChartDrawItem<'_>]) -> Result<PreparedFrame> {
+        self.inner.prepare(items)
+    }
+
+    pub async fn export_panel_rgba_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<RasterImage> {
+        self.inner
+            .export_panel_rgba_async(chart, series, scale)
+            .await
+    }
+
+    pub async fn export_panel_rgba_with_clear_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+        clear: crate::color::Color,
+    ) -> Result<RasterImage> {
+        self.inner
+            .export_panel_rgba_with_clear_async(chart, series, scale, clear)
+            .await
+    }
+
+    pub async fn export_panel_png_bytes_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<Vec<u8>> {
+        self.inner
+            .export_panel_png_bytes_async(chart, series, scale)
+            .await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export_panel_rgba(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<RasterImage> {
+        self.inner.export_panel_rgba(chart, series, scale)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export_panel_png_bytes(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<Vec<u8>> {
+        self.inner.export_panel_png_bytes(chart, series, scale)
+    }
+
+    pub async fn export_panel_png_bytes_with_clear_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+        clear: crate::color::Color,
+    ) -> Result<Vec<u8>> {
+        self.inner
+            .export_panel_png_bytes_with_clear_async(chart, series, scale, clear)
+            .await
     }
 
     /// Reconfigure the swap chain after a window resize. The caller is then
@@ -3522,6 +5274,21 @@ impl<'w> WindowedRenderer<'w> {
     /// presents. The caller is only responsible for processing per-panel
     /// dirty flags (`chart.consume_*_dirty()` → `refresh_axis`).
     pub fn draw(&mut self, clear: crate::color::Color, items: &[ChartDrawItem<'_>]) -> Result<()> {
+        let prepared = self.inner.prepare(items)?;
+        self.draw_prepared(clear, &prepared)
+    }
+
+    /// Draw one frame using a prepared data token owned by the host.
+    ///
+    /// This still records the surface composition pass (`grid -> data -> decoration`),
+    /// but it does not rerun `prepare`: no transform uniform write, styled
+    /// pipeline ensure, or arc-prefix compute unless the host prepared a new
+    /// token first.
+    pub fn draw_prepared(
+        &mut self,
+        clear: crate::color::Color,
+        prepared: &PreparedFrame,
+    ) -> Result<()> {
         let frame = match self.surface.get_current_texture() {
             Ok(t) => t,
             Err(error @ (wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated)) => {
@@ -3538,7 +5305,6 @@ impl<'w> WindowedRenderer<'w> {
             None => (&target, None, wgpu::StoreOp::Store),
         };
 
-        let prepared = self.inner.prepare(items)?;
         let mut encoder =
             self.inner
                 .device()
@@ -3569,8 +5335,7 @@ impl<'w> WindowedRenderer<'w> {
             self.inner.paint_prepared(
                 &mut pass,
                 (self.surface_config.width, self.surface_config.height),
-                items,
-                &prepared,
+                prepared,
             )?;
         }
         self.inner.queue().submit(std::iter::once(encoder.finish()));
@@ -3610,6 +5375,33 @@ mod tests {
             error_bar_style_table: None,
             error_bar_style_index_column: None,
             error_bar_style_overrides: None,
+        }
+    }
+
+    fn state_test_renderer() -> Option<Renderer> {
+        let (device, queue) = crate::data_render::shared_device()?;
+        Renderer::try_new(
+            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+            wgpu::TextureFormat::Rgba8Unorm,
+            1024 * 1024,
+        )
+        .ok()
+    }
+
+    fn state_test_line(id: &str, x: &str, y: &str) -> SeriesConfig {
+        SeriesConfig {
+            series_id: id.to_string(),
+            source_id: None,
+            label: None,
+            x_column: x.to_string(),
+            y_column: y.to_string(),
+            render_type: DataRenderType::Line {
+                line: DataLineStyleConfig {
+                    line_style: LineStylePreset::Solid,
+                    line_color: Color::new(0.1, 0.2, 0.3, 1.0),
+                    line_width: 1.0,
+                },
+            },
         }
     }
 
@@ -3664,6 +5456,801 @@ mod tests {
         // A device with a generous binding limit keeps a large pool intact.
         let caps_big = caps_with_limits(u32::MAX, 4 * 1024 * mb);
         assert_eq!(effective_pool_capacity(512 * mb, caps_big), 512 * mb);
+    }
+
+    #[test]
+    fn renderer_owned_chart_ids_are_ordered_and_never_reused() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        let first = renderer
+            .register_chart(crate::default::default_config(), Vec::new())
+            .unwrap();
+        let second = renderer
+            .register_chart(crate::default::default_config(), Vec::new())
+            .unwrap();
+        assert_eq!(renderer.chart_order(), &[first, second]);
+
+        renderer.remove_chart(first).unwrap();
+        let third = renderer
+            .register_chart(crate::default::default_config(), Vec::new())
+            .unwrap();
+        assert_ne!(first, third);
+        assert_eq!(renderer.chart_order(), &[second, third]);
+        assert!(matches!(
+            renderer.chart_config(first),
+            Err(FiggyError::UnknownChart { .. })
+        ));
+
+        let Some(mut other_renderer) = state_test_renderer() else {
+            return;
+        };
+        let other_first = other_renderer
+            .register_chart(crate::default::default_config(), Vec::new())
+            .unwrap();
+        assert_ne!(first, other_first);
+        assert_ne!(renderer.visual_revision(), other_renderer.visual_revision());
+        assert_ne!(renderer.visual_stamp(), other_renderer.visual_stamp());
+        assert_eq!(
+            renderer.visual_stamp().font_generation,
+            crate::text_render::font_generation()
+        );
+        assert!(matches!(
+            other_renderer.chart_config(first),
+            Err(FiggyError::UnknownChart { .. })
+        ));
+    }
+
+    #[test]
+    fn renderer_chart_id_exhaustion_is_failure_atomic() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.next_chart_id = u64::MAX;
+        let before_visual = renderer.visual_revision();
+
+        assert!(matches!(
+            renderer.register_chart(crate::default::default_config(), Vec::new()),
+            Err(FiggyError::CounterExhausted {
+                counter: "chart id"
+            })
+        ));
+        assert!(renderer.chart_order().is_empty());
+        assert!(renderer.chart_states.is_empty());
+        assert_eq!(renderer.visual_revision(), before_visual);
+    }
+
+    #[test]
+    fn renderer_owned_series_validation_is_failure_atomic() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        let chart = renderer
+            .register_chart(crate::default::default_config(), Vec::new())
+            .unwrap();
+        let before_revision = renderer.visual_revision();
+
+        let missing = vec![state_test_line("missing", "x", "y")];
+        assert!(matches!(
+            renderer.set_chart_series(chart, missing),
+            Err(FiggyError::UnknownColumn { .. })
+        ));
+        assert!(renderer.chart_series(chart).unwrap().is_empty());
+        assert_eq!(renderer.visual_revision(), before_revision);
+
+        renderer.add_column("x", &col_f64(vec![0.0, 1.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![1.0, 2.0])).unwrap();
+        let duplicate = vec![
+            state_test_line("same", "x", "y"),
+            state_test_line("same", "x", "y"),
+        ];
+        assert!(matches!(
+            renderer.set_chart_series(chart, duplicate),
+            Err(FiggyError::InvalidSeriesConfig { .. })
+        ));
+        assert!(renderer.chart_series(chart).unwrap().is_empty());
+        assert_eq!(renderer.visual_revision(), before_revision);
+    }
+
+    #[test]
+    fn renderer_owned_combined_state_validation_is_failure_atomic() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.add_column("x", &col_f64(vec![0.0, 1.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![1.0, 2.0])).unwrap();
+        let initial_config = crate::default::default_config();
+        let initial_series = vec![state_test_line("line", "x", "y")];
+        let chart = renderer
+            .register_chart(initial_config.clone(), initial_series.clone())
+            .unwrap();
+        let initial_stamp = renderer.chart_render_stamp(chart).unwrap();
+
+        let mut changed_config = initial_config.clone();
+        changed_config.chart_title.text.segments =
+            crate::text::rich_segments_from_text("must not publish");
+        let invalid_series = vec![state_test_line("missing", "x", "missing")];
+        assert!(matches!(
+            renderer.set_chart_state(chart, changed_config, invalid_series),
+            Err(FiggyError::UnknownColumn { .. })
+        ));
+        assert_eq!(renderer.chart_config(chart).unwrap(), &initial_config);
+        assert_eq!(renderer.chart_series(chart).unwrap(), initial_series);
+        assert_eq!(renderer.chart_render_stamp(chart).unwrap(), initial_stamp);
+
+        let mut invalid_config = initial_config.clone();
+        invalid_config.bottom_x.max = invalid_config.bottom_x.min;
+        assert!(matches!(
+            renderer.set_chart_state(chart, invalid_config, Vec::new()),
+            Err(FiggyError::InvalidConfig { .. })
+        ));
+        assert_eq!(renderer.chart_config(chart).unwrap(), &initial_config);
+        assert_eq!(renderer.chart_series(chart).unwrap(), initial_series);
+        assert_eq!(renderer.chart_render_stamp(chart).unwrap(), initial_stamp);
+    }
+
+    #[test]
+    fn renderer_owned_config_and_view_validation_are_failure_atomic() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        let mut invalid = crate::default::default_config();
+        invalid.bottom_x.max = invalid.bottom_x.min;
+        let visual_before = renderer.visual_revision();
+        assert!(matches!(
+            renderer.register_chart(invalid, Vec::new()),
+            Err(FiggyError::InvalidConfig {
+                field: "bottom_x",
+                ..
+            })
+        ));
+        assert!(renderer.chart_order().is_empty());
+        assert_eq!(renderer.visual_revision(), visual_before);
+
+        let mut invalid_layout = crate::default::default_config();
+        invalid_layout.left_y.out_margin = invalid_layout.chart_area.0.width as f32;
+        assert!(matches!(
+            renderer.register_chart(invalid_layout, Vec::new()),
+            Err(FiggyError::InvalidConfig {
+                field: "layout",
+                ..
+            })
+        ));
+        assert!(renderer.chart_order().is_empty());
+        assert_eq!(renderer.visual_revision(), visual_before);
+
+        let chart = renderer
+            .register_chart(crate::default::default_config(), Vec::new())
+            .unwrap();
+        let config_before = renderer.chart_config(chart).unwrap().clone();
+        let view_before = renderer.chart_view_state(chart).unwrap();
+        let visual_before = renderer.visual_revision();
+        let mut invalid_view = view_before.clone();
+        invalid_view.left_y.min = f64::NAN;
+        assert!(matches!(
+            renderer.set_chart_view_state(chart, invalid_view),
+            Err(FiggyError::InvalidConfig {
+                field: "left_y",
+                ..
+            })
+        ));
+        assert_eq!(renderer.chart_config(chart).unwrap(), &config_before);
+        assert_eq!(renderer.chart_view_state(chart).unwrap(), view_before);
+        assert_eq!(renderer.visual_revision(), visual_before);
+
+        let mut invalid_layout_view = view_before.clone();
+        invalid_layout_view.chart_area.width = 1;
+        invalid_layout_view.chart_area.height = 1;
+        assert!(matches!(
+            renderer.set_chart_view_state(chart, invalid_layout_view),
+            Err(FiggyError::InvalidConfig {
+                field: "layout",
+                ..
+            })
+        ));
+        assert_eq!(renderer.chart_config(chart).unwrap(), &config_before);
+        assert_eq!(renderer.chart_view_state(chart).unwrap(), view_before);
+        assert_eq!(renderer.visual_revision(), visual_before);
+    }
+
+    #[test]
+    fn renderer_owned_explicit_setters_always_issue_checked_revisions() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        let config = crate::default::default_config();
+        let chart = renderer.register_chart(config.clone(), Vec::new()).unwrap();
+
+        let after_register = renderer.visual_revision();
+        renderer.set_chart_config(chart, config.clone()).unwrap();
+        let after_config = renderer.visual_revision();
+        assert_ne!(after_register, after_config);
+        let raster_before_series = renderer.chart_states[&chart].revisions.raster;
+        renderer.set_chart_series(chart, Vec::new()).unwrap();
+        let after_series = renderer.visual_revision();
+        assert_ne!(after_config, after_series);
+        assert_ne!(
+            renderer.chart_states[&chart].revisions.raster,
+            raster_before_series
+        );
+        renderer.set_chart_selection(chart, None).unwrap();
+        assert_ne!(after_series, renderer.visual_revision());
+
+        let before_config = renderer.chart_config(chart).unwrap().clone();
+        let before_visual = renderer.visual_revision();
+        renderer.visual_revision = RenderRevision {
+            renderer_identity: renderer.renderer_identity,
+            sequence: u64::MAX,
+        };
+        assert!(matches!(
+            renderer.set_chart_config(chart, config),
+            Err(FiggyError::CounterExhausted { .. })
+        ));
+        assert_eq!(renderer.chart_config(chart).unwrap(), &before_config);
+        renderer.visual_revision = before_visual;
+    }
+
+    #[test]
+    fn chart_render_stamp_classifies_renderer_owned_dirty_state() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer
+            .add_column("unused", &col_f64(vec![9.0, 9.0]))
+            .unwrap();
+        renderer.add_column("x", &col_f64(vec![0.0, 1.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![1.0, 2.0])).unwrap();
+        let chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("line", "x", "y")],
+            )
+            .unwrap();
+
+        let initial = renderer.chart_render_stamp(chart).unwrap();
+        assert!(initial.needs_draw_since(None));
+        assert!(initial.needs_raster_since(None));
+
+        renderer.remove_column("unused").unwrap();
+        assert!(renderer.defragment().unwrap());
+        let after_maintenance = renderer.chart_render_stamp(chart).unwrap();
+        assert_eq!(after_maintenance, initial);
+
+        let same_config = renderer.chart_config(chart).unwrap().clone();
+        renderer.set_chart_config(chart, same_config).unwrap();
+        let decoration = renderer.chart_render_stamp(chart).unwrap();
+        assert!(decoration.needs_draw_since(Some(&initial)));
+        assert!(decoration.needs_raster_since(Some(&initial)));
+
+        let mut view_config = renderer.chart_config(chart).unwrap().clone();
+        view_config.bottom_x.min -= 1.0;
+        renderer.set_chart_config(chart, view_config).unwrap();
+        let view = renderer.chart_render_stamp(chart).unwrap();
+        assert!(view.needs_draw_since(Some(&decoration)));
+
+        renderer
+            .upsert_column("x", &col_f64(vec![10.0, 11.0]))
+            .unwrap();
+        let data = renderer.chart_render_stamp(chart).unwrap();
+        assert!(data.needs_draw_since(Some(&view)));
+        assert!(!data.needs_raster_since(Some(&view)));
+    }
+
+    #[test]
+    fn renderer_font_generation_sync_is_atomic_and_idempotent() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        let chart = renderer
+            .register_chart(crate::default::default_config(), Vec::new())
+            .unwrap();
+        let generation = crate::text_render::font_generation();
+        renderer.observed_font_generation = if generation == 0 {
+            u64::MAX
+        } else {
+            generation - 1
+        };
+        let before = renderer.visual_revision();
+        assert!(renderer.sync_external_invalidations().unwrap());
+        assert_ne!(renderer.visual_revision(), before);
+        assert!(!renderer.sync_external_invalidations().unwrap());
+        assert!(renderer.chart_config(chart).is_ok());
+    }
+
+    #[test]
+    fn renderer_column_upsert_invalidates_only_referencing_charts() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.add_column("x", &col_f64(vec![0.0, 1.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![1.0, 2.0])).unwrap();
+        renderer.add_column("z", &col_f64(vec![2.0, 3.0])).unwrap();
+        let affected = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("affected", "x", "y")],
+            )
+            .unwrap();
+        let unrelated = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("unrelated", "z", "y")],
+            )
+            .unwrap();
+        let affected_before = renderer.chart_states[&affected].revisions.desired;
+        let unrelated_before = renderer.chart_states[&unrelated].revisions.desired;
+        let visual_before = renderer.visual_revision();
+
+        renderer
+            .upsert_column("x", &col_f64(vec![10.0, 11.0]))
+            .unwrap();
+
+        assert_ne!(
+            renderer.chart_states[&affected].revisions.desired,
+            affected_before
+        );
+        assert_eq!(
+            renderer.chart_states[&unrelated].revisions.desired,
+            unrelated_before
+        );
+        assert_ne!(renderer.visual_revision(), visual_before);
+    }
+
+    #[test]
+    fn dropped_renderer_column_upsert_rolls_back_pool_and_chart_state() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.add_column("x", &col_f64(vec![0.0, 1.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![1.0, 2.0])).unwrap();
+        let chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("line", "x", "y")],
+            )
+            .unwrap();
+        let visual_before = renderer.visual_revision();
+        let desired_before = renderer.chart_states[&chart].revisions.desired;
+        let min_before = renderer.pool().slot("x").unwrap().min;
+
+        {
+            let guard = renderer
+                .begin_upsert_column("x", &col_f64(vec![20.0, 21.0]))
+                .unwrap();
+            assert_eq!(guard.pool().slot("x").unwrap().min, 20.0);
+        }
+
+        assert_eq!(renderer.pool().slot("x").unwrap().min, min_before);
+        assert_eq!(renderer.visual_revision(), visual_before);
+        assert_eq!(
+            renderer.chart_states[&chart].revisions.desired,
+            desired_before
+        );
+    }
+
+    #[test]
+    fn provisional_upsert_snapshot_matches_commit_and_disappears_on_drop() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.add_column("x", &col_f64(vec![0.0, 1.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![1.0, 2.0])).unwrap();
+        let chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("line", "x", "y")],
+            )
+            .unwrap();
+        let before = renderer.web_derived_snapshot(chart).unwrap();
+
+        {
+            let guard = renderer
+                .begin_upsert_column("x", &col_f64(vec![10.0, 11.0]))
+                .unwrap();
+            let prospective = guard.web_derived_snapshot(chart).unwrap();
+            assert_ne!(prospective.stamp(), before.stamp());
+        }
+        assert_eq!(
+            renderer.web_derived_snapshot(chart).unwrap().stamp(),
+            before.stamp()
+        );
+
+        let prospective_stamp = {
+            let guard = renderer
+                .begin_upsert_column("x", &col_f64(vec![20.0, 21.0]))
+                .unwrap();
+            let stamp = guard.web_derived_snapshot(chart).unwrap().stamp().clone();
+            guard.commit();
+            stamp
+        };
+        assert_eq!(
+            renderer.web_derived_snapshot(chart).unwrap().stamp(),
+            &prospective_stamp
+        );
+    }
+
+    #[test]
+    fn renderer_internal_zero_column_is_not_host_mutable() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        let nonzero = col_f64(vec![7.0, 7.0]);
+        assert!(matches!(
+            renderer.add_column(INTERNAL_ZERO_COLUMN_ID, &nonzero),
+            Err(FiggyError::ReservedColumnId { .. })
+        ));
+        assert!(matches!(
+            renderer.begin_upsert_column(INTERNAL_ZERO_COLUMN_ID, &nonzero),
+            Err(FiggyError::ReservedColumnId { .. })
+        ));
+
+        renderer.ensure_internal_zero_column(2).unwrap();
+        let slot = renderer.pool().slot(INTERNAL_ZERO_COLUMN_ID).unwrap();
+        assert_eq!((slot.min, slot.max, slot.len_values), (0.0, 0.0, 2));
+        assert!(matches!(
+            renderer.remove_column(INTERNAL_ZERO_COLUMN_ID),
+            Err(FiggyError::ReservedColumnId { .. })
+        ));
+        assert!(renderer.pool().slot(INTERNAL_ZERO_COLUMN_ID).is_some());
+    }
+
+    #[test]
+    fn renderer_column_remove_cascades_across_registered_charts() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        for (id, values) in [
+            ("x", vec![0.0, 1.0]),
+            ("y", vec![1.0, 2.0]),
+            ("z", vec![2.0, 3.0]),
+        ] {
+            renderer.add_column(id, &col_f64(values)).unwrap();
+        }
+        let first = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![
+                    state_test_line("removed", "x", "y"),
+                    state_test_line("kept", "z", "y"),
+                ],
+            )
+            .unwrap();
+        let second = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("also-removed", "x", "y")],
+            )
+            .unwrap();
+        let first_raster = renderer.chart_states[&first].revisions.raster;
+        let second_raster = renderer.chart_states[&second].revisions.raster;
+
+        assert!(renderer.remove_column("x").unwrap());
+        assert!(renderer.pool().slot("x").is_none());
+        assert_eq!(renderer.chart_series(first).unwrap().len(), 1);
+        assert_eq!(renderer.chart_series(first).unwrap()[0].series_id, "kept");
+        assert!(renderer.chart_series(second).unwrap().is_empty());
+        assert_ne!(renderer.chart_states[&first].revisions.raster, first_raster);
+        assert_ne!(
+            renderer.chart_states[&second].revisions.raster,
+            second_raster
+        );
+        assert!(renderer.has_pending_maintenance());
+    }
+
+    #[test]
+    fn renderer_column_revision_exhaustion_preflights_before_pool_mutation() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.add_column("x", &col_f64(vec![0.0, 1.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![1.0, 2.0])).unwrap();
+        let chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("line", "x", "y")],
+            )
+            .unwrap();
+        let renderer_identity = renderer.renderer_identity;
+        renderer
+            .chart_states
+            .get_mut(&chart)
+            .unwrap()
+            .revisions
+            .desired = RenderRevision {
+            renderer_identity,
+            sequence: u64::MAX,
+        };
+        let min_before = renderer.pool().slot("x").unwrap().min;
+
+        let error = renderer
+            .begin_upsert_column("x", &col_f64(vec![30.0, 31.0]))
+            .err()
+            .expect("revision exhaustion must reject before the pool changes");
+        assert!(matches!(error, FiggyError::CounterExhausted { .. }));
+        assert_eq!(renderer.pool().slot("x").unwrap().min, min_before);
+    }
+
+    #[test]
+    fn web_derived_stamp_tracks_layout_while_fit_token_survives_defrag_only() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer
+            .add_column("hole", &col_f64(vec![9.0, 9.0]))
+            .unwrap();
+        renderer.add_column("x", &col_f64(vec![0.0, 1.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![1.0, 2.0])).unwrap();
+        let chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("line", "x", "y")],
+            )
+            .unwrap();
+        let before = renderer.web_derived_snapshot(chart).unwrap();
+        let token = renderer.begin_fit_commit(chart).unwrap();
+
+        assert!(renderer.remove_column("hole").unwrap());
+        assert!(renderer.defragment().unwrap());
+        let after = renderer.web_derived_snapshot(chart).unwrap();
+        assert_ne!(before.stamp(), after.stamp());
+
+        let x_extent = crate::chart::FitExtent {
+            min: 10.0,
+            max: 20.0,
+            min_positive: Some(10.0),
+        };
+        let y_extent = crate::chart::FitExtent {
+            min: -5.0,
+            max: 5.0,
+            min_positive: Some(5.0),
+        };
+        renderer
+            .commit_auto_fit_all_if_current(&token, &x_extent, &y_extent, 0.0)
+            .unwrap();
+        let config = renderer.chart_config(chart).unwrap();
+        assert_eq!((config.bottom_x.min, config.bottom_x.max), (10.0, 20.0));
+        assert_eq!((config.left_y.min, config.left_y.max), (-5.0, 5.0));
+    }
+
+    #[test]
+    fn web_derived_stamp_tracks_picker_source_identity() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.add_column("x", &col_f64(vec![0.0, 1.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![1.0, 2.0])).unwrap();
+        let chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("line", "x", "y")],
+            )
+            .unwrap();
+        let before = renderer.web_derived_snapshot(chart).unwrap();
+        let mut series = renderer.chart_series(chart).unwrap()[0].clone();
+        series.source_id = Some("replacement-source".to_string());
+
+        renderer.set_chart_series(chart, vec![series]).unwrap();
+
+        let after = renderer.web_derived_snapshot(chart).unwrap();
+        assert_ne!(before.stamp(), after.stamp());
+    }
+
+    #[test]
+    fn stale_fit_token_rejects_without_partially_updating_axes() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.add_column("x", &col_f64(vec![0.0, 1.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![1.0, 2.0])).unwrap();
+        let chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("line", "x", "y")],
+            )
+            .unwrap();
+        let token = renderer.begin_fit_commit(chart).unwrap();
+        let mut changed = renderer.chart_config(chart).unwrap().clone();
+        changed.bottom_x.min = -25.0;
+        changed.bottom_x.max = 25.0;
+        changed.left_y.min = -50.0;
+        changed.left_y.max = 50.0;
+        renderer.set_chart_config(chart, changed.clone()).unwrap();
+
+        let extent = crate::chart::FitExtent {
+            min: 100.0,
+            max: 200.0,
+            min_positive: Some(100.0),
+        };
+        assert!(matches!(
+            renderer.commit_auto_fit_all_if_current(&token, &extent, &extent, 0.0),
+            Err(FiggyError::StaleStateToken { .. })
+        ));
+        assert_eq!(renderer.chart_config(chart).unwrap(), &changed);
+    }
+
+    #[test]
+    fn fit_token_tracks_referenced_column_content() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.add_column("x", &col_f64(vec![0.0, 1.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![1.0, 2.0])).unwrap();
+        let chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("line", "x", "y")],
+            )
+            .unwrap();
+        let token = renderer.begin_fit_commit(chart).unwrap();
+        renderer
+            .upsert_column("x", &col_f64(vec![10.0, 11.0]))
+            .unwrap();
+
+        let extent = crate::chart::FitExtent {
+            min: 10.0,
+            max: 11.0,
+            min_positive: Some(10.0),
+        };
+        assert!(matches!(
+            renderer.commit_auto_fit_all_if_current(&token, &extent, &extent, 0.0),
+            Err(FiggyError::StaleStateToken { .. })
+        ));
+    }
+
+    #[test]
+    fn fit_token_tracks_normalized_series_extent_mode() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.add_column("x", &col_f64(vec![0.0, 1.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![1.0, 2.0])).unwrap();
+        let chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("series", "x", "y")],
+            )
+            .unwrap();
+        let line_token = renderer.begin_fit_commit(chart).unwrap();
+        let mut scatter = state_test_line("series", "x", "y");
+        scatter.render_type = DataRenderType::Scatter {
+            scatter: test_scatter_style(),
+        };
+        renderer.set_chart_series(chart, vec![scatter]).unwrap();
+
+        let extent = crate::chart::FitExtent {
+            min: 10.0,
+            max: 20.0,
+            min_positive: Some(10.0),
+        };
+        assert!(matches!(
+            renderer.commit_auto_fit_all_if_current(&line_token, &extent, &extent, 0.0),
+            Err(FiggyError::StaleStateToken { .. })
+        ));
+    }
+
+    #[test]
+    fn fit_token_ignores_title_only_config_change_and_preserves_it_on_commit() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.add_column("x", &col_f64(vec![0.0, 1.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![1.0, 2.0])).unwrap();
+        let chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("line", "x", "y")],
+            )
+            .unwrap();
+        let token = renderer.begin_fit_commit(chart).unwrap();
+        let mut config = renderer.chart_config(chart).unwrap().clone();
+        config.chart_title.visible = true;
+        config.chart_title.text.segments = crate::text::rich_segments_from_text("newer title");
+        renderer.set_chart_config(chart, config).unwrap();
+
+        let extent = crate::chart::FitExtent {
+            min: 10.0,
+            max: 20.0,
+            min_positive: Some(10.0),
+        };
+        renderer
+            .commit_auto_fit_all_if_current(&token, &extent, &extent, 0.0)
+            .unwrap();
+        let committed = renderer.chart_config(chart).unwrap();
+        assert_eq!(
+            committed
+                .chart_title
+                .text
+                .segments
+                .iter()
+                .map(|segment| segment.text)
+                .collect::<String>(),
+            "newer title"
+        );
+        assert_eq!(
+            (committed.bottom_x.min, committed.bottom_x.max),
+            (10.0, 20.0)
+        );
+    }
+
+    #[test]
+    fn foreign_or_removed_fit_token_is_stale_not_an_unknown_chart_alias() {
+        let Some(mut first) = state_test_renderer() else {
+            return;
+        };
+        let Some(mut second) = state_test_renderer() else {
+            return;
+        };
+        for renderer in [&mut first, &mut second] {
+            renderer.add_column("x", &col_f64(vec![0.0, 1.0])).unwrap();
+            renderer.add_column("y", &col_f64(vec![1.0, 2.0])).unwrap();
+        }
+        let first_chart = first
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("line", "x", "y")],
+            )
+            .unwrap();
+        let second_chart = second
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("line", "x", "y")],
+            )
+            .unwrap();
+        let token = first.begin_fit_commit(first_chart).unwrap();
+        let extent = crate::chart::FitExtent {
+            min: 10.0,
+            max: 20.0,
+            min_positive: Some(10.0),
+        };
+        assert!(matches!(
+            second.commit_auto_fit_all_if_current(&token, &extent, &extent, 0.0),
+            Err(FiggyError::StaleStateToken { .. })
+        ));
+
+        first.remove_chart(first_chart).unwrap();
+        assert!(matches!(
+            first.commit_auto_fit_all_if_current(&token, &extent, &extent, 0.0),
+            Err(FiggyError::StaleStateToken { .. })
+        ));
+        assert!(second.chart_config(second_chart).is_ok());
+    }
+
+    #[test]
+    fn internal_zero_column_grows_without_point_vector_or_visual_invalidation() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        let visual = renderer.visual_revision();
+        renderer.ensure_internal_zero_column(4).unwrap();
+        assert_eq!(
+            renderer
+                .pool()
+                .slot(INTERNAL_ZERO_COLUMN_ID)
+                .unwrap()
+                .len_values,
+            4
+        );
+        assert_eq!(renderer.visual_revision(), visual);
+
+        renderer.ensure_internal_zero_column(2).unwrap();
+        assert_eq!(
+            renderer
+                .pool()
+                .slot(INTERNAL_ZERO_COLUMN_ID)
+                .unwrap()
+                .len_values,
+            4
+        );
+        renderer.ensure_internal_zero_column(8).unwrap();
+        assert_eq!(
+            renderer
+                .pool()
+                .slot(INTERNAL_ZERO_COLUMN_ID)
+                .unwrap()
+                .len_values,
+            8
+        );
+        assert_eq!(renderer.visual_revision(), visual);
     }
 
     #[test]
@@ -3996,7 +6583,7 @@ mod tests {
         r.add_column("x", &col_f64(vec![2.0])).unwrap();
         r.add_column("y", &col_f64(vec![2.5])).unwrap();
         r.add_column("ey", &col_f64(vec![1.0])).unwrap();
-        r.add_column("__zero", &col_f64(vec![0.0])).unwrap();
+        r.ensure_internal_zero_column(1).unwrap();
 
         let mut chart = basic_errorbar_chart();
         chart.config_mut().picked_points = Some(crate::config::PickedPointsConfig {
@@ -4056,7 +6643,7 @@ mod tests {
         r.add_column("y", &col_f64(vec![2.5, 2.5])).unwrap();
         r.add_column("ey", &col_f64(vec![1.0, 1.0])).unwrap();
         r.add_column("err_style", &col_f64(vec![0.0, 1.0])).unwrap();
-        r.add_column("__zero", &col_f64(vec![0.0, 0.0])).unwrap();
+        r.ensure_internal_zero_column(2).unwrap();
 
         let chart = basic_errorbar_chart();
         let mut scatter = test_scatter_style();
@@ -4637,11 +7224,19 @@ mod tests {
             config: &series_cfg,
             style: &style,
         }];
-        let view = r
+        let view_a = r
             .create_chart_view(&chart, chart.config().chart_area.0.clone())
             .unwrap();
-        let items = [ChartDrawItem {
-            view: &view,
+        let view_b = r
+            .create_chart_view(&chart, chart.config().chart_area.0.clone())
+            .unwrap();
+        let items_a = [ChartDrawItem {
+            view: &view_a,
+            chart_config: chart.config(),
+            series: &series,
+        }];
+        let items_b = [ChartDrawItem {
+            view: &view_b,
             chart_config: chart.config(),
             series: &series,
         }];
@@ -4649,17 +7244,19 @@ mod tests {
         let arc_of = |p: &PreparedFrame| -> Arc<wgpu::Buffer> {
             Arc::clone(
                 &p.items[0].series[0]
+                    .line
+                    .as_ref()
+                    .expect("dashed series has a line layer")
                     .arc
                     .as_ref()
                     .expect("dashed series has an arc prefix")
-                    .prefix
                     .0,
             )
         };
 
-        let p1 = r.prepare(&items).unwrap();
+        let p1 = r.prepare(&items_a).unwrap();
         let a1 = arc_of(&p1);
-        let p2 = r.prepare(&items).unwrap();
+        let p2 = r.prepare(&items_b).unwrap();
         let a2 = arc_of(&p2);
         assert!(
             !Arc::ptr_eq(&a1, &a2),
@@ -4667,14 +7264,14 @@ mod tests {
         );
 
         // Both tokens stay individually paintable.
-        assert!(r.validate_prepared(&items, &p1).is_ok());
-        assert!(r.validate_prepared(&items, &p2).is_ok());
+        assert!(r.validate_prepared(&p1).is_ok());
+        assert!(r.validate_prepared(&p2).is_ok());
 
         // With no token left alive, an existing slot is reused in place.
         let a1_raw = Arc::as_ptr(&a1);
         let a2_raw = Arc::as_ptr(&a2);
         drop((p1, a1, p2, a2));
-        let p3 = r.prepare(&items).unwrap();
+        let p3 = r.prepare(&items_a).unwrap();
         let a3_raw = Arc::as_ptr(&arc_of(&p3));
         assert!(
             a3_raw == a1_raw || a3_raw == a2_raw,
@@ -4685,11 +7282,13 @@ mod tests {
         // Retained-token steady state (hosts replace last frame's token only
         // AFTER the next prepare returns): the slot pool must settle on two
         // alternating slots — no per-frame rebuild, no growth.
-        let mut held = r.prepare(&items).unwrap();
+        let mut held = r.prepare(&items_a).unwrap();
         let mut seen = std::collections::HashSet::new();
         seen.insert(Arc::as_ptr(&arc_of(&held)));
-        for _ in 0..6 {
-            let next = r.prepare(&items).unwrap();
+        for idx in 0..6 {
+            let next = r
+                .prepare(if idx % 2 == 0 { &items_b } else { &items_a })
+                .unwrap();
             seen.insert(Arc::as_ptr(&arc_of(&next)));
             held = next;
         }
@@ -4706,12 +7305,10 @@ mod tests {
         );
     }
 
-    /// `paint_prepared` must reject a token when an invalidating change
-    /// interleaved between `prepare` and `paint_prepared`: an edited chart
-    /// config (transform stamp), reordered series (identity stamp), and a
-    /// target-format switch (pipeline-cache stamp).
+    /// The token owns host inputs after prepare and rejects only renderer
+    /// resource changes that invalidate its captured GPU work.
     #[test]
-    fn paint_prepared_rejects_stale_tokens() {
+    fn prepared_frame_owns_inputs_and_rejects_resource_staleness() {
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
@@ -4767,17 +7364,6 @@ mod tests {
                 style: &style,
             },
         ];
-        let series_ba = [
-            Series {
-                config: &cfg_b,
-                style: &style,
-            },
-            Series {
-                config: &cfg_a,
-                style: &style,
-            },
-        ];
-
         let prepared = {
             let items = [ChartDrawItem {
                 view: &view,
@@ -4785,40 +7371,73 @@ mod tests {
                 series: &series_ab,
             }];
             let p = r.prepare(&items).unwrap();
-            assert!(
-                r.validate_prepared(&items, &p).is_ok(),
-                "fresh token validates"
-            );
+            assert!(r.validate_prepared(&p).is_ok(), "fresh token validates");
             p
         };
 
         // (1) Reordered series → identity stamp.
-        {
-            let items = [ChartDrawItem {
-                view: &view,
-                chart_config: chart.config(),
-                series: &series_ba,
-            }];
-            assert!(matches!(
-                r.validate_prepared(&items, &prepared),
-                Err(FiggyError::StalePreparedFrame { .. })
-            ));
-        }
-
         // (2) Chart config edited between prepare and paint → transform stamp.
+        assert_eq!(prepared.items[0].series.len(), 2);
         chart.set_x_range(0.0, 2.0);
-        {
+        assert!(r.validate_prepared(&prepared).is_ok());
+        chart.set_x_range(0.0, 1.0);
+
+        let mut foreign = Renderer::try_new(
+            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+            wgpu::TextureFormat::Bgra8Unorm,
+            1024 * 1024,
+        )
+        .unwrap();
+        foreign
+            .add_column("st_x", &col_f64(vec![0.0, 0.5, 1.0]))
+            .unwrap();
+        foreign
+            .add_column("st_y", &col_f64(vec![0.0, 1.0, 0.25]))
+            .unwrap();
+        assert!(matches!(
+            foreign.validate_prepared(&prepared),
+            Err(FiggyError::StalePreparedFrame { .. })
+        ));
+
+        let mut view_reuse = r
+            .create_chart_view(&chart, chart.config().chart_area.0.clone())
+            .unwrap();
+        let first_view_token = {
             let items = [ChartDrawItem {
-                view: &view,
+                view: &view_reuse,
                 chart_config: chart.config(),
                 series: &series_ab,
             }];
-            assert!(matches!(
-                r.validate_prepared(&items, &prepared),
-                Err(FiggyError::StalePreparedFrame { .. })
-            ));
-        }
-        chart.set_x_range(0.0, 1.0);
+            r.prepare(&items).unwrap()
+        };
+        let second_view_token = {
+            let items = [ChartDrawItem {
+                view: &view_reuse,
+                chart_config: chart.config(),
+                series: &series_ab,
+            }];
+            r.prepare(&items).unwrap()
+        };
+        assert!(matches!(
+            r.validate_prepared(&first_view_token),
+            Err(FiggyError::StalePreparedFrame { .. })
+        ));
+        assert!(r.validate_prepared(&second_view_token).is_ok());
+        r.refresh_axis(&mut view_reuse, &chart, chart.config().chart_area.0.clone())
+            .unwrap();
+        assert!(matches!(
+            r.validate_prepared(&second_view_token),
+            Err(FiggyError::StalePreparedFrame { .. })
+        ));
+        view_reuse
+            .content_revision
+            .store(u64::MAX, std::sync::atomic::Ordering::Release);
+        assert!(matches!(
+            r.update_transform(&view_reuse, &chart),
+            Err(FiggyError::CounterExhausted {
+                counter: "chart view content revision"
+            })
+        ));
 
         // (3) Remove + re-add an arc source at the same physical layout.
         // Layout generation stays put, so the source allocation epoch must
@@ -4852,14 +7471,7 @@ mod tests {
             r.prepare(&items).unwrap()
         };
         assert!(r.remove_column("st_unrelated").unwrap());
-        {
-            let items = [ChartDrawItem {
-                view: &view,
-                chart_config: chart.config(),
-                series: &series_dash,
-            }];
-            assert!(r.validate_prepared(&items, &prepared_dash).is_ok());
-        }
+        assert!(r.validate_prepared(&prepared_dash).is_ok());
         let old_y_handle = r.handle_for("st_y").unwrap();
         let old_y_epoch = r.pool().allocation_epoch("st_y").unwrap();
         assert!(r.remove_column("st_y").unwrap());
@@ -4870,44 +7482,36 @@ mod tests {
         assert_eq!(new_y_handle.byte_size, old_y_handle.byte_size);
         assert_eq!(new_y_handle.len_values, old_y_handle.len_values);
         assert_ne!(r.pool().allocation_epoch("st_y"), Some(old_y_epoch));
-        {
-            let items = [ChartDrawItem {
-                view: &view,
-                chart_config: chart.config(),
-                series: &series_dash,
-            }];
-            assert!(matches!(
-                r.validate_prepared(&items, &prepared_dash),
-                Err(FiggyError::StalePreparedFrame { .. })
-            ));
-        }
-        // Non-arc series intentionally resolve live pool state at paint —
-        // the solid-series token stays valid across the same remove+re-add.
-        {
+        assert!(matches!(
+            r.validate_prepared(&prepared_dash),
+            Err(FiggyError::StalePreparedFrame { .. })
+        ));
+        assert!(matches!(
+            r.validate_prepared(&prepared),
+            Err(FiggyError::StalePreparedFrame { .. })
+        ));
+        let prepared_target = {
             let items = [ChartDrawItem {
                 view: &view,
                 chart_config: chart.config(),
                 series: &series_ab,
             }];
-            assert!(r.validate_prepared(&items, &prepared).is_ok());
-        }
+            r.prepare(&items).unwrap()
+        };
 
         // (4) Target-format switch rebuilds the pipeline cache → format stamp.
         assert!(
             r.ensure_target_format(wgpu::TextureFormat::Rgba8Unorm)
                 .unwrap()
         );
-        {
-            let items = [ChartDrawItem {
-                view: &view,
-                chart_config: chart.config(),
-                series: &series_ab,
-            }];
-            assert!(matches!(
-                r.validate_prepared(&items, &prepared),
-                Err(FiggyError::StalePreparedFrame { .. })
-            ));
-        }
+        assert!(
+            r.ensure_target_format(wgpu::TextureFormat::Bgra8Unorm)
+                .unwrap()
+        );
+        assert!(matches!(
+            r.validate_prepared(&prepared_target),
+            Err(FiggyError::StalePreparedFrame { .. })
+        ));
     }
 
     /// End-to-end split under the adversarial host schedule: prepare, then
@@ -4967,11 +7571,19 @@ mod tests {
             config: &series_cfg,
             style: &style,
         }];
-        let view = r
+        let view_a = r
             .create_chart_view(&chart, chart.config().chart_area.0.clone())
             .unwrap();
-        let items = [ChartDrawItem {
-            view: &view,
+        let view_b = r
+            .create_chart_view(&chart, chart.config().chart_area.0.clone())
+            .unwrap();
+        let items_a = [ChartDrawItem {
+            view: &view_a,
+            chart_config: chart.config(),
+            series: &series,
+        }];
+        let items_b = [ChartDrawItem {
+            view: &view_b,
             chart_config: chart.config(),
             series: &series,
         }];
@@ -4979,15 +7591,12 @@ mod tests {
         // egui-style schedule: both prepares run before any paint. The
         // second one rebuilds the arc scratch (COW), so painting with `p1`
         // exercises the token's cache-independent snapshot.
-        let p1 = r.prepare(&items).unwrap();
+        let p1 = r.prepare(&items_a).unwrap();
         assert!(
-            p1.items[0].series[0]
-                .arc
-                .as_ref()
-                .is_some_and(|a| a.star.is_some()),
+            p1.items[0].series[0].line_extra.is_some(),
             "milkyway line series must carry a star-pass snapshot"
         );
-        let p2 = r.prepare(&items).unwrap();
+        let p2 = r.prepare(&items_b).unwrap();
 
         let target_desc = wgpu::TextureDescriptor {
             label: Some("prepare split test target"),
@@ -5024,7 +7633,7 @@ mod tests {
                     timestamp_writes: None,
                     occlusion_query_set: None,
                 });
-                r.paint_prepared(&mut pass, (w, h), &items, prepared)
+                r.paint_prepared(&mut pass, (w, h), prepared)
                     .expect("paint_prepared with a valid token");
             }
             // 320 * 4 = 1280 bytes/row, already 256-aligned.

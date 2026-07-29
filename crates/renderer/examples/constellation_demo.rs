@@ -431,7 +431,7 @@ fn main() {
         .map(|i| 4.5 + 2.5 * ((i as f64) * 1.1).cos().abs())
         .collect();
     r.add_column("perr", &col(jerr)).unwrap();
-    r.add_column("__zero", &col(vec![0.0; m2])).unwrap();
+    r.ensure_internal_zero_column(m2).unwrap();
     let jets = [SeriesConfig {
         series_id: "jets".into(),
         source_id: None,

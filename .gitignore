@@ -8,3 +8,6 @@
 /.agents/
 /.claude/
 /.codex/
+
+# Local GitHub repository social preview draft.
+/crates/renderer/assets/social-preview.png

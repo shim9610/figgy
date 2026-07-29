@@ -149,7 +149,7 @@ fn main() {
     r.add_column("yb", &col(yb)).unwrap();
     r.add_column("yc", &col(yc)).unwrap();
     r.add_column("err", &col(err)).unwrap();
-    r.add_column("__zero", &col(vec![0.0; m])).unwrap();
+    r.ensure_internal_zero_column(m).unwrap();
 
     let blue = Color::from_rgb8(38, 104, 214);
     let green = Color::from_rgb8(44, 140, 80);

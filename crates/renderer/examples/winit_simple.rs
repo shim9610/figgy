@@ -183,7 +183,7 @@ fn compute_panel_rects(w: u32, h: u32) -> [Rect; 3] {
 // Same pattern when adding a new chart kind.
 // ============================================================================
 
-fn build_sine_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
+fn build_sine_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEntry {
     let (xs, ys) = demo::sine_data(N);
     renderer.add_column("sine_x", &col_f64(xs)).expect("add x");
     renderer.add_column("sine_y", &col_f64(ys)).expect("add y");
@@ -235,7 +235,7 @@ fn build_sine_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     }
 }
 
-fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
+fn build_rc_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEntry {
     // Charge + discharge — same t, two V columns.
     let (ts, vs_charge) = demo::rc_data(N);
     let (_, vs_discharge) = demo::rc_discharge_data(N);
@@ -310,7 +310,7 @@ fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     }
 }
 
-fn build_cross_section_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
+fn build_cross_section_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEntry {
     let (es, sigmas) = demo::cross_section_data(N);
     renderer.add_column("xs_e", &col_f64(es)).expect("add E");
     renderer
@@ -700,7 +700,10 @@ impl App {
                 eprintln!("[refresh_axis] {e}");
                 return;
             }
-            renderer.update_transform(&panel.view, &panel.chart);
+            if let Err(e) = renderer.update_transform(&panel.view, &panel.chart) {
+                eprintln!("[update_transform] {e}");
+                return;
+            }
             let _ = panel.chart.consume_data_dirty();
             let _ = panel.chart.consume_raster_dirty();
         }

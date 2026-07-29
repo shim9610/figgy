@@ -13,7 +13,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use swash::FontRef;
 use swash::scale::{Render, ScaleContext, Source};
@@ -59,44 +59,119 @@ fn font_db() -> &'static fontdb::Database {
 /// on wasm; only the system *scan* is native-only). Registered families win
 /// over system fonts so native and wasm resolve identically once a host has
 /// registered its fonts.
-fn registered_db() -> &'static Mutex<fontdb::Database> {
-    static DB: OnceLock<Mutex<fontdb::Database>> = OnceLock::new();
-    DB.get_or_init(|| Mutex::new(fontdb::Database::new()))
+struct RegisteredFonts {
+    db: fontdb::Database,
+    /// Exact font bytes to the families reported by their first registration.
+    ///
+    /// `HashMap` hashes for lookup but still compares the complete `Vec<u8>`
+    /// on collisions, so this is not a hash-only identity check. The `Arc`
+    /// allocation is shared with fontdb's binary source instead of retaining
+    /// a second copy solely for deduplication.
+    families_by_bytes: HashMap<Arc<Vec<u8>>, Vec<String>>,
+    /// Stable swash backing bytes per fontdb face.
+    ///
+    /// A runtime registration invalidates the thread-local family lookup, but
+    /// it must not copy and leak an already-resolved face again afterward.
+    resolved_faces: HashMap<fontdb::ID, (&'static [u8], u32)>,
 }
 
-/// Register a font (TTF/OTF/TTC bytes) for `RichText.font` family lookup.
-/// Returns the family names the file declares, or an error when the bytes
-/// parse to no usable face. Re-registering a family replaces nothing —
-/// fontdb keeps both and the query picks the best style match.
-pub fn register_font_bytes(bytes: Vec<u8>) -> Result<Vec<String>, String> {
-    let mut db = registered_db()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let before: Vec<fontdb::ID> = db.faces().map(|f| f.id).collect();
-    db.load_font_data(bytes);
-    let mut families: Vec<String> = db
-        .faces()
-        .filter(|f| !before.contains(&f.id))
+impl RegisteredFonts {
+    fn new() -> Self {
+        Self {
+            db: fontdb::Database::new(),
+            families_by_bytes: HashMap::new(),
+            resolved_faces: HashMap::new(),
+        }
+    }
+
+    fn register(
+        &mut self,
+        bytes: Vec<u8>,
+        generation: u64,
+    ) -> Result<(Vec<String>, Option<u64>), String> {
+        if let Some(families) = self.families_by_bytes.get(&bytes) {
+            return Ok((families.clone(), None));
+        }
+
+        let bytes = Arc::new(bytes);
+        let (families, successor) =
+            load_registered_font(&mut self.db, Arc::clone(&bytes), generation)?;
+        self.families_by_bytes.insert(bytes, families.clone());
+        Ok((families, Some(successor)))
+    }
+
+    fn lookup(&mut self, family: &str, bold: bool, italic: bool) -> Option<(&'static [u8], u32)> {
+        let id = query_font(&self.db, family, bold, italic)?;
+        if let Some(face) = self.resolved_faces.get(&id) {
+            return Some(*face);
+        }
+        let face = self.db.with_face_data(id, |data, index| {
+            (&*Box::leak(data.to_vec().into_boxed_slice()), index)
+        })?;
+        self.resolved_faces.insert(id, face);
+        Some(face)
+    }
+}
+
+fn registered_fonts() -> &'static Mutex<RegisteredFonts> {
+    static FONTS: OnceLock<Mutex<RegisteredFonts>> = OnceLock::new();
+    FONTS.get_or_init(|| Mutex::new(RegisteredFonts::new()))
+}
+
+fn load_registered_font(
+    db: &mut fontdb::Database,
+    bytes: Arc<Vec<u8>>,
+    generation: u64,
+) -> Result<(Vec<String>, u64), String> {
+    let successor = generation
+        .checked_add(1)
+        .ok_or_else(|| "font generation counter exhausted".to_string())?;
+    let source: Arc<dyn AsRef<[u8]> + Send + Sync> = bytes;
+    let ids = db.load_font_source(fontdb::Source::Binary(source));
+    let mut families: Vec<String> = ids
+        .iter()
+        .filter_map(|id| db.face(*id))
         .filter_map(|f| f.families.first().map(|(name, _)| name.clone()))
         .collect();
     families.dedup();
     if families.is_empty() {
         return Err("font data contains no usable face".to_string());
     }
+    Ok((families, successor))
+}
+
+/// Register a font (TTF/OTF/TTC bytes) for `RichText.font` family lookup.
+/// Returns the family names the file declares, or an error when the bytes
+/// parse to no usable face. Registering the exact same bytes again is
+/// idempotent; different font files declaring the same family still coexist.
+pub fn register_font_bytes(bytes: Vec<u8>) -> Result<Vec<String>, String> {
+    let mut fonts = registered_fonts()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let generation = font_generation();
+    let (families, successor) = fonts.register(bytes, generation)?;
+    let Some(successor) = successor else {
+        return Ok(families);
+    };
     // A family that previously missed (and was cached as the bundled
     // fallback) may now resolve — invalidate every thread's resolution
     // cache via the generation counter. Glyph caches key on each font's
     // own CacheKey, so they stay valid.
-    FONT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Release);
+    FONT_GENERATION.store(successor, std::sync::atomic::Ordering::Release);
     Ok(families)
 }
 
 fn lookup_registered_font(family: &str, bold: bool, italic: bool) -> Option<(&'static [u8], u32)> {
-    let db = registered_db()
+    registered_fonts()
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .lookup(family, bold, italic)
+}
+
+fn query_font(db: &fontdb::Database, family: &str, bold: bool, italic: bool) -> Option<fontdb::ID> {
+    let families = [fontdb::Family::Name(family)];
     let query = fontdb::Query {
-        families: &[fontdb::Family::Name(family)],
+        families: &families,
         weight: if bold {
             fontdb::Weight::BOLD
         } else {
@@ -109,10 +184,7 @@ fn lookup_registered_font(family: &str, bold: bool, italic: bool) -> Option<(&'s
             fontdb::Style::Normal
         },
     };
-    let id = db.query(&query)?;
-    db.with_face_data(id, |data, index| {
-        (&*Box::leak(data.to_vec().into_boxed_slice()), index)
-    })
+    db.query(&query)
 }
 
 /// Per-chart text policy, derived from `Config.draw_style`. Threaded
@@ -193,18 +265,24 @@ fn embedded_font(bold: bool, italic: bool) -> FontRef<'static> {
     })
 }
 
-/// Bumped on every `register_font_bytes` — thread-local resolution caches
-/// compare against it and clear themselves, so a newly registered family
-/// wins over a previously cached fallback on EVERY thread without any
+/// Bumped when `register_font_bytes` accepts previously unseen file contents.
+/// Exact duplicate registration is idempotent. Thread-local resolution caches
+/// compare against this value and clear themselves, so a newly registered
+/// family wins over a previously cached fallback on every thread without
 /// cross-thread locking on the hot path.
 static FONT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Current runtime-font content stamp for renderer cache invalidation.
+pub(crate) fn font_generation() -> u64 {
+    FONT_GENERATION.load(std::sync::atomic::Ordering::Acquire)
+}
 
 thread_local! {
     /// Resolved `FontRef` per (family, bold, italic), per thread — the hot
     /// path of measure/draw (called per segment, including during pointer
-    /// hit-testing) stays lock-free. Faces are copied out of fontdb and
-    /// leaked once per thread on first miss; realistic hosts run text on
-    /// one or two threads, so the duplication is a few families at most.
+    /// hit-testing) stays lock-free. Stable backing bytes are cached by
+    /// fontdb face id in the process-wide registered/system face caches, so
+    /// thread-local misses reuse the same backing instead of copying it.
     static RESOLVED: RefCell<(u64, HashMap<(String, bool, bool), FontRef<'static>>)> =
         RefCell::new((0, HashMap::new()));
 }
@@ -212,24 +290,21 @@ thread_local! {
 #[cfg(not(target_arch = "wasm32"))]
 fn lookup_system_font(family: &str, bold: bool, italic: bool) -> Option<(&'static [u8], u32)> {
     let db = font_db();
-    let query = fontdb::Query {
-        families: &[fontdb::Family::Name(family)],
-        weight: if bold {
-            fontdb::Weight::BOLD
-        } else {
-            fontdb::Weight::NORMAL
-        },
-        stretch: fontdb::Stretch::Normal,
-        style: if italic {
-            fontdb::Style::Italic
-        } else {
-            fontdb::Style::Normal
-        },
-    };
-    let id = db.query(&query)?;
-    db.with_face_data(id, |data, index| {
+    let id = query_font(db, family, bold, italic)?;
+    static RESOLVED_SYSTEM_FACES: OnceLock<Mutex<HashMap<fontdb::ID, (&'static [u8], u32)>>> =
+        OnceLock::new();
+    let mut resolved = RESOLVED_SYSTEM_FACES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(face) = resolved.get(&id) {
+        return Some(*face);
+    }
+    let face = db.with_face_data(id, |data, index| {
         (&*Box::leak(data.to_vec().into_boxed_slice()), index)
-    })
+    })?;
+    resolved.insert(id, face);
+    Some(face)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -247,7 +322,7 @@ fn resolve_font(family: &str, bold: bool, italic: bool) -> FontRef<'static> {
     }
     RESOLVED.with(|cell| {
         let mut cache = cell.borrow_mut();
-        let generation = FONT_GENERATION.load(std::sync::atomic::Ordering::Acquire);
+        let generation = font_generation();
         if cache.0 != generation {
             cache.0 = generation;
             cache.1.clear();
@@ -1103,15 +1178,35 @@ mod tests {
     // registration it resolves to the registered face (distinct CacheKey).
     // Liberation Sans bytes double as the fixture under an alias-free name.
     #[test]
-    fn register_font_bytes_resolves_new_family() {
+    fn register_font_bytes_resolves_new_family_and_publishes_generation() {
+        let before_invalid = font_generation();
         assert!(
             register_font_bytes(vec![1, 2, 3]).is_err(),
             "garbage must not register"
         );
+        assert_eq!(
+            font_generation(),
+            before_invalid,
+            "parse failure must not publish a font generation"
+        );
 
         let fallback = resolve_font("Liberation Sans", false, false);
+        let before_success = font_generation();
         let families = register_font_bytes(EMBEDDED_REGULAR.to_vec()).unwrap();
         assert_eq!(families, ["Liberation Sans"]);
+        assert_eq!(
+            font_generation(),
+            before_success.checked_add(1).unwrap(),
+            "successful registration must publish exactly one generation"
+        );
+        let after_success = font_generation();
+        let duplicate = register_font_bytes(EMBEDDED_REGULAR.to_vec()).unwrap();
+        assert_eq!(duplicate, families);
+        assert_eq!(
+            font_generation(),
+            after_success,
+            "registering identical bytes must not publish another generation"
+        );
 
         let resolved = resolve_font("Liberation Sans", false, false);
         let embedded = embedded_font(false, false);
@@ -1123,6 +1218,51 @@ mod tests {
         // that ship Liberation Sans; only the embedded-vs-registered relation
         // is asserted, plus that pre-registration resolution succeeded.
         let _ = fallback;
+    }
+
+    #[test]
+    fn font_generation_exhaustion_is_fail_closed_before_registry_mutation() {
+        let mut fonts = RegisteredFonts::new();
+
+        let error = fonts
+            .register(EMBEDDED_REGULAR.to_vec(), u64::MAX)
+            .expect_err("exhausted generation must reject registration");
+
+        assert_eq!(error, "font generation counter exhausted");
+        assert_eq!(fonts.db.faces().count(), 0);
+        assert!(fonts.families_by_bytes.is_empty());
+    }
+
+    #[test]
+    fn identical_font_bytes_are_stored_once() {
+        let mut fonts = RegisteredFonts::new();
+        let bytes = EMBEDDED_REGULAR.to_vec();
+
+        let (first_families, first_generation) = fonts.register(bytes.clone(), 41).unwrap();
+        let face_count = fonts.db.faces().count();
+        let (second_families, second_generation) = fonts.register(bytes, 42).unwrap();
+
+        assert_eq!(first_families, ["Liberation Sans"]);
+        assert_eq!(second_families, first_families);
+        assert_eq!(first_generation, Some(42));
+        assert_eq!(second_generation, None);
+        assert_eq!(fonts.families_by_bytes.len(), 1);
+        assert_eq!(
+            fonts.db.faces().count(),
+            face_count,
+            "identical bytes must not add duplicate fontdb faces"
+        );
+
+        let first_face = fonts.lookup("Liberation Sans", false, false).unwrap();
+        let resolved_count = fonts.resolved_faces.len();
+        let second_face = fonts.lookup("Liberation Sans", false, false).unwrap();
+        assert_eq!(second_face.0.as_ptr(), first_face.0.as_ptr());
+        assert_eq!(second_face.1, first_face.1);
+        assert_eq!(
+            fonts.resolved_faces.len(),
+            resolved_count,
+            "resolving the same face again must reuse its stable backing bytes"
+        );
     }
 
     // Every legend symbol form must measure EXACTLY the same width at the

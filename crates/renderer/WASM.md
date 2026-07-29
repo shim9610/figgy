@@ -92,7 +92,8 @@ JS / 웹 프레임워크                      wasm (figgy)
 - **Standalone facade (권장)**: JS가 `<figgy-chart>`를 배치하면 facade가
   shadow DOM 내부 canvas를 만들고 raw `FiggyChart.create(canvas)`를 async로
   호출한다. host는 `await element.ready` 또는 `figgy-ready` event 이후
-  proxy 메서드(`set_column_f32`, `set_series`, `export_png` 등)를 호출한다.
+  proxy 메서드(`register_column_f32`, `update_register_column_f32`,
+  `set_series`, `export_png` 등)를 호출한다.
 - **Raw kernel (advanced)**: `wgpu::SurfaceTarget`이 `HtmlCanvasElement` /
   `OffscreenCanvas`를 받으므로, 직접 canvas를 넘기면 `for_window_async`가
   surface→adapter→device까지 구성한다. 이 경로에서는 host가 rAF, DPR
@@ -105,7 +106,11 @@ Raw kernel 초기화는 async이므로 JS 이벤트 루프에서 구동한다:
 ```rust
 // wasm-bindgen 스케치 — 저장소에 포함된 코드는 아니고 배선 형태만 보여준다.
 #[wasm_bindgen]
-pub struct FiggyChart { renderer: WindowedRenderer<'static>, /* chart, view, hitmap, … */ }
+pub struct FiggyChart {
+    renderer: WindowedRenderer<'static>,
+    chart_id: ChartId,
+    /* view, derived caches, hitmap, … */
+}
 
 #[wasm_bindgen]
 impl FiggyChart {
@@ -115,47 +120,57 @@ impl FiggyChart {
         let renderer = Renderer::for_window_async(
             wgpu::SurfaceTarget::Canvas(canvas), (w, h), 16 * 1024 * 1024,
         ).await.map_err(|e| JsValue::from_str(&e.to_string()))?;
-        // … 컬럼 등록 / Chart / ChartView / HitMap::standard_chart() …
+        // … 컬럼 등록 / renderer.register_chart(config, series)
+        //   / ChartId / ChartView / HitMap::standard_chart() …
     }
 }
 ```
 
-### 3.2 렌더 루프 — requestAnimationFrame + dirty flag
+### 3.2 렌더 루프 — requestAnimationFrame + renderer stamp
 
 `<figgy-chart>` facade가 `requestAnimationFrame` 콜백에서 데스크톱 데모와
 동일한 패턴을 돈다. raw kernel을 직접 쓰는 advanced host는 같은 루프를
 직접 구현해야 한다. 아래는 실제 `frame()`의 상태 전이만 줄인 의사 코드다:
 
 ```rust
-let data_dirty = chart.data_dirty();
-let raster_dirty = chart.raster_dirty();
-let visual_dirty = data_dirty || raster_dirty || view_dirty || redraw_pending;
+renderer.sync_external_invalidations()?; // process-global font registration
+let stamp = renderer.chart_render_stamp(chart_id)?;
+let renderer_dirty = stamp.needs_draw_since(last_presented_stamp.as_ref());
+let raster_dirty = stamp.needs_raster_since(last_presented_stamp.as_ref());
 
-if !visual_dirty {
-    if needs_defrag {
+match frame_decision(
+    renderer_dirty,
+    raster_dirty,
+    view_dirty,
+    redraw_pending,
+    needs_defrag,
+) {
+    Clean => return Ok(()),
+    MaintenanceOnly => {
         process_pending_defrag()?; // surface acquire/draw 없음
+        return Ok(());
     }
-    return Ok(());
-}
+    Draw { refresh_raster } => {
+        ensure_internal_render_columns()?;
+        process_pending_defrag()?;
+        let stamp = renderer.chart_render_stamp(chart_id)?;
+        if refresh_raster {
+            renderer.refresh_axis_with_selection(
+                &mut view,
+                &display_chart,
+                rect,
+                &sel_boxes,
+            )?;
+        }
+        renderer.draw(clear, &items)?;
 
-ensure_internal_render_columns()?;
-process_pending_defrag()?;
-if raster_dirty || view_dirty {
-    renderer.refresh_axis_with_selection(&mut view, &chart, rect, &sel_boxes)?;
+        // submit/present 성공 뒤에만 onscreen 상태를 전진시킨다.
+        view_dirty = false;
+        redraw_pending = false;
+        last_presented_stamp = Some(stamp);
+    }
 }
-renderer.draw(clear, &items)?;
-
-// refresh/draw가 모두 성공한 뒤에만 현재 visual snapshot을 소비한다.
-chart.consume_data_dirty();
-chart.consume_raster_dirty();
-view_dirty = false;
-redraw_pending = false;
 ```
-
-`WindowedRenderer` uses the WebGPU surface format and, when the adapter supports it,
-draws into an internal 4x or 2x MSAA color target before resolving to the surface frame;
-unsupported browsers or formats fall back to 1x. This changes only raster coverage, not
-data values, point positions, or dash arc-lengths.
 
 `WindowedRenderer::draw`는 `Renderer::prepare`(`&mut` — pipeline 준비,
 transform uniform write, arc-length compute dispatch)와
@@ -167,21 +182,27 @@ transform uniform write, arc-length compute dispatch)와
 
 clean rAF에도 facade의 다음 콜백 예약, DPR 비교, wasm 상태 확인은 남지만
 GPU column 준비, surface acquire, draw/submit/present는 전부 생략한다.
-실패한 refresh/draw는 dirty를 소비하지 않아 다음 rAF에서 재시도한다.
+실패한 refresh/draw는 last-presented stamp와 host flag를 전진시키지 않아
+다음 rAF에서 재시도한다.
 이 최적화는 이전 canvas가 그대로 유효한 프레임만 건너뛰며, 원본 데이터의
 sampling·LOD·decimation이나 시간 기반 프레임 누락은 수행하지 않는다.
 
-### 3.3 데이터 입력 — 업로드는 이미 제로카피, 경계 횡단만 플랫폼 비용
+### 3.3 데이터 입력 — 명시적 register/update와 f32 물리 lane
 
-GPU 풀에 올라가는 데이터는 **항상 f32**다. 업로드 설계의 핵심 불변은
-native/wasm 공통이다:
+GPU 풀의 물리 lane은 **항상 f32**다. 일반 scalar column은 logical value당
+f32 lane 하나, `Float64Array`/`HiLoColumnSource` 경로는 `(hi: f32, lo: f32)`
+lane 두 개를 사용한다. 즉 shader의 native f64가 아니라 두 f32의 합으로 큰
+절대값에서 작은 delta를 보존한다. 업로드 설계의 핵심 불변은 native/wasm
+공통이다:
 
 ```rust
-// column_pool::try_add_column — f64 소스는 &dyn ColumnSource로 "빌려서" 읽고,
-// f32 변환쓰기의 목적지가 곧 GPU 업로드 버퍼(mapped staging)다. 중간 버퍼 0개.
+// scalar: logical value → one f32 lane
 let mut view = staging.slice(..).get_mapped_range_mut();
-source.write_f32_le_into(&mut view[..]);          // f64 참조 → f32 변환쓰기 1회
+source.write_f32_le_into(&mut view[..]);
 enc.copy_buffer_to_buffer(&staging, 0, &pool, offset);  // 이후는 GPU 내부 복사
+
+// hi/lo: logical f64 value → two f32 lanes in the same mapped staging buffer
+source.write_f32_pair_le_into(&mut view[..]);
 ```
 
 즉 "f64의 소유권/참조만 받아 변환 결과가 업로드 버퍼에 직접 쓰이는가"는
@@ -199,24 +220,30 @@ wasm에서 추가되는 비용은 변환이 아니라 **메모리 도메인 횡�
 
 경계 타입 선택:
 
-- **`Float32Array` (권장)** — 경계 트래픽이 4 B/elem으로 절반,
-  `Column<f32>` 경로는 staging에 **순수 memcpy**. GPU 결과는 어느 쪽이든
-  f32 한 번 반올림이라 픽셀은 동일하다.
-- **`Float64Array`** — 원본이 f64인 데이터에서 min/max 메타데이터(자동
-  핏, 로그 변환)의 f64 정밀도를 유지하고 싶을 때.
+- **`Float32Array` (일반 좌표 권장)** — 경계 트래픽 4 B/elem,
+  `Column<f32>` 경로는 staging에 **순수 memcpy**.
+- **`Float64Array` (큰 절대 좌표)** — 경계 트래픽과 GPU 저장은 8 B/elem.
+  min/max 메타데이터뿐 아니라 GPU vertex 계산도 hi/lo 두 f32 lane을 사용해
+  timestamp 크기의 절대값에서 sub-f32 delta를 보존한다.
 
 마샬링 오버헤드까지 줄이려면 wasm이 버퍼를 할당해 ptr/len을 노출하고
 JS가 `new Float32Array(memory.buffer, ptr, len).set(src)`로 직접 채우는
 패턴을 쓴다 (경계 복사 1회는 동일, wasm-bindgen 인자 변환만 제거).
 
-```rust
-#[wasm_bindgen]
-pub fn set_column_f32(&mut self, id: &str, data: &[f32]) {
-    // 길이+해시가 기존과 같으면 no-op (재업로드 스킵);
-    // 다르면 min/max 1회 스캔 → Column<f32> → add_column (staging memcpy)
-}
-// JS: chart.set_column_f32("x", xs);   // xs: Float32Array, 업서트
+공개 API는 등록과 교체를 구분한다:
+
+```js
+chart.register_column_f32("x", xs);          // 새 id만; 기존 id면 오류
+chart.update_register_column_f32("x", next); // 기존 id만; 없으면 오류
+
+chart.register_column_f64("time", times);          // Float64Array → hi/lo
+chart.update_register_column_f64("time", nextTimes);
 ```
+
+빈 배열은 거부한다. 승인된 `update_register_*` 호출은 같은 내용이더라도
+명시적 교체 요청이므로 매번 failure-atomic upload를 수행한다. hash-only
+동일성 판정이나 묵시적 no-op은 없다. `set_series`는 등록된 column id 중
+무엇을 그릴지만 바꾸며 column upload를 수행하지 않는다.
 
 ### 3.4 이벤트 입력 — 포인터를 모델 정책으로 그대로 전달
 
@@ -225,14 +252,15 @@ pub fn set_column_f32(&mut self, id: &str, data: &[f32]) {
 `<figgy-chart>` facade가 변환한 pointer event를 쓰면 된다. raw kernel을
 직접 쓰는 경우에만 canvas 포인터 이벤트를 픽셀 좌표로 바꿔 넘긴다:
 
-```rust
-// pointerdown → on_press(e.offsetX * dpr, e.offsetY * dpr)
-pub fn on_press(&mut self, x: f32, y: f32) {
-    // ① 선택된 요소의 리사이즈 핸들 우선 → ② hit_test 선택 → 드래그 암
-    // (winit 데모 handle_click과 동일 로직 — CpuTextMeasure 주입)
-}
-pub fn on_move(&mut self, dx: f32, dy: f32) { /* drag_by / resize_by */ }
-pub fn on_release(&mut self) { /* 드래그/리사이즈 해제 */ }
+```js
+const rect = canvas.getBoundingClientRect();
+const sx = canvas.width / Math.max(1, rect.width);
+const sy = canvas.height / Math.max(1, rect.height);
+const x = (event.clientX - rect.left) * sx;
+const y = (event.clientY - rect.top) * sy;
+const selected = kernel.on_press(x, y); // Rust Result<bool, JsValue>: 오류는 throw
+kernel.on_move(x - lastX, y - lastY);   // Rust Result<(), JsValue>
+kernel.on_release();                    // infallible state clear
 ```
 
 facade는 매 event에서 canvas CSS rect와 backing-store 크기의 비율을 사용해
@@ -254,18 +282,35 @@ chartEl.addEventListener("figgy-select", (e) => {
 });
 ```
 
-### 3.6 PNG export — async 필수, Blob으로 출력
+### 3.6 PNG export — async 필수, `Uint8Array` 반환
 
 ```rust
-pub async fn export_png(&self, scale: f32) -> Result<js_sys::Uint8Array, JsValue> {
+pub async fn export_png(&mut self, scale: f32) -> Result<js_sys::Uint8Array, JsValue> {
+    self.ensure_zero_column_for_render()?;
+    let export_chart = Chart::new(
+        self.renderer
+            .chart_config(self.chart_id)
+            .map_err(js_err)?
+            .clone(),
+    );
+    let series = self
+        .renderer
+        .chart_series(self.chart_id)
+        .map_err(js_err)?
+        .to_vec();
     let bytes = self.renderer
-        .export_panel_png_bytes_async(&self.chart, &self.series, scale)
+        .export_panel_png_bytes_with_clear_async(
+            &export_chart,
+            &series,
+            scale,
+            self.clear_color,
+        )
         .await
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
     Ok(js_sys::Uint8Array::from(bytes.as_slice()))
 }
 // JS: const png = await chart.export_png(2.0);
-//     const url = URL.createObjectURL(new Blob([png], { type: "image/png" }));
+// 필요할 때 host가 new Blob([png], { type: "image/png" })로 변환한다.
 ```
 
 블로킹 `export_panel_png_bytes`는 웹에 존재하지 않는다(컴파일 제외) —
@@ -300,7 +345,7 @@ cfg.bottom_x.tick = "Both";                // 틱 모양
 cfg.bottom_x.major_tick_length = 12.0;     // 틱 길이
 cfg.bottom_x.label_style.color = { r: 0.8, g: 0.1, b: 0.1, a: 1.0 };  // 색
 cfg.chart_title.text.font_size = 34;       // 글씨
-chart.set_config(JSON.stringify(cfg));     // → dirty → 다음 frame()에 반영
+chart.set_config(JSON.stringify(cfg));     // → renderer revision 갱신 → 다음 frame()에 반영
 
 const series = JSON.parse(chart.get_series());
 series[0].render_type.Line.line.line_width = 4.0;
@@ -308,8 +353,10 @@ series[0].render_type.Line.line.line_color = { r: 1, g: 0, b: 1, a: 1 };
 chart.set_series(JSON.stringify(series));  // GPU 스타일 재빌드 포함
 ```
 
-`set_config`는 `config_mut()` 경유라 양쪽 dirty가 서고, 다음 `frame()`이
-데코 재래스터와 transform 갱신을 각각 명시 처리한다 — 데스크톱과 동일 규약.
+`set_config`는 JSON을 검증한 뒤 renderer-owned `Config`를
+`set_chart_config(chart_id, config)`로 교체한다. 이 호출이 desired/config/
+raster revision을 갱신하므로 다음 `frame()`의 `ChartRenderStamp` 비교가
+draw와 raster refresh를 요구한다.
 **주의**: 스케일을 바꾸면 `major_spacing` 해석도 바뀐다 (Linear = 데이터
 단위, Logarithmic = decade 단위). `set_x_range`류 헬퍼는 자동으로 맞춰
 주지만 SSoT 직접 편집은 호출자가 함께 고쳐야 한다.
@@ -395,13 +442,13 @@ cd crates/web && python -m http.server 8137   # wasm은 file:// 불가
 | 분류 | 메서드 |
 |---|---|
 | 수명 | `<figgy-chart>` element · `ready` promise · `figgy-ready` / `figgy-error` / `figgy-select` / `figgy-drag` / `figgy-release` / `figgy-resize` events · `free()` |
-| 폰트 | `register_font(Uint8Array)` → 가족명 배열 (TTF/OTF/TTC). 등록 후 SSoT `font` 가족명이 해석됨 — 등록 폰트가 시스템 폰트보다 우선이라 웹/데스크탑 해석이 동일. 미등록·미해석 가족명은 내장 Liberation Sans 폴백 (CJK 글리프 없음 — 한글은 폰트 등록 필요) |
+| 폰트 | `register_font(Uint8Array)` → 가족명 배열 (TTF/OTF/TTC). 등록 후 SSoT `font` 가족명이 해석됨 — 등록 폰트가 시스템 폰트보다 우선이라 웹/데스크탑 해석이 동일. byte-for-byte 동일 파일의 재등록은 저장소와 font generation을 늘리지 않는 멱등 동작이며, resolved face backing도 face id별로 재사용한다. 미등록·미해석 가족명은 내장 Liberation Sans 폴백 (CJK 글리프 없음 — 한글은 폰트 등록 필요) |
 | 스타일 파라미터 | *(free 함수)* `draw_style_modes()` → 모드 태그 JSON 배열 · `draw_style_param_specs(mode)` → `{key, min, max, default, integer}` JSON 배열. **슬라이더 범위의 단일 진실 원본** — min/max는 권장 범위(SSoT는 그 밖의 값도 수용, 렌더러는 안전 가드만 적용), default는 model의 `Default` 구현과 테스트로 고정. 호스트는 이걸로 스타일 UI를 자동 생성하고 범위를 하드코딩하지 말 것 |
-| 컬럼 등록/해제 | `set_column_f32(id, Float32Array)` *(업서트)* · `remove_column(id)` |
+| 컬럼 등록/갱신/해제 | `register_column_f32/f64(id, TypedArray)` *(새 id만)* · `update_register_column_f32/f64(id, TypedArray)` *(기존 id만, 승인된 호출은 항상 upload)* · `remove_column(id)` |
 | 시리즈 등록/해제 | `add_line_series(id, x, y, width, label)` *(업서트)* · `remove_series(id)` |
 | 범례 | `set_series_label(id, label)` — `'\n'` 줄바꿈·유니코드 첨자 지원, 빈 문자열 = 해당 행 제거. `set_series` / `apply_color_cycle` 은 자유 편집된 텍스트를 덮지 않고 인식 가능한 자동 엔트리의 심볼만 갱신한다. 전체 재작성은 `reset_legend_from_series_labels()` 를 명시 호출할 때만 수행한다. 자유 편집은 SSoT `legend.content` 하나의 리치 문서로: 줄바꿈은 `"\n"` 세그먼트, `"\t"` 는 표형 열 구분자, 심볼은 **고정폭 필드 세그먼트**(`field_em` — 어떤 형태든 정확히 2.0 em; 선 마크는 `rule:true`, 점선은 `rule_dash` em 패턴) + 색 오버라이드라 위치·줄배치·폭이 전부 명시적. `content.font` / `content.font_size` / 세그먼트별 오버라이드는 그리기 시점에 그대로 적용 |
-| 히트테스트 | `hit_test(x, y)` → 요소 id 문자열 또는 `null` (`"data_area"` · `"axis_bottom"` · `"tick_labels_left"` · `"axis_title_left"` · `"legend"` · `"chart_title"` …). `pick_point(x, y, max_distance_px)` → `{ source_id, series_id, point_index, data_x, data_y, distance_px }` JSON 또는 `null`; point/scatter는 실제 marker 크기(스타일 매핑 포함)를 기준으로, line 계열은 stroke 근처 클릭을 해당 segment의 가까운 endpoint 데이터 점으로 스냅한다. errorbar stem/cap 자체는 pick target이 아니다. `data_x`/`data_y`는 화면/log 변환값이 아니라 선택된 원본 데이터 좌표. 선택 상태 무변경 — 렌더러 자체 레이아웃이 답하므로 호스트가 박스 위치를 복제할 필요 없음 |
-| 범위 | `auto_fit_all(pad)` — **등록된 전 시리즈의 원본 primitive data domain** x/y 합집합에 4방 균일 비율 마진(`0.0` = 딱 맞춤, `0.05` = 5%). 원본 GPU 컬럼을 축약·샘플링 없이 전수 reduce한다. line-only는 유효한 인접 segment의 endpoint, scatter-bearing 시리즈는 유한한 x/y 쌍, errorbar는 실제 six-column 공통 행에서 현재 renderer와 같은 방향 활성 조건을 통과한 `값−err_lo … 값+err_hi` endpoint를 포함한다. 짧은 error 컬럼은 errorbar endpoint 범위만 제한하며 그 뒤의 유효한 base line/scatter 행을 자르지 않는다. 이 primitive 조건에서 탈락한 non-finite 행과 고립된 line point는 제외하고 normalized mode와 역할별 column revision으로 결과를 캐싱한다. 범위 끝 라운딩 없음 — 틱은 범위 안 nice 값에 자동으로 떨어지므로 호스트가 범위를 재가공하지 말 것 · `auto_fit_x/y(col, pad)` (단일 컬럼 upload metadata, 에러바 미반영) · `load_demo()` *(멱등)* |
+| 히트테스트 | `hit_test(x, y)` → 요소 id 문자열 또는 `null` (`"data_area"` · `"axis_bottom"` · `"tick_labels_left"` · `"axis_title_left"` · `"legend"` · `"chart_title"` …). `pick_point(x, y, max_distance_px)` → `Promise<{ source_id: string \| null, series_id, point_index, distance_px } \| null>`; point/scatter는 실제 marker 크기(스타일 매핑 포함)를 기준으로, line 계열은 stroke 근처 클릭을 해당 segment의 가까운 endpoint 데이터 점으로 스냅한다. errorbar stem/cap 자체는 pick target이 아니다. 좌표가 필요하면 host가 `point_index`로 자신이 등록한 원본 column을 조회한다. 선택 상태 무변경 — 렌더러 자체 레이아웃이 답하므로 호스트가 박스 위치를 복제할 필요 없음 |
+| 범위 | `auto_fit_all(pad)` *(Promise)* — **등록된 전 시리즈의 원본 primitive data domain** x/y 합집합에 4방 균일 비율 마진(`0.0` = 딱 맞춤, `0.05` = 5%). 원본 GPU 컬럼을 축약·샘플링 없이 전수 reduce한다. line-only는 유효한 인접 segment의 endpoint, scatter-bearing 시리즈는 유한한 x/y 쌍, errorbar는 실제 six-column 공통 행에서 현재 renderer와 같은 방향 활성 조건을 통과한 `값−err_lo … 값+err_hi` endpoint를 포함한다. 짧은 error 컬럼은 errorbar endpoint 범위만 제한하며 그 뒤의 유효한 base line/scatter 행을 자르지 않는다. 이 primitive 조건에서 탈락한 non-finite 행과 고립된 line point는 제외하고 normalized mode와 역할별 column revision으로 결과를 캐싱한다. readback 결과는 다음 `frame()`에서 token이 여전히 current일 때 renderer-owned Config에 commit된 뒤 Promise가 resolve된다. facade는 지속 rAF로 이를 처리하며 raw kernel host는 pending 동안 `frame()`을 계속 호출해야 한다. 범위 끝 라운딩 없음 — 틱은 범위 안 nice 값에 자동으로 떨어지므로 호스트가 범위를 재가공하지 말 것 · `auto_fit_x/y(col, pad)` (단일 컬럼 upload metadata, 에러바 미반영) · `load_demo()` *(멱등)* |
 | 피킹 기준 | 최종 스타일/래스터 픽셀이 아니라 원본 시리즈 primitive를 판정한다. scatter는 원본 데이터 점 위치와 설정된 marker hit 반경을 사용하고, line은 인접한 원본 데이터 점 사이의 직선 segment를 검사해 가까운 endpoint로 스냅한다. dash 공백, square-cap 래스터 모서리, sketch 등 장식용 변형은 pick 경로를 바꾸지 않는다. |
 | SSoT I/O | `get_config()` / `set_config(json)` · `get_series()` / `set_series(json)` |
 | 프리셋 | `apply_axis_preset(AxisPreset)` · `apply_color_cycle(ColorCycle)` · `color_cycle_css(cycle)` |
@@ -424,17 +471,19 @@ host 계약이 아니라 디버깅/특수 embed용이다.
 차트는 캔버스당 인스턴스 하나를 두고, 내용은 id 기반 등록/해제로
 관리한다. 풀 내부(용량 통계·defrag 정책·핸들)는 노출하지 않는다:
 
-- **`set_column_f32(id, data)` 는 업서트**: 새 id는 업로드, 같은 id에
-  **동일 데이터(길이 + 64bit 콘텐츠 해시)는 재업로드 없이 무시** — 호스트
-  가 전체 데이터셋을 매번 던져도 변한 컬럼만 GPU에 올라간다. 같은 id의
-  다른 데이터는 교체(이전 영역 해제 + 재업로드).
+- **`register_column_f32/f64(id, data)` 는 새 id 전용**: 기존 id면 오류.
+- **`update_register_column_f32/f64(id, data)` 는 기존 id 전용**: 없는 id면
+  오류. 호출 자체가 내용 교체 의사이므로 승인된 호출은 같은 값이어도 매번
+  failure-atomic upload를 수행한다. hash-only no-op 판정은 사용하지 않는다.
+- **`set_series(json)`은 column id 지정만 변경**: 등록/교체 upload를
+  수행하지 않는다.
 - 업로드 시 auto-fit 용 스칼라 통계(min/max/최소 양수)가 캐싱된다. 점선
   호장(arc-length) 위상 같은 per-point 지오메트리는 GPU 컴퓨트 스캔
   (`line_arc.wgsl`)이 풀 데이터에서 직접 계산한다.
-- **에러바 시리즈의 zero-fill 컬럼은 자동 공급**: 한쪽 방향만 쓰는
-  errorbar 변종(`ScatterErrorbarY` 등)이 `set_series`로 들어오면, 미사용
-  차원에 바인딩되는 내부 `"__zero"` 컬럼을 래퍼가 알아서 등록·확장한다.
-  호스트가 이 컨벤션을 알 필요 없음.
+- **에러바 시리즈의 zero-fill 컬럼은 render 준비가 소유**: `"__zero"`는
+  public mutation이 금지된 reserved id다. 한쪽 방향만 쓰는 errorbar 변종의
+  실제 draw/export 직전에만 필요한 길이로 renderer-owned filler를
+  생성·확장한다. `set_series` 자체는 어떤 column도 upload하지 않는다.
 - **`remove_column(id)`** 은 그 컬럼을 참조하는 시리즈까지 자동으로 내려서,
   해제된 데이터를 가리키는 프레임이 존재할 수 없다. 자동 관리 범례에서는
   대응 행도 제거하고, `set_config` 로 자유 편집된 범례에서는 사용자 텍스트를

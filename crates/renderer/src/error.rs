@@ -15,6 +15,12 @@ pub enum FiggyError {
     /// `Config.chart_area` has zero size (cannot raster).
     InvalidChartArea { width: u32, height: u32 },
 
+    /// A renderer-owned chart config violates a render invariant.
+    InvalidConfig {
+        field: &'static str,
+        reason: &'static str,
+    },
+
     /// CPU raster target allocation failed — typically a zero/oversized area.
     RasterWrapFailed { reason: String },
 
@@ -55,6 +61,24 @@ pub enum FiggyError {
     /// Referenced column id is not in the pool.
     UnknownColumn { id: String },
 
+    /// The column id belongs to renderer maintenance and is not host-mutable.
+    ReservedColumnId { id: String },
+
+    /// Renderer-owned chart id is not live in this renderer.
+    UnknownChart { id: crate::renderer::ChartId },
+
+    /// A checked identity/revision issuer has no successor.
+    CounterExhausted { counter: &'static str },
+
+    /// An invocation token no longer identifies current renderer state.
+    StaleStateToken { reason: String },
+
+    /// A renderer-state candidate could not reserve CPU memory before commit.
+    StateAllocationFailed {
+        resource: &'static str,
+        reason: String,
+    },
+
     /// A series declaration is internally inconsistent for the requested
     /// render path.
     InvalidSeriesConfig { series_id: String, reason: String },
@@ -62,11 +86,11 @@ pub enum FiggyError {
     /// Handle generation no longer matches after an invalidating pool mutation.
     StaleHandle { generation: u32, current: u32 },
 
-    /// A `PreparedFrame` no longer matches the renderer state or the items it
-    /// was prepared for — something invalidating interleaved between
-    /// `Renderer::prepare` and `Renderer::paint_prepared` (pool layout change,
-    /// target-format change, edited chart config, or reordered items/series).
-    /// Recovery: call `prepare` again with the current items.
+    /// A `PreparedFrame` no longer matches its captured renderer resources —
+    /// for example it belongs to another renderer, the target pipeline or pool
+    /// layout changed, a captured column allocation was replaced, or a
+    /// captured `ChartView` was rewritten after `Renderer::prepare`.
+    /// Recovery: build the current items and call `prepare` again.
     StalePreparedFrame { reason: String },
 }
 
@@ -76,6 +100,9 @@ impl std::fmt::Display for FiggyError {
             Self::Pool(e) => write!(f, "column pool: {e}"),
             Self::InvalidChartArea { width, height } => {
                 write!(f, "invalid chart area: {width}x{height}")
+            }
+            Self::InvalidConfig { field, reason } => {
+                write!(f, "invalid chart config field {field}: {reason}")
             }
             Self::RasterWrapFailed { reason } => write!(f, "raster wrap failed: {reason}"),
             Self::AdapterUnavailable => write!(f, "no compatible wgpu adapter"),
@@ -106,6 +133,17 @@ impl std::fmt::Display for FiggyError {
                 write!(f, "{resource} GPU allocation failed: {reason}")
             }
             Self::UnknownColumn { id } => write!(f, "unknown column id: {id}"),
+            Self::ReservedColumnId { id } => {
+                write!(f, "column id is reserved for renderer maintenance: {id}")
+            }
+            Self::UnknownChart { id } => write!(f, "unknown chart id: {id:?}"),
+            Self::CounterExhausted { counter } => {
+                write!(f, "renderer counter exhausted: {counter}")
+            }
+            Self::StaleStateToken { reason } => write!(f, "stale renderer state token: {reason}"),
+            Self::StateAllocationFailed { resource, reason } => {
+                write!(f, "{resource} allocation failed: {reason}")
+            }
             Self::InvalidSeriesConfig { series_id, reason } => {
                 write!(f, "invalid series config for {series_id}: {reason}")
             }

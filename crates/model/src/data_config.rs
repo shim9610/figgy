@@ -18,8 +18,9 @@ pub struct DataConfig {
 /// One series — which columns to draw, with which render type and style.
 ///
 /// Columns are referenced by the id used when registering them with the
-/// `ColumnPool`. `Renderer::paint` resolves them to byte ranges every frame
-/// via `pool.handle_for(id)`.
+/// `ColumnPool`. `Renderer::prepare` resolves them to allocation-stamped GPU
+/// handles; the resulting `PreparedFrame` owns those handles for immutable
+/// paint recording.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SeriesConfig {

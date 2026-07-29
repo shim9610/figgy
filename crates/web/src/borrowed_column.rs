@@ -206,69 +206,6 @@ impl HiLoColumnSource for BorrowedF64Column<'_> {
     }
 }
 
-/// A logical all-zero column that stores only its length.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ZeroColumnSource {
-    len: usize,
-}
-
-impl ZeroColumnSource {
-    pub(crate) fn new(len: usize) -> Self {
-        Self { len }
-    }
-
-    fn min_max(&self) -> (f64, f64) {
-        if self.len == 0 {
-            (f64::INFINITY, f64::NEG_INFINITY)
-        } else {
-            (0.0, 0.0)
-        }
-    }
-}
-
-impl ColumnSource for ZeroColumnSource {
-    fn len(&self) -> usize {
-        self.len
-    }
-
-    fn min(&self) -> f64 {
-        self.min_max().0
-    }
-
-    fn max(&self) -> f64 {
-        self.min_max().1
-    }
-
-    fn write_f32_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.len * size_of::<f32>());
-        dst.fill(0);
-    }
-
-    fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.len * COLUMN_VALUE_BYTES);
-        dst.fill(0);
-    }
-}
-
-impl HiLoColumnSource for ZeroColumnSource {
-    fn len(&self) -> usize {
-        self.len
-    }
-
-    fn min(&self) -> f64 {
-        self.min_max().0
-    }
-
-    fn max(&self) -> f64 {
-        self.min_max().1
-    }
-
-    fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.len * COLUMN_VALUE_BYTES);
-        dst.fill(0);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,16 +337,5 @@ mod tests {
         let empty_f64 = BorrowedF64Column::new(&[]);
         assert_eq!(ColumnSource::min(&empty_f64), f64::INFINITY);
         assert_eq!(ColumnSource::max(&empty_f64), f64::NEG_INFINITY);
-
-        let zeros = ZeroColumnSource::new(3);
-        assert_eq!(ColumnSource::min(&zeros).to_bits(), 0.0f64.to_bits());
-        assert_eq!(ColumnSource::max(&zeros).to_bits(), 0.0f64.to_bits());
-        assert_eq!(scalar_bytes(&zeros), vec![0; 3 * size_of::<f32>()]);
-        assert_eq!(scalar_pair_bytes(&zeros), vec![0; 3 * COLUMN_VALUE_BYTES]);
-        assert_eq!(pair_bytes(&zeros), vec![0; 3 * COLUMN_VALUE_BYTES]);
-
-        let empty_zeros = ZeroColumnSource::new(0);
-        assert_eq!(ColumnSource::min(&empty_zeros), f64::INFINITY);
-        assert_eq!(ColumnSource::max(&empty_zeros), f64::NEG_INFINITY);
     }
 }

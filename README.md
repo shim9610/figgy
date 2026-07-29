@@ -7,17 +7,16 @@ Embed in egui / iced / winit / any other wgpu host.
 
 > This is the workspace root README. The workspace has three crates:
 > **`crates/model`** — the pure chart model and schema authority: option/data SSoT (`Config`, `SeriesConfig`), the rich-text/legend document model, interaction policies (`Selectable`/`Draggable`/`Resizable`, `HitMap`, the single `Config::nudge` movement path), presets (`AxisPreset`, `ColorCycle`). Dependency-free; optional `serde` feature.
-> **`crates/renderer`** — the wgpu + CPU-raster machinery documented below. Depends on `model` and re-exports every module, so all `renderer::…` paths keep working unchanged.
+> **`crates/renderer`** — the wgpu + CPU-raster machinery documented below. It also provides a renderer-owned chart registry (`ChartId` → `Config`, ordered `SeriesConfig`, selection, checked revisions) for persistent hosts such as the web wrapper. Depends on `model` and re-exports every module, so all `renderer::…` paths keep working unchanged.
 > **`crates/web`** — the browser package (`figgy`): public `<figgy-chart>` Custom Element facade plus a raw `FiggyChart` wasm kernel as an advanced escape hatch. The facade owns the shadow canvas, ready promise/event lifecycle, rAF loop, ResizeObserver/DPR handling, pointer mapping, export busy gate, and id-keyed register/unregister lifecycle. Browser I/O: [WASM.md](crates/renderer/WASM.md) · full Config JSON schema: [SCHEMA.md](crates/web/SCHEMA.md). Build artifacts (`crates/web/pkg/`) are gitignored — build with `npx wasm-pack build crates/web --release --target web`.
 > **Online studio** — [figgyplot.com](https://figgyplot.com/) hosts the public web editor. It runs in-browser with local chart data, imports CSV/TSV/Excel, opens `.figgy` project files, and exports PNGs from the same wasm/WebGPU surface.
 
 - **GPU columnar pool**: all data columns share a single GPU buffer with first-fit alloc + ping-pong defrag on fragmentation. Logical values are stored as f32 hi/lo pairs when uploaded through `HiLoColumnSource`, preserving timestamp-sized offsets on the GPU. Upload caches scalar stats (min / max / smallest-positive) for auto-fit; per-point geometry such as the dashed-line arc-length prefix is computed in place by a compute scan (`line_arc.wgsl`).
 - **Layered compositing**: grid → data → axis/label/legend, so grid never covers the data. Axis raster can be produced as `Grid` and `Decoration` layers; `AxisLayerKind::All` remains a legacy single-pass helper.
-- **MSAA resolve quality**: `WindowedRenderer` live frames and offscreen PNG export use a 4x (or 2x) MSAA render target when the adapter/format supports resolve, falling back to 1x. This changes only rasterization coverage at primitive edges; data points, line segments, dash arc lengths, and export scale semantics are unchanged.
 - **Data fidelity contract**: renderer/web consume the model contract without silently changing original coordinates, provenance, or axis↔data correspondence. Explicit clipping, log-domain skips, NaN skips, and antialiasing limits are rendering contracts rather than data rewrites.
 - **Headless PNG export**: GPU offscreen raster at arbitrary DPI → RGBA / PNG bytes in memory (async-first; blocking wrappers on native).
 - **Interaction layer (opt-in)**: hit-testing, selection boxes, drag (axes constrained to their perpendicular, detached-axis `line_offset`), PPT-style 8-handle resize of the data area — all policy in `model`, fed by host pointer events; never runs if you don't wire it.
-- **Data picking (opt-in)**: picking is defined against the original series primitives, not the final styled/rasterized pixels. Scatter tests source data-point positions with the configured marker hit radius; line tests each straight segment between adjacent source-data points and snaps to the nearer endpoint. Dash off-gaps, cap rasterization, and decorative draw-style displacement do not alter the pick path. Hosts receive `{ source_id?, series_id, point_index, data_x, data_y, distance_px }`; errorbar stems/caps are not pick targets. Picked-point decoration is driven back through `Config.picked_points` so UI state stays outside the renderer.
+- **Data picking (opt-in)**: picking is defined against the original series primitives, not the final styled/rasterized pixels. Scatter tests source data-point positions with the configured marker hit radius; line tests each straight segment between adjacent source-data points and snaps to the nearer endpoint. Dash off-gaps, cap rasterization, and decorative draw-style displacement do not alter the pick path. The async web result is `{ source_id: string | null, series_id, point_index, distance_px }`; hosts use `point_index` to read coordinates from their registered source data. Errorbar stems/caps are not pick targets. Picked-point decoration is driven back through `Config.picked_points` so UI state stays outside the renderer.
 - **Per-point style mapping (opt-in)**: precise scatter can bind `point_style_table` / `point_style_index_column` / `point_style_overrides`; precise errorbars can independently bind `error_bar_style_table` / `error_bar_style_index_column` / `error_bar_style_overrides`. Styled modes keep their own visual shaders and ignore these mappings.
 - **Rich-text everywhere**: titles, tick labels, and the legend share one engine — per-segment bold/italic/underline/sub/superscript/greek, per-segment color & size overrides, `'\n'` line breaks, `'\t'` table columns, fixed-width legend symbol fields.
 - **Hand-drawn sketch mode (opt-in)**: `draw_style: { mode: "sketch", amplitude_px, wavelength_px, seed }` renders the whole chart xkcd-style — axes/ticks/grid/legend wobble on the CPU raster, line wobble/dash phase uses arc-length-scan-driven GPU variants, markers/errorbars use dedicated GPU variants, and chart text automatically switches to the bundled handwritten face (Comic Neue, OFL) with per-character fallback for glyphs it lacks (CJK keeps your registered font). Deterministic (seeded), composes with dashes, and the field's absence means the precise path runs completely untouched.
@@ -132,11 +131,16 @@ let items  = [ChartDrawItem {
 renderer.draw(Color::WHITE, &items).unwrap();   // acquire surface frame → prepare → encoder → pass → paint_prepared → submit → present
 ```
 
-`WindowedRenderer` may insert an internal MSAA color target before the surface and resolve into the acquired frame. Hosts that call `Renderer::paint` directly still own their render pass sample count.
-
 ### `ColumnSource` — the data adapter trait
 
 `Renderer::add_column` takes `&dyn ColumnSource` — implement the trait on any container of yours and the data lands in the GPU pool with zero copy (no intermediate `Vec` allocation). The upload pass reads the freshly written bytes once to cache scalar stats (min / max / smallest-positive) for auto-fit. Use `Renderer::add_hilo_column` with `&dyn HiLoColumnSource` for large absolute timestamps or coordinates that must preserve sub-f32 deltas; it uploads each logical value as `(hi: f32, lo: f32)`.
+
+`add_column` / `add_hilo_column` register a new id. To atomically replace an
+existing id, use `upsert_column` / `upsert_hilo_column`; the previous allocation
+and renderer revisions are published only after the replacement upload and
+checked revision preflight succeed. Integrations that must prepare dependent
+picker/extent state first use `begin_upsert_*`, inspect its provisional pool,
+then call the guard's allocation-free `commit`.
 
 ```rust
 pub trait ColumnSource {
@@ -166,9 +170,10 @@ pub trait HiLoColumnSource {
 }
 ```
 
-`Column<f64>` implements `HiLoColumnSource`; browser hosts should pass
-`Float64Array` via `set_column_f64` when using timestamp axes with large Unix
-epoch values.
+`Column<f64>` implements `HiLoColumnSource`; browser hosts should pass a
+`Float64Array` through `register_column_f64` for the first upload and
+`update_register_column_f64` for an explicit replacement when using timestamp
+axes with large Unix epoch values.
 
 **Custom — time series / DataFrame / mmap / FFI data, anything**:
 
@@ -214,7 +219,8 @@ Each example shows:
 ### Browser timestamp-axis demo
 
 `crates/web/timestamp-demo.html` exercises the browser timestamp path with
-absolute Unix time values uploaded through `set_column_f64(Float64Array)`.
+absolute Unix time values uploaded through `register_column_f64(Float64Array)`
+and explicitly replaced through `update_register_column_f64`.
 It lets you change the visible time window, data unit, timezone, fractional
 second policy, label pattern, chart width, and export scale while the x axis
 uses `LabelFormat::Timestamp` + `AutoCalendar` to choose non-overlapping labels.
@@ -268,14 +274,15 @@ impl egui_wgpu::CallbackTrait for FiggyCallback {
         let state = resources.get::<FiggyState>().unwrap();
         let prepared = state.panels[self.panel_idx].prepared.as_ref().unwrap();
         let target = (info.screen_size_px[0], info.screen_size_px[1]);
-        state.renderer.paint_prepared(render_pass, target, &items, prepared).unwrap();
+        state.renderer.paint_prepared(render_pass, target, prepared).unwrap();
     }
 }
 ```
 
 `paint_prepared` is repeatable (the same token may be recorded into more than
-one pass) and requires `items` unchanged, in prepare order. If an invalidating
-`&mut` call interleaved between the two phases it records nothing and returns
+one pass). `PreparedFrame` owns the resolved draw inputs, so paint neither
+reconstructs nor receives `items`. If a captured renderer resource changes
+between the two phases, paint records nothing and returns
 `FiggyError::StalePreparedFrame` — recover with a fresh `prepare` next frame.
 The one-shot `Renderer::paint(&mut self, …)` facade remains for hosts that own
 the renderer exclusively during their frame (winit loop, wasm wrapper): it
@@ -285,24 +292,28 @@ Full version: [examples/egui_embed.rs](crates/renderer/examples/egui_embed.rs).
 
 ### iced integration pattern
 
-`iced_wgpu::primitive::Pipeline` (one-time init) + `shader::Primitive` (per frame) — keep figgy's `Renderer` inside the Pipeline directly, no `Mutex`: `prepare` (`&mut Storage`) runs dirty handling plus `renderer.prepare(&items)` and stores the returned `PreparedFrame` token alongside the Pipeline, `draw` (`&Storage`) calls `renderer.paint_prepared(pass, target, &items, &prepared)` through shared access only. See [examples/iced_embed.rs](crates/renderer/examples/iced_embed.rs).
+`iced_wgpu::primitive::Pipeline` (one-time init) + `shader::Primitive` (per frame) — keep figgy's `Renderer` inside the Pipeline directly, no `Mutex`: `prepare` (`&mut Storage`) runs dirty handling plus `renderer.prepare(&items)` and stores the returned `PreparedFrame` token alongside the Pipeline, `draw` (`&Storage`) calls `renderer.paint_prepared(pass, target, &prepared)` through shared access only. See [examples/iced_embed.rs](crates/renderer/examples/iced_embed.rs).
 
 ### PNG export (memory only — saving is the caller's job)
 
 ```rust
-let bytes = renderer.export_panel_png_bytes(&chart, &series_configs, scale)?;
+let bytes = renderer
+    .export_panel_png_bytes_async(&chart, &series_configs, scale)
+    .await?;
 std::fs::write("/tmp/out.png", &bytes)?;          // or clipboard / network / wherever.
 
 // If you only need RGBA:
-let img = renderer.export_panel_rgba(&chart, &series_configs, scale)?;
+let img = renderer
+    .export_panel_rgba_async(&chart, &series_configs, scale)
+    .await?;
 // img.width, img.height, img.rgba (straight alpha, length = w * h * 4)
 ```
 
+Native-only blocking convenience wrappers use the same names without `_async`.
 `scale` bounds: `renderer::MIN_EXPORT_SCALE` (0.25) ~ `renderer::MAX_EXPORT_SCALE` (8.0), automatically clamped.
 Convert from standard 96 DPI via `renderer::dpi_to_scale(dpi)`.
 
 When scaling, every pixel-based dimension (font / line / margin / grid / legend) scales proportionally → the visual is identical, just denser pixels.
-When the target format supports it, export renders into an MSAA color target and resolves into the single-sample `COPY_SRC` texture used for readback. The source data and geometry are not smoothed.
 
 ---
 
@@ -361,9 +372,10 @@ pub struct Config {
 UTC Unix seconds with `AutoCalendar` tick planning; use
 `unit = Milliseconds` for JS timestamps and `FixedOffsetMinutes(540)` for KST.
 `AutoCalendar` measures tick-label text and coarsens the calendar step so labels
-do not overlap. Use `Renderer::add_hilo_column` (native) or `set_column_f64`
-(web `Float64Array`) for high-resolution absolute Unix timestamps; those paths
-preserve sub-f32 deltas on the GPU as f32 hi/lo pairs.
+do not overlap. Use `Renderer::add_hilo_column` (native) or
+`register_column_f64` / `update_register_column_f64` (web `Float64Array`) for
+high-resolution absolute Unix timestamps; those paths preserve sub-f32 deltas
+on the GPU as f32 hi/lo pairs.
 The browser demo at [crates/web/timestamp-demo.html](crates/web/timestamp-demo.html)
 is the quickest visual check for range changes, chart-width changes, and export
 scale against that contract.
@@ -452,7 +464,7 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::paint` branches 
 
 **`Renderer::create_style_for_series(cfg)`** extracts color/width/shape from `cfg.render_type`'s sub-styles and builds a GPU `ChartStyle` for screen paint. For export, `create_style_for_series_scaled(cfg, scale)` scales pixel widths only.
 
-**Single-direction errorbar** (`ScatterErrorbarY` etc.): the unused dimension binds a zero-filled column under id `__zero`. Native callers pre-register it (`renderer.add_column("__zero", &zero_col)`) — without it, paint returns `FiggyError::UnknownColumn`. The wasm wrapper provisions it automatically on `set_series`. (Symmetric variants reuse the same column for lo/hi — no special handling.)
+**Single-direction errorbar** (`ScatterErrorbarY` etc.): the unused dimension binds the renderer-owned reserved column `__zero`. Native hosts call `renderer.ensure_internal_zero_column(required_len)?` before preparing the series; public add/upsert calls reject this reserved id. The web wrapper creates or grows it only during render/export preparation, never as a side effect of `set_series`. (Symmetric variants reuse the same column for lo/hi — no special handling.)
 
 ### `Config::scaled(scale)` / `Config::scale_in_place(s)`
 Multiplies every pixel-based dim by `scale`. `min/max/major_spacing`, scale enum, and colors are untouched. Used for resolution-invariant high-DPI export.
@@ -470,26 +482,40 @@ Empty text is filled in via the `Chart::with_title / with_x_title / with_y_title
 
 ## 3. Internal memory data flow
 
-![figgy data flow (English)](crates/renderer/assets/architecture-en.png)
+![figgy internal memory and render architecture](crates/renderer/assets/architecture-state-flow-en.png)
 
-> Source: `crates/renderer/assets/architecture-en.png` — the `model` /
-> `renderer` / `web` crate split, the `ColumnSource` → `ColumnPool` upload
-> path (scalar stats at upload), the GPU arc scan for dashed lines, the
-> per-panel `ChartView` / `ChartStyle` resources, dirty-flag handling, the
-> grid → data → decoration paint order, and the window / export paths.
+The renderer-owned registry is the persistent SSoT used by the browser wrapper.
+Low-level native hosts may still supply `ChartDrawItem` directly. In both paths,
+`ChartDrawItem` is prepare-only input; paint consumes only the owned token.
 
 ### Ownership and lifetime boundaries
 
-`Renderer` owns the lifetime of GPU-side state: the `ColumnPool`,
+`Renderer` owns the chart registry and GPU-side state: the `ColumnPool`,
 render/compute pipelines, bind groups, per-panel GPU resources such as
 `ChartView` / `ChartStyle`, and the shared `Arc<wgpu::Device>` /
-`Arc<wgpu::Queue>`. Every mutation — `Renderer::prepare` and the export
-prepare path — runs behind an `&mut self` boundary and does not introduce a
-shared lock inside the renderer. `Renderer::paint_prepared` records through
-`&self` against an owned `PreparedFrame` token, so host paint callbacks that
-only hand out shared access need no wrapper lock either (`Renderer` is
-`Send + Sync`). Overlapping prepares are safe: buffers still referenced by a
-live token are copy-on-write protected, never rewritten in place.
+`Arc<wgpu::Queue>`. A `ChartId` is opaque and bound to its issuing renderer.
+`set_chart_state` atomically validates and replaces a chart's `Config` and
+ordered series when one logical edit affects both.
+`remove_column` cascade-removes every renderer-owned series that references the
+id, but the core renderer deliberately does not rewrite the `Config::legend`
+document. The web facade applies its auto-managed-versus-free-edited legend
+policy around that core operation.
+
+Every mutation — `Renderer::prepare` and the export prepare path — runs behind
+an `&mut self` boundary and does not introduce a shared lock inside the
+renderer. `Renderer::paint_prepared` records through `&self` against an owned
+`PreparedFrame` token, so host paint callbacks that only hand out shared access
+need no wrapper lock either (`Renderer` is `Send + Sync`).
+
+The token captures resolved pipelines, bind groups, buffers, panel geometry,
+column allocation epochs, pool layout generation, target-pipeline generation,
+and each captured `ChartView` content revision. A mismatch fails before
+recording with `FiggyError::StalePreparedFrame`; the host prepares again on the
+next frame. Arc/star scratch buffers use copy-on-write slots when a live token
+still owns the old slot. This COW guarantee does not apply indiscriminately to
+every GPU buffer: rewriting the same `ChartView`, replacing a captured column,
+defragmenting the pool, or rebuilding target pipelines deliberately makes the
+old token stale.
 
 `ColumnSource` data is borrowed only during upload. The long-lived records are
 the GPU-pool column and the scalar stats cached for auto-fit (min / max /
@@ -530,7 +556,7 @@ pool columns (x, y) ──┐                       Transform uniform (96 B writ
 The compute encoder is submitted before the host's render pass, so queue
 order sequences it under every embedding (winit / egui / iced / web) without
 API changes. Arc scratch buffers and bind groups are cached per series and
-reused only when the pool generation, column offsets, length, and star-pass
+reused only when the pool layout generation, column offsets, length, and star-pass
 shape match. The current arc-prefix scan is u32-addressable (`u32::MAX =
 4,294,967,295`); if a series length or pool element offset cannot fit in
 `u32`, the dashed arc prefix is skipped. As a runaway-churn backstop, a new
@@ -538,22 +564,51 @@ series id clears the per-series arc cache before insertion when it already
 holds 256 entries. Stale rebuilds for an existing id replace that entry in
 place, so the cache does not retain more than 256 entries.
 
-### Dirty flags
+### Renderer-owned state and frame invalidation
 
-`Chart` tracks two kinds of dirtiness:
+Persistent hosts register a chart in `Renderer` and keep the last
+`ChartRenderStamp` that was actually submitted and presented. The renderer is
+the sole issuer of its checked revisions:
 
-| Flag | Triggers | Handling |
-|---|---|---|
-| `data_dirty` | `set_x/y_range`, `auto_fit_*`, `invalidate()`, `config_mut()` / `set_config`, chart_area change, first frame | handled by `Renderer::prepare` (one UB write per panel per frame — also runs inside the `paint` / `draw` facades), so no explicit call is needed; `Renderer::update_transform` remains available but is no longer required per frame |
-| `raster_dirty` | `set_x/y_range`, `auto_fit_*` (ticks/grid depend on the range), decoration changes (`with_title`, decoration fields, …), `config_mut()` / `set_config`, chart_area change, first frame | `Renderer::refresh_axis` (re-rasterizes both grid + decoration textures and re-uploads them) |
+| State | Current trigger/handling |
+|---|---|
+| renderer `desired` revision | Any accepted visible chart edit, a referenced column replacement, or synchronized font registration requires a draw |
+| renderer `raster` revision | Config, series, selection, or font changes conservatively require `refresh_axis` before drawing |
+| host `view_dirty` | Surface/DPR preview geometry changed; refresh raster and draw |
+| host `redraw_pending` | Host-only surface state such as clear color changed; draw without duplicating chart state |
 
-Caller per frame:
+Browser frame flow:
+
 ```rust
-let raster_dirty = chart.consume_raster_dirty();
-if raster_dirty { renderer.refresh_axis(view, chart, panel_rect)?; }
-// data_dirty needs no explicit call: prepare rewrites the transform
-// uniform from the live chart config every frame.
+renderer.sync_external_invalidations()?;
+let stamp = renderer.chart_render_stamp(chart_id)?;
+let draw = stamp.needs_draw_since(last_presented_stamp.as_ref());
+let raster = stamp.needs_raster_since(last_presented_stamp.as_ref());
+
+if !draw && !view_dirty && !redraw_pending {
+    process_maintenance_without_surface_if_needed()?;
+    return Ok(());
+}
+if raster || view_dirty {
+    renderer.refresh_axis_with_selection(&mut view, &display_chart, rect, &boxes)?;
+}
+renderer.draw(clear, &items)?;
+last_presented_stamp = Some(renderer.chart_render_stamp(chart_id)?);
+view_dirty = false;
+redraw_pending = false;
 ```
+
+The last-presented stamp and host flags advance only after a successful draw, so
+a failed visual frame is retried. A clean web rAF skips the entire GPU surface
+path. Once a draw is required, data primitives are recorded again from the
+registered columns; there is no data-layer image cache, LOD, sampling, or
+decimation.
+
+The standalone `Chart::{data_dirty,raster_dirty}` booleans remain a compatibility
+mechanism for low-level callers that own an external `Chart`. `prepare` does not
+read or consume those booleans; it writes the transform whenever the caller has
+decided to draw. External-`Chart` hosts remain responsible for consuming
+`raster_dirty` and calling `refresh_axis`.
 
 ### Log scale on the GPU
 
@@ -566,15 +621,14 @@ When `AxisOptions.scale = Logarithmic`:
 ### Export pipeline
 
 ```
-export_panel_rgba(chart, &[SeriesConfig], scale):
+export_panel_rgba_async(chart, &[SeriesConfig], scale).await:
     scale ← clamp_export_scale(scale)         // [MIN_EXPORT_SCALE, MAX_EXPORT_SCALE]
     chart.config().scaled(scale)               // every pixel dim scaled proportionally
         ↓
     temp ChartView (scaled axis textures)
     temp ChartStyles ← create_style_for_series_scaled(cfg, scale) per cfg
         ↓
-    offscreen wgpu::Texture (fixed Rgba8Unorm, COPY_SRC, transparent clear;
-    optional MSAA color target resolves into this readback texture)
+    offscreen wgpu::Texture (fixed Rgba8Unorm, COPY_SRC, transparent clear)
     paint(items) — same compositing order (grid → data → decoration)
         ↓
     copy_texture_to_buffer in ROW CHUNKS (256-byte aligned padding; chunk
@@ -596,7 +650,7 @@ export_panel_rgba(chart, &[SeriesConfig], scale):
 
 ## License / fonts
 
-Bundled font: Liberation Sans (SIL OFL 1.1) — `crates/renderer/fonts/LICENSE-LiberationSans.txt`. Hosts can register additional fonts at runtime (`register_font` on wasm, `text_render::register_font_bytes` on native).
+Bundled font: Liberation Sans (SIL OFL 1.1) — `crates/renderer/fonts/LICENSE-LiberationSans.txt`. Hosts can register additional fonts at runtime (`register_font` on wasm, `text_render::register_font_bytes` on native). Byte-for-byte duplicate registration is idempotent: the registry stores the file once, reuses resolved face backing by face id, and does not advance the global font generation.
 
 ---
 
@@ -609,17 +663,16 @@ egui / iced / winit / 기타 wgpu 호스트 어디든 임베드 가능.
 
 > 워크스페이스 루트 README. crate 3개로 구성:
 > **`crates/model`** — 순수 차트 모델이자 스키마 권위: 옵션/데이터 SSoT(`Config`, `SeriesConfig`), 리치텍스트/범례 문서 모델, 상호작용 정책(`Selectable`/`Draggable`/`Resizable`, `HitMap`, 단일 이동 경로 `Config::nudge`), 프리셋(`AxisPreset`, `ColorCycle`). 의존성 0, `serde` 는 선택 피쳐.
-> **`crates/renderer`** — 아래에서 문서화하는 wgpu + CPU 라스터 장치. `model` 을 의존하며 전 모듈 re-export — `renderer::…` 경로 전부 유효.
+> **`crates/renderer`** — 아래에서 문서화하는 wgpu + CPU 라스터 장치. 지속 상태를 쓰는 host를 위해 renderer-owned chart registry(`ChartId` → `Config`, 순서 있는 `SeriesConfig`, selection, checked revision)도 제공한다. `model` 을 의존하며 전 모듈 re-export — `renderer::…` 경로 전부 유효.
 > **`crates/web`** — 브라우저 패키지(`figgy`): public `<figgy-chart>` Custom Element facade와 advanced escape hatch로 남는 raw `FiggyChart` wasm kernel. facade가 shadow canvas, ready promise/event 수명주기, rAF loop, ResizeObserver/DPR 처리, pointer mapping, export busy gate, id 기반 등록/해제 수명주기를 소유한다. 브라우저 I/O: [WASM.md](crates/renderer/WASM.md) · Config JSON 스키마: [SCHEMA.md](crates/web/SCHEMA.md). 빌드 산출물(`crates/web/pkg/`)은 gitignore — `npx wasm-pack build crates/web --release --target web` 로 빌드.
 > **웹 스튜디오** — [figgyplot.com](https://figgyplot.com/) 에 공개 웹 편집기가 있다. 브라우저 안에서 로컬 차트 데이터를 처리하고, CSV/TSV/Excel import, `.figgy` 프로젝트 열기, 같은 wasm/WebGPU 표면 기반 PNG export를 제공한다.
 
 - **GPU columnar pool**: 모든 데이터 컬럼을 하나의 GPU buffer 에 first-fit + 단편화 시 핑퐁 defrag. 업로드 시 auto-fit 용 스칼라 통계(min / max / 최소 양수)를 캐싱하고, 점선 호장 prefix 같은 per-point 지오메트리는 컴퓨트 스캔(`line_arc.wgsl`)이 제자리에서 계산.
 - **분리 합성**: grid → data → axis/label/legend 순으로 합성 → 그리드가 데이터를 가리지 않음. axis raster는 `Grid` / `Decoration` 분리 레이어가 기본이고, `AxisLayerKind::All`은 legacy 단일 패스 helper로 남아 있음.
-- **MSAA resolve 품질**: `WindowedRenderer` live frame과 offscreen PNG export는 adapter/format이 resolve를 지원하면 4x(또는 2x) MSAA render target을 쓰고, 미지원 시 1x로 fallback한다. 바뀌는 것은 primitive edge의 rasterization coverage뿐이며 데이터 포인트, 선분, dash arc length, export scale 의미는 바뀌지 않는다.
 - **데이터 무왜곡 계약**: renderer/web은 model 계약을 소비하며 원본 좌표, provenance, 축↔데이터 대응을 호스트 동의 없이 조용히 바꾸지 않는다. 명시적 clipping, log-domain skip, NaN skip, antialiasing 한계는 데이터 재작성 아닌 렌더링 계약이다.
 - **헤드리스 PNG export**: 임의 DPI 로 GPU offscreen 라스터 → 메모리 RGBA / PNG 바이트 반환 (async 우선, native 는 blocking 래퍼 제공).
 - **상호작용 레이어 (opt-in)**: 히트테스트, 선택 박스, 드래그(축은 수직 방향 제약 + 분리 축 `line_offset`), 데이터 영역 PPT 식 8핸들 리사이즈 — 정책은 전부 `model`, 호스트가 포인터 이벤트를 넣을 때만 동작.
-- **데이터 피킹 (opt-in)**: 최종 스타일/래스터 픽셀이 아니라 원본 시리즈 primitive가 판정 기준이다. scatter는 원본 데이터 점 위치와 설정된 marker hit 반경을 사용하고, line은 인접한 원본 데이터 점 사이의 직선 segment를 검사해 가까운 endpoint로 스냅한다. dash 공백, cap 래스터 형상, 장식용 draw-style 변형은 pick 경로를 바꾸지 않는다.
+- **데이터 피킹 (opt-in)**: 최종 스타일/래스터 픽셀이 아니라 원본 시리즈 primitive가 판정 기준이다. scatter는 원본 데이터 점 위치와 설정된 marker hit 반경을 사용하고, line은 인접한 원본 데이터 점 사이의 직선 segment를 검사해 가까운 endpoint로 스냅한다. dash 공백, cap 래스터 형상, 장식용 draw-style 변형은 pick 경로를 바꾸지 않는다. web의 async 반환은 `{ source_id: string | null, series_id, point_index, distance_px }`이고, 좌표가 필요하면 host가 `point_index`로 등록한 원본 데이터를 조회한다. errorbar stem/cap은 pick target이 아니다.
 - **리치텍스트 일원화**: 제목·틱 라벨·범례가 한 엔진 공유 — 세그먼트별 bold/italic/밑줄/첨자/그리스, 세그먼트별 색·크기 오버라이드, `'\n'` 줄바꿈, `'\t'` 표 열, 고정폭 범례 심볼 필드.
 - **손그림 스케치 모드 (opt-in)**: `draw_style: { mode: "sketch", amplitude_px, wavelength_px, seed }` 한 필드로 차트 전체를 xkcd 풍으로 — 축/틱/그리드/범례는 CPU 라스터에서, 라인의 흔들림/점선 위상은 호장 스캔 기반 GPU 변형으로, 마커/에러바는 전용 GPU 변형으로 처리되고, 차트 텍스트는 번들 손글씨 폰트(Comic Neue, OFL)로 자동 전환된다(글리프 없는 문자는 문자 단위 폴백 — CJK는 등록 폰트 유지). 시드 기반 결정적, 점선과 합성 가능, 필드가 없으면 정밀 경로가 한 바이트도 달라지지 않는다.
 - **은하수(milkyway) 모드 (opt-in)**: `draw_style: { mode: "milkyway", ... }` — 차트를 천체사진처럼 렌더링한다. 라인은 시리즈색 성운 리본 위 별 사슬(흑체색·흰 포화 코어·멱법칙 등급·클럼핑·쌍성), scatter는 기존 point shape가 고리 각도로 매핑되는 고리 행성, 에러바는 경계에 충격파 매듭이 맺히는 양극 제트, 축 크롬은 선광원 블룸, 배경은 가독성 우선 비네팅이 걸린 심우주(데이터가 항상 가장 밝다). 무거운 생성물(PSF·흑체 LUT·절차적 행성 아틀라스·고리 스트립)은 스타일 첫 사용 시 1회 베이크 후 캐싱, 전 파라미터 라이브 튜닝 가능(`examples/constellation_demo.rs`, `examples/constellation_lab.rs`), 슬라이더 범위는 기계가 읽는 메타데이터(`draw_style_param_specs`)로 제공.
@@ -733,11 +786,16 @@ let items  = [ChartDrawItem {
 renderer.draw(Color::WHITE, &items).unwrap();   // surface frame 획득 → prepare → encoder → pass → paint_prepared → submit → present
 ```
 
-`WindowedRenderer` 는 내부 MSAA color target을 surface 앞에 두고 획득한 frame으로 resolve할 수 있다. `Renderer::paint`를 직접 호출하는 host는 여전히 자신이 여는 render pass의 sample count를 직접 소유한다.
-
 ### `ColumnSource` — 데이터 어댑터 trait
 
 `Renderer::add_column` 의 시그니처는 `&dyn ColumnSource` 입니다 — 어떤 데이터 컨테이너든 본인 타입에 trait 구현하면 GPU pool 에 zero-copy 로 들어갑니다 (`Vec` 중간 alloc 0). 업로드 패스가 갓 쓴 바이트를 한 번 읽어 auto-fit 용 스칼라 통계(min / max / 최소 양수)를 캐싱합니다.
+
+`add_column` / `add_hilo_column` 은 새 id 등록용이다. 기존 id를 원자적으로
+교체할 때는 `upsert_column` / `upsert_hilo_column` 을 사용한다. 교체 업로드와
+checked revision preflight가 성공한 뒤에만 이전 allocation과 renderer
+revision이 교체·공개된다. picker/extent 같은 의존 상태를 먼저 준비해야 하는
+통합은 `begin_upsert_*` guard의 provisional pool을 사용하고 마지막에
+allocation-free `commit`을 호출한다.
 
 ```rust
 pub trait ColumnSource {
@@ -798,10 +856,11 @@ cargo run -p renderer --example iced_embed --features iced_demo
 ### 브라우저 timestamp 축 데모
 
 `crates/web/timestamp-demo.html` 은 absolute Unix time 값을
-`set_column_f64(Float64Array)` 로 올리는 브라우저 timestamp 경로를 확인하는
-데모다. 시간 범위, 데이터 단위, 시간대, 소수 초 정책, 라벨 패턴, 차트 폭,
-export scale 을 바꾸면서 x 축이 `LabelFormat::Timestamp` + `AutoCalendar` 로
-겹치지 않는 라벨을 고르는지 볼 수 있다.
+`register_column_f64(Float64Array)` 로 처음 올리고
+`update_register_column_f64` 로 명시 교체하는 브라우저 timestamp 경로를
+확인하는 데모다. 시간 범위, 데이터 단위, 시간대, 소수 초 정책, 라벨 패턴,
+차트 폭, export scale 을 바꾸면서 x 축이 `LabelFormat::Timestamp` +
+`AutoCalendar` 로 겹치지 않는 라벨을 고르는지 볼 수 있다.
 
 ```bash
 npx wasm-pack build crates/web --release --target web
@@ -852,16 +911,17 @@ impl egui_wgpu::CallbackTrait for FiggyCallback {
         let state = resources.get::<FiggyState>().unwrap();
         let prepared = state.panels[self.panel_idx].prepared.as_ref().unwrap();
         let target = (info.screen_size_px[0], info.screen_size_px[1]);
-        state.renderer.paint_prepared(render_pass, target, &items, prepared).unwrap();
+        state.renderer.paint_prepared(render_pass, target, prepared).unwrap();
     }
 }
 ```
 
-`paint_prepared` 는 반복 가능하고(같은 토큰을 여러 pass 에 기록 가능),
-`items` 는 prepare 때와 같은 순서·같은 내용이어야 한다. 두 단계 사이에
-무효화하는 `&mut` 호출이 끼어들면 아무것도 기록하지 않고
-`FiggyError::StalePreparedFrame` 을 반환한다 — 다음 frame 에 새로 `prepare`
-하면 복구된다. 렌더러를 frame 동안 단독 소유하는 호스트(winit 루프, wasm
+`paint_prepared` 는 반복 가능하다(같은 토큰을 여러 pass 에 기록 가능).
+`PreparedFrame` 이 resolve된 draw input을 소유하므로 paint에서 `items`를
+재구성하거나 다시 전달하지 않는다. 두 단계 사이에 캡처된 renderer 자원이
+바뀌면 아무것도 기록하지 않고 `FiggyError::StalePreparedFrame` 을 반환한다
+— 다음 frame 에 새로 `prepare` 하면 복구된다. 렌더러를 frame 동안 단독
+소유하는 호스트(winit 루프, wasm
 래퍼)는 두 단계를 연달아 실행하는 원샷 `Renderer::paint(&mut self, …)`
 facade 를 그대로 쓰면 된다.
 
@@ -869,24 +929,28 @@ facade 를 그대로 쓰면 된다.
 
 ### iced 통합 패턴
 
-`iced_wgpu::primitive::Pipeline` (1회 init) + `shader::Primitive` (frame 별) — figgy 의 `Renderer` 를 Pipeline 에 그대로 보관, `Mutex` 없음: `prepare` (`&mut Storage`) 가 dirty 처리와 `renderer.prepare(&items)` 를 실행해 반환된 `PreparedFrame` 토큰을 Pipeline 옆에 저장하고, `draw` (`&Storage`) 는 공유 참조만으로 `renderer.paint_prepared(pass, target, &items, &prepared)` 를 호출한다. [examples/iced_embed.rs](crates/renderer/examples/iced_embed.rs).
+`iced_wgpu::primitive::Pipeline` (1회 init) + `shader::Primitive` (frame 별) — figgy 의 `Renderer` 를 Pipeline 에 그대로 보관, `Mutex` 없음: `prepare` (`&mut Storage`) 가 dirty 처리와 `renderer.prepare(&items)` 를 실행해 반환된 `PreparedFrame` 토큰을 Pipeline 옆에 저장하고, `draw` (`&Storage`) 는 공유 참조만으로 `renderer.paint_prepared(pass, target, &prepared)` 를 호출한다. [examples/iced_embed.rs](crates/renderer/examples/iced_embed.rs).
 
 ### PNG export (메모리 only — 저장은 caller)
 
 ```rust
-let bytes = renderer.export_panel_png_bytes(&chart, &series_configs, scale)?;
+let bytes = renderer
+    .export_panel_png_bytes_async(&chart, &series_configs, scale)
+    .await?;
 std::fs::write("/tmp/out.png", &bytes)?;          // 또는 clipboard / network 등 자유.
 
 // RGBA 만 필요하면:
-let img = renderer.export_panel_rgba(&chart, &series_configs, scale)?;
+let img = renderer
+    .export_panel_rgba_async(&chart, &series_configs, scale)
+    .await?;
 // img.width, img.height, img.rgba (straight alpha, 길이 = w * h * 4)
 ```
 
+native 전용 blocking convenience wrapper는 `_async` 없는 같은 이름을 쓴다.
 `scale` 한계: `renderer::MIN_EXPORT_SCALE` (0.25) ~ `renderer::MAX_EXPORT_SCALE` (8.0) 자동 clamp.
 `renderer::dpi_to_scale(dpi)` 로 표준 DPI(96) 기준 변환.
 
 스케일 시 모든 픽셀 dim (폰트 / 선 / 마진 / 그리드 / 범례) 비례 확대 → 시각적 동치, 픽셀만 더 촘촘.
-target format이 지원하면 export는 MSAA color target에 렌더한 뒤 readback용 single-sample `COPY_SRC` texture로 resolve한다. 원본 데이터와 지오메트리는 smoothing하지 않는다.
 
 ---
 
@@ -946,8 +1010,9 @@ Unix seconds + `AutoCalendar` tick 계획이며, JS timestamp에는 `unit =
 Milliseconds`, 한국 시간 같은 고정 오프셋에는 `FixedOffsetMinutes(540)`을 쓴다.
 `AutoCalendar`는 tick label 폭을 측정해서 label이 겹치지 않도록 calendar step을
 자동으로 성글게 만든다. 고해상도 absolute Unix timestamp는 native에서
-`Renderer::add_hilo_column`, web에서 `set_column_f64(Float64Array)`를 사용하면
-GPU에서 `(hi: f32, lo: f32)` pair로 보존된다.
+`Renderer::add_hilo_column`, web에서 `register_column_f64` /
+`update_register_column_f64`(`Float64Array`)를 사용하면 GPU에서
+`(hi: f32, lo: f32)` pair로 보존된다.
 [crates/web/timestamp-demo.html](crates/web/timestamp-demo.html) 데모는 이 계약을
 시간 범위 변경, 차트 폭 변경, export scale 변경과 함께 가장 빨리 눈으로
 확인하는 경로다.
@@ -1035,7 +1100,7 @@ overlay ring은 선택된 scatter marker 반지름을 따른다(포인트별 스
 
 **`Renderer::create_style_for_series(cfg)`** 가 `cfg.render_type` 의 sub-style 에서 색/두께/shape 자동 추출 → GPU `ChartStyle` 빌드. 화면 paint 시 사용. export 는 `create_style_for_series_scaled(cfg, scale)` 로 두께만 픽셀 스케일.
 
-**한쪽 차원만 errorbar 시** (`ScatterErrorbarY` 등): 미사용 차원은 `__zero` id 의 zero column 을 바인딩. native 호출자는 사전 등록 필요 (`renderer.add_column("__zero", &zero_col)`, 미등록 시 `FiggyError::UnknownColumn`). wasm 래퍼는 `set_series` 에서 자동 공급. (Symmetric 변종은 같은 컬럼을 lo/hi 양쪽에 자동 사용 — 별도 처리 X.)
+**한쪽 차원만 errorbar 시** (`ScatterErrorbarY` 등): 미사용 차원은 renderer-owned reserved column `__zero` 를 바인딩한다. native host는 시리즈 prepare 전에 `renderer.ensure_internal_zero_column(required_len)?` 을 호출하고, public add/upsert는 이 reserved id를 거부한다. web wrapper는 `set_series` 부수효과로 업로드하지 않고 실제 render/export 준비 시에만 생성·확장한다. (Symmetric 변종은 같은 컬럼을 lo/hi 양쪽에 자동 사용 — 별도 처리 X.)
 
 ### `Config::scaled(scale)` / `Config::scale_in_place(s)`
 모든 픽셀 dim 을 `scale` 배. `min/max/major_spacing`, scale enum, 색은 무변경. 고해상도 export 시 시각적 동치 보장.
@@ -1053,26 +1118,38 @@ overlay ring은 선택된 scatter marker 반지름을 따른다(포인트별 스
 
 ## 3. 내부 메모리 데이터 흐름
 
-![figgy 데이터 흐름 (한국어)](crates/renderer/assets/architecture-kr.png)
+![figgy 내부 메모리 및 렌더링 아키텍처](crates/renderer/assets/architecture-state-flow-kr.png)
 
-> 출처: `crates/renderer/assets/architecture-kr.png` — `model` / `renderer` /
-> `web` crate 분리, `ColumnSource` → `ColumnPool` 업로드 경로(업로드 시
-> 스칼라 통계 캐싱), 점선용 GPU 호장 스캔, panel 별 `ChartView` /
-> `ChartStyle` 자원, dirty-flag 처리, grid → data → decoration 합성 순서,
-> 윈도우 / export 경로.
+renderer-owned registry가 browser wrapper의 지속 SSoT다. 저수준 native host는
+`ChartDrawItem`을 직접 전달할 수도 있다. 어느 경로든 `ChartDrawItem`은
+prepare 전용 입력이고 paint는 owned token만 소비한다.
 
 ### 소유권과 수명 경계
 
-`Renderer` 는 GPU 측 상태의 수명 소유자다. `ColumnPool`,
+`Renderer` 는 chart registry와 GPU 측 상태의 수명 소유자다. `ColumnPool`,
 render/compute pipeline, bind group, panel 별 `ChartView` / `ChartStyle`
 GPU 자원, 공유 `Arc<wgpu::Device>` / `Arc<wgpu::Queue>` 를 보관한다.
+`ChartId`는 발급한 renderer에 결박된 opaque id다. 하나의 논리 편집이
+Config와 ordered series를 함께 바꾸면 `set_chart_state`가 두 값을 검증하고
+원자적으로 교체한다.
+`remove_column`은 그 id를 참조하는 모든 renderer-owned series를 cascade
+제거하지만 core renderer는 `Config::legend` 문서를 고치지 않는다. web
+facade가 core 호출 주위에서 auto-managed/free-edited legend 정책을 적용한다.
+
 모든 변경 — `Renderer::prepare` 와 export prepare 경로 — 은 `&mut self`
 경계에서 실행되고, renderer 내부에 새 공유 락을 만들지 않는다.
 `Renderer::paint_prepared` 는 owned `PreparedFrame` 토큰을 상대로 `&self`
 로 기록하므로, 공유 참조만 제공하는 host paint 콜백에도 wrapper 락이
-필요 없다 (`Renderer` 는 `Send + Sync`). 겹치는 prepare 도 안전하다:
-살아 있는 토큰이 참조하는 버퍼는 copy-on-write 로 보호되어 제자리에서
-다시 쓰이지 않는다.
+필요 없다 (`Renderer` 는 `Send + Sync`).
+
+토큰은 resolve된 pipeline, bind group, buffer, panel geometry, column
+allocation epoch, pool layout generation, target-pipeline generation,
+캡처한 각 `ChartView`의 content revision을 보유한다. 하나라도 어긋나면
+기록 전에 `FiggyError::StalePreparedFrame`으로 실패하고 다음 frame에 다시
+prepare한다. arc/star scratch buffer는 살아 있는 토큰이 기존 slot을 잡고
+있을 때만 copy-on-write slot을 쓴다. 이 COW 보장은 모든 GPU buffer에
+무차별 적용되지 않는다. 같은 `ChartView` 재작성, 캡처 column 교체, pool
+defrag, target pipeline 재생성은 기존 토큰을 의도적으로 stale 처리한다.
 
 `ColumnSource` 데이터는 upload 순간에만 빌려 읽힌다. 장기 보관되는 것은
 GPU pool column과 auto-fit 용 scalar stats(min / max / 최소 양수)뿐이며,
@@ -1109,7 +1186,7 @@ pool 컬럼 (x, y) ──┐                        Transform uniform (96 B writ
 
 컴퓨트 인코더는 호스트의 렌더 패스보다 먼저 submit 되므로 큐 순서가 모든
 임베딩(winit / egui / iced / web)에서 API 변경 없이 순서를 보장한다.
-arc scratch buffer/바인드 그룹은 시리즈별 캐싱되며 pool generation, column
+arc scratch buffer/바인드 그룹은 시리즈별 캐싱되며 pool layout generation, column
 offset, length, star-pass shape가 모두 맞을 때만 재사용된다. 현재 arc-prefix
 scan은 u32-addressable 범위(`u32::MAX = 4,294,967,295`) 안에서 동작한다.
 시리즈 길이나 pool element offset이 `u32`에 들어가지 않으면 dashed arc
@@ -1117,22 +1194,48 @@ prefix는 생략된다. 새 series id를 삽입할 때 시리즈별 arc cache가
 256개이면 삽입 전에 clear한다. 기존 id의 stale rebuild는 같은 key를 제자리에서
 교체하므로 불필요하게 clear하지 않으며, cache는 256개를 넘겨 보관하지 않는다.
 
-### 더티 플래그
+### Renderer-owned 상태와 frame invalidation
 
-`Chart` 가 두 종류의 dirty 추적:
+지속 host는 chart를 `Renderer`에 등록하고 실제 submit/present에 성공한 마지막
+`ChartRenderStamp`를 보관한다. checked revision은 renderer만 발급한다:
 
-| 플래그 | 트리거 | 처리 |
-|---|---|---|
-| `data_dirty` | `set_x/y_range`, `auto_fit_*`, `invalidate()`, `config_mut()` / `set_config`, chart_area 변경, 첫 frame | `Renderer::prepare` 가 처리 (panel 당 매 frame UB 1회 write — `paint` / `draw` facade 안에서도 실행) → 명시적 호출 불필요. `Renderer::update_transform` 은 남아 있지만 frame 별 호출은 더 이상 필요 없다 |
-| `raster_dirty` | `set_x/y_range`, `auto_fit_*` (tick/grid가 range에 의존), 데코레이션 변경 (`with_title`, decoration field 등), `config_mut()` / `set_config`, chart_area 변경, 첫 frame | `Renderer::refresh_axis` (grid + decoration 두 텍스처 모두 재라스터 + 업로드) |
+| 상태 | 현재 trigger / 처리 |
+|---|---|
+| renderer `desired` revision | 승인된 시각 상태 변경, 참조 column 교체, 동기화된 font 등록은 draw 요구 |
+| renderer `raster` revision | Config, series, selection, font 변경은 보수적으로 draw 전 `refresh_axis` 요구 |
+| host `view_dirty` | surface/DPR preview geometry 변경 — raster refresh + draw |
+| host `redraw_pending` | clear color 같은 host-only surface 상태 변경 — chart 상태 복제 없이 draw |
 
-호출자 매 frame:
+browser frame 흐름:
+
 ```rust
-let raster_dirty = chart.consume_raster_dirty();
-if raster_dirty { renderer.refresh_axis(view, chart, panel_rect)?; }
-// data_dirty 는 별도 호출 불필요: prepare 가 매 frame 라이브 chart config
-// 로부터 transform uniform 을 다시 쓴다.
+renderer.sync_external_invalidations()?;
+let stamp = renderer.chart_render_stamp(chart_id)?;
+let draw = stamp.needs_draw_since(last_presented_stamp.as_ref());
+let raster = stamp.needs_raster_since(last_presented_stamp.as_ref());
+
+if !draw && !view_dirty && !redraw_pending {
+    process_maintenance_without_surface_if_needed()?;
+    return Ok(());
+}
+if raster || view_dirty {
+    renderer.refresh_axis_with_selection(&mut view, &display_chart, rect, &boxes)?;
+}
+renderer.draw(clear, &items)?;
+last_presented_stamp = Some(renderer.chart_render_stamp(chart_id)?);
+view_dirty = false;
+redraw_pending = false;
 ```
+
+last-presented stamp와 host flag는 draw 성공 뒤에만 전진하므로 visual frame
+실패는 재시도된다. clean web rAF는 GPU surface 경로 전체를 생략한다. draw가
+필요해지면 등록 column의 원본 primitive를 다시 기록한다. data-layer image
+cache, LOD, sampling, decimation은 없다.
+
+독립 `Chart::{data_dirty,raster_dirty}` bool은 외부 `Chart`를 소유하는 저수준
+호출자용 호환 장치로 남는다. `prepare`는 이 bool을 읽거나 consume하지 않고,
+호출자가 draw를 결정했을 때 transform을 쓴다. 외부-`Chart` host는
+`raster_dirty`를 consume하고 `refresh_axis`를 호출할 책임이 있다.
 
 ### Log scale GPU 처리
 
@@ -1145,15 +1248,14 @@ if raster_dirty { renderer.refresh_axis(view, chart, panel_rect)?; }
 ### Export 파이프라인
 
 ```
-export_panel_rgba(chart, &[SeriesConfig], scale):
+export_panel_rgba_async(chart, &[SeriesConfig], scale).await:
     scale ← clamp_export_scale(scale)         // [MIN_EXPORT_SCALE, MAX_EXPORT_SCALE]
     chart.config().scaled(scale)               // 픽셀 dim 모두 비례 확대
         ↓
     임시 ChartView (스케일된 axis 텍스처)
     임시 ChartStyle 들 ← create_style_for_series_scaled(cfg, scale) per cfg
         ↓
-    offscreen wgpu::Texture (고정 Rgba8Unorm, COPY_SRC, transparent clear;
-    선택적 MSAA color target이 이 readback texture로 resolve)
+    offscreen wgpu::Texture (고정 Rgba8Unorm, COPY_SRC, transparent clear)
     paint(items) — 동일 합성 순서 (grid → data → decoration)
         ↓
     copy_texture_to_buffer 를 **행 청크** 로 (256 byte 정렬 padding; 청크
@@ -1174,4 +1276,4 @@ export_panel_rgba(chart, &[SeriesConfig], scale):
 
 ## 라이선스 / 폰트
 
-번들 폰트: Liberation Sans (SIL OFL 1.1) — `crates/renderer/fonts/LICENSE-LiberationSans.txt`. 추가 폰트는 런타임 등록 (wasm `register_font`, native `text_render::register_font_bytes`).
+번들 폰트: Liberation Sans (SIL OFL 1.1) — `crates/renderer/fonts/LICENSE-LiberationSans.txt`. 추가 폰트는 런타임 등록 (wasm `register_font`, native `text_render::register_font_bytes`). byte-for-byte 동일 파일 재등록은 멱등이며, registry는 파일을 한 번만 저장하고 face id별 resolved backing을 재사용하며 global font generation을 올리지 않는다.

@@ -987,6 +987,7 @@ name = "figgy"
 version = "0.7.0"
 dependencies = [
  "console_error_panic_hook",
+ "futures-channel",
  "js-sys",
  "model",
  "renderer",

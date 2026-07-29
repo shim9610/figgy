@@ -7,14 +7,19 @@
 //! change, and cleared by the caller via `consume_*_dirty()`.
 
 use crate::color::Color;
-use crate::config::{AxisScale, Config, LegendEntryKind};
+use crate::config::{AxisOptions, AxisScale, Config, LegendEntryKind};
 use crate::data_render::ColumnPool;
 use crate::error::{FiggyError, Result};
 use crate::format::LabelFormat;
 use crate::text::{RichText, rich_segments_from_text};
 
 /// Apply min/max and scale-appropriate tick settings to one axis.
-fn apply_axis_range(axis: &mut crate::config::AxisOptions, min: f64, max: f64, log: bool) {
+pub(crate) fn apply_axis_range(
+    axis: &mut crate::config::AxisOptions,
+    min: f64,
+    max: f64,
+    log: bool,
+) {
     axis.min = min;
     axis.max = max;
     if log {
@@ -161,6 +166,97 @@ impl FitExtent {
     /// same gate the column-union fitters have always applied.
     fn is_fittable(&self) -> bool {
         self.min.is_finite() && self.max.is_finite() && self.max > self.min
+    }
+}
+
+/// Validate the invariants required before a `Config` becomes renderer-owned.
+///
+/// Raster helpers remain defensive against invalid ad-hoc values, but the
+/// renderer registry never publishes a zero target, a non-finite/reversed
+/// range, or a non-positive logarithmic range.
+pub(crate) fn validate_renderer_config(config: &Config) -> Result<()> {
+    let area = &config.chart_area.0;
+    if area.width == 0 || area.height == 0 {
+        return Err(FiggyError::InvalidChartArea {
+            width: area.width,
+            height: area.height,
+        });
+    }
+
+    for (field, axis) in [
+        ("top_x", &config.top_x),
+        ("bottom_x", &config.bottom_x),
+        ("left_y", &config.left_y),
+        ("right_y", &config.right_y),
+    ] {
+        if !axis.min.is_finite() || !axis.max.is_finite() {
+            return Err(FiggyError::InvalidConfig {
+                field,
+                reason: "axis bounds must be finite",
+            });
+        }
+        if axis.max <= axis.min {
+            return Err(FiggyError::InvalidConfig {
+                field,
+                reason: "axis max must be greater than min",
+            });
+        }
+        if matches!(axis.scale, AxisScale::Logarithmic) && axis.min <= 0.0 {
+            return Err(FiggyError::InvalidConfig {
+                field,
+                reason: "logarithmic axis bounds must be positive",
+            });
+        }
+    }
+
+    config.validate().map_err(|_| FiggyError::InvalidConfig {
+        field: "layout",
+        reason: "margins and visual dimensions must produce a non-empty data area",
+    })?;
+    Ok(())
+}
+
+fn fitted_axis_range(
+    axis: &AxisOptions,
+    ext: &FitExtent,
+    padding_ratio: f64,
+) -> Option<(f64, f64)> {
+    if !ext.is_fittable() {
+        return None;
+    }
+    let range = if matches!(axis.scale, AxisScale::Logarithmic) {
+        let safe = if ext.min > 0.0 {
+            ext.min
+        } else {
+            ext.min_positive?
+        };
+        log_padded(safe, ext.max, padding_ratio)
+    } else {
+        Chart::padded(ext.min, ext.max, padding_ratio)
+    };
+    (range.0.is_finite() && range.1.is_finite() && range.1 > range.0).then_some(range)
+}
+
+/// Apply both exact fit results directly to an owned `Config`.
+///
+/// This is allocation-free and infallible after extent validation, allowing
+/// the renderer to preflight every checked revision before atomically
+/// publishing the two axes.
+pub(crate) fn apply_auto_fit_all(
+    config: &mut Config,
+    x_extent: &FitExtent,
+    y_extent: &FitExtent,
+    padding_ratio: f64,
+) {
+    if let Some((min, max)) = fitted_axis_range(&config.bottom_x, x_extent, padding_ratio) {
+        let log = matches!(config.bottom_x.scale, AxisScale::Logarithmic);
+        apply_axis_range(&mut config.bottom_x, min, max, log);
+        apply_axis_range(&mut config.top_x, min, max, log);
+    }
+    if let Some((min, max)) = fitted_axis_range(&config.left_y, y_extent, padding_ratio) {
+        let log = matches!(config.left_y.scale, AxisScale::Logarithmic);
+        apply_axis_range(&mut config.left_y, min, max, log);
+        apply_axis_range(&mut config.right_y, min, max, log);
     }
 }
 
@@ -383,47 +479,19 @@ impl Chart {
     /// extent (non-finite or zero span) and on a log axis with no positive
     /// bound to anchor to.
     pub fn auto_fit_x_extent(&mut self, ext: &FitExtent, padding_ratio: f64) {
-        if !ext.is_fittable() {
+        let Some((min, max)) = fitted_axis_range(&self.config.bottom_x, ext, padding_ratio) else {
             return;
-        }
-        let log = matches!(self.config.bottom_x.scale, AxisScale::Logarithmic);
-        let (lo, hi) = if log {
-            let safe = if ext.min > 0.0 {
-                ext.min
-            } else {
-                match ext.min_positive {
-                    Some(p) => p,
-                    None => return,
-                }
-            };
-            log_padded(safe, ext.max, padding_ratio)
-        } else {
-            Self::padded(ext.min, ext.max, padding_ratio)
         };
-        self.set_x_range(lo, hi);
+        self.set_x_range(min, max);
     }
 
     /// Fit the Y axis to a prepared [`FitExtent`] — see
     /// [`Self::auto_fit_x_extent`].
     pub fn auto_fit_y_extent(&mut self, ext: &FitExtent, padding_ratio: f64) {
-        if !ext.is_fittable() {
+        let Some((min, max)) = fitted_axis_range(&self.config.left_y, ext, padding_ratio) else {
             return;
-        }
-        let log = matches!(self.config.left_y.scale, AxisScale::Logarithmic);
-        let (lo, hi) = if log {
-            let safe = if ext.min > 0.0 {
-                ext.min
-            } else {
-                match ext.min_positive {
-                    Some(p) => p,
-                    None => return,
-                }
-            };
-            log_padded(safe, ext.max, padding_ratio)
-        } else {
-            Self::padded(ext.min, ext.max, padding_ratio)
         };
-        self.set_y_range(lo, hi);
+        self.set_y_range(min, max);
     }
 
     /// Auto-fit the X axis range from the pool's column metadata for `x_id`.

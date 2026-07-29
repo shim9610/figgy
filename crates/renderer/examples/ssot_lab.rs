@@ -313,12 +313,10 @@ impl CallbackTrait for LabCallback {
             state.frames_skipped.fetch_add(1, Ordering::Relaxed);
             return;
         };
-        let series = one_series(&panel.series, &panel.style);
-        let items = panel_items(&panel.view, panel.chart.config(), &series);
         let target_size = (info.screen_size_px[0], info.screen_size_px[1]);
         if let Err(e) = state
             .renderer
-            .paint_prepared(render_pass, target_size, &items, prepared)
+            .paint_prepared(render_pass, target_size, prepared)
         {
             state.frames_skipped.fetch_add(1, Ordering::Relaxed);
             eprintln!("[ssot_lab] paint_prepared skipped a panel frame: {e}");

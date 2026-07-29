@@ -5,11 +5,8 @@
 직접 직렬화해 생성했고, 동기화 테스트가 어긋남을 막는다:
 
 ```bash
-cargo test -p model --features serde
+cargo test -p model --features serde --test schema_sync
 ```
-
-`schema_sync` 통합 테스트는 제거되었다. 이 문서는 `crates/model`의 serde
-형태와 default 값을 기준으로 수동 갱신한다.
 
 **타입의 진실 원본 (Rust 소스)**
 
@@ -96,9 +93,14 @@ supported tokens are `%Y`, `%m`, `%d`, `%H`, `%M`, `%S`, `%f`, and `%%`.
 needed so adjacent labels do not overlap.
 
 For large absolute Unix timestamps, upload browser data with
-`set_column_f64(id, Float64Array)` so the renderer can preserve sub-f32 deltas
-as GPU `(hi: f32, lo: f32)` pairs. `set_column_f32` is still appropriate for
-ordinary numeric coordinates or already-relative time values.
+`register_column_f64(id, Float64Array)` for a new id and
+`update_register_column_f64(id, Float64Array)` for an explicit replacement, so
+the renderer can preserve sub-f32 deltas as GPU `(hi: f32, lo: f32)` pairs.
+Use the corresponding `register_column_f32` / `update_register_column_f32`
+methods for ordinary numeric coordinates or already-relative time values.
+Registration rejects an existing id; update rejects a missing id and every
+accepted update performs an upload. `set_series` only selects registered column
+ids and never uploads column contents.
 
 The local demo [timestamp-demo.html](timestamp-demo.html) wires this path end to
 end: `Float64Array` timestamp upload, `LabelFormat::Timestamp`, `AutoCalendar`
@@ -118,7 +120,11 @@ tick planning, chart-width changes, and export scale changes.
 - `pick_point`는 실제 scatter marker 크기(스타일 매핑 포함)와 line stroke를
   hit 대상으로 본다. line stroke 근처 클릭은 hit segment의 가까운 endpoint
   데이터 점으로 스냅되고, errorbar stem/cap 자체는 pick target이 아니다.
-  반환 좌표는 항상 원본 데이터 좌표다.
+  `<figgy-chart>` facade 반환형은
+  `Promise<{ source_id: string | null, series_id, point_index, distance_px } | null>`이다.
+  raw `FiggyChart`는 같은 필드의 JSON string 또는 `undefined`를 Promise로
+  반환하고 facade가 이를 object / `null`로 정규화한다.
+  좌표가 필요하면 host가 `point_index`로 자신이 등록한 원본 column을 조회한다.
 - `chart_area`는 저장/Export 기준의 논리 문서 사각형이다. Web wrapper의
   `resize(w, h)`는 캔버스 surface만 바꾸고, 이 논리 문서를 현재 viewport에
   uniform scale + letterbox로 맞춰 보여준다. 브라우저 창 크기 변경을

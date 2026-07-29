@@ -196,9 +196,9 @@ fn build_combined(r: &mut Renderer) -> (Chart, Vec<SeriesConfig>) {
     r.add_column("sy", &col_f64(sy)).unwrap();
     r.add_column("ey", &col_f64(ey)).unwrap();
     r.add_column("ee", &col_f64(ee)).unwrap();
-    // Required by every errorbar series: zero-fill padding for the unused
-    // error dimension (the web wrapper registers this automatically).
-    r.add_column("__zero", &col_f64(vec![0.0; m])).unwrap();
+    // Required by every errorbar series: renderer-owned zero-fill padding for
+    // the unused error dimension.
+    r.ensure_internal_zero_column(m).unwrap();
 
     let mut chart = bare_chart(640, 480);
     chart.set_x_range(0.0, 6.5);

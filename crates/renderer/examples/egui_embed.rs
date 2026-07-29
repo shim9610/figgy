@@ -17,9 +17,8 @@
 //!    `renderer::Renderer::prepare(items)` — which also writes the panel's
 //!    data→NDC transform uniform — and stash the returned `PreparedFrame`
 //!    token on the panel.
-//! 5. Callback `paint` (`&CallbackResources`): rebuild the same items and
-//!    record with `renderer::Renderer::paint_prepared(pass, target, items,
-//!    token)` — pure `&self` command recording.
+//! 5. Callback `paint` (`&CallbackResources`): record only the prepared token
+//!    with `renderer::Renderer::paint_prepared(pass, target, token)`.
 //!
 //! Run with:
 //! `cargo run -p renderer --example egui_embed --features egui_demo`
@@ -398,9 +397,7 @@ fn build_xs_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
 // CallbackTrait — bridge between egui_wgpu and figgy.
 // ============================================================================
 
-/// Series list for one panel. Shared by `prepare` and `paint` so the items
-/// passed to `Renderer::prepare` and `Renderer::paint_prepared` are
-/// deterministic and identical (per-series identity is verified at paint).
+/// Series list used to build the prepare-only panel input.
 fn panel_series(panel: &PanelEntry) -> Vec<Series<'_>> {
     panel
         .series
@@ -410,8 +407,7 @@ fn panel_series(panel: &PanelEntry) -> Vec<Series<'_>> {
         .collect()
 }
 
-/// The single `ChartDrawItem` slice for one panel, over `panel_series`
-/// output. Same helper on both halves of the frame — see `panel_series`.
+/// The single prepare-only `ChartDrawItem` slice for one panel.
 fn panel_draw_items<'a>(panel: &'a PanelEntry, series: &'a [Series<'a>]) -> [ChartDrawItem<'a>; 1] {
     [ChartDrawItem {
         view: &panel.view,
@@ -529,16 +525,13 @@ impl CallbackTrait for FiggyCallback {
             );
             return;
         };
-        // Rebuild the exact items `prepare` used — same helpers, same order.
-        let series = panel_series(panel);
-        let items = panel_draw_items(panel, &series);
         // target = pixel size of the color attachment the current render pass draws into (egui's swap chain).
         let target_size = (info.screen_size_px[0], info.screen_size_px[1]);
         // A stale token (invalidating `&mut` call between prepare and paint)
         // is recoverable: skip this frame, the next prepare re-issues it.
         if let Err(e) = state
             .renderer
-            .paint_prepared(render_pass, target_size, &items, prepared)
+            .paint_prepared(render_pass, target_size, prepared)
         {
             eprintln!("[figgy] paint_prepared failed (skipping frame): {e}");
         }
