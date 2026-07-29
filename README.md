@@ -48,7 +48,7 @@ Same growth-response data, rendered through the four chart styles:
 
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # or git URL — currently 0.7.0, not on crates.io.
+renderer = { path = "crates/renderer" }   # or git URL — currently 0.7.1, not on crates.io.
 wgpu     = "27"
 ```
 
@@ -703,7 +703,7 @@ egui / iced / winit / 기타 wgpu 호스트 어디든 임베드 가능.
 
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # 또는 git URL — 현재 0.7.0, crates.io 미배포.
+renderer = { path = "crates/renderer" }   # 또는 git URL — 현재 0.7.1, crates.io 미배포.
 wgpu     = "27"
 ```
 

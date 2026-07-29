@@ -1,16 +1,20 @@
 // Exact GPU point/segment picking over ColumnPool split-f32 values.
 //
-// This module deliberately uses pick_* names and its own layouts.  It is not
+// This module deliberately uses pick_* names and its own layouts. It is not
 // part of the render-shader common block: the picker consumes the same public
-// data representation, but owns a compute-only ABI and a persistent packed
-// block BVH.
+// data representation but owns a compute-only ABI.
+//
+// Small queries scan directly. Larger queries use two streaming gates instead
+// of a traversal index. The X pass reads one axis and writes one scatter/line
+// bit pair for every 32 logical indices. The Y pass narrows only those bits.
+// The exact pass reads the surviving original indices and performs the
+// production distance calculation.
 
-const PICK_BLOCK_POINTS: u32 = 64u;
+const PICK_GATE_WORD_POINTS: u32 = 32u;
 const PICK_WORKGROUP_SIZE: u32 = 64u;
 const PICK_F32_MAX: f32 = 0x1.fffffep+127;
 const PICK_F32_EPSILON: f32 = 1.1920929e-7;
 
-const PICK_NODE_LEAF: u32 = 1u;
 const PICK_FLAG_SCATTER: u32 = 1u;
 const PICK_FLAG_LINE: u32 = 2u;
 const PICK_FLAG_STYLE_MAP: u32 = 4u;
@@ -18,34 +22,6 @@ const PICK_FLAG_STYLE_INDEX: u32 = 8u;
 
 const PICK_STYLE_MASK_RADIUS: u32 = 2u;
 const PICK_STYLE_MASK_SHAPE: u32 = 4u;
-
-struct PickBvhNode {
-    // Independent lane intervals are intentionally wider than an interval of
-    // (hi + lo).  They remain conservative when the query subtracts split
-    // axis bounds before adding the lanes (the precision-preserving linear
-    // path used by rendering).
-    x_hi_bounds: vec2<f32>,
-    x_lo_bounds: vec2<f32>,
-    y_hi_bounds: vec2<f32>,
-    y_lo_bounds: vec2<f32>,
-    // Leaf: first point and number of points owned by this leaf.
-    // Internal: first child node and child count (one or two).
-    first: u32,
-    count: u32,
-    kind: u32,
-    valid: u32,
-};
-
-struct PickBuildParams {
-    point_count: u32,
-    x_base: u32,
-    y_base: u32,
-    input_start: u32,
-    output_start: u32,
-    input_count: u32,
-    invocation_base: u32,
-    include_line_boundary: u32,
-};
 
 struct PickQueryTransform {
     data_min: vec2<f32>,
@@ -61,17 +37,16 @@ struct PickQueryParams {
     transform: PickQueryTransform,
     // (cursor_x, cursor_y, chart_x, chart_y), all canvas pixels.
     cursor_chart: vec4<f32>,
-    // (chart_width, chart_height, maximum pick distance, maximum primitive
-    // center extent).  The final component is only a conservative BVH
-    // expansion; exact radii/widths are resolved in leaves.
+    // (chart_width, chart_height, maximum pick distance, maximum scatter
+    // center extent). Exact radii/widths are resolved after both gates.
     chart_limits: vec4<f32>,
-    // (base scatter radius, line half width, display scale, unused).
+    // (base scatter radius, line half width, display scale, direct-scan flag).
     scatter_line: vec4<f32>,
     // (point count, x f32-lane base, y f32-lane base, style-index lane base).
     data: vec4<u32>,
     // (flags, style count, override count, style-index logical length).
     style: vec4<u32>,
-    // (root node, series order, base shape id, node count).
+    // (gate-word count, series order, base shape id, dispatch X width).
     series: vec4<u32>,
 };
 
@@ -89,47 +64,35 @@ struct PickScatterStyleOverride {
     params: vec4<f32>,
 };
 
-struct PickQueueState {
-    head: atomic<u32>,
-    tail: atomic<u32>,
-    overflow: atomic<u32>,
-    _pad: u32,
-};
-
-// Forty-eight bytes, byte-for-byte with Rust's PickCandidateGpu.
+// Thirty-two bytes, byte-for-byte with Rust's PickCandidateGpu. The public
+// contract returns only identity/index/distance, so no reconstructed data value
+// is carried through workgroup storage or readback.
 struct PickCandidate {
     valid: u32,
     series_order: u32,
     point_index: u32,
     primitive_kind: u32, // scatter=0, line=1 (CPU traversal order)
     primitive_index: u32,
-    data_x: f32,
-    data_y: f32,
     distance_sq: f32,
     distance_px: f32,
-    _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
+    _pad: u32,
 };
 
 @group(0) @binding(0) var<storage, read> pick_pool_words: array<u32>;
-@group(0) @binding(1) var<storage, read_write> pick_bvh_nodes: array<PickBvhNode>;
-@group(0) @binding(2) var<uniform> pick_build_params: PickBuildParams;
+// x=scatter bits, y=line-segment bits. One word pair covers 32 indices.
+@group(0) @binding(1) var<storage, read_write> pick_gate_masks: array<vec2<u32>>;
+@group(0) @binding(2) var<storage, read_write> pick_workgroup_candidates: array<PickCandidate>;
 
 // Reduction-only resources share group 0 but use bindings not reachable from
-// the build/query entry points.
+// the gate/exact entry points.
 @group(0) @binding(3) var<storage, read> pick_reduce_inputs: array<PickCandidate>;
 @group(0) @binding(4) var<storage, read_write> pick_reduce_output: PickCandidate;
 
-@group(1) @binding(0) var<storage, read_write> pick_node_queue: array<u32>;
-@group(1) @binding(1) var<storage, read_write> pick_queue_state: PickQueueState;
-@group(1) @binding(2) var<uniform> pick_query_params: PickQueryParams;
-@group(1) @binding(3) var<storage, read> pick_style_slots: array<PickScatterStyleSlot>;
-@group(1) @binding(4) var<storage, read> pick_style_overrides: array<PickScatterStyleOverride>;
-@group(1) @binding(5) var<storage, read_write> pick_series_output: PickCandidate;
+@group(1) @binding(0) var<uniform> pick_query_params: PickQueryParams;
+@group(1) @binding(1) var<storage, read> pick_style_slots: array<PickScatterStyleSlot>;
+@group(1) @binding(2) var<storage, read> pick_style_overrides: array<PickScatterStyleOverride>;
+@group(1) @binding(3) var<storage, read_write> pick_series_output: PickCandidate;
 
-var<workgroup> pick_round_begin: u32;
-var<workgroup> pick_round_end: u32;
 var<workgroup> pick_shared_candidates: array<PickCandidate, PICK_WORKGROUP_SIZE>;
 
 fn pick_is_finite(v: f32) -> bool {
@@ -145,232 +108,8 @@ fn pick_pair_is_valid(v: vec2<f32>) -> bool {
     return pick_is_finite(v.x) && pick_is_finite(v.y) && pick_is_finite(v.x + v.y);
 }
 
-fn pick_empty_node(first: u32, count: u32, kind: u32) -> PickBvhNode {
-    return PickBvhNode(
-        vec2<f32>(PICK_F32_MAX, -PICK_F32_MAX),
-        vec2<f32>(PICK_F32_MAX, -PICK_F32_MAX),
-        vec2<f32>(PICK_F32_MAX, -PICK_F32_MAX),
-        vec2<f32>(PICK_F32_MAX, -PICK_F32_MAX),
-        first,
-        count,
-        kind,
-        0u,
-    );
-}
-
-fn pick_grow_node(node_in: PickBvhNode, x: vec2<f32>, y: vec2<f32>) -> PickBvhNode {
-    var node = node_in;
-    node.x_hi_bounds = vec2<f32>(min(node.x_hi_bounds.x, x.x), max(node.x_hi_bounds.y, x.x));
-    node.x_lo_bounds = vec2<f32>(min(node.x_lo_bounds.x, x.y), max(node.x_lo_bounds.y, x.y));
-    node.y_hi_bounds = vec2<f32>(min(node.y_hi_bounds.x, y.x), max(node.y_hi_bounds.y, y.x));
-    node.y_lo_bounds = vec2<f32>(min(node.y_lo_bounds.x, y.y), max(node.y_lo_bounds.y, y.y));
-    node.valid = 1u;
-    return node;
-}
-
-fn pick_union_node(parent_in: PickBvhNode, child: PickBvhNode) -> PickBvhNode {
-    if child.valid == 0u {
-        return parent_in;
-    }
-    var parent = parent_in;
-    parent.x_hi_bounds = vec2<f32>(min(parent.x_hi_bounds.x, child.x_hi_bounds.x), max(parent.x_hi_bounds.y, child.x_hi_bounds.y));
-    parent.x_lo_bounds = vec2<f32>(min(parent.x_lo_bounds.x, child.x_lo_bounds.x), max(parent.x_lo_bounds.y, child.x_lo_bounds.y));
-    parent.y_hi_bounds = vec2<f32>(min(parent.y_hi_bounds.x, child.y_hi_bounds.x), max(parent.y_hi_bounds.y, child.y_hi_bounds.y));
-    parent.y_lo_bounds = vec2<f32>(min(parent.y_lo_bounds.x, child.y_lo_bounds.x), max(parent.y_lo_bounds.y, child.y_lo_bounds.y));
-    parent.valid = 1u;
-    return parent;
-}
-
-@compute @workgroup_size(PICK_WORKGROUP_SIZE)
-fn pick_build_leaves(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let leaf_index = pick_build_params.invocation_base + gid.x;
-    if leaf_index >= pick_build_params.input_count {
-        return;
-    }
-
-    let first = leaf_index * PICK_BLOCK_POINTS;
-    let owned_count = min(PICK_BLOCK_POINTS, pick_build_params.point_count - first);
-    var scan_count = owned_count;
-    if pick_build_params.include_line_boundary != 0u && first + scan_count < pick_build_params.point_count {
-        scan_count = scan_count + 1u;
-    }
-
-    var node = pick_empty_node(first, owned_count, PICK_NODE_LEAF);
-    for (var local = 0u; local < scan_count; local = local + 1u) {
-        let point_index = first + local;
-        let x = pick_read_pair(pick_build_params.x_base, point_index);
-        let y = pick_read_pair(pick_build_params.y_base, point_index);
-        if pick_pair_is_valid(x) && pick_pair_is_valid(y) {
-            node = pick_grow_node(node, x, y);
-        }
-    }
-    pick_bvh_nodes[pick_build_params.output_start + leaf_index] = node;
-}
-
-@compute @workgroup_size(PICK_WORKGROUP_SIZE)
-fn pick_build_internal(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let parent_local = pick_build_params.invocation_base + gid.x;
-    let parent_count = (pick_build_params.input_count + 1u) / 2u;
-    if parent_local >= parent_count {
-        return;
-    }
-
-    let first_child = pick_build_params.input_start + parent_local * 2u;
-    let child_count = min(2u, pick_build_params.input_count - parent_local * 2u);
-    var parent = pick_empty_node(first_child, child_count, 0u);
-    parent = pick_union_node(parent, pick_bvh_nodes[first_child]);
-    if child_count == 2u {
-        parent = pick_union_node(parent, pick_bvh_nodes[first_child + 1u]);
-    }
-    pick_bvh_nodes[pick_build_params.output_start + parent_local] = parent;
-}
-
-fn pick_next_up_once(v: f32) -> f32 {
-    if v != v || v >= PICK_F32_MAX {
-        return v;
-    }
-    if v == 0.0 {
-        return bitcast<f32>(1u);
-    }
-    let bits = bitcast<u32>(v);
-    return bitcast<f32>(select(bits - 1u, bits + 1u, v > 0.0));
-}
-
-fn pick_next_down_once(v: f32) -> f32 {
-    if v != v || v <= -PICK_F32_MAX {
-        return v;
-    }
-    if v == 0.0 {
-        return bitcast<f32>(0x80000001u);
-    }
-    let bits = bitcast<u32>(v);
-    return bitcast<f32>(select(bits + 1u, bits - 1u, v > 0.0));
-}
-
-// Eight ULPs cover the WGSL transcendental accuracy allowance while keeping
-// the hierarchy useful.  Every elementary interval operation below rounds
-// outward as well, so no exact leaf candidate can be rejected by a parent.
-fn pick_next_up(v_in: f32) -> f32 {
-    var v = v_in;
-    for (var i = 0u; i < 8u; i = i + 1u) {
-        v = pick_next_up_once(v);
-    }
-    return v;
-}
-
-fn pick_next_down(v_in: f32) -> f32 {
-    var v = v_in;
-    for (var i = 0u; i < 8u; i = i + 1u) {
-        v = pick_next_down_once(v);
-    }
-    return v;
-}
-
-struct PickInterval {
-    lo: f32,
-    hi: f32,
-};
-
-fn pick_interval(lo: f32, hi: f32) -> PickInterval {
-    return PickInterval(min(lo, hi), max(lo, hi));
-}
-
-fn pick_interval_add(a: PickInterval, b: PickInterval) -> PickInterval {
-    return PickInterval(pick_next_down(a.lo + b.lo), pick_next_up(a.hi + b.hi));
-}
-
-fn pick_interval_sub(a: PickInterval, b: PickInterval) -> PickInterval {
-    return PickInterval(pick_next_down(a.lo - b.hi), pick_next_up(a.hi - b.lo));
-}
-
-fn pick_interval_mul_scalar(a: PickInterval, s: f32) -> PickInterval {
-    let p0 = a.lo * s;
-    let p1 = a.hi * s;
-    return PickInterval(pick_next_down(min(p0, p1)), pick_next_up(max(p0, p1)));
-}
-
-fn pick_interval_div_scalar(a: PickInterval, s: f32) -> PickInterval {
-    let p0 = a.lo / s;
-    let p1 = a.hi / s;
-    return PickInterval(pick_next_down(min(p0, p1)), pick_next_up(max(p0, p1)));
-}
-
 fn pick_log10(v: f32) -> f32 {
     return log(max(v, 1e-30)) / log(10.0);
-}
-
-fn pick_axis_t_interval(hi_bounds: vec2<f32>, lo_bounds: vec2<f32>, axis: u32) -> PickInterval {
-    let hi = pick_interval(hi_bounds.x, hi_bounds.y);
-    let lo = pick_interval(lo_bounds.x, lo_bounds.y);
-    let min_hi = pick_query_params.transform.data_min[axis];
-    let max_hi = pick_query_params.transform.data_max[axis];
-    let min_lo = pick_query_params.transform.data_min_lo[axis];
-    let max_lo = pick_query_params.transform.data_max_lo[axis];
-    let range = (max_hi - min_hi) + (max_lo - min_lo);
-
-    if pick_query_params.transform.scale_log[axis] >= 0.5 {
-        let raw = pick_interval_add(hi, lo);
-        let logged = PickInterval(
-            pick_next_down(pick_log10(raw.lo)),
-            pick_next_up(pick_log10(raw.hi)),
-        );
-        let numerator = pick_interval_sub(
-            pick_interval_sub(logged, PickInterval(min_hi, min_hi)),
-            PickInterval(min_lo, min_lo),
-        );
-        return pick_interval_div_scalar(numerator, range);
-    }
-
-    let hi_num = pick_interval_sub(hi, PickInterval(min_hi, min_hi));
-    let lo_num = pick_interval_sub(lo, PickInterval(min_lo, min_lo));
-    return pick_interval_div_scalar(pick_interval_add(hi_num, lo_num), range);
-}
-
-fn pick_axis_canvas_interval(t: PickInterval, axis: u32) -> PickInterval {
-    let ndc = pick_interval_add(
-        pick_interval_mul_scalar(t, 2.0),
-        PickInterval(-1.0, -1.0),
-    );
-    if axis == 0u {
-        let shifted = pick_interval_add(ndc, PickInterval(1.0, 1.0));
-        let scaled = pick_interval_mul_scalar(
-            pick_interval_mul_scalar(shifted, 0.5),
-            pick_query_params.chart_limits.x,
-        );
-        return pick_interval_add(scaled, PickInterval(pick_query_params.cursor_chart.z, pick_query_params.cursor_chart.z));
-    }
-    let flipped = pick_interval_sub(PickInterval(1.0, 1.0), ndc);
-    let scaled = pick_interval_mul_scalar(
-        pick_interval_mul_scalar(flipped, 0.5),
-        pick_query_params.chart_limits.y,
-    );
-    return pick_interval_add(scaled, PickInterval(pick_query_params.cursor_chart.w, pick_query_params.cursor_chart.w));
-}
-
-fn pick_node_may_hit(node: PickBvhNode) -> bool {
-    if node.valid == 0u {
-        return false;
-    }
-    let tx = pick_axis_t_interval(node.x_hi_bounds, node.x_lo_bounds, 0u);
-    let ty = pick_axis_t_interval(node.y_hi_bounds, node.y_lo_bounds, 1u);
-    let px = pick_axis_canvas_interval(tx, 0u);
-    let py = pick_axis_canvas_interval(ty, 1u);
-
-    // A non-finite interval means the transform itself is degenerate.  Do not
-    // prune: exact leaf projection remains the authority.
-    if !pick_is_finite(px.lo) || !pick_is_finite(px.hi) || !pick_is_finite(py.lo) || !pick_is_finite(py.hi) {
-        return true;
-    }
-
-    let cursor = pick_query_params.cursor_chart.xy;
-    let dx = max(max(px.lo - cursor.x, cursor.x - px.hi), 0.0);
-    let dy = max(max(py.lo - cursor.y, cursor.y - py.hi), 0.0);
-    let center_distance = sqrt(fma(dx, dx, dy * dy));
-    let threshold = pick_next_up(
-        pick_query_params.chart_limits.z
-            + pick_query_params.chart_limits.w * pick_query_params.scatter_line.z,
-    );
-    return !pick_is_finite(center_distance) || center_distance <= threshold;
 }
 
 fn pick_axis_pair_to_t(v: vec2<f32>, axis: u32) -> f32 {
@@ -385,14 +124,175 @@ fn pick_axis_pair_to_t(v: vec2<f32>, axis: u32) -> f32 {
     return mix(linear_num / range, log_num / range, pick_query_params.transform.scale_log[axis]);
 }
 
+fn pick_project_axis_pair(v: vec2<f32>, axis: u32) -> f32 {
+    let t = pick_axis_pair_to_t(v, axis);
+    if axis == 0u {
+        return pick_query_params.cursor_chart.z + t * pick_query_params.chart_limits.x;
+    }
+    return pick_query_params.cursor_chart.w + (1.0 - t) * pick_query_params.chart_limits.y;
+}
+
 fn pick_project_pair(x: vec2<f32>, y: vec2<f32>) -> vec2<f32> {
-    let tx = pick_axis_pair_to_t(x, 0u);
-    let ty = pick_axis_pair_to_t(y, 1u);
-    let ndc = vec2<f32>(tx, ty) * 2.0 - 1.0;
-    return vec2<f32>(
-        pick_query_params.cursor_chart.z + (ndc.x + 1.0) * 0.5 * pick_query_params.chart_limits.x,
-        pick_query_params.cursor_chart.w + (1.0 - ndc.y) * 0.5 * pick_query_params.chart_limits.y,
+    return vec2<f32>(pick_project_axis_pair(x, 0u), pick_project_axis_pair(y, 1u));
+}
+
+fn pick_axis_cursor(axis: u32) -> f32 {
+    return pick_query_params.cursor_chart[axis];
+}
+
+fn pick_conservative_gate_threshold(threshold: f32) -> f32 {
+    // The exact pass remains authoritative. A tiny outward pad prevents an
+    // axis gate from rejecting a boundary hit because sqrt/add/sub rounded in
+    // a different direction.
+    return threshold + max(abs(threshold), 1.0) * PICK_F32_EPSILON * 8.0;
+}
+
+fn pick_scatter_projected_may_hit(projected: f32, axis: u32) -> bool {
+    if !pick_is_finite(projected) {
+        return false;
+    }
+    let threshold = pick_conservative_gate_threshold(
+        pick_query_params.chart_limits.z
+        + pick_query_params.chart_limits.w * pick_query_params.scatter_line.z,
     );
+    return abs(projected - pick_axis_cursor(axis)) <= threshold;
+}
+
+fn pick_line_projected_may_hit(a_px: f32, b_px: f32, axis: u32) -> bool {
+    if !pick_is_finite(a_px) || !pick_is_finite(b_px) {
+        return false;
+    }
+    let threshold = pick_conservative_gate_threshold(
+        pick_query_params.chart_limits.z
+        + pick_query_params.scatter_line.y * pick_query_params.scatter_line.z,
+    );
+    let cursor = pick_axis_cursor(axis);
+    return cursor >= min(a_px, b_px) - threshold
+        && cursor <= max(a_px, b_px) + threshold;
+}
+
+fn pick_linear_workgroup_id(workgroup_id: vec3<u32>) -> u32 {
+    return workgroup_id.x + workgroup_id.y * pick_query_params.series.w;
+}
+
+@compute @workgroup_size(PICK_WORKGROUP_SIZE)
+fn pick_gate_x(
+    @builtin(workgroup_id) workgroup_id: vec3<u32>,
+    @builtin(local_invocation_index) local_index: u32,
+) {
+    let word_index =
+        pick_linear_workgroup_id(workgroup_id) * PICK_WORKGROUP_SIZE + local_index;
+    if word_index >= pick_query_params.series.x {
+        return;
+    }
+
+    let flags = pick_query_params.style.x;
+    let scatter_enabled = (flags & PICK_FLAG_SCATTER) != 0u;
+    let line_enabled = (flags & PICK_FLAG_LINE) != 0u;
+    let point_count = pick_query_params.data.x;
+    let first = word_index * PICK_GATE_WORD_POINTS;
+    var scatter_mask = 0u;
+    var line_mask = 0u;
+    var x = pick_read_pair(pick_query_params.data.y, first);
+    for (var bit = 0u; bit < PICK_GATE_WORD_POINTS; bit = bit + 1u) {
+        let point_index = first + bit;
+        if point_index >= point_count {
+            break;
+        }
+        let x_valid = pick_pair_is_valid(x);
+        var x_px = 0.0;
+        if x_valid {
+            x_px = pick_project_axis_pair(x, 0u);
+        }
+        if scatter_enabled && x_valid && pick_scatter_projected_may_hit(x_px, 0u) {
+            scatter_mask = scatter_mask | (1u << bit);
+        }
+        let has_next = point_index + 1u < point_count;
+        let load_next = has_next && (line_enabled || bit + 1u < PICK_GATE_WORD_POINTS);
+        if load_next {
+            let next_x = pick_read_pair(pick_query_params.data.y, point_index + 1u);
+            if line_enabled
+                && x_valid
+                && pick_pair_is_valid(next_x)
+                && pick_line_projected_may_hit(
+                    x_px,
+                    pick_project_axis_pair(next_x, 0u),
+                    0u,
+                )
+            {
+                line_mask = line_mask | (1u << bit);
+            }
+            x = next_x;
+        }
+    }
+    pick_gate_masks[word_index] = vec2<u32>(scatter_mask, line_mask);
+}
+
+@compute @workgroup_size(PICK_WORKGROUP_SIZE)
+fn pick_gate_y(
+    @builtin(workgroup_id) workgroup_id: vec3<u32>,
+    @builtin(local_invocation_index) local_index: u32,
+) {
+    let word_index =
+        pick_linear_workgroup_id(workgroup_id) * PICK_WORKGROUP_SIZE + local_index;
+    if word_index >= pick_query_params.series.x {
+        return;
+    }
+
+    let point_count = pick_query_params.data.x;
+    let first = word_index * PICK_GATE_WORD_POINTS;
+    let input = pick_gate_masks[word_index];
+    var scatter_mask = input.x;
+    var line_mask = input.y;
+    var cached_y = vec2<f32>(0.0);
+    var cached_index = 0u;
+    var has_cached_y = false;
+    for (var bit = 0u; bit < PICK_GATE_WORD_POINTS; bit = bit + 1u) {
+        let bit_mask = 1u << bit;
+        if ((scatter_mask | line_mask) & bit_mask) == 0u {
+            continue;
+        }
+        let point_index = first + bit;
+        var y = vec2<f32>(0.0);
+        if has_cached_y && cached_index == point_index {
+            y = cached_y;
+        } else {
+            y = pick_read_pair(pick_query_params.data.z, point_index);
+        }
+        let y_valid = pick_pair_is_valid(y);
+        var y_px = 0.0;
+        if y_valid {
+            y_px = pick_project_axis_pair(y, 1u);
+        }
+        if (scatter_mask & bit_mask) != 0u {
+            if !y_valid || !pick_scatter_projected_may_hit(y_px, 1u) {
+                scatter_mask = scatter_mask & ~bit_mask;
+            }
+        }
+        if (line_mask & bit_mask) != 0u {
+            if point_index + 1u >= point_count {
+                line_mask = line_mask & ~bit_mask;
+            } else {
+                let next_y = pick_read_pair(pick_query_params.data.z, point_index + 1u);
+                cached_y = next_y;
+                cached_index = point_index + 1u;
+                has_cached_y = true;
+                if !y_valid
+                    || !pick_pair_is_valid(next_y)
+                    || !pick_line_projected_may_hit(
+                        y_px,
+                        pick_project_axis_pair(next_y, 1u),
+                        1u,
+                    )
+                {
+                    line_mask = line_mask & ~bit_mask;
+                }
+            }
+        } else {
+            has_cached_y = false;
+        }
+    }
+    pick_gate_masks[word_index] = vec2<u32>(scatter_mask, line_mask);
 }
 
 fn pick_base_shape_id(shape_id: u32) -> u32 {
@@ -490,20 +390,19 @@ fn pick_resolve_scatter_radius(point_index: u32) -> f32 {
 }
 
 fn pick_invalid_candidate(series_order: u32) -> PickCandidate {
-    return PickCandidate(0u, series_order, 0u, 0u, 0u, 0.0, 0.0, PICK_F32_MAX, PICK_F32_MAX, 0u, 0u, 0u);
-}
-
-fn pick_error_candidate(series_order: u32) -> PickCandidate {
-    return PickCandidate(2u, series_order, 0u, 0u, 0u, 0.0, 0.0, 0.0, 0.0, 0u, 0u, 0u);
+    return PickCandidate(
+        0u,
+        series_order,
+        0u,
+        0u,
+        0u,
+        PICK_F32_MAX,
+        PICK_F32_MAX,
+        0u,
+    );
 }
 
 fn pick_candidate_is_better(candidate: PickCandidate, incumbent: PickCandidate) -> bool {
-    if candidate.valid == 2u {
-        return incumbent.valid != 2u;
-    }
-    if incumbent.valid == 2u {
-        return false;
-    }
     if candidate.valid == 0u {
         return false;
     }
@@ -524,10 +423,12 @@ fn pick_candidate_is_better(candidate: PickCandidate, incumbent: PickCandidate) 
     return candidate.primitive_index < incumbent.primitive_index;
 }
 
-fn pick_scatter_candidate(point_index: u32) -> PickCandidate {
+fn pick_scatter_candidate(
+    point_index: u32,
+    x: vec2<f32>,
+    y: vec2<f32>,
+) -> PickCandidate {
     let series_order = pick_query_params.series.y;
-    let x = pick_read_pair(pick_query_params.data.y, point_index);
-    let y = pick_read_pair(pick_query_params.data.z, point_index);
     if !pick_pair_is_valid(x) || !pick_pair_is_valid(y) {
         return pick_invalid_candidate(series_order);
     }
@@ -553,22 +454,20 @@ fn pick_scatter_candidate(point_index: u32) -> PickCandidate {
         point_index,
         0u,
         point_index,
-        x.x + x.y,
-        y.x + y.y,
         distance_sq,
         hit_distance,
-        0u,
-        0u,
         0u,
     );
 }
 
-fn pick_line_candidate(segment_index: u32) -> PickCandidate {
+fn pick_line_candidate(
+    segment_index: u32,
+    ax: vec2<f32>,
+    ay: vec2<f32>,
+    bx: vec2<f32>,
+    by: vec2<f32>,
+) -> PickCandidate {
     let series_order = pick_query_params.series.y;
-    let ax = pick_read_pair(pick_query_params.data.y, segment_index);
-    let ay = pick_read_pair(pick_query_params.data.z, segment_index);
-    let bx = pick_read_pair(pick_query_params.data.y, segment_index + 1u);
-    let by = pick_read_pair(pick_query_params.data.z, segment_index + 1u);
     if !pick_pair_is_valid(ax) || !pick_pair_is_valid(ay) || !pick_pair_is_valid(bx) || !pick_pair_is_valid(by) {
         return pick_invalid_candidate(series_order);
     }
@@ -600,94 +499,100 @@ fn pick_line_candidate(segment_index: u32) -> PickCandidate {
     }
     let use_b = t > 0.5;
     let point_index = select(segment_index, segment_index + 1u, use_b);
-    let data_x = select(ax.x + ax.y, bx.x + bx.y, use_b);
-    let data_y = select(ay.x + ay.y, by.x + by.y, use_b);
     return PickCandidate(
         1u,
         series_order,
         point_index,
         1u,
         segment_index,
-        data_x,
-        data_y,
         distance_sq,
         sqrt(distance_sq),
-        0u,
-        0u,
         0u,
     );
 }
 
-fn pick_test_leaf(node: PickBvhNode, best_in: PickCandidate) -> PickCandidate {
-    var best = best_in;
+fn pick_direct_masks(word_index: u32) -> vec2<u32> {
     let flags = pick_query_params.style.x;
-    if (flags & PICK_FLAG_SCATTER) != 0u {
-        for (var local = 0u; local < node.count; local = local + 1u) {
-            let candidate = pick_scatter_candidate(node.first + local);
-            if pick_candidate_is_better(candidate, best) {
-                best = candidate;
-            }
+    let point_count = pick_query_params.data.x;
+    let first = word_index * PICK_GATE_WORD_POINTS;
+    var scatter_mask = 0u;
+    var line_mask = 0u;
+    for (var bit = 0u; bit < PICK_GATE_WORD_POINTS; bit = bit + 1u) {
+        let point_index = first + bit;
+        if point_index >= point_count {
+            break;
+        }
+        if (flags & PICK_FLAG_SCATTER) != 0u {
+            scatter_mask = scatter_mask | (1u << bit);
+        }
+        if (flags & PICK_FLAG_LINE) != 0u && point_index + 1u < point_count {
+            line_mask = line_mask | (1u << bit);
         }
     }
-    if (flags & PICK_FLAG_LINE) != 0u && node.first < pick_query_params.data.x - 1u {
-        let segment_count = min(node.count, pick_query_params.data.x - 1u - node.first);
-        for (var local = 0u; local < segment_count; local = local + 1u) {
-            let candidate = pick_line_candidate(node.first + local);
-            if pick_candidate_is_better(candidate, best) {
-                best = candidate;
-            }
-        }
-    }
-    return best;
+    return vec2<u32>(scatter_mask, line_mask);
 }
 
 @compute @workgroup_size(PICK_WORKGROUP_SIZE)
-fn pick_query_bvh(@builtin(local_invocation_index) local_index: u32) {
+fn pick_exact_candidates(
+    @builtin(workgroup_id) workgroup_id: vec3<u32>,
+    @builtin(local_invocation_index) local_index: u32,
+) {
+    let group_index = pick_linear_workgroup_id(workgroup_id);
+    let word_index = group_index * PICK_WORKGROUP_SIZE + local_index;
     let series_order = pick_query_params.series.y;
     var local_best = pick_invalid_candidate(series_order);
 
-    if local_index == 0u {
-        atomicStore(&pick_queue_state.head, 0u);
-        atomicStore(&pick_queue_state.tail, 1u);
-        atomicStore(&pick_queue_state.overflow, 0u);
-        pick_node_queue[0] = pick_query_params.series.x;
-    }
-    storageBarrier();
-    workgroupBarrier();
-
-    loop {
-        if local_index == 0u {
-            pick_round_begin = atomicLoad(&pick_queue_state.head);
-            pick_round_end = atomicLoad(&pick_queue_state.tail);
-            atomicStore(&pick_queue_state.head, pick_round_end);
+    if word_index < pick_query_params.series.x {
+        var masks = vec2<u32>(0u);
+        if pick_query_params.scatter_line.w >= 0.5 {
+            masks = pick_direct_masks(word_index);
+        } else {
+            masks = pick_gate_masks[word_index];
         }
-        workgroupBarrier();
-        if pick_round_begin >= pick_round_end {
-            break;
-        }
-
-        var queue_index = pick_round_begin + local_index;
-        while queue_index < pick_round_end {
-            let node_index = pick_node_queue[queue_index];
-            let node = pick_bvh_nodes[node_index];
-            if pick_node_may_hit(node) {
-                if node.kind == PICK_NODE_LEAF {
-                    local_best = pick_test_leaf(node, local_best);
-                } else {
-                    for (var child = 0u; child < node.count; child = child + 1u) {
-                        let destination = atomicAdd(&pick_queue_state.tail, 1u);
-                        if destination < pick_query_params.series.w {
-                            pick_node_queue[destination] = node.first + child;
-                        } else {
-                            atomicStore(&pick_queue_state.overflow, 1u);
-                        }
-                    }
+        let first = word_index * PICK_GATE_WORD_POINTS;
+        var cached_x = vec2<f32>(0.0);
+        var cached_y = vec2<f32>(0.0);
+        var cached_index = 0u;
+        var has_cached_point = false;
+        for (var bit = 0u; bit < PICK_GATE_WORD_POINTS; bit = bit + 1u) {
+            let bit_mask = 1u << bit;
+            if ((masks.x | masks.y) & bit_mask) == 0u {
+                continue;
+            }
+            let point_index = first + bit;
+            var x = vec2<f32>(0.0);
+            var y = vec2<f32>(0.0);
+            if has_cached_point && cached_index == point_index {
+                x = cached_x;
+                y = cached_y;
+            } else {
+                x = pick_read_pair(pick_query_params.data.y, point_index);
+                y = pick_read_pair(pick_query_params.data.z, point_index);
+            }
+            if (masks.x & bit_mask) != 0u {
+                let candidate = pick_scatter_candidate(point_index, x, y);
+                if pick_candidate_is_better(candidate, local_best) {
+                    local_best = candidate;
                 }
             }
-            queue_index = queue_index + PICK_WORKGROUP_SIZE;
+            if (masks.y & bit_mask) != 0u {
+                let next_x =
+                    pick_read_pair(pick_query_params.data.y, point_index + 1u);
+                let next_y =
+                    pick_read_pair(pick_query_params.data.z, point_index + 1u);
+                let candidate =
+                    pick_line_candidate(point_index, x, y, next_x, next_y);
+                if pick_candidate_is_better(candidate, local_best) {
+                    local_best = candidate;
+                }
+                cached_x = next_x;
+                cached_y = next_y;
+                cached_index = point_index + 1u;
+                has_cached_point = true;
+            } else {
+                has_cached_point = false;
+            }
         }
-        storageBarrier();
-        workgroupBarrier();
     }
 
     pick_shared_candidates[local_index] = local_best;
@@ -701,18 +606,13 @@ fn pick_query_bvh(@builtin(local_invocation_index) local_index: u32) {
         }
         workgroupBarrier();
     }
-
-    if local_index == 0u {
-        if atomicLoad(&pick_queue_state.overflow) != 0u {
-            pick_series_output = pick_error_candidate(series_order);
-        } else {
-            pick_series_output = pick_shared_candidates[0];
-        }
+    if local_index == 0u && group_index < arrayLength(&pick_workgroup_candidates) {
+        pick_workgroup_candidates[group_index] = pick_shared_candidates[0];
     }
 }
 
 @compute @workgroup_size(PICK_WORKGROUP_SIZE)
-fn pick_reduce_series(@builtin(local_invocation_index) local_index: u32) {
+fn pick_reduce_candidates(@builtin(local_invocation_index) local_index: u32) {
     var best = pick_invalid_candidate(0u);
     let count = arrayLength(&pick_reduce_inputs);
     var index = local_index;

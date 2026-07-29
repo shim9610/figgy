@@ -1,17 +1,12 @@
-//! Persistent GPU BVH picking for [`ColumnPool`](crate::data_render::ColumnPool).
+//! Streaming exact GPU picking for [`ColumnPool`](crate::data_render::ColumnPool).
 //!
-//! The BVH is an index-order block hierarchy.  A leaf owns at most 64 scatter
-//! points and the same 64 adjacent line-segment starts; the endpoint at the
-//! next block boundary is included in that leaf's bounds.  Leaf and parent
-//! AABBs are built entirely by compute dispatches.  The CPU supplies only
-//! column offsets/lengths, packed-level topology, series identity, and small
-//! style metadata -- never per-value data.
-//!
-//! A query traverses the hierarchy with a per-series GPU queue.  Every
-//! surviving leaf exact-tests all owned scatter points and line segments,
-//! then a second compute pass reduces the per-series scalars with the current
-//! picker tie rules.  [`GpuPickTicket`] owns its mapping buffer, device, and
-//! identity snapshot, so it can outlive both the engine and the chart frame.
+//! Small series scan directly. Larger queries first gate original indices by X
+//! and then Y into a compact two-bit mask (scatter point plus line-segment start
+//! per index). Only the surviving original indices reach the exact
+//! screen-distance calculation. There is no CPU value mirror, index reordering,
+//! decimation, or traversal tree. [`GpuPickTicket`] owns its mapping buffer,
+//! device, and identity snapshot, so it can outlive both the engine and the
+//! chart frame.
 
 use std::fmt;
 use std::sync::Arc;
@@ -25,14 +20,19 @@ use crate::data_render::{
 };
 use crate::pick::PickedPoint;
 
-/// Logical point/segment starts exact-tested by one leaf.
+/// Logical point/segment indices represented by one gate-mask word.
+pub const GPU_PICK_GATE_WORD_POINTS: u32 = 32;
+/// Legacy BVH leaf width retained only for source compatibility.
+#[deprecated(note = "the BVH picker was removed; use GPU_PICK_GATE_WORD_POINTS")]
 pub const GPU_PICK_BLOCK_POINTS: u32 = 64;
-/// Compute workgroup width used by build, traversal, and reduction.
+/// Compute workgroup width used by gating, exact testing, and reduction.
 pub const GPU_PICK_WORKGROUP_SIZE: u32 = 64;
+/// Up to 32 workgroups scan directly; larger series use the X/Y gates first.
+pub const GPU_PICK_DIRECT_SCAN_POINTS: u32 =
+    GPU_PICK_GATE_WORD_POINTS * GPU_PICK_WORKGROUP_SIZE * 32;
 
-const NODE_BYTES: u64 = 48;
-const CANDIDATE_BYTES: u64 = 48;
-const QUEUE_STATE_BYTES: u64 = 16;
+const GATE_MASK_BYTES: u64 = 8;
+const CANDIDATE_BYTES: u64 = 32;
 const MAX_SHAPE_SCALE: f32 = 1.555_120_3;
 
 const FLAG_SCATTER: u32 = 1;
@@ -67,6 +67,8 @@ pub enum GpuPickError {
         series_id: String,
         count: usize,
     },
+    /// Retained for source compatibility with the former traversal picker.
+    /// The streaming gate implementation never emits this error.
     TraversalOverflow,
     MapChannelClosed,
     MapFailed(wgpu::BufferAsyncError),
@@ -100,7 +102,7 @@ impl fmt::Display for GpuPickError {
                 column_id,
             } => write!(
                 f,
-                "GPU pick BVH for series {series_id:?} is stale because column {column_id:?} moved, was removed, or changed length"
+                "GPU picker for series {series_id:?} is stale because column {column_id:?} moved, was removed, or changed length"
             ),
             Self::EmptySeries(id) => write!(f, "GPU pick series {id:?} has no paired values"),
             Self::NoPickPrimitive(id) => {
@@ -120,7 +122,7 @@ impl fmt::Display for GpuPickError {
                 "GPU pick series {series_id:?} has {count} values; the WebGPU storage index limit is {}",
                 u32::MAX
             ),
-            Self::TraversalOverflow => write!(f, "GPU pick BVH traversal queue overflowed"),
+            Self::TraversalOverflow => write!(f, "legacy GPU pick traversal overflow"),
             Self::MapChannelClosed => write!(f, "GPU pick readback callback was dropped"),
             Self::MapFailed(error) => write!(f, "GPU pick readback mapping failed: {error:?}"),
             Self::InvalidGpuResult => write!(f, "GPU pick returned an invalid scalar record"),
@@ -162,7 +164,7 @@ pub struct GpuPickScatter<'a> {
     pub style_map: Option<GpuPickScatterStyle<'a>>,
 }
 
-/// Registration-time metadata for a persistent series BVH.
+/// Registration-time metadata for one exact GPU-picked series.
 pub struct GpuPickSeriesDescriptor<'a> {
     pub source_id: Option<String>,
     pub series_id: String,
@@ -209,19 +211,6 @@ impl GpuPickSeriesId {
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct PickBuildParamsGpu {
-    point_count: u32,
-    x_base: u32,
-    y_base: u32,
-    input_start: u32,
-    output_start: u32,
-    input_count: u32,
-    invocation_base: u32,
-    include_line_boundary: u32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct PickQueryParamsGpu {
     transform: ScatterTransform,
     cursor_chart: [f32; 4],
@@ -240,14 +229,11 @@ struct PickCandidateGpu {
     point_index: u32,
     primitive_kind: u32,
     primitive_index: u32,
-    data_x: f32,
-    data_y: f32,
     distance_sq: f32,
     distance_px: f32,
-    _pad: [u32; 3],
+    _pad: u32,
 }
 
-const _: () = assert!(std::mem::size_of::<PickBuildParamsGpu>() == 32);
 const _: () = assert!(std::mem::size_of::<PickQueryParamsGpu>() == 192);
 const _: () = assert!(std::mem::size_of::<PickCandidateGpu>() == CANDIDATE_BYTES as usize);
 
@@ -258,13 +244,12 @@ struct PickIdentity {
 }
 
 struct PickPipelines {
-    build_bgl: wgpu::BindGroupLayout,
     query_data_bgl: wgpu::BindGroupLayout,
     query_work_bgl: wgpu::BindGroupLayout,
     reduce_bgl: wgpu::BindGroupLayout,
-    build_leaves: wgpu::ComputePipeline,
-    build_internal: wgpu::ComputePipeline,
-    query: wgpu::ComputePipeline,
+    gate_x: wgpu::ComputePipeline,
+    gate_y: wgpu::ComputePipeline,
+    exact: wgpu::ComputePipeline,
     reduce: wgpu::ComputePipeline,
 }
 
@@ -281,13 +266,17 @@ struct PickSeriesGpu {
     y_allocation_epoch: u64,
     style_index_allocation_epoch: Option<u64>,
     query_params: wgpu::Buffer,
-    nodes: wgpu::Buffer,
+    gate_masks: wgpu::Buffer,
+    workgroup_candidates: wgpu::Buffer,
     query_data_bg: wgpu::BindGroup,
     query_work_bg: wgpu::BindGroup,
+    reduce_bg: wgpu::BindGroup,
     result: wgpu::Buffer,
     point_count: u32,
-    node_count: u32,
-    root_index: u32,
+    gate_word_count: u32,
+    dispatch_x: u32,
+    dispatch_y: u32,
+    direct_scan: bool,
     flags: u32,
     base_radius_px: f32,
     base_shape_id: u32,
@@ -374,27 +363,21 @@ fn create_pipelines(device: &wgpu::Device) -> PickPipelines {
         source: wgpu::ShaderSource::Wgsl(include_str!("gpu_pick.wgsl").into()),
     });
 
-    let build_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("figgy GPU pick BVH build bgl"),
+    let query_data_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("figgy GPU pick query data bgl"),
         entries: &[
             storage_entry(0, true),
             storage_entry(1, false),
-            uniform_entry(2),
+            storage_entry(2, false),
         ],
-    });
-    let query_data_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("figgy GPU pick query data bgl"),
-        entries: &[storage_entry(0, true), storage_entry(1, false)],
     });
     let query_work_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("figgy GPU pick query work bgl"),
         entries: &[
-            storage_entry(0, false),
-            storage_entry(1, false),
-            uniform_entry(2),
-            storage_entry(3, true),
-            storage_entry(4, true),
-            storage_entry(5, false),
+            uniform_entry(0),
+            storage_entry(1, true),
+            storage_entry(2, true),
+            storage_entry(3, false),
         ],
     });
     let reduce_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -402,11 +385,6 @@ fn create_pipelines(device: &wgpu::Device) -> PickPipelines {
         entries: &[storage_entry(3, true), storage_entry(4, false)],
     });
 
-    let build_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("figgy GPU pick BVH build layout"),
-        bind_group_layouts: &[&build_bgl],
-        push_constant_ranges: &[],
-    });
     let query_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("figgy GPU pick query layout"),
         bind_group_layouts: &[&query_data_bgl, &query_work_bgl],
@@ -429,27 +407,26 @@ fn create_pipelines(device: &wgpu::Device) -> PickPipelines {
     };
 
     PickPipelines {
-        build_leaves: pipeline(
-            &build_layout,
-            "pick_build_leaves",
-            "figgy GPU pick leaf build pipeline",
-        ),
-        build_internal: pipeline(
-            &build_layout,
-            "pick_build_internal",
-            "figgy GPU pick internal build pipeline",
-        ),
-        query: pipeline(
+        gate_x: pipeline(
             &query_layout,
-            "pick_query_bvh",
-            "figgy GPU pick traversal pipeline",
+            "pick_gate_x",
+            "figgy GPU pick X gate pipeline",
+        ),
+        gate_y: pipeline(
+            &query_layout,
+            "pick_gate_y",
+            "figgy GPU pick Y gate pipeline",
+        ),
+        exact: pipeline(
+            &query_layout,
+            "pick_exact_candidates",
+            "figgy GPU pick exact candidate pipeline",
         ),
         reduce: pipeline(
             &reduce_layout,
-            "pick_reduce_series",
-            "figgy GPU pick series reduction pipeline",
+            "pick_reduce_candidates",
+            "figgy GPU pick candidate reduction pipeline",
         ),
-        build_bgl,
         query_data_bgl,
         query_work_bgl,
         reduce_bgl,
@@ -589,8 +566,8 @@ fn style_max_extent(series_id: &str, scatter: &GpuPickScatter<'_>) -> Result<f32
     }
 
     // Radius and shape changes may originate in different table/override
-    // rows.  Their product is deliberately a cross-product upper bound; leaf
-    // resolution still applies rows in exact production order.
+    // rows. Their product is deliberately a cross-product upper bound; the
+    // final exact pass still applies rows in production order.
     Ok(maximum_radius * maximum_scale)
 }
 
@@ -608,12 +585,30 @@ fn lane_base(handle: ColumnHandle, series_id: &str) -> Result<u32, GpuPickError>
     })
 }
 
-fn packed_level_counts(point_count: u32) -> Vec<u32> {
-    let mut levels = vec![point_count.div_ceil(GPU_PICK_BLOCK_POINTS)];
-    while levels.last().copied().unwrap_or(1) > 1 {
-        levels.push(levels.last().copied().unwrap_or(1).div_ceil(2));
+fn gate_dispatch_layout(
+    point_count: u32,
+    max_workgroups_per_dimension: u32,
+) -> Result<(u32, u32, u32, u32), GpuPickError> {
+    if max_workgroups_per_dimension == 0 {
+        return Err(GpuPickError::DeviceLimit {
+            resource: "max_compute_workgroups_per_dimension",
+            requested: 1,
+            limit: 0,
+        });
     }
-    levels
+    let gate_word_count = point_count.div_ceil(GPU_PICK_GATE_WORD_POINTS);
+    let workgroup_count = gate_word_count.div_ceil(GPU_PICK_WORKGROUP_SIZE);
+    let dispatch_x = workgroup_count.min(max_workgroups_per_dimension);
+    let dispatch_y = workgroup_count.div_ceil(dispatch_x);
+    if dispatch_y > max_workgroups_per_dimension {
+        return Err(GpuPickError::DeviceLimit {
+            resource: "GPU pick gate dispatch",
+            requested: u64::from(workgroup_count),
+            limit: u64::from(max_workgroups_per_dimension)
+                * u64::from(max_workgroups_per_dimension),
+        });
+    }
+    Ok((gate_word_count, workgroup_count, dispatch_x, dispatch_y))
 }
 
 fn same_storage(a: ColumnHandle, b: ColumnHandle) -> bool {
@@ -644,10 +639,10 @@ impl GpuPickEngine {
                 limit: u64::from(limits.max_bind_groups),
             });
         }
-        if limits.max_storage_buffers_per_shader_stage < 7 {
+        if limits.max_storage_buffers_per_shader_stage < 6 {
             return Err(GpuPickError::DeviceLimit {
                 resource: "max_storage_buffers_per_shader_stage",
-                requested: 7,
+                requested: 6,
                 limit: u64::from(limits.max_storage_buffers_per_shader_stage),
             });
         }
@@ -732,10 +727,10 @@ impl GpuPickEngine {
         })
     }
 
-    /// Build one persistent exact index from `pool`.
+    /// Prepare one persistent exact query slot from `pool`.
     ///
-    /// Every later [`Self::pick`] must receive that same pool instance. Rebuild
-    /// this series after any referenced column content replacement. Allocation
+    /// Every later [`Self::pick`] must receive that same pool instance. Replace
+    /// this slot after any referenced column content replacement. Allocation
     /// epochs distinguish remove+readd even when the replacement reuses the
     /// same offset and length.
     pub fn add_series(
@@ -743,7 +738,7 @@ impl GpuPickEngine {
         pool: &ColumnPool,
         descriptor: GpuPickSeriesDescriptor<'_>,
     ) -> Result<GpuPickSeriesId, GpuPickError> {
-        let prepared = self.build_series(pool, descriptor)?;
+        let prepared = self.prepare_series(pool, descriptor)?;
         let next_count = self.series.len() + 1;
         let next_reduce =
             Self::create_reduce_resources(&self.device, &self.pipelines.reduce_bgl, next_count)?;
@@ -754,7 +749,7 @@ impl GpuPickEngine {
         Ok(id)
     }
 
-    fn build_series(
+    fn prepare_series(
         &self,
         pool: &ColumnPool,
         descriptor: GpuPickSeriesDescriptor<'_>,
@@ -857,68 +852,63 @@ impl GpuPickEngine {
             return Err(GpuPickError::NoPickPrimitive(descriptor.series_id));
         }
 
-        let x_base = lane_base(x_handle, &descriptor.series_id)?;
-        let y_base = lane_base(y_handle, &descriptor.series_id)?;
-        let levels = packed_level_counts(point_count);
-        let node_count_u64: u64 = levels.iter().map(|&count| u64::from(count)).sum();
-        let node_count = u32::try_from(node_count_u64).map_err(|_| GpuPickError::DeviceLimit {
-            resource: "BVH node index",
-            requested: node_count_u64,
-            limit: u64::from(u32::MAX),
-        })?;
-        let node_bytes =
-            node_count_u64
-                .checked_mul(NODE_BYTES)
-                .ok_or(GpuPickError::DeviceLimit {
-                    resource: "BVH node buffer",
-                    requested: u64::MAX,
-                    limit: limits.max_buffer_size,
-                })?;
-        let storage_limit = u64::from(limits.max_storage_buffer_binding_size);
-        if node_bytes > limits.max_buffer_size || node_bytes > storage_limit {
-            return Err(GpuPickError::DeviceLimit {
-                resource: "BVH node buffer",
-                requested: node_bytes,
-                limit: limits.max_buffer_size.min(storage_limit),
-            });
-        }
-        let queue_bytes = node_count_u64
-            .checked_mul(4)
+        let _ = lane_base(x_handle, &descriptor.series_id)?;
+        let _ = lane_base(y_handle, &descriptor.series_id)?;
+        let (gate_word_count, workgroup_count, dispatch_x, dispatch_y) =
+            gate_dispatch_layout(point_count, limits.max_compute_workgroups_per_dimension)?;
+        let direct_scan = point_count <= GPU_PICK_DIRECT_SCAN_POINTS;
+        let allocated_gate_words = if direct_scan { 1 } else { gate_word_count };
+        let gate_mask_bytes = u64::from(allocated_gate_words)
+            .checked_mul(GATE_MASK_BYTES)
             .ok_or(GpuPickError::DeviceLimit {
-                resource: "BVH traversal queue",
+                resource: "GPU pick gate-mask buffer",
                 requested: u64::MAX,
                 limit: limits.max_buffer_size,
             })?;
+        let workgroup_candidate_bytes = u64::from(workgroup_count)
+            .checked_mul(CANDIDATE_BYTES)
+            .ok_or(GpuPickError::DeviceLimit {
+                resource: "GPU pick workgroup-candidate buffer",
+                requested: u64::MAX,
+                limit: limits.max_buffer_size,
+            })?;
+        let storage_limit = u64::from(limits.max_storage_buffer_binding_size);
+        if gate_mask_bytes > limits.max_buffer_size || gate_mask_bytes > storage_limit {
+            return Err(GpuPickError::DeviceLimit {
+                resource: "GPU pick gate-mask buffer",
+                requested: gate_mask_bytes,
+                limit: limits.max_buffer_size.min(storage_limit),
+            });
+        }
+        if workgroup_candidate_bytes > limits.max_buffer_size
+            || workgroup_candidate_bytes > storage_limit
+        {
+            return Err(GpuPickError::DeviceLimit {
+                resource: "GPU pick workgroup-candidate buffer",
+                requested: workgroup_candidate_bytes,
+                limit: limits.max_buffer_size.min(storage_limit),
+            });
+        }
 
-        let nodes = create_buffer_checked(
+        let gate_masks = create_buffer_checked(
             &self.device,
             &wgpu::BufferDescriptor {
-                label: Some("figgy GPU pick packed BVH"),
-                size: node_bytes,
+                label: Some("figgy GPU pick XY gate masks"),
+                size: gate_mask_bytes,
                 usage: wgpu::BufferUsages::STORAGE,
                 mapped_at_creation: false,
             },
-            "packed BVH buffer",
+            "XY gate-mask buffer",
         )?;
-        let node_queue = create_buffer_checked(
+        let workgroup_candidates = create_buffer_checked(
             &self.device,
             &wgpu::BufferDescriptor {
-                label: Some("figgy GPU pick traversal queue"),
-                size: queue_bytes.max(4),
+                label: Some("figgy GPU pick exact workgroup candidates"),
+                size: workgroup_candidate_bytes,
                 usage: wgpu::BufferUsages::STORAGE,
                 mapped_at_creation: false,
             },
-            "BVH traversal queue",
-        )?;
-        let queue_state = create_buffer_checked(
-            &self.device,
-            &wgpu::BufferDescriptor {
-                label: Some("figgy GPU pick queue state"),
-                size: QUEUE_STATE_BYTES,
-                usage: wgpu::BufferUsages::STORAGE,
-                mapped_at_creation: false,
-            },
-            "BVH queue state",
+            "exact workgroup-candidate buffer",
         )?;
         let query_params = create_buffer_checked(
             &self.device,
@@ -955,123 +945,6 @@ impl GpuPickEngine {
             "series pick scalar",
         )?;
 
-        struct BuildDispatch {
-            internal: bool,
-            bind_group: wgpu::BindGroup,
-            workgroups: u32,
-        }
-        let max_groups = limits.max_compute_workgroups_per_dimension;
-        let max_invocations = u64::from(max_groups) * u64::from(GPU_PICK_WORKGROUP_SIZE);
-        if max_invocations == 0 {
-            return Err(GpuPickError::DeviceLimit {
-                resource: "max_compute_workgroups_per_dimension",
-                requested: 1,
-                limit: 0,
-            });
-        }
-        let mut dispatches = Vec::new();
-        let mut append_dispatches = |internal: bool,
-                                     input_start: u32,
-                                     output_start: u32,
-                                     input_count: u32|
-         -> Result<(), GpuPickError> {
-            let output_count = if internal {
-                input_count.div_ceil(2)
-            } else {
-                input_count
-            };
-            let mut invocation_base = 0u64;
-            while invocation_base < u64::from(output_count) {
-                let invocation_count =
-                    (u64::from(output_count) - invocation_base).min(max_invocations);
-                let workgroups =
-                    u32::try_from(invocation_count.div_ceil(u64::from(GPU_PICK_WORKGROUP_SIZE)))
-                        .map_err(|_| GpuPickError::DeviceLimit {
-                            resource: "BVH build dispatch",
-                            requested: invocation_count,
-                            limit: max_invocations,
-                        })?;
-                let params = PickBuildParamsGpu {
-                    point_count,
-                    x_base,
-                    y_base,
-                    input_start,
-                    output_start,
-                    input_count,
-                    invocation_base: invocation_base as u32,
-                    include_line_boundary: u32::from(flags & FLAG_LINE != 0),
-                };
-                let params_buffer = create_buffer_init_checked(
-                    &self.device,
-                    "figgy GPU pick build params",
-                    bytemuck::bytes_of(&params),
-                    wgpu::BufferUsages::UNIFORM,
-                    "BVH build uniform",
-                )?;
-                let bind_group = create_bind_group_checked(
-                    &self.device,
-                    &wgpu::BindGroupDescriptor {
-                        label: Some("figgy GPU pick build bg"),
-                        layout: &self.pipelines.build_bgl,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: pool.buffer().as_entire_binding(),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: nodes.as_entire_binding(),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 2,
-                                resource: params_buffer.as_entire_binding(),
-                            },
-                        ],
-                    },
-                    "BVH build bind group",
-                )?;
-                dispatches.push(BuildDispatch {
-                    internal,
-                    bind_group,
-                    workgroups,
-                });
-                invocation_base += invocation_count;
-            }
-            Ok(())
-        };
-
-        append_dispatches(false, 0, 0, levels[0])?;
-        let mut input_start = 0u32;
-        let mut output_start = levels[0];
-        for level in 0..levels.len().saturating_sub(1) {
-            append_dispatches(true, input_start, output_start, levels[level])?;
-            input_start = output_start;
-            output_start += levels[level + 1];
-        }
-        let root_index = node_count - 1;
-
-        let mut build_encoder =
-            self.device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("figgy GPU pick BVH build encoder"),
-                });
-        {
-            let mut pass = build_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("figgy GPU pick BVH build"),
-                timestamp_writes: None,
-            });
-            for dispatch in &dispatches {
-                pass.set_pipeline(if dispatch.internal {
-                    &self.pipelines.build_internal
-                } else {
-                    &self.pipelines.build_leaves
-                });
-                pass.set_bind_group(0, &dispatch.bind_group, &[]);
-                pass.dispatch_workgroups(dispatch.workgroups, 1, 1);
-            }
-        }
-        self.queue.submit(std::iter::once(build_encoder.finish()));
-
         let query_data_bg = create_bind_group_checked(
             &self.device,
             &wgpu::BindGroupDescriptor {
@@ -1084,7 +957,11 @@ impl GpuPickEngine {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: nodes.as_entire_binding(),
+                        resource: gate_masks.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: workgroup_candidates.as_entire_binding(),
                     },
                 ],
             },
@@ -1098,31 +975,41 @@ impl GpuPickEngine {
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: node_queue.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: queue_state.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
                         resource: query_params.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
-                        binding: 3,
+                        binding: 1,
                         resource: style_slots.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
-                        binding: 4,
+                        binding: 2,
                         resource: style_overrides.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
-                        binding: 5,
+                        binding: 3,
                         resource: result.as_entire_binding(),
                     },
                 ],
             },
             "query work bind group",
+        )?;
+        let reduce_bg = create_bind_group_checked(
+            &self.device,
+            &wgpu::BindGroupDescriptor {
+                label: Some("figgy GPU pick per-series reduction bg"),
+                layout: &self.pipelines.reduce_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: workgroup_candidates.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: result.as_entire_binding(),
+                    },
+                ],
+            },
+            "per-series reduction bind group",
         )?;
 
         let identity = PickIdentity {
@@ -1142,13 +1029,17 @@ impl GpuPickEngine {
             y_allocation_epoch,
             style_index_allocation_epoch,
             query_params,
-            nodes,
+            gate_masks,
+            workgroup_candidates,
             query_data_bg,
             query_work_bg,
+            reduce_bg,
             result,
             point_count,
-            node_count,
-            root_index,
+            gate_word_count,
+            dispatch_x,
+            dispatch_y,
+            direct_scan,
             flags,
             base_radius_px,
             base_shape_id,
@@ -1164,8 +1055,8 @@ impl GpuPickEngine {
     /// Prepare positional replacements and any pool-wide rebind as one batch.
     ///
     /// `pool` must be the provisional [`ColumnPool`] view whose buffer and
-    /// handle layout will become the committed final view. Every affected BVH
-    /// is built against that view before this method returns. At the same time,
+    /// handle layout will become the committed final view. Every affected query
+    /// slot is prepared against that view before this method returns. At the same time,
     /// every unaffected slot gets a fully allocated data-bind-group/handle
     /// update, so a backing-buffer or layout change does not invalidate it.
     ///
@@ -1207,7 +1098,7 @@ impl GpuPickEngine {
         let mut built: Vec<Option<PickSeriesGpu>> = (0..len).map(|_| None).collect();
         for replacement in replacements {
             let gpu_index = replacement.gpu_index;
-            built[gpu_index] = Some(self.build_series(pool, replacement.descriptor)?);
+            built[gpu_index] = Some(self.prepare_series(pool, replacement.descriptor)?);
         }
 
         let mut slots = Vec::with_capacity(len);
@@ -1269,7 +1160,7 @@ impl GpuPickEngine {
         self.reduce = reduce;
     }
 
-    /// Replace one registry slot without rebuilding any other series BVH.
+    /// Replace one registry slot without recreating any other series resources.
     ///
     /// The replacement is built first, so a build/allocation error leaves the
     /// existing slot untouched. The returned id is the unchanged positional
@@ -1294,7 +1185,7 @@ impl GpuPickEngine {
         Ok(GpuPickSeriesId(index as u32))
     }
 
-    /// Insert one registry slot without rebuilding any existing series BVH.
+    /// Insert one registry slot without recreating existing series resources.
     ///
     /// The new series is built completely at the tail before it is moved into
     /// position, so a build/allocation error leaves the registry and its tie
@@ -1316,7 +1207,7 @@ impl GpuPickEngine {
         Ok(GpuPickSeriesId(index as u32))
     }
 
-    /// Remove one positional registry slot without rebuilding surviving BVHs.
+    /// Remove one positional registry slot without recreating surviving slots.
     /// Later slots shift left, matching their new production traversal order.
     pub fn remove_series_at(&mut self, index: usize) -> Result<(), GpuPickError> {
         let len = self.series.len();
@@ -1399,7 +1290,11 @@ impl GpuPickEngine {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: series.nodes.as_entire_binding(),
+                        resource: series.gate_masks.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: series.workgroup_candidates.as_entire_binding(),
                     },
                 ],
             },
@@ -1420,10 +1315,10 @@ impl GpuPickEngine {
     /// Rebind registered columns after an in-place [`ColumnPool::defragment`].
     ///
     /// Defragmentation changes the backing buffer, offsets, and generations,
-    /// but preserves every value, so the value-space BVH nodes remain valid.
-    /// This method verifies every referenced column still exists with exactly
-    /// its registered logical length, recreates the whole-pool data bind
-    /// groups, and updates all handles/bases without rebuilding any BVH.
+    /// but preserves every value. This method verifies every referenced column
+    /// still exists with exactly its registered logical length, recreates the
+    /// whole-pool data bind groups, and updates all handles/bases without
+    /// reallocating gate or reduction storage.
     ///
     /// Use this only with the same `ColumnPool` after a relocation-only
     /// defragment. It is not valid after replacing column contents, even when
@@ -1519,9 +1414,8 @@ impl GpuPickEngine {
     ///
     /// Series descriptors remain in logical-document pixels. This scale is
     /// applied once by the query shader to scatter radii, line half-widths,
-    /// and the matching conservative BVH expansion. Cursor coordinates,
-    /// `max_distance_px`, and returned distances remain physical canvas
-    /// pixels.
+    /// and the matching conservative gate widths. Cursor coordinates,
+    /// `max_distance_px`, and returned distances remain physical canvas pixels.
     pub fn pick_with_display_scale(
         &self,
         pool: &ColumnPool,
@@ -1582,7 +1476,7 @@ impl GpuPickEngine {
                     series.base_radius_px,
                     series.line_half_width_px,
                     display_scale,
-                    0.0,
+                    if series.direct_scan { 1.0 } else { 0.0 },
                 ],
                 data: [
                     series.point_count,
@@ -1597,10 +1491,10 @@ impl GpuPickEngine {
                     series.style_index_len,
                 ],
                 series: [
-                    series.root_index,
+                    series.gate_word_count,
                     series_order as u32,
                     series.base_shape_id,
-                    series.node_count,
+                    series.dispatch_x,
                 ],
             };
             self.queue
@@ -1626,15 +1520,57 @@ impl GpuPickEngine {
         // after replace/remove. Clear every slot so a prior query's candidate
         // can never participate as a stale tail entry.
         encoder.clear_buffer(&self.reduce.candidates, 0, None);
-        {
+        let has_gated_series = self.series.iter().any(|series| !series.direct_scan);
+        if has_gated_series {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("figgy exact GPU pick traversal"),
+                label: Some("figgy exact GPU pick X gate"),
                 timestamp_writes: None,
             });
-            pass.set_pipeline(&self.pipelines.query);
+            pass.set_pipeline(&self.pipelines.gate_x);
+            for series in &self.series {
+                if series.direct_scan {
+                    continue;
+                }
+                pass.set_bind_group(0, &series.query_data_bg, &[]);
+                pass.set_bind_group(1, &series.query_work_bg, &[]);
+                pass.dispatch_workgroups(series.dispatch_x, series.dispatch_y, 1);
+            }
+        }
+        if has_gated_series {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("figgy exact GPU pick Y gate"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipelines.gate_y);
+            for series in &self.series {
+                if series.direct_scan {
+                    continue;
+                }
+                pass.set_bind_group(0, &series.query_data_bg, &[]);
+                pass.set_bind_group(1, &series.query_work_bg, &[]);
+                pass.dispatch_workgroups(series.dispatch_x, series.dispatch_y, 1);
+            }
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("figgy exact GPU pick candidate scan"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipelines.exact);
             for series in &self.series {
                 pass.set_bind_group(0, &series.query_data_bg, &[]);
                 pass.set_bind_group(1, &series.query_work_bg, &[]);
+                pass.dispatch_workgroups(series.dispatch_x, series.dispatch_y, 1);
+            }
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("figgy exact GPU pick per-series reduction"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipelines.reduce);
+            for series in &self.series {
+                pass.set_bind_group(0, &series.reduce_bg, &[]);
                 pass.dispatch_workgroups(1, 1, 1);
             }
         }
@@ -2013,8 +1949,10 @@ mod tests {
         y_allocation_epoch: u64,
         style_index_allocation_epoch: Option<u64>,
         point_count: u32,
-        node_count: u32,
-        root_index: u32,
+        gate_word_count: u32,
+        dispatch_x: u32,
+        dispatch_y: u32,
+        direct_scan: bool,
         flags: u32,
         base_radius_bits: u32,
         base_shape_id: u32,
@@ -2042,8 +1980,10 @@ mod tests {
                 y_allocation_epoch: series.y_allocation_epoch,
                 style_index_allocation_epoch: series.style_index_allocation_epoch,
                 point_count: series.point_count,
-                node_count: series.node_count,
-                root_index: series.root_index,
+                gate_word_count: series.gate_word_count,
+                dispatch_x: series.dispatch_x,
+                dispatch_y: series.dispatch_y,
+                direct_scan: series.direct_scan,
                 flags: series.flags,
                 base_radius_bits: series.base_radius_px.to_bits(),
                 base_shape_id: series.base_shape_id,
@@ -2060,9 +2000,11 @@ mod tests {
     #[derive(Debug, Clone, PartialEq)]
     struct PickSeriesResourceSnapshot {
         query_params: wgpu::Buffer,
-        nodes: wgpu::Buffer,
+        gate_masks: wgpu::Buffer,
+        workgroup_candidates: wgpu::Buffer,
         query_data_bg: wgpu::BindGroup,
         query_work_bg: wgpu::BindGroup,
+        reduce_bg: wgpu::BindGroup,
         result: wgpu::Buffer,
     }
 
@@ -2070,9 +2012,11 @@ mod tests {
         fn capture(series: &PickSeriesGpu) -> Self {
             Self {
                 query_params: series.query_params.clone(),
-                nodes: series.nodes.clone(),
+                gate_masks: series.gate_masks.clone(),
+                workgroup_candidates: series.workgroup_candidates.clone(),
                 query_data_bg: series.query_data_bg.clone(),
                 query_work_bg: series.query_work_bg.clone(),
+                reduce_bg: series.reduce_bg.clone(),
                 result: series.result.clone(),
             }
         }
@@ -2494,14 +2438,216 @@ mod tests {
             )
             .unwrap();
 
-        // Segment start 63 belongs to the leaf ending at point 63 while its
-        // endpoint 64 is in the next 64-point block.
+        // Segment start 63 and endpoint 64 straddle two 32-index gate words.
+        // The start word must still retain and exact-test that segment.
         for (cursor, expected_index) in [([635.0, 50.0], 63), ([637.5, 50.0], 64)] {
             let cpu = cpu_pick(&config, &cpu_series, &cpu_columns, cursor, 0.01);
             let gpu = resolve_pick(&engine, &pool, query_from_config(&config, cursor, 0.01));
             assert_pick_parity(cpu.clone(), gpu);
             assert_eq!(cpu.unwrap().point_index, expected_index);
         }
+    }
+
+    #[test]
+    fn exact_gpu_line_gate_keeps_a_segment_whose_endpoints_are_both_outside() {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let config = parity_config(100, 100, (0.0, 10.0), (0.0, 10.0));
+        let xs = [0.0, 10.0];
+        let ys = [0.0, 10.0];
+        let cpu_columns = CpuColumns::new(&[
+            ("gate-line-x", xs.as_slice()),
+            ("gate-line-y", ys.as_slice()),
+        ]);
+        let cpu_series = [line_series(
+            "gate-line",
+            None,
+            "gate-line-x",
+            "gate-line-y",
+            0.0,
+        )];
+
+        let mut pool = ColumnPool::new(&device, 64 * 1024).unwrap();
+        pool.add_column(
+            "gate-line-x".into(),
+            &f32_column(xs.to_vec()),
+            &device,
+            &queue,
+        )
+        .unwrap();
+        pool.add_column(
+            "gate-line-y".into(),
+            &f32_column(ys.to_vec()),
+            &device,
+            &queue,
+        )
+        .unwrap();
+        let mut engine = GpuPickEngine::new(device, queue).unwrap();
+        engine
+            .add_series(
+                &pool,
+                GpuPickSeriesDescriptor {
+                    source_id: None,
+                    series_id: "gate-line".into(),
+                    x_column: "gate-line-x".into(),
+                    y_column: "gate-line-y".into(),
+                    scatter: None,
+                    line_width_px: Some(0.0),
+                },
+            )
+            .unwrap();
+
+        let cursor = [50.0, 50.0];
+        let cpu = cpu_pick(&config, &cpu_series, &cpu_columns, cursor, 0.01);
+        let gpu = resolve_pick(&engine, &pool, query_from_config(&config, cursor, 0.01));
+        assert_pick_parity(cpu, gpu);
+    }
+
+    #[test]
+    fn two_dimensional_gate_dispatch_returns_the_original_index() {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let point_count = GPU_PICK_DIRECT_SCAN_POINTS as usize + 1;
+        let xs = (0..point_count)
+            .map(|index| ((index * 2_053) % point_count) as f32)
+            .collect::<Vec<_>>();
+        let ys = (0..point_count)
+            .map(|index| ((index * 12_337) % point_count) as f32)
+            .collect::<Vec<_>>();
+        let target_index = point_count / 2;
+        let axis_max = (point_count - 1) as f32;
+        let cursor = [
+            xs[target_index] / axis_max * 100.0,
+            (1.0 - ys[target_index] / axis_max) * 100.0,
+        ];
+        let mut pool = ColumnPool::new(&device, 2 * 1024 * 1024).unwrap();
+        pool.add_column("gate-2d-x".into(), &f32_column(xs), &device, &queue)
+            .unwrap();
+        pool.add_column("gate-2d-y".into(), &f32_column(ys), &device, &queue)
+            .unwrap();
+        let mut engine = GpuPickEngine::new(device, queue).unwrap();
+        engine
+            .add_series(
+                &pool,
+                GpuPickSeriesDescriptor {
+                    source_id: None,
+                    series_id: "gate-2d".into(),
+                    x_column: "gate-2d-x".into(),
+                    y_column: "gate-2d-y".into(),
+                    scatter: Some(GpuPickScatter {
+                        base_radius_px: 0.0001,
+                        base_shape_id: 0,
+                        style_map: None,
+                    }),
+                    line_width_px: None,
+                },
+            )
+            .unwrap();
+
+        let groups = engine.series[0]
+            .gate_word_count
+            .div_ceil(GPU_PICK_WORKGROUP_SIZE);
+        assert_eq!(groups, 33);
+        assert!(!engine.series[0].direct_scan);
+        engine.series[0].dispatch_x = 1;
+        engine.series[0].dispatch_y = groups;
+        let picked = resolve_pick(
+            &engine,
+            &pool,
+            GpuPickQuery {
+                transform: ScatterTransform {
+                    data_min: [0.0, 0.0],
+                    data_max: [axis_max, axis_max],
+                    data_min_lo: [0.0; 2],
+                    data_max_lo: [0.0; 2],
+                    scale_log: [0.0; 2],
+                    pixel_to_ndc: [0.02; 2],
+                    style_params: [[0.0; 4]; 3],
+                },
+                chart_rect_px: [0.0, 0.0, 100.0, 100.0],
+                data_area_px: Some([0.0, 0.0, 100.0, 100.0]),
+                canvas_position_px: cursor,
+                max_distance_px: 0.0,
+            },
+        )
+        .unwrap();
+        assert_eq!(picked.point_index, target_index);
+        assert_eq!(picked.distance_px, 0.0);
+    }
+
+    #[test]
+    fn overlapping_gated_tickets_keep_distinct_results_after_registry_clear() {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let point_count = GPU_PICK_DIRECT_SCAN_POINTS as usize + 1;
+        let mut pool = ColumnPool::new(&device, 2 * 1024 * 1024).unwrap();
+        pool.add_column(
+            "overlap-x".into(),
+            &f32_column((0..point_count).map(|index| index as f32).collect()),
+            &device,
+            &queue,
+        )
+        .unwrap();
+        pool.add_column(
+            "overlap-y".into(),
+            &f32_column(vec![5.0; point_count]),
+            &device,
+            &queue,
+        )
+        .unwrap();
+
+        let mut engine = GpuPickEngine::new(device, queue).unwrap();
+        engine
+            .add_series(
+                &pool,
+                GpuPickSeriesDescriptor {
+                    source_id: Some("overlap-source".into()),
+                    series_id: "overlap-series".into(),
+                    x_column: "overlap-x".into(),
+                    y_column: "overlap-y".into(),
+                    scatter: Some(GpuPickScatter {
+                        base_radius_px: 0.0001,
+                        base_shape_id: 0,
+                        style_map: None,
+                    }),
+                    line_width_px: None,
+                },
+            )
+            .unwrap();
+        assert!(!engine.series[0].direct_scan);
+
+        let query = |cursor_x| GpuPickQuery {
+            transform: ScatterTransform {
+                data_min: [0.0, 0.0],
+                data_max: [(point_count - 1) as f32, 10.0],
+                data_min_lo: [0.0; 2],
+                data_max_lo: [0.0; 2],
+                scale_log: [0.0; 2],
+                pixel_to_ndc: [0.02; 2],
+                style_params: [[0.0; 4]; 3],
+            },
+            chart_rect_px: [0.0, 0.0, 100.0, 100.0],
+            data_area_px: Some([0.0, 0.0, 100.0, 100.0]),
+            canvas_position_px: [cursor_x, 50.0],
+            max_distance_px: 0.0,
+        };
+        let left = engine.pick(&pool, query(25.0)).unwrap();
+        let right = engine.pick(&pool, query(75.0)).unwrap();
+        engine.clear_series();
+
+        let right = pollster::block_on(right.resolve()).unwrap().unwrap();
+        let left = pollster::block_on(left.resolve()).unwrap().unwrap();
+        assert_eq!(right.source_id.as_deref(), Some("overlap-source"));
+        assert_eq!(right.series_id, "overlap-series");
+        assert_eq!(right.point_index, (point_count - 1) * 3 / 4);
+        assert_eq!(right.distance_px, 0.0);
+        assert_eq!(left.source_id.as_deref(), Some("overlap-source"));
+        assert_eq!(left.series_id, "overlap-series");
+        assert_eq!(left.point_index, (point_count - 1) / 4);
+        assert_eq!(left.distance_px, 0.0);
     }
 
     #[test]
@@ -2896,7 +3042,7 @@ mod tests {
     }
 
     #[test]
-    fn batch_commit_replaces_only_affected_bvhs_and_rebinds_every_survivor() {
+    fn batch_commit_replaces_only_affected_pick_slots_and_rebinds_every_survivor() {
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
@@ -3026,19 +3172,35 @@ mod tests {
                     before_metadata[index].x_allocation_epoch
                 );
             }
-            assert_ne!(engine.series[index].nodes, before_resources[index].nodes);
+            assert_ne!(
+                engine.series[index].gate_masks,
+                before_resources[index].gate_masks
+            );
+            assert_ne!(
+                engine.series[index].workgroup_candidates,
+                before_resources[index].workgroup_candidates
+            );
             assert_ne!(
                 engine.series[index].query_work_bg,
                 before_resources[index].query_work_bg
+            );
+            assert_ne!(
+                engine.series[index].reduce_bg,
+                before_resources[index].reduce_bg
             );
             assert_ne!(engine.series[index].result, before_resources[index].result);
         }
         for index in [1usize, 3] {
             let series = &engine.series[index];
-            assert_eq!(series.nodes, before_resources[index].nodes);
+            assert_eq!(series.gate_masks, before_resources[index].gate_masks);
+            assert_eq!(
+                series.workgroup_candidates,
+                before_resources[index].workgroup_candidates
+            );
             assert_eq!(series.query_params, before_resources[index].query_params);
             assert_ne!(series.query_data_bg, before_resources[index].query_data_bg);
             assert_eq!(series.query_work_bg, before_resources[index].query_work_bg);
+            assert_eq!(series.reduce_bg, before_resources[index].reduce_bg);
             assert_eq!(series.result, before_resources[index].result);
             assert_eq!(series.pool_layout_generation, old_pool.layout_generation());
             assert_eq!(
@@ -3235,7 +3397,7 @@ mod tests {
     }
 
     #[test]
-    fn relocation_rebind_keeps_bvh_and_refreshes_all_column_bases() {
+    fn relocation_rebind_keeps_gate_storage_and_refreshes_all_column_bases() {
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
@@ -3324,7 +3486,8 @@ mod tests {
         assert_eq!(pool.allocation_epoch("pick-ry"), Some(y_epoch));
         assert_eq!(pool.allocation_epoch("pick-rstyle"), Some(style_epoch));
 
-        let nodes = engine.series[0].nodes.clone();
+        let gate_masks = engine.series[0].gate_masks.clone();
+        let workgroup_candidates = engine.series[0].workgroup_candidates.clone();
         let layout_generation = pool.layout_generation();
         let old_style_handle = pool.handle_for("pick-rstyle").unwrap();
         assert!(pool.remove_column("pick-rstyle").unwrap());
@@ -3341,7 +3504,8 @@ mod tests {
         assert_eq!(new_style_handle.len_values, old_style_handle.len_values);
         assert_ne!(pool.allocation_epoch("pick-rstyle"), Some(style_epoch));
         assert_eq!(pool.layout_generation(), layout_generation);
-        assert_eq!(engine.series[0].nodes, nodes);
+        assert_eq!(engine.series[0].gate_masks, gate_masks);
+        assert_eq!(engine.series[0].workgroup_candidates, workgroup_candidates);
         assert!(matches!(
             engine.pick(&pool, test_query([40.0, 40.0])),
             Err(GpuPickError::StaleColumn { column_id, .. })
@@ -3350,25 +3514,41 @@ mod tests {
     }
 
     #[test]
-    fn packed_levels_cover_every_leaf_and_end_in_one_root() {
-        for n in [1, 63, 64, 65, 4096, 4097, 1_000_000] {
-            let levels = packed_level_counts(n);
-            assert_eq!(levels[0], n.div_ceil(GPU_PICK_BLOCK_POINTS));
-            assert_eq!(levels.last(), Some(&1));
-            for pair in levels.windows(2) {
-                assert_eq!(pair[1], pair[0].div_ceil(2));
-            }
-            let nodes: u64 = levels.iter().map(|&v| u64::from(v)).sum();
-            assert!(nodes >= u64::from(levels[0]));
+    fn gate_dispatch_covers_u32_point_space_with_two_dimensions() {
+        let max_groups = 65_535;
+        for n in [
+            1,
+            31,
+            32,
+            33,
+            2_048,
+            2_049,
+            1_000_000,
+            100_000_000,
+            u32::MAX,
+        ] {
+            let (words, groups, x, y) = gate_dispatch_layout(n, max_groups).unwrap();
+            assert_eq!(words, n.div_ceil(GPU_PICK_GATE_WORD_POINTS));
+            assert_eq!(groups, words.div_ceil(GPU_PICK_WORKGROUP_SIZE));
+            assert!(x <= max_groups);
+            assert!(y <= max_groups);
+            assert!(u64::from(x) * u64::from(y) >= u64::from(groups));
         }
+        let (words, groups, _, _) = gate_dispatch_layout(100_000_000, max_groups).unwrap();
+        assert_eq!(u64::from(words) * GATE_MASK_BYTES, 25_000_000);
+        assert_eq!(u64::from(groups) * CANDIDATE_BYTES, 1_562_528);
+        assert_eq!(
+            GPU_PICK_DIRECT_SCAN_POINTS,
+            GPU_PICK_GATE_WORD_POINTS * GPU_PICK_WORKGROUP_SIZE * 32
+        );
     }
 
     #[test]
-    fn originating_leaf_owns_the_boundary_segment() {
+    fn originating_gate_word_owns_every_boundary_segment_once() {
         let n = 130u32;
         let mut starts = Vec::new();
-        for first in (0..n).step_by(GPU_PICK_BLOCK_POINTS as usize) {
-            let owned = GPU_PICK_BLOCK_POINTS.min(n - first);
+        for first in (0..n).step_by(GPU_PICK_GATE_WORD_POINTS as usize) {
+            let owned = GPU_PICK_GATE_WORD_POINTS.min(n - first);
             let segment_count = owned.min(n - 1 - first);
             starts.extend(first..first + segment_count);
         }
@@ -3379,9 +3559,9 @@ mod tests {
     }
 
     #[test]
-    fn independent_lane_bounds_conservatively_contain_split_linear_projection() {
-        // Deliberately anti-correlated hi/lo lanes: bounding (hi + lo) alone
-        // would lose the split subtraction guarantee around a large epoch.
+    fn split_linear_projection_preserves_independent_hi_lo_subtraction() {
+        // Deliberately anti-correlated hi/lo lanes: recombining before
+        // subtracting the large epoch would lose the residual.
         let values = [
             (1_700_000_000_000.0_f64 as f32, -65_535.75_f32),
             (1_700_000_000_000.0_f64 as f32, -65_535.0_f32),
@@ -3454,7 +3634,7 @@ mod tests {
     }
 
     #[test]
-    fn unrelated_remove_keeps_exact_bvh_while_reused_source_epoch_stales_it() {
+    fn unrelated_remove_keeps_gate_storage_while_reused_source_epoch_stales_it() {
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
@@ -3482,14 +3662,16 @@ mod tests {
                 scatter_descriptor("epoch-pick-series", "epoch-pick-x", "epoch-pick-y"),
             )
             .unwrap();
-        let nodes = engine.series[0].nodes.clone();
+        let gate_masks = engine.series[0].gate_masks.clone();
+        let workgroup_candidates = engine.series[0].workgroup_candidates.clone();
         let layout_generation = pool.layout_generation();
         let baseline = resolve_pick(&engine, &pool, test_query([50.0, 50.0]));
         assert!(baseline.is_some());
 
         assert!(pool.remove_column("epoch-pick-unrelated").unwrap());
         assert_eq!(pool.layout_generation(), layout_generation);
-        assert_eq!(engine.series[0].nodes, nodes);
+        assert_eq!(engine.series[0].gate_masks, gate_masks);
+        assert_eq!(engine.series[0].workgroup_candidates, workgroup_candidates);
         assert!(GpuPickEngine::validate_series_columns(&pool, &engine.series[0]).is_ok());
         assert_eq!(
             resolve_pick(&engine, &pool, test_query([50.0, 50.0])),
@@ -3507,7 +3689,8 @@ mod tests {
             Some(original_x_epoch)
         );
         assert_eq!(pool.layout_generation(), layout_generation);
-        assert_eq!(engine.series[0].nodes, nodes);
+        assert_eq!(engine.series[0].gate_masks, gate_masks);
+        assert_eq!(engine.series[0].workgroup_candidates, workgroup_candidates);
         assert!(matches!(
             GpuPickEngine::validate_series_columns(&pool, &engine.series[0]),
             Err(GpuPickError::StaleColumn { column_id, .. })
