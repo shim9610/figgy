@@ -7,8 +7,8 @@ Embed in egui / iced / winit / any other wgpu host.
 
 > This is the workspace root README. The workspace has three crates:
 > **`crates/model`** — the pure chart model and schema authority: option/data SSoT (`Config`, `SeriesConfig`), the rich-text/legend document model, interaction policies (`Selectable`/`Draggable`/`Resizable`, `HitMap`, the single `Config::nudge` movement path), presets (`AxisPreset`, `ColorCycle`). Dependency-free; optional `serde` feature.
-> **`crates/renderer`** — the wgpu + CPU-raster machinery documented below. It also provides a renderer-owned chart registry (`ChartId` → `Config`, ordered `SeriesConfig`, selection, checked revisions) for persistent hosts such as the web wrapper. Depends on `model` and re-exports every module, so all `renderer::…` paths keep working unchanged.
-> **`crates/web`** — the browser package (`figgy`): public `<figgy-chart>` Custom Element facade plus a raw `FiggyChart` wasm kernel as an advanced escape hatch. The facade owns the shadow canvas, ready promise/event lifecycle, rAF loop, ResizeObserver/DPR handling, pointer mapping, export busy gate, and id-keyed register/unregister lifecycle. Browser I/O: [WASM.md](crates/renderer/WASM.md) · full Config JSON schema: [SCHEMA.md](crates/web/SCHEMA.md). Build artifacts (`crates/web/pkg/`) are gitignored — build with `npx wasm-pack build crates/web --release --target web`.
+> **`crates/renderer`** — the wgpu + CPU-raster machinery documented below. It owns the persistent chart registry (`ChartId` → `Config`, ordered `SeriesConfig`, selection, checked revisions), `ColumnPool`, picker pipeline bundle and derived single active-chart registry cache, and pending GPU-pool maintenance. Depends on `model` and re-exports its public modules.
+> **`crates/web`** — the browser package (`figgy`): public `<figgy-chart>` Custom Element facade plus a raw `FiggyChart` wasm kernel as an advanced escape hatch. The facade owns the shadow canvas, ready promise/event lifecycle, rAF loop, ResizeObserver/DPR handling, pointer mapping, export busy gate, id-keyed registration metadata, UI-derived labels/styles/extents, and Promise adaptation. Picker, pool, chart, and maintenance authority remain in `Renderer`. Browser I/O: [WASM.md](crates/renderer/WASM.md) · full Config JSON schema: [SCHEMA.md](crates/web/SCHEMA.md). Build artifacts (`crates/web/pkg/`) are gitignored — build with `npx wasm-pack build crates/web --release --target web`.
 > **Online studio** — [figgyplot.com](https://figgyplot.com/) hosts the public web editor. It runs in-browser with local chart data, imports CSV/TSV/Excel, opens `.figgy` project files, and exports PNGs from the same wasm/WebGPU surface.
 
 - **GPU columnar pool**: all data columns share a single GPU buffer with first-fit alloc + ping-pong defrag on fragmentation. Logical values are stored as f32 hi/lo pairs when uploaded through `HiLoColumnSource`, preserving timestamp-sized offsets on the GPU. Upload caches scalar stats (min / max / smallest-positive) for auto-fit; per-point geometry such as the dashed-line arc-length prefix is computed in place by a compute scan (`line_arc.wgsl`).
@@ -48,7 +48,7 @@ Same growth-response data, rendered through the four chart styles:
 
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # or git URL — currently 0.7.1, not on crates.io.
+renderer = { path = "crates/renderer" }   # or git URL — currently 0.8.0, not on crates.io.
 wgpu     = "27"
 ```
 
@@ -136,11 +136,13 @@ renderer.draw(Color::WHITE, &items).unwrap();   // acquire surface frame → pre
 `Renderer::add_column` takes `&dyn ColumnSource` — implement the trait on any container of yours and the data lands in the GPU pool with zero copy (no intermediate `Vec` allocation). The upload pass reads the freshly written bytes once to cache scalar stats (min / max / smallest-positive) for auto-fit. Use `Renderer::add_hilo_column` with `&dyn HiLoColumnSource` for large absolute timestamps or coordinates that must preserve sub-f32 deltas; it uploads each logical value as `(hi: f32, lo: f32)`.
 
 `add_column` / `add_hilo_column` register a new id. To atomically replace an
-existing id, use `upsert_column` / `upsert_hilo_column`; the previous allocation
-and renderer revisions are published only after the replacement upload and
-checked revision preflight succeed. Integrations that must prepare dependent
-picker/extent state first use `begin_upsert_*`, inspect its provisional pool,
-then call the guard's allocation-free `commit`.
+existing id, use `upsert_column` / `upsert_hilo_column`. `Renderer` prepares the
+provisional pool, affected chart revisions, active picker transition, and
+maintenance state before publishing any of them. A returned preparation error
+therefore preserves the previous authority state. Integrations with additional
+host-owned derived state may use `begin_upsert_*`, inspect its provisional pool,
+prepare that derived state, and then call the guard's infallible,
+allocation-free `commit`; hosts do not rebuild the picker themselves.
 
 ```rust
 pub trait ColumnSource {
@@ -490,16 +492,34 @@ Low-level native hosts may still supply `ChartDrawItem` directly. In both paths,
 
 ### Ownership and lifetime boundaries
 
-`Renderer` owns the chart registry and GPU-side state: the `ColumnPool`,
-render/compute pipelines, bind groups, per-panel GPU resources such as
+`Renderer` owns the chart registry and GPU-side state: each chart's authoritative
+`Config` and ordered `SeriesConfig`, the `ColumnPool`, render/compute pipelines,
+the shared picker pipeline bundle, at most one derived active-chart picker cache,
+pending pool maintenance, bind groups, per-panel GPU resources such as
 `ChartView` / `ChartStyle`, and the shared `Arc<wgpu::Device>` /
 `Arc<wgpu::Queue>`. A `ChartId` is opaque and bound to its issuing renderer.
 `set_chart_state` atomically validates and replaces a chart's `Config` and
 ordered series when one logical edit affects both.
-`remove_column` cascade-removes every renderer-owned series that references the
-id, but the core renderer deliberately does not rewrite the `Config::legend`
-document. The web facade applies its auto-managed-versus-free-edited legend
-policy around that core operation.
+
+Column upsert, removal, and defragmentation prepare all fallible pool, chart,
+revision, and active-picker work before publishing the new authority state.
+For returned synchronous errors, the previous pool/chart/picker state remains
+intact; the final publication is allocation-free. Plain `remove_column`
+cascade-removes every renderer-owned series that references the id and does not
+rewrite any `Config::legend` document. A host that derives a legend update from
+that cascade uses `remove_column_with_chart_config`, which publishes the pool,
+all affected series, and that chart's replacement `Config` in the same
+transaction. The web facade uses this combined boundary for its
+auto-managed-versus-free-edited legend policy.
+
+Renderer 0.8 makes exact GPU picking chart-aware. Call
+`enable_gpu_picking()` once, optionally call
+`prepare_gpu_picking_for_chart(chart_id)` to make a chart first-pick-ready, and
+submit through `pick_chart(chart_id, GpuPickRequest)` or
+`WindowedRenderer::pick_chart_at`. The renderer derives axis transforms and the
+data-area clip from its authoritative `Config`; the public low-level
+`GpuPickEngine` surface from 0.7 is no longer exposed. Picking reads the GPU
+column pool directly: there is no CPU point mirror and no internal `Mutex`.
 
 Every mutation — `Renderer::prepare` and the export prepare path — runs behind
 an `&mut self` boundary and does not introduce a shared lock inside the
@@ -522,6 +542,11 @@ the GPU-pool column and the scalar stats cached for auto-fit (min / max /
 smallest-positive); source references and CPU-side per-point geometry are not
 kept. Per-point geometry such as dashed-line and constellation arc prefixes is
 derived from the GPU pool by compute scans.
+
+An in-flight `GpuPickTicket` owns its readback resources and an `Arc`-backed
+identity mapping captured at submission. Later chart or pool mutations, and
+even dropping the renderer, cannot remap that ticket's eventual
+`source_id` / `series_id` result.
 
 The browser public surface follows the same boundary. The `<figgy-chart>`
 facade owns the shadow canvas, ready promise, rAF loop, ResizeObserver/DPR
@@ -663,20 +688,21 @@ egui / iced / winit / 기타 wgpu 호스트 어디든 임베드 가능.
 
 > 워크스페이스 루트 README. crate 3개로 구성:
 > **`crates/model`** — 순수 차트 모델이자 스키마 권위: 옵션/데이터 SSoT(`Config`, `SeriesConfig`), 리치텍스트/범례 문서 모델, 상호작용 정책(`Selectable`/`Draggable`/`Resizable`, `HitMap`, 단일 이동 경로 `Config::nudge`), 프리셋(`AxisPreset`, `ColorCycle`). 의존성 0, `serde` 는 선택 피쳐.
-> **`crates/renderer`** — 아래에서 문서화하는 wgpu + CPU 라스터 장치. 지속 상태를 쓰는 host를 위해 renderer-owned chart registry(`ChartId` → `Config`, 순서 있는 `SeriesConfig`, selection, checked revision)도 제공한다. `model` 을 의존하며 전 모듈 re-export — `renderer::…` 경로 전부 유효.
-> **`crates/web`** — 브라우저 패키지(`figgy`): public `<figgy-chart>` Custom Element facade와 advanced escape hatch로 남는 raw `FiggyChart` wasm kernel. facade가 shadow canvas, ready promise/event 수명주기, rAF loop, ResizeObserver/DPR 처리, pointer mapping, export busy gate, id 기반 등록/해제 수명주기를 소유한다. 브라우저 I/O: [WASM.md](crates/renderer/WASM.md) · Config JSON 스키마: [SCHEMA.md](crates/web/SCHEMA.md). 빌드 산출물(`crates/web/pkg/`)은 gitignore — `npx wasm-pack build crates/web --release --target web` 로 빌드.
+> **`crates/renderer`** — 아래에서 문서화하는 wgpu + CPU 라스터 장치. 지속 chart registry(`ChartId` → `Config`, 순서 있는 `SeriesConfig`, selection, checked revision), `ColumnPool`, picker pipeline bundle과 파생된 단일 active-chart registry cache, pending GPU-pool maintenance를 소유한다. `model`을 의존하고 public 모듈을 re-export한다.
+> **`crates/web`** — 브라우저 패키지(`figgy`): public `<figgy-chart>` Custom Element facade와 advanced escape hatch로 남는 raw `FiggyChart` wasm kernel. facade가 shadow canvas, ready promise/event 수명주기, rAF loop, ResizeObserver/DPR 처리, pointer mapping, export busy gate, id 기반 등록 metadata, UI 파생 label/style/extent, Promise 변환을 소유한다. picker, pool, chart, maintenance 권위는 `Renderer`에 남는다. 브라우저 I/O: [WASM.md](crates/renderer/WASM.md) · Config JSON 스키마: [SCHEMA.md](crates/web/SCHEMA.md). 빌드 산출물(`crates/web/pkg/`)은 gitignore — `npx wasm-pack build crates/web --release --target web` 로 빌드.
 > **웹 스튜디오** — [figgyplot.com](https://figgyplot.com/) 에 공개 웹 편집기가 있다. 브라우저 안에서 로컬 차트 데이터를 처리하고, CSV/TSV/Excel import, `.figgy` 프로젝트 열기, 같은 wasm/WebGPU 표면 기반 PNG export를 제공한다.
 
-- **GPU columnar pool**: 모든 데이터 컬럼을 하나의 GPU buffer 에 first-fit + 단편화 시 핑퐁 defrag. 업로드 시 auto-fit 용 스칼라 통계(min / max / 최소 양수)를 캐싱하고, 점선 호장 prefix 같은 per-point 지오메트리는 컴퓨트 스캔(`line_arc.wgsl`)이 제자리에서 계산.
+- **GPU columnar pool**: 모든 데이터 컬럼을 하나의 GPU buffer 에 first-fit + 단편화 시 핑퐁 defrag. `HiLoColumnSource`로 올린 논리값은 f32 hi/lo 쌍으로 저장해 timestamp 크기의 offset도 GPU에서 보존한다. 업로드 시 auto-fit 용 스칼라 통계(min / max / 최소 양수)를 캐싱하고, 점선 호장 prefix 같은 per-point 지오메트리는 컴퓨트 스캔(`line_arc.wgsl`)이 제자리에서 계산.
 - **분리 합성**: grid → data → axis/label/legend 순으로 합성 → 그리드가 데이터를 가리지 않음. axis raster는 `Grid` / `Decoration` 분리 레이어가 기본이고, `AxisLayerKind::All`은 legacy 단일 패스 helper로 남아 있음.
 - **데이터 무왜곡 계약**: renderer/web은 model 계약을 소비하며 원본 좌표, provenance, 축↔데이터 대응을 호스트 동의 없이 조용히 바꾸지 않는다. 명시적 clipping, log-domain skip, NaN skip, antialiasing 한계는 데이터 재작성 아닌 렌더링 계약이다.
 - **헤드리스 PNG export**: 임의 DPI 로 GPU offscreen 라스터 → 메모리 RGBA / PNG 바이트 반환 (async 우선, native 는 blocking 래퍼 제공).
 - **상호작용 레이어 (opt-in)**: 히트테스트, 선택 박스, 드래그(축은 수직 방향 제약 + 분리 축 `line_offset`), 데이터 영역 PPT 식 8핸들 리사이즈 — 정책은 전부 `model`, 호스트가 포인터 이벤트를 넣을 때만 동작.
-- **데이터 피킹 (opt-in)**: 최종 스타일/래스터 픽셀이 아니라 원본 시리즈 primitive가 판정 기준이다. scatter는 원본 데이터 점 위치와 설정된 marker hit 반경을 사용하고, line은 인접한 원본 데이터 점 사이의 직선 segment를 검사해 가까운 endpoint로 스냅한다. dash 공백, cap 래스터 형상, 장식용 draw-style 변형은 pick 경로를 바꾸지 않는다. web의 async 반환은 `{ source_id: string | null, series_id, point_index, distance_px }`이고, 좌표가 필요하면 host가 `point_index`로 등록한 원본 데이터를 조회한다. errorbar stem/cap은 pick target이 아니다.
+- **데이터 피킹 (opt-in)**: 최종 스타일/래스터 픽셀이 아니라 원본 시리즈 primitive가 판정 기준이다. scatter는 원본 데이터 점 위치와 설정된 marker hit 반경을 사용하고, line은 인접한 원본 데이터 점 사이의 직선 segment를 검사해 가까운 endpoint로 스냅한다. dash 공백, cap 래스터 형상, 장식용 draw-style 변형은 pick 경로를 바꾸지 않는다. web의 async 반환은 `{ source_id: string | null, series_id, point_index, distance_px }`이고, 좌표가 필요하면 host가 `point_index`로 등록한 원본 데이터를 조회한다. errorbar stem/cap은 pick target이 아니다. 선택 점 장식은 `Config.picked_points`로 다시 입력하므로 UI 상태는 renderer 밖에 남는다.
+- **점별 스타일 매핑 (opt-in)**: precise scatter는 `point_style_table` / `point_style_index_column` / `point_style_overrides`를, precise errorbar는 독립적인 `error_bar_style_table` / `error_bar_style_index_column` / `error_bar_style_overrides`를 바인딩할 수 있다. styled mode는 자체 visual shader를 사용하며 이 매핑을 무시한다.
 - **리치텍스트 일원화**: 제목·틱 라벨·범례가 한 엔진 공유 — 세그먼트별 bold/italic/밑줄/첨자/그리스, 세그먼트별 색·크기 오버라이드, `'\n'` 줄바꿈, `'\t'` 표 열, 고정폭 범례 심볼 필드.
 - **손그림 스케치 모드 (opt-in)**: `draw_style: { mode: "sketch", amplitude_px, wavelength_px, seed }` 한 필드로 차트 전체를 xkcd 풍으로 — 축/틱/그리드/범례는 CPU 라스터에서, 라인의 흔들림/점선 위상은 호장 스캔 기반 GPU 변형으로, 마커/에러바는 전용 GPU 변형으로 처리되고, 차트 텍스트는 번들 손글씨 폰트(Comic Neue, OFL)로 자동 전환된다(글리프 없는 문자는 문자 단위 폴백 — CJK는 등록 폰트 유지). 시드 기반 결정적, 점선과 합성 가능, 필드가 없으면 정밀 경로가 한 바이트도 달라지지 않는다.
-- **은하수(milkyway) 모드 (opt-in)**: `draw_style: { mode: "milkyway", ... }` — 차트를 천체사진처럼 렌더링한다. 라인은 시리즈색 성운 리본 위 별 사슬(흑체색·흰 포화 코어·멱법칙 등급·클럼핑·쌍성), scatter는 기존 point shape가 고리 각도로 매핑되는 고리 행성, 에러바는 경계에 충격파 매듭이 맺히는 양극 제트, 축 크롬은 선광원 블룸, 배경은 가독성 우선 비네팅이 걸린 심우주(데이터가 항상 가장 밝다). 무거운 생성물(PSF·흑체 LUT·절차적 행성 아틀라스·고리 스트립)은 스타일 첫 사용 시 1회 베이크 후 캐싱, 전 파라미터 라이브 튜닝 가능(`examples/constellation_demo.rs`, `examples/constellation_lab.rs`), 슬라이더 범위는 기계가 읽는 메타데이터(`draw_style_param_specs`)로 제공.
-- **성좌(constellation) 모드 (opt-in)**: `draw_style: { mode: "constellation", ... }` — 5~10개 안팎의 드문 `ScatterLine` 데이터를 위한 혼합 스타일. scatter 위치에는 PSF 별 스프라이트를 놓고, line은 별자리를 잇는 선처럼 낮은 투명도로 연결한다. 별 크기는 scatter `point_size`를 따르며 별/선 투명도는 `ConstellationOptions.star_opacity` / `line_opacity`로 분리 제어한다.
+- **은하수(milkyway) 모드 (opt-in)**: `draw_style: { mode: "milkyway", ... }`는 차트를 천체사진처럼 렌더링한다. 라인은 시리즈색 성운 리본 위 별 사슬, scatter marker는 고리 행성, errorbar는 심우주 배경 위 양극 제트가 된다.
+- **성좌(constellation) 모드 (opt-in)**: `draw_style: { mode: "constellation", ... }`는 `ScatterLine` series만 지원한다. scatter 데이터 위치에 PSF 별을 놓고 반투명 선으로 연결한다. 파라미터 범위는 기계가 읽는 `draw_style_param_specs` metadata로 제공한다.
 - **단일 wgpu 메이저 (27)**: iced 0.14 + eframe 0.33 ecosystem 정렬.
 - **WebAssembly 지원**: 순수 Rust 라스터 스택(tiny-skia + fontdb + swash), async 초기화/export, 런타임 폰트 등록(`register_font`) 으로 CJK·커스텀 패밀리 지원.
 
@@ -703,7 +729,7 @@ egui / iced / winit / 기타 wgpu 호스트 어디든 임베드 가능.
 
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # 또는 git URL — 현재 0.7.1, crates.io 미배포.
+renderer = { path = "crates/renderer" }   # 또는 git URL — 현재 0.8.0, crates.io 미배포.
 wgpu     = "27"
 ```
 
@@ -791,11 +817,13 @@ renderer.draw(Color::WHITE, &items).unwrap();   // surface frame 획득 → prep
 `Renderer::add_column` 의 시그니처는 `&dyn ColumnSource` 입니다 — 어떤 데이터 컨테이너든 본인 타입에 trait 구현하면 GPU pool 에 zero-copy 로 들어갑니다 (`Vec` 중간 alloc 0). 업로드 패스가 갓 쓴 바이트를 한 번 읽어 auto-fit 용 스칼라 통계(min / max / 최소 양수)를 캐싱합니다.
 
 `add_column` / `add_hilo_column` 은 새 id 등록용이다. 기존 id를 원자적으로
-교체할 때는 `upsert_column` / `upsert_hilo_column` 을 사용한다. 교체 업로드와
-checked revision preflight가 성공한 뒤에만 이전 allocation과 renderer
-revision이 교체·공개된다. picker/extent 같은 의존 상태를 먼저 준비해야 하는
-통합은 `begin_upsert_*` guard의 provisional pool을 사용하고 마지막에
-allocation-free `commit`을 호출한다.
+교체할 때는 `upsert_column` / `upsert_hilo_column` 을 사용한다. `Renderer`는
+새 pool 후보, 영향받는 chart revision, active picker transition, maintenance
+상태를 전부 준비한 뒤 한꺼번에 공개한다. 준비 단계가 오류를 반환하면 기존
+권위 상태가 유지된다. 추가적인 host-owned 파생 상태가 있는 통합은
+`begin_upsert_*` guard의 provisional pool을 보고 그 파생 상태를 준비한 다음
+실패하지 않고 allocation도 하지 않는 `commit`을 호출할 수 있다. host가
+picker를 별도로 재구축하지는 않는다.
 
 ```rust
 pub trait ColumnSource {
@@ -1126,15 +1154,32 @@ prepare 전용 입력이고 paint는 owned token만 소비한다.
 
 ### 소유권과 수명 경계
 
-`Renderer` 는 chart registry와 GPU 측 상태의 수명 소유자다. `ColumnPool`,
-render/compute pipeline, bind group, panel 별 `ChartView` / `ChartStyle`
-GPU 자원, 공유 `Arc<wgpu::Device>` / `Arc<wgpu::Queue>` 를 보관한다.
-`ChartId`는 발급한 renderer에 결박된 opaque id다. 하나의 논리 편집이
-Config와 ordered series를 함께 바꾸면 `set_chart_state`가 두 값을 검증하고
-원자적으로 교체한다.
-`remove_column`은 그 id를 참조하는 모든 renderer-owned series를 cascade
-제거하지만 core renderer는 `Config::legend` 문서를 고치지 않는다. web
-facade가 core 호출 주위에서 auto-managed/free-edited legend 정책을 적용한다.
+`Renderer`는 chart registry와 GPU 측 상태의 수명 소유자다. chart별 권위
+`Config`와 순서 있는 `SeriesConfig`, `ColumnPool`, render/compute pipeline,
+공유 picker pipeline bundle, 최대 하나의 파생 active-chart picker cache, pending
+pool maintenance, bind group, panel별 `ChartView` / `ChartStyle` GPU 자원, 공유
+`Arc<wgpu::Device>` / `Arc<wgpu::Queue>`를 보관한다. `ChartId`는 발급한
+renderer에 결박된 opaque id다. 하나의 논리 편집이 Config와 ordered series를
+함께 바꾸면 `set_chart_state`가 두 값을 검증하고 원자적으로 교체한다.
+
+column upsert, 제거, defrag는 실패 가능한 pool/chart/revision/active-picker
+준비를 모두 끝낸 뒤 새 권위 상태를 공개한다. 동기적으로 반환되는 오류에
+대해서는 기존 pool/chart/picker가 그대로 유지되고, 마지막 공개 단계에는
+allocation이 없다. plain `remove_column`은 그 id를 참조하는 모든
+renderer-owned series를 cascade 제거하지만 어떤 `Config::legend` 문서도
+고치지 않는다. cascade 결과에 따른 범례 변경도 함께 적용해야 하는 host는
+`remove_column_with_chart_config`를 사용한다. 이 API는 pool, 영향받는 모든
+series, 해당 chart의 교체 `Config`를 같은 transaction에서 공개한다. web
+facade는 auto-managed/free-edited legend 정책에 이 결합 경계를 사용한다.
+
+Renderer 0.8의 exact GPU picking은 chart-aware API다.
+`enable_gpu_picking()`을 한 번 호출하고, 필요하면
+`prepare_gpu_picking_for_chart(chart_id)`로 첫 pick 전에 chart registry를
+준비한 뒤 `pick_chart(chart_id, GpuPickRequest)` 또는
+`WindowedRenderer::pick_chart_at`으로 제출한다. 축 transform과 data-area clip은
+renderer가 권위 `Config`에서 계산한다. 0.7에서 공개했던 저수준
+`GpuPickEngine` 표면은 더 이상 노출하지 않는다. picker는 GPU column pool을
+직접 읽으며 CPU point mirror와 내부 `Mutex`를 두지 않는다.
 
 모든 변경 — `Renderer::prepare` 와 export prepare 경로 — 은 `&mut self`
 경계에서 실행되고, renderer 내부에 새 공유 락을 만들지 않는다.
@@ -1156,6 +1201,10 @@ GPU pool column과 auto-fit 용 scalar stats(min / max / 최소 양수)뿐이며
 원본 source 참조나 CPU 측 per-point geometry는 유지하지 않는다. dashed line
 또는 constellation arc prefix 같은 per-point geometry는 GPU pool을 compute
 scan해서 만든다.
+
+진행 중인 `GpuPickTicket`은 readback 자원과 제출 시점의 `Arc` 기반 identity
+mapping을 직접 소유한다. 이후 chart/pool이 변경되거나 renderer가 drop되어도
+그 ticket이 반환할 `source_id` / `series_id`가 다른 대상으로 바뀌지 않는다.
 
 web public surface도 같은 경계를 따른다. `<figgy-chart>` facade가 shadow
 canvas, ready promise, rAF loop, ResizeObserver/DPR 처리, pointer mapping,

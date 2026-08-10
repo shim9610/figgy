@@ -26,81 +26,7 @@
 #[cfg(any(target_arch = "wasm32", test))]
 mod borrowed_column;
 #[cfg(any(target_arch = "wasm32", test))]
-mod gpu_pick_style;
-#[cfg(any(target_arch = "wasm32", test))]
 mod scalar_job;
-
-#[cfg(any(target_arch = "wasm32", test))]
-fn fit_display_panel(
-    logical_size: (u32, u32),
-    surface_size: (u32, u32),
-) -> (f32, renderer::layout::Rect) {
-    let doc_w = logical_size.0.max(1) as f32;
-    let doc_h = logical_size.1.max(1) as f32;
-    let surface_w = surface_size.0.max(1);
-    let surface_h = surface_size.1.max(1);
-    let scale = ((surface_w as f32) / doc_w).min((surface_h as f32) / doc_h);
-    let panel_w = ((doc_w * scale).round().max(1.0) as u32).min(surface_w);
-    let panel_h = ((doc_h * scale).round().max(1.0) as u32).min(surface_h);
-    let x = (surface_w - panel_w) / 2;
-    let y = (surface_h - panel_h) / 2;
-    (
-        scale,
-        renderer::layout::Rect {
-            x,
-            y,
-            width: panel_w,
-            height: panel_h,
-        },
-    )
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-fn display_config_for_surface(
-    config: &renderer::Config,
-    surface_size: (u32, u32),
-) -> (renderer::Config, renderer::layout::Rect, f32) {
-    let logical = config.chart_area.0;
-    let (scale, panel_rect) = fit_display_panel((logical.width, logical.height), surface_size);
-    let mut display_config = config.scaled(scale);
-    display_config.chart_area = renderer::layout::ChartArea(panel_rect);
-    (display_config, panel_rect, scale)
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-fn gpu_pick_query_for_surface(
-    config: &renderer::Config,
-    surface_size: (u32, u32),
-    canvas_position_px: [f32; 2],
-    max_distance_px: f32,
-) -> (renderer::gpu_pick::GpuPickQuery, f32) {
-    let (display_config, _, display_scale) = display_config_for_surface(config, surface_size);
-    let chart_rect = display_config.chart_area.0;
-    let data_area_px = display_config.data_area().ok().map(|area| {
-        let rect = area.0;
-        [
-            rect.x as f32,
-            rect.y as f32,
-            rect.width as f32,
-            rect.height as f32,
-        ]
-    });
-    (
-        renderer::gpu_pick::GpuPickQuery {
-            transform: renderer::data_render::scatter_transform_from_config(&display_config),
-            chart_rect_px: [
-                chart_rect.x as f32,
-                chart_rect.y as f32,
-                chart_rect.width as f32,
-                chart_rect.height as f32,
-            ],
-            data_area_px,
-            canvas_position_px,
-            max_distance_px,
-        },
-        display_scale,
-    )
-}
 
 #[cfg(any(target_arch = "wasm32", test))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -122,10 +48,10 @@ fn frame_decision(
     raster_dirty: bool,
     view_dirty: bool,
     redraw_pending: bool,
-    needs_defrag: bool,
+    maintenance_pending: bool,
 ) -> FrameDecision {
     let visual_pending = renderer_dirty || raster_dirty || view_dirty || redraw_pending;
-    match (visual_pending, needs_defrag) {
+    match (visual_pending, maintenance_pending) {
         (false, false) => FrameDecision::Clean,
         (false, true) => FrameDecision::MaintenanceOnly,
         (true, _) => FrameDecision::Draw {
@@ -602,9 +528,8 @@ mod tests {
     use super::{
         ColumnRegistryAction, ErrorRefKind, FrameDecision, INTERNAL_ZERO_COLUMN_ID,
         active_series_extent_requests, checked_column_revision, column_update_invalidates_fit,
-        consume_successful_frame, display_config_for_surface, fit_display_panel, frame_decision,
-        gpu_pick_query_for_surface, picked_point_json_string, prepare_column_metadata,
-        required_internal_zero_column_len, select_series_extent_job_map,
+        consume_successful_frame, frame_decision, picked_point_json_string,
+        prepare_column_metadata, required_internal_zero_column_len, select_series_extent_job_map,
         series_extent_key_matches_config, series_extent_mode, series_extent_needs_submission,
         series_extent_request_from, validate_column_data_len, validate_column_registry_action,
         validate_public_column_id,
@@ -660,10 +585,10 @@ mod tests {
             let raster_dirty = bits & 2 != 0;
             let view_dirty = bits & 4 != 0;
             let redraw_pending = bits & 8 != 0;
-            let needs_defrag = bits & 16 != 0;
+            let maintenance_pending = bits & 16 != 0;
             let visual_pending = renderer_dirty || raster_dirty || view_dirty || redraw_pending;
             let expected = if !visual_pending {
-                if needs_defrag {
+                if maintenance_pending {
                     FrameDecision::MaintenanceOnly
                 } else {
                     FrameDecision::Clean
@@ -680,7 +605,7 @@ mod tests {
                     raster_dirty,
                     view_dirty,
                     redraw_pending,
-                    needs_defrag,
+                    maintenance_pending,
                 ),
                 expected,
                 "dirty-state mask {bits:05b}"
@@ -714,7 +639,7 @@ mod tests {
 
     #[test]
     fn display_panel_uniformly_scales_document() {
-        let (scale, panel) = fit_display_panel((1000, 800), (2000, 1600));
+        let (scale, panel) = renderer::fit_display_panel((1000, 800), (2000, 1600));
         assert!((scale - 2.0).abs() < 1e-6);
         assert_eq!(
             (panel.x, panel.y, panel.width, panel.height),
@@ -724,7 +649,7 @@ mod tests {
 
     #[test]
     fn display_panel_letterboxes_aspect_ratio_changes() {
-        let (scale, panel) = fit_display_panel((1000, 800), (1600, 800));
+        let (scale, panel) = renderer::fit_display_panel((1000, 800), (1600, 800));
         assert!((scale - 1.0).abs() < 1e-6);
         assert_eq!(
             (panel.x, panel.y, panel.width, panel.height),
@@ -743,7 +668,7 @@ mod tests {
         });
         let original = config.clone();
 
-        let (display, panel, scale) = display_config_for_surface(&config, (500, 400));
+        let (display, panel, scale) = renderer::display_config_for_surface(&config, (500, 400));
 
         assert!((scale - 0.5).abs() < 1e-6);
         assert_eq!(
@@ -757,31 +682,6 @@ mod tests {
         );
         assert_eq!(display.chart_area.0.width, 500);
         assert!((display.bottom_x.label_style.font_size - 9.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn gpu_pick_query_preserves_surface_scale_and_physical_distance_contract() {
-        let mut config = renderer::default::default_config();
-        config.chart_area = renderer::layout::ChartArea(renderer::layout::Rect {
-            x: 0,
-            y: 0,
-            width: 1000,
-            height: 800,
-        });
-
-        for (surface, expected_scale, expected_rect) in [
-            ((500, 400), 0.5, [0.0, 0.0, 500.0, 400.0]),
-            ((1000, 800), 1.0, [0.0, 0.0, 1000.0, 800.0]),
-            ((2000, 1600), 2.0, [0.0, 0.0, 2000.0, 1600.0]),
-            ((1600, 800), 1.0, [300.0, 0.0, 1000.0, 800.0]),
-        ] {
-            let (query, display_scale) =
-                gpu_pick_query_for_surface(&config, surface, [17.0, 23.0], 7.5);
-            assert!((display_scale - expected_scale).abs() < 1e-6);
-            assert_eq!(query.chart_rect_px, expected_rect);
-            assert_eq!(query.canvas_position_px, [17.0, 23.0]);
-            assert_eq!(query.max_distance_px, 7.5);
-        }
     }
 
     #[test]
@@ -1345,15 +1245,19 @@ mod tests {
 
 #[cfg(target_arch = "wasm32")]
 mod web {
-    use std::{cell::Cell, collections::HashMap, rc::Rc, sync::Arc};
+    use std::{cell::Cell, collections::HashMap, rc::Rc};
+
+    #[cfg(feature = "startup-profile")]
+    use std::cell::RefCell;
 
     use wasm_bindgen::prelude::*;
     use wasm_bindgen_futures::{future_to_promise, spawn_local};
     use web_sys::HtmlCanvasElement;
 
+    #[cfg(feature = "startup-profile")]
+    use web_sys::Performance;
+
     use renderer::data_config::ErrorRef;
-    use renderer::data_render::ColumnPool;
-    use renderer::gpu_pick::{GpuPickEngine, GpuPickSeriesReplacement, PreparedGpuPickSeriesBatch};
     use renderer::layout::{ChartArea, NudgeResult, Rect};
     use renderer::line::LineStylePreset;
     use renderer::text::{RichText, rich_segments_from_text};
@@ -1364,8 +1268,10 @@ mod web {
         Series, SeriesConfig, WindowedRenderer,
     };
 
+    #[cfg(feature = "startup-profile")]
+    use renderer::{INIT_EVENT_SCHEMA_VERSION, InitEvent, InitPhase};
+
     use crate::borrowed_column::{BorrowedCastF32Column, BorrowedF32Column, BorrowedF64Column};
-    use crate::gpu_pick_style::OwnedGpuPickSeriesDescriptor;
     use crate::scalar_job::{SeriesExtentJob, SeriesFitExtent};
     use crate::{
         ColumnRegistryAction, FrameDecision, INTERNAL_ZERO_COLUMN_ID, SeriesExtentKey,
@@ -1379,6 +1285,230 @@ mod web {
 
     fn js_err(e: impl std::fmt::Display) -> JsValue {
         JsValue::from_str(&e.to_string())
+    }
+
+    #[cfg(feature = "startup-profile")]
+    thread_local! {
+        static NEXT_STARTUP_PROFILE_ID: Cell<u32> = const { Cell::new(1) };
+    }
+
+    #[cfg(feature = "startup-profile")]
+    struct StartupProbeResources {
+        _renderer: WindowedRenderer<'static>,
+    }
+
+    #[cfg(feature = "startup-profile")]
+    thread_local! {
+        static STARTUP_PROBE_RESOURCES: RefCell<Option<StartupProbeResources>> = const {
+            RefCell::new(None)
+        };
+    }
+
+    #[cfg(feature = "startup-profile")]
+    struct StartupProfileCollector {
+        profile_id: u32,
+        performance: Option<Performance>,
+        started_at_ms: f64,
+        events: Vec<(InitEvent, f64)>,
+    }
+
+    #[cfg(feature = "startup-profile")]
+    impl StartupProfileCollector {
+        fn new() -> Self {
+            let profile_id = NEXT_STARTUP_PROFILE_ID.with(|next| {
+                let id = next.get();
+                next.set(id.wrapping_add(1).max(1));
+                id
+            });
+            let performance = web_sys::window().and_then(|window| window.performance());
+            let started_at_ms = performance.as_ref().map(Performance::now).unwrap_or(0.0);
+            Self {
+                profile_id,
+                performance,
+                started_at_ms,
+                events: Vec::new(),
+            }
+        }
+
+        fn now(&self) -> f64 {
+            self.performance
+                .as_ref()
+                .map(Performance::now)
+                .unwrap_or(self.started_at_ms)
+        }
+
+        fn record(&mut self, event: InitEvent) {
+            let at_ms = self.now();
+            if let Some(performance) = self.performance.as_ref() {
+                let phase = match event.phase {
+                    InitPhase::Started => "started",
+                    InitPhase::Finished => "finished",
+                };
+                let scope = event
+                    .scope
+                    .replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+                let stage = event
+                    .stage
+                    .replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+                let name = format!(
+                    "figgy.startup.v{}.p{}.{}.{}.{}",
+                    event.schema_version, self.profile_id, scope, stage, phase
+                );
+                let _ = performance.mark(&name);
+            }
+            self.events.push((event, at_ms));
+        }
+
+        fn started(&mut self, scope: &'static str, stage: &'static str) {
+            self.record(InitEvent::new(scope, stage, InitPhase::Started));
+        }
+
+        fn finished(&mut self, scope: &'static str, stage: &'static str) {
+            self.record(InitEvent::new(scope, stage, InitPhase::Finished));
+        }
+
+        fn finish_json(&self, picker_enabled: Option<bool>) -> Result<String, JsValue> {
+            let finished_at_ms = self.now();
+            let mut open = HashMap::<(&'static str, &'static str), Vec<f64>>::new();
+            let mut stages = Vec::new();
+            let events = self
+                .events
+                .iter()
+                .map(|(event, at_ms)| {
+                    let phase = match event.phase {
+                        InitPhase::Started => {
+                            open.entry((event.scope, event.stage))
+                                .or_default()
+                                .push(*at_ms);
+                            "started"
+                        }
+                        InitPhase::Finished => {
+                            if let Some(started_at_ms) =
+                                open.get_mut(&(event.scope, event.stage)).and_then(Vec::pop)
+                            {
+                                stages.push(serde_json::json!({
+                                    "scope": event.scope,
+                                    "stage": event.stage,
+                                    "startedAtMs": started_at_ms,
+                                    "finishedAtMs": at_ms,
+                                    "durationMs": at_ms - started_at_ms,
+                                }));
+                            }
+                            "finished"
+                        }
+                    };
+                    serde_json::json!({
+                        "scope": event.scope,
+                        "stage": event.stage,
+                        "phase": phase,
+                        "atMs": at_ms,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let mut profile = serde_json::json!({
+                "schemaVersion": INIT_EVENT_SCHEMA_VERSION,
+                "profileId": self.profile_id,
+                "clock": "performance.now",
+                "startedAtMs": self.started_at_ms,
+                "finishedAtMs": finished_at_ms,
+                "durationMs": finished_at_ms - self.started_at_ms,
+                "events": events,
+                "stages": stages,
+            });
+            if let Some(picker_enabled) = picker_enabled {
+                profile["pickerEnabled"] = serde_json::Value::Bool(picker_enabled);
+            }
+            serde_json::to_string(&profile).map_err(js_err)
+        }
+    }
+
+    #[cfg(feature = "startup-profile")]
+    async fn create_renderer_for_canvas_observed(
+        canvas: HtmlCanvasElement,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> Result<(WindowedRenderer<'static>, u32, u32), JsValue> {
+        let (w, h) = (canvas.width().max(1), canvas.height().max(1));
+        let mut renderer = Renderer::for_window_async_observed(
+            wgpu::SurfaceTarget::Canvas(canvas),
+            (w, h),
+            POOL_CAPACITY,
+            observer,
+        )
+        .await
+        .map_err(js_err)?;
+        // Replace-heavy hosts can fragment between remove and the next frame.
+        renderer.set_defrag_policy(DefragPolicy::OnAllocFailure);
+        Ok((renderer, w, h))
+    }
+
+    /// Measurement-only renderer startup probe used by the Wave 0 harness.
+    #[cfg(feature = "startup-profile")]
+    #[wasm_bindgen]
+    pub async fn profile_raw_create(
+        canvas: HtmlCanvasElement,
+        picker_enabled: bool,
+        submit_frame: bool,
+    ) -> Result<String, JsValue> {
+        console_error_panic_hook::set_once();
+        let mut profile = StartupProfileCollector::new();
+        let mut observer = |event| profile.record(event);
+        let (mut renderer, w, h) =
+            create_renderer_for_canvas_observed(canvas, &mut observer).await?;
+        if picker_enabled {
+            renderer
+                .enable_gpu_picking_observed(&mut observer)
+                .map_err(js_err)?;
+        }
+
+        if submit_frame {
+            profile.started("web.profile", "empty frame");
+            let mut config = renderer::default::default_config();
+            config.chart_area = ChartArea(Rect {
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+            });
+            let chart_id = renderer
+                .register_chart(config.clone(), Vec::new())
+                .map_err(js_err)?;
+            if picker_enabled {
+                renderer
+                    .prepare_gpu_picking_for_chart(chart_id)
+                    .map_err(js_err)?;
+            }
+            let chart = Chart::new(config);
+            let panel_rect = Rect {
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+            };
+            let mut view = renderer
+                .create_chart_view(&chart, panel_rect)
+                .map_err(js_err)?;
+            renderer
+                .refresh_axis_with_selection(&mut view, &chart, panel_rect, &[])
+                .map_err(js_err)?;
+            let series: [Series<'_>; 0] = [];
+            let items = [ChartDrawItem {
+                view: &view,
+                chart_config: chart.config(),
+                series: &series,
+            }];
+            renderer.draw(Color::WHITE, &items).map_err(js_err)?;
+            profile.finished("web.profile", "empty frame");
+        }
+
+        let json = profile.finish_json(Some(picker_enabled))?;
+        if submit_frame {
+            STARTUP_PROBE_RESOURCES.with(|slot| {
+                slot.replace(Some(StartupProbeResources {
+                    _renderer: renderer,
+                }));
+            });
+        }
+        Ok(json)
     }
 
     /// Parameter metadata for one `draw_style` mode — a JSON array of
@@ -1499,21 +1629,6 @@ mod web {
         HiLo(&'a dyn HiLoColumnSource),
     }
 
-    struct PickerReplacementPlan {
-        gpu_index: usize,
-        descriptor: OwnedGpuPickSeriesDescriptor,
-    }
-
-    enum PickerUploadPlan {
-        Rebuild(Vec<OwnedGpuPickSeriesDescriptor>),
-        Batch(Vec<PickerReplacementPlan>),
-    }
-
-    enum PreparedColumnPicker {
-        Rebuild(GpuPickEngine),
-        Batch(PreparedGpuPickSeriesBatch),
-    }
-
     struct PreparedSeriesExtentCache {
         extents: HashMap<SeriesExtentKey, Rc<SeriesExtentJob>>,
         ticket_jobs: Vec<(renderer::GpuSeriesExtentTicket, Rc<SeriesExtentJob>)>,
@@ -1604,9 +1719,9 @@ mod web {
     #[wasm_bindgen]
     pub struct FiggyChart {
         renderer: WindowedRenderer<'static>,
+        #[cfg(feature = "startup-profile")]
+        startup_profile: String,
         chart_id: ChartId,
-        gpu_picker: GpuPickEngine,
-        gpu_picker_dirty: bool,
         view: ChartView,
         /// Current WebGPU surface size in physical canvas pixels. This is a
         /// viewport property, not the exported document size.
@@ -1634,8 +1749,6 @@ mod web {
         /// Async readback completion mailbox. `frame()` is the only owner that
         /// mutates the renderer and commits a still-current fit token.
         pending_fit_commit: Rc<Cell<Option<PendingFitCommit>>>,
-        /// A removal happened — defragment once on the next frame.
-        needs_defrag: bool,
         /// Monotonic color assignment for newly registered series.
         color_seq: usize,
         hitmap: HitMap,
@@ -1689,11 +1802,11 @@ mod web {
 
         fn display_scale_and_panel(&self) -> (f32, Rect) {
             let logical = self.chart_config().chart_area.0;
-            super::fit_display_panel((logical.width, logical.height), self.surface_size)
+            renderer::fit_display_panel((logical.width, logical.height), self.surface_size)
         }
 
         fn display_config(&self) -> (renderer::config::Config, Rect, f32) {
-            super::display_config_for_surface(self.chart_config(), self.surface_size)
+            renderer::display_config_for_surface(self.chart_config(), self.surface_size)
         }
 
         fn display_delta_to_document(&self, dx: f32, dy: f32) -> (f32, f32) {
@@ -1724,55 +1837,6 @@ mod web {
                 .get(i)
                 .and_then(|cfg| cfg.label.clone())
                 .or_else(|| self.labels.get(i)?.as_ref().map(|s| self.label_text(s)))
-        }
-
-        fn append_legend_entry_for(&mut self, i: usize) -> Result<(), JsValue> {
-            let Some(cfg) = self.chart_series().get(i).cloned() else {
-                return Ok(());
-            };
-            let Some(label) = self.fallback_label(i) else {
-                return Ok(());
-            };
-            let mut config = self.chart_config().clone();
-            renderer::config::append_legend_entry_rich(
-                &mut config.legend.content,
-                renderer::config::series_symbol_segments(&cfg),
-                label.segments,
-            );
-            config.legend.visible = true;
-            self.replace_chart_config(config)
-        }
-
-        fn remove_legend_entry_for(&mut self, i: usize) -> Result<(), JsValue> {
-            let mut config = self.chart_config().clone();
-            if renderer::config::remove_legend_entry(&mut config.legend.content, i)
-                && config.legend.content.segments.is_empty()
-            {
-                config.legend.visible = false;
-            }
-            self.replace_chart_config(config)
-        }
-
-        fn sync_legend_symbols(&mut self, append_missing: bool) -> Result<(), JsValue> {
-            let series = self.chart_series().to_vec();
-            let mut config = self.chart_config().clone();
-            let existing = renderer::config::legend_entry_count(&config.legend.content);
-            renderer::config::update_legend_symbols_preserving_text(
-                &mut config.legend.content,
-                &series,
-            );
-            self.replace_chart_config(config)?;
-            if append_missing {
-                if existing > series.len() {
-                    for i in (series.len()..existing).rev() {
-                        self.remove_legend_entry_for(i)?;
-                    }
-                }
-                for i in existing..series.len() {
-                    self.append_legend_entry_for(i)?;
-                }
-            }
-            Ok(())
         }
 
         /// Explicit reset: rebuild every auto legend row from SeriesConfig.label
@@ -1808,129 +1872,6 @@ mod web {
                 .iter()
                 .map(|cfg| self.renderer.create_style_for_series_scaled(cfg, scale))
                 .collect();
-        }
-
-        fn pick_series_active_in_metadata(&self, cfg: &SeriesConfig) -> bool {
-            Self::pick_series_active_in(&self.columns, cfg)
-        }
-
-        fn pick_series_active_in(columns: &HashMap<String, usize>, cfg: &SeriesConfig) -> bool {
-            columns
-                .get(&cfg.x_column)
-                .zip(columns.get(&cfg.y_column))
-                .is_some_and(|(x_len, y_len)| (*x_len).min(*y_len) > 0)
-        }
-
-        fn pick_series_active_in_pool(&self, cfg: &SeriesConfig) -> bool {
-            self.renderer
-                .pool()
-                .handle_for(&cfg.x_column)
-                .zip(self.renderer.pool().handle_for(&cfg.y_column))
-                .is_some_and(|(x, y)| x.len_values.min(y.len_values) > 0)
-        }
-
-        fn build_gpu_picker_for(
-            &self,
-            series_cfgs: &[SeriesConfig],
-            precise: bool,
-        ) -> Result<GpuPickEngine, JsValue> {
-            let mut picker = GpuPickEngine::new(
-                Arc::clone(self.renderer.device()),
-                Arc::clone(self.renderer.queue()),
-            )
-            .map_err(js_err)?;
-            for cfg in series_cfgs {
-                if !self.pick_series_active_in_pool(cfg) {
-                    continue;
-                }
-                let owned = OwnedGpuPickSeriesDescriptor::from_series(cfg, precise);
-                owned
-                    .with_descriptor(|descriptor| {
-                        picker.add_series(self.renderer.pool(), descriptor)
-                    })
-                    .map_err(js_err)?;
-            }
-            Ok(picker)
-        }
-
-        fn build_gpu_picker_from_descriptors(
-            device: Arc<wgpu::Device>,
-            queue: Arc<wgpu::Queue>,
-            pool: &ColumnPool,
-            descriptors: &[OwnedGpuPickSeriesDescriptor],
-        ) -> Result<GpuPickEngine, JsValue> {
-            let mut picker = GpuPickEngine::new(device, queue).map_err(js_err)?;
-            for owned in descriptors {
-                owned.with_descriptor(|descriptor| {
-                    let active = pool
-                        .handle_for(&descriptor.x_column)
-                        .zip(pool.handle_for(&descriptor.y_column))
-                        .is_some_and(|(x, y)| x.len_values.min(y.len_values) > 0);
-                    if active {
-                        picker
-                            .add_series(pool, descriptor)
-                            .map(|_| ())
-                            .map_err(js_err)
-                    } else {
-                        Ok(())
-                    }
-                })?;
-            }
-            Ok(picker)
-        }
-
-        fn prepare_picker_upload_plan(
-            &self,
-            id: &str,
-            precise: bool,
-        ) -> Result<PickerUploadPlan, JsValue> {
-            if self.gpu_picker_dirty {
-                let series = self.chart_series();
-                let mut descriptors = Vec::new();
-                descriptors.try_reserve(series.len()).map_err(js_err)?;
-                descriptors.extend(
-                    series
-                        .iter()
-                        .map(|cfg| OwnedGpuPickSeriesDescriptor::from_series(cfg, precise)),
-                );
-                return Ok(PickerUploadPlan::Rebuild(descriptors));
-            }
-
-            let mut replacements = Vec::new();
-            replacements
-                .try_reserve(self.chart_series().len())
-                .map_err(js_err)?;
-            let mut gpu_index = 0usize;
-            for cfg in self.chart_series() {
-                if !self.pick_series_active_in_metadata(cfg) {
-                    continue;
-                }
-                let descriptor = OwnedGpuPickSeriesDescriptor::from_series(cfg, precise);
-                if descriptor.references_column(id) {
-                    replacements.push(PickerReplacementPlan {
-                        gpu_index,
-                        descriptor,
-                    });
-                }
-                gpu_index += 1;
-            }
-            Ok(PickerUploadPlan::Batch(replacements))
-        }
-
-        fn repair_gpu_picker_if_dirty(&mut self) -> Result<(), JsValue> {
-            if self.gpu_picker_dirty {
-                self.rebuild_gpu_picker_now()?;
-            }
-            Ok(())
-        }
-
-        fn rebuild_gpu_picker_now(&mut self) -> Result<(), JsValue> {
-            self.gpu_picker.clear_series();
-            let precise = self.chart_config().draw_style.is_precise();
-            let picker = self.build_gpu_picker_for(self.chart_series(), precise)?;
-            self.gpu_picker = picker;
-            self.gpu_picker_dirty = false;
-            Ok(())
         }
 
         /// Invalidate an in-flight fit when a later mutation wins call order.
@@ -2005,7 +1946,10 @@ mod web {
         /// Removing series cannot create a new extent identity. Retire stale
         /// jobs without allocating or submitting new GPU work.
         fn retire_series_extent_cache(&mut self) {
-            let series_cfgs = self.chart_series().to_vec();
+            let series_cfgs = self
+                .renderer
+                .chart_series(self.chart_id)
+                .expect("FiggyChart keeps its renderer-owned chart registered");
             let revisions = &self.column_revisions;
             self.series_extents.retain(|key, _| {
                 series_cfgs
@@ -2056,10 +2000,6 @@ mod web {
             let (future_series_extents, pending_series_extents) =
                 select_series_extent_job_map(ordered_requests, &self.series_extents, false)
                     .map_err(js_err)?;
-            let precise = self.chart_config().draw_style.is_precise();
-            let picker_plan = self.prepare_picker_upload_plan(id, precise)?;
-            let device = Arc::clone(self.renderer.device());
-            let queue = Arc::clone(self.renderer.queue());
             let mut ticket_jobs = Vec::new();
             ticket_jobs
                 .try_reserve(pending_series_extents.len())
@@ -2072,34 +2012,6 @@ mod web {
                 }
             }
             .map_err(js_err)?;
-            let replaced_existing = guard.replaced_existing();
-
-            let prepared_picker = match &picker_plan {
-                PickerUploadPlan::Rebuild(descriptors) => {
-                    PreparedColumnPicker::Rebuild(Self::build_gpu_picker_from_descriptors(
-                        device,
-                        queue,
-                        guard.pool(),
-                        descriptors,
-                    )?)
-                }
-                PickerUploadPlan::Batch(replacements) => {
-                    let batch = self
-                        .gpu_picker
-                        .prepare_series_batch(
-                            guard.pool(),
-                            replacements
-                                .iter()
-                                .map(|replacement| GpuPickSeriesReplacement {
-                                    gpu_index: replacement.gpu_index,
-                                    descriptor: replacement.descriptor.descriptor(),
-                                }),
-                        )
-                        .map_err(js_err)?;
-                    PreparedColumnPicker::Batch(batch)
-                }
-            };
-
             for request in &pending_series_extents {
                 let ticket = guard
                     .begin_series_extent(request.key.mode, request.columns.borrowed())
@@ -2118,15 +2030,9 @@ mod web {
             };
 
             guard.commit();
-            match prepared_picker {
-                PreparedColumnPicker::Rebuild(picker) => self.gpu_picker = picker,
-                PreparedColumnPicker::Batch(batch) => self.gpu_picker.commit_series_batch(batch),
-            }
-            self.gpu_picker_dirty = false;
             self.columns = metadata.columns;
             self.column_revisions = metadata.revisions;
             self.next_column_revision = metadata.next_revision;
-            self.needs_defrag |= replaced_existing;
             if column_update_invalidates_fit(id) {
                 self.bump_fit_epoch();
             }
@@ -2146,14 +2052,12 @@ mod web {
                 len,
             )
             .map_err(js_err)?;
-            let replaced_existing = self.columns.contains_key(INTERNAL_ZERO_COLUMN_ID);
             self.renderer
                 .ensure_internal_zero_column(len)
                 .map_err(js_err)?;
             self.columns = metadata.columns;
             self.column_revisions = metadata.revisions;
             self.next_column_revision = metadata.next_revision;
-            self.needs_defrag |= replaced_existing;
             Ok(())
         }
 
@@ -2191,25 +2095,6 @@ mod web {
             }
             Ok(())
         }
-
-        fn process_pending_defrag(&mut self) -> Result<bool, JsValue> {
-            if !self.needs_defrag {
-                return Ok(false);
-            }
-            // Preserve the existing R2-04 behavior: maintenance is consumed
-            // before defrag/rebind. Visual dirty state is handled separately
-            // and is never consumed here.
-            self.needs_defrag = false;
-            let relocated = self.renderer.defragment().map_err(js_err)?;
-            if relocated {
-                if !self.gpu_picker_dirty {
-                    self.gpu_picker
-                        .rebind_columns(self.renderer.pool())
-                        .map_err(js_err)?;
-                }
-            }
-            Ok(relocated)
-        }
     }
 
     impl Drop for FiggyChart {
@@ -2233,20 +2118,39 @@ mod web {
         pub async fn create(canvas: HtmlCanvasElement) -> Result<FiggyChart, JsValue> {
             console_error_panic_hook::set_once();
 
-            let (w, h) = (canvas.width().max(1), canvas.height().max(1));
-            let mut renderer = Renderer::for_window_async(
-                wgpu::SurfaceTarget::Canvas(canvas),
-                (w, h),
-                POOL_CAPACITY,
-            )
-            .await
-            .map_err(js_err)?;
-            // Replace-heavy hosts can hit transient fragmentation between the
-            // remove and the next frame's defrag — let the pool self-heal.
-            renderer.set_defrag_policy(DefragPolicy::OnAllocFailure);
-            let gpu_picker =
-                GpuPickEngine::new(Arc::clone(renderer.device()), Arc::clone(renderer.queue()))
+            #[cfg(feature = "startup-profile")]
+            let mut profile = StartupProfileCollector::new();
+
+            #[cfg(feature = "startup-profile")]
+            let (mut renderer, w, h) = {
+                let mut observer = |event| profile.record(event);
+                let (mut renderer, w, h) =
+                    create_renderer_for_canvas_observed(canvas, &mut observer).await?;
+                renderer
+                    .enable_gpu_picking_observed(&mut observer)
                     .map_err(js_err)?;
+                (renderer, w, h)
+            };
+
+            #[cfg(not(feature = "startup-profile"))]
+            let (mut renderer, w, h) = {
+                let (w, h) = (canvas.width().max(1), canvas.height().max(1));
+                let mut renderer = Renderer::for_window_async(
+                    wgpu::SurfaceTarget::Canvas(canvas),
+                    (w, h),
+                    POOL_CAPACITY,
+                )
+                .await
+                .map_err(js_err)?;
+                // Replace-heavy hosts can hit transient fragmentation between
+                // remove and the next frame's defrag.
+                renderer.set_defrag_policy(DefragPolicy::OnAllocFailure);
+                renderer.enable_gpu_picking().map_err(js_err)?;
+                (renderer, w, h)
+            };
+
+            #[cfg(feature = "startup-profile")]
+            profile.started("web.create", "chart resources");
 
             let mut config = renderer::default::default_config();
             config.chart_area = ChartArea(Rect {
@@ -2257,6 +2161,9 @@ mod web {
             });
             let chart_id = renderer
                 .register_chart(config.clone(), Vec::new())
+                .map_err(js_err)?;
+            renderer
+                .prepare_gpu_picking_for_chart(chart_id)
                 .map_err(js_err)?;
             let chart = Chart::new(config);
             let view = renderer
@@ -2271,11 +2178,16 @@ mod web {
                 )
                 .map_err(js_err)?;
 
+            #[cfg(feature = "startup-profile")]
+            profile.finished("web.create", "chart resources");
+            #[cfg(feature = "startup-profile")]
+            let startup_profile = profile.finish_json(None)?;
+
             Ok(FiggyChart {
                 renderer,
+                #[cfg(feature = "startup-profile")]
+                startup_profile,
                 chart_id,
-                gpu_picker,
-                gpu_picker_dirty: false,
                 view,
                 surface_size: (w, h),
                 styles: Vec::new(),
@@ -2288,7 +2200,6 @@ mod web {
                 fit_epoch: Rc::new(Cell::new(0)),
                 alive: Rc::new(Cell::new(true)),
                 pending_fit_commit: Rc::new(Cell::new(None)),
-                needs_defrag: false,
                 color_seq: 0,
                 hitmap: HitMap::standard_chart(),
                 dragging: false,
@@ -2299,6 +2210,12 @@ mod web {
                 redraw_pending: true,
                 last_presented_stamp: None,
             })
+        }
+
+        /// Versioned renderer/picker startup profile as JSON.
+        #[cfg(feature = "startup-profile")]
+        pub fn startup_profile(&self) -> String {
+            self.startup_profile.clone()
         }
 
         /// Register a font (TTF/OTF/TTC bytes) for SSoT `font` family names.
@@ -2401,55 +2318,69 @@ mod web {
                 return Ok(false);
             }
             let old_series = self.chart_series().to_vec();
-            if !self.renderer.remove_column(id).map_err(js_err)? {
-                return Ok(false);
-            }
-            let was_dirty = self.gpu_picker_dirty;
-            let keep: Vec<bool> = old_series
-                .iter()
-                .map(|cfg| !referenced_columns(cfg).contains(&id))
-                .collect();
-            let removed: Vec<usize> = keep
-                .iter()
-                .enumerate()
-                .filter_map(|(i, keep)| (!keep).then_some(i))
-                .collect();
-            if !was_dirty {
-                for &logical_index in removed.iter().rev() {
-                    if self.pick_series_active_in_metadata(&old_series[logical_index]) {
-                        let gpu_index = old_series[..logical_index]
-                            .iter()
-                            .filter(|cfg| self.pick_series_active_in_metadata(cfg))
-                            .count();
-                        if self.gpu_picker.remove_series_at(gpu_index).is_err() {
-                            self.gpu_picker_dirty = true;
-                            break;
-                        }
-                    }
+            let mut keep = Vec::new();
+            keep.try_reserve(old_series.len()).map_err(js_err)?;
+            keep.extend(
+                old_series
+                    .iter()
+                    .map(|cfg| !referenced_columns(cfg).contains(&id)),
+            );
+            let mut removed = Vec::new();
+            removed.try_reserve(old_series.len()).map_err(js_err)?;
+            removed.extend(
+                keep.iter()
+                    .enumerate()
+                    .filter_map(|(index, keep)| (!keep).then_some(index)),
+            );
+
+            let mut next_series = Vec::new();
+            next_series.try_reserve(old_series.len()).map_err(js_err)?;
+            next_series.extend(
+                old_series
+                    .iter()
+                    .zip(&keep)
+                    .filter(|(_, keep)| **keep)
+                    .map(|(series, _)| series.clone()),
+            );
+            let mut next_labels = Vec::new();
+            next_labels.try_reserve(self.labels.len()).map_err(js_err)?;
+            next_labels.extend(
+                self.labels
+                    .iter()
+                    .zip(&keep)
+                    .filter(|(_, keep)| **keep)
+                    .map(|(label, _)| label.clone()),
+            );
+            let mut next_config = self.chart_config().clone();
+            if self.legend_auto_managed {
+                for &index in removed.iter().rev() {
+                    renderer::config::remove_legend_entry(&mut next_config.legend.content, index);
                 }
+                next_config.legend.visible = !next_config.legend.content.segments.is_empty();
+            } else {
+                renderer::config::update_legend_symbols_preserving_text(
+                    &mut next_config.legend.content,
+                    &next_series,
+                );
+            }
+
+            let removed_from_renderer = if removed.is_empty() {
+                self.renderer.remove_column(id).map_err(js_err)?
+            } else {
+                self.renderer
+                    .remove_column_with_chart_config(id, self.chart_id, next_config)
+                    .map_err(js_err)?
+            };
+            if !removed_from_renderer {
+                return Ok(false);
             }
 
             self.columns.remove(id);
             self.column_revisions.remove(id);
             debug_assert!(self.renderer.pool().slot(id).is_none());
-            self.needs_defrag = true;
-
-            if keep.iter().any(|k| !k) {
-                let mut it = keep.iter();
-                self.styles.retain(|_| *it.next().unwrap());
-                let mut it = keep.iter();
-                self.labels.retain(|_| *it.next().unwrap());
-                if self.legend_auto_managed {
-                    for i in removed.into_iter().rev() {
-                        self.remove_legend_entry_for(i)?;
-                    }
-                } else {
-                    self.sync_legend_symbols(false)?;
-                }
-            }
-            if self.gpu_picker_dirty {
-                let _ = self.rebuild_gpu_picker_now();
-            }
+            let mut keep_iter = keep.iter();
+            self.styles.retain(|_| *keep_iter.next().unwrap());
+            self.labels = next_labels;
             self.bump_fit_epoch();
             self.retire_series_extent_cache();
             Ok(true)
@@ -2521,8 +2452,6 @@ mod web {
                 proposed.try_reserve(1).map_err(js_err)?;
                 proposed.push(cfg.clone());
             }
-            let precise = self.chart_config().draw_style.is_precise();
-            let next_gpu_picker = self.build_gpu_picker_for(&proposed, precise)?;
             let prepared_extents =
                 self.prepare_series_extent_cache(&proposed, &self.column_revisions, false)?;
             let mut next_styles = Vec::new();
@@ -2563,8 +2492,6 @@ mod web {
             self.replace_chart_state(next_config, proposed)?;
             self.styles = next_styles;
             self.labels = next_labels;
-            self.gpu_picker = next_gpu_picker;
-            self.gpu_picker_dirty = false;
             self.color_seq = next_color_seq;
             self.bump_fit_epoch();
             self.publish_series_extent_cache(prepared_extents);
@@ -2617,8 +2544,6 @@ mod web {
                 return Ok(false);
             };
             series.remove(i);
-            let precise = self.chart_config().draw_style.is_precise();
-            let next_gpu_picker = self.build_gpu_picker_for(&series, precise)?;
             let mut config = self.chart_config().clone();
             if self.legend_auto_managed {
                 if renderer::config::remove_legend_entry(&mut config.legend.content, i)
@@ -2635,8 +2560,6 @@ mod web {
             self.replace_chart_state(config, series)?;
             self.styles.remove(i);
             self.labels.remove(i);
-            self.gpu_picker = next_gpu_picker;
-            self.gpu_picker_dirty = false;
             self.bump_fit_epoch();
             self.retire_series_extent_cache();
             Ok(true)
@@ -2820,25 +2743,14 @@ mod web {
             let new_cfg: renderer::Config = serde_json::from_str(json).map_err(js_err)?;
             let old_config = self.chart_config();
             let legend_content_changed = old_config.legend.content != new_cfg.legend.content;
-            let old_precise = old_config.draw_style.is_precise();
-            let new_precise = new_cfg.draw_style.is_precise();
             let series = self.chart_series().to_vec();
-            let next_gpu_picker = if old_precise != new_precise {
-                Some(self.build_gpu_picker_for(&series, new_precise)?)
-            } else {
-                None
-            };
-            let (_, _, scale) = super::display_config_for_surface(&new_cfg, self.surface_size);
+            let (_, _, scale) = renderer::display_config_for_surface(&new_cfg, self.surface_size);
             let mut new_styles = Vec::new();
             new_styles.try_reserve(series.len()).map_err(js_err)?;
             for cfg in &series {
                 new_styles.push(self.renderer.create_style_for_series_scaled(cfg, scale));
             }
             self.replace_chart_config(new_cfg)?;
-            if let Some(next_gpu_picker) = next_gpu_picker {
-                self.gpu_picker = next_gpu_picker;
-                self.gpu_picker_dirty = false;
-            }
             self.bump_fit_epoch();
             if legend_content_changed {
                 self.legend_auto_managed = false;
@@ -2860,8 +2772,6 @@ mod web {
             for cfg in &new_series {
                 self.ensure_columns_exist(cfg)?;
             }
-            let precise = self.chart_config().draw_style.is_precise();
-            let next_gpu_picker = self.build_gpu_picker_for(&new_series, precise)?;
             let old_series = self.chart_series().to_vec();
             let mut new_labels = Vec::new();
             new_labels.try_reserve(new_series.len()).map_err(js_err)?;
@@ -2918,8 +2828,6 @@ mod web {
             self.replace_chart_state(config, new_series)?;
             self.labels = new_labels;
             self.styles = new_styles;
-            self.gpu_picker = next_gpu_picker;
-            self.gpu_picker_dirty = false;
             self.color_seq = new_len.max(self.color_seq);
             self.bump_fit_epoch();
             self.publish_series_extent_cache(prepared_extents);
@@ -2963,20 +2871,10 @@ mod web {
         /// The `<figgy-chart>` facade parses the string and normalizes
         /// `undefined` to `null`.
         pub fn pick_point(&mut self, x: f32, y: f32, max_distance_px: f32) -> js_sys::Promise {
-            if let Err(error) = self.repair_gpu_picker_if_dirty() {
-                return js_sys::Promise::reject(&error);
-            }
-            let (query, display_scale) = super::gpu_pick_query_for_surface(
-                self.chart_config(),
-                self.surface_size,
-                [x, y],
-                max_distance_px,
-            );
-            let ticket = match self.gpu_picker.pick_with_display_scale(
-                self.renderer.pool(),
-                query,
-                display_scale,
-            ) {
+            let ticket = match self
+                .renderer
+                .pick_chart_at(self.chart_id, [x, y], max_distance_px)
+            {
                 Ok(ticket) => ticket,
                 Err(error) => return js_sys::Promise::reject(&js_err(error)),
             };
@@ -3095,12 +2993,15 @@ mod web {
                 raster_dirty,
                 self.view_dirty,
                 self.redraw_pending,
-                self.needs_defrag,
+                self.renderer.has_pending_maintenance(),
             );
             let refresh_raster = match decision {
                 FrameDecision::Clean => return Ok(()),
                 FrameDecision::MaintenanceOnly => {
-                    let _ = self.process_pending_defrag()?;
+                    let _ = self
+                        .renderer
+                        .process_pending_maintenance()
+                        .map_err(js_err)?;
                     return Ok(());
                 }
                 FrameDecision::Draw { refresh_raster } => refresh_raster,
@@ -3110,7 +3011,10 @@ mod web {
             // It is never scanned or uploaded on a clean or maintenance-only
             // frame.
             self.ensure_zero_column_for_render()?;
-            let _ = self.process_pending_defrag()?;
+            let _ = self
+                .renderer
+                .process_pending_maintenance()
+                .map_err(js_err)?;
             let current_stamp = self
                 .renderer
                 .chart_render_stamp(self.chart_id)

@@ -12,6 +12,9 @@ pub enum FiggyError {
     /// Column pool allocation / management error.
     Pool(AllocError),
 
+    /// Renderer-owned exact GPU picking failed.
+    GpuPick(crate::gpu_pick::GpuPickError),
+
     /// `Config.chart_area` has zero size (cannot raster).
     InvalidChartArea { width: u32, height: u32 },
 
@@ -98,6 +101,7 @@ impl std::fmt::Display for FiggyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Pool(e) => write!(f, "column pool: {e}"),
+            Self::GpuPick(e) => write!(f, "GPU pick: {e}"),
             Self::InvalidChartArea { width, height } => {
                 write!(f, "invalid chart area: {width}x{height}")
             }
@@ -165,6 +169,7 @@ impl std::error::Error for FiggyError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Pool(e) => Some(e),
+            Self::GpuPick(e) => Some(e),
             _ => None,
         }
     }
@@ -173,6 +178,12 @@ impl std::error::Error for FiggyError {
 impl From<AllocError> for FiggyError {
     fn from(e: AllocError) -> Self {
         Self::Pool(e)
+    }
+}
+
+impl From<crate::gpu_pick::GpuPickError> for FiggyError {
+    fn from(error: crate::gpu_pick::GpuPickError) -> Self {
+        Self::GpuPick(error)
     }
 }
 

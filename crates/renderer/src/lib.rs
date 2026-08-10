@@ -5,7 +5,8 @@ pub mod data_render;
 pub mod demo;
 pub mod error;
 pub mod gpu_errorbar;
-pub mod gpu_pick;
+mod gpu_pick;
+pub mod init;
 pub mod pick;
 pub mod raster;
 pub mod renderer;
@@ -43,13 +44,16 @@ pub use gpu_errorbar::{
     GpuErrorbarError, GpuErrorbarExtent, GpuErrorbarExtentTicket, GpuSeriesExtent,
     GpuSeriesExtentColumnIds, GpuSeriesExtentMode, GpuSeriesExtentTicket,
 };
+pub use gpu_pick::{GpuPickError, GpuPickTicket};
+pub use init::{INIT_EVENT_SCHEMA_VERSION, InitEvent, InitPhase};
 pub use pick::{PickedPoint, PointColumnLookup, PointPickOptions, pick_nearest_point};
 pub use preset::{AxisPreset, ColorCycle};
 pub use renderer::{
     AxisViewState, ChartDrawItem, ChartId, ChartRenderStamp, ChartStyle, ChartView, ChartViewState,
-    FitCommitToken, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE, PreparedFrame, RasterImage, RenderRevision,
-    Renderer, RendererDevice, RendererVisualStamp, Series, WebDerivedSnapshot, WebDerivedStamp,
-    WindowedRenderer, clamp_export_scale, dpi_to_scale, encode_png,
+    FitCommitToken, GpuPickRequest, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE, PreparedFrame, RasterImage,
+    RenderRevision, Renderer, RendererDevice, RendererVisualStamp, Series, WebDerivedSnapshot,
+    WebDerivedStamp, WindowedRenderer, clamp_export_scale, display_config_for_surface,
+    dpi_to_scale, encode_png, fit_display_panel,
 };
 pub use resize::{Resizable, ResizeHandle};
 pub use select::{

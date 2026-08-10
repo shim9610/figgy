@@ -28,6 +28,7 @@ use crate::data_render::{
     ColumnPickRingLayer, ColumnPool, ColumnScatterLayer, DefragPolicy, PrimitiveStyle,
 };
 use crate::error::{FiggyError, Result};
+use crate::init::{InitEvent, finished, observe_result, observe_value, started};
 use crate::layout::Rect;
 use crate::line::LineStylePreset;
 use crate::select::HitId;
@@ -57,6 +58,53 @@ impl RendererDevice {
     pub fn queue(&self) -> &Arc<wgpu::Queue> {
         &self.queue
     }
+}
+
+/// Host-space input for one renderer-owned exact GPU pick.
+///
+/// The renderer derives the transform and data-area clip from its authoritative
+/// chart config. Hosts provide only the physical canvas position and the panel
+/// placement used for the current display.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GpuPickRequest {
+    pub canvas_position_px: [f32; 2],
+    pub display_panel_px: Rect,
+    pub display_scale: f32,
+    pub max_distance_px: f32,
+}
+
+/// Uniformly fit a logical chart document into a physical surface.
+pub fn fit_display_panel(logical_size: (u32, u32), surface_size: (u32, u32)) -> (f32, Rect) {
+    let doc_w = logical_size.0.max(1) as f32;
+    let doc_h = logical_size.1.max(1) as f32;
+    let surface_w = surface_size.0.max(1);
+    let surface_h = surface_size.1.max(1);
+    let scale = ((surface_w as f32) / doc_w).min((surface_h as f32) / doc_h);
+    let panel_w = ((doc_w * scale).round().max(1.0) as u32).min(surface_w);
+    let panel_h = ((doc_h * scale).round().max(1.0) as u32).min(surface_h);
+    let x = (surface_w - panel_w) / 2;
+    let y = (surface_h - panel_h) / 2;
+    (
+        scale,
+        Rect {
+            x,
+            y,
+            width: panel_w,
+            height: panel_h,
+        },
+    )
+}
+
+/// Derive the scaled display config and centered panel for a surface.
+pub fn display_config_for_surface(
+    config: &Config,
+    surface_size: (u32, u32),
+) -> (Config, Rect, f32) {
+    let logical = config.chart_area.0;
+    let (scale, panel_rect) = fit_display_panel((logical.width, logical.height), surface_size);
+    let mut display_config = config.scaled(scale);
+    display_config.chart_area = crate::layout::ChartArea(panel_rect);
+    (display_config, panel_rect, scale)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -404,6 +452,609 @@ struct ChartRenderState {
     revisions: ChartRevisions,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EffectiveSeriesPrimitives {
+    line: bool,
+    scatter: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PickPointStyleSignature {
+    radius_bits: Option<u32>,
+    shape_id: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PickPointOverrideSignature {
+    point_index: u32,
+    style: PickPointStyleSignature,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PickPreciseStyleMappingSignature {
+    style_index_column: Option<ColumnId>,
+    style_slots: Vec<PickPointStyleSignature>,
+    style_overrides: Vec<PickPointOverrideSignature>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PickStyleMappingSignature {
+    Inactive,
+    Precise(PickPreciseStyleMappingSignature),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PickScatterSignature {
+    base_radius_bits: u32,
+    base_shape_id: u32,
+    style_mapping: PickStyleMappingSignature,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PickResourceSignature {
+    x_column: ColumnId,
+    y_column: ColumnId,
+    primitives: EffectiveSeriesPrimitives,
+    line_width_bits: Option<u32>,
+    scatter: Option<PickScatterSignature>,
+}
+
+impl PickResourceSignature {
+    fn references_column(&self, id: &str) -> bool {
+        self.x_column == id
+            || self.y_column == id
+            || self.scatter.as_ref().is_some_and(|scatter| {
+                matches!(
+                    &scatter.style_mapping,
+                    PickStyleMappingSignature::Precise(mapping)
+                        if mapping.style_index_column.as_deref() == Some(id)
+                )
+            })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PickSeriesSignature {
+    series_id: String,
+    source_id: Option<String>,
+    resource: PickResourceSignature,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PickChartSignature {
+    slots: Vec<PickSeriesSignature>,
+}
+
+impl PickChartSignature {
+    fn references_column(&self, id: &str) -> bool {
+        self.slots
+            .iter()
+            .any(|slot| slot.resource.references_column(id))
+    }
+}
+
+struct OwnedGpuPickScatter {
+    base_radius_px: f32,
+    base_shape_id: u32,
+    style_index_column: Option<ColumnId>,
+    style_slots: Vec<data_render::ScatterStyleSlotGpu>,
+    style_overrides: Vec<data_render::ScatterStyleOverrideGpu>,
+    style_meta: Option<data_render::ScatterStyleMapMeta>,
+}
+
+impl OwnedGpuPickScatter {
+    fn descriptor(&self) -> crate::gpu_pick::GpuPickScatter<'_> {
+        crate::gpu_pick::GpuPickScatter {
+            base_radius_px: self.base_radius_px,
+            base_shape_id: self.base_shape_id,
+            style_map: self
+                .style_meta
+                .map(|style_meta| crate::gpu_pick::GpuPickScatterStyle {
+                    style_index_column: self.style_index_column.clone(),
+                    style_slots: &self.style_slots,
+                    style_overrides: &self.style_overrides,
+                    style_meta,
+                }),
+        }
+    }
+}
+
+struct OwnedGpuPickSeriesDescriptor {
+    signature: PickSeriesSignature,
+    scatter: Option<OwnedGpuPickScatter>,
+    line_width_px: Option<f32>,
+}
+
+impl OwnedGpuPickSeriesDescriptor {
+    fn descriptor(&self) -> crate::gpu_pick::GpuPickSeriesDescriptor<'_> {
+        crate::gpu_pick::GpuPickSeriesDescriptor {
+            source_id: self.signature.source_id.clone(),
+            series_id: self.signature.series_id.clone(),
+            x_column: self.signature.resource.x_column.clone(),
+            y_column: self.signature.resource.y_column.clone(),
+            scatter: self.scatter.as_ref().map(OwnedGpuPickScatter::descriptor),
+            line_width_px: self.line_width_px,
+        }
+    }
+}
+
+struct PickChartPlan {
+    descriptors: Vec<OwnedGpuPickSeriesDescriptor>,
+    signature: PickChartSignature,
+}
+
+impl PickChartPlan {
+    fn new(
+        config: &Config,
+        series: &[SeriesConfig],
+    ) -> std::result::Result<Self, crate::gpu_pick::GpuPickError> {
+        const MASK_COLOR: u32 = 1;
+        const MASK_RADIUS: u32 = 2;
+        const MASK_SHAPE: u32 = 4;
+
+        let mut descriptors = Vec::new();
+        descriptors.try_reserve_exact(series.len()).map_err(|_| {
+            crate::gpu_pick::GpuPickError::AllocationFailed {
+                resource: "renderer pick descriptor plan",
+            }
+        })?;
+
+        for series in series {
+            let primitives = effective_series_primitives(&config.draw_style, &series.render_type);
+            if !primitives.line && !primitives.scatter {
+                continue;
+            }
+
+            let (scatter, scatter_signature) = if primitives.scatter {
+                let scatter = extract_scatter(&series.render_type)
+                    .expect("effective scatter primitive has scatter configuration");
+                let base_radius_px = scatter.point_size;
+                let base_shape_id = data_render::shape_id(&scatter.point_shape);
+                if config.draw_style.is_precise() {
+                    let style_table = scatter.point_style_table.as_deref().unwrap_or(&[]);
+                    let overrides = scatter.point_style_overrides.as_deref().unwrap_or(&[]);
+                    let mut style_slots = Vec::new();
+                    let mut style_signatures = Vec::new();
+                    style_slots
+                        .try_reserve_exact(style_table.len())
+                        .map_err(|_| crate::gpu_pick::GpuPickError::AllocationFailed {
+                            resource: "renderer pick style slots",
+                        })?;
+                    style_signatures
+                        .try_reserve_exact(style_table.len())
+                        .map_err(|_| crate::gpu_pick::GpuPickError::AllocationFailed {
+                            resource: "renderer pick style signatures",
+                        })?;
+                    for slot in style_table {
+                        style_slots.push(scatter_style_slot_gpu(
+                            slot,
+                            1.0,
+                            MASK_COLOR,
+                            MASK_RADIUS,
+                            MASK_SHAPE,
+                        ));
+                        style_signatures.push(pick_point_style_signature(slot));
+                    }
+
+                    let mut style_overrides = Vec::new();
+                    let mut override_signatures = Vec::new();
+                    style_overrides
+                        .try_reserve_exact(overrides.len())
+                        .map_err(|_| crate::gpu_pick::GpuPickError::AllocationFailed {
+                            resource: "renderer pick style overrides",
+                        })?;
+                    override_signatures
+                        .try_reserve_exact(overrides.len())
+                        .map_err(|_| crate::gpu_pick::GpuPickError::AllocationFailed {
+                            resource: "renderer pick override signatures",
+                        })?;
+                    for override_ in overrides {
+                        let Ok(point_index) = u32::try_from(override_.index) else {
+                            continue;
+                        };
+                        let slot = scatter_style_slot_gpu(
+                            &override_.style,
+                            1.0,
+                            MASK_COLOR,
+                            MASK_RADIUS,
+                            MASK_SHAPE,
+                        );
+                        style_overrides.push(data_render::ScatterStyleOverrideGpu {
+                            point_index,
+                            _pad: [0; 3],
+                            color_premul: slot.color_premul,
+                            meta: slot.meta,
+                        });
+                        override_signatures.push(PickPointOverrideSignature {
+                            point_index,
+                            style: pick_point_style_signature(&override_.style),
+                        });
+                    }
+
+                    let style_index_column = scatter.point_style_index_column.clone();
+                    let has_index = style_index_column.is_some();
+                    let style_meta =
+                        (has_index || !style_slots.is_empty() || !style_overrides.is_empty())
+                            .then_some(data_render::ScatterStyleMapMeta {
+                                style_count: style_slots.len().min(u32::MAX as usize) as u32,
+                                override_count: style_overrides.len().min(u32::MAX as usize) as u32,
+                                has_index: u32::from(has_index),
+                                _pad: 0,
+                            });
+                    let style_mapping = if style_meta.is_some() {
+                        PickStyleMappingSignature::Precise(PickPreciseStyleMappingSignature {
+                            style_index_column: style_index_column.clone(),
+                            style_slots: style_signatures,
+                            style_overrides: override_signatures,
+                        })
+                    } else {
+                        PickStyleMappingSignature::Inactive
+                    };
+                    (
+                        Some(OwnedGpuPickScatter {
+                            base_radius_px,
+                            base_shape_id,
+                            style_index_column: style_index_column.clone(),
+                            style_slots,
+                            style_overrides,
+                            style_meta,
+                        }),
+                        Some(PickScatterSignature {
+                            base_radius_bits: base_radius_px.to_bits(),
+                            base_shape_id,
+                            style_mapping,
+                        }),
+                    )
+                } else {
+                    (
+                        Some(OwnedGpuPickScatter {
+                            base_radius_px,
+                            base_shape_id,
+                            style_index_column: None,
+                            style_slots: Vec::new(),
+                            style_overrides: Vec::new(),
+                            style_meta: None,
+                        }),
+                        Some(PickScatterSignature {
+                            base_radius_bits: base_radius_px.to_bits(),
+                            base_shape_id,
+                            style_mapping: PickStyleMappingSignature::Inactive,
+                        }),
+                    )
+                }
+            } else {
+                (None, None)
+            };
+
+            let line_width_px = primitives.line.then(|| {
+                extract_line(&series.render_type)
+                    .expect("effective line primitive has line configuration")
+                    .line_width
+            });
+            let resource = PickResourceSignature {
+                x_column: series.x_column.clone(),
+                y_column: series.y_column.clone(),
+                primitives,
+                line_width_bits: line_width_px.map(f32::to_bits),
+                scatter: scatter_signature,
+            };
+            descriptors.push(OwnedGpuPickSeriesDescriptor {
+                signature: PickSeriesSignature {
+                    series_id: series.series_id.clone(),
+                    source_id: series.source_id.clone(),
+                    resource,
+                },
+                scatter,
+                line_width_px,
+            });
+        }
+
+        let mut signature_slots = Vec::new();
+        signature_slots
+            .try_reserve_exact(descriptors.len())
+            .map_err(|_| crate::gpu_pick::GpuPickError::AllocationFailed {
+                resource: "renderer pick chart signature",
+            })?;
+        signature_slots.extend(
+            descriptors
+                .iter()
+                .map(|descriptor| descriptor.signature.clone()),
+        );
+        Ok(Self {
+            descriptors,
+            signature: PickChartSignature {
+                slots: signature_slots,
+            },
+        })
+    }
+
+    fn registry_slots<'a>(
+        &'a self,
+        current: Option<&PickChartSignature>,
+    ) -> std::result::Result<
+        Vec<crate::gpu_pick::GpuPickRegistrySlot<'a>>,
+        crate::gpu_pick::GpuPickError,
+    > {
+        self.registry_slots_rebuilding(current, None)
+    }
+
+    fn registry_slots_rebuilding<'a>(
+        &'a self,
+        current: Option<&PickChartSignature>,
+        rebuild_column: Option<&str>,
+    ) -> std::result::Result<
+        Vec<crate::gpu_pick::GpuPickRegistrySlot<'a>>,
+        crate::gpu_pick::GpuPickError,
+    > {
+        let mut slots = Vec::new();
+        slots
+            .try_reserve_exact(self.descriptors.len())
+            .map_err(|_| crate::gpu_pick::GpuPickError::AllocationFailed {
+                resource: "renderer pick registry transition",
+            })?;
+        for descriptor in &self.descriptors {
+            let reusable = current.and_then(|signature| {
+                signature.slots.iter().position(|slot| {
+                    rebuild_column
+                        .is_none_or(|id| !descriptor.signature.resource.references_column(id))
+                        && slot.series_id == descriptor.signature.series_id
+                        && slot.resource == descriptor.signature.resource
+                })
+            });
+            if let Some(current_index) = reusable {
+                slots.push(crate::gpu_pick::GpuPickRegistrySlot::Reuse {
+                    current_index,
+                    source_id: descriptor.signature.source_id.clone(),
+                    series_id: descriptor.signature.series_id.clone(),
+                });
+            } else {
+                slots.push(crate::gpu_pick::GpuPickRegistrySlot::Build(
+                    descriptor.descriptor(),
+                ));
+            }
+        }
+        Ok(slots)
+    }
+}
+
+enum PickerPipelineState {
+    Disabled,
+    Ready(Arc<crate::gpu_pick::PickPipelineBundle>),
+    Failed(crate::gpu_pick::GpuPickError),
+}
+
+struct ActivePickRegistry {
+    chart_id: ChartId,
+    signature: PickChartSignature,
+    engine: crate::gpu_pick::GpuPickEngine,
+}
+
+struct PreparedActivePickerMutation<'a> {
+    transition: crate::gpu_pick::PreparedPickRegistryTransition<'a>,
+    active_chart_id: &'a mut ChartId,
+    active_signature: &'a mut PickChartSignature,
+    next_chart_id: ChartId,
+    next_signature: PickChartSignature,
+}
+
+impl PreparedActivePickerMutation<'_> {
+    fn commit(self) {
+        self.transition.commit();
+        *self.active_chart_id = self.next_chart_id;
+        *self.active_signature = self.next_signature;
+    }
+}
+
+enum ChartMutationValues {
+    Config(Config),
+    Series(Vec<SeriesConfig>),
+    State {
+        config: Config,
+        series: Vec<SeriesConfig>,
+    },
+}
+
+struct PreparedChartMutation<'a> {
+    chart_state: &'a mut ChartRenderState,
+    visual_revision: &'a mut RenderRevision,
+    next_revisions: ChartRevisions,
+    next_visual_revision: RenderRevision,
+    values: ChartMutationValues,
+    picker: Option<PreparedActivePickerMutation<'a>>,
+}
+
+impl PreparedChartMutation<'_> {
+    fn commit(self) {
+        if let Some(picker) = self.picker {
+            picker.commit();
+        }
+        match self.values {
+            ChartMutationValues::Config(config) => self.chart_state.config = config,
+            ChartMutationValues::Series(series) => self.chart_state.series = series,
+            ChartMutationValues::State { config, series } => {
+                self.chart_state.config = config;
+                self.chart_state.series = series;
+            }
+        }
+        self.chart_state.revisions = self.next_revisions;
+        *self.visual_revision = self.next_visual_revision;
+    }
+}
+
+struct RendererPicker {
+    pipeline_state: PickerPipelineState,
+    active: Option<ActivePickRegistry>,
+    #[cfg(test)]
+    injected_activation_failure: Option<crate::gpu_pick::GpuPickError>,
+}
+
+impl RendererPicker {
+    fn disabled() -> Self {
+        Self {
+            pipeline_state: PickerPipelineState::Disabled,
+            active: None,
+            #[cfg(test)]
+            injected_activation_failure: None,
+        }
+    }
+
+    fn enable_observed(
+        &mut self,
+        device: Arc<wgpu::Device>,
+        queue: Arc<wgpu::Queue>,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        match &self.pipeline_state {
+            PickerPipelineState::Ready(_) => return Ok(()),
+            PickerPipelineState::Failed(error) => return Err(error.clone()),
+            PickerPipelineState::Disabled => {}
+        }
+
+        #[cfg(test)]
+        if let Some(error) = self.injected_activation_failure.take() {
+            self.pipeline_state = PickerPipelineState::Failed(error.clone());
+            return Err(error);
+        }
+
+        match crate::gpu_pick::PickPipelineBundle::new_observed(device, queue, observer) {
+            Ok(bundle) => {
+                self.pipeline_state = PickerPipelineState::Ready(bundle);
+                Ok(())
+            }
+            Err(error) => {
+                self.pipeline_state = PickerPipelineState::Failed(error.clone());
+                Err(error)
+            }
+        }
+    }
+
+    fn ready_bundle(
+        &self,
+    ) -> std::result::Result<Arc<crate::gpu_pick::PickPipelineBundle>, crate::gpu_pick::GpuPickError>
+    {
+        match &self.pipeline_state {
+            PickerPipelineState::Disabled => Err(crate::gpu_pick::GpuPickError::PickerDisabled),
+            PickerPipelineState::Ready(bundle) => Ok(Arc::clone(bundle)),
+            PickerPipelineState::Failed(error) => Err(error.clone()),
+        }
+    }
+
+    #[cfg(test)]
+    fn fail_activation_once(&mut self, error: crate::gpu_pick::GpuPickError) {
+        self.injected_activation_failure = Some(error);
+    }
+
+    fn prepare_chart(
+        &mut self,
+        pool: &ColumnPool,
+        chart_id: ChartId,
+        config: &Config,
+        series: &[SeriesConfig],
+    ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        let bundle = self.ready_bundle()?;
+        let plan = PickChartPlan::new(config, series)?;
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.chart_id == chart_id && active.signature == plan.signature)
+        {
+            return Ok(());
+        }
+
+        if let Some(active) = self.active.as_mut() {
+            let slots = plan.registry_slots(Some(&active.signature))?;
+            active
+                .engine
+                .prepare_registry_transition(pool, slots)?
+                .commit();
+            active.chart_id = chart_id;
+            active.signature = plan.signature;
+        } else {
+            let mut engine = crate::gpu_pick::GpuPickEngine::from_bundle(bundle)?;
+            let slots = plan.registry_slots(None)?;
+            engine.prepare_registry_transition(pool, slots)?.commit();
+            self.active = Some(ActivePickRegistry {
+                chart_id,
+                signature: plan.signature,
+                engine,
+            });
+        }
+        Ok(())
+    }
+
+    fn prepare_active_chart_mutation<'picker>(
+        &'picker mut self,
+        pool: &ColumnPool,
+        chart_id: ChartId,
+        config: &Config,
+        series: &[SeriesConfig],
+    ) -> std::result::Result<
+        Option<PreparedActivePickerMutation<'picker>>,
+        crate::gpu_pick::GpuPickError,
+    > {
+        let plan = PickChartPlan::new(config, series)?;
+        self.prepare_active_plan(pool, chart_id, plan, None, false)
+    }
+
+    fn prepare_active_pool_mutation<'picker>(
+        &'picker mut self,
+        pool: &ColumnPool,
+        chart_id: ChartId,
+        plan: PickChartPlan,
+        rebuild_column: Option<&str>,
+    ) -> std::result::Result<
+        Option<PreparedActivePickerMutation<'picker>>,
+        crate::gpu_pick::GpuPickError,
+    > {
+        self.prepare_active_plan(pool, chart_id, plan, rebuild_column, true)
+    }
+
+    fn prepare_active_plan<'picker>(
+        &'picker mut self,
+        pool: &ColumnPool,
+        chart_id: ChartId,
+        plan: PickChartPlan,
+        rebuild_column: Option<&str>,
+        force: bool,
+    ) -> std::result::Result<
+        Option<PreparedActivePickerMutation<'picker>>,
+        crate::gpu_pick::GpuPickError,
+    > {
+        let Some(active) = self
+            .active
+            .as_mut()
+            .filter(|active| active.chart_id == chart_id)
+        else {
+            return Ok(None);
+        };
+        if !force && active.signature == plan.signature {
+            return Ok(None);
+        }
+
+        let ActivePickRegistry {
+            chart_id: active_chart_id,
+            signature: active_signature,
+            engine,
+        } = active;
+        let slots = plan.registry_slots_rebuilding(Some(active_signature), rebuild_column)?;
+        let transition = engine.prepare_registry_transition(pool, slots)?;
+        Ok(Some(PreparedActivePickerMutation {
+            transition,
+            active_chart_id,
+            active_signature,
+            next_chart_id: chart_id,
+            next_signature: plan.signature,
+        }))
+    }
+}
+
+fn pick_point_style_signature(style: &DataScatterPointStyleConfig) -> PickPointStyleSignature {
+    PickPointStyleSignature {
+        radius_bits: style.point_size.map(f32::to_bits),
+        shape_id: style.point_shape.as_ref().map(data_render::shape_id),
+    }
+}
+
 struct ChartColumnInvalidation {
     id: ChartId,
     desired: RenderRevision,
@@ -443,9 +1094,13 @@ impl ColumnInvalidationPlan {
 
 struct ChartSeriesRemoval {
     id: ChartId,
+    remove_referencing_series: bool,
+    next_config: Option<Config>,
     desired: RenderRevision,
-    series_revision: RenderRevision,
-    data: RenderRevision,
+    config_revision: Option<RenderRevision>,
+    series_revision: Option<RenderRevision>,
+    data: Option<RenderRevision>,
+    view: Option<RenderRevision>,
     raster: RenderRevision,
 }
 
@@ -465,18 +1120,55 @@ impl ColumnRemovalPlan {
             let state = chart_states
                 .get_mut(&update.id)
                 .expect("column removal chart remains registered");
-            state
-                .series
-                .retain(|series| !series_references_column(series, removed_column));
+            if update.remove_referencing_series {
+                state
+                    .series
+                    .retain(|series| !series_references_column(series, removed_column));
+                state.revisions.series = update
+                    .series_revision
+                    .expect("series-removal revision was prepared");
+                state.revisions.data = update.data.expect("data revision was prepared");
+            }
+            if let Some(config) = update.next_config {
+                state.config = config;
+                state.revisions.config = update
+                    .config_revision
+                    .expect("config replacement revision was prepared");
+                if let Some(view) = update.view {
+                    state.revisions.view = view;
+                }
+            }
             state.revisions.desired = update.desired;
-            state.revisions.series = update.series_revision;
-            state.revisions.data = update.data;
             state.revisions.raster = update.raster;
         }
         if let Some(visual) = self.visual {
             *visual_revision = visual;
         }
     }
+}
+
+fn series_after_column_removal(
+    series: &[SeriesConfig],
+    removed_column: &str,
+) -> Result<Vec<SeriesConfig>> {
+    let retained = series
+        .iter()
+        .filter(|series| !series_references_column(series, removed_column))
+        .count();
+    let mut candidate = Vec::new();
+    candidate
+        .try_reserve_exact(retained)
+        .map_err(|error| FiggyError::StateAllocationFailed {
+            resource: "column removal series candidate",
+            reason: error.to_string(),
+        })?;
+    candidate.extend(
+        series
+            .iter()
+            .filter(|series| !series_references_column(series, removed_column))
+            .cloned(),
+    );
+    Ok(candidate)
 }
 
 /// Owned snapshot of one series' constellation/milkyway star pass, cloned
@@ -777,6 +1469,7 @@ pub struct Renderer {
     renderer_identity: u64,
     observed_font_generation: u64,
     pending_defrag: bool,
+    picker: RendererPicker,
     errorbar_extent_engine: crate::gpu_errorbar::GpuErrorbarExtentEngine,
     target_sample_count: u32,
     target_pipeline_generation: u64,
@@ -840,6 +1533,8 @@ pub struct RendererColumnUpsert<'a> {
     visual_revision: &'a mut RenderRevision,
     pending_defrag: &'a mut bool,
     invalidation: Option<ColumnInvalidationPlan>,
+    picker: Option<PreparedActivePickerMutation<'a>>,
+    pending_defrag_after_commit: Option<bool>,
     renderer_identity: u64,
     device: &'a wgpu::Device,
     queue: &'a wgpu::Queue,
@@ -878,8 +1573,9 @@ impl RendererColumnUpsert<'_> {
         let data_revision = self
             .invalidation
             .as_ref()
-            .expect("renderer column invalidation plan remains live")
-            .prospective_data_revision(id, state.revisions.data);
+            .map_or(state.revisions.data, |invalidation| {
+                invalidation.prospective_data_revision(id, state.revisions.data)
+            });
         build_web_derived_snapshot_from_state(
             self.pool(),
             self.renderer_identity,
@@ -934,20 +1630,114 @@ impl RendererColumnUpsert<'_> {
     }
 
     pub fn commit(mut self) -> ColumnHandle {
-        let replaced_existing = self.replaced_existing();
         let handle = self
             .inner
             .take()
             .expect("renderer column upsert remains live")
             .commit();
-        self.invalidation
-            .take()
-            .expect("renderer column invalidation plan remains live")
-            .publish(self.chart_states, self.visual_revision);
-        if replaced_existing {
-            *self.pending_defrag = true;
+        if let Some(invalidation) = self.invalidation.take() {
+            invalidation.publish(self.chart_states, self.visual_revision);
+        }
+        if let Some(picker) = self.picker.take() {
+            picker.commit();
+        }
+        if let Some(pending) = self.pending_defrag_after_commit {
+            *self.pending_defrag = pending;
         }
         handle
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_renderer_column_upsert<'a>(
+    inner: data_render::column_pool::ColumnUpsert<'a>,
+    changed_column: &str,
+    old_layout_generation: u64,
+    chart_states: &'a mut HashMap<ChartId, ChartRenderState>,
+    visual_revision: &'a mut RenderRevision,
+    pending_defrag: &'a mut bool,
+    picker: &'a mut RendererPicker,
+    invalidation: Option<ColumnInvalidationPlan>,
+    renderer_identity: u64,
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    errorbar_extent_engine: &'a crate::gpu_errorbar::GpuErrorbarExtentEngine,
+) -> Result<RendererColumnUpsert<'a>> {
+    let relocated = inner.pool().layout_generation() != old_layout_generation;
+    let active = picker.active.as_ref().map(|active| {
+        (
+            active.chart_id,
+            active.signature.references_column(changed_column),
+        )
+    });
+    let picker = match active {
+        Some((chart_id, rebuild)) if relocated || rebuild => {
+            let state = chart_states
+                .get(&chart_id)
+                .ok_or(FiggyError::UnknownChart { id: chart_id })?;
+            let plan = PickChartPlan::new(&state.config, &state.series)?;
+            picker.prepare_active_pool_mutation(
+                inner.pool(),
+                chart_id,
+                plan,
+                rebuild.then_some(changed_column),
+            )?
+        }
+        _ => None,
+    };
+    let pending_defrag_after_commit = if relocated {
+        Some(false)
+    } else if inner.replaced_existing() {
+        Some(true)
+    } else {
+        None
+    };
+
+    Ok(RendererColumnUpsert {
+        inner: Some(inner),
+        chart_states,
+        visual_revision,
+        pending_defrag,
+        invalidation,
+        picker,
+        pending_defrag_after_commit,
+        renderer_identity,
+        device,
+        queue,
+        errorbar_extent_engine,
+    })
+}
+
+#[must_use = "dropping a PreparedColumnRemoval rolls the composite removal back"]
+struct PreparedColumnRemoval<'a> {
+    inner: Option<data_render::column_pool::ColumnRemoval<'a>>,
+    chart_states: &'a mut HashMap<ChartId, ChartRenderState>,
+    visual_revision: &'a mut RenderRevision,
+    pending_defrag: &'a mut bool,
+    removal: Option<ColumnRemovalPlan>,
+    picker: Option<PreparedActivePickerMutation<'a>>,
+    removed_column: ColumnId,
+}
+
+impl PreparedColumnRemoval<'_> {
+    fn commit(mut self) -> bool {
+        self.inner
+            .take()
+            .expect("renderer column removal remains live")
+            .commit();
+        self.removal
+            .take()
+            .expect("renderer column removal plan remains live")
+            .publish(
+                self.chart_states,
+                self.visual_revision,
+                &self.removed_column,
+            );
+        if let Some(picker) = self.picker.take() {
+            picker.commit();
+        }
+        *self.pending_defrag = true;
+        true
     }
 }
 
@@ -1271,70 +2061,145 @@ fn create_target_pipelines(
     surface_format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> TargetPipelines {
+    let mut observer = |_| {};
+    create_target_pipelines_observed(
+        device,
+        texture_bgl,
+        transform_bgl,
+        style_bgl,
+        per_point_style_map_bgl,
+        surface_format,
+        sample_count,
+        &mut observer,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_target_pipelines_observed(
+    device: &wgpu::Device,
+    texture_bgl: &wgpu::BindGroupLayout,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    per_point_style_map_bgl: &wgpu::BindGroupLayout,
+    surface_format: wgpu::TextureFormat,
+    sample_count: u32,
+    observer: &mut dyn FnMut(InitEvent),
+) -> TargetPipelines {
     TargetPipelines {
-        axis: data_render::create_fullscreen_textured_pipeline_with_sample_count(
-            device,
-            texture_bgl,
-            surface_format,
-            sample_count,
+        axis: observe_value(
+            observer,
+            "renderer",
+            "figgy fullscreen textured pipeline",
+            || {
+                data_render::create_fullscreen_textured_pipeline_with_sample_count(
+                    device,
+                    texture_bgl,
+                    surface_format,
+                    sample_count,
+                )
+            },
         ),
-        line: data_render::create_line_columnar_pipeline_with_sample_count(
-            device,
-            transform_bgl,
-            style_bgl,
-            surface_format,
-            sample_count,
+        line: observe_value(observer, "renderer", "figgy line columnar pipeline", || {
+            data_render::create_line_columnar_pipeline_with_sample_count(
+                device,
+                transform_bgl,
+                style_bgl,
+                surface_format,
+                sample_count,
+            )
+        }),
+        scatter: observe_value(
+            observer,
+            "renderer",
+            "figgy scatter columnar pipeline",
+            || {
+                data_render::create_scatter_columnar_pipeline_with_sample_count(
+                    device,
+                    transform_bgl,
+                    style_bgl,
+                    surface_format,
+                    sample_count,
+                )
+            },
         ),
-        scatter: data_render::create_scatter_columnar_pipeline_with_sample_count(
-            device,
-            transform_bgl,
-            style_bgl,
-            surface_format,
-            sample_count,
+        scatter_mapped: observe_value(
+            observer,
+            "renderer",
+            "figgy scatter mapped pipeline",
+            || {
+                data_render::create_scatter_columnar_mapped_pipeline(
+                    device,
+                    transform_bgl,
+                    style_bgl,
+                    per_point_style_map_bgl,
+                    surface_format,
+                    sample_count,
+                )
+            },
         ),
-        scatter_mapped: data_render::create_scatter_columnar_mapped_pipeline(
-            device,
-            transform_bgl,
-            style_bgl,
-            per_point_style_map_bgl,
-            surface_format,
-            sample_count,
-        ),
-        pick_ring: data_render::create_scatter_columnar_pipeline_with_entries(
-            device,
-            transform_bgl,
-            style_bgl,
-            surface_format,
-            sample_count,
-            "vs_pick_ring",
-            "fs_pick_ring",
+        pick_ring: observe_value(
+            observer,
+            "renderer",
             "figgy picked point ring pipeline",
+            || {
+                data_render::create_scatter_columnar_pipeline_with_entries(
+                    device,
+                    transform_bgl,
+                    style_bgl,
+                    surface_format,
+                    sample_count,
+                    "vs_pick_ring",
+                    "fs_pick_ring",
+                    "figgy picked point ring pipeline",
+                )
+            },
         ),
-        pick_ring_mapped: data_render::create_scatter_columnar_mapped_pipeline_with_entries(
-            device,
-            transform_bgl,
-            style_bgl,
-            per_point_style_map_bgl,
-            surface_format,
-            sample_count,
-            "vs_pick_ring_mapped",
-            "fs_pick_ring",
+        pick_ring_mapped: observe_value(
+            observer,
+            "renderer",
             "figgy picked point mapped ring pipeline",
+            || {
+                data_render::create_scatter_columnar_mapped_pipeline_with_entries(
+                    device,
+                    transform_bgl,
+                    style_bgl,
+                    per_point_style_map_bgl,
+                    surface_format,
+                    sample_count,
+                    "vs_pick_ring_mapped",
+                    "fs_pick_ring",
+                    "figgy picked point mapped ring pipeline",
+                )
+            },
         ),
-        errorbar: data_render::create_errorbar_columnar_pipeline_with_sample_count(
-            device,
-            transform_bgl,
-            style_bgl,
-            surface_format,
-            sample_count,
+        errorbar: observe_value(
+            observer,
+            "renderer",
+            "figgy errorbar columnar pipeline",
+            || {
+                data_render::create_errorbar_columnar_pipeline_with_sample_count(
+                    device,
+                    transform_bgl,
+                    style_bgl,
+                    surface_format,
+                    sample_count,
+                )
+            },
         ),
-        errorbar_mapped: data_render::create_errorbar_columnar_mapped_pipeline(
-            device,
-            transform_bgl,
-            style_bgl,
-            per_point_style_map_bgl,
-            surface_format,
-            sample_count,
+        errorbar_mapped: observe_value(
+            observer,
+            "renderer",
+            "figgy errorbar mapped pipeline",
+            || {
+                data_render::create_errorbar_columnar_mapped_pipeline(
+                    device,
+                    transform_bgl,
+                    style_bgl,
+                    per_point_style_map_bgl,
+                    surface_format,
+                    sample_count,
+                )
+            },
         ),
         sample_count,
         styled: HashMap::new(),
@@ -2002,13 +2867,48 @@ impl Renderer {
         Self::try_new_with_sample_count(gpu, surface_format, pool_capacity_bytes, 1)
     }
 
+    /// Initialize every figgy GPU resource and report timestamp-free startup
+    /// stage boundaries to `observer`.
+    pub fn try_new_observed(
+        gpu: RendererDevice,
+        surface_format: wgpu::TextureFormat,
+        pool_capacity_bytes: u64,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> Result<Self> {
+        Self::try_new_with_sample_count_observed(
+            gpu,
+            surface_format,
+            pool_capacity_bytes,
+            1,
+            observer,
+        )
+    }
+
     fn try_new_with_sample_count(
         gpu: RendererDevice,
         surface_format: wgpu::TextureFormat,
         pool_capacity_bytes: u64,
         target_sample_count: u32,
     ) -> Result<Self> {
+        let mut observer = |_| {};
+        Self::try_new_with_sample_count_observed(
+            gpu,
+            surface_format,
+            pool_capacity_bytes,
+            target_sample_count,
+            &mut observer,
+        )
+    }
+
+    fn try_new_with_sample_count_observed(
+        gpu: RendererDevice,
+        surface_format: wgpu::TextureFormat,
+        pool_capacity_bytes: u64,
+        target_sample_count: u32,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> Result<Self> {
         let RendererDevice { device, queue } = gpu;
+        started(observer, "renderer", "capabilities");
         let caps = RendererDeviceCaps::from_device(&device);
         // Downlevel (GL-class) adapters report compute limits below what the
         // dashed-line arc scan needs; creating its pipelines there is a
@@ -2037,8 +2937,12 @@ impl Renderer {
                 caps.max_storage_buffer_binding_size, caps.max_buffer_size
             );
         }
-        let pool = ColumnPool::new(&device, pool_capacity)?;
-        let errorbar_extent_engine = crate::gpu_errorbar::GpuErrorbarExtentEngine::new(&device);
+        finished(observer, "renderer", "capabilities");
+        let pool = observe_result(observer, "renderer", "figgy column pool", || {
+            ColumnPool::new(&device, pool_capacity)
+        })?;
+        let errorbar_extent_engine =
+            crate::gpu_errorbar::GpuErrorbarExtentEngine::new_observed(&device, observer);
 
         let texture_bgl = data_render::create_texture_bind_group_layout(&device);
         let transform_bgl = data_render::create_scatter_transform_bind_group_layout(&device);
@@ -2052,7 +2956,7 @@ impl Renderer {
 
         // Precise pipelines compile eagerly; styled variants compile lazily
         // in the prepare phase of the first `paint`/export that uses them.
-        let pipelines = create_target_pipelines(
+        let pipelines = create_target_pipelines_observed(
             &device,
             &texture_bgl,
             &transform_bgl,
@@ -2060,9 +2964,13 @@ impl Renderer {
             &per_point_style_map_bgl,
             surface_format,
             target_sample_count,
+            observer,
         );
-        let arc_pipelines = data_render::line_arc::create_arc_scan_pipelines(&device);
-        let renderer_identity = issue_renderer_identity()?;
+        let arc_pipelines =
+            data_render::line_arc::create_arc_scan_pipelines_observed(&device, observer);
+        let renderer_identity = observe_result(observer, "renderer", "identity", || {
+            issue_renderer_identity()
+        })?;
 
         Ok(Self {
             device,
@@ -2076,6 +2984,7 @@ impl Renderer {
             renderer_identity,
             observed_font_generation: crate::text_render::font_generation(),
             pending_defrag: false,
+            picker: RendererPicker::disabled(),
             errorbar_extent_engine,
             target_sample_count,
             target_pipeline_generation: 1,
@@ -2107,6 +3016,85 @@ impl Renderer {
     pub fn pool(&self) -> &ColumnPool {
         &self.pool
     }
+
+    /// Enable exact GPU picking for this renderer.
+    ///
+    /// This is idempotent. The immutable compute pipeline bundle is created
+    /// only by the first successful call; chart registries remain lazy.
+    pub fn enable_gpu_picking(&mut self) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        let mut noop = |_| {};
+        self.enable_gpu_picking_observed(&mut noop)
+    }
+
+    /// Enable exact GPU picking while reporting timestamp-free pipeline stages.
+    pub fn enable_gpu_picking_observed(
+        &mut self,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        self.picker
+            .enable_observed(Arc::clone(&self.device), Arc::clone(&self.queue), observer)
+    }
+
+    /// Prepare the renderer-owned picker cache for one chart.
+    pub fn prepare_gpu_picking_for_chart(
+        &mut self,
+        id: ChartId,
+    ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(crate::gpu_pick::GpuPickError::UnknownChart(id))?;
+        self.picker
+            .prepare_chart(&self.pool, id, &state.config, &state.series)
+    }
+
+    /// Submit one exact pick against renderer-owned chart state.
+    pub fn pick_chart(
+        &mut self,
+        id: ChartId,
+        request: GpuPickRequest,
+    ) -> std::result::Result<crate::gpu_pick::GpuPickTicket, crate::gpu_pick::GpuPickError> {
+        self.prepare_gpu_picking_for_chart(id)?;
+        let config = &self
+            .chart_states
+            .get(&id)
+            .ok_or(crate::gpu_pick::GpuPickError::UnknownChart(id))?
+            .config;
+        let mut display_config = config.scaled(request.display_scale);
+        display_config.chart_area = crate::layout::ChartArea(request.display_panel_px);
+        let chart_rect = display_config.chart_area.0;
+        let data_area_px = display_config.data_area().ok().map(|area| {
+            let rect = area.0;
+            [
+                rect.x as f32,
+                rect.y as f32,
+                rect.width as f32,
+                rect.height as f32,
+            ]
+        });
+        let query = crate::gpu_pick::GpuPickQuery {
+            transform: data_render::scatter_transform_from_config(&display_config),
+            chart_rect_px: [
+                chart_rect.x as f32,
+                chart_rect.y as f32,
+                chart_rect.width as f32,
+                chart_rect.height as f32,
+            ],
+            data_area_px,
+            canvas_position_px: request.canvas_position_px,
+            max_distance_px: request.max_distance_px,
+        };
+        let active = self
+            .picker
+            .active
+            .as_ref()
+            .expect("successful chart preparation publishes an active picker registry");
+        debug_assert_eq!(active.chart_id, id);
+        active
+            .engine
+            .pick_with_display_scale(&self.pool, query, request.display_scale)
+    }
+
     pub fn surface_format(&self) -> wgpu::TextureFormat {
         self.surface_format
     }
@@ -2224,6 +3212,14 @@ impl Renderer {
         let visual_revision = self.visual_revision.successor("renderer visual revision")?;
         self.chart_states.remove(&id);
         self.chart_order.retain(|candidate| *candidate != id);
+        if self
+            .picker
+            .active
+            .as_ref()
+            .is_some_and(|active| active.chart_id == id)
+        {
+            self.picker.active = None;
+        }
         self.visual_revision = visual_revision;
         Ok(())
     }
@@ -2249,17 +3245,31 @@ impl Renderer {
         };
         let raster = state.revisions.raster.successor("chart raster revision")?;
         let visual = self.visual_revision.successor("renderer visual revision")?;
+        let mut next_revisions = state.revisions;
+        next_revisions.desired = desired;
+        next_revisions.config = config_revision;
+        next_revisions.view = view;
+        next_revisions.raster = raster;
 
-        let state = self
+        let chart_state = self
             .chart_states
             .get_mut(&id)
-            .ok_or(FiggyError::UnknownChart { id })?;
-        state.config = config;
-        state.revisions.desired = desired;
-        state.revisions.config = config_revision;
-        state.revisions.view = view;
-        state.revisions.raster = raster;
-        self.visual_revision = visual;
+            .expect("validated chart remains registered during config preparation");
+        let picker = self.picker.prepare_active_chart_mutation(
+            &self.pool,
+            id,
+            &config,
+            &chart_state.series,
+        )?;
+        PreparedChartMutation {
+            chart_state,
+            visual_revision: &mut self.visual_revision,
+            next_revisions,
+            next_visual_revision: visual,
+            values: ChartMutationValues::Config(config),
+            picker,
+        }
+        .commit();
         Ok(())
     }
 
@@ -2281,17 +3291,31 @@ impl Renderer {
         };
         let raster = state.revisions.raster.successor("chart raster revision")?;
         let visual = self.visual_revision.successor("renderer visual revision")?;
+        let mut next_revisions = state.revisions;
+        next_revisions.desired = desired;
+        next_revisions.series = series_revision;
+        next_revisions.data = data;
+        next_revisions.raster = raster;
 
-        let state = self
+        let chart_state = self
             .chart_states
             .get_mut(&id)
-            .ok_or(FiggyError::UnknownChart { id })?;
-        state.series = series;
-        state.revisions.desired = desired;
-        state.revisions.series = series_revision;
-        state.revisions.data = data;
-        state.revisions.raster = raster;
-        self.visual_revision = visual;
+            .expect("validated chart remains registered during series preparation");
+        let picker = self.picker.prepare_active_chart_mutation(
+            &self.pool,
+            id,
+            &chart_state.config,
+            &series,
+        )?;
+        PreparedChartMutation {
+            chart_state,
+            visual_revision: &mut self.visual_revision,
+            next_revisions,
+            next_visual_revision: visual,
+            values: ChartMutationValues::Series(series),
+            picker,
+        }
+        .commit();
         Ok(())
     }
 
@@ -2333,20 +3357,30 @@ impl Renderer {
         };
         let raster = state.revisions.raster.successor("chart raster revision")?;
         let visual = self.visual_revision.successor("renderer visual revision")?;
+        let mut next_revisions = state.revisions;
+        next_revisions.desired = desired;
+        next_revisions.config = config_revision;
+        next_revisions.series = series_revision;
+        next_revisions.data = data;
+        next_revisions.view = view;
+        next_revisions.raster = raster;
 
-        let state = self
+        let chart_state = self
             .chart_states
             .get_mut(&id)
-            .ok_or(FiggyError::UnknownChart { id })?;
-        state.config = config;
-        state.series = series;
-        state.revisions.desired = desired;
-        state.revisions.config = config_revision;
-        state.revisions.series = series_revision;
-        state.revisions.data = data;
-        state.revisions.view = view;
-        state.revisions.raster = raster;
-        self.visual_revision = visual;
+            .expect("validated chart remains registered during state preparation");
+        let picker = self
+            .picker
+            .prepare_active_chart_mutation(&self.pool, id, &config, &series)?;
+        PreparedChartMutation {
+            chart_state,
+            visual_revision: &mut self.visual_revision,
+            next_revisions,
+            next_visual_revision: visual,
+            values: ChartMutationValues::State { config, series },
+            picker,
+        }
+        .commit();
         Ok(())
     }
 
@@ -2569,7 +3603,11 @@ impl Renderer {
         Ok(ColumnInvalidationPlan { charts, visual })
     }
 
-    fn prepare_column_removal(&self, id: &str) -> Result<ColumnRemovalPlan> {
+    fn prepare_column_removal(
+        &self,
+        id: &str,
+        config_override: Option<(ChartId, Config)>,
+    ) -> Result<ColumnRemovalPlan> {
         let mut charts = Vec::new();
         charts
             .try_reserve(self.chart_order.len())
@@ -2577,17 +3615,20 @@ impl Renderer {
                 resource: "column removal candidates",
                 reason: error.to_string(),
             })?;
+        let mut config_override = config_override;
         for chart_id in &self.chart_order {
             let state = self
                 .chart_states
                 .get(chart_id)
                 .ok_or(FiggyError::UnknownChart { id: *chart_id })?;
-            let removed_count = state
+            let remove_referencing_series = state
                 .series
                 .iter()
-                .filter(|series| series_references_column(series, id))
-                .count();
-            if removed_count == 0 {
+                .any(|series| series_references_column(series, id));
+            let replace_config = config_override
+                .as_ref()
+                .is_some_and(|(override_chart, _)| override_chart == chart_id);
+            if !remove_referencing_series && !replace_config {
                 continue;
             }
 
@@ -2595,23 +3636,122 @@ impl Renderer {
                 .revisions
                 .desired
                 .successor("chart desired revision")?;
-            let series_revision = state.revisions.series.successor("chart series revision")?;
-            let data = state.revisions.data.successor("chart data revision")?;
+            let series_revision = remove_referencing_series
+                .then(|| state.revisions.series.successor("chart series revision"))
+                .transpose()?;
+            let data = remove_referencing_series
+                .then(|| state.revisions.data.successor("chart data revision"))
+                .transpose()?;
+            let config_revision = replace_config
+                .then(|| state.revisions.config.successor("chart config revision"))
+                .transpose()?;
+            let view = config_override
+                .as_ref()
+                .filter(|(override_chart, _)| override_chart == chart_id)
+                .and_then(|(_, config)| {
+                    (ChartViewState::from_config(&state.config)
+                        != ChartViewState::from_config(config)
+                        || state.config.draw_style != config.draw_style)
+                        .then(|| state.revisions.view.successor("chart view revision"))
+                })
+                .transpose()?;
             let raster = state.revisions.raster.successor("chart raster revision")?;
             charts.push(ChartSeriesRemoval {
                 id: *chart_id,
+                remove_referencing_series,
+                next_config: replace_config.then(|| {
+                    config_override
+                        .take()
+                        .expect("matching chart config override remains available")
+                        .1
+                }),
                 desired,
+                config_revision,
                 series_revision,
                 data,
+                view,
                 raster,
             });
         }
+        debug_assert!(config_override.is_none());
         let visual = if charts.is_empty() {
             None
         } else {
             Some(self.visual_revision.successor("renderer visual revision")?)
         };
         Ok(ColumnRemovalPlan { charts, visual })
+    }
+
+    fn remove_column_impl(
+        &mut self,
+        id: &str,
+        config_override: Option<(ChartId, Config)>,
+    ) -> Result<bool> {
+        validate_host_column_id(id)?;
+        if self.pool.slot(id).is_none() {
+            return Ok(false);
+        }
+        if let Some((chart_id, config)) = config_override.as_ref() {
+            crate::chart::validate_renderer_config(config)?;
+            if !self.chart_states.contains_key(chart_id) {
+                return Err(FiggyError::UnknownChart { id: *chart_id });
+            }
+        }
+
+        let active_plan = match self.picker.active.as_ref() {
+            Some(active) => {
+                let state =
+                    self.chart_states
+                        .get(&active.chart_id)
+                        .ok_or(FiggyError::UnknownChart {
+                            id: active.chart_id,
+                        })?;
+                let removes_series = state
+                    .series
+                    .iter()
+                    .any(|series| series_references_column(series, id));
+                let override_config = config_override
+                    .as_ref()
+                    .filter(|(chart_id, _)| *chart_id == active.chart_id)
+                    .map(|(_, config)| config);
+                if removes_series || override_config.is_some() {
+                    let candidate = removes_series
+                        .then(|| series_after_column_removal(&state.series, id))
+                        .transpose()?;
+                    Some((
+                        active.chart_id,
+                        PickChartPlan::new(
+                            override_config.unwrap_or(&state.config),
+                            candidate.as_deref().unwrap_or(&state.series),
+                        )?,
+                    ))
+                } else {
+                    None
+                }
+            }
+            None => None,
+        };
+        let removed_column = id.to_string();
+        let removal = self.prepare_column_removal(id, config_override)?;
+        let Some(inner) = self.pool.begin_remove_column(id)? else {
+            return Ok(false);
+        };
+        let picker = if let Some((chart_id, plan)) = active_plan {
+            self.picker
+                .prepare_active_pool_mutation(inner.pool(), chart_id, plan, None)?
+        } else {
+            None
+        };
+        Ok(PreparedColumnRemoval {
+            inner: Some(inner),
+            chart_states: &mut self.chart_states,
+            visual_revision: &mut self.visual_revision,
+            pending_defrag: &mut self.pending_defrag,
+            removal: Some(removal),
+            picker,
+            removed_column,
+        }
+        .commit())
     }
 
     /// Rebuild render-target pipelines if the host swap-chain format changed.
@@ -2715,9 +3855,10 @@ impl Renderer {
     ) -> Result<ColumnHandle> {
         let id = id.into();
         validate_host_column_id(&id)?;
-        Ok(self
-            .pool
-            .add_column(id, source, &self.device, &self.queue)?)
+        if self.pool.slot(&id).is_some() {
+            return Err(data_render::AllocError::DuplicateId(id).into());
+        }
+        Ok(self.begin_upsert_column(id, source)?.commit())
     }
 
     pub fn add_hilo_column(
@@ -2727,9 +3868,10 @@ impl Renderer {
     ) -> Result<ColumnHandle> {
         let id = id.into();
         validate_host_column_id(&id)?;
-        Ok(self
-            .pool
-            .add_hilo_column(id, source, &self.device, &self.queue)?)
+        if self.pool.slot(&id).is_some() {
+            return Err(data_render::AllocError::DuplicateId(id).into());
+        }
+        Ok(self.begin_upsert_hilo_column(id, source)?.commit())
     }
 
     /// Begin a failure-atomic scalar insert or same-id replacement.
@@ -2741,20 +3883,27 @@ impl Renderer {
         let id = id.into();
         validate_host_column_id(&id)?;
         let invalidation = self.prepare_column_invalidation(&id)?;
-        let inner =
-            self.pool
-                .begin_upsert_column(id, source, self.device.as_ref(), self.queue.as_ref())?;
-        Ok(RendererColumnUpsert {
-            inner: Some(inner),
-            chart_states: &mut self.chart_states,
-            visual_revision: &mut self.visual_revision,
-            pending_defrag: &mut self.pending_defrag,
-            invalidation: Some(invalidation),
-            renderer_identity: self.renderer_identity,
-            device: self.device.as_ref(),
-            queue: self.queue.as_ref(),
-            errorbar_extent_engine: &self.errorbar_extent_engine,
-        })
+        let old_layout_generation = self.pool.layout_generation();
+        let inner = self.pool.begin_upsert_column(
+            id.clone(),
+            source,
+            self.device.as_ref(),
+            self.queue.as_ref(),
+        )?;
+        finish_renderer_column_upsert(
+            inner,
+            &id,
+            old_layout_generation,
+            &mut self.chart_states,
+            &mut self.visual_revision,
+            &mut self.pending_defrag,
+            &mut self.picker,
+            Some(invalidation),
+            self.renderer_identity,
+            self.device.as_ref(),
+            self.queue.as_ref(),
+            &self.errorbar_extent_engine,
+        )
     }
 
     /// Begin a failure-atomic hi/lo insert or same-id replacement.
@@ -2766,28 +3915,33 @@ impl Renderer {
         let id = id.into();
         validate_host_column_id(&id)?;
         let invalidation = self.prepare_column_invalidation(&id)?;
+        let old_layout_generation = self.pool.layout_generation();
         let inner = self.pool.begin_upsert_hilo_column(
-            id,
+            id.clone(),
             source,
             self.device.as_ref(),
             self.queue.as_ref(),
         )?;
-        Ok(RendererColumnUpsert {
-            inner: Some(inner),
-            chart_states: &mut self.chart_states,
-            visual_revision: &mut self.visual_revision,
-            pending_defrag: &mut self.pending_defrag,
-            invalidation: Some(invalidation),
-            renderer_identity: self.renderer_identity,
-            device: self.device.as_ref(),
-            queue: self.queue.as_ref(),
-            errorbar_extent_engine: &self.errorbar_extent_engine,
-        })
+        finish_renderer_column_upsert(
+            inner,
+            &id,
+            old_layout_generation,
+            &mut self.chart_states,
+            &mut self.visual_revision,
+            &mut self.pending_defrag,
+            &mut self.picker,
+            Some(invalidation),
+            self.renderer_identity,
+            self.device.as_ref(),
+            self.queue.as_ref(),
+            &self.errorbar_extent_engine,
+        )
     }
 
     /// Failure-atomic scalar upsert without an intermediate batch-preparation
-    /// step.  Web integrations that rebuild picker/errorbar state should use
-    /// [`Self::begin_upsert_column`] and commit its guard explicitly.
+    /// step. Hosts that must prepare additional derived state against the
+    /// provisional pool can use [`Self::begin_upsert_column`] and commit its
+    /// guard explicitly.
     pub fn upsert_column(
         &mut self,
         id: impl Into<ColumnId>,
@@ -2820,18 +3974,28 @@ impl Renderer {
         {
             return Ok(());
         }
-        let replaced_existing = self.pool.slot(INTERNAL_ZERO_COLUMN_ID).is_some();
-        self.pool
-            .begin_upsert_column(
-                INTERNAL_ZERO_COLUMN_ID.to_string(),
-                &InternalZeroColumn { len },
-                self.device.as_ref(),
-                self.queue.as_ref(),
-            )?
-            .commit();
-        if replaced_existing {
-            self.pending_defrag = true;
-        }
+        let old_layout_generation = self.pool.layout_generation();
+        let inner = self.pool.begin_upsert_column(
+            INTERNAL_ZERO_COLUMN_ID.to_string(),
+            &InternalZeroColumn { len },
+            self.device.as_ref(),
+            self.queue.as_ref(),
+        )?;
+        finish_renderer_column_upsert(
+            inner,
+            INTERNAL_ZERO_COLUMN_ID,
+            old_layout_generation,
+            &mut self.chart_states,
+            &mut self.visual_revision,
+            &mut self.pending_defrag,
+            &mut self.picker,
+            None,
+            self.renderer_identity,
+            self.device.as_ref(),
+            self.queue.as_ref(),
+            &self.errorbar_extent_engine,
+        )?
+        .commit();
         Ok(())
     }
 
@@ -2842,23 +4006,54 @@ impl Renderer {
     /// policy belongs to the host. The web wrapper removes rows for its
     /// auto-managed legend and preserves freely edited legend text.
     pub fn remove_column(&mut self, id: &str) -> Result<bool> {
-        validate_host_column_id(id)?;
-        if self.pool.slot(id).is_none() {
-            return Ok(false);
-        }
-        let removal = self.prepare_column_removal(id)?;
-        if !self.pool.remove_column(id)? {
-            return Ok(false);
-        }
-        removal.publish(&mut self.chart_states, &mut self.visual_revision, id);
-        self.pending_defrag = true;
-        Ok(true)
+        self.remove_column_impl(id, None)
+    }
+
+    /// Remove a column while atomically replacing one chart's config.
+    ///
+    /// This is the host boundary for a derived legend update caused by the
+    /// series cascade. A missing column returns `false` without validating or
+    /// publishing `next_config`. All fallible validation, revision, pool, and
+    /// picker preparation completes before either authority is published.
+    pub fn remove_column_with_chart_config(
+        &mut self,
+        id: &str,
+        chart_id: ChartId,
+        next_config: Config,
+    ) -> Result<bool> {
+        self.remove_column_impl(id, Some((chart_id, next_config)))
     }
 
     /// Compact every live column to the start of the pool. `true` iff
     /// anything actually moved.
     pub fn defragment(&mut self) -> Result<bool> {
-        let moved = self.pool.defragment(&self.device, &self.queue)?;
+        let defragment = self
+            .pool
+            .begin_defragment(self.device.as_ref(), self.queue.as_ref())?;
+        let picker = if defragment.relocated() {
+            match self.picker.active.as_ref().map(|active| active.chart_id) {
+                Some(chart_id) => {
+                    let state = self
+                        .chart_states
+                        .get(&chart_id)
+                        .ok_or(FiggyError::UnknownChart { id: chart_id })?;
+                    let plan = PickChartPlan::new(&state.config, &state.series)?;
+                    self.picker.prepare_active_pool_mutation(
+                        defragment.pool(),
+                        chart_id,
+                        plan,
+                        None,
+                    )?
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+        let moved = defragment.commit();
+        if let Some(picker) = picker {
+            picker.commit();
+        }
         self.pending_defrag = false;
         Ok(moved)
     }
@@ -2871,9 +4066,7 @@ impl Renderer {
         if !self.pending_defrag {
             return Ok(false);
         }
-        let moved = self.pool.defragment(&self.device, &self.queue)?;
-        self.pending_defrag = false;
-        Ok(moved)
+        self.defragment()
     }
 
     pub fn set_defrag_policy(&mut self, policy: DefragPolicy) {
@@ -2952,57 +4145,83 @@ impl Renderer {
         size: (u32, u32),
         pool_capacity_bytes: u64,
     ) -> Result<WindowedRenderer<'w>> {
-        let instance = data_render::create_instance();
-        let surface = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            data_render::create_surface_for_window(&instance, target)
-        }))
-        .map_err(|_| FiggyError::SurfaceCreationFailed {
-            reason:
-                "wgpu surface creation panicked; check platform window/canvas/thread constraints"
-                    .into(),
-        })?
-        .map_err(|e| FiggyError::SurfaceCreationFailed {
-            reason: format!("{e}"),
+        let mut observer = |_| {};
+        Self::for_window_async_observed(target, size, pool_capacity_bytes, &mut observer).await
+    }
+
+    /// Build a standalone renderer while reporting timestamp-free startup
+    /// stage boundaries to `observer`.
+    pub async fn for_window_async_observed<'w>(
+        target: impl Into<wgpu::SurfaceTarget<'w>>,
+        size: (u32, u32),
+        pool_capacity_bytes: u64,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> Result<WindowedRenderer<'w>> {
+        let instance = observe_value(observer, "window", "instance", data_render::create_instance);
+        let surface = observe_result(observer, "window", "surface", || {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                data_render::create_surface_for_window(&instance, target)
+            }))
+            .map_err(|_| FiggyError::SurfaceCreationFailed {
+                reason:
+                    "wgpu surface creation panicked; check platform window/canvas/thread constraints"
+                        .into(),
+            })?
+            .map_err(|e| FiggyError::SurfaceCreationFailed {
+                reason: format!("{e}"),
+            })
         })?;
+
+        started(observer, "window", "adapter");
         let adapter = data_render::request_adapter_for_surface_async(&instance, &surface)
             .await
             .map_err(|_| FiggyError::AdapterUnavailable)?;
+        finished(observer, "window", "adapter");
+
+        started(observer, "window", "device");
         let (device, queue) = data_render::request_device_async(&adapter)
             .await
             .map_err(|e| FiggyError::DeviceCreationFailed {
                 reason: format!("{e}"),
             })?;
+        finished(observer, "window", "device");
         let device = Arc::new(device);
         let queue = Arc::new(queue);
-        let surface_config = data_render::try_configure_surface(
-            &surface,
-            &adapter,
-            &device,
-            size.0.max(1),
-            size.1.max(1),
-        )?;
+        let surface_config = observe_result(observer, "window", "configure", || {
+            data_render::try_configure_surface(
+                &surface,
+                &adapter,
+                &device,
+                size.0.max(1),
+                size.1.max(1),
+            )
+        })?;
 
         let caps = RendererDeviceCaps::from_device(&device);
         let preferred_sample_count = preferred_msaa_sample_count(caps, surface_config.format);
-        let (target_sample_count, msaa_target) = match create_msaa_target(
-            &device,
-            caps,
-            "figgy frame msaa target",
-            surface_config.width,
-            surface_config.height,
-            surface_config.format,
-            preferred_sample_count,
-        ) {
-            Ok(target) => (preferred_sample_count, target),
-            Err(_) if preferred_sample_count > 1 => (1, None),
-            Err(e) => return Err(e),
-        };
+        let (target_sample_count, msaa_target) =
+            observe_result(observer, "window", "figgy frame msaa target", || {
+                match create_msaa_target(
+                    &device,
+                    caps,
+                    "figgy frame msaa target",
+                    surface_config.width,
+                    surface_config.height,
+                    surface_config.format,
+                    preferred_sample_count,
+                ) {
+                    Ok(target) => Ok((preferred_sample_count, target)),
+                    Err(_) if preferred_sample_count > 1 => Ok((1, None)),
+                    Err(e) => Err(e),
+                }
+            })?;
 
-        let inner = Renderer::try_new_with_sample_count(
+        let inner = Renderer::try_new_with_sample_count_observed(
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
             surface_config.format,
             pool_capacity_bytes,
             target_sample_count,
+            observer,
         )?;
 
         Ok(WindowedRenderer {
@@ -3709,7 +4928,9 @@ impl Renderer {
             let mut per_series = Vec::with_capacity(item.series.len());
             for series in item.series {
                 let cfg = series.config;
-                let line = has_line(&cfg.render_type);
+                let line =
+                    effective_series_primitives(&item.chart_config.draw_style, &cfg.render_type)
+                        .line;
                 let dashed = line
                     && extract_line(&cfg.render_type)
                         .is_some_and(|l| !matches!(l.line_style, LineStylePreset::Solid));
@@ -3937,11 +5158,11 @@ impl Renderer {
             let cfg = series.config;
             let rt = &cfg.render_type;
             let constellation_only = matches!(styled, Some(StyleSet::Constellation(_)));
-            let constellation_supported = matches!(rt, DataRenderType::ScatterLine { .. });
+            let primitives = effective_series_primitives(&chart_config.draw_style, rt);
             let x_h = lookup(&cfg.x_column)?;
             let y_h = lookup(&cfg.y_column)?;
 
-            let line = if has_line(rt) && (!constellation_only || constellation_supported) {
+            let line = if primitives.line {
                 let arc = prepared
                     .get(idx)
                     .and_then(|series| series.arc.as_ref())
@@ -3984,7 +5205,7 @@ impl Renderer {
                 _ => None,
             };
 
-            let scatter = if has_scatter(rt) && (!constellation_only || constellation_supported) {
+            let scatter = if primitives.scatter {
                 let precise_style_map = if styled.is_none() {
                     series.style.scatter_map.as_ref()
                 } else {
@@ -4128,7 +5349,7 @@ impl Renderer {
                 .as_ref()
                 .filter(|cfg| cfg.visible && !cfg.refs.is_empty())
             {
-                let visible_in_style = !constellation_only || constellation_supported;
+                let visible_in_style = primitives.line || primitives.scatter;
                 if visible_in_style {
                     for picked_ref in &picked_cfg.refs {
                         if !picked_ref_matches_series(cfg, picked_ref) {
@@ -4911,6 +6132,23 @@ pub struct ChartDrawItem<'a> {
 // DataRenderType branching helpers — which layers are needed and which
 // sub-style to extract.
 
+fn effective_series_primitives(
+    draw_style: &DrawStyle,
+    render_type: &DataRenderType,
+) -> EffectiveSeriesPrimitives {
+    if matches!(draw_style, DrawStyle::Constellation(_)) {
+        let supported = matches!(render_type, DataRenderType::ScatterLine { .. });
+        return EffectiveSeriesPrimitives {
+            line: supported,
+            scatter: supported,
+        };
+    }
+    EffectiveSeriesPrimitives {
+        line: has_line(render_type),
+        scatter: has_scatter(render_type),
+    }
+}
+
 fn has_line(rt: &DataRenderType) -> bool {
     matches!(
         rt,
@@ -5015,6 +6253,17 @@ impl Drop for WindowedRenderer<'_> {
 }
 
 impl<'w> WindowedRenderer<'w> {
+    /// Build a standalone renderer while reporting timestamp-free startup
+    /// stage boundaries to `observer`.
+    pub async fn for_window_async_observed(
+        target: impl Into<wgpu::SurfaceTarget<'w>>,
+        size: (u32, u32),
+        pool_capacity_bytes: u64,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> Result<Self> {
+        Renderer::for_window_async_observed(target, size, pool_capacity_bytes, observer).await
+    }
+
     pub fn surface_size(&self) -> (u32, u32) {
         (self.surface_config.width, self.surface_config.height)
     }
@@ -5075,6 +6324,16 @@ impl<'w> WindowedRenderer<'w> {
         self.inner.remove_column(id)
     }
 
+    pub fn remove_column_with_chart_config(
+        &mut self,
+        id: &str,
+        chart_id: ChartId,
+        next_config: Config,
+    ) -> Result<bool> {
+        self.inner
+            .remove_column_with_chart_config(id, chart_id, next_config)
+    }
+
     pub fn defragment(&mut self) -> Result<bool> {
         self.inner.defragment()
     }
@@ -5089,6 +6348,52 @@ impl<'w> WindowedRenderer<'w> {
 
     pub fn set_defrag_policy(&mut self, policy: DefragPolicy) {
         self.inner.set_defrag_policy(policy);
+    }
+
+    pub fn enable_gpu_picking(&mut self) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        self.inner.enable_gpu_picking()
+    }
+
+    pub fn enable_gpu_picking_observed(
+        &mut self,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        self.inner.enable_gpu_picking_observed(observer)
+    }
+
+    pub fn prepare_gpu_picking_for_chart(
+        &mut self,
+        id: ChartId,
+    ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        self.inner.prepare_gpu_picking_for_chart(id)
+    }
+
+    /// Pick one chart using this window's current physical surface size.
+    pub fn pick_chart_at(
+        &mut self,
+        id: ChartId,
+        canvas_position_px: [f32; 2],
+        max_distance_px: f32,
+    ) -> std::result::Result<crate::gpu_pick::GpuPickTicket, crate::gpu_pick::GpuPickError> {
+        let config = self
+            .inner
+            .chart_states
+            .get(&id)
+            .ok_or(crate::gpu_pick::GpuPickError::UnknownChart(id))?;
+        let logical = config.config.chart_area.0;
+        let (display_scale, display_panel_px) = fit_display_panel(
+            (logical.width, logical.height),
+            (self.surface_config.width, self.surface_config.height),
+        );
+        self.inner.pick_chart(
+            id,
+            GpuPickRequest {
+                canvas_position_px,
+                display_panel_px,
+                display_scale,
+                max_distance_px,
+            },
+        )
     }
 
     pub fn register_chart(&mut self, config: Config, series: Vec<SeriesConfig>) -> Result<ChartId> {
@@ -5378,14 +6683,18 @@ mod tests {
         }
     }
 
-    fn state_test_renderer() -> Option<Renderer> {
+    fn state_test_renderer_with_capacity(pool_capacity: u64) -> Option<Renderer> {
         let (device, queue) = crate::data_render::shared_device()?;
         Renderer::try_new(
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
             wgpu::TextureFormat::Rgba8Unorm,
-            1024 * 1024,
+            pool_capacity,
         )
         .ok()
+    }
+
+    fn state_test_renderer() -> Option<Renderer> {
+        state_test_renderer_with_capacity(1024 * 1024)
     }
 
     fn state_test_line(id: &str, x: &str, y: &str) -> SeriesConfig {
@@ -5403,6 +6712,50 @@ mod tests {
                 },
             },
         }
+    }
+
+    fn state_test_scatter_line(id: &str, source: Option<&str>, x: &str, y: &str) -> SeriesConfig {
+        SeriesConfig {
+            series_id: id.to_string(),
+            source_id: source.map(str::to_string),
+            label: None,
+            x_column: x.to_string(),
+            y_column: y.to_string(),
+            render_type: DataRenderType::ScatterLine {
+                scatter: test_scatter_style(),
+                line: DataLineStyleConfig {
+                    line_style: LineStylePreset::Solid,
+                    line_color: Color::new(0.1, 0.2, 0.3, 1.0),
+                    line_width: 1.0,
+                },
+            },
+        }
+    }
+
+    fn state_test_scatter(id: &str, source: Option<&str>, x: &str, y: &str) -> SeriesConfig {
+        SeriesConfig {
+            series_id: id.to_string(),
+            source_id: source.map(str::to_string),
+            label: None,
+            x_column: x.to_string(),
+            y_column: y.to_string(),
+            render_type: DataRenderType::Scatter {
+                scatter: test_scatter_style(),
+            },
+        }
+    }
+
+    fn add_state_test_xy(renderer: &mut Renderer, x: &str, y: &str, values: Vec<f64>) {
+        renderer.add_column(x, &col_f64(values.clone())).unwrap();
+        renderer.add_column(y, &col_f64(values)).unwrap();
+    }
+
+    fn active_picker(renderer: &Renderer) -> &ActivePickRegistry {
+        renderer
+            .picker
+            .active
+            .as_ref()
+            .expect("test prepared an active picker registry")
     }
 
     fn basic_errorbar_chart() -> Chart {
@@ -5456,6 +6809,472 @@ mod tests {
         // A device with a generous binding limit keeps a large pool intact.
         let caps_big = caps_with_limits(u32::MAX, 4 * 1024 * mb);
         assert_eq!(effective_pool_capacity(512 * mb, caps_big), 512 * mb);
+    }
+
+    #[test]
+    fn renderer_gpu_picker_activation_creates_four_pipelines_once() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        let mut events = Vec::new();
+        renderer
+            .enable_gpu_picking_observed(&mut |event| events.push(event))
+            .unwrap();
+        renderer
+            .enable_gpu_picking_observed(&mut |event| events.push(event))
+            .unwrap();
+
+        let pipeline_starts = events
+            .iter()
+            .filter(|event| {
+                event.scope == "renderer.gpu_pick"
+                    && event.phase == crate::init::InitPhase::Started
+                    && matches!(
+                        event.stage,
+                        "pick_gate_x"
+                            | "pick_gate_y"
+                            | "pick_exact_candidates"
+                            | "pick_reduce_candidates"
+                    )
+            })
+            .count();
+        let setup_starts = events
+            .iter()
+            .filter(|event| {
+                event.scope == "renderer.gpu_pick"
+                    && event.phase == crate::init::InitPhase::Started
+                    && event.stage == "setup"
+            })
+            .count();
+        assert_eq!(pipeline_starts, 4);
+        assert_eq!(setup_starts, 1);
+        assert!(renderer.picker.active.is_none());
+    }
+
+    #[test]
+    fn renderer_gpu_picker_activation_failure_is_sticky_without_retrying_creation() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer
+            .picker
+            .fail_activation_once(crate::gpu_pick::GpuPickError::DeviceLimit {
+                resource: "injected picker limit",
+                requested: 17,
+                limit: 9,
+            });
+        let mut events = Vec::new();
+        for _ in 0..2 {
+            let error = renderer
+                .enable_gpu_picking_observed(&mut |event| events.push(event))
+                .unwrap_err();
+            assert!(matches!(
+                error,
+                crate::gpu_pick::GpuPickError::DeviceLimit {
+                    resource: "injected picker limit",
+                    requested: 17,
+                    limit: 9,
+                }
+            ));
+        }
+        assert!(events.is_empty());
+        assert!(matches!(
+            &renderer.picker.pipeline_state,
+            PickerPipelineState::Failed(crate::gpu_pick::GpuPickError::DeviceLimit {
+                resource: "injected picker limit",
+                requested: 17,
+                limit: 9,
+            })
+        ));
+    }
+
+    #[test]
+    fn active_picker_ignores_unrelated_mutations_and_reuses_source_only_changes() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        add_state_test_xy(&mut renderer, "x", "y", vec![0.0, 1.0]);
+        let config = crate::default::default_config();
+        let active_chart = renderer
+            .register_chart(
+                config.clone(),
+                vec![state_test_scatter_line("series", Some("old"), "x", "y")],
+            )
+            .unwrap();
+        let inactive_chart = renderer
+            .register_chart(
+                config.clone(),
+                vec![state_test_scatter_line("other", None, "x", "y")],
+            )
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        renderer
+            .prepare_gpu_picking_for_chart(active_chart)
+            .unwrap();
+
+        let generation = active_picker(&renderer).engine.registry_generation();
+        let query_buffer = active_picker(&renderer)
+            .engine
+            .query_params_buffer(0)
+            .unwrap();
+
+        let mut inactive_series = renderer.chart_series(inactive_chart).unwrap()[0].clone();
+        let DataRenderType::ScatterLine { line, .. } = &mut inactive_series.render_type else {
+            unreachable!();
+        };
+        line.line_width = 8.0;
+        renderer
+            .set_chart_series(inactive_chart, vec![inactive_series])
+            .unwrap();
+        assert_eq!(
+            active_picker(&renderer).engine.registry_generation(),
+            generation
+        );
+
+        let mut decoration_only = config.clone();
+        decoration_only.chart_title.text.segments =
+            crate::text::rich_segments_from_text("new title");
+        decoration_only.bottom_x.min = -10.0;
+        decoration_only.bottom_x.max = 10.0;
+        renderer
+            .set_chart_config(active_chart, decoration_only)
+            .unwrap();
+        assert_eq!(
+            active_picker(&renderer).engine.registry_generation(),
+            generation
+        );
+        assert_eq!(
+            active_picker(&renderer)
+                .engine
+                .query_params_buffer(0)
+                .unwrap(),
+            query_buffer
+        );
+
+        let mut identity_only = renderer.chart_series(active_chart).unwrap()[0].clone();
+        identity_only.source_id = Some("new".into());
+        renderer
+            .set_chart_series(active_chart, vec![identity_only])
+            .unwrap();
+        assert!(active_picker(&renderer).engine.registry_generation() > generation);
+        assert_eq!(
+            active_picker(&renderer)
+                .engine
+                .query_params_buffer(0)
+                .unwrap(),
+            query_buffer
+        );
+        assert_eq!(
+            active_picker(&renderer).signature.slots[0]
+                .source_id
+                .as_deref(),
+            Some("new")
+        );
+    }
+
+    #[test]
+    fn precise_mode_without_point_mapping_reuses_stylized_picker_resources() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        add_state_test_xy(&mut renderer, "x", "y", vec![0.0, 1.0]);
+        let config = crate::default::default_config();
+        let chart = renderer
+            .register_chart(config, vec![state_test_scatter("scatter", None, "x", "y")])
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        renderer.prepare_gpu_picking_for_chart(chart).unwrap();
+        let generation = active_picker(&renderer).engine.registry_generation();
+        let query_buffer = active_picker(&renderer)
+            .engine
+            .query_params_buffer(0)
+            .unwrap();
+        assert!(matches!(
+            active_picker(&renderer).signature.slots[0]
+                .resource
+                .scatter
+                .as_ref()
+                .unwrap()
+                .style_mapping,
+            PickStyleMappingSignature::Inactive
+        ));
+
+        let mut sketch = renderer.chart_config(chart).unwrap().clone();
+        sketch.draw_style = DrawStyle::Sketch(Default::default());
+        renderer.set_chart_config(chart, sketch).unwrap();
+
+        assert_eq!(
+            active_picker(&renderer).engine.registry_generation(),
+            generation
+        );
+        assert_eq!(
+            active_picker(&renderer)
+                .engine
+                .query_params_buffer(0)
+                .unwrap(),
+            query_buffer
+        );
+        assert_eq!(
+            active_picker(&renderer).signature.slots[0]
+                .resource
+                .primitives,
+            EffectiveSeriesPrimitives {
+                line: false,
+                scatter: true,
+            }
+        );
+    }
+
+    #[test]
+    fn constellation_picker_support_matches_rendered_scatter_line_only() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        add_state_test_xy(&mut renderer, "x", "y", vec![0.0, 1.0]);
+        let mut config = crate::default::default_config();
+        config.draw_style = DrawStyle::Constellation(Default::default());
+        let chart = renderer
+            .register_chart(
+                config,
+                vec![
+                    state_test_line("line", "x", "y"),
+                    state_test_scatter("scatter", None, "x", "y"),
+                    state_test_scatter_line("scatter-line", None, "x", "y"),
+                ],
+            )
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        renderer.prepare_gpu_picking_for_chart(chart).unwrap();
+
+        let active = active_picker(&renderer);
+        assert_eq!(active.engine.registered_series_count(), 1);
+        assert_eq!(active.signature.slots.len(), 1);
+        assert_eq!(active.signature.slots[0].series_id, "scatter-line");
+
+        let mut precise = renderer.chart_config(chart).unwrap().clone();
+        precise.draw_style = DrawStyle::Precise;
+        renderer.set_chart_config(chart, precise).unwrap();
+        assert_eq!(active_picker(&renderer).engine.registered_series_count(), 3);
+    }
+
+    #[test]
+    fn picker_switches_charts_without_recreating_equal_series_resources() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        add_state_test_xy(&mut renderer, "x", "y", vec![0.0, 1.0]);
+        let config = crate::default::default_config();
+        let first = renderer
+            .register_chart(
+                config.clone(),
+                vec![state_test_scatter("same", Some("first"), "x", "y")],
+            )
+            .unwrap();
+        let second = renderer
+            .register_chart(
+                config,
+                vec![state_test_scatter("same", Some("second"), "x", "y")],
+            )
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        renderer.prepare_gpu_picking_for_chart(first).unwrap();
+        let first_buffer = active_picker(&renderer)
+            .engine
+            .query_params_buffer(0)
+            .unwrap();
+
+        renderer.prepare_gpu_picking_for_chart(second).unwrap();
+        assert_eq!(active_picker(&renderer).chart_id, second);
+        assert_eq!(
+            active_picker(&renderer)
+                .engine
+                .query_params_buffer(0)
+                .unwrap(),
+            first_buffer
+        );
+        assert_eq!(
+            active_picker(&renderer).signature.slots[0]
+                .source_id
+                .as_deref(),
+            Some("second")
+        );
+
+        renderer.prepare_gpu_picking_for_chart(first).unwrap();
+        assert_eq!(active_picker(&renderer).chart_id, first);
+        assert_eq!(
+            active_picker(&renderer)
+                .engine
+                .query_params_buffer(0)
+                .unwrap(),
+            first_buffer
+        );
+    }
+
+    #[test]
+    fn picker_reorder_reuses_gpu_slots_and_publishes_new_identity_order() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        add_state_test_xy(&mut renderer, "x", "y", vec![0.0, 1.0]);
+        let initial = vec![
+            state_test_scatter("a", Some("source-a0"), "x", "y"),
+            state_test_scatter("b", Some("source-b0"), "x", "y"),
+        ];
+        let chart = renderer
+            .register_chart(crate::default::default_config(), initial)
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        renderer.prepare_gpu_picking_for_chart(chart).unwrap();
+        let a_buffer = active_picker(&renderer)
+            .engine
+            .query_params_buffer(0)
+            .unwrap();
+        let b_buffer = active_picker(&renderer)
+            .engine
+            .query_params_buffer(1)
+            .unwrap();
+
+        renderer
+            .set_chart_series(
+                chart,
+                vec![
+                    state_test_scatter("b", Some("source-b1"), "x", "y"),
+                    state_test_scatter("a", Some("source-a1"), "x", "y"),
+                ],
+            )
+            .unwrap();
+
+        let active = active_picker(&renderer);
+        assert_eq!(active.engine.query_params_buffer(0).unwrap(), b_buffer);
+        assert_eq!(active.engine.query_params_buffer(1).unwrap(), a_buffer);
+        assert_eq!(
+            active.engine.identity_snapshot(),
+            vec![
+                (Some("source-b1".into()), "b".into()),
+                (Some("source-a1".into()), "a".into()),
+            ]
+        );
+        assert_eq!(
+            active
+                .signature
+                .slots
+                .iter()
+                .map(|slot| slot.series_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b", "a"]
+        );
+    }
+
+    #[test]
+    fn composite_picker_prepare_failure_preserves_all_state_and_retry_succeeds() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        add_state_test_xy(&mut renderer, "x", "y", vec![0.0, 1.0]);
+        let initial_config = crate::default::default_config();
+        let initial_series = vec![state_test_line("line", "x", "y")];
+        let chart = renderer
+            .register_chart(initial_config.clone(), initial_series.clone())
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        renderer.prepare_gpu_picking_for_chart(chart).unwrap();
+        let generation = active_picker(&renderer).engine.registry_generation();
+        let signature = active_picker(&renderer).signature.clone();
+        let render_stamp = renderer.chart_render_stamp(chart).unwrap();
+        let visual_revision = renderer.visual_revision();
+        active_picker(&renderer).engine.fail_next_registry_prepare();
+
+        let mut changed_series = initial_series.clone();
+        let DataRenderType::Line { line } = &mut changed_series[0].render_type else {
+            unreachable!();
+        };
+        line.line_width = 9.0;
+        let mut changed_config = initial_config.clone();
+        changed_config.chart_title.text.segments =
+            crate::text::rich_segments_from_text("prepared but not published");
+        assert!(matches!(
+            renderer.set_chart_state(chart, changed_config.clone(), changed_series.clone()),
+            Err(FiggyError::GpuPick(
+                crate::gpu_pick::GpuPickError::AllocationFailed {
+                    resource: "injected registry prepare failure"
+                }
+            ))
+        ));
+        assert_eq!(renderer.chart_config(chart).unwrap(), &initial_config);
+        assert_eq!(
+            renderer.chart_series(chart).unwrap(),
+            initial_series.as_slice()
+        );
+        assert_eq!(renderer.chart_render_stamp(chart).unwrap(), render_stamp);
+        assert_eq!(renderer.visual_revision(), visual_revision);
+        assert_eq!(
+            active_picker(&renderer).engine.registry_generation(),
+            generation
+        );
+        assert_eq!(active_picker(&renderer).signature, signature);
+
+        renderer
+            .set_chart_state(chart, changed_config.clone(), changed_series.clone())
+            .unwrap();
+        assert_eq!(renderer.chart_config(chart).unwrap(), &changed_config);
+        assert_eq!(
+            renderer.chart_series(chart).unwrap(),
+            changed_series.as_slice()
+        );
+        assert_ne!(renderer.chart_render_stamp(chart).unwrap(), render_stamp);
+        assert_ne!(renderer.visual_revision(), visual_revision);
+        assert!(active_picker(&renderer).engine.registry_generation() > generation);
+        assert_ne!(active_picker(&renderer).signature, signature);
+    }
+
+    #[test]
+    fn picker_ticket_resolves_after_chart_registry_pool_and_renderer_drop() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.add_column("x", &col_f64(vec![0.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![0.0])).unwrap();
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 240,
+        });
+        config.bottom_x.min = -1.0;
+        config.bottom_x.max = 1.0;
+        config.left_y.min = -1.0;
+        config.left_y.max = 1.0;
+        let chart = renderer
+            .register_chart(
+                config.clone(),
+                vec![state_test_scatter("point", Some("source"), "x", "y")],
+            )
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        let (display, panel, scale) = display_config_for_surface(&config, (320, 240));
+        let area = display.data_area().unwrap().0;
+        let ticket = renderer
+            .pick_chart(
+                chart,
+                GpuPickRequest {
+                    canvas_position_px: [
+                        area.x as f32 + area.width as f32 * 0.5,
+                        area.y as f32 + area.height as f32 * 0.5,
+                    ],
+                    display_panel_px: panel,
+                    display_scale: scale,
+                    max_distance_px: 20.0,
+                },
+            )
+            .unwrap();
+        renderer.remove_chart(chart).unwrap();
+        drop(renderer);
+
+        let picked = pollster::block_on(ticket.resolve()).unwrap().unwrap();
+        assert_eq!(picked.source_id.as_deref(), Some("source"));
+        assert_eq!(picked.series_id, "point");
+        assert_eq!(picked.point_index, 0);
     }
 
     #[test]
@@ -5797,6 +7616,449 @@ mod tests {
     }
 
     #[test]
+    fn active_picker_upsert_failure_rolls_back_every_authority_and_retry_succeeds() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        add_state_test_xy(&mut renderer, "x", "y", vec![0.0, 1.0]);
+        let chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_scatter("scatter", None, "x", "y")],
+            )
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        renderer.prepare_gpu_picking_for_chart(chart).unwrap();
+
+        let pool_generation = renderer.pool().generation();
+        let layout_generation = renderer.pool().layout_generation();
+        let picker_generation = active_picker(&renderer).engine.registry_generation();
+        let picker_buffer = active_picker(&renderer)
+            .engine
+            .query_params_buffer(0)
+            .unwrap();
+        let render_stamp = renderer.chart_render_stamp(chart).unwrap();
+        let visual_revision = renderer.visual_revision();
+        let old_min = renderer.pool().slot("x").unwrap().min;
+        active_picker(&renderer).engine.fail_next_registry_prepare();
+
+        assert!(matches!(
+            renderer.upsert_column("x", &col_f64(vec![10.0, 11.0])),
+            Err(FiggyError::GpuPick(
+                crate::gpu_pick::GpuPickError::AllocationFailed {
+                    resource: "injected registry prepare failure"
+                }
+            ))
+        ));
+        assert_eq!(renderer.pool().slot("x").unwrap().min, old_min);
+        assert_eq!(renderer.pool().generation(), pool_generation);
+        assert_eq!(renderer.pool().layout_generation(), layout_generation);
+        assert_eq!(renderer.chart_render_stamp(chart).unwrap(), render_stamp);
+        assert_eq!(renderer.visual_revision(), visual_revision);
+        assert_eq!(
+            active_picker(&renderer).engine.registry_generation(),
+            picker_generation
+        );
+        assert_eq!(
+            active_picker(&renderer)
+                .engine
+                .query_params_buffer(0)
+                .unwrap(),
+            picker_buffer
+        );
+        assert!(!renderer.has_pending_maintenance());
+
+        renderer
+            .upsert_column("x", &col_f64(vec![10.0, 11.0]))
+            .unwrap();
+        assert_eq!(renderer.pool().slot("x").unwrap().min, 10.0);
+        assert_ne!(renderer.chart_render_stamp(chart).unwrap(), render_stamp);
+        assert!(active_picker(&renderer).engine.registry_generation() > picker_generation);
+        assert_ne!(
+            active_picker(&renderer)
+                .engine
+                .query_params_buffer(0)
+                .unwrap(),
+            picker_buffer
+        );
+    }
+
+    #[test]
+    fn active_picker_removal_failure_rolls_back_pool_chart_and_registry() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        add_state_test_xy(&mut renderer, "x", "y", vec![0.0, 1.0]);
+        let chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_scatter("scatter", None, "x", "y")],
+            )
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        renderer.prepare_gpu_picking_for_chart(chart).unwrap();
+
+        let pool_generation = renderer.pool().generation();
+        let picker_generation = active_picker(&renderer).engine.registry_generation();
+        let render_stamp = renderer.chart_render_stamp(chart).unwrap();
+        active_picker(&renderer).engine.fail_next_registry_prepare();
+
+        assert!(matches!(
+            renderer.remove_column("x"),
+            Err(FiggyError::GpuPick(
+                crate::gpu_pick::GpuPickError::AllocationFailed {
+                    resource: "injected registry prepare failure"
+                }
+            ))
+        ));
+        assert!(renderer.pool().slot("x").is_some());
+        assert_eq!(renderer.pool().generation(), pool_generation);
+        assert_eq!(renderer.chart_series(chart).unwrap().len(), 1);
+        assert_eq!(renderer.chart_render_stamp(chart).unwrap(), render_stamp);
+        assert_eq!(
+            active_picker(&renderer).engine.registry_generation(),
+            picker_generation
+        );
+        assert_eq!(active_picker(&renderer).engine.registered_series_count(), 1);
+        assert!(!renderer.has_pending_maintenance());
+
+        assert!(renderer.remove_column("x").unwrap());
+        assert!(renderer.pool().slot("x").is_none());
+        assert!(renderer.chart_series(chart).unwrap().is_empty());
+        assert_eq!(active_picker(&renderer).engine.registered_series_count(), 0);
+        assert!(renderer.has_pending_maintenance());
+    }
+
+    #[test]
+    fn column_removal_with_chart_config_picker_failure_preserves_all_authority() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        add_state_test_xy(&mut renderer, "x", "y", vec![0.0, 1.0]);
+        let initial_config = crate::default::default_config();
+        let initial_series = vec![state_test_scatter("scatter", None, "x", "y")];
+        let chart = renderer
+            .register_chart(initial_config.clone(), initial_series.clone())
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        renderer.prepare_gpu_picking_for_chart(chart).unwrap();
+
+        let mut next_config = initial_config.clone();
+        next_config.chart_title.text.segments =
+            crate::text::rich_segments_from_text("atomic legend replacement");
+        let pool_generation = renderer.pool().generation();
+        let render_stamp = renderer.chart_render_stamp(chart).unwrap();
+        let visual_revision = renderer.visual_revision();
+        let picker_generation = active_picker(&renderer).engine.registry_generation();
+        let picker_signature = active_picker(&renderer).signature.clone();
+        active_picker(&renderer).engine.fail_next_registry_prepare();
+
+        assert!(matches!(
+            renderer.remove_column_with_chart_config("x", chart, next_config.clone()),
+            Err(FiggyError::GpuPick(
+                crate::gpu_pick::GpuPickError::AllocationFailed {
+                    resource: "injected registry prepare failure"
+                }
+            ))
+        ));
+        assert!(renderer.pool().slot("x").is_some());
+        assert_eq!(renderer.pool().generation(), pool_generation);
+        assert_eq!(renderer.chart_config(chart).unwrap(), &initial_config);
+        assert_eq!(
+            renderer.chart_series(chart).unwrap(),
+            initial_series.as_slice()
+        );
+        assert_eq!(renderer.chart_render_stamp(chart).unwrap(), render_stamp);
+        assert_eq!(renderer.visual_revision(), visual_revision);
+        assert_eq!(
+            active_picker(&renderer).engine.registry_generation(),
+            picker_generation
+        );
+        assert_eq!(active_picker(&renderer).signature, picker_signature);
+        assert!(!renderer.has_pending_maintenance());
+
+        assert!(
+            renderer
+                .remove_column_with_chart_config("x", chart, next_config.clone())
+                .unwrap()
+        );
+        assert!(renderer.pool().slot("x").is_none());
+        assert_eq!(renderer.chart_config(chart).unwrap(), &next_config);
+        assert!(renderer.chart_series(chart).unwrap().is_empty());
+        assert_eq!(active_picker(&renderer).engine.registered_series_count(), 0);
+        assert!(renderer.has_pending_maintenance());
+    }
+
+    #[test]
+    fn column_removal_with_chart_config_counter_failure_preserves_all_authority() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        add_state_test_xy(&mut renderer, "x", "y", vec![0.0, 1.0]);
+        let initial_config = crate::default::default_config();
+        let initial_series = vec![state_test_scatter("scatter", None, "x", "y")];
+        let chart = renderer
+            .register_chart(initial_config.clone(), initial_series.clone())
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        renderer.prepare_gpu_picking_for_chart(chart).unwrap();
+        let renderer_identity = renderer.renderer_identity;
+        renderer
+            .chart_states
+            .get_mut(&chart)
+            .unwrap()
+            .revisions
+            .config = RenderRevision {
+            renderer_identity,
+            sequence: u64::MAX,
+        };
+
+        let mut next_config = initial_config.clone();
+        next_config.chart_title.text.segments =
+            crate::text::rich_segments_from_text("must not publish");
+        let pool_generation = renderer.pool().generation();
+        let visual_revision = renderer.visual_revision();
+        let picker_generation = active_picker(&renderer).engine.registry_generation();
+        let picker_signature = active_picker(&renderer).signature.clone();
+        let pending_maintenance = renderer.has_pending_maintenance();
+
+        assert!(matches!(
+            renderer.remove_column_with_chart_config("x", chart, next_config),
+            Err(FiggyError::CounterExhausted {
+                counter: "chart config revision"
+            })
+        ));
+        assert!(renderer.pool().slot("x").is_some());
+        assert_eq!(renderer.pool().generation(), pool_generation);
+        assert_eq!(renderer.chart_config(chart).unwrap(), &initial_config);
+        assert_eq!(
+            renderer.chart_series(chart).unwrap(),
+            initial_series.as_slice()
+        );
+        assert_eq!(renderer.visual_revision(), visual_revision);
+        assert_eq!(
+            active_picker(&renderer).engine.registry_generation(),
+            picker_generation
+        );
+        assert_eq!(active_picker(&renderer).signature, picker_signature);
+        assert_eq!(renderer.has_pending_maintenance(), pending_maintenance);
+    }
+
+    #[test]
+    fn column_removal_with_invalid_chart_config_preserves_all_authority() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        add_state_test_xy(&mut renderer, "x", "y", vec![0.0, 1.0]);
+        let initial_config = crate::default::default_config();
+        let initial_series = vec![state_test_scatter("scatter", None, "x", "y")];
+        let chart = renderer
+            .register_chart(initial_config.clone(), initial_series.clone())
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        renderer.prepare_gpu_picking_for_chart(chart).unwrap();
+
+        let mut invalid_config = initial_config.clone();
+        invalid_config.bottom_x.max = invalid_config.bottom_x.min;
+        let pool_generation = renderer.pool().generation();
+        let render_stamp = renderer.chart_render_stamp(chart).unwrap();
+        let visual_revision = renderer.visual_revision();
+        let picker_generation = active_picker(&renderer).engine.registry_generation();
+        let picker_signature = active_picker(&renderer).signature.clone();
+
+        assert!(matches!(
+            renderer.remove_column_with_chart_config("x", chart, invalid_config),
+            Err(FiggyError::InvalidConfig {
+                field: "bottom_x",
+                ..
+            })
+        ));
+        assert!(renderer.pool().slot("x").is_some());
+        assert_eq!(renderer.pool().generation(), pool_generation);
+        assert_eq!(renderer.chart_config(chart).unwrap(), &initial_config);
+        assert_eq!(
+            renderer.chart_series(chart).unwrap(),
+            initial_series.as_slice()
+        );
+        assert_eq!(renderer.chart_render_stamp(chart).unwrap(), render_stamp);
+        assert_eq!(renderer.visual_revision(), visual_revision);
+        assert_eq!(
+            active_picker(&renderer).engine.registry_generation(),
+            picker_generation
+        );
+        assert_eq!(active_picker(&renderer).signature, picker_signature);
+        assert!(!renderer.has_pending_maintenance());
+    }
+
+    #[test]
+    fn missing_column_does_not_publish_chart_config_override() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        let initial_config = crate::default::default_config();
+        let chart = renderer
+            .register_chart(initial_config.clone(), Vec::new())
+            .unwrap();
+        let render_stamp = renderer.chart_render_stamp(chart).unwrap();
+        let visual_revision = renderer.visual_revision();
+        let mut next_config = initial_config.clone();
+        next_config.chart_title.text.segments =
+            crate::text::rich_segments_from_text("missing column must not publish");
+
+        assert!(
+            !renderer
+                .remove_column_with_chart_config("missing", chart, next_config)
+                .unwrap()
+        );
+        assert_eq!(renderer.chart_config(chart).unwrap(), &initial_config);
+        assert_eq!(renderer.chart_render_stamp(chart).unwrap(), render_stamp);
+        assert_eq!(renderer.visual_revision(), visual_revision);
+        assert!(!renderer.has_pending_maintenance());
+    }
+
+    #[test]
+    fn removing_errorbar_column_removes_active_scatter_picker_slot() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        add_state_test_xy(&mut renderer, "x", "y", vec![0.0, 1.0]);
+        renderer
+            .add_column("y_err", &col_f64(vec![0.1, 0.2]))
+            .unwrap();
+        let series = SeriesConfig {
+            series_id: "scatter-errors".into(),
+            source_id: Some("source".into()),
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            render_type: DataRenderType::ScatterErrorbarY {
+                scatter: test_scatter_style(),
+                err_y: ErrorRef::Symmetric {
+                    column: "y_err".into(),
+                },
+                err_style: test_errorbar_style(),
+            },
+        };
+        let chart = renderer
+            .register_chart(crate::default::default_config(), vec![series])
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        renderer.prepare_gpu_picking_for_chart(chart).unwrap();
+        assert_eq!(active_picker(&renderer).engine.registered_series_count(), 1);
+
+        assert!(renderer.remove_column("y_err").unwrap());
+        assert!(renderer.chart_series(chart).unwrap().is_empty());
+        assert_eq!(active_picker(&renderer).engine.registered_series_count(), 0);
+    }
+
+    #[test]
+    fn active_picker_defrag_failure_rolls_back_and_noop_keeps_registry_generation() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer
+            .add_column("hole", &col_f64(vec![9.0, 9.0]))
+            .unwrap();
+        add_state_test_xy(&mut renderer, "x", "y", vec![0.0, 1.0]);
+        let chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_scatter("scatter", None, "x", "y")],
+            )
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        renderer.prepare_gpu_picking_for_chart(chart).unwrap();
+        assert!(renderer.remove_column("hole").unwrap());
+
+        let old_x = renderer.pool().handle_for("x").unwrap();
+        let pool_generation = renderer.pool().generation();
+        let layout_generation = renderer.pool().layout_generation();
+        let picker_generation = active_picker(&renderer).engine.registry_generation();
+        active_picker(&renderer).engine.fail_next_registry_prepare();
+
+        assert!(matches!(
+            renderer.defragment(),
+            Err(FiggyError::GpuPick(
+                crate::gpu_pick::GpuPickError::AllocationFailed {
+                    resource: "injected registry prepare failure"
+                }
+            ))
+        ));
+        let rolled_back_x = renderer.pool().handle_for("x").unwrap();
+        assert_eq!(rolled_back_x.generation, old_x.generation);
+        assert_eq!(rolled_back_x.offset, old_x.offset);
+        assert_eq!(rolled_back_x.byte_size, old_x.byte_size);
+        assert_eq!(rolled_back_x.len_values, old_x.len_values);
+        assert_eq!(renderer.pool().generation(), pool_generation);
+        assert_eq!(renderer.pool().layout_generation(), layout_generation);
+        assert_eq!(
+            active_picker(&renderer).engine.registry_generation(),
+            picker_generation
+        );
+        assert!(renderer.has_pending_maintenance());
+
+        assert!(renderer.defragment().unwrap());
+        assert_ne!(
+            renderer.pool().handle_for("x").unwrap().offset,
+            old_x.offset
+        );
+        let rebound_generation = active_picker(&renderer).engine.registry_generation();
+        assert!(rebound_generation > picker_generation);
+        assert!(!renderer.has_pending_maintenance());
+
+        assert!(!renderer.defragment().unwrap());
+        assert_eq!(
+            active_picker(&renderer).engine.registry_generation(),
+            rebound_generation
+        );
+    }
+
+    #[test]
+    fn on_alloc_failure_compaction_rebinds_active_picker_transactionally() {
+        let Some(mut renderer) = state_test_renderer_with_capacity(1024) else {
+            return;
+        };
+        let block = || col_f64(vec![1.0; 32]);
+        renderer.add_column("x", &block()).unwrap();
+        renderer.add_column("hole-a", &block()).unwrap();
+        renderer.add_column("y", &block()).unwrap();
+        renderer.add_column("hole-b", &block()).unwrap();
+        let chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_scatter("scatter", None, "x", "y")],
+            )
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        renderer.prepare_gpu_picking_for_chart(chart).unwrap();
+        let picker_generation = active_picker(&renderer).engine.registry_generation();
+        let picker_buffer = active_picker(&renderer)
+            .engine
+            .query_params_buffer(0)
+            .unwrap();
+        let old_y_offset = renderer.pool().handle_for("y").unwrap().offset;
+
+        assert!(renderer.remove_column("hole-a").unwrap());
+        assert!(renderer.remove_column("hole-b").unwrap());
+        renderer.set_defrag_policy(DefragPolicy::OnAllocFailure);
+        renderer.add_column("new", &col_f64(vec![2.0; 64])).unwrap();
+
+        assert_ne!(
+            renderer.pool().handle_for("y").unwrap().offset,
+            old_y_offset
+        );
+        assert!(active_picker(&renderer).engine.registry_generation() > picker_generation);
+        assert_eq!(
+            active_picker(&renderer)
+                .engine
+                .query_params_buffer(0)
+                .unwrap(),
+            picker_buffer
+        );
+        assert!(!renderer.has_pending_maintenance());
+    }
+
+    #[test]
     fn dropped_renderer_column_upsert_rolls_back_pool_and_chart_state() {
         let Some(mut renderer) = state_test_renderer() else {
             return;
@@ -5923,9 +8185,19 @@ mod tests {
             .unwrap();
         let first_raster = renderer.chart_states[&first].revisions.raster;
         let second_raster = renderer.chart_states[&second].revisions.raster;
+        let second_config = renderer.chart_config(second).unwrap().clone();
+        let mut next_first_config = renderer.chart_config(first).unwrap().clone();
+        next_first_config.chart_title.text.segments =
+            crate::text::rich_segments_from_text("first chart replacement");
 
-        assert!(renderer.remove_column("x").unwrap());
+        assert!(
+            renderer
+                .remove_column_with_chart_config("x", first, next_first_config.clone())
+                .unwrap()
+        );
         assert!(renderer.pool().slot("x").is_none());
+        assert_eq!(renderer.chart_config(first).unwrap(), &next_first_config);
+        assert_eq!(renderer.chart_config(second).unwrap(), &second_config);
         assert_eq!(renderer.chart_series(first).unwrap().len(), 1);
         assert_eq!(renderer.chart_series(first).unwrap()[0].series_id, "kept");
         assert!(renderer.chart_series(second).unwrap().is_empty());

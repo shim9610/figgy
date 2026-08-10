@@ -24,7 +24,7 @@
 //! storage-binding alignment; vertex slices reuse the same value to keep
 //! mode switching free of caveats.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt, sync::Arc};
 
 use wgpu::{Buffer, BufferDescriptor, BufferUsages, Device, Queue};
 
@@ -33,6 +33,44 @@ use crate::data::{COLUMN_VALUE_BYTES, ColumnSource, HiLoColumnSource};
 // Defined in the model crate (`model::data`); re-exported here so
 // `data_render::ColumnId` stays a valid path.
 pub use crate::data::ColumnId;
+
+/// Opaque identity of one [`ColumnPool`] instance.
+///
+/// Clones retain the same identity. Equality is allocation identity rather
+/// than a numeric stamp, so independently-created pools cannot compare as the
+/// same while either identity is live.
+#[derive(Clone)]
+pub(crate) struct PoolIdentity(Arc<PoolIdentityInner>);
+
+struct PoolIdentityInner {
+    _private: u8,
+}
+
+impl PoolIdentity {
+    fn new() -> Self {
+        Self(Arc::new(PoolIdentityInner { _private: 0 }))
+    }
+
+    pub(crate) fn same_instance(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl PartialEq for PoolIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        self.same_instance(other)
+    }
+}
+
+impl Eq for PoolIdentity {}
+
+impl fmt::Debug for PoolIdentity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PoolIdentity")
+            .finish_non_exhaustive()
+    }
+}
 
 /// Alignment (in bytes) for every offset and size in the pool.
 pub const ALIGN: u64 = 256;
@@ -300,6 +338,7 @@ fn create_buffer_checked(
 
 /// GPU column slab + CPU-side offset table.
 pub struct ColumnPool {
+    identity: PoolIdentity,
     primary: Buffer,
     capacity: u64,
     max_buffer_size: u64,
@@ -431,6 +470,124 @@ impl Drop for ColumnUpsert<'_> {
     }
 }
 
+struct RemovalRollback {
+    slots: HashMap<ColumnId, ColumnSlot>,
+    free: Vec<FreeRegion>,
+    generation: u32,
+    allocation_epochs: HashMap<ColumnId, u64>,
+}
+
+/// A provisionally-removed column.
+///
+/// The removed slot and allocator metadata are visible through [`Self::pool`]
+/// so dependent GPU state can be prepared before publication. Committing only
+/// releases the rollback snapshot; dropping restores the exact prior state.
+#[must_use = "dropping a ColumnRemoval rolls the provisional removal back"]
+pub struct ColumnRemoval<'a> {
+    pool: &'a mut ColumnPool,
+    rollback: Option<RemovalRollback>,
+}
+
+impl ColumnRemoval<'_> {
+    /// The exact pool view that will remain live after [`Self::commit`].
+    pub fn pool(&self) -> &ColumnPool {
+        self.pool
+    }
+
+    /// Publish the provisional removal.
+    pub fn commit(mut self) -> bool {
+        self.rollback.take();
+        true
+    }
+}
+
+impl Drop for ColumnRemoval<'_> {
+    fn drop(&mut self) {
+        let Some(mut rollback) = self.rollback.take() else {
+            return;
+        };
+
+        std::mem::swap(&mut self.pool.slots, &mut rollback.slots);
+        std::mem::swap(&mut self.pool.free, &mut rollback.free);
+        std::mem::swap(
+            &mut self.pool.allocation_epochs,
+            &mut rollback.allocation_epochs,
+        );
+        self.pool.generation = rollback.generation;
+    }
+}
+
+struct DefragmentRollback {
+    slots: Option<HashMap<ColumnId, ColumnSlot>>,
+    free: Vec<FreeRegion>,
+    generation: u32,
+    layout_generation: u64,
+    swapped_primary: bool,
+    candidate_was_backup: bool,
+}
+
+/// A provisionally-applied column-pool defragmentation.
+///
+/// GPU copies have already been submitted when a relocating guard is returned.
+/// Returned preparation errors occur before the provisional pool is published;
+/// asynchronous device failures remain governed by wgpu's device error model.
+#[must_use = "dropping a ColumnDefragment rolls the provisional layout back"]
+pub struct ColumnDefragment<'a> {
+    pool: &'a mut ColumnPool,
+    rollback: Option<DefragmentRollback>,
+    changed: bool,
+    relocated: bool,
+    legacy_result: bool,
+}
+
+impl ColumnDefragment<'_> {
+    /// The exact pool view that will remain live after [`Self::commit`].
+    pub fn pool(&self) -> &ColumnPool {
+        self.pool
+    }
+
+    /// Whether any allocator state was normalized or relocated.
+    pub fn changed(&self) -> bool {
+        self.changed
+    }
+
+    /// Whether live columns moved to a different backing layout.
+    pub fn relocated(&self) -> bool {
+        self.relocated
+    }
+
+    /// Publish the provisional state and return the legacy defragment result.
+    pub fn commit(mut self) -> bool {
+        self.rollback.take();
+        self.legacy_result
+    }
+}
+
+impl Drop for ColumnDefragment<'_> {
+    fn drop(&mut self) {
+        let Some(mut rollback) = self.rollback.take() else {
+            return;
+        };
+
+        if let Some(mut slots) = rollback.slots.take() {
+            std::mem::swap(&mut self.pool.slots, &mut slots);
+        }
+        std::mem::swap(&mut self.pool.free, &mut rollback.free);
+        self.pool.generation = rollback.generation;
+        self.pool.layout_generation = rollback.layout_generation;
+
+        if rollback.swapped_primary {
+            let Some(old_primary) = self.pool.backup.take() else {
+                return;
+            };
+            let candidate = std::mem::replace(&mut self.pool.primary, old_primary);
+            if rollback.candidate_was_backup {
+                self.pool.backup = Some(candidate);
+            }
+        }
+    }
+}
+
 impl ColumnPool {
     /// New pool. `capacity_bytes` is rounded up to a multiple of `ALIGN`.
     pub fn new(device: &Device, capacity_bytes: u64) -> Result<Self, AllocError> {
@@ -462,6 +619,7 @@ impl ColumnPool {
         };
         let primary = create_buffer_checked(device, &primary_desc, "column pool buffer")?;
         Ok(Self {
+            identity: PoolIdentity::new(),
             primary,
             capacity,
             max_buffer_size,
@@ -490,6 +648,12 @@ impl ColumnPool {
     pub fn generation(&self) -> u32 {
         self.generation
     }
+
+    #[allow(dead_code)]
+    pub(crate) fn identity(&self) -> PoolIdentity {
+        self.identity.clone()
+    }
+
     pub(crate) fn layout_generation(&self) -> u64 {
         self.layout_generation
     }
@@ -1159,12 +1323,13 @@ impl ColumnPool {
         Ok(handle)
     }
 
-    /// Remove a column. Returns its region to the free list and coalesces
-    /// with neighbors. Public handles are invalidated, the removed allocation
-    /// epoch is discarded, and the layout generation remains unchanged.
-    pub fn remove_column(&mut self, id: &str) -> Result<bool, AllocError> {
+    /// Provisionally remove a column so dependent GPU state can be prepared.
+    pub fn begin_remove_column(
+        &mut self,
+        id: &str,
+    ) -> Result<Option<ColumnRemoval<'_>>, AllocError> {
         let Some(slot) = self.slots.get(id).cloned() else {
-            return Ok(false);
+            return Ok(None);
         };
         let next_generation = self.checked_generation_successor()?;
         let mut planned_slots = self.slots.clone();
@@ -1181,11 +1346,31 @@ impl ColumnPool {
         let mut planned_allocation_epochs = self.allocation_epochs.clone();
         planned_allocation_epochs.remove(id);
 
-        self.slots = planned_slots;
-        self.free = planned_free;
-        self.allocation_epochs = planned_allocation_epochs;
-        self.generation = next_generation;
-        Ok(true)
+        let old_slots = std::mem::replace(&mut self.slots, planned_slots);
+        let old_free = std::mem::replace(&mut self.free, planned_free);
+        let old_allocation_epochs =
+            std::mem::replace(&mut self.allocation_epochs, planned_allocation_epochs);
+        let old_generation = std::mem::replace(&mut self.generation, next_generation);
+
+        Ok(Some(ColumnRemoval {
+            pool: self,
+            rollback: Some(RemovalRollback {
+                slots: old_slots,
+                free: old_free,
+                generation: old_generation,
+                allocation_epochs: old_allocation_epochs,
+            }),
+        }))
+    }
+
+    /// Remove a column. Returns its region to the free list and coalesces
+    /// with neighbors. Public handles are invalidated, the removed allocation
+    /// epoch is discarded, and the layout generation remains unchanged.
+    pub fn remove_column(&mut self, id: &str) -> Result<bool, AllocError> {
+        let Some(removal) = self.begin_remove_column(id)? else {
+            return Ok(false);
+        };
+        Ok(removal.commit())
     }
 
     /// Pack every live column tightly from offset 0 of `primary` (ping-pong).
@@ -1205,14 +1390,24 @@ impl ColumnPool {
     ///
     /// Returns true iff something actually moved (caller must re-fetch
     /// handles via `handle_for`).
-    pub fn defragment(&mut self, device: &Device, queue: &Queue) -> Result<bool, AllocError> {
+    pub fn begin_defragment(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+    ) -> Result<ColumnDefragment<'_>, AllocError> {
         // Empty pool: just normalize the free list.
         if self.slots.is_empty() {
             let already = self.free.len() == 1
                 && self.free[0].offset == 0
                 && self.free[0].size == self.capacity;
             if already {
-                return Ok(false);
+                return Ok(ColumnDefragment {
+                    pool: self,
+                    rollback: None,
+                    changed: false,
+                    relocated: false,
+                    legacy_result: false,
+                });
             }
             let next_generation = self.checked_generation_successor()?;
             let next_layout_generation = self.checked_layout_successor()?;
@@ -1220,10 +1415,24 @@ impl ColumnPool {
                 offset: 0,
                 size: self.capacity,
             }];
-            self.free = normalized_free;
-            self.generation = next_generation;
-            self.layout_generation = next_layout_generation;
-            return Ok(true);
+            let old_free = std::mem::replace(&mut self.free, normalized_free);
+            let old_generation = std::mem::replace(&mut self.generation, next_generation);
+            let old_layout_generation =
+                std::mem::replace(&mut self.layout_generation, next_layout_generation);
+            return Ok(ColumnDefragment {
+                pool: self,
+                rollback: Some(DefragmentRollback {
+                    slots: None,
+                    free: old_free,
+                    generation: old_generation,
+                    layout_generation: old_layout_generation,
+                    swapped_primary: false,
+                    candidate_was_backup: false,
+                }),
+                changed: true,
+                relocated: false,
+                legacy_result: true,
+            });
         }
 
         // Pack in the current offset order.
@@ -1248,21 +1457,60 @@ impl ColumnPool {
                     .free
                     .first()
                     .is_none_or(|r| r.offset == next && r.offset + r.size == self.capacity);
-            if !tail_ok {
-                self.free.clear();
-                if next < self.capacity {
-                    self.free.push(FreeRegion {
-                        offset: next,
-                        size: self.capacity - next,
-                    });
-                }
+            if tail_ok {
+                return Ok(ColumnDefragment {
+                    pool: self,
+                    rollback: None,
+                    changed: false,
+                    relocated: false,
+                    legacy_result: false,
+                });
             }
-            return Ok(false);
+            let mut normalized_free = Vec::with_capacity(usize::from(next < self.capacity));
+            if next < self.capacity {
+                normalized_free.push(FreeRegion {
+                    offset: next,
+                    size: self.capacity - next,
+                });
+            }
+            let generation = self.generation;
+            let layout_generation = self.layout_generation;
+            let old_free = std::mem::replace(&mut self.free, normalized_free);
+            return Ok(ColumnDefragment {
+                pool: self,
+                rollback: Some(DefragmentRollback {
+                    slots: None,
+                    free: old_free,
+                    generation,
+                    layout_generation,
+                    swapped_primary: false,
+                    candidate_was_backup: false,
+                }),
+                changed: true,
+                relocated: false,
+                legacy_result: false,
+            });
         }
         let next_generation = self.checked_generation_successor()?;
         let next_layout_generation = self.checked_layout_successor()?;
 
+        let mut planned_slots = self.slots.clone();
+        for (id, &new_off) in order.iter().zip(new_offsets.iter()) {
+            if let Some(slot) = planned_slots.get_mut(id) {
+                slot.offset = new_off;
+                slot.generation = next_generation;
+            }
+        }
+        let mut planned_free = Vec::with_capacity(usize::from(next < self.capacity));
+        if next < self.capacity {
+            planned_free.push(FreeRegion {
+                offset: next,
+                size: self.capacity - next,
+            });
+        }
+
         // Lazily create backup with the same capacity/usage as primary.
+        let candidate_was_backup = self.backup.is_some();
         if self.backup.is_none() {
             let backup_desc = BufferDescriptor {
                 label: Some("figgy column pool backup"),
@@ -1282,11 +1530,15 @@ impl ColumnPool {
 
         // primary[old_off..] -> backup[new_off..] (GPU-internal copy).
         // The `is_none` branch above guarantees `backup` is `Some`; the
-        // graceful exit below exists only to handle invariant violations.
+        // checked error below exists only to handle invariant violations.
         {
-            let Some(backup) = self.backup.as_ref() else {
-                return Ok(false);
-            };
+            let backup = self
+                .backup
+                .as_ref()
+                .ok_or_else(|| AllocError::AllocationFailed {
+                    resource: "column pool defragmentation",
+                    reason: "backup buffer missing after preparation".into(),
+                })?;
             let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("figgy column pool defrag"),
             });
@@ -1304,31 +1556,41 @@ impl ColumnPool {
         }
 
         // primary <-> backup ping-pong swap.
-        let Some(new_primary) = self.backup.take() else {
-            return Ok(false);
-        };
+        let new_primary = self
+            .backup
+            .take()
+            .ok_or_else(|| AllocError::AllocationFailed {
+                resource: "column pool defragmentation",
+                reason: "backup buffer missing before publication".into(),
+            })?;
         let old_primary = std::mem::replace(&mut self.primary, new_primary);
         self.backup = Some(old_primary);
 
-        // Bump generation and update slots.
-        self.generation = next_generation;
-        self.layout_generation = next_layout_generation;
-        for (id, &new_off) in order.iter().zip(new_offsets.iter()) {
-            if let Some(slot) = self.slots.get_mut(id) {
-                slot.offset = new_off;
-                slot.generation = self.generation;
-            }
-        }
+        let old_slots = std::mem::replace(&mut self.slots, planned_slots);
+        let old_free = std::mem::replace(&mut self.free, planned_free);
+        let old_generation = std::mem::replace(&mut self.generation, next_generation);
+        let old_layout_generation =
+            std::mem::replace(&mut self.layout_generation, next_layout_generation);
 
-        // Free list collapses to a single tail region.
-        self.free.clear();
-        if next < self.capacity {
-            self.free.push(FreeRegion {
-                offset: next,
-                size: self.capacity - next,
-            });
-        }
-        Ok(true)
+        Ok(ColumnDefragment {
+            pool: self,
+            rollback: Some(DefragmentRollback {
+                slots: Some(old_slots),
+                free: old_free,
+                generation: old_generation,
+                layout_generation: old_layout_generation,
+                swapped_primary: true,
+                candidate_was_backup,
+            }),
+            changed: true,
+            relocated: true,
+            legacy_result: true,
+        })
+    }
+
+    /// Pack every live column tightly and publish immediately.
+    pub fn defragment(&mut self, device: &Device, queue: &Queue) -> Result<bool, AllocError> {
+        Ok(self.begin_defragment(device, queue)?.commit())
     }
 
     /// Sort `free` by offset and merge adjacent regions.
@@ -1551,9 +1813,56 @@ mod tests {
         Column { data, min, max }
     }
 
+    #[test]
+    fn independently_created_pools_have_distinct_identities() {
+        let Some((device, _queue, pool_a)) = mk_pool(ALIGN) else {
+            return;
+        };
+        let pool_b = ColumnPool::new(&device, ALIGN).unwrap();
+
+        let identity_a = pool_a.identity();
+        assert_eq!(identity_a, identity_a.clone());
+        assert_ne!(identity_a, pool_b.identity());
+    }
+
+    #[test]
+    fn pool_identity_survives_upsert_drop_commit_and_defragmentation() {
+        let Some((device, queue, mut pool)) = mk_pool(3 * ALIGN) else {
+            return;
+        };
+        let values = col_f64(vec![1.0]);
+        for id in ["identity-a", "identity-b", "identity-c"] {
+            pool.add_column(id.into(), &values, &device, &queue)
+                .unwrap();
+        }
+        let identity = pool.identity();
+
+        {
+            let replacement = col_f64(vec![2.0]);
+            let pending = pool
+                .begin_upsert_column("identity-a".into(), &replacement, &device, &queue)
+                .unwrap();
+            assert_eq!(pending.pool().identity(), identity);
+        }
+        assert_eq!(pool.identity(), identity);
+
+        let replacement = col_f64(vec![3.0]);
+        let pending = pool
+            .begin_upsert_column("identity-a".into(), &replacement, &device, &queue)
+            .unwrap();
+        assert_eq!(pending.pool().identity(), identity);
+        pending.commit();
+        assert_eq!(pool.identity(), identity);
+
+        assert!(pool.remove_column("identity-b").unwrap());
+        assert!(pool.defragment(&device, &queue).unwrap());
+        assert_eq!(pool.identity(), identity);
+    }
+
     #[derive(Debug, PartialEq)]
     struct PoolState {
-        buffer: usize,
+        buffer: u64,
+        backup: Option<u64>,
         generation: u32,
         layout_generation: u64,
         allocation_epoch_counter: u64,
@@ -1565,6 +1874,12 @@ mod tests {
         handle: Option<(u32, u64, u64, usize)>,
     }
 
+    fn buffer_identity(buffer: &Buffer) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(buffer, &mut hasher);
+        std::hash::Hasher::finish(&hasher)
+    }
+
     fn pool_state(pool: &ColumnPool, id: &str) -> PoolState {
         let mut allocation_epochs = pool
             .allocation_epochs
@@ -1574,7 +1889,8 @@ mod tests {
         allocation_epochs.sort_by(|a, b| a.0.cmp(&b.0));
 
         PoolState {
-            buffer: pool.buffer() as *const Buffer as usize,
+            buffer: buffer_identity(pool.buffer()),
+            backup: pool.backup.as_ref().map(buffer_identity),
             generation: pool.generation(),
             layout_generation: pool.layout_generation(),
             allocation_epoch_counter: pool.allocation_epoch_counter,
@@ -1606,6 +1922,188 @@ mod tests {
                 )
             }),
         }
+    }
+
+    #[test]
+    fn column_removal_guard_drop_restores_exact_pool_state() {
+        let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+            return;
+        };
+        let values = col_f64(vec![1.0]);
+        pool.add_column("remove-a".into(), &values, &device, &queue)
+            .unwrap();
+        pool.add_column("remove-b".into(), &values, &device, &queue)
+            .unwrap();
+        let identity = pool.identity();
+        let before_a = pool_state(&pool, "remove-a");
+        let before_b = pool_state(&pool, "remove-b");
+
+        {
+            let removal = pool
+                .begin_remove_column("remove-a")
+                .unwrap()
+                .expect("existing column must produce a guard");
+            assert_eq!(removal.pool().identity(), identity);
+            assert!(removal.pool().handle_for("remove-a").is_none());
+            assert!(removal.pool().handle_for("remove-b").is_some());
+        }
+
+        assert_eq!(pool.identity(), identity);
+        assert_eq!(pool_state(&pool, "remove-a"), before_a);
+        assert_eq!(pool_state(&pool, "remove-b"), before_b);
+    }
+
+    #[test]
+    fn column_removal_guard_commit_publishes_without_changing_identity() {
+        let Some((device, queue, mut pool)) = mk_pool(2 * ALIGN) else {
+            return;
+        };
+        let values = col_f64(vec![1.0]);
+        pool.add_column("remove-commit".into(), &values, &device, &queue)
+            .unwrap();
+        let identity = pool.identity();
+
+        let removal = pool
+            .begin_remove_column("remove-commit")
+            .unwrap()
+            .expect("existing column must produce a guard");
+        assert!(removal.commit());
+
+        assert_eq!(pool.identity(), identity);
+        assert!(pool.handle_for("remove-commit").is_none());
+        assert_eq!(pool.free_bytes(), pool.capacity());
+        assert!(pool.begin_remove_column("missing").unwrap().is_none());
+    }
+
+    #[test]
+    fn defragment_guard_fresh_candidate_drop_restores_primary_and_no_backup() {
+        let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+            return;
+        };
+        let values = col_f64(vec![1.0]);
+        for id in ["fresh-a", "fresh-b", "fresh-c"] {
+            pool.add_column(id.into(), &values, &device, &queue)
+                .unwrap();
+        }
+        pool.remove_column("fresh-b").unwrap();
+        let identity = pool.identity();
+        let before_a = pool_state(&pool, "fresh-a");
+        let before_c = pool_state(&pool, "fresh-c");
+        assert!(pool.backup.is_none());
+
+        {
+            let defrag = pool.begin_defragment(&device, &queue).unwrap();
+            assert!(defrag.changed());
+            assert!(defrag.relocated());
+            assert_eq!(defrag.pool().identity(), identity);
+            assert_eq!(defrag.pool().slots["fresh-c"].offset, ALIGN);
+            assert!(defrag.pool().backup.is_some());
+        }
+
+        assert_eq!(pool.identity(), identity);
+        assert!(pool.backup.is_none());
+        assert_eq!(pool_state(&pool, "fresh-a"), before_a);
+        assert_eq!(pool_state(&pool, "fresh-c"), before_c);
+    }
+
+    #[test]
+    fn defragment_guard_existing_backup_drop_restores_both_buffers() {
+        let Some((device, queue, mut pool)) = mk_pool(5 * ALIGN) else {
+            return;
+        };
+        let values = col_f64(vec![1.0]);
+        for id in ["reuse-a", "reuse-b", "reuse-c", "reuse-d"] {
+            pool.add_column(id.into(), &values, &device, &queue)
+                .unwrap();
+        }
+        pool.remove_column("reuse-b").unwrap();
+        assert!(pool.defragment(&device, &queue).unwrap());
+        assert!(pool.backup.is_some());
+
+        pool.remove_column("reuse-c").unwrap();
+        let before_a = pool_state(&pool, "reuse-a");
+        let before_d = pool_state(&pool, "reuse-d");
+        let primary_before = buffer_identity(pool.buffer());
+        let backup_before = pool.backup.as_ref().map(buffer_identity);
+
+        {
+            let defrag = pool.begin_defragment(&device, &queue).unwrap();
+            assert!(defrag.changed());
+            assert!(defrag.relocated());
+            assert_eq!(defrag.pool().slots["reuse-d"].offset, ALIGN);
+            assert_eq!(
+                buffer_identity(defrag.pool().buffer()),
+                backup_before.unwrap()
+            );
+        }
+
+        assert_eq!(buffer_identity(pool.buffer()), primary_before);
+        assert_eq!(pool.backup.as_ref().map(buffer_identity), backup_before);
+        assert_eq!(pool_state(&pool, "reuse-a"), before_a);
+        assert_eq!(pool_state(&pool, "reuse-d"), before_d);
+    }
+
+    #[test]
+    fn defragment_guard_distinguishes_noop_normalization_and_relocation() {
+        let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+            return;
+        };
+        let identity = pool.identity();
+
+        let no_op = pool.begin_defragment(&device, &queue).unwrap();
+        assert!(!no_op.changed());
+        assert!(!no_op.relocated());
+        assert!(!no_op.commit());
+
+        pool.free = vec![
+            FreeRegion {
+                offset: 0,
+                size: ALIGN,
+            },
+            FreeRegion {
+                offset: ALIGN,
+                size: pool.capacity() - ALIGN,
+            },
+        ];
+        let empty_before = pool_state(&pool, "missing");
+        {
+            let normalized = pool.begin_defragment(&device, &queue).unwrap();
+            assert!(normalized.changed());
+            assert!(!normalized.relocated());
+            assert_eq!(normalized.pool().identity(), identity);
+            assert_eq!(normalized.pool().free.len(), 1);
+        }
+        assert_eq!(pool_state(&pool, "missing"), empty_before);
+
+        let normalized = pool.begin_defragment(&device, &queue).unwrap();
+        assert!(normalized.changed());
+        assert!(!normalized.relocated());
+        assert!(normalized.commit());
+        assert_eq!(pool.identity(), identity);
+        assert_eq!(pool.free.len(), 1);
+
+        let values = col_f64(vec![1.0]);
+        pool.add_column("packed".into(), &values, &device, &queue)
+            .unwrap();
+        pool.free = vec![
+            FreeRegion {
+                offset: ALIGN,
+                size: ALIGN,
+            },
+            FreeRegion {
+                offset: 2 * ALIGN,
+                size: 2 * ALIGN,
+            },
+        ];
+        let generation = pool.generation();
+        let layout_generation = pool.layout_generation();
+        let normalized = pool.begin_defragment(&device, &queue).unwrap();
+        assert!(normalized.changed());
+        assert!(!normalized.relocated());
+        assert!(!normalized.commit());
+        assert_eq!(pool.generation(), generation);
+        assert_eq!(pool.layout_generation(), layout_generation);
+        assert_eq!(pool.free.len(), 1);
     }
 
     #[test]

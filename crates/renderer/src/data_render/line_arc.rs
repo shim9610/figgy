@@ -34,7 +34,11 @@ use std::sync::Arc;
 
 use wgpu::util::DeviceExt;
 
+use crate::init::{InitEvent, finished, observe_value, started};
+
 use super::ScatterTransform;
+
+const INIT_SCOPE: &str = "renderer.arc_scan";
 
 /// Workgroup width of every kernel in `line_arc.wgsl`. Public so the
 /// renderer can refuse downlevel adapters that cannot run 256-wide
@@ -122,6 +126,15 @@ pub const STAR_SLOT_PITCH_FACTOR: f32 = 0.5;
 pub const STAR_MAX_SLOTS: u32 = 2_000_000;
 
 pub fn create_arc_scan_pipelines(device: &wgpu::Device) -> ArcScanPipelines {
+    let mut noop = |_| {};
+    create_arc_scan_pipelines_observed(device, &mut noop)
+}
+
+pub fn create_arc_scan_pipelines_observed(
+    device: &wgpu::Device,
+    observer: &mut dyn FnMut(InitEvent),
+) -> ArcScanPipelines {
+    started(observer, INIT_SCOPE, "setup");
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("figgy line arc scan shader"),
         source: wgpu::ShaderSource::Wgsl(include_str!("line_arc.wgsl").into()),
@@ -203,6 +216,7 @@ pub fn create_arc_scan_pipelines(device: &wgpu::Device) -> ArcScanPipelines {
         bind_group_layouts: &[&transform_bgl, &storage_bgl, &star_args_bgl],
         push_constant_ranges: &[],
     });
+    finished(observer, INIT_SCOPE, "setup");
     let pipeline = |layout: &wgpu::PipelineLayout, entry: &str| {
         device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("figgy arc scan pipeline"),
@@ -215,12 +229,24 @@ pub fn create_arc_scan_pipelines(device: &wgpu::Device) -> ArcScanPipelines {
     };
 
     ArcScanPipelines {
-        seg_init: pipeline(&layout, "seg_init"),
-        scan_block: pipeline(&layout, "scan_block"),
-        add_offsets: pipeline(&layout, "add_offsets"),
-        apply_carry: pipeline(&layout, "apply_carry"),
-        update_carry: pipeline(&layout, "update_carry"),
-        star_indirect: pipeline(&star_layout, "star_indirect"),
+        seg_init: observe_value(observer, INIT_SCOPE, "seg_init", || {
+            pipeline(&layout, "seg_init")
+        }),
+        scan_block: observe_value(observer, INIT_SCOPE, "scan_block", || {
+            pipeline(&layout, "scan_block")
+        }),
+        add_offsets: observe_value(observer, INIT_SCOPE, "add_offsets", || {
+            pipeline(&layout, "add_offsets")
+        }),
+        apply_carry: observe_value(observer, INIT_SCOPE, "apply_carry", || {
+            pipeline(&layout, "apply_carry")
+        }),
+        update_carry: observe_value(observer, INIT_SCOPE, "update_carry", || {
+            pipeline(&layout, "update_carry")
+        }),
+        star_indirect: observe_value(observer, INIT_SCOPE, "star_indirect", || {
+            pipeline(&star_layout, "star_indirect")
+        }),
         transform_bgl,
         storage_bgl,
         star_args_bgl,

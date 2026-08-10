@@ -117,14 +117,33 @@ impl FiggyChart {
     /// JS: `const chart = await FiggyChart.create(canvas);`
     pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<FiggyChart, JsValue> {
         let (w, h) = (canvas.width(), canvas.height());
-        let renderer = Renderer::for_window_async(
+        let mut renderer = Renderer::for_window_async(
             wgpu::SurfaceTarget::Canvas(canvas), (w, h), 16 * 1024 * 1024,
         ).await.map_err(|e| JsValue::from_str(&e.to_string()))?;
-        // … 컬럼 등록 / renderer.register_chart(config, series)
-        //   / ChartId / ChartView / HitMap::standard_chart() …
+        renderer.enable_gpu_picking().map_err(js_err)?;
+        // … 컬럼 등록 …
+        let chart_id = renderer.register_chart(config, series).map_err(js_err)?;
+        renderer
+            .prepare_gpu_picking_for_chart(chart_id)
+            .map_err(js_err)?;
+        // … ChartView / HitMap::standard_chart() …
     }
 }
 ```
+
+생성 경로는 picker pipeline bundle을 한 번 활성화하고 기본 chart registry까지
+준비하므로 첫 `pick_point`가 pipeline/registry 생성 비용을 떠안지 않는다.
+`Renderer`가 chart별 `Config`와 ordered series, `ColumnPool`, picker pipeline
+bundle과 파생된 단일 active-chart registry cache, pending maintenance를 소유한다. web
+kernel은 UI 파생 metadata와 Promise 변환만 관리하며 picker engine, dirty flag,
+pool maintenance 권위를 복제하지 않는다.
+
+Renderer 0.8부터 저수준 `GpuPickEngine`은 public API가 아니다. native/embed
+host는 `enable_gpu_picking()` → 선택적
+`prepare_gpu_picking_for_chart(chart_id)` →
+`pick_chart(chart_id, GpuPickRequest)` 순서로 이전한다. `WindowedRenderer`는
+현재 surface에 맞는 panel/scale을 계산하는 `pick_chart_at`을 제공한다. host는
+axis transform이나 data-area clip을 복제하지 않는다.
 
 ### 3.2 렌더 루프 — requestAnimationFrame + renderer stamp
 
@@ -143,16 +162,16 @@ match frame_decision(
     raster_dirty,
     view_dirty,
     redraw_pending,
-    needs_defrag,
+    renderer.has_pending_maintenance(),
 ) {
     Clean => return Ok(()),
     MaintenanceOnly => {
-        process_pending_defrag()?; // surface acquire/draw 없음
+        renderer.process_pending_maintenance()?; // surface acquire/draw 없음
         return Ok(());
     }
     Draw { refresh_raster } => {
         ensure_internal_render_columns()?;
-        process_pending_defrag()?;
+        renderer.process_pending_maintenance()?;
         let stamp = renderer.chart_render_stamp(chart_id)?;
         if refresh_raster {
             renderer.refresh_axis_with_selection(
@@ -186,6 +205,14 @@ GPU column 준비, surface acquire, draw/submit/present는 전부 생략한다.
 다음 rAF에서 재시도한다.
 이 최적화는 이전 canvas가 그대로 유효한 프레임만 건너뛰며, 원본 데이터의
 sampling·LOD·decimation이나 시간 기반 프레임 누락은 수행하지 않는다.
+
+column upsert/remove/defrag는 renderer 내부에서 provisional pool, 영향받는
+chart authority/revision, active picker successor를 먼저 준비한다. 반환 가능한
+동기 오류가 나면 전 상태를 보존하고, 성공 시 pool/chart를 공개한 다음 picker와
+maintenance 상태를 allocation 없이 게시한다. plain `remove_column`은 참조
+series만 cascade 제거하고 legend 문서는 바꾸지 않는다. web처럼 cascade에
+따른 파생 legend `Config`도 함께 바꿔야 하는 host는
+`remove_column_with_chart_config`를 사용해 한 transaction으로 게시한다.
 
 ### 3.3 데이터 입력 — 명시적 register/update와 f32 물리 lane
 
@@ -466,6 +493,12 @@ Advanced escape hatch: `element.kernel`은 raw wasm `FiggyChart`를 반환한다
 이 경로는 facade의 busy gate와 browser lifecycle 캡슐화를 우회하므로, 일반
 host 계약이 아니라 디버깅/특수 embed용이다.
 
+`pick_point`의 JSON/object/null payload와 rejection 전달 계약은 0.8에서도
+그대로다. 제출된 ticket은 readback 자원과 제출 시점의 `Arc` 기반
+`source_id`/`series_id` identity mapping을 소유하므로, Promise가 pending인
+동안 chart/pool이 바뀌거나 renderer가 해제되어도 결과 identity가 바뀌지
+않는다. point 좌표의 CPU mirror는 만들지 않는다.
+
 ### 등록/해제 모델 — 메모리는 내부 자동 관리
 
 차트는 캔버스당 인스턴스 하나를 두고, 내용은 id 기반 등록/해제로
@@ -488,9 +521,10 @@ host 계약이 아니라 디버깅/특수 embed용이다.
   해제된 데이터를 가리키는 프레임이 존재할 수 없다. 자동 관리 범례에서는
   대응 행도 제거하고, `set_config` 로 자유 편집된 범례에서는 사용자 텍스트를
   보존한 채 남은 인식 가능 심볼만 갱신한다.
-- **defrag 자동**: 제거/교체로 생긴 풀 구멍은 다음 `frame()` 시작에서
-  1회로 통합 압축되고(GPU 내부 복사), 연속 교체 중 일시 단편화는
-  `OnAllocFailure` 정책이 흡수한다.
+- **defrag 자동**: 제거/교체로 생긴 풀 구멍은 renderer-owned pending
+  maintenance로 기록되고 다음 `frame()` 시작에서 1회로 통합 압축된다(GPU
+  내부 복사). 연속 교체 중 일시 단편화는 `OnAllocFailure` 정책이 흡수하며,
+  web은 별도 defrag flag나 picker rebind 상태를 보관하지 않는다.
 - **`add_line_series`도 series_id 업서트** — 기존 id는 제자리 교체(색
   유지), 새 id는 색 로테이션의 다음 색. 빈 label 로 기존 id를 업서트해도
   기존 범례 텍스트는 제거되지 않는다. 비어 있지 않은 label 은 해당 행의

@@ -3,11 +3,13 @@
 use std::sync::Arc;
 
 use renderer::{
+    Color, DataRenderType, DataScatterStyleConfig, GpuPickRequest, Renderer, RendererDevice,
+    ScatterShape, SeriesConfig,
+    config::DrawStyle,
     data::Column,
-    data_render::{
-        ColumnPool, ScatterTransform, create_instance, request_adapter_async, request_device_async,
-    },
-    gpu_pick::{GpuPickEngine, GpuPickQuery, GpuPickScatter, GpuPickSeriesDescriptor},
+    data_render::{create_instance, request_adapter_async, request_device_async},
+    default,
+    layout::{ChartArea, Rect},
 };
 use wasm_bindgen_test::*;
 
@@ -24,110 +26,136 @@ async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_e
         .expect("Chrome/Dawn must create a WebGPU device");
     let device = Arc::new(device);
     let queue = Arc::new(queue);
+    let mut renderer = Renderer::try_new(
+        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        wgpu::TextureFormat::Bgra8Unorm,
+        2 * 1024 * 1024,
+    )
+    .expect("renderer initialization failed");
+
+    let point_count = 65_537usize;
+    for id in ["browser-direct-x", "browser-direct-y"] {
+        renderer
+            .add_column(
+                id,
+                &Column {
+                    data: vec![0.0_f32],
+                    min: 0.0,
+                    max: 0.0,
+                },
+            )
+            .expect("browser direct-scan column upload failed");
+    }
+    renderer
+        .add_column(
+            "browser-pick-x",
+            &Column {
+                data: (0..point_count).map(|index| index as f32).collect(),
+                min: 0.0,
+                max: (point_count - 1) as f32,
+            },
+        )
+        .expect("browser pick x-column upload failed");
+    renderer
+        .add_column(
+            "browser-pick-y",
+            &Column {
+                data: vec![5.0_f32; point_count],
+                min: 5.0,
+                max: 5.0,
+            },
+        )
+        .expect("browser pick y-column upload failed");
+
+    let scatter = || DataScatterStyleConfig {
+        point_color: Color::BLACK,
+        point_shape: ScatterShape::CircleFilled,
+        // The 65,537 points span 100 px. Keep the radius below neighbour
+        // spacing so only the exact centre point joins the zero-distance tie.
+        point_size: 0.0002,
+        point_style_table: None,
+        point_style_index_column: None,
+        point_style_overrides: None,
+    };
+    let series = vec![
+        SeriesConfig {
+            source_id: Some("browser-direct-source".into()),
+            series_id: "browser-direct-series".into(),
+            label: None,
+            x_column: "browser-direct-x".into(),
+            y_column: "browser-direct-y".into(),
+            render_type: DataRenderType::Scatter { scatter: scatter() },
+        },
+        SeriesConfig {
+            source_id: Some("browser-source".into()),
+            series_id: "browser-series".into(),
+            label: None,
+            x_column: "browser-pick-x".into(),
+            y_column: "browser-pick-y".into(),
+            render_type: DataRenderType::Scatter { scatter: scatter() },
+        },
+    ];
+
+    let mut config = default::default_config();
+    config.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+    });
+    config.chart_title.top_margin = 0.0;
+    for axis in [
+        &mut config.top_x,
+        &mut config.bottom_x,
+        &mut config.left_y,
+        &mut config.right_y,
+    ] {
+        axis.out_margin = 0.0;
+        axis.major_tick_length = 0.0;
+    }
+    for axis in [&mut config.top_x, &mut config.bottom_x] {
+        axis.min = 0.0;
+        axis.max = (point_count - 1) as f64;
+    }
+    for axis in [&mut config.left_y, &mut config.right_y] {
+        axis.min = 0.0;
+        axis.max = 10.0;
+    }
+    config.draw_style = DrawStyle::Precise;
+    assert_eq!(
+        config.data_area().expect("explicit data area").0,
+        config.chart_area.0
+    );
+    let chart_id = renderer
+        .register_chart(config, series)
+        .expect("chart registration failed");
 
     device.push_error_scope(wgpu::ErrorFilter::Validation);
-    let picker = GpuPickEngine::new(Arc::clone(&device), Arc::clone(&queue));
+    renderer
+        .enable_gpu_picking()
+        .expect("GPU picker pipeline preparation failed");
     let validation_error = device.pop_error_scope().await;
-
     assert!(
         validation_error.is_none(),
         "Chrome/Dawn rejected the GPU pick pipeline: {validation_error:?}"
     );
-    let mut picker = picker.expect("GPU picker resource preparation failed");
 
     device.push_error_scope(wgpu::ErrorFilter::Validation);
-    let point_count = 65_537usize;
-    let mut pool =
-        ColumnPool::new(&device, 2 * 1024 * 1024).expect("column pool allocation failed");
-    for id in ["browser-direct-x", "browser-direct-y"] {
-        pool.add_column(
-            id.into(),
-            &Column {
-                data: vec![0.0],
-                min: 0.0,
-                max: 0.0,
-            },
-            &device,
-            &queue,
-        )
-        .expect("browser direct-scan column upload failed");
-    }
-    pool.add_column(
-        "browser-pick-x".into(),
-        &Column {
-            data: (0..point_count).map(|index| index as f32).collect(),
-            min: 0.0,
-            max: (point_count - 1) as f32,
-        },
-        &device,
-        &queue,
-    )
-    .expect("browser pick x-column upload failed");
-    pool.add_column(
-        "browser-pick-y".into(),
-        &Column {
-            data: vec![5.0_f32; point_count],
-            min: 5.0,
-            max: 5.0,
-        },
-        &device,
-        &queue,
-    )
-    .expect("browser pick y-column upload failed");
-    picker
-        .add_series(
-            &pool,
-            GpuPickSeriesDescriptor {
-                source_id: Some("browser-direct-source".into()),
-                series_id: "browser-direct-series".into(),
-                x_column: "browser-direct-x".into(),
-                y_column: "browser-direct-y".into(),
-                scatter: Some(GpuPickScatter {
-                    base_radius_px: 0.0001,
-                    base_shape_id: 0,
-                    style_map: None,
-                }),
-                line_width_px: None,
-            },
-        )
-        .expect("browser direct-scan preparation failed");
-    picker
-        .add_series(
-            &pool,
-            GpuPickSeriesDescriptor {
-                source_id: Some("browser-source".into()),
-                series_id: "browser-series".into(),
-                x_column: "browser-pick-x".into(),
-                y_column: "browser-pick-y".into(),
-                scatter: Some(GpuPickScatter {
-                    // 65,537 points are projected into 100 px. Keep the
-                    // visible radius below the neighbour spacing so only the
-                    // exact centre point participates in the zero-distance tie.
-                    base_radius_px: 0.0001,
-                    base_shape_id: 0,
-                    style_map: None,
-                }),
-                line_width_px: None,
-            },
-        )
-        .expect("browser pick gate preparation failed");
-
-    let picked = picker
-        .pick(
-            &pool,
-            GpuPickQuery {
-                transform: ScatterTransform {
-                    data_min: [0.0, 0.0],
-                    data_max: [(point_count - 1) as f32, 10.0],
-                    data_min_lo: [0.0; 2],
-                    data_max_lo: [0.0; 2],
-                    scale_log: [0.0; 2],
-                    pixel_to_ndc: [0.02; 2],
-                    style_params: [[0.0; 4]; 3],
-                },
-                chart_rect_px: [0.0, 0.0, 100.0, 100.0],
-                data_area_px: Some([0.0, 0.0, 100.0, 100.0]),
+    renderer
+        .prepare_gpu_picking_for_chart(chart_id)
+        .expect("browser chart pick registry preparation failed");
+    let picked = renderer
+        .pick_chart(
+            chart_id,
+            GpuPickRequest {
                 canvas_position_px: [50.0, 50.0],
+                display_panel_px: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 100,
+                    height: 100,
+                },
+                display_scale: 1.0,
                 max_distance_px: 0.0,
             },
         )

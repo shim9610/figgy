@@ -14,6 +14,9 @@ use wgpu::util::DeviceExt;
 use crate::data::COLUMN_VALUE_BYTES;
 use crate::data_config::DataRenderType;
 use crate::data_render::ColumnHandle;
+use crate::init::{InitEvent, finished, observe_value, started};
+
+const INIT_SCOPE: &str = "renderer.errorbar_extent";
 
 const WORKGROUP_SIZE: u32 = 64;
 const ENDPOINT_INVALID: u32 = 0;
@@ -274,6 +277,13 @@ pub struct GpuErrorbarExtentEngine {
 
 impl GpuErrorbarExtentEngine {
     pub fn new(device: &wgpu::Device) -> Self {
+        let mut noop = |_| {};
+        Self::new_observed(device, &mut noop)
+    }
+
+    pub fn new_observed(device: &wgpu::Device, observer: &mut dyn FnMut(InitEvent)) -> Self {
+        observe_value(observer, INIT_SCOPE, "limits", || device.limits());
+        started(observer, INIT_SCOPE, "setup");
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("figgy exact series extent shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("gpu_errorbar.wgsl").into()),
@@ -320,6 +330,7 @@ impl GpuErrorbarExtentEngine {
                 bind_group_layouts: &[&states_layout],
                 push_constant_ranges: &[],
             });
+        finished(observer, INIT_SCOPE, "setup");
         let make_pipeline = |label, layout, entry| {
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some(label),
@@ -330,16 +341,20 @@ impl GpuErrorbarExtentEngine {
                 cache: None,
             })
         };
-        let reduce_values = make_pipeline(
-            "figgy exact series initial pipeline",
-            &values_pipeline_layout,
-            "reduce_values",
-        );
-        let reduce_states = make_pipeline(
-            "figgy exact series state pipeline",
-            &states_pipeline_layout,
-            "reduce_states",
-        );
+        let reduce_values = observe_value(observer, INIT_SCOPE, "reduce_values", || {
+            make_pipeline(
+                "figgy exact series initial pipeline",
+                &values_pipeline_layout,
+                "reduce_values",
+            )
+        });
+        let reduce_states = observe_value(observer, INIT_SCOPE, "reduce_states", || {
+            make_pipeline(
+                "figgy exact series state pipeline",
+                &states_pipeline_layout,
+                "reduce_states",
+            )
+        });
 
         Self {
             values_layout,

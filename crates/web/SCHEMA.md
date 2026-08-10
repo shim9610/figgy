@@ -124,6 +124,9 @@ tick planning, chart-width changes, and export scale changes.
   `Promise<{ source_id: string | null, series_id, point_index, distance_px } | null>`이다.
   raw `FiggyChart`는 같은 필드의 JSON string 또는 `undefined`를 Promise로
   반환하고 facade가 이를 object / `null`로 정규화한다.
+  제출된 비동기 ticket은 제출 시점의 `source_id` / `series_id` identity를
+  소유하므로, Promise가 pending인 동안 chart/pool이 변경되거나 renderer가
+  해제되어도 그 요청의 identity가 다른 데이터로 바뀌지 않는다.
   좌표가 필요하면 host가 `point_index`로 자신이 등록한 원본 column을 조회한다.
 - `chart_area`는 저장/Export 기준의 논리 문서 사각형이다. Web wrapper의
   `resize(w, h)`는 캔버스 surface만 바꾸고, 이 논리 문서를 현재 viewport에
