@@ -197,6 +197,11 @@ pub enum GpuErrorbarError {
         limit: u64,
     },
     NoDispatchCapacity,
+    /// Wasm hosts must `ensure_errorbar_extent_engine` before the first extent
+    /// submit so compute pipelines can compile through
+    /// `createComputePipelineAsync` instead of the first `queue.submit()`.
+    EngineNotReady,
+    AsyncCompileFailed(String),
     ReadbackSenderDropped,
     ReadbackMapFailed(String),
     DevicePollFailed(String),
@@ -255,6 +260,13 @@ impl std::fmt::Display for GpuErrorbarError {
                 "{role} storage binding requires {requested} bytes, device limit is {limit}"
             ),
             Self::NoDispatchCapacity => write!(f, "device exposes no usable extent dispatch"),
+            Self::EngineNotReady => write!(
+                f,
+                "extent engine is not ready; call ensure_errorbar_extent_engine first"
+            ),
+            Self::AsyncCompileFailed(reason) => {
+                write!(f, "async extent pipeline compile failed: {reason}")
+            }
             Self::ReadbackSenderDropped => write!(f, "extent readback callback sender was dropped"),
             Self::ReadbackMapFailed(reason) => write!(f, "extent readback map failed: {reason}"),
             Self::DevicePollFailed(reason) => {
@@ -266,6 +278,114 @@ impl std::fmt::Display for GpuErrorbarError {
 }
 
 impl std::error::Error for GpuErrorbarError {}
+
+#[cfg(target_arch = "wasm32")]
+async fn warm_extent_pipelines_js(device: &wgpu::Device) -> Result<(), GpuErrorbarError> {
+    use js_sys::{Array, Function, Object, Promise, Reflect};
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::JsValue;
+    use wasm_bindgen_futures::JsFuture;
+
+    let gpu_device = device.as_webgpu().ok_or_else(|| {
+        GpuErrorbarError::AsyncCompileFailed("wgpu device is not a WebGPU handle".into())
+    })?;
+    let device_js = JsValue::from(gpu_device.clone());
+
+    let js_err = |error: JsValue| {
+        GpuErrorbarError::AsyncCompileFailed(
+            error.as_string().unwrap_or_else(|| format!("{error:?}")),
+        )
+    };
+    let call1 = |name: &str, arg: &JsValue| -> Result<JsValue, GpuErrorbarError> {
+        let method = Reflect::get(&device_js, &JsValue::from_str(name)).map_err(js_err)?;
+        let method = method
+            .dyn_into::<Function>()
+            .map_err(|_| GpuErrorbarError::AsyncCompileFailed(format!("missing {name}")))?;
+        method.call1(&device_js, arg).map_err(js_err)
+    };
+    let set = |obj: &Object, key: &str, value: &JsValue| -> Result<(), GpuErrorbarError> {
+        Reflect::set(obj, &JsValue::from_str(key), value).map_err(js_err)?;
+        Ok(())
+    };
+
+    let shader_desc = Object::new();
+    set(
+        &shader_desc,
+        "label",
+        &JsValue::from_str("figgy exact series extent shader"),
+    )?;
+    set(
+        &shader_desc,
+        "code",
+        &JsValue::from_str(include_str!("gpu_errorbar.wgsl")),
+    )?;
+    let shader = call1("createShaderModule", shader_desc.as_ref())?;
+
+    let compute_vis = JsValue::from_f64(4.0);
+    let read_only = Object::new();
+    set(&read_only, "type", &JsValue::from_str("read-only-storage"))?;
+    let storage = Object::new();
+    set(&storage, "type", &JsValue::from_str("storage"))?;
+    let uniform = Object::new();
+    set(&uniform, "type", &JsValue::from_str("uniform"))?;
+    set(
+        &uniform,
+        "minBindingSize",
+        &JsValue::from_f64(std::mem::size_of::<ParamsGpu>() as f64),
+    )?;
+
+    let entry = |binding: u32, buffer: &Object| -> Result<Object, GpuErrorbarError> {
+        let object = Object::new();
+        set(&object, "binding", &JsValue::from_f64(f64::from(binding)))?;
+        set(&object, "visibility", &compute_vis)?;
+        set(&object, "buffer", buffer.as_ref())?;
+        Ok(object)
+    };
+    let entries = Array::of3(
+        entry(0, &read_only)?.as_ref(),
+        entry(1, &storage)?.as_ref(),
+        entry(2, &uniform)?.as_ref(),
+    );
+    let layout_desc = Object::new();
+    set(&layout_desc, "entries", entries.as_ref())?;
+    let values_bgl = call1("createBindGroupLayout", layout_desc.as_ref())?;
+    let states_bgl = call1("createBindGroupLayout", layout_desc.as_ref())?;
+
+    let pipeline_layout = |label: &str, bgl: &JsValue| -> Result<JsValue, GpuErrorbarError> {
+        let desc = Object::new();
+        set(&desc, "label", &JsValue::from_str(label))?;
+        set(&desc, "bindGroupLayouts", Array::of1(bgl).as_ref())?;
+        call1("createPipelineLayout", desc.as_ref())
+    };
+    let values_layout = pipeline_layout("figgy exact series values pipeline layout", &values_bgl)?;
+    let states_layout = pipeline_layout("figgy exact series states pipeline layout", &states_bgl)?;
+
+    for (label, layout, entry_point) in [
+        (
+            "figgy exact series initial pipeline",
+            values_layout,
+            "reduce_values",
+        ),
+        (
+            "figgy exact series state pipeline",
+            states_layout,
+            "reduce_states",
+        ),
+    ] {
+        let stage = Object::new();
+        set(&stage, "module", &shader)?;
+        set(&stage, "entryPoint", &JsValue::from_str(entry_point))?;
+        let desc = Object::new();
+        set(&desc, "label", &JsValue::from_str(label))?;
+        set(&desc, "layout", &layout)?;
+        set(&desc, "compute", stage.as_ref())?;
+        let promise = call1("createComputePipelineAsync", desc.as_ref())?;
+        JsFuture::from(Promise::from(promise))
+            .await
+            .map_err(js_err)?;
+    }
+    Ok(())
+}
 
 /// Pipelines and layouts intended to be created once and owned by Renderer.
 pub struct GpuErrorbarExtentEngine {
@@ -321,14 +441,14 @@ impl GpuErrorbarExtentEngine {
         let values_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("figgy exact series values pipeline layout"),
-                bind_group_layouts: &[&values_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&values_layout)],
+                immediate_size: 0,
             });
         let states_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("figgy exact series states pipeline layout"),
-                bind_group_layouts: &[&states_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&states_layout)],
+                immediate_size: 0,
             });
         finished(observer, INIT_SCOPE, "setup");
         let make_pipeline = |label, layout, entry| {
@@ -361,6 +481,114 @@ impl GpuErrorbarExtentEngine {
             states_layout,
             reduce_values,
             reduce_states,
+        }
+    }
+
+    pub async fn new_observed_async(
+        device: &wgpu::Device,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> Self {
+        use crate::init::{observe_value_async, yield_init_frame};
+        observe_value_async(observer, INIT_SCOPE, "limits", || device.limits()).await;
+        started(observer, INIT_SCOPE, "setup");
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("figgy exact series extent shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("gpu_errorbar.wgsl").into()),
+        });
+
+        let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let uniform = wgpu::BindGroupLayoutEntry {
+            binding: 2,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: NonZeroU64::new(std::mem::size_of::<ParamsGpu>() as u64),
+            },
+            count: None,
+        };
+        let make_layout = |label| {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some(label),
+                entries: &[storage(0, true), storage(1, false), uniform],
+            })
+        };
+        let values_layout = make_layout("figgy exact series values layout");
+        let states_layout = make_layout("figgy exact series states layout");
+
+        let values_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("figgy exact series values pipeline layout"),
+                bind_group_layouts: &[Some(&values_layout)],
+                immediate_size: 0,
+            });
+        let states_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("figgy exact series states pipeline layout"),
+                bind_group_layouts: &[Some(&states_layout)],
+                immediate_size: 0,
+            });
+        finished(observer, INIT_SCOPE, "setup");
+        yield_init_frame().await;
+        let make_pipeline = |label, layout, entry| {
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(label),
+                layout: Some(layout),
+                module: &shader,
+                entry_point: Some(entry),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            })
+        };
+        let reduce_values = observe_value_async(observer, INIT_SCOPE, "reduce_values", || {
+            make_pipeline(
+                "figgy exact series initial pipeline",
+                &values_pipeline_layout,
+                "reduce_values",
+            )
+        })
+        .await;
+        let reduce_states = observe_value_async(observer, INIT_SCOPE, "reduce_states", || {
+            make_pipeline(
+                "figgy exact series state pipeline",
+                &states_pipeline_layout,
+                "reduce_states",
+            )
+        })
+        .await;
+
+        Self {
+            values_layout,
+            states_layout,
+            reduce_values,
+            reduce_states,
+        }
+    }
+
+    /// Compile the extent compute pipelines through the browser's async API.
+    ///
+    /// Native is a no-op. On wasm this calls `createComputePipelineAsync` so
+    /// Dawn/driver compilation is not deferred to the first `queue.submit()`.
+    /// The resulting JS pipelines are discarded; the wgpu engine created
+    /// afterwards should hit the device compilation cache.
+    pub async fn warm_device_async(device: &wgpu::Device) -> Result<(), GpuErrorbarError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = device;
+            Ok(())
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            warm_extent_pipelines_js(device).await
         }
     }
 
@@ -625,7 +853,9 @@ impl GpuExtentTicketCore {
             .map_err(|_| GpuErrorbarError::ReadbackSenderDropped)?
             .map_err(|error| GpuErrorbarError::ReadbackMapFailed(format!("{error:?}")))?;
         let slice = readback.slice(0..SERIES_STATE_BYTES);
-        let mapped = slice.get_mapped_range();
+        let mapped = slice
+            .get_mapped_range()
+            .map_err(|error| GpuErrorbarError::ReadbackMapFailed(format!("{error:?}")))?;
         let state = bytemuck::pod_read_unaligned::<SeriesStateGpu>(&mapped);
         drop(mapped);
         readback.unmap();

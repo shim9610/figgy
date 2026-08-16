@@ -1,7 +1,7 @@
 # figgy
 
 Rust scientific chart library. **CPU raster (axes / labels / grid — tiny-skia + swash) + GPU wgpu (large data) hybrid** rendering.
-Embed in egui / iced / winit / any other wgpu host.
+Embed in egui / winit / any other wgpu 30 host.
 
 > [한국어 문서](#한국어-문서) is available below.
 
@@ -22,8 +22,9 @@ Embed in egui / iced / winit / any other wgpu host.
 - **Hand-drawn sketch mode (opt-in)**: `draw_style: { mode: "sketch", amplitude_px, wavelength_px, seed }` renders the whole chart xkcd-style — axes/ticks/grid/legend wobble on the CPU raster, line wobble/dash phase uses arc-length-scan-driven GPU variants, markers/errorbars use dedicated GPU variants, and chart text automatically switches to the bundled handwritten face (Comic Neue, OFL) with per-character fallback for glyphs it lacks (CJK keeps your registered font). Deterministic (seeded), composes with dashes, and the field's absence means the precise path runs completely untouched.
 - **Milkyway mode (opt-in)**: `draw_style: { mode: "milkyway", ... }` renders the chart as an astrophotograph — lines become star chains over a series-colored nebula ribbon; scatter markers become ringed planets; errorbars become bipolar jets over a deep-space backdrop.
 - **Constellation mode (opt-in)**: `draw_style: { mode: "constellation", ... }` supports `ScatterLine` series only: PSF-rendered stars sit at scatter data positions and a translucent line connects them. Parameter ranges ship as machine-readable metadata (`draw_style_param_specs`).
-- **Single wgpu major (27)**: aligned with iced 0.14 + eframe 0.33 ecosystem.
+- **Single wgpu major (30)**: the renderer and active egui integration use wgpu 30. The retained iced integration source is not a build target because iced 0.14 still exposes wgpu 27 types.
 - **WebAssembly-ready**: pure-Rust raster stack (tiny-skia + fontdb + swash), async init/export, runtime font registration (`register_font`) for CJK and custom families.
+- **Observable web startup**: `<figgy-chart>` emits `figgy-init-progress` while initialization yields between pipeline stages. `first_frame_ready()` / `warm_up()` wait for submitted GPU work; exact extent and picker pipelines stay lazy until their first use.
 
 ### Draw style preview
 
@@ -48,8 +49,8 @@ Same growth-response data, rendered through the four chart styles:
 
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # or git URL — currently 0.8.0, not on crates.io.
-wgpu     = "27"
+renderer = { path = "crates/renderer" }   # or git URL — currently 0.9.0, not on crates.io.
+wgpu     = "30"
 ```
 
 The library itself depends on neither winit, egui, nor iced. Pull in only the host you actually use:
@@ -59,14 +60,13 @@ The library itself depends on neither winit, egui, nor iced. Pull in only the ho
 winit = "0.30"
 
 # egui embedded
-eframe    = { version = "0.33", default-features = false, features = ["wgpu"] }
-egui      = "0.33"
-egui-wgpu = "0.33"
-
-# iced embedded
-iced      = { version = "0.14", features = ["wgpu"] }
-iced_wgpu = "0.14"
+eframe    = { version = "0.36", default-features = false, features = ["wgpu"] }
+egui      = "0.36"
+egui-wgpu = "0.36"
 ```
+
+iced 0.14 still uses wgpu 27, so direct device/queue/render-pass sharing is
+disabled until iced publishes a wgpu 30-compatible release.
 
 ### Shortest standalone example (winit + figgy alone with wgpu)
 
@@ -203,12 +203,11 @@ renderer.add_column("temperature", &my_series)?;   // ↘ writes directly into m
 
 If your container is already native `f32`, a single `bytemuck::cast_slice` lets you do `dst.copy_from_slice(...)` — even the conversion cost is zero.
 
-### Three examples — sine / RC / cross-section
+### Native examples — sine / RC / cross-section
 
 ```bash
 cargo run -p renderer --example winit_simple
 cargo run -p renderer --example egui_embed --features egui_demo
-cargo run -p renderer --example iced_embed --features iced_demo
 ```
 
 Each example shows:
@@ -216,7 +215,7 @@ Each example shows:
 - The RC panel renders 2 series (charging + discharging)
 - Line widths of 1 / 2 / 3.5 px across panels
 - Legends
-- DPI input + Save PNG button (egui / iced) or `S` key (winit) → per-panel PNG bytes in memory → written by the example to `/tmp/figgy_*_panel_{i}.png`
+- DPI input + Save PNG button (egui) or `S` key (winit) → per-panel PNG bytes in memory → written by the example to `/tmp/figgy_*_panel_{i}.png`
 
 ### Browser timestamp-axis demo
 
@@ -292,9 +291,12 @@ runs both phases back to back.
 
 Full version: [examples/egui_embed.rs](crates/renderer/examples/egui_embed.rs).
 
-### iced integration pattern
+### iced integration status
 
-`iced_wgpu::primitive::Pipeline` (one-time init) + `shader::Primitive` (per frame) — keep figgy's `Renderer` inside the Pipeline directly, no `Mutex`: `prepare` (`&mut Storage`) runs dirty handling plus `renderer.prepare(&items)` and stores the returned `PreparedFrame` token alongside the Pipeline, `draw` (`&Storage`) calls `renderer.paint_prepared(pass, target, &prepared)` through shared access only. See [examples/iced_embed.rs](crates/renderer/examples/iced_embed.rs).
+The retained [iced integration source](crates/renderer/unsupported/iced_embed_wgpu27.rs)
+documents the intended `prepare` / `paint_prepared` ownership pattern, but its
+build target is disabled while iced 0.14 remains on wgpu 27. wgpu device,
+queue, and render-pass types cannot be shared across major versions.
 
 ### PNG export (memory only — saving is the caller's job)
 
@@ -512,7 +514,7 @@ all affected series, and that chart's replacement `Config` in the same
 transaction. The web facade uses this combined boundary for its
 auto-managed-versus-free-edited legend policy.
 
-Renderer 0.8 makes exact GPU picking chart-aware. Call
+Renderer 0.9 keeps exact GPU picking chart-aware. Call
 `enable_gpu_picking()` once, optionally call
 `prepare_gpu_picking_for_chart(chart_id)` to make a chart first-pick-ready, and
 submit through `pick_chart(chart_id, GpuPickRequest)` or
@@ -684,7 +686,7 @@ Bundled font: Liberation Sans (SIL OFL 1.1) — `crates/renderer/fonts/LICENSE-L
 # figgy (한국어 문서)
 
 Rust 과학 차트 라이브러리. **CPU 라스터 (축 / 라벨 / 그리드 — tiny-skia + swash) + GPU wgpu (대량 데이터) 하이브리드** 렌더링.
-egui / iced / winit / 기타 wgpu 호스트 어디든 임베드 가능.
+egui / winit / 기타 wgpu 30 호스트에 임베드할 수 있다.
 
 > 워크스페이스 루트 README. crate 3개로 구성:
 > **`crates/model`** — 순수 차트 모델이자 스키마 권위: 옵션/데이터 SSoT(`Config`, `SeriesConfig`), 리치텍스트/범례 문서 모델, 상호작용 정책(`Selectable`/`Draggable`/`Resizable`, `HitMap`, 단일 이동 경로 `Config::nudge`), 프리셋(`AxisPreset`, `ColorCycle`). 의존성 0, `serde` 는 선택 피쳐.
@@ -703,8 +705,9 @@ egui / iced / winit / 기타 wgpu 호스트 어디든 임베드 가능.
 - **손그림 스케치 모드 (opt-in)**: `draw_style: { mode: "sketch", amplitude_px, wavelength_px, seed }` 한 필드로 차트 전체를 xkcd 풍으로 — 축/틱/그리드/범례는 CPU 라스터에서, 라인의 흔들림/점선 위상은 호장 스캔 기반 GPU 변형으로, 마커/에러바는 전용 GPU 변형으로 처리되고, 차트 텍스트는 번들 손글씨 폰트(Comic Neue, OFL)로 자동 전환된다(글리프 없는 문자는 문자 단위 폴백 — CJK는 등록 폰트 유지). 시드 기반 결정적, 점선과 합성 가능, 필드가 없으면 정밀 경로가 한 바이트도 달라지지 않는다.
 - **은하수(milkyway) 모드 (opt-in)**: `draw_style: { mode: "milkyway", ... }`는 차트를 천체사진처럼 렌더링한다. 라인은 시리즈색 성운 리본 위 별 사슬, scatter marker는 고리 행성, errorbar는 심우주 배경 위 양극 제트가 된다.
 - **성좌(constellation) 모드 (opt-in)**: `draw_style: { mode: "constellation", ... }`는 `ScatterLine` series만 지원한다. scatter 데이터 위치에 PSF 별을 놓고 반투명 선으로 연결한다. 파라미터 범위는 기계가 읽는 `draw_style_param_specs` metadata로 제공한다.
-- **단일 wgpu 메이저 (27)**: iced 0.14 + eframe 0.33 ecosystem 정렬.
+- **단일 wgpu 메이저 (30)**: renderer와 활성 egui 통합은 wgpu 30을 공유한다. iced 0.14는 아직 wgpu 27 타입을 노출하므로 보존된 iced 통합 소스는 빌드 대상에 넣지 않는다.
 - **WebAssembly 지원**: 순수 Rust 라스터 스택(tiny-skia + fontdb + swash), async 초기화/export, 런타임 폰트 등록(`register_font`) 으로 CJK·커스텀 패밀리 지원.
+- **관찰 가능한 웹 초기화**: `<figgy-chart>`는 파이프라인 단계 사이에서 양보하며 `figgy-init-progress`를 발생시킨다. `first_frame_ready()` / `warm_up()`은 제출한 GPU 작업 완료를 기다리고, exact extent와 picker 파이프라인은 최초 사용 전까지 만들지 않는다.
 
 ### 렌더링 스타일 미리보기
 
@@ -729,8 +732,8 @@ egui / iced / winit / 기타 wgpu 호스트 어디든 임베드 가능.
 
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # 또는 git URL — 현재 0.8.0, crates.io 미배포.
-wgpu     = "27"
+renderer = { path = "crates/renderer" }   # 또는 git URL — 현재 0.9.0, crates.io 미배포.
+wgpu     = "30"
 ```
 
 라이브러리 자체는 winit / egui / iced 어느 것에도 의존하지 않습니다. 사용하는 호스트만 추가:
@@ -740,14 +743,13 @@ wgpu     = "27"
 winit = "0.30"
 
 # egui 임베드
-eframe    = { version = "0.33", default-features = false, features = ["wgpu"] }
-egui      = "0.33"
-egui-wgpu = "0.33"
-
-# iced 임베드
-iced      = { version = "0.14", features = ["wgpu"] }
-iced_wgpu = "0.14"
+eframe    = { version = "0.36", default-features = false, features = ["wgpu"] }
+egui      = "0.36"
+egui-wgpu = "0.36"
 ```
+
+iced 0.14는 아직 wgpu 27을 사용한다. 따라서 iced가 wgpu 30 호환 버전을
+배포하기 전까지 device/queue/render pass 직접 공유 통합은 비활성 상태다.
 
 ### 가장 짧은 standalone 예 (winit + figgy 단독 wgpu)
 
@@ -866,12 +868,11 @@ renderer.add_column("temperature", &my_series)?;   // ↘ mapped staging memory 
 
 `f32` 네이티브 컨테이너면 `bytemuck::cast_slice` 한 줄로 `dst.copy_from_slice(...)` 가능 — 변환 비용도 0.
 
-### example 3 종 — 사인 / RC / cross-section
+### 네이티브 example — 사인 / RC / cross-section
 
 ```bash
 cargo run -p renderer --example winit_simple
 cargo run -p renderer --example egui_embed --features egui_demo
-cargo run -p renderer --example iced_embed --features iced_demo
 ```
 
 각 example 은:
@@ -879,7 +880,7 @@ cargo run -p renderer --example iced_embed --features iced_demo
 - RC panel 은 충전 + 방전 2 시리즈
 - 라인 두께 1 / 2 / 3.5 px 차등
 - 범례 표시
-- DPI 입력 + Save PNG 버튼 (egui / iced) 또는 `S` 키 (winit) 으로 panel 별 PNG 메모리 export → `/tmp/figgy_*_panel_{i}.png`
+- DPI 입력 + Save PNG 버튼 (egui) 또는 `S` 키 (winit) 으로 panel 별 PNG 메모리 export → `/tmp/figgy_*_panel_{i}.png`
 
 ### 브라우저 timestamp 축 데모
 
@@ -955,9 +956,12 @@ facade 를 그대로 쓰면 된다.
 
 자세한 건 [examples/egui_embed.rs](crates/renderer/examples/egui_embed.rs).
 
-### iced 통합 패턴
+### iced 통합 상태
 
-`iced_wgpu::primitive::Pipeline` (1회 init) + `shader::Primitive` (frame 별) — figgy 의 `Renderer` 를 Pipeline 에 그대로 보관, `Mutex` 없음: `prepare` (`&mut Storage`) 가 dirty 처리와 `renderer.prepare(&items)` 를 실행해 반환된 `PreparedFrame` 토큰을 Pipeline 옆에 저장하고, `draw` (`&Storage`) 는 공유 참조만으로 `renderer.paint_prepared(pass, target, &prepared)` 를 호출한다. [examples/iced_embed.rs](crates/renderer/examples/iced_embed.rs).
+보존된 [iced 통합 소스](crates/renderer/unsupported/iced_embed_wgpu27.rs)는
+`prepare` / `paint_prepared` 소유권 패턴을 기록하지만 iced 0.14가 wgpu 27에
+머무는 동안 빌드 대상은 비활성이다. 서로 다른 wgpu 메이저의 device, queue,
+render pass 타입은 공유할 수 없다.
 
 ### PNG export (메모리 only — 저장은 caller)
 
@@ -1172,7 +1176,7 @@ renderer-owned series를 cascade 제거하지만 어떤 `Config::legend` 문서�
 series, 해당 chart의 교체 `Config`를 같은 transaction에서 공개한다. web
 facade는 auto-managed/free-edited legend 정책에 이 결합 경계를 사용한다.
 
-Renderer 0.8의 exact GPU picking은 chart-aware API다.
+Renderer 0.9의 exact GPU picking은 chart-aware API다.
 `enable_gpu_picking()`을 한 번 호출하고, 필요하면
 `prepare_gpu_picking_for_chart(chart_id)`로 첫 pick 전에 chart registry를
 준비한 뒤 `pick_chart(chart_id, GpuPickRequest)` 또는

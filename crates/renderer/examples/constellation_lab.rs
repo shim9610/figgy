@@ -354,11 +354,12 @@ impl Drop for LabApp {
 }
 
 impl eframe::App for LabApp {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
         ctx.set_visuals(egui::Visuals::dark());
 
         let Some(render_state) = frame.wgpu_render_state() else {
-            egui::CentralPanel::default().show(ctx, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 ui.label("No wgpu render state — the wgpu backend must be enabled.");
             });
             return;
@@ -382,7 +383,7 @@ impl eframe::App for LabApp {
         }
         if let Some(msg) = &self.failed {
             let msg = msg.clone();
-            egui::CentralPanel::default().show(ctx, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 ui.label(msg);
             });
             return;
@@ -390,9 +391,9 @@ impl eframe::App for LabApp {
 
         let pixels_per_point = ctx.pixels_per_point();
 
-        egui::SidePanel::left("controls")
-            .min_width(250.0)
-            .show(ctx, |ui| {
+        egui::Panel::left("controls")
+            .min_size(250.0)
+            .show(ui, |ui| {
                 ui.heading("Sparse constellation");
                 ui.add_space(8.0);
                 // Sliders are GENERATED from the SSoT's parameter metadata —
@@ -434,7 +435,7 @@ impl eframe::App for LabApp {
 
         egui::CentralPanel::default()
             .frame(egui::Frame::default().fill(SPACE_BG))
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 let avail = ui.available_size();
                 let (rect, _resp) = ui.allocate_exact_size(avail, egui::Sense::hover());
                 let panel_rect_px = Rect {

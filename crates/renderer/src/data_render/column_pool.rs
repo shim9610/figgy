@@ -5,9 +5,10 @@
 //! - `slots: HashMap<ColumnId, ColumnSlot>` is the SSoT mapping id → byte
 //!   range; `free: Vec<FreeRegion>` tracks holes (first-fit on add, coalesce
 //!   with neighbors on remove).
-//! - `add_hilo_column` is a zero-copy stream upload: a staging buffer created
-//!   with `mapped_at_creation` lets `HiLoColumnSource::write_f32_pair_le_into`
-//!   fill split `(hi, lo)` bytes directly with no intermediate `Vec`.
+//! - `add_hilo_column` stages through a CPU `Vec`: wgpu 29+ maps
+//!   `get_mapped_range_mut()` as write-only, so the same view cannot be
+//!   reread for `min_positive`. The source writes into the Vec, the Vec is
+//!   copied into the mapped staging buffer, then scanned.
 //! - `defragment` packs survivors into a backup buffer with GPU-internal
 //!   copies (no PCIe traffic) then swaps `primary <-> backup`.
 //!
@@ -91,6 +92,35 @@ fn out_of_space(requested: u64, free: &[FreeRegion]) -> AllocError {
         largest_free: free.iter().map(|region| region.size).max().unwrap_or(0),
         total_free: free.iter().map(|region| region.size).sum(),
     }
+}
+
+/// wgpu 29+ `get_mapped_range_mut` is write-only, so pair bytes live in a
+/// CPU `Vec` long enough to both upload and scan `min_positive`.
+fn write_staging_pairs(
+    staging: &Buffer,
+    raw_bytes: u64,
+    write_pairs: impl FnOnce(&mut [u8]),
+) -> f64 {
+    let raw_len = raw_bytes as usize;
+    let mut cpu = vec![0u8; raw_len];
+    write_pairs(&mut cpu);
+    {
+        let mut view = staging
+            .slice(0..raw_bytes)
+            .get_mapped_range_mut()
+            .expect("column staging is mapped at creation");
+        view.copy_from_slice(&cpu);
+    }
+    let mut min_positive = f64::INFINITY;
+    for bytes in cpu.chunks_exact(COLUMN_VALUE_BYTES) {
+        let hi = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64;
+        let lo = f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as f64;
+        let value = hi + lo;
+        if value > 0.0 && value < min_positive {
+            min_positive = value;
+        }
+    }
+    min_positive
 }
 
 fn alloc_region_from(free: &mut Vec<FreeRegion>, size: u64) -> Result<u64, AllocError> {
@@ -922,19 +952,7 @@ impl ColumnPool {
         // Complete every source-dependent/fallible staging operation before
         // touching allocator metadata or the live primary buffer.
         let staging = create_staging(byte_size)?;
-        let mut min_positive = f64::INFINITY;
-        {
-            let mut view = staging.slice(..).get_mapped_range_mut();
-            write_pairs(&mut view[..raw_bytes as usize]);
-            for bytes in view[..raw_bytes as usize].chunks_exact(COLUMN_VALUE_BYTES) {
-                let hi = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64;
-                let lo = f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as f64;
-                let value = hi + lo;
-                if value > 0.0 && value < min_positive {
-                    min_positive = value;
-                }
-            }
-        }
+        let min_positive = write_staging_pairs(&staging, raw_bytes, write_pairs);
         staging.unmap();
         let min_positive = min_positive.is_finite().then_some(min_positive);
 
@@ -1266,26 +1284,9 @@ impl ColumnPool {
         let reservation = alloc_region(&mut self.free, byte_size)?;
         let region_offset = reservation.offset();
 
-        // Staging buffer — write into mapped memory directly, no Vec.
+        // Staging buffer — CPU Vec, then copy into the write-only map view.
         let staging = create_staging(byte_size)?;
-        let mut min_positive = f64::INFINITY;
-        {
-            // wgpu 27's BufferViewMut derefs to `&mut [u8]`, so the column
-            // can serialize itself straight into staging memory.
-            let mut view = staging.slice(..).get_mapped_range_mut();
-            write_pairs(&mut view[..raw_bytes as usize]);
-            // Scalar stats only — read the freshly written bytes once, retain
-            // nothing (the upload path stays zero-copy and the pool keeps no
-            // CPU shadow of the data).
-            for b in view[..raw_bytes as usize].chunks_exact(COLUMN_VALUE_BYTES) {
-                let hi = f32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f64;
-                let lo = f32::from_le_bytes([b[4], b[5], b[6], b[7]]) as f64;
-                let v = hi + lo;
-                if v > 0.0 && v < min_positive {
-                    min_positive = v;
-                }
-            }
-        }
+        let min_positive = write_staging_pairs(&staging, raw_bytes, write_pairs);
         staging.unmap();
 
         let slot = ColumnSlot {
@@ -2211,7 +2212,10 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(30))
             .expect("readback callback")
             .expect("map readback");
-        let mapped = readback.slice(..handle.byte_size).get_mapped_range();
+        let mapped = readback
+            .slice(..handle.byte_size)
+            .get_mapped_range()
+            .expect("column readback is mapped after map_async");
         let values = mapped[..handle.len_values * COLUMN_VALUE_BYTES]
             .chunks_exact(COLUMN_VALUE_BYTES)
             .map(|bytes| {

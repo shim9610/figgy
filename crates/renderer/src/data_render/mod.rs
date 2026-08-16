@@ -23,7 +23,7 @@ pub use column_pool::{
 /// Create a `wgpu::Instance` with default settings (all native backends, no
 /// pre-bound display handle). Synchronous and infallible.
 pub fn create_instance() -> wgpu::Instance {
-    wgpu::Instance::new(&wgpu::InstanceDescriptor::default())
+    wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle())
 }
 
 /// Pick any adapter, with no surface compatibility constraint.
@@ -35,6 +35,7 @@ pub async fn request_adapter_async(
         power_preference: wgpu::PowerPreference::None,
         force_fallback_adapter: false,
         compatible_surface: None,
+        apply_limit_buckets: false,
     };
     instance.request_adapter(&options).await
 }
@@ -71,6 +72,7 @@ pub async fn request_adapter_for_surface_async(
         power_preference: wgpu::PowerPreference::None,
         force_fallback_adapter: false,
         compatible_surface: Some(surface),
+        apply_limit_buckets: false,
     };
     instance.request_adapter(&options).await
 }
@@ -265,6 +267,7 @@ pub fn try_configure_surface(
     let config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format,
+        color_space: wgpu::SurfaceColorSpace::Auto,
         width: width.max(1),
         height: height.max(1),
         present_mode,
@@ -319,6 +322,21 @@ pub enum RenderOutcome {
     Skipped,
 }
 
+fn acquire_surface_frame(
+    surface: &wgpu::Surface<'_>,
+) -> Result<wgpu::SurfaceTexture, RenderOutcome> {
+    match surface.get_current_texture() {
+        wgpu::CurrentSurfaceTexture::Success(frame)
+        | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Ok(frame),
+        wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+            Err(RenderOutcome::Reconfigure)
+        }
+        wgpu::CurrentSurfaceTexture::Timeout
+        | wgpu::CurrentSurfaceTexture::Occluded
+        | wgpu::CurrentSurfaceTexture::Validation => Err(RenderOutcome::Skipped),
+    }
+}
+
 /// Clear the current frame to `clear_color` and present.
 ///
 /// `clear_color` is in linear RGB (0..=1). On an sRGB surface the GPU applies
@@ -330,15 +348,9 @@ pub fn render_clear(
     queue: &wgpu::Queue,
     clear_color: wgpu::Color,
 ) -> RenderOutcome {
-    let frame = match surface.get_current_texture() {
+    let frame = match acquire_surface_frame(surface) {
         Ok(t) => t,
-        Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
-            return RenderOutcome::Reconfigure;
-        }
-        Err(wgpu::SurfaceError::Timeout | wgpu::SurfaceError::OutOfMemory) => {
-            return RenderOutcome::Skipped;
-        }
-        Err(_) => return RenderOutcome::Skipped,
+        Err(outcome) => return outcome,
     };
 
     let view = frame
@@ -364,11 +376,12 @@ pub fn render_clear(
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
     }
 
     queue.submit(std::iter::once(encoder.finish()));
-    frame.present();
+    queue.present(frame);
 
     RenderOutcome::Rendered
 }
@@ -471,7 +484,7 @@ pub fn create_linear_sampler(device: &wgpu::Device) -> wgpu::Sampler {
         address_mode_w: wgpu::AddressMode::ClampToEdge,
         mag_filter: wgpu::FilterMode::Linear,
         min_filter: wgpu::FilterMode::Linear,
-        mipmap_filter: wgpu::FilterMode::Nearest,
+        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
         lod_min_clamp: 0.0,
         lod_max_clamp: 0.0,
         compare: None,
@@ -537,6 +550,38 @@ fn multisample_state(sample_count: u32) -> wgpu::MultisampleState {
     }
 }
 
+/// One compiled module per WGSL file. Precise, mapped, pick-ring, and styled
+/// pipelines reuse these instead of re-running naga on the same source.
+pub(crate) struct ShaderModules {
+    pub fullscreen: wgpu::ShaderModule,
+    pub line: wgpu::ShaderModule,
+    pub scatter: wgpu::ShaderModule,
+    pub errorbar: wgpu::ShaderModule,
+}
+
+impl ShaderModules {
+    pub(crate) fn new(device: &wgpu::Device) -> Self {
+        Self {
+            fullscreen: device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("figgy fullscreen textured shader"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("fullscreen_textured.wgsl").into()),
+            }),
+            line: device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("figgy line columnar shader"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("line_columnar.wgsl").into()),
+            }),
+            scatter: device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("figgy scatter columnar shader"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("scatter_columnar.wgsl").into()),
+            }),
+            errorbar: device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("figgy errorbar columnar shader"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("errorbar_columnar.wgsl").into()),
+            }),
+        }
+    }
+}
+
 /// Build the fullscreen textured-quad pipeline. The shader emits its own
 /// vertices via `vertex_index`, so no vertex buffers are needed.
 ///
@@ -548,8 +593,10 @@ pub fn create_fullscreen_textured_pipeline(
     bind_group_layout: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
+    let shaders = ShaderModules::new(device);
     create_fullscreen_textured_pipeline_with_sample_count(
         device,
+        &shaders.fullscreen,
         bind_group_layout,
         target_format,
         1,
@@ -558,19 +605,15 @@ pub fn create_fullscreen_textured_pipeline(
 
 pub(crate) fn create_fullscreen_textured_pipeline_with_sample_count(
     device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
     bind_group_layout: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> wgpu::RenderPipeline {
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("figgy fullscreen textured shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("fullscreen_textured.wgsl").into()),
-    });
-
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("figgy fullscreen textured pipeline layout"),
-        bind_group_layouts: &[bind_group_layout],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(bind_group_layout)],
+        immediate_size: 0,
     });
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -578,7 +621,7 @@ pub(crate) fn create_fullscreen_textured_pipeline_with_sample_count(
         layout: Some(&pipeline_layout),
 
         vertex: wgpu::VertexState {
-            module: &shader,
+            module: shader,
             entry_point: Some("vs_main"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             buffers: &[],
@@ -599,7 +642,7 @@ pub(crate) fn create_fullscreen_textured_pipeline_with_sample_count(
         multisample: multisample_state(sample_count),
 
         fragment: Some(wgpu::FragmentState {
-            module: &shader,
+            module: shader,
             entry_point: Some("fs_main"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
@@ -609,7 +652,7 @@ pub(crate) fn create_fullscreen_textured_pipeline_with_sample_count(
             })],
         }),
 
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     })
 }
@@ -623,12 +666,9 @@ pub fn render_textured(
     bind_group: &wgpu::BindGroup,
     clear_color: wgpu::Color,
 ) -> RenderOutcome {
-    let frame = match surface.get_current_texture() {
+    let frame = match acquire_surface_frame(surface) {
         Ok(t) => t,
-        Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
-            return RenderOutcome::Reconfigure;
-        }
-        Err(_) => return RenderOutcome::Skipped,
+        Err(outcome) => return outcome,
     };
 
     let view = frame
@@ -654,6 +694,7 @@ pub fn render_textured(
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
 
         pass.set_pipeline(pipeline);
@@ -662,7 +703,7 @@ pub fn render_textured(
     }
 
     queue.submit(std::iter::once(encoder.finish()));
-    frame.present();
+    queue.present(frame);
 
     RenderOutcome::Rendered
 }
@@ -1276,8 +1317,10 @@ pub fn create_line_columnar_pipeline(
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
+    let shaders = ShaderModules::new(device);
     create_line_columnar_pipeline_with_sample_count(
         device,
+        &shaders.line,
         transform_bgl,
         style_bgl,
         target_format,
@@ -1287,6 +1330,7 @@ pub fn create_line_columnar_pipeline(
 
 pub(crate) fn create_line_columnar_pipeline_with_sample_count(
     device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
@@ -1294,6 +1338,7 @@ pub(crate) fn create_line_columnar_pipeline_with_sample_count(
 ) -> wgpu::RenderPipeline {
     create_line_columnar_pipeline_with_entries(
         device,
+        shader,
         transform_bgl,
         style_bgl,
         target_format,
@@ -1556,6 +1601,7 @@ fn bake_blackbody_lut() -> Vec<u8> {
 pub(crate) fn create_milkyway_set(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
+    shaders: &ShaderModules,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
     star_data_bgl: &wgpu::BindGroupLayout,
@@ -1709,6 +1755,7 @@ pub(crate) fn create_milkyway_set(
     };
     let ribbon = create_line_columnar_pipeline_with_entries(
         device,
+        &shaders.line,
         transform_bgl,
         style_bgl,
         target_format,
@@ -1723,20 +1770,21 @@ pub(crate) fn create_milkyway_set(
     // Arc-driven star pass: NO vertex buffers — the VS reads the arc-length
     // prefix and the column pool as storage (group 3) and is drawn via
     // DrawIndirect args computed on the GPU from the polyline's total arc.
-    let star_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("figgy milkyway star shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("line_columnar.wgsl").into()),
-    });
     let star_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("figgy milkyway star layout"),
-        bind_group_layouts: &[transform_bgl, style_bgl, &tex_bgl, star_data_bgl],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[
+            Some(transform_bgl),
+            Some(style_bgl),
+            Some(&tex_bgl),
+            Some(star_data_bgl),
+        ],
+        immediate_size: 0,
     });
     let stars = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("figgy milkyway stars pipeline"),
         layout: Some(&star_layout),
         vertex: wgpu::VertexState {
-            module: &star_shader,
+            module: &shaders.line,
             entry_point: Some("vs_stars"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             buffers: &[],
@@ -1753,7 +1801,7 @@ pub(crate) fn create_milkyway_set(
         depth_stencil: None,
         multisample: multisample_state(sample_count),
         fragment: Some(wgpu::FragmentState {
-            module: &star_shader,
+            module: &shaders.line,
             entry_point: Some("fs_stars"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
@@ -1762,13 +1810,14 @@ pub(crate) fn create_milkyway_set(
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
     // Planets keep the scatter builder's premultiplied blend — bodies
     // occlude the additive star field behind them.
     let planets = create_scatter_columnar_pipeline_full(
         device,
+        &shaders.scatter,
         transform_bgl,
         style_bgl,
         target_format,
@@ -1780,6 +1829,7 @@ pub(crate) fn create_milkyway_set(
     );
     let jets = create_errorbar_columnar_pipeline_full(
         device,
+        &shaders.errorbar,
         transform_bgl,
         style_bgl,
         target_format,
@@ -1805,6 +1855,7 @@ pub(crate) fn create_milkyway_set(
 pub(crate) fn create_point_constellation_set(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
+    shaders: &ShaderModules,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
@@ -1938,6 +1989,7 @@ pub(crate) fn create_point_constellation_set(
 
     let line = create_line_columnar_pipeline_with_entries(
         device,
+        &shaders.line,
         transform_bgl,
         style_bgl,
         target_format,
@@ -1951,6 +2003,7 @@ pub(crate) fn create_point_constellation_set(
     );
     let stars = create_scatter_columnar_pipeline_full(
         device,
+        &shaders.scatter,
         transform_bgl,
         style_bgl,
         target_format,
@@ -1976,6 +2029,7 @@ pub(crate) fn create_point_constellation_set(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn create_line_columnar_pipeline_with_entries(
     device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
@@ -1987,19 +2041,14 @@ pub(crate) fn create_line_columnar_pipeline_with_entries(
     texture_bgl: Option<&wgpu::BindGroupLayout>,
     label: &str,
 ) -> wgpu::RenderPipeline {
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("figgy line columnar shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("line_columnar.wgsl").into()),
-    });
-
-    let mut bgls: Vec<&wgpu::BindGroupLayout> = vec![transform_bgl, style_bgl];
+    let mut bgls: Vec<Option<&wgpu::BindGroupLayout>> = vec![Some(transform_bgl), Some(style_bgl)];
     if let Some(t) = texture_bgl {
-        bgls.push(t);
+        bgls.push(Some(t));
     }
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("figgy line columnar layout"),
         bind_group_layouts: &bgls,
-        push_constant_ranges: &[],
+        immediate_size: 0,
     });
 
     let f32_stride = std::mem::size_of::<f32>() as wgpu::BufferAddress;
@@ -2018,7 +2067,7 @@ pub(crate) fn create_line_columnar_pipeline_with_entries(
             // Each instance emits a 4-vertex quad strip for one segment.
             buffers: &[
                 // slot 0: x_a (X column from offset 0)
-                wgpu::VertexBufferLayout {
+                Some(wgpu::VertexBufferLayout {
                     array_stride: column_stride,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[wgpu::VertexAttribute {
@@ -2026,9 +2075,9 @@ pub(crate) fn create_line_columnar_pipeline_with_entries(
                         offset: 0,
                         shader_location: 0,
                     }],
-                },
+                }),
                 // slot 1: y_a
-                wgpu::VertexBufferLayout {
+                Some(wgpu::VertexBufferLayout {
                     array_stride: column_stride,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[wgpu::VertexAttribute {
@@ -2036,9 +2085,9 @@ pub(crate) fn create_line_columnar_pipeline_with_entries(
                         offset: 0,
                         shader_location: 1,
                     }],
-                },
+                }),
                 // slot 2: x_b (X column from the next value)
-                wgpu::VertexBufferLayout {
+                Some(wgpu::VertexBufferLayout {
                     array_stride: column_stride,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[wgpu::VertexAttribute {
@@ -2046,9 +2095,9 @@ pub(crate) fn create_line_columnar_pipeline_with_entries(
                         offset: 0,
                         shader_location: 2,
                     }],
-                },
+                }),
                 // slot 3: y_b
-                wgpu::VertexBufferLayout {
+                Some(wgpu::VertexBufferLayout {
                     array_stride: column_stride,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[wgpu::VertexAttribute {
@@ -2056,12 +2105,12 @@ pub(crate) fn create_line_columnar_pipeline_with_entries(
                         offset: 0,
                         shader_location: 3,
                     }],
-                },
+                }),
                 // slots 4/5: cumulative arc length (px) at A and B — the
                 // same prefix buffer bound twice with a one-f32 shift, like
                 // x/y. Solid lines bind the X column here as inert filler
                 // (the fragment stage ignores it when dash_len == 0).
-                wgpu::VertexBufferLayout {
+                Some(wgpu::VertexBufferLayout {
                     array_stride: f32_stride,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[wgpu::VertexAttribute {
@@ -2069,8 +2118,8 @@ pub(crate) fn create_line_columnar_pipeline_with_entries(
                         offset: 0,
                         shader_location: 4,
                     }],
-                },
-                wgpu::VertexBufferLayout {
+                }),
+                Some(wgpu::VertexBufferLayout {
                     array_stride: f32_stride,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[wgpu::VertexAttribute {
@@ -2078,7 +2127,7 @@ pub(crate) fn create_line_columnar_pipeline_with_entries(
                         offset: 0,
                         shader_location: 5,
                     }],
-                },
+                }),
             ],
         },
         primitive: wgpu::PrimitiveState {
@@ -2105,7 +2154,7 @@ pub(crate) fn create_line_columnar_pipeline_with_entries(
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     })
 }
@@ -2118,8 +2167,10 @@ pub fn create_scatter_columnar_pipeline(
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
+    let shaders = ShaderModules::new(device);
     create_scatter_columnar_pipeline_with_sample_count(
         device,
+        &shaders.scatter,
         transform_bgl,
         style_bgl,
         target_format,
@@ -2129,6 +2180,7 @@ pub fn create_scatter_columnar_pipeline(
 
 pub(crate) fn create_scatter_columnar_pipeline_with_sample_count(
     device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
@@ -2136,6 +2188,7 @@ pub(crate) fn create_scatter_columnar_pipeline_with_sample_count(
 ) -> wgpu::RenderPipeline {
     create_scatter_columnar_pipeline_full(
         device,
+        shader,
         transform_bgl,
         style_bgl,
         target_format,
@@ -2160,8 +2213,10 @@ pub fn create_scatter_columnar_mapped_pipeline(
     target_format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> wgpu::RenderPipeline {
+    let shaders = ShaderModules::new(device);
     create_scatter_columnar_mapped_pipeline_with_entries(
         device,
+        &shaders.scatter,
         transform_bgl,
         style_bgl,
         style_map_bgl,
@@ -2175,6 +2230,7 @@ pub fn create_scatter_columnar_mapped_pipeline(
 
 pub(crate) fn create_scatter_columnar_mapped_pipeline_with_entries(
     device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
     style_map_bgl: &wgpu::BindGroupLayout,
@@ -2184,14 +2240,10 @@ pub(crate) fn create_scatter_columnar_mapped_pipeline_with_entries(
     fs_entry: &str,
     label: &str,
 ) -> wgpu::RenderPipeline {
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some(label),
-        source: wgpu::ShaderSource::Wgsl(include_str!("scatter_columnar.wgsl").into()),
-    });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some(label),
-        bind_group_layouts: &[transform_bgl, style_bgl, style_map_bgl],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(transform_bgl), Some(style_bgl), Some(style_map_bgl)],
+        immediate_size: 0,
     });
 
     let vec2_stride = (std::mem::size_of::<f32>() * 2) as wgpu::BufferAddress;
@@ -2204,7 +2256,7 @@ pub(crate) fn create_scatter_columnar_mapped_pipeline_with_entries(
             entry_point: Some(vs_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             buffers: &[
-                wgpu::VertexBufferLayout {
+                Some(wgpu::VertexBufferLayout {
                     array_stride: vec2_stride,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[wgpu::VertexAttribute {
@@ -2212,8 +2264,8 @@ pub(crate) fn create_scatter_columnar_mapped_pipeline_with_entries(
                         offset: 0,
                         shader_location: 0,
                     }],
-                },
-                wgpu::VertexBufferLayout {
+                }),
+                Some(wgpu::VertexBufferLayout {
                     array_stride: column_stride,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[wgpu::VertexAttribute {
@@ -2221,8 +2273,8 @@ pub(crate) fn create_scatter_columnar_mapped_pipeline_with_entries(
                         offset: 0,
                         shader_location: 1,
                     }],
-                },
-                wgpu::VertexBufferLayout {
+                }),
+                Some(wgpu::VertexBufferLayout {
                     array_stride: column_stride,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[wgpu::VertexAttribute {
@@ -2230,8 +2282,8 @@ pub(crate) fn create_scatter_columnar_mapped_pipeline_with_entries(
                         offset: 0,
                         shader_location: 2,
                     }],
-                },
-                wgpu::VertexBufferLayout {
+                }),
+                Some(wgpu::VertexBufferLayout {
                     array_stride: column_stride,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[wgpu::VertexAttribute {
@@ -2239,7 +2291,7 @@ pub(crate) fn create_scatter_columnar_mapped_pipeline_with_entries(
                         offset: 0,
                         shader_location: 3,
                     }],
-                },
+                }),
             ],
         },
         primitive: wgpu::PrimitiveState {
@@ -2263,7 +2315,7 @@ pub(crate) fn create_scatter_columnar_mapped_pipeline_with_entries(
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     })
 }
@@ -2271,6 +2323,7 @@ pub(crate) fn create_scatter_columnar_mapped_pipeline_with_entries(
 /// Two-entry convenience used by the sketch style (shared layout/state).
 pub(crate) fn create_scatter_columnar_pipeline_with_entries(
     device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
@@ -2281,6 +2334,7 @@ pub(crate) fn create_scatter_columnar_pipeline_with_entries(
 ) -> wgpu::RenderPipeline {
     create_scatter_columnar_pipeline_full(
         device,
+        shader,
         transform_bgl,
         style_bgl,
         target_format,
@@ -2298,6 +2352,7 @@ pub(crate) fn create_scatter_columnar_pipeline_with_entries(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn create_scatter_columnar_pipeline_full(
     device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
@@ -2307,19 +2362,14 @@ pub(crate) fn create_scatter_columnar_pipeline_full(
     texture_bgl: Option<&wgpu::BindGroupLayout>,
     label: &str,
 ) -> wgpu::RenderPipeline {
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("figgy scatter columnar shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("scatter_columnar.wgsl").into()),
-    });
-
-    let mut bgls: Vec<&wgpu::BindGroupLayout> = vec![transform_bgl, style_bgl];
+    let mut bgls: Vec<Option<&wgpu::BindGroupLayout>> = vec![Some(transform_bgl), Some(style_bgl)];
     if let Some(t) = texture_bgl {
-        bgls.push(t);
+        bgls.push(Some(t));
     }
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("figgy scatter columnar layout"),
         bind_group_layouts: &bgls,
-        push_constant_ranges: &[],
+        immediate_size: 0,
     });
 
     let vec2_stride = (std::mem::size_of::<f32>() * 2) as wgpu::BufferAddress;
@@ -2334,7 +2384,7 @@ pub(crate) fn create_scatter_columnar_pipeline_full(
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             buffers: &[
                 // slot 0: unit quad (per-vertex, vec2)
-                wgpu::VertexBufferLayout {
+                Some(wgpu::VertexBufferLayout {
                     array_stride: vec2_stride,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[wgpu::VertexAttribute {
@@ -2342,9 +2392,9 @@ pub(crate) fn create_scatter_columnar_pipeline_full(
                         offset: 0,
                         shader_location: 0,
                     }],
-                },
+                }),
                 // slot 1: X column (per-instance, f32)
-                wgpu::VertexBufferLayout {
+                Some(wgpu::VertexBufferLayout {
                     array_stride: column_stride,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[wgpu::VertexAttribute {
@@ -2352,9 +2402,9 @@ pub(crate) fn create_scatter_columnar_pipeline_full(
                         offset: 0,
                         shader_location: 1,
                     }],
-                },
+                }),
                 // slot 2: Y column (per-instance, f32)
-                wgpu::VertexBufferLayout {
+                Some(wgpu::VertexBufferLayout {
                     array_stride: column_stride,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[wgpu::VertexAttribute {
@@ -2362,7 +2412,7 @@ pub(crate) fn create_scatter_columnar_pipeline_full(
                         offset: 0,
                         shader_location: 2,
                     }],
-                },
+                }),
             ],
         },
         primitive: wgpu::PrimitiveState {
@@ -2386,7 +2436,7 @@ pub(crate) fn create_scatter_columnar_pipeline_full(
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     })
 }
@@ -2405,8 +2455,10 @@ pub fn create_errorbar_columnar_pipeline(
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
+    let shaders = ShaderModules::new(device);
     create_errorbar_columnar_pipeline_with_sample_count(
         device,
+        &shaders.errorbar,
         transform_bgl,
         style_bgl,
         target_format,
@@ -2416,6 +2468,7 @@ pub fn create_errorbar_columnar_pipeline(
 
 pub(crate) fn create_errorbar_columnar_pipeline_with_sample_count(
     device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
@@ -2423,6 +2476,7 @@ pub(crate) fn create_errorbar_columnar_pipeline_with_sample_count(
 ) -> wgpu::RenderPipeline {
     create_errorbar_columnar_pipeline_with_entries(
         device,
+        shader,
         transform_bgl,
         style_bgl,
         target_format,
@@ -2440,15 +2494,31 @@ pub fn create_errorbar_columnar_mapped_pipeline(
     target_format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> wgpu::RenderPipeline {
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("figgy errorbar mapped shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("errorbar_columnar.wgsl").into()),
-    });
+    let shaders = ShaderModules::new(device);
+    create_errorbar_columnar_mapped_pipeline_from_shader(
+        device,
+        &shaders.errorbar,
+        transform_bgl,
+        style_bgl,
+        style_map_bgl,
+        target_format,
+        sample_count,
+    )
+}
 
+pub(crate) fn create_errorbar_columnar_mapped_pipeline_from_shader(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    style_map_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("figgy errorbar mapped layout"),
-        bind_group_layouts: &[transform_bgl, style_bgl, style_map_bgl],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(transform_bgl), Some(style_bgl), Some(style_map_bgl)],
+        immediate_size: 0,
     });
 
     let column_stride = crate::data::COLUMN_VALUE_BYTES as wgpu::BufferAddress;
@@ -2488,41 +2558,41 @@ pub fn create_errorbar_columnar_mapped_pipeline(
         shader_location: 6,
     }];
     let buffers = [
-        wgpu::VertexBufferLayout {
+        Some(wgpu::VertexBufferLayout {
             array_stride: column_stride,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTR0,
-        },
-        wgpu::VertexBufferLayout {
+        }),
+        Some(wgpu::VertexBufferLayout {
             array_stride: column_stride,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTR1,
-        },
-        wgpu::VertexBufferLayout {
+        }),
+        Some(wgpu::VertexBufferLayout {
             array_stride: column_stride,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTR2,
-        },
-        wgpu::VertexBufferLayout {
+        }),
+        Some(wgpu::VertexBufferLayout {
             array_stride: column_stride,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTR3,
-        },
-        wgpu::VertexBufferLayout {
+        }),
+        Some(wgpu::VertexBufferLayout {
             array_stride: column_stride,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTR4,
-        },
-        wgpu::VertexBufferLayout {
+        }),
+        Some(wgpu::VertexBufferLayout {
             array_stride: column_stride,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTR5,
-        },
-        wgpu::VertexBufferLayout {
+        }),
+        Some(wgpu::VertexBufferLayout {
             array_stride: column_stride,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTR6,
-        },
+        }),
     ];
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -2555,7 +2625,7 @@ pub fn create_errorbar_columnar_mapped_pipeline(
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     })
 }
@@ -2566,6 +2636,7 @@ pub fn create_errorbar_columnar_mapped_pipeline(
 /// state; the renderer's style table supplies the entry string.
 pub(crate) fn create_errorbar_columnar_pipeline_with_entries(
     device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
@@ -2575,6 +2646,7 @@ pub(crate) fn create_errorbar_columnar_pipeline_with_entries(
 ) -> wgpu::RenderPipeline {
     create_errorbar_columnar_pipeline_full(
         device,
+        shader,
         transform_bgl,
         style_bgl,
         target_format,
@@ -2591,6 +2663,7 @@ pub(crate) fn create_errorbar_columnar_pipeline_with_entries(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn create_errorbar_columnar_pipeline_full(
     device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
@@ -2600,15 +2673,10 @@ pub(crate) fn create_errorbar_columnar_pipeline_full(
     blend: wgpu::BlendState,
     label: &str,
 ) -> wgpu::RenderPipeline {
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("figgy errorbar columnar shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("errorbar_columnar.wgsl").into()),
-    });
-
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("figgy errorbar columnar layout"),
-        bind_group_layouts: &[transform_bgl, style_bgl],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(transform_bgl), Some(style_bgl)],
+        immediate_size: 0,
     });
 
     let column_stride = crate::data::COLUMN_VALUE_BYTES as wgpu::BufferAddress;
@@ -2644,36 +2712,36 @@ pub(crate) fn create_errorbar_columnar_pipeline_full(
         shader_location: 5,
     }];
     let buffers = [
-        wgpu::VertexBufferLayout {
+        Some(wgpu::VertexBufferLayout {
             array_stride: column_stride,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTR0,
-        },
-        wgpu::VertexBufferLayout {
+        }),
+        Some(wgpu::VertexBufferLayout {
             array_stride: column_stride,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTR1,
-        },
-        wgpu::VertexBufferLayout {
+        }),
+        Some(wgpu::VertexBufferLayout {
             array_stride: column_stride,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTR2,
-        },
-        wgpu::VertexBufferLayout {
+        }),
+        Some(wgpu::VertexBufferLayout {
             array_stride: column_stride,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTR3,
-        },
-        wgpu::VertexBufferLayout {
+        }),
+        Some(wgpu::VertexBufferLayout {
             array_stride: column_stride,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTR4,
-        },
-        wgpu::VertexBufferLayout {
+        }),
+        Some(wgpu::VertexBufferLayout {
             array_stride: column_stride,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTR5,
-        },
+        }),
     ];
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -2706,7 +2774,7 @@ pub(crate) fn create_errorbar_columnar_pipeline_full(
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     })
 }
@@ -3231,6 +3299,7 @@ mod tests {
         let transform_bgl = create_scatter_transform_bind_group_layout(&device);
         let style_bgl = create_style_bind_group_layout(&device);
         let style_map_bgl = create_scatter_style_map_bind_group_layout(&device);
+        let shaders = ShaderModules::new(&device);
 
         let mapped = create_scatter_columnar_mapped_pipeline(
             &device,
@@ -3242,6 +3311,7 @@ mod tests {
         );
         let picked = create_scatter_columnar_pipeline_with_entries(
             &device,
+            &shaders.scatter,
             &transform_bgl,
             &style_bgl,
             wgpu::TextureFormat::Bgra8Unorm,
@@ -3252,6 +3322,7 @@ mod tests {
         );
         let picked_mapped = create_scatter_columnar_mapped_pipeline_with_entries(
             &device,
+            &shaders.scatter,
             &transform_bgl,
             &style_bgl,
             &style_map_bgl,

@@ -1,8 +1,10 @@
 //! Public-facing wgpu renderer.
 //!
-//! `Renderer::try_new` builds every figgy GPU resource (pool, pipelines,
+//! `Renderer::try_new` builds the shared GPU resources (pool, axis pipeline,
 //! bind-group layouts, sampler, quad VB) in one call so users don't have to
 //! wire `data_render::create_*_pipeline` / `ColumnPool::new` manually.
+//! Line / scatter / errorbar pipelines and the errorbar extent engine compile
+//! on first use.
 //!
 //! Ownership: holds `Arc<wgpu::Device>` and `Arc<wgpu::Queue>` so the same
 //! device can be shared with the host (egui_wgpu, iced_wgpu, etc.) without
@@ -28,7 +30,10 @@ use crate::data_render::{
     ColumnPickRingLayer, ColumnPool, ColumnScatterLayer, DefragPolicy, PrimitiveStyle,
 };
 use crate::error::{FiggyError, Result};
-use crate::init::{InitEvent, finished, observe_result, observe_value, started};
+use crate::init::{
+    InitEvent, finished, observe_result, observe_result_async, observe_value, observe_value_async,
+    started,
+};
 use crate::layout::Rect;
 use crate::line::LineStylePreset;
 use crate::select::HitId;
@@ -117,7 +122,7 @@ struct RendererDeviceCaps {
     /// above it is clamped at construction (see [`effective_pool_capacity`])
     /// rather than deferred into a wgpu validation panic on the first
     /// dashed/sketch/milkyway line.
-    max_storage_buffer_binding_size: u32,
+    max_storage_buffer_binding_size: u64,
     /// Per-dimension dispatch ceiling for the arc-length compute scan.
     max_compute_workgroups_per_dimension: u32,
     /// The arc scan needs 256-wide workgroups; downlevel (GL-class)
@@ -151,7 +156,7 @@ impl RendererDeviceCaps {
 /// back via `renderer.pool().capacity()`.
 fn effective_pool_capacity(requested: u64, caps: RendererDeviceCaps) -> u64 {
     requested
-        .min(u64::from(caps.max_storage_buffer_binding_size))
+        .min(caps.max_storage_buffer_binding_size)
         .min(caps.max_buffer_size)
 }
 
@@ -928,6 +933,37 @@ impl RendererPicker {
         }
     }
 
+    async fn enable_observed_async(
+        &mut self,
+        device: Arc<wgpu::Device>,
+        queue: Arc<wgpu::Queue>,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        match &self.pipeline_state {
+            PickerPipelineState::Ready(_) => return Ok(()),
+            PickerPipelineState::Failed(error) => return Err(error.clone()),
+            PickerPipelineState::Disabled => {}
+        }
+
+        #[cfg(test)]
+        if let Some(error) = self.injected_activation_failure.take() {
+            self.pipeline_state = PickerPipelineState::Failed(error.clone());
+            return Err(error);
+        }
+
+        match crate::gpu_pick::PickPipelineBundle::new_observed_async(device, queue, observer).await
+        {
+            Ok(bundle) => {
+                self.pipeline_state = PickerPipelineState::Ready(bundle);
+                Ok(())
+            }
+            Err(error) => {
+                self.pipeline_state = PickerPipelineState::Failed(error.clone());
+                Err(error)
+            }
+        }
+    }
+
     fn ready_bundle(
         &self,
     ) -> std::result::Result<Arc<crate::gpu_pick::PickPipelineBundle>, crate::gpu_pick::GpuPickError>
@@ -1470,7 +1506,7 @@ pub struct Renderer {
     observed_font_generation: u64,
     pending_defrag: bool,
     picker: RendererPicker,
-    errorbar_extent_engine: crate::gpu_errorbar::GpuErrorbarExtentEngine,
+    errorbar_extent_engine: std::sync::OnceLock<crate::gpu_errorbar::GpuErrorbarExtentEngine>,
     target_sample_count: u32,
     target_pipeline_generation: u64,
 
@@ -1503,7 +1539,7 @@ pub struct Renderer {
     /// the `&self` draw phase reads the token's owned snapshot, never this
     /// cache.
     arc_cache: HashMap<String, Vec<data_render::line_arc::ArcScratch>>,
-    arc_pipelines: data_render::line_arc::ArcScanPipelines,
+    arc_pipelines: Option<data_render::line_arc::ArcScanPipelines>,
     /// Test-only narrowing of the arc-scan chunk size so the multi-chunk
     /// carry path is exercisable with small `n`. Always `None` in release.
     #[cfg(test)]
@@ -1538,7 +1574,7 @@ pub struct RendererColumnUpsert<'a> {
     renderer_identity: u64,
     device: &'a wgpu::Device,
     queue: &'a wgpu::Queue,
-    errorbar_extent_engine: &'a crate::gpu_errorbar::GpuErrorbarExtentEngine,
+    errorbar_extent_engine: &'a std::sync::OnceLock<crate::gpu_errorbar::GpuErrorbarExtentEngine>,
 }
 
 impl RendererColumnUpsert<'_> {
@@ -1598,7 +1634,7 @@ impl RendererColumnUpsert<'_> {
         crate::gpu_errorbar::GpuErrorbarError,
     > {
         begin_errorbar_extent_from_pool(
-            self.errorbar_extent_engine,
+            errorbar_extent_engine_or_init(self.errorbar_extent_engine, self.device)?,
             self.device,
             self.queue,
             self.pool(),
@@ -1620,7 +1656,7 @@ impl RendererColumnUpsert<'_> {
         crate::gpu_errorbar::GpuErrorbarError,
     > {
         begin_series_extent_from_pool(
-            self.errorbar_extent_engine,
+            errorbar_extent_engine_or_init(self.errorbar_extent_engine, self.device)?,
             self.device,
             self.queue,
             self.pool(),
@@ -1661,7 +1697,7 @@ fn finish_renderer_column_upsert<'a>(
     renderer_identity: u64,
     device: &'a wgpu::Device,
     queue: &'a wgpu::Queue,
-    errorbar_extent_engine: &'a crate::gpu_errorbar::GpuErrorbarExtentEngine,
+    errorbar_extent_engine: &'a std::sync::OnceLock<crate::gpu_errorbar::GpuErrorbarExtentEngine>,
 ) -> Result<RendererColumnUpsert<'a>> {
     let relocated = inner.pool().layout_generation() != old_layout_generation;
     let active = picker.active.as_ref().map(|active| {
@@ -1761,6 +1797,25 @@ fn current_extent_handle(
         });
     }
     Ok(handle)
+}
+
+fn errorbar_extent_engine_or_init<'a>(
+    slot: &'a std::sync::OnceLock<crate::gpu_errorbar::GpuErrorbarExtentEngine>,
+    device: &wgpu::Device,
+) -> std::result::Result<
+    &'a crate::gpu_errorbar::GpuErrorbarExtentEngine,
+    crate::gpu_errorbar::GpuErrorbarError,
+> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = device;
+        slot.get()
+            .ok_or(crate::gpu_errorbar::GpuErrorbarError::EngineNotReady)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Ok(slot.get_or_init(|| crate::gpu_errorbar::GpuErrorbarExtentEngine::new(device)))
+    }
 }
 
 fn begin_errorbar_extent_from_pool(
@@ -2033,21 +2088,20 @@ enum StyleSet {
     Constellation(data_render::PointConstellationSet),
 }
 
-/// Every pipeline compiled against one render-target format: the four
-/// precise pipelines (created eagerly, as before) plus a lazy per-style
-/// cache. A style's set is compiled the first time the prepare phase of
-/// `paint`/export sees an item drawn in that style; charts that stay precise
-/// never pay for any styled compile. Rebuilding for a new target format
-/// starts from an empty cache — the next prepare phase recompiles on use.
+/// Pipelines compiled against one render-target format: axis is eager; line /
+/// scatter / errorbar, mapped, pick-ring, and styled sets compile on first
+/// prepare that needs them. Rebuilding for a new target format keeps already
+/// live lazy variants and leaves unused ones uncompiled.
 struct TargetPipelines {
+    shaders: data_render::ShaderModules,
     axis: wgpu::RenderPipeline,
-    line: wgpu::RenderPipeline,
-    scatter: wgpu::RenderPipeline,
-    scatter_mapped: wgpu::RenderPipeline,
-    pick_ring: wgpu::RenderPipeline,
-    pick_ring_mapped: wgpu::RenderPipeline,
-    errorbar: wgpu::RenderPipeline,
-    errorbar_mapped: wgpu::RenderPipeline,
+    line: Option<wgpu::RenderPipeline>,
+    scatter: Option<wgpu::RenderPipeline>,
+    scatter_mapped: Option<wgpu::RenderPipeline>,
+    pick_ring: Option<wgpu::RenderPipeline>,
+    pick_ring_mapped: Option<wgpu::RenderPipeline>,
+    errorbar: Option<wgpu::RenderPipeline>,
+    errorbar_mapped: Option<wgpu::RenderPipeline>,
     sample_count: u32,
     styled: HashMap<StyleKey, StyleSet>,
 }
@@ -2057,7 +2111,7 @@ fn create_target_pipelines(
     texture_bgl: &wgpu::BindGroupLayout,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
-    per_point_style_map_bgl: &wgpu::BindGroupLayout,
+    _per_point_style_map_bgl: &wgpu::BindGroupLayout,
     surface_format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> TargetPipelines {
@@ -2067,7 +2121,7 @@ fn create_target_pipelines(
         texture_bgl,
         transform_bgl,
         style_bgl,
-        per_point_style_map_bgl,
+        _per_point_style_map_bgl,
         surface_format,
         sample_count,
         &mut observer,
@@ -2078,13 +2132,16 @@ fn create_target_pipelines(
 fn create_target_pipelines_observed(
     device: &wgpu::Device,
     texture_bgl: &wgpu::BindGroupLayout,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    per_point_style_map_bgl: &wgpu::BindGroupLayout,
+    _transform_bgl: &wgpu::BindGroupLayout,
+    _style_bgl: &wgpu::BindGroupLayout,
+    _per_point_style_map_bgl: &wgpu::BindGroupLayout,
     surface_format: wgpu::TextureFormat,
     sample_count: u32,
     observer: &mut dyn FnMut(InitEvent),
 ) -> TargetPipelines {
+    let shaders = observe_value(observer, "renderer", "shader modules", || {
+        data_render::ShaderModules::new(device)
+    });
     TargetPipelines {
         axis: observe_value(
             observer,
@@ -2093,114 +2150,66 @@ fn create_target_pipelines_observed(
             || {
                 data_render::create_fullscreen_textured_pipeline_with_sample_count(
                     device,
+                    &shaders.fullscreen,
                     texture_bgl,
                     surface_format,
                     sample_count,
                 )
             },
         ),
-        line: observe_value(observer, "renderer", "figgy line columnar pipeline", || {
-            data_render::create_line_columnar_pipeline_with_sample_count(
+        line: None,
+        scatter: None,
+        scatter_mapped: None,
+        pick_ring: None,
+        pick_ring_mapped: None,
+        errorbar: None,
+        errorbar_mapped: None,
+        shaders,
+        sample_count,
+        styled: HashMap::new(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn create_target_pipelines_observed_async(
+    device: &wgpu::Device,
+    texture_bgl: &wgpu::BindGroupLayout,
+    _transform_bgl: &wgpu::BindGroupLayout,
+    _style_bgl: &wgpu::BindGroupLayout,
+    _per_point_style_map_bgl: &wgpu::BindGroupLayout,
+    surface_format: wgpu::TextureFormat,
+    sample_count: u32,
+    observer: &mut dyn FnMut(InitEvent),
+) -> TargetPipelines {
+    let shaders = observe_value_async(observer, "renderer", "shader modules", || {
+        data_render::ShaderModules::new(device)
+    })
+    .await;
+    let axis = observe_value_async(
+        observer,
+        "renderer",
+        "figgy fullscreen textured pipeline",
+        || {
+            data_render::create_fullscreen_textured_pipeline_with_sample_count(
                 device,
-                transform_bgl,
-                style_bgl,
+                &shaders.fullscreen,
+                texture_bgl,
                 surface_format,
                 sample_count,
             )
-        }),
-        scatter: observe_value(
-            observer,
-            "renderer",
-            "figgy scatter columnar pipeline",
-            || {
-                data_render::create_scatter_columnar_pipeline_with_sample_count(
-                    device,
-                    transform_bgl,
-                    style_bgl,
-                    surface_format,
-                    sample_count,
-                )
-            },
-        ),
-        scatter_mapped: observe_value(
-            observer,
-            "renderer",
-            "figgy scatter mapped pipeline",
-            || {
-                data_render::create_scatter_columnar_mapped_pipeline(
-                    device,
-                    transform_bgl,
-                    style_bgl,
-                    per_point_style_map_bgl,
-                    surface_format,
-                    sample_count,
-                )
-            },
-        ),
-        pick_ring: observe_value(
-            observer,
-            "renderer",
-            "figgy picked point ring pipeline",
-            || {
-                data_render::create_scatter_columnar_pipeline_with_entries(
-                    device,
-                    transform_bgl,
-                    style_bgl,
-                    surface_format,
-                    sample_count,
-                    "vs_pick_ring",
-                    "fs_pick_ring",
-                    "figgy picked point ring pipeline",
-                )
-            },
-        ),
-        pick_ring_mapped: observe_value(
-            observer,
-            "renderer",
-            "figgy picked point mapped ring pipeline",
-            || {
-                data_render::create_scatter_columnar_mapped_pipeline_with_entries(
-                    device,
-                    transform_bgl,
-                    style_bgl,
-                    per_point_style_map_bgl,
-                    surface_format,
-                    sample_count,
-                    "vs_pick_ring_mapped",
-                    "fs_pick_ring",
-                    "figgy picked point mapped ring pipeline",
-                )
-            },
-        ),
-        errorbar: observe_value(
-            observer,
-            "renderer",
-            "figgy errorbar columnar pipeline",
-            || {
-                data_render::create_errorbar_columnar_pipeline_with_sample_count(
-                    device,
-                    transform_bgl,
-                    style_bgl,
-                    surface_format,
-                    sample_count,
-                )
-            },
-        ),
-        errorbar_mapped: observe_value(
-            observer,
-            "renderer",
-            "figgy errorbar mapped pipeline",
-            || {
-                data_render::create_errorbar_columnar_mapped_pipeline(
-                    device,
-                    transform_bgl,
-                    style_bgl,
-                    per_point_style_map_bgl,
-                    surface_format,
-                    sample_count,
-                )
-            },
-        ),
+        },
+    )
+    .await;
+    TargetPipelines {
+        shaders,
+        axis,
+        line: None,
+        scatter: None,
+        scatter_mapped: None,
+        pick_ring: None,
+        pick_ring_mapped: None,
+        errorbar: None,
+        errorbar_mapped: None,
         sample_count,
         styled: HashMap::new(),
     }
@@ -2229,6 +2238,7 @@ impl TargetPipelines {
                 StyleKey::Sketch => StyleSet::Sketch {
                     line: data_render::create_line_columnar_pipeline_with_entries(
                         device,
+                        &self.shaders.line,
                         transform_bgl,
                         style_bgl,
                         surface_format,
@@ -2242,6 +2252,7 @@ impl TargetPipelines {
                     ),
                     scatter: data_render::create_scatter_columnar_pipeline_with_entries(
                         device,
+                        &self.shaders.scatter,
                         transform_bgl,
                         style_bgl,
                         surface_format,
@@ -2252,6 +2263,7 @@ impl TargetPipelines {
                     ),
                     errorbar: data_render::create_errorbar_columnar_pipeline_with_entries(
                         device,
+                        &self.shaders.errorbar,
                         transform_bgl,
                         style_bgl,
                         surface_format,
@@ -2266,6 +2278,7 @@ impl TargetPipelines {
                 StyleKey::Milkyway => StyleSet::Milkyway(data_render::create_milkyway_set(
                     device,
                     queue,
+                    &self.shaders,
                     transform_bgl,
                     style_bgl,
                     star_data_bgl,
@@ -2276,6 +2289,7 @@ impl TargetPipelines {
                     StyleSet::Constellation(data_render::create_point_constellation_set(
                         device,
                         queue,
+                        &self.shaders,
                         transform_bgl,
                         style_bgl,
                         surface_format,
@@ -2283,6 +2297,149 @@ impl TargetPipelines {
                     ))
                 }
             });
+        }
+    }
+
+    fn ensure_precise_variants_for_items(
+        &mut self,
+        device: &wgpu::Device,
+        transform_bgl: &wgpu::BindGroupLayout,
+        style_bgl: &wgpu::BindGroupLayout,
+        per_point_style_map_bgl: &wgpu::BindGroupLayout,
+        surface_format: wgpu::TextureFormat,
+        items: &[ChartDrawItem<'_>],
+    ) {
+        let mut need_line = false;
+        let mut need_scatter = false;
+        let mut need_errorbar = false;
+        let mut need_scatter_mapped = false;
+        let mut need_errorbar_mapped = false;
+        let mut need_pick_ring = false;
+        let mut need_pick_ring_mapped = false;
+        for item in items {
+            if style_variant(&item.chart_config.draw_style).is_some() {
+                if item.chart_config.picked_points.is_some() {
+                    need_pick_ring = true;
+                }
+                continue;
+            }
+            if item.chart_config.picked_points.is_some() {
+                need_pick_ring = true;
+            }
+            for series in item.series {
+                let primitives = effective_series_primitives(
+                    &item.chart_config.draw_style,
+                    &series.config.render_type,
+                );
+                need_line |= primitives.line;
+                need_scatter |= primitives.scatter;
+                need_errorbar |= has_errorbar(&series.config.render_type);
+                // `has_index` only means a style-index column is bound.
+                // Sparse `*_style_overrides` still need the mapped shader.
+                if primitives.scatter && series.style.scatter_map.is_some() {
+                    need_scatter_mapped = true;
+                    if item.chart_config.picked_points.is_some() {
+                        need_pick_ring_mapped = true;
+                    }
+                }
+                if has_errorbar(&series.config.render_type) && series.style.errorbar_map.is_some() {
+                    need_errorbar_mapped = true;
+                }
+            }
+        }
+        if need_line && self.line.is_none() {
+            self.line = Some(
+                data_render::create_line_columnar_pipeline_with_sample_count(
+                    device,
+                    &self.shaders.line,
+                    transform_bgl,
+                    style_bgl,
+                    surface_format,
+                    self.sample_count,
+                ),
+            );
+        }
+        if need_scatter && self.scatter.is_none() {
+            self.scatter = Some(
+                data_render::create_scatter_columnar_pipeline_with_sample_count(
+                    device,
+                    &self.shaders.scatter,
+                    transform_bgl,
+                    style_bgl,
+                    surface_format,
+                    self.sample_count,
+                ),
+            );
+        }
+        if need_errorbar && self.errorbar.is_none() {
+            self.errorbar = Some(
+                data_render::create_errorbar_columnar_pipeline_with_sample_count(
+                    device,
+                    &self.shaders.errorbar,
+                    transform_bgl,
+                    style_bgl,
+                    surface_format,
+                    self.sample_count,
+                ),
+            );
+        }
+        if need_scatter_mapped && self.scatter_mapped.is_none() {
+            self.scatter_mapped = Some(
+                data_render::create_scatter_columnar_mapped_pipeline_with_entries(
+                    device,
+                    &self.shaders.scatter,
+                    transform_bgl,
+                    style_bgl,
+                    per_point_style_map_bgl,
+                    surface_format,
+                    self.sample_count,
+                    "vs_mapped",
+                    "fs_mapped",
+                    "figgy scatter mapped pipeline",
+                ),
+            );
+        }
+        if need_pick_ring && self.pick_ring.is_none() {
+            self.pick_ring = Some(data_render::create_scatter_columnar_pipeline_with_entries(
+                device,
+                &self.shaders.scatter,
+                transform_bgl,
+                style_bgl,
+                surface_format,
+                self.sample_count,
+                "vs_pick_ring",
+                "fs_pick_ring",
+                "figgy picked point ring pipeline",
+            ));
+        }
+        if need_pick_ring_mapped && self.pick_ring_mapped.is_none() {
+            self.pick_ring_mapped = Some(
+                data_render::create_scatter_columnar_mapped_pipeline_with_entries(
+                    device,
+                    &self.shaders.scatter,
+                    transform_bgl,
+                    style_bgl,
+                    per_point_style_map_bgl,
+                    surface_format,
+                    self.sample_count,
+                    "vs_pick_ring_mapped",
+                    "fs_pick_ring",
+                    "figgy picked point mapped ring pipeline",
+                ),
+            );
+        }
+        if need_errorbar_mapped && self.errorbar_mapped.is_none() {
+            self.errorbar_mapped = Some(
+                data_render::create_errorbar_columnar_mapped_pipeline_from_shader(
+                    device,
+                    &self.shaders.errorbar,
+                    transform_bgl,
+                    style_bgl,
+                    per_point_style_map_bgl,
+                    surface_format,
+                    self.sample_count,
+                ),
+            );
         }
     }
 
@@ -2858,7 +3015,8 @@ impl Renderer {
     /// granted size back via [`Self::pool`]`().capacity()`. To get a larger
     /// pool, raise those limits when requesting the wgpu device (the defaults
     /// are only 128 MiB / 256 MiB). `surface_format` is the final render
-    /// target color format; every graphics pipeline is compiled against it.
+    /// target color format; the eager axis pipeline and any later lazy
+    /// graphics pipelines are compiled against it.
     pub fn try_new(
         gpu: RendererDevice,
         surface_format: wgpu::TextureFormat,
@@ -2941,8 +3099,6 @@ impl Renderer {
         let pool = observe_result(observer, "renderer", "figgy column pool", || {
             ColumnPool::new(&device, pool_capacity)
         })?;
-        let errorbar_extent_engine =
-            crate::gpu_errorbar::GpuErrorbarExtentEngine::new_observed(&device, observer);
 
         let texture_bgl = data_render::create_texture_bind_group_layout(&device);
         let transform_bgl = data_render::create_scatter_transform_bind_group_layout(&device);
@@ -2954,8 +3110,9 @@ impl Renderer {
         let sampler = data_render::create_linear_sampler(&device);
         let quad_vb = data_render::create_unit_centered_quad_vertex_buffer(&device);
 
-        // Precise pipelines compile eagerly; styled variants compile lazily
-        // in the prepare phase of the first `paint`/export that uses them.
+        // Axis compiles here. Line/scatter/errorbar, mapped, pick-ring,
+        // styled, and arc-scan pipelines compile on first prepare that needs
+        // them. The errorbar extent engine is created on first extent job.
         let pipelines = create_target_pipelines_observed(
             &device,
             &texture_bgl,
@@ -2966,8 +3123,6 @@ impl Renderer {
             target_sample_count,
             observer,
         );
-        let arc_pipelines =
-            data_render::line_arc::create_arc_scan_pipelines_observed(&device, observer);
         let renderer_identity = observe_result(observer, "renderer", "identity", || {
             issue_renderer_identity()
         })?;
@@ -2985,7 +3140,7 @@ impl Renderer {
             observed_font_generation: crate::text_render::font_generation(),
             pending_defrag: false,
             picker: RendererPicker::disabled(),
-            errorbar_extent_engine,
+            errorbar_extent_engine: std::sync::OnceLock::new(),
             target_sample_count,
             target_pipeline_generation: 1,
             texture_bgl,
@@ -2997,7 +3152,104 @@ impl Renderer {
             sampler,
             quad_vb,
             arc_cache: HashMap::new(),
-            arc_pipelines,
+            arc_pipelines: None,
+            #[cfg(test)]
+            arc_chunk_override: None,
+            space_bg: None,
+            surface_format,
+        })
+    }
+
+    async fn try_new_with_sample_count_observed_async(
+        gpu: RendererDevice,
+        surface_format: wgpu::TextureFormat,
+        pool_capacity_bytes: u64,
+        target_sample_count: u32,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> Result<Self> {
+        let RendererDevice { device, queue } = gpu;
+        started(observer, "renderer", "capabilities");
+        let caps = RendererDeviceCaps::from_device(&device);
+        if caps.max_compute_invocations_per_workgroup < data_render::line_arc::WG
+            || caps.max_compute_workgroups_per_dimension == 0
+        {
+            return Err(FiggyError::GpuResourceLimit {
+                resource: "compute workgroup (figgy requires WebGPU-class compute; \
+                           GL-downlevel adapters are not supported)",
+                requested: u64::from(data_render::line_arc::WG),
+                limit: u64::from(caps.max_compute_invocations_per_workgroup),
+            });
+        }
+        validate_target_sample_count(caps, surface_format, target_sample_count)?;
+
+        let pool_capacity = effective_pool_capacity(pool_capacity_bytes, caps);
+        if pool_capacity < pool_capacity_bytes {
+            eprintln!(
+                "[figgy] pool capacity {pool_capacity_bytes} B exceeds device limits \
+                 (max_storage_buffer_binding_size {}, max_buffer_size {}); \
+                 clamped to {pool_capacity} B",
+                caps.max_storage_buffer_binding_size, caps.max_buffer_size
+            );
+        }
+        finished(observer, "renderer", "capabilities");
+        crate::init::yield_init_frame().await;
+        let pool = observe_result_async(observer, "renderer", "figgy column pool", || {
+            ColumnPool::new(&device, pool_capacity)
+        })
+        .await?;
+
+        let texture_bgl = data_render::create_texture_bind_group_layout(&device);
+        let transform_bgl = data_render::create_scatter_transform_bind_group_layout(&device);
+        let style_bgl = data_render::create_style_bind_group_layout(&device);
+        let per_point_style_map_bgl =
+            data_render::create_per_point_style_map_bind_group_layout(&device);
+        let star_data_bgl = data_render::create_star_data_bind_group_layout(&device);
+
+        let sampler = data_render::create_linear_sampler(&device);
+        let quad_vb = data_render::create_unit_centered_quad_vertex_buffer(&device);
+
+        let pipelines = create_target_pipelines_observed_async(
+            &device,
+            &texture_bgl,
+            &transform_bgl,
+            &style_bgl,
+            &per_point_style_map_bgl,
+            surface_format,
+            target_sample_count,
+            observer,
+        )
+        .await;
+        let renderer_identity = observe_result_async(observer, "renderer", "identity", || {
+            issue_renderer_identity()
+        })
+        .await?;
+
+        Ok(Self {
+            device,
+            queue,
+            caps,
+            pool,
+            chart_states: HashMap::new(),
+            chart_order: Vec::new(),
+            next_chart_id: 0,
+            visual_revision: RenderRevision::initial(renderer_identity),
+            renderer_identity,
+            observed_font_generation: crate::text_render::font_generation(),
+            pending_defrag: false,
+            picker: RendererPicker::disabled(),
+            errorbar_extent_engine: std::sync::OnceLock::new(),
+            target_sample_count,
+            target_pipeline_generation: 1,
+            texture_bgl,
+            transform_bgl,
+            style_bgl,
+            per_point_style_map_bgl,
+            star_data_bgl,
+            pipelines,
+            sampler,
+            quad_vb,
+            arc_cache: HashMap::new(),
+            arc_pipelines: None,
             #[cfg(test)]
             arc_chunk_override: None,
             space_bg: None,
@@ -3033,6 +3285,22 @@ impl Renderer {
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         self.picker
             .enable_observed(Arc::clone(&self.device), Arc::clone(&self.queue), observer)
+    }
+
+    pub async fn enable_gpu_picking_async(
+        &mut self,
+    ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        let mut noop = |_| {};
+        self.enable_gpu_picking_observed_async(&mut noop).await
+    }
+
+    pub async fn enable_gpu_picking_observed_async(
+        &mut self,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        self.picker
+            .enable_observed_async(Arc::clone(&self.device), Arc::clone(&self.queue), observer)
+            .await
     }
 
     /// Prepare the renderer-owned picker cache for one chart.
@@ -3779,8 +4047,17 @@ impl Renderer {
                 .ok_or(FiggyError::CounterExhausted {
                     counter: "target pipeline generation",
                 })?;
-        // Fresh set with an empty styled cache — any styled pipelines the
-        // next frame needs are recompiled by its prepare phase.
+        // Fresh set with an empty styled cache — any styled / lazy precise
+        // variants the next frame needs are recompiled by its prepare phase.
+        // Recreate only the lazy variants that were already live so a format
+        // change does not re-eager unused data/mapped/ring pipelines.
+        let had_line = self.pipelines.line.is_some();
+        let had_scatter = self.pipelines.scatter.is_some();
+        let had_errorbar = self.pipelines.errorbar.is_some();
+        let had_scatter_mapped = self.pipelines.scatter_mapped.is_some();
+        let had_pick_ring = self.pipelines.pick_ring.is_some();
+        let had_pick_ring_mapped = self.pipelines.pick_ring_mapped.is_some();
+        let had_errorbar_mapped = self.pipelines.errorbar_mapped.is_some();
         self.pipelines = create_target_pipelines(
             &self.device,
             &self.texture_bgl,
@@ -3790,6 +4067,101 @@ impl Renderer {
             surface_format,
             target_sample_count,
         );
+        if had_line {
+            self.pipelines.line = Some(
+                data_render::create_line_columnar_pipeline_with_sample_count(
+                    &self.device,
+                    &self.pipelines.shaders.line,
+                    &self.transform_bgl,
+                    &self.style_bgl,
+                    surface_format,
+                    target_sample_count,
+                ),
+            );
+        }
+        if had_scatter {
+            self.pipelines.scatter = Some(
+                data_render::create_scatter_columnar_pipeline_with_sample_count(
+                    &self.device,
+                    &self.pipelines.shaders.scatter,
+                    &self.transform_bgl,
+                    &self.style_bgl,
+                    surface_format,
+                    target_sample_count,
+                ),
+            );
+        }
+        if had_errorbar {
+            self.pipelines.errorbar = Some(
+                data_render::create_errorbar_columnar_pipeline_with_sample_count(
+                    &self.device,
+                    &self.pipelines.shaders.errorbar,
+                    &self.transform_bgl,
+                    &self.style_bgl,
+                    surface_format,
+                    target_sample_count,
+                ),
+            );
+        }
+        if had_scatter_mapped {
+            self.pipelines.scatter_mapped = Some(
+                data_render::create_scatter_columnar_mapped_pipeline_with_entries(
+                    &self.device,
+                    &self.pipelines.shaders.scatter,
+                    &self.transform_bgl,
+                    &self.style_bgl,
+                    &self.per_point_style_map_bgl,
+                    surface_format,
+                    target_sample_count,
+                    "vs_mapped",
+                    "fs_mapped",
+                    "figgy scatter mapped pipeline",
+                ),
+            );
+        }
+        if had_pick_ring {
+            self.pipelines.pick_ring =
+                Some(data_render::create_scatter_columnar_pipeline_with_entries(
+                    &self.device,
+                    &self.pipelines.shaders.scatter,
+                    &self.transform_bgl,
+                    &self.style_bgl,
+                    surface_format,
+                    target_sample_count,
+                    "vs_pick_ring",
+                    "fs_pick_ring",
+                    "figgy picked point ring pipeline",
+                ));
+        }
+        if had_pick_ring_mapped {
+            self.pipelines.pick_ring_mapped = Some(
+                data_render::create_scatter_columnar_mapped_pipeline_with_entries(
+                    &self.device,
+                    &self.pipelines.shaders.scatter,
+                    &self.transform_bgl,
+                    &self.style_bgl,
+                    &self.per_point_style_map_bgl,
+                    surface_format,
+                    target_sample_count,
+                    "vs_pick_ring_mapped",
+                    "fs_pick_ring",
+                    "figgy picked point mapped ring pipeline",
+                ),
+            );
+        }
+        if had_errorbar_mapped {
+            self.pipelines.errorbar_mapped = Some(
+                data_render::create_errorbar_columnar_mapped_pipeline_from_shader(
+                    &self.device,
+                    &self.pipelines.shaders.errorbar,
+                    &self.transform_bgl,
+                    &self.style_bgl,
+                    &self.per_point_style_map_bgl,
+                    surface_format,
+                    target_sample_count,
+                ),
+            );
+        }
         self.surface_format = surface_format;
         self.target_sample_count = target_sample_count;
         self.target_pipeline_generation = target_pipeline_generation;
@@ -3828,14 +4200,59 @@ impl Renderer {
     pub fn axis_pipeline(&self) -> &wgpu::RenderPipeline {
         &self.pipelines.axis
     }
-    pub fn line_pipeline(&self) -> &wgpu::RenderPipeline {
-        &self.pipelines.line
+    pub fn line_pipeline(&self) -> Option<&wgpu::RenderPipeline> {
+        self.pipelines.line.as_ref()
     }
-    pub fn scatter_pipeline(&self) -> &wgpu::RenderPipeline {
-        &self.pipelines.scatter
+    pub fn scatter_pipeline(&self) -> Option<&wgpu::RenderPipeline> {
+        self.pipelines.scatter.as_ref()
     }
-    pub fn errorbar_pipeline(&self) -> &wgpu::RenderPipeline {
-        &self.pipelines.errorbar
+    pub fn errorbar_pipeline(&self) -> Option<&wgpu::RenderPipeline> {
+        self.pipelines.errorbar.as_ref()
+    }
+
+    /// True after the first exact series/errorbar extent job has compiled the
+    /// compute engine. Empty charts leave this uncreated.
+    pub fn errorbar_extent_engine_ready(&self) -> bool {
+        self.errorbar_extent_engine.get().is_some()
+    }
+
+    /// Compile the exact-extent compute engine if it does not exist yet.
+    ///
+    /// Native `create_compute_pipeline` stays synchronous. On wasm this first
+    /// awaits `GPUDevice.createComputePipelineAsync` so Dawn is less likely to
+    /// stall the first later `queue.submit()`.
+    pub async fn ensure_errorbar_extent_engine(
+        &self,
+    ) -> std::result::Result<(), crate::gpu_errorbar::GpuErrorbarError> {
+        if self.errorbar_extent_engine.get().is_some() {
+            return Ok(());
+        }
+        crate::gpu_errorbar::GpuErrorbarExtentEngine::warm_device_async(&self.device).await?;
+        let _ = self
+            .errorbar_extent_engine
+            .get_or_init(|| crate::gpu_errorbar::GpuErrorbarExtentEngine::new(&self.device));
+        Ok(())
+    }
+
+    /// Wait until previously submitted GPU work has finished executing.
+    ///
+    /// This does not submit a frame. Hosts that have not drawn yet should call
+    /// [`WindowedRenderer::first_frame_ready`] or draw first. On native the
+    /// device is polled so the callback can resolve; on wasm the browser
+    /// delivers `onSubmittedWorkDone`.
+    pub async fn wait_submitted_work(&self) {
+        let (sender, receiver) = futures_channel::oneshot::channel();
+        self.queue.on_submitted_work_done(move || {
+            let _ = sender.send(());
+        });
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = self.device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            });
+        }
+        let _ = receiver.await;
     }
 
     pub fn sampler(&self) -> &wgpu::Sampler {
@@ -4096,7 +4513,7 @@ impl Renderer {
         crate::gpu_errorbar::GpuErrorbarError,
     > {
         begin_errorbar_extent_from_pool(
-            &self.errorbar_extent_engine,
+            errorbar_extent_engine_or_init(&self.errorbar_extent_engine, &self.device)?,
             &self.device,
             &self.queue,
             &self.pool,
@@ -4118,7 +4535,7 @@ impl Renderer {
         crate::gpu_errorbar::GpuErrorbarError,
     > {
         begin_series_extent_from_pool(
-            &self.errorbar_extent_engine,
+            errorbar_extent_engine_or_init(&self.errorbar_extent_engine, &self.device)?,
             &self.device,
             &self.queue,
             &self.pool,
@@ -4216,13 +4633,14 @@ impl Renderer {
                 }
             })?;
 
-        let inner = Renderer::try_new_with_sample_count_observed(
+        let inner = Renderer::try_new_with_sample_count_observed_async(
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
             surface_config.format,
             pool_capacity_bytes,
             target_sample_count,
             observer,
-        )?;
+        )
+        .await?;
 
         Ok(WindowedRenderer {
             inner,
@@ -4805,6 +5223,14 @@ impl Renderer {
     /// pool layout change, replacement of any captured column allocation, or
     /// another transform/axis write to a captured `ChartView`.
     pub fn prepare(&mut self, items: &[ChartDrawItem<'_>]) -> Result<PreparedFrame> {
+        self.pipelines.ensure_precise_variants_for_items(
+            &self.device,
+            &self.transform_bgl,
+            &self.style_bgl,
+            &self.per_point_style_map_bgl,
+            self.surface_format,
+            items,
+        );
         self.pipelines.ensure_styles_for_items(
             &self.device,
             &self.queue,
@@ -5071,32 +5497,35 @@ impl Renderer {
 
         // Resolve the style set into per-primitive picks once. `stars` is the
         // constellation's arc-driven indirect star pass over the same polyline.
+        #[derive(Clone, Copy)]
         struct LinePick<'p> {
             pipeline: &'p wgpu::RenderPipeline,
             verts: u32,
             texture_bg: Option<&'p wgpu::BindGroup>,
         }
+        #[derive(Clone, Copy)]
         struct StarsPick<'p> {
             pipeline: &'p wgpu::RenderPipeline,
             texture_bg: &'p wgpu::BindGroup,
         }
+        #[derive(Clone, Copy)]
         struct ScatterPick<'p> {
             pipeline: &'p wgpu::RenderPipeline,
             texture_bg: Option<&'p wgpu::BindGroup>,
         }
         let (line_pick, stars_pick, scatter_pick, errorbar_pipe) = match styled {
             None => (
-                LinePick {
-                    pipeline: &pipelines.line,
+                pipelines.line.as_ref().map(|pipeline| LinePick {
+                    pipeline,
                     verts: 4,
                     texture_bg: None,
-                },
+                }),
                 None,
-                ScatterPick {
-                    pipeline: &pipelines.scatter,
+                pipelines.scatter.as_ref().map(|pipeline| ScatterPick {
+                    pipeline,
                     texture_bg: None,
-                },
-                &pipelines.errorbar,
+                }),
+                pipelines.errorbar.as_ref(),
             ),
             Some(StyleSet::Sketch {
                 line,
@@ -5104,52 +5533,52 @@ impl Renderer {
                 errorbar,
                 line_verts,
             }) => (
-                LinePick {
+                Some(LinePick {
                     pipeline: line,
                     verts: *line_verts,
                     texture_bg: None,
-                },
+                }),
                 None,
-                ScatterPick {
+                Some(ScatterPick {
                     pipeline: scatter,
                     texture_bg: None,
-                },
-                errorbar,
+                }),
+                Some(errorbar),
             ),
             // Milkyway: line = ribbon + star pass, scatter = ringed
             // planets (premultiplied — they occlude the star field),
             // errorbar = bipolar jets with terminal shock knots.
             Some(StyleSet::Milkyway(c)) => (
-                LinePick {
+                Some(LinePick {
                     pipeline: &c.ribbon,
                     verts: data_render::MILKYWAY_RIBBON_VERTICES,
                     texture_bg: Some(&c.star_tex_bg),
-                },
+                }),
                 Some(StarsPick {
                     pipeline: &c.stars,
                     texture_bg: &c.star_tex_bg,
                 }),
-                ScatterPick {
+                Some(ScatterPick {
                     pipeline: &c.planets,
                     texture_bg: Some(&c.star_tex_bg),
-                },
-                &c.jets,
+                }),
+                Some(&c.jets),
             ),
             // Constellation: only ScatterLine is supported. The line is the
             // regular columnar stroke with style-level alpha; the scatter
             // layer renders PSF stars at the data points.
             Some(StyleSet::Constellation(c)) => (
-                LinePick {
+                Some(LinePick {
                     pipeline: &c.line,
                     verts: 4,
                     texture_bg: None,
-                },
+                }),
                 None,
-                ScatterPick {
+                Some(ScatterPick {
                     pipeline: &c.stars,
                     texture_bg: Some(&c.star_tex_bg),
-                },
-                &pipelines.errorbar,
+                }),
+                None,
             ),
         };
 
@@ -5163,6 +5592,7 @@ impl Renderer {
             let y_h = lookup(&cfg.y_column)?;
 
             let line = if primitives.line {
+                let line_pick = line_pick.expect("prepare ensured line pipeline");
                 let arc = prepared
                     .get(idx)
                     .and_then(|series| series.arc.as_ref())
@@ -5234,9 +5664,14 @@ impl Renderer {
                     }
                     _ => None,
                 };
+                let scatter_pick = scatter_pick.expect("prepare ensured scatter pipeline");
                 Some(ColumnScatterLayer {
-                    pipeline: precise_style_map
-                        .map_or(scatter_pick.pipeline, |_| &pipelines.scatter_mapped),
+                    pipeline: precise_style_map.map_or(scatter_pick.pipeline, |_| {
+                        pipelines
+                            .scatter_mapped
+                            .as_ref()
+                            .expect("prepare ensured mapped scatter pipeline")
+                    }),
                     transform_bg: &view.transform_bg,
                     style_bg: &series.style.scatter_bg,
                     style_map_bg: precise_style_map.map(|m| &m.bind_group),
@@ -5325,8 +5760,15 @@ impl Renderer {
                             _ => None,
                         };
                         Some(ColumnErrorBarDraw {
-                            pipeline: precise_errorbar_style_map
-                                .map_or(errorbar_pipe, |_| &pipelines.errorbar_mapped),
+                            pipeline: precise_errorbar_style_map.map_or(
+                                errorbar_pipe.expect("prepare ensured errorbar pipeline"),
+                                |_| {
+                                    pipelines
+                                        .errorbar_mapped
+                                        .as_ref()
+                                        .expect("prepare ensured mapped errorbar pipeline")
+                                },
+                            ),
                             transform_bg: &view.transform_bg,
                             style_bg: &series.style.errorbar_bg,
                             style_map_bg: precise_errorbar_style_map.map(|m| &m.bind_group),
@@ -5438,9 +5880,15 @@ impl Renderer {
                         );
                         picked.push(ColumnPickRingLayer {
                             pipeline: if uses_mapped_pick {
-                                &pipelines.pick_ring_mapped
+                                pipelines
+                                    .pick_ring_mapped
+                                    .as_ref()
+                                    .expect("prepare ensured mapped pick ring pipeline")
                             } else {
-                                &pipelines.pick_ring
+                                pipelines
+                                    .pick_ring
+                                    .as_ref()
+                                    .expect("prepare ensured pick ring pipeline")
                             },
                             transform_bg: &view.transform_bg,
                             style_bg,
@@ -5522,6 +5970,11 @@ impl Renderer {
         t: &data_render::ScatterTransform,
         star_pitch: Option<f32>,
     ) -> Option<PreparedArc> {
+        if self.arc_pipelines.is_none() {
+            self.arc_pipelines = Some(data_render::line_arc::create_arc_scan_pipelines(
+                &self.device,
+            ));
+        }
         let (x_base, y_base, n) = self.arc_source_layout(x_id, y_id)?;
         let layout_generation = self.pool.layout_generation();
 
@@ -5561,7 +6014,7 @@ impl Renderer {
                 let chunk_override = None;
                 let scratch = data_render::line_arc::ArcScratch::build(
                     &self.device,
-                    &self.arc_pipelines,
+                    self.arc_pipelines.as_ref().expect("arc pipelines ensured"),
                     self.pool.buffer(),
                     n,
                     x_base,
@@ -5585,7 +6038,7 @@ impl Renderer {
         scratch.dispatch(
             &self.queue,
             &mut encoder,
-            &self.arc_pipelines,
+            self.arc_pipelines.as_ref().expect("arc pipelines ensured"),
             t,
             star_pitch,
         );
@@ -5756,6 +6209,14 @@ impl Renderer {
             export_format,
             export_sample_count,
         );
+        export_target_pipelines.ensure_precise_variants_for_items(
+            &self.device,
+            &self.transform_bgl,
+            &self.style_bgl,
+            &self.per_point_style_map_bgl,
+            export_format,
+            &items,
+        );
         export_target_pipelines.ensure_styles_for_items(
             &self.device,
             &self.queue,
@@ -5838,6 +6299,7 @@ impl Renderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             self.paint_prepared_items(&mut pass, (w, h), &prepared_items)?;
         }
@@ -5909,7 +6371,13 @@ impl Renderer {
                     resource: "figgy export readback mapping",
                     reason: format!("map_async: {e:?}"),
                 })?;
-            let mapped = slice.get_mapped_range();
+            let mapped =
+                slice
+                    .get_mapped_range()
+                    .map_err(|e| FiggyError::GpuResourceAllocationFailed {
+                        resource: "figgy export readback mapping",
+                        reason: format!("get_mapped_range: {e:?}"),
+                    })?;
 
             for local_y in 0..rows {
                 let src_off = (local_y * padded_bpr) as usize;
@@ -6164,6 +6632,10 @@ fn has_scatter(rt: &DataRenderType) -> bool {
     !matches!(rt, DataRenderType::Line { .. })
 }
 
+fn has_errorbar(rt: &DataRenderType) -> bool {
+    extract_err_x(rt).is_some() || extract_err_y(rt).is_some()
+}
+
 fn extract_line(rt: &DataRenderType) -> Option<&DataLineStyleConfig> {
     match rt {
         DataRenderType::Line { line }
@@ -6359,6 +6831,19 @@ impl<'w> WindowedRenderer<'w> {
         observer: &mut dyn FnMut(InitEvent),
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         self.inner.enable_gpu_picking_observed(observer)
+    }
+
+    pub async fn enable_gpu_picking_async(
+        &mut self,
+    ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        self.inner.enable_gpu_picking_async().await
+    }
+
+    pub async fn enable_gpu_picking_observed_async(
+        &mut self,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        self.inner.enable_gpu_picking_observed_async(observer).await
     }
 
     pub fn prepare_gpu_picking_for_chart(
@@ -6595,12 +7080,23 @@ impl<'w> WindowedRenderer<'w> {
         prepared: &PreparedFrame,
     ) -> Result<()> {
         let frame = match self.surface.get_current_texture() {
-            Ok(t) => t,
-            Err(error @ (wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated)) => {
-                // Let the caller decide whether to resize, retry, or exit.
-                return Err(FiggyError::SurfaceAcquireFailed { error });
+            wgpu::CurrentSurfaceTexture::Success(t)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            wgpu::CurrentSurfaceTexture::Lost => {
+                return Err(FiggyError::SurfaceAcquireFailed {
+                    reason: "lost".into(),
+                });
             }
-            Err(error) => return Err(FiggyError::SurfaceAcquireFailed { error }),
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                return Err(FiggyError::SurfaceAcquireFailed {
+                    reason: "outdated".into(),
+                });
+            }
+            other => {
+                return Err(FiggyError::SurfaceAcquireFailed {
+                    reason: format!("{other:?}"),
+                });
+            }
         };
         let target = frame
             .texture
@@ -6636,6 +7132,7 @@ impl<'w> WindowedRenderer<'w> {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             self.inner.paint_prepared(
                 &mut pass,
@@ -6644,8 +7141,34 @@ impl<'w> WindowedRenderer<'w> {
             )?;
         }
         self.inner.queue().submit(std::iter::once(encoder.finish()));
-        frame.present();
+        self.inner.queue().present(frame);
         Ok(())
+    }
+
+    /// Submit one frame and wait until that GPU work has finished executing.
+    ///
+    /// Dawn / native drivers often compile the used pipelines on this first
+    /// real submit rather than at `createRenderPipeline`. Hosts should keep
+    /// a loading state up until this future resolves. It does not remove a
+    /// main-thread freeze; it only makes that freeze observable as "not
+    /// ready yet" instead of a black canvas.
+    pub async fn first_frame_ready(
+        &mut self,
+        clear: crate::color::Color,
+        items: &[ChartDrawItem<'_>],
+    ) -> Result<()> {
+        self.draw(clear, items)?;
+        self.inner.wait_submitted_work().await;
+        Ok(())
+    }
+
+    /// Alias for [`Self::first_frame_ready`].
+    pub async fn warm_up(
+        &mut self,
+        clear: crate::color::Color,
+        items: &[ChartDrawItem<'_>],
+    ) -> Result<()> {
+        self.first_frame_ready(clear, items).await
     }
 }
 
@@ -6653,6 +7176,7 @@ impl<'w> WindowedRenderer<'w> {
 mod tests {
     use super::*;
     use crate::data::Column;
+    use crate::data_config::{DataErrorBarPointStyleOverride, DataScatterPointStyleOverride};
 
     fn col_f64(data: Vec<f64>) -> Column<f64> {
         let min = data.iter().copied().fold(f64::INFINITY, f64::min);
@@ -6773,7 +7297,7 @@ mod tests {
         chart
     }
 
-    fn caps_with_limits(storage_binding: u32, buffer_size: u64) -> RendererDeviceCaps {
+    fn caps_with_limits(storage_binding: u64, buffer_size: u64) -> RendererDeviceCaps {
         RendererDeviceCaps {
             features: wgpu::Features::empty(),
             max_texture_dimension_2d: 8192,
@@ -6791,7 +7315,7 @@ mod tests {
     #[test]
     fn pool_capacity_clamps_to_storage_and_buffer_limits() {
         let mb = 1024 * 1024;
-        let caps = caps_with_limits(128 * mb as u32, 1024 * mb);
+        let caps = caps_with_limits(128 * mb, 1024 * mb);
         // Comfortably under both limits — untouched.
         assert_eq!(effective_pool_capacity(64 * mb, caps), 64 * mb);
         // Exactly at the storage-binding limit — untouched.
@@ -6801,13 +7325,13 @@ mod tests {
         // that used to panic on the first dashed/sketch/milkyway line.
         assert_eq!(effective_pool_capacity(256 * mb, caps), 128 * mb);
         // When max_buffer_size is the tighter of the two, it wins.
-        let caps_small_buffer = caps_with_limits(u32::MAX, 32 * mb);
+        let caps_small_buffer = caps_with_limits(u64::from(u32::MAX), 32 * mb);
         assert_eq!(
             effective_pool_capacity(256 * mb, caps_small_buffer),
             32 * mb
         );
         // A device with a generous binding limit keeps a large pool intact.
-        let caps_big = caps_with_limits(u32::MAX, 4 * 1024 * mb);
+        let caps_big = caps_with_limits(u64::from(u32::MAX), 4 * 1024 * mb);
         assert_eq!(effective_pool_capacity(512 * mb, caps_big), 512 * mb);
     }
 
@@ -8647,6 +9171,215 @@ mod tests {
         assert_eq!((committed.x.min, committed.x.max), (300.0, 400.0));
     }
 
+    fn empty_chart_items<'a>(
+        renderer: &Renderer,
+        chart: &'a Chart,
+        view: &'a ChartView,
+    ) -> [ChartDrawItem<'a>; 1] {
+        let _ = renderer;
+        [ChartDrawItem {
+            view,
+            chart_config: chart.config(),
+            series: &[],
+        }]
+    }
+
+    #[test]
+    fn empty_prepare_compiles_only_axis_and_leaves_extent_engine_idle() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 240,
+        });
+        let chart = Chart::new(config);
+        let view = renderer
+            .create_chart_view(&chart, chart.config().chart_area.0.clone())
+            .unwrap();
+        let items = empty_chart_items(&renderer, &chart, &view);
+        renderer.prepare(&items).unwrap();
+
+        assert!(renderer.line_pipeline().is_none());
+        assert!(renderer.scatter_pipeline().is_none());
+        assert!(renderer.errorbar_pipeline().is_none());
+        assert!(renderer.pipelines.scatter_mapped.is_none());
+        assert!(renderer.pipelines.errorbar_mapped.is_none());
+        assert!(renderer.pipelines.pick_ring_mapped.is_none());
+        assert!(!renderer.errorbar_extent_engine_ready());
+        pollster::block_on(renderer.wait_submitted_work());
+    }
+
+    #[test]
+    fn line_prepare_compiles_only_the_line_pipeline() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.add_column("lx", &col_f64(vec![0.0, 1.0])).unwrap();
+        renderer.add_column("ly", &col_f64(vec![0.0, 1.0])).unwrap();
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 240,
+        });
+        let chart = Chart::new(config);
+        let view = renderer
+            .create_chart_view(&chart, chart.config().chart_area.0.clone())
+            .unwrap();
+        let series_cfg = state_test_line("line", "lx", "ly");
+        let style = renderer.create_style_for_series(&series_cfg);
+        let series = [Series {
+            config: &series_cfg,
+            style: &style,
+        }];
+        let items = [ChartDrawItem {
+            view: &view,
+            chart_config: chart.config(),
+            series: &series,
+        }];
+        renderer.prepare(&items).unwrap();
+        assert!(renderer.line_pipeline().is_some());
+        assert!(renderer.scatter_pipeline().is_none());
+        assert!(renderer.errorbar_pipeline().is_none());
+        assert!(renderer.pipelines.scatter_mapped.is_none());
+        assert!(renderer.pipelines.errorbar_mapped.is_none());
+        assert!(renderer.pipelines.pick_ring_mapped.is_none());
+        assert!(!renderer.errorbar_extent_engine_ready());
+    }
+
+    #[test]
+    fn scatter_prepare_compiles_only_the_scatter_pipeline() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.add_column("sx", &col_f64(vec![0.0, 1.0])).unwrap();
+        renderer.add_column("sy", &col_f64(vec![0.0, 1.0])).unwrap();
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 240,
+        });
+        let chart = Chart::new(config);
+        let view = renderer
+            .create_chart_view(&chart, chart.config().chart_area.0.clone())
+            .unwrap();
+        let series_cfg = SeriesConfig {
+            series_id: "scatter".into(),
+            source_id: None,
+            label: None,
+            x_column: "sx".into(),
+            y_column: "sy".into(),
+            render_type: DataRenderType::Scatter {
+                scatter: test_scatter_style(),
+            },
+        };
+        let style = renderer.create_style_for_series(&series_cfg);
+        let series = [Series {
+            config: &series_cfg,
+            style: &style,
+        }];
+        let items = [ChartDrawItem {
+            view: &view,
+            chart_config: chart.config(),
+            series: &series,
+        }];
+        renderer.prepare(&items).unwrap();
+        assert!(renderer.line_pipeline().is_none());
+        assert!(renderer.scatter_pipeline().is_some());
+        assert!(renderer.errorbar_pipeline().is_none());
+        assert!(
+            renderer.pipelines.scatter_mapped.is_none(),
+            "unmapped scatter must not compile the mapped pipeline"
+        );
+        assert!(renderer.pipelines.errorbar_mapped.is_none());
+        assert!(renderer.pipelines.pick_ring_mapped.is_none());
+    }
+
+    #[test]
+    fn errorbar_prepare_compiles_scatter_and_errorbar_pipelines() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.add_column("ex", &col_f64(vec![0.0, 1.0])).unwrap();
+        renderer.add_column("ey", &col_f64(vec![0.0, 1.0])).unwrap();
+        renderer.add_column("ee", &col_f64(vec![0.1, 0.1])).unwrap();
+        renderer.ensure_internal_zero_column(2).unwrap();
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 240,
+        });
+        let chart = Chart::new(config);
+        let view = renderer
+            .create_chart_view(&chart, chart.config().chart_area.0.clone())
+            .unwrap();
+        let series_cfg = SeriesConfig {
+            series_id: "errorbar".into(),
+            source_id: None,
+            label: None,
+            x_column: "ex".into(),
+            y_column: "ey".into(),
+            render_type: DataRenderType::ScatterErrorbarY {
+                scatter: test_scatter_style(),
+                err_y: ErrorRef::Symmetric {
+                    column: "ee".into(),
+                },
+                err_style: test_errorbar_style(),
+            },
+        };
+        let style = renderer.create_style_for_series(&series_cfg);
+        let series = [Series {
+            config: &series_cfg,
+            style: &style,
+        }];
+        let items = [ChartDrawItem {
+            view: &view,
+            chart_config: chart.config(),
+            series: &series,
+        }];
+        renderer.prepare(&items).unwrap();
+        assert!(renderer.line_pipeline().is_none());
+        assert!(renderer.scatter_pipeline().is_some());
+        assert!(renderer.errorbar_pipeline().is_some());
+        assert!(
+            renderer.pipelines.scatter_mapped.is_none(),
+            "errorbar without a style map must not compile mapped pipelines"
+        );
+        assert!(renderer.pipelines.errorbar_mapped.is_none());
+        assert!(renderer.pipelines.pick_ring_mapped.is_none());
+        assert!(!renderer.errorbar_extent_engine_ready());
+    }
+
+    #[test]
+    fn first_extent_job_creates_the_errorbar_extent_engine() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer
+            .add_column("fit-value", &col_f64(vec![0.0, 10.0]))
+            .unwrap();
+        renderer
+            .add_column("fit-lower", &col_f64(vec![1.0, 5.0]))
+            .unwrap();
+        renderer
+            .add_column("fit-upper", &col_f64(vec![1.0, 5.0]))
+            .unwrap();
+        assert!(!renderer.errorbar_extent_engine_ready());
+        let _ = renderer
+            .begin_errorbar_extent("fit-value", "fit-lower", "fit-upper")
+            .unwrap();
+        assert!(renderer.errorbar_extent_engine_ready());
+    }
+
     #[test]
     fn point_constellation_scatterline_exports() {
         let Some((device, queue)) = crate::data_render::shared_device() else {
@@ -8966,6 +9699,552 @@ mod tests {
 
         assert!(green > 20, "mapped errorbar style produced no green ink");
         assert!(blue > 20, "mapped errorbar style produced no blue ink");
+    }
+
+    fn count_rgba_ink(rgba: &[u8], pred: impl Fn([u8; 4]) -> bool) -> usize {
+        rgba.chunks_exact(4)
+            .filter(|p| pred([p[0], p[1], p[2], p[3]]))
+            .count()
+    }
+
+    fn is_saturated_red(p: [u8; 4]) -> bool {
+        p[0] > 150 && p[1] < 80 && p[2] < 80 && p[3] > 100
+    }
+
+    fn is_saturated_green(p: [u8; 4]) -> bool {
+        p[0] < 80 && p[1] > 150 && p[2] < 80 && p[3] > 100
+    }
+
+    fn is_saturated_blue(p: [u8; 4]) -> bool {
+        p[0] < 80 && p[1] < 80 && p[2] > 150 && p[3] > 100
+    }
+
+    fn paint_prepared_rgba(
+        renderer: &Renderer,
+        prepared: &PreparedFrame,
+        w: u32,
+        h: u32,
+    ) -> Vec<u8> {
+        let device = renderer.device.as_ref();
+        let queue = renderer.queue.as_ref();
+        let target_desc = wgpu::TextureDescriptor {
+            label: Some("mapped style regression target"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        };
+        let tex = device.create_texture(&target_desc);
+        let tv = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let unpadded = w * 4;
+        let padded = unpadded.div_ceil(256) * 256;
+        let mut enc = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &tv,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            renderer
+                .paint_prepared(&mut pass, (w, h), prepared)
+                .expect("paint_prepared after mapped-style prepare");
+        }
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: u64::from(padded) * u64::from(h),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(h),
+                },
+            },
+            target_desc.size,
+        );
+        queue.submit(std::iter::once(enc.finish()));
+        let slice = readback.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(std::time::Duration::from_secs(30)),
+        });
+        let mapped = slice
+            .get_mapped_range()
+            .expect("offscreen readback is mapped");
+        if padded == unpadded {
+            mapped.to_vec()
+        } else {
+            let mut out = Vec::with_capacity((unpadded * h) as usize);
+            for row in 0..h {
+                let start = (row * padded) as usize;
+                out.extend_from_slice(&mapped[start..start + unpadded as usize]);
+            }
+            out
+        }
+    }
+
+    struct MappedStyleRender {
+        styles: Vec<ChartStyle>,
+        screen: Vec<u8>,
+        export: Vec<u8>,
+        scatter_mapped: bool,
+        errorbar_mapped: bool,
+        pick_ring_mapped: bool,
+    }
+
+    /// On-screen path = `prepare` + `paint_prepared` (same as `WindowedRenderer::draw`).
+    /// PNG/export path = `export_panel_rgba` (own pipeline cache, same ensure).
+    fn render_mapped_style_case(
+        renderer: &mut Renderer,
+        chart: &Chart,
+        series_cfgs: &[SeriesConfig],
+    ) -> MappedStyleRender {
+        let styles: Vec<ChartStyle> = series_cfgs
+            .iter()
+            .map(|cfg| renderer.create_style_for_series(cfg))
+            .collect();
+        let w = chart.config().chart_area.0.width;
+        let h = chart.config().chart_area.0.height;
+        let view = renderer
+            .create_chart_view(chart, chart.config().chart_area.0.clone())
+            .unwrap();
+        let series: Vec<Series<'_>> = series_cfgs
+            .iter()
+            .zip(styles.iter())
+            .map(|(cfg, style)| Series { config: cfg, style })
+            .collect();
+        let items = [ChartDrawItem {
+            view: &view,
+            chart_config: chart.config(),
+            series: &series,
+        }];
+        let prepared = renderer.prepare(&items).unwrap();
+        let scatter_mapped = renderer.pipelines.scatter_mapped.is_some();
+        let errorbar_mapped = renderer.pipelines.errorbar_mapped.is_some();
+        let pick_ring_mapped = renderer.pipelines.pick_ring_mapped.is_some();
+        let screen = paint_prepared_rgba(renderer, &prepared, w, h);
+        drop(prepared);
+        drop(items);
+        drop(series);
+        drop(view);
+        let export = renderer
+            .export_panel_rgba(chart, series_cfgs, 1.0)
+            .expect("export must not panic when a style map exists without an index column");
+        MappedStyleRender {
+            styles,
+            screen,
+            export: export.rgba,
+            scatter_mapped,
+            errorbar_mapped,
+            pick_ring_mapped,
+        }
+    }
+
+    fn assert_ink_on_screen_and_export(
+        rendered: &MappedStyleRender,
+        label: &str,
+        pred: fn([u8; 4]) -> bool,
+        min: usize,
+    ) {
+        let screen = count_rgba_ink(&rendered.screen, pred);
+        let export = count_rgba_ink(&rendered.export, pred);
+        assert!(
+            screen >= min,
+            "{label} missing on-screen ({screen} px, need {min})"
+        );
+        assert!(
+            export >= min,
+            "{label} missing on PNG/export ({export} px, need {min})"
+        );
+    }
+
+    fn override_only_scatter_series(id: &str, x: &str, y: &str) -> SeriesConfig {
+        let mut scatter = test_scatter_style();
+        scatter.point_color = Color::new(0.0, 0.0, 0.0, 1.0);
+        scatter.point_size = 6.0;
+        scatter.point_style_table = None;
+        scatter.point_style_index_column = None;
+        scatter.point_style_overrides = Some(vec![DataScatterPointStyleOverride {
+            index: 0,
+            style: DataScatterPointStyleConfig {
+                point_color: Some(Color::new(1.0, 0.0, 0.0, 1.0)),
+                point_size: Some(16.0),
+                ..Default::default()
+            },
+        }]);
+        SeriesConfig {
+            series_id: id.into(),
+            source_id: None,
+            label: None,
+            x_column: x.into(),
+            y_column: y.into(),
+            render_type: DataRenderType::Scatter { scatter },
+        }
+    }
+
+    /// `point_style_overrides` without `point_style_index_column` still builds
+    /// a style map (`has_index = false`). Prepare must compile the mapped
+    /// scatter pipeline that draw/export both require.
+    #[test]
+    fn override_only_scatter_paints_on_screen_and_export() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.add_column("x", &col_f64(vec![1.0, 3.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![2.5, 2.5])).unwrap();
+
+        let chart = basic_errorbar_chart();
+        let series = [override_only_scatter_series("ov-scatter", "x", "y")];
+        let rendered = render_mapped_style_case(&mut renderer, &chart, &series);
+
+        let map = rendered.styles[0]
+            .scatter_map
+            .as_ref()
+            .expect("overrides-only scatter must build a style map");
+        assert!(
+            !map.has_index,
+            "overrides-only scatter must not set has_index"
+        );
+        assert!(
+            rendered.styles[0].errorbar_map.is_none(),
+            "scatter-only series must not build an errorbar map"
+        );
+        assert!(
+            rendered.scatter_mapped,
+            "prepare must compile mapped scatter when scatter_map is Some"
+        );
+        assert!(!rendered.errorbar_mapped);
+        assert!(!rendered.pick_ring_mapped);
+
+        assert_ink_on_screen_and_export(
+            &rendered,
+            "override-only red scatter",
+            is_saturated_red,
+            20,
+        );
+    }
+
+    /// Same override-only map plus a selected-point ring. Draw selects the
+    /// mapped pick-ring pipeline whenever `scatter_map` is Some.
+    #[test]
+    fn override_only_scatter_picked_ring_paints_on_screen_and_export() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.add_column("x", &col_f64(vec![1.0, 3.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![2.5, 2.5])).unwrap();
+
+        let mut chart = basic_errorbar_chart();
+        chart.config_mut().picked_points = Some(crate::config::PickedPointsConfig {
+            visible: true,
+            refs: vec![crate::config::PickedPointRef {
+                source_id: None,
+                series_id: "ov-scatter".into(),
+                point_index: 0,
+            }],
+            ring_color: Color::new(0.0, 1.0, 0.0, 1.0),
+            ring_width_px: 3.0,
+            radius_extra_px: 8.0,
+        });
+        let series = [override_only_scatter_series("ov-scatter", "x", "y")];
+        let rendered = render_mapped_style_case(&mut renderer, &chart, &series);
+
+        assert!(
+            rendered.styles[0]
+                .scatter_map
+                .as_ref()
+                .is_some_and(|map| !map.has_index)
+        );
+        assert!(
+            rendered.scatter_mapped,
+            "picked override-only scatter still needs mapped scatter"
+        );
+        assert!(
+            rendered.pick_ring_mapped,
+            "picked override-only scatter must compile mapped pick ring"
+        );
+
+        assert_ink_on_screen_and_export(
+            &rendered,
+            "override-only red scatter",
+            is_saturated_red,
+            20,
+        );
+        assert_ink_on_screen_and_export(&rendered, "mapped pick ring", is_saturated_green, 10);
+    }
+
+    /// `error_bar_style_overrides` without an index column is the errorbar
+    /// counterpart of a single-point edit.
+    #[test]
+    fn override_only_errorbar_paints_on_screen_and_export() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.add_column("x", &col_f64(vec![1.0, 3.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![2.5, 2.5])).unwrap();
+        renderer.add_column("ey", &col_f64(vec![1.0, 1.0])).unwrap();
+        renderer.ensure_internal_zero_column(2).unwrap();
+
+        let chart = basic_errorbar_chart();
+        let mut scatter = test_scatter_style();
+        scatter.point_size = 0.0;
+        let series = [SeriesConfig {
+            series_id: "ov-errorbar".into(),
+            source_id: None,
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            render_type: DataRenderType::ScatterErrorbarY {
+                scatter,
+                err_y: ErrorRef::Symmetric {
+                    column: "ey".into(),
+                },
+                err_style: DataErrorBarStyleConfig {
+                    error_bar_color: Color::BLACK,
+                    error_bar_width: 2.0,
+                    error_bar_cap_size: 7.0,
+                    cap_width: 2.0,
+                    error_bar_style_table: None,
+                    error_bar_style_index_column: None,
+                    error_bar_style_overrides: Some(vec![
+                        DataErrorBarPointStyleOverride {
+                            index: 0,
+                            style: DataErrorBarPointStyleConfig {
+                                error_bar_color: Some(Color::new(0.0, 1.0, 0.0, 1.0)),
+                                ..Default::default()
+                            },
+                        },
+                        DataErrorBarPointStyleOverride {
+                            index: 1,
+                            style: DataErrorBarPointStyleConfig {
+                                error_bar_color: Some(Color::new(0.0, 0.0, 1.0, 1.0)),
+                                ..Default::default()
+                            },
+                        },
+                    ]),
+                },
+            },
+        }];
+        let rendered = render_mapped_style_case(&mut renderer, &chart, &series);
+
+        let map = rendered.styles[0]
+            .errorbar_map
+            .as_ref()
+            .expect("overrides-only errorbar must build a style map");
+        assert!(!map.has_index);
+        assert!(
+            rendered.errorbar_mapped,
+            "prepare must compile mapped errorbar when errorbar_map is Some"
+        );
+        assert!(
+            !rendered.scatter_mapped,
+            "hidden unmapped scatter must not compile mapped scatter"
+        );
+
+        assert_ink_on_screen_and_export(
+            &rendered,
+            "override-only green errorbar",
+            is_saturated_green,
+            20,
+        );
+        assert_ink_on_screen_and_export(
+            &rendered,
+            "override-only blue errorbar",
+            is_saturated_blue,
+            20,
+        );
+    }
+
+    /// Existing table + index-column mapped path, scatter and errorbar, both
+    /// on-screen paint and PNG/export.
+    #[test]
+    fn table_and_index_mapped_scatter_and_errorbar_paints_on_screen_and_export() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.add_column("sx", &col_f64(vec![1.0, 3.0])).unwrap();
+        renderer.add_column("sy", &col_f64(vec![3.5, 3.5])).unwrap();
+        renderer
+            .add_column("s_style", &col_f64(vec![0.0, 1.0]))
+            .unwrap();
+        renderer.add_column("ex", &col_f64(vec![1.0, 3.0])).unwrap();
+        renderer.add_column("ey", &col_f64(vec![1.2, 1.2])).unwrap();
+        renderer.add_column("ee", &col_f64(vec![0.7, 0.7])).unwrap();
+        renderer
+            .add_column("e_style", &col_f64(vec![0.0, 1.0]))
+            .unwrap();
+        renderer.ensure_internal_zero_column(2).unwrap();
+
+        let chart = basic_errorbar_chart();
+        let mut hidden_scatter = test_scatter_style();
+        hidden_scatter.point_size = 0.0;
+        let series = [
+            SeriesConfig {
+                series_id: "mapped-scatter".into(),
+                source_id: None,
+                label: None,
+                x_column: "sx".into(),
+                y_column: "sy".into(),
+                render_type: DataRenderType::Scatter {
+                    scatter: DataScatterStyleConfig {
+                        point_color: Color::BLACK,
+                        point_shape: crate::data_config::ScatterShape::CircleFilled,
+                        point_size: 10.0,
+                        point_style_table: Some(vec![
+                            DataScatterPointStyleConfig {
+                                point_color: Some(Color::new(1.0, 0.0, 0.0, 1.0)),
+                                ..Default::default()
+                            },
+                            DataScatterPointStyleConfig {
+                                point_color: Some(Color::new(0.0, 0.0, 1.0, 1.0)),
+                                ..Default::default()
+                            },
+                        ]),
+                        point_style_index_column: Some("s_style".into()),
+                        point_style_overrides: None,
+                    },
+                },
+            },
+            SeriesConfig {
+                series_id: "mapped-errorbar".into(),
+                source_id: None,
+                label: None,
+                x_column: "ex".into(),
+                y_column: "ey".into(),
+                render_type: DataRenderType::ScatterErrorbarY {
+                    scatter: hidden_scatter,
+                    err_y: ErrorRef::Symmetric {
+                        column: "ee".into(),
+                    },
+                    err_style: DataErrorBarStyleConfig {
+                        error_bar_color: Color::BLACK,
+                        error_bar_width: 2.0,
+                        error_bar_cap_size: 7.0,
+                        cap_width: 2.0,
+                        error_bar_style_table: Some(vec![
+                            DataErrorBarPointStyleConfig {
+                                error_bar_color: Some(Color::new(0.0, 1.0, 0.0, 1.0)),
+                                ..Default::default()
+                            },
+                            DataErrorBarPointStyleConfig {
+                                error_bar_color: Some(Color::new(0.0, 0.0, 1.0, 1.0)),
+                                ..Default::default()
+                            },
+                        ]),
+                        error_bar_style_index_column: Some("e_style".into()),
+                        error_bar_style_overrides: None,
+                    },
+                },
+            },
+        ];
+        let rendered = render_mapped_style_case(&mut renderer, &chart, &series);
+
+        let scatter_map = rendered.styles[0]
+            .scatter_map
+            .as_ref()
+            .expect("table+index scatter must build a style map");
+        assert!(scatter_map.has_index);
+        let errorbar_map = rendered.styles[1]
+            .errorbar_map
+            .as_ref()
+            .expect("table+index errorbar must build a style map");
+        assert!(errorbar_map.has_index);
+        assert!(rendered.scatter_mapped);
+        assert!(rendered.errorbar_mapped);
+
+        assert_ink_on_screen_and_export(&rendered, "table+index red scatter", is_saturated_red, 20);
+        assert_ink_on_screen_and_export(
+            &rendered,
+            "table+index green errorbar",
+            is_saturated_green,
+            20,
+        );
+        assert_ink_on_screen_and_export(
+            &rendered,
+            "table+index blue mapped marks",
+            is_saturated_blue,
+            20,
+        );
+    }
+
+    /// A style table with no index column and no overrides still produces a
+    /// style map (`has_index = false`). Draw uses the mapped pipeline, so
+    /// prepare must compile it even though the table cannot be indexed.
+    #[test]
+    fn style_table_without_index_still_ensures_mapped_scatter_pipeline() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.add_column("x", &col_f64(vec![1.0, 3.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![2.5, 2.5])).unwrap();
+
+        let chart = basic_errorbar_chart();
+        let series = [SeriesConfig {
+            series_id: "table-only".into(),
+            source_id: None,
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            render_type: DataRenderType::Scatter {
+                scatter: DataScatterStyleConfig {
+                    point_color: Color::new(1.0, 0.0, 0.0, 1.0),
+                    point_shape: crate::data_config::ScatterShape::CircleFilled,
+                    point_size: 10.0,
+                    point_style_table: Some(vec![DataScatterPointStyleConfig {
+                        point_color: Some(Color::new(0.0, 1.0, 0.0, 1.0)),
+                        ..Default::default()
+                    }]),
+                    point_style_index_column: None,
+                    point_style_overrides: None,
+                },
+            },
+        }];
+        let rendered = render_mapped_style_case(&mut renderer, &chart, &series);
+        let map = rendered.styles[0]
+            .scatter_map
+            .as_ref()
+            .expect("a non-empty style table still builds a map");
+        assert!(!map.has_index);
+        assert!(
+            rendered.scatter_mapped,
+            "table-only map must compile mapped scatter"
+        );
+        // Table rows are ignored without an index column; base red must paint.
+        assert_ink_on_screen_and_export(
+            &rendered,
+            "table-only base red scatter",
+            is_saturated_red,
+            20,
+        );
     }
 
     #[test]
@@ -9371,7 +10650,12 @@ mod tests {
                 submission_index: None,
                 timeout: Some(std::time::Duration::from_secs(30)),
             });
-            let gpu: Vec<f32> = bytemuck::cast_slice(&slice.get_mapped_range()).to_vec();
+            let gpu: Vec<f32> = bytemuck::cast_slice(
+                &slice
+                    .get_mapped_range()
+                    .expect("arc prefix readback is mapped"),
+            )
+            .to_vec();
 
             // Sequential CPU reference mirroring the shader math.
             let px = |x: f64, y: f64| -> (f32, f32) {
@@ -9904,6 +11188,7 @@ mod tests {
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
+                    multiview_mask: None,
                 });
                 r.paint_prepared(&mut pass, (w, h), prepared)
                     .expect("paint_prepared with a valid token");
@@ -9941,7 +11226,10 @@ mod tests {
                 submission_index: None,
                 timeout: Some(std::time::Duration::from_secs(30)),
             });
-            let out = slice.get_mapped_range().to_vec();
+            let out = slice
+                .get_mapped_range()
+                .expect("offscreen readback is mapped")
+                .to_vec();
             out
         };
 

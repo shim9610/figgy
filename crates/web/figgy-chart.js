@@ -113,7 +113,9 @@ export class FiggyChartElement extends HTMLElement {
     if (!this.#isCurrentConnection(generation, readyToken)) {
       return;
     }
-    const kernel = await RawFiggyChart.create(this.#canvas);
+    const kernel = await RawFiggyChart.create_with_progress(this.#canvas, (event) => {
+      dispatchFiggyEvent(this, "figgy-init-progress", event);
+    });
     if (!this.#isCurrentConnection(generation, readyToken)) {
       kernel.free();
       return;
@@ -313,6 +315,44 @@ export class FiggyChartElement extends HTMLElement {
     }
   }
 
+  async first_frame_ready() {
+    if (this.busy) {
+      throw new Error("figgy chart is busy");
+    }
+    const token = {
+      generation: this.#lifecycleGeneration,
+      kernel: this.kernel,
+      disposal: "attached",
+    };
+    this.#exportToken = token;
+    try {
+      await token.kernel.first_frame_ready();
+    } finally {
+      this.#settleExport(token);
+    }
+  }
+
+  warm_up() {
+    return this.first_frame_ready();
+  }
+
+  async ensure_extent_engine() {
+    if (this.busy) {
+      throw new Error("figgy chart is busy");
+    }
+    const token = {
+      generation: this.#lifecycleGeneration,
+      kernel: this.kernel,
+      disposal: "attached",
+    };
+    this.#exportToken = token;
+    try {
+      await token.kernel.ensure_extent_engine();
+    } finally {
+      this.#settleExport(token);
+    }
+  }
+
   #settleExport(token) {
     let cleanupError = null;
     if (this.#isCurrentKernel(token) && this.#pendingRelease?.token === token) {
@@ -418,7 +458,22 @@ export class FiggyChartElement extends HTMLElement {
   remove_series(seriesId) { return this.#kernelForCall().remove_series(seriesId); }
   auto_fit_x(column, padding) { return this.#kernelForCall().auto_fit_x(column, padding); }
   auto_fit_y(column, padding) { return this.#kernelForCall().auto_fit_y(column, padding); }
-  auto_fit_all(padding) { return this.#kernelForCall().auto_fit_all(padding); }
+  async auto_fit_all(padding) {
+    if (this.busy) {
+      throw new Error("figgy chart is busy");
+    }
+    const token = {
+      generation: this.#lifecycleGeneration,
+      kernel: this.kernel,
+      disposal: "attached",
+    };
+    this.#exportToken = token;
+    try {
+      await token.kernel.auto_fit_all(padding);
+    } finally {
+      this.#settleExport(token);
+    }
+  }
   set_title(text) { return this.#kernelForCall().set_title(text); }
   set_x_title(text) { return this.#kernelForCall().set_x_title(text); }
   set_y_title(text) { return this.#kernelForCall().set_y_title(text); }
@@ -433,10 +488,22 @@ export class FiggyChartElement extends HTMLElement {
     const hit = this.#kernelForCall().hit_test(x, y);
     return hit === undefined ? null : hit;
   }
-  pick_point(x, y, maxDistancePx) {
-    return this.#kernelForCall().pick_point(x, y, maxDistancePx).then((hit) => (
-      hit === undefined ? null : JSON.parse(hit)
-    ));
+  async pick_point(x, y, maxDistancePx) {
+    if (this.busy) {
+      throw new Error("figgy chart is busy");
+    }
+    const token = {
+      generation: this.#lifecycleGeneration,
+      kernel: this.kernel,
+      disposal: "attached",
+    };
+    this.#exportToken = token;
+    try {
+      const hit = await token.kernel.pick_point(x, y, maxDistancePx);
+      return hit === undefined ? null : JSON.parse(hit);
+    } finally {
+      this.#settleExport(token);
+    }
   }
   set_picked_points(json) { return this.#kernelForCall().set_picked_points(json); }
   set_clear_color(r, g, b, a) { return this.#kernelForCall().set_clear_color(r, g, b, a); }

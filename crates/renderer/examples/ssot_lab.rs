@@ -511,14 +511,15 @@ impl Drop for LabApp {
 }
 
 impl eframe::App for LabApp {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
         let mut visuals = egui::Visuals::dark();
         visuals.panel_fill = EGUI_BG;
         visuals.window_fill = EGUI_BG;
         ctx.set_visuals(visuals);
 
         let Some(render_state) = frame.wgpu_render_state() else {
-            egui::CentralPanel::default().show(ctx, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 ui.label("No eframe wgpu_render_state — wgpu backend must be enabled.");
             });
             return;
@@ -536,7 +537,7 @@ impl eframe::App for LabApp {
                     self.initialized = true;
                 }
                 Err(msg) => {
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
                         ui.label(msg);
                     });
                     return;
@@ -578,9 +579,9 @@ impl eframe::App for LabApp {
                 }
             }
 
-            egui::SidePanel::left("controls")
-                .exact_width(300.0)
-                .show(ctx, |ui| {
+            egui::Panel::left("controls")
+                .exact_size(300.0)
+                .show(ui, |ui| {
                     ui.add_space(6.0);
                     ui.heading("SSoT editing");
                     ui.label(
@@ -653,7 +654,7 @@ impl eframe::App for LabApp {
         // -- 2×2 chart grid: register one split-API callback per panel. ------
         egui::CentralPanel::default()
             .frame(egui::Frame::default().fill(EGUI_BG))
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 let row_h = ui.available_height() / 2.0;
                 ui.columns(2, |cols| {
                     for (col_idx, col_ui) in cols.iter_mut().enumerate() {

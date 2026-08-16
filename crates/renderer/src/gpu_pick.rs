@@ -421,13 +421,13 @@ fn create_pipeline_bundle_observed(
 
     let query_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("figgy GPU pick query layout"),
-        bind_group_layouts: &[&query_data_bgl, &query_work_bgl],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(&query_data_bgl), Some(&query_work_bgl)],
+        immediate_size: 0,
     });
     let reduce_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("figgy GPU pick reduction layout"),
-        bind_group_layouts: &[&reduce_bgl],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(&reduce_bgl)],
+        immediate_size: 0,
     });
     finished(observer, INIT_SCOPE, "setup");
     let pipeline = |layout: &wgpu::PipelineLayout, entry: &str, label: &'static str| {
@@ -470,6 +470,109 @@ fn create_pipeline_bundle_observed(
                 "figgy GPU pick candidate reduction pipeline",
             )
         }),
+        query_data_bgl,
+        query_work_bgl,
+        reduce_bgl,
+        device,
+        queue,
+    })
+}
+
+async fn create_pipeline_bundle_observed_async(
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+    observer: &mut dyn FnMut(InitEvent),
+) -> Arc<PickPipelineBundle> {
+    use crate::init::{observe_value_async, yield_init_frame};
+    started(observer, INIT_SCOPE, "setup");
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("figgy exact GPU pick shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("gpu_pick.wgsl").into()),
+    });
+
+    let query_data_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("figgy GPU pick query data bgl"),
+        entries: &[
+            storage_entry(0, true),
+            storage_entry(1, false),
+            storage_entry(2, false),
+        ],
+    });
+    let query_work_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("figgy GPU pick query work bgl"),
+        entries: &[
+            uniform_entry(0),
+            storage_entry(1, true),
+            storage_entry(2, true),
+            storage_entry(3, false),
+        ],
+    });
+    let reduce_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("figgy GPU pick reduction bgl"),
+        entries: &[storage_entry(3, true), storage_entry(4, false)],
+    });
+
+    let query_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("figgy GPU pick query layout"),
+        bind_group_layouts: &[Some(&query_data_bgl), Some(&query_work_bgl)],
+        immediate_size: 0,
+    });
+    let reduce_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("figgy GPU pick reduction layout"),
+        bind_group_layouts: &[Some(&reduce_bgl)],
+        immediate_size: 0,
+    });
+    finished(observer, INIT_SCOPE, "setup");
+    yield_init_frame().await;
+    let pipeline = |layout: &wgpu::PipelineLayout, entry: &str, label: &'static str| {
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some(label),
+            layout: Some(layout),
+            module: &shader,
+            entry_point: Some(entry),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        })
+    };
+
+    let gate_x = observe_value_async(observer, INIT_SCOPE, "pick_gate_x", || {
+        pipeline(
+            &query_layout,
+            "pick_gate_x",
+            "figgy GPU pick X gate pipeline",
+        )
+    })
+    .await;
+    let gate_y = observe_value_async(observer, INIT_SCOPE, "pick_gate_y", || {
+        pipeline(
+            &query_layout,
+            "pick_gate_y",
+            "figgy GPU pick Y gate pipeline",
+        )
+    })
+    .await;
+    let exact = observe_value_async(observer, INIT_SCOPE, "pick_exact_candidates", || {
+        pipeline(
+            &query_layout,
+            "pick_exact_candidates",
+            "figgy GPU pick exact candidate pipeline",
+        )
+    })
+    .await;
+    let reduce = observe_value_async(observer, INIT_SCOPE, "pick_reduce_candidates", || {
+        pipeline(
+            &reduce_layout,
+            "pick_reduce_candidates",
+            "figgy GPU pick candidate reduction pipeline",
+        )
+    })
+    .await;
+
+    Arc::new(PickPipelineBundle {
+        gate_x,
+        gate_y,
+        exact,
+        reduce,
         query_data_bgl,
         query_work_bgl,
         reduce_bgl,
@@ -702,6 +805,15 @@ impl PickPipelineBundle {
     ) -> Result<Arc<Self>, GpuPickError> {
         validate_device_limits(&device)?;
         Ok(create_pipeline_bundle_observed(device, queue, observer))
+    }
+
+    pub(crate) async fn new_observed_async(
+        device: Arc<wgpu::Device>,
+        queue: Arc<wgpu::Queue>,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> Result<Arc<Self>, GpuPickError> {
+        validate_device_limits(&device)?;
+        Ok(create_pipeline_bundle_observed_async(device, queue, observer).await)
     }
 }
 
@@ -1885,7 +1997,9 @@ impl GpuPickTicket {
             .map_err(|_| GpuPickError::MapChannelClosed)?
             .map_err(GpuPickError::MapFailed)?;
         let slice = readback.slice(..CANDIDATE_BYTES);
-        let mapped = slice.get_mapped_range();
+        let mapped = slice
+            .get_mapped_range()
+            .expect("GPU pick readback is mapped after map_async");
         let candidate = *bytemuck::from_bytes::<PickCandidateGpu>(&mapped);
         drop(mapped);
         readback.unmap();

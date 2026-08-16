@@ -1,6 +1,6 @@
 [package]
 name = "renderer"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 description = "wgpu + CPU-raster hybrid chart renderer for the figgy workspace."
 license = "MIT OR Apache-2.0"
@@ -13,7 +13,7 @@ bytemuck = { version = "1.19", features = ["derive"] }
 # Awaitable buffer-map signal for the async export path (works on wasm too).
 futures-channel = "0.3"
 png = "0.17"
-wgpu = "27"
+wgpu = "30"
 
 # Pure-Rust CPU raster stack (axis chrome + text) — compiles on every target
 # including wasm32-unknown-unknown.
@@ -25,19 +25,26 @@ tiny-skia = "0.11"
 # blocking the single thread would deadlock; use the *_async variants there.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster = "0.4.0"
+eframe = { version = "0.36", optional = true, default-features = false, features = ["wgpu"] }
+egui = { version = "0.36", optional = true }
+egui-wgpu = { version = "0.36", optional = true }
 
-eframe = { version = "0.33", optional = true, default-features = false, features = ["wgpu"] }
-egui = { version = "0.33", optional = true }
-egui-wgpu = { version = "0.33", optional = true }
-iced = { version = "0.14", optional = true, features = ["wgpu"] }
-iced_wgpu = { version = "0.14", optional = true }
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Window"] }
+
+# iced 0.14 still requires wgpu 27. Its integration source stays under
+# unsupported/; re-wire it when iced ships a wgpu 30 release.
+# iced = { version = "0.14", optional = true, features = ["wgpu"] }
+# iced_wgpu = { version = "0.14", optional = true }
 
 [dev-dependencies]
 winit = "0.30.13"
 
 [features]
 egui_demo = ["dep:eframe", "dep:egui", "dep:egui-wgpu"]
-iced_demo = ["dep:iced", "dep:iced_wgpu"]
 
 [[example]]
 name = "winit_simple"
@@ -52,11 +59,6 @@ required-features = ["egui_demo"]
 name = "egui_embed"
 path = "examples/egui_embed.rs"
 required-features = ["egui_demo"]
-
-[[example]]
-name = "iced_embed"
-path = "examples/iced_embed.rs"
-required-features = ["iced_demo"]
 
 [[example]]
 name = "ssot_lab"

@@ -206,15 +206,19 @@ pub fn create_arc_scan_pipelines_observed(
 
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("figgy arc scan layout"),
-        bind_group_layouts: &[&transform_bgl, &storage_bgl],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(&transform_bgl), Some(&storage_bgl)],
+        immediate_size: 0,
     });
     // Same first two groups (compatible prefix keeps them bound), plus the
     // star args group.
     let star_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("figgy star indirect layout"),
-        bind_group_layouts: &[&transform_bgl, &storage_bgl, &star_args_bgl],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[
+            Some(&transform_bgl),
+            Some(&storage_bgl),
+            Some(&star_args_bgl),
+        ],
+        immediate_size: 0,
     });
     finished(observer, INIT_SCOPE, "setup");
     let pipeline = |layout: &wgpu::PipelineLayout, entry: &str| {

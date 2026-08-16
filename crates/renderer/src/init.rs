@@ -73,6 +73,49 @@ pub(crate) fn observe_result<T, E>(
     Ok(value)
 }
 
+/// Yield one animation frame on wasm so a host loading bar can paint.
+/// Native init has no event loop to return to, so this is a no-op there.
+pub(crate) async fn yield_init_frame() {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+            if window.request_animation_frame(&resolve).is_err() {
+                let _ = resolve.call0(&wasm_bindgen::JsValue::UNDEFINED);
+            }
+        });
+        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+    }
+}
+
+pub(crate) async fn observe_value_async<T>(
+    observer: &mut dyn FnMut(InitEvent),
+    scope: &'static str,
+    stage: &'static str,
+    operation: impl FnOnce() -> T,
+) -> T {
+    started(observer, scope, stage);
+    let value = operation();
+    finished(observer, scope, stage);
+    yield_init_frame().await;
+    value
+}
+
+pub(crate) async fn observe_result_async<T, E>(
+    observer: &mut dyn FnMut(InitEvent),
+    scope: &'static str,
+    stage: &'static str,
+    operation: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
+    started(observer, scope, stage);
+    let value = operation()?;
+    finished(observer, scope, stage);
+    yield_init_frame().await;
+    Ok(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,5 +156,20 @@ mod tests {
         assert!(panic.is_err());
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].phase, InitPhase::Started);
+    }
+
+    #[test]
+    fn async_observe_matches_sync_pairs_when_yield_is_noop() {
+        let mut events = Vec::new();
+        let value = pollster::block_on(observe_value_async(
+            &mut |event| events.push(event),
+            "test",
+            "async",
+            || 7,
+        ));
+        assert_eq!(value, 7);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].phase, InitPhase::Started);
+        assert_eq!(events[1].phase, InitPhase::Finished);
     }
 }

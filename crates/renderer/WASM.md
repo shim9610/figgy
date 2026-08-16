@@ -18,7 +18,7 @@ cargo check -p renderer --target wasm32-unknown-unknown
 |---|---|---|
 | `model` | 의존성 0 (순수 Rust) | ✅ 무조건 |
 | CPU 라스터 (축/라벨/텍스트) | `tiny-skia` + `fontdb` + `swash` — 전부 순수 Rust | ✅ |
-| GPU | `wgpu` 27 — 웹에서는 WebGPU 백엔드 | ✅ |
+| GPU | `wgpu` 30 — 웹에서는 WebGPU 백엔드 | ✅ |
 | 블로킹 실행기 | `pollster` — **native 전용 타겟 의존성** | ❌ 컴파일 제외 |
 
 skia-safe는 `wasm32-unknown-emscripten`만 지원해 wasm-bindgen 생태계
@@ -47,6 +47,7 @@ skia-safe는 `wasm32-unknown-emscripten`만 지원해 wasm-bindgen 생태계
 | `Renderer::export_panel_rgba` | `export_panel_rgba_async` | GPU→CPU readback |
 | `Renderer::export_panel_png_bytes` | `export_panel_png_bytes_async` | |
 | — | `Renderer::wait_idle` | 웹에서는 no-op (브라우저가 디바이스 폴링) |
+| — | `Renderer::wait_submitted_work` / `WindowedRenderer::first_frame_ready` / `warm_up` | 첫 `queue.submit()` 이후 GPU 작업 완료 대기 |
 
 블로킹 버전은 전부 `pollster::block_on(async 버전)` 한 줄 래퍼라 구현은
 하나다. export의 readback은 `map_async` 완료를 `futures_channel::oneshot`
@@ -120,25 +121,51 @@ impl FiggyChart {
         let mut renderer = Renderer::for_window_async(
             wgpu::SurfaceTarget::Canvas(canvas), (w, h), 16 * 1024 * 1024,
         ).await.map_err(|e| JsValue::from_str(&e.to_string()))?;
-        renderer.enable_gpu_picking().map_err(js_err)?;
+        // picker는 첫 pick 전, 또는 여기서 명시적으로 enable.
         // … 컬럼 등록 …
         let chart_id = renderer.register_chart(config, series).map_err(js_err)?;
-        renderer
-            .prepare_gpu_picking_for_chart(chart_id)
-            .map_err(js_err)?;
         // … ChartView / HitMap::standard_chart() …
     }
 }
 ```
 
-생성 경로는 picker pipeline bundle을 한 번 활성화하고 기본 chart registry까지
-준비하므로 첫 `pick_point`가 pipeline/registry 생성 비용을 떠안지 않는다.
+`for_window_async`는 adapter/device await 뒤에 파이프라인 스테이지마다
+한 프레임을 양보한다 (`InitEvent` + wasm `requestAnimationFrame`). 그래서
+호스트 로딩바가 create 도중에 움직일 수 있다. `<figgy-chart>`는
+`create_with_progress`로 각 스테이지를 `figgy-init-progress`
+(`{ scope, stage, phase }`)로 내보낸다. 콜백에서 커널 메서드를 부르지
+말 것 (객체가 아직 없거나, 생겨도 wasm_bindgen 락).
+
+웹 `FiggyChart.create` / `create_with_progress`는 빈 차트의 첫 프레임을
+제출한 뒤 `Queue::on_submitted_work_done`을 기다린다 (`first_frame_ready`).
+axis 파이프라인만 eager이고, line / scatter / errorbar 파이프라인은 첫
+prepare 때 생성된다. exact extent compute 엔진은 `set_series` /
+`add_line_series`에서 만들지 않는다. `auto_fit_all` 또는
+`ensure_extent_engine`이 wasm에서 `createComputePipelineAsync`로 데운 뒤
+wgpu 엔진을 만든다. 브라우저 Dawn은
+`createRenderPipeline`이 아니라 그 파이프라인을 쓰는 첫 `queue.submit()`
+에서 실제 컴파일을 미루는 경우가 많아서, 로딩 화면은 `create` Promise
+(또는 이후 `await chart.first_frame_ready()` / `warm_up()`)가 끝날 때까지
+유지해야 한다. 이 대기는 메인 스레드 프리즈를 없애지 않는다 — 제출이
+끝난 뒤에야 로딩을 닫을 수 있게 할 뿐이다. 완전한 UI 프리즈 제거는
+OffscreenCanvas + Worker가 필요하다.
+
+호스트가 첫 데이터 시리즈를 올린 뒤에도 같은 API를 다시 호출해야 한다.
+새 파이프라인이 그 제출에서 처음 쓰이면 그때 또 지연 컴파일이 난다.
+별도 로딩 오버레이를 가진 호스트는 첫 제출 뒤 rAF 한 번이 아니라 연속
+3–4 프레임이 안정될 때까지 오버레이를 유지하는 편이 안전하다.
+
+웹 `FiggyChart.create`는 picker를 켜지 않는다. 첫 `pick_point`가
+`enable_gpu_picking_async`와 chart registry 준비를 한다. raw kernel이
+첫 프레임부터 pick하려면 여전히 직접 `enable_gpu_picking()` /
+`enable_gpu_picking_async()`를 호출하면 된다.
+
 `Renderer`가 chart별 `Config`와 ordered series, `ColumnPool`, picker pipeline
 bundle과 파생된 단일 active-chart registry cache, pending maintenance를 소유한다. web
 kernel은 UI 파생 metadata와 Promise 변환만 관리하며 picker engine, dirty flag,
 pool maintenance 권위를 복제하지 않는다.
 
-Renderer 0.8부터 저수준 `GpuPickEngine`은 public API가 아니다. native/embed
+Renderer 0.9부터 저수준 `GpuPickEngine`은 public API가 아니다. native/embed
 host는 `enable_gpu_picking()` → 선택적
 `prepare_gpu_picking_for_chart(chart_id)` →
 `pick_chart(chart_id, GpuPickRequest)` 순서로 이전한다. `WindowedRenderer`는
@@ -307,6 +334,10 @@ React / Vue / Svelte가 표준 방식으로 구독한다. 이벤트는 custom el
 chartEl.addEventListener("figgy-select", (e) => {
   console.log(e.detail.selected);
 });
+chartEl.addEventListener("figgy-init-progress", (e) => {
+  // { scope, stage, phase: "started" | "finished" } — ready 이전에도 발생
+  console.log(e.detail.scope, e.detail.stage, e.detail.phase);
+});
 ```
 
 ### 3.6 PNG export — async 필수, `Uint8Array` 반환
@@ -405,8 +436,11 @@ raw kernel 직접 호출 시 host 규약:
 
 - rAF 루프에서 `requestAnimationFrame(tick)`을 **wasm 호출보다 먼저**
   예약해 예외가 루프를 죽이지 못하게 한다.
-- export 동안 `busy` 플래그로 `frame()` / 포인터 / resize / proxy 호출을
-  모두 건너뛰거나 거부한다.
+- export, `first_frame_ready`/`warm_up`, `ensure_extent_engine`,
+  `auto_fit_all`, 첫 `pick_point`(picker 컴파일) 동안 `busy` 플래그로
+  `frame()` / 포인터 / resize / proxy 호출을 모두 건너뛰거나 거부한다.
+  `auto_fit_all`은 Promise가 끝날 때 Config에 직접 commit하므로 pending
+  중 `frame()`을 부르면 안 된다.
 
 `crates/web/index.html`은 facade 사용 레퍼런스다. raw kernel 직접 배선은
 advanced host가 위 규약을 그대로 복제할 때만 선택한다.
@@ -468,14 +502,14 @@ cd crates/web && python -m http.server 8137   # wasm은 file:// 불가
 
 | 분류 | 메서드 |
 |---|---|
-| 수명 | `<figgy-chart>` element · `ready` promise · `figgy-ready` / `figgy-error` / `figgy-select` / `figgy-drag` / `figgy-release` / `figgy-resize` events · `free()` |
+| 수명 | `<figgy-chart>` element · `ready` promise · `figgy-ready` / `figgy-init-progress` / `figgy-error` / `figgy-select` / `figgy-drag` / `figgy-release` / `figgy-resize` events · `free()` |
 | 폰트 | `register_font(Uint8Array)` → 가족명 배열 (TTF/OTF/TTC). 등록 후 SSoT `font` 가족명이 해석됨 — 등록 폰트가 시스템 폰트보다 우선이라 웹/데스크탑 해석이 동일. byte-for-byte 동일 파일의 재등록은 저장소와 font generation을 늘리지 않는 멱등 동작이며, resolved face backing도 face id별로 재사용한다. 미등록·미해석 가족명은 내장 Liberation Sans 폴백 (CJK 글리프 없음 — 한글은 폰트 등록 필요) |
 | 스타일 파라미터 | *(free 함수)* `draw_style_modes()` → 모드 태그 JSON 배열 · `draw_style_param_specs(mode)` → `{key, min, max, default, integer}` JSON 배열. **슬라이더 범위의 단일 진실 원본** — min/max는 권장 범위(SSoT는 그 밖의 값도 수용, 렌더러는 안전 가드만 적용), default는 model의 `Default` 구현과 테스트로 고정. 호스트는 이걸로 스타일 UI를 자동 생성하고 범위를 하드코딩하지 말 것 |
 | 컬럼 등록/갱신/해제 | `register_column_f32/f64(id, TypedArray)` *(새 id만)* · `update_register_column_f32/f64(id, TypedArray)` *(기존 id만, 승인된 호출은 항상 upload)* · `remove_column(id)` |
 | 시리즈 등록/해제 | `add_line_series(id, x, y, width, label)` *(업서트)* · `remove_series(id)` |
 | 범례 | `set_series_label(id, label)` — `'\n'` 줄바꿈·유니코드 첨자 지원, 빈 문자열 = 해당 행 제거. `set_series` / `apply_color_cycle` 은 자유 편집된 텍스트를 덮지 않고 인식 가능한 자동 엔트리의 심볼만 갱신한다. 전체 재작성은 `reset_legend_from_series_labels()` 를 명시 호출할 때만 수행한다. 자유 편집은 SSoT `legend.content` 하나의 리치 문서로: 줄바꿈은 `"\n"` 세그먼트, `"\t"` 는 표형 열 구분자, 심볼은 **고정폭 필드 세그먼트**(`field_em` — 어떤 형태든 정확히 2.0 em; 선 마크는 `rule:true`, 점선은 `rule_dash` em 패턴) + 색 오버라이드라 위치·줄배치·폭이 전부 명시적. `content.font` / `content.font_size` / 세그먼트별 오버라이드는 그리기 시점에 그대로 적용 |
 | 히트테스트 | `hit_test(x, y)` → 요소 id 문자열 또는 `null` (`"data_area"` · `"axis_bottom"` · `"tick_labels_left"` · `"axis_title_left"` · `"legend"` · `"chart_title"` …). `pick_point(x, y, max_distance_px)` → `Promise<{ source_id: string \| null, series_id, point_index, distance_px } \| null>`; point/scatter는 실제 marker 크기(스타일 매핑 포함)를 기준으로, line 계열은 stroke 근처 클릭을 해당 segment의 가까운 endpoint 데이터 점으로 스냅한다. errorbar stem/cap 자체는 pick target이 아니다. 좌표가 필요하면 host가 `point_index`로 자신이 등록한 원본 column을 조회한다. 선택 상태 무변경 — 렌더러 자체 레이아웃이 답하므로 호스트가 박스 위치를 복제할 필요 없음 |
-| 범위 | `auto_fit_all(pad)` *(Promise)* — **등록된 전 시리즈의 원본 primitive data domain** x/y 합집합에 4방 균일 비율 마진(`0.0` = 딱 맞춤, `0.05` = 5%). 원본 GPU 컬럼을 축약·샘플링 없이 전수 reduce한다. line-only는 유효한 인접 segment의 endpoint, scatter-bearing 시리즈는 유한한 x/y 쌍, errorbar는 실제 six-column 공통 행에서 현재 renderer와 같은 방향 활성 조건을 통과한 `값−err_lo … 값+err_hi` endpoint를 포함한다. 짧은 error 컬럼은 errorbar endpoint 범위만 제한하며 그 뒤의 유효한 base line/scatter 행을 자르지 않는다. 이 primitive 조건에서 탈락한 non-finite 행과 고립된 line point는 제외하고 normalized mode와 역할별 column revision으로 결과를 캐싱한다. readback 결과는 다음 `frame()`에서 token이 여전히 current일 때 renderer-owned Config에 commit된 뒤 Promise가 resolve된다. facade는 지속 rAF로 이를 처리하며 raw kernel host는 pending 동안 `frame()`을 계속 호출해야 한다. 범위 끝 라운딩 없음 — 틱은 범위 안 nice 값에 자동으로 떨어지므로 호스트가 범위를 재가공하지 말 것 · `auto_fit_x/y(col, pad)` (단일 컬럼 upload metadata, 에러바 미반영) · `load_demo()` *(멱등)* |
+| 범위 | `auto_fit_all(pad)` *(Promise)* — **등록된 전 시리즈의 원본 primitive data domain** x/y 합집합에 4방 균일 비율 마진(`0.0` = 딱 맞춤, `0.05` = 5%). 원본 GPU 컬럼을 축약·샘플링 없이 전수 reduce한다. line-only는 유효한 인접 segment의 endpoint, scatter-bearing 시리즈는 유한한 x/y 쌍, errorbar는 실제 six-column 공통 행에서 현재 renderer와 같은 방향 활성 조건을 통과한 `값−err_lo … 값+err_hi` endpoint를 포함한다. 짧은 error 컬럼은 errorbar endpoint 범위만 제한하며 그 뒤의 유효한 base line/scatter 행을 자르지 않는다. 이 primitive 조건에서 탈락한 non-finite 행과 고립된 line point는 제외하고 normalized mode와 역할별 column revision으로 결과를 캐싱한다. GPU readback이 끝나면 같은 호출이 renderer-owned Config에 직접 commit하고 Promise를 resolve한다. wasm-bindgen이 pending 동안 객체를 잠그므로 host/facade는 `frame()`을 포함한 다른 커널 호출을 busy gate로 막고, 끝난 뒤 다음 rAF에서 새 범위를 그린다. 범위 끝 라운딩 없음 — 틱은 범위 안 nice 값에 자동으로 떨어지므로 호스트가 범위를 재가공하지 말 것 · `auto_fit_x/y(col, pad)` (단일 컬럼 upload metadata, 에러바 미반영) · `load_demo()` *(멱등)* |
 | 피킹 기준 | 최종 스타일/래스터 픽셀이 아니라 원본 시리즈 primitive를 판정한다. scatter는 원본 데이터 점 위치와 설정된 marker hit 반경을 사용하고, line은 인접한 원본 데이터 점 사이의 직선 segment를 검사해 가까운 endpoint로 스냅한다. dash 공백, square-cap 래스터 모서리, sketch 등 장식용 변형은 pick 경로를 바꾸지 않는다. |
 | SSoT I/O | `get_config()` / `set_config(json)` · `get_series()` / `set_series(json)` |
 | 프리셋 | `apply_axis_preset(AxisPreset)` · `apply_color_cycle(ColorCycle)` · `color_cycle_css(cycle)` |

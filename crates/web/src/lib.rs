@@ -1251,7 +1251,7 @@ mod web {
     use std::cell::RefCell;
 
     use wasm_bindgen::prelude::*;
-    use wasm_bindgen_futures::{future_to_promise, spawn_local};
+    use wasm_bindgen_futures::spawn_local;
     use web_sys::HtmlCanvasElement;
 
     #[cfg(feature = "startup-profile")]
@@ -1269,7 +1269,8 @@ mod web {
     };
 
     #[cfg(feature = "startup-profile")]
-    use renderer::{INIT_EVENT_SCHEMA_VERSION, InitEvent, InitPhase};
+    use renderer::INIT_EVENT_SCHEMA_VERSION;
+    use renderer::{InitEvent, InitPhase};
 
     use crate::borrowed_column::{BorrowedCastF32Column, BorrowedF32Column, BorrowedF64Column};
     use crate::scalar_job::{SeriesExtentJob, SeriesFitExtent};
@@ -1441,6 +1442,137 @@ mod web {
         Ok((renderer, w, h))
     }
 
+    fn emit_init_progress(on_event: Option<&js_sys::Function>, event: InitEvent) {
+        let Some(callback) = on_event else {
+            return;
+        };
+        let payload = js_sys::Object::new();
+        let phase = match event.phase {
+            InitPhase::Started => "started",
+            InitPhase::Finished => "finished",
+        };
+        let _ = js_sys::Reflect::set(&payload, &"scope".into(), &JsValue::from_str(event.scope));
+        let _ = js_sys::Reflect::set(&payload, &"stage".into(), &JsValue::from_str(event.stage));
+        let _ = js_sys::Reflect::set(&payload, &"phase".into(), &JsValue::from_str(phase));
+        let _ = callback.call1(&JsValue::UNDEFINED, &payload);
+    }
+
+    async fn create_chart_kernel(
+        canvas: HtmlCanvasElement,
+        on_event: Option<js_sys::Function>,
+    ) -> Result<FiggyChart, JsValue> {
+        console_error_panic_hook::set_once();
+
+        #[cfg(feature = "startup-profile")]
+        let mut profile = StartupProfileCollector::new();
+
+        let (mut renderer, w, h) = {
+            let on_event_ref = on_event.as_ref();
+            #[cfg(feature = "startup-profile")]
+            let mut observer = |event| {
+                profile.record(event);
+                emit_init_progress(on_event_ref, event);
+            };
+            #[cfg(not(feature = "startup-profile"))]
+            let mut observer = |event| {
+                emit_init_progress(on_event_ref, event);
+            };
+            let (w, h) = (canvas.width().max(1), canvas.height().max(1));
+            let mut renderer = Renderer::for_window_async_observed(
+                wgpu::SurfaceTarget::Canvas(canvas),
+                (w, h),
+                POOL_CAPACITY,
+                &mut observer,
+            )
+            .await
+            .map_err(js_err)?;
+            renderer.set_defrag_policy(DefragPolicy::OnAllocFailure);
+            (renderer, w, h)
+        };
+
+        #[cfg(feature = "startup-profile")]
+        profile.started("web.create", "chart resources");
+        emit_init_progress(
+            on_event.as_ref(),
+            InitEvent::new("web.create", "chart resources", InitPhase::Started),
+        );
+
+        let mut config = renderer::default::default_config();
+        config.chart_area = ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        });
+        let chart_id = renderer
+            .register_chart(config.clone(), Vec::new())
+            .map_err(js_err)?;
+        let chart = Chart::new(config);
+        let view = renderer
+            .create_chart_view(
+                &chart,
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: w,
+                    height: h,
+                },
+            )
+            .map_err(js_err)?;
+
+        #[cfg(feature = "startup-profile")]
+        profile.finished("web.create", "chart resources");
+        emit_init_progress(
+            on_event.as_ref(),
+            InitEvent::new("web.create", "chart resources", InitPhase::Finished),
+        );
+        let mut chart = FiggyChart {
+            renderer,
+            #[cfg(feature = "startup-profile")]
+            startup_profile: String::new(),
+            chart_id,
+            view,
+            surface_size: (w, h),
+            styles: Vec::new(),
+            labels: Vec::new(),
+            legend_auto_managed: true,
+            columns: HashMap::new(),
+            column_revisions: HashMap::new(),
+            next_column_revision: 1,
+            series_extents: HashMap::new(),
+            fit_epoch: Rc::new(Cell::new(0)),
+            alive: Rc::new(Cell::new(true)),
+            color_seq: 0,
+            hitmap: HitMap::standard_chart(),
+            dragging: false,
+            resizing: None,
+            cycle: renderer::ColorCycle::Classic,
+            clear_color: Color::WHITE,
+            view_dirty: false,
+            redraw_pending: true,
+            last_presented_stamp: None,
+        };
+
+        #[cfg(feature = "startup-profile")]
+        profile.started("web.create", "first frame");
+        emit_init_progress(
+            on_event.as_ref(),
+            InitEvent::new("web.create", "first frame", InitPhase::Started),
+        );
+        chart.first_frame_ready().await?;
+        #[cfg(feature = "startup-profile")]
+        profile.finished("web.create", "first frame");
+        emit_init_progress(
+            on_event.as_ref(),
+            InitEvent::new("web.create", "first frame", InitPhase::Finished),
+        );
+        #[cfg(feature = "startup-profile")]
+        {
+            chart.startup_profile = profile.finish_json(None)?;
+        }
+        Ok(chart)
+    }
+
     /// Measurement-only renderer startup probe used by the Wave 0 harness.
     #[cfg(feature = "startup-profile")]
     #[wasm_bindgen]
@@ -1456,7 +1588,8 @@ mod web {
             create_renderer_for_canvas_observed(canvas, &mut observer).await?;
         if picker_enabled {
             renderer
-                .enable_gpu_picking_observed(&mut observer)
+                .enable_gpu_picking_observed_async(&mut observer)
+                .await
                 .map_err(js_err)?;
         }
 
@@ -1497,6 +1630,7 @@ mod web {
                 series: &series,
             }];
             renderer.draw(Color::WHITE, &items).map_err(js_err)?;
+            renderer.wait_submitted_work().await;
             profile.finished("web.profile", "empty frame");
         }
 
@@ -1634,15 +1768,6 @@ mod web {
         ticket_jobs: Vec<(renderer::GpuSeriesExtentTicket, Rc<SeriesExtentJob>)>,
     }
 
-    struct PendingFitCommit {
-        token: renderer::FitCommitToken,
-        expected_epoch: u64,
-        x_extent: FitExtent,
-        y_extent: FitExtent,
-        padding: f64,
-        completion: futures_channel::oneshot::Sender<Result<(), String>>,
-    }
-
     // ------------------------------------------------------------------
     // Preset mirrors — fieldless enums cross the boundary as integers.
     // ------------------------------------------------------------------
@@ -1746,9 +1871,6 @@ mod web {
         /// Invalidates an async fit if a later data/series/range mutation wins.
         fit_epoch: Rc<Cell<u64>>,
         alive: Rc<Cell<bool>>,
-        /// Async readback completion mailbox. `frame()` is the only owner that
-        /// mutates the renderer and commits a still-current fit token.
-        pending_fit_commit: Rc<Cell<Option<PendingFitCommit>>>,
         /// Monotonic color assignment for newly registered series.
         color_seq: usize,
         hitmap: HitMap,
@@ -1879,31 +2001,24 @@ mod web {
             self.fit_epoch.set(self.fit_epoch.get().wrapping_add(1));
         }
 
-        fn commit_pending_fit(&mut self) {
-            let Some(pending) = self.pending_fit_commit.take() else {
-                return;
-            };
-            let result = if self.fit_epoch.get() != pending.expected_epoch {
-                Err(
-                    "auto_fit_all was superseded by a later fit, data, series, or axis mutation"
-                        .to_string(),
-                )
-            } else {
-                self.renderer
-                    .commit_auto_fit_all_if_current(
-                        &pending.token,
-                        &pending.x_extent,
-                        &pending.y_extent,
-                        pending.padding,
-                    )
-                    .map_err(|error| error.to_string())
-            };
-            let _ = pending.completion.send(result);
-        }
-
         fn request_host_redraw(&mut self) {
             self.redraw_pending = true;
         }
+        fn publish_series_extents_if_engine_ready(
+            &mut self,
+            series_cfgs: &[SeriesConfig],
+            revisions: &HashMap<String, u64>,
+            retry_failed: bool,
+        ) -> Result<(), JsValue> {
+            if !self.renderer.errorbar_extent_engine_ready() {
+                return Ok(());
+            }
+            let prepared =
+                self.prepare_series_extent_cache(series_cfgs, revisions, retry_failed)?;
+            self.publish_series_extent_cache(prepared);
+            Ok(())
+        }
+
         fn prepare_series_extent_cache(
             &self,
             series_cfgs: &[SeriesConfig],
@@ -2004,6 +2119,7 @@ mod web {
             ticket_jobs
                 .try_reserve(pending_series_extents.len())
                 .map_err(js_err)?;
+            let engine_ready = self.renderer.errorbar_extent_engine_ready();
 
             let guard = match source {
                 ColumnUploadSource::Scalar(source) => self.renderer.begin_upsert_column(id, source),
@@ -2012,20 +2128,26 @@ mod web {
                 }
             }
             .map_err(js_err)?;
-            for request in &pending_series_extents {
-                let ticket = guard
-                    .begin_series_extent(request.key.mode, request.columns.borrowed())
-                    .map_err(js_err)?;
-                let job = future_series_extents
-                    .get(&request.key)
-                    .cloned()
-                    .ok_or_else(|| {
-                        js_err("pending series extent key lost its prepared job before commit")
-                    })?;
-                ticket_jobs.push((ticket, job));
+            if engine_ready {
+                for request in &pending_series_extents {
+                    let ticket = guard
+                        .begin_series_extent(request.key.mode, request.columns.borrowed())
+                        .map_err(js_err)?;
+                    let job = future_series_extents
+                        .get(&request.key)
+                        .cloned()
+                        .ok_or_else(|| {
+                            js_err("pending series extent key lost its prepared job before commit")
+                        })?;
+                    ticket_jobs.push((ticket, job));
+                }
             }
             let prepared_series_extents = PreparedSeriesExtentCache {
-                extents: future_series_extents,
+                extents: if engine_ready {
+                    future_series_extents
+                } else {
+                    self.series_extents.clone()
+                },
                 ticket_jobs,
             };
 
@@ -2101,11 +2223,6 @@ mod web {
         fn drop(&mut self) {
             self.alive.set(false);
             self.bump_fit_epoch();
-            if let Some(pending) = self.pending_fit_commit.take() {
-                let _ = pending.completion.send(Err(
-                    "chart was dropped while auto_fit_all was pending".into(),
-                ));
-            }
         }
     }
 
@@ -2116,100 +2233,17 @@ mod web {
         /// `figgy-chart.js` and its `<figgy-chart>` Custom Element.
         /// JS: `const chart = await FiggyChart.create(canvas);`
         pub async fn create(canvas: HtmlCanvasElement) -> Result<FiggyChart, JsValue> {
-            console_error_panic_hook::set_once();
+            create_chart_kernel(canvas, None).await
+        }
 
-            #[cfg(feature = "startup-profile")]
-            let mut profile = StartupProfileCollector::new();
-
-            #[cfg(feature = "startup-profile")]
-            let (mut renderer, w, h) = {
-                let mut observer = |event| profile.record(event);
-                let (mut renderer, w, h) =
-                    create_renderer_for_canvas_observed(canvas, &mut observer).await?;
-                renderer
-                    .enable_gpu_picking_observed(&mut observer)
-                    .map_err(js_err)?;
-                (renderer, w, h)
-            };
-
-            #[cfg(not(feature = "startup-profile"))]
-            let (mut renderer, w, h) = {
-                let (w, h) = (canvas.width().max(1), canvas.height().max(1));
-                let mut renderer = Renderer::for_window_async(
-                    wgpu::SurfaceTarget::Canvas(canvas),
-                    (w, h),
-                    POOL_CAPACITY,
-                )
-                .await
-                .map_err(js_err)?;
-                // Replace-heavy hosts can hit transient fragmentation between
-                // remove and the next frame's defrag.
-                renderer.set_defrag_policy(DefragPolicy::OnAllocFailure);
-                renderer.enable_gpu_picking().map_err(js_err)?;
-                (renderer, w, h)
-            };
-
-            #[cfg(feature = "startup-profile")]
-            profile.started("web.create", "chart resources");
-
-            let mut config = renderer::default::default_config();
-            config.chart_area = ChartArea(Rect {
-                x: 0,
-                y: 0,
-                width: w,
-                height: h,
-            });
-            let chart_id = renderer
-                .register_chart(config.clone(), Vec::new())
-                .map_err(js_err)?;
-            renderer
-                .prepare_gpu_picking_for_chart(chart_id)
-                .map_err(js_err)?;
-            let chart = Chart::new(config);
-            let view = renderer
-                .create_chart_view(
-                    &chart,
-                    Rect {
-                        x: 0,
-                        y: 0,
-                        width: w,
-                        height: h,
-                    },
-                )
-                .map_err(js_err)?;
-
-            #[cfg(feature = "startup-profile")]
-            profile.finished("web.create", "chart resources");
-            #[cfg(feature = "startup-profile")]
-            let startup_profile = profile.finish_json(None)?;
-
-            Ok(FiggyChart {
-                renderer,
-                #[cfg(feature = "startup-profile")]
-                startup_profile,
-                chart_id,
-                view,
-                surface_size: (w, h),
-                styles: Vec::new(),
-                labels: Vec::new(),
-                legend_auto_managed: true,
-                columns: HashMap::new(),
-                column_revisions: HashMap::new(),
-                next_column_revision: 1,
-                series_extents: HashMap::new(),
-                fit_epoch: Rc::new(Cell::new(0)),
-                alive: Rc::new(Cell::new(true)),
-                pending_fit_commit: Rc::new(Cell::new(None)),
-                color_seq: 0,
-                hitmap: HitMap::standard_chart(),
-                dragging: false,
-                resizing: None,
-                cycle: renderer::ColorCycle::Classic,
-                clear_color: Color::WHITE,
-                view_dirty: false,
-                redraw_pending: true,
-                last_presented_stamp: None,
-            })
+        /// Same as [`Self::create`], reporting each init stage to `on_event`
+        /// as `{ scope, stage, phase }`. Do not call other kernel methods
+        /// from the callback.
+        pub async fn create_with_progress(
+            canvas: HtmlCanvasElement,
+            on_event: js_sys::Function,
+        ) -> Result<FiggyChart, JsValue> {
+            create_chart_kernel(canvas, Some(on_event)).await
         }
 
         /// Versioned renderer/picker startup profile as JSON.
@@ -2452,8 +2486,11 @@ mod web {
                 proposed.try_reserve(1).map_err(js_err)?;
                 proposed.push(cfg.clone());
             }
-            let prepared_extents =
-                self.prepare_series_extent_cache(&proposed, &self.column_revisions, false)?;
+            let prepared_extents = if self.renderer.errorbar_extent_engine_ready() {
+                Some(self.prepare_series_extent_cache(&proposed, &self.column_revisions, false)?)
+            } else {
+                None
+            };
             let mut next_styles = Vec::new();
             next_styles.try_reserve(proposed.len()).map_err(js_err)?;
             for series in &proposed {
@@ -2494,7 +2531,9 @@ mod web {
             self.labels = next_labels;
             self.color_seq = next_color_seq;
             self.bump_fit_epoch();
-            self.publish_series_extent_cache(prepared_extents);
+            if let Some(prepared_extents) = prepared_extents {
+                self.publish_series_extent_cache(prepared_extents);
+            }
             Ok(())
         }
 
@@ -2596,73 +2635,43 @@ mod web {
         /// Each series contributes its exact original GPU primitive domain:
         /// valid adjacent segments for line-only mode, paired finite points
         /// for point-bearing modes, and enabled error endpoints. The reduction
-        /// is submitted eagerly when data or series metadata changes and cached
-        /// by the normalized mode plus role-specific column revisions.
-        pub fn auto_fit_all(&mut self, padding: f64) -> js_sys::Promise {
-            let snapshot = (|| -> Result<_, JsValue> {
-                let token = self
-                    .renderer
-                    .begin_fit_commit(self.chart_id)
-                    .map_err(js_err)?;
-                let series = self.chart_series().to_vec();
-                let prepared =
-                    self.prepare_series_extent_cache(&series, &self.column_revisions, true)?;
-                let mut jobs = Vec::new();
-                jobs.try_reserve(prepared.extents.len()).map_err(js_err)?;
-                jobs.extend(prepared.extents.values().cloned());
-                Ok((token, prepared, jobs))
-            })();
-
-            let (token, prepared, jobs) = match snapshot {
-                Ok(snapshot) => snapshot,
-                Err(error) => return js_sys::Promise::reject(&error),
-            };
+        /// is compiled on first fit (`createComputePipelineAsync` on wasm)
+        /// and cached by the normalized mode plus role-specific column
+        /// revisions. Series registration itself does not submit GPU work.
+        pub async fn auto_fit_all(&mut self, padding: f64) -> Result<(), JsValue> {
+            self.renderer
+                .ensure_errorbar_extent_engine()
+                .await
+                .map_err(js_err)?;
+            let token = self
+                .renderer
+                .begin_fit_commit(self.chart_id)
+                .map_err(js_err)?;
+            let series = self.chart_series().to_vec();
+            let prepared =
+                self.prepare_series_extent_cache(&series, &self.column_revisions, true)?;
+            let mut jobs = Vec::new();
+            jobs.try_reserve(prepared.extents.len()).map_err(js_err)?;
+            jobs.extend(prepared.extents.values().cloned());
             self.publish_series_extent_cache(prepared);
-            let fit_epoch = Rc::clone(&self.fit_epoch);
-            let alive = Rc::clone(&self.alive);
-            let pending_fit_commit = Rc::clone(&self.pending_fit_commit);
-            let Some(expected_epoch) = fit_epoch.get().checked_add(1) else {
-                return js_sys::Promise::reject(&js_err("fit epoch counter exhausted"));
-            };
-            fit_epoch.set(expected_epoch);
 
-            future_to_promise(async move {
-                let mut x_ext = FitExtent::EMPTY;
-                let mut y_ext = FitExtent::EMPTY;
-                for job in jobs {
-                    let extent = job.wait().await.map_err(js_err)?;
-                    if let Some(extent) = extent {
-                        x_ext.union(&extent.x);
-                        y_ext.union(&extent.y);
-                    }
+            let mut x_ext = FitExtent::EMPTY;
+            let mut y_ext = FitExtent::EMPTY;
+            for job in jobs {
+                let extent = job.wait().await.map_err(js_err)?;
+                if let Some(extent) = extent {
+                    x_ext.union(&extent.x);
+                    y_ext.union(&extent.y);
                 }
-                if !alive.get() {
-                    return Err(js_err("chart was dropped while auto_fit_all was pending"));
-                }
-                if fit_epoch.get() != expected_epoch {
-                    return Err(js_err(
-                        "auto_fit_all was superseded by a later data, series, or axis mutation",
-                    ));
-                }
-                let (completion, receiver) = futures_channel::oneshot::channel();
-                if let Some(previous) = pending_fit_commit.replace(Some(PendingFitCommit {
-                    token,
-                    expected_epoch,
-                    x_extent: x_ext,
-                    y_extent: y_ext,
-                    padding,
-                    completion,
-                })) {
-                    let _ = previous
-                        .completion
-                        .send(Err("auto_fit_all was superseded by a later fit".into()));
-                }
-                receiver
-                    .await
-                    .map_err(|_| js_err("auto_fit_all commit channel closed"))?
-                    .map_err(js_err)?;
-                Ok(JsValue::UNDEFINED)
-            })
+            }
+            if !self.alive.get() {
+                return Err(js_err("chart was dropped while auto_fit_all was pending"));
+            }
+            self.renderer
+                .commit_auto_fit_all_if_current(&token, &x_ext, &y_ext, padding)
+                .map_err(js_err)?;
+            self.request_host_redraw();
+            Ok(())
         }
 
         // ---- titles ----
@@ -2794,8 +2803,6 @@ mod web {
             for cfg in &new_series {
                 new_styles.push(self.renderer.create_style_for_series_scaled(cfg, scale));
             }
-            let prepared_extents =
-                self.prepare_series_extent_cache(&new_series, &self.column_revisions, false)?;
             let mut config = self.chart_config().clone();
             if self.legend_auto_managed {
                 let existing = renderer::config::legend_entry_count(&config.legend.content);
@@ -2830,7 +2837,9 @@ mod web {
             self.styles = new_styles;
             self.color_seq = new_len.max(self.color_seq);
             self.bump_fit_epoch();
-            self.publish_series_extent_cache(prepared_extents);
+            let extent_series = self.chart_series().to_vec();
+            let extent_revisions = self.column_revisions.clone();
+            self.publish_series_extents_if_engine_ready(&extent_series, &extent_revisions, false)?;
             Ok(())
         }
 
@@ -2870,22 +2879,28 @@ mod web {
         /// `undefined` when no visible primitive is within `max_distance_px`.
         /// The `<figgy-chart>` facade parses the string and normalizes
         /// `undefined` to `null`.
-        pub fn pick_point(&mut self, x: f32, y: f32, max_distance_px: f32) -> js_sys::Promise {
-            let ticket = match self
+        pub async fn pick_point(
+            &mut self,
+            x: f32,
+            y: f32,
+            max_distance_px: f32,
+        ) -> Result<JsValue, JsValue> {
+            self.renderer
+                .enable_gpu_picking_async()
+                .await
+                .map_err(js_err)?;
+            self.renderer
+                .prepare_gpu_picking_for_chart(self.chart_id)
+                .map_err(js_err)?;
+            let ticket = self
                 .renderer
                 .pick_chart_at(self.chart_id, [x, y], max_distance_px)
-            {
-                Ok(ticket) => ticket,
-                Err(error) => return js_sys::Promise::reject(&js_err(error)),
+                .map_err(js_err)?;
+            let Some(picked) = ticket.resolve().await.map_err(js_err)? else {
+                return Ok(JsValue::UNDEFINED);
             };
-
-            future_to_promise(async move {
-                let Some(picked) = ticket.resolve().await.map_err(js_err)? else {
-                    return Ok(JsValue::UNDEFINED);
-                };
-                let json = crate::picked_point_json_string(&picked).map_err(js_err)?;
-                Ok(JsValue::from_str(&json))
-            })
+            let json = crate::picked_point_json_string(&picked).map_err(js_err)?;
+            Ok(JsValue::from_str(&json))
         }
 
         /// Replace the picked-point overlay config. Passing JSON `null`
@@ -2975,10 +2990,43 @@ mod web {
 
         // ---- frame / resize / export ----
 
+        /// Wait until previously submitted GPU work has finished. Does not
+        /// draw. Used to separate an earlier compute submit from the next
+        /// render submit when measuring startup.
+        pub async fn wait_submitted_work(&self) {
+            self.renderer.wait_submitted_work().await;
+        }
+
+        /// Compile the exact-extent compute engine without drawing. On wasm
+        /// this uses `createComputePipelineAsync`. Series registration does
+        /// not do this; `auto_fit_all` does.
+        pub async fn ensure_extent_engine(&self) -> Result<(), JsValue> {
+            self.renderer
+                .ensure_errorbar_extent_engine()
+                .await
+                .map_err(js_err)
+        }
+
+        /// Submit the current chart if it is dirty, then wait until that GPU
+        /// work has finished. Hosts should keep a loading overlay up until
+        /// this resolves. The wait does not remove a main-thread Dawn/driver
+        /// freeze; it only reports first-submit completion.
+        ///
+        /// JS: `await chart.first_frame_ready();`
+        pub async fn first_frame_ready(&mut self) -> Result<(), JsValue> {
+            self.frame()?;
+            self.renderer.wait_submitted_work().await;
+            Ok(())
+        }
+
+        /// Alias for [`Self::first_frame_ready`].
+        pub async fn warm_up(&mut self) -> Result<(), JsValue> {
+            self.first_frame_ready().await
+        }
+
         /// Process pending pool maintenance and draw only when visual state is
         /// dirty. A clean rAF tick returns before touching the pool or surface.
         pub fn frame(&mut self) -> Result<(), JsValue> {
-            self.commit_pending_fit();
             self.renderer
                 .sync_external_invalidations()
                 .map_err(js_err)?;

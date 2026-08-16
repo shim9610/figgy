@@ -11,9 +11,48 @@ use renderer::{
     default,
     layout::{ChartArea, Rect},
 };
+use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
+
+fn raw_device_method(device: &wgpu::webgpu::GpuDevice, name: &str) -> js_sys::Function {
+    js_sys::Reflect::get(device.as_ref(), &JsValue::from_str(name))
+        .expect("GPUDevice method lookup failed")
+        .dyn_into()
+        .expect("GPUDevice property was not a function")
+}
+
+fn push_validation_scope(device: &wgpu::Device) {
+    let raw = device
+        .as_webgpu()
+        .expect("browser test requires the WebGPU backend");
+    raw_device_method(raw, "pushErrorScope")
+        .call1(raw.as_ref(), &JsValue::from_str("validation"))
+        .expect("GPUDevice.pushErrorScope failed");
+}
+
+async fn pop_error_scope(device: &wgpu::Device) -> Option<String> {
+    let raw = device
+        .as_webgpu()
+        .expect("browser test requires the WebGPU backend");
+    let promise = raw_device_method(raw, "popErrorScope")
+        .call0(raw.as_ref())
+        .expect("GPUDevice.popErrorScope failed")
+        .unchecked_into::<js_sys::Promise>();
+    let error = JsFuture::from(promise)
+        .await
+        .expect("GPUDevice.popErrorScope rejected");
+    if error.is_null() || error.is_undefined() {
+        return None;
+    }
+    let message = js_sys::Reflect::get(&error, &JsValue::from_str("message"))
+        .ok()
+        .and_then(|value| value.as_string())
+        .unwrap_or_else(|| format!("{error:?}"));
+    Some(message)
+}
 
 #[wasm_bindgen_test(async)]
 async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_error() {
@@ -130,17 +169,17 @@ async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_e
         .register_chart(config, series)
         .expect("chart registration failed");
 
-    device.push_error_scope(wgpu::ErrorFilter::Validation);
+    push_validation_scope(&device);
     renderer
         .enable_gpu_picking()
         .expect("GPU picker pipeline preparation failed");
-    let validation_error = device.pop_error_scope().await;
+    let validation_error = pop_error_scope(&device).await;
     assert!(
         validation_error.is_none(),
         "Chrome/Dawn rejected the GPU pick pipeline: {validation_error:?}"
     );
 
-    device.push_error_scope(wgpu::ErrorFilter::Validation);
+    push_validation_scope(&device);
     renderer
         .prepare_gpu_picking_for_chart(chart_id)
         .expect("browser chart pick registry preparation failed");
@@ -164,7 +203,7 @@ async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_e
         .await
         .expect("browser pick readback failed")
         .expect("known visible point was not picked");
-    let execution_error = device.pop_error_scope().await;
+    let execution_error = pop_error_scope(&device).await;
 
     assert!(
         execution_error.is_none(),

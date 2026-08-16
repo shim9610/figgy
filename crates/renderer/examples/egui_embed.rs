@@ -562,10 +562,10 @@ impl Default for DemoApp {
 }
 
 impl DemoApp {
-    fn show_renderer_error(ctx: &egui::Context, message: &str) {
+    fn show_renderer_error(ui: &mut egui::Ui, message: &str) {
         egui::CentralPanel::default()
             .frame(egui::Frame::default().fill(EGUI_BG))
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 ui.label(message);
             });
     }
@@ -598,8 +598,9 @@ impl Drop for DemoApp {
 }
 
 impl eframe::App for DemoApp {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        force_dark_theme(ctx);
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        force_dark_theme(&ctx);
 
         // 1) Lazy init: build renderer::Renderer + register columns + Chart on the first frame.
         let render_state = match frame.wgpu_render_state() {
@@ -607,7 +608,7 @@ impl eframe::App for DemoApp {
             None => {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::default().fill(EGUI_BG))
-                    .show(ctx, |ui| {
+                    .show(ui, |ui| {
                         ui.label("No eframe wgpu_render_state — wgpu backend must be enabled.");
                     });
                 return;
@@ -632,7 +633,7 @@ impl eframe::App for DemoApp {
                     let message = format!("Renderer init failed: {e}");
                     self.renderer_error = Some(message);
                     if let Some(message) = self.renderer_error.as_deref() {
-                        Self::show_renderer_error(ctx, message);
+                        Self::show_renderer_error(ui, message);
                     }
                     return;
                 }
@@ -674,7 +675,7 @@ impl eframe::App for DemoApp {
                     let message = format!("Renderer target format failed: {e}");
                     self.renderer_error = Some(message);
                     if let Some(message) = self.renderer_error.as_deref() {
-                        Self::show_renderer_error(ctx, message);
+                        Self::show_renderer_error(ui, message);
                     }
                     return;
                 }
@@ -689,7 +690,7 @@ impl eframe::App for DemoApp {
         let render_state_clone = render_state.clone();
         egui::CentralPanel::default()
             .frame(egui::Frame::default().fill(EGUI_BG))
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.heading("figgy + egui_wgpu — sine / RC / cross-section");
                     // DPI input — figgy maps dpi/96 → scale → clamp internally.

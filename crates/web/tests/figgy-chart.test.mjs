@@ -183,6 +183,9 @@ async function loadFacade({ initImpl, createImpl } = {}) {
       state.createCalls.push(canvas);
       return createImpl(canvas, state.createCalls.length - 1);
     }
+    static create_with_progress(canvas, _onEvent) {
+      return RawFiggyChart.create(canvas);
+    }
   }
 
   const init = () => {
@@ -287,6 +290,14 @@ function makeKernel(name, options = {}) {
     },
     pick_point() {
       return this.pickImpl();
+    },
+    auto_fit_all(padding) {
+      calls.push(["auto_fit_all", padding]);
+      return options.autoFitImpl?.(padding) ?? Promise.resolve();
+    },
+    ensure_extent_engine() {
+      calls.push(["ensure_extent_engine"]);
+      return Promise.resolve();
     },
   };
   return kernel;
@@ -485,6 +496,38 @@ test("ready-event teardown publishes only the reconnected observer and rAF", asy
   assert.equal(element.kernel, currentKernel);
   assert.equal(state.observers.filter((observer) => observer.target === element).length, 1);
   assert.equal(state.rafs.size, 1, "stale ready callback must not schedule its own rAF");
+});
+
+test("auto_fit_all holds busy so rAF does not call frame", async () => {
+  const fit = deferred();
+  const kernel = makeKernel("fit", {
+    autoFitImpl: () => fit.promise,
+  });
+  const { Element, state } = await loadFacade({
+    createImpl: () => Promise.resolve(kernel),
+  });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+
+  const pending = element.auto_fit_all(0.05);
+  assert.equal(element.busy, true);
+  for (const callback of [...state.rafs.values()]) {
+    callback(0);
+  }
+  await flushTasks();
+  assert.deepEqual(
+    kernel.calls.filter(([name]) => name === "frame"),
+    [],
+    "frame must not run while auto_fit_all is pending",
+  );
+  await assert.rejects(element.auto_fit_all(0.1), /busy/);
+  fit.resolve();
+  await pending;
+  assert.equal(element.busy, false);
+  assert.deepEqual(kernel.calls.filter(([name]) => name === "auto_fit_all"), [
+    ["auto_fit_all", 0.05],
+  ]);
 });
 
 test("busy pointer release is deferred once and settled before resize", async () => {

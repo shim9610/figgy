@@ -8,8 +8,8 @@
 //! - `FiggyPrimitive` (impls `shader::Primitive`) — per-frame instance
 //!   carrying which panel to draw + panel rect.
 //!
-//! Run with:
-//! `cargo run -p renderer --example iced_embed --features iced_demo`
+//! This is retained as a reference only. It is not a Cargo target while
+//! renderer uses wgpu 30 and iced 0.14 uses wgpu 27.
 
 use std::sync::Arc;
 use std::sync::Mutex;

@@ -40,7 +40,7 @@ pub enum FiggyError {
     SurfaceConfigurationFailed { reason: String },
 
     /// Acquiring the next surface texture failed.
-    SurfaceAcquireFailed { error: wgpu::SurfaceError },
+    SurfaceAcquireFailed { reason: String },
 
     /// The render target format cannot be used by figgy's blended pipelines.
     UnsupportedSurfaceFormat {
@@ -119,8 +119,8 @@ impl std::fmt::Display for FiggyError {
             Self::SurfaceConfigurationFailed { reason } => {
                 write!(f, "wgpu surface configuration failed: {reason}")
             }
-            Self::SurfaceAcquireFailed { error } => {
-                write!(f, "wgpu surface acquire failed: {error:?}")
+            Self::SurfaceAcquireFailed { reason } => {
+                write!(f, "wgpu surface acquire failed: {reason}")
             }
             Self::UnsupportedSurfaceFormat { format, reason } => {
                 write!(f, "unsupported surface format {format:?}: {reason}")
