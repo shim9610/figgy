@@ -767,8 +767,8 @@ pub struct ScatterTransform {
     /// `(2 / chart_w, 2 / chart_h)` — 1 pixel in NDC. Shaders multiply pixel
     /// sizes (line width, point radius, cap half-length) by this.
     pub pixel_to_ndc: [f32; 2], // offset 40
-    /// Generic per-panel style parameter slots (SHADER_COMMON.md §1), packed
-    /// by the renderer's style table (`StyleVariant::pack_params`, flat
+    /// Generic per-panel style parameter slots mirrored by WGSL `Transform`,
+    /// packed by the renderer's style table (`StyleVariant::pack_params`, flat
     /// `[f32; 12]` split into three vec4 slots). All zeros in precise mode —
     /// the precise entry points never read them. Sketch:
     /// `[0] = [amplitude_px, wavelength_px, seed as f32, 0.0]`, rest 0;
@@ -781,8 +781,8 @@ pub struct ScatterTransform {
     pub style_params: [[f32; 4]; 3], // offset 48 → 96 byte
 }
 
-// WGSL mirror size guards (SHADER_COMMON.md §1 / §2). Update both the doc and
-// every shader's common block before touching these.
+// WGSL mirror size guards. Field order and size must remain byte-identical to
+// every shader common block before either CPU structure changes.
 const _: () = assert!(std::mem::size_of::<ScatterTransform>() == 96);
 
 /// Allocate the transform uniform buffer with `COPY_DST` so subsequent
@@ -847,7 +847,7 @@ pub fn create_scatter_transform_bind_group(
 /// Per-primitive style uniform. 80 bytes, 16-byte aligned.
 ///
 /// One struct serves all three primitive shaders; each reads its own fields
-/// and ignores the rest (field semantics in SHADER_COMMON.md §2).
+/// and ignores the rest. Field order mirrors WGSL `Style` byte-for-byte.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PrimitiveStyle {
@@ -902,6 +902,15 @@ impl PrimitiveStyle {
             _pad: 0,
             dash: [[0.0; 4]; 2],
         }
+    }
+
+    pub(crate) fn pack_dash_pattern(&mut self, pattern: &[f32], scale: f32) {
+        let capacity: usize = self.dash.iter().map(|lane| lane.len()).sum();
+        self.dash.iter_mut().flatten().for_each(|slot| *slot = 0.0);
+        for (slot, length) in self.dash.iter_mut().flatten().zip(pattern.iter()) {
+            *slot = *length * scale;
+        }
+        self.dash_len = pattern.len().min(capacity) as u32;
     }
 }
 
@@ -1361,14 +1370,14 @@ pub const LINE_SKETCH_VERTICES_PER_INSTANCE: u32 = 18;
 /// `CONS_RIBBON_SUBDIV` in `line_columnar.wgsl`.
 pub const MILKYWAY_RIBBON_VERTICES: u32 = 18;
 
-/// Milkyway pipelines + baked style textures for one target format —
-/// cached inside the renderer's lazy style set (docs/CONSTELLATION_DESIGN.MD
-/// §3c/§3d). The bind group keeps the textures alive.
+/// Milkyway pipelines and baked style textures for one target format, cached
+/// inside the renderer's lazy style set. The bind group keeps the textures
+/// alive for as long as the pipelines can sample them.
 pub(crate) struct MilkywaySet {
     pub(crate) ribbon: wgpu::RenderPipeline,
     pub(crate) stars: wgpu::RenderPipeline,
-    /// Ringed-planet scatter pass (Step 2) — premultiplied blend, occludes
-    /// the additive star field behind it.
+    /// Ringed-planet scatter pass uses premultiplied blending so planet bodies
+    /// occlude the additive star field behind them.
     pub(crate) planets: wgpu::RenderPipeline,
     /// Bipolar-jet errorbars — additive beams + terminal shock knots over
     /// the precise errorbar geometry.
@@ -1385,8 +1394,8 @@ pub(crate) struct PointConstellationSet {
     pub(crate) star_tex_bg: wgpu::BindGroup,
 }
 
-// ── Procedural bakes for the planet atlas (Step 2). Heavy math is fine —
-// this runs once per style-set creation and the results are GPU-cached.
+// Procedural planet-atlas bakes run once per style-set creation; results are
+// cached on the GPU and never recomputed per frame.
 
 fn bake_hash2(ix: i64, iy: i64, seed: u32) -> f64 {
     let mut h = (ix as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
@@ -1537,8 +1546,8 @@ fn bake_ring_strip() -> Vec<u8> {
 }
 
 /// Bake the star PSF sprite (R = saturating core, G = halo wings + one faint
-/// Airy-style ring) — runs once per style-set creation; expensive math is
-/// fine here (CONSTELLATION_DESIGN.md §0 "bake, then sample").
+/// Airy-style ring). This runs once per style-set creation, so the render loop
+/// only samples the baked texture.
 fn bake_psf_rgba(size: u32) -> Vec<u8> {
     let mut out = vec![0u8; (size * size * 4) as usize];
     let half = (size as f32 - 1.0) * 0.5;
@@ -1598,6 +1607,8 @@ fn bake_blackbody_lut() -> Vec<u8> {
 
 /// Build the milkyway style set: bake PSF + blackbody LUT, upload them,
 /// and compile the additive ribbon/star pipelines (group 2 = the textures).
+// Milkyway assembly combines both texture resources and both line/star layouts.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn create_milkyway_set(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -2058,7 +2069,7 @@ pub(crate) fn create_line_columnar_pipeline_with_entries(
         label: Some(label),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
-            module: &shader,
+            module: shader,
             entry_point: Some(vs_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             // 4 per-instance f32 slots: x_a, y_a, x_b, y_b. The same X/Y
@@ -2145,7 +2156,7 @@ pub(crate) fn create_line_columnar_pipeline_with_entries(
         depth_stencil: None,
         multisample: multisample_state(sample_count),
         fragment: Some(wgpu::FragmentState {
-            module: &shader,
+            module: shader,
             entry_point: Some(fs_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
@@ -2228,6 +2239,8 @@ pub fn create_scatter_columnar_mapped_pipeline(
     )
 }
 
+// Mapping adds index/table layouts to the shared scatter pipeline state.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn create_scatter_columnar_mapped_pipeline_with_entries(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
@@ -2252,7 +2265,7 @@ pub(crate) fn create_scatter_columnar_mapped_pipeline_with_entries(
         label: Some(label),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
-            module: &shader,
+            module: shader,
             entry_point: Some(vs_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             buffers: &[
@@ -2306,7 +2319,7 @@ pub(crate) fn create_scatter_columnar_mapped_pipeline_with_entries(
         depth_stencil: None,
         multisample: multisample_state(sample_count),
         fragment: Some(wgpu::FragmentState {
-            module: &shader,
+            module: shader,
             entry_point: Some(fs_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
@@ -2321,6 +2334,8 @@ pub(crate) fn create_scatter_columnar_mapped_pipeline_with_entries(
 }
 
 /// Two-entry convenience used by the sketch style (shared layout/state).
+// This wrapper forwards both shader entries and the shared scatter state.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn create_scatter_columnar_pipeline_with_entries(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
@@ -2379,7 +2394,7 @@ pub(crate) fn create_scatter_columnar_pipeline_full(
         label: Some(label),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
-            module: &shader,
+            module: shader,
             entry_point: Some(vs_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             buffers: &[
@@ -2427,7 +2442,7 @@ pub(crate) fn create_scatter_columnar_pipeline_full(
         depth_stencil: None,
         multisample: multisample_state(sample_count),
         fragment: Some(wgpu::FragmentState {
-            module: &shader,
+            module: shader,
             entry_point: Some(fs_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
@@ -2599,7 +2614,7 @@ pub(crate) fn create_errorbar_columnar_mapped_pipeline_from_shader(
         label: Some("figgy errorbar mapped pipeline"),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
-            module: &shader,
+            module: shader,
             entry_point: Some("vs_mapped"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             buffers: &buffers,
@@ -2616,7 +2631,7 @@ pub(crate) fn create_errorbar_columnar_mapped_pipeline_from_shader(
         depth_stencil: None,
         multisample: multisample_state(sample_count),
         fragment: Some(wgpu::FragmentState {
-            module: &shader,
+            module: shader,
             entry_point: Some("fs_mapped"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
@@ -2634,6 +2649,8 @@ pub(crate) fn create_errorbar_columnar_mapped_pipeline_from_shader(
 /// (e.g. the sketch `vs_sketch` — fragment stage shared, vertex count
 /// unchanged at 36 per instance) share the precise pipeline's layout and
 /// state; the renderer's style table supplies the entry string.
+// Styled error bars vary shader entries while retaining shared pipeline state.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn create_errorbar_columnar_pipeline_with_entries(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
@@ -2748,7 +2765,7 @@ pub(crate) fn create_errorbar_columnar_pipeline_full(
         label: Some(label),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
-            module: &shader,
+            module: shader,
             entry_point: Some(vs_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             buffers: &buffers,
@@ -2765,7 +2782,7 @@ pub(crate) fn create_errorbar_columnar_pipeline_full(
         depth_stencil: None,
         multisample: multisample_state(sample_count),
         fragment: Some(wgpu::FragmentState {
-            module: &shader,
+            module: shader,
             entry_point: Some(fs_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {

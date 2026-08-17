@@ -14,48 +14,53 @@ pub enum LabelFormat {
     Timestamp(TimestampLabelFormat),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TimestampUnit {
+    #[default]
     Seconds,
     Milliseconds,
     Microseconds,
     Nanoseconds,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TimestampZone {
+    #[default]
     Utc,
     /// Fixed offset from UTC in minutes. Korea Standard Time is 540.
     FixedOffsetMinutes(i32),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TimestampLabelMode {
+    #[default]
     Auto,
     /// Minimal strftime-like pattern: %Y %m %d %H %M %S %f and %%.
     Pattern(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FractionalSecondDigits {
+    #[default]
     Auto,
     Fixed(u8),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TimestampTickPolicy {
     /// Calendar-aware ticks such as minutes, hours, days, months, and years.
+    #[default]
     AutoCalendar,
     /// Reuse the numeric `major_spacing` / `minor_count` tick walkers.
     NumericSpacing,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct TimestampLabelFormat {
@@ -64,48 +69,6 @@ pub struct TimestampLabelFormat {
     pub label: TimestampLabelMode,
     pub fractional: FractionalSecondDigits,
     pub tick_policy: TimestampTickPolicy,
-}
-
-impl Default for TimestampUnit {
-    fn default() -> Self {
-        Self::Seconds
-    }
-}
-
-impl Default for TimestampZone {
-    fn default() -> Self {
-        Self::Utc
-    }
-}
-
-impl Default for TimestampLabelMode {
-    fn default() -> Self {
-        Self::Auto
-    }
-}
-
-impl Default for FractionalSecondDigits {
-    fn default() -> Self {
-        Self::Auto
-    }
-}
-
-impl Default for TimestampTickPolicy {
-    fn default() -> Self {
-        Self::AutoCalendar
-    }
-}
-
-impl Default for TimestampLabelFormat {
-    fn default() -> Self {
-        Self {
-            unit: TimestampUnit::default(),
-            timezone: TimestampZone::default(),
-            label: TimestampLabelMode::default(),
-            fractional: FractionalSecondDigits::default(),
-            tick_policy: TimestampTickPolicy::default(),
-        }
-    }
 }
 
 fn auto_sig_linear(min: f64, max: f64, step: f64) -> u8 {

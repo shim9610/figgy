@@ -217,11 +217,10 @@ impl CallbackTrait for LabCallback {
         for idx in 0..state.series.len() {
             let mut changed = false;
             if let DataRenderType::ScatterLine { scatter, .. } = &mut state.series[idx].render_type
+                && (scatter.point_size - self.point_size).abs() > f32::EPSILON
             {
-                if (scatter.point_size - self.point_size).abs() > f32::EPSILON {
-                    scatter.point_size = self.point_size;
-                    changed = true;
-                }
+                scatter.point_size = self.point_size;
+                changed = true;
             }
             if changed {
                 state.styles[idx] = state.renderer.create_style_for_series(&state.series[idx]);
@@ -248,15 +247,14 @@ impl CallbackTrait for LabCallback {
             // `Renderer::prepare` below rewrites the transform uniform from
             // the current config every frame.
             let _ = state.chart.consume_data_dirty();
-            if raster_dirty {
-                if let Err(e) = state
+            if raster_dirty
+                && let Err(e) = state
                     .renderer
                     .refresh_axis(&mut state.view, &state.chart, cur_rect)
-                {
-                    eprintln!("[lab] refresh_axis failed: {e}");
-                    state.prepared = None;
-                    return Vec::new();
-                }
+            {
+                eprintln!("[lab] refresh_axis failed: {e}");
+                state.prepared = None;
+                return Vec::new();
             }
         }
 

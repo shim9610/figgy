@@ -14,8 +14,6 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
-# Measurement-only raw startup A/B export. Production builds do not expose it.
-startup-profile = ["web-sys/Performance", "web-sys/Window"]
 
 # wasm-pack's bundled wasm-opt crashes on wasm features emitted by current
 # rustc (binaryen Precompute UNREACHABLE). Rust's own release optimization

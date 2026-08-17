@@ -128,9 +128,13 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
             let Some((b_px, b_py)) = project_data_to_canvas_px(config, &transform, bx, by) else {
                 continue;
             };
-            let Some((dist_sq, point_index)) =
-                line_segment_pick(canvas_x, canvas_y, a_px, a_py, b_px, b_py, half_width, i)
-            else {
+            let Some((dist_sq, point_index)) = line_segment_pick(
+                [canvas_x, canvas_y],
+                [a_px, a_py],
+                [b_px, b_py],
+                half_width,
+                i,
+            ) else {
                 continue;
             };
             if !dist_sq.is_finite() || dist_sq > max_dist_sq {
@@ -206,20 +210,19 @@ fn scatter_visual_radius_px(
     let mut shape = &scatter.point_shape;
 
     if use_style_mapping {
-        if let (Some(indices), Some(table)) = (style_index, scatter.point_style_table.as_deref()) {
-            if let Some(idx) = indices
+        if let (Some(indices), Some(table)) = (style_index, scatter.point_style_table.as_deref())
+            && let Some(idx) = indices
                 .get(point_index)
                 .copied()
                 .and_then(valid_style_index)
                 .filter(|idx| *idx < table.len())
-            {
-                let slot = &table[idx];
-                if let Some(size) = slot.point_size {
-                    radius = size;
-                }
-                if let Some(slot_shape) = slot.point_shape.as_ref() {
-                    shape = slot_shape;
-                }
+        {
+            let slot = &table[idx];
+            if let Some(size) = slot.point_size {
+                radius = size;
+            }
+            if let Some(slot_shape) = slot.point_shape.as_ref() {
+                shape = slot_shape;
             }
         }
 
@@ -241,7 +244,7 @@ fn scatter_visual_radius_px(
 }
 
 fn valid_style_index(v: f32) -> Option<usize> {
-    if v >= 0.0 && v <= 16_777_216.0 && (v - v.round()).abs() <= 0.001 {
+    if (0.0..=16_777_216.0).contains(&v) && (v - v.round()).abs() <= 0.001 {
         Some(v.round() as usize)
     } else {
         None
@@ -270,15 +273,15 @@ fn shape_visual_radius_px(shape: &ScatterShape, radius: f32) -> f32 {
 }
 
 fn line_segment_pick(
-    x: f32,
-    y: f32,
-    ax: f32,
-    ay: f32,
-    bx: f32,
-    by: f32,
+    cursor: [f32; 2],
+    a: [f32; 2],
+    b: [f32; 2],
     half_width: f32,
     point_index: usize,
 ) -> Option<(f32, usize)> {
+    let [x, y] = cursor;
+    let [ax, ay] = a;
+    let [bx, by] = b;
     let sx = bx - ax;
     let sy = by - ay;
     let len_sq = sx.mul_add(sx, sy * sy);

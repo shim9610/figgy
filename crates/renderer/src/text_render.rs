@@ -19,8 +19,29 @@ use swash::FontRef;
 use swash::scale::{Render, ScaleContext, Source};
 
 use crate::color::Color;
+use crate::layout::RectF;
 use crate::raster::Canvas;
 use crate::text::{RichSegment, RichText, greek_char};
+
+type FontLookupKey = (String, bool, bool);
+#[cfg(not(target_arch = "wasm32"))]
+type SystemFaceBacking = (&'static [u8], u32);
+#[cfg(not(target_arch = "wasm32"))]
+type SystemFaceCache = HashMap<fontdb::ID, SystemFaceBacking>;
+
+struct ResolvedFontCache {
+    generation: u64,
+    fonts: HashMap<FontLookupKey, FontRef<'static>>,
+}
+
+impl ResolvedFontCache {
+    fn new() -> Self {
+        Self {
+            generation: 0,
+            fonts: HashMap::new(),
+        }
+    }
+}
 
 // Bundled fonts (SIL OFL 1.1):
 //   - Liberation Sans — the default face (fonts/LICENSE-LiberationSans.txt).
@@ -283,16 +304,14 @@ thread_local! {
     /// hit-testing) stays lock-free. Stable backing bytes are cached by
     /// fontdb face id in the process-wide registered/system face caches, so
     /// thread-local misses reuse the same backing instead of copying it.
-    static RESOLVED: RefCell<(u64, HashMap<(String, bool, bool), FontRef<'static>>)> =
-        RefCell::new((0, HashMap::new()));
+    static RESOLVED: RefCell<ResolvedFontCache> = RefCell::new(ResolvedFontCache::new());
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn lookup_system_font(family: &str, bold: bool, italic: bool) -> Option<(&'static [u8], u32)> {
     let db = font_db();
     let id = query_font(db, family, bold, italic)?;
-    static RESOLVED_SYSTEM_FACES: OnceLock<Mutex<HashMap<fontdb::ID, (&'static [u8], u32)>>> =
-        OnceLock::new();
+    static RESOLVED_SYSTEM_FACES: OnceLock<Mutex<SystemFaceCache>> = OnceLock::new();
     let mut resolved = RESOLVED_SYSTEM_FACES
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -323,19 +342,19 @@ fn resolve_font(family: &str, bold: bool, italic: bool) -> FontRef<'static> {
     RESOLVED.with(|cell| {
         let mut cache = cell.borrow_mut();
         let generation = font_generation();
-        if cache.0 != generation {
-            cache.0 = generation;
-            cache.1.clear();
+        if cache.generation != generation {
+            cache.generation = generation;
+            cache.fonts.clear();
         }
         let key = (family.to_string(), bold, italic);
-        if let Some(hit) = cache.1.get(&key) {
+        if let Some(hit) = cache.fonts.get(&key) {
             return *hit;
         }
         let resolved = lookup_registered_font(family, bold, italic)
             .or_else(|| lookup_system_font(family, bold, italic))
             .and_then(|(bytes, index)| FontRef::from_index(bytes, index as usize))
             .unwrap_or_else(|| embedded_font(bold, italic));
-        cache.1.insert(key, resolved);
+        cache.fonts.insert(key, resolved);
         resolved
     })
 }
@@ -733,7 +752,18 @@ fn draw_line_segments(
             let t = (base * RULE_THICKNESS_RATIO).max(1.0);
             let ry = y - base * RULE_Y_RATIO - t * 0.5;
             if let Some(pattern) = &seg.rule_dash {
-                draw_dashed_rule(canvas, pen_x, ry, field, t, &color, pattern, base);
+                draw_dashed_rule(
+                    canvas,
+                    RectF {
+                        x: pen_x,
+                        y: ry,
+                        width: field,
+                        height: t,
+                    },
+                    &color,
+                    pattern,
+                    base,
+                );
             } else {
                 canvas.draw_rect(pen_x, ry, field, t, &crate::raster::Paint::fill(&color));
             }
@@ -771,16 +801,7 @@ fn draw_line_segments(
     }
 }
 
-fn draw_dashed_rule(
-    canvas: &mut Canvas,
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-    color: &Color,
-    dash_em: &[f32],
-    base: f32,
-) {
+fn draw_dashed_rule(canvas: &mut Canvas, rect: RectF, color: &Color, dash_em: &[f32], base: f32) {
     let pattern: Vec<f32> = dash_em
         .iter()
         .filter_map(|v| {
@@ -789,21 +810,27 @@ fn draw_dashed_rule(
         })
         .collect();
     if pattern.is_empty() {
-        canvas.draw_rect(x, y, width, height, &crate::raster::Paint::fill(color));
+        canvas.draw_rect(
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height,
+            &crate::raster::Paint::fill(color),
+        );
         return;
     }
 
     let mut offset = 0.0;
     let mut pattern_i = 0usize;
     let mut ink = true;
-    while offset < width {
-        let len = pattern[pattern_i % pattern.len()].min(width - offset);
+    while offset < rect.width {
+        let len = pattern[pattern_i % pattern.len()].min(rect.width - offset);
         if ink {
             canvas.draw_rect(
-                x + offset,
-                y,
+                rect.x + offset,
+                rect.y,
                 len,
-                height,
+                rect.height,
                 &crate::raster::Paint::fill(color),
             );
         }
@@ -876,18 +903,7 @@ pub fn draw_rich_text(canvas: &mut Canvas, rt: &RichText, origin: (f32, f32), po
 ///
 /// `height() = ascent + descent` is the full vertical envelope, so block
 /// centering math works unchanged for multi-line text.
-#[derive(Debug, Clone, PartialEq)]
-pub struct TextMetrics {
-    pub width: f32,
-    pub ascent: f32,
-    pub descent: f32,
-}
-
-impl TextMetrics {
-    pub fn height(&self) -> f32 {
-        self.ascent + self.descent
-    }
-}
+pub use crate::text::TextExtents as TextMetrics;
 
 /// CPU-raster implementation of the model crate's [`MeasureText`] contract.
 ///
@@ -912,12 +928,7 @@ impl CpuTextMeasure {
 
 impl crate::text::MeasureText for CpuTextMeasure {
     fn measure_rich(&self, rt: &RichText) -> crate::text::TextExtents {
-        let m = measure_rich_text(rt, self.policy);
-        crate::text::TextExtents {
-            width: m.width,
-            ascent: m.ascent,
-            descent: m.descent,
-        }
+        measure_rich_text(rt, self.policy)
     }
 }
 

@@ -28,11 +28,12 @@ export class FiggyChartElement extends HTMLElement {
   #started = false;
   #lifecycleGeneration = 0;
   #readyToken = null;
-  #exportToken = null;
+  #operationToken = null;
   #lastPoint = null;
   #dpr = 1;
   #pendingResize = null;
   #pendingRelease = null;
+  #pendingPrewarm = null;
 
   constructor() {
     super();
@@ -81,6 +82,9 @@ export class FiggyChartElement extends HTMLElement {
   }
 
   get kernel() {
+    if (this.busy) {
+      throw new Error("figgy chart is busy");
+    }
     if (!this.#kernel) {
       throw new Error("figgy chart is not ready yet; await element.ready first");
     }
@@ -88,7 +92,7 @@ export class FiggyChartElement extends HTMLElement {
   }
 
   get busy() {
-    return this.#exportToken !== null;
+    return this.#operationToken !== null;
   }
 
   #isCurrentConnection(generation, readyToken = this.#readyToken) {
@@ -98,50 +102,71 @@ export class FiggyChartElement extends HTMLElement {
       && this.#readyToken === readyToken;
   }
 
-  #isCurrentKernel(token) {
-    return this.#exportToken === token
+  #isCurrentOperation(token) {
+    return this.#operationToken === token
       && this.#lifecycleGeneration === token.generation
-      && this.#kernel === token.kernel;
+      && (token.kind === "connect" || this.#kernel === token.kernel);
   }
 
   async #connect(generation, readyToken) {
-    await ensureWasm();
-    if (!this.#isCurrentConnection(generation, readyToken)) {
-      return;
-    }
-    this.#resizeCanvas(false);
-    if (!this.#isCurrentConnection(generation, readyToken)) {
-      return;
-    }
-    const kernel = await RawFiggyChart.create_with_progress(this.#canvas, (event) => {
-      dispatchFiggyEvent(this, "figgy-init-progress", event);
-    });
-    if (!this.#isCurrentConnection(generation, readyToken)) {
-      kernel.free();
-      return;
-    }
-    let resizeObserver;
+    const token = this.#beginOperation("connect", null, generation);
+    let kernel = null;
+    let resizeObserver = null;
+    let published = false;
     try {
+      await ensureWasm();
+      if (!this.#isCurrentConnection(generation, readyToken)
+          || !this.#isCurrentOperation(token)) {
+        return;
+      }
+      this.#resizeCanvas(false);
+      if (!this.#isCurrentConnection(generation, readyToken)
+          || !this.#isCurrentOperation(token)) {
+        return;
+      }
+      kernel = await RawFiggyChart.create_with_progress(this.#canvas, (event) => {
+        if (this.#isCurrentConnection(generation, readyToken)
+            && this.#isCurrentOperation(token)) {
+          dispatchFiggyEvent(this, "figgy-init-progress", event);
+        }
+      });
+      token.kernel = kernel;
+      if (!this.#isCurrentConnection(generation, readyToken)
+          || !this.#isCurrentOperation(token)) {
+        return;
+      }
       resizeObserver = new ResizeObserver(() => this.#resizeCanvas(true));
       resizeObserver.observe(this);
-    } catch (error) {
-      kernel.free();
-      throw error;
+      if (!this.#isCurrentConnection(generation, readyToken)
+          || !this.#isCurrentOperation(token)) {
+        return;
+      }
+      this.#kernel = kernel;
+      this.#resizeObserver = resizeObserver;
+      this.#pendingResize = null;
+      this.#pendingRelease = null;
+      published = true;
+    } finally {
+      if (!published && resizeObserver) {
+        resizeObserver.disconnect();
+      }
+      if (!published && kernel && token.disposal === "attached") {
+        token.disposal = "freed";
+        kernel.free();
+      }
+      this.#settleOperation(token);
     }
-    if (!this.#isCurrentConnection(generation, readyToken)) {
-      resizeObserver.disconnect();
-      kernel.free();
+
+    if (!published || !this.#isCurrentConnection(generation, readyToken)
+        || this.#kernel !== kernel) {
       return;
     }
-    this.#kernel = kernel;
-    this.#resizeObserver = resizeObserver;
-    this.#pendingResize = null;
-    this.#pendingRelease = null;
     readyToken.state = "fulfilled";
     readyToken.resolve(this);
     dispatchFiggyEvent(this, "figgy-ready", { chart: this, kernel });
     if (this.#isCurrentConnection(generation, readyToken) && this.#kernel === kernel) {
       this.#startLoop();
+      this.#queueBackgroundPrewarm(generation, kernel);
     }
   }
 
@@ -213,7 +238,7 @@ export class FiggyChartElement extends HTMLElement {
     if (notifyKernel && this.#kernel) {
       if (this.busy) {
         this.#pendingResize = {
-          token: this.#exportToken,
+          token: this.#operationToken,
           width,
           height,
         };
@@ -259,9 +284,9 @@ export class FiggyChartElement extends HTMLElement {
         return;
       }
       this.#lastPoint = null;
-      const token = this.#exportToken;
+      const token = this.#operationToken;
       if (token) {
-        if (this.#isCurrentKernel(token) && !this.#pendingRelease) {
+        if (this.#isCurrentOperation(token)) {
           this.#pendingRelease = { token };
         }
         return;
@@ -288,6 +313,68 @@ export class FiggyChartElement extends HTMLElement {
     return this.kernel;
   }
 
+  #beginOperation(kind, kernel = this.kernel, generation = this.#lifecycleGeneration) {
+    if (this.busy) {
+      throw new Error("figgy chart is busy");
+    }
+    const token = {
+      kind,
+      generation,
+      kernel,
+      disposal: "attached",
+    };
+    this.#operationToken = token;
+    return token;
+  }
+
+  async #runKernelOperation(kind, operation) {
+    const token = this.#beginOperation(kind);
+    try {
+      return await operation(token.kernel);
+    } finally {
+      this.#settleOperation(token);
+    }
+  }
+
+  #queueBackgroundPrewarm(generation, kernel) {
+    this.#pendingPrewarm = { generation, kernel };
+    Promise.resolve().then(() => this.#drainBackgroundPrewarm());
+  }
+
+  #drainBackgroundPrewarm() {
+    const pending = this.#pendingPrewarm;
+    if (!pending) {
+      return;
+    }
+    if (!this.#started
+        || !this.isConnected
+        || this.#lifecycleGeneration !== pending.generation
+        || this.#kernel !== pending.kernel) {
+      this.#pendingPrewarm = null;
+      return;
+    }
+    if (this.busy) {
+      return;
+    }
+    this.#pendingPrewarm = null;
+    this.#runKernelOperation(
+      "picker-prewarm",
+      (kernel) => kernel.prewarm_gpu_picking(),
+    ).catch((error) => {
+      if (this.#started
+          && this.isConnected
+          && this.#lifecycleGeneration === pending.generation
+          && this.#kernel === pending.kernel) {
+        console.error("figgy picker prewarm:", error);
+        dispatchFiggyEvent(this, "figgy-error", {
+          error,
+          operation: "prewarm_gpu_picking",
+          recoverable: true,
+        });
+      }
+    });
+  }
+
   resize() {
     this.#resizeCanvas(true);
   }
@@ -299,37 +386,11 @@ export class FiggyChartElement extends HTMLElement {
   }
 
   async export_png(scale = 1.0) {
-    if (this.busy) {
-      throw new Error("figgy chart is busy");
-    }
-    const token = {
-      generation: this.#lifecycleGeneration,
-      kernel: this.kernel,
-      disposal: "attached",
-    };
-    this.#exportToken = token;
-    try {
-      return await token.kernel.export_png(scale);
-    } finally {
-      this.#settleExport(token);
-    }
+    return this.#runKernelOperation("export", (kernel) => kernel.export_png(scale));
   }
 
   async first_frame_ready() {
-    if (this.busy) {
-      throw new Error("figgy chart is busy");
-    }
-    const token = {
-      generation: this.#lifecycleGeneration,
-      kernel: this.kernel,
-      disposal: "attached",
-    };
-    this.#exportToken = token;
-    try {
-      await token.kernel.first_frame_ready();
-    } finally {
-      this.#settleExport(token);
-    }
+    await this.#runKernelOperation("first-frame", (kernel) => kernel.first_frame_ready());
   }
 
   warm_up() {
@@ -337,25 +398,22 @@ export class FiggyChartElement extends HTMLElement {
   }
 
   async ensure_extent_engine() {
-    if (this.busy) {
-      throw new Error("figgy chart is busy");
-    }
-    const token = {
-      generation: this.#lifecycleGeneration,
-      kernel: this.kernel,
-      disposal: "attached",
-    };
-    this.#exportToken = token;
-    try {
-      await token.kernel.ensure_extent_engine();
-    } finally {
-      this.#settleExport(token);
-    }
+    await this.#runKernelOperation(
+      "extent-prewarm",
+      (kernel) => kernel.ensure_extent_engine(),
+    );
   }
 
-  #settleExport(token) {
+  async prewarm_gpu_picking() {
+    await this.#runKernelOperation(
+      "picker-prewarm",
+      (kernel) => kernel.prewarm_gpu_picking(),
+    );
+  }
+
+  #settleOperation(token) {
     let cleanupError = null;
-    if (this.#isCurrentKernel(token) && this.#pendingRelease?.token === token) {
+    if (this.#isCurrentOperation(token) && this.#pendingRelease?.token === token) {
       this.#pendingRelease = null;
       try {
         token.kernel.on_release();
@@ -366,7 +424,7 @@ export class FiggyChartElement extends HTMLElement {
       }
     }
 
-    if (this.#isCurrentKernel(token) && this.#pendingResize?.token === token) {
+    if (this.#isCurrentOperation(token) && this.#pendingResize?.token === token) {
       const { width, height } = this.#pendingResize;
       this.#pendingResize = null;
       try {
@@ -376,16 +434,21 @@ export class FiggyChartElement extends HTMLElement {
       }
     }
 
-    if (this.#exportToken === token) {
-      this.#exportToken = null;
+    if (this.#operationToken === token) {
+      this.#operationToken = null;
     }
     if (token.disposal === "deferred") {
       token.disposal = "freed";
-      try {
-        token.kernel.free();
-      } catch (error) {
-        cleanupError ??= error;
+      if (token.kernel) {
+        try {
+          token.kernel.free();
+        } catch (error) {
+          cleanupError ??= error;
+        }
       }
+    }
+    if (this.#pendingPrewarm) {
+      Promise.resolve().then(() => this.#drainBackgroundPrewarm());
     }
     if (cleanupError) {
       throw cleanupError;
@@ -393,12 +456,12 @@ export class FiggyChartElement extends HTMLElement {
   }
 
   free() {
-    const exportToken = this.#exportToken;
+    const operationToken = this.#operationToken;
     const active = this.#started
       || this.#kernel !== null
       || this.#resizeObserver !== null
       || this.#raf !== 0
-      || this.#exportToken !== null;
+      || this.#operationToken !== null;
     if (!active) {
       return;
     }
@@ -408,7 +471,11 @@ export class FiggyChartElement extends HTMLElement {
     this.#lastPoint = null;
     this.#pendingResize = null;
     this.#pendingRelease = null;
-    this.#exportToken = null;
+    this.#pendingPrewarm = null;
+    this.#operationToken = null;
+    if (operationToken?.disposal === "attached") {
+      operationToken.disposal = "deferred";
+    }
 
     if (this.#raf) {
       cancelAnimationFrame(this.#raf);
@@ -433,9 +500,7 @@ export class FiggyChartElement extends HTMLElement {
     this.#resetReady();
 
     if (kernel) {
-      if (exportToken?.kernel === kernel && exportToken.disposal === "attached") {
-        exportToken.disposal = "deferred";
-      } else {
+      if (operationToken?.kernel !== kernel) {
         kernel.free();
       }
     }
@@ -459,20 +524,10 @@ export class FiggyChartElement extends HTMLElement {
   auto_fit_x(column, padding) { return this.#kernelForCall().auto_fit_x(column, padding); }
   auto_fit_y(column, padding) { return this.#kernelForCall().auto_fit_y(column, padding); }
   async auto_fit_all(padding) {
-    if (this.busy) {
-      throw new Error("figgy chart is busy");
-    }
-    const token = {
-      generation: this.#lifecycleGeneration,
-      kernel: this.kernel,
-      disposal: "attached",
-    };
-    this.#exportToken = token;
-    try {
-      await token.kernel.auto_fit_all(padding);
-    } finally {
-      this.#settleExport(token);
-    }
+    await this.#runKernelOperation(
+      "auto-fit",
+      (kernel) => kernel.auto_fit_all(padding),
+    );
   }
   set_title(text) { return this.#kernelForCall().set_title(text); }
   set_x_title(text) { return this.#kernelForCall().set_x_title(text); }
@@ -489,21 +544,11 @@ export class FiggyChartElement extends HTMLElement {
     return hit === undefined ? null : hit;
   }
   async pick_point(x, y, maxDistancePx) {
-    if (this.busy) {
-      throw new Error("figgy chart is busy");
-    }
-    const token = {
-      generation: this.#lifecycleGeneration,
-      kernel: this.kernel,
-      disposal: "attached",
-    };
-    this.#exportToken = token;
-    try {
-      const hit = await token.kernel.pick_point(x, y, maxDistancePx);
-      return hit === undefined ? null : JSON.parse(hit);
-    } finally {
-      this.#settleExport(token);
-    }
+    const hit = await this.#runKernelOperation(
+      "pick",
+      (kernel) => kernel.pick_point(x, y, maxDistancePx),
+    );
+    return hit === undefined ? null : JSON.parse(hit);
   }
   set_picked_points(json) { return this.#kernelForCall().set_picked_points(json); }
   set_clear_color(r, g, b, a) { return this.#kernelForCall().set_clear_color(r, g, b, a); }

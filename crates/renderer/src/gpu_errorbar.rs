@@ -197,9 +197,9 @@ pub enum GpuErrorbarError {
         limit: u64,
     },
     NoDispatchCapacity,
-    /// Wasm hosts must `ensure_errorbar_extent_engine` before the first extent
-    /// submit so compute pipelines can compile through
-    /// `createComputePipelineAsync` instead of the first `queue.submit()`.
+    /// All hosts must complete mutable `ensure_errorbar_extent_engine`
+    /// preparation before shared extent submission. The shared path only reads
+    /// a successfully published engine and never creates compute pipelines.
     EngineNotReady,
     AsyncCompileFailed(String),
     ReadbackSenderDropped,
@@ -685,8 +685,7 @@ impl GpuErrorbarExtentEngine {
         let limits = device.limits();
         let pool_binding = checked_pool_binding(pool_buffer, &limits)?;
         let input_len = params.lengths_1[2];
-        let max_scratch_groups =
-            u64::from(limits.max_storage_buffer_binding_size) / SERIES_STATE_BYTES;
+        let max_scratch_groups = limits.max_storage_buffer_binding_size / SERIES_STATE_BYTES;
         let dispatch_cap = u64::from(limits.max_compute_workgroups_per_dimension)
             .min(max_scratch_groups)
             .min(u64::from(u32::MAX)) as u32;
@@ -936,7 +935,7 @@ fn checked_pool_binding<'a>(
     limits: &wgpu::Limits,
 ) -> Result<wgpu::BufferBinding<'a>, GpuErrorbarError> {
     let requested = pool_buffer.size();
-    let limit = u64::from(limits.max_storage_buffer_binding_size);
+    let limit = limits.max_storage_buffer_binding_size;
     if requested > limit {
         return Err(GpuErrorbarError::StorageBindingTooLarge {
             role: "column pool",

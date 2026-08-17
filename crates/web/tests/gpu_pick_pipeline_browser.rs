@@ -14,6 +14,7 @@ use renderer::{
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::*;
+use web_sys::HtmlCanvasElement;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -52,6 +53,92 @@ async fn pop_error_scope(device: &wgpu::Device) -> Option<String> {
         .and_then(|value| value.as_string())
         .unwrap_or_else(|| format!("{error:?}"));
     Some(message)
+}
+
+fn canvas(width: u32, height: u32) -> HtmlCanvasElement {
+    let document = web_sys::window()
+        .expect("window")
+        .document()
+        .expect("document");
+    let canvas = document
+        .create_element("canvas")
+        .expect("canvas element")
+        .dyn_into::<HtmlCanvasElement>()
+        .expect("HtmlCanvasElement");
+    canvas.set_width(width);
+    canvas.set_height(height);
+    canvas
+}
+
+#[wasm_bindgen_test(async)]
+async fn raw_figgy_prewarm_is_idempotent_and_pick_reuses_it() {
+    let mut chart = figgy::FiggyChart::create(canvas(400, 400))
+        .await
+        .expect("raw chart creation failed");
+    chart
+        .register_column_f32("raw-pick-x", &[0.0, 1.0, 2.0])
+        .expect("x-column registration failed");
+    chart
+        .register_column_f32("raw-pick-y", &[0.0, 1.0, 2.0])
+        .expect("y-column registration failed");
+    chart
+        .add_line_series("raw-series", "raw-pick-x", "raw-pick-y", 2.0, "raw")
+        .expect("line registration failed");
+
+    let mut config: renderer::Config =
+        serde_json::from_str(&chart.get_config().expect("raw config serialization failed"))
+            .expect("raw config JSON failed to parse");
+    config.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+    });
+    config.chart_title.top_margin = 0.0;
+    for axis in [
+        &mut config.top_x,
+        &mut config.bottom_x,
+        &mut config.left_y,
+        &mut config.right_y,
+    ] {
+        axis.out_margin = 0.0;
+        axis.major_tick_length = 0.0;
+    }
+    for axis in [&mut config.top_x, &mut config.bottom_x] {
+        axis.min = 0.0;
+        axis.max = 2.0;
+    }
+    for axis in [&mut config.left_y, &mut config.right_y] {
+        axis.min = 0.0;
+        axis.max = 2.0;
+    }
+    assert_eq!(
+        config.data_area().expect("explicit raw data area").0,
+        config.chart_area.0
+    );
+    chart
+        .set_config(&serde_json::to_string(&config).expect("raw config serialization failed"))
+        .expect("raw config update failed");
+    chart.resize(100, 100).expect("raw chart resize failed");
+
+    chart
+        .prewarm_gpu_picking()
+        .await
+        .expect("first raw picker prewarm failed");
+    chart
+        .prewarm_gpu_picking()
+        .await
+        .expect("idempotent raw picker prewarm failed");
+    let picked = chart
+        .pick_point(50.0, 50.0, 2.0)
+        .await
+        .expect("raw pick failed")
+        .as_string()
+        .expect("known line point was not picked");
+    let picked: serde_json::Value =
+        serde_json::from_str(&picked).expect("raw pick payload was not JSON");
+    assert_eq!(picked["series_id"], "raw-series");
+    assert_eq!(picked["point_index"], 1);
 }
 
 #[wasm_bindgen_test(async)]

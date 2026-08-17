@@ -1,21 +1,24 @@
 //! Selection policy — `Selectable` and the chart elements that implement it.
 //!
-//! Selectable objects expose their exact pixel bounds (`bounds`); what
+//! Selectable objects expose their interaction-policy pixel bounds (`bounds`); what
 //! selection *does* is fixed by the trait's default methods so it applies
 //! uniformly to every element: a blue highlight box around the bounds
 //! (`selection_box`) and point hit-testing (`contains`). The renderer draws
 //! the box with skia (`axis_render::draw_selection_boxes`); the model only
 //! states the policy.
 //!
-//! Bounds formulas mirror the renderer's draw formulas one-to-one
-//! (`axis_render::draw_chart_title` / `draw_axis_title` / axis bands), with
-//! glyph extents supplied through the [`MeasureText`] contract — so the box
-//! encloses exactly what is drawn.
+//! Placement formulas shared with the renderer consume glyph extents through
+//! the [`MeasureText`] contract. Tick labels intentionally use a representative
+//! strip instead of reproducing renderer-owned tick generation, formatting,
+//! pruning, or the exact union of rendered labels.
 
 use crate::color::Color;
-use crate::config::{AxisOptions, Config, LegendCorner, TickVisibility};
+use crate::config::{AxisOptions, Config, TickVisibility};
 use crate::drag::Draggable;
-use crate::layout::{RectF, Side};
+use crate::layout::{
+    RectF, Side, axis_offset, axis_title_placement, axis_visibility_rect, chart_title_placement,
+    label_origin, label_rect, legend_rect,
+};
 use crate::resize::Resizable;
 use crate::text::MeasureText;
 
@@ -50,9 +53,10 @@ pub struct SelectionBox {
 /// the default methods so it is identical across elements; override them only
 /// to change the policy itself.
 pub trait Selectable {
-    /// Exact pixel bounds of this element under `cfg`, or `None` when the
+    /// Interaction bounds of this element under `cfg`, or `None` when the
     /// element is hidden, empty, or the layout is infeasible. Text-bearing
-    /// elements compute glyph-precise boxes via `measure`.
+    /// elements use `measure`; tick-label elements remain representative
+    /// strips rather than exact rendered-label unions.
     fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF>;
 
     /// Default selection policy: a blue box [`SELECTION_PADDING`] px outside
@@ -213,6 +217,12 @@ impl HitMap {
     }
 }
 
+impl Default for HitMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // Selectable chart elements.
 
 /// One of the four axes — the axis line plus its tick band.
@@ -267,56 +277,7 @@ impl Selectable for AxisElement {
         }
         let da = cfg.data_area().ok()?;
 
-        // Tick extents on each side of the axis line. The stroke itself is at
-        // least 1 px in the renderer (`stroke_paint` clamps), so mirror that.
-        let t = axis.major_tick_length;
-        let (inward, outward) = match axis.tick {
-            TickVisibility::None => (0.0, 0.0),
-            TickVisibility::Outside => (0.0, t),
-            TickVisibility::Inside => (t, 0.0),
-            TickVisibility::Both => (t, t),
-        };
-        let half_line = if axis.line_visible {
-            axis.line_width.max(1.0) * 0.5
-        } else {
-            0.0
-        };
-        let in_ext = inward.max(half_line);
-        let out_ext = outward.max(half_line);
-
-        let (dax, day) = (da.x as f32, da.y as f32);
-        let (daw, dah) = (da.width as f32, da.height as f32);
-        let band = match self.side {
-            Side::Top => RectF {
-                x: dax,
-                y: day - out_ext,
-                width: daw,
-                height: in_ext + out_ext,
-            },
-            Side::Bottom => RectF {
-                x: dax,
-                y: day + dah - in_ext,
-                width: daw,
-                height: in_ext + out_ext,
-            },
-            Side::Left => RectF {
-                x: dax - out_ext,
-                y: day,
-                width: in_ext + out_ext,
-                height: dah,
-            },
-            Side::Right => RectF {
-                x: dax + daw - in_ext,
-                y: day,
-                width: in_ext + out_ext,
-                height: dah,
-            },
-        };
-        // A detached axis carries its band with it (perpendicular shift).
-        Some(match self.side {
-            Side::Left | Side::Right => band.translated(axis.line_offset, 0.0),
-            Side::Top | Side::Bottom => band.translated(0.0, axis.line_offset),
-        })
+        Some(axis_visibility_rect(self.side.clone(), &da, axis))
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -324,16 +285,11 @@ impl Selectable for AxisElement {
     }
 }
 
-/// Gap between a tick end and its label — keep in sync with the renderer's
-/// `axis_render::LABEL_GAP`.
-const LABEL_GAP: f32 = 4.0;
-
 impl Selectable for AxisLabelElement {
-    /// The strip the label glyphs occupy: it starts `major_tick_length +
-    /// LABEL_GAP` outward of the axis line (same placement rule as the
-    /// renderer's `draw_tick_label`) and is sized from the label font via
-    /// `measure` — its height for horizontal axes, and a
-    /// `significant_digits`-wide digit sample for the vertical axes' width.
+    /// Approximate interaction strip for representative label glyphs. It uses
+    /// the renderer's placement formula and a decimal/timestamp sample, but
+    /// does not reproduce the renderer-owned tick set, formatting, pruning,
+    /// or exact rendered-label union.
     fn element_id(&self) -> String {
         format!("tick_labels_{}", side_str(&self.side))
     }
@@ -345,8 +301,6 @@ impl Selectable for AxisLabelElement {
             return None;
         }
         let da = cfg.data_area().ok()?;
-        let start = axis.major_tick_length + LABEL_GAP;
-
         // Representative label extents at the label font/size. Digits share
         // one height; width approximates a `significant_digits`-long number
         // (+2 for a sign / decimal point).
@@ -367,39 +321,32 @@ impl Selectable for AxisLabelElement {
 
         let (dax, day) = (da.x as f32, da.y as f32);
         let (daw, dah) = (da.width as f32, da.height as f32);
-        let strip = match self.side {
-            Side::Top => RectF {
-                x: dax,
-                y: day - start - m.height(),
-                width: daw,
-                height: m.height(),
-            },
-            Side::Bottom => RectF {
-                x: dax,
-                y: day + dah + start,
-                width: daw,
-                height: m.height(),
-            },
-            Side::Left => RectF {
-                x: dax - start - m.width,
-                y: day,
-                width: m.width,
-                height: dah,
-            },
-            Side::Right => RectF {
-                x: dax + daw + start,
-                y: day,
-                width: m.width,
-                height: dah,
-            },
+        let tick_position = match self.side {
+            Side::Top => (dax, day),
+            Side::Bottom => (dax, day + dah),
+            Side::Left => (dax, day),
+            Side::Right => (dax + daw, day),
         };
-        // Labels follow a detached axis (perpendicular shift), then translate
-        // with the user's visual offset.
-        let strip = match self.side {
-            Side::Left | Side::Right => strip.translated(axis.line_offset, 0.0),
-            Side::Top | Side::Bottom => strip.translated(0.0, axis.line_offset),
-        };
-        Some(strip.translated(ls.label_offset_x, ls.label_offset_y))
+        let origin = label_origin(
+            self.side.clone(),
+            tick_position,
+            axis.major_tick_length,
+            (ls.label_offset_x, ls.label_offset_y),
+            m,
+        );
+        let mut strip = label_rect(origin, m);
+        match self.side {
+            Side::Top | Side::Bottom => {
+                strip.x = dax;
+                strip.width = daw;
+            }
+            Side::Left | Side::Right => {
+                strip.y = day;
+                strip.height = dah;
+            }
+        }
+        let (dx, dy) = axis_offset(self.side.clone(), axis.line_offset);
+        Some(strip.translated(dx, dy))
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -419,60 +366,19 @@ impl Selectable for AxisTitleElement {
             return None;
         }
         let da = cfg.data_area().ok()?;
-        let ca = &cfg.chart_area;
         let m = measure.measure_rich(&to.text);
-
-        Some(match self.side {
-            // Horizontal text — same formulas as `draw_axis_title`.
-            Side::Top => {
-                let band_top = ca.y as f32 + cfg.chart_title.top_margin;
-                let baseline = band_top + (axis.out_margin - m.height()) * 0.5 + m.ascent;
-                let x = da.x as f32 + da.width as f32 * 0.5 - m.width * 0.5;
-                RectF {
-                    x: x + to.offset_x,
-                    y: baseline + to.offset_y - m.ascent,
-                    width: m.width,
-                    height: m.height(),
-                }
-            }
-            Side::Bottom => {
-                let band_top = (ca.y + ca.height) as f32 - axis.out_margin;
-                let baseline = band_top + (axis.out_margin - m.height()) * 0.5 + m.ascent;
-                let x = da.x as f32 + da.width as f32 * 0.5 - m.width * 0.5;
-                RectF {
-                    x: x + to.offset_x,
-                    y: baseline + to.offset_y - m.ascent,
-                    width: m.width,
-                    height: m.height(),
-                }
-            }
-            // Rotated text (Left −90°, Right +90°): the local-frame box is
-            // centered on the rotation center; the screen box is the axis-
-            // aligned image of that — width/height swap, offsets mapped with
-            // the same rotation as `nudge`'s `local_to_screen_offset`.
-            Side::Left => {
-                let cx = ca.x as f32 + axis.out_margin * 0.5;
-                let cy = da.y as f32 + da.height as f32 * 0.5;
-                let (sx, sy) = (cx + to.offset_y, cy - to.offset_x);
-                RectF {
-                    x: sx - m.height() * 0.5,
-                    y: sy - m.width * 0.5,
-                    width: m.height(),
-                    height: m.width,
-                }
-            }
-            Side::Right => {
-                let cx = (ca.x + ca.width) as f32 - axis.out_margin * 0.5;
-                let cy = da.y as f32 + da.height as f32 * 0.5;
-                let (sx, sy) = (cx - to.offset_y, cy + to.offset_x);
-                RectF {
-                    x: sx - m.height() * 0.5,
-                    y: sy - m.width * 0.5,
-                    width: m.height(),
-                    height: m.width,
-                }
-            }
-        })
+        Some(
+            axis_title_placement(
+                self.side.clone(),
+                &cfg.chart_area,
+                &da,
+                cfg.chart_title.top_margin,
+                axis.out_margin,
+                (to.offset_x, to.offset_y),
+                m,
+            )
+            .rect(m),
+        )
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -490,18 +396,16 @@ impl Selectable for ChartTitleElement {
         if !ct.visible || ct.text.segments.is_empty() {
             return None;
         }
-        let ca = &cfg.chart_area;
         let m = measure.measure_rich(&ct.text);
-
-        // Same formulas as `draw_chart_title`.
-        let baseline = ca.y as f32 + (ct.top_margin - m.height()) * 0.5 + m.ascent;
-        let x = ca.x as f32 + ca.width as f32 * 0.5 - m.width * 0.5;
-        Some(RectF {
-            x: x + ct.offset_x,
-            y: baseline + ct.offset_y - m.ascent,
-            width: m.width,
-            height: m.height(),
-        })
+        Some(
+            chart_title_placement(
+                &cfg.chart_area,
+                ct.top_margin,
+                (ct.offset_x, ct.offset_y),
+                m,
+            )
+            .rect(m),
+        )
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -528,10 +432,9 @@ impl Selectable for DataAreaElement {
 }
 
 impl Selectable for LegendElement {
-    /// Same box formulas as the renderer's `draw_legend` (change together):
-    /// the whole content document is measured as one rich text (`'\n'`
-    /// segments break lines), the box is the measured envelope expanded by
-    /// `padding` on every side, inset 6 px from the data-area corner.
+    /// The whole content document is measured as one rich text (`'\n'`
+    /// segments break lines); shared placement expands it by `padding` and
+    /// anchors it at the configured data-area corner.
     fn element_id(&self) -> String {
         "legend".to_string()
     }
@@ -544,31 +447,13 @@ impl Selectable for LegendElement {
         let da = cfg.data_area().ok()?;
 
         let m = measure.measure_rich(&lg.content);
-        let box_w = m.width + lg.padding * 2.0;
-        let box_h = m.height() + lg.padding * 2.0;
-
-        let inset = 6.0;
-        let (x, y) = match lg.corner {
-            LegendCorner::TopLeft => (da.x as f32 + inset, da.y as f32 + inset),
-            LegendCorner::TopRight => (
-                (da.x + da.width) as f32 - box_w - inset,
-                da.y as f32 + inset,
-            ),
-            LegendCorner::BottomLeft => (
-                da.x as f32 + inset,
-                (da.y + da.height) as f32 - box_h - inset,
-            ),
-            LegendCorner::BottomRight => (
-                (da.x + da.width) as f32 - box_w - inset,
-                (da.y + da.height) as f32 - box_h - inset,
-            ),
-        };
-        Some(RectF {
-            x: x + lg.offset_x,
-            y: y + lg.offset_y,
-            width: box_w,
-            height: box_h,
-        })
+        Some(legend_rect(
+            &da,
+            lg.corner,
+            lg.padding,
+            (lg.offset_x, lg.offset_y),
+            m,
+        ))
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {

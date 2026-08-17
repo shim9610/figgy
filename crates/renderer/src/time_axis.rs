@@ -296,7 +296,18 @@ fn calendar_month_values(
     let mut out = Vec::new();
     loop {
         let (year, month) = year_month_from_total(total_month)?;
-        let value = value_from_local_parts(year, month, 1, 0, 0, 0, 0, cfg)?;
+        let value = value_from_local_parts(
+            DateTimeParts {
+                year,
+                month,
+                day: 1,
+                hour: 0,
+                minute: 0,
+                second: 0,
+                nanosecond: 0,
+            },
+            cfg,
+        )?;
         if value > max + range_epsilon(min, max) {
             break;
         }
@@ -324,7 +335,18 @@ fn calendar_year_values(
     let mut year = div_ceil_i32(min_parts.year, step_years) * step_years;
     let mut out = Vec::new();
     loop {
-        let value = value_from_local_parts(year, 1, 1, 0, 0, 0, 0, cfg)?;
+        let value = value_from_local_parts(
+            DateTimeParts {
+                year,
+                month: 1,
+                day: 1,
+                hour: 0,
+                minute: 0,
+                second: 0,
+                nanosecond: 0,
+            },
+            cfg,
+        )?;
         if value > max + range_epsilon(min, max) {
             break;
         }
@@ -532,25 +554,16 @@ fn parts_from_epoch_ns(epoch_ns: i128, zone: TimestampZone) -> Option<DateTimePa
     })
 }
 
-fn value_from_local_parts(
-    year: i32,
-    month: u8,
-    day: u8,
-    hour: u8,
-    minute: u8,
-    second: u8,
-    nanosecond: u32,
-    cfg: &TimestampLabelFormat,
-) -> Option<f64> {
-    let days = days_from_civil(year, month, day)?;
+fn value_from_local_parts(parts: DateTimeParts, cfg: &TimestampLabelFormat) -> Option<f64> {
+    let days = days_from_civil(parts.year, parts.month, parts.day)?;
     let local_seconds = days as i128 * SECONDS_PER_DAY as i128
-        + hour as i128 * 3_600
-        + minute as i128 * 60
-        + second as i128;
+        + parts.hour as i128 * 3_600
+        + parts.minute as i128 * 60
+        + parts.second as i128;
     let utc_seconds = local_seconds.checked_sub(zone_offset_seconds(cfg.timezone) as i128)?;
     let epoch_ns = utc_seconds
         .checked_mul(NS_PER_SECOND)?
-        .checked_add(nanosecond as i128)?;
+        .checked_add(parts.nanosecond as i128)?;
     Some(value_from_epoch_ns(epoch_ns, cfg.unit))
 }
 
@@ -719,8 +732,32 @@ mod tests {
             label: TimestampLabelMode::Pattern("%Y-%m-%d".into()),
             ..TimestampLabelFormat::default()
         };
-        let jan_15 = value_from_local_parts(2026, 1, 15, 0, 0, 0, 0, &cfg).unwrap();
-        let may_15 = value_from_local_parts(2026, 5, 15, 0, 0, 0, 0, &cfg).unwrap();
+        let jan_15 = value_from_local_parts(
+            DateTimeParts {
+                year: 2026,
+                month: 1,
+                day: 15,
+                hour: 0,
+                minute: 0,
+                second: 0,
+                nanosecond: 0,
+            },
+            &cfg,
+        )
+        .unwrap();
+        let may_15 = value_from_local_parts(
+            DateTimeParts {
+                year: 2026,
+                month: 5,
+                day: 15,
+                hour: 0,
+                minute: 0,
+                second: 0,
+                nanosecond: 0,
+            },
+            &cfg,
+        )
+        .unwrap();
         let mut axis = default_config().bottom_x;
         axis.min = jan_15;
         axis.max = may_15;

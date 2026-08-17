@@ -7,6 +7,21 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const FACADE_PATH = path.resolve(TEST_DIR, "..", "figgy-chart.js");
+const RAW_STARTUP_STAGES = [
+  ["window", "instance"],
+  ["window", "surface"],
+  ["window", "adapter"],
+  ["window", "device"],
+  ["window", "configure"],
+  ["window", "figgy frame msaa target"],
+  ["renderer", "capabilities"],
+  ["renderer", "figgy column pool"],
+  ["renderer", "shader modules"],
+  ["renderer", "figgy fullscreen textured pipeline"],
+  ["renderer", "identity"],
+  ["web.create", "chart resources"],
+  ["web.create", "first frame"],
+];
 
 function deferred() {
   let resolve;
@@ -22,6 +37,14 @@ async function flushTasks() {
   await Promise.resolve();
   await new Promise((resolve) => setImmediate(resolve));
   await Promise.resolve();
+}
+
+async function waitForIdle(element) {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    await flushTasks();
+    if (!element.busy) return;
+  }
+  throw new Error("facade did not become idle");
 }
 
 class FakeEventTarget {
@@ -183,8 +206,16 @@ async function loadFacade({ initImpl, createImpl } = {}) {
       state.createCalls.push(canvas);
       return createImpl(canvas, state.createCalls.length - 1);
     }
-    static create_with_progress(canvas, _onEvent) {
-      return RawFiggyChart.create(canvas);
+    static async create_with_progress(canvas, onEvent) {
+      for (const [scope, stage] of RAW_STARTUP_STAGES) {
+        onEvent({ scope, stage, phase: "started" });
+        if (stage !== "first frame") {
+          onEvent({ scope, stage, phase: "finished" });
+        }
+      }
+      const kernel = await RawFiggyChart.create(canvas);
+      onEvent({ scope: "web.create", stage: "first frame", phase: "finished" });
+      return kernel;
     }
   }
 
@@ -248,6 +279,7 @@ function makeKernel(name, options = {}) {
     calls,
     freeCalls: 0,
     exportImpl: options.exportImpl ?? (() => Promise.resolve(new Uint8Array([1]))),
+    prewarmImpl: options.prewarmImpl ?? (() => Promise.resolve()),
     hitValue: undefined,
     pickImpl: () => Promise.resolve(undefined),
     free() {
@@ -285,11 +317,16 @@ function makeKernel(name, options = {}) {
       calls.push(["export", scale]);
       return this.exportImpl(scale);
     },
+    first_frame_ready() {
+      calls.push(["first_frame_ready"]);
+      return options.firstFrameImpl?.() ?? Promise.resolve();
+    },
     hit_test() {
       return this.hitValue;
     },
-    pick_point() {
-      return this.pickImpl();
+    pick_point(x, y, maxDistancePx) {
+      calls.push(["pick", x, y, maxDistancePx]);
+      return this.pickImpl(x, y, maxDistancePx);
     },
     auto_fit_all(padding) {
       calls.push(["auto_fit_all", padding]);
@@ -297,7 +334,11 @@ function makeKernel(name, options = {}) {
     },
     ensure_extent_engine() {
       calls.push(["ensure_extent_engine"]);
-      return Promise.resolve();
+      return options.ensureExtentImpl?.() ?? Promise.resolve();
+    },
+    prewarm_gpu_picking() {
+      calls.push(["prewarm_gpu_picking"]);
+      return this.prewarmImpl();
     },
   };
   return kernel;
@@ -337,6 +378,7 @@ test("disconnect during wasm init rejects only the old ready generation", async 
 
   create.resolve(kernel);
   await nextReady;
+  await waitForIdle(element);
   assert.equal(element.kernel, kernel);
   assert.equal(readyEvents, 1);
   assert.equal(state.observers.filter((observer) => observer.target === element).length, 1);
@@ -369,6 +411,7 @@ test("resize callback generation changes stop stale create before it starts", as
   await flushTasks();
   assert.ok(reconnectedReady);
   await reconnectedReady;
+  await waitForIdle(element);
   assert.equal(state.createCalls.length, 1, "stale generation must stop after resize callback");
   assert.equal(element.kernel, kernel);
   assert.equal(state.observers.filter((observer) => observer.target === element).length, 1);
@@ -398,10 +441,11 @@ test("stale create success is freed and stale rejection cannot fail current read
     first.resolve(staleKernel);
     await flushTasks();
     assert.equal(staleKernel.freeCalls, 1);
-    assert.equal(element.busy, false);
+    assert.equal(element.busy, true, "the current connection owns the operation token");
 
     second.resolve(currentKernel);
     await currentReady;
+    await waitForIdle(element);
     assert.equal(element.kernel, currentKernel);
   }
 
@@ -429,6 +473,7 @@ test("stale create success is freed and stale rejection cannot fail current read
 
     second.resolve(currentKernel);
     await currentReady;
+    await waitForIdle(element);
     const staleError = new Error("stale create failed");
     first.reject(staleError);
     await flushTasks();
@@ -458,6 +503,7 @@ test("stale create success is freed and stale rejection cannot fail current read
 
     second.resolve(currentKernel);
     await currentReady;
+    await waitForIdle(element);
     first.resolve(staleKernel);
     await flushTasks();
     assert.equal(element.kernel, currentKernel);
@@ -491,11 +537,234 @@ test("ready-event teardown publishes only the reconnected observer and rAF", asy
   await flushTasks();
   assert.ok(reconnectedReady);
   await reconnectedReady;
+  await waitForIdle(element);
   assert.equal(readyEvents, 2);
   assert.equal(firstKernel.freeCalls, 1);
   assert.equal(element.kernel, currentKernel);
   assert.equal(state.observers.filter((observer) => observer.target === element).length, 1);
   assert.equal(state.rafs.size, 1, "stale ready callback must not schedule its own rAF");
+});
+
+test("facade relays the exact raw startup contract as bubbling composed events", async () => {
+  const order = [];
+  const kernel = makeKernel("progress-contract", {
+    prewarmImpl: () => {
+      order.push({ kind: "prewarm" });
+      return Promise.resolve();
+    },
+  });
+  const { Element } = await loadFacade({
+    createImpl: () => Promise.resolve(kernel),
+  });
+  const element = new Element();
+  element.addEventListener("figgy-init-progress", (event) => {
+    order.push({
+      kind: "progress",
+      detail: { ...event.detail },
+      bubbles: event.bubbles,
+      composed: event.composed,
+    });
+  });
+  element.addEventListener("figgy-ready", () => {
+    order.push({ kind: "ready" });
+  });
+
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+
+  const progress = order.filter(({ kind }) => kind === "progress");
+  const expected = RAW_STARTUP_STAGES.flatMap(([scope, stage]) => [
+    { scope, stage, phase: "started" },
+    { scope, stage, phase: "finished" },
+  ]);
+  assert.deepEqual(progress.map(({ detail }) => detail), expected);
+  assert.ok(progress.every(({ bubbles, composed }) => bubbles && composed));
+
+  const firstFrameFinished = order.findIndex(({ kind, detail }) => (
+    kind === "progress"
+      && detail.stage === "first frame"
+      && detail.phase === "finished"
+  ));
+  const ready = order.findIndex(({ kind }) => kind === "ready");
+  const prewarm = order.findIndex(({ kind }) => kind === "prewarm");
+  assert.ok(firstFrameFinished < ready, "first-frame finished must precede ready");
+  assert.ok(ready < prewarm, "background prewarm must follow ready publication");
+});
+
+test("first-frame completion and ready publish before recoverable background prewarm", async () => {
+  const firstPrewarm = deferred();
+  const order = [];
+  let prewarmAttempts = 0;
+  let nestedExport;
+  let element;
+  const kernel = makeKernel("background-prewarm", {
+    prewarmImpl: () => {
+      prewarmAttempts += 1;
+      order.push(`prewarm-${prewarmAttempts}`);
+      return prewarmAttempts === 1 ? firstPrewarm.promise : Promise.resolve();
+    },
+    onRelease: () => {
+      nestedExport = element.export_png();
+      nestedExport.catch(() => {});
+    },
+  });
+  const { Element, state } = await loadFacade({
+    createImpl: () => Promise.resolve(kernel),
+  });
+  element = new Element();
+  const errors = [];
+  element.addEventListener("figgy-init-progress", ({ detail }) => {
+    if (detail.stage === "first frame" && detail.phase === "finished") {
+      order.push("first-frame-finished");
+    }
+  });
+  element.addEventListener("figgy-ready", () => {
+    order.push("ready-event");
+    element.canvas.emit("pointerdown", { pointerId: 7, clientX: 10, clientY: 20 });
+  });
+  element.addEventListener("figgy-error", ({ detail }) => errors.push(detail));
+
+  connect(element);
+  await element.ready;
+  order.push("ready-promise");
+  await flushTasks();
+
+  assert.deepEqual(order, [
+    "first-frame-finished",
+    "ready-event",
+    "prewarm-1",
+    "ready-promise",
+  ]);
+  assert.equal(element.busy, true);
+  assert.equal(kernel.calls.filter(([name]) => name === "press").length, 1);
+
+  for (const callback of [...state.rafs.values()]) callback(0);
+  assert.equal(kernel.calls.filter(([name]) => name === "frame").length, 0);
+  assert.throws(() => element.get_config(), /busy/);
+
+  element.setRect(700, 500);
+  element.resize();
+  element.setRect(900, 700);
+  element.resize();
+  element.canvas.emit("pointerup");
+  element.canvas.emit("pointercancel");
+  assert.equal(kernel.calls.filter(([name]) => name === "release").length, 0);
+  assert.equal(kernel.calls.filter(([name]) => name === "resize").length, 0);
+
+  const prewarmError = new Error("synthetic picker prewarm failure");
+  firstPrewarm.reject(prewarmError);
+  await flushTasks();
+  await assert.rejects(nestedExport, /busy/);
+
+  assert.equal(element.busy, false);
+  assert.equal(await element.ready, element, "ready stays fulfilled after picker failure");
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].error, prewarmError);
+  assert.equal(errors[0].operation, "prewarm_gpu_picking");
+  assert.equal(errors[0].recoverable, true);
+  assert.deepEqual(kernel.calls.filter(([name]) => name === "resize"), [
+    ["resize", 900, 700],
+  ]);
+  assert.equal(kernel.calls.filter(([name]) => name === "release").length, 1);
+
+  await element.prewarm_gpu_picking();
+  await element.prewarm_gpu_picking();
+  assert.equal(prewarmAttempts, 3, "retries delegate to renderer-owned idempotence");
+
+  const frameCount = kernel.calls.filter(([name]) => name === "frame").length;
+  for (const callback of [...state.rafs.values()]) callback(1);
+  assert.ok(kernel.calls.filter(([name]) => name === "frame").length > frameCount);
+});
+
+test("all async facade borrows share the operation gate", async () => {
+  const firstFrame = deferred();
+  const extent = deferred();
+  const pick = deferred();
+  const explicitPrewarm = deferred();
+  let prewarmCalls = 0;
+  const kernel = makeKernel("async-gate", {
+    firstFrameImpl: () => firstFrame.promise,
+    ensureExtentImpl: () => extent.promise,
+    prewarmImpl: () => {
+      prewarmCalls += 1;
+      return prewarmCalls === 1 ? Promise.resolve() : explicitPrewarm.promise;
+    },
+  });
+  kernel.pickImpl = () => pick.promise;
+  const { Element, state } = await loadFacade({
+    createImpl: () => Promise.resolve(kernel),
+  });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await flushTasks();
+
+  const cases = [
+    [() => element.first_frame_ready(), firstFrame],
+    [() => element.ensure_extent_engine(), extent],
+    [() => element.pick_point(1, 2, 3), pick],
+    [() => element.prewarm_gpu_picking(), explicitPrewarm],
+  ];
+  for (const [start, operation] of cases) {
+    const frameCount = kernel.calls.filter(([name]) => name === "frame").length;
+    const pending = start();
+    assert.equal(element.busy, true);
+    assert.throws(() => element.set_title("blocked"), /busy/);
+    for (const callback of [...state.rafs.values()]) callback(0);
+    assert.equal(kernel.calls.filter(([name]) => name === "frame").length, frameCount);
+    operation.resolve(undefined);
+    await pending;
+    assert.equal(element.busy, false);
+  }
+});
+
+test("stale background prewarm settles and frees only its disconnected generation", async () => {
+  const oldPrewarm = deferred();
+  const newPrewarm = deferred();
+  const oldKernel = makeKernel("old-prewarm", {
+    prewarmImpl: () => oldPrewarm.promise,
+  });
+  const newKernel = makeKernel("new-prewarm", {
+    prewarmImpl: () => newPrewarm.promise,
+  });
+  const kernels = [oldKernel, newKernel];
+  const { Element } = await loadFacade({
+    createImpl: () => Promise.resolve(kernels.shift()),
+  });
+  const element = new Element();
+  let errorEvents = 0;
+  element.addEventListener("figgy-error", () => {
+    errorEvents += 1;
+  });
+
+  connect(element);
+  await element.ready;
+  await flushTasks();
+  assert.equal(element.busy, true);
+  disconnect(element);
+  assert.equal(oldKernel.freeCalls, 0);
+
+  const newReady = element.ready;
+  connect(element);
+  await newReady;
+  await flushTasks();
+  assert.equal(element.busy, true);
+  assert.throws(() => element.kernel, /busy/);
+
+  oldPrewarm.reject(new Error("stale prewarm failed"));
+  await flushTasks();
+  assert.equal(oldKernel.freeCalls, 1);
+  assert.equal(newKernel.freeCalls, 0);
+  assert.equal(element.busy, true, "stale settle cannot release the new operation");
+  assert.equal(errorEvents, 0, "stale failure is not reported on the new generation");
+
+  newPrewarm.resolve();
+  await flushTasks();
+  assert.equal(element.busy, false);
+  assert.equal(element.kernel, newKernel);
+  disconnect(element);
+  assert.equal(newKernel.freeCalls, 1);
 });
 
 test("auto_fit_all holds busy so rAF does not call frame", async () => {
@@ -509,6 +778,7 @@ test("auto_fit_all holds busy so rAF does not call frame", async () => {
   const element = new Element();
   connect(element);
   await element.ready;
+  await waitForIdle(element);
 
   const pending = element.auto_fit_all(0.05);
   assert.equal(element.busy, true);
@@ -551,6 +821,7 @@ test("busy pointer release is deferred once and settled before resize", async ()
   });
   connect(element);
   await element.ready;
+  await waitForIdle(element);
 
   element.canvas.emit("pointerdown", { pointerId: 1, clientX: 10, clientY: 20 });
   const exported = element.export_png(2);
@@ -602,6 +873,7 @@ test("release cleanup cannot strand busy and listener teardown suppresses stale 
     const element = new Element();
     connect(element);
     await element.ready;
+    await waitForIdle(element);
     element.canvas.emit("pointerdown", { pointerId: 1, clientX: 1, clientY: 1 });
     const exported = element.export_png();
     element.canvas.emit("pointerup");
@@ -626,6 +898,7 @@ test("release cleanup cannot strand busy and listener teardown suppresses stale 
     const element = new Element();
     connect(element);
     await element.ready;
+    await waitForIdle(element);
     let reconnectedReady;
     element.addEventListener("figgy-release", () => {
       disconnect(element);
@@ -642,6 +915,7 @@ test("release cleanup cannot strand busy and listener teardown suppresses stale 
     assert.deepEqual(Array.from(await exported), [3]);
     await flushTasks();
     await reconnectedReady;
+    await waitForIdle(element);
     assert.equal(element.busy, false);
     assert.equal(kernel.freeCalls, 1);
     assert.equal(kernel.calls.filter(([name]) => name === "resize").length, 0);
@@ -662,6 +936,7 @@ test("release cleanup cannot strand busy and listener teardown suppresses stale 
     const element = new Element();
     connect(element);
     await element.ready;
+    await waitForIdle(element);
     const exported = element.export_png();
     element.setRect(750, 550);
     element.resize();
@@ -684,6 +959,7 @@ test("stale export settle cannot clear a reconnected kernel export token", async
   const element = new Element();
   connect(element);
   await element.ready;
+  await waitForIdle(element);
   const oldPromise = element.export_png();
 
   disconnect(element);
@@ -691,6 +967,7 @@ test("stale export settle cannot clear a reconnected kernel export token", async
   const newReady = element.ready;
   connect(element);
   await newReady;
+  await waitForIdle(element);
   const newPromise = element.export_png();
   assert.equal(element.busy, true);
   assert.equal(oldKernel.freeCalls, 0);
@@ -721,6 +998,7 @@ test("disconnect defers exporting kernel disposal exactly once on resolve and re
     const element = new Element();
     connect(element);
     await element.ready;
+    await waitForIdle(element);
 
     const exported = element.export_png();
     disconnect(element);
@@ -750,6 +1028,7 @@ test("disconnect defers exporting kernel disposal exactly once on resolve and re
     const element = new Element();
     connect(element);
     await element.ready;
+    await waitForIdle(element);
 
     const exported = element.export_png();
     disconnect(element);
@@ -774,12 +1053,14 @@ test("deferred exports from separate generations dispose independently out of or
 
   connect(element);
   await element.ready;
+  await waitForIdle(element);
   const oldPromise = element.export_png();
   disconnect(element);
 
   const newReady = element.ready;
   connect(element);
   await newReady;
+  await waitForIdle(element);
   const newPromise = element.export_png();
   disconnect(element);
 
@@ -805,6 +1086,7 @@ test("facade normalizes hit and pick results without changing rejection reasons"
   const element = new Element();
   connect(element);
   await element.ready;
+  await waitForIdle(element);
 
   kernel.hitValue = undefined;
   assert.equal(element.hit_test(1, 2), null);

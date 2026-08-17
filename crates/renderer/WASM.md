@@ -63,7 +63,7 @@ async로 디바이스를 만든 뒤 넘기면 데스크톱과 동일하게 동�
 일반 웹 호스트의 public API는 `crates/web/figgy-chart.js`가 등록하는
 `<figgy-chart>` Custom Element다. 이 facade가 내부 `<canvas>` 생성,
 wasm async init/create, `ready` promise와 `figgy-ready` event,
-`requestAnimationFrame` 루프, export 중 busy gate, `ResizeObserver`,
+`requestAnimationFrame` 루프, async operation busy gate, `ResizeObserver`,
 현재 `devicePixelRatio` 기반 backing-store resize, pointer 좌표 변환,
 `CustomEvent` dispatch를 맡는다. Raw wasm `FiggyChart` class는 이 facade가
 쓰는 low-level kernel이며, 브라우저 수명주기를 직접 소유하려는 advanced
@@ -74,6 +74,15 @@ host만 직접 호출한다.
 Promise가 설치된다. `free()`는 terminal teardown이므로 다시 DOM에 연결하기
 전까지 새 `ready`는 pending이며, 같은 비활성 element에 반복 호출해도 세대나
 Promise가 다시 바뀌지 않는다.
+
+Cold-start / lifecycle 요약:
+
+| 표면/상태 | 계약 |
+|---|---|
+| raw `FiggyChart` | `create` / `create_with_progress`는 첫 빈 차트 frame까지 완료하지만 picker는 만들지 않는다. `prewarm_gpu_picking()`이 renderer picker enable과 현재 chart 준비를 명시 수행하며 반복 호출은 같은 renderer 상태를 재사용한다. `pick_point`도 이 준비 helper를 거친다. |
+| facade ready | `web.create / first frame / finished` progress와 `figgy-ready`를 먼저 공개한 뒤 picker를 background prewarm한다. 실패는 `figgy-error`의 recoverable picker 오류로 보고하며 fulfilled `ready`와 rendering loop를 취소하지 않는다. |
+| facade busy | generation+kernel operation token 하나가 connect/create와 모든 async mutable wasm 호출을 직렬화한다. busy 중 frame/input/sync proxy는 wasm을 호출하지 않고 최신 resize와 pointer release만 settle 뒤 적용한다. |
+| generation 종료 | disconnect/reconnect는 이전 token을 stale로 만든다. active operation의 kernel free는 settle까지 지연되고, stale settle은 새 generation의 token이나 kernel에 영향을 주지 않는다. |
 
 ```
 JS / 웹 프레임워크                      wasm (figgy)
@@ -152,13 +161,30 @@ OffscreenCanvas + Worker가 필요하다.
 
 호스트가 첫 데이터 시리즈를 올린 뒤에도 같은 API를 다시 호출해야 한다.
 새 파이프라인이 그 제출에서 처음 쓰이면 그때 또 지연 컴파일이 난다.
-별도 로딩 오버레이를 가진 호스트는 첫 제출 뒤 rAF 한 번이 아니라 연속
-3–4 프레임이 안정될 때까지 오버레이를 유지하는 편이 안전하다.
+별도 로딩 오버레이를 가진 호스트는 첫 제출 뒤 rAF 한 번이
+아니라 연속 3–4 프레임이 안정될 때까지 오버레이를 유지하는 편이 안전하다.
 
-웹 `FiggyChart.create`는 picker를 켜지 않는다. 첫 `pick_point`가
-`enable_gpu_picking_async`와 chart registry 준비를 한다. raw kernel이
-첫 프레임부터 pick하려면 여전히 직접 `enable_gpu_picking()` /
-`enable_gpu_picking_async()`를 호출하면 된다.
+Startup 측정은 별도 wasm export나 커널 내부 timestamp를 요구하지 않는다.
+호스트가 `performance.now()` 같은 monotonic clock으로
+`FiggyChart.create_with_progress` Promise의 시작/완료와 각
+`{ scope, stage, phase }` callback 수신 시각을 기록한다. normal raw create는
+window/renderer 11단계 뒤 `web.create / chart resources`,
+`web.create / first frame`을 더한 13단계의 started/finished pair를 내보낸다.
+파이프라인별 첫 제출을 비교할 때도 line/scatter/errorbar workload를 표준
+register/set/frame API로 각각 구성하고 같은 외부 phase clock을 사용한다.
+
+Picker A/B 측정에서 picker-off는 `prewarm_gpu_picking()`을 한 번도 호출하지
+않는다. picker-on은 반드시 `web.create / first frame / finished` callback 뒤에
+raw `prewarm_gpu_picking()`을 명시 호출하고 그 Promise duration을 외부 clock으로
+따로 기록한다. create duration에 picker compile 시간을 합치거나, 첫 pick의
+implicit 준비를 explicit prewarm 측정값으로 취급하지 않는다.
+
+웹 `FiggyChart.create`는 picker를 켜지 않는다. raw kernel이 첫 pick 전에
+준비하려면 `await chart.prewarm_gpu_picking()`을 호출한다. 이 메서드와
+`pick_point`는 같은 내부 경로에서 renderer의 `enable_gpu_picking_async` 뒤
+현재 chart registry를 준비한다. renderer가 pipeline/cache/revision의 유일한
+권위이므로 반복 prewarm과 재시도는 sticky activation error를 포함한 같은
+renderer 상태를 재사용한다.
 
 `Renderer`가 chart별 `Config`와 ordered series, `ColumnPool`, picker pipeline
 bundle과 파생된 단일 active-chart registry cache, pending maintenance를 소유한다. web
@@ -241,26 +267,50 @@ series만 cascade 제거하고 legend 문서는 바꾸지 않는다. web처럼 c
 따른 파생 legend `Config`도 함께 바꿔야 하는 host는
 `remove_column_with_chart_config`를 사용해 한 transaction으로 게시한다.
 
+public `FiggyChart::load_demo()`도 같은 compound failure-atomic 경계를 쓴다.
+4개 demo column, 최종 `Config`/ordered series, active picker, web의 column
+revision/style/label/color metadata와 여전히 유효한 extent cache를 함께
+게시한다. commit 전 동기 오류가 나면 이 상태는 전부 이전 값으로 남는다.
+transaction 중에는 extent reduction을 submit하지 않으며, 바뀐 demo column을
+참조하던 cache entry는 제거되어 commit 뒤 기존 lazy/retry 경로에서 다시
+생성된다. 성공한 호출은 pool capacity와 같은 임시 GPU buffer 하나와 staging
+buffer 4개를 추가로 사용한다. 기존 defrag backup이 있으면 순간적으로
+primary + backup + 임시 full-pool buffer가 공존한다.
+
 ### 3.3 데이터 입력 — 명시적 register/update와 f32 물리 lane
 
-GPU 풀의 물리 lane은 **항상 f32**다. 일반 scalar column은 logical value당
-f32 lane 하나, `Float64Array`/`HiLoColumnSource` 경로는 `(hi: f32, lo: f32)`
-lane 두 개를 사용한다. 즉 shader의 native f64가 아니라 두 f32의 합으로 큰
-절대값에서 작은 delta를 보존한다. 업로드 설계의 핵심 불변은 native/wasm
-공통이다:
+GPU 풀의 물리 lane은 **항상 logical value당 f32 두 개**다. 일반 scalar
+column은 `(value as f32, 0)`, `Float64Array`/`HiLoColumnSource` 경로는
+`(hi: f32, lo: f32)`를 기록한다. 즉 shader의 native f64가 아니라 두 f32의
+합으로 큰 절대값에서 작은 delta를 보존한다. 업로드 설계의 핵심 불변은
+native/wasm 공통이다:
 
 ```rust
-// scalar: logical value → one f32 lane
+// scalar: logical value → `(value as f32, 0)`
 let mut view = staging.slice(..).get_mapped_range_mut();
-source.write_f32_le_into(&mut view[..]);
+let writer = ColumnPairWriter::new(view.slice(..)); // renderer pool 내부, crate-private
+let stats = source.write_f32_pair_le_into_with_stats(writer);
+drop(view);
+staging.unmap();
 enc.copy_buffer_to_buffer(&staging, 0, &pool, offset);  // 이후는 GPU 내부 복사
 
 // hi/lo: logical f64 value → two f32 lanes in the same mapped staging buffer
-source.write_f32_pair_le_into(&mut view[..]);
+let mut view = staging.slice(..).get_mapped_range_mut();
+let writer = ColumnPairWriter::new(view.slice(..)); // renderer pool 내부, crate-private
+let stats = source.write_f32_pair_le_into_with_stats(writer);
+drop(view);
+staging.unmap();
 ```
 
 즉 "f64의 소유권/참조만 받아 변환 결과가 업로드 버퍼에 직접 쓰이는가"는
-**그렇다** — 데스크톱에서는 이것이 전부다.
+**그렇다** — 데스크톱에서는 이것이 전부다. source는 pair를 기록하는 같은
+loop에서 `ColumnUploadStats`를 반환하며 renderer는 write-only view를 재독하지
+않는다. scalar 최소 양수는 실제 기록된 `value as f32`, hi-lo 최소 양수는
+기록된 `hi as f64 + lo as f64` 기준이고 finite positive 값만 포함한다.
+
+custom `ColumnSource` / `HiLoColumnSource` 구현은 fused method를 반드시
+구현해야 한다. 불완전한 migration은 upload 중 런타임 실패가 아니라 컴파일
+오류로 드러나며, mapped byte readback이나 silent fallback은 두지 않는다.
 
 wasm에서 추가되는 비용은 변환이 아니라 **메모리 도메인 횡단**이며, 위
 구조 바깥의 플랫폼 사정이다:
@@ -275,7 +325,7 @@ wasm에서 추가되는 비용은 변환이 아니라 **메모리 도메인 횡�
 경계 타입 선택:
 
 - **`Float32Array` (일반 좌표 권장)** — 경계 트래픽 4 B/elem,
-  `Column<f32>` 경로는 staging에 **순수 memcpy**.
+  borrowed source가 staging에 `(value, 0)` pair와 통계를 한 pass로 기록.
 - **`Float64Array` (큰 절대 좌표)** — 경계 트래픽과 GPU 저장은 8 B/elem.
   min/max 메타데이터뿐 아니라 GPU vertex 계산도 hi/lo 두 f32 lane을 사용해
   timestamp 크기의 절대값에서 sub-f32 delta를 보존한다.
@@ -429,18 +479,23 @@ draw와 raster refresh를 요구한다.
 
 ### 3.9 async 메서드와 객체 잠금 (필독)
 
-wasm_bindgen은 async 메서드(`export_png`)의 **프로미스가 pending인 동안
+wasm_bindgen은 async 메서드의 **프로미스가 pending인 동안
 객체를 잠근다** — 그 사이 같은 객체의 다른 메서드를 부르면 "recursive
 use of an object" 예외가 난다. facade는 이 규약을 내부에서 지킨다.
 raw kernel 직접 호출 시 host 규약:
 
 - rAF 루프에서 `requestAnimationFrame(tick)`을 **wasm 호출보다 먼저**
   예약해 예외가 루프를 죽이지 못하게 한다.
-- export, `first_frame_ready`/`warm_up`, `ensure_extent_engine`,
-  `auto_fit_all`, 첫 `pick_point`(picker 컴파일) 동안 `busy` 플래그로
+- create/connect, `prewarm_gpu_picking`, export,
+  `first_frame_ready`/`warm_up`, `ensure_extent_engine`, `auto_fit_all`,
+  `pick_point` 동안 generation+kernel `busy` token으로
   `frame()` / 포인터 / resize / proxy 호출을 모두 건너뛰거나 거부한다.
   `auto_fit_all`은 Promise가 끝날 때 Config에 직접 commit하므로 pending
   중 `frame()`을 부르면 안 된다.
+- facade는 busy 중 최신 resize 하나와 pointer release만 보관한다. 현재
+  operation settle 뒤 release와 resize를 wasm에 적용한 다음 token을 놓는다.
+  disconnect는 active kernel free를 settle까지 미루며, 이전 generation의
+  settle은 새 generation의 token을 해제하지 않는다.
 
 `crates/web/index.html`은 facade 사용 레퍼런스다. raw kernel 직접 배선은
 advanced host가 위 규약을 그대로 복제할 때만 선택한다.
@@ -489,7 +544,7 @@ npx wasm-pack build crates/web --release --target web
 `crates/web/figgy-chart.js`가 public facade다(`pkg/` 산출물이 아니라 함께
 배포하는 JS entry). 내부 canvas, rAF 루프, DPR
 좌표 변환, 포인터 선택/드래그/리사이즈, ResizeObserver, ready/event
-수명주기, export busy gate를 포함한다. `crates/web/index.html`은 이 facade를
+수명주기, async operation busy gate를 포함한다. `crates/web/index.html`은 이 facade를
 사용하는 동작 레퍼런스고,
 [`crates/web/SCHEMA.md`](../web/SCHEMA.md)가 SSoT JSON의 전체 스키마
 레퍼런스다. 로컬 확인:
@@ -502,18 +557,21 @@ cd crates/web && python -m http.server 8137   # wasm은 file:// 불가
 
 | 분류 | 메서드 |
 |---|---|
-| 수명 | `<figgy-chart>` element · `ready` promise · `figgy-ready` / `figgy-init-progress` / `figgy-error` / `figgy-select` / `figgy-drag` / `figgy-release` / `figgy-resize` events · `free()` |
+| 수명 | `<figgy-chart>` element · `ready` promise · `figgy-ready` / `figgy-init-progress` / `figgy-error` / `figgy-select` / `figgy-drag` / `figgy-release` / `figgy-resize` events · `free()`. 첫 frame 완료와 ready 공개 뒤 background picker prewarm을 시작한다. prewarm 실패는 `operation: "prewarm_gpu_picking"`, `recoverable: true`인 `figgy-error`이며 ready를 취소하지 않는다 |
 | 폰트 | `register_font(Uint8Array)` → 가족명 배열 (TTF/OTF/TTC). 등록 후 SSoT `font` 가족명이 해석됨 — 등록 폰트가 시스템 폰트보다 우선이라 웹/데스크탑 해석이 동일. byte-for-byte 동일 파일의 재등록은 저장소와 font generation을 늘리지 않는 멱등 동작이며, resolved face backing도 face id별로 재사용한다. 미등록·미해석 가족명은 내장 Liberation Sans 폴백 (CJK 글리프 없음 — 한글은 폰트 등록 필요) |
 | 스타일 파라미터 | *(free 함수)* `draw_style_modes()` → 모드 태그 JSON 배열 · `draw_style_param_specs(mode)` → `{key, min, max, default, integer}` JSON 배열. **슬라이더 범위의 단일 진실 원본** — min/max는 권장 범위(SSoT는 그 밖의 값도 수용, 렌더러는 안전 가드만 적용), default는 model의 `Default` 구현과 테스트로 고정. 호스트는 이걸로 스타일 UI를 자동 생성하고 범위를 하드코딩하지 말 것 |
 | 컬럼 등록/갱신/해제 | `register_column_f32/f64(id, TypedArray)` *(새 id만)* · `update_register_column_f32/f64(id, TypedArray)` *(기존 id만, 승인된 호출은 항상 upload)* · `remove_column(id)` |
 | 시리즈 등록/해제 | `add_line_series(id, x, y, width, label)` *(업서트)* · `remove_series(id)` |
 | 범례 | `set_series_label(id, label)` — `'\n'` 줄바꿈·유니코드 첨자 지원, 빈 문자열 = 해당 행 제거. `set_series` / `apply_color_cycle` 은 자유 편집된 텍스트를 덮지 않고 인식 가능한 자동 엔트리의 심볼만 갱신한다. 전체 재작성은 `reset_legend_from_series_labels()` 를 명시 호출할 때만 수행한다. 자유 편집은 SSoT `legend.content` 하나의 리치 문서로: 줄바꿈은 `"\n"` 세그먼트, `"\t"` 는 표형 열 구분자, 심볼은 **고정폭 필드 세그먼트**(`field_em` — 어떤 형태든 정확히 2.0 em; 선 마크는 `rule:true`, 점선은 `rule_dash` em 패턴) + 색 오버라이드라 위치·줄배치·폭이 전부 명시적. `content.font` / `content.font_size` / 세그먼트별 오버라이드는 그리기 시점에 그대로 적용 |
 | 히트테스트 | `hit_test(x, y)` → 요소 id 문자열 또는 `null` (`"data_area"` · `"axis_bottom"` · `"tick_labels_left"` · `"axis_title_left"` · `"legend"` · `"chart_title"` …). `pick_point(x, y, max_distance_px)` → `Promise<{ source_id: string \| null, series_id, point_index, distance_px } \| null>`; point/scatter는 실제 marker 크기(스타일 매핑 포함)를 기준으로, line 계열은 stroke 근처 클릭을 해당 segment의 가까운 endpoint 데이터 점으로 스냅한다. errorbar stem/cap 자체는 pick target이 아니다. 좌표가 필요하면 host가 `point_index`로 자신이 등록한 원본 column을 조회한다. 선택 상태 무변경 — 렌더러 자체 레이아웃이 답하므로 호스트가 박스 위치를 복제할 필요 없음 |
+| picker 준비 | facade는 ready 뒤 background 실행. `prewarm_gpu_picking()` *(Promise)*은 명시 재시도/선행 준비용이며 raw/facade 모두 renderer-owned pipeline과 현재 chart cache를 재사용한다. web에 별도 picker revision/state를 두지 않는다 |
 | 범위 | `auto_fit_all(pad)` *(Promise)* — **등록된 전 시리즈의 원본 primitive data domain** x/y 합집합에 4방 균일 비율 마진(`0.0` = 딱 맞춤, `0.05` = 5%). 원본 GPU 컬럼을 축약·샘플링 없이 전수 reduce한다. line-only는 유효한 인접 segment의 endpoint, scatter-bearing 시리즈는 유한한 x/y 쌍, errorbar는 실제 six-column 공통 행에서 현재 renderer와 같은 방향 활성 조건을 통과한 `값−err_lo … 값+err_hi` endpoint를 포함한다. 짧은 error 컬럼은 errorbar endpoint 범위만 제한하며 그 뒤의 유효한 base line/scatter 행을 자르지 않는다. 이 primitive 조건에서 탈락한 non-finite 행과 고립된 line point는 제외하고 normalized mode와 역할별 column revision으로 결과를 캐싱한다. GPU readback이 끝나면 같은 호출이 renderer-owned Config에 직접 commit하고 Promise를 resolve한다. wasm-bindgen이 pending 동안 객체를 잠그므로 host/facade는 `frame()`을 포함한 다른 커널 호출을 busy gate로 막고, 끝난 뒤 다음 rAF에서 새 범위를 그린다. 범위 끝 라운딩 없음 — 틱은 범위 안 nice 값에 자동으로 떨어지므로 호스트가 범위를 재가공하지 말 것 · `auto_fit_x/y(col, pad)` (단일 컬럼 upload metadata, 에러바 미반영) · `load_demo()` *(멱등)* |
 | 피킹 기준 | 최종 스타일/래스터 픽셀이 아니라 원본 시리즈 primitive를 판정한다. scatter는 원본 데이터 점 위치와 설정된 marker hit 반경을 사용하고, line은 인접한 원본 데이터 점 사이의 직선 segment를 검사해 가까운 endpoint로 스냅한다. dash 공백, square-cap 래스터 모서리, sketch 등 장식용 변형은 pick 경로를 바꾸지 않는다. |
 | SSoT I/O | `get_config()` / `set_config(json)` · `get_series()` / `set_series(json)` |
 | 프리셋 | `apply_axis_preset(AxisPreset)` · `apply_color_cycle(ColorCycle)` · `color_cycle_css(cycle)` |
 | 상호작용 | facade가 pointer event를 내부 처리. Advanced proxy: `on_press(x, y)` · `on_move(dx, dy)` · `on_release()` · `has_selection()` |
+| 선택 overlay | `set_picked_points(json)` — `PickedPointsConfig` 또는 `null` JSON 문자열. renderer-owned `Config.picked_points`만 교체하고 `null`은 overlay를 지운다. `series_id` / 선택적 `source_id` / `point_index` provenance만 보관하며 point 좌표 CPU mirror는 만들지 않는다 |
+| surface 배경 | `set_clear_color(r, g, b, a)` — linear RGBA를 성분별 `0..1`로 clamp하고 redraw를 예약한다. host/surface 상태라 Config JSON을 바꾸지 않으며 clear color 변경만으로 axis raster를 refresh하지 않는다 |
 | 출력 | `export_png(scale)` *(async → Uint8Array)* |
 | 타이틀 | `set_title` · `set_x_title` · `set_y_title` |
 

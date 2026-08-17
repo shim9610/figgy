@@ -1,7 +1,3 @@
-// ============================================================================
-// §2.1 Rect + ChartArea/DataArea newtypes
-// ============================================================================
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Rect {

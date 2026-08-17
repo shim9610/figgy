@@ -8,8 +8,9 @@
 //! the impls.)
 //!
 //! Included: visual style (colors, widths, font sizes, tick lengths, grid),
-//! axis visibility policy (top/right labels and titles off, bottom/left on),
-//! units / formatting (Linear, Decimal, 3 sig digits), and margins.
+//! axis visibility policy (all axis lines and inside ticks on; top/right
+//! labels and titles off, bottom/left labels and titles on), units / formatting
+//! (Linear, Decimal, 3 sig digits), and margins.
 //!
 //! Not included (caller supplies): chart and axis text (empty segments —
 //! filled in by builders), axis range (0..1 placeholder updated by
@@ -205,8 +206,8 @@ pub fn default_chart_area() -> ChartArea {
 ///
 /// - `bottom_x` / `left_y`: axis line, ticks, labels, and title all on. Text
 ///   is empty — fill in via `Chart::with_x_title` / `with_y_title`.
-/// - `top_x` / `right_y`: axis line only (kept for the frame); labels and
-///   axis title off. Enable for special charts (e.g. dual-axis).
+/// - `top_x` / `right_y`: axis line and inside ticks on (kept for the frame);
+///   labels and axis title off. Enable those for special charts (e.g. dual-axis).
 /// - `chart_title`: title band reserved; text empty until `Chart::with_title`.
 pub fn default_config() -> Config {
     let mut top_x = default_axis_options_x();

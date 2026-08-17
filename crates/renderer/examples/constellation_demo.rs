@@ -207,7 +207,7 @@ fn main() {
     let spec_scales = [1.0, 0.55, 0.10, 0.05, 0.02];
     for (i, k) in spec_scales.iter().enumerate() {
         let ys: Vec<f64> = base.iter().map(|b| b * k).collect();
-        r.add_column(&format!("spec_{i}"), &col(ys)).unwrap();
+        r.add_column(format!("spec_{i}"), &col(ys)).unwrap();
     }
     let spec_colors = [
         Color::from_rgb8(110, 200, 255),

@@ -1,4 +1,9 @@
-use super::{Config, Side, axis_mut, axis_ref};
+use crate::text::TextExtents;
+
+use super::{
+    Config, LABEL_GAP, Side, axis_mut, axis_ref, axis_title_offset_to_screen, axis_title_placement,
+    chart_title_placement, legend_rect, screen_offset_to_axis_title,
+};
 
 // Nudge types.
 
@@ -39,74 +44,63 @@ pub enum NudgeReject {
 
 // Per-element anchor and current offset.
 
-/// Approximate distance from axis line to label center (matches LABEL_GAP in
-/// axis_render.rs) plus a rough label extent.
-const LABEL_ANCHOR_EST: f32 = 14.0;
+/// Measurement-free label extent estimate used only for nudge containment.
+const LABEL_EXTENT_EST: f32 = 10.0;
+const ZERO_EXTENTS: TextExtents = TextExtents {
+    width: 0.0,
+    ascent: 0.0,
+    descent: 0.0,
+};
 
-/// Actual screen-space render center of `element` when its offset is zero.
-/// The final drawn position is `anchor + offset`.
+/// Measurement-free representative screen anchor used by nudge containment.
+/// Exact measured bounds remain the `Selectable` policy.
 fn element_anchor(cfg: &Config, element: &Element) -> Option<(f32, f32)> {
     let ca = &cfg.chart_area;
     let da = cfg.data_area().ok()?;
 
     let anchor = match element {
-        // Center of the chart title band (ca.y .. ca.y + chart_title.top_margin).
-        Element::ChartTitle => (
-            ca.x as f32 + ca.width as f32 * 0.5,
-            ca.y as f32 + cfg.chart_title.top_margin * 0.5,
-        ),
-        // Axis title: center of that side's out_margin band.
-        Element::AxisTitle(Side::Top) => (
-            da.x as f32 + da.width as f32 * 0.5,
-            ca.y as f32 + cfg.chart_title.top_margin + cfg.top_x.out_margin * 0.5,
-        ),
-        Element::AxisTitle(Side::Bottom) => (
-            da.x as f32 + da.width as f32 * 0.5,
-            (ca.y + ca.height) as f32 - cfg.bottom_x.out_margin * 0.5,
-        ),
-        Element::AxisTitle(Side::Left) => (
-            ca.x as f32 + cfg.left_y.out_margin * 0.5,
-            da.y as f32 + da.height as f32 * 0.5,
-        ),
-        Element::AxisTitle(Side::Right) => (
-            (ca.x + ca.width) as f32 - cfg.right_y.out_margin * 0.5,
-            da.y as f32 + da.height as f32 * 0.5,
-        ),
+        Element::ChartTitle => {
+            chart_title_placement(ca, cfg.chart_title.top_margin, (0.0, 0.0), ZERO_EXTENTS).origin
+        }
+        Element::AxisTitle(side) => {
+            let axis = axis_ref(cfg, side);
+            axis_title_placement(
+                side.clone(),
+                ca,
+                &da,
+                cfg.chart_title.top_margin,
+                axis.out_margin,
+                (0.0, 0.0),
+                ZERO_EXTENTS,
+            )
+            .origin
+        }
         // Axis label: just outside the tick end (with approximate label extent).
         Element::AxisLabel(Side::Top) => (
             da.x as f32 + da.width as f32 * 0.5,
-            da.y as f32 - cfg.top_x.major_tick_length - LABEL_ANCHOR_EST,
+            da.y as f32 - cfg.top_x.major_tick_length - LABEL_GAP - LABEL_EXTENT_EST,
         ),
         Element::AxisLabel(Side::Bottom) => (
             da.x as f32 + da.width as f32 * 0.5,
-            (da.y + da.height) as f32 + cfg.bottom_x.major_tick_length + LABEL_ANCHOR_EST,
+            (da.y + da.height) as f32
+                + cfg.bottom_x.major_tick_length
+                + LABEL_GAP
+                + LABEL_EXTENT_EST,
         ),
         Element::AxisLabel(Side::Left) => (
-            da.x as f32 - cfg.left_y.major_tick_length - LABEL_ANCHOR_EST,
+            da.x as f32 - cfg.left_y.major_tick_length - LABEL_GAP - LABEL_EXTENT_EST,
             da.y as f32 + da.height as f32 * 0.5,
         ),
         Element::AxisLabel(Side::Right) => (
-            (da.x + da.width) as f32 + cfg.right_y.major_tick_length + LABEL_ANCHOR_EST,
+            (da.x + da.width) as f32 + cfg.right_y.major_tick_length + LABEL_GAP + LABEL_EXTENT_EST,
             da.y as f32 + da.height as f32 * 0.5,
         ),
         // Legend: corner anchor point (inset corner of the data area). The
         // box extent isn't known here (it needs text measurement), but the
         // chart_area containment check only needs a representative point.
         Element::Legend => {
-            let inset = 6.0;
-            match cfg.legend.corner {
-                crate::config::LegendCorner::TopLeft => (da.x as f32 + inset, da.y as f32 + inset),
-                crate::config::LegendCorner::TopRight => {
-                    ((da.x + da.width) as f32 - inset, da.y as f32 + inset)
-                }
-                crate::config::LegendCorner::BottomLeft => {
-                    (da.x as f32 + inset, (da.y + da.height) as f32 - inset)
-                }
-                crate::config::LegendCorner::BottomRight => (
-                    (da.x + da.width) as f32 - inset,
-                    (da.y + da.height) as f32 - inset,
-                ),
-            }
+            let rect = legend_rect(&da, cfg.legend.corner, 0.0, (0.0, 0.0), ZERO_EXTENTS);
+            (rect.x, rect.y)
         }
         // Axis / data-area moves have their own rules — dispatched before
         // this function is reached.
@@ -114,19 +108,6 @@ fn element_anchor(cfg: &Config, element: &Element) -> Option<(f32, f32)> {
     };
 
     Some(anchor)
-}
-
-/// Convert a local-frame offset (in the rotated coordinate system) to a
-/// screen-frame offset. Only Left/Right axis titles are rotated; everything
-/// else is identity.
-fn local_to_screen_offset(element: &Element, ox: f32, oy: f32) -> (f32, f32) {
-    match element {
-        // Left (-90° CCW): local (ox, oy) → screen (oy, -ox).
-        Element::AxisTitle(Side::Left) => (oy, -ox),
-        // Right (+90° CW): local (ox, oy) → screen (-oy, ox).
-        Element::AxisTitle(Side::Right) => (-oy, ox),
-        _ => (ox, oy),
-    }
 }
 
 fn current_offset(cfg: &Config, element: &Element) -> (f32, f32) {
@@ -149,6 +130,9 @@ fn current_offset(cfg: &Config, element: &Element) -> (f32, f32) {
 // Nudge methods.
 
 impl Config {
+    /// Apply a measurement-free approximate containment policy. Text-bearing
+    /// elements use representative anchors here; exact glyph bounds are kept
+    /// in the `Selectable` path and no text measurer is required by nudge.
     pub fn nudge(&mut self, element: Element, dx: f32, dy: f32) -> NudgeResult {
         // Axis / data-area-edge moves have their own rules (perpendicular
         // only); everything else moves via stored offsets below.
@@ -168,7 +152,10 @@ impl Config {
         // Compute the current screen position by converting the stored local
         // offset to screen frame (identity except for rotated axis titles).
         let (ox, oy) = current_offset(self, &element);
-        let (screen_ox, screen_oy) = local_to_screen_offset(&element, ox, oy);
+        let (screen_ox, screen_oy) = match &element {
+            Element::AxisTitle(side) => axis_title_offset_to_screen(side.clone(), (ox, oy)),
+            _ => (ox, oy),
+        };
         let new_x = anchor.0 + screen_ox + dx;
         let new_y = anchor.1 + screen_oy + dy;
 
@@ -191,11 +178,7 @@ impl Config {
                 // Left/Right axis titles are drawn with a canvas rotate, so we
                 // map screen dx/dy back into the rotated local frame so the
                 // title moves in the direction the user expects on screen.
-                let (local_dx, local_dy) = match side {
-                    Side::Top | Side::Bottom => (dx, dy),
-                    Side::Left => (-dy, dx),  // inverse of -90° rotation
-                    Side::Right => (dy, -dx), // inverse of +90° rotation
-                };
+                let (local_dx, local_dy) = screen_offset_to_axis_title(side.clone(), (dx, dy));
                 let a = axis_mut(self, &side);
                 a.title_option.offset_x += local_dx;
                 a.title_option.offset_y += local_dy;

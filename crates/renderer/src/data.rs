@@ -11,6 +11,78 @@ pub use ::model::data::*;
 pub const COLUMN_VALUE_F32S: usize = 2;
 pub const COLUMN_VALUE_BYTES: usize = std::mem::size_of::<f32>() * COLUMN_VALUE_F32S;
 
+/// Safe write-only access to a column's logical `(hi, lo)` f32 pairs.
+///
+/// Sources can inspect only the number of pairs and write a complete pair by
+/// index. The mapped bytes and the renderer's wgpu dependency stay private.
+pub struct ColumnPairWriter<'a> {
+    dst: wgpu::WriteOnly<'a, [u8]>,
+}
+
+impl<'a> ColumnPairWriter<'a> {
+    pub(crate) fn new(dst: wgpu::WriteOnly<'a, [u8]>) -> Self {
+        assert_eq!(
+            dst.len() % COLUMN_VALUE_BYTES,
+            0,
+            "column pair destination must contain complete f32 pairs"
+        );
+        Self { dst }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_bytes_for_test(dst: &'a mut [u8]) -> Self {
+        Self::new(wgpu::WriteOnly::from_mut(dst))
+    }
+
+    /// Number of logical `(hi, lo)` pairs available for writing.
+    pub fn len(&self) -> usize {
+        self.dst.len() / COLUMN_VALUE_BYTES
+    }
+
+    /// Returns `true` when no logical pairs are available for writing.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Write one little-endian `(hi, lo)` pair.
+    ///
+    /// Panics when `index` is outside `0..self.len()`.
+    #[track_caller]
+    pub fn write_pair(&mut self, index: usize, hi: f32, lo: f32) {
+        assert!(
+            index < self.len(),
+            "column pair index {index} out of bounds for length {}",
+            self.len()
+        );
+        let start = index * COLUMN_VALUE_BYTES;
+        let hi = hi.to_le_bytes();
+        let lo = lo.to_le_bytes();
+        self.dst
+            .slice(start..start + COLUMN_VALUE_BYTES)
+            .copy_from_slice(&[hi[0], hi[1], hi[2], hi[3], lo[0], lo[1], lo[2], lo[3]]);
+    }
+}
+
+/// Scalar statistics collected while a source writes its GPU pair encoding.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ColumnUploadStats {
+    /// Smallest finite value greater than zero in the recorded pair stream.
+    pub min_positive: Option<f64>,
+}
+
+#[inline]
+fn record_min_positive(stats: &mut ColumnUploadStats, value: f64) {
+    if !value.is_finite() || value <= 0.0 {
+        return;
+    }
+    if match stats.min_positive {
+        Some(current) => value < current,
+        None => true,
+    } {
+        stats.min_positive = Some(value);
+    }
+}
+
 pub fn split_f64_to_f32_pair(v: f64) -> (f32, f32) {
     let hi = v as f32;
     if !v.is_finite() || !hi.is_finite() {
@@ -23,9 +95,11 @@ pub fn split_f64_to_f32_pair(v: f64) -> (f32, f32) {
 /// Adapter from any column-shaped data into the scalar figgy GPU upload path.
 ///
 /// The contract is scalar stats plus a zero-copy staging write: `len` /
-/// `min` / `max` describe the column, and [`Self::write_f32_le_into`] streams
-/// the values into a wgpu mapped staging buffer. Nulls encode as `f32::NAN`;
-/// null / non-numeric handling is the implementor's responsibility.
+/// `min` / `max` describe the source values, while
+/// [`Self::write_f32_pair_le_into_with_stats`] writes the GPU representation
+/// and returns encoded-value stats without reading mapped bytes. Nulls encode
+/// as `f32::NAN`; null / non-numeric handling is the implementor's
+/// responsibility.
 pub trait ColumnSource {
     fn len(&self) -> usize;
 
@@ -35,17 +109,15 @@ pub trait ColumnSource {
     fn max(&self) -> f64;
     fn min(&self) -> f64;
 
-    /// **Zero-copy stream upload**: write the column's values as little-endian
-    /// f32 directly into `dst`, which is a slice into a wgpu mapped staging
-    /// buffer. The caller guarantees `dst.len() == self.len() * 4`. Nulls are
-    /// encoded as `f32::NAN`. Conversion (f64 → f32, Option → f32) happens
-    /// element-wise inline — no intermediate `Vec`.
+    /// Legacy scalar encoding helper. The caller guarantees
+    /// `dst.len() == self.len() * 4`; nulls encode as `f32::NAN`. Pool upload
+    /// uses [`Self::write_f32_pair_le_into_with_stats`] instead.
     fn write_f32_le_into(&self, dst: &mut [u8]);
 
     /// Write the scalar GPU representation directly as `(value, 0)` f32
-    /// pairs. Implementors should override this to keep mapped staging writes
-    /// sequential. The fallback preserves source compatibility and expands in
-    /// place without allocating a per-value buffer.
+    /// pairs. The fallback preserves source compatibility and expands in
+    /// place without allocating a per-value buffer. Pool upload uses the
+    /// write-only fused capability below instead.
     fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
         let n = self.len();
         debug_assert_eq!(dst.len(), n * COLUMN_VALUE_BYTES);
@@ -61,6 +133,17 @@ pub trait ColumnSource {
             words[i * 2 + 1] = 0;
         }
     }
+
+    /// Write scalar `(value, 0)` pairs and collect stats in that same pass.
+    ///
+    /// The caller guarantees `dst.len() == self.len() * 8`. `min_positive`
+    /// uses each actual uploaded `value as f32`, widened to f64, and includes
+    /// only finite values greater than zero.
+    ///
+    /// Implementations must write every pair and return the statistics from
+    /// that same pass. Keeping this method required makes an incomplete custom
+    /// source fail at compile time rather than during an upload.
+    fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats;
 }
 
 /// High-precision column upload path.
@@ -77,8 +160,16 @@ pub trait HiLoColumnSource {
     fn max(&self) -> f64;
     fn min(&self) -> f64;
 
-    /// Write `len * 8` bytes as little-endian `(hi: f32, lo: f32)` pairs.
+    /// Legacy helper that writes `len * 8` bytes as little-endian `(hi: f32,
+    /// lo: f32)` pairs. Pool upload uses the write-only fused capability.
     fn write_f32_pair_le_into(&self, dst: &mut [u8]);
+
+    /// Write hi/lo pairs and collect stats from recorded `hi as f64 + lo as
+    /// f64` values in that same pass, including only finite values greater
+    /// than zero. The caller guarantees `dst.len() == self.len() * 8`. See
+    /// [`ColumnSource::write_f32_pair_le_into_with_stats`] for the required
+    /// single-pass contract.
+    fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats;
 }
 
 // Built-in implementations for numeric column types.
@@ -103,8 +194,21 @@ impl ColumnSource for Column<f64> {
         debug_assert_eq!(dst.len(), self.data.len() * COLUMN_VALUE_BYTES);
         for (pair, &value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(&self.data) {
             pair[..4].copy_from_slice(&(value as f32).to_le_bytes());
-            pair[4..].fill(0);
+            pair[4..].copy_from_slice(&0.0f32.to_le_bytes());
         }
+    }
+    fn write_f32_pair_le_into_with_stats(
+        &self,
+        mut dst: ColumnPairWriter<'_>,
+    ) -> ColumnUploadStats {
+        debug_assert_eq!(dst.len(), self.data.len());
+        let mut stats = ColumnUploadStats { min_positive: None };
+        for (index, &value) in self.data.iter().enumerate() {
+            let value = value as f32;
+            dst.write_pair(index, value, 0.0);
+            record_min_positive(&mut stats, value as f64);
+        }
+        stats
     }
 }
 
@@ -120,12 +224,24 @@ impl HiLoColumnSource for Column<f64> {
     }
     fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
         debug_assert_eq!(dst.len(), self.data.len() * COLUMN_VALUE_BYTES);
-        for (i, &v) in self.data.iter().enumerate() {
-            let (hi, lo) = split_f64_to_f32_pair(v);
-            let base = i * COLUMN_VALUE_BYTES;
-            dst[base..base + 4].copy_from_slice(&hi.to_le_bytes());
-            dst[base + 4..base + 8].copy_from_slice(&lo.to_le_bytes());
+        for (pair, &value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(&self.data) {
+            let (hi, lo) = split_f64_to_f32_pair(value);
+            pair[..4].copy_from_slice(&hi.to_le_bytes());
+            pair[4..].copy_from_slice(&lo.to_le_bytes());
         }
+    }
+    fn write_f32_pair_le_into_with_stats(
+        &self,
+        mut dst: ColumnPairWriter<'_>,
+    ) -> ColumnUploadStats {
+        debug_assert_eq!(dst.len(), self.data.len());
+        let mut stats = ColumnUploadStats { min_positive: None };
+        for (index, &v) in self.data.iter().enumerate() {
+            let (hi, lo) = split_f64_to_f32_pair(v);
+            dst.write_pair(index, hi, lo);
+            record_min_positive(&mut stats, hi as f64 + lo as f64);
+        }
+        stats
     }
 }
 
@@ -146,7 +262,14 @@ impl ColumnSource for Column<f32> {
         dst_f32.copy_from_slice(&self.data);
     }
     fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
-        <Self as HiLoColumnSource>::write_f32_pair_le_into(self, dst);
+        debug_assert_eq!(dst.len(), self.data.len() * COLUMN_VALUE_BYTES);
+        for (pair, &value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(&self.data) {
+            pair[..4].copy_from_slice(&value.to_le_bytes());
+            pair[4..].copy_from_slice(&0.0f32.to_le_bytes());
+        }
+    }
+    fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
+        <Self as HiLoColumnSource>::write_f32_pair_le_into_with_stats(self, dst)
     }
 }
 
@@ -161,12 +284,19 @@ impl HiLoColumnSource for Column<f32> {
         self.max as f64
     }
     fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.data.len() * COLUMN_VALUE_BYTES);
-        for (i, &hi) in self.data.iter().enumerate() {
-            let base = i * COLUMN_VALUE_BYTES;
-            dst[base..base + 4].copy_from_slice(&hi.to_le_bytes());
-            dst[base + 4..base + 8].copy_from_slice(&0.0f32.to_le_bytes());
+        <Self as ColumnSource>::write_f32_zero_lo_pair_le_into(self, dst);
+    }
+    fn write_f32_pair_le_into_with_stats(
+        &self,
+        mut dst: ColumnPairWriter<'_>,
+    ) -> ColumnUploadStats {
+        debug_assert_eq!(dst.len(), self.data.len());
+        let mut stats = ColumnUploadStats { min_positive: None };
+        for (index, &hi) in self.data.iter().enumerate() {
+            dst.write_pair(index, hi, 0.0);
+            record_min_positive(&mut stats, hi as f64);
         }
+        stats
     }
 }
 
@@ -192,8 +322,21 @@ impl ColumnSource for Column<Option<f64>> {
         for (pair, value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(&self.data) {
             let value = value.map(|value| value as f32).unwrap_or(f32::NAN);
             pair[..4].copy_from_slice(&value.to_le_bytes());
-            pair[4..].fill(0);
+            pair[4..].copy_from_slice(&0.0f32.to_le_bytes());
         }
+    }
+    fn write_f32_pair_le_into_with_stats(
+        &self,
+        mut dst: ColumnPairWriter<'_>,
+    ) -> ColumnUploadStats {
+        debug_assert_eq!(dst.len(), self.data.len());
+        let mut stats = ColumnUploadStats { min_positive: None };
+        for (index, value) in self.data.iter().enumerate() {
+            let value = value.map(|value| value as f32).unwrap_or(f32::NAN);
+            dst.write_pair(index, value, 0.0);
+            record_min_positive(&mut stats, value as f64);
+        }
+        stats
     }
 }
 
@@ -209,18 +352,115 @@ impl HiLoColumnSource for Column<Option<f64>> {
     }
     fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
         debug_assert_eq!(dst.len(), self.data.len() * COLUMN_VALUE_BYTES);
-        for (i, opt) in self.data.iter().enumerate() {
-            let (hi, lo) = opt.map(split_f64_to_f32_pair).unwrap_or((f32::NAN, 0.0));
-            let base = i * COLUMN_VALUE_BYTES;
-            dst[base..base + 4].copy_from_slice(&hi.to_le_bytes());
-            dst[base + 4..base + 8].copy_from_slice(&lo.to_le_bytes());
+        for (pair, value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(&self.data) {
+            let (hi, lo) = value.map(split_f64_to_f32_pair).unwrap_or((f32::NAN, 0.0));
+            pair[..4].copy_from_slice(&hi.to_le_bytes());
+            pair[4..].copy_from_slice(&lo.to_le_bytes());
         }
+    }
+    fn write_f32_pair_le_into_with_stats(
+        &self,
+        mut dst: ColumnPairWriter<'_>,
+    ) -> ColumnUploadStats {
+        debug_assert_eq!(dst.len(), self.data.len());
+        let mut stats = ColumnUploadStats { min_positive: None };
+        for (index, opt) in self.data.iter().enumerate() {
+            let (hi, lo) = opt.map(split_f64_to_f32_pair).unwrap_or((f32::NAN, 0.0));
+            dst.write_pair(index, hi, lo);
+            record_min_positive(&mut stats, hi as f64 + lo as f64);
+        }
+        stats
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::split_f64_to_f32_pair;
+    use super::*;
+
+    fn scalar_upload(source: &dyn ColumnSource) -> (Vec<(f32, f32)>, ColumnUploadStats) {
+        let mut bytes = vec![0; source.len() * COLUMN_VALUE_BYTES];
+        let stats = source
+            .write_f32_pair_le_into_with_stats(ColumnPairWriter::from_bytes_for_test(&mut bytes));
+        (decode_pairs(&bytes), stats)
+    }
+
+    fn hilo_upload(source: &dyn HiLoColumnSource) -> (Vec<(f32, f32)>, ColumnUploadStats) {
+        let mut bytes = vec![0; source.len() * COLUMN_VALUE_BYTES];
+        let stats = source
+            .write_f32_pair_le_into_with_stats(ColumnPairWriter::from_bytes_for_test(&mut bytes));
+        (decode_pairs(&bytes), stats)
+    }
+
+    fn decode_pairs(bytes: &[u8]) -> Vec<(f32, f32)> {
+        bytes
+            .chunks_exact(COLUMN_VALUE_BYTES)
+            .map(|pair| {
+                (
+                    f32::from_le_bytes(pair[..4].try_into().unwrap()),
+                    f32::from_le_bytes(pair[4..].try_into().unwrap()),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn pair_writer_reports_logical_length_and_checks_bounds() {
+        let mut bytes = [0; 2 * COLUMN_VALUE_BYTES];
+        {
+            let mut writer = ColumnPairWriter::from_bytes_for_test(&mut bytes);
+            assert_eq!(writer.len(), 2);
+            assert!(!writer.is_empty());
+            writer.write_pair(1, 3.5, -0.25);
+        }
+        assert_eq!(decode_pairs(&bytes)[1], (3.5, -0.25));
+
+        let mut empty = [];
+        assert!(ColumnPairWriter::from_bytes_for_test(&mut empty).is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "column pair index 1 out of bounds for length 1")]
+    fn pair_writer_rejects_out_of_bounds_writes() {
+        let mut bytes = [0; COLUMN_VALUE_BYTES];
+        ColumnPairWriter::from_bytes_for_test(&mut bytes).write_pair(1, 0.0, 0.0);
+    }
+
+    #[test]
+    fn built_in_fused_scalar_stats_follow_recorded_f32_values() {
+        let min_subnormal = f32::from_bits(1);
+        let source = Column {
+            data: vec![f64::from_bits(1), f64::MAX, min_subnormal as f64],
+            min: f64::from_bits(1),
+            max: f64::MAX,
+        };
+        let (pairs, stats) = scalar_upload(&source);
+
+        assert_eq!(pairs[0], (0.0, 0.0));
+        assert_eq!(pairs[1], (f32::INFINITY, 0.0));
+        assert_eq!(stats.min_positive, Some(min_subnormal as f64));
+    }
+
+    #[test]
+    fn built_in_fused_hilo_stats_and_precision_use_recorded_pairs() {
+        let cancellation = 16_777_215.5_f64;
+        let epoch_a = 1_700_000_000_000.125_f64;
+        let epoch_b = epoch_a + 0.75;
+        let source = Column {
+            data: vec![cancellation, epoch_a, epoch_b],
+            min: cancellation,
+            max: epoch_b,
+        };
+        let (pairs, stats) = hilo_upload(&source);
+        let (cancel_hi, cancel_lo) = split_f64_to_f32_pair(cancellation);
+
+        assert_eq!(pairs[0], (cancel_hi, cancel_lo));
+        assert_eq!(
+            stats.min_positive,
+            Some(cancel_hi as f64 + cancel_lo as f64)
+        );
+        let epoch_delta = (pairs[2].0 - pairs[1].0) + (pairs[2].1 - pairs[1].1);
+        assert!((epoch_delta as f64 - 0.75).abs() < 1.0e-3);
+    }
 
     #[test]
     fn split_pair_preserves_small_delta_near_large_epoch() {

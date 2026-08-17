@@ -403,14 +403,12 @@ fn fs_mapped(in: MappedOut) -> @location(0) vec4<f32> {
 }
 
 // ──────────────── sketch mode (NOT part of the common block) ────────────────
-// Hand-drawn entry point — design SSoT: docs/SKETCH_DESIGN.md (§3 noise,
-// §5d errorbar). Selected as a separate pipeline variant; the precise entries
-// above are never modified and never read the sketch Transform fields.
+// Hand-drawn entry point selected as a separate pipeline variant. The precise
+// entries above never read the sketch Transform fields.
 
-// 1D value-noise pair — original formula: docs/SKETCH_DESIGN.md §3.
 // Deliberately duplicated per data shader (scatter/line/errorbar) and NOT in
 // the SHADER_COMMON.md common block: line_arc.wgsl shares that block but has
-// no use for noise. Keep the three copies in sync with the design doc.
+// no use for noise. Keep these helpers byte-identical in all three shaders.
 fn sketch_hash01(i: u32, seed: u32) -> f32 {
     var h = (i * 0x9E3779B9u) ^ (seed * 0x85EBCA6Bu);
     h = (h ^ (h >> 16u)) * 0x45D9F3Bu;
@@ -428,9 +426,9 @@ fn sketch_noise(t: f32, seed: u32) -> f32 {
     return mix(sketch_hash01(i, seed), sketch_hash01(i + 1u, seed), u) * 2.0 - 1.0;
 }
 
-// Sketch errorbar vertex stage (docs/SKETCH_DESIGN.md §5d): same six-quad
-// construction as vs_main, but each quad END (A/B, along the bar-length
-// parameter) is displaced perpendicular to its stroke by
+// The sketch errorbar uses the same six-quad construction as vs_main, but each
+// quad end (A/B along the bar-length parameter) is displaced perpendicular to
+// its stroke by
 // amplitude · noise(2·seg + end, seed + instance_index). The integer lattice
 // input samples the noise at lattice points, giving every one of the 12 quad
 // ends an independent deterministic offset; both corners of an end share it,
@@ -522,8 +520,7 @@ fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> @builtin(position)
 }
 
 // ────────────── constellation mode (NOT part of the common block) ───────────
-// Bipolar-jet errorbars — docs/CONSTELLATION_DESIGN.md. The error range
-// renders as a glowing astrophysical jet (think Herbig-Haro flows): the
+// Bipolar-jet errorbars render the error range as a glowing astrophysical jet:
 // stem quads become tapered beams brightest at the data point, and the cap
 // quads become terminal shock KNOTS — diffuse radial glows that mark the
 // exact interval bounds. Series color tints the plasma; the hot cores

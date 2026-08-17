@@ -1,6 +1,6 @@
 //! End-to-end pixel verification of the hand-drawn ("sketch") render mode
-//! (design SSoT: docs/SKETCH_DESIGN.md §7 V2) using ONLY the public
-//! renderer API and the headless `export_panel_rgba` path.
+//! using only the public renderer API and the headless `export_panel_rgba`
+//! path.
 //!
 //! House pattern (mirrors the in-crate GPU tests): every test builds its own
 //! instance/adapter/device and early-returns when no usable adapter exists.
@@ -12,8 +12,8 @@
 //! and assertions filter pixels by color class — black deco ink never
 //! matches any class predicate.
 //!
-//! §7 V2 item 6 (JSON default round-trip) is intentionally NOT duplicated
-//! here: it already exists as `draw_style_serde_tests` in
+//! JSON default round-trip coverage is not duplicated here; it lives in
+//! `draw_style_serde_tests` in
 //! `crates/model/src/config.rs` (config_without_draw_style_key_deserializes_to_precise,
 //! sketch_tag_alone_yields_all_defaults,
 //! partial_sketch_fields_fill_remaining_defaults,
@@ -181,7 +181,8 @@ fn errorbar_series(id: &str, x: &str, y: &str, err: &str, color: Color) -> Serie
 /// Bands are ≥ 30 px apart so a ±few-px wobble can never mix color classes.
 fn build_combined(r: &mut Renderer) -> (Chart, Vec<SeriesConfig>) {
     let n = 257;
-    let lx: Vec<f64> = (0..n).map(|i| i as f64 * 6.28 / (n - 1) as f64).collect();
+    let period = 628.0_f64 / 100.0;
+    let lx: Vec<f64> = (0..n).map(|i| i as f64 * period / (n - 1) as f64).collect();
     let ly: Vec<f64> = lx.iter().map(|x| 0.8 + 0.3 * x.sin()).collect();
     let m = 33;
     let sx: Vec<f64> = (0..m)
@@ -224,20 +225,39 @@ fn is_blue(p: &[u8]) -> bool {
     p[3] > 16 && p[2] > 120 && p[0] < 90 && p[1] < 90
 }
 
-/// (label, predicate, minimum expected ink pixels) per data-layer primitive.
-const CLASSES: [(&str, fn(&[u8]) -> bool, usize); 3] = [
-    ("line(red)", is_red, 300),
-    ("scatter(green)", is_green, 200),
-    ("errorbar(blue)", is_blue, 300),
+type PixelPredicate = fn(&[u8]) -> bool;
+
+struct PixelClass {
+    name: &'static str,
+    predicate: PixelPredicate,
+    min_ink: usize,
+}
+
+const CLASSES: [PixelClass; 3] = [
+    PixelClass {
+        name: "line(red)",
+        predicate: is_red,
+        min_ink: 300,
+    },
+    PixelClass {
+        name: "scatter(green)",
+        predicate: is_green,
+        min_ink: 200,
+    },
+    PixelClass {
+        name: "errorbar(blue)",
+        predicate: is_blue,
+        min_ink: 300,
+    },
 ];
 
-fn count_class(img: &RasterImage, pred: fn(&[u8]) -> bool) -> usize {
+fn count_class(img: &RasterImage, pred: PixelPredicate) -> usize {
     img.rgba.chunks_exact(4).filter(|p| pred(p)).count()
 }
 
 /// Pixels that belong to `pred`'s color class in at least one image AND whose
 /// RGBA bytes differ between the two — i.e. that class's ink actually moved.
-fn class_diff(a: &RasterImage, b: &RasterImage, pred: fn(&[u8]) -> bool) -> usize {
+fn class_diff(a: &RasterImage, b: &RasterImage, pred: PixelPredicate) -> usize {
     assert_eq!((a.width, a.height), (b.width, b.height), "image dims");
     a.rgba
         .chunks_exact(4)
@@ -270,7 +290,7 @@ fn assert_bytes_eq(a: &RasterImage, b: &RasterImage, what: &str) {
 
 // ───────────────────────────── the tests ─────────────────────────────
 
-/// §7 V2-1 — divergence. Same data, sketch `None` vs `Some(default)`:
+/// Divergence contract. Same data, sketch `None` vs `Some(default)`:
 /// the whole image differs AND each data primitive's own color class
 /// differs (so line, scatter and errorbar wobble are each individually
 /// proven, not masked by the deco-layer wobble). A vanish guard pins the
@@ -291,7 +311,12 @@ fn sketch_diverges_from_precise() {
         img_p.rgba != img_s.rgba,
         "sketch(default) export is pixel-identical to precise export"
     );
-    for (name, pred, min_ink) in CLASSES {
+    for PixelClass {
+        name,
+        predicate: pred,
+        min_ink,
+    } in CLASSES
+    {
         let (cp, cs) = (count_class(&img_p, pred), count_class(&img_s, pred));
         assert!(cp > min_ink, "{name}: precise ink missing ({cp} px)");
         assert!(cs > min_ink, "{name}: sketch ink missing ({cs} px)");
@@ -308,27 +333,39 @@ fn sketch_diverges_from_precise() {
 
     // Single-series isolation: one chart per primitive, fresh precise/sketch
     // pair each, diff restricted to that primitive's color class.
-    let singles: [(SeriesConfig, fn(&[u8]) -> bool, &str, usize); 3] = [
-        (
-            line_series("only_l", "lx", "ly", RED, LineStylePreset::Solid),
-            is_red,
-            "line-only",
-            300,
-        ),
-        (
-            scatter_series("only_s", "sx", "sy", GREEN),
-            is_green,
-            "scatter-only",
-            200,
-        ),
-        (
-            errorbar_series("only_e", "sx", "ey", "ee", BLUE),
-            is_blue,
-            "errorbar-only",
-            300,
-        ),
+    struct SingleSeriesCase {
+        config: SeriesConfig,
+        predicate: PixelPredicate,
+        name: &'static str,
+        min_ink: usize,
+    }
+    let singles = [
+        SingleSeriesCase {
+            config: line_series("only_l", "lx", "ly", RED, LineStylePreset::Solid),
+            predicate: is_red,
+            name: "line-only",
+            min_ink: 300,
+        },
+        SingleSeriesCase {
+            config: scatter_series("only_s", "sx", "sy", GREEN),
+            predicate: is_green,
+            name: "scatter-only",
+            min_ink: 200,
+        },
+        SingleSeriesCase {
+            config: errorbar_series("only_e", "sx", "ey", "ee", BLUE),
+            predicate: is_blue,
+            name: "errorbar-only",
+            min_ink: 300,
+        },
     ];
-    for (cfg, pred, name, min_ink) in singles {
+    for SingleSeriesCase {
+        config: cfg,
+        predicate: pred,
+        name,
+        min_ink,
+    } in singles
+    {
         let mut chart = bare_chart(640, 480);
         chart.set_x_range(0.0, 6.5);
         chart.set_y_range(-1.2, 1.2);
@@ -347,7 +384,7 @@ fn sketch_diverges_from_precise() {
     }
 }
 
-/// §7 V2-2 — determinism. Identical config + data must export
+/// Determinism contract. Identical config + data must export
 /// byte-identical pixels: twice from the same renderer (no per-frame
 /// randomness / time dependence) and once from a freshly built renderer
 /// with the same column insertion order (no hidden instance state).
@@ -368,7 +405,7 @@ fn sketch_is_deterministic() {
     assert_bytes_eq(&a, &c, "fresh renderer instance, identical inputs");
 }
 
-/// §7 V2-3 — seed separation. seed 0 vs seed 1 must change the pixels,
+/// Seed-separation contract. Seed 0 vs seed 1 must change the pixels,
 /// and must change them within EVERY data primitive's color class (each
 /// GPU sketch entry consumes the global seed).
 #[test]
@@ -391,7 +428,12 @@ fn sketch_seed_separates() {
         s0.rgba != s1.rgba,
         "seed 0 and seed 1 produced identical exports"
     );
-    for (name, pred, _) in CLASSES {
+    for PixelClass {
+        name,
+        predicate: pred,
+        ..
+    } in CLASSES
+    {
         let d = class_diff(&s0, &s1, pred);
         assert!(
             d > 0,
@@ -400,7 +442,7 @@ fn sketch_seed_separates() {
     }
 }
 
-/// §7 V2-4 — amplitude bound. A horizontal line (the wobble displacement is
+/// Amplitude-bound contract. A horizontal line (the wobble displacement is
 /// perpendicular to the path, i.e. purely vertical here) drawn with
 /// amplitude A = 3 px must keep its ink rows within the PRECISE export's ink
 /// row span ± (A + 2 px AA slack). Scanned only across data-area-interior
@@ -464,7 +506,7 @@ fn sketch_amplitude_is_bounded() {
     );
 }
 
-/// §7 V2-5 — NaN gap preservation. A horizontal line with a NaN band over
+/// NaN-gap contract. A horizontal line with a NaN band over
 /// x ∈ [0.40, 0.45) exported in sketch mode must leave the gap's interior
 /// columns ink-free (caps may narrow the gap by ~line-width, so the probe
 /// stays 5 px inside each edge), while both sides still draw.
@@ -524,7 +566,7 @@ fn sketch_preserves_nan_gaps() {
     );
 }
 
-/// §7 V2 extension — dash composition. The same sine line exported in
+/// Dash-composition contract. The same sine line exported in
 /// sketch mode as Solid vs Dash([8,4]): the dashed variant must draw
 /// strictly less ink (gaps exist → < 85 % of solid) but still most of the
 /// curve (> 25 % of solid — the wobbled dash phase didn't erase the line).
@@ -532,7 +574,8 @@ fn sketch_preserves_nan_gaps() {
 fn sketch_composes_with_dash() {
     let Some(mut r) = try_renderer() else { return };
     let n = 512;
-    let xs: Vec<f64> = (0..n).map(|i| i as f64 * 6.28 / (n - 1) as f64).collect();
+    let period = 628.0_f64 / 100.0;
+    let xs: Vec<f64> = (0..n).map(|i| i as f64 * period / (n - 1) as f64).collect();
     let ys: Vec<f64> = xs.iter().map(|x| x.sin()).collect();
     r.add_column("dx", &col_f64(xs)).unwrap();
     r.add_column("dy", &col_f64(ys)).unwrap();

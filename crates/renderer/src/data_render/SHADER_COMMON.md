@@ -49,8 +49,8 @@
 
 데이터 좌표 → NDC 변환, 로그 축 플래그, 픽셀↔NDC 환산 비율, 그리고
 활성 렌더 스타일(스케치/성좌 등)의 범용 파라미터 슬롯을 셰이더에 전달하는
-유니폼. **80바이트** (`vec2<f32>` 4개 + `array<vec4<f32>, 3>` 1개 —
-배열은 offset 32, 원소 stride 16, WGSL uniform layout). 픽셀 단위
+유니폼. **96바이트** (`vec2<f32>` 6개 + `array<vec4<f32>, 3>` 1개 —
+배열은 offset 48, 원소 stride 16, WGSL uniform layout). 픽셀 단위
 크기(점 반지름, cap 길이 등)는 `Style`로 이동했다 — 픽셀→NDC 환산은
 셰이더가 `pixel_to_ndc`로 직접 수행한다.
 

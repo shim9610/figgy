@@ -5,10 +5,9 @@
 //! - `slots: HashMap<ColumnId, ColumnSlot>` is the SSoT mapping id → byte
 //!   range; `free: Vec<FreeRegion>` tracks holes (first-fit on add, coalesce
 //!   with neighbors on remove).
-//! - `add_hilo_column` stages through a CPU `Vec`: wgpu 29+ maps
-//!   `get_mapped_range_mut()` as write-only, so the same view cannot be
-//!   reread for `min_positive`. The source writes into the Vec, the Vec is
-//!   copied into the mapped staging buffer, then scanned.
+//! - Column sources write pairs and collect `min_positive` in one pass over
+//!   the mapped staging range. wgpu 29+ maps that range as write-only, so the
+//!   renderer never reads the mapped bytes back.
 //! - `defragment` packs survivors into a backup buffer with GPU-internal
 //!   copies (no PCIe traffic) then swaps `primary <-> backup`.
 //!
@@ -29,7 +28,9 @@ use std::{collections::HashMap, fmt, sync::Arc};
 
 use wgpu::{Buffer, BufferDescriptor, BufferUsages, Device, Queue};
 
-use crate::data::{COLUMN_VALUE_BYTES, ColumnSource, HiLoColumnSource};
+use crate::data::{
+    COLUMN_VALUE_BYTES, ColumnPairWriter, ColumnSource, ColumnUploadStats, HiLoColumnSource,
+};
 
 // Defined in the model crate (`model::data`); re-exported here so
 // `data_render::ColumnId` stays a valid path.
@@ -94,33 +95,20 @@ fn out_of_space(requested: u64, free: &[FreeRegion]) -> AllocError {
     }
 }
 
-/// wgpu 29+ `get_mapped_range_mut` is write-only, so pair bytes live in a
-/// CPU `Vec` long enough to both upload and scan `min_positive`.
+/// Invoke the fused source capability once while the write-only view is live.
 fn write_staging_pairs(
     staging: &Buffer,
     raw_bytes: u64,
-    write_pairs: impl FnOnce(&mut [u8]),
-) -> f64 {
-    let raw_len = raw_bytes as usize;
-    let mut cpu = vec![0u8; raw_len];
-    write_pairs(&mut cpu);
-    {
-        let mut view = staging
-            .slice(0..raw_bytes)
-            .get_mapped_range_mut()
-            .expect("column staging is mapped at creation");
-        view.copy_from_slice(&cpu);
-    }
-    let mut min_positive = f64::INFINITY;
-    for bytes in cpu.chunks_exact(COLUMN_VALUE_BYTES) {
-        let hi = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64;
-        let lo = f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as f64;
-        let value = hi + lo;
-        if value > 0.0 && value < min_positive {
-            min_positive = value;
-        }
-    }
-    min_positive
+    write_pairs: impl FnOnce(ColumnPairWriter<'_>) -> ColumnUploadStats,
+) -> ColumnUploadStats {
+    let mut view = staging
+        .slice(0..raw_bytes)
+        .get_mapped_range_mut()
+        .expect("column staging is mapped at creation");
+    let stats = write_pairs(ColumnPairWriter::new(view.slice(..)));
+    drop(view);
+    staging.unmap();
+    stats
 }
 
 fn alloc_region_from(free: &mut Vec<FreeRegion>, size: u64) -> Result<u64, AllocError> {
@@ -170,7 +158,7 @@ pub struct ColumnSlot {
     /// can read the range without rescanning data that lives on the GPU.
     pub min: f64,
     pub max: f64,
-    /// Smallest strictly-positive value, scanned once at upload — the
+    /// Smallest strictly-positive value, collected during upload — the
     /// log-axis auto-fit lower bound when the data contains zeros or
     /// negatives. `None` when no positive value exists.
     ///
@@ -179,6 +167,17 @@ pub struct ColumnSlot {
     /// per-point geometry (dashed-line arc length) is computed on the GPU
     /// (`line_arc.wgsl`). Do not reintroduce CPU shadows.
     pub min_positive: Option<f64>,
+}
+
+/// Source metadata captured before an upload is prepared.
+///
+/// This deliberately excludes allocator state and encoded-value statistics,
+/// which belong to [`ColumnSlot`] and [`ColumnUploadStats`] respectively.
+struct ColumnInputMeta {
+    id: ColumnId,
+    len_values: usize,
+    min: f64,
+    max: f64,
 }
 
 /// A free region. Adjacent regions are merged on coalesce.
@@ -270,8 +269,11 @@ pub enum DefragPolicy {
     OnAllocFailure,
 }
 
-fn write_scalar_source_as_pairs(source: &dyn ColumnSource, dst: &mut [u8]) {
-    source.write_f32_zero_lo_pair_le_into(dst);
+fn write_scalar_source_as_pairs(
+    source: &dyn ColumnSource,
+    dst: ColumnPairWriter<'_>,
+) -> ColumnUploadStats {
+    source.write_f32_pair_le_into_with_stats(dst)
 }
 
 /// Lightweight handle handed out to the chart layer. `generation` lets
@@ -497,6 +499,53 @@ impl Drop for ColumnUpsert<'_> {
                 self.pool.backup = old_backup.take();
             }
         }
+    }
+}
+
+#[must_use = "dropping a ColumnBatchUpsert leaves the live pool unchanged"]
+pub(crate) struct ColumnBatchUpsert<'a> {
+    pool: &'a mut ColumnPool,
+    candidate: Option<ColumnPool>,
+    handles: [ColumnHandle; 4],
+}
+
+impl ColumnBatchUpsert<'_> {
+    pub(crate) fn pool(&self) -> &ColumnPool {
+        self.candidate
+            .as_ref()
+            .expect("demo column batch candidate remains live")
+    }
+
+    pub(crate) fn commit(mut self) -> [ColumnHandle; 4] {
+        let candidate = self
+            .candidate
+            .take()
+            .expect("demo column batch candidate remains live");
+        let ColumnPool {
+            identity: _,
+            primary,
+            capacity: _,
+            max_buffer_size: _,
+            slots,
+            free,
+            generation,
+            allocation_epochs,
+            allocation_epoch_counter,
+            layout_generation,
+            backup,
+            defrag_policy: _,
+        } = candidate;
+        debug_assert!(backup.is_none());
+
+        let old_primary = std::mem::replace(&mut self.pool.primary, primary);
+        self.pool.slots = slots;
+        self.pool.free = free;
+        self.pool.generation = generation;
+        self.pool.allocation_epochs = allocation_epochs;
+        self.pool.allocation_epoch_counter = allocation_epoch_counter;
+        self.pool.layout_generation = layout_generation;
+        self.pool.backup = Some(old_primary);
+        self.handles
     }
 }
 
@@ -831,10 +880,12 @@ impl ColumnPool {
         queue: &Queue,
     ) -> Result<ColumnUpsert<'a>, AllocError> {
         self.begin_upsert_column_pairs_with(
-            id,
-            source.len(),
-            source.min(),
-            source.max(),
+            ColumnInputMeta {
+                id,
+                len_values: source.len(),
+                min: source.min(),
+                max: source.max(),
+            },
             device,
             queue,
             |dst| write_scalar_source_as_pairs(source, dst),
@@ -862,13 +913,15 @@ impl ColumnPool {
         queue: &Queue,
     ) -> Result<ColumnUpsert<'a>, AllocError> {
         self.begin_upsert_column_pairs_with(
-            id,
-            source.len(),
-            source.min(),
-            source.max(),
+            ColumnInputMeta {
+                id,
+                len_values: source.len(),
+                min: source.min(),
+                max: source.max(),
+            },
             device,
             queue,
-            |dst| source.write_f32_pair_le_into(dst),
+            |dst| source.write_f32_pair_le_into_with_stats(dst),
             |byte_size| {
                 create_buffer_checked(
                     device,
@@ -912,17 +965,311 @@ impl ColumnPool {
             .commit())
     }
 
-    fn begin_upsert_column_pairs_with<'a>(
+    pub(crate) fn begin_demo_batch_upsert<'a>(
         &'a mut self,
-        id: ColumnId,
-        n: usize,
-        min: f64,
-        max: f64,
+        columns: [(ColumnId, &dyn ColumnSource); 4],
         device: &Device,
         queue: &Queue,
-        write_pairs: impl FnOnce(&mut [u8]),
+    ) -> Result<ColumnBatchUpsert<'a>, AllocError> {
+        struct StagedColumn {
+            id: ColumnId,
+            len_values: usize,
+            byte_size: u64,
+            min: f64,
+            max: f64,
+            min_positive: Option<f64>,
+            staging: Buffer,
+        }
+
+        for index in 0..columns.len() {
+            if columns[..index]
+                .iter()
+                .any(|(id, _)| id == &columns[index].0)
+            {
+                return Err(AllocError::DuplicateId(columns[index].0.clone()));
+            }
+        }
+
+        let mut staged = Vec::new();
+        staged
+            .try_reserve_exact(columns.len())
+            .map_err(|error| AllocError::AllocationFailed {
+                resource: "demo column staging registry",
+                reason: error.to_string(),
+            })?;
+        for (id, source) in columns {
+            let len_values = source.len();
+            if len_values == 0 {
+                return Err(AllocError::EmptySource);
+            }
+            let raw_bytes = (len_values as u64)
+                .checked_mul(COLUMN_VALUE_BYTES as u64)
+                .ok_or(AllocError::ResourceLimit {
+                    resource: "column staging buffer",
+                    requested: u64::MAX,
+                    limit: self.max_buffer_size,
+                })?;
+            let byte_size = try_align_up(raw_bytes, ALIGN).ok_or(AllocError::ResourceLimit {
+                resource: "column staging buffer",
+                requested: raw_bytes,
+                limit: self.max_buffer_size,
+            })?;
+            if byte_size > self.max_buffer_size {
+                return Err(AllocError::ResourceLimit {
+                    resource: "column staging buffer",
+                    requested: byte_size,
+                    limit: self.max_buffer_size,
+                });
+            }
+
+            let staging = create_buffer_checked(
+                device,
+                &BufferDescriptor {
+                    label: Some("figgy demo column staging"),
+                    size: byte_size,
+                    usage: BufferUsages::COPY_SRC,
+                    mapped_at_creation: true,
+                },
+                "demo column staging buffer",
+            )?;
+            let min_positive = write_staging_pairs(&staging, raw_bytes, |dst| {
+                write_scalar_source_as_pairs(source, dst)
+            })
+            .min_positive;
+            staged.push(StagedColumn {
+                id,
+                len_values,
+                byte_size,
+                min: source.min(),
+                max: source.max(),
+                min_positive,
+                staging,
+            });
+        }
+
+        let next_generation = self.checked_generation_successor()?;
+        let next_layout_generation = self.checked_layout_successor()?;
+        let mut next_allocation_epoch = self.allocation_epoch_counter;
+        let mut replacement_epochs = Vec::new();
+        replacement_epochs
+            .try_reserve_exact(staged.len())
+            .map_err(|error| AllocError::AllocationFailed {
+                resource: "demo allocation epochs",
+                reason: error.to_string(),
+            })?;
+        for _ in &staged {
+            next_allocation_epoch =
+                next_allocation_epoch
+                    .checked_add(1)
+                    .ok_or(AllocError::CounterExhausted {
+                        counter: "allocation epoch",
+                    })?;
+            replacement_epochs.push(next_allocation_epoch);
+        }
+
+        let is_replaced = |id: &str| staged.iter().any(|column| column.id == id);
+        let survivor_count = self.slots.len().saturating_sub(
+            staged
+                .iter()
+                .filter(|column| self.slots.contains_key(&column.id))
+                .count(),
+        );
+        let final_count =
+            survivor_count
+                .checked_add(staged.len())
+                .ok_or(AllocError::AllocationFailed {
+                    resource: "demo column registry",
+                    reason: "column count overflow".into(),
+                })?;
+        let mut survivor_ids = Vec::new();
+        survivor_ids
+            .try_reserve_exact(survivor_count)
+            .map_err(|error| AllocError::AllocationFailed {
+                resource: "demo survivor order",
+                reason: error.to_string(),
+            })?;
+        survivor_ids.extend(
+            self.slots
+                .values()
+                .filter(|slot| !is_replaced(&slot.id))
+                .map(|slot| slot.id.clone()),
+        );
+        survivor_ids.sort_by_key(|id| self.slots[id].offset);
+
+        let mut planned_slots = HashMap::new();
+        planned_slots
+            .try_reserve(final_count)
+            .map_err(|error| AllocError::AllocationFailed {
+                resource: "demo column registry",
+                reason: error.to_string(),
+            })?;
+        let mut planned_allocation_epochs = HashMap::new();
+        planned_allocation_epochs
+            .try_reserve(final_count)
+            .map_err(|error| AllocError::AllocationFailed {
+                resource: "demo allocation epoch registry",
+                reason: error.to_string(),
+            })?;
+        let mut next_offset = 0u64;
+        for id in &survivor_ids {
+            let old = &self.slots[id];
+            let end = next_offset
+                .checked_add(old.byte_size)
+                .ok_or_else(|| out_of_space(old.byte_size, &self.free))?;
+            if end > self.capacity {
+                return Err(out_of_space(old.byte_size, &self.free));
+            }
+            let mut slot = old.clone();
+            slot.offset = next_offset;
+            slot.generation = next_generation;
+            planned_allocation_epochs.insert(
+                id.clone(),
+                *self
+                    .allocation_epochs
+                    .get(id)
+                    .expect("live column has an allocation epoch"),
+            );
+            planned_slots.insert(id.clone(), slot);
+            next_offset = end;
+        }
+
+        let mut handles = Vec::new();
+        handles
+            .try_reserve_exact(staged.len())
+            .map_err(|error| AllocError::AllocationFailed {
+                resource: "demo column handles",
+                reason: error.to_string(),
+            })?;
+        for (column, allocation_epoch) in staged.iter().zip(replacement_epochs) {
+            let end = next_offset.checked_add(column.byte_size).ok_or_else(|| {
+                out_of_space(
+                    column.byte_size,
+                    &[FreeRegion {
+                        offset: next_offset,
+                        size: self.capacity.saturating_sub(next_offset),
+                    }],
+                )
+            })?;
+            if end > self.capacity {
+                return Err(out_of_space(
+                    column.byte_size,
+                    &[FreeRegion {
+                        offset: next_offset,
+                        size: self.capacity.saturating_sub(next_offset),
+                    }],
+                ));
+            }
+            let slot = ColumnSlot {
+                id: column.id.clone(),
+                offset: next_offset,
+                byte_size: column.byte_size,
+                len_values: column.len_values,
+                generation: next_generation,
+                min: column.min,
+                max: column.max,
+                min_positive: column.min_positive,
+            };
+            handles.push(ColumnHandle {
+                generation: slot.generation,
+                offset: slot.offset,
+                byte_size: slot.byte_size,
+                len_values: slot.len_values,
+            });
+            planned_allocation_epochs.insert(column.id.clone(), allocation_epoch);
+            planned_slots.insert(column.id.clone(), slot);
+            next_offset = end;
+        }
+        let mut planned_free = Vec::new();
+        if next_offset < self.capacity {
+            planned_free
+                .try_reserve_exact(1)
+                .map_err(|error| AllocError::AllocationFailed {
+                    resource: "demo free list",
+                    reason: error.to_string(),
+                })?;
+            planned_free.push(FreeRegion {
+                offset: next_offset,
+                size: self.capacity - next_offset,
+            });
+        }
+
+        let primary = create_buffer_checked(
+            device,
+            &BufferDescriptor {
+                label: Some("figgy demo column pool candidate"),
+                size: self.capacity,
+                usage: BufferUsages::VERTEX
+                    | BufferUsages::STORAGE
+                    | BufferUsages::COPY_DST
+                    | BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            },
+            "demo column pool candidate",
+        )?;
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("figgy demo column batch"),
+        });
+        for id in &survivor_ids {
+            let old = &self.slots[id];
+            let new = &planned_slots[id];
+            encoder.copy_buffer_to_buffer(
+                &self.primary,
+                old.offset,
+                &primary,
+                new.offset,
+                old.byte_size,
+            );
+        }
+        for column in &staged {
+            let slot = &planned_slots[&column.id];
+            encoder.copy_buffer_to_buffer(
+                &column.staging,
+                0,
+                &primary,
+                slot.offset,
+                slot.byte_size,
+            );
+        }
+        queue.submit(std::iter::once(encoder.finish()));
+
+        let handles: [ColumnHandle; 4] = handles
+            .try_into()
+            .expect("demo batch always prepares exactly four handles");
+        let candidate = ColumnPool {
+            identity: self.identity.clone(),
+            primary,
+            capacity: self.capacity,
+            max_buffer_size: self.max_buffer_size,
+            slots: planned_slots,
+            free: planned_free,
+            generation: next_generation,
+            allocation_epochs: planned_allocation_epochs,
+            allocation_epoch_counter: next_allocation_epoch,
+            layout_generation: next_layout_generation,
+            backup: None,
+            defrag_policy: self.defrag_policy,
+        };
+        Ok(ColumnBatchUpsert {
+            pool: self,
+            candidate: Some(candidate),
+            handles,
+        })
+    }
+
+    fn begin_upsert_column_pairs_with<'a>(
+        &'a mut self,
+        input: ColumnInputMeta,
+        device: &Device,
+        queue: &Queue,
+        write_pairs: impl FnOnce(ColumnPairWriter<'_>) -> ColumnUploadStats,
         create_staging: impl FnOnce(u64) -> Result<Buffer, AllocError>,
     ) -> Result<ColumnUpsert<'a>, AllocError> {
+        let ColumnInputMeta {
+            id,
+            len_values: n,
+            min,
+            max,
+        } = input;
         if n == 0 {
             return Err(AllocError::EmptySource);
         }
@@ -952,9 +1299,7 @@ impl ColumnPool {
         // Complete every source-dependent/fallible staging operation before
         // touching allocator metadata or the live primary buffer.
         let staging = create_staging(byte_size)?;
-        let min_positive = write_staging_pairs(&staging, raw_bytes, write_pairs);
-        staging.unmap();
-        let min_positive = min_positive.is_finite().then_some(min_positive);
+        let min_positive = write_staging_pairs(&staging, raw_bytes, write_pairs).min_positive;
 
         let old_slot = self.slots.get(&id).cloned();
         let replaced_existing = old_slot.is_some();
@@ -1178,8 +1523,8 @@ impl ColumnPool {
     ///
     /// 1. First-fit allocation from the free list.
     /// 2. Create a `mapped_at_creation: true` staging buffer.
-    /// 3. `ColumnSource::write_f32_zero_lo_pair_le_into` writes bytes directly
-    ///    into the mapped slice (no intermediate Vec).
+    /// 3. `ColumnSource::write_f32_pair_le_into_with_stats` writes bytes and
+    ///    collects encoded-value stats through the write-only mapped view.
     /// 4. Unmap, encode a staging→primary copy, submit.
     fn try_add_column(
         &mut self,
@@ -1189,10 +1534,12 @@ impl ColumnPool {
         queue: &Queue,
     ) -> Result<ColumnHandle, AllocError> {
         self.try_add_column_pairs(
-            id,
-            source.len(),
-            source.min(),
-            source.max(),
+            ColumnInputMeta {
+                id,
+                len_values: source.len(),
+                min: source.min(),
+                max: source.max(),
+            },
             device,
             queue,
             |dst| write_scalar_source_as_pairs(source, dst),
@@ -1207,27 +1554,26 @@ impl ColumnPool {
         queue: &Queue,
     ) -> Result<ColumnHandle, AllocError> {
         self.try_add_column_pairs(
-            id,
-            source.len(),
-            source.min(),
-            source.max(),
+            ColumnInputMeta {
+                id,
+                len_values: source.len(),
+                min: source.min(),
+                max: source.max(),
+            },
             device,
             queue,
-            |dst| source.write_f32_pair_le_into(dst),
+            |dst| source.write_f32_pair_le_into_with_stats(dst),
         )
     }
 
     fn try_add_column_pairs(
         &mut self,
-        id: ColumnId,
-        n: usize,
-        min: f64,
-        max: f64,
+        input: ColumnInputMeta,
         device: &Device,
         queue: &Queue,
-        write_pairs: impl FnOnce(&mut [u8]),
+        write_pairs: impl FnOnce(ColumnPairWriter<'_>) -> ColumnUploadStats,
     ) -> Result<ColumnHandle, AllocError> {
-        self.try_add_column_pairs_with(id, n, min, max, device, queue, write_pairs, |byte_size| {
+        self.try_add_column_pairs_with(input, device, queue, write_pairs, |byte_size| {
             create_buffer_checked(
                 device,
                 &BufferDescriptor {
@@ -1243,15 +1589,18 @@ impl ColumnPool {
 
     fn try_add_column_pairs_with(
         &mut self,
-        id: ColumnId,
-        n: usize,
-        min: f64,
-        max: f64,
+        input: ColumnInputMeta,
         device: &Device,
         queue: &Queue,
-        write_pairs: impl FnOnce(&mut [u8]),
+        write_pairs: impl FnOnce(ColumnPairWriter<'_>) -> ColumnUploadStats,
         create_staging: impl FnOnce(u64) -> Result<Buffer, AllocError>,
     ) -> Result<ColumnHandle, AllocError> {
+        let ColumnInputMeta {
+            id,
+            len_values: n,
+            min,
+            max,
+        } = input;
         if self.slots.contains_key(&id) {
             return Err(AllocError::DuplicateId(id));
         }
@@ -1284,10 +1633,9 @@ impl ColumnPool {
         let reservation = alloc_region(&mut self.free, byte_size)?;
         let region_offset = reservation.offset();
 
-        // Staging buffer — CPU Vec, then copy into the write-only map view.
+        // The source writes and collects stats while the write-only view lives.
         let staging = create_staging(byte_size)?;
-        let min_positive = write_staging_pairs(&staging, raw_bytes, write_pairs);
-        staging.unmap();
+        let min_positive = write_staging_pairs(&staging, raw_bytes, write_pairs).min_positive;
 
         let slot = ColumnSlot {
             id: id.clone(),
@@ -1297,7 +1645,7 @@ impl ColumnPool {
             generation: self.generation,
             min,
             max,
-            min_positive: min_positive.is_finite().then_some(min_positive),
+            min_positive,
         };
         let handle = ColumnHandle {
             generation: slot.generation,
@@ -1602,11 +1950,11 @@ impl ColumnPool {
         free.sort_by_key(|r| r.offset);
         let mut merged: Vec<FreeRegion> = Vec::with_capacity(free.len());
         for r in free.drain(..) {
-            if let Some(last) = merged.last_mut() {
-                if last.offset + last.size == r.offset {
-                    last.size += r.size;
-                    continue;
-                }
+            if let Some(last) = merged.last_mut()
+                && last.offset + last.size == r.offset
+            {
+                last.size += r.size;
+                continue;
             }
             merged.push(r);
         }
@@ -1621,7 +1969,6 @@ mod tests {
 
     struct RawScalarSource<'a> {
         bits: &'a [u32],
-        write_address: std::cell::Cell<usize>,
     }
 
     impl ColumnSource for RawScalarSource<'_> {
@@ -1638,11 +1985,32 @@ mod tests {
         }
 
         fn write_f32_le_into(&self, dst: &mut [u8]) {
-            self.write_address.set(dst.as_ptr() as usize);
             assert_eq!(dst.len(), self.bits.len() * std::mem::size_of::<f32>());
             for (chunk, bits) in dst.chunks_exact_mut(4).zip(self.bits) {
                 chunk.copy_from_slice(&bits.to_le_bytes());
             }
+        }
+
+        fn write_f32_pair_le_into_with_stats(
+            &self,
+            mut dst: ColumnPairWriter<'_>,
+        ) -> ColumnUploadStats {
+            assert_eq!(dst.len(), self.bits.len());
+            let mut min_positive: Option<f64> = None;
+            for (index, bits) in self.bits.iter().enumerate() {
+                let value = f32::from_bits(*bits);
+                dst.write_pair(index, value, 0.0);
+                if value.is_finite()
+                    && value > 0.0
+                    && match min_positive {
+                        Some(current) => (value as f64) < current,
+                        None => true,
+                    }
+                {
+                    min_positive = Some(value as f64);
+                }
+            }
+            ColumnUploadStats { min_positive }
         }
     }
 
@@ -1669,6 +2037,14 @@ mod tests {
             dst[0] = 0xa5;
             panic!("injected scalar writer panic");
         }
+
+        fn write_f32_pair_le_into_with_stats(
+            &self,
+            mut dst: ColumnPairWriter<'_>,
+        ) -> ColumnUploadStats {
+            dst.write_pair(0, 9.0, 0.0);
+            panic!("injected scalar writer panic");
+        }
     }
 
     struct PanickingHiLoSource;
@@ -1688,6 +2064,14 @@ mod tests {
 
         fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
             dst[0] = 0x5a;
+            panic!("injected hi/lo writer panic");
+        }
+
+        fn write_f32_pair_le_into_with_stats(
+            &self,
+            mut dst: ColumnPairWriter<'_>,
+        ) -> ColumnUploadStats {
+            dst.write_pair(0, 9.0, 0.25);
             panic!("injected hi/lo writer panic");
         }
     }
@@ -1767,15 +2151,14 @@ mod tests {
             0xff80_0000,
         ];
         let mut dst = vec![0xa5; bits.len() * COLUMN_VALUE_BYTES];
-        let dst_address = dst.as_ptr() as usize;
-        let source = RawScalarSource {
-            bits: &bits,
-            write_address: std::cell::Cell::new(0),
-        };
+        let source = RawScalarSource { bits: &bits };
 
-        write_scalar_source_as_pairs(&source, &mut dst);
+        let stats = write_scalar_source_as_pairs(
+            &source,
+            ColumnPairWriter::from_bytes_for_test(dst.as_mut_slice()),
+        );
 
-        assert_eq!(source.write_address.get(), dst_address);
+        assert_eq!(stats.min_positive, Some(f32::from_bits(0x3f80_0001) as f64));
         for (pair, bits) in dst.chunks_exact(COLUMN_VALUE_BYTES).zip(bits) {
             assert_eq!(&pair[..4], &bits.to_le_bytes());
             assert_eq!(&pair[4..], &0.0f32.to_le_bytes());
@@ -1784,15 +2167,16 @@ mod tests {
 
     #[test]
     fn scalar_source_expansion_accepts_empty_input() {
-        let source = RawScalarSource {
-            bits: &[],
-            write_address: std::cell::Cell::new(0),
-        };
+        let source = RawScalarSource { bits: &[] };
         let mut dst = [];
 
-        write_scalar_source_as_pairs(&source, &mut dst);
+        let stats = write_scalar_source_as_pairs(
+            &source,
+            ColumnPairWriter::from_bytes_for_test(dst.as_mut_slice()),
+        );
 
         assert!(dst.is_empty());
+        assert_eq!(stats.min_positive, None);
     }
 
     fn mk_pool(
@@ -1861,6 +2245,31 @@ mod tests {
     }
 
     #[derive(Debug, PartialEq)]
+    struct SlotState {
+        offset: u64,
+        byte_size: u64,
+        len_values: usize,
+        generation: u32,
+        min_bits: u64,
+        max_bits: u64,
+        min_positive_bits: Option<u64>,
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct HandleState {
+        generation: u32,
+        offset: u64,
+        byte_size: u64,
+        len_values: usize,
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct NamedSlotState {
+        id: ColumnId,
+        slot: SlotState,
+    }
+
+    #[derive(Debug, PartialEq)]
     struct PoolState {
         buffer: u64,
         backup: Option<u64>,
@@ -1871,8 +2280,8 @@ mod tests {
         used: u64,
         free_bytes: u64,
         free: Vec<(u64, u64)>,
-        slot: Option<(u64, u64, usize, u32, u64, u64, Option<u64>)>,
-        handle: Option<(u32, u64, u64, usize)>,
+        slot: Option<SlotState>,
+        handle: Option<HandleState>,
     }
 
     fn buffer_identity(buffer: &Buffer) -> u64 {
@@ -1903,26 +2312,255 @@ mod tests {
                 .iter()
                 .map(|region| (region.offset, region.size))
                 .collect(),
-            slot: pool.slot(id).map(|slot| {
-                (
-                    slot.offset,
-                    slot.byte_size,
-                    slot.len_values,
-                    slot.generation,
-                    slot.min.to_bits(),
-                    slot.max.to_bits(),
-                    slot.min_positive.map(f64::to_bits),
-                )
+            slot: pool.slot(id).map(|slot| SlotState {
+                offset: slot.offset,
+                byte_size: slot.byte_size,
+                len_values: slot.len_values,
+                generation: slot.generation,
+                min_bits: slot.min.to_bits(),
+                max_bits: slot.max.to_bits(),
+                min_positive_bits: slot.min_positive.map(f64::to_bits),
             }),
-            handle: pool.handle_for(id).map(|handle| {
-                (
-                    handle.generation,
-                    handle.offset,
-                    handle.byte_size,
-                    handle.len_values,
-                )
+            handle: pool.handle_for(id).map(|handle| HandleState {
+                generation: handle.generation,
+                offset: handle.offset,
+                byte_size: handle.byte_size,
+                len_values: handle.len_values,
             }),
         }
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct FullPoolState {
+        identity: PoolIdentity,
+        base: PoolState,
+        slots: Vec<NamedSlotState>,
+    }
+
+    fn full_pool_state(pool: &ColumnPool) -> FullPoolState {
+        let mut slots = pool
+            .slots
+            .values()
+            .map(|slot| NamedSlotState {
+                id: slot.id.clone(),
+                slot: SlotState {
+                    offset: slot.offset,
+                    byte_size: slot.byte_size,
+                    len_values: slot.len_values,
+                    generation: slot.generation,
+                    min_bits: slot.min.to_bits(),
+                    max_bits: slot.max.to_bits(),
+                    min_positive_bits: slot.min_positive.map(f64::to_bits),
+                },
+            })
+            .collect::<Vec<_>>();
+        slots.sort_by(|left, right| left.id.cmp(&right.id));
+        FullPoolState {
+            identity: pool.identity(),
+            base: pool_state(pool, "demo_x"),
+            slots,
+        }
+    }
+
+    fn demo_batch_columns(sources: [&dyn ColumnSource; 4]) -> [(ColumnId, &dyn ColumnSource); 4] {
+        let ids = ["demo_x", "demo_sin", "demo_t", "demo_rc"];
+        std::array::from_fn(|index| (ids[index].to_string(), sources[index]))
+    }
+
+    #[test]
+    fn demo_batch_capacity_failures_at_each_replacement_preserve_live_pool() {
+        let Some((device, queue, _)) = mk_pool(4 * ALIGN) else {
+            return;
+        };
+        for failed_index in 0..4 {
+            let mut pool = ColumnPool::new(&device, 4 * ALIGN).unwrap();
+            let before = full_pool_state(&pool);
+            let mut columns = Vec::new();
+            for index in 0..4 {
+                let aligned_regions = if index == failed_index {
+                    5usize - failed_index
+                } else {
+                    1
+                };
+                columns.push(col_f64(vec![1.0; aligned_regions * ALIGN as usize / 8]));
+            }
+            let sources: [&dyn ColumnSource; 4] =
+                [&columns[0], &columns[1], &columns[2], &columns[3]];
+            assert!(matches!(
+                pool.begin_demo_batch_upsert(demo_batch_columns(sources), &device, &queue,),
+                Err(AllocError::OutOfSpace { .. })
+            ));
+            assert_eq!(full_pool_state(&pool), before, "replacement {failed_index}");
+        }
+    }
+
+    #[test]
+    fn demo_batch_epoch_failures_at_each_replacement_preserve_live_pool() {
+        let Some((device, queue, _)) = mk_pool(8 * ALIGN) else {
+            return;
+        };
+        let values = col_f64(vec![1.0, 2.0]);
+        for failed_index in 0..4 {
+            let mut pool = ColumnPool::new(&device, 8 * ALIGN).unwrap();
+            pool.add_column("survivor".into(), &values, &device, &queue)
+                .unwrap();
+            pool.allocation_epoch_counter = u64::MAX - failed_index as u64;
+            let before = full_pool_state(&pool);
+            let sources: [&dyn ColumnSource; 4] = [&values, &values, &values, &values];
+            let error =
+                match pool.begin_demo_batch_upsert(demo_batch_columns(sources), &device, &queue) {
+                    Ok(_) => panic!("replacement {failed_index} epoch must fail"),
+                    Err(error) => error,
+                };
+            assert_eq!(
+                error,
+                AllocError::CounterExhausted {
+                    counter: "allocation epoch",
+                }
+            );
+            assert_eq!(full_pool_state(&pool), before, "replacement {failed_index}");
+        }
+    }
+
+    #[test]
+    fn demo_batch_generation_and_layout_overflow_preserve_live_pool() {
+        let Some((device, queue, _)) = mk_pool(8 * ALIGN) else {
+            return;
+        };
+        let values = col_f64(vec![1.0, 2.0]);
+        for counter in ["public generation", "layout generation"] {
+            let mut pool = ColumnPool::new(&device, 8 * ALIGN).unwrap();
+            pool.add_column("survivor".into(), &values, &device, &queue)
+                .unwrap();
+            if counter == "public generation" {
+                pool.generation = u32::MAX;
+            } else {
+                pool.layout_generation = u64::MAX;
+            }
+            let before = full_pool_state(&pool);
+            let sources: [&dyn ColumnSource; 4] = [&values, &values, &values, &values];
+            let error =
+                match pool.begin_demo_batch_upsert(demo_batch_columns(sources), &device, &queue) {
+                    Ok(_) => panic!("{counter} must reject overflow"),
+                    Err(error) => error,
+                };
+            assert_eq!(error, AllocError::CounterExhausted { counter });
+            assert_eq!(full_pool_state(&pool), before);
+        }
+    }
+
+    #[test]
+    fn demo_batch_drop_preserves_fragmented_pool_with_existing_backup() {
+        let Some((device, queue, mut pool)) = mk_pool(10 * ALIGN) else {
+            return;
+        };
+        let old = col_f64(vec![1.0, 2.0]);
+        for id in ["survivor-a", "demo_x", "hole", "demo_rc", "survivor-b"] {
+            pool.add_column(id.into(), &old, &device, &queue).unwrap();
+        }
+        assert!(pool.remove_column("hole").unwrap());
+        assert!(pool.defragment(&device, &queue).unwrap());
+        assert!(pool.backup.is_some());
+        assert!(pool.remove_column("demo_x").unwrap());
+        let before = full_pool_state(&pool);
+        let survivor_a = read_column_values(
+            &device,
+            &queue,
+            &pool,
+            pool.handle_for("survivor-a").unwrap(),
+        );
+        let replacements = [
+            col_f64(vec![10.0, 11.0]),
+            col_f64(vec![20.0, 21.0]),
+            col_f64(vec![30.0, 31.0]),
+            col_f64(vec![40.0, 41.0]),
+        ];
+        {
+            let sources: [&dyn ColumnSource; 4] = [
+                &replacements[0],
+                &replacements[1],
+                &replacements[2],
+                &replacements[3],
+            ];
+            let pending = pool
+                .begin_demo_batch_upsert(demo_batch_columns(sources), &device, &queue)
+                .unwrap();
+            assert_ne!(buffer_identity(pending.pool().buffer()), before.base.buffer);
+        }
+        assert_eq!(full_pool_state(&pool), before);
+        assert_eq!(
+            read_column_values(
+                &device,
+                &queue,
+                &pool,
+                pool.handle_for("survivor-a").unwrap(),
+            ),
+            survivor_a
+        );
+    }
+
+    #[test]
+    fn demo_batch_commit_publishes_complete_packed_pool_and_preserves_survivor_epochs() {
+        let Some((device, queue, mut pool)) = mk_pool(10 * ALIGN) else {
+            return;
+        };
+        let old = col_f64(vec![1.0, 2.0]);
+        for id in ["survivor", "demo_x", "hole", "demo_sin"] {
+            pool.add_column(id.into(), &old, &device, &queue).unwrap();
+        }
+        assert!(pool.remove_column("hole").unwrap());
+        assert!(pool.defragment(&device, &queue).unwrap());
+        let before = full_pool_state(&pool);
+        let primary = buffer_identity(pool.buffer());
+        let old_backup = pool.backup.as_ref().map(buffer_identity);
+        let generation = pool.generation();
+        let layout_generation = pool.layout_generation();
+        let survivor_epoch = pool.allocation_epoch("survivor").unwrap();
+        let old_demo_x_epoch = pool.allocation_epoch("demo_x").unwrap();
+        let replacements = [
+            col_f64(vec![10.0, 11.0]),
+            col_f64(vec![20.0, 21.0]),
+            col_f64(vec![30.0, 31.0]),
+            col_f64(vec![40.0, 41.0]),
+        ];
+        let sources: [&dyn ColumnSource; 4] = [
+            &replacements[0],
+            &replacements[1],
+            &replacements[2],
+            &replacements[3],
+        ];
+        let handles = pool
+            .begin_demo_batch_upsert(demo_batch_columns(sources), &device, &queue)
+            .unwrap()
+            .commit();
+
+        let committed = full_pool_state(&pool);
+        assert_eq!(committed.identity, before.identity);
+        assert_eq!(pool.generation(), generation + 1);
+        assert_eq!(pool.layout_generation(), layout_generation + 1);
+        assert_eq!(pool.backup.as_ref().map(buffer_identity), Some(primary));
+        assert_ne!(pool.backup.as_ref().map(buffer_identity), old_backup);
+        assert_eq!(pool.allocation_epoch("survivor"), Some(survivor_epoch));
+        assert_ne!(pool.allocation_epoch("demo_x"), Some(old_demo_x_epoch));
+        let replacement_epochs = ["demo_x", "demo_sin", "demo_t", "demo_rc"]
+            .map(|id| pool.allocation_epoch(id).unwrap());
+        assert!(replacement_epochs.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(pool.free.len(), 1);
+        assert_eq!(pool.free[0].offset, pool.used_bytes());
+        for (index, id) in ["demo_x", "demo_sin", "demo_t", "demo_rc"]
+            .iter()
+            .enumerate()
+        {
+            assert_eq!(pool.handle_for(id).unwrap().offset, handles[index].offset);
+            assert_eq!(
+                read_column_values(&device, &queue, &pool, handles[index]),
+                replacements[index].data
+            );
+        }
+        assert_eq!(
+            read_column_values(&device, &queue, &pool, pool.handle_for("survivor").unwrap(),),
+            old.data
+        );
     }
 
     #[test]
@@ -2117,10 +2755,12 @@ mod tests {
 
         let error = pool
             .try_add_column_pairs_with(
-                "x".into(),
-                column.data.len(),
-                column.min,
-                column.max,
+                ColumnInputMeta {
+                    id: "x".into(),
+                    len_values: column.data.len(),
+                    min: column.min,
+                    max: column.max,
+                },
                 &device,
                 &queue,
                 |dst| write_scalar_source_as_pairs(&column, dst),
@@ -2243,10 +2883,12 @@ mod tests {
 
         let replacement = col_f64(vec![4.0, 5.0, 6.0]);
         let staging_error = match pool.begin_upsert_column_pairs_with(
-            "x".into(),
-            replacement.data.len(),
-            replacement.min,
-            replacement.max,
+            ColumnInputMeta {
+                id: "x".into(),
+                len_values: replacement.data.len(),
+                min: replacement.min,
+                max: replacement.max,
+            },
             &device,
             &queue,
             |dst| write_scalar_source_as_pairs(&replacement, dst),

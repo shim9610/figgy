@@ -147,6 +147,13 @@ struct SeriesExtentRequest {
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
+type SeriesExtentJobMap =
+    std::collections::HashMap<SeriesExtentKey, std::rc::Rc<crate::scalar_job::SeriesExtentJob>>;
+
+#[cfg(any(target_arch = "wasm32", test))]
+type SeriesExtentJobSelection = (SeriesExtentJobMap, Vec<SeriesExtentRequest>);
+
+#[cfg(any(target_arch = "wasm32", test))]
 #[derive(Debug)]
 enum SeriesExtentRequestError {
     Allocation(std::collections::TryReserveError),
@@ -171,6 +178,9 @@ fn checked_column_revision(next: u64) -> Result<(u64, u64), &'static str> {
         .map(|successor| (next, successor))
         .ok_or("column revision counter exhausted")
 }
+
+#[cfg(any(target_arch = "wasm32", test))]
+const DEMO_COLUMN_IDS: [&str; 4] = ["demo_x", "demo_sin", "demo_t", "demo_rc"];
 
 #[cfg(any(target_arch = "wasm32", test))]
 fn err_refs(
@@ -348,18 +358,9 @@ fn series_extent_key_matches_config(
 #[cfg(any(target_arch = "wasm32", test))]
 fn select_series_extent_job_map(
     ordered_requests: Vec<SeriesExtentRequest>,
-    existing: &std::collections::HashMap<
-        SeriesExtentKey,
-        std::rc::Rc<crate::scalar_job::SeriesExtentJob>,
-    >,
+    existing: &SeriesExtentJobMap,
     retry_failed: bool,
-) -> Result<
-    (
-        std::collections::HashMap<SeriesExtentKey, std::rc::Rc<crate::scalar_job::SeriesExtentJob>>,
-        Vec<SeriesExtentRequest>,
-    ),
-    std::collections::TryReserveError,
-> {
+) -> Result<SeriesExtentJobSelection, std::collections::TryReserveError> {
     use std::collections::HashMap;
 
     let mut selected = HashMap::new();
@@ -379,6 +380,27 @@ fn select_series_extent_job_map(
         selected.insert(request.key, value);
     }
     Ok((selected, pending))
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn retain_valid_series_extent_jobs(
+    series_cfgs: &[renderer::SeriesConfig],
+    revisions: &std::collections::HashMap<String, u64>,
+    existing: &SeriesExtentJobMap,
+) -> Result<SeriesExtentJobMap, SeriesExtentRequestError> {
+    use std::collections::HashMap;
+
+    let requests = active_series_extent_requests(series_cfgs, revisions)?;
+    let mut retained = HashMap::new();
+    retained
+        .try_reserve(requests.len())
+        .map_err(SeriesExtentRequestError::Allocation)?;
+    for request in requests {
+        if let Some(job) = existing.get(&request.key) {
+            retained.insert(request.key, std::rc::Rc::clone(job));
+        }
+    }
+    Ok(retained)
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
@@ -426,11 +448,6 @@ fn validate_public_column_id(id: &str) -> Result<(), &'static str> {
     } else {
         Ok(())
     }
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-fn column_update_invalidates_fit(id: &str) -> bool {
-    id != INTERNAL_ZERO_COLUMN_ID
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
@@ -515,6 +532,158 @@ fn prepare_column_metadata(
     })
 }
 
+#[cfg(any(target_arch = "wasm32", test))]
+fn prepare_demo_column_metadata(
+    columns: &std::collections::HashMap<String, usize>,
+    revisions: &std::collections::HashMap<String, u64>,
+    next_revision: u64,
+    lengths: [usize; 4],
+) -> Result<PreparedColumnMetadata, &'static str> {
+    use std::collections::HashMap;
+
+    let additional_columns = DEMO_COLUMN_IDS
+        .iter()
+        .filter(|id| !columns.contains_key(**id))
+        .count();
+    let column_capacity = columns
+        .len()
+        .checked_add(additional_columns)
+        .ok_or("column metadata capacity exhausted")?;
+    let mut future_columns = HashMap::new();
+    future_columns
+        .try_reserve(column_capacity)
+        .map_err(|_| "column metadata allocation failed")?;
+    future_columns.extend(columns.iter().map(|(id, value)| (id.clone(), *value)));
+
+    let additional_revisions = DEMO_COLUMN_IDS
+        .iter()
+        .filter(|id| !revisions.contains_key(**id))
+        .count();
+    let revision_capacity = revisions
+        .len()
+        .checked_add(additional_revisions)
+        .ok_or("column revision metadata capacity exhausted")?;
+    let mut future_revisions = HashMap::new();
+    future_revisions
+        .try_reserve(revision_capacity)
+        .map_err(|_| "column revision metadata allocation failed")?;
+    future_revisions.extend(revisions.iter().map(|(id, value)| (id.clone(), *value)));
+
+    let mut successor = next_revision;
+    for (id, len) in DEMO_COLUMN_IDS.into_iter().zip(lengths) {
+        let (revision, next) = checked_column_revision(successor)?;
+        future_columns.insert(id.to_string(), len);
+        future_revisions.insert(id.to_string(), revision);
+        successor = next;
+    }
+    Ok(PreparedColumnMetadata {
+        columns: future_columns,
+        revisions: future_revisions,
+        next_revision: successor,
+    })
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+struct PreparedDemoDeclarations {
+    config: renderer::Config,
+    series: Vec<renderer::SeriesConfig>,
+    labels: Vec<Option<String>>,
+    color_seq: usize,
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn prepare_demo_declarations(
+    current_config: &renderer::Config,
+    current_series: &[renderer::SeriesConfig],
+    current_labels: &[Option<String>],
+    cycle: renderer::ColorCycle,
+    color_seq: usize,
+) -> Result<PreparedDemoDeclarations, String> {
+    use renderer::line::LineStylePreset;
+    use renderer::{DataLineStyleConfig, DataRenderType, SeriesConfig};
+
+    let mut config = current_config.clone();
+    let mut series = Vec::new();
+    series
+        .try_reserve(current_series.len().saturating_add(2))
+        .map_err(|error| error.to_string())?;
+    series.extend(current_series.iter().cloned());
+    let mut labels = Vec::new();
+    labels
+        .try_reserve(current_labels.len().saturating_add(2))
+        .map_err(|error| error.to_string())?;
+    labels.extend(current_labels.iter().cloned());
+    let mut next_color_seq = color_seq;
+
+    for (series_id, x_column, y_column, label) in [
+        ("sine", "demo_x", "demo_sin", "sin(x)"),
+        ("rc", "demo_t", "demo_rc", "RC charge"),
+    ] {
+        let existing = series.iter().position(|item| item.series_id == series_id);
+        let color = match existing {
+            Some(index) => match &series[index].render_type {
+                DataRenderType::Line { line } => line.line_color,
+                _ => cycle.color(index),
+            },
+            None => cycle.color(next_color_seq),
+        };
+        if existing.is_none() {
+            next_color_seq = next_color_seq
+                .checked_add(1)
+                .ok_or_else(|| "series color sequence exhausted".to_string())?;
+        }
+        let rich_label = renderer::text::RichText {
+            segments: renderer::text::rich_segments_from_text(label),
+            color: config.legend.content.color,
+            font_size: config.legend.content.font_size,
+            font: config.legend.content.font.clone(),
+        };
+        let item = SeriesConfig {
+            series_id: series_id.to_string(),
+            source_id: None,
+            label: Some(rich_label.clone()),
+            x_column: x_column.to_string(),
+            y_column: y_column.to_string(),
+            render_type: DataRenderType::Line {
+                line: DataLineStyleConfig {
+                    line_style: LineStylePreset::Solid,
+                    line_color: color,
+                    line_width: 2.0,
+                },
+            },
+        };
+        if let Some(index) = existing {
+            series[index] = item.clone();
+            labels[index] = Some(label.to_string());
+            renderer::config::set_legend_entry_label(
+                &mut config.legend.content,
+                index,
+                renderer::config::series_symbol_segments(&item),
+                rich_label.segments,
+            );
+        } else {
+            series.push(item.clone());
+            labels.push(Some(label.to_string()));
+            renderer::config::append_legend_entry_rich(
+                &mut config.legend.content,
+                renderer::config::series_symbol_segments(&item),
+                rich_label.segments,
+            );
+        }
+        config.legend.visible = true;
+    }
+    config.chart_title.text.segments = renderer::text::rich_segments_from_text("figgy");
+    config.bottom_x.title_option.text.segments = renderer::text::rich_segments_from_text("x");
+    config.left_y.title_option.text.segments = renderer::text::rich_segments_from_text("y");
+
+    Ok(PreparedDemoDeclarations {
+        config,
+        series,
+        labels,
+        color_seq: next_color_seq,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::HashMap, rc::Rc};
@@ -526,13 +695,14 @@ mod tests {
     };
 
     use super::{
-        ColumnRegistryAction, ErrorRefKind, FrameDecision, INTERNAL_ZERO_COLUMN_ID,
-        active_series_extent_requests, checked_column_revision, column_update_invalidates_fit,
+        ColumnRegistryAction, DEMO_COLUMN_IDS, ErrorRefKind, FrameDecision,
+        INTERNAL_ZERO_COLUMN_ID, active_series_extent_requests, checked_column_revision,
         consume_successful_frame, frame_decision, picked_point_json_string,
-        prepare_column_metadata, required_internal_zero_column_len, select_series_extent_job_map,
-        series_extent_key_matches_config, series_extent_mode, series_extent_needs_submission,
-        series_extent_request_from, validate_column_data_len, validate_column_registry_action,
-        validate_public_column_id,
+        prepare_column_metadata, prepare_demo_column_metadata, prepare_demo_declarations,
+        required_internal_zero_column_len, retain_valid_series_extent_jobs,
+        select_series_extent_job_map, series_extent_key_matches_config, series_extent_mode,
+        series_extent_needs_submission, series_extent_request_from, validate_column_data_len,
+        validate_column_registry_action, validate_public_column_id,
     };
     use crate::scalar_job::{SeriesExtentJob, SeriesExtentStatus};
 
@@ -575,6 +745,17 @@ mod tests {
             x_column: "x".to_string(),
             y_column: "y".to_string(),
             render_type,
+        }
+    }
+
+    fn line_series(series_id: &str, x: &str, y: &str) -> SeriesConfig {
+        SeriesConfig {
+            series_id: series_id.to_string(),
+            source_id: None,
+            label: None,
+            x_column: x.to_string(),
+            y_column: y.to_string(),
+            render_type: DataRenderType::Line { line: line_style() },
         }
     }
 
@@ -1161,6 +1342,164 @@ mod tests {
     }
 
     #[test]
+    fn demo_metadata_issues_four_revisions_without_partial_publication() {
+        let columns = HashMap::from([("stable".to_string(), 7), ("demo_x".to_string(), 3)]);
+        let revisions = HashMap::from([("stable".to_string(), 10), ("demo_x".to_string(), 11)]);
+        let original_columns = columns.clone();
+        let original_revisions = revisions.clone();
+        let prepared = prepare_demo_column_metadata(&columns, &revisions, 20, [512; 4]).unwrap();
+
+        assert_eq!(columns, original_columns);
+        assert_eq!(revisions, original_revisions);
+        assert_eq!(prepared.columns.get("stable"), Some(&7));
+        assert_eq!(prepared.revisions.get("stable"), Some(&10));
+        for (index, id) in DEMO_COLUMN_IDS.into_iter().enumerate() {
+            assert_eq!(prepared.columns.get(id), Some(&512));
+            assert_eq!(prepared.revisions.get(id), Some(&(20 + index as u64)));
+        }
+        assert_eq!(prepared.next_revision, 24);
+
+        let error = match prepare_demo_column_metadata(&columns, &revisions, u64::MAX - 3, [512; 4])
+        {
+            Ok(_) => panic!("fourth demo revision must reject overflow"),
+            Err(error) => error,
+        };
+        assert_eq!(error, "column revision counter exhausted");
+        assert_eq!(columns, original_columns);
+        assert_eq!(revisions, original_revisions);
+    }
+
+    #[test]
+    fn demo_declarations_are_complete_and_stable_on_repeat() {
+        let initial_config = renderer::default::default_config();
+        let first =
+            prepare_demo_declarations(&initial_config, &[], &[], renderer::ColorCycle::Classic, 0)
+                .unwrap();
+        assert_eq!(
+            first
+                .series
+                .iter()
+                .map(|item| item.series_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["sine", "rc"]
+        );
+        assert_eq!(
+            first.labels,
+            vec![Some("sin(x)".into()), Some("RC charge".into())]
+        );
+        assert_eq!(first.color_seq, 2);
+        assert_eq!(
+            first.config.chart_title.text.segments,
+            renderer::text::rich_segments_from_text("figgy")
+        );
+        assert_eq!(
+            first.config.bottom_x.title_option.text.segments,
+            renderer::text::rich_segments_from_text("x")
+        );
+        assert_eq!(
+            first.config.left_y.title_option.text.segments,
+            renderer::text::rich_segments_from_text("y")
+        );
+
+        let repeated = prepare_demo_declarations(
+            &first.config,
+            &first.series,
+            &first.labels,
+            renderer::ColorCycle::Classic,
+            first.color_seq,
+        )
+        .unwrap();
+        assert_eq!(repeated.config, first.config);
+        assert_eq!(repeated.series, first.series);
+        assert_eq!(repeated.labels, first.labels);
+        assert_eq!(repeated.color_seq, first.color_seq);
+    }
+
+    #[test]
+    fn demo_extent_preparation_retains_stable_jobs_and_defers_changed_submits() {
+        let stable = line_series("stable", "stable-x", "stable-y");
+        let demo = line_series("demo", "demo_x", "demo_sin");
+        let old_revisions = HashMap::from([
+            ("stable-x".to_string(), 1),
+            ("stable-y".to_string(), 1),
+            ("demo_x".to_string(), 1),
+            ("demo_sin".to_string(), 1),
+        ]);
+        let stable_request = series_extent_request_from(&old_revisions, &stable).unwrap();
+        let old_demo_request = series_extent_request_from(&old_revisions, &demo).unwrap();
+        let stable_job = SeriesExtentJob::pending();
+        let demo_job = SeriesExtentJob::pending();
+        let existing = HashMap::from([
+            (stable_request.key.clone(), Rc::clone(&stable_job)),
+            (old_demo_request.key, demo_job),
+        ]);
+        let mut future_revisions = old_revisions;
+        future_revisions.insert("demo_x".to_string(), 2);
+        future_revisions.insert("demo_sin".to_string(), 2);
+
+        let retained = retain_valid_series_extent_jobs(
+            &[stable.clone(), demo.clone()],
+            &future_revisions,
+            &existing,
+        )
+        .unwrap();
+        assert_eq!(retained.len(), 1);
+        assert!(Rc::ptr_eq(
+            retained.get(&stable_request.key).unwrap(),
+            &stable_job
+        ));
+
+        let requests = active_series_extent_requests(&[stable, demo], &future_revisions).unwrap();
+        let (_lazy_map, pending) =
+            select_series_extent_job_map(requests, &retained, false).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].columns.x, "demo_x");
+        assert_eq!(pending[0].columns.y, "demo_sin");
+    }
+
+    #[test]
+    fn demo_precommit_abort_preserves_every_host_owned_authority() {
+        let config = renderer::default::default_config();
+        let series = vec![line_series("stable", "stable-x", "stable-y")];
+        let columns = HashMap::from([("stable-x".to_string(), 2), ("stable-y".to_string(), 2)]);
+        let revisions = HashMap::from([("stable-x".to_string(), 1), ("stable-y".to_string(), 1)]);
+        let labels = vec![Some("stable".to_string())];
+        let styles = vec![7u32];
+        let color_seq = 1usize;
+        let request = series_extent_request_from(&revisions, &series[0]).unwrap();
+        let job = SeriesExtentJob::pending();
+        let extents = HashMap::from([(request.key, Rc::clone(&job))]);
+
+        let prepared_metadata =
+            prepare_demo_column_metadata(&columns, &revisions, 2, [512; 4]).unwrap();
+        let prepared_declarations = prepare_demo_declarations(
+            &config,
+            &series,
+            &labels,
+            renderer::ColorCycle::Classic,
+            color_seq,
+        )
+        .unwrap();
+        let prepared_extents = retain_valid_series_extent_jobs(
+            &prepared_declarations.series,
+            &prepared_metadata.revisions,
+            &extents,
+        )
+        .unwrap();
+        drop((prepared_metadata, prepared_declarations, prepared_extents));
+
+        assert_eq!(config, renderer::default::default_config());
+        assert_eq!(series, vec![line_series("stable", "stable-x", "stable-y")]);
+        assert_eq!(columns.len(), 2);
+        assert_eq!(revisions.len(), 2);
+        assert_eq!(styles, vec![7]);
+        assert_eq!(labels, vec![Some("stable".to_string())]);
+        assert_eq!(color_seq, 1);
+        assert_eq!(extents.len(), 1);
+        assert!(Rc::ptr_eq(extents.values().next().unwrap(), &job));
+    }
+
+    #[test]
     fn column_registry_actions_fail_closed() {
         assert_eq!(
             validate_column_registry_action(false, ColumnRegistryAction::Register),
@@ -1187,8 +1526,6 @@ mod tests {
             Err("is reserved for internal errorbar rendering")
         );
         assert_eq!(validate_public_column_id("x"), Ok(()));
-        assert!(!column_update_invalidates_fit(INTERNAL_ZERO_COLUMN_ID));
-        assert!(column_update_invalidates_fit("x"));
         assert_eq!(validate_column_data_len(0), Err("data must not be empty"));
         assert_eq!(validate_column_data_len(1), Ok(()));
     }
@@ -1247,15 +1584,9 @@ mod tests {
 mod web {
     use std::{cell::Cell, collections::HashMap, rc::Rc};
 
-    #[cfg(feature = "startup-profile")]
-    use std::cell::RefCell;
-
     use wasm_bindgen::prelude::*;
     use wasm_bindgen_futures::spawn_local;
     use web_sys::HtmlCanvasElement;
-
-    #[cfg(feature = "startup-profile")]
-    use web_sys::Performance;
 
     use renderer::data_config::ErrorRef;
     use renderer::layout::{ChartArea, NudgeResult, Rect};
@@ -1268,16 +1599,15 @@ mod web {
         Series, SeriesConfig, WindowedRenderer,
     };
 
-    #[cfg(feature = "startup-profile")]
-    use renderer::INIT_EVENT_SCHEMA_VERSION;
     use renderer::{InitEvent, InitPhase};
 
     use crate::borrowed_column::{BorrowedCastF32Column, BorrowedF32Column, BorrowedF64Column};
     use crate::scalar_job::{SeriesExtentJob, SeriesFitExtent};
     use crate::{
-        ColumnRegistryAction, FrameDecision, INTERNAL_ZERO_COLUMN_ID, SeriesExtentKey,
-        active_series_extent_requests, column_update_invalidates_fit, consume_successful_frame,
-        frame_decision, prepare_column_metadata, required_internal_zero_column_len,
+        ColumnRegistryAction, FrameDecision, INTERNAL_ZERO_COLUMN_ID, PreparedDemoDeclarations,
+        SeriesExtentKey, active_series_extent_requests, consume_successful_frame, frame_decision,
+        prepare_column_metadata, prepare_demo_column_metadata, prepare_demo_declarations,
+        required_internal_zero_column_len, retain_valid_series_extent_jobs,
         select_series_extent_job_map, series_extent_key_matches_config, validate_column_data_len,
         validate_column_registry_action, validate_public_column_id,
     };
@@ -1288,158 +1618,30 @@ mod web {
         JsValue::from_str(&e.to_string())
     }
 
-    #[cfg(feature = "startup-profile")]
+    #[cfg(test)]
     thread_local! {
-        static NEXT_STARTUP_PROFILE_ID: Cell<u32> = const { Cell::new(1) };
+        static LOAD_DEMO_ABORT_BEFORE_RENDERER_COMMIT: Cell<bool> = const { Cell::new(false) };
+        static SERIES_EXTENT_SUBMIT_COUNT: Cell<u64> = const { Cell::new(0) };
     }
 
-    #[cfg(feature = "startup-profile")]
-    struct StartupProbeResources {
-        _renderer: WindowedRenderer<'static>,
+    #[cfg(test)]
+    fn set_load_demo_abort_before_renderer_commit(enabled: bool) {
+        LOAD_DEMO_ABORT_BEFORE_RENDERER_COMMIT.with(|state| state.set(enabled));
     }
 
-    #[cfg(feature = "startup-profile")]
-    thread_local! {
-        static STARTUP_PROBE_RESOURCES: RefCell<Option<StartupProbeResources>> = const {
-            RefCell::new(None)
-        };
+    #[cfg(test)]
+    fn record_series_extent_submit() {
+        SERIES_EXTENT_SUBMIT_COUNT.with(|count| count.set(count.get().wrapping_add(1)));
     }
 
-    #[cfg(feature = "startup-profile")]
-    struct StartupProfileCollector {
-        profile_id: u32,
-        performance: Option<Performance>,
-        started_at_ms: f64,
-        events: Vec<(InitEvent, f64)>,
+    #[cfg(test)]
+    fn series_extent_submit_count() -> u64 {
+        SERIES_EXTENT_SUBMIT_COUNT.with(Cell::get)
     }
 
-    #[cfg(feature = "startup-profile")]
-    impl StartupProfileCollector {
-        fn new() -> Self {
-            let profile_id = NEXT_STARTUP_PROFILE_ID.with(|next| {
-                let id = next.get();
-                next.set(id.wrapping_add(1).max(1));
-                id
-            });
-            let performance = web_sys::window().and_then(|window| window.performance());
-            let started_at_ms = performance.as_ref().map(Performance::now).unwrap_or(0.0);
-            Self {
-                profile_id,
-                performance,
-                started_at_ms,
-                events: Vec::new(),
-            }
-        }
-
-        fn now(&self) -> f64 {
-            self.performance
-                .as_ref()
-                .map(Performance::now)
-                .unwrap_or(self.started_at_ms)
-        }
-
-        fn record(&mut self, event: InitEvent) {
-            let at_ms = self.now();
-            if let Some(performance) = self.performance.as_ref() {
-                let phase = match event.phase {
-                    InitPhase::Started => "started",
-                    InitPhase::Finished => "finished",
-                };
-                let scope = event
-                    .scope
-                    .replace(|c: char| !c.is_ascii_alphanumeric(), "_");
-                let stage = event
-                    .stage
-                    .replace(|c: char| !c.is_ascii_alphanumeric(), "_");
-                let name = format!(
-                    "figgy.startup.v{}.p{}.{}.{}.{}",
-                    event.schema_version, self.profile_id, scope, stage, phase
-                );
-                let _ = performance.mark(&name);
-            }
-            self.events.push((event, at_ms));
-        }
-
-        fn started(&mut self, scope: &'static str, stage: &'static str) {
-            self.record(InitEvent::new(scope, stage, InitPhase::Started));
-        }
-
-        fn finished(&mut self, scope: &'static str, stage: &'static str) {
-            self.record(InitEvent::new(scope, stage, InitPhase::Finished));
-        }
-
-        fn finish_json(&self, picker_enabled: Option<bool>) -> Result<String, JsValue> {
-            let finished_at_ms = self.now();
-            let mut open = HashMap::<(&'static str, &'static str), Vec<f64>>::new();
-            let mut stages = Vec::new();
-            let events = self
-                .events
-                .iter()
-                .map(|(event, at_ms)| {
-                    let phase = match event.phase {
-                        InitPhase::Started => {
-                            open.entry((event.scope, event.stage))
-                                .or_default()
-                                .push(*at_ms);
-                            "started"
-                        }
-                        InitPhase::Finished => {
-                            if let Some(started_at_ms) =
-                                open.get_mut(&(event.scope, event.stage)).and_then(Vec::pop)
-                            {
-                                stages.push(serde_json::json!({
-                                    "scope": event.scope,
-                                    "stage": event.stage,
-                                    "startedAtMs": started_at_ms,
-                                    "finishedAtMs": at_ms,
-                                    "durationMs": at_ms - started_at_ms,
-                                }));
-                            }
-                            "finished"
-                        }
-                    };
-                    serde_json::json!({
-                        "scope": event.scope,
-                        "stage": event.stage,
-                        "phase": phase,
-                        "atMs": at_ms,
-                    })
-                })
-                .collect::<Vec<_>>();
-            let mut profile = serde_json::json!({
-                "schemaVersion": INIT_EVENT_SCHEMA_VERSION,
-                "profileId": self.profile_id,
-                "clock": "performance.now",
-                "startedAtMs": self.started_at_ms,
-                "finishedAtMs": finished_at_ms,
-                "durationMs": finished_at_ms - self.started_at_ms,
-                "events": events,
-                "stages": stages,
-            });
-            if let Some(picker_enabled) = picker_enabled {
-                profile["pickerEnabled"] = serde_json::Value::Bool(picker_enabled);
-            }
-            serde_json::to_string(&profile).map_err(js_err)
-        }
-    }
-
-    #[cfg(feature = "startup-profile")]
-    async fn create_renderer_for_canvas_observed(
-        canvas: HtmlCanvasElement,
-        observer: &mut dyn FnMut(InitEvent),
-    ) -> Result<(WindowedRenderer<'static>, u32, u32), JsValue> {
-        let (w, h) = (canvas.width().max(1), canvas.height().max(1));
-        let mut renderer = Renderer::for_window_async_observed(
-            wgpu::SurfaceTarget::Canvas(canvas),
-            (w, h),
-            POOL_CAPACITY,
-            observer,
-        )
-        .await
-        .map_err(js_err)?;
-        // Replace-heavy hosts can fragment between remove and the next frame.
-        renderer.set_defrag_policy(DefragPolicy::OnAllocFailure);
-        Ok((renderer, w, h))
+    #[cfg(test)]
+    fn reset_series_extent_submit_count() {
+        SERIES_EXTENT_SUBMIT_COUNT.with(|count| count.set(0));
     }
 
     fn emit_init_progress(on_event: Option<&js_sys::Function>, event: InitEvent) {
@@ -1463,20 +1665,9 @@ mod web {
     ) -> Result<FiggyChart, JsValue> {
         console_error_panic_hook::set_once();
 
-        #[cfg(feature = "startup-profile")]
-        let mut profile = StartupProfileCollector::new();
-
         let (mut renderer, w, h) = {
             let on_event_ref = on_event.as_ref();
-            #[cfg(feature = "startup-profile")]
-            let mut observer = |event| {
-                profile.record(event);
-                emit_init_progress(on_event_ref, event);
-            };
-            #[cfg(not(feature = "startup-profile"))]
-            let mut observer = |event| {
-                emit_init_progress(on_event_ref, event);
-            };
+            let mut observer = |event| emit_init_progress(on_event_ref, event);
             let (w, h) = (canvas.width().max(1), canvas.height().max(1));
             let mut renderer = Renderer::for_window_async_observed(
                 wgpu::SurfaceTarget::Canvas(canvas),
@@ -1490,8 +1681,6 @@ mod web {
             (renderer, w, h)
         };
 
-        #[cfg(feature = "startup-profile")]
-        profile.started("web.create", "chart resources");
         emit_init_progress(
             on_event.as_ref(),
             InitEvent::new("web.create", "chart resources", InitPhase::Started),
@@ -1520,16 +1709,12 @@ mod web {
             )
             .map_err(js_err)?;
 
-        #[cfg(feature = "startup-profile")]
-        profile.finished("web.create", "chart resources");
         emit_init_progress(
             on_event.as_ref(),
             InitEvent::new("web.create", "chart resources", InitPhase::Finished),
         );
         let mut chart = FiggyChart {
             renderer,
-            #[cfg(feature = "startup-profile")]
-            startup_profile: String::new(),
             chart_id,
             view,
             surface_size: (w, h),
@@ -1540,7 +1725,6 @@ mod web {
             column_revisions: HashMap::new(),
             next_column_revision: 1,
             series_extents: HashMap::new(),
-            fit_epoch: Rc::new(Cell::new(0)),
             alive: Rc::new(Cell::new(true)),
             color_seq: 0,
             hitmap: HitMap::standard_chart(),
@@ -1553,96 +1737,16 @@ mod web {
             last_presented_stamp: None,
         };
 
-        #[cfg(feature = "startup-profile")]
-        profile.started("web.create", "first frame");
         emit_init_progress(
             on_event.as_ref(),
             InitEvent::new("web.create", "first frame", InitPhase::Started),
         );
         chart.first_frame_ready().await?;
-        #[cfg(feature = "startup-profile")]
-        profile.finished("web.create", "first frame");
         emit_init_progress(
             on_event.as_ref(),
             InitEvent::new("web.create", "first frame", InitPhase::Finished),
         );
-        #[cfg(feature = "startup-profile")]
-        {
-            chart.startup_profile = profile.finish_json(None)?;
-        }
         Ok(chart)
-    }
-
-    /// Measurement-only renderer startup probe used by the Wave 0 harness.
-    #[cfg(feature = "startup-profile")]
-    #[wasm_bindgen]
-    pub async fn profile_raw_create(
-        canvas: HtmlCanvasElement,
-        picker_enabled: bool,
-        submit_frame: bool,
-    ) -> Result<String, JsValue> {
-        console_error_panic_hook::set_once();
-        let mut profile = StartupProfileCollector::new();
-        let mut observer = |event| profile.record(event);
-        let (mut renderer, w, h) =
-            create_renderer_for_canvas_observed(canvas, &mut observer).await?;
-        if picker_enabled {
-            renderer
-                .enable_gpu_picking_observed_async(&mut observer)
-                .await
-                .map_err(js_err)?;
-        }
-
-        if submit_frame {
-            profile.started("web.profile", "empty frame");
-            let mut config = renderer::default::default_config();
-            config.chart_area = ChartArea(Rect {
-                x: 0,
-                y: 0,
-                width: w,
-                height: h,
-            });
-            let chart_id = renderer
-                .register_chart(config.clone(), Vec::new())
-                .map_err(js_err)?;
-            if picker_enabled {
-                renderer
-                    .prepare_gpu_picking_for_chart(chart_id)
-                    .map_err(js_err)?;
-            }
-            let chart = Chart::new(config);
-            let panel_rect = Rect {
-                x: 0,
-                y: 0,
-                width: w,
-                height: h,
-            };
-            let mut view = renderer
-                .create_chart_view(&chart, panel_rect)
-                .map_err(js_err)?;
-            renderer
-                .refresh_axis_with_selection(&mut view, &chart, panel_rect, &[])
-                .map_err(js_err)?;
-            let series: [Series<'_>; 0] = [];
-            let items = [ChartDrawItem {
-                view: &view,
-                chart_config: chart.config(),
-                series: &series,
-            }];
-            renderer.draw(Color::WHITE, &items).map_err(js_err)?;
-            renderer.wait_submitted_work().await;
-            profile.finished("web.profile", "empty frame");
-        }
-
-        let json = profile.finish_json(Some(picker_enabled))?;
-        if submit_frame {
-            STARTUP_PROBE_RESOURCES.with(|slot| {
-                slot.replace(Some(StartupProbeResources {
-                    _renderer: renderer,
-                }));
-            });
-        }
-        Ok(json)
     }
 
     /// Parameter metadata for one `draw_style` mode — a JSON array of
@@ -1844,8 +1948,6 @@ mod web {
     #[wasm_bindgen]
     pub struct FiggyChart {
         renderer: WindowedRenderer<'static>,
-        #[cfg(feature = "startup-profile")]
-        startup_profile: String,
         chart_id: ChartId,
         view: ChartView,
         /// Current WebGPU surface size in physical canvas pixels. This is a
@@ -1868,8 +1970,6 @@ mod web {
         /// identity includes the normalized primitive mode and every active
         /// role-specific column revision.
         series_extents: HashMap<SeriesExtentKey, Rc<SeriesExtentJob>>,
-        /// Invalidates an async fit if a later data/series/range mutation wins.
-        fit_epoch: Rc<Cell<u64>>,
         alive: Rc<Cell<bool>>,
         /// Monotonic color assignment for newly registered series.
         color_seq: usize,
@@ -1996,11 +2096,6 @@ mod web {
                 .collect();
         }
 
-        /// Invalidate an in-flight fit when a later mutation wins call order.
-        fn bump_fit_epoch(&self) {
-            self.fit_epoch.set(self.fit_epoch.get().wrapping_add(1));
-        }
-
         fn request_host_redraw(&mut self) {
             self.redraw_pending = true;
         }
@@ -2040,7 +2135,11 @@ mod web {
                     .renderer
                     .begin_series_extent(request.key.mode, request.columns.borrowed())
                 {
-                    Ok(ticket) => ticket_jobs.push((ticket, job)),
+                    Ok(ticket) => {
+                        #[cfg(test)]
+                        record_series_extent_submit();
+                        ticket_jobs.push((ticket, job));
+                    }
                     Err(error) => job.complete_terminal_failure(error.to_string()),
                 }
             }
@@ -2133,6 +2232,8 @@ mod web {
                     let ticket = guard
                         .begin_series_extent(request.key.mode, request.columns.borrowed())
                         .map_err(js_err)?;
+                    #[cfg(test)]
+                    record_series_extent_submit();
                     let job = future_series_extents
                         .get(&request.key)
                         .cloned()
@@ -2155,9 +2256,6 @@ mod web {
             self.columns = metadata.columns;
             self.column_revisions = metadata.revisions;
             self.next_column_revision = metadata.next_revision;
-            if column_update_invalidates_fit(id) {
-                self.bump_fit_epoch();
-            }
             self.publish_series_extent_cache(prepared_series_extents);
             Ok(())
         }
@@ -2181,11 +2279,6 @@ mod web {
             self.column_revisions = metadata.revisions;
             self.next_column_revision = metadata.next_revision;
             Ok(())
-        }
-
-        fn upsert_column_f64_as_f32(&mut self, id: &str, data: &[f64]) -> Result<(), JsValue> {
-            let column = BorrowedCastF32Column::new(data);
-            self.upsert_column_atomic(id, data.len(), ColumnUploadSource::Scalar(&column))
         }
 
         fn ensure_columns_exist(&self, cfg: &SeriesConfig) -> Result<(), JsValue> {
@@ -2222,7 +2315,6 @@ mod web {
     impl Drop for FiggyChart {
         fn drop(&mut self) {
             self.alive.set(false);
-            self.bump_fit_epoch();
         }
     }
 
@@ -2244,12 +2336,6 @@ mod web {
             on_event: js_sys::Function,
         ) -> Result<FiggyChart, JsValue> {
             create_chart_kernel(canvas, Some(on_event)).await
-        }
-
-        /// Versioned renderer/picker startup profile as JSON.
-        #[cfg(feature = "startup-profile")]
-        pub fn startup_profile(&self) -> String {
-            self.startup_profile.clone()
         }
 
         /// Register a font (TTF/OTF/TTC bytes) for SSoT `font` family names.
@@ -2415,7 +2501,6 @@ mod web {
             let mut keep_iter = keep.iter();
             self.styles.retain(|_| *keep_iter.next().unwrap());
             self.labels = next_labels;
-            self.bump_fit_epoch();
             self.retire_series_extent_cache();
             Ok(true)
         }
@@ -2530,7 +2615,6 @@ mod web {
             self.styles = next_styles;
             self.labels = next_labels;
             self.color_seq = next_color_seq;
-            self.bump_fit_epoch();
             if let Some(prepared_extents) = prepared_extents {
                 self.publish_series_extent_cache(prepared_extents);
             }
@@ -2599,7 +2683,6 @@ mod web {
             self.replace_chart_state(config, series)?;
             self.styles.remove(i);
             self.labels.remove(i);
-            self.bump_fit_epoch();
             self.retire_series_extent_cache();
             Ok(true)
         }
@@ -2611,7 +2694,6 @@ mod web {
                 .auto_fit_x(self.renderer.pool(), column, padding)
                 .map_err(js_err)?;
             self.replace_chart_config(chart.config().clone())?;
-            self.bump_fit_epoch();
             Ok(())
         }
 
@@ -2621,7 +2703,6 @@ mod web {
                 .auto_fit_y(self.renderer.pool(), column, padding)
                 .map_err(js_err)?;
             self.replace_chart_config(chart.config().clone())?;
-            self.bump_fit_epoch();
             Ok(())
         }
 
@@ -2760,7 +2841,6 @@ mod web {
                 new_styles.push(self.renderer.create_style_for_series_scaled(cfg, scale));
             }
             self.replace_chart_config(new_cfg)?;
-            self.bump_fit_epoch();
             if legend_content_changed {
                 self.legend_auto_managed = false;
             }
@@ -2836,7 +2916,6 @@ mod web {
             self.labels = new_labels;
             self.styles = new_styles;
             self.color_seq = new_len.max(self.color_seq);
-            self.bump_fit_epoch();
             let extent_series = self.chart_series().to_vec();
             let extent_revisions = self.column_revisions.clone();
             self.publish_series_extents_if_engine_ready(&extent_series, &extent_revisions, false)?;
@@ -2870,6 +2949,22 @@ mod web {
                 .map(|el| el.element_id())
         }
 
+        async fn prepare_gpu_picking(&mut self) -> Result<(), JsValue> {
+            self.renderer
+                .enable_gpu_picking_async()
+                .await
+                .map_err(js_err)?;
+            self.renderer
+                .prepare_gpu_picking_for_chart(self.chart_id)
+                .map_err(js_err)
+        }
+
+        /// Compile the exact GPU picker and prepare it for the current chart.
+        /// Repeated calls, including retries, reuse renderer-owned state.
+        pub async fn prewarm_gpu_picking(&mut self) -> Result<(), JsValue> {
+            self.prepare_gpu_picking().await
+        }
+
         /// Pick the nearest visible data primitive to canvas pixel `(x, y)`.
         /// Scatter hits use the visible marker size, including per-point style
         /// mapping; line strokes snap to the nearest endpoint data point on
@@ -2885,13 +2980,7 @@ mod web {
             y: f32,
             max_distance_px: f32,
         ) -> Result<JsValue, JsValue> {
-            self.renderer
-                .enable_gpu_picking_async()
-                .await
-                .map_err(js_err)?;
-            self.renderer
-                .prepare_gpu_picking_for_chart(self.chart_id)
-                .map_err(js_err)?;
+            self.prepare_gpu_picking().await?;
             let ticket = self
                 .renderer
                 .pick_chart_at(self.chart_id, [x, y], max_distance_px)
@@ -2962,19 +3051,18 @@ mod web {
             let (dx, dy) = self.display_delta_to_document(dx, dy);
             let mut config = self.chart_config().clone();
             if let Some(handle) = self.resizing {
-                if let Some(rz) = self.hitmap.get(id).and_then(|el| el.as_resizable()) {
-                    if rz.resize_by(&mut config, handle, dx, dy) == NudgeResult::Moved {
-                        self.replace_chart_config(config)?;
-                    }
+                if let Some(rz) = self.hitmap.get(id).and_then(|el| el.as_resizable())
+                    && rz.resize_by(&mut config, handle, dx, dy) == NudgeResult::Moved
+                {
+                    self.replace_chart_config(config)?;
                 }
                 return Ok(());
             }
             if self.dragging
                 && let Some(drag) = self.hitmap.get(id).and_then(|el| el.as_draggable())
+                && drag.drag_by(&mut config, dx, dy) == NudgeResult::Moved
             {
-                if drag.drag_by(&mut config, dx, dy) == NudgeResult::Moved {
-                    self.replace_chart_config(config)?;
-                }
+                self.replace_chart_config(config)?;
             }
             Ok(())
         }
@@ -3000,7 +3088,7 @@ mod web {
         /// Compile the exact-extent compute engine without drawing. On wasm
         /// this uses `createComputePipelineAsync`. Series registration does
         /// not do this; `auto_fit_all` does.
-        pub async fn ensure_extent_engine(&self) -> Result<(), JsValue> {
+        pub async fn ensure_extent_engine(&mut self) -> Result<(), JsValue> {
             self.renderer
                 .ensure_errorbar_extent_engine()
                 .await
@@ -3173,18 +3261,329 @@ mod web {
             let (xs, ys) = renderer::demo::sine_data(512);
             let (ts, vs) = renderer::demo::rc_data(512);
 
-            self.upsert_column_f64_as_f32("demo_x", &xs)?;
-            self.upsert_column_f64_as_f32("demo_sin", &ys)?;
-            self.upsert_column_f64_as_f32("demo_t", &ts)?;
-            self.upsert_column_f64_as_f32("demo_rc", &vs)?;
-            self.add_line_series("sine", "demo_x", "demo_sin", 2.0, "sin(x)")?;
-            self.add_line_series("rc", "demo_t", "demo_rc", 2.0, "RC charge")?;
-            self.auto_fit_x("demo_x", 0.02)?;
-            self.auto_fit_y("demo_sin", 0.10)?;
-            self.set_title("figgy")?;
-            self.set_x_title("x")?;
-            self.set_y_title("y")?;
+            let demo_x = BorrowedCastF32Column::new(&xs);
+            let demo_sin = BorrowedCastF32Column::new(&ys);
+            let demo_t = BorrowedCastF32Column::new(&ts);
+            let demo_rc = BorrowedCastF32Column::new(&vs);
+            let metadata = prepare_demo_column_metadata(
+                &self.columns,
+                &self.column_revisions,
+                self.next_column_revision,
+                [xs.len(), ys.len(), ts.len(), vs.len()],
+            )
+            .map_err(js_err)?;
+            let declarations = prepare_demo_declarations(
+                self.chart_config(),
+                self.chart_series(),
+                &self.labels,
+                self.cycle,
+                self.color_seq,
+            )
+            .map_err(js_err)?;
+            for item in &declarations.series {
+                for id in referenced_columns(item) {
+                    validate_public_column_id(id)
+                        .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
+                    if !metadata.columns.contains_key(id) {
+                        return Err(js_err(format!(
+                            "series '{}' references unregistered column '{id}'",
+                            item.series_id
+                        )));
+                    }
+                }
+            }
+            let (scale, _) = self.display_scale_and_panel();
+            let mut styles = Vec::new();
+            styles
+                .try_reserve(declarations.series.len())
+                .map_err(js_err)?;
+            for item in &declarations.series {
+                styles.push(self.renderer.create_style_for_series_scaled(item, scale));
+            }
+            let retained_extents = retain_valid_series_extent_jobs(
+                &declarations.series,
+                &metadata.revisions,
+                &self.series_extents,
+            )
+            .map_err(js_err)?;
+            let PreparedDemoDeclarations {
+                config,
+                series,
+                labels,
+                color_seq,
+            } = declarations;
+            let guard = self
+                .renderer
+                .begin_load_demo(
+                    self.chart_id,
+                    &demo_x,
+                    &demo_sin,
+                    &demo_t,
+                    &demo_rc,
+                    move |pool| {
+                        let mut chart = Chart::new(config);
+                        chart.auto_fit_x(pool, "demo_x", 0.02)?;
+                        chart.auto_fit_y(pool, "demo_sin", 0.10)?;
+                        Ok((chart.config().clone(), series))
+                    },
+                )
+                .map_err(js_err)?;
+
+            #[cfg(test)]
+            if LOAD_DEMO_ABORT_BEFORE_RENDERER_COMMIT.with(Cell::get) {
+                return Err(js_err("injected load_demo abort before renderer commit"));
+            }
+
+            guard.commit();
+            self.columns = metadata.columns;
+            self.column_revisions = metadata.revisions;
+            self.next_column_revision = metadata.next_revision;
+            self.styles = styles;
+            self.labels = labels;
+            self.color_seq = color_seq;
+            self.series_extents = retained_extents;
             Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::{
+            collections::HashMap,
+            hash::{Hash, Hasher},
+        };
+
+        use wasm_bindgen::JsCast;
+        use wasm_bindgen_test::*;
+
+        use super::*;
+        use crate::scalar_job::SeriesExtentStatus;
+
+        wasm_bindgen_test_configure!(run_in_browser);
+
+        #[derive(Debug, PartialEq)]
+        struct PoolAuthority {
+            buffer: u64,
+            capacity: u64,
+            generation: u32,
+            used_bytes: u64,
+            free_bytes: u64,
+            slots: Vec<(String, u64, u64, usize, u32, u64, u64, Option<u64>)>,
+        }
+
+        #[derive(Debug, PartialEq)]
+        struct FiggyAuthority {
+            config: renderer::Config,
+            series: Vec<SeriesConfig>,
+            columns: HashMap<String, usize>,
+            column_revisions: HashMap<String, u64>,
+            next_column_revision: u64,
+            styles: (usize, usize, usize),
+            labels: Vec<Option<String>>,
+            legend_auto_managed: bool,
+            color_seq: usize,
+            series_extents: HashMap<SeriesExtentKey, (usize, SeriesExtentStatus)>,
+            chart_stamp: ChartRenderStamp,
+            visual_revision: renderer::RenderRevision,
+            picker_visible_selection: Option<HitId>,
+            pending_maintenance: bool,
+            pool: PoolAuthority,
+        }
+
+        fn canvas() -> HtmlCanvasElement {
+            let document = web_sys::window()
+                .expect("window")
+                .document()
+                .expect("document");
+            let canvas = document
+                .create_element("canvas")
+                .expect("canvas element")
+                .dyn_into::<HtmlCanvasElement>()
+                .expect("HtmlCanvasElement");
+            canvas.set_width(800);
+            canvas.set_height(500);
+            canvas
+        }
+
+        fn buffer_identity(buffer: &wgpu::Buffer) -> u64 {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            buffer.hash(&mut hasher);
+            hasher.finish()
+        }
+
+        fn snapshot(chart: &FiggyChart) -> FiggyAuthority {
+            let pool = chart.renderer.pool();
+            let mut ids = chart.columns.keys().cloned().collect::<Vec<_>>();
+            if pool.slot(INTERNAL_ZERO_COLUMN_ID).is_some() {
+                ids.push(INTERNAL_ZERO_COLUMN_ID.to_string());
+            }
+            ids.sort();
+            ids.dedup();
+            let slots = ids
+                .into_iter()
+                .map(|id| {
+                    let slot = pool
+                        .slot(&id)
+                        .expect("host registry and renderer pool stay synchronized");
+                    (
+                        id,
+                        slot.offset,
+                        slot.byte_size,
+                        slot.len_values,
+                        slot.generation,
+                        slot.min.to_bits(),
+                        slot.max.to_bits(),
+                        slot.min_positive.map(f64::to_bits),
+                    )
+                })
+                .collect();
+            let series_extents = chart
+                .series_extents
+                .iter()
+                .map(|(key, job)| (key.clone(), (Rc::as_ptr(job) as usize, job.status())))
+                .collect();
+
+            FiggyAuthority {
+                config: chart.chart_config().clone(),
+                series: chart.chart_series().to_vec(),
+                columns: chart.columns.clone(),
+                column_revisions: chart.column_revisions.clone(),
+                next_column_revision: chart.next_column_revision,
+                styles: (
+                    chart.styles.as_ptr() as usize,
+                    chart.styles.len(),
+                    chart.styles.capacity(),
+                ),
+                labels: chart.labels.clone(),
+                legend_auto_managed: chart.legend_auto_managed,
+                color_seq: chart.color_seq,
+                series_extents,
+                chart_stamp: chart.renderer.chart_render_stamp(chart.chart_id).unwrap(),
+                visual_revision: chart.renderer.visual_revision(),
+                picker_visible_selection: chart.renderer.chart_selection(chart.chart_id).unwrap(),
+                pending_maintenance: chart.renderer.has_pending_maintenance(),
+                pool: PoolAuthority {
+                    buffer: buffer_identity(pool.buffer()),
+                    capacity: pool.capacity(),
+                    generation: pool.generation(),
+                    used_bytes: pool.used_bytes(),
+                    free_bytes: pool.free_bytes(),
+                    slots,
+                },
+            }
+        }
+
+        async fn chart_with_stable_extent() -> FiggyChart {
+            let mut chart = FiggyChart::create(canvas()).await.expect("create chart");
+            chart
+                .register_column_f64("stable-x", &[0.0, 1.0, 2.0])
+                .unwrap();
+            chart
+                .register_column_f64("stable-y", &[2.0, 3.0, 4.0])
+                .unwrap();
+            chart
+                .add_line_series("stable", "stable-x", "stable-y", 2.0, "stable")
+                .unwrap();
+            chart.ensure_extent_engine().await.unwrap();
+            chart.auto_fit_all(0.0).await.unwrap();
+            chart
+        }
+
+        #[wasm_bindgen_test(async)]
+        async fn real_load_demo_late_abort_preserves_every_authority_then_retries() {
+            set_load_demo_abort_before_renderer_commit(false);
+            reset_series_extent_submit_count();
+            let mut chart = chart_with_stable_extent().await;
+            chart.renderer.enable_gpu_picking_async().await.unwrap();
+            chart
+                .renderer
+                .prepare_gpu_picking_for_chart(chart.chart_id)
+                .unwrap();
+            let before = snapshot(&chart);
+
+            set_load_demo_abort_before_renderer_commit(true);
+            let error = chart
+                .load_demo()
+                .expect_err("test hook must abort load_demo");
+            set_load_demo_abort_before_renderer_commit(false);
+            assert_eq!(
+                error.as_string().as_deref(),
+                Some("injected load_demo abort before renderer commit")
+            );
+            assert_eq!(snapshot(&chart), before);
+
+            chart.load_demo().expect("retry must commit");
+            for id in crate::DEMO_COLUMN_IDS {
+                assert_eq!(chart.columns.get(id), Some(&512));
+                assert!(chart.renderer.pool().slot(id).is_some());
+            }
+            assert!(
+                chart
+                    .chart_series()
+                    .iter()
+                    .any(|series| series.series_id == "sine")
+            );
+            assert!(
+                chart
+                    .chart_series()
+                    .iter()
+                    .any(|series| series.series_id == "rc")
+            );
+        }
+
+        #[wasm_bindgen_test(async)]
+        async fn load_demo_defers_real_extent_submits_and_lazy_fit_retains_stable_job() {
+            set_load_demo_abort_before_renderer_commit(false);
+            reset_series_extent_submit_count();
+            let mut chart = chart_with_stable_extent().await;
+            assert_eq!(series_extent_submit_count(), 1);
+
+            let stable_key = crate::series_extent_request_from(
+                &chart.column_revisions,
+                &chart.chart_series()[0],
+            )
+            .unwrap()
+            .key;
+            let stable_job = Rc::clone(chart.series_extents.get(&stable_key).unwrap());
+            let before_load_demo = series_extent_submit_count();
+
+            chart.load_demo().unwrap();
+            assert_eq!(series_extent_submit_count(), before_load_demo);
+            assert!(Rc::ptr_eq(
+                chart.series_extents.get(&stable_key).unwrap(),
+                &stable_job
+            ));
+
+            let demo_keys = chart
+                .chart_series()
+                .iter()
+                .filter(|series| series.series_id == "sine" || series.series_id == "rc")
+                .map(|series| {
+                    crate::series_extent_request_from(&chart.column_revisions, series)
+                        .unwrap()
+                        .key
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(demo_keys.len(), 2);
+            assert!(
+                demo_keys
+                    .iter()
+                    .all(|key| !chart.series_extents.contains_key(key))
+            );
+
+            let before_lazy_fit = series_extent_submit_count();
+            chart.auto_fit_all(0.0).await.unwrap();
+            assert_eq!(series_extent_submit_count(), before_lazy_fit + 2);
+            assert!(Rc::ptr_eq(
+                chart.series_extents.get(&stable_key).unwrap(),
+                &stable_job
+            ));
+            for key in demo_keys {
+                assert_eq!(
+                    chart.series_extents.get(&key).unwrap().status(),
+                    SeriesExtentStatus::Succeeded
+                );
+            }
         }
     }
 }

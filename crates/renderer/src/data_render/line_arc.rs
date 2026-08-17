@@ -343,6 +343,9 @@ impl ArcScratch {
     /// `star_data_bgl`: pass the renderer's star-data layout to also build
     /// the constellation star pass (indirect args + the VS bind group);
     /// `None` for styles without it.
+    // Prepared frames share this buffer with the cache; Arc::strong_count
+    // drives the copy-on-write guard. WebGPU confines the handle on wasm.
+    #[cfg_attr(target_arch = "wasm32", allow(clippy::arc_with_non_send_sync))]
     #[allow(clippy::too_many_arguments)]
     pub fn build(
         device: &wgpu::Device,
@@ -655,13 +658,13 @@ impl ArcScratch {
         // kernel's `dst[start+len-1]` reads the full-polyline total; the
         // kernel touches the arc buffer only through that already-tracked
         // binding (no aliased rebind).
-        if let (Some(star), Some(_)) = (self.star.as_ref(), star_pitch_px) {
-            if let Some(last_chunk) = self.chunks.last() {
-                pass.set_pipeline(&pipelines.star_indirect);
-                pass.set_bind_group(1, &last_chunk.bg_arc, &[]);
-                pass.set_bind_group(2, &star.kernel_bg, &[]);
-                pass.dispatch_workgroups(1, 1, 1);
-            }
+        if let (Some(star), Some(_)) = (self.star.as_ref(), star_pitch_px)
+            && let Some(last_chunk) = self.chunks.last()
+        {
+            pass.set_pipeline(&pipelines.star_indirect);
+            pass.set_bind_group(1, &last_chunk.bg_arc, &[]);
+            pass.set_bind_group(2, &star.kernel_bg, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
         }
     }
 }

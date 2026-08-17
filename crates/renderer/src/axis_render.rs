@@ -8,7 +8,10 @@ use crate::raster::{Canvas, Paint};
 use crate::color::Color;
 use crate::config::{AxisOptions, AxisScale, Config, LabelStyle, TickVisibility};
 use crate::format::LabelFormat;
-use crate::layout::{DataArea, Side};
+use crate::layout::{
+    DataArea, Side, TitlePlacement, axis_anchor, axis_offset, axis_title_placement,
+    chart_title_placement, label_origin, legend_rect,
+};
 use crate::line::LineStylePreset;
 use crate::select::SelectionBox;
 use crate::sketch::DecoStroker;
@@ -97,10 +100,10 @@ pub fn try_raster_chart_layer_to_rgba_with_selection(
     }
     // Milkyway: the axis chrome reads as line-light — bloom it. Runs
     // BEFORE the selection overlay so interaction chrome stays crisp.
-    if let crate::config::DrawStyle::Milkyway(c) = &config.draw_style {
-        if matches!(layer, AxisLayerKind::Decoration | AxisLayerKind::All) {
-            apply_decoration_glow(&mut canvas, c.glow);
-        }
+    if let crate::config::DrawStyle::Milkyway(c) = &config.draw_style
+        && matches!(layer, AxisLayerKind::Decoration | AxisLayerKind::All)
+    {
+        apply_decoration_glow(&mut canvas, c.glow);
     }
     if !selection.is_empty() && matches!(layer, AxisLayerKind::Decoration | AxisLayerKind::All) {
         let ox = config.chart_area.0.x as f32;
@@ -440,7 +443,7 @@ pub fn draw_decoration_layer(canvas: &mut Canvas, config: &Config) {
     let Ok(da) = config.data_area() else { return };
 
     // The decoration stroke strategy is derived once per layer entry and
-    // threaded down (STYLE_REGISTRY §4): `Precise` keeps every draw below on
+    // threaded down: `Precise` keeps every draw below on
     // the plain pre-stroker canvas calls. The font policy is its text twin —
     // sketch mode forces the bundled handwritten face (with per-character
     // fallback for glyphs it lacks), threaded through every measure + draw so
@@ -488,39 +491,17 @@ fn draw_legend(
     stroker: &DecoStroker,
     fp: FontPolicy,
 ) {
-    use crate::config::LegendCorner;
-
     let lg = &config.legend;
     if !lg.visible || lg.content.segments.is_empty() {
         return;
     }
 
     let m = measure_rich_text(&lg.content, fp);
-    let box_w = m.width + lg.padding * 2.0;
-    let box_h = m.height() + lg.padding * 2.0;
-
-    // Corner position — inset from the data_area inner corner, then the
-    // user's drag offset on top.
-    let inset = 6.0;
-    let (box_x, box_y) = match lg.corner {
-        LegendCorner::TopLeft => (da.x as f32 + inset, da.y as f32 + inset),
-        LegendCorner::TopRight => (
-            (da.x + da.width) as f32 - box_w - inset,
-            da.y as f32 + inset,
-        ),
-        LegendCorner::BottomLeft => (
-            da.x as f32 + inset,
-            (da.y + da.height) as f32 - box_h - inset,
-        ),
-        LegendCorner::BottomRight => (
-            (da.x + da.width) as f32 - box_w - inset,
-            (da.y + da.height) as f32 - box_h - inset,
-        ),
-    };
-    let (box_x, box_y) = (box_x + lg.offset_x, box_y + lg.offset_y);
+    let rect = legend_rect(da, lg.corner, lg.padding, (lg.offset_x, lg.offset_y), m);
+    let (box_x, box_y, box_w, box_h) = (rect.x, rect.y, rect.width, rect.height);
 
     // Box background + border. The sketch stroker wobbles only the border
-    // outline; the fill stays a precise rect (§5a) — perturbing the fill too
+    // outline; the fill stays a precise rect — perturbing the fill too
     // would visibly disagree with the independently wobbled border.
     canvas.draw_rect(box_x, box_y, box_w, box_h, &Paint::fill(&lg.bg_color));
     let border = Paint::stroke(&lg.border_color, 1.0);
@@ -535,7 +516,7 @@ fn draw_legend(
     );
 }
 
-// Decoration stroke plumbing — STYLE_REGISTRY §4.
+// Decoration stroke plumbing.
 //
 // Each layer entry (`draw_grid` / `draw_decoration_layer`) derives one
 // [`DecoStroker`] from `config.draw_style` and threads it down by reference.
@@ -628,17 +609,14 @@ fn draw_axis(
     // Detached-axis offset: shift the whole axis chrome (line + ticks +
     // labels) perpendicular to the axis. The data area and grid stay put;
     // tick positions along the axis are unaffected.
-    let (off_x, off_y) = match side {
-        Side::Left | Side::Right => (axis.line_offset, 0.0),
-        Side::Top | Side::Bottom => (0.0, axis.line_offset),
-    };
+    let (off_x, off_y) = axis_offset(side.clone(), axis.line_offset);
     let detached = off_x != 0.0 || off_y != 0.0;
     if detached {
         canvas.save();
         canvas.translate(off_x, off_y);
     }
 
-    let (p0, p1) = axis_endpoints(side.clone(), da);
+    let (p0, p1) = axis_anchor(side.clone(), da);
 
     // 1) Axis line.
     if axis.line_visible {
@@ -721,29 +699,6 @@ fn draw_axis(
 
     if detached {
         canvas.restore();
-    }
-}
-
-// Axis-line / tick-position helpers.
-
-fn axis_endpoints(side: Side, da: &DataArea) -> ((f32, f32), (f32, f32)) {
-    // For a 1px AA stroke to land on a single row/column at full alpha, its
-    // coordinate must be a pixel center (integer + 0.5). Integer coordinates
-    // would split the line over two rows at 50% alpha each, blending the
-    // edge with the data drawn underneath and giving the four sides
-    // different apparent colors.
-    //
-    // top/left: center of the first inside pixel of the data area.
-    // bottom/right: center of the last inside pixel.
-    let x0 = da.x as f32 + 0.5;
-    let y0 = da.y as f32 + 0.5;
-    let x1 = (da.x + da.width) as f32 - 0.5;
-    let y1 = (da.y + da.height) as f32 - 0.5;
-    match side {
-        Side::Top => ((x0, y0), (x1, y0)),
-        Side::Bottom => ((x0, y1), (x1, y1)),
-        Side::Left => ((x0, y0), (x0, y1)),
-        Side::Right => ((x1, y0), (x1, y1)),
     }
 }
 
@@ -1147,29 +1102,13 @@ fn plain_tick_label_interval(
 ) -> (f32, f32) {
     let ls: &LabelStyle = &axis.label_style;
     let m = measure_plain_text(text, &ls.label_font, ls.font_size, false, false, fp);
-    let outward = axis.major_tick_length;
-
-    let (base_x, base_y) = match side {
-        Side::Top => (
-            tick_pos.0 - m.width * 0.5,
-            tick_pos.1 - outward - LABEL_GAP - m.descent,
-        ),
-        Side::Bottom => (
-            tick_pos.0 - m.width * 0.5,
-            tick_pos.1 + outward + LABEL_GAP + m.ascent,
-        ),
-        Side::Left => (
-            tick_pos.0 - outward - LABEL_GAP - m.width,
-            tick_pos.1 + (m.ascent - m.descent) * 0.5,
-        ),
-        Side::Right => (
-            tick_pos.0 + outward + LABEL_GAP,
-            tick_pos.1 + (m.ascent - m.descent) * 0.5,
-        ),
-    };
-
-    let origin_x = base_x + ls.label_offset_x;
-    let origin_y = base_y + ls.label_offset_y;
+    let (origin_x, origin_y) = label_origin(
+        side.clone(),
+        tick_pos,
+        axis.major_tick_length,
+        (ls.label_offset_x, ls.label_offset_y),
+        m,
+    );
     match side {
         Side::Top | Side::Bottom => (origin_x, origin_x + m.width),
         Side::Left | Side::Right => (origin_y - m.ascent, origin_y + m.descent),
@@ -1246,10 +1185,6 @@ fn format_tick_power(value: f64, sig_digits: u8, ls: &LabelStyle) -> RichText {
     style_from(segs)
 }
 
-/// Minimum gap (px) between the end of a tick and its label, applied on top
-/// of any user-provided `label_offset_{x,y}`.
-const LABEL_GAP: f32 = 4.0;
-
 fn draw_tick_label(
     canvas: &mut Canvas,
     text: &str,
@@ -1261,33 +1196,13 @@ fn draw_tick_label(
     let ls: &LabelStyle = &axis.label_style;
     let m = measure_plain_text(text, &ls.label_font, ls.font_size, false, false, fp);
 
-    // The label's natural anchor sits one tick-length outward (plus a gap).
-    // `label_offset_{x,y}` is added on top in screen coordinates.
-    let outward = axis.major_tick_length;
-
-    // Pre-offset baseline anchor.
-    let (base_x, base_y) = match side {
-        Side::Top => (
-            tick_pos.0 - m.width * 0.5,
-            tick_pos.1 - outward - LABEL_GAP - m.descent,
-        ),
-        Side::Bottom => (
-            tick_pos.0 - m.width * 0.5,
-            tick_pos.1 + outward + LABEL_GAP + m.ascent,
-        ),
-        Side::Left => (
-            tick_pos.0 - outward - LABEL_GAP - m.width,
-            tick_pos.1 + (m.ascent - m.descent) * 0.5,
-        ),
-        Side::Right => (
-            tick_pos.0 + outward + LABEL_GAP,
-            tick_pos.1 + (m.ascent - m.descent) * 0.5,
-        ),
-    };
-
-    // label_offset is a screen-space translation (same convention for all sides).
-    let origin_x = base_x + ls.label_offset_x;
-    let origin_y = base_y + ls.label_offset_y;
+    let (origin_x, origin_y) = label_origin(
+        side,
+        tick_pos,
+        axis.major_tick_length,
+        (ls.label_offset_x, ls.label_offset_y),
+        m,
+    );
 
     draw_plain_text(
         canvas,
@@ -1313,29 +1228,14 @@ fn draw_tick_label_rich(
     fp: FontPolicy,
 ) {
     let m = measure_rich_text(rt, fp);
-    let outward = axis.major_tick_length;
-
-    let (base_x, base_y) = match side {
-        Side::Top => (
-            tick_pos.0 - m.width * 0.5,
-            tick_pos.1 - outward - LABEL_GAP - m.descent,
-        ),
-        Side::Bottom => (
-            tick_pos.0 - m.width * 0.5,
-            tick_pos.1 + outward + LABEL_GAP + m.ascent,
-        ),
-        Side::Left => (
-            tick_pos.0 - outward - LABEL_GAP - m.width,
-            tick_pos.1 + (m.ascent - m.descent) * 0.5,
-        ),
-        Side::Right => (
-            tick_pos.0 + outward + LABEL_GAP,
-            tick_pos.1 + (m.ascent - m.descent) * 0.5,
-        ),
-    };
-
     let ls = &axis.label_style;
-    let origin = (base_x + ls.label_offset_x, base_y + ls.label_offset_y);
+    let origin = label_origin(
+        side,
+        tick_pos,
+        axis.major_tick_length,
+        (ls.label_offset_x, ls.label_offset_y),
+        m,
+    );
 
     draw_rich_text(canvas, rt, origin, fp);
 }
@@ -1361,75 +1261,36 @@ fn draw_axis_title(
     }
 
     let m = measure_rich_text(&to.text, fp);
-    let ca = &config.chart_area;
-
-    match side {
-        // Horizontal text (Top/Bottom): centered horizontally, vertically
-        // centered within the band.
-        Side::Top => {
-            let band_top = ca.y as f32 + config.chart_title.top_margin;
-            let baseline = band_top + (axis.out_margin - m.height()) * 0.5 + m.ascent;
-            let x = da.x as f32 + da.width as f32 * 0.5 - m.width * 0.5;
-            draw_rich_text(
-                canvas,
-                &to.text,
-                (x + to.offset_x, baseline + to.offset_y),
-                fp,
-            );
-        }
-        Side::Bottom => {
-            let band_top = (ca.y + ca.height) as f32 - axis.out_margin;
-            let baseline = band_top + (axis.out_margin - m.height()) * 0.5 + m.ascent;
-            let x = da.x as f32 + da.width as f32 * 0.5 - m.width * 0.5;
-            draw_rich_text(
-                canvas,
-                &to.text,
-                (x + to.offset_x, baseline + to.offset_y),
-                fp,
-            );
-        }
-        // Vertical text: Left (-90° CCW), Right (+90° CW).
-        // Rotate around the band center and center the text on that point.
-        Side::Left => {
-            let center_x = ca.x as f32 + axis.out_margin * 0.5;
-            let center_y = da.y as f32 + da.height as f32 * 0.5;
-            draw_rotated_centered(canvas, &to.text, (center_x, center_y), -90.0, to, &m, fp);
-        }
-        Side::Right => {
-            let center_x = (ca.x + ca.width) as f32 - axis.out_margin * 0.5;
-            let center_y = da.y as f32 + da.height as f32 * 0.5;
-            draw_rotated_centered(canvas, &to.text, (center_x, center_y), 90.0, to, &m, fp);
-        }
-    }
+    let placement = axis_title_placement(
+        side,
+        &config.chart_area,
+        da,
+        config.chart_title.top_margin,
+        axis.out_margin,
+        (to.offset_x, to.offset_y),
+        m,
+    );
+    draw_placed_title(canvas, &to.text, placement, fp);
 }
 
-// Rotate text by `degrees` around `(cx, cy)` and center it on that point.
-// `to.offset_{x,y}` is applied in the pre-rotation local frame (so it stays
-// aligned with the text direction after the rotation).
-#[allow(clippy::too_many_arguments)]
-fn draw_rotated_centered(
+fn draw_placed_title(
     canvas: &mut Canvas,
     rt: &crate::text::RichText,
-    center: (f32, f32),
-    degrees: f32,
-    to: &crate::config::AxisTitleOptions,
-    m: &crate::text_render::TextMetrics,
+    placement: TitlePlacement,
     fp: FontPolicy,
 ) {
-    let (cx, cy) = center;
-    canvas.save();
-    canvas.rotate_at(degrees, cx, cy);
-
-    // After the rotate, place the text centered on (cx, cy) in the pre-rotation frame.
-    let text_x = cx - m.width * 0.5;
-    let text_baseline = cy + (m.ascent - m.descent) * 0.5;
-    draw_rich_text(
-        canvas,
-        rt,
-        (text_x + to.offset_x, text_baseline + to.offset_y),
-        fp,
-    );
-    canvas.restore();
+    if placement.rotation_degrees == 0.0 {
+        draw_rich_text(canvas, rt, placement.origin, fp);
+    } else {
+        canvas.save();
+        canvas.rotate_at(
+            placement.rotation_degrees,
+            placement.rotation_center.0,
+            placement.rotation_center.1,
+        );
+        draw_rich_text(canvas, rt, placement.origin, fp);
+        canvas.restore();
+    }
 }
 
 // Chart title (RichText).
@@ -1437,16 +1298,13 @@ fn draw_rotated_centered(
 fn draw_chart_title(canvas: &mut Canvas, config: &Config, fp: FontPolicy) {
     let ct = &config.chart_title;
     let m = measure_rich_text(&ct.text, fp);
-    let ca = &config.chart_area;
-
-    // Vertically centered inside the top_margin band.
-    let baseline = ca.y as f32 + (ct.top_margin - m.height()) * 0.5 + m.ascent;
-    let x = ca.x as f32 + ca.width as f32 * 0.5 - m.width * 0.5;
-
-    let origin_x = x + ct.offset_x;
-    let origin_y = baseline + ct.offset_y;
-
-    draw_rich_text(canvas, &ct.text, (origin_x, origin_y), fp);
+    let placement = chart_title_placement(
+        &config.chart_area,
+        ct.top_margin,
+        (ct.offset_x, ct.offset_y),
+        m,
+    );
+    draw_placed_title(canvas, &ct.text, placement, fp);
 }
 
 // Skia Paint helpers.
@@ -1735,7 +1593,7 @@ mod tests {
         }
     }
 
-    /// (§2) The selection overlay never wobbles. The box is placed mid data
+    /// The selection overlay never wobbles. The box is placed mid data
     /// area, over pixels that are fully transparent in both modes (deco ink
     /// hugs the data-area border, the legend sits top-right), so its rendered
     /// pixels — footprint AND values — must be byte-identical whether sketch
@@ -1772,8 +1630,12 @@ mod tests {
 
         let layer = AxisLayerKind::Decoration;
         let base_p = try_raster_chart_layer_to_rgba(&precise, layer).unwrap();
-        let with_p =
-            try_raster_chart_layer_to_rgba_with_selection(&precise, layer, &[sel.clone()]).unwrap();
+        let with_p = try_raster_chart_layer_to_rgba_with_selection(
+            &precise,
+            layer,
+            std::slice::from_ref(&sel),
+        )
+        .unwrap();
         let base_s = try_raster_chart_layer_to_rgba(&sketched, layer).unwrap();
         let with_s =
             try_raster_chart_layer_to_rgba_with_selection(&sketched, layer, &[sel]).unwrap();

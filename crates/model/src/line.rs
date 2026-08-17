@@ -56,11 +56,24 @@ mod tests {
         assert!(LineStylePreset::Solid.pattern().is_empty());
     }
 
-    /// The longest presets stay within the GPU dash capacity of 8 scalars
-    /// (`Style.dash` = 2 × vec4 in SHADER_COMMON.md §2).
     #[test]
-    fn longest_presets_have_six_entries() {
-        assert_eq!(LineStylePreset::DashDotDot.pattern().len(), 6);
-        assert_eq!(LineStylePreset::LongDashDotDot.pattern().len(), 6);
+    fn dash_presets_are_positive_on_off_pairs() {
+        for preset in [
+            LineStylePreset::Dash,
+            LineStylePreset::Dot,
+            LineStylePreset::DashDot,
+            LineStylePreset::DashDotDot,
+            LineStylePreset::ShortDash,
+            LineStylePreset::ShortDot,
+            LineStylePreset::ShortDashDot,
+            LineStylePreset::LongDash,
+            LineStylePreset::LongDashDot,
+            LineStylePreset::LongDashDotDot,
+        ] {
+            let pattern = preset.pattern();
+            assert!(!pattern.is_empty());
+            assert_eq!(pattern.len() % 2, 0, "{preset:?}");
+            assert!(pattern.iter().all(|length| *length > 0.0), "{preset:?}");
+        }
     }
 }

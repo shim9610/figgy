@@ -2,22 +2,23 @@
 //! ([`Legend::content`]).
 //!
 //! Design points:
-//! - **Symbols are text.** A line sample is an em dash, a scatter sample is
-//!   a geometric-shape glyph (`●`, `■`, …), colored via the per-segment
-//!   `RichSegment.color` override. That buys the whole rich-text feature set
-//!   (size, bold/italic, sub/super, greek) for marks, identical rendering on
-//!   screen and in PNG export, and one layout engine for the entire legend.
+//! - **Symbols are fixed-width rich segments.** A line sample is a drawn
+//!   horizontal rule whose em dash text is only a fallback, while a scatter
+//!   sample is a geometric-shape glyph (`●`, `■`, …) centered in its field.
+//!   Each symbol form occupies the same 2 em total advance and carries a
+//!   per-segment `RichSegment.color` override, so marks line up and use the
+//!   same layout path on screen and in PNG export.
 //! - **Everything is explicit in the SSoT.** Line breaks are `'\n'` segments,
-//!   symbols are ordinary inline segments — so a one-line legend, mid-text
-//!   symbols, and any custom arrangement are all just segment sequences.
+//!   and symbols remain inline segment sequences, so a one-line legend,
+//!   mid-text symbols, and any custom arrangement are all explicit.
 //! - **Font and font size are live.** `content.font` / `content.font_size`
 //!   (and per-segment overrides) are consumed at draw time, so SSoT edits
 //!   after composition still apply.
 //!
 //! Composition helpers cover the common cases: [`symbol_segments`] /
 //! [`series_symbol_segments`] build a colored symbol, [`append_legend_entry`]
-//! appends "symbol + space + label" as a new line. Fully custom layouts edit
-//! `content.segments` directly.
+//! appends "fixed-width symbol + space + tab + label" as a new line. Fully
+//! custom layouts edit `content.segments` directly.
 
 use crate::color::Color;
 use crate::data_config::{DataRenderType, ScatterShape, SeriesConfig};
@@ -308,9 +309,10 @@ pub fn series_symbol_segments(cfg: &SeriesConfig) -> Vec<RichSegment> {
 /// interpreted by the segment mapper).
 ///
 /// The `'\t'` makes the symbol field a table column: the text engine sizes
-/// every column to its widest cell, so labels line up even when symbol
-/// forms differ in width (`—` vs `–●–`). Callers wanting a one-line legend
-/// can extend `content.segments` themselves without the `'\n'`.
+/// each label column consistently across rows. The symbol sequence itself
+/// always totals [`SYMBOL_FIELD_EM`], whether it is a rule, a centered glyph,
+/// or rule + glyph + rule. Callers wanting a one-line legend can extend
+/// `content.segments` themselves without the `'\n'`.
 pub fn append_legend_entry(content: &mut RichText, symbol: Vec<RichSegment>, label: &str) {
     append_legend_entry_rich(content, symbol, rich_segments_from_text(label));
 }
@@ -467,10 +469,11 @@ pub fn remove_legend_entry(content: &mut RichText, entry_index: usize) -> bool {
 pub struct Legend {
     pub visible: bool,
     /// The whole legend as one rich document. `'\n'` segments break lines;
-    /// symbols are ordinary inline segments (glyph char + color override),
-    /// so line breaks, symbol positions, and mid-text symbols are all
-    /// explicit in the SSoT. Font + font_size of this RichText are live —
-    /// consumed at draw time.
+    /// symbol fields are fixed-width inline segments with color overrides.
+    /// Line symbols draw rules across their fields and retain an em dash only
+    /// as fallback text; scatter glyphs are centered in their fields. Thus
+    /// line breaks, symbol positions, and mid-text symbols remain explicit in
+    /// the SSoT. Font + font_size of this RichText are consumed at draw time.
     pub content: RichText,
     pub corner: LegendCorner,
     /// Visual offset from the corner anchor (drag-to-move lands here).

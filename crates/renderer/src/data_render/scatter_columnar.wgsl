@@ -315,14 +315,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 }
 
 // ──────────────── sketch mode (NOT part of the common block) ────────────────
-// Hand-drawn entry points — design SSoT: docs/SKETCH_DESIGN.md (§3 noise,
-// §5c scatter). Selected as a separate pipeline variant; the precise entries
-// above are never modified and never read the sketch Transform fields.
+// Hand-drawn entry points selected as a separate pipeline variant. The precise
+// entries above never read the sketch Transform fields.
 
-// 1D value-noise pair — original formula: docs/SKETCH_DESIGN.md §3.
 // Deliberately duplicated per data shader (scatter/line/errorbar) and NOT in
 // the SHADER_COMMON.md common block: line_arc.wgsl shares that block but has
-// no use for noise. Keep the three copies in sync with the design doc.
+// no use for noise. Keep these helpers byte-identical in all three shaders.
 // Per-point style mapping (NOT part of the common block). The default precise
 // path above remains the three-slot fast path; this entry is selected only for
 // scatter series with a style table, style-index column, or sparse overrides.
@@ -556,12 +554,12 @@ fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> VsSketchOut {
 }
 
 const SKETCH_TAU: f32 = 6.28318530718;
-// Wobble count around the marker contour (docs/SKETCH_DESIGN.md §5c: C ≈ 6).
+// Six noise periods around the contour keep marker wobble visually local.
 const SKETCH_CONTOUR_WOBBLES: f32 = 6.0;
 
-// Sketch fragment stage (docs/SKETCH_DESIGN.md §5c): perturb the signed
-// contour distance with angle-parameterized noise — d' = d + k·noise(θ/τ·C),
-// seeded per marker — so every point gets its own hand-drawn outline. The
+// Perturb the sketch marker's signed contour distance with angle-parameterized
+// noise, d' = d + k·noise(θ/τ·C), seeded per marker so every point gets its
+// own hand-drawn outline. The
 // noise lattice has a seam at θ = ±π; its magnitude is ≤ wobble_px (≤ 0.75 px
 // at default amplitude) and reads as part of the hand-drawn look.
 @fragment
@@ -587,7 +585,6 @@ fn fs_sketch(in: VsSketchOut) -> @location(0) vec4<f32> {
 }
 
 // ────────────── constellation mode (NOT part of the common block) ───────────
-// Ringed-planet markers — docs/CONSTELLATION_DESIGN.md Step 2.
 //   - The ring's POSITION ANGLE encodes the series: the existing
 //     ScatterShape SSoT maps to a tilt (see cons_ring_angle) — no new
 //     per-series fields.

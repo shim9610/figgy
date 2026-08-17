@@ -237,14 +237,12 @@ fn fs_constellation_line(in: VsOut) -> @location(0) vec4<f32> {
 }
 
 // ──────────────── sketch mode (NOT part of the common block) ────────────────
-// Hand-drawn entry point — design SSoT: docs/SKETCH_DESIGN.md (§3 noise,
-// §5b line). Selected as a separate pipeline variant; the precise entries
-// above are never modified and never read the sketch Transform fields.
+// Hand-drawn entry point selected as a separate pipeline variant. The precise
+// entries above never read the sketch Transform fields.
 
-// 1D value-noise pair — original formula: docs/SKETCH_DESIGN.md §3.
 // Deliberately duplicated per data shader (scatter/line/errorbar) and NOT in
 // the SHADER_COMMON.md common block: line_arc.wgsl shares that block but has
-// no use for noise. Keep the three copies in sync with the design doc.
+// no use for noise. Keep these helpers byte-identical in all three shaders.
 fn sketch_hash01(i: u32, seed: u32) -> f32 {
     var h = (i * 0x9E3779B9u) ^ (seed * 0x85EBCA6Bu);
     h = (h ^ (h >> 16u)) * 0x45D9F3Bu;
@@ -267,9 +265,9 @@ fn sketch_noise(t: f32, seed: u32) -> f32 {
 // mod.rs (`LINE_SKETCH_VERTICES_PER_INSTANCE`) — keep the two in sync.
 const SKETCH_SUBDIV: u32 = 8u;
 
-// Sketch line vertex stage (docs/SKETCH_DESIGN.md §5b): subdivide each
-// segment into S spans (k = vid/2 ∈ 0..=S, side = vid%2, t = k/S), displace
-// the midline perpendicularly by amplitude · noise(arc_px/wavelength, seed),
+// Subdivide each sketch line segment into S spans (k = vid/2 ∈ 0..=S,
+// side = vid%2, t = k/S), displace the midline perpendicularly by
+// amplitude · noise(arc_px/wavelength, seed),
 // then extrude ±half_w. Arc-length parameterization makes the displacement
 // continuous across the shared endpoint of adjacent segments. The outer
 // points keep vs_main's square-cap extension so joints stay seamless, and
@@ -330,8 +328,8 @@ fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
 }
 
 // ────────────── constellation mode (NOT part of the common block) ───────────
-// Star-chain line style — design SSoT: docs/CONSTELLATION_DESIGN.md.
-// Two entries reuse the line pipeline's six instance slots:
+// Star-chain line style. Two entries reuse the line pipeline's six instance
+// slots:
 //   vs_ribbon/fs_ribbon — the unresolved-starlight haze (series-colored
 //                         nebula band; this is what separates two series),
 //   vs_stars/fs_stars   — individual stars scattered along the arc.
@@ -569,8 +567,9 @@ fn vs_stars(
         b = b * 0.35;
     }
 
-    // Temperature: population mix by local density (§2.6), then blackbody
-    // LUT. textureLoad — vertex stages have no implicit derivatives.
+    // Temperature is a population mix driven by local density, then mapped
+    // through the blackbody LUT. Vertex stages use textureLoad because they
+    // have no implicit derivatives.
     let pop = clamp(cons_pop(arc_here, seed), 0.0, 1.0);
     let h_t = cons_h(primary_id, 0x7E47u, seed);
     let t_norm = mix(mix(0.04, 0.30, h_t), mix(0.45, 0.95, h_t), pop);
@@ -617,8 +616,8 @@ fn vs_stars(
 fn fs_stars(in: StarOut) -> @location(0) vec4<f32> {
     // Explicit LOD by repo rule (shader_consistency lint) — single-mip PSF.
     let s = textureSampleLevel(cons_psf_tex, cons_samp, in.uv, 0.0);
-    // White saturated core + blackbody-tinted halo — star color lives in the
-    // halo, exactly like a saturated sensor (§2.1).
+    // Keep the saturated core white and carry star color in the
+    // blackbody-tinted halo.
     let col = (vec3<f32>(1.0) * s.r + in.tint * s.g) * in.brightness;
     let a = max(col.r, max(col.g, col.b));
     return vec4<f32>(col, a);

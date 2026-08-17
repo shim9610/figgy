@@ -2,7 +2,25 @@
 //! buffers without constructing an owned per-value mirror.
 
 use renderer::data::{COLUMN_VALUE_BYTES, split_f64_to_f32_pair};
-use renderer::{ColumnSource, HiLoColumnSource};
+use renderer::{ColumnPairWriter, ColumnSource, ColumnUploadStats, HiLoColumnSource};
+
+#[inline]
+fn record_min_positive(stats: &mut ColumnUploadStats, value: f64) {
+    if !value.is_finite() || value <= 0.0 {
+        return;
+    }
+    if match stats.min_positive {
+        Some(current) => value < current,
+        None => true,
+    } {
+        stats.min_positive = Some(value);
+    }
+}
+
+fn write_pair_bytes(dst: &mut [u8], hi: f32, lo: f32) {
+    dst[..4].copy_from_slice(&hi.to_le_bytes());
+    dst[4..].copy_from_slice(&lo.to_le_bytes());
+}
 
 /// Borrowed `f32` column with upload-time scalar statistics.
 #[derive(Debug, Clone, Copy)]
@@ -48,7 +66,14 @@ impl ColumnSource for BorrowedF32Column<'_> {
     }
 
     fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
-        HiLoColumnSource::write_f32_pair_le_into(self, dst);
+        debug_assert_eq!(dst.len(), self.data.len() * COLUMN_VALUE_BYTES);
+        for (pair, &value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(self.data) {
+            write_pair_bytes(pair, value, 0.0);
+        }
+    }
+
+    fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
+        HiLoColumnSource::write_f32_pair_le_into_with_stats(self, dst)
     }
 }
 
@@ -66,11 +91,20 @@ impl HiLoColumnSource for BorrowedF32Column<'_> {
     }
 
     fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.data.len() * COLUMN_VALUE_BYTES);
-        for (pair, &hi) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(self.data) {
-            pair[..4].copy_from_slice(&hi.to_le_bytes());
-            pair[4..].copy_from_slice(&0.0f32.to_le_bytes());
+        ColumnSource::write_f32_zero_lo_pair_le_into(self, dst);
+    }
+
+    fn write_f32_pair_le_into_with_stats(
+        &self,
+        mut dst: ColumnPairWriter<'_>,
+    ) -> ColumnUploadStats {
+        debug_assert_eq!(dst.len(), self.data.len());
+        let mut stats = ColumnUploadStats { min_positive: None };
+        for (index, &hi) in self.data.iter().enumerate() {
+            dst.write_pair(index, hi, 0.0);
+            record_min_positive(&mut stats, hi as f64);
         }
+        stats
     }
 }
 
@@ -125,9 +159,22 @@ impl ColumnSource for BorrowedCastF32Column<'_> {
     fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
         debug_assert_eq!(dst.len(), self.data.len() * COLUMN_VALUE_BYTES);
         for (pair, &value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(self.data) {
-            pair[..4].copy_from_slice(&(value as f32).to_le_bytes());
-            pair[4..].fill(0);
+            write_pair_bytes(pair, value as f32, 0.0);
         }
+    }
+
+    fn write_f32_pair_le_into_with_stats(
+        &self,
+        mut dst: ColumnPairWriter<'_>,
+    ) -> ColumnUploadStats {
+        debug_assert_eq!(dst.len(), self.data.len());
+        let mut stats = ColumnUploadStats { min_positive: None };
+        for (index, &value) in self.data.iter().enumerate() {
+            let value = value as f32;
+            dst.write_pair(index, value, 0.0);
+            record_min_positive(&mut stats, value as f64);
+        }
+        stats
     }
 }
 
@@ -177,9 +224,22 @@ impl ColumnSource for BorrowedF64Column<'_> {
     fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
         debug_assert_eq!(dst.len(), self.data.len() * COLUMN_VALUE_BYTES);
         for (pair, &value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(self.data) {
-            pair[..4].copy_from_slice(&(value as f32).to_le_bytes());
-            pair[4..].fill(0);
+            write_pair_bytes(pair, value as f32, 0.0);
         }
+    }
+
+    fn write_f32_pair_le_into_with_stats(
+        &self,
+        mut dst: ColumnPairWriter<'_>,
+    ) -> ColumnUploadStats {
+        debug_assert_eq!(dst.len(), self.data.len());
+        let mut stats = ColumnUploadStats { min_positive: None };
+        for (index, &value) in self.data.iter().enumerate() {
+            let value = value as f32;
+            dst.write_pair(index, value, 0.0);
+            record_min_positive(&mut stats, value as f64);
+        }
+        stats
     }
 }
 
@@ -200,15 +260,94 @@ impl HiLoColumnSource for BorrowedF64Column<'_> {
         debug_assert_eq!(dst.len(), self.data.len() * COLUMN_VALUE_BYTES);
         for (pair, &value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(self.data) {
             let (hi, lo) = split_f64_to_f32_pair(value);
-            pair[..4].copy_from_slice(&hi.to_le_bytes());
-            pair[4..].copy_from_slice(&lo.to_le_bytes());
+            write_pair_bytes(pair, hi, lo);
         }
+    }
+
+    fn write_f32_pair_le_into_with_stats(
+        &self,
+        mut dst: ColumnPairWriter<'_>,
+    ) -> ColumnUploadStats {
+        debug_assert_eq!(dst.len(), self.data.len());
+        let mut stats = ColumnUploadStats { min_positive: None };
+        for (index, &value) in self.data.iter().enumerate() {
+            let (hi, lo) = split_f64_to_f32_pair(value);
+            dst.write_pair(index, hi, lo);
+            record_min_positive(&mut stats, hi as f64 + lo as f64);
+        }
+        stats
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use std::sync::{Arc, OnceLock};
+    use std::time::Duration;
+
+    use renderer::data_render::column_pool::ALIGN;
+    use renderer::data_render::{create_instance, request_adapter, request_device};
+    use renderer::{AllocError, ColumnHandle, ColumnPool};
+    use wgpu::{BufferDescriptor, BufferUsages};
+
+    fn shared_device() -> Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> {
+        static DEVICE: OnceLock<Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)>> = OnceLock::new();
+        DEVICE
+            .get_or_init(|| {
+                let instance = create_instance();
+                let adapter = request_adapter(&instance).ok()?;
+                let (device, queue) = request_device(&adapter).ok()?;
+                Some((Arc::new(device), Arc::new(queue)))
+            })
+            .as_ref()
+            .map(|(device, queue)| (Arc::clone(device), Arc::clone(queue)))
+    }
+
+    fn read_uploaded_bytes(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pool: &ColumnPool,
+        handle: ColumnHandle,
+    ) -> Vec<u8> {
+        let readback = device.create_buffer(&BufferDescriptor {
+            label: Some("web borrowed column test readback"),
+            size: handle.byte_size,
+            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("web borrowed column test encoder"),
+        });
+        encoder.copy_buffer_to_buffer(pool.buffer(), handle.offset, &readback, 0, handle.byte_size);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        encoder.map_buffer_on_submit(
+            &readback,
+            wgpu::MapMode::Read,
+            0..handle.byte_size,
+            move |result| {
+                let _ = sender.send(result);
+            },
+        );
+        let submission = queue.submit(std::iter::once(encoder.finish()));
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submission),
+                timeout: Some(Duration::from_secs(30)),
+            })
+            .expect("borrowed column readback poll");
+        receiver
+            .recv_timeout(Duration::from_secs(30))
+            .expect("borrowed column readback callback")
+            .expect("borrowed column readback map");
+        let mapped = readback
+            .slice(..handle.byte_size)
+            .get_mapped_range()
+            .expect("borrowed column readback is mapped");
+        let bytes = mapped[..handle.len_values * COLUMN_VALUE_BYTES].to_vec();
+        drop(mapped);
+        readback.unmap();
+        bytes
+    }
 
     fn scalar_bytes<T: ColumnSource>(source: &T) -> Vec<u8> {
         let mut bytes = vec![0; source.len() * size_of::<f32>()];
@@ -226,6 +365,38 @@ mod tests {
         let mut bytes = vec![0; source.len() * COLUMN_VALUE_BYTES];
         source.write_f32_pair_le_into(&mut bytes);
         bytes
+    }
+
+    fn scalar_pair_upload<T: ColumnSource>(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        source: &T,
+    ) -> (Vec<u8>, Option<f64>) {
+        let mut pool = ColumnPool::new(device, ALIGN).unwrap();
+        let handle = pool
+            .add_column("scalar".into(), source, device, queue)
+            .unwrap();
+        let min_positive = pool.slot("scalar").unwrap().min_positive;
+        (
+            read_uploaded_bytes(device, queue, &pool, handle),
+            min_positive,
+        )
+    }
+
+    fn hilo_pair_upload<T: HiLoColumnSource>(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        source: &T,
+    ) -> (Vec<u8>, Option<f64>) {
+        let mut pool = ColumnPool::new(device, ALIGN).unwrap();
+        let handle = pool
+            .add_hilo_column("hilo".into(), source, device, queue)
+            .unwrap();
+        let min_positive = pool.slot("hilo").unwrap().min_positive;
+        (
+            read_uploaded_bytes(device, queue, &pool, handle),
+            min_positive,
+        )
     }
 
     #[test]
@@ -255,6 +426,16 @@ mod tests {
             .collect();
         assert_eq!(scalar_pair_bytes(&source), expected_pairs);
         assert_eq!(pair_bytes(&source), expected_pairs);
+        let Some((device, queue)) = shared_device() else {
+            eprintln!("no GPU adapter; skipping borrowed fused upload assertions");
+            return;
+        };
+        let (scalar_pairs, scalar_min_positive) = scalar_pair_upload(&device, &queue, &source);
+        assert_eq!(scalar_pairs, expected_pairs);
+        assert_eq!(scalar_min_positive, Some(4.5));
+        let (hilo_pairs, hilo_min_positive) = hilo_pair_upload(&device, &queue, &source);
+        assert_eq!(hilo_pairs, expected_pairs);
+        assert_eq!(hilo_min_positive, Some(4.5));
     }
 
     #[test]
@@ -291,6 +472,20 @@ mod tests {
             })
             .collect();
         assert_eq!(pair_bytes(&source), expected_pairs);
+        let Some((device, queue)) = shared_device() else {
+            eprintln!("no GPU adapter; skipping borrowed fused upload assertions");
+            return;
+        };
+        let (scalar_pairs, scalar_min_positive) = scalar_pair_upload(&device, &queue, &source);
+        assert_eq!(scalar_pairs, expected_scalar_pairs);
+        assert_eq!(
+            scalar_min_positive,
+            Some((1_700_000_000_000.125_f64 as f32) as f64)
+        );
+        let (hilo_pairs, hilo_min_positive) = hilo_pair_upload(&device, &queue, &source);
+        assert_eq!(hilo_pairs, expected_pairs);
+        let (hi, lo) = split_f64_to_f32_pair(1_700_000_000_000.125);
+        assert_eq!(hilo_min_positive, Some(hi as f64 + lo as f64));
     }
 
     #[test]
@@ -326,10 +521,20 @@ mod tests {
             .flat_map(|value| [value.to_le_bytes(), 0.0f32.to_le_bytes()].concat())
             .collect();
         assert_eq!(scalar_pair_bytes(&source), expected_pairs);
+        let Some((device, queue)) = shared_device() else {
+            eprintln!("no GPU adapter; skipping borrowed fused upload assertions");
+            return;
+        };
+        let (pairs, min_positive) = scalar_pair_upload(&device, &queue, &source);
+        assert_eq!(pairs, expected_pairs);
+        assert_eq!(
+            min_positive,
+            Some((1_700_000_000_000.125_f64 as f32) as f64)
+        );
     }
 
     #[test]
-    fn empty_and_zero_sources_match_existing_scan_semantics() {
+    fn empty_sources_have_no_positive_upload_stat() {
         let empty_f32 = BorrowedF32Column::new(&[]);
         assert_eq!(ColumnSource::min(&empty_f32), f64::INFINITY);
         assert_eq!(ColumnSource::max(&empty_f32), f64::NEG_INFINITY);
@@ -337,5 +542,88 @@ mod tests {
         let empty_f64 = BorrowedF64Column::new(&[]);
         assert_eq!(ColumnSource::min(&empty_f64), f64::INFINITY);
         assert_eq!(ColumnSource::max(&empty_f64), f64::NEG_INFINITY);
+
+        let Some((device, queue)) = shared_device() else {
+            eprintln!("no GPU adapter; skipping borrowed fused upload assertions");
+            return;
+        };
+        let mut pool = ColumnPool::new(&device, ALIGN).unwrap();
+        assert_eq!(
+            pool.add_column("f32-scalar".into(), &empty_f32, &device, &queue)
+                .unwrap_err(),
+            AllocError::EmptySource
+        );
+        assert_eq!(
+            pool.add_hilo_column("f32-hilo".into(), &empty_f32, &device, &queue)
+                .unwrap_err(),
+            AllocError::EmptySource
+        );
+        assert_eq!(
+            pool.add_column("f64-scalar".into(), &empty_f64, &device, &queue)
+                .unwrap_err(),
+            AllocError::EmptySource
+        );
+        assert_eq!(
+            pool.add_hilo_column("f64-hilo".into(), &empty_f64, &device, &queue)
+                .unwrap_err(),
+            AllocError::EmptySource
+        );
+    }
+
+    #[test]
+    fn borrowed_stats_filter_non_finite_zero_and_cast_extremes() {
+        let min_subnormal = f32::from_bits(1);
+        let f32_values = [
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            0.0,
+            -0.0,
+            -min_subnormal,
+            min_subnormal,
+        ];
+        let f32_source = BorrowedF32Column::new(&f32_values);
+        let Some((device, queue)) = shared_device() else {
+            eprintln!("no GPU adapter; skipping borrowed fused upload assertions");
+            return;
+        };
+        let expected_f32_pairs: Vec<u8> = f32_values
+            .iter()
+            .flat_map(|value| [value.to_le_bytes(), 0.0f32.to_le_bytes()].concat())
+            .collect();
+        let (f32_pairs, f32_min_positive) = scalar_pair_upload(&device, &queue, &f32_source);
+        assert_eq!(f32_pairs, expected_f32_pairs);
+        assert_eq!(f32_min_positive, Some(min_subnormal as f64));
+
+        let f64_values = [
+            f64::from_bits(1),
+            f64::MAX,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            0.0,
+            -0.0,
+            min_subnormal as f64,
+        ];
+        let cast_source = BorrowedCastF32Column::new(&f64_values);
+        let expected_cast_pairs: Vec<u8> = f64_values
+            .iter()
+            .flat_map(|&value| [(value as f32).to_le_bytes(), 0.0f32.to_le_bytes()].concat())
+            .collect();
+        let (cast_pairs, cast_min_positive) = scalar_pair_upload(&device, &queue, &cast_source);
+        assert_eq!(cast_pairs, expected_cast_pairs);
+        assert_eq!(cast_min_positive, Some(min_subnormal as f64));
+
+        let hilo_source = BorrowedF64Column::new(&f64_values);
+        let expected_hilo_pairs: Vec<u8> = f64_values
+            .iter()
+            .flat_map(|&value| {
+                let (hi, lo) = split_f64_to_f32_pair(value);
+                [hi.to_le_bytes(), lo.to_le_bytes()].concat()
+            })
+            .collect();
+        let (hilo_pairs, hilo_min_positive) = hilo_pair_upload(&device, &queue, &hilo_source);
+        assert_eq!(hilo_pairs, expected_hilo_pairs);
+        assert_eq!(hilo_min_positive, Some(min_subnormal as f64));
     }
 }

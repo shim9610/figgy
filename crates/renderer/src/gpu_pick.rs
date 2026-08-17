@@ -386,6 +386,9 @@ fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
+// Renderer GPU ownership is Arc-based on every target. WebGPU handles are
+// intentionally !Send/!Sync on wasm because JavaScript confines them locally.
+#[cfg_attr(target_arch = "wasm32", allow(clippy::arc_with_non_send_sync))]
 fn create_pipeline_bundle_observed(
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
@@ -478,6 +481,7 @@ fn create_pipeline_bundle_observed(
     })
 }
 
+#[cfg_attr(target_arch = "wasm32", allow(clippy::arc_with_non_send_sync))]
 async fn create_pipeline_bundle_observed_async(
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
@@ -996,11 +1000,11 @@ impl GpuPickEngine {
         descriptor: GpuPickSeriesDescriptor<'_>,
     ) -> Result<PickSeriesSlot, GpuPickError> {
         let limits = self.bundle.device.limits();
-        if pool.capacity() > u64::from(limits.max_storage_buffer_binding_size) {
+        if pool.capacity() > limits.max_storage_buffer_binding_size {
             return Err(GpuPickError::DeviceLimit {
                 resource: "column-pool storage binding",
                 requested: pool.capacity(),
-                limit: u64::from(limits.max_storage_buffer_binding_size),
+                limit: limits.max_storage_buffer_binding_size,
             });
         }
         let x_handle = pool
@@ -1113,7 +1117,7 @@ impl GpuPickEngine {
                 requested: u64::MAX,
                 limit: limits.max_buffer_size,
             })?;
-        let storage_limit = u64::from(limits.max_storage_buffer_binding_size);
+        let storage_limit = limits.max_storage_buffer_binding_size;
         if gate_mask_bytes > limits.max_buffer_size || gate_mask_bytes > storage_limit {
             return Err(GpuPickError::DeviceLimit {
                 resource: "GPU pick gate-mask buffer",
@@ -1436,7 +1440,7 @@ impl GpuPickEngine {
                 resource: "injected registry prepare failure",
             });
         }
-        let storage_limit = u64::from(self.bundle.device.limits().max_storage_buffer_binding_size);
+        let storage_limit = self.bundle.device.limits().max_storage_buffer_binding_size;
         if pool.capacity() > storage_limit {
             return Err(GpuPickError::DeviceLimit {
                 resource: "column-pool storage binding",

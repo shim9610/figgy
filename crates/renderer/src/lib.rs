@@ -31,7 +31,7 @@ pub use ::model::{
 pub use chart::{Chart, FitExtent, errorbar_extent};
 pub use color::Color;
 pub use config::Config;
-pub use data::{Column, ColumnSource, HiLoColumnSource};
+pub use data::{Column, ColumnPairWriter, ColumnSource, ColumnUploadStats, HiLoColumnSource};
 pub use data_config::{
     DataErrorBarPointStyleConfig, DataErrorBarPointStyleOverride, DataErrorBarStyleConfig,
     DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorRef, ScatterShape,
@@ -51,9 +51,9 @@ pub use preset::{AxisPreset, ColorCycle};
 pub use renderer::{
     AxisViewState, ChartDrawItem, ChartId, ChartRenderStamp, ChartStyle, ChartView, ChartViewState,
     FitCommitToken, GpuPickRequest, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE, PreparedFrame, RasterImage,
-    RenderRevision, Renderer, RendererDevice, RendererVisualStamp, Series, WebDerivedSnapshot,
-    WebDerivedStamp, WindowedRenderer, clamp_export_scale, display_config_for_surface,
-    dpi_to_scale, encode_png, fit_display_panel,
+    RenderRevision, Renderer, RendererDevice, RendererLoadDemo, RendererVisualStamp, Series,
+    WebDerivedSnapshot, WebDerivedStamp, WindowedRenderer, clamp_export_scale,
+    display_config_for_surface, dpi_to_scale, encode_png, fit_display_panel,
 };
 pub use resize::{Resizable, ResizeHandle};
 pub use select::{

@@ -45,12 +45,82 @@ cargo test -p model --features serde --test schema_sync
   `{"text":"—","rule":true,"field_em":2.0,"rule_dash":[0.571,0.286],...}`,
   선+점 = rule(0.65) + 글리프(0.7) + rule(0.65).
 - **색은 0..1 float RGBA**: `{ "r": 0.8, "g": 0.1, "b": 0.1, "a": 1.0 }`.
-- `label: null` 가능 (`Option`), 세그먼트 오버라이드 키와 Config의
-  `draw_style` / `picked_points` 키는 생략 가능하다 (`draw_style`:
-  `precise` = 키 자체가 생략, `picked_points`: `None` = 키 자체가 생략).
-  `picked_points: {}` 는 default overlay config로 파싱된다. 그 외 필드는
-  전부 항상 존재한다. 부분 업데이트가 아니라 **전체 트리 교체**이므로,
+- **`None`이면 생략되는 series/picking 키 (2개)**:
+  `SeriesConfig.source_id`, `PickedPointRef.source_id`.
+- **`None`이면 생략되는 outer style mapping 키 (6개)**:
+  `DataScatterStyleConfig.point_style_table` / `point_style_index_column` /
+  `point_style_overrides`, `DataErrorBarStyleConfig.error_bar_style_table` /
+  `error_bar_style_index_column` / `error_bar_style_overrides`.
+- **`None`이면 생략되는 nested style 키 (7개)**:
+  `DataScatterPointStyleConfig.point_color` / `point_shape` / `point_size`,
+  `DataErrorBarPointStyleConfig.error_bar_color` / `error_bar_width` /
+  `error_bar_cap_size` / `cap_width`. 따라서 모든 nested style option이
+  `None`이면 객체는 `{}`로 직렬화된다. override의 `style`은 flatten되므로
+  이 키들은 override 객체에서도 같은 방식으로 생략된다.
+- 위 세 묶음의 **정확히 15개 `Option` 키**와 달리 `SeriesConfig.label`은
+  항상 존재하며 값만 `null`일 수 있다.
+- 세그먼트 오버라이드 키와 Config의 `draw_style` / `picked_points` 키도
+  생략 가능하다 (`draw_style`: `precise` = 키 자체가 생략,
+  `picked_points`: `None` = 키 자체가 생략). `picked_points: {}` 는 default
+  overlay config로 파싱된다. 부분 업데이트가 아니라 **전체 트리 교체**이므로,
   `get_config()` 결과를 고쳐서 되돌리는 패턴을 쓸 것.
+
+15개 omission의 canonical serde 출력은 다음과 같다. `series.source_id`, 두
+outer style의 mapping 키 6개, 두 빈 nested style의 option 키 7개,
+`picked_point.source_id`가 모두 생략되어 있다.
+
+<!-- schema-sync: name=option-omissions -->
+```json
+{
+  "series": {
+    "series_id": "no-source",
+    "label": null,
+    "x_column": "x",
+    "y_column": "y",
+    "render_type": {
+      "Line": {
+        "line": {
+          "line_style": "Solid",
+          "line_color": {
+            "r": 0.0,
+            "g": 0.0,
+            "b": 0.0,
+            "a": 1.0
+          },
+          "line_width": 1.0
+        }
+      }
+    }
+  },
+  "scatter_style": {
+    "point_color": {
+      "r": 0.0,
+      "g": 0.0,
+      "b": 0.0,
+      "a": 1.0
+    },
+    "point_shape": "CircleFilled",
+    "point_size": 4.0
+  },
+  "errorbar_style": {
+    "error_bar_color": {
+      "r": 0.0,
+      "g": 0.0,
+      "b": 0.0,
+      "a": 1.0
+    },
+    "error_bar_width": 1.0,
+    "error_bar_cap_size": 3.0,
+    "cap_width": 1.0
+  },
+  "scatter_point_style": {},
+  "errorbar_point_style": {},
+  "picked_point": {
+    "series_id": "no-source",
+    "point_index": 7
+  }
+}
+```
 
 ## enum 허용값
 
@@ -59,6 +129,11 @@ cargo test -p model --features serde --test schema_sync
 | `scale` (AxisScale) | `"Linear"` `"Logarithmic"` |
 | `tick` (TickVisibility) | `"None"` `"Outside"` `"Inside"` `"Both"` |
 | `format` (LabelFormat) | `"Decimal"` `"Scientific"` `"Power"` `{ "Timestamp": { ... } }` |
+| `unit` (TimestampUnit) | `"Seconds"` `"Milliseconds"` `"Microseconds"` `"Nanoseconds"` |
+| `timezone` (TimestampZone) | `"Utc"` `{ "FixedOffsetMinutes": 540 }` |
+| `label` (TimestampLabelMode) | `"Auto"` `{ "Pattern": "%Y-%m-%d %H:%M:%S.%f" }` |
+| `fractional` (FractionalSecondDigits) | `"Auto"` `{ "Fixed": 3 }` |
+| `tick_policy` (TimestampTickPolicy) | `"AutoCalendar"` `"NumericSpacing"` |
 | `line_style` (LineStylePreset) | `"Solid"` `"Dash"` `"Dot"` `"DashDot"` `"DashDotDot"` `"ShortDash"` `"ShortDot"` `"ShortDashDot"` `"LongDash"` `"LongDashDot"` `"LongDashDotDot"` |
 | `corner` (LegendCorner) | `"TopLeft"` `"TopRight"` `"BottomLeft"` `"BottomRight"` |
 | `point_shape` (ScatterShape) | `"Circle"` `"Square"` `"Triangle"` `"Diamond"` `"Cross"` `"CircleFilled"` `"SquareFilled"` `"TriangleFilled"` `"DiamondFilled"` `"TriangleDown"` `"TriangleLeft"` `"TriangleRight"` `"Plus"` `"Pentagon"` `"Hexagon"` `"Octagon"` `"Star"` `"TriangleDownFilled"` `"TriangleLeftFilled"` `"TriangleRightFilled"` `"PlusFilled"` `"CrossFilled"` `"PentagonFilled"` `"HexagonFilled"` `"OctagonFilled"` `"StarFilled"` |
@@ -91,6 +166,42 @@ Custom labels can use `"label": { "Pattern": "%Y-%m-%d %H:%M:%S.%f" }`;
 supported tokens are `%Y`, `%m`, `%d`, `%H`, `%M`, `%S`, `%f`, and `%%`.
 `AutoCalendar` measures label text and chooses coarser calendar tick units when
 needed so adjacent labels do not overlap.
+
+The exact serde forms of all 12 timestamp variants are:
+
+<!-- schema-sync: name=timestamp-variants -->
+```json
+{
+  "unit": [
+    "Seconds",
+    "Milliseconds",
+    "Microseconds",
+    "Nanoseconds"
+  ],
+  "timezone": [
+    "Utc",
+    {
+      "FixedOffsetMinutes": 540
+    }
+  ],
+  "label": [
+    "Auto",
+    {
+      "Pattern": "%Y-%m-%d %H:%M:%S.%f"
+    }
+  ],
+  "fractional": [
+    "Auto",
+    {
+      "Fixed": 3
+    }
+  ],
+  "tick_policy": [
+    "AutoCalendar",
+    "NumericSpacing"
+  ]
+}
+```
 
 For large absolute Unix timestamps, upload browser data with
 `register_column_f64(id, Float64Array)` for a new id and
@@ -212,6 +323,7 @@ sketch의 모든 파라미터에 디폴트가 있어 (`serde(default)`) 부분 �
 켜고 싶으면 `picked_points` 객체를 추가한다. 빈 객체 `{}` 는 기본 overlay
 설정으로 파싱된다.
 
+<!-- schema-sync: name=config -->
 ```json
 {
   "chart_area": {
@@ -529,6 +641,7 @@ sketch의 모든 파라미터에 디폴트가 있어 (`serde(default)`) 부분 �
 `LineScatterErrorbarXY` + 두 가지 `ErrorRef` 형태 + 라벨이 모두 포함된
 한 개짜리 배열. 실제 값은 이 형태의 부분집합 변형들이다.
 
+<!-- schema-sync: name=series -->
 ```json
 [
   {

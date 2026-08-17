@@ -1,23 +1,20 @@
 //! Hand-drawn ("sketch") geometry helpers — deterministic polyline wobble.
 //!
-//! Implements the noise specification of `docs/SKETCH_DESIGN.md` §3 (PCG-style
-//! integer hash → 1D smoothstep value noise) and the subdivision rules of §5a.
+//! Noise is a PCG-style integer hash followed by 1D smoothstep interpolation.
 //! The noise/geometry layer ([`hash01`] … [`sketch_rect_outline`]) is pure
 //! functions over primitive parameters — no wgpu, tiny-skia, or model types.
 //! Coordinates are pixel-space (y-down), matching the raster/deco consumers.
 //! Everything is `f32`, with no runtime randomness or clocks — identical
-//! inputs yield bit-identical outputs (§3 determinism contract).
+//! inputs yield bit-identical outputs.
 //!
-//! [`DecoStroker`] (STYLE_REGISTRY.md §4) is the deco layer's entry point: a
-//! per-raster-pass stroke strategy that routes each decoration stroke either
-//! to the plain [`Canvas`] calls (`Precise`) or through the wobble functions
-//! above (`Sketch`). It is the one raster-facing piece of this module.
+//! [`DecoStroker`] is the raster-facing entry point. It routes each decoration
+//! stroke either to plain [`Canvas`] calls (`Precise`) or through the wobble
+//! functions above (`Sketch`).
 
 use crate::config::DrawStyle;
 use crate::raster::{Canvas, Paint};
 
-/// Spacing between subdivision points never exceeds this many pixels
-/// (design §5a: "min 2 subdivisions, at most ~16 px per subdivision").
+/// Maximum spacing between adjacent subdivision points, in pixels.
 const MAX_SUBDIV_SPACING_PX: f32 = 16.0;
 
 /// Hard safety cap on subdivisions per input segment — guards pathological
@@ -26,9 +23,9 @@ const MAX_SUBDIV_SPACING_PX: f32 = 16.0;
 /// any chart canvas.
 const MAX_SUBDIV_PER_SEGMENT: f32 = 4096.0;
 
-/// PCG-style integer hash (design §3) mapping `(i, seed)` into `[0, 1)`.
+/// PCG-style integer hash mapping `(i, seed)` into `[0, 1]` after f32 conversion.
 ///
-/// Spec formula (all integer arithmetic wrapping mod 2³²):
+/// Formula (all integer arithmetic wrapping mod 2³²):
 ///
 /// ```text
 /// h = i*0x9E3779B9 ^ seed*0x85EBCA6B
@@ -37,7 +34,7 @@ const MAX_SUBDIV_PER_SEGMENT: f32 = 4096.0;
 /// hash01 = f32(h) / 4294967296.0
 /// ```
 ///
-/// Caveat inherited from the spec formula: for the 128 inputs whose final
+/// Conversion caveat: for the 128 inputs whose final
 /// `h ≥ 2³² − 128`, the `u32 → f32` conversion rounds up to 2³² and the
 /// result is exactly 1.0 (probability ≈ 2⁻²⁵). Downstream math ([`noise1`])
 /// still honours its `[-1, 1]` contract, so this is documented, not
@@ -49,7 +46,7 @@ pub(crate) fn hash01(i: u32, seed: u32) -> f32 {
     h as f32 / 4_294_967_296.0
 }
 
-/// 1D value noise (design §3): smoothstep-interpolated lattice hashes —
+/// 1D value noise: smoothstep-interpolated lattice hashes —
 /// C1-continuous in `t`, range `[-1, 1]`.
 ///
 /// `t` is non-negative in practice (`arc_px / wavelength_px`), but any finite
@@ -67,9 +64,9 @@ pub(crate) fn noise1(t: f32, seed: u32) -> f32 {
     (a + (b - a) * u) * 2.0 - 1.0 // mix(a, b, u) * 2 - 1
 }
 
-/// FNV-1a 32-bit hash of `tag`'s UTF-8 bytes — derives per-element seeds for
-/// the deco layer (design §5a: `seed' = seed ^ fnv1a(tag)`, with stable tags
-/// like `"axis_left"`, `"tick_x_3"`, `"legend_box"`).
+/// FNV-1a 32-bit hash of `tag`'s UTF-8 bytes. The deco layer derives each
+/// element seed as `seed ^ fnv1a(tag)` using stable tags such as
+/// `"axis_left"`, `"tick_x_3"`, and `"legend_box"`.
 pub(crate) fn fnv1a(tag: &str) -> u32 {
     let mut h: u32 = 0x811C_9DC5; // FNV offset basis
     for &byte in tag.as_bytes() {
@@ -79,7 +76,7 @@ pub(crate) fn fnv1a(tag: &str) -> u32 {
     h
 }
 
-/// Perturb a pixel-space polyline into a hand-drawn squiggle (design §3/§5a).
+/// Perturb a pixel-space polyline into a hand-drawn squiggle.
 ///
 /// Each segment of length `L` is subdivided into
 /// `ceil(L / (wavelength_px / 4))` pieces (at least 2, spacing capped at
@@ -150,7 +147,7 @@ pub(crate) fn sketch_polyline(
     out
 }
 
-/// Subdivide and displace one maximal run of finite points (§5a rules).
+/// Subdivide and displace one maximal run of finite points.
 /// `arc_px` accumulates across runs so the noise phase continues over gaps.
 fn sketch_finite_run(
     run: &[(f32, f32)],
@@ -179,13 +176,12 @@ fn sketch_finite_run(
         // Unit perpendicular to the travel direction (pixel space, y-down;
         // the sign is immaterial — noise is symmetric about 0).
         let (nx, ny) = (-dy / len, dx / len);
-        // §5a subdivision count: ceil(L / (wavelength/4)), at least 2,
-        // spacing never above ~16 px, plus a hard safety cap.
+        // At least two spans, no more than 16 px apart, with a hard cap that
+        // bounds allocation for pathological wavelength values.
         let n = (len / (wavelength_px / 4.0))
             .ceil()
             .max((len / MAX_SUBDIV_SPACING_PX).ceil())
-            .max(2.0)
-            .min(MAX_SUBDIV_PER_SEGMENT) as u32;
+            .clamp(2.0, MAX_SUBDIV_PER_SEGMENT) as u32;
         // Shared interior vertices were already emitted by the previous
         // segment (displaced along its perpendicular) — skip j = 0 then.
         let first_j = u32::from(emitted_start);
@@ -215,7 +211,7 @@ pub(crate) fn sketch_line(
 ///
 /// The four edges are chained into a single path that revisits the starting
 /// corner to close, so the arc parameter — and with it the noise phase —
-/// carries across every corner (design §5a). One shared `seed`; deliberately
+/// carries across every corner. One shared `seed`; deliberately
 /// **no** per-edge seed mixing, continuity wins. Like a real hand-drawn box,
 /// the closing point is displaced at a different noise phase than the opening
 /// point and need not coincide with it exactly.
@@ -238,8 +234,6 @@ pub(crate) fn sketch_rect_outline(
     sketch_polyline(&corners, amplitude_px, wavelength_px, seed)
 }
 
-// Decoration stroke strategy — STYLE_REGISTRY.md §4.
-
 /// Minimum stroke width (px) for sketch-mode decoration strokes. A wobbled
 /// 1 px hairline drifts across pixel rows and alternates between crisp and
 /// 50/50-blurred AA coverage — it reads as a broken line. Hand-drawn pen
@@ -257,7 +251,7 @@ const SKETCH_MIN_STROKE_PX: f32 = 1.4;
 ///
 /// `tag` is a stable element tag (`"axis_left"`, `"tick_left_3"`,
 /// `"grid_major_x_2"`, `"legend_box"`) mixed into the global seed as
-/// `seed ^ fnv1a(tag)` (design §5a), so every element wobbles differently but
+/// `seed ^ fnv1a(tag)`, so every element wobbles differently but
 /// identically across re-rasters.
 pub(crate) enum DecoStroker {
     Precise,
@@ -311,7 +305,7 @@ impl DecoStroker {
     /// single [`Canvas::draw_rect`] with the given (stroke) paint; `Sketch`
     /// chains the four edges into one arc-continuous wobble polyline via
     /// [`sketch_rect_outline`].
-    #[allow(clippy::too_many_arguments)] // signature fixed by STYLE_REGISTRY §4
+    #[allow(clippy::too_many_arguments)] // Independent geometry, paint, and tag inputs.
     pub(crate) fn stroke_rect_outline(
         &self,
         canvas: &mut Canvas,

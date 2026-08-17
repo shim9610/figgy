@@ -8,7 +8,7 @@ Embed in egui / winit / any other wgpu 30 host.
 > This is the workspace root README. The workspace has three crates:
 > **`crates/model`** — the pure chart model and schema authority: option/data SSoT (`Config`, `SeriesConfig`), the rich-text/legend document model, interaction policies (`Selectable`/`Draggable`/`Resizable`, `HitMap`, the single `Config::nudge` movement path), presets (`AxisPreset`, `ColorCycle`). Dependency-free; optional `serde` feature.
 > **`crates/renderer`** — the wgpu + CPU-raster machinery documented below. It owns the persistent chart registry (`ChartId` → `Config`, ordered `SeriesConfig`, selection, checked revisions), `ColumnPool`, picker pipeline bundle and derived single active-chart registry cache, and pending GPU-pool maintenance. Depends on `model` and re-exports its public modules.
-> **`crates/web`** — the browser package (`figgy`): public `<figgy-chart>` Custom Element facade plus a raw `FiggyChart` wasm kernel as an advanced escape hatch. The facade owns the shadow canvas, ready promise/event lifecycle, rAF loop, ResizeObserver/DPR handling, pointer mapping, export busy gate, id-keyed registration metadata, UI-derived labels/styles/extents, and Promise adaptation. Picker, pool, chart, and maintenance authority remain in `Renderer`. Browser I/O: [WASM.md](crates/renderer/WASM.md) · full Config JSON schema: [SCHEMA.md](crates/web/SCHEMA.md). Build artifacts (`crates/web/pkg/`) are gitignored — build with `npx wasm-pack build crates/web --release --target web`.
+> **`crates/web`** — the browser package (`figgy`): public `<figgy-chart>` Custom Element facade plus a raw `FiggyChart` wasm kernel as an advanced escape hatch. The facade owns the shadow canvas, ready promise/event lifecycle, rAF loop, ResizeObserver/DPR handling, pointer mapping, async-operation busy gate, id-keyed registration metadata, UI-derived labels/styles/extents, and Promise adaptation. Picker, pool, chart, and maintenance authority remain in `Renderer`. Browser I/O: [WASM.md](crates/renderer/WASM.md) · full Config JSON schema: [SCHEMA.md](crates/web/SCHEMA.md). Build artifacts (`crates/web/pkg/`) are gitignored — build with `npx wasm-pack build crates/web --release --target web`.
 > **Online studio** — [figgyplot.com](https://figgyplot.com/) hosts the public web editor. It runs in-browser with local chart data, imports CSV/TSV/Excel, opens `.figgy` project files, and exports PNGs from the same wasm/WebGPU surface.
 
 - **GPU columnar pool**: all data columns share a single GPU buffer with first-fit alloc + ping-pong defrag on fragmentation. Logical values are stored as f32 hi/lo pairs when uploaded through `HiLoColumnSource`, preserving timestamp-sized offsets on the GPU. Upload caches scalar stats (min / max / smallest-positive) for auto-fit; per-point geometry such as the dashed-line arc-length prefix is computed in place by a compute scan (`line_arc.wgsl`).
@@ -24,7 +24,7 @@ Embed in egui / winit / any other wgpu 30 host.
 - **Constellation mode (opt-in)**: `draw_style: { mode: "constellation", ... }` supports `ScatterLine` series only: PSF-rendered stars sit at scatter data positions and a translucent line connects them. Parameter ranges ship as machine-readable metadata (`draw_style_param_specs`).
 - **Single wgpu major (30)**: the renderer and active egui integration use wgpu 30. The retained iced integration source is not a build target because iced 0.14 still exposes wgpu 27 types.
 - **WebAssembly-ready**: pure-Rust raster stack (tiny-skia + fontdb + swash), async init/export, runtime font registration (`register_font`) for CJK and custom families.
-- **Observable web startup**: `<figgy-chart>` emits `figgy-init-progress` while initialization yields between pipeline stages. `first_frame_ready()` / `warm_up()` wait for submitted GPU work; exact extent and picker pipelines stay lazy until their first use.
+- **Observable web startup**: `<figgy-chart>` emits `figgy-init-progress` while initialization yields between pipeline stages. Its first successful frame and `figgy-ready` publish before renderer-owned GPU picking is prewarmed in the background. Raw kernels can call `prewarm_gpu_picking()` explicitly; exact extent pipelines remain lazy until their first use.
 
 ### Draw style preview
 
@@ -133,7 +133,7 @@ renderer.draw(Color::WHITE, &items).unwrap();   // acquire surface frame → pre
 
 ### `ColumnSource` — the data adapter trait
 
-`Renderer::add_column` takes `&dyn ColumnSource` — implement the trait on any container of yours and the data lands in the GPU pool with zero copy (no intermediate `Vec` allocation). The upload pass reads the freshly written bytes once to cache scalar stats (min / max / smallest-positive) for auto-fit. Use `Renderer::add_hilo_column` with `&dyn HiLoColumnSource` for large absolute timestamps or coordinates that must preserve sub-f32 deltas; it uploads each logical value as `(hi: f32, lo: f32)`.
+`Renderer::add_column` takes `&dyn ColumnSource` — implement the trait on any container of yours and the data lands in the GPU pool with zero copy (no intermediate `Vec` allocation). The source writes GPU pairs and returns smallest-positive statistics in the same pass; the renderer never reads wgpu 30's write-only mapped bytes. `min` / `max` retain their source-level meaning. Scalar smallest-positive uses the actual uploaded `(value as f32, 0)` value, while hi-lo uses the recorded `hi as f64 + lo as f64`; both include only finite positive values. Use `Renderer::add_hilo_column` with `&dyn HiLoColumnSource` for large absolute timestamps or coordinates that must preserve sub-f32 deltas.
 
 `add_column` / `add_hilo_column` register a new id. To atomically replace an
 existing id, use `upsert_column` / `upsert_hilo_column`. `Renderer` prepares the
@@ -151,9 +151,15 @@ pub trait ColumnSource {
     fn min(&self) -> f64;
     fn max(&self) -> f64;
 
-    /// **Key**: write little-endian f32 values directly into the GPU mapped staging buffer (`&mut [u8]`).
+    /// Legacy scalar encoder retained for source compatibility.
     /// Caller guarantees `dst.len() == self.len() * 4`. null → `f32::NAN`.
     fn write_f32_le_into(&self, dst: &mut [u8]);
+
+    /// Write `(value as f32, 0)` pairs and return stats in the same pass.
+    fn write_f32_pair_le_into_with_stats(
+        &self,
+        writer: ColumnPairWriter<'_>,
+    ) -> ColumnUploadStats;
 }
 ```
 
@@ -166,9 +172,15 @@ pub trait HiLoColumnSource {
     fn min(&self) -> f64;
     fn max(&self) -> f64;
 
-    /// Write little-endian `(hi: f32, lo: f32)` pairs into `dst`.
+    /// Legacy slice encoder retained for source compatibility.
     /// Caller guarantees `dst.len() == self.len() * 8`.
     fn write_f32_pair_le_into(&self, dst: &mut [u8]);
+
+    /// Write pairs and return stats from recorded `hi as f64 + lo as f64`.
+    fn write_f32_pair_le_into_with_stats(
+        &self,
+        writer: ColumnPairWriter<'_>,
+    ) -> ColumnUploadStats;
 }
 ```
 
@@ -176,6 +188,11 @@ pub trait HiLoColumnSource {
 `Float64Array` through `register_column_f64` for the first upload and
 `update_register_column_f64` for an explicit replacement when using timestamp
 axes with large Unix epoch values.
+
+Custom trait implementations must implement the fused method. This makes an
+incomplete migration a compile-time error instead of allowing a source to
+compile and then fail during upload. There is no byte-readback or silently
+incorrect fallback.
 
 **Custom — time series / DataFrame / mmap / FFI data, anything**:
 
@@ -196,12 +213,33 @@ impl renderer::ColumnSource for MyTimeSeries {
             dst[i*4..i*4+4].copy_from_slice(&(v as f32).to_le_bytes());
         }
     }
+    fn write_f32_pair_le_into_with_stats(
+        &self,
+        mut writer: renderer::ColumnPairWriter<'_>,
+    ) -> renderer::ColumnUploadStats {
+        debug_assert_eq!(writer.len(), self.samples.len());
+        let mut min_positive: Option<f64> = None;
+        for (index, &sample) in self.samples.iter().enumerate() {
+            let value = sample as f32;
+            writer.write_pair(index, value, 0.0);
+            let value = value as f64;
+            if value.is_finite() && value > 0.0
+                && min_positive.map_or(true, |current| value < current)
+            {
+                min_positive = Some(value);
+            }
+        }
+        renderer::ColumnUploadStats { min_positive }
+    }
 }
 
 renderer.add_column("temperature", &my_series)?;   // ↘ writes directly into mapped staging memory, zero Vec
 ```
 
-If your container is already native `f32`, a single `bytemuck::cast_slice` lets you do `dst.copy_from_slice(...)` — even the conversion cost is zero.
+Native `f32` containers use the same fused path: iterate the values and call
+`writer.write_pair(index, value, 0.0)`. `ColumnPairWriter` exposes logical pair
+writes rather than mapped bytes, so active pool upload remains allocation-free
+without exposing wgpu or permitting a `dst.copy_from_slice(...)` shortcut.
 
 ### Native examples — sine / RC / cross-section
 
@@ -552,9 +590,25 @@ even dropping the renderer, cannot remap that ticket's eventual
 
 The browser public surface follows the same boundary. The `<figgy-chart>`
 facade owns the shadow canvas, ready promise, rAF loop, ResizeObserver/DPR
-handling, pointer mapping, export busy gate, and id register/unregister
+handling, pointer mapping, async-operation busy gate, and id register/unregister
 lifecycle. The raw `FiggyChart` wasm kernel remains available as an advanced
 escape hatch.
+
+Web cold-start and lifecycle contract:
+
+| Surface | Contract |
+|---|---|
+| Raw `FiggyChart` | `create` / `create_with_progress` submit and await the first empty-chart frame without compiling the picker. `await chart.prewarm_gpu_picking()` explicitly enables the renderer-owned picker and prepares the current chart; repeated calls and retries reuse renderer state, including its sticky activation error. `pick_point` uses the same preparation path. |
+| `<figgy-chart>` startup | The `web.create / first frame / finished` progress event and `figgy-ready` are published before background picker prewarm begins. A prewarm failure emits `figgy-error` with `operation: "prewarm_gpu_picking"` and `recoverable: true`; the fulfilled `ready` promise and rendering loop remain valid. |
+| Async serialization | One generation+kernel operation token covers connect/create, prewarm, export, `first_frame_ready` / `warm_up`, extent preparation, async fit, and pick. While `busy`, rAF drawing and pointer/proxy kernel access do not enter wasm; only the latest resize and a pending pointer release are retained and applied after settlement. |
+| Disconnect/reconnect | Disconnect invalidates the generation and cancels its rAF/observer. A kernel borrowed by an active operation is freed only after that operation settles. Its stale settlement cannot clear, resize, release, or free the new generation's kernel. |
+
+Web mutation API contracts:
+
+| API | Contract |
+|---|---|
+| `set_picked_points(json)` | Accepts a JSON string encoding `PickedPointsConfig` or `null`. It replaces only renderer-owned `Config.picked_points`; `null` clears the overlay. References retain `series_id`, optional `source_id`, and `point_index`, not copied point coordinates. |
+| `set_clear_color(r, g, b, a)` | Accepts linear RGBA components, clamps each to `0..1`, and schedules a surface redraw. Clear color is host/surface state and does not modify Config JSON or force an axis-raster refresh. |
 
 These ownership rules support the data fidelity contract: renderer/web keep
 source columns intact, and clipping, log-domain skips, NaN skips, and
@@ -631,6 +685,16 @@ path. Once a draw is required, data primitives are recorded again from the
 registered columns; there is no data-layer image cache, LOD, sampling, or
 decimation.
 
+The public `FiggyChart::load_demo()` call is compound failure-atomic. Its four
+columns, final `Config` and ordered series, active picker state, host metadata,
+and retained extent cache become visible together; any synchronous preparation
+failure leaves the complete prior state visible. The transaction submits no
+extent reduction, so invalidated extents are recreated by the normal lazy retry
+path after commit. An accepted call temporarily allocates one full
+column-pool-capacity GPU buffer plus four staging buffers. If a defragmentation
+backup already exists, peak pool storage is primary + backup + that temporary
+full-pool buffer.
+
 The standalone `Chart::{data_dirty,raster_dirty}` booleans remain a compatibility
 mechanism for low-level callers that own an external `Chart`. `prepare` does not
 read or consume those booleans; it writes the transform whenever the caller has
@@ -691,7 +755,7 @@ egui / winit / 기타 wgpu 30 호스트에 임베드할 수 있다.
 > 워크스페이스 루트 README. crate 3개로 구성:
 > **`crates/model`** — 순수 차트 모델이자 스키마 권위: 옵션/데이터 SSoT(`Config`, `SeriesConfig`), 리치텍스트/범례 문서 모델, 상호작용 정책(`Selectable`/`Draggable`/`Resizable`, `HitMap`, 단일 이동 경로 `Config::nudge`), 프리셋(`AxisPreset`, `ColorCycle`). 의존성 0, `serde` 는 선택 피쳐.
 > **`crates/renderer`** — 아래에서 문서화하는 wgpu + CPU 라스터 장치. 지속 chart registry(`ChartId` → `Config`, 순서 있는 `SeriesConfig`, selection, checked revision), `ColumnPool`, picker pipeline bundle과 파생된 단일 active-chart registry cache, pending GPU-pool maintenance를 소유한다. `model`을 의존하고 public 모듈을 re-export한다.
-> **`crates/web`** — 브라우저 패키지(`figgy`): public `<figgy-chart>` Custom Element facade와 advanced escape hatch로 남는 raw `FiggyChart` wasm kernel. facade가 shadow canvas, ready promise/event 수명주기, rAF loop, ResizeObserver/DPR 처리, pointer mapping, export busy gate, id 기반 등록 metadata, UI 파생 label/style/extent, Promise 변환을 소유한다. picker, pool, chart, maintenance 권위는 `Renderer`에 남는다. 브라우저 I/O: [WASM.md](crates/renderer/WASM.md) · Config JSON 스키마: [SCHEMA.md](crates/web/SCHEMA.md). 빌드 산출물(`crates/web/pkg/`)은 gitignore — `npx wasm-pack build crates/web --release --target web` 로 빌드.
+> **`crates/web`** — 브라우저 패키지(`figgy`): public `<figgy-chart>` Custom Element facade와 advanced escape hatch로 남는 raw `FiggyChart` wasm kernel. facade가 shadow canvas, ready promise/event 수명주기, rAF loop, ResizeObserver/DPR 처리, pointer mapping, async operation busy gate, id 기반 등록 metadata, UI 파생 label/style/extent, Promise 변환을 소유한다. picker, pool, chart, maintenance 권위는 `Renderer`에 남는다. 브라우저 I/O: [WASM.md](crates/renderer/WASM.md) · Config JSON 스키마: [SCHEMA.md](crates/web/SCHEMA.md). 빌드 산출물(`crates/web/pkg/`)은 gitignore — `npx wasm-pack build crates/web --release --target web` 로 빌드.
 > **웹 스튜디오** — [figgyplot.com](https://figgyplot.com/) 에 공개 웹 편집기가 있다. 브라우저 안에서 로컬 차트 데이터를 처리하고, CSV/TSV/Excel import, `.figgy` 프로젝트 열기, 같은 wasm/WebGPU 표면 기반 PNG export를 제공한다.
 
 - **GPU columnar pool**: 모든 데이터 컬럼을 하나의 GPU buffer 에 first-fit + 단편화 시 핑퐁 defrag. `HiLoColumnSource`로 올린 논리값은 f32 hi/lo 쌍으로 저장해 timestamp 크기의 offset도 GPU에서 보존한다. 업로드 시 auto-fit 용 스칼라 통계(min / max / 최소 양수)를 캐싱하고, 점선 호장 prefix 같은 per-point 지오메트리는 컴퓨트 스캔(`line_arc.wgsl`)이 제자리에서 계산.
@@ -707,7 +771,7 @@ egui / winit / 기타 wgpu 30 호스트에 임베드할 수 있다.
 - **성좌(constellation) 모드 (opt-in)**: `draw_style: { mode: "constellation", ... }`는 `ScatterLine` series만 지원한다. scatter 데이터 위치에 PSF 별을 놓고 반투명 선으로 연결한다. 파라미터 범위는 기계가 읽는 `draw_style_param_specs` metadata로 제공한다.
 - **단일 wgpu 메이저 (30)**: renderer와 활성 egui 통합은 wgpu 30을 공유한다. iced 0.14는 아직 wgpu 27 타입을 노출하므로 보존된 iced 통합 소스는 빌드 대상에 넣지 않는다.
 - **WebAssembly 지원**: 순수 Rust 라스터 스택(tiny-skia + fontdb + swash), async 초기화/export, 런타임 폰트 등록(`register_font`) 으로 CJK·커스텀 패밀리 지원.
-- **관찰 가능한 웹 초기화**: `<figgy-chart>`는 파이프라인 단계 사이에서 양보하며 `figgy-init-progress`를 발생시킨다. `first_frame_ready()` / `warm_up()`은 제출한 GPU 작업 완료를 기다리고, exact extent와 picker 파이프라인은 최초 사용 전까지 만들지 않는다.
+- **관찰 가능한 웹 초기화**: `<figgy-chart>`는 파이프라인 단계 사이에서 양보하며 `figgy-init-progress`를 발생시킨다. 첫 성공 frame과 `figgy-ready`를 먼저 공개한 뒤 renderer-owned GPU picker를 background prewarm한다. raw kernel은 `prewarm_gpu_picking()`을 명시 호출할 수 있고 exact extent pipeline은 최초 사용까지 lazy다.
 
 ### 렌더링 스타일 미리보기
 
@@ -816,7 +880,7 @@ renderer.draw(Color::WHITE, &items).unwrap();   // surface frame 획득 → prep
 
 ### `ColumnSource` — 데이터 어댑터 trait
 
-`Renderer::add_column` 의 시그니처는 `&dyn ColumnSource` 입니다 — 어떤 데이터 컨테이너든 본인 타입에 trait 구현하면 GPU pool 에 zero-copy 로 들어갑니다 (`Vec` 중간 alloc 0). 업로드 패스가 갓 쓴 바이트를 한 번 읽어 auto-fit 용 스칼라 통계(min / max / 최소 양수)를 캐싱합니다.
+`Renderer::add_column` 의 시그니처는 `&dyn ColumnSource` 입니다 — 어떤 데이터 컨테이너든 본인 타입에 trait 구현하면 GPU pool 에 zero-copy 로 들어갑니다 (`Vec` 중간 alloc 0). source가 GPU pair 기록과 최소 양수 통계를 같은 pass에서 수행하고, renderer는 wgpu 30의 write-only mapped byte를 다시 읽지 않습니다. `min` / `max`의 source-level 의미는 그대로입니다. scalar 최소 양수는 실제 업로드된 `(value as f32, 0)`, hi-lo 최소 양수는 기록된 `hi as f64 + lo as f64` 기준이며 finite positive 값만 포함합니다.
 
 `add_column` / `add_hilo_column` 은 새 id 등록용이다. 기존 id를 원자적으로
 교체할 때는 `upsert_column` / `upsert_hilo_column` 을 사용한다. `Renderer`는
@@ -834,13 +898,24 @@ pub trait ColumnSource {
     fn min(&self) -> f64;
     fn max(&self) -> f64;
 
-    /// **핵심**: GPU mapped staging buffer 의 `&mut [u8]` 에 little-endian f32 로 직접 채움.
+    /// source compatibility를 위해 유지되는 legacy scalar encoder.
     /// 호출자는 `dst.len() == self.len() * 4` 보장. null → `f32::NAN`.
     fn write_f32_le_into(&self, dst: &mut [u8]);
+
+    /// `(value as f32, 0)` pair와 통계를 같은 pass에서 기록.
+    fn write_f32_pair_le_into_with_stats(
+        &self,
+        writer: ColumnPairWriter<'_>,
+    ) -> ColumnUploadStats;
 }
 ```
 
 **빌트인 구현체**: `Column<f64>`, `Column<f32>`, `Column<Option<f64>>` (null → NaN).
+
+custom trait 구현은 fused method를 반드시 구현해야 한다. 불완전한 migration은
+upload 중 런타임 오류가 아니라 컴파일 오류로 드러난다. byte readback이나
+부정확한 silent fallback은 없다. `HiLoColumnSource`도 같은 이름의 fused
+method에서 `(hi, lo)` 기록과 reconstructed 통계를 함께 반환해야 한다.
 
 **사용자 정의 — 시계열 / DataFrame / mmap / FFI 데이터 등 어떤 출처든**:
 
@@ -861,12 +936,33 @@ impl renderer::ColumnSource for MyTimeSeries {
             dst[i*4..i*4+4].copy_from_slice(&(v as f32).to_le_bytes());
         }
     }
+    fn write_f32_pair_le_into_with_stats(
+        &self,
+        mut writer: renderer::ColumnPairWriter<'_>,
+    ) -> renderer::ColumnUploadStats {
+        debug_assert_eq!(writer.len(), self.samples.len());
+        let mut min_positive: Option<f64> = None;
+        for (index, &sample) in self.samples.iter().enumerate() {
+            let value = sample as f32;
+            writer.write_pair(index, value, 0.0);
+            let value = value as f64;
+            if value.is_finite() && value > 0.0
+                && min_positive.map_or(true, |current| value < current)
+            {
+                min_positive = Some(value);
+            }
+        }
+        renderer::ColumnUploadStats { min_positive }
+    }
 }
 
 renderer.add_column("temperature", &my_series)?;   // ↘ mapped staging memory 에 직접 write, Vec 0
 ```
 
-`f32` 네이티브 컨테이너면 `bytemuck::cast_slice` 한 줄로 `dst.copy_from_slice(...)` 가능 — 변환 비용도 0.
+`f32` 네이티브 컨테이너도 같은 fused 경로를 사용한다. 값을 순회하며
+`writer.write_pair(index, value, 0.0)`를 호출한다. `ColumnPairWriter`는 mapped
+byte 대신 논리적인 pair 쓰기만 공개하므로, wgpu나 `dst.copy_from_slice(...)`
+우회 없이도 active pool upload에 중간 allocation이 생기지 않는다.
 
 ### 네이티브 example — 사인 / RC / cross-section
 
@@ -1212,8 +1308,32 @@ mapping을 직접 소유한다. 이후 chart/pool이 변경되거나 renderer가
 
 web public surface도 같은 경계를 따른다. `<figgy-chart>` facade가 shadow
 canvas, ready promise, rAF loop, ResizeObserver/DPR 처리, pointer mapping,
-export busy gate, id 등록/해제 수명주기를 소유한다. raw `FiggyChart` wasm
+async operation busy gate, id 등록/해제 수명주기를 소유한다. raw `FiggyChart` wasm
 kernel은 advanced escape hatch로 남는다.
+
+웹 cold-start와 lifecycle 계약:
+
+| 표면 | 계약 |
+|---|---|
+| raw `FiggyChart` | `create` / `create_with_progress`는 picker를 컴파일하지 않고 빈 차트 첫 frame을 submit하고 완료까지 기다린다. `await chart.prewarm_gpu_picking()`은 renderer-owned picker를 명시적으로 enable하고 현재 chart를 준비한다. 반복 호출과 재시도는 sticky activation error를 포함한 renderer 상태를 재사용하며, `pick_point`도 같은 준비 경로를 쓴다. |
+| `<figgy-chart>` 시작 | `web.create / first frame / finished` progress event와 `figgy-ready`를 공개한 뒤 background picker prewarm을 시작한다. 실패하면 `operation: "prewarm_gpu_picking"`, `recoverable: true`인 `figgy-error`를 내보내지만 이미 fulfilled된 `ready`와 rendering loop는 유지한다. |
+| async 직렬화 | generation+kernel operation token 하나가 connect/create, prewarm, export, `first_frame_ready` / `warm_up`, extent 준비, async fit, pick을 포괄한다. `busy` 동안 rAF draw와 pointer/proxy kernel 접근은 wasm에 들어가지 않고, 최신 resize 하나와 pending pointer release만 보관해 settle 뒤 적용한다. |
+| disconnect/reconnect | disconnect는 generation을 무효화하고 해당 rAF/observer를 해제한다. active operation이 빌린 kernel은 operation settle 뒤에만 free한다. stale settle은 새 generation의 kernel token을 해제하거나 resize/release/free하지 못한다. |
+
+웹 mutation API 계약:
+
+| API | 계약 |
+|---|---|
+| `set_picked_points(json)` | `PickedPointsConfig` 또는 `null`을 인코딩한 JSON 문자열을 받는다. renderer-owned `Config.picked_points`만 교체하며 `null`은 overlay를 지운다. 참조는 복제한 좌표가 아니라 `series_id`, 선택적 `source_id`, `point_index`를 보관한다. |
+| `set_clear_color(r, g, b, a)` | linear RGBA 각 성분을 받아 `0..1`로 clamp하고 surface redraw를 예약한다. clear color는 host/surface 상태이므로 Config JSON을 바꾸거나 axis raster refresh를 강제하지 않는다. |
+
+public `FiggyChart::load_demo()`는 compound failure-atomic 호출이다. 4개 컬럼,
+최종 `Config`/ordered series, active picker, host metadata, 유효한 extent cache가
+한 번에 보이며, 동기 준비 오류가 나면 이전 전체 상태가 그대로 남는다. 이
+transaction 안에서는 extent reduction을 submit하지 않고, 무효화된 extent는
+commit 뒤 기존 lazy/retry 경로가 다시 만든다. 승인된 호출은 pool capacity와
+같은 임시 GPU buffer 하나와 staging buffer 4개를 추가로 사용한다. 기존 defrag
+backup이 있으면 순간 pool 저장량은 primary + backup + 임시 full-pool buffer다.
 
 이 소유권 규칙은 데이터 무왜곡 계약과 연결된다. renderer/web은 source
 column을 변형 저장하지 않고, clipping, log-domain skip, NaN skip,
