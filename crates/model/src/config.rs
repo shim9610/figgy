@@ -1,6 +1,7 @@
 use crate::color::Color;
+use crate::colormap::ColorMap;
 use crate::format::LabelFormat;
-use crate::layout::ChartArea;
+use crate::layout::{ChartArea, Side};
 use crate::line::LineStylePreset;
 use crate::text::RichText;
 
@@ -351,6 +352,116 @@ impl Default for PickedPointsConfig {
     }
 }
 
+/// A renderer-independent reference to one selected data primitive.
+///
+/// These records deliberately carry provenance only. Coordinates, bin edges,
+/// matrix values, and contour values remain in the caller's registered source
+/// columns / series configuration; the renderer never creates a CPU shadow of
+/// GPU-owned data just to remember a selection.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(tag = "kind", rename_all = "snake_case"))]
+pub enum PickedDataRef {
+    Point {
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        source_id: Option<String>,
+        series_id: String,
+        point_index: usize,
+    },
+    HistogramBin {
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        source_id: Option<String>,
+        series_id: String,
+        bin_index: usize,
+    },
+    MatrixCell {
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        source_id: Option<String>,
+        series_id: String,
+        /// Canonical x-axis cell/quad index, independent of matrix storage
+        /// orientation.
+        x_index: usize,
+        /// Canonical y-axis cell/quad index, independent of matrix storage
+        /// orientation.
+        y_index: usize,
+    },
+    ContourLevel {
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        source_id: Option<String>,
+        series_id: String,
+        /// Index into `ContourConfig.levels`; the level value itself stays in
+        /// the chart configuration SSoT.
+        level_index: usize,
+        /// Canonical x/y sample-cell indices containing the hit. They identify
+        /// the local piece without copying a reconstructed coordinate.
+        x_index: usize,
+        y_index: usize,
+    },
+}
+
+impl PickedDataRef {
+    pub fn source_id(&self) -> Option<&str> {
+        match self {
+            Self::Point { source_id, .. }
+            | Self::HistogramBin { source_id, .. }
+            | Self::MatrixCell { source_id, .. }
+            | Self::ContourLevel { source_id, .. } => source_id.as_deref(),
+        }
+    }
+
+    pub fn series_id(&self) -> &str {
+        match self {
+            Self::Point { series_id, .. }
+            | Self::HistogramBin { series_id, .. }
+            | Self::MatrixCell { series_id, .. }
+            | Self::ContourLevel { series_id, .. } => series_id,
+        }
+    }
+}
+
+/// Visual policy for typed data selections.
+///
+/// The selected records are small stable identities. Every overlay resolves
+/// its geometry from the same current `Config` and `ColumnPool` used by the
+/// normal draw, so an axis/range update cannot leave a stored CPU rectangle or
+/// contour segment behind.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct DataSelectionsConfig {
+    pub visible: bool,
+    pub refs: Vec<PickedDataRef>,
+    pub highlight_color: Color,
+    pub outline_width_px: f32,
+    pub point_radius_extra_px: f32,
+    pub contour_width_extra_px: f32,
+}
+
+impl Default for DataSelectionsConfig {
+    fn default() -> Self {
+        Self {
+            visible: true,
+            refs: Vec::new(),
+            highlight_color: Color::from_rgb8(255, 215, 0),
+            outline_width_px: 2.0,
+            point_radius_extra_px: 3.0,
+            contour_width_extra_px: 2.0,
+        }
+    }
+}
+
 impl DrawStyle {
     /// True for the default scientific path (used by serde skip).
     pub fn is_precise(&self) -> bool {
@@ -399,6 +510,137 @@ impl DrawStyle {
     }
 }
 
+/// Where the colourbar sits along its side when it is shorter than the data
+/// area (`length_frac < 1`).
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum BarAlign {
+    /// Top for a vertical bar, left for a horizontal one.
+    Start,
+    Center,
+    /// Bottom for a vertical bar, right for a horizontal one.
+    End,
+}
+
+/// The colourbar — and, because it owns the z axis, the chart's only z scale.
+///
+/// `axis` is the whole point. It is the same [`AxisOptions`] the four chart
+/// axes use, so `scale` (including `Logarithmic`), `min` / `max`,
+/// `major_spacing`, `minor_count`, `label_style` (including
+/// [`LabelFormat::Power`]), `tick`, and `title_option` all mean here exactly
+/// what they mean there — and tick generation, label formatting, and log
+/// handling are the same code, not a parallel implementation that drifts.
+///
+/// `axis.min` / `axis.max` are the authority on the z range. A helper may fill
+/// them in from matrix statistics, the way [`AxisOptions::auto_ticks`] fills in
+/// spacing, but nothing else stores a z range.
+///
+/// Consequences worth stating, because they are decisions and not accidents:
+///
+/// - A `Heatmap` / `Contour` / `HeatmapContour` series requires this to be
+///   `Some`. Without it there is no z range and no colormap anywhere, so there
+///   is no value to draw — the renderer rejects the series rather than
+///   inventing one.
+/// - To hide the bar, set `visible: false`. The options stay, the field still
+///   renders, and the band is given back to the data area.
+/// - There is therefore **one z scale per chart**. Several heatmaps in one
+///   chart share it; two colourbars with different scales is out of scope.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ColorBarOptions {
+    /// False draws nothing and reserves no band. Field series still render.
+    pub visible: bool,
+    /// Which margin the bar occupies. `Left` / `Right` give a vertical bar,
+    /// `Top` / `Bottom` a horizontal one, and this alone decides which.
+    ///
+    /// The discrete half of the bar's placement, the way
+    /// [`Legend::corner`](crate::legend::Legend::corner) is for the legend box;
+    /// `offset_x` / `offset_y` are the continuous half.
+    pub side: Side,
+    /// The strip's short dimension: width for a vertical bar, height for a
+    /// horizontal one.
+    pub thickness_px: f32,
+    /// Space between the data area and the strip.
+    pub gap_px: f32,
+    /// Strip length as a fraction of the data area's length along its side.
+    pub length_frac: f32,
+    pub align: BarAlign,
+    /// Free offset from the `side` + `align` anchor, in screen pixels — the
+    /// same contract as `Legend::offset_{x,y}` and the title / label offsets:
+    /// **margin-noncontributing**, so nudging the bar moves it without
+    /// reflowing the data area under the pointer.
+    ///
+    /// This is where a drag accumulates. Without it the bar had no continuous
+    /// position at all, which is what kept it out of the selection / drag /
+    /// resize machinery every other piece of chrome already uses.
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub colormap: ColorMap,
+    /// Colour for z values the ramp cannot place: NaN, and non-positive z on a
+    /// logarithmic colourbar. Fully transparent by default — "missing" reads as
+    /// absent rather than as some particular value.
+    pub nan_color: Color,
+    pub border_color: Color,
+    pub border_width: f32,
+    /// The z axis. See the type docs — this is the SSoT for the z range.
+    pub axis: AxisOptions,
+}
+
+impl ColorBarOptions {
+    /// Where `z` falls on the ramp, in `[0, 1]`, or `None` when the ramp cannot
+    /// place it — draw those with [`Self::nan_color`].
+    ///
+    /// This is **the** z→colour normalization. The CPU colourbar strip and the
+    /// GPU field sampler both go through this formula, so a cell and the tick
+    /// beside it cannot disagree about what a value looks like:
+    ///
+    /// ```text
+    /// linear: t = (z - min) / (max - min)
+    /// log:    t = (log10 z - log10 min) / (log10 max - log10 min)
+    /// ```
+    ///
+    /// clamped to `[0, 1]`. `None` for NaN, for a non-positive `z` on a
+    /// logarithmic bar (no logarithm to take), and for a degenerate range.
+    ///
+    /// Two things it deliberately does **not** do:
+    ///
+    /// - It does not clamp an unplaceable value to an endpoint. "Missing" and
+    ///   "smallest" are different facts, and `nan_color` is how the second one
+    ///   stays distinguishable.
+    /// - It does not apply `axis.inverted`. Inverting an axis moves where a
+    ///   value is *drawn*; it does not change which colour that value has. The
+    ///   strip's screen ends swap, its ramp does not reverse.
+    pub fn normalized_z(&self, z: f64) -> Option<f32> {
+        let axis = &self.axis;
+        if !z.is_finite() || !axis.min.is_finite() || !axis.max.is_finite() {
+            return None;
+        }
+        let (value, low, high) = match axis.scale {
+            AxisScale::Linear => (z, axis.min, axis.max),
+            AxisScale::Logarithmic => {
+                if z <= 0.0 || axis.min <= 0.0 || axis.max <= 0.0 {
+                    return None;
+                }
+                (z.log10(), axis.min.log10(), axis.max.log10())
+            }
+        };
+        let span = high - low;
+        if span <= 0.0 {
+            return None;
+        }
+        Some((((value - low) / span) as f32).clamp(0.0, 1.0))
+    }
+
+    /// The colour for `z`: the ramp where it can be placed, `nan_color` where it
+    /// cannot.
+    pub fn color_for_z(&self, z: f64) -> Color {
+        match self.normalized_z(z) {
+            Some(t) => self.colormap.sample(t),
+            None => self.nan_color,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Config {
@@ -415,6 +657,22 @@ pub struct Config {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub picked_points: Option<PickedPointsConfig>,
+    /// Typed point/bin/cell/contour selections. Additive to the legacy
+    /// `picked_points` field so existing documents and hosts keep their exact
+    /// point-only contract.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub picked_data: Option<DataSelectionsConfig>,
+    /// The colourbar and, with it, the chart's z scale. `None` (key absent in
+    /// JSON) is a chart with no z dimension — the shape of every document
+    /// written before field series existed.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub colorbar: Option<ColorBarOptions>,
     /// Chart-global render style. `Precise` (default, key absent in JSON) is
     /// identical to current rendering; every other variant is an opt-in
     /// stylized mode. No per-series mixing.
@@ -452,17 +710,7 @@ impl Config {
             &mut self.left_y,
             &mut self.right_y,
         ] {
-            axis.label_style.font_size *= s;
-            axis.label_style.label_offset_x *= s;
-            axis.label_style.label_offset_y *= s;
-            scale_rich_text(&mut axis.title_option.text, s);
-            axis.title_option.offset_x *= s;
-            axis.title_option.offset_y *= s;
-            axis.out_margin *= s;
-            axis.line_offset *= s;
-            axis.line_width *= s;
-            axis.major_tick_length *= s;
-            axis.minor_tick_length *= s;
+            scale_axis_in_place(axis, s);
         }
 
         self.grid.major_x_width *= s;
@@ -478,6 +726,24 @@ impl Config {
         if let Some(picked_points) = self.picked_points.as_mut() {
             picked_points.ring_width_px *= s;
             picked_points.radius_extra_px *= s;
+        }
+        if let Some(picked_data) = self.picked_data.as_mut() {
+            picked_data.outline_width_px *= s;
+            picked_data.point_radius_extra_px *= s;
+            picked_data.contour_width_extra_px *= s;
+        }
+
+        // The colourbar's axis goes through the same helper as the four chart
+        // axes — a new pixel field on `AxisOptions` must not be scalable on the
+        // chart axes and silently fixed on the colourbar's. `length_frac` is a
+        // fraction of the data area and stays put.
+        if let Some(bar) = self.colorbar.as_mut() {
+            bar.thickness_px *= s;
+            bar.gap_px *= s;
+            bar.border_width *= s;
+            bar.offset_x *= s;
+            bar.offset_y *= s;
+            scale_axis_in_place(&mut bar.axis, s);
         }
 
         // Sketch wobble dims are pixel-based visual dims too. Scaled only in
@@ -509,6 +775,22 @@ impl Config {
     }
 }
 
+/// Scale one axis' pixel-based dims. Shared by the four chart axes and the
+/// colourbar's z axis so the set of "which fields are pixels" is written once.
+fn scale_axis_in_place(axis: &mut AxisOptions, s: f32) {
+    axis.label_style.font_size *= s;
+    axis.label_style.label_offset_x *= s;
+    axis.label_style.label_offset_y *= s;
+    scale_rich_text(&mut axis.title_option.text, s);
+    axis.title_option.offset_x *= s;
+    axis.title_option.offset_y *= s;
+    axis.out_margin *= s;
+    axis.line_offset *= s;
+    axis.line_width *= s;
+    axis.major_tick_length *= s;
+    axis.minor_tick_length *= s;
+}
+
 /// Scale a `RichText`'s pixel-based dims: the document-level `font_size` and
 /// every per-segment `font_size` override.
 fn scale_rich_text(rt: &mut RichText, s: f32) {
@@ -517,6 +799,146 @@ fn scale_rich_text(rt: &mut RichText, s: f32) {
         if let Some(size) = seg.font_size.as_mut() {
             *size *= s;
         }
+    }
+}
+
+// z -> colour normalization. This is the formula the CPU strip and the GPU field
+// sampler share, so its edges are contracts, not incidental behaviour.
+#[cfg(test)]
+mod colorbar_normalization_tests {
+    use crate::color::Color;
+    use crate::colormap::ColorMap;
+    use crate::config::AxisScale;
+    use crate::default::default_colorbar_options;
+
+    #[test]
+    fn a_linear_bar_normalizes_and_clamps() {
+        let mut bar = default_colorbar_options();
+        bar.axis.min = -50.0;
+        bar.axis.max = 150.0;
+
+        assert_eq!(bar.normalized_z(-50.0), Some(0.0));
+        assert_eq!(bar.normalized_z(150.0), Some(1.0));
+        assert_eq!(bar.normalized_z(50.0), Some(0.5));
+        // Outside the range is the endpoint colour, not an out-of-range index.
+        assert_eq!(bar.normalized_z(-1000.0), Some(0.0));
+        assert_eq!(bar.normalized_z(1000.0), Some(1.0));
+    }
+
+    #[test]
+    fn a_logarithmic_bar_normalizes_in_decades_and_rejects_non_positive() {
+        let mut bar = default_colorbar_options();
+        bar.axis.scale = AxisScale::Logarithmic;
+        bar.axis.min = 1.0e-2;
+        bar.axis.max = 1.0e2;
+
+        assert_eq!(bar.normalized_z(1.0e-2), Some(0.0));
+        assert_eq!(bar.normalized_z(1.0e2), Some(1.0));
+        assert_eq!(bar.normalized_z(1.0), Some(0.5));
+
+        // No logarithm to take. These are `nan_color`'s job — clamping them to
+        // the low end would draw them as "smallest", which they are not.
+        assert_eq!(bar.normalized_z(0.0), None);
+        assert_eq!(bar.normalized_z(-1.0), None);
+    }
+
+    #[test]
+    fn unplaceable_values_and_ranges_yield_none() {
+        let mut bar = default_colorbar_options();
+        bar.axis.min = 0.0;
+        bar.axis.max = 1.0;
+        assert_eq!(bar.normalized_z(f64::NAN), None);
+        assert_eq!(bar.normalized_z(f64::INFINITY), None);
+
+        // A degenerate range has no ramp position for anything.
+        bar.axis.max = bar.axis.min;
+        assert_eq!(bar.normalized_z(0.0), None);
+
+        bar.axis.max = f64::NAN;
+        assert_eq!(bar.normalized_z(0.0), None);
+    }
+
+    #[test]
+    fn color_for_z_falls_back_to_nan_color() {
+        let mut bar = default_colorbar_options();
+        bar.axis.scale = AxisScale::Logarithmic;
+        bar.axis.min = 1.0;
+        bar.axis.max = 100.0;
+        bar.colormap = ColorMap::GrayScale;
+        bar.nan_color = Color::from_rgb8(255, 0, 255);
+
+        assert_eq!(bar.color_for_z(1.0), ColorMap::GrayScale.sample(0.0));
+        assert_eq!(bar.color_for_z(100.0), ColorMap::GrayScale.sample(1.0));
+        assert_eq!(bar.color_for_z(0.0), bar.nan_color);
+        assert_eq!(bar.color_for_z(f64::NAN), bar.nan_color);
+    }
+
+    // `inverted` is screen layout, not colour assignment.
+    #[test]
+    fn inverting_the_axis_does_not_reverse_the_ramp() {
+        let mut bar = default_colorbar_options();
+        bar.axis.min = 0.0;
+        bar.axis.max = 10.0;
+        let upright = bar.normalized_z(2.5);
+        bar.axis.inverted = true;
+        assert_eq!(bar.normalized_z(2.5), upright);
+    }
+}
+
+// High-DPI export invariance for the colourbar. `scaled(s)` must multiply every
+// pixel dim it owns — including the ones inside its axis, which is why the axis
+// scaling is a shared helper and not a loop over the four chart axes.
+#[cfg(test)]
+mod colorbar_scale_tests {
+    use crate::default::{default_colorbar_options, default_config};
+
+    #[test]
+    fn scaling_a_config_scales_the_colorbar_pixels_but_not_its_fractions() {
+        let mut cfg = default_config();
+        cfg.colorbar = Some(default_colorbar_options());
+        let before = cfg.colorbar.clone().expect("colourbar");
+
+        let scaled = cfg.scaled(2.0);
+        let after = scaled.colorbar.as_ref().expect("colourbar");
+
+        assert_eq!(after.thickness_px, before.thickness_px * 2.0);
+        assert_eq!(after.gap_px, before.gap_px * 2.0);
+        assert_eq!(after.border_width, before.border_width * 2.0);
+        assert_eq!(after.axis.out_margin, before.axis.out_margin * 2.0);
+        assert_eq!(
+            after.axis.major_tick_length,
+            before.axis.major_tick_length * 2.0
+        );
+        assert_eq!(
+            after.axis.minor_tick_length,
+            before.axis.minor_tick_length * 2.0
+        );
+        assert_eq!(after.axis.line_width, before.axis.line_width * 2.0);
+        assert_eq!(
+            after.axis.label_style.font_size,
+            before.axis.label_style.font_size * 2.0
+        );
+
+        // Fractions, ranges, and colours are not pixels.
+        assert_eq!(after.length_frac, before.length_frac);
+        assert_eq!(after.axis.min, before.axis.min);
+        assert_eq!(after.axis.max, before.axis.max);
+        assert_eq!(after.colormap, before.colormap);
+        assert_eq!(after.nan_color, before.nan_color);
+    }
+
+    // The colourbar's axis must scale by exactly the same rule as a chart axis:
+    // if the two ever diverge, a high-DPI export puts the bar's labels at a
+    // different size than the axis labels beside them.
+    #[test]
+    fn the_colorbar_axis_scales_like_a_chart_axis() {
+        let mut cfg = default_config();
+        let mut bar = default_colorbar_options();
+        bar.axis = cfg.left_y.clone();
+        cfg.colorbar = Some(bar);
+
+        let scaled = cfg.scaled(1.75);
+        assert_eq!(scaled.colorbar.expect("colourbar").axis, scaled.left_y);
     }
 }
 
@@ -535,7 +957,10 @@ pub use crate::legend::{
 // parameters sit INLINE next to the tag.
 #[cfg(all(test, feature = "serde"))]
 mod draw_style_serde_tests {
-    use super::{Config, DrawStyle, PickedPointRef, PickedPointsConfig, SketchOptions};
+    use super::{
+        Config, DataSelectionsConfig, DrawStyle, PickedDataRef, PickedPointRef, PickedPointsConfig,
+        SketchOptions,
+    };
     use crate::default::default_config;
 
     /// Serialized default config — `draw_style` is `Precise`, so the JSON has
@@ -674,6 +1099,76 @@ mod draw_style_serde_tests {
         let picked = cfg.picked_points.expect("picked points");
         assert_eq!(picked.ring_width_px, 4.0);
         assert_eq!(picked.radius_extra_px, 6.0);
+    }
+
+    #[test]
+    fn config_without_picked_data_key_deserializes_to_none() {
+        let cfg: Config =
+            serde_json::from_value(default_config_json()).expect("pre-data-pick document parses");
+        assert_eq!(cfg.picked_data, None);
+    }
+
+    #[test]
+    fn picked_data_empty_object_yields_defaults() {
+        let mut json = default_config_json();
+        json.as_object_mut()
+            .unwrap()
+            .insert("picked_data".into(), serde_json::json!({}));
+        let cfg: Config = serde_json::from_value(json).expect("empty picked_data parses");
+        assert_eq!(cfg.picked_data, Some(DataSelectionsConfig::default()));
+    }
+
+    #[test]
+    fn typed_picked_data_round_trips_with_minimal_provenance() {
+        let mut cfg = default_config();
+        cfg.picked_data = Some(DataSelectionsConfig {
+            refs: vec![
+                PickedDataRef::Point {
+                    source_id: None,
+                    series_id: "points".into(),
+                    point_index: 3,
+                },
+                PickedDataRef::HistogramBin {
+                    source_id: Some("source-a".into()),
+                    series_id: "hist".into(),
+                    bin_index: 4,
+                },
+                PickedDataRef::MatrixCell {
+                    source_id: None,
+                    series_id: "heat".into(),
+                    x_index: 5,
+                    y_index: 6,
+                },
+                PickedDataRef::ContourLevel {
+                    source_id: None,
+                    series_id: "contour".into(),
+                    level_index: 2,
+                    x_index: 7,
+                    y_index: 8,
+                },
+            ],
+            ..DataSelectionsConfig::default()
+        });
+
+        let json = serde_json::to_value(&cfg).expect("serialize typed selections");
+        assert_eq!(json["picked_data"]["refs"][0]["kind"], "point");
+        assert!(json["picked_data"]["refs"][0].get("source_id").is_none());
+        assert_eq!(json["picked_data"]["refs"][1]["kind"], "histogram_bin");
+        assert_eq!(json["picked_data"]["refs"][2]["kind"], "matrix_cell");
+        assert_eq!(json["picked_data"]["refs"][3]["kind"], "contour_level");
+        let back: Config = serde_json::from_value(json).expect("parse typed selections");
+        assert_eq!(back.picked_data, cfg.picked_data);
+    }
+
+    #[test]
+    fn scale_scales_typed_selection_pixel_dimensions() {
+        let mut cfg = default_config();
+        cfg.picked_data = Some(DataSelectionsConfig::default());
+        cfg.scale_in_place(2.0);
+        let picked = cfg.picked_data.expect("picked data");
+        assert_eq!(picked.outline_width_px, 4.0);
+        assert_eq!(picked.point_radius_extra_px, 6.0);
+        assert_eq!(picked.contour_width_extra_px, 4.0);
     }
 
     #[test]

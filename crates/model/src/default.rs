@@ -18,12 +18,13 @@
 //! match the host viewport).
 
 use crate::color::Color;
+use crate::colormap::ColorMap;
 use crate::config::{
-    AxisOptions, AxisScale, AxisTitleOptions, ChartTitleOptions, Config, DrawStyle, GridOptions,
-    LabelStyle, Legend, LegendCorner, TickVisibility,
+    AxisOptions, AxisScale, AxisTitleOptions, BarAlign, ChartTitleOptions, ColorBarOptions, Config,
+    DrawStyle, GridOptions, LabelStyle, Legend, LegendCorner, TickVisibility,
 };
 use crate::format::LabelFormat;
-use crate::layout::{ChartArea, Rect};
+use crate::layout::{ChartArea, Rect, Side};
 use crate::line::LineStylePreset;
 use crate::text::RichText;
 
@@ -137,6 +138,65 @@ pub fn default_axis_options_y() -> AxisOptions {
     }
 }
 
+/// The colourbar's z axis. Range is a 0..1 placeholder — replace with the
+/// matrix's z statistics.
+///
+/// Differs from the chart axes in two places, both because the strip is not a
+/// data area: `line_visible` is off (the strip's own border draws that edge, and
+/// a second line on top of it is just a thicker border), and ticks point
+/// `Outside` so they sit in the label margin instead of over the colours.
+pub fn default_axis_options_colorbar() -> AxisOptions {
+    let mut title_option = default_axis_title_options();
+    // A z title is the exception, not the rule — most colourbars are labelled
+    // by their tick values alone.
+    title_option.visible = false;
+    AxisOptions {
+        scale: AxisScale::Linear,
+        min: 0.0,
+        max: 1.0,
+        major_spacing: 0.2,
+        minor_count: 4,
+        inverted: false,
+        label_style: default_label_style_y(),
+        tick: TickVisibility::Outside,
+        title_option,
+        // Holds the tick labels only; no title band by default.
+        out_margin: 60.0,
+        line_offset: 0.0,
+        line_visible: false,
+        line_color: Color::BLACK,
+        line_width: 1.0,
+        line_style: LineStylePreset::Solid,
+        major_tick_length: 5.0,
+        minor_tick_length: 3.0,
+    }
+}
+
+/// Colourbar defaults — visible, on the right, three quarters of the data
+/// area's height, Viridis. `nan_color` is fully transparent: a value the ramp
+/// cannot place reads as absent rather than as some particular colour.
+///
+/// Not `Default::default()` on purpose, following this module: `axis.min` /
+/// `axis.max` carry user (or data) intent and the placeholder range is only
+/// meaningful as a starting point a caller replaces.
+pub fn default_colorbar_options() -> ColorBarOptions {
+    ColorBarOptions {
+        visible: true,
+        side: Side::Right,
+        thickness_px: 18.0,
+        gap_px: 24.0,
+        length_frac: 0.75,
+        align: BarAlign::Center,
+        offset_x: 0.0,
+        offset_y: 0.0,
+        colormap: ColorMap::Viridis,
+        nan_color: Color::from_rgba(0.0, 0.0, 0.0, 0.0),
+        border_color: Color::from_rgb8(80, 80, 80),
+        border_width: 1.0,
+        axis: default_axis_options_colorbar(),
+    }
+}
+
 /// Major grid on, minor grid off. Light gray lines.
 pub fn default_grid_options() -> GridOptions {
     GridOptions {
@@ -232,6 +292,10 @@ pub fn default_config() -> Config {
         grid: default_grid_options(),
         legend: default_legend(),
         picked_points: None,
+        picked_data: None,
+        // No z dimension until a field series needs one — see
+        // `default_colorbar_options`.
+        colorbar: None,
         // Precise mode. Stylized modes are opt-in (`DrawStyle::Sketch(..)`).
         draw_style: DrawStyle::Precise,
     }

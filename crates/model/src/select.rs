@@ -16,8 +16,9 @@ use crate::color::Color;
 use crate::config::{AxisOptions, Config, TickVisibility};
 use crate::drag::Draggable;
 use crate::layout::{
-    RectF, Side, axis_offset, axis_title_placement, axis_visibility_rect, chart_title_placement,
-    label_origin, label_rect, legend_rect,
+    RectF, Side, TitleBand, axis_offset, axis_title_placement, axis_visibility_rect,
+    chart_title_placement, colorbar_rect, colorbar_title_placement, label_origin, label_rect,
+    legend_rect, point_on_rect_side, rect_axis_visibility_rect,
 };
 use crate::resize::Resizable;
 use crate::text::MeasureText;
@@ -113,8 +114,9 @@ pub trait Selectable {
     /// Stable element name for hosts that key on identity rather than
     /// [`HitId`] (e.g. a wasm host exposing hit-testing as strings):
     /// `"data_area"`, `"axis_bottom"`, `"tick_labels_left"`,
-    /// `"axis_title_left"`, `"legend"`, `"chart_title"`. Custom host
-    /// elements keep the default.
+    /// `"axis_title_left"`, `"legend"`, `"chart_title"`,
+    /// `"colorbar_axis"`, `"colorbar_tick_labels"`, `"colorbar_title"`.
+    /// Custom host elements keep the default.
     fn element_id(&self) -> String {
         "custom".to_string()
     }
@@ -153,7 +155,12 @@ impl HitMap {
 
     /// The standard registration set for a single chart panel, back-to-front:
     /// data area → axes → tick-label bands → axis titles → legend → chart
-    /// title.
+    /// title → colourbar strip → colourbar axis → colourbar labels →
+    /// colourbar title.
+    ///
+    /// Colourbar chrome is last, so it wins over anything it overlaps. Its
+    /// smaller parts follow the strip, allowing the ticks, labels, and title to
+    /// be selected independently while the strip remains the resize target.
     pub fn standard_chart() -> Self {
         let mut map = Self::new();
         map.register(DataAreaElement);
@@ -168,6 +175,10 @@ impl HitMap {
         }
         map.register(LegendElement);
         map.register(ChartTitleElement);
+        map.register(ColorBarElement);
+        map.register(ColorBarAxisElement);
+        map.register(ColorBarLabelElement);
+        map.register(ColorBarTitleElement);
         map
     }
 
@@ -256,6 +267,31 @@ pub struct DataAreaElement;
 #[derive(Debug, Clone, PartialEq)]
 pub struct LegendElement;
 
+/// The colourbar strip.
+///
+/// Carries no side of its own: the bar's `side` lives in `Config.colorbar`, and
+/// a copy here would be a mirror that can disagree with what is drawn. That is
+/// also why the resize handles map to screen-side edges
+/// ([`Element::ColorBarEdge`](crate::layout::Element::ColorBarEdge)) and let
+/// nudge resolve which dimension each one drives.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColorBarElement;
+
+/// The colourbar axis line plus its major/minor tick band.
+///
+/// Like [`ColorBarElement`], this carries no mirrored `Side`; orientation is
+/// always read from `Config.colorbar` at the point of use.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColorBarAxisElement;
+
+/// The colourbar's tick-value label band.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColorBarLabelElement;
+
+/// The colourbar title, rotated on vertical bars.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColorBarTitleElement;
+
 fn axis_of<'a>(cfg: &'a Config, side: &Side) -> &'a AxisOptions {
     match side {
         Side::Top => &cfg.top_x,
@@ -263,6 +299,37 @@ fn axis_of<'a>(cfg: &'a Config, side: &Side) -> &'a AxisOptions {
         Side::Left => &cfg.left_y,
         Side::Right => &cfg.right_y,
     }
+}
+
+fn representative_label_extents(
+    axis: &AxisOptions,
+    measure: &dyn MeasureText,
+) -> crate::text::TextExtents {
+    let ls = &axis.label_style;
+    let sample_text = match &ls.format {
+        crate::format::LabelFormat::Timestamp(_) => "0000-00-00 00:00:00.000".to_string(),
+        _ => {
+            let digits = (ls.significant_digits.max(1) as usize) + 2;
+            "0".repeat(digits)
+        }
+    };
+    let sample = crate::text::RichText {
+        segments: crate::text::rich_segments_from_text(&sample_text),
+        color: ls.color,
+        font_size: ls.font_size,
+        font: ls.label_font.clone(),
+    };
+    measure.measure_rich(&sample)
+}
+
+fn visible_colorbar_rect(cfg: &Config) -> Option<(&crate::config::ColorBarOptions, RectF)> {
+    let bar = cfg.colorbar.as_ref()?;
+    if !bar.visible {
+        return None;
+    }
+    let da = cfg.data_area().ok()?;
+    let rect = colorbar_rect(&cfg.chart_area, &da, cfg.chart_title.top_margin, bar);
+    (rect.width > 0.0 && rect.height > 0.0).then_some((bar, rect))
 }
 
 impl Selectable for AxisElement {
@@ -304,20 +371,7 @@ impl Selectable for AxisLabelElement {
         // Representative label extents at the label font/size. Digits share
         // one height; width approximates a `significant_digits`-long number
         // (+2 for a sign / decimal point).
-        let sample_text = match &ls.format {
-            crate::format::LabelFormat::Timestamp(_) => "0000-00-00 00:00:00.000".to_string(),
-            _ => {
-                let digits = (ls.significant_digits.max(1) as usize) + 2;
-                "0".repeat(digits)
-            }
-        };
-        let sample = crate::text::RichText {
-            segments: crate::text::rich_segments_from_text(&sample_text),
-            color: ls.color,
-            font_size: ls.font_size,
-            font: ls.label_font.clone(),
-        };
-        let m = measure.measure_rich(&sample);
+        let m = representative_label_extents(axis, measure);
 
         let (dax, day) = (da.x as f32, da.y as f32);
         let (daw, dah) = (da.width as f32, da.height as f32);
@@ -372,8 +426,11 @@ impl Selectable for AxisTitleElement {
                 self.side.clone(),
                 &cfg.chart_area,
                 &da,
-                cfg.chart_title.top_margin,
-                axis.out_margin,
+                TitleBand {
+                    out_margin: axis.out_margin,
+                    chart_title_margin: cfg.chart_title.top_margin,
+                    edge_inset: cfg.colorbar_band(&self.side),
+                },
                 (to.offset_x, to.offset_y),
                 m,
             )
@@ -431,6 +488,117 @@ impl Selectable for DataAreaElement {
     }
 }
 
+impl Selectable for ColorBarElement {
+    fn element_id(&self) -> String {
+        "colorbar".to_string()
+    }
+
+    /// The strip rect — the same one the renderer paints, offsets included, so
+    /// the highlight box and the eight handles sit on the bar the user sees.
+    /// Ticks and labels are outside it, as they are for an axis.
+    fn bounds(&self, cfg: &Config, _measure: &dyn MeasureText) -> Option<RectF> {
+        visible_colorbar_rect(cfg).map(|(_, rect)| rect)
+    }
+
+    fn as_draggable(&self) -> Option<&dyn Draggable> {
+        Some(self)
+    }
+
+    fn as_resizable(&self) -> Option<&dyn Resizable> {
+        Some(self)
+    }
+}
+
+impl Selectable for ColorBarAxisElement {
+    fn element_id(&self) -> String {
+        "colorbar_axis".to_string()
+    }
+
+    fn bounds(&self, cfg: &Config, _measure: &dyn MeasureText) -> Option<RectF> {
+        let (bar, rect) = visible_colorbar_rect(cfg)?;
+        let axis = &bar.axis;
+        if !axis.line_visible && matches!(axis.tick, TickVisibility::None) {
+            return None;
+        }
+        Some(rect_axis_visibility_rect(bar.side.clone(), &rect, axis))
+    }
+
+    fn as_draggable(&self) -> Option<&dyn Draggable> {
+        Some(self)
+    }
+}
+
+impl Selectable for ColorBarLabelElement {
+    fn element_id(&self) -> String {
+        "colorbar_tick_labels".to_string()
+    }
+
+    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
+        let (bar, rect) = visible_colorbar_rect(cfg)?;
+        let axis = &bar.axis;
+        let ls = &axis.label_style;
+        if !ls.visible || !ls.label_visible {
+            return None;
+        }
+
+        let m = representative_label_extents(axis, measure);
+        let tick_position = point_on_rect_side(0.0, &bar.side, &rect);
+        let origin = label_origin(
+            bar.side.clone(),
+            tick_position,
+            axis.major_tick_length,
+            (ls.label_offset_x, ls.label_offset_y),
+            m,
+        );
+        let mut strip = label_rect(origin, m);
+        match bar.side {
+            Side::Top | Side::Bottom => {
+                strip.x = rect.x;
+                strip.width = rect.width;
+            }
+            Side::Left | Side::Right => {
+                strip.y = rect.y;
+                strip.height = rect.height;
+            }
+        }
+        let (dx, dy) = axis_offset(bar.side.clone(), axis.line_offset);
+        Some(strip.translated(dx, dy))
+    }
+
+    fn as_draggable(&self) -> Option<&dyn Draggable> {
+        Some(self)
+    }
+}
+
+impl Selectable for ColorBarTitleElement {
+    fn element_id(&self) -> String {
+        "colorbar_title".to_string()
+    }
+
+    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
+        let (bar, rect) = visible_colorbar_rect(cfg)?;
+        let title = &bar.axis.title_option;
+        if !title.visible || title.text.segments.is_empty() {
+            return None;
+        }
+        let m = measure.measure_rich(&title.text);
+        Some(
+            colorbar_title_placement(
+                bar.side.clone(),
+                &rect,
+                &bar.axis,
+                (title.offset_x, title.offset_y),
+                m,
+            )
+            .rect(m),
+        )
+    }
+
+    fn as_draggable(&self) -> Option<&dyn Draggable> {
+        Some(self)
+    }
+}
+
 impl Selectable for LegendElement {
     /// The whole content document is measured as one rich text (`'\n'`
     /// segments break lines); shared placement expands it by `padding` and
@@ -479,6 +647,10 @@ mod tests {
             AxisTitleElement { side: Side::Left }.element_id(),
             LegendElement.element_id(),
             ChartTitleElement.element_id(),
+            ColorBarElement.element_id(),
+            ColorBarAxisElement.element_id(),
+            ColorBarLabelElement.element_id(),
+            ColorBarTitleElement.element_id(),
         ];
         assert_eq!(
             ids,
@@ -488,7 +660,11 @@ mod tests {
                 "tick_labels_left",
                 "axis_title_left",
                 "legend",
-                "chart_title"
+                "chart_title",
+                "colorbar",
+                "colorbar_axis",
+                "colorbar_tick_labels",
+                "colorbar_title"
             ]
         );
     }
@@ -793,5 +969,193 @@ mod tests {
             .hit_test(&cfg, &FixedMeasure, tb.x + 1.0, tb.y + 1.0)
             .unwrap();
         assert_eq!(hit, id);
+    }
+
+    // ── Colourbar ──────────────────────────────────────────────────────────
+
+    fn cfg_with_colorbar(side: Side) -> Config {
+        let mut cfg = cfg_800x600();
+        let mut bar = crate::default::default_colorbar_options();
+        bar.side = side;
+        cfg.colorbar = Some(bar);
+        cfg
+    }
+
+    /// The bar is selectable like every other piece of chrome, and its bounds
+    /// are the strip the renderer paints — not the band, and not the labels.
+    #[test]
+    fn the_colorbar_is_selectable_and_its_bounds_are_the_strip() {
+        for side in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
+            let cfg = cfg_with_colorbar(side.clone());
+            let da = cfg.data_area().expect("data area");
+            let bar = cfg.colorbar.as_ref().expect("colourbar");
+            let expected = colorbar_rect(&cfg.chart_area, &da, cfg.chart_title.top_margin, bar);
+            assert_eq!(
+                ColorBarElement.bounds(&cfg, &FixedMeasure),
+                Some(expected),
+                "{side:?}"
+            );
+
+            // And it is reachable through the standard hit map.
+            let map = HitMap::standard_chart();
+            let id = map
+                .hit_test(
+                    &cfg,
+                    &FixedMeasure,
+                    expected.x + expected.width * 0.5,
+                    expected.y + expected.height * 0.5,
+                )
+                .expect("the strip is hit-testable");
+            assert_eq!(map.get(id).expect("element").element_id(), "colorbar");
+        }
+    }
+
+    /// No colourbar, or a hidden one, is not selectable — the same rule the
+    /// legend and the titles follow when they are not drawn.
+    #[test]
+    fn an_absent_or_hidden_colorbar_is_not_selectable() {
+        let cfg = cfg_800x600();
+        assert_eq!(ColorBarElement.bounds(&cfg, &FixedMeasure), None);
+
+        let mut hidden = cfg_with_colorbar(Side::Right);
+        hidden.colorbar.as_mut().expect("colourbar").visible = false;
+        assert_eq!(ColorBarElement.bounds(&hidden, &FixedMeasure), None);
+
+        // A degenerate strip has nothing to select either.
+        let mut degenerate = cfg_with_colorbar(Side::Right);
+        degenerate.colorbar.as_mut().expect("colourbar").length_frac = 0.0;
+        assert_eq!(ColorBarElement.bounds(&degenerate, &FixedMeasure), None);
+    }
+
+    /// Resizable elements get the eight handles automatically. Before this the
+    /// data area was the only one; the bar is the second.
+    #[test]
+    fn the_colorbar_selection_box_carries_resize_handles() {
+        let cfg = cfg_with_colorbar(Side::Right);
+        let box_ = ColorBarElement
+            .selection_box(&cfg, &FixedMeasure)
+            .expect("selection box");
+        assert_eq!(box_.handles.len(), 8);
+        assert_eq!(
+            box_.rect,
+            ColorBarElement
+                .bounds(&cfg, &FixedMeasure)
+                .expect("bounds")
+                .expanded(SELECTION_PADDING)
+        );
+
+        // Non-resizable chrome still has none, so the handles mean something.
+        let title = ChartTitleElement.selection_box(&cfg, &FixedMeasure);
+        assert!(title.is_none_or(|b| b.handles.is_empty()));
+    }
+
+    #[test]
+    fn colorbar_axis_labels_and_title_are_independent_hit_targets() {
+        for side in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
+            let mut cfg = cfg_with_colorbar(side.clone());
+            {
+                let bar = cfg.colorbar.as_mut().expect("colourbar");
+                bar.axis.title_option.visible = true;
+                bar.axis.title_option.text =
+                    RichText::plain("z", crate::color::Color::BLACK, 12.0, "");
+            }
+            let map = HitMap::standard_chart();
+
+            let axis = ColorBarAxisElement
+                .bounds(&cfg, &FixedMeasure)
+                .expect("axis bounds");
+            let axis_hit = map
+                .hit_test(
+                    &cfg,
+                    &FixedMeasure,
+                    axis.x + axis.width * 0.5,
+                    axis.y + axis.height * 0.5,
+                )
+                .expect("axis hit");
+            assert_eq!(map.get(axis_hit).unwrap().element_id(), "colorbar_axis");
+            let axis_selection = map
+                .selection_box(axis_hit, &cfg, &FixedMeasure)
+                .expect("axis selection box");
+            assert_eq!(axis_selection.rect, axis.expanded(SELECTION_PADDING));
+            assert!(axis_selection.handles.is_empty());
+
+            let labels = ColorBarLabelElement
+                .bounds(&cfg, &FixedMeasure)
+                .expect("label bounds");
+            let label_point = match side {
+                Side::Top | Side::Bottom => (labels.x + 1.0, labels.y + labels.height * 0.5),
+                Side::Left | Side::Right => (labels.x + labels.width * 0.5, labels.y + 1.0),
+            };
+            let label_hit = map
+                .hit_test(&cfg, &FixedMeasure, label_point.0, label_point.1)
+                .expect("label hit");
+            assert_eq!(
+                map.get(label_hit).unwrap().element_id(),
+                "colorbar_tick_labels"
+            );
+            let label_selection = map
+                .selection_box(label_hit, &cfg, &FixedMeasure)
+                .expect("label selection box");
+            assert_eq!(label_selection.rect, labels.expanded(SELECTION_PADDING));
+            assert!(label_selection.handles.is_empty());
+
+            let title = ColorBarTitleElement
+                .bounds(&cfg, &FixedMeasure)
+                .expect("title bounds");
+            let title_hit = map
+                .hit_test(
+                    &cfg,
+                    &FixedMeasure,
+                    title.x + title.width * 0.5,
+                    title.y + title.height * 0.5,
+                )
+                .expect("title hit");
+            assert_eq!(map.get(title_hit).unwrap().element_id(), "colorbar_title");
+            let title_selection = map
+                .selection_box(title_hit, &cfg, &FixedMeasure)
+                .expect("title selection box");
+            assert_eq!(title_selection.rect, title.expanded(SELECTION_PADDING));
+            assert!(title_selection.handles.is_empty());
+        }
+    }
+
+    #[test]
+    fn colorbar_detail_bounds_follow_the_painted_strip_offset() {
+        let mut cfg = cfg_with_colorbar(Side::Right);
+        {
+            let bar = cfg.colorbar.as_mut().expect("colourbar");
+            bar.length_frac = 0.4;
+            bar.align = crate::config::BarAlign::End;
+            bar.axis.title_option.visible = true;
+            bar.axis.title_option.text =
+                RichText::plain("intensity", crate::color::Color::BLACK, 12.0, "");
+        }
+        let before = [
+            ColorBarAxisElement.bounds(&cfg, &FixedMeasure).unwrap(),
+            ColorBarLabelElement.bounds(&cfg, &FixedMeasure).unwrap(),
+            ColorBarTitleElement.bounds(&cfg, &FixedMeasure).unwrap(),
+        ];
+        {
+            let bar = cfg.colorbar.as_mut().expect("colourbar");
+            bar.offset_x += 17.0;
+            bar.offset_y -= 11.0;
+        }
+        let after = [
+            ColorBarAxisElement.bounds(&cfg, &FixedMeasure).unwrap(),
+            ColorBarLabelElement.bounds(&cfg, &FixedMeasure).unwrap(),
+            ColorBarTitleElement.bounds(&cfg, &FixedMeasure).unwrap(),
+        ];
+        for (before, after) in before.into_iter().zip(after) {
+            assert_eq!(after, before.translated(17.0, -11.0));
+        }
+    }
+
+    #[test]
+    fn hidden_colorbar_details_have_no_bounds() {
+        let mut cfg = cfg_with_colorbar(Side::Right);
+        cfg.colorbar.as_mut().unwrap().visible = false;
+        assert!(ColorBarAxisElement.bounds(&cfg, &FixedMeasure).is_none());
+        assert!(ColorBarLabelElement.bounds(&cfg, &FixedMeasure).is_none());
+        assert!(ColorBarTitleElement.bounds(&cfg, &FixedMeasure).is_none());
     }
 }

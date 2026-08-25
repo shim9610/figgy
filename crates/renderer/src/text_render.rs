@@ -1,4 +1,4 @@
-//! Pure text rendering onto the CPU raster [`Canvas`](crate::raster::Canvas).
+//! Pure text rendering onto the CPU raster [`Canvas`].
 //!
 //! No window or event-loop dependency — the caller passes in a canvas and we
 //! draw into it. Liberation Sans (SIL OFL 1.1) is bundled in four styles, so
@@ -905,7 +905,7 @@ pub fn draw_rich_text(canvas: &mut Canvas, rt: &RichText, origin: (f32, f32), po
 /// centering math works unchanged for multi-line text.
 pub use crate::text::TextExtents as TextMetrics;
 
-/// CPU-raster implementation of the model crate's [`MeasureText`] contract.
+/// CPU-raster implementation of the model crate's [`crate::MeasureText`] contract.
 ///
 /// Inject this wherever the model needs glyph extents — element bounds for
 /// `Selectable::selection_box`, hit tests, etc. — so model-side geometry uses

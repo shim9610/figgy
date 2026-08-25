@@ -12,12 +12,15 @@ use std::fmt;
 use std::sync::Arc;
 
 use futures_channel::oneshot;
-use wgpu::util::DeviceExt;
 
 use crate::data_render::column_pool::PoolIdentity;
 use crate::data_render::{
     ColumnHandle, ColumnId, ColumnPool, ScatterStyleMapMeta, ScatterStyleOverrideGpu,
     ScatterStyleSlotGpu, ScatterTransform,
+};
+use crate::gpu_memory::{
+    ChargeTally, GpuByteCharge, GpuLedger, GpuResourceKind, SharedCharge, charged_buffer,
+    charged_buffer_init, shared_charge,
 };
 #[cfg(test)]
 use crate::init::observe_result;
@@ -56,6 +59,7 @@ pub enum GpuPickError {
     AllocationFailed {
         resource: &'static str,
     },
+    AsyncCompileFailed(String),
     MissingColumn(ColumnId),
     StaleColumn {
         series_id: String,
@@ -103,6 +107,9 @@ impl fmt::Display for GpuPickError {
             ),
             Self::AllocationFailed { resource } => {
                 write!(f, "GPU pick could not allocate {resource}")
+            }
+            Self::AsyncCompileFailed(reason) => {
+                write!(f, "GPU pick pipeline compile failed: {reason}")
             }
             Self::MissingColumn(id) => write!(f, "GPU pick column is missing: {id}"),
             Self::StaleColumn {
@@ -239,7 +246,7 @@ struct PickCandidateGpu {
     _pad: u32,
 }
 
-const _: () = assert!(std::mem::size_of::<PickQueryParamsGpu>() == 192);
+const _: () = assert!(std::mem::size_of::<PickQueryParamsGpu>() == 208);
 const _: () = assert!(std::mem::size_of::<PickCandidateGpu>() == CANDIDATE_BYTES as usize);
 
 #[derive(Clone)]
@@ -252,6 +259,9 @@ struct PickIdentity {
 pub(crate) struct PickPipelineBundle {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
+    /// Where pick scratch is charged. Carried by the bundle so every
+    /// `&self` query path can charge without a per-call argument.
+    ledger: Arc<GpuLedger>,
     query_data_bgl: wgpu::BindGroupLayout,
     query_work_bgl: wgpu::BindGroupLayout,
     reduce_bgl: wgpu::BindGroupLayout,
@@ -263,6 +273,9 @@ pub(crate) struct PickPipelineBundle {
 
 #[derive(Clone)]
 struct PickSeriesGpu {
+    /// Charge for this series' gate masks, workgroup candidates, params, style
+    /// rows, and scalar result. Shared across clones like `ReduceResources`.
+    _charge: SharedCharge,
     pool_identity: PoolIdentity,
     x_column: ColumnId,
     y_column: ColumnId,
@@ -309,6 +322,10 @@ struct ReduceResources {
     final_result: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     capacity: usize,
+    /// Charge for `candidates` + `final_result`. Shared because this struct is
+    /// cloned and the clones hold the same device buffers — see
+    /// [`SharedCharge`].
+    _charge: SharedCharge,
 }
 
 struct PickRegistry {
@@ -392,6 +409,7 @@ fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
 fn create_pipeline_bundle_observed(
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
+    ledger: Arc<GpuLedger>,
     observer: &mut dyn FnMut(InitEvent),
 ) -> Arc<PickPipelineBundle> {
     started(observer, INIT_SCOPE, "setup");
@@ -445,6 +463,7 @@ fn create_pipeline_bundle_observed(
     };
 
     Arc::new(PickPipelineBundle {
+        ledger,
         gate_x: observe_value(observer, INIT_SCOPE, "pick_gate_x", || {
             pipeline(
                 &query_layout,
@@ -485,9 +504,25 @@ fn create_pipeline_bundle_observed(
 async fn create_pipeline_bundle_observed_async(
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
+    ledger: Arc<GpuLedger>,
     observer: &mut dyn FnMut(InitEvent),
-) -> Arc<PickPipelineBundle> {
+) -> Result<Arc<PickPipelineBundle>, GpuPickError> {
     use crate::init::{observe_value_async, yield_init_frame};
+    #[cfg(target_arch = "wasm32")]
+    crate::init::prewarm_compute_entries_js(
+        &device,
+        "gpu.pick.async",
+        include_str!("gpu_pick.wgsl"),
+        &[
+            ("pick_gate_x", "pick_gate_x"),
+            ("pick_gate_y", "pick_gate_y"),
+            ("pick_exact_candidates", "pick_exact_candidates"),
+            ("pick_reduce_candidates", "pick_reduce_candidates"),
+        ],
+        observer,
+    )
+    .await
+    .map_err(GpuPickError::AsyncCompileFailed)?;
     started(observer, INIT_SCOPE, "setup");
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("figgy exact GPU pick shader"),
@@ -572,7 +607,7 @@ async fn create_pipeline_bundle_observed_async(
     })
     .await;
 
-    Arc::new(PickPipelineBundle {
+    Ok(Arc::new(PickPipelineBundle {
         gate_x,
         gate_y,
         exact,
@@ -582,19 +617,27 @@ async fn create_pipeline_bundle_observed_async(
         reduce_bgl,
         device,
         queue,
-    })
+        ledger,
+    }))
 }
 
+/// Every pick buffer goes through here, and the tally is not optional, so a new
+/// pick allocation cannot skip the ledger.
 fn create_buffer_checked(
+    tally: &ChargeTally,
     device: &wgpu::Device,
     desc: &wgpu::BufferDescriptor<'_>,
     resource: &'static str,
 ) -> Result<wgpu::Buffer, GpuPickError> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.create_buffer(desc)))
-        .map_err(|_| GpuPickError::AllocationFailed { resource })
+    // gpu-alloc: PickScratch
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        charged_buffer(tally, device, desc)
+    }))
+    .map_err(|_| GpuPickError::AllocationFailed { resource })
 }
 
 fn create_buffer_init_checked(
+    tally: &ChargeTally,
     device: &wgpu::Device,
     label: &'static str,
     contents: &[u8],
@@ -602,11 +645,16 @@ fn create_buffer_init_checked(
     resource: &'static str,
 ) -> Result<wgpu::Buffer, GpuPickError> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(label),
-            contents,
-            usage,
-        })
+        // gpu-alloc: PickScratch
+        charged_buffer_init(
+            tally,
+            device,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents,
+                usage,
+            },
+        )
     }))
     .map_err(|_| GpuPickError::AllocationFailed { resource })
 }
@@ -805,19 +853,23 @@ impl PickPipelineBundle {
     pub(crate) fn new_observed(
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
+        ledger: Arc<GpuLedger>,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<Arc<Self>, GpuPickError> {
         validate_device_limits(&device)?;
-        Ok(create_pipeline_bundle_observed(device, queue, observer))
+        Ok(create_pipeline_bundle_observed(
+            device, queue, ledger, observer,
+        ))
     }
 
     pub(crate) async fn new_observed_async(
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
+        ledger: Arc<GpuLedger>,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<Arc<Self>, GpuPickError> {
         validate_device_limits(&device)?;
-        Ok(create_pipeline_bundle_observed_async(device, queue, observer).await)
+        create_pipeline_bundle_observed_async(device, queue, ledger, observer).await
     }
 }
 
@@ -837,16 +889,18 @@ impl GpuPickEngine {
         observe_result(observer, INIT_SCOPE, "limits", || {
             validate_device_limits(&device)
         })?;
-        let bundle = create_pipeline_bundle_observed(device, queue, observer);
+        let bundle =
+            create_pipeline_bundle_observed(device, queue, Arc::new(GpuLedger::new()), observer);
         let reduce = observe_result(observer, INIT_SCOPE, "initial_reduce_resources", || {
-            Self::create_reduce_resources(&bundle.device, &bundle.reduce_bgl, 1)
+            Self::create_reduce_resources(&bundle.device, &bundle.ledger, &bundle.reduce_bgl, 1)
         })?;
         Ok(Self::from_bundle_and_reduce(bundle, reduce))
     }
 
     #[allow(dead_code)] // Consumed by renderer ownership integration in P-02.
     pub(crate) fn from_bundle(bundle: Arc<PickPipelineBundle>) -> Result<Self, GpuPickError> {
-        let reduce = Self::create_reduce_resources(&bundle.device, &bundle.reduce_bgl, 1)?;
+        let reduce =
+            Self::create_reduce_resources(&bundle.device, &bundle.ledger, &bundle.reduce_bgl, 1)?;
         Ok(Self::from_bundle_and_reduce(bundle, reduce))
     }
 
@@ -900,10 +954,12 @@ impl GpuPickEngine {
 
     fn create_reduce_resources(
         device: &wgpu::Device,
+        ledger: &Arc<GpuLedger>,
         layout: &wgpu::BindGroupLayout,
         candidate_count: usize,
     ) -> Result<ReduceResources, GpuPickError> {
         let capacity = candidate_count.max(1);
+        let tally = ChargeTally::new();
         let count = capacity as u64;
         let candidate_size =
             count
@@ -914,6 +970,7 @@ impl GpuPickEngine {
                     limit: device.limits().max_buffer_size,
                 })?;
         let candidates = create_buffer_checked(
+            &tally,
             device,
             &wgpu::BufferDescriptor {
                 label: Some("figgy GPU pick per-series candidates"),
@@ -924,6 +981,7 @@ impl GpuPickEngine {
             "per-series candidate buffer",
         )?;
         let final_result = create_buffer_checked(
+            &tally,
             device,
             &wgpu::BufferDescriptor {
                 label: Some("figgy GPU pick final scalar"),
@@ -956,6 +1014,7 @@ impl GpuPickEngine {
             final_result,
             bind_group,
             capacity,
+            _charge: shared_charge(tally, ledger, GpuResourceKind::PickScratch),
         })
     }
 
@@ -968,6 +1027,7 @@ impl GpuPickEngine {
         } else {
             Self::create_reduce_resources(
                 &self.bundle.device,
+                &self.bundle.ledger,
                 &self.bundle.reduce_bgl,
                 candidate_count,
             )
@@ -1135,7 +1195,11 @@ impl GpuPickEngine {
             });
         }
 
+        // Every buffer this slot owns is tallied by the creation helpers, so the
+        // charge below cannot disagree with what was allocated.
+        let series_tally = ChargeTally::new();
         let gate_masks = create_buffer_checked(
+            &series_tally,
             &self.bundle.device,
             &wgpu::BufferDescriptor {
                 label: Some("figgy GPU pick XY gate masks"),
@@ -1146,6 +1210,7 @@ impl GpuPickEngine {
             "XY gate-mask buffer",
         )?;
         let workgroup_candidates = create_buffer_checked(
+            &series_tally,
             &self.bundle.device,
             &wgpu::BufferDescriptor {
                 label: Some("figgy GPU pick exact workgroup candidates"),
@@ -1156,6 +1221,7 @@ impl GpuPickEngine {
             "exact workgroup-candidate buffer",
         )?;
         let query_params = create_buffer_checked(
+            &series_tally,
             &self.bundle.device,
             &wgpu::BufferDescriptor {
                 label: Some("figgy GPU pick query params"),
@@ -1166,6 +1232,7 @@ impl GpuPickEngine {
             "query uniform",
         )?;
         let style_slots = create_buffer_init_checked(
+            &series_tally,
             &self.bundle.device,
             "figgy GPU pick style slots",
             slot_bytes,
@@ -1173,6 +1240,7 @@ impl GpuPickEngine {
             "style slot buffer",
         )?;
         let style_overrides = create_buffer_init_checked(
+            &series_tally,
             &self.bundle.device,
             "figgy GPU pick style overrides",
             override_bytes,
@@ -1180,6 +1248,7 @@ impl GpuPickEngine {
             "style override buffer",
         )?;
         let result = create_buffer_checked(
+            &series_tally,
             &self.bundle.device,
             &wgpu::BufferDescriptor {
                 label: Some("figgy GPU pick series scalar"),
@@ -1261,9 +1330,18 @@ impl GpuPickEngine {
             source_id: descriptor.source_id,
             series_id: descriptor.series_id,
         };
+        // One charge for the whole slot: the style rows and params live inside
+        // the bind groups above, so per-buffer tracking cannot see them. The
+        // tally already holds the sizes the device was handed, so there is no
+        // second list of terms to keep in step with the creations.
         Ok(PickSeriesSlot {
             identity,
             gpu: PickSeriesGpu {
+                _charge: shared_charge(
+                    series_tally,
+                    &self.bundle.ledger,
+                    GpuResourceKind::PickScratch,
+                ),
                 pool_identity: pool.identity(),
                 x_column: descriptor.x_column,
                 y_column: descriptor.y_column,
@@ -1836,7 +1914,9 @@ impl GpuPickEngine {
                 .write_buffer(&series.query_params, 0, bytemuck::bytes_of(&params));
         }
 
+        let readback_tally = ChargeTally::new();
         let readback = create_buffer_checked(
+            &readback_tally,
             &self.bundle.device,
             &wgpu::BufferDescriptor {
                 label: Some("figgy GPU pick detached readback"),
@@ -1953,6 +2033,7 @@ impl GpuPickEngine {
                 readback,
                 receiver,
                 identities: Arc::clone(&self.registry.identities),
+                _charge: readback_tally.into_charge(&self.bundle.ledger, GpuResourceKind::Readback),
             },
         })
     }
@@ -1965,6 +2046,9 @@ enum GpuPickTicketState {
         readback: wgpu::Buffer,
         receiver: oneshot::Receiver<Result<(), wgpu::BufferAsyncError>>,
         identities: Arc<[PickIdentity]>,
+        /// Credited when the ticket resolves or is abandoned — either way the
+        /// MAP_READ buffer goes with it.
+        _charge: GpuByteCharge,
     },
 }
 
@@ -1986,6 +2070,8 @@ impl GpuPickTicket {
             readback,
             receiver,
             identities,
+            // Dropped here: resolving consumes the readback buffer.
+            _charge,
         } = self.state
         else {
             return Ok(None);
@@ -2266,6 +2352,8 @@ mod tests {
                 data_max_lo: [0.0; 2],
                 scale_log: [0.0; 2],
                 pixel_to_ndc: [0.02; 2],
+                data_to_panel_scale: [1.0; 2],
+                data_to_panel_offset: [0.0; 2],
                 style_params: [[0.0; 4]; 3],
             },
             chart_rect_px: [0.0, 0.0, 100.0, 100.0],
@@ -2444,6 +2532,7 @@ mod tests {
         let bundle = PickPipelineBundle::new_observed(
             Arc::clone(&device),
             Arc::clone(&queue),
+            Arc::new(GpuLedger::new()),
             &mut |event| events.push(event),
         )
         .unwrap();
@@ -2479,19 +2568,21 @@ mod tests {
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
-        let mut pool = ColumnPool::new(&device, 64 * 1024).unwrap();
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            64 * 1024,
+        )
+        .unwrap();
         pool.add_column(
             "transition-drop-x".into(),
             &f32_column(vec![5.0]),
-            &device,
-            &queue,
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
         )
         .unwrap();
         pool.add_column(
             "transition-drop-y".into(),
             &f32_column(vec![5.0]),
-            &device,
-            &queue,
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
         )
         .unwrap();
         let mut engine = GpuPickEngine::new(device, queue).unwrap();
@@ -2529,11 +2620,23 @@ mod tests {
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
-        let mut pool = ColumnPool::new(&device, 64 * 1024).unwrap();
-        pool.add_column("identity-x".into(), &f32_column(vec![5.0]), &device, &queue)
-            .unwrap();
-        pool.add_column("identity-y".into(), &f32_column(vec![5.0]), &device, &queue)
-            .unwrap();
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            64 * 1024,
+        )
+        .unwrap();
+        pool.add_column(
+            "identity-x".into(),
+            &f32_column(vec![5.0]),
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        )
+        .unwrap();
+        pool.add_column(
+            "identity-y".into(),
+            &f32_column(vec![5.0]),
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        )
+        .unwrap();
         let mut engine = GpuPickEngine::new(device, queue).unwrap();
         engine
             .add_series(
@@ -2574,11 +2677,23 @@ mod tests {
             return;
         };
         let make_pool = || {
-            let mut pool = ColumnPool::new(&device, 64 * 1024).unwrap();
-            pool.add_column("foreign-x".into(), &f32_column(vec![5.0]), &device, &queue)
-                .unwrap();
-            pool.add_column("foreign-y".into(), &f32_column(vec![5.0]), &device, &queue)
-                .unwrap();
+            let mut pool = ColumnPool::new(
+                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+                64 * 1024,
+            )
+            .unwrap();
+            pool.add_column(
+                "foreign-x".into(),
+                &f32_column(vec![5.0]),
+                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            )
+            .unwrap();
+            pool.add_column(
+                "foreign-y".into(),
+                &f32_column(vec![5.0]),
+                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            )
+            .unwrap();
             pool
         };
         let first_pool = make_pool();
@@ -2623,11 +2738,23 @@ mod tests {
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
-        let mut pool = ColumnPool::new(&device, 64 * 1024).unwrap();
-        pool.add_column("grow-x".into(), &f32_column(vec![5.0]), &device, &queue)
-            .unwrap();
-        pool.add_column("grow-y".into(), &f32_column(vec![5.0]), &device, &queue)
-            .unwrap();
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            64 * 1024,
+        )
+        .unwrap();
+        pool.add_column(
+            "grow-x".into(),
+            &f32_column(vec![5.0]),
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        )
+        .unwrap();
+        pool.add_column(
+            "grow-y".into(),
+            &f32_column(vec![5.0]),
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        )
+        .unwrap();
         let mut engine = GpuPickEngine::new(device, queue).unwrap();
         for id in ["grow-a", "grow-b"] {
             engine
@@ -2689,14 +2816,22 @@ mod tests {
             ("parity-si", &style_indices),
         ]);
 
-        let mut pool = ColumnPool::new(&device, 64 * 1024).unwrap();
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            64 * 1024,
+        )
+        .unwrap();
         for (id, values) in [
             ("parity-sx", xs.as_slice()),
             ("parity-sy", ys.as_slice()),
             ("parity-si", style_indices.as_slice()),
         ] {
-            pool.add_column(id.into(), &f32_column(values.to_vec()), &device, &queue)
-                .unwrap();
+            pool.add_column(
+                id.into(),
+                &f32_column(values.to_vec()),
+                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            )
+            .unwrap();
         }
 
         let scatter = DataScatterStyleConfig {
@@ -2821,7 +2956,11 @@ mod tests {
         let line_x = [15.0, 17.0];
         let line_y = [2.0, 2.0];
 
-        let mut pool = ColumnPool::new(&device, 64 * 1024).unwrap();
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            64 * 1024,
+        )
+        .unwrap();
         for (id, values) in [
             ("scale-base-x", base_x.as_slice()),
             ("scale-base-y", base_y.as_slice()),
@@ -2831,8 +2970,12 @@ mod tests {
             ("scale-line-x", line_x.as_slice()),
             ("scale-line-y", line_y.as_slice()),
         ] {
-            pool.add_column(id.into(), &f32_column(values.to_vec()), &device, &queue)
-                .unwrap();
+            pool.add_column(
+                id.into(),
+                &f32_column(values.to_vec()),
+                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            )
+            .unwrap();
         }
 
         let mapped_slots = [ScatterStyleSlotGpu {
@@ -2967,19 +3110,21 @@ mod tests {
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
-        let mut pool = ColumnPool::new(&device, 64 * 1024).unwrap();
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            64 * 1024,
+        )
+        .unwrap();
         pool.add_column(
             "invalid-scale-x".into(),
             &f32_column(vec![5.0]),
-            &device,
-            &queue,
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
         )
         .unwrap();
         pool.add_column(
             "invalid-scale-y".into(),
             &f32_column(vec![5.0]),
-            &device,
-            &queue,
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
         )
         .unwrap();
         let mut engine = GpuPickEngine::new(device, queue).unwrap();
@@ -3016,11 +3161,23 @@ mod tests {
             0.0,
         )];
 
-        let mut pool = ColumnPool::new(&device, 64 * 1024).unwrap();
-        pool.add_column("parity-lx".into(), &f32_column(xs), &device, &queue)
-            .unwrap();
-        pool.add_column("parity-ly".into(), &f32_column(ys), &device, &queue)
-            .unwrap();
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            64 * 1024,
+        )
+        .unwrap();
+        pool.add_column(
+            "parity-lx".into(),
+            &f32_column(xs),
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        )
+        .unwrap();
+        pool.add_column(
+            "parity-ly".into(),
+            &f32_column(ys),
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        )
+        .unwrap();
         let mut engine = GpuPickEngine::new(device, queue).unwrap();
         engine
             .add_series(
@@ -3066,19 +3223,21 @@ mod tests {
             0.0,
         )];
 
-        let mut pool = ColumnPool::new(&device, 64 * 1024).unwrap();
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            64 * 1024,
+        )
+        .unwrap();
         pool.add_column(
             "gate-line-x".into(),
             &f32_column(xs.to_vec()),
-            &device,
-            &queue,
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
         )
         .unwrap();
         pool.add_column(
             "gate-line-y".into(),
             &f32_column(ys.to_vec()),
-            &device,
-            &queue,
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
         )
         .unwrap();
         let mut engine = GpuPickEngine::new(device, queue).unwrap();
@@ -3120,11 +3279,23 @@ mod tests {
             xs[target_index] / axis_max * 100.0,
             (1.0 - ys[target_index] / axis_max) * 100.0,
         ];
-        let mut pool = ColumnPool::new(&device, 2 * 1024 * 1024).unwrap();
-        pool.add_column("gate-2d-x".into(), &f32_column(xs), &device, &queue)
-            .unwrap();
-        pool.add_column("gate-2d-y".into(), &f32_column(ys), &device, &queue)
-            .unwrap();
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            2 * 1024 * 1024,
+        )
+        .unwrap();
+        pool.add_column(
+            "gate-2d-x".into(),
+            &f32_column(xs),
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        )
+        .unwrap();
+        pool.add_column(
+            "gate-2d-y".into(),
+            &f32_column(ys),
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        )
+        .unwrap();
         let mut engine = GpuPickEngine::new(device, queue).unwrap();
         engine
             .add_series(
@@ -3163,6 +3334,8 @@ mod tests {
                     data_max_lo: [0.0; 2],
                     scale_log: [0.0; 2],
                     pixel_to_ndc: [0.02; 2],
+                    data_to_panel_scale: [1.0; 2],
+                    data_to_panel_offset: [0.0; 2],
                     style_params: [[0.0; 4]; 3],
                 },
                 chart_rect_px: [0.0, 0.0, 100.0, 100.0],
@@ -3182,19 +3355,21 @@ mod tests {
             return;
         };
         let point_count = GPU_PICK_DIRECT_SCAN_POINTS as usize + 1;
-        let mut pool = ColumnPool::new(&device, 2 * 1024 * 1024).unwrap();
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            2 * 1024 * 1024,
+        )
+        .unwrap();
         pool.add_column(
             "overlap-x".into(),
             &f32_column((0..point_count).map(|index| index as f32).collect()),
-            &device,
-            &queue,
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
         )
         .unwrap();
         pool.add_column(
             "overlap-y".into(),
             &f32_column(vec![5.0; point_count]),
-            &device,
-            &queue,
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
         )
         .unwrap();
 
@@ -3226,6 +3401,8 @@ mod tests {
                 data_max_lo: [0.0; 2],
                 scale_log: [0.0; 2],
                 pixel_to_ndc: [0.02; 2],
+                data_to_panel_scale: [1.0; 2],
+                data_to_panel_offset: [0.0; 2],
                 style_params: [[0.0; 4]; 3],
             },
             chart_rect_px: [0.0, 0.0, 100.0, 100.0],
@@ -3278,19 +3455,21 @@ mod tests {
             scatter,
         )];
 
-        let mut pool = ColumnPool::new(&device, 64 * 1024).unwrap();
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            64 * 1024,
+        )
+        .unwrap();
         pool.add_column(
             "parity-log-x".into(),
             &f32_column(xs.to_vec()),
-            &device,
-            &queue,
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
         )
         .unwrap();
         pool.add_column(
             "parity-log-y".into(),
             &f32_column(ys.to_vec()),
-            &device,
-            &queue,
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
         )
         .unwrap();
         let mut engine = GpuPickEngine::new(device, queue).unwrap();
@@ -3388,15 +3567,23 @@ mod tests {
             },
         );
 
-        let mut pool = ColumnPool::new(&device, 64 * 1024).unwrap();
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            64 * 1024,
+        )
+        .unwrap();
         for (id, values) in [
             ("parity-tie-x0", first_xs.as_slice()),
             ("parity-tie-y0", first_ys.as_slice()),
             ("parity-tie-x1", later_xs.as_slice()),
             ("parity-tie-y1", later_ys.as_slice()),
         ] {
-            pool.add_column(id.into(), &f32_column(values.to_vec()), &device, &queue)
-                .unwrap();
+            pool.add_column(
+                id.into(),
+                &f32_column(values.to_vec()),
+                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            )
+            .unwrap();
         }
         let mut engine = GpuPickEngine::new(device, queue).unwrap();
         engine
@@ -3470,19 +3657,21 @@ mod tests {
         assert_ne!(x0_lo.to_bits(), x1_lo.to_bits());
 
         let config = parity_config(100, 100, (epoch, epoch + 1.0), (0.0, 1.0));
-        let mut pool = ColumnPool::new(&device, 64 * 1024).unwrap();
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            64 * 1024,
+        )
+        .unwrap();
         pool.add_hilo_column(
             "parity-f64-x".into(),
             &f64_column(xs.to_vec()),
-            &device,
-            &queue,
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
         )
         .unwrap();
         pool.add_hilo_column(
             "parity-f64-y".into(),
             &f64_column(ys.to_vec()),
-            &device,
-            &queue,
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
         )
         .unwrap();
         let mut engine = GpuPickEngine::new(device, queue).unwrap();
@@ -3516,19 +3705,21 @@ mod tests {
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
-        let mut pool = ColumnPool::new(&device, 64 * 1024).unwrap();
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            64 * 1024,
+        )
+        .unwrap();
         pool.add_column(
             "pick-batch-x".into(),
             &f32_column(vec![5.0]),
-            &device,
-            &queue,
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
         )
         .unwrap();
         pool.add_column(
             "pick-batch-y".into(),
             &f32_column(vec![5.0]),
-            &device,
-            &queue,
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
         )
         .unwrap();
 
@@ -3579,7 +3770,11 @@ mod tests {
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
-        let mut old_pool = ColumnPool::new(&device, 64 * 1024).unwrap();
+        let mut old_pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            64 * 1024,
+        )
+        .unwrap();
         for (id, value) in [
             ("pick-rf-ax", 2.0),
             ("pick-rf-ay", 5.0),
@@ -3587,17 +3782,29 @@ mod tests {
             ("pick-rf-by", 5.0),
         ] {
             old_pool
-                .add_column(id.into(), &f32_column(vec![value]), &device, &queue)
+                .add_column(
+                    id.into(),
+                    &f32_column(vec![value]),
+                    crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+                )
                 .unwrap();
         }
-        let mut provisional_pool = ColumnPool::new(&device, 64 * 1024).unwrap();
+        let mut provisional_pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            64 * 1024,
+        )
+        .unwrap();
         for (id, value) in [
             ("pick-rf-ax", 3.0),
             ("pick-rf-ay", 5.0),
             ("pick-rf-bx", 8.0),
         ] {
             provisional_pool
-                .add_column(id.into(), &f32_column(vec![value]), &device, &queue)
+                .add_column(
+                    id.into(),
+                    &f32_column(vec![value]),
+                    crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+                )
                 .unwrap();
         }
 
@@ -3641,13 +3848,16 @@ mod tests {
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
-        let mut old_pool = ColumnPool::new(&device, 64 * 1024).unwrap();
+        let mut old_pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            64 * 1024,
+        )
+        .unwrap();
         old_pool
             .add_column(
                 "pick-success-layout-prefix".into(),
                 &f32_column(vec![0.0]),
-                &device,
-                &queue,
+                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
             )
             .unwrap();
         for index in 0..5 {
@@ -3655,16 +3865,14 @@ mod tests {
                 .add_column(
                     format!("pick-success-x{index}"),
                     &f32_column(vec![index as f32 + 1.0]),
-                    &device,
-                    &queue,
+                    crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
                 )
                 .unwrap();
             old_pool
                 .add_column(
                     format!("pick-success-y{index}"),
                     &f32_column(vec![5.0]),
-                    &device,
-                    &queue,
+                    crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
                 )
                 .unwrap();
         }
@@ -3701,21 +3909,23 @@ mod tests {
                 .remove_column("pick-success-layout-prefix")
                 .unwrap()
         );
-        assert!(old_pool.defragment(&device, &queue).unwrap());
+        assert!(
+            old_pool
+                .defragment(crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue))
+                .unwrap()
+        );
         old_pool
             .upsert_column(
                 "pick-success-x0".into(),
                 &f32_column(vec![1.5]),
-                &device,
-                &queue,
+                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
             )
             .unwrap();
         old_pool
             .upsert_column(
                 "pick-success-x2".into(),
                 &f32_column(vec![3.5]),
-                &device,
-                &queue,
+                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
             )
             .unwrap();
 
@@ -3856,11 +4066,23 @@ mod tests {
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
-        let mut pool = ColumnPool::new(&device, 64 * 1024).unwrap();
-        pool.add_column("pick-ix".into(), &f32_column(vec![5.0]), &device, &queue)
-            .unwrap();
-        pool.add_column("pick-iy".into(), &f32_column(vec![5.0]), &device, &queue)
-            .unwrap();
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            64 * 1024,
+        )
+        .unwrap();
+        pool.add_column(
+            "pick-ix".into(),
+            &f32_column(vec![5.0]),
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        )
+        .unwrap();
+        pool.add_column(
+            "pick-iy".into(),
+            &f32_column(vec![5.0]),
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        )
+        .unwrap();
 
         let mut engine = GpuPickEngine::new(device, queue).unwrap();
         engine
@@ -3940,7 +4162,11 @@ mod tests {
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
-        let mut pool = ColumnPool::new(&device, 64 * 1024).unwrap();
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            64 * 1024,
+        )
+        .unwrap();
         for (id, values) in [
             ("pick-ax", vec![2.0]),
             ("pick-ay", vec![5.0]),
@@ -3949,8 +4175,12 @@ mod tests {
             ("pick-cx", vec![8.0]),
             ("pick-cy", vec![5.0]),
         ] {
-            pool.add_column(id.into(), &f32_column(values), &device, &queue)
-                .unwrap();
+            pool.add_column(
+                id.into(),
+                &f32_column(values),
+                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            )
+            .unwrap();
         }
 
         let mut engine = GpuPickEngine::new(device, queue).unwrap();
@@ -4014,16 +4244,28 @@ mod tests {
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
-        let mut pool = ColumnPool::new(&device, 64 * 1024).unwrap();
-        pool.add_column("pick-hole".into(), &f32_column(vec![0.0]), &device, &queue)
-            .unwrap();
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            64 * 1024,
+        )
+        .unwrap();
+        pool.add_column(
+            "pick-hole".into(),
+            &f32_column(vec![0.0]),
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        )
+        .unwrap();
         for (id, values) in [
             ("pick-rx", vec![4.0]),
             ("pick-ry", vec![6.0]),
             ("pick-rstyle", vec![1.0]),
         ] {
-            pool.add_column(id.into(), &f32_column(values), &device, &queue)
-                .unwrap();
+            pool.add_column(
+                id.into(),
+                &f32_column(values),
+                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            )
+            .unwrap();
         }
         let slots = [
             ScatterStyleSlotGpu {
@@ -4078,7 +4320,10 @@ mod tests {
         let style_epoch = pool.allocation_epoch("pick-rstyle").unwrap();
 
         assert!(pool.remove_column("pick-hole").unwrap());
-        assert!(pool.defragment(&device, &queue).unwrap());
+        assert!(
+            pool.defragment(crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue))
+                .unwrap()
+        );
         assert!(matches!(
             engine.pick(&pool, test_query([40.0, 40.0])),
             Err(GpuPickError::StaleColumn { .. })
@@ -4108,8 +4353,7 @@ mod tests {
             .add_column(
                 "pick-rstyle".into(),
                 &f32_column(vec![1.0]),
-                &device,
-                &queue,
+                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
             )
             .unwrap();
         assert_eq!(new_style_handle.offset, old_style_handle.offset);
@@ -4254,20 +4498,31 @@ mod tests {
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
-        let mut pool = ColumnPool::new(&device, 4 * 256).unwrap();
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            4 * 256,
+        )
+        .unwrap();
         let values = f32_column(vec![5.0]);
 
         let original_x = pool
-            .add_column("epoch-pick-x".into(), &values, &device, &queue)
+            .add_column(
+                "epoch-pick-x".into(),
+                &values,
+                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            )
             .unwrap();
         let original_x_epoch = pool.allocation_epoch("epoch-pick-x").unwrap();
-        pool.add_column("epoch-pick-y".into(), &values, &device, &queue)
-            .unwrap();
+        pool.add_column(
+            "epoch-pick-y".into(),
+            &values,
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        )
+        .unwrap();
         pool.add_column(
             "epoch-pick-unrelated".into(),
             &f32_column(vec![0.0]),
-            &device,
-            &queue,
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
         )
         .unwrap();
 
@@ -4299,7 +4554,11 @@ mod tests {
 
         assert!(pool.remove_column("epoch-pick-x").unwrap());
         let replacement_x = pool
-            .add_column("epoch-pick-x".into(), &values, &device, &queue)
+            .add_column(
+                "epoch-pick-x".into(),
+                &values,
+                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            )
             .unwrap();
         assert_eq!(replacement_x.offset, original_x.offset);
         assert_eq!(replacement_x.len_values, original_x.len_values);

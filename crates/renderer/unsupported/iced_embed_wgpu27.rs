@@ -491,7 +491,7 @@ impl shader::Primitive for FiggyPrimitive {
         // Mutable half of the frame: build this panel's draw items and run
         // `Renderer::prepare`. `draw` records only the resulting token. Overlap
         // with the other panels' live tokens — or with the export above — is
-        // safe: buffers referenced by a live token are copy-on-write.
+        // Safe: prepared GPU results are immutable snapshots.
         let Some(panel) = pipeline.panels.get_mut(self.panel_idx) else {
             return;
         };

@@ -13,7 +13,7 @@
 
 use crate::config::Config;
 use crate::layout::{Element, NudgeReject, NudgeResult, RectF, Side};
-use crate::select::{DataAreaElement, SELECTION_PADDING, Selectable};
+use crate::select::{ColorBarElement, DataAreaElement, SELECTION_PADDING, Selectable};
 use crate::text::MeasureText;
 
 /// Edge length of a square resize handle, px.
@@ -125,6 +125,27 @@ pub trait Resizable: Selectable {
         } else {
             NudgeResult::Rejected(NudgeReject::OutOfBounds)
         }
+    }
+}
+
+impl Resizable for ColorBarElement {
+    /// Each handle drives the strip edges it touches — the same compass mapping
+    /// the data area uses. Which of `thickness_px` / `length_frac` an edge
+    /// changes depends on the bar's orientation, and that resolution belongs to
+    /// nudge: a handle only knows screen directions.
+    fn resize_targets(&self, handle: ResizeHandle) -> (Option<Element>, Option<Element>) {
+        use ResizeHandle::*;
+        let horizontal = match handle {
+            NW | W | SW => Some(Element::ColorBarEdge(Side::Left)),
+            NE | E | SE => Some(Element::ColorBarEdge(Side::Right)),
+            N | S => None,
+        };
+        let vertical = match handle {
+            NW | N | NE => Some(Element::ColorBarEdge(Side::Top)),
+            SW | S | SE => Some(Element::ColorBarEdge(Side::Bottom)),
+            E | W => None,
+        };
+        (horizontal, vertical)
     }
 }
 
@@ -250,5 +271,263 @@ mod tests {
         let r = DataAreaElement.resize_by(&mut cfg, ResizeHandle::E, 1e6, 0.0);
         assert_eq!(r, NudgeResult::Rejected(NudgeReject::OutOfBounds));
         assert_eq!(cfg, before);
+    }
+
+    // ── Colourbar ──────────────────────────────────────────────────────────
+
+    fn cfg_with_colorbar(side: Side) -> Config {
+        let mut cfg = cfg_800x600();
+        let mut bar = crate::default::default_colorbar_options();
+        bar.side = side;
+        cfg.colorbar = Some(bar);
+        cfg
+    }
+
+    fn bar_of(cfg: &Config) -> &crate::config::ColorBarOptions {
+        cfg.colorbar.as_ref().expect("colourbar")
+    }
+
+    fn colorbar_bounds(cfg: &Config) -> RectF {
+        ColorBarElement
+            .bounds(cfg, &FixedMeasure)
+            .expect("strip bounds")
+    }
+
+    fn colorbar_short_edges(rect: RectF, side: &Side) -> (f32, f32) {
+        match side {
+            Side::Left => (rect.x + rect.width, rect.x),
+            Side::Right => (rect.x, rect.x + rect.width),
+            Side::Top => (rect.y + rect.height, rect.y),
+            Side::Bottom => (rect.y, rect.y + rect.height),
+        }
+    }
+
+    fn assert_near(actual: f32, expected: f32, context: &str) {
+        assert!(
+            (actual - expected).abs() < 1e-3,
+            "{context}: got {actual}, expected {expected}"
+        );
+    }
+
+    /// Which dimension a handle drives follows the *bar's* orientation, not the
+    /// handle: on a vertical bar the side handles are thickness and the end
+    /// handles are length; on a horizontal bar it is the other way round.
+    #[test]
+    fn colorbar_handles_drive_thickness_or_length_by_orientation() {
+        for (side, thickness_handle, length_handle) in [
+            (Side::Right, ResizeHandle::W, ResizeHandle::N),
+            (Side::Left, ResizeHandle::E, ResizeHandle::S),
+            (Side::Top, ResizeHandle::S, ResizeHandle::E),
+            (Side::Bottom, ResizeHandle::N, ResizeHandle::W),
+        ] {
+            let base = cfg_with_colorbar(side.clone());
+            let (t0, l0) = (bar_of(&base).thickness_px, bar_of(&base).length_frac);
+
+            // The thickness handle changes thickness and leaves length alone.
+            let mut cfg = base.clone();
+            assert_eq!(
+                ColorBarElement.resize_by(&mut cfg, thickness_handle, -4.0, -4.0),
+                NudgeResult::Moved,
+                "{side:?} {thickness_handle:?}"
+            );
+            assert_ne!(bar_of(&cfg).thickness_px, t0, "{side:?} thickness");
+            assert_eq!(bar_of(&cfg).length_frac, l0, "{side:?} length untouched");
+
+            // And the length handle the other way.
+            let mut cfg = base.clone();
+            assert_eq!(
+                ColorBarElement.resize_by(&mut cfg, length_handle, -4.0, -4.0),
+                NudgeResult::Moved,
+                "{side:?} {length_handle:?}"
+            );
+            assert_eq!(
+                bar_of(&cfg).thickness_px,
+                t0,
+                "{side:?} thickness untouched"
+            );
+            assert_ne!(bar_of(&cfg).length_frac, l0, "{side:?} length");
+        }
+    }
+
+    /// Dragging an edge outward grows the bar; inward shrinks it. Stated on the
+    /// drawn rect, because that is what the user is dragging.
+    #[test]
+    fn dragging_a_colorbar_edge_outward_grows_it() {
+        // Vertical bar, west handle: dragging left (away from the strip) widens.
+        let mut cfg = cfg_with_colorbar(Side::Right);
+        let before = colorbar_bounds(&cfg);
+        ColorBarElement.resize_by(&mut cfg, ResizeHandle::W, -6.0, 0.0);
+        let after = colorbar_bounds(&cfg);
+        assert!(
+            after.width > before.width,
+            "west drag left must widen: {} -> {}",
+            before.width,
+            after.width
+        );
+
+        let mut cfg = cfg_with_colorbar(Side::Right);
+        ColorBarElement.resize_by(&mut cfg, ResizeHandle::W, 6.0, 0.0);
+        assert!(
+            colorbar_bounds(&cfg).width < before.width,
+            "west drag right narrows"
+        );
+    }
+
+    /// Every thickness handle follows the pointer on screen. The edge opposite
+    /// the grabbed handle stays fixed, including when the grabbed edge is the
+    /// strip's band-anchored outer edge.
+    #[test]
+    fn colorbar_thickness_handles_track_the_pointer_on_all_sides() {
+        for (side, outer_handle, outer_dx, outer_dy) in [
+            (Side::Left, ResizeHandle::W, -6.0, 0.0),
+            (Side::Right, ResizeHandle::E, 6.0, 0.0),
+            (Side::Top, ResizeHandle::N, 0.0, -6.0),
+            (Side::Bottom, ResizeHandle::S, 0.0, 6.0),
+        ] {
+            let pointer_delta = if outer_dx != 0.0 { outer_dx } else { outer_dy };
+
+            let mut cfg = cfg_with_colorbar(side.clone());
+            let before = colorbar_bounds(&cfg);
+            let (inner_before, outer_before) = colorbar_short_edges(before, &side);
+            assert_eq!(
+                ColorBarElement.resize_by(&mut cfg, outer_handle, outer_dx, outer_dy),
+                NudgeResult::Moved,
+                "{side:?} outer handle"
+            );
+            let after = colorbar_bounds(&cfg);
+            let (inner_after, outer_after) = colorbar_short_edges(after, &side);
+            assert_near(inner_after, inner_before, &format!("{side:?} inner edge"));
+            assert_near(
+                outer_after,
+                outer_before + pointer_delta,
+                &format!("{side:?} outer edge"),
+            );
+
+            let inner_handle = match side {
+                Side::Left => ResizeHandle::E,
+                Side::Right => ResizeHandle::W,
+                Side::Top => ResizeHandle::S,
+                Side::Bottom => ResizeHandle::N,
+            };
+            let mut cfg = cfg_with_colorbar(side.clone());
+            let before = colorbar_bounds(&cfg);
+            let (inner_before, outer_before) = colorbar_short_edges(before, &side);
+            assert_eq!(
+                ColorBarElement.resize_by(&mut cfg, inner_handle, -outer_dx, -outer_dy),
+                NudgeResult::Moved,
+                "{side:?} inner handle"
+            );
+            let after = colorbar_bounds(&cfg);
+            let (inner_after, outer_after) = colorbar_short_edges(after, &side);
+            assert_near(
+                inner_after,
+                inner_before - pointer_delta,
+                &format!("{side:?} inner edge"),
+            );
+            assert_near(outer_after, outer_before, &format!("{side:?} outer edge"));
+        }
+    }
+
+    /// With a centre anchor both ends move by half a size change, so the size
+    /// has to change by twice the drag for the dragged edge to stay under the
+    /// pointer. With `Start` / `End` one end is pinned and the factor is 1.
+    #[test]
+    fn a_colorbar_end_handle_tracks_the_pointer_under_its_anchor() {
+        use crate::config::BarAlign;
+
+        for (align, factor) in [
+            (BarAlign::Center, 2.0f32),
+            (BarAlign::Start, 1.0),
+            (BarAlign::End, 1.0),
+        ] {
+            let mut cfg = cfg_with_colorbar(Side::Right);
+            cfg.colorbar.as_mut().expect("colourbar").align = align.clone();
+            let da = cfg.data_area().expect("data area");
+            let before = bar_of(&cfg).length_frac;
+
+            let drag = -10.0f32; // north handle, upward = grow
+            ColorBarElement.resize_by(&mut cfg, ResizeHandle::N, 0.0, drag);
+            let grew = (bar_of(&cfg).length_frac - before) * da.height as f32;
+            assert!(
+                (grew - factor * -drag).abs() < 1e-3,
+                "{align:?}: grew {grew} px, expected {}",
+                factor * -drag
+            );
+        }
+    }
+
+    /// The size range is the one `Config::validate` states, and a handle drag
+    /// cannot leave it: rejected, with the config untouched.
+    #[test]
+    fn colorbar_resize_stops_at_the_valid_range() {
+        // Length cannot exceed the data area.
+        let mut cfg = cfg_with_colorbar(Side::Right);
+        cfg.colorbar.as_mut().expect("colourbar").length_frac = 1.0;
+        let before = cfg.clone();
+        assert_eq!(
+            ColorBarElement.resize_by(&mut cfg, ResizeHandle::N, 0.0, -5.0),
+            NudgeResult::Rejected(NudgeReject::OutOfBounds)
+        );
+        assert_eq!(cfg, before);
+
+        // Thickness cannot go negative.
+        let mut cfg = cfg_with_colorbar(Side::Right);
+        cfg.colorbar.as_mut().expect("colourbar").thickness_px = 2.0;
+        let before = cfg.clone();
+        assert_eq!(
+            ColorBarElement.resize_by(&mut cfg, ResizeHandle::W, 50.0, 0.0),
+            NudgeResult::Rejected(NudgeReject::OutOfBounds)
+        );
+        assert_eq!(cfg, before);
+
+        // A rejected outer-edge resize rolls back its paired offset as well as
+        // the thickness; otherwise the bar would jump despite the rejection.
+        let mut cfg = cfg_with_colorbar(Side::Right);
+        let before = cfg.clone();
+        assert_eq!(
+            ColorBarElement.resize_by(&mut cfg, ResizeHandle::E, 1e6, 0.0),
+            NudgeResult::Rejected(NudgeReject::OutOfBounds)
+        );
+        assert_eq!(cfg, before);
+
+        // And the result always satisfies `validate`.
+        let mut cfg = cfg_with_colorbar(Side::Right);
+        for _ in 0..40 {
+            ColorBarElement.resize_by(&mut cfg, ResizeHandle::NW, -3.0, -3.0);
+            assert!(cfg.validate().is_ok(), "resize left an invalid config");
+        }
+    }
+
+    /// A corner handle drives both dimensions in one gesture.
+    #[test]
+    fn a_colorbar_corner_handle_resizes_both_dimensions() {
+        let mut cfg = cfg_with_colorbar(Side::Right);
+        let (t0, l0) = (bar_of(&cfg).thickness_px, bar_of(&cfg).length_frac);
+        assert_eq!(
+            ColorBarElement.resize_by(&mut cfg, ResizeHandle::NW, -5.0, -5.0),
+            NudgeResult::Moved
+        );
+        assert!(bar_of(&cfg).thickness_px > t0);
+        assert!(bar_of(&cfg).length_frac > l0);
+    }
+
+    /// The outer component of a corner handle obeys the same pointer-tracking
+    /// rule while its long-axis component resizes in the same gesture.
+    #[test]
+    fn a_colorbar_outer_corner_tracks_both_pointer_components() {
+        let mut cfg = cfg_with_colorbar(Side::Right);
+        let before = colorbar_bounds(&cfg);
+        assert_eq!(
+            ColorBarElement.resize_by(&mut cfg, ResizeHandle::NE, 5.0, -7.0),
+            NudgeResult::Moved
+        );
+        let after = colorbar_bounds(&cfg);
+        assert_near(after.x, before.x, "opposite thickness edge");
+        assert_near(
+            after.x + after.width,
+            before.x + before.width + 5.0,
+            "outer thickness edge",
+        );
+        assert_near(after.y, before.y - 7.0, "north length edge");
     }
 }

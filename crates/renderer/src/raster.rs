@@ -262,6 +262,28 @@ impl Canvas {
                 let Some(rect) = tiny_skia::Rect::from_xywh(x, y, w, h) else {
                     return;
                 };
+                // tiny-skia 0.11's anti-aliased `fill_rect` always goes through
+                // `hairline_aa::fill_dot8`, which trims the fractional edge
+                // column and row and then asserts that a whole-pixel interior is
+                // left. A rect that straddles a pixel boundary without covering a
+                // full interior column has none — `x = 10.5, w = 0.999` panics —
+                // and the assert is a `debug_assert!(false)`, so it takes the
+                // whole raster down in a debug build. Under two pixels in either
+                // direction, fill the rect as a path instead: the general
+                // scanline filler has no such fast path and handles any size. A
+                // colourbar band, a 1 px separator, or a thin selection outline
+                // must not be able to kill a raster.
+                if w < 2.0 || h < 2.0 {
+                    let path = PathBuilder::from_rect(rect);
+                    self.pix.fill_path(
+                        &path,
+                        &paint.shader_paint(),
+                        tiny_skia::FillRule::Winding,
+                        self.ts,
+                        None,
+                    );
+                    return;
+                }
                 self.pix
                     .fill_rect(rect, &paint.shader_paint(), self.ts, None);
             }

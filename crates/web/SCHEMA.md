@@ -1,5 +1,7 @@
 # Config / SeriesConfig — JSON 스키마 레퍼런스
 
+적용 공개 버전: `figgy 0.9.0` / `renderer 0.10.0`.
+
 `FiggyChart.get_config()` / `get_series()`가 반환하고 `set_config()` /
 `set_series()`가 받는 JSON의 **전체 형태**다. 아래 JSON 블록은 Rust 소스에서
 직접 직렬화해 생성했고, 동기화 테스트가 어긋남을 막는다:
@@ -15,6 +17,7 @@ cargo test -p model --features serde --test schema_sync
 | `Config` (축/타이틀/그리드/범례) | `crates/model/src/config.rs` |
 | `SeriesConfig` (시리즈 선언) | `crates/model/src/data_config.rs` |
 | `Color` | `crates/model/src/color.rs` |
+| `ColorMap` (연속 컬러 램프) | `crates/model/src/colormap.rs` |
 | `RichText` / `RichSegment` | `crates/model/src/text.rs` |
 | `LineStylePreset` | `crates/model/src/line.rs` |
 | `LabelFormat` | `crates/model/src/format.rs` |
@@ -45,8 +48,9 @@ cargo test -p model --features serde --test schema_sync
   `{"text":"—","rule":true,"field_em":2.0,"rule_dash":[0.571,0.286],...}`,
   선+점 = rule(0.65) + 글리프(0.7) + rule(0.65).
 - **색은 0..1 float RGBA**: `{ "r": 0.8, "g": 0.1, "b": 0.1, "a": 1.0 }`.
-- **`None`이면 생략되는 series/picking 키 (2개)**:
-  `SeriesConfig.source_id`, `PickedPointRef.source_id`.
+- **`None`이면 생략되는 series/picking provenance 키**:
+  `SeriesConfig.source_id`, `PickedPointRef.source_id`, 그리고 모든
+  `PickedDataRef` 변종의 `source_id`.
 - **`None`이면 생략되는 outer style mapping 키 (6개)**:
   `DataScatterStyleConfig.point_style_table` / `point_style_index_column` /
   `point_style_overrides`, `DataErrorBarStyleConfig.error_bar_style_table` /
@@ -57,13 +61,18 @@ cargo test -p model --features serde --test schema_sync
   `error_bar_cap_size` / `cap_width`. 따라서 모든 nested style option이
   `None`이면 객체는 `{}`로 직렬화된다. override의 `style`은 flatten되므로
   이 키들은 override 객체에서도 같은 방식으로 생략된다.
-- 위 세 묶음의 **정확히 15개 `Option` 키**와 달리 `SeriesConfig.label`은
-  항상 존재하며 값만 `null`일 수 있다.
-- 세그먼트 오버라이드 키와 Config의 `draw_style` / `picked_points` 키도
-  생략 가능하다 (`draw_style`: `precise` = 키 자체가 생략,
-  `picked_points`: `None` = 키 자체가 생략). `picked_points: {}` 는 default
-  overlay config로 파싱된다. 부분 업데이트가 아니라 **전체 트리 교체**이므로,
-  `get_config()` 결과를 고쳐서 되돌리는 패턴을 쓸 것.
+- 위 `Option` 키들과 달리 `SeriesConfig.label`은 항상 존재하며 값만
+  `null`일 수 있다.
+- **`None`이면 생략되는 contour 키 (2개)**: `ContourConfig.per_level_color`,
+  `ContourConfig.labels`. `per_level_color`가 없다는 것은 **모든 레벨이
+  `line.line_color` 단색**이라는 뜻이고, 빈 배열 `[]`(항목 0개인 표)과는
+  다른 진술이다.
+- 세그먼트 오버라이드 키와 Config의 `draw_style` / `picked_points` / `picked_data` /
+  `colorbar` 키도 생략 가능하다 (`draw_style`: `precise` = 키 자체가 생략,
+  두 picked 키: `None` = 키 자체가 생략). `picked_points: {}` 와
+  `picked_data: {}` 는 각각의 default overlay config로 파싱된다. 부분
+  업데이트가 아니라 **전체 트리 교체**이므로, `get_config()` 결과를 고쳐서
+  되돌리는 패턴을 쓸 것.
 
 15개 omission의 canonical serde 출력은 다음과 같다. `series.source_id`, 두
 outer style의 mapping 키 6개, 두 빈 nested style의 option 키 7개,
@@ -137,8 +146,16 @@ outer style의 mapping 키 6개, 두 빈 nested style의 option 키 7개,
 | `line_style` (LineStylePreset) | `"Solid"` `"Dash"` `"Dot"` `"DashDot"` `"DashDotDot"` `"ShortDash"` `"ShortDot"` `"ShortDashDot"` `"LongDash"` `"LongDashDot"` `"LongDashDotDot"` |
 | `corner` (LegendCorner) | `"TopLeft"` `"TopRight"` `"BottomLeft"` `"BottomRight"` |
 | `point_shape` (ScatterShape) | `"Circle"` `"Square"` `"Triangle"` `"Diamond"` `"Cross"` `"CircleFilled"` `"SquareFilled"` `"TriangleFilled"` `"DiamondFilled"` `"TriangleDown"` `"TriangleLeft"` `"TriangleRight"` `"Plus"` `"Pentagon"` `"Hexagon"` `"Octagon"` `"Star"` `"TriangleDownFilled"` `"TriangleLeftFilled"` `"TriangleRightFilled"` `"PlusFilled"` `"CrossFilled"` `"PentagonFilled"` `"HexagonFilled"` `"OctagonFilled"` `"StarFilled"` |
-| `render_type` (DataRenderType, 태그) | `"Scatter"` `"Line"` `"ScatterLine"` `"ScatterErrorbarX"` `"ScatterErrorbarY"` `"ScatterErrorbarXY"` `"LineScatterErrorbarX"` `"LineScatterErrorbarY"` `"LineScatterErrorbarXY"` |
+| `render_type` (DataRenderType, 태그) | `"Scatter"` `"Line"` `"ScatterLine"` `"ScatterErrorbarX"` `"ScatterErrorbarY"` `"ScatterErrorbarXY"` `"LineScatterErrorbarX"` `"LineScatterErrorbarY"` `"LineScatterErrorbarXY"` `"Histogram"` `"Heatmap"` `"Contour"` `"HeatmapContour"` |
 | `err_x` / `err_y` (ErrorRef, 태그) | `"Symmetric"` (`{column}`) / `"Asymmetric"` (`{lower, upper}`) |
+| `side` (Side) | `"Top"` `"Bottom"` `"Left"` `"Right"` |
+| `align` (BarAlign) | `"Start"` `"Center"` `"End"` |
+| `colormap` (ColorMap) | `"Viridis"` `"Magma"` `"Turbo"` `"GrayScale"` `"RdBu"` `{ "Custom": { "stops": [Color, …] } }` |
+| `orientation` (BarOrientation) | `"Vertical"` `"Horizontal"` |
+| `orientation` (MatrixOrientation) | `"ColumnsAreX"` `"ColumnsAreY"` |
+| `grid_layout` (GridLayout) | `"Edges"` `"Centers"` |
+| `mode` (FillMode) | `"Continuous"` `"Bands"` |
+| `shading` (Shading) | `"Flat"` `"Interpolated"` |
 
 ### Timestamp label format
 
@@ -239,6 +256,16 @@ tick planning, chart-width changes, and export scale changes.
   소유하므로, Promise가 pending인 동안 chart/pool이 변경되거나 renderer가
   해제되어도 그 요청의 identity가 다른 데이터로 바뀌지 않는다.
   좌표가 필요하면 host가 `point_index`로 자신이 등록한 원본 column을 조회한다.
+- `pick_data`는 point/line에 더해 Histogram bin, Heatmap cell, Contour level을
+  같은 GPU 요청으로 고른다. facade 반환값은 `kind`가
+  `"point" | "histogram_bin" | "matrix_cell" | "contour_level"`인 tagged
+  object 또는 `null`이다. bin은 `bin_index`, cell은 canonical axis 방향의
+  `x_index`/`y_index`, contour는 `level_index`와 hit가 있던 sample-cell의
+  `x_index`/`y_index`를 제공한다. `HeatmapContour`에서 선과 cell이 겹치면
+  나중에 그려지는 contour가 우선하며, 시리즈 간 동률은 chart paint order를
+  따른다. CPU는 bar rectangle, cell bounds, contour endpoint나 f64 값을
+  복원하지 않는다. 실제 hit geometry는 보이는 draw entry와 같은 transform,
+  pool, lattice, contour 함수에서 계산된다.
 - `chart_area`는 저장/Export 기준의 논리 문서 사각형이다. Web wrapper의
   `resize(w, h)`는 캔버스 surface만 바꾸고, 이 논리 문서를 현재 viewport에
   uniform scale + letterbox로 맞춰 보여준다. 브라우저 창 크기 변경을
@@ -254,6 +281,43 @@ tick planning, chart-width changes, and export scale changes.
   `reset_legend_from_series_labels()` 를 명시 호출한다. 이때 legacy
   `add_line_series(..., label)` 로 저장된 wrapper label 은 rich label 이 없는
   시리즈의 fallback 으로만 쓰인다.
+
+## `picked_data` — typed data selection overlay (Config 선택 키)
+
+`Config.picked_data`는 `pick_data` 결과의 안정적인 identity만 보관한다.
+`set_picked_data(json)`은 이 필드만 교체하고 JSON `null`은 overlay를 지운다.
+기존 point-only `picked_points`와 독립적이므로 둘을 동시에 쓸 수 있다.
+
+```json
+{
+  "picked_data": {
+    "visible": true,
+    "refs": [
+      { "kind": "point", "series_id": "points", "point_index": 4 },
+      { "kind": "histogram_bin", "series_id": "hist", "bin_index": 2 },
+      { "kind": "matrix_cell", "series_id": "heat", "x_index": 3, "y_index": 1 },
+      {
+        "kind": "contour_level",
+        "series_id": "contour",
+        "level_index": 5,
+        "x_index": 3,
+        "y_index": 1
+      }
+    ],
+    "highlight_color": { "r": 1.0, "g": 0.84313726, "b": 0.0, "a": 1.0 },
+    "outline_width_px": 2.0,
+    "point_radius_extra_px": 3.0,
+    "contour_width_extra_px": 2.0
+  }
+}
+```
+
+각 ref에는 선택적으로 `source_id`를 넣어 같은 `series_id`를 가진 서로 다른
+host source를 구분할 수 있다. point는 기존 ring entry를, histogram은 선택된
+instance의 동일 edge/value/style bind group을, matrix/contour는 일반 draw가
+사용한 동일 field bind group을 읽는다. 따라서 축 범위나 데이터가 바뀌어도
+보이는 데이터와 overlay가 서로 다른 CPU 복원 좌표를 가질 수 없다. 유효 범위를
+벗어난 stale index는 그리지 않는다.
 
 ## `draw_style` — 렌더 스타일 (Config 선택 키)
 
@@ -318,10 +382,10 @@ sketch의 모든 파라미터에 디폴트가 있어 (`serde(default)`) 부분 �
 
 ## `get_config()` 전체 형태 — 기본값 기준
 
-기본 `Config`는 `draw_style: Precise`와 `picked_points: None` 이므로
-`get_config()` JSON에는 두 키가 정상적으로 생략된다. Picked-point overlay를
-켜고 싶으면 `picked_points` 객체를 추가한다. 빈 객체 `{}` 는 기본 overlay
-설정으로 파싱된다.
+기본 `Config`는 `draw_style: Precise`, `picked_points: None`,
+`picked_data: None` 이므로 `get_config()` JSON에는 세 키가 정상적으로
+생략된다. overlay를 켜려면 해당 picked 객체를 추가한다. 빈 객체 `{}` 는
+각 overlay의 기본 설정으로 파싱된다.
 
 <!-- schema-sync: name=config -->
 ```json
@@ -631,6 +695,415 @@ sketch의 모든 파라미터에 디폴트가 있어 (`serde(default)`) 부분 �
       "g": 0.6,
       "b": 0.6,
       "a": 1.0
+    }
+  }
+}
+```
+
+## `colorbar` — 컬러바와 z 스케일 (Config 선택 키)
+
+`Config.colorbar`는 컬러바 하나이면서 **그 차트의 z 스케일 소유자**다. 기본
+`Config`에는 없으므로(`None` = 키 자체가 생략) z 차원이 없는 문서 — 즉 면
+계열이 생기기 전에 쓰인 모든 문서 — 는 그대로 파싱된다.
+
+핵심은 `axis`가 4축과 **같은 `AxisOptions`** 라는 점이다. `scale`
+(`"Logarithmic"` 포함) · `min`/`max` · `major_spacing` · `minor_count` ·
+`label_style`(`"Power"` 포함) · `tick` · `title_option` 이 축과 완전히 같은
+의미이고, 틱 생성 · 라벨 포맷 · 로그 처리가 **같은 코드**를 지난다.
+
+| 필드 | 타입 | 기본값 | 의미 |
+|---|---|---|---|
+| `visible` | bool | `true` | `false`면 아무것도 그리지 않고 **밴드도 반납**한다(면은 정상 렌더) |
+| `side` | Side | `"Right"` | `Left`/`Right` = 수직 바, `Top`/`Bottom` = 수평 바. 이것만으로 방향이 결정된다 |
+| `thickness_px` | f32 | `18.0` | 스트립의 짧은 쪽 |
+| `gap_px` | f32 | `24.0` | 데이터 영역과 스트립 사이 |
+| `length_frac` | f32 | `0.75` | 그 변 길이에 대한 스트립 길이 비율. `(0, 1]` |
+| `align` | BarAlign | `"Center"` | 변을 따라 어디에 둘지 (이산 앵커) |
+| `offset_x`, `offset_y` | f32 | `0.0` | 앵커에서의 자유 이동, 화면 픽셀. **마진에 기여하지 않는다**(범례·타이틀·라벨 offset과 같은 계약) — 드래그가 여기에 누적되므로 바를 끌어도 데이터 영역이 다시 흐르지 않는다 |
+| `colormap` | ColorMap | `"Viridis"` | 연속 램프 |
+| `nan_color` | Color | 완전투명 | 램프에 놓을 수 없는 z(NaN, 로그 컬러바의 비양수) |
+| `border_color` | Color | 회색(80,80,80) | 스트립 테두리 |
+| `border_width` | f32 | `1.0` | 〃 |
+| `axis` | AxisOptions | 아래 | **z 축. z 범위의 진실 원본** |
+
+따라오는 규칙:
+
+- `Heatmap` / `Contour` / `HeatmapContour` 시리즈가 있으면 이 키가 **있어야
+  한다.** 없으면 z 범위도 colormap도 어디에도 없어 그릴 값 자체가 없으므로
+  시리즈가 거부된다.
+- 결과적으로 **차트당 z 스케일 1개**다. 한 차트의 히트맵 여러 개는 같은
+  스케일을 공유한다.
+- 컬러바 밴드 = `gap_px + thickness_px + axis.out_margin +
+  axis.major_tick_length` 이고, 그 변의 마진에 더해져 데이터 영역이 줄어든다.
+  `fit`/`resize`는 `axis.out_margin`(라벨 공간)만 조절하고 스트립 자체
+  (`thickness_px`/`gap_px`/틱 길이)는 건드리지 않는다.
+- 컬러바 축의 기본값은 4축과 두 곳이 다르다: `line_visible: false`(스트립
+  테두리가 그 선 역할을 한다)와 `tick: "Outside"`(틱이 색 위가 아니라 라벨
+  마진에 놓인다). `tick`은 `None`/`Outside`/`Inside`/`Both` 방향을,
+  `inverted`는 min→max 화면 방향을 정하며, 틱 외형은 축선과 같은
+  `line_color`/`line_width`/`line_style`을 쓴다.
+- 컬러바는 **선택 · 이동 · 크기조정**이 되는 요소다. 히트테스트 id는
+  `"colorbar"`이고, 선택하면 파란 박스 + **8개 크기조정 핸들**이 붙는다(데이터
+  영역과 함께 핸들을 가진 둘뿐인 요소). 이동은 `offset_{x,y}`에, 크기조정은
+  핸들이 잡은 변에 따라 `thickness_px`(짧은 쪽) 또는 `length_frac`(긴 쪽)에
+  들어간다 — 어느 쪽인지는 **바의 방향**이 정하고 핸들은 화면 방향만 안다.
+- 틱/축, 틱 라벨, 제목은 `"colorbar_axis"`, `"colorbar_tick_labels"`,
+  `"colorbar_title"`로 따로 선택되고 파란 선택 표시가 붙는다. 드래그는 각각
+  `axis.line_offset`, `axis.label_style.label_offset_{x,y}`,
+  `axis.title_option.offset_{x,y}`를 갱신한다. 배치와 히트박스는 모두 실제
+  컬러바 스트립 사각형에서 파생되므로 `length_frac`/`align`/bar offset/resize와
+  정확히 함께 움직인다.
+- 웹 편집은 `set_colorbar_axis(json)`으로 이 `AxisOptions` 전체를 교체하거나,
+  `set_colorbar_title(text)`로 제목을 바로 설정할 수 있다. 후자는 빈 문자열이면
+  제목을 숨기며, 두 호출 모두 컬러바가 없으면 실패한다.
+
+<!-- schema-sync: name=colorbar -->
+```json
+{
+  "visible": true,
+  "side": "Right",
+  "thickness_px": 18.0,
+  "gap_px": 24.0,
+  "length_frac": 0.75,
+  "align": "Center",
+  "offset_x": 0.0,
+  "offset_y": 0.0,
+  "colormap": "Viridis",
+  "nan_color": {
+    "r": 0.0,
+    "g": 0.0,
+    "b": 0.0,
+    "a": 0.0
+  },
+  "border_color": {
+    "r": 0.3137255,
+    "g": 0.3137255,
+    "b": 0.3137255,
+    "a": 1.0
+  },
+  "border_width": 1.0,
+  "axis": {
+    "scale": "Linear",
+    "min": 0.0,
+    "max": 1.0,
+    "major_spacing": 0.2,
+    "minor_count": 4,
+    "inverted": false,
+    "label_style": {
+      "visible": true,
+      "color": {
+        "r": 0.0,
+        "g": 0.0,
+        "b": 0.0,
+        "a": 1.0
+      },
+      "font_size": 18.0,
+      "label_visible": true,
+      "label_font": "",
+      "label_offset_x": 0.0,
+      "label_offset_y": 0.0,
+      "format": "Decimal",
+      "significant_digits": 3
+    },
+    "tick": "Outside",
+    "title_option": {
+      "text": {
+        "segments": [],
+        "color": {
+          "r": 0.0,
+          "g": 0.0,
+          "b": 0.0,
+          "a": 1.0
+        },
+        "font_size": 22.0,
+        "font": ""
+      },
+      "visible": false,
+      "offset_x": 0.0,
+      "offset_y": 0.0
+    },
+    "out_margin": 60.0,
+    "line_offset": 0.0,
+    "line_visible": false,
+    "line_color": {
+      "r": 0.0,
+      "g": 0.0,
+      "b": 0.0,
+      "a": 1.0
+    },
+    "line_width": 1.0,
+    "line_style": "Solid",
+    "major_tick_length": 5.0,
+    "minor_tick_length": 3.0
+  }
+}
+```
+
+## 면 · 막대 render_type — 전체 형태
+
+새 4종의 canonical 형태다. `Histogram`은 호스트가 미리 비닝한
+`(edges, counts)` 두 컬럼을 받고, 나머지 셋은 `MatrixRef`로 격자를 선언한다.
+
+- `Histogram`: `bar.orientation`이 컬럼 역할을 **단독 결정**한다.
+  `"Vertical"` = `x_column`이 edges / `y_column`이 counts, `"Horizontal"`은
+  반대. 길이 관계(`edges = counts + 1`)로 역할을 추측하지 않는다.
+- `bar.width_ratio`는 각 bin 폭에서 가운데 정렬된 막대가 차지할 비율이며
+  `0..=1`로 clamp된다. 그 다음 `gap_px`가 양쪽에서 픽셀 단위로 추가 차감된다.
+  `border_width: 0`은 외곽선을 끄며 `border_color`와 양수 두께가 외곽선을 정한다.
+- `bar.bar_style_overrides`는 `index`로 특정 bin 하나를 골라 `fill_color`,
+  `border_color`, `border_width`, `gap_px`, `width_ratio` 중 필요한 값만 덮는다.
+  같은 index가 여러 번 나오면 선언 순서대로 합성된다. baseline과 orientation은
+  시리즈 단위다. 렌더·typed pick·선택 outline이 모두 이 최종 막대 경계를 쓴다.
+- `MatrixRef.columns`: 격자를 이루는 구성 컬럼 id 목록. 별도의 데이터 보유
+  객체는 없다 — 격자는 **풀에 있는 그 컬럼들 자체**다.
+- `MatrixRef.grid_layout`: 좌표 컬럼이 셀 경계(`"Edges"`, n+1개)인지 셀
+  중심(`"Centers"`, n개)인지. **추론하지 않는다.**
+- 선언과 데이터의 개수가 어긋나도 **에러가 아니다.** 가장 작은 공통 범위까지
+  그리고 잘렸다는 사실만 알린다.
+<!-- contour-contract: scope=schema max-levels=1024 -->
+- `ContourConfig.levels`는 항상 **데이터 단위**의 명시 목록이다(자동 추론
+  variant 없음). 허용 길이는 `0..=1024`이고 1025개 이상이면 `set_series`가
+  실패한다. 배열을 조용히 자르지 않으며 이전 config, series, GPU style은
+  그대로 유지된다.
+- `ContourLabelConfig.spacing_px`는 자동 배치의 목표 간격이며 숨김 라벨과 명시
+  anchor에서도 유한한 양수여야 한다. 정상 선택은 이 간격을 목표로 하지만
+  레벨별 fallback은 더 가까운 후보를 남길 수 있다. automatic/explicit은 공통
+  1024개 용량을 쓴다. 명시 `anchors`는 유효하지 않은 `level_index`를 제거한 뒤
+  입력 순서의 앞 1024개만 사용한다. resolved 목록이 비면 자동 배치하고,
+  하나라도 남으면 그 목록이 자동 배치를 대체한다. automatic에서만 clamp된
+  frame/export scale을 spacing에 곱해 유한한 양수인지 다시 검사한다. atlas는
+  WebGPU adapter의 texture dimension 안에 들어야 하며, 위 검증 실패는 이전
+  config, series, GPU style을 보존한다. 앵커는 데이터 좌표 `(x, y)` + 데이터
+  공간 접선 `(tx, ty)`로 저장되므로 줌/팬 때 각도만 다시 투영하면 된다.
+- `ContourLabelConfig.color`는 contour 선색/`per_level_color`와 독립적인 글자색이다.
+  Decimal은 level 간격(없으면 colorbar 간격)과 `significant_digits`를 함께 사용한다.
+  선은 실제 선택된 label 사각형 안에서 끊기며 `bg_padding_px`는 배경색 유무와 무관하게
+  그 간격을 패딩한다.
+
+<!-- schema-sync: name=field-render-types -->
+```json
+{
+  "histogram": {
+    "Histogram": {
+      "bar": {
+        "fill_color": {
+          "r": 0.27450982,
+          "g": 0.50980395,
+          "b": 0.7058824,
+          "a": 1.0
+        },
+        "border_color": {
+          "r": 0.0,
+          "g": 0.0,
+          "b": 0.0,
+          "a": 1.0
+        },
+        "border_width": 1.0,
+        "baseline": 0.0,
+        "gap_px": 1.0,
+        "width_ratio": 0.85,
+        "orientation": "Vertical",
+        "bar_style_overrides": [
+          {
+            "index": 1,
+            "fill_color": {
+              "r": 0.9019608,
+              "g": 0.22352941,
+              "b": 0.27450982,
+              "a": 1.0
+            },
+            "border_color": {
+              "r": 0.47058824,
+              "g": 0.078431375,
+              "b": 0.11764706,
+              "a": 1.0
+            },
+            "border_width": 2.0,
+            "width_ratio": 0.6
+          }
+        ]
+      }
+    }
+  },
+  "heatmap": {
+    "Heatmap": {
+      "matrix": {
+        "columns": [
+          "z0",
+          "z1",
+          "z2"
+        ],
+        "orientation": "ColumnsAreX",
+        "grid_layout": "Edges"
+      },
+      "fill": {
+        "mode": "Continuous",
+        "shading": "Interpolated",
+        "opacity": 1.0
+      }
+    }
+  },
+  "contour": {
+    "Contour": {
+      "matrix": {
+        "columns": [
+          "z0",
+          "z1",
+          "z2"
+        ],
+        "orientation": "ColumnsAreX",
+        "grid_layout": "Edges"
+      },
+      "contour": {
+        "levels": [
+          1.0,
+          2.0,
+          5.0
+        ],
+        "line": {
+          "line_style": "Solid",
+          "line_color": {
+            "r": 0.0,
+            "g": 0.0,
+            "b": 0.0,
+            "a": 1.0
+          },
+          "line_width": 1.0
+        },
+        "per_level_color": [
+          {
+            "r": 0.9019608,
+            "g": 0.22352941,
+            "b": 0.27450982,
+            "a": 1.0
+          },
+          {
+            "r": 0.11372549,
+            "g": 0.20784314,
+            "b": 0.34117648,
+            "a": 1.0
+          },
+          {
+            "r": 0.16470589,
+            "g": 0.6156863,
+            "b": 0.56078434,
+            "a": 1.0
+          }
+        ],
+        "labels": {
+          "visible": true,
+          "font_size": 12.0,
+          "color": {
+            "r": 0.0,
+            "g": 0.0,
+            "b": 0.0,
+            "a": 1.0
+          },
+          "format": "Decimal",
+          "significant_digits": 3,
+          "spacing_px": 140.0,
+          "anchors": [
+            {
+              "level_index": 1,
+              "x": 0.5,
+              "y": 0.25,
+              "tx": 1.0,
+              "ty": 0.0
+            }
+          ],
+          "bg_color": {
+            "r": 1.0,
+            "g": 1.0,
+            "b": 1.0,
+            "a": 1.0
+          },
+          "bg_padding_px": 2.0
+        }
+      }
+    }
+  },
+  "heatmap_contour": {
+    "HeatmapContour": {
+      "matrix": {
+        "columns": [
+          "z0",
+          "z1",
+          "z2"
+        ],
+        "orientation": "ColumnsAreX",
+        "grid_layout": "Edges"
+      },
+      "fill": {
+        "mode": "Continuous",
+        "shading": "Interpolated",
+        "opacity": 1.0
+      },
+      "contour": {
+        "levels": [
+          1.0,
+          2.0,
+          5.0
+        ],
+        "line": {
+          "line_style": "Solid",
+          "line_color": {
+            "r": 0.0,
+            "g": 0.0,
+            "b": 0.0,
+            "a": 1.0
+          },
+          "line_width": 1.0
+        },
+        "per_level_color": [
+          {
+            "r": 0.9019608,
+            "g": 0.22352941,
+            "b": 0.27450982,
+            "a": 1.0
+          },
+          {
+            "r": 0.11372549,
+            "g": 0.20784314,
+            "b": 0.34117648,
+            "a": 1.0
+          },
+          {
+            "r": 0.16470589,
+            "g": 0.6156863,
+            "b": 0.56078434,
+            "a": 1.0
+          }
+        ],
+        "labels": {
+          "visible": true,
+          "font_size": 12.0,
+          "color": {
+            "r": 0.0,
+            "g": 0.0,
+            "b": 0.0,
+            "a": 1.0
+          },
+          "format": "Decimal",
+          "significant_digits": 3,
+          "spacing_px": 140.0,
+          "anchors": [
+            {
+              "level_index": 1,
+              "x": 0.5,
+              "y": 0.25,
+              "tx": 1.0,
+              "ty": 0.0
+            }
+          ],
+          "bg_color": {
+            "r": 1.0,
+            "g": 1.0,
+            "b": 1.0,
+            "a": 1.0
+          },
+          "bg_padding_px": 2.0
+        }
+      }
     }
   }
 }

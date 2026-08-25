@@ -283,11 +283,36 @@ pub fn symbol_segments(kind: &LegendEntryKind, color: Color) -> Vec<RichSegment>
     }
 }
 
+/// Blank mark of exactly [`SYMBOL_FIELD_EM`] — a label-only legend row.
+///
+/// Used for a heatmap, whose colour is the colourbar's to report and not a
+/// single swatch's. It is a spacer rather than an empty vec because every series
+/// must still produce exactly one entry: legend entry `i` **is** series `i`
+/// (`update_legend_symbols_preserving_text` zips the two positionally, and the
+/// web layer passes series indices to `set_legend_entry_label`), so a skipped
+/// entry would re-point every later row's symbol at the wrong series. Full field
+/// width also keeps the tab-aligned symbol column the same width on every row.
+fn blank_symbol() -> Vec<RichSegment> {
+    vec![RichSegment::fielded(' ', SYMBOL_FIELD_EM, None)]
+}
+
 /// Symbol segments matching a series declaration: line / scatter / combined,
 /// shape and color taken from the render type's sub-styles.
 pub fn series_symbol_segments(cfg: &SeriesConfig) -> Vec<RichSegment> {
     match &cfg.render_type {
         DataRenderType::Line { line } => line_symbol(line.line_color, line.line_style),
+        // A bar reads as a filled swatch; the glyph is already in the shape
+        // table, so no new symbol machinery.
+        DataRenderType::Histogram { bar } => {
+            scatter_symbol(&ScatterShape::SquareFilled, bar.fill_color)
+        }
+        // Contour lines are lines. When a fill is under them the line is still
+        // the mark — the fill's colours belong to the colourbar.
+        DataRenderType::Contour { contour, .. }
+        | DataRenderType::HeatmapContour { contour, .. } => {
+            line_symbol(contour.line.line_color, contour.line.line_style)
+        }
+        DataRenderType::Heatmap { .. } => blank_symbol(),
         DataRenderType::Scatter { scatter }
         | DataRenderType::ScatterErrorbarX { scatter, .. }
         | DataRenderType::ScatterErrorbarY { scatter, .. }
@@ -644,5 +669,132 @@ mod tests {
         assert!(content.segments.iter().all(|s| s.text != '\n'));
         let texts: String = content.segments.iter().map(|s| s.text).collect();
         assert_eq!(texts, "— \ta ● b");
+    }
+
+    fn field_series(render_type: DataRenderType) -> SeriesConfig {
+        SeriesConfig {
+            series_id: "f".into(),
+            source_id: None,
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            render_type,
+        }
+    }
+
+    fn bar(color: Color) -> DataRenderType {
+        DataRenderType::Histogram {
+            bar: crate::data_config::DataBarStyleConfig {
+                fill_color: color,
+                border_color: Color::BLACK,
+                border_width: 1.0,
+                baseline: 0.0,
+                gap_px: 1.0,
+                width_ratio: 1.0,
+                orientation: crate::data_config::BarOrientation::Vertical,
+                bar_style_overrides: None,
+            },
+        }
+    }
+
+    fn contour(color: Color) -> crate::data_config::ContourConfig {
+        crate::data_config::ContourConfig {
+            levels: vec![1.0],
+            line: DataLineStyleConfig {
+                line_style: LineStylePreset::Dash,
+                line_color: color,
+                line_width: 1.0,
+            },
+            per_level_color: None,
+            labels: None,
+        }
+    }
+
+    fn matrix() -> crate::data_config::MatrixRef {
+        crate::data_config::MatrixRef {
+            columns: vec!["z0".into()],
+            orientation: crate::data_config::MatrixOrientation::ColumnsAreX,
+            grid_layout: crate::data_config::GridLayout::Centers,
+        }
+    }
+
+    fn fill() -> crate::data_config::FieldFillConfig {
+        crate::data_config::FieldFillConfig {
+            mode: crate::data_config::FillMode::Continuous,
+            shading: crate::data_config::Shading::Flat,
+            opacity: 1.0,
+        }
+    }
+
+    // A bar reads as a swatch, a contour as a line — in the colours those
+    // primitives are actually drawn with.
+    #[test]
+    fn field_series_symbols_come_from_the_primitive_that_is_drawn() {
+        let swatch = series_symbol_segments(&field_series(bar(Color::from_rgb8(1, 2, 3))));
+        assert_eq!(swatch.len(), 1);
+        assert_eq!(swatch[0].color, Some(Color::from_rgb8(1, 2, 3)));
+        assert_eq!(
+            swatch[0].text,
+            scatter_shape_char(&crate::data_config::ScatterShape::SquareFilled)
+        );
+
+        let level_color = Color::from_rgb8(4, 5, 6);
+        for render_type in [
+            DataRenderType::Contour {
+                matrix: matrix(),
+                contour: contour(level_color),
+            },
+            DataRenderType::HeatmapContour {
+                matrix: matrix(),
+                fill: fill(),
+                contour: contour(level_color),
+            },
+        ] {
+            let mark = series_symbol_segments(&field_series(render_type));
+            assert_eq!(mark.len(), 1, "a contour mark is one rule");
+            assert_eq!(mark[0].color, Some(level_color));
+            // Dashed, because the contour line is — the mark reports the style
+            // the line is drawn with, not a generic rule.
+            assert!(mark[0].rule, "a contour mark is a drawn rule");
+            assert!(mark[0].rule_dash.is_some(), "dashed contour, dashed mark");
+        }
+    }
+
+    // A heatmap has no swatch of its own: its colours are the colourbar's. The
+    // mark is blank — but it is still exactly one full-width segment, because
+    // legend entry `i` is series `i` and the symbol column is tab-aligned across
+    // rows. An empty vec would re-point every later row at the wrong series.
+    #[test]
+    fn a_heatmap_gets_a_blank_full_width_mark_not_no_entry() {
+        let heatmap = field_series(DataRenderType::Heatmap {
+            matrix: matrix(),
+            fill: fill(),
+        });
+        let mark = series_symbol_segments(&heatmap);
+        assert_eq!(mark.len(), 1);
+        assert_eq!(mark[0].field_em, Some(SYMBOL_FIELD_EM));
+        assert_eq!(mark[0].text, ' ');
+
+        // One entry per series, in series order, with the heatmap in the middle.
+        let series = [
+            line_cfg(Color::from_rgb8(10, 0, 0)),
+            heatmap,
+            field_series(bar(Color::from_rgb8(0, 10, 0))),
+        ];
+        let mut content = RichText {
+            segments: Vec::new(),
+            color: Color::BLACK,
+            font_size: 12.0,
+            font: String::new(),
+        };
+        for cfg in &series {
+            append_legend_entry(&mut content, series_symbol_segments(cfg), "label");
+        }
+        assert_eq!(legend_entry_count(&content), series.len());
+        assert_eq!(
+            update_legend_symbols_preserving_text(&mut content, &series),
+            series.len(),
+            "every series must own exactly one entry, or later symbols shift"
+        );
     }
 }

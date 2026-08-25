@@ -411,6 +411,20 @@ export class FiggyChartElement extends HTMLElement {
     );
   }
 
+  async prewarm_all_with_progress(onEvent) {
+    await this.#runKernelOperation(
+      "prewarm-all",
+      (kernel) => kernel.prewarm_all_with_progress(onEvent),
+    );
+  }
+
+  async prewarm_all() {
+    await this.#runKernelOperation(
+      "prewarm-all",
+      (kernel) => kernel.prewarm_all(),
+    );
+  }
+
   #settleOperation(token) {
     let cleanupError = null;
     if (this.#isCurrentOperation(token) && this.#pendingRelease?.token === token) {
@@ -509,6 +523,14 @@ export class FiggyChartElement extends HTMLElement {
   register_font(bytes) { return this.#kernelForCall().register_font(bytes); }
   register_column_f32(id, data) { return this.#kernelForCall().register_column_f32(id, data); }
   register_column_f64(id, data) { return this.#kernelForCall().register_column_f64(id, data); }
+  // Matrix batch: `data` is one flat buffer of ids.length x valuesPerColumn
+  // values, in id order. One upload for the whole batch, all-or-nothing.
+  register_columns_f32(ids, data, valuesPerColumn) {
+    return this.#kernelForCall().register_columns_f32(ids, data, valuesPerColumn);
+  }
+  register_columns_f64(ids, data, valuesPerColumn) {
+    return this.#kernelForCall().register_columns_f64(ids, data, valuesPerColumn);
+  }
   update_register_column_f32(id, data) {
     return this.#kernelForCall().update_register_column_f32(id, data);
   }
@@ -523,15 +545,28 @@ export class FiggyChartElement extends HTMLElement {
   remove_series(seriesId) { return this.#kernelForCall().remove_series(seriesId); }
   auto_fit_x(column, padding) { return this.#kernelForCall().auto_fit_x(column, padding); }
   auto_fit_y(column, padding) { return this.#kernelForCall().auto_fit_y(column, padding); }
+  auto_fit_colorbar(padding) { return this.#kernelForCall().auto_fit_colorbar(padding); }
   async auto_fit_all(padding) {
     await this.#runKernelOperation(
       "auto-fit",
       (kernel) => kernel.auto_fit_all(padding),
     );
   }
+  set_contour_nice_levels(seriesId, targetCount, useColormapColors) {
+    return this.#kernelForCall().set_contour_nice_levels(
+      seriesId,
+      targetCount,
+      useColormapColors,
+    );
+  }
+  series_draw_info(seriesId) {
+    return JSON.parse(this.#kernelForCall().series_draw_info(seriesId));
+  }
   set_title(text) { return this.#kernelForCall().set_title(text); }
   set_x_title(text) { return this.#kernelForCall().set_x_title(text); }
   set_y_title(text) { return this.#kernelForCall().set_y_title(text); }
+  set_colorbar_title(text) { return this.#kernelForCall().set_colorbar_title(text); }
+  set_colorbar_axis(json) { return this.#kernelForCall().set_colorbar_axis(json); }
   apply_axis_preset(preset) { return this.#kernelForCall().apply_axis_preset(preset); }
   apply_color_cycle(cycle) { return this.#kernelForCall().apply_color_cycle(cycle); }
   get_config() { return this.#kernelForCall().get_config(); }
@@ -550,7 +585,15 @@ export class FiggyChartElement extends HTMLElement {
     );
     return hit === undefined ? null : JSON.parse(hit);
   }
+  async pick_data(x, y, maxDistancePx) {
+    const hit = await this.#runKernelOperation(
+      "pick",
+      (kernel) => kernel.pick_data(x, y, maxDistancePx),
+    );
+    return hit === undefined ? null : JSON.parse(hit);
+  }
   set_picked_points(json) { return this.#kernelForCall().set_picked_points(json); }
+  set_picked_data(json) { return this.#kernelForCall().set_picked_data(json); }
   set_clear_color(r, g, b, a) { return this.#kernelForCall().set_clear_color(r, g, b, a); }
   load_demo() { return this.#kernelForCall().load_demo(); }
   on_press(x, y) { return this.#kernelForCall().on_press(x, y); }

@@ -1,8 +1,9 @@
 use crate::text::TextExtents;
 
 use super::{
-    Config, LABEL_GAP, Side, axis_mut, axis_ref, axis_title_offset_to_screen, axis_title_placement,
-    chart_title_placement, legend_rect, screen_offset_to_axis_title,
+    Config, LABEL_GAP, Side, TitleBand, axis_mut, axis_offset, axis_ref,
+    axis_title_offset_to_screen, axis_title_placement, chart_title_placement, colorbar_rect,
+    colorbar_title_placement, legend_rect, point_on_rect_side, screen_offset_to_axis_title,
 };
 
 // Nudge types.
@@ -29,6 +30,27 @@ pub enum Element {
     /// The legend box — moves freely via `legend.offset_{x,y}` relative to
     /// its corner anchor.
     Legend,
+    /// The colourbar strip — moves freely via `colorbar.offset_{x,y}` relative
+    /// to its `side` + `align` anchor, the same rule as [`Self::Legend`].
+    ColorBar,
+    /// The colourbar axis line and ticks. Like a chart axis, a drag detaches it
+    /// only perpendicular to its direction through `colorbar.axis.line_offset`.
+    ColorBarAxis,
+    /// The colourbar tick-label band. A drag updates the z axis' label offsets.
+    ColorBarLabel,
+    /// The colourbar title. A drag updates the z axis' title offsets in the
+    /// title's rotated local frame.
+    ColorBarTitle,
+    /// One edge of the colourbar strip, named by the **screen** side of the
+    /// strip it is on — the resize-handle target, mirroring
+    /// [`Self::DataAreaEdge`].
+    ///
+    /// Which dimension it changes follows the bar's orientation, not the
+    /// element: on a vertical bar the left/right edges are `thickness_px` and
+    /// the top/bottom edges are `length_frac`; on a horizontal bar it is the
+    /// other way round. The element stays orientation-free because the handle
+    /// that produced it only knows screen directions.
+    ColorBarEdge(Side),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -68,8 +90,11 @@ fn element_anchor(cfg: &Config, element: &Element) -> Option<(f32, f32)> {
                 side.clone(),
                 ca,
                 &da,
-                cfg.chart_title.top_margin,
-                axis.out_margin,
+                TitleBand {
+                    out_margin: axis.out_margin,
+                    chart_title_margin: cfg.chart_title.top_margin,
+                    edge_inset: cfg.colorbar_band(side),
+                },
                 (0.0, 0.0),
                 ZERO_EXTENTS,
             )
@@ -102,9 +127,43 @@ fn element_anchor(cfg: &Config, element: &Element) -> Option<(f32, f32)> {
             let rect = legend_rect(&da, cfg.legend.corner, 0.0, (0.0, 0.0), ZERO_EXTENTS);
             (rect.x, rect.y)
         }
-        // Axis / data-area moves have their own rules — dispatched before
-        // this function is reached.
-        Element::Axis(_) | Element::DataAreaEdge(_) | Element::DataArea => return None,
+        // Colourbar: the un-offset strip corner. Same shape as the legend —
+        // a representative point is all the chart_area containment check needs.
+        Element::ColorBar => {
+            let bar = cfg.colorbar.as_ref()?;
+            let mut anchored = bar.clone();
+            anchored.offset_x = 0.0;
+            anchored.offset_y = 0.0;
+            let rect = colorbar_rect(ca, &da, cfg.chart_title.top_margin, &anchored);
+            (rect.x, rect.y)
+        }
+        Element::ColorBarLabel => {
+            let bar = cfg.colorbar.as_ref()?;
+            let rect = colorbar_rect(ca, &da, cfg.chart_title.top_margin, bar);
+            let pos = point_on_rect_side(0.5, &bar.side, &rect);
+            let (axis_dx, axis_dy) = axis_offset(bar.side.clone(), bar.axis.line_offset);
+            let reach = bar.axis.major_tick_length + LABEL_GAP + LABEL_EXTENT_EST;
+            let (out_x, out_y) = match bar.side {
+                Side::Top => (0.0, -reach),
+                Side::Bottom => (0.0, reach),
+                Side::Left => (-reach, 0.0),
+                Side::Right => (reach, 0.0),
+            };
+            (pos.0 + axis_dx + out_x, pos.1 + axis_dy + out_y)
+        }
+        Element::ColorBarTitle => {
+            let bar = cfg.colorbar.as_ref()?;
+            let rect = colorbar_rect(ca, &da, cfg.chart_title.top_margin, bar);
+            colorbar_title_placement(bar.side.clone(), &rect, &bar.axis, (0.0, 0.0), ZERO_EXTENTS)
+                .origin
+        }
+        // Axis / data-area / colourbar-edge moves have their own rules —
+        // dispatched before this function is reached.
+        Element::Axis(_)
+        | Element::ColorBarAxis
+        | Element::DataAreaEdge(_)
+        | Element::DataArea
+        | Element::ColorBarEdge(_) => return None,
     };
 
     Some(anchor)
@@ -122,8 +181,28 @@ fn current_offset(cfg: &Config, element: &Element) -> (f32, f32) {
             (a.label_style.label_offset_x, a.label_style.label_offset_y)
         }
         Element::Legend => (cfg.legend.offset_x, cfg.legend.offset_y),
+        Element::ColorBar => cfg
+            .colorbar
+            .as_ref()
+            .map_or((0.0, 0.0), |bar| (bar.offset_x, bar.offset_y)),
+        Element::ColorBarLabel => cfg.colorbar.as_ref().map_or((0.0, 0.0), |bar| {
+            (
+                bar.axis.label_style.label_offset_x,
+                bar.axis.label_style.label_offset_y,
+            )
+        }),
+        Element::ColorBarTitle => cfg.colorbar.as_ref().map_or((0.0, 0.0), |bar| {
+            (
+                bar.axis.title_option.offset_x,
+                bar.axis.title_option.offset_y,
+            )
+        }),
         // Dispatched before the offset path.
-        Element::Axis(_) | Element::DataAreaEdge(_) | Element::DataArea => (0.0, 0.0),
+        Element::Axis(_)
+        | Element::ColorBarAxis
+        | Element::DataAreaEdge(_)
+        | Element::DataArea
+        | Element::ColorBarEdge(_) => (0.0, 0.0),
     }
 }
 
@@ -139,11 +218,17 @@ impl Config {
         if let Element::Axis(side) = element {
             return self.nudge_axis(side, dx, dy);
         }
+        if let Element::ColorBarAxis = element {
+            return self.nudge_colorbar_axis(dx, dy);
+        }
         if let Element::DataAreaEdge(side) = element {
             return self.nudge_data_area_edge(side, dx, dy);
         }
         if let Element::DataArea = element {
             return self.nudge_data_area(dx, dy);
+        }
+        if let Element::ColorBarEdge(side) = element {
+            return self.nudge_colorbar_edge(side, dx, dy);
         }
         let anchor = match element_anchor(self, &element) {
             Some(a) => a,
@@ -154,6 +239,12 @@ impl Config {
         let (ox, oy) = current_offset(self, &element);
         let (screen_ox, screen_oy) = match &element {
             Element::AxisTitle(side) => axis_title_offset_to_screen(side.clone(), (ox, oy)),
+            Element::ColorBarTitle => {
+                let Some(side) = self.colorbar.as_ref().map(|bar| bar.side.clone()) else {
+                    return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+                };
+                axis_title_offset_to_screen(side, (ox, oy))
+            }
             _ => (ox, oy),
         };
         let new_x = anchor.0 + screen_ox + dx;
@@ -194,8 +285,36 @@ impl Config {
                 self.legend.offset_x += dx;
                 self.legend.offset_y += dy;
             }
+            Element::ColorBar => {
+                // `element_anchor` already returned `None` for a missing bar, so
+                // reaching here means there is one.
+                if let Some(bar) = self.colorbar.as_mut() {
+                    bar.offset_x += dx;
+                    bar.offset_y += dy;
+                }
+            }
+            Element::ColorBarLabel => {
+                if let Some(bar) = self.colorbar.as_mut() {
+                    bar.axis.label_style.label_offset_x += dx;
+                    bar.axis.label_style.label_offset_y += dy;
+                }
+            }
+            Element::ColorBarTitle => {
+                let Some(side) = self.colorbar.as_ref().map(|bar| bar.side.clone()) else {
+                    return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+                };
+                let (local_dx, local_dy) = screen_offset_to_axis_title(side, (dx, dy));
+                if let Some(bar) = self.colorbar.as_mut() {
+                    bar.axis.title_option.offset_x += local_dx;
+                    bar.axis.title_option.offset_y += local_dy;
+                }
+            }
             // Dispatched at the top of `nudge`.
-            Element::Axis(_) | Element::DataAreaEdge(_) | Element::DataArea => {}
+            Element::Axis(_)
+            | Element::ColorBarAxis
+            | Element::DataAreaEdge(_)
+            | Element::DataArea
+            | Element::ColorBarEdge(_) => {}
         }
         NudgeResult::Moved
     }
@@ -271,6 +390,153 @@ impl Config {
             return NudgeResult::Rejected(NudgeReject::OutOfBounds);
         }
         axis_mut(self, &side).line_offset = new_offset;
+        NudgeResult::Moved
+    }
+
+    /// Colourbar-axis drag rule: detach the z-axis chrome perpendicular to the
+    /// strip without moving the strip, its title, the data area, or the z
+    /// transform. Labels follow the line/ticks because they share
+    /// `colorbar.axis.line_offset` in the renderer.
+    fn nudge_colorbar_axis(&mut self, dx: f32, dy: f32) -> NudgeResult {
+        let Some(bar) = self.colorbar.as_ref() else {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        };
+        let side = bar.side.clone();
+        let d = match side {
+            Side::Left | Side::Right => dx,
+            Side::Top | Side::Bottom => dy,
+        };
+        if d == 0.0 {
+            return NudgeResult::Moved;
+        }
+        let Ok(da) = self.data_area() else {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        };
+        let rect = colorbar_rect(&self.chart_area, &da, self.chart_title.top_margin, bar);
+        let new_offset = bar.axis.line_offset + d;
+        let line_pos = match side {
+            Side::Left => rect.x + new_offset,
+            Side::Right => rect.x + rect.width + new_offset,
+            Side::Top => rect.y + new_offset,
+            Side::Bottom => rect.y + rect.height + new_offset,
+        };
+        let ca = &self.chart_area;
+        let (lo, hi) = match side {
+            Side::Left | Side::Right => (ca.x as f32, (ca.x + ca.width) as f32),
+            Side::Top | Side::Bottom => (ca.y as f32, (ca.y + ca.height) as f32),
+        };
+        if line_pos < lo || line_pos > hi {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        }
+        self.colorbar.as_mut().expect("colourbar").axis.line_offset = new_offset;
+        NudgeResult::Moved
+    }
+
+    /// Colourbar-edge rule (resize handles): the dragged edge grows the
+    /// dimension it belongs to.
+    ///
+    /// Which dimension that is comes from the bar's orientation, not the handle:
+    /// on a vertical bar the left/right edges are `thickness_px` and the
+    /// top/bottom edges are `length_frac`. The sign is "away from the strip's
+    /// centre grows it", the same shape as `nudge_data_area_edge`'s per-side sign.
+    ///
+    /// The anchor decides how a size change moves the edge under the pointer, so
+    /// the delta is scaled to keep the two together: with `BarAlign::Center` both
+    /// ends move by half, so the size has to change by twice the drag. With
+    /// `Start` / `End` one end is pinned and the free end carries the whole
+    /// change — dragging the *pinned* end's handle still resizes, from the free
+    /// end, which is what an anchored box does.
+    ///
+    /// `thickness_px` needs no such factor. The band anchor pins the edge named
+    /// by `bar.side`, so changing thickness alone already makes the opposite,
+    /// inner edge follow its handle. When the pinned outer edge itself is
+    /// dragged, the strip is translated by the same pointer delta as the size
+    /// change. That keeps the opposite edge fixed and puts the grabbed edge
+    /// under the pointer instead of leaving it behind at the band anchor.
+    fn nudge_colorbar_edge(&mut self, side: Side, dx: f32, dy: f32) -> NudgeResult {
+        let Some(bar) = self.colorbar.as_ref() else {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        };
+        // Growth is the drag projected onto the edge's outward normal.
+        let growth = match side {
+            Side::Left => -dx,
+            Side::Right => dx,
+            Side::Top => -dy,
+            Side::Bottom => dy,
+        };
+        if growth == 0.0 {
+            // Motion parallel to this edge — nothing to resize, not an error.
+            return NudgeResult::Moved;
+        }
+        let bar_vertical = matches!(bar.side, Side::Left | Side::Right);
+        let edge_vertical = matches!(side, Side::Left | Side::Right);
+        // A vertical bar's left/right edges are its thickness; so are a
+        // horizontal bar's top/bottom edges.
+        let edge_is_thickness = bar_vertical == edge_vertical;
+
+        if edge_is_thickness {
+            let old_thickness = bar.thickness_px;
+            let old_offset_x = bar.offset_x;
+            let old_offset_y = bar.offset_y;
+            let new = old_thickness + growth;
+            if new < 0.0 {
+                return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+            }
+            let dragged_outer_edge = bar.side == side;
+            let new_offset_x = if dragged_outer_edge && bar_vertical {
+                old_offset_x + dx
+            } else {
+                old_offset_x
+            };
+            let new_offset_y = if dragged_outer_edge && !bar_vertical {
+                old_offset_y + dy
+            } else {
+                old_offset_y
+            };
+            // Growing the strip grows its band, which shrinks the data area —
+            // so the same check `nudge_data_area_edge` makes applies, by the
+            // same write-then-revert (no Config clone on a pointer-move path).
+            // Thickness and the outer-handle offset are one transaction: a
+            // rejected resize must not leave the strip translated.
+            {
+                let bar = self.colorbar.as_mut().expect("colourbar");
+                bar.thickness_px = new;
+                bar.offset_x = new_offset_x;
+                bar.offset_y = new_offset_y;
+            }
+            if self.data_area().is_err() {
+                let bar = self.colorbar.as_mut().expect("colourbar");
+                bar.thickness_px = old_thickness;
+                bar.offset_x = old_offset_x;
+                bar.offset_y = old_offset_y;
+                return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+            }
+            return NudgeResult::Moved;
+        }
+
+        let Ok(da) = self.data_area() else {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        };
+        let span = if bar_vertical {
+            da.height as f32
+        } else {
+            da.width as f32
+        };
+        if span <= 0.0 {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        }
+        let factor = match bar.align {
+            crate::config::BarAlign::Center => 2.0,
+            crate::config::BarAlign::Start | crate::config::BarAlign::End => 1.0,
+        };
+        let new = bar.length_frac + factor * growth / span;
+        // `Config::validate`'s range: a strip of zero length has no pixel to
+        // hold a colour, and one longer than its side runs past the axis it is
+        // labelled against.
+        if !(new > 0.0 && new <= 1.0) {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        }
+        self.colorbar.as_mut().expect("colourbar").length_frac = new;
         NudgeResult::Moved
     }
 

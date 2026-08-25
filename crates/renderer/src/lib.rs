@@ -4,7 +4,10 @@ pub mod data;
 pub mod data_render;
 pub mod demo;
 pub mod error;
+pub mod gpu_contour;
+mod gpu_data_pick;
 pub mod gpu_errorbar;
+pub mod gpu_memory;
 mod gpu_pick;
 pub mod init;
 pub mod pick;
@@ -23,42 +26,53 @@ mod time_axis;
 // (`chart` and `data` are renderer modules: dirty-flag tracking and the
 // `ColumnSource` upload adapter are render-side machinery.)
 pub use ::model::{
-    color, config, data_config, default, drag, format, layout, legend, line, preset, resize,
-    select, text, tick,
+    color, colormap, config, data_config, default, drag, format, layout, legend, line, preset,
+    resize, select, text, tick,
 };
 
 // Public API re-exports.
 pub use chart::{Chart, FitExtent, errorbar_extent};
 pub use color::Color;
-pub use config::Config;
+pub use colormap::{ColorMap, LUT_LEN};
+pub use config::{
+    BarAlign, ColorBarOptions, Config, DataSelectionsConfig, PickedDataRef, PickedPointRef,
+    PickedPointsConfig,
+};
 pub use data::{Column, ColumnPairWriter, ColumnSource, ColumnUploadStats, HiLoColumnSource};
 pub use data_config::{
-    DataErrorBarPointStyleConfig, DataErrorBarPointStyleOverride, DataErrorBarStyleConfig,
-    DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorRef, ScatterShape,
-    SeriesConfig,
+    DataBarBinStyleConfig, DataBarStyleOverride, DataErrorBarPointStyleConfig,
+    DataErrorBarPointStyleOverride, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
+    DataScatterStyleConfig, ErrorRef, MAX_CONTOUR_LEVELS, ScatterShape, SeriesConfig,
 };
-pub use data_render::{AllocError, ColumnHandle, ColumnId, ColumnPool, DefragPolicy};
+pub use data_render::{
+    AllocError, ColumnHandle, ColumnId, ColumnPool, DefragPolicy, GpuAllocCtx, GpuBudget,
+    GrowthPolicy,
+};
 pub use drag::Draggable;
 pub use error::{FiggyError, Result};
+pub use gpu_data_pick::GpuDataPickTicket;
 pub use gpu_errorbar::{
-    GpuErrorbarError, GpuErrorbarExtent, GpuErrorbarExtentTicket, GpuSeriesExtent,
-    GpuSeriesExtentColumnIds, GpuSeriesExtentMode, GpuSeriesExtentTicket,
+    GpuErrorbarError, GpuErrorbarExtent, GpuErrorbarExtentTicket, GpuFieldExtentMode,
+    GpuSeriesExtent, GpuSeriesExtentColumnIds, GpuSeriesExtentMode, GpuSeriesExtentTicket,
+    GpuSeriesFitMode,
 };
+pub use gpu_memory::{GpuMemoryUsage, GpuResourceKind};
 pub use gpu_pick::{GpuPickError, GpuPickTicket};
 pub use init::{INIT_EVENT_SCHEMA_VERSION, InitEvent, InitPhase};
-pub use pick::{PickedPoint, PointColumnLookup, PointPickOptions, pick_nearest_point};
+pub use pick::{PickedData, PickedPoint, PointColumnLookup, PointPickOptions, pick_nearest_point};
 pub use preset::{AxisPreset, ColorCycle};
 pub use renderer::{
     AxisViewState, ChartDrawItem, ChartId, ChartRenderStamp, ChartStyle, ChartView, ChartViewState,
     FitCommitToken, GpuPickRequest, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE, PreparedFrame, RasterImage,
     RenderRevision, Renderer, RendererDevice, RendererLoadDemo, RendererVisualStamp, Series,
-    WebDerivedSnapshot, WebDerivedStamp, WindowedRenderer, clamp_export_scale,
+    SeriesDrawInfo, WebDerivedSnapshot, WebDerivedStamp, WindowedRenderer, clamp_export_scale,
     display_config_for_surface, dpi_to_scale, encode_png, fit_display_panel,
 };
 pub use resize::{Resizable, ResizeHandle};
 pub use select::{
-    AxisElement, AxisLabelElement, AxisTitleElement, ChartTitleElement, DataAreaElement, HitId,
-    HitMap, LegendElement, Selectable, SelectionBox,
+    AxisElement, AxisLabelElement, AxisTitleElement, ChartTitleElement, ColorBarAxisElement,
+    ColorBarElement, ColorBarLabelElement, ColorBarTitleElement, DataAreaElement, HitId, HitMap,
+    LegendElement, Selectable, SelectionBox,
 };
 pub use text::MeasureText;
 pub use text_render::{CpuTextMeasure, FontPolicy};

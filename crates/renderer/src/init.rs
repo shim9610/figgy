@@ -90,6 +90,70 @@ pub(crate) async fn yield_init_frame() {
     }
 }
 
+/// Compile compute entry points through WebGPU's Promise-based API before
+/// wgpu publishes the production pipelines. The temporary browser pipelines
+/// only warm the same device's compiler cache; ownership remains with wgpu.
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn prewarm_compute_entries_js(
+    device: &wgpu::Device,
+    scope: &'static str,
+    source: &str,
+    entries: &[(&'static str, &'static str)],
+    observer: &mut dyn FnMut(InitEvent),
+) -> Result<(), String> {
+    use js_sys::{Function, Object, Promise, Reflect};
+    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen_futures::JsFuture;
+
+    let gpu_device = device
+        .as_webgpu()
+        .ok_or_else(|| "wgpu device is not backed by a browser GPUDevice".to_owned())?;
+    let device_js = JsValue::from(gpu_device.clone());
+    let js_error = |error: JsValue| {
+        error
+            .as_string()
+            .unwrap_or_else(|| format!("WebGPU compute compile failed: {error:?}"))
+    };
+    let method = |name: &str| -> Result<Function, String> {
+        Reflect::get(&device_js, &JsValue::from_str(name))
+            .map_err(js_error)?
+            .dyn_into()
+            .map_err(|_| format!("GPUDevice.{name} is unavailable"))
+    };
+    let set = |object: &Object, key: &str, value: &JsValue| -> Result<(), String> {
+        Reflect::set(object, &JsValue::from_str(key), value).map_err(js_error)?;
+        Ok(())
+    };
+    let create_shader = method("createShaderModule")?;
+    let create_pipeline = method("createComputePipelineAsync")?;
+    let shader_desc = Object::new();
+    set(&shader_desc, "label", &JsValue::from_str(scope))?;
+    set(&shader_desc, "code", &JsValue::from_str(source))?;
+    let shader = create_shader
+        .call1(&device_js, shader_desc.as_ref())
+        .map_err(js_error)?;
+
+    for (stage, entry_point) in entries {
+        started(observer, scope, stage);
+        let compute = Object::new();
+        set(&compute, "module", &shader)?;
+        set(&compute, "entryPoint", &JsValue::from_str(entry_point))?;
+        let desc = Object::new();
+        set(&desc, "label", &JsValue::from_str(stage))?;
+        set(&desc, "layout", &JsValue::from_str("auto"))?;
+        set(&desc, "compute", compute.as_ref())?;
+        let promise = create_pipeline
+            .call1(&device_js, desc.as_ref())
+            .map_err(js_error)?;
+        JsFuture::from(Promise::from(promise))
+            .await
+            .map_err(js_error)?;
+        finished(observer, scope, stage);
+        yield_init_frame().await;
+    }
+    Ok(())
+}
+
 pub(crate) async fn observe_value_async<T>(
     observer: &mut dyn FnMut(InitEvent),
     scope: &'static str,

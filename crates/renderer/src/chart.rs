@@ -72,15 +72,23 @@ pub(crate) fn guarded_log_range(min: f64, max: f64) -> (f64, f64) {
     } else {
         LOG_RANGE_FALLBACK_MIN
     };
-    let mut max = if max.is_finite() && max > 0.0 {
-        max
-    } else {
-        min * 10.0
-    };
-    if max <= min {
-        max = min * 10.0;
+    if max.is_finite() && max > min {
+        return (min, max);
     }
-    (min, max)
+
+    let upper = min * 10.0;
+    if upper.is_finite() && upper > min {
+        return (min, upper);
+    }
+
+    // `min` is at the top of f64 and one decade upward overflowed. Preserve a
+    // finite, ordered fallback by putting the synthetic decade below it.
+    let lower = min / 10.0;
+    if lower.is_finite() && lower > 0.0 && lower < min {
+        return (lower, min);
+    }
+
+    (LOG_RANGE_FALLBACK_MIN, LOG_RANGE_FALLBACK_MIN * 10.0)
 }
 
 /// Positive-preserving padding for a log-scale axis: pad by
@@ -106,14 +114,22 @@ pub(crate) fn nice_spacing(span: f64) -> f64 {
     }
     let exp = span.log10().floor();
     let base = 10f64.powf(exp);
+    if !base.is_finite() || base <= 0.0 {
+        return span;
+    }
     let frac = span / base;
     // frac is in [1, 10); the 1·2·5 branches keep tick count in 5..=10.
-    if frac >= 5.0 {
+    let spacing = if frac >= 5.0 {
         base
     } else if frac >= 2.0 {
         0.5 * base
     } else {
         0.2 * base
+    };
+    if spacing.is_finite() && spacing > 0.0 {
+        spacing
+    } else {
+        span
     }
 }
 
@@ -183,12 +199,20 @@ pub(crate) fn validate_renderer_config(config: &Config) -> Result<()> {
         });
     }
 
+    // The colourbar's z axis is validated with the four chart axes, by the same
+    // rules: it is an `AxisOptions` and its range means the same thing. A log
+    // colourbar with a non-positive lower bound has no `t` for its lowest
+    // colour, which is the same defect as a log x axis starting at zero.
+    let colorbar_axis = config.colorbar.as_ref().map(|bar| &bar.axis);
     for (field, axis) in [
         ("top_x", &config.top_x),
         ("bottom_x", &config.bottom_x),
         ("left_y", &config.left_y),
         ("right_y", &config.right_y),
-    ] {
+    ]
+    .into_iter()
+    .chain(colorbar_axis.map(|axis| ("colorbar.axis", axis)))
+    {
         if !axis.min.is_finite() || !axis.max.is_finite() {
             return Err(FiggyError::InvalidConfig {
                 field,
@@ -237,7 +261,7 @@ fn fitted_axis_range(
     (range.0.is_finite() && range.1.is_finite() && range.1 > range.0).then_some(range)
 }
 
-/// Apply both exact fit results directly to an owned `Config`.
+/// Apply GPU-reduced x/y fit bounds directly to an owned `Config`.
 ///
 /// This is allocation-free and infallible after extent validation, allowing
 /// the renderer to preflight every checked revision before atomically
@@ -494,6 +518,38 @@ impl Chart {
         self.set_y_range(min, max);
     }
 
+    /// Fit the chart's z axis to a prepared extent. The colourbar owns the
+    /// z scale, so a chart without one is intentionally left unchanged.
+    pub fn auto_fit_colorbar_extent(&mut self, ext: &FitExtent, padding_ratio: f64) {
+        let Some(axis) = self.config.colorbar.as_ref().map(|bar| &bar.axis) else {
+            return;
+        };
+        let Some((min, max)) = fitted_axis_range(axis, ext, padding_ratio) else {
+            return;
+        };
+        let log = matches!(axis.scale, AxisScale::Logarithmic);
+        self.with_axis_range_change(|config| {
+            if let Some(bar) = config.colorbar.as_mut() {
+                apply_axis_range(&mut bar.axis, min, max, log);
+            }
+        });
+    }
+
+    /// Auto-fit the colourbar to the union of matrix value columns.
+    pub fn auto_fit_colorbar_union(
+        &mut self,
+        pool: &ColumnPool,
+        z_ids: &[&str],
+        padding_ratio: f64,
+    ) -> Result<()> {
+        let mut ext = FitExtent::EMPTY;
+        for id in z_ids {
+            ext.union(&Self::slot_extent(pool, id)?);
+        }
+        self.auto_fit_colorbar_extent(&ext, padding_ratio);
+        Ok(())
+    }
+
     /// Auto-fit the X axis range from the pool's column metadata for `x_id`.
     /// Uses multiplicative (positive-preserving) padding for log scale.
     pub fn auto_fit_x(&mut self, pool: &ColumnPool, x_id: &str, padding_ratio: f64) -> Result<()> {
@@ -716,5 +772,102 @@ mod tests {
             0.1,
         );
         assert_eq!((c.config().bottom_x.min, c.config().bottom_x.max), before);
+    }
+
+    #[test]
+    fn auto_fit_colorbar_extent_uses_the_colourbar_axis() {
+        let mut config = dummy_config();
+        config.colorbar = Some(crate::default::default_colorbar_options());
+        let mut chart = Chart::new(config);
+        chart.auto_fit_colorbar_extent(
+            &FitExtent {
+                min: 2.0,
+                max: 8.0,
+                min_positive: Some(2.0),
+            },
+            0.1,
+        );
+        let axis = &chart.config().colorbar.as_ref().unwrap().axis;
+        assert!((axis.min - 1.4).abs() < 1e-9);
+        assert!((axis.max - 8.6).abs() < 1e-9);
+    }
+
+    #[test]
+    fn auto_fit_colorbar_extent_without_a_colourbar_is_a_noop() {
+        let config = dummy_config();
+        assert!(config.colorbar.is_none());
+        let mut chart = Chart::new(config.clone());
+        chart.auto_fit_colorbar_extent(
+            &FitExtent {
+                min: 2.0,
+                max: 8.0,
+                min_positive: Some(2.0),
+            },
+            0.1,
+        );
+        assert_eq!(chart.config(), &config);
+    }
+
+    // The colourbar's z axis goes through the same renderer-side gate as the
+    // four chart axes. A log colourbar starting at zero has no `t` for its
+    // lowest colour, exactly as a log x axis starting at zero has no screen
+    // position for its lowest point.
+    #[test]
+    fn validate_renderer_config_holds_the_colorbar_axis_to_the_axis_rules() {
+        let with_bar = |edit: fn(&mut crate::config::ColorBarOptions)| {
+            let mut cfg = dummy_config();
+            let mut bar = crate::default::default_colorbar_options();
+            edit(&mut bar);
+            cfg.colorbar = Some(bar);
+            cfg
+        };
+
+        assert!(validate_renderer_config(&with_bar(|_| {})).is_ok());
+
+        let non_finite = validate_renderer_config(&with_bar(|bar| bar.axis.max = f64::NAN));
+        assert!(matches!(
+            non_finite,
+            Err(FiggyError::InvalidConfig {
+                field: "colorbar.axis",
+                ..
+            })
+        ));
+
+        let reversed = validate_renderer_config(&with_bar(|bar| {
+            bar.axis.min = 10.0;
+            bar.axis.max = 1.0;
+        }));
+        assert!(matches!(
+            reversed,
+            Err(FiggyError::InvalidConfig {
+                field: "colorbar.axis",
+                ..
+            })
+        ));
+
+        let log_at_zero = validate_renderer_config(&with_bar(|bar| {
+            bar.axis.scale = AxisScale::Logarithmic;
+            bar.axis.min = 0.0;
+            bar.axis.max = 100.0;
+        }));
+        assert!(matches!(
+            log_at_zero,
+            Err(FiggyError::InvalidConfig {
+                field: "colorbar.axis",
+                reason: "logarithmic axis bounds must be positive"
+            })
+        ));
+
+        // A positive log range is fine, and a hidden bar is still validated —
+        // an invisible z scale that field series read from must still be sane.
+        assert!(
+            validate_renderer_config(&with_bar(|bar| {
+                bar.visible = false;
+                bar.axis.scale = AxisScale::Logarithmic;
+                bar.axis.min = 1e-3;
+                bar.axis.max = 1e3;
+            }))
+            .is_ok()
+        );
     }
 }

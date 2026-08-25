@@ -8,6 +8,7 @@
 //! on this one and re-exports these modules under the same paths.
 
 pub mod color;
+pub mod colormap;
 pub mod config;
 pub mod data;
 pub mod data_config;
@@ -25,18 +26,24 @@ pub mod tick;
 
 // Public API re-exports.
 pub use color::Color;
-pub use config::{Config, PickedPointRef, PickedPointsConfig};
+pub use colormap::{ColorMap, LUT_LEN};
+pub use config::{
+    BarAlign, ColorBarOptions, Config, DataSelectionsConfig, PickedDataRef, PickedPointRef,
+    PickedPointsConfig,
+};
 pub use data::{Column, ColumnId, DataCell};
 pub use data_config::{
-    DataErrorBarPointStyleConfig, DataErrorBarPointStyleOverride, DataErrorBarStyleConfig,
-    DataLineStyleConfig, DataRenderType, DataScatterPointStyleConfig,
-    DataScatterPointStyleOverride, DataScatterStyleConfig, ErrorRef, ScatterShape, SeriesConfig,
+    DataBarBinStyleConfig, DataBarStyleOverride, DataErrorBarPointStyleConfig,
+    DataErrorBarPointStyleOverride, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
+    DataScatterPointStyleConfig, DataScatterPointStyleOverride, DataScatterStyleConfig, ErrorRef,
+    MAX_CONTOUR_LEVELS, ScatterShape, SeriesConfig,
 };
 pub use drag::Draggable;
 pub use preset::{AxisPreset, ColorCycle};
 pub use resize::{Resizable, ResizeHandle};
 pub use select::{
-    AxisElement, AxisLabelElement, AxisTitleElement, ChartTitleElement, DataAreaElement, HitId,
-    HitMap, LegendElement, Selectable, SelectionBox,
+    AxisElement, AxisLabelElement, AxisTitleElement, ChartTitleElement, ColorBarAxisElement,
+    ColorBarElement, ColorBarLabelElement, ColorBarTitleElement, DataAreaElement, HitId, HitMap,
+    LegendElement, Selectable, SelectionBox,
 };
 pub use text::{MeasureText, TextExtents};

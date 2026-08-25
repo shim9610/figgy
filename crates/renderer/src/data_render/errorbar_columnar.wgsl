@@ -9,9 +9,9 @@
 // (stems: style.line_width_px, caps: style.cap_width_px); pixel offsets are
 // converted to NDC via transform.pixel_to_ndc.
 //
-// To draw only one direction, fill the unused err columns with zeros (or
-// share a single zero-filled column): a direction with err_lo + err_hi <= 0
-// collapses to zero-area quads, so neither its stem nor its caps rasterize.
+// `style.primitive_flags` is the direction authority: bit 0 enables Y and
+// bit 1 enables X. Inactive vertex slots may bind any sufficiently long
+// column because the shader collapses that direction before reading errors.
 //
 // `scale_log.{x,y}` = 1.0 applies log10 to both the input coords and the
 // computed err endpoints.
@@ -24,6 +24,8 @@ struct Transform {
     data_max_lo: vec2<f32>,
     scale_log: vec2<f32>,
     pixel_to_ndc: vec2<f32>,
+    data_to_panel_scale: vec2<f32>,
+    data_to_panel_offset: vec2<f32>,
     // Generic per-panel style parameter slots. Interpretation belongs to the
     // ACTIVE style's shader entries; the precise entries never read them.
     // sketch:        [0] = (amplitude_px, wavelength_px, seed(f32), 0)
@@ -35,7 +37,7 @@ struct Transform {
     //                resolution-invariant under DPI/export scaling.
     // constellation: [0] = (star_opacity, line_opacity, 0, 0)
     style_params: array<vec4<f32>, 3>,
-};  // 96 B (vec4 array at offset 48, stride 16 — alignment unchanged)
+};  // 112 B (vec4 array at offset 64, stride 16)
 
 @group(0) @binding(0) var<uniform> transform: Transform;
 
@@ -51,7 +53,9 @@ struct Style {
     // (sketch/milkyway/constellation) XOR it into their hash seeds so two series never
     // share a star/wobble pattern; precise entries never read it.
     series_salt: u32,
-    _pad: u32,
+    // Primitive-specific feature bits. Errorbar uses bit 0 for Y and bit 1
+    // for X; every other primitive ignores this field.
+    primitive_flags: u32,
     dash: array<vec4<f32>, 2>,
 };
 
@@ -62,20 +66,24 @@ fn maybe_log(v: f32, is_log: f32) -> f32 {
     return mix(v, lv, is_log);
 }
 
-fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f32, is_log: f32) -> f32 {
+fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f32, is_log: f32, panel_scale: f32, panel_offset: f32) -> f32 {
     let raw = v.x + v.y;
     let linear_num = (v.x - min_hi) + (v.y - min_lo);
     let range = (max_hi - min_hi) + (max_lo - min_lo);
     let log_num = (maybe_log(raw, is_log) - min_hi) - min_lo;
-    return mix(linear_num / range, log_num / range, is_log);
+    let data_t = mix(linear_num / range, log_num / range, is_log);
+    return panel_offset + data_t * panel_scale;
 }
 
 fn data_to_ndc(xv: vec2<f32>, yv: vec2<f32>) -> vec2<f32> {
-    let tx = axis_pair_to_t(xv, transform.data_min.x, transform.data_max.x, transform.data_min_lo.x, transform.data_max_lo.x, transform.scale_log.x);
-    let ty = axis_pair_to_t(yv, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y);
+    let tx = axis_pair_to_t(xv, transform.data_min.x, transform.data_max.x, transform.data_min_lo.x, transform.data_max_lo.x, transform.scale_log.x, transform.data_to_panel_scale.x, transform.data_to_panel_offset.x);
+    let ty = axis_pair_to_t(yv, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y, transform.data_to_panel_scale.y, transform.data_to_panel_offset.y);
     return vec2<f32>(tx, ty) * 2.0 - 1.0;
 }
 // ───── END common block ─────
+
+const ERRORBAR_HAS_Y: u32 = 1u;
+const ERRORBAR_HAS_X: u32 = 2u;
 
 struct DataPoint {
     x: vec2<f32>,
@@ -118,10 +126,10 @@ fn vs_main(in: VsIn) -> @builtin(position) vec4<f32> {
     // 5 cap@x_hi.
     let seg = in.vi / 6u;
 
-    // Zero-filled err columns disable a whole direction, caps included:
-    // collapse its segments to the anchor so every triangle has zero area.
-    let has_y = (pair_value(in.err_y_lo) + pair_value(in.err_y_hi)) > 0.0;
-    let has_x = (pair_value(in.err_x_lo) + pair_value(in.err_x_hi)) > 0.0;
+    // Disabled directions collapse at the anchor, caps included. Direction
+    // presence is structural and must not depend on whether an error value is 0.
+    let has_y = (style.primitive_flags & ERRORBAR_HAS_Y) != 0u;
+    let has_x = (style.primitive_flags & ERRORBAR_HAS_X) != 0u;
     let dir_enabled = select(has_x, has_y, seg < 3u);
     if (!dir_enabled) {
         let anchor = data_to_ndc(in.x, in.y);
@@ -323,8 +331,8 @@ fn vs_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> MappedOut {
     var out: MappedOut;
     out.color_premul = resolved.color_premul;
 
-    let has_y = (pair_value(in.err_y_lo) + pair_value(in.err_y_hi)) > 0.0;
-    let has_x = (pair_value(in.err_x_lo) + pair_value(in.err_x_hi)) > 0.0;
+    let has_y = (style.primitive_flags & ERRORBAR_HAS_Y) != 0u;
+    let has_x = (style.primitive_flags & ERRORBAR_HAS_X) != 0u;
     let dir_enabled = select(has_x, has_y, seg < 3u);
     if (!dir_enabled) {
         let anchor = data_to_ndc(in.x, in.y);
@@ -442,8 +450,8 @@ fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> @builtin(position)
     // 5 cap@x_hi.
     let seg = in.vi / 6u;
 
-    let has_y = (pair_value(in.err_y_lo) + pair_value(in.err_y_hi)) > 0.0;
-    let has_x = (pair_value(in.err_x_lo) + pair_value(in.err_x_hi)) > 0.0;
+    let has_y = (style.primitive_flags & ERRORBAR_HAS_Y) != 0u;
+    let has_x = (style.primitive_flags & ERRORBAR_HAS_X) != 0u;
     let dir_enabled = select(has_x, has_y, seg < 3u);
     if (!dir_enabled) {
         let anchor = data_to_ndc(in.x, in.y);
@@ -554,8 +562,8 @@ fn vs_jet(in: VsIn, @builtin(instance_index) inst: u32) -> JetOut {
     out.t_src = 0.5;
     out.local = vec2<f32>(0.0, 0.0);
 
-    let has_y = (pair_value(in.err_y_lo) + pair_value(in.err_y_hi)) > 0.0;
-    let has_x = (pair_value(in.err_x_lo) + pair_value(in.err_x_hi)) > 0.0;
+    let has_y = (style.primitive_flags & ERRORBAR_HAS_Y) != 0u;
+    let has_x = (style.primitive_flags & ERRORBAR_HAS_X) != 0u;
     let dir_enabled = select(has_x, has_y, seg < 3u);
     if (!dir_enabled) {
         let anchor = data_to_ndc(in.x, in.y);

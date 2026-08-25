@@ -30,6 +30,8 @@ struct PickQueryTransform {
     data_max_lo: vec2<f32>,
     scale_log: vec2<f32>,
     pixel_to_ndc: vec2<f32>,
+    data_to_panel_scale: vec2<f32>,
+    data_to_panel_offset: vec2<f32>,
     style_params: array<vec4<f32>, 3>,
 };
 
@@ -121,7 +123,9 @@ fn pick_axis_pair_to_t(v: vec2<f32>, axis: u32) -> f32 {
     let linear_num = (v.x - min_hi) + (v.y - min_lo);
     let range = (max_hi - min_hi) + (max_lo - min_lo);
     let log_num = (pick_log10(raw) - min_hi) - min_lo;
-    return mix(linear_num / range, log_num / range, pick_query_params.transform.scale_log[axis]);
+    let data_t = mix(linear_num / range, log_num / range, pick_query_params.transform.scale_log[axis]);
+    return pick_query_params.transform.data_to_panel_offset[axis]
+        + data_t * pick_query_params.transform.data_to_panel_scale[axis];
 }
 
 fn pick_project_axis_pair(v: vec2<f32>, axis: u32) -> f32 {

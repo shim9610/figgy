@@ -298,6 +298,17 @@ impl ColorCycle {
                 line.line_color = c;
                 err_style.error_bar_color = c;
             }
+            DataRenderType::Histogram { bar } => {
+                bar.fill_color = c;
+            }
+            // The contour line joins the cycle like any other line. The fill
+            // does not: its colours come from the colormap, and overwriting one
+            // of them with a cycle entry would make the colourbar lie.
+            DataRenderType::Contour { contour, .. }
+            | DataRenderType::HeatmapContour { contour, .. } => {
+                contour.line.line_color = c;
+            }
+            DataRenderType::Heatmap { .. } => {}
         }
     }
 
@@ -461,5 +472,94 @@ mod tests {
             };
             assert_eq!(line.line_color, ColorCycle::Classic.color(i));
         }
+    }
+
+    // The contour line joins the cycle like any other line; the field's colours
+    // come from the colormap and the cycle must not reach into them.
+    #[test]
+    fn the_cycle_recolors_bars_and_contour_lines_but_never_a_field() {
+        use crate::data_config::{
+            BarOrientation, ContourConfig, DataBarStyleConfig, FieldFillConfig, FillMode,
+            GridLayout, MatrixOrientation, MatrixRef, Shading,
+        };
+
+        let matrix = || MatrixRef {
+            columns: vec!["z0".into()],
+            orientation: MatrixOrientation::ColumnsAreX,
+            grid_layout: GridLayout::Centers,
+        };
+        let fill = || FieldFillConfig {
+            mode: FillMode::Continuous,
+            shading: Shading::Flat,
+            opacity: 1.0,
+        };
+        let contour = || ContourConfig {
+            levels: vec![1.0],
+            line: DataLineStyleConfig {
+                line_style: LineStylePreset::Solid,
+                line_color: Color::BLACK,
+                line_width: 1.0,
+            },
+            per_level_color: None,
+            labels: None,
+        };
+        let series = |render_type| SeriesConfig {
+            series_id: "s".into(),
+            source_id: None,
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            render_type,
+        };
+        let expected = ColorCycle::Classic.color(2);
+
+        let mut histogram = series(DataRenderType::Histogram {
+            bar: DataBarStyleConfig {
+                fill_color: Color::BLACK,
+                border_color: Color::BLACK,
+                border_width: 1.0,
+                baseline: 0.0,
+                gap_px: 1.0,
+                width_ratio: 1.0,
+                orientation: BarOrientation::Vertical,
+                bar_style_overrides: None,
+            },
+        });
+        ColorCycle::Classic.apply_to_series(&mut histogram, 2);
+        let DataRenderType::Histogram { bar } = &histogram.render_type else {
+            unreachable!()
+        };
+        assert_eq!(bar.fill_color, expected);
+
+        for render_type in [
+            DataRenderType::Contour {
+                matrix: matrix(),
+                contour: contour(),
+            },
+            DataRenderType::HeatmapContour {
+                matrix: matrix(),
+                fill: fill(),
+                contour: contour(),
+            },
+        ] {
+            let mut item = series(render_type);
+            ColorCycle::Classic.apply_to_series(&mut item, 2);
+            let line_color = match &item.render_type {
+                DataRenderType::Contour { contour, .. }
+                | DataRenderType::HeatmapContour { contour, .. } => contour.line.line_color,
+                _ => unreachable!(),
+            };
+            assert_eq!(line_color, expected);
+        }
+
+        // A fill is left exactly as declared — including inside the combined
+        // variant, where only the line was recoloured above.
+        let mut heatmap = series(DataRenderType::Heatmap {
+            matrix: matrix(),
+            fill: fill(),
+        });
+        let before = heatmap.clone();
+        ColorCycle::Classic.apply_to_series(&mut heatmap, 2);
+        assert_eq!(heatmap, before);
     }
 }

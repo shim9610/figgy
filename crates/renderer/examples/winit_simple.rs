@@ -47,15 +47,20 @@ use winit::window::{Window, WindowId};
 use renderer::color::Color;
 use renderer::config::{AxisScale, LegendEntryKind};
 use renderer::data::Column;
+use renderer::data_config::{
+    ContourConfig, ContourLabelConfig, FieldFillConfig, FillMode, GridLayout, MatrixOrientation,
+    MatrixRef, Shading,
+};
 use renderer::default;
 use renderer::demo;
+use renderer::format::LabelFormat;
 use renderer::layout::NudgeResult;
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{
-    AxisPreset, Chart, ChartDrawItem, ChartStyle, ChartView, ColorCycle, CpuTextMeasure,
-    DataLineStyleConfig, DataRenderType, HitId, HitMap, Renderer, ResizeHandle, SelectionBox,
-    Series, SeriesConfig, WindowedRenderer, encode_png,
+    AxisPreset, Chart, ChartDrawItem, ChartStyle, ChartView, ColorCycle, ColumnSource,
+    CpuTextMeasure, DataLineStyleConfig, DataRenderType, HitId, HitMap, Renderer, ResizeHandle,
+    SelectionBox, Series, SeriesConfig, WindowedRenderer, encode_png,
 };
 
 const AXIS_PRESETS: [AxisPreset; 5] = [
@@ -152,30 +157,18 @@ impl Drop for App {
     }
 }
 
-fn compute_panel_rects(w: u32, h: u32) -> [Rect; 3] {
-    let avail_w = w.saturating_sub(GAP * 4);
-    let pw = avail_w / 3;
+const PANELS: usize = 4;
+
+fn compute_panel_rects(w: u32, h: u32) -> [Rect; PANELS] {
+    let avail_w = w.saturating_sub(GAP * (PANELS as u32 + 1));
+    let pw = avail_w / PANELS as u32;
     let ph = h.saturating_sub(GAP * 2);
-    [
-        Rect {
-            x: GAP,
-            y: GAP,
-            width: pw,
-            height: ph,
-        },
-        Rect {
-            x: GAP * 2 + pw,
-            y: GAP,
-            width: pw,
-            height: ph,
-        },
-        Rect {
-            x: GAP * 3 + pw * 2,
-            y: GAP,
-            width: pw,
-            height: ph,
-        },
-    ]
+    std::array::from_fn(|i| Rect {
+        x: GAP * (i as u32 + 1) + pw * i as u32,
+        y: GAP,
+        width: pw,
+        height: ph,
+    })
 }
 
 // ============================================================================
@@ -370,6 +363,117 @@ fn build_cross_section_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) ->
     }
 }
 
+/// Field panel — a heatmap with contour lines, labels and a colourbar.
+///
+/// Also the demo of the batch upload: a grid is 40 columns, and `add_columns`
+/// takes the lot in one pool region, one staging buffer and one submit instead of
+/// forty of each.
+fn build_field_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEntry {
+    const G: usize = 40;
+    const SPREAD: f64 = 0.05;
+    let coords: Vec<f64> = (0..G).map(|i| i as f64 / (G - 1) as f64).collect();
+    let bump = |x: f64, y: f64| {
+        let (dx, dy) = (x - 0.5, y - 0.5);
+        (-(dx * dx + dy * dy) / SPREAD).exp()
+    };
+    let grid: Vec<Column<f64>> = coords
+        .iter()
+        .map(|x| col_f64(coords.iter().map(|y| bump(*x, *y)).collect()))
+        .collect();
+    let ids: Vec<String> = (0..G).map(|c| format!("bump_z{c}")).collect();
+
+    let coord_col = col_f64(coords.clone());
+    let mut batch: Vec<(&str, &dyn ColumnSource)> = Vec::with_capacity(G + 2);
+    batch.push(("bump_x", &coord_col as &dyn ColumnSource));
+    batch.push(("bump_y", &coord_col as &dyn ColumnSource));
+    for (id, column) in ids.iter().zip(&grid) {
+        batch.push((id.as_str(), column as &dyn ColumnSource));
+    }
+    renderer.add_columns(&batch).expect("grid batch upload");
+
+    let mut config = default::default_config();
+    config.chart_area = ChartArea(rect);
+    config.grid.show_major_x = false;
+    config.grid.show_major_y = false;
+    config.grid.show_minor_x = false;
+    config.grid.show_minor_y = false;
+    // The colourbar owns the z range and the colormap — a field has no value to
+    // draw without it, so `validate_renderer_series` insists on one.
+    let mut bar = default::default_colorbar_options();
+    bar.axis.min = 0.0;
+    bar.axis.max = 1.0;
+    bar.axis.major_spacing = 0.25;
+    config.colorbar = Some(bar);
+
+    let mut chart = Chart::new(config)
+        .with_title("Gaussian field — heatmap + labelled contours")
+        .with_x_title("x")
+        .with_y_title("y");
+    chart.set_x_range(0.0, 1.0);
+    chart.set_y_range(0.0, 1.0);
+
+    // Levels only. Where the labels go is not stated anywhere here: the anchor
+    // pass projects seed points onto the implicit field at `spacing_px`. An earlier
+    // version of this demo inverted the Gaussian analytically to place them —
+    // which only worked because the demo knew the closed form of its own data.
+    let levels = vec![0.2f64, 0.4, 0.6, 0.8];
+
+    let series = vec![SeriesConfig {
+        series_id: "bump".into(),
+        source_id: None,
+        label: None,
+        x_column: "bump_x".into(),
+        y_column: "bump_y".into(),
+        render_type: DataRenderType::HeatmapContour {
+            matrix: MatrixRef {
+                columns: ids,
+                orientation: MatrixOrientation::ColumnsAreX,
+                grid_layout: GridLayout::Centers,
+            },
+            fill: FieldFillConfig {
+                mode: FillMode::Continuous,
+                shading: Shading::Interpolated,
+                opacity: 1.0,
+            },
+            contour: ContourConfig {
+                levels,
+                line: DataLineStyleConfig {
+                    line_style: LineStylePreset::Solid,
+                    line_color: Color::from_rgb8(20, 20, 20),
+                    line_width: 1.5,
+                },
+                per_level_color: None,
+                labels: Some(ContourLabelConfig {
+                    visible: true,
+                    font_size: 11.0,
+                    color: Color::from_rgb8(20, 20, 20),
+                    format: LabelFormat::Decimal,
+                    significant_digits: 1,
+                    spacing_px: 120.0,
+                    // Empty: the GPU picks. A non-empty list would override it.
+                    anchors: Vec::new(),
+                    // The label's own background, so the isoline under it does
+                    // not run through the digits.
+                    bg_color: Some(Color::from_rgb8(250, 250, 250)),
+                    bg_padding_px: 2.0,
+                }),
+            },
+        },
+    }];
+    let view = renderer.create_chart_view(&chart, rect).expect("view");
+    let styles = series
+        .iter()
+        .map(|cfg| renderer.create_style_for_series(cfg))
+        .collect();
+    PanelEntry {
+        chart,
+        view,
+        series,
+        styles,
+        hitmap: HitMap::standard_chart(),
+    }
+}
+
 // ============================================================================
 // winit ApplicationHandler
 // ============================================================================
@@ -405,6 +509,7 @@ impl ApplicationHandler for App {
             build_sine_panel(&mut renderer, rects[0]),
             build_rc_panel(&mut renderer, rects[1]),
             build_cross_section_panel(&mut renderer, rects[2]),
+            build_field_panel(&mut renderer, rects[3]),
         ];
         for p in panels.iter_mut() {
             let _ = p.chart.consume_data_dirty();

@@ -279,6 +279,60 @@ impl HiLoColumnSource for BorrowedF64Column<'_> {
     }
 }
 
+/// Borrowed f64 column whose **`ColumnSource`** impl writes the split `(hi, lo)`
+/// pair — the batch upload's f64 adapter.
+///
+/// [`BorrowedF64Column`] already splits, but only through `HiLoColumnSource`; its
+/// `ColumnSource` impl deliberately keeps the single-column scalar API's cast
+/// semantics, and a test fixes that contract. The pool's *batch* path
+/// (`begin_add_columns`) accepts only `&dyn ColumnSource`, so a batch of f64
+/// columns going through `BorrowedF64Column` would silently drop the low half and
+/// lose precision the single-column API preserves.
+///
+/// Nothing in the trait mandates `lo == 0`: [`BorrowedF32Column`] already routes
+/// its `ColumnSource` pair writer to its `HiLoColumnSource` impl. This type does
+/// the same thing for f64 — one behaviour, both traits.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BorrowedSplitF64Column<'a> {
+    inner: BorrowedF64Column<'a>,
+}
+
+impl<'a> BorrowedSplitF64Column<'a> {
+    pub(crate) fn new(data: &'a [f64]) -> Self {
+        Self {
+            inner: BorrowedF64Column::new(data),
+        }
+    }
+}
+
+impl ColumnSource for BorrowedSplitF64Column<'_> {
+    fn len(&self) -> usize {
+        HiLoColumnSource::len(&self.inner)
+    }
+
+    fn min(&self) -> f64 {
+        HiLoColumnSource::min(&self.inner)
+    }
+
+    fn max(&self) -> f64 {
+        HiLoColumnSource::max(&self.inner)
+    }
+
+    fn write_f32_le_into(&self, dst: &mut [u8]) {
+        // The f32-only form cannot carry a low half by definition; this is the
+        // same cast the single-column scalar path performs.
+        ColumnSource::write_f32_le_into(&self.inner, dst);
+    }
+
+    fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
+        HiLoColumnSource::write_f32_pair_le_into(&self.inner, dst);
+    }
+
+    fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
+        HiLoColumnSource::write_f32_pair_le_into_with_stats(&self.inner, dst)
+    }
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
@@ -372,9 +426,14 @@ mod tests {
         queue: &wgpu::Queue,
         source: &T,
     ) -> (Vec<u8>, Option<f64>) {
-        let mut pool = ColumnPool::new(device, ALIGN).unwrap();
+        let mut pool =
+            ColumnPool::new(renderer::GpuAllocCtx::unbudgeted(device, queue), ALIGN).unwrap();
         let handle = pool
-            .add_column("scalar".into(), source, device, queue)
+            .add_column(
+                "scalar".into(),
+                source,
+                renderer::GpuAllocCtx::unbudgeted(device, queue),
+            )
             .unwrap();
         let min_positive = pool.slot("scalar").unwrap().min_positive;
         (
@@ -388,9 +447,14 @@ mod tests {
         queue: &wgpu::Queue,
         source: &T,
     ) -> (Vec<u8>, Option<f64>) {
-        let mut pool = ColumnPool::new(device, ALIGN).unwrap();
+        let mut pool =
+            ColumnPool::new(renderer::GpuAllocCtx::unbudgeted(device, queue), ALIGN).unwrap();
         let handle = pool
-            .add_hilo_column("hilo".into(), source, device, queue)
+            .add_hilo_column(
+                "hilo".into(),
+                source,
+                renderer::GpuAllocCtx::unbudgeted(device, queue),
+            )
             .unwrap();
         let min_positive = pool.slot("hilo").unwrap().min_positive;
         (
@@ -547,25 +611,42 @@ mod tests {
             eprintln!("no GPU adapter; skipping borrowed fused upload assertions");
             return;
         };
-        let mut pool = ColumnPool::new(&device, ALIGN).unwrap();
+        let mut pool =
+            ColumnPool::new(renderer::GpuAllocCtx::unbudgeted(&device, &queue), ALIGN).unwrap();
         assert_eq!(
-            pool.add_column("f32-scalar".into(), &empty_f32, &device, &queue)
-                .unwrap_err(),
+            pool.add_column(
+                "f32-scalar".into(),
+                &empty_f32,
+                renderer::GpuAllocCtx::unbudgeted(&device, &queue)
+            )
+            .unwrap_err(),
             AllocError::EmptySource
         );
         assert_eq!(
-            pool.add_hilo_column("f32-hilo".into(), &empty_f32, &device, &queue)
-                .unwrap_err(),
+            pool.add_hilo_column(
+                "f32-hilo".into(),
+                &empty_f32,
+                renderer::GpuAllocCtx::unbudgeted(&device, &queue)
+            )
+            .unwrap_err(),
             AllocError::EmptySource
         );
         assert_eq!(
-            pool.add_column("f64-scalar".into(), &empty_f64, &device, &queue)
-                .unwrap_err(),
+            pool.add_column(
+                "f64-scalar".into(),
+                &empty_f64,
+                renderer::GpuAllocCtx::unbudgeted(&device, &queue)
+            )
+            .unwrap_err(),
             AllocError::EmptySource
         );
         assert_eq!(
-            pool.add_hilo_column("f64-hilo".into(), &empty_f64, &device, &queue)
-                .unwrap_err(),
+            pool.add_hilo_column(
+                "f64-hilo".into(),
+                &empty_f64,
+                renderer::GpuAllocCtx::unbudgeted(&device, &queue)
+            )
+            .unwrap_err(),
             AllocError::EmptySource
         );
     }
@@ -625,5 +706,45 @@ mod tests {
         let (hilo_pairs, hilo_min_positive) = hilo_pair_upload(&device, &queue, &hilo_source);
         assert_eq!(hilo_pairs, expected_hilo_pairs);
         assert_eq!(hilo_min_positive, Some(min_subnormal as f64));
+    }
+
+    /// The batch adapter uploads through the **scalar** path and still lands the
+    /// same bytes the hi/lo path does.
+    ///
+    /// This is the precision guarantee of the wasm batch API (design B.8): the
+    /// pool's batch entry takes `&dyn ColumnSource`, so an f64 batch can only keep
+    /// its low half if the `ColumnSource` impl writes one.
+    #[test]
+    fn split_f64_scalar_upload_matches_the_hilo_upload() {
+        let values = [
+            1_700_000_000_000.125,
+            1_700_000_000_000.875,
+            -8.5,
+            0.0,
+            f64::from_bits(0x7ff8_0000_0000_0042),
+            2.5e-8,
+        ];
+        let split = BorrowedSplitF64Column::new(&values);
+        let hilo = BorrowedF64Column::new(&values);
+
+        // Same statistics, so the pool records the same slot metadata.
+        assert_eq!(ColumnSource::len(&split), HiLoColumnSource::len(&hilo));
+        assert_eq!(ColumnSource::min(&split), HiLoColumnSource::min(&hilo));
+        assert_eq!(ColumnSource::max(&split), HiLoColumnSource::max(&hilo));
+        assert_eq!(scalar_pair_bytes(&split), pair_bytes(&hilo));
+
+        let Some((device, queue)) = shared_device() else {
+            eprintln!("no GPU adapter; skipping split f64 fused upload assertions");
+            return;
+        };
+        let (scalar_pairs, scalar_min_positive) = scalar_pair_upload(&device, &queue, &split);
+        let (hilo_pairs, hilo_min_positive) = hilo_pair_upload(&device, &queue, &hilo);
+        assert_eq!(scalar_pairs, hilo_pairs);
+        assert_eq!(scalar_min_positive, hilo_min_positive);
+
+        // And it is genuinely different from the casting impl — otherwise the test
+        // above would pass with the low half thrown away.
+        let cast = BorrowedF64Column::new(&values);
+        assert_ne!(scalar_pair_bytes(&split), scalar_pair_bytes(&cast));
     }
 }

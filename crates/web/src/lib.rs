@@ -71,6 +71,67 @@ fn picked_point_json_string(picked: &renderer::PickedPoint) -> serde_json::Resul
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
+fn picked_data_json_string(picked: &renderer::PickedData) -> serde_json::Result<String> {
+    let value = match picked {
+        renderer::PickedData::Point {
+            source_id,
+            series_id,
+            point_index,
+            distance_px,
+        } => serde_json::json!({
+            "kind": "point",
+            "source_id": source_id.as_ref(),
+            "series_id": series_id,
+            "point_index": point_index,
+            "distance_px": distance_px,
+        }),
+        renderer::PickedData::HistogramBin {
+            source_id,
+            series_id,
+            bin_index,
+            distance_px,
+        } => serde_json::json!({
+            "kind": "histogram_bin",
+            "source_id": source_id.as_ref(),
+            "series_id": series_id,
+            "bin_index": bin_index,
+            "distance_px": distance_px,
+        }),
+        renderer::PickedData::MatrixCell {
+            source_id,
+            series_id,
+            x_index,
+            y_index,
+            distance_px,
+        } => serde_json::json!({
+            "kind": "matrix_cell",
+            "source_id": source_id.as_ref(),
+            "series_id": series_id,
+            "x_index": x_index,
+            "y_index": y_index,
+            "distance_px": distance_px,
+        }),
+        renderer::PickedData::ContourLevel {
+            source_id,
+            series_id,
+            level_index,
+            x_index,
+            y_index,
+            distance_px,
+        } => serde_json::json!({
+            "kind": "contour_level",
+            "source_id": source_id.as_ref(),
+            "series_id": series_id,
+            "level_index": level_index,
+            "x_index": x_index,
+            "y_index": y_index,
+            "distance_px": distance_px,
+        }),
+    };
+    serde_json::to_string(&value)
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct RevisionedColumn {
     id: String,
@@ -78,8 +139,12 @@ struct RevisionedColumn {
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
-fn series_extent_mode(render_type: &renderer::DataRenderType) -> renderer::GpuSeriesExtentMode {
-    renderer::GpuSeriesExtentMode::from_render_type(render_type)
+/// `None` only for metadata-backed histogram fitting. Paired primitives and
+/// matrix fields both produce a GPU request, with distinct normalized modes.
+fn series_extent_mode(
+    render_type: &renderer::DataRenderType,
+) -> Option<renderer::GpuSeriesFitMode> {
+    renderer::GpuSeriesFitMode::from_render_type(render_type)
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
@@ -100,50 +165,32 @@ struct ErrorDirectionKey {
     upper: RevisionedColumn,
 }
 
-/// Exact GPU extent identity for one drawable series domain.
+/// GPU fit-bound identity for one drawable series domain.
 ///
 /// Inactive error directions are `None`; the renderer's internal filler
 /// binding is deliberately excluded from this data identity.
 #[cfg(any(target_arch = "wasm32", test))]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct SeriesExtentKey {
-    mode: renderer::GpuSeriesExtentMode,
+    mode: renderer::GpuSeriesFitMode,
     x: RevisionedColumn,
     y: RevisionedColumn,
     x_error: Option<ErrorDirectionKey>,
     y_error: Option<ErrorDirectionKey>,
+    /// Matrix value columns affect the usable grid dimensions even though the
+    /// fit reads only x/y coordinate values. Their ordered revisions therefore
+    /// belong to the job identity.
+    matrix: Vec<RevisionedColumn>,
+    /// Orientation decides which resolved matrix dimension belongs to x/y.
+    /// It is independent of the cell/sample lattice encoded by `mode`.
+    field_orientation: Option<u8>,
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct SeriesExtentColumnIds {
-    x: String,
-    y: String,
-    x_lower: Option<String>,
-    x_upper: Option<String>,
-    y_lower: Option<String>,
-    y_upper: Option<String>,
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-impl SeriesExtentColumnIds {
-    fn borrowed(&self) -> renderer::GpuSeriesExtentColumnIds<'_> {
-        renderer::GpuSeriesExtentColumnIds {
-            x: &self.x,
-            y: &self.y,
-            x_lower: self.x_lower.as_deref(),
-            x_upper: self.x_upper.as_deref(),
-            y_lower: self.y_lower.as_deref(),
-            y_upper: self.y_upper.as_deref(),
-        }
-    }
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 struct SeriesExtentRequest {
     key: SeriesExtentKey,
-    columns: SeriesExtentColumnIds,
+    series: renderer::SeriesConfig,
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
@@ -201,6 +248,11 @@ fn err_refs(
         | DataRenderType::LineScatterErrorbarY { err_y, .. } => (None, Some(err_y)),
         DataRenderType::ScatterErrorbarXY { err_x, err_y, .. }
         | DataRenderType::LineScatterErrorbarXY { err_x, err_y, .. } => (Some(err_x), Some(err_y)),
+        // Bars and fields carry no error columns.
+        DataRenderType::Histogram { .. }
+        | DataRenderType::Heatmap { .. }
+        | DataRenderType::Contour { .. }
+        | DataRenderType::HeatmapContour { .. } => (None, None),
     }
 }
 
@@ -212,6 +264,18 @@ fn err_cols(errors: &renderer::data_config::ErrorRef) -> (&str, &str) {
     match errors {
         ErrorRef::Symmetric { column } => (column, column),
         ErrorRef::Asymmetric { lower, upper } => (lower, upper),
+    }
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn histogram_fit_columns<'a>(
+    cfg: &'a renderer::SeriesConfig,
+    orientation: &renderer::data_config::BarOrientation,
+) -> (&'a str, &'a str) {
+    if matches!(orientation, renderer::data_config::BarOrientation::Vertical) {
+        (&cfg.x_column, &cfg.y_column)
+    } else {
+        (&cfg.y_column, &cfg.x_column)
     }
 }
 
@@ -256,27 +320,42 @@ fn series_extent_request_from(
         return None;
     }
 
-    let x_lower = x_error.as_ref().map(|error| error.lower.id.clone());
-    let x_upper = x_error.as_ref().map(|error| error.upper.id.clone());
-    let y_lower = y_error.as_ref().map(|error| error.lower.id.clone());
-    let y_upper = y_error.as_ref().map(|error| error.upper.id.clone());
-
+    let (matrix, field_orientation) = match &cfg.render_type {
+        renderer::DataRenderType::Heatmap { matrix, .. }
+        | renderer::DataRenderType::Contour { matrix, .. }
+        | renderer::DataRenderType::HeatmapContour { matrix, .. } => (
+            matrix
+                .columns
+                .iter()
+                .map(|id| revisioned_column_from(revisions, id))
+                .collect::<Option<Vec<_>>>()?,
+            Some(match &matrix.orientation {
+                renderer::data_config::MatrixOrientation::ColumnsAreX => 0,
+                renderer::data_config::MatrixOrientation::ColumnsAreY => 1,
+            }),
+        ),
+        renderer::DataRenderType::Scatter { .. }
+        | renderer::DataRenderType::Line { .. }
+        | renderer::DataRenderType::ScatterLine { .. }
+        | renderer::DataRenderType::ScatterErrorbarX { .. }
+        | renderer::DataRenderType::ScatterErrorbarY { .. }
+        | renderer::DataRenderType::ScatterErrorbarXY { .. }
+        | renderer::DataRenderType::LineScatterErrorbarX { .. }
+        | renderer::DataRenderType::LineScatterErrorbarY { .. }
+        | renderer::DataRenderType::LineScatterErrorbarXY { .. }
+        | renderer::DataRenderType::Histogram { .. } => (Vec::new(), None),
+    };
     Some(SeriesExtentRequest {
         key: SeriesExtentKey {
-            mode: series_extent_mode(&cfg.render_type),
+            mode: series_extent_mode(&cfg.render_type)?,
             x: revisioned_column_from(revisions, &cfg.x_column)?,
             y: revisioned_column_from(revisions, &cfg.y_column)?,
             x_error,
             y_error,
+            matrix,
+            field_orientation,
         },
-        columns: SeriesExtentColumnIds {
-            x: cfg.x_column.clone(),
-            y: cfg.y_column.clone(),
-            x_lower,
-            x_upper,
-            y_lower,
-            y_upper,
-        },
+        series: cfg.clone(),
     })
 }
 
@@ -298,6 +377,9 @@ fn active_series_extent_requests(
         .map_err(SeriesExtentRequestError::Allocation)?;
 
     for cfg in series_cfgs {
+        if series_extent_mode(&cfg.render_type).is_none() {
+            continue;
+        }
         let request = series_extent_request_from(revisions, cfg)
             .ok_or(SeriesExtentRequestError::MissingLiveRevision)?;
         if active.insert(request.key.clone()) {
@@ -313,46 +395,7 @@ fn series_extent_key_matches_config(
     cfg: &renderer::SeriesConfig,
     revisions: &std::collections::HashMap<String, u64>,
 ) -> bool {
-    fn column_matches(
-        column: &RevisionedColumn,
-        id: &str,
-        revisions: &std::collections::HashMap<String, u64>,
-    ) -> bool {
-        column.id == id && revisions.get(id) == Some(&column.revision)
-    }
-
-    fn error_matches(
-        key: Option<&ErrorDirectionKey>,
-        errors: Option<&renderer::data_config::ErrorRef>,
-        revisions: &std::collections::HashMap<String, u64>,
-    ) -> bool {
-        use renderer::data_config::ErrorRef;
-
-        match (key, errors) {
-            (None, None) => true,
-            (Some(key), Some(ErrorRef::Symmetric { column })) => {
-                key.kind == ErrorRefKind::Symmetric
-                    && column_matches(&key.lower, column, revisions)
-                    && column_matches(&key.upper, column, revisions)
-            }
-            (Some(key), Some(ErrorRef::Asymmetric { lower, upper })) => {
-                key.kind == ErrorRefKind::Asymmetric
-                    && column_matches(&key.lower, lower, revisions)
-                    && column_matches(&key.upper, upper, revisions)
-            }
-            _ => false,
-        }
-    }
-
-    if key.mode != series_extent_mode(&cfg.render_type)
-        || !column_matches(&key.x, &cfg.x_column, revisions)
-        || !column_matches(&key.y, &cfg.y_column, revisions)
-    {
-        return false;
-    }
-    let (err_x, err_y) = err_refs(&cfg.render_type);
-    error_matches(key.x_error.as_ref(), err_x, revisions)
-        && error_matches(key.y_error.as_ref(), err_y, revisions)
+    series_extent_request_from(revisions, cfg).is_some_and(|request| request.key == *key)
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
@@ -420,9 +463,6 @@ struct PreparedColumnMetadata {
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
-const INTERNAL_ZERO_COLUMN_ID: &str = "__zero";
-
-#[cfg(any(target_arch = "wasm32", test))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ColumnRegistryAction {
     Register,
@@ -442,15 +482,6 @@ fn validate_column_registry_action(
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
-fn validate_public_column_id(id: &str) -> Result<(), &'static str> {
-    if id == INTERNAL_ZERO_COLUMN_ID {
-        Err("is reserved for internal errorbar rendering")
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
 fn validate_column_data_len(len: usize) -> Result<(), &'static str> {
     if len == 0 {
         Err("data must not be empty")
@@ -459,37 +490,99 @@ fn validate_column_data_len(len: usize) -> Result<(), &'static str> {
     }
 }
 
+/// Validate a batch registration's shape before anything is uploaded.
+///
+/// The flat-buffer size check is an **error**, not a truncation: the
+/// smallest-common-extent rule is about columns disagreeing with
+/// each other, whereas a buffer whose size does not match the declared
+/// `ids.len() x values_per_column` shape cannot be cut into columns at all.
 #[cfg(any(target_arch = "wasm32", test))]
-fn required_internal_zero_column_len(
+fn validate_column_batch(
     columns: &std::collections::HashMap<String, usize>,
-    series_cfgs: &[renderer::SeriesConfig],
-) -> usize {
-    use renderer::data_config::ErrorRef;
-
-    let mut needed = 0usize;
-    for cfg in series_cfgs {
-        let errors = match err_refs(&cfg.render_type) {
-            (Some(errors), None) | (None, Some(errors)) => errors,
-            (None, None) | (Some(_), Some(_)) => continue,
-        };
-        let mut count = columns
-            .get(&cfg.x_column)
-            .copied()
-            .unwrap_or(0)
-            .min(columns.get(&cfg.y_column).copied().unwrap_or(0));
-        match errors {
-            ErrorRef::Symmetric { column } => {
-                count = count.min(columns.get(column).copied().unwrap_or(0));
-            }
-            ErrorRef::Asymmetric { lower, upper } => {
-                count = count
-                    .min(columns.get(lower).copied().unwrap_or(0))
-                    .min(columns.get(upper).copied().unwrap_or(0));
-            }
-        }
-        needed = needed.max(count);
+    ids: &[String],
+    values_per_column: usize,
+    data_len: usize,
+) -> Result<(), String> {
+    if ids.is_empty() {
+        return Err("a column batch needs at least one id".to_string());
     }
-    needed
+    validate_column_data_len(values_per_column)
+        .map_err(|reason| format!("values_per_column {reason}"))?;
+    let expected = ids
+        .len()
+        .checked_mul(values_per_column)
+        .ok_or_else(|| "column batch size overflows".to_string())?;
+    if data_len != expected {
+        return Err(format!(
+            "column batch data has {data_len} values, but {} ids x {values_per_column} \
+             values_per_column is {expected}",
+            ids.len()
+        ));
+    }
+    // One set rather than a quadratic scan: a matrix batch is thousands of ids,
+    // and the allocation is proportional to the id count like everything else on
+    // this path.
+    let mut seen = std::collections::HashSet::new();
+    seen.try_reserve(ids.len())
+        .map_err(|_| "column batch id set allocation failed".to_string())?;
+    for id in ids {
+        validate_column_registry_action(columns.contains_key(id), ColumnRegistryAction::Register)
+            .map_err(|reason| format!("column '{id}' {reason}"))?;
+        if !seen.insert(id.as_str()) {
+            return Err(format!("column '{id}' appears twice in one batch"));
+        }
+    }
+    Ok(())
+}
+
+/// Registry metadata for a whole batch, prepared into fresh maps.
+///
+/// Same prepare-then-commit shape as [`prepare_demo_column_metadata`], for the
+/// same reason: nothing installs until the renderer's own atomic insert has
+/// succeeded. Each id gets its own revision, so a host watching revisions sees
+/// one bump per column rather than one for the batch.
+#[cfg(any(target_arch = "wasm32", test))]
+fn prepare_batch_column_metadata(
+    columns: &std::collections::HashMap<String, usize>,
+    revisions: &std::collections::HashMap<String, u64>,
+    next_revision: u64,
+    ids: &[String],
+    len: usize,
+) -> Result<PreparedColumnMetadata, &'static str> {
+    use std::collections::HashMap;
+
+    let column_capacity = columns
+        .len()
+        .checked_add(ids.len())
+        .ok_or("column metadata capacity exhausted")?;
+    let mut future_columns = HashMap::new();
+    future_columns
+        .try_reserve(column_capacity)
+        .map_err(|_| "column metadata allocation failed")?;
+    future_columns.extend(columns.iter().map(|(id, value)| (id.clone(), *value)));
+
+    let revision_capacity = revisions
+        .len()
+        .checked_add(ids.len())
+        .ok_or("column revision metadata capacity exhausted")?;
+    let mut future_revisions = HashMap::new();
+    future_revisions
+        .try_reserve(revision_capacity)
+        .map_err(|_| "column revision metadata allocation failed")?;
+    future_revisions.extend(revisions.iter().map(|(id, value)| (id.clone(), *value)));
+
+    let mut successor = next_revision;
+    for id in ids {
+        let (revision, next) = checked_column_revision(successor)?;
+        future_columns.insert(id.clone(), len);
+        future_revisions.insert(id.clone(), revision);
+        successor = next;
+    }
+    Ok(PreparedColumnMetadata {
+        columns: future_columns,
+        revisions: future_revisions,
+        next_revision: successor,
+    })
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
@@ -621,9 +714,25 @@ fn prepare_demo_declarations(
     ] {
         let existing = series.iter().position(|item| item.series_id == series_id);
         let color = match existing {
+            // Exhaustive so a new render type has to declare where its colour
+            // comes from. A wildcard here would hand a bar or field series the
+            // cycle colour while its own configured colour sat unread.
             Some(index) => match &series[index].render_type {
                 DataRenderType::Line { line } => line.line_color,
-                _ => cycle.color(index),
+                DataRenderType::Scatter { .. }
+                | DataRenderType::ScatterLine { .. }
+                | DataRenderType::ScatterErrorbarX { .. }
+                | DataRenderType::ScatterErrorbarY { .. }
+                | DataRenderType::ScatterErrorbarXY { .. }
+                | DataRenderType::LineScatterErrorbarX { .. }
+                | DataRenderType::LineScatterErrorbarY { .. }
+                | DataRenderType::LineScatterErrorbarXY { .. } => cycle.color(index),
+                DataRenderType::Histogram { bar } => bar.fill_color,
+                DataRenderType::Contour { contour, .. }
+                | DataRenderType::HeatmapContour { contour, .. } => contour.line.line_color,
+                // A heatmap's colour is the colourbar's colormap, not a swatch
+                // this demo could reuse.
+                DataRenderType::Heatmap { .. } => cycle.color(index),
             },
             None => cycle.color(next_color_seq),
         };
@@ -688,21 +797,25 @@ fn prepare_demo_declarations(
 mod tests {
     use std::{collections::HashMap, rc::Rc};
 
-    use renderer::data_config::ErrorRef;
+    use renderer::data_config::{
+        ContourConfig, ErrorRef, FieldFillConfig, FillMode, GridLayout, MatrixOrientation,
+        MatrixRef, Shading,
+    };
     use renderer::{
         Color, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
-        DataScatterStyleConfig, GpuSeriesExtentMode, ScatterShape, SeriesConfig,
+        DataScatterStyleConfig, GpuFieldExtentMode, GpuSeriesExtentMode, GpuSeriesFitMode,
+        ScatterShape, SeriesConfig,
     };
 
     use super::{
         ColumnRegistryAction, DEMO_COLUMN_IDS, ErrorRefKind, FrameDecision,
-        INTERNAL_ZERO_COLUMN_ID, active_series_extent_requests, checked_column_revision,
-        consume_successful_frame, frame_decision, picked_point_json_string,
-        prepare_column_metadata, prepare_demo_column_metadata, prepare_demo_declarations,
-        required_internal_zero_column_len, retain_valid_series_extent_jobs,
-        select_series_extent_job_map, series_extent_key_matches_config, series_extent_mode,
-        series_extent_needs_submission, series_extent_request_from, validate_column_data_len,
-        validate_column_registry_action, validate_public_column_id,
+        active_series_extent_requests, checked_column_revision, consume_successful_frame,
+        frame_decision, picked_data_json_string, picked_point_json_string,
+        prepare_batch_column_metadata, prepare_column_metadata, prepare_demo_column_metadata,
+        prepare_demo_declarations, retain_valid_series_extent_jobs, select_series_extent_job_map,
+        series_extent_key_matches_config, series_extent_mode, series_extent_needs_submission,
+        series_extent_request_from, validate_column_batch, validate_column_data_len,
+        validate_column_registry_action,
     };
     use crate::scalar_job::{SeriesExtentJob, SeriesExtentStatus};
 
@@ -889,6 +1002,34 @@ mod tests {
     }
 
     #[test]
+    fn picked_data_json_is_tagged_and_keeps_canonical_indices() {
+        let picked = renderer::PickedData::ContourLevel {
+            source_id: Some("source-grid".into()),
+            series_id: "contour-a".into(),
+            level_index: 4,
+            x_index: 2,
+            y_index: 3,
+            distance_px: 0.75,
+        };
+
+        let json: serde_json::Value =
+            serde_json::from_str(&picked_data_json_string(&picked).unwrap()).unwrap();
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "kind": "contour_level",
+                "source_id": "source-grid",
+                "series_id": "contour-a",
+                "level_index": 4,
+                "x_index": 2,
+                "y_index": 3,
+                "distance_px": 0.75,
+            })
+        );
+    }
+
+    #[test]
     fn column_revision_successor_rejects_overflow() {
         assert_eq!(checked_column_revision(41), Ok((41, 42)));
         assert_eq!(
@@ -979,17 +1120,82 @@ mod tests {
         ];
 
         for (render_type, expected) in cases {
-            assert_eq!(series_extent_mode(&render_type), expected);
+            assert_eq!(
+                series_extent_mode(&render_type),
+                Some(GpuSeriesFitMode::Paired(expected))
+            );
+        }
+
+        let matrix = |grid_layout| MatrixRef {
+            columns: vec!["z0".into(), "z1".into()],
+            orientation: MatrixOrientation::ColumnsAreX,
+            grid_layout,
+        };
+        let fill = |shading| FieldFillConfig {
+            mode: FillMode::Continuous,
+            shading,
+            opacity: 1.0,
+        };
+        let contour = || ContourConfig {
+            levels: vec![0.5],
+            line: line_style(),
+            per_level_color: None,
+            labels: None,
+        };
+        let field_cases = [
+            (
+                DataRenderType::Heatmap {
+                    matrix: matrix(GridLayout::Edges),
+                    fill: fill(Shading::Flat),
+                },
+                GpuFieldExtentMode::EdgesCells,
+            ),
+            (
+                DataRenderType::Heatmap {
+                    matrix: matrix(GridLayout::Edges),
+                    fill: fill(Shading::Interpolated),
+                },
+                GpuFieldExtentMode::EdgesSamples,
+            ),
+            (
+                DataRenderType::Contour {
+                    matrix: matrix(GridLayout::Centers),
+                    contour: contour(),
+                },
+                GpuFieldExtentMode::CentersSamples,
+            ),
+            (
+                DataRenderType::HeatmapContour {
+                    matrix: matrix(GridLayout::Centers),
+                    fill: fill(Shading::Flat),
+                    contour: contour(),
+                },
+                GpuFieldExtentMode::CentersCells,
+            ),
+            (
+                DataRenderType::HeatmapContour {
+                    matrix: matrix(GridLayout::Centers),
+                    fill: fill(Shading::Interpolated),
+                    contour: contour(),
+                },
+                GpuFieldExtentMode::CentersSamples,
+            ),
+        ];
+        for (render_type, expected) in field_cases {
+            assert_eq!(
+                series_extent_mode(&render_type),
+                Some(GpuSeriesFitMode::Field(expected))
+            );
         }
     }
 
     #[test]
-    fn series_extent_key_is_role_explicit_and_excludes_inactive_fillers() {
+    fn series_extent_key_is_role_explicit_and_excludes_unrelated_columns() {
         let revisions = HashMap::from([
             ("x".to_string(), 1),
             ("y".to_string(), 2),
             ("err".to_string(), 3),
-            (INTERNAL_ZERO_COLUMN_ID.to_string(), 4),
+            ("unrelated".to_string(), 4),
         ]);
         let plain = series_config(
             "plain",
@@ -998,25 +1204,17 @@ mod tests {
             },
         );
         let plain_request = series_extent_request_from(&revisions, &plain).unwrap();
-        assert_eq!(plain_request.key.mode, GpuSeriesExtentMode::Points);
+        assert_eq!(
+            plain_request.key.mode,
+            GpuSeriesFitMode::Paired(GpuSeriesExtentMode::Points)
+        );
         assert!(plain_request.key.x_error.is_none());
         assert!(plain_request.key.y_error.is_none());
-        assert_eq!(plain_request.columns.x_lower, None);
-        assert_eq!(plain_request.columns.x_upper, None);
-        assert_eq!(plain_request.columns.y_lower, None);
-        assert_eq!(plain_request.columns.y_upper, None);
-        let borrowed = plain_request.columns.borrowed();
-        assert_eq!(borrowed.x, "x");
-        assert_eq!(borrowed.y, "y");
-        assert_eq!(borrowed.x_lower, None);
-        assert_eq!(borrowed.x_upper, None);
-        assert_eq!(borrowed.y_lower, None);
-        assert_eq!(borrowed.y_upper, None);
-        assert!(!format!("{:?}", plain_request.key).contains(INTERNAL_ZERO_COLUMN_ID));
-        let mut filler_changed = revisions.clone();
-        filler_changed.insert(INTERNAL_ZERO_COLUMN_ID.to_string(), 99);
+        assert!(!format!("{:?}", plain_request.key).contains("unrelated"));
+        let mut unrelated_changed = revisions.clone();
+        unrelated_changed.insert("unrelated".to_string(), 99);
         assert_eq!(
-            series_extent_request_from(&filler_changed, &plain)
+            series_extent_request_from(&unrelated_changed, &plain)
                 .unwrap()
                 .key,
             plain_request.key
@@ -1043,16 +1241,15 @@ mod tests {
                 err_style: errorbar_style(),
             },
         );
-        let symmetric_request = series_extent_request_from(&revisions, &symmetric).unwrap();
-        let symmetric_columns = symmetric_request.columns.borrowed();
-        assert_eq!(symmetric_columns.x_lower, Some("err"));
-        assert_eq!(symmetric_columns.x_upper, Some("err"));
-        assert_eq!(symmetric_columns.y_lower, None);
-        assert_eq!(symmetric_columns.y_upper, None);
-        let symmetric_key = symmetric_request.key;
+        let symmetric_key = series_extent_request_from(&revisions, &symmetric)
+            .unwrap()
+            .key;
         let asymmetric_key = series_extent_request_from(&revisions, &asymmetric)
             .unwrap()
             .key;
+        assert_eq!(symmetric_key.x_error.as_ref().unwrap().lower.id, "err");
+        assert_eq!(symmetric_key.x_error.as_ref().unwrap().upper.id, "err");
+        assert!(symmetric_key.y_error.is_none());
         assert_eq!(
             symmetric_key.x_error.as_ref().unwrap().kind,
             ErrorRefKind::Symmetric
@@ -1128,6 +1325,53 @@ mod tests {
 
         let line = series_config("line", DataRenderType::Line { line: line_style() });
         assert_ne!(key_for(&line), key_for(&points));
+
+        let field = series_config(
+            "field",
+            DataRenderType::Heatmap {
+                matrix: MatrixRef {
+                    columns: vec!["z0".into(), "z1".into()],
+                    orientation: MatrixOrientation::ColumnsAreX,
+                    grid_layout: GridLayout::Centers,
+                },
+                fill: FieldFillConfig {
+                    mode: FillMode::Continuous,
+                    shading: Shading::Flat,
+                    opacity: 1.0,
+                },
+            },
+        );
+        let mut transposed = field.clone();
+        let DataRenderType::Heatmap { matrix, .. } = &mut transposed.render_type else {
+            unreachable!()
+        };
+        matrix.orientation = MatrixOrientation::ColumnsAreY;
+        let field_revisions = HashMap::from([
+            ("x".to_string(), 7),
+            ("y".to_string(), 7),
+            ("z0".to_string(), 7),
+            ("z1".to_string(), 7),
+        ]);
+        let field_key = |cfg: &SeriesConfig| {
+            series_extent_request_from(&field_revisions, cfg)
+                .unwrap()
+                .key
+        };
+        assert_ne!(field_key(&field), field_key(&transposed));
+        let mut changed_matrix_revision = field_revisions.clone();
+        changed_matrix_revision.insert("z1".to_string(), 8);
+        assert_ne!(
+            field_key(&field),
+            series_extent_request_from(&changed_matrix_revision, &field)
+                .unwrap()
+                .key
+        );
+        let mut reordered = field.clone();
+        let DataRenderType::Heatmap { matrix, .. } = &mut reordered.render_type else {
+            unreachable!()
+        };
+        matrix.columns.reverse();
+        assert_ne!(field_key(&field), field_key(&reordered));
     }
 
     #[test]
@@ -1144,6 +1388,68 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "series references a column without a live revision"
+        );
+    }
+
+    #[test]
+    fn active_series_extent_requests_leave_histograms_to_metadata_fit() {
+        let revisions = HashMap::from([("x".to_string(), 1), ("y".to_string(), 2)]);
+        let series = series_config(
+            "histogram",
+            DataRenderType::Histogram {
+                bar: renderer::data_config::DataBarStyleConfig {
+                    fill_color: Color::BLACK,
+                    border_color: Color::BLACK,
+                    border_width: 1.0,
+                    baseline: 0.0,
+                    gap_px: 1.0,
+                    width_ratio: 1.0,
+                    orientation: renderer::data_config::BarOrientation::Vertical,
+                    bar_style_overrides: None,
+                },
+            },
+        );
+
+        assert!(
+            active_series_extent_requests(&[series], &revisions)
+                .unwrap()
+                .is_empty(),
+            "non-paired render types are fitted from upload metadata"
+        );
+    }
+
+    #[test]
+    fn histogram_fit_columns_follow_orientation_roles() {
+        let mut series = series_config(
+            "histogram",
+            DataRenderType::Histogram {
+                bar: renderer::data_config::DataBarStyleConfig {
+                    fill_color: Color::BLACK,
+                    border_color: Color::BLACK,
+                    border_width: 1.0,
+                    baseline: 0.0,
+                    gap_px: 1.0,
+                    width_ratio: 1.0,
+                    orientation: renderer::data_config::BarOrientation::Vertical,
+                    bar_style_overrides: None,
+                },
+            },
+        );
+        series.x_column = "edges".to_string();
+        series.y_column = "counts".to_string();
+        assert_eq!(
+            crate::histogram_fit_columns(&series, &renderer::data_config::BarOrientation::Vertical,),
+            ("edges", "counts"),
+        );
+
+        series.x_column = "counts".to_string();
+        series.y_column = "edges".to_string();
+        assert_eq!(
+            crate::histogram_fit_columns(
+                &series,
+                &renderer::data_config::BarOrientation::Horizontal,
+            ),
+            ("edges", "counts"),
         );
     }
 
@@ -1370,6 +1676,71 @@ mod tests {
     }
 
     #[test]
+    fn batch_metadata_issues_one_revision_per_column_without_partial_publication() {
+        let columns = HashMap::from([("stable".to_string(), 7)]);
+        let revisions = HashMap::from([("stable".to_string(), 10)]);
+        let original_columns = columns.clone();
+        let original_revisions = revisions.clone();
+        let ids = ["g0".to_string(), "g1".to_string(), "g2".to_string()];
+
+        let prepared = prepare_batch_column_metadata(&columns, &revisions, 20, &ids, 64).unwrap();
+        // The caller's maps are untouched until it installs the prepared ones.
+        assert_eq!(columns, original_columns);
+        assert_eq!(revisions, original_revisions);
+        assert_eq!(prepared.columns.get("stable"), Some(&7));
+        assert_eq!(prepared.revisions.get("stable"), Some(&10));
+        for (index, id) in ids.iter().enumerate() {
+            assert_eq!(prepared.columns.get(id), Some(&64));
+            assert_eq!(prepared.revisions.get(id), Some(&(20 + index as u64)));
+        }
+        assert_eq!(prepared.next_revision, 23);
+
+        // Overflow on the third id rejects the whole batch, not the first two.
+        let error =
+            match prepare_batch_column_metadata(&columns, &revisions, u64::MAX - 2, &ids, 64) {
+                Ok(_) => panic!("a batch revision past the counter must be rejected"),
+                Err(error) => error,
+            };
+        assert_eq!(error, "column revision counter exhausted");
+        assert_eq!(columns, original_columns);
+        assert_eq!(revisions, original_revisions);
+    }
+
+    #[test]
+    fn a_column_batch_is_validated_before_anything_is_uploaded() {
+        let columns = HashMap::from([("taken".to_string(), 4)]);
+        let ids = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+
+        // The shape that works: 3 ids x 2 values = 6.
+        assert!(validate_column_batch(&columns, &ids(&["a", "b", "c"]), 2, 6).is_ok());
+
+        assert_eq!(
+            validate_column_batch(&columns, &[], 2, 0).unwrap_err(),
+            "a column batch needs at least one id"
+        );
+        assert_eq!(
+            validate_column_batch(&columns, &ids(&["a"]), 0, 0).unwrap_err(),
+            "values_per_column data must not be empty"
+        );
+        // A flat buffer that does not divide into the declared shape is not a
+        // length mismatch to draw through — it cannot be cut into columns at all.
+        assert!(
+            validate_column_batch(&columns, &ids(&["a", "b"]), 3, 5)
+                .unwrap_err()
+                .contains("5 values")
+        );
+        assert_eq!(
+            validate_column_batch(&columns, &ids(&["a", "taken"]), 2, 4).unwrap_err(),
+            "column 'taken' is already registered"
+        );
+        assert_eq!(
+            validate_column_batch(&columns, &ids(&["a", "a"]), 2, 4).unwrap_err(),
+            "column 'a' appears twice in one batch"
+        );
+        assert!(validate_column_batch(&columns, &ids(&["__zero"]), 2, 2).is_ok());
+    }
+
+    #[test]
     fn demo_declarations_are_complete_and_stable_on_repeat() {
         let initial_config = renderer::default::default_config();
         let first =
@@ -1453,8 +1824,8 @@ mod tests {
         let (_lazy_map, pending) =
             select_series_extent_job_map(requests, &retained, false).unwrap();
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].columns.x, "demo_x");
-        assert_eq!(pending[0].columns.y, "demo_sin");
+        assert_eq!(pending[0].series.x_column, "demo_x");
+        assert_eq!(pending[0].series.y_column, "demo_sin");
     }
 
     #[test]
@@ -1520,63 +1891,9 @@ mod tests {
     }
 
     #[test]
-    fn internal_zero_column_id_is_not_publicly_mutable() {
-        assert_eq!(
-            validate_public_column_id(INTERNAL_ZERO_COLUMN_ID),
-            Err("is reserved for internal errorbar rendering")
-        );
-        assert_eq!(validate_public_column_id("x"), Ok(()));
+    fn column_data_length_is_validated() {
         assert_eq!(validate_column_data_len(0), Err("data must not be empty"));
         assert_eq!(validate_column_data_len(1), Ok(()));
-    }
-
-    #[test]
-    fn internal_zero_length_matches_single_axis_draw_count_only() {
-        let columns = HashMap::from([
-            ("x".to_string(), 100),
-            ("y".to_string(), 80),
-            ("x_lo".to_string(), 60),
-            ("x_hi".to_string(), 70),
-            ("y_err".to_string(), 50),
-        ]);
-        let x_only = series_config(
-            "x-only",
-            DataRenderType::ScatterErrorbarX {
-                scatter: scatter_style(),
-                err_x: ErrorRef::Asymmetric {
-                    lower: "x_lo".to_string(),
-                    upper: "x_hi".to_string(),
-                },
-                err_style: errorbar_style(),
-            },
-        );
-        let y_only = series_config(
-            "y-only",
-            DataRenderType::ScatterErrorbarY {
-                scatter: scatter_style(),
-                err_y: ErrorRef::Symmetric {
-                    column: "y_err".to_string(),
-                },
-                err_style: errorbar_style(),
-            },
-        );
-        let xy = series_config(
-            "xy",
-            DataRenderType::ScatterErrorbarXY {
-                scatter: scatter_style(),
-                err_x: ErrorRef::Symmetric {
-                    column: "x_lo".to_string(),
-                },
-                err_y: ErrorRef::Symmetric {
-                    column: "y_err".to_string(),
-                },
-                err_style: errorbar_style(),
-            },
-        );
-
-        assert_eq!(required_internal_zero_column_len(&columns, &[x_only]), 60);
-        assert_eq!(required_internal_zero_column_len(&columns, &[y_only]), 50);
-        assert_eq!(required_internal_zero_column_len(&columns, &[xy]), 0);
     }
 }
 
@@ -1601,15 +1918,17 @@ mod web {
 
     use renderer::{InitEvent, InitPhase};
 
-    use crate::borrowed_column::{BorrowedCastF32Column, BorrowedF32Column, BorrowedF64Column};
+    use crate::borrowed_column::{
+        BorrowedCastF32Column, BorrowedF32Column, BorrowedF64Column, BorrowedSplitF64Column,
+    };
     use crate::scalar_job::{SeriesExtentJob, SeriesFitExtent};
     use crate::{
-        ColumnRegistryAction, FrameDecision, INTERNAL_ZERO_COLUMN_ID, PreparedDemoDeclarations,
-        SeriesExtentKey, active_series_extent_requests, consume_successful_frame, frame_decision,
-        prepare_column_metadata, prepare_demo_column_metadata, prepare_demo_declarations,
-        required_internal_zero_column_len, retain_valid_series_extent_jobs,
-        select_series_extent_job_map, series_extent_key_matches_config, validate_column_data_len,
-        validate_column_registry_action, validate_public_column_id,
+        ColumnRegistryAction, FrameDecision, PreparedDemoDeclarations, SeriesExtentKey,
+        active_series_extent_requests, consume_successful_frame, frame_decision,
+        prepare_batch_column_metadata, prepare_column_metadata, prepare_demo_column_metadata,
+        prepare_demo_declarations, retain_valid_series_extent_jobs, select_series_extent_job_map,
+        series_extent_key_matches_config, series_extent_mode, validate_column_batch,
+        validate_column_data_len, validate_column_registry_action,
     };
 
     const POOL_CAPACITY: u64 = 16 * 1024 * 1024;
@@ -1857,6 +2176,17 @@ mod web {
                 push_errorbar_style_ref(&mut ids, err_style);
                 push_ref(&mut ids, err_x);
                 push_ref(&mut ids, err_y);
+            }
+            DataRenderType::Histogram { .. } => {}
+            // The grid's constituent columns are referenced columns: a matrix
+            // series' derived identity has to change when any of them does, or a
+            // replaced grid column would keep serving a stale cache entry.
+            DataRenderType::Heatmap { matrix, .. }
+            | DataRenderType::Contour { matrix, .. }
+            | DataRenderType::HeatmapContour { matrix, .. } => {
+                for column in &matrix.columns {
+                    ids.push(column);
+                }
             }
         }
         ids
@@ -2131,15 +2461,15 @@ mod web {
                 let job = extents.get(&request.key).cloned().ok_or_else(|| {
                     js_err("pending series extent key lost its prepared job before publication")
                 })?;
-                match self
-                    .renderer
-                    .begin_series_extent(request.key.mode, request.columns.borrowed())
-                {
-                    Ok(ticket) => {
+                match self.renderer.begin_series_fit_extent(&request.series) {
+                    Ok(Some(ticket)) => {
                         #[cfg(test)]
                         record_series_extent_submit();
                         ticket_jobs.push((ticket, job));
                     }
+                    Ok(None) => job.complete_terminal_failure(
+                        "active GPU extent request resolved to a metadata-only series".into(),
+                    ),
                     Err(error) => job.complete_terminal_failure(error.to_string()),
                 }
             }
@@ -2230,8 +2560,11 @@ mod web {
             if engine_ready {
                 for request in &pending_series_extents {
                     let ticket = guard
-                        .begin_series_extent(request.key.mode, request.columns.borrowed())
-                        .map_err(js_err)?;
+                        .begin_series_fit_extent(&request.series)
+                        .map_err(js_err)?
+                        .ok_or_else(|| {
+                            js_err("active GPU extent request resolved to a metadata-only series")
+                        })?;
                     #[cfg(test)]
                     record_series_extent_submit();
                     let job = future_series_extents
@@ -2260,21 +2593,40 @@ mod web {
             Ok(())
         }
 
-        fn upsert_zero_column(&mut self, len: usize) -> Result<(), JsValue> {
-            if self.columns.get(INTERNAL_ZERO_COLUMN_ID) == Some(&len) {
-                return Ok(());
-            }
-            let metadata = prepare_column_metadata(
+        /// Upload a validated batch and install its registry metadata.
+        ///
+        /// Generic over the adapter so f32 and f64 share one commit without boxing
+        /// a source per column — the only per-column allocations on this path are
+        /// the two `Vec`s and the metadata maps, all proportional to the *column*
+        /// count and independent of `values_per_column`.
+        ///
+        /// **No series-extent refresh**, for the reason `Renderer::add_columns`
+        /// gives for skipping its picker rebuild: every id in a batch is new to the
+        /// pool, and `validate_renderer_series` refuses a series that reads a
+        /// column the pool does not have — so no existing series can reference one
+        /// of these ids, and there is no extent to recompute.
+        fn commit_column_batch<S: ColumnSource>(
+            &mut self,
+            ids: &[String],
+            len: usize,
+            adapters: &[S],
+        ) -> Result<(), JsValue> {
+            let metadata = prepare_batch_column_metadata(
                 &self.columns,
                 &self.column_revisions,
                 self.next_column_revision,
-                INTERNAL_ZERO_COLUMN_ID,
+                ids,
                 len,
             )
             .map_err(js_err)?;
-            self.renderer
-                .ensure_internal_zero_column(len)
-                .map_err(js_err)?;
+            let mut refs: Vec<(&str, &dyn ColumnSource)> = Vec::new();
+            refs.try_reserve_exact(ids.len()).map_err(js_err)?;
+            refs.extend(
+                ids.iter()
+                    .zip(adapters)
+                    .map(|(id, adapter)| (id.as_str(), adapter as &dyn ColumnSource)),
+            );
+            self.renderer.add_columns(&refs).map_err(js_err)?;
             self.columns = metadata.columns;
             self.column_revisions = metadata.revisions;
             self.next_column_revision = metadata.next_revision;
@@ -2283,30 +2635,12 @@ mod web {
 
         fn ensure_columns_exist(&self, cfg: &SeriesConfig) -> Result<(), JsValue> {
             for id in referenced_columns(cfg) {
-                validate_public_column_id(id)
-                    .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
                 if !self.columns.contains_key(id) {
                     return Err(js_err(format!(
                         "series '{}' references unregistered column '{id}'",
                         cfg.series_id
                     )));
                 }
-            }
-            Ok(())
-        }
-
-        /// Errorbar variants bind the internal `"__zero"` column for their
-        /// unused error dimension. Rendering preparation owns this resource;
-        /// changing the active series never uploads column data.
-        fn ensure_zero_column_for_render(&mut self) -> Result<(), JsValue> {
-            let needed = required_internal_zero_column_len(&self.columns, self.chart_series());
-            let existing = self
-                .columns
-                .get(INTERNAL_ZERO_COLUMN_ID)
-                .copied()
-                .unwrap_or(0);
-            if needed > 0 && existing < needed {
-                self.upsert_zero_column(needed)?;
             }
             Ok(())
         }
@@ -2357,8 +2691,6 @@ mod web {
 
         /// Register a new `Float32Array` column. Existing ids are rejected.
         pub fn register_column_f32(&mut self, id: &str, data: &[f32]) -> Result<(), JsValue> {
-            validate_public_column_id(id)
-                .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
             validate_column_registry_action(
                 self.columns.contains_key(id),
                 ColumnRegistryAction::Register,
@@ -2373,8 +2705,6 @@ mod web {
         /// Register a new `Float64Array` column as GPU `(hi, lo)` pairs.
         /// Existing ids are rejected.
         pub fn register_column_f64(&mut self, id: &str, data: &[f64]) -> Result<(), JsValue> {
-            validate_public_column_id(id)
-                .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
             validate_column_registry_action(
                 self.columns.contains_key(id),
                 ColumnRegistryAction::Register,
@@ -2386,6 +2716,60 @@ mod web {
             self.upsert_column_atomic(id, data.len(), ColumnUploadSource::HiLo(&column))
         }
 
+        /// Register many new columns from **one** flat `Float32Array`.
+        ///
+        /// `data` holds `ids.len()` columns of `values_per_column` values each, in
+        /// id order — the memory layout a matrix already has. This is the wasm
+        /// counterpart of `Renderer::add_columns`: one staging buffer and one
+        /// submit for the whole batch, so a 5000-column grid costs one upload
+        /// rather than 5000 (design B.8).
+        ///
+        /// Nothing is copied: each column is a borrowed slice of `data` written
+        /// straight into the staging buffer.
+        ///
+        /// All-or-nothing. A rejected batch registers no ids and uploads nothing.
+        /// Ragged batches are not supported — a matrix is rectangular by
+        /// definition, and unequal lengths still work through
+        /// `register_column_f32` one at a time.
+        pub fn register_columns_f32(
+            &mut self,
+            ids: Vec<String>,
+            data: &[f32],
+            values_per_column: usize,
+        ) -> Result<(), JsValue> {
+            validate_column_batch(&self.columns, &ids, values_per_column, data.len())
+                .map_err(js_err)?;
+            let mut adapters = Vec::new();
+            adapters.try_reserve_exact(ids.len()).map_err(js_err)?;
+            adapters.extend(
+                data.chunks_exact(values_per_column)
+                    .map(BorrowedF32Column::new),
+            );
+            self.commit_column_batch(&ids, values_per_column, &adapters)
+        }
+
+        /// Register many new columns from **one** flat `Float64Array`.
+        ///
+        /// The f64 counterpart of [`Self::register_columns_f32`], and it keeps the
+        /// same precision the single-column `register_column_f64` does: values are
+        /// uploaded as the `(hi, lo)` f32 pair, not cast to f32.
+        pub fn register_columns_f64(
+            &mut self,
+            ids: Vec<String>,
+            data: &[f64],
+            values_per_column: usize,
+        ) -> Result<(), JsValue> {
+            validate_column_batch(&self.columns, &ids, values_per_column, data.len())
+                .map_err(js_err)?;
+            let mut adapters = Vec::new();
+            adapters.try_reserve_exact(ids.len()).map_err(js_err)?;
+            adapters.extend(
+                data.chunks_exact(values_per_column)
+                    .map(BorrowedSplitF64Column::new),
+            );
+            self.commit_column_batch(&ids, values_per_column, &adapters)
+        }
+
         /// Atomically replace an existing column from a `Float32Array`.
         /// Missing ids are rejected; every accepted call performs an upload.
         pub fn update_register_column_f32(
@@ -2393,8 +2777,6 @@ mod web {
             id: &str,
             data: &[f32],
         ) -> Result<(), JsValue> {
-            validate_public_column_id(id)
-                .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
             validate_column_registry_action(
                 self.columns.contains_key(id),
                 ColumnRegistryAction::Update,
@@ -2413,8 +2795,6 @@ mod web {
             id: &str,
             data: &[f64],
         ) -> Result<(), JsValue> {
-            validate_public_column_id(id)
-                .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
             validate_column_registry_action(
                 self.columns.contains_key(id),
                 ColumnRegistryAction::Update,
@@ -2432,8 +2812,6 @@ mod web {
         /// and only synchronize recognized series symbols.
         /// Returns `true` when the column existed.
         pub fn remove_column(&mut self, id: &str) -> Result<bool, JsValue> {
-            validate_public_column_id(id)
-                .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
             if !self.columns.contains_key(id) {
                 return Ok(false);
             }
@@ -2708,7 +3086,7 @@ mod web {
 
         /// Fit BOTH axes to the union of every registered series, leaving a
         /// uniform `padding` fraction of the data span as margin on each
-        /// side (`0.0` = exact fit, `0.05` = 5% top/bottom/left/right).
+        /// side (`0.0` = no padding, `0.05` = 5% top/bottom/left/right).
         /// This is the whole fit policy — no rounding of the range ends;
         /// ticks land on nice values inside the range by themselves. Hosts
         /// should call this instead of re-deriving ranges.
@@ -2718,17 +3096,25 @@ mod web {
         /// for point-bearing modes, and enabled error endpoints. The reduction
         /// is compiled on first fit (`createComputePipelineAsync` on wasm)
         /// and cached by the normalized mode plus role-specific column
-        /// revisions. Series registration itself does not submit GPU work.
+        /// revisions. Matrix-backed series use the same engine to return the
+        /// exact cell/sample-lattice bounds; only histograms remain a metadata
+        /// union because their uploaded edge column already is their geometry.
+        /// Series registration itself does not submit GPU work.
         pub async fn auto_fit_all(&mut self, padding: f64) -> Result<(), JsValue> {
-            self.renderer
-                .ensure_errorbar_extent_engine()
-                .await
-                .map_err(js_err)?;
+            let series = self.chart_series().to_vec();
+            if series
+                .iter()
+                .any(|cfg| series_extent_mode(&cfg.render_type).is_some())
+            {
+                self.renderer
+                    .ensure_errorbar_extent_engine()
+                    .await
+                    .map_err(js_err)?;
+            }
             let token = self
                 .renderer
                 .begin_fit_commit(self.chart_id)
                 .map_err(js_err)?;
-            let series = self.chart_series().to_vec();
             let prepared =
                 self.prepare_series_extent_cache(&series, &self.column_revisions, true)?;
             let mut jobs = Vec::new();
@@ -2745,6 +3131,35 @@ mod web {
                     y_ext.union(&extent.y);
                 }
             }
+            let scalar_extent = |value: f64| FitExtent {
+                min: value,
+                max: value,
+                min_positive: (value > 0.0).then_some(value),
+            };
+            for cfg in &series {
+                match &cfg.render_type {
+                    DataRenderType::Histogram { bar } => {
+                        let (edge_column, count_column) =
+                            crate::histogram_fit_columns(cfg, &bar.orientation);
+                        let edge = Chart::slot_extent(self.renderer.pool(), edge_column)
+                            .map_err(js_err)?;
+                        let mut count = Chart::slot_extent(self.renderer.pool(), count_column)
+                            .map_err(js_err)?;
+                        count.union(&scalar_extent(bar.baseline));
+                        if matches!(
+                            &bar.orientation,
+                            renderer::data_config::BarOrientation::Vertical
+                        ) {
+                            x_ext.union(&edge);
+                            y_ext.union(&count);
+                        } else {
+                            x_ext.union(&count);
+                            y_ext.union(&edge);
+                        }
+                    }
+                    _ => {}
+                }
+            }
             if !self.alive.get() {
                 return Err(js_err("chart was dropped while auto_fit_all was pending"));
             }
@@ -2753,6 +3168,79 @@ mod web {
                 .map_err(js_err)?;
             self.request_host_redraw();
             Ok(())
+        }
+
+        /// Fit the shared z axis to every matrix value column in the chart.
+        /// A chart without a colourbar is left unchanged.
+        pub fn auto_fit_colorbar(&mut self, padding: f64) -> Result<(), JsValue> {
+            let mut z_extent = FitExtent::EMPTY;
+            for cfg in self.chart_series() {
+                let matrix = match &cfg.render_type {
+                    DataRenderType::Heatmap { matrix, .. }
+                    | DataRenderType::Contour { matrix, .. }
+                    | DataRenderType::HeatmapContour { matrix, .. } => matrix,
+                    _ => continue,
+                };
+                for id in &matrix.columns {
+                    z_extent.union(&Chart::slot_extent(self.renderer.pool(), id).map_err(js_err)?);
+                }
+            }
+            let mut chart = Chart::new(self.chart_config().clone());
+            chart.auto_fit_colorbar_extent(&z_extent, padding);
+            self.replace_chart_config(chart.config().clone())?;
+            self.request_host_redraw();
+            Ok(())
+        }
+
+        /// Replace one contour series' levels with axis-native nice levels.
+        /// The resulting explicit values remain the series SSoT.
+        pub fn set_contour_nice_levels(
+            &mut self,
+            series_id: &str,
+            target_count: usize,
+            use_colormap_colors: bool,
+        ) -> Result<u32, JsValue> {
+            let colorbar = self
+                .chart_config()
+                .colorbar
+                .clone()
+                .ok_or_else(|| js_err("contour levels need Config.colorbar"))?;
+            let mut series = self.chart_series().to_vec();
+            let cfg = series
+                .iter_mut()
+                .find(|cfg| cfg.series_id == series_id)
+                .ok_or_else(|| js_err("no series with this id in the chart"))?;
+            let contour = match &mut cfg.render_type {
+                DataRenderType::Contour { contour, .. }
+                | DataRenderType::HeatmapContour { contour, .. } => contour,
+                _ => return Err(js_err("series does not have contour levels")),
+            };
+            contour
+                .set_nice_levels(&colorbar.axis, target_count)
+                .map_err(|error| js_err(format!("{error:?}")))?;
+            if use_colormap_colors {
+                contour.set_colormap_colors(&colorbar);
+            }
+            let count = u32::try_from(contour.levels.len()).map_err(js_err)?;
+            let json = serde_json::to_string(&series).map_err(js_err)?;
+            self.set_series(&json)?;
+            self.request_host_redraw();
+            Ok(count)
+        }
+
+        /// Report the effective primitive/grid extent currently drawn.
+        pub fn series_draw_info(&self, series_id: &str) -> Result<String, JsValue> {
+            let info = self
+                .renderer
+                .series_draw_info(self.chart_id, series_id)
+                .map_err(js_err)?;
+            serde_json::to_string(&serde_json::json!({
+                "drawn_count": info.drawn_count,
+                "cols": info.cols,
+                "rows": info.rows,
+                "truncated": info.truncated,
+            }))
+            .map_err(js_err)
         }
 
         // ---- titles ----
@@ -2772,6 +3260,34 @@ mod web {
         pub fn set_y_title(&mut self, text: &str) -> Result<(), JsValue> {
             let mut config = self.chart_config().clone();
             config.left_y.title_option.text.segments = rich_segments_from_text(text);
+            self.replace_chart_config(config)
+        }
+
+        /// Set the colourbar title text and make it visible. An empty string
+        /// hides it. The full rich-text/title offsets remain available through
+        /// `set_colorbar_axis` or the chart Config SSoT.
+        pub fn set_colorbar_title(&mut self, text: &str) -> Result<(), JsValue> {
+            let mut config = self.chart_config().clone();
+            let bar = config
+                .colorbar
+                .as_mut()
+                .ok_or_else(|| js_err("colorbar title needs Config.colorbar"))?;
+            bar.axis.title_option.text.segments = rich_segments_from_text(text);
+            bar.axis.title_option.visible = !text.is_empty();
+            self.replace_chart_config(config)
+        }
+
+        /// Replace the colourbar's z-axis options as one SSoT value. This is
+        /// the focused edit boundary for tick direction/style/length, value
+        /// direction, tick-label style/offsets, and title options.
+        pub fn set_colorbar_axis(&mut self, json: &str) -> Result<(), JsValue> {
+            let axis: renderer::config::AxisOptions = serde_json::from_str(json).map_err(js_err)?;
+            let mut config = self.chart_config().clone();
+            let bar = config
+                .colorbar
+                .as_mut()
+                .ok_or_else(|| js_err("colorbar axis needs Config.colorbar"))?;
+            bar.axis = axis;
             self.replace_chart_config(config)
         }
 
@@ -2856,6 +3372,15 @@ mod web {
         /// Replace the series declarations from JSON. Column references must
         /// already be registered; GPU styles are rebuilt, legend labels are
         /// kept for series ids that survive.
+        ///
+        /// `Contour` and `HeatmapContour` accept `contour.levels` lists with
+        /// 0 through 1024 entries. A list with 1025 or more entries rejects the
+        /// JSON call with a JavaScript exception; the previously committed
+        /// chart config, series declarations, and GPU styles remain active.
+        /// The WASM facade neither adds a smaller limit nor truncates levels.
+        /// Contour labels use the same 1024 capacity for automatic and explicit
+        /// placement. `spacing_px` must be finite and positive even for hidden
+        /// labels or explicit anchors; rejection preserves the prior state.
         pub fn set_series(&mut self, json: &str) -> Result<(), JsValue> {
             let new_series: Vec<SeriesConfig> = serde_json::from_str(json).map_err(js_err)?;
             for cfg in &new_series {
@@ -2932,8 +3457,9 @@ mod web {
 
         /// Hit-test the chart chrome at canvas pixel `(x, y)` — returns the
         /// topmost element's stable id (`"data_area"`, `"axis_bottom"`,
-        /// `"tick_labels_left"`, `"axis_title_left"`, `"legend"`,
-        /// `"chart_title"`, …) or `null`. Pure geometry, no selection state
+        /// `"tick_labels_left"`, `"axis_title_left"`, `"colorbar"`,
+        /// `"colorbar_axis"`, `"colorbar_tick_labels"`,
+        /// `"colorbar_title"`, …) or `null`. Pure geometry, no selection state
         /// change: the renderer's own layout answers, so hosts don't have to
         /// re-derive box positions for hover cursors / context UI.
         pub fn hit_test(&self, x: f32, y: f32) -> Option<String> {
@@ -2992,6 +3518,30 @@ mod web {
             Ok(JsValue::from_str(&json))
         }
 
+        /// Pick the nearest visible data primitive at canvas pixel `(x, y)`;
+        /// equal-distance hits follow chart paint order.
+        /// Unlike `pick_point`, this includes histogram bins, canonical heatmap
+        /// cells and contour levels. The tagged result contains only stable
+        /// source/series indices plus `distance_px`; values and geometry stay
+        /// in the renderer's GPU-backed SSoT. Resolves to `undefined` on miss.
+        pub async fn pick_data(
+            &mut self,
+            x: f32,
+            y: f32,
+            max_distance_px: f32,
+        ) -> Result<JsValue, JsValue> {
+            self.prepare_gpu_picking().await?;
+            let ticket = self
+                .renderer
+                .pick_chart_data_at(self.chart_id, [x, y], max_distance_px)
+                .map_err(js_err)?;
+            let Some(picked) = ticket.resolve().await.map_err(js_err)? else {
+                return Ok(JsValue::UNDEFINED);
+            };
+            let json = crate::picked_data_json_string(&picked).map_err(js_err)?;
+            Ok(JsValue::from_str(&json))
+        }
+
         /// Replace the picked-point overlay config. Passing JSON `null`
         /// clears it.
         pub fn set_picked_points(&mut self, json: &str) -> Result<(), JsValue> {
@@ -2999,6 +3549,17 @@ mod web {
                 serde_json::from_str(json).map_err(js_err)?;
             let mut config = self.chart_config().clone();
             config.picked_points = picked;
+            self.replace_chart_config(config)
+        }
+
+        /// Replace the typed data-selection overlay config. Passing JSON
+        /// `null` clears it. This is independent of the legacy point-only
+        /// overlay so existing hosts keep their current behavior.
+        pub fn set_picked_data(&mut self, json: &str) -> Result<(), JsValue> {
+            let picked: Option<renderer::DataSelectionsConfig> =
+                serde_json::from_str(json).map_err(js_err)?;
+            let mut config = self.chart_config().clone();
+            config.picked_data = picked;
             self.replace_chart_config(config)
         }
 
@@ -3085,7 +3646,7 @@ mod web {
             self.renderer.wait_submitted_work().await;
         }
 
-        /// Compile the exact-extent compute engine without drawing. On wasm
+        /// Compile the drawable-series fit-bound engine without drawing. On wasm
         /// this uses `createComputePipelineAsync`. Series registration does
         /// not do this; `auto_fit_all` does.
         pub async fn ensure_extent_engine(&mut self) -> Result<(), JsValue> {
@@ -3110,6 +3671,31 @@ mod web {
         /// Alias for [`Self::first_frame_ready`].
         pub async fn warm_up(&mut self) -> Result<(), JsValue> {
             self.first_frame_ready().await
+        }
+
+        /// Compile every renderer pipeline while reporting the exact current
+        /// stage as `{ scope, stage, phase }` objects. The chart is mutably
+        /// borrowed until the Promise settles; hosts must keep their normal
+        /// async busy gate active and queue chart work rather than calling the
+        /// kernel from the callback.
+        pub async fn prewarm_all_with_progress(
+            &mut self,
+            on_event: js_sys::Function,
+        ) -> Result<(), JsValue> {
+            let mut observer = |event| emit_init_progress(Some(&on_event), event);
+            self.renderer
+                .prewarm_all_observed(&mut observer)
+                .await
+                .map_err(js_err)?;
+            self.request_host_redraw();
+            Ok(())
+        }
+
+        /// Compile every renderer pipeline without a progress callback.
+        pub async fn prewarm_all(&mut self) -> Result<(), JsValue> {
+            self.renderer.prewarm_all().await.map_err(js_err)?;
+            self.request_host_redraw();
+            Ok(())
         }
 
         /// Process pending pool maintenance and draw only when visual state is
@@ -3143,10 +3729,6 @@ mod web {
                 FrameDecision::Draw { refresh_raster } => refresh_raster,
             };
 
-            // Rendering preparation owns the internal inactive error lane.
-            // It is never scanned or uploaded on a clean or maintenance-only
-            // frame.
-            self.ensure_zero_column_for_render()?;
             let _ = self
                 .renderer
                 .process_pending_maintenance()
@@ -3237,8 +3819,11 @@ mod web {
         /// (`&mut self`: the renderer's export runs its prepare phase —
         /// transform uniforms + arc-prefix compute; wasm-bindgen serializes
         /// access, so this changes nothing for JS callers.)
+        /// Automatic contour placement validates `spacing_px * scale` after the
+        /// export scale is clamped. Explicit placement does not multiply spacing.
+        /// Scale-product overflow or an atlas beyond the adapter texture limit
+        /// rejects the export before contour GPU state changes.
         pub async fn export_png(&mut self, scale: f32) -> Result<js_sys::Uint8Array, JsValue> {
-            self.ensure_zero_column_for_render()?;
             let export_chart = Chart::new(self.chart_config().clone());
             let series = self.chart_series().to_vec();
             let bytes = self
@@ -3282,8 +3867,6 @@ mod web {
             .map_err(js_err)?;
             for item in &declarations.series {
                 for id in referenced_columns(item) {
-                    validate_public_column_id(id)
-                        .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
                     if !metadata.columns.contains_key(id) {
                         return Err(js_err(format!(
                             "series '{}' references unregistered column '{id}'",
@@ -3414,9 +3997,6 @@ mod web {
         fn snapshot(chart: &FiggyChart) -> FiggyAuthority {
             let pool = chart.renderer.pool();
             let mut ids = chart.columns.keys().cloned().collect::<Vec<_>>();
-            if pool.slot(INTERNAL_ZERO_COLUMN_ID).is_some() {
-                ids.push(INTERNAL_ZERO_COLUMN_ID.to_string());
-            }
             ids.sort();
             ids.dedup();
             let slots = ids
@@ -3529,6 +4109,59 @@ mod web {
                     .iter()
                     .any(|series| series.series_id == "rc")
             );
+        }
+
+        /// A matrix-shaped batch registers every column in one upload, and the
+        /// f64 form keeps the `(hi, lo)` precision the single-column path does.
+        ///
+        /// `ColumnPool` creations answers the "one upload" claim: the batch takes a
+        /// single staging buffer, so a 16-column grid must not create 16.
+        #[wasm_bindgen_test(async)]
+        async fn a_column_batch_registers_every_column_in_one_upload() {
+            const N: usize = 16;
+            let mut chart = FiggyChart::create(canvas()).await.expect("create chart");
+            let ids: Vec<String> = (0..N).map(|c| format!("g{c}")).collect();
+            // A grid whose values need the low half: the integer part alone would
+            // round away the +0.125 / +0.875 offsets in f32.
+            let data: Vec<f64> = (0..N)
+                .flat_map(|c| (0..N).map(move |r| 1_700_000_000_000.0 + c as f64 + r as f64 / 8.0))
+                .collect();
+
+            let before = chart
+                .renderer
+                .gpu_memory_usage()
+                .creations_of(renderer::GpuResourceKind::ColumnPool);
+            chart
+                .register_columns_f64(ids.clone(), &data, N)
+                .expect("batch register");
+            let creations = chart
+                .renderer
+                .gpu_memory_usage()
+                .creations_of(renderer::GpuResourceKind::ColumnPool)
+                - before;
+            assert!(
+                creations <= 1,
+                "{N} columns must upload through one staging buffer, not {creations}"
+            );
+
+            for id in &ids {
+                assert_eq!(chart.columns.get(id), Some(&N));
+                assert!(chart.column_revisions.contains_key(id));
+            }
+            // One revision per column, not one for the batch.
+            let mut revisions: Vec<u64> = ids
+                .iter()
+                .map(|id| *chart.column_revisions.get(id).unwrap())
+                .collect();
+            revisions.sort_unstable();
+            revisions.dedup();
+            assert_eq!(revisions.len(), N);
+
+            // A second batch naming one of the same ids is rejected whole.
+            let clash = vec![format!("fresh"), ids[0].clone()];
+            let small: Vec<f64> = vec![0.0; 2 * N];
+            assert!(chart.register_columns_f64(clash, &small, N).is_err());
+            assert!(!chart.columns.contains_key("fresh"));
         }
 
         #[wasm_bindgen_test(async)]

@@ -1,6 +1,6 @@
 use super::{
     ChartArea, Config, DataArea, LayoutError, Margins, Rect, Side, chart_title_contribution,
-    tick_contribution,
+    colorbar_parts, tick_contribution,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -12,76 +12,77 @@ pub enum FitStrategy {
 
 // Per-side components used internally by fit/resize.
 //
-// Flex (scaled on fit/resize): `out_margin`, `chart_title` (Top only).
-// Fixed (never scaled): `major_tick_length`.
+// Flex (scaled on fit/resize): `out_margin`, `chart_title` (Top only),
+// `colorbar_out_margin` (the colourbar's side only).
+// Fixed (never scaled): `major_tick_length`, `colorbar_fixed`.
 //
 // `label_offset_{x,y}` and `minor_tick_length` are visual-only and don't
 // contribute to margins, so they are absent here.
+//
+// The colourbar band is split rather than registered whole, and both halves
+// matter. Registering all of it as fixed would leave fit unable to reclaim the
+// bar's label space, so a tight target fails where it could have succeeded;
+// omitting it entirely would let fit and resize hand the data area a band that
+// `margins()` still charges, and the two would disagree about where the data
+// area is.
 
 #[derive(Clone)]
 struct SideComponents {
     out_margin: f32,          // flex
     chart_title: Option<f32>, // flex, Top only
     major_tick_length: f32,   // fixed
+    /// The colourbar axis' `out_margin` — flex, and `Some` only on the side the
+    /// bar occupies (`None` elsewhere, so `write_side` knows not to write).
+    colorbar_out_margin: Option<f32>,
+    /// `gap_px + thickness_px + colourbar tick length` — fixed, like the axis
+    /// tick it sits next to. The strip does not grow with the window.
+    colorbar_fixed: f32,
 }
 
 fn read_side(cfg: &Config, side: &Side) -> SideComponents {
-    match side {
-        Side::Top => SideComponents {
-            out_margin: cfg.top_x.out_margin,
-            chart_title: Some(chart_title_contribution(&cfg.chart_title)),
-            major_tick_length: tick_contribution(&cfg.top_x),
+    // Straight from the layout helper `margins()` uses, so "which side carries a
+    // band" is decided once for both.
+    let (colorbar_out_margin, colorbar_fixed) = match colorbar_parts(cfg, side) {
+        Some((flex, fixed)) => (Some(flex), fixed),
+        None => (None, 0.0),
+    };
+    let axis = super::axis_ref(cfg, side);
+    SideComponents {
+        out_margin: axis.out_margin,
+        chart_title: match side {
+            Side::Top => Some(chart_title_contribution(&cfg.chart_title)),
+            Side::Bottom | Side::Left | Side::Right => None,
         },
-        Side::Bottom => SideComponents {
-            out_margin: cfg.bottom_x.out_margin,
-            chart_title: None,
-            major_tick_length: tick_contribution(&cfg.bottom_x),
-        },
-        Side::Left => SideComponents {
-            out_margin: cfg.left_y.out_margin,
-            chart_title: None,
-            major_tick_length: tick_contribution(&cfg.left_y),
-        },
-        Side::Right => SideComponents {
-            out_margin: cfg.right_y.out_margin,
-            chart_title: None,
-            major_tick_length: tick_contribution(&cfg.right_y),
-        },
+        major_tick_length: tick_contribution(axis),
+        colorbar_out_margin,
+        colorbar_fixed,
     }
 }
 
 fn flex_total(c: &SideComponents) -> f32 {
-    c.out_margin + c.chart_title.unwrap_or(0.0)
+    c.out_margin + c.chart_title.unwrap_or(0.0) + c.colorbar_out_margin.unwrap_or(0.0)
 }
 
 fn side_total(c: &SideComponents) -> f32 {
-    flex_total(c) + c.major_tick_length
+    flex_total(c) + c.major_tick_length + c.colorbar_fixed
 }
 
-// Write flex components back into Config. Tick length is fixed and not touched.
+// Write flex components back into Config. Tick lengths and the colourbar strip
+// itself are fixed and not touched.
 fn write_side(cfg: &mut Config, side: &Side, c: &SideComponents) {
-    match side {
-        Side::Top => {
-            cfg.top_x.out_margin = c.out_margin;
-            if let Some(v) = c.chart_title {
-                cfg.chart_title.top_margin = v;
-            }
-        }
-        Side::Bottom => {
-            cfg.bottom_x.out_margin = c.out_margin;
-        }
-        Side::Left => {
-            cfg.left_y.out_margin = c.out_margin;
-        }
-        Side::Right => {
-            cfg.right_y.out_margin = c.out_margin;
-        }
+    if let (Some(value), Some(bar)) = (c.colorbar_out_margin, cfg.colorbar.as_mut()) {
+        bar.axis.out_margin = value;
+    }
+    super::axis_mut(cfg, side).out_margin = c.out_margin;
+    if let (Side::Top, Some(v)) = (side, c.chart_title) {
+        cfg.chart_title.top_margin = v;
     }
 }
 
 fn scale_proportional(c: &SideComponents, target: f32) -> Result<SideComponents, LayoutError> {
-    // Tick is fixed; scale only the flex part to reach the target total.
-    let flex_target = target - c.major_tick_length;
+    // Tick and colourbar strip are fixed; scale only the flex part to reach
+    // the target total.
+    let flex_target = target - c.major_tick_length - c.colorbar_fixed;
     if flex_target < 0.0 {
         return Err(LayoutError::Infeasible);
     }
@@ -97,34 +98,44 @@ fn scale_proportional(c: &SideComponents, target: f32) -> Result<SideComponents,
         out_margin: c.out_margin * r,
         chart_title: c.chart_title.map(|v| v * r),
         major_tick_length: c.major_tick_length,
+        colorbar_out_margin: c.colorbar_out_margin.map(|v| v * r),
+        colorbar_fixed: c.colorbar_fixed,
     })
 }
 
-// PreserveTitles: keep chart_title fixed and adjust only out_margin (tick always fixed).
+// PreserveTitles: keep chart_title fixed and adjust only out_margin (tick always
+// fixed). The colourbar's label space is preserved for the same reason titles
+// are — it holds text, and crushing it is what this strategy exists to avoid.
 fn preserve_titles(c: &SideComponents, target: f32) -> Result<SideComponents, LayoutError> {
-    let fixed = c.major_tick_length + c.chart_title.unwrap_or(0.0);
-    let new_out = target - fixed;
+    let new_out = target - preserved_fixed(c);
     if new_out < 0.0 {
         return Err(LayoutError::Infeasible);
     }
     Ok(SideComponents {
         out_margin: new_out,
-        chart_title: c.chart_title,
-        major_tick_length: c.major_tick_length,
+        ..c.clone()
     })
 }
 
-// Absorb: push the entire delta into out_margin. chart_title and tick stay fixed.
+/// Everything `PreserveTitles` / `Absorb` hold still: the fixed terms plus the
+/// text-bearing flex ones. The whole delta lands on the axis `out_margin`.
+fn preserved_fixed(c: &SideComponents) -> f32 {
+    c.major_tick_length
+        + c.chart_title.unwrap_or(0.0)
+        + c.colorbar_fixed
+        + c.colorbar_out_margin.unwrap_or(0.0)
+}
+
+// Absorb: push the entire delta into out_margin. chart_title, tick, and the
+// colourbar stay fixed.
 fn absorb_single(c: &SideComponents, target: f32) -> Result<SideComponents, LayoutError> {
-    let fixed = c.major_tick_length + c.chart_title.unwrap_or(0.0);
-    let new_out = target - fixed;
+    let new_out = target - preserved_fixed(c);
     if new_out < 0.0 {
         return Err(LayoutError::Infeasible);
     }
     Ok(SideComponents {
         out_margin: new_out,
-        chart_title: c.chart_title,
-        major_tick_length: c.major_tick_length,
+        ..c.clone()
     })
 }
 
@@ -134,6 +145,8 @@ fn scale_flex(c: &SideComponents, r: f32) -> SideComponents {
         out_margin: c.out_margin * r,
         chart_title: c.chart_title.map(|v| v * r),
         major_tick_length: c.major_tick_length,
+        colorbar_out_margin: c.colorbar_out_margin.map(|v| v * r),
+        colorbar_fixed: c.colorbar_fixed,
     }
 }
 
@@ -313,10 +326,18 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::default::default_config;
+    use crate::default::{default_colorbar_options, default_config};
 
     fn approx_eq(a: f32, b: f32, eps: f32) -> bool {
         (a - b).abs() <= eps
+    }
+
+    fn config_with_colorbar(side: Side) -> Config {
+        let mut cfg = default_config();
+        let mut bar = default_colorbar_options();
+        bar.side = side;
+        cfg.colorbar = Some(bar);
+        cfg
     }
 
     // After a successful fit_to_data_area, data_area() must equal target (within rounding).
@@ -472,5 +493,134 @@ mod tests {
 
         assert!(approx_eq(cfg.top_x.major_tick_length, maj0, 1e-3));
         assert!(approx_eq(cfg.top_x.minor_tick_length, min0, 1e-3));
+    }
+
+    // The invariant that ties this module to `margins()`: what fit thinks a
+    // side totals must be what layout charges it. A colourbar band registered
+    // in one and not the other would put the data area in two places.
+    #[test]
+    fn side_total_agrees_with_margins_on_every_side() {
+        for side in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
+            let cfg = config_with_colorbar(side.clone());
+            let m = cfg.margins();
+            for probe in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
+                let charged = match probe {
+                    Side::Top => m.top,
+                    Side::Bottom => m.bottom,
+                    Side::Left => m.left,
+                    Side::Right => m.right,
+                };
+                let seen = side_total(&read_side(&cfg, &probe));
+                assert!(
+                    approx_eq(seen, charged, 1e-3),
+                    "bar on {side:?}, probing {probe:?}: fit sees {seen}, margins charge {charged}"
+                );
+            }
+        }
+    }
+
+    // A fit must be able to reclaim the bar's label space (it is text space,
+    // like an axis' out_margin) but never the strip itself — a colourbar that
+    // got thinner with the window would misreport its own colours' extent.
+    #[test]
+    fn proportional_fit_scales_the_colorbar_label_margin_and_not_the_strip() {
+        let mut cfg = config_with_colorbar(Side::Right);
+        let bar0 = cfg.colorbar.clone().expect("colourbar");
+        let m = cfg.margins();
+        // Halve the right margin's flex share by asking for a wider data area.
+        let da = cfg.data_area().expect("data area");
+        let target = DataArea(Rect {
+            x: da.x,
+            y: da.y,
+            width: da.width + (m.right * 0.25) as u32,
+            height: da.height,
+        });
+        cfg.fit_to_data_area(target.clone(), FitStrategy::ProportionalScale)
+            .expect("fit");
+
+        let bar = cfg.colorbar.as_ref().expect("colourbar");
+        assert!(
+            bar.axis.out_margin < bar0.axis.out_margin,
+            "label margin should have shrunk: {} → {}",
+            bar0.axis.out_margin,
+            bar.axis.out_margin
+        );
+        assert!(approx_eq(bar.thickness_px, bar0.thickness_px, 1e-6));
+        assert!(approx_eq(bar.gap_px, bar0.gap_px, 1e-6));
+        assert!(approx_eq(
+            bar.axis.major_tick_length,
+            bar0.axis.major_tick_length,
+            1e-6
+        ));
+        // And the fit actually landed where it was asked to.
+        let after = cfg.data_area().expect("data area");
+        assert_eq!(after.width, target.width);
+    }
+
+    // PreserveTitles and Absorb hold text space still and push the whole delta
+    // into the axis margin — the colourbar's labels are text too.
+    #[test]
+    fn preserve_titles_and_absorb_leave_the_colorbar_alone() {
+        for strategy in [
+            FitStrategy::PreserveTitles,
+            FitStrategy::Absorb(Side::Right),
+        ] {
+            let mut cfg = config_with_colorbar(Side::Right);
+            let bar0 = cfg.colorbar.clone().expect("colourbar");
+            let out0 = cfg.right_y.out_margin;
+            let da = cfg.data_area().expect("data area");
+            // 4 px, not more: `right_y.out_margin` starts at 8 (that side's
+            // labels and title are off), and these two strategies may only
+            // spend the axis margin.
+            let target = DataArea(Rect {
+                x: da.x,
+                y: da.y,
+                width: da.width + 4,
+                height: da.height,
+            });
+            cfg.fit_to_data_area(target, strategy.clone())
+                .unwrap_or_else(|e| panic!("{strategy:?} fit: {e:?}"));
+
+            assert_eq!(cfg.colorbar.as_ref().expect("colourbar"), &bar0);
+            assert!(
+                cfg.right_y.out_margin < out0,
+                "{strategy:?}: the delta belongs to the axis margin"
+            );
+        }
+    }
+
+    // resize_chart_area_scaled scales flex per side; the colourbar's label
+    // margin is flex, its strip is not.
+    #[test]
+    fn scaled_resize_scales_the_colorbar_label_margin_only() {
+        let mut cfg = config_with_colorbar(Side::Right);
+        let bar0 = cfg.colorbar.clone().expect("colourbar");
+        let area = cfg.chart_area.clone();
+        cfg.resize_chart_area_scaled(ChartArea(Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width * 2,
+            height: area.height,
+        }))
+        .expect("resize");
+
+        let bar = cfg.colorbar.as_ref().expect("colourbar");
+        assert!(approx_eq(
+            bar.axis.out_margin,
+            bar0.axis.out_margin * 2.0,
+            1e-3
+        ));
+        assert!(approx_eq(bar.thickness_px, bar0.thickness_px, 1e-6));
+        assert!(approx_eq(bar.gap_px, bar0.gap_px, 1e-6));
+    }
+
+    // A bar on one side must not be written to from another side's fit.
+    #[test]
+    fn fitting_a_side_without_a_bar_does_not_touch_it() {
+        let mut cfg = config_with_colorbar(Side::Right);
+        let bar0 = cfg.colorbar.clone().expect("colourbar");
+        cfg.set_side_margin(Side::Left, cfg.margins().left * 0.8)
+            .expect("set left margin");
+        assert_eq!(cfg.colorbar.as_ref().expect("colourbar"), &bar0);
     }
 }

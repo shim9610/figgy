@@ -17,6 +17,8 @@ struct Transform {
     data_max_lo: vec2<f32>,
     scale_log: vec2<f32>,
     pixel_to_ndc: vec2<f32>,
+    data_to_panel_scale: vec2<f32>,
+    data_to_panel_offset: vec2<f32>,
     // Generic per-panel style parameter slots. Interpretation belongs to the
     // ACTIVE style's shader entries; the precise entries never read them.
     // sketch:        [0] = (amplitude_px, wavelength_px, seed(f32), 0)
@@ -28,7 +30,7 @@ struct Transform {
     //                resolution-invariant under DPI/export scaling.
     // constellation: [0] = (star_opacity, line_opacity, 0, 0)
     style_params: array<vec4<f32>, 3>,
-};  // 96 B (vec4 array at offset 48, stride 16 — alignment unchanged)
+};  // 112 B (vec4 array at offset 64, stride 16)
 
 @group(0) @binding(0) var<uniform> transform: Transform;
 
@@ -44,7 +46,9 @@ struct Style {
     // (sketch/milkyway/constellation) XOR it into their hash seeds so two series never
     // share a star/wobble pattern; precise entries never read it.
     series_salt: u32,
-    _pad: u32,
+    // Primitive-specific feature bits. Errorbar uses bit 0 for Y and bit 1
+    // for X; every other primitive ignores this field.
+    primitive_flags: u32,
     dash: array<vec4<f32>, 2>,
 };
 
@@ -55,17 +59,18 @@ fn maybe_log(v: f32, is_log: f32) -> f32 {
     return mix(v, lv, is_log);
 }
 
-fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f32, is_log: f32) -> f32 {
+fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f32, is_log: f32, panel_scale: f32, panel_offset: f32) -> f32 {
     let raw = v.x + v.y;
     let linear_num = (v.x - min_hi) + (v.y - min_lo);
     let range = (max_hi - min_hi) + (max_lo - min_lo);
     let log_num = (maybe_log(raw, is_log) - min_hi) - min_lo;
-    return mix(linear_num / range, log_num / range, is_log);
+    let data_t = mix(linear_num / range, log_num / range, is_log);
+    return panel_offset + data_t * panel_scale;
 }
 
 fn data_to_ndc(xv: vec2<f32>, yv: vec2<f32>) -> vec2<f32> {
-    let tx = axis_pair_to_t(xv, transform.data_min.x, transform.data_max.x, transform.data_min_lo.x, transform.data_max_lo.x, transform.scale_log.x);
-    let ty = axis_pair_to_t(yv, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y);
+    let tx = axis_pair_to_t(xv, transform.data_min.x, transform.data_max.x, transform.data_min_lo.x, transform.data_max_lo.x, transform.scale_log.x, transform.data_to_panel_scale.x, transform.data_to_panel_offset.x);
+    let ty = axis_pair_to_t(yv, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y, transform.data_to_panel_scale.y, transform.data_to_panel_offset.y);
     return vec2<f32>(tx, ty) * 2.0 - 1.0;
 }
 // ───── END common block ─────

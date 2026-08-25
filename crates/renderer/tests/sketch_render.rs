@@ -21,7 +21,7 @@
 //! explicit_precise_mode_deserializes_to_precise,
 //! precise_serializes_without_key).
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use renderer::config::{DrawStyle, SketchOptions};
 use renderer::data::Column;
@@ -42,19 +42,36 @@ fn col_f64(data: Vec<f64>) -> Column<f64> {
     Column { data, min, max }
 }
 
+/// The process-wide device, created once.
+///
+/// A `wgpu` device costs adapter enumeration, driver init and shader-cache setup;
+/// creating one per test made this binary's tests contend for the driver and hold
+/// a device apiece. `column_upload_stats.rs` already pools this way — the pixel
+/// suites simply had not.
+///
+/// The `Renderer` is still per test: it owns the column pool, so sharing one
+/// would let test fixtures collide on column ids. Only the device is shared, and
+/// `wgpu::Device` is `Send + Sync`, so the default parallel harness is fine.
+fn shared_device() -> Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> {
+    static DEVICE: OnceLock<Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)>> = OnceLock::new();
+    DEVICE
+        .get_or_init(|| {
+            let instance = create_instance();
+            let adapter = request_adapter(&instance).ok()?;
+            let (device, queue) = request_device(&adapter).ok()?;
+            Some((Arc::new(device), Arc::new(queue)))
+        })
+        .as_ref()
+        .map(|(device, queue)| (Arc::clone(device), Arc::clone(queue)))
+}
+
 /// Headless renderer, or `None` when this environment has no GPU adapter
 /// (the caller early-returns — same skip pattern as the in-crate GPU tests).
 fn try_renderer() -> Option<Renderer> {
-    let inst = create_instance();
-    let Ok(adapter) = request_adapter(&inst) else {
-        return None;
-    };
-    let Ok((device, queue)) = request_device(&adapter) else {
-        return None;
-    };
+    let (device, queue) = shared_device()?;
     Some(
         Renderer::try_new(
-            RendererDevice::new(Arc::new(device), Arc::new(queue)),
+            RendererDevice::new(device, queue),
             wgpu::TextureFormat::Bgra8Unorm,
             4 * 1024 * 1024,
         )
@@ -197,9 +214,6 @@ fn build_combined(r: &mut Renderer) -> (Chart, Vec<SeriesConfig>) {
     r.add_column("sy", &col_f64(sy)).unwrap();
     r.add_column("ey", &col_f64(ey)).unwrap();
     r.add_column("ee", &col_f64(ee)).unwrap();
-    // Required by every errorbar series: renderer-owned zero-fill padding for
-    // the unused error dimension.
-    r.ensure_internal_zero_column(m).unwrap();
 
     let mut chart = bare_chart(640, 480);
     chart.set_x_range(0.0, 6.5);

@@ -19,17 +19,22 @@ use std::sync::Arc;
 use crate::axis_render;
 use crate::chart::Chart;
 use crate::color::Color;
-use crate::config::{AxisOptions, AxisScale, Config, DrawStyle, PickedPointRef};
-use crate::data::{ColumnPairWriter, ColumnSource, ColumnUploadStats, HiLoColumnSource};
+use crate::config::{AxisOptions, AxisScale, Config, DrawStyle, PickedDataRef, PickedPointRef};
+use crate::data::{ColumnSource, HiLoColumnSource};
 use crate::data_config::{
-    DataErrorBarPointStyleConfig, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
-    DataScatterPointStyleConfig, DataScatterStyleConfig, ErrorRef, ScatterShape, SeriesConfig,
+    DataBarBinStyleConfig, DataBarStyleConfig, DataErrorBarPointStyleConfig,
+    DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterPointStyleConfig,
+    DataScatterStyleConfig, ErrorRef, ScatterShape, SeriesConfig,
 };
 use crate::data_render::{
-    self, AxisLayer, ColumnErrorBarDraw, ColumnHandle, ColumnId, ColumnLineLayer,
-    ColumnPickRingLayer, ColumnPool, ColumnScatterLayer, DefragPolicy, PrimitiveStyle,
+    self, AxisLayer, ColumnBarSelectionLayer, ColumnErrorBarDraw, ColumnFieldSelectionLayer,
+    ColumnHandle, ColumnId, ColumnLineLayer, ColumnPickRingLayer, ColumnPool, ColumnScatterLayer,
+    DefragPolicy, ERRORBAR_HAS_X, ERRORBAR_HAS_Y, PrimitiveStyle,
 };
 use crate::error::{FiggyError, Result};
+use crate::gpu_memory::{
+    GpuLedger, GpuMemoryUsage, GpuResourceKind, TrackedBuffer, TrackedTexture,
+};
 use crate::init::{
     InitEvent, finished, observe_result, observe_result_async, observe_value, observe_value_async,
     started,
@@ -154,6 +159,11 @@ impl RendererDeviceCaps {
 /// pool must request higher device limits when creating the device (wgpu's
 /// defaults are only 128 MiB / 256 MiB). Callers can read the granted size
 /// back via `renderer.pool().capacity()`.
+///
+/// This clamp is a convenience for the caller, not the enforcement point. The
+/// pool applies the same combined ceiling at every buffer it creates, reading
+/// the device's limits there rather than trusting a number captured once —
+/// see `column_pool::buffer_ceiling`.
 fn effective_pool_capacity(requested: u64, caps: RendererDeviceCaps) -> u64 {
     requested
         .min(caps.max_storage_buffer_binding_size)
@@ -174,52 +184,267 @@ fn issue_renderer_identity() -> Result<u64> {
         })
 }
 
+/// A grid declaration resolved against the pool — see `Renderer::resolve_grid`.
+struct ResolvedGrid {
+    x: ColumnHandle,
+    y: ColumnHandle,
+    grid: Vec<data_render::GridColumnGpu>,
+    epochs: Vec<u64>,
+    extent: MatrixExtent,
+    columns_are_y: bool,
+    centers: bool,
+}
+
+/// The contour levels a render type declares, as the f32s both the fill's band
+/// quantization and the implicit contour shader compare against.
+///
+/// Padded to one entry when there are none: a storage binding cannot be
+/// zero-sized, and the real count travels in the params uniform.
+fn contour_levels(rt: &DataRenderType) -> Result<Vec<f32>> {
+    let empty: [f64; 0] = [];
+    let source = extract_contour(rt).map_or(&empty[..], |contour| &contour.levels);
+    let mut levels =
+        crate::gpu_contour::try_collect("contour levels", source.iter().map(|l| *l as f32))?;
+    if levels.is_empty() {
+        levels.push(0.0);
+    }
+    Ok(levels)
+}
+
+/// How many levels the declaration actually names — the padding
+/// `contour_levels` adds is not one of them.
+fn declared_level_count(rt: &DataRenderType) -> usize {
+    extract_contour(rt).map_or(0, |contour| contour.levels.len())
+}
+
+fn validate_contour_level_count(series_id: &str, rt: &DataRenderType) -> Result<()> {
+    let count = declared_level_count(rt);
+    if count > crate::data_config::MAX_CONTOUR_LEVELS {
+        return Err(FiggyError::InvalidSeriesConfig {
+            series_id: series_id.to_owned(),
+            reason: format!(
+                "contour level count {count} exceeds the supported maximum {}",
+                crate::data_config::MAX_CONTOUR_LEVELS
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn validate_contour_label_config(series_id: &str, rt: &DataRenderType) -> Result<()> {
+    let Some(labels) = extract_contour(rt).and_then(|contour| contour.labels.as_ref()) else {
+        return Ok(());
+    };
+    labels
+        .validate()
+        .map_err(|reason| FiggyError::InvalidSeriesConfig {
+            series_id: series_id.to_owned(),
+            reason: reason.to_owned(),
+        })
+}
+
+fn contour_labels_use_automatic(rt: &DataRenderType) -> bool {
+    let Some(contour) = extract_contour(rt) else {
+        return false;
+    };
+    let Some(labels) = contour.labels.as_ref() else {
+        return false;
+    };
+    labels.visible
+        && labels.font_size > 0.0
+        && !contour.levels.is_empty()
+        && !labels
+            .anchors
+            .iter()
+            .any(|anchor| (anchor.level_index as usize) < contour.levels.len())
+}
+
+/// Validate the frame-dependent spacing product and return the exact value the
+/// automatic dispatch must consume. Explicit placement never multiplies it.
+fn preflight_contour_label_spacing(
+    series_id: &str,
+    rt: &DataRenderType,
+    contour_enabled: bool,
+    scale: f32,
+) -> Result<Option<f32>> {
+    validate_contour_label_config(series_id, rt)?;
+    if !contour_enabled || !contour_labels_use_automatic(rt) {
+        return Ok(None);
+    }
+    let labels = extract_contour(rt)
+        .and_then(|contour| contour.labels.as_ref())
+        .expect("automatic contour labels have a label config");
+    let spacing_px = labels.spacing_px * scale;
+    if !spacing_px.is_finite() || spacing_px <= 0.0 {
+        return Err(FiggyError::InvalidSeriesConfig {
+            series_id: series_id.to_owned(),
+            reason:
+                "automatic contour label spacing_px * scale must be finite and greater than zero"
+                    .to_owned(),
+        });
+    }
+    Ok(Some(spacing_px))
+}
+
+/// Whether a series declares contour labels that would actually be drawn.
+///
+/// Hidden labels and a non-positive font size are the same answer as no label
+/// declaration at all — nothing to bake, so nothing to compile a pipeline for.
+fn series_wants_contour_labels(rt: &DataRenderType) -> bool {
+    extract_contour(rt)
+        .and_then(|contour| contour.labels.as_ref())
+        .is_some_and(|labels| labels.visible && labels.font_size > 0.0)
+}
+
+/// Clear a per-series scratch cache that is about to exceed its bound.
+///
+/// Same rule as `arc_cache`: a host cycling through thousands of series ids must
+/// not grow a cache without limit, and dropping the lot is simpler than a
+/// recency policy nothing has asked for.
+fn evict_if_full<V>(cache: &mut HashMap<String, V>, series_id: &str, limit: usize) {
+    let known = cache.contains_key(series_id);
+    if cache.len() > limit || (!known && cache.len() >= limit) {
+        cache.clear();
+    }
+}
+
+/// Per-series contour scratch cache limit, mirroring `ARC_PREFIX_CACHE_LIMIT`.
+const CONTOUR_SCRATCH_CACHE_LIMIT: usize = 256;
+
+/// What a cached contour's GPU state was resolved from.
+///
+/// Equality means the same isolines would be drawn: the levels, their colours,
+/// the grid, the coordinate columns and the pool layout are all in it. Shaped
+/// like [`FieldSignature`] because since design B.4.9 a contour *is* a field
+/// draw — the same quad and the same group-2 tables, through `fs_contour`.
+///
+/// The colourmap stops are absent on purpose: `fs_contour` takes its colour from
+/// `level_colors` and never samples the ramp, so the stop table is padding for
+/// the layout and cannot change what is drawn.
+#[derive(Debug, PartialEq)]
+struct ContourSignature {
+    pool_layout_generation: u64,
+    params: data_render::FieldParamsGpu,
+    grid: Vec<data_render::GridColumnGpu>,
+    epochs: Vec<u64>,
+    levels: Vec<f32>,
+    /// Per-level stroke colour, premultiplied — as drawn, so comparing
+    /// signatures compares pixels.
+    level_colors: Vec<[f32; 4]>,
+    /// `None` when the series draws no labels.
+    label: Option<ContourLabelSignature>,
+}
+
+/// What a contour series' baked label atlas and anchor buffer were resolved
+/// from — the part of it not already in [`ContourSignature`].
+///
+/// The level GPU values and stroke colours are in the outer signature already,
+/// so this holds only what the atlas adds: the final strings, the independent
+/// label colour, the face, the background, and any host anchor override.
+/// `spacing_px` is
+/// deliberately absent — it is a screen distance the anchor pass reads every
+/// frame, not something an atlas is baked for.
+#[derive(Debug, PartialEq)]
+struct ContourLabelSignature {
+    /// Final formatted strings are the atlas' exact content authority. This
+    /// captures f64 level distinctions and colourbar/level-spacing changes
+    /// without accidentally keying the atlas to an unrelated chart axis.
+    texts: Vec<String>,
+    /// `font_size * scale` — an export at 2x re-bakes rather than magnifying.
+    font_bits: u32,
+    color: [u32; 4],
+    policy: crate::text_render::FontPolicy,
+    family: String,
+    bg: Option<[u32; 4]>,
+    bg_padding_bits: u32,
+    /// Runtime font registration invalidates a previously baked atlas even
+    /// when every chart-owned formatting field is unchanged.
+    font_generation: u64,
+    /// The resolved host override. Empty means the GPU picks the anchors.
+    anchors: Vec<crate::gpu_contour::LabelAnchorGpu>,
+}
+
+/// One contour series' resolved GPU state — the same shape a field's is.
+struct ContourScratchEntry {
+    signature: ContourSignature,
+    style_bg: wgpu::BindGroup,
+    field_bg: wgpu::BindGroup,
+    charge: crate::gpu_memory::SharedCharge,
+    sources: Arc<GridSources>,
+    /// False when the grid has no cell to interpolate a contour across.
+    drawable: bool,
+    /// `None` when the series draws no labels — hidden, no label declaration, or
+    /// every formatted string empty. Atlas/device-limit failures are errors.
+    label: Option<crate::gpu_contour::ContourLabelState>,
+}
+
+/// Per-series field scratch cache limit, mirroring `ARC_PREFIX_CACHE_LIMIT`.
+const FIELD_SCRATCH_CACHE_LIMIT: usize = 256;
+
+/// The grid columns a prepared field or contour read, and the allocation epochs
+/// they had.
+///
+/// Shared with the `PreparedFrame` by `Arc`, so validating a token walks it
+/// without allocating and a matrix' thousands of columns cost one pointer in the
+/// token rather than a `HashMap` entry each.
+#[derive(Debug)]
+struct GridSources {
+    ids: Vec<ColumnId>,
+    epochs: Vec<u64>,
+}
+
+/// What a cached field bind group was built from.
+///
+/// Everything the group-2 buffers hold, plus the pool layout it was resolved
+/// against. Equality means the cached bind group is still exactly right, so a
+/// prepare that changes nothing uploads nothing — which is the difference
+/// between a 40 KB grid table per frame and one per change.
+#[derive(Debug, PartialEq)]
+struct FieldSignature {
+    pool_layout_generation: u64,
+    params: data_render::FieldParamsGpu,
+    grid: Vec<data_render::GridColumnGpu>,
+    epochs: Vec<u64>,
+    levels: Vec<f32>,
+    stops: Vec<[f32; 4]>,
+    nan_color: [u32; 4],
+}
+
+/// One field series' resolved GPU state.
+struct FieldScratch {
+    signature: FieldSignature,
+    style_bg: wgpu::BindGroup,
+    field_bg: wgpu::BindGroup,
+    charge: crate::gpu_memory::SharedCharge,
+    sources: Arc<GridSources>,
+    drawable: bool,
+}
+
 /// A dashed series' GPU arc-length prefix: the buffer (bound as the line
 /// pipeline's vertex slots 4/5) and its used byte length.
 type ArcPrefix = (Arc<wgpu::Buffer>, u64);
 const ARC_PREFIX_CACHE_LIMIT: usize = 256;
-const INTERNAL_ZERO_COLUMN_ID: &str = "__zero";
+const ARC_RESULT_CACHE_LIMIT_PER_SERIES: usize = 8;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ArcResultKey {
+    n: u32,
+    x_base: u32,
+    y_base: u32,
+    pool_layout_generation: u64,
+    x_allocation_epoch: u64,
+    y_allocation_epoch: u64,
+    /// Only the first 64 bytes of `ScatterTransform` are read by the arc scan;
+    /// style parameter changes must not retraverse the data.
+    geometry_transform_bits: [u32; 16],
+    star_pitch_bits: Option<u32>,
+}
+
+struct ArcResultEntry {
+    key: ArcResultKey,
+    scratch: data_render::line_arc::ArcScratch,
+}
 const DEMO_COLUMN_IDS: [&str; 4] = ["demo_x", "demo_sin", "demo_t", "demo_rc"];
-
-#[derive(Clone, Copy, Debug)]
-struct InternalZeroColumn {
-    len: usize,
-}
-
-impl ColumnSource for InternalZeroColumn {
-    fn len(&self) -> usize {
-        self.len
-    }
-
-    fn min(&self) -> f64 {
-        0.0
-    }
-
-    fn max(&self) -> f64 {
-        0.0
-    }
-
-    fn write_f32_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.len * std::mem::size_of::<f32>());
-        dst.fill(0);
-    }
-
-    fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.len * crate::data::COLUMN_VALUE_BYTES);
-        dst.fill(0);
-    }
-
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        mut dst: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats {
-        debug_assert_eq!(dst.len(), self.len);
-        for index in 0..dst.len() {
-            dst.write_pair(index, 0.0, 0.0);
-        }
-        ColumnUploadStats { min_positive: None }
-    }
-}
 
 /// Stable identity for one renderer-owned chart state.
 ///
@@ -426,13 +651,21 @@ struct FitAxisStamp {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct FitSeriesStamp {
     series_id: String,
-    mode: crate::gpu_errorbar::GpuSeriesExtentMode,
+    /// `None` for a render type whose extent is metadata-only (histogram). The
+    /// stamp is still
+    /// recorded with its column stamps, so a content change in one of those
+    /// columns still invalidates the token — dropping the series from the token
+    /// entirely would have quietly stopped detecting that.
+    mode: Option<crate::gpu_errorbar::GpuSeriesFitMode>,
+    /// Matrix orientation changes which resolved dimension belongs to x/y even
+    /// when the same columns and lattice mode remain selected.
+    field_orientation: Option<u8>,
     columns: Vec<FitColumnStamp>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct FitColumnStamp {
-    role: u8,
+    role: u32,
     id: ColumnId,
     allocation_epoch: u64,
 }
@@ -471,8 +704,11 @@ struct ChartRenderState {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct EffectiveSeriesPrimitives {
+    field: bool,
+    contour: bool,
     line: bool,
     scatter: bool,
+    bar: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -846,7 +1082,10 @@ impl PickChartPlan {
 
 enum PickerPipelineState {
     Disabled,
-    Ready(Arc<crate::gpu_pick::PickPipelineBundle>),
+    Ready {
+        point: Arc<crate::gpu_pick::PickPipelineBundle>,
+        data: Arc<crate::gpu_data_pick::DataPickPipelineBundle>,
+    },
     Failed(crate::gpu_pick::GpuPickError),
 }
 
@@ -925,14 +1164,21 @@ impl RendererPicker {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn enable_observed(
         &mut self,
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
+        gpu_ledger: Arc<GpuLedger>,
+        bar_shader: &wgpu::ShaderModule,
+        field_shader: &wgpu::ShaderModule,
+        transform_bgl: &wgpu::BindGroupLayout,
+        field_bgl: &wgpu::BindGroupLayout,
+        bar_style_bgl: &wgpu::BindGroupLayout,
         observer: &mut dyn FnMut(InitEvent),
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         match &self.pipeline_state {
-            PickerPipelineState::Ready(_) => return Ok(()),
+            PickerPipelineState::Ready { .. } => return Ok(()),
             PickerPipelineState::Failed(error) => return Err(error.clone()),
             PickerPipelineState::Disabled => {}
         }
@@ -943,9 +1189,25 @@ impl RendererPicker {
             return Err(error);
         }
 
-        match crate::gpu_pick::PickPipelineBundle::new_observed(device, queue, observer) {
-            Ok(bundle) => {
-                self.pipeline_state = PickerPipelineState::Ready(bundle);
+        match crate::gpu_pick::PickPipelineBundle::new_observed(
+            Arc::clone(&device),
+            Arc::clone(&queue),
+            Arc::clone(&gpu_ledger),
+            observer,
+        ) {
+            Ok(point) => {
+                let data = crate::gpu_data_pick::DataPickPipelineBundle::new_observed(
+                    device,
+                    queue,
+                    gpu_ledger,
+                    bar_shader,
+                    field_shader,
+                    transform_bgl,
+                    field_bgl,
+                    bar_style_bgl,
+                    observer,
+                );
+                self.pipeline_state = PickerPipelineState::Ready { point, data };
                 Ok(())
             }
             Err(error) => {
@@ -955,14 +1217,21 @@ impl RendererPicker {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn enable_observed_async(
         &mut self,
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
+        gpu_ledger: Arc<GpuLedger>,
+        bar_shader: &wgpu::ShaderModule,
+        field_shader: &wgpu::ShaderModule,
+        transform_bgl: &wgpu::BindGroupLayout,
+        field_bgl: &wgpu::BindGroupLayout,
+        bar_style_bgl: &wgpu::BindGroupLayout,
         observer: &mut dyn FnMut(InitEvent),
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         match &self.pipeline_state {
-            PickerPipelineState::Ready(_) => return Ok(()),
+            PickerPipelineState::Ready { .. } => return Ok(()),
             PickerPipelineState::Failed(error) => return Err(error.clone()),
             PickerPipelineState::Disabled => {}
         }
@@ -973,11 +1242,37 @@ impl RendererPicker {
             return Err(error);
         }
 
-        match crate::gpu_pick::PickPipelineBundle::new_observed_async(device, queue, observer).await
+        match crate::gpu_pick::PickPipelineBundle::new_observed_async(
+            Arc::clone(&device),
+            Arc::clone(&queue),
+            Arc::clone(&gpu_ledger),
+            observer,
+        )
+        .await
         {
-            Ok(bundle) => {
-                self.pipeline_state = PickerPipelineState::Ready(bundle);
-                Ok(())
+            Ok(point) => {
+                match crate::gpu_data_pick::DataPickPipelineBundle::new_observed_async(
+                    device,
+                    queue,
+                    gpu_ledger,
+                    bar_shader,
+                    field_shader,
+                    transform_bgl,
+                    field_bgl,
+                    bar_style_bgl,
+                    observer,
+                )
+                .await
+                {
+                    Ok(data) => {
+                        self.pipeline_state = PickerPipelineState::Ready { point, data };
+                        Ok(())
+                    }
+                    Err(error) => {
+                        self.pipeline_state = PickerPipelineState::Failed(error.clone());
+                        Err(error)
+                    }
+                }
             }
             Err(error) => {
                 self.pipeline_state = PickerPipelineState::Failed(error.clone());
@@ -992,7 +1287,20 @@ impl RendererPicker {
     {
         match &self.pipeline_state {
             PickerPipelineState::Disabled => Err(crate::gpu_pick::GpuPickError::PickerDisabled),
-            PickerPipelineState::Ready(bundle) => Ok(Arc::clone(bundle)),
+            PickerPipelineState::Ready { point, .. } => Ok(Arc::clone(point)),
+            PickerPipelineState::Failed(error) => Err(error.clone()),
+        }
+    }
+
+    fn ready_data_bundle(
+        &self,
+    ) -> std::result::Result<
+        Arc<crate::gpu_data_pick::DataPickPipelineBundle>,
+        crate::gpu_pick::GpuPickError,
+    > {
+        match &self.pipeline_state {
+            PickerPipelineState::Disabled => Err(crate::gpu_pick::GpuPickError::PickerDisabled),
+            PickerPipelineState::Ready { data, .. } => Ok(Arc::clone(data)),
             PickerPipelineState::Failed(error) => Err(error.clone()),
         }
     }
@@ -1279,6 +1587,7 @@ struct PreparedStar {
 struct PreparedArc {
     prefix: ArcPrefix,
     star: Option<PreparedStar>,
+    charge: crate::gpu_memory::SharedCharge,
 }
 
 struct PreparedArcSeries {
@@ -1288,6 +1597,27 @@ struct PreparedArcSeries {
 struct PreparedArcItem {
     view_revision: u64,
     series: Vec<PreparedArcSeries>,
+}
+
+struct PreparedContourScratch {
+    style_bg: wgpu::BindGroup,
+    field_bg: wgpu::BindGroup,
+    charge: crate::gpu_memory::SharedCharge,
+    drawable: bool,
+    label: Option<crate::gpu_contour::ContourLabelSnapshot>,
+}
+
+struct PreparedContourSeries {
+    scratch: Option<PreparedContourScratch>,
+}
+
+struct PreparedContourItem {
+    series: Vec<PreparedContourSeries>,
+}
+
+struct PreparedSeriesProducts<'a> {
+    arcs: &'a [PreparedArcSeries],
+    contours: &'a [PreparedContourSeries],
 }
 
 struct PreparedLineLayer {
@@ -1328,6 +1658,28 @@ struct PreparedPickRingLayer {
     instance: u32,
 }
 
+struct PreparedBarSelectionLayer {
+    pipeline: wgpu::RenderPipeline,
+    transform_bg: wgpu::BindGroup,
+    style_bg: wgpu::BindGroup,
+    selection_bg: wgpu::BindGroup,
+    selection_charge: crate::gpu_memory::SharedCharge,
+    pool_buffer: wgpu::Buffer,
+    edges: ColumnHandle,
+    values: ColumnHandle,
+    instance: u32,
+}
+
+struct PreparedFieldSelectionLayer {
+    pipeline: wgpu::RenderPipeline,
+    transform_bg: wgpu::BindGroup,
+    selection_bg: wgpu::BindGroup,
+    selection_charge: crate::gpu_memory::SharedCharge,
+    field_bg: wgpu::BindGroup,
+    charge: crate::gpu_memory::SharedCharge,
+    drawable: bool,
+}
+
 struct PreparedStarLayer {
     pipeline: wgpu::RenderPipeline,
     transform_bg: wgpu::BindGroup,
@@ -1335,6 +1687,49 @@ struct PreparedStarLayer {
     texture_bg: wgpu::BindGroup,
     star_bg: wgpu::BindGroup,
     indirect: wgpu::Buffer,
+}
+
+/// Owned field layer. The grid table, level list, colourmap stops, lookup
+/// metadata and `FieldParams` are all inside `field_bg`, which owns their
+/// buffers — so the token needs nothing else to redraw the field.
+struct PreparedFieldLayer {
+    pipeline: wgpu::RenderPipeline,
+    transform_bg: wgpu::BindGroup,
+    style_bg: wgpu::BindGroup,
+    field_bg: wgpu::BindGroup,
+    charge: crate::gpu_memory::SharedCharge,
+    drawable: bool,
+}
+
+/// Owned contour layer. The group-2 tables, the lump charge and the label state
+/// are refcounted, so the token draws from its own clones even after a later
+/// prepare replaces the scratch they came from.
+struct PreparedContourLayer {
+    pipeline: wgpu::RenderPipeline,
+    transform_bg: wgpu::BindGroup,
+    style_bg: wgpu::BindGroup,
+    field_bg: wgpu::BindGroup,
+    charge: crate::gpu_memory::SharedCharge,
+    drawable: bool,
+    label: Option<PreparedContourLabel>,
+}
+
+/// Owned label layer. Same reasoning as the lines above: the pipeline, bind group
+/// and buffers are refcounted clones, so a later prepare replacing the scratch
+/// cannot pull them out from under a token that can still be painted.
+struct PreparedContourLabel {
+    pipeline: wgpu::RenderPipeline,
+    snapshot: crate::gpu_contour::ContourLabelSnapshot,
+}
+
+struct PreparedBarLayer {
+    pipeline: wgpu::RenderPipeline,
+    transform_bg: wgpu::BindGroup,
+    style_bg: wgpu::BindGroup,
+    style_map_bg: Option<wgpu::BindGroup>,
+    pool_buffer: wgpu::Buffer,
+    edges: ColumnHandle,
+    values: ColumnHandle,
 }
 
 struct PreparedErrorBarLayer {
@@ -1355,10 +1750,16 @@ struct PreparedErrorBarLayer {
 /// Complete owned draw packet for one series. Every pipeline, bind group,
 /// buffer, and column handle needed by paint is resolved during prepare.
 struct PreparedSeries {
+    _arc_charge: Option<crate::gpu_memory::SharedCharge>,
+    field: Option<PreparedFieldLayer>,
+    bar: Option<PreparedBarLayer>,
+    contour: Option<PreparedContourLayer>,
     errorbar: Option<PreparedErrorBarLayer>,
     line: Option<PreparedLineLayer>,
     line_extra: Option<PreparedStarLayer>,
     scatter: Option<PreparedScatterLayer>,
+    selected_bars: Vec<PreparedBarSelectionLayer>,
+    selected_fields: Vec<PreparedFieldSelectionLayer>,
     picked: Vec<PreparedPickRingLayer>,
 }
 
@@ -1367,6 +1768,9 @@ struct PreparedSeries {
 struct PreparedView {
     grid_bind_group: wgpu::BindGroup,
     decoration_bind_group: wgpu::BindGroup,
+    _grid_charge: crate::gpu_memory::SharedCharge,
+    _decoration_charge: crate::gpu_memory::SharedCharge,
+    _transform_charge: crate::gpu_memory::SharedCharge,
     content_revision: Arc<std::sync::atomic::AtomicU64>,
     expected_content_revision: u64,
     panel_rect: Rect,
@@ -1401,6 +1805,11 @@ pub struct PreparedFrame {
     /// Monotonic identity of the target pipeline set. This detects format
     /// ABA and sample-count changes, not just a different current format.
     target_pipeline_generation: u64,
+    /// One receipt per field or contour series: the grid columns it read and the
+    /// epochs they had. `column_sources` cannot serve this — a matrix declares
+    /// thousands of columns, and an owned map entry each would put a per-frame
+    /// allocation per column on the prepare path.
+    grid_sources: Vec<Arc<GridSources>>,
 }
 
 impl std::fmt::Debug for PreparedItem {
@@ -1412,8 +1821,41 @@ impl std::fmt::Debug for PreparedItem {
 }
 
 impl PreparedSeries {
-    fn from_layers(layers: data_render::SeriesLayers<'_>) -> Self {
+    fn from_layers(
+        layers: data_render::SeriesLayers<'_>,
+        arc_charge: Option<crate::gpu_memory::SharedCharge>,
+    ) -> Self {
         Self {
+            _arc_charge: arc_charge,
+            field: layers.field.map(|layer| PreparedFieldLayer {
+                pipeline: layer.pipeline.clone(),
+                transform_bg: layer.transform_bg.clone(),
+                style_bg: layer.style_bg,
+                field_bg: layer.field_bg,
+                charge: layer.charge,
+                drawable: layer.drawable,
+            }),
+            bar: layers.bar.map(|layer| PreparedBarLayer {
+                pipeline: layer.pipeline.clone(),
+                transform_bg: layer.transform_bg.clone(),
+                style_bg: layer.style_bg.clone(),
+                style_map_bg: layer.style_map_bg.cloned(),
+                pool_buffer: layer.pool_buffer.clone(),
+                edges: layer.edges,
+                values: layer.values,
+            }),
+            contour: layers.contour.map(|layer| PreparedContourLayer {
+                pipeline: layer.pipeline.clone(),
+                transform_bg: layer.transform_bg.clone(),
+                style_bg: layer.style_bg,
+                field_bg: layer.field_bg,
+                charge: layer.charge,
+                drawable: layer.drawable,
+                label: layer.label.map(|label| PreparedContourLabel {
+                    pipeline: label.pipeline.clone(),
+                    snapshot: label.snapshot,
+                }),
+            }),
             errorbar: layers.errorbar.map(|layer| PreparedErrorBarLayer {
                 pipeline: layer.pipeline.clone(),
                 transform_bg: layer.transform_bg.clone(),
@@ -1459,6 +1901,34 @@ impl PreparedSeries {
                 style_index: layer.style_index,
                 texture_bg: layer.texture_bg.cloned(),
             }),
+            selected_bars: layers
+                .selected_bars
+                .into_iter()
+                .map(|layer| PreparedBarSelectionLayer {
+                    pipeline: layer.pipeline.clone(),
+                    transform_bg: layer.transform_bg.clone(),
+                    style_bg: layer.style_bg,
+                    selection_bg: layer.selection_bg,
+                    selection_charge: layer.selection_charge,
+                    pool_buffer: layer.pool_buffer.clone(),
+                    edges: layer.edges,
+                    values: layer.values,
+                    instance: layer.instance,
+                })
+                .collect(),
+            selected_fields: layers
+                .selected_fields
+                .into_iter()
+                .map(|layer| PreparedFieldSelectionLayer {
+                    pipeline: layer.pipeline.clone(),
+                    transform_bg: layer.transform_bg.clone(),
+                    selection_bg: layer.selection_bg,
+                    selection_charge: layer.selection_charge,
+                    field_bg: layer.field_bg,
+                    charge: layer.charge,
+                    drawable: layer.drawable,
+                })
+                .collect(),
             picked: layers
                 .picked
                 .into_iter()
@@ -1480,6 +1950,44 @@ impl PreparedSeries {
 
     fn layers(&self) -> data_render::SeriesLayers<'_> {
         data_render::SeriesLayers {
+            field: self
+                .field
+                .as_ref()
+                .map(|layer| data_render::ColumnFieldLayer {
+                    pipeline: &layer.pipeline,
+                    transform_bg: &layer.transform_bg,
+                    style_bg: layer.style_bg.clone(),
+                    field_bg: layer.field_bg.clone(),
+                    charge: Arc::clone(&layer.charge),
+                    drawable: layer.drawable,
+                }),
+            bar: self.bar.as_ref().map(|layer| data_render::ColumnBarLayer {
+                pipeline: &layer.pipeline,
+                transform_bg: &layer.transform_bg,
+                style_bg: &layer.style_bg,
+                style_map_bg: layer.style_map_bg.as_ref(),
+                pool_buffer: &layer.pool_buffer,
+                edges: layer.edges,
+                values: layer.values,
+            }),
+            contour: self
+                .contour
+                .as_ref()
+                .map(|layer| data_render::ColumnContourLayer {
+                    pipeline: &layer.pipeline,
+                    transform_bg: &layer.transform_bg,
+                    style_bg: layer.style_bg.clone(),
+                    field_bg: layer.field_bg.clone(),
+                    charge: Arc::clone(&layer.charge),
+                    drawable: layer.drawable,
+                    label: layer
+                        .label
+                        .as_ref()
+                        .map(|label| data_render::ColumnContourLabel {
+                            pipeline: &label.pipeline,
+                            snapshot: label.snapshot.clone(),
+                        }),
+                }),
             errorbar: self.errorbar.as_ref().map(|layer| ColumnErrorBarDraw {
                 pipeline: &layer.pipeline,
                 transform_bg: &layer.transform_bg,
@@ -1528,6 +2036,34 @@ impl PreparedSeries {
                 style_index: layer.style_index,
                 texture_bg: layer.texture_bg.as_ref(),
             }),
+            selected_bars: self
+                .selected_bars
+                .iter()
+                .map(|layer| ColumnBarSelectionLayer {
+                    pipeline: &layer.pipeline,
+                    transform_bg: &layer.transform_bg,
+                    style_bg: layer.style_bg.clone(),
+                    selection_bg: layer.selection_bg.clone(),
+                    selection_charge: Arc::clone(&layer.selection_charge),
+                    pool_buffer: &layer.pool_buffer,
+                    edges: layer.edges,
+                    values: layer.values,
+                    instance: layer.instance,
+                })
+                .collect(),
+            selected_fields: self
+                .selected_fields
+                .iter()
+                .map(|layer| ColumnFieldSelectionLayer {
+                    pipeline: &layer.pipeline,
+                    transform_bg: &layer.transform_bg,
+                    selection_bg: layer.selection_bg.clone(),
+                    selection_charge: Arc::clone(&layer.selection_charge),
+                    field_bg: layer.field_bg.clone(),
+                    charge: Arc::clone(&layer.charge),
+                    drawable: layer.drawable,
+                })
+                .collect(),
             picked: self
                 .picked
                 .iter()
@@ -1571,9 +2107,14 @@ pub struct Renderer {
     transform_bgl: wgpu::BindGroupLayout,
     style_bgl: wgpu::BindGroupLayout,
     per_point_style_map_bgl: wgpu::BindGroupLayout,
+    data_selection_bgl: wgpu::BindGroupLayout,
     /// Constellation star-pass data layout (arc prefix + pool + offsets) —
     /// shared by the stars pipeline and every per-series star bind group.
     star_data_bgl: wgpu::BindGroupLayout,
+    /// Field data layout (pool + grid table + levels + colourmap stops + lookup
+    /// metadata + `FieldParams`) — shared by the field pipeline and every
+    /// per-series field bind group.
+    field_bgl: wgpu::BindGroupLayout,
 
     // Pipelines (precise + lazily-cached styled variants), all against
     // `surface_format`.
@@ -1581,20 +2122,32 @@ pub struct Renderer {
 
     // Shared resources.
     sampler: wgpu::Sampler,
-    quad_vb: wgpu::Buffer,
+    /// Charged once per renderer; 32 bytes, but the gate counts objects too.
+    quad_vb: TrackedBuffer,
 
-    /// Per-series GPU arc-scan slot pool for dashed lines, keyed by series
-    /// id. The prefix is re-dispatched on every prepare that uses it (it
-    /// depends on the data→pixel transform); a slot is reused in place only
-    /// while the series layout (length, column offsets, pool layout
-    /// generation) is stable AND no live `PreparedFrame` still references it
-    /// (copy-on-write
-    /// — see `ensure_arc_prefix`). Retained-token hosts settle on two slots
-    /// per series that alternate frame over frame. Mutated only in
+    /// Per-series immutable GPU arc results, keyed by every input the scan or
+    /// star-count kernel reads. A cache miss allocates and dispatches a new
+    /// result; an old result is never rewritten, even after its token drops,
+    /// because a host-owned command buffer may still reference it before a late
+    /// submission. Mutated only in
     /// `&mut self` prepare-phase entry points (`prepare`/`paint`/export);
     /// the `&self` draw phase reads the token's owned snapshot, never this
     /// cache.
-    arc_cache: HashMap<String, Vec<data_render::line_arc::ArcScratch>>,
+    arc_cache: HashMap<String, Vec<ArcResultEntry>>,
+    /// Anchor compute pipelines plus the label draw's module and layouts.
+    /// Compiled on the first frame that asks for a contour label; a chart with
+    /// none never pays for the shader.
+    contour_label_pipelines: Option<crate::gpu_contour::ContourLabelPipelines>,
+    /// Per-contour-series group-2 state, keyed by `series_id`. Since design
+    /// B.4.9 this holds the same tables a field's scratch does — the isolines are
+    /// drawn from the grid by `fs_contour`, so there are no traced segments to
+    /// cache — plus the immutable label atlas and its placement-slot pool when
+    /// the series has labels.
+    contour_cache: HashMap<String, ContourScratchEntry>,
+    /// Per-field-series group-2 state, keyed by `series_id`. Rebuilt only when
+    /// its [`FieldSignature`] changes; a live token holds its own refcounted
+    /// clone of the bind group, so replacement disturbs nothing it can draw.
+    field_cache: HashMap<String, FieldScratch>,
     arc_pipelines: Option<data_render::line_arc::ArcScanPipelines>,
     /// Test-only narrowing of the arc-scan chunk size so the multi-chunk
     /// carry path is exercisable with small `n`. Always `None` in release.
@@ -1611,6 +2164,24 @@ pub struct Renderer {
     space_bg: Option<SpaceBgCache>,
 
     surface_format: wgpu::TextureFormat,
+
+    /// Byte ledger for every GPU resource **outside** the column pool. The
+    /// pool reports its own bytes from the buffers it holds, so the ledger
+    /// plus the pool is the whole footprint — see [`Self::gpu_memory_usage`].
+    ///
+    /// Shared by `Arc` because tracked resources credit their bytes back from
+    /// `Drop`, which can run anywhere, and because `WindowedRenderer` owns the
+    /// MSAA target outside this struct.
+    gpu_ledger: Arc<GpuLedger>,
+
+    /// Host-declared ceiling for all renderer GPU bytes, pool included.
+    ///
+    /// `None` (the default) means device limits are the only bound, which is
+    /// the 0.9 behavior. When set, it rides into every pool allocation as
+    /// `GpuAllocCtx::budget` together with the out-of-pool total read at that
+    /// moment, so the pool refuses a growth that would cross the ceiling
+    /// instead of discovering it as a device error.
+    memory_budget: Option<u64>,
 }
 
 /// Renderer-level guard for an atomic scalar or hi/lo column upsert.
@@ -1731,7 +2302,7 @@ impl RendererColumnUpsert<'_> {
         )
     }
 
-    /// Begin an exact drawable-series extent job against the provisional
+    /// Begin a drawable-series fit-bound job against the provisional
     /// mappings. Inactive error directions are `None`; active directions
     /// require both lower and upper ids.
     pub fn begin_series_extent(
@@ -1749,6 +2320,25 @@ impl RendererColumnUpsert<'_> {
             self.pool(),
             mode,
             columns,
+        )
+    }
+
+    /// Begin the exact GPU fit domain for a complete series declaration against
+    /// the provisional pool. Matrix-backed series resolve only their cell counts
+    /// on the CPU; coordinate values and edge/sample arithmetic stay on the GPU.
+    pub fn begin_series_fit_extent(
+        &self,
+        series: &SeriesConfig,
+    ) -> std::result::Result<
+        Option<crate::gpu_errorbar::GpuSeriesExtentTicket>,
+        crate::gpu_errorbar::GpuErrorbarError,
+    > {
+        begin_series_fit_extent_from_pool(
+            prepared_errorbar_extent_engine(self.errorbar_extent_engine)?,
+            self.device,
+            self.queue,
+            self.pool(),
+            series,
         )
     }
 
@@ -1771,6 +2361,46 @@ impl RendererColumnUpsert<'_> {
     }
 }
 
+/// Rebuild the active picker against a pool that has just been mutated, when it
+/// has to be rebuilt.
+///
+/// Two reasons force it: the pool relocated its columns, so every recorded
+/// offset is stale, or the picker reads one of the columns the mutation touched,
+/// so its slots have to be rebuilt from the new bytes. When only the first
+/// applies, `rebuild_columns` stays empty and matching slots are reused.
+///
+/// Shared by the single-column upsert and the batch insert so "when must the
+/// picker be rebuilt" has one answer.
+fn prepare_picker_for_pool_mutation<'picker>(
+    picker: &'picker mut RendererPicker,
+    pool: &ColumnPool,
+    chart_states: &HashMap<ChartId, ChartRenderState>,
+    relocated: bool,
+    changed_columns: &[&str],
+) -> Result<Option<PreparedActivePickerMutation<'picker>>> {
+    let Some((chart_id, rebuild)) = picker.active.as_ref().map(|active| {
+        (
+            active.chart_id,
+            active.signature.references_any_column(changed_columns),
+        )
+    }) else {
+        return Ok(None);
+    };
+    if !relocated && !rebuild {
+        return Ok(None);
+    }
+    let state = chart_states
+        .get(&chart_id)
+        .ok_or(FiggyError::UnknownChart { id: chart_id })?;
+    let plan = PickChartPlan::new(&state.config, &state.series)?;
+    Ok(picker.prepare_active_pool_mutation(
+        pool,
+        chart_id,
+        plan,
+        if rebuild { changed_columns } else { &[] },
+    )?)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn finish_renderer_column_upsert<'a>(
     inner: data_render::column_pool::ColumnUpsert<'a>,
@@ -1788,27 +2418,13 @@ fn finish_renderer_column_upsert<'a>(
 ) -> Result<RendererColumnUpsert<'a>> {
     let relocated = inner.pool().layout_generation() != old_layout_generation;
     let changed_columns = [changed_column];
-    let active = picker.active.as_ref().map(|active| {
-        (
-            active.chart_id,
-            active.signature.references_any_column(&changed_columns),
-        )
-    });
-    let picker = match active {
-        Some((chart_id, rebuild)) if relocated || rebuild => {
-            let state = chart_states
-                .get(&chart_id)
-                .ok_or(FiggyError::UnknownChart { id: chart_id })?;
-            let plan = PickChartPlan::new(&state.config, &state.series)?;
-            picker.prepare_active_pool_mutation(
-                inner.pool(),
-                chart_id,
-                plan,
-                if rebuild { &changed_columns } else { &[] },
-            )?
-        }
-        _ => None,
-    };
+    let picker = prepare_picker_for_pool_mutation(
+        picker,
+        inner.pool(),
+        &*chart_states,
+        relocated,
+        &changed_columns,
+    )?;
     let pending_defrag_after_commit = if relocated {
         Some(false)
     } else if inner.replaced_existing() {
@@ -1947,6 +2563,90 @@ fn begin_series_extent_from_pool(
             y_upper: optional_handle("y upper error", ids.y_upper)?,
         },
     )
+}
+
+fn begin_series_fit_extent_from_pool(
+    engine: &crate::gpu_errorbar::GpuErrorbarExtentEngine,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pool: &ColumnPool,
+    series: &SeriesConfig,
+) -> std::result::Result<
+    Option<crate::gpu_errorbar::GpuSeriesExtentTicket>,
+    crate::gpu_errorbar::GpuErrorbarError,
+> {
+    use crate::gpu_errorbar::{GpuFieldExtentColumns, GpuSeriesFitMode};
+
+    let Some(mode) = GpuSeriesFitMode::from_render_type(&series.render_type) else {
+        // Histogram bounds are still available synchronously from its edge and
+        // value-column upload metadata.
+        return Ok(None);
+    };
+    match mode {
+        GpuSeriesFitMode::Paired(mode) => {
+            fn ids(errors: Option<&ErrorRef>) -> (Option<&str>, Option<&str>) {
+                match errors {
+                    None => (None, None),
+                    Some(ErrorRef::Symmetric { column }) => {
+                        (Some(column.as_str()), Some(column.as_str()))
+                    }
+                    Some(ErrorRef::Asymmetric { lower, upper }) => {
+                        (Some(lower.as_str()), Some(upper.as_str()))
+                    }
+                }
+            }
+            let (x_lower, x_upper) = ids(extract_err_x(&series.render_type));
+            let (y_lower, y_upper) = ids(extract_err_y(&series.render_type));
+            begin_series_extent_from_pool(
+                engine,
+                device,
+                queue,
+                pool,
+                mode,
+                crate::gpu_errorbar::GpuSeriesExtentColumnIds {
+                    x: &series.x_column,
+                    y: &series.y_column,
+                    x_lower,
+                    x_upper,
+                    y_lower,
+                    y_upper,
+                },
+            )
+            .map(Some)
+        }
+        GpuSeriesFitMode::Field(mode) => {
+            let matrix = extract_matrix(&series.render_type)
+                .expect("field fit mode comes from a matrix render type");
+            let x = current_extent_handle(pool, "field x", &series.x_column)?;
+            let y = current_extent_handle(pool, "field y", &series.y_column)?;
+            let extent = matrix_extent(matrix, x.len_values, y.len_values, |id| {
+                pool.handle_for(id).map_or(0, |handle| handle.len_values)
+            });
+            let (x_cells, y_cells) = match matrix.orientation {
+                crate::data_config::MatrixOrientation::ColumnsAreX => (extent.cols, extent.rows),
+                crate::data_config::MatrixOrientation::ColumnsAreY => (extent.rows, extent.cols),
+            };
+            let checked_cells = |role: &'static str, cells: usize| {
+                u32::try_from(cells).map_err(|_| {
+                    crate::gpu_errorbar::GpuErrorbarError::ValueCountTooLarge { role, len: cells }
+                })
+            };
+            engine
+                .begin_field(
+                    device,
+                    queue,
+                    pool.buffer(),
+                    mode,
+                    GpuFieldExtentColumns {
+                        x,
+                        y,
+                        x_cells: checked_cells("field x cells", x_cells)?,
+                        y_cells: checked_cells("field y cells", y_cells)?,
+                    },
+                )
+                .map(Some)
+        }
+    }
 }
 
 /// Key + bytes of one baked constellation backdrop. `bake_gen` is a
@@ -2165,10 +2865,9 @@ enum StyleSet {
     Constellation(data_render::PointConstellationSet),
 }
 
-/// Pipelines compiled against one render-target format: axis is eager; line /
-/// scatter / errorbar, mapped, pick-ring, and styled sets compile on first
-/// prepare that needs them. Rebuilding for a new target format keeps already
-/// live lazy variants and leaves unused ones uncompiled.
+/// Pipelines compiled against one render-target format. Axis is created with
+/// the target; ordinary renderer use creates the other variants lazily, while
+/// explicit full prewarm materializes every optional field before interaction.
 struct TargetPipelines {
     shaders: data_render::ShaderModules,
     axis: wgpu::RenderPipeline,
@@ -2179,8 +2878,97 @@ struct TargetPipelines {
     pick_ring_mapped: Option<wgpu::RenderPipeline>,
     errorbar: Option<wgpu::RenderPipeline>,
     errorbar_mapped: Option<wgpu::RenderPipeline>,
+    bar: Option<wgpu::RenderPipeline>,
+    bar_mapped: Option<wgpu::RenderPipeline>,
+    bar_selection: Option<wgpu::RenderPipeline>,
+    field: Option<wgpu::RenderPipeline>,
+    field_selection: Option<wgpu::RenderPipeline>,
+    /// The field quad through `fs_contour` — the isolines. Same module and same
+    /// layouts as `field`, one entry point apart.
+    contour: Option<wgpu::RenderPipeline>,
+    /// The same contour pass with group 3 bound to selected label anchors, so
+    /// the stroke is omitted under the label quads.
+    contour_labelled: Option<wgpu::RenderPipeline>,
+    /// The contour label draw. Compiled from `Renderer::contour_label_pipelines`,
+    /// which owns the module and the group-1 layout.
+    contour_label: Option<wgpu::RenderPipeline>,
     sample_count: u32,
     styled: HashMap<StyleKey, StyleSet>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_style_set(
+    key: StyleKey,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    shaders: &data_render::ShaderModules,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    star_data_bgl: &wgpu::BindGroupLayout,
+    surface_format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> StyleSet {
+    match key {
+        StyleKey::Sketch => StyleSet::Sketch {
+            line: data_render::create_line_columnar_pipeline_with_entries(
+                device,
+                &shaders.line,
+                transform_bgl,
+                style_bgl,
+                surface_format,
+                sample_count,
+                "vs_sketch",
+                "fs_main",
+                wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+                wgpu::PrimitiveTopology::TriangleStrip,
+                None,
+                "figgy line styled pipeline",
+            ),
+            scatter: data_render::create_scatter_columnar_pipeline_with_entries(
+                device,
+                &shaders.scatter,
+                transform_bgl,
+                style_bgl,
+                surface_format,
+                sample_count,
+                "vs_sketch",
+                "fs_sketch",
+                "figgy scatter styled pipeline",
+            ),
+            errorbar: data_render::create_errorbar_columnar_pipeline_with_entries(
+                device,
+                &shaders.errorbar,
+                transform_bgl,
+                style_bgl,
+                surface_format,
+                sample_count,
+                "vs_sketch",
+                "figgy errorbar styled pipeline",
+            ),
+            line_verts: data_render::LINE_SKETCH_VERTICES_PER_INSTANCE,
+        },
+        StyleKey::Milkyway => StyleSet::Milkyway(data_render::create_milkyway_set(
+            device,
+            queue,
+            shaders,
+            transform_bgl,
+            style_bgl,
+            star_data_bgl,
+            surface_format,
+            sample_count,
+        )),
+        StyleKey::Constellation => {
+            StyleSet::Constellation(data_render::create_point_constellation_set(
+                device,
+                queue,
+                shaders,
+                transform_bgl,
+                style_bgl,
+                surface_format,
+                sample_count,
+            ))
+        }
+    }
 }
 
 fn create_target_pipelines(
@@ -2241,6 +3029,14 @@ fn create_target_pipelines_observed(
         pick_ring_mapped: None,
         errorbar: None,
         errorbar_mapped: None,
+        bar: None,
+        bar_mapped: None,
+        bar_selection: None,
+        field: None,
+        field_selection: None,
+        contour: None,
+        contour_labelled: None,
+        contour_label: None,
         shaders,
         sample_count,
         styled: HashMap::new(),
@@ -2257,11 +3053,18 @@ async fn create_target_pipelines_observed_async(
     surface_format: wgpu::TextureFormat,
     sample_count: u32,
     observer: &mut dyn FnMut(InitEvent),
-) -> TargetPipelines {
+) -> Result<TargetPipelines> {
     let shaders = observe_value_async(observer, "renderer", "shader modules", || {
         data_render::ShaderModules::new(device)
     })
     .await;
+    #[cfg(target_arch = "wasm32")]
+    data_render::prewarm_browser_render_pipelines(device, surface_format, sample_count, observer)
+        .await
+        .map_err(|reason| FiggyError::GpuResourceAllocationFailed {
+            resource: "browser render pipeline prewarm",
+            reason,
+        })?;
     let axis = observe_value_async(
         observer,
         "renderer",
@@ -2277,7 +3080,7 @@ async fn create_target_pipelines_observed_async(
         },
     )
     .await;
-    TargetPipelines {
+    Ok(TargetPipelines {
         shaders,
         axis,
         line: None,
@@ -2287,9 +3090,17 @@ async fn create_target_pipelines_observed_async(
         pick_ring_mapped: None,
         errorbar: None,
         errorbar_mapped: None,
+        bar: None,
+        bar_mapped: None,
+        bar_selection: None,
+        field: None,
+        field_selection: None,
+        contour: None,
+        contour_labelled: None,
+        contour_label: None,
         sample_count,
         styled: HashMap::new(),
-    }
+    })
 }
 
 impl TargetPipelines {
@@ -2311,48 +3122,9 @@ impl TargetPipelines {
             let Some(v) = style_variant(&item.chart_config.draw_style) else {
                 continue;
             };
-            self.styled.entry(v.key).or_insert_with(|| match v.key {
-                StyleKey::Sketch => StyleSet::Sketch {
-                    line: data_render::create_line_columnar_pipeline_with_entries(
-                        device,
-                        &self.shaders.line,
-                        transform_bgl,
-                        style_bgl,
-                        surface_format,
-                        self.sample_count,
-                        "vs_sketch",
-                        "fs_main",
-                        wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
-                        wgpu::PrimitiveTopology::TriangleStrip,
-                        None,
-                        "figgy line styled pipeline",
-                    ),
-                    scatter: data_render::create_scatter_columnar_pipeline_with_entries(
-                        device,
-                        &self.shaders.scatter,
-                        transform_bgl,
-                        style_bgl,
-                        surface_format,
-                        self.sample_count,
-                        "vs_sketch",
-                        "fs_sketch",
-                        "figgy scatter styled pipeline",
-                    ),
-                    errorbar: data_render::create_errorbar_columnar_pipeline_with_entries(
-                        device,
-                        &self.shaders.errorbar,
-                        transform_bgl,
-                        style_bgl,
-                        surface_format,
-                        self.sample_count,
-                        "vs_sketch",
-                        "figgy errorbar styled pipeline",
-                    ),
-                    line_verts: data_render::LINE_SKETCH_VERTICES_PER_INSTANCE,
-                },
-                // Texture bakes happen once when the lazy style set is created;
-                // the resulting views are cached with these pipelines.
-                StyleKey::Milkyway => StyleSet::Milkyway(data_render::create_milkyway_set(
+            self.styled.entry(v.key).or_insert_with(|| {
+                create_style_set(
+                    v.key,
                     device,
                     queue,
                     &self.shaders,
@@ -2361,39 +3133,63 @@ impl TargetPipelines {
                     star_data_bgl,
                     surface_format,
                     self.sample_count,
-                )),
-                StyleKey::Constellation => {
-                    StyleSet::Constellation(data_render::create_point_constellation_set(
-                        device,
-                        queue,
-                        &self.shaders,
-                        transform_bgl,
-                        style_bgl,
-                        surface_format,
-                        self.sample_count,
-                    ))
-                }
+                )
             });
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn ensure_precise_variants_for_items(
         &mut self,
         device: &wgpu::Device,
         transform_bgl: &wgpu::BindGroupLayout,
         style_bgl: &wgpu::BindGroupLayout,
         per_point_style_map_bgl: &wgpu::BindGroupLayout,
+        data_selection_bgl: &wgpu::BindGroupLayout,
+        field_bgl: &wgpu::BindGroupLayout,
+        label_pipelines: Option<&crate::gpu_contour::ContourLabelPipelines>,
         surface_format: wgpu::TextureFormat,
         items: &[ChartDrawItem<'_>],
     ) {
+        let mut need_field = false;
+        let mut need_contour = false;
+        let mut need_contour_label = false;
         let mut need_line = false;
         let mut need_scatter = false;
         let mut need_errorbar = false;
+        let mut need_bar = false;
+        let mut need_bar_mapped = false;
+        let mut need_bar_selection = false;
+        let mut need_field_selection = false;
         let mut need_scatter_mapped = false;
         let mut need_errorbar_mapped = false;
         let mut need_pick_ring = false;
         let mut need_pick_ring_mapped = false;
         for item in items {
+            let typed_picks = item
+                .chart_config
+                .picked_data
+                .as_ref()
+                .filter(|config| config.visible && !config.refs.is_empty());
+            let typed_point = typed_picks.is_some_and(|config| {
+                config
+                    .refs
+                    .iter()
+                    .any(|picked| matches!(picked, PickedDataRef::Point { .. }))
+            });
+            if let Some(config) = typed_picks {
+                need_pick_ring |= typed_point;
+                need_bar_selection |= config
+                    .refs
+                    .iter()
+                    .any(|picked| matches!(picked, PickedDataRef::HistogramBin { .. }));
+                need_field_selection |= config.refs.iter().any(|picked| {
+                    matches!(
+                        picked,
+                        PickedDataRef::MatrixCell { .. } | PickedDataRef::ContourLevel { .. }
+                    )
+                });
+            }
             if style_variant(&item.chart_config.draw_style).is_some() {
                 if item.chart_config.picked_points.is_some() {
                     need_pick_ring = true;
@@ -2408,14 +3204,22 @@ impl TargetPipelines {
                     &item.chart_config.draw_style,
                     &series.config.render_type,
                 );
+                need_field |= primitives.field;
+                // A contour is the field quad through a different fragment entry
+                // point, so it needs no line pipeline at all any more.
+                need_contour |= primitives.contour;
                 need_line |= primitives.line;
+                need_contour_label |=
+                    primitives.contour && series_wants_contour_labels(&series.config.render_type);
                 need_scatter |= primitives.scatter;
+                need_bar |= primitives.bar;
+                need_bar_mapped |= primitives.bar && series.style.bar_map.is_some();
                 need_errorbar |= has_errorbar(&series.config.render_type);
                 // `has_index` only means a style-index column is bound.
                 // Sparse `*_style_overrides` still need the mapped shader.
                 if primitives.scatter && series.style.scatter_map.is_some() {
                     need_scatter_mapped = true;
-                    if item.chart_config.picked_points.is_some() {
+                    if item.chart_config.picked_points.is_some() || typed_point {
                         need_pick_ring_mapped = true;
                     }
                 }
@@ -2443,6 +3247,107 @@ impl TargetPipelines {
                     &self.shaders.scatter,
                     transform_bgl,
                     style_bgl,
+                    surface_format,
+                    self.sample_count,
+                ),
+            );
+        }
+        if need_field && self.field.is_none() {
+            self.field = Some(
+                data_render::create_field_columnar_pipeline_with_sample_count(
+                    device,
+                    &self.shaders.field,
+                    transform_bgl,
+                    style_bgl,
+                    field_bgl,
+                    surface_format,
+                    self.sample_count,
+                ),
+            );
+        }
+        if need_contour && self.contour.is_none() {
+            self.contour = Some(data_render::create_field_columnar_pipeline_with_entry(
+                device,
+                &self.shaders.field,
+                transform_bgl,
+                style_bgl,
+                field_bgl,
+                surface_format,
+                self.sample_count,
+                "fs_contour",
+                "figgy field contour pipeline",
+            ));
+        }
+        if need_contour_label
+            && self.contour_labelled.is_none()
+            && let Some(labels) = label_pipelines
+        {
+            self.contour_labelled = Some(data_render::create_labelled_contour_pipeline(
+                device,
+                &self.shaders.field,
+                transform_bgl,
+                style_bgl,
+                field_bgl,
+                labels.label_gap_bgl(),
+                surface_format,
+                self.sample_count,
+            ));
+        }
+        if need_contour_label
+            && self.contour_label.is_none()
+            && let Some(labels) = label_pipelines
+        {
+            self.contour_label = Some(labels.render_pipeline(
+                device,
+                transform_bgl,
+                surface_format,
+                self.sample_count,
+            ));
+        }
+        if need_bar && self.bar.is_none() {
+            self.bar = Some(data_render::create_bar_columnar_pipeline_with_sample_count(
+                device,
+                &self.shaders.bar,
+                transform_bgl,
+                style_bgl,
+                surface_format,
+                self.sample_count,
+            ));
+        }
+        if need_bar_mapped && self.bar_mapped.is_none() {
+            self.bar_mapped = Some(
+                data_render::create_bar_columnar_mapped_pipeline_with_sample_count(
+                    device,
+                    &self.shaders.bar,
+                    transform_bgl,
+                    style_bgl,
+                    per_point_style_map_bgl,
+                    surface_format,
+                    self.sample_count,
+                ),
+            );
+        }
+        if need_bar_selection && self.bar_selection.is_none() {
+            self.bar_selection = Some(
+                data_render::create_bar_selection_pipeline_with_sample_count(
+                    device,
+                    &self.shaders.bar,
+                    transform_bgl,
+                    style_bgl,
+                    data_selection_bgl,
+                    surface_format,
+                    self.sample_count,
+                ),
+            );
+        }
+        if need_field_selection && self.field_selection.is_none() {
+            self.field_selection = Some(
+                data_render::create_field_selection_pipeline_with_sample_count(
+                    device,
+                    &self.shaders.field,
+                    transform_bgl,
+                    data_selection_bgl,
+                    field_bgl,
                     surface_format,
                     self.sample_count,
                 ),
@@ -2520,6 +3425,261 @@ impl TargetPipelines {
         }
     }
 
+    /// Compile every target-format render pipeline, including variants that no
+    /// current chart needs. Cold-start hosts use this before accepting their
+    /// first chart so a later render-type/style switch cannot move shader
+    /// compilation back onto the interaction that requested it.
+    #[allow(clippy::too_many_arguments)]
+    async fn prewarm_all_observed(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        transform_bgl: &wgpu::BindGroupLayout,
+        style_bgl: &wgpu::BindGroupLayout,
+        per_point_style_map_bgl: &wgpu::BindGroupLayout,
+        data_selection_bgl: &wgpu::BindGroupLayout,
+        field_bgl: &wgpu::BindGroupLayout,
+        star_data_bgl: &wgpu::BindGroupLayout,
+        label_pipelines: &crate::gpu_contour::ContourLabelPipelines,
+        surface_format: wgpu::TextureFormat,
+        observer: &mut dyn FnMut(InitEvent),
+    ) {
+        macro_rules! ensure {
+            ($field:ident, $stage:literal, $create:expr) => {
+                if self.$field.is_none() {
+                    self.$field = Some(
+                        observe_value_async(observer, "renderer.prewarm", $stage, || $create).await,
+                    );
+                }
+            };
+        }
+
+        ensure!(
+            line,
+            "precise line",
+            data_render::create_line_columnar_pipeline_with_sample_count(
+                device,
+                &self.shaders.line,
+                transform_bgl,
+                style_bgl,
+                surface_format,
+                self.sample_count,
+            )
+        );
+        ensure!(
+            scatter,
+            "precise scatter",
+            data_render::create_scatter_columnar_pipeline_with_sample_count(
+                device,
+                &self.shaders.scatter,
+                transform_bgl,
+                style_bgl,
+                surface_format,
+                self.sample_count,
+            )
+        );
+        ensure!(
+            errorbar,
+            "precise errorbar",
+            data_render::create_errorbar_columnar_pipeline_with_sample_count(
+                device,
+                &self.shaders.errorbar,
+                transform_bgl,
+                style_bgl,
+                surface_format,
+                self.sample_count,
+            )
+        );
+        ensure!(
+            scatter_mapped,
+            "mapped scatter",
+            data_render::create_scatter_columnar_mapped_pipeline_with_entries(
+                device,
+                &self.shaders.scatter,
+                transform_bgl,
+                style_bgl,
+                per_point_style_map_bgl,
+                surface_format,
+                self.sample_count,
+                "vs_mapped",
+                "fs_mapped",
+                "figgy scatter mapped pipeline",
+            )
+        );
+        ensure!(
+            pick_ring,
+            "picked point ring",
+            data_render::create_scatter_columnar_pipeline_with_entries(
+                device,
+                &self.shaders.scatter,
+                transform_bgl,
+                style_bgl,
+                surface_format,
+                self.sample_count,
+                "vs_pick_ring",
+                "fs_pick_ring",
+                "figgy picked point ring pipeline",
+            )
+        );
+        ensure!(
+            pick_ring_mapped,
+            "mapped picked point ring",
+            data_render::create_scatter_columnar_mapped_pipeline_with_entries(
+                device,
+                &self.shaders.scatter,
+                transform_bgl,
+                style_bgl,
+                per_point_style_map_bgl,
+                surface_format,
+                self.sample_count,
+                "vs_pick_ring_mapped",
+                "fs_pick_ring",
+                "figgy picked point mapped ring pipeline",
+            )
+        );
+        ensure!(
+            errorbar_mapped,
+            "mapped errorbar",
+            data_render::create_errorbar_columnar_mapped_pipeline_from_shader(
+                device,
+                &self.shaders.errorbar,
+                transform_bgl,
+                style_bgl,
+                per_point_style_map_bgl,
+                surface_format,
+                self.sample_count,
+            )
+        );
+        ensure!(
+            bar,
+            "histogram bars",
+            data_render::create_bar_columnar_pipeline_with_sample_count(
+                device,
+                &self.shaders.bar,
+                transform_bgl,
+                style_bgl,
+                surface_format,
+                self.sample_count,
+            )
+        );
+        ensure!(
+            bar_mapped,
+            "mapped histogram bars",
+            data_render::create_bar_columnar_mapped_pipeline_with_sample_count(
+                device,
+                &self.shaders.bar,
+                transform_bgl,
+                style_bgl,
+                per_point_style_map_bgl,
+                surface_format,
+                self.sample_count,
+            )
+        );
+        ensure!(
+            bar_selection,
+            "selected histogram bin",
+            data_render::create_bar_selection_pipeline_with_sample_count(
+                device,
+                &self.shaders.bar,
+                transform_bgl,
+                style_bgl,
+                data_selection_bgl,
+                surface_format,
+                self.sample_count,
+            )
+        );
+        ensure!(
+            field,
+            "heatmap field",
+            data_render::create_field_columnar_pipeline_with_sample_count(
+                device,
+                &self.shaders.field,
+                transform_bgl,
+                style_bgl,
+                field_bgl,
+                surface_format,
+                self.sample_count,
+            )
+        );
+        ensure!(
+            contour,
+            "contour field",
+            data_render::create_field_columnar_pipeline_with_entry(
+                device,
+                &self.shaders.field,
+                transform_bgl,
+                style_bgl,
+                field_bgl,
+                surface_format,
+                self.sample_count,
+                "fs_contour",
+                "figgy field contour pipeline",
+            )
+        );
+        ensure!(
+            contour_labelled,
+            "label-gapped contour field",
+            data_render::create_labelled_contour_pipeline(
+                device,
+                &self.shaders.field,
+                transform_bgl,
+                style_bgl,
+                field_bgl,
+                label_pipelines.label_gap_bgl(),
+                surface_format,
+                self.sample_count,
+            )
+        );
+        ensure!(
+            field_selection,
+            "selected field data",
+            data_render::create_field_selection_pipeline_with_sample_count(
+                device,
+                &self.shaders.field,
+                transform_bgl,
+                data_selection_bgl,
+                field_bgl,
+                surface_format,
+                self.sample_count,
+            )
+        );
+        ensure!(
+            contour_label,
+            "contour labels",
+            label_pipelines.render_pipeline(
+                device,
+                transform_bgl,
+                surface_format,
+                self.sample_count,
+            )
+        );
+
+        for (key, stage) in [
+            (StyleKey::Sketch, "hand-drawn style"),
+            (StyleKey::Milkyway, "milkyway style"),
+            (StyleKey::Constellation, "constellation style"),
+        ] {
+            if self.styled.contains_key(&key) {
+                continue;
+            }
+            let set = observe_value_async(observer, "renderer.prewarm", stage, || {
+                create_style_set(
+                    key,
+                    device,
+                    queue,
+                    &self.shaders,
+                    transform_bgl,
+                    style_bgl,
+                    star_data_bgl,
+                    surface_format,
+                    self.sample_count,
+                )
+            })
+            .await;
+            self.styled.insert(key, set);
+        }
+    }
+
     /// Draw-phase lookup: the cached set for the item's style, `None` for
     /// precise mode. A cache miss (impossible once the prepare phase ran)
     /// also yields `None` — callers then fall back to the precise pipelines
@@ -2565,6 +3725,7 @@ fn create_texture_checked(
     desc: &wgpu::TextureDescriptor<'_>,
     resource: &'static str,
 ) -> Result<wgpu::Texture> {
+    // gpu-alloc: caller
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.create_texture(desc))).map_err(
         |_| FiggyError::GpuResourceAllocationFailed {
             resource,
@@ -2578,12 +3739,43 @@ fn create_buffer_checked(
     desc: &wgpu::BufferDescriptor<'_>,
     resource: &'static str,
 ) -> Result<wgpu::Buffer> {
+    // gpu-alloc: caller
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.create_buffer(desc))).map_err(
         |_| FiggyError::GpuResourceAllocationFailed {
             resource,
             reason: "wgpu Device::create_buffer panicked".into(),
         },
     )
+}
+
+/// Allocation context for one column-pool call.
+///
+/// A free function over the fields rather than a `&self` method for two
+/// reasons. It keeps the caller's `&mut self.pool` borrow disjoint from the
+/// device/queue/ledger borrows, and it makes the out-of-pool total something
+/// that is *read at the call* — there is no place to cache it, so a budget
+/// check can never run against a stale sum. The pool adds its own current
+/// capacity and the capacity it is about to allocate, so `external_bytes`
+/// deliberately excludes the pool row.
+///
+/// The sum happens inside `map`, so with no ceiling declared it does not happen
+/// at all: the pool reads the out-of-pool total only to compare it against a
+/// ceiling, and `GpuBudget` keeps the two together precisely so there is no
+/// unused total to compute or to fabricate.
+fn pool_alloc_ctx<'a>(
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    memory_budget: Option<u64>,
+    ledger: &GpuLedger,
+) -> data_render::GpuAllocCtx<'a> {
+    data_render::GpuAllocCtx {
+        device,
+        queue,
+        budget: memory_budget.map(|ceiling_bytes| data_render::GpuBudget {
+            ceiling_bytes,
+            external_bytes: ledger.total_bytes(),
+        }),
+    }
 }
 
 fn premul_rgba(c: Color) -> [f32; 4] {
@@ -2655,6 +3847,88 @@ fn errorbar_style_slot_gpu(
     }
 }
 
+fn bar_style_slot_gpu(slot: &DataBarBinStyleConfig, scale: f32) -> data_render::BarStyleSlotGpu {
+    const MASK_FILL: u32 = 1;
+    const MASK_BORDER_COLOR: u32 = 2;
+    const MASK_BORDER_WIDTH: u32 = 4;
+    const MASK_GAP: u32 = 8;
+    const MASK_WIDTH_RATIO: u32 = 16;
+
+    let mut mask = 0u32;
+    let mut fill_color_premul = [0.0; 4];
+    let mut border_color_premul = [0.0; 4];
+    let mut border_width_px = 0.0;
+    let mut gap_px = 0.0;
+    let mut width_ratio = 1.0;
+    if let Some(color) = slot.fill_color {
+        mask |= MASK_FILL;
+        fill_color_premul = premul_rgba(color);
+    }
+    if let Some(color) = slot.border_color {
+        mask |= MASK_BORDER_COLOR;
+        border_color_premul = premul_rgba(color);
+    }
+    if let Some(width) = slot.border_width {
+        mask |= MASK_BORDER_WIDTH;
+        border_width_px = if width.is_finite() {
+            width.max(0.0) * scale
+        } else {
+            0.0
+        };
+    }
+    if let Some(gap) = slot.gap_px {
+        mask |= MASK_GAP;
+        gap_px = if gap.is_finite() {
+            gap.max(0.0) * scale
+        } else {
+            0.0
+        };
+    }
+    if let Some(ratio) = slot.width_ratio {
+        mask |= MASK_WIDTH_RATIO;
+        width_ratio = data_render::sanitize_bar_width_ratio(ratio);
+    }
+    data_render::BarStyleSlotGpu {
+        fill_color_premul,
+        border_color_premul,
+        params: [border_width_px, gap_px, width_ratio, mask as f32],
+    }
+}
+
+fn apply_bar_bin_style(bar: &mut DataBarStyleConfig, slot: &DataBarBinStyleConfig) {
+    if let Some(color) = slot.fill_color {
+        bar.fill_color = color;
+    }
+    if let Some(color) = slot.border_color {
+        bar.border_color = color;
+    }
+    if let Some(width) = slot.border_width {
+        bar.border_width = width;
+    }
+    if let Some(gap) = slot.gap_px {
+        bar.gap_px = gap;
+    }
+    if let Some(ratio) = slot.width_ratio {
+        bar.width_ratio = ratio;
+    }
+}
+
+fn resolved_bar_primitive_style(
+    bar: &DataBarStyleConfig,
+    bin_index: usize,
+    scale: f32,
+) -> PrimitiveStyle {
+    let mut resolved = bar.clone();
+    if let Some(overrides) = &bar.bar_style_overrides {
+        for style_override in overrides {
+            if style_override.index == bin_index {
+                apply_bar_bin_style(&mut resolved, &style_override.style);
+            }
+        }
+    }
+    PrimitiveStyle::from_bar(&resolved, scale)
+}
+
 fn picked_ref_matches_series(series: &SeriesConfig, picked: &PickedPointRef) -> bool {
     if picked.series_id != series.series_id {
         return false;
@@ -2665,13 +3939,27 @@ fn picked_ref_matches_series(series: &SeriesConfig, picked: &PickedPointRef) -> 
     }
 }
 
+fn picked_data_ref_matches_series(series: &SeriesConfig, picked: &PickedDataRef) -> bool {
+    if picked.series_id() != series.series_id {
+        return false;
+    }
+    match picked.source_id() {
+        Some(source_id) => series.source_id.as_deref() == Some(source_id),
+        None => true,
+    }
+}
+
 struct MsaaTarget {
-    _texture: wgpu::Texture,
+    /// Charged to the ledger for as long as this target lives; the sample
+    /// count multiplies the bytes, which is why it is worth its own row.
+    _texture: TrackedTexture,
     view: wgpu::TextureView,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_msaa_target(
     device: &wgpu::Device,
+    ledger: &Arc<GpuLedger>,
     caps: RendererDeviceCaps,
     label: &'static str,
     width: u32,
@@ -2698,7 +3986,11 @@ fn create_msaa_target(
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     };
-    let texture = create_texture_checked(device, &desc, label)?;
+    let texture = TrackedTexture::new(
+        ledger,
+        GpuResourceKind::MsaaTarget,
+        create_texture_checked(device, &desc, label)?,
+    );
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     Ok(Some(MsaaTarget {
         _texture: texture,
@@ -2738,19 +4030,10 @@ fn scatter_pick_anchor_may_be_visible(
 }
 
 fn validate_registered_column(pool: &ColumnPool, id: &str) -> Result<()> {
-    validate_host_column_id(id)?;
     if pool.slot(id).is_some() {
         Ok(())
     } else {
         Err(FiggyError::UnknownColumn { id: id.to_owned() })
-    }
-}
-
-fn validate_host_column_id(id: &str) -> Result<()> {
-    if id == INTERNAL_ZERO_COLUMN_ID {
-        Err(FiggyError::ReservedColumnId { id: id.to_owned() })
-    } else {
-        Ok(())
     }
 }
 
@@ -2799,32 +4082,18 @@ fn validate_error_ref_columns(pool: &ColumnPool, error: &ErrorRef) -> Result<()>
     }
 }
 
-fn error_ref_references_column(error: &ErrorRef, id: &str) -> bool {
-    match error {
-        ErrorRef::Symmetric { column } => column == id,
-        ErrorRef::Asymmetric { lower, upper } => lower == id || upper == id,
-    }
-}
-
+/// Whether this series reads `id` from the pool.
+///
+/// Asks [`visit_series_columns`] rather than enumerating the columns a second
+/// time. The two used to be hand-kept copies of the same list, which is a live
+/// hazard without any new variant at all: give an existing variant another
+/// column-bearing field, update one function and not the other, and column
+/// removal and validation quietly disagree about what a series needs. One
+/// enumeration cannot disagree with itself.
 fn series_references_column(series: &SeriesConfig, id: &str) -> bool {
-    if series.x_column == id || series.y_column == id {
-        return true;
-    }
-    if extract_scatter(&series.render_type)
-        .and_then(|scatter| scatter.point_style_index_column.as_deref())
-        == Some(id)
-    {
-        return true;
-    }
-    if extract_errorbar_style(&series.render_type)
-        .and_then(|errorbar| errorbar.error_bar_style_index_column.as_deref())
-        == Some(id)
-    {
-        return true;
-    }
-    extract_err_x(&series.render_type).is_some_and(|error| error_ref_references_column(error, id))
-        || extract_err_y(&series.render_type)
-            .is_some_and(|error| error_ref_references_column(error, id))
+    let mut found = false;
+    visit_series_columns(series, &mut |column| found |= column == id);
+    found
 }
 
 fn data_series_declarations_equal(left: &[SeriesConfig], right: &[SeriesConfig]) -> bool {
@@ -2838,10 +4107,20 @@ fn data_series_declarations_equal(left: &[SeriesConfig], right: &[SeriesConfig])
         })
 }
 
-fn series_list_references_any_column(series: &[SeriesConfig], ids: &[&str]) -> bool {
-    series
-        .iter()
-        .any(|series| ids.iter().any(|id| series_references_column(series, id)))
+/// Whether any of `ids` is read by any series in the list.
+///
+/// Takes an iterator rather than a slice so a caller that only has the ids as
+/// part of a larger structure — a batch of `(id, source)` pairs, for one — does
+/// not have to collect them into a `Vec` first.
+fn series_list_references_any_column<'i>(
+    series: &[SeriesConfig],
+    mut ids: impl Iterator<Item = &'i str>,
+) -> bool {
+    ids.any(|id| {
+        series
+            .iter()
+            .any(|series| series_references_column(series, id))
+    })
 }
 
 fn prepare_load_demo_chart_plan(
@@ -2867,7 +4146,9 @@ fn prepare_load_demo_chart_plan(
             .get(id)
             .ok_or(FiggyError::UnknownChart { id: *id })?;
         let is_target = *id == target_id;
-        if !is_target && !series_list_references_any_column(&state.series, &DEMO_COLUMN_IDS) {
+        if !is_target
+            && !series_list_references_any_column(&state.series, DEMO_COLUMN_IDS.iter().copied())
+        {
             continue;
         }
 
@@ -2880,8 +4161,8 @@ fn prepare_load_demo_chart_plan(
             next.config = state.revisions.config.successor("chart config revision")?;
             next.series = state.revisions.series.successor("chart series revision")?;
             if !data_series_declarations_equal(&state.series, &series)
-                || series_list_references_any_column(&state.series, &DEMO_COLUMN_IDS)
-                || series_list_references_any_column(&series, &DEMO_COLUMN_IDS)
+                || series_list_references_any_column(&state.series, DEMO_COLUMN_IDS.iter().copied())
+                || series_list_references_any_column(&series, DEMO_COLUMN_IDS.iter().copied())
             {
                 next.data = state.revisions.data.successor("chart data revision")?;
             }
@@ -2920,6 +4201,19 @@ fn visit_error_ref_columns(error: &ErrorRef, visit: &mut impl FnMut(&str)) {
     }
 }
 
+/// Every pool column this series reads, visited once per occurrence.
+///
+/// The single enumeration: column removal, validation, pick invalidation, and
+/// the derived-data stamps all reach the pool through here, so a column this
+/// function does not name is a column the renderer believes nobody uses.
+///
+/// The tail match exists to make that a compile error rather than a discovery.
+/// Every column above is reached through an `extract_*` helper, so a variant
+/// whose columns live in a *new* field — the design's matrix bundle, say — would
+/// be invisible here and nothing would fail to compile: a chart keeps a series
+/// pointing at a removed column, and every later `prepare` fails in `lookup`
+/// with `UnknownColumn`, permanently. Listing the variants forces the author of
+/// the next one to answer "does it read anything else?".
 fn visit_series_columns(series: &SeriesConfig, visit: &mut impl FnMut(&str)) {
     visit(&series.x_column);
     visit(&series.y_column);
@@ -2939,9 +4233,41 @@ fn visit_series_columns(series: &SeriesConfig, visit: &mut impl FnMut(&str)) {
     if let Some(error) = extract_err_y(&series.render_type) {
         visit_error_ref_columns(error, visit);
     }
+    match &series.render_type {
+        // Nothing beyond what the extractors above already reached.
+        DataRenderType::Line { .. }
+        | DataRenderType::Scatter { .. }
+        | DataRenderType::ScatterLine { .. }
+        | DataRenderType::ScatterErrorbarX { .. }
+        | DataRenderType::ScatterErrorbarY { .. }
+        | DataRenderType::ScatterErrorbarXY { .. }
+        | DataRenderType::LineScatterErrorbarX { .. }
+        | DataRenderType::LineScatterErrorbarY { .. }
+        | DataRenderType::LineScatterErrorbarXY { .. }
+        | DataRenderType::Histogram { .. } => {}
+        // A matrix' constituent columns are referenced columns like any other:
+        // remove-column cascade, validation, and the derived-identity stamp all
+        // reach them through here, so a grid column cannot be dropped from under
+        // a live field.
+        DataRenderType::Heatmap { matrix, .. }
+        | DataRenderType::Contour { matrix, .. }
+        | DataRenderType::HeatmapContour { matrix, .. } => {
+            for column in &matrix.columns {
+                visit(column);
+            }
+        }
+    }
 }
 
-fn validate_renderer_series(pool: &ColumnPool, series: &[SeriesConfig]) -> Result<()> {
+/// Validate a series list against the pool and the chart's own `Config`.
+///
+/// The config is needed because a field series is only fully declared with it:
+/// `Config.colorbar` owns the z range and colormap.
+fn validate_renderer_series(
+    pool: &ColumnPool,
+    config: &Config,
+    series: &[SeriesConfig],
+) -> Result<()> {
     for (index, item) in series.iter().enumerate() {
         if item.series_id.is_empty() {
             return Err(FiggyError::InvalidSeriesConfig {
@@ -2977,6 +4303,25 @@ fn validate_renderer_series(pool: &ColumnPool, series: &[SeriesConfig]) -> Resul
         if let Some(error) = extract_err_y(&item.render_type) {
             validate_error_ref_columns(pool, error)?;
         }
+        if requires_colorbar(&item.render_type) && config.colorbar.is_none() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: item.series_id.clone(),
+                reason: "a field series needs Config.colorbar: it owns the z range and \
+                         colormap, so without it there is no value to draw"
+                    .to_string(),
+            });
+        }
+        validate_contour_level_count(&item.series_id, &item.render_type)?;
+        validate_contour_label_config(&item.series_id, &item.render_type)?;
+        if let Some(matrix) = extract_matrix(&item.render_type) {
+            // A grid column that is not registered would read whatever else
+            // happens to be at that offset. Count mismatches between the
+            // declaration and the data are *not* checked here — those are drawn
+            // to the smallest common extent and reported, never rejected.
+            for column in &matrix.columns {
+                validate_registered_column(pool, column)?;
+            }
+        }
     }
     Ok(())
 }
@@ -2992,7 +4337,7 @@ fn axis_fit_stamp(axis: &AxisOptions) -> (u8, u64, u64) {
 fn push_fit_column_stamp(
     pool: &ColumnPool,
     columns: &mut Vec<FitColumnStamp>,
-    role: u8,
+    role: u32,
     id: &str,
 ) -> Result<()> {
     let allocation_epoch = pool
@@ -3010,8 +4355,8 @@ fn push_fit_error_stamps(
     pool: &ColumnPool,
     columns: &mut Vec<FitColumnStamp>,
     error: &ErrorRef,
-    lower_role: u8,
-    upper_role: u8,
+    lower_role: u32,
+    upper_role: u32,
 ) -> Result<()> {
     match error {
         ErrorRef::Symmetric { column } => {
@@ -3054,9 +4399,31 @@ fn build_fit_token_from_state(
         if let Some(error) = extract_err_y(&item.render_type) {
             push_fit_error_stamps(pool, &mut columns, error, 4, 5)?;
         }
+        if let Some(matrix) = extract_matrix(&item.render_type) {
+            columns.try_reserve(matrix.columns.len()).map_err(|error| {
+                FiggyError::StateAllocationFailed {
+                    resource: "fit matrix-column stamps",
+                    reason: error.to_string(),
+                }
+            })?;
+            for (index, id) in matrix.columns.iter().enumerate() {
+                push_fit_column_stamp(
+                    pool,
+                    &mut columns,
+                    6u32.saturating_add(u32::try_from(index).unwrap_or(u32::MAX)),
+                    id,
+                )?;
+            }
+        }
         series.push(FitSeriesStamp {
             series_id: item.series_id.clone(),
-            mode: crate::gpu_errorbar::GpuSeriesExtentMode::from_render_type(&item.render_type),
+            mode: crate::gpu_errorbar::GpuSeriesFitMode::from_render_type(&item.render_type),
+            field_orientation: extract_matrix(&item.render_type).map(|matrix| {
+                match matrix.orientation {
+                    crate::data_config::MatrixOrientation::ColumnsAreX => 0,
+                    crate::data_config::MatrixOrientation::ColumnsAreY => 1,
+                }
+            }),
             columns,
         });
     }
@@ -3153,6 +4520,209 @@ fn build_web_derived_snapshot_from_state(
     })
 }
 
+#[cfg(target_arch = "wasm32")]
+#[derive(Debug)]
+struct BrowserGpuError {
+    name: String,
+    constructor_name: String,
+    message: String,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl BrowserGpuError {
+    fn from_js(error: &wasm_bindgen::JsValue) -> Self {
+        use wasm_bindgen::JsValue;
+
+        let string_property = |object: &JsValue, property: &str| {
+            js_sys::Reflect::get(object, &JsValue::from_str(property))
+                .ok()
+                .and_then(|value| value.as_string())
+                .filter(|value| !value.is_empty())
+        };
+        let constructor_name = js_sys::Reflect::get(error, &JsValue::from_str("constructor"))
+            .ok()
+            .and_then(|constructor| string_property(&constructor, "name"))
+            .unwrap_or_else(|| "unknown".into());
+        Self {
+            name: string_property(error, "name").unwrap_or_else(|| "GPUError".into()),
+            constructor_name,
+            message: string_property(error, "message").unwrap_or_else(|| format!("{error:?}")),
+        }
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "{} (constructor {}): {}",
+            self.name, self.constructor_name, self.message
+        )
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn browser_gpu_device_method(
+    device: &wgpu::webgpu::GpuDevice,
+    name: &str,
+) -> std::result::Result<js_sys::Function, String> {
+    use wasm_bindgen::{JsCast, JsValue};
+
+    js_sys::Reflect::get(device.as_ref(), &JsValue::from_str(name))
+        .map_err(|error| format!("GPUDevice.{name} lookup failed: {error:?}"))?
+        .dyn_into()
+        .map_err(|_| format!("GPUDevice.{name} is not a function"))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn browser_scope_failure(resource: &'static str, reason: String) -> FiggyError {
+    FiggyError::GpuResourceAllocationFailed { resource, reason }
+}
+
+#[cfg(target_arch = "wasm32")]
+struct BrowserErrorScopes {
+    device: wgpu::webgpu::GpuDevice,
+    pop: js_sys::Function,
+    active: u8,
+    resource: &'static str,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl BrowserErrorScopes {
+    fn push(device: &wgpu::Device, resource: &'static str) -> Result<Self> {
+        use wasm_bindgen::JsValue;
+
+        let device = device.as_webgpu().cloned().ok_or_else(|| {
+            browser_scope_failure(
+                resource,
+                "wgpu device is not backed by a browser GPUDevice".into(),
+            )
+        })?;
+        let push = browser_gpu_device_method(&device, "pushErrorScope")
+            .map_err(|reason| browser_scope_failure(resource, reason))?;
+        let pop = browser_gpu_device_method(&device, "popErrorScope")
+            .map_err(|reason| browser_scope_failure(resource, reason))?;
+        let mut scopes = Self {
+            device,
+            pop,
+            active: 0,
+            resource,
+        };
+        for filter in ["out-of-memory", "internal"] {
+            push.call1(scopes.device.as_ref(), &JsValue::from_str(filter))
+                .map_err(|error| {
+                    browser_scope_failure(
+                        resource,
+                        format!("GPUDevice.pushErrorScope({filter}) failed: {error:?}"),
+                    )
+                })?;
+            scopes.active += 1;
+        }
+        Ok(scopes)
+    }
+
+    fn request_pop(&mut self) -> std::result::Result<js_sys::Promise, String> {
+        use wasm_bindgen::JsCast;
+
+        debug_assert!(self.active > 0);
+        let value = self
+            .pop
+            .call0(self.device.as_ref())
+            .map_err(|error| format!("GPUDevice.popErrorScope failed: {error:?}"))?;
+        // A successful call starts the pop and removes that scope from the
+        // device stack even though its Promise is still pending.
+        self.active -= 1;
+        value
+            .dyn_into::<js_sys::Promise>()
+            .map_err(|_| "GPUDevice.popErrorScope did not return a Promise".to_owned())
+    }
+
+    fn request_all(mut self) -> BrowserPendingErrorScopes {
+        // Request both pops before returning to JS. Once popErrorScope has
+        // returned its Promise, that scope no longer occupies the device
+        // stack while the Promise is awaited.
+        let internal = self.request_pop();
+        let out_of_memory = self.request_pop();
+        BrowserPendingErrorScopes {
+            internal,
+            out_of_memory,
+            resource: self.resource,
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Drop for BrowserErrorScopes {
+    fn drop(&mut self) {
+        // Dropping an async export also drops its locals. Start every remaining
+        // pop synchronously; JS Promises keep running after their Rust handles
+        // are discarded.
+        while self.active > 0 {
+            self.active -= 1;
+            let _ = self.pop.call0(self.device.as_ref());
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+struct BrowserPendingErrorScopes {
+    internal: std::result::Result<js_sys::Promise, String>,
+    out_of_memory: std::result::Result<js_sys::Promise, String>,
+    resource: &'static str,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl BrowserPendingErrorScopes {
+    async fn finish(self) -> Result<()> {
+        let internal = browser_await_error_scope(self.internal).await;
+        let out_of_memory = browser_await_error_scope(self.out_of_memory).await;
+        finish_browser_error_scopes(self.resource, internal, out_of_memory)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn browser_await_error_scope(
+    request: std::result::Result<js_sys::Promise, String>,
+) -> std::result::Result<Option<BrowserGpuError>, String> {
+    use wasm_bindgen_futures::JsFuture;
+
+    let error = JsFuture::from(request?)
+        .await
+        .map_err(|error| format!("GPUDevice.popErrorScope rejected: {error:?}"))?;
+    if error.is_null() || error.is_undefined() {
+        Ok(None)
+    } else {
+        Ok(Some(BrowserGpuError::from_js(&error)))
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn finish_browser_error_scopes(
+    resource: &'static str,
+    internal: std::result::Result<Option<BrowserGpuError>, String>,
+    out_of_memory: std::result::Result<Option<BrowserGpuError>, String>,
+) -> Result<()> {
+    let mut failures = Vec::new();
+    match internal {
+        Ok(Some(error)) => failures.push(format!(
+            "browser WebGPU internal error: {}",
+            error.describe()
+        )),
+        Err(error) => failures.push(format!("browser internal scope pop failed: {error}")),
+        Ok(None) => {}
+    }
+    match out_of_memory {
+        Ok(Some(error)) => failures.push(format!(
+            "browser WebGPU out-of-memory error: {}",
+            error.describe()
+        )),
+        Err(error) => failures.push(format!("browser OOM scope pop failed: {error}")),
+        Ok(None) => {}
+    }
+
+    if failures.is_empty() {
+        return Ok(());
+    }
+    Err(browser_scope_failure(resource, failures.join("; ")))
+}
+
 impl Renderer {
     /// Initialize every figgy GPU resource against the given device/queue pair.
     ///
@@ -3163,7 +4733,9 @@ impl Renderer {
     /// `max_buffer_size`) is reduced instead of panicking later; read the
     /// granted size back via [`Self::pool`]`().capacity()`. To get a larger
     /// pool, raise those limits when requesting the wgpu device (the defaults
-    /// are only 128 MiB / 256 MiB). `surface_format` is the final render
+    /// are only 128 MiB / 256 MiB). This initial slab is **not** subject to
+    /// [`Self::set_memory_budget`] — the budget governs growth, and this size is
+    /// the host's own declaration. `surface_format` is the final render
     /// target color format; the eager axis pipeline and any later lazy
     /// graphics pipelines are compiled against it.
     pub fn try_new(
@@ -3245,8 +4817,13 @@ impl Renderer {
             );
         }
         finished(observer, "renderer", "capabilities");
+        // host-alloc: W1-a
+        let gpu_ledger = Arc::new(GpuLedger::new());
         let pool = observe_result(observer, "renderer", "figgy column pool", || {
-            ColumnPool::new(&device, pool_capacity)
+            ColumnPool::new(
+                pool_alloc_ctx(&device, &queue, None, &gpu_ledger),
+                pool_capacity,
+            )
         })?;
 
         let texture_bgl = data_render::create_texture_bind_group_layout(&device);
@@ -3254,10 +4831,16 @@ impl Renderer {
         let style_bgl = data_render::create_style_bind_group_layout(&device);
         let per_point_style_map_bgl =
             data_render::create_per_point_style_map_bind_group_layout(&device);
+        let data_selection_bgl = data_render::create_data_selection_bind_group_layout(&device);
         let star_data_bgl = data_render::create_star_data_bind_group_layout(&device);
+        let field_bgl = data_render::create_field_data_bind_group_layout(&device);
 
         let sampler = data_render::create_linear_sampler(&device);
-        let quad_vb = data_render::create_unit_centered_quad_vertex_buffer(&device);
+        let quad_vb = TrackedBuffer::new(
+            &gpu_ledger,
+            GpuResourceKind::Uniform,
+            data_render::create_unit_centered_quad_vertex_buffer(&device),
+        );
 
         // Axis compiles here. Line/scatter/errorbar, mapped, pick-ring,
         // styled, and arc-scan pipelines compile on first prepare that needs
@@ -3296,16 +4879,23 @@ impl Renderer {
             transform_bgl,
             style_bgl,
             per_point_style_map_bgl,
+            data_selection_bgl,
             star_data_bgl,
+            field_bgl,
             pipelines,
             sampler,
             quad_vb,
             arc_cache: HashMap::new(),
+            field_cache: HashMap::new(),
+            contour_label_pipelines: None,
+            contour_cache: HashMap::new(),
             arc_pipelines: None,
             #[cfg(test)]
             arc_chunk_override: None,
             space_bg: None,
             surface_format,
+            gpu_ledger,
+            memory_budget: None,
         })
     }
 
@@ -3314,6 +4904,7 @@ impl Renderer {
         surface_format: wgpu::TextureFormat,
         pool_capacity_bytes: u64,
         target_sample_count: u32,
+        gpu_ledger: Arc<GpuLedger>,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<Self> {
         let RendererDevice { device, queue } = gpu;
@@ -3343,7 +4934,10 @@ impl Renderer {
         finished(observer, "renderer", "capabilities");
         crate::init::yield_init_frame().await;
         let pool = observe_result_async(observer, "renderer", "figgy column pool", || {
-            ColumnPool::new(&device, pool_capacity)
+            ColumnPool::new(
+                pool_alloc_ctx(&device, &queue, None, &gpu_ledger),
+                pool_capacity,
+            )
         })
         .await?;
 
@@ -3352,10 +4946,16 @@ impl Renderer {
         let style_bgl = data_render::create_style_bind_group_layout(&device);
         let per_point_style_map_bgl =
             data_render::create_per_point_style_map_bind_group_layout(&device);
+        let data_selection_bgl = data_render::create_data_selection_bind_group_layout(&device);
         let star_data_bgl = data_render::create_star_data_bind_group_layout(&device);
+        let field_bgl = data_render::create_field_data_bind_group_layout(&device);
 
         let sampler = data_render::create_linear_sampler(&device);
-        let quad_vb = data_render::create_unit_centered_quad_vertex_buffer(&device);
+        let quad_vb = TrackedBuffer::new(
+            &gpu_ledger,
+            GpuResourceKind::Uniform,
+            data_render::create_unit_centered_quad_vertex_buffer(&device),
+        );
 
         let pipelines = create_target_pipelines_observed_async(
             &device,
@@ -3367,7 +4967,7 @@ impl Renderer {
             target_sample_count,
             observer,
         )
-        .await;
+        .await?;
         let renderer_identity = observe_result_async(observer, "renderer", "identity", || {
             issue_renderer_identity()
         })
@@ -3393,16 +4993,23 @@ impl Renderer {
             transform_bgl,
             style_bgl,
             per_point_style_map_bgl,
+            data_selection_bgl,
             star_data_bgl,
+            field_bgl,
             pipelines,
             sampler,
             quad_vb,
             arc_cache: HashMap::new(),
+            field_cache: HashMap::new(),
+            contour_label_pipelines: None,
+            contour_cache: HashMap::new(),
             arc_pipelines: None,
             #[cfg(test)]
             arc_chunk_override: None,
             space_bg: None,
             surface_format,
+            gpu_ledger,
+            memory_budget: None,
         })
     }
 
@@ -3416,6 +5023,77 @@ impl Renderer {
     }
     pub fn pool(&self) -> &ColumnPool {
         &self.pool
+    }
+
+    /// Every GPU byte this renderer currently accounts for, one row per
+    /// [`GpuResourceKind`].
+    ///
+    /// The pool row comes from the pool itself (its live slab plus the
+    /// ping-pong backup while one exists); every other row comes from the
+    /// ledger. Released bytes stay in the report as *retired* until the frame
+    /// boundary, because wgpu defers the device-side release — spending them
+    /// before then over-commits.
+    ///
+    /// Not a measurement of driver-side residency: it is what figgy asked the
+    /// device for. Free VRAM is not portably observable, so this plus the
+    /// device limits plus [`Self::set_memory_budget`] is the whole defence.
+    pub fn gpu_memory_usage(&self) -> GpuMemoryUsage {
+        self.gpu_ledger
+            .snapshot()
+            .with_kind(
+                GpuResourceKind::ColumnPool,
+                self.pool.gpu_bytes(),
+                self.pool.retired_bytes(),
+            )
+            .with_creations(GpuResourceKind::ColumnPool, self.pool.buffer_creations())
+            .with_peak_at_least(self.pool.peak_bytes())
+    }
+
+    /// The host-declared ceiling for all renderer GPU bytes, if any.
+    pub fn memory_budget(&self) -> Option<u64> {
+        self.memory_budget
+    }
+
+    /// Declare a ceiling for all renderer GPU bytes, pool included.
+    ///
+    /// **What it governs.** Growth. It applies from the next allocation onward
+    /// and never shrinks what is already held, and in particular it does *not*
+    /// retroactively bound the pool's initial capacity: that slab is created
+    /// during construction from the `pool_capacity_bytes` the host itself
+    /// passed, before any budget exists. A pool growth that would cross the
+    /// ceiling is refused as `AllocError::ResourceLimit` — the same failure the
+    /// pool already reports for a device ceiling, so no host learns a new error
+    /// shape.
+    ///
+    /// **Returns** the current total when the new ceiling is already below it,
+    /// `None` when the ceiling has room. The ceiling is applied either way: a
+    /// host that lowers it deliberately, intending to release something next,
+    /// gets what it asked for. But it learns at the call rather than at
+    /// whatever growth fails later — the reason this returns anything at all.
+    #[must_use = "a returned total means the new ceiling is already exceeded"]
+    pub fn set_memory_budget(&mut self, budget: Option<u64>) -> Option<u64> {
+        self.memory_budget = budget;
+        let ceiling = budget?;
+        let current = self.gpu_memory_usage().total_bytes();
+        (current > ceiling).then_some(current)
+    }
+
+    /// Submission boundary: stop counting retired bytes after the host has
+    /// submitted every command buffer recorded before their owners were
+    /// released.
+    ///
+    /// Split prepare/paint hosts call this once, after submitting all panels in
+    /// the frame. Calling it from `prepare` would be too early because a host
+    /// may still hold an unsubmitted command buffer. Idempotent.
+    pub fn end_gpu_frame(&mut self) {
+        self.gpu_ledger.end_submission();
+        self.pool.clear_retired_bytes();
+    }
+
+    /// Handle onto the ledger, for resources this renderer creates but does
+    /// not own (the windowed MSAA target).
+    pub(crate) fn gpu_ledger(&self) -> &Arc<GpuLedger> {
+        &self.gpu_ledger
     }
 
     /// Enable exact GPU picking for this renderer.
@@ -3432,8 +5110,17 @@ impl Renderer {
         &mut self,
         observer: &mut dyn FnMut(InitEvent),
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
-        self.picker
-            .enable_observed(Arc::clone(&self.device), Arc::clone(&self.queue), observer)
+        self.picker.enable_observed(
+            Arc::clone(&self.device),
+            Arc::clone(&self.queue),
+            Arc::clone(&self.gpu_ledger),
+            &self.pipelines.shaders.bar,
+            &self.pipelines.shaders.field,
+            &self.transform_bgl,
+            &self.field_bgl,
+            &self.per_point_style_map_bgl,
+            observer,
+        )
     }
 
     pub async fn enable_gpu_picking_async(
@@ -3448,7 +5135,17 @@ impl Renderer {
         observer: &mut dyn FnMut(InitEvent),
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         self.picker
-            .enable_observed_async(Arc::clone(&self.device), Arc::clone(&self.queue), observer)
+            .enable_observed_async(
+                Arc::clone(&self.device),
+                Arc::clone(&self.queue),
+                Arc::clone(&self.gpu_ledger),
+                &self.pipelines.shaders.bar,
+                &self.pipelines.shaders.field,
+                &self.transform_bgl,
+                &self.field_bgl,
+                &self.per_point_style_map_bgl,
+                observer,
+            )
             .await
     }
 
@@ -3512,6 +5209,195 @@ impl Renderer {
             .pick_with_display_scale(&self.pool, query, request.display_scale)
     }
 
+    /// Submit one typed data pick across points/lines, histogram bins, heatmap
+    /// cells, and contour levels.
+    ///
+    /// Source values stay in `ColumnPool`. The CPU supplies only current
+    /// render metadata (lane bases, counts, styles and identity indices), while
+    /// the bar/field render shaders themselves compute the exact hit geometry.
+    pub fn pick_chart_data(
+        &mut self,
+        id: ChartId,
+        request: GpuPickRequest,
+    ) -> Result<crate::GpuDataPickTicket> {
+        let (config, series) = {
+            let state = self
+                .chart_states
+                .get(&id)
+                .ok_or(FiggyError::UnknownChart { id })?;
+            (state.config.clone(), state.series.clone())
+        };
+
+        // Submit the established point/line query first. It stays point-only,
+        // so the compatibility API and its registry lifecycle are unchanged.
+        let point_ticket = self.pick_chart(id, request)?;
+        let data_bundle = self.picker.ready_data_bundle()?;
+
+        let mut data_series = Vec::new();
+        data_series
+            .try_reserve_exact(series.len())
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "typed data pick series",
+                reason: error.to_string(),
+            })?;
+        let mut point_orders = Vec::new();
+        point_orders
+            .try_reserve_exact(series.len())
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "typed point pick paint order",
+                reason: error.to_string(),
+            })?;
+
+        for (index, cfg) in series.iter().enumerate() {
+            let paint_order =
+                u32::try_from(index).map_err(|_| FiggyError::InvalidSeriesConfig {
+                    series_id: cfg.series_id.clone(),
+                    reason: "series paint order exceeds the GPU u32 index space".into(),
+                })?;
+            point_orders.push(crate::gpu_data_pick::PointPaintOrder {
+                source_id: cfg.source_id.clone(),
+                series_id: cfg.series_id.clone(),
+                paint_order,
+            });
+
+            let primitives = effective_series_primitives(&config.draw_style, &cfg.render_type);
+            if primitives.bar {
+                let bar = extract_bar(&cfg.render_type)
+                    .expect("effective histogram primitive has a bar config");
+                let (edges_id, values_id, horizontal) = match bar.orientation {
+                    crate::data_config::BarOrientation::Vertical => {
+                        (&cfg.x_column, &cfg.y_column, false)
+                    }
+                    crate::data_config::BarOrientation::Horizontal => {
+                        (&cfg.y_column, &cfg.x_column, true)
+                    }
+                };
+                let edges =
+                    self.pool
+                        .handle_for(edges_id)
+                        .ok_or_else(|| FiggyError::UnknownColumn {
+                            id: edges_id.clone(),
+                        })?;
+                let values =
+                    self.pool
+                        .handle_for(values_id)
+                        .ok_or_else(|| FiggyError::UnknownColumn {
+                            id: values_id.clone(),
+                        })?;
+                let bin_count = edges.len_values.saturating_sub(1).min(values.len_values);
+                if bin_count != 0 {
+                    let bin_count =
+                        u32::try_from(bin_count).map_err(|_| FiggyError::InvalidSeriesConfig {
+                            series_id: cfg.series_id.clone(),
+                            reason: "histogram bin count exceeds the GPU u32 index space".into(),
+                        })?;
+                    let (baseline_hi, baseline_lo) =
+                        crate::data::split_f64_to_f32_pair(bar.baseline);
+                    let style_map = self
+                        .create_bar_style_map_for(bar, request.display_scale)
+                        .map(|map| map.bind_group);
+                    data_series.push(crate::gpu_data_pick::GpuDataPickSeries {
+                        source_id: cfg.source_id.clone(),
+                        series_id: cfg.series_id.clone(),
+                        paint_order,
+                        geometry: crate::gpu_data_pick::GpuDataPickGeometry::Histogram {
+                            edges,
+                            values,
+                            bin_count,
+                            baseline: [baseline_hi, baseline_lo],
+                            gap_px: bar.gap_px.max(0.0) * request.display_scale,
+                            width_ratio: data_render::sanitize_bar_width_ratio(bar.width_ratio),
+                            horizontal,
+                            style_map,
+                        },
+                    });
+                }
+                continue;
+            }
+
+            if !(primitives.field || primitives.contour) {
+                continue;
+            }
+            let has_fill = primitives.field;
+            let has_contour = primitives.contour;
+            let (field_bg, charge, drawable) = if has_fill {
+                self.ensure_field_scratch(&config, cfg)?;
+                let scratch = self
+                    .field_cache
+                    .get(cfg.series_id.as_str())
+                    .expect("field scratch was just ensured");
+                (
+                    scratch.field_bg.clone(),
+                    Arc::clone(&scratch.charge),
+                    scratch.drawable,
+                )
+            } else {
+                self.ensure_contour_scratch(cfg, &config, request.display_scale)?;
+                let scratch = self
+                    .contour_cache
+                    .get(cfg.series_id.as_str())
+                    .expect("contour scratch was just ensured");
+                (
+                    scratch.field_bg.clone(),
+                    Arc::clone(&scratch.charge),
+                    scratch.drawable,
+                )
+            };
+            if !drawable {
+                continue;
+            }
+            let contour_width_px = extract_contour(&cfg.render_type)
+                .map_or(0.0, |contour| contour.line.line_width.max(0.0))
+                * request.display_scale;
+            data_series.push(crate::gpu_data_pick::GpuDataPickSeries {
+                source_id: cfg.source_id.clone(),
+                series_id: cfg.series_id.clone(),
+                paint_order,
+                geometry: crate::gpu_data_pick::GpuDataPickGeometry::Field {
+                    field_bg,
+                    charge,
+                    has_fill,
+                    has_contour,
+                    contour_width_px,
+                },
+            });
+        }
+
+        let mut display_config = config.scaled(request.display_scale);
+        display_config.chart_area = crate::layout::ChartArea(request.display_panel_px);
+        let chart_rect = display_config.chart_area.0;
+        let data_area_px = display_config.data_area().ok().map(|area| {
+            let rect = area.0;
+            [
+                rect.x as f32,
+                rect.y as f32,
+                rect.width as f32,
+                rect.height as f32,
+            ]
+        });
+        let data_ticket = data_bundle.submit(
+            &self.pool,
+            crate::gpu_data_pick::GpuDataPickQuery {
+                transform: data_render::scatter_transform_from_config(&display_config),
+                chart_rect_px: [
+                    chart_rect.x as f32,
+                    chart_rect.y as f32,
+                    chart_rect.width as f32,
+                    chart_rect.height as f32,
+                ],
+                data_area_px,
+                canvas_position_px: request.canvas_position_px,
+                max_distance_px: request.max_distance_px,
+            },
+            data_series,
+        )?;
+        Ok(crate::gpu_data_pick::GpuDataPickTicket::new(
+            point_ticket,
+            data_ticket,
+            point_orders,
+        ))
+    }
+
     pub fn surface_format(&self) -> wgpu::TextureFormat {
         self.surface_format
     }
@@ -3548,6 +5434,29 @@ impl Renderer {
             .ok_or(FiggyError::UnknownChart { id })
     }
 
+    /// What one series of a renderer-owned chart draws right now — and whether
+    /// the data made it smaller than the declaration asked for.
+    ///
+    /// The reporting window for the smallest-common-extent rule: a length mismatch is drawn to the
+    /// smallest common extent, never raised as an error, so this is how a host
+    /// learns that its 11-edge / 9-count histogram drew 9 bars. Reads the pool's
+    /// current lengths, so the answer follows an upsert without a re-prepare.
+    pub fn series_draw_info(&self, id: ChartId, series_id: &str) -> Result<SeriesDrawInfo> {
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        let series = state
+            .series
+            .iter()
+            .find(|series| series.series_id == series_id)
+            .ok_or_else(|| FiggyError::InvalidSeriesConfig {
+                series_id: series_id.to_string(),
+                reason: "no series with this id in the chart".to_string(),
+            })?;
+        Ok(series_draw_info_from_pool(&self.pool, series))
+    }
+
     pub fn chart_selection(&self, id: ChartId) -> Result<Option<HitId>> {
         self.chart_states
             .get(&id)
@@ -3579,7 +5488,7 @@ impl Renderer {
     /// are checked before any state is published.
     pub fn register_chart(&mut self, config: Config, series: Vec<SeriesConfig>) -> Result<ChartId> {
         crate::chart::validate_renderer_config(&config)?;
-        validate_renderer_series(&self.pool, &series)?;
+        validate_renderer_series(&self.pool, &config, &series)?;
         let id_value = self
             .next_chart_id
             .checked_add(1)
@@ -3691,11 +5600,13 @@ impl Renderer {
     }
 
     pub fn set_chart_series(&mut self, id: ChartId, series: Vec<SeriesConfig>) -> Result<()> {
-        validate_renderer_series(&self.pool, &series)?;
         let state = self
             .chart_states
             .get(&id)
             .ok_or(FiggyError::UnknownChart { id })?;
+        // Validated against the chart's *current* config: this call replaces the
+        // series only, so that config is what the new series will be drawn with.
+        validate_renderer_series(&self.pool, &state.config, &series)?;
         let desired = state
             .revisions
             .desired
@@ -3748,7 +5659,7 @@ impl Renderer {
         series: Vec<SeriesConfig>,
     ) -> Result<()> {
         crate::chart::validate_renderer_config(&config)?;
-        validate_renderer_series(&self.pool, &series)?;
+        validate_renderer_series(&self.pool, &config, &series)?;
         let state = self
             .chart_states
             .get(&id)
@@ -3985,6 +5896,15 @@ impl Renderer {
     }
 
     fn prepare_column_invalidation(&self, id: &str) -> Result<ColumnInvalidationPlan> {
+        self.prepare_columns_invalidation(std::iter::once(id))
+    }
+
+    /// The invalidation plan for a mutation that touches several columns at
+    /// once. One pass over the charts, whatever the batch size.
+    fn prepare_columns_invalidation<'i>(
+        &self,
+        ids: impl Iterator<Item = &'i str> + Clone,
+    ) -> Result<ColumnInvalidationPlan> {
         let mut charts = Vec::new();
         charts
             .try_reserve(self.chart_order.len())
@@ -3997,11 +5917,7 @@ impl Renderer {
                 .chart_states
                 .get(chart_id)
                 .ok_or(FiggyError::UnknownChart { id: *chart_id })?;
-            if state
-                .series
-                .iter()
-                .any(|series| series_references_column(series, id))
-            {
+            if series_list_references_any_column(&state.series, ids.clone()) {
                 charts.push(ChartColumnInvalidation {
                     id: *chart_id,
                     desired: state
@@ -4104,7 +6020,6 @@ impl Renderer {
         id: &str,
         config_override: Option<(ChartId, Config)>,
     ) -> Result<bool> {
-        validate_host_column_id(id)?;
         if self.pool.slot(id).is_none() {
             return Ok(false);
         }
@@ -4207,6 +6122,8 @@ impl Renderer {
         let had_pick_ring = self.pipelines.pick_ring.is_some();
         let had_pick_ring_mapped = self.pipelines.pick_ring_mapped.is_some();
         let had_errorbar_mapped = self.pipelines.errorbar_mapped.is_some();
+        let had_bar = self.pipelines.bar.is_some();
+        let had_bar_mapped = self.pipelines.bar_mapped.is_some();
         self.pipelines = create_target_pipelines(
             &self.device,
             &self.texture_bgl,
@@ -4235,6 +6152,29 @@ impl Renderer {
                     &self.pipelines.shaders.scatter,
                     &self.transform_bgl,
                     &self.style_bgl,
+                    surface_format,
+                    target_sample_count,
+                ),
+            );
+        }
+        if had_bar {
+            self.pipelines.bar = Some(data_render::create_bar_columnar_pipeline_with_sample_count(
+                &self.device,
+                &self.pipelines.shaders.bar,
+                &self.transform_bgl,
+                &self.style_bgl,
+                surface_format,
+                target_sample_count,
+            ));
+        }
+        if had_bar_mapped {
+            self.pipelines.bar_mapped = Some(
+                data_render::create_bar_columnar_mapped_pipeline_with_sample_count(
+                    &self.device,
+                    &self.pipelines.shaders.bar,
+                    &self.transform_bgl,
+                    &self.style_bgl,
+                    &self.per_point_style_map_bgl,
                     surface_format,
                     target_sample_count,
                 ),
@@ -4358,14 +6298,21 @@ impl Renderer {
     pub fn errorbar_pipeline(&self) -> Option<&wgpu::RenderPipeline> {
         self.pipelines.errorbar.as_ref()
     }
+    pub fn bar_pipeline(&self) -> Option<&wgpu::RenderPipeline> {
+        self.pipelines.bar.as_ref()
+    }
 
-    /// True after explicit exact-extent preparation has published the compute
+    pub fn bar_mapped_pipeline(&self) -> Option<&wgpu::RenderPipeline> {
+        self.pipelines.bar_mapped.as_ref()
+    }
+
+    /// True after explicit fit-bound preparation has published the compute
     /// engine. Construction and ordinary frame preparation leave it uncreated.
     pub fn errorbar_extent_engine_ready(&self) -> bool {
         self.errorbar_extent_engine.is_some()
     }
 
-    /// Prepare and publish the exact-extent compute engine if needed.
+    /// Prepare and publish the drawable-series fit-bound engine if needed.
     ///
     /// This is the only creation boundary. All hosts must complete it through
     /// exclusive mutable renderer access before shared extent submission. On
@@ -4382,14 +6329,112 @@ impl Renderer {
         self.finish_errorbar_extent_engine_preparation(warm_result)
     }
 
+    /// Compile and retain every renderer-owned pipeline before first use.
+    ///
+    /// The observer receives a started/finished pair around each independently
+    /// scheduled stage. On wasm every finished stage yields to the browser so
+    /// host UI and file parsing remain live while the renderer is preparing.
+    /// Repeated calls are cheap: already-published caches are reused.
+    pub async fn prewarm_all_observed(
+        &mut self,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> Result<()> {
+        if self.contour_label_pipelines.is_none() {
+            #[cfg(target_arch = "wasm32")]
+            crate::init::prewarm_compute_entries_js(
+                &self.device,
+                "contour.label.async",
+                include_str!("contour_anchor.wgsl"),
+                &[
+                    ("anchor_project", "anchor_project"),
+                    ("anchor_select", "anchor_select"),
+                ],
+                observer,
+            )
+            .await
+            .map_err(|reason| FiggyError::GpuResourceAllocationFailed {
+                resource: "contour label compute pipelines",
+                reason,
+            })?;
+            self.contour_label_pipelines = Some(
+                observe_value_async(observer, "renderer.prewarm", "contour label engine", || {
+                    crate::gpu_contour::ContourLabelPipelines::new(&self.device, &self.field_bgl)
+                })
+                .await,
+            );
+        }
+
+        self.pipelines
+            .prewarm_all_observed(
+                &self.device,
+                &self.queue,
+                &self.transform_bgl,
+                &self.style_bgl,
+                &self.per_point_style_map_bgl,
+                &self.data_selection_bgl,
+                &self.field_bgl,
+                &self.star_data_bgl,
+                self.contour_label_pipelines
+                    .as_ref()
+                    .expect("contour label pipelines were prepared"),
+                self.surface_format,
+                observer,
+            )
+            .await;
+
+        if self.arc_pipelines.is_none() {
+            self.arc_pipelines = Some(
+                data_render::line_arc::create_arc_scan_pipelines_observed_async(
+                    &self.device,
+                    observer,
+                )
+                .await
+                .map_err(|reason| FiggyError::GpuResourceAllocationFailed {
+                    resource: "line arc compute pipelines",
+                    reason,
+                })?,
+            );
+        }
+
+        if self.errorbar_extent_engine.is_none() {
+            started(observer, "renderer.prewarm", "fit extent compute");
+            self.ensure_errorbar_extent_engine()
+                .await
+                .map_err(|error| FiggyError::GpuResourceAllocationFailed {
+                    resource: "fit extent compute pipelines",
+                    reason: error.to_string(),
+                })?;
+            finished(observer, "renderer.prewarm", "fit extent compute");
+            crate::init::yield_init_frame().await;
+        }
+
+        started(observer, "renderer.prewarm", "point picking compute");
+        self.enable_gpu_picking_observed_async(observer)
+            .await
+            .map_err(|error| FiggyError::GpuResourceAllocationFailed {
+                resource: "point picking compute pipelines",
+                reason: error.to_string(),
+            })?;
+        finished(observer, "renderer.prewarm", "point picking compute");
+        crate::init::yield_init_frame().await;
+        Ok(())
+    }
+
+    pub async fn prewarm_all(&mut self) -> Result<()> {
+        let mut noop = |_| {};
+        self.prewarm_all_observed(&mut noop).await
+    }
+
     fn finish_errorbar_extent_engine_preparation(
         &mut self,
         warm_result: std::result::Result<(), crate::gpu_errorbar::GpuErrorbarError>,
     ) -> std::result::Result<(), crate::gpu_errorbar::GpuErrorbarError> {
         warm_result?;
-        self.errorbar_extent_engine = Some(crate::gpu_errorbar::GpuErrorbarExtentEngine::new(
-            self.device.as_ref(),
-        ));
+        self.errorbar_extent_engine =
+            Some(crate::gpu_errorbar::GpuErrorbarExtentEngine::new_tracked(
+                self.device.as_ref(),
+                Arc::clone(&self.gpu_ledger),
+            ));
         Ok(())
     }
 
@@ -4450,8 +6495,11 @@ impl Renderer {
             visual_revision,
             pending_defrag,
             picker,
+            gpu_ledger,
+            memory_budget,
             ..
         } = self;
+        let memory_budget = *memory_budget;
         let inner = pool.begin_demo_batch_upsert(
             [
                 (DEMO_COLUMN_IDS[0].to_string(), demo_x),
@@ -4459,12 +6507,16 @@ impl Renderer {
                 (DEMO_COLUMN_IDS[2].to_string(), demo_t),
                 (DEMO_COLUMN_IDS[3].to_string(), demo_rc),
             ],
-            device.as_ref(),
-            queue.as_ref(),
+            pool_alloc_ctx(
+                device.as_ref(),
+                queue.as_ref(),
+                memory_budget,
+                gpu_ledger.as_ref(),
+            ),
         )?;
         let (config, series) = prepare_state(inner.pool())?;
         crate::chart::validate_renderer_config(&config)?;
-        validate_renderer_series(inner.pool(), &series)?;
+        validate_renderer_series(inner.pool(), &config, &series)?;
         let chart_plan = prepare_load_demo_chart_plan(
             chart_states,
             chart_order,
@@ -4511,7 +6563,6 @@ impl Renderer {
         source: &dyn ColumnSource,
     ) -> Result<ColumnHandle> {
         let id = id.into();
-        validate_host_column_id(&id)?;
         if self.pool.slot(&id).is_some() {
             return Err(data_render::AllocError::DuplicateId(id).into());
         }
@@ -4524,11 +6575,75 @@ impl Renderer {
         source: &dyn HiLoColumnSource,
     ) -> Result<ColumnHandle> {
         let id = id.into();
-        validate_host_column_id(&id)?;
         if self.pool.slot(&id).is_some() {
             return Err(data_render::AllocError::DuplicateId(id).into());
         }
         Ok(self.begin_upsert_hilo_column(id, source)?.commit())
+    }
+
+    /// Upload many **new** columns in one transaction: one pool region, one
+    /// staging buffer, one copy, one submit — instead of one of each per column.
+    ///
+    /// This is the path a matrix declaration takes. At the thousands of columns
+    /// a grid has, per-column [`Self::add_column`] spends the whole upload on
+    /// first-fit searches, staging buffers and `queue.submit` calls. Nothing
+    /// about the batch is matrix-specific, so any host with many columns gets it.
+    ///
+    /// Every id must be new to the pool and distinct within the batch —
+    /// `DuplicateId` otherwise, with nothing uploaded. An empty slice is a
+    /// no-op. No handles come back: a batch may relocate the pool, so callers
+    /// re-acquire them through [`Self::handle_for`] exactly as after any other
+    /// invalidating mutation.
+    ///
+    /// Failure-atomic end to end. The pool guard holds the columns provisionally
+    /// while the chart revisions and the picker are prepared against them; if
+    /// any of that fails the guard is dropped and no column is published.
+    ///
+    /// One thing a failure does not undo: a compaction or growth that had to
+    /// happen first to make one contiguous region. That relayout is not part of
+    /// the batch — the pool is simply laid out differently with the same columns
+    /// in it — so handles and prepared frames are re-acquired exactly as after a
+    /// [`Self::defragment`], and an active picker reports `StaleColumn` until it
+    /// is prepared again.
+    pub fn add_columns(&mut self, columns: &[(&str, &dyn ColumnSource)]) -> Result<()> {
+        if columns.is_empty() {
+            return Ok(());
+        }
+        let invalidation = self.prepare_columns_invalidation(columns.iter().map(|(id, _)| *id))?;
+        let old_layout_generation = self.pool.layout_generation();
+        let ctx = pool_alloc_ctx(
+            self.device.as_ref(),
+            self.queue.as_ref(),
+            self.memory_budget,
+            self.gpu_ledger.as_ref(),
+        );
+        let batch = self.pool.begin_add_columns(columns, ctx)?;
+        let relocated = batch.pool().layout_generation() != old_layout_generation;
+        // No changed-column list: every id here is new to the pool, and
+        // `validate_renderer_series` refuses a series that reads a column the
+        // pool does not have (test:
+        // `a_matrix_column_must_be_registered_and_is_a_referenced_column`), so
+        // no picker slot can already be reading one of them. Relocation is the
+        // only reason a batch insert can force a rebuild — and it needs no list.
+        let picker = prepare_picker_for_pool_mutation(
+            &mut self.picker,
+            batch.pool(),
+            &self.chart_states,
+            relocated,
+            &[],
+        )?;
+
+        batch.commit();
+        invalidation.publish(&mut self.chart_states, &mut self.visual_revision);
+        if let Some(picker) = picker {
+            picker.commit();
+        }
+        if relocated {
+            // The batch relaid the pool out, so the maintenance defrag the
+            // upsert path would have asked for is already paid for.
+            self.pending_defrag = false;
+        }
+        Ok(())
     }
 
     /// Begin a failure-atomic scalar insert or same-id replacement.
@@ -4538,14 +6653,17 @@ impl Renderer {
         source: &dyn ColumnSource,
     ) -> Result<RendererColumnUpsert<'_>> {
         let id = id.into();
-        validate_host_column_id(&id)?;
         let invalidation = self.prepare_column_invalidation(&id)?;
         let old_layout_generation = self.pool.layout_generation();
         let inner = self.pool.begin_upsert_column(
             id.clone(),
             source,
-            self.device.as_ref(),
-            self.queue.as_ref(),
+            pool_alloc_ctx(
+                self.device.as_ref(),
+                self.queue.as_ref(),
+                self.memory_budget,
+                self.gpu_ledger.as_ref(),
+            ),
         )?;
         finish_renderer_column_upsert(
             inner,
@@ -4570,14 +6688,17 @@ impl Renderer {
         source: &dyn HiLoColumnSource,
     ) -> Result<RendererColumnUpsert<'_>> {
         let id = id.into();
-        validate_host_column_id(&id)?;
         let invalidation = self.prepare_column_invalidation(&id)?;
         let old_layout_generation = self.pool.layout_generation();
         let inner = self.pool.begin_upsert_hilo_column(
             id.clone(),
             source,
-            self.device.as_ref(),
-            self.queue.as_ref(),
+            pool_alloc_ctx(
+                self.device.as_ref(),
+                self.queue.as_ref(),
+                self.memory_budget,
+                self.gpu_ledger.as_ref(),
+            ),
         )?;
         finish_renderer_column_upsert(
             inner,
@@ -4617,45 +6738,6 @@ impl Renderer {
         Ok(self.begin_upsert_hilo_column(id, source)?.commit())
     }
 
-    /// Ensure the renderer-owned filler column can cover `len` points.
-    ///
-    /// The column grows only when necessary and is uploaded without a
-    /// temporary scalar vector. It is maintenance data, not a public chart
-    /// column or a second source of truth.
-    pub fn ensure_internal_zero_column(&mut self, len: usize) -> Result<()> {
-        if len == 0
-            || self
-                .pool
-                .slot(INTERNAL_ZERO_COLUMN_ID)
-                .is_some_and(|slot| slot.len_values >= len)
-        {
-            return Ok(());
-        }
-        let old_layout_generation = self.pool.layout_generation();
-        let inner = self.pool.begin_upsert_column(
-            INTERNAL_ZERO_COLUMN_ID.to_string(),
-            &InternalZeroColumn { len },
-            self.device.as_ref(),
-            self.queue.as_ref(),
-        )?;
-        finish_renderer_column_upsert(
-            inner,
-            INTERNAL_ZERO_COLUMN_ID,
-            old_layout_generation,
-            &mut self.chart_states,
-            &mut self.visual_revision,
-            &mut self.pending_defrag,
-            &mut self.picker,
-            None,
-            self.renderer_identity,
-            self.device.as_ref(),
-            self.queue.as_ref(),
-            self.errorbar_extent_engine.as_ref(),
-        )?
-        .commit();
-        Ok(())
-    }
-
     /// Remove a column and cascade-remove every renderer-owned series that
     /// references it, so no registered chart can retain a freed data id.
     ///
@@ -4684,9 +6766,12 @@ impl Renderer {
     /// Compact every live column to the start of the pool. `true` iff
     /// anything actually moved.
     pub fn defragment(&mut self) -> Result<bool> {
-        let defragment = self
-            .pool
-            .begin_defragment(self.device.as_ref(), self.queue.as_ref())?;
+        let defragment = self.pool.begin_defragment(pool_alloc_ctx(
+            self.device.as_ref(),
+            self.queue.as_ref(),
+            self.memory_budget,
+            self.gpu_ledger.as_ref(),
+        ))?;
         let picker = if defragment.relocated() {
             match self.picker.active.as_ref().map(|active| active.chart_id) {
                 Some(chart_id) => {
@@ -4730,6 +6815,25 @@ impl Renderer {
         self.pool.defrag_policy = policy;
     }
 
+    /// Whether an upload that does not fit may enlarge the pool.
+    pub fn pool_growth_policy(&self) -> data_render::GrowthPolicy {
+        self.pool.growth_policy
+    }
+
+    /// Let uploads that do not fit enlarge the pool, or keep the fixed-capacity
+    /// behavior.
+    ///
+    /// `GrowthPolicy::Fixed` is the default and the 0.9 contract: an upload
+    /// with nowhere to go reports `OutOfSpace` and the host decides. With
+    /// `OnAllocFailure` the pool relayouts into a larger buffer first, which
+    /// invalidates every live [`ColumnHandle`] and `PreparedFrame` exactly as a
+    /// defragmentation does. Growth is still bounded by the device ceiling and
+    /// by [`Self::set_memory_budget`]; when it cannot happen the original
+    /// `OutOfSpace` is what the caller sees.
+    pub fn set_pool_growth_policy(&mut self, policy: data_render::GrowthPolicy) {
+        self.pool.growth_policy = policy;
+    }
+
     pub fn handle_for(&self, id: &str) -> Result<ColumnHandle> {
         self.pool
             .handle_for(id)
@@ -4740,7 +6844,7 @@ impl Renderer {
         self.pool.is_valid_handle(h)
     }
 
-    /// Submit one exact errorbar-inclusive extent reduction from the current
+    /// Submit one errorbar-inclusive fit-bound reduction from the current
     /// GPU column-pool mappings. The returned ticket owns its readback and
     /// does not borrow this renderer.
     pub fn begin_errorbar_extent(
@@ -4763,7 +6867,7 @@ impl Renderer {
         )
     }
 
-    /// Submit one exact x/y extent reduction over the primitive rows that
+    /// Submit one x/y fit-bound reduction over the primitive rows that
     /// the current series mode can draw. The returned ticket owns its
     /// readback and does not borrow this renderer.
     pub fn begin_series_extent(
@@ -4781,6 +6885,25 @@ impl Renderer {
             &self.pool,
             mode,
             columns,
+        )
+    }
+
+    /// Begin the normalized drawable fit domain for a series. Histograms remain
+    /// metadata-only and return `None`; every paired or matrix-backed primitive
+    /// returns an owned GPU ticket.
+    pub fn begin_series_fit_extent(
+        &self,
+        series: &SeriesConfig,
+    ) -> std::result::Result<
+        Option<crate::gpu_errorbar::GpuSeriesExtentTicket>,
+        crate::gpu_errorbar::GpuErrorbarError,
+    > {
+        begin_series_fit_extent_from_pool(
+            prepared_errorbar_extent_engine(self.errorbar_extent_engine.as_ref())?,
+            &self.device,
+            &self.queue,
+            &self.pool,
+            series,
         )
     }
 
@@ -4858,11 +6981,18 @@ impl Renderer {
         })?;
 
         let caps = RendererDeviceCaps::from_device(&device);
+        // Probing MSAA decides the sample count the renderer's pipelines are
+        // compiled against, so it has to happen before the renderer exists.
+        // The ledger is therefore created here and adopted by the renderer:
+        // one ledger per device, this target included.
+        // host-alloc: W1-a
+        let gpu_ledger = Arc::new(GpuLedger::new());
         let preferred_sample_count = preferred_msaa_sample_count(caps, surface_config.format);
         let (target_sample_count, msaa_target) =
             observe_result(observer, "window", "figgy frame msaa target", || {
                 match create_msaa_target(
                     &device,
+                    &gpu_ledger,
                     caps,
                     "figgy frame msaa target",
                     surface_config.width,
@@ -4881,6 +7011,7 @@ impl Renderer {
             surface_config.format,
             pool_capacity_bytes,
             target_sample_count,
+            Arc::clone(&gpu_ledger),
             observer,
         )
         .await?;
@@ -4928,6 +7059,9 @@ impl Renderer {
     //      — pure recording, repeatable, no lock required. Returns
     //      `FiggyError::StalePreparedFrame` if an invalidating `&mut` call
     //      interleaved; recover by re-preparing next frame.
+    //   4. After submitting every panel command buffer, call
+    //      `renderer.end_gpu_frame()` once. Never call it per-panel during the
+    //      prepare sweep: later panels can still own unsubmitted work.
     //
     // No `Mutex` is needed for the paint callback: `Renderer` is Send + Sync
     // and `paint_prepared` never mutates. Hosts that own the renderer
@@ -4998,7 +7132,7 @@ impl Renderer {
             }
             None => PrimitiveStyle::from_color(Color::BLACK),
         };
-        let errorbar = match extract_errorbar_style(&cfg.render_type) {
+        let mut errorbar = match extract_errorbar_style(&cfg.render_type) {
             Some(e) => {
                 let mut s = PrimitiveStyle::from_color_with_width(
                     e.error_bar_color,
@@ -5010,38 +7144,65 @@ impl Renderer {
             }
             None => PrimitiveStyle::from_color(Color::BLACK),
         };
-        let (mut line, mut scatter, mut errorbar) = (line, scatter, errorbar);
+        errorbar.primitive_flags = errorbar_direction_flags(&cfg.render_type);
+        // Bars reinterpret the same `Style` bytes — fill, border, gap, baseline,
+        // orientation. SHADER_COMMON.md's bar reinterpretation table is the SSoT.
+        let bar = match extract_bar(&cfg.render_type) {
+            Some(b) => PrimitiveStyle::from_bar(b, scale),
+            None => PrimitiveStyle::from_color(Color::BLACK),
+        };
+        let (mut line, mut scatter, mut bar) = (line, scatter, bar);
         line.series_salt = series_salt;
         scatter.series_salt = series_salt;
         errorbar.series_salt = series_salt;
+        bar.series_salt = series_salt;
         let scatter_map = extract_scatter(&cfg.render_type)
             .and_then(|sc| self.create_scatter_style_map_for(sc, scale));
         let errorbar_map = extract_errorbar_style(&cfg.render_type)
             .and_then(|eb| self.create_errorbar_style_map_for(eb, scale));
-        self.create_style_from_primitives(line, scatter, errorbar, scatter_map, errorbar_map)
+        let bar_map =
+            extract_bar(&cfg.render_type).and_then(|bar| self.create_bar_style_map_for(bar, scale));
+        self.create_style_from_primitives(
+            line,
+            scatter,
+            errorbar,
+            bar,
+            scatter_map,
+            errorbar_map,
+            bar_map,
+            scale,
+        )
     }
 
     /// Shared tail of `create_style_for_series*`: allocate the three style
     /// uniform buffers and bind groups from fully-built values.
+    #[allow(clippy::too_many_arguments)]
     fn create_style_from_primitives(
         &self,
         line: PrimitiveStyle,
         scatter: PrimitiveStyle,
         errorbar: PrimitiveStyle,
+        bar: PrimitiveStyle,
         scatter_map: Option<data_render::ScatterStyleMap>,
         errorbar_map: Option<data_render::ErrorBarStyleMap>,
+        bar_map: Option<data_render::BarStyleMap>,
+        display_scale: f32,
     ) -> ChartStyle {
         let dev = &self.device;
         let scatter_radius_px = scatter.point_radius_px;
         let line_buf = data_render::create_style_uniform_buffer(dev, &line);
         let sc_buf = data_render::create_style_uniform_buffer(dev, &scatter);
         let eb_buf = data_render::create_style_uniform_buffer(dev, &errorbar);
+        let bar_buf = data_render::create_style_uniform_buffer(dev, &bar);
         ChartStyle {
             line_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &line_buf),
             scatter_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &sc_buf),
             errorbar_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &eb_buf),
+            bar_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &bar_buf),
             scatter_map,
             errorbar_map,
+            bar_map,
+            display_scale,
             scatter_radius_px,
         }
     }
@@ -5166,6 +7327,38 @@ impl Renderer {
         ))
     }
 
+    fn create_bar_style_map_for(
+        &self,
+        bar: &DataBarStyleConfig,
+        scale: f32,
+    ) -> Option<data_render::BarStyleMap> {
+        let overrides: Vec<data_render::BarStyleOverrideGpu> = bar
+            .bar_style_overrides
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|style_override| {
+                let bin_index = u32::try_from(style_override.index).ok()?;
+                let slot = bar_style_slot_gpu(&style_override.style, scale);
+                Some(data_render::BarStyleOverrideGpu {
+                    bin_index,
+                    _pad: [0; 3],
+                    fill_color_premul: slot.fill_color_premul,
+                    border_color_premul: slot.border_color_premul,
+                    params: slot.params,
+                })
+            })
+            .collect();
+        if overrides.is_empty() {
+            return None;
+        }
+        Some(data_render::create_bar_style_map(
+            &self.device,
+            &self.per_point_style_map_bgl,
+            &overrides,
+        ))
+    }
+
     /// Build the per-panel GPU resources: grid + decoration textures and
     /// bind groups, plus the transform uniform buffer + bind group.
     /// `panel_rect` is the panel's pixel rect in surface coordinates.
@@ -5180,14 +7373,18 @@ impl Renderer {
             chart.config(),
             axis_render::AxisLayerKind::Grid,
         )?;
-        let grid_tex = data_render::upload_rgba_texture(
-            &self.device,
-            &self.queue,
-            self.caps.max_texture_dimension_2d,
-            w,
-            h,
-            &grid_rgba,
-        )?;
+        let grid_tex = TrackedTexture::new(
+            &self.gpu_ledger,
+            GpuResourceKind::PanelTexture,
+            data_render::upload_rgba_texture(
+                &self.device,
+                &self.queue,
+                self.caps.max_texture_dimension_2d,
+                w,
+                h,
+                &grid_rgba,
+            )?,
+        );
         let grid_view_t = grid_tex.create_view(&wgpu::TextureViewDescriptor::default());
         let grid_bg = data_render::create_texture_bind_group(
             &self.device,
@@ -5201,14 +7398,18 @@ impl Renderer {
             chart.config(),
             axis_render::AxisLayerKind::Decoration,
         )?;
-        let dec_tex = data_render::upload_rgba_texture(
-            &self.device,
-            &self.queue,
-            self.caps.max_texture_dimension_2d,
-            w,
-            h,
-            &dec_rgba,
-        )?;
+        let dec_tex = TrackedTexture::new(
+            &self.gpu_ledger,
+            GpuResourceKind::PanelTexture,
+            data_render::upload_rgba_texture(
+                &self.device,
+                &self.queue,
+                self.caps.max_texture_dimension_2d,
+                w,
+                h,
+                &dec_rgba,
+            )?,
+        );
         let dec_view_t = dec_tex.create_view(&wgpu::TextureViewDescriptor::default());
         let dec_bg = data_render::create_texture_bind_group(
             &self.device,
@@ -5218,8 +7419,11 @@ impl Renderer {
         );
 
         let t = data_render::scatter_transform_from_config(chart.config());
-        let transform_buffer =
-            data_render::create_scatter_transform_uniform_buffer(&self.device, &t);
+        let transform_buffer = TrackedBuffer::new(
+            &self.gpu_ledger,
+            GpuResourceKind::Uniform,
+            data_render::create_scatter_transform_uniform_buffer(&self.device, &t),
+        );
         let transform_bg = data_render::create_scatter_transform_bind_group(
             &self.device,
             &self.transform_bgl,
@@ -5355,7 +7559,7 @@ impl Renderer {
     /// the grid and decoration layers.
     fn refresh_one_layer(
         &self,
-        tex: &mut wgpu::Texture,
+        tex: &mut TrackedTexture,
         bg: &mut wgpu::BindGroup,
         rgba: &[u8],
         w: u32,
@@ -5383,14 +7587,21 @@ impl Renderer {
                 },
             );
         } else {
-            let new_tex = data_render::upload_rgba_texture(
-                &self.device,
-                &self.queue,
-                self.caps.max_texture_dimension_2d,
-                w,
-                h,
-                rgba,
-            )?;
+            // The replacement is charged before the assignment below drops
+            // the old one, so a resize reads as `old + new` for one frame —
+            // which is what the device is holding.
+            let new_tex = TrackedTexture::new(
+                &self.gpu_ledger,
+                GpuResourceKind::PanelTexture,
+                data_render::upload_rgba_texture(
+                    &self.device,
+                    &self.queue,
+                    self.caps.max_texture_dimension_2d,
+                    w,
+                    h,
+                    rgba,
+                )?,
+            );
             let new_view_t = new_tex.create_view(&wgpu::TextureViewDescriptor::default());
             let new_bg = data_render::create_texture_bind_group(
                 &self.device,
@@ -5453,19 +7664,51 @@ impl Renderer {
     /// harmless) for callers of this API.
     ///
     /// Contract: call after this frame's data uploads (`add_column`),
-    /// `ensure_target_format`, and `refresh_axis`; before the host submits
-    /// the command buffer containing the render pass. The returned token owns
-    /// the resolved draw input. `paint_prepared` therefore receives no second
+    /// `ensure_target_format`, and `refresh_axis`; before the host records and
+    /// submits the command buffer containing the render pass. Once a command
+    /// buffer has been recorded from the token, submit it before any later
+    /// mutation of the same [`ChartView`] or another `prepare` for that view.
+    /// The returned token owns the resolved draw input. `paint_prepared`
+    /// therefore receives no second
     /// copy of chart/view/series/style inputs. It rejects renderer resource
     /// changes that invalidate the captured GPU work: target-pipeline rebuild,
     /// pool layout change, replacement of any captured column allocation, or
     /// another transform/axis write to a captured `ChartView`.
     pub fn prepare(&mut self, items: &[ChartDrawItem<'_>]) -> Result<PreparedFrame> {
+        let mut contour_spacings = Vec::with_capacity(items.len());
+        for item in items {
+            let mut per_series = Vec::with_capacity(item.series.len());
+            for series in item.series {
+                validate_contour_level_count(
+                    series.config.series_id.as_str(),
+                    &series.config.render_type,
+                )?;
+                let contour_enabled = effective_series_primitives(
+                    &item.chart_config.draw_style,
+                    &series.config.render_type,
+                )
+                .contour;
+                per_series.push(preflight_contour_label_spacing(
+                    series.config.series_id.as_str(),
+                    &series.config.render_type,
+                    contour_enabled,
+                    1.0,
+                )?);
+            }
+            contour_spacings.push(per_series);
+        }
+        // The label draw's module and group-1 layout live on the renderer, and
+        // the target pipeline is compiled from them — so they have to exist
+        // before the one place allowed to compile new pipelines runs.
+        self.ensure_contour_label_pipelines(items);
         self.pipelines.ensure_precise_variants_for_items(
             &self.device,
             &self.transform_bgl,
             &self.style_bgl,
             &self.per_point_style_map_bgl,
+            &self.data_selection_bgl,
+            &self.field_bgl,
+            self.contour_label_pipelines.as_ref(),
             self.surface_format,
             items,
         );
@@ -5478,15 +7721,24 @@ impl Renderer {
             self.surface_format,
             items,
         );
+        let mut grid_sources = self.ensure_field_scratches(items)?;
+        let (prepared_contours, mut contour_sources) =
+            self.ensure_contour_scratches(items, 1.0, &contour_spacings)?;
+        grid_sources.append(&mut contour_sources);
         let prepared_arcs = self.prepare_arc_items(items)?;
-        let (items, column_sources) =
-            self.resolve_prepared_items(items, &prepared_arcs, &self.pipelines)?;
+        let (items, column_sources) = self.resolve_prepared_items(
+            items,
+            &prepared_arcs,
+            &prepared_contours,
+            &self.pipelines,
+        )?;
         Ok(PreparedFrame {
             renderer_identity: self.renderer_identity,
             items,
             column_sources,
             pool_layout_generation: self.pool.layout_generation(),
             target_pipeline_generation: self.target_pipeline_generation,
+            grid_sources,
         })
     }
 
@@ -5503,7 +7755,9 @@ impl Renderer {
     /// not reconstruct or pass it again. Renderer-level stamps detect
     /// invalidating `&mut self` calls since `prepare`. On mismatch nothing is
     /// recorded and [`FiggyError::StalePreparedFrame`] is returned; recovery
-    /// is a fresh `prepare`.
+    /// is a fresh `prepare`. A recorded command buffer is outside Rust's
+    /// borrow graph, so the host must submit it before mutating or preparing
+    /// the same [`ChartView`] again; validation can only run while recording.
     pub fn paint_prepared(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -5558,7 +7812,93 @@ impl Renderer {
                 )));
             }
         }
+        // A field's grid columns, walked from the shared receipt: reads only, so
+        // a 5000-column matrix costs no allocation to validate.
+        for sources in &prepared.grid_sources {
+            for (id, allocation_epoch) in sources.ids.iter().zip(&sources.epochs) {
+                if self.pool.allocation_epoch(id) != Some(*allocation_epoch) {
+                    return Err(stale(format!(
+                        "grid column {:?} changed allocation between prepare and paint_prepared",
+                        id
+                    )));
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// Read the instance-count word from a prepared contour label's indirect
+    /// draw arguments. This exists only for native unit tests and wasm browser
+    /// conformance tests, where pixels cannot distinguish all 1024 instances.
+    #[cfg(any(test, target_arch = "wasm32"))]
+    #[doc(hidden)]
+    pub async fn contour_label_instance_count_for_test(
+        &self,
+        prepared: &PreparedFrame,
+        item_index: usize,
+        series_index: usize,
+    ) -> Result<Option<u32>> {
+        self.validate_prepared(prepared)?;
+        let Some(indirect) = prepared
+            .items
+            .get(item_index)
+            .and_then(|item| item.series.get(series_index))
+            .and_then(|series| series.contour.as_ref())
+            .and_then(|contour| contour.label.as_ref())
+            .map(|label| label.snapshot.indirect())
+        else {
+            return Ok(None);
+        };
+
+        // gpu-alloc: Readback
+        let readback = TrackedBuffer::new(
+            &self.gpu_ledger,
+            GpuResourceKind::Readback,
+            self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("figgy contour label indirect count readback"),
+                size: 4,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            }),
+        );
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("figgy contour label indirect count copy"),
+            });
+        encoder.copy_buffer_to_buffer(indirect, 4, &readback, 0, 4);
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        let slice = readback.slice(..);
+        let (tx, rx) = futures_channel::oneshot::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+        rx.await
+            .map_err(|error| FiggyError::GpuResourceAllocationFailed {
+                resource: "contour label indirect count readback",
+                reason: format!("map_async sender dropped: {error}"),
+            })?
+            .map_err(|error| FiggyError::GpuResourceAllocationFailed {
+                resource: "contour label indirect count readback",
+                reason: format!("map_async: {error:?}"),
+            })?;
+        let mapped =
+            slice
+                .get_mapped_range()
+                .map_err(|error| FiggyError::GpuResourceAllocationFailed {
+                    resource: "contour label indirect count readback",
+                    reason: format!("get_mapped_range: {error:?}"),
+                })?;
+        let count = u32::from_le_bytes(mapped[..4].try_into().expect("four-byte readback"));
+        drop(mapped);
+        readback.unmap();
+        Ok(Some(count))
     }
 
     /// Per-item body of the prepare phase (also reused by export). For each
@@ -5569,6 +7909,765 @@ impl Renderer {
     /// `needs_arc_prefix` (sketch: the wobble is parameterized by arc
     /// length, so solid sketch lines need the prefix too). The immutable draw
     /// phase later reads the owned result, never the live `arc_cache`.
+    /// Resolve every field series' group-2 state, reusing what has not changed.
+    ///
+    /// The prepare-phase `&mut self` half of the field path, next to
+    /// `prepare_arc_items` and for the same reason: `build_series_layers` is
+    /// `&self`, so anything that has to be built has to be built here. Returns
+    /// the per-field source receipts in `items` order for the token to hold.
+    fn ensure_field_scratches(
+        &mut self,
+        items: &[ChartDrawItem<'_>],
+    ) -> Result<Vec<Arc<GridSources>>> {
+        let mut receipts = Vec::new();
+        for item in items {
+            for series in item.series {
+                let cfg = series.config;
+                if !effective_series_primitives(&item.chart_config.draw_style, &cfg.render_type)
+                    .field
+                {
+                    continue;
+                }
+                let sources = self.ensure_field_scratch(item.chart_config, cfg)?;
+                receipts
+                    .try_reserve(1)
+                    .map_err(|error| FiggyError::StateAllocationFailed {
+                        resource: "field source receipts",
+                        reason: error.to_string(),
+                    })?;
+                receipts.push(sources);
+            }
+        }
+        Ok(receipts)
+    }
+
+    /// A grid declaration resolved against the pool: the coordinate handles, the
+    /// `(base, len)` table, the per-column allocation epochs, and the extent.
+    ///
+    /// Shared by the field and the contour paths so that "what does this
+    /// declaration point at right now" has one answer. Both need every part of
+    /// it, and a second copy of the resolution is a second place for the two to
+    /// disagree about which cell holds which value.
+    fn resolve_grid(
+        &self,
+        cfg: &SeriesConfig,
+        matrix: &crate::data_config::MatrixRef,
+    ) -> Result<ResolvedGrid> {
+        let alloc = |resource: &'static str| {
+            move |error: std::collections::TryReserveError| FiggyError::StateAllocationFailed {
+                resource,
+                reason: error.to_string(),
+            }
+        };
+        let x = self
+            .pool
+            .handle_for(&cfg.x_column)
+            .ok_or_else(|| FiggyError::UnknownColumn {
+                id: cfg.x_column.clone(),
+            })?;
+        let y = self
+            .pool
+            .handle_for(&cfg.y_column)
+            .ok_or_else(|| FiggyError::UnknownColumn {
+                id: cfg.y_column.clone(),
+            })?;
+
+        let mut grid = Vec::new();
+        grid.try_reserve_exact(matrix.columns.len().max(1))
+            .map_err(alloc("field grid table"))?;
+        let mut epochs = Vec::new();
+        epochs
+            .try_reserve_exact(matrix.columns.len())
+            .map_err(alloc("field grid epochs"))?;
+        let mut lengths = Vec::new();
+        lengths
+            .try_reserve_exact(matrix.columns.len())
+            .map_err(alloc("field grid column lengths"))?;
+        for id in &matrix.columns {
+            let handle = self
+                .pool
+                .handle_for(id)
+                .ok_or_else(|| FiggyError::UnknownColumn { id: id.clone() })?;
+            let epoch = self
+                .pool
+                .allocation_epoch(id)
+                .ok_or_else(|| FiggyError::UnknownColumn { id: id.clone() })?;
+            lengths.push(handle.len_values);
+            epochs.push(epoch);
+            grid.push(data_render::GridColumnGpu {
+                base: u32::try_from(handle.offset / 4).map_err(|_| {
+                    FiggyError::InvalidSeriesConfig {
+                        series_id: cfg.series_id.clone(),
+                        reason: "grid column offset exceeds a 32-bit lane index".into(),
+                    }
+                })?,
+                len: u32::try_from(handle.len_values).unwrap_or(u32::MAX),
+            });
+        }
+        let mut index = 0usize;
+        let extent = matrix_extent(matrix, x.len_values, y.len_values, |_| {
+            let len = lengths.get(index).copied().unwrap_or(0);
+            index += 1;
+            len
+        });
+        // A storage binding cannot be zero-sized, so an empty table is padded.
+        // The real count travels in the params uniform.
+        if grid.is_empty() {
+            grid.push(data_render::GridColumnGpu { base: 0, len: 0 });
+        }
+        Ok(ResolvedGrid {
+            x,
+            y,
+            grid,
+            epochs,
+            extent,
+            columns_are_y: matches!(
+                matrix.orientation,
+                crate::data_config::MatrixOrientation::ColumnsAreY
+            ),
+            centers: matches!(matrix.grid_layout, crate::data_config::GridLayout::Centers),
+        })
+    }
+
+    /// The grid columns a resolved declaration read, as a shared receipt.
+    fn grid_receipt(
+        matrix: &crate::data_config::MatrixRef,
+        epochs: &[u64],
+    ) -> Result<Arc<GridSources>> {
+        let alloc = |resource: &'static str| {
+            move |error: std::collections::TryReserveError| FiggyError::StateAllocationFailed {
+                resource,
+                reason: error.to_string(),
+            }
+        };
+        let mut ids = Vec::new();
+        ids.try_reserve_exact(matrix.columns.len())
+            .map_err(alloc("grid source ids"))?;
+        ids.extend(matrix.columns.iter().cloned());
+        let mut owned = Vec::new();
+        owned
+            .try_reserve_exact(epochs.len())
+            .map_err(alloc("grid source epochs"))?;
+        owned.extend_from_slice(epochs);
+        Ok(Arc::new(GridSources { ids, epochs: owned }))
+    }
+
+    /// Build or reuse one field series' group-2 bind group.
+    ///
+    /// The signature is compared before anything is created, so a steady frame
+    /// uploads nothing at all. When it does differ, the new buffers replace the
+    /// old ones outright — a live `PreparedFrame` holds its own refcounted clone
+    /// of the bind group, so nothing it can still draw with is disturbed. That is
+    /// why this needs none of `arc_cache`'s immutable keyed results: the field
+    /// buffers themselves are already immutable snapshots.
+    fn ensure_field_scratch(
+        &mut self,
+        chart_config: &Config,
+        cfg: &SeriesConfig,
+    ) -> Result<Arc<GridSources>> {
+        let rt = &cfg.render_type;
+        let matrix = extract_matrix(rt).expect("a field series has a matrix");
+        let fill = extract_field_fill(rt).expect("a field series has a fill config");
+        validate_contour_level_count(cfg.series_id.as_str(), rt)?;
+        let bar =
+            chart_config
+                .colorbar
+                .as_ref()
+                .ok_or_else(|| FiggyError::InvalidSeriesConfig {
+                    series_id: cfg.series_id.clone(),
+                    reason: "a field series needs Config.colorbar".into(),
+                })?;
+        let resolved = self.resolve_grid(cfg, matrix)?;
+
+        let mut flags = 0u32;
+        if resolved.columns_are_y {
+            flags |= data_render::FIELD_FLAG_COLUMNS_ARE_Y;
+        }
+        if resolved.centers {
+            flags |= data_render::FIELD_FLAG_CENTERS;
+        }
+        let interpolated = matches!(fill.shading, crate::data_config::Shading::Interpolated);
+        if interpolated {
+            flags |= data_render::FIELD_FLAG_INTERPOLATED;
+        }
+        if matches!(fill.mode, crate::data_config::FillMode::Bands) {
+            flags |= data_render::FIELD_FLAG_BANDS;
+        }
+        let log_z = matches!(bar.axis.scale, crate::config::AxisScale::Logarithmic);
+        if log_z {
+            flags |= data_render::FIELD_FLAG_LOG_Z;
+        }
+        // Log bounds are taken here, in f64: doing it in the shader would lose
+        // the precision the bounds were written with. `validate_renderer_config`
+        // has already refused a log colourbar whose lower bound is not positive.
+        let bound = |value: f64| {
+            let transformed = if log_z { value.log10() } else { value };
+            let (hi, lo) = crate::data::split_f64_to_f32_pair(transformed);
+            [hi, lo]
+        };
+
+        let levels = contour_levels(rt)?;
+        let level_count = u32::try_from(declared_level_count(rt)).unwrap_or(u32::MAX);
+        let stop_source = bar.colormap.stops();
+        let mut stops = crate::gpu_contour::try_collect(
+            "field colourmap stops",
+            stop_source
+                .iter()
+                .map(|color| [color.r, color.g, color.b, color.a]),
+        )?;
+        let stop_count = u32::try_from(stops.len()).unwrap_or(u32::MAX);
+        if stops.is_empty() {
+            stops.push([0.0; 4]);
+        }
+
+        let params = data_render::FieldParamsGpu {
+            x_base: u32::try_from(resolved.x.offset / 4).unwrap_or(0),
+            y_base: u32::try_from(resolved.y.offset / 4).unwrap_or(0),
+            x_len: u32::try_from(resolved.x.len_values).unwrap_or(u32::MAX),
+            y_len: u32::try_from(resolved.y.len_values).unwrap_or(u32::MAX),
+            cols: u32::try_from(resolved.extent.cols).unwrap_or(u32::MAX),
+            rows: u32::try_from(resolved.extent.rows).unwrap_or(u32::MAX),
+            level_count,
+            stop_count,
+            flags,
+            opacity: fill.opacity.clamp(0.0, 1.0),
+            // Contour-only; a fill draws no strokes and reads no level colours.
+            line_width_px: 0.0,
+            level_color_count: 0,
+            z_min: bound(bar.axis.min),
+            z_max: bound(bar.axis.max),
+        };
+        let nan = bar.nan_color;
+        let signature = FieldSignature {
+            pool_layout_generation: self.pool.layout_generation(),
+            params,
+            grid: resolved.grid,
+            epochs: resolved.epochs,
+            levels,
+            stops,
+            // Bits, not floats: the signature has to be comparable, and two
+            // NaN alphas that differ in bits are two different configs.
+            nan_color: [
+                nan.r.to_bits(),
+                nan.g.to_bits(),
+                nan.b.to_bits(),
+                nan.a.to_bits(),
+            ],
+        };
+
+        if let Some(scratch) = self.field_cache.get(cfg.series_id.as_str())
+            && scratch.signature == signature
+        {
+            return Ok(Arc::clone(&scratch.sources));
+        }
+
+        // Interpolated shading spans point-to-point, so it needs two samples
+        // along each axis before it has a quad to draw.
+        let minimum = if interpolated { 2 } else { 1 };
+        let drawable = resolved.extent.cols >= minimum && resolved.extent.rows >= minimum;
+        let sources = Self::grid_receipt(matrix, &signature.epochs)?;
+
+        let nan_buf = data_render::create_style_uniform_buffer(
+            &self.device,
+            &PrimitiveStyle::from_color(bar.nan_color),
+        );
+        let style_bg =
+            data_render::create_style_bind_group(&self.device, &self.style_bgl, &nan_buf);
+        let lookup_tables = data_render::build_field_lookup_tables(
+            &signature.stops,
+            &signature.levels[..level_count as usize],
+        )?;
+        let (field_bg, charge) = data_render::create_field_data_bind_group(
+            &self.device,
+            &self.gpu_ledger,
+            &self.field_bgl,
+            self.pool.buffer(),
+            data_render::FieldTables {
+                grid: &signature.grid,
+                levels: &signature.levels,
+                stops: &lookup_tables.stops,
+                // Fill-only bind group: the stroke colour table is padding.
+                level_colors: &[[0.0; 4]],
+                lookup_metadata: &lookup_tables.metadata,
+                params: &signature.params,
+            },
+        );
+
+        // Bounded like `arc_cache`: a host cycling through thousands of series
+        // ids must not grow this without limit.
+        evict_if_full(
+            &mut self.field_cache,
+            cfg.series_id.as_str(),
+            FIELD_SCRATCH_CACHE_LIMIT,
+        );
+        self.field_cache
+            .try_reserve(1)
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "field scratch cache",
+                reason: error.to_string(),
+            })?;
+        let receipt = Arc::clone(&sources);
+        self.field_cache.insert(
+            cfg.series_id.clone(),
+            FieldScratch {
+                signature,
+                style_bg,
+                field_bg,
+                charge,
+                sources,
+                drawable,
+            },
+        );
+        Ok(receipt)
+    }
+
+    /// Prepare every contour series' reusable GPU state.
+    ///
+    /// Returns the grid receipts for the token, the same way
+    /// `ensure_field_scratches` does. Automatic label anchors are the only
+    /// contour compute dispatch and remain frame-dependent.
+    /// `scale` is the export DPI multiplier — the same one
+    /// `create_style_for_series_scaled` applies to every other pixel dimension.
+    /// It rides in the signature, so switching between a window frame and an
+    /// export rebuilds the level styles rather than drawing one at the other's
+    /// stroke width.
+    fn ensure_contour_scratches(
+        &mut self,
+        items: &[ChartDrawItem<'_>],
+        scale: f32,
+        contour_spacings: &[Vec<Option<f32>>],
+    ) -> Result<(Vec<PreparedContourItem>, Vec<Arc<GridSources>>)> {
+        let mut prepared = Vec::with_capacity(items.len());
+        let mut receipts = Vec::new();
+        debug_assert_eq!(items.len(), contour_spacings.len());
+        for (item, item_spacings) in items.iter().zip(contour_spacings) {
+            debug_assert_eq!(item.series.len(), item_spacings.len());
+            let transform = data_render::scatter_transform_from_config(item.chart_config);
+            let ca = item.chart_config.chart_area.0;
+            let da = item
+                .chart_config
+                .data_area()
+                .map(|area| area.0)
+                .unwrap_or(ca);
+            let mut encoder = None;
+            let mut per_series = Vec::with_capacity(item.series.len());
+            for (series, effective_spacing_px) in item.series.iter().zip(item_spacings) {
+                let cfg = series.config;
+                if !effective_series_primitives(&item.chart_config.draw_style, &cfg.render_type)
+                    .contour
+                {
+                    per_series.push(PreparedContourSeries { scratch: None });
+                    continue;
+                }
+                let sources = self.ensure_contour_scratch(cfg, item.chart_config, scale)?;
+                receipts
+                    .try_reserve(1)
+                    .map_err(|error| FiggyError::StateAllocationFailed {
+                        resource: "contour source receipts",
+                        reason: error.to_string(),
+                    })?;
+                receipts.push(sources);
+
+                let automatic = self
+                    .contour_cache
+                    .get(cfg.series_id.as_str())
+                    .and_then(|entry| entry.label.as_ref())
+                    .is_some_and(crate::gpu_contour::ContourLabelState::is_automatic);
+                if automatic && encoder.is_none() {
+                    encoder = Some(self.device.create_command_encoder(
+                        &wgpu::CommandEncoderDescriptor {
+                            label: Some("figgy contour label encoder"),
+                        },
+                    ));
+                }
+
+                let entry = self
+                    .contour_cache
+                    .get_mut(cfg.series_id.as_str())
+                    .expect("contour scratch was just ensured");
+                let label = match entry.label.as_mut() {
+                    None => None,
+                    Some(label) if !label.is_automatic() => label.explicit_snapshot(),
+                    Some(label) => {
+                        let effective_spacing_px = effective_spacing_px
+                            .expect("automatic contour spacing was preflighted");
+                        let params = &entry.signature.params;
+                        let plan = crate::gpu_contour::ContourLabelState::anchor_plan(
+                            da.width as f32,
+                            da.height as f32,
+                            effective_spacing_px,
+                            params.level_count,
+                        );
+                        Some(
+                            label.dispatch_automatic(
+                                &self.device,
+                                &self.queue,
+                                &self.gpu_ledger,
+                                encoder.as_mut().expect("automatic label encoder"),
+                                self.contour_label_pipelines
+                                    .as_ref()
+                                    .expect("contour label pipelines ensured"),
+                                &transform,
+                                crate::gpu_contour::AnchorParamsGpu {
+                                    lattice_x: plan.lattice_x,
+                                    lattice_y: plan.lattice_y,
+                                    level_count: plan.levels,
+                                    kept_capacity: crate::gpu_contour::MAX_CONTOUR_LABELS_TOTAL,
+                                    area_x: ca.x as f32,
+                                    area_y: ca.y as f32,
+                                    area_w: ca.width as f32,
+                                    area_h: ca.height as f32,
+                                    clip_x: da.x as f32,
+                                    clip_y: da.y as f32,
+                                    clip_w: da.width as f32,
+                                    clip_h: da.height as f32,
+                                    spacing_px: effective_spacing_px,
+                                    label_h_px: label.cell_h_px(),
+                                    label_vertices: crate::gpu_contour::LABEL_VERTICES,
+                                    _pad0: 0,
+                                },
+                                &entry.field_bg,
+                            ),
+                        )
+                    }
+                };
+                per_series.push(PreparedContourSeries {
+                    scratch: Some(PreparedContourScratch {
+                        style_bg: entry.style_bg.clone(),
+                        field_bg: entry.field_bg.clone(),
+                        charge: Arc::clone(&entry.charge),
+                        drawable: entry.drawable,
+                        label,
+                    }),
+                });
+            }
+            if let Some(encoder) = encoder {
+                self.queue.submit(std::iter::once(encoder.finish()));
+            }
+            prepared.push(PreparedContourItem { series: per_series });
+        }
+        Ok((prepared, receipts))
+    }
+
+    /// Build or reuse one contour series' GPU state.
+    ///
+    /// Since design B.4.9 this resolves the same group-2 tables a field does: the
+    /// isolines are drawn from the grid itself by `fs_contour`, so there is no
+    /// trace to dispatch and nothing here depends on the panel transform. The
+    /// label anchors do — `ensure_contour_scratches` captures one placement
+    /// snapshot per panel/item + series occurrence.
+    ///
+    /// `scale` is the export DPI multiplier, applied to the stroke width and the
+    /// label font exactly as `create_style_for_series_scaled` applies it
+    /// everywhere else.
+    fn ensure_contour_scratch(
+        &mut self,
+        cfg: &SeriesConfig,
+        chart_config: &Config,
+        scale: f32,
+    ) -> Result<Arc<GridSources>> {
+        let rt = &cfg.render_type;
+        let matrix = extract_matrix(rt).expect("a contour series has a matrix");
+        let contour = extract_contour(rt).expect("a contour series has a contour config");
+        validate_contour_level_count(cfg.series_id.as_str(), rt)?;
+        let resolved = self.resolve_grid(cfg, matrix)?;
+        let levels = contour_levels(rt)?;
+        let level_count = u32::try_from(declared_level_count(rt)).unwrap_or(u32::MAX);
+
+        let mut flags = 0u32;
+        if resolved.columns_are_y {
+            flags |= data_render::FIELD_FLAG_COLUMNS_ARE_Y;
+        }
+        if resolved.centers {
+            flags |= data_render::FIELD_FLAG_CENTERS;
+        }
+        // The contour's lattice is the sample-point lattice — that is where z
+        // lives, and an isoline does not move because a fill decided to draw flat
+        // cells. `fs_contour` asks for `LATTICE_SAMPLES` explicitly, so this flag
+        // is redundant for it; set anyway so this bind group's params describe the
+        // lattice its shader actually walks.
+        flags |= data_render::FIELD_FLAG_INTERPOLATED;
+
+        // Per-level stroke: `per_level_color` when given, the line's own colour
+        // otherwise. Colours are not derived from the colormap here — a helper
+        // that wants that writes them into the config (design B.3).
+        //
+        // Premultiplied, because that is what the shader composites and what the
+        // blend state expects; storing it as drawn also makes a signature
+        // comparison a comparison of pixels.
+        let level_colors: Vec<[f32; 4]> = crate::gpu_contour::try_collect(
+            "contour level colours",
+            (0..level_count as usize).map(|index| {
+                let color = contour
+                    .per_level_color
+                    .as_ref()
+                    .and_then(|colors| colors.get(index))
+                    .copied()
+                    .unwrap_or(contour.line.line_color);
+                let a = color.a.clamp(0.0, 1.0);
+                [color.r * a, color.g * a, color.b * a, a]
+            }),
+        )?;
+
+        let params = data_render::FieldParamsGpu {
+            x_base: u32::try_from(resolved.x.offset / 4).unwrap_or(0),
+            y_base: u32::try_from(resolved.y.offset / 4).unwrap_or(0),
+            x_len: u32::try_from(resolved.x.len_values).unwrap_or(u32::MAX),
+            y_len: u32::try_from(resolved.y.len_values).unwrap_or(u32::MAX),
+            cols: u32::try_from(resolved.extent.cols).unwrap_or(u32::MAX),
+            rows: u32::try_from(resolved.extent.rows).unwrap_or(u32::MAX),
+            level_count,
+            // One padding stop: `fs_contour` never samples the ramp, and a
+            // zero-sized storage binding is invalid.
+            stop_count: 1,
+            flags,
+            // Fill-only; the contour pass never reads it.
+            opacity: 1.0,
+            line_width_px: contour.line.line_width * scale,
+            level_color_count: u32::try_from(level_colors.len()).unwrap_or(u32::MAX),
+            // Colourbar bounds are the *fill*'s business. Levels are in data
+            // units (design B.5), so the lines need no z range at all.
+            z_min: [0.0, 0.0],
+            z_max: [0.0, 0.0],
+        };
+
+        // What the labels are baked from. `spacing_px` is not in here: it is a
+        // screen distance the anchor pass reads every frame, so changing it moves
+        // the labels without rebaking a single glyph.
+        let mut label_sig = None;
+        if let Some(labels) = contour.labels.as_ref()
+            && labels.visible
+            && labels.font_size > 0.0
+            && level_count > 0
+        {
+            let mut anchors = crate::gpu_contour::try_collect(
+                "contour label anchor overrides",
+                labels.anchors.iter().map(|anchor| {
+                    let (x_hi, x_lo) = crate::data::split_f64_to_f32_pair(anchor.x);
+                    let (y_hi, y_lo) = crate::data::split_f64_to_f32_pair(anchor.y);
+                    crate::gpu_contour::LabelAnchorGpu {
+                        x: [x_hi, x_lo],
+                        y: [y_hi, y_lo],
+                        // A direction, so it needs no pair split.
+                        dir: [anchor.tx as f32, anchor.ty as f32],
+                        level: anchor.level_index,
+                        // Resolved from the baked atlas immediately before the
+                        // explicit anchors are uploaded.
+                        width_px: 0.0,
+                    }
+                }),
+            )?;
+            // An anchor naming a level the declaration no longer has is stale,
+            // not fatal: it draws nothing and the rest still do.
+            anchors.retain(|anchor| anchor.level < level_count);
+            anchors.truncate(crate::gpu_contour::MAX_CONTOUR_LABELS_TOTAL as usize);
+            label_sig = Some(ContourLabelSignature {
+                texts: axis_render::contour_label_texts(chart_config, labels, &contour.levels),
+                font_bits: (labels.font_size * scale).to_bits(),
+                color: [
+                    labels.color.r.to_bits(),
+                    labels.color.g.to_bits(),
+                    labels.color.b.to_bits(),
+                    labels.color.a.to_bits(),
+                ],
+                policy: crate::text_render::FontPolicy::for_style(&chart_config.draw_style),
+                family: chart_config.bottom_x.label_style.label_font.clone(),
+                bg: labels
+                    .bg_color
+                    .as_ref()
+                    .map(|c| [c.r.to_bits(), c.g.to_bits(), c.b.to_bits(), c.a.to_bits()]),
+                bg_padding_bits: labels.bg_padding_px.to_bits(),
+                font_generation: crate::text_render::font_generation(),
+                anchors,
+            });
+        }
+
+        let signature = ContourSignature {
+            pool_layout_generation: self.pool.layout_generation(),
+            params,
+            grid: resolved.grid,
+            epochs: resolved.epochs,
+            levels,
+            level_colors,
+            label: label_sig,
+        };
+        if let Some(entry) = self.contour_cache.get(cfg.series_id.as_str())
+            && entry.signature == signature
+        {
+            return Ok(Arc::clone(&entry.sources));
+        }
+
+        // A contour interpolates point-to-point, so it needs two samples along
+        // each axis before it has a cell to place a line in.
+        let drawable = resolved.extent.cols >= 2 && resolved.extent.rows >= 2;
+        let sources = Self::grid_receipt(matrix, &signature.epochs)?;
+
+        // `fs_contour` does not read `Style`, but the layout is shared with the
+        // fill and group 1 has to be bound. Transparent, so a future entry point
+        // that did read it would draw nothing rather than something arbitrary.
+        let style_buf = data_render::create_style_uniform_buffer(
+            &self.device,
+            &PrimitiveStyle::from_color(Color::new(0.0, 0.0, 0.0, 0.0)),
+        );
+        let style_bg =
+            data_render::create_style_bind_group(&self.device, &self.style_bgl, &style_buf);
+        let lookup_tables = data_render::build_field_lookup_tables(
+            &[[0.0; 4]],
+            &signature.levels[..level_count as usize],
+        )?;
+        let (field_bg, charge) = data_render::create_field_data_bind_group(
+            &self.device,
+            &self.gpu_ledger,
+            &self.field_bgl,
+            self.pool.buffer(),
+            data_render::FieldTables {
+                grid: &signature.grid,
+                levels: &signature.levels,
+                stops: &lookup_tables.stops,
+                level_colors: if signature.level_colors.is_empty() {
+                    &[[0.0; 4]]
+                } else {
+                    &signature.level_colors
+                },
+                lookup_metadata: &lookup_tables.metadata,
+                params: &signature.params,
+            },
+        );
+
+        let label = match signature.label.as_ref() {
+            Some(label_sig) => self.build_contour_label(
+                cfg.series_id.as_str(),
+                chart_config,
+                contour,
+                label_sig,
+                scale,
+            )?,
+            None => None,
+        };
+
+        evict_if_full(
+            &mut self.contour_cache,
+            cfg.series_id.as_str(),
+            CONTOUR_SCRATCH_CACHE_LIMIT,
+        );
+        self.contour_cache
+            .try_reserve(1)
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "contour scratch cache",
+                reason: error.to_string(),
+            })?;
+        let receipt = Arc::clone(&sources);
+        self.contour_cache.insert(
+            cfg.series_id.clone(),
+            ContourScratchEntry {
+                signature,
+                style_bg,
+                field_bg,
+                charge,
+                sources,
+                drawable,
+                label,
+            },
+        );
+        Ok(receipt)
+    }
+
+    /// Bake one contour series' label atlas and allocate its anchor state.
+    ///
+    /// `None` when nothing is bakeable because every string is empty. A requested
+    /// atlas that cannot fit the device limit is an explicit series error rather
+    /// than silently dropping labels.
+    fn build_contour_label(
+        &mut self,
+        series_id: &str,
+        chart_config: &Config,
+        contour: &crate::data_config::ContourConfig,
+        label_sig: &ContourLabelSignature,
+        scale: f32,
+    ) -> Result<Option<crate::gpu_contour::ContourLabelState>> {
+        let Some(labels) = contour.labels.as_ref() else {
+            return Ok(None);
+        };
+        let Some(baked) = axis_render::bake_contour_label_atlas(
+            chart_config,
+            labels,
+            &label_sig.texts,
+            scale,
+            self.caps.max_texture_dimension_2d,
+        )
+        .map_err(|error| FiggyError::InvalidSeriesConfig {
+            series_id: series_id.to_owned(),
+            reason: error.to_string(),
+        })?
+        else {
+            return Ok(None);
+        };
+        let cell_w = crate::gpu_contour::try_collect(
+            "contour label cell widths",
+            baked.cells.iter().map(|cell| cell.width),
+        )?;
+        if self.contour_label_pipelines.is_none() {
+            self.contour_label_pipelines = Some(crate::gpu_contour::ContourLabelPipelines::new(
+                &self.device,
+                &self.field_bgl,
+            ));
+        }
+        let pipelines = self
+            .contour_label_pipelines
+            .as_ref()
+            .expect("contour label pipelines ensured");
+        let state = crate::gpu_contour::ContourLabelState::build(
+            &self.device,
+            &self.queue,
+            &self.gpu_ledger,
+            pipelines,
+            &self.sampler,
+            self.caps.max_texture_dimension_2d,
+            crate::gpu_contour::LabelAtlas {
+                rgba: &baked.rgba,
+                width: baked.width,
+                height: baked.height,
+                cell_h: baked.cell_h,
+                cell_stride_w: baked.cell_stride_w,
+                cell_stride_h: baked.cell_stride_h,
+                columns: baked.columns,
+                rows: baked.rows,
+                gutter: baked.gutter,
+                cell_w: &cell_w,
+            },
+            (!label_sig.anchors.is_empty()).then_some(label_sig.anchors.as_slice()),
+        )?;
+        Ok(Some(state))
+    }
+
+    /// Compile the label shader's module and layouts if any item wants labels.
+    ///
+    /// Separate from `ensure_precise_variants_for_items` because that function
+    /// may only *use* them: it is the single site allowed to compile a target
+    /// pipeline (design B.6), and it has no `&mut self` to create the module
+    /// with.
+    fn ensure_contour_label_pipelines(&mut self, items: &[ChartDrawItem<'_>]) {
+        if self.contour_label_pipelines.is_some() {
+            return;
+        }
+        let wanted = items.iter().any(|item| {
+            item.series.iter().any(|series| {
+                effective_series_primitives(
+                    &item.chart_config.draw_style,
+                    &series.config.render_type,
+                )
+                .contour
+                    && series_wants_contour_labels(&series.config.render_type)
+            })
+        });
+        if wanted {
+            self.contour_label_pipelines = Some(crate::gpu_contour::ContourLabelPipelines::new(
+                &self.device,
+                &self.field_bgl,
+            ));
+        }
+    }
+
     fn prepare_arc_items(&mut self, items: &[ChartDrawItem<'_>]) -> Result<Vec<PreparedArcItem>> {
         let mut prepared = Vec::with_capacity(items.len());
         for item in items {
@@ -5624,19 +8723,26 @@ impl Renderer {
         &self,
         items: &[ChartDrawItem<'_>],
         prepared_arcs: &[PreparedArcItem],
+        prepared_contours: &[PreparedContourItem],
         pipelines: &TargetPipelines,
     ) -> Result<(Vec<PreparedItem>, HashMap<ColumnId, u64>)> {
         let mut prepared = Vec::with_capacity(items.len());
         let mut column_sources = HashMap::new();
 
-        for (item, prepared_arc) in items.iter().zip(prepared_arcs) {
+        for ((item, prepared_arc), prepared_contour) in
+            items.iter().zip(prepared_arcs).zip(prepared_contours)
+        {
             let styled = pipelines.style_set(&item.chart_config.draw_style);
+            let products = PreparedSeriesProducts {
+                arcs: &prepared_arc.series,
+                contours: &prepared_contour.series,
+            };
             let (layers, sources) = self.build_series_layers(
                 item.view,
                 item.chart_config,
                 item.series,
                 pipelines,
-                &prepared_arc.series,
+                products,
                 styled,
             )?;
 
@@ -5648,6 +8754,9 @@ impl Renderer {
                 view: PreparedView {
                     grid_bind_group: item.view.grid_bind_group.clone(),
                     decoration_bind_group: item.view.decoration_bind_group.clone(),
+                    _grid_charge: item.view.grid_texture.shared_charge(),
+                    _decoration_charge: item.view.decoration_texture.shared_charge(),
+                    _transform_charge: item.view.transform_buffer.shared_charge(),
                     content_revision: Arc::clone(&item.view.content_revision),
                     expected_content_revision: prepared_arc.view_revision,
                     panel_rect: item.view.panel_rect,
@@ -5660,7 +8769,13 @@ impl Renderer {
                 axis_pipeline: pipelines.axis.clone(),
                 series: layers
                     .into_iter()
-                    .map(PreparedSeries::from_layers)
+                    .zip(&prepared_arc.series)
+                    .map(|(layers, arc)| {
+                        PreparedSeries::from_layers(
+                            layers,
+                            arc.arc.as_ref().map(|arc| Arc::clone(&arc.charge)),
+                        )
+                    })
                     .collect(),
             });
         }
@@ -5717,7 +8832,7 @@ impl Renderer {
         chart_config: &'a Config,
         series_specs: &[Series<'a>],
         pipelines: &'a TargetPipelines,
-        prepared: &'a [PreparedArcSeries],
+        products: PreparedSeriesProducts<'a>,
         styled: Option<&'a StyleSet>,
     ) -> Result<(Vec<data_render::SeriesLayers<'a>>, HashMap<ColumnId, u64>)> {
         let pool = &self.pool;
@@ -5829,9 +8944,114 @@ impl Renderer {
             let x_h = lookup(&cfg.x_column)?;
             let y_h = lookup(&cfg.y_column)?;
 
+            // A field: the group-2 state was resolved in `ensure_field_scratches`
+            // (the prepare phase's `&mut self` half) and is reused whole while
+            // nothing it depends on changes.
+            let field = if primitives.field {
+                let scratch = self
+                    .field_cache
+                    .get(cfg.series_id.as_str())
+                    .expect("prepare ensured this field's scratch");
+                Some(data_render::ColumnFieldLayer {
+                    pipeline: pipelines
+                        .field
+                        .as_ref()
+                        .expect("prepare ensured field pipeline"),
+                    transform_bg: &view.transform_bg,
+                    style_bg: scratch.style_bg.clone(),
+                    field_bg: scratch.field_bg.clone(),
+                    charge: Arc::clone(&scratch.charge),
+                    drawable: scratch.drawable,
+                })
+            } else {
+                None
+            };
+
+            // Contour lines: the same quad the field draws, through
+            // `fs_contour`. The group-2 tables were resolved in
+            // `ensure_contour_scratches`; the isolines come out of the grid
+            // itself, so there is nothing per-level about the draw call.
+            let contour = if primitives.contour {
+                let scratch = products
+                    .contours
+                    .get(idx)
+                    .and_then(|series| series.scratch.as_ref())
+                    .expect("prepare captured this contour occurrence");
+                let label = scratch
+                    .label
+                    .as_ref()
+                    .zip(pipelines.contour_label.as_ref())
+                    .map(|(snapshot, pipeline)| data_render::ColumnContourLabel {
+                        pipeline,
+                        snapshot: snapshot.clone(),
+                    });
+                let pipeline = if label.is_some() {
+                    pipelines
+                        .contour_labelled
+                        .as_ref()
+                        .expect("prepare ensured labelled contour pipeline")
+                } else {
+                    pipelines
+                        .contour
+                        .as_ref()
+                        .expect("prepare ensured contour pipeline")
+                };
+                Some(data_render::ColumnContourLayer {
+                    pipeline,
+                    transform_bg: &view.transform_bg,
+                    style_bg: scratch.style_bg.clone(),
+                    field_bg: scratch.field_bg.clone(),
+                    charge: Arc::clone(&scratch.charge),
+                    drawable: scratch.drawable,
+                    // The label pipeline is compiled only when some series wants
+                    // labels, so a `None` here means this series' labels are not
+                    // drawable this frame — never that the state is missing.
+                    label,
+                })
+            } else {
+                None
+            };
+
+            // Bars: the edge column and the value column are picked from the
+            // bar's own orientation — never from the column lengths (design
+            // §B.3). `Vertical` reads x as edges, `Horizontal` reads y.
+            let bar = if primitives.bar {
+                let bar_cfg = extract_bar(rt).expect("primitives.bar implies a bar config");
+                let (edges, values) = match bar_cfg.orientation {
+                    crate::data_config::BarOrientation::Vertical => (x_h, y_h),
+                    crate::data_config::BarOrientation::Horizontal => (y_h, x_h),
+                };
+                let style_map = series.style.bar_map.as_ref();
+                Some(data_render::ColumnBarLayer {
+                    pipeline: style_map.map_or_else(
+                        || {
+                            pipelines
+                                .bar
+                                .as_ref()
+                                .expect("prepare ensured bar pipeline")
+                        },
+                        |_| {
+                            pipelines
+                                .bar_mapped
+                                .as_ref()
+                                .expect("prepare ensured mapped bar pipeline")
+                        },
+                    ),
+                    transform_bg: &view.transform_bg,
+                    style_bg: &series.style.bar_bg,
+                    style_map_bg: style_map.map(|map| &map.bind_group),
+                    pool_buffer: pool.buffer(),
+                    edges,
+                    values,
+                })
+            } else {
+                None
+            };
+
             let line = if primitives.line {
                 let line_pick = line_pick.expect("prepare ensured line pipeline");
-                let arc = prepared
+                let arc = products
+                    .arcs
                     .get(idx)
                     .and_then(|series| series.arc.as_ref())
                     .map(|arc| arc.prefix.clone());
@@ -5858,7 +9078,8 @@ impl Renderer {
             // theoretically-impossible prepare miss) just skips the stars —
             // the ribbon still draws.
             let line_extra = match (&line, &stars_pick) {
-                (Some(_), Some(sp)) => prepared
+                (Some(_), Some(sp)) => products
+                    .arcs
                     .get(idx)
                     .and_then(|series| series.arc.as_ref())
                     .and_then(|a| a.star.as_ref())
@@ -5938,10 +9159,10 @@ impl Renderer {
                             Some(ErrorRef::Asymmetric { lower, upper }) => {
                                 (lookup(lower)?, lookup(upper)?)
                             }
-                            None => {
-                                let zero = lookup(INTERNAL_ZERO_COLUMN_ID)?;
-                                (zero, zero)
-                            }
+                            // The direction flag disables these attributes
+                            // before the shader reads them. Reuse the anchor
+                            // column so the bound slice still covers every draw.
+                            None => (y_h, y_h),
                         };
                         let (ex_lo, ex_hi) = match ex_opt {
                             Some(ErrorRef::Symmetric { column }) => {
@@ -5951,10 +9172,7 @@ impl Renderer {
                             Some(ErrorRef::Asymmetric { lower, upper }) => {
                                 (lookup(lower)?, lookup(upper)?)
                             }
-                            None => {
-                                let zero = lookup(INTERNAL_ZERO_COLUMN_ID)?;
-                                (zero, zero)
-                            }
+                            None => (x_h, x_h),
                         };
                         let precise_errorbar_style_map = if styled.is_none() {
                             series.style.errorbar_map.as_ref()
@@ -6023,130 +9241,343 @@ impl Renderer {
                 }
             };
 
-            let mut picked = Vec::new();
+            struct PointSelectionVisual {
+                point_index: usize,
+                color: Color,
+                width_px: f32,
+                radius_extra_px: f32,
+            }
+
+            let mut point_visuals = Vec::new();
             if let Some(picked_cfg) = chart_config
                 .picked_points
                 .as_ref()
-                .filter(|cfg| cfg.visible && !cfg.refs.is_empty())
+                .filter(|config| config.visible && !config.refs.is_empty())
             {
-                let visible_in_style = primitives.line || primitives.scatter;
-                if visible_in_style {
-                    for picked_ref in &picked_cfg.refs {
-                        if !picked_ref_matches_series(cfg, picked_ref) {
-                            continue;
-                        }
-                        if picked_ref.point_index >= x_h.len_values
-                            || picked_ref.point_index >= y_h.len_values
-                        {
-                            continue;
-                        }
-                        let Some(instance) = u32::try_from(picked_ref.point_index).ok() else {
-                            continue;
-                        };
+                point_visuals.extend(
+                    picked_cfg
+                        .refs
+                        .iter()
+                        .filter(|picked_ref| picked_ref_matches_series(cfg, picked_ref))
+                        .map(|picked_ref| PointSelectionVisual {
+                            point_index: picked_ref.point_index,
+                            color: picked_cfg.ring_color,
+                            width_px: picked_cfg.ring_width_px,
+                            radius_extra_px: picked_cfg.radius_extra_px,
+                        }),
+                );
+            }
+            let typed_selections = chart_config
+                .picked_data
+                .as_ref()
+                .filter(|config| config.visible && !config.refs.is_empty());
+            if let Some(selection_cfg) = typed_selections {
+                point_visuals.extend(selection_cfg.refs.iter().filter_map(|picked_ref| {
+                    if !picked_data_ref_matches_series(cfg, picked_ref) {
+                        return None;
+                    }
+                    let PickedDataRef::Point { point_index, .. } = picked_ref else {
+                        return None;
+                    };
+                    Some(PointSelectionVisual {
+                        point_index: *point_index,
+                        color: selection_cfg.highlight_color,
+                        width_px: selection_cfg.outline_width_px,
+                        radius_extra_px: selection_cfg.point_radius_extra_px,
+                    })
+                }));
+            }
 
-                        let scatter_cfg = extract_scatter(rt);
-                        let has_line_anchor = extract_line(rt).is_some();
-                        let use_scatter_style_mapping = styled.is_none();
-                        let has_scatter_anchor = scatter_cfg.is_some_and(|scatter| {
-                            scatter_pick_anchor_may_be_visible(
-                                scatter,
-                                picked_ref.point_index,
-                                use_scatter_style_mapping,
-                            )
-                        });
-                        if !has_line_anchor && !has_scatter_anchor {
-                            continue;
-                        }
+            let mut picked = Vec::new();
+            if primitives.line || primitives.scatter {
+                for visual in point_visuals {
+                    if visual.point_index >= x_h.len_values || visual.point_index >= y_h.len_values
+                    {
+                        continue;
+                    }
+                    let Some(instance) = u32::try_from(visual.point_index).ok() else {
+                        continue;
+                    };
 
-                        let precise_pick_style_map = if styled.is_none() {
-                            series.style.scatter_map.as_ref()
-                        } else {
-                            None
-                        };
-                        let style_index = match (precise_pick_style_map, scatter_cfg) {
-                            (Some(map), Some(scatter)) if map.has_index => {
-                                let Some(column) = scatter.point_style_index_column.as_ref() else {
-                                    return Err(FiggyError::InvalidSeriesConfig {
-                                        series_id: cfg.series_id.clone(),
-                                        reason: "scatter style map expects an index column".into(),
-                                    });
-                                };
-                                let h = lookup(column)?;
-                                let count = x_h.len_values.min(y_h.len_values);
-                                if h.len_values < count {
-                                    return Err(FiggyError::InvalidSeriesConfig {
-                                        series_id: cfg.series_id.clone(),
-                                        reason: format!(
-                                            "style index column {column:?} has {} values, but scatter uses {count}",
-                                            h.len_values
-                                        ),
-                                    });
-                                }
-                                Some(h)
+                    let scatter_cfg = extract_scatter(rt);
+                    let has_line_anchor = extract_line(rt).is_some();
+                    let use_scatter_style_mapping = styled.is_none();
+                    let has_scatter_anchor = scatter_cfg.is_some_and(|scatter| {
+                        scatter_pick_anchor_may_be_visible(
+                            scatter,
+                            visual.point_index,
+                            use_scatter_style_mapping,
+                        )
+                    });
+                    if !has_line_anchor && !has_scatter_anchor {
+                        continue;
+                    }
+
+                    let precise_pick_style_map = if styled.is_none() {
+                        series.style.scatter_map.as_ref()
+                    } else {
+                        None
+                    };
+                    let style_index = match (precise_pick_style_map, scatter_cfg) {
+                        (Some(map), Some(scatter)) if map.has_index => {
+                            let Some(column) = scatter.point_style_index_column.as_ref() else {
+                                return Err(FiggyError::InvalidSeriesConfig {
+                                    series_id: cfg.series_id.clone(),
+                                    reason: "scatter style map expects an index column".into(),
+                                });
+                            };
+                            let h = lookup(column)?;
+                            let count = x_h.len_values.min(y_h.len_values);
+                            if h.len_values < count {
+                                return Err(FiggyError::InvalidSeriesConfig {
+                                    series_id: cfg.series_id.clone(),
+                                    reason: format!(
+                                        "style index column {column:?} has {} values, but scatter uses {count}",
+                                        h.len_values
+                                    ),
+                                });
                             }
-                            _ => None,
-                        };
-
-                        let mut ring_style = PrimitiveStyle::from_color_with_width(
-                            picked_cfg.ring_color,
-                            picked_cfg.ring_width_px,
-                        );
-                        let uses_mapped_pick = precise_pick_style_map.is_some();
-                        if uses_mapped_pick {
-                            ring_style.point_radius_px = series.style.scatter_radius_px;
-                            ring_style.cap_half_px = picked_cfg.radius_extra_px;
-                        } else {
-                            let scatter_radius = scatter_cfg
-                                .map(|scatter| {
-                                    scatter_config_radius_px(
-                                        scatter,
-                                        picked_ref.point_index,
-                                        use_scatter_style_mapping,
-                                    )
-                                })
-                                .unwrap_or(0.0);
-                            ring_style.point_radius_px =
-                                (scatter_radius + picked_cfg.radius_extra_px).max(0.0);
+                            Some(h)
                         }
-                        ring_style.shape_id = data_render::shape_id(&ScatterShape::Circle);
-                        let ring_buf =
-                            data_render::create_style_uniform_buffer(&self.device, &ring_style);
-                        let style_bg = data_render::create_style_bind_group(
-                            &self.device,
-                            &self.style_bgl,
-                            &ring_buf,
-                        );
-                        picked.push(ColumnPickRingLayer {
-                            pipeline: if uses_mapped_pick {
-                                pipelines
-                                    .pick_ring_mapped
+                        _ => None,
+                    };
+
+                    let mut ring_style =
+                        PrimitiveStyle::from_color_with_width(visual.color, visual.width_px);
+                    let uses_mapped_pick = precise_pick_style_map.is_some();
+                    if uses_mapped_pick {
+                        ring_style.point_radius_px = series.style.scatter_radius_px;
+                        ring_style.cap_half_px = visual.radius_extra_px;
+                    } else {
+                        let scatter_radius = scatter_cfg
+                            .map(|scatter| {
+                                scatter_config_radius_px(
+                                    scatter,
+                                    visual.point_index,
+                                    use_scatter_style_mapping,
+                                )
+                            })
+                            .unwrap_or(0.0);
+                        ring_style.point_radius_px =
+                            (scatter_radius + visual.radius_extra_px).max(0.0);
+                    }
+                    ring_style.shape_id = data_render::shape_id(&ScatterShape::Circle);
+                    let ring_buf =
+                        data_render::create_style_uniform_buffer(&self.device, &ring_style);
+                    let style_bg = data_render::create_style_bind_group(
+                        &self.device,
+                        &self.style_bgl,
+                        &ring_buf,
+                    );
+                    picked.push(ColumnPickRingLayer {
+                        pipeline: if uses_mapped_pick {
+                            pipelines
+                                .pick_ring_mapped
+                                .as_ref()
+                                .expect("prepare ensured mapped pick ring pipeline")
+                        } else {
+                            pipelines
+                                .pick_ring
+                                .as_ref()
+                                .expect("prepare ensured pick ring pipeline")
+                        },
+                        transform_bg: &view.transform_bg,
+                        style_bg,
+                        style_map_bg: precise_pick_style_map.map(|map| &map.bind_group),
+                        quad_vb: &self.quad_vb,
+                        pool_buffer: pool.buffer(),
+                        x: x_h,
+                        y: y_h,
+                        style_index,
+                        instance,
+                    });
+                }
+            }
+
+            let mut selected_bars = Vec::new();
+            let mut selected_fields = Vec::new();
+            if let Some(selection_cfg) = typed_selections {
+                for picked_ref in &selection_cfg.refs {
+                    if !picked_data_ref_matches_series(cfg, picked_ref) {
+                        continue;
+                    }
+                    match picked_ref {
+                        PickedDataRef::HistogramBin { bin_index, .. } if primitives.bar => {
+                            let Some(instance) = u32::try_from(*bin_index).ok() else {
+                                continue;
+                            };
+                            let bar_layer = bar.as_ref().expect("bar primitive has a layer");
+                            if instance
+                                >= data_render::bar_instance_count(
+                                    bar_layer.edges.len_values,
+                                    bar_layer.values.len_values,
+                                )
+                            {
+                                continue;
+                            }
+                            let mut selection = data_render::DataSelectionGpu::from_color(
+                                selection_cfg.highlight_color,
+                            );
+                            selection.metrics[0] = selection_cfg.outline_width_px;
+                            selection.indices = [
+                                data_render::DATA_SELECTION_KIND_HISTOGRAM_BIN,
+                                instance,
+                                0,
+                                0,
+                            ];
+                            let (selection_bg, selection_charge) =
+                                data_render::create_data_selection_bind_group(
+                                    &self.gpu_ledger,
+                                    &self.device,
+                                    &self.data_selection_bgl,
+                                    &selection,
+                                );
+                            // The selection outline must follow the selected
+                            // bin's overridden gap/width exactly. Resolve only
+                            // style metadata on the CPU; edge/value geometry
+                            // remains in the shared GPU columns.
+                            let bar_cfg =
+                                extract_bar(rt).expect("histogram selection has a bar config");
+                            let resolved_style = resolved_bar_primitive_style(
+                                bar_cfg,
+                                *bin_index,
+                                series.style.display_scale,
+                            );
+                            let resolved_style_buffer = data_render::create_style_uniform_buffer(
+                                &self.device,
+                                &resolved_style,
+                            );
+                            let resolved_style_bg = data_render::create_style_bind_group(
+                                &self.device,
+                                &self.style_bgl,
+                                &resolved_style_buffer,
+                            );
+                            selected_bars.push(ColumnBarSelectionLayer {
+                                pipeline: pipelines
+                                    .bar_selection
                                     .as_ref()
-                                    .expect("prepare ensured mapped pick ring pipeline")
-                            } else {
-                                pipelines
-                                    .pick_ring
+                                    .expect("prepare ensured histogram selection pipeline"),
+                                transform_bg: &view.transform_bg,
+                                style_bg: resolved_style_bg,
+                                selection_bg,
+                                selection_charge,
+                                pool_buffer: pool.buffer(),
+                                edges: bar_layer.edges,
+                                values: bar_layer.values,
+                                instance,
+                            });
+                        }
+                        PickedDataRef::MatrixCell {
+                            x_index, y_index, ..
+                        } if primitives.field => {
+                            let (Some(x_index), Some(y_index)) =
+                                (u32::try_from(*x_index).ok(), u32::try_from(*y_index).ok())
+                            else {
+                                continue;
+                            };
+                            let scratch = self
+                                .field_cache
+                                .get(cfg.series_id.as_str())
+                                .expect("prepare ensured selected field scratch");
+                            let mut selection = data_render::DataSelectionGpu::from_color(
+                                selection_cfg.highlight_color,
+                            );
+                            selection.metrics[0] = selection_cfg.outline_width_px;
+                            selection.indices = [
+                                data_render::DATA_SELECTION_KIND_MATRIX_CELL,
+                                0,
+                                x_index,
+                                y_index,
+                            ];
+                            let (selection_bg, selection_charge) =
+                                data_render::create_data_selection_bind_group(
+                                    &self.gpu_ledger,
+                                    &self.device,
+                                    &self.data_selection_bgl,
+                                    &selection,
+                                );
+                            selected_fields.push(ColumnFieldSelectionLayer {
+                                pipeline: pipelines
+                                    .field_selection
                                     .as_ref()
-                                    .expect("prepare ensured pick ring pipeline")
-                            },
-                            transform_bg: &view.transform_bg,
-                            style_bg,
-                            style_map_bg: precise_pick_style_map.map(|map| &map.bind_group),
-                            quad_vb: &self.quad_vb,
-                            pool_buffer: pool.buffer(),
-                            x: x_h,
-                            y: y_h,
-                            style_index,
-                            instance,
-                        });
+                                    .expect("prepare ensured field selection pipeline"),
+                                transform_bg: &view.transform_bg,
+                                selection_bg,
+                                selection_charge,
+                                field_bg: scratch.field_bg.clone(),
+                                charge: Arc::clone(&scratch.charge),
+                                drawable: scratch.drawable,
+                            });
+                        }
+                        PickedDataRef::ContourLevel {
+                            level_index,
+                            x_index,
+                            y_index,
+                            ..
+                        } if primitives.contour => {
+                            let (Some(level_index), Some(x_index), Some(y_index)) = (
+                                u32::try_from(*level_index).ok(),
+                                u32::try_from(*x_index).ok(),
+                                u32::try_from(*y_index).ok(),
+                            ) else {
+                                continue;
+                            };
+                            if usize::try_from(level_index).ok().is_none_or(|index| {
+                                extract_contour(rt)
+                                    .is_none_or(|contour| index >= contour.levels.len())
+                            }) {
+                                continue;
+                            }
+                            let scratch = products
+                                .contours
+                                .get(idx)
+                                .and_then(|series| series.scratch.as_ref())
+                                .expect("prepare captured selected contour scratch");
+                            let mut selection = data_render::DataSelectionGpu::from_color(
+                                selection_cfg.highlight_color,
+                            );
+                            selection.metrics[1] = selection_cfg.contour_width_extra_px;
+                            selection.indices = [
+                                data_render::DATA_SELECTION_KIND_CONTOUR_LEVEL,
+                                level_index,
+                                x_index,
+                                y_index,
+                            ];
+                            let (selection_bg, selection_charge) =
+                                data_render::create_data_selection_bind_group(
+                                    &self.gpu_ledger,
+                                    &self.device,
+                                    &self.data_selection_bgl,
+                                    &selection,
+                                );
+                            selected_fields.push(ColumnFieldSelectionLayer {
+                                pipeline: pipelines
+                                    .field_selection
+                                    .as_ref()
+                                    .expect("prepare ensured contour selection pipeline"),
+                                transform_bg: &view.transform_bg,
+                                selection_bg,
+                                selection_charge,
+                                field_bg: scratch.field_bg.clone(),
+                                charge: Arc::clone(&scratch.charge),
+                                drawable: scratch.drawable,
+                            });
+                        }
+                        _ => {}
                     }
                 }
             }
 
             out.push(data_render::SeriesLayers {
+                field,
+                bar,
+                contour,
                 errorbar,
                 line,
                 line_extra,
                 scatter,
+                selected_bars,
+                selected_fields,
                 picked,
             });
         }
@@ -6187,17 +9618,11 @@ impl Renderer {
     /// Series longer than one chunk's dispatch capacity scan as sequential
     /// chunks linked by a carry buffer, so any pool-resident `n` is fine.
     ///
-    /// The scan is re-dispatched on every prepare that needs it (the prefix
-    /// depends on the data→pixel transform `t`): a handful of tiny compute
-    /// dispatches submitted before the host's render pass, which queue order
-    /// then sequences correctly. Buffers/bind groups are cached per series
-    /// and rebuilt only when the series layout changes — or when a live
-    /// [`PreparedFrame`] still references the cached buffer (its refcount is
-    /// greater than 1): `dispatch` rewrites contents in place, so instead of clobbering
-    /// what an outstanding token will draw, the scratch is rebuilt with
-    /// fresh buffers (copy-on-write). This makes overlapping prepares — a
-    /// second panel with the same series, an export between a host's
-    /// prepare and paint — safe by construction.
+    /// A distinct scan input is dispatched once into new immutable buffers.
+    /// An exact key hit reuses that result without traversing the columns. An
+    /// old result is never rewritten: after `paint_prepared` records a buffer,
+    /// the host may drop its [`PreparedFrame`] before submitting the command
+    /// buffer, and the late submission must still see the recorded generation.
     ///
     /// `star_pitch`: `Some` adds the constellation star pass to the scratch
     /// (indirect args + VS bind group) and runs its kernel after the scan.
@@ -6216,58 +9641,61 @@ impl Renderer {
         }
         let (x_base, y_base, n) = self.arc_source_layout(x_id, y_id)?;
         let layout_generation = self.pool.layout_generation();
+        let x_allocation_epoch = self.pool.allocation_epoch(x_id)?;
+        let y_allocation_epoch = self.pool.allocation_epoch(y_id)?;
+        let transform_bits: [u32; std::mem::size_of::<data_render::ScatterTransform>() / 4] =
+            bytemuck::cast(*t);
+        let mut geometry_transform_bits = [0u32; 16];
+        geometry_transform_bits.copy_from_slice(&transform_bits[..16]);
+        let key = ArcResultKey {
+            n,
+            x_base,
+            y_base,
+            pool_layout_generation: layout_generation,
+            x_allocation_epoch,
+            y_allocation_epoch,
+            geometry_transform_bits,
+            star_pitch_bits: star_pitch.map(f32::to_bits),
+        };
 
         // Runaway-churn backstop: ids of long-removed series would otherwise
-        // pin GPU memory forever. Existing-key rebuilds replace in place, but
-        // new-key inserts must not let the cache grow past the cap.
+        // pin GPU memory forever. Exact-key results are immutable; new-key
+        // inserts evict only through this bounded cache policy.
         let has_cached_series = self.arc_cache.contains_key(series_id);
         if self.arc_cache.len() > ARC_PREFIX_CACHE_LIMIT
             || (!has_cached_series && self.arc_cache.len() >= ARC_PREFIX_CACHE_LIMIT)
         {
             self.arc_cache.clear();
         }
-        let slots = self.arc_cache.entry(series_id.to_string()).or_default();
-        // Slots whose layout no longer matches are useless for reuse; any
-        // live token that still draws from one owns clones of its handles,
-        // so dropping the slot here never invalidates a token.
-        slots.retain(|s| {
-            s.matches(n, x_base, y_base, layout_generation)
-                && s.star.is_some() == star_pitch.is_some()
-        });
-        // Copy-on-write slot pool: `dispatch` rewrites buffer contents in
-        // place, and a strong count > 1 means a live PreparedFrame (or an
-        // in-flight sibling within this same prepare) still references the
-        // slot's arc buffer — its contents must survive until that token's
-        // pass is submitted. Reuse the first free slot; only when every slot
-        // is pinned is a fresh one built. Retained-token hosts (replace last
-        // frame's token after the next prepare returns) settle on two slots
-        // that alternate, so the steady state allocates nothing. A transient
-        // over-count from a token dropping on another thread only costs a
-        // spurious slot, never a clobber.
-        let idx = match slots.iter().position(|s| Arc::strong_count(&s.arc) == 1) {
-            Some(idx) => idx,
-            None => {
-                #[cfg(test)]
-                let chunk_override = self.arc_chunk_override;
-                #[cfg(not(test))]
-                let chunk_override = None;
-                let scratch = data_render::line_arc::ArcScratch::build(
-                    &self.device,
-                    self.arc_pipelines.as_ref().expect("arc pipelines ensured"),
-                    self.pool.buffer(),
-                    n,
-                    x_base,
-                    y_base,
-                    layout_generation,
-                    self.caps.max_compute_workgroups_per_dimension,
-                    chunk_override,
-                    star_pitch.is_some().then_some(&self.star_data_bgl),
-                )?; // None only on a zero-dispatch-limit adapter; try_new rejects those.
-                slots.push(scratch);
-                slots.len() - 1
-            }
-        };
-        let scratch = &slots[idx];
+        let results = self.arc_cache.entry(series_id.to_string()).or_default();
+        if let Some(hit) = results.iter().find(|entry| entry.key == key) {
+            let star = hit.scratch.star.as_ref().map(|star| PreparedStar {
+                indirect: star.indirect.clone(),
+                vs_bg: star.vs_bg.clone(),
+            });
+            return Some(PreparedArc {
+                prefix: (Arc::clone(&hit.scratch.arc), u64::from(n) * 4),
+                star,
+                charge: hit.scratch.charge(),
+            });
+        }
+
+        #[cfg(test)]
+        let chunk_override = self.arc_chunk_override;
+        #[cfg(not(test))]
+        let chunk_override = None;
+        let scratch = data_render::line_arc::ArcScratch::build(
+            &self.device,
+            &self.gpu_ledger,
+            self.arc_pipelines.as_ref().expect("arc pipelines ensured"),
+            self.pool.buffer(),
+            n,
+            x_base,
+            y_base,
+            self.caps.max_compute_workgroups_per_dimension,
+            chunk_override,
+            star_pitch.is_some().then_some(&self.star_data_bgl),
+        )?; // None only on a zero-dispatch-limit adapter; try_new rejects those.
 
         let mut encoder = self
             .device
@@ -6283,17 +9711,23 @@ impl Renderer {
         );
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        // Snapshot AFTER the dispatch is submitted: the token's handles are
-        // owned clones (wgpu resources are refcounted), so the draw phase
-        // never has to reach back into `arc_cache`.
+        // Snapshot after submission. The cache never mutates this scratch;
+        // dropping a prepared token therefore cannot make a future prepare
+        // overwrite a host command buffer that already recorded these handles.
         let star = scratch.star.as_ref().map(|s| PreparedStar {
             indirect: s.indirect.clone(),
             vs_bg: s.vs_bg.clone(),
         });
-        Some(PreparedArc {
+        let prepared = PreparedArc {
             prefix: (Arc::clone(&scratch.arc), u64::from(n) * 4),
             star,
-        })
+            charge: scratch.charge(),
+        };
+        if results.len() >= ARC_RESULT_CACHE_LIMIT_PER_SERIES {
+            results.remove(0);
+        }
+        results.push(ArcResultEntry { key, scratch });
+        Some(prepared)
     }
 
     // Headless PNG export.
@@ -6330,6 +9764,29 @@ impl Renderer {
     }
 
     /// Export a panel with an explicit clear color behind the chart.
+    ///
+    /// Wrapped in device error scopes. Export is where figgy asks for its
+    /// largest transient resources — a target texture at `scale²`, an MSAA
+    /// attachment at `scale² × samples`, and a readback buffer — and it is
+    /// `async`, so every scope pop can actually be awaited here. Native uses
+    /// wgpu's OOM guard; wasm uses short underlying `GPUDevice` OOM and internal
+    /// scopes so internal/OOM classification and host scope boundaries remain
+    /// explicit at the raw browser API boundary.
+    /// Each browser scope pair is popped synchronously before the next await,
+    /// so cancellation and a host sharing the device cannot cross its stack.
+    /// The synchronous upload paths keep their `catch_unwind` wrapper instead:
+    /// a future cannot be driven from them, and wasm cannot block a single
+    /// thread to poll one.
+    ///
+    /// A device that reports OOM fails the export even when the encode
+    /// succeeded — a partially-resident target renders garbage, and returning
+    /// an image the caller would save is worse than an error.
+    ///
+    /// This method owns and completes its GPU submission, then reports a global
+    /// submission boundary to the memory ledger. A split prepare/paint host must
+    /// submit every command buffer it previously recorded from this renderer
+    /// before starting an export; opaque host command buffers cannot be observed
+    /// or retired selectively by the renderer.
     pub async fn export_panel_rgba_with_clear_async(
         &mut self,
         chart: &Chart,
@@ -6337,7 +9794,61 @@ impl Renderer {
         scale: f32,
         clear: crate::color::Color,
     ) -> Result<RasterImage> {
+        #[cfg(target_arch = "wasm32")]
+        let result = self
+            .export_panel_rgba_with_clear_inner(chart, series, scale, clear)
+            .await;
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let result = {
+            // wgpu 30's scope guard pops itself on drop, so an early return
+            // inside the body cannot leave a scope on the device's stack for the
+            // next caller to inherit.
+            let scope = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+            let rendered = self
+                .export_panel_rgba_with_clear_inner(chart, series, scale, clear)
+                .await;
+            let out_of_memory = scope.pop().await;
+            match (rendered, out_of_memory) {
+                (Ok(_), Some(error)) => Err(FiggyError::GpuResourceAllocationFailed {
+                    resource: "figgy export target",
+                    reason: format!("device reported out of memory during export: {error}"),
+                }),
+                (result, _) => result,
+            }
+        };
+        // Every export submission and readback has completed and all transient
+        // owners inside the inner future have been dropped.
+        self.end_gpu_frame();
+        result
+    }
+
+    async fn export_panel_rgba_with_clear_inner(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+        clear: crate::color::Color,
+    ) -> Result<RasterImage> {
+        #[cfg(target_arch = "wasm32")]
+        let browser_scopes = BrowserErrorScopes::push(&self.device, "figgy export target")?;
+
+        for config in series {
+            validate_contour_level_count(config.series_id.as_str(), &config.render_type)?;
+        }
         let scale = clamp_export_scale(scale);
+        let mut contour_spacings = Vec::with_capacity(series.len());
+        for config in series {
+            let contour_enabled =
+                effective_series_primitives(&chart.config().draw_style, &config.render_type)
+                    .contour;
+            contour_spacings.push(preflight_contour_label_spacing(
+                config.series_id.as_str(),
+                &config.render_type,
+                contour_enabled,
+                scale,
+            )?);
+        }
         let orig = chart.config().chart_area.0;
         let w = ((orig.width as f32) * scale).round().max(1.0) as u32;
         let h = ((orig.height as f32) * scale).round().max(1.0) as u32;
@@ -6414,10 +9925,17 @@ impl Renderer {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         };
-        let target_tex = create_texture_checked(&self.device, &target_desc, "figgy export target")?;
+        // Charged for the length of the export, so a concurrent pool growth
+        // sees the export's bytes in its budget rather than after the fact.
+        let target_tex = TrackedTexture::new(
+            &self.gpu_ledger,
+            GpuResourceKind::ExportTarget,
+            create_texture_checked(&self.device, &target_desc, "figgy export target")?,
+        );
         let target_view = target_tex.create_view(&wgpu::TextureViewDescriptor::default());
         let msaa_export_target = match create_msaa_target(
             &self.device,
+            &self.gpu_ledger,
             self.caps,
             "figgy export msaa target",
             w,
@@ -6448,11 +9966,15 @@ impl Renderer {
             export_format,
             export_sample_count,
         );
+        self.ensure_contour_label_pipelines(&items);
         export_target_pipelines.ensure_precise_variants_for_items(
             &self.device,
             &self.transform_bgl,
             &self.style_bgl,
             &self.per_point_style_map_bgl,
+            &self.data_selection_bgl,
+            &self.field_bgl,
+            self.contour_label_pipelines.as_ref(),
             export_format,
             &items,
         );
@@ -6465,9 +9987,19 @@ impl Renderer {
             export_format,
             &items,
         );
+        // Export renders immediately rather than handing out a token, so the
+        // receipts have nothing to be held for.
+        let _ = self.ensure_field_scratches(&items)?;
+        let contour_spacings = [contour_spacings];
+        let (prepared_contours, _) =
+            self.ensure_contour_scratches(&items, scale, &contour_spacings)?;
         let prepared_arcs = self.prepare_arc_items(&items)?;
-        let (prepared_items, _) =
-            self.resolve_prepared_items(&items, &prepared_arcs, &export_target_pipelines)?;
+        let (prepared_items, _) = self.resolve_prepared_items(
+            &items,
+            &prepared_arcs,
+            &prepared_contours,
+            &export_target_pipelines,
+        )?;
 
         // 5) Readback buffer. Allocate at most the hardware limit and read rows
         // sequentially if the full image would exceed it.
@@ -6502,7 +10034,9 @@ impl Renderer {
                 mapped_at_creation: false,
             };
             match create_buffer_checked(&self.device, &desc, "figgy export readback buffer") {
-                Ok(buffer) => break buffer,
+                Ok(buffer) => {
+                    break TrackedBuffer::new(&self.gpu_ledger, GpuResourceKind::Readback, buffer);
+                }
                 Err(e) if rows_per_chunk > 1 => {
                     rows_per_chunk = (rows_per_chunk / 2).max(1);
                     let _ = e;
@@ -6544,6 +10078,9 @@ impl Renderer {
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
+        #[cfg(target_arch = "wasm32")]
+        browser_scopes.request_all().finish().await?;
+
         // 7) Texture → readback buffer in row chunks.
         let bgra = false;
         let rgba_len = u64::from(w)
@@ -6558,6 +10095,9 @@ impl Renderer {
         let mut rgba = vec![0u8; rgba_len];
         let mut y0 = 0;
         while y0 < h {
+            #[cfg(target_arch = "wasm32")]
+            let browser_scopes = BrowserErrorScopes::push(&self.device, "figgy export readback")?;
+
             let rows = rows_per_chunk.min(h - y0);
             let chunk_size = padded_bpr_u64 * u64::from(rows);
             let mut copy_encoder =
@@ -6593,6 +10133,10 @@ impl Renderer {
             slice.map_async(wgpu::MapMode::Read, move |r| {
                 let _ = tx.send(r);
             });
+
+            #[cfg(target_arch = "wasm32")]
+            browser_scopes.request_all().finish().await?;
+
             // Native: drive the device to completion so the await below
             // resolves immediately. On wasm the browser polls the device and
             // the await yields to the JS event loop instead.
@@ -6771,11 +10315,11 @@ pub fn encode_png(img: &RasterImage) -> Result<Vec<u8>> {
 /// rasterized to two textures so the GPU can composite in order:
 /// `grid → data → decoration`.
 pub struct ChartView {
-    grid_texture: wgpu::Texture,
+    grid_texture: TrackedTexture,
     grid_bind_group: wgpu::BindGroup,
-    decoration_texture: wgpu::Texture,
+    decoration_texture: TrackedTexture,
     decoration_bind_group: wgpu::BindGroup,
-    transform_buffer: wgpu::Buffer,
+    transform_buffer: TrackedBuffer,
     transform_bg: wgpu::BindGroup,
     content_revision: Arc<std::sync::atomic::AtomicU64>,
     /// Panel pixel rect in surface coordinates.
@@ -6815,8 +10359,11 @@ pub struct ChartStyle {
     line_bg: wgpu::BindGroup,
     scatter_bg: wgpu::BindGroup,
     errorbar_bg: wgpu::BindGroup,
+    bar_bg: wgpu::BindGroup,
     scatter_map: Option<data_render::ScatterStyleMap>,
     errorbar_map: Option<data_render::ErrorBarStyleMap>,
+    bar_map: Option<data_render::BarStyleMap>,
+    display_scale: f32,
     scatter_radius_px: f32,
 }
 
@@ -6844,31 +10391,85 @@ fn effective_series_primitives(
     render_type: &DataRenderType,
 ) -> EffectiveSeriesPrimitives {
     if matches!(draw_style, DrawStyle::Constellation(_)) {
-        let supported = matches!(render_type, DataRenderType::ScatterLine { .. });
         return EffectiveSeriesPrimitives {
-            line: supported,
-            scatter: supported,
+            field: false,
+            contour: false,
+            line: constellation_supports(render_type),
+            scatter: constellation_supports(render_type),
+            bar: false,
         };
     }
     EffectiveSeriesPrimitives {
+        // A field is a precise-mode primitive, for the same reason bars are: a
+        // stylized mode has no field entry point, and a precise field inside a
+        // sketch panel would mix two visual languages.
+        field: matches!(draw_style, DrawStyle::Precise) && has_field(render_type),
+        // Contours reuse the precise line pipeline, so like the field they are a
+        // precise-mode primitive: a stylized panel has no entry point that would
+        // draw them in its own visual language.
+        contour: matches!(draw_style, DrawStyle::Precise) && has_contour(render_type),
         line: has_line(render_type),
         scatter: has_scatter(render_type),
+        // Bars are a precise-mode primitive. A stylized mode has no bar entry
+        // point, and drawing the precise one inside a sketch/milkyway chart
+        // would mix two visual languages in one panel — so a stylized chart
+        // draws no bars at all, the same answer `constellation_supports` gives.
+        bar: matches!(draw_style, DrawStyle::Precise) && has_bar(render_type),
     }
 }
 
-fn has_line(rt: &DataRenderType) -> bool {
-    matches!(
-        rt,
+/// Whether the constellation style has a rendering for this render type.
+///
+/// Exhaustive rather than `matches!(rt, ScatterLine { .. })` for the same reason
+/// as the predicates below: a new variant defaulting to `false` here would be
+/// *correct* — a stylized mode that cannot draw bars should draw nothing rather
+/// than something wrong — but it would be correct by accident. The compiler
+/// stopping here makes it a decision.
+fn constellation_supports(rt: &DataRenderType) -> bool {
+    match rt {
+        DataRenderType::ScatterLine { .. } => true,
         DataRenderType::Line { .. }
-            | DataRenderType::ScatterLine { .. }
-            | DataRenderType::LineScatterErrorbarX { .. }
-            | DataRenderType::LineScatterErrorbarY { .. }
-            | DataRenderType::LineScatterErrorbarXY { .. }
-    )
+        | DataRenderType::Scatter { .. }
+        | DataRenderType::ScatterErrorbarX { .. }
+        | DataRenderType::ScatterErrorbarY { .. }
+        | DataRenderType::ScatterErrorbarXY { .. }
+        | DataRenderType::LineScatterErrorbarX { .. }
+        | DataRenderType::LineScatterErrorbarY { .. }
+        | DataRenderType::LineScatterErrorbarXY { .. }
+        | DataRenderType::Histogram { .. }
+        | DataRenderType::Heatmap { .. }
+        | DataRenderType::Contour { .. }
+        | DataRenderType::HeatmapContour { .. } => false,
+    }
+}
+
+// Which primitives a render type draws.
+//
+// Derived from the extractors rather than listed again, following `has_errorbar`
+// below. An exhaustive `match` in each predicate would make the compiler stop on
+// a new variant — but it would only force the arms to be *written*, not to agree
+// with the config lookup. Someone answering `Bar { .. } => true` in `has_scatter`
+// while `extract_scatter` correctly says `None` reproduces the original bug
+// exactly, past a compiler that saw nothing wrong. Asking the extractor makes the
+// two impossible to disagree, and leaves exactly one exhaustive match per
+// primitive as the place a new variant has to be decided.
+//
+// The bug this shape closes: `has_scatter` was
+// `!matches!(rt, Line { .. })` — "anything that is not a bare line has points" —
+// which answers *yes* for a variant that draws bars or a filled field. Nothing
+// panics on that answer, which is what makes it dangerous:
+// `ensure_precise_variants_for_items` and `build_series_layers` read this same
+// predicate, so they agree, compile the scatter pipeline, and draw a
+// `ColumnScatterLayer` for the series. With no scatter config to read,
+// `create_style_for_series_scaled` falls back to
+// `PrimitiveStyle::from_color(BLACK)` — a 4 px filled circle — so the new series
+// silently gains black dots at every data point instead of crashing.
+fn has_line(rt: &DataRenderType) -> bool {
+    extract_line(rt).is_some()
 }
 
 fn has_scatter(rt: &DataRenderType) -> bool {
-    !matches!(rt, DataRenderType::Line { .. })
+    extract_scatter(rt).is_some()
 }
 
 fn has_errorbar(rt: &DataRenderType) -> bool {
@@ -6882,7 +10483,18 @@ fn extract_line(rt: &DataRenderType) -> Option<&DataLineStyleConfig> {
         | DataRenderType::LineScatterErrorbarX { line, .. }
         | DataRenderType::LineScatterErrorbarY { line, .. }
         | DataRenderType::LineScatterErrorbarXY { line, .. } => Some(line),
-        _ => None,
+        DataRenderType::Scatter { .. }
+        | DataRenderType::ScatterErrorbarX { .. }
+        | DataRenderType::ScatterErrorbarY { .. }
+        | DataRenderType::ScatterErrorbarXY { .. }
+        // A contour's `contour.line` is not this line. This one is the polyline
+        // through `(x_column, y_column)`; a contour is an implicit level set
+        // drawn directly from the matrix. Returning its style here would make `has_line`
+        // true and draw a polyline through the grid's coordinate columns.
+        | DataRenderType::Histogram { .. }
+        | DataRenderType::Heatmap { .. }
+        | DataRenderType::Contour { .. }
+        | DataRenderType::HeatmapContour { .. } => None,
     }
 }
 
@@ -6896,8 +10508,315 @@ fn extract_scatter(rt: &DataRenderType) -> Option<&DataScatterStyleConfig> {
         | DataRenderType::LineScatterErrorbarX { scatter, .. }
         | DataRenderType::LineScatterErrorbarY { scatter, .. }
         | DataRenderType::LineScatterErrorbarXY { scatter, .. } => Some(scatter),
-        DataRenderType::Line { .. } => None,
+        // None of these draw points. This is the predicate `has_scatter` is
+        // derived from, so answering otherwise is what put black 4 px dots at
+        // every data point — see the note above.
+        DataRenderType::Line { .. }
+        | DataRenderType::Histogram { .. }
+        | DataRenderType::Heatmap { .. }
+        | DataRenderType::Contour { .. }
+        | DataRenderType::HeatmapContour { .. } => None,
     }
+}
+
+/// What one series would draw right now, and whether the data forced a smaller
+/// extent than the declaration asked for.
+///
+/// Column lengths are facts that arrive with the data, not SSoT — so a mismatch
+/// never errors and never stops the draw: the smallest common extent is drawn
+/// and reported here. This is the **series-common** window onto
+/// that: a histogram's `edges` / `counts` truncation, a line's `min(x, y)`, and
+/// (from W6) a matrix' grid extent all come out of the same query, so no
+/// primitive ends up without a reporting path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SeriesDrawInfo {
+    /// Primitive instances the paint phase issues for this series: points,
+    /// line segments, errorbars, or bars.
+    pub drawn_count: u64,
+    /// Grid columns actually used, for a matrix-backed series. `None` for every
+    /// other render type.
+    pub cols: Option<u64>,
+    /// Grid rows actually used, for a matrix-backed series. `None` otherwise.
+    pub rows: Option<u64>,
+    /// True when some role column carries more values than `drawn_count` can
+    /// consume — the declaration asked for more than the data supports, and the
+    /// surplus is not drawn.
+    pub truncated: bool,
+}
+
+/// The bar appearance of a bar-backed render type.
+///
+/// The single exhaustive match that decides whether a variant draws bars;
+/// `has_bar` is derived from it so the predicate and the config lookup cannot
+/// disagree, following `has_line` / `has_scatter`.
+fn extract_bar(rt: &DataRenderType) -> Option<&crate::data_config::DataBarStyleConfig> {
+    match rt {
+        DataRenderType::Histogram { bar } => Some(bar),
+        DataRenderType::Line { .. }
+        | DataRenderType::Scatter { .. }
+        | DataRenderType::ScatterLine { .. }
+        | DataRenderType::ScatterErrorbarX { .. }
+        | DataRenderType::ScatterErrorbarY { .. }
+        | DataRenderType::ScatterErrorbarXY { .. }
+        | DataRenderType::LineScatterErrorbarX { .. }
+        | DataRenderType::LineScatterErrorbarY { .. }
+        | DataRenderType::LineScatterErrorbarXY { .. }
+        | DataRenderType::Heatmap { .. }
+        | DataRenderType::Contour { .. }
+        | DataRenderType::HeatmapContour { .. } => None,
+    }
+}
+
+fn has_bar(rt: &DataRenderType) -> bool {
+    extract_bar(rt).is_some()
+}
+
+/// The fill appearance of a field-backed render type.
+///
+/// `Contour` is deliberately absent: contour lines over an unfilled field is a
+/// distinct look, and giving it a default fill would paint something the config
+/// does not ask for. The single exhaustive match that decides whether a variant
+/// paints cells; `has_field` is derived from it.
+fn extract_field_fill(rt: &DataRenderType) -> Option<&crate::data_config::FieldFillConfig> {
+    match rt {
+        DataRenderType::Heatmap { fill, .. } | DataRenderType::HeatmapContour { fill, .. } => {
+            Some(fill)
+        }
+        DataRenderType::Contour { .. }
+        | DataRenderType::Line { .. }
+        | DataRenderType::Scatter { .. }
+        | DataRenderType::ScatterLine { .. }
+        | DataRenderType::ScatterErrorbarX { .. }
+        | DataRenderType::ScatterErrorbarY { .. }
+        | DataRenderType::ScatterErrorbarXY { .. }
+        | DataRenderType::LineScatterErrorbarX { .. }
+        | DataRenderType::LineScatterErrorbarY { .. }
+        | DataRenderType::LineScatterErrorbarXY { .. }
+        | DataRenderType::Histogram { .. } => None,
+    }
+}
+
+fn has_field(rt: &DataRenderType) -> bool {
+    extract_field_fill(rt).is_some()
+}
+
+/// Whether this render type draws implicit contour lines. A `Heatmap` with no contour
+/// declaration does not, even though its banded fill can quantize into levels.
+fn has_contour(rt: &DataRenderType) -> bool {
+    extract_contour(rt).is_some()
+}
+
+/// The contour declaration of a render type that draws contour lines. Its levels
+/// also divide the bands of a quantized fill.
+pub(crate) fn extract_contour(rt: &DataRenderType) -> Option<&crate::data_config::ContourConfig> {
+    match rt {
+        DataRenderType::Contour { contour, .. }
+        | DataRenderType::HeatmapContour { contour, .. } => Some(contour),
+        DataRenderType::Heatmap { .. }
+        | DataRenderType::Line { .. }
+        | DataRenderType::Scatter { .. }
+        | DataRenderType::ScatterLine { .. }
+        | DataRenderType::ScatterErrorbarX { .. }
+        | DataRenderType::ScatterErrorbarY { .. }
+        | DataRenderType::ScatterErrorbarXY { .. }
+        | DataRenderType::LineScatterErrorbarX { .. }
+        | DataRenderType::LineScatterErrorbarY { .. }
+        | DataRenderType::LineScatterErrorbarXY { .. }
+        | DataRenderType::Histogram { .. } => None,
+    }
+}
+/// `SeriesDrawInfo` for one series against the pool's current column lengths.
+///
+/// Exhaustive over the render types so a new primitive cannot ship without
+/// deciding how its extent is reported. A column the pool does not hold counts
+/// as zero: nothing draws, and that is reported rather than raised — checking
+/// registration is `validate_renderer_series`' job.
+fn series_draw_info_from_pool(pool: &ColumnPool, series: &SeriesConfig) -> SeriesDrawInfo {
+    let len = |id: &str| -> u64 {
+        pool.handle_for(id)
+            .map_or(0, |handle| handle.len_values as u64)
+    };
+    let x = len(&series.x_column);
+    let y = len(&series.y_column);
+    // Index-aligned roles: the shortest decides, and anything longer is surplus.
+    let paired = |lengths: &[u64]| -> (u64, bool) {
+        let low = lengths.iter().copied().min().unwrap_or(0);
+        (low, lengths.iter().any(|value| *value > low))
+    };
+
+    match &series.render_type {
+        // A polyline draws one segment between adjacent points.
+        DataRenderType::Line { .. } => {
+            let (count, truncated) = paired(&[x, y]);
+            SeriesDrawInfo {
+                drawn_count: count.saturating_sub(1),
+                cols: None,
+                rows: None,
+                truncated,
+            }
+        }
+        DataRenderType::Scatter { .. } | DataRenderType::ScatterLine { .. } => {
+            let (count, truncated) = paired(&[x, y]);
+            SeriesDrawInfo {
+                drawn_count: count,
+                cols: None,
+                rows: None,
+                truncated,
+            }
+        }
+        DataRenderType::ScatterErrorbarX { .. }
+        | DataRenderType::ScatterErrorbarY { .. }
+        | DataRenderType::ScatterErrorbarXY { .. }
+        | DataRenderType::LineScatterErrorbarX { .. }
+        | DataRenderType::LineScatterErrorbarY { .. }
+        | DataRenderType::LineScatterErrorbarXY { .. } => {
+            // x, y, and up to two lo/hi pairs — the same six roles the
+            // errorbar draw call minimizes over, on the stack.
+            let mut lengths = [x, y, 0, 0, 0, 0];
+            let mut used = 2;
+            for error in [
+                extract_err_x(&series.render_type),
+                extract_err_y(&series.render_type),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                match error {
+                    ErrorRef::Symmetric { column } => {
+                        lengths[used] = len(column);
+                        used += 1;
+                    }
+                    ErrorRef::Asymmetric { lower, upper } => {
+                        lengths[used] = len(lower);
+                        lengths[used + 1] = len(upper);
+                        used += 2;
+                    }
+                }
+            }
+            let (count, truncated) = paired(&lengths[..used]);
+            SeriesDrawInfo {
+                drawn_count: count,
+                cols: None,
+                rows: None,
+                truncated,
+            }
+        }
+        // `n` bars need `n + 1` edges. Orientation decides which column is
+        // which — never the lengths.
+        DataRenderType::Histogram { bar } => {
+            let (edges, values) = match bar.orientation {
+                crate::data_config::BarOrientation::Vertical => (x, y),
+                crate::data_config::BarOrientation::Horizontal => (y, x),
+            };
+            let bins = edges.saturating_sub(1);
+            SeriesDrawInfo {
+                drawn_count: bins.min(values),
+                cols: None,
+                rows: None,
+                truncated: bins != values,
+            }
+        }
+        // A field's primitive count is its cells. `cols` / `rows` report the
+        // grid the declaration and the data agreed on, which is the only way a
+        // host can tell a 10x10 grid drawn as 10x9 from one drawn whole.
+        DataRenderType::Heatmap { matrix, .. }
+        | DataRenderType::Contour { matrix, .. }
+        | DataRenderType::HeatmapContour { matrix, .. } => {
+            let extent = matrix_extent(matrix, x as usize, y as usize, |id| len(id) as usize);
+            SeriesDrawInfo {
+                drawn_count: (extent.cols as u64).saturating_mul(extent.rows as u64),
+                cols: Some(extent.cols as u64),
+                rows: Some(extent.rows as u64),
+                truncated: extent.truncated,
+            }
+        }
+    }
+}
+
+/// What a matrix declaration resolves to against the pool's current column
+/// lengths.
+///
+/// The declaration is SSoT; the lengths are facts that arrive with the data. A
+/// mismatch is never an error — the smallest common extent is drawn and the
+/// surplus is reported — so both halves come out of one place and
+/// `series_draw_info_from_pool` and the draw path cannot disagree about the
+/// extent they respectively report and paint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MatrixExtent {
+    cols: usize,
+    rows: usize,
+    truncated: bool,
+}
+
+/// Resolve a grid declaration against the pool.
+///
+/// `column_len` reports a constituent column's length, or 0 for one the pool
+/// does not hold. A missing column contributes 0 and collapses the grid rather
+/// than raising — registration is `validate_renderer_series`' job, and by the
+/// time a series is drawn it has already passed.
+fn matrix_extent(
+    matrix: &crate::data_config::MatrixRef,
+    x_len: usize,
+    y_len: usize,
+    mut column_len: impl FnMut(&str) -> usize,
+) -> MatrixExtent {
+    let (coord_along, coord_across) = matrix.coordinate_cells(x_len, y_len);
+    // Columns past what the coordinates can bound are surplus, and their
+    // lengths must not shrink the rows the drawn ones support.
+    let usable = matrix.columns.len().min(coord_along);
+    let mut shortest = usize::MAX;
+    let mut longest = 0usize;
+    for id in &matrix.columns[..usable] {
+        let len = column_len(id);
+        shortest = shortest.min(len);
+        longest = longest.max(len);
+    }
+    if usable == 0 {
+        shortest = 0;
+    }
+    let (cols, rows) = matrix.effective_extent(x_len, y_len, shortest);
+    // Truncated means some role offered more than was drawn — declared columns,
+    // coordinate cells, or values inside a column.
+    let truncated =
+        matrix.columns.len() > cols || coord_along > cols || coord_across > rows || longest > rows;
+    MatrixExtent {
+        cols,
+        rows,
+        truncated,
+    }
+}
+
+/// The grid declaration of a matrix-backed render type.
+///
+/// The single exhaustive match that decides whether a variant is a field: both
+/// "which columns does it reference" and "does it need a z scale" are derived
+/// from this one answer instead of being listed again, so they cannot disagree
+/// about a variant.
+fn extract_matrix(rt: &DataRenderType) -> Option<&crate::data_config::MatrixRef> {
+    match rt {
+        DataRenderType::Heatmap { matrix, .. }
+        | DataRenderType::Contour { matrix, .. }
+        | DataRenderType::HeatmapContour { matrix, .. } => Some(matrix),
+        DataRenderType::Line { .. }
+        | DataRenderType::Scatter { .. }
+        | DataRenderType::ScatterLine { .. }
+        | DataRenderType::ScatterErrorbarX { .. }
+        | DataRenderType::ScatterErrorbarY { .. }
+        | DataRenderType::ScatterErrorbarXY { .. }
+        | DataRenderType::LineScatterErrorbarX { .. }
+        | DataRenderType::LineScatterErrorbarY { .. }
+        | DataRenderType::LineScatterErrorbarXY { .. }
+        | DataRenderType::Histogram { .. } => None,
+    }
+}
+
+/// Whether this render type cannot be drawn without `Config.colorbar`.
+///
+/// A field's z range and colormap live nowhere else, so without the colourbar
+/// there is no value to paint — not a missing decoration, a missing input.
+/// Derived from `extract_matrix` rather than matched again.
+fn requires_colorbar(rt: &DataRenderType) -> bool {
+    extract_matrix(rt).is_some()
 }
 
 fn extract_errorbar_style(rt: &DataRenderType) -> Option<&DataErrorBarStyleConfig> {
@@ -6908,7 +10827,13 @@ fn extract_errorbar_style(rt: &DataRenderType) -> Option<&DataErrorBarStyleConfi
         | DataRenderType::LineScatterErrorbarX { err_style, .. }
         | DataRenderType::LineScatterErrorbarY { err_style, .. }
         | DataRenderType::LineScatterErrorbarXY { err_style, .. } => Some(err_style),
-        _ => None,
+        DataRenderType::Line { .. }
+        | DataRenderType::Scatter { .. }
+        | DataRenderType::ScatterLine { .. }
+        | DataRenderType::Histogram { .. }
+        | DataRenderType::Heatmap { .. }
+        | DataRenderType::Contour { .. }
+        | DataRenderType::HeatmapContour { .. } => None,
     }
 }
 
@@ -6918,7 +10843,15 @@ fn extract_err_y(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::ScatterErrorbarXY { err_y, .. }
         | DataRenderType::LineScatterErrorbarY { err_y, .. }
         | DataRenderType::LineScatterErrorbarXY { err_y, .. } => Some(err_y),
-        _ => None,
+        DataRenderType::Line { .. }
+        | DataRenderType::Scatter { .. }
+        | DataRenderType::ScatterLine { .. }
+        | DataRenderType::ScatterErrorbarX { .. }
+        | DataRenderType::LineScatterErrorbarX { .. }
+        | DataRenderType::Histogram { .. }
+        | DataRenderType::Heatmap { .. }
+        | DataRenderType::Contour { .. }
+        | DataRenderType::HeatmapContour { .. } => None,
     }
 }
 
@@ -6928,8 +10861,21 @@ fn extract_err_x(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::ScatterErrorbarXY { err_x, .. }
         | DataRenderType::LineScatterErrorbarX { err_x, .. }
         | DataRenderType::LineScatterErrorbarXY { err_x, .. } => Some(err_x),
-        _ => None,
+        DataRenderType::Line { .. }
+        | DataRenderType::Scatter { .. }
+        | DataRenderType::ScatterLine { .. }
+        | DataRenderType::ScatterErrorbarY { .. }
+        | DataRenderType::LineScatterErrorbarY { .. }
+        | DataRenderType::Histogram { .. }
+        | DataRenderType::Heatmap { .. }
+        | DataRenderType::Contour { .. }
+        | DataRenderType::HeatmapContour { .. } => None,
     }
+}
+
+fn errorbar_direction_flags(rt: &DataRenderType) -> u32 {
+    (u32::from(extract_err_y(rt).is_some()) * ERRORBAR_HAS_Y)
+        | (u32::from(extract_err_x(rt).is_some()) * ERRORBAR_HAS_X)
 }
 
 // WindowedRenderer — figgy owns the surface and swap chain.
@@ -6989,6 +10935,17 @@ impl<'w> WindowedRenderer<'w> {
         self.inner.ensure_errorbar_extent_engine().await
     }
 
+    pub async fn prewarm_all_observed(
+        &mut self,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> Result<()> {
+        self.inner.prewarm_all_observed(observer).await
+    }
+
+    pub async fn prewarm_all(&mut self) -> Result<()> {
+        self.inner.prewarm_all().await
+    }
+
     pub fn add_column(
         &mut self,
         id: impl Into<ColumnId>,
@@ -7020,6 +10977,10 @@ impl<'w> WindowedRenderer<'w> {
     {
         self.inner
             .begin_load_demo(chart_id, demo_x, demo_sin, demo_t, demo_rc, prepare_state)
+    }
+
+    pub fn add_columns(&mut self, columns: &[(&str, &dyn ColumnSource)]) -> Result<()> {
+        self.inner.add_columns(columns)
     }
 
     pub fn begin_upsert_column(
@@ -7072,16 +11033,36 @@ impl<'w> WindowedRenderer<'w> {
         self.inner.defragment()
     }
 
+    /// Declare a ceiling for all renderer GPU bytes — see
+    /// [`Renderer::set_memory_budget`], including what the ceiling does and does
+    /// not govern and what a returned total means.
+    ///
+    /// The window's MSAA target is charged to the same ledger as the
+    /// renderer's own resources, so the ceiling covers it and the immutable
+    /// [`Renderer::gpu_memory_usage`] reached through `Deref` reports it.
+    #[must_use = "a returned total means the new ceiling is already exceeded"]
+    pub fn set_memory_budget(&mut self, budget: Option<u64>) -> Option<u64> {
+        self.inner.set_memory_budget(budget)
+    }
+
+    /// Submission boundary — see [`Renderer::end_gpu_frame`]. `draw` calls it
+    /// after queue submission; hosts that record their own command buffers call
+    /// it after submitting every panel in the frame.
+    pub fn end_gpu_frame(&mut self) {
+        self.inner.end_gpu_frame();
+    }
+
     pub fn process_pending_maintenance(&mut self) -> Result<bool> {
         self.inner.process_pending_maintenance()
     }
 
-    pub fn ensure_internal_zero_column(&mut self, len: usize) -> Result<()> {
-        self.inner.ensure_internal_zero_column(len)
-    }
-
     pub fn set_defrag_policy(&mut self, policy: DefragPolicy) {
         self.inner.set_defrag_policy(policy);
+    }
+
+    /// See [`Renderer::set_pool_growth_policy`].
+    pub fn set_pool_growth_policy(&mut self, policy: data_render::GrowthPolicy) {
+        self.inner.set_pool_growth_policy(policy);
     }
 
     pub fn enable_gpu_picking(&mut self) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
@@ -7133,6 +11114,34 @@ impl<'w> WindowedRenderer<'w> {
             (self.surface_config.width, self.surface_config.height),
         );
         self.inner.pick_chart(
+            id,
+            GpuPickRequest {
+                canvas_position_px,
+                display_panel_px,
+                display_scale,
+                max_distance_px,
+            },
+        )
+    }
+
+    /// Typed data pick using this window's current physical surface size.
+    pub fn pick_chart_data_at(
+        &mut self,
+        id: ChartId,
+        canvas_position_px: [f32; 2],
+        max_distance_px: f32,
+    ) -> Result<crate::GpuDataPickTicket> {
+        let config = self
+            .inner
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        let logical = config.config.chart_area.0;
+        let (display_scale, display_panel_px) = fit_display_panel(
+            (logical.width, logical.height),
+            (self.surface_config.width, self.surface_config.height),
+        );
+        self.inner.pick_chart_data(
             id,
             GpuPickRequest {
                 canvas_position_px,
@@ -7301,6 +11310,7 @@ impl<'w> WindowedRenderer<'w> {
             preferred_msaa_sample_count(self.inner.caps, self.surface_config.format);
         let (target_sample_count, msaa_target) = match create_msaa_target(
             self.inner.device(),
+            self.inner.gpu_ledger(),
             self.inner.caps,
             "figgy frame msaa target",
             self.surface_config.width,
@@ -7403,6 +11413,7 @@ impl<'w> WindowedRenderer<'w> {
             )?;
         }
         self.inner.queue().submit(std::iter::once(encoder.finish()));
+        self.inner.end_gpu_frame();
         self.inner.queue().present(frame);
         Ok(())
     }
@@ -7654,7 +11665,7 @@ mod tests {
     }
 
     #[test]
-    fn renderer_gpu_picker_activation_creates_four_pipelines_once() {
+    fn renderer_gpu_picker_activation_creates_six_pipelines_once() {
         let Some(mut renderer) = state_test_renderer() else {
             return;
         };
@@ -7688,9 +11699,325 @@ mod tests {
                     && event.stage == "setup"
             })
             .count();
+        let data_pipeline_starts = events
+            .iter()
+            .filter(|event| {
+                event.scope == "renderer.gpu_data_pick"
+                    && event.phase == crate::init::InitPhase::Started
+                    && matches!(event.stage, "pick_histogram_bin" | "pick_field_data")
+            })
+            .count();
+        let data_setup_starts = events
+            .iter()
+            .filter(|event| {
+                event.scope == "renderer.gpu_data_pick"
+                    && event.phase == crate::init::InitPhase::Started
+                    && event.stage == "setup"
+            })
+            .count();
         assert_eq!(pipeline_starts, 4);
         assert_eq!(setup_starts, 1);
+        assert_eq!(data_pipeline_starts, 2);
+        assert_eq!(data_setup_starts, 1);
         assert!(renderer.picker.active.is_none());
+    }
+
+    fn typed_pick_config(x: (f64, f64), y: (f64, f64)) -> Config {
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 480,
+            height: 360,
+        });
+        config.legend.visible = false;
+        for axis in [&mut config.bottom_x, &mut config.top_x] {
+            axis.min = x.0;
+            axis.max = x.1;
+        }
+        for axis in [&mut config.left_y, &mut config.right_y] {
+            axis.min = y.0;
+            axis.max = y.1;
+        }
+        config
+    }
+
+    fn typed_pick_position(config: &Config, x: f64, y: f64) -> [f32; 2] {
+        let area = config.data_area().unwrap().0;
+        let tx = ((x - config.bottom_x.min) / (config.bottom_x.max - config.bottom_x.min)) as f32;
+        let ty = ((y - config.left_y.min) / (config.left_y.max - config.left_y.min)) as f32;
+        [
+            area.x as f32 + tx * area.width as f32,
+            area.y as f32 + (1.0 - ty) * area.height as f32,
+        ]
+    }
+
+    fn typed_pick_request(config: &Config, position: [f32; 2]) -> GpuPickRequest {
+        GpuPickRequest {
+            canvas_position_px: position,
+            display_panel_px: config.chart_area.0,
+            display_scale: 1.0,
+            max_distance_px: 0.0,
+        }
+    }
+
+    #[test]
+    fn typed_gpu_pick_returns_histogram_bin_without_cpu_bar_bounds() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer
+            .add_column("edges", &col_f64(vec![0.0, 1.0, 2.0]))
+            .unwrap();
+        renderer
+            .add_column("counts", &col_f64(vec![5.0, 8.0]))
+            .unwrap();
+        let config = typed_pick_config((0.0, 2.0), (0.0, 10.0));
+        let position = typed_pick_position(&config, 1.5, 4.0);
+        let series = SeriesConfig {
+            series_id: "hist".into(),
+            source_id: Some("source".into()),
+            label: None,
+            x_column: "edges".into(),
+            y_column: "counts".into(),
+            render_type: DataRenderType::Histogram {
+                bar: crate::data_config::DataBarStyleConfig {
+                    fill_color: Color::BLACK,
+                    border_color: Color::BLACK,
+                    border_width: 1.0,
+                    baseline: 0.0,
+                    gap_px: 2.0,
+                    width_ratio: 1.0,
+                    orientation: crate::data_config::BarOrientation::Vertical,
+                    bar_style_overrides: None,
+                },
+            },
+        };
+        let chart = renderer
+            .register_chart(config.clone(), vec![series])
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        let picked = pollster::block_on(
+            renderer
+                .pick_chart_data(chart, typed_pick_request(&config, position))
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap()
+        .expect("histogram bin hit");
+        assert_eq!(
+            picked,
+            crate::pick::PickedData::HistogramBin {
+                source_id: Some("source".into()),
+                series_id: "hist".into(),
+                bin_index: 1,
+                distance_px: 0.0,
+            }
+        );
+    }
+
+    #[test]
+    fn typed_gpu_pick_uses_the_overridden_histogram_width() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer
+            .add_column("edges", &col_f64(vec![0.0, 1.0, 2.0]))
+            .unwrap();
+        renderer
+            .add_column("counts", &col_f64(vec![5.0, 8.0]))
+            .unwrap();
+        let config = typed_pick_config((0.0, 2.0), (0.0, 10.0));
+        let series = SeriesConfig {
+            series_id: "hist".into(),
+            source_id: None,
+            label: None,
+            x_column: "edges".into(),
+            y_column: "counts".into(),
+            render_type: DataRenderType::Histogram {
+                bar: DataBarStyleConfig {
+                    fill_color: Color::BLACK,
+                    border_color: Color::BLACK,
+                    border_width: 0.0,
+                    baseline: 0.0,
+                    gap_px: 0.0,
+                    width_ratio: 1.0,
+                    orientation: crate::data_config::BarOrientation::Vertical,
+                    bar_style_overrides: Some(vec![crate::data_config::DataBarStyleOverride {
+                        index: 1,
+                        style: DataBarBinStyleConfig {
+                            width_ratio: Some(0.2),
+                            ..Default::default()
+                        },
+                    }]),
+                },
+            },
+        };
+        let chart = renderer
+            .register_chart(config.clone(), vec![series])
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+
+        // Raw bin 1 spans x=1..2, but its overridden bar spans x=1.4..1.6.
+        let outside = pollster::block_on(
+            renderer
+                .pick_chart_data(
+                    chart,
+                    typed_pick_request(&config, typed_pick_position(&config, 1.1, 4.0)),
+                )
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap();
+        assert_eq!(
+            outside, None,
+            "raw bin area outside the narrow bar was picked"
+        );
+
+        let inside = pollster::block_on(
+            renderer
+                .pick_chart_data(
+                    chart,
+                    typed_pick_request(&config, typed_pick_position(&config, 1.5, 4.0)),
+                )
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap()
+        .expect("narrow overridden bar hit");
+        assert!(matches!(
+            inside,
+            crate::pick::PickedData::HistogramBin { bin_index: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn typed_gpu_pick_returns_canonical_heatmap_cell_indices() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        for (id, values) in [
+            ("x", vec![0.0, 1.0, 2.0]),
+            ("y", vec![0.0, 1.0, 2.0]),
+            ("z0", vec![1.0, 2.0]),
+            ("z1", vec![3.0, 4.0]),
+        ] {
+            renderer.add_column(id, &col_f64(values)).unwrap();
+        }
+        let mut config = typed_pick_config((0.0, 2.0), (0.0, 2.0));
+        config.colorbar = Some(crate::default::default_colorbar_options());
+        let position = typed_pick_position(&config, 1.5, 0.5);
+        let series = SeriesConfig {
+            series_id: "heat".into(),
+            source_id: None,
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            render_type: DataRenderType::Heatmap {
+                matrix: crate::data_config::MatrixRef {
+                    columns: vec!["z0".into(), "z1".into()],
+                    orientation: crate::data_config::MatrixOrientation::ColumnsAreX,
+                    grid_layout: crate::data_config::GridLayout::Edges,
+                },
+                fill: crate::data_config::FieldFillConfig {
+                    mode: crate::data_config::FillMode::Continuous,
+                    shading: crate::data_config::Shading::Flat,
+                    opacity: 1.0,
+                },
+            },
+        };
+        let chart = renderer
+            .register_chart(config.clone(), vec![series])
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        let picked = pollster::block_on(
+            renderer
+                .pick_chart_data(chart, typed_pick_request(&config, position))
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap()
+        .expect("heatmap cell hit");
+        assert_eq!(
+            picked,
+            crate::pick::PickedData::MatrixCell {
+                source_id: None,
+                series_id: "heat".into(),
+                x_index: 1,
+                y_index: 0,
+                distance_px: 0.0,
+            }
+        );
+    }
+
+    #[test]
+    fn typed_gpu_pick_prefers_heatmap_contour_level_over_containing_cell() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        for (id, values) in [
+            ("x", vec![0.0, 1.0]),
+            ("y", vec![0.0, 1.0]),
+            ("z0", vec![0.0, 0.0]),
+            ("z1", vec![1.0, 1.0]),
+        ] {
+            renderer.add_column(id, &col_f64(values)).unwrap();
+        }
+        let mut config = typed_pick_config((-0.5, 1.5), (-0.5, 1.5));
+        config.colorbar = Some(crate::default::default_colorbar_options());
+        let position = typed_pick_position(&config, 0.5, 0.5);
+        let series = SeriesConfig {
+            series_id: "field".into(),
+            source_id: None,
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            render_type: DataRenderType::HeatmapContour {
+                matrix: crate::data_config::MatrixRef {
+                    columns: vec!["z0".into(), "z1".into()],
+                    orientation: crate::data_config::MatrixOrientation::ColumnsAreX,
+                    grid_layout: crate::data_config::GridLayout::Centers,
+                },
+                fill: crate::data_config::FieldFillConfig {
+                    mode: crate::data_config::FillMode::Continuous,
+                    shading: crate::data_config::Shading::Interpolated,
+                    opacity: 1.0,
+                },
+                contour: crate::data_config::ContourConfig {
+                    levels: vec![0.5],
+                    line: DataLineStyleConfig {
+                        line_style: LineStylePreset::Solid,
+                        line_color: Color::BLACK,
+                        line_width: 2.0,
+                    },
+                    per_level_color: None,
+                    labels: None,
+                },
+            },
+        };
+        let chart = renderer
+            .register_chart(config.clone(), vec![series])
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        let picked = pollster::block_on(
+            renderer
+                .pick_chart_data(chart, typed_pick_request(&config, position))
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap()
+        .expect("contour hit");
+        assert_eq!(
+            picked,
+            crate::pick::PickedData::ContourLevel {
+                source_id: None,
+                series_id: "field".into(),
+                level_index: 0,
+                x_index: 0,
+                y_index: 0,
+                distance_px: 0.0,
+            }
+        );
     }
 
     #[test]
@@ -7861,8 +12188,11 @@ mod tests {
                 .resource
                 .primitives,
             EffectiveSeriesPrimitives {
+                field: false,
+                contour: false,
                 line: false,
                 scatter: true,
+                bar: false,
             }
         );
     }
@@ -8179,6 +12509,930 @@ mod tests {
         assert!(renderer.chart_order().is_empty());
         assert!(renderer.chart_states.is_empty());
         assert_eq!(renderer.visual_revision(), before_visual);
+    }
+
+    fn state_test_heatmap(id: &str, x: &str, y: &str, z: &[&str]) -> SeriesConfig {
+        SeriesConfig {
+            series_id: id.to_string(),
+            source_id: None,
+            label: None,
+            x_column: x.to_string(),
+            y_column: y.to_string(),
+            render_type: DataRenderType::Heatmap {
+                matrix: crate::data_config::MatrixRef {
+                    columns: z.iter().map(|c| c.to_string()).collect(),
+                    orientation: crate::data_config::MatrixOrientation::ColumnsAreX,
+                    grid_layout: crate::data_config::GridLayout::Centers,
+                },
+                fill: crate::data_config::FieldFillConfig {
+                    mode: crate::data_config::FillMode::Continuous,
+                    shading: crate::data_config::Shading::Flat,
+                    opacity: 1.0,
+                },
+            },
+        }
+    }
+
+    fn state_test_contour(id: &str, x: &str, y: &str, z: &[&str], levels: usize) -> SeriesConfig {
+        let mut series = state_test_heatmap(id, x, y, z);
+        let DataRenderType::Heatmap { matrix, .. } = series.render_type else {
+            unreachable!();
+        };
+        series.render_type = DataRenderType::Contour {
+            matrix,
+            contour: state_test_contour_config(levels),
+        };
+        series
+    }
+
+    fn state_test_heatmap_contour(
+        id: &str,
+        x: &str,
+        y: &str,
+        z: &[&str],
+        levels: usize,
+    ) -> SeriesConfig {
+        let mut series = state_test_heatmap(id, x, y, z);
+        let DataRenderType::Heatmap { matrix, fill } = series.render_type else {
+            unreachable!();
+        };
+        series.render_type = DataRenderType::HeatmapContour {
+            matrix,
+            fill,
+            contour: state_test_contour_config(levels),
+        };
+        series
+    }
+
+    fn state_test_contour_config(levels: usize) -> crate::data_config::ContourConfig {
+        crate::data_config::ContourConfig {
+            levels: (0..levels).map(|level| level as f64).collect(),
+            line: DataLineStyleConfig {
+                line_style: LineStylePreset::Solid,
+                line_color: Color::BLACK,
+                line_width: 1.0,
+            },
+            per_level_color: None,
+            labels: None,
+        }
+    }
+
+    fn state_test_labelled_contour(
+        spacing_px: f32,
+        anchors: Vec<crate::data_config::ContourLabelAnchor>,
+    ) -> SeriesConfig {
+        let mut series =
+            state_test_contour("label-cache", "clx", "cly", &["clz0", "clz1", "clz2"], 1);
+        let DataRenderType::Contour { contour, .. } = &mut series.render_type else {
+            unreachable!();
+        };
+        contour.levels = vec![2.0];
+        contour.line.line_color = Color::new(0.0, 0.2, 0.8, 1.0);
+        contour.labels = Some(crate::data_config::ContourLabelConfig {
+            visible: true,
+            font_size: 18.0,
+            color: Color::BLACK,
+            format: crate::format::LabelFormat::Decimal,
+            significant_digits: 3,
+            spacing_px,
+            anchors,
+            bg_color: Some(Color::new(1.0, 0.0, 1.0, 1.0)),
+            bg_padding_px: 2.0,
+        });
+        series
+    }
+
+    fn state_test_contour_labels_mut(
+        series: &mut SeriesConfig,
+    ) -> &mut crate::data_config::ContourLabelConfig {
+        let (DataRenderType::Contour { contour, .. }
+        | DataRenderType::HeatmapContour { contour, .. }) = &mut series.render_type
+        else {
+            panic!("expected contour series")
+        };
+        contour.labels.as_mut().expect("labelled contour")
+    }
+
+    fn assert_contour_spacing_error(result: Result<impl Sized>, product: bool) {
+        let Err(FiggyError::InvalidSeriesConfig { reason, .. }) = result else {
+            panic!("invalid contour spacing was accepted or returned the wrong error")
+        };
+        let expected = if product {
+            "automatic contour label spacing_px * scale must be finite and greater than zero"
+        } else {
+            crate::data_config::ContourLabelConfig::INVALID_SPACING_REASON
+        };
+        assert_eq!(reason, expected);
+    }
+
+    fn add_state_test_contour_grid(renderer: &mut Renderer) {
+        renderer
+            .add_column("clx", &col_f64(vec![0.0, 0.5, 1.0]))
+            .unwrap();
+        renderer
+            .add_column("cly", &col_f64(vec![0.0, 0.5, 1.0]))
+            .unwrap();
+        renderer
+            .add_column("clz0", &col_f64(vec![0.0, 1.0, 2.0]))
+            .unwrap();
+        renderer
+            .add_column("clz1", &col_f64(vec![1.0, 2.0, 3.0]))
+            .unwrap();
+        renderer
+            .add_column("clz2", &col_f64(vec![2.0, 3.0, 4.0]))
+            .unwrap();
+    }
+
+    fn state_test_contour_chart(rect: Rect, x_range: (f64, f64)) -> Chart {
+        let mut config = panel_config(rect.width, rect.height);
+        config.chart_area = crate::layout::ChartArea(rect);
+        config.colorbar = Some(crate::default::default_colorbar_options());
+        config.legend.visible = false;
+        config.bottom_x.major_spacing = 0.25;
+        config.left_y.major_spacing = 0.25;
+        let mut chart = Chart::new(config);
+        chart.set_x_range(x_range.0, x_range.1);
+        chart.set_y_range(0.0, 1.0);
+        chart.config_mut().bottom_x.major_spacing = 0.25;
+        chart.config_mut().left_y.major_spacing = 0.25;
+        chart
+    }
+
+    fn state_test_contour_variant(
+        heatmap: bool,
+        id: &str,
+        x: &str,
+        y: &str,
+        z: &[&str],
+        levels: usize,
+    ) -> SeriesConfig {
+        if heatmap {
+            state_test_heatmap_contour(id, x, y, z, levels)
+        } else {
+            state_test_contour(id, x, y, z, levels)
+        }
+    }
+
+    fn assert_contour_limit_error(result: Result<impl Sized>) {
+        let Err(FiggyError::InvalidSeriesConfig { reason, .. }) = result else {
+            panic!("oversized contour was accepted or returned the wrong error")
+        };
+        assert_eq!(
+            reason,
+            "contour level count 1025 exceeds the supported maximum 1024"
+        );
+    }
+
+    #[test]
+    fn renderer_owned_series_boundaries_reject_spacing_without_state_changes() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        add_state_test_contour_grid(&mut renderer);
+        let mut config = crate::default::default_config();
+        config.colorbar = Some(crate::default::default_colorbar_options());
+        let chart = renderer.register_chart(config.clone(), Vec::new()).unwrap();
+
+        let invalid = |spacing_px: f32, visible: bool, explicit: bool| {
+            let anchors = explicit
+                .then_some(crate::data_config::ContourLabelAnchor {
+                    level_index: 0,
+                    x: 0.5,
+                    y: 0.5,
+                    tx: 1.0,
+                    ty: 0.0,
+                })
+                .into_iter()
+                .collect();
+            let mut series = state_test_labelled_contour(spacing_px, anchors);
+            state_test_contour_labels_mut(&mut series).visible = visible;
+            series
+        };
+
+        for series in [invalid(0.0, false, false), invalid(-1.0, true, true)] {
+            let before_series = renderer.chart_series(chart).unwrap().to_vec();
+            let before_visual = renderer.visual_revision();
+            assert_contour_spacing_error(
+                renderer.set_chart_series(chart, vec![series.clone()]),
+                false,
+            );
+            assert_eq!(renderer.chart_series(chart).unwrap(), before_series);
+            assert_eq!(renderer.visual_revision(), before_visual);
+
+            assert_contour_spacing_error(
+                renderer.set_chart_state(chart, config.clone(), vec![series.clone()]),
+                false,
+            );
+            assert_eq!(renderer.chart_series(chart).unwrap(), before_series);
+            assert_eq!(renderer.visual_revision(), before_visual);
+
+            let before_order = renderer.chart_order().to_vec();
+            assert_contour_spacing_error(
+                renderer.register_chart(config.clone(), vec![series]),
+                false,
+            );
+            assert_eq!(renderer.chart_order(), before_order);
+            assert_eq!(renderer.visual_revision(), before_visual);
+        }
+    }
+
+    #[test]
+    fn demo_load_rejects_invalid_spacing_without_publishing_candidate_state() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        let chart = renderer
+            .register_chart(crate::default::default_config(), Vec::new())
+            .unwrap();
+        let column = col_f64(vec![0.0, 1.0, 2.0]);
+        let before_visual = renderer.visual_revision();
+        let before_generation = renderer.pool().generation();
+        let result = renderer.begin_load_demo(chart, &column, &column, &column, &column, |_| {
+            let mut config = crate::default::default_config();
+            config.colorbar = Some(crate::default::default_colorbar_options());
+            let mut series = state_test_contour(
+                "demo-label",
+                DEMO_COLUMN_IDS[0],
+                DEMO_COLUMN_IDS[1],
+                &[DEMO_COLUMN_IDS[2]],
+                1,
+            );
+            let DataRenderType::Contour { contour, .. } = &mut series.render_type else {
+                unreachable!()
+            };
+            contour.labels = Some(crate::data_config::ContourLabelConfig {
+                visible: false,
+                font_size: 12.0,
+                color: Color::BLACK,
+                format: crate::format::LabelFormat::Decimal,
+                significant_digits: 3,
+                spacing_px: f32::NAN,
+                anchors: Vec::new(),
+                bg_color: None,
+                bg_padding_px: 0.0,
+            });
+            Ok((config, vec![series]))
+        });
+        assert_contour_spacing_error(result, false);
+        assert!(renderer.chart_series(chart).unwrap().is_empty());
+        assert_eq!(renderer.visual_revision(), before_visual);
+        assert_eq!(renderer.pool().generation(), before_generation);
+    }
+
+    #[test]
+    fn prepare_preflights_hidden_invalid_spacing_before_gpu_mutation() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        add_state_test_contour_grid(&mut renderer);
+        let chart = state_test_contour_chart(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 240,
+                height: 180,
+            },
+            (0.0, 1.0),
+        );
+        let mut config = state_test_labelled_contour(0.0, Vec::new());
+        state_test_contour_labels_mut(&mut config).visible = false;
+        let style = renderer.create_style_for_series(&config);
+        let series = [Series {
+            config: &config,
+            style: &style,
+        }];
+        let view = renderer
+            .create_chart_view(&chart, chart.config().chart_area.0)
+            .unwrap();
+        let items = [ChartDrawItem {
+            view: &view,
+            chart_config: chart.config(),
+            series: &series,
+        }];
+        let before = renderer
+            .gpu_memory_usage()
+            .creations_of(GpuResourceKind::ContourScratch);
+        assert_contour_spacing_error(renderer.prepare(&items), false);
+        assert_eq!(
+            renderer
+                .gpu_memory_usage()
+                .creations_of(GpuResourceKind::ContourScratch),
+            before
+        );
+        assert!(renderer.contour_label_pipelines.is_none());
+    }
+
+    #[test]
+    fn export_checks_clamped_automatic_spacing_product_only_for_automatic_labels() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        add_state_test_contour_grid(&mut renderer);
+        let chart = state_test_contour_chart(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 240,
+                height: 180,
+            },
+            (0.0, 1.0),
+        );
+        let huge = f32::MAX;
+        let automatic = [state_test_labelled_contour(huge, Vec::new())];
+        let before = renderer
+            .gpu_memory_usage()
+            .creations_of(GpuResourceKind::ContourScratch);
+        assert_contour_spacing_error(
+            renderer.export_panel_rgba(&chart, &automatic, f32::INFINITY),
+            true,
+        );
+        assert_eq!(
+            renderer
+                .gpu_memory_usage()
+                .creations_of(GpuResourceKind::ContourScratch),
+            before
+        );
+
+        let anchor = crate::data_config::ContourLabelAnchor {
+            level_index: 0,
+            x: 0.5,
+            y: 0.5,
+            tx: 1.0,
+            ty: 0.0,
+        };
+        let explicit = [state_test_labelled_contour(huge, vec![anchor])];
+        renderer
+            .export_panel_rgba(&chart, &explicit, f32::INFINITY)
+            .expect("explicit placement must not multiply spacing by export scale");
+
+        let mut hidden = state_test_labelled_contour(huge, Vec::new());
+        state_test_contour_labels_mut(&mut hidden).visible = false;
+        renderer
+            .export_panel_rgba(&chart, &[hidden], f32::INFINITY)
+            .expect("hidden labels must not multiply spacing by export scale");
+    }
+
+    #[test]
+    fn contour_label_font_generation_drift_forces_an_atlas_cache_miss() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        add_state_test_contour_grid(&mut renderer);
+        let chart = state_test_contour_chart(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 240,
+                height: 180,
+            },
+            (0.0, 1.0),
+        );
+        let config = state_test_labelled_contour(90.0, Vec::new());
+        let style = renderer.create_style_for_series(&config);
+        let series = [Series {
+            config: &config,
+            style: &style,
+        }];
+        let view = renderer
+            .create_chart_view(&chart, chart.config().chart_area.0)
+            .unwrap();
+        let items = [ChartDrawItem {
+            view: &view,
+            chart_config: chart.config(),
+            series: &series,
+        }];
+
+        let first = renderer.prepare(&items).unwrap();
+        let before = renderer.contour_cache["label-cache"]
+            .label
+            .as_ref()
+            .unwrap()
+            .atlas_identity();
+        renderer
+            .contour_cache
+            .get_mut("label-cache")
+            .unwrap()
+            .signature
+            .label
+            .as_mut()
+            .unwrap()
+            .font_generation = crate::text_render::font_generation().wrapping_add(1);
+
+        let second = renderer.prepare(&items).unwrap();
+        let entry = &renderer.contour_cache["label-cache"];
+        let after = entry.label.as_ref().unwrap().atlas_identity();
+        assert_ne!(before, after, "font generation drift reused a stale atlas");
+        assert_eq!(
+            entry.signature.label.as_ref().unwrap().font_generation,
+            crate::text_render::font_generation()
+        );
+        drop((first, second));
+    }
+
+    #[test]
+    fn register_and_set_cover_both_contour_variants_at_the_level_boundary() {
+        for heatmap in [false, true] {
+            let Some(mut renderer) = state_test_renderer() else {
+                return;
+            };
+            renderer.add_column("x", &col_f64(vec![0.0, 1.0])).unwrap();
+            renderer.add_column("y", &col_f64(vec![0.0, 1.0])).unwrap();
+            renderer.add_column("z0", &col_f64(vec![0.0, 1.0])).unwrap();
+            let mut config = crate::default::default_config();
+            config.colorbar = Some(crate::default::default_colorbar_options());
+
+            let chart = renderer
+                .register_chart(
+                    config.clone(),
+                    vec![state_test_contour_variant(
+                        heatmap,
+                        "accepted",
+                        "x",
+                        "y",
+                        &["z0"],
+                        crate::data_config::MAX_CONTOUR_LEVELS,
+                    )],
+                )
+                .unwrap();
+            renderer
+                .set_chart_series(
+                    chart,
+                    vec![state_test_contour_variant(
+                        heatmap,
+                        "set-accepted",
+                        "x",
+                        "y",
+                        &["z0"],
+                        crate::data_config::MAX_CONTOUR_LEVELS,
+                    )],
+                )
+                .unwrap();
+            let before_revision = renderer.visual_revision();
+            assert_contour_limit_error(renderer.set_chart_series(
+                chart,
+                vec![state_test_contour_variant(
+                    heatmap,
+                    "rejected",
+                    "x",
+                    "y",
+                    &["z0"],
+                    crate::data_config::MAX_CONTOUR_LEVELS + 1,
+                )],
+            ));
+            assert_eq!(
+                declared_level_count(&renderer.chart_series(chart).unwrap()[0].render_type),
+                crate::data_config::MAX_CONTOUR_LEVELS
+            );
+            assert_eq!(renderer.visual_revision(), before_revision);
+
+            let chart_count = renderer.chart_order().len();
+            let before_revision = renderer.visual_revision();
+            assert_contour_limit_error(renderer.register_chart(
+                config,
+                vec![state_test_contour_variant(
+                    heatmap,
+                    "register-rejected",
+                    "x",
+                    "y",
+                    &["z0"],
+                    crate::data_config::MAX_CONTOUR_LEVELS + 1,
+                )],
+            ));
+            assert_eq!(renderer.chart_order().len(), chart_count);
+            assert_eq!(renderer.visual_revision(), before_revision);
+        }
+    }
+
+    #[test]
+    fn contour_level_validation_is_identical_for_contour_and_heatmap_contour() {
+        let allowed = [
+            state_test_contour(
+                "contour",
+                "x",
+                "y",
+                &["z0"],
+                crate::data_config::MAX_CONTOUR_LEVELS,
+            ),
+            state_test_heatmap_contour(
+                "heatmap-contour",
+                "x",
+                "y",
+                &["z0"],
+                crate::data_config::MAX_CONTOUR_LEVELS,
+            ),
+        ];
+        for series in &allowed {
+            validate_contour_level_count(&series.series_id, &series.render_type).unwrap();
+        }
+
+        let rejected = [
+            state_test_contour(
+                "contour",
+                "x",
+                "y",
+                &["z0"],
+                crate::data_config::MAX_CONTOUR_LEVELS + 1,
+            ),
+            state_test_heatmap_contour(
+                "heatmap-contour",
+                "x",
+                "y",
+                &["z0"],
+                crate::data_config::MAX_CONTOUR_LEVELS + 1,
+            ),
+        ];
+        let reasons: Vec<String> = rejected
+            .iter()
+            .map(|series| {
+                let FiggyError::InvalidSeriesConfig { reason, .. } =
+                    validate_contour_level_count(&series.series_id, &series.render_type)
+                        .unwrap_err()
+                else {
+                    panic!("wrong contour limit error")
+                };
+                reason
+            })
+            .collect();
+        assert_eq!(reasons[0], reasons[1]);
+    }
+
+    #[test]
+    fn direct_prepare_covers_both_contour_variants_at_the_level_boundary() {
+        for heatmap in [false, true] {
+            let Some((mut renderer, chart, _)) = field_prepare_fixture() else {
+                return;
+            };
+            let view = renderer
+                .create_chart_view(&chart, chart.config().chart_area.0)
+                .unwrap();
+            let accepted = state_test_contour_variant(
+                heatmap,
+                "field",
+                "fx",
+                "fy",
+                &["fz0", "fz1"],
+                crate::data_config::MAX_CONTOUR_LEVELS,
+            );
+            let style = renderer.create_style_for_series(&accepted);
+            let series = [Series {
+                config: &accepted,
+                style: &style,
+            }];
+            let items = [ChartDrawItem {
+                view: &view,
+                chart_config: chart.config(),
+                series: &series,
+            }];
+            drop(renderer.prepare(&items).unwrap());
+            let creations = renderer
+                .gpu_memory_usage()
+                .creations_of(crate::gpu_memory::GpuResourceKind::FieldTable);
+            let field_cache_len = renderer.field_cache.len();
+            let contour_cache_len = renderer.contour_cache.len();
+
+            let rejected = state_test_contour_variant(
+                heatmap,
+                "rejected",
+                "fx",
+                "fy",
+                &["fz0", "fz1"],
+                crate::data_config::MAX_CONTOUR_LEVELS + 1,
+            );
+            let style = renderer.create_style_for_series(&rejected);
+            let series = [Series {
+                config: &rejected,
+                style: &style,
+            }];
+            let items = [ChartDrawItem {
+                view: &view,
+                chart_config: chart.config(),
+                series: &series,
+            }];
+            assert_contour_limit_error(renderer.prepare(&items));
+            assert_eq!(
+                renderer
+                    .gpu_memory_usage()
+                    .creations_of(crate::gpu_memory::GpuResourceKind::FieldTable),
+                creations
+            );
+            assert_eq!(renderer.field_cache.len(), field_cache_len);
+            assert_eq!(renderer.contour_cache.len(), contour_cache_len);
+        }
+    }
+
+    #[test]
+    fn direct_export_covers_both_contour_variants_at_the_level_boundary() {
+        for heatmap in [false, true] {
+            let Some((mut renderer, chart, _)) = field_prepare_fixture() else {
+                return;
+            };
+            let accepted = [state_test_contour_variant(
+                heatmap,
+                "field",
+                "fx",
+                "fy",
+                &["fz0", "fz1"],
+                crate::data_config::MAX_CONTOUR_LEVELS,
+            )];
+            let image = renderer.export_panel_rgba(&chart, &accepted, 1.0).unwrap();
+            assert_eq!(image.width, chart.config().chart_area.0.width);
+            assert_eq!(image.height, chart.config().chart_area.0.height);
+
+            let creations = renderer
+                .gpu_memory_usage()
+                .creations_of(crate::gpu_memory::GpuResourceKind::FieldTable);
+            let rejected = [state_test_contour_variant(
+                heatmap,
+                "rejected",
+                "fx",
+                "fy",
+                &["fz0", "fz1"],
+                crate::data_config::MAX_CONTOUR_LEVELS + 1,
+            )];
+            assert_contour_limit_error(renderer.export_panel_rgba(&chart, &rejected, 1.0));
+            assert_eq!(
+                renderer
+                    .gpu_memory_usage()
+                    .creations_of(crate::gpu_memory::GpuResourceKind::FieldTable),
+                creations
+            );
+        }
+    }
+
+    #[test]
+    fn demo_load_covers_both_contour_variants_at_the_level_boundary() {
+        for heatmap in [false, true] {
+            let Some(mut renderer) = state_test_renderer() else {
+                return;
+            };
+            let chart = renderer
+                .register_chart(crate::default::default_config(), Vec::new())
+                .unwrap();
+            let column = col_f64(vec![0.0, 1.0]);
+            let mut config = crate::default::default_config();
+            config.colorbar = Some(crate::default::default_colorbar_options());
+            renderer
+                .begin_load_demo(chart, &column, &column, &column, &column, |_| {
+                    Ok((
+                        config,
+                        vec![state_test_contour_variant(
+                            heatmap,
+                            "accepted",
+                            DEMO_COLUMN_IDS[0],
+                            DEMO_COLUMN_IDS[1],
+                            &[DEMO_COLUMN_IDS[2]],
+                            crate::data_config::MAX_CONTOUR_LEVELS,
+                        )],
+                    ))
+                })
+                .unwrap()
+                .commit();
+            assert_eq!(
+                declared_level_count(&renderer.chart_series(chart).unwrap()[0].render_type),
+                crate::data_config::MAX_CONTOUR_LEVELS
+            );
+
+            let before_revision = renderer.visual_revision();
+            let before_series = renderer.chart_series(chart).unwrap().to_vec();
+            let before_generation = renderer.pool().generation();
+            let before_layout_generation = renderer.pool().layout_generation();
+            let before_handles = DEMO_COLUMN_IDS.map(|id| renderer.pool().handle_for(id).unwrap());
+            let before_epochs =
+                DEMO_COLUMN_IDS.map(|id| renderer.pool().allocation_epoch(id).unwrap());
+            let mut rejected_config = crate::default::default_config();
+            rejected_config.colorbar = Some(crate::default::default_colorbar_options());
+            let result =
+                renderer.begin_load_demo(chart, &column, &column, &column, &column, |_| {
+                    Ok((
+                        rejected_config,
+                        vec![state_test_contour_variant(
+                            heatmap,
+                            "rejected",
+                            DEMO_COLUMN_IDS[0],
+                            DEMO_COLUMN_IDS[1],
+                            &[DEMO_COLUMN_IDS[2]],
+                            crate::data_config::MAX_CONTOUR_LEVELS + 1,
+                        )],
+                    ))
+                });
+            assert_contour_limit_error(result);
+            assert_eq!(renderer.chart_series(chart).unwrap(), before_series);
+            assert_eq!(renderer.visual_revision(), before_revision);
+            assert_eq!(renderer.pool().generation(), before_generation);
+            assert_eq!(
+                renderer.pool().layout_generation(),
+                before_layout_generation
+            );
+            for (id, before) in DEMO_COLUMN_IDS.into_iter().zip(before_handles) {
+                let after = renderer.pool().handle_for(id).unwrap();
+                assert_eq!(after.generation, before.generation);
+                assert_eq!(after.offset, before.offset);
+                assert_eq!(after.byte_size, before.byte_size);
+                assert_eq!(after.len_values, before.len_values);
+            }
+            assert_eq!(
+                DEMO_COLUMN_IDS.map(|id| renderer.pool().allocation_epoch(id).unwrap()),
+                before_epochs
+            );
+        }
+    }
+
+    // A field series without `Config.colorbar` is not a chart missing a
+    // decoration — it is a chart with no z range and no colormap, so there is no
+    // value to draw. Rejected, and rejected atomically.
+    #[test]
+    fn a_field_series_without_a_colorbar_is_rejected() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        let chart = renderer
+            .register_chart(crate::default::default_config(), Vec::new())
+            .unwrap();
+        renderer.add_column("x", &col_f64(vec![0.0, 1.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![0.0, 1.0])).unwrap();
+        renderer.add_column("z0", &col_f64(vec![1.0, 2.0])).unwrap();
+        let before = renderer.visual_revision();
+
+        let field = vec![state_test_heatmap("field", "x", "y", &["z0"])];
+        assert!(matches!(
+            renderer.set_chart_series(chart, field.clone()),
+            Err(FiggyError::InvalidSeriesConfig { .. })
+        ));
+        assert!(renderer.chart_series(chart).unwrap().is_empty());
+        assert_eq!(renderer.visual_revision(), before);
+
+        // With a colourbar it is accepted — including a hidden one, which is how
+        // a field is drawn without the bar beside it.
+        let mut config = crate::default::default_config();
+        let mut bar = crate::default::default_colorbar_options();
+        bar.visible = false;
+        config.colorbar = Some(bar);
+        renderer.set_chart_state(chart, config, field).unwrap();
+        assert_eq!(renderer.chart_series(chart).unwrap().len(), 1);
+    }
+
+    // The grid's constituent columns are referenced columns: they must exist,
+    // and the reference must be reachable by everything that walks a series'
+    // columns (validation, the remove-column cascade, derived identity).
+    #[test]
+    fn a_matrix_column_must_be_registered_and_is_a_referenced_column() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        let mut config = crate::default::default_config();
+        config.colorbar = Some(crate::default::default_colorbar_options());
+        let chart = renderer.register_chart(config, Vec::new()).unwrap();
+        renderer.add_column("x", &col_f64(vec![0.0, 1.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![0.0, 1.0])).unwrap();
+        renderer.add_column("z0", &col_f64(vec![1.0, 2.0])).unwrap();
+
+        assert!(matches!(
+            renderer.set_chart_series(
+                chart,
+                vec![state_test_heatmap("field", "x", "y", &["z0", "z_missing"])]
+            ),
+            Err(FiggyError::UnknownColumn { .. })
+        ));
+
+        let series = state_test_heatmap("field", "x", "y", &["z0"]);
+        renderer
+            .set_chart_series(chart, vec![series.clone()])
+            .unwrap();
+        assert!(series_references_column(&series, "z0"));
+        assert!(!series_references_column(&series, "z_other"));
+
+        // A declaration that does not line up with the data is not an error —
+        // so a grid declaring more columns than exist in the pool is only
+        // rejected for the missing *registration*, never for the count.
+        let mut visited = Vec::new();
+        visit_series_columns(&series, &mut |column| visited.push(column.to_string()));
+        assert!(visited.iter().any(|column| column == "z0"));
+    }
+
+    // The paired reducer's domain is index-aligned pairs, which the field and bar
+    // types are not. Fields use the distinct lattice mode; histograms stay on
+    // metadata. Their stamps remain in the fit token in either case.
+    #[test]
+    fn field_and_bar_types_are_not_submitted_to_the_paired_extent_reducer() {
+        use crate::gpu_errorbar::GpuSeriesExtentMode;
+
+        let matrix = crate::data_config::MatrixRef {
+            columns: vec!["z0".into()],
+            orientation: crate::data_config::MatrixOrientation::ColumnsAreX,
+            grid_layout: crate::data_config::GridLayout::Centers,
+        };
+        let fill = crate::data_config::FieldFillConfig {
+            mode: crate::data_config::FillMode::Continuous,
+            shading: crate::data_config::Shading::Flat,
+            opacity: 1.0,
+        };
+        let contour = crate::data_config::ContourConfig {
+            levels: vec![1.0],
+            line: DataLineStyleConfig {
+                line_style: LineStylePreset::Solid,
+                line_color: Color::BLACK,
+                line_width: 1.0,
+            },
+            per_level_color: None,
+            labels: None,
+        };
+        let unpaired = [
+            DataRenderType::Histogram {
+                bar: crate::data_config::DataBarStyleConfig {
+                    fill_color: Color::BLACK,
+                    border_color: Color::BLACK,
+                    border_width: 1.0,
+                    baseline: 0.0,
+                    gap_px: 1.0,
+                    width_ratio: 1.0,
+                    orientation: crate::data_config::BarOrientation::Vertical,
+                    bar_style_overrides: None,
+                },
+            },
+            DataRenderType::Heatmap {
+                matrix: matrix.clone(),
+                fill: fill.clone(),
+            },
+            DataRenderType::Contour {
+                matrix: matrix.clone(),
+                contour: contour.clone(),
+            },
+            DataRenderType::HeatmapContour {
+                matrix,
+                fill,
+                contour,
+            },
+        ];
+        for render_type in &unpaired {
+            assert_eq!(
+                GpuSeriesExtentMode::from_render_type(render_type),
+                None,
+                "{render_type:?} must not go through the paired reducer"
+            );
+            // And they draw neither of the paired primitives, so nothing
+            // downstream compiles a pipeline or a layer for them yet.
+            assert!(!has_line(render_type));
+            assert!(!has_scatter(render_type));
+            assert!(!has_errorbar(render_type));
+            assert!(!constellation_supports(render_type));
+        }
+        // The paired types still are.
+        assert_eq!(
+            GpuSeriesExtentMode::from_render_type(&DataRenderType::Line {
+                line: DataLineStyleConfig {
+                    line_style: LineStylePreset::Solid,
+                    line_color: Color::BLACK,
+                    line_width: 1.0,
+                },
+            }),
+            Some(GpuSeriesExtentMode::Line)
+        );
+    }
+
+    #[test]
+    fn renderer_field_fit_resolves_the_same_sample_endpoints_as_contour_draw() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer
+            .add_column("fit-gx", &col_f64(vec![-3.1, -2.9, 2.9, 3.1]))
+            .unwrap();
+        renderer
+            .add_column("fit-gy", &col_f64(vec![-2.5, -2.3, 2.3, 2.5]))
+            .unwrap();
+        for (id, values) in [
+            ("fit-z0", vec![0.0, 1.0, 2.0]),
+            ("fit-z1", vec![1.0, 2.0, 3.0]),
+            ("fit-z2", vec![2.0, 3.0, 4.0]),
+        ] {
+            renderer.add_column(id, &col_f64(values)).unwrap();
+        }
+        let mut series = state_test_contour(
+            "field-fit",
+            "fit-gx",
+            "fit-gy",
+            &["fit-z0", "fit-z1", "fit-z2"],
+            1,
+        );
+        let DataRenderType::Contour { matrix, .. } = &mut series.render_type else {
+            unreachable!()
+        };
+        matrix.grid_layout = crate::data_config::GridLayout::Edges;
+
+        pollster::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
+        let extent = pollster::block_on(
+            renderer
+                .begin_series_fit_extent(&series)
+                .unwrap()
+                .expect("contour uses a GPU field-fit ticket")
+                .resolve(),
+        )
+        .unwrap()
+        .expect("the 3x3 contour lattice has an extent");
+        assert!((extent.x.min + 3.0).abs() < 1.0e-6);
+        assert!((extent.x.max - 3.0).abs() < 1.0e-6);
+        assert!((extent.y.min + 2.4).abs() < 1.0e-6);
+        assert!((extent.y.max - 2.4).abs() < 1.0e-6);
     }
 
     #[test]
@@ -9250,31 +14504,6 @@ mod tests {
     }
 
     #[test]
-    fn renderer_internal_zero_column_is_not_host_mutable() {
-        let Some(mut renderer) = state_test_renderer() else {
-            return;
-        };
-        let nonzero = col_f64(vec![7.0, 7.0]);
-        assert!(matches!(
-            renderer.add_column(INTERNAL_ZERO_COLUMN_ID, &nonzero),
-            Err(FiggyError::ReservedColumnId { .. })
-        ));
-        assert!(matches!(
-            renderer.begin_upsert_column(INTERNAL_ZERO_COLUMN_ID, &nonzero),
-            Err(FiggyError::ReservedColumnId { .. })
-        ));
-
-        renderer.ensure_internal_zero_column(2).unwrap();
-        let slot = renderer.pool().slot(INTERNAL_ZERO_COLUMN_ID).unwrap();
-        assert_eq!((slot.min, slot.max, slot.len_values), (0.0, 0.0, 2));
-        assert!(matches!(
-            renderer.remove_column(INTERNAL_ZERO_COLUMN_ID),
-            Err(FiggyError::ReservedColumnId { .. })
-        ));
-        assert!(renderer.pool().slot(INTERNAL_ZERO_COLUMN_ID).is_some());
-    }
-
-    #[test]
     fn renderer_column_remove_cascades_across_registered_charts() {
         let Some(mut renderer) = state_test_renderer() else {
             return;
@@ -9605,44 +14834,6 @@ mod tests {
         assert!(second.chart_config(second_chart).is_ok());
     }
 
-    #[test]
-    fn internal_zero_column_grows_without_point_vector_or_visual_invalidation() {
-        let Some(mut renderer) = state_test_renderer() else {
-            return;
-        };
-        let visual = renderer.visual_revision();
-        renderer.ensure_internal_zero_column(4).unwrap();
-        assert_eq!(
-            renderer
-                .pool()
-                .slot(INTERNAL_ZERO_COLUMN_ID)
-                .unwrap()
-                .len_values,
-            4
-        );
-        assert_eq!(renderer.visual_revision(), visual);
-
-        renderer.ensure_internal_zero_column(2).unwrap();
-        assert_eq!(
-            renderer
-                .pool()
-                .slot(INTERNAL_ZERO_COLUMN_ID)
-                .unwrap()
-                .len_values,
-            4
-        );
-        renderer.ensure_internal_zero_column(8).unwrap();
-        assert_eq!(
-            renderer
-                .pool()
-                .slot(INTERNAL_ZERO_COLUMN_ID)
-                .unwrap()
-                .len_values,
-            8
-        );
-        assert_eq!(renderer.visual_revision(), visual);
-    }
-
     fn typecheck_windowed_load_demo_forwarding<'surface>(
         renderer: &mut WindowedRenderer<'surface>,
         chart_id: ChartId,
@@ -9822,11 +15013,255 @@ mod tests {
         assert!(renderer.line_pipeline().is_none());
         assert!(renderer.scatter_pipeline().is_none());
         assert!(renderer.errorbar_pipeline().is_none());
+        assert!(renderer.bar_pipeline().is_none());
         assert!(renderer.pipelines.scatter_mapped.is_none());
         assert!(renderer.pipelines.errorbar_mapped.is_none());
         assert!(renderer.pipelines.pick_ring_mapped.is_none());
         assert!(!renderer.errorbar_extent_engine_ready());
         pollster::block_on(renderer.wait_submitted_work());
+    }
+
+    #[test]
+    fn full_prewarm_materializes_every_deferred_pipeline() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        let mut events = Vec::new();
+        pollster::block_on(renderer.prewarm_all_observed(&mut |event| events.push(event))).unwrap();
+
+        assert!(renderer.pipelines.line.is_some());
+        assert!(renderer.pipelines.scatter.is_some());
+        assert!(renderer.pipelines.scatter_mapped.is_some());
+        assert!(renderer.pipelines.pick_ring.is_some());
+        assert!(renderer.pipelines.pick_ring_mapped.is_some());
+        assert!(renderer.pipelines.errorbar.is_some());
+        assert!(renderer.pipelines.errorbar_mapped.is_some());
+        assert!(renderer.pipelines.bar.is_some());
+        assert!(renderer.pipelines.bar_selection.is_some());
+        assert!(renderer.pipelines.field.is_some());
+        assert!(renderer.pipelines.field_selection.is_some());
+        assert!(renderer.pipelines.contour.is_some());
+        assert!(renderer.pipelines.contour_label.is_some());
+        assert!(renderer.pipelines.styled.contains_key(&StyleKey::Sketch));
+        assert!(renderer.pipelines.styled.contains_key(&StyleKey::Milkyway));
+        assert!(
+            renderer
+                .pipelines
+                .styled
+                .contains_key(&StyleKey::Constellation)
+        );
+        assert!(renderer.contour_label_pipelines.is_some());
+        assert!(renderer.arc_pipelines.is_some());
+        assert!(renderer.errorbar_extent_engine_ready());
+        assert!(events.iter().any(|event| {
+            event.scope == "renderer.prewarm"
+                && event.stage == "point picking compute"
+                && event.phase == crate::init::InitPhase::Finished
+        }));
+    }
+
+    // ── Histogram (W5) ─────────────────────────────────────────────────────
+
+    fn state_test_histogram(
+        id: &str,
+        x: &str,
+        y: &str,
+        orientation: crate::data_config::BarOrientation,
+    ) -> SeriesConfig {
+        SeriesConfig {
+            series_id: id.to_string(),
+            source_id: None,
+            label: None,
+            x_column: x.to_string(),
+            y_column: y.to_string(),
+            render_type: DataRenderType::Histogram {
+                bar: crate::data_config::DataBarStyleConfig {
+                    fill_color: Color::new(0.2, 0.5, 0.8, 1.0),
+                    border_color: Color::BLACK,
+                    border_width: 1.0,
+                    baseline: 0.0,
+                    gap_px: 1.0,
+                    width_ratio: 1.0,
+                    orientation,
+                    bar_style_overrides: None,
+                },
+            },
+        }
+    }
+
+    /// A histogram compiles the bar pipeline and nothing else. Eager creation
+    /// would break the other isolation tests in this module, and would put a
+    /// pipeline on every chart that never draws a bar.
+    #[test]
+    fn histogram_prepare_compiles_only_the_bar_pipeline() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        // 4 bins: 5 edges, 4 counts.
+        renderer
+            .add_column("edges", &col_f64(vec![0.0, 1.0, 2.0, 3.0, 4.0]))
+            .unwrap();
+        renderer
+            .add_column("counts", &col_f64(vec![3.0, 7.0, 5.0, 2.0]))
+            .unwrap();
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 240,
+        });
+        let chart = Chart::new(config);
+        let view = renderer
+            .create_chart_view(&chart, chart.config().chart_area.0)
+            .unwrap();
+        let series_cfg = state_test_histogram(
+            "hist",
+            "edges",
+            "counts",
+            crate::data_config::BarOrientation::Vertical,
+        );
+        let style = renderer.create_style_for_series(&series_cfg);
+        let series = [Series {
+            config: &series_cfg,
+            style: &style,
+        }];
+        let items = [ChartDrawItem {
+            view: &view,
+            chart_config: chart.config(),
+            series: &series,
+        }];
+        renderer.prepare(&items).unwrap();
+
+        assert!(renderer.bar_pipeline().is_some());
+        assert!(renderer.line_pipeline().is_none());
+        assert!(renderer.scatter_pipeline().is_none());
+        assert!(renderer.errorbar_pipeline().is_none());
+        assert!(renderer.pipelines.scatter_mapped.is_none());
+        assert!(renderer.pipelines.errorbar_mapped.is_none());
+        assert!(!renderer.errorbar_extent_engine_ready());
+    }
+
+    /// A bar is not a line: the line draw call issues `min(x, y) - 1`
+    /// instances, which for a correctly shaped `(n + 1, n)` histogram drops the
+    /// last bar. The bar count is `min(edges - 1, counts)`.
+    #[test]
+    fn bar_instance_count_keeps_the_last_bin() {
+        use crate::data_render::bar_instance_count;
+
+        // Well-formed: 11 edges bound 10 bins.
+        assert_eq!(bar_instance_count(11, 10), 10);
+        // What the line rule would have given for the same columns: one bar
+        // short, the last bin silently gone.
+        let line_rule = |a: usize, b: usize| a.min(b).saturating_sub(1);
+        assert_eq!(line_rule(11, 10), 9);
+
+        // Mismatches truncate to the smallest common extent, never error.
+        assert_eq!(bar_instance_count(11, 9), 9);
+        assert_eq!(bar_instance_count(5, 10), 4);
+        assert_eq!(bar_instance_count(1, 10), 0);
+        assert_eq!(bar_instance_count(0, 10), 0);
+        assert_eq!(bar_instance_count(11, 0), 0);
+    }
+
+    /// The smallest-common-extent reporting window. A mismatch is drawn small and *reported* — the
+    /// one place a host can learn its declaration outran its data.
+    #[test]
+    fn series_draw_info_reports_the_truncation_it_drew() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer
+            .add_column("edges", &col_f64(vec![0.0, 1.0, 2.0, 3.0, 4.0]))
+            .unwrap();
+        renderer
+            .add_column("counts4", &col_f64(vec![3.0, 7.0, 5.0, 2.0]))
+            .unwrap();
+        renderer
+            .add_column("counts2", &col_f64(vec![3.0, 7.0]))
+            .unwrap();
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 240,
+        });
+        let chart = renderer.register_chart(config, Vec::new()).unwrap();
+
+        // 5 edges + 4 counts: exactly 4 bars, nothing left over.
+        renderer
+            .set_chart_series(
+                chart,
+                vec![state_test_histogram(
+                    "hist",
+                    "edges",
+                    "counts4",
+                    crate::data_config::BarOrientation::Vertical,
+                )],
+            )
+            .unwrap();
+        assert_eq!(
+            renderer.series_draw_info(chart, "hist").unwrap(),
+            SeriesDrawInfo {
+                drawn_count: 4,
+                cols: None,
+                rows: None,
+                truncated: false,
+            }
+        );
+
+        // 5 edges + 2 counts: two bars, and the surplus edges are reported.
+        renderer
+            .set_chart_series(
+                chart,
+                vec![state_test_histogram(
+                    "hist",
+                    "edges",
+                    "counts2",
+                    crate::data_config::BarOrientation::Vertical,
+                )],
+            )
+            .unwrap();
+        let info = renderer.series_draw_info(chart, "hist").unwrap();
+        assert_eq!(info.drawn_count, 2);
+        assert!(info.truncated);
+
+        // Orientation alone decides the roles. Same two columns in the same
+        // slots, `Horizontal` instead of `Vertical`: now `y` (2 values) is the
+        // edge column, bounding a single bin, against 5 values in `x`.
+        renderer
+            .set_chart_series(
+                chart,
+                vec![state_test_histogram(
+                    "hist",
+                    "edges",
+                    "counts2",
+                    crate::data_config::BarOrientation::Horizontal,
+                )],
+            )
+            .unwrap();
+        let info = renderer.series_draw_info(chart, "hist").unwrap();
+        assert_eq!(
+            info.drawn_count, 1,
+            "horizontal reads y as edges: 2 edges bound 1 bin"
+        );
+        assert!(info.truncated);
+
+        // The same window explains the existing primitives' `min` truncation.
+        renderer
+            .add_column("lx", &col_f64(vec![0.0, 1.0, 2.0]))
+            .unwrap();
+        renderer.add_column("ly", &col_f64(vec![0.0, 1.0])).unwrap();
+        renderer
+            .set_chart_series(chart, vec![state_test_line("line", "lx", "ly")])
+            .unwrap();
+        let info = renderer.series_draw_info(chart, "line").unwrap();
+        assert_eq!(info.drawn_count, 1, "two usable points make one segment");
+        assert!(info.truncated);
+
+        // And an unknown series is an error, not a zero.
+        assert!(renderer.series_draw_info(chart, "nope").is_err());
     }
 
     #[test]
@@ -9862,6 +15297,7 @@ mod tests {
         assert!(renderer.line_pipeline().is_some());
         assert!(renderer.scatter_pipeline().is_none());
         assert!(renderer.errorbar_pipeline().is_none());
+        assert!(renderer.bar_pipeline().is_none());
         assert!(renderer.pipelines.scatter_mapped.is_none());
         assert!(renderer.pipelines.errorbar_mapped.is_none());
         assert!(renderer.pipelines.pick_ring_mapped.is_none());
@@ -9926,7 +15362,6 @@ mod tests {
         renderer.add_column("ex", &col_f64(vec![0.0, 1.0])).unwrap();
         renderer.add_column("ey", &col_f64(vec![0.0, 1.0])).unwrap();
         renderer.add_column("ee", &col_f64(vec![0.1, 0.1])).unwrap();
-        renderer.ensure_internal_zero_column(2).unwrap();
         let mut config = crate::default::default_config();
         config.chart_area = crate::layout::ChartArea(Rect {
             x: 0,
@@ -10241,7 +15676,6 @@ mod tests {
         r.add_column("x", &col_f64(vec![2.0])).unwrap();
         r.add_column("y", &col_f64(vec![2.5])).unwrap();
         r.add_column("ey", &col_f64(vec![1.0])).unwrap();
-        r.ensure_internal_zero_column(1).unwrap();
 
         let mut chart = basic_errorbar_chart();
         chart.config_mut().picked_points = Some(crate::config::PickedPointsConfig {
@@ -10301,7 +15735,6 @@ mod tests {
         r.add_column("y", &col_f64(vec![2.5, 2.5])).unwrap();
         r.add_column("ey", &col_f64(vec![1.0, 1.0])).unwrap();
         r.add_column("err_style", &col_f64(vec![0.0, 1.0])).unwrap();
-        r.ensure_internal_zero_column(2).unwrap();
 
         let chart = basic_errorbar_chart();
         let mut scatter = test_scatter_style();
@@ -10372,14 +15805,21 @@ mod tests {
         p[0] < 80 && p[1] < 80 && p[2] > 150 && p[3] > 100
     }
 
-    fn paint_prepared_rgba(
+    struct RecordedPreparedRgba {
+        command_buffer: wgpu::CommandBuffer,
+        readback: wgpu::Buffer,
+        unpadded: u32,
+        padded: u32,
+        height: u32,
+    }
+
+    fn record_prepared_rgba(
         renderer: &Renderer,
         prepared: &PreparedFrame,
         w: u32,
         h: u32,
-    ) -> Vec<u8> {
+    ) -> RecordedPreparedRgba {
         let device = renderer.device.as_ref();
-        let queue = renderer.queue.as_ref();
         let target_desc = wgpu::TextureDescriptor {
             label: Some("mapped style regression target"),
             size: wgpu::Extent3d {
@@ -10443,26 +15883,47 @@ mod tests {
             },
             target_desc.size,
         );
-        queue.submit(std::iter::once(enc.finish()));
-        let slice = readback.slice(..);
+        RecordedPreparedRgba {
+            command_buffer: enc.finish(),
+            readback,
+            unpadded,
+            padded,
+            height: h,
+        }
+    }
+
+    fn submit_recorded_rgba(renderer: &Renderer, recorded: RecordedPreparedRgba) -> Vec<u8> {
+        renderer
+            .queue
+            .submit(std::iter::once(recorded.command_buffer));
+        let slice = recorded.readback.slice(..);
         slice.map_async(wgpu::MapMode::Read, |_| {});
-        let _ = device.poll(wgpu::PollType::Wait {
+        let _ = renderer.device.poll(wgpu::PollType::Wait {
             submission_index: None,
             timeout: Some(std::time::Duration::from_secs(30)),
         });
         let mapped = slice
             .get_mapped_range()
             .expect("offscreen readback is mapped");
-        if padded == unpadded {
+        if recorded.padded == recorded.unpadded {
             mapped.to_vec()
         } else {
-            let mut out = Vec::with_capacity((unpadded * h) as usize);
-            for row in 0..h {
-                let start = (row * padded) as usize;
-                out.extend_from_slice(&mapped[start..start + unpadded as usize]);
+            let mut out = Vec::with_capacity((recorded.unpadded * recorded.height) as usize);
+            for row in 0..recorded.height {
+                let start = (row * recorded.padded) as usize;
+                out.extend_from_slice(&mapped[start..start + recorded.unpadded as usize]);
             }
             out
         }
+    }
+
+    fn paint_prepared_rgba(
+        renderer: &Renderer,
+        prepared: &PreparedFrame,
+        w: u32,
+        h: u32,
+    ) -> Vec<u8> {
+        submit_recorded_rgba(renderer, record_prepared_rgba(renderer, prepared, w, h))
     }
 
     struct MappedStyleRender {
@@ -10670,7 +16131,6 @@ mod tests {
         renderer.add_column("x", &col_f64(vec![1.0, 3.0])).unwrap();
         renderer.add_column("y", &col_f64(vec![2.5, 2.5])).unwrap();
         renderer.add_column("ey", &col_f64(vec![1.0, 1.0])).unwrap();
-        renderer.ensure_internal_zero_column(2).unwrap();
 
         let chart = basic_errorbar_chart();
         let mut scatter = test_scatter_style();
@@ -10760,7 +16220,6 @@ mod tests {
         renderer
             .add_column("e_style", &col_f64(vec![0.0, 1.0]))
             .unwrap();
-        renderer.ensure_internal_zero_column(2).unwrap();
 
         let chart = basic_errorbar_chart();
         let mut hidden_scatter = test_scatter_style();
@@ -10906,7 +16365,7 @@ mod tests {
     }
 
     #[test]
-    fn single_direction_errorbar_still_requires_zero_column() {
+    fn single_direction_errorbar_needs_no_internal_filler_column() {
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
@@ -10922,7 +16381,7 @@ mod tests {
         r.add_column("ey", &col_f64(vec![0.3, 0.1, 0.2])).unwrap();
 
         let chart = basic_errorbar_chart();
-        let series = [SeriesConfig {
+        let series_configs = [SeriesConfig {
             series_id: "y".into(),
             source_id: None,
             label: None,
@@ -10937,14 +16396,146 @@ mod tests {
             },
         }];
 
-        let err = match r.export_panel_rgba(&chart, &series, 1.0) {
-            Ok(_) => panic!("Y-only errorbar must still need __zero for the missing X side"),
-            Err(err) => err,
-        };
-        match err {
-            FiggyError::UnknownColumn { id } => assert!(id.contains("__zero"), "{id}"),
-            other => panic!("unexpected error: {other:?}"),
+        {
+            let style = r.create_style_for_series(&series_configs[0]);
+            let drawable = [Series {
+                config: &series_configs[0],
+                style: &style,
+            }];
+            let view = r
+                .create_chart_view(&chart, chart.config().chart_area.0)
+                .unwrap();
+            let items = [ChartDrawItem {
+                view: &view,
+                chart_config: chart.config(),
+                series: &drawable,
+            }];
+            r.prepare(&items)
+                .expect("single-direction errorbar prepare");
         }
+        assert!(r.pool().slot("__zero").is_none());
+
+        let mut export_renderer = Renderer::try_new(
+            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+            wgpu::TextureFormat::Bgra8Unorm,
+            1024 * 1024,
+        )
+        .unwrap();
+        export_renderer
+            .add_column("x", &col_f64(vec![1.0, 2.0, 3.0]))
+            .unwrap();
+        export_renderer
+            .add_column("y", &col_f64(vec![1.0, 3.0, 2.0]))
+            .unwrap();
+        export_renderer
+            .add_column("ey", &col_f64(vec![0.3, 0.1, 0.2]))
+            .unwrap();
+        let image = export_renderer
+            .export_panel_rgba(&chart, &series_configs, 1.0)
+            .expect("single-direction errorbar export");
+        assert!(export_renderer.pool().slot("__zero").is_none());
+        assert!(image.rgba.chunks_exact(4).any(|pixel| pixel[3] > 0));
+    }
+
+    #[test]
+    fn differently_sized_single_direction_panels_keep_both_prepared_frames_valid() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer
+            .add_column("short_x", &col_f64(vec![1.0, 2.0]))
+            .unwrap();
+        renderer
+            .add_column("short_y", &col_f64(vec![2.0, 3.0]))
+            .unwrap();
+        renderer
+            .add_column("short_ey", &col_f64(vec![0.2, 0.3]))
+            .unwrap();
+        renderer
+            .add_column("long_x", &col_f64((0..9).map(f64::from).collect()))
+            .unwrap();
+        renderer
+            .add_column(
+                "long_y",
+                &col_f64((0..9).map(|value| f64::from(value) * 0.5).collect()),
+            )
+            .unwrap();
+        renderer
+            .add_column("long_ex", &col_f64(vec![0.25; 9]))
+            .unwrap();
+
+        let chart_a = basic_errorbar_chart();
+        let chart_b = basic_errorbar_chart();
+        let config_a = SeriesConfig {
+            series_id: "short-y-error".into(),
+            source_id: None,
+            label: None,
+            x_column: "short_x".into(),
+            y_column: "short_y".into(),
+            render_type: DataRenderType::ScatterErrorbarY {
+                scatter: test_scatter_style(),
+                err_y: ErrorRef::Symmetric {
+                    column: "short_ey".into(),
+                },
+                err_style: test_errorbar_style(),
+            },
+        };
+        let config_b = SeriesConfig {
+            series_id: "long-x-error".into(),
+            source_id: None,
+            label: None,
+            x_column: "long_x".into(),
+            y_column: "long_y".into(),
+            render_type: DataRenderType::ScatterErrorbarX {
+                scatter: test_scatter_style(),
+                err_x: ErrorRef::Symmetric {
+                    column: "long_ex".into(),
+                },
+                err_style: test_errorbar_style(),
+            },
+        };
+        let style_a = renderer.create_style_for_series(&config_a);
+        let style_b = renderer.create_style_for_series(&config_b);
+        assert_eq!(
+            errorbar_direction_flags(&config_a.render_type),
+            ERRORBAR_HAS_Y
+        );
+        assert_eq!(
+            errorbar_direction_flags(&config_b.render_type),
+            ERRORBAR_HAS_X
+        );
+        let series_a = [Series {
+            config: &config_a,
+            style: &style_a,
+        }];
+        let series_b = [Series {
+            config: &config_b,
+            style: &style_b,
+        }];
+        let view_a = renderer
+            .create_chart_view(&chart_a, chart_a.config().chart_area.0)
+            .unwrap();
+        let view_b = renderer
+            .create_chart_view(&chart_b, chart_b.config().chart_area.0)
+            .unwrap();
+        let prepared_a = renderer
+            .prepare(&[ChartDrawItem {
+                view: &view_a,
+                chart_config: chart_a.config(),
+                series: &series_a,
+            }])
+            .unwrap();
+        let prepared_b = renderer
+            .prepare(&[ChartDrawItem {
+                view: &view_b,
+                chart_config: chart_b.config(),
+                series: &series_b,
+            }])
+            .unwrap();
+
+        renderer.validate_prepared(&prepared_a).unwrap();
+        renderer.validate_prepared(&prepared_b).unwrap();
+        assert!(renderer.pool().slot("__zero").is_none());
     }
 
     /// Two line series on distinct column pairs must BOTH render — this
@@ -11318,8 +16909,18 @@ mod tests {
 
             // Sequential CPU reference mirroring the shader math.
             let px = |x: f64, y: f64| -> (f32, f32) {
-                let nx = ((x as f32) - t.data_min[0]) / (t.data_max[0] - t.data_min[0]) * 2.0 - 1.0;
-                let ny = ((y as f32) - t.data_min[1]) / (t.data_max[1] - t.data_min[1]) * 2.0 - 1.0;
+                let axis_ndc = |value: f64, axis: usize| {
+                    let (hi, lo) = crate::data::split_f64_to_f32_pair(value);
+                    let numerator = (hi - t.data_min[axis]) + (lo - t.data_min_lo[axis]);
+                    let range = (t.data_max[axis] - t.data_min[axis])
+                        + (t.data_max_lo[axis] - t.data_min_lo[axis]);
+                    let data_t = numerator / range;
+                    let panel_t =
+                        t.data_to_panel_offset[axis] + data_t * t.data_to_panel_scale[axis];
+                    panel_t * 2.0 - 1.0
+                };
+                let nx = axis_ndc(x, 0);
+                let ny = axis_ndc(y, 1);
                 (nx / t.pixel_to_ndc[0], ny / t.pixel_to_ndc[1])
             };
             let mut acc = 0.0f32;
@@ -11385,14 +16986,11 @@ mod tests {
         }
     }
 
-    /// Two overlapping prepares for the same dashed series (egui's
-    /// all-prepares-before-any-paint schedule with a shared renderer, or an
-    /// export interleaved between a host's prepare and paint) must not share
-    /// an arc buffer: `dispatch` rewrites contents in place, so a buffer
-    /// referenced by a live token is never reused (copy-on-write). Once no
-    /// token holds the buffer, the cached scratch is reused again.
+    /// Arc results are immutable by their exact compute input. Equal inputs
+    /// share one result without another traversal; a geometry/data generation
+    /// change gets a different buffer even after every prepared token drops.
     #[test]
-    fn overlapping_prepares_get_isolated_arc_buffers() {
+    fn arc_results_reuse_only_exact_compute_keys() {
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
@@ -11403,9 +17001,9 @@ mod tests {
             1024 * 1024,
         )
         .unwrap();
-        r.add_column("cow_x", &col_f64(vec![0.0, 0.5, 1.0]))
+        r.add_column("cache_x", &col_f64(vec![0.0, 0.5, 1.0]))
             .unwrap();
-        r.add_column("cow_y", &col_f64(vec![0.0, 1.0, 0.25]))
+        r.add_column("cache_y", &col_f64(vec![0.0, 1.0, 0.25]))
             .unwrap();
 
         let mut config = crate::default::default_config();
@@ -11421,11 +17019,11 @@ mod tests {
         chart.set_y_range(0.0, 1.0);
 
         let series_cfg = SeriesConfig {
-            series_id: "cow".into(),
+            series_id: "arc-cache".into(),
             source_id: None,
             label: None,
-            x_column: "cow_x".into(),
-            y_column: "cow_y".into(),
+            x_column: "cache_x".into(),
+            y_column: "cache_y".into(),
             render_type: DataRenderType::Line {
                 line: DataLineStyleConfig {
                     line_style: crate::line::LineStylePreset::Dash,
@@ -11471,52 +17069,576 @@ mod tests {
 
         let p1 = r.prepare(&items_a).unwrap();
         let a1 = arc_of(&p1);
+        let creations = r.gpu_memory_usage().creations_of(GpuResourceKind::ArcScan);
         let p2 = r.prepare(&items_b).unwrap();
         let a2 = arc_of(&p2);
         assert!(
-            !Arc::ptr_eq(&a1, &a2),
-            "a prepare must not rewrite the arc buffer a live token references"
-        );
-
-        // Both tokens stay individually paintable.
-        assert!(r.validate_prepared(&p1).is_ok());
-        assert!(r.validate_prepared(&p2).is_ok());
-
-        // With no token left alive, an existing slot is reused in place.
-        let a1_raw = Arc::as_ptr(&a1);
-        let a2_raw = Arc::as_ptr(&a2);
-        drop((p1, a1, p2, a2));
-        let p3 = r.prepare(&items_a).unwrap();
-        let a3_raw = Arc::as_ptr(&arc_of(&p3));
-        assert!(
-            a3_raw == a1_raw || a3_raw == a2_raw,
-            "an unreferenced slot should be reused, not rebuilt"
-        );
-        drop(p3);
-
-        // Retained-token steady state (hosts replace last frame's token only
-        // AFTER the next prepare returns): the slot pool must settle on two
-        // alternating slots — no per-frame rebuild, no growth.
-        let mut held = r.prepare(&items_a).unwrap();
-        let mut seen = std::collections::HashSet::new();
-        seen.insert(Arc::as_ptr(&arc_of(&held)));
-        for idx in 0..6 {
-            let next = r
-                .prepare(if idx % 2 == 0 { &items_b } else { &items_a })
-                .unwrap();
-            seen.insert(Arc::as_ptr(&arc_of(&next)));
-            held = next;
-        }
-        drop(held);
-        assert!(
-            seen.len() <= 2,
-            "retained-token steady state must alternate between two slots, saw {} distinct buffers",
-            seen.len()
+            Arc::ptr_eq(&a1, &a2),
+            "an identical compute key should reuse its immutable arc result"
         );
         assert_eq!(
-            r.arc_cache.get("cow").map(|slots| slots.len()),
-            Some(2),
-            "slot pool should hold exactly two slots after retained-token frames"
+            r.gpu_memory_usage().creations_of(GpuResourceKind::ArcScan),
+            creations,
+            "an identical key must not retraverse or allocate"
+        );
+        drop((p1, a1, p2, a2));
+
+        let base_transform = data_render::scatter_transform_from_config(chart.config());
+        let mut changed_transform = base_transform;
+        changed_transform.pixel_to_ndc[0] *= 0.5;
+        let changed = r
+            .ensure_arc_prefix("arc-cache", "cache_x", "cache_y", &changed_transform, None)
+            .expect("changed geometry arc result");
+        let changed_arc = Arc::clone(&changed.prefix.0);
+        assert!(
+            !Arc::ptr_eq(&arc_of(&r.prepare(&items_a).unwrap()), &changed_arc),
+            "a changed geometry transform must not overwrite the old result"
+        );
+        drop(changed);
+
+        let changed_again = r
+            .ensure_arc_prefix("arc-cache", "cache_x", "cache_y", &changed_transform, None)
+            .expect("cached changed geometry arc result");
+        assert!(
+            Arc::ptr_eq(&changed_arc, &changed_again.prefix.0),
+            "an exact changed key should reuse its immutable result"
+        );
+
+        let mut style_only = changed_transform;
+        style_only.style_params[0][0] = 123.0;
+        let style_only_result = r
+            .ensure_arc_prefix("arc-cache", "cache_x", "cache_y", &style_only, None)
+            .expect("style-only arc result");
+        assert!(
+            Arc::ptr_eq(&changed_arc, &style_only_result.prefix.0),
+            "style-only changes must not retraverse geometry columns"
+        );
+
+        r.upsert_column("cache_y", &col_f64(vec![0.0, 0.8, 0.25]))
+            .unwrap();
+        let changed_data = r
+            .ensure_arc_prefix("arc-cache", "cache_x", "cache_y", &base_transform, None)
+            .expect("changed data generation arc result");
+        assert!(
+            !Arc::ptr_eq(&changed_arc, &changed_data.prefix.0),
+            "a new source generation must not reuse an old prefix"
+        );
+        assert_eq!(
+            r.arc_cache.get("arc-cache").map(Vec::len),
+            Some(3),
+            "the cache should hold base, changed-transform, and changed-data results"
+        );
+    }
+
+    #[test]
+    fn contour_label_placements_reuse_only_exact_dispatch_keys() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        add_state_test_contour_grid(&mut renderer);
+        let chart_a = state_test_contour_chart(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 320,
+                height: 240,
+            },
+            (0.0, 1.0),
+        );
+        let chart_b = state_test_contour_chart(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 320,
+                height: 240,
+            },
+            (-0.5, 1.5),
+        );
+        let automatic_a = state_test_labelled_contour(70.0, Vec::new());
+        let automatic_b = state_test_labelled_contour(260.0, Vec::new());
+        let style_a = renderer.create_style_for_series(&automatic_a);
+        let style_b = renderer.create_style_for_series(&automatic_b);
+        let series_a = [Series {
+            config: &automatic_a,
+            style: &style_a,
+        }];
+        let series_b = [Series {
+            config: &automatic_b,
+            style: &style_b,
+        }];
+        let view_a = renderer
+            .create_chart_view(&chart_a, chart_a.config().chart_area.0)
+            .unwrap();
+        let view_b = renderer
+            .create_chart_view(&chart_b, chart_b.config().chart_area.0)
+            .unwrap();
+        let items_a = [ChartDrawItem {
+            view: &view_a,
+            chart_config: chart_a.config(),
+            series: &series_a,
+        }];
+        let items_b = [ChartDrawItem {
+            view: &view_b,
+            chart_config: chart_b.config(),
+            series: &series_b,
+        }];
+        let placement_of = |prepared: &PreparedFrame| {
+            prepared.items[0].series[0]
+                .contour
+                .as_ref()
+                .and_then(|contour| contour.label.as_ref())
+                .expect("labelled contour snapshot")
+                .snapshot
+                .placement_identity()
+        };
+
+        let first = renderer.prepare(&items_a).unwrap();
+        let first_id = placement_of(&first);
+        let second = renderer.prepare(&items_b).unwrap();
+        let second_id = placement_of(&second);
+        assert_ne!(
+            first_id, second_id,
+            "different dispatch keys reused one automatic placement result"
+        );
+        assert!(renderer.validate_prepared(&first).is_ok());
+        assert!(renderer.validate_prepared(&second).is_ok());
+        assert_eq!(
+            renderer.contour_cache["label-cache"]
+                .label
+                .as_ref()
+                .unwrap()
+                .automatic_result_count(),
+            2
+        );
+
+        let creations = renderer
+            .gpu_memory_usage()
+            .creations_of(GpuResourceKind::ContourScratch);
+        drop((first, second));
+        let reused = renderer.prepare(&items_a).unwrap();
+        let reused_id = placement_of(&reused);
+        assert_eq!(
+            reused_id, first_id,
+            "the exact A input must reuse A's immutable result"
+        );
+        assert_eq!(
+            renderer
+                .gpu_memory_usage()
+                .creations_of(GpuResourceKind::ContourScratch),
+            creations,
+            "an exact automatic placement key should not allocate or dispatch again"
+        );
+        drop(reused);
+
+        // Record A without submitting it, release the Rust token, then cross
+        // the eight-result cache limit with distinct transforms. The delayed
+        // command buffer must still read A's immutable anchors and indirect
+        // count, while its evicted charge remains retired until submission.
+        let baseline_a = {
+            let prepared = renderer.prepare(&items_a).unwrap();
+            paint_prepared_rgba(&renderer, &prepared, 320, 240)
+        };
+        let delayed_a = {
+            let prepared = renderer.prepare(&items_a).unwrap();
+            record_prepared_rgba(&renderer, &prepared, 320, 240)
+        };
+        let mut pixels_c = None;
+        for key in 0..9 {
+            let min = -1.0 - f64::from(key) * 0.125;
+            let chart_c = state_test_contour_chart(
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 320,
+                    height: 240,
+                },
+                (min, 2.0 + f64::from(key) * 0.25),
+            );
+            let view_c = renderer
+                .create_chart_view(&chart_c, chart_c.config().chart_area.0)
+                .unwrap();
+            let items_c = [ChartDrawItem {
+                view: &view_c,
+                chart_config: chart_c.config(),
+                series: &series_a,
+            }];
+            let prepared = renderer.prepare(&items_c).unwrap();
+            pixels_c = Some(paint_prepared_rgba(&renderer, &prepared, 320, 240));
+        }
+        assert_eq!(
+            renderer.contour_cache["label-cache"]
+                .label
+                .as_ref()
+                .unwrap()
+                .automatic_result_count(),
+            crate::gpu_contour::AUTOMATIC_PLACEMENT_CACHE_LIMIT
+        );
+        assert!(
+            renderer
+                .gpu_memory_usage()
+                .retired_bytes_of(GpuResourceKind::ContourScratch)
+                > 0,
+            "evicted recorded contour resources must remain budgeted before submission"
+        );
+        let delayed_pixels_a = submit_recorded_rgba(&renderer, delayed_a);
+        assert_eq!(
+            delayed_pixels_a, baseline_a,
+            "a later contour dispatch changed an already-recorded A command buffer"
+        );
+        assert_ne!(
+            baseline_a,
+            pixels_c.unwrap(),
+            "the delayed-submit oracle needs visibly different A and C frames"
+        );
+        renderer.end_gpu_frame();
+        assert_eq!(
+            renderer
+                .gpu_memory_usage()
+                .retired_bytes_of(GpuResourceKind::ContourScratch),
+            0
+        );
+
+        let explicit_anchor = crate::data_config::ContourLabelAnchor {
+            level_index: 0,
+            x: 0.5,
+            y: 0.5,
+            tx: 1.0,
+            ty: -1.0,
+        };
+        let explicit = state_test_labelled_contour(70.0, vec![explicit_anchor]);
+        let explicit_style = renderer.create_style_for_series(&explicit);
+        let explicit_series = [Series {
+            config: &explicit,
+            style: &explicit_style,
+        }];
+        let explicit_a = [ChartDrawItem {
+            view: &view_a,
+            chart_config: chart_a.config(),
+            series: &explicit_series,
+        }];
+        let explicit_b = [ChartDrawItem {
+            view: &view_b,
+            chart_config: chart_b.config(),
+            series: &explicit_series,
+        }];
+        let first = renderer.prepare(&explicit_a).unwrap();
+        let second = renderer.prepare(&explicit_b).unwrap();
+        assert_eq!(
+            placement_of(&first),
+            placement_of(&second),
+            "explicit placement must remain one immutable shared snapshot"
+        );
+        assert_eq!(
+            renderer.contour_cache["label-cache"]
+                .label
+                .as_ref()
+                .unwrap()
+                .automatic_result_count(),
+            0
+        );
+    }
+
+    #[test]
+    fn automatic_contour_label_indirect_count_is_exactly_1024() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        add_state_test_contour_grid(&mut renderer);
+        let chart = state_test_contour_chart(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 320,
+                height: 240,
+            },
+            (0.0, 1.0),
+        );
+        let mut config = state_test_labelled_contour(2000.0, Vec::new());
+        let DataRenderType::Contour { contour, .. } = &mut config.render_type else {
+            unreachable!();
+        };
+        contour.levels = vec![2.0; crate::data_config::MAX_CONTOUR_LEVELS];
+        let style = renderer.create_style_for_series(&config);
+        let series = [Series {
+            config: &config,
+            style: &style,
+        }];
+        let view = renderer
+            .create_chart_view(&chart, chart.config().chart_area.0)
+            .unwrap();
+        let items = [ChartDrawItem {
+            view: &view,
+            chart_config: chart.config(),
+            series: &series,
+        }];
+
+        let prepared = renderer.prepare(&items).unwrap();
+        let count =
+            pollster::block_on(renderer.contour_label_instance_count_for_test(&prepared, 0, 0))
+                .unwrap()
+                .expect("automatic contour label snapshot");
+        assert_eq!(count, 1024, "native indirect label count must be exact");
+    }
+
+    #[test]
+    fn contour_label_snapshot_survives_cache_replacement_until_token_drop() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        add_state_test_contour_grid(&mut renderer);
+        let chart = state_test_contour_chart(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 320,
+                height: 240,
+            },
+            (0.0, 1.0),
+        );
+        let old_config = state_test_labelled_contour(90.0, Vec::new());
+        let old_style = renderer.create_style_for_series(&old_config);
+        let old_series = [Series {
+            config: &old_config,
+            style: &old_style,
+        }];
+        let old_view = renderer
+            .create_chart_view(&chart, chart.config().chart_area.0)
+            .unwrap();
+        let old_items = [ChartDrawItem {
+            view: &old_view,
+            chart_config: chart.config(),
+            series: &old_series,
+        }];
+        let placement_of = |prepared: &PreparedFrame| {
+            prepared.items[0].series[0]
+                .contour
+                .as_ref()
+                .and_then(|contour| contour.label.as_ref())
+                .expect("labelled contour snapshot")
+                .snapshot
+                .placement_identity()
+        };
+
+        let old_prepared = renderer.prepare(&old_items).unwrap();
+        let old_atlas = renderer.contour_cache["label-cache"]
+            .label
+            .as_ref()
+            .unwrap()
+            .atlas_identity();
+        let old_placement = placement_of(&old_prepared);
+        let old_live = renderer
+            .gpu_memory_usage()
+            .live_bytes_of(GpuResourceKind::ContourScratch);
+        assert!(old_live > 0, "old atlas and placement slot must be charged");
+
+        let mut replacement_config = state_test_labelled_contour(90.0, Vec::new());
+        state_test_contour_labels_mut(&mut replacement_config).font_size = 20.0;
+        let replacement_style = renderer.create_style_for_series(&replacement_config);
+        let replacement_series = [Series {
+            config: &replacement_config,
+            style: &replacement_style,
+        }];
+        let replacement_view = renderer
+            .create_chart_view(&chart, chart.config().chart_area.0)
+            .unwrap();
+        let replacement_items = [ChartDrawItem {
+            view: &replacement_view,
+            chart_config: chart.config(),
+            series: &replacement_series,
+        }];
+        let replacement_prepared = renderer.prepare(&replacement_items).unwrap();
+        let replacement_atlas = renderer.contour_cache["label-cache"]
+            .label
+            .as_ref()
+            .unwrap()
+            .atlas_identity();
+        let replacement_placement = placement_of(&replacement_prepared);
+        assert_ne!(old_atlas, replacement_atlas, "cache kept the old atlas");
+        assert_ne!(
+            old_placement, replacement_placement,
+            "replacement reused the live token's placement slot"
+        );
+        assert!(renderer.validate_prepared(&old_prepared).is_ok());
+        assert!(renderer.validate_prepared(&replacement_prepared).is_ok());
+
+        let combined_live = renderer
+            .gpu_memory_usage()
+            .live_bytes_of(GpuResourceKind::ContourScratch);
+        assert!(
+            combined_live > old_live,
+            "replacement must add a separately charged atlas and placement"
+        );
+        drop(old_prepared);
+        let after_old_drop = renderer.gpu_memory_usage();
+        let replacement_live = after_old_drop.live_bytes_of(GpuResourceKind::ContourScratch);
+        assert_eq!(
+            combined_live,
+            old_live + replacement_live,
+            "the old token's exact charge must remain live across replacement"
+        );
+        assert_eq!(
+            after_old_drop.retired_bytes_of(GpuResourceKind::ContourScratch),
+            old_live,
+            "dropping the old token must retire its atlas and placement charge"
+        );
+
+        drop(replacement_prepared);
+        assert_eq!(
+            renderer
+                .gpu_memory_usage()
+                .live_bytes_of(GpuResourceKind::ContourScratch),
+            replacement_live,
+            "the replacement cache must retain its atlas and placement charge"
+        );
+        renderer.contour_cache.clear();
+        let retired = renderer.gpu_memory_usage();
+        assert_eq!(retired.live_bytes_of(GpuResourceKind::ContourScratch), 0);
+        assert_eq!(
+            retired.retired_bytes_of(GpuResourceKind::ContourScratch),
+            combined_live,
+            "cache removal must retire the replacement charge too"
+        );
+        renderer.end_gpu_frame();
+        assert_eq!(
+            renderer
+                .gpu_memory_usage()
+                .bytes_of(GpuResourceKind::ContourScratch),
+            0
+        );
+    }
+
+    #[test]
+    fn multi_panel_contour_labels_survive_interleaved_prepare_and_repeat_paint() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        add_state_test_contour_grid(&mut renderer);
+        let (panel_w, panel_h) = (320, 240);
+        let target_w = panel_w * 2;
+        let chart_a = state_test_contour_chart(
+            Rect {
+                x: 0,
+                y: 0,
+                width: panel_w,
+                height: panel_h,
+            },
+            (0.0, 1.0),
+        );
+        let chart_b = state_test_contour_chart(
+            Rect {
+                x: panel_w,
+                y: 0,
+                width: panel_w,
+                height: panel_h,
+            },
+            (-0.5, 1.5),
+        );
+        let chart_c = state_test_contour_chart(
+            Rect {
+                x: 0,
+                y: 0,
+                width: panel_w,
+                height: panel_h,
+            },
+            (0.2, 0.8),
+        );
+        let config_a = state_test_labelled_contour(70.0, Vec::new());
+        let config_b = state_test_labelled_contour(420.0, Vec::new());
+        let config_c = state_test_labelled_contour(140.0, Vec::new());
+        let style_a = renderer.create_style_for_series(&config_a);
+        let style_b = renderer.create_style_for_series(&config_b);
+        let style_c = renderer.create_style_for_series(&config_c);
+        let series_a = [Series {
+            config: &config_a,
+            style: &style_a,
+        }];
+        let series_b = [Series {
+            config: &config_b,
+            style: &style_b,
+        }];
+        let series_c = [Series {
+            config: &config_c,
+            style: &style_c,
+        }];
+        let view_a = renderer
+            .create_chart_view(&chart_a, chart_a.config().chart_area.0)
+            .unwrap();
+        let view_b = renderer
+            .create_chart_view(&chart_b, chart_b.config().chart_area.0)
+            .unwrap();
+        let view_c = renderer
+            .create_chart_view(&chart_c, chart_c.config().chart_area.0)
+            .unwrap();
+        let multi_items = [
+            ChartDrawItem {
+                view: &view_a,
+                chart_config: chart_a.config(),
+                series: &series_a,
+            },
+            ChartDrawItem {
+                view: &view_b,
+                chart_config: chart_b.config(),
+                series: &series_b,
+            },
+        ];
+        let interleaved_items = [ChartDrawItem {
+            view: &view_c,
+            chart_config: chart_c.config(),
+            series: &series_c,
+        }];
+
+        let multi = renderer.prepare(&multi_items).unwrap();
+        let interleaved = renderer.prepare(&interleaved_items).unwrap();
+        assert!(renderer.validate_prepared(&multi).is_ok());
+        let first = paint_prepared_rgba(&renderer, &multi, target_w, panel_h);
+        let repeated = paint_prepared_rgba(&renderer, &multi, target_w, panel_h);
+        assert_eq!(first, repeated, "repeat paint changed a prepared token");
+        drop((interleaved, multi));
+
+        let only_a = [ChartDrawItem {
+            view: &view_a,
+            chart_config: chart_a.config(),
+            series: &series_a,
+        }];
+        let prepared_a = renderer.prepare(&only_a).unwrap();
+        let baseline_a = paint_prepared_rgba(&renderer, &prepared_a, target_w, panel_h);
+        drop(prepared_a);
+        let only_b = [ChartDrawItem {
+            view: &view_b,
+            chart_config: chart_b.config(),
+            series: &series_b,
+        }];
+        let prepared_b = renderer.prepare(&only_b).unwrap();
+        let baseline_b = paint_prepared_rgba(&renderer, &prepared_b, target_w, panel_h);
+
+        let crop = |rgba: &[u8], x: u32| {
+            let mut out = Vec::with_capacity((panel_w * panel_h * 4) as usize);
+            for row in 0..panel_h {
+                let start = ((row * target_w + x) * 4) as usize;
+                out.extend_from_slice(&rgba[start..start + (panel_w * 4) as usize]);
+            }
+            out
+        };
+        let multi_a = crop(&first, 0);
+        let multi_b = crop(&first, panel_w);
+        assert_eq!(multi_a, crop(&baseline_a, 0));
+        assert_eq!(multi_b, crop(&baseline_b, panel_w));
+        let magenta = |rgba: &[u8]| {
+            rgba.chunks_exact(4)
+                .filter(|p| p[0] > 150 && p[1] < 80 && p[2] > 150 && p[3] > 100)
+                .count()
+        };
+        assert!(
+            magenta(&multi_a) > 10,
+            "left panel drew no label background"
+        );
+        assert!(
+            magenta(&multi_b) > 10,
+            "right panel drew no label background"
+        );
+        assert_ne!(
+            multi_a, multi_b,
+            "different transforms and spacing produced the same panel baseline"
         );
     }
 
@@ -11729,13 +17851,12 @@ mod tests {
         ));
     }
 
-    /// End-to-end split under the adversarial host schedule: prepare, then
-    /// an interleaved second prepare (which rebuilds the cache entry via
-    /// copy-on-write), then record with the FIRST token into an offscreen
-    /// pass. The token's owned arc/star snapshot must survive the
-    /// interleaving and still put ink on the target.
+    /// End-to-end split under the adversarial host schedule: record A, drop its
+    /// token without submitting, dispatch and draw a different B transform,
+    /// then submit A. The recorded arc/star resources must remain A's exact
+    /// immutable result.
     #[test]
-    fn paint_prepared_draws_after_interleaved_prepare() {
+    fn recorded_arc_star_frame_survives_later_compute_before_submit() {
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
@@ -11762,9 +17883,12 @@ mod tests {
         config.legend.visible = false;
         config.draw_style =
             crate::config::DrawStyle::Milkyway(crate::config::MilkywayOptions::default());
-        let mut chart = Chart::new(config);
-        chart.set_x_range(-0.05, 1.05);
-        chart.set_y_range(0.0, 1.0);
+        let mut chart_a = Chart::new(config.clone());
+        chart_a.set_x_range(-0.05, 1.05);
+        chart_a.set_y_range(0.0, 1.0);
+        let mut chart_b = Chart::new(config);
+        chart_b.set_x_range(-1.0, 2.0);
+        chart_b.set_y_range(-0.5, 1.5);
 
         let series_cfg = SeriesConfig {
             series_id: "mw".into(),
@@ -11787,118 +17911,86 @@ mod tests {
             style: &style,
         }];
         let view_a = r
-            .create_chart_view(&chart, chart.config().chart_area.0)
+            .create_chart_view(&chart_a, chart_a.config().chart_area.0)
             .unwrap();
         let view_b = r
-            .create_chart_view(&chart, chart.config().chart_area.0)
+            .create_chart_view(&chart_b, chart_b.config().chart_area.0)
             .unwrap();
         let items_a = [ChartDrawItem {
             view: &view_a,
-            chart_config: chart.config(),
+            chart_config: chart_a.config(),
             series: &series,
         }];
         let items_b = [ChartDrawItem {
             view: &view_b,
-            chart_config: chart.config(),
+            chart_config: chart_b.config(),
             series: &series,
         }];
 
-        // egui-style schedule: both prepares run before any paint. The
-        // second one rebuilds the arc scratch (COW), so painting with `p1`
-        // exercises the token's cache-independent snapshot.
-        let p1 = r.prepare(&items_a).unwrap();
-        assert!(
-            p1.items[0].series[0].line_extra.is_some(),
-            "milkyway line series must carry a star-pass snapshot"
-        );
-        let p2 = r.prepare(&items_b).unwrap();
-
-        let target_desc = wgpu::TextureDescriptor {
-            label: Some("prepare split test target"),
-            size: wgpu::Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        };
-
-        let paint_once = |prepared: &PreparedFrame| -> Vec<u8> {
-            let tex = device.create_texture(&target_desc);
-            let tv = tex.create_view(&wgpu::TextureViewDescriptor::default());
-            let mut enc = device.create_command_encoder(&Default::default());
-            {
-                let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: None,
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &tv,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-                r.paint_prepared(&mut pass, (w, h), prepared)
-                    .expect("paint_prepared with a valid token");
-            }
-            // 320 * 4 = 1280 bytes/row, already 256-aligned.
-            let readback = device.create_buffer(&wgpu::BufferDescriptor {
-                label: None,
-                size: u64::from(w) * 4 * u64::from(h),
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            });
-            enc.copy_texture_to_buffer(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &tex,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::TexelCopyBufferInfo {
-                    buffer: &readback,
-                    layout: wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(w * 4),
-                        rows_per_image: Some(h),
-                    },
-                },
-                target_desc.size,
-            );
-            queue.submit(std::iter::once(enc.finish()));
-            let slice = readback.slice(..);
-            slice.map_async(wgpu::MapMode::Read, |_| {});
-            // Bounded so a stalled submission fails the test instead of
-            // spinning forever (see `data_render::shared_device`).
-            let _ = device.poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: Some(std::time::Duration::from_secs(30)),
-            });
-            slice
-                .get_mapped_range()
-                .expect("offscreen readback is mapped")
-                .to_vec()
-        };
-
-        for (label, prepared) in [("stale-cache token p1", &p1), ("fresh token p2", &p2)] {
-            let rgba = paint_once(prepared);
-            let lit = rgba.chunks_exact(4).filter(|p| p[3] > 0).count();
+        let baseline_a = {
+            let prepared = r.prepare(&items_a).unwrap();
             assert!(
-                lit > 100,
-                "{label}: milkyway split paint produced too little ink: {lit}"
+                prepared.items[0].series[0].line_extra.is_some(),
+                "milkyway line series must carry a star-pass snapshot"
             );
+            paint_prepared_rgba(&r, &prepared, w, h)
+        };
+        let delayed_a = {
+            let prepared = r.prepare(&items_a).unwrap();
+            record_prepared_rgba(&r, &prepared, w, h)
+        };
+        let pixels_b = {
+            let prepared = r.prepare(&items_b).unwrap();
+            paint_prepared_rgba(&r, &prepared, w, h)
+        };
+        for key in 0..8 {
+            let mut chart = Chart::new(chart_a.config().clone());
+            chart.set_x_range(-2.0 - f64::from(key) * 0.25, 2.5 + f64::from(key) * 0.5);
+            chart.set_y_range(-1.0 - f64::from(key) * 0.125, 1.75 + f64::from(key) * 0.25);
+            let view = r
+                .create_chart_view(&chart, chart.config().chart_area.0)
+                .unwrap();
+            let items = [ChartDrawItem {
+                view: &view,
+                chart_config: chart.config(),
+                series: &series,
+            }];
+            let prepared = r.prepare(&items).unwrap();
+            let _ = paint_prepared_rgba(&r, &prepared, w, h);
         }
+        assert_eq!(
+            r.arc_cache.get("mw").map(Vec::len),
+            Some(ARC_RESULT_CACHE_LIMIT_PER_SERIES)
+        );
+        assert!(
+            r.gpu_memory_usage()
+                .retired_bytes_of(GpuResourceKind::ArcScan)
+                > 0,
+            "evicted recorded arc resources must remain budgeted before submission"
+        );
+        let delayed_pixels_a = submit_recorded_rgba(&r, delayed_a);
+        assert_eq!(
+            delayed_pixels_a, baseline_a,
+            "a later arc/star dispatch changed an already-recorded A command buffer"
+        );
+        assert_ne!(
+            baseline_a, pixels_b,
+            "the delayed-submit oracle needs visibly different A and B frames"
+        );
+        let lit = delayed_pixels_a
+            .chunks_exact(4)
+            .filter(|pixel| pixel[3] > 0)
+            .count();
+        assert!(
+            lit > 100,
+            "delayed milkyway frame produced too little ink: {lit}"
+        );
+        r.end_gpu_frame();
+        assert_eq!(
+            r.gpu_memory_usage()
+                .retired_bytes_of(GpuResourceKind::ArcScan),
+            0
+        );
     }
 
     /// Log-axis auto-fit with zeros in the data must clamp the lower bound
@@ -12030,10 +18122,35 @@ mod tests {
         close((da.y as f64 + dah - 1.0 - max_y as f64) / dah, "bottom");
     }
 
+    /// Hide the four axis lines for a data-layer pixel test.
+    ///
+    /// The decoration layer is composited **over** the data by design, so an axis
+    /// line sitting on the data area's boundary legitimately covers the first or
+    /// last column of whatever the data layer drew there. A continuity assertion
+    /// that scans every column between the first and last inked one would then
+    /// report that covered column as a break in the *curve*, which is not what it
+    /// is measuring.
+    ///
+    /// This is not a tolerance: the axis chrome is simply not part of the question
+    /// "does the stroke ever break". Whether it lands opaque on that column or
+    /// leaks a little colour through its antialiasing is a rasterizer detail — on
+    /// llvmpipe it lands opaque, which is what made these two tests look
+    /// environment-dependent.
+    fn hide_axis_lines(config: &mut crate::Config) {
+        config.bottom_x.line_visible = false;
+        config.top_x.line_visible = false;
+        config.left_y.line_visible = false;
+        config.right_y.line_visible = false;
+    }
+
     /// A solid line stays CONTINUOUS no matter how dense the data is. With
     /// sub-pixel segments (here ~0.04 px each) naive per-segment quads
     /// degenerate into disconnected slivers — every x column the curve
     /// crosses must contain ink.
+    ///
+    /// Axis lines off ([`hide_axis_lines`]): the y-axis line covers the data
+    /// area's first column, and that is the decoration layer doing its job rather
+    /// than the stroke breaking.
     #[test]
     fn dense_line_has_no_gaps() {
         let Some((device, queue)) = crate::data_render::shared_device() else {
@@ -12068,6 +18185,7 @@ mod tests {
             height: 400,
         });
         config.legend.visible = false;
+        hide_axis_lines(&mut config);
         let mut chart = Chart::new(config);
         chart.set_x_range(0.0, 1.0);
         chart.set_y_range(-0.05, 1.05);
@@ -12202,6 +18320,10 @@ mod tests {
     /// break the line (the caps may narrow a gap by ~line_width, never close
     /// a real one), and nothing assumes monotonic x — a path that doubles
     /// back stays continuous.
+    ///
+    /// Axis lines off ([`hide_axis_lines`]) for the same reason as
+    /// `dense_line_has_no_gaps`: the y-axis line covers the data area's first
+    /// column, which would read as one pass of the doubled-back path missing.
     #[test]
     fn caps_preserve_nan_breaks_and_nonmonotonic_paths() {
         let Some((device, queue)) = crate::data_render::shared_device() else {
@@ -12223,6 +18345,7 @@ mod tests {
             height: 400,
         });
         config.legend.visible = false;
+        hide_axis_lines(&mut config);
         let mut chart = Chart::new(config);
         chart.set_x_range(0.0, 1.0);
         chart.set_y_range(-0.1, 1.1);
@@ -12507,5 +18630,871 @@ mod tests {
         // Unknown id → UnknownColumn.
         let res = r.handle_for("nope");
         assert!(matches!(res, Err(FiggyError::UnknownColumn { .. })));
+    }
+
+    // GPU memory accounting. These live in-crate so they can compare the
+    // report against the resources the renderer actually holds — a self-report
+    // is only worth what an independent recount proves.
+
+    fn panel_config(width: u32, height: u32) -> Config {
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        });
+        config
+    }
+
+    /// Independent recount of the pool row: the buffers the pool holds, read
+    /// back from wgpu rather than from any counter.
+    fn pool_bytes_held(renderer: &Renderer) -> u64 {
+        renderer.pool.buffer().size()
+            + renderer
+                .pool
+                .backup_buffer_for_test()
+                .map_or(0, |backup| backup.size())
+    }
+
+    #[test]
+    fn pool_row_equals_the_buffers_the_pool_actually_holds() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        let usage = renderer.gpu_memory_usage();
+        assert_eq!(
+            usage.pool_bytes(),
+            pool_bytes_held(&renderer),
+            "pool row disagrees with the buffers held\n{}",
+            usage.report()
+        );
+        assert_eq!(usage.pool_bytes(), renderer.pool.capacity());
+
+        // A defragmentation materializes the ping-pong backup, so the pool's
+        // footprint becomes two buffers and the row must follow.
+        let column = col_f64((0..64).map(|i| i as f64).collect());
+        renderer.add_column("x", &column).unwrap();
+        renderer.add_column("y", &column).unwrap();
+        renderer.remove_column("x").unwrap();
+        renderer.defragment().unwrap();
+
+        let usage = renderer.gpu_memory_usage();
+        assert_eq!(
+            usage.pool_bytes(),
+            pool_bytes_held(&renderer),
+            "pool row missed the ping-pong backup\n{}",
+            usage.report()
+        );
+        assert_eq!(usage.pool_bytes(), renderer.pool.capacity() * 2);
+    }
+
+    #[test]
+    fn data_upload_moves_only_the_pool_row() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        let before = renderer.gpu_memory_usage();
+        let column = col_f64((0..4096).map(|i| i as f64).collect());
+        renderer.add_column("x", &column).unwrap();
+        renderer.end_gpu_frame();
+        let after = renderer.gpu_memory_usage();
+
+        assert_eq!(
+            before.external_bytes(),
+            after.external_bytes(),
+            "uploading data must not change out-of-pool bytes\nbefore:\n{}after:\n{}",
+            before.report(),
+            after.report()
+        );
+        assert_eq!(
+            before.pool_bytes(),
+            after.pool_bytes(),
+            "the slab was already allocated; an upload fills it, it does not grow it"
+        );
+    }
+
+    #[test]
+    fn upload_peak_includes_the_staging_buffer_that_no_observer_can_see() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        let values = 4096usize;
+        let column = col_f64((0..values).map(|i| i as f64).collect());
+        renderer.pool.reset_peak_bytes();
+        renderer.add_column("x", &column).unwrap();
+
+        let staged = (values as u64) * crate::data::COLUMN_VALUE_BYTES as u64;
+        let settled = renderer.gpu_memory_usage().pool_bytes();
+        assert_eq!(
+            renderer.pool.peak_bytes(),
+            settled + staged,
+            "the staging buffer lives and dies inside add_column, so only the \
+             peak can testify to it"
+        );
+    }
+
+    #[test]
+    fn panel_textures_are_charged_at_exactly_two_rgba_layers() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        let (w, h) = (320u32, 240u32);
+        let chart = Chart::new(panel_config(w, h));
+        let before = renderer.gpu_memory_usage();
+        let view = renderer
+            .create_chart_view(&chart, chart.config().chart_area.0)
+            .unwrap();
+        let after = renderer.gpu_memory_usage();
+
+        let charged = after.bytes_of(GpuResourceKind::PanelTexture)
+            - before.bytes_of(GpuResourceKind::PanelTexture);
+        let held = crate::gpu_memory::texture_bytes(&view.grid_texture)
+            + crate::gpu_memory::texture_bytes(&view.decoration_texture);
+        assert_eq!(charged, held, "charge disagrees with the textures held");
+        assert_eq!(
+            charged,
+            u64::from(w) * u64::from(h) * 4 * 2,
+            "grid + decoration, RGBA8, one sample\n{}",
+            after.report()
+        );
+
+        // Dropping the panel credits the bytes back — as retired first,
+        // because wgpu releases them when the queue drains, not at the drop.
+        drop(view);
+        let retired = renderer.gpu_memory_usage();
+        assert_eq!(
+            retired.retired_bytes_of(GpuResourceKind::PanelTexture),
+            held
+        );
+        assert_eq!(
+            retired.bytes_of(GpuResourceKind::PanelTexture),
+            before.bytes_of(GpuResourceKind::PanelTexture) + held,
+            "released bytes stay in the total until the submission boundary"
+        );
+        renderer.end_gpu_frame();
+        assert_eq!(
+            renderer
+                .gpu_memory_usage()
+                .bytes_of(GpuResourceKind::PanelTexture),
+            before.bytes_of(GpuResourceKind::PanelTexture),
+            "the submission boundary clears retirement"
+        );
+    }
+
+    #[test]
+    fn prepared_view_keeps_panel_charges_after_chart_view_drop() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        let chart = Chart::new(panel_config(320, 240));
+        let view = renderer
+            .create_chart_view(&chart, chart.config().chart_area.0)
+            .unwrap();
+        let panel_bytes = renderer
+            .gpu_memory_usage()
+            .live_bytes_of(GpuResourceKind::PanelTexture);
+        let series: [Series<'_>; 0] = [];
+        let prepared = {
+            let items = [ChartDrawItem {
+                view: &view,
+                chart_config: chart.config(),
+                series: &series,
+            }];
+            renderer.prepare(&items).unwrap()
+        };
+        drop(view);
+
+        let held = renderer.gpu_memory_usage();
+        assert_eq!(
+            held.live_bytes_of(GpuResourceKind::PanelTexture),
+            panel_bytes,
+            "the prepared bind groups and their accounting lifetime must agree"
+        );
+        assert_eq!(held.retired_bytes_of(GpuResourceKind::PanelTexture), 0);
+
+        drop(prepared);
+        let retired = renderer.gpu_memory_usage();
+        assert_eq!(retired.live_bytes_of(GpuResourceKind::PanelTexture), 0);
+        assert_eq!(
+            retired.retired_bytes_of(GpuResourceKind::PanelTexture),
+            panel_bytes
+        );
+        renderer.end_gpu_frame();
+        assert_eq!(
+            renderer
+                .gpu_memory_usage()
+                .bytes_of(GpuResourceKind::PanelTexture),
+            0
+        );
+    }
+
+    #[test]
+    fn panel_resize_charges_the_replacement_before_releasing_the_old_one() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        let mut chart = Chart::new(panel_config(320, 240));
+        let mut view = renderer
+            .create_chart_view(&chart, chart.config().chart_area.0)
+            .unwrap();
+        let small = renderer
+            .gpu_memory_usage()
+            .bytes_of(GpuResourceKind::PanelTexture);
+        assert_eq!(small, 320 * 240 * 4 * 2);
+
+        let big_rect = Rect {
+            x: 0,
+            y: 0,
+            width: 640,
+            height: 480,
+        };
+        chart.config_mut().chart_area = crate::layout::ChartArea(big_rect);
+        renderer.refresh_axis(&mut view, &chart, big_rect).unwrap();
+
+        let during = renderer.gpu_memory_usage();
+        let big = 640 * 480 * 4 * 2;
+        assert_eq!(
+            during.live_bytes_of(GpuResourceKind::PanelTexture),
+            big,
+            "the live rows are the new textures\n{}",
+            during.report()
+        );
+        assert_eq!(
+            during.bytes_of(GpuResourceKind::PanelTexture),
+            big + small,
+            "old and new coexist until the queue drains"
+        );
+
+        renderer.end_gpu_frame();
+        assert_eq!(
+            renderer
+                .gpu_memory_usage()
+                .bytes_of(GpuResourceKind::PanelTexture),
+            big
+        );
+    }
+
+    /// The batch is the matrix upload path, so what it has to deliver is: every
+    /// declared column registered (or `validate_renderer_series` rejects the
+    /// grid), and one staging buffer for the lot instead of one per column.
+    #[test]
+    fn a_renderer_batch_registers_every_grid_column_at_one_buffer_each_batch() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        let x = col_f64(vec![0.0, 1.0, 2.0]);
+        let y = col_f64(vec![0.0, 1.0]);
+        let z0 = col_f64(vec![1.0, 2.0]);
+        let z1 = col_f64(vec![-3.0, 4.0]);
+
+        let before = renderer.pool.buffer_creations();
+        renderer
+            .add_columns(&[
+                ("x", &x as &dyn ColumnSource),
+                ("y", &y as &dyn ColumnSource),
+                ("z0", &z0 as &dyn ColumnSource),
+                ("z1", &z1 as &dyn ColumnSource),
+            ])
+            .expect("batch upload");
+        assert_eq!(
+            renderer.pool.buffer_creations() - before,
+            1,
+            "four columns, one staging buffer"
+        );
+
+        for (id, len) in [("x", 3usize), ("y", 2), ("z0", 2), ("z1", 2)] {
+            let slot = renderer.pool.slot(id).expect("batch column is registered");
+            assert_eq!(slot.len_values, len, "{id} length");
+        }
+        assert_eq!(renderer.pool.slot("z1").unwrap().min, -3.0);
+        assert_eq!(renderer.pool.slot("z1").unwrap().max, 4.0);
+
+        // The point of registration: the grid declaration now validates.
+        let mut config = crate::default::default_config();
+        config.colorbar = Some(crate::default::default_colorbar_options());
+        renderer
+            .register_chart(
+                config,
+                vec![state_test_heatmap("field", "x", "y", &["z0", "z1"])],
+            )
+            .expect("a grid over batched columns is drawable");
+    }
+
+    /// An empty batch is a no-op, and a repeated id is refused with nothing
+    /// uploaded — the same two edges the single-column path has.
+    #[test]
+    fn a_renderer_batch_rejects_repeated_ids_and_accepts_an_empty_one() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        let a = col_f64(vec![1.0, 2.0]);
+        renderer.add_columns(&[]).expect("empty batch is a no-op");
+        assert_eq!(renderer.pool.used_bytes(), 0);
+
+        assert!(matches!(
+            renderer.add_columns(&[
+                ("dup", &a as &dyn ColumnSource),
+                ("dup", &a as &dyn ColumnSource),
+            ]),
+            Err(FiggyError::Pool(data_render::AllocError::DuplicateId(_)))
+        ));
+        assert!(renderer.pool.slot("dup").is_none());
+        assert_eq!(renderer.pool.used_bytes(), 0, "nothing was uploaded");
+
+        renderer
+            .add_columns(&[("live", &a as &dyn ColumnSource)])
+            .expect("first insert");
+        let after_first = renderer.pool.used_bytes();
+        assert!(matches!(
+            renderer.add_columns(&[("live", &a as &dyn ColumnSource)]),
+            Err(FiggyError::Pool(data_render::AllocError::DuplicateId(_)))
+        ));
+        assert_eq!(
+            renderer.pool.used_bytes(),
+            after_first,
+            "the second insert of a live id added nothing"
+        );
+    }
+
+    /// A batch that has to grow the pool relocates every column, so the active
+    /// picker is rebound in the same call and the maintenance bit is cleared —
+    /// the same contract the single-column upsert has.
+    #[test]
+    fn a_renderer_batch_that_grows_the_pool_rebinds_the_active_picker() {
+        let Some(mut renderer) = state_test_renderer_with_capacity(4 * 1024) else {
+            return;
+        };
+        renderer.set_pool_growth_policy(data_render::GrowthPolicy::OnAllocFailure);
+        add_state_test_xy(&mut renderer, "x", "y", vec![0.0, 1.0]);
+        let chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_scatter("scatter", None, "x", "y")],
+            )
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        renderer.prepare_gpu_picking_for_chart(chart).unwrap();
+
+        let picker_generation = active_picker(&renderer).engine.registry_generation();
+        let old_x = renderer.pool.handle_for("x").unwrap();
+        let capacity_before = renderer.pool.capacity();
+        let layout_before = renderer.pool.layout_generation();
+
+        let big: Vec<f64> = (0..512).map(|i| i as f64).collect();
+        let b0 = col_f64(big.clone());
+        let b1 = col_f64(big);
+        renderer
+            .add_columns(&[
+                ("b0", &b0 as &dyn ColumnSource),
+                ("b1", &b1 as &dyn ColumnSource),
+            ])
+            .expect("the batch grew the pool to fit");
+
+        assert!(
+            renderer.pool.capacity() > capacity_before,
+            "the batch was supposed to grow the pool"
+        );
+        assert!(renderer.pool.layout_generation() > layout_before);
+        assert_ne!(
+            renderer.pool.handle_for("x").unwrap().generation,
+            old_x.generation,
+            "growth republished every handle"
+        );
+        assert!(
+            active_picker(&renderer).engine.registry_generation() > picker_generation,
+            "the picker must be rebound against the new layout"
+        );
+        assert!(!renderer.has_pending_maintenance());
+        for id in ["b0", "b1"] {
+            assert_eq!(renderer.pool.slot(id).unwrap().len_values, 512, "{id}");
+        }
+    }
+
+    /// The renderer half of the batch is fallible too. When the picker rebuild
+    /// fails, the guard drops: no column is published and the region goes back.
+    /// The relayout that made room is *not* undone — it is not part of the batch
+    /// — and the picker reports `StaleColumn` until it is re-prepared, which is
+    /// the same recovery a defragmentation asks for.
+    #[test]
+    fn a_renderer_batch_rolled_back_by_a_picker_failure_publishes_no_column() {
+        let Some(mut renderer) = state_test_renderer_with_capacity(4 * 1024) else {
+            return;
+        };
+        renderer.set_pool_growth_policy(data_render::GrowthPolicy::OnAllocFailure);
+        add_state_test_xy(&mut renderer, "x", "y", vec![0.0, 1.0]);
+        let chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_scatter("scatter", None, "x", "y")],
+            )
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        renderer.prepare_gpu_picking_for_chart(chart).unwrap();
+
+        let picker_generation = active_picker(&renderer).engine.registry_generation();
+        let used_before = renderer.pool.used_bytes();
+        active_picker(&renderer).engine.fail_next_registry_prepare();
+
+        let big: Vec<f64> = (0..512).map(|i| i as f64).collect();
+        let b0 = col_f64(big.clone());
+        let b1 = col_f64(big);
+        assert!(matches!(
+            renderer.add_columns(&[
+                ("b0", &b0 as &dyn ColumnSource),
+                ("b1", &b1 as &dyn ColumnSource),
+            ]),
+            Err(FiggyError::GpuPick(
+                crate::gpu_pick::GpuPickError::AllocationFailed {
+                    resource: "injected registry prepare failure"
+                }
+            ))
+        ));
+
+        assert!(renderer.pool.slot("b0").is_none(), "b0 was published");
+        assert!(renderer.pool.slot("b1").is_none(), "b1 was published");
+        assert_eq!(
+            renderer.pool.used_bytes(),
+            used_before,
+            "the batch region went back to the free list"
+        );
+        assert_eq!(
+            renderer.pool.free_bytes(),
+            renderer.pool.capacity() - used_before,
+            "and it coalesced back into the rest of the free space"
+        );
+        assert_eq!(
+            active_picker(&renderer).engine.registry_generation(),
+            picker_generation,
+            "the failed prepare must not publish a registry"
+        );
+
+        // Retrying now succeeds: the region is allocatable again.
+        renderer
+            .add_columns(&[
+                ("b0", &b0 as &dyn ColumnSource),
+                ("b1", &b1 as &dyn ColumnSource),
+            ])
+            .expect("the retry lands where the abandoned batch was");
+        assert_eq!(renderer.pool.slot("b1").unwrap().len_values, 512);
+    }
+
+    /// The field's group-2 buffers are the grid `(base, len)` table, the levels,
+    /// the stops and `FieldParams`. At matrix scale the table alone is tens of
+    /// kilobytes, so a steady frame must rebuild **none** of it.
+    #[test]
+    fn a_steady_field_frame_rebuilds_no_group_two_buffers() {
+        let Some((mut renderer, chart, series_cfg)) = field_prepare_fixture() else {
+            return;
+        };
+        let view = renderer
+            .create_chart_view(&chart, chart.config().chart_area.0)
+            .unwrap();
+        let style = renderer.create_style_for_series(&series_cfg);
+        let series = [Series {
+            config: &series_cfg,
+            style: &style,
+        }];
+        let items = [ChartDrawItem {
+            view: &view,
+            chart_config: chart.config(),
+            series: &series,
+        }];
+
+        let first = renderer.prepare(&items).unwrap();
+        renderer.validate_prepared(&first).unwrap();
+        let after_first = renderer
+            .gpu_memory_usage()
+            .creations_of(crate::gpu_memory::GpuResourceKind::FieldTable);
+        assert!(
+            after_first > 0,
+            "the first prepare must build the field tables"
+        );
+        let live = renderer
+            .gpu_memory_usage()
+            .live_bytes_of(crate::gpu_memory::GpuResourceKind::FieldTable);
+        assert!(live > 0, "and charge them");
+        assert_eq!(renderer.field_cache.len(), 1);
+
+        let second = renderer.prepare(&items).unwrap();
+        renderer.validate_prepared(&second).unwrap();
+        assert_eq!(
+            renderer
+                .gpu_memory_usage()
+                .creations_of(crate::gpu_memory::GpuResourceKind::FieldTable),
+            after_first,
+            "nothing changed, so nothing may be rebuilt"
+        );
+        assert_eq!(
+            renderer
+                .gpu_memory_usage()
+                .live_bytes_of(crate::gpu_memory::GpuResourceKind::FieldTable),
+            live,
+            "and the charge must not double"
+        );
+    }
+
+    /// Replacing a grid column both stales the live token and rebuilds the
+    /// scratch on the next prepare. The token check is the point: the captured
+    /// `rows` came from that column's length, so drawing on with it would paint a
+    /// grid the data no longer has.
+    #[test]
+    fn a_replaced_grid_column_stales_the_token_and_rebuilds_the_scratch() {
+        let Some((mut renderer, chart, series_cfg)) = field_prepare_fixture() else {
+            return;
+        };
+        let view = renderer
+            .create_chart_view(&chart, chart.config().chart_area.0)
+            .unwrap();
+        let style = renderer.create_style_for_series(&series_cfg);
+        let series = [Series {
+            config: &series_cfg,
+            style: &style,
+        }];
+        let items = [ChartDrawItem {
+            view: &view,
+            chart_config: chart.config(),
+            series: &series,
+        }];
+
+        let token = renderer.prepare(&items).unwrap();
+        renderer.validate_prepared(&token).unwrap();
+        let creations_before = renderer
+            .gpu_memory_usage()
+            .creations_of(crate::gpu_memory::GpuResourceKind::FieldTable);
+
+        // Same id, same length, new bytes: the layout does not move, so only the
+        // per-column allocation epoch marks the change.
+        renderer
+            .upsert_column("fz0", &col_f64(vec![7.0, 8.0]))
+            .unwrap();
+        let stale = renderer
+            .validate_prepared(&token)
+            .expect_err("a replaced grid column must stale the token");
+        match &stale {
+            FiggyError::StalePreparedFrame { reason } => {
+                assert!(
+                    reason.contains("grid column"),
+                    "expected the grid column to be named: {reason}"
+                );
+            }
+            other => panic!("expected StalePreparedFrame, got {other:?}"),
+        }
+
+        let next = renderer.prepare(&items).unwrap();
+        renderer.validate_prepared(&next).unwrap();
+        assert!(
+            renderer
+                .gpu_memory_usage()
+                .creations_of(crate::gpu_memory::GpuResourceKind::FieldTable)
+                > creations_before,
+            "the scratch must be rebuilt against the new epoch"
+        );
+    }
+
+    /// A chart, a colourbar and a two-column grid, ready to prepare.
+    fn field_prepare_fixture() -> Option<(Renderer, Chart, SeriesConfig)> {
+        let mut renderer = state_test_renderer()?;
+        renderer.add_column("fx", &col_f64(vec![0.0, 1.0])).unwrap();
+        renderer.add_column("fy", &col_f64(vec![0.0, 1.0])).unwrap();
+        renderer
+            .add_column("fz0", &col_f64(vec![0.0, 1.0]))
+            .unwrap();
+        renderer
+            .add_column("fz1", &col_f64(vec![2.0, 3.0]))
+            .unwrap();
+        let mut config = panel_config(320, 240);
+        config.colorbar = Some(crate::default::default_colorbar_options());
+        Some((
+            renderer,
+            Chart::new(config),
+            state_test_heatmap("field", "fx", "fy", &["fz0", "fz1"]),
+        ))
+    }
+
+    #[test]
+    fn a_growth_makes_a_live_prepared_frame_stale_and_the_next_one_valid() {
+        // Small pool so one oversized upload has to relayout.
+        let Some(mut renderer) = state_test_renderer_with_capacity(4 * 1024) else {
+            return;
+        };
+        renderer.set_pool_growth_policy(data_render::GrowthPolicy::OnAllocFailure);
+        renderer.add_column("lx", &col_f64(vec![0.0, 1.0])).unwrap();
+        renderer.add_column("ly", &col_f64(vec![0.0, 1.0])).unwrap();
+        let chart = Chart::new(panel_config(320, 240));
+        let view = renderer
+            .create_chart_view(&chart, chart.config().chart_area.0)
+            .unwrap();
+        let series_cfg = state_test_line("line", "lx", "ly");
+        let style = renderer.create_style_for_series(&series_cfg);
+        let series = [Series {
+            config: &series_cfg,
+            style: &style,
+        }];
+        let items = [ChartDrawItem {
+            view: &view,
+            chart_config: chart.config(),
+            series: &series,
+        }];
+        let prepared = renderer.prepare(&items).unwrap();
+        renderer
+            .validate_prepared(&prepared)
+            .expect("a fresh token is valid");
+        let capacity_before = renderer.pool.capacity();
+
+        // Force a growth: this relayouts the slab, which moves every column and
+        // advances the pool's layout generation.
+        let big: Vec<f64> = (0..2048).map(|i| i as f64).collect();
+        renderer.add_column("big", &col_f64(big)).unwrap();
+        assert!(
+            renderer.pool.capacity() > capacity_before,
+            "the upload was supposed to grow the pool"
+        );
+
+        // The token prepared against the old layout must be refused rather than
+        // drawn: its vertex offsets point into a buffer that no longer exists.
+        let stale = renderer
+            .validate_prepared(&prepared)
+            .expect_err("a token prepared before a growth must be stale");
+        assert!(
+            matches!(stale, FiggyError::StalePreparedFrame { .. }),
+            "expected StalePreparedFrame, got {stale:?}"
+        );
+
+        // Recovery is a fresh prepare, exactly as it is after a defragmentation.
+        let reprepared = renderer.prepare(&items).unwrap();
+        renderer
+            .validate_prepared(&reprepared)
+            .expect("the next frame prepares normally after a growth");
+    }
+
+    #[test]
+    fn the_report_tracks_the_pool_across_a_growth() {
+        let Some(mut renderer) = state_test_renderer_with_capacity(4 * 1024) else {
+            return;
+        };
+        renderer.set_pool_growth_policy(data_render::GrowthPolicy::OnAllocFailure);
+        renderer.add_column("lx", &col_f64(vec![0.0, 1.0])).unwrap();
+        renderer.end_gpu_frame();
+
+        let before = renderer.gpu_memory_usage();
+        assert_eq!(before.pool_bytes(), pool_bytes_held(&renderer));
+        let capacity_before = renderer.pool.capacity();
+
+        let big: Vec<f64> = (0..2048).map(|i| i as f64).collect();
+        renderer.add_column("big", &col_f64(big)).unwrap();
+        let capacity_after = renderer.pool.capacity();
+        assert!(capacity_after > capacity_before, "growth expected");
+
+        // Immediately after the growth the old slab is retired but not yet
+        // counted as gone, so the row is new + old.
+        let during = renderer.gpu_memory_usage();
+        assert_eq!(
+            during.live_bytes_of(GpuResourceKind::ColumnPool),
+            pool_bytes_held(&renderer),
+            "live pool bytes must equal the buffers held\n{}",
+            during.report()
+        );
+        assert_eq!(
+            during.retired_bytes_of(GpuResourceKind::ColumnPool),
+            capacity_before,
+            "the old slab is retired until the submission boundary\n{}",
+            during.report()
+        );
+        assert!(
+            during.peak_bytes() >= capacity_before + capacity_after,
+            "the peak must remember that both slabs existed across the copy: \
+             {} < {} + {}\n{}",
+            during.peak_bytes(),
+            capacity_before,
+            capacity_after,
+            during.report()
+        );
+
+        renderer.end_gpu_frame();
+        let after = renderer.gpu_memory_usage();
+        assert_eq!(after.retired_bytes(), 0);
+        assert_eq!(after.pool_bytes(), pool_bytes_held(&renderer));
+        assert_eq!(after.pool_bytes(), capacity_after);
+    }
+
+    #[test]
+    fn an_undeclared_ceiling_carries_no_out_of_pool_total() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        let chart = Chart::new(panel_config(320, 240));
+        let _view = renderer
+            .create_chart_view(&chart, chart.config().chart_area.0)
+            .unwrap();
+        renderer.end_gpu_frame();
+
+        // No ceiling: the context carries no budget at all, so there is no
+        // out-of-pool total to compute and none to misread. `GpuBudget` fusing
+        // the two is what makes that a type-level fact rather than a comment.
+        let ctx = pool_alloc_ctx(
+            renderer.device.as_ref(),
+            renderer.queue.as_ref(),
+            renderer.memory_budget,
+            renderer.gpu_ledger.as_ref(),
+        );
+        assert!(
+            ctx.budget.is_none(),
+            "with no ceiling declared the pool must be handed no budget"
+        );
+
+        // With a ceiling, the total rides along and matches what the report
+        // says is held outside the pool right now.
+        let external = renderer.gpu_memory_usage().external_bytes();
+        assert!(external > 0, "the panel textures should be charged by now");
+        assert_eq!(renderer.set_memory_budget(Some(u64::MAX)), None);
+        let ctx = pool_alloc_ctx(
+            renderer.device.as_ref(),
+            renderer.queue.as_ref(),
+            renderer.memory_budget,
+            renderer.gpu_ledger.as_ref(),
+        );
+        let budget = ctx.budget.expect("a declared ceiling reaches the pool");
+        assert_eq!(budget.ceiling_bytes, u64::MAX);
+        assert_eq!(
+            budget.external_bytes, external,
+            "the out-of-pool total must be the one read at this call"
+        );
+    }
+
+    #[test]
+    fn lowering_the_ceiling_below_the_current_total_reports_it_at_the_call() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        let chart = Chart::new(panel_config(320, 240));
+        let _view = renderer
+            .create_chart_view(&chart, chart.config().chart_area.0)
+            .unwrap();
+        renderer.end_gpu_frame();
+        let total = renderer.gpu_memory_usage().total_bytes();
+
+        // A ceiling with room says nothing.
+        assert_eq!(renderer.set_memory_budget(Some(total + 1)), None);
+
+        // A ceiling already crossed is still applied — a host lowering it on
+        // purpose, about to release something, gets what it asked for — but it
+        // hears about the conflict here instead of at some later growth.
+        assert_eq!(
+            renderer.set_memory_budget(Some(total - 1)),
+            Some(total),
+            "the setter must report the total that already exceeds the ceiling"
+        );
+        assert_eq!(
+            renderer.memory_budget(),
+            Some(total - 1),
+            "and it must still have been applied"
+        );
+
+        assert_eq!(renderer.set_memory_budget(None), None);
+        assert_eq!(renderer.memory_budget(), None);
+    }
+
+    #[test]
+    fn registering_a_pick_series_charges_pick_scratch_and_releases_it() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        add_state_test_xy(&mut renderer, "x", "y", vec![0.0, 1.0]);
+        let chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_scatter("scatter", None, "x", "y")],
+            )
+            .unwrap();
+
+        let before = renderer.gpu_memory_usage();
+        renderer.enable_gpu_picking().unwrap();
+        renderer.prepare_gpu_picking_for_chart(chart).unwrap();
+        let after = renderer.gpu_memory_usage();
+        assert!(
+            after.live_bytes_of(GpuResourceKind::PickScratch)
+                > before.live_bytes_of(GpuResourceKind::PickScratch),
+            "pick registration allocates gate masks, candidates, style rows and \
+             a scalar result — none of it was charged\n{}",
+            after.report()
+        );
+
+        // Dropping the renderer must credit every charged byte back — the
+        // ledger outlives it, so a leak shows up as a non-zero live row.
+        let ledger = Arc::clone(renderer.gpu_ledger());
+        drop(renderer);
+        let released = ledger.snapshot();
+        for kind in GpuResourceKind::ALL {
+            assert_eq!(
+                released.live_bytes_of(kind),
+                0,
+                "{} bytes still charged after the renderer was dropped\n{}",
+                kind.label(),
+                released.report()
+            );
+        }
+        assert!(
+            released.creations_of(GpuResourceKind::PickScratch) > 0,
+            "the pick rows were never populated, so the check above proves nothing"
+        );
+    }
+
+    #[test]
+    fn out_of_pool_bytes_ride_into_the_pool_and_a_budget_refuses_growth() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.pool.growth_policy = data_render::GrowthPolicy::OnAllocFailure;
+        let chart = Chart::new(panel_config(320, 240));
+        let _view = renderer
+            .create_chart_view(&chart, chart.config().chart_area.0)
+            .unwrap();
+
+        let usage = renderer.gpu_memory_usage();
+        let external = usage.external_bytes();
+        assert!(
+            external >= 320 * 240 * 4 * 2,
+            "the panel textures must be visible as out-of-pool bytes\n{}",
+            usage.report()
+        );
+
+        // A ceiling that the settled state fits under but a growth cannot:
+        // the pool would need old + new on top of `external`.
+        assert_eq!(
+            renderer.set_memory_budget(Some(external + usage.pool_bytes() + 1)),
+            None,
+            "this ceiling is above the settled total, so nothing is exceeded yet"
+        );
+        let capacity_before = renderer.pool.capacity();
+        let oversized = col_f64((0..(capacity_before as usize)).map(|i| i as f64).collect());
+        let error = renderer
+            .add_column("too-big", &oversized)
+            .expect_err("an upload larger than the pool must not fit under the budget");
+        assert!(
+            matches!(
+                error,
+                FiggyError::Pool(data_render::AllocError::OutOfSpace { .. })
+            ),
+            "growth refused under budget must keep the original OutOfSpace: {error:?}"
+        );
+        assert_eq!(
+            renderer.pool.capacity(),
+            capacity_before,
+            "a refused growth leaves the pool exactly as it was"
+        );
+        assert!(renderer.pool.slot("too-big").is_none());
+
+        // Lifting the ceiling lets the same upload through, which proves the
+        // refusal came from the budget and not from the data.
+        assert_eq!(
+            renderer.set_memory_budget(None),
+            None,
+            "clearing the ceiling cannot conflict with anything"
+        );
+        renderer
+            .add_column("too-big", &oversized)
+            .expect("the same upload fits once the ceiling is lifted");
+        assert!(renderer.pool.capacity() > capacity_before);
     }
 }

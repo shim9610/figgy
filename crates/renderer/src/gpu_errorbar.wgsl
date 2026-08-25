@@ -1,4 +1,4 @@
-// Exact drawable-series extent reduction over one ColumnPool buffer.
+// Drawable-series fit-bound reduction over one ColumnPool buffer.
 //
 // The initial pass interprets `input_words` as the pool's packed `(hi, lo)`
 // f32 lanes.  Later passes bind a SeriesState scratch buffer to the same raw
@@ -6,15 +6,9 @@
 // separate explicit pipeline layouts without inactive bind groups.
 
 const WORKGROUP_SIZE: u32 = 64u;
-const ACC_WORDS: u32 = 10u;
-const ENDPOINT_WORDS: u32 = 6u;
-const AXIS_STATE_WORDS: u32 = 18u;
-const SERIES_STATE_WORDS: u32 = 36u;
-
-const ENDPOINT_INVALID: u32 = 0u;
-const ENDPOINT_VALUE: u32 = 1u;
-const ENDPOINT_LOWER: u32 = 2u;
-const ENDPOINT_UPPER: u32 = 3u;
+const BOUND_WORDS: u32 = 2u;
+const AXIS_STATE_WORDS: u32 = 6u;
+const SERIES_STATE_WORDS: u32 = 12u;
 
 const MODE_LINE: u32 = 0u;
 const MODE_POINTS: u32 = 1u;
@@ -22,29 +16,31 @@ const MODE_POINTS_X: u32 = 2u;
 const MODE_POINTS_Y: u32 = 3u;
 const MODE_POINTS_XY: u32 = 4u;
 const MODE_LEGACY_AXIS: u32 = 5u;
+const MODE_FIELD_EDGES_CELLS: u32 = 6u;
+const MODE_FIELD_EDGES_SAMPLES: u32 = 7u;
+const MODE_FIELD_CENTERS_CELLS: u32 = 8u;
+const MODE_FIELD_CENTERS_SAMPLES: u32 = 9u;
 
 const F32_SIGN_MASK: u32 = 0x80000000u;
 const F32_ABS_MASK: u32 = 0x7fffffffu;
 const F32_EXP_MASK: u32 = 0x7f800000u;
-const F32_FRAC_MASK: u32 = 0x007fffffu;
-const F32_HIDDEN_BIT: u32 = 0x00800000u;
-
-struct Endpoint {
-    value: vec2<f32>,
-    error: vec2<f32>,
-    kind: u32,
-    source_index: u32,
-};
+const F32_MAX_BITS: u32 = 0x7f7fffffu;
 
 struct AxisState {
-    minimum: Endpoint,
-    maximum: Endpoint,
-    minimum_positive: Endpoint,
+    // These are the only values the CPU-side axis SSoT consumes.
+    minimum: vec2<f32>,
+    maximum: vec2<f32>,
+    minimum_positive: vec2<f32>,
 };
 
 struct SeriesState {
     x: AxisState,
     y: AxisState,
+};
+
+struct FieldBound {
+    pair: vec2<f32>,
+    valid: bool,
 };
 
 // Four vec4s keep the Rust/WGSL uniform ABI explicit and 16-byte aligned.
@@ -57,11 +53,6 @@ struct Params {
     lengths_0: vec4<u32>,
     // y-lower, y-upper, input length, dispatch groups.
     lengths_1: vec4<u32>,
-};
-
-struct SignedAccumulator {
-    // Little-endian two's-complement limbs. Bit zero represents 2^-149.
-    words: array<u32, 10>,
 };
 
 @group(0) @binding(0) var<storage, read> input_words: array<u32>;
@@ -90,18 +81,21 @@ fn y_upper_len() -> u32 { return params.lengths_1.y; }
 fn input_len() -> u32 { return params.lengths_1.z; }
 fn dispatch_groups() -> u32 { return params.lengths_1.w; }
 
-fn empty_endpoint() -> Endpoint {
-    return Endpoint(
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(0.0, 0.0),
-        ENDPOINT_INVALID,
-        0xffffffffu,
-    );
+fn maximum_finite_pair() -> vec2<f32> {
+    let maximum = bitcast<f32>(F32_MAX_BITS);
+    return vec2<f32>(maximum, maximum);
+}
+
+fn empty_minimum() -> vec2<f32> {
+    return maximum_finite_pair();
+}
+
+fn empty_maximum() -> vec2<f32> {
+    return -maximum_finite_pair();
 }
 
 fn empty_axis_state() -> AxisState {
-    let empty = empty_endpoint();
-    return AxisState(empty, empty, empty);
+    return AxisState(empty_minimum(), empty_maximum(), empty_minimum());
 }
 
 fn empty_series_state() -> SeriesState {
@@ -124,184 +118,234 @@ fn load_pair(offset: u32, index: u32) -> vec2<f32> {
     );
 }
 
+fn mode_is_field() -> bool {
+    return mode() >= MODE_FIELD_EDGES_CELLS
+        && mode() <= MODE_FIELD_CENTERS_SAMPLES;
+}
+
+fn field_uses_centers() -> bool {
+    return mode() == MODE_FIELD_CENTERS_CELLS
+        || mode() == MODE_FIELD_CENTERS_SAMPLES;
+}
+
+fn field_uses_samples() -> bool {
+    return mode() == MODE_FIELD_EDGES_SAMPLES
+        || mode() == MODE_FIELD_CENTERS_SAMPLES;
+}
+
+// Byte-for-byte twins of the field grid-pair arithmetic.
+fn grid_rounded_add(a: f32, b: f32) -> f32 {
+    return bitcast<f32>(bitcast<u32>(a + b));
+}
+
+fn grid_rounded_subtract(a: f32, b: f32) -> f32 {
+    return bitcast<f32>(bitcast<u32>(a - b));
+}
+
+fn normalize_grid_pair(v: vec2<f32>) -> vec2<f32> {
+    let sum = grid_rounded_add(v.x, v.y);
+    let b_virtual = grid_rounded_subtract(sum, v.x);
+    let a_virtual = grid_rounded_subtract(sum, b_virtual);
+    let b_roundoff = grid_rounded_subtract(v.y, b_virtual);
+    let a_roundoff = grid_rounded_subtract(v.x, a_virtual);
+    return vec2<f32>(sum, grid_rounded_add(a_roundoff, b_roundoff));
+}
+
+fn add_grid_pairs(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+    let high = normalize_grid_pair(vec2<f32>(a.x, b.x));
+    let low = grid_rounded_add(grid_rounded_add(a.y, b.y), high.y);
+    return normalize_grid_pair(vec2<f32>(high.x, low));
+}
+
+fn subtract_grid_pairs(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+    return add_grid_pairs(a, -b);
+}
+
+fn scale_grid_pair(v: vec2<f32>, factor: f32) -> vec2<f32> {
+    return normalize_grid_pair(vec2<f32>(v.x * factor, v.y * factor));
+}
+
+fn midpoint_grid_pair(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+    // Scale first so two same-sign maximum f32 coordinates can still have a
+    // finite midpoint.
+    return add_grid_pairs(scale_grid_pair(a, 0.5), scale_grid_pair(b, 0.5));
+}
+
+fn field_bound(pair: vec2<f32>) -> FieldBound {
+    var out: FieldBound;
+    out.pair = pair;
+    out.valid = pair_is_finite(pair);
+    return out;
+}
+
+fn invalid_field_bound() -> FieldBound {
+    var out: FieldBound;
+    out.pair = vec2<f32>(0.0, 0.0);
+    out.valid = false;
+    return out;
+}
+
+/// One outer bound of the exact lattice used by the field fragment entry.
+/// `cells` is already resolved against matrix-column truncation by the renderer;
+/// the coordinate arithmetic itself stays here beside the source pairs.
+fn field_axis_bound(offset: u32, len: u32, cells: u32, high: bool) -> FieldBound {
+    if (cells == 0u) {
+        return invalid_field_bound();
+    }
+    if (field_uses_centers()) {
+        if (cells > len) {
+            return invalid_field_bound();
+        }
+        if (field_uses_samples()) {
+            return field_bound(load_pair(offset, select(0u, cells - 1u, high)));
+        }
+        if (!high) {
+            let c0 = load_pair(offset, 0u);
+            let c1 = load_pair(offset, min(1u, cells - 1u));
+            return field_bound(add_grid_pairs(
+                c0,
+                scale_grid_pair(subtract_grid_pairs(c0, c1), 0.5),
+            ));
+        }
+        let last = load_pair(offset, cells - 1u);
+        let prev = load_pair(offset, max(cells, 2u) - 2u);
+        return field_bound(add_grid_pairs(
+            last,
+            scale_grid_pair(subtract_grid_pairs(last, prev), 0.5),
+        ));
+    }
+    if (cells >= len) {
+        return invalid_field_bound();
+    }
+    if (!field_uses_samples()) {
+        return field_bound(load_pair(offset, select(0u, cells, high)));
+    }
+    let i = select(0u, cells - 1u, high);
+    return field_bound(midpoint_grid_pair(
+        load_pair(offset, i),
+        load_pair(offset, i + 1u),
+    ));
+}
+
 fn pair_value(v: vec2<f32>) -> f32 {
     return v.x + v.y;
 }
 
-fn shifted_magnitude_word(
-    mantissa: u32,
-    shift: u32,
-    word_index: u32,
-) -> u32 {
-    let base = shift >> 5u;
-    let intra = shift & 31u;
-    if (word_index == base) {
-        return mantissa << intra;
-    }
-    if (intra != 0u && word_index == base + 1u) {
-        return mantissa >> (32u - intra);
-    }
-    return 0u;
+// Error-free addition for finite, non-overflowing f32 inputs. The returned
+// pair carries the rounded sum in x and its residual in y.
+fn rounded_add(a: f32, b: f32) -> f32 {
+    return bitcast<f32>(bitcast<u32>(a + b));
 }
 
-fn add_shifted_magnitude(
-    accumulator: SignedAccumulator,
-    mantissa: u32,
-    shift: u32,
-    subtract: bool,
-) -> SignedAccumulator {
-    var out = accumulator;
-    if (subtract) {
-        var borrow = 0u;
-        for (var word = 0u; word < ACC_WORDS; word = word + 1u) {
-            let part = shifted_magnitude_word(mantissa, shift, word);
-            let before = out.words[word];
-            let first = before - part;
-            let borrow_part = select(0u, 1u, before < part);
-            let second = first - borrow;
-            let borrow_carry = select(0u, 1u, first < borrow);
-            out.words[word] = second;
-            borrow = borrow_part | borrow_carry;
+fn rounded_subtract(a: f32, b: f32) -> f32 {
+    return bitcast<f32>(bitcast<u32>(a - b));
+}
+
+fn two_sum(a: f32, b: f32) -> vec2<f32> {
+    // The bitcasts make each f32 rounding boundary observable and prevent a
+    // backend from reassociating the compensation terms back into `a + b`.
+    let sum = rounded_add(a, b);
+    let b_virtual = rounded_subtract(sum, a);
+    let a_virtual = rounded_subtract(sum, b_virtual);
+    let b_roundoff = rounded_subtract(b, b_virtual);
+    let a_roundoff = rounded_subtract(a, a_virtual);
+    return vec2<f32>(sum, rounded_add(a_roundoff, b_roundoff));
+}
+
+// Keep a fit bound in the same compact `(hi, lo)` form the axis SSoT already
+// consumes. The overflow fallback deliberately keeps the two dominant finite
+// lanes instead of manufacturing infinity; the CPU can still reconstruct a
+// finite f64 bound such as `f32::MAX + f32::MAX`.
+fn add_pairs(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+    let high_sum = rounded_add(a.x, b.x);
+    if (!lane_is_finite(high_sum)) {
+        if (abs(a.x) >= abs(b.x)) {
+            return vec2<f32>(a.x, b.x);
         }
-    } else {
-        var carry = 0u;
-        for (var word = 0u; word < ACC_WORDS; word = word + 1u) {
-            let part = shifted_magnitude_word(mantissa, shift, word);
-            let before = out.words[word];
-            let first = before + part;
-            let carry_part = select(0u, 1u, first < before);
-            let second = first + carry;
-            let carry_carry = select(0u, 1u, second < first);
-            out.words[word] = second;
-            carry = carry_part | carry_carry;
-        }
+        return vec2<f32>(b.x, a.x);
     }
-    return out;
-}
-
-fn add_lane(
-    accumulator: SignedAccumulator,
-    lane: f32,
-    coefficient_negative: bool,
-) -> SignedAccumulator {
-    let bits = bitcast<u32>(lane);
-    let magnitude_bits = bits & F32_ABS_MASK;
-    if (magnitude_bits == 0u || (magnitude_bits & F32_EXP_MASK) == F32_EXP_MASK) {
-        return accumulator;
+    // When one high lane is below the other's f32 ULP, the rounded high sum
+    // is unchanged. Put that entire smaller pair into the residual directly;
+    // relying on a backend to preserve a symbolic TwoSum cancellation here is
+    // both slower and less portable.
+    if (bitcast<u32>(high_sum) == bitcast<u32>(a.x)
+        && bitcast<u32>(a.x) != bitcast<u32>(b.x)) {
+        return vec2<f32>(a.x, rounded_add(a.y, rounded_add(b.x, b.y)));
     }
-
-    let exponent = magnitude_bits >> 23u;
-    var mantissa = magnitude_bits & F32_FRAC_MASK;
-    var shift = 0u;
-    if (exponent != 0u) {
-        mantissa = mantissa | F32_HIDDEN_BIT;
-        shift = exponent - 1u;
+    if (bitcast<u32>(high_sum) == bitcast<u32>(b.x)
+        && bitcast<u32>(a.x) != bitcast<u32>(b.x)) {
+        return vec2<f32>(b.x, rounded_add(b.y, rounded_add(a.x, a.y)));
     }
-
-    let lane_negative = (bits & F32_SIGN_MASK) != 0u;
-    return add_shifted_magnitude(
-        accumulator,
-        mantissa,
-        shift,
-        lane_negative != coefficient_negative,
-    );
-}
-
-fn add_endpoint(
-    accumulator: SignedAccumulator,
-    endpoint: Endpoint,
-    negate_endpoint: bool,
-) -> SignedAccumulator {
-    var out = accumulator;
-    out = add_lane(out, endpoint.value.x, negate_endpoint);
-    out = add_lane(out, endpoint.value.y, negate_endpoint);
-
-    let error_is_negative =
-        (endpoint.kind == ENDPOINT_LOWER) != negate_endpoint;
-    out = add_lane(out, endpoint.error.x, error_is_negative);
-    out = add_lane(out, endpoint.error.y, error_is_negative);
-    return out;
-}
-
-fn accumulator_sign(accumulator: SignedAccumulator) -> i32 {
-    var any = 0u;
-    for (var word = 0u; word < ACC_WORDS; word = word + 1u) {
-        any = any | accumulator.words[word];
+    let high = two_sum(a.x, b.x);
+    let low = rounded_add(rounded_add(a.y, b.y), high.y);
+    let normalized = two_sum(high.x, low);
+    if (pair_is_finite(normalized)) {
+        return normalized;
     }
-    if (any == 0u) {
-        return 0;
+    return vec2<f32>(high.x, low);
+}
+
+fn subtract_pairs(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+    return add_pairs(a, -b);
+}
+
+fn pair_is_positive(pair: vec2<f32>) -> bool {
+    let high = bitcast<u32>(pair.x);
+    if ((high & F32_ABS_MASK) != 0u) {
+        return (high & F32_SIGN_MASK) == 0u;
     }
-    if ((accumulator.words[ACC_WORDS - 1u] & F32_SIGN_MASK) != 0u) {
-        return -1;
+    let low = bitcast<u32>(pair.y);
+    return (low & F32_ABS_MASK) != 0u && (low & F32_SIGN_MASK) == 0u;
+}
+
+fn float_order_key(value: f32) -> u32 {
+    let bits = bitcast<u32>(value);
+    if ((bits & F32_ABS_MASK) == 0u) {
+        // Treat positive and negative zero as one value.
+        return F32_SIGN_MASK;
     }
-    return 1;
-}
-
-fn zero_accumulator() -> SignedAccumulator {
-    return SignedAccumulator(array<u32, 10>(
-        0u, 0u, 0u, 0u, 0u,
-        0u, 0u, 0u, 0u, 0u,
-    ));
-}
-
-fn compare_endpoint_values(a: Endpoint, b: Endpoint) -> i32 {
-    var accumulator = zero_accumulator();
-    accumulator = add_endpoint(accumulator, a, false);
-    accumulator = add_endpoint(accumulator, b, true);
-    return accumulator_sign(accumulator);
-}
-
-fn endpoint_sign(endpoint: Endpoint) -> i32 {
-    var accumulator = zero_accumulator();
-    accumulator = add_endpoint(accumulator, endpoint, false);
-    return accumulator_sign(accumulator);
-}
-
-fn endpoint_is_earlier(a: Endpoint, b: Endpoint) -> bool {
-    if (a.source_index != b.source_index) {
-        return a.source_index < b.source_index;
+    if ((bits & F32_SIGN_MASK) != 0u) {
+        return ~bits;
     }
-    return a.kind < b.kind;
+    return bits | F32_SIGN_MASK;
 }
 
-fn choose_minimum(a: Endpoint, b: Endpoint) -> Endpoint {
-    if (a.kind == ENDPOINT_INVALID) {
+// Uploaded pairs and pairs produced by `add_pairs` are normalized in the
+// ordinary finite case, so lexicographic hi/lo ordering preserves timestamp
+// residuals without emulating arbitrary-precision integer arithmetic.
+fn pair_is_less(a: vec2<f32>, b: vec2<f32>) -> bool {
+    let a_high = float_order_key(a.x);
+    let b_high = float_order_key(b.x);
+    if (a_high != b_high) {
+        return a_high < b_high;
+    }
+    return float_order_key(a.y) < float_order_key(b.y);
+}
+
+fn choose_minimum(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+    if (!pair_is_finite(a)) {
         return b;
     }
-    if (b.kind == ENDPOINT_INVALID) {
+    if (!pair_is_finite(b)) {
         return a;
     }
-    let comparison = compare_endpoint_values(a, b);
-    if (comparison < 0) {
-        return a;
-    }
-    if (comparison > 0) {
+    if (pair_is_less(b, a)) {
         return b;
     }
-    if (endpoint_is_earlier(a, b)) {
-        return a;
-    }
-    return b;
+    return a;
 }
 
-fn choose_maximum(a: Endpoint, b: Endpoint) -> Endpoint {
-    if (a.kind == ENDPOINT_INVALID) {
+fn choose_maximum(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+    if (!pair_is_finite(a)) {
         return b;
     }
-    if (b.kind == ENDPOINT_INVALID) {
+    if (!pair_is_finite(b)) {
         return a;
     }
-    let comparison = compare_endpoint_values(a, b);
-    if (comparison > 0) {
-        return a;
-    }
-    if (comparison < 0) {
+    if (pair_is_less(a, b)) {
         return b;
     }
-    if (endpoint_is_earlier(a, b)) {
-        return a;
-    }
-    return b;
+    return a;
 }
 
 fn merge_axis_states(a: AxisState, b: AxisState) -> AxisState {
@@ -319,34 +363,28 @@ fn merge_series_states(a: SeriesState, b: SeriesState) -> SeriesState {
     );
 }
 
-fn state_for_endpoint(endpoint: Endpoint) -> AxisState {
-    var minimum_positive = empty_endpoint();
-    if (endpoint_sign(endpoint) > 0) {
-        minimum_positive = endpoint;
+fn state_for_bound(bound: vec2<f32>) -> AxisState {
+    var minimum_positive = empty_minimum();
+    if (pair_is_positive(bound)) {
+        minimum_positive = bound;
     }
-    return AxisState(endpoint, endpoint, minimum_positive);
+    return AxisState(bound, bound, minimum_positive);
 }
 
-fn state_for_value(value: vec2<f32>, index: u32) -> AxisState {
-    return state_for_endpoint(Endpoint(
-        value,
-        vec2<f32>(0.0, 0.0),
-        ENDPOINT_VALUE,
-        index,
-    ));
+fn state_for_value(value: vec2<f32>) -> AxisState {
+    return state_for_bound(value);
 }
 
 fn state_for_errors(
     value: vec2<f32>,
     lower_error: vec2<f32>,
     upper_error: vec2<f32>,
-    index: u32,
 ) -> AxisState {
-    let lower = Endpoint(value, lower_error, ENDPOINT_LOWER, index);
-    let upper = Endpoint(value, upper_error, ENDPOINT_UPPER, index);
+    let lower = subtract_pairs(value, lower_error);
+    let upper = add_pairs(value, upper_error);
     return merge_axis_states(
-        state_for_endpoint(lower),
-        state_for_endpoint(upper),
+        state_for_bound(lower),
+        state_for_bound(upper),
     );
 }
 
@@ -354,29 +392,18 @@ fn state_for_active_errors(
     value: vec2<f32>,
     lower_error: vec2<f32>,
     upper_error: vec2<f32>,
-    index: u32,
 ) -> AxisState {
     var state = empty_axis_state();
     if (pair_is_finite(lower_error)) {
         state = merge_axis_states(
             state,
-            state_for_endpoint(Endpoint(
-                value,
-                lower_error,
-                ENDPOINT_LOWER,
-                index,
-            )),
+            state_for_bound(subtract_pairs(value, lower_error)),
         );
     }
     if (pair_is_finite(upper_error)) {
         state = merge_axis_states(
             state,
-            state_for_endpoint(Endpoint(
-                value,
-                upper_error,
-                ENDPOINT_UPPER,
-                index,
-            )),
+            state_for_bound(add_pairs(value, upper_error)),
         );
     }
     return state;
@@ -426,8 +453,8 @@ fn error_domain_len() -> u32 {
 fn state_for_series_index(index: u32) -> SeriesState {
     var state = empty_series_state();
     if (point_is_in_base_domain(index)) {
-        state.x = state_for_value(load_pair(x_offset(), index), index);
-        state.y = state_for_value(load_pair(y_offset(), index), index);
+        state.x = state_for_value(load_pair(x_offset(), index));
+        state.y = state_for_value(load_pair(y_offset(), index));
     }
 
     if (index >= error_domain_len() || !paired_value_is_finite(index)) {
@@ -448,7 +475,6 @@ fn state_for_series_index(index: u32) -> SeriesState {
                     load_pair(x_offset(), index),
                     lower,
                     upper,
-                    index,
                 ),
             );
         }
@@ -466,12 +492,25 @@ fn state_for_series_index(index: u32) -> SeriesState {
                     load_pair(y_offset(), index),
                     lower,
                     upper,
-                    index,
                 ),
             );
         }
     }
     return state;
+}
+
+fn state_for_field() -> SeriesState {
+    let x_lo = field_axis_bound(x_offset(), x_len(), params.lengths_1.x, false);
+    let x_hi = field_axis_bound(x_offset(), x_len(), params.lengths_1.x, true);
+    let y_lo = field_axis_bound(y_offset(), y_len(), params.lengths_1.y, false);
+    let y_hi = field_axis_bound(y_offset(), y_len(), params.lengths_1.y, true);
+    if (!x_lo.valid || !x_hi.valid || !y_lo.valid || !y_hi.valid) {
+        return empty_series_state();
+    }
+    return SeriesState(
+        merge_axis_states(state_for_bound(x_lo.pair), state_for_bound(x_hi.pair)),
+        merge_axis_states(state_for_bound(y_lo.pair), state_for_bound(y_hi.pair)),
+    );
 }
 
 fn state_for_legacy_index(index: u32) -> SeriesState {
@@ -495,31 +534,23 @@ fn state_for_legacy_index(index: u32) -> SeriesState {
         }
     }
     return SeriesState(
-        state_for_errors(value, lower, upper, index),
+        state_for_errors(value, lower, upper),
         empty_axis_state(),
     );
 }
 
-fn load_endpoint(base: u32) -> Endpoint {
-    return Endpoint(
-        vec2<f32>(
-            bitcast<f32>(input_words[base]),
-            bitcast<f32>(input_words[base + 1u]),
-        ),
-        vec2<f32>(
-            bitcast<f32>(input_words[base + 2u]),
-            bitcast<f32>(input_words[base + 3u]),
-        ),
-        input_words[base + 4u],
-        input_words[base + 5u],
+fn load_bound(base: u32) -> vec2<f32> {
+    return vec2<f32>(
+        bitcast<f32>(input_words[base]),
+        bitcast<f32>(input_words[base + 1u]),
     );
 }
 
 fn load_axis_state(base: u32) -> AxisState {
     return AxisState(
-        load_endpoint(base),
-        load_endpoint(base + ENDPOINT_WORDS),
-        load_endpoint(base + ENDPOINT_WORDS * 2u),
+        load_bound(base),
+        load_bound(base + BOUND_WORDS),
+        load_bound(base + BOUND_WORDS * 2u),
     );
 }
 
@@ -531,19 +562,15 @@ fn load_series_state(index: u32) -> SeriesState {
     );
 }
 
-fn store_endpoint(base: u32, endpoint: Endpoint) {
-    output_words[base] = bitcast<u32>(endpoint.value.x);
-    output_words[base + 1u] = bitcast<u32>(endpoint.value.y);
-    output_words[base + 2u] = bitcast<u32>(endpoint.error.x);
-    output_words[base + 3u] = bitcast<u32>(endpoint.error.y);
-    output_words[base + 4u] = endpoint.kind;
-    output_words[base + 5u] = endpoint.source_index;
+fn store_bound(base: u32, bound: vec2<f32>) {
+    output_words[base] = bitcast<u32>(bound.x);
+    output_words[base + 1u] = bitcast<u32>(bound.y);
 }
 
 fn store_axis_state(base: u32, state: AxisState) {
-    store_endpoint(base, state.minimum);
-    store_endpoint(base + ENDPOINT_WORDS, state.maximum);
-    store_endpoint(base + ENDPOINT_WORDS * 2u, state.minimum_positive);
+    store_bound(base, state.minimum);
+    store_bound(base + BOUND_WORDS, state.maximum);
+    store_bound(base + BOUND_WORDS * 2u, state.minimum_positive);
 }
 
 fn store_series_state(index: u32, state: SeriesState) {
@@ -578,7 +605,9 @@ fn reduce_values(
     var index = global_id.x;
     while (index < input_len()) {
         var next = empty_series_state();
-        if (mode() == MODE_LEGACY_AXIS) {
+        if (mode_is_field()) {
+            next = state_for_field();
+        } else if (mode() == MODE_LEGACY_AXIS) {
             next = state_for_legacy_index(index);
         } else {
             next = state_for_series_index(index);

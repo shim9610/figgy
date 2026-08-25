@@ -21,6 +21,152 @@ pub struct PickedPoint {
     pub distance_px: f32,
 }
 
+/// One exact data-primitive hit.
+///
+/// The result contains only source identity and stable indices. Data values,
+/// coordinates, bar bounds, and reconstructed contour endpoints remain in the
+/// registered columns / chart configuration and are never mirrored onto the
+/// CPU by the GPU picker.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PickedData {
+    Point {
+        source_id: Option<String>,
+        series_id: String,
+        point_index: usize,
+        distance_px: f32,
+    },
+    HistogramBin {
+        source_id: Option<String>,
+        series_id: String,
+        bin_index: usize,
+        distance_px: f32,
+    },
+    MatrixCell {
+        source_id: Option<String>,
+        series_id: String,
+        x_index: usize,
+        y_index: usize,
+        distance_px: f32,
+    },
+    ContourLevel {
+        source_id: Option<String>,
+        series_id: String,
+        level_index: usize,
+        x_index: usize,
+        y_index: usize,
+        distance_px: f32,
+    },
+}
+
+impl PickedData {
+    pub fn source_id(&self) -> Option<&str> {
+        match self {
+            Self::Point { source_id, .. }
+            | Self::HistogramBin { source_id, .. }
+            | Self::MatrixCell { source_id, .. }
+            | Self::ContourLevel { source_id, .. } => source_id.as_deref(),
+        }
+    }
+
+    pub fn series_id(&self) -> &str {
+        match self {
+            Self::Point { series_id, .. }
+            | Self::HistogramBin { series_id, .. }
+            | Self::MatrixCell { series_id, .. }
+            | Self::ContourLevel { series_id, .. } => series_id,
+        }
+    }
+
+    pub fn distance_px(&self) -> f32 {
+        match self {
+            Self::Point { distance_px, .. }
+            | Self::HistogramBin { distance_px, .. }
+            | Self::MatrixCell { distance_px, .. }
+            | Self::ContourLevel { distance_px, .. } => *distance_px,
+        }
+    }
+
+    pub fn to_ref(&self) -> crate::config::PickedDataRef {
+        match self {
+            Self::Point {
+                source_id,
+                series_id,
+                point_index,
+                ..
+            } => crate::config::PickedDataRef::Point {
+                source_id: source_id.clone(),
+                series_id: series_id.clone(),
+                point_index: *point_index,
+            },
+            Self::HistogramBin {
+                source_id,
+                series_id,
+                bin_index,
+                ..
+            } => crate::config::PickedDataRef::HistogramBin {
+                source_id: source_id.clone(),
+                series_id: series_id.clone(),
+                bin_index: *bin_index,
+            },
+            Self::MatrixCell {
+                source_id,
+                series_id,
+                x_index,
+                y_index,
+                ..
+            } => crate::config::PickedDataRef::MatrixCell {
+                source_id: source_id.clone(),
+                series_id: series_id.clone(),
+                x_index: *x_index,
+                y_index: *y_index,
+            },
+            Self::ContourLevel {
+                source_id,
+                series_id,
+                level_index,
+                x_index,
+                y_index,
+                ..
+            } => crate::config::PickedDataRef::ContourLevel {
+                source_id: source_id.clone(),
+                series_id: series_id.clone(),
+                level_index: *level_index,
+                x_index: *x_index,
+                y_index: *y_index,
+            },
+        }
+    }
+
+    pub fn into_point(self) -> Option<PickedPoint> {
+        let Self::Point {
+            source_id,
+            series_id,
+            point_index,
+            distance_px,
+        } = self
+        else {
+            return None;
+        };
+        Some(PickedPoint {
+            source_id,
+            series_id,
+            point_index,
+            distance_px,
+        })
+    }
+}
+
+impl From<PickedPoint> for PickedData {
+    fn from(point: PickedPoint) -> Self {
+        Self::Point {
+            source_id: point.source_id,
+            series_id: point.series_id,
+            point_index: point.point_index,
+            distance_px: point.distance_px,
+        }
+    }
+}
+
 pub fn pick_nearest_point<L: PointColumnLookup>(
     config: &Config,
     series: &[SeriesConfig],
@@ -182,7 +328,21 @@ fn extract_line(rt: &DataRenderType) -> Option<&DataLineStyleConfig> {
         | DataRenderType::LineScatterErrorbarX { line, .. }
         | DataRenderType::LineScatterErrorbarY { line, .. }
         | DataRenderType::LineScatterErrorbarXY { line, .. } => Some(line),
-        _ => None,
+        // Exhaustive on purpose: a new render type must fail to compile here so
+        // somebody decides whether picking should hit-test a line for it.
+        //
+        // The four field / bar types are not point-pickable: a bar has no
+        // vertex to snap to, and a matrix' `(x_column, y_column)` are grid
+        // coordinates, so a "nearest point" would be a grid intersection the
+        // user never plotted. Picking a cell or a level is a separate query.
+        DataRenderType::Scatter { .. }
+        | DataRenderType::ScatterErrorbarX { .. }
+        | DataRenderType::ScatterErrorbarY { .. }
+        | DataRenderType::ScatterErrorbarXY { .. }
+        | DataRenderType::Histogram { .. }
+        | DataRenderType::Heatmap { .. }
+        | DataRenderType::Contour { .. }
+        | DataRenderType::HeatmapContour { .. } => None,
     }
 }
 
@@ -196,7 +356,11 @@ fn extract_scatter(rt: &DataRenderType) -> Option<&DataScatterStyleConfig> {
         | DataRenderType::LineScatterErrorbarX { scatter, .. }
         | DataRenderType::LineScatterErrorbarY { scatter, .. }
         | DataRenderType::LineScatterErrorbarXY { scatter, .. } => Some(scatter),
-        DataRenderType::Line { .. } => None,
+        DataRenderType::Line { .. }
+        | DataRenderType::Histogram { .. }
+        | DataRenderType::Heatmap { .. }
+        | DataRenderType::Contour { .. }
+        | DataRenderType::HeatmapContour { .. } => None,
     }
 }
 
@@ -313,12 +477,20 @@ fn project_data_to_canvas_px(
     x: f32,
     y: f32,
 ) -> Option<(f32, f32)> {
-    let xv = maybe_log(x, transform.scale_log[0]);
-    let yv = maybe_log(y, transform.scale_log[1]);
-    let range_x = transform.data_max[0] - transform.data_min[0];
-    let range_y = transform.data_max[1] - transform.data_min[1];
-    let tx = (xv - transform.data_min[0]) / range_x;
-    let ty = (yv - transform.data_min[1]) / range_y;
+    let axis_t = |value: f32, axis: usize| {
+        let min_hi = transform.data_min[axis];
+        let max_hi = transform.data_max[axis];
+        let min_lo = transform.data_min_lo[axis];
+        let max_lo = transform.data_max_lo[axis];
+        let linear_num = (value - min_hi) - min_lo;
+        let range = (max_hi - min_hi) + (max_lo - min_lo);
+        let log_num = (maybe_log(value, transform.scale_log[axis]) - min_hi) - min_lo;
+        let data_t = linear_num * (1.0 - transform.scale_log[axis]) / range
+            + log_num * transform.scale_log[axis] / range;
+        transform.data_to_panel_offset[axis] + data_t * transform.data_to_panel_scale[axis]
+    };
+    let tx = axis_t(x, 0);
+    let ty = axis_t(y, 1);
     let ndc_x = tx * 2.0 - 1.0;
     let ndc_y = ty * 2.0 - 1.0;
     if !ndc_x.is_finite() || !ndc_y.is_finite() {

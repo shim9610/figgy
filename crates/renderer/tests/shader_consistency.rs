@@ -3,8 +3,10 @@
 //! WGSL has no `import`/`include`. The `Transform` / `Style` / `maybe_log` /
 //! `data_to_ndc` definitions are therefore duplicated across
 //! `scatter_columnar.wgsl`, `line_columnar.wgsl`, `errorbar_columnar.wgsl`,
-//! and the `line_arc.wgsl` compute shader. `src/data_render/SHADER_COMMON.md`
-//! is the single source of truth for those duplicates.
+//! `bar_columnar.wgsl`, `field_columnar.wgsl`, the `line_arc.wgsl` and
+//! `contour_anchor.wgsl` compute shaders, and the `contour_label.wgsl`
+//! render shader. `src/data_render/SHADER_COMMON.md` is the single source of
+//! truth for those duplicates.
 //!
 //! This test parses SHADER_COMMON.md for fenced WGSL blocks that are marked
 //! with a metadata comment of the form
@@ -20,8 +22,8 @@
 //! Run manually with:
 //!     cargo test --test shader_consistency
 //!
-//! The repository's pre-commit hook (`.githooks/pre-commit`) runs this test
-//! automatically whenever any `.wgsl` file or `SHADER_COMMON.md` is staged.
+//! CI and local development can run this gate whenever a `.wgsl` file or
+//! `SHADER_COMMON.md` changes.
 
 use std::collections::HashMap;
 use std::fs;
@@ -30,7 +32,9 @@ use std::path::PathBuf;
 const SSOT_PATH: &str = "src/data_render/SHADER_COMMON.md";
 const BEGIN_MARKER: &str = "// ───── BEGIN common block";
 const END_MARKER: &str = "// ───── END common block";
-const TARGETS: &[&str] = &["scatter", "line", "errorbar", "arc"];
+const TARGETS: &[&str] = &[
+    "scatter", "line", "errorbar", "bar", "field", "arc", "anchor", "label",
+];
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -49,10 +53,15 @@ fn shader_path_for(short: &str) -> &'static str {
         "scatter" => "src/data_render/scatter_columnar.wgsl",
         "line" => "src/data_render/line_columnar.wgsl",
         "errorbar" => "src/data_render/errorbar_columnar.wgsl",
+        "bar" => "src/data_render/bar_columnar.wgsl",
+        "field" => "src/data_render/field_columnar.wgsl",
         "arc" => "src/data_render/line_arc.wgsl",
+        "anchor" => "src/contour_anchor.wgsl",
+        "label" => "src/contour_label.wgsl",
         other => panic!(
             "Unknown shader short-name `{}` in SHADER_COMMON.md metadata. \
-             Valid names: scatter | line | errorbar | arc.",
+             Valid names: scatter | line | errorbar | bar | field | arc | \
+             anchor | label.",
             other
         ),
     }
@@ -166,6 +175,31 @@ fn shader_common_region(shader: &str, path: &str) -> String {
     shader[after_begin..end].to_string()
 }
 
+fn wgsl_function(source: &str, name: &str) -> String {
+    let needle = format!("fn {name}(");
+    let start = source
+        .find(&needle)
+        .unwrap_or_else(|| panic!("missing WGSL function `{name}`"));
+    let open = source[start..]
+        .find('{')
+        .map(|offset| start + offset)
+        .unwrap_or_else(|| panic!("WGSL function `{name}` has no body"));
+    let mut depth = 0usize;
+    for (offset, byte) in source.as_bytes()[open..].iter().copied().enumerate() {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return source[start..=open + offset].to_string();
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("WGSL function `{name}` has an unclosed body")
+}
+
 fn expected_region_for(blocks: &[CommonBlock], short: &str) -> String {
     let chunks: Vec<&str> = blocks
         .iter()
@@ -235,6 +269,182 @@ fn shader_common_blocks_match_ssot() {
             failures.join("\n")
         );
     }
+}
+
+#[test]
+fn field_fit_uses_the_ssot_grid_pair_normalization() {
+    let ssot = read(SSOT_PATH);
+    let fit = read("src/gpu_errorbar.wgsl");
+    for function in [
+        "grid_rounded_add",
+        "grid_rounded_subtract",
+        "normalize_grid_pair",
+        "add_grid_pairs",
+        "subtract_grid_pairs",
+        "scale_grid_pair",
+        "midpoint_grid_pair",
+    ] {
+        assert_eq!(
+            wgsl_function(&fit, function),
+            wgsl_function(&ssot, function),
+            "field fit and rendered field bounds must share `{function}` byte-for-byte"
+        );
+    }
+    assert!(fit.contains("struct FieldBound {\n    pair: vec2<f32>,\n    valid: bool,"));
+    assert!(fit.contains("if (!x_lo.valid || !x_hi.valid || !y_lo.valid || !y_hi.valid)"));
+    assert!(
+        !fit.contains("0x7fc00000u"),
+        "field fit must carry invalidity explicitly instead of relying on a NaN sentinel"
+    );
+}
+
+#[test]
+fn contour_level_search_constants_match_the_model_limit() {
+    assert_eq!(renderer::MAX_CONTOUR_LEVELS, 1024);
+
+    let rust = read("src/data_render/mod.rs");
+    let shader = read("src/data_render/field_columnar.wgsl");
+    assert!(rust.contains("pub(crate) const CONTOUR_LEVEL_BLOCK_SIZE: usize = 32;"));
+    assert!(rust.contains("pub(crate) const CONTOUR_LEVEL_BLOCK_COUNT: usize = 32;"));
+    assert!(
+        rust.contains("crate::data_config::MAX_CONTOUR_LEVELS == CONTOUR_LEVEL_LOOKUP_CAPACITY")
+    );
+    assert!(shader.contains("const CONTOUR_LEVEL_BLOCK_SIZE: u32 = 32u;"));
+    assert!(shader.contains("let original = firstTrailingBit(candidates);"));
+}
+
+#[test]
+fn contour_label_capacity_and_workgroup_storage_match_the_model_contract() {
+    const WEBGPU_MIN_WORKGROUP_STORAGE_BYTES: usize = 16_384;
+    const KEPT_POSITION_BYTES: usize = 1024 * std::mem::size_of::<[f32; 2]>();
+    const KEPT_RADIUS_BYTES: usize = 1024 * std::mem::size_of::<f32>();
+
+    assert_eq!(renderer::MAX_CONTOUR_LEVELS, 1024);
+    assert_eq!(renderer::gpu_contour::MAX_CONTOUR_LABELS_TOTAL, 1024);
+    assert!(renderer::gpu_contour::MAX_ANCHOR_CANDIDATES >= renderer::MAX_CONTOUR_LEVELS as u32);
+    assert_eq!(KEPT_POSITION_BYTES + KEPT_RADIUS_BYTES, 12_288);
+    const {
+        assert!(KEPT_POSITION_BYTES + KEPT_RADIUS_BYTES <= WEBGPU_MIN_WORKGROUP_STORAGE_BYTES);
+    }
+
+    let rust = read("src/gpu_contour.rs");
+    let shader = read("src/contour_anchor.wgsl");
+    assert!(rust.contains("pub const MAX_CONTOUR_LABELS_TOTAL: u32 = 1024;"));
+    assert!(
+        rust.contains("MAX_ANCHOR_CANDIDATES >= crate::data_config::MAX_CONTOUR_LEVELS as u32")
+    );
+    assert!(shader.contains("const MAX_KEPT: u32 = 1024u;"));
+    assert!(shader.contains("var<workgroup> kept_px: array<vec2<f32>, 1024>;"));
+    assert!(shader.contains("var<workgroup> kept_r: array<f32, 1024>;"));
+}
+
+#[test]
+fn contour_lookup_metadata_binding_and_layout_match_cpu_and_wgsl() {
+    let rust = read("src/data_render/mod.rs");
+    let field = read("src/data_render/field_columnar.wgsl");
+    let anchor = read("src/contour_anchor.wgsl");
+
+    assert!(rust.contains("pub struct ContourLookupMetadataGpu"));
+    assert!(rust.contains("pub finite_count: u32"));
+    assert!(rust.contains("pub negative_infinity_count: u32"));
+    assert!(rust.contains("size_of::<ContourLookupMetadataGpu>() == 8"));
+    assert!(rust.contains("storage(6, wgpu::ShaderStages::FRAGMENT)"));
+    assert!(rust.contains("binding: 6,"));
+    assert!(rust.contains("resource: lookup_metadata_buf.as_entire_binding()"));
+
+    assert!(field.contains("struct ContourLookupMetadata {\n    finite_count: u32,\n    negative_infinity_count: u32,\n};"));
+    assert!(field.contains("@group(2) @binding(6) var<storage, read> contour_lookup_metadata"));
+    assert!(field.contains("let original = u32(record.y) - start;"));
+    assert!(!field.contains("bitcast<u32>(record.y)"));
+    assert!(!anchor.contains("@group(2) @binding(6)"));
+}
+
+#[test]
+fn field_invalid_values_use_explicit_validity_without_nan_sentinels() {
+    let field = read("src/data_render/field_columnar.wgsl");
+    let anchor = read("src/contour_anchor.wgsl");
+
+    for (name, shader) in [("field", field.as_str()), ("anchor", anchor.as_str())] {
+        assert!(shader.contains("struct GridValue {\n    pair: vec2<f32>,\n    valid: bool,\n};"));
+        assert!(shader.contains("if (!p00.valid || !p10.valid || !p01.valid || !p11.valid)"));
+        assert!(shader.contains("fn vec2_f32_is_finite(v: vec2<f32>) -> bool"));
+        assert!(shader.contains("!vec2_f32_is_finite(p00.pair)"));
+        assert!(
+            !shader.contains("bitcast<f32>(0x7fc00000u)"),
+            "{name} shader must not construct a constant NaN sentinel"
+        );
+    }
+
+    assert!(field.contains("if (!sample.valid)"));
+    assert!(anchor.contains("struct LevelValue {\n    value: f32,\n    valid: bool,\n};"));
+    assert!(anchor.contains("if (!wanted.valid || !f32_is_finite(wanted.value))"));
+}
+
+#[test]
+fn field_derived_nonfinite_arithmetic_fails_closed() {
+    let field = read("src/data_render/field_columnar.wgsl");
+    let anchor = read("src/contour_anchor.wgsl");
+
+    for (name, shader) in [("field", field.as_str()), ("anchor", anchor.as_str())] {
+        let locate = shader
+            .split_once("fn locate(base: u32")
+            .unwrap_or_else(|| panic!("{name} shader has no locate"))
+            .1
+            .split_once("struct GridValue")
+            .unwrap_or_else(|| panic!("{name} shader has no GridValue after locate"))
+            .0;
+        for required in [
+            "!f32_is_finite(t)",
+            "!f32_is_finite(first)",
+            "!f32_is_finite(last)",
+            "!f32_is_finite(tm)",
+            "!f32_is_finite(a)",
+            "!f32_is_finite(b)",
+            "!f32_is_finite(span)",
+            "!f32_is_finite(frac)",
+        ] {
+            assert!(
+                locate.contains(required),
+                "{name} locate must fail closed on {required}"
+            );
+        }
+        assert!(
+            locate.find("!f32_is_finite(frac)").unwrap() < locate.find("out.hit = true;").unwrap(),
+            "{name} locate must validate every derived boundary value before hit=true"
+        );
+
+        let sample = shader
+            .split_once("fn contour_sample(t: vec2<f32>) -> ContourSample {")
+            .unwrap_or_else(|| panic!("{name} shader has no contour_sample"))
+            .1
+            .split_once("fn grad_px")
+            .unwrap_or_else(|| panic!("{name} shader has no grad_px after contour_sample"))
+            .0;
+        assert!(sample.contains("!f32_is_finite(z00)"));
+        assert!(sample.contains("!f32_is_finite(du0)"));
+        assert!(sample.contains("!f32_is_finite(z_delta)"));
+        assert!(sample.contains("!f32_is_finite(dz_du)"));
+        assert!(sample.contains("!f32_is_finite(span_product)"));
+        assert!(sample.contains("!vec2_f32_is_finite(dz) || !f32_is_finite(d2)"));
+        assert!(
+            sample
+                .find("!vec2_f32_is_finite(dz) || !f32_is_finite(d2)")
+                .unwrap()
+                < sample.find("out.hit = true;").unwrap(),
+            "{name} must validate interpolation, gradient, and Hessian before hit=true"
+        );
+    }
+
+    assert!(field.contains("if (!f32_is_finite(raw))"));
+    assert!(field.contains("!f32_is_finite(normalized)"));
+    assert!(field.contains("!vec2_f32_is_finite(low) || !vec2_f32_is_finite(high)"));
+    assert!(field.contains("!f32_is_finite(coverage_unclamped)"));
+    assert!(field.contains("if (!f32_is_finite(cov) || cov <= 0.0)"));
+    assert!(field.contains("!vec4_f32_is_finite(c) || !vec4_f32_is_finite(composited)"));
+
+    assert!(anchor.contains("if (!f32_is_finite(g2) || g2 <= 0.0"));
+    assert!(anchor.contains("if (!vec2_f32_is_finite(correction))"));
+    assert!(anchor.contains("if (!vec2_f32_is_finite(p))"));
 }
 
 /// Browser-WGSL portability lint: bare `textureSample` is FORBIDDEN in every

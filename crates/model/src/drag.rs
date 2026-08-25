@@ -1,6 +1,6 @@
 //! Drag policy — `Draggable`, position adjustment for selected elements.
 //!
-//! `Draggable` extends [`Selectable`](crate::select::Selectable): only objects
+//! `Draggable` extends [`Selectable`]: only objects
 //! the user can select can be dragged. Implementations provide a single
 //! mapping — which nudge-path [`Element`] they move — and nothing else. The
 //! default [`Draggable::drag_by`] routes every position change through
@@ -21,8 +21,9 @@
 use crate::config::Config;
 use crate::layout::{Element, NudgeResult};
 use crate::select::{
-    AxisElement, AxisLabelElement, AxisTitleElement, ChartTitleElement, DataAreaElement,
-    LegendElement, Selectable,
+    AxisElement, AxisLabelElement, AxisTitleElement, ChartTitleElement, ColorBarAxisElement,
+    ColorBarElement, ColorBarLabelElement, ColorBarTitleElement, DataAreaElement, LegendElement,
+    Selectable,
 };
 
 /// A selectable object whose position can be adjusted by drag & drop.
@@ -77,6 +78,30 @@ impl Draggable for LegendElement {
 impl Draggable for DataAreaElement {
     fn nudge_element(&self) -> Element {
         Element::DataArea
+    }
+}
+
+impl Draggable for ColorBarElement {
+    fn nudge_element(&self) -> Element {
+        Element::ColorBar
+    }
+}
+
+impl Draggable for ColorBarAxisElement {
+    fn nudge_element(&self) -> Element {
+        Element::ColorBarAxis
+    }
+}
+
+impl Draggable for ColorBarLabelElement {
+    fn nudge_element(&self) -> Element {
+        Element::ColorBarLabel
+    }
+}
+
+impl Draggable for ColorBarTitleElement {
+    fn nudge_element(&self) -> Element {
+        Element::ColorBarTitle
     }
 }
 
@@ -269,5 +294,108 @@ mod tests {
             NudgeResult::Rejected(crate::layout::NudgeReject::OutOfBounds)
         );
         assert_eq!(cfg, before);
+    }
+
+    /// The bar drags like the legend: the delta lands in its own offsets, and
+    /// the *band* does not move — so the data area does not reflow out from
+    /// under the pointer mid-drag.
+    #[test]
+    fn dragging_the_colorbar_moves_its_offsets_and_not_the_layout() {
+        use crate::layout::Side;
+        use crate::select::ColorBarElement;
+
+        let mut cfg = cfg_800x600();
+        cfg.colorbar = Some(crate::default::default_colorbar_options());
+        let margins_before = cfg.margins();
+        let area_before = cfg.data_area().expect("data area");
+
+        assert_eq!(
+            ColorBarElement.drag_by(&mut cfg, 7.0, -3.0),
+            NudgeResult::Moved
+        );
+        let bar = cfg.colorbar.as_ref().expect("colourbar");
+        assert_eq!((bar.offset_x, bar.offset_y), (7.0, -3.0));
+        assert_eq!(cfg.margins(), margins_before);
+        assert_eq!(cfg.data_area().expect("data area"), area_before);
+
+        // Deltas accumulate, and the drawn rect follows them.
+        let da = cfg.data_area().expect("data area");
+        let anchored = {
+            let mut probe = cfg.clone();
+            let bar = probe.colorbar.as_mut().expect("colourbar");
+            bar.offset_x = 0.0;
+            bar.offset_y = 0.0;
+            crate::layout::colorbar_rect(
+                &probe.chart_area,
+                &da,
+                probe.chart_title.top_margin,
+                probe.colorbar.as_ref().expect("colourbar"),
+            )
+        };
+        ColorBarElement.drag_by(&mut cfg, 1.0, 1.0);
+        let bar = cfg.colorbar.as_ref().expect("colourbar");
+        assert_eq!((bar.offset_x, bar.offset_y), (8.0, -2.0));
+        let moved =
+            crate::layout::colorbar_rect(&cfg.chart_area, &da, cfg.chart_title.top_margin, bar);
+        assert_eq!(moved.x, anchored.x + 8.0);
+        assert_eq!(moved.y, anchored.y - 2.0);
+
+        // A drag that would leave the chart area is rejected, state untouched.
+        let before = cfg.clone();
+        assert_eq!(
+            ColorBarElement.drag_by(&mut cfg, 10_000.0, 0.0),
+            NudgeResult::Rejected(NudgeReject::OutOfBounds)
+        );
+        assert_eq!(cfg, before);
+
+        // With no colourbar there is nothing to drag.
+        let mut bare = cfg_800x600();
+        bare.colorbar = None;
+        assert_eq!(
+            ColorBarElement.drag_by(&mut bare, 1.0, 1.0),
+            NudgeResult::Rejected(NudgeReject::OutOfBounds)
+        );
+        let _ = Side::Right;
+    }
+
+    #[test]
+    fn colorbar_detail_drags_update_only_the_z_axis_fields() {
+        let mut cfg = cfg_800x600();
+        let mut bar = crate::default::default_colorbar_options();
+        bar.side = Side::Right;
+        bar.axis.title_option.visible = true;
+        bar.axis.title_option.text =
+            crate::text::RichText::plain("z", crate::color::Color::BLACK, 12.0, "");
+        cfg.colorbar = Some(bar);
+        let area_before = cfg.data_area().expect("data area");
+        let strip_offsets_before = {
+            let bar = cfg.colorbar.as_ref().unwrap();
+            (bar.offset_x, bar.offset_y)
+        };
+
+        assert_eq!(
+            ColorBarAxisElement.drag_by(&mut cfg, 6.0, 99.0),
+            NudgeResult::Moved
+        );
+        assert_eq!(cfg.colorbar.as_ref().unwrap().axis.line_offset, 6.0);
+
+        assert_eq!(
+            ColorBarLabelElement.drag_by(&mut cfg, 4.0, -2.0),
+            NudgeResult::Moved
+        );
+        let labels = &cfg.colorbar.as_ref().unwrap().axis.label_style;
+        assert_eq!((labels.label_offset_x, labels.label_offset_y), (4.0, -2.0));
+
+        assert_eq!(
+            ColorBarTitleElement.drag_by(&mut cfg, 3.0, 7.0),
+            NudgeResult::Moved
+        );
+        let title = &cfg.colorbar.as_ref().unwrap().axis.title_option;
+        // Right-side text is rotated +90°: screen (dx,dy) → local (dy,-dx).
+        assert_eq!((title.offset_x, title.offset_y), (7.0, -3.0));
+
+        let bar = cfg.colorbar.as_ref().unwrap();
+        assert_eq!((bar.offset_x, bar.offset_y), strip_offsets_before);
+        assert_eq!(cfg.data_area().expect("data area"), area_before);
     }
 }

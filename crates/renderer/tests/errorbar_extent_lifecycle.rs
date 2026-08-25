@@ -2,8 +2,8 @@ use std::sync::{Arc, OnceLock};
 
 use renderer::data_render::{create_instance, request_adapter, request_device};
 use renderer::{
-    Column, GpuErrorbarError, GpuSeriesExtentColumnIds, GpuSeriesExtentMode, Renderer,
-    RendererDevice,
+    Column, GpuErrorbarError, GpuResourceKind, GpuSeriesExtentColumnIds, GpuSeriesExtentMode,
+    Renderer, RendererDevice,
 };
 
 fn col_f64(data: Vec<f64>) -> Column<f64> {
@@ -87,16 +87,34 @@ fn explicit_preparation_publishes_engine_for_shared_submission() {
     pollster::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
 
     let shared_renderer = &renderer;
-    let extent = pollster::block_on(
-        shared_renderer
-            .begin_series_extent(GpuSeriesExtentMode::Points, point_columns())
-            .unwrap()
-            .resolve(),
-    )
-    .unwrap()
-    .unwrap();
+    // A live ticket owns reduction scratch and a MAP_READ buffer; both are
+    // charged for exactly as long as the ticket holds them.
+    let idle = renderer.gpu_memory_usage();
+    assert_eq!(idle.live_bytes_of(GpuResourceKind::ErrorbarScratch), 0);
+    let ticket = shared_renderer
+        .begin_series_extent(GpuSeriesExtentMode::Points, point_columns())
+        .unwrap();
+    let pending = renderer.gpu_memory_usage();
+    assert!(
+        pending.live_bytes_of(GpuResourceKind::ErrorbarScratch) > 0
+            && pending.live_bytes_of(GpuResourceKind::Readback) > 0,
+        "extent scratch and readback must be charged while a ticket is live\n{}",
+        pending.report()
+    );
+
+    let extent = pollster::block_on(ticket.resolve()).unwrap().unwrap();
     assert_eq!((extent.x.min, extent.x.max), (1.0, 2.0));
     assert_eq!((extent.y.min, extent.y.max), (10.0, 20.0));
+
+    renderer.end_gpu_frame();
+    let settled = renderer.gpu_memory_usage();
+    assert_eq!(
+        settled.live_bytes_of(GpuResourceKind::ErrorbarScratch),
+        0,
+        "resolving the ticket releases its scratch\n{}",
+        settled.report()
+    );
+    assert_eq!(settled.live_bytes_of(GpuResourceKind::Readback), 0);
 }
 
 #[test]

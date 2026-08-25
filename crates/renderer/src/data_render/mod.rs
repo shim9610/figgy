@@ -16,6 +16,7 @@ pub mod column_pool;
 pub mod line_arc;
 pub use column_pool::{
     AllocError, ColumnHandle, ColumnId, ColumnPool, ColumnSlot, DefragPolicy, FreeRegion,
+    GpuAllocCtx, GpuBudget, GrowthPolicy,
 };
 
 // Instance, adapter, surface, and device setup.
@@ -448,6 +449,7 @@ pub fn upload_rgba_texture(
         view_formats: &[],
     };
     let texture = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // gpu-alloc: caller
         device.create_texture(&texture_desc)
     }))
     .map_err(|_| crate::FiggyError::GpuResourceAllocationFailed {
@@ -542,7 +544,7 @@ pub fn create_texture_bind_group(
     })
 }
 
-fn multisample_state(sample_count: u32) -> wgpu::MultisampleState {
+pub(crate) fn multisample_state(sample_count: u32) -> wgpu::MultisampleState {
     wgpu::MultisampleState {
         count: sample_count,
         mask: !0,
@@ -557,6 +559,8 @@ pub(crate) struct ShaderModules {
     pub line: wgpu::ShaderModule,
     pub scatter: wgpu::ShaderModule,
     pub errorbar: wgpu::ShaderModule,
+    pub bar: wgpu::ShaderModule,
+    pub field: wgpu::ShaderModule,
 }
 
 impl ShaderModules {
@@ -578,8 +582,663 @@ impl ShaderModules {
                 label: Some("figgy errorbar columnar shader"),
                 source: wgpu::ShaderSource::Wgsl(include_str!("errorbar_columnar.wgsl").into()),
             }),
+            bar: device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("figgy bar columnar shader"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("bar_columnar.wgsl").into()),
+            }),
+            field: device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("figgy field columnar shader"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("field_columnar.wgsl").into()),
+            }),
         }
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy)]
+struct BrowserVertexAttributeSpec {
+    format: &'static str,
+    offset: u32,
+    location: u32,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy)]
+struct BrowserVertexBufferSpec {
+    stride: u32,
+    step_mode: &'static str,
+    attributes: &'static [BrowserVertexAttributeSpec],
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy)]
+enum BrowserBlend {
+    Premultiplied,
+    Additive,
+    Maximum,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy)]
+struct BrowserRenderPipelineSpec {
+    label: &'static str,
+    vertex_entry: &'static str,
+    fragment_entry: &'static str,
+    topology: &'static str,
+    buffers: &'static [BrowserVertexBufferSpec],
+    blend: BrowserBlend,
+}
+
+#[cfg(target_arch = "wasm32")]
+const fn browser_attr(format: &'static str, location: u32) -> BrowserVertexAttributeSpec {
+    BrowserVertexAttributeSpec {
+        format,
+        offset: 0,
+        location,
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+const ATTR_F32X2_0: [BrowserVertexAttributeSpec; 1] = [browser_attr("float32x2", 0)];
+#[cfg(target_arch = "wasm32")]
+const ATTR_F32X2_1: [BrowserVertexAttributeSpec; 1] = [browser_attr("float32x2", 1)];
+#[cfg(target_arch = "wasm32")]
+const ATTR_F32X2_2: [BrowserVertexAttributeSpec; 1] = [browser_attr("float32x2", 2)];
+#[cfg(target_arch = "wasm32")]
+const ATTR_F32X2_3: [BrowserVertexAttributeSpec; 1] = [browser_attr("float32x2", 3)];
+#[cfg(target_arch = "wasm32")]
+const ATTR_F32X2_4: [BrowserVertexAttributeSpec; 1] = [browser_attr("float32x2", 4)];
+#[cfg(target_arch = "wasm32")]
+const ATTR_F32X2_5: [BrowserVertexAttributeSpec; 1] = [browser_attr("float32x2", 5)];
+#[cfg(target_arch = "wasm32")]
+const ATTR_F32_3: [BrowserVertexAttributeSpec; 1] = [browser_attr("float32", 3)];
+#[cfg(target_arch = "wasm32")]
+const ATTR_F32_4: [BrowserVertexAttributeSpec; 1] = [browser_attr("float32", 4)];
+#[cfg(target_arch = "wasm32")]
+const ATTR_F32_5: [BrowserVertexAttributeSpec; 1] = [browser_attr("float32", 5)];
+#[cfg(target_arch = "wasm32")]
+const ATTR_F32_6: [BrowserVertexAttributeSpec; 1] = [browser_attr("float32", 6)];
+#[cfg(target_arch = "wasm32")]
+const fn contour_label_browser_attr(index: usize) -> BrowserVertexAttributeSpec {
+    let attribute = crate::gpu_contour::CONTOUR_LABEL_VERTEX_ATTRIBUTES[index];
+    let format = match attribute.format {
+        wgpu::VertexFormat::Float32x2 => "float32x2",
+        wgpu::VertexFormat::Uint32 => "uint32",
+        wgpu::VertexFormat::Float32 => "float32",
+        _ => panic!("unsupported contour label vertex format"),
+    };
+    BrowserVertexAttributeSpec {
+        format,
+        offset: attribute.offset as u32,
+        location: attribute.shader_location,
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+const CONTOUR_LABEL_ATTRIBUTES: [BrowserVertexAttributeSpec;
+    crate::gpu_contour::CONTOUR_LABEL_VERTEX_ATTRIBUTES.len()] = [
+    contour_label_browser_attr(0),
+    contour_label_browser_attr(1),
+    contour_label_browser_attr(2),
+    contour_label_browser_attr(3),
+    contour_label_browser_attr(4),
+];
+
+#[cfg(target_arch = "wasm32")]
+const LINE_BUFFERS: [BrowserVertexBufferSpec; 6] = [
+    BrowserVertexBufferSpec {
+        stride: 8,
+        step_mode: "instance",
+        attributes: &ATTR_F32X2_0,
+    },
+    BrowserVertexBufferSpec {
+        stride: 8,
+        step_mode: "instance",
+        attributes: &ATTR_F32X2_1,
+    },
+    BrowserVertexBufferSpec {
+        stride: 8,
+        step_mode: "instance",
+        attributes: &ATTR_F32X2_2,
+    },
+    BrowserVertexBufferSpec {
+        stride: 8,
+        step_mode: "instance",
+        attributes: &ATTR_F32X2_3,
+    },
+    BrowserVertexBufferSpec {
+        stride: 4,
+        step_mode: "instance",
+        attributes: &ATTR_F32_4,
+    },
+    BrowserVertexBufferSpec {
+        stride: 4,
+        step_mode: "instance",
+        attributes: &ATTR_F32_5,
+    },
+];
+
+#[cfg(target_arch = "wasm32")]
+const SCATTER_BUFFERS: [BrowserVertexBufferSpec; 3] = [
+    BrowserVertexBufferSpec {
+        stride: 8,
+        step_mode: "vertex",
+        attributes: &ATTR_F32X2_0,
+    },
+    BrowserVertexBufferSpec {
+        stride: 8,
+        step_mode: "instance",
+        attributes: &ATTR_F32X2_1,
+    },
+    BrowserVertexBufferSpec {
+        stride: 8,
+        step_mode: "instance",
+        attributes: &ATTR_F32X2_2,
+    },
+];
+
+#[cfg(target_arch = "wasm32")]
+const SCATTER_MAPPED_BUFFERS: [BrowserVertexBufferSpec; 4] = [
+    BrowserVertexBufferSpec {
+        stride: 8,
+        step_mode: "vertex",
+        attributes: &ATTR_F32X2_0,
+    },
+    BrowserVertexBufferSpec {
+        stride: 8,
+        step_mode: "instance",
+        attributes: &ATTR_F32X2_1,
+    },
+    BrowserVertexBufferSpec {
+        stride: 8,
+        step_mode: "instance",
+        attributes: &ATTR_F32X2_2,
+    },
+    BrowserVertexBufferSpec {
+        stride: 8,
+        step_mode: "instance",
+        attributes: &ATTR_F32_3,
+    },
+];
+
+#[cfg(target_arch = "wasm32")]
+const ERRORBAR_BUFFERS: [BrowserVertexBufferSpec; 6] = [
+    BrowserVertexBufferSpec {
+        stride: 8,
+        step_mode: "instance",
+        attributes: &ATTR_F32X2_0,
+    },
+    BrowserVertexBufferSpec {
+        stride: 8,
+        step_mode: "instance",
+        attributes: &ATTR_F32X2_1,
+    },
+    BrowserVertexBufferSpec {
+        stride: 8,
+        step_mode: "instance",
+        attributes: &ATTR_F32X2_2,
+    },
+    BrowserVertexBufferSpec {
+        stride: 8,
+        step_mode: "instance",
+        attributes: &ATTR_F32X2_3,
+    },
+    BrowserVertexBufferSpec {
+        stride: 8,
+        step_mode: "instance",
+        attributes: &ATTR_F32X2_4,
+    },
+    BrowserVertexBufferSpec {
+        stride: 8,
+        step_mode: "instance",
+        attributes: &ATTR_F32X2_5,
+    },
+];
+
+#[cfg(target_arch = "wasm32")]
+const ERRORBAR_MAPPED_BUFFERS: [BrowserVertexBufferSpec; 7] = [
+    ERRORBAR_BUFFERS[0],
+    ERRORBAR_BUFFERS[1],
+    ERRORBAR_BUFFERS[2],
+    ERRORBAR_BUFFERS[3],
+    ERRORBAR_BUFFERS[4],
+    ERRORBAR_BUFFERS[5],
+    BrowserVertexBufferSpec {
+        stride: 8,
+        step_mode: "instance",
+        attributes: &ATTR_F32_6,
+    },
+];
+
+#[cfg(target_arch = "wasm32")]
+const BAR_BUFFERS: [BrowserVertexBufferSpec; 3] = [
+    BrowserVertexBufferSpec {
+        stride: 8,
+        step_mode: "instance",
+        attributes: &ATTR_F32X2_0,
+    },
+    BrowserVertexBufferSpec {
+        stride: 8,
+        step_mode: "instance",
+        attributes: &ATTR_F32X2_1,
+    },
+    BrowserVertexBufferSpec {
+        stride: 8,
+        step_mode: "instance",
+        attributes: &ATTR_F32X2_2,
+    },
+];
+
+#[cfg(target_arch = "wasm32")]
+const CONTOUR_LABEL_BUFFERS: [BrowserVertexBufferSpec; 1] = [BrowserVertexBufferSpec {
+    stride: std::mem::size_of::<crate::gpu_contour::LabelAnchorGpu>() as u32,
+    step_mode: "instance",
+    attributes: &CONTOUR_LABEL_ATTRIBUTES,
+}];
+
+/// Warm every render shader through WebGPU's genuinely asynchronous pipeline
+/// API. The returned JS pipelines are intentionally discarded; the subsequent
+/// wgpu pipeline creation reuses the same device's shader/driver cache while
+/// retaining wgpu as the sole owner of production pipeline objects.
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn prewarm_browser_render_pipelines(
+    device: &wgpu::Device,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+    observer: &mut dyn FnMut(crate::InitEvent),
+) -> Result<(), String> {
+    use js_sys::{Array, Function, Object, Promise, Reflect};
+    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen_futures::JsFuture;
+
+    let gpu_device = device
+        .as_webgpu()
+        .ok_or_else(|| "wgpu device is not backed by a browser GPUDevice".to_owned())?;
+    let device_js = JsValue::from(gpu_device.clone());
+    let js_error = |error: JsValue| {
+        error
+            .as_string()
+            .unwrap_or_else(|| format!("WebGPU pipeline compile failed: {error:?}"))
+    };
+    let method = |name: &str| -> Result<Function, String> {
+        Reflect::get(&device_js, &JsValue::from_str(name))
+            .map_err(js_error)?
+            .dyn_into()
+            .map_err(|_| format!("GPUDevice.{name} is unavailable"))
+    };
+    let create_shader = method("createShaderModule")?;
+    let create_pipeline = method("createRenderPipelineAsync")?;
+    let set = |object: &Object, key: &str, value: &JsValue| -> Result<(), String> {
+        Reflect::set(object, &JsValue::from_str(key), value).map_err(js_error)?;
+        Ok(())
+    };
+    let format = match target_format {
+        wgpu::TextureFormat::Bgra8Unorm => "bgra8unorm",
+        wgpu::TextureFormat::Bgra8UnormSrgb => "bgra8unorm-srgb",
+        wgpu::TextureFormat::Rgba8Unorm => "rgba8unorm",
+        wgpu::TextureFormat::Rgba8UnormSrgb => "rgba8unorm-srgb",
+        other => {
+            return Err(format!(
+                "unsupported browser prewarm target format: {other:?}"
+            ));
+        }
+    };
+
+    let groups: [(&str, &str, &[BrowserRenderPipelineSpec]); 7] = [
+        (
+            "fullscreen",
+            include_str!("fullscreen_textured.wgsl"),
+            &[BrowserRenderPipelineSpec {
+                label: "fullscreen textured",
+                vertex_entry: "vs_main",
+                fragment_entry: "fs_main",
+                topology: "triangle-list",
+                buffers: &[],
+                blend: BrowserBlend::Premultiplied,
+            }],
+        ),
+        (
+            "line",
+            include_str!("line_columnar.wgsl"),
+            &[
+                BrowserRenderPipelineSpec {
+                    label: "precise line",
+                    vertex_entry: "vs_main",
+                    fragment_entry: "fs_main",
+                    topology: "triangle-strip",
+                    buffers: &LINE_BUFFERS,
+                    blend: BrowserBlend::Premultiplied,
+                },
+                BrowserRenderPipelineSpec {
+                    label: "hand-drawn line",
+                    vertex_entry: "vs_sketch",
+                    fragment_entry: "fs_main",
+                    topology: "triangle-strip",
+                    buffers: &LINE_BUFFERS,
+                    blend: BrowserBlend::Premultiplied,
+                },
+                BrowserRenderPipelineSpec {
+                    label: "milkyway ribbon",
+                    vertex_entry: "vs_ribbon",
+                    fragment_entry: "fs_ribbon",
+                    topology: "triangle-strip",
+                    buffers: &LINE_BUFFERS,
+                    blend: BrowserBlend::Maximum,
+                },
+                BrowserRenderPipelineSpec {
+                    label: "milkyway stars",
+                    vertex_entry: "vs_stars",
+                    fragment_entry: "fs_stars",
+                    topology: "triangle-list",
+                    buffers: &[],
+                    blend: BrowserBlend::Additive,
+                },
+                BrowserRenderPipelineSpec {
+                    label: "constellation line",
+                    vertex_entry: "vs_main",
+                    fragment_entry: "fs_constellation_line",
+                    topology: "triangle-strip",
+                    buffers: &LINE_BUFFERS,
+                    blend: BrowserBlend::Premultiplied,
+                },
+            ],
+        ),
+        (
+            "scatter",
+            include_str!("scatter_columnar.wgsl"),
+            &[
+                BrowserRenderPipelineSpec {
+                    label: "precise scatter",
+                    vertex_entry: "vs_main",
+                    fragment_entry: "fs_main",
+                    topology: "triangle-strip",
+                    buffers: &SCATTER_BUFFERS,
+                    blend: BrowserBlend::Premultiplied,
+                },
+                BrowserRenderPipelineSpec {
+                    label: "mapped scatter",
+                    vertex_entry: "vs_mapped",
+                    fragment_entry: "fs_mapped",
+                    topology: "triangle-strip",
+                    buffers: &SCATTER_MAPPED_BUFFERS,
+                    blend: BrowserBlend::Premultiplied,
+                },
+                BrowserRenderPipelineSpec {
+                    label: "picked point ring",
+                    vertex_entry: "vs_pick_ring",
+                    fragment_entry: "fs_pick_ring",
+                    topology: "triangle-strip",
+                    buffers: &SCATTER_BUFFERS,
+                    blend: BrowserBlend::Premultiplied,
+                },
+                BrowserRenderPipelineSpec {
+                    label: "mapped picked point ring",
+                    vertex_entry: "vs_pick_ring_mapped",
+                    fragment_entry: "fs_pick_ring",
+                    topology: "triangle-strip",
+                    buffers: &SCATTER_MAPPED_BUFFERS,
+                    blend: BrowserBlend::Premultiplied,
+                },
+                BrowserRenderPipelineSpec {
+                    label: "hand-drawn scatter",
+                    vertex_entry: "vs_sketch",
+                    fragment_entry: "fs_sketch",
+                    topology: "triangle-strip",
+                    buffers: &SCATTER_BUFFERS,
+                    blend: BrowserBlend::Premultiplied,
+                },
+                BrowserRenderPipelineSpec {
+                    label: "milkyway planets",
+                    vertex_entry: "vs_planet",
+                    fragment_entry: "fs_planet",
+                    topology: "triangle-strip",
+                    buffers: &SCATTER_BUFFERS,
+                    blend: BrowserBlend::Premultiplied,
+                },
+                BrowserRenderPipelineSpec {
+                    label: "constellation stars",
+                    vertex_entry: "vs_constellation_star",
+                    fragment_entry: "fs_constellation_star",
+                    topology: "triangle-strip",
+                    buffers: &SCATTER_BUFFERS,
+                    blend: BrowserBlend::Premultiplied,
+                },
+            ],
+        ),
+        (
+            "errorbar",
+            include_str!("errorbar_columnar.wgsl"),
+            &[
+                BrowserRenderPipelineSpec {
+                    label: "precise errorbar",
+                    vertex_entry: "vs_main",
+                    fragment_entry: "fs_main",
+                    topology: "triangle-list",
+                    buffers: &ERRORBAR_BUFFERS,
+                    blend: BrowserBlend::Premultiplied,
+                },
+                BrowserRenderPipelineSpec {
+                    label: "mapped errorbar",
+                    vertex_entry: "vs_mapped",
+                    fragment_entry: "fs_mapped",
+                    topology: "triangle-list",
+                    buffers: &ERRORBAR_MAPPED_BUFFERS,
+                    blend: BrowserBlend::Premultiplied,
+                },
+                BrowserRenderPipelineSpec {
+                    label: "hand-drawn errorbar",
+                    vertex_entry: "vs_sketch",
+                    fragment_entry: "fs_main",
+                    topology: "triangle-list",
+                    buffers: &ERRORBAR_BUFFERS,
+                    blend: BrowserBlend::Premultiplied,
+                },
+                BrowserRenderPipelineSpec {
+                    label: "milkyway jets",
+                    vertex_entry: "vs_jet",
+                    fragment_entry: "fs_jet",
+                    topology: "triangle-list",
+                    buffers: &ERRORBAR_BUFFERS,
+                    blend: BrowserBlend::Additive,
+                },
+            ],
+        ),
+        (
+            "bar",
+            include_str!("bar_columnar.wgsl"),
+            &[
+                BrowserRenderPipelineSpec {
+                    label: "histogram bars",
+                    vertex_entry: "vs_main",
+                    fragment_entry: "fs_main",
+                    topology: "triangle-list",
+                    buffers: &BAR_BUFFERS,
+                    blend: BrowserBlend::Premultiplied,
+                },
+                BrowserRenderPipelineSpec {
+                    label: "mapped histogram bars",
+                    vertex_entry: "vs_mapped",
+                    fragment_entry: "fs_main",
+                    topology: "triangle-list",
+                    buffers: &BAR_BUFFERS,
+                    blend: BrowserBlend::Premultiplied,
+                },
+                BrowserRenderPipelineSpec {
+                    label: "selected histogram bin",
+                    vertex_entry: "vs_bar_selection",
+                    fragment_entry: "fs_main",
+                    topology: "triangle-list",
+                    buffers: &BAR_BUFFERS,
+                    blend: BrowserBlend::Premultiplied,
+                },
+            ],
+        ),
+        (
+            "field",
+            include_str!("field_columnar.wgsl"),
+            &[
+                BrowserRenderPipelineSpec {
+                    label: "heatmap field",
+                    vertex_entry: "vs_main",
+                    fragment_entry: "fs_main",
+                    topology: "triangle-list",
+                    buffers: &[],
+                    blend: BrowserBlend::Premultiplied,
+                },
+                BrowserRenderPipelineSpec {
+                    label: "contour field",
+                    vertex_entry: "vs_main",
+                    fragment_entry: "fs_contour",
+                    topology: "triangle-list",
+                    buffers: &[],
+                    blend: BrowserBlend::Premultiplied,
+                },
+                BrowserRenderPipelineSpec {
+                    label: "label-gapped contour field",
+                    vertex_entry: "vs_main",
+                    fragment_entry: "fs_contour_labelled",
+                    topology: "triangle-list",
+                    buffers: &[],
+                    blend: BrowserBlend::Premultiplied,
+                },
+                BrowserRenderPipelineSpec {
+                    label: "selected field data",
+                    vertex_entry: "vs_main",
+                    fragment_entry: "fs_data_selection",
+                    topology: "triangle-list",
+                    buffers: &[],
+                    blend: BrowserBlend::Premultiplied,
+                },
+            ],
+        ),
+        (
+            "contour labels",
+            include_str!("../contour_label.wgsl"),
+            &[BrowserRenderPipelineSpec {
+                label: "contour labels",
+                vertex_entry: "vs_main",
+                fragment_entry: "fs_main",
+                topology: "triangle-list",
+                buffers: &CONTOUR_LABEL_BUFFERS,
+                blend: BrowserBlend::Premultiplied,
+            }],
+        ),
+    ];
+
+    for (module_label, source, specs) in groups {
+        let shader_desc = Object::new();
+        set(&shader_desc, "label", &JsValue::from_str(module_label))?;
+        set(&shader_desc, "code", &JsValue::from_str(source))?;
+        let shader = create_shader
+            .call1(&device_js, shader_desc.as_ref())
+            .map_err(js_error)?;
+
+        for spec in specs {
+            crate::init::started(observer, "renderer.prewarm.async", spec.label);
+            let vertex = Object::new();
+            set(&vertex, "module", &shader)?;
+            set(&vertex, "entryPoint", &JsValue::from_str(spec.vertex_entry))?;
+            let buffers = Array::new();
+            for buffer_spec in spec.buffers {
+                let attributes = Array::new();
+                for attribute_spec in buffer_spec.attributes {
+                    let attribute = Object::new();
+                    set(
+                        &attribute,
+                        "format",
+                        &JsValue::from_str(attribute_spec.format),
+                    )?;
+                    set(
+                        &attribute,
+                        "offset",
+                        &JsValue::from_f64(attribute_spec.offset.into()),
+                    )?;
+                    set(
+                        &attribute,
+                        "shaderLocation",
+                        &JsValue::from_f64(attribute_spec.location.into()),
+                    )?;
+                    attributes.push(attribute.as_ref());
+                }
+                let buffer = Object::new();
+                set(
+                    &buffer,
+                    "arrayStride",
+                    &JsValue::from_f64(buffer_spec.stride.into()),
+                )?;
+                set(
+                    &buffer,
+                    "stepMode",
+                    &JsValue::from_str(buffer_spec.step_mode),
+                )?;
+                set(&buffer, "attributes", attributes.as_ref())?;
+                buffers.push(buffer.as_ref());
+            }
+            set(&vertex, "buffers", buffers.as_ref())?;
+
+            let fragment = Object::new();
+            set(&fragment, "module", &shader)?;
+            set(
+                &fragment,
+                "entryPoint",
+                &JsValue::from_str(spec.fragment_entry),
+            )?;
+            let color = Object::new();
+            set(&color, "srcFactor", &JsValue::from_str("one"))?;
+            set(
+                &color,
+                "dstFactor",
+                &JsValue::from_str(match spec.blend {
+                    BrowserBlend::Premultiplied => "one-minus-src-alpha",
+                    BrowserBlend::Additive | BrowserBlend::Maximum => "one",
+                }),
+            )?;
+            set(
+                &color,
+                "operation",
+                &JsValue::from_str(match spec.blend {
+                    BrowserBlend::Maximum => "max",
+                    BrowserBlend::Premultiplied | BrowserBlend::Additive => "add",
+                }),
+            )?;
+            let alpha = color.clone();
+            let blend = Object::new();
+            set(&blend, "color", color.as_ref())?;
+            set(&blend, "alpha", alpha.as_ref())?;
+            let target = Object::new();
+            set(&target, "format", &JsValue::from_str(format))?;
+            set(&target, "blend", blend.as_ref())?;
+            set(&target, "writeMask", &JsValue::from_f64(15.0))?;
+            set(&fragment, "targets", Array::of1(target.as_ref()).as_ref())?;
+
+            let primitive = Object::new();
+            set(&primitive, "topology", &JsValue::from_str(spec.topology))?;
+            let multisample = Object::new();
+            set(
+                &multisample,
+                "count",
+                &JsValue::from_f64(sample_count.into()),
+            )?;
+            set(&multisample, "mask", &JsValue::from_f64(u32::MAX.into()))?;
+            set(&multisample, "alphaToCoverageEnabled", &JsValue::FALSE)?;
+            let desc = Object::new();
+            set(&desc, "label", &JsValue::from_str(spec.label))?;
+            set(&desc, "layout", &JsValue::from_str("auto"))?;
+            set(&desc, "vertex", vertex.as_ref())?;
+            set(&desc, "fragment", fragment.as_ref())?;
+            set(&desc, "primitive", primitive.as_ref())?;
+            set(&desc, "multisample", multisample.as_ref())?;
+            let promise = create_pipeline
+                .call1(&device_js, desc.as_ref())
+                .map_err(js_error)?;
+            JsFuture::from(Promise::from(promise))
+                .await
+                .map_err(js_error)?;
+            crate::init::finished(observer, "renderer.prewarm.async", spec.label);
+            crate::init::yield_init_frame().await;
+        }
+    }
+    Ok(())
 }
 
 /// Build the fullscreen textured-quad pipeline. The shader emits its own
@@ -738,6 +1397,7 @@ pub fn create_unit_centered_quad_vertex_buffer(device: &wgpu::Device) -> wgpu::B
             std::mem::size_of_val(&vertices),
         )
     };
+    // gpu-alloc: caller
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("figgy unit-centered quad"),
         contents: bytes,
@@ -751,8 +1411,8 @@ pub fn create_unit_centered_quad_vertex_buffer(device: &wgpu::Device) -> wgpu::B
 
 /// Shared transform uniform for scatter / line / errorbar shaders.
 ///
-/// 96 bytes (six `vec2<f32>` fields plus one `array<vec4<f32>, 3>` at
-/// offset 48, stride 16, WGSL uniform layout). Pixel sizes (point radius,
+/// 112 bytes (eight `vec2<f32>` fields plus one `array<vec4<f32>, 3>` at
+/// offset 64, stride 16, WGSL uniform layout). Pixel sizes (point radius,
 /// cap half-length) live in [`PrimitiveStyle`]; shaders convert them to NDC
 /// via `pixel_to_ndc`.
 #[repr(C)]
@@ -767,6 +1427,10 @@ pub struct ScatterTransform {
     /// `(2 / chart_w, 2 / chart_h)` — 1 pixel in NDC. Shaders multiply pixel
     /// sizes (line width, point radius, cap half-length) by this.
     pub pixel_to_ndc: [f32; 2], // offset 40
+    /// Affine from an axis-normalized SSoT coordinate into panel `t`.
+    /// Layout margins belong here, never in `data_min` / `data_max`.
+    pub data_to_panel_scale: [f32; 2], // offset 48
+    pub data_to_panel_offset: [f32; 2], // offset 56
     /// Generic per-panel style parameter slots mirrored by WGSL `Transform`,
     /// packed by the renderer's style table (`StyleVariant::pack_params`, flat
     /// `[f32; 12]` split into three vec4 slots). All zeros in precise mode —
@@ -778,12 +1442,12 @@ pub struct ScatterTransform {
     /// 0, 0]`; constellation: `[0] = [star_opacity, line_opacity, 0.0,
     /// 0.0]`, rest 0. Seeds are stored as f32 (exact up to 2^24) and shaders
     /// recover them via `u32(...)`.
-    pub style_params: [[f32; 4]; 3], // offset 48 → 96 byte
+    pub style_params: [[f32; 4]; 3], // offset 64 → 112 byte
 }
 
 // WGSL mirror size guards. Field order and size must remain byte-identical to
 // every shader common block before either CPU structure changes.
-const _: () = assert!(std::mem::size_of::<ScatterTransform>() == 96);
+const _: () = assert!(std::mem::size_of::<ScatterTransform>() == 112);
 
 /// Allocate the transform uniform buffer with `COPY_DST` so subsequent
 /// updates can use `queue.write_buffer` instead of recreating it.
@@ -791,6 +1455,7 @@ pub fn create_scatter_transform_uniform_buffer(
     device: &wgpu::Device,
     transform: &ScatterTransform,
 ) -> wgpu::Buffer {
+    // gpu-alloc: caller
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("figgy scatter transform uniform"),
         contents: bytemuck::bytes_of(transform),
@@ -807,14 +1472,15 @@ pub fn update_scatter_transform(
     queue.write_buffer(buffer, 0, bytemuck::bytes_of(transform));
 }
 
-/// Bind-group layout for the transform uniform. Vertex-only — the data→NDC
-/// mapping happens in the vertex stage.
+/// Bind-group layout for the transform uniform. Render entries use it in the
+/// vertex/fragment stages; exact histogram/field picking uses the same bytes in
+/// compute so hit geometry cannot diverge from the draw transform.
 pub fn create_scatter_transform_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("figgy scatter transform bgl"),
         entries: &[wgpu::BindGroupLayoutEntry {
             binding: 0,
-            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT.union(wgpu::ShaderStages::COMPUTE),
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
                 has_dynamic_offset: false,
@@ -869,14 +1535,28 @@ pub struct PrimitiveStyle {
     /// entries XOR it into their hash seeds so series with identical
     /// sampling don't share star/wobble patterns; precise entries ignore it.
     pub series_salt: u32, // offset 40
-    /// Keeps `dash` 16-byte aligned.
-    pub _pad: u32, // offset 44
+    /// Primitive-specific feature bits. Errorbar uses bit 0 for Y and bit 1
+    /// for X; other primitive shaders ignore this field.
+    pub primitive_flags: u32, // offset 44
     /// Up to 8 sequential `[on, off, ...]` pixel lengths: `dash[0]` first,
     /// then `dash[1]`.
     pub dash: [[f32; 4]; 2], // offset 48 → 80 byte
 }
 
 const _: () = assert!(std::mem::size_of::<PrimitiveStyle>() == 80);
+
+pub(crate) const ERRORBAR_HAS_Y: u32 = 1 << 0;
+pub(crate) const ERRORBAR_HAS_X: u32 = 1 << 1;
+
+/// Renderer policy for histogram width ratios. Invalid host values inherit the
+/// full-bin default instead of poisoning bar geometry with NaN.
+pub(crate) fn sanitize_bar_width_ratio(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        1.0
+    }
+}
 
 impl PrimitiveStyle {
     /// Convert a straight-RGBA `Color` to the premultiplied form expected by
@@ -899,8 +1579,41 @@ impl PrimitiveStyle {
             shape_id: shape_id(&ScatterShape::CircleFilled),
             dash_len: 0,
             series_salt: 0,
-            _pad: 0,
+            primitive_flags: 0,
             dash: [[0.0; 4]; 2],
+        }
+    }
+
+    /// A bar's style — the `Style` reinterpretation documented in
+    /// **SHADER_COMMON.md**'s bar `Style` reinterpretation table, which is the
+    /// SSoT for this mapping. Change
+    /// one without the other and a bar's colour, border, or baseline goes
+    /// silently wrong.
+    ///
+    /// `scale` multiplies the pixel dimensions for high-DPI export, exactly as
+    /// the other `create_style_for_series_scaled` paths do.
+    pub fn from_bar(bar: &crate::data_config::DataBarStyleConfig, scale: f32) -> Self {
+        let premul = |c: Color| {
+            let a = c.a.clamp(0.0, 1.0);
+            [c.r * a, c.g * a, c.b * a, a]
+        };
+        // The baseline crosses as the pool's (hi, lo) f32 pair so a large
+        // absolute base keeps its small deltas — a single f32 would not.
+        let (base_hi, base_lo) = crate::data::split_f64_to_f32_pair(bar.baseline);
+        Self {
+            color_premul: premul(bar.fill_color),
+            line_width_px: bar.border_width.max(0.0) * scale,
+            point_radius_px: 0.0,
+            cap_half_px: bar.gap_px.max(0.0) * scale,
+            cap_width_px: sanitize_bar_width_ratio(bar.width_ratio),
+            shape_id: match bar.orientation {
+                crate::data_config::BarOrientation::Vertical => 0,
+                crate::data_config::BarOrientation::Horizontal => 1,
+            },
+            dash_len: 0,
+            series_salt: 0,
+            primitive_flags: 0,
+            dash: [premul(bar.border_color), [base_hi, base_lo, 0.0, 0.0]],
         }
     }
 
@@ -912,6 +1625,86 @@ impl PrimitiveStyle {
         }
         self.dash_len = pattern.len().min(capacity) as u32;
     }
+}
+
+pub(crate) const DATA_SELECTION_KIND_HISTOGRAM_BIN: u32 = 1;
+pub(crate) const DATA_SELECTION_KIND_MATRIX_CELL: u32 = 2;
+pub(crate) const DATA_SELECTION_KIND_CONTOUR_LEVEL: u32 = 3;
+
+/// Small typed-selection uniform shared by the bar and field overlay entries.
+///
+/// GPU twins: `bar_columnar.wgsl::DataSelection` and
+/// `field_columnar.wgsl::DataSelection`, both 48 bytes. It contains provenance
+/// indices plus visual scalars, never reconstructed data coordinates.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct DataSelectionGpu {
+    pub color_premul: [f32; 4],
+    pub metrics: [f32; 4],
+    pub indices: [u32; 4],
+}
+
+const _: () = assert!(std::mem::size_of::<DataSelectionGpu>() == 48);
+
+impl DataSelectionGpu {
+    pub(crate) fn from_color(color: Color) -> Self {
+        let alpha = color.a.clamp(0.0, 1.0);
+        Self {
+            color_premul: [color.r * alpha, color.g * alpha, color.b * alpha, alpha],
+            metrics: [0.0; 4],
+            indices: [0; 4],
+        }
+    }
+}
+
+pub(crate) fn create_data_selection_bind_group_layout(
+    device: &wgpu::Device,
+) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("figgy typed data selection bgl"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 4,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    })
+}
+
+pub(crate) fn create_data_selection_bind_group(
+    ledger: &std::sync::Arc<crate::gpu_memory::GpuLedger>,
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    selection: &DataSelectionGpu,
+) -> (wgpu::BindGroup, crate::gpu_memory::SharedCharge) {
+    let tally = crate::gpu_memory::ChargeTally::new();
+    let buffer = crate::gpu_memory::charged_buffer_init(
+        &tally,
+        device,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("figgy typed data selection uniform"),
+            contents: bytemuck::bytes_of(selection),
+            usage: wgpu::BufferUsages::UNIFORM,
+        },
+    );
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("figgy typed data selection bg"),
+        layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 4,
+            resource: buffer.as_entire_binding(),
+        }],
+    });
+    let charge = crate::gpu_memory::shared_charge(
+        tally,
+        ledger,
+        crate::gpu_memory::GpuResourceKind::Uniform,
+    );
+    (bind_group, charge)
 }
 
 /// Map a [`ScatterShape`] to the stable `Style.shape_id` uniform value.
@@ -965,6 +1758,7 @@ pub fn create_style_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupL
 }
 
 pub fn create_style_uniform_buffer(device: &wgpu::Device, style: &PrimitiveStyle) -> wgpu::Buffer {
+    // gpu-alloc: uncharged(style uniforms are owned by their bind groups)
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("figgy primitive style uniform"),
         contents: bytemuck::bytes_of(style),
@@ -1042,12 +1836,45 @@ pub type ErrorBarStyleOverrideGpu = ScatterStyleOverrideGpu;
 pub type ErrorBarStyleMapMeta = ScatterStyleMapMeta;
 pub type ErrorBarStyleMap = ScatterStyleMap;
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct BarStyleSlotGpu {
+    pub fill_color_premul: [f32; 4],
+    pub border_color_premul: [f32; 4],
+    /// `(border_width_px, gap_px, width_ratio, mask_bits as f32)`.
+    pub params: [f32; 4],
+}
+
+const _: () = assert!(std::mem::size_of::<BarStyleSlotGpu>() == 48);
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct BarStyleOverrideGpu {
+    pub bin_index: u32,
+    pub _pad: [u32; 3],
+    pub fill_color_premul: [f32; 4],
+    pub border_color_premul: [f32; 4],
+    /// `(border_width_px, gap_px, width_ratio, mask_bits as f32)`.
+    pub params: [f32; 4],
+}
+
+const _: () = assert!(std::mem::size_of::<BarStyleOverrideGpu>() == 64);
+
+pub type BarStyleMapMeta = ScatterStyleMapMeta;
+
+/// GPU-side sparse histogram-bin style map. It deliberately shares the
+/// generic mapped-style bind-group layout (bindings 5..7), while its record
+/// bytes are bar-specific and consumed only by `bar_columnar.wgsl`.
+pub struct BarStyleMap {
+    pub bind_group: wgpu::BindGroup,
+}
+
 pub fn create_per_point_style_map_bind_group_layout(
     device: &wgpu::Device,
 ) -> wgpu::BindGroupLayout {
     let storage = |binding| wgpu::BindGroupLayoutEntry {
         binding,
-        visibility: wgpu::ShaderStages::VERTEX,
+        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::COMPUTE,
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Storage { read_only: true },
             has_dynamic_offset: false,
@@ -1062,7 +1889,7 @@ pub fn create_per_point_style_map_bind_group_layout(
             storage(6),
             wgpu::BindGroupLayoutEntry {
                 binding: 7,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -1105,16 +1932,19 @@ pub fn create_scatter_style_map(
     } else {
         overrides
     };
+    // gpu-alloc: uncharged(style rows are rebuilt per prepare and owned by the bind group)
     let style_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("figgy scatter style rows"),
         contents: bytemuck::cast_slice(style_slots),
         usage: wgpu::BufferUsages::STORAGE,
     });
+    // gpu-alloc: uncharged(style rows are rebuilt per prepare and owned by the bind group)
     let override_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("figgy scatter style override rows"),
         contents: bytemuck::cast_slice(overrides),
         usage: wgpu::BufferUsages::STORAGE,
     });
+    // gpu-alloc: uncharged(style rows are rebuilt per prepare and owned by the bind group)
     let meta_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("figgy scatter style map meta"),
         contents: bytemuck::bytes_of(&meta),
@@ -1152,6 +1982,73 @@ pub fn create_errorbar_style_map(
     meta: ErrorBarStyleMapMeta,
 ) -> ErrorBarStyleMap {
     create_scatter_style_map(device, bgl, style_slots, overrides, meta)
+}
+
+pub fn create_bar_style_map(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    overrides: &[BarStyleOverrideGpu],
+) -> BarStyleMap {
+    let dummy_style = [BarStyleSlotGpu {
+        fill_color_premul: [0.0; 4],
+        border_color_premul: [0.0; 4],
+        params: [0.0; 4],
+    }];
+    let dummy_override = [BarStyleOverrideGpu {
+        bin_index: 0,
+        _pad: [0; 3],
+        fill_color_premul: [0.0; 4],
+        border_color_premul: [0.0; 4],
+        params: [0.0; 4],
+    }];
+    let override_rows = if overrides.is_empty() {
+        &dummy_override[..]
+    } else {
+        overrides
+    };
+    let meta = BarStyleMapMeta {
+        style_count: 0,
+        override_count: overrides.len().min(u32::MAX as usize) as u32,
+        has_index: 0,
+        _pad: 0,
+    };
+    // gpu-alloc: uncharged(style rows are rebuilt per prepare and owned by the bind group)
+    let style_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("figgy histogram style padding row"),
+        contents: bytemuck::cast_slice(&dummy_style),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+    // gpu-alloc: uncharged(style rows are rebuilt per prepare and owned by the bind group)
+    let override_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("figgy histogram style override rows"),
+        contents: bytemuck::cast_slice(override_rows),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+    // gpu-alloc: uncharged(style rows are rebuilt per prepare and owned by the bind group)
+    let meta_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("figgy histogram style map meta"),
+        contents: bytemuck::bytes_of(&meta),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("figgy histogram style map bg"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: style_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: override_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 7,
+                resource: meta_buf.as_entire_binding(),
+            },
+        ],
+    });
+    BarStyleMap { bind_group }
 }
 
 /// Bind group layout for the constellation star pass's per-series data
@@ -1196,10 +2093,9 @@ pub struct AxisLayer<'a> {
 
 /// Build a [`ScatterTransform`] from a `Config`.
 ///
-/// The transform encodes data-space ranges, log-axis flags, and pixel-to-NDC
-/// scale factors. When `data_area` is smaller than `chart_area`, the data
-/// range is **extended** so the same data extents land inside data_area only,
-/// and the rest of the panel viewport is empty space.
+/// The transform copies the Config SSoT axis range into `(hi, lo)` fields.
+/// Data-area placement is a separate affine, so layout margins can never
+/// silently replace the range the GPU draws against.
 pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
     let ca = &config.chart_area.0;
     let chart_w = ca.width.max(1) as f32;
@@ -1250,66 +2146,39 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
     let orient_axis = |min: f64, max: f64, inverted: bool| {
         if inverted { (max, min) } else { (min, max) }
     };
-    let build_transform = |min_x: f64, max_x: f64, min_y: f64, max_y: f64| -> ScatterTransform {
-        let (min_x_hi, min_x_lo) = crate::data::split_f64_to_f32_pair(min_x);
-        let (max_x_hi, max_x_lo) = crate::data::split_f64_to_f32_pair(max_x);
-        let (min_y_hi, min_y_lo) = crate::data::split_f64_to_f32_pair(min_y);
-        let (max_y_hi, max_y_lo) = crate::data::split_f64_to_f32_pair(max_y);
-        ScatterTransform {
-            data_min: [min_x_hi, min_y_hi],
-            data_max: [max_x_hi, max_y_hi],
-            data_min_lo: [min_x_lo, min_y_lo],
-            data_max_lo: [max_x_lo, max_y_lo],
-            scale_log,
-            pixel_to_ndc,
-            style_params,
-        }
-    };
+    let (data_to_panel_scale, data_to_panel_offset) = config.data_area().map_or_else(
+        |_| ([1.0, 1.0], [0.0, 0.0]),
+        |area| {
+            let da = area.0;
+            let rel_x = (da.x as i64 - ca.x as i64) as f64;
+            let rel_y = (da.y as i64 - ca.y as i64) as f64;
+            let chart_w64 = f64::from(chart_w);
+            let chart_h64 = f64::from(chart_h);
+            let sx = rel_x / chart_w64;
+            let ex = (rel_x + f64::from(da.width)) / chart_w64;
+            let sy = (chart_h64 - (rel_y + f64::from(da.height))) / chart_h64;
+            let ey = (chart_h64 - rel_y) / chart_h64;
+            ([(ex - sx) as f32, (ey - sy) as f32], [sx as f32, sy as f32])
+        },
+    );
 
-    // No data_area → use the data range directly (no extension).
-    let da: Rect = match config.data_area() {
-        Ok(d) => d.0,
-        Err(_) => {
-            let (data_min_x, data_max_x) =
-                orient_axis(data_min_x, data_max_x, config.bottom_x.inverted);
-            let (data_min_y, data_max_y) =
-                orient_axis(data_min_y, data_max_y, config.left_y.inverted);
-            return build_transform(data_min_x, data_max_x, data_min_y, data_max_y);
-        }
-    };
-
-    // Relative to chart_area origin (drop the panel's global offset).
-    let rel_x = da.x as i64 - ca.x as i64;
-    let rel_y = da.y as i64 - ca.y as i64;
-    let rel_x = rel_x as f64;
-    let rel_y = rel_y as f64;
-
-    // Fractions of chart_area covered by data_area, in NDC orientation
-    // (X left/right, Y bottom/top — screen is Y-down, NDC is Y-up).
-    let chart_w64 = chart_w as f64;
-    let chart_h64 = chart_h as f64;
-    let sx = rel_x / chart_w64;
-    let ex = (rel_x + da.width as f64) / chart_w64;
-    let sy = (chart_h64 - (rel_y + da.height as f64)) / chart_h64;
-    let ey = (chart_h64 - rel_y) / chart_h64;
-
-    let extend = |min: f64, max: f64, s: f64, e: f64| -> (f64, f64) {
-        let span = e - s;
-        if span.abs() < f64::EPSILON {
-            return (min, max);
-        }
-        let range_ext = (max - min) / span;
-        let min_ext = min - s * range_ext;
-        let max_ext = min_ext + range_ext;
-        (min_ext, max_ext)
-    };
-
-    let (min_x_ext, max_x_ext) = extend(data_min_x, data_max_x, sx, ex);
-    let (min_y_ext, max_y_ext) = extend(data_min_y, data_max_y, sy, ey);
-    let (min_x_ext, max_x_ext) = orient_axis(min_x_ext, max_x_ext, config.bottom_x.inverted);
-    let (min_y_ext, max_y_ext) = orient_axis(min_y_ext, max_y_ext, config.left_y.inverted);
-
-    build_transform(min_x_ext, max_x_ext, min_y_ext, max_y_ext)
+    let (data_min_x, data_max_x) = orient_axis(data_min_x, data_max_x, config.bottom_x.inverted);
+    let (data_min_y, data_max_y) = orient_axis(data_min_y, data_max_y, config.left_y.inverted);
+    let (min_x_hi, min_x_lo) = crate::data::split_f64_to_f32_pair(data_min_x);
+    let (max_x_hi, max_x_lo) = crate::data::split_f64_to_f32_pair(data_max_x);
+    let (min_y_hi, min_y_lo) = crate::data::split_f64_to_f32_pair(data_min_y);
+    let (max_y_hi, max_y_lo) = crate::data::split_f64_to_f32_pair(data_max_y);
+    ScatterTransform {
+        data_min: [min_x_hi, min_y_hi],
+        data_max: [max_x_hi, max_y_hi],
+        data_min_lo: [min_x_lo, min_y_lo],
+        data_max_lo: [max_x_lo, max_y_lo],
+        scale_log,
+        pixel_to_ndc,
+        data_to_panel_scale,
+        data_to_panel_offset,
+        style_params,
+    }
 }
 
 // Columnar pipelines backed by ColumnPool.
@@ -1620,6 +2489,7 @@ pub(crate) fn create_milkyway_set(
     sample_count: u32,
 ) -> MilkywaySet {
     let make_tex = |label: &str, w: u32, h: u32, data: &[u8]| {
+        // gpu-alloc: uncharged(baked inside a lazily-compiled style set)
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
             size: wgpu::Extent3d {
@@ -1873,6 +2743,7 @@ pub(crate) fn create_point_constellation_set(
     sample_count: u32,
 ) -> PointConstellationSet {
     let make_tex = |label: &str, w: u32, h: u32, data: &[u8]| {
+        // gpu-alloc: uncharged(baked inside a lazily-compiled style set)
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
             size: wgpu::Extent3d {
@@ -2796,6 +3667,772 @@ pub(crate) fn create_errorbar_columnar_pipeline_full(
     })
 }
 
+/// Vertices per bar instance: five axis-aligned quads (fill + four border
+/// edges) as a TriangleList. Must match `bar_columnar.wgsl`'s `BAR_SEGMENTS`.
+pub const BAR_VERTICES_PER_INSTANCE: u32 = 30;
+/// Four axis-aligned outline quads for one selected histogram bin.
+/// Must match `vs_bar_selection` in `bar_columnar.wgsl`.
+pub const BAR_SELECTION_VERTICES: u32 = 24;
+
+/// Columnar bar pipeline. Slots (all per-instance): 0 = edge_lo, 1 = edge_hi,
+/// 2 = value. The caller binds the edge column twice, the second time shifted
+/// by one logical value, and picks which pool column is edges vs values from
+/// the bar's orientation.
+pub fn create_bar_columnar_pipeline(
+    device: &wgpu::Device,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    let shaders = ShaderModules::new(device);
+    create_bar_columnar_pipeline_with_sample_count(
+        device,
+        &shaders.bar,
+        transform_bgl,
+        style_bgl,
+        target_format,
+        1,
+    )
+}
+
+pub(crate) fn create_bar_columnar_pipeline_with_sample_count(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    create_bar_columnar_pipeline_with_entry(
+        device,
+        shader,
+        transform_bgl,
+        style_bgl,
+        None,
+        target_format,
+        sample_count,
+        "vs_main",
+        "figgy bar columnar pipeline",
+    )
+}
+
+pub fn create_bar_columnar_mapped_pipeline(
+    device: &wgpu::Device,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    style_map_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    let shaders = ShaderModules::new(device);
+    create_bar_columnar_mapped_pipeline_with_sample_count(
+        device,
+        &shaders.bar,
+        transform_bgl,
+        style_bgl,
+        style_map_bgl,
+        target_format,
+        1,
+    )
+}
+
+pub(crate) fn create_bar_columnar_mapped_pipeline_with_sample_count(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    style_map_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    create_bar_columnar_pipeline_with_entry(
+        device,
+        shader,
+        transform_bgl,
+        style_bgl,
+        Some(style_map_bgl),
+        target_format,
+        sample_count,
+        "vs_mapped",
+        "figgy mapped bar columnar pipeline",
+    )
+}
+
+pub(crate) fn create_bar_selection_pipeline_with_sample_count(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    selection_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    create_bar_columnar_pipeline_with_entry(
+        device,
+        shader,
+        transform_bgl,
+        style_bgl,
+        Some(selection_bgl),
+        target_format,
+        sample_count,
+        "vs_bar_selection",
+        "figgy selected histogram bin pipeline",
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_bar_columnar_pipeline_with_entry(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    transform_bgl: &wgpu::BindGroupLayout,
+    group_one_bgl: &wgpu::BindGroupLayout,
+    group_two_bgl: Option<&wgpu::BindGroupLayout>,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+    vertex_entry: &str,
+    label: &str,
+) -> wgpu::RenderPipeline {
+    let base_layouts = [Some(transform_bgl), Some(group_one_bgl)];
+    let selection_layouts = [Some(transform_bgl), Some(group_one_bgl), group_two_bgl];
+    let bind_group_layouts = if group_two_bgl.is_some() {
+        &selection_layouts[..]
+    } else {
+        &base_layouts[..]
+    };
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("figgy bar columnar layout"),
+        bind_group_layouts,
+        immediate_size: 0,
+    });
+
+    let column_stride = crate::data::COLUMN_VALUE_BYTES as wgpu::BufferAddress;
+    const ATTR0: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x2,
+        offset: 0,
+        shader_location: 0,
+    }];
+    const ATTR1: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x2,
+        offset: 0,
+        shader_location: 1,
+    }];
+    const ATTR2: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x2,
+        offset: 0,
+        shader_location: 2,
+    }];
+    let buffers = [
+        Some(wgpu::VertexBufferLayout {
+            array_stride: column_stride,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &ATTR0,
+        }),
+        Some(wgpu::VertexBufferLayout {
+            array_stride: column_stride,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &ATTR1,
+        }),
+        Some(wgpu::VertexBufferLayout {
+            array_stride: column_stride,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &ATTR2,
+        }),
+    ];
+
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some(vertex_entry),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &buffers,
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            unclipped_depth: false,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            conservative: false,
+        },
+        depth_stencil: None,
+        multisample: multisample_state(sample_count),
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: target_format,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+/// Vertices per field draw. The field is **one** quad for the whole grid, not
+/// one per cell — `field_columnar.wgsl`'s header has the two reasons (25M
+/// instances at matrix scale, and MSAA seams between adjacent quads).
+pub const FIELD_VERTICES: u32 = 6;
+
+/// Where one constituent grid column lives in the pool.
+///
+/// GPU twin: `field_columnar.wgsl::GridColumn`. `base` is an **f32 lane** index,
+/// matching the pool's `array<f32>` view — the same convention the arc scan and
+/// the star pass use.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GridColumnGpu {
+    pub base: u32,
+    pub len: u32,
+}
+
+const _: () = assert!(std::mem::size_of::<GridColumnGpu>() == 8);
+
+/// `FieldParams.flags` — the grid's declared shape, packed. Every one of these
+/// comes from the *declaration*, never from the column lengths.
+pub const FIELD_FLAG_COLUMNS_ARE_Y: u32 = 1;
+pub const FIELD_FLAG_CENTERS: u32 = 2;
+pub const FIELD_FLAG_INTERPOLATED: u32 = 4;
+pub const FIELD_FLAG_BANDS: u32 = 8;
+pub const FIELD_FLAG_LOG_Z: u32 = 16;
+
+/// Contour lookup granularity. Each block fits in one shader `u32` candidate
+/// mask, so the original declaration order can be restored without a second
+/// per-fragment table or an O(level_count) scan.
+pub(crate) const CONTOUR_LEVEL_BLOCK_SIZE: usize = 32;
+pub(crate) const CONTOUR_LEVEL_BLOCK_COUNT: usize = 32;
+pub(crate) const CONTOUR_LEVEL_LOOKUP_CAPACITY: usize =
+    CONTOUR_LEVEL_BLOCK_SIZE * CONTOUR_LEVEL_BLOCK_COUNT;
+const _: () = assert!(crate::data_config::MAX_CONTOUR_LEVELS == CONTOUR_LEVEL_LOOKUP_CAPACITY);
+
+/// Per-32-level lookup bounds uploaded at field group-2 binding 6.
+///
+/// GPU twin: `field_columnar.wgsl::ContourLookupMetadata`, 8 B. Counts are
+/// derived from the actual f32 search keys, after the declared f64 levels have
+/// crossed the renderer upload boundary.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ContourLookupMetadataGpu {
+    pub finite_count: u32,
+    pub negative_infinity_count: u32,
+}
+
+const _: () = assert!(std::mem::size_of::<ContourLookupMetadataGpu>() == 8);
+
+/// Everything the field shader needs beyond `Transform` and `Style`.
+///
+/// GPU twin: `field_columnar.wgsl::FieldParams`, 64 B. `z_min` / `z_max` are the
+/// colourbar's bounds as the pool's `(hi, lo)` f32 pair, **already
+/// log-transformed** when [`FIELD_FLAG_LOG_Z`] is set: the bounds are f64 on the
+/// host, so taking the logarithm here keeps precision the shader would lose.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct FieldParamsGpu {
+    pub x_base: u32,
+    pub y_base: u32,
+    pub x_len: u32,
+    pub y_len: u32,
+    pub cols: u32,
+    pub rows: u32,
+    /// Contour levels, and for a `Bands` fill the bands' boundaries. Binding 2
+    /// preserves declaration order; binding 3 carries a block-sorted lookup copy
+    /// so fragments binary-search reachable levels without changing positional
+    /// `level_index`, duplicate, colour, or source-over semantics.
+    pub level_count: u32,
+    pub stop_count: u32,
+    pub flags: u32,
+    pub opacity: f32,
+    /// Contour stroke width in pixels, already scaled. Read by `fs_contour` and
+    /// ignored by the fill.
+    pub line_width_px: f32,
+    /// Entries in the `level_colors` table.
+    pub level_color_count: u32,
+    pub z_min: [f32; 2],
+    pub z_max: [f32; 2],
+}
+
+const _: () = assert!(std::mem::size_of::<FieldParamsGpu>() == 64);
+
+/// Bind group layout for the field's own data (group 2).
+///
+/// No textures: the colour ramp travels as its control points and the shader
+/// reimplements `model::colormap::sample` over them, so the GPU field and the
+/// CPU-drawn colourbar strip agree by construction instead of by resampling a
+/// quantized LUT. The pool is bound whole in both stages — the vertex stage
+/// needs nothing from it, but a single layout for one shader is simpler than two.
+///
+/// **Compute-visible too.** `contour_anchor.wgsl` reads the very same grid
+/// through the very same `locate`/`grid_value` (they are one SSoT block), so it
+/// binds this group rather than owning a second copy of the table. A label
+/// therefore cannot land on a grid the lines were not drawn from.
+pub fn create_field_data_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    let render = wgpu::ShaderStages::VERTEX_FRAGMENT;
+    let shared = render.union(wgpu::ShaderStages::COMPUTE);
+    let storage = |binding, visibility| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    };
+    // Only what the anchor pass actually reads is compute-visible. A storage
+    // binding counts against `max_storage_buffers_per_shader_stage` (8) in every
+    // stage it is visible to, and the anchor pipeline binds four of its own — so
+    // marking the ramp tables compute-visible for symmetry would put the layout
+    // one over the limit on a conformant device.
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("figgy field data bgl"),
+        entries: &[
+            storage(0, shared), // column pool (coordinate + grid bases in the uniform)
+            storage(1, shared), // per-constituent-column (base, len)
+            storage(2, shared), // contour levels, in data units
+            storage(3, render), // colourmap control points
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: shared,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            storage(5, render), // per-level contour stroke colour, premultiplied
+            storage(6, wgpu::ShaderStages::FRAGMENT), // contour lookup block metadata
+        ],
+    })
+}
+
+/// Bind the field's pool, tables and params into the layout above.
+///
+/// Every slice must be non-empty — a zero-sized storage binding is invalid, so
+/// the caller pads. `FieldParams` carries the real counts.
+/// The field's group-2 table contents, resolved from the grid declaration.
+///
+/// One argument instead of four: they are always built together from the same
+/// declaration and always uploaded together, so passing them separately only
+/// creates an order to get wrong. Each slice must be non-empty — a zero-sized
+/// storage binding is invalid — and the real counts live in `params`.
+pub struct FieldTables<'a> {
+    pub grid: &'a [GridColumnGpu],
+    pub levels: &'a [f32],
+    /// Binding 3: `max(params.stop_count, 1)` ramp/padding entries followed by one
+    /// search record per real contour level. In each 32-record block the finite
+    /// keys form a sorted prefix; x is the level value and y stores the original
+    /// level index as a normal numeric f32. The remaining records are zero.
+    pub stops: &'a [[f32; 4]],
+    /// Per-level contour stroke colour, **premultiplied**. A fill-only series
+    /// pads it to one entry; `FieldParams.level_color_count` carries the truth.
+    pub level_colors: &'a [[f32; 4]],
+    /// Binding 6: one `[finite_count, negative_infinity_count]` record per
+    /// 32-level block. An empty level declaration still has one zero record.
+    pub lookup_metadata: &'a [ContourLookupMetadataGpu],
+    pub params: &'a FieldParamsGpu,
+}
+
+pub(crate) struct FieldLookupTables {
+    pub stops: Vec<[f32; 4]>,
+    pub metadata: Vec<ContourLookupMetadataGpu>,
+}
+
+/// Build binding 3 and binding 6 from the same uploaded-f32 level slice.
+///
+/// Binding 3 keeps one record per declared level so block offsets remain source
+/// positional. Each block compacts only its finite keys into a sorted prefix;
+/// binding 6 is the bound that makes the zero padding unreachable. The source
+/// `levels` remain untouched and continue to define every positional contract.
+pub(crate) fn build_field_lookup_tables(
+    stops: &[[f32; 4]],
+    levels: &[f32],
+) -> crate::Result<FieldLookupTables> {
+    if levels.len() > CONTOUR_LEVEL_LOOKUP_CAPACITY {
+        return Err(crate::FiggyError::StateAllocationFailed {
+            resource: "contour level lookup",
+            reason: format!(
+                "{} levels exceed the {}-entry lookup capacity",
+                levels.len(),
+                CONTOUR_LEVEL_LOOKUP_CAPACITY
+            ),
+        });
+    }
+
+    let mut table = Vec::new();
+    table
+        .try_reserve_exact(stops.len().saturating_add(levels.len()))
+        .map_err(|error| crate::FiggyError::StateAllocationFailed {
+            resource: "field stop and contour lookup table",
+            reason: error.to_string(),
+        })?;
+    table.extend_from_slice(stops);
+
+    let block_count = levels.len().div_ceil(CONTOUR_LEVEL_BLOCK_SIZE);
+    let mut metadata = Vec::new();
+    metadata
+        .try_reserve_exact(block_count.max(1))
+        .map_err(|error| crate::FiggyError::StateAllocationFailed {
+            resource: "contour lookup metadata table",
+            reason: error.to_string(),
+        })?;
+
+    let mut order = [0u32; CONTOUR_LEVEL_BLOCK_SIZE];
+    for block_start in (0..levels.len()).step_by(CONTOUR_LEVEL_BLOCK_SIZE) {
+        let block_len = (levels.len() - block_start).min(CONTOUR_LEVEL_BLOCK_SIZE);
+        let mut finite_count = 0usize;
+        let mut negative_infinity_count = 0u32;
+        for local in 0..block_len {
+            let original = block_start + local;
+            let value = levels[original];
+            if value.is_finite() {
+                order[finite_count] = u32::try_from(original).unwrap_or(u32::MAX);
+                finite_count += 1;
+            } else if value == f32::NEG_INFINITY {
+                negative_infinity_count += 1;
+            }
+        }
+        order[..finite_count].sort_unstable_by(|left, right| {
+            let left_value = levels[*left as usize];
+            let right_value = levels[*right as usize];
+            left_value
+                .partial_cmp(&right_value)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.cmp(right))
+        });
+        for original_index in &order[..finite_count] {
+            table.push([
+                levels[*original_index as usize],
+                *original_index as f32,
+                0.0,
+                0.0,
+            ]);
+        }
+        table.resize(table.len() + block_len - finite_count, [0.0; 4]);
+        metadata.push(ContourLookupMetadataGpu {
+            finite_count: u32::try_from(finite_count).unwrap_or(u32::MAX),
+            negative_infinity_count,
+        });
+    }
+    if metadata.is_empty() {
+        metadata.push(ContourLookupMetadataGpu::default());
+    }
+    Ok(FieldLookupTables {
+        stops: table,
+        metadata,
+    })
+}
+
+/// The six buffers end up owned only by the returned bind group, so no wrapper
+/// can observe their lifetime. They are charged as one lump against the
+/// [`crate::gpu_memory::GpuResourceKind::FieldTable`] row and the returned
+/// [`crate::gpu_memory::SharedCharge`] credits
+/// it back when the last clone of the layer dies — the same construction
+/// `gpu_pick` uses for its bind-group-owned buffers. The grid table scales with
+/// the column count, so leaving it uncharged would put a data-proportional term
+/// outside the budget.
+pub fn create_field_data_bind_group(
+    device: &wgpu::Device,
+    ledger: &std::sync::Arc<crate::gpu_memory::GpuLedger>,
+    layout: &wgpu::BindGroupLayout,
+    pool_buffer: &wgpu::Buffer,
+    tables: FieldTables<'_>,
+) -> (wgpu::BindGroup, crate::gpu_memory::SharedCharge) {
+    use crate::gpu_memory::{ChargeTally, charged_buffer_init};
+    let FieldTables {
+        grid,
+        levels,
+        stops,
+        level_colors,
+        lookup_metadata,
+        params,
+    } = tables;
+    let tally = ChargeTally::new();
+    let grid_buf = charged_buffer_init(
+        &tally,
+        device,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("figgy field grid table"),
+            contents: bytemuck::cast_slice(grid),
+            usage: wgpu::BufferUsages::STORAGE,
+        },
+    );
+    let level_buf = charged_buffer_init(
+        &tally,
+        device,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("figgy field levels"),
+            contents: bytemuck::cast_slice(levels),
+            usage: wgpu::BufferUsages::STORAGE,
+        },
+    );
+    let stop_buf = charged_buffer_init(
+        &tally,
+        device,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("figgy field ramp and contour lookup"),
+            contents: bytemuck::cast_slice(stops),
+            usage: wgpu::BufferUsages::STORAGE,
+        },
+    );
+    let level_color_buf = charged_buffer_init(
+        &tally,
+        device,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("figgy field level colours"),
+            contents: bytemuck::cast_slice(level_colors),
+            usage: wgpu::BufferUsages::STORAGE,
+        },
+    );
+    let lookup_metadata_buf = charged_buffer_init(
+        &tally,
+        device,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("figgy field contour lookup metadata"),
+            contents: bytemuck::cast_slice(lookup_metadata),
+            usage: wgpu::BufferUsages::STORAGE,
+        },
+    );
+    let param_buf = charged_buffer_init(
+        &tally,
+        device,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("figgy field params"),
+            contents: bytemuck::bytes_of(params),
+            usage: wgpu::BufferUsages::UNIFORM,
+        },
+    );
+    let charge = crate::gpu_memory::shared_charge(
+        tally,
+        ledger,
+        crate::gpu_memory::GpuResourceKind::FieldTable,
+    );
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("figgy field data bg"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: pool_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: grid_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: level_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: stop_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: param_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: level_color_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: lookup_metadata_buf.as_entire_binding(),
+            },
+        ],
+    });
+    (bind_group, charge)
+}
+
+/// Columnar field pipeline. No vertex buffers — the quad is emitted from
+/// `vertex_index` and every data read goes through group 2's storage bindings.
+pub fn create_field_columnar_pipeline(
+    device: &wgpu::Device,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    field_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    let shaders = ShaderModules::new(device);
+    create_field_columnar_pipeline_with_sample_count(
+        device,
+        &shaders.field,
+        transform_bgl,
+        style_bgl,
+        field_bgl,
+        target_format,
+        1,
+    )
+}
+
+pub(crate) fn create_field_columnar_pipeline_with_sample_count(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    field_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    create_field_columnar_pipeline_with_entry(
+        device,
+        shader,
+        transform_bgl,
+        style_bgl,
+        field_bgl,
+        target_format,
+        sample_count,
+        "fs_main",
+        "figgy field columnar pipeline",
+    )
+}
+
+pub(crate) fn create_field_selection_pipeline_with_sample_count(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    transform_bgl: &wgpu::BindGroupLayout,
+    selection_bgl: &wgpu::BindGroupLayout,
+    field_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    create_field_columnar_pipeline_with_entry(
+        device,
+        shader,
+        transform_bgl,
+        selection_bgl,
+        field_bgl,
+        target_format,
+        sample_count,
+        "fs_data_selection",
+        "figgy selected field data pipeline",
+    )
+}
+
+/// The field quad against one fragment entry point.
+///
+/// `fs_main` fills; `fs_contour` draws the isolines as the level set of the same
+/// interpolation. Same vertex shader, same layouts, same quad — which is what
+/// makes a filled band and the line over it agree by construction rather than by
+/// two implementations happening to round the same way.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_field_columnar_pipeline_with_entry(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    field_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+    fragment_entry: &str,
+    label: &str,
+) -> wgpu::RenderPipeline {
+    create_field_columnar_pipeline_with_optional_extra_layout(
+        device,
+        shader,
+        transform_bgl,
+        style_bgl,
+        field_bgl,
+        None,
+        target_format,
+        sample_count,
+        fragment_entry,
+        label,
+    )
+}
+
+/// Labelled contours add group 3 containing the exact selected-anchor buffers.
+/// No-label contours keep the original layout and entry point, so merely adding
+/// contour support does not compile or bind label machinery.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_labelled_contour_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    field_bgl: &wgpu::BindGroupLayout,
+    label_gap_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    create_field_columnar_pipeline_with_optional_extra_layout(
+        device,
+        shader,
+        transform_bgl,
+        style_bgl,
+        field_bgl,
+        Some(label_gap_bgl),
+        target_format,
+        sample_count,
+        "fs_contour_labelled",
+        "figgy labelled field contour pipeline",
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_field_columnar_pipeline_with_optional_extra_layout(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    field_bgl: &wgpu::BindGroupLayout,
+    extra_bgl: Option<&wgpu::BindGroupLayout>,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+    fragment_entry: &str,
+    label: &str,
+) -> wgpu::RenderPipeline {
+    let layouts = [
+        Some(transform_bgl),
+        Some(style_bgl),
+        Some(field_bgl),
+        extra_bgl,
+    ];
+    let layout_count = if extra_bgl.is_some() { 4 } else { 3 };
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("figgy field columnar layout"),
+        bind_group_layouts: &layouts[..layout_count],
+        immediate_size: 0,
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            unclipped_depth: false,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            conservative: false,
+        },
+        depth_stencil: None,
+        multisample: multisample_state(sample_count),
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some(fragment_entry),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: target_format,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
 /// Bundle of handles for drawing one columnar line series. `pool_buffer` is
 /// passed in separately so it can be shared across series.
 pub struct ColumnLineLayer<'a> {
@@ -2818,6 +4455,82 @@ pub struct ColumnLineLayer<'a> {
     /// Style textures (group 2) when `pipeline`'s layout includes them —
     /// the milkyway/constellation PSF/LUT bind group. `None` for precise/sketch.
     pub texture_bg: Option<&'a wgpu::BindGroup>,
+}
+
+/// One columnar field (heatmap / band) series.
+///
+/// `field_bg` is group 2: the pool, the grid's `(base, len)` table, the contour
+/// levels, the colourmap stops and `FieldParams`. It is built where the grid
+/// declaration is resolved, so this layer carries no counts of its own — the
+/// shader reads them from the uniform and the draw is always one quad.
+pub struct ColumnFieldLayer<'a> {
+    pub pipeline: &'a wgpu::RenderPipeline,
+    pub transform_bg: &'a wgpu::BindGroup,
+    /// Owned, not borrowed: the field's `Style` holds the *chart's*
+    /// `colorbar.nan_color`, which the per-series style set does not know, so it
+    /// is built where the grid declaration is resolved — the same reason the
+    /// pick ring owns its style bind group.
+    pub style_bg: wgpu::BindGroup,
+    pub field_bg: wgpu::BindGroup,
+    /// Keeps the group-2 buffers' lump charge alive for as long as anything can
+    /// still draw with them.
+    pub charge: crate::gpu_memory::SharedCharge,
+    /// False when the declaration resolved to no cells; the draw is skipped
+    /// rather than issued for an empty grid.
+    pub drawable: bool,
+}
+
+/// One contour series' draw.
+///
+/// The **same quad as the field**, through `fs_contour`: the isolines are the
+/// level set of the same bilinear interpolation, so there is no segment list, no
+/// indirect draw and no per-level draw call. Per-level colour comes from the
+/// group-2 `level_colors` table. Stroke coverage comes from the quadratic root
+/// of the current cell's bilinear polynomial along the fragment's gradient
+/// normal; it is not a claim of globally shortest Euclidean distance.
+pub struct ColumnContourLayer<'a> {
+    pub pipeline: &'a wgpu::RenderPipeline,
+    pub transform_bg: &'a wgpu::BindGroup,
+    /// group(1): the fallback colour for an unplaceable z. Unread by
+    /// `fs_contour`, but the layout is shared with the fill.
+    pub style_bg: wgpu::BindGroup,
+    /// group(2): pool, grid table, levels, stops, params, level colours.
+    pub field_bg: wgpu::BindGroup,
+    /// Keeps the group-2 lump charge alive for as long as this layer can draw.
+    pub charge: std::sync::Arc<crate::gpu_memory::GpuByteCharge>,
+    /// False when the grid has no cell to interpolate across.
+    pub drawable: bool,
+    /// `None` when the series draws no labels.
+    pub label: Option<ColumnContourLabel<'a>>,
+}
+
+/// The inline level labels for one contour series.
+///
+/// One quad per anchor, textured from the CPU-baked atlas. The serial
+/// `anchor_select` pass writes the indirect instance count; the CPU neither
+/// learns it nor needs to. A host override writes the same records and argument
+/// quad, so there is exactly one draw path.
+pub struct ColumnContourLabel<'a> {
+    pub pipeline: &'a wgpu::RenderPipeline,
+    /// Immutable atlas plus this occurrence's explicit or exact-key automatic
+    /// placement resources and their ledger charges.
+    pub(crate) snapshot: crate::gpu_contour::ContourLabelSnapshot,
+}
+
+/// One columnar bar (histogram) series.
+///
+/// `edges` and `values` are already role-resolved by the caller from the bar's
+/// orientation: `edges` is the bin-bound column, `values` the magnitudes. The
+/// shader is told which screen axis the edges run along through
+/// `Style.shape_id`.
+pub struct ColumnBarLayer<'a> {
+    pub pipeline: &'a wgpu::RenderPipeline,
+    pub transform_bg: &'a wgpu::BindGroup,
+    pub style_bg: &'a wgpu::BindGroup,
+    pub style_map_bg: Option<&'a wgpu::BindGroup>,
+    pub pool_buffer: &'a wgpu::Buffer,
+    pub edges: ColumnHandle,
+    pub values: ColumnHandle,
 }
 
 pub struct ColumnScatterLayer<'a> {
@@ -2848,14 +4561,51 @@ pub struct ColumnPickRingLayer<'a> {
     pub instance: u32,
 }
 
+/// One selected histogram bin. The instance index is the only geometric
+/// selection state: the vertex entry reads the exact edge/value pairs from the
+/// same pool columns as the normal bar draw.
+pub struct ColumnBarSelectionLayer<'a> {
+    pub pipeline: &'a wgpu::RenderPipeline,
+    pub transform_bg: &'a wgpu::BindGroup,
+    pub style_bg: wgpu::BindGroup,
+    pub selection_bg: wgpu::BindGroup,
+    pub selection_charge: crate::gpu_memory::SharedCharge,
+    pub pool_buffer: &'a wgpu::Buffer,
+    pub edges: ColumnHandle,
+    pub values: ColumnHandle,
+    pub instance: u32,
+}
+
+/// One selected matrix cell or contour level. `field_bg` is the exact group-2
+/// snapshot used by the underlying field/contour draw, so the overlay cannot
+/// drift onto a different lattice or level set.
+pub struct ColumnFieldSelectionLayer<'a> {
+    pub pipeline: &'a wgpu::RenderPipeline,
+    pub transform_bg: &'a wgpu::BindGroup,
+    pub selection_bg: wgpu::BindGroup,
+    pub selection_charge: crate::gpu_memory::SharedCharge,
+    pub field_bg: wgpu::BindGroup,
+    pub charge: crate::gpu_memory::SharedCharge,
+    pub drawable: bool,
+}
+
 /// One series' data primitives. A panel can hold multiple of these.
 pub struct SeriesLayers<'a> {
+    /// The field covers the whole grid, so it goes under everything else —
+    /// see `issue_series_data` for the full order.
+    pub field: Option<ColumnFieldLayer<'a>>,
+    /// Bars are area primitives, so they are issued before the stroked ones.
+    pub bar: Option<ColumnBarLayer<'a>>,
+    /// Contour lines go over the field they describe and under the markers.
+    pub contour: Option<ColumnContourLayer<'a>>,
     pub errorbar: Option<ColumnErrorBarDraw<'a>>,
     pub line: Option<ColumnLineLayer<'a>>,
     /// Constellation star pass over the same polyline as `line` — drawn
     /// right after it, before `scatter`. `None` everywhere else.
     pub line_extra: Option<ColumnStarLayer<'a>>,
     pub scatter: Option<ColumnScatterLayer<'a>>,
+    pub selected_bars: Vec<ColumnBarSelectionLayer<'a>>,
+    pub selected_fields: Vec<ColumnFieldSelectionLayer<'a>>,
     pub picked: Vec<ColumnPickRingLayer<'a>>,
 }
 
@@ -2949,9 +4699,78 @@ fn draw_line_layer(pass: &mut wgpu::RenderPass<'_>, l: &ColumnLineLayer<'_>) {
     pass.draw(0..l.verts_per_instance, 0..(count - 1));
 }
 
+/// Bars drawable from an `(edges, values)` pair.
+///
+/// `n` bins need `n + 1` edges, so the count is `min(edges - 1, values)` — and
+/// a mismatch is **not** an error: the smallest common extent is drawn and the
+/// caller reports the truncation. This is also why bars cannot
+/// borrow the line draw call, which computes `min(x, y) - 1` and would drop the
+/// last bar of a correctly-shaped histogram.
+pub fn bar_instance_count(edge_values: usize, value_values: usize) -> u32 {
+    edge_values.saturating_sub(1).min(value_values) as u32
+}
+
 /// Issue draw calls for one series' data primitives. The caller must have
 /// already set the viewport (panel) and scissor (data_area).
 fn issue_series_data(pass: &mut wgpu::RenderPass<'_>, series: &SeriesLayers<'_>) {
+    // The field is the backdrop: it paints every cell of the grid, so bars,
+    // contour lines and markers all have to land on top of it.
+    if let Some(f) = series.field.as_ref().filter(|f| f.drawable) {
+        pass.set_pipeline(f.pipeline);
+        pass.set_bind_group(0, f.transform_bg, &[]);
+        pass.set_bind_group(1, &f.style_bg, &[]);
+        pass.set_bind_group(2, &f.field_bg, &[]);
+        pass.draw(0..FIELD_VERTICES, 0..1);
+    }
+
+    // Bars next: they are filled areas, and the stroked primitives below must
+    // land on top of them rather than under.
+    if let Some(b) = series.bar.as_ref() {
+        let count = bar_instance_count(b.edges.len_values, b.values.len_values);
+        if count > 0 {
+            pass.set_pipeline(b.pipeline);
+            pass.set_bind_group(0, b.transform_bg, &[]);
+            pass.set_bind_group(1, b.style_bg, &[]);
+            if let Some(map) = b.style_map_bg {
+                pass.set_bind_group(2, map, &[]);
+            }
+            let edges = b.edges.byte_range();
+            // The same column one logical value along — instance i then sees
+            // `edges[i]` and `edges[i + 1]`.
+            let edges_next = (edges.start + crate::data::COLUMN_VALUE_BYTES as u64)..edges.end;
+            pass.set_vertex_buffer(0, b.pool_buffer.slice(edges.clone()));
+            pass.set_vertex_buffer(1, b.pool_buffer.slice(edges_next));
+            pass.set_vertex_buffer(2, b.pool_buffer.slice(b.values.byte_range()));
+            pass.draw(0..BAR_VERTICES_PER_INSTANCE, 0..count);
+        }
+    }
+
+    // Contour lines: over the field they describe, under everything stroked for
+    // the data itself. One draw of the same quad the fill uses — `fs_contour`
+    // finds every level in one fragment pass, so the cost is the data area's
+    // pixels rather than the grid's cells.
+    if let Some(c) = series.contour.as_ref().filter(|c| c.drawable) {
+        pass.set_pipeline(c.pipeline);
+        pass.set_bind_group(0, c.transform_bg, &[]);
+        pass.set_bind_group(1, &c.style_bg, &[]);
+        pass.set_bind_group(2, &c.field_bg, &[]);
+        if let Some(label) = c.label.as_ref() {
+            pass.set_bind_group(3, label.snapshot.label_gap_bind_group(), &[]);
+        }
+        pass.draw(0..FIELD_VERTICES, 0..1);
+        // Labels over the lines they name, still inside the data pass — so the
+        // `data_area` scissor trims them and the decoration layer (axes, legend,
+        // colourbar) composites on top, which is the order a legend box covering
+        // a label needs.
+        if let Some(l) = c.label.as_ref() {
+            pass.set_pipeline(l.pipeline);
+            pass.set_bind_group(0, c.transform_bg, &[]);
+            pass.set_bind_group(1, l.snapshot.bind_group(), &[]);
+            pass.set_vertex_buffer(0, l.snapshot.anchors().slice(..));
+            pass.draw_indirect(l.snapshot.indirect(), 0);
+        }
+    }
+
     if let Some(eb) = series.errorbar.as_ref() {
         let count = [
             eb.x.len_values,
@@ -3031,6 +4850,33 @@ fn issue_series_data(pass: &mut wgpu::RenderPass<'_>, series: &SeriesLayers<'_>)
 /// `panel_rect` / `data_area` are clamped to it to avoid wgpu validation
 /// errors when a panel partially exits the surface.
 fn issue_series_picked(pass: &mut wgpu::RenderPass<'_>, series: &SeriesLayers<'_>) {
+    for selection in &series.selected_bars {
+        pass.set_pipeline(selection.pipeline);
+        pass.set_bind_group(0, selection.transform_bg, &[]);
+        pass.set_bind_group(1, &selection.style_bg, &[]);
+        pass.set_bind_group(2, &selection.selection_bg, &[]);
+        let edges = selection.edges.byte_range();
+        let edges_next = (edges.start + crate::data::COLUMN_VALUE_BYTES as u64)..edges.end;
+        pass.set_vertex_buffer(0, selection.pool_buffer.slice(edges.clone()));
+        pass.set_vertex_buffer(1, selection.pool_buffer.slice(edges_next));
+        pass.set_vertex_buffer(
+            2,
+            selection.pool_buffer.slice(selection.values.byte_range()),
+        );
+        pass.draw(
+            0..BAR_SELECTION_VERTICES,
+            selection.instance..selection.instance + 1,
+        );
+    }
+
+    for selection in series.selected_fields.iter().filter(|layer| layer.drawable) {
+        pass.set_pipeline(selection.pipeline);
+        pass.set_bind_group(0, selection.transform_bg, &[]);
+        pass.set_bind_group(1, &selection.selection_bg, &[]);
+        pass.set_bind_group(2, &selection.field_bg, &[]);
+        pass.draw(0..FIELD_VERTICES, 0..1);
+    }
+
     for p in &series.picked {
         pass.set_pipeline(p.pipeline);
         pass.set_bind_group(0, p.transform_bg, &[]);
@@ -3117,6 +4963,164 @@ pub fn draw_chart_panel_columnar(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contour_lookup_uses_finite_prefixes_numeric_indices_and_block_metadata() {
+        let mut levels: Vec<f32> = (0..35).map(|index| 100.0 - index as f32).collect();
+        levels[2] = 50.0;
+        levels[3] = 50.0;
+        levels[4] = f32::NAN;
+        levels[30] = f32::NEG_INFINITY;
+        levels[32] = f32::NEG_INFINITY;
+        levels[33] = f32::INFINITY;
+        let ramp = [[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]];
+        let lookup = build_field_lookup_tables(&ramp, &levels).unwrap();
+
+        assert_eq!(&lookup.stops[..ramp.len()], &ramp);
+        assert_eq!(lookup.stops.len(), ramp.len() + levels.len());
+        assert_eq!(
+            lookup.metadata,
+            vec![
+                ContourLookupMetadataGpu {
+                    finite_count: 30,
+                    negative_infinity_count: 1,
+                },
+                ContourLookupMetadataGpu {
+                    finite_count: 1,
+                    negative_infinity_count: 1,
+                },
+            ]
+        );
+
+        let search = &lookup.stops[ramp.len()..];
+        let first_finite = &search[..lookup.metadata[0].finite_count as usize];
+        assert!(first_finite.windows(2).all(|pair| pair[0][0] <= pair[1][0]));
+        assert!(search[30..32].iter().all(|record| *record == [0.0; 4]));
+        assert_eq!(search[32][0], levels[34]);
+        assert_eq!(search[32][1], 34.0);
+        assert!(search[33..35].iter().all(|record| *record == [0.0; 4]));
+
+        let duplicate_indices: Vec<u32> = first_finite
+            .iter()
+            .filter(|record| record[0] == 50.0)
+            .map(|record| record[1] as u32)
+            .collect();
+        assert_eq!(duplicate_indices, vec![2, 3]);
+        for record in first_finite {
+            let original = record[1] as usize;
+            assert_eq!(record[1], original as f32);
+            assert_eq!(record[0], levels[original]);
+        }
+    }
+
+    #[test]
+    fn contour_lookup_pads_empty_metadata_and_preserves_31_32_1023_indices() {
+        let empty = build_field_lookup_tables(&[[0.0; 4]], &[]).unwrap();
+        assert_eq!(empty.stops, vec![[0.0; 4]]);
+        assert_eq!(empty.metadata, vec![ContourLookupMetadataGpu::default()]);
+
+        let allowed = vec![0.0; CONTOUR_LEVEL_LOOKUP_CAPACITY];
+        let lookup = build_field_lookup_tables(&[[0.0; 4]], &allowed).unwrap();
+        assert_eq!(lookup.stops.len(), 1 + CONTOUR_LEVEL_LOOKUP_CAPACITY);
+        assert_eq!(lookup.metadata.len(), CONTOUR_LEVEL_BLOCK_COUNT);
+        let search = &lookup.stops[1..];
+        for index in [31usize, 32, 1023] {
+            let block = index / CONTOUR_LEVEL_BLOCK_SIZE;
+            let start = block * CONTOUR_LEVEL_BLOCK_SIZE;
+            let end = start + lookup.metadata[block].finite_count as usize;
+            let record = search[start..end]
+                .iter()
+                .find(|record| record[1] == index as f32)
+                .unwrap_or_else(|| panic!("numeric original index {index} was not preserved"));
+            assert_eq!(record[1].to_bits(), (index as f32).to_bits());
+        }
+
+        let rejected = vec![0.0; CONTOUR_LEVEL_LOOKUP_CAPACITY + 1];
+        assert!(matches!(
+            build_field_lookup_tables(&[[0.0; 4]], &rejected),
+            Err(crate::FiggyError::StateAllocationFailed {
+                resource: "contour level lookup",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn contour_lookup_dimensions_match_the_model_and_shader() {
+        assert_eq!(CONTOUR_LEVEL_BLOCK_SIZE, 32);
+        assert_eq!(CONTOUR_LEVEL_BLOCK_COUNT, 32);
+        assert_eq!(
+            CONTOUR_LEVEL_LOOKUP_CAPACITY,
+            crate::data_config::MAX_CONTOUR_LEVELS
+        );
+
+        let shader = include_str!("field_columnar.wgsl");
+        assert!(shader.contains("const CONTOUR_LEVEL_BLOCK_SIZE: u32 = 32u;"));
+        assert!(shader.contains("let original = firstTrailingBit(candidates);"));
+        assert!(shader.contains("let original = u32(record.y) - start;"));
+        assert!(shader.contains("contour_lookup_metadata[block].finite_count"));
+        assert!(shader.contains("metadata.negative_infinity_count"));
+        assert!(shader.contains("let search_lo = s.z_lo - margin;"));
+        assert!(shader.contains("let search_hi = s.z_hi + margin;"));
+        assert!(shader.contains("contour_lower_bound(start, count, search_lo)"));
+        assert!(shader.contains("contour_upper_bound(start, count, search_hi)"));
+        assert!(
+            !shader.contains("for (var i = 0u; i < field.level_count"),
+            "contour fragments must not return to a full level scan"
+        );
+    }
+
+    #[test]
+    fn field_table_exact_charge_includes_zero_level_lookup_metadata_padding() {
+        let Some((device, _queue)) = shared_device() else {
+            return;
+        };
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
+        let layout = create_field_data_bind_group_layout(&device);
+        let pool = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("field table charge test pool"),
+            size: 4,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        let lookup = build_field_lookup_tables(&[[0.0; 4]], &[]).unwrap();
+        let params = <FieldParamsGpu as bytemuck::Zeroable>::zeroed();
+        let (_bind_group, charge) = create_field_data_bind_group(
+            &device,
+            &ledger,
+            &layout,
+            &pool,
+            FieldTables {
+                grid: &[GridColumnGpu { base: 0, len: 0 }],
+                levels: &[0.0],
+                stops: &lookup.stops,
+                level_colors: &[[0.0; 4]],
+                lookup_metadata: &lookup.metadata,
+                params: &params,
+            },
+        );
+
+        let expected = std::mem::size_of::<GridColumnGpu>()
+            + std::mem::size_of::<f32>()
+            + std::mem::size_of::<[f32; 4]>()
+            + std::mem::size_of::<[f32; 4]>()
+            + std::mem::size_of::<ContourLookupMetadataGpu>()
+            + std::mem::size_of::<FieldParamsGpu>();
+        assert_eq!(expected, 116);
+        assert_eq!(
+            ledger
+                .snapshot()
+                .live_bytes_of(crate::gpu_memory::GpuResourceKind::FieldTable),
+            expected as u64
+        );
+        drop(charge);
+        assert_eq!(
+            ledger
+                .snapshot()
+                .live_bytes_of(crate::gpu_memory::GpuResourceKind::FieldTable),
+            0
+        );
+    }
 
     /// Instance creation must not panic, even on driver-less environments
     /// (it does not talk to any GPU yet).
@@ -3242,6 +5246,63 @@ mod tests {
         }
     }
 
+    #[test]
+    fn gpu_transform_uses_auto_fit_ssot_bounds_bit_for_bit() {
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 17,
+            y: 29,
+            width: 900,
+            height: 600,
+        });
+        let x_extent = crate::chart::FitExtent {
+            min: 1_700_000_000_000.125,
+            max: 1_700_000_000_009.875,
+            min_positive: Some(1_700_000_000_000.125),
+        };
+        let y_extent = crate::chart::FitExtent {
+            min: -3.25,
+            max: 8.75,
+            min_positive: Some(0.125),
+        };
+        crate::chart::apply_auto_fit_all(&mut config, &x_extent, &y_extent, 0.05);
+
+        let transform = scatter_transform_from_config(&config);
+        let x_min = crate::data::split_f64_to_f32_pair(config.bottom_x.min);
+        let x_max = crate::data::split_f64_to_f32_pair(config.bottom_x.max);
+        let y_min = crate::data::split_f64_to_f32_pair(config.left_y.min);
+        let y_max = crate::data::split_f64_to_f32_pair(config.left_y.max);
+        assert_eq!(
+            [transform.data_min[0], transform.data_min_lo[0]],
+            [x_min.0, x_min.1]
+        );
+        assert_eq!(
+            [transform.data_max[0], transform.data_max_lo[0]],
+            [x_max.0, x_max.1]
+        );
+        assert_eq!(
+            [transform.data_min[1], transform.data_min_lo[1]],
+            [y_min.0, y_min.1]
+        );
+        assert_eq!(
+            [transform.data_max[1], transform.data_max_lo[1]],
+            [y_max.0, y_max.1]
+        );
+
+        // Layout changes only the panel affine. They can no longer manufacture
+        // a second, margin-extended axis range behind Config's back.
+        let mut different_layout = config.clone();
+        different_layout.bottom_x.out_margin += 40.0;
+        different_layout.left_y.out_margin += 30.0;
+        let moved = scatter_transform_from_config(&different_layout);
+        assert_eq!(moved.data_min, transform.data_min);
+        assert_eq!(moved.data_max, transform.data_max);
+        assert_eq!(moved.data_min_lo, transform.data_min_lo);
+        assert_eq!(moved.data_max_lo, transform.data_max_lo);
+        assert_ne!(moved.data_to_panel_offset, transform.data_to_panel_offset);
+        assert_ne!(moved.data_to_panel_scale, transform.data_to_panel_scale);
+    }
+
     /// Smoke-test the texture-upload API path (no readback). Validation
     /// would surface here if the call shape were wrong.
     #[test]
@@ -3357,8 +5418,15 @@ mod tests {
             wgpu::TextureFormat::Bgra8Unorm,
             1,
         );
+        let bar_mapped = create_bar_columnar_mapped_pipeline(
+            &device,
+            &transform_bgl,
+            &style_bgl,
+            &style_map_bgl,
+            wgpu::TextureFormat::Bgra8Unorm,
+        );
 
-        let _ = (mapped, picked, picked_mapped, errorbar_mapped);
+        let _ = (mapped, picked, picked_mapped, errorbar_mapped, bar_mapped);
         let _ = device.poll(wgpu::PollType::Wait {
             submission_index: None,
             timeout: Some(std::time::Duration::from_secs(30)),

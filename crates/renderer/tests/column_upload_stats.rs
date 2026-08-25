@@ -28,9 +28,14 @@ fn scalar_upload(
     queue: &wgpu::Queue,
     source: &dyn ColumnSource,
 ) -> (Vec<(f32, f32)>, Option<f64>) {
-    let mut pool = ColumnPool::new(device, ALIGN).unwrap();
+    let mut pool =
+        ColumnPool::new(renderer::GpuAllocCtx::unbudgeted(device, queue), ALIGN).unwrap();
     let handle = pool
-        .add_column("matrix".into(), source, device, queue)
+        .add_column(
+            "matrix".into(),
+            source,
+            renderer::GpuAllocCtx::unbudgeted(device, queue),
+        )
         .unwrap();
     let min_positive = pool.slot("matrix").unwrap().min_positive;
     (read_pairs(device, queue, &pool, handle), min_positive)
@@ -41,9 +46,14 @@ fn hilo_upload(
     queue: &wgpu::Queue,
     source: &dyn HiLoColumnSource,
 ) -> (Vec<(f32, f32)>, Option<f64>) {
-    let mut pool = ColumnPool::new(device, ALIGN).unwrap();
+    let mut pool =
+        ColumnPool::new(renderer::GpuAllocCtx::unbudgeted(device, queue), ALIGN).unwrap();
     let handle = pool
-        .add_hilo_column("matrix".into(), source, device, queue)
+        .add_hilo_column(
+            "matrix".into(),
+            source,
+            renderer::GpuAllocCtx::unbudgeted(device, queue),
+        )
         .unwrap();
     let min_positive = pool.slot("matrix").unwrap().min_positive;
     (read_pairs(device, queue, &pool, handle), min_positive)
@@ -341,22 +351,35 @@ fn built_in_scalar_stats_use_actual_uploaded_f32_values() {
         min: f64::INFINITY,
         max: f64::NEG_INFINITY,
     };
-    let mut empty_pool = ColumnPool::new(&device, ALIGN).unwrap();
+    let mut empty_pool =
+        ColumnPool::new(renderer::GpuAllocCtx::unbudgeted(&device, &queue), ALIGN).unwrap();
     assert_eq!(
         empty_pool
-            .add_column("empty-option".into(), &empty, &device, &queue)
+            .add_column(
+                "empty-option".into(),
+                &empty,
+                renderer::GpuAllocCtx::unbudgeted(&device, &queue)
+            )
             .unwrap_err(),
         AllocError::EmptySource
     );
     assert_eq!(
         empty_pool
-            .add_column("empty-f64".into(), &empty_f64, &device, &queue)
+            .add_column(
+                "empty-f64".into(),
+                &empty_f64,
+                renderer::GpuAllocCtx::unbudgeted(&device, &queue)
+            )
             .unwrap_err(),
         AllocError::EmptySource
     );
     assert_eq!(
         empty_pool
-            .add_hilo_column("empty-hilo".into(), &empty_f64, &device, &queue)
+            .add_hilo_column(
+                "empty-hilo".into(),
+                &empty_f64,
+                renderer::GpuAllocCtx::unbudgeted(&device, &queue)
+            )
             .unwrap_err(),
         AllocError::EmptySource
     );
@@ -539,13 +562,21 @@ fn pool_calls_fused_writer_once_and_panics_roll_back() {
         eprintln!("no GPU adapter; skipping pool contract assertions");
         return;
     };
-    let mut pool = ColumnPool::new(&device, 3 * ALIGN).unwrap();
+    let mut pool = ColumnPool::new(
+        renderer::GpuAllocCtx::unbudgeted(&device, &queue),
+        3 * ALIGN,
+    )
+    .unwrap();
     let add_source = CountingScalar {
         values: &[1.0, 2.0],
         calls: Cell::new(0),
     };
     let handle = pool
-        .add_column("x".into(), &add_source, &device, &queue)
+        .add_column(
+            "x".into(),
+            &add_source,
+            renderer::GpuAllocCtx::unbudgeted(&device, &queue),
+        )
         .unwrap();
     assert_eq!(add_source.calls.get(), 1);
     assert_eq!(pool.slot("x").unwrap().min_positive, Some(1.0));
@@ -558,7 +589,11 @@ fn pool_calls_fused_writer_once_and_panics_roll_back() {
     };
     {
         let pending = pool
-            .begin_upsert_hilo_column("x".into(), &replacement, &device, &queue)
+            .begin_upsert_hilo_column(
+                "x".into(),
+                &replacement,
+                renderer::GpuAllocCtx::unbudgeted(&device, &queue),
+            )
             .unwrap();
         assert_eq!(replacement.calls.get(), 1);
         assert_eq!(pending.pool().slot("x").unwrap().min_positive, Some(0.5));
@@ -571,7 +606,11 @@ fn pool_calls_fused_writer_once_and_panics_roll_back() {
         calls: Cell::new(0),
     };
     let add_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = pool.add_column("panic".into(), &panic_add, &device, &queue);
+        let _ = pool.add_column(
+            "panic".into(),
+            &panic_add,
+            renderer::GpuAllocCtx::unbudgeted(&device, &queue),
+        );
     }));
     assert!(add_result.is_err());
     assert_eq!(panic_add.calls.get(), 1);
@@ -582,7 +621,11 @@ fn pool_calls_fused_writer_once_and_panics_roll_back() {
         calls: Cell::new(0),
     };
     let upsert_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = pool.begin_upsert_column("x".into(), &panic_upsert, &device, &queue);
+        let _ = pool.begin_upsert_column(
+            "x".into(),
+            &panic_upsert,
+            renderer::GpuAllocCtx::unbudgeted(&device, &queue),
+        );
     }));
     assert!(upsert_result.is_err());
     assert_eq!(panic_upsert.calls.get(), 1);

@@ -280,8 +280,12 @@ function makeKernel(name, options = {}) {
     freeCalls: 0,
     exportImpl: options.exportImpl ?? (() => Promise.resolve(new Uint8Array([1]))),
     prewarmImpl: options.prewarmImpl ?? (() => Promise.resolve()),
+    prewarmAllWithProgressImpl:
+      options.prewarmAllWithProgressImpl ?? (() => Promise.resolve()),
+    prewarmAllImpl: options.prewarmAllImpl ?? (() => Promise.resolve()),
     hitValue: undefined,
     pickImpl: () => Promise.resolve(undefined),
+    pickDataImpl: () => Promise.resolve(undefined),
     free() {
       this.freeCalls += 1;
       calls.push(["free"]);
@@ -328,6 +332,10 @@ function makeKernel(name, options = {}) {
       calls.push(["pick", x, y, maxDistancePx]);
       return this.pickImpl(x, y, maxDistancePx);
     },
+    pick_data(x, y, maxDistancePx) {
+      calls.push(["pick_data", x, y, maxDistancePx]);
+      return this.pickDataImpl(x, y, maxDistancePx);
+    },
     auto_fit_all(padding) {
       calls.push(["auto_fit_all", padding]);
       return options.autoFitImpl?.(padding) ?? Promise.resolve();
@@ -339,6 +347,14 @@ function makeKernel(name, options = {}) {
     prewarm_gpu_picking() {
       calls.push(["prewarm_gpu_picking"]);
       return this.prewarmImpl();
+    },
+    prewarm_all_with_progress(onEvent) {
+      calls.push(["prewarm_all_with_progress", onEvent]);
+      return this.prewarmAllWithProgressImpl(onEvent);
+    },
+    prewarm_all() {
+      calls.push(["prewarm_all"]);
+      return this.prewarmAllImpl();
     },
   };
   return kernel;
@@ -692,6 +708,7 @@ test("all async facade borrows share the operation gate", async () => {
     },
   });
   kernel.pickImpl = () => pick.promise;
+  kernel.pickDataImpl = () => pick.promise;
   const { Element, state } = await loadFacade({
     createImpl: () => Promise.resolve(kernel),
   });
@@ -704,6 +721,7 @@ test("all async facade borrows share the operation gate", async () => {
     [() => element.first_frame_ready(), firstFrame],
     [() => element.ensure_extent_engine(), extent],
     [() => element.pick_point(1, 2, 3), pick],
+    [() => element.pick_data(1, 2, 3), pick],
     [() => element.prewarm_gpu_picking(), explicitPrewarm],
   ];
   for (const [start, operation] of cases) {
@@ -798,6 +816,137 @@ test("auto_fit_all holds busy so rAF does not call frame", async () => {
   assert.deepEqual(kernel.calls.filter(([name]) => name === "auto_fit_all"), [
     ["auto_fit_all", 0.05],
   ]);
+});
+
+test("new synchronous facade APIs forward values and preserve raw failures", async () => {
+  const kernel = makeKernel("sync-forwarding");
+  const fitResult = { fitted: true };
+  const contourError = new Error("raw contour failure");
+  kernel.auto_fit_colorbar = (padding) => {
+    kernel.calls.push(["auto_fit_colorbar", padding]);
+    return fitResult;
+  };
+  kernel.set_contour_nice_levels = (seriesId, targetCount, useColormapColors) => {
+    kernel.calls.push([
+      "set_contour_nice_levels",
+      seriesId,
+      targetCount,
+      useColormapColors,
+    ]);
+    if (seriesId === "broken") throw contourError;
+    return 7;
+  };
+  kernel.series_draw_info = (seriesId) => {
+    kernel.calls.push(["series_draw_info", seriesId]);
+    return JSON.stringify({
+      drawn_count: 12,
+      cols: 4,
+      rows: 3,
+      truncated: false,
+    });
+  };
+  kernel.set_picked_data = (json) => {
+    kernel.calls.push(["set_picked_data", json]);
+    return "picked-data-updated";
+  };
+  kernel.set_colorbar_axis = (json) => {
+    kernel.calls.push(["set_colorbar_axis", json]);
+    return "colorbar-axis-updated";
+  };
+  kernel.set_colorbar_title = (title) => {
+    kernel.calls.push(["set_colorbar_title", title]);
+    return "colorbar-title-updated";
+  };
+  const { Element } = await loadFacade({
+    createImpl: () => Promise.resolve(kernel),
+  });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+
+  assert.equal(element.auto_fit_colorbar(0.125), fitResult);
+  assert.equal(element.set_contour_nice_levels("contour", 7, true), 7);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(element.series_draw_info("contour"))),
+    { drawn_count: 12, cols: 4, rows: 3, truncated: false },
+  );
+  assert.equal(element.set_picked_data("null"), "picked-data-updated");
+  assert.equal(element.set_colorbar_axis('{"tick":"Both"}'), "colorbar-axis-updated");
+  assert.equal(element.set_colorbar_title("intensity"), "colorbar-title-updated");
+  assert.deepEqual(kernel.calls.filter(([name]) => (
+    name === "auto_fit_colorbar"
+      || name === "set_contour_nice_levels"
+      || name === "series_draw_info"
+      || name === "set_picked_data"
+      || name === "set_colorbar_axis"
+      || name === "set_colorbar_title"
+  )), [
+    ["auto_fit_colorbar", 0.125],
+    ["set_contour_nice_levels", "contour", 7, true],
+    ["series_draw_info", "contour"],
+    ["set_picked_data", "null"],
+    ["set_colorbar_axis", '{"tick":"Both"}'],
+    ["set_colorbar_title", "intensity"],
+  ]);
+  assert.throws(
+    () => element.set_contour_nice_levels("broken", 5, false),
+    (error) => error === contourError,
+  );
+  kernel.series_draw_info = () => "{not json";
+  assert.throws(
+    () => element.series_draw_info("contour"),
+    (error) => error?.name === "SyntaxError",
+  );
+});
+
+test("full prewarm APIs share busy lifecycle and recover after resolve and reject", async () => {
+  const progressPrewarm = deferred();
+  const rejectedPrewarm = deferred();
+  let plainCalls = 0;
+  const kernel = makeKernel("full-prewarm", {
+    prewarmAllWithProgressImpl: () => progressPrewarm.promise,
+    prewarmAllImpl: () => {
+      plainCalls += 1;
+      return plainCalls === 1 ? rejectedPrewarm.promise : Promise.resolve();
+    },
+  });
+  const { Element, state } = await loadFacade({
+    createImpl: () => Promise.resolve(kernel),
+  });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+
+  const onProgress = () => {};
+  const frameCount = kernel.calls.filter(([name]) => name === "frame").length;
+  const withProgress = element.prewarm_all_with_progress(onProgress);
+  assert.equal(element.busy, true);
+  assert.equal(
+    kernel.calls.find(([name]) => name === "prewarm_all_with_progress")[1],
+    onProgress,
+  );
+  for (const callback of [...state.rafs.values()]) callback(0);
+  assert.equal(kernel.calls.filter(([name]) => name === "frame").length, frameCount);
+  await assert.rejects(element.prewarm_all(), /busy/);
+  assert.equal(kernel.calls.filter(([name]) => name === "prewarm_all").length, 0);
+  progressPrewarm.resolve();
+  await withProgress;
+  assert.equal(element.busy, false);
+
+  const rawError = new Error("raw full prewarm failed");
+  const rejected = element.prewarm_all();
+  assert.equal(element.busy, true);
+  rejectedPrewarm.reject(rawError);
+  await assert.rejects(rejected, (error) => error === rawError);
+  assert.equal(element.busy, false);
+
+  await element.prewarm_all();
+  assert.equal(element.busy, false);
+  assert.equal(plainCalls, 2);
+  assert.equal(kernel.calls.filter(([name]) => name === "prewarm_all").length, 2);
+  element.frame();
 });
 
 test("busy pointer release is deferred once and settled before resize", async () => {
@@ -1118,6 +1267,28 @@ test("facade normalizes hit and pick results without changing rejection reasons"
   }));
   assert.equal((await element.pick_point(1, 2, 3)).source_id, "source-a");
 
+  kernel.pickDataImpl = () => Promise.resolve(undefined);
+  assert.equal(await element.pick_data(1, 2, 3), null);
+  kernel.pickDataImpl = () => Promise.resolve(JSON.stringify({
+    kind: "matrix_cell",
+    source_id: "source-grid",
+    series_id: "heatmap-a",
+    x_index: 2,
+    y_index: 3,
+    distance_px: 0,
+  }));
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(await element.pick_data(1, 2, 3))),
+    {
+      kind: "matrix_cell",
+      source_id: "source-grid",
+      series_id: "heatmap-a",
+      x_index: 2,
+      y_index: 3,
+      distance_px: 0,
+    },
+  );
+
   kernel.pickImpl = () => Promise.resolve("{not json");
   await assert.rejects(
     element.pick_point(1, 2, 3),
@@ -1127,4 +1298,6 @@ test("facade normalizes hit and pick results without changing rejection reasons"
   const rawError = new Error("raw pick failed");
   kernel.pickImpl = () => Promise.reject(rawError);
   await assert.rejects(element.pick_point(1, 2, 3), (error) => error === rawError);
+  kernel.pickDataImpl = () => Promise.reject(rawError);
+  await assert.rejects(element.pick_data(1, 2, 3), (error) => error === rawError);
 });
