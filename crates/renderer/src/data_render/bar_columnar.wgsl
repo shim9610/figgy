@@ -167,15 +167,23 @@ fn bar_outer_ndc_values(
         hi.x = hi.x - d;
     }
 
-    // Gap: shrink along the edge axis only, half on each side, and never past
-    // the point where the bar would invert.
+    // Gap: shrink along the edge axis only, half on each side. Preserve at
+    // least one pixel when the ratio-adjusted span is wider than a pixel, and
+    // preserve the full span when it is already subpixel. Otherwise a 1 px
+    // gap collapses every bin in a dense histogram to zero-width geometry.
     let half_gap_px = max(gap_px, 0.0) * 0.5;
     if (horizontal) {
-        let d = min(half_gap_px * transform.pixel_to_ndc.y, (hi.y - lo.y) * 0.5);
+        let span = hi.y - lo.y;
+        let min_visible_span = min(span, transform.pixel_to_ndc.y);
+        let max_inset = max((span - min_visible_span) * 0.5, 0.0);
+        let d = min(half_gap_px * transform.pixel_to_ndc.y, max_inset);
         lo.y = lo.y + d;
         hi.y = hi.y - d;
     } else {
-        let d = min(half_gap_px * transform.pixel_to_ndc.x, (hi.x - lo.x) * 0.5);
+        let span = hi.x - lo.x;
+        let min_visible_span = min(span, transform.pixel_to_ndc.x);
+        let max_inset = max((span - min_visible_span) * 0.5, 0.0);
+        let d = min(half_gap_px * transform.pixel_to_ndc.x, max_inset);
         lo.x = lo.x + d;
         hi.x = hi.x - d;
     }
@@ -310,7 +318,7 @@ fn base_bar_style() -> ResolvedBarStyle {
     );
 }
 
-fn bar_vertex(in: VsIn, resolved: ResolvedBarStyle) -> VsOut {
+fn bar_vertex(in: VsIn, resolved: ResolvedBarStyle, envelope_enabled: bool) -> VsOut {
     let seg = in.vi / 6u;
     let horizontal = style.shape_id == BAR_ORIENT_HORIZONTAL;
 
@@ -321,8 +329,16 @@ fn bar_vertex(in: VsIn, resolved: ResolvedBarStyle) -> VsOut {
         seg == 0u,
     );
 
+    let raw = bar_outer_ndc(in, horizontal, 0.0, 1.0);
+    let span_px = select((raw.z - raw.x) / transform.pixel_to_ndc.x,
+        (raw.w - raw.y) / transform.pixel_to_ndc.y, horizontal);
+    // Subpixel bins are emitted once per pixel by the max-envelope pass.
+    if (envelope_enabled && span_px > 0.0 && span_px < 1.0) {
+        out.pos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        return out;
+    }
     let outer = bar_outer_ndc(in, horizontal, resolved.gap_px, resolved.width_ratio);
-    // A bin of zero width, or one the gap closed entirely, draws nothing.
+    // A genuinely zero-width bin (including width_ratio = 0) draws nothing.
     if (!(outer.z > outer.x) || !(outer.w > outer.y)) {
         out.pos = vec4<f32>(outer.xy, 0.0, 1.0);
         return out;
@@ -341,17 +357,124 @@ fn bar_vertex(in: VsIn, resolved: ResolvedBarStyle) -> VsOut {
 
 @vertex
 fn vs_main(in: VsIn) -> VsOut {
-    return bar_vertex(in, base_bar_style());
+    return bar_vertex(in, base_bar_style(), false);
 }
 
 @vertex
 fn vs_mapped(in: VsIn, @builtin(instance_index) inst: u32) -> VsOut {
-    return bar_vertex(in, resolve_bar_style(base_bar_style(), inst));
+    return bar_vertex(in, resolve_bar_style(base_bar_style(), inst), false);
+}
+
+@vertex
+fn vs_envelope_bars(in: VsIn) -> VsOut {
+    return bar_vertex(in, base_bar_style(), true);
+}
+
+@vertex
+fn vs_envelope_mapped_bars(in: VsIn, @builtin(instance_index) inst: u32) -> VsOut {
+    return bar_vertex(in, resolve_bar_style(base_bar_style(), inst), true);
 }
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     return in.color_premul;
+}
+
+// Pixel-column envelope. The pool remains the sole source of bin values.
+// A winner is a bin index + 1 (zero means empty), never a rounded height.
+struct EnvelopeParams { edges: u32, values: u32, count: u32, pixels: u32 };
+@group(3) @binding(0) var<storage, read> envelope_pool: array<vec2<f32>>;
+@group(3) @binding(1) var<uniform> envelope_params: EnvelopeParams;
+@group(3) @binding(2) var<storage, read> envelope_winners: array<u32>;
+@group(3) @binding(3) var<storage, read_write> envelope_atomic: array<atomic<u32>>;
+
+fn envelope_better(candidate: u32, incumbent: u32) -> bool {
+    if (incumbent == 0u) { return true; }
+    let a = envelope_pool[envelope_params.values + candidate - 1u];
+    let b = envelope_pool[envelope_params.values + incumbent - 1u];
+    // Uploaded hi/lo pairs are ordered by hi, then residual. Equal values
+    // choose the earliest bin so colours do not depend on dispatch order.
+    return a.x > b.x || (a.x == b.x && (a.y > b.y || (a.y == b.y && candidate < incumbent)));
+}
+
+@compute @workgroup_size(64)
+fn reduce_bar_envelope(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x + gid.y * 65535u * 64u;
+    if (i >= envelope_params.count) { return; }
+    let a = envelope_pool[envelope_params.edges + i];
+    let b = envelope_pool[envelope_params.edges + i + 1u];
+    let value = envelope_pool[envelope_params.values + i];
+    if (!data_pick_finite(a.x) || !data_pick_finite(a.y) ||
+        !data_pick_finite(b.x) || !data_pick_finite(b.y) ||
+        !data_pick_finite(value.x) || !data_pick_finite(value.y)) { return; }
+    let horizontal = style.shape_id == BAR_ORIENT_HORIZONTAL;
+    let raw = bar_outer_ndc_values(a, b, value, vec2<f32>(0.0), horizontal, 0.0, 1.0);
+    let low = select(raw.x, raw.y, horizontal);
+    let high = select(raw.z, raw.w, horizontal);
+    let pixel = select(transform.pixel_to_ndc.x, transform.pixel_to_ndc.y, horizontal);
+    let width = (high - low) / pixel;
+    // Distinct hi/lo edges may round to the same final f32 screen coordinate.
+    // They still cover that pixel; only genuinely equal edges are empty.
+    if (!(width >= 0.0 && width < 1.0) || all(a == b)) { return; }
+    if (resolve_bar_style(base_bar_style(), i).width_ratio <= 0.0) { return; }
+    // Half-open bin bounds: touching the next column is not overlapping it.
+    let start = u32(clamp(floor((low + 1.0) / pixel), 0.0, f32(envelope_params.pixels)));
+    var end = u32(clamp(ceil((high + 1.0) / pixel), 0.0, f32(envelope_params.pixels)));
+    if (high == low && low >= -1.0 && low < 1.0) {
+        end = min(start + 1u, envelope_params.pixels);
+    }
+    for (var p = start; p < end; p = p + 1u) {
+        var old = atomicLoad(&envelope_atomic[p]);
+        loop {
+            if (!envelope_better(i + 1u, old)) { break; }
+            let result = atomicCompareExchangeWeak(&envelope_atomic[p], old, i + 1u);
+            if (result.exchanged) { break; }
+            old = result.old_value;
+        }
+    }
+}
+
+struct EnvelopeVertex {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) @interpolate(flat) fill: vec4<f32>,
+};
+
+fn envelope_top(winner: u32, horizontal: bool, base: f32) -> f32 {
+    if (winner == 0u) { return base; }
+    let value = envelope_pool[envelope_params.values + winner - 1u];
+    return select(data_to_ndc(vec2<f32>(0.0), value).y,
+        data_to_ndc(value, vec2<f32>(0.0)).x, horizontal);
+}
+
+@vertex
+fn vs_bar_envelope(@builtin(vertex_index) vi: u32, @builtin(instance_index) p: u32) -> EnvelopeVertex {
+    var out: EnvelopeVertex;
+    out.pos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    let winner = envelope_winners[p];
+    if (winner == 0u) { return out; }
+    let resolved = resolve_bar_style(base_bar_style(), winner - 1u);
+    let horizontal = style.shape_id == BAR_ORIENT_HORIZONTAL;
+    let zero = data_to_ndc(vec2<f32>(0.0), vec2<f32>(0.0));
+    let base = select(zero.y, zero.x, horizontal);
+    let top = envelope_top(winner, horizontal, base);
+    let pixel = select(transform.pixel_to_ndc.x, transform.pixel_to_ndc.y, horizontal);
+    let low = min(base, top);
+    let high = max(base, top);
+    let border = resolved.border_width_px > 0.0 && resolved.border_color_premul.a > 0.0;
+    var corners = array<u32, 6>(0u, 1u, 2u, 2u, 1u, 3u);
+    let corner = corners[vi % 6u];
+    let along = -1.0 + (f32(p) + select(0.0, 1.0, (corner & 1u) != 0u)) * pixel;
+    let magnitude = select(low, high, corner >= 2u);
+    out.pos = vec4<f32>(select(vec2<f32>(along, magnitude), vec2<f32>(magnitude, along), horizontal), 0.0, 1.0);
+    // Subpixel bars use the winner's stroke throughout the zero-to-max area
+    // when enabled, not merely on the merged envelope's outer boundary.
+    out.fill = select(resolved.fill_color_premul, resolved.border_color_premul, border);
+    return out;
+}
+
+@fragment
+fn fs_bar_envelope(in: EnvelopeVertex) -> @location(0) vec4<f32> {
+    return in.fill;
 }
 
 // ───── Exact data picking (compute entry) ───────────────────────────────────

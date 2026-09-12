@@ -640,8 +640,10 @@ pub struct DataBarStyleConfig {
     /// The value bars grow from — usually 0. On a logarithmic count axis 0 has
     /// no position, and the base is clamped to the axis minimum instead.
     pub baseline: f64,
-    /// Screen-space gap between neighbouring bars, clamped so a bar's width
-    /// never goes negative.
+    /// Screen-space gap between neighbouring bars. The renderer reduces the
+    /// gap when necessary so a positive-width bin keeps a visible footprint;
+    /// Subpixel bins use a GPU pixel-column maximum envelope instead: gap
+    /// and positive width ratios do not cut holes in that envelope.
     pub gap_px: f32,
     /// Fraction of each bin occupied by its bar, centred on the bin. Values are
     /// clamped to `0..=1` by the renderer. `1` uses the whole bin before

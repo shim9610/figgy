@@ -11,9 +11,18 @@ Embed in egui / winit / any other wgpu 30 host.
 > **`crates/web`** — the browser package (`figgy`): public `<figgy-chart>` Custom Element facade plus a raw `FiggyChart` wasm kernel as an advanced escape hatch. The facade owns the shadow canvas, ready promise/event lifecycle, rAF loop, ResizeObserver/DPR handling, pointer mapping, async-operation busy gate, id-keyed registration metadata, UI-derived labels/styles/extents, and Promise adaptation. Picker, pool, chart, and maintenance authority remain in `Renderer`. Browser I/O: [WASM.md](crates/renderer/WASM.md) · full Config JSON schema: [SCHEMA.md](crates/web/SCHEMA.md). Build artifacts (`crates/web/pkg/`) are gitignored — build with `npx wasm-pack build crates/web --release --target web`.
 > **Online studio** — [figgyplot.com](https://figgyplot.com/) hosts the public web editor. It runs in-browser with local chart data, imports CSV/TSV/Excel, opens `.figgy` project files, and exports PNGs from the same wasm/WebGPU surface.
 
-## Current release — renderer 0.10.0 / figgy 0.9.0
+## Current release — renderer 0.11.0 / figgy 0.9.1
 
-This release advances the public source from renderer 0.9.0 / figgy 0.8.0.
+Subpixel histogram bins now fill each pixel column from zero to its maximum
+bin value on the GPU. An enabled, nontransparent stroke supplies the entire
+fill colour; otherwise the bin's fill colour is used. Original columns and
+web API signatures are unchanged. The Rust `ColumnBarLayer` has a new
+`envelope` field, so downstream struct literals require an update (`None`
+for manually built layers without an envelope).
+The browser demo includes bin-count and stroke controls. Run
+`npx serve crates/web -l 8142`, then open `http://localhost:8142/`.
+
+The previous renderer 0.10.0 / figgy 0.9.0 release introduced:
 
 - **Histogram and matrix fields are first-class GPU series.** `Histogram`, `Heatmap`, `Contour`, and `ContourFill` share the declared matrix lattice and colour-map SSoT. Heatmaps support flat or interpolated shading, contours support up to 1024 levels, and contour labels open a real gap in the underlying isoline. Automatic field fitting uses the rendered cell boundaries rather than only the sample centres.
 - **Field interaction and styling use stable identities.** `pick_data` returns tagged point, histogram-bin, matrix-cell, or contour-level references that can be written back through `Config.picked_data`. Histograms expose width, outline colour/thickness, and per-bin overrides. Contour label text/background/number formatting is independent of per-level line colour. The colourbar exposes its full `AxisOptions`, including ticks, labels, title, reversal, and pointer-following resize handles.
@@ -60,7 +69,7 @@ Same growth-response data, rendered through the four chart styles:
 
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # or public Git source — 0.10.0, not on crates.io.
+renderer = { path = "crates/renderer" }   # or public Git source — 0.11.0, not on crates.io.
 wgpu     = "30"
 ```
 
@@ -628,6 +637,14 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::paint` branches 
 
 Histogram width is resolved in two stages: `width_ratio` keeps a centred
 `0..=1` fraction of the bin, then `gap_px` removes a fixed screen-space amount.
+The gap is capped to leave at least one pixel for wider positive-width bars.
+Bins whose original projected width is below one pixel use a GPU envelope:
+each overlapping pixel column takes the maximum bin value and is filled to
+zero (clipped to the visible axis range). Horizontal histograms use pixel rows.
+The winning bin supplies the stroke colour for the entire area when its stroke
+has positive width and alpha; otherwise it supplies the fill colour. Equal maxima use the first
+bin. Gap and positive width ratios do not cut holes in this envelope;
+`width_ratio = 0` still hides the bin. Original columns are unchanged.
 `border_width = 0` disables the outline; otherwise `border_color` and
 `border_width` control it. `bar_style_overrides` is a sparse declaration-order
 list keyed by `index`; each record may independently replace `fill_color`,
@@ -981,9 +998,16 @@ egui / winit / 기타 wgpu 30 호스트에 임베드할 수 있다.
 > **`crates/web`** — 브라우저 패키지(`figgy`): public `<figgy-chart>` Custom Element facade와 advanced escape hatch로 남는 raw `FiggyChart` wasm kernel. facade가 shadow canvas, ready promise/event 수명주기, rAF loop, ResizeObserver/DPR 처리, pointer mapping, async operation busy gate, id 기반 등록 metadata, UI 파생 label/style/extent, Promise 변환을 소유한다. picker, pool, chart, maintenance 권위는 `Renderer`에 남는다. 브라우저 I/O: [WASM.md](crates/renderer/WASM.md) · Config JSON 스키마: [SCHEMA.md](crates/web/SCHEMA.md). 빌드 산출물(`crates/web/pkg/`)은 gitignore — `npx wasm-pack build crates/web --release --target web` 로 빌드.
 > **웹 스튜디오** — [figgyplot.com](https://figgyplot.com/) 에 공개 웹 편집기가 있다. 브라우저 안에서 로컬 차트 데이터를 처리하고, CSV/TSV/Excel import, `.figgy` 프로젝트 열기, 같은 wasm/WebGPU 표면 기반 PNG export를 제공한다.
 
-## 현재 릴리스 — renderer 0.10.0 / figgy 0.9.0
+## 현재 릴리스 — renderer 0.11.0 / figgy 0.9.1
 
-이번 릴리스는 공개 소스를 renderer 0.9.0 / figgy 0.8.0에서 올린 버전이다.
+1픽셀 미만 히스토그램 bin은 GPU에서 픽셀 열별 최댓값을 골라 0까지 채운다.
+선 두께와 알파가 모두 양수면 영역 전체를 선 색으로, 아니면 면 색으로 채운다.
+원본 컬럼과 웹 API 형식은 바뀌지 않는다. Rust `ColumnBarLayer`에는 `envelope`
+필드가 추가되어 외부 struct literal은 수정해야 한다(수동 레이어에 envelope가
+없으면 `None`). 데모에는 bin 개수 슬라이더와 외곽선 토글이 있다.
+`npx serve crates/web -l 8142` 실행 후 `http://localhost:8142/`에서 확인할 수 있다.
+
+이전 renderer 0.10.0 / figgy 0.9.0 릴리스에 포함된 기능은 다음과 같다.
 
 - **히스토그램과 행렬 필드를 GPU 일급 시리즈로 제공한다.** `Histogram`, `Heatmap`, `Contour`, `ContourFill`이 선언된 matrix lattice와 colour-map SSoT를 공유한다. heatmap은 flat/interpolated shading을, contour는 최대 1024 level을 지원하며 라벨 위치에서는 실제 등고선을 끊는다. 필드 자동 맞춤은 sample centre가 아니라 실제 렌더링되는 cell 경계를 사용한다.
 - **필드 선택과 스타일은 stable identity를 사용한다.** `pick_data`는 point, histogram bin, matrix cell, contour level의 tagged ref를 반환하며 `Config.picked_data`로 다시 표시할 수 있다. histogram은 막대 폭, 외곽선 색/두께, 개별 bin override를 제공한다. contour label 글자색·배경·숫자 형식은 level 선 색과 독립적이다. colorbar는 tick, label, title, reverse와 포인터를 따르는 resize handle을 포함한 전체 `AxisOptions`를 노출한다.
@@ -1030,7 +1054,7 @@ egui / winit / 기타 wgpu 30 호스트에 임베드할 수 있다.
 
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # 또는 공개 Git source — 0.10.0, crates.io 미배포.
+renderer = { path = "crates/renderer" }   # 또는 공개 Git source — 0.11.0, crates.io 미배포.
 wgpu     = "30"
 ```
 
@@ -1553,7 +1577,14 @@ draw와 동일 GPU 자원에서 현재 형상을 푼다. 범위를 벗어난 sta
 | `HeatmapContour { matrix, fill, contour }` | fill + contour | 면 + 그 위의 선 |
 
 히스토그램 폭은 먼저 `width_ratio`로 bin의 가운데 정렬된 `0..=1` 비율을
-남기고, 그다음 `gap_px`를 화면 픽셀 단위로 추가 차감한다. `border_width = 0`이면
+남기고, 그다음 `gap_px`를 화면 픽셀 단위로 추가 차감한다. 단, 양수 폭 막대가
+1픽셀보다 넓으면 최소 1픽셀을 남기도록 gap을 제한한다. 원래 bin 폭이 화면에서
+1픽셀 미만이면 GPU가 각 픽셀 열에 겹치는 bin의 최댓값을 선택해 0까지 채운다.
+가로 히스토그램은 픽셀 행 기준이며, 채움은 표시 중인 축 범위에서 잘린다.
+최댓값 bin의 선 두께와 알파가 양수면 영역 전체를 선 색으로 채우고,
+그렇지 않으면 면 색으로 채운다. 동률이면 앞선 bin을 선택한다.
+이 경로에서는 gap과 양수 width_ratio로 틈을 만들지 않는다. 원본 컬럼은 유지하며
+`width_ratio = 0`인 bin은 제외한다. `border_width = 0`이면
 외곽선이 꺼지고, 양수이면 `border_color`와 두께가 적용된다.
 `bar_style_overrides`는 `index`로 특정 bin을 고르는 sparse 목록이며 각 항목이
 `fill_color`, `border_color`, `border_width`, `gap_px`, `width_ratio` 중 필요한

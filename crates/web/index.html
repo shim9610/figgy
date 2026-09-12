@@ -40,44 +40,38 @@
       </select>
     </label>
     <span id="swatches"></span>
+    <label>Bin count: <input id="bins" type="range" min="3" max="13" step="0.1" value="13" disabled /></label>
+    <output id="bin-label"></output>
+    <label><input id="border" type="checkbox" checked disabled /> Black border (1 px)</label>
     <button id="export">Export PNG x2</button>
     <span id="status"></span>
   </div>
   <div id="chart-wrap"><figgy-chart id="chart"></figgy-chart></div>
 
+  <script>
+    if (location.protocol === "file:") {
+      document.getElementById("status").textContent =
+        "파일 직접 열기로는 실행할 수 없습니다. 저장소에서 npx serve crates/web -l 8142 실행 후 http://localhost:8142/ 를 여세요.";
+    }
+  </script>
+
   <script type="module">
-    import { AxisPreset, ColorCycle, color_cycle_css } from "./figgy-chart.js?v=scatter-markers";
+    import { AxisPreset, ColorCycle, color_cycle_css } from "./figgy-chart.js?v=histogram";
 
     const status = document.getElementById("status");
     const chart = document.getElementById("chart");
-    const markerShapes = [
-      "Circle", "Square", "Triangle", "Diamond", "Cross",
-      "CircleFilled", "SquareFilled", "TriangleFilled", "DiamondFilled",
-      "TriangleDown", "TriangleLeft", "TriangleRight", "Plus",
-      "Pentagon", "Hexagon", "Octagon", "Star",
-      "TriangleDownFilled", "TriangleLeftFilled", "TriangleRightFilled",
-      "PlusFilled", "CrossFilled", "PentagonFilled", "HexagonFilled",
-      "OctagonFilled", "StarFilled",
-    ];
-    const palette = [
-      [0.10, 0.34, 0.85], [0.85, 0.20, 0.18], [0.10, 0.58, 0.34],
-      [0.76, 0.40, 0.05], [0.45, 0.25, 0.78], [0.05, 0.55, 0.62],
-      [0.70, 0.18, 0.42], [0.32, 0.38, 0.46],
-    ];
-    const markerLabel = `${markerShapes.length} scatter markers`;
+    let binCount = 8192;
+    let demoLabel = "";
+    const bins = document.getElementById("bins");
+    const border = document.getElementById("border");
 
     chart.addEventListener("figgy-select", (event) => {
-      status.textContent = event.detail.selected ? "selected" : markerLabel;
+      status.textContent = event.detail.selected ? "selected" : demoLabel;
     });
     chart.addEventListener("figgy-error", (event) => {
       const message = event.detail.error?.message ?? event.detail.error;
       status.textContent = `error: ${message}`;
     });
-
-    const color = (i) => {
-      const [r, g, b] = palette[i % palette.length];
-      return { r, g, b, a: 1.0 };
-    };
 
     const showSwatches = (name) => {
       document.getElementById("swatches").innerHTML = color_cycle_css(ColorCycle[name])
@@ -88,38 +82,66 @@
     try {
       await chart.ready;
 
-      const markerSeries = markerShapes.map((shape, i) => {
-        const x = i % 7;
-        const y = 3 - Math.floor(i / 7);
-        const xId = `marker_x_${i}`;
-        const yId = `marker_y_${i}`;
-        chart.register_column_f32(xId, new Float32Array([x]));
-        chart.register_column_f32(yId, new Float32Array([y]));
-        return {
-          series_id: `marker_${i}_${shape}`,
-          label: null,
-          x_column: xId,
-          y_column: yId,
-          render_type: {
-            Scatter: {
-              scatter: {
-                point_color: color(i),
-                point_shape: shape,
-                point_size: 12.0,
-              },
-            },
-          },
-        };
+      let dataRegistered = false;
+      const updateData = () => {
+      binCount = Math.round(2 ** Number(bins.value));
+      const edges = Float32Array.from({ length: binCount + 1 }, (_, i) => i * 8192 / binCount);
+      const counts = Float32Array.from({ length: binCount }, (_, i) => {
+        const x = (i + 0.5) / binCount;
+        const height = 2 + 7 * Math.exp(-(((x - 0.3) / 0.13) ** 2))
+          + 5 * Math.exp(-(((x - 0.72) / 0.09) ** 2));
+        return height * [0.15, 1, 0.3, 0.45][i % 4];
       });
-
-      chart.set_series(JSON.stringify(markerSeries));
-      chart.auto_fit_all(0.12);
-      chart.set_title("Scatter marker shape showcase");
-      chart.set_x_title("shape column");
-      chart.set_y_title("shape row");
-      window.figgyChart = chart;
+      if (dataRegistered) {
+        chart.update_register_column_f32("histogram_edges", edges);
+        chart.update_register_column_f32("histogram_counts", counts);
+      } else {
+        chart.register_column_f32("histogram_edges", edges);
+        chart.register_column_f32("histogram_counts", counts);
+        dataRegistered = true;
+      }
+      demoLabel = `${binCount.toLocaleString()} bins · baseline 0`;
+      document.getElementById("bin-label").textContent = `${binCount.toLocaleString()} bins / width ${(8192 / binCount).toFixed(2)}`;
+      status.textContent = demoLabel;
+      };
+      const updateSeries = () => {
+      chart.set_series(JSON.stringify([{
+        series_id: "subpixel_histogram", label: null,
+        x_column: "histogram_edges", y_column: "histogram_counts",
+        render_type: { Histogram: { bar: {
+          fill_color: { r: 0.1, g: 0.6, b: 0.3, a: 0.65 },
+          border_color: { r: 0, g: 0, b: 0, a: 1 },
+          border_width: border.checked ? 1 : 0, baseline: 0, gap_px: 1, width_ratio: 1,
+          orientation: "Vertical",
+        } } },
+      }]));
+      };
+      updateData();
+      updateSeries();
+      chart.set_title("Subpixel histogram: maximum per pixel column");
+      chart.set_x_title("bin edge");
+      chart.set_y_title("count");
       window.figgyKernel = chart.kernel;
-      status.textContent = markerLabel;
+      await chart.auto_fit_all(0.12);
+      window.figgyChart = chart;
+      status.textContent = demoLabel;
+      bins.disabled = false;
+      border.disabled = false;
+      let pendingDemoFrame = 0;
+      const updateDemo = () => {
+        if (pendingDemoFrame) return;
+        pendingDemoFrame = requestAnimationFrame(() => {
+          pendingDemoFrame = 0;
+          if (chart.busy) { updateDemo(); return; }
+          try { updateData(); updateSeries(); }
+          catch (error) { status.textContent = `update failed: ${error?.message ?? error}`; }
+        });
+      };
+      bins.addEventListener("input", updateDemo);
+      border.addEventListener("change", () => {
+        if (chart.busy) { updateDemo(); return; }
+        updateSeries();
+      });
 
       document.getElementById("axis-preset").addEventListener("change", (event) => {
         chart.apply_axis_preset(AxisPreset[event.target.value]);

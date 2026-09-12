@@ -1723,6 +1723,7 @@ struct PreparedContourLabel {
 }
 
 struct PreparedBarLayer {
+    envelope: Option<data_render::bar_envelope::Snapshot>,
     pipeline: wgpu::RenderPipeline,
     transform_bg: wgpu::BindGroup,
     style_bg: wgpu::BindGroup,
@@ -1836,6 +1837,7 @@ impl PreparedSeries {
                 drawable: layer.drawable,
             }),
             bar: layers.bar.map(|layer| PreparedBarLayer {
+                envelope: layer.envelope,
                 pipeline: layer.pipeline.clone(),
                 transform_bg: layer.transform_bg.clone(),
                 style_bg: layer.style_bg.clone(),
@@ -1962,6 +1964,7 @@ impl PreparedSeries {
                     drawable: layer.drawable,
                 }),
             bar: self.bar.as_ref().map(|layer| data_render::ColumnBarLayer {
+                envelope: layer.envelope.clone(),
                 pipeline: &layer.pipeline,
                 transform_bg: &layer.transform_bg,
                 style_bg: &layer.style_bg,
@@ -2879,6 +2882,7 @@ struct TargetPipelines {
     errorbar: Option<wgpu::RenderPipeline>,
     errorbar_mapped: Option<wgpu::RenderPipeline>,
     bar: Option<wgpu::RenderPipeline>,
+    bar_envelope: Option<data_render::bar_envelope::Pipelines>,
     bar_mapped: Option<wgpu::RenderPipeline>,
     bar_selection: Option<wgpu::RenderPipeline>,
     field: Option<wgpu::RenderPipeline>,
@@ -3030,6 +3034,7 @@ fn create_target_pipelines_observed(
         errorbar: None,
         errorbar_mapped: None,
         bar: None,
+        bar_envelope: None,
         bar_mapped: None,
         bar_selection: None,
         field: None,
@@ -3091,6 +3096,7 @@ async fn create_target_pipelines_observed_async(
         errorbar: None,
         errorbar_mapped: None,
         bar: None,
+        bar_envelope: None,
         bar_mapped: None,
         bar_selection: None,
         field: None,
@@ -3310,6 +3316,17 @@ impl TargetPipelines {
                 &self.shaders.bar,
                 transform_bgl,
                 style_bgl,
+                surface_format,
+                self.sample_count,
+            ));
+        }
+        if (need_bar || need_bar_mapped) && self.bar_envelope.is_none() {
+            self.bar_envelope = Some(data_render::bar_envelope::Pipelines::new(
+                device,
+                &self.shaders.bar,
+                transform_bgl,
+                style_bgl,
+                per_point_style_map_bgl,
                 surface_format,
                 self.sample_count,
             ));
@@ -3566,6 +3583,19 @@ impl TargetPipelines {
             bar_mapped,
             "mapped histogram bars",
             data_render::create_bar_columnar_mapped_pipeline_with_sample_count(
+                device,
+                &self.shaders.bar,
+                transform_bgl,
+                style_bgl,
+                per_point_style_map_bgl,
+                surface_format,
+                self.sample_count,
+            )
+        );
+        ensure!(
+            bar_envelope,
+            "histogram envelope",
+            data_render::bar_envelope::Pipelines::new(
                 device,
                 &self.shaders.bar,
                 transform_bgl,
@@ -9023,6 +9053,31 @@ impl Renderer {
                 };
                 let style_map = series.style.bar_map.as_ref();
                 Some(data_render::ColumnBarLayer {
+                    envelope: Some(
+                        pipelines
+                            .bar_envelope
+                            .as_ref()
+                            .expect("prepare ensured histogram envelope pipeline")
+                            .prepare(
+                                &self.device,
+                                &self.queue,
+                                &self.gpu_ledger,
+                                pool.buffer(),
+                                edges,
+                                values,
+                                match bar_cfg.orientation {
+                                    crate::data_config::BarOrientation::Vertical => {
+                                        view.panel_rect.width
+                                    }
+                                    crate::data_config::BarOrientation::Horizontal => {
+                                        view.panel_rect.height
+                                    }
+                                },
+                                &view.transform_bg,
+                                &series.style.bar_bg,
+                                style_map.map(|map| &map.bind_group),
+                            ),
+                    ),
                     pipeline: style_map.map_or_else(
                         || {
                             pipelines

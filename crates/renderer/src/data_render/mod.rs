@@ -12,6 +12,7 @@ use crate::layout::Rect;
 
 use wgpu::util::DeviceExt;
 
+pub mod bar_envelope;
 pub mod column_pool;
 pub mod line_arc;
 pub use column_pool::{
@@ -1049,7 +1050,7 @@ pub(crate) async fn prewarm_browser_render_pipelines(
             &[
                 BrowserRenderPipelineSpec {
                     label: "histogram bars",
-                    vertex_entry: "vs_main",
+                    vertex_entry: "vs_envelope_bars",
                     fragment_entry: "fs_main",
                     topology: "triangle-list",
                     buffers: &BAR_BUFFERS,
@@ -1057,10 +1058,18 @@ pub(crate) async fn prewarm_browser_render_pipelines(
                 },
                 BrowserRenderPipelineSpec {
                     label: "mapped histogram bars",
-                    vertex_entry: "vs_mapped",
+                    vertex_entry: "vs_envelope_mapped_bars",
                     fragment_entry: "fs_main",
                     topology: "triangle-list",
                     buffers: &BAR_BUFFERS,
+                    blend: BrowserBlend::Premultiplied,
+                },
+                BrowserRenderPipelineSpec {
+                    label: "histogram pixel envelope",
+                    vertex_entry: "vs_bar_envelope",
+                    fragment_entry: "fs_bar_envelope",
+                    topology: "triangle-list",
+                    buffers: &[],
                     blend: BrowserBlend::Premultiplied,
                 },
                 BrowserRenderPipelineSpec {
@@ -1746,7 +1755,7 @@ pub fn create_style_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupL
         label: Some("figgy primitive style bgl"),
         entries: &[wgpu::BindGroupLayoutEntry {
             binding: 0,
-            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
                 has_dynamic_offset: false,
@@ -3685,13 +3694,16 @@ pub fn create_bar_columnar_pipeline(
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
     let shaders = ShaderModules::new(device);
-    create_bar_columnar_pipeline_with_sample_count(
+    create_bar_columnar_pipeline_with_entry(
         device,
         &shaders.bar,
         transform_bgl,
         style_bgl,
+        None,
         target_format,
         1,
+        "vs_main",
+        "figgy bar columnar pipeline",
     )
 }
 
@@ -3711,7 +3723,7 @@ pub(crate) fn create_bar_columnar_pipeline_with_sample_count(
         None,
         target_format,
         sample_count,
-        "vs_main",
+        "vs_envelope_bars",
         "figgy bar columnar pipeline",
     )
 }
@@ -3724,14 +3736,16 @@ pub fn create_bar_columnar_mapped_pipeline(
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
     let shaders = ShaderModules::new(device);
-    create_bar_columnar_mapped_pipeline_with_sample_count(
+    create_bar_columnar_pipeline_with_entry(
         device,
         &shaders.bar,
         transform_bgl,
         style_bgl,
-        style_map_bgl,
+        Some(style_map_bgl),
         target_format,
         1,
+        "vs_mapped",
+        "figgy mapped bar columnar pipeline",
     )
 }
 
@@ -3752,7 +3766,7 @@ pub(crate) fn create_bar_columnar_mapped_pipeline_with_sample_count(
         Some(style_map_bgl),
         target_format,
         sample_count,
-        "vs_mapped",
+        "vs_envelope_mapped_bars",
         "figgy mapped bar columnar pipeline",
     )
 }
@@ -4524,6 +4538,7 @@ pub struct ColumnContourLabel<'a> {
 /// shader is told which screen axis the edges run along through
 /// `Style.shape_id`.
 pub struct ColumnBarLayer<'a> {
+    pub envelope: Option<bar_envelope::Snapshot>,
     pub pipeline: &'a wgpu::RenderPipeline,
     pub transform_bg: &'a wgpu::BindGroup,
     pub style_bg: &'a wgpu::BindGroup,
@@ -4742,6 +4757,9 @@ fn issue_series_data(pass: &mut wgpu::RenderPass<'_>, series: &SeriesLayers<'_>)
             pass.set_vertex_buffer(1, b.pool_buffer.slice(edges_next));
             pass.set_vertex_buffer(2, b.pool_buffer.slice(b.values.byte_range()));
             pass.draw(0..BAR_VERTICES_PER_INSTANCE, 0..count);
+            if let Some(envelope) = &b.envelope {
+                envelope.draw(pass, b.transform_bg, b.style_bg);
+            }
         }
     }
 

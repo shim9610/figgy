@@ -1,6 +1,6 @@
 # Config / SeriesConfig — JSON 스키마 레퍼런스
 
-적용 공개 버전: `figgy 0.9.0` / `renderer 0.10.0`.
+적용 공개 버전: `figgy 0.9.1` / `renderer 0.11.0`.
 
 `FiggyChart.get_config()` / `get_series()`가 반환하고 `set_config()` /
 `set_series()`가 받는 JSON의 **전체 형태**다. 아래 JSON 블록은 Rust 소스에서
@@ -849,6 +849,12 @@ sketch의 모든 파라미터에 디폴트가 있어 (`serde(default)`) 부분 �
   반대. 길이 관계(`edges = counts + 1`)로 역할을 추측하지 않는다.
 - `bar.width_ratio`는 각 bin 폭에서 가운데 정렬된 막대가 차지할 비율이며
   `0..=1`로 clamp된다. 그 다음 `gap_px`가 양쪽에서 픽셀 단위로 추가 차감된다.
+  양수 폭 막대가 1픽셀보다 넓으면 최소 1픽셀을 남기도록 gap이 제한되고, 이미
+  원래 bin 폭이 1픽셀 미만이면 픽셀 열별 최댓값을 GPU에서 골라 0까지 채운다
+  (가로 히스토그램은 픽셀 행). 이 경로에서는 gap과 양수 width_ratio를 무시하며,
+  최댓값 bin의 선 두께와 알파가 양수면 영역 전체를 선 색으로 채우고,
+  아니면 면 색으로 채운다. 동률은 앞선 bin을 선택하고,
+  `width_ratio: 0`인 bin은 제외한다. 원본 컬럼은 변경하지 않는다.
   `border_width: 0`은 외곽선을 끄며 `border_color`와 양수 두께가 외곽선을 정한다.
 - `bar.bar_style_overrides`는 `index`로 특정 bin 하나를 골라 `fill_color`,
   `border_color`, `border_width`, `gap_px`, `width_ratio` 중 필요한 값만 덮는다.
