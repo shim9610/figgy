@@ -16,6 +16,16 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+mod selection_prepare;
+
+#[path = "streaming_runtime.rs"]
+mod streaming_runtime;
+pub use streaming_runtime::{StreamingOperation, StreamingResidencyOperation, StreamingSelectionRequest, StreamingSelectionTicket};
+#[path = "streaming_surface.rs"]
+mod streaming_surface;
+#[cfg(test)]
+mod streaming_request_tests;
+
 use crate::axis_render;
 use crate::chart::Chart;
 use crate::color::Color;
@@ -33,7 +43,8 @@ use crate::data_render::{
 };
 use crate::error::{FiggyError, Result};
 use crate::gpu_memory::{
-    GpuLedger, GpuMemoryUsage, GpuResourceKind, TrackedBuffer, TrackedTexture,
+    GpuLedger, GpuMemoryUsage, GpuResourceKind, ResidentAdmission, ResidentAdmissionRequest,
+    ResidentAdmissionStatus, TrackedBuffer, TrackedTexture,
 };
 use crate::init::{
     InitEvent, finished, observe_result, observe_result_async, observe_value, observe_value_async,
@@ -584,6 +595,27 @@ impl ChartViewState {
     }
 }
 
+/// Whether two configs produce the same streamed data prefix.
+///
+/// Decoration is deliberately excluded: titles, tick-label appearance, grid
+/// colours, and other raster-only chrome are composited over the preserved
+/// prefix.  Anything that changes data-to-pixel geometry or the set of data
+/// primitives remains a stream-breaking view change.
+fn stream_config_equal(left: &Config, right: &Config) -> bool {
+    ChartViewState::from_config(left) == ChartViewState::from_config(right)
+        && left.data_area().ok().map(|area| area.0)
+            == right.data_area().ok().map(|area| area.0)
+        && left.draw_style == right.draw_style
+}
+
+fn selection_config_revision(current: RenderRevision, before: &Config, after: &Config) -> Result<RenderRevision> {
+    if before.picked_points != after.picked_points || before.picked_data != after.picked_data {
+        current.successor("chart selection revision")
+    } else {
+        Ok(current)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct ColumnContentStamp {
     id: ColumnId,
@@ -667,7 +699,13 @@ struct FitSeriesStamp {
 struct FitColumnStamp {
     role: u32,
     id: ColumnId,
-    allocation_epoch: u64,
+    source: FitColumnSourceStamp,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum FitColumnSourceStamp {
+    ResidentAllocation(u64),
+    StreamedRegistration { revision: u64, fit_epoch: u64 },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -698,8 +736,19 @@ impl ChartRevisions {
 struct ChartRenderState {
     config: Config,
     series: Vec<SeriesConfig>,
+    prepared_styles: Option<RegisteredChartStyles>,
     selected: Option<HitId>,
+    /// One-shot renderer-owned request consumed by the next automatic stream.
+    /// `None` preserves the caller-specified axis ranges.
+    stream_auto_fit_padding: Option<f64>,
     revisions: ChartRevisions,
+}
+
+// GPU-only derivative; authoritative options stay in ChartRenderState.series.
+// Style bindings use stable layouts and scale 1, independent of target format.
+struct RegisteredChartStyles {
+    series_revision: RenderRevision,
+    styles: Vec<ChartStyle>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1095,19 +1144,33 @@ struct ActivePickRegistry {
     engine: crate::gpu_pick::GpuPickEngine,
 }
 
-struct PreparedActivePickerMutation<'a> {
-    transition: crate::gpu_pick::PreparedPickRegistryTransition<'a>,
-    active_chart_id: &'a mut ChartId,
-    active_signature: &'a mut PickChartSignature,
-    next_chart_id: ChartId,
-    next_signature: PickChartSignature,
+enum PreparedActivePickerMutation<'a> {
+    Clear(&'a mut Option<ActivePickRegistry>),
+    Update {
+        transition: crate::gpu_pick::PreparedPickRegistryTransition<'a>,
+        active_chart_id: &'a mut ChartId,
+        active_signature: &'a mut PickChartSignature,
+        next_chart_id: ChartId,
+        next_signature: PickChartSignature,
+    },
 }
 
 impl PreparedActivePickerMutation<'_> {
     fn commit(self) {
-        self.transition.commit();
-        *self.active_chart_id = self.next_chart_id;
-        *self.active_signature = self.next_signature;
+        match self {
+            Self::Clear(active) => *active = None,
+            Self::Update {
+                transition,
+                active_chart_id,
+                active_signature,
+                next_chart_id,
+                next_signature,
+            } => {
+                transition.commit();
+                *active_chart_id = next_chart_id;
+                *active_signature = next_signature;
+            }
+        }
     }
 }
 
@@ -1358,6 +1421,19 @@ impl RendererPicker {
         Option<PreparedActivePickerMutation<'picker>>,
         crate::gpu_pick::GpuPickError,
     > {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.chart_id == chart_id)
+        {
+            let mut nonresident = false;
+            for item in series {
+                visit_series_columns(item, &mut |id| nonresident |= pool.slot(id).is_none());
+            }
+            if nonresident {
+                return Ok(Some(PreparedActivePickerMutation::Clear(&mut self.active)));
+            }
+        }
         let plan = PickChartPlan::new(config, series)?;
         self.prepare_active_plan(pool, chart_id, plan, &[], false)
     }
@@ -1404,7 +1480,7 @@ impl RendererPicker {
         } = active;
         let slots = plan.registry_slots_rebuilding(Some(active_signature), rebuild_columns)?;
         let transition = engine.prepare_registry_transition(pool, slots)?;
-        Ok(Some(PreparedActivePickerMutation {
+        Ok(Some(PreparedActivePickerMutation::Update {
             transition,
             active_chart_id,
             active_signature,
@@ -1467,6 +1543,13 @@ impl LoadDemoChartPlan {
 }
 
 impl ColumnInvalidationPlan {
+    fn prospective_desired_revision(&self, id: ChartId, current: RenderRevision) -> RenderRevision {
+        self.charts
+            .iter()
+            .find(|update| update.id == id)
+            .map_or(current, |update| update.desired)
+    }
+
     fn prospective_data_revision(&self, id: ChartId, current: RenderRevision) -> RenderRevision {
         self.charts
             .iter()
@@ -1498,6 +1581,7 @@ struct ChartSeriesRemoval {
     next_config: Option<Config>,
     desired: RenderRevision,
     config_revision: Option<RenderRevision>,
+    selection_revision: Option<RenderRevision>,
     series_revision: Option<RenderRevision>,
     data: Option<RenderRevision>,
     view: Option<RenderRevision>,
@@ -1534,6 +1618,7 @@ impl ColumnRemovalPlan {
                 state.revisions.config = update
                     .config_revision
                     .expect("config replacement revision was prepared");
+                state.revisions.selection = update.selection_revision.expect("selection revision was prepared");
                 if let Some(view) = update.view {
                     state.revisions.view = view;
                 }
@@ -1752,6 +1837,9 @@ struct PreparedErrorBarLayer {
 /// buffer, and column handle needed by paint is resolved during prepare.
 struct PreparedSeries {
     _arc_charge: Option<crate::gpu_memory::SharedCharge>,
+    _column_charge: Option<crate::gpu_memory::SharedCharge>,
+    _stream_style_charge: Option<crate::gpu_memory::SharedCharge>,
+    _stream_transform_charge: Option<crate::gpu_memory::SharedCharge>,
     field: Option<PreparedFieldLayer>,
     bar: Option<PreparedBarLayer>,
     contour: Option<PreparedContourLayer>,
@@ -1783,6 +1871,7 @@ struct PreparedItem {
     data_area: Rect,
     axis_pipeline: wgpu::RenderPipeline,
     series: Vec<PreparedSeries>,
+    stream_display: Option<streaming_runtime::StreamDisplayPacket>,
 }
 
 /// Token returned by [`Renderer::prepare`] and consumed (by reference,
@@ -1798,6 +1887,7 @@ pub struct PreparedFrame {
     renderer_identity: u64,
     items: Vec<PreparedItem>,
     column_sources: HashMap<ColumnId, u64>,
+    registered_charts: Vec<PreparedChartStamp>,
     /// Pool layout stamp — defrag, clear, or a buffer-relocating upsert can
     /// move column bytes or replace the backing buffer. Per-column allocation
     /// epochs above catch same-layout replacement of any captured draw input
@@ -1811,6 +1901,13 @@ pub struct PreparedFrame {
     /// thousands of columns, and an owned map entry each would put a per-frame
     /// allocation per column on the prepare path.
     grid_sources: Vec<Arc<GridSources>>,
+}
+
+#[derive(Debug)]
+struct PreparedChartStamp {
+    chart_id: ChartId,
+    desired: RenderRevision,
+    data: RenderRevision,
 }
 
 impl std::fmt::Debug for PreparedItem {
@@ -1828,6 +1925,9 @@ impl PreparedSeries {
     ) -> Self {
         Self {
             _arc_charge: arc_charge,
+            _column_charge: None,
+            _stream_style_charge: None,
+            _stream_transform_charge: None,
             field: layers.field.map(|layer| PreparedFieldLayer {
                 pipeline: layer.pipeline.clone(),
                 transform_bg: layer.transform_bg.clone(),
@@ -2087,12 +2187,156 @@ impl PreparedSeries {
     }
 }
 
+struct RegisteredStreamColumn {
+    column: crate::StreamColumn,
+    fit_epoch: u64,
+    statistics_cache: StreamStatisticsCache,
+}
+
+/// A resident-to-streamed authority change that is deliberately withheld
+/// until its replacement stream has rendered the complete chart closure.
+/// While this value is live the resident pool and chart registry remain the
+/// only published source of truth.
+pub(super) struct ResidentStreamHandoff {
+    pub(super) columns: Vec<crate::StreamColumn>,
+    pub(super) allocation_epochs: Vec<(ColumnId, u64)>,
+    pub(super) expected_stream_revisions: Vec<(ColumnId, u64)>,
+    pub(super) expected_chart_revisions: Vec<(ChartId, RenderRevision, RenderRevision)>,
+}
+
+/// Normal streaming coalesces to one interval. This ceiling keeps deliberately
+/// fragmented random-access supply from turning statistics metadata into an
+/// unbounded per-point mirror of the source.
+const MAX_STREAM_STATISTICS_RANGES: usize = 4096;
+
+#[derive(Default)]
+struct StreamStatisticsCache {
+    /// Sorted, disjoint measured ranges. Adjacent sequential chunks coalesce,
+    /// while sparse chunks remain cached so their values are never rescanned.
+    covered: Vec<std::ops::Range<u64>>,
+    bounds: Option<crate::StreamBounds>,
+}
+
+impl StreamStatisticsCache {
+    fn covers(&self, range: std::ops::Range<u64>) -> bool {
+        range.is_empty()
+            || self
+                .covered
+                .iter()
+                .any(|covered| covered.start <= range.start && covered.end >= range.end)
+    }
+
+    fn try_coverage_copy(
+        &self,
+    ) -> std::result::Result<Self, std::collections::TryReserveError> {
+        let mut covered = Vec::new();
+        covered.try_reserve_exact(self.covered.len())?;
+        covered.extend(self.covered.iter().cloned());
+        Ok(Self {
+            covered,
+            bounds: self.bounds,
+        })
+    }
+
+    fn uncovered(
+        &self,
+        range: std::ops::Range<u64>,
+    ) -> std::result::Result<Vec<std::ops::Range<u64>>, std::collections::TryReserveError> {
+        let mut gaps = Vec::new();
+        gaps.try_reserve(self.covered.len().saturating_add(1))?;
+        let mut cursor = range.start;
+        for covered in &self.covered {
+            if covered.end <= cursor {
+                continue;
+            }
+            if covered.start >= range.end {
+                break;
+            }
+            if covered.start > cursor {
+                gaps.push(cursor..covered.start.min(range.end));
+            }
+            cursor = cursor.max(covered.end);
+            if cursor >= range.end {
+                break;
+            }
+        }
+        if cursor < range.end {
+            gaps.push(cursor..range.end);
+        }
+        Ok(gaps)
+    }
+
+    fn coverage_len_after_insert(&self, range: &std::ops::Range<u64>) -> usize {
+        let index = self
+            .covered
+            .partition_point(|cached| cached.end < range.start);
+        let mut merged_end = range.end;
+        let mut removed = 0usize;
+        while index + removed < self.covered.len()
+            && self.covered[index + removed].start <= merged_end
+        {
+            merged_end = merged_end.max(self.covered[index + removed].end);
+            removed += 1;
+        }
+        self.covered.len() - removed + 1
+    }
+
+    fn merge_bounds(&mut self, bounds: Option<crate::StreamBounds>) {
+        let Some(bounds) = bounds else {
+            return;
+        };
+        self.bounds = Some(match self.bounds {
+            Some(current) => crate::StreamBounds {
+                min: current.min.min(bounds.min),
+                max: current.max.max(bounds.max),
+                min_positive: match (current.min_positive, bounds.min_positive) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                },
+            },
+            None => bounds,
+        });
+    }
+
+    fn insert_measured(
+        &mut self,
+        range: std::ops::Range<u64>,
+        bounds: Option<crate::StreamBounds>,
+    ) {
+        let mut start = range.start;
+        let mut end = range.end;
+        let index = self.covered.partition_point(|cached| cached.end < start);
+        while index < self.covered.len() && self.covered[index].start <= end {
+            let cached = self.covered.remove(index);
+            start = start.min(cached.start);
+            end = end.max(cached.end);
+        }
+        self.covered.insert(index, start..end);
+        self.merge_bounds(bounds);
+    }
+}
+
+impl std::ops::Deref for RegisteredStreamColumn {
+    type Target = crate::StreamColumn;
+
+    fn deref(&self) -> &Self::Target {
+        &self.column
+    }
+}
+
 /// Facade bundling every figgy GPU resource.
 pub struct Renderer {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     caps: RendererDeviceCaps,
     pool: ColumnPool,
+    // Disjoint from pool ids: host metadata only, never payloads or copied slots.
+    streaming_sources: HashMap<ColumnId, RegisteredStreamColumn>,
+    // Logical host revision authority survives streamed -> resident promotion.
+    // Only a true logical-column removal clears an entry.
+    stream_revision_lineage: HashMap<ColumnId, u64>,
+    next_stream_source_fit_epoch: u64,
+    stream_runtime: Option<streaming_runtime::StreamRuntime>,
     chart_states: HashMap<ChartId, ChartRenderState>,
     chart_order: Vec<ChartId>,
     next_chart_id: u64,
@@ -2185,6 +2429,13 @@ pub struct Renderer {
     /// moment, so the pool refuses a growth that would cross the ceiling
     /// instead of discovering it as a device error.
     memory_budget: Option<u64>,
+
+    /// Host policy for renderer-selected streamed -> resident transitions.
+    /// `None` keeps native callers in explicit-control mode. This is separate
+    /// from `memory_budget`: the latter caps all renderer GPU resources, while
+    /// this cap decides whether one complete chart-column closure belongs in
+    /// the resident representation.
+    auto_resident_working_set_limit: Option<u64>,
 }
 
 /// Renderer-level guard for an atomic scalar or hi/lo column upsert.
@@ -2194,6 +2445,7 @@ pub struct Renderer {
 /// and allocation-free.
 #[must_use = "dropping a RendererColumnUpsert rolls the provisional pool state back"]
 pub struct RendererColumnUpsert<'a> {
+    streaming_sources: &'a HashMap<ColumnId, RegisteredStreamColumn>,
     inner: Option<data_render::column_pool::ColumnUpsert<'a>>,
     chart_states: &'a mut HashMap<ChartId, ChartRenderState>,
     visual_revision: &'a mut RenderRevision,
@@ -2267,6 +2519,9 @@ impl RendererColumnUpsert<'_> {
             .chart_states
             .get(&id)
             .ok_or(FiggyError::UnknownChart { id })?;
+        for series in &state.series {
+            require_resident_sources(self.streaming_sources, series)?;
+        }
         let data_revision = self
             .invalidation
             .as_ref()
@@ -2275,6 +2530,7 @@ impl RendererColumnUpsert<'_> {
             });
         build_web_derived_snapshot_from_state(
             self.pool(),
+            self.streaming_sources,
             self.renderer_identity,
             id,
             state,
@@ -2294,6 +2550,13 @@ impl RendererColumnUpsert<'_> {
         crate::gpu_errorbar::GpuErrorbarExtentTicket,
         crate::gpu_errorbar::GpuErrorbarError,
     > {
+        for id in [value_id, lower_id, upper_id] {
+            if self.streaming_sources.contains_key(id) {
+                return Err(crate::gpu_errorbar::GpuErrorbarError::ColumnNotResident {
+                    id: id.to_owned(),
+                });
+            }
+        }
         begin_errorbar_extent_from_pool(
             prepared_errorbar_extent_engine(self.errorbar_extent_engine)?,
             self.device,
@@ -2316,6 +2579,23 @@ impl RendererColumnUpsert<'_> {
         crate::gpu_errorbar::GpuSeriesExtentTicket,
         crate::gpu_errorbar::GpuErrorbarError,
     > {
+        for id in [
+            Some(columns.x),
+            Some(columns.y),
+            columns.x_lower,
+            columns.x_upper,
+            columns.y_lower,
+            columns.y_upper,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if self.streaming_sources.contains_key(id) {
+                return Err(crate::gpu_errorbar::GpuErrorbarError::ColumnNotResident {
+                    id: id.to_owned(),
+                });
+            }
+        }
         begin_series_extent_from_pool(
             prepared_errorbar_extent_engine(self.errorbar_extent_engine)?,
             self.device,
@@ -2336,6 +2616,11 @@ impl RendererColumnUpsert<'_> {
         Option<crate::gpu_errorbar::GpuSeriesExtentTicket>,
         crate::gpu_errorbar::GpuErrorbarError,
     > {
+        if let Err(FiggyError::ColumnNotResident { id }) =
+            require_resident_sources(self.streaming_sources, series)
+        {
+            return Err(crate::gpu_errorbar::GpuErrorbarError::ColumnNotResident { id });
+        }
         begin_series_fit_extent_from_pool(
             prepared_errorbar_extent_engine(self.errorbar_extent_engine)?,
             self.device,
@@ -2407,6 +2692,7 @@ fn prepare_picker_for_pool_mutation<'picker>(
 #[allow(clippy::too_many_arguments)]
 fn finish_renderer_column_upsert<'a>(
     inner: data_render::column_pool::ColumnUpsert<'a>,
+    streaming_sources: &'a HashMap<ColumnId, RegisteredStreamColumn>,
     changed_column: &str,
     old_layout_generation: u64,
     chart_states: &'a mut HashMap<ChartId, ChartRenderState>,
@@ -2437,6 +2723,7 @@ fn finish_renderer_column_upsert<'a>(
     };
 
     Ok(RendererColumnUpsert {
+        streaming_sources,
         inner: Some(inner),
         chart_states,
         visual_revision,
@@ -4059,8 +4346,44 @@ fn scatter_pick_anchor_may_be_visible(
         || scatter_config_radius_px(scatter, point_index, use_style_mapping) > 0.0
 }
 
-fn validate_registered_column(pool: &ColumnPool, id: &str) -> Result<()> {
-    if pool.slot(id).is_some() {
+fn require_resident_sources(
+    sources: &HashMap<ColumnId, RegisteredStreamColumn>,
+    series: &SeriesConfig,
+) -> Result<()> {
+    let mut result = Ok(());
+    visit_series_columns(series, &mut |id| {
+        if result.is_ok() && sources.contains_key(id) {
+            result = Err(FiggyError::ColumnNotResident { id: id.to_owned() });
+        }
+    });
+    result
+}
+
+trait ColumnRegistration {
+    fn column_len(&self, id: &str) -> Option<u64>;
+
+    fn contains_column(&self, id: &str) -> bool {
+        self.column_len(id).is_some()
+    }
+}
+
+impl ColumnRegistration for ColumnPool {
+    fn column_len(&self, id: &str) -> Option<u64> {
+        self.slot(id).map(|slot| slot.len_values as u64)
+    }
+}
+
+impl ColumnRegistration for (&ColumnPool, &HashMap<ColumnId, RegisteredStreamColumn>) {
+    fn column_len(&self, id: &str) -> Option<u64> {
+        self.1
+            .get(id)
+            .map(|source| source.len)
+            .or_else(|| self.0.column_len(id))
+    }
+}
+
+fn validate_registered_column(pool: &impl ColumnRegistration, id: &str) -> Result<()> {
+    if pool.contains_column(id) {
         Ok(())
     } else {
         Err(FiggyError::UnknownColumn { id: id.to_owned() })
@@ -4102,7 +4425,7 @@ fn validate_chart_view_state(view: &ChartViewState) -> Result<()> {
     validate_axis_view_state("right_y", &view.right_y)
 }
 
-fn validate_error_ref_columns(pool: &ColumnPool, error: &ErrorRef) -> Result<()> {
+fn validate_error_ref_columns(pool: &impl ColumnRegistration, error: &ErrorRef) -> Result<()> {
     match error {
         ErrorRef::Symmetric { column } => validate_registered_column(pool, column),
         ErrorRef::Asymmetric { lower, upper } => {
@@ -4153,6 +4476,30 @@ fn series_list_references_any_column<'i>(
     })
 }
 
+fn try_insert_column_id(
+    ids: &mut std::collections::HashSet<ColumnId>,
+    id: &str,
+    resource: &'static str,
+) -> Result<bool> {
+    if ids.contains(id) {
+        return Ok(false);
+    }
+    ids.try_reserve(1)
+        .map_err(|error| FiggyError::StateAllocationFailed {
+            resource,
+            reason: error.to_string(),
+        })?;
+    let mut owned = String::new();
+    owned
+        .try_reserve_exact(id.len())
+        .map_err(|error| FiggyError::StateAllocationFailed {
+            resource,
+            reason: error.to_string(),
+        })?;
+    owned.push_str(id);
+    Ok(ids.insert(owned))
+}
+
 fn prepare_load_demo_chart_plan(
     chart_states: &HashMap<ChartId, ChartRenderState>,
     chart_order: &[ChartId],
@@ -4189,6 +4536,7 @@ fn prepare_load_demo_chart_plan(
             .successor("chart desired revision")?;
         if is_target {
             next.config = state.revisions.config.successor("chart config revision")?;
+            next.selection = selection_config_revision(state.revisions.selection, &state.config, &config)?;
             next.series = state.revisions.series.successor("chart series revision")?;
             if !data_series_declarations_equal(&state.series, &series)
                 || series_list_references_any_column(&state.series, DEMO_COLUMN_IDS.iter().copied())
@@ -4196,9 +4544,7 @@ fn prepare_load_demo_chart_plan(
             {
                 next.data = state.revisions.data.successor("chart data revision")?;
             }
-            if ChartViewState::from_config(&state.config) != ChartViewState::from_config(&config)
-                || state.config.draw_style != config.draw_style
-            {
+            if !stream_config_equal(&state.config, &config) {
                 next.view = state.revisions.view.successor("chart view revision")?;
             }
             next.raster = state.revisions.raster.successor("chart raster revision")?;
@@ -4294,7 +4640,7 @@ fn visit_series_columns(series: &SeriesConfig, visit: &mut impl FnMut(&str)) {
 /// The config is needed because a field series is only fully declared with it:
 /// `Config.colorbar` owns the z range and colormap.
 fn validate_renderer_series(
-    pool: &ColumnPool,
+    pool: &impl ColumnRegistration,
     config: &Config,
     series: &[SeriesConfig],
 ) -> Result<()> {
@@ -4366,23 +4712,30 @@ fn axis_fit_stamp(axis: &AxisOptions) -> (u8, u64, u64) {
 
 fn push_fit_column_stamp(
     pool: &ColumnPool,
+    streaming_sources: &HashMap<ColumnId, RegisteredStreamColumn>,
     columns: &mut Vec<FitColumnStamp>,
     role: u32,
     id: &str,
 ) -> Result<()> {
-    let allocation_epoch = pool
-        .allocation_epoch(id)
+    let source = streaming_sources
+        .get(id)
+        .map(|streamed| FitColumnSourceStamp::StreamedRegistration {
+            revision: streamed.column.revision,
+            fit_epoch: streamed.fit_epoch,
+        })
+        .or_else(|| pool.allocation_epoch(id).map(FitColumnSourceStamp::ResidentAllocation))
         .ok_or_else(|| FiggyError::UnknownColumn { id: id.to_string() })?;
     columns.push(FitColumnStamp {
         role,
         id: id.to_string(),
-        allocation_epoch,
+        source,
     });
     Ok(())
 }
 
 fn push_fit_error_stamps(
     pool: &ColumnPool,
+    streaming_sources: &HashMap<ColumnId, RegisteredStreamColumn>,
     columns: &mut Vec<FitColumnStamp>,
     error: &ErrorRef,
     lower_role: u32,
@@ -4390,18 +4743,19 @@ fn push_fit_error_stamps(
 ) -> Result<()> {
     match error {
         ErrorRef::Symmetric { column } => {
-            push_fit_column_stamp(pool, columns, lower_role, column)?;
-            push_fit_column_stamp(pool, columns, upper_role, column)
+            push_fit_column_stamp(pool, streaming_sources, columns, lower_role, column)?;
+            push_fit_column_stamp(pool, streaming_sources, columns, upper_role, column)
         }
         ErrorRef::Asymmetric { lower, upper } => {
-            push_fit_column_stamp(pool, columns, lower_role, lower)?;
-            push_fit_column_stamp(pool, columns, upper_role, upper)
+            push_fit_column_stamp(pool, streaming_sources, columns, lower_role, lower)?;
+            push_fit_column_stamp(pool, streaming_sources, columns, upper_role, upper)
         }
     }
 }
 
 fn build_fit_token_from_state(
     pool: &ColumnPool,
+    streaming_sources: &HashMap<ColumnId, RegisteredStreamColumn>,
     renderer_identity: u64,
     chart_id: ChartId,
     state: &ChartRenderState,
@@ -4421,13 +4775,13 @@ fn build_fit_token_from_state(
                 resource: "fit role-column stamps",
                 reason: error.to_string(),
             })?;
-        push_fit_column_stamp(pool, &mut columns, 0, &item.x_column)?;
-        push_fit_column_stamp(pool, &mut columns, 1, &item.y_column)?;
+        push_fit_column_stamp(pool, streaming_sources, &mut columns, 0, &item.x_column)?;
+        push_fit_column_stamp(pool, streaming_sources, &mut columns, 1, &item.y_column)?;
         if let Some(error) = extract_err_x(&item.render_type) {
-            push_fit_error_stamps(pool, &mut columns, error, 2, 3)?;
+            push_fit_error_stamps(pool, streaming_sources, &mut columns, error, 2, 3)?;
         }
         if let Some(error) = extract_err_y(&item.render_type) {
-            push_fit_error_stamps(pool, &mut columns, error, 4, 5)?;
+            push_fit_error_stamps(pool, streaming_sources, &mut columns, error, 4, 5)?;
         }
         if let Some(matrix) = extract_matrix(&item.render_type) {
             columns.try_reserve(matrix.columns.len()).map_err(|error| {
@@ -4439,6 +4793,7 @@ fn build_fit_token_from_state(
             for (index, id) in matrix.columns.iter().enumerate() {
                 push_fit_column_stamp(
                     pool,
+                    streaming_sources,
                     &mut columns,
                     6u32.saturating_add(u32::try_from(index).unwrap_or(u32::MAX)),
                     id,
@@ -4521,6 +4876,7 @@ fn build_web_derived_stamp_from_state(
 
 fn build_web_derived_snapshot_from_state(
     pool: &ColumnPool,
+    streaming_sources: &HashMap<ColumnId, RegisteredStreamColumn>,
     renderer_identity: u64,
     chart_id: ChartId,
     state: &ChartRenderState,
@@ -4533,7 +4889,13 @@ fn build_web_derived_snapshot_from_state(
         state,
         data_revision,
     )?;
-    let fit_token = build_fit_token_from_state(pool, renderer_identity, chart_id, state)?;
+    let fit_token = build_fit_token_from_state(
+        pool,
+        streaming_sources,
+        renderer_identity,
+        chart_id,
+        state,
+    )?;
     let mut series = Vec::new();
     series
         .try_reserve(state.series.len())
@@ -4895,6 +5257,10 @@ impl Renderer {
             caps,
             pool,
             chart_states: HashMap::new(),
+            streaming_sources: HashMap::new(),
+            stream_revision_lineage: HashMap::new(),
+            next_stream_source_fit_epoch: 0,
+            stream_runtime: None,
             chart_order: Vec::new(),
             next_chart_id: 0,
             visual_revision: RenderRevision::initial(renderer_identity),
@@ -4926,6 +5292,7 @@ impl Renderer {
             surface_format,
             gpu_ledger,
             memory_budget: None,
+            auto_resident_working_set_limit: None,
         })
     }
 
@@ -5009,6 +5376,10 @@ impl Renderer {
             caps,
             pool,
             chart_states: HashMap::new(),
+            streaming_sources: HashMap::new(),
+            stream_revision_lineage: HashMap::new(),
+            next_stream_source_fit_epoch: 0,
+            stream_runtime: None,
             chart_order: Vec::new(),
             next_chart_id: 0,
             visual_revision: RenderRevision::initial(renderer_identity),
@@ -5040,6 +5411,7 @@ impl Renderer {
             surface_format,
             gpu_ledger,
             memory_budget: None,
+            auto_resident_working_set_limit: None,
         })
     }
 
@@ -5084,6 +5456,558 @@ impl Renderer {
         self.memory_budget
     }
 
+    /// Check whether an exact resident working set fits every declared static
+    /// resource constraint without allocating or mutating renderer state.
+    ///
+    /// The check includes ALIGN-padded column storage, upload staging, a pool
+    /// compaction/growth candidate, persistent derived bytes, caller-declared
+    /// transition headroom, current live resources, and resources retired but
+    /// not yet released by the GPU. It also applies the current pool policies,
+    /// the device's combined buffer/storage-binding ceiling, the working-set
+    /// cap, and [`Self::memory_budget`].
+    ///
+    /// Without a host memory budget the result is fail-closed as
+    /// [`ResidentAdmissionStatus::MemoryBudgetUnset`]: WebGPU exposes device
+    /// limits but not free VRAM. An admissible result is not a reservation, so
+    /// the eventual atomic transition must repeat allocation-time checks and
+    /// remain failure-atomic.
+    pub fn resident_admission(&self, request: ResidentAdmissionRequest<'_>) -> ResidentAdmission {
+        use crate::data::COLUMN_VALUE_BYTES;
+        use crate::data_render::column_pool::{ALIGN, ResidentBatchCapacityError};
+
+        let usage = self.gpu_memory_usage();
+        let Some(current_gpu_bytes) = usage.checked_total_bytes() else {
+            return ResidentAdmission {
+                status: ResidentAdmissionStatus::ArithmeticOverflow,
+                resident_column_bytes: 0,
+                resident_working_set_bytes: 0,
+                derived_resident_bytes: 0,
+                upload_staging_bytes: 0,
+                pool_capacity_before: self.pool.capacity(),
+                pool_capacity_after: self.pool.capacity(),
+                pool_transition_bytes: 0,
+                pool_free_bytes: self.pool.free_bytes(),
+                pool_largest_free_bytes: self.pool.largest_free_region(),
+                current_gpu_bytes: u64::MAX,
+                transition_peak_bytes: u64::MAX,
+                working_set_limit_bytes: request.working_set_limit_bytes,
+                memory_budget_bytes: self.memory_budget,
+                device_buffer_limit_bytes: self
+                    .caps
+                    .max_buffer_size
+                    .min(self.caps.max_storage_buffer_binding_size),
+            };
+        };
+        let device_buffer_limit_bytes = self
+            .caps
+            .max_buffer_size
+            .min(self.caps.max_storage_buffer_binding_size);
+        let mut report = ResidentAdmission {
+            status: ResidentAdmissionStatus::ArithmeticOverflow,
+            resident_column_bytes: 0,
+            resident_working_set_bytes: 0,
+            derived_resident_bytes: 0,
+            upload_staging_bytes: 0,
+            pool_capacity_before: self.pool.capacity(),
+            pool_capacity_after: self.pool.capacity(),
+            pool_transition_bytes: 0,
+            pool_free_bytes: self.pool.free_bytes(),
+            pool_largest_free_bytes: self.pool.largest_free_region(),
+            current_gpu_bytes,
+            transition_peak_bytes: current_gpu_bytes,
+            working_set_limit_bytes: request.working_set_limit_bytes,
+            memory_budget_bytes: self.memory_budget,
+            device_buffer_limit_bytes,
+        };
+
+        for (column, &length) in request.column_value_counts.iter().enumerate() {
+            if length > u64::from(u32::MAX) || usize::try_from(length).is_err() {
+                report.status =
+                    ResidentAdmissionStatus::ColumnLengthLimitExceeded { column, length };
+                return report;
+            }
+            if length == 0 {
+                continue;
+            }
+            let Some(raw_bytes) = length.checked_mul(COLUMN_VALUE_BYTES as u64) else {
+                return report;
+            };
+            let Some(region_bytes) = raw_bytes
+                .checked_add(ALIGN - 1)
+                .map(|bytes| bytes & !(ALIGN - 1))
+            else {
+                return report;
+            };
+            if region_bytes > device_buffer_limit_bytes {
+                report.status = ResidentAdmissionStatus::DeviceBufferLimitExceeded;
+                return report;
+            }
+            let Some(total) = report.resident_column_bytes.checked_add(region_bytes) else {
+                return report;
+            };
+            report.resident_column_bytes = total;
+        }
+        report.upload_staging_bytes = report.resident_column_bytes;
+        for (buffer, &bytes) in request.derived_buffer_sizes.iter().enumerate() {
+            if bytes > device_buffer_limit_bytes {
+                report.status =
+                    ResidentAdmissionStatus::DerivedBufferLimitExceeded { buffer, bytes };
+                return report;
+            }
+            let Some(total) = report.derived_resident_bytes.checked_add(bytes) else {
+                return report;
+            };
+            report.derived_resident_bytes = total;
+        }
+        let Some(working_set_bytes) = report
+            .resident_column_bytes
+            .checked_add(report.derived_resident_bytes)
+            .and_then(|bytes| bytes.checked_add(request.already_resident_working_set_bytes))
+        else {
+            return report;
+        };
+        report.resident_working_set_bytes = working_set_bytes;
+        if working_set_bytes > request.working_set_limit_bytes {
+            report.status = ResidentAdmissionStatus::WorkingSetLimitExceeded;
+            return report;
+        }
+
+        let pool_plan = match self
+            .pool
+            .plan_resident_batch_capacity(report.resident_column_bytes, device_buffer_limit_bytes)
+        {
+            Ok(plan) => plan,
+            Err(ResidentBatchCapacityError::Overflow) => return report,
+            Err(ResidentBatchCapacityError::DeviceLimit) => {
+                report.status = ResidentAdmissionStatus::DeviceBufferLimitExceeded;
+                return report;
+            }
+            Err(ResidentBatchCapacityError::Policy) => {
+                report.status = ResidentAdmissionStatus::PoolCapacityUnavailable;
+                return report;
+            }
+        };
+        report.pool_capacity_after = pool_plan.capacity_after;
+        report.pool_transition_bytes = pool_plan.transition_bytes;
+
+        let Some(transition_peak_bytes) = current_gpu_bytes
+            .checked_add(pool_plan.transition_bytes)
+            .and_then(|bytes| bytes.checked_add(report.upload_staging_bytes))
+            .and_then(|bytes| bytes.checked_add(report.derived_resident_bytes))
+            .and_then(|bytes| bytes.checked_add(request.transition_headroom_bytes))
+        else {
+            return report;
+        };
+        report.transition_peak_bytes = transition_peak_bytes;
+        let Some(memory_budget) = self.memory_budget else {
+            report.status = ResidentAdmissionStatus::MemoryBudgetUnset;
+            return report;
+        };
+        report.status = if transition_peak_bytes > memory_budget {
+            ResidentAdmissionStatus::MemoryBudgetExceeded
+        } else {
+            ResidentAdmissionStatus::Admissible
+        };
+        report
+    }
+
+    fn transition_column_closure<'i>(
+        &self,
+        roots: impl Iterator<Item = &'i str>,
+    ) -> Result<std::collections::HashSet<ColumnId>> {
+        let mut closure = std::collections::HashSet::new();
+        for id in roots {
+            try_insert_column_id(&mut closure, id, "column transition closure")?;
+        }
+
+        loop {
+            let before = closure.len();
+            for state in self.chart_states.values() {
+                let touches = state.series.iter().any(|series| {
+                    let mut touches = false;
+                    visit_series_columns(series, &mut |id| touches |= closure.contains(id));
+                    touches
+                });
+                if !touches {
+                    continue;
+                }
+                let mut insertion_error = None;
+                for series in &state.series {
+                    visit_series_columns(series, &mut |id| {
+                        if insertion_error.is_none()
+                            && let Err(error) =
+                                try_insert_column_id(&mut closure, id, "column transition closure")
+                        {
+                            insertion_error = Some(error);
+                        }
+                    });
+                }
+                if let Some(error) = insertion_error {
+                    return Err(error);
+                }
+            }
+            if closure.len() == before {
+                return Ok(closure);
+            }
+        }
+    }
+
+    fn validated_streamed_promotion_lengths(
+        &self,
+        sources: &[crate::StreamSourceBinding<'_>],
+    ) -> Result<Vec<u64>> {
+        let mut lengths = Vec::new();
+        lengths.try_reserve_exact(sources.len()).map_err(|error| {
+            FiggyError::StateAllocationFailed {
+                resource: "streamed promotion lengths",
+                reason: error.to_string(),
+            }
+        })?;
+        let mut seen = std::collections::HashSet::new();
+        seen.try_reserve(sources.len())
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "streamed promotion id set",
+                reason: error.to_string(),
+            })?;
+        for binding in sources {
+            if !seen.insert(binding.id) {
+                return Err(FiggyError::InvalidStreamSource {
+                    id: binding.id.to_owned(),
+                    reason: "promotion source id appears more than once",
+                });
+            }
+            if self.pool.slot(binding.id).is_some() {
+                return Err(FiggyError::InvalidStreamSource {
+                    id: binding.id.to_owned(),
+                    reason: "promotion source is already resident",
+                });
+            }
+            let registered = self.streaming_sources.get(binding.id).ok_or_else(|| {
+                FiggyError::UnknownColumn {
+                    id: binding.id.to_owned(),
+                }
+            })?;
+            if registered.revision != binding.revision {
+                return Err(FiggyError::InvalidStreamSource {
+                    id: binding.id.to_owned(),
+                    reason: "promotion source revision does not match the registered revision",
+                });
+            }
+            let len = u64::try_from(binding.source.len()).map_err(|_| {
+                FiggyError::InvalidStreamSource {
+                    id: binding.id.to_owned(),
+                    reason: "promotion source length exceeds the host index representation",
+                }
+            })?;
+            if len == 0 {
+                return Err(FiggyError::InvalidStreamSource {
+                    id: binding.id.to_owned(),
+                    reason: "empty streamed columns cannot become resident",
+                });
+            }
+            if registered.len != len {
+                return Err(FiggyError::InvalidStreamSource {
+                    id: binding.id.to_owned(),
+                    reason: "promotion source length does not match the registered length",
+                });
+            }
+            if registered.encoding != binding.source.encoding() {
+                return Err(FiggyError::InvalidStreamSource {
+                    id: binding.id.to_owned(),
+                    reason: "promotion source encoding does not match the registered encoding",
+                });
+            }
+            lengths.push(len);
+        }
+        let closure = self.transition_column_closure(seen.iter().copied())?;
+        if let Some(missing) = closure.iter().find(|id| !seen.contains(id.as_str())) {
+            return Err(FiggyError::InvalidStreamSource {
+                id: missing.clone(),
+                reason: "promotion must cover the complete referenced-column chart closure",
+            });
+        }
+        Ok(lengths)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn resident_admission_for_validated_streamed_lengths(
+        &self,
+        lengths: &[u64],
+        already_resident_working_set_bytes: u64,
+        derived_buffer_sizes: &[u64],
+        transition_headroom_bytes: u64,
+        working_set_limit_bytes: u64,
+    ) -> ResidentAdmission {
+        let mut report = self.resident_admission(ResidentAdmissionRequest {
+            column_value_counts: lengths,
+            already_resident_working_set_bytes,
+            derived_buffer_sizes,
+            transition_headroom_bytes,
+            working_set_limit_bytes,
+        });
+
+        let needs_candidate = report.resident_column_bytes > report.pool_largest_free_bytes;
+        let planned = matches!(
+            report.status,
+            ResidentAdmissionStatus::Admissible
+                | ResidentAdmissionStatus::MemoryBudgetUnset
+                | ResidentAdmissionStatus::MemoryBudgetExceeded
+        );
+        if needs_candidate && planned {
+            // The general pool planner may report zero transition bytes when a
+            // ping-pong backup exists. Promotion cannot borrow that buffer
+            // without moving live rollback ownership, so its dedicated atomic
+            // guard uses a fresh candidate and this helper charges it exactly.
+            report.pool_transition_bytes = report.pool_capacity_after;
+            let Some(peak) = report
+                .current_gpu_bytes
+                .checked_add(report.pool_transition_bytes)
+                .and_then(|bytes| bytes.checked_add(report.upload_staging_bytes))
+                .and_then(|bytes| bytes.checked_add(report.derived_resident_bytes))
+                .and_then(|bytes| bytes.checked_add(transition_headroom_bytes))
+            else {
+                report.status = ResidentAdmissionStatus::ArithmeticOverflow;
+                report.transition_peak_bytes = u64::MAX;
+                return report;
+            };
+            report.transition_peak_bytes = peak;
+            report.status = match report.memory_budget_bytes {
+                None => ResidentAdmissionStatus::MemoryBudgetUnset,
+                Some(limit) if peak > limit => ResidentAdmissionStatus::MemoryBudgetExceeded,
+                Some(_) => ResidentAdmissionStatus::Admissible,
+            };
+        }
+        report
+    }
+
+    /// Validate exact same-revision streamed sources and report whether their
+    /// failure-atomic promotion can fit the resident path.
+    ///
+    /// Unlike [`Self::resident_admission`], this helper derives column lengths
+    /// from the bindings and accounts for the complete candidate slab required
+    /// when promotion must compact or grow. It performs no upload and retains
+    /// no borrowed source.
+    #[allow(clippy::too_many_arguments)]
+    pub fn resident_admission_for_streamed_columns(
+        &self,
+        sources: &[crate::StreamSourceBinding<'_>],
+        already_resident_working_set_bytes: u64,
+        derived_buffer_sizes: &[u64],
+        transition_headroom_bytes: u64,
+        working_set_limit_bytes: u64,
+    ) -> Result<ResidentAdmission> {
+        let lengths = self.validated_streamed_promotion_lengths(sources)?;
+        Ok(self.resident_admission_for_validated_streamed_lengths(
+            &lengths,
+            already_resident_working_set_bytes,
+            derived_buffer_sizes,
+            transition_headroom_bytes,
+            working_set_limit_bytes,
+        ))
+    }
+
+    fn automatic_resident_derived_buffers(
+        &self,
+        chart: ChartId,
+        render_config: &Config,
+        sources: &[crate::StreamSourceBinding<'_>],
+    ) -> Result<Vec<u64>> {
+        let mut lengths = HashMap::new();
+        lengths
+            .try_reserve(sources.len())
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "automatic resident source lengths",
+                reason: error.to_string(),
+            })?;
+        for source in sources {
+            let len = u64::try_from(source.source.len()).map_err(|_| {
+                FiggyError::InvalidStreamSource {
+                    id: source.id.to_owned(),
+                    reason: "automatic resident source length exceeds the host index representation",
+                }
+            })?;
+            lengths.insert(source.id, len);
+        }
+
+        self.automatic_resident_derived_buffers_for_lengths(chart, render_config, &lengths)
+    }
+
+    fn automatic_resident_derived_buffers_for_lengths(
+        &self,
+        chart: ChartId,
+        render_config: &Config,
+        lengths: &HashMap<&str, u64>,
+    ) -> Result<Vec<u64>> {
+        let closure = self.transition_column_closure(lengths.keys().copied())?;
+
+        let mut buffers = Vec::new();
+        for chart_id in &self.chart_order {
+            let state = self
+                .chart_states
+                .get(chart_id)
+                .ok_or(FiggyError::UnknownChart { id: *chart_id })?;
+            if !series_list_references_any_column(
+                &state.series,
+                closure.iter().map(String::as_str),
+            ) {
+                continue;
+            }
+            let config = if *chart_id == chart {
+                render_config
+            } else {
+                &state.config
+            };
+            let variant = style_variant(&config.draw_style);
+            for series in &state.series {
+                if matches!(
+                    series.render_type,
+                    DataRenderType::Contour { .. }
+                        | DataRenderType::HeatmapContour { .. }
+                ) {
+                    return Err(FiggyError::InvalidSeriesConfig {
+                        series_id: series.series_id.clone(),
+                        reason: "automatic resident transition does not yet size contour derived buffers"
+                            .into(),
+                    });
+                }
+
+                if let DataRenderType::Heatmap { matrix, .. } = &series.render_type {
+                    let bar = config.colorbar.as_ref().ok_or_else(|| FiggyError::InvalidSeriesConfig {
+                        series_id: series.series_id.clone(), reason: "a field series needs Config.colorbar".into(),
+                    })?;
+                    let selected = config.picked_data.as_ref().filter(|picked| picked.visible)
+                        .map_or(0, |picked| picked.refs.iter().filter(|pick| {
+                            picked_data_ref_matches_series(series, pick)
+                                && matches!(pick, PickedDataRef::MatrixCell { x_index, y_index, .. }
+                                    if u32::try_from(*x_index).is_ok() && u32::try_from(*y_index).is_ok())
+                        }).count());
+                    buffers.try_reserve(7usize.checked_add(selected).ok_or_else(|| FiggyError::StateAllocationFailed {
+                        resource: "automatic resident field buffer sizes", reason: "buffer count overflow".into(),
+                    })?).map_err(|error| {
+                        FiggyError::StateAllocationFailed { resource: "automatic resident field buffer sizes", reason: error.to_string() }
+                    })?;
+                    buffers.extend([
+                        matrix.columns.len().max(1) as u64 * 8,
+                        4, bar.colormap.stops().len().max(1) as u64 * 16,
+                        16, 8, std::mem::size_of::<data_render::FieldParamsGpu>() as u64,
+                        std::mem::size_of::<PrimitiveStyle>() as u64,
+                    ]);
+                    buffers.extend(std::iter::repeat_n(std::mem::size_of::<data_render::DataSelectionGpu>() as u64, selected));
+                }
+
+                let primitives =
+                    effective_series_primitives(&config.draw_style, &series.render_type);
+                let dashed = primitives.line
+                    && extract_line(&series.render_type)
+                        .is_some_and(|line| !matches!(line.line_style, LineStylePreset::Solid));
+                let arc_wanted = dashed
+                    || (variant.is_some_and(|style| style.needs_arc_prefix) && primitives.line);
+                if arc_wanted {
+                    let x = lengths.get(series.x_column.as_str()).ok_or_else(|| {
+                        FiggyError::InvalidStreamSource {
+                            id: series.x_column.clone(),
+                            reason: "automatic resident closure has no x source",
+                        }
+                    })?;
+                    let y = lengths.get(series.y_column.as_str()).ok_or_else(|| {
+                        FiggyError::InvalidStreamSource {
+                            id: series.y_column.clone(),
+                            reason: "automatic resident closure has no y source",
+                        }
+                    })?;
+                    let n = u32::try_from((*x).min(*y)).map_err(|_| {
+                        FiggyError::InvalidStreamSource {
+                            id: series.series_id.clone(),
+                            reason: "automatic resident arc length exceeds the global index representation",
+                        }
+                    })?;
+                    if n >= 2 {
+                        let star = matches!(config.draw_style, DrawStyle::Milkyway(_));
+                        let plan = data_render::line_arc::buffer_plan(
+                            n,
+                            self.caps.max_compute_workgroups_per_dimension,
+                            None,
+                            star,
+                        )
+                        .ok_or_else(|| FiggyError::GpuResourceLimit {
+                            resource: "automatic resident arc scan",
+                            requested: u64::from(n),
+                            limit: 0,
+                        })?;
+                        buffers.try_reserve(plan.buffer_count()).map_err(|error| {
+                            FiggyError::StateAllocationFailed {
+                                resource: "automatic resident derived buffer sizes",
+                                reason: error.to_string(),
+                            }
+                        })?;
+                        plan.visit_sizes(|bytes| buffers.push(bytes));
+                    }
+                }
+
+                if let DataRenderType::Histogram { bar } = &series.render_type {
+                    let pixels = match bar.orientation {
+                        crate::data_config::BarOrientation::Vertical => config.chart_area.0.width,
+                        crate::data_config::BarOrientation::Horizontal => config.chart_area.0.height,
+                    }
+                    .max(1);
+                    buffers.try_reserve(2).map_err(|error| {
+                        FiggyError::StateAllocationFailed {
+                            resource: "automatic resident histogram buffer sizes",
+                            reason: error.to_string(),
+                        }
+                    })?;
+                    buffers.push(16); // histogram envelope params
+                    buffers.push(u64::from(pixels) * 4); // one atomic winner per pixel
+                }
+            }
+        }
+        Ok(buffers)
+    }
+
+    /// Attempt the renderer-selected streamed -> resident transition for one
+    /// complete referenced-column closure.
+    ///
+    /// `None` means native explicit-control mode is still active because no
+    /// automatic working-set cap was configured. `Some(non-admissible)` keeps
+    /// the exact streamed representation unchanged. `Some(Admissible)` means
+    /// the failure-atomic promotion committed. A running stream is never
+    /// interrupted for the attempt. A terminal streamed display may hand off:
+    /// it remains published through admission/allocation and is retired only
+    /// after the resident commit succeeds.
+    pub fn try_promote_streamed_chart_to_resident(
+        &mut self,
+        chart: ChartId,
+        render_config: &Config,
+        sources: &[crate::StreamSourceBinding<'_>],
+    ) -> Result<Option<ResidentAdmission>> {
+        let Some(working_set_limit_bytes) = self.auto_resident_working_set_limit else {
+            return Ok(None);
+        };
+        crate::chart::validate_renderer_config(render_config)?;
+        self.service_stream_requests();
+        let active = self.active_stream_job(chart).is_some();
+        if active && !self.active_auto_stream_is_terminal(chart) {
+            return Err(FiggyError::StaleStateToken {
+                reason: "automatic resident transition cannot interrupt a running stream".into(),
+            });
+        }
+        // Validate the complete closure before deriving any chart-dependent
+        // resource sizes. Promotion repeats the validation at allocation time.
+        self.validated_streamed_promotion_lengths(sources)?;
+        let derived = self.automatic_resident_derived_buffers(chart, render_config, sources)?;
+        let report = self.promote_streamed_columns_to_resident(
+            sources,
+            0,
+            &derived,
+            0,
+            working_set_limit_bytes,
+        )?;
+        if report.is_admissible() && active {
+            self.retire_stream_after_resident_commit(chart);
+        }
+        Ok(Some(report))
+    }
+
     /// Declare a ceiling for all renderer GPU bytes, pool included.
     ///
     /// **What it governs.** Growth. It applies from the next allocation onward
@@ -5108,16 +6032,46 @@ impl Renderer {
         (current > ceiling).then_some(current)
     }
 
-    /// Submission boundary: stop counting retired bytes after the host has
-    /// submitted every command buffer recorded before their owners were
-    /// released.
+    /// Set the policy cap used only by renderer-selected residency changes.
+    /// Native callers that never set this remain on the existing explicit
+    /// promote/demote API. Returning the previous cap makes temporary host
+    /// policy changes reversible without another getter.
+    pub fn set_auto_resident_working_set_limit(&mut self, limit: Option<u64>) -> Option<u64> {
+        std::mem::replace(&mut self.auto_resident_working_set_limit, limit)
+    }
+
+    /// Submission boundary: the host has submitted or discarded every command
+    /// buffer recorded before retired owners were released. Snapshot those
+    /// bytes now, but keep counting them until the queue reports completion.
     ///
     /// Split prepare/paint hosts call this once, after submitting all panels in
     /// the frame. Calling it from `prepare` would be too early because a host
     /// may still hold an unsubmitted command buffer. Idempotent.
     pub fn end_gpu_frame(&mut self) {
-        self.gpu_ledger.end_submission();
-        self.pool.clear_retired_bytes();
+        let batch = self.gpu_ledger.take_retirement();
+        let (pool_retired, pool_bytes) = self.pool.take_retirement();
+        if pool_bytes == 0 && batch.iter().all(|bytes| *bytes == 0) {
+            return;
+        }
+        let ledger = Arc::clone(&self.gpu_ledger);
+        self.queue.on_submitted_work_done(move || {
+            ledger.complete_retirement(batch);
+            pool_retired.complete(pool_bytes);
+        });
+    }
+
+    /// Service submitted GPU work and retirement callbacks without waiting.
+    ///
+    /// This does not submit work or report a submission boundary: call
+    /// [`Self::end_gpu_frame`] after submitting or discarding recorded commands
+    /// first. Native hosts must keep servicing completions even while idle if
+    /// they need retired memory to become available without another submission.
+    /// On WebGPU the browser delivers completion callbacks asynchronously.
+    /// Polling errors are returned to the host rather than treated as completion.
+    pub fn service_gpu_completions(
+        &self,
+    ) -> std::result::Result<wgpu::PollStatus, wgpu::PollError> {
+        self.device.poll(wgpu::PollType::Poll)
     }
 
     /// Handle onto the ledger, for resources this renderer creates but does
@@ -5188,6 +6142,12 @@ impl Renderer {
             .chart_states
             .get(&id)
             .ok_or(crate::gpu_pick::GpuPickError::UnknownChart(id))?;
+        for series in &state.series {
+            if let Err(FiggyError::ColumnNotResident { id }) = self.require_resident_series(series)
+            {
+                return Err(crate::gpu_pick::GpuPickError::ColumnNotResident(id));
+            }
+        }
         self.picker
             .prepare_chart(&self.pool, id, &state.config, &state.series)
     }
@@ -5255,6 +6215,9 @@ impl Renderer {
                 .chart_states
                 .get(&id)
                 .ok_or(FiggyError::UnknownChart { id })?;
+            for series in &state.series {
+                self.require_resident_series(series)?;
+            }
             (state.config.clone(), state.series.clone())
         };
 
@@ -5469,8 +6432,9 @@ impl Renderer {
     ///
     /// The reporting window for the smallest-common-extent rule: a length mismatch is drawn to the
     /// smallest common extent, never raised as an error, so this is how a host
-    /// learns that its 11-edge / 9-count histogram drew 9 bars. Reads the pool's
-    /// current lengths, so the answer follows an upsert without a re-prepare.
+    /// learns that its 11-edge / 9-count histogram describes 9 bars. Reads current
+    /// logical lengths, so the answer follows a replacement without a re-prepare.
+    /// This is the complete declared extent, not streaming progress.
     pub fn series_draw_info(&self, id: ChartId, series_id: &str) -> Result<SeriesDrawInfo> {
         let state = self
             .chart_states
@@ -5484,7 +6448,10 @@ impl Renderer {
                 series_id: series_id.to_string(),
                 reason: "no series with this id in the chart".to_string(),
             })?;
-        Ok(series_draw_info_from_pool(&self.pool, series))
+        Ok(series_draw_info_from_pool(
+            &(&self.pool, &self.streaming_sources),
+            series,
+        ))
     }
 
     pub fn chart_selection(&self, id: ChartId) -> Result<Option<HitId>> {
@@ -5518,7 +6485,7 @@ impl Renderer {
     /// are checked before any state is published.
     pub fn register_chart(&mut self, config: Config, series: Vec<SeriesConfig>) -> Result<ChartId> {
         crate::chart::validate_renderer_config(&config)?;
-        validate_renderer_series(&self.pool, &config, &series)?;
+        validate_renderer_series(&(&self.pool, &self.streaming_sources), &config, &series)?;
         let id_value = self
             .next_chart_id
             .checked_add(1)
@@ -5550,7 +6517,9 @@ impl Renderer {
             ChartRenderState {
                 config,
                 series,
+                prepared_styles: None,
                 selected: None,
+                stream_auto_fit_padding: None,
                 revisions: ChartRevisions::initial(chart_revision),
             },
         );
@@ -5591,10 +6560,7 @@ impl Renderer {
             .desired
             .successor("chart desired revision")?;
         let config_revision = state.revisions.config.successor("chart config revision")?;
-        let view = if ChartViewState::from_config(&state.config)
-            != ChartViewState::from_config(&config)
-            || state.config.draw_style != config.draw_style
-        {
+        let view = if !stream_config_equal(&state.config, &config) {
             state.revisions.view.successor("chart view revision")?
         } else {
             state.revisions.view
@@ -5604,6 +6570,7 @@ impl Renderer {
         let mut next_revisions = state.revisions;
         next_revisions.desired = desired;
         next_revisions.config = config_revision;
+        next_revisions.selection = selection_config_revision(state.revisions.selection, &state.config, &config)?;
         next_revisions.view = view;
         next_revisions.raster = raster;
 
@@ -5636,7 +6603,11 @@ impl Renderer {
             .ok_or(FiggyError::UnknownChart { id })?;
         // Validated against the chart's *current* config: this call replaces the
         // series only, so that config is what the new series will be drawn with.
-        validate_renderer_series(&self.pool, &state.config, &series)?;
+        validate_renderer_series(
+            &(&self.pool, &self.streaming_sources),
+            &state.config,
+            &series,
+        )?;
         let desired = state
             .revisions
             .desired
@@ -5689,7 +6660,7 @@ impl Renderer {
         series: Vec<SeriesConfig>,
     ) -> Result<()> {
         crate::chart::validate_renderer_config(&config)?;
-        validate_renderer_series(&self.pool, &config, &series)?;
+        validate_renderer_series(&(&self.pool, &self.streaming_sources), &config, &series)?;
         let state = self
             .chart_states
             .get(&id)
@@ -5705,10 +6676,7 @@ impl Renderer {
         } else {
             state.revisions.data.successor("chart data revision")?
         };
-        let view = if ChartViewState::from_config(&state.config)
-            != ChartViewState::from_config(&config)
-            || state.config.draw_style != config.draw_style
-        {
+        let view = if !stream_config_equal(&state.config, &config) {
             state.revisions.view.successor("chart view revision")?
         } else {
             state.revisions.view
@@ -5718,6 +6686,7 @@ impl Renderer {
         let mut next_revisions = state.revisions;
         next_revisions.desired = desired;
         next_revisions.config = config_revision;
+        next_revisions.selection = selection_config_revision(state.revisions.selection, &state.config, &config)?;
         next_revisions.series = series_revision;
         next_revisions.data = data;
         next_revisions.view = view;
@@ -5855,8 +6824,12 @@ impl Renderer {
             .chart_states
             .get(&id)
             .ok_or(FiggyError::UnknownChart { id })?;
+        for series in &state.series {
+            self.require_resident_series(series)?;
+        }
         build_web_derived_snapshot_from_state(
             &self.pool,
+            &self.streaming_sources,
             self.renderer_identity,
             id,
             state,
@@ -5869,7 +6842,46 @@ impl Renderer {
             .chart_states
             .get(&id)
             .ok_or(FiggyError::UnknownChart { id })?;
-        build_fit_token_from_state(&self.pool, self.renderer_identity, id, state)
+        build_fit_token_from_state(
+            &self.pool,
+            &self.streaming_sources,
+            self.renderer_identity,
+            id,
+            state,
+        )
+    }
+
+    /// Request progressive axis fitting for the next automatic streaming
+    /// execution. The request is renderer-owned and does not affect explicit
+    /// streaming or resident drawing.
+    pub fn request_stream_auto_fit(&mut self, id: ChartId, padding: f64) -> Result<()> {
+        if !padding.is_finite() || padding < 0.0 {
+            return Err(FiggyError::InvalidConfig {
+                field: "stream auto-fit padding",
+                reason: "padding must be finite and non-negative",
+            });
+        }
+        if self.try_cached_stream_auto_fit(id, padding)? {
+            return Ok(());
+        }
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        if state.stream_auto_fit_padding == Some(padding) {
+            return Ok(());
+        }
+        let desired = state
+            .revisions
+            .desired
+            .successor("chart desired revision")?;
+        let state = self
+            .chart_states
+            .get_mut(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        state.stream_auto_fit_padding = Some(padding);
+        state.revisions.desired = desired;
+        Ok(())
     }
 
     pub fn commit_auto_fit_all_if_current(
@@ -5890,8 +6902,13 @@ impl Renderer {
             .chart_states
             .get(&token.chart_id)
             .ok_or(FiggyError::UnknownChart { id: token.chart_id })?;
-        let current_fit =
-            build_fit_token_from_state(&self.pool, self.renderer_identity, token.chart_id, state)?;
+        let current_fit = build_fit_token_from_state(
+            &self.pool,
+            &self.streaming_sources,
+            self.renderer_identity,
+            token.chart_id,
+            state,
+        )?;
         if current_fit != *token {
             return Err(FiggyError::StaleStateToken {
                 reason: "axis range/scale, ordered fit geometry, or source column content changed"
@@ -6008,13 +7025,15 @@ impl Renderer {
             let config_revision = replace_config
                 .then(|| state.revisions.config.successor("chart config revision"))
                 .transpose()?;
+            let selection_revision = config_override.as_ref()
+                .filter(|(override_chart, _)| override_chart == chart_id)
+                .map(|(_, config)| selection_config_revision(state.revisions.selection, &state.config, config))
+                .transpose()?;
             let view = config_override
                 .as_ref()
                 .filter(|(override_chart, _)| override_chart == chart_id)
                 .and_then(|(_, config)| {
-                    (ChartViewState::from_config(&state.config)
-                        != ChartViewState::from_config(config)
-                        || state.config.draw_style != config.draw_style)
+                    (!stream_config_equal(&state.config, config))
                         .then(|| state.revisions.view.successor("chart view revision"))
                 })
                 .transpose()?;
@@ -6030,6 +7049,7 @@ impl Renderer {
                 }),
                 desired,
                 config_revision,
+                selection_revision,
                 series_revision,
                 data,
                 view,
@@ -6050,7 +7070,7 @@ impl Renderer {
         id: &str,
         config_override: Option<(ChartId, Config)>,
     ) -> Result<bool> {
-        if self.pool.slot(id).is_none() {
+        if self.pool.slot(id).is_none() && !self.streaming_sources.contains_key(id) {
             return Ok(false);
         }
         if let Some((chart_id, config)) = config_override.as_ref() {
@@ -6095,6 +7115,25 @@ impl Renderer {
         };
         let removed_column = id.to_string();
         let removal = self.prepare_column_removal(id, config_override)?;
+        if self.streaming_sources.contains_key(id) {
+            let picker = if let Some((chart_id, plan)) = active_plan {
+                self.picker
+                    .prepare_active_pool_mutation(&self.pool, chart_id, plan, &[])?
+            } else {
+                None
+            };
+            self.streaming_sources.remove(id);
+            self.stream_revision_lineage.remove(id);
+            removal.publish(
+                &mut self.chart_states,
+                &mut self.visual_revision,
+                &removed_column,
+            );
+            if let Some(picker) = picker {
+                picker.commit();
+            }
+            return Ok(true);
+        }
         let Some(inner) = self.pool.begin_remove_column(id)? else {
             return Ok(false);
         };
@@ -6104,7 +7143,7 @@ impl Renderer {
         } else {
             None
         };
-        Ok(PreparedColumnRemoval {
+        let removed = PreparedColumnRemoval {
             inner: Some(inner),
             chart_states: &mut self.chart_states,
             visual_revision: &mut self.visual_revision,
@@ -6113,7 +7152,11 @@ impl Renderer {
             picker,
             removed_column,
         }
-        .commit())
+        .commit();
+        if removed {
+            self.stream_revision_lineage.remove(id);
+        }
+        Ok(removed)
     }
 
     /// Rebuild render-target pipelines if the host swap-chain format changed.
@@ -6498,6 +7541,1098 @@ impl Renderer {
 
     // Column management (returns Result).
 
+    /// Look up either logical host metadata or the authoritative resident slot.
+    pub fn logical_column(&self, id: &str) -> Option<crate::LogicalColumn<'_>> {
+        self.streaming_sources
+            .get(id)
+            .map(|source| crate::LogicalColumn::Streamed(&source.column))
+            .or_else(|| self.pool.slot(id).map(crate::LogicalColumn::Resident))
+    }
+
+    fn reject_streamed_id(&self, id: &str) -> Result<()> {
+        if self.streaming_sources.contains_key(id) {
+            return Err(FiggyError::InvalidStreamSource {
+                id: id.to_owned(),
+                reason: "remove the streamed registration before resident insertion",
+            });
+        }
+        Ok(())
+    }
+
+    fn require_resident_series(&self, series: &SeriesConfig) -> Result<()> {
+        require_resident_sources(&self.streaming_sources, series)
+    }
+
+    /// Register any number of replayable sources without uploading or retaining
+    /// their payload. Existing ids are rejected, including resident ids.
+    pub fn register_streamed_columns(&mut self, columns: Vec<crate::StreamColumn>) -> Result<()> {
+        self.mutate_streamed_columns(columns, false)
+    }
+
+    /// Replace existing host metadata atomically. Each source revision must
+    /// strictly increase; bindings are unchanged and only dependent charts dirty.
+    pub fn replace_streamed_columns(&mut self, columns: Vec<crate::StreamColumn>) -> Result<()> {
+        self.mutate_streamed_columns(columns, true)
+    }
+
+    /// Commit complete statistics only for the still-current source revision.
+    /// Partial chunk extrema must never be passed here. Known statistics cannot
+    /// be overwritten; source changes require explicit revision replacement.
+    /// Statistics change fit tokens, not the source content or an in-flight
+    /// draw of that same revision.
+    #[cfg(test)]
+    fn commit_streamed_statistics(
+        &mut self,
+        id: &str,
+        revision: u64,
+        bounds: Option<crate::StreamBounds>,
+    ) -> Result<()> {
+        let source = self
+            .streaming_sources
+            .get(id)
+            .ok_or_else(|| FiggyError::UnknownColumn { id: id.to_owned() })?;
+        if source.revision != revision {
+            return Err(FiggyError::StaleStateToken {
+                reason: "source statistics revision changed".into(),
+            });
+        }
+        let statistics = crate::StreamStatistics::Known(bounds);
+        crate::streaming_source::validate_statistics(source.len, statistics).map_err(|reason| {
+            FiggyError::InvalidStreamSource {
+                id: id.to_owned(),
+                reason,
+            }
+        })?;
+        if let crate::StreamStatistics::Known(_) = source.statistics {
+            if source.statistics == statistics {
+                return Ok(());
+            }
+            return Err(FiggyError::InvalidStreamSource {
+                id: id.to_owned(),
+                reason: "complete statistics already committed for this revision",
+            });
+        }
+        let next_fit_epoch = self
+            .next_stream_source_fit_epoch
+            .checked_add(1)
+            .ok_or(FiggyError::CounterExhausted {
+                counter: "stream source fit epoch",
+            })?;
+        let source = self
+            .streaming_sources
+            .get_mut(id)
+            .expect("validated source remains registered");
+        source.column.statistics = statistics;
+        source.fit_epoch = next_fit_epoch;
+        self.next_stream_source_fit_epoch = next_fit_epoch;
+        Ok(())
+    }
+
+    fn mutate_streamed_columns(
+        &mut self,
+        columns: Vec<crate::StreamColumn>,
+        replace: bool,
+    ) -> Result<()> {
+        for (index, source) in columns.iter().enumerate() {
+            source.validate()?;
+            if self.pool.slot(&source.id).is_some()
+                || columns[..index].iter().any(|s| s.id == source.id)
+            {
+                return Err(data_render::AllocError::DuplicateId(source.id.clone()).into());
+            }
+            match (replace, self.streaming_sources.get(&source.id)) {
+                (false, Some(_)) => {
+                    return Err(data_render::AllocError::DuplicateId(source.id.clone()).into());
+                }
+                (true, None) => {
+                    return Err(FiggyError::UnknownColumn {
+                        id: source.id.clone(),
+                    });
+                }
+                (true, Some(old)) if source.revision <= old.revision => {
+                    return Err(FiggyError::InvalidStreamSource {
+                        id: source.id.clone(),
+                        reason: "replacement revision must strictly increase",
+                    });
+                }
+                _ => {}
+            }
+            if replace
+                && self
+                    .stream_revision_lineage
+                    .get(&source.id)
+                    .is_some_and(|last| source.revision <= *last)
+            {
+                return Err(FiggyError::InvalidStreamSource {
+                    id: source.id.clone(),
+                    reason: "replacement revision must exceed the logical stream lineage",
+                });
+            }
+        }
+        let count = u64::try_from(columns.len()).map_err(|_| FiggyError::CounterExhausted {
+            counter: "stream source fit epoch",
+        })?;
+        let final_fit_epoch = self
+            .next_stream_source_fit_epoch
+            .checked_add(count)
+            .ok_or(FiggyError::CounterExhausted {
+                counter: "stream source fit epoch",
+            })?;
+        let invalidation =
+            self.prepare_columns_invalidation(columns.iter().map(|s| s.id.as_str()))?;
+        self.streaming_sources
+            .try_reserve(columns.len())
+            .map_err(|e| FiggyError::StateAllocationFailed {
+                resource: "streaming source registry",
+                reason: e.to_string(),
+            })?;
+        self.stream_revision_lineage
+            .try_reserve(columns.len())
+            .map_err(|e| FiggyError::StateAllocationFailed {
+                resource: "stream revision lineage",
+                reason: e.to_string(),
+            })?;
+        // Reserve keys before publishing metadata or chart revisions.
+        let mut entries = Vec::new();
+        entries.try_reserve_exact(columns.len()).map_err(|e| {
+            FiggyError::StateAllocationFailed {
+                resource: "streaming source entries",
+                reason: e.to_string(),
+            }
+        })?;
+        let mut fit_epoch = self.next_stream_source_fit_epoch;
+        for mut source in columns {
+            fit_epoch = fit_epoch.checked_add(1).ok_or(FiggyError::CounterExhausted {
+                counter: "stream source fit epoch",
+            })?;
+            if source.len == 0 {
+                source.statistics = crate::StreamStatistics::Known(None);
+            }
+            let mut key = String::new();
+            key.try_reserve_exact(source.id.len()).map_err(|e| {
+                FiggyError::StateAllocationFailed {
+                    resource: "streaming source id",
+                    reason: e.to_string(),
+                }
+            })?;
+            key.push_str(&source.id);
+            let mut lineage_key = String::new();
+            lineage_key
+                .try_reserve_exact(source.id.len())
+                .map_err(|e| FiggyError::StateAllocationFailed {
+                    resource: "stream revision lineage id",
+                    reason: e.to_string(),
+                })?;
+            lineage_key.push_str(&source.id);
+            let revision = source.revision;
+            entries.push((
+                key,
+                lineage_key,
+                revision,
+                RegisteredStreamColumn {
+                    column: source,
+                    fit_epoch,
+                    statistics_cache: StreamStatisticsCache::default(),
+                },
+            ));
+        }
+        for (key, lineage_key, revision, source) in entries {
+            self.streaming_sources.insert(key, source);
+            self.stream_revision_lineage.insert(lineage_key, revision);
+        }
+        self.next_stream_source_fit_epoch = final_fit_epoch;
+        invalidation.publish(&mut self.chart_states, &mut self.visual_revision);
+        Ok(())
+    }
+
+    /// Promote exact registered stream revisions into the resident column pool
+    /// as one logical commit.
+    ///
+    /// A non-admissible report is returned without touching renderer state.
+    /// Source writes, pool allocation, chart invalidation and picker rebuilding
+    /// are all prepared before publication; any error keeps the streamed
+    /// registrations, series, picker, and existing resident layout unchanged.
+    #[allow(clippy::too_many_arguments)]
+    pub fn promote_streamed_columns_to_resident(
+        &mut self,
+        sources: &[crate::StreamSourceBinding<'_>],
+        already_resident_working_set_bytes: u64,
+        derived_buffer_sizes: &[u64],
+        transition_headroom_bytes: u64,
+        working_set_limit_bytes: u64,
+    ) -> Result<ResidentAdmission> {
+        // Admission is deliberately repeated at the allocating boundary. The
+        // earlier helper result is advisory, not a reservation.
+        // Freeze every host length in this validation pass: the pool plan and
+        // staging writer must not re-enter a mutable host source for sizing.
+        let lengths = self.validated_streamed_promotion_lengths(sources)?;
+        let report = self.resident_admission_for_validated_streamed_lengths(
+            &lengths,
+            already_resident_working_set_bytes,
+            derived_buffer_sizes,
+            transition_headroom_bytes,
+            working_set_limit_bytes,
+        );
+        if !report.is_admissible() || sources.is_empty() {
+            return Ok(report);
+        }
+
+        let invalidation =
+            self.prepare_columns_invalidation(sources.iter().map(|source| source.id))?;
+        let mut changed_columns = Vec::new();
+        changed_columns
+            .try_reserve_exact(sources.len())
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "streamed promotion changed columns",
+                reason: error.to_string(),
+            })?;
+        changed_columns.extend(sources.iter().map(|source| source.id));
+        let mut uploads = Vec::new();
+        uploads.try_reserve_exact(sources.len()).map_err(|error| {
+            FiggyError::StateAllocationFailed {
+                resource: "streamed promotion upload plan",
+                reason: error.to_string(),
+            }
+        })?;
+        uploads.extend(sources.iter().zip(&lengths).map(|(source, &len)| {
+            data_render::column_pool::StreamedColumnUpload {
+                id: source.id,
+                source: source.source,
+                len_values: usize::try_from(len)
+                    .expect("validated host length originated as usize"),
+            }
+        }));
+
+        let Renderer {
+            device,
+            queue,
+            pool,
+            streaming_sources,
+            chart_states,
+            visual_revision,
+            pending_defrag,
+            picker,
+            gpu_ledger,
+            memory_budget,
+            ..
+        } = self;
+        let promotion = pool.begin_streamed_promotion(
+            &uploads,
+            report.pool_capacity_after,
+            pool_alloc_ctx(
+                device.as_ref(),
+                queue.as_ref(),
+                *memory_budget,
+                gpu_ledger.as_ref(),
+            ),
+        )?;
+        let relocated = promotion.relocated();
+        let prepared_picker = prepare_picker_for_pool_mutation(
+            picker,
+            promotion.pool(),
+            chart_states,
+            relocated,
+            &changed_columns,
+        )?;
+
+        // No operation below this point allocates or can fail. Pool visibility,
+        // logical-source authority and dependent derived stamps therefore
+        // advance as one renderer commit.
+        promotion.commit();
+        for source in sources {
+            let removed = streaming_sources.remove(source.id);
+            debug_assert!(
+                removed.is_some(),
+                "validated stream source remains registered"
+            );
+        }
+        invalidation.publish(chart_states, visual_revision);
+        if let Some(prepared_picker) = prepared_picker {
+            prepared_picker.commit();
+        }
+        if relocated {
+            *pending_defrag = false;
+        }
+        Ok(report)
+    }
+
+    fn prepare_resident_stream_handoff(
+        &self,
+        chart: ChartId,
+        columns: Vec<crate::StreamColumn>,
+    ) -> Result<ResidentStreamHandoff> {
+        let state = self
+            .chart_states
+            .get(&chart)
+            .ok_or(FiggyError::UnknownChart { id: chart })?;
+        if columns.is_empty() {
+            return Err(FiggyError::InvalidStreamSource {
+                id: String::new(),
+                reason: "resident handoff requires the complete non-empty chart column closure",
+            });
+        }
+
+        let mut supplied = std::collections::HashSet::new();
+        supplied
+            .try_reserve(columns.len())
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "resident stream handoff id set",
+                reason: error.to_string(),
+            })?;
+        for source in &columns {
+            source.validate()?;
+            if !supplied.insert(source.id.as_str()) {
+                return Err(data_render::AllocError::DuplicateId(source.id.clone()).into());
+            }
+        }
+
+        let mut referenced = std::collections::HashSet::new();
+        referenced.try_reserve(columns.len()).map_err(|error| {
+            FiggyError::StateAllocationFailed {
+                resource: "resident stream handoff chart closure",
+                reason: error.to_string(),
+            }
+        })?;
+        let mut insertion_error = None;
+        for series in &state.series {
+            visit_series_columns(series, &mut |id| {
+                if insertion_error.is_none()
+                    && let Err(error) = try_insert_column_id(
+                        &mut referenced,
+                        id,
+                        "resident stream handoff chart closure",
+                    )
+                {
+                    insertion_error = Some(error);
+                }
+            });
+        }
+        if let Some(error) = insertion_error {
+            return Err(error);
+        }
+        if referenced.len() != supplied.len()
+            || referenced.iter().any(|id| !supplied.contains(id.as_str()))
+        {
+            return Err(FiggyError::InvalidStreamSource {
+                id: String::new(),
+                reason: "resident handoff metadata must exactly cover every column referenced by the target chart",
+            });
+        }
+        let closure = self.transition_column_closure(referenced.iter().map(String::as_str))?;
+        if closure.len() != supplied.len()
+            || closure.iter().any(|id| !supplied.contains(id.as_str()))
+        {
+            return Err(FiggyError::InvalidStreamSource {
+                id: String::new(),
+                reason: "resident handoff must cover the complete connected chart-column closure",
+            });
+        }
+
+        let mut allocation_epochs = Vec::new();
+        let mut expected_stream_revisions = Vec::new();
+        allocation_epochs
+            .try_reserve_exact(columns.len())
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "resident stream handoff allocation epochs",
+                reason: error.to_string(),
+            })?;
+        expected_stream_revisions
+            .try_reserve_exact(columns.len())
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "resident stream handoff source revisions",
+                reason: error.to_string(),
+            })?;
+        for source in &columns {
+            match (
+                self.pool.allocation_epoch(&source.id),
+                self.streaming_sources.get(&source.id),
+            ) {
+                (Some(epoch), None) => {
+                    match self.stream_revision_lineage.get(&source.id) {
+                        Some(last) if source.revision <= *last => {
+                            return Err(FiggyError::InvalidStreamSource {
+                                id: source.id.clone(),
+                                reason: "resident handoff revision must exceed the logical stream lineage",
+                            });
+                        }
+                        None if source.revision == 0 => {
+                            return Err(FiggyError::InvalidStreamSource {
+                                id: source.id.clone(),
+                                reason: "initial resident handoff revision must be nonzero",
+                            });
+                        }
+                        _ => {}
+                    }
+                    allocation_epochs.push((source.id.clone(), epoch));
+                }
+                (None, Some(current)) => {
+                    if source.revision < current.revision
+                        || self
+                            .stream_revision_lineage
+                            .get(&source.id)
+                            .is_some_and(|last| source.revision < *last)
+                    {
+                        return Err(FiggyError::InvalidStreamSource {
+                            id: source.id.clone(),
+                            reason: "mixed handoff stream revision is stale",
+                        });
+                    }
+                    if source.revision == current.revision
+                        && (source.len != current.len
+                            || source.encoding != current.encoding
+                            || source.replay != current.replay)
+                    {
+                        return Err(FiggyError::InvalidStreamSource {
+                            id: source.id.clone(),
+                            reason: "same-revision mixed handoff metadata changed",
+                        });
+                    }
+                    expected_stream_revisions.push((source.id.clone(), current.revision));
+                }
+                (Some(_), Some(_)) => {
+                    return Err(FiggyError::InvalidStreamSource {
+                        id: source.id.clone(),
+                        reason: "column is simultaneously resident and streamed",
+                    });
+                }
+                (None, None) => {
+                    return Err(FiggyError::UnknownColumn {
+                        id: source.id.clone(),
+                    });
+                }
+            }
+        }
+
+        let mut expected_chart_revisions = Vec::new();
+        expected_chart_revisions
+            .try_reserve(self.chart_states.len())
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "resident stream handoff chart revisions",
+                reason: error.to_string(),
+            })?;
+        for (id, state) in &self.chart_states {
+            if state.series.iter().any(|series| {
+                let mut referenced = false;
+                visit_series_columns(series, &mut |column| {
+                    referenced |= supplied.contains(column)
+                });
+                referenced
+            }) {
+                expected_chart_revisions.push((*id, state.revisions.data, state.revisions.series));
+            }
+        }
+
+        Ok(ResidentStreamHandoff {
+            columns,
+            allocation_epochs,
+            expected_stream_revisions,
+            expected_chart_revisions,
+        })
+    }
+
+    /// Normalize one complete referenced-column chart closure to streamed
+    /// authority as one logical commit while preserving every chart config and
+    /// series.
+    ///
+    /// The complete metadata batch, dependent revisions, registry storage,
+    /// provisional pool removal, and active-picker transition are prepared
+    /// first. Any error therefore leaves the pool, stream registry, charts and
+    /// picker unchanged; success publishes all ids together.
+    pub fn demote_resident_columns_to_streamed(
+        &mut self,
+        changed_ids: &[&str],
+        columns: Vec<crate::StreamColumn>,
+        sources: &[crate::StreamSourceBinding<'_>],
+    ) -> Result<()> {
+        if changed_ids.is_empty() && columns.is_empty() && sources.is_empty() {
+            return Ok(());
+        }
+
+        let mut changed = std::collections::HashSet::new();
+        changed.try_reserve(changed_ids.len()).map_err(|error| {
+            FiggyError::StateAllocationFailed {
+                resource: "resident demotion changed id set",
+                reason: error.to_string(),
+            }
+        })?;
+        for id in changed_ids {
+            if !changed.insert(*id) {
+                return Err(data_render::AllocError::DuplicateId((*id).to_owned()).into());
+            }
+        }
+        let closure = self.transition_column_closure(changed.iter().copied())?;
+        for id in &closure {
+            let resident = self.pool.slot(id).is_some();
+            let streamed = self.streaming_sources.contains_key(id);
+            if resident && streamed {
+                return Err(FiggyError::InvalidStreamSource {
+                    id: id.clone(),
+                    reason: "column is simultaneously resident and streamed",
+                });
+            }
+            if !resident && !streamed {
+                return Err(FiggyError::UnknownColumn { id: id.clone() });
+            }
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        seen.try_reserve(columns.len())
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "resident demotion metadata id set",
+                reason: error.to_string(),
+            })?;
+        for source in &columns {
+            source.validate()?;
+            if !seen.insert(source.id.as_str()) {
+                return Err(data_render::AllocError::DuplicateId(source.id.clone()).into());
+            }
+            if !closure.contains(&source.id) {
+                return Err(FiggyError::InvalidStreamSource {
+                    id: source.id.clone(),
+                    reason: "demotion metadata is outside the changed chart closure",
+                });
+            }
+        }
+        if let Some(missing) = closure.iter().find(|id| !seen.contains(id.as_str())) {
+            return Err(FiggyError::InvalidStreamSource {
+                id: missing.clone(),
+                reason: "demotion metadata must cover the complete referenced-column chart closure",
+            });
+        }
+
+        let mut seen_bindings = std::collections::HashSet::new();
+        seen_bindings.try_reserve(sources.len()).map_err(|error| {
+            FiggyError::StateAllocationFailed {
+                resource: "resident demotion source id set",
+                reason: error.to_string(),
+            }
+        })?;
+        for binding in sources {
+            if !seen_bindings.insert(binding.id) {
+                return Err(FiggyError::InvalidStreamSource {
+                    id: binding.id.to_owned(),
+                    reason: "demotion source id appears more than once",
+                });
+            }
+            if !closure.contains(binding.id) {
+                return Err(FiggyError::InvalidStreamSource {
+                    id: binding.id.to_owned(),
+                    reason: "demotion source is outside the changed chart closure",
+                });
+            }
+        }
+        if let Some(missing) = closure
+            .iter()
+            .find(|id| !seen_bindings.contains(id.as_str()))
+        {
+            return Err(FiggyError::InvalidStreamSource {
+                id: missing.clone(),
+                reason: "demotion sources must cover the complete referenced-column chart closure",
+            });
+        }
+
+        for source in &columns {
+            let binding = sources
+                .iter()
+                .find(|binding| binding.id == source.id)
+                .expect("exact closure source coverage was validated");
+            if binding.revision != source.revision {
+                return Err(FiggyError::InvalidStreamSource {
+                    id: source.id.clone(),
+                    reason: "demotion source revision does not match its metadata",
+                });
+            }
+            let binding_len = u64::try_from(binding.source.len()).map_err(|_| {
+                FiggyError::InvalidStreamSource {
+                    id: source.id.clone(),
+                    reason: "demotion source length exceeds the host index representation",
+                }
+            })?;
+            if binding_len != source.len {
+                return Err(FiggyError::InvalidStreamSource {
+                    id: source.id.clone(),
+                    reason: "demotion source length does not match its metadata",
+                });
+            }
+            if binding.source.encoding() != source.encoding {
+                return Err(FiggyError::InvalidStreamSource {
+                    id: source.id.clone(),
+                    reason: "demotion source encoding does not match its metadata",
+                });
+            }
+            if let Some(slot) = self.pool.slot(&source.id) {
+                if !changed.contains(source.id.as_str())
+                    && u64::try_from(slot.len_values).ok() != Some(source.len)
+                {
+                    return Err(FiggyError::InvalidStreamSource {
+                        id: source.id.clone(),
+                        reason: "unchanged closure source length does not match the resident column",
+                    });
+                }
+                match self.stream_revision_lineage.get(&source.id) {
+                    Some(last) if source.revision <= *last => {
+                        return Err(FiggyError::InvalidStreamSource {
+                            id: source.id.clone(),
+                            reason: "demotion revision must exceed the logical stream lineage",
+                        });
+                    }
+                    None if source.revision == 0 => {
+                        return Err(FiggyError::InvalidStreamSource {
+                            id: source.id.clone(),
+                            reason: "initial demotion revision must be nonzero",
+                        });
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            let registered = self
+                .streaming_sources
+                .get(&source.id)
+                .expect("closure column was validated streamed");
+            if source.revision < registered.revision {
+                return Err(FiggyError::InvalidStreamSource {
+                    id: source.id.clone(),
+                    reason: "streamed normalization revision is stale",
+                });
+            }
+            if source.revision == registered.revision {
+                if source.len != registered.len
+                    || source.encoding != registered.encoding
+                    || source.replay != registered.replay
+                {
+                    return Err(FiggyError::InvalidStreamSource {
+                        id: source.id.clone(),
+                        reason: "same-revision streamed metadata does not match registered content metadata",
+                    });
+                }
+                debug_assert_eq!(
+                    self.stream_revision_lineage.get(&source.id),
+                    Some(&source.revision),
+                    "registered stream revision remains the logical lineage"
+                );
+                continue;
+            }
+            if !changed.contains(source.id.as_str()) {
+                return Err(FiggyError::InvalidStreamSource {
+                    id: source.id.clone(),
+                    reason: "unchanged streamed closure companion must keep its revision",
+                });
+            }
+            if self
+                .stream_revision_lineage
+                .get(&source.id)
+                .is_some_and(|last| source.revision <= *last)
+            {
+                return Err(FiggyError::InvalidStreamSource {
+                    id: source.id.clone(),
+                    reason: "streamed replacement revision must exceed the logical lineage",
+                });
+            }
+        }
+
+        let mutation_count = columns
+            .iter()
+            .filter(|source| {
+                self.pool.slot(&source.id).is_some()
+                    || self
+                        .streaming_sources
+                        .get(&source.id)
+                        .is_some_and(|registered| source.revision > registered.revision)
+            })
+            .count();
+        if mutation_count == 0 {
+            return Ok(());
+        }
+
+        let count = u64::try_from(mutation_count).map_err(|_| FiggyError::CounterExhausted {
+            counter: "stream source fit epoch",
+        })?;
+        let final_fit_epoch = self.next_stream_source_fit_epoch.checked_add(count).ok_or(
+            FiggyError::CounterExhausted {
+                counter: "stream source fit epoch",
+            },
+        )?;
+        let invalidation =
+            self.prepare_columns_invalidation(columns.iter().map(|source| source.id.as_str()))?;
+        self.streaming_sources
+            .try_reserve(mutation_count)
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "streaming source registry",
+                reason: error.to_string(),
+            })?;
+        self.stream_revision_lineage
+            .try_reserve(mutation_count)
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "stream revision lineage",
+                reason: error.to_string(),
+            })?;
+        let mut entries = Vec::new();
+        entries.try_reserve_exact(mutation_count).map_err(|error| {
+            FiggyError::StateAllocationFailed {
+                resource: "resident demotion entries",
+                reason: error.to_string(),
+            }
+        })?;
+        let mut fit_epoch = self.next_stream_source_fit_epoch;
+        for source in columns {
+            let was_resident = self.pool.slot(&source.id).is_some();
+            let replaces_stream = self
+                .streaming_sources
+                .get(&source.id)
+                .is_some_and(|registered| source.revision > registered.revision);
+            if !was_resident && !replaces_stream {
+                continue;
+            }
+            fit_epoch = fit_epoch
+                .checked_add(1)
+                .ok_or(FiggyError::CounterExhausted {
+                    counter: "stream source fit epoch",
+                })?;
+            let mut key = String::new();
+            key.try_reserve_exact(source.id.len()).map_err(|error| {
+                FiggyError::StateAllocationFailed {
+                    resource: "streaming source id",
+                    reason: error.to_string(),
+                }
+            })?;
+            key.push_str(&source.id);
+            let mut lineage_key = String::new();
+            lineage_key
+                .try_reserve_exact(source.id.len())
+                .map_err(|error| FiggyError::StateAllocationFailed {
+                    resource: "stream revision lineage id",
+                    reason: error.to_string(),
+                })?;
+            lineage_key.push_str(&source.id);
+            let revision = source.revision;
+            entries.push((
+                key,
+                lineage_key,
+                revision,
+                was_resident,
+                RegisteredStreamColumn {
+                    column: source,
+                    fit_epoch,
+                    statistics_cache: StreamStatisticsCache::default(),
+                },
+            ));
+        }
+        let mut ids = Vec::new();
+        ids.try_reserve_exact(entries.len()).map_err(|error| {
+            FiggyError::StateAllocationFailed {
+                resource: "resident demotion ids",
+                reason: error.to_string(),
+            }
+        })?;
+        ids.extend(
+            entries
+                .iter()
+                .filter(|(_, _, _, was_resident, _)| *was_resident)
+                .map(|(id, _, _, _, _)| id.as_str()),
+        );
+        let removed_resident = !ids.is_empty();
+
+        let Renderer {
+            pool,
+            streaming_sources,
+            stream_revision_lineage,
+            next_stream_source_fit_epoch,
+            chart_states,
+            visual_revision,
+            pending_defrag,
+            picker,
+            ..
+        } = self;
+        let removal = pool.begin_remove_columns(&ids)?;
+        let prepared_picker = match picker.active.as_ref().map(|active| active.chart_id) {
+            Some(chart_id) => {
+                let state = chart_states
+                    .get(&chart_id)
+                    .ok_or(FiggyError::UnknownChart { id: chart_id })?;
+                picker.prepare_active_chart_mutation(
+                    removal.pool(),
+                    chart_id,
+                    &state.config,
+                    &state.series,
+                )?
+            }
+            None => None,
+        };
+
+        // All remaining operations are allocation-free and infallible.
+        removal.commit();
+        for (id, lineage_id, revision, was_resident, source) in entries {
+            let replaced = streaming_sources.insert(id, source);
+            debug_assert_eq!(
+                replaced.is_some(),
+                !was_resident,
+                "normalization classification remains current until commit"
+            );
+            stream_revision_lineage.insert(lineage_id, revision);
+        }
+        *next_stream_source_fit_epoch = final_fit_epoch;
+        invalidation.publish(chart_states, visual_revision);
+        if let Some(prepared_picker) = prepared_picker {
+            prepared_picker.commit();
+        }
+        if removed_resident {
+            *pending_defrag = true;
+        }
+        Ok(())
+    }
+
+    /// Publish a fully rendered resident-to-streamed replacement. Every
+    /// fallible allocation and dependent-state transition is prepared before
+    /// the resident pool is touched, so an error leaves the old resident
+    /// authority and its picker state intact.
+    fn commit_completed_resident_stream_handoff(
+        &mut self,
+        chart: ChartId,
+        handoff: &ResidentStreamHandoff,
+        statistics: &[(ColumnId, StreamStatisticsCache)],
+        rendered_config: &Config,
+        auto_fit_padding: Option<f64>,
+    ) -> Result<RenderRevision> {
+        for (id, data, series) in &handoff.expected_chart_revisions {
+            let state = self
+                .chart_states
+                .get(id)
+                .ok_or(FiggyError::UnknownChart { id: *id })?;
+            if state.revisions.data != *data || state.revisions.series != *series {
+                return Err(FiggyError::StaleStateToken {
+                    reason: "chart data or series changed during resident stream handoff".into(),
+                });
+            }
+        }
+        for (id, epoch) in &handoff.allocation_epochs {
+            if self.pool.allocation_epoch(id) != Some(*epoch)
+                || self.streaming_sources.contains_key(id)
+            {
+                return Err(FiggyError::StaleStateToken {
+                    reason: "resident column changed during stream handoff".into(),
+                });
+            }
+        }
+        for (id, revision) in &handoff.expected_stream_revisions {
+            if self.pool.slot(id).is_some()
+                || self
+                    .streaming_sources
+                    .get(id)
+                    .is_none_or(|source| source.revision != *revision)
+            {
+                return Err(FiggyError::StaleStateToken {
+                    reason: "streamed column changed during mixed stream handoff".into(),
+                });
+            }
+        }
+
+        let count = u64::try_from(handoff.columns.len()).map_err(|_| {
+            FiggyError::CounterExhausted {
+                counter: "stream source fit epoch",
+            }
+        })?;
+        let final_fit_epoch = self.next_stream_source_fit_epoch.checked_add(count).ok_or(
+            FiggyError::CounterExhausted {
+                counter: "stream source fit epoch",
+            },
+        )?;
+        let invalidation = self.prepare_columns_invalidation(
+            handoff.columns.iter().map(|source| source.id.as_str()),
+        )?;
+        let current = self
+            .chart_states
+            .get(&chart)
+            .ok_or(FiggyError::UnknownChart { id: chart })?;
+        let final_desired = invalidation
+            .prospective_desired_revision(chart, current.revisions.desired);
+        let auto_fit_revisions = if auto_fit_padding.is_some() {
+            Some((
+                final_desired.successor("chart desired revision")?,
+                current
+                    .revisions
+                    .config
+                    .successor("chart config revision")?,
+                current.revisions.view.successor("chart view revision")?,
+                current
+                    .revisions
+                    .raster
+                    .successor("chart raster revision")?,
+                invalidation
+                    .visual
+                    .unwrap_or(self.visual_revision)
+                    .successor("renderer visual revision")?,
+            ))
+        } else {
+            None
+        };
+
+        self.streaming_sources
+            .try_reserve(handoff.columns.len())
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "streaming source registry",
+                reason: error.to_string(),
+            })?;
+        self.stream_revision_lineage
+            .try_reserve(handoff.columns.len())
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "stream revision lineage",
+                reason: error.to_string(),
+            })?;
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(handoff.columns.len())
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "resident stream handoff entries",
+                reason: error.to_string(),
+            })?;
+        let mut fit_epoch = self.next_stream_source_fit_epoch;
+        for source in &handoff.columns {
+            let cache = statistics
+                .iter()
+                .find_map(|(id, cache)| (id == &source.id).then_some(cache))
+                .ok_or_else(|| {
+                    FiggyError::StaleStateToken {
+                        reason: format!(
+                            "stream handoff has no statistics for column {:?}",
+                            source.id
+                        ),
+                    }
+                })?;
+            if !cache.covers(0..source.len) {
+                return Err(FiggyError::StaleStateToken {
+                    reason: format!(
+                        "stream handoff did not consume the complete column {:?}",
+                        source.id
+                    ),
+                });
+            }
+            let cache = cache.try_coverage_copy().map_err(|error| {
+                FiggyError::StateAllocationFailed {
+                    resource: "resident stream handoff statistics",
+                    reason: error.to_string(),
+                }
+            })?;
+            fit_epoch = fit_epoch
+                .checked_add(1)
+                .ok_or(FiggyError::CounterExhausted {
+                    counter: "stream source fit epoch",
+                })?;
+            let mut id = String::new();
+            id.try_reserve_exact(source.id.len()).map_err(|error| {
+                FiggyError::StateAllocationFailed {
+                    resource: "resident stream handoff id",
+                    reason: error.to_string(),
+                }
+            })?;
+            id.push_str(&source.id);
+            let mut lineage_id = String::new();
+            lineage_id
+                .try_reserve_exact(source.id.len())
+                .map_err(|error| FiggyError::StateAllocationFailed {
+                    resource: "resident stream handoff lineage id",
+                    reason: error.to_string(),
+                })?;
+            lineage_id.push_str(&source.id);
+            let mut column = source.clone();
+            column.statistics = crate::StreamStatistics::Known(cache.bounds);
+            entries.push((
+                id,
+                lineage_id,
+                source.revision,
+                self.pool.slot(&source.id).is_some(),
+                RegisteredStreamColumn {
+                    column,
+                    fit_epoch,
+                    statistics_cache: cache,
+                },
+            ));
+        }
+        debug_assert_eq!(fit_epoch, final_fit_epoch);
+
+        let mut resident_ids = Vec::new();
+        resident_ids
+            .try_reserve_exact(entries.len())
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "resident stream handoff removal ids",
+                reason: error.to_string(),
+            })?;
+        resident_ids.extend(
+            entries
+                .iter()
+                .filter(|(_, _, _, was_resident, _)| *was_resident)
+                .map(|(id, _, _, _, _)| id.as_str()),
+        );
+        let removed_resident = !resident_ids.is_empty();
+
+        let Renderer {
+            pool,
+            streaming_sources,
+            stream_revision_lineage,
+            next_stream_source_fit_epoch,
+            chart_states,
+            visual_revision,
+            pending_defrag,
+            picker,
+            ..
+        } = self;
+        let removal = pool.begin_remove_columns(&resident_ids)?;
+        let prepared_picker = match picker.active.as_ref().map(|active| active.chart_id) {
+            Some(active_id) => {
+                let state = chart_states
+                    .get(&active_id)
+                    .ok_or(FiggyError::UnknownChart { id: active_id })?;
+                picker.prepare_active_chart_mutation(
+                    removal.pool(),
+                    active_id,
+                    &state.config,
+                    &state.series,
+                )?
+            }
+            None => None,
+        };
+
+        // No operation below this point allocates or can fail.
+        removal.commit();
+        for (id, lineage_id, revision, was_resident, source) in entries {
+            let replaced = streaming_sources.insert(id, source);
+            debug_assert_eq!(replaced.is_some(), !was_resident);
+            stream_revision_lineage.insert(lineage_id, revision);
+        }
+        *next_stream_source_fit_epoch = final_fit_epoch;
+        invalidation.publish(chart_states, visual_revision);
+        let revision = if let Some((desired, config, view, raster, visual)) = auto_fit_revisions {
+            let state = chart_states
+                .get_mut(&chart)
+                .expect("resident handoff target chart remains registered");
+            state.config.top_x.min = rendered_config.top_x.min;
+            state.config.top_x.max = rendered_config.top_x.max;
+            state.config.bottom_x.min = rendered_config.bottom_x.min;
+            state.config.bottom_x.max = rendered_config.bottom_x.max;
+            state.config.left_y.min = rendered_config.left_y.min;
+            state.config.left_y.max = rendered_config.left_y.max;
+            state.config.right_y.min = rendered_config.right_y.min;
+            state.config.right_y.max = rendered_config.right_y.max;
+            state.stream_auto_fit_padding = None;
+            state.revisions.desired = desired;
+            state.revisions.config = config;
+            state.revisions.view = view;
+            state.revisions.raster = raster;
+            *visual_revision = visual;
+            desired
+        } else {
+            final_desired
+        };
+        if let Some(prepared_picker) = prepared_picker {
+            prepared_picker.commit();
+        }
+        if removed_resident {
+            *pending_defrag = true;
+        }
+        Ok(revision)
+    }
+
     /// Prepare the renderer-owned portion of the bundled demo as one commit.
     ///
     /// `prepare_state` receives the complete candidate pool so the final axis
@@ -6516,6 +8651,9 @@ impl Renderer {
     where
         F: FnOnce(&ColumnPool) -> Result<(Config, Vec<SeriesConfig>)>,
     {
+        for id in DEMO_COLUMN_IDS {
+            self.reject_streamed_id(id)?;
+        }
         let Renderer {
             device,
             queue,
@@ -6636,6 +8774,9 @@ impl Renderer {
     /// [`Self::defragment`], and an active picker reports `StaleColumn` until it
     /// is prepared again.
     pub fn add_columns(&mut self, columns: &[(&str, &dyn ColumnSource)]) -> Result<()> {
+        for (id, _) in columns {
+            self.reject_streamed_id(id)?;
+        }
         if columns.is_empty() {
             return Ok(());
         }
@@ -6683,6 +8824,7 @@ impl Renderer {
         source: &dyn ColumnSource,
     ) -> Result<RendererColumnUpsert<'_>> {
         let id = id.into();
+        self.reject_streamed_id(&id)?;
         let invalidation = self.prepare_column_invalidation(&id)?;
         let old_layout_generation = self.pool.layout_generation();
         let inner = self.pool.begin_upsert_column(
@@ -6697,6 +8839,7 @@ impl Renderer {
         )?;
         finish_renderer_column_upsert(
             inner,
+            &self.streaming_sources,
             &id,
             old_layout_generation,
             &mut self.chart_states,
@@ -6718,6 +8861,7 @@ impl Renderer {
         source: &dyn HiLoColumnSource,
     ) -> Result<RendererColumnUpsert<'_>> {
         let id = id.into();
+        self.reject_streamed_id(&id)?;
         let invalidation = self.prepare_column_invalidation(&id)?;
         let old_layout_generation = self.pool.layout_generation();
         let inner = self.pool.begin_upsert_hilo_column(
@@ -6732,6 +8876,7 @@ impl Renderer {
         )?;
         finish_renderer_column_upsert(
             inner,
+            &self.streaming_sources,
             &id,
             old_layout_generation,
             &mut self.chart_states,
@@ -6865,6 +9010,9 @@ impl Renderer {
     }
 
     pub fn handle_for(&self, id: &str) -> Result<ColumnHandle> {
+        if self.streaming_sources.contains_key(id) {
+            return Err(FiggyError::ColumnNotResident { id: id.to_owned() });
+        }
         self.pool
             .handle_for(id)
             .ok_or_else(|| FiggyError::UnknownColumn { id: id.to_string() })
@@ -6886,6 +9034,13 @@ impl Renderer {
         crate::gpu_errorbar::GpuErrorbarExtentTicket,
         crate::gpu_errorbar::GpuErrorbarError,
     > {
+        for id in [value_id, lower_id, upper_id] {
+            if self.streaming_sources.contains_key(id) {
+                return Err(crate::gpu_errorbar::GpuErrorbarError::ColumnNotResident {
+                    id: id.to_owned(),
+                });
+            }
+        }
         begin_errorbar_extent_from_pool(
             prepared_errorbar_extent_engine(self.errorbar_extent_engine.as_ref())?,
             &self.device,
@@ -6908,6 +9063,23 @@ impl Renderer {
         crate::gpu_errorbar::GpuSeriesExtentTicket,
         crate::gpu_errorbar::GpuErrorbarError,
     > {
+        for id in [
+            Some(columns.x),
+            Some(columns.y),
+            columns.x_lower,
+            columns.x_upper,
+            columns.y_lower,
+            columns.y_upper,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if self.streaming_sources.contains_key(id) {
+                return Err(crate::gpu_errorbar::GpuErrorbarError::ColumnNotResident {
+                    id: id.to_owned(),
+                });
+            }
+        }
         begin_series_extent_from_pool(
             prepared_errorbar_extent_engine(self.errorbar_extent_engine.as_ref())?,
             &self.device,
@@ -6928,6 +9100,9 @@ impl Renderer {
         Option<crate::gpu_errorbar::GpuSeriesExtentTicket>,
         crate::gpu_errorbar::GpuErrorbarError,
     > {
+        if let Err(FiggyError::ColumnNotResident { id }) = self.require_resident_series(series) {
+            return Err(crate::gpu_errorbar::GpuErrorbarError::ColumnNotResident { id });
+        }
         begin_series_fit_extent_from_pool(
             prepared_errorbar_extent_engine(self.errorbar_extent_engine.as_ref())?,
             &self.device,
@@ -7468,6 +9643,7 @@ impl Renderer {
             transform_buffer,
             transform_bg,
             content_revision: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            stream_revision: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             panel_rect,
             grid_space_gen: None,
         })
@@ -7478,6 +9654,7 @@ impl Renderer {
     /// raster, no texture rebuild — one GPU write.
     pub fn update_transform(&mut self, view: &ChartView, chart: &Chart) -> Result<()> {
         let t = data_render::scatter_transform_from_config(chart.config());
+        view.advance_stream_revision()?;
         view.advance_content_revision()?;
         data_render::update_scatter_transform(&self.queue, &view.transform_buffer, &t);
         Ok(())
@@ -7521,6 +9698,9 @@ impl Renderer {
             axis_render::AxisLayerKind::Decoration,
             selection,
         )?;
+        if view.panel_rect != panel_rect {
+            view.advance_stream_revision()?;
+        }
         view.advance_content_revision()?;
 
         // Grid layer. The constellation backdrop is axis-range independent,
@@ -7676,7 +9856,37 @@ impl Renderer {
         let prepared = self.prepare(items)?;
         self.paint_prepared(pass, target_size, &prepared)
     }
-
+    fn preparation_parts(&mut self) -> (&HashMap<ChartId, ChartRenderState>, PrepareContext<'_>) {
+        (
+            &self.chart_states,
+            PrepareContext {
+                device: &self.device,
+                queue: &self.queue,
+                caps: &self.caps,
+                pool: &self.pool,
+                gpu_ledger: &self.gpu_ledger,
+                style_bgl: &self.style_bgl,
+                field_bgl: &self.field_bgl,
+                transform_bgl: &self.transform_bgl,
+                per_point_style_map_bgl: &self.per_point_style_map_bgl,
+                data_selection_bgl: &self.data_selection_bgl,
+                star_data_bgl: &self.star_data_bgl,
+                sampler: &self.sampler,
+                quad_vb: &self.quad_vb,
+                pipelines: &mut self.pipelines,
+                field_cache: &mut self.field_cache,
+                contour_cache: &mut self.contour_cache,
+                arc_cache: &mut self.arc_cache,
+                contour_label_pipelines: &mut self.contour_label_pipelines,
+                arc_pipelines: &mut self.arc_pipelines,
+                surface_format: self.surface_format,
+                renderer_identity: self.renderer_identity,
+                target_pipeline_generation: self.target_pipeline_generation,
+                #[cfg(test)]
+                arc_chunk_override: self.arc_chunk_override,
+            },
+        )
+    }
     /// Mutable half of the frame: finish every state change the draw needs,
     /// before any render pass opens.
     ///
@@ -7705,71 +9915,242 @@ impl Renderer {
     /// pool layout change, replacement of any captured column allocation, or
     /// another transform/axis write to a captured `ChartView`.
     pub fn prepare(&mut self, items: &[ChartDrawItem<'_>]) -> Result<PreparedFrame> {
-        let mut contour_spacings = Vec::with_capacity(items.len());
         for item in items {
-            let mut per_series = Vec::with_capacity(item.series.len());
             for series in item.series {
-                validate_contour_level_count(
-                    series.config.series_id.as_str(),
-                    &series.config.render_type,
-                )?;
-                let contour_enabled = effective_series_primitives(
-                    &item.chart_config.draw_style,
-                    &series.config.render_type,
-                )
-                .contour;
-                per_series.push(preflight_contour_label_spacing(
-                    series.config.series_id.as_str(),
-                    &series.config.render_type,
-                    contour_enabled,
+                self.require_resident_series(series.config)?;
+            }
+        }
+        self.preparation_parts().1.prepare(items)
+    }
+
+    /// Prepare renderer-owned charts without copying their Config or ordered
+    /// SeriesConfig values. GPU styles are cached derivatives of those series;
+    /// chart identity is always the explicit id, never inferred from resources.
+    ///
+    /// Refresh each view's raster before this call as for [`Self::prepare`].
+    /// Mutating or removing a captured chart makes its token stale. Changes to
+    /// unrelated charts do not invalidate the captured chart stamps.
+    pub fn prepare_registered(
+        &mut self,
+        items: &[RegisteredChartDrawItem<'_>],
+    ) -> Result<PreparedFrame> {
+        self.prepare_registered_mixed(items)
+            .map_err(streaming_runtime::StreamRequestError::into_figgy)
+    }
+
+    fn prepare_registered_resident(
+        &mut self,
+        items: &[RegisteredChartDrawItem<'_>],
+    ) -> Result<PreparedFrame> {
+        let allocation =
+            |error: std::collections::TryReserveError| FiggyError::StateAllocationFailed {
+                resource: "registered chart prepare inputs",
+                reason: error.to_string(),
+            };
+        // Resolve every id and fallible contour invariant before creating any
+        // GPU styles or advancing the content revision of a supplied view.
+        for item in items {
+            let state = self
+                .chart_states
+                .get(&item.chart_id)
+                .ok_or(FiggyError::UnknownChart { id: item.chart_id })?;
+            for series in &state.series {
+                self.require_resident_series(series)?;
+                validate_contour_level_count(&series.series_id, &series.render_type)?;
+                preflight_contour_label_spacing(
+                    &series.series_id,
+                    &series.render_type,
+                    effective_series_primitives(&state.config.draw_style, &series.render_type)
+                        .contour,
                     1.0,
+                )?;
+            }
+        }
+        let mut style_updates: Vec<(ChartId, RegisteredChartStyles)> = Vec::new();
+        style_updates
+            .try_reserve_exact(items.len())
+            .map_err(allocation)?;
+        for item in items {
+            let state = self
+                .chart_states
+                .get(&item.chart_id)
+                .ok_or(FiggyError::UnknownChart { id: item.chart_id })?;
+            if state
+                .prepared_styles
+                .as_ref()
+                .is_some_and(|styles| styles.series_revision == state.revisions.series)
+                || style_updates.iter().any(|(id, _)| *id == item.chart_id)
+            {
+                continue;
+            }
+            let mut styles = Vec::new();
+            styles
+                .try_reserve_exact(state.series.len())
+                .map_err(allocation)?;
+            styles.extend(
+                state
+                    .series
+                    .iter()
+                    .map(|series| self.create_style_for_series(series)),
+            );
+            style_updates.push((
+                item.chart_id,
+                RegisteredChartStyles {
+                    series_revision: state.revisions.series,
+                    styles,
+                },
+            ));
+        }
+        for (id, styles) in style_updates {
+            self.chart_states
+                .get_mut(&id)
+                .ok_or(FiggyError::UnknownChart { id })?
+                .prepared_styles = Some(styles);
+        }
+        let (states, mut preparation) = self.preparation_parts();
+        let mut series_inputs = Vec::new();
+        let mut stamps = Vec::new();
+        series_inputs
+            .try_reserve_exact(items.len())
+            .map_err(allocation)?;
+        stamps.try_reserve_exact(items.len()).map_err(allocation)?;
+        for item in items {
+            let state = states
+                .get(&item.chart_id)
+                .ok_or(FiggyError::UnknownChart { id: item.chart_id })?;
+            let styles = &state
+                .prepared_styles
+                .as_ref()
+                .expect("registered styles were prepared")
+                .styles;
+            let mut series = Vec::new();
+            series
+                .try_reserve_exact(state.series.len())
+                .map_err(allocation)?;
+            series.extend(
+                state
+                    .series
+                    .iter()
+                    .zip(styles)
+                    .map(|(config, style)| Series { config, style }),
+            );
+            series_inputs.push(series);
+            stamps.push(PreparedChartStamp {
+                chart_id: item.chart_id,
+                desired: state.revisions.desired,
+                data: state.revisions.data,
+            });
+        }
+        let mut draws = Vec::new();
+        draws.try_reserve_exact(items.len()).map_err(allocation)?;
+        for (item, series) in items.iter().zip(&series_inputs) {
+            let state = states
+                .get(&item.chart_id)
+                .ok_or(FiggyError::UnknownChart { id: item.chart_id })?;
+            draws.push(ChartDrawItem {
+                view: item.view,
+                chart_config: &state.config,
+                series,
+            });
+        }
+        let mut frame = preparation.prepare(&draws)?;
+        frame.registered_charts = stamps;
+        Ok(frame)
+    }
+
+    /// Select the current resident or owned streaming display for each chart
+    /// from its explicit id. Paint receives only the prepared token.
+    pub(crate) fn prepare_registered_mixed(
+        &mut self,
+        items: &[RegisteredChartDrawItem<'_>],
+    ) -> streaming_runtime::StreamResult<PreparedFrame> {
+        let allocation = |error: std::collections::TryReserveError| {
+            FiggyError::StateAllocationFailed {
+                resource: "mixed chart prepare inputs",
+                reason: error.to_string(),
+            }
+        };
+        let mut resident = Vec::new();
+        let mut displays = Vec::new();
+        let mut streamed = Vec::new();
+        resident.try_reserve_exact(items.len()).map_err(allocation)?;
+        displays.try_reserve_exact(items.len()).map_err(allocation)?;
+        streamed.try_reserve_exact(items.len()).map_err(allocation)?;
+        self.sync_external_invalidations()?;
+        self.service_stream_requests();
+        for item in items {
+            self.chart_config(item.chart_id)?;
+            let active = self.chart_has_stream_surface(item.chart_id);
+            if active {
+                self.preflight_chart_stream_display(item.chart_id, item.view)?;
+            }
+            if !active {
+                resident.push(RegisteredChartDrawItem {
+                    chart_id: item.chart_id,
+                    view: item.view,
+                });
+            }
+            streamed.push(active);
+            displays.push(None);
+        }
+        let mut frame = self.prepare_registered_resident(&resident)?;
+        for ((item, active), display) in items.iter().zip(streamed).zip(&mut displays) {
+            if active {
+                *display = Some(
+                    self.prepare_chart_stream_display(item.chart_id, item.view)?
+                        .ok_or(crate::streaming::StreamError::WrongState)?,
+                );
+            }
+        }
+        let mut resident_items = std::mem::take(&mut frame.items).into_iter();
+        frame.items.try_reserve_exact(items.len()).map_err(allocation)?;
+        frame
+            .registered_charts
+            .try_reserve_exact(items.len() - resident.len())
+            .map_err(allocation)?;
+        for (item, display) in items.iter().zip(displays) {
+            if let Some(display) = display {
+                let state = self
+                    .chart_states
+                    .get(&item.chart_id)
+                    .ok_or(FiggyError::UnknownChart { id: item.chart_id })?;
+                frame.registered_charts.push(PreparedChartStamp {
+                    chart_id: item.chart_id,
+                    desired: state.revisions.desired,
+                    data: state.revisions.data,
+                });
+                frame.items.push(PreparedItem {
+                    view: PreparedView {
+                        grid_bind_group: item.view.grid_bind_group.clone(),
+                        decoration_bind_group: item.view.decoration_bind_group.clone(),
+                        _grid_charge: item.view.grid_texture.shared_charge(),
+                        _decoration_charge: item.view.decoration_texture.shared_charge(),
+                        _transform_charge: item.view.transform_buffer.shared_charge(),
+                        content_revision: Arc::clone(&item.view.content_revision),
+                        expected_content_revision: item
+                            .view
+                            .content_revision
+                            .load(std::sync::atomic::Ordering::Acquire),
+                        panel_rect: item.view.panel_rect,
+                    },
+                    data_area: state
+                        .config
+                        .data_area()
+                        .map(|area| area.0)
+                        .unwrap_or(item.view.panel_rect),
+                    axis_pipeline: self.pipelines.axis.clone(),
+                    series: Vec::new(),
+                    stream_display: Some(display),
+                });
+            } else {
+                frame.items.push(resident_items.next().ok_or(
+                    streaming_runtime::StreamRequestError::Scheduler(
+                        crate::streaming::StreamError::WrongState,
+                    ),
                 )?);
             }
-            contour_spacings.push(per_series);
         }
-        // The label draw's module and group-1 layout live on the renderer, and
-        // the target pipeline is compiled from them — so they have to exist
-        // before the one place allowed to compile new pipelines runs.
-        self.ensure_contour_label_pipelines(items);
-        self.pipelines.ensure_precise_variants_for_items(
-            &self.device,
-            &self.transform_bgl,
-            &self.style_bgl,
-            &self.per_point_style_map_bgl,
-            &self.data_selection_bgl,
-            &self.field_bgl,
-            self.contour_label_pipelines.as_ref(),
-            self.surface_format,
-            items,
-        );
-        self.pipelines.ensure_styles_for_items(
-            &self.device,
-            &self.queue,
-            &self.transform_bgl,
-            &self.style_bgl,
-            &self.star_data_bgl,
-            self.surface_format,
-            items,
-        );
-        let mut grid_sources = self.ensure_field_scratches(items)?;
-        let (prepared_contours, mut contour_sources) =
-            self.ensure_contour_scratches(items, 1.0, &contour_spacings)?;
-        grid_sources.append(&mut contour_sources);
-        let prepared_arcs = self.prepare_arc_items(items)?;
-        let (items, column_sources) = self.resolve_prepared_items(
-            items,
-            &prepared_arcs,
-            &prepared_contours,
-            &self.pipelines,
-        )?;
-        Ok(PreparedFrame {
-            renderer_identity: self.renderer_identity,
-            items,
-            column_sources,
-            pool_layout_generation: self.pool.layout_generation(),
-            target_pipeline_generation: self.target_pipeline_generation,
-            grid_sources,
-        })
+        Ok(frame)
     }
 
     /// Immutable half of the frame: pure command recording against a
@@ -7815,6 +10196,17 @@ impl Renderer {
                 prepared.target_pipeline_generation, self.target_pipeline_generation
             )));
         }
+        for stamp in &prepared.registered_charts {
+            let unchanged = self.chart_states.get(&stamp.chart_id).is_some_and(|state| {
+                state.revisions.desired == stamp.desired && state.revisions.data == stamp.data
+            });
+            if !unchanged {
+                return Err(stale(format!(
+                    "registered chart {:?} changed or was removed between prepare and paint_prepared",
+                    stamp.chart_id,
+                )));
+            }
+        }
         if prepared.pool_layout_generation != self.pool.layout_generation() {
             return Err(stale(format!(
                 "prepared at pool layout generation {}, pool is now at {} \
@@ -7831,6 +10223,13 @@ impl Renderer {
             if current != item.view.expected_content_revision {
                 return Err(stale(format!(
                     "panel {idx} view changed between prepare and paint_prepared"
+                )));
+            }
+            if let Some(display) = &item.stream_display
+                && !self.stream_display_packet_is_current(display)
+            {
+                return Err(stale(format!(
+                    "panel {idx} stream display changed or was cancelled after prepare"
                 )));
             }
         }
@@ -7929,6 +10328,978 @@ impl Renderer {
         drop(mapped);
         readback.unmap();
         Ok(Some(count))
+    }
+
+    /// Per-item body of the prepare phase (also reused by export). For each
+    /// panel: computes ONE transform snapshot from `item.chart_config`,
+    /// writes it to the panel's transform uniform, dispatches the arc-length
+    /// scan of every line series that needs one with that same snapshot —
+    /// dashed lines (dash phase) and every line of a style with
+    /// `needs_arc_prefix` (sketch: the wobble is parameterized by arc
+    /// length, so solid sketch lines need the prefix too). The immutable draw
+    /// phase later reads the owned result, never the live `arc_cache`.
+    /// Resolve every field series' group-2 state, reusing what has not changed.
+    ///
+    /// The prepare-phase `&mut self` half of the field path, next to
+    /// `prepare_arc_items` and for the same reason: `build_series_layers` is
+    /// `&self`, so anything that has to be built has to be built here. Returns
+    /// the per-field source receipts in `items` order for the token to hold.
+    fn ensure_field_scratches(
+        &mut self,
+        items: &[ChartDrawItem<'_>],
+    ) -> Result<Vec<Arc<GridSources>>> {
+        self.preparation_parts().1.ensure_field_scratches(items)
+    }
+
+    /// Build or reuse one field series' group-2 bind group.
+    ///
+    /// The signature is compared before anything is created, so a steady frame
+    /// uploads nothing at all. When it does differ, the new buffers replace the
+    /// old ones outright — a live `PreparedFrame` holds its own refcounted clone
+    /// of the bind group, so nothing it can still draw with is disturbed. That is
+    /// why this needs none of `arc_cache`'s immutable keyed results: the field
+    /// buffers themselves are already immutable snapshots.
+    fn ensure_field_scratch(
+        &mut self,
+        chart_config: &Config,
+        cfg: &SeriesConfig,
+    ) -> Result<Arc<GridSources>> {
+        self.preparation_parts()
+            .1
+            .ensure_field_scratch(chart_config, cfg)
+    }
+
+    /// Prepare every contour series' reusable GPU state.
+    ///
+    /// Returns the grid receipts for the token, the same way
+    /// `ensure_field_scratches` does. Automatic label anchors are the only
+    /// contour compute dispatch and remain frame-dependent.
+    /// `scale` is the export DPI multiplier — the same one
+    /// `create_style_for_series_scaled` applies to every other pixel dimension.
+    /// It rides in the signature, so switching between a window frame and an
+    /// export rebuilds the level styles rather than drawing one at the other's
+    /// stroke width.
+    fn ensure_contour_scratches(
+        &mut self,
+        items: &[ChartDrawItem<'_>],
+        scale: f32,
+        contour_spacings: &[Vec<Option<f32>>],
+    ) -> Result<(Vec<PreparedContourItem>, Vec<Arc<GridSources>>)> {
+        self.preparation_parts()
+            .1
+            .ensure_contour_scratches(items, scale, contour_spacings)
+    }
+
+    /// Build or reuse one contour series' GPU state.
+    ///
+    /// Since design B.4.9 this resolves the same group-2 tables a field does: the
+    /// isolines are drawn from the grid itself by `fs_contour`, so there is no
+    /// trace to dispatch and nothing here depends on the panel transform. The
+    /// label anchors do — `ensure_contour_scratches` captures one placement
+    /// snapshot per panel/item + series occurrence.
+    ///
+    /// `scale` is the export DPI multiplier, applied to the stroke width and the
+    /// label font exactly as `create_style_for_series_scaled` applies it
+    /// everywhere else.
+    fn ensure_contour_scratch(
+        &mut self,
+        cfg: &SeriesConfig,
+        chart_config: &Config,
+        scale: f32,
+    ) -> Result<Arc<GridSources>> {
+        self.preparation_parts()
+            .1
+            .ensure_contour_scratch(cfg, chart_config, scale)
+    }
+
+    /// Compile the label shader's module and layouts if any item wants labels.
+    ///
+    /// Separate from `ensure_precise_variants_for_items` because that function
+    /// may only *use* them: it is the single site allowed to compile a target
+    /// pipeline (design B.6), and it has no `&mut self` to create the module
+    /// with.
+    fn ensure_contour_label_pipelines(&mut self, items: &[ChartDrawItem<'_>]) {
+        self.preparation_parts()
+            .1
+            .ensure_contour_label_pipelines(items)
+    }
+
+    fn prepare_arc_items(&mut self, items: &[ChartDrawItem<'_>]) -> Result<Vec<PreparedArcItem>> {
+        self.preparation_parts().1.prepare_arc_items(items)
+    }
+
+    fn resolve_prepared_items(
+        &mut self,
+        items: &[ChartDrawItem<'_>],
+        prepared_arcs: &[PreparedArcItem],
+        prepared_contours: &[PreparedContourItem],
+        pipelines: &TargetPipelines,
+    ) -> Result<(Vec<PreparedItem>, HashMap<ColumnId, u64>)> {
+        self.preparation_parts().1.resolve_prepared_items(
+            items,
+            prepared_arcs,
+            prepared_contours,
+            pipelines,
+        )
+    }
+
+    fn paint_prepared_items<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'_>,
+        target_size: (u32, u32),
+        prepared: &'a [PreparedItem],
+    ) -> Result<()> {
+        for item in prepared {
+            if let Some(display) = &item.stream_display
+                && display.size != target_size
+            {
+                return Err(FiggyError::StalePreparedFrame {
+                    reason: "stream display size differs from paint target".into(),
+                });
+            }
+        }
+        for item in prepared {
+            if let Some(display) = &item.stream_display {
+                if let Some(panel) =
+                    data_render::clamp_rect_to_target(item.view.panel_rect, target_size)
+                {
+                    // D covers the whole target, unlike a panel-sized axis texture.
+                    pass.set_viewport(
+                        0.0,
+                        0.0,
+                        target_size.0 as f32,
+                        target_size.1 as f32,
+                        0.0,
+                        1.0,
+                    );
+                    pass.set_scissor_rect(panel.x, panel.y, panel.width, panel.height);
+                    pass.set_pipeline(&item.axis_pipeline);
+                    pass.set_bind_group(0, &display.bind_group, &[]);
+                    pass.draw(0..3, 0..1);
+                }
+                continue;
+            }
+            let panel_rect = item.view.panel_rect;
+            let series_list: Vec<_> = item.series.iter().map(PreparedSeries::layers).collect();
+
+            // The single style decision per panel: the chart's `DrawStyle`
+            // resolves to a cached styled pipeline set (compiled by the
+            // prepare phase) or `None` for precise — the precise path stays
+            // untouched.
+            // Bundle every series's primitives for the panel into one call.
+
+            data_render::draw_chart_panel_columnar(
+                pass,
+                target_size,
+                panel_rect,
+                item.data_area,
+                AxisLayer {
+                    pipeline: &item.axis_pipeline,
+                    bind_group: &item.view.grid_bind_group,
+                },
+                &series_list,
+                AxisLayer {
+                    pipeline: &item.axis_pipeline,
+                    bind_group: &item.view.decoration_bind_group,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    /// Ensure the GPU arc-length prefix for one dashed line series and return
+    /// the token-side snapshot: the prefix buffer slice, the owned star-pass
+    /// handles (when the scratch has one), and the source-column layout the
+    /// scan ran over. The whole computation runs on the GPU
+    /// (`line_arc.wgsl` compute scan over the pool columns) — the data never
+    /// returns to the CPU, keeping the pool's no-CPU-copy contract intact.
+    /// Series longer than one chunk's dispatch capacity scan as sequential
+    /// chunks linked by a carry buffer, so any pool-resident `n` is fine.
+    ///
+    /// A distinct scan input is dispatched once into new immutable buffers.
+    /// An exact key hit reuses that result without traversing the columns. An
+    /// old result is never rewritten: after `paint_prepared` records a buffer,
+    /// the host may drop its [`PreparedFrame`] before submitting the command
+    /// buffer, and the late submission must still see the recorded generation.
+    ///
+    /// `star_pitch`: `Some` adds the constellation star pass to the scratch
+    /// (indirect args + VS bind group) and runs its kernel after the scan.
+    #[cfg(test)]
+    fn ensure_arc_prefix(
+        &mut self,
+        series_id: &str,
+        x_id: &str,
+        y_id: &str,
+        t: &data_render::ScatterTransform,
+        star_pitch: Option<f32>,
+    ) -> Option<PreparedArc> {
+        self.preparation_parts()
+            .1
+            .ensure_arc_prefix(series_id, x_id, y_id, t, star_pitch)
+    }
+
+    // Headless PNG export.
+
+    /// Render one chart panel offscreen at `scale × original` pixel
+    /// dimensions and return an RGBA buffer. Fonts, line widths, and margins
+    /// are all scaled proportionally so the result is visually consistent.
+    ///
+    /// - `scale` is clamped to [`MIN_EXPORT_SCALE`] .. [`MAX_EXPORT_SCALE`].
+    /// - Background is fully transparent (alpha 0).
+    /// - Output size is `chart_area × scale`.
+    /// - Encoding / saving the PNG is the caller's responsibility — use
+    ///   [`encode_png`] or [`Self::export_panel_png_bytes_async`].
+    ///
+    /// Async because the GPU→CPU readback must yield to the browser on wasm;
+    /// on native the await resolves immediately (the device is polled to
+    /// completion inline). Native callers can use the blocking
+    /// [`Self::export_panel_rgba`] wrapper instead. `&mut self` for the same
+    /// reason as [`Self::paint`]: the prepare phase (arc prefixes; the
+    /// export's styled pipelines live in a per-call set instead).
+    pub async fn export_panel_rgba_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<RasterImage> {
+        self.export_panel_rgba_with_clear_async(
+            chart,
+            series,
+            scale,
+            crate::color::Color::from_rgba(0.0, 0.0, 0.0, 0.0),
+        )
+        .await
+    }
+
+    /// Export a panel with an explicit clear color behind the chart.
+    ///
+    /// Wrapped in device error scopes. Export is where figgy asks for its
+    /// largest transient resources — a target texture at `scale²`, an MSAA
+    /// attachment at `scale² × samples`, and a readback buffer — and it is
+    /// `async`, so every scope pop can actually be awaited here. Native uses
+    /// wgpu's OOM guard; wasm uses short underlying `GPUDevice` OOM and internal
+    /// scopes so internal/OOM classification and host scope boundaries remain
+    /// explicit at the raw browser API boundary.
+    /// Each browser scope pair is popped synchronously before the next await,
+    /// so cancellation and a host sharing the device cannot cross its stack.
+    /// The synchronous upload paths keep their `catch_unwind` wrapper instead:
+    /// a future cannot be driven from them, and wasm cannot block a single
+    /// thread to poll one.
+    ///
+    /// A device that reports OOM fails the export even when the encode
+    /// succeeded — a partially-resident target renders garbage, and returning
+    /// an image the caller would save is worse than an error.
+    ///
+    /// This method owns and completes its GPU submission, then reports a global
+    /// submission boundary to the memory ledger. A split prepare/paint host must
+    /// submit every command buffer it previously recorded from this renderer
+    /// before starting an export; opaque host command buffers cannot be observed
+    /// or retired selectively by the renderer.
+    pub async fn export_panel_rgba_with_clear_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+        clear: crate::color::Color,
+    ) -> Result<RasterImage> {
+        for item in series {
+            self.require_resident_series(item)?;
+        }
+        #[cfg(target_arch = "wasm32")]
+        let result = self
+            .export_panel_rgba_with_clear_inner(chart, series, scale, clear)
+            .await;
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let result = {
+            // wgpu 30's scope guard pops itself on drop, so an early return
+            // inside the body cannot leave a scope on the device's stack for the
+            // next caller to inherit.
+            let scope = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+            let rendered = self
+                .export_panel_rgba_with_clear_inner(chart, series, scale, clear)
+                .await;
+            let out_of_memory = scope.pop().await;
+            match (rendered, out_of_memory) {
+                (Ok(_), Some(error)) => Err(FiggyError::GpuResourceAllocationFailed {
+                    resource: "figgy export target",
+                    reason: format!("device reported out of memory during export: {error}"),
+                }),
+                (result, _) => result,
+            }
+        };
+        // Every export submission and readback has completed and all transient
+        // owners inside the inner future have been dropped.
+        self.end_gpu_frame();
+        result
+    }
+
+    async fn export_panel_rgba_with_clear_inner(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+        clear: crate::color::Color,
+    ) -> Result<RasterImage> {
+        #[cfg(target_arch = "wasm32")]
+        let browser_scopes = BrowserErrorScopes::push(&self.device, "figgy export target")?;
+
+        for config in series {
+            validate_contour_level_count(config.series_id.as_str(), &config.render_type)?;
+        }
+        let scale = clamp_export_scale(scale);
+        let mut contour_spacings = Vec::with_capacity(series.len());
+        for config in series {
+            let contour_enabled =
+                effective_series_primitives(&chart.config().draw_style, &config.render_type)
+                    .contour;
+            contour_spacings.push(preflight_contour_label_spacing(
+                config.series_id.as_str(),
+                &config.render_type,
+                contour_enabled,
+                scale,
+            )?);
+        }
+        let orig = chart.config().chart_area.0;
+        let w = ((orig.width as f32) * scale).round().max(1.0) as u32;
+        let h = ((orig.height as f32) * scale).round().max(1.0) as u32;
+        validate_texture_extent(self.caps, "figgy export target dimension", w, h)?;
+        let export_format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut export_sample_count = preferred_msaa_sample_count(self.caps, export_format);
+        validate_target_sample_count(self.caps, export_format, export_sample_count)?;
+        let export_features = export_format.guaranteed_format_features(self.caps.features);
+        if !export_features
+            .allowed_usages
+            .contains(wgpu::TextureUsages::COPY_SRC)
+        {
+            return Err(FiggyError::UnsupportedSurfaceFormat {
+                format: export_format,
+                reason: "figgy export target is not guaranteed to support COPY_SRC".into(),
+            });
+        }
+
+        // 1) Scaled config with chart_area overridden to (0,0,w,h) → temp chart.
+        let mut scaled_config = chart.config().scaled(scale);
+        scaled_config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        });
+        let scaled_chart = Chart::new(scaled_config);
+
+        // 2) Temp ChartView with scaled axis textures.
+        let view = self.create_chart_view(
+            &scaled_chart,
+            Rect {
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+            },
+        )?;
+
+        // 3) Series styles — line_width also scales (extracted from render_type).
+        let scaled_styles: Vec<ChartStyle> = series
+            .iter()
+            .map(|cfg| self.create_style_for_series_scaled(cfg, scale))
+            .collect();
+        let series_objs: Vec<Series<'_>> = series
+            .iter()
+            .zip(scaled_styles.iter())
+            .map(|(cfg, st)| Series {
+                config: cfg,
+                style: st,
+            })
+            .collect();
+        let items = [ChartDrawItem {
+            view: &view,
+            chart_config: scaled_chart.config(),
+            series: &series_objs,
+        }];
+
+        // 3.5) Per-item prepare phase (transform uniform write + arc-prefix
+        // dispatch) — submitted before the render pass below, so queue order
+        // sequences them.
+        // 4) Offscreen target.
+        let target_desc = wgpu::TextureDescriptor {
+            label: Some("figgy export target"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: export_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        };
+        // Charged for the length of the export, so a concurrent pool growth
+        // sees the export's bytes in its budget rather than after the fact.
+        let target_tex = TrackedTexture::new(
+            &self.gpu_ledger,
+            GpuResourceKind::ExportTarget,
+            create_texture_checked(&self.device, &target_desc, "figgy export target")?,
+        );
+        let target_view = target_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let msaa_export_target = match create_msaa_target(
+            &self.device,
+            &self.gpu_ledger,
+            self.caps,
+            "figgy export msaa target",
+            w,
+            h,
+            export_format,
+            export_sample_count,
+        ) {
+            Ok(target) => target,
+            Err(_) if export_sample_count > 1 => {
+                export_sample_count = 1;
+                None
+            }
+            Err(e) => return Err(e),
+        };
+        let (render_view, resolve_target, store) = match msaa_export_target.as_ref() {
+            Some(msaa) => (&msaa.view, Some(&target_view), wgpu::StoreOp::Discard),
+            None => (&target_view, None, wgpu::StoreOp::Store),
+        };
+        // Per-call set against the export format. The same prepare-phase
+        // ensure as `paint` fills the styled cache, so styled variants
+        // compile only when this export actually draws with them.
+        let mut export_target_pipelines = create_target_pipelines(
+            &self.device,
+            &self.texture_bgl,
+            &self.transform_bgl,
+            &self.style_bgl,
+            &self.per_point_style_map_bgl,
+            export_format,
+            export_sample_count,
+        );
+        self.ensure_contour_label_pipelines(&items);
+        export_target_pipelines.ensure_precise_variants_for_items(
+            &self.device,
+            &self.transform_bgl,
+            &self.style_bgl,
+            &self.per_point_style_map_bgl,
+            &self.data_selection_bgl,
+            &self.field_bgl,
+            self.contour_label_pipelines.as_ref(),
+            export_format,
+            &items,
+        );
+        export_target_pipelines.ensure_styles_for_items(
+            &self.device,
+            &self.queue,
+            &self.transform_bgl,
+            &self.style_bgl,
+            &self.star_data_bgl,
+            export_format,
+            &items,
+        );
+        // Export renders immediately rather than handing out a token, so the
+        // receipts have nothing to be held for.
+        let _ = self.ensure_field_scratches(&items)?;
+        let contour_spacings = [contour_spacings];
+        let (prepared_contours, _) =
+            self.ensure_contour_scratches(&items, scale, &contour_spacings)?;
+        let prepared_arcs = self.prepare_arc_items(&items)?;
+        let (prepared_items, _) = self.resolve_prepared_items(
+            &items,
+            &prepared_arcs,
+            &prepared_contours,
+            &export_target_pipelines,
+        )?;
+
+        // 5) Readback buffer. Allocate at most the hardware limit and read rows
+        // sequentially if the full image would exceed it.
+        let unpadded_bpr_u64 = u64::from(w) * 4;
+        let align = u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let padded_bpr_u64 = unpadded_bpr_u64.div_ceil(align) * align;
+        if padded_bpr_u64 > u64::from(u32::MAX) {
+            return Err(FiggyError::GpuResourceLimit {
+                resource: "figgy export bytes_per_row",
+                requested: padded_bpr_u64,
+                limit: u64::from(u32::MAX),
+            });
+        }
+        let unpadded_bpr = unpadded_bpr_u64 as u32;
+        let padded_bpr = padded_bpr_u64 as u32;
+        let max_rows = (self.caps.max_buffer_size / padded_bpr_u64).min(u64::from(h));
+        if max_rows == 0 {
+            return Err(FiggyError::GpuResourceLimit {
+                resource: "figgy export readback row",
+                requested: padded_bpr_u64,
+                limit: self.caps.max_buffer_size,
+            });
+        }
+        let mut rows_per_chunk = max_rows.min(u64::from(u32::MAX)) as u32;
+        let readback = loop {
+            let size = padded_bpr_u64 * u64::from(rows_per_chunk);
+            validate_buffer_size(self.caps, "figgy export readback buffer", size)?;
+            let desc = wgpu::BufferDescriptor {
+                label: Some("figgy export readback"),
+                size,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            };
+            match create_buffer_checked(&self.device, &desc, "figgy export readback buffer") {
+                Ok(buffer) => {
+                    break TrackedBuffer::new(&self.gpu_ledger, GpuResourceKind::Readback, buffer);
+                }
+                Err(e) if rows_per_chunk > 1 => {
+                    rows_per_chunk = (rows_per_chunk / 2).max(1);
+                    let _ = e;
+                }
+                Err(e) => return Err(e),
+            }
+        };
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("figgy export encoder"),
+            });
+
+        // 6) Render pass — configured clear + a single paint.
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("figgy export pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: render_view,
+                    depth_slice: None,
+                    resolve_target,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: clear.r as f64,
+                            g: clear.g as f64,
+                            b: clear.b as f64,
+                            a: clear.a as f64,
+                        }),
+                        store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            self.paint_prepared_items(&mut pass, (w, h), &prepared_items)?;
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        #[cfg(target_arch = "wasm32")]
+        browser_scopes.request_all().finish().await?;
+
+        // 7) Texture → readback buffer in row chunks.
+        let bgra = false;
+        let rgba_len = u64::from(w)
+            .checked_mul(u64::from(h))
+            .and_then(|px| px.checked_mul(4))
+            .and_then(|bytes| usize::try_from(bytes).ok())
+            .ok_or(FiggyError::GpuResourceLimit {
+                resource: "figgy export rgba output",
+                requested: u64::from(w).saturating_mul(u64::from(h)).saturating_mul(4),
+                limit: usize::MAX as u64,
+            })?;
+        let mut rgba = vec![0u8; rgba_len];
+        let mut y0 = 0;
+        while y0 < h {
+            #[cfg(target_arch = "wasm32")]
+            let browser_scopes = BrowserErrorScopes::push(&self.device, "figgy export readback")?;
+
+            let rows = rows_per_chunk.min(h - y0);
+            let chunk_size = padded_bpr_u64 * u64::from(rows);
+            let mut copy_encoder =
+                self.device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("figgy export copy encoder"),
+                    });
+            copy_encoder.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &target_tex,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: 0, y: y0, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &readback,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(padded_bpr),
+                        rows_per_image: Some(rows),
+                    },
+                },
+                wgpu::Extent3d {
+                    width: w,
+                    height: rows,
+                    depth_or_array_layers: 1,
+                },
+            );
+            self.queue.submit(std::iter::once(copy_encoder.finish()));
+
+            let slice = readback.slice(..chunk_size);
+            let (tx, rx) = futures_channel::oneshot::channel();
+            slice.map_async(wgpu::MapMode::Read, move |r| {
+                let _ = tx.send(r);
+            });
+
+            #[cfg(target_arch = "wasm32")]
+            browser_scopes.request_all().finish().await?;
+
+            // Native: drive the device to completion so the await below
+            // resolves immediately. On wasm the browser polls the device and
+            // the await yields to the JS event loop instead.
+            #[cfg(not(target_arch = "wasm32"))]
+            let _ = self.device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            });
+            rx.await
+                .map_err(|e| FiggyError::GpuResourceAllocationFailed {
+                    resource: "figgy export readback mapping",
+                    reason: format!("map_async sender dropped: {e}"),
+                })?
+                .map_err(|e| FiggyError::GpuResourceAllocationFailed {
+                    resource: "figgy export readback mapping",
+                    reason: format!("map_async: {e:?}"),
+                })?;
+            let mapped =
+                slice
+                    .get_mapped_range()
+                    .map_err(|e| FiggyError::GpuResourceAllocationFailed {
+                        resource: "figgy export readback mapping",
+                        reason: format!("get_mapped_range: {e:?}"),
+                    })?;
+
+            for local_y in 0..rows {
+                let src_off = (local_y * padded_bpr) as usize;
+                let dst_off = ((y0 + local_y) * unpadded_bpr) as usize;
+                let row = &mapped[src_off..src_off + unpadded_bpr as usize];
+                for i in 0..(w as usize) {
+                    let p = i * 4;
+                    let (b0, b1, b2, b3) = (row[p], row[p + 1], row[p + 2], row[p + 3]);
+                    let (r, g, b, a) = if bgra {
+                        (b2, b1, b0, b3)
+                    } else {
+                        (b0, b1, b2, b3)
+                    };
+                    let (or, og, ob) = if a == 0 || a == 255 {
+                        (r, g, b)
+                    } else {
+                        let a_f = a as f32 / 255.0;
+                        (
+                            ((r as f32 / a_f).round().clamp(0.0, 255.0)) as u8,
+                            ((g as f32 / a_f).round().clamp(0.0, 255.0)) as u8,
+                            ((b as f32 / a_f).round().clamp(0.0, 255.0)) as u8,
+                        )
+                    };
+                    rgba[dst_off + p] = or;
+                    rgba[dst_off + p + 1] = og;
+                    rgba[dst_off + p + 2] = ob;
+                    rgba[dst_off + p + 3] = a;
+                }
+            }
+            drop(mapped);
+            readback.unmap();
+            y0 += rows;
+        }
+
+        Ok(RasterImage {
+            width: w,
+            height: h,
+            rgba,
+        })
+    }
+
+    /// Convenience wrapper: export panel RGBA, then encode PNG bytes in
+    /// memory. Saving the bytes to disk is up to the caller.
+    pub async fn export_panel_png_bytes_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<Vec<u8>> {
+        let img = self.export_panel_rgba_async(chart, series, scale).await?;
+        encode_png(&img)
+    }
+
+    /// Convenience wrapper: export panel PNG with an explicit clear color.
+    pub async fn export_panel_png_bytes_with_clear_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+        clear: crate::color::Color,
+    ) -> Result<Vec<u8>> {
+        let img = self
+            .export_panel_rgba_with_clear_async(chart, series, scale, clear)
+            .await?;
+        encode_png(&img)
+    }
+
+    /// Blocking convenience wrapper around [`Self::export_panel_rgba_async`].
+    /// Native only — on wasm, await the async variant from the host's event
+    /// loop instead.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export_panel_rgba(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<RasterImage> {
+        pollster::block_on(self.export_panel_rgba_async(chart, series, scale))
+    }
+
+    /// Blocking convenience wrapper around
+    /// [`Self::export_panel_png_bytes_async`]. Native only.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export_panel_png_bytes(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<Vec<u8>> {
+        pollster::block_on(self.export_panel_png_bytes_async(chart, series, scale))
+    }
+}
+
+// Export result type, scale clamping, PNG encoding.
+
+/// Lower bound for export scale. 1.0 is screen-equivalent (96 DPI baseline,
+/// `scale = dpi / 96`); 0.25 corresponds to ~24 DPI (thumbnails).
+pub const MIN_EXPORT_SCALE: f32 = 0.25;
+/// Upper bound. 8.0 corresponds to ~768 DPI; we clamp instead of erroring
+/// because anything bigger explodes memory and time
+/// (an 8× export of a 1920×1080 panel is 15360×8640 RGBA ≈ 530 MB).
+pub const MAX_EXPORT_SCALE: f32 = 8.0;
+
+/// Convert DPI to a `scale` value relative to the 96 DPI baseline.
+pub fn dpi_to_scale(dpi: f32) -> f32 {
+    clamp_export_scale(dpi / 96.0)
+}
+
+/// Clamp `scale` to [`MIN_EXPORT_SCALE`] .. [`MAX_EXPORT_SCALE`].
+pub fn clamp_export_scale(scale: f32) -> f32 {
+    if scale.is_nan() || scale <= 0.0 {
+        return MIN_EXPORT_SCALE;
+    }
+    scale.clamp(MIN_EXPORT_SCALE, MAX_EXPORT_SCALE)
+}
+
+/// In-memory RGBA8 image (straight alpha).
+pub struct RasterImage {
+    pub width: u32,
+    pub height: u32,
+    /// `width * height * 4` bytes, row-major, channel order R, G, B, A.
+    pub rgba: Vec<u8>,
+}
+
+/// Encode `img` as PNG bytes in memory. Saving to disk is the caller's job.
+pub fn encode_png(img: &RasterImage) -> Result<Vec<u8>> {
+    let mut buf: Vec<u8> = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut buf, img.width, img.height);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut writer = enc
+            .write_header()
+            .map_err(|e| FiggyError::RasterWrapFailed {
+                reason: format!("png header: {e}"),
+            })?;
+        writer
+            .write_image_data(&img.rgba)
+            .map_err(|e| FiggyError::RasterWrapFailed {
+                reason: format!("png write: {e}"),
+            })?;
+    }
+    Ok(buf)
+}
+
+// Public auxiliary types.
+
+/// Per-panel GPU resources: separate grid + decoration textures (for layered
+/// compositing) plus the transform uniform.
+///
+/// Grid (below data) and decoration (axis lines, labels — above data) are
+/// rasterized to two textures so the GPU can composite in order:
+/// `grid → data → decoration`.
+pub struct ChartView {
+    grid_texture: TrackedTexture,
+    grid_bind_group: wgpu::BindGroup,
+    decoration_texture: TrackedTexture,
+    decoration_bind_group: wgpu::BindGroup,
+    transform_buffer: TrackedBuffer,
+    transform_bg: wgpu::BindGroup,
+    content_revision: Arc<std::sync::atomic::AtomicU64>,
+    /// Changes only when the streamed data prefix's coordinate space changes.
+    /// Decoration texture rewrites deliberately leave this revision untouched.
+    stream_revision: Arc<std::sync::atomic::AtomicU64>,
+    /// Panel pixel rect in surface coordinates.
+    panel_rect: Rect,
+    /// Generation of the renderer's cached constellation backdrop currently
+    /// uploaded into `grid_texture` (`None` = non-cached content). Lets
+    /// `refresh_axis` skip the full-panel texture write on cache hits.
+    grid_space_gen: Option<u64>,
+}
+
+impl ChartView {
+    pub fn panel_rect(&self) -> Rect {
+        self.panel_rect
+    }
+
+    fn advance_content_revision(&self) -> Result<u64> {
+        self.content_revision
+            .fetch_update(
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+                |current| current.checked_add(1),
+            )
+            .map(|previous| previous + 1)
+            .map_err(|_| FiggyError::CounterExhausted {
+                counter: "chart view content revision",
+            })
+    }
+
+    fn advance_stream_revision(&self) -> Result<u64> {
+        self.stream_revision
+            .fetch_update(
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+                |current| current.checked_add(1),
+            )
+            .map(|previous| previous + 1)
+            .map_err(|_| FiggyError::CounterExhausted {
+                counter: "chart view stream revision",
+            })
+    }
+}
+
+/// Bundle of style bind groups for line, scatter, and errorbar primitives.
+/// Built via `Renderer::create_style_for_series*`. Multiple series in one
+/// chart can share a single `ChartStyle` (`Series.style: &ChartStyle`).
+///
+/// The style uniform buffers live inside the bind groups — wgpu keeps bound
+/// resources alive, so no named buffer fields are needed.
+pub struct ChartStyle {
+    line_bg: wgpu::BindGroup,
+    scatter_bg: wgpu::BindGroup,
+    errorbar_bg: wgpu::BindGroup,
+    bar_bg: wgpu::BindGroup,
+    scatter_map: Option<data_render::ScatterStyleMap>,
+    errorbar_map: Option<data_render::ErrorBarStyleMap>,
+    bar_map: Option<data_render::BarStyleMap>,
+    display_scale: f32,
+    scatter_radius_px: f32,
+}
+
+/// One drawable series — `data_config::SeriesConfig` (declarative) plus a
+/// `ChartStyle` (GPU uniform buffers). The unit of input to `Renderer::paint`.
+pub struct Series<'a> {
+    /// Column ids + render type + label. Pure declaration, no GPU state.
+    pub config: &'a SeriesConfig,
+    /// GPU style created by `Renderer::create_style_for_series`.
+    pub style: &'a ChartStyle,
+}
+
+// Disjoint GPU borrows let registered preparation read the registry in place.
+// This context never owns chart Config or SeriesConfig values.
+struct PrepareContext<'a> {
+    device: &'a Arc<wgpu::Device>,
+    queue: &'a Arc<wgpu::Queue>,
+    caps: &'a RendererDeviceCaps,
+    pool: &'a ColumnPool,
+    gpu_ledger: &'a Arc<GpuLedger>,
+    style_bgl: &'a wgpu::BindGroupLayout,
+    field_bgl: &'a wgpu::BindGroupLayout,
+    transform_bgl: &'a wgpu::BindGroupLayout,
+    per_point_style_map_bgl: &'a wgpu::BindGroupLayout,
+    data_selection_bgl: &'a wgpu::BindGroupLayout,
+    star_data_bgl: &'a wgpu::BindGroupLayout,
+    sampler: &'a wgpu::Sampler,
+    quad_vb: &'a TrackedBuffer,
+    pipelines: &'a mut TargetPipelines,
+    field_cache: &'a mut HashMap<String, FieldScratch>,
+    contour_cache: &'a mut HashMap<String, ContourScratchEntry>,
+    arc_cache: &'a mut HashMap<String, Vec<ArcResultEntry>>,
+    contour_label_pipelines: &'a mut Option<crate::gpu_contour::ContourLabelPipelines>,
+    arc_pipelines: &'a mut Option<data_render::line_arc::ArcScanPipelines>,
+    surface_format: wgpu::TextureFormat,
+    renderer_identity: u64,
+    target_pipeline_generation: u64,
+    #[cfg(test)]
+    arc_chunk_override: Option<u32>,
+}
+
+impl PrepareContext<'_> {
+    fn prepare(&mut self, items: &[ChartDrawItem<'_>]) -> Result<PreparedFrame> {
+        let mut contour_spacings = Vec::with_capacity(items.len());
+        for item in items {
+            let mut per_series = Vec::with_capacity(item.series.len());
+            for series in item.series {
+                validate_contour_level_count(
+                    series.config.series_id.as_str(),
+                    &series.config.render_type,
+                )?;
+                let contour_enabled = effective_series_primitives(
+                    &item.chart_config.draw_style,
+                    &series.config.render_type,
+                )
+                .contour;
+                per_series.push(preflight_contour_label_spacing(
+                    series.config.series_id.as_str(),
+                    &series.config.render_type,
+                    contour_enabled,
+                    1.0,
+                )?);
+            }
+            contour_spacings.push(per_series);
+        }
+        // The label draw's module and group-1 layout live on the renderer, and
+        // the target pipeline is compiled from them — so they have to exist
+        // before the one place allowed to compile new pipelines runs.
+        self.ensure_contour_label_pipelines(items);
+        self.pipelines.ensure_precise_variants_for_items(
+            &self.device,
+            &self.transform_bgl,
+            &self.style_bgl,
+            &self.per_point_style_map_bgl,
+            &self.data_selection_bgl,
+            &self.field_bgl,
+            self.contour_label_pipelines.as_ref(),
+            self.surface_format,
+            items,
+        );
+        self.pipelines.ensure_styles_for_items(
+            &self.device,
+            &self.queue,
+            &self.transform_bgl,
+            &self.style_bgl,
+            &self.star_data_bgl,
+            self.surface_format,
+            items,
+        );
+        let mut grid_sources = self.ensure_field_scratches(items)?;
+        let (prepared_contours, mut contour_sources) =
+            self.ensure_contour_scratches(items, 1.0, &contour_spacings)?;
+        grid_sources.append(&mut contour_sources);
+        let prepared_arcs = self.prepare_arc_items(items)?;
+        let (items, column_sources) = self.resolve_prepared_items(
+            items,
+            &prepared_arcs,
+            &prepared_contours,
+            &self.pipelines,
+        )?;
+        Ok(PreparedFrame {
+            renderer_identity: self.renderer_identity,
+            items,
+            column_sources,
+            pool_layout_generation: self.pool.layout_generation(),
+            target_pipeline_generation: self.target_pipeline_generation,
+            grid_sources,
+            registered_charts: Vec::new(),
+        })
     }
 
     /// Per-item body of the prepare phase (also reused by export). For each
@@ -8637,7 +12008,7 @@ impl Renderer {
             baked.cells.iter().map(|cell| cell.width),
         )?;
         if self.contour_label_pipelines.is_none() {
-            self.contour_label_pipelines = Some(crate::gpu_contour::ContourLabelPipelines::new(
+            *self.contour_label_pipelines = Some(crate::gpu_contour::ContourLabelPipelines::new(
                 &self.device,
                 &self.field_bgl,
             ));
@@ -8691,7 +12062,7 @@ impl Renderer {
             })
         });
         if wanted {
-            self.contour_label_pipelines = Some(crate::gpu_contour::ContourLabelPipelines::new(
+            *self.contour_label_pipelines = Some(crate::gpu_contour::ContourLabelPipelines::new(
                 &self.device,
                 &self.field_bgl,
             ));
@@ -8706,6 +12077,7 @@ impl Renderer {
             // uniform the vertex shaders read and the arc dispatch below.
             // Written here (not via `update_transform`) so they cannot
             // desync within a frame.
+            item.view.advance_stream_revision()?;
             let view_revision = item.view.advance_content_revision()?;
             data_render::update_scatter_transform(&self.queue, &item.view.transform_buffer, &t);
             let variant = style_variant(&item.chart_config.draw_style);
@@ -8807,44 +12179,10 @@ impl Renderer {
                         )
                     })
                     .collect(),
+                stream_display: None,
             });
         }
         Ok((prepared, column_sources))
-    }
-
-    fn paint_prepared_items<'a>(
-        &'a self,
-        pass: &mut wgpu::RenderPass<'_>,
-        target_size: (u32, u32),
-        prepared: &'a [PreparedItem],
-    ) -> Result<()> {
-        for item in prepared {
-            let panel_rect = item.view.panel_rect;
-            let series_list: Vec<_> = item.series.iter().map(PreparedSeries::layers).collect();
-
-            // The single style decision per panel: the chart's `DrawStyle`
-            // resolves to a cached styled pipeline set (compiled by the
-            // prepare phase) or `None` for precise — the precise path stays
-            // untouched.
-            // Bundle every series's primitives for the panel into one call.
-
-            data_render::draw_chart_panel_columnar(
-                pass,
-                target_size,
-                panel_rect,
-                item.data_area,
-                AxisLayer {
-                    pipeline: &item.axis_pipeline,
-                    bind_group: &item.view.grid_bind_group,
-                },
-                &series_list,
-                AxisLayer {
-                    pipeline: &item.axis_pipeline,
-                    bind_group: &item.view.decoration_bind_group,
-                },
-            );
-        }
-        Ok(())
     }
 
     /// Convert one panel's `Series` list into `SeriesLayers` ready for
@@ -8878,6 +12216,192 @@ impl Renderer {
             Ok(handle)
         };
 
+        let layers = self.build_series_layers_with_columns(
+            view,
+            chart_config,
+            series_specs,
+            pipelines,
+            products,
+            styled,
+            pool.buffer(),
+            &mut lookup,
+            None,
+        )?;
+        Ok((layers, column_sources))
+    }
+
+    /// A single exact pass; composite series and global-context primitives must
+    /// be scheduled separately rather than repeated once per source chunk.
+    fn validate_stream_series(config: &Config, series: &SeriesConfig) -> Result<()> {
+        let unsupported = || FiggyError::InvalidSeriesConfig {
+            series_id: series.series_id.clone(),
+            reason: "stream pass does not yet support contours or arc-driven stars"
+                .into(),
+        };
+        let primitives = effective_series_primitives(&config.draw_style, &series.render_type);
+        if primitives.contour
+            || (primitives.field && !streaming_runtime::is_stream_heatmap(&series.render_type))
+            || (primitives.line && matches!(config.draw_style, DrawStyle::Milkyway(_)))
+        {
+            return Err(unsupported());
+        }
+        Ok(())
+    }
+
+    fn build_stream_series(
+        &self,
+        view: &ChartView,
+        config: &Config,
+        series: &Series<'_>,
+        chunk: &crate::streaming_upload::RecordedChunk,
+        columns: &[crate::streaming::ColumnRange],
+        phase: streaming_runtime::StreamDrawPhase,
+    ) -> Result<PreparedSeries> {
+        self.build_stream_series_with_pipelines(view, config, series, chunk, columns, phase, self.pipelines)
+    }
+
+    fn build_stream_arc_series(
+        &self,
+        view: &ChartView,
+        config: &Config,
+        series: &Series<'_>,
+        pool: &wgpu::Buffer,
+        x: ColumnHandle,
+        y: ColumnHandle,
+        arc: ArcPrefix,
+        charge: crate::gpu_memory::SharedCharge,
+        pipelines: &TargetPipelines,
+    ) -> Result<PreparedSeries> {
+        Self::validate_stream_series(config, series.config)?;
+        let specs = [Series { config: series.config, style: series.style }];
+        let mut layers = self.build_series_layers_with_columns(
+            view, config, &specs, pipelines,
+            PreparedSeriesProducts { arcs: &[], contours: &[] },
+            pipelines.style_set(&config.draw_style), pool,
+            |id| if id == series.config.x_column { Ok(x) } else if id == series.config.y_column { Ok(y) }
+                else { Err(FiggyError::UnknownColumn { id: id.into() }) },
+            Some(streaming_runtime::StreamDrawPhase::Line),
+        )?;
+        let mut packet = PreparedSeries::from_layers(layers.remove(0), Some(charge));
+        if let Some(line) = &mut packet.line { line.arc = Some(arc); }
+        Ok(packet)
+    }
+
+    fn build_stream_series_with_pipelines(
+        &self,
+        view: &ChartView,
+        config: &Config,
+        series: &Series<'_>,
+        chunk: &crate::streaming_upload::RecordedChunk,
+        columns: &[crate::streaming::ColumnRange],
+        phase: streaming_runtime::StreamDrawPhase,
+        pipelines: &TargetPipelines,
+    ) -> Result<PreparedSeries> {
+        Self::validate_stream_series(config, series.config)?;
+        if phase == streaming_runtime::StreamDrawPhase::Field {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.config.series_id.clone(),
+                reason: "streamed field requires the bounded tile executor".into(),
+            });
+        }
+        if phase == streaming_runtime::StreamDrawPhase::Line
+            && extract_line(&series.config.render_type).is_some_and(|line| {
+                !matches!(line.line_style, LineStylePreset::Solid)
+                    || style_variant(&config.draw_style)
+                        .is_some_and(|variant| variant.needs_arc_prefix)
+            })
+        {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.config.series_id.clone(),
+                reason: "streamed line requires a prepared canonical arc prefix".into(),
+            });
+        }
+        let expected = streaming_runtime::stream_phase_columns(series.config, phase);
+        let first = columns.first().ok_or_else(|| FiggyError::InvalidSeriesConfig {
+            series_id: series.config.series_id.clone(),
+            reason: "streamed primitive has no supplied columns".into(),
+        })?;
+        let bins = if phase == streaming_runtime::StreamDrawPhase::Histogram {
+            if streaming_runtime::histogram_edge_column(series.config)
+                == Some(series.config.x_column.as_str())
+            {
+                first.len.saturating_sub(1)
+            } else {
+                first.len
+            }
+        } else {
+            first.len.saturating_sub(phase.halo())
+        };
+        if columns.len() != expected.count
+            || columns.iter().enumerate().any(|(index, column)| {
+                column.column != index as u64
+                    || column.offset != first.offset
+                    || column.len
+                        != if phase == streaming_runtime::StreamDrawPhase::Histogram {
+                            bins.saturating_add(u64::from(
+                                streaming_runtime::histogram_edge_column(series.config)
+                                    == Some(expected.ids[index]),
+                            ))
+                        } else {
+                            bins.saturating_add(phase.halo())
+                        }
+            })
+        {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.config.series_id.clone(),
+                reason: "streamed primitive ranges must describe the same global rows".into(),
+            });
+        }
+        let specs = [Series {
+            config: series.config,
+            style: series.style,
+        }];
+        let mut layers = self.build_series_layers_with_columns(
+            view,
+            config,
+            &specs,
+            pipelines,
+            PreparedSeriesProducts {
+                arcs: &[],
+                contours: &[],
+            },
+            pipelines.style_set(&config.draw_style),
+            &chunk.work,
+            |id| {
+                let index = expected.ids[..expected.count]
+                    .iter()
+                    .position(|column| *column == id)
+                    .ok_or_else(|| FiggyError::UnknownColumn { id: id.into() })?;
+                let range = columns[index];
+                chunk
+                    .column_handle(range)
+                    .map_err(|error| FiggyError::InvalidSeriesConfig {
+                        series_id: series.config.series_id.clone(),
+                        reason: format!("invalid streamed column span: {error:?}"),
+                    })
+            },
+            Some(phase),
+        )?;
+        let mut prepared = PreparedSeries::from_layers(layers.remove(0), None);
+        prepared._column_charge = Some(chunk.work.shared_charge());
+        Ok(prepared)
+    }
+
+    /// Column locations and their lifetime authority are resolved by the caller;
+    /// geometry and style interpretation remain shared with resident rendering.
+    #[allow(clippy::too_many_arguments)]
+    fn build_series_layers_with_columns<'a>(
+        &'a self,
+        view: &'a ChartView,
+        chart_config: &'a Config,
+        series_specs: &[Series<'a>],
+        pipelines: &'a TargetPipelines,
+        products: PreparedSeriesProducts<'a>,
+        styled: Option<&'a StyleSet>,
+        column_buffer: &'a wgpu::Buffer,
+        mut lookup: impl FnMut(&str) -> Result<ColumnHandle>,
+        phase: Option<streaming_runtime::StreamDrawPhase>,
+    ) -> Result<Vec<data_render::SeriesLayers<'a>>> {
         // Resolve the style set into per-primitive picks once. `stars` is the
         // constellation's arc-driven indirect star pass over the same polyline.
         #[derive(Clone, Copy)]
@@ -9045,7 +12569,9 @@ impl Renderer {
             // Bars: the edge column and the value column are picked from the
             // bar's own orientation — never from the column lengths (design
             // §B.3). `Vertical` reads x as edges, `Horizontal` reads y.
-            let bar = if primitives.bar {
+            let bar = if primitives.bar
+                && phase.is_none_or(|phase| phase == streaming_runtime::StreamDrawPhase::Histogram)
+            {
                 let bar_cfg = extract_bar(rt).expect("primitives.bar implies a bar config");
                 let (edges, values) = match bar_cfg.orientation {
                     crate::data_config::BarOrientation::Vertical => (x_h, y_h),
@@ -9053,7 +12579,7 @@ impl Renderer {
                 };
                 let style_map = series.style.bar_map.as_ref();
                 Some(data_render::ColumnBarLayer {
-                    envelope: Some(
+                    envelope: phase.is_none().then(||
                         pipelines
                             .bar_envelope
                             .as_ref()
@@ -9062,7 +12588,7 @@ impl Renderer {
                                 &self.device,
                                 &self.queue,
                                 &self.gpu_ledger,
-                                pool.buffer(),
+                                column_buffer,
                                 edges,
                                 values,
                                 match bar_cfg.orientation {
@@ -9095,7 +12621,7 @@ impl Renderer {
                     transform_bg: &view.transform_bg,
                     style_bg: &series.style.bar_bg,
                     style_map_bg: style_map.map(|map| &map.bind_group),
-                    pool_buffer: pool.buffer(),
+                    pool_buffer: column_buffer,
                     edges,
                     values,
                 })
@@ -9103,7 +12629,9 @@ impl Renderer {
                 None
             };
 
-            let line = if primitives.line {
+            let line = if primitives.line
+                && phase.is_none_or(|phase| phase == streaming_runtime::StreamDrawPhase::Line)
+            {
                 let line_pick = line_pick.expect("prepare ensured line pipeline");
                 let arc = products
                     .arcs
@@ -9114,7 +12642,7 @@ impl Renderer {
                     pipeline: line_pick.pipeline,
                     transform_bg: &view.transform_bg,
                     style_bg: &series.style.line_bg,
-                    pool_buffer: pool.buffer(),
+                    pool_buffer: column_buffer,
                     x: x_h,
                     y: y_h,
                     arc,
@@ -9149,7 +12677,9 @@ impl Renderer {
                 _ => None,
             };
 
-            let scatter = if primitives.scatter {
+            let scatter = if primitives.scatter
+                && phase.is_none_or(|phase| phase == streaming_runtime::StreamDrawPhase::Scatter)
+            {
                 let precise_style_map = if styled.is_none() {
                     series.style.scatter_map.as_ref()
                 } else {
@@ -9190,7 +12720,7 @@ impl Renderer {
                     style_bg: &series.style.scatter_bg,
                     style_map_bg: precise_style_map.map(|m| &m.bind_group),
                     quad_vb: &self.quad_vb,
-                    pool_buffer: pool.buffer(),
+                    pool_buffer: column_buffer,
                     x: x_h,
                     y: y_h,
                     style_index,
@@ -9200,7 +12730,9 @@ impl Renderer {
                 None
             };
 
-            let errorbar = if constellation_only {
+            let errorbar = if constellation_only
+                || phase.is_some_and(|phase| phase != streaming_runtime::StreamDrawPhase::Errorbar)
+            {
                 None
             } else {
                 match (extract_err_y(rt), extract_err_x(rt)) {
@@ -9283,7 +12815,7 @@ impl Renderer {
                             transform_bg: &view.transform_bg,
                             style_bg: &series.style.errorbar_bg,
                             style_map_bg: precise_errorbar_style_map.map(|m| &m.bind_group),
-                            pool_buffer: pool.buffer(),
+                            pool_buffer: column_buffer,
                             x: x_h,
                             y: y_h,
                             err_y_lo: ey_lo,
@@ -9296,332 +12828,32 @@ impl Renderer {
                 }
             };
 
-            struct PointSelectionVisual {
-                point_index: usize,
-                color: Color,
-                width_px: f32,
-                radius_extra_px: f32,
-            }
-
-            let mut point_visuals = Vec::new();
-            if let Some(picked_cfg) = chart_config
-                .picked_points
-                .as_ref()
-                .filter(|config| config.visible && !config.refs.is_empty())
-            {
-                point_visuals.extend(
-                    picked_cfg
-                        .refs
-                        .iter()
-                        .filter(|picked_ref| picked_ref_matches_series(cfg, picked_ref))
-                        .map(|picked_ref| PointSelectionVisual {
-                            point_index: picked_ref.point_index,
-                            color: picked_cfg.ring_color,
-                            width_px: picked_cfg.ring_width_px,
-                            radius_extra_px: picked_cfg.radius_extra_px,
-                        }),
-                );
-            }
-            let typed_selections = chart_config
-                .picked_data
-                .as_ref()
-                .filter(|config| config.visible && !config.refs.is_empty());
-            if let Some(selection_cfg) = typed_selections {
-                point_visuals.extend(selection_cfg.refs.iter().filter_map(|picked_ref| {
-                    if !picked_data_ref_matches_series(cfg, picked_ref) {
-                        return None;
-                    }
-                    let PickedDataRef::Point { point_index, .. } = picked_ref else {
-                        return None;
-                    };
-                    Some(PointSelectionVisual {
-                        point_index: *point_index,
-                        color: selection_cfg.highlight_color,
-                        width_px: selection_cfg.outline_width_px,
-                        radius_extra_px: selection_cfg.point_radius_extra_px,
-                    })
-                }));
-            }
-
-            let mut picked = Vec::new();
-            if primitives.line || primitives.scatter {
-                for visual in point_visuals {
-                    if visual.point_index >= x_h.len_values || visual.point_index >= y_h.len_values
-                    {
-                        continue;
-                    }
-                    let Some(instance) = u32::try_from(visual.point_index).ok() else {
-                        continue;
-                    };
-
-                    let scatter_cfg = extract_scatter(rt);
-                    let has_line_anchor = extract_line(rt).is_some();
-                    let use_scatter_style_mapping = styled.is_none();
-                    let has_scatter_anchor = scatter_cfg.is_some_and(|scatter| {
-                        scatter_pick_anchor_may_be_visible(
-                            scatter,
-                            visual.point_index,
-                            use_scatter_style_mapping,
-                        )
-                    });
-                    if !has_line_anchor && !has_scatter_anchor {
-                        continue;
-                    }
-
-                    let precise_pick_style_map = if styled.is_none() {
-                        series.style.scatter_map.as_ref()
-                    } else {
-                        None
-                    };
-                    let style_index = match (precise_pick_style_map, scatter_cfg) {
-                        (Some(map), Some(scatter)) if map.has_index => {
-                            let Some(column) = scatter.point_style_index_column.as_ref() else {
-                                return Err(FiggyError::InvalidSeriesConfig {
-                                    series_id: cfg.series_id.clone(),
-                                    reason: "scatter style map expects an index column".into(),
-                                });
-                            };
-                            let h = lookup(column)?;
-                            let count = x_h.len_values.min(y_h.len_values);
-                            if h.len_values < count {
-                                return Err(FiggyError::InvalidSeriesConfig {
-                                    series_id: cfg.series_id.clone(),
-                                    reason: format!(
-                                        "style index column {column:?} has {} values, but scatter uses {count}",
-                                        h.len_values
-                                    ),
-                                });
-                            }
-                            Some(h)
-                        }
-                        _ => None,
-                    };
-
-                    let mut ring_style =
-                        PrimitiveStyle::from_color_with_width(visual.color, visual.width_px);
-                    let uses_mapped_pick = precise_pick_style_map.is_some();
-                    if uses_mapped_pick {
-                        ring_style.point_radius_px = series.style.scatter_radius_px;
-                        ring_style.cap_half_px = visual.radius_extra_px;
-                    } else {
-                        let scatter_radius = scatter_cfg
-                            .map(|scatter| {
-                                scatter_config_radius_px(
-                                    scatter,
-                                    visual.point_index,
-                                    use_scatter_style_mapping,
-                                )
-                            })
-                            .unwrap_or(0.0);
-                        ring_style.point_radius_px =
-                            (scatter_radius + visual.radius_extra_px).max(0.0);
-                    }
-                    ring_style.shape_id = data_render::shape_id(&ScatterShape::Circle);
-                    let ring_buf =
-                        data_render::create_style_uniform_buffer(&self.device, &ring_style);
-                    let style_bg = data_render::create_style_bind_group(
-                        &self.device,
-                        &self.style_bgl,
-                        &ring_buf,
-                    );
-                    picked.push(ColumnPickRingLayer {
-                        pipeline: if uses_mapped_pick {
-                            pipelines
-                                .pick_ring_mapped
-                                .as_ref()
-                                .expect("prepare ensured mapped pick ring pipeline")
-                        } else {
-                            pipelines
-                                .pick_ring
-                                .as_ref()
-                                .expect("prepare ensured pick ring pipeline")
-                        },
-                        transform_bg: &view.transform_bg,
-                        style_bg,
-                        style_map_bg: precise_pick_style_map.map(|map| &map.bind_group),
-                        quad_vb: &self.quad_vb,
-                        pool_buffer: pool.buffer(),
-                        x: x_h,
-                        y: y_h,
-                        style_index,
-                        instance,
-                    });
-                }
-            }
-
-            let mut selected_bars = Vec::new();
-            let mut selected_fields = Vec::new();
-            if let Some(selection_cfg) = typed_selections {
-                for picked_ref in &selection_cfg.refs {
-                    if !picked_data_ref_matches_series(cfg, picked_ref) {
-                        continue;
-                    }
-                    match picked_ref {
-                        PickedDataRef::HistogramBin { bin_index, .. } if primitives.bar => {
-                            let Some(instance) = u32::try_from(*bin_index).ok() else {
-                                continue;
-                            };
-                            let bar_layer = bar.as_ref().expect("bar primitive has a layer");
-                            if instance
-                                >= data_render::bar_instance_count(
-                                    bar_layer.edges.len_values,
-                                    bar_layer.values.len_values,
-                                )
-                            {
-                                continue;
-                            }
-                            let mut selection = data_render::DataSelectionGpu::from_color(
-                                selection_cfg.highlight_color,
-                            );
-                            selection.metrics[0] = selection_cfg.outline_width_px;
-                            selection.indices = [
-                                data_render::DATA_SELECTION_KIND_HISTOGRAM_BIN,
-                                instance,
-                                0,
-                                0,
-                            ];
-                            let (selection_bg, selection_charge) =
-                                data_render::create_data_selection_bind_group(
-                                    &self.gpu_ledger,
-                                    &self.device,
-                                    &self.data_selection_bgl,
-                                    &selection,
-                                );
-                            // The selection outline must follow the selected
-                            // bin's overridden gap/width exactly. Resolve only
-                            // style metadata on the CPU; edge/value geometry
-                            // remains in the shared GPU columns.
-                            let bar_cfg =
-                                extract_bar(rt).expect("histogram selection has a bar config");
-                            let resolved_style = resolved_bar_primitive_style(
-                                bar_cfg,
-                                *bin_index,
-                                series.style.display_scale,
-                            );
-                            let resolved_style_buffer = data_render::create_style_uniform_buffer(
-                                &self.device,
-                                &resolved_style,
-                            );
-                            let resolved_style_bg = data_render::create_style_bind_group(
-                                &self.device,
-                                &self.style_bgl,
-                                &resolved_style_buffer,
-                            );
-                            selected_bars.push(ColumnBarSelectionLayer {
-                                pipeline: pipelines
-                                    .bar_selection
-                                    .as_ref()
-                                    .expect("prepare ensured histogram selection pipeline"),
-                                transform_bg: &view.transform_bg,
-                                style_bg: resolved_style_bg,
-                                selection_bg,
-                                selection_charge,
-                                pool_buffer: pool.buffer(),
-                                edges: bar_layer.edges,
-                                values: bar_layer.values,
-                                instance,
-                            });
-                        }
-                        PickedDataRef::MatrixCell {
-                            x_index, y_index, ..
-                        } if primitives.field => {
-                            let (Some(x_index), Some(y_index)) =
-                                (u32::try_from(*x_index).ok(), u32::try_from(*y_index).ok())
-                            else {
-                                continue;
-                            };
-                            let scratch = self
-                                .field_cache
-                                .get(cfg.series_id.as_str())
-                                .expect("prepare ensured selected field scratch");
-                            let mut selection = data_render::DataSelectionGpu::from_color(
-                                selection_cfg.highlight_color,
-                            );
-                            selection.metrics[0] = selection_cfg.outline_width_px;
-                            selection.indices = [
-                                data_render::DATA_SELECTION_KIND_MATRIX_CELL,
-                                0,
-                                x_index,
-                                y_index,
-                            ];
-                            let (selection_bg, selection_charge) =
-                                data_render::create_data_selection_bind_group(
-                                    &self.gpu_ledger,
-                                    &self.device,
-                                    &self.data_selection_bgl,
-                                    &selection,
-                                );
-                            selected_fields.push(ColumnFieldSelectionLayer {
-                                pipeline: pipelines
-                                    .field_selection
-                                    .as_ref()
-                                    .expect("prepare ensured field selection pipeline"),
-                                transform_bg: &view.transform_bg,
-                                selection_bg,
-                                selection_charge,
-                                field_bg: scratch.field_bg.clone(),
-                                charge: Arc::clone(&scratch.charge),
-                                drawable: scratch.drawable,
-                            });
-                        }
-                        PickedDataRef::ContourLevel {
-                            level_index,
-                            x_index,
-                            y_index,
-                            ..
-                        } if primitives.contour => {
-                            let (Some(level_index), Some(x_index), Some(y_index)) = (
-                                u32::try_from(*level_index).ok(),
-                                u32::try_from(*x_index).ok(),
-                                u32::try_from(*y_index).ok(),
-                            ) else {
-                                continue;
-                            };
-                            if usize::try_from(level_index).ok().is_none_or(|index| {
-                                extract_contour(rt)
-                                    .is_none_or(|contour| index >= contour.levels.len())
-                            }) {
-                                continue;
-                            }
-                            let scratch = products
-                                .contours
-                                .get(idx)
-                                .and_then(|series| series.scratch.as_ref())
-                                .expect("prepare captured selected contour scratch");
-                            let mut selection = data_render::DataSelectionGpu::from_color(
-                                selection_cfg.highlight_color,
-                            );
-                            selection.metrics[1] = selection_cfg.contour_width_extra_px;
-                            selection.indices = [
-                                data_render::DATA_SELECTION_KIND_CONTOUR_LEVEL,
-                                level_index,
-                                x_index,
-                                y_index,
-                            ];
-                            let (selection_bg, selection_charge) =
-                                data_render::create_data_selection_bind_group(
-                                    &self.gpu_ledger,
-                                    &self.device,
-                                    &self.data_selection_bgl,
-                                    &selection,
-                                );
-                            selected_fields.push(ColumnFieldSelectionLayer {
-                                pipeline: pipelines
-                                    .field_selection
-                                    .as_ref()
-                                    .expect("prepare ensured contour selection pipeline"),
-                                transform_bg: &view.transform_bg,
-                                selection_bg,
-                                selection_charge,
-                                field_bg: scratch.field_bg.clone(),
-                                charge: Arc::clone(&scratch.charge),
-                                drawable: scratch.drawable,
-                            });
-                        }
-                        _ => {}
-                    }
-                }
-            }
+            let selection_prepare::SelectionLayers {
+                picked,
+                selected_bars,
+                selected_fields,
+            } = if phase.is_some() {
+                selection_prepare::SelectionLayers { picked: Vec::new(), selected_bars: Vec::new(), selected_fields: Vec::new() }
+            } else { self.build_selection_layers(
+                view,
+                chart_config,
+                series,
+                pipelines,
+                selection_prepare::SelectionColumns {
+                    buffer: column_buffer,
+                    x: x_h,
+                    y: y_h,
+                    bar: bar.as_ref().map(|layer| (layer.edges, layer.values)),
+                    rows: selection_prepare::SelectionRows::RESIDENT,
+                    mapped_point_bg: None,
+                },
+                products
+                    .contours
+                    .get(idx)
+                    .and_then(|series| series.scratch.as_ref()),
+                styled.is_none(),
+                &mut lookup,
+            )? };
 
             out.push(data_render::SeriesLayers {
                 field,
@@ -9636,7 +12868,7 @@ impl Renderer {
                 picked,
             });
         }
-        Ok((out, column_sources))
+        Ok(out)
     }
 
     /// The `(x_base, y_base, n)` source layout for an arc scan over these
@@ -9690,7 +12922,7 @@ impl Renderer {
         star_pitch: Option<f32>,
     ) -> Option<PreparedArc> {
         if self.arc_pipelines.is_none() {
-            self.arc_pipelines = Some(data_render::line_arc::create_arc_scan_pipelines(
+            *self.arc_pipelines = Some(data_render::line_arc::create_arc_scan_pipelines(
                 &self.device,
             ));
         }
@@ -9784,651 +13016,6 @@ impl Renderer {
         results.push(ArcResultEntry { key, scratch });
         Some(prepared)
     }
-
-    // Headless PNG export.
-
-    /// Render one chart panel offscreen at `scale × original` pixel
-    /// dimensions and return an RGBA buffer. Fonts, line widths, and margins
-    /// are all scaled proportionally so the result is visually consistent.
-    ///
-    /// - `scale` is clamped to [`MIN_EXPORT_SCALE`] .. [`MAX_EXPORT_SCALE`].
-    /// - Background is fully transparent (alpha 0).
-    /// - Output size is `chart_area × scale`.
-    /// - Encoding / saving the PNG is the caller's responsibility — use
-    ///   [`encode_png`] or [`Self::export_panel_png_bytes_async`].
-    ///
-    /// Async because the GPU→CPU readback must yield to the browser on wasm;
-    /// on native the await resolves immediately (the device is polled to
-    /// completion inline). Native callers can use the blocking
-    /// [`Self::export_panel_rgba`] wrapper instead. `&mut self` for the same
-    /// reason as [`Self::paint`]: the prepare phase (arc prefixes; the
-    /// export's styled pipelines live in a per-call set instead).
-    pub async fn export_panel_rgba_async(
-        &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
-    ) -> Result<RasterImage> {
-        self.export_panel_rgba_with_clear_async(
-            chart,
-            series,
-            scale,
-            crate::color::Color::from_rgba(0.0, 0.0, 0.0, 0.0),
-        )
-        .await
-    }
-
-    /// Export a panel with an explicit clear color behind the chart.
-    ///
-    /// Wrapped in device error scopes. Export is where figgy asks for its
-    /// largest transient resources — a target texture at `scale²`, an MSAA
-    /// attachment at `scale² × samples`, and a readback buffer — and it is
-    /// `async`, so every scope pop can actually be awaited here. Native uses
-    /// wgpu's OOM guard; wasm uses short underlying `GPUDevice` OOM and internal
-    /// scopes so internal/OOM classification and host scope boundaries remain
-    /// explicit at the raw browser API boundary.
-    /// Each browser scope pair is popped synchronously before the next await,
-    /// so cancellation and a host sharing the device cannot cross its stack.
-    /// The synchronous upload paths keep their `catch_unwind` wrapper instead:
-    /// a future cannot be driven from them, and wasm cannot block a single
-    /// thread to poll one.
-    ///
-    /// A device that reports OOM fails the export even when the encode
-    /// succeeded — a partially-resident target renders garbage, and returning
-    /// an image the caller would save is worse than an error.
-    ///
-    /// This method owns and completes its GPU submission, then reports a global
-    /// submission boundary to the memory ledger. A split prepare/paint host must
-    /// submit every command buffer it previously recorded from this renderer
-    /// before starting an export; opaque host command buffers cannot be observed
-    /// or retired selectively by the renderer.
-    pub async fn export_panel_rgba_with_clear_async(
-        &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
-        clear: crate::color::Color,
-    ) -> Result<RasterImage> {
-        #[cfg(target_arch = "wasm32")]
-        let result = self
-            .export_panel_rgba_with_clear_inner(chart, series, scale, clear)
-            .await;
-
-        #[cfg(not(target_arch = "wasm32"))]
-        let result = {
-            // wgpu 30's scope guard pops itself on drop, so an early return
-            // inside the body cannot leave a scope on the device's stack for the
-            // next caller to inherit.
-            let scope = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-            let rendered = self
-                .export_panel_rgba_with_clear_inner(chart, series, scale, clear)
-                .await;
-            let out_of_memory = scope.pop().await;
-            match (rendered, out_of_memory) {
-                (Ok(_), Some(error)) => Err(FiggyError::GpuResourceAllocationFailed {
-                    resource: "figgy export target",
-                    reason: format!("device reported out of memory during export: {error}"),
-                }),
-                (result, _) => result,
-            }
-        };
-        // Every export submission and readback has completed and all transient
-        // owners inside the inner future have been dropped.
-        self.end_gpu_frame();
-        result
-    }
-
-    async fn export_panel_rgba_with_clear_inner(
-        &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
-        clear: crate::color::Color,
-    ) -> Result<RasterImage> {
-        #[cfg(target_arch = "wasm32")]
-        let browser_scopes = BrowserErrorScopes::push(&self.device, "figgy export target")?;
-
-        for config in series {
-            validate_contour_level_count(config.series_id.as_str(), &config.render_type)?;
-        }
-        let scale = clamp_export_scale(scale);
-        let mut contour_spacings = Vec::with_capacity(series.len());
-        for config in series {
-            let contour_enabled =
-                effective_series_primitives(&chart.config().draw_style, &config.render_type)
-                    .contour;
-            contour_spacings.push(preflight_contour_label_spacing(
-                config.series_id.as_str(),
-                &config.render_type,
-                contour_enabled,
-                scale,
-            )?);
-        }
-        let orig = chart.config().chart_area.0;
-        let w = ((orig.width as f32) * scale).round().max(1.0) as u32;
-        let h = ((orig.height as f32) * scale).round().max(1.0) as u32;
-        validate_texture_extent(self.caps, "figgy export target dimension", w, h)?;
-        let export_format = wgpu::TextureFormat::Rgba8Unorm;
-        let mut export_sample_count = preferred_msaa_sample_count(self.caps, export_format);
-        validate_target_sample_count(self.caps, export_format, export_sample_count)?;
-        let export_features = export_format.guaranteed_format_features(self.caps.features);
-        if !export_features
-            .allowed_usages
-            .contains(wgpu::TextureUsages::COPY_SRC)
-        {
-            return Err(FiggyError::UnsupportedSurfaceFormat {
-                format: export_format,
-                reason: "figgy export target is not guaranteed to support COPY_SRC".into(),
-            });
-        }
-
-        // 1) Scaled config with chart_area overridden to (0,0,w,h) → temp chart.
-        let mut scaled_config = chart.config().scaled(scale);
-        scaled_config.chart_area = crate::layout::ChartArea(Rect {
-            x: 0,
-            y: 0,
-            width: w,
-            height: h,
-        });
-        let scaled_chart = Chart::new(scaled_config);
-
-        // 2) Temp ChartView with scaled axis textures.
-        let view = self.create_chart_view(
-            &scaled_chart,
-            Rect {
-                x: 0,
-                y: 0,
-                width: w,
-                height: h,
-            },
-        )?;
-
-        // 3) Series styles — line_width also scales (extracted from render_type).
-        let scaled_styles: Vec<ChartStyle> = series
-            .iter()
-            .map(|cfg| self.create_style_for_series_scaled(cfg, scale))
-            .collect();
-        let series_objs: Vec<Series<'_>> = series
-            .iter()
-            .zip(scaled_styles.iter())
-            .map(|(cfg, st)| Series {
-                config: cfg,
-                style: st,
-            })
-            .collect();
-        let items = [ChartDrawItem {
-            view: &view,
-            chart_config: scaled_chart.config(),
-            series: &series_objs,
-        }];
-
-        // 3.5) Per-item prepare phase (transform uniform write + arc-prefix
-        // dispatch) — submitted before the render pass below, so queue order
-        // sequences them.
-        // 4) Offscreen target.
-        let target_desc = wgpu::TextureDescriptor {
-            label: Some("figgy export target"),
-            size: wgpu::Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: export_format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        };
-        // Charged for the length of the export, so a concurrent pool growth
-        // sees the export's bytes in its budget rather than after the fact.
-        let target_tex = TrackedTexture::new(
-            &self.gpu_ledger,
-            GpuResourceKind::ExportTarget,
-            create_texture_checked(&self.device, &target_desc, "figgy export target")?,
-        );
-        let target_view = target_tex.create_view(&wgpu::TextureViewDescriptor::default());
-        let msaa_export_target = match create_msaa_target(
-            &self.device,
-            &self.gpu_ledger,
-            self.caps,
-            "figgy export msaa target",
-            w,
-            h,
-            export_format,
-            export_sample_count,
-        ) {
-            Ok(target) => target,
-            Err(_) if export_sample_count > 1 => {
-                export_sample_count = 1;
-                None
-            }
-            Err(e) => return Err(e),
-        };
-        let (render_view, resolve_target, store) = match msaa_export_target.as_ref() {
-            Some(msaa) => (&msaa.view, Some(&target_view), wgpu::StoreOp::Discard),
-            None => (&target_view, None, wgpu::StoreOp::Store),
-        };
-        // Per-call set against the export format. The same prepare-phase
-        // ensure as `paint` fills the styled cache, so styled variants
-        // compile only when this export actually draws with them.
-        let mut export_target_pipelines = create_target_pipelines(
-            &self.device,
-            &self.texture_bgl,
-            &self.transform_bgl,
-            &self.style_bgl,
-            &self.per_point_style_map_bgl,
-            export_format,
-            export_sample_count,
-        );
-        self.ensure_contour_label_pipelines(&items);
-        export_target_pipelines.ensure_precise_variants_for_items(
-            &self.device,
-            &self.transform_bgl,
-            &self.style_bgl,
-            &self.per_point_style_map_bgl,
-            &self.data_selection_bgl,
-            &self.field_bgl,
-            self.contour_label_pipelines.as_ref(),
-            export_format,
-            &items,
-        );
-        export_target_pipelines.ensure_styles_for_items(
-            &self.device,
-            &self.queue,
-            &self.transform_bgl,
-            &self.style_bgl,
-            &self.star_data_bgl,
-            export_format,
-            &items,
-        );
-        // Export renders immediately rather than handing out a token, so the
-        // receipts have nothing to be held for.
-        let _ = self.ensure_field_scratches(&items)?;
-        let contour_spacings = [contour_spacings];
-        let (prepared_contours, _) =
-            self.ensure_contour_scratches(&items, scale, &contour_spacings)?;
-        let prepared_arcs = self.prepare_arc_items(&items)?;
-        let (prepared_items, _) = self.resolve_prepared_items(
-            &items,
-            &prepared_arcs,
-            &prepared_contours,
-            &export_target_pipelines,
-        )?;
-
-        // 5) Readback buffer. Allocate at most the hardware limit and read rows
-        // sequentially if the full image would exceed it.
-        let unpadded_bpr_u64 = u64::from(w) * 4;
-        let align = u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-        let padded_bpr_u64 = unpadded_bpr_u64.div_ceil(align) * align;
-        if padded_bpr_u64 > u64::from(u32::MAX) {
-            return Err(FiggyError::GpuResourceLimit {
-                resource: "figgy export bytes_per_row",
-                requested: padded_bpr_u64,
-                limit: u64::from(u32::MAX),
-            });
-        }
-        let unpadded_bpr = unpadded_bpr_u64 as u32;
-        let padded_bpr = padded_bpr_u64 as u32;
-        let max_rows = (self.caps.max_buffer_size / padded_bpr_u64).min(u64::from(h));
-        if max_rows == 0 {
-            return Err(FiggyError::GpuResourceLimit {
-                resource: "figgy export readback row",
-                requested: padded_bpr_u64,
-                limit: self.caps.max_buffer_size,
-            });
-        }
-        let mut rows_per_chunk = max_rows.min(u64::from(u32::MAX)) as u32;
-        let readback = loop {
-            let size = padded_bpr_u64 * u64::from(rows_per_chunk);
-            validate_buffer_size(self.caps, "figgy export readback buffer", size)?;
-            let desc = wgpu::BufferDescriptor {
-                label: Some("figgy export readback"),
-                size,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            };
-            match create_buffer_checked(&self.device, &desc, "figgy export readback buffer") {
-                Ok(buffer) => {
-                    break TrackedBuffer::new(&self.gpu_ledger, GpuResourceKind::Readback, buffer);
-                }
-                Err(e) if rows_per_chunk > 1 => {
-                    rows_per_chunk = (rows_per_chunk / 2).max(1);
-                    let _ = e;
-                }
-                Err(e) => return Err(e),
-            }
-        };
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("figgy export encoder"),
-            });
-
-        // 6) Render pass — configured clear + a single paint.
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("figgy export pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: render_view,
-                    depth_slice: None,
-                    resolve_target,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: clear.r as f64,
-                            g: clear.g as f64,
-                            b: clear.b as f64,
-                            a: clear.a as f64,
-                        }),
-                        store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            self.paint_prepared_items(&mut pass, (w, h), &prepared_items)?;
-        }
-        self.queue.submit(std::iter::once(encoder.finish()));
-
-        #[cfg(target_arch = "wasm32")]
-        browser_scopes.request_all().finish().await?;
-
-        // 7) Texture → readback buffer in row chunks.
-        let bgra = false;
-        let rgba_len = u64::from(w)
-            .checked_mul(u64::from(h))
-            .and_then(|px| px.checked_mul(4))
-            .and_then(|bytes| usize::try_from(bytes).ok())
-            .ok_or(FiggyError::GpuResourceLimit {
-                resource: "figgy export rgba output",
-                requested: u64::from(w).saturating_mul(u64::from(h)).saturating_mul(4),
-                limit: usize::MAX as u64,
-            })?;
-        let mut rgba = vec![0u8; rgba_len];
-        let mut y0 = 0;
-        while y0 < h {
-            #[cfg(target_arch = "wasm32")]
-            let browser_scopes = BrowserErrorScopes::push(&self.device, "figgy export readback")?;
-
-            let rows = rows_per_chunk.min(h - y0);
-            let chunk_size = padded_bpr_u64 * u64::from(rows);
-            let mut copy_encoder =
-                self.device
-                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("figgy export copy encoder"),
-                    });
-            copy_encoder.copy_texture_to_buffer(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &target_tex,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d { x: 0, y: y0, z: 0 },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::TexelCopyBufferInfo {
-                    buffer: &readback,
-                    layout: wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(padded_bpr),
-                        rows_per_image: Some(rows),
-                    },
-                },
-                wgpu::Extent3d {
-                    width: w,
-                    height: rows,
-                    depth_or_array_layers: 1,
-                },
-            );
-            self.queue.submit(std::iter::once(copy_encoder.finish()));
-
-            let slice = readback.slice(..chunk_size);
-            let (tx, rx) = futures_channel::oneshot::channel();
-            slice.map_async(wgpu::MapMode::Read, move |r| {
-                let _ = tx.send(r);
-            });
-
-            #[cfg(target_arch = "wasm32")]
-            browser_scopes.request_all().finish().await?;
-
-            // Native: drive the device to completion so the await below
-            // resolves immediately. On wasm the browser polls the device and
-            // the await yields to the JS event loop instead.
-            #[cfg(not(target_arch = "wasm32"))]
-            let _ = self.device.poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            });
-            rx.await
-                .map_err(|e| FiggyError::GpuResourceAllocationFailed {
-                    resource: "figgy export readback mapping",
-                    reason: format!("map_async sender dropped: {e}"),
-                })?
-                .map_err(|e| FiggyError::GpuResourceAllocationFailed {
-                    resource: "figgy export readback mapping",
-                    reason: format!("map_async: {e:?}"),
-                })?;
-            let mapped =
-                slice
-                    .get_mapped_range()
-                    .map_err(|e| FiggyError::GpuResourceAllocationFailed {
-                        resource: "figgy export readback mapping",
-                        reason: format!("get_mapped_range: {e:?}"),
-                    })?;
-
-            for local_y in 0..rows {
-                let src_off = (local_y * padded_bpr) as usize;
-                let dst_off = ((y0 + local_y) * unpadded_bpr) as usize;
-                let row = &mapped[src_off..src_off + unpadded_bpr as usize];
-                for i in 0..(w as usize) {
-                    let p = i * 4;
-                    let (b0, b1, b2, b3) = (row[p], row[p + 1], row[p + 2], row[p + 3]);
-                    let (r, g, b, a) = if bgra {
-                        (b2, b1, b0, b3)
-                    } else {
-                        (b0, b1, b2, b3)
-                    };
-                    let (or, og, ob) = if a == 0 || a == 255 {
-                        (r, g, b)
-                    } else {
-                        let a_f = a as f32 / 255.0;
-                        (
-                            ((r as f32 / a_f).round().clamp(0.0, 255.0)) as u8,
-                            ((g as f32 / a_f).round().clamp(0.0, 255.0)) as u8,
-                            ((b as f32 / a_f).round().clamp(0.0, 255.0)) as u8,
-                        )
-                    };
-                    rgba[dst_off + p] = or;
-                    rgba[dst_off + p + 1] = og;
-                    rgba[dst_off + p + 2] = ob;
-                    rgba[dst_off + p + 3] = a;
-                }
-            }
-            drop(mapped);
-            readback.unmap();
-            y0 += rows;
-        }
-
-        Ok(RasterImage {
-            width: w,
-            height: h,
-            rgba,
-        })
-    }
-
-    /// Convenience wrapper: export panel RGBA, then encode PNG bytes in
-    /// memory. Saving the bytes to disk is up to the caller.
-    pub async fn export_panel_png_bytes_async(
-        &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
-    ) -> Result<Vec<u8>> {
-        let img = self.export_panel_rgba_async(chart, series, scale).await?;
-        encode_png(&img)
-    }
-
-    /// Convenience wrapper: export panel PNG with an explicit clear color.
-    pub async fn export_panel_png_bytes_with_clear_async(
-        &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
-        clear: crate::color::Color,
-    ) -> Result<Vec<u8>> {
-        let img = self
-            .export_panel_rgba_with_clear_async(chart, series, scale, clear)
-            .await?;
-        encode_png(&img)
-    }
-
-    /// Blocking convenience wrapper around [`Self::export_panel_rgba_async`].
-    /// Native only — on wasm, await the async variant from the host's event
-    /// loop instead.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn export_panel_rgba(
-        &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
-    ) -> Result<RasterImage> {
-        pollster::block_on(self.export_panel_rgba_async(chart, series, scale))
-    }
-
-    /// Blocking convenience wrapper around
-    /// [`Self::export_panel_png_bytes_async`]. Native only.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn export_panel_png_bytes(
-        &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
-    ) -> Result<Vec<u8>> {
-        pollster::block_on(self.export_panel_png_bytes_async(chart, series, scale))
-    }
-}
-
-// Export result type, scale clamping, PNG encoding.
-
-/// Lower bound for export scale. 1.0 is screen-equivalent (96 DPI baseline,
-/// `scale = dpi / 96`); 0.25 corresponds to ~24 DPI (thumbnails).
-pub const MIN_EXPORT_SCALE: f32 = 0.25;
-/// Upper bound. 8.0 corresponds to ~768 DPI; we clamp instead of erroring
-/// because anything bigger explodes memory and time
-/// (an 8× export of a 1920×1080 panel is 15360×8640 RGBA ≈ 530 MB).
-pub const MAX_EXPORT_SCALE: f32 = 8.0;
-
-/// Convert DPI to a `scale` value relative to the 96 DPI baseline.
-pub fn dpi_to_scale(dpi: f32) -> f32 {
-    clamp_export_scale(dpi / 96.0)
-}
-
-/// Clamp `scale` to [`MIN_EXPORT_SCALE`] .. [`MAX_EXPORT_SCALE`].
-pub fn clamp_export_scale(scale: f32) -> f32 {
-    if scale.is_nan() || scale <= 0.0 {
-        return MIN_EXPORT_SCALE;
-    }
-    scale.clamp(MIN_EXPORT_SCALE, MAX_EXPORT_SCALE)
-}
-
-/// In-memory RGBA8 image (straight alpha).
-pub struct RasterImage {
-    pub width: u32,
-    pub height: u32,
-    /// `width * height * 4` bytes, row-major, channel order R, G, B, A.
-    pub rgba: Vec<u8>,
-}
-
-/// Encode `img` as PNG bytes in memory. Saving to disk is the caller's job.
-pub fn encode_png(img: &RasterImage) -> Result<Vec<u8>> {
-    let mut buf: Vec<u8> = Vec::new();
-    {
-        let mut enc = png::Encoder::new(&mut buf, img.width, img.height);
-        enc.set_color(png::ColorType::Rgba);
-        enc.set_depth(png::BitDepth::Eight);
-        let mut writer = enc
-            .write_header()
-            .map_err(|e| FiggyError::RasterWrapFailed {
-                reason: format!("png header: {e}"),
-            })?;
-        writer
-            .write_image_data(&img.rgba)
-            .map_err(|e| FiggyError::RasterWrapFailed {
-                reason: format!("png write: {e}"),
-            })?;
-    }
-    Ok(buf)
-}
-
-// Public auxiliary types.
-
-/// Per-panel GPU resources: separate grid + decoration textures (for layered
-/// compositing) plus the transform uniform.
-///
-/// Grid (below data) and decoration (axis lines, labels — above data) are
-/// rasterized to two textures so the GPU can composite in order:
-/// `grid → data → decoration`.
-pub struct ChartView {
-    grid_texture: TrackedTexture,
-    grid_bind_group: wgpu::BindGroup,
-    decoration_texture: TrackedTexture,
-    decoration_bind_group: wgpu::BindGroup,
-    transform_buffer: TrackedBuffer,
-    transform_bg: wgpu::BindGroup,
-    content_revision: Arc<std::sync::atomic::AtomicU64>,
-    /// Panel pixel rect in surface coordinates.
-    panel_rect: Rect,
-    /// Generation of the renderer's cached constellation backdrop currently
-    /// uploaded into `grid_texture` (`None` = non-cached content). Lets
-    /// `refresh_axis` skip the full-panel texture write on cache hits.
-    grid_space_gen: Option<u64>,
-}
-
-impl ChartView {
-    pub fn panel_rect(&self) -> Rect {
-        self.panel_rect
-    }
-
-    fn advance_content_revision(&self) -> Result<u64> {
-        self.content_revision
-            .fetch_update(
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Acquire,
-                |current| current.checked_add(1),
-            )
-            .map(|previous| previous + 1)
-            .map_err(|_| FiggyError::CounterExhausted {
-                counter: "chart view content revision",
-            })
-    }
-}
-
-/// Bundle of style bind groups for line, scatter, and errorbar primitives.
-/// Built via `Renderer::create_style_for_series*`. Multiple series in one
-/// chart can share a single `ChartStyle` (`Series.style: &ChartStyle`).
-///
-/// The style uniform buffers live inside the bind groups — wgpu keeps bound
-/// resources alive, so no named buffer fields are needed.
-pub struct ChartStyle {
-    line_bg: wgpu::BindGroup,
-    scatter_bg: wgpu::BindGroup,
-    errorbar_bg: wgpu::BindGroup,
-    bar_bg: wgpu::BindGroup,
-    scatter_map: Option<data_render::ScatterStyleMap>,
-    errorbar_map: Option<data_render::ErrorBarStyleMap>,
-    bar_map: Option<data_render::BarStyleMap>,
-    display_scale: f32,
-    scatter_radius_px: f32,
-}
-
-/// One drawable series — `data_config::SeriesConfig` (declarative) plus a
-/// `ChartStyle` (GPU uniform buffers). The unit of input to `Renderer::paint`.
-pub struct Series<'a> {
-    /// Column ids + render type + label. Pure declaration, no GPU state.
-    pub config: &'a SeriesConfig,
-    /// GPU style created by `Renderer::create_style_for_series`.
-    pub style: &'a ChartStyle,
 }
 
 /// One chart panel to draw: view + chart config + series slice.
@@ -10436,6 +13023,13 @@ pub struct ChartDrawItem<'a> {
     pub view: &'a ChartView,
     pub chart_config: &'a crate::config::Config,
     pub series: &'a [Series<'a>],
+}
+
+/// Prepare-only resources for an explicitly identified renderer-owned chart.
+/// Config and ordered series are borrowed from the Renderer registry.
+pub struct RegisteredChartDrawItem<'a> {
+    pub chart_id: ChartId,
+    pub view: &'a ChartView,
 }
 
 // DataRenderType branching helpers — which layers are needed and which
@@ -10680,17 +13274,17 @@ pub(crate) fn extract_contour(rt: &DataRenderType) -> Option<&crate::data_config
         | DataRenderType::Histogram { .. } => None,
     }
 }
-/// `SeriesDrawInfo` for one series against the pool's current column lengths.
+/// `SeriesDrawInfo` for one series against current logical column lengths.
 ///
 /// Exhaustive over the render types so a new primitive cannot ship without
-/// deciding how its extent is reported. A column the pool does not hold counts
+/// deciding how its extent is reported. An unregistered column counts
 /// as zero: nothing draws, and that is reported rather than raised — checking
 /// registration is `validate_renderer_series`' job.
-fn series_draw_info_from_pool(pool: &ColumnPool, series: &SeriesConfig) -> SeriesDrawInfo {
-    let len = |id: &str| -> u64 {
-        pool.handle_for(id)
-            .map_or(0, |handle| handle.len_values as u64)
-    };
+fn series_draw_info_from_pool(
+    pool: &impl ColumnRegistration,
+    series: &SeriesConfig,
+) -> SeriesDrawInfo {
+    let len = |id: &str| -> u64 { pool.column_len(id).unwrap_or(0) };
     let x = len(&series.x_column);
     let y = len(&series.y_column);
     // Index-aligned roles: the shortest decides, and anything longer is surplus.
@@ -11038,6 +13632,190 @@ impl<'w> WindowedRenderer<'w> {
         self.inner.add_columns(columns)
     }
 
+    pub fn register_streamed_columns(
+        &mut self,
+        columns: Vec<crate::StreamColumn>,
+    ) -> Result<()> {
+        self.inner.register_streamed_columns(columns)
+    }
+
+    pub fn replace_streamed_columns(
+        &mut self,
+        columns: Vec<crate::StreamColumn>,
+    ) -> Result<()> {
+        self.inner.replace_streamed_columns(columns)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn resident_admission_for_streamed_columns(
+        &self,
+        sources: &[crate::StreamSourceBinding<'_>],
+        already_resident_working_set_bytes: u64,
+        derived_buffer_sizes: &[u64],
+        transition_headroom_bytes: u64,
+        working_set_limit_bytes: u64,
+    ) -> Result<ResidentAdmission> {
+        self.inner.resident_admission_for_streamed_columns(
+            sources,
+            already_resident_working_set_bytes,
+            derived_buffer_sizes,
+            transition_headroom_bytes,
+            working_set_limit_bytes,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn promote_streamed_columns_to_resident(
+        &mut self,
+        sources: &[crate::StreamSourceBinding<'_>],
+        already_resident_working_set_bytes: u64,
+        derived_buffer_sizes: &[u64],
+        transition_headroom_bytes: u64,
+        working_set_limit_bytes: u64,
+    ) -> Result<ResidentAdmission> {
+        self.inner.promote_streamed_columns_to_resident(
+            sources,
+            already_resident_working_set_bytes,
+            derived_buffer_sizes,
+            transition_headroom_bytes,
+            working_set_limit_bytes,
+        )
+    }
+
+    pub fn try_promote_streamed_chart_to_resident(
+        &mut self,
+        chart: ChartId,
+        render_config: &Config,
+        sources: &[crate::StreamSourceBinding<'_>],
+    ) -> Result<Option<ResidentAdmission>> {
+        self.inner
+            .try_promote_streamed_chart_to_resident(chart, render_config, sources)
+    }
+
+    pub fn demote_resident_columns_to_streamed(
+        &mut self,
+        changed_ids: &[&str],
+        columns: Vec<crate::StreamColumn>,
+        sources: &[crate::StreamSourceBinding<'_>],
+    ) -> Result<()> {
+        self.inner
+            .demote_resident_columns_to_streamed(changed_ids, columns, sources)
+    }
+
+    pub fn configure_streaming(&mut self, limits: crate::StreamingLimits) -> Result<()> {
+        self.inner.configure_streaming(limits)
+    }
+
+    pub fn begin_streaming_chart(
+        &mut self,
+        chart: ChartId,
+        view: &ChartView,
+        options: crate::StreamingChartOptions,
+    ) -> Result<()> {
+        self.inner.begin_streaming_chart(chart, view, options)
+    }
+
+    pub fn request_auto_streaming_chart(
+        &mut self,
+        chart: ChartId,
+        view: &ChartView,
+        options: crate::StreamingChartOptions,
+    ) -> Result<crate::AutoStreamingRequest> {
+        self.inner
+            .request_auto_streaming_chart(chart, view, options)
+    }
+
+    pub fn request_auto_streaming_chart_with_config(
+        &mut self,
+        chart: ChartId,
+        view: &ChartView,
+        render_config: Config,
+        options: crate::StreamingChartOptions,
+    ) -> Result<crate::AutoStreamingRequest> {
+        self.inner
+            .request_auto_streaming_chart_with_config(chart, view, render_config, options)
+    }
+
+    pub fn request_resident_stream_handoff_with_config(
+        &mut self,
+        chart: ChartId,
+        view: &ChartView,
+        render_config: Config,
+        columns: Vec<crate::StreamColumn>,
+        options: crate::StreamingChartOptions,
+    ) -> Result<crate::AutoStreamingRequest> {
+        self.inner.request_resident_stream_handoff_with_config(
+            chart,
+            view,
+            render_config,
+            columns,
+            options,
+        )
+    }
+
+    pub fn request_auto_streaming_chart_with_display_scale(
+        &mut self, chart: ChartId, view: &ChartView, render_config: Config,
+        display_scale: f32, options: crate::StreamingChartOptions,
+    ) -> Result<crate::AutoStreamingRequest> {
+        self.inner.request_auto_streaming_chart_with_display_scale(chart, view, render_config, display_scale, options)
+    }
+
+    pub fn request_resident_stream_handoff_with_display_scale(
+        &mut self, chart: ChartId, view: &ChartView, render_config: Config, display_scale: f32,
+        columns: Vec<crate::StreamColumn>, options: crate::StreamingChartOptions,
+    ) -> Result<crate::AutoStreamingRequest> {
+        self.inner.request_resident_stream_handoff_with_display_scale(chart, view, render_config, display_scale, columns, options)
+    }
+
+    pub fn auto_stream_chart_step(
+        &mut self,
+        chart: ChartId,
+        sources: &[crate::StreamSourceBinding<'_>],
+    ) -> Result<crate::AutoStreamingProgress> {
+        self.inner.auto_stream_chart_step(chart, sources)
+    }
+
+    pub fn auto_stream_chart_request_ranges(
+        &mut self,
+        chart: ChartId,
+    ) -> Result<crate::AutoStreamingRangeRequest> {
+        self.inner.auto_stream_chart_request_ranges(chart)
+    }
+
+    pub fn auto_stream_chart_submit_ranges(
+        &mut self,
+        chart: ChartId,
+        sources: &[crate::StreamRangeSourceBinding<'_>],
+    ) -> Result<crate::AutoStreamingProgress> {
+        self.inner.auto_stream_chart_submit_ranges(chart, sources)
+    }
+
+    pub fn interrupt_render(&mut self, chart: ChartId) -> Result<crate::RenderInterruptStatus> {
+        self.inner.interrupt_render(chart)
+    }
+
+    pub fn stream_chart_step(
+        &mut self,
+        chart: ChartId,
+        view: &ChartView,
+        sources: &[crate::StreamSourceBinding<'_>],
+    ) -> Result<crate::StreamingProgress> {
+        self.inner.stream_chart_step(chart, view, sources)
+    }
+
+    pub fn cancel_streaming_chart(&mut self, chart: ChartId) -> Result<()> {
+        self.inner.cancel_streaming_chart(chart)
+    }
+
+    pub fn set_stream_chunk_budget(&mut self, chart: ChartId, primitives: u64) -> Result<()> {
+        self.inner.set_stream_chunk_budget(chart, primitives)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub async fn cancel_streaming_chart_and_wait(&mut self, chart: ChartId) -> Result<()> {
+        self.inner.cancel_streaming_chart_and_wait(chart).await
+    }
+
     pub fn begin_upsert_column(
         &mut self,
         id: impl Into<ColumnId>,
@@ -11098,6 +13876,10 @@ impl<'w> WindowedRenderer<'w> {
     #[must_use = "a returned total means the new ceiling is already exceeded"]
     pub fn set_memory_budget(&mut self, budget: Option<u64>) -> Option<u64> {
         self.inner.set_memory_budget(budget)
+    }
+
+    pub fn set_auto_resident_working_set_limit(&mut self, limit: Option<u64>) -> Option<u64> {
+        self.inner.set_auto_resident_working_set_limit(limit)
     }
 
     /// Submission boundary — see [`Renderer::end_gpu_frame`]. `draw` calls it
@@ -11244,6 +14026,10 @@ impl<'w> WindowedRenderer<'w> {
         self.inner.sync_external_invalidations()
     }
 
+    pub fn request_stream_auto_fit(&mut self, id: ChartId, padding: f64) -> Result<()> {
+        self.inner.request_stream_auto_fit(id, padding)
+    }
+
     pub fn commit_auto_fit_all_if_current(
         &mut self,
         token: &FitCommitToken,
@@ -11281,6 +14067,13 @@ impl<'w> WindowedRenderer<'w> {
 
     pub fn prepare(&mut self, items: &[ChartDrawItem<'_>]) -> Result<PreparedFrame> {
         self.inner.prepare(items)
+    }
+
+    pub fn prepare_registered(
+        &mut self,
+        items: &[RegisteredChartDrawItem<'_>],
+    ) -> Result<PreparedFrame> {
+        self.inner.prepare_registered(items)
     }
 
     pub async fn export_panel_rgba_async(
@@ -11392,6 +14185,17 @@ impl<'w> WindowedRenderer<'w> {
     /// dirty flags (`chart.consume_*_dirty()` → `refresh_axis`).
     pub fn draw(&mut self, clear: crate::color::Color, items: &[ChartDrawItem<'_>]) -> Result<()> {
         let prepared = self.inner.prepare(items)?;
+        self.draw_prepared(clear, &prepared)
+    }
+
+    /// Draw renderer-owned charts, selecting resident data or an active exact
+    /// streaming display independently for each chart.
+    pub fn draw_registered(
+        &mut self,
+        clear: crate::color::Color,
+        items: &[RegisteredChartDrawItem<'_>],
+    ) -> Result<()> {
+        let prepared = self.inner.prepare_registered(items)?;
         self.draw_prepared(clear, &prepared)
     }
 
@@ -11603,6 +14407,645 @@ mod tests {
 
     fn state_test_renderer() -> Option<Renderer> {
         state_test_renderer_with_capacity(1024 * 1024)
+    }
+
+    fn state_test_stream(id: &str, revision: u64) -> crate::StreamColumn {
+        crate::StreamColumn {
+            id: id.into(),
+            len: 100,
+            encoding: crate::StreamEncoding::HiLoF32,
+            replay: crate::StreamReplay::Sequential,
+            revision,
+            statistics: crate::StreamStatistics::Unknown,
+        }
+    }
+
+    struct FailingPromotionSource {
+        len: usize,
+    }
+
+    impl ColumnSource for FailingPromotionSource {
+        fn len(&self) -> usize {
+            self.len
+        }
+
+        fn min(&self) -> f64 {
+            0.0
+        }
+
+        fn max(&self) -> f64 {
+            1.0
+        }
+
+        fn write_f32_le_into(&self, _dst: &mut [u8]) {
+            unreachable!("promotion uses the range capability")
+        }
+
+        fn write_f32_pair_le_into_with_stats(
+            &self,
+            _dst: crate::data::ColumnPairWriter<'_>,
+        ) -> crate::data::ColumnUploadStats {
+            unreachable!("promotion uses the range capability")
+        }
+
+        fn write_f32_pair_range_into_with_stats(
+            &self,
+            _start: u64,
+            _dst: crate::data::ColumnPairWriter<'_>,
+        ) -> std::result::Result<Option<crate::StreamBounds>, crate::data::ColumnRangeWriteError>
+        {
+            Err(crate::data::ColumnRangeWriteError::SourceFailed)
+        }
+    }
+
+    struct MutableLenPromotionSource {
+        calls: std::cell::Cell<usize>,
+    }
+
+    impl ColumnSource for MutableLenPromotionSource {
+        fn len(&self) -> usize {
+            let call = self.calls.get();
+            self.calls.set(call + 1);
+            if call == 0 { 1 } else { usize::MAX }
+        }
+
+        fn min(&self) -> f64 {
+            1.0
+        }
+
+        fn max(&self) -> f64 {
+            1.0
+        }
+
+        fn write_f32_le_into(&self, _dst: &mut [u8]) {}
+
+        fn write_f32_pair_le_into_with_stats(
+            &self,
+            _dst: crate::data::ColumnPairWriter<'_>,
+        ) -> crate::data::ColumnUploadStats {
+            crate::data::ColumnUploadStats { min_positive: Some(1.0) }
+        }
+
+        fn write_f32_pair_range_into_with_stats(
+            &self,
+            _start: u64,
+            mut dst: crate::data::ColumnPairWriter<'_>,
+        ) -> std::result::Result<Option<crate::StreamBounds>, crate::data::ColumnRangeWriteError>
+        {
+            assert_eq!(dst.len(), 1, "promotion must stage the frozen length");
+            dst.write_pair(0, 1.0, 0.0);
+            Ok(Some(crate::StreamBounds {
+                min: 1.0,
+                max: 1.0,
+                min_positive: Some(1.0),
+            }))
+        }
+    }
+
+    struct PanickingPromotionSource;
+
+    impl HiLoColumnSource for PanickingPromotionSource {
+        fn len(&self) -> usize {
+            1
+        }
+
+        fn min(&self) -> f64 {
+            1.0
+        }
+
+        fn max(&self) -> f64 {
+            1.0
+        }
+
+        fn write_f32_pair_le_into(&self, _dst: &mut [u8]) {}
+
+        fn write_f32_pair_le_into_with_stats(
+            &self,
+            _dst: crate::data::ColumnPairWriter<'_>,
+        ) -> crate::data::ColumnUploadStats {
+            crate::data::ColumnUploadStats { min_positive: Some(1.0) }
+        }
+
+        fn write_f32_pair_range_into_with_stats(
+            &self,
+            _start: u64,
+            _dst: crate::data::ColumnPairWriter<'_>,
+        ) -> std::result::Result<Option<crate::StreamBounds>, crate::data::ColumnRangeWriteError>
+        {
+            panic!("injected promotion writer panic")
+        }
+    }
+
+    struct InvalidBoundsPromotionSource;
+
+    impl ColumnSource for InvalidBoundsPromotionSource {
+        fn len(&self) -> usize {
+            1
+        }
+
+        fn min(&self) -> f64 {
+            1.0
+        }
+
+        fn max(&self) -> f64 {
+            1.0
+        }
+
+        fn write_f32_le_into(&self, _dst: &mut [u8]) {}
+
+        fn write_f32_pair_le_into_with_stats(
+            &self,
+            _dst: crate::data::ColumnPairWriter<'_>,
+        ) -> crate::data::ColumnUploadStats {
+            crate::data::ColumnUploadStats { min_positive: Some(1.0) }
+        }
+
+        fn write_f32_pair_range_into_with_stats(
+            &self,
+            _start: u64,
+            mut dst: crate::data::ColumnPairWriter<'_>,
+        ) -> std::result::Result<Option<crate::StreamBounds>, crate::data::ColumnRangeWriteError>
+        {
+            dst.write_pair(0, 1.0, 0.0);
+            Ok(Some(crate::StreamBounds {
+                min: 2.0,
+                max: 1.0,
+                min_positive: None,
+            }))
+        }
+    }
+
+    #[test]
+    fn streamed_promotion_freezes_len_and_contains_source_failures() {
+        fn setup(id: &str, encoding: crate::StreamEncoding) -> Option<(Renderer, ChartId)> {
+            let mut renderer = state_test_renderer_with_capacity(4 * 1024)?;
+            let _ = renderer.set_memory_budget(Some(u64::MAX));
+            renderer
+                .register_streamed_columns(vec![crate::StreamColumn {
+                    id: id.into(),
+                    len: 1,
+                    encoding,
+                    replay: crate::StreamReplay::RandomAccess,
+                    revision: 1,
+                    statistics: crate::StreamStatistics::Unknown,
+                }])
+                .unwrap();
+            let chart = renderer
+                .register_chart(
+                    crate::default::default_config(),
+                    vec![state_test_line("temporary", id, id)],
+                )
+                .unwrap();
+            Some((renderer, chart))
+        }
+
+        let Some((mut renderer, chart)) =
+            setup("mutable-len", crate::StreamEncoding::ScalarF32)
+        else {
+            return;
+        };
+        let source = MutableLenPromotionSource {
+            calls: std::cell::Cell::new(0),
+        };
+        let before = revision_snapshot(&renderer, chart);
+        let pending_before = renderer.pending_defrag;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            renderer.promote_streamed_columns_to_resident(
+                &[crate::StreamSourceBinding {
+                    id: "mutable-len",
+                    revision: 1,
+                    source: crate::StreamColumnSource::Scalar(&source),
+                }],
+                0,
+                &[],
+                0,
+                u64::MAX,
+            )
+        }));
+        let report = result
+            .expect("mutable len must not panic")
+            .expect("the first validated length must drive the complete promotion");
+        assert!(report.is_admissible());
+        assert_eq!(source.calls.get(), 1, "source length must be read exactly once");
+        let slot = renderer.pool.slot("mutable-len").unwrap();
+        assert_eq!(slot.len_values, 1);
+        assert_eq!((slot.min, slot.max, slot.min_positive), (1.0, 1.0, Some(1.0)));
+        assert!(!renderer.streaming_sources.contains_key("mutable-len"));
+        assert_eq!(renderer.stream_revision_lineage["mutable-len"], 1);
+        assert_ne!(revision_snapshot(&renderer, chart), before);
+        assert_eq!(renderer.pending_defrag, pending_before);
+
+        let Some((mut renderer, chart)) =
+            setup("panicking-writer", crate::StreamEncoding::HiLoF32)
+        else {
+            return;
+        };
+        let before = revision_snapshot(&renderer, chart);
+        let used_before = renderer.pool.used_bytes();
+        let layout_before = renderer.pool.layout_generation();
+        let pending_before = renderer.pending_defrag;
+        let picker_before = renderer.picker.active.is_some();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            renderer.promote_streamed_columns_to_resident(
+                &[crate::StreamSourceBinding {
+                    id: "panicking-writer",
+                    revision: 1,
+                    source: crate::StreamColumnSource::HiLo(&PanickingPromotionSource),
+                }],
+                0,
+                &[],
+                0,
+                u64::MAX,
+            )
+        }));
+        assert!(matches!(
+            result.expect("writer panic must be contained"),
+            Err(FiggyError::Pool(data_render::AllocError::AllocationFailed {
+                resource: "streamed promotion source",
+                ..
+            }))
+        ));
+        assert!(renderer.pool.slot("panicking-writer").is_none());
+        assert!(renderer.streaming_sources.contains_key("panicking-writer"));
+        assert_eq!(renderer.stream_revision_lineage["panicking-writer"], 1);
+        assert_eq!(renderer.pool.used_bytes(), used_before);
+        assert_eq!(renderer.pool.layout_generation(), layout_before);
+        assert_eq!(revision_snapshot(&renderer, chart), before);
+        assert_eq!(renderer.pending_defrag, pending_before);
+        assert_eq!(renderer.picker.active.is_some(), picker_before);
+
+        let Some((mut renderer, chart)) =
+            setup("invalid-bounds", crate::StreamEncoding::ScalarF32)
+        else {
+            return;
+        };
+        let before = revision_snapshot(&renderer, chart);
+        let used_before = renderer.pool.used_bytes();
+        let layout_before = renderer.pool.layout_generation();
+        let pending_before = renderer.pending_defrag;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            renderer.promote_streamed_columns_to_resident(
+                &[crate::StreamSourceBinding {
+                    id: "invalid-bounds",
+                    revision: 1,
+                    source: crate::StreamColumnSource::Scalar(&InvalidBoundsPromotionSource),
+                }],
+                0,
+                &[],
+                0,
+                u64::MAX,
+            )
+        }));
+        assert!(matches!(
+            result.expect("invalid statistics must not panic"),
+            Err(FiggyError::Pool(data_render::AllocError::AllocationFailed {
+                resource: "streamed promotion source",
+                ..
+            }))
+        ));
+        assert!(renderer.pool.slot("invalid-bounds").is_none());
+        assert!(renderer.streaming_sources.contains_key("invalid-bounds"));
+        assert_eq!(renderer.stream_revision_lineage["invalid-bounds"], 1);
+        assert_eq!(renderer.pool.used_bytes(), used_before);
+        assert_eq!(renderer.pool.layout_generation(), layout_before);
+        assert_eq!(revision_snapshot(&renderer, chart), before);
+        assert_eq!(renderer.pending_defrag, pending_before);
+    }
+
+    #[test]
+    fn stream_statistics_cache_coalesces_coverage_and_encoded_bounds() {
+        let mut cache = StreamStatisticsCache::default();
+        cache.insert_measured(4..8, Some(crate::StreamBounds {
+            min: -99.0,
+            max: 99.0,
+            min_positive: Some(99.0),
+        }));
+        assert_eq!(cache.covered, vec![4..8]);
+        assert_eq!(cache.uncovered(0..12).unwrap(), vec![0..4, 8..12]);
+        assert_eq!(cache.bounds.unwrap().max, 99.0);
+        cache.insert_measured(
+            0..4,
+            Some(crate::StreamBounds {
+                min: -2.0,
+                max: 7.0,
+                min_positive: Some(0.5),
+            }),
+        );
+        assert!(cache.covers(5..7));
+        assert!(!cache.covers(0..12));
+        assert_eq!(cache.covered, vec![0..8]);
+        cache.insert_measured(
+            8..12,
+            Some(crate::StreamBounds {
+                min: 1.0,
+                max: 9.0,
+                min_positive: Some(1.0),
+            }),
+        );
+        assert_eq!(cache.covered, vec![0..12]);
+        assert_eq!(
+            cache.bounds,
+            Some(crate::StreamBounds {
+                min: -99.0,
+                max: 99.0,
+                min_positive: Some(0.5),
+            })
+        );
+
+        let fragmented = StreamStatisticsCache {
+            covered: (0..MAX_STREAM_STATISTICS_RANGES as u64)
+                .map(|index| index * 2..index * 2 + 1)
+                .collect(),
+            bounds: None,
+        };
+        assert_eq!(
+            fragmented.coverage_len_after_insert(
+                &(MAX_STREAM_STATISTICS_RANGES as u64 * 2
+                    ..MAX_STREAM_STATISTICS_RANGES as u64 * 2 + 1)
+            ),
+            MAX_STREAM_STATISTICS_RANGES + 1
+        );
+        assert_eq!(
+            fragmented.coverage_len_after_insert(
+                &(1..MAX_STREAM_STATISTICS_RANGES as u64 * 2)
+            ),
+            1,
+            "a bridge is allowed to collapse even a full fragmented cache"
+        );
+    }
+
+    #[test]
+    fn streamed_statistics_and_provisional_fit_preserve_revision_contract() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer
+            .register_streamed_columns(vec![state_test_stream("s", 1)])
+            .unwrap();
+        let series = state_test_line("streamed", "s", "s");
+        let chart = renderer
+            .register_chart(crate::default::default_config(), vec![series.clone()])
+            .unwrap();
+        assert!(matches!(
+            renderer.begin_errorbar_extent("s", "s", "s"),
+            Err(crate::GpuErrorbarError::ColumnNotResident { .. })
+        ));
+        let columns = crate::GpuSeriesExtentColumnIds {
+            x: "s",
+            y: "s",
+            x_lower: None,
+            x_upper: None,
+            y_lower: None,
+            y_upper: None,
+        };
+        let old = renderer.chart_states[&chart].revisions.desired;
+        {
+            let guard = renderer
+                .begin_upsert_column("resident", &col_f64(vec![1.0, 2.0]))
+                .unwrap();
+            assert!(matches!(
+                guard.web_derived_snapshot(chart),
+                Err(FiggyError::ColumnNotResident { .. })
+            ));
+            assert!(matches!(
+                guard.begin_series_fit_extent(&series),
+                Err(crate::GpuErrorbarError::ColumnNotResident { .. })
+            ));
+            assert!(matches!(
+                guard.begin_errorbar_extent("s", "s", "s"),
+                Err(crate::GpuErrorbarError::ColumnNotResident { .. })
+            ));
+            assert!(matches!(
+                guard.begin_series_extent(crate::GpuSeriesExtentMode::Line, columns),
+                Err(crate::GpuErrorbarError::ColumnNotResident { .. })
+            ));
+        }
+        assert!(renderer.logical_column("resident").is_none());
+        assert_eq!(renderer.chart_states[&chart].revisions.desired, old);
+        let bounds = Some(crate::StreamBounds {
+            min: -1.0,
+            max: 2.0,
+            min_positive: Some(0.5),
+        });
+        assert!(matches!(
+            renderer.commit_streamed_statistics("s", 2, bounds),
+            Err(FiggyError::StaleStateToken { .. })
+        ));
+        assert_eq!(
+            renderer.streaming_sources["s"].statistics,
+            crate::StreamStatistics::Unknown
+        );
+        let fit_epoch = renderer.next_stream_source_fit_epoch;
+        renderer.next_stream_source_fit_epoch = u64::MAX;
+        assert!(matches!(
+            renderer.commit_streamed_statistics("s", 1, bounds),
+            Err(FiggyError::CounterExhausted { .. })
+        ));
+        assert_eq!(
+            renderer.streaming_sources["s"].statistics,
+            crate::StreamStatistics::Unknown
+        );
+        renderer.next_stream_source_fit_epoch = fit_epoch;
+        renderer.commit_streamed_statistics("s", 1, bounds).unwrap();
+        assert_eq!(
+            renderer.streaming_sources["s"].statistics,
+            crate::StreamStatistics::Known(bounds)
+        );
+        let committed = renderer.chart_render_stamp(chart).unwrap();
+        renderer.commit_streamed_statistics("s", 1, bounds).unwrap();
+        assert_eq!(renderer.chart_render_stamp(chart).unwrap(), committed);
+        assert!(renderer.commit_streamed_statistics("s", 1, None).is_err());
+    }
+
+    #[test]
+    fn streamed_fit_token_uses_live_source_revision_and_registration_epoch() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer
+            .register_streamed_columns(vec![state_test_stream("s", 1)])
+            .unwrap();
+        let series = state_test_line("streamed", "s", "s");
+        let chart = renderer
+            .register_chart(crate::default::default_config(), vec![series.clone()])
+            .unwrap();
+        assert_eq!(
+            renderer.logical_column("s").unwrap().statistics(),
+            crate::StreamStatistics::Unknown
+        );
+        let before_statistics = renderer.begin_fit_commit(chart).unwrap();
+        let bounds = crate::StreamBounds {
+            min: 1.0,
+            max: 3.0,
+            min_positive: Some(1.0),
+        };
+        renderer
+            .commit_streamed_statistics("s", 1, Some(bounds))
+            .unwrap();
+        assert_eq!(
+            renderer.logical_column("s").unwrap().statistics(),
+            crate::StreamStatistics::Known(Some(bounds))
+        );
+        let extent = crate::FitExtent {
+            min: bounds.min,
+            max: bounds.max,
+            min_positive: bounds.min_positive,
+        };
+        assert!(matches!(
+            renderer.commit_auto_fit_all_if_current(&before_statistics, &extent, &extent, 0.0),
+            Err(FiggyError::StaleStateToken { .. })
+        ));
+        let known = renderer.begin_fit_commit(chart).unwrap();
+        renderer
+            .commit_auto_fit_all_if_current(&known, &extent, &extent, 0.0)
+            .unwrap();
+        assert_eq!(renderer.chart_config(chart).unwrap().bottom_x.min, 1.0);
+        assert_eq!(renderer.chart_config(chart).unwrap().bottom_x.max, 3.0);
+        let current = renderer.begin_fit_commit(chart).unwrap();
+        renderer
+            .replace_streamed_columns(vec![state_test_stream("s", 2)])
+            .unwrap();
+        assert!(matches!(
+            renderer.commit_auto_fit_all_if_current(&current, &extent, &extent, 0.0),
+            Err(FiggyError::StaleStateToken { .. })
+        ));
+
+        let before_reuse = renderer.begin_fit_commit(chart).unwrap();
+        let config = renderer.chart_config(chart).unwrap().clone();
+        assert!(renderer.remove_column("s").unwrap());
+        renderer
+            .register_streamed_columns(vec![state_test_stream("s", 2)])
+            .unwrap();
+        renderer
+            .set_chart_state(chart, config, vec![series])
+            .unwrap();
+        assert!(matches!(
+            renderer.commit_auto_fit_all_if_current(&before_reuse, &extent, &extent, 0.0),
+            Err(FiggyError::StaleStateToken { .. })
+        ));
+    }
+
+    #[test]
+    fn streamed_source_revision_failure_and_remove_are_chart_atomic() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer
+            .register_streamed_columns(vec![state_test_stream("s", 1), state_test_stream("t", 1)])
+            .unwrap();
+        let chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("s", "s", "s")],
+            )
+            .unwrap();
+        let other = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("t", "t", "t")],
+            )
+            .unwrap();
+        let other_stamp = renderer.chart_render_stamp(other).unwrap();
+        let old = renderer.chart_states[&chart].revisions.desired;
+        renderer
+            .chart_states
+            .get_mut(&chart)
+            .unwrap()
+            .revisions
+            .desired
+            .sequence = u64::MAX;
+        assert!(matches!(
+            renderer.replace_streamed_columns(vec![state_test_stream("s", 2)]),
+            Err(FiggyError::CounterExhausted { .. })
+        ));
+        assert_eq!(renderer.streaming_sources["s"].revision, 1);
+        assert!(renderer.remove_column("s").is_err());
+        assert!(renderer.logical_column("s").is_some());
+        assert_eq!(renderer.chart_states[&chart].series.len(), 1);
+        renderer
+            .chart_states
+            .get_mut(&chart)
+            .unwrap()
+            .revisions
+            .desired = old;
+        renderer
+            .replace_streamed_columns(vec![state_test_stream("s", 2)])
+            .unwrap();
+        assert_ne!(renderer.chart_states[&chart].revisions.desired, old);
+        assert_eq!(renderer.chart_render_stamp(other).unwrap(), other_stamp);
+        let fit_token = renderer.begin_fit_commit(chart).unwrap();
+        assert!(renderer.remove_column("s").unwrap());
+        assert!(renderer.chart_states[&chart].series.is_empty());
+        assert!(renderer.logical_column("s").is_none());
+        assert!(matches!(
+            renderer.commit_auto_fit_all_if_current(
+                &fit_token,
+                &crate::FitExtent::EMPTY,
+                &crate::FitExtent::EMPTY,
+                0.0,
+            ),
+            Err(FiggyError::StaleStateToken { .. })
+        ));
+        assert_eq!(renderer.chart_render_stamp(other).unwrap(), other_stamp);
+    }
+
+    #[test]
+    fn streamed_series_set_detaches_only_affected_picker_after_success() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        add_state_test_xy(&mut renderer, "x", "y", vec![1.0, 2.0]);
+        renderer
+            .register_streamed_columns(vec![state_test_stream("s", 1)])
+            .unwrap();
+        let chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("resident", "x", "y")],
+            )
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        renderer.prepare_gpu_picking_for_chart(chart).unwrap();
+        let unrelated = renderer
+            .register_chart(crate::default::default_config(), vec![])
+            .unwrap();
+        renderer
+            .set_chart_series(unrelated, vec![state_test_line("streamed", "s", "s")])
+            .unwrap();
+        assert_eq!(active_picker(&renderer).chart_id, chart);
+        let old = renderer.chart_states[&chart].revisions.desired;
+        renderer
+            .chart_states
+            .get_mut(&chart)
+            .unwrap()
+            .revisions
+            .desired
+            .sequence = u64::MAX;
+        assert!(
+            renderer
+                .set_chart_series(chart, vec![state_test_line("streamed", "s", "s")])
+                .is_err()
+        );
+        assert_eq!(active_picker(&renderer).chart_id, chart);
+        renderer
+            .chart_states
+            .get_mut(&chart)
+            .unwrap()
+            .revisions
+            .desired = old;
+        renderer
+            .set_chart_series(chart, vec![state_test_line("streamed", "s", "s")])
+            .unwrap();
+        assert!(renderer.picker.active.is_none());
+        assert!(matches!(
+            renderer.prepare_gpu_picking_for_chart(chart),
+            Err(crate::GpuPickError::ColumnNotResident(_))
+        ));
+        renderer
+            .set_chart_series(chart, vec![state_test_line("resident", "x", "y")])
+            .unwrap();
+        renderer.prepare_gpu_picking_for_chart(chart).unwrap();
+        assert_eq!(active_picker(&renderer).chart_id, chart);
     }
 
     fn state_test_line(id: &str, x: &str, y: &str) -> SeriesConfig {
@@ -14538,23 +17981,34 @@ mod tests {
                 .unwrap();
             let prospective = guard.web_derived_snapshot(chart).unwrap();
             assert_ne!(prospective.stamp(), before.stamp());
+            assert_ne!(prospective.fit_token(), before.fit_token());
         }
         assert_eq!(
             renderer.web_derived_snapshot(chart).unwrap().stamp(),
             before.stamp()
         );
+        assert_eq!(
+            renderer.web_derived_snapshot(chart).unwrap().fit_token(),
+            before.fit_token()
+        );
 
-        let prospective_stamp = {
+        let (prospective_stamp, prospective_fit_token) = {
             let guard = renderer
                 .begin_upsert_column("x", &col_f64(vec![20.0, 21.0]))
                 .unwrap();
-            let stamp = guard.web_derived_snapshot(chart).unwrap().stamp().clone();
+            let snapshot = guard.web_derived_snapshot(chart).unwrap();
+            let stamp = snapshot.stamp().clone();
+            let fit_token = snapshot.fit_token().clone();
             guard.commit();
-            stamp
+            (stamp, fit_token)
         };
         assert_eq!(
             renderer.web_derived_snapshot(chart).unwrap().stamp(),
             &prospective_stamp
+        );
+        assert_eq!(
+            renderer.web_derived_snapshot(chart).unwrap().fit_token(),
+            &prospective_fit_token
         );
     }
 
@@ -14707,6 +18161,39 @@ mod tests {
 
         let after = renderer.web_derived_snapshot(chart).unwrap();
         assert_ne!(before.stamp(), after.stamp());
+    }
+
+    #[test]
+    fn resident_fit_token_survives_source_identity_only_edit() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.add_column("x", &col_f64(vec![0.0, 1.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![1.0, 2.0])).unwrap();
+        let chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("line", "x", "y")],
+            )
+            .unwrap();
+        let token = renderer.begin_fit_commit(chart).unwrap();
+        let mut series = renderer.chart_series(chart).unwrap()[0].clone();
+        series.source_id = Some("replacement-source".to_string());
+        renderer.set_chart_series(chart, vec![series]).unwrap();
+        let extent = crate::FitExtent {
+            min: 10.0,
+            max: 20.0,
+            min_positive: Some(10.0),
+        };
+        renderer
+            .commit_auto_fit_all_if_current(&token, &extent, &extent, 0.0)
+            .unwrap();
+        assert_eq!(
+            renderer.chart_series(chart).unwrap()[0]
+                .source_id
+                .as_deref(),
+            Some("replacement-source")
+        );
     }
 
     #[test]
@@ -17346,6 +20833,13 @@ mod tests {
             "the delayed-submit oracle needs visibly different A and C frames"
         );
         renderer.end_gpu_frame();
+        renderer
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .expect("retired GPU work completes");
         assert_eq!(
             renderer
                 .gpu_memory_usage()
@@ -17554,6 +21048,13 @@ mod tests {
             "cache removal must retire the replacement charge too"
         );
         renderer.end_gpu_frame();
+        renderer
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .expect("retired GPU work completes");
         assert_eq!(
             renderer
                 .gpu_memory_usage()
@@ -17697,8 +21198,470 @@ mod tests {
         );
     }
 
+    #[test]
+    fn stream_chunk_uses_shared_preparation_and_retains_work_charge() {
+        use crate::streaming::{ColumnInput, ColumnRange, SourceEncoding};
+        use crate::streaming_upload::{ChunkUploadBudget, record_chunk};
+        let (device, queue) = crate::data_render::shared_device().expect("stream GPU required");
+        let mut r = Renderer::try_new(
+            RendererDevice::new(device, queue),
+            wgpu::TextureFormat::Rgba8Unorm,
+            4096,
+        )
+        .unwrap();
+        let values = [0.1f32, 0.5, 0.9];
+        for id in ["rx", "ry"] {
+            r.add_column(
+                id,
+                &Column {
+                    data: values.to_vec(),
+                    min: 0.1,
+                    max: 0.9,
+                },
+            )
+            .unwrap();
+        }
+        r.register_streamed_columns(
+            ["sx", "sy"]
+                .map(|id| crate::StreamColumn {
+                    id: id.into(),
+                    len: 3,
+                    encoding: crate::StreamEncoding::ScalarF32,
+                    replay: crate::StreamReplay::RandomAccess,
+                    revision: 1,
+                    statistics: crate::StreamStatistics::Unknown,
+                })
+                .to_vec(),
+        )
+        .unwrap();
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 240,
+        });
+        let mut chart = Chart::new(config);
+        chart.set_x_range(0.0, 1.0);
+        chart.set_y_range(0.0, 1.0);
+        let resident_series = SeriesConfig {
+            series_id: "s".into(),
+            source_id: None,
+            label: None,
+            x_column: "rx".into(),
+            y_column: "ry".into(),
+            render_type: DataRenderType::Line {
+                line: DataLineStyleConfig {
+                    line_style: LineStylePreset::Solid,
+                    line_color: Color::new(1.0, 0.0, 0.0, 0.5),
+                    line_width: 5.0,
+                },
+            },
+        };
+        let mut stream_series = resident_series.clone();
+        stream_series.x_column = "sx".into();
+        stream_series.y_column = "sy".into();
+        let resident_id = r
+            .register_chart(chart.config().clone(), vec![resident_series])
+            .unwrap();
+        let streamed_id = r
+            .register_chart(chart.config().clone(), vec![stream_series])
+            .unwrap();
+        let view = r
+            .create_chart_view(&chart, chart.config().chart_area.0)
+            .unwrap();
+        let mut frame = r
+            .prepare_registered(&[RegisteredChartDrawItem {
+                chart_id: resident_id,
+                view: &view,
+            }])
+            .unwrap();
+        let expected = paint_prepared_rgba(&r, &frame, 320, 240);
+        let x = ColumnRange {
+            column: 0,
+            revision: 1,
+            source_len: 3,
+            offset: 0,
+            len: 3,
+            encoding: SourceEncoding::ScalarF32,
+        };
+        let y = ColumnRange { column: 1, ..x };
+        let requested = [x, y];
+        let mut encoder = r.device.create_command_encoder(&Default::default());
+        let chunk = record_chunk(
+            &r.device,
+            &mut encoder,
+            &r.gpu_ledger,
+            ChunkUploadBudget {
+                max_columns: 2,
+                max_input_bytes: 24,
+                max_work_buffer_bytes: 48,
+                max_upload_bytes: 96,
+                renderer_budget_bytes: u64::MAX,
+                pool_bytes: r.gpu_memory_usage().pool_bytes(),
+            },
+            &[
+                ColumnInput {
+                    range: x,
+                    bytes: bytemuck::cast_slice(&values),
+                },
+                ColumnInput {
+                    range: y,
+                    bytes: bytemuck::cast_slice(&values),
+                },
+            ],
+        )
+        .unwrap();
+        r.queue.submit([encoder.finish()]);
+        let style = r.create_style_for_series(&r.chart_series(streamed_id).unwrap()[0]);
+        let stream_packet = {
+            let (states, preparation) = r.preparation_parts();
+            let state = &states[&streamed_id];
+            let series = Series {
+                config: &state.series[0],
+                style: &style,
+            };
+            assert!(
+                preparation
+                    .build_stream_series(
+                        &view,
+                        &state.config,
+                        &series,
+                        &chunk,
+                        &[
+                            requested[0],
+                            ColumnRange {
+                                offset: 1,
+                                len: 2,
+                                ..requested[1]
+                            },
+                        ],
+                        streaming_runtime::StreamDrawPhase::Line,
+                    )
+                    .is_err()
+            );
+            let mut dashed = state.series[0].clone();
+            if let DataRenderType::Line { line } = &mut dashed.render_type {
+                line.line_style = LineStylePreset::Dash;
+            }
+            assert!(
+                preparation
+                    .build_stream_series(
+                        &view,
+                        &state.config,
+                        &Series {
+                            config: &dashed,
+                            style: &style
+                        },
+                        &chunk,
+                        &requested,
+                        streaming_runtime::StreamDrawPhase::Line,
+                    )
+                    .is_err()
+            );
+            let mut sketch = state.config.clone();
+            sketch.draw_style = DrawStyle::Sketch(Default::default());
+            assert!(
+                preparation
+                    .build_stream_series(
+                        &view,
+                        &sketch,
+                        &series,
+                        &chunk,
+                        &requested,
+                        streaming_runtime::StreamDrawPhase::Line,
+                    )
+                    .is_err()
+            );
+            preparation
+                .build_stream_series(
+                    &view,
+                    &state.config,
+                    &series,
+                    &chunk,
+                    &requested,
+                    streaming_runtime::StreamDrawPhase::Line,
+                )
+                .unwrap()
+        };
+        frame.items[0].series = vec![stream_packet];
+        frame.column_sources.clear();
+        let state = &r.chart_states[&streamed_id];
+        frame.registered_charts = vec![PreparedChartStamp {
+            chart_id: streamed_id,
+            desired: state.revisions.desired,
+            data: state.revisions.data,
+        }];
+        // The prepared packet, not the temporary upload record, keeps work live.
+        drop(chunk);
+        r.end_gpu_frame();
+        r.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .unwrap();
+        assert_eq!(
+            r.gpu_memory_usage()
+                .bytes_of(crate::GpuResourceKind::StreamingUpload),
+            48
+        );
+        assert_eq!(paint_prepared_rgba(&r, &frame, 320, 240), expected);
+        assert!(r.pool.slot("sx").is_none());
+        let mut replacement = match r.logical_column("sx").unwrap() {
+            crate::LogicalColumn::Streamed(source) => source.clone(),
+            _ => unreachable!(),
+        };
+        replacement.revision = 2;
+        r.replace_streamed_columns(vec![replacement]).unwrap();
+        assert!(r.validate_prepared(&frame).is_err());
+        drop(frame);
+        r.end_gpu_frame();
+        r.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .unwrap();
+        assert_eq!(
+            r.gpu_memory_usage()
+                .bytes_of(crate::GpuResourceKind::StreamingUpload),
+            0
+        );
+    }
+
     /// The token owns host inputs after prepare and rejects only renderer
     /// resource changes that invalidate its captured GPU work.
+    #[test]
+    fn registered_prepare_preserves_chart_identity_and_ssot_styles() {
+        let (device, queue) = crate::data_render::shared_device()
+            .expect("registered preparation regression requires a GPU adapter");
+        let mut r = Renderer::try_new(
+            RendererDevice::new(device, queue),
+            wgpu::TextureFormat::Rgba8Unorm,
+            1024 * 1024,
+        )
+        .unwrap();
+        for id in ["registered_x", "registered_y"] {
+            r.add_column(id, &col_f64(vec![0.1, 0.5, 0.9])).unwrap();
+        }
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 240,
+        });
+        let mut chart = Chart::new(config);
+        chart.set_x_range(0.0, 1.0);
+        chart.set_y_range(0.0, 1.0);
+        let series = SeriesConfig {
+            series_id: "same-series-id".into(),
+            source_id: None,
+            label: None,
+            x_column: "registered_x".into(),
+            y_column: "registered_y".into(),
+            render_type: DataRenderType::Line {
+                line: DataLineStyleConfig {
+                    line_style: LineStylePreset::Solid,
+                    line_color: Color::new(1.0, 0.0, 0.0, 1.0),
+                    line_width: 5.0,
+                },
+            },
+        };
+        // Equal configs, series ids and source columns cannot identify a chart.
+        let a = r
+            .register_chart(chart.config().clone(), vec![series.clone()])
+            .unwrap();
+        let b = r
+            .register_chart(chart.config().clone(), vec![series.clone()])
+            .unwrap();
+        let view_a = r
+            .create_chart_view(&chart, chart.config().chart_area.0)
+            .unwrap();
+        let view_b = r
+            .create_chart_view(&chart, chart.config().chart_area.0)
+            .unwrap();
+        let view_b_only = r
+            .create_chart_view(&chart, chart.config().chart_area.0)
+            .unwrap();
+        let both = r
+            .prepare_registered(&[
+                RegisteredChartDrawItem {
+                    chart_id: a,
+                    view: &view_a,
+                },
+                RegisteredChartDrawItem {
+                    chart_id: b,
+                    view: &view_b,
+                },
+            ])
+            .unwrap();
+        assert_eq!(both.registered_charts[0].chart_id, a);
+        assert_eq!(both.registered_charts[1].chart_id, b);
+        let before_a = paint_prepared_rgba(&r, &both, 320, 240);
+        let b_only = r
+            .prepare_registered(&[RegisteredChartDrawItem {
+                chart_id: b,
+                view: &view_b_only,
+            }])
+            .unwrap();
+        let before_b = paint_prepared_rgba(&r, &b_only, 320, 240);
+        let b_style_revision = r.chart_states[&b]
+            .prepared_styles
+            .as_ref()
+            .unwrap()
+            .series_revision;
+        let b_style_buffer = r.chart_states[&b].prepared_styles.as_ref().unwrap().styles[0]
+            .line_bg
+            .clone();
+        r.validate_prepared(&both).unwrap();
+
+        let mut changed = series.clone();
+        if let DataRenderType::Line { line } = &mut changed.render_type {
+            line.line_color = Color::new(0.0, 1.0, 0.0, 1.0);
+        }
+        r.set_chart_series(a, vec![changed]).unwrap();
+        assert!(matches!(
+            r.validate_prepared(&both),
+            Err(FiggyError::StalePreparedFrame { .. })
+        ));
+        r.validate_prepared(&b_only).unwrap();
+        let next_a = r
+            .prepare_registered(&[RegisteredChartDrawItem {
+                chart_id: a,
+                view: &view_a,
+            }])
+            .unwrap();
+        let after_a = paint_prepared_rgba(&r, &next_a, 320, 240);
+        assert_ne!(
+            before_a, after_a,
+            "registered style must be regenerated from SSOT"
+        );
+        let b_again = r
+            .prepare_registered(&[RegisteredChartDrawItem {
+                chart_id: b,
+                view: &view_b,
+            }])
+            .unwrap();
+        assert_eq!(before_b, paint_prepared_rgba(&r, &b_again, 320, 240));
+        assert_eq!(before_b, paint_prepared_rgba(&r, &b_only, 320, 240));
+        assert_eq!(
+            r.chart_states[&b]
+                .prepared_styles
+                .as_ref()
+                .unwrap()
+                .series_revision,
+            b_style_revision
+        );
+        assert_eq!(
+            r.chart_states[&b].prepared_styles.as_ref().unwrap().styles[0].line_bg,
+            b_style_buffer
+        );
+
+        let mut next_config = r.chart_config(a).unwrap().clone();
+        next_config.bottom_x.max = 2.0;
+        r.set_chart_config(a, next_config).unwrap();
+        assert!(matches!(
+            r.validate_prepared(&next_a),
+            Err(FiggyError::StalePreparedFrame { .. })
+        ));
+        r.validate_prepared(&b_only).unwrap();
+        let removal_token = r
+            .prepare_registered(&[RegisteredChartDrawItem {
+                chart_id: a,
+                view: &view_a,
+            }])
+            .unwrap();
+        r.remove_chart(a).unwrap();
+        assert!(matches!(
+            r.validate_prepared(&removal_token),
+            Err(FiggyError::StalePreparedFrame { .. })
+        ));
+        r.validate_prepared(&b_only).unwrap();
+        assert_eq!(before_b, paint_prepared_rgba(&r, &b_only, 320, 240));
+
+        let source_token = r
+            .prepare_registered(&[RegisteredChartDrawItem {
+                chart_id: b,
+                view: &view_b_only,
+            }])
+            .unwrap();
+        r.upsert_column("registered_y", &col_f64(vec![0.9, 0.5, 0.1]))
+            .unwrap();
+        assert!(matches!(
+            r.validate_prepared(&source_token),
+            Err(FiggyError::StalePreparedFrame { .. })
+        ));
+    }
+
+    #[test]
+    fn registered_prepare_preflight_failure_preserves_live_token() {
+        let (device, queue) = crate::data_render::shared_device()
+            .expect("registered preparation regression requires a GPU adapter");
+        let mut r = Renderer::try_new(
+            RendererDevice::new(device, queue),
+            wgpu::TextureFormat::Rgba8Unorm,
+            1024 * 1024,
+        )
+        .unwrap();
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 240,
+        });
+        let chart = Chart::new(config);
+        let a = r.register_chart(chart.config().clone(), vec![]).unwrap();
+        let removed = r.register_chart(chart.config().clone(), vec![]).unwrap();
+        r.remove_chart(removed).unwrap();
+        let view = r
+            .create_chart_view(&chart, chart.config().chart_area.0)
+            .unwrap();
+        let token = r
+            .prepare_registered(&[RegisteredChartDrawItem {
+                chart_id: a,
+                view: &view,
+            }])
+            .unwrap();
+        let unprepared = r.register_chart(chart.config().clone(), vec![]).unwrap();
+        let stamp = r.chart_render_stamp(a).unwrap();
+        let revision = view
+            .content_revision
+            .load(std::sync::atomic::Ordering::Acquire);
+        assert!(matches!(
+            r.prepare_registered(&[
+                RegisteredChartDrawItem {
+                    chart_id: a,
+                    view: &view
+                },
+                RegisteredChartDrawItem {
+                    chart_id: unprepared,
+                    view: &view
+                },
+                RegisteredChartDrawItem {
+                    chart_id: removed,
+                    view: &view
+                },
+            ]),
+            Err(FiggyError::UnknownChart { .. })
+        ));
+        assert!(r.chart_states[&unprepared].prepared_styles.is_none());
+        assert_eq!(r.chart_render_stamp(a).unwrap(), stamp);
+        assert_eq!(
+            view.content_revision
+                .load(std::sync::atomic::Ordering::Acquire),
+            revision
+        );
+        r.validate_prepared(&token).unwrap();
+        let mut invalid = r.chart_config(a).unwrap().clone();
+        invalid.bottom_x.min = f64::NAN;
+        assert!(r.set_chart_config(a, invalid).is_err());
+        r.validate_prepared(&token).unwrap();
+        paint_prepared_rgba(&r, &token, 320, 240);
+    }
+
     #[test]
     fn prepared_frame_owns_inputs_and_rejects_resource_staleness() {
         let Some((device, queue)) = crate::data_render::shared_device() else {
@@ -18041,6 +22004,12 @@ mod tests {
             "delayed milkyway frame produced too little ink: {lit}"
         );
         r.end_gpu_frame();
+        r.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .expect("retired GPU work completes");
         assert_eq!(
             r.gpu_memory_usage()
                 .retired_bytes_of(GpuResourceKind::ArcScan),
@@ -18736,12 +22705,16 @@ mod tests {
 
         let usage = renderer.gpu_memory_usage();
         assert_eq!(
-            usage.pool_bytes(),
+            usage.live_bytes_of(GpuResourceKind::ColumnPool),
             pool_bytes_held(&renderer),
             "pool row missed the ping-pong backup\n{}",
             usage.report()
         );
-        assert_eq!(usage.pool_bytes(), renderer.pool.capacity() * 2);
+        assert_eq!(
+            usage.pool_bytes(),
+            renderer.pool.capacity() * 2
+                + usage.retired_bytes_of(GpuResourceKind::ColumnPool)
+        );
     }
 
     #[test]
@@ -18753,6 +22726,13 @@ mod tests {
         let column = col_f64((0..4096).map(|i| i as f64).collect());
         renderer.add_column("x", &column).unwrap();
         renderer.end_gpu_frame();
+        renderer
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .expect("retired GPU work completes");
         let after = renderer.gpu_memory_usage();
 
         assert_eq!(
@@ -18770,7 +22750,7 @@ mod tests {
     }
 
     #[test]
-    fn upload_peak_includes_the_staging_buffer_that_no_observer_can_see() {
+    fn upload_peak_and_current_usage_include_submitted_staging() {
         let Some(mut renderer) = state_test_renderer() else {
             return;
         };
@@ -18780,12 +22760,16 @@ mod tests {
         renderer.add_column("x", &column).unwrap();
 
         let staged = (values as u64) * crate::data::COLUMN_VALUE_BYTES as u64;
-        let settled = renderer.gpu_memory_usage().pool_bytes();
+        let usage = renderer.gpu_memory_usage();
         assert_eq!(
             renderer.pool.peak_bytes(),
-            settled + staged,
-            "the staging buffer lives and dies inside add_column, so only the \
-             peak can testify to it"
+            usage.live_bytes_of(GpuResourceKind::ColumnPool) + staged,
+            "the peak must include submitted staging"
+        );
+        assert_eq!(
+            usage.retired_bytes_of(GpuResourceKind::ColumnPool),
+            staged,
+            "submitted staging remains budgeted until queue completion"
         );
     }
 
@@ -18828,6 +22812,13 @@ mod tests {
             "released bytes stay in the total until the submission boundary"
         );
         renderer.end_gpu_frame();
+        renderer
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .expect("retired GPU work completes");
         assert_eq!(
             renderer
                 .gpu_memory_usage()
@@ -18835,6 +22826,41 @@ mod tests {
             before.bytes_of(GpuResourceKind::PanelTexture),
             "the submission boundary clears retirement"
         );
+    }
+
+    #[test]
+    fn idle_nonblocking_service_completes_retirement_without_another_submission() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        let chart = Chart::new(panel_config(320, 240));
+        let view = renderer
+            .create_chart_view(&chart, chart.config().chart_area.0)
+            .unwrap();
+        drop(view);
+        assert!(renderer.gpu_memory_usage().retired_bytes() > 0);
+        renderer.end_gpu_frame();
+
+        // No further submission or boundary call: an idle host services only
+        // nonblocking callbacks until the already submitted work completes.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            renderer
+                .service_gpu_completions()
+                .expect("device remains available");
+            if renderer.gpu_memory_usage().retired_bytes() == 0 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "idle retirement did not complete"
+            );
+            std::thread::yield_now();
+        }
+        renderer
+            .service_gpu_completions()
+            .expect("empty poll is idempotent");
+        assert_eq!(renderer.gpu_memory_usage().retired_bytes(), 0);
     }
 
     #[test]
@@ -18876,6 +22902,13 @@ mod tests {
             panel_bytes
         );
         renderer.end_gpu_frame();
+        renderer
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .expect("retired GPU work completes");
         assert_eq!(
             renderer
                 .gpu_memory_usage()
@@ -18922,6 +22955,13 @@ mod tests {
         );
 
         renderer.end_gpu_frame();
+        renderer
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .expect("retired GPU work completes");
         assert_eq!(
             renderer
                 .gpu_memory_usage()
@@ -19331,6 +23371,13 @@ mod tests {
         renderer.set_pool_growth_policy(data_render::GrowthPolicy::OnAllocFailure);
         renderer.add_column("lx", &col_f64(vec![0.0, 1.0])).unwrap();
         renderer.end_gpu_frame();
+        renderer
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .expect("retired GPU work completes");
 
         let before = renderer.gpu_memory_usage();
         assert_eq!(before.pool_bytes(), pool_bytes_held(&renderer));
@@ -19352,8 +23399,8 @@ mod tests {
         );
         assert_eq!(
             during.retired_bytes_of(GpuResourceKind::ColumnPool),
-            capacity_before,
-            "the old slab is retired until the submission boundary\n{}",
+            capacity_before + 2048 * crate::data::COLUMN_VALUE_BYTES as u64,
+            "the old slab and submitted staging stay retired until completion\n{}",
             during.report()
         );
         assert!(
@@ -19367,6 +23414,13 @@ mod tests {
         );
 
         renderer.end_gpu_frame();
+        renderer
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .expect("retired GPU work completes");
         let after = renderer.gpu_memory_usage();
         assert_eq!(after.retired_bytes(), 0);
         assert_eq!(after.pool_bytes(), pool_bytes_held(&renderer));
@@ -19383,6 +23437,13 @@ mod tests {
             .create_chart_view(&chart, chart.config().chart_area.0)
             .unwrap();
         renderer.end_gpu_frame();
+        renderer
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .expect("retired GPU work completes");
 
         // No ceiling: the context carries no budget at all, so there is no
         // out-of-pool total to compute and none to misread. `GpuBudget` fusing
@@ -19427,6 +23488,13 @@ mod tests {
             .create_chart_view(&chart, chart.config().chart_area.0)
             .unwrap();
         renderer.end_gpu_frame();
+        renderer
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .expect("retired GPU work completes");
         let total = renderer.gpu_memory_usage().total_bytes();
 
         // A ceiling with room says nothing.
@@ -19448,6 +23516,2058 @@ mod tests {
 
         assert_eq!(renderer.set_memory_budget(None), None);
         assert_eq!(renderer.memory_budget(), None);
+    }
+
+    #[test]
+    fn resident_admission_counts_staging_derived_headroom_and_requires_a_budget() {
+        let Some(mut renderer) = state_test_renderer_with_capacity(4 * 1024) else {
+            return;
+        };
+        let lengths = [1, 33]; // 256 + 512 bytes after per-column alignment.
+        let derived = [128, 192];
+        let request = ResidentAdmissionRequest {
+            column_value_counts: &lengths,
+            already_resident_working_set_bytes: 256,
+            derived_buffer_sizes: &derived,
+            transition_headroom_bytes: 128,
+            working_set_limit_bytes: 1344,
+        };
+        let current = renderer.gpu_memory_usage().total_bytes();
+        let unbounded = renderer.resident_admission(request);
+        assert_eq!(unbounded.status, ResidentAdmissionStatus::MemoryBudgetUnset);
+        assert_eq!(unbounded.resident_column_bytes, 768);
+        assert_eq!(unbounded.derived_resident_bytes, 320);
+        assert_eq!(unbounded.upload_staging_bytes, 768);
+        assert_eq!(unbounded.resident_working_set_bytes, 1344);
+        assert_eq!(unbounded.pool_transition_bytes, 0);
+        assert_eq!(unbounded.transition_peak_bytes, current + 768 + 320 + 128);
+
+        assert_eq!(
+            renderer.set_memory_budget(Some(unbounded.transition_peak_bytes)),
+            None
+        );
+        let accepted = renderer.resident_admission(request);
+        assert!(accepted.is_admissible(), "{accepted:?}");
+
+        assert_eq!(
+            renderer.set_memory_budget(Some(accepted.transition_peak_bytes - 1)),
+            None
+        );
+        assert_eq!(
+            renderer.resident_admission(request).status,
+            ResidentAdmissionStatus::MemoryBudgetExceeded
+        );
+        let capped = renderer.resident_admission(ResidentAdmissionRequest {
+            working_set_limit_bytes: 1343,
+            ..request
+        });
+        assert_eq!(
+            capped.status,
+            ResidentAdmissionStatus::WorkingSetLimitExceeded
+        );
+    }
+
+    #[test]
+    fn automatic_residency_requires_policy_and_budget_before_it_promotes() {
+        let Some(mut renderer) = state_test_renderer_with_capacity(4 * 1024) else {
+            return;
+        };
+        let x = col_f64(vec![0.0, 1.0, 2.0]);
+        let y = col_f64(vec![2.0, 1.0, 0.0]);
+        renderer
+            .register_streamed_columns(vec![
+                crate::StreamColumn {
+                    id: "auto-resident-x".into(),
+                    len: 3,
+                    encoding: crate::StreamEncoding::ScalarF32,
+                    replay: crate::StreamReplay::RandomAccess,
+                    revision: 1,
+                    statistics: crate::StreamStatistics::Unknown,
+                },
+                crate::StreamColumn {
+                    id: "auto-resident-y".into(),
+                    len: 3,
+                    encoding: crate::StreamEncoding::ScalarF32,
+                    replay: crate::StreamReplay::RandomAccess,
+                    revision: 2,
+                    statistics: crate::StreamStatistics::Unknown,
+                },
+            ])
+            .unwrap();
+        let config = panel_config(320, 240);
+        let chart = renderer
+            .register_chart(
+                config.clone(),
+                vec![state_test_line(
+                    "auto-resident-line",
+                    "auto-resident-x",
+                    "auto-resident-y",
+                )],
+            )
+            .unwrap();
+        let bindings = [
+            crate::StreamSourceBinding {
+                id: "auto-resident-x",
+                revision: 1,
+                source: crate::StreamColumnSource::Scalar(&x),
+            },
+            crate::StreamSourceBinding {
+                id: "auto-resident-y",
+                revision: 2,
+                source: crate::StreamColumnSource::Scalar(&y),
+            },
+        ];
+
+        assert!(
+            renderer
+                .try_promote_streamed_chart_to_resident(chart, &config, &bindings)
+                .unwrap()
+                .is_none(),
+            "native explicit-control mode must remain the default"
+        );
+        assert_eq!(
+            renderer.set_auto_resident_working_set_limit(Some(512)),
+            None
+        );
+        let no_budget = renderer
+            .try_promote_streamed_chart_to_resident(chart, &config, &bindings)
+            .unwrap()
+            .unwrap();
+        assert_eq!(no_budget.status, ResidentAdmissionStatus::MemoryBudgetUnset);
+        assert!(matches!(
+            renderer.logical_column("auto-resident-x"),
+            Some(crate::LogicalColumn::Streamed(_))
+        ));
+
+        assert_eq!(renderer.set_memory_budget(Some(u64::MAX)), None);
+        let promoted = renderer
+            .try_promote_streamed_chart_to_resident(chart, &config, &bindings)
+            .unwrap()
+            .unwrap();
+        assert!(promoted.is_admissible(), "{promoted:?}");
+        assert!(matches!(
+            renderer.logical_column("auto-resident-x"),
+            Some(crate::LogicalColumn::Resident(_))
+        ));
+        assert!(matches!(
+            renderer.logical_column("auto-resident-y"),
+            Some(crate::LogicalColumn::Resident(_))
+        ));
+    }
+
+    #[test]
+    fn automatic_residency_sizes_histogram_pixel_envelope() {
+        let Some(mut renderer) = state_test_renderer_with_capacity(4 * 1024) else {
+            return;
+        };
+        let edges = col_f64(vec![0.0, 1.0, 2.0, 3.0, 4.0]);
+        let values = col_f64(vec![1.0, 2.0, 3.0, 4.0]);
+        renderer
+            .register_streamed_columns(vec![
+                crate::StreamColumn {
+                    id: "auto-hist-edges".into(),
+                    len: 5,
+                    encoding: crate::StreamEncoding::ScalarF32,
+                    replay: crate::StreamReplay::RandomAccess,
+                    revision: 1,
+                    statistics: crate::StreamStatistics::Unknown,
+                },
+                crate::StreamColumn {
+                    id: "auto-hist-values".into(),
+                    len: 4,
+                    encoding: crate::StreamEncoding::ScalarF32,
+                    replay: crate::StreamReplay::RandomAccess,
+                    revision: 1,
+                    statistics: crate::StreamStatistics::Unknown,
+                },
+            ])
+            .unwrap();
+        let config = panel_config(321, 240);
+        let chart = renderer
+            .register_chart(
+                config.clone(),
+                vec![state_test_histogram(
+                    "auto-hist",
+                    "auto-hist-edges",
+                    "auto-hist-values",
+                    crate::data_config::BarOrientation::Vertical,
+                )],
+            )
+            .unwrap();
+        let bindings = [
+            crate::StreamSourceBinding {
+                id: "auto-hist-edges",
+                revision: 1,
+                source: crate::StreamColumnSource::Scalar(&edges),
+            },
+            crate::StreamSourceBinding {
+                id: "auto-hist-values",
+                revision: 1,
+                source: crate::StreamColumnSource::Scalar(&values),
+            },
+        ];
+        assert_eq!(
+            renderer
+                .automatic_resident_derived_buffers(chart, &config, &bindings)
+                .unwrap(),
+            vec![16, 321 * 4]
+        );
+    }
+
+    #[test]
+    fn automatic_residency_sizes_dashed_line_arc_buffers() {
+        let Some(mut renderer) = state_test_renderer_with_capacity(16 * 1024) else {
+            return;
+        };
+        let x = col_f64((0..513).map(f64::from).collect());
+        let y = col_f64((0..513).map(|value| f64::from(value % 7)).collect());
+        renderer
+            .register_streamed_columns(vec![
+                crate::StreamColumn {
+                    id: "auto-arc-x".into(),
+                    len: 513,
+                    encoding: crate::StreamEncoding::ScalarF32,
+                    replay: crate::StreamReplay::RandomAccess,
+                    revision: 1,
+                    statistics: crate::StreamStatistics::Unknown,
+                },
+                crate::StreamColumn {
+                    id: "auto-arc-y".into(),
+                    len: 513,
+                    encoding: crate::StreamEncoding::ScalarF32,
+                    replay: crate::StreamReplay::RandomAccess,
+                    revision: 1,
+                    statistics: crate::StreamStatistics::Unknown,
+                },
+            ])
+            .unwrap();
+        let config = panel_config(320, 240);
+        let mut series = state_test_line("auto-arc", "auto-arc-x", "auto-arc-y");
+        let DataRenderType::Line { line } = &mut series.render_type else {
+            unreachable!()
+        };
+        line.line_style = LineStylePreset::Dash;
+        let chart = renderer
+            .register_chart(config.clone(), vec![series])
+            .unwrap();
+        let bindings = [
+            crate::StreamSourceBinding {
+                id: "auto-arc-x",
+                revision: 1,
+                source: crate::StreamColumnSource::Scalar(&x),
+            },
+            crate::StreamSourceBinding {
+                id: "auto-arc-y",
+                revision: 1,
+                source: crate::StreamColumnSource::Scalar(&y),
+            },
+        ];
+        let plan = data_render::line_arc::buffer_plan(
+            513,
+            renderer.caps.max_compute_workgroups_per_dimension,
+            None,
+            false,
+        )
+        .unwrap();
+        let mut expected = Vec::new();
+        plan.visit_sizes(|bytes| expected.push(bytes));
+        assert_eq!(
+            renderer
+                .automatic_resident_derived_buffers(chart, &config, &bindings)
+                .unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn streamed_promotion_commits_mixed_encodings_and_only_invalidates_dependents() {
+        let Some(mut renderer) = state_test_renderer_with_capacity(4 * 1024) else {
+            return;
+        };
+        let _ = renderer.set_memory_budget(Some(u64::MAX));
+        let scalar = col_f64(vec![-2.0, 0.5, 4.0]);
+        let hilo = col_f64(vec![
+            1_700_000_000_000.125,
+            1_700_000_000_000.25,
+            1_700_000_000_000.5,
+        ]);
+        renderer
+            .register_streamed_columns(vec![
+                crate::StreamColumn {
+                    id: "promote-x".into(),
+                    len: 3,
+                    encoding: crate::StreamEncoding::ScalarF32,
+                    replay: crate::StreamReplay::RandomAccess,
+                    revision: 7,
+                    statistics: crate::StreamStatistics::Unknown,
+                },
+                crate::StreamColumn {
+                    id: "promote-y".into(),
+                    len: 3,
+                    encoding: crate::StreamEncoding::HiLoF32,
+                    replay: crate::StreamReplay::RandomAccess,
+                    revision: 9,
+                    statistics: crate::StreamStatistics::Unknown,
+                },
+            ])
+            .unwrap();
+        let series = state_test_line("promoted", "promote-x", "promote-y");
+        let dependent = renderer
+            .register_chart(crate::default::default_config(), vec![series.clone()])
+            .unwrap();
+        let unrelated = renderer
+            .register_chart(crate::default::default_config(), Vec::new())
+            .unwrap();
+        let dependent_before = revision_snapshot(&renderer, dependent);
+        let unrelated_before = revision_snapshot(&renderer, unrelated);
+        let fit_before = renderer.begin_fit_commit(dependent).unwrap();
+        let sources = [
+            crate::StreamSourceBinding {
+                id: "promote-x",
+                revision: 7,
+                source: crate::data::StreamColumnSource::Scalar(&scalar),
+            },
+            crate::StreamSourceBinding {
+                id: "promote-y",
+                revision: 9,
+                source: crate::data::StreamColumnSource::HiLo(&hilo),
+            },
+        ];
+
+        let report = renderer
+            .promote_streamed_columns_to_resident(&sources, 0, &[], 0, u64::MAX)
+            .unwrap();
+        assert!(report.is_admissible(), "{report:?}");
+        assert!(matches!(
+            renderer.logical_column("promote-x"),
+            Some(crate::LogicalColumn::Resident(_))
+        ));
+        assert!(matches!(
+            renderer.logical_column("promote-y"),
+            Some(crate::LogicalColumn::Resident(_))
+        ));
+        assert!(!renderer.streaming_sources.contains_key("promote-x"));
+        assert!(!renderer.streaming_sources.contains_key("promote-y"));
+        assert_eq!(renderer.stream_revision_lineage["promote-x"], 7);
+        assert_eq!(renderer.stream_revision_lineage["promote-y"], 9);
+        assert_eq!(renderer.chart_states[&dependent].series, vec![series]);
+        let dependent_after = revision_snapshot(&renderer, dependent);
+        assert_ne!(dependent_after[0], dependent_before[0]);
+        assert_ne!(dependent_after[3], dependent_before[3]);
+        assert_eq!(dependent_after[1], dependent_before[1]);
+        assert_eq!(dependent_after[2], dependent_before[2]);
+        assert_eq!(revision_snapshot(&renderer, unrelated), unrelated_before);
+        assert_eq!(renderer.pool.slot("promote-x").unwrap().min, -2.0);
+        assert_eq!(
+            renderer.pool.slot("promote-y").unwrap().min_positive,
+            Some(1_700_000_000_000.125)
+        );
+        assert!(matches!(
+            renderer.commit_auto_fit_all_if_current(
+                &fit_before,
+                &crate::chart::FitExtent::EMPTY,
+                &crate::chart::FitExtent::EMPTY,
+                0.0,
+            ),
+            Err(FiggyError::StaleStateToken { .. })
+        ));
+    }
+
+    #[test]
+    fn streamed_promotion_validation_admission_and_source_failure_leave_stream_authority() {
+        let Some(mut renderer) = state_test_renderer_with_capacity(4 * 1024) else {
+            return;
+        };
+        let source = FailingPromotionSource { len: 3 };
+        renderer
+            .register_streamed_columns(vec![crate::StreamColumn {
+                id: "stay-streamed".into(),
+                len: 3,
+                encoding: crate::StreamEncoding::ScalarF32,
+                replay: crate::StreamReplay::RandomAccess,
+                revision: 4,
+                statistics: crate::StreamStatistics::Unknown,
+            }])
+            .unwrap();
+        let chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line(
+                    "streamed",
+                    "stay-streamed",
+                    "stay-streamed",
+                )],
+            )
+            .unwrap();
+        let revisions = revision_snapshot(&renderer, chart);
+        let used = renderer.pool.used_bytes();
+        let layout = renderer.pool.layout_generation();
+        let stale = [crate::StreamSourceBinding {
+            id: "stay-streamed",
+            revision: 3,
+            source: crate::data::StreamColumnSource::Scalar(&source),
+        }];
+        assert!(matches!(
+            renderer.resident_admission_for_streamed_columns(&stale, 0, &[], 0, u64::MAX),
+            Err(FiggyError::InvalidStreamSource { .. })
+        ));
+        let short = FailingPromotionSource { len: 2 };
+        let wrong_len = [crate::StreamSourceBinding {
+            id: "stay-streamed",
+            revision: 4,
+            source: crate::data::StreamColumnSource::Scalar(&short),
+        }];
+        assert!(matches!(
+            renderer.resident_admission_for_streamed_columns(&wrong_len, 0, &[], 0, u64::MAX),
+            Err(FiggyError::InvalidStreamSource { .. })
+        ));
+        let wrong_encoding_values = col_f64(vec![1.0, 2.0, 3.0]);
+        let wrong_encoding = [crate::StreamSourceBinding {
+            id: "stay-streamed",
+            revision: 4,
+            source: crate::data::StreamColumnSource::HiLo(&wrong_encoding_values),
+        }];
+        assert!(matches!(
+            renderer.resident_admission_for_streamed_columns(&wrong_encoding, 0, &[], 0, u64::MAX,),
+            Err(FiggyError::InvalidStreamSource { .. })
+        ));
+
+        let current = renderer.gpu_memory_usage().checked_total_bytes().unwrap();
+        let _ = renderer.set_memory_budget(Some(current));
+        let exact = [crate::StreamSourceBinding {
+            revision: 4,
+            ..stale[0]
+        }];
+        let duplicate = [exact[0], exact[0]];
+        assert!(matches!(
+            renderer.resident_admission_for_streamed_columns(&duplicate, 0, &[], 0, u64::MAX),
+            Err(FiggyError::InvalidStreamSource { .. })
+        ));
+        let rejected = renderer
+            .promote_streamed_columns_to_resident(&exact, 0, &[], 0, u64::MAX)
+            .unwrap();
+        assert_eq!(
+            rejected.status,
+            ResidentAdmissionStatus::MemoryBudgetExceeded
+        );
+        let _ = renderer.set_memory_budget(Some(u64::MAX));
+        assert!(matches!(
+            renderer.promote_streamed_columns_to_resident(&exact, 0, &[], 0, u64::MAX),
+            Err(FiggyError::Pool(
+                data_render::AllocError::AllocationFailed {
+                    resource: "streamed promotion source",
+                    ..
+                }
+            ))
+        ));
+        assert!(matches!(
+            renderer.logical_column("stay-streamed"),
+            Some(crate::LogicalColumn::Streamed(_))
+        ));
+        assert!(renderer.pool.slot("stay-streamed").is_none());
+        assert_eq!(renderer.stream_revision_lineage["stay-streamed"], 4);
+        assert_eq!(renderer.pool.used_bytes(), used);
+        assert_eq!(renderer.pool.layout_generation(), layout);
+        assert_eq!(revision_snapshot(&renderer, chart), revisions);
+    }
+
+    #[test]
+    fn resident_demotion_commits_mixed_metadata_and_preserves_chart_authority() {
+        let Some(mut renderer) = state_test_renderer_with_capacity(4 * 1024) else {
+            return;
+        };
+        let demote_x = col_f64(vec![1.0, 2.0, 3.0]);
+        let demote_y = col_f64(vec![
+            1_700_000_000_000.0,
+            1_700_000_000_000.25,
+            1_700_000_000_000.5,
+        ]);
+        renderer.add_column("demote-x", &demote_x).unwrap();
+        renderer.add_hilo_column("demote-y", &demote_y).unwrap();
+        renderer
+            .add_column("resident-z", &col_f64(vec![4.0, 5.0, 6.0]))
+            .unwrap();
+        let config = crate::default::default_config();
+        let series = state_test_line("demoted", "demote-x", "demote-y");
+        let dependent = renderer
+            .register_chart(config.clone(), vec![series.clone()])
+            .unwrap();
+        let unrelated = renderer
+            .register_chart(
+                config.clone(),
+                vec![state_test_line("resident", "resident-z", "resident-z")],
+            )
+            .unwrap();
+        let dependent_before = revision_snapshot(&renderer, dependent);
+        let unrelated_before = revision_snapshot(&renderer, unrelated);
+        let fit_before = renderer.begin_fit_commit(dependent).unwrap();
+        let chart = Chart::new(config.clone());
+        let view = renderer
+            .create_chart_view(&chart, chart.config().chart_area.0)
+            .unwrap();
+        let prepared = renderer
+            .prepare_registered(&[RegisteredChartDrawItem {
+                chart_id: dependent,
+                view: &view,
+            }])
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        renderer.prepare_gpu_picking_for_chart(dependent).unwrap();
+        assert_eq!(active_picker(&renderer).chart_id, dependent);
+
+        let sources = [
+            crate::StreamSourceBinding {
+                id: "demote-x",
+                revision: 31,
+                source: crate::StreamColumnSource::Scalar(&demote_x),
+            },
+            crate::StreamSourceBinding {
+                id: "demote-y",
+                revision: 47,
+                source: crate::StreamColumnSource::HiLo(&demote_y),
+            },
+        ];
+        renderer
+            .demote_resident_columns_to_streamed(
+                &["demote-x"],
+                vec![
+                    crate::StreamColumn {
+                        id: "demote-x".into(),
+                        len: 3,
+                        encoding: crate::StreamEncoding::ScalarF32,
+                        replay: crate::StreamReplay::RandomAccess,
+                        revision: 31,
+                        statistics: crate::StreamStatistics::Unknown,
+                    },
+                    crate::StreamColumn {
+                        id: "demote-y".into(),
+                        len: 3,
+                        encoding: crate::StreamEncoding::HiLoF32,
+                        replay: crate::StreamReplay::Sequential,
+                        revision: 47,
+                        statistics: crate::StreamStatistics::Unknown,
+                    },
+                ],
+                &sources,
+            )
+            .unwrap();
+
+        assert!(matches!(
+            renderer.logical_column("demote-x"),
+            Some(crate::LogicalColumn::Streamed(source))
+                if source.revision == 31
+                    && source.encoding == crate::StreamEncoding::ScalarF32
+        ));
+        assert!(matches!(
+            renderer.logical_column("demote-y"),
+            Some(crate::LogicalColumn::Streamed(source))
+                if source.revision == 47
+                    && source.encoding == crate::StreamEncoding::HiLoF32
+        ));
+        assert!(renderer.pool.slot("demote-x").is_none());
+        assert!(renderer.pool.slot("demote-y").is_none());
+        assert!(renderer.pool.slot("resident-z").is_some());
+        assert_eq!(renderer.stream_revision_lineage["demote-x"], 31);
+        assert_eq!(renderer.stream_revision_lineage["demote-y"], 47);
+        assert_eq!(renderer.chart_config(dependent).unwrap(), &config);
+        assert_eq!(renderer.chart_series(dependent).unwrap(), &[series]);
+        let dependent_after = revision_snapshot(&renderer, dependent);
+        assert_ne!(dependent_after[0], dependent_before[0]);
+        assert_ne!(dependent_after[3], dependent_before[3]);
+        assert_eq!(dependent_after[1], dependent_before[1]);
+        assert_eq!(dependent_after[2], dependent_before[2]);
+        assert_eq!(revision_snapshot(&renderer, unrelated), unrelated_before);
+        assert!(renderer.picker.active.is_none());
+        assert!(matches!(
+            renderer.validate_prepared(&prepared),
+            Err(FiggyError::StalePreparedFrame { .. })
+        ));
+        assert!(matches!(
+            renderer.commit_auto_fit_all_if_current(
+                &fit_before,
+                &crate::FitExtent::EMPTY,
+                &crate::FitExtent::EMPTY,
+                0.0,
+            ),
+            Err(FiggyError::StaleStateToken { .. })
+        ));
+    }
+
+    #[test]
+    fn resident_demotion_rejects_the_whole_batch_before_any_authority_changes() {
+        let Some(mut renderer) = state_test_renderer_with_capacity(4 * 1024) else {
+            return;
+        };
+        let resident_a = col_f64(vec![1.0, 2.0]);
+        let resident_b = col_f64(vec![1.0, 2.0]);
+        renderer.add_column("resident-a", &resident_a).unwrap();
+        renderer.add_column("resident-b", &resident_b).unwrap();
+        let chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("resident", "resident-a", "resident-b")],
+            )
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        renderer.prepare_gpu_picking_for_chart(chart).unwrap();
+        let revisions = revision_snapshot(&renderer, chart);
+        let generation = renderer.pool.generation();
+        let used = renderer.pool.used_bytes();
+        let stream_count = renderer.streaming_sources.len();
+        let fit_epoch = renderer.next_stream_source_fit_epoch;
+        let lineage = renderer.stream_revision_lineage.clone();
+
+        let metadata = |id: &str, len: u64| crate::StreamColumn {
+            id: id.into(),
+            len,
+            encoding: crate::StreamEncoding::ScalarF32,
+            replay: crate::StreamReplay::RandomAccess,
+            revision: 5,
+            statistics: crate::StreamStatistics::Unknown,
+        };
+        let sources = [
+            crate::StreamSourceBinding {
+                id: "resident-a",
+                revision: 5,
+                source: crate::StreamColumnSource::Scalar(&resident_a),
+            },
+            crate::StreamSourceBinding {
+                id: "resident-b",
+                revision: 5,
+                source: crate::StreamColumnSource::Scalar(&resident_b),
+            },
+        ];
+        assert!(matches!(
+            renderer.demote_resident_columns_to_streamed(
+                &["resident-a"],
+                vec![metadata("resident-a", 2), metadata("resident-a", 2)],
+                &sources,
+            ),
+            Err(FiggyError::Pool(data_render::AllocError::DuplicateId(_)))
+        ));
+        let short = col_f64(vec![1.0]);
+        let wrong_companion = [
+            sources[0],
+            crate::StreamSourceBinding {
+                id: "resident-b",
+                revision: 5,
+                source: crate::StreamColumnSource::Scalar(&short),
+            },
+        ];
+        assert!(matches!(
+            renderer.demote_resident_columns_to_streamed(
+                &["resident-a"],
+                vec![metadata("resident-a", 2), metadata("resident-b", 1)],
+                &wrong_companion,
+            ),
+            Err(FiggyError::InvalidStreamSource { .. })
+        ));
+        let mut known = metadata("resident-a", 2);
+        known.statistics = crate::StreamStatistics::Known(Some(crate::StreamBounds {
+            min: 1.0,
+            max: 2.0,
+            min_positive: Some(1.0),
+        }));
+        assert!(matches!(
+            renderer.demote_resident_columns_to_streamed(
+                &["resident-a"],
+                vec![known, metadata("resident-b", 2)],
+                &sources,
+            ),
+            Err(FiggyError::InvalidStreamSource { .. })
+        ));
+        let missing_source = [crate::StreamSourceBinding {
+            id: "missing",
+            revision: 5,
+            source: crate::StreamColumnSource::Scalar(&resident_a),
+        }];
+        assert!(matches!(
+            renderer.demote_resident_columns_to_streamed(
+                &["missing"],
+                vec![metadata("missing", 2)],
+                &missing_source,
+            ),
+            Err(FiggyError::UnknownColumn { .. })
+        ));
+
+        let old_desired = renderer.chart_states[&chart].revisions.desired;
+        renderer
+            .chart_states
+            .get_mut(&chart)
+            .unwrap()
+            .revisions
+            .desired = RenderRevision {
+            renderer_identity: renderer.renderer_identity,
+            sequence: u64::MAX,
+        };
+        assert!(matches!(
+            renderer.demote_resident_columns_to_streamed(
+                &["resident-a"],
+                vec![metadata("resident-a", 2), metadata("resident-b", 2)],
+                &sources,
+            ),
+            Err(FiggyError::CounterExhausted { .. })
+        ));
+        renderer
+            .chart_states
+            .get_mut(&chart)
+            .unwrap()
+            .revisions
+            .desired = old_desired;
+
+        assert_eq!(renderer.pool.generation(), generation);
+        assert_eq!(renderer.pool.used_bytes(), used);
+        assert!(renderer.pool.slot("resident-a").is_some());
+        assert!(renderer.pool.slot("resident-b").is_some());
+        assert_eq!(renderer.streaming_sources.len(), stream_count);
+        assert_eq!(renderer.stream_revision_lineage, lineage);
+        assert_eq!(renderer.next_stream_source_fit_epoch, fit_epoch);
+        assert_eq!(revision_snapshot(&renderer, chart), revisions);
+        assert_eq!(active_picker(&renderer).chart_id, chart);
+    }
+
+    #[test]
+    fn resident_demotion_closes_over_shared_charts_and_accepts_new_root_length() {
+        let Some(mut renderer) = state_test_renderer_with_capacity(8 * 1024) else {
+            return;
+        };
+        let old_a = col_f64(vec![1.0, 2.0]);
+        let new_a = col_f64(vec![1.0, 2.0, 3.0]);
+        let b = col_f64(vec![4.0, 5.0]);
+        let c = col_f64(vec![6.0, 7.0]);
+        let d = col_f64(vec![8.0, 9.0]);
+        for (id, source) in [
+            ("closure-a", &old_a),
+            ("closure-b", &b),
+            ("closure-c", &c),
+            ("closure-d", &d),
+        ] {
+            renderer.add_column(id, source).unwrap();
+        }
+        let first = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("first", "closure-a", "closure-b")],
+            )
+            .unwrap();
+        let shared = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("shared", "closure-b", "closure-c")],
+            )
+            .unwrap();
+        let unrelated = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("unrelated", "closure-d", "closure-d")],
+            )
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        renderer.prepare_gpu_picking_for_chart(shared).unwrap();
+
+        let metadata = |id: &str, len: u64| crate::StreamColumn {
+            id: id.into(),
+            len,
+            encoding: crate::StreamEncoding::ScalarF32,
+            replay: crate::StreamReplay::RandomAccess,
+            revision: 1,
+            statistics: crate::StreamStatistics::Unknown,
+        };
+        let sources = [
+            crate::StreamSourceBinding {
+                id: "closure-a",
+                revision: 1,
+                source: crate::StreamColumnSource::Scalar(&new_a),
+            },
+            crate::StreamSourceBinding {
+                id: "closure-b",
+                revision: 1,
+                source: crate::StreamColumnSource::Scalar(&b),
+            },
+            crate::StreamSourceBinding {
+                id: "closure-c",
+                revision: 1,
+                source: crate::StreamColumnSource::Scalar(&c),
+            },
+        ];
+        let first_before = revision_snapshot(&renderer, first);
+        let shared_before = revision_snapshot(&renderer, shared);
+        let unrelated_before = revision_snapshot(&renderer, unrelated);
+        let generation = renderer.pool.generation();
+        let used = renderer.pool.used_bytes();
+        assert!(matches!(
+            renderer.demote_resident_columns_to_streamed(
+                &["closure-a"],
+                vec![metadata("closure-a", 3), metadata("closure-b", 2)],
+                &sources[..2],
+            ),
+            Err(FiggyError::InvalidStreamSource { .. })
+        ));
+        assert_eq!(renderer.pool.generation(), generation);
+        assert_eq!(renderer.pool.used_bytes(), used);
+        assert!(renderer.streaming_sources.is_empty());
+        assert!(renderer.stream_revision_lineage.is_empty());
+        assert_eq!(revision_snapshot(&renderer, first), first_before);
+        assert_eq!(revision_snapshot(&renderer, shared), shared_before);
+        assert_eq!(active_picker(&renderer).chart_id, shared);
+
+        renderer
+            .demote_resident_columns_to_streamed(
+                &["closure-a"],
+                vec![
+                    metadata("closure-a", 3),
+                    metadata("closure-b", 2),
+                    metadata("closure-c", 2),
+                ],
+                &sources,
+            )
+            .unwrap();
+        for id in ["closure-a", "closure-b", "closure-c"] {
+            assert!(renderer.pool.slot(id).is_none());
+            assert!(renderer.streaming_sources.contains_key(id));
+        }
+        assert_eq!(renderer.streaming_sources["closure-a"].len, 3);
+        assert!(renderer.pool.slot("closure-d").is_some());
+        for (before, after) in [
+            (first_before, revision_snapshot(&renderer, first)),
+            (shared_before, revision_snapshot(&renderer, shared)),
+        ] {
+            assert_eq!(after[0].sequence, before[0].sequence + 1);
+            assert_eq!(after[3].sequence, before[3].sequence + 1);
+            assert_eq!(after[1], before[1]);
+            assert_eq!(after[2], before[2]);
+            assert_eq!(after[4], before[4]);
+            assert_eq!(after[5], before[5]);
+            assert_eq!(after[6], before[6]);
+        }
+        assert_eq!(revision_snapshot(&renderer, unrelated), unrelated_before);
+        assert!(renderer.picker.active.is_none());
+        assert!(renderer.pending_defrag);
+
+        let first_demoted = revision_snapshot(&renderer, first);
+        let shared_demoted = revision_snapshot(&renderer, shared);
+        let _ = renderer.set_memory_budget(Some(u64::MAX));
+        assert!(matches!(
+            renderer.promote_streamed_columns_to_resident(&sources[..1], 0, &[], 0, u64::MAX,),
+            Err(FiggyError::InvalidStreamSource { .. })
+        ));
+        for id in ["closure-a", "closure-b", "closure-c"] {
+            assert!(renderer.pool.slot(id).is_none());
+            assert!(renderer.streaming_sources.contains_key(id));
+        }
+        let report = renderer
+            .promote_streamed_columns_to_resident(&sources, 0, &[], 0, u64::MAX)
+            .unwrap();
+        assert!(report.is_admissible(), "{report:?}");
+        for id in ["closure-a", "closure-b", "closure-c"] {
+            assert!(renderer.pool.slot(id).is_some());
+            assert!(!renderer.streaming_sources.contains_key(id));
+            assert_eq!(renderer.stream_revision_lineage[id], 1);
+        }
+        for (before, after) in [
+            (first_demoted, revision_snapshot(&renderer, first)),
+            (shared_demoted, revision_snapshot(&renderer, shared)),
+        ] {
+            assert_eq!(after[0].sequence, before[0].sequence + 1);
+            assert_eq!(after[3].sequence, before[3].sequence + 1);
+            assert_eq!(after[1], before[1]);
+            assert_eq!(after[2], before[2]);
+            assert_eq!(after[4], before[4]);
+            assert_eq!(after[5], before[5]);
+            assert_eq!(after[6], before[6]);
+        }
+        assert_eq!(revision_snapshot(&renderer, unrelated), unrelated_before);
+    }
+
+    #[test]
+    fn stream_revision_lineage_survives_promotion_and_true_remove_clears_it() {
+        let Some(mut renderer) = state_test_renderer_with_capacity(4 * 1024) else {
+            return;
+        };
+        let values = col_f64(vec![1.0, 2.0]);
+        let metadata = |revision| crate::StreamColumn {
+            id: "lineage".into(),
+            len: 2,
+            encoding: crate::StreamEncoding::ScalarF32,
+            replay: crate::StreamReplay::RandomAccess,
+            revision,
+            statistics: crate::StreamStatistics::Unknown,
+        };
+        renderer
+            .register_streamed_columns(vec![metadata(5)])
+            .unwrap();
+        assert_eq!(renderer.stream_revision_lineage["lineage"], 5);
+        let binding = |revision| crate::StreamSourceBinding {
+            id: "lineage",
+            revision,
+            source: crate::StreamColumnSource::Scalar(&values),
+        };
+        let _ = renderer.set_memory_budget(Some(u64::MAX));
+        renderer
+            .promote_streamed_columns_to_resident(&[binding(5)], 0, &[], 0, u64::MAX)
+            .unwrap();
+        assert_eq!(renderer.stream_revision_lineage["lineage"], 5);
+        assert!(matches!(
+            renderer.demote_resident_columns_to_streamed(
+                &["lineage"],
+                vec![metadata(5)],
+                &[binding(5)],
+            ),
+            Err(FiggyError::InvalidStreamSource { .. })
+        ));
+        assert!(renderer.pool.slot("lineage").is_some());
+        assert!(!renderer.streaming_sources.contains_key("lineage"));
+        assert_eq!(renderer.stream_revision_lineage["lineage"], 5);
+
+        renderer
+            .demote_resident_columns_to_streamed(&["lineage"], vec![metadata(6)], &[binding(6)])
+            .unwrap();
+        renderer
+            .replace_streamed_columns(vec![metadata(7)])
+            .unwrap();
+        assert_eq!(renderer.stream_revision_lineage["lineage"], 7);
+        assert!(renderer.remove_column("lineage").unwrap());
+        assert!(!renderer.stream_revision_lineage.contains_key("lineage"));
+
+        renderer.add_column("native-zero", &values).unwrap();
+        let zero = crate::StreamColumn {
+            id: "native-zero".into(),
+            revision: 0,
+            ..metadata(1)
+        };
+        let zero_binding = crate::StreamSourceBinding {
+            id: "native-zero",
+            revision: 0,
+            source: crate::StreamColumnSource::Scalar(&values),
+        };
+        assert!(matches!(
+            renderer.demote_resident_columns_to_streamed(
+                &["native-zero"],
+                vec![zero],
+                &[zero_binding],
+            ),
+            Err(FiggyError::InvalidStreamSource { .. })
+        ));
+        assert!(renderer.pool.slot("native-zero").is_some());
+    }
+
+    #[test]
+    fn resident_demotion_normalizes_a_mixed_chart_and_preserves_streamed_companion() {
+        let Some(mut renderer) = state_test_renderer_with_capacity(4 * 1024) else {
+            return;
+        };
+        let resident = col_f64(vec![1.0, 2.0]);
+        let streamed = col_f64(vec![3.0, 4.0]);
+        renderer.add_column("mixed-resident", &resident).unwrap();
+        renderer
+            .register_streamed_columns(vec![crate::StreamColumn {
+                id: "mixed-streamed".into(),
+                len: 2,
+                encoding: crate::StreamEncoding::ScalarF32,
+                replay: crate::StreamReplay::RandomAccess,
+                revision: 1,
+                statistics: crate::StreamStatistics::Unknown,
+            }])
+            .unwrap();
+        let chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("mixed", "mixed-resident", "mixed-streamed")],
+            )
+            .unwrap();
+        let revisions = revision_snapshot(&renderer, chart);
+        let streamed_fit_epoch = renderer.streaming_sources["mixed-streamed"].fit_epoch;
+        let resident_metadata = crate::StreamColumn {
+            id: "mixed-resident".into(),
+            len: 2,
+            encoding: crate::StreamEncoding::ScalarF32,
+            replay: crate::StreamReplay::RandomAccess,
+            revision: 1,
+            statistics: crate::StreamStatistics::Unknown,
+        };
+        let streamed_metadata = crate::StreamColumn {
+            id: "mixed-streamed".into(),
+            ..resident_metadata.clone()
+        };
+        let bindings = [
+            crate::StreamSourceBinding {
+                id: "mixed-resident",
+                revision: 1,
+                source: crate::StreamColumnSource::Scalar(&resident),
+            },
+            crate::StreamSourceBinding {
+                id: "mixed-streamed",
+                revision: 1,
+                source: crate::StreamColumnSource::Scalar(&streamed),
+            },
+        ];
+        renderer
+            .demote_resident_columns_to_streamed(
+                &["mixed-resident"],
+                vec![resident_metadata, streamed_metadata],
+                &bindings,
+            )
+            .unwrap();
+        assert!(renderer.pool.slot("mixed-resident").is_none());
+        assert_eq!(renderer.streaming_sources["mixed-resident"].revision, 1);
+        assert!(renderer.streaming_sources.contains_key("mixed-streamed"));
+        assert_eq!(
+            renderer.streaming_sources["mixed-streamed"].fit_epoch,
+            streamed_fit_epoch
+        );
+        assert_eq!(renderer.stream_revision_lineage["mixed-resident"], 1);
+        assert_eq!(renderer.stream_revision_lineage["mixed-streamed"], 1);
+        let after = revision_snapshot(&renderer, chart);
+        assert_eq!(after[0].sequence, revisions[0].sequence + 1);
+        assert_eq!(after[3].sequence, revisions[3].sequence + 1);
+        for index in [1, 2, 4, 5, 6] {
+            assert_eq!(after[index], revisions[index]);
+        }
+    }
+
+    #[test]
+    fn mixed_normalization_closes_three_shared_charts_and_preserves_caches_and_picker() {
+        let Some(mut renderer) = state_test_renderer_with_capacity(8 * 1024) else {
+            return;
+        };
+        let a = col_f64(vec![1.0, 2.0]);
+        let b = col_f64(vec![3.0, 4.0]);
+        let c = col_f64(vec![5.0, 6.0]);
+        let d = col_f64(vec![7.0, 8.0]);
+        let picker_values = col_f64(vec![9.0, 10.0]);
+        renderer.add_column("graph-a", &a).unwrap();
+        renderer.add_column("graph-c", &c).unwrap();
+        renderer.add_column("graph-picker", &picker_values).unwrap();
+        renderer
+            .register_streamed_columns(vec![
+                crate::StreamColumn {
+                    id: "graph-b".into(),
+                    len: 2,
+                    encoding: crate::StreamEncoding::ScalarF32,
+                    replay: crate::StreamReplay::RandomAccess,
+                    revision: 10,
+                    statistics: crate::StreamStatistics::Unknown,
+                },
+                crate::StreamColumn {
+                    id: "graph-d".into(),
+                    len: 2,
+                    encoding: crate::StreamEncoding::ScalarF32,
+                    replay: crate::StreamReplay::Sequential,
+                    revision: 20,
+                    statistics: crate::StreamStatistics::Unknown,
+                },
+            ])
+            .unwrap();
+        let chart_ab = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("ab", "graph-a", "graph-b")],
+            )
+            .unwrap();
+        let chart_bc = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("bc", "graph-b", "graph-c")],
+            )
+            .unwrap();
+        let chart_cd = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("cd", "graph-c", "graph-d")],
+            )
+            .unwrap();
+        let picker_chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("picker", "graph-picker", "graph-picker")],
+            )
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        renderer
+            .prepare_gpu_picking_for_chart(picker_chart)
+            .unwrap();
+        renderer
+            .streaming_sources
+            .get_mut("graph-b")
+            .unwrap()
+            .statistics_cache
+            .covered
+            .push(0..1);
+        renderer
+            .streaming_sources
+            .get_mut("graph-d")
+            .unwrap()
+            .statistics_cache
+            .covered
+            .push(1..2);
+
+        let chart_snapshots = [chart_ab, chart_bc, chart_cd].map(|chart| {
+            (
+                chart,
+                renderer.chart_config(chart).unwrap().clone(),
+                renderer.chart_series(chart).unwrap().to_vec(),
+                revision_snapshot(&renderer, chart),
+            )
+        });
+        let picker_revisions = revision_snapshot(&renderer, picker_chart);
+        let b_fit = renderer.streaming_sources["graph-b"].fit_epoch;
+        let d_fit = renderer.streaming_sources["graph-d"].fit_epoch;
+        let metadata = vec![
+            crate::StreamColumn {
+                id: "graph-a".into(),
+                len: 2,
+                encoding: crate::StreamEncoding::ScalarF32,
+                replay: crate::StreamReplay::RandomAccess,
+                revision: 1,
+                statistics: crate::StreamStatistics::Unknown,
+            },
+            crate::StreamColumn {
+                id: "graph-b".into(),
+                len: 2,
+                encoding: crate::StreamEncoding::ScalarF32,
+                replay: crate::StreamReplay::RandomAccess,
+                revision: 10,
+                statistics: crate::StreamStatistics::Unknown,
+            },
+            crate::StreamColumn {
+                id: "graph-c".into(),
+                len: 2,
+                encoding: crate::StreamEncoding::ScalarF32,
+                replay: crate::StreamReplay::RandomAccess,
+                revision: 1,
+                statistics: crate::StreamStatistics::Unknown,
+            },
+            crate::StreamColumn {
+                id: "graph-d".into(),
+                len: 2,
+                encoding: crate::StreamEncoding::ScalarF32,
+                replay: crate::StreamReplay::Sequential,
+                revision: 20,
+                statistics: crate::StreamStatistics::Unknown,
+            },
+        ];
+        let bindings = [
+            crate::StreamSourceBinding {
+                id: "graph-a",
+                revision: 1,
+                source: crate::StreamColumnSource::Scalar(&a),
+            },
+            crate::StreamSourceBinding {
+                id: "graph-b",
+                revision: 10,
+                source: crate::StreamColumnSource::Scalar(&b),
+            },
+            crate::StreamSourceBinding {
+                id: "graph-c",
+                revision: 1,
+                source: crate::StreamColumnSource::Scalar(&c),
+            },
+            crate::StreamSourceBinding {
+                id: "graph-d",
+                revision: 20,
+                source: crate::StreamColumnSource::Scalar(&d),
+            },
+        ];
+        renderer
+            .demote_resident_columns_to_streamed(&["graph-a"], metadata, &bindings)
+            .unwrap();
+
+        for id in ["graph-a", "graph-b", "graph-c", "graph-d"] {
+            assert!(renderer.pool.slot(id).is_none(), "{id} stayed resident");
+            assert!(
+                renderer.streaming_sources.contains_key(id),
+                "{id} did not become streamed"
+            );
+        }
+        assert_eq!(renderer.streaming_sources["graph-b"].fit_epoch, b_fit);
+        assert_eq!(renderer.streaming_sources["graph-d"].fit_epoch, d_fit);
+        assert_eq!(
+            renderer.streaming_sources["graph-b"]
+                .statistics_cache
+                .covered,
+            vec![0..1]
+        );
+        assert_eq!(
+            renderer.streaming_sources["graph-d"]
+                .statistics_cache
+                .covered,
+            vec![1..2]
+        );
+        for (chart, config, series, before) in chart_snapshots {
+            assert_eq!(renderer.chart_config(chart).unwrap(), &config);
+            assert_eq!(renderer.chart_series(chart).unwrap(), series);
+            let after = revision_snapshot(&renderer, chart);
+            assert_eq!(after[0].sequence, before[0].sequence + 1);
+            assert_eq!(after[3].sequence, before[3].sequence + 1);
+            for index in [1, 2, 4, 5, 6] {
+                assert_eq!(after[index], before[index]);
+            }
+        }
+        assert_eq!(revision_snapshot(&renderer, picker_chart), picker_revisions);
+        assert_eq!(active_picker(&renderer).chart_id, picker_chart);
+        assert!(renderer.pending_defrag);
+    }
+
+    #[test]
+    fn mixed_normalize_promote_and_length_change_demote_preserve_lineage_monotonicity() {
+        let Some(mut renderer) = state_test_renderer_with_capacity(8 * 1024) else {
+            return;
+        };
+        let x_old = col_f64(vec![1.0, 2.0]);
+        let x_new = col_f64(vec![1.0, 2.0, 3.0]);
+        let y = col_f64(vec![4.0, 5.0]);
+        renderer.add_column("round-x", &x_old).unwrap();
+        renderer
+            .register_streamed_columns(vec![crate::StreamColumn {
+                id: "round-y".into(),
+                len: 2,
+                encoding: crate::StreamEncoding::ScalarF32,
+                replay: crate::StreamReplay::RandomAccess,
+                revision: 5,
+                statistics: crate::StreamStatistics::Unknown,
+            }])
+            .unwrap();
+        let chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("round", "round-x", "round-y")],
+            )
+            .unwrap();
+        let initial_revisions = revision_snapshot(&renderer, chart);
+        let initial_metadata = vec![
+            crate::StreamColumn {
+                id: "round-x".into(),
+                len: 2,
+                encoding: crate::StreamEncoding::ScalarF32,
+                replay: crate::StreamReplay::RandomAccess,
+                revision: 1,
+                statistics: crate::StreamStatistics::Unknown,
+            },
+            crate::StreamColumn {
+                id: "round-y".into(),
+                len: 2,
+                encoding: crate::StreamEncoding::ScalarF32,
+                replay: crate::StreamReplay::RandomAccess,
+                revision: 5,
+                statistics: crate::StreamStatistics::Unknown,
+            },
+        ];
+        let initial_bindings = [
+            crate::StreamSourceBinding {
+                id: "round-x",
+                revision: 1,
+                source: crate::StreamColumnSource::Scalar(&x_old),
+            },
+            crate::StreamSourceBinding {
+                id: "round-y",
+                revision: 5,
+                source: crate::StreamColumnSource::Scalar(&y),
+            },
+        ];
+        renderer
+            .demote_resident_columns_to_streamed(&["round-x"], initial_metadata, &initial_bindings)
+            .unwrap();
+        assert_eq!(renderer.stream_revision_lineage["round-x"], 1);
+        assert_eq!(renderer.stream_revision_lineage["round-y"], 5);
+
+        let _ = renderer.set_memory_budget(Some(u64::MAX));
+        let report = renderer
+            .promote_streamed_columns_to_resident(&initial_bindings, 0, &[], 0, u64::MAX)
+            .unwrap();
+        assert!(report.is_admissible(), "{report:?}");
+        assert!(renderer.pool.slot("round-x").is_some());
+        assert!(renderer.pool.slot("round-y").is_some());
+        assert_eq!(renderer.stream_revision_lineage["round-x"], 1);
+        assert_eq!(renderer.stream_revision_lineage["round-y"], 5);
+
+        let final_metadata = vec![
+            crate::StreamColumn {
+                id: "round-x".into(),
+                len: 3,
+                encoding: crate::StreamEncoding::ScalarF32,
+                replay: crate::StreamReplay::Sequential,
+                revision: 2,
+                statistics: crate::StreamStatistics::Unknown,
+            },
+            crate::StreamColumn {
+                id: "round-y".into(),
+                len: 2,
+                encoding: crate::StreamEncoding::ScalarF32,
+                replay: crate::StreamReplay::RandomAccess,
+                revision: 6,
+                statistics: crate::StreamStatistics::Unknown,
+            },
+        ];
+        let final_bindings = [
+            crate::StreamSourceBinding {
+                id: "round-x",
+                revision: 2,
+                source: crate::StreamColumnSource::Scalar(&x_new),
+            },
+            crate::StreamSourceBinding {
+                id: "round-y",
+                revision: 6,
+                source: crate::StreamColumnSource::Scalar(&y),
+            },
+        ];
+        renderer
+            .demote_resident_columns_to_streamed(&["round-x"], final_metadata, &final_bindings)
+            .unwrap();
+        assert_eq!(renderer.streaming_sources["round-x"].len, 3);
+        assert_eq!(renderer.streaming_sources["round-x"].revision, 2);
+        assert_eq!(renderer.streaming_sources["round-y"].revision, 6);
+        assert_eq!(renderer.stream_revision_lineage["round-x"], 2);
+        assert_eq!(renderer.stream_revision_lineage["round-y"], 6);
+        let final_revisions = revision_snapshot(&renderer, chart);
+        assert_eq!(
+            final_revisions[0].sequence,
+            initial_revisions[0].sequence + 3
+        );
+        assert_eq!(
+            final_revisions[3].sequence,
+            initial_revisions[3].sequence + 3
+        );
+        for index in [1, 2, 4, 5, 6] {
+            assert_eq!(final_revisions[index], initial_revisions[index]);
+        }
+    }
+
+    #[test]
+    fn resident_demotion_replaces_a_changed_streamed_root_within_the_mixed_commit() {
+        let Some(mut renderer) = state_test_renderer_with_capacity(4 * 1024) else {
+            return;
+        };
+        let resident = col_f64(vec![1.0, 2.0]);
+        let new_stream = col_f64(vec![3.0, 4.0, 5.0]);
+        renderer.add_column("replace-resident", &resident).unwrap();
+        renderer
+            .register_streamed_columns(vec![crate::StreamColumn {
+                id: "replace-stream".into(),
+                len: 2,
+                encoding: crate::StreamEncoding::ScalarF32,
+                replay: crate::StreamReplay::RandomAccess,
+                revision: 5,
+                statistics: crate::StreamStatistics::Unknown,
+            }])
+            .unwrap();
+        let chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line(
+                    "replace",
+                    "replace-resident",
+                    "replace-stream",
+                )],
+            )
+            .unwrap();
+        let before = revision_snapshot(&renderer, chart);
+        let old_fit_epoch = renderer.streaming_sources["replace-stream"].fit_epoch;
+        let metadata = vec![
+            crate::StreamColumn {
+                id: "replace-resident".into(),
+                len: 2,
+                encoding: crate::StreamEncoding::ScalarF32,
+                replay: crate::StreamReplay::RandomAccess,
+                revision: 1,
+                statistics: crate::StreamStatistics::Unknown,
+            },
+            crate::StreamColumn {
+                id: "replace-stream".into(),
+                len: 3,
+                encoding: crate::StreamEncoding::ScalarF32,
+                replay: crate::StreamReplay::Sequential,
+                revision: 6,
+                statistics: crate::StreamStatistics::Unknown,
+            },
+        ];
+        let bindings = [
+            crate::StreamSourceBinding {
+                id: "replace-resident",
+                revision: 1,
+                source: crate::StreamColumnSource::Scalar(&resident),
+            },
+            crate::StreamSourceBinding {
+                id: "replace-stream",
+                revision: 6,
+                source: crate::StreamColumnSource::Scalar(&new_stream),
+            },
+        ];
+        renderer
+            .demote_resident_columns_to_streamed(&["replace-stream"], metadata, &bindings)
+            .unwrap();
+
+        assert!(renderer.pool.slot("replace-resident").is_none());
+        assert_eq!(renderer.streaming_sources["replace-resident"].revision, 1);
+        let replaced = &renderer.streaming_sources["replace-stream"];
+        assert_eq!(replaced.revision, 6);
+        assert_eq!(replaced.len, 3);
+        assert_eq!(replaced.replay, crate::StreamReplay::Sequential);
+        assert!(replaced.fit_epoch > old_fit_epoch);
+        assert_eq!(renderer.stream_revision_lineage["replace-stream"], 6);
+        let after = revision_snapshot(&renderer, chart);
+        assert_eq!(after[0].sequence, before[0].sequence + 1);
+        assert_eq!(after[3].sequence, before[3].sequence + 1);
+        for index in [1, 2, 4, 5, 6] {
+            assert_eq!(after[index], before[index]);
+        }
+    }
+
+    #[test]
+    fn all_streamed_same_revision_normalization_is_a_true_noop() {
+        let Some(mut renderer) = state_test_renderer_with_capacity(4 * 1024) else {
+            return;
+        };
+        let x = col_f64(vec![1.0, 2.0]);
+        let y = col_f64(vec![3.0, 4.0]);
+        let resident = col_f64(vec![5.0, 6.0]);
+        renderer
+            .register_streamed_columns(vec![
+                crate::StreamColumn {
+                    id: "noop-x".into(),
+                    len: 2,
+                    encoding: crate::StreamEncoding::ScalarF32,
+                    replay: crate::StreamReplay::RandomAccess,
+                    revision: 3,
+                    statistics: crate::StreamStatistics::Unknown,
+                },
+                crate::StreamColumn {
+                    id: "noop-y".into(),
+                    len: 2,
+                    encoding: crate::StreamEncoding::ScalarF32,
+                    replay: crate::StreamReplay::Sequential,
+                    revision: 4,
+                    statistics: crate::StreamStatistics::Unknown,
+                },
+            ])
+            .unwrap();
+        let streamed_chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("noop", "noop-x", "noop-y")],
+            )
+            .unwrap();
+        renderer.add_column("noop-resident", &resident).unwrap();
+        let picker_chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("picker", "noop-resident", "noop-resident")],
+            )
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        renderer
+            .prepare_gpu_picking_for_chart(picker_chart)
+            .unwrap();
+        renderer
+            .streaming_sources
+            .get_mut("noop-x")
+            .unwrap()
+            .statistics_cache
+            .covered
+            .push(0..1);
+        renderer.pending_defrag = true;
+
+        let revisions = revision_snapshot(&renderer, streamed_chart);
+        let picker_revisions = revision_snapshot(&renderer, picker_chart);
+        let visual = renderer.visual_revision;
+        let generation = renderer.pool.generation();
+        let used = renderer.pool.used_bytes();
+        let next_fit_epoch = renderer.next_stream_source_fit_epoch;
+        let x_fit_epoch = renderer.streaming_sources["noop-x"].fit_epoch;
+        let y_fit_epoch = renderer.streaming_sources["noop-y"].fit_epoch;
+        let lineage = renderer.stream_revision_lineage.clone();
+        let metadata = || {
+            vec![
+                crate::StreamColumn {
+                    id: "noop-x".into(),
+                    len: 2,
+                    encoding: crate::StreamEncoding::ScalarF32,
+                    replay: crate::StreamReplay::RandomAccess,
+                    revision: 3,
+                    statistics: crate::StreamStatistics::Unknown,
+                },
+                crate::StreamColumn {
+                    id: "noop-y".into(),
+                    len: 2,
+                    encoding: crate::StreamEncoding::ScalarF32,
+                    replay: crate::StreamReplay::Sequential,
+                    revision: 4,
+                    statistics: crate::StreamStatistics::Unknown,
+                },
+            ]
+        };
+        let bindings = [
+            crate::StreamSourceBinding {
+                id: "noop-x",
+                revision: 3,
+                source: crate::StreamColumnSource::Scalar(&x),
+            },
+            crate::StreamSourceBinding {
+                id: "noop-y",
+                revision: 4,
+                source: crate::StreamColumnSource::Scalar(&y),
+            },
+        ];
+        for _ in 0..4 {
+            renderer
+                .demote_resident_columns_to_streamed(&["noop-x"], metadata(), &bindings)
+                .unwrap();
+        }
+
+        assert_eq!(renderer.pool.generation(), generation);
+        assert_eq!(renderer.pool.used_bytes(), used);
+        assert_eq!(renderer.next_stream_source_fit_epoch, next_fit_epoch);
+        assert_eq!(renderer.streaming_sources["noop-x"].fit_epoch, x_fit_epoch);
+        assert_eq!(renderer.streaming_sources["noop-y"].fit_epoch, y_fit_epoch);
+        assert_eq!(
+            renderer.streaming_sources["noop-x"]
+                .statistics_cache
+                .covered,
+            vec![0..1]
+        );
+        assert_eq!(renderer.stream_revision_lineage, lineage);
+        assert_eq!(revision_snapshot(&renderer, streamed_chart), revisions);
+        assert_eq!(revision_snapshot(&renderer, picker_chart), picker_revisions);
+        assert_eq!(renderer.visual_revision, visual);
+        assert_eq!(active_picker(&renderer).chart_id, picker_chart);
+        assert!(renderer.pending_defrag);
+    }
+
+    #[test]
+    fn live_normalization_supersedes_the_active_auto_snapshot_immediately() {
+        let Some(mut renderer) = state_test_renderer_with_capacity(4 * 1024) else {
+            return;
+        };
+        let new_x = col_f64(vec![10.0, 20.0]);
+        let y = col_f64(vec![3.0, 4.0]);
+        renderer
+            .register_streamed_columns(vec![
+                crate::StreamColumn {
+                    id: "auto-live-x".into(),
+                    len: 2,
+                    encoding: crate::StreamEncoding::ScalarF32,
+                    replay: crate::StreamReplay::RandomAccess,
+                    revision: 1,
+                    statistics: crate::StreamStatistics::Unknown,
+                },
+                crate::StreamColumn {
+                    id: "auto-live-y".into(),
+                    len: 2,
+                    encoding: crate::StreamEncoding::ScalarF32,
+                    replay: crate::StreamReplay::RandomAccess,
+                    revision: 1,
+                    statistics: crate::StreamStatistics::Unknown,
+                },
+            ])
+            .unwrap();
+        let config = crate::default::default_config();
+        let chart = renderer
+            .register_chart(
+                config.clone(),
+                vec![state_test_line("auto-live", "auto-live-x", "auto-live-y")],
+            )
+            .unwrap();
+        renderer
+            .configure_streaming(crate::StreamingLimits {
+                max_active_charts: 1,
+                max_in_flight_chunks: 2,
+                max_columns_per_chunk: 2,
+                max_chunk_input_bytes: 4096,
+                max_in_flight_gpu_bytes: 8192,
+            })
+            .unwrap();
+        let view = renderer
+            .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
+            .unwrap();
+        let options = crate::StreamingChartOptions {
+            size: (config.chart_area.0.width, config.chart_area.0.height),
+            clear_color: Color::WHITE,
+            max_primitives_per_chunk: 1,
+        };
+        let crate::AutoStreamingRequest::Started {
+            revision: active_revision,
+            ..
+        } = renderer
+            .request_auto_streaming_chart(chart, &view, options)
+            .unwrap()
+        else {
+            panic!("automatic stream must start")
+        };
+        let job = renderer.active_stream_job(chart).unwrap();
+        assert_eq!(
+            renderer.auto_stream_snapshot(job).unwrap().sources["auto-live-x"].revision,
+            1
+        );
+
+        let metadata = vec![
+            crate::StreamColumn {
+                id: "auto-live-x".into(),
+                len: 2,
+                encoding: crate::StreamEncoding::ScalarF32,
+                replay: crate::StreamReplay::RandomAccess,
+                revision: 2,
+                statistics: crate::StreamStatistics::Unknown,
+            },
+            crate::StreamColumn {
+                id: "auto-live-y".into(),
+                len: 2,
+                encoding: crate::StreamEncoding::ScalarF32,
+                replay: crate::StreamReplay::RandomAccess,
+                revision: 1,
+                statistics: crate::StreamStatistics::Unknown,
+            },
+        ];
+        let live_bindings = [
+            crate::StreamSourceBinding {
+                id: "auto-live-x",
+                revision: 2,
+                source: crate::StreamColumnSource::Scalar(&new_x),
+            },
+            crate::StreamSourceBinding {
+                id: "auto-live-y",
+                revision: 1,
+                source: crate::StreamColumnSource::Scalar(&y),
+            },
+        ];
+        renderer
+            .demote_resident_columns_to_streamed(&["auto-live-x"], metadata, &live_bindings)
+            .unwrap();
+        let latest = renderer.chart_states[&chart].revisions.desired;
+        let crate::AutoStreamingRequest::Started {
+            revision: replacement_revision,
+            ..
+        } = renderer
+            .request_auto_streaming_chart(chart, &view, options)
+            .unwrap()
+        else {
+            panic!("live source normalization must immediately start the latest execution")
+        };
+        assert_eq!(replacement_revision, latest);
+        let replacement_job = renderer.active_stream_job(chart).unwrap();
+        assert_ne!(replacement_job, job);
+        let snapshot = renderer.auto_stream_snapshot(replacement_job).unwrap();
+        assert_eq!(snapshot.sources["auto-live-x"].revision, 2);
+        assert_eq!(snapshot.sources["auto-live-y"].revision, 1);
+        assert!(renderer.request_chart_stream_draw(job).is_err());
+        let streaming_runtime::StreamDrawRequestStatus::Ready(ticket) =
+            renderer.request_chart_stream_draw(replacement_job).unwrap()
+        else {
+            panic!("replacement automatic stream must issue the latest source request")
+        };
+        let requested = renderer.stream_request_columns(ticket).unwrap();
+        assert!(
+            requested
+                .iter()
+                .any(|request| { request.column == "auto-live-x" && request.range.revision == 2 })
+        );
+        assert!(
+            requested
+                .iter()
+                .any(|request| { request.column == "auto-live-y" && request.range.revision == 1 })
+        );
+        assert!(requested.iter().all(|request| {
+            request.column != "auto-live-x" || request.range.revision != 1
+        }));
+        assert_ne!(active_revision, latest);
+    }
+
+    #[test]
+    fn mixed_normalization_validation_failures_preserve_every_authority() {
+        let Some(mut renderer) = state_test_renderer_with_capacity(4 * 1024) else {
+            return;
+        };
+        let resident = col_f64(vec![1.0, 2.0]);
+        let streamed = col_f64(vec![3.0, 4.0]);
+        let unrelated = col_f64(vec![5.0, 6.0]);
+        let short = col_f64(vec![3.0]);
+        renderer.add_column("fail-resident", &resident).unwrap();
+        renderer.add_column("fail-unrelated", &unrelated).unwrap();
+        renderer
+            .register_streamed_columns(vec![crate::StreamColumn {
+                id: "fail-stream".into(),
+                len: 2,
+                encoding: crate::StreamEncoding::ScalarF32,
+                replay: crate::StreamReplay::RandomAccess,
+                revision: 5,
+                statistics: crate::StreamStatistics::Unknown,
+            }])
+            .unwrap();
+        let affected = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line("affected", "fail-resident", "fail-stream")],
+            )
+            .unwrap();
+        let picker_chart = renderer
+            .register_chart(
+                crate::default::default_config(),
+                vec![state_test_line(
+                    "unrelated",
+                    "fail-unrelated",
+                    "fail-unrelated",
+                )],
+            )
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        renderer
+            .prepare_gpu_picking_for_chart(picker_chart)
+            .unwrap();
+        {
+            let cache = &mut renderer
+                .streaming_sources
+                .get_mut("fail-stream")
+                .unwrap()
+                .statistics_cache;
+            cache.covered.push(0..1);
+            cache.bounds = Some(crate::StreamBounds {
+                min: 3.0,
+                max: 3.0,
+                min_positive: Some(3.0),
+            });
+        }
+
+        let generation = renderer.pool.generation();
+        let used = renderer.pool.used_bytes();
+        let resident_slot = renderer.pool.slot("fail-resident").unwrap().clone();
+        let stream_column = renderer.streaming_sources["fail-stream"].column.clone();
+        let stream_fit_epoch = renderer.streaming_sources["fail-stream"].fit_epoch;
+        let stream_covered = renderer.streaming_sources["fail-stream"]
+            .statistics_cache
+            .covered
+            .clone();
+        let stream_bounds = renderer.streaming_sources["fail-stream"]
+            .statistics_cache
+            .bounds;
+        let lineage = renderer.stream_revision_lineage.clone();
+        let affected_revisions = revision_snapshot(&renderer, affected);
+        let picker_revisions = revision_snapshot(&renderer, picker_chart);
+        let visual = renderer.visual_revision;
+        let fit_epoch = renderer.next_stream_source_fit_epoch;
+        let pending_defrag = renderer.pending_defrag;
+        let assert_unchanged = |renderer: &Renderer| {
+            assert_eq!(renderer.pool.generation(), generation);
+            assert_eq!(renderer.pool.used_bytes(), used);
+            let slot = renderer.pool.slot("fail-resident").unwrap();
+            assert_eq!(slot.offset, resident_slot.offset);
+            assert_eq!(slot.len_values, resident_slot.len_values);
+            let registered = &renderer.streaming_sources["fail-stream"];
+            assert_eq!(registered.column, stream_column);
+            assert_eq!(registered.fit_epoch, stream_fit_epoch);
+            assert_eq!(registered.statistics_cache.covered, stream_covered);
+            assert_eq!(registered.statistics_cache.bounds, stream_bounds);
+            assert_eq!(renderer.stream_revision_lineage, lineage);
+            assert_eq!(revision_snapshot(renderer, affected), affected_revisions);
+            assert_eq!(revision_snapshot(renderer, picker_chart), picker_revisions);
+            assert_eq!(renderer.visual_revision, visual);
+            assert_eq!(renderer.next_stream_source_fit_epoch, fit_epoch);
+            assert_eq!(renderer.pending_defrag, pending_defrag);
+            assert_eq!(active_picker(renderer).chart_id, picker_chart);
+        };
+        let metadata = |id: &str, len: u64, revision: u64| crate::StreamColumn {
+            id: id.into(),
+            len,
+            encoding: crate::StreamEncoding::ScalarF32,
+            replay: crate::StreamReplay::RandomAccess,
+            revision,
+            statistics: crate::StreamStatistics::Unknown,
+        };
+        let resident_binding = crate::StreamSourceBinding {
+            id: "fail-resident",
+            revision: 1,
+            source: crate::StreamColumnSource::Scalar(&resident),
+        };
+        let stream_binding = crate::StreamSourceBinding {
+            id: "fail-stream",
+            revision: 5,
+            source: crate::StreamColumnSource::Scalar(&streamed),
+        };
+
+        assert!(
+            renderer
+                .demote_resident_columns_to_streamed(
+                    &["fail-resident"],
+                    vec![metadata("fail-resident", 2, 1)],
+                    &[resident_binding],
+                )
+                .is_err()
+        );
+        assert_unchanged(&renderer);
+
+        assert!(
+            renderer
+                .demote_resident_columns_to_streamed(
+                    &["fail-resident"],
+                    vec![
+                        metadata("fail-resident", 2, 1),
+                        metadata("fail-stream", 2, 5),
+                        metadata("fail-stream", 2, 5),
+                    ],
+                    &[resident_binding, stream_binding],
+                )
+                .is_err()
+        );
+        assert_unchanged(&renderer);
+
+        let extra_binding = crate::StreamSourceBinding {
+            id: "fail-extra",
+            revision: 1,
+            source: crate::StreamColumnSource::Scalar(&resident),
+        };
+        assert!(
+            renderer
+                .demote_resident_columns_to_streamed(
+                    &["fail-resident"],
+                    vec![
+                        metadata("fail-resident", 2, 1),
+                        metadata("fail-stream", 2, 5),
+                        metadata("fail-extra", 2, 1),
+                    ],
+                    &[resident_binding, stream_binding, extra_binding],
+                )
+                .is_err()
+        );
+        assert_unchanged(&renderer);
+
+        let stale_binding = crate::StreamSourceBinding {
+            id: "fail-stream",
+            revision: 4,
+            source: crate::StreamColumnSource::Scalar(&streamed),
+        };
+        assert!(
+            renderer
+                .demote_resident_columns_to_streamed(
+                    &["fail-stream"],
+                    vec![
+                        metadata("fail-resident", 2, 1),
+                        metadata("fail-stream", 2, 4),
+                    ],
+                    &[resident_binding, stale_binding],
+                )
+                .is_err()
+        );
+        assert_unchanged(&renderer);
+
+        let short_binding = crate::StreamSourceBinding {
+            id: "fail-stream",
+            revision: 5,
+            source: crate::StreamColumnSource::Scalar(&short),
+        };
+        assert!(
+            renderer
+                .demote_resident_columns_to_streamed(
+                    &["fail-resident"],
+                    vec![
+                        metadata("fail-resident", 2, 1),
+                        metadata("fail-stream", 1, 5),
+                    ],
+                    &[resident_binding, short_binding],
+                )
+                .is_err()
+        );
+        assert_unchanged(&renderer);
+
+        let wrong_encoding = crate::StreamSourceBinding {
+            id: "fail-stream",
+            revision: 5,
+            source: crate::StreamColumnSource::HiLo(&streamed),
+        };
+        assert!(
+            renderer
+                .demote_resident_columns_to_streamed(
+                    &["fail-resident"],
+                    vec![
+                        metadata("fail-resident", 2, 1),
+                        metadata("fail-stream", 2, 5),
+                    ],
+                    &[resident_binding, wrong_encoding],
+                )
+                .is_err()
+        );
+        assert_unchanged(&renderer);
+
+        let newer_companion = crate::StreamSourceBinding {
+            id: "fail-stream",
+            revision: 6,
+            source: crate::StreamColumnSource::Scalar(&streamed),
+        };
+        assert!(
+            renderer
+                .demote_resident_columns_to_streamed(
+                    &["fail-resident"],
+                    vec![
+                        metadata("fail-resident", 2, 1),
+                        metadata("fail-stream", 2, 6),
+                    ],
+                    &[resident_binding, newer_companion],
+                )
+                .is_err()
+        );
+        assert_unchanged(&renderer);
+
+        renderer
+            .demote_resident_columns_to_streamed(
+                &["fail-resident"],
+                vec![
+                    metadata("fail-resident", 2, 1),
+                    metadata("fail-stream", 2, 5),
+                ],
+                &[resident_binding, stream_binding],
+            )
+            .unwrap();
+        assert!(renderer.pool.slot("fail-resident").is_none());
+        assert_eq!(renderer.streaming_sources["fail-resident"].revision, 1);
+        assert_eq!(
+            renderer.streaming_sources["fail-stream"].column,
+            stream_column
+        );
+        assert_eq!(
+            renderer.streaming_sources["fail-stream"]
+                .statistics_cache
+                .covered,
+            stream_covered
+        );
+        assert_eq!(
+            renderer.streaming_sources["fail-stream"]
+                .statistics_cache
+                .bounds,
+            stream_bounds
+        );
+        let after = revision_snapshot(&renderer, affected);
+        assert_eq!(after[0].sequence, affected_revisions[0].sequence + 1);
+        assert_eq!(after[3].sequence, affected_revisions[3].sequence + 1);
+        for index in [1, 2, 4, 5, 6] {
+            assert_eq!(after[index], affected_revisions[index]);
+        }
+        assert_eq!(revision_snapshot(&renderer, picker_chart), picker_revisions);
+        assert_eq!(active_picker(&renderer).chart_id, picker_chart);
+        assert!(renderer.pending_defrag);
+    }
+
+    #[test]
+    fn resident_admission_counts_submitted_column_staging_until_completion() {
+        let Some(mut renderer) = state_test_renderer_with_capacity(4 * 1024) else {
+            return;
+        };
+        let before = renderer.gpu_memory_usage().checked_total_bytes().unwrap();
+        renderer.add_column("staged", &col_f64(vec![1.0])).unwrap();
+        let during = renderer.gpu_memory_usage();
+        assert_eq!(
+            during.retired_bytes_of(GpuResourceKind::ColumnPool),
+            data_render::column_pool::ALIGN
+        );
+        let current = during.checked_total_bytes().unwrap();
+        assert_eq!(current, before + data_render::column_pool::ALIGN);
+        assert_eq!(renderer.set_memory_budget(Some(current)), None);
+        let admitted = renderer.resident_admission(ResidentAdmissionRequest {
+            column_value_counts: &[],
+            already_resident_working_set_bytes: 0,
+            derived_buffer_sizes: &[],
+            transition_headroom_bytes: 0,
+            working_set_limit_bytes: 0,
+        });
+        assert!(admitted.is_admissible(), "{admitted:?}");
+        assert_eq!(admitted.current_gpu_bytes, current);
+
+        renderer.end_gpu_frame();
+        renderer
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .expect("submitted staging completes");
+        assert_eq!(
+            renderer.gpu_memory_usage().checked_total_bytes(),
+            Some(before)
+        );
+    }
+
+    #[test]
+    fn resident_admission_mirrors_fixed_and_growing_pool_policies_without_mutation() {
+        let Some(mut renderer) = state_test_renderer_with_capacity(data_render::column_pool::ALIGN)
+        else {
+            return;
+        };
+        let lengths = [64]; // 512 resident bytes, twice the initial pool.
+        let request = ResidentAdmissionRequest {
+            column_value_counts: &lengths,
+            already_resident_working_set_bytes: 0,
+            derived_buffer_sizes: &[],
+            transition_headroom_bytes: 0,
+            working_set_limit_bytes: 512,
+        };
+        let before_capacity = renderer.pool.capacity();
+        assert_eq!(renderer.set_memory_budget(Some(u64::MAX)), None);
+        let fixed = renderer.resident_admission(request);
+        assert_eq!(
+            fixed.status,
+            ResidentAdmissionStatus::PoolCapacityUnavailable
+        );
+        assert_eq!(renderer.pool.capacity(), before_capacity);
+        assert_eq!(renderer.pool.used_bytes(), 0);
+
+        renderer.set_pool_growth_policy(data_render::GrowthPolicy::OnAllocFailure);
+        let growing = renderer.resident_admission(request);
+        assert!(growing.is_admissible(), "{growing:?}");
+        assert_eq!(growing.pool_capacity_before, 256);
+        assert_eq!(growing.pool_capacity_after, 512);
+        assert_eq!(growing.pool_transition_bytes, 512);
+        assert_eq!(growing.upload_staging_bytes, 512);
+        assert_eq!(renderer.pool.capacity(), before_capacity);
+        assert_eq!(renderer.pool.used_bytes(), 0);
+    }
+
+    #[test]
+    fn resident_admission_fails_closed_on_index_and_byte_overflow() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        assert_eq!(renderer.set_memory_budget(Some(u64::MAX)), None);
+        let over_index = [u64::from(u32::MAX) + 1];
+        let rejected = renderer.resident_admission(ResidentAdmissionRequest {
+            column_value_counts: &over_index,
+            already_resident_working_set_bytes: 0,
+            derived_buffer_sizes: &[],
+            transition_headroom_bytes: 0,
+            working_set_limit_bytes: u64::MAX,
+        });
+        assert_eq!(
+            rejected.status,
+            ResidentAdmissionStatus::ColumnLengthLimitExceeded {
+                column: 0,
+                length: u64::from(u32::MAX) + 1,
+            }
+        );
+
+        let one = [1];
+        let derived = [1];
+        let overflow = renderer.resident_admission(ResidentAdmissionRequest {
+            column_value_counts: &one,
+            already_resident_working_set_bytes: u64::MAX,
+            derived_buffer_sizes: &derived,
+            transition_headroom_bytes: 0,
+            working_set_limit_bytes: u64::MAX,
+        });
+        assert_eq!(overflow.status, ResidentAdmissionStatus::ArithmeticOverflow);
+
+        let oversized = [renderer
+            .caps
+            .max_buffer_size
+            .min(renderer.caps.max_storage_buffer_binding_size)
+            + 1];
+        let rejected = renderer.resident_admission(ResidentAdmissionRequest {
+            column_value_counts: &[],
+            already_resident_working_set_bytes: 0,
+            derived_buffer_sizes: &oversized,
+            transition_headroom_bytes: 0,
+            working_set_limit_bytes: u64::MAX,
+        });
+        assert_eq!(
+            rejected.status,
+            ResidentAdmissionStatus::DerivedBufferLimitExceeded {
+                buffer: 0,
+                bytes: oversized[0],
+            }
+        );
     }
 
     #[test]

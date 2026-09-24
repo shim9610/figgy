@@ -7,11 +7,23 @@ Embed in egui / winit / any other wgpu 30 host.
 
 > This is the workspace root README. The workspace has three crates:
 > **`crates/model`** — the pure chart model and schema authority: option/data SSoT (`Config`, `SeriesConfig`), the rich-text/legend document model, interaction policies (`Selectable`/`Draggable`/`Resizable`, `HitMap`, the single `Config::nudge` movement path), presets (`AxisPreset`, `ColorCycle`). Dependency-free; optional `serde` feature.
-> **`crates/renderer`** — the wgpu + CPU-raster machinery documented below. It owns the persistent chart registry (`ChartId` → `Config`, ordered `SeriesConfig`, selection, checked revisions), `ColumnPool`, picker pipeline bundle and derived single active-chart registry cache, and pending GPU-pool maintenance. Depends on `model` and re-exports its public modules.
+> **`crates/renderer`** — the wgpu + CPU-raster machinery documented below. It owns the persistent chart registry (`ChartId` → `Config`, ordered `SeriesConfig`, selection, checked revisions), resident `ColumnPool`, nonresident logical-source metadata in the 0.12.0 candidate, picker pipeline bundle and derived single active-chart registry cache, and pending GPU-pool maintenance. Depends on `model` and re-exports its public modules.
 > **`crates/web`** — the browser package (`figgy`): public `<figgy-chart>` Custom Element facade plus a raw `FiggyChart` wasm kernel as an advanced escape hatch. The facade owns the shadow canvas, ready promise/event lifecycle, rAF loop, ResizeObserver/DPR handling, pointer mapping, async-operation busy gate, id-keyed registration metadata, UI-derived labels/styles/extents, and Promise adaptation. Picker, pool, chart, and maintenance authority remain in `Renderer`. Browser I/O: [WASM.md](crates/renderer/WASM.md) · full Config JSON schema: [SCHEMA.md](crates/web/SCHEMA.md). Build artifacts (`crates/web/pkg/`) are gitignored — build with `npx wasm-pack build crates/web --release --target web`.
 > **Online studio** — [figgyplot.com](https://figgyplot.com/) hosts the public web editor. It runs in-browser with local chart data, imports CSV/TSV/Excel, opens `.figgy` project files, and exports PNGs from the same wasm/WebGPU surface.
 
-## Current release — renderer 0.11.0 / figgy 0.9.1
+## Public release candidate — renderer 0.12.0 / figgy 0.10.0
+
+This candidate adds renderer-owned exact nonresident streaming and the browser
+`render_chart()` job API. The renderer chooses residency for the referenced
+column closure; the web facade requests bounded original ranges, schedules
+work, and reports progress. Unchanged completed revisions are reused, while
+resize, view changes, picking, and scaled export can replay the same source.
+There is no LOD or downsampling. Supported styles and exclusions are listed in
+[WASM.md](crates/renderer/WASM.md). This source candidate does **not** mean the
+online Studio has adopted the new API. The published release remains 0.11.0 /
+0.9.1 until this candidate passes the public gate and is published.
+
+The previous renderer 0.11.0 / figgy 0.9.1 release introduced:
 
 Subpixel histogram bins now fill each pixel column from zero to its maximum
 bin value on the GPU. An enabled, nontransparent stroke supplies the entire
@@ -22,7 +34,7 @@ for manually built layers without an envelope).
 The browser demo includes bin-count and stroke controls. Run
 `npx serve crates/web -l 8142`, then open `http://localhost:8142/`.
 
-The previous renderer 0.10.0 / figgy 0.9.0 release introduced:
+Renderer 0.10.0 / figgy 0.9.0 introduced:
 
 - **Histogram and matrix fields are first-class GPU series.** `Histogram`, `Heatmap`, `Contour`, and `ContourFill` share the declared matrix lattice and colour-map SSoT. Heatmaps support flat or interpolated shading, contours support up to 1024 levels, and contour labels open a real gap in the underlying isoline. Automatic field fitting uses the rendered cell boundaries rather than only the sample centres.
 - **Field interaction and styling use stable identities.** `pick_data` returns tagged point, histogram-bin, matrix-cell, or contour-level references that can be written back through `Config.picked_data`. Histograms expose width, outline colour/thickness, and per-bin overrides. Contour label text/background/number formatting is independent of per-level line colour. The colourbar exposes its full `AxisOptions`, including ticks, labels, title, reversal, and pointer-following resize handles.
@@ -31,12 +43,13 @@ The previous renderer 0.10.0 / figgy 0.9.0 release introduced:
 
 This repository is the supported source distribution; the crates are not published on crates.io. Consumers pinned to a public Git revision must update their lockfile and rebuild the wasm package. See [WASM.md](crates/renderer/WASM.md) for browser lifecycle/API details and [SCHEMA.md](crates/web/SCHEMA.md) for the complete JSON contract.
 
-- **GPU columnar pool**: all data columns share a single GPU buffer with first-fit alloc + ping-pong defrag on fragmentation. Logical values are stored as f32 hi/lo pairs when uploaded through `HiLoColumnSource`, preserving timestamp-sized offsets on the GPU. Upload caches scalar stats (min / max / smallest-positive) for auto-fit; per-point geometry such as the dashed-line arc-length prefix is computed in place by a compute scan (`line_arc.wgsl`).
+- **Resident GPU columnar pool**: columns admitted to the resident path share a single GPU buffer with first-fit alloc + ping-pong defrag on fragmentation. Logical values are stored as f32 hi/lo pairs when uploaded through `HiLoColumnSource`, preserving timestamp-sized offsets on the GPU. Upload caches scalar stats (min / max / smallest-positive) for auto-fit; per-point geometry such as the dashed-line arc-length prefix is computed in place by a compute scan (`line_arc.wgsl`).
+- **Nonresident rendering (0.10.0 candidate)**: replayable columns are registered by logical ID, length, encoding, and revision without keeping their complete data in the GPU pool. The renderer requests bounded original ranges and accumulates the exact drawing; the host retains the source for replay after a view or output change. This does not decimate or downsample data. Admission, supported styles, cancellation, and completed-revision queries are described in [WASM.md](crates/renderer/WASM.md).
 - **Layered compositing**: grid → data → axis/label/legend, so grid never covers the data. Axis raster can be produced as `Grid` and `Decoration` layers; `AxisLayerKind::All` remains a legacy single-pass helper.
 - **Data fidelity contract**: renderer/web consume the model contract without silently changing original coordinates, provenance, or axis↔data correspondence. Explicit clipping, log-domain skips, NaN skips, and antialiasing limits are rendering contracts rather than data rewrites.
 - **Headless PNG export**: GPU offscreen raster at arbitrary DPI → RGBA / PNG bytes in memory (async-first; blocking wrappers on native).
 - **Interaction layer (opt-in)**: hit-testing, selection boxes, drag (axes constrained to their perpendicular, detached-axis `line_offset`), PPT-style 8-handle resize of the data area — all policy in `model`, fed by host pointer events; never runs if you don't wire it.
-- **Data picking (opt-in)**: `pick_point` retains the point/line compatibility contract, while `pick_data` additionally returns tagged histogram-bin, canonical matrix-cell, and contour-level identities. Bar rectangles and field/contour geometry are evaluated in the GPU render shaders from the same transform, pool, style, lattice, and level tables used to draw them; CPU code does not reconstruct f64 values or keep geometry mirrors. Hosts feed stable refs back through `Config.picked_data` for exact bin/cell/level highlighting; legacy point decoration remains available through `Config.picked_points`.
+- **Data picking (opt-in)**: `pick_point` retains the point/line compatibility contract, while `pick_data` additionally returns tagged histogram-bin, canonical matrix-cell, and contour-level identities. The resident path evaluates bar rectangles and field/contour geometry on the GPU from the same transform, pool, style, lattice, and level tables used to draw them. Supported nonresident picking replays bounded source ranges on the GPU and returns stable indices, not CPU-reconstructed coordinates or geometry mirrors. Hosts feed stable refs back through `Config.picked_data` for exact bin/cell/level highlighting; legacy point decoration remains available through `Config.picked_points`.
 - **Per-point style mapping (opt-in)**: precise scatter can bind `point_style_table` / `point_style_index_column` / `point_style_overrides`; precise errorbars can independently bind `error_bar_style_table` / `error_bar_style_index_column` / `error_bar_style_overrides`. Styled modes keep their own visual shaders and ignore these mappings.
 - **Rich-text everywhere**: titles, tick labels, and the legend share one engine — per-segment bold/italic/underline/sub/superscript/greek, per-segment color & size overrides, `'\n'` line breaks, `'\t'` table columns, fixed-width legend symbol fields.
 - **Hand-drawn sketch mode (opt-in)**: `draw_style: { mode: "sketch", amplitude_px, wavelength_px, seed }` renders the whole chart xkcd-style — axes/ticks/grid/legend wobble on the CPU raster, line wobble/dash phase uses arc-length-scan-driven GPU variants, markers/errorbars use dedicated GPU variants, and chart text automatically switches to the bundled handwritten face (Comic Neue, OFL) with per-character fallback for glyphs it lacks (CJK keeps your registered font). Deterministic (seeded), composes with dashes, and the field's absence means the precise path runs completely untouched.
@@ -69,7 +82,7 @@ Same growth-response data, rendered through the four chart styles:
 
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # or public Git source — 0.11.0, not on crates.io.
+renderer = { path = "crates/renderer" }   # or public Git source — candidate 0.12.0, not on crates.io.
 wgpu     = "30"
 ```
 
@@ -610,7 +623,7 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::paint` branches 
 
 | Type | Fields | Role |
 |---|---|---|
-| `SeriesConfig` | `series_id, source_id?, label, x_column: ColumnId, y_column: ColumnId, render_type` | Full series declaration. `source_id` is optional host provenance for picking; `x_column / y_column` are pool-registered ids. In the web editing flow, `legend.content` is the live label authority; ordinary series edits update recognized legend symbols only and preserve user text. `SeriesConfig.label` becomes authoritative only for an explicit `reset_legend_from_series_labels()` rebuild |
+| `SeriesConfig` | `series_id, source_id?, label, x_column: ColumnId, y_column: ColumnId, render_type` | Full series declaration. `source_id` is optional host provenance for picking; `x_column / y_column` are renderer-registered ids, resident in the pool or backed by a replayable nonresident source. In the web editing flow, `legend.content` is the live label authority; ordinary series edits update recognized legend symbols only and preserve user text. `SeriesConfig.label` becomes authoritative only for an explicit `reset_legend_from_series_labels()` rebuild |
 | `DataRenderType` | enum, 13 variants | One independent draw path per variant. Optional struct merging avoided |
 | `ErrorRef` | `Symmetric { column }` or `Asymmetric { lower, upper }` | Errorbar column reference. Symmetric = ±σ, Asymmetric = lower/upper split |
 | `DataLineStyleConfig` | `line_style, line_color, line_width` | Line appearance |
@@ -653,10 +666,11 @@ orientation stay series-wide. Rendering, typed picking, and selected-bin
 outlines all resolve the same final bar rectangle.
 
 The three matrix variants declare their grid as `MatrixRef { columns,
-orientation, grid_layout }` — a bundle of pool-registered column ids and nothing
-else. There is no separate matrix container and no renderer-side registry: the
-grid **is** those columns in the pool, which is what keeps `Config` + `series`
-a complete definition of the picture. `grid_layout` says whether the coordinate
+orientation, grid_layout }` — a bundle of registered column ids and nothing
+else. There is no separate matrix container: resident drawing reads those columns
+from the pool, while supported nonresident Heatmap drawing replays their registered
+sources in bounded ranges. Neither path duplicates `Config` or `series`.
+`grid_layout` says whether the coordinate
 columns are cell `Edges` (n + 1) or `Centers` (n); it is never inferred from the
 lengths. A declaration that does not line up with the data is **not an error** —
 the smallest common extent is drawn and the truncation is reported.
@@ -755,10 +769,39 @@ The renderer-owned registry is the persistent SSoT used by the browser wrapper.
 Low-level native hosts may still supply `ChartDrawItem` directly. In both paths,
 `ChartDrawItem` is prepare-only input; paint consumes only the owned token.
 
+### Exact streaming and residency
+
+![figgy exact streaming architecture](crates/renderer/assets/streaming-architecture-en.png)
+
+The image shows the **on-screen** paths. The host owns replayable original data:
+either stable TypedArrays or a `readRange` provider. The web facade handles
+browser scheduling and requests only the ranges needed for the current job; it
+does not own the stream cursor, chart state, or accumulated statistics. The
+renderer owns `Config`, ordered series, source revisions, the cursor, cached
+range summaries, and residency admission. It decides for the complete connected
+column closure whether a chart fits the resident `ColumnPool` or must use bounded
+GPU uploads and an offscreen accumulation surface. Both paths draw original
+primitives, without LOD, sampling, or decimation. A resident chart and a
+streamed chart can coexist on one page.
+
+Streaming presents completed portions while the next ranges are supplied. An
+unchanged completed revision reuses its visible result; decoration-only edits
+keep the data cursor and accumulation. A view or physical-resolution change
+replays the same source revision at the new transform. `job.cancel()` stops new
+work and releases job-owned resources after submitted GPU work settles. GPU
+picking and scaled PNG export are **not** reads from the visible accumulation
+image: they use the original registered data or replayable ranges in separate
+GPU paths. The source must remain available for these operations and for replay.
+See [the web streaming contract](crates/renderer/WASM.md#exact-streaming)
+for the current API, support limits, and lifecycle details. Exact original-data
+processing does not imply byte-identical antialiasing across GPU backends or
+render-pass boundaries.
+
 ### Ownership and lifetime boundaries
 
 `Renderer` owns the chart registry and GPU-side state: each chart's authoritative
-`Config` and ordered `SeriesConfig`, the `ColumnPool`, render/compute pipelines,
+`Config` and ordered `SeriesConfig`, the resident `ColumnPool`, nonresident
+logical-source metadata in the 0.12.0 candidate, render/compute pipelines,
 the shared picker pipeline bundle, at most one derived active-chart picker cache,
 pending pool maintenance, bind groups, per-panel GPU resources such as
 `ChartView` / `ChartStyle`, and the shared `Arc<wgpu::Device>` /
@@ -810,11 +853,14 @@ replacing a captured column, defragmenting the pool, or rebuilding target
 pipelines deliberately makes the old token stale. Commands recorded from that
 token must be submitted before one of those mutations.
 
-`ColumnSource` data is borrowed only during upload. The long-lived records are
-the GPU-pool column and the scalar stats cached for auto-fit (min / max /
-smallest-positive); source references and CPU-side per-point geometry are not
-kept. Per-point geometry such as dashed-line and constellation arc prefixes is
-derived from the GPU pool by compute scans.
+For resident `add_column`, `ColumnSource` data is borrowed only during upload.
+The long-lived records are the GPU-pool column and the scalar stats cached for
+auto-fit (min / max / smallest-positive); source references and CPU-side
+per-point geometry are not kept. Per-point geometry such as dashed-line and
+constellation arc prefixes is derived from the GPU pool by compute scans.
+Nonresident registration instead retains logical source metadata and bounded
+GPU work; its host must keep the original range provider available for exact
+replay. The renderer does not retain a full CPU copy of that source.
 
 An in-flight `GpuPickTicket` owns its readback resources and an `Arc`-backed
 identity mapping captured at submission. Later chart or pool mutations, and
@@ -921,8 +967,10 @@ redraw_pending = false;
 
 The last-presented stamp and host flags advance only after a successful draw, so
 a failed visual frame is retried. A clean web rAF skips the entire GPU surface
-path. Once a draw is required, data primitives are recorded again from the
-registered columns; there is no data-layer image cache, LOD, sampling, or
+path. A resident redraw records data primitives again from the pool; that path
+has no data-layer image cache. Candidate nonresident rendering instead
+keeps a bounded GPU accumulation surface for partial display and reuses an
+unchanged completed revision. Neither path applies data LOD, sampling, or
 decimation.
 
 The public `FiggyChart::load_demo()` call is compound failure-atomic. Its four
@@ -994,11 +1042,22 @@ egui / winit / 기타 wgpu 30 호스트에 임베드할 수 있다.
 
 > 워크스페이스 루트 README. crate 3개로 구성:
 > **`crates/model`** — 순수 차트 모델이자 스키마 권위: 옵션/데이터 SSoT(`Config`, `SeriesConfig`), 리치텍스트/범례 문서 모델, 상호작용 정책(`Selectable`/`Draggable`/`Resizable`, `HitMap`, 단일 이동 경로 `Config::nudge`), 프리셋(`AxisPreset`, `ColorCycle`). 의존성 0, `serde` 는 선택 피쳐.
-> **`crates/renderer`** — 아래에서 문서화하는 wgpu + CPU 라스터 장치. 지속 chart registry(`ChartId` → `Config`, 순서 있는 `SeriesConfig`, selection, checked revision), `ColumnPool`, picker pipeline bundle과 파생된 단일 active-chart registry cache, pending GPU-pool maintenance를 소유한다. `model`을 의존하고 public 모듈을 re-export한다.
+> **`crates/renderer`** — 아래에서 문서화하는 wgpu + CPU 라스터 장치. 지속 chart registry(`ChartId` → `Config`, 순서 있는 `SeriesConfig`, selection, checked revision), 상주 `ColumnPool`, 0.12.0 후보의 비상주 논리 소스 metadata, picker pipeline bundle과 파생된 단일 active-chart registry cache, pending GPU-pool maintenance를 소유한다. `model`을 의존하고 public 모듈을 re-export한다.
 > **`crates/web`** — 브라우저 패키지(`figgy`): public `<figgy-chart>` Custom Element facade와 advanced escape hatch로 남는 raw `FiggyChart` wasm kernel. facade가 shadow canvas, ready promise/event 수명주기, rAF loop, ResizeObserver/DPR 처리, pointer mapping, async operation busy gate, id 기반 등록 metadata, UI 파생 label/style/extent, Promise 변환을 소유한다. picker, pool, chart, maintenance 권위는 `Renderer`에 남는다. 브라우저 I/O: [WASM.md](crates/renderer/WASM.md) · Config JSON 스키마: [SCHEMA.md](crates/web/SCHEMA.md). 빌드 산출물(`crates/web/pkg/`)은 gitignore — `npx wasm-pack build crates/web --release --target web` 로 빌드.
 > **웹 스튜디오** — [figgyplot.com](https://figgyplot.com/) 에 공개 웹 편집기가 있다. 브라우저 안에서 로컬 차트 데이터를 처리하고, CSV/TSV/Excel import, `.figgy` 프로젝트 열기, 같은 wasm/WebGPU 표면 기반 PNG export를 제공한다.
 
-## 현재 릴리스 — renderer 0.11.0 / figgy 0.9.1
+## 공개 후보 — renderer 0.12.0 / figgy 0.10.0
+
+이번 후보에는 렌더러가 소유하는 원본 데이터 스트리밍과 웹의 `render_chart()`
+작업 API가 들어간다. 렌더러가 참조 컬럼 전체의 상주 가능 여부를 판단하고, 웹
+facade는 필요한 원본 구간만 요청해 실행 일정과 진행 상태를 연결한다. 완료된
+revision은 재사용하며 화면 크기·뷰 변경, 피킹, 배율 출력에는 동일 원본을 다시
+공급할 수 있다. LOD나 다운샘플링은 없다. 지원 범위와 제외 항목은
+[WASM.md](crates/renderer/WASM.md)에 정리했다. 이 소스 후보가 공개 웹
+Studio에 적용됐다는 뜻은 아니다. 공개 검증과 배포가 끝나기 전의 실제 공개
+버전은 0.11.0 / 0.9.1이다.
+
+이전 renderer 0.11.0 / figgy 0.9.1 릴리스의 변경 내용:
 
 1픽셀 미만 히스토그램 bin은 GPU에서 픽셀 열별 최댓값을 골라 0까지 채운다.
 선 두께와 알파가 모두 양수면 영역 전체를 선 색으로, 아니면 면 색으로 채운다.
@@ -1007,7 +1066,7 @@ egui / winit / 기타 wgpu 30 호스트에 임베드할 수 있다.
 없으면 `None`). 데모에는 bin 개수 슬라이더와 외곽선 토글이 있다.
 `npx serve crates/web -l 8142` 실행 후 `http://localhost:8142/`에서 확인할 수 있다.
 
-이전 renderer 0.10.0 / figgy 0.9.0 릴리스에 포함된 기능은 다음과 같다.
+renderer 0.10.0 / figgy 0.9.0 릴리스에 포함된 기능은 다음과 같다.
 
 - **히스토그램과 행렬 필드를 GPU 일급 시리즈로 제공한다.** `Histogram`, `Heatmap`, `Contour`, `ContourFill`이 선언된 matrix lattice와 colour-map SSoT를 공유한다. heatmap은 flat/interpolated shading을, contour는 최대 1024 level을 지원하며 라벨 위치에서는 실제 등고선을 끊는다. 필드 자동 맞춤은 sample centre가 아니라 실제 렌더링되는 cell 경계를 사용한다.
 - **필드 선택과 스타일은 stable identity를 사용한다.** `pick_data`는 point, histogram bin, matrix cell, contour level의 tagged ref를 반환하며 `Config.picked_data`로 다시 표시할 수 있다. histogram은 막대 폭, 외곽선 색/두께, 개별 bin override를 제공한다. contour label 글자색·배경·숫자 형식은 level 선 색과 독립적이다. colorbar는 tick, label, title, reverse와 포인터를 따르는 resize handle을 포함한 전체 `AxisOptions`를 노출한다.
@@ -1016,12 +1075,13 @@ egui / winit / 기타 wgpu 30 호스트에 임베드할 수 있다.
 
 이 저장소가 지원되는 공개 source distribution이며 crate는 crates.io에 배포하지 않는다. 공개 Git revision을 고정한 소비자는 lockfile을 갱신하고 wasm package를 다시 빌드해야 한다. 브라우저 lifecycle/API는 [WASM.md](crates/renderer/WASM.md), 전체 JSON 계약은 [SCHEMA.md](crates/web/SCHEMA.md)를 참고한다.
 
-- **GPU columnar pool**: 모든 데이터 컬럼을 하나의 GPU buffer 에 first-fit + 단편화 시 핑퐁 defrag. `HiLoColumnSource`로 올린 논리값은 f32 hi/lo 쌍으로 저장해 timestamp 크기의 offset도 GPU에서 보존한다. 업로드 시 auto-fit 용 스칼라 통계(min / max / 최소 양수)를 캐싱하고, 점선 호장 prefix 같은 per-point 지오메트리는 컴퓨트 스캔(`line_arc.wgsl`)이 제자리에서 계산.
+- **상주 GPU columnar pool**: 상주 경로에 들어간 컬럼은 하나의 GPU buffer를 공유하고, first-fit 할당과 단편화 시 핑퐁 defrag를 사용한다. `HiLoColumnSource`로 올린 논리값은 f32 hi/lo 쌍으로 저장해 timestamp 크기의 offset도 GPU에서 보존한다. 업로드 시 auto-fit 용 스칼라 통계(min / max / 최소 양수)를 캐싱하고, 점선 호장 prefix 같은 per-point 지오메트리는 컴퓨트 스캔(`line_arc.wgsl`)이 제자리에서 계산한다.
+- **비상주 렌더링(0.10.0 공개 후보)**: 재공급 가능한 컬럼은 논리 ID·길이·인코딩·revision만 등록하고 전체 데이터를 GPU pool에 보관하지 않는다. 렌더러가 원본의 필요한 구간을 제한된 크기로 요청해 빠짐없이 누적해서 그리며, 화면이나 출력 조건이 바뀌면 호스트가 같은 원본을 재공급한다. 데이터 축소·다운샘플링은 하지 않는다. 입장 판단·지원 스타일·취소·완료 후 조회 계약은 [WASM.md](crates/renderer/WASM.md)에 별도로 적었다.
 - **분리 합성**: grid → data → axis/label/legend 순으로 합성 → 그리드가 데이터를 가리지 않음. axis raster는 `Grid` / `Decoration` 분리 레이어가 기본이고, `AxisLayerKind::All`은 legacy 단일 패스 helper로 남아 있음.
 - **데이터 무왜곡 계약**: renderer/web은 model 계약을 소비하며 원본 좌표, provenance, 축↔데이터 대응을 호스트 동의 없이 조용히 바꾸지 않는다. 명시적 clipping, log-domain skip, NaN skip, antialiasing 한계는 데이터 재작성 아닌 렌더링 계약이다.
 - **헤드리스 PNG export**: 임의 DPI 로 GPU offscreen 라스터 → 메모리 RGBA / PNG 바이트 반환 (async 우선, native 는 blocking 래퍼 제공).
 - **상호작용 레이어 (opt-in)**: 히트테스트, 선택 박스, 드래그(축은 수직 방향 제약 + 분리 축 `line_offset`), 데이터 영역 PPT 식 8핸들 리사이즈 — 정책은 전부 `model`, 호스트가 포인터 이벤트를 넣을 때만 동작.
-- **데이터 피킹 (opt-in)**: `pick_point`는 기존 point/line 호환 계약을 유지하고, `pick_data`는 여기에 histogram bin, canonical matrix cell, contour level의 tagged identity를 추가한다. bar rectangle과 field/contour 형상은 보통 draw와 같은 transform·pool·style·lattice·level table을 읽는 GPU shader entry에서 판정한다. CPU가 f64 값이나 geometry mirror를 복원·보관하지 않는다. stable ref는 `Config.picked_data`로 다시 넣어 bin/cell/level을 정확히 표시하고, 기존 point 장식은 `Config.picked_points`로 유지된다.
+- **데이터 피킹 (opt-in)**: `pick_point`는 기존 point/line 호환 계약을 유지하고, `pick_data`는 여기에 histogram bin, canonical matrix cell, contour level의 tagged identity를 추가한다. 상주 경로의 bar rectangle과 field/contour 형상은 draw와 같은 transform·pool·style·lattice·level table을 읽는 GPU shader entry에서 판정한다. 지원되는 비상주 피킹은 제한된 원본 구간을 GPU에서 재생해 안정적인 인덱스를 반환하며 CPU가 원본 좌표나 geometry mirror를 복원·보관하지 않는다. stable ref는 `Config.picked_data`로 다시 넣어 bin/cell/level을 정확히 표시하고, 기존 point 장식은 `Config.picked_points`로 유지된다.
 - **점별 스타일 매핑 (opt-in)**: precise scatter는 `point_style_table` / `point_style_index_column` / `point_style_overrides`를, precise errorbar는 독립적인 `error_bar_style_table` / `error_bar_style_index_column` / `error_bar_style_overrides`를 바인딩할 수 있다. styled mode는 자체 visual shader를 사용하며 이 매핑을 무시한다.
 - **리치텍스트 일원화**: 제목·틱 라벨·범례가 한 엔진 공유 — 세그먼트별 bold/italic/밑줄/첨자/그리스, 세그먼트별 색·크기 오버라이드, `'\n'` 줄바꿈, `'\t'` 표 열, 고정폭 범례 심볼 필드.
 - **손그림 스케치 모드 (opt-in)**: `draw_style: { mode: "sketch", amplitude_px, wavelength_px, seed }` 한 필드로 차트 전체를 xkcd 풍으로 — 축/틱/그리드/범례는 CPU 라스터에서, 라인의 흔들림/점선 위상은 호장 스캔 기반 GPU 변형으로, 마커/에러바는 전용 GPU 변형으로 처리되고, 차트 텍스트는 번들 손글씨 폰트(Comic Neue, OFL)로 자동 전환된다(글리프 없는 문자는 문자 단위 폴백 — CJK는 등록 폰트 유지). 시드 기반 결정적, 점선과 합성 가능, 필드가 없으면 정밀 경로가 한 바이트도 달라지지 않는다.
@@ -1054,7 +1114,7 @@ egui / winit / 기타 wgpu 30 호스트에 임베드할 수 있다.
 
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # 또는 공개 Git source — 0.11.0, crates.io 미배포.
+renderer = { path = "crates/renderer" }   # 또는 공개 Git source — 후보 0.12.0, crates.io 미배포.
 wgpu     = "30"
 ```
 
@@ -1551,7 +1611,7 @@ draw와 동일 GPU 자원에서 현재 형상을 푼다. 범위를 벗어난 sta
 
 | 타입 | 필드 | 역할 |
 |---|---|---|
-| `SeriesConfig` | `series_id, source_id?, label, x_column: ColumnId, y_column: ColumnId, render_type` | 한 시리즈의 모든 선언. `source_id`는 picking용 선택적 host provenance이고, `x_column / y_column` 은 pool 에 등록된 id. web 편집 플로우에서는 `legend.content`가 live 라벨 권위이며, 일반 시리즈 편집은 인식 가능한 범례 심볼만 갱신하고 사용자 텍스트를 보존한다. `SeriesConfig.label`은 명시적 `reset_legend_from_series_labels()` 재작성에서만 권위가 된다 |
+| `SeriesConfig` | `series_id, source_id?, label, x_column: ColumnId, y_column: ColumnId, render_type` | 한 시리즈의 모든 선언. `source_id`는 picking용 선택적 host provenance이고, `x_column / y_column`은 렌더러에 등록된 id로 상주 pool이나 재공급 가능한 비상주 소스를 가리킨다. web 편집 플로우에서는 `legend.content`가 live 라벨 권위이며, 일반 시리즈 편집은 인식 가능한 범례 심볼만 갱신하고 사용자 텍스트를 보존한다. `SeriesConfig.label`은 명시적 `reset_legend_from_series_labels()` 재작성에서만 권위가 된다 |
 | `DataRenderType` | 13 변종 enum | 변종별 독립 draw path. 옵셔널 struct 안 합침 |
 | `ErrorRef` | `Symmetric { column }` 또는 `Asymmetric { lower, upper }` | 에러바 컬럼 참조. Symmetric 은 ±σ, Asymmetric 은 lower/upper 분리 |
 | `DataLineStyleConfig` | `line_style, line_color, line_width` | 라인 외형 |
@@ -1591,10 +1651,11 @@ draw와 동일 GPU 자원에서 현재 형상을 푼다. 범위를 벗어난 sta
 값만 덮는다. baseline·orientation은 시리즈 공통이고, 렌더·typed pick·선택
 outline은 모두 같은 최종 막대 경계를 쓴다.
 
-매트릭스 3종은 격자를 `MatrixRef { columns, orientation, grid_layout }` — 풀에
-등록된 컬럼 id 묶음, 그게 전부 — 로 선언한다. 별도의 매트릭스 컨테이너도
-렌더러 소유 레지스트리도 없다: 격자는 **풀에 있는 그 컬럼들 자체**이고, 그것이
-`Config` + `series`만으로 그림이 완전 정의되게 하는 조건이다. `grid_layout`은
+매트릭스 3종은 격자를 `MatrixRef { columns, orientation, grid_layout }` —
+등록된 컬럼 id 묶음 — 으로 선언한다. 별도의 매트릭스 컨테이너는 없다.
+상주 경로는 pool의 컬럼을 읽고, 지원되는 비상주 Heatmap 경로는 같은 ID의
+원본 구간을 제한된 크기로 재공급받는다. 어느 경로도 `Config`나 `series`를
+복제하지 않는다. `grid_layout`은
 좌표 컬럼이 셀 경계(`Edges`, n+1)인지 중심(`Centers`, n)인지를 말하며 길이로
 추론하지 않는다. 선언과 데이터의 개수가 어긋나도 **에러가 아니다** — 가장 작은
 공통 범위까지 그리고 잘렸다는 사실만 알린다.
@@ -1671,6 +1732,30 @@ interpolated fill은 실제 sample 끝(`Edges`에서는 경계 좌표의 중점)
 
 ![figgy 내부 메모리 및 렌더링 아키텍처](crates/renderer/assets/architecture-state-flow-kr.png)
 
+### 원본 데이터 스트리밍과 상주 전환
+
+![figgy 스트리밍 경로: 원본 소스, 웹 실행기, 렌더러 상태, 상주 풀 또는 청크 누적 화면](crates/renderer/assets/streaming-architecture-en.png)
+
+그림은 **화면 표시 경로**를 나타낸다. 원본 데이터는 호스트가 재공급 가능한
+TypedArray 또는 `readRange` 공급자로 보관한다. 웹 facade는 브라우저 실행
+일정과 구간 요청을 연결하지만 스트림 커서·차트 상태·통계의 권위는 갖지 않는다.
+렌더러는 `Config`, 순서 있는 시리즈, 소스 revision, 커서, 범위 요약 캐시와
+상주 가능 여부를 소유한다. 차트에서 참조 관계로 연결된 컬럼 전체를 기준으로
+상주 `ColumnPool`에 들어갈지, 제한된 청크를 GPU에 올려 오프스크린 면에
+누적할지 결정한다. 두 경로 모두 원본 primitive를 그리며 LOD·샘플링·데시메이션은
+하지 않는다. 같은 페이지에 상주 차트와 스트림 차트를 함께 둘 수 있다.
+
+스트림은 완료된 부분부터 화면에 보여 준다. 변경 없는 완료 revision은 결과를
+재사용하고, 제목·축 이름 같은 장식 변경은 데이터 커서와 누적면을 유지한다.
+뷰나 물리 해상도가 바뀌면 동일 revision의 원본을 새 조건으로 다시 그린다.
+`job.cancel()`은 새 작업을 중단하고 제출된 GPU 작업이 끝난 뒤 해당 자원을
+정리한다. 피킹과 배율을 지정한 PNG 출력은 화면 누적 이미지를 읽는 기능이
+아니다. 원본 컬럼 또는 재공급 구간을 쓰는 별도 GPU 경로이므로, 호스트는 재생과
+조회가 필요한 동안 원본을 유지해야 한다. 지원 범위와 웹 API는
+[WASM 가이드](crates/renderer/WASM.md#exact-streaming)에
+정리했다. 원본 데이터를 빠짐없이 처리한다는 뜻과 GPU 백엔드·렌더 패스 경계의
+안티앨리어싱 픽셀이 바이트 단위로 같다는 뜻은 구별해야 한다.
+
 renderer-owned registry가 browser wrapper의 지속 SSoT다. 저수준 native host는
 `ChartDrawItem`을 직접 전달할 수도 있다. 어느 경로든 `ChartDrawItem`은
 prepare 전용 입력이고 paint는 owned token만 소비한다.
@@ -1678,7 +1763,8 @@ prepare 전용 입력이고 paint는 owned token만 소비한다.
 ### 소유권과 수명 경계
 
 `Renderer`는 chart registry와 GPU 측 상태의 수명 소유자다. chart별 권위
-`Config`와 순서 있는 `SeriesConfig`, `ColumnPool`, render/compute pipeline,
+`Config`와 순서 있는 `SeriesConfig`, 상주 `ColumnPool`, 0.12.0 후보의 비상주
+논리 소스 metadata, render/compute pipeline,
 공유 picker pipeline bundle, 최대 하나의 파생 active-chart picker cache, pending
 pool maintenance, bind group, panel별 `ChartView` / `ChartStyle` GPU 자원, 공유
 `Arc<wgpu::Device>` / `Arc<wgpu::Queue>`를 보관한다. `ChartId`는 발급한
@@ -1726,11 +1812,13 @@ cache나 prepared token이 대응 GPU handle을 소유하는 동안 shared charg
 pool defrag, target pipeline 재생성은 기존 토큰을 의도적으로 stale 처리한다.
 host는 그 변경 전에 기존 토큰으로 기록한 command buffer를 제출해야 한다.
 
-`ColumnSource` 데이터는 upload 순간에만 빌려 읽힌다. 장기 보관되는 것은
-GPU pool column과 auto-fit 용 scalar stats(min / max / 최소 양수)뿐이며,
-원본 source 참조나 CPU 측 per-point geometry는 유지하지 않는다. dashed line
-또는 constellation arc prefix 같은 per-point geometry는 GPU pool을 compute
-scan해서 만든다.
+상주 `add_column`의 `ColumnSource` 데이터는 upload 순간에만 빌려 읽힌다.
+장기 보관되는 것은 GPU pool column과 auto-fit 용 scalar stats(min / max /
+최소 양수)뿐이며, 원본 source 참조나 CPU 측 per-point geometry는 유지하지
+않는다. dashed line 또는 constellation arc prefix 같은 per-point geometry는
+GPU pool을 compute scan해서 만든다. 비상주 등록은 논리 소스 metadata와
+제한된 GPU 작업 상태를 유지하고, 호스트가 정확한 재생을 위해 원본 구간
+공급자를 보관한다. 렌더러는 원본 전체의 CPU 사본을 보관하지 않는다.
 
 진행 중인 `GpuPickTicket`은 readback 자원과 제출 시점의 `Arc` 기반 identity
 mapping을 직접 소유한다. 이후 chart/pool이 변경되거나 renderer가 drop되어도
@@ -1840,9 +1928,11 @@ redraw_pending = false;
 ```
 
 last-presented stamp와 host flag는 draw 성공 뒤에만 전진하므로 visual frame
-실패는 재시도된다. clean web rAF는 GPU surface 경로 전체를 생략한다. draw가
-필요해지면 등록 column의 원본 primitive를 다시 기록한다. data-layer image
-cache, LOD, sampling, decimation은 없다.
+실패는 재시도된다. clean web rAF는 GPU surface 경로 전체를 생략한다. 상주
+경로는 다시 그릴 때 pool의 원본 primitive를 재기록하며 data-layer image
+cache를 두지 않는다. 0.12.0 후보의 비상주 경로는 부분 표시용으로 제한된 GPU
+누적면을 유지하고, 바뀌지 않은 완료 revision을 재사용한다. 어느 경로도
+데이터 LOD·샘플링·데시메이션을 적용하지 않는다.
 
 독립 `Chart::{data_dirty,raster_dirty}` bool은 외부 `Chart`를 소유하는 저수준
 호출자용 호환 장치로 남는다. `prepare`는 이 bool을 읽거나 consume하지 않고,

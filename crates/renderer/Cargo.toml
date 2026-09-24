@@ -1,6 +1,6 @@
 [package]
 name = "renderer"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
 description = "wgpu + CPU-raster hybrid chart renderer for the figgy workspace."
 license = "MIT OR Apache-2.0"
@@ -58,6 +58,11 @@ required-features = ["egui_demo"]
 [[example]]
 name = "egui_embed"
 path = "examples/egui_embed.rs"
+required-features = ["egui_demo"]
+
+[[example]]
+name = "streaming_capacity_demo"
+path = "examples/streaming_capacity_demo.rs"
 required-features = ["egui_demo"]
 
 [[example]]

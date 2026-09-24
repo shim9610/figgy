@@ -1,8 +1,51 @@
 //! Borrowed adapters for streaming web column inputs into renderer staging
 //! buffers without constructing an owned per-value mirror.
 
+use std::{ops::Range, rc::Rc};
+
 use renderer::data::{COLUMN_VALUE_BYTES, split_f64_to_f32_pair};
-use renderer::{ColumnPairWriter, ColumnSource, ColumnUploadStats, HiLoColumnSource};
+use renderer::{
+    ColumnPairWriter, ColumnRangeWriteError, ColumnSource, ColumnUploadStats, HiLoColumnSource,
+    StreamBounds,
+};
+
+#[derive(Default)]
+struct StreamBoundsBuilder {
+    min: f64,
+    max: f64,
+    min_positive: Option<f64>,
+    any: bool,
+}
+
+impl StreamBoundsBuilder {
+    fn record(&mut self, hi: f32, lo: f32) {
+        let gpu_value = hi + lo;
+        let value = hi as f64 + lo as f64;
+        if !gpu_value.is_finite() || !value.is_finite() {
+            return;
+        }
+        let value = if value == 0.0 { 0.0 } else { value };
+        if self.any {
+            self.min = self.min.min(value);
+            self.max = self.max.max(value);
+        } else {
+            self.min = value;
+            self.max = value;
+            self.any = true;
+        }
+        if value > 0.0 && self.min_positive.is_none_or(|current| value < current) {
+            self.min_positive = Some(value);
+        }
+    }
+
+    fn finish(self) -> Option<StreamBounds> {
+        self.any.then_some(StreamBounds {
+            min: self.min,
+            max: self.max,
+            min_positive: self.min_positive,
+        })
+    }
+}
 
 #[inline]
 fn record_min_positive(stats: &mut ColumnUploadStats, value: f64) {
@@ -20,6 +63,276 @@ fn record_min_positive(stats: &mut ColumnUploadStats, value: f64) {
 fn write_pair_bytes(dst: &mut [u8], hi: f32, lo: f32) {
     dst[..4].copy_from_slice(&hi.to_le_bytes());
     dst[4..].copy_from_slice(&lo.to_le_bytes());
+}
+
+/// One immutable wasm-boundary allocation that can back one column or many
+/// range views without copying its payload.
+///
+/// `Box<[T]>` is intentional: wasm-bindgen can transfer ownership of the
+/// allocation it creates while copying a JavaScript typed array into wasm
+/// memory. The outer `Rc` only shares that allocation between batch views.
+#[derive(Debug)]
+pub(crate) struct OwnedColumnBuffer<T> {
+    data: Rc<Box<[T]>>,
+}
+
+impl<T> Clone for OwnedColumnBuffer<T> {
+    fn clone(&self) -> Self {
+        Self {
+            data: Rc::clone(&self.data),
+        }
+    }
+}
+
+impl<T> OwnedColumnBuffer<T> {
+    pub(crate) fn new(data: Box<[T]>) -> Self {
+        Self {
+            data: Rc::new(data),
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    fn slice(&self, range: &Range<usize>) -> Option<&[T]> {
+        self.data.get(range.clone())
+    }
+
+    #[cfg(test)]
+    fn shares_allocation_with(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.data, &other.data)
+    }
+}
+
+/// Immutable scalar-f32 view over a boundary-owned allocation.
+#[derive(Debug, Clone)]
+pub(crate) struct OwnedF32Column {
+    buffer: OwnedColumnBuffer<f32>,
+    range: Range<usize>,
+    min: f32,
+    max: f32,
+}
+
+impl OwnedF32Column {
+    pub(crate) fn new(data: Box<[f32]>) -> Self {
+        let buffer = OwnedColumnBuffer::new(data);
+        let end = buffer.len();
+        Self::from_buffer(&buffer, 0..end).expect("the whole owned f32 buffer is a valid range")
+    }
+
+    pub(crate) fn from_buffer(
+        buffer: &OwnedColumnBuffer<f32>,
+        range: Range<usize>,
+    ) -> Result<Self, ColumnRangeWriteError> {
+        let data = buffer
+            .slice(&range)
+            .ok_or(ColumnRangeWriteError::InvalidRange)?;
+        let borrowed = BorrowedF32Column::new(data);
+        Ok(Self {
+            buffer: buffer.clone(),
+            range,
+            min: borrowed.min,
+            max: borrowed.max,
+        })
+    }
+
+    fn data(&self) -> &[f32] {
+        self.buffer
+            .slice(&self.range)
+            .expect("an owned f32 column keeps its validated range")
+    }
+
+    fn borrowed(&self) -> BorrowedF32Column<'_> {
+        BorrowedF32Column {
+            data: self.data(),
+            min: self.min,
+            max: self.max,
+        }
+    }
+}
+
+impl ColumnSource for OwnedF32Column {
+    fn len(&self) -> usize {
+        self.range.len()
+    }
+
+    fn min(&self) -> f64 {
+        self.min as f64
+    }
+
+    fn max(&self) -> f64 {
+        self.max as f64
+    }
+
+    fn write_f32_le_into(&self, dst: &mut [u8]) {
+        ColumnSource::write_f32_le_into(&self.borrowed(), dst);
+    }
+
+    fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
+        ColumnSource::write_f32_zero_lo_pair_le_into(&self.borrowed(), dst);
+    }
+
+    fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
+        ColumnSource::write_f32_pair_le_into_with_stats(&self.borrowed(), dst)
+    }
+
+    fn write_f32_pair_range_into_with_stats(
+        &self,
+        start: u64,
+        dst: ColumnPairWriter<'_>,
+    ) -> Result<Option<StreamBounds>, ColumnRangeWriteError> {
+        ColumnSource::write_f32_pair_range_into_with_stats(&self.borrowed(), start, dst)
+    }
+}
+
+impl HiLoColumnSource for OwnedF32Column {
+    fn len(&self) -> usize {
+        self.range.len()
+    }
+
+    fn min(&self) -> f64 {
+        self.min as f64
+    }
+
+    fn max(&self) -> f64 {
+        self.max as f64
+    }
+
+    fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
+        HiLoColumnSource::write_f32_pair_le_into(&self.borrowed(), dst);
+    }
+
+    fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
+        HiLoColumnSource::write_f32_pair_le_into_with_stats(&self.borrowed(), dst)
+    }
+
+    fn write_f32_pair_range_into_with_stats(
+        &self,
+        start: u64,
+        dst: ColumnPairWriter<'_>,
+    ) -> Result<Option<StreamBounds>, ColumnRangeWriteError> {
+        ColumnSource::write_f32_pair_range_into_with_stats(&self.borrowed(), start, dst)
+    }
+}
+
+/// Immutable hi/lo-f64 view over a boundary-owned allocation.
+///
+/// Its `ColumnSource` pair methods deliberately use the split `(hi, lo)`
+/// encoding too, so an f64 matrix batch retains the same precision as a
+/// single-column `HiLoColumnSource` upload.
+#[derive(Debug, Clone)]
+pub(crate) struct OwnedF64Column {
+    buffer: OwnedColumnBuffer<f64>,
+    range: Range<usize>,
+    min: f64,
+    max: f64,
+}
+
+impl OwnedF64Column {
+    pub(crate) fn new(data: Box<[f64]>) -> Self {
+        let buffer = OwnedColumnBuffer::new(data);
+        let end = buffer.len();
+        Self::from_buffer(&buffer, 0..end).expect("the whole owned f64 buffer is a valid range")
+    }
+
+    pub(crate) fn from_buffer(
+        buffer: &OwnedColumnBuffer<f64>,
+        range: Range<usize>,
+    ) -> Result<Self, ColumnRangeWriteError> {
+        let data = buffer
+            .slice(&range)
+            .ok_or(ColumnRangeWriteError::InvalidRange)?;
+        let borrowed = BorrowedF64Column::new(data);
+        Ok(Self {
+            buffer: buffer.clone(),
+            range,
+            min: borrowed.min,
+            max: borrowed.max,
+        })
+    }
+
+    fn data(&self) -> &[f64] {
+        self.buffer
+            .slice(&self.range)
+            .expect("an owned f64 column keeps its validated range")
+    }
+
+    fn borrowed(&self) -> BorrowedF64Column<'_> {
+        BorrowedF64Column {
+            data: self.data(),
+            min: self.min,
+            max: self.max,
+        }
+    }
+}
+
+impl ColumnSource for OwnedF64Column {
+    fn len(&self) -> usize {
+        self.range.len()
+    }
+
+    fn min(&self) -> f64 {
+        self.min
+    }
+
+    fn max(&self) -> f64 {
+        self.max
+    }
+
+    fn write_f32_le_into(&self, dst: &mut [u8]) {
+        ColumnSource::write_f32_le_into(&self.borrowed(), dst);
+    }
+
+    fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
+        HiLoColumnSource::write_f32_pair_le_into(&self.borrowed(), dst);
+    }
+
+    fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
+        HiLoColumnSource::write_f32_pair_le_into_with_stats(&self.borrowed(), dst)
+    }
+
+    fn write_f32_pair_range_into_with_stats(
+        &self,
+        start: u64,
+        dst: ColumnPairWriter<'_>,
+    ) -> Result<Option<StreamBounds>, ColumnRangeWriteError> {
+        HiLoColumnSource::write_f32_pair_range_into_with_stats(&self.borrowed(), start, dst)
+    }
+}
+
+impl HiLoColumnSource for OwnedF64Column {
+    fn len(&self) -> usize {
+        self.range.len()
+    }
+
+    fn min(&self) -> f64 {
+        self.min
+    }
+
+    fn max(&self) -> f64 {
+        self.max
+    }
+
+    fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
+        HiLoColumnSource::write_f32_pair_le_into(&self.borrowed(), dst);
+    }
+
+    fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
+        HiLoColumnSource::write_f32_pair_le_into_with_stats(&self.borrowed(), dst)
+    }
+
+    fn write_f32_pair_range_into_with_stats(
+        &self,
+        start: u64,
+        dst: ColumnPairWriter<'_>,
+    ) -> Result<Option<StreamBounds>, ColumnRangeWriteError> {
+        HiLoColumnSource::write_f32_pair_range_into_with_stats(&self.borrowed(), start, dst)
+    }
 }
 
 /// Borrowed `f32` column with upload-time scalar statistics.
@@ -74,6 +387,24 @@ impl ColumnSource for BorrowedF32Column<'_> {
 
     fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
         HiLoColumnSource::write_f32_pair_le_into_with_stats(self, dst)
+    }
+
+    fn write_f32_pair_range_into_with_stats(
+        &self,
+        start: u64,
+        mut dst: ColumnPairWriter<'_>,
+    ) -> Result<Option<StreamBounds>, ColumnRangeWriteError> {
+        let start = usize::try_from(start).map_err(|_| ColumnRangeWriteError::InvalidRange)?;
+        let end = start
+            .checked_add(dst.len())
+            .filter(|end| *end <= self.data.len())
+            .ok_or(ColumnRangeWriteError::InvalidRange)?;
+        let mut bounds = StreamBoundsBuilder::default();
+        for (index, &value) in self.data[start..end].iter().enumerate() {
+            dst.write_pair(index, value, 0.0);
+            bounds.record(value, 0.0);
+        }
+        Ok(bounds.finish())
     }
 }
 
@@ -277,6 +608,216 @@ impl HiLoColumnSource for BorrowedF64Column<'_> {
         }
         stats
     }
+
+    fn write_f32_pair_range_into_with_stats(
+        &self,
+        start: u64,
+        mut dst: ColumnPairWriter<'_>,
+    ) -> Result<Option<StreamBounds>, ColumnRangeWriteError> {
+        let start = usize::try_from(start).map_err(|_| ColumnRangeWriteError::InvalidRange)?;
+        let end = start
+            .checked_add(dst.len())
+            .filter(|end| *end <= self.data.len())
+            .ok_or(ColumnRangeWriteError::InvalidRange)?;
+        let mut bounds = StreamBoundsBuilder::default();
+        for (index, &value) in self.data[start..end].iter().enumerate() {
+            let (hi, lo) = split_f64_to_f32_pair(value);
+            dst.write_pair(index, hi, lo);
+            bounds.record(hi, lo);
+        }
+        Ok(bounds.finish())
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) enum JsStreamColumn {
+    F32(JsF32StreamSource),
+    F64(JsF64StreamSource),
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) struct JsF32StreamSource(js_sys::Float32Array);
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) struct JsF64StreamSource(js_sys::Float64Array);
+
+#[cfg(target_arch = "wasm32")]
+impl JsStreamColumn {
+    pub(crate) fn from_js(value: &wasm_bindgen::JsValue) -> Result<Self, &'static str> {
+        use wasm_bindgen::JsCast;
+
+        if value.is_instance_of::<js_sys::Float32Array>() {
+            return Ok(Self::F32(JsF32StreamSource(
+                value.clone().unchecked_into(),
+            )));
+        }
+        if value.is_instance_of::<js_sys::Float64Array>() {
+            return Ok(Self::F64(JsF64StreamSource(
+                value.clone().unchecked_into(),
+            )));
+        }
+        Err("stream source must be a Float32Array or Float64Array")
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            Self::F32(values) => values.0.length() as usize,
+            Self::F64(values) => values.0.length() as usize,
+        }
+    }
+
+    pub(crate) fn encoding(&self) -> renderer::StreamEncoding {
+        match self {
+            Self::F32(_) => renderer::StreamEncoding::ScalarF32,
+            Self::F64(_) => renderer::StreamEncoding::HiLoF32,
+        }
+    }
+
+    pub(crate) fn source(&self) -> renderer::StreamColumnSource<'_> {
+        match self {
+            Self::F32(values) => renderer::StreamColumnSource::Scalar(values),
+            Self::F64(values) => renderer::StreamColumnSource::HiLo(values),
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn js_f32_extreme(values: &JsF32StreamSource, min: bool) -> f64 {
+    let mut result = if min { f32::INFINITY } else { f32::NEG_INFINITY };
+    for index in 0..values.0.length() {
+        let value = values.0.get_index(index);
+        result = if min {
+            result.min(value)
+        } else {
+            result.max(value)
+        };
+    }
+    result as f64
+}
+
+#[cfg(target_arch = "wasm32")]
+impl ColumnSource for JsF32StreamSource {
+    fn len(&self) -> usize {
+        self.0.length() as usize
+    }
+
+    fn min(&self) -> f64 {
+        js_f32_extreme(self, true)
+    }
+
+    fn max(&self) -> f64 {
+        js_f32_extreme(self, false)
+    }
+
+    fn write_f32_le_into(&self, dst: &mut [u8]) {
+        debug_assert_eq!(dst.len(), self.0.length() as usize * size_of::<f32>());
+        for (index, bytes) in dst.chunks_exact_mut(size_of::<f32>()).enumerate() {
+            bytes.copy_from_slice(&self.0.get_index(index as u32).to_le_bytes());
+        }
+    }
+
+    fn write_f32_pair_le_into_with_stats(
+        &self,
+        mut dst: ColumnPairWriter<'_>,
+    ) -> ColumnUploadStats {
+        let mut stats = ColumnUploadStats { min_positive: None };
+        for index in 0..dst.len() {
+            let value = self.0.get_index(index as u32);
+            dst.write_pair(index, value, 0.0);
+            record_min_positive(&mut stats, value as f64);
+        }
+        stats
+    }
+
+    fn write_f32_pair_range_into_with_stats(
+        &self,
+        start: u64,
+        mut dst: ColumnPairWriter<'_>,
+    ) -> Result<Option<StreamBounds>, ColumnRangeWriteError> {
+        let start = u32::try_from(start).map_err(|_| ColumnRangeWriteError::InvalidRange)?;
+        let len = u32::try_from(dst.len()).map_err(|_| ColumnRangeWriteError::InvalidRange)?;
+        let end = start
+            .checked_add(len)
+            .filter(|end| *end <= self.0.length())
+            .ok_or(ColumnRangeWriteError::InvalidRange)?;
+        let mut bounds = StreamBoundsBuilder::default();
+        for (target, source) in (start..end).enumerate() {
+            let value = self.0.get_index(source);
+            dst.write_pair(target, value, 0.0);
+            bounds.record(value, 0.0);
+        }
+        Ok(bounds.finish())
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn js_f64_extreme(values: &JsF64StreamSource, min: bool) -> f64 {
+    let mut result = if min { f64::INFINITY } else { f64::NEG_INFINITY };
+    for index in 0..values.0.length() {
+        let value = values.0.get_index(index);
+        result = if min {
+            result.min(value)
+        } else {
+            result.max(value)
+        };
+    }
+    result
+}
+
+#[cfg(target_arch = "wasm32")]
+impl HiLoColumnSource for JsF64StreamSource {
+    fn len(&self) -> usize {
+        self.0.length() as usize
+    }
+
+    fn min(&self) -> f64 {
+        js_f64_extreme(self, true)
+    }
+
+    fn max(&self) -> f64 {
+        js_f64_extreme(self, false)
+    }
+
+    fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
+        debug_assert_eq!(dst.len(), self.0.length() as usize * COLUMN_VALUE_BYTES);
+        for (index, pair) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).enumerate() {
+            let (hi, lo) = split_f64_to_f32_pair(self.0.get_index(index as u32));
+            write_pair_bytes(pair, hi, lo);
+        }
+    }
+
+    fn write_f32_pair_le_into_with_stats(
+        &self,
+        mut dst: ColumnPairWriter<'_>,
+    ) -> ColumnUploadStats {
+        let mut stats = ColumnUploadStats { min_positive: None };
+        for index in 0..dst.len() {
+            let (hi, lo) = split_f64_to_f32_pair(self.0.get_index(index as u32));
+            dst.write_pair(index, hi, lo);
+            record_min_positive(&mut stats, hi as f64 + lo as f64);
+        }
+        stats
+    }
+
+    fn write_f32_pair_range_into_with_stats(
+        &self,
+        start: u64,
+        mut dst: ColumnPairWriter<'_>,
+    ) -> Result<Option<StreamBounds>, ColumnRangeWriteError> {
+        let start = u32::try_from(start).map_err(|_| ColumnRangeWriteError::InvalidRange)?;
+        let len = u32::try_from(dst.len()).map_err(|_| ColumnRangeWriteError::InvalidRange)?;
+        let end = start
+            .checked_add(len)
+            .filter(|end| *end <= self.0.length())
+            .ok_or(ColumnRangeWriteError::InvalidRange)?;
+        let mut bounds = StreamBoundsBuilder::default();
+        for (target, source) in (start..end).enumerate() {
+            let (hi, lo) = split_f64_to_f32_pair(self.0.get_index(source));
+            dst.write_pair(target, hi, lo);
+            bounds.record(hi, lo);
+        }
+        Ok(bounds.finish())
+    }
 }
 
 /// Borrowed f64 column whose **`ColumnSource`** impl writes the split `(hi, lo)`
@@ -461,6 +1002,82 @@ mod tests {
             read_uploaded_bytes(device, queue, &pool, handle),
             min_positive,
         )
+    }
+
+    #[test]
+    fn owned_f32_views_share_one_boundary_allocation_and_preserve_ranges() {
+        let boxed = vec![-10.0f32, 1.25, 2.5, 3.75, 20.0].into_boxed_slice();
+        let payload = boxed.as_ptr();
+        let buffer = OwnedColumnBuffer::new(boxed);
+        assert_eq!(buffer.data.as_ptr(), payload);
+        assert!(!buffer.is_empty());
+
+        let left = OwnedF32Column::from_buffer(&buffer, 1..3).unwrap();
+        let right = OwnedF32Column::from_buffer(&buffer, 3..5).unwrap();
+        assert!(left.buffer.shares_allocation_with(&right.buffer));
+        assert_eq!(left.data().as_ptr(), unsafe { payload.add(1) });
+        assert_eq!(right.data().as_ptr(), unsafe { payload.add(3) });
+        assert_eq!(ColumnSource::min(&left), 1.25);
+        assert_eq!(ColumnSource::max(&left), 2.5);
+
+        let expected_left: Vec<u8> = [1.25f32, 2.5]
+            .iter()
+            .flat_map(|value| [value.to_le_bytes(), 0.0f32.to_le_bytes()].concat())
+            .collect();
+        assert_eq!(scalar_pair_bytes(&left), expected_left);
+
+        drop(buffer);
+        assert_eq!(right.data(), &[3.75, 20.0]);
+        assert_eq!(ColumnSource::min(&right), 3.75);
+        assert_eq!(ColumnSource::max(&right), 20.0);
+    }
+
+    #[test]
+    fn owned_f64_views_use_split_pairs_through_both_traits() {
+        let epoch = 1_700_000_000_000.0;
+        let boxed = vec![-5.0f64, epoch + 0.125, epoch + 0.875, 9.0].into_boxed_slice();
+        let payload = boxed.as_ptr();
+        let buffer = OwnedColumnBuffer::new(boxed);
+        let source = OwnedF64Column::from_buffer(&buffer, 1..3).unwrap();
+        assert_eq!(source.data().as_ptr(), unsafe { payload.add(1) });
+
+        let expected: Vec<u8> = [epoch + 0.125, epoch + 0.875]
+            .iter()
+            .flat_map(|&value| {
+                let (hi, lo) = split_f64_to_f32_pair(value);
+                [hi.to_le_bytes(), lo.to_le_bytes()].concat()
+            })
+            .collect();
+        assert_eq!(scalar_pair_bytes(&source), expected);
+        assert_eq!(pair_bytes(&source), expected);
+        assert_ne!(
+            expected,
+            [epoch + 0.125, epoch + 0.875]
+                .iter()
+                .flat_map(|&value| [(value as f32).to_le_bytes(), 0.0f32.to_le_bytes()].concat())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(ColumnSource::min(&source), epoch + 0.125);
+        assert_eq!(ColumnSource::max(&source), epoch + 0.875);
+    }
+
+    #[test]
+    fn owned_columns_reject_out_of_bounds_views_and_accept_whole_boxes() {
+        let f32_buffer = OwnedColumnBuffer::new(vec![1.0f32, 2.0].into_boxed_slice());
+        assert!(matches!(
+            OwnedF32Column::from_buffer(&f32_buffer, 1..3),
+            Err(ColumnRangeWriteError::InvalidRange)
+        ));
+        let f64_buffer = OwnedColumnBuffer::new(vec![1.0f64, 2.0].into_boxed_slice());
+        assert!(matches!(
+            OwnedF64Column::from_buffer(&f64_buffer, 2..1),
+            Err(ColumnRangeWriteError::InvalidRange)
+        ));
+
+        let f32_source = OwnedF32Column::new(vec![3.0f32, 4.0].into_boxed_slice());
+        let f64_source = OwnedF64Column::new(vec![5.0f64, 6.0].into_boxed_slice());
+        assert_eq!(ColumnSource::len(&f32_source), 2);
+        assert_eq!(HiLoColumnSource::len(&f64_source), 2);
     }
 
     #[test]

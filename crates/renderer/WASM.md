@@ -1,6 +1,8 @@
 # WebAssembly 빌드와 웹 I/O 가이드
 
-적용 공개 버전: `figgy 0.9.0` / `renderer 0.10.0`.
+공개 후보 버전: `figgy 0.10.0` / `renderer 0.12.0`.
+현재 배포된 버전은 `figgy 0.9.1` / `renderer 0.11.0`이며, 아래 스트리밍
+API는 공개 후보의 소스 계약이다. 공개 검증과 배포 전에는 기존 버전에 포함되지 않는다.
 
 `model`/`renderer` 두 crate 모두 `wasm32-unknown-unknown`으로 컴파일된다.
 이 문서는 ① 무엇이 어떻게 타겟별로 갈리는지, ② 브라우저에서 다른 웹
@@ -650,6 +652,116 @@ modes ignore the mappings.
 Advanced escape hatch: `element.kernel`은 raw wasm `FiggyChart`를 반환한다.
 이 경로는 facade의 busy gate와 browser lifecycle 캡슐화를 우회하므로, 일반
 host 계약이 아니라 디버깅/특수 embed용이다.
+
+<a id="exact-streaming"></a>
+
+### 공개 후보: 자동 실행과 원본 구간 공급
+
+아래는 0.10.0 공개 후보 API이며 현재 배포 버전의 기능을 뜻하지 않는다.
+`render_chart()`가 실행기를 소유하므로 앱은 `auto_stream_chart_step()`이나
+`frame()`을 반복 호출하지 않는다. 네이티브 Rust의 빌린 `ColumnSource`와 명시적
+청크 실행 API는 그대로 유지한다.
+
+![figgy의 상주 및 비상주 화면 렌더링 구조](assets/streaming-architecture-en.png)
+
+이 그림은 화면 표시 경로만 나타낸다. 책임과 재실행 조건은 다음과 같다.
+
+| 계층 | 소유하는 상태와 역할 |
+|---|---|
+| 호스트 원본 저장소 | 동일 revision의 TypedArray 또는 `readRange` 공급자를 재생·조회가 끝날 때까지 유지한다. 파일 파싱과 Worker I/O도 여기서 한다. |
+| 웹 facade | 필요한 구간만 요청·전달하고 rAF, GPU 완료 대기, 중단 신호, 진행 통지와 Promise 수명주기를 처리한다. 전체 데이터를 별도로 복제하거나 스트림 커서·통계의 권위를 갖지 않는다. |
+| 렌더러 | `Config`·시리즈·소스 revision·커서·청크 통계의 단일 진실 원본이다. 참조 관계로 연결된 컬럼 전체의 상주 가능 여부를 판단하고, 상주 풀 또는 청크 누적 경로를 고른다. |
+| GPU 화면 경로 | 상주 시 `ColumnPool`의 원본 primitive를 그리고, 비상주 시 제한된 청크를 업로드해 오프스크린 면에 누적한다. 두 경로 모두 LOD·데시메이션 없이 처리한다. |
+
+화면의 누적 이미지는 피킹 결과나 PNG 출력의 데이터 원본이 아니다. 완료
+revision의 피킹은 원본 컬럼 또는 필요한 구간을 GPU에 재공급하며, 배율 지정
+PNG는 별도의 해상도로 원본을 다시 그린다. 따라서 완료 직후 소스 공급자를
+버리면 이 작업과 resize/DPR 재생을 보장할 수 없다. 같은 revision의 원본은
+불변이어야 하며, 변경할 때는 새 revision으로 등록한다. 정확한 원본 primitive
+처리와 서로 다른 GPU 백엔드·렌더 패스에서의 안티앨리어싱 RGBA 바이트 일치는
+별개의 계약이다.
+
+```js
+await chart.ready;
+// 값은 예시 정책이다. 실제 사용량과 admission 결과에 맞춰 정한다.
+chart.configure_streaming(1, 2, 8, 2 * 1024 ** 2, 16 * 1024 ** 2);
+const columns = [
+  { id: "x", revision: 1, length: rowCount, encoding: "f64" },
+  { id: "y", revision: 1, length: rowCount, encoding: "f32" },
+];
+chart.register_streaming_column_sources(
+  columns.map(c => c.id), columns.map(c => c.revision),
+  columns.map(c => c.length), columns.map(c => c.encoding),
+);
+chart.add_line_series("signal", "x", "y", 1.5, "Signal");
+const job = chart.render_chart({
+  columns,
+  // 원본 저장소의 구간 읽기: 배열 길이는 반드시 length와 같아야 한다.
+  readRange: ({ id, revision, offset, length, encoding }) =>
+    sourceStore.readRange({ id, revision, offset, length, encoding }),
+  maxPrimitivesPerChunk: 262144,
+  maxFrameTimeMs: 8,
+  stallTimeoutMs: 30000,
+  onProgress: progress => updateProgress(progress),
+});
+await job.done;
+const hit = await chart.pick_point(pixelX, pixelY, 8);
+const png = await chart.export_png(2);
+// 화면을 버릴 때: await job.cancel();
+```
+
+- `columns`는 임의 N개 컬럼이다. 전체 배열을 이미 갖고 있다면 각 항목을
+  `{ id, revision, values: typedArray }`로 주고 `readRange`를 생략한다.
+  facade는 배열 참조만 보관한다. 구간 뷰를 만들 때 전체 배열을 복사하지 않으며,
+  필요한 구간만 WASM의 write-only staging에 기록한다. Worker에서 생성한 구간은
+  transferable buffer로 넘길 수 있다. 파일 파싱·저장소·Worker I/O는 호스트 책임이다.
+- 완료 뒤에도 원본 참조 또는 `readRange`를 유지한다. resize/DPR 변경, 정확한 출력,
+  피킹에는 같은 revision의 재공급이 필요하기 때문이다. 같은 revision의 값은
+  바꾸거나 버퍼를 detach하지 않는다. 변경은 새 revision으로 명시한다.
+  `job.cancel()`이나 컴포넌트 해제로 해당 실행의 보관 참조를 놓는다.
+- `Config`, 시리즈, 소스 revision과 청크 커서의 권위는 렌더러다. facade는 GPU 계산이나
+  피킹을 재구현하지 않고 구간 요청과 완료 통지만 연결한다. 데이터 축소·LOD는 없다.
+- `maxFrameTimeMs`는 측정된 동기 제출 시간을 이용한 적응형 청크 목표다. 브라우저의
+  스케줄링, 공급자 코드, GPU 명령의 실행 시간을 강제로 제한하는 보장은 아니다.
+  작업은 MessageChannel과 GPU 완료 통지로 진행하며 화면 표시는 rAF에 맞춘다.
+- `job.done`은 완료·상주·취소·대체 상태를 반환하고 실패 시 reject한다.
+  `job.cancel()`은 제출된 GPU 작업의 자원 회수까지 기다린다. GPU 명령 자체를
+  선점하지 않으며 늦게 도착한 원본 응답은 새 실행에 제출하지 않는다.
+- `stream_status()`는 read-only다. 완료 후에도 누적 primitive 수, revision,
+  job id를 유지한다. 동일 입력의 재요청은 원본을 다시 읽거나 그리지 않는다.
+- 데이터·뷰 변경은 다음 실행 경계에서 최신 스냅샷으로 교체한다. 제목 등 장식만
+  바뀌면 데이터 커서와 누적면을 보존한다. resize/DPR 변경에는 새 물리 해상도로
+  원본을 다시 그린다. `await auto_fit_all()`은 통계에 따른 축 commit과 렌더 완료를
+  기다린다. 통계는 최초 구간 업로드 때 수집하고 렌더러가 revision별로 재사용한다.
+- 선택 변경은 데이터 스트림을 재시작하지 않는다. 선택된 원본 구간만 요청하고,
+  새 선택의 GPU 자원이 모두 준비될 때까지 이전 선택 표시를 유지한 뒤 한 번에
+  교체한다. 공급 실패 시에도 이전 표시를 유지하며 `figgy-error`로 알린다.
+  취소되거나 더 새 선택으로 대체된 요청의 지연 응답은 반영하지 않는다.
+  내보내기는 시작 시점의 선택을 유지하므로 이후 화면 선택 변경과 섞이지 않는다.
+- 완료된 스트림의 `pick_point`/`pick_data`/`export_png`는 기존 facade API를 사용한다.
+  피킹은 GPU가 전역 인덱스·identity·`distance_px`만 반환한다. PNG는 문서 크기와
+  출력 배율로 원본을 재생하며 화면 텍스처를 늘려 쓰지 않는다. 화면 작업의 커서와
+  누적면은 변경하지 않는다. 진행 중인 revision은 miss로 속이지 않고 오류로 알린다.
+- `inspect_column_admission(metadata)`는 encoded bytes, 한도, 거절 이유를 조회한다.
+  예약이나 모든 파생 자원의 admission 보장은 아니다. `configure_auto_residency()`로
+  전체 GPU 예산과 상주 한도를 정하면, TypedArray와 구간 공급자 경로 모두 렌더러가
+  참조 관계로 연결된 전체 컬럼의 상주 가능 여부를 판단한다. 구간 공급자는 후보 GPU
+  버퍼에 필요한 범위만 차례로 업로드하며 전체 CPU 배열을 만들지 않는다. 기존 완료
+  화면은 후보가 준비될 때까지 유지한다. 후보 실패는 기존 화면을 지우지 않는다.
+  참조 관계·소스 revision이 바뀌거나 영향을 받는 다른 차트가 렌더링 중이면 전환을
+  게시하지 않는다. 명시적인 `job.cancel()`은 해당 작업과 표시 자원을 정리한다.
+- Heatmap은 렌더·GPU 행렬 셀 피킹·선택·출력을 지원한다. 피킹은 좌표 컬럼만 재공급하고
+  전역 셀 인덱스를 반환한다. 선택 표시는 해당 셀 경계 계산에 필요한 축 이웃만 읽는다.
+  오토스케일은 기존 GPU 격자 범위 계산을 재사용하고 결과를 revision별로 캐시한다.
+- `streaming_capabilities()`는 현재 Config/Series의 지원 여부와 이유를 반환한다.
+  `operations_require_completed_revision`은 조회·출력의 완료 조건이다. 미지원 조합은
+  묵살하거나 다른 스타일로 그리지 않는다. contour는 지원 범위에서 제외한다.
+  Milkyway의 스트림 선·별 연결은 보류 상태다. Precise/Sketch 및 Constellation의
+  점선은 원래 arc scan의 연산 순서를 유지하며 청크 크기로 위상을 다시 시작하지 않는다.
+
+실제 브라우저 회귀 페이지는 `crates/web/tests/streaming-contract-probe.html`이다.
+430만 점, Worker 구간 공급, 상주 차트 동시 표시, 리사이즈, 취소, fit,
+전역 인덱스 피킹과 1배·2배 출력을 검사한다.
 
 `pick_point`의 JSON/object/null payload와 rejection 전달 계약은 0.8에서도
 그대로다. 제출된 ticket은 readback 자원과 제출 시점의 `Arc` 기반

@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Figgy Wave 0 startup probe</title>
+  <style>
+    :root { color-scheme: light dark; font: 14px/1.45 system-ui, sans-serif; }
+    body { margin: 0; padding: 20px; background: Canvas; color: CanvasText; }
+    h1 { margin: 0 0 12px; font-size: 20px; letter-spacing: 0; }
+    canvas { display: block; width: 800px; height: 500px; max-width: 100%; border: 1px solid GrayText; }
+    pre { margin: 16px 0 0; padding: 12px; max-height: 38vh; overflow: auto; border: 1px solid GrayText; font: 12px/1.4 ui-monospace, monospace; }
+  </style>
+</head>
+<body>
+  <h1>Figgy Wave 0 startup probe</h1>
+  <canvas id="chart" width="800" height="500"></canvas>
+  <pre id="output">running</pre>
+  <script type="module">
+    const query = new URLSearchParams(location.search);
+    const probeCase = query.get("case") || "picker-on";
+    const runId = query.get("run") || "manual";
+    const output = document.querySelector("#output");
+    const canvas = document.querySelector("#chart");
+    const report = {
+      schemaVersion: 2,
+      runId,
+      case: probeCase,
+      status: "running",
+      userAgent: navigator.userAgent,
+      timeOrigin: performance.timeOrigin,
+      webgpuAvailable: Boolean(navigator.gpu),
+      phases: [],
+      wgpuCalls: [],
+      longTasks: [],
+      raf: null,
+      startupProfile: null,
+      pickerPrewarm: {
+        callCount: 0,
+        firstFrameFinishedAtMs: null,
+        startedAtMs: null,
+        finishedAtMs: null,
+        durationMs: null,
+        orderedAfterFirstFrame: null,
+      },
+      error: null,
+    };
+    globalThis.__figgyStartupResult = null;
+    globalThis.__figgyStartupKernel = null;
+    globalThis.__figgyStartupProgress = {
+      phase: "bootstrap",
+      state: "started",
+      atMs: performance.now(),
+    };
+
+    function setProgress(phase, state) {
+      globalThis.__figgyStartupProgress = {
+        phase,
+        state,
+        atMs: performance.now(),
+      };
+    }
+
+    let currentPhase = "bootstrap";
+    let rafRunning = true;
+    const rafTimes = [];
+    const rafLoop = (at) => {
+      rafTimes.push(at);
+      if (rafRunning) requestAnimationFrame(rafLoop);
+    };
+    requestAnimationFrame(rafLoop);
+
+    try {
+      const observer = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          report.longTasks.push({
+            name: entry.name,
+            startTimeMs: entry.startTime,
+            durationMs: entry.duration,
+          });
+        }
+      });
+      observer.observe({ type: "longtask", buffered: true });
+    } catch {
+      report.longTaskObserverUnavailable = true;
+    }
+
+    function measureSync(name, operation) {
+      currentPhase = name;
+      setProgress(name, "started");
+      const startedAtMs = performance.now();
+      const value = operation();
+      const finishedAtMs = performance.now();
+      report.phases.push({
+        name,
+        startedAtMs,
+        finishedAtMs,
+        durationMs: finishedAtMs - startedAtMs,
+      });
+      setProgress(name, "finished");
+      return value;
+    }
+
+    async function measureAsync(name, operation) {
+      currentPhase = name;
+      setProgress(name, "started");
+      const startedAtMs = performance.now();
+      const value = await operation();
+      const finishedAtMs = performance.now();
+      report.phases.push({
+        name,
+        startedAtMs,
+        finishedAtMs,
+        durationMs: finishedAtMs - startedAtMs,
+      });
+      setProgress(name, "finished");
+      return value;
+    }
+
+    function wrapSync(prototype, method, kind, describe = () => ({})) {
+      if (!prototype || typeof prototype[method] !== "function") return;
+      const original = prototype[method];
+      prototype[method] = function wrapped(...args) {
+        const startedAtMs = performance.now();
+        try {
+          return original.apply(this, args);
+        } finally {
+          const finishedAtMs = performance.now();
+          report.wgpuCalls.push({
+            kind,
+            phase: currentPhase,
+            ...describe(args),
+            startedAtMs,
+            finishedAtMs,
+            blockingMs: finishedAtMs - startedAtMs,
+          });
+        }
+      };
+    }
+
+    function wrapAsync(prototype, method, kind, describe = () => ({})) {
+      if (!prototype || typeof prototype[method] !== "function") return;
+      const original = prototype[method];
+      prototype[method] = async function wrapped(...args) {
+        const startedAtMs = performance.now();
+        try {
+          return await original.apply(this, args);
+        } finally {
+          const finishedAtMs = performance.now();
+          report.wgpuCalls.push({
+            kind,
+            phase: currentPhase,
+            ...describe(args),
+            startedAtMs,
+            finishedAtMs,
+            blockingMs: finishedAtMs - startedAtMs,
+          });
+        }
+      };
+    }
+
+    const descriptor = ([value]) => ({
+      label: value?.label ?? null,
+      vertexEntryPoint: value?.vertex?.entryPoint ?? null,
+      fragmentEntryPoint: value?.fragment?.entryPoint ?? null,
+      computeEntryPoint: value?.compute?.entryPoint ?? null,
+    });
+    wrapAsync(globalThis.GPU?.prototype, "requestAdapter", "requestAdapter");
+    wrapAsync(globalThis.GPUAdapter?.prototype, "requestDevice", "requestDevice");
+    wrapSync(globalThis.GPUCanvasContext?.prototype, "configure", "configure");
+    wrapSync(globalThis.GPUDevice?.prototype, "createShaderModule", "createShaderModule", ([value]) => ({
+      label: value?.label ?? null,
+    }));
+    wrapSync(globalThis.GPUDevice?.prototype, "createRenderPipeline", "createRenderPipeline", descriptor);
+    wrapSync(globalThis.GPUDevice?.prototype, "createComputePipeline", "createComputePipeline", descriptor);
+    wrapAsync(globalThis.GPUDevice?.prototype, "createRenderPipelineAsync", "createRenderPipelineAsync", descriptor);
+    wrapAsync(globalThis.GPUDevice?.prototype, "createComputePipelineAsync", "createComputePipelineAsync", descriptor);
+    wrapSync(globalThis.GPUQueue?.prototype, "submit", "submit", ([buffers]) => ({
+      commandBufferCount: buffers?.length ?? null,
+    }));
+    wrapAsync(globalThis.GPUQueue?.prototype, "onSubmittedWorkDone", "onSubmittedWorkDone");
+
+    function setupIsolatedSeries(kernel, currentCase) {
+      const xs = new Float32Array([0, 1, 2, 3, 4]);
+      const ys = new Float32Array([0, 1, 0, 1, 0]);
+      const err = new Float32Array([0.1, 0.1, 0.1, 0.1, 0.1]);
+      kernel.register_column_f32("iso_x", xs);
+      kernel.register_column_f32("iso_y", ys);
+      const color = { r: 0.1, g: 0.35, b: 0.85, a: 1 };
+      const scatter = {
+        point_color: color,
+        point_shape: "CircleFilled",
+        point_size: 6,
+      };
+      const line = {
+        line_style: "Solid",
+        line_color: color,
+        line_width: 2,
+      };
+      let renderType;
+      if (currentCase === "line-only") {
+        renderType = { Line: { line } };
+      } else if (currentCase === "scatter-only") {
+        renderType = { Scatter: { scatter } };
+      } else {
+        kernel.register_column_f32("iso_e", err);
+        renderType = {
+          ScatterErrorbarY: {
+            scatter,
+            err_y: { Symmetric: { column: "iso_e" } },
+            err_style: {
+              error_bar_color: color,
+              error_bar_width: 1,
+              error_bar_cap_size: 4,
+              cap_width: 1,
+            },
+          },
+        };
+      }
+      kernel.set_series(JSON.stringify([{
+        series_id: "iso",
+        label: null,
+        x_column: "iso_x",
+        y_column: "iso_y",
+        render_type: renderType,
+      }]));
+    }
+
+    const nextFrame = (name) => new Promise((resolve) => {
+      setProgress(name, "waiting");
+      requestAnimationFrame((at) => {
+        setProgress(name, "finished");
+        resolve(at);
+      });
+    });
+
+    const quantile = (values, q) => {
+      if (values.length === 0) return null;
+      const ordered = [...values].sort((a, b) => a - b);
+      return ordered[Math.min(ordered.length - 1, Math.ceil(q * ordered.length) - 1)];
+    };
+
+    function externalStartupProfile(phase, events) {
+      const open = new Map();
+      const stages = [];
+      for (const event of events) {
+        const key = `${event.scope}\u0000${event.stage}`;
+        if (event.phase === "started") {
+          const starts = open.get(key) ?? [];
+          starts.push(event.atMs);
+          open.set(key, starts);
+        } else if (event.phase === "finished") {
+          const startedAtMs = open.get(key)?.pop();
+          if (Number.isFinite(startedAtMs)) {
+            stages.push({
+              scope: event.scope,
+              stage: event.stage,
+              startedAtMs,
+              finishedAtMs: event.atMs,
+              durationMs: event.atMs - startedAtMs,
+            });
+          }
+        }
+      }
+      return {
+        schemaVersion: 2,
+        source: "FiggyChart.create_with_progress",
+        clock: "performance.now",
+        startedAtMs: phase.startedAtMs,
+        finishedAtMs: phase.finishedAtMs,
+        durationMs: phase.durationMs,
+        events,
+        stages,
+      };
+    }
+
+    async function createKernel(module) {
+      const events = [];
+      const kernel = await measureAsync("raw-create", () => (
+        module.FiggyChart.create_with_progress(canvas, (event) => {
+          events.push({
+            scope: event.scope,
+            stage: event.stage,
+            phase: event.phase,
+            atMs: performance.now(),
+          });
+        })
+      ));
+      const phase = report.phases.at(-1);
+      report.startupProfile = externalStartupProfile(phase, events);
+      report.pickerPrewarm.firstFrameFinishedAtMs = events.find((event) => (
+        event.scope === "web.create"
+          && event.stage === "first frame"
+          && event.phase === "finished"
+      ))?.atMs ?? null;
+      globalThis.__figgyStartupKernel = kernel;
+      return kernel;
+    }
+
+    async function prewarmPicker(kernel) {
+      report.pickerPrewarm.callCount += 1;
+      await measureAsync("picker-prewarm", () => kernel.prewarm_gpu_picking());
+      const phase = report.phases.at(-1);
+      report.pickerPrewarm.startedAtMs = phase.startedAtMs;
+      report.pickerPrewarm.finishedAtMs = phase.finishedAtMs;
+      report.pickerPrewarm.durationMs = phase.durationMs;
+      report.pickerPrewarm.orderedAfterFirstFrame = Number.isFinite(
+        report.pickerPrewarm.firstFrameFinishedAtMs,
+      ) && phase.startedAtMs >= report.pickerPrewarm.firstFrameFinishedAtMs;
+      if (!report.pickerPrewarm.orderedAfterFirstFrame) {
+        throw new Error("picker prewarm started before first-frame finished progress");
+      }
+    }
+
+    try {
+      const module = await measureAsync("module-import", () => import("./candidate-pkg/figgy.js"));
+      await measureAsync("wasm-init", () => module.default());
+
+      if (probeCase === "raf-only") {
+        report.startupProfile = {
+          schemaVersion: 2,
+          source: "external-baseline",
+          clock: "performance.now",
+          durationMs: 0,
+          events: [],
+          stages: [],
+        };
+      } else if (probeCase === "webgpu-clear") {
+        const adapter = await measureAsync("baseline-request-adapter", () => (
+          navigator.gpu.requestAdapter()
+        ));
+        if (!adapter) throw new Error("WebGPU adapter unavailable");
+        const device = await measureAsync("baseline-request-device", () => (
+          adapter.requestDevice()
+        ));
+        const context = canvas.getContext("webgpu");
+        const format = navigator.gpu.getPreferredCanvasFormat();
+        measureSync("baseline-configure", () => context.configure({
+          device,
+          format,
+          alphaMode: "premultiplied",
+        }));
+        measureSync("baseline-clear-submit", () => {
+          const encoder = device.createCommandEncoder({ label: "figgy startup baseline encoder" });
+          const pass = encoder.beginRenderPass({
+            label: "figgy startup baseline clear pass",
+            colorAttachments: [{
+              view: context.getCurrentTexture().createView(),
+              clearValue: { r: 0.08, g: 0.1, b: 0.14, a: 1 },
+              loadOp: "clear",
+              storeOp: "store",
+            }],
+          });
+          pass.end();
+          device.queue.submit([encoder.finish()]);
+        });
+        report.startupProfile = {
+          schemaVersion: 2,
+          source: "external-baseline",
+          clock: "performance.now",
+          durationMs: 0,
+          events: [],
+          stages: [],
+        };
+      } else if (probeCase === "picker-on" || probeCase === "picker-off") {
+        const kernel = await createKernel(module);
+        if (probeCase === "picker-on") {
+          await prewarmPicker(kernel);
+        }
+      } else if (
+        probeCase === "chart-empty"
+        || probeCase === "chart-axis-only"
+        || probeCase === "chart-demo"
+        || probeCase === "chart-demo-pick"
+        || probeCase === "line-only"
+        || probeCase === "scatter-only"
+        || probeCase === "errorbar-only"
+      ) {
+        const kernel = await createKernel(module);
+        if (probeCase === "chart-demo" || probeCase === "chart-demo-pick") {
+          measureSync("workload-setup", () => kernel.load_demo());
+        } else if (
+          probeCase === "line-only"
+          || probeCase === "scatter-only"
+          || probeCase === "errorbar-only"
+        ) {
+          measureSync("workload-setup", () => setupIsolatedSeries(kernel, probeCase));
+          if (typeof kernel.wait_submitted_work === "function") {
+            await measureAsync("post-setup-gpu-wait", () => kernel.wait_submitted_work());
+          }
+        }
+        await measureAsync("first-frame-ready", () => kernel.first_frame_ready());
+        if (
+          (probeCase === "line-only"
+            || probeCase === "scatter-only"
+            || probeCase === "errorbar-only")
+          && typeof kernel.ensure_extent_engine === "function"
+        ) {
+          await measureAsync("extent-engine-ensure", () => kernel.ensure_extent_engine());
+        }
+        await measureAsync("first-frame-raf", () => nextFrame("first-frame-raf"));
+        if (probeCase === "chart-demo-pick") {
+          await measureAsync("first-pick", () => (
+            kernel.pick_point(canvas.width / 2, canvas.height / 2, 1000)
+          ));
+        }
+        measureSync("followup-frame-call", () => kernel.frame());
+        await measureAsync("followup-frame-raf", () => nextFrame("followup-frame-raf"));
+      } else {
+        throw new Error(`unknown case: ${probeCase}`);
+      }
+
+      for (let index = 1; index <= 6; index += 1) {
+        const name = `settle-raf-${index}`;
+        await measureAsync(name, () => nextFrame(name));
+      }
+      report.status = "ok";
+    } catch (error) {
+      report.status = "error";
+      report.error = {
+        name: error?.name ?? "Error",
+        message: error?.message ?? String(error),
+        stack: error?.stack ?? null,
+      };
+    } finally {
+      rafRunning = false;
+      const gaps = rafTimes.slice(1).map((at, index) => at - rafTimes[index]);
+      report.raf = {
+        samples: gaps.length,
+        maxGapMs: gaps.length ? Math.max(...gaps) : null,
+        p50GapMs: quantile(gaps, 0.5),
+        p95GapMs: quantile(gaps, 0.95),
+        over20Ms: gaps.filter((gap) => gap > 20).length,
+        over50Ms: gaps.filter((gap) => gap > 50).length,
+        gapsMs: gaps,
+      };
+      report.finishedAtMs = performance.now();
+      output.textContent = JSON.stringify(report, null, 2);
+      globalThis.__figgyStartupResult = report;
+      setProgress("complete", report.status);
+    }
+  </script>
+</body>
+</html>

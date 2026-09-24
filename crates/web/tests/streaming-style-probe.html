@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Figgy streamed style export parity</title>
+  <style>
+    :root { font-family: system-ui, sans-serif; color: #182438; background: #f5f7fb; }
+    body { margin: 24px; }
+    h1 { font-size: 24px; }
+    p { max-width: 1000px; line-height: 1.5; }
+    button, input { font: inherit; }
+    button { padding: 8px 12px; }
+    .toolbar, #charts { display: flex; gap: 20px; flex-wrap: wrap; align-items: center; }
+    #charts { margin: 20px 0; align-items: flex-start; }
+    .card { padding: 12px; background: white; border: 1px solid #d6deeb; border-radius: 8px; }
+    h2 { font-size: 16px; margin: 0 0 8px; }
+    figgy-chart { display: block; width: 320px; height: 240px; }
+    #status { font-weight: 600; }
+    #checks { padding-left: 24px; line-height: 1.6; }
+    [data-state="PASS"] { color: #116632; }
+    [data-state="FAIL"] { color: #b5162a; font-weight: 600; }
+    [data-state="RUNNING"] { color: #175fc4; }
+    pre { padding: 16px; background: #111c2e; color: #dfebff; white-space: pre-wrap; overflow-wrap: anywhere; }
+    #downloads a { margin-right: 16px; }
+    .note { color: #526178; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>Streamed style export parity</h1>
+  <p>This real-browser test compares every decoded PNG RGBA byte from resident and streamed
+    <code>export_png(1)</code>. Both charts use the same 320 × 240 document, CSS size, series IDs,
+    and 19-point fixture (including NaN). Chunk limits are 1, 3, and 7. There is no pixel tolerance.
+    The probe stops at the first failure.</p>
+  <p>Cases: Sketch scatter and asymmetric XY errorbars; Milkyway scatter and asymmetric XY errorbars;
+    Constellation solid ScatterLine. Mapped styles and global point overrides are configured and
+    independently checked to be ignored in these styled modes. The separate canonical-arc matrix uses
+    Precise dashed and Sketch solid lines, 513 points across 256-lane scan boundaries, and bounded
+    I/O chunks of 7, 113, and 257. Its Float64 case uses inverted/log axes and a large x offset.</p>
+  <div class="toolbar">
+    <button id="run" type="button">Run exact style parity</button>
+    <label><input id="include-f64" type="checkbox" checked> Also test Float64 coordinate/error columns</label>
+    <label>Cases <select id="case-filter"><option value="all">Existing point styles</option><option value="errorbar">Sketch XY errorbars only</option><option value="arc">Canonical Precise/Sketch arcs only</option></select></label>
+    <label>Chunks <select id="chunk-filter"><option value="small">Bounded chunks (per matrix)</option><option value="whole">Whole fixture (unsplit)</option></select></label>
+    <label><input id="include-nan" type="checkbox" checked> Include NaN row</label>
+    <span id="status" role="status">Ready — requires WebGPU</span>
+  </div>
+  <p class="note">Serve <code>crates/web</code> over HTTP with the current wasm package built.
+    A one-byte resident working-set limit and metadata-only range sources force actual streaming.
+    Renderer progress, bounded reads, admission, capabilities, and exact mismatch details are reported below.
+    The probe uses the web renderer's configured sample count; it does not claim an MSAA matrix.</p>
+  <div id="charts">
+    <section class="card"><h2>Resident reference</h2><div id="resident-mount"></div></section>
+    <section class="card"><h2>Streamed candidate</h2><div id="stream-mount"></div></section>
+  </div>
+  <div id="downloads"></div>
+  <ol id="checks"></ol>
+  <pre id="result">{"status":"ready"}</pre>
+  <script type="module">
+    const WIDTH = 320, HEIGHT = 240;
+    let N = 19;
+    let CHUNKS = [1, 3, 7];
+    const COLUMN_IDS = ["x", "y", "ex_lo", "ex_hi", "ey_lo", "ey_hi", "index"];
+    const CASES = [
+      { name: "Sketch scatter", mode: "sketch", kind: "Scatter" },
+      { name: "Sketch asymmetric XY errorbars", mode: "sketch", kind: "ScatterErrorbarXY" },
+      { name: "Milkyway scatter", mode: "milkyway", kind: "Scatter" },
+      { name: "Milkyway asymmetric XY errorbars", mode: "milkyway", kind: "ScatterErrorbarXY" },
+      { name: "Constellation solid ScatterLine", mode: "constellation", kind: "ScatterLine" },
+    ];
+    const ARC_CASES = [
+      { name: "Precise dashed canonical Line", mode: "precise", kind: "Line", lineStyle: "Dash" },
+      { name: "Sketch solid canonical Line", mode: "sketch", kind: "Line", lineStyle: "Solid" },
+    ];
+    const runButton = document.querySelector("#run");
+    const includeF64 = document.querySelector("#include-f64");
+    const statusElement = document.querySelector("#status");
+    const resultElement = document.querySelector("#result");
+    const checks = document.querySelector("#checks");
+    let report = { status: "ready" }, running = false, resident = null, streamed = null;
+    let activeCase = null;
+    const downloadUrls = [];
+    const clone = (value) => JSON.parse(JSON.stringify(value));
+    const assert = (condition, message) => { if (!condition) throw new Error(message); };
+    const describe = (error) => error?.stack ?? String(error);
+    const color = (r, g, b, a = 1) => ({ r, g, b, a });
+
+    function publish() {
+      window.__figgyStreamingStyleResult = report;
+      resultElement.textContent = JSON.stringify(report, null, 2);
+    }
+    function recordError(kind, error) {
+      if (!running) return;
+      report.errors.push({ kind, case: activeCase?.name ?? null, message: describe(error) });
+      publish();
+    }
+    window.addEventListener("error", (event) => recordError("window", event.error ?? event.message));
+    window.addEventListener("unhandledrejection", (event) => recordError("unhandledrejection", event.reason));
+
+    async function watchdog(promise, label, timeoutMs = 120000) {
+      let timer;
+      try {
+        return await Promise.race([promise, new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs} ms`)), timeoutMs);
+        })]);
+      } finally { clearTimeout(timer); }
+    }
+    async function idle(chart) {
+      await watchdog((async () => {
+        do { await new Promise((resolve) => setTimeout(resolve, 20)); } while (chart.busy);
+      })(), "chart readiness/prewarm");
+    }
+    async function frames(count = 3) {
+      for (let i = 0; i < count; i++) await new Promise(requestAnimationFrame);
+    }
+    async function cancelledResize(chart, provider, entry) {
+      const before = dimensions(chart), coreBefore = chart.stream_status();
+      const calls = provider.audit.calls, errorsBefore = report.errors.length;
+      const resize = async (width, height) => {
+        chart.style.width = `${width}px`; chart.style.height = `${height}px`;
+        await watchdog((async () => {
+          for (;;) {
+            const dpr = window.devicePixelRatio || 1;
+            if (chart.canvas.width === Math.max(1, Math.round(width * dpr))
+                && chart.canvas.height === Math.max(1, Math.round(height * dpr))) break;
+            await frames(1);
+          }
+        })(), "cancelled chart physical resize");
+        await frames();
+      };
+      let resized;
+      try {
+        await resize(WIDTH + 17, HEIGHT + 11);
+        resized = dimensions(chart);
+        assert(resized.canvasWidth !== before.canvasWidth && resized.canvasHeight !== before.canvasHeight,
+          "Cancelled chart did not receive a new physical target size");
+      } finally {
+        await resize(WIDTH, HEIGHT);
+      }
+      const after = dimensions(chart), coreAfter = chart.stream_status(), drained = usage(chart);
+      const result = { before, resized, after, coreBefore, coreAfter, drained,
+        sourceCalls: provider.audit.calls - calls, newErrors: report.errors.length - errorsBefore };
+      entry.cancelledResize = result;
+      assert(result.sourceCalls === 0, "Cancelled chart resize read its released original source");
+      assert(coreAfter.status !== "active" && drained.activeCharts === 0 && drained.inFlightChunks === 0
+        && drained.reservedGpuBytes === 0, "Cancelled chart resize restarted work or leaked reservations");
+      assert(result.newErrors === 0, `Cancelled mounted chart resize emitted ${result.newErrors} errors`);
+      return result;
+    }
+    async function mount(kind) {
+      const chart = document.createElement("figgy-chart");
+      chart.id = `${kind}-host`;
+      chart.addEventListener("figgy-error", (event) => recordError(kind, event.detail?.error ?? event.detail));
+      document.querySelector(`#${kind}-mount`).replaceChildren(chart);
+      await watchdog(chart.ready, `${kind} initialization`);
+      await idle(chart);
+      return chart;
+    }
+    function fixture(encoding, arc) {
+      return new Map(COLUMN_IDS.map((id) => {
+        const Type = encoding === "f64" && id !== "index" ? Float64Array : Float32Array;
+        return [id, Type.from({ length: N }, (_, i) => {
+          switch (id) {
+            case "x": return arc ? (encoding === "f64" ? 1e12 : 0) + i / (N - 1) : 0.08 + (i % 9) * 0.1;
+            case "y":
+              if (i === (arc ? 255 : 11) && document.querySelector("#include-nan").checked) return NaN;
+              return arc ? (encoding === "f64" && i === 256 ? -0.5 : 0.5 + Math.sin(i * 0.031) * 0.37)
+                : 0.11 + ((i * 7) % 13) * 0.055;
+            case "ex_lo": return 0.03;
+            case "ex_hi": return 0.06;
+            case "ey_lo": return 0.045;
+            case "ey_hi": return 0.025;
+            default: return 0;
+          }
+        })];
+      }));
+    }
+    function drawStyle(mode) {
+      if (mode === "precise") return { mode };
+      if (mode === "sketch") return { mode, amplitude_px: 2.4, wavelength_px: 43, seed: 73 };
+      if (mode === "milkyway") return { mode, seed: 291, planet_rim: 0.67 };
+      return { mode, star_opacity: 0.79, line_opacity: 0.37 };
+    }
+    function seriesFor(test, mapped = true) {
+      return ["front", "back"].map((series_id, i) => {
+        const tint = i === 0 ? color(0.9, 0.2, 0.1, 0.65) : color(0.1, 0.4, 0.9, 0.55);
+        const scatter = { point_color: tint, point_shape: "DiamondFilled", point_size: 9 };
+        const err_style = { error_bar_color: tint, error_bar_width: 2.5, error_bar_cap_size: 8, cap_width: 2 };
+        if (mapped) {
+          Object.assign(scatter, {
+            point_style_index_column: "index",
+            point_style_table: [{ point_color: color(0, 1, 0), point_size: 23, point_shape: "SquareFilled" }],
+            point_style_overrides: [{ index: 7, point_size: 0 }, { index: 15, point_size: 31 }],
+          });
+          Object.assign(err_style, {
+            error_bar_style_index_column: "index",
+            error_bar_style_table: [{ error_bar_color: color(1, 0, 1), error_bar_width: 9,
+              error_bar_cap_size: 23, cap_width: 7 }],
+            error_bar_style_overrides: [{ index: 12, error_bar_width: 0 }],
+          });
+        }
+        const style = test.kind === "Line" ? {} : { scatter };
+        if (test.kind === "ScatterLine" || test.kind === "Line") {
+          style.line = { line_color: tint, line_width: 2.5, line_style: test.lineStyle ?? "Solid" };
+        } else if (test.kind === "ScatterErrorbarXY") {
+          Object.assign(style, { err_style,
+            err_x: { Asymmetric: { lower: "ex_lo", upper: "ex_hi" } },
+            err_y: { Asymmetric: { lower: "ey_lo", upper: "ey_hi" } } });
+        }
+        return { series_id, label: null, x_column: "x", y_column: "y", render_type: { [test.kind]: style } };
+      });
+    }
+    function configure(chart, config, series) {
+      chart.set_series(JSON.stringify(series));
+      // Set the exact same complete document after any legend synchronization.
+      chart.set_config(JSON.stringify(config));
+    }
+    function dimensions(chart) {
+      const bounds = chart.getBoundingClientRect();
+      return { cssWidth: bounds.width, cssHeight: bounds.height,
+        canvasWidth: chart.canvas.width, canvasHeight: chart.canvas.height };
+    }
+    function usage(chart) {
+      const value = chart.streaming_usage();
+      try {
+        return { activeCharts: value.active_charts, inFlightChunks: value.in_flight_chunks,
+          reservedGpuBytes: value.reserved_gpu_bytes };
+      } finally { value.free(); }
+    }
+    function providerFor(values, chunk) {
+      const columns = Array.from(values, ([id, array]) => ({ id, revision: 1, length: array.length,
+        encoding: array instanceof Float64Array ? "f64" : "f32" }));
+      const audit = { calls: 0, renderCalls: 0, exportCalls: 0, maxRangeValues: 0,
+        maxOffset: 0, byColumn: {}, firstRequests: [], violations: [] };
+      let phase = "render";
+      return { columns, audit, exporting() { phase = "export"; },
+        async readRange(range) {
+          const array = values.get(range.id);
+          const encoding = array instanceof Float64Array ? "f64" : "f32";
+          const valid = array && range.revision === 1 && range.encoding === encoding
+            && Number.isSafeInteger(range.offset) && Number.isSafeInteger(range.length)
+            && range.offset >= 0 && range.length > 0 && range.offset + range.length <= N
+            && range.length <= chunk + 1 && (range.length < N || chunk >= N);
+          if (!valid) {
+            const message = `Invalid/unbounded ${phase} range: ${JSON.stringify(range)} (chunk ${chunk})`;
+            audit.violations.push(message);
+            throw new Error(message);
+          }
+          audit.calls++;
+          audit[`${phase}Calls`]++;
+          audit.maxRangeValues = Math.max(audit.maxRangeValues, range.length);
+          audit.maxOffset = Math.max(audit.maxOffset, range.offset);
+          audit.byColumn[range.id] = (audit.byColumn[range.id] ?? 0) + 1;
+          if (audit.firstRequests.length < 12) audit.firstRequests.push({ phase, ...range });
+          // Only the requested original values cross the facade boundary.
+          return array.slice(range.offset, range.offset + range.length);
+        } };
+    }
+    async function decode(bytes) {
+      assert(bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71, "Export is not PNG");
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+      try {
+        assert(bitmap.width === WIDTH && bitmap.height === HEIGHT,
+          `Expected document ${WIDTH}×${HEIGHT}, got ${bitmap.width}×${bitmap.height}`);
+        const canvas = document.createElement("canvas");
+        canvas.width = bitmap.width; canvas.height = bitmap.height;
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        context.drawImage(bitmap, 0, 0);
+        return context.getImageData(0, 0, WIDTH, HEIGHT).data;
+      } finally { bitmap.close(); }
+    }
+    function compare(expected, actual) {
+      assert(expected.length === actual.length, "Decoded pixel byte lengths differ");
+      let differingBytes = 0, differingPixels = 0, maxChannelDelta = 0, first = null;
+      for (let pixel = 0; pixel < expected.length / 4; pixel++) {
+        let differs = false;
+        for (let channel = 0; channel < 4; channel++) {
+          const offset = pixel * 4 + channel, delta = Math.abs(expected[offset] - actual[offset]);
+          if (delta !== 0) { differingBytes++; differs = true; maxChannelDelta = Math.max(maxChannelDelta, delta); }
+        }
+        if (differs) {
+          differingPixels++;
+          first ??= { x: pixel % WIDTH, y: Math.floor(pixel / WIDTH),
+            resident: Array.from(expected.slice(pixel * 4, pixel * 4 + 4)),
+            candidate: Array.from(actual.slice(pixel * 4, pixel * 4 + 4)) };
+        }
+      }
+      return { equal: differingBytes === 0, differingPixels, differingBytes, maxChannelDelta, first };
+    }
+    function summary(pixels, png) {
+      let hash = 0x811c9dc5, coloredPixels = 0;
+      for (const byte of pixels) hash = Math.imul(hash ^ byte, 0x01000193) >>> 0;
+      for (let i = 0; i < pixels.length; i += 4) {
+        if (pixels[i + 3] > 0 && Math.max(pixels[i], pixels[i + 1], pixels[i + 2])
+          - Math.min(pixels[i], pixels[i + 1], pixels[i + 2]) > 30) coloredPixels++;
+      }
+      return { width: WIDTH, height: HEIGHT, pngBytes: png.length, rgbaBytes: pixels.length,
+        rgbaFnv1a: hash.toString(16).padStart(8, "0"), coloredPixels };
+    }
+    function mismatchDownloads(name, expected, actual) {
+      if (downloadUrls.length !== 0) return;
+      for (const [label, bytes] of [["resident", expected], ["streamed", actual]]) {
+        const url = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+        downloadUrls.push(url);
+        const link = document.createElement("a");
+        link.href = url; link.download = `${name.replace(/[^a-z0-9]+/gi, "-")}-${label}.png`;
+        link.textContent = `Download first mismatch: ${label} PNG`;
+        document.querySelector("#downloads").append(link);
+      }
+    }
+
+    runButton.addEventListener("click", async () => {
+      if (running) return;
+      running = true; runButton.disabled = true; includeF64.disabled = true;
+      for (const url of downloadUrls.splice(0)) URL.revokeObjectURL(url);
+      document.querySelector("#downloads").replaceChildren();
+      checks.replaceChildren();
+      resident?.remove(); streamed?.remove(); resident = null; streamed = null;
+      const encodings = includeF64.checked ? ["f32", "f64"] : ["f32"];
+      const caseFilter = document.querySelector("#case-filter").value;
+      const arc = caseFilter === "arc";
+      N = arc ? 513 : 19;
+      CHUNKS = document.querySelector("#chunk-filter").value === "whole" ? [N] : arc ? [7, 113, 257] : [1, 3, 7];
+      const cases = arc ? ARC_CASES : caseFilter === "errorbar"
+        ? CASES.filter((test) => test.mode === "sketch" && test.kind === "ScatterErrorbarXY") : CASES;
+      report = { status: "RUNNING", startedAt: new Date().toISOString(),
+        fixture: { points: N, canonicalArc: arc, nanYIndex: document.querySelector("#include-nan").checked ? (arc ? 255 : 11) : null,
+          invalidLogYIndex: arc && encodings.includes("f64") ? 256 : null, seriesIds: ["front", "back"], encodings,
+          float64Note: "Float64 coordinates/errors retain their nonzero hi/lo residuals; style indices remain Float32." },
+        document: { width: WIDTH, height: HEIGHT, exportScale: 1 },
+        chunkLimits: CHUNKS, residentWorkingSetLimitBytes: 1,
+        comparison: "Exact decoded RGBA bytes; no tolerance or compression-byte comparison",
+        plannedCases: cases.length * CHUNKS.length * encodings.length,
+        browser: navigator.userAgent, devicePixelRatio: window.devicePixelRatio,
+        baselines: [], cases: [], errors: [] };
+      const started = performance.now();
+      publish();
+      try {
+        assert(location.protocol !== "file:", "Serve the probe over HTTP, not file://");
+        assert(navigator.gpu, "This browser does not expose WebGPU");
+        await import("../figgy-chart.js");
+        let baseConfig = null;
+        for (const encoding of encodings) {
+          resident = await mount("resident");
+          const values = fixture(encoding, arc);
+          for (const [id, array] of values) {
+            if (array instanceof Float64Array) resident.register_column_f64(id, array);
+            else resident.register_column_f32(id, array);
+          }
+          baseConfig ??= JSON.parse(resident.get_config());
+          baseConfig.chart_area = { x: 0, y: 0, width: WIDTH, height: HEIGHT };
+          for (const axis of ["bottom_x", "top_x", "left_y", "right_y"]) {
+            Object.assign(baseConfig[axis], { min: 0, max: 1, scale: "Linear", inverted: false });
+          }
+          if (arc && encoding === "f64") {
+            for (const axis of ["bottom_x", "top_x"]) {
+              Object.assign(baseConfig[axis], { min: 1e12, max: 1e12 + 1, inverted: true });
+            }
+            for (const axis of ["left_y", "right_y"]) {
+              Object.assign(baseConfig[axis], { min: 0.1, max: 1, scale: "Logarithmic", inverted: true });
+            }
+          }
+          for (const test of cases) {
+            const config = { ...clone(baseConfig), draw_style: drawStyle(test.mode) };
+            const declarations = seriesFor(test);
+            statusElement.textContent = `Reference — ${test.name}, ${encoding}`;
+            configure(resident, config, declarations);
+            const referencePng = await watchdog(resident.export_png(1), "resident mapped export");
+            const reference = await decode(referencePng);
+            const baseline = { name: `${test.name}, ${encoding}`, ...summary(reference, referencePng) };
+            report.baselines.push(baseline);
+            assert(baseline.coloredPixels > 10, `${baseline.name}: reference contains no visible colored data`);
+            configure(resident, config, seriesFor(test, false));
+            const plainPng = await watchdog(resident.export_png(1), "resident unmapped export");
+            baseline.mappedStyleIgnored = compare(reference, await decode(plainPng));
+            assert(baseline.mappedStyleIgnored.equal,
+              `${baseline.name}: styled resident unexpectedly applies mapped styles: ${JSON.stringify(baseline.mappedStyleIgnored)}`);
+            configure(resident, config, declarations);
+            for (const chunk of CHUNKS) {
+              const entry = { name: `${test.name}, ${encoding}, chunk ${chunk}`, status: "RUNNING", chunk,
+                encoding, mode: test.mode, renderType: test.kind, progress: { events: 0, partialEvents: 0, last: null } };
+              report.cases.push(entry); activeCase = entry;
+              const row = document.createElement("li");
+              row.dataset.state = "RUNNING"; row.textContent = `RUNNING — ${entry.name}`; checks.append(row);
+              statusElement.textContent = entry.name; publish();
+              const caseStarted = performance.now(), errorsBefore = report.errors.length;
+              let job = null;
+              try {
+                // A fresh element prevents completed-cursor reuse from hiding a chunk-size case.
+                streamed = await mount("stream");
+                streamed.configure_streaming(1, 2, 8, Math.max(4096, (chunk + 1) * 16), 64 * 1024 * 1024);
+                streamed.configure_auto_residency(1024 * 1024 * 1024, 1);
+                const provider = providerFor(values, chunk);
+                entry.source = provider.audit;
+                entry.admission = streamed.inspect_column_admission(provider.columns);
+                assert(!entry.admission.admissible && entry.admission.reason === "working_set_limit",
+                  `Tiny resident ceiling did not reject admission: ${JSON.stringify(entry.admission)}`);
+                streamed.register_streaming_column_sources(provider.columns.map((c) => c.id),
+                  provider.columns.map((c) => c.revision), provider.columns.map((c) => c.length),
+                  provider.columns.map((c) => c.encoding));
+                configure(streamed, config, declarations);
+                assert(provider.audit.calls === 0, "Metadata registration/configuration read source values");
+                entry.capabilities = streamed.streaming_capabilities();
+                assert(entry.capabilities.render_supported && entry.capabilities.stream_export,
+                  `Enabled style reported unsupported: ${JSON.stringify(entry.capabilities)}`);
+                assert(resident.get_config() === streamed.get_config(), "Resident and stream document Config differ");
+                assert(resident.get_series() === streamed.get_series(), "Resident and stream series declarations differ");
+                entry.dimensions = { resident: dimensions(resident), streamed: dimensions(streamed) };
+                // Match the facade's CSS-to-physical rounding, without relaxing pixel comparison.
+                const dpr = window.devicePixelRatio || 1;
+                entry.dimensions.expectedCanvas = {
+                  width: Math.max(1, Math.round(WIDTH * dpr)),
+                  height: Math.max(1, Math.round(HEIGHT * dpr)),
+                };
+                assert(JSON.stringify(entry.dimensions.resident) === JSON.stringify(entry.dimensions.streamed)
+                  && Math.round(entry.dimensions.resident.cssWidth) === WIDTH
+                  && Math.round(entry.dimensions.resident.cssHeight) === HEIGHT
+                  && entry.dimensions.resident.canvasWidth === entry.dimensions.expectedCanvas.width
+                  && entry.dimensions.resident.canvasHeight === entry.dimensions.expectedCanvas.height,
+                  `Chart CSS/canvas sizes differ: ${JSON.stringify(entry.dimensions)}`);
+                job = streamed.render_chart({ columns: provider.columns, readRange: provider.readRange,
+                  maxPrimitivesPerChunk: chunk, maxFrameTimeMs: 8, stallTimeoutMs: 60000,
+                  onProgress(progress) {
+                    entry.progress.events++;
+                    if (progress.submittedPrimitives > 0 && progress.submittedPrimitives < progress.totalPrimitives) {
+                      entry.progress.partialEvents++;
+                    }
+                    entry.progress.last = { ...progress };
+                  } });
+                entry.completed = await watchdog(job.done, "actual streamed rendering");
+                entry.coreBeforeExport = streamed.stream_status();
+                assert(entry.completed.status === "complete" && entry.coreBeforeExport.status === "complete"
+                  && entry.coreBeforeExport.job_id !== null && entry.coreBeforeExport.total_primitives > chunk
+                  && entry.coreBeforeExport.submitted_primitives === entry.coreBeforeExport.total_primitives
+                  && provider.audit.renderCalls > 0 && entry.progress.partialEvents > 0,
+                  `Not a completed multi-chunk stream: ${JSON.stringify(entry.coreBeforeExport)}`);
+                provider.exporting();
+                entry.usageBeforeExport = usage(streamed);
+                const actualPng = await watchdog(streamed.export_png(1), "streamed PNG replay");
+                const actual = await decode(actualPng);
+                entry.image = summary(actual, actualPng);
+                entry.comparison = compare(reference, actual);
+                entry.coreAfterExport = streamed.stream_status();
+                entry.usageAfterExport = usage(streamed);
+                assert(provider.audit.exportCalls > 0 && (provider.audit.maxOffset > chunk || chunk >= N)
+                  && provider.audit.violations.length === 0, "Export did not replay bounded original source ranges");
+                assert(entry.coreAfterExport.job_id === entry.coreBeforeExport.job_id
+                  && entry.coreAfterExport.submitted_primitives === entry.coreBeforeExport.submitted_primitives,
+                  "Export changed the completed screen job/cursor");
+                assert(entry.usageAfterExport.activeCharts === entry.usageBeforeExport.activeCharts
+                  && entry.usageAfterExport.inFlightChunks === 0
+                  && entry.usageAfterExport.reservedGpuBytes === 0, "Completed export left stream reservations live");
+                if (!entry.comparison.equal) mismatchDownloads(entry.name, referencePng, actualPng);
+                assert(entry.comparison.equal, `Exact PNG pixel mismatch: ${JSON.stringify(entry.comparison)}`);
+                await watchdog(job.cancel(), "completed stream cleanup");
+                entry.usageAfterCancel = usage(streamed);
+                assert(entry.usageAfterCancel.activeCharts === 0 && entry.usageAfterCancel.inFlightChunks === 0
+                  && entry.usageAfterCancel.reservedGpuBytes === 0, "Cancellation left stream reservations live");
+                entry.coreAfterCancel = streamed.stream_status();
+                await frames();
+                entry.postCancelIdleFrames = 3;
+                await cancelledResize(streamed, provider, entry);
+                assert(report.errors.length === errorsBefore, "Browser/figgy errors occurred; inspect report.errors");
+                entry.status = row.dataset.state = "PASS";
+                row.textContent = `PASS — ${entry.name}`;
+              } catch (error) {
+                entry.status = row.dataset.state = "FAIL"; entry.error = describe(error);
+                row.textContent = `FAIL — ${entry.name}: ${error.message ?? error}`;
+                try { if (job && !streamed.busy) await watchdog(job.cancel(), "failure cleanup", 30000); }
+                catch (cleanupError) { recordError("cleanup", cleanupError); }
+                throw error;
+              } finally {
+                entry.elapsedMs = Math.round(performance.now() - caseStarted); activeCase = null; publish();
+              }
+            }
+          }
+        }
+        const failures = report.cases.filter((entry) => entry.status !== "PASS");
+        assert(report.cases.length === report.plannedCases && failures.length === 0 && report.errors.length === 0,
+          `${failures.length} case(s) failed; ${report.errors.length} browser/figgy error(s)`);
+        report.status = "PASS";
+        statusElement.textContent = `PASS — ${report.cases.length} exact streamed style comparisons`;
+      } catch (error) {
+        report.status = "FAIL"; report.failure = describe(error);
+        statusElement.textContent = `FAIL — ${error.message ?? error}`;
+      } finally {
+        report.elapsedMs = Math.round(performance.now() - started);
+        report.passedCases = report.cases.filter((entry) => entry.status === "PASS").length;
+        report.failedCases = report.cases.filter((entry) => entry.status === "FAIL").length;
+        report.notRunCases = report.plannedCases - report.cases.length;
+        publish(); running = false; activeCase = null; runButton.disabled = false; includeF64.disabled = false;
+      }
+    });
+    publish();
+  </script>
+</body>
+</html>

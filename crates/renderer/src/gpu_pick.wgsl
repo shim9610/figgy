@@ -50,6 +50,8 @@ struct PickQueryParams {
     style: vec4<u32>,
     // (gate-word count, series order, base shape id, dispatch X width).
     series: vec4<u32>,
+    // (global point offset, owned scatter count, owned segment count, unused).
+    stream: vec4<u32>,
 };
 
 struct PickScatterStyleSlot {
@@ -208,7 +210,7 @@ fn pick_gate_x(
         if x_valid {
             x_px = pick_project_axis_pair(x, 0u);
         }
-        if scatter_enabled && x_valid && pick_scatter_projected_may_hit(x_px, 0u) {
+        if scatter_enabled && point_index < pick_query_params.stream.y && x_valid && pick_scatter_projected_may_hit(x_px, 0u) {
             scatter_mask = scatter_mask | (1u << bit);
         }
         let has_next = point_index + 1u < point_count;
@@ -216,6 +218,7 @@ fn pick_gate_x(
         if load_next {
             let next_x = pick_read_pair(pick_query_params.data.y, point_index + 1u);
             if line_enabled
+                && point_index < pick_query_params.stream.z
                 && x_valid
                 && pick_pair_is_valid(next_x)
                 && pick_line_projected_may_hit(
@@ -382,7 +385,7 @@ fn pick_resolve_scatter_radius(point_index: u32) -> f32 {
         }
         for (var i = 0u; i < pick_query_params.style.z; i = i + 1u) {
             let override_row = pick_style_overrides[i];
-            if override_row.point_index == point_index {
+            if override_row.point_index == point_index + pick_query_params.stream.x {
                 let slot = PickScatterStyleSlot(override_row.color_premul, override_row.params);
                 let resolved = pick_apply_style(radius, shape, slot);
                 radius = resolved.x;
@@ -455,9 +458,9 @@ fn pick_scatter_candidate(
     return PickCandidate(
         1u,
         series_order,
-        point_index,
+        point_index + pick_query_params.stream.x,
         0u,
-        point_index,
+        point_index + pick_query_params.stream.x,
         distance_sq,
         hit_distance,
         0u,
@@ -506,9 +509,9 @@ fn pick_line_candidate(
     return PickCandidate(
         1u,
         series_order,
-        point_index,
+        point_index + pick_query_params.stream.x,
         1u,
-        segment_index,
+        segment_index + pick_query_params.stream.x,
         distance_sq,
         sqrt(distance_sq),
         0u,
@@ -526,10 +529,10 @@ fn pick_direct_masks(word_index: u32) -> vec2<u32> {
         if point_index >= point_count {
             break;
         }
-        if (flags & PICK_FLAG_SCATTER) != 0u {
+        if (flags & PICK_FLAG_SCATTER) != 0u && point_index < pick_query_params.stream.y {
             scatter_mask = scatter_mask | (1u << bit);
         }
-        if (flags & PICK_FLAG_LINE) != 0u && point_index + 1u < point_count {
+        if (flags & PICK_FLAG_LINE) != 0u && point_index < pick_query_params.stream.z && point_index + 1u < point_count {
             line_mask = line_mask | (1u << bit);
         }
     }

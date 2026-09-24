@@ -62,10 +62,16 @@ struct Transform {
     //                wavelength, binary separation); keeps the star texture
     //                resolution-invariant under DPI/export scaling.
     // constellation: [0] = (star_opacity, line_opacity, 0, 0)
+    // All styles reserve [2].z for the global point-base u32 BIT PATTERN.
+    // Resident draws write zero; streamed point/errorbar draws bitcast it.
     style_params: array<vec4<f32>, 3>,
 };  // 112 B (vec4 array at offset 64, stride 16)
 
 @group(0) @binding(0) var<uniform> transform: Transform;
+
+fn styled_point_index(local_index: u32) -> u32 {
+    return bitcast<u32>(transform.style_params[2].z) + local_index;
+}
 
 struct Style {
     color_premul: vec4<f32>,
@@ -328,7 +334,7 @@ fn locate(base: u32, n: u32, count: u32, axis: u32, t: f32, lattice: u32) -> Cel
         if (hi - lo <= 1u) {
             break;
         }
-        let mid = (lo + hi) / 2u;
+        let mid = lo + (hi - lo) / 2u;
         let tm = boundary_t(base, n, mid, axis, lattice);
         if (!f32_is_finite(tm)) {
             return out;
@@ -774,16 +780,26 @@ fn fs_main(in: FieldOut) -> @location(0) vec4<f32> {
     let r = select(y.index, x.index, columns_are_y);
     let fc = select(x.frac, y.frac, columns_are_y);
     let fr = select(y.frac, x.frac, columns_are_y);
+    let z00 = grid_value(c, r);
+    var z10: GridValue;
+    var z01: GridValue;
+    var z11: GridValue;
+    if (field_flag(FIELD_INTERPOLATED)) {
+        z10 = grid_value(c + 1u, r);
+        z01 = grid_value(c, r + 1u);
+        z11 = grid_value(c + 1u, r + 1u);
+    }
+    return field_fill_color(z00, z10, z01, z11, fc, fr);
+}
 
+// Resident storage and bounded replay share all final field colour arithmetic.
+fn field_fill_color(z00: GridValue, z10: GridValue, z01: GridValue,
+    z11: GridValue, fc: f32, fr: f32) -> vec4<f32> {
     var z: vec2<f32>;
     if (field_flag(FIELD_INTERPOLATED)) {
         // Bilinear over the four surrounding sample points. Done on the axis
         // `t` fractions, so on a logarithmic axis the interpolation is in
         // screen space, matching the weak nonlinearity of common plotting tools.
-        let z00 = grid_value(c, r);
-        let z10 = grid_value(c + 1u, r);
-        let z01 = grid_value(c, r + 1u);
-        let z11 = grid_value(c + 1u, r + 1u);
         // Bounds misses and actual non-finite data are both unplaceable, but
         // they remain distinct until this consumer applies the paint policy.
         if (!z00.valid || !z10.valid || !z01.valid || !z11.valid) {
@@ -803,7 +819,7 @@ fn fs_main(in: FieldOut) -> @location(0) vec4<f32> {
             return style.color_premul;
         }
     } else {
-        let sample = grid_value(c, r);
+        let sample = z00;
         if (!sample.valid) {
             return style.color_premul;
         }
@@ -1274,4 +1290,200 @@ fn fs_data_selection(in: FieldOut) -> @location(0) vec4<f32> {
         return selection_color(selected_contour_coverage(in.axis_t));
     }
     return vec4<f32>(0.0);
+}
+
+// Bounded streamed field replay. No resident pool/grid binding is reachable.
+
+struct StreamFieldAxis {
+    t: f32, first: f32, a: f32, lo: u32,
+    hi: u32, phase: u32, steps: u32, ascending: u32,
+    index: u32, frac: f32, hit: u32, pad: u32,
+};
+struct StreamFieldPixel {
+    x: StreamFieldAxis, y: StreamFieldAxis,
+    z: array<vec2<f32>, 4>, valid_mask: u32, sample_marker: u32,
+};
+struct StreamFieldTicket {
+    start: u32, len: u32, n: u32, count: u32,
+    axis: u32, column: u32, pair_base: u32, pad1: u32,
+};
+struct StreamFieldTile {
+    origin: vec2<u32>, extent: vec2<u32>,
+    samples: u32, pad0: u32, pad1: u32, pad2: u32,
+};
+@group(3) @binding(0) var<storage, read_write> stream_field_pixels: array<StreamFieldPixel>;
+@group(3) @binding(1) var<storage, read> stream_field_chunk: array<vec2<f32>>;
+@group(3) @binding(2) var<uniform> stream_field_ticket: StreamFieldTicket;
+@group(3) @binding(3) var<uniform> stream_field_tile: StreamFieldTile;
+
+fn stream_field_key(local: vec2<u32>, sample_index: u32) -> u32 {
+    return (sample_index * stream_field_tile.extent.y + local.y) * stream_field_tile.extent.x + local.x;
+}
+fn stream_field_fragment_key(pos: vec4<f32>, sample_index: u32) -> u32 {
+    return stream_field_key(vec2<u32>(pos.xy) - stream_field_tile.origin, sample_index);
+}
+fn stream_field_fresh_axis(t: f32, count: u32) -> StreamFieldAxis {
+    return StreamFieldAxis(t, 0.0, 0.0, 0u, count, 0u, 0u, 0u, 0u, 0.0, 0u, 0u);
+}
+@compute @workgroup_size(1)
+fn cs_stream_field_pick_init() {
+    var s: StreamFieldPixel;
+    let cy = field_flag(FIELD_COLUMNS_ARE_Y);
+    let t = data_pick_query.cursor_ndc_t.zw;
+    s.x = stream_field_fresh_axis(t.x, quad_count(select(field.cols, field.rows, cy), LATTICE_QUADS));
+    s.y = stream_field_fresh_axis(t.y, quad_count(select(field.rows, field.cols, cy), LATTICE_QUADS));
+    stream_field_pixels[0] = s;
+}
+@compute @workgroup_size(1)
+fn cs_stream_field_pick_final() {
+    let s = stream_field_pixels[0];
+    var hit = field_pick_invalid();
+    if (s.x.hit != 0u && s.y.hit != 0u) {
+        hit = DataPickCandidate(1u, data_pick_query.data.y, DATA_PICK_KIND_MATRIX_CELL,
+            s.x.index, s.y.index, 0u, 0.0, 0u);
+    }
+    data_pick_output = hit;
+}
+@fragment fn fs_stream_field_init(in: FieldOut, @builtin(sample_index) sample_index: u32)
+    -> @location(0) vec4<f32> {
+    var s: StreamFieldPixel;
+    let cy = field_flag(FIELD_COLUMNS_ARE_Y);
+    s.x = stream_field_fresh_axis(in.axis_t.x, quad_count(select(field.cols, field.rows, cy), LATTICE_QUADS));
+    s.y = stream_field_fresh_axis(in.axis_t.y, quad_count(select(field.rows, field.cols, cy), LATTICE_QUADS));
+    s.valid_mask = 0u;
+    s.sample_marker = sample_index + 1u;
+    stream_field_pixels[stream_field_fragment_key(in.pos, sample_index)] = s;
+    return vec4<f32>(0.0);
+}
+fn stream_field_has(k: u32) -> bool {
+    return k >= stream_field_ticket.start && k - stream_field_ticket.start < stream_field_ticket.len;
+}
+fn stream_field_pair(k: u32) -> vec2<f32> {
+    return stream_field_chunk[stream_field_ticket.pair_base + k - stream_field_ticket.start];
+}
+struct StreamFieldBoundary { available: bool, value: f32 };
+fn stream_field_boundary(k: u32) -> StreamFieldBoundary {
+    var out = StreamFieldBoundary(false, 0.0);
+    var pair = vec2<f32>(0.0);
+    let n = stream_field_ticket.n;
+    if (lattice_is_samples(LATTICE_QUADS)) {
+        if (field_flag(FIELD_CENTERS)) {
+            if (!stream_field_has(k)) { return out; }
+            pair = stream_field_pair(k);
+        } else {
+            let next = min(k + 1u, n - 1u);
+            if (!stream_field_has(k) || !stream_field_has(next)) { return out; }
+            pair = midpoint_grid_pair(stream_field_pair(k), stream_field_pair(next));
+        }
+    } else if (!field_flag(FIELD_CENTERS)) {
+        if (!stream_field_has(k)) { return out; }
+        pair = stream_field_pair(k);
+    } else if (k == 0u) {
+        let next = min(1u, n - 1u);
+        if (!stream_field_has(0u) || !stream_field_has(next)) { return out; }
+        let c0 = stream_field_pair(0u);
+        let c1 = stream_field_pair(next);
+        pair = add_grid_pairs(c0, scale_grid_pair(subtract_grid_pairs(c0, c1), 0.5));
+    } else if (k >= n) {
+        let last = n - 1u;
+        let prev = max(n, 2u) - 2u;
+        if (!stream_field_has(last) || !stream_field_has(prev)) { return out; }
+        pair = add_grid_pairs(stream_field_pair(last),
+            scale_grid_pair(subtract_grid_pairs(stream_field_pair(last), stream_field_pair(prev)), 0.5));
+    } else {
+        if (!stream_field_has(k - 1u) || !stream_field_has(k)) { return out; }
+        pair = midpoint_grid_pair(stream_field_pair(k - 1u), stream_field_pair(k));
+    }
+    return StreamFieldBoundary(true, axis_t(pair, stream_field_ticket.axis));
+}
+fn stream_field_advance_axis(input: StreamFieldAxis) -> StreamFieldAxis {
+    var s = input;
+    if (s.phase >= 5u) { return s; }
+    if (s.phase == 0u && (stream_field_ticket.count == 0u || stream_field_ticket.n == 0u
+        || !f32_is_finite(s.t))) { s.phase = 6u; return s; }
+    if (s.phase == 2u && (s.hi - s.lo <= 1u || s.steps == 32u)) { s.phase = 3u; }
+    var k = 0u;
+    switch s.phase {
+        case 0u: { k = 0u; }
+        case 1u: { k = stream_field_ticket.count; }
+        case 2u: { k = s.lo + (s.hi - s.lo) / 2u; }
+        case 3u: { k = s.lo; }
+        case 4u: { k = s.lo + 1u; }
+        default: { return s; }
+    }
+    let boundary = stream_field_boundary(k);
+    if (!boundary.available) { return s; }
+    let v = boundary.value;
+    if (!f32_is_finite(v)) { s.phase = 6u; return s; }
+    if (s.phase == 0u) {
+        s.first = v;
+        s.phase = 1u;
+    } else if (s.phase == 1u) {
+        if (s.t < min(s.first, v) || s.t > max(s.first, v)) { s.phase = 6u; }
+        else { s.ascending = select(0u, 1u, v >= s.first); s.phase = 2u; }
+    } else if (s.phase == 2u) {
+        let before = select(v > s.t, v <= s.t, s.ascending != 0u);
+        if (before) { s.lo = k; } else { s.hi = k; }
+        s.steps = s.steps + 1u;
+    } else if (s.phase == 3u) {
+        s.a = v;
+        s.phase = 4u;
+    } else if (s.phase == 4u) {
+        let span = v - s.a;
+        if (!f32_is_finite(span)) { s.phase = 6u; return s; }
+        var frac = 0.0;
+        if (span != 0.0) {
+            frac = (s.t - s.a) / span;
+            if (!f32_is_finite(frac)) { s.phase = 6u; return s; }
+        }
+        s.index = s.lo;
+        s.frac = clamp(frac, 0.0, 1.0);
+        s.hit = 1u;
+        s.phase = 5u;
+    }
+    return s;
+}
+@compute @workgroup_size(8, 8, 1)
+fn cs_stream_field_axis(@builtin(global_invocation_id) id: vec3<u32>) {
+    if (any(id.xy >= stream_field_tile.extent) || id.z >= stream_field_tile.samples) { return; }
+    let p = stream_field_key(id.xy, id.z);
+    var s = stream_field_pixels[p];
+    if (stream_field_ticket.axis == 0u) { s.x = stream_field_advance_axis(s.x); }
+    else { s.y = stream_field_advance_axis(s.y); }
+    stream_field_pixels[p] = s;
+}
+@compute @workgroup_size(8, 8, 1)
+fn cs_stream_field_z(@builtin(global_invocation_id) id: vec3<u32>) {
+    if (any(id.xy >= stream_field_tile.extent) || id.z >= stream_field_tile.samples) { return; }
+    let p = stream_field_key(id.xy, id.z);
+    var s = stream_field_pixels[p];
+    if (s.x.hit == 0u || s.y.hit == 0u) { return; }
+    let cy = field_flag(FIELD_COLUMNS_ARE_Y);
+    let c = select(s.x.index, s.y.index, cy);
+    let r = select(s.y.index, s.x.index, cy);
+    let need = select(1u, 4u, field_flag(FIELD_INTERPOLATED));
+    for (var slot = 0u; slot < need; slot = slot + 1u) {
+        let dc = slot & 1u;
+        let dr = slot >> 1u;
+        let row = r + dr;
+        if (c + dc != stream_field_ticket.column || !stream_field_has(row)) { continue; }
+        s.z[slot] = stream_field_pair(row);
+        s.valid_mask = s.valid_mask | (1u << slot);
+    }
+    stream_field_pixels[p] = s;
+}
+
+@fragment fn fs_stream_field_final(in: FieldOut, @builtin(sample_index) sample_index: u32)
+    -> @location(0) vec4<f32> {
+    let s = stream_field_pixels[stream_field_fragment_key(in.pos, sample_index)];
+    if (s.x.phase != 5u || s.y.phase != 5u || s.x.hit == 0u || s.y.hit == 0u
+        || s.sample_marker != sample_index + 1u) { return vec4<f32>(0.0); }
+    let cy = field_flag(FIELD_COLUMNS_ARE_Y);
+    let fc = select(s.x.frac, s.y.frac, cy);
+    let fr = select(s.y.frac, s.x.frac, cy);
+    return field_fill_color(
+        GridValue(s.z[0], (s.valid_mask & 1u) != 0u),
+        GridValue(s.z[1], (s.valid_mask & 2u) != 0u),
+        GridValue(s.z[2], (s.valid_mask & 4u) != 0u),
+        GridValue(s.z[3], (s.valid_mask & 8u) != 0u), fc, fr);
 }

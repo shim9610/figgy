@@ -18,8 +18,8 @@
 //!
 //! 1. **Released is not free yet.** A dropped handle moves its bytes from
 //!    `live` to `retired` rather than out of the report, because wgpu defers
-//!    the device-side release until the queue drains. `end_submission` clears
-//!    `retired` until the host reports the corresponding queue submission.
+//!    the device-side release until the queue drains. A submission boundary
+//!    snapshots retired bytes; only that submission's completion credits them.
 //! 2. **The total is never cached.** [`GpuLedger::snapshot`] is cheap
 //!    (a handful of relaxed loads) and callers read it immediately before an
 //!    allocation decision, so a budget check never runs against a stale sum.
@@ -28,7 +28,100 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Number of rows in a [`GpuMemoryUsage`] report.
-pub const GPU_RESOURCE_KIND_COUNT: usize = 12;
+pub const GPU_RESOURCE_KIND_COUNT: usize = 13;
+
+/// Complete byte inputs for a side-effect-free resident admission check.
+///
+/// `column_value_counts` names only columns that still have to enter the pool.
+/// A viewport subset is valid only when the caller has already proved that all
+/// required halo and global context is included. The renderer stores every
+/// resident scalar as one `(hi, lo)` pair regardless of source encoding.
+#[derive(Clone, Copy, Debug)]
+pub struct ResidentAdmissionRequest<'a> {
+    pub column_value_counts: &'a [u64],
+    /// Bytes in the requested working set that are already resident and
+    /// therefore count against its policy cap but not as a new allocation.
+    pub already_resident_working_set_bytes: u64,
+    /// Persistent non-column buffers that the resident representation still
+    /// has to allocate (arc/field/errorbar or other derived state). Keeping the
+    /// constituent sizes lets the renderer enforce the device ceiling itself;
+    /// the admission check also sums them for working-set and budget accounting.
+    pub derived_buffer_sizes: &'a [u64],
+    /// Temporary bytes, other than the upload staging and pool relayout that
+    /// figgy calculates itself, which coexist during the atomic transition.
+    pub transition_headroom_bytes: u64,
+    /// Policy cap for the resident working set. This is deliberately distinct
+    /// from the renderer-wide memory budget.
+    pub working_set_limit_bytes: u64,
+}
+
+/// Why a resident resource request is or is not statically admissible.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResidentAdmissionStatus {
+    /// Every declared cap admits the request. GPU allocation remains fallible.
+    Admissible,
+    /// No renderer-wide budget was declared, so WebGPU device limits alone
+    /// cannot prove that enough physical memory is available.
+    MemoryBudgetUnset,
+    /// A logical column cannot be addressed by the renderer's global index.
+    ColumnLengthLimitExceeded { column: usize, length: u64 },
+    /// One derived buffer crosses the device's legal buffer/storage ceiling.
+    DerivedBufferLimitExceeded { buffer: usize, bytes: u64 },
+    /// A checked byte calculation overflowed.
+    ArithmeticOverflow,
+    /// Resident columns plus persistent derived resources cross the explicit
+    /// working-set policy cap.
+    WorkingSetLimitExceeded,
+    /// A column or the resulting pool would cross the device's legal buffer
+    /// and storage-binding ceiling.
+    DeviceBufferLimitExceeded,
+    /// The current pool layout cannot serve the request and its configured
+    /// defragmentation/growth policies do not permit making room.
+    PoolCapacityUnavailable,
+    /// The full transition peak crosses the renderer-wide host budget.
+    MemoryBudgetExceeded,
+}
+
+/// Auditable result of [`crate::Renderer::resident_admission`].
+///
+/// This is a static admission result, not a reservation: another allocation
+/// can consume budget after the call, and the eventual WebGPU allocation can
+/// still fail. The committing transition must repeat the same checks at its
+/// allocation boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResidentAdmission {
+    pub status: ResidentAdmissionStatus,
+    /// ALIGN-padded bytes occupied by the requested columns in ColumnPool.
+    pub resident_column_bytes: u64,
+    /// Newly admitted column/derived bytes plus already-resident working-set
+    /// bytes.
+    pub resident_working_set_bytes: u64,
+    /// Sum of the declared persistent derived buffers.
+    pub derived_resident_bytes: u64,
+    /// Upload staging that coexists with the pool and source streaming state.
+    /// Bounded range promotion includes both staging and work upload slots.
+    pub upload_staging_bytes: u64,
+    pub pool_capacity_before: u64,
+    pub pool_capacity_after: u64,
+    /// A new relayout/growth buffer that must coexist at transition peak.
+    pub pool_transition_bytes: u64,
+    pub pool_free_bytes: u64,
+    pub pool_largest_free_bytes: u64,
+    /// Live plus retired bytes at the instant of the check.
+    pub current_gpu_bytes: u64,
+    /// Current bytes plus every candidate, staging, derived, and caller-declared
+    /// transition allocation that must coexist before atomic publication.
+    pub transition_peak_bytes: u64,
+    pub working_set_limit_bytes: u64,
+    pub memory_budget_bytes: Option<u64>,
+    pub device_buffer_limit_bytes: u64,
+}
+
+impl ResidentAdmission {
+    pub fn is_admissible(&self) -> bool {
+        self.status == ResidentAdmissionStatus::Admissible
+    }
+}
 
 /// The kind every GPU allocation is charged to.
 ///
@@ -66,6 +159,8 @@ pub enum GpuResourceKind {
     /// Contour label candidates, selected anchors, indirect args, params and
     /// the CPU-baked label atlas.
     ContourScratch,
+    /// Bounded streaming chunk staging and work buffers, outside the resident pool.
+    StreamingUpload,
 }
 
 impl GpuResourceKind {
@@ -83,6 +178,7 @@ impl GpuResourceKind {
         GpuResourceKind::Lut,
         GpuResourceKind::FieldTable,
         GpuResourceKind::ContourScratch,
+        GpuResourceKind::StreamingUpload,
     ];
 
     /// Row index in a [`GpuMemoryUsage`] report.
@@ -100,6 +196,7 @@ impl GpuResourceKind {
             GpuResourceKind::Lut => 9,
             GpuResourceKind::FieldTable => 10,
             GpuResourceKind::ContourScratch => 11,
+            GpuResourceKind::StreamingUpload => 12,
         }
     }
 
@@ -118,6 +215,7 @@ impl GpuResourceKind {
             GpuResourceKind::Lut => "lut",
             GpuResourceKind::FieldTable => "field table",
             GpuResourceKind::ContourScratch => "contour scratch",
+            GpuResourceKind::StreamingUpload => "streaming upload",
         }
     }
 }
@@ -190,9 +288,49 @@ fn texture_extent_bytes(
 #[derive(Debug)]
 pub struct GpuLedger {
     live: [AtomicU64; GPU_RESOURCE_KIND_COUNT],
-    retired: [AtomicU64; GPU_RESOURCE_KIND_COUNT],
+    retired: [RetiredBytes; GPU_RESOURCE_KIND_COUNT],
     creations: [AtomicU64; GPU_RESOURCE_KIND_COUNT],
     peak_bytes: AtomicU64,
+}
+
+/// Fixed-size, generation-free accounting for pending and submitted retirements.
+/// The total never drops when a batch is detached. A completion owns only its
+/// exact byte count, so it cannot credit a later retirement.
+#[derive(Debug, Default)]
+pub(crate) struct RetiredBytes {
+    total: AtomicU64,
+    pending: AtomicU64,
+}
+
+impl RetiredBytes {
+    pub(crate) fn retire(&self, bytes: u64) {
+        self.total
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                n.checked_add(bytes)
+            })
+            .expect("retired GPU byte total overflow");
+        self.pending
+            .fetch_update(Ordering::Release, Ordering::Relaxed, |n| {
+                n.checked_add(bytes)
+            })
+            .expect("pending GPU byte total overflow");
+    }
+
+    pub(crate) fn total(&self) -> u64 {
+        self.total.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn take_pending(&self) -> u64 {
+        self.pending.swap(0, Ordering::AcqRel)
+    }
+
+    pub(crate) fn complete(&self, bytes: u64) {
+        self.total
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                n.checked_sub(bytes)
+            })
+            .expect("completed GPU byte batch exceeds retired total");
+    }
 }
 
 impl Default for GpuLedger {
@@ -205,7 +343,7 @@ impl GpuLedger {
     pub fn new() -> Self {
         Self {
             live: std::array::from_fn(|_| AtomicU64::new(0)),
-            retired: std::array::from_fn(|_| AtomicU64::new(0)),
+            retired: std::array::from_fn(|_| RetiredBytes::default()),
             creations: std::array::from_fn(|_| AtomicU64::new(0)),
             peak_bytes: AtomicU64::new(0),
         }
@@ -227,20 +365,29 @@ impl GpuLedger {
     /// still hold the memory until the queue drains.
     pub fn record_retire(&self, kind: GpuResourceKind, bytes: u64) {
         let i = kind.index();
+        self.retired[i].retire(bytes);
         // Saturating so a mis-paired credit reports zero rather than wrapping
         // to a nonsense total that would refuse every later allocation.
         let _ = self.live[i].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
             Some(live.saturating_sub(bytes))
         });
-        self.retired[i].fetch_add(bytes, Ordering::Relaxed);
     }
 
-    /// Submission boundary: the host has handed every recorded reference to the
-    /// queue, so opaque command-buffer ownership no longer needs this retired
-    /// accounting backstop.
+    /// Compatibility helper for callers that have already observed GPU
+    /// completion of every pending retirement (not merely queue submission).
+    /// Does not credit batches already detached for asynchronous completion.
+    /// Renderer hosts should use `Renderer::end_gpu_frame` instead.
     pub fn end_submission(&self) {
-        for slot in &self.retired {
-            slot.store(0, Ordering::Relaxed);
+        self.complete_retirement(self.take_retirement());
+    }
+
+    pub(crate) fn take_retirement(&self) -> [u64; GPU_RESOURCE_KIND_COUNT] {
+        std::array::from_fn(|i| self.retired[i].take_pending())
+    }
+
+    pub(crate) fn complete_retirement(&self, batch: [u64; GPU_RESOURCE_KIND_COUNT]) {
+        for (slot, bytes) in self.retired.iter().zip(batch) {
+            slot.complete(bytes);
         }
     }
 
@@ -250,7 +397,7 @@ impl GpuLedger {
         for i in 0..GPU_RESOURCE_KIND_COUNT {
             total = total
                 .saturating_add(self.live[i].load(Ordering::Relaxed))
-                .saturating_add(self.retired[i].load(Ordering::Relaxed));
+                .saturating_add(self.retired[i].total());
         }
         total
     }
@@ -259,7 +406,7 @@ impl GpuLedger {
     pub fn snapshot(&self) -> GpuMemoryUsage {
         GpuMemoryUsage {
             live: std::array::from_fn(|i| self.live[i].load(Ordering::Relaxed)),
-            retired: std::array::from_fn(|i| self.retired[i].load(Ordering::Relaxed)),
+            retired: std::array::from_fn(|i| self.retired[i].total()),
             creations: std::array::from_fn(|i| self.creations[i].load(Ordering::Relaxed)),
             peak_bytes: self.peak_bytes.load(Ordering::Relaxed),
         }
@@ -336,6 +483,14 @@ impl GpuMemoryUsage {
     /// Live + retired: what the device may still be holding.
     pub fn total_bytes(&self) -> u64 {
         self.live_bytes().saturating_add(self.retired_bytes())
+    }
+
+    /// Checked live + retired total for fail-closed resource admission.
+    pub fn checked_total_bytes(&self) -> Option<u64> {
+        self.live
+            .iter()
+            .chain(self.retired.iter())
+            .try_fold(0u64, |total, bytes| total.checked_add(*bytes))
     }
 
     /// The pool row — the data itself.
@@ -644,6 +799,18 @@ impl GpuByteCharge {
     pub fn kind(&self) -> GpuResourceKind {
         self.kind
     }
+
+    /// Transfer a still-live buffer to an owner accounted outside this ledger.
+    /// The caller publishes the replacement accounting in the same infallible
+    /// commit; unlike dropping a GPU owner, this creates no retirement debt.
+    pub(crate) fn transfer_to_external_accounting(mut self) {
+        self.ledger.live[self.kind.index()]
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
+                live.checked_sub(self.bytes)
+            })
+            .expect("transferred GPU bytes are live");
+        self.bytes = 0;
+    }
 }
 
 impl Drop for GpuByteCharge {
@@ -655,6 +822,17 @@ impl Drop for GpuByteCharge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_owner_transfer_does_not_create_retirement_debt() {
+        let ledger = Arc::new(GpuLedger::new());
+        let charge = GpuByteCharge::new(&ledger, GpuResourceKind::StreamingUpload, 4096);
+        assert_eq!(ledger.total_bytes(), 4096);
+        charge.transfer_to_external_accounting();
+        assert_eq!(ledger.total_bytes(), 0);
+        assert_eq!(ledger.snapshot().retired_bytes(), 0);
+        assert_eq!(ledger.snapshot().total_creations(), 1);
+    }
 
     #[test]
     fn kind_indices_are_unique_and_cover_every_row() {
@@ -748,7 +926,7 @@ mod tests {
     }
 
     #[test]
-    fn retired_bytes_stay_in_the_total_until_the_submission_boundary() {
+    fn retired_bytes_stay_in_the_total_until_completion() {
         let ledger = GpuLedger::new();
         ledger.record_alloc(GpuResourceKind::PanelTexture, 4096);
         assert_eq!(ledger.total_bytes(), 4096);
@@ -763,8 +941,41 @@ mod tests {
         assert_eq!(usage.live_bytes(), 0);
         assert_eq!(usage.retired_bytes(), 4096);
 
-        ledger.end_submission();
+        let batch = ledger.take_retirement();
+        assert_eq!(ledger.total_bytes(), 4096, "submission does not free bytes");
+        assert_eq!(ledger.take_retirement(), [0; GPU_RESOURCE_KIND_COUNT]);
+        ledger.complete_retirement(batch);
         assert_eq!(ledger.total_bytes(), 0);
+    }
+
+    #[test]
+    fn old_completion_cannot_credit_newer_or_unsubmitted_retirements() {
+        let ledger = GpuLedger::new();
+        ledger.record_alloc(GpuResourceKind::ArcScan, 600);
+        ledger.record_retire(GpuResourceKind::ArcScan, 100);
+        let first = ledger.take_retirement();
+        ledger.record_retire(GpuResourceKind::ArcScan, 200);
+        let second = ledger.take_retirement();
+        ledger.record_retire(GpuResourceKind::ArcScan, 300);
+        ledger.complete_retirement(first);
+        assert_eq!(ledger.snapshot().retired_bytes(), 500);
+        ledger.complete_retirement(second);
+        assert_eq!(ledger.snapshot().retired_bytes(), 300);
+        ledger.complete_retirement(ledger.take_retirement());
+        assert_eq!(ledger.total_bytes(), 0);
+    }
+
+    #[test]
+    fn retirement_batches_can_complete_out_of_order_without_generations() {
+        let retired = RetiredBytes::default();
+        retired.retire(64);
+        let first = retired.take_pending();
+        retired.retire(128);
+        let second = retired.take_pending();
+        retired.complete(second);
+        assert_eq!(retired.total(), 64);
+        retired.complete(first);
+        assert_eq!(retired.total(), 0);
     }
 
     #[test]

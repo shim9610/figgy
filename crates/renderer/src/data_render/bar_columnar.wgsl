@@ -44,10 +44,16 @@ struct Transform {
     //                wavelength, binary separation); keeps the star texture
     //                resolution-invariant under DPI/export scaling.
     // constellation: [0] = (star_opacity, line_opacity, 0, 0)
+    // All styles reserve [2].z for the global point-base u32 BIT PATTERN.
+    // Resident draws write zero; streamed point/errorbar draws bitcast it.
     style_params: array<vec4<f32>, 3>,
 };  // 112 B (vec4 array at offset 64, stride 16)
 
 @group(0) @binding(0) var<uniform> transform: Transform;
+
+fn styled_point_index(local_index: u32) -> u32 {
+    return bitcast<u32>(transform.style_params[2].z) + local_index;
+}
 
 struct Style {
     color_premul: vec4<f32>,
@@ -375,6 +381,13 @@ fn vs_envelope_mapped_bars(in: VsIn, @builtin(instance_index) inst: u32) -> VsOu
     return bar_vertex(in, resolve_bar_style(base_bar_style(), inst), true);
 }
 
+// The streamed work buffer starts at a local instance zero, while sparse
+// overrides are keyed by the original bin index.
+@vertex
+fn vs_stream_envelope_mapped_bars(in: VsIn, @builtin(instance_index) inst: u32) -> VsOut {
+    return bar_vertex(in, resolve_bar_style(base_bar_style(), stream_offset.bin_start + inst), true);
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     return in.color_premul;
@@ -387,6 +400,23 @@ struct EnvelopeParams { edges: u32, values: u32, count: u32, pixels: u32 };
 @group(3) @binding(1) var<uniform> envelope_params: EnvelopeParams;
 @group(3) @binding(2) var<storage, read> envelope_winners: array<u32>;
 @group(3) @binding(3) var<storage, read_write> envelope_atomic: array<atomic<u32>>;
+
+struct StreamWinner {
+    valid: u32,
+    bin_index: u32,
+    value: vec2<f32>,
+};
+
+struct StreamOffset {
+    bin_start: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+};
+
+@group(3) @binding(4) var<storage, read_write> stream_winners_write: array<StreamWinner>;
+@group(3) @binding(5) var<storage, read> stream_winners_read: array<StreamWinner>;
+@group(3) @binding(6) var<uniform> stream_offset: StreamOffset;
 
 fn envelope_better(candidate: u32, incumbent: u32) -> bool {
     if (incumbent == 0u) { return true; }
@@ -434,6 +464,64 @@ fn reduce_bar_envelope(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 }
 
+@compute @workgroup_size(64)
+fn reduce_stream_bar_envelope(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x + gid.y * 65535u * 64u;
+    if (i >= envelope_params.count) { return; }
+    let a = envelope_pool[envelope_params.edges + i];
+    let b = envelope_pool[envelope_params.edges + i + 1u];
+    let value = envelope_pool[envelope_params.values + i];
+    if (!data_pick_finite(a.x) || !data_pick_finite(a.y) ||
+        !data_pick_finite(b.x) || !data_pick_finite(b.y) ||
+        !data_pick_finite(value.x) || !data_pick_finite(value.y)) { return; }
+    let horizontal = style.shape_id == BAR_ORIENT_HORIZONTAL;
+    let raw = bar_outer_ndc_values(a, b, value, vec2<f32>(0.0), horizontal, 0.0, 1.0);
+    let low = select(raw.x, raw.y, horizontal);
+    let high = select(raw.z, raw.w, horizontal);
+    let pixel = select(transform.pixel_to_ndc.x, transform.pixel_to_ndc.y, horizontal);
+    let width = (high - low) / pixel;
+    if (!(width >= 0.0 && width < 1.0) || all(a == b)) { return; }
+    if (resolve_bar_style(base_bar_style(), stream_offset.bin_start + i).width_ratio <= 0.0) { return; }
+    let start = u32(clamp(floor((low + 1.0) / pixel), 0.0, f32(envelope_params.pixels)));
+    var end = u32(clamp(ceil((high + 1.0) / pixel), 0.0, f32(envelope_params.pixels)));
+    if (high == low && low >= -1.0 && low < 1.0) {
+        end = min(start + 1u, envelope_params.pixels);
+    }
+    for (var p = start; p < end; p = p + 1u) {
+        var old = atomicLoad(&envelope_atomic[p]);
+        loop {
+            if (!envelope_better(i + 1u, old)) { break; }
+            let result = atomicCompareExchangeWeak(&envelope_atomic[p], old, i + 1u);
+            if (result.exchanged) { break; }
+            old = result.old_value;
+        }
+    }
+}
+
+fn stream_winner_better(value: vec2<f32>, bin_index: u32, incumbent: StreamWinner) -> bool {
+    if (incumbent.valid == 0u) { return true; }
+    let old = incumbent.value;
+    return value.x > old.x ||
+        (value.x == old.x && (value.y > old.y ||
+        (value.y == old.y && bin_index < incumbent.bin_index)));
+}
+
+// One invocation owns each persistent pixel. Successive dispatches are queued
+// in source order; no persistent atomic or work-buffer address survives merge.
+@compute @workgroup_size(64)
+fn merge_stream_bar_envelope(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let p = gid.x;
+    if (p >= envelope_params.pixels) { return; }
+    let local = atomicLoad(&envelope_atomic[p]);
+    if (local == 0u || local > envelope_params.count) { return; }
+    let bin_index = stream_offset.bin_start + local - 1u;
+    let value = envelope_pool[envelope_params.values + local - 1u];
+    let incumbent = stream_winners_write[p];
+    if (stream_winner_better(value, bin_index, incumbent)) {
+        stream_winners_write[p] = StreamWinner(1u, bin_index, value);
+    }
+}
+
 struct EnvelopeVertex {
     @builtin(position) pos: vec4<f32>,
     @location(0) @interpolate(flat) fill: vec4<f32>,
@@ -472,6 +560,31 @@ fn vs_bar_envelope(@builtin(vertex_index) vi: u32, @builtin(instance_index) p: u
     return out;
 }
 
+@vertex
+fn vs_stream_bar_envelope(@builtin(vertex_index) vi: u32, @builtin(instance_index) p: u32) -> EnvelopeVertex {
+    var out: EnvelopeVertex;
+    out.pos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    let winner = stream_winners_read[p];
+    if (winner.valid == 0u) { return out; }
+    let resolved = resolve_bar_style(base_bar_style(), winner.bin_index);
+    let horizontal = style.shape_id == BAR_ORIENT_HORIZONTAL;
+    let zero = data_to_ndc(vec2<f32>(0.0), vec2<f32>(0.0));
+    let base = select(zero.y, zero.x, horizontal);
+    let top = select(data_to_ndc(vec2<f32>(0.0), winner.value).y,
+        data_to_ndc(winner.value, vec2<f32>(0.0)).x, horizontal);
+    let pixel = select(transform.pixel_to_ndc.x, transform.pixel_to_ndc.y, horizontal);
+    let low = min(base, top);
+    let high = max(base, top);
+    let border = resolved.border_width_px > 0.0 && resolved.border_color_premul.a > 0.0;
+    var corners = array<u32, 6>(0u, 1u, 2u, 2u, 1u, 3u);
+    let corner = corners[vi % 6u];
+    let along = -1.0 + (f32(p) + select(0.0, 1.0, (corner & 1u) != 0u)) * pixel;
+    let magnitude = select(low, high, corner >= 2u);
+    out.pos = vec4<f32>(select(vec2<f32>(along, magnitude), vec2<f32>(magnitude, along), horizontal), 0.0, 1.0);
+    out.fill = select(resolved.fill_color_premul, resolved.border_color_premul, border);
+    return out;
+}
+
 @fragment
 fn fs_bar_envelope(in: EnvelopeVertex) -> @location(0) vec4<f32> {
     return in.fill;
@@ -494,7 +607,7 @@ struct DataPickQuery {
     limits: vec4<f32>,
     // x = flags, y = source paint order, z = item count, w = orientation.
     data: vec4<u32>,
-    // x = edge-column f32 lane base, y = value-column lane base.
+    // x = edge-column f32 lane base, y = value-column lane base, z = global bin offset.
     bases: vec4<u32>,
     // xy = histogram baseline (hi, lo).
     baseline: vec4<f32>,
@@ -574,7 +687,7 @@ fn data_pick_bar(bin_index: u32) -> DataPickCandidate {
             data_pick_query.limits.y,
             data_pick_query.limits.z,
         ),
-        bin_index,
+        bin_index + data_pick_query.bases.z,
     );
     let outer = bar_outer_ndc_values(
         edge_lo,
@@ -606,11 +719,11 @@ fn data_pick_bar(bin_index: u32) -> DataPickCandidate {
         1u,
         data_pick_query.data.y,
         DATA_PICK_KIND_HISTOGRAM_BIN,
-        bin_index,
+        bin_index + data_pick_query.bases.z,
         0u,
         0u,
         distance_px,
-        bin_index,
+        bin_index + data_pick_query.bases.z,
     );
 }
 

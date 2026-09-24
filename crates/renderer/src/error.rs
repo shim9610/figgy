@@ -61,8 +61,18 @@ pub enum FiggyError {
         reason: String,
     },
 
-    /// Referenced column id is not in the pool.
+    /// Referenced column id is not registered.
     UnknownColumn { id: String },
+
+    /// Registered host source has no resident GPU allocation yet.
+    ColumnNotResident {
+        id: String,
+    },
+
+    InvalidStreamSource {
+        id: String,
+        reason: &'static str,
+    },
 
     /// The column id belongs to renderer maintenance and is not host-mutable.
     ReservedColumnId { id: String },
@@ -137,6 +147,12 @@ impl std::fmt::Display for FiggyError {
                 write!(f, "{resource} GPU allocation failed: {reason}")
             }
             Self::UnknownColumn { id } => write!(f, "unknown column id: {id}"),
+            Self::ColumnNotResident { id } => {
+                write!(f, "column is registered but not GPU resident: {id}")
+            }
+            Self::InvalidStreamSource { id, reason } => {
+                write!(f, "invalid streamed source {id}: {reason}")
+            }
             Self::ReservedColumnId { id } => {
                 write!(f, "column id is reserved for renderer maintenance: {id}")
             }

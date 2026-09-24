@@ -46,10 +46,16 @@ struct Transform {
     //                wavelength, binary separation); keeps the star texture
     //                resolution-invariant under DPI/export scaling.
     // constellation: [0] = (star_opacity, line_opacity, 0, 0)
+    // All styles reserve [2].z for the global point-base u32 BIT PATTERN.
+    // Resident draws write zero; streamed point/errorbar draws bitcast it.
     style_params: array<vec4<f32>, 3>,
 };  // 112 B (vec4 array at offset 64, stride 16)
 
 @group(0) @binding(0) var<uniform> transform: Transform;
+
+fn styled_point_index(local_index: u32) -> u32 {
+    return bitcast<u32>(transform.style_params[2].z) + local_index;
+}
 
 fn maybe_log(v: f32, is_log: f32) -> f32 {
     let lv = log(max(v, 1e-30)) / log(10.0);
@@ -183,6 +189,35 @@ fn update_carry(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (gid.x == 0u) {
         carry[0] = dst[params.start + params.len - 1u];
     }
+}
+
+// Bounded replay orchestration. The host cursor owns the canonical chunk and
+// 256-point leaf ranges; these kernels do not infer ranges from IO chunking.
+// A leaf is scanned with the entries above, its lane-255 total is copied to
+// the canonical sums0 slot, and on replay the already scanned predecessor is
+// added in the same order as `add_offsets` before any cross-chunk carry.
+struct ArcReplayParams {
+    block: u32,
+    global_start: u32,
+    _pad0: u32,
+    _pad1: u32,
+};
+
+@group(2) @binding(0) var<storage, read_write> replay_sums0: array<f32>;
+@group(2) @binding(2) var<uniform> replay: ArcReplayParams;
+
+@compute @workgroup_size(1)
+fn collect_leaf_total() {
+    replay_sums0[replay.block] = sums[0];
+}
+
+@compute @workgroup_size(256)
+fn add_global_offset(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if (i >= params.len || replay.block == 0u) {
+        return;
+    }
+    dst[params.start + i] = dst[params.start + i] + replay_sums0[replay.block - 1u];
 }
 
 // ── Constellation star-pass indirect args (NOT part of the common block) ──

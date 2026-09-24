@@ -1,0 +1,829 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Figgy streaming contract — real browser probe</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, sans-serif; color: #172438; background: #f5f7fb; }
+    body { margin: 24px; }
+    h1 { font-size: 24px; margin-bottom: 8px; }
+    p { max-width: 1000px; line-height: 1.5; }
+    button, input { font: inherit; padding: 7px 11px; }
+    input { width: 130px; }
+    .toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    #status { font-weight: 600; }
+    #charts { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; margin-top: 20px; }
+    .card { background: white; border: 1px solid #d6deeb; border-radius: 8px; padding: 12px; overflow: auto; }
+    .card h2 { font-size: 16px; margin: 0 0 8px; }
+    figgy-chart { display: block; }
+    #stream-host { width: 760px; height: 390px; }
+    #resident-host { width: 360px; height: 260px; }
+    #checks { padding-left: 26px; line-height: 1.8; }
+    [data-state="PASS"] { color: #116632; }
+    [data-state="FAIL"] { color: #b5162a; font-weight: 600; }
+    [data-state="RUNNING"] { color: #175fc4; font-weight: 600; }
+    pre { background: #111c2e; color: #dfebff; padding: 16px; border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .note { font-size: 13px; color: #526178; }
+  </style>
+</head>
+<body>
+  <h1>Streaming contract: real WebGPU + bounded Worker ranges</h1>
+  <p>The large line has no full CPU array. A Worker generates only the requested original ranges,
+    transfers each buffer, and supplies mixed Float64 x / Float32 y columns. The small resident chart
+    stays visible beside it. Serve <code>crates/web</code> over HTTP with the current wasm package built.</p>
+  <div class="toolbar">
+    <label>Line points <input id="point-count" type="number" value="4300000" min="100000" max="100000000" step="100000"></label>
+    <button id="run" type="button">Run all scenarios</button>
+    <span id="status" role="status">Ready — requires WebGPU</span>
+  </div>
+  <p class="note">The requested 8 ms frame budget bounds measured host submission work adaptively;
+    it is not a hard GPU execution, browser scheduling, or input-latency guarantee. Timeouts below are
+    test watchdogs. “Read-only queries” means metadata/config inspection, not picking or export.</p>
+  <div id="charts">
+    <section class="card"><h2>Streamed line · requested ranges only</h2><div id="stream-mount"></div></section>
+    <section class="card"><h2>Resident reference · 2,049 points</h2><div id="resident-mount"></div></section>
+  </div>
+  <ol id="checks"></ol>
+  <div class="toolbar">
+    <button id="arm-active-dpr" type="button" disabled>Arm active DPR change</button>
+    <button id="arm-completed-dpr" type="button" disabled>Arm completed DPR change</button>
+    <span id="dpr-status" role="status">DPR probes become available after the recovery render.</span>
+  </div>
+  <p class="note">After a DPR probe says ARMED, change browser zoom with Ctrl+− or Ctrl++.
+    The probe checks physical canvas dimensions, a replacement core job, completed replay, and errors.</p>
+  <pre id="dpr-result">[]</pre>
+  <div class="toolbar">
+    <button id="run-provider-residency" type="button">Run provider-only automatic residency</button>
+    <span id="residency-status" role="status">Ready — independent 4,096-point residency check.</span>
+  </div>
+  <div id="residency-mount"></div>
+  <pre id="residency-result">{"status":"ready"}</pre>
+  <pre id="result">{"status":"ready"}</pre>
+  <script type="module">
+    const scenarioNames = [
+      "Metadata registration and resident reference",
+      "Active decoration preserves core job, cursor, and source requests",
+      "Active resize changes physical canvas and restarts the core view",
+      "Completed inspections and identical render are source-read free",
+      "Completed resize automatically replays at new physical dimensions",
+      "Awaited auto_fit_all commits completed statistics and rendering",
+      "Cancel pending provider, drain reservations, discard late replies",
+      "Cancel active drawing and drain all submitted reservations",
+      "Recovery render and bounded transferred-source audit",
+      "Completed stream GPU point and typed picking preserve global indices",
+      "Exact PNG replay at document 1x and 2x leaves the screen job untouched",
+      "A data-style edit replaces an unfinished revision without waiting for its source",
+      "Selection keeps its prior pixels until replacement source rows arrive",
+    ];
+    const runButton = document.querySelector("#run");
+    const statusElement = document.querySelector("#status");
+    const resultElement = document.querySelector("#result");
+    const checks = document.querySelector("#checks");
+    const dprButtons = [document.querySelector("#arm-active-dpr"), document.querySelector("#arm-completed-dpr")];
+    const dprStatusElement = document.querySelector("#dpr-status");
+    const dprResultElement = document.querySelector("#dpr-result");
+    let running = false;
+    let dprContext = null;
+    let cleanupPrevious = () => {};
+    let currentReport = null;
+    const describe = (error) => error?.stack ?? error?.message ?? String(error);
+    const assert = (condition, message) => { if (!condition) throw new Error(message); };
+    const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+    async function frames(count = 3) { for (let i = 0; i < count; i++) await nextFrame(); }
+    async function until(predicate, label, timeoutMs = 120000) {
+      const start = performance.now();
+      while (!predicate()) {
+        if (performance.now() - start > timeoutMs) throw new Error(`Timeout: ${label}`);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+    async function watchdog(promise, label, timeoutMs = 120000) {
+      let timer;
+      try {
+        return await Promise.race([promise, new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`Timeout: ${label}`)), timeoutMs);
+        })]);
+      } finally { clearTimeout(timer); }
+    }
+    function publish() {
+      if (!currentReport) return;
+      window.__figgyStreamingContractResult = currentReport;
+      resultElement.textContent = JSON.stringify(currentReport, null, 2);
+      dprResultElement.textContent = JSON.stringify(currentReport.dprChecks ?? [], null, 2);
+    }
+    function recordError(kind, error) {
+      if (!running || !currentReport) return;
+      currentReport.errors.push({ kind, message: describe(error) });
+      publish();
+    }
+    window.addEventListener("error", (event) => recordError("window", event.error ?? event.message));
+    window.addEventListener("unhandledrejection", (event) => recordError("unhandledrejection", event.reason));
+
+    // Only request descriptors wait here. Arrays are allocated after release,
+    // one bounded source range at a time; postMessage transfers their buffers.
+    const workerSource = `
+      const held = [];
+      function answer(request) {
+        const { token, id, revision, offset, length, encoding, pointCount, origin, step } = request;
+        const values = encoding === "f64" ? new Float64Array(length) : new Float32Array(length);
+        for (let local = 0; local < length; local++) {
+          const index = offset + local;
+          values[local] = id === "stream-x" ? origin + index * step
+            : Math.sin(index / (pointCount - 1) * Math.PI * 16);
+        }
+        const buffer = values.buffer;
+        postMessage({ type: "range", token, id, revision, offset, length, encoding, buffer }, [buffer]);
+        postMessage({ type: "transfer-audit", token, detached: buffer.byteLength === 0 });
+      }
+      onmessage = ({ data }) => {
+        if (data.type === "release") { for (const request of held.splice(0)) answer(request); return; }
+        if (data.type !== "range") return;
+        if (data.hold) { held.push(data); postMessage({ type: "held", token: data.token }); }
+        else answer(data);
+      };
+    `;
+
+    function createProvider(pointCount, maxPrimitives, origin, step) {
+      const url = URL.createObjectURL(new Blob([workerSource], { type: "text/javascript" }));
+      const worker = new Worker(url);
+      URL.revokeObjectURL(url);
+      const pending = new Map();
+      let token = 0;
+      let hold = false;
+      const audit = {
+        calls: 0, replies: 0, transferred: 0, heldRequests: 0,
+        maxRangeValues: 0, maxRangeBytes: 0, maxPendingRequests: 0,
+        requestedBytes: 0, violations: [], firstRequests: [],
+      };
+      worker.onmessage = ({ data }) => {
+        if (data.type === "transfer-audit") {
+          if (data.detached) audit.transferred++;
+          else audit.violations.push(`Worker buffer ${data.token} was not detached`);
+          return;
+        }
+        const item = pending.get(data.token);
+        if (!item) { audit.violations.push(`Unknown Worker response ${data.token}`); return; }
+        if (data.type === "held") { item.held = true; audit.heldRequests++; return; }
+        if (data.type !== "range") return;
+        pending.delete(data.token);
+        audit.replies++;
+        const values = data.encoding === "f64" ? new Float64Array(data.buffer) : new Float32Array(data.buffer);
+        if (values.length !== item.length || data.offset !== item.offset || data.revision !== item.revision) {
+          const error = new Error("Worker changed requested range identity");
+          audit.violations.push(error.message);
+          item.reject(error);
+        } else item.resolve(values);
+      };
+      worker.onerror = (event) => {
+        const error = new Error(event.message || "range Worker failed");
+        for (const item of pending.values()) item.reject(error);
+        pending.clear();
+        recordError("worker", error);
+      };
+      return {
+        audit,
+        get pendingCount() { return pending.size; },
+        get heldCount() { return [...pending.values()].filter((item) => item.held).length; },
+        setHeld(value) { hold = value; },
+        release() { hold = false; worker.postMessage({ type: "release" }); },
+        readRange(request) {
+          const { id, revision, offset, length, encoding } = request;
+          const valid = (id === "stream-x" || id === "stream-y")
+            && Number.isSafeInteger(offset) && Number.isSafeInteger(length) && length > 0
+            && offset >= 0 && offset + length <= pointCount && length <= maxPrimitives + 1
+            && encoding === (id === "stream-x" ? "f64" : "f32");
+          if (!valid) {
+            const error = new Error(`Unbounded or invalid source request: ${JSON.stringify(request)}`);
+            audit.violations.push(error.message);
+            return Promise.reject(error);
+          }
+          audit.calls++;
+          audit.maxRangeValues = Math.max(audit.maxRangeValues, length);
+          const bytes = length * (encoding === "f64" ? 8 : 4);
+          audit.maxRangeBytes = Math.max(audit.maxRangeBytes, bytes);
+          audit.requestedBytes += bytes;
+          if (audit.firstRequests.length < 8) audit.firstRequests.push({ ...request });
+          return new Promise((resolve, reject) => {
+            const requestToken = ++token;
+            pending.set(requestToken, { resolve, reject, length, offset, revision, held: false });
+            audit.maxPendingRequests = Math.max(audit.maxPendingRequests, pending.size);
+            worker.postMessage({ type: "range", token: requestToken, ...request,
+              pointCount, origin, step, hold });
+          });
+        },
+        dispose() {
+          worker.terminate();
+          for (const item of pending.values()) item.reject(new DOMException("Probe disposed", "AbortError"));
+          pending.clear();
+        },
+      };
+    }
+
+    function usageOf(chart) {
+      const usage = chart.streaming_usage();
+      try {
+        return {
+          active_charts: usage.active_charts,
+          in_flight_chunks: usage.in_flight_chunks,
+          reserved_gpu_bytes: usage.reserved_gpu_bytes,
+        };
+      } finally { usage.free?.(); }
+    }
+    function assertDrained(chart) {
+      const usage = usageOf(chart);
+      assert(usage.active_charts === 0 && usage.in_flight_chunks === 0 && usage.reserved_gpu_bytes === 0,
+        `await cancel did not drain usage: ${JSON.stringify(usage)}`);
+      return usage;
+    }
+    function dimensionsOf(chart) {
+      const rect = chart.getBoundingClientRect();
+      return { css: [rect.width, rect.height], physical: [chart.canvas.width, chart.canvas.height],
+        expected: [Math.max(1, Math.round(rect.width * devicePixelRatio)),
+          Math.max(1, Math.round(rect.height * devicePixelRatio))] };
+    }
+    function assertDimensions(chart, previous) {
+      const dimensions = dimensionsOf(chart);
+      assert(JSON.stringify(dimensions.physical) === JSON.stringify(dimensions.expected),
+        `Physical canvas does not match CSS × DPR: ${JSON.stringify(dimensions)}`);
+      assert(JSON.stringify(dimensions.physical) !== JSON.stringify(previous.physical),
+        "Resize did not change the physical canvas dimensions");
+      return dimensions;
+    }
+
+    async function armDprChange(mode) {
+      if (running || !dprContext) return;
+      const context = dprContext;
+      running = true;
+      runButton.disabled = true;
+      for (const button of dprButtons) button.disabled = true;
+      const entry = { mode, status: "PREPARING" };
+      currentReport.dprChecks.push(entry);
+      const errorCount = currentReport.errors.length;
+      const start = performance.now();
+      try {
+        dprStatusElement.textContent = `Preparing ${mode} DPR probe…`;
+        if (mode === "active") await context.startActive();
+        else assert(context.chart.stream_status().status === "complete", "Completed DPR probe needs a completed chart");
+        entry.before = { dpr: devicePixelRatio, dimensions: dimensionsOf(context.chart),
+          core: context.chart.stream_status(), sourceCalls: context.provider.audit.calls };
+        assert(entry.before.core.status === (mode === "active" ? "active" : "complete"),
+          `Unexpected core state before DPR change: ${entry.before.core.status}`);
+        entry.status = "ARMED";
+        dprStatusElement.textContent = `ARMED (${mode}, DPR ${entry.before.dpr}) — change browser zoom now with Ctrl+− or Ctrl++`;
+        publish();
+        await until(() => devicePixelRatio !== entry.before.dpr, "manual browser zoom / DPR change");
+        await until(() => context.chart.stream_status().job_id !== entry.before.core.job_id,
+          "DPR change replacement core job");
+        const dimensions = assertDimensions(context.chart, entry.before.dimensions);
+        context.provider.release();
+        await until(() => context.chart.stream_status().status === "complete", "DPR replay completion");
+        await until(() => context.provider.pendingCount === 0, "DPR stale/replayed provider responses");
+        await frames();
+        assert(currentReport.errors.length === errorCount, "Browser or figgy error occurred during DPR replay");
+        assert(context.provider.audit.calls > entry.before.sourceCalls, "DPR change did not replay original source ranges");
+        assert(JSON.stringify(context.resident.series_draw_info("reference")) === JSON.stringify(context.residentBaseline),
+          "Resident reference draw metadata changed during DPR replay");
+        entry.after = { dpr: devicePixelRatio, dimensions, core: context.chart.stream_status(),
+          sourceCalls: context.provider.audit.calls, newErrors: currentReport.errors.length - errorCount };
+        entry.status = "PASS";
+        dprStatusElement.textContent = `PASS — ${mode} DPR ${entry.before.dpr} → ${entry.after.dpr}; exact replay complete`;
+      } catch (error) {
+        entry.status = "FAIL";
+        entry.error = describe(error);
+        currentReport.status = "FAIL";
+        dprStatusElement.textContent = `FAIL — ${error.message ?? error}`;
+        context.provider.release();
+      } finally {
+        entry.elapsedMs = Math.round(performance.now() - start);
+        currentReport.provider = { ...context.provider.audit };
+        publish();
+        running = false;
+        runButton.disabled = false;
+        for (const button of dprButtons) button.disabled = false;
+      }
+    }
+    dprButtons[0].addEventListener("click", () => armDprChange("active"));
+    dprButtons[1].addEventListener("click", () => armDprChange("completed"));
+
+    const residencyButton = document.querySelector("#run-provider-residency");
+    const residencyStatus = document.querySelector("#residency-status");
+    const residencyResult = document.querySelector("#residency-result");
+    residencyButton.addEventListener("click", async () => {
+      if (running || residencyButton.disabled) return;
+      residencyButton.disabled = true;
+      runButton.disabled = true;
+      for (const button of dprButtons) button.disabled = true;
+      const report = { status: "RUNNING", points: 4096, maxRangeValues: 128,
+        browser: navigator.userAgent, devicePixelRatio, cases: [], errors: [] };
+      const publishResidency = () => { residencyResult.textContent = JSON.stringify(report, null, 2); };
+      const record = (kind, error) => { report.errors.push({ kind, message: describe(error) }); publishResidency(); };
+      const onWindowError = (event) => record("window", event.error ?? event.message);
+      const onRejection = (event) => record("unhandledrejection", event.reason);
+      window.addEventListener("error", onWindowError);
+      window.addEventListener("unhandledrejection", onRejection);
+      const started = performance.now();
+      let chart = null, job = null, release = null;
+      publishResidency();
+      try {
+        await import("../figgy-chart.js");
+        for (const workingSetLimit of [1024 * 1024, 1]) {
+          const entry = { workingSetLimit, expectedStatus: workingSetLimit === 1 ? "complete" : "resident",
+            status: "RUNNING", source: { calls: 0, maxLength: 0, totalValues: 0, violations: [] } };
+          report.cases.push(entry);
+          residencyStatus.textContent = `Testing ${entry.expectedStatus} admission…`;
+          chart = document.createElement("figgy-chart");
+          chart.style.width = "320px"; chart.style.height = "240px";
+          chart.addEventListener("figgy-error", (event) => record(event.detail?.operation ?? "figgy",
+            event.detail?.error ?? event.detail));
+          document.querySelector("#residency-mount").replaceChildren(chart);
+          await watchdog(chart.ready, "provider residency chart initialization");
+          await until(() => !chart.busy, "provider residency chart prewarm");
+          chart.configure_streaming(1, 2, 2, 8192, 64 * 1024);
+          chart.configure_auto_residency(256 * 1024 * 1024, workingSetLimit);
+          const columns = ["resident-x", "resident-y"].map((id) => ({ id, revision: 1,
+            length: report.points, encoding: "f32" }));
+          chart.register_streaming_column_sources(columns.map(c => c.id), columns.map(c => c.revision),
+            columns.map(c => c.length), columns.map(c => c.encoding));
+          chart.add_line_series("provider-line", "resident-x", "resident-y", 2, "Provider-only sine");
+          const config = JSON.parse(chart.get_config());
+          config.chart_area = { x: 0, y: 0, width: 320, height: 240 };
+          config.bottom_x.min = config.top_x.min = 0;
+          config.bottom_x.max = config.top_x.max = 1;
+          config.left_y.min = config.right_y.min = -1.1;
+          config.left_y.max = config.right_y.max = 1.1;
+          chart.set_config(JSON.stringify(config));
+          entry.admission = chart.inspect_column_admission(columns);
+          assert(entry.admission.admissible === (workingSetLimit !== 1),
+            `Unexpected provider admission: ${JSON.stringify(entry.admission)}`);
+          const held = new Promise(resolve => { release = resolve; });
+          let hold = true;
+          const readRange = async (range) => {
+            const valid = columns.some(c => c.id === range.id) && range.revision === 1 && range.encoding === "f32"
+              && Number.isSafeInteger(range.offset) && Number.isSafeInteger(range.length)
+              && range.offset >= 0 && range.length > 0 && range.offset + range.length <= report.points
+              && range.length <= report.maxRangeValues + 1 && range.length < report.points;
+            if (!valid) { entry.source.violations.push(range); throw new Error("Unbounded provider-only source request"); }
+            entry.source.calls++; entry.source.maxLength = Math.max(entry.source.maxLength, range.length);
+            entry.source.totalValues += range.length;
+            if (hold) await held;
+            return Float32Array.from({ length: range.length }, (_, local) => {
+              const t = (range.offset + local) / (report.points - 1);
+              return range.id === "resident-x" ? t : Math.sin(t * Math.PI * 8);
+            });
+          };
+          const render = () => chart.render_chart({ columns, readRange,
+            maxPrimitivesPerChunk: report.maxRangeValues, maxFrameTimeMs: 8, stallTimeoutMs: 60000 });
+          const errorsBefore = report.errors.length;
+          job = render(); job.done.catch(() => {});
+          await until(() => entry.source.calls > 0, "initial provider-only bounded request");
+          const callsHeld = entry.source.calls;
+          await frames(8);
+          entry.pending = { frames: 8, core: chart.stream_status(), sourceCalls: entry.source.calls,
+            errors: report.errors.length - errorsBefore };
+          assert(entry.pending.errors === 0 && entry.source.calls === callsHeld,
+            "Pending provider residency produced errors or ignored backpressure");
+          hold = false; release(); release = null;
+          entry.completed = await watchdog(job.done, "provider-only automatic admission completion");
+          await frames();
+          assert(entry.completed.status === entry.expectedStatus,
+            `Expected ${entry.expectedStatus}, got ${entry.completed.status}`);
+          entry.core = chart.stream_status();
+          entry.usage = usageOf(chart);
+          const calls = entry.source.calls;
+          const repeated = render();
+          entry.repeated = await watchdog(repeated.done, "identical provider-only render");
+          await frames();
+          entry.repeatSourceCalls = entry.source.calls - calls;
+          assert(entry.repeated.status === entry.expectedStatus && entry.repeatSourceCalls === 0,
+            "Identical provider revision reread its original source");
+          assert(report.errors.length === errorsBefore && entry.source.violations.length === 0,
+            "Provider-only automatic residency emitted an error");
+          await watchdog(job.cancel(), "provider-only case cleanup");
+          chart.remove(); chart = null; job = null;
+          entry.status = "PASS";
+          publishResidency();
+        }
+        report.status = "PASS";
+        residencyStatus.textContent = "PASS — bounded provider residency, source-free reuse, and tiny-cap streaming";
+      } catch (error) {
+        report.status = "FAIL"; report.failure = describe(error);
+        if (report.cases.at(-1)?.status === "RUNNING") {
+          report.cases.at(-1).status = "FAIL";
+          report.cases.at(-1).error = report.failure;
+        }
+        residencyStatus.textContent = `FAIL — ${error.message ?? error}`;
+        release?.();
+        try { if (job && chart && !chart.busy) await watchdog(job.cancel(), "provider failure cleanup", 30000); }
+        catch (cleanupError) { record("cleanup", cleanupError); }
+      } finally {
+        chart?.remove();
+        report.elapsedMs = Math.round(performance.now() - started);
+        publishResidency();
+        window.removeEventListener("error", onWindowError);
+        window.removeEventListener("unhandledrejection", onRejection);
+        residencyButton.disabled = false;
+        runButton.disabled = false;
+        for (const button of dprButtons) button.disabled = !dprContext;
+      }
+    });
+
+    runButton.addEventListener("click", async () => {
+      if (running) return;
+      cleanupPrevious();
+      running = true;
+      dprContext = null;
+      runButton.disabled = true;
+      for (const button of dprButtons) button.disabled = true;
+      dprStatusElement.textContent = "DPR probes become available after the recovery render.";
+      const started = performance.now();
+      const pointCount = Number(document.querySelector("#point-count").value);
+      const maxPrimitives = 65536;
+      const origin = 1700000000;
+      const step = 0.001;
+      currentReport = {
+        status: "running", pointCount, maxPrimitivesPerChunk: maxPrimitives, maxFrameTimeMs: 8,
+        devicePixelRatio, userAgent: navigator.userAgent,
+        timingContract: "Adaptive host submission budget; not a hard GPU or wall-clock bound.",
+        scenarios: scenarioNames.map((name) => ({ name, status: "NOT RUN" })),
+        errors: [], progress: { events: 0, last: null }, provider: null, dprChecks: [],
+      };
+      checks.replaceChildren(...scenarioNames.map((name) => {
+        const row = document.createElement("li"); row.textContent = `NOT RUN — ${name}`; return row;
+      }));
+      publish();
+      let chart, resident, provider, job;
+      let residentBaseline;
+      let latestSourceRevision = 0;
+      let holdAfterFirstProgress = true;
+      let activeCancelNotify = null;
+      async function scenario(index, action) {
+        const entry = currentReport.scenarios[index];
+        const row = checks.children[index];
+        entry.status = row.dataset.state = "RUNNING";
+        row.textContent = `RUNNING — ${entry.name}`;
+        statusElement.textContent = entry.name;
+        const start = performance.now();
+        publish();
+        try {
+          entry.details = await action();
+          entry.status = row.dataset.state = "PASS";
+          row.textContent = `PASS — ${entry.name}`;
+        } catch (error) {
+          entry.status = row.dataset.state = "FAIL";
+          entry.error = describe(error);
+          row.textContent = `FAIL — ${entry.name}: ${error.message ?? error}`;
+          throw error;
+        } finally { entry.elapsedMs = Math.round(performance.now() - start); publish(); }
+      }
+      const columnsFor = (revision) => [
+        { id: "stream-x", revision, length: pointCount, encoding: "f64" },
+        { id: "stream-y", revision, length: pointCount, encoding: "f32" },
+      ];
+      const onProgress = (progress) => {
+        currentReport.progress.events++;
+        currentReport.progress.last = { ...progress };
+        if (holdAfterFirstProgress && progress.submittedPrimitives > 0) {
+          holdAfterFirstProgress = false;
+          provider.setHeld(true);
+        }
+        if (activeCancelNotify && progress.submittedPrimitives > 0
+            && progress.submittedPrimitives < progress.totalPrimitives) {
+          const notify = activeCancelNotify;
+          activeCancelNotify = null;
+          provider.setHeld(true);
+          notify(chart.stream_status());
+        }
+      };
+      const render = (revision = 1) => {
+        latestSourceRevision = Math.max(latestSourceRevision, revision);
+        return chart.render_chart({ columns: columnsFor(revision),
+          readRange: (range) => provider.readRange(range), maxPrimitivesPerChunk: maxPrimitives,
+          maxFrameTimeMs: 8, stallTimeoutMs: 60000, onProgress });
+      };
+      try {
+        assert(Number.isSafeInteger(pointCount) && pointCount >= 100000 && pointCount <= 100000000,
+          "Choose 100,000–100,000,000 integer points");
+        assert(location.protocol !== "file:", "Serve this page over HTTP, not file://");
+        assert(navigator.gpu, "This browser does not expose WebGPU");
+        const { ColorCycle } = await import("../figgy-chart.js");
+        chart = document.createElement("figgy-chart"); chart.id = "stream-host";
+        resident = document.createElement("figgy-chart"); resident.id = "resident-host";
+        for (const element of [chart, resident]) {
+          element.addEventListener("figgy-error", (event) => recordError(element.id, event.detail.error));
+        }
+        document.querySelector("#stream-mount").replaceChildren(chart);
+        document.querySelector("#resident-mount").replaceChildren(resident);
+        provider = createProvider(pointCount, maxPrimitives, origin, step);
+        currentReport.provider = provider.audit;
+        cleanupPrevious = () => { chart.remove(); resident.remove(); provider.dispose(); };
+        await scenario(0, async () => {
+          await watchdog(Promise.all([chart.ready, resident.ready]), "both chart initializations");
+          await until(() => !chart.busy && !resident.busy, "initial background prewarm");
+          const rx = new Float32Array(2049), ry = new Float32Array(2049);
+          for (let i = 0; i < rx.length; i++) { rx[i] = i / 2048 * 16 * Math.PI; ry[i] = Math.sin(rx[i]); }
+          resident.register_column_f32("reference-x", rx);
+          resident.register_column_f32("reference-y", ry);
+          resident.add_line_series("reference", "reference-x", "reference-y", 2, "Resident sine");
+          await resident.auto_fit_all(0.05);
+          resident.set_title("Resident reference");
+          resident.frame();
+          residentBaseline = resident.series_draw_info("reference");
+          assert(residentBaseline.drawn_count === 2048, "2,049 resident line points must produce 2,048 segments");
+          chart.configure_streaming(1, 2, 2, 2 * 1024 * 1024, 16 * 1024 * 1024);
+          chart.register_streaming_column_sources(["stream-x", "stream-y"], [1, 1],
+            [pointCount, pointCount], ["f64", "f32"]);
+          chart.add_line_series("stream-line", "stream-x", "stream-y", 1.5, "Worker sine");
+          chart.apply_color_cycle(ColorCycle.Vivid);
+          const config = JSON.parse(chart.get_config());
+          config.bottom_x.min = config.top_x.min = origin;
+          config.bottom_x.max = config.top_x.max = origin + (pointCount - 1) * step;
+          config.left_y.min = config.right_y.min = -1.25;
+          config.left_y.max = config.right_y.max = 1.25;
+          chart.set_config(JSON.stringify(config));
+          chart.set_title(`${pointCount.toLocaleString("en-US")} streamed line points`);
+          chart.set_x_title("Timestamp (Float64)"); chart.set_y_title("Sine (Float32)");
+          assert(provider.audit.calls === 0, "Metadata registration unexpectedly read source values");
+          job = render();
+          job.done.catch(() => {});
+          return { residentPoints: rx.length, residentDrawInfo: residentBaseline,
+            metadataSourceCalls: 0, core: chart.stream_status(),
+            streamCanvas: dimensionsOf(chart), residentCanvas: dimensionsOf(resident) };
+        });
+        await scenario(1, async () => {
+          await until(() => provider.heldCount > 0 && chart.stream_status().submitted_primitives > 0,
+            "active cursor with a held provider response");
+          const before = chart.stream_status(), calls = provider.audit.calls;
+          chart.set_title("Decoration-only edit: the existing line continues");
+          chart.frame();
+          await frames();
+          const after = chart.stream_status();
+          assert(after.job_id === before.job_id, "Decoration replaced the renderer job");
+          assert(after.submitted_primitives === before.submitted_primitives, "Held cursor changed on decoration");
+          assert(provider.audit.calls === calls, "Decoration requested source data again");
+          return { before, after, sourceCallsBefore: calls, sourceCallsAfter: provider.audit.calls };
+        });
+        await scenario(2, async () => {
+          const before = chart.stream_status(), dimensions = dimensionsOf(chart);
+          chart.style.width = "832px"; chart.style.height = "422px"; chart.resize();
+          await until(() => chart.stream_status().job_id !== before.job_id, "active resize replacement job");
+          const resized = assertDimensions(chart, dimensions);
+          const replacement = chart.stream_status();
+          provider.release();
+          const completed = await watchdog(job.done, "resized original execution completion");
+          assert(completed.status === "complete", `Active resize ended as ${completed.status}`);
+          assert(chart.stream_status().status === "complete", "Core did not finish resized execution");
+          return { oldJobId: before.job_id, newJobId: replacement.job_id, dimensions: resized,
+            completion: chart.stream_status() };
+        });
+        await scenario(3, async () => {
+          const before = chart.stream_status(), calls = provider.audit.calls;
+          let drawInfo;
+          for (let i = 0; i < 20; i++) {
+            chart.stream_status(); chart.get_config(); chart.get_series(); usageOf(chart);
+            drawInfo = chart.series_draw_info("stream-line");
+          }
+          job = render();
+          const completed = await watchdog(job.done, "identical completed render");
+          await frames();
+          const after = chart.stream_status();
+          assert(completed.status === "complete", "Identical render did not reuse completion");
+          assert(after.job_id === before.job_id, "Identical render replaced the core job");
+          assert(after.submitted_primitives === before.submitted_primitives, "Read inspection changed the cursor");
+          assert(provider.audit.calls === calls, "Completed inspection/identical render fetched data");
+          return { before, after, sourceCallsBefore: calls, sourceCallsAfter: provider.audit.calls, drawInfo };
+        });
+        await scenario(4, async () => {
+          const before = chart.stream_status(), dimensions = dimensionsOf(chart), calls = provider.audit.calls;
+          chart.style.width = "904px"; chart.style.height = "454px"; chart.resize();
+          await until(() => chart.stream_status().job_id !== before.job_id, "completed resize replay job");
+          const resized = assertDimensions(chart, dimensions);
+          await until(() => chart.stream_status().status === "complete", "completed resize exact replay");
+          assert(provider.audit.calls > calls, "Completed resize did not replay original source ranges");
+          return { oldJobId: before.job_id, completion: chart.stream_status(), dimensions: resized,
+            replaySourceCalls: provider.audit.calls - calls };
+        });
+        await scenario(5, async () => {
+          const calls = provider.audit.calls;
+          await watchdog(chart.auto_fit_all(0.05), "awaited streamed auto-fit");
+          const core = chart.stream_status(), config = JSON.parse(chart.get_config());
+          assert(core.status === "complete" && !core.auto_fit_pending,
+            `auto_fit_all resolved before completion: ${JSON.stringify(core)}`);
+          assert(config.bottom_x.min < origin && config.bottom_x.max > origin + (pointCount - 1) * step,
+            "Auto-fit did not commit padded Float64 x bounds");
+          assert(config.left_y.min < -1 && config.left_y.max > 1
+            && config.left_y.min > -1.2 && config.left_y.max < 1.2,
+            "Auto-fit did not commit sine y statistics with 5% padding");
+          return { core, xBounds: [config.bottom_x.min, config.bottom_x.max],
+            yBounds: [config.left_y.min, config.left_y.max], redrawSourceCalls: provider.audit.calls - calls,
+            note: "Cached scalar statistics set the fit; changed axes may require an exact source replay for drawing." };
+        });
+        await scenario(6, async () => {
+          provider.setHeld(true);
+          job = render(2); job.done.catch(() => {});
+          await until(() => provider.heldCount > 0, "pending held provider request before cancellation");
+          const before = chart.stream_status(), repliesBefore = provider.audit.replies;
+          const cancelled = await watchdog(job.cancel(), "pending-source cancellation drain");
+          await watchdog(job.done, "cancelled job settlement");
+          const drained = assertDrained(chart), settled = chart.stream_status(), calls = provider.audit.calls;
+          provider.release();
+          await until(() => provider.pendingCount === 0, "late Worker reply delivery");
+          await frames(5);
+          const after = chart.stream_status();
+          assert(provider.audit.replies > repliesBefore, "No late provider reply exercised rejection");
+          assert(after.submitted_primitives === settled.submitted_primitives && after.job_id === settled.job_id,
+            "A late provider reply advanced the cancelled core cursor");
+          assert(provider.audit.calls === calls, "Cancelled job requested new source data");
+          assertDrained(chart);
+          return { before, cancelled, drained, after, lateReplies: provider.audit.replies - repliesBefore };
+        });
+        await scenario(7, async () => {
+          const drawing = new Promise((resolve) => { activeCancelNotify = resolve; });
+          job = render(3); job.done.catch(() => {});
+          const before = await watchdog(drawing, "active submitted drawing before cancellation");
+          assert(before.submitted_primitives > 0 && before.submitted_primitives < before.total_primitives,
+            "Cancellation was not triggered during partial drawing");
+          const cancelled = await watchdog(job.cancel(), "active-draw cancellation drain");
+          await watchdog(job.done, "active cancelled job settlement");
+          const drained = assertDrained(chart);
+          provider.release();
+          await until(() => provider.pendingCount === 0, "active cancellation late provider replies");
+          await frames();
+          assertDrained(chart);
+          return { before, cancelled, drained, after: chart.stream_status() };
+        });
+        await scenario(8, async () => {
+          job = render(4);
+          const completed = await watchdog(job.done, "recovery rendering");
+          await until(() => provider.pendingCount === 0 && provider.audit.transferred === provider.audit.replies,
+            "all Worker transfer acknowledgements");
+          assert(completed.status === "complete", "Rendering did not recover after cancellation");
+          assert(provider.audit.violations.length === 0, provider.audit.violations.join("; "));
+          assert(provider.audit.maxRangeValues <= maxPrimitives + 1 && provider.audit.maxRangeValues < pointCount,
+            "Provider allocated a full source or an oversized range");
+          assert(provider.audit.transferred === provider.audit.replies, "Not every Worker buffer was transferred");
+          assert(JSON.stringify(resident.series_draw_info("reference")) === JSON.stringify(residentBaseline),
+            "Resident reference draw metadata changed from its initial 2,048-segment baseline");
+          resident.frame(); chart.frame();
+          dprContext = { chart, resident, provider, residentBaseline,
+            async startActive() {
+              provider.release();
+              const drawing = new Promise((resolve) => { activeCancelNotify = resolve; });
+              job = render(latestSourceRevision + 1); job.done.catch(() => {});
+              await watchdog(drawing, "partial drawing before manual DPR change");
+              await until(() => provider.heldCount > 0, "held source request for active DPR probe");
+            },
+          };
+          return { completed: chart.stream_status(), sourceAudit: { ...provider.audit },
+            residentDrawInfo: resident.series_draw_info("reference"),
+            display: "Both real chart canvases remain mounted for visual inspection." };
+        });
+        await scenario(9, async () => {
+          const before = chart.stream_status(), calls = provider.audit.calls;
+          const x = chart.canvas.width / 2, y = chart.canvas.height / 2;
+          const point = await watchdog(chart.pick_point(x, y, 64), "stream point pick");
+          const data = await watchdog(chart.pick_data(x, y, 64), "stream typed pick");
+          assert(point && point.point_index > maxPrimitives && point.point_index < pointCount,
+            `Point pick lost its global source index: ${JSON.stringify(point)}`);
+          assert(Number.isFinite(point.distance_px) && point.distance_px <= 64,
+            "Point pick returned an invalid pixel distance");
+          assert(data && data.distance_px === point.distance_px, "Typed pick differs from point pick for a line-only chart");
+          assert(!("data_x" in point) && !("data_y" in point), "Picking must return identity, not values");
+          const after = chart.stream_status();
+          assert(after.job_id === before.job_id && after.submitted_primitives === before.submitted_primitives,
+            "Picking changed the completed display job/cursor");
+          assert(provider.audit.calls > calls, "Stream picking did not replay source ranges");
+          return { point, data, before, after, sourceCalls: provider.audit.calls - calls };
+        });
+        await scenario(10, async () => {
+          const before = chart.stream_status(), calls = provider.audit.calls;
+          const config = JSON.parse(chart.get_config());
+          const area = config.chart_area;
+          const exports = [];
+          for (const scale of [1, 2]) {
+            const bytes = await watchdog(chart.export_png(scale), `exact stream PNG ${scale}x`);
+            assert(bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71,
+              "Export is not PNG bytes");
+            const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+            const width = Math.round(area.width * scale), height = Math.round(area.height * scale);
+            assert(bitmap.width === width && bitmap.height === height,
+              `Export dimensions ${bitmap.width}x${bitmap.height} differ from document ${width}x${height}`);
+            const canvas = document.createElement("canvas"); canvas.width = width; canvas.height = height;
+            const context = canvas.getContext("2d"); context.drawImage(bitmap, 0, 0); bitmap.close();
+            const pixels = context.getImageData(0, 0, width, height).data;
+            let colored = 0;
+            for (let offset = 0; offset < pixels.length; offset += 4) {
+              if (pixels[offset + 3] > 0
+                  && Math.max(pixels[offset], pixels[offset + 1], pixels[offset + 2])
+                    - Math.min(pixels[offset], pixels[offset + 1], pixels[offset + 2]) > 30) colored++;
+            }
+            assert(colored > 500, "PNG contains no visible colored data line");
+            exports.push({ scale, width, height, bytes: bytes.length, coloredPixels: colored });
+          }
+          const after = chart.stream_status();
+          assert(after.job_id === before.job_id && after.submitted_primitives === before.submitted_primitives,
+            "PNG replay changed the completed screen job/cursor");
+          assert(provider.audit.calls > calls, "PNG did not replay the original source");
+          assert(provider.audit.violations.length === 0, provider.audit.violations.join("; "));
+          return { exports, before, after, sourceCalls: provider.audit.calls - calls };
+        });
+        await scenario(11, async () => {
+          const drawing = new Promise((resolve) => { activeCancelNotify = resolve; });
+          job = render(5);
+          job.done.catch(() => {});
+          await watchdog(drawing, "partial drawing before a style edit");
+          await until(() => provider.heldCount > 0, "old revision source held before editing");
+          const before = chart.stream_status();
+          const series = JSON.parse(chart.get_series());
+          series[0].render_type.Line.line.line_width = 2.75;
+          chart.set_series(JSON.stringify(series));
+          await until(() => chart.stream_status().job_id !== before.job_id,
+            "new core job starts while old source is still unresolved");
+          const replacement = chart.stream_status();
+          assert(before.submitted_primitives > 0 && before.submitted_primitives < before.total_primitives,
+            "The style edit did not happen during an unfinished data revision");
+          assert(replacement.status === "active" && provider.heldCount > 0,
+            "Old source requests must not block the latest renderer snapshot");
+          provider.release();
+          await watchdog(job.done, "replacement style completion");
+          const completed = chart.stream_status();
+          assert(completed.status === "complete" && completed.job_id === replacement.job_id,
+            "The replacement revision did not complete");
+          assert(completed.submitted_primitives === pointCount - 1,
+            "Replacement rendering omitted original line segments");
+          return { before, replacement, completed };
+        });
+        await scenario(12, async () => {
+          const before = chart.stream_status();
+          const declaration = JSON.parse(chart.get_series())[0];
+          const select = (index) => chart.set_picked_points(JSON.stringify({
+            visible: true, refs: [{ source_id: declaration.source_id, series_id: declaration.series_id,
+              point_index: index }], ring_color: { r: 1, g: 0, b: 0, a: 1 },
+            ring_width_px: 4, radius_extra_px: 9,
+          }));
+          const pixels = () => {
+            // Capture in the same task as presentation: a later rAF may see a
+            // recycled WebGPU canvas backing store. Re-presenting the same
+            // clear color does not alter the data job or its stream cursor.
+            chart.set_clear_color(1, 1, 1, 1);
+            chart.frame();
+            const canvas = document.createElement("canvas");
+            canvas.width = chart.canvas.width; canvas.height = chart.canvas.height;
+            const context = canvas.getContext("2d", { willReadFrequently: true });
+            context.drawImage(chart.canvas, 0, 0);
+            const values = context.getImageData(0, 0, canvas.width, canvas.height).data;
+            assert(values.some((v) => v !== 0), "Canvas capture must contain the rendered frame");
+            return values;
+          };
+          const different = (a, b) => a.length !== b.length || a.some((v, i) => v !== b[i]);
+          const baseline = pixels(), calls = provider.audit.calls;
+          select(Math.floor(pointCount * 0.25));
+          await until(() => provider.audit.calls >= calls + 2 && provider.pendingCount === 0,
+            "first selected source rows");
+          await frames(5);
+          const oldSelection = pixels();
+          assert(different(baseline, oldSelection), "First selection did not appear on screen");
+          provider.setHeld(true);
+          select(Math.floor(pointCount * 0.75));
+          await until(() => provider.heldCount > 0, "replacement selection source held");
+          await frames(5);
+          assert(!different(oldSelection, pixels()), "Old selection disappeared before replacement rows arrived");
+          const held = chart.stream_status();
+          assert(held.job_id === before.job_id && held.submitted_primitives === before.submitted_primitives,
+            "Selection restarted the completed data stream");
+          provider.release();
+          await until(() => provider.pendingCount === 0, "replacement selection source delivered");
+          await frames(5);
+          assert(different(oldSelection, pixels()), "New selection did not atomically replace the old overlay");
+          const after = chart.stream_status();
+          assert(after.job_id === before.job_id && after.submitted_primitives === before.submitted_primitives,
+            "Selection commit changed data progress");
+          chart.set_picked_points("null");
+          await frames(5);
+          assert(!different(baseline, pixels()), "Clearing selection changed data pixels");
+          return { before, held, after, selectedRangeReads: provider.audit.calls - calls,
+            exactOldPixelsHeld: true, exactDataPixelsRestored: true };
+        });
+        assert(currentReport.errors.length === 0, "Browser/figgy errors occurred; see errors in the JSON report");
+        currentReport.status = "PASS";
+        statusElement.textContent = "PASS — all real-browser scenarios completed";
+      } catch (error) {
+        currentReport.status = "FAIL";
+        currentReport.failure = describe(error);
+        statusElement.textContent = `FAIL — ${error.message ?? error}`;
+        try { if (job && chart && !chart.busy) await watchdog(job.cancel(), "failure cleanup", 30000); }
+        catch (cleanupError) { currentReport.errors.push({ kind: "cleanup", message: describe(cleanupError) }); }
+        provider?.release();
+      } finally {
+        currentReport.elapsedMs = Math.round(performance.now() - started);
+        currentReport.provider = provider ? { ...provider.audit } : null;
+        publish();
+        running = false;
+        runButton.disabled = false;
+        for (const button of dprButtons) button.disabled = !dprContext;
+        if (dprContext) dprStatusElement.textContent = "Choose a DPR probe, then change browser zoom when it says ARMED.";
+      }
+    });
+  </script>
+</body>
+</html>

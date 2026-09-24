@@ -17,6 +17,9 @@ pub mod renderer;
 // deco layer (`axis_render`) when `Config::draw_style` selects a stylized
 // mode (`DrawStyle::Sketch`, …).
 mod sketch;
+mod streaming;
+pub mod streaming_source;
+mod streaming_upload;
 pub mod text_render;
 mod time_axis;
 
@@ -38,7 +41,10 @@ pub use config::{
     BarAlign, ColorBarOptions, Config, DataSelectionsConfig, PickedDataRef, PickedPointRef,
     PickedPointsConfig,
 };
-pub use data::{Column, ColumnPairWriter, ColumnSource, ColumnUploadStats, HiLoColumnSource};
+pub use data::{
+    Column, ColumnPairWriter, ColumnRangeWriteError, ColumnSource, ColumnUploadStats,
+    HiLoColumnSource, StreamColumnSource,
+};
 pub use data_config::{
     DataBarBinStyleConfig, DataBarStyleOverride, DataErrorBarPointStyleConfig,
     DataErrorBarPointStyleOverride, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
@@ -56,7 +62,10 @@ pub use gpu_errorbar::{
     GpuSeriesExtent, GpuSeriesExtentColumnIds, GpuSeriesExtentMode, GpuSeriesExtentTicket,
     GpuSeriesFitMode,
 };
-pub use gpu_memory::{GpuMemoryUsage, GpuResourceKind};
+pub use gpu_memory::{
+    GpuMemoryUsage, GpuResourceKind, ResidentAdmission, ResidentAdmissionRequest,
+    ResidentAdmissionStatus,
+};
 pub use gpu_pick::{GpuPickError, GpuPickTicket};
 pub use init::{INIT_EVENT_SCHEMA_VERSION, InitEvent, InitPhase};
 pub use pick::{PickedData, PickedPoint, PointColumnLookup, PointPickOptions, pick_nearest_point};
@@ -64,15 +73,23 @@ pub use preset::{AxisPreset, ColorCycle};
 pub use renderer::{
     AxisViewState, ChartDrawItem, ChartId, ChartRenderStamp, ChartStyle, ChartView, ChartViewState,
     FitCommitToken, GpuPickRequest, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE, PreparedFrame, RasterImage,
-    RenderRevision, Renderer, RendererDevice, RendererLoadDemo, RendererVisualStamp, Series,
-    SeriesDrawInfo, WebDerivedSnapshot, WebDerivedStamp, WindowedRenderer, clamp_export_scale,
-    display_config_for_surface, dpi_to_scale, encode_png, fit_display_panel,
+    RegisteredChartDrawItem, RenderRevision, Renderer, RendererDevice, RendererLoadDemo,
+    RendererVisualStamp, Series, SeriesDrawInfo, WebDerivedSnapshot, WebDerivedStamp,
+    WindowedRenderer, StreamingOperation, StreamingResidencyOperation, StreamingSelectionRequest, StreamingSelectionTicket, clamp_export_scale, display_config_for_surface, dpi_to_scale, encode_png,
+    fit_display_panel,
 };
 pub use resize::{Resizable, ResizeHandle};
 pub use select::{
     AxisElement, AxisLabelElement, AxisTitleElement, ChartTitleElement, ColorBarAxisElement,
     ColorBarElement, ColorBarLabelElement, ColorBarTitleElement, DataAreaElement, HitId, HitMap,
     LegendElement, Selectable, SelectionBox,
+};
+pub use streaming_source::{
+    AutoStreamRange, AutoStreamSourceVersion, AutoStreamingProgress, AutoStreamingRangeRequest,
+    AutoStreamingRequest, LogicalColumn, RenderInterruptStatus, StreamBounds, StreamColumn,
+    StreamEncoding, StreamRangeSourceBinding, StreamReplay, StreamSourceBinding, StreamStatistics,
+    StreamingChartOptions, StreamingLimits, StreamingProgress, StreamingState, StreamingStatus,
+    StreamingUsage,
 };
 pub use text::MeasureText;
 pub use text_render::{CpuTextMeasure, FontPolicy};

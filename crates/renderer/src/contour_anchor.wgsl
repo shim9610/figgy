@@ -53,10 +53,16 @@ struct Transform {
     //                wavelength, binary separation); keeps the star texture
     //                resolution-invariant under DPI/export scaling.
     // constellation: [0] = (star_opacity, line_opacity, 0, 0)
+    // All styles reserve [2].z for the global point-base u32 BIT PATTERN.
+    // Resident draws write zero; streamed point/errorbar draws bitcast it.
     style_params: array<vec4<f32>, 3>,
 };  // 112 B (vec4 array at offset 64, stride 16)
 
 @group(0) @binding(0) var<uniform> transform: Transform;
+
+fn styled_point_index(local_index: u32) -> u32 {
+    return bitcast<u32>(transform.style_params[2].z) + local_index;
+}
 
 fn maybe_log(v: f32, is_log: f32) -> f32 {
     let lv = log(max(v, 1e-30)) / log(10.0);
@@ -299,7 +305,7 @@ fn locate(base: u32, n: u32, count: u32, axis: u32, t: f32, lattice: u32) -> Cel
         if (hi - lo <= 1u) {
             break;
         }
-        let mid = (lo + hi) / 2u;
+        let mid = lo + (hi - lo) / 2u;
         let tm = boundary_t(base, n, mid, axis, lattice);
         if (!f32_is_finite(tm)) {
             return out;

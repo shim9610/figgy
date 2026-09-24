@@ -29,10 +29,16 @@ struct Transform {
     //                wavelength, binary separation); keeps the star texture
     //                resolution-invariant under DPI/export scaling.
     // constellation: [0] = (star_opacity, line_opacity, 0, 0)
+    // All styles reserve [2].z for the global point-base u32 BIT PATTERN.
+    // Resident draws write zero; streamed point/errorbar draws bitcast it.
     style_params: array<vec4<f32>, 3>,
 };  // 112 B (vec4 array at offset 64, stride 16)
 
 @group(0) @binding(0) var<uniform> transform: Transform;
+
+fn styled_point_index(local_index: u32) -> u32 {
+    return bitcast<u32>(transform.style_params[2].z) + local_index;
+}
 
 struct Style {
     color_premul: vec4<f32>,
@@ -403,6 +409,7 @@ fn apply_style_slot(base: ResolvedMappedStyle, slot: ScatterStyleSlot) -> Resolv
 
 fn resolve_mapped_style(style_index: f32, inst: u32) -> ResolvedMappedStyle {
     var out = ResolvedMappedStyle(style.color_premul, style.point_radius_px, style.shape_id);
+    let point_index = inst + scatter_style_meta._pad;
 
     if (scatter_style_meta.has_index != 0u && valid_style_index(style_index)) {
         let idx = u32(round(style_index));
@@ -413,7 +420,7 @@ fn resolve_mapped_style(style_index: f32, inst: u32) -> ResolvedMappedStyle {
 
     for (var i = 0u; i < scatter_style_meta.override_count; i = i + 1u) {
         let ov = scatter_style_overrides[i];
-        if (ov.point_index == inst) {
+        if (ov.point_index == point_index) {
             out = apply_style_slot(out, ScatterStyleSlot(ov.color_premul, ov.params));
         }
     }
@@ -553,7 +560,7 @@ fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> VsSketchOut {
     var out: VsSketchOut;
     out.pos = vec4<f32>(world, 0.0, 1.0);
     out.local_pos = in.quad_pos;
-    out.seed_inst = (u32(transform.style_params[0].z) ^ style.series_salt) + inst;
+    out.seed_inst = (u32(transform.style_params[0].z) ^ style.series_salt) + styled_point_index(inst);
     out.wobble_px = wobble;
     return out;
 }
@@ -621,14 +628,15 @@ fn vs_constellation_star(in: VsIn, @builtin(instance_index) inst: u32) -> VsCons
 
     let seed = style.series_salt;
 
-    let u_b = sketch_hash01(inst, seed ^ 0x86A9u);
+    let global_inst = styled_point_index(inst);
+    let u_b = sketch_hash01(global_inst, seed ^ 0x86A9u);
     let brightness = 0.22 + 0.78 * pow(u_b, 2.4);
-    let size_jitter = 0.86 + 0.30 * sketch_hash01(inst, seed ^ 0x51A7u);
+    let size_jitter = 0.86 + 0.30 * sketch_hash01(global_inst, seed ^ 0x51A7u);
     let star_radius = max(style.point_radius_px * CONSTELLATION_POINT_STAR_GAIN * size_jitter, 0.5);
     let half_px = star_radius * 4.0 + QUAD_MARGIN_PX;
     let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
 
-    let h_t = sketch_hash01(inst, seed ^ 0x7E47u);
+    let h_t = sketch_hash01(global_inst, seed ^ 0x7E47u);
     let t_norm = mix(0.08, 0.92, h_t);
     let tint = textureLoad(
         cons_lut_tex,
@@ -704,7 +712,7 @@ fn vs_planet(in: VsIn, @builtin(instance_index) inst: u32) -> VsPlanetOut {
     var out: VsPlanetOut;
     out.pos = vec4<f32>(world, 0.0, 1.0);
     out.local_pos = in.quad_pos;
-    out.seed_inst = (u32(transform.style_params[0].w) ^ style.series_salt) + inst;
+    out.seed_inst = (u32(transform.style_params[0].w) ^ style.series_salt) + styled_point_index(inst);
     out.rim_gain = clamp(transform.style_params[1].w, 0.0, 2.0);
     return out;
 }

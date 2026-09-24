@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Figgy bounded Heatmap browser parity</title>
+  <style>
+    body { margin: 24px; font-family: system-ui, sans-serif; color: #182438; background: #f5f7fb; }
+    button { font: inherit; padding: 8px 12px; }
+    #charts { display: flex; gap: 20px; margin: 20px 0; }
+    figgy-chart { display: block; width: 320px; height: 240px; background: white; }
+    pre { background: #111c2e; color: #dfebff; padding: 16px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    #status { font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>Bounded Heatmap: real-browser exact parity</h1>
+  <p>Float64 3×3 fields, repeated Z columns with unequal source lengths, NaN and translucent fill.
+    Edges/flat and centers/interpolated cases use a two-value draw I/O limit. Picking and selection
+    must request axes only. Selected 1×/2× exports compare every decoded RGBA byte with resident output.</p>
+  <button id="run">Run Heatmap end-to-end checks</button>
+  <label>Cases <select id="case-filter"><option value="all">Both cases</option><option value="centers">Centers/interpolated only</option></select></label>
+  <span id="status" role="status">Ready — requires current WebGPU WASM</span>
+  <div id="charts"><section><h2>Resident</h2><div id="resident"></div></section>
+    <section><h2>Streamed</h2><div id="streamed"></div></section></div>
+  <pre id="result">{"status":"ready"}</pre>
+  <div id="difference-images"></div>
+  <script type="module">
+    const WIDTH = 160, HEIGHT = 120, ORIGIN = 1e12;
+    const button = document.querySelector("#run"), status = document.querySelector("#status");
+    const output = document.querySelector("#result");
+    const assert = (ok, message) => { if (!ok) throw new Error(message); };
+    const clone = value => JSON.parse(JSON.stringify(value));
+    const color = (r, g, b, a = 1) => ({ r, g, b, a });
+    let report = { status: "ready" }, running = false, resident = null, streamed = null;
+    const publish = () => { output.textContent = JSON.stringify(report, null, 2); };
+    const error = (kind, cause) => {
+      if (!running) return;
+      report.errors.push({ kind, message: cause?.stack ?? cause?.message ?? String(cause) }); publish();
+    };
+    window.addEventListener("error", event => error("window", event.error ?? event.message));
+    window.addEventListener("unhandledrejection", event => error("unhandledrejection", event.reason));
+    const frames = async (n = 3) => { for (let i = 0; i < n; i++) await new Promise(requestAnimationFrame); };
+    async function watchdog(promise, label) {
+      let timer;
+      try { return await Promise.race([promise, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Timeout: ${label}`)), 120000);
+      })]); } finally { clearTimeout(timer); }
+    }
+    async function until(predicate, label) {
+      await watchdog((async () => { while (!predicate()) await frames(1); })(), label);
+    }
+    async function mount(id) {
+      const chart = document.createElement("figgy-chart");
+      chart.addEventListener("figgy-error", event => error(event.detail?.operation ?? id, event.detail?.error ?? event.detail));
+      document.querySelector(`#${id}`).replaceChildren(chart);
+      await watchdog(chart.ready, `${id} initialization`);
+      await until(() => !chart.busy, `${id} prewarm`);
+      return chart;
+    }
+    async function pixels(png, scale) {
+      const bitmap = await createImageBitmap(new Blob([png], { type: "image/png" }));
+      try {
+        assert(bitmap.width === WIDTH * scale && bitmap.height === HEIGHT * scale, "Wrong document export size");
+        const canvas = document.createElement("canvas"); canvas.width = bitmap.width; canvas.height = bitmap.height;
+        const context = canvas.getContext("2d", { willReadFrequently: true }); context.drawImage(bitmap, 0, 0);
+        return context.getImageData(0, 0, canvas.width, canvas.height).data;
+      } finally { bitmap.close(); }
+    }
+    function compare(a, b) {
+      assert(a.length === b.length, "RGBA lengths differ");
+      let differingBytes = 0, maxDelta = 0, first = null;
+      for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) {
+        differingBytes++; maxDelta = Math.max(maxDelta, Math.abs(a[i] - b[i]));
+        first ??= { byte: i, resident: a[i], streamed: b[i] };
+      }
+      return { equal: differingBytes === 0, differingBytes, maxDelta, first };
+    }
+    function differencePixels(a, b, width) {
+      const samples = [];
+      for (let i = 0; i < a.length && samples.length < 16; i += 4) {
+        if (a.subarray(i, i + 4).some((value, j) => value !== b[i + j])) {
+          samples.push({ x: (i / 4) % width, y: Math.floor(i / 4 / width),
+            resident: Array.from(a.subarray(i, i + 4)), streamed: Array.from(b.subarray(i, i + 4)) });
+        }
+      }
+      return samples;
+    }
+    function showDifferenceImages(expected, actual, scale) {
+      const area = document.querySelector("#difference-images");
+      for (const [label, bytes] of [["Resident selected export", expected], ["Streamed selected export", actual]]) {
+        const heading = document.createElement("h3"); heading.textContent = label;
+        const canvas = document.createElement("canvas"); canvas.width = WIDTH * scale; canvas.height = HEIGHT * scale;
+        canvas.getContext("2d").putImageData(new ImageData(bytes, canvas.width, canvas.height), 0, 0);
+        area.append(heading, canvas);
+      }
+    }
+    function usage(chart) {
+      const value = chart.streaming_usage();
+      try { return { active: value.active_charts, chunks: value.in_flight_chunks, bytes: value.reserved_gpu_bytes }; }
+      finally { value.free(); }
+    }
+    function fixture(centers) {
+      const axis = centers ? [0.5, 1.5, 3] : [0.2, 0.9, 2.2, 3.8];
+      return new Map([["x", Float64Array.from(axis, x => ORIGIN + x)], ["y", Float64Array.from(axis)],
+        ["z0", Float64Array.from([0.2, NaN, 1.4, 9])], ["z1", Float64Array.from([2.1, 3.8, 2.6])]]);
+    }
+    function provider(values) {
+      let phase = "render", pending = 0;
+      const audit = { calls: 0, maxLength: 0, phases: {}, violations: [] };
+      return { audit, get pending() { return pending; }, phase(value) { phase = value; },
+        columns: Array.from(values, ([id, data]) => ({ id, revision: 1, length: data.length, encoding: "f64" })),
+        async readRange(range) {
+          const data = values.get(range.id), bound = phase === "selection" ? 3 : 2;
+          if (!data || range.revision !== 1 || range.encoding !== "f64" || !Number.isSafeInteger(range.offset)
+              || !Number.isSafeInteger(range.length) || range.offset < 0 || range.length < 1
+              || range.length > bound || range.offset + range.length > data.length) {
+            audit.violations.push({ phase, ...range }); throw new Error("Invalid bounded field source range");
+          }
+          pending++; audit.calls++; audit.maxLength = Math.max(audit.maxLength, range.length);
+          const row = audit.phases[phase] ??= { calls: 0, byColumn: {} };
+          row.calls++; row.byColumn[range.id] = (row.byColumn[range.id] ?? 0) + 1;
+          try { return data.slice(range.offset, range.offset + range.length); } finally { pending--; }
+        },
+      };
+    }
+    button.addEventListener("click", async () => {
+      if (running) return;
+      running = true; button.disabled = true; resident?.remove(); streamed?.remove();
+      document.querySelector("#difference-images").replaceChildren();
+      report = { status: "RUNNING", browser: navigator.userAgent, dpr: devicePixelRatio,
+        document: [WIDTH, HEIGHT], chunkLimit: 2, cases: [], errors: [] };
+      const started = performance.now(); publish();
+      let job = null;
+      try {
+        await import("../figgy-chart.js");
+        for (const centers of document.querySelector("#case-filter").value === "centers" ? [true] : [false, true]) {
+          const entry = { name: centers ? "Float64 centers/interpolated" : "Float64 edges/flat", status: "RUNNING" };
+          report.cases.push(entry); status.textContent = entry.name; publish();
+          resident = await mount("resident"); streamed = await mount("streamed");
+          const values = fixture(centers), source = provider(values); entry.source = source.audit;
+          for (const [id, data] of values) resident.register_column_f64(id, data);
+          streamed.configure_streaming(1, 2, 8, 512, 4 * 1024 * 1024);
+          streamed.configure_auto_residency(256 * 1024 * 1024, 1);
+          streamed.register_streaming_column_sources(source.columns.map(c => c.id), source.columns.map(c => c.revision),
+            source.columns.map(c => c.length), source.columns.map(c => c.encoding));
+          const config = JSON.parse(resident.get_config());
+          config.chart_area = { x: 0, y: 0, width: WIDTH, height: HEIGHT };
+          config.chart_title.visible = false; config.chart_title.top_margin = 0; config.legend.visible = false;
+          for (const name of ["bottom_x", "top_x", "left_y", "right_y"]) {
+            const axis = config[name], x = name.endsWith("x");
+            Object.assign(axis, { min: (x ? ORIGIN : 0) + 0.1, max: (x ? ORIGIN : 0) + 4,
+              scale: "Linear", inverted: false, out_margin: 12 });
+            axis.label_style.label_visible = false; axis.title_option.visible = false;
+          }
+          const zAxis = clone(config.left_y); zAxis.min = 0.1; zAxis.max = 4;
+          config.colorbar = { visible: false, side: "Right", thickness_px: 18, gap_px: 24,
+            length_frac: 0.75, align: "Center", offset_x: 0, offset_y: 0, colormap: "Viridis",
+            nan_color: color(0.9, 0.1, 0.4, 0.45), border_color: color(0.3, 0.3, 0.3), border_width: 1, axis: zAxis };
+          const series = [{ series_id: "heat", source_id: "matrix", label: null, x_column: "x", y_column: "y",
+            render_type: { Heatmap: { matrix: { columns: ["z0", "z1", "z0"], orientation: "ColumnsAreX",
+              grid_layout: centers ? "Centers" : "Edges" }, fill: { mode: "Continuous",
+              shading: centers ? "Interpolated" : "Flat", opacity: 0.63 } } } }];
+          for (const chart of [resident, streamed]) {
+            chart.set_config(JSON.stringify(config)); chart.set_series(JSON.stringify(series)); chart.set_config(JSON.stringify(config));
+            chart.style.width = `${WIDTH}px`; chart.style.height = `${HEIGHT}px`;
+          }
+          await frames();
+          assert(source.audit.calls === 0, "Metadata setup read the field source");
+          entry.capabilities = streamed.streaming_capabilities();
+          job = streamed.render_chart({ columns: source.columns, readRange: source.readRange,
+            maxPrimitivesPerChunk: 2, maxFrameTimeMs: 8, stallTimeoutMs: 60000 });
+          entry.completed = await watchdog(job.done, "bounded field rendering");
+          assert(entry.completed.status === "complete" && source.audit.calls > 0, "Heatmap did not stream to completion");
+          const original = streamed.stream_status();
+          source.phase("pick");
+          entry.pick = await watchdog(streamed.pick_data(streamed.canvas.width / 2, streamed.canvas.height / 2, 5), "matrix GPU pick");
+          const expectedPick = await resident.pick_data(resident.canvas.width / 2, resident.canvas.height / 2, 5);
+          entry.expectedPick = expectedPick;
+          assert(entry.pick?.kind === "matrix_cell" && entry.pick.series_id === "heat"
+            && entry.pick.x_index === 1 && entry.pick.y_index === 1 && entry.pick.distance_px === 0
+            && JSON.stringify(entry.pick) === JSON.stringify(expectedPick), "Resident/streamed matrix identities differ");
+          assert(source.audit.phases.pick?.calls > 0 && Object.keys(source.audit.phases.pick.byColumn).every(id => id === "x" || id === "y"),
+            "Matrix pick must replay axes and never Z");
+          const baseline = await pixels(await resident.export_png(1), 1);
+          const selection = { visible: true, refs: [{ kind: "matrix_cell", source_id: "matrix", series_id: "heat", x_index: 1, y_index: 1 }],
+            highlight_color: color(0.9, 0.1, 0.6, 0.65), outline_width_px: 3, point_radius_extra_px: 3, contour_width_extra_px: 2 };
+          source.phase("selection"); const selectionCalls = source.audit.calls;
+          resident.set_picked_data(JSON.stringify(selection)); streamed.set_picked_data(JSON.stringify(selection));
+          await until(() => source.audit.calls > selectionCalls && source.pending === 0, "selected cell axis neighbours"); await frames(5);
+          assert(Object.keys(source.audit.phases.selection.byColumn).every(id => id === "x" || id === "y"), "Cell selection requested Z");
+          entry.exports = [];
+          for (const scale of [1, 2]) {
+            source.phase(`export${scale}`);
+            const expected = await pixels(await watchdog(resident.export_png(scale), "resident field PNG"), scale);
+            const actual = await pixels(await watchdog(streamed.export_png(scale), "streamed field PNG"), scale);
+            const comparison = compare(expected, actual); entry.exports.push({ scale, comparison }); publish();
+            if (!comparison.equal) {
+              entry.differencePixels = differencePixels(expected, actual, WIDTH * scale);
+              showDifferenceImages(expected, actual, scale);
+              source.phase("clear-selection");
+              for (const chart of [resident, streamed]) chart.set_picked_data(JSON.stringify({ ...selection, visible: false, refs: [] }));
+              await frames(5);
+              source.phase("unselected-export");
+              const unselectedExpected = await pixels(await watchdog(resident.export_png(scale), "unselected resident diagnostic PNG"), scale);
+              const unselectedActual = await pixels(await watchdog(streamed.export_png(scale), "unselected streamed diagnostic PNG"), scale);
+              entry.unselectedDiagnostic = { scale, comparison: compare(unselectedExpected, unselectedActual),
+                differencePixels: differencePixels(unselectedExpected, unselectedActual, WIDTH * scale) };
+              publish();
+            }
+            if (scale === 1) assert(!compare(baseline, expected).equal, "Selected matrix overlay changed no pixels");
+          }
+          assert(streamed.stream_status().job_id === original.job_id, "Pick/selection/export changed the screen field job");
+          source.phase("fit");
+          await watchdog(streamed.auto_fit_all(0.05), "field GPU endpoint fit and redraw");
+          await resident.auto_fit_all(0.05);
+          const fitted = JSON.parse(streamed.get_config()), residentFit = JSON.parse(resident.get_config());
+          entry.fitBounds = [fitted.bottom_x.min, fitted.bottom_x.max, fitted.left_y.min, fitted.left_y.max];
+          entry.fitMatchesResident = JSON.stringify(entry.fitBounds) === JSON.stringify([residentFit.bottom_x.min, residentFit.bottom_x.max,
+            residentFit.left_y.min, residentFit.left_y.max]);
+          assert(entry.fitMatchesResident, "Field fit differs from resident derived bounds");
+          const calls = source.audit.calls;
+          await watchdog(streamed.auto_fit_all(0.05), "cached identical field fit"); await frames();
+          entry.cachedFitReads = source.audit.calls - calls;
+          assert(entry.cachedFitReads === 0, "Identical cached field fit reread the source");
+          await watchdog(job.cancel(), "field cancellation"); entry.afterCancel = usage(streamed);
+          assert(entry.afterCancel.active === 0 && entry.afterCancel.chunks === 0 && entry.afterCancel.bytes === 0, "Field cancellation leaked reservations");
+          assert(report.errors.length === 0 && source.audit.violations.length === 0, "Field browser errors or invalid requests");
+          const mismatch = entry.exports.find(value => !value.comparison.equal);
+          assert(!mismatch, `Heatmap PNG mismatch retained after independent fit/cache/cancel checks: ${JSON.stringify(mismatch)}`);
+          entry.status = "PASS"; job = null; publish();
+        }
+        report.status = "PASS"; status.textContent = "PASS — both Heatmap end-to-end cases";
+      } catch (cause) {
+        report.status = "FAIL"; report.failure = cause?.stack ?? String(cause);
+        if (report.cases.at(-1)) report.cases.at(-1).status = "FAIL";
+        status.textContent = `FAIL — ${cause.message ?? cause}`;
+        try { if (job && streamed && !streamed.busy) await watchdog(job.cancel(), "field failure cleanup"); }
+        catch (cleanup) { error("cleanup", cleanup); }
+      } finally { report.elapsedMs = Math.round(performance.now() - started); publish(); running = false; button.disabled = false; }
+    });
+  </script>
+</body>
+</html>

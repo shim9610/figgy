@@ -26,10 +26,12 @@
 
 use std::{collections::HashMap, fmt, sync::Arc};
 
+use crate::gpu_memory::RetiredBytes;
 use wgpu::{Buffer, BufferDescriptor, BufferUsages, Device, Queue};
 
 use crate::data::{
     COLUMN_VALUE_BYTES, ColumnPairWriter, ColumnSource, ColumnUploadStats, HiLoColumnSource,
+    StreamColumnSource,
 };
 
 // Defined in the model crate (`model::data`); re-exported here so
@@ -445,6 +447,127 @@ fn write_scalar_source_as_pairs(
     source.write_f32_pair_le_into_with_stats(dst)
 }
 
+#[derive(Clone, Copy)]
+struct StagedStreamedColumn {
+    offset: u64,
+    byte_size: u64,
+    len_values: usize,
+    min: f64,
+    max: f64,
+    min_positive: Option<f64>,
+}
+
+fn streamed_batch_region_bytes(
+    columns: &[StreamedColumnUpload<'_>],
+    ceiling: u64,
+) -> Result<u64, AllocError> {
+    let mut total = 0u64;
+    for column in columns {
+        let len_values = column.len_values;
+        if len_values == 0 {
+            return Err(AllocError::EmptySource);
+        }
+        let byte_size = column_region_bytes(len_values).ok_or(AllocError::ResourceLimit {
+            resource: "streamed promotion staging buffer",
+            requested: column_raw_bytes(len_values),
+            limit: ceiling,
+        })?;
+        if byte_size > ceiling {
+            return Err(AllocError::ResourceLimit {
+                resource: "streamed promotion staging buffer",
+                requested: byte_size,
+                limit: ceiling,
+            });
+        }
+        total = total
+            .checked_add(byte_size)
+            .ok_or(AllocError::ResourceLimit {
+                resource: "streamed promotion batch",
+                requested: u64::MAX,
+                limit: ceiling,
+            })?;
+    }
+    Ok(total)
+}
+
+fn stage_streamed_columns(
+    device: &Device,
+    columns: &[StreamedColumnUpload<'_>],
+    total: u64,
+) -> Result<(Buffer, Vec<StagedStreamedColumn>), AllocError> {
+    let staging = create_buffer_checked(
+        device,
+        &BufferDescriptor {
+            label: Some("figgy streamed promotion staging"),
+            size: total,
+            usage: BufferUsages::COPY_SRC,
+            mapped_at_creation: true,
+        },
+        "streamed promotion staging buffer",
+    )?;
+    let mut staged = Vec::new();
+    staged
+        .try_reserve_exact(columns.len())
+        .map_err(|error| AllocError::AllocationFailed {
+            resource: "streamed promotion staging plan",
+            reason: error.to_string(),
+        })?;
+
+    let mut view = staging
+        .slice(..)
+        .get_mapped_range_mut()
+        .expect("streamed promotion staging is mapped at creation");
+    let mut offset = 0u64;
+    let written = (|| {
+        for column in columns {
+            let len_values = column.len_values;
+            let raw_bytes = column_raw_bytes(len_values);
+            let byte_size = column_region_bytes(len_values).expect("promotion batch was sized");
+            let start = offset as usize;
+            let end = start + raw_bytes as usize;
+            let bounds = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                column
+                    .source
+                    .write_range(0, ColumnPairWriter::new(view.slice(start..end)))
+            }))
+            .map_err(|_| AllocError::AllocationFailed {
+                resource: "streamed promotion source",
+                reason: "source panicked while writing the requested range".into(),
+            })?
+            .map_err(|error| AllocError::AllocationFailed {
+                resource: "streamed promotion source",
+                reason: error.reason().to_owned(),
+            })?;
+            crate::streaming_source::validate_statistics(
+                len_values as u64,
+                crate::StreamStatistics::Known(bounds),
+            )
+            .map_err(|reason| AllocError::AllocationFailed {
+                resource: "streamed promotion source",
+                reason: reason.to_owned(),
+            })?;
+            let (min, max, min_positive) = bounds
+                .map_or((f64::INFINITY, f64::NEG_INFINITY, None), |bounds| {
+                    (bounds.min, bounds.max, bounds.min_positive)
+                });
+            staged.push(StagedStreamedColumn {
+                offset,
+                byte_size,
+                len_values,
+                min,
+                max,
+                min_positive,
+            });
+            offset += byte_size;
+        }
+        Ok(())
+    })();
+    drop(view);
+    staging.unmap();
+    written?;
+    Ok((staging, staged))
+}
+
 /// Lightweight handle handed out to the chart layer. `generation` lets
 /// callers detect a stale handle after any invalidating pool mutation.
 #[derive(Debug, Clone, Copy)]
@@ -632,9 +755,8 @@ pub struct ColumnPool {
     pub growth_policy: GrowthPolicy,
     /// Bytes whose buffer handle this pool has already dropped but whose
     /// device memory the queue may not have released yet. A budget must keep
-    /// counting them until the host submission boundary clears them
-    /// ([`Self::clear_retired_bytes`]) — spending them early over-commits.
-    retired_bytes: u64,
+    /// counting them until the corresponding queue completion.
+    retired_bytes: Arc<RetiredBytes>,
     /// High-water mark of [`Self::gpu_bytes`] plus whatever transient buffer
     /// coexisted with it (upload staging, candidate primary, the new slab
     /// during a growth copy). Live bytes are derived from the buffers this
@@ -645,6 +767,22 @@ pub struct ColumnPool {
     /// Device buffers created since construction. Counts objects, not bytes,
     /// so a scenario can assert how many allocations it caused.
     buffer_creations: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ResidentBatchCapacityPlan {
+    pub capacity_after: u64,
+    /// Newly allocated pool bytes that coexist with the current pool while a
+    /// relayout is prepared. Zero means the existing layout or backup serves
+    /// the request without another pool buffer.
+    pub transition_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ResidentBatchCapacityError {
+    Overflow,
+    DeviceLimit,
+    Policy,
 }
 
 enum UpsertBufferRollback {
@@ -753,6 +891,163 @@ pub struct ColumnBatchInsert<'a> {
     rollback: Option<BatchInsertRollback>,
 }
 
+/// One replayable streamed source being promoted into the resident pool.
+///
+/// The adapter is deliberately borrowed: promotion consumes one range write
+/// at the call boundary and never stores host payload or trait objects. The
+/// renderer freezes `len_values` during metadata validation; pool planning and
+/// staging must not call the host trait's potentially mutable `len` again.
+#[derive(Clone, Copy)]
+pub(crate) struct StreamedColumnUpload<'a> {
+    pub id: &'a str,
+    pub source: StreamColumnSource<'a>,
+    pub len_values: usize,
+}
+
+/// A provisionally uploaded streamed-to-resident batch.
+///
+/// A batch that already fits targets untouched free bytes in the live slab and
+/// uses [`ColumnBatchInsert`] for exact allocator rollback. A batch requiring
+/// compaction or growth targets a separate complete candidate slab instead, so
+/// dropping this guard restores the original layout and buffers exactly.
+#[must_use = "dropping an uncommitted streamed promotion leaves the live pool unchanged"]
+pub(crate) enum StreamedColumnPromotion<'a> {
+    InPlace(ColumnBatchInsert<'a>),
+    Candidate(ColumnBatchCandidate<'a>),
+}
+
+impl StreamedColumnPromotion<'_> {
+    pub(crate) fn pool(&self) -> &ColumnPool {
+        match self {
+            Self::InPlace(batch) => batch.pool(),
+            Self::Candidate(batch) => batch.pool(),
+        }
+    }
+
+    pub(crate) fn relocated(&self) -> bool {
+        matches!(self, Self::Candidate(_))
+    }
+
+    pub(crate) fn commit(self) {
+        match self {
+            Self::InPlace(batch) => batch.commit(),
+            Self::Candidate(batch) => batch.commit(),
+        }
+    }
+}
+
+pub(crate) struct ColumnBatchCandidate<'a> {
+    pool: &'a mut ColumnPool,
+    candidate: Option<ColumnPool>,
+}
+
+/// An unpublished slab filled by bounded stream tickets across host turns.
+pub(crate) struct StreamedRangeCandidate {
+    candidate: ColumnPool,
+    original_identity: PoolIdentity,
+    original_generation: u32,
+    original_layout: u64,
+    original_epoch: u64,
+    charge: crate::gpu_memory::GpuByteCharge,
+}
+
+impl StreamedRangeCandidate {
+    pub(crate) fn is_current(&self, pool: &ColumnPool) -> bool {
+        self.original_identity == pool.identity
+            && self.original_generation == pool.generation
+            && self.original_layout == pool.layout_generation
+            && self.original_epoch == pool.allocation_epoch_counter
+    }
+
+    pub(crate) fn pool(&self) -> &ColumnPool {
+        &self.candidate
+    }
+
+    pub(crate) fn set_statistics(&mut self, id: &str, bounds: Option<crate::StreamBounds>) {
+        let slot = self
+            .candidate
+            .slots
+            .get_mut(id)
+            .expect("candidate owns source");
+        slot.min = bounds.map_or(f64::INFINITY, |b| b.min);
+        slot.max = bounds.map_or(f64::NEG_INFINITY, |b| b.max);
+        slot.min_positive = bounds.and_then(|b| b.min_positive);
+    }
+
+    pub(crate) fn commit(self, pool: &mut ColumnPool) {
+        debug_assert!(self.is_current(pool));
+        ColumnBatchCandidate {
+            pool,
+            candidate: Some(self.candidate),
+        }
+        .commit();
+        self.charge.transfer_to_external_accounting();
+    }
+}
+
+impl ColumnBatchCandidate<'_> {
+    fn pool(&self) -> &ColumnPool {
+        self.candidate
+            .as_ref()
+            .expect("streamed promotion candidate remains live")
+    }
+
+    fn commit(mut self) {
+        let candidate = self
+            .candidate
+            .take()
+            .expect("streamed promotion candidate remains live");
+        let ColumnPool {
+            identity: _,
+            primary,
+            capacity,
+            slots,
+            free,
+            generation,
+            allocation_epochs,
+            allocation_epoch_counter,
+            layout_generation,
+            backup,
+            defrag_policy: _,
+            growth_policy: _,
+            retired_bytes: _,
+            peak_bytes: _,
+            buffer_creations: _,
+        } = candidate;
+        debug_assert!(backup.is_none());
+
+        let old_primary = std::mem::replace(&mut self.pool.primary, primary);
+        let old_capacity = self.pool.capacity;
+        self.pool.capacity = capacity;
+        self.pool.slots = slots;
+        self.pool.free = free;
+        self.pool.generation = generation;
+        self.pool.allocation_epochs = allocation_epochs;
+        self.pool.allocation_epoch_counter = allocation_epoch_counter;
+        self.pool.layout_generation = layout_generation;
+
+        if old_capacity == capacity {
+            if let Some(superseded) = self.pool.backup.replace(old_primary) {
+                self.pool.note_buffer_retired(superseded.size());
+            }
+        } else {
+            let mut released = old_primary.size();
+            released =
+                released.saturating_add(self.pool.backup.take().map_or(0, |buffer| buffer.size()));
+            self.pool.note_buffer_retired(released);
+        }
+    }
+}
+
+impl Drop for ColumnBatchCandidate<'_> {
+    fn drop(&mut self) {
+        let Some(candidate) = self.candidate.take() else {
+            return;
+        };
+        self.pool.note_buffer_retired(candidate.primary.size());
+    }
+}
+
 struct BatchInsertRollback {
     region: FreeRegion,
     undo: RegionUndo,
@@ -821,6 +1116,7 @@ impl Drop for ColumnUpsert<'_> {
                 self.pool.backup = Some(candidate);
             } else {
                 self.pool.backup = old_backup.take();
+                self.pool.note_buffer_retired(candidate.size());
             }
         }
     }
@@ -871,8 +1167,19 @@ impl ColumnBatchUpsert<'_> {
         self.pool.allocation_epochs = allocation_epochs;
         self.pool.allocation_epoch_counter = allocation_epoch_counter;
         self.pool.layout_generation = layout_generation;
-        self.pool.backup = Some(old_primary);
+        if let Some(superseded) = self.pool.backup.replace(old_primary) {
+            self.pool.note_buffer_retired(superseded.size());
+        }
         self.handles
+    }
+}
+
+impl Drop for ColumnBatchUpsert<'_> {
+    fn drop(&mut self) {
+        let Some(candidate) = self.candidate.take() else {
+            return;
+        };
+        self.pool.note_buffer_retired(candidate.primary.size());
     }
 }
 
@@ -1005,6 +1312,8 @@ impl Drop for ColumnDefragment<'_> {
             let candidate = std::mem::replace(&mut self.pool.primary, old_primary);
             if rollback.candidate_was_backup {
                 self.pool.backup = Some(candidate);
+            } else {
+                self.pool.note_buffer_retired(candidate.size());
             }
         }
     }
@@ -1057,7 +1366,7 @@ impl ColumnPool {
             backup: None,
             defrag_policy: DefragPolicy::Manual,
             growth_policy: GrowthPolicy::Fixed,
-            retired_bytes: 0,
+            retired_bytes: Arc::default(),
             peak_bytes: capacity,
             buffer_creations: 1,
         })
@@ -1065,6 +1374,61 @@ impl ColumnPool {
 
     pub fn capacity(&self) -> u64 {
         self.capacity
+    }
+
+    /// Pure pool half of resident admission. It mirrors the batch insertion
+    /// ladder (first-fit, optional compaction, optional growth) without
+    /// allocating, submitting, defragmenting, or changing allocator state.
+    pub(crate) fn plan_resident_batch_capacity(
+        &self,
+        required_bytes: u64,
+        device_ceiling: u64,
+    ) -> Result<ResidentBatchCapacityPlan, ResidentBatchCapacityError> {
+        if required_bytes == 0 || self.largest_free_region() >= required_bytes {
+            return Ok(ResidentBatchCapacityPlan {
+                capacity_after: self.capacity,
+                transition_bytes: 0,
+            });
+        }
+
+        let may_compact = self.defrag_policy == DefragPolicy::OnAllocFailure;
+        if may_compact && self.free_bytes() >= required_bytes {
+            let reusable_backup = self
+                .backup
+                .as_ref()
+                .is_some_and(|buffer| buffer.size() == self.capacity);
+            return Ok(ResidentBatchCapacityPlan {
+                capacity_after: self.capacity,
+                transition_bytes: (!reusable_backup).then_some(self.capacity).unwrap_or(0),
+            });
+        }
+        if self.growth_policy != GrowthPolicy::OnAllocFailure {
+            return Err(ResidentBatchCapacityError::Policy);
+        }
+
+        // Keep this arithmetic identical to `grow_for_pending_upload`: when
+        // compaction is disabled, its first-fit deficit is measured from the
+        // largest region even though growth itself packs the complete pool.
+        let usable = if may_compact {
+            self.free_bytes()
+        } else {
+            self.largest_free_region()
+        };
+        let deficit = required_bytes.saturating_sub(usable);
+        let minimum = self
+            .capacity
+            .checked_add(deficit)
+            .ok_or(ResidentBatchCapacityError::Overflow)?;
+        let doubled = self.capacity.checked_mul(2).unwrap_or(u64::MAX);
+        let requested = doubled.max(minimum).min(device_ceiling).max(minimum);
+        let target = try_align_up(requested, ALIGN).ok_or(ResidentBatchCapacityError::Overflow)?;
+        if target > device_ceiling {
+            return Err(ResidentBatchCapacityError::DeviceLimit);
+        }
+        Ok(ResidentBatchCapacityPlan {
+            capacity_after: target,
+            transition_bytes: target,
+        })
     }
 
     pub fn buffer(&self) -> &Buffer {
@@ -1143,12 +1507,22 @@ impl ColumnPool {
 
     /// Bytes released by this pool that the device may still be holding.
     pub fn retired_bytes(&self) -> u64 {
-        self.retired_bytes
+        self.retired_bytes.total()
     }
 
-    /// Submission boundary: every command using retired slabs has been queued.
+    /// Compatibility helper: call only after GPU completion of every pending
+    /// retirement, not merely submission. Already submitted batches are left
+    /// to their completion callbacks. Renderer hosts use `end_gpu_frame`.
     pub fn clear_retired_bytes(&mut self) {
-        self.retired_bytes = 0;
+        self.retired_bytes
+            .complete(self.retired_bytes.take_pending());
+    }
+
+    pub(crate) fn take_retirement(&self) -> (Arc<RetiredBytes>, u64) {
+        (
+            Arc::clone(&self.retired_bytes),
+            self.retired_bytes.take_pending(),
+        )
     }
 
     /// Highest footprint seen, transients included.
@@ -1158,7 +1532,7 @@ impl ColumnPool {
 
     /// Forget the recorded peak; the next allocation starts a fresh mark.
     pub fn reset_peak_bytes(&mut self) {
-        self.peak_bytes = self.gpu_bytes();
+        self.peak_bytes = self.gpu_bytes().saturating_add(self.retired_bytes());
     }
 
     /// Device buffers this pool has created since construction.
@@ -1171,14 +1545,17 @@ impl ColumnPool {
     /// larger slab a growth is copying into.
     fn note_buffer_created(&mut self, transient_bytes: u64) {
         self.buffer_creations = self.buffer_creations.saturating_add(1);
-        let total = self.gpu_bytes().saturating_add(transient_bytes);
+        let total = self
+            .gpu_bytes()
+            .saturating_add(self.retired_bytes())
+            .saturating_add(transient_bytes);
         self.peak_bytes = self.peak_bytes.max(total);
     }
 
     /// Credit a buffer this pool just dropped. The bytes stay in
-    /// [`Self::retired_bytes`] until the submission boundary.
+    /// [`Self::retired_bytes`] until the corresponding queue completion.
     fn note_buffer_retired(&mut self, bytes: u64) {
-        self.retired_bytes = self.retired_bytes.saturating_add(bytes);
+        self.retired_bytes.retire(bytes);
     }
 
     pub fn slot(&self, id: &str) -> Option<&ColumnSlot> {
@@ -1294,6 +1671,518 @@ impl ColumnPool {
     ) -> Result<(), AllocError> {
         self.begin_add_columns(columns, ctx)?.commit();
         Ok(())
+    }
+
+    pub(crate) fn begin_streamed_range_candidate(
+        &self,
+        columns: &[crate::StreamColumn],
+        capacity: u64,
+        ctx: GpuAllocCtx<'_>,
+        ledger: &Arc<crate::gpu_memory::GpuLedger>,
+    ) -> Result<StreamedRangeCandidate, AllocError> {
+        let limit = buffer_ceiling(ctx.device);
+        if capacity > limit || capacity < self.capacity {
+            return Err(AllocError::ResourceLimit {
+                resource: "streamed range candidate",
+                requested: capacity,
+                limit,
+            });
+        }
+        if let Some(budget) = ctx.budget {
+            let peak = self
+                .gpu_bytes()
+                .checked_add(self.retired_bytes())
+                .and_then(|bytes| bytes.checked_add(budget.external_bytes))
+                .and_then(|bytes| bytes.checked_add(capacity))
+                .unwrap_or(u64::MAX);
+            if peak > budget.ceiling_bytes {
+                return Err(AllocError::ResourceLimit {
+                    resource: "streamed range candidate",
+                    requested: peak,
+                    limit: budget.ceiling_bytes,
+                });
+            }
+        }
+        let generation = self.checked_generation_successor()?;
+        let layout_generation = self.checked_layout_successor()?;
+        let mut epoch = self.allocation_epoch_counter;
+        let count = self.slots.len().checked_add(columns.len()).ok_or_else(|| {
+            AllocError::AllocationFailed {
+                resource: "streamed range candidate metadata",
+                reason: "column count overflow".into(),
+            }
+        })?;
+        let allocation_error =
+            |error: std::collections::TryReserveError| AllocError::AllocationFailed {
+                resource: "streamed range candidate metadata",
+                reason: error.to_string(),
+            };
+        let mut slots = HashMap::new();
+        slots.try_reserve(count).map_err(allocation_error)?;
+        let mut epochs = HashMap::new();
+        epochs.try_reserve(count).map_err(allocation_error)?;
+        let mut order = Vec::new();
+        order
+            .try_reserve_exact(self.slots.len())
+            .map_err(allocation_error)?;
+        order.extend(self.slots.values());
+        order.sort_by_key(|slot| slot.offset);
+        let mut next = 0u64;
+        for old in &order {
+            let mut slot = (*old).clone();
+            slot.offset = next;
+            slot.generation = generation;
+            next = next
+                .checked_add(slot.byte_size)
+                .ok_or(AllocError::ResourceLimit {
+                    resource: "streamed range candidate",
+                    requested: u64::MAX,
+                    limit: capacity,
+                })?;
+            epochs.insert(slot.id.clone(), self.allocation_epochs[&slot.id]);
+            slots.insert(slot.id.clone(), slot);
+        }
+        for column in columns {
+            if slots.contains_key(&column.id) {
+                return Err(AllocError::DuplicateId(column.id.clone()));
+            }
+            let raw = column.len.checked_mul(COLUMN_VALUE_BYTES as u64).ok_or(
+                AllocError::ResourceLimit {
+                    resource: "streamed range column",
+                    requested: u64::MAX,
+                    limit,
+                },
+            )?;
+            let bytes = try_align_up(raw, ALIGN).ok_or(AllocError::ResourceLimit {
+                resource: "streamed range column",
+                requested: u64::MAX,
+                limit,
+            })?;
+            let offset = next;
+            next = next.checked_add(bytes).filter(|n| *n <= capacity).ok_or(
+                AllocError::ResourceLimit {
+                    resource: "streamed range candidate",
+                    requested: next.saturating_add(bytes),
+                    limit: capacity,
+                },
+            )?;
+            epoch = epoch.checked_add(1).ok_or(AllocError::CounterExhausted {
+                counter: "allocation epoch",
+            })?;
+            epochs.insert(column.id.clone(), epoch);
+            slots.insert(
+                column.id.clone(),
+                ColumnSlot {
+                    id: column.id.clone(),
+                    offset,
+                    byte_size: bytes,
+                    len_values: usize::try_from(column.len).map_err(|_| {
+                        AllocError::ResourceLimit {
+                            resource: "streamed range column length",
+                            requested: column.len,
+                            limit: usize::MAX as u64,
+                        }
+                    })?,
+                    generation,
+                    min: f64::INFINITY,
+                    max: f64::NEG_INFINITY,
+                    min_positive: None,
+                },
+            );
+        }
+        let mut free = Vec::new();
+        if next < capacity {
+            free.try_reserve_exact(1).map_err(allocation_error)?;
+            free.push(FreeRegion {
+                offset: next,
+                size: capacity - next,
+            });
+        }
+        let primary = create_buffer_checked(
+            ctx.device,
+            &BufferDescriptor {
+                label: Some("figgy bounded streamed residency candidate"),
+                size: capacity,
+                usage: BufferUsages::VERTEX
+                    | BufferUsages::STORAGE
+                    | BufferUsages::COPY_DST
+                    | BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            },
+            "streamed range candidate",
+        )?;
+        let charge = crate::gpu_memory::GpuByteCharge::new(
+            ledger,
+            crate::gpu_memory::GpuResourceKind::StreamingUpload,
+            primary.size(),
+        );
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("figgy bounded streamed residency survivor copy"),
+            });
+        for old in order {
+            encoder.copy_buffer_to_buffer(
+                &self.primary,
+                old.offset,
+                &primary,
+                slots[&old.id].offset,
+                old.byte_size,
+            );
+        }
+        ctx.queue.submit([encoder.finish()]);
+        Ok(StreamedRangeCandidate {
+            original_identity: self.identity.clone(),
+            original_generation: self.generation,
+            original_layout: self.layout_generation,
+            original_epoch: self.allocation_epoch_counter,
+            charge,
+            candidate: ColumnPool {
+                identity: self.identity.clone(),
+                primary,
+                capacity,
+                slots,
+                free,
+                generation,
+                allocation_epochs: epochs,
+                allocation_epoch_counter: epoch,
+                layout_generation,
+                backup: None,
+                defrag_policy: self.defrag_policy,
+                growth_policy: self.growth_policy,
+                retired_bytes: Arc::default(),
+                peak_bytes: 0,
+                buffer_creations: 0,
+            },
+        })
+    }
+
+    /// Prepare a same-id streamed-to-resident promotion without publishing any
+    /// live allocator state. Sources may mix scalar and hi/lo encodings.
+    ///
+    /// `target_capacity` comes from the renderer's immediately preceding
+    /// resident-admission check. It is used only when the batch cannot fit an
+    /// untouched free region and a complete candidate slab is required.
+    pub(crate) fn begin_streamed_promotion<'a>(
+        &'a mut self,
+        columns: &[StreamedColumnUpload<'_>],
+        target_capacity: u64,
+        ctx: GpuAllocCtx<'_>,
+    ) -> Result<StreamedColumnPromotion<'a>, AllocError> {
+        if columns.is_empty() {
+            return Ok(StreamedColumnPromotion::InPlace(ColumnBatchInsert {
+                pool: self,
+                rollback: None,
+            }));
+        }
+        let ceiling = buffer_ceiling(ctx.device);
+
+        let mut seen = std::collections::HashSet::new();
+        seen.try_reserve(columns.len())
+            .map_err(|error| AllocError::AllocationFailed {
+                resource: "streamed promotion id set",
+                reason: error.to_string(),
+            })?;
+        for column in columns {
+            if self.slots.contains_key(column.id) || !seen.insert(column.id) {
+                return Err(AllocError::DuplicateId(column.id.to_owned()));
+            }
+        }
+
+        let total = streamed_batch_region_bytes(columns, ceiling)?;
+        let in_place = self.largest_free_region() >= total;
+        let capacity_after = if in_place {
+            self.capacity
+        } else {
+            let planned = self
+                .plan_resident_batch_capacity(total, ceiling)
+                .map_err(|error| match error {
+                    ResidentBatchCapacityError::Policy => out_of_space(total, &self.free),
+                    ResidentBatchCapacityError::DeviceLimit => AllocError::ResourceLimit {
+                        resource: "streamed promotion candidate",
+                        requested: target_capacity,
+                        limit: ceiling,
+                    },
+                    ResidentBatchCapacityError::Overflow => AllocError::ResourceLimit {
+                        resource: "streamed promotion candidate",
+                        requested: u64::MAX,
+                        limit: ceiling,
+                    },
+                })?;
+            if planned.capacity_after != target_capacity {
+                return Err(AllocError::AllocationFailed {
+                    resource: "streamed promotion admission",
+                    reason: "pool capacity changed after admission".into(),
+                });
+            }
+            planned.capacity_after
+        };
+
+        if !in_place {
+            let required =
+                self.used_bytes()
+                    .checked_add(total)
+                    .ok_or(AllocError::ResourceLimit {
+                        resource: "streamed promotion candidate",
+                        requested: u64::MAX,
+                        limit: capacity_after,
+                    })?;
+            if required > capacity_after || capacity_after > ceiling {
+                return Err(AllocError::ResourceLimit {
+                    resource: "streamed promotion candidate",
+                    requested: required.max(capacity_after),
+                    limit: ceiling.min(capacity_after),
+                });
+            }
+            if let Some(budget) = ctx.budget {
+                let peak = budget
+                    .external_bytes
+                    .checked_add(self.gpu_bytes())
+                    .and_then(|bytes| bytes.checked_add(self.retired_bytes()))
+                    .and_then(|bytes| bytes.checked_add(total))
+                    .and_then(|bytes| bytes.checked_add(capacity_after))
+                    .ok_or(AllocError::ResourceLimit {
+                        resource: "streamed promotion transition",
+                        requested: u64::MAX,
+                        limit: budget.ceiling_bytes,
+                    })?;
+                if peak > budget.ceiling_bytes {
+                    return Err(AllocError::ResourceLimit {
+                        resource: "streamed promotion transition",
+                        requested: peak,
+                        limit: budget.ceiling_bytes,
+                    });
+                }
+            }
+        }
+
+        let first_epoch = self.allocation_epoch_counter;
+        let count = u64::try_from(columns.len()).map_err(|_| AllocError::CounterExhausted {
+            counter: "allocation epoch",
+        })?;
+        let last_epoch = first_epoch
+            .checked_add(count)
+            .ok_or(AllocError::CounterExhausted {
+                counter: "allocation epoch",
+            })?;
+        let (staging, staged) = stage_streamed_columns(ctx.device, columns, total)?;
+
+        if in_place {
+            self.slots.try_reserve(columns.len()).map_err(|error| {
+                AllocError::AllocationFailed {
+                    resource: "streamed promotion column registry",
+                    reason: error.to_string(),
+                }
+            })?;
+            self.allocation_epochs
+                .try_reserve(columns.len())
+                .map_err(|error| AllocError::AllocationFailed {
+                    resource: "streamed promotion epoch registry",
+                    reason: error.to_string(),
+                })?;
+            let reservation = alloc_region(&mut self.free, total)?;
+            let region_offset = reservation.offset();
+            let mut epoch = first_epoch;
+            for (column, staged) in columns.iter().zip(&staged) {
+                epoch += 1;
+                let id = column.id.to_owned();
+                self.allocation_epochs.insert(id.clone(), epoch);
+                self.slots.insert(
+                    id.clone(),
+                    ColumnSlot {
+                        id,
+                        offset: region_offset + staged.offset,
+                        byte_size: staged.byte_size,
+                        len_values: staged.len_values,
+                        generation: self.generation,
+                        min: staged.min,
+                        max: staged.max,
+                        min_positive: staged.min_positive,
+                    },
+                );
+            }
+            let mut encoder = ctx
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("figgy streamed promotion in-place"),
+                });
+            encoder.copy_buffer_to_buffer(&staging, 0, &self.primary, region_offset, total);
+            ctx.queue.submit(std::iter::once(encoder.finish()));
+            let undo = reservation.into_undo();
+            self.allocation_epoch_counter = last_epoch;
+            self.note_buffer_created(total);
+            self.note_buffer_retired(total);
+            return Ok(StreamedColumnPromotion::InPlace(ColumnBatchInsert {
+                pool: self,
+                rollback: Some(BatchInsertRollback {
+                    region: FreeRegion {
+                        offset: region_offset,
+                        size: total,
+                    },
+                    undo,
+                    epoch_counter: first_epoch,
+                }),
+            }));
+        }
+
+        let next_generation = self.checked_generation_successor()?;
+        let next_layout_generation = self.checked_layout_successor()?;
+        let final_count =
+            self.slots
+                .len()
+                .checked_add(columns.len())
+                .ok_or(AllocError::AllocationFailed {
+                    resource: "streamed promotion column registry",
+                    reason: "column count overflow".into(),
+                })?;
+        let mut order = Vec::new();
+        order.try_reserve_exact(self.slots.len()).map_err(|error| {
+            AllocError::AllocationFailed {
+                resource: "streamed promotion survivor order",
+                reason: error.to_string(),
+            }
+        })?;
+        order.extend(self.slots.values().map(|slot| slot.id.clone()));
+        order.sort_by_key(|id| self.slots[id].offset);
+
+        let mut planned_slots = HashMap::new();
+        planned_slots
+            .try_reserve(final_count)
+            .map_err(|error| AllocError::AllocationFailed {
+                resource: "streamed promotion column registry",
+                reason: error.to_string(),
+            })?;
+        let mut planned_epochs = HashMap::new();
+        planned_epochs
+            .try_reserve(final_count)
+            .map_err(|error| AllocError::AllocationFailed {
+                resource: "streamed promotion epoch registry",
+                reason: error.to_string(),
+            })?;
+        let mut next_offset = 0u64;
+        for id in &order {
+            let old = &self.slots[id];
+            let mut slot = old.clone();
+            slot.offset = next_offset;
+            slot.generation = next_generation;
+            next_offset =
+                next_offset
+                    .checked_add(slot.byte_size)
+                    .ok_or(AllocError::ResourceLimit {
+                        resource: "streamed promotion candidate",
+                        requested: u64::MAX,
+                        limit: capacity_after,
+                    })?;
+            planned_epochs.insert(
+                id.clone(),
+                *self
+                    .allocation_epochs
+                    .get(id)
+                    .expect("live column has an allocation epoch"),
+            );
+            planned_slots.insert(id.clone(), slot);
+        }
+        let promoted_offset = next_offset;
+        let mut epoch = first_epoch;
+        for (column, staged) in columns.iter().zip(&staged) {
+            epoch += 1;
+            let id = column.id.to_owned();
+            let offset = promoted_offset + staged.offset;
+            planned_epochs.insert(id.clone(), epoch);
+            planned_slots.insert(
+                id.clone(),
+                ColumnSlot {
+                    id,
+                    offset,
+                    byte_size: staged.byte_size,
+                    len_values: staged.len_values,
+                    generation: next_generation,
+                    min: staged.min,
+                    max: staged.max,
+                    min_positive: staged.min_positive,
+                },
+            );
+        }
+        next_offset = promoted_offset
+            .checked_add(total)
+            .ok_or(AllocError::ResourceLimit {
+                resource: "streamed promotion candidate",
+                requested: u64::MAX,
+                limit: capacity_after,
+            })?;
+        if next_offset > capacity_after {
+            return Err(out_of_space(total, &self.free));
+        }
+        let mut planned_free = Vec::new();
+        if next_offset < capacity_after {
+            planned_free
+                .try_reserve_exact(1)
+                .map_err(|error| AllocError::AllocationFailed {
+                    resource: "streamed promotion free list",
+                    reason: error.to_string(),
+                })?;
+            planned_free.push(FreeRegion {
+                offset: next_offset,
+                size: capacity_after - next_offset,
+            });
+        }
+
+        let primary = create_buffer_checked(
+            ctx.device,
+            &BufferDescriptor {
+                label: Some("figgy streamed promotion candidate"),
+                size: capacity_after,
+                usage: BufferUsages::VERTEX
+                    | BufferUsages::STORAGE
+                    | BufferUsages::COPY_DST
+                    | BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            },
+            "streamed promotion candidate",
+        )?;
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("figgy streamed promotion candidate"),
+            });
+        for id in &order {
+            let old = &self.slots[id];
+            let new = &planned_slots[id];
+            encoder.copy_buffer_to_buffer(
+                &self.primary,
+                old.offset,
+                &primary,
+                new.offset,
+                old.byte_size,
+            );
+        }
+        encoder.copy_buffer_to_buffer(&staging, 0, &primary, promoted_offset, total);
+        ctx.queue.submit(std::iter::once(encoder.finish()));
+        self.note_buffer_created(total);
+        self.note_buffer_created(total.saturating_add(capacity_after));
+        self.note_buffer_retired(total);
+
+        let candidate = ColumnPool {
+            identity: self.identity.clone(),
+            primary,
+            capacity: capacity_after,
+            slots: planned_slots,
+            free: planned_free,
+            generation: next_generation,
+            allocation_epochs: planned_epochs,
+            allocation_epoch_counter: last_epoch,
+            layout_generation: next_layout_generation,
+            backup: None,
+            defrag_policy: self.defrag_policy,
+            growth_policy: self.growth_policy,
+            retired_bytes: Arc::default(),
+            peak_bytes: 0,
+            buffer_creations: 0,
+        };
+        Ok(StreamedColumnPromotion::Candidate(ColumnBatchCandidate {
+            pool: self,
+            candidate: Some(candidate),
+        }))
     }
 
     /// The failure-atomic form of [`Self::add_columns`].
@@ -1464,6 +2353,9 @@ impl ColumnPool {
         for _ in &staging {
             self.note_buffer_created(total);
         }
+        // CPU handles are dropped on return, but the submitted copy keeps the
+        // staging allocation device-resident until queue completion.
+        self.note_buffer_retired(total);
         Ok(ColumnBatchInsert {
             pool: self,
             rollback: Some(BatchInsertRollback {
@@ -1512,7 +2404,7 @@ impl ColumnPool {
     }
 
     /// The biggest single region first fit could serve from.
-    fn largest_free_region(&self) -> u64 {
+    pub(crate) fn largest_free_region(&self) -> u64 {
         self.free
             .iter()
             .map(|region| region.size)
@@ -1926,6 +2818,7 @@ impl ColumnPool {
             );
         }
         queue.submit(std::iter::once(encoder.finish()));
+        self.note_buffer_retired(staged_bytes);
 
         let handles: [ColumnHandle; 4] = handles
             .try_into()
@@ -1946,7 +2839,7 @@ impl ColumnPool {
             // The candidate is a shell that only carries the new buffer and
             // layout across to `commit`. Its allocations are charged to the
             // real pool at the creation site, so the shell meters nothing.
-            retired_bytes: 0,
+            retired_bytes: Arc::default(),
             peak_bytes: 0,
             buffer_creations: 0,
         };
@@ -2180,6 +3073,7 @@ impl ColumnPool {
         // rollback boundary.  Every Result-returning and allocating operation
         // is complete; only ownership moves follow this submission.
         queue.submit(std::iter::once(upload));
+        self.note_buffer_retired(byte_size);
 
         let buffer_rollback = match target {
             PreparedUpsertTarget::InPlace => UpsertBufferRollback::InPlace,
@@ -2382,6 +3276,7 @@ impl ColumnPool {
         // reservation borrows the free list until it commits. `staging` is
         // still alive at this point, so the peak it contributes to is real.
         self.note_buffer_created(byte_size);
+        self.note_buffer_retired(byte_size);
         Ok(handle)
     }
 
@@ -2390,23 +3285,80 @@ impl ColumnPool {
         &mut self,
         id: &str,
     ) -> Result<Option<ColumnRemoval<'_>>, AllocError> {
-        let Some(slot) = self.slots.get(id).cloned() else {
+        if !self.slots.contains_key(id) {
             return Ok(None);
-        };
+        }
+        Ok(Some(self.begin_remove_columns(&[id])?))
+    }
+
+    /// Provisionally remove several resident columns as one allocator change.
+    ///
+    /// Every id must be present and distinct. The returned pool view contains
+    /// none of them, allowing dependent state to be prepared before commit;
+    /// dropping the guard restores every slot, free region, allocation epoch,
+    /// and public generation exactly.
+    pub(crate) fn begin_remove_columns<'a>(
+        &'a mut self,
+        ids: &[&str],
+    ) -> Result<ColumnRemoval<'a>, AllocError> {
+        if ids.is_empty() {
+            return Ok(ColumnRemoval {
+                pool: self,
+                rollback: None,
+            });
+        }
+        let mut seen = std::collections::HashSet::new();
+        seen.try_reserve(ids.len())
+            .map_err(|error| AllocError::AllocationFailed {
+                resource: "column batch removal id set",
+                reason: error.to_string(),
+            })?;
+        for id in ids {
+            if !seen.insert(*id) {
+                return Err(AllocError::DuplicateId((*id).to_owned()));
+            }
+            if !self.slots.contains_key(*id) {
+                return Err(AllocError::AllocationFailed {
+                    resource: "column batch removal",
+                    reason: "resident column disappeared before removal".into(),
+                });
+            }
+        }
+
         let next_generation = self.checked_generation_successor()?;
         let mut planned_slots = self.slots.clone();
-        planned_slots.remove(id);
+        let mut removed_regions = Vec::new();
+        removed_regions
+            .try_reserve_exact(ids.len())
+            .map_err(|error| AllocError::AllocationFailed {
+                resource: "column batch removal regions",
+                reason: error.to_string(),
+            })?;
+        for id in ids {
+            let slot = planned_slots
+                .remove(*id)
+                .expect("validated resident column remains in removal plan");
+            removed_regions.push(FreeRegion {
+                offset: slot.offset,
+                size: slot.byte_size,
+            });
+        }
         for slot in planned_slots.values_mut() {
             slot.generation = next_generation;
         }
         let mut planned_free = self.free.clone();
-        planned_free.push(FreeRegion {
-            offset: slot.offset,
-            size: slot.byte_size,
-        });
+        planned_free
+            .try_reserve(removed_regions.len())
+            .map_err(|error| AllocError::AllocationFailed {
+                resource: "column batch removal free list",
+                reason: error.to_string(),
+            })?;
+        planned_free.extend(removed_regions);
         Self::coalesce_free(&mut planned_free);
         let mut planned_allocation_epochs = self.allocation_epochs.clone();
-        planned_allocation_epochs.remove(id);
+        for id in ids {
+            planned_allocation_epochs.remove(*id);
+        }
 
         let old_slots = std::mem::replace(&mut self.slots, planned_slots);
         let old_free = std::mem::replace(&mut self.free, planned_free);
@@ -2414,7 +3366,7 @@ impl ColumnPool {
             std::mem::replace(&mut self.allocation_epochs, planned_allocation_epochs);
         let old_generation = std::mem::replace(&mut self.generation, next_generation);
 
-        Ok(Some(ColumnRemoval {
+        Ok(ColumnRemoval {
             pool: self,
             rollback: Some(RemovalRollback {
                 slots: old_slots,
@@ -2422,7 +3374,7 @@ impl ColumnPool {
                 generation: old_generation,
                 allocation_epochs: old_allocation_epochs,
             }),
-        }))
+        })
     }
 
     /// Remove a column. Returns its region to the free list and coalesces
@@ -2771,11 +3723,12 @@ impl ColumnPool {
             });
         }
         if let Some(budget) = ctx.budget {
-            // Old and new buffers coexist across the copy; backup is released
-            // first, so it is not part of the peak.
+            // Released buffers, including a dropped backup, remain resident
+            // until queue completion and cannot finance the new allocation.
             let peak = budget
                 .external_bytes
-                .checked_add(self.capacity)
+                .checked_add(self.gpu_bytes())
+                .and_then(|sum| sum.checked_add(self.retired_bytes()))
                 .and_then(|sum| sum.checked_add(target))
                 .ok_or(AllocError::ResourceLimit {
                     resource: "column pool growth",
@@ -2859,6 +3812,42 @@ mod tests {
     #[test]
     fn equal_ceilings_are_that_value() {
         assert_eq!(buffer_ceiling_from(128 << 20, 128 << 20), 128 << 20);
+    }
+
+    #[test]
+    fn resident_batch_capacity_plan_is_pure_and_obeys_fragmentation_policy() {
+        let Some((device, queue, mut pool)) = mk_pool(3 * ALIGN) else {
+            return;
+        };
+        let ctx = GpuAllocCtx::unbudgeted(&device, &queue);
+        for id in ["a", "b", "c"] {
+            pool.add_column(id.into(), &col_f64(vec![1.0]), ctx)
+                .unwrap();
+        }
+        pool.remove_column("a").unwrap();
+        pool.remove_column("c").unwrap();
+        assert_eq!(pool.free_bytes(), 2 * ALIGN);
+        assert_eq!(pool.largest_free_region(), ALIGN);
+        let before_capacity = pool.capacity();
+        let before_used = pool.used_bytes();
+        let ceiling = buffer_ceiling(&device);
+
+        assert_eq!(
+            pool.plan_resident_batch_capacity(2 * ALIGN, ceiling),
+            Err(ResidentBatchCapacityError::Policy)
+        );
+        pool.defrag_policy = DefragPolicy::OnAllocFailure;
+        assert_eq!(
+            pool.plan_resident_batch_capacity(2 * ALIGN, ceiling),
+            Ok(ResidentBatchCapacityPlan {
+                capacity_after: 3 * ALIGN,
+                transition_bytes: 3 * ALIGN,
+            })
+        );
+        assert_eq!(pool.capacity(), before_capacity);
+        assert_eq!(pool.used_bytes(), before_used);
+        assert_eq!(pool.free_bytes(), 2 * ALIGN);
+        assert_eq!(pool.largest_free_region(), ALIGN);
     }
 
     // ---- growth (begin_relayout with a larger target) ----
@@ -3024,6 +4013,34 @@ mod tests {
     }
 
     #[test]
+    fn pool_retirement_is_budgeted_until_its_exact_batch_completes() {
+        let Some((device, queue, mut pool)) = mk_pool(2 * ALIGN) else {
+            return;
+        };
+        let target = 8 * ALIGN;
+        let ctx = GpuAllocCtx {
+            device: &device,
+            queue: &queue,
+            budget: Some(GpuBudget {
+                ceiling_bytes: pool.gpu_bytes() + target,
+                external_bytes: 0,
+            }),
+        };
+        pool.note_buffer_retired(ALIGN);
+        let (counter, first) = pool.take_retirement();
+        assert_eq!(pool.retired_bytes(), ALIGN);
+        assert!(pool.plan_relayout_capacity(ctx, target).is_err());
+        pool.note_buffer_retired(2 * ALIGN);
+        counter.complete(first);
+        assert_eq!(pool.retired_bytes(), 2 * ALIGN);
+        assert!(pool.plan_relayout_capacity(ctx, target).is_err());
+        let (counter, second) = pool.take_retirement();
+        counter.complete(second);
+        assert_eq!(pool.retired_bytes(), 0);
+        assert!(pool.plan_relayout_capacity(ctx, target).is_ok());
+    }
+
+    #[test]
     fn dropping_a_growth_guard_restores_capacity_and_the_old_buffer() {
         let Some((device, queue, mut pool)) = mk_pool(2 * ALIGN) else {
             return;
@@ -3128,9 +4145,9 @@ mod tests {
         let after = pool.capacity();
         assert!(after >= 8 * ALIGN);
 
-        // `commit` released the old slab, so the settled footprint is the new
-        // slab alone — but the peak has to remember that both existed while the
-        // copy ran, since that is the moment a budget has to survive.
+        // `commit` released the old slab, so the held footprint is the new
+        // slab alone. The preceding upload staging and the old slab both stay
+        // retired until completion, and the peak includes all three buffers.
         assert_eq!(
             pool.gpu_bytes(),
             after,
@@ -3138,15 +4155,22 @@ mod tests {
         );
         assert_eq!(
             pool.peak_bytes(),
-            before + after,
-            "peak must be old + new: they coexist across the GPU copy"
+            ALIGN + before + after,
+            "peak must include submitted staging plus old and new slabs"
         );
         assert_eq!(
             pool.retired_bytes(),
-            before,
-            "the old slab counts as retired until the submission boundary"
+            ALIGN + before,
+            "submitted staging and the old slab count until queue completion"
         );
-        pool.clear_retired_bytes();
+        let (retired, bytes) = pool.take_retirement();
+        queue.on_submitted_work_done(move || retired.complete(bytes));
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("retired pool copy completes");
         assert_eq!(pool.retired_bytes(), 0);
     }
 
@@ -3841,6 +4865,7 @@ mod tests {
         assert!(pool.backup.is_some());
         assert!(pool.remove_column("demo_x").unwrap());
         let before = full_pool_state(&pool);
+        let retired_before = pool.retired_bytes();
         let survivor_a = read_column_values(
             GpuAllocCtx::unbudgeted(&device, &queue),
             &pool,
@@ -3868,6 +4893,11 @@ mod tests {
             assert_ne!(buffer_identity(pending.pool().buffer()), before.base.buffer);
         }
         assert_eq!(full_pool_state(&pool), before);
+        assert_eq!(
+            pool.retired_bytes(),
+            retired_before + pool.capacity() + 4 * ALIGN,
+            "abandoned candidate and four submitted staging buffers stay budgeted"
+        );
         assert_eq!(
             read_column_values(
                 GpuAllocCtx::unbudgeted(&device, &queue),
@@ -3898,6 +4928,7 @@ mod tests {
         let old_backup = pool.backup.as_ref().map(buffer_identity);
         let generation = pool.generation();
         let layout_generation = pool.layout_generation();
+        let retired_before = pool.retired_bytes();
         let survivor_epoch = pool.allocation_epoch("survivor").unwrap();
         let old_demo_x_epoch = pool.allocation_epoch("demo_x").unwrap();
         let replacements = [
@@ -3926,6 +4957,11 @@ mod tests {
         assert_eq!(pool.layout_generation(), layout_generation + 1);
         assert_eq!(pool.backup.as_ref().map(buffer_identity), Some(primary));
         assert_ne!(pool.backup.as_ref().map(buffer_identity), old_backup);
+        assert_eq!(
+            pool.retired_bytes(),
+            retired_before + pool.capacity() + 4 * ALIGN,
+            "the superseded backup and four staging buffers stay budgeted"
+        );
         assert_eq!(pool.allocation_epoch("survivor"), Some(survivor_epoch));
         assert_ne!(pool.allocation_epoch("demo_x"), Some(old_demo_x_epoch));
         let replacement_epochs = ["demo_x", "demo_sin", "demo_t", "demo_rc"]
@@ -3954,6 +4990,87 @@ mod tests {
                 pool.handle_for("survivor").unwrap(),
             ),
             old.data
+        );
+    }
+
+    #[test]
+    fn mixed_streamed_promotion_candidate_rolls_back_then_commits_as_one_pool() {
+        let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+            return;
+        };
+        let per_region = (ALIGN / COLUMN_VALUE_BYTES as u64) as usize;
+        let resident = col_f64(vec![1.0; per_region]);
+        for id in ["keep-a", "hole", "keep-c"] {
+            pool.add_column(
+                id.into(),
+                &resident,
+                GpuAllocCtx::unbudgeted(&device, &queue),
+            )
+            .unwrap();
+        }
+        pool.remove_column("hole").unwrap();
+        pool.defrag_policy = DefragPolicy::OnAllocFailure;
+        let scalar = col_f64(vec![3.25]);
+        let hilo = col_f64(vec![1_700_000_000_000.125]);
+        let uploads = [
+            StreamedColumnUpload {
+                id: "stream-scalar",
+                source: StreamColumnSource::Scalar(&scalar),
+                len_values: scalar.data.len(),
+            },
+            StreamedColumnUpload {
+                id: "stream-hilo",
+                source: StreamColumnSource::HiLo(&hilo),
+                len_values: hilo.data.len(),
+            },
+        ];
+        let before = full_pool_state(&pool);
+        let retired_before = pool.retired_bytes();
+
+        {
+            let pending = pool
+                .begin_streamed_promotion(
+                    &uploads,
+                    4 * ALIGN,
+                    GpuAllocCtx::unbudgeted(&device, &queue),
+                )
+                .unwrap();
+            assert!(pending.relocated());
+            assert!(pending.pool().slot("stream-scalar").is_some());
+            assert!(pending.pool().slot("stream-hilo").is_some());
+        }
+        assert_eq!(full_pool_state(&pool), before);
+        assert_eq!(
+            pool.retired_bytes(),
+            retired_before + 6 * ALIGN,
+            "candidate slab and the two-column staging stay retired after rollback"
+        );
+
+        pool.begin_streamed_promotion(
+            &uploads,
+            4 * ALIGN,
+            GpuAllocCtx::unbudgeted(&device, &queue),
+        )
+        .unwrap()
+        .commit();
+        assert!(pool.slot("stream-scalar").is_some());
+        assert!(pool.slot("stream-hilo").is_some());
+        assert_eq!(pool.layout_generation(), before.base.layout_generation + 1);
+        assert_eq!(
+            read_column_values(
+                GpuAllocCtx::unbudgeted(&device, &queue),
+                &pool,
+                pool.handle_for("stream-scalar").unwrap(),
+            ),
+            vec![3.25]
+        );
+        assert_eq!(
+            read_column_values(
+                GpuAllocCtx::unbudgeted(&device, &queue),
+                &pool,
+                pool.handle_for("stream-hilo").unwrap(),
+            ),
+            hilo.data
         );
     }
 
@@ -3992,6 +5109,45 @@ mod tests {
         assert_eq!(pool.identity(), identity);
         assert_eq!(pool_state(&pool, "remove-a"), before_a);
         assert_eq!(pool_state(&pool, "remove-b"), before_b);
+    }
+
+    #[test]
+    fn batch_removal_guard_validates_rolls_back_and_commits_all_ids_together() {
+        let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+            return;
+        };
+        let values = col_f64(vec![1.0]);
+        for id in ["batch-a", "batch-b", "batch-c"] {
+            pool.add_column(id.into(), &values, GpuAllocCtx::unbudgeted(&device, &queue))
+                .unwrap();
+        }
+        let before = full_pool_state(&pool);
+        assert!(matches!(
+            pool.begin_remove_columns(&["batch-a", "batch-a"]),
+            Err(AllocError::DuplicateId(_))
+        ));
+        assert_eq!(full_pool_state(&pool), before);
+        assert!(pool.begin_remove_columns(&["batch-a", "missing"]).is_err());
+        assert_eq!(full_pool_state(&pool), before);
+
+        {
+            let removal = pool.begin_remove_columns(&["batch-a", "batch-c"]).unwrap();
+            assert!(removal.pool().slot("batch-a").is_none());
+            assert!(removal.pool().slot("batch-b").is_some());
+            assert!(removal.pool().slot("batch-c").is_none());
+        }
+        assert_eq!(full_pool_state(&pool), before);
+
+        let survivor_epoch = pool.allocation_epoch("batch-b");
+        pool.begin_remove_columns(&["batch-a", "batch-c"])
+            .unwrap()
+            .commit();
+        assert!(pool.slot("batch-a").is_none());
+        assert!(pool.slot("batch-c").is_none());
+        assert!(pool.slot("batch-b").is_some());
+        assert_eq!(pool.allocation_epoch("batch-b"), survivor_epoch);
+        assert_eq!(pool.generation(), before.base.generation + 1);
+        assert_eq!(pool.free_bytes(), 3 * ALIGN);
     }
 
     #[test]
@@ -4034,6 +5190,7 @@ mod tests {
         let identity = pool.identity();
         let before_a = pool_state(&pool, "fresh-a");
         let before_c = pool_state(&pool, "fresh-c");
+        let retired_before = pool.retired_bytes();
         assert!(pool.backup.is_none());
 
         {
@@ -4051,6 +5208,11 @@ mod tests {
         assert!(pool.backup.is_none());
         assert_eq!(pool_state(&pool, "fresh-a"), before_a);
         assert_eq!(pool_state(&pool, "fresh-c"), before_c);
+        assert_eq!(
+            pool.retired_bytes(),
+            retired_before + pool.capacity(),
+            "abandoned submitted candidate stays budgeted"
+        );
     }
 
     #[test]
@@ -4829,6 +5991,7 @@ mod tests {
             .add_column("x".into(), &old, GpuAllocCtx::unbudgeted(&device, &queue))
             .unwrap();
         let before = pool_state(&pool, "x");
+        let retired_before = pool.retired_bytes();
 
         {
             let replacement = col_f64(vec![100.0, 200.0, 300.0]);
@@ -4844,6 +6007,11 @@ mod tests {
         }
 
         assert_eq!(pool_state(&pool, "x"), before);
+        assert_eq!(
+            pool.retired_bytes(),
+            retired_before + 2 * ALIGN,
+            "abandoned candidate and submitted staging stay budgeted"
+        );
         assert!(pool.is_valid_handle(&old_handle));
         assert_eq!(
             read_column_values(GpuAllocCtx::unbudgeted(&device, &queue), &pool, old_handle),

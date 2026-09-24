@@ -257,6 +257,9 @@ pub(crate) struct GpuFieldExtentColumns {
 /// Validation, submission, or detached-readback failure.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GpuErrorbarError {
+    ColumnNotResident {
+        id: String,
+    },
     UnknownColumn {
         role: &'static str,
         id: String,
@@ -314,6 +317,9 @@ pub enum GpuErrorbarError {
 impl std::fmt::Display for GpuErrorbarError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ColumnNotResident { id } => {
+                write!(f, "fit column is registered but not resident: {id}")
+            }
             Self::UnknownColumn { role, id } => write!(f, "unknown {role} column id: {id}"),
             Self::StaleHandle {
                 role,
@@ -1122,6 +1128,23 @@ pub struct GpuSeriesExtentTicket {
 }
 
 impl GpuSeriesExtentTicket {
+    pub(crate) const FIELD_BYTES: u64 = SERIES_STATE_BYTES * 3 + std::mem::size_of::<ParamsGpu>() as u64;
+
+    /// Nonblocking counterpart used by renderer-owned streaming continuations.
+    /// `None` means pending; `Some(None)` is a completed empty drawable extent.
+    pub(crate) fn try_resolve(&mut self) -> Result<Option<Option<GpuSeriesExtent>>, GpuErrorbarError> {
+        let Some(result) = self.core.receiver.try_recv().map_err(|_| GpuErrorbarError::ReadbackSenderDropped)? else {
+            return Ok(None);
+        };
+        result.map_err(|error| GpuErrorbarError::ReadbackMapFailed(format!("{error:?}")))?;
+        let mapped = self.core.readback.slice(0..SERIES_STATE_BYTES).get_mapped_range()
+            .map_err(|error| GpuErrorbarError::ReadbackMapFailed(format!("{error:?}")))?;
+        let state = bytemuck::pod_read_unaligned::<SeriesStateGpu>(&mapped);
+        drop(mapped);
+        self.core.readback.unmap();
+        decode_series_state(state).map(Some)
+    }
+
     pub async fn resolve(self) -> Result<Option<GpuSeriesExtent>, GpuErrorbarError> {
         decode_series_state(self.core.resolve().await?)
     }

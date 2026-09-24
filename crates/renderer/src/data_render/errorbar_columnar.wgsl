@@ -36,10 +36,16 @@ struct Transform {
     //                wavelength, binary separation); keeps the star texture
     //                resolution-invariant under DPI/export scaling.
     // constellation: [0] = (star_opacity, line_opacity, 0, 0)
+    // All styles reserve [2].z for the global point-base u32 BIT PATTERN.
+    // Resident draws write zero; streamed point/errorbar draws bitcast it.
     style_params: array<vec4<f32>, 3>,
 };  // 112 B (vec4 array at offset 64, stride 16)
 
 @group(0) @binding(0) var<uniform> transform: Transform;
+
+fn styled_point_index(local_index: u32) -> u32 {
+    return bitcast<u32>(transform.style_params[2].z) + local_index;
+}
 
 struct Style {
     color_premul: vec4<f32>,
@@ -306,6 +312,7 @@ fn resolve_errorbar_mapped_style(style_index: f32, inst: u32) -> ResolvedErrorBa
         style.cap_half_px,
         style.cap_width_px,
     );
+    let point_index = inst + errorbar_style_meta._pad;
 
     if (errorbar_style_meta.has_index != 0u && valid_errorbar_style_index(style_index)) {
         let idx = u32(round(style_index));
@@ -316,7 +323,7 @@ fn resolve_errorbar_mapped_style(style_index: f32, inst: u32) -> ResolvedErrorBa
 
     for (var i = 0u; i < errorbar_style_meta.override_count; i = i + 1u) {
         let ov = errorbar_style_overrides[i];
-        if (ov.point_index == inst) {
+        if (ov.point_index == point_index) {
             out = apply_errorbar_style_slot(out, ErrorBarStyleSlot(ov.color_premul, ov.params));
         }
     }
@@ -516,7 +523,7 @@ fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> @builtin(position)
     let side = select(1.0, -1.0, (corner & 1u) == 0u);
 
     let amp = max(transform.style_params[0].x, 0.0);
-    let seed = (u32(transform.style_params[0].z) ^ style.series_salt) + inst;
+    let seed = (u32(transform.style_params[0].z) ^ style.series_salt) + styled_point_index(inst);
     let lattice = f32(seg * 2u + select(1u, 0u, at_a));
     let disp = amp * sketch_noise(lattice, seed);
 
@@ -557,7 +564,7 @@ fn vs_jet(in: VsIn, @builtin(instance_index) inst: u32) -> JetOut {
     let seg = in.vi / 6u;
 
     var out: JetOut;
-    out.seed_inst = (u32(transform.style_params[0].w) ^ style.series_salt) + inst;
+    out.seed_inst = (u32(transform.style_params[0].w) ^ style.series_salt) + styled_point_index(inst);
     out.kind = select(1u, 0u, seg == 0u || seg == 3u);
     out.t_src = 0.5;
     out.local = vec2<f32>(0.0, 0.0);

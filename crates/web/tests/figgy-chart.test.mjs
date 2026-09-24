@@ -135,6 +135,10 @@ async function loadFacade({ initImpl, createImpl } = {}) {
     observers: [],
     rafs: new Map(),
     nextRaf: 1,
+    timers: new Map(),
+    nextTimer: 1,
+    now: 0,
+    messages: [],
     errors: [],
   };
 
@@ -158,6 +162,7 @@ async function loadFacade({ initImpl, createImpl } = {}) {
 
   const registry = new Map();
   const document = {
+    hidden: false,
     createElement(tag) {
       if (tag === "canvas") {
         return new FakeCanvas();
@@ -195,10 +200,28 @@ async function loadFacade({ initImpl, createImpl } = {}) {
     ResizeObserver: FakeResizeObserver,
     requestAnimationFrame,
     cancelAnimationFrame,
+    performance: { now: () => state.now },
+    setTimeout: (callback) => {
+      const id = state.nextTimer++;
+      state.timers.set(id, callback);
+      return id;
+    },
+    clearTimeout: (id) => state.timers.delete(id),
+    MessageChannel: class {
+      constructor() {
+        this.port1 = { onmessage: null, closed: false, close() { this.closed = true; } };
+        this.port2 = {
+          postMessage: () => state.messages.push(() => { if (!this.port1.closed) this.port1.onmessage?.(); }),
+          close() {},
+        };
+      }
+    },
     window: { devicePixelRatio: 1 },
     DOMException,
     console: quietConsole,
     Uint8Array,
+    Float32Array,
+    Float64Array,
   });
 
   class RawFiggyChart {
@@ -259,6 +282,8 @@ async function loadFacade({ initImpl, createImpl } = {}) {
   return {
     Element: facade.namespace.FiggyChartElement,
     state,
+    document,
+    browserWindow: context.window,
   };
 }
 
@@ -356,9 +381,579 @@ function makeKernel(name, options = {}) {
       calls.push(["prewarm_all"]);
       return this.prewarmAllImpl();
     },
+    request_stream_auto_fit() { return false; },
+    stream_status() {
+      return JSON.stringify({ status: "complete", revision: "1", job_id: "1",
+        submitted_primitives: 0, total_primitives: 0, auto_fit_pending: false });
+    },
+    set_stream_chunk_budget(size) { calls.push(["set_stream_chunk_budget", size]); },
+    streaming_gpu_ready() { return new Promise(() => {}); },
+    stream_selection_request_ranges() { return { status: "complete", free() {} }; },
+    suspend_stream_selection() { calls.push(["suspend_stream_selection"]); },
+    cancel_streaming_and_wait() {
+      calls.push(["cancel_streaming_and_wait"]);
+      this.interrupt_render?.();
+      return options.cancelImpl?.() ?? Promise.resolve();
+    },
+    configure_auto_residency(memoryBudgetBytes, workingSetLimitBytes) {
+      calls.push(["configure_auto_residency", memoryBudgetBytes, workingSetLimitBytes]);
+    },
+    try_auto_resident_chart(ids, revisions, sources) {
+      calls.push(["try_auto_resident_chart", ids, revisions, sources]);
+      return { status: "streamed", reason: "policy_unset" };
+    },
+    demote_auto_resident_columns(ids, revisions, sources) {
+      calls.push(["demote_auto_resident_columns", ids, revisions, sources]);
+    },
   };
   return kernel;
 }
+
+async function completedReplayFixture({ readRange = null, typed = false, extraColumn = null } = {}) {
+  const kernel = makeKernel("auxiliary-replay");
+  kernel.register_streaming_columns = () => {};
+  kernel.register_streaming_column_sources = () => {};
+  kernel.request_auto_streaming_chart = () => ({ status: "complete" });
+  const environment = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new environment.Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+  const values = new Float32Array([0, 1, 2, 3, 4, 5, 6, 7]);
+  const columns = typed
+    ? [{ id: "x", revision: 2, values }]
+    : [{ id: "x", revision: 2, length: 8, encoding: "f32" }];
+  if (extraColumn) columns.push(extraColumn);
+  await element.render_chart({ columns, readRange, maxPrimitivesPerChunk: 4 }).done;
+  let pending = true;
+  const handle = { free: () => kernel.calls.push(["handle-free"]) };
+  for (const kind of ["export", "pick_point", "pick_data"]) {
+    kernel[`begin_stream_${kind}`] = (...args) => {
+      kernel.calls.push([`begin-${kind}`, ...args]);
+      pending = true;
+      return handle;
+    };
+  }
+  kernel.stream_operation_request_ranges = (actual) => {
+    assert.equal(actual, handle);
+    return pending ? {
+      status: "ready", source_ids: ["x"], source_revisions: [2], source_lengths: [8],
+      offsets: [3], lengths: [2], encodings: ["f32"],
+      free: () => kernel.calls.push(["request-free"]),
+    } : { status: "complete", free: () => kernel.calls.push(["request-free"]) };
+  };
+  kernel.stream_operation_submit_ranges = (actual, ids, revisions, lengths, offsets, chunks) => {
+    assert.equal(actual, handle);
+    kernel.calls.push(["submit-aux", ids, revisions, lengths, offsets, chunks]);
+    pending = false;
+    return { free: () => kernel.calls.push(["progress-free"]) };
+  };
+  kernel.finish_stream_export = () => Promise.resolve(new Uint8Array([137, 80, 78, 71]));
+  kernel.set_stream_operation_chunk_budget = (_handle, count) => {
+    kernel.calls.push(["aux-budget", count]);
+  };
+  kernel.finish_stream_pick_point = () => Promise.resolve(JSON.stringify({
+    source_id: "data", series_id: "s", point_index: 4, distance_px: 0.25,
+  }));
+  kernel.finish_stream_pick_data = () => Promise.resolve(undefined);
+  kernel.cancel_stream_operation_and_wait = () => {
+    kernel.calls.push(["cancel-aux"]);
+    return Promise.resolve();
+  };
+  return { ...environment, kernel, element, values };
+}
+
+async function residencyFixture() {
+  const kernel = makeKernel("provider-residency");
+  const candidates = [];
+  let revision = 1;
+  kernel.register_streaming_column_sources = (_ids, revisions) => { revision = revisions[0]; };
+  kernel.replace_streaming_column_sources = (_ids, revisions) => { revision = revisions[0]; };
+  kernel.begin_stream_residency = () => {
+    const candidate = { revision, offset: 0, cancelled: 0, freed: 0,
+      source_ids: ["x"], source_revisions: [revision],
+      free() { this.freed += 1; } };
+    candidates.push(candidate);
+    return candidate;
+  };
+  kernel.set_stream_residency_chunk_budget = () => {};
+  kernel.stream_residency_request_ranges = (candidate) => ({
+    status: candidate.offset === 4 ? "complete" : "ready",
+    source_ids: ["x"], source_revisions: [candidate.revision], source_lengths: [4],
+    offsets: [candidate.offset], lengths: [2], encodings: ["f32"],
+    submitted_primitives: candidate.offset, total_primitives: 4,
+  });
+  kernel.stream_residency_submit_ranges = (candidate, ids, revisions, lengths, offsets, chunks) => {
+    assert.equal(candidate.cancelled, 0);
+    assert.equal(offsets[0], candidate.offset);
+    assert.equal(chunks[0].length, 2);
+    kernel.calls.push(["resident-submit", candidate, chunks[0]]);
+    candidate.offset += 2;
+    return { status: "submitted", submitted_primitives: candidate.offset, total_primitives: 4 };
+  };
+  kernel.finish_stream_residency = (candidate) => {
+    assert.equal(candidate.offset, 4);
+    kernel.calls.push(["resident-finish", candidate]);
+  };
+  kernel.cancel_stream_residency = (candidate) => { candidate.cancelled += 1; };
+  kernel.request_auto_streaming_chart = () => { throw new Error("unexpected ordinary stream"); };
+  kernel.stream_selection_request_ranges = () => { throw new Error("unpublished residency has no stream selection surface"); };
+  const { Element, state } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+  const runFrame = async () => {
+    const [id, callback] = [...state.rafs.entries()].at(-1);
+    state.rafs.delete(id);
+    callback(0);
+    await flushTasks();
+  };
+  const request = (readRange, sourceRevision = 1) => element.render_chart({
+    columns: [{ id: "x", revision: sourceRevision, length: 4, encoding: "f32" }],
+    maxPrimitivesPerChunk: 2, readRange,
+  });
+  const finishFrames = async () => { for (let index = 0; index < 6; index += 1) await runFrame(); };
+  return { kernel, element, candidates, request, runFrame, finishFrames };
+}
+
+test("range-provider residency uploads bounded ranges and publishes once", async () => {
+  const fixture = await residencyFixture();
+  const reads = [];
+  const job = fixture.request((request) => {
+    reads.push(request);
+    return new Float32Array(request.length).fill(request.offset);
+  });
+  await fixture.finishFrames();
+  assert.equal((await job.done).status, "resident");
+  assert.deepEqual(reads.map(({ offset, length }) => [offset, length]), [[0, 2], [2, 2]]);
+  assert.equal(fixture.kernel.calls.filter(([name]) => name === "resident-finish").length, 1);
+  assert.equal(fixture.candidates[0].freed, 1);
+  assert.equal(fixture.candidates[0].cancelled, 0);
+  assert.equal((await fixture.request(() => { throw new Error("resident data reread"); }).done).status, "resident");
+  assert.equal(fixture.candidates.length, 1);
+});
+
+test("provider residency cancellation discards late data and releases its token once", async () => {
+  const fixture = await residencyFixture();
+  const late = deferred();
+  const job = fixture.request(() => late.promise);
+  await fixture.runFrame();
+  await job.cancel();
+  late.resolve(new Float32Array(2));
+  await fixture.finishFrames();
+  assert.equal((await job.done).status, "cancelled");
+  assert.equal(fixture.candidates[0].cancelled, 1);
+  assert.equal(fixture.candidates[0].freed, 1);
+  assert.equal(fixture.kernel.calls.filter(([name]) => name === "resident-submit").length, 0);
+  assert.equal(fixture.kernel.calls.filter(([name]) => name === "cancel_streaming_and_wait").length, 1);
+});
+
+test("provider residency marks only the renderer-selected column closure resident", async () => {
+  const fixture = await residencyFixture();
+  const metadata = (id) => ({ id, revision: 1, length: 4, encoding: "f32" });
+  const job = fixture.element.render_chart({ columns: [metadata("x"), metadata("unused")],
+    readRange: ({ id, length }) => {
+      assert.equal(id, "x");
+      return new Float32Array(length);
+    }, maxPrimitivesPerChunk: 2,
+  });
+  await fixture.finishFrames();
+  assert.equal((await job.done).status, "resident");
+  const begin = fixture.kernel.begin_stream_residency;
+  fixture.kernel.begin_stream_residency = () => {
+    const candidate = begin();
+    candidate.source_ids = ["unused"];
+    return candidate;
+  };
+  const unused = fixture.element.render_chart({ columns: [metadata("unused")],
+    readRange: ({ length }) => new Float32Array(length), maxPrimitivesPerChunk: 2,
+  });
+  assert.equal(unused.status, "running", "unreferenced metadata must not be marked resident");
+  assert.equal(fixture.candidates.length, 2);
+  await unused.cancel();
+});
+
+test("provider residency replacement coalesces identical requests and ignores old revision reads", async () => {
+  const fixture = await residencyFixture();
+  const late = deferred();
+  const job = fixture.request(() => late.promise);
+  await fixture.runFrame();
+  assert.equal(fixture.request(() => late.promise), job);
+  const replacement = fixture.request(() => new Float32Array(2).fill(2), 2);
+  late.resolve(new Float32Array(2).fill(1));
+  await fixture.finishFrames();
+  assert.equal((await job.done).status, "superseded");
+  assert.equal((await replacement.done).status, "resident");
+  assert.equal(fixture.candidates[0].cancelled, 1);
+  assert.equal(fixture.candidates[0].freed, 1);
+  const submitted = fixture.kernel.calls.filter(([name]) => name === "resident-submit");
+  assert.equal(submitted.length, 2);
+  assert.ok(submitted.every(([, candidate, values]) => candidate.revision === 2 && values[0] === 2));
+});
+
+test("provider residency resize replaces pending candidate and drops old target reads", async () => {
+  const fixture = await residencyFixture();
+  const late = deferred();
+  let reads = 0;
+  const job = fixture.request(() => ++reads === 1 ? late.promise : new Float32Array(2).fill(2));
+  await fixture.runFrame();
+  fixture.element.setRect(800, 600);
+  fixture.element.resize();
+  await fixture.finishFrames();
+  late.resolve(new Float32Array(2).fill(1));
+  await fixture.runFrame();
+  assert.equal((await job.done).status, "resident");
+  assert.equal(fixture.candidates.length, 2);
+  assert.equal(fixture.candidates[0].cancelled, 1);
+  assert.equal(fixture.candidates[0].freed, 1);
+  assert.ok(fixture.kernel.calls.filter(([name]) => name === "resident-submit")
+    .every(([, candidate, values]) => candidate === fixture.candidates[1] && values[0] === 2));
+});
+
+test("provider residency publication failure rejects and releases unpublished candidate", async () => {
+  const fixture = await residencyFixture();
+  const failure = new Error("candidate preflight failed");
+  fixture.kernel.finish_stream_residency = () => { throw failure; };
+  const job = fixture.request(() => new Float32Array(2));
+  const rejected = assert.rejects(job.done, (error) => error === failure);
+  await fixture.finishFrames();
+  await rejected;
+  assert.equal(fixture.candidates[0].cancelled, 1);
+  assert.equal(fixture.candidates[0].freed, 1);
+  assert.equal(fixture.kernel.calls.filter(([name]) => name === "cancel_streaming_and_wait").length, 0,
+    "publication failure must not cancel an existing completed display");
+});
+
+test("completed streamed pick/export reuse retained source views without host pumping", async () => {
+  const { kernel, element, values } = await completedReplayFixture({ typed: true });
+  assert.deepEqual(Array.from(await element.export_png(2)), [137, 80, 78, 71]);
+  assert.equal((await element.pick_point(10, 20, 4)).point_index, 4);
+  assert.equal(await element.pick_data(10, 20, 4), null);
+  const submissions = kernel.calls.filter(([name]) => name === "submit-aux");
+  assert.equal(submissions.length, 3);
+  for (const [, ids, revisions, lengths, offsets, chunks] of submissions) {
+    assert.deepEqual([...ids], ["x"]);
+    assert.deepEqual([...revisions], [2]);
+    assert.deepEqual([...lengths], [8]);
+    assert.deepEqual([...offsets], [3]);
+    assert.deepEqual([...chunks[0]], [3, 4]);
+    assert.equal(chunks[0].buffer, values.buffer, "the facade must borrow a view, not clone data");
+  }
+  assert.equal(kernel.calls.filter(([name]) => name === "cancel-aux").length, 0);
+  assert.equal(kernel.calls.filter(([name]) => name === "handle-free").length, 3);
+  assert.equal(kernel.calls.filter(([name]) => name === "request-free").length, 6);
+  assert.equal(kernel.calls.filter(([name]) => name === "progress-free").length, 3);
+  assert.equal(element.busy, false);
+});
+
+function runFacadeFrame(state) {
+  const [id, callback] = [...state.rafs.entries()].at(-1);
+  state.rafs.delete(id);
+  callback(state.now);
+}
+
+function selectionRequest(index, freed) {
+  return {
+    status: "ready", index, source_ids: ["x"], source_revisions: [2], source_lengths: [8],
+    offsets: [index], lengths: [1], encodings: ["f32"],
+    same_selection_request(other) { return other.index === index; },
+    free() { freed.push(index); },
+  };
+}
+
+test("selection replacement keeps old overlay until the newest bounded range resolves", async () => {
+  const reads = [], freed = [], first = deferred(), newest = deferred();
+  const { kernel, element, state } = await completedReplayFixture({ readRange(range) {
+    reads.push(range);
+    return range.offset === 3 ? first.promise : newest.promise;
+  } });
+  let desired = 3, committed = 1;
+  kernel.set_picked_points = (json) => { desired = JSON.parse(json); };
+  kernel.stream_selection_request_ranges = () => desired === committed
+    ? { status: "complete", free() {} } : selectionRequest(desired, freed);
+  kernel.stream_selection_submit_ranges = (request, ids, revisions, lengths, offsets, chunks) => {
+    assert.equal(request.index, desired);
+    assert.deepEqual([...chunks[0]], [desired]);
+    committed = desired;
+  };
+  runFacadeFrame(state);
+  await flushTasks();
+  runFacadeFrame(state);
+  assert.equal(reads.length, 1, "unchanged pending selection must not re-read");
+  assert.equal(committed, 1);
+  element.set_picked_points("5");
+  runFacadeFrame(state);
+  await flushTasks();
+  assert.deepEqual(reads.map((r) => r.offset), [3, 5]);
+  assert.equal(committed, 1, "old overlay stays visible while new source is delayed");
+  first.resolve(new Float32Array([3]));
+  await flushTasks();
+  runFacadeFrame(state);
+  assert.equal(committed, 1, "late superseded reply cannot replace the overlay");
+  newest.resolve(new Float32Array([5]));
+  await flushTasks();
+  runFacadeFrame(state);
+  assert.equal(committed, 5);
+  assert.ok(freed.includes(3) && freed.includes(5));
+  assert.equal(element.busy, false);
+  element.free();
+});
+
+test("a superseded selection rejection cannot swallow a newer selection mutation", async () => {
+  const old = deferred(), reads = [], freed = [];
+  const { kernel, element, state } = await completedReplayFixture({ readRange(range) {
+    reads.push(range.offset);
+    return range.offset === 3 ? old.promise : new Float32Array([5]);
+  } });
+  let desired = 3, committed = 1;
+  kernel.set_picked_points = (json) => { desired = JSON.parse(json); };
+  kernel.stream_selection_request_ranges = () => desired === committed
+    ? { status: "complete", free() {} } : selectionRequest(desired, freed);
+  kernel.stream_selection_submit_ranges = (request) => { committed = request.index; };
+  kernel.discard_stream_selection_request = () => assert.fail("superseded ticket must not abandon current selection");
+  runFacadeFrame(state);
+  old.reject(new Error("old selection failed"));
+  await flushTasks();
+  element.set_picked_points("5");
+  runFacadeFrame(state);
+  await flushTasks();
+  runFacadeFrame(state);
+  assert.deepEqual(reads, [3, 5]);
+  assert.equal(committed, 5);
+  element.free();
+});
+
+test("selection borrows typed-array ranges without copying", async () => {
+  const { kernel, element, values, state } = await completedReplayFixture({ typed: true });
+  const freed = [];
+  let complete = false;
+  kernel.stream_selection_request_ranges = () => complete
+    ? { status: "complete", free() {} } : selectionRequest(4, freed);
+  kernel.stream_selection_submit_ranges = (_request, _ids, _revisions, _lengths, offsets, chunks) => {
+    assert.deepEqual([...offsets], [4]);
+    assert.equal(chunks[0].buffer, values.buffer);
+    assert.deepEqual([...chunks[0]], [4]);
+    complete = true;
+  };
+  runFacadeFrame(state);
+  await flushTasks();
+  runFacadeFrame(state);
+  assert.equal(complete, true);
+  element.free();
+  assert.ok(freed.includes(4));
+});
+
+test("disconnect releases an unresolved selected-row request and ignores its late reply", async () => {
+  const pending = deferred(), freed = [];
+  const { kernel, element, state } = await completedReplayFixture({ readRange() { return pending.promise; } });
+  kernel.stream_selection_request_ranges = () => selectionRequest(3, freed);
+  kernel.stream_selection_submit_ranges = () => assert.fail("disconnected selection must not submit");
+  runFacadeFrame(state);
+  element.free();
+  assert.deepEqual(freed, [3]);
+  pending.resolve(new Float32Array([3]));
+  await flushTasks();
+  assert.equal(state.timers.size, 0);
+});
+
+test("selection backpressure uses a bounded wake rather than spinning on an already-complete fence", async () => {
+  const { kernel, element, state } = await completedReplayFixture({ typed: true });
+  let requests = 0, fences = 0;
+  kernel.stream_selection_request_ranges = () => { requests++; return { status: "backpressure", free() {} }; };
+  kernel.streaming_gpu_ready = () => { fences++; return Promise.resolve(); };
+  runFacadeFrame(state);
+  await flushTasks();
+  for (let i = 0; i < 5; i++) runFacadeFrame(state);
+  assert.equal(requests, 1);
+  assert.equal(fences, 1);
+  assert.equal(state.timers.size, 1);
+  element.free();
+  assert.equal(state.timers.size, 0);
+});
+
+test("selection provider failure abandons only its ticket and leaves data execution available", async () => {
+  const failure = new Error("selected range unavailable");
+  const { kernel, element, state } = await completedReplayFixture({ readRange() { throw failure; } });
+  const errors = [];
+  element.addEventListener("figgy-error", (event) => errors.push(event));
+  const freed = [];
+  let abandoned = 0, requests = 0;
+  kernel.stream_selection_request_ranges = () => { requests++; return selectionRequest(3, freed); };
+  kernel.discard_stream_selection_request = (request) => { assert.equal(request.index, 3); abandoned++; };
+  kernel.stream_selection_submit_ranges = () => assert.fail("failed input must not be submitted");
+  runFacadeFrame(state);
+  await flushTasks();
+  runFacadeFrame(state);
+  runFacadeFrame(state);
+  assert.equal(abandoned, 1);
+  assert.equal(requests, 1, "failed selection must not loop without a new mutation");
+  assert.ok(errors.some((event) => event.type === "figgy-error"
+    && event.detail.error === failure && event.detail.operation === "stream_selection"));
+  assert.equal(kernel.calls.filter(([name]) => name === "cancel_streaming_and_wait").length, 0);
+  assert.equal(element.busy, false);
+  element.free();
+});
+
+test("exclusive operations suspend a selected-row reservation and resume it in a hidden tab", async () => {
+  const oldRead = deferred(), warm = deferred(), freed = [];
+  let reads = 0;
+  const { kernel, element, state } = await completedReplayFixture({ readRange() {
+    return ++reads === 1 ? oldRead.promise : new Float32Array([3]);
+  } });
+  let reserved = false, committed = false;
+  kernel.stream_selection_request_ranges = () => {
+    if (committed) return { status: "complete", free() {} };
+    reserved = true;
+    return selectionRequest(3, freed);
+  };
+  kernel.suspend_stream_selection = () => { reserved = false; };
+  kernel.stream_selection_submit_ranges = () => { committed = true; reserved = false; };
+  kernel.prewarmImpl = () => {
+    assert.equal(reserved, false, "exclusive GPU work must not wait behind a held source ticket");
+    return warm.promise;
+  };
+  runFacadeFrame(state);
+  const operation = element.prewarm_gpu_picking();
+  assert.equal(element.busy, true);
+  oldRead.resolve(new Float32Array([3]));
+  await flushTasks();
+  for (let i = 0; i < 8 && state.messages.length; i++) state.messages.shift()();
+  assert.equal(committed, false);
+  warm.resolve();
+  await operation;
+  // No rAF callback is invoked after the exclusive operation settles.
+  for (let i = 0; i < 12; i++) {
+    if (state.messages.length) state.messages.shift()();
+    await flushTasks();
+  }
+  assert.equal(committed, true);
+  assert.equal(reads, 2);
+  assert.equal(element.busy, false);
+  element.free();
+});
+
+test("stream auxiliary provider receives only bounded ranges and waits on GPU backpressure", async () => {
+  const reads = [];
+  const { kernel, element } = await completedReplayFixture({
+    readRange(request) { reads.push(request); return new Float32Array([3, 4]); },
+  });
+  const gpu = deferred();
+  let initial = true;
+  const request = kernel.stream_operation_request_ranges;
+  kernel.stream_operation_request_ranges = (handle) => {
+    if (initial) { initial = false; return { status: "backpressure" }; }
+    return request(handle);
+  };
+  kernel.streaming_gpu_ready = () => gpu.promise;
+  const exported = element.export_png(2);
+  await flushTasks();
+  assert.equal(reads.length, 0);
+  assert.equal(element.busy, true);
+  gpu.resolve();
+  await exported;
+  assert.deepEqual(JSON.parse(JSON.stringify(reads)), [
+    { id: "x", revision: 2, offset: 3, length: 2, encoding: "f32" },
+  ]);
+});
+
+test("free interrupts an unresolved stream export provider and drains before disposing", async () => {
+  const read = deferred();
+  const drained = deferred();
+  const { kernel, element } = await completedReplayFixture({ readRange: () => read.promise });
+  kernel.cancel_stream_operation_and_wait = () => {
+    kernel.calls.push(["cancel-aux"]);
+    return drained.promise;
+  };
+  const exported = element.export_png();
+  const rejected = assert.rejects(exported, (error) => error.name === "AbortError");
+  await flushTasks();
+  disconnect(element);
+  await flushTasks();
+  assert.equal(kernel.calls.filter(([name]) => name === "cancel-aux").length, 1);
+  assert.equal(kernel.freeCalls, 0);
+  drained.resolve();
+  await rejected;
+  assert.equal(kernel.freeCalls, 1);
+  read.resolve(new Float32Array([3, 4]));
+  await flushTasks();
+  assert.equal(kernel.calls.filter(([name]) => name === "submit-aux").length, 0);
+});
+
+test("invalid stream auxiliary input is rejected and its reservation is drained", async () => {
+  const { kernel, element } = await completedReplayFixture({
+    readRange: () => new Float64Array([3, 4]),
+  });
+  await assert.rejects(element.pick_data(10, 20, 4), /Float32Array/);
+  assert.equal(kernel.calls.filter(([name]) => name === "submit-aux").length, 0);
+  assert.equal(kernel.calls.filter(([name]) => name === "cancel-aux").length, 1);
+  assert.equal(element.busy, false);
+});
+
+test("stream auxiliary cleanup errors do not replace the original provider failure", async () => {
+  const primary = new Error("provider failed");
+  const cleanup = new Error("drain failed");
+  const { kernel, element } = await completedReplayFixture({
+    readRange: () => Promise.reject(primary),
+  });
+  const cleanupEvents = [];
+  element.addEventListener("figgy-error", (event) => cleanupEvents.push(event.detail));
+  kernel.cancel_stream_operation_and_wait = () => Promise.reject(cleanup);
+  await assert.rejects(element.export_png(), (error) => error === primary);
+  assert.equal(cleanupEvents.length, 1);
+  assert.equal(cleanupEvents[0].error, cleanup);
+  assert.equal(kernel.calls.filter(([name]) => name === "handle-free").length, 1);
+  assert.equal(element.busy, false);
+});
+
+test("queued resize cleanup preserves a stream auxiliary provider failure", async () => {
+  const read = deferred();
+  const primary = new Error("provider failed before queued resize");
+  const cleanup = new Error("queued resize failed");
+  const { kernel, element } = await completedReplayFixture({ readRange: () => read.promise });
+  const cleanupEvents = [];
+  element.addEventListener("figgy-error", (event) => cleanupEvents.push(event.detail));
+  kernel.resize = (width, height) => {
+    kernel.calls.push(["resize", width, height]);
+    throw cleanup;
+  };
+  const exported = element.export_png();
+  const rejected = assert.rejects(exported, (error) => error === primary);
+  await flushTasks();
+  element.setRect(800, 600);
+  element.resize();
+  assert.equal(kernel.calls.filter(([name]) => name === "resize").length, 0);
+  read.reject(primary);
+  await rejected;
+  assert.equal(cleanupEvents.length, 1);
+  assert.equal(cleanupEvents[0].error, cleanup);
+  assert.equal(cleanupEvents[0].operation, "operation_cleanup");
+  assert.equal(kernel.calls.filter(([name]) => name === "resize").length, 1);
+  assert.equal(kernel.calls.filter(([name]) => name === "cancel-aux").length, 1);
+  assert.equal(kernel.calls.filter(([name]) => name === "handle-free").length, 1);
+  assert.equal(element.busy, false);
+});
+
+test("synchronous provider throw still observes earlier pending range rejections", async () => {
+  const pending = deferred();
+  const primary = new Error("second provider throws synchronously");
+  const { kernel, element } = await completedReplayFixture({
+    extraColumn: { id: "y", revision: 2, length: 8, encoding: "f32" },
+    readRange({ id }) {
+      if (id === "x") return pending.promise;
+      throw primary;
+    },
+  });
+  kernel.stream_operation_request_ranges = () => ({
+    status: "ready", source_ids: ["x", "y"], source_revisions: [2, 2], source_lengths: [8, 8],
+    offsets: [3, 3], lengths: [2, 2], encodings: ["f32", "f32"],
+  });
+  await assert.rejects(element.export_png(), (error) => error === primary);
+  pending.reject(new Error("first provider rejects later"));
+  await flushTasks();
+  assert.equal(element.busy, false);
+  assert.equal(kernel.calls.filter(([name]) => name === "cancel-aux").length, 1);
+});
 
 test("disconnect during wasm init rejects only the old ready generation", async () => {
   const init = deferred();
@@ -898,6 +1493,1325 @@ test("new synchronous facade APIs forward values and preserve raw failures", asy
     () => element.series_draw_info("contour"),
     (error) => error?.name === "SyntaxError",
   );
+});
+
+test("automatic streaming facade forwards the exact host bindings", async () => {
+  const kernel = makeKernel("auto-stream-forwarding");
+  const requestResult = { status: "started" };
+  const stepResult = { status: "submitted" };
+  const revisions = new Float64Array([7, 7]);
+  const sources = [new Float32Array([1, 2]), new Float32Array([3, 4])];
+  kernel.request_auto_streaming_chart = (chunkSize) => {
+    kernel.calls.push(["request_auto_streaming_chart", chunkSize]);
+    return requestResult;
+  };
+  kernel.auto_stream_chart_step = (ids, suppliedRevisions, suppliedSources) => {
+    kernel.calls.push([
+      "auto_stream_chart_step",
+      ids,
+      suppliedRevisions,
+      suppliedSources,
+    ]);
+    return stepResult;
+  };
+  kernel.interrupt_render = () => {
+    kernel.calls.push(["interrupt_render"]);
+    return "stream_cancel_queued";
+  };
+  const { Element } = await loadFacade({
+    createImpl: () => Promise.resolve(kernel),
+  });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+
+  assert.equal(element.request_auto_streaming_chart(4096), requestResult);
+  assert.equal(
+    element.auto_stream_chart_step(["x", "y"], revisions, sources),
+    stepResult,
+  );
+  assert.equal(element.interrupt_render(), "stream_cancel_queued");
+  assert.deepEqual(kernel.calls.slice(-3), [
+    ["request_auto_streaming_chart", 4096],
+    ["auto_stream_chart_step", ["x", "y"], revisions, sources],
+    ["interrupt_render"],
+  ]);
+});
+
+test("high-level streaming job owns pumping, progress, and completion", async () => {
+  const kernel = makeKernel("owned-stream-executor");
+  const x = new Float32Array([0, 1, 2, 3]);
+  const y = new Float64Array([4, 5, 6, 7]);
+  let requestCount = 0;
+  const steps = [
+    { status: "submitted", submitted_primitives: 2, total_primitives: 4 },
+    { status: "all_submitted", submitted_primitives: 4, total_primitives: 4 },
+  ];
+  kernel.register_streaming_columns = (ids, revisions, sources) => {
+    kernel.calls.push(["register_streaming_columns", ids, revisions, sources]);
+  };
+  kernel.request_auto_streaming_chart = (chunkSize) => {
+    kernel.calls.push(["request_auto_streaming_chart", chunkSize]);
+    requestCount += 1;
+    if (requestCount === 1) {
+      return {
+        status: "started",
+        source_ids: ["x", "y"],
+        source_revisions: [1, 1],
+      };
+    }
+    return requestCount <= 3
+      ? { status: "active", source_ids: [], source_revisions: [] }
+      : { status: "complete", source_ids: [], source_revisions: [] };
+  };
+  kernel.auto_stream_chart_step = (ids, revisions, sources) => {
+    kernel.calls.push(["auto_stream_chart_step", ids, revisions, sources]);
+    return steps.shift();
+  };
+  const { Element, state } = await loadFacade({
+    createImpl: () => Promise.resolve(kernel),
+  });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+
+  const progress = [];
+  const job = element.render_streaming_chart({
+    columns: [
+      { id: "x", revision: 1, values: x },
+      { id: "y", revision: 1, values: y },
+    ],
+    maxPrimitivesPerChunk: 2,
+    onProgress: (event) => progress.push(event.status),
+  });
+  assert.equal(element.busy, false, "streaming must not block config and series calls");
+  assert.equal(job.status, "running");
+
+  for (let frame = 0; frame < 2; frame += 1) {
+    const [id, callback] = [...state.rafs.entries()].at(-1);
+    state.rafs.delete(id);
+    callback(frame);
+  }
+  assert.deepEqual(JSON.parse(JSON.stringify(await job.done)), {
+    status: "complete",
+    submittedPrimitives: 4,
+    totalPrimitives: 4,
+  });
+  assert.equal(job.status, "complete");
+  assert.deepEqual(progress, ["running", "running", "waiting_gpu", "complete"]);
+  const registration = kernel.calls.find(([name]) => name === "register_streaming_columns");
+  assert.deepEqual(JSON.parse(JSON.stringify(registration.slice(0, 3))), [
+    "register_streaming_columns",
+    ["x", "y"],
+    [1, 1],
+  ]);
+  assert.equal(registration[3][0], x);
+  assert.equal(registration[3][1], y);
+  const supplied = kernel.calls.filter(([name]) => name === "auto_stream_chart_step");
+  assert.equal(supplied.length, 2);
+  for (const [, ids, revisions, sources] of supplied) {
+    assert.deepEqual(JSON.parse(JSON.stringify([ids, revisions])), [["x", "y"], [1, 1]]);
+    assert.equal(sources[0], x);
+    assert.equal(sources[1], y);
+  }
+
+  const repeated = element.render_streaming_chart({
+    columns: [
+      { id: "x", revision: 1, values: x },
+      { id: "y", revision: 1, values: y },
+    ],
+    maxPrimitivesPerChunk: 2,
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(await repeated.done)), {
+    status: "complete",
+    submittedPrimitives: 0,
+    totalPrimitives: 0,
+  });
+  assert.equal(kernel.calls.filter(([name]) => name === "auto_stream_chart_step").length, 2);
+
+  const requestsBeforeResize = requestCount;
+  element.setRect(800, 600);
+  element.resize();
+  assert.equal(requestCount, requestsBeforeResize + 1);
+  await repeated.cancel();
+  element.setRect(900, 700);
+  element.resize();
+  assert.equal(
+    requestCount,
+    requestsBeforeResize + 1,
+    "cancelling a completed job must release its retained source references",
+  );
+});
+
+test("range-provider streaming fetches only renderer-selected chunks and owns completion", async () => {
+  const kernel = makeKernel("range-provider-executor");
+  const requested = [];
+  let rangeStep = 0;
+  let renderRequests = 0;
+  kernel.register_streaming_column_sources = (ids, revisions, lengths, encodings) => {
+    kernel.calls.push([
+      "register_streaming_column_sources",
+      ids,
+      revisions,
+      lengths,
+      encodings,
+    ]);
+  };
+  kernel.request_auto_streaming_chart = () => {
+    renderRequests += 1;
+    return renderRequests === 1 ? {
+      status: "started",
+      source_ids: ["x", "y"],
+      source_revisions: [1, 1],
+    } : {
+      status: "complete",
+      source_ids: [],
+      source_revisions: [],
+    };
+  };
+  kernel.auto_stream_chart_request_ranges = () => {
+    rangeStep += 1;
+    if (rangeStep === 1) {
+      return {
+        status: "ready",
+        source_ids: ["x", "y"],
+        source_revisions: [1, 1],
+        source_lengths: [8, 8],
+        offsets: [2, 2],
+        lengths: [3, 3],
+        encodings: ["f32", "f64"],
+        submitted_primitives: 2,
+        total_primitives: 7,
+      };
+    }
+    if (rangeStep === 2) {
+      return {
+        status: "all_submitted",
+        source_ids: [],
+        source_revisions: [],
+        source_lengths: [],
+        offsets: [],
+        lengths: [],
+        encodings: [],
+        submitted_primitives: 7,
+        total_primitives: 7,
+      };
+    }
+    return {
+      status: "complete",
+      source_ids: [],
+      source_revisions: [],
+      source_lengths: [],
+      offsets: [],
+      lengths: [],
+      encodings: [],
+      submitted_primitives: 0,
+      total_primitives: 0,
+    };
+  };
+  kernel.auto_stream_chart_submit_ranges = (
+    ids, revisions, sourceLengths, offsets, sources,
+  ) => {
+    kernel.calls.push([
+      "auto_stream_chart_submit_ranges",
+      ids,
+      revisions,
+      sourceLengths,
+      offsets,
+      sources,
+    ]);
+    return { status: "submitted", submitted_primitives: 7, total_primitives: 7 };
+  };
+  const { Element, state } = await loadFacade({
+    createImpl: () => Promise.resolve(kernel),
+  });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+
+  const job = element.render_chart({
+    columns: [
+      { id: "x", revision: 1, length: 8, encoding: "f32" },
+      { id: "y", revision: 1, length: 8, encoding: "f64" },
+    ],
+    maxPrimitivesPerChunk: 2,
+    readRange(request) {
+      requested.push(request);
+      return request.encoding === "f32"
+        ? new Float32Array(request.length).fill(3)
+        : Promise.resolve(new Float64Array(request.length).fill(4));
+    },
+  });
+  const runFrame = (time) => {
+    const [id, callback] = [...state.rafs.entries()].at(-1);
+    state.rafs.delete(id);
+    callback(time);
+  };
+  runFrame(0);
+  await flushTasks();
+  runFrame(1);
+  runFrame(2);
+
+  assert.deepEqual(JSON.parse(JSON.stringify(await job.done)), {
+    status: "complete",
+    submittedPrimitives: 0,
+    totalPrimitives: 0,
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(requested)), [
+    { id: "x", revision: 1, offset: 2, length: 3, encoding: "f32" },
+    { id: "y", revision: 1, offset: 2, length: 3, encoding: "f64" },
+  ]);
+  const submit = kernel.calls.find(([name]) => name === "auto_stream_chart_submit_ranges");
+  assert.deepEqual(JSON.parse(JSON.stringify(submit.slice(0, 5))), [
+    "auto_stream_chart_submit_ranges",
+    ["x", "y"],
+    [1, 1],
+    [8, 8],
+    [2, 2],
+  ]);
+  assert.equal(submit[5][0] instanceof Float32Array, true);
+  assert.equal(submit[5][1] instanceof Float64Array, true);
+
+  const repeated = element.render_chart({
+    columns: [
+      { id: "x", revision: 1, length: 8, encoding: "f32" },
+      { id: "y", revision: 1, length: 8, encoding: "f64" },
+    ],
+    maxPrimitivesPerChunk: 2,
+    readRange() {
+      throw new Error("completed identical input must not be read again");
+    },
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(await repeated.done)), {
+    status: "complete",
+    submittedPrimitives: 0,
+    totalPrimitives: 0,
+  });
+  assert.equal(renderRequests, 2);
+  assert.equal(requested.length, 2);
+});
+
+for (const dprOnly of [false, true]) {
+test(`completed range-provider stream replays exact source ranges after ${dprOnly ? "DPR change" : "resize"}`, async () => {
+  const kernel = makeKernel("range-provider-resize-replay");
+  let renderRequests = 0;
+  let rangeReady = false;
+  let reads = 0;
+  let submits = 0;
+  kernel.register_streaming_column_sources = () => {};
+  kernel.request_auto_streaming_chart = () => {
+    renderRequests += 1;
+    rangeReady = true;
+    return {
+      status: "started",
+      source_ids: ["x"],
+      source_revisions: [1],
+    };
+  };
+  kernel.auto_stream_chart_request_ranges = () => {
+    if (!rangeReady) {
+      return {
+        status: "complete",
+        source_ids: [], source_revisions: [], source_lengths: [],
+        offsets: [], lengths: [], encodings: [],
+        submitted_primitives: 0, total_primitives: 0,
+      };
+    }
+    return {
+      status: "ready",
+      source_ids: ["x"],
+      source_revisions: [1],
+      source_lengths: [8],
+      offsets: [2],
+      lengths: [2],
+      encodings: ["f32"],
+      submitted_primitives: 0,
+      total_primitives: 7,
+    };
+  };
+  kernel.auto_stream_chart_submit_ranges = () => {
+    submits += 1;
+    rangeReady = false;
+    return { status: "submitted", submitted_primitives: 7, total_primitives: 7 };
+  };
+  const { Element, state, browserWindow } = await loadFacade({
+    createImpl: () => Promise.resolve(kernel),
+  });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+  const runFrame = (time) => {
+    const [id, callback] = [...state.rafs.entries()].at(-1);
+    state.rafs.delete(id);
+    callback(time);
+  };
+
+  const job = element.render_chart({
+    columns: [{ id: "x", revision: 1, length: 8, encoding: "f32" }],
+    readRange(request) {
+      reads += 1;
+      return new Float32Array(request.length).fill(reads);
+    },
+  });
+  runFrame(0);
+  await flushTasks();
+  runFrame(1);
+  await job.done;
+  assert.equal(renderRequests, 1);
+  assert.equal(reads, 1);
+  assert.equal(submits, 1);
+
+  if (dprOnly) {
+    browserWindow.devicePixelRatio = 2;
+    runFrame(2);
+  } else {
+    element.setRect(800, 600);
+    element.resize();
+  }
+  assert.deepEqual(kernel.calls.filter(([name]) => name === "resize").at(-1), [
+    "resize", dprOnly ? 1280 : 800, dprOnly ? 960 : 600,
+  ]);
+  assert.equal(renderRequests, 2, "resize must start an exact replay without host pumping");
+  if (!dprOnly) runFrame(2);
+  await flushTasks();
+  runFrame(3);
+  await flushTasks();
+
+  assert.equal(reads, 2, "the retained provider must supply the resized target");
+  assert.equal(submits, 2);
+});
+
+test(`active range-provider ${dprOnly ? "DPR change" : "resize"} restarts the same job and drops the old read`, async () => {
+  const kernel = makeKernel("range-provider-active-resize");
+  const oldRead = deferred();
+  let renderRequests = 0;
+  let ready = false;
+  let reads = 0;
+  const submitted = [];
+  kernel.register_streaming_column_sources = () => {};
+  kernel.request_auto_streaming_chart = () => {
+    renderRequests += 1;
+    ready = true;
+    return {
+      status: "started",
+      source_ids: ["x"],
+      source_revisions: [1],
+    };
+  };
+  kernel.auto_stream_chart_request_ranges = () => {
+    if (!ready) {
+      return {
+        status: "complete",
+        source_ids: [], source_revisions: [], source_lengths: [],
+        offsets: [], lengths: [], encodings: [],
+        submitted_primitives: 0, total_primitives: 0,
+      };
+    }
+    return {
+      status: "ready",
+      source_ids: ["x"],
+      source_revisions: [1],
+      source_lengths: [8],
+      offsets: [0],
+      lengths: [2],
+      encodings: ["f32"],
+      submitted_primitives: 0,
+      total_primitives: 7,
+    };
+  };
+  kernel.auto_stream_chart_submit_ranges = (_ids, _revisions, _lengths, _offsets, chunks) => {
+    submitted.push([...chunks[0]]);
+    ready = false;
+    return { status: "submitted", submitted_primitives: 7, total_primitives: 7 };
+  };
+  const { Element, state, browserWindow } = await loadFacade({
+    createImpl: () => Promise.resolve(kernel),
+  });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+  const runFrame = (time) => {
+    const [id, callback] = [...state.rafs.entries()].at(-1);
+    state.rafs.delete(id);
+    callback(time);
+  };
+
+  const job = element.render_chart({
+    columns: [{ id: "x", revision: 1, length: 8, encoding: "f32" }],
+    readRange() {
+      reads += 1;
+      return reads === 1 ? oldRead.promise : new Float32Array([2, 2]);
+    },
+  });
+  const executionId = job.executionId;
+  runFrame(0);
+  assert.equal(reads, 1);
+
+  if (dprOnly) {
+    browserWindow.devicePixelRatio = 2;
+  } else {
+    element.setRect(800, 600);
+    element.resize();
+  }
+  runFrame(1);
+  assert.deepEqual(kernel.calls.filter(([name]) => name === "resize").at(-1), [
+    "resize", dprOnly ? 1280 : 800, dprOnly ? 960 : 600,
+  ]);
+  await flushTasks();
+  runFrame(2);
+  await job.done;
+
+  oldRead.resolve(new Float32Array([1, 1]));
+  await flushTasks();
+  assert.equal(job.executionId, executionId);
+  assert.equal(renderRequests, 2);
+  assert.deepEqual(submitted, [[2, 2]], "late data for the old target must be discarded");
+});
+}
+
+test("cancelled range-provider work discards late async data without submitting it", async () => {
+  const kernel = makeKernel("range-provider-cancel");
+  const pending = deferred();
+  let cancelled = false;
+  let submits = 0;
+  let renderRequests = 0;
+  kernel.register_streaming_column_sources = () => {};
+  kernel.request_auto_streaming_chart = () => {
+    renderRequests += 1;
+    return {
+      status: "started",
+      source_ids: ["x"],
+      source_revisions: [1],
+    };
+  };
+  kernel.auto_stream_chart_request_ranges = () => {
+    if (cancelled) throw new Error("automatic streaming chart has no active execution");
+    return {
+      status: "ready",
+      source_ids: ["x"],
+      source_revisions: [1],
+      source_lengths: [8],
+      offsets: [0],
+      lengths: [2],
+      encodings: ["f32"],
+      submitted_primitives: 0,
+      total_primitives: 7,
+    };
+  };
+  kernel.auto_stream_chart_submit_ranges = () => {
+    submits += 1;
+    return { status: "submitted", submitted_primitives: 2, total_primitives: 7 };
+  };
+  kernel.interrupt_render = () => {
+    cancelled = true;
+    return "stream_cancel_queued";
+  };
+  const { Element, state } = await loadFacade({
+    createImpl: () => Promise.resolve(kernel),
+  });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+
+  const job = element.render_chart({
+    columns: [{ id: "x", revision: 1, length: 8, encoding: "f32" }],
+    readRange: () => pending.promise,
+  });
+  let [id, callback] = [...state.rafs.entries()].at(-1);
+  state.rafs.delete(id);
+  callback(0);
+  const cancellation = job.cancel();
+  assert.equal(typeof cancellation.then, "function");
+  [id, callback] = [...state.rafs.entries()].at(-1);
+  state.rafs.delete(id);
+  callback(1);
+  pending.resolve(new Float32Array([1, 2]));
+  await flushTasks();
+  await cancellation;
+
+  assert.equal(submits, 0);
+  assert.equal(job.status, "cancelled");
+  assert.deepEqual(JSON.parse(JSON.stringify(await job.done)), {
+    status: "cancelled",
+    submittedPrimitives: 0,
+    totalPrimitives: 7,
+  });
+  element.setRect(800, 600);
+  element.resize();
+  assert.equal(renderRequests, 1, "cancel must release the replay provider reference");
+});
+
+test("resident revision change uses two-phase range handoff without eager demotion", async () => {
+  const kernel = makeKernel("resident-range-handoff");
+  const first = new Float32Array([0, 1, 2, 3]);
+  let rangeStep = 0;
+  kernel.register_streaming_columns = () => {};
+  kernel.try_auto_resident_chart = () => ({ status: "resident", reason: "admissible" });
+  kernel.request_resident_stream_handoff = (
+    ids, revisions, lengths, encodings, chunkSize,
+  ) => {
+    kernel.calls.push([
+      "request_resident_stream_handoff",
+      ids,
+      revisions,
+      lengths,
+      encodings,
+      chunkSize,
+    ]);
+    return { status: "started", source_ids: ids, source_revisions: revisions };
+  };
+  kernel.auto_stream_chart_request_ranges = () => {
+    rangeStep += 1;
+    if (rangeStep === 1) {
+      return {
+        status: "ready",
+        source_ids: ["x"],
+        source_revisions: [2],
+        source_lengths: [4],
+        offsets: [0],
+        lengths: [4],
+        encodings: ["f32"],
+        submitted_primitives: 0,
+        total_primitives: 3,
+      };
+    }
+    if (rangeStep === 2) {
+      return {
+        status: "all_submitted",
+        source_ids: [], source_revisions: [], source_lengths: [],
+        offsets: [], lengths: [], encodings: [],
+        submitted_primitives: 3, total_primitives: 3,
+      };
+    }
+    return {
+      status: "complete",
+      source_ids: [], source_revisions: [], source_lengths: [],
+      offsets: [], lengths: [], encodings: [],
+      submitted_primitives: 0, total_primitives: 0,
+    };
+  };
+  kernel.auto_stream_chart_submit_ranges = () => ({
+    status: "submitted", submitted_primitives: 3, total_primitives: 3,
+  });
+  const { Element, state } = await loadFacade({
+    createImpl: () => Promise.resolve(kernel),
+  });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+  await element.render_chart({
+    columns: [{ id: "x", revision: 1, values: first }],
+  }).done;
+
+  const job = element.render_chart({
+    columns: [{ id: "x", revision: 2, length: 4, encoding: "f32" }],
+    maxPrimitivesPerChunk: 4,
+    readRange: () => new Float32Array([4, 5, 6, 7]),
+  });
+  element.setRect(800, 600);
+  element.resize();
+  const runFrame = (time) => {
+    const [id, callback] = [...state.rafs.entries()].at(-1);
+    state.rafs.delete(id);
+    callback(time);
+  };
+  runFrame(0);
+  await flushTasks();
+  runFrame(1);
+  runFrame(2);
+  await job.done;
+
+  const handoffs = kernel.calls.filter(([name]) => name === "request_resident_stream_handoff");
+  assert.equal(handoffs.length, 2, "resize must restart the same atomic resident handoff");
+  assert.deepEqual(JSON.parse(JSON.stringify(handoffs[1])), [
+    "request_resident_stream_handoff",
+    ["x"],
+    [2],
+    [4],
+    ["f32"],
+    4,
+  ]);
+  assert.equal(
+    kernel.calls.some(([name]) => name === "demote_auto_resident_columns"),
+    false,
+  );
+});
+
+test("range-provider type mismatch fails the job and never submits", async () => {
+  const kernel = makeKernel("range-provider-invalid-type");
+  let submits = 0;
+  let renderRequests = 0;
+  kernel.register_streaming_column_sources = () => {};
+  kernel.request_auto_streaming_chart = () => {
+    renderRequests += 1;
+    return { status: "started", source_ids: ["x"], source_revisions: [1] };
+  };
+  kernel.auto_stream_chart_request_ranges = () => ({
+    status: "ready",
+    source_ids: ["x"],
+    source_revisions: [1],
+    source_lengths: [4],
+    offsets: [0],
+    lengths: [2],
+    encodings: ["f32"],
+    submitted_primitives: 0,
+    total_primitives: 3,
+  });
+  kernel.auto_stream_chart_submit_ranges = () => { submits += 1; };
+  kernel.interrupt_render = () => "stream_cancel_queued";
+  const { Element, state } = await loadFacade({
+    createImpl: () => Promise.resolve(kernel),
+  });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+
+  const job = element.render_chart({
+    columns: [{ id: "x", revision: 1, length: 4, encoding: "f32" }],
+    readRange: () => new Float64Array([1, 2]),
+  });
+  const [id, callback] = [...state.rafs.entries()].at(-1);
+  state.rafs.delete(id);
+  callback(0);
+  await flushTasks();
+  const [nextId, nextCallback] = [...state.rafs.entries()].at(-1);
+  state.rafs.delete(nextId);
+  nextCallback(1);
+  await assert.rejects(job.done, /must return a Float32Array/);
+  assert.equal(submits, 0);
+  assert.equal(job.status, "failed");
+  element.setRect(800, 600);
+  element.resize();
+  assert.equal(renderRequests, 1, "a failed provider must not become the resize replay source");
+});
+
+test("new range-provider revision supersedes one pending read and drops its late result", async () => {
+  const kernel = makeKernel("range-provider-supersede");
+  const oldRead = deferred();
+  let activeRevision = 0;
+  const submittedRevisions = [];
+  kernel.register_streaming_columns = () => {};
+  kernel.try_auto_resident_chart = () => ({ status: "resident", reason: "admissible" });
+  kernel.request_resident_stream_handoff = (ids, revisions) => {
+    activeRevision = revisions[0];
+    return { status: "started", source_ids: ids, source_revisions: revisions };
+  };
+  kernel.auto_stream_chart_request_ranges = () => ({
+    status: "ready",
+    source_ids: ["x"],
+    source_revisions: [activeRevision],
+    source_lengths: [4],
+    offsets: [0],
+    lengths: [2],
+    encodings: ["f32"],
+    submitted_primitives: 0,
+    total_primitives: 3,
+  });
+  kernel.auto_stream_chart_submit_ranges = (_ids, revisions) => {
+    submittedRevisions.push(revisions[0]);
+    return { status: "submitted", submitted_primitives: 2, total_primitives: 3 };
+  };
+  kernel.interrupt_render = () => "stream_cancel_queued";
+  const { Element, state } = await loadFacade({
+    createImpl: () => Promise.resolve(kernel),
+  });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+  await element.render_chart({
+    columns: [{ id: "x", revision: 1, values: new Float32Array(4) }],
+  }).done;
+
+  const oldJob = element.render_chart({
+    columns: [{ id: "x", revision: 2, length: 4, encoding: "f32" }],
+    readRange: () => oldRead.promise,
+  });
+  let [id, callback] = [...state.rafs.entries()].at(-1);
+  state.rafs.delete(id);
+  callback(0);
+
+  const newJob = element.render_chart({
+    columns: [{ id: "x", revision: 3, length: 4, encoding: "f32" }],
+    readRange: () => new Float32Array([3, 3]),
+  });
+  assert.equal((await oldJob.done).status, "superseded");
+  [id, callback] = [...state.rafs.entries()].at(-1);
+  state.rafs.delete(id);
+  callback(1);
+  await flushTasks();
+  [id, callback] = [...state.rafs.entries()].at(-1);
+  state.rafs.delete(id);
+  callback(2);
+  oldRead.resolve(new Float32Array([2, 2]));
+  await flushTasks();
+
+  assert.deepEqual(submittedRevisions, [3]);
+  assert.equal(newJob.status, "running");
+  newJob.cancel();
+});
+
+test("high-level render job accepts renderer-selected resident execution", async () => {
+  const kernel = makeKernel("owned-resident-executor");
+  const x = new Float32Array([0, 1, 2]);
+  const y = new Float32Array([2, 1, 0]);
+  kernel.register_streaming_columns = (ids, revisions, sources) => {
+    kernel.calls.push(["register_streaming_columns", ids, revisions, sources]);
+  };
+  kernel.try_auto_resident_chart = (ids, revisions, sources) => {
+    kernel.calls.push(["try_auto_resident_chart", ids, revisions, sources]);
+    return { status: "resident", reason: "admissible" };
+  };
+  kernel.request_auto_streaming_chart = () => {
+    throw new Error("resident selection must not start a stream");
+  };
+  const { Element } = await loadFacade({
+    createImpl: () => Promise.resolve(kernel),
+  });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+
+  const progress = [];
+  const columns = [
+    { id: "x", revision: 1, values: x },
+    { id: "y", revision: 1, values: y },
+  ];
+  const job = element.render_chart({
+    columns,
+    onProgress: (event) => progress.push(event.status),
+  });
+  assert.equal(job.status, "resident");
+  assert.deepEqual(JSON.parse(JSON.stringify(await job.done)), {
+    status: "resident",
+    submittedPrimitives: 0,
+    totalPrimitives: 0,
+  });
+  assert.deepEqual(progress, ["resident"]);
+  assert.equal(
+    kernel.calls.filter(([name]) => name === "try_auto_resident_chart").length,
+    1,
+  );
+
+  const repeated = element.render_chart({ columns });
+  assert.equal(repeated.status, "resident");
+  await repeated.done;
+  assert.equal(
+    kernel.calls.filter(([name]) => name === "try_auto_resident_chart").length,
+    1,
+    "an unchanged resident request must not be re-uploaded or re-promoted",
+  );
+  element.setRect(800, 600);
+  element.resize();
+  assert.equal(
+    kernel.calls.filter(([name]) => name === "try_auto_resident_chart").length,
+    1,
+    "resident data must resize through the resident path without stream replay",
+  );
+});
+
+test("resident revision change normalizes the full closure before reselection", async () => {
+  const kernel = makeKernel("resident-demote-reselect");
+  const first = new Float32Array([0, 1]);
+  const second = new Float32Array([1, 2]);
+  let decisions = 0;
+  kernel.register_streaming_columns = () => {};
+  kernel.try_auto_resident_chart = () => ({
+    status: decisions++ === 0 ? "resident" : "streamed",
+    reason: decisions === 1 ? "admissible" : "working_set_limit",
+  });
+  kernel.request_auto_streaming_chart = () => ({
+    status: "started",
+    source_ids: ["x"],
+    source_revisions: [2],
+  });
+  const { Element } = await loadFacade({
+    createImpl: () => Promise.resolve(kernel),
+  });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+
+  await element.render_chart({
+    columns: [{ id: "x", revision: 1, values: first }],
+  }).done;
+  const streamed = element.render_chart({
+    columns: [{ id: "x", revision: 2, values: second }],
+  });
+  assert.equal(streamed.status, "running");
+  const demotion = kernel.calls.find(([name]) => name === "demote_auto_resident_columns");
+  assert.deepEqual(JSON.parse(JSON.stringify(demotion.slice(0, 3))), [
+    "demote_auto_resident_columns",
+    ["x"],
+    [2],
+  ]);
+  assert.equal(demotion[3][0], second);
+});
+
+test("high-level streaming cancellation settles without restarting", async () => {
+  const kernel = makeKernel("owned-stream-cancel");
+  const x = new Float32Array([0, 1]);
+  kernel.register_streaming_columns = () => {};
+  kernel.request_auto_streaming_chart = () => ({
+    status: "started",
+    source_ids: ["x"],
+    source_revisions: [3],
+  });
+  kernel.interrupt_render = () => "stream_cancel_queued";
+  kernel.auto_stream_chart_step = () => {
+    throw new Error("automatic streaming chart has no active execution");
+  };
+  const { Element, state } = await loadFacade({
+    createImpl: () => Promise.resolve(kernel),
+  });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+
+  const job = element.render_streaming_chart({
+    columns: [{ id: "x", revision: 3, values: x }],
+  });
+  const cancellation = job.cancel();
+  assert.equal(typeof cancellation.then, "function");
+  assert.equal(job.status, "cancel_requested");
+  const [id, callback] = [...state.rafs.entries()].at(-1);
+  state.rafs.delete(id);
+  callback(0);
+  await cancellation;
+  assert.deepEqual(JSON.parse(JSON.stringify(await job.done)), {
+    status: "cancelled",
+    submittedPrimitives: 0,
+    totalPrimitives: 0,
+  });
+  assert.equal(job.status, "cancelled");
+});
+
+test("cancel Promise waits for GPU drain and is idempotent without rAF", async () => {
+  const drain = deferred();
+  const kernel = makeKernel("cancel-drain", { cancelImpl: () => drain.promise });
+  kernel.register_streaming_columns = () => {};
+  kernel.request_auto_streaming_chart = () => ({
+    status: "started", revision: "5", source_ids: ["x"], source_revisions: [3],
+  });
+  const { Element } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+  const job = element.render_chart({ columns: [{ id: "x", revision: 3, values: new Float32Array(4) }] });
+  assert.equal(job.finished, job.done);
+  const cancelled = job.cancel();
+  assert.equal(job.cancel(), cancelled);
+  let finished = false;
+  job.done.then(() => { finished = true; });
+  await flushTasks();
+  assert.equal(finished, false);
+  assert.equal(element.busy, true);
+  drain.resolve();
+  assert.equal((await cancelled).status, "cancelled");
+  assert.equal((await job.done).status, "cancelled");
+  assert.equal(element.busy, false);
+  assert.equal(kernel.calls.filter(([name]) => name === "cancel_streaming_and_wait").length, 1);
+});
+
+test("range configuration edits replace pending reads but decorations preserve them", async () => {
+  const kernel = makeKernel("range-mutation");
+  const firstRead = deferred();
+  const secondRead = deferred();
+  let requestCount = 0;
+  let view = 1;
+  let captured = 0;
+  let readCount = 0;
+  const submitted = [];
+  kernel.register_streaming_column_sources = () => {};
+  kernel.set_title = () => {};
+  kernel.set_config = () => { view += 1; };
+  kernel.request_auto_streaming_chart = () => {
+    requestCount += 1;
+    if (captured === view) return { status: "active" };
+    captured = view;
+    return { status: "started", revision: String(view), source_ids: ["x"], source_revisions: [1] };
+  };
+  kernel.auto_stream_chart_request_ranges = () => ({
+    status: "ready", source_ids: ["x"], source_revisions: [1], source_lengths: [8],
+    offsets: [0], lengths: [2], encodings: ["f32"], submitted_primitives: 0, total_primitives: 8,
+  });
+  kernel.auto_stream_chart_submit_ranges = (_a, _b, _c, _d, chunks) => {
+    submitted.push([...chunks[0]]);
+    return { status: "all_submitted", submitted_primitives: 8, total_primitives: 8 };
+  };
+  const { Element, state } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+  const frame = () => {
+    const [id, callback] = [...state.rafs.entries()].at(-1);
+    state.rafs.delete(id);
+    callback();
+  };
+  const job = element.render_chart({
+    columns: [{ id: "x", revision: 1, length: 8, encoding: "f32" }],
+    readRange: () => (++readCount === 1 ? firstRead.promise : secondRead.promise),
+  });
+  frame();
+  element.set_title("Decoration only");
+  frame();
+  assert.equal(readCount, 1, "a title change must not discard the pending range");
+  element.set_config("new transform");
+  frame();
+  assert.equal(readCount, 2);
+  assert.equal(job.revision, "2");
+  firstRead.resolve(new Float32Array([1, 1]));
+  secondRead.resolve(new Float32Array([2, 2]));
+  await flushTasks();
+  frame();
+  assert.deepEqual(submitted, [[2, 2]]);
+  assert.equal(requestCount, 3);
+  await job.cancel();
+});
+
+test("adaptive chunk sizing yields at the budget and runs in a hidden document", async () => {
+  const kernel = makeKernel("adaptive-stream");
+  let count = 0;
+  let registered = false;
+  let chunk = 0;
+  let submitted = 0;
+  const budgets = [];
+  const requests = [];
+  kernel.register_streaming_columns = () => {};
+  kernel.set_stream_chunk_budget = (value) => { chunk = value; budgets.push(value); };
+  kernel.request_auto_streaming_chart = (maximum) => {
+    requests.push(maximum);
+    if (!registered) {
+      registered = true;
+      return { status: "started", revision: "7", source_ids: ["x"], source_revisions: [1] };
+    }
+    return count < 3 ? { status: "active" } : {
+      status: "complete", revision: "7", submitted_primitives: submitted, total_primitives: submitted,
+    };
+  };
+  const { Element, state, document } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  kernel.auto_stream_chart_step = () => {
+    count += 1;
+    submitted += chunk;
+    state.now += 20;
+    return { status: "submitted", submitted_primitives: submitted, total_primitives: 10000 };
+  };
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+  const job = element.render_chart({
+    columns: [{ id: "x", revision: 1, values: new Float32Array(10000) }],
+    maxPrimitivesPerChunk: 8192, maxFrameTimeMs: 8,
+  });
+  document.hidden = true;
+  for (let turn = 0; turn < 4; turn += 1) {
+    const [id, callback] = [...state.timers.entries()].at(-1);
+    state.timers.delete(id);
+    callback();
+    assert.ok(count <= turn + 1, "no second chunk once the measured budget is exhausted");
+  }
+  await job.done;
+  assert.equal(budgets[0], 4096);
+  assert.ok(budgets[1] < budgets[0]);
+  assert.ok(requests.every((value) => value === 8192), "adaptive sizes must not change request identity");
+  assert.equal(state.timers.size, 0);
+});
+
+test("stream auto-fit Promise waits for Config commit without blocking the pump", async () => {
+  const kernel = makeKernel("stream-fit");
+  const prewarm = deferred();
+  let prewarmPromise;
+  let prewarming = false;
+  let requests = 0;
+  let pendingFit = false;
+  let step = 0;
+  kernel.register_streaming_columns = () => {};
+  kernel.request_auto_streaming_chart = () => {
+    requests += 1;
+    if (requests <= 2) return { status: "started", revision: String(requests), source_ids: ["x"], source_revisions: [1] };
+    return { status: "active" };
+  };
+  kernel.request_stream_auto_fit = () => { pendingFit = true; return true; };
+  kernel.auto_stream_chart_step = () => {
+    step += 1;
+    if (step < 2) return { status: "all_submitted", submitted_primitives: 4, total_primitives: 4 };
+    pendingFit = false;
+    return { status: "complete", revision: "3", submitted_primitives: 4, total_primitives: 4 };
+  };
+  kernel.stream_status = () => {
+    if (prewarming) throw new Error("WASM borrow conflict");
+    return JSON.stringify({ auto_fit_pending: pendingFit });
+  };
+  kernel.prewarm_all = () => { prewarming = true; return prewarm.promise; };
+  const { Element, state } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+  const job = element.render_chart({
+    columns: [{ id: "x", revision: 1, values: new Float32Array(4) }],
+    onProgress: ({ status }) => {
+      if (status === "complete") prewarmPromise = element.prewarm_all();
+    },
+  });
+  state.messages.shift()();
+  assert.equal(state.messages.length, 0);
+  let resolved = false;
+  const fit = element.auto_fit_all(0.05).then(() => { resolved = true; });
+  await flushTasks();
+  assert.equal(element.busy, false);
+  assert.equal(resolved, false);
+  assert.equal(state.messages.length, 1, "fit must wake an execution waiting for GPU completion");
+  state.messages.shift()();
+  await fit;
+  assert.equal(job.status, "complete");
+  assert.equal(job.revision, "3");
+  assert.equal(pendingFit, false);
+  assert.equal(element.busy, true, "fit must resolve without borrowing the kernel held by a callback");
+  prewarm.resolve();
+  await prewarmPromise;
+});
+
+test("same completed request keeps final counts and status queries have no commands", async () => {
+  const kernel = makeKernel("read-only-status");
+  const result = { status: "complete", revision: "9", job_id: "7", submitted_primitives: 100, total_primitives: 100 };
+  let commandCount = 0;
+  kernel.register_streaming_column_sources = () => {};
+  kernel.stream_status = () => JSON.stringify(result);
+  kernel.request_auto_streaming_chart = () => { commandCount += 1; return result; };
+  const { Element } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+  const job = element.render_chart({ columns: [{ id: "x", revision: 1, length: 100, encoding: "f32" }], readRange: () => { throw new Error("must not read"); } });
+  assert.equal((await job.done).submittedPrimitives, 100);
+  assert.equal(job.totalPrimitives, 100);
+  assert.equal(job.revision, "9");
+  assert.equal(element.stream_status().execution_id, job.executionId);
+  assert.equal(element.stream_status().job_id, "7");
+  assert.equal(commandCount, 1);
+  await job.cancel();
+});
+
+test("completed-job drain failure clears the executor so a new request can run", async () => {
+  const kernel = makeKernel("completed-drain-error", { cancelImpl: () => Promise.reject(new Error("drain failed")) });
+  kernel.register_streaming_column_sources = () => {};
+  kernel.request_auto_streaming_chart = () => ({ status: "complete" });
+  const { Element } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+  const options = { columns: [{ id: "x", revision: 1, length: 4, encoding: "f32" }], readRange: () => new Float32Array(4) };
+  const completed = element.render_chart(options);
+  await completed.done;
+  await assert.rejects(completed.cancel(), /drain failed/);
+  assert.equal(element.busy, false);
+  const retried = element.render_chart(options);
+  assert.equal((await retried.done).status, "complete");
+  element.free();
+});
+
+test("free detaches the kernel before cancelled progress can reenter render", async () => {
+  const kernel = makeKernel("free-reentry");
+  kernel.register_streaming_columns = () => {};
+  kernel.request_auto_streaming_chart = () => ({
+    status: "started", source_ids: ["x"], source_revisions: [1],
+  });
+  const { Element, state } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+  const columns = [{ id: "x", revision: 1, values: new Float32Array(4) }];
+  let callbacks = 0;
+  let reentryError;
+  const job = element.render_chart({ columns, onProgress(progress) {
+    if (progress.status !== "cancelled") return;
+    callbacks += 1;
+    try { element.render_chart({ columns }); } catch (error) { reentryError = error; }
+  } });
+  element.free();
+  assert.equal((await job.done).status, "cancelled");
+  assert.equal(callbacks, 1);
+  assert.match(reentryError?.message ?? "", /not ready/);
+  assert.equal(kernel.freeCalls, 1);
+  assert.equal(state.timers.size, 0);
+  for (const message of state.messages.splice(0)) message();
+  assert.equal(state.messages.length, 0);
+});
+
+test("completed typed-array replay does not pump across a reentrant async borrow", async () => {
+  const prewarm = deferred();
+  const kernel = makeKernel("replay-borrow");
+  kernel.register_streaming_columns = () => {};
+  kernel.set_title = () => {};
+  let requests = 0;
+  let borrow;
+  let element;
+  kernel.request_auto_streaming_chart = () => {
+    assert.equal(element.busy, false, "every pump must recheck the WASM borrow gate");
+    requests += 1;
+    return requests === 2
+      ? { status: "started", source_ids: ["x"], source_revisions: [1] }
+      : { status: "complete" };
+  };
+  const { Element, state } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+  kernel.prewarmAllImpl = () => prewarm.promise;
+  const job = element.render_chart({
+    columns: [{ id: "x", revision: 1, values: new Float32Array(4) }],
+    onProgress(progress) {
+      if (progress.status === "running") borrow = element.prewarm_all();
+    },
+  });
+  await job.done;
+  element.set_title("changed");
+  state.messages.shift()();
+  assert.equal(element.busy, true);
+  assert.equal(requests, 2);
+  prewarm.resolve();
+  await borrow;
+  state.messages.shift()();
+  assert.equal(requests, 3);
+  element.free();
+});
+
+test("background message tasks continue after the step quantum and wake on GPU completion", async () => {
+  const completion = deferred();
+  const kernel = makeKernel("background-quantum");
+  kernel.register_streaming_columns = () => {};
+  kernel.request_auto_streaming_chart = () => ({
+    status: "started", source_ids: ["x"], source_revisions: [1],
+  });
+  let steps = 0;
+  let fences = 0;
+  let complete = false;
+  kernel.auto_stream_chart_step = () => {
+    steps += 1;
+    return { status: complete ? "complete" : steps <= 40 ? "submitted" : "all_submitted",
+      submitted_primitives: Math.min(steps, 40), total_primitives: 40 };
+  };
+  kernel.streaming_gpu_ready = () => { fences += 1; return completion.promise; };
+  const { Element, state, document } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  document.hidden = true;
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+  const job = element.render_chart({
+    columns: [{ id: "x", revision: 1, values: new Float32Array(41) }],
+    maxPrimitivesPerChunk: 1,
+  });
+  state.messages.shift()();
+  assert.equal(steps, 32);
+  assert.equal(state.messages.length, 1, "quantum exhaustion must queue a task without rAF/timer");
+  state.messages.shift()();
+  assert.equal(steps, 41);
+  assert.equal(fences, 1);
+  assert.equal(state.messages.length, 0, "GPU backpressure must not busy-spin message tasks");
+  element.setRect(800, 600);
+  element.resize();
+  assert.equal(state.messages.length, 1, "active TypedArray resize must wake without rAF");
+  state.messages.shift()();
+  assert.equal(state.messages.length, 0);
+  assert.equal(fences, 1, "resize must not duplicate an outstanding GPU completion waiter");
+  complete = true;
+  completion.resolve();
+  await flushTasks();
+  assert.equal(state.messages.length, 1);
+  state.messages.shift()();
+  assert.equal((await job.done).status, "complete");
+  assert.equal(state.messages.length, 0);
+  assert.equal(state.timers.size, 0);
+  element.free();
+});
+
+test("GPU preparation submissions do not falsely stall before the first drawable primitive", async () => {
+  const kernel = makeKernel("arc-collect-progress");
+  kernel.register_streaming_columns = () => {};
+  let requests = 0;
+  let steps = 0;
+  kernel.request_auto_streaming_chart = () => ({
+    status: ++requests === 1 ? "started" : "active",
+    revision: "1", source_ids: ["x"], source_revisions: [1],
+  });
+  const { Element, state } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  kernel.auto_stream_chart_step = () => {
+    state.now += 8;
+    return ++steps <= 6
+      ? { status: "submitted", submitted_primitives: 0, total_primitives: 4 }
+      : { status: "complete", submitted_primitives: 4, total_primitives: 4 };
+  };
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+  const job = element.render_chart({
+    columns: [{ id: "x", revision: 1, values: new Float32Array(5) }],
+    maxFrameTimeMs: 4, stallTimeoutMs: 10,
+  });
+  for (let step = 0; step < 7; step++) {
+    assert.equal(state.messages.length, 1, "accepted GPU preparation must schedule further work");
+    state.messages.shift()();
+    if (step < 6) assert.equal(job.submittedPrimitives, 0);
+  }
+  assert.equal((await job.done).status, "complete");
+  assert.equal(steps, 7);
+  assert.equal(state.errors.length, 0);
+  element.free();
+});
+
+test("backpressure polling does not refresh the streaming stall watchdog", async () => {
+  const kernel = makeKernel("stalled-backpressure");
+  kernel.register_streaming_columns = () => {};
+  let requests = 0;
+  kernel.request_auto_streaming_chart = () => ({
+    status: ++requests === 1 ? "started" : "active",
+    source_ids: ["x"], source_revisions: [1],
+  });
+  kernel.auto_stream_chart_step = () => ({
+    status: "backpressure", submitted_primitives: 0, total_primitives: 4,
+  });
+  const { Element, state } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+  const job = element.render_chart({
+    columns: [{ id: "x", revision: 1, values: new Float32Array(5) }],
+    stallTimeoutMs: 10,
+  });
+  const rejected = assert.rejects(job.done, /streaming stalled for 10 ms/);
+  state.messages.shift()();
+  for (const time of [6, 12]) {
+    state.now = time;
+    const frames = [...state.rafs.values()];
+    state.rafs.clear();
+    for (const callback of frames) callback(time);
+  }
+  await rejected;
+  assert.equal(job.status, "failed");
+  assert.equal(kernel.calls.filter(([name]) => name === "cancel_streaming_and_wait").length, 1);
+  element.free();
 });
 
 test("full prewarm APIs share busy lifecycle and recover after resolve and reject", async () => {

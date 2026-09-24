@@ -15,6 +15,9 @@ use wgpu::util::DeviceExt;
 pub mod bar_envelope;
 pub mod column_pool;
 pub mod line_arc;
+pub(crate) mod stream_field;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod stream_point_style_tests;
 pub use column_pool::{
     AllocError, ColumnHandle, ColumnId, ColumnPool, ColumnSlot, DefragPolicy, FreeRegion,
     GpuAllocCtx, GpuBudget, GrowthPolicy,
@@ -1450,13 +1453,56 @@ pub struct ScatterTransform {
     /// faint_bias, planet_rim]`, `[2] = [structure_scale, star_brightness,
     /// 0, 0]`; constellation: `[0] = [star_opacity, line_opacity, 0.0,
     /// 0.0]`, rest 0. Seeds are stored as f32 (exact up to 2^24) and shaders
-    /// recover them via `u32(...)`.
+    /// recover them via `u32(...)`. Independently of style, `[2][2]` is
+    /// reserved for the global point-base u32 bit pattern (resident: zero).
+    /// Streamed point/errorbar entries recover it with `bitcast<u32>`, not
+    /// numeric conversion, preserving global identities above 2^24.
     pub style_params: [[f32; 4]; 3], // offset 64 → 112 byte
 }
 
 // WGSL mirror size guards. Field order and size must remain byte-identical to
 // every shader common block before either CPU structure changes.
 const _: () = assert!(std::mem::size_of::<ScatterTransform>() == 112);
+
+/// Admission headroom for one immutable streamed point/errorbar transform.
+pub(crate) const STREAM_POINT_TRANSFORM_BYTES: u64 =
+    std::mem::size_of::<ScatterTransform>() as u64;
+
+/// Snapshot transform metadata with an exact global point identity. The
+/// caller must admit [`STREAM_POINT_TRANSFORM_BYTES`] before allocation and
+/// validate that its local draw range fits the global u32 index domain.
+///
+/// The bind group owns the uniform's GPU handle; its matching charge must be
+/// retained by the same prepared packet. No source payload is copied, and the
+/// shared view transform is never rewritten. Arc-driven line/star identities
+/// have their own replay state and must not use this point-base field.
+pub(crate) fn create_stream_point_transform_bind_group(
+    ledger: &std::sync::Arc<crate::gpu_memory::GpuLedger>,
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    transform: &ScatterTransform,
+    global_base: u32,
+) -> (wgpu::BindGroup, crate::gpu_memory::SharedCharge) {
+    let mut chunk_transform = *transform;
+    chunk_transform.style_params[2][2] = f32::from_bits(global_base);
+    let tally = crate::gpu_memory::ChargeTally::new();
+    let buffer = crate::gpu_memory::charged_buffer_init(
+        &tally,
+        device,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("figgy streamed point transform"),
+            contents: bytemuck::bytes_of(&chunk_transform),
+            usage: wgpu::BufferUsages::UNIFORM,
+        },
+    );
+    let bind_group = create_scatter_transform_bind_group(device, layout, &buffer);
+    let charge = crate::gpu_memory::shared_charge(
+        tally,
+        ledger,
+        crate::gpu_memory::GpuResourceKind::Uniform,
+    );
+    (bind_group, charge)
+}
 
 /// Allocate the transform uniform buffer with `COPY_DST` so subsequent
 /// updates can use `queue.write_buffer` instead of recreating it.
@@ -1838,6 +1884,70 @@ const _: () = assert!(std::mem::size_of::<ScatterStyleMapMeta>() == 16);
 pub struct ScatterStyleMap {
     pub bind_group: wgpu::BindGroup,
     pub has_index: bool,
+    style_buf: wgpu::Buffer,
+    override_buf: wgpu::Buffer,
+    meta: ScatterStyleMapMeta,
+    stream_base_charge: Option<crate::gpu_memory::SharedCharge>,
+}
+
+impl ScatterStyleMap {
+    pub(crate) fn stream_base_bytes(&self) -> u64 {
+        self.style_buf.size() + self.override_buf.size() + 16
+    }
+
+    pub(crate) fn stream_base_is_charged(&self) -> bool {
+        self.stream_base_charge.is_some()
+    }
+
+    pub(crate) fn charge_stream_base(&mut self, ledger: &std::sync::Arc<crate::gpu_memory::GpuLedger>) {
+        if self.stream_base_charge.is_none() {
+            let tally = crate::gpu_memory::ChargeTally::new();
+            tally.add(self.stream_base_bytes());
+            self.stream_base_charge = Some(crate::gpu_memory::shared_charge(
+                tally, ledger, crate::gpu_memory::GpuResourceKind::Uniform,
+            ));
+        }
+    }
+
+    pub(crate) fn stream_bind_group(
+        &self,
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        global_base: u32,
+        tally: &crate::gpu_memory::ChargeTally,
+    ) -> wgpu::BindGroup {
+        let stream_meta = ScatterStyleMapMeta {
+            _pad: global_base,
+            ..self.meta
+        };
+        let meta_buf = crate::gpu_memory::charged_buffer_init(
+            tally,
+            device,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("figgy streamed point style map meta"),
+                contents: bytemuck::bytes_of(&stream_meta),
+                usage: wgpu::BufferUsages::UNIFORM,
+            },
+        );
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("figgy streamed point style map bg"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: self.style_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: self.override_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: meta_buf.as_entire_binding(),
+                },
+            ],
+        })
+    }
 }
 
 pub type ErrorBarStyleSlotGpu = ScatterStyleSlotGpu;
@@ -1980,6 +2090,10 @@ pub fn create_scatter_style_map(
     ScatterStyleMap {
         bind_group,
         has_index: meta.has_index != 0,
+        style_buf,
+        override_buf,
+        meta,
+        stream_base_charge: None,
     }
 }
 
@@ -2248,6 +2362,17 @@ pub const LINE_SKETCH_VERTICES_PER_INSTANCE: u32 = 18;
 /// `CONS_RIBBON_SUBDIV` in `line_columnar.wgsl`.
 pub const MILKYWAY_RIBBON_VERTICES: u32 = 18;
 
+const PSF_SIZE: u32 = 128;
+const ATLAS_TILE: u32 = 128;
+const STYLE_STRIP_SIZE: u32 = 256;
+
+/// Exact Rgba8Unorm payload bytes of either textured style set: one PSF,
+/// one 2x2 planet atlas, and the blackbody and ring strips (one mip each).
+pub(crate) const STYLED_TEXTURE_BYTES: u64 = 4
+    * (PSF_SIZE as u64 * PSF_SIZE as u64
+        + (ATLAS_TILE as u64 * 2) * (ATLAS_TILE as u64 * 2)
+        + 2 * STYLE_STRIP_SIZE as u64);
+
 /// Milkyway pipelines and baked style textures for one target format, cached
 /// inside the renderer's lazy style set. The bind group keeps the textures
 /// alive for as long as the pipelines can sample them.
@@ -2398,9 +2523,9 @@ fn bake_planet_atlas(tile: u32) -> Vec<u8> {
 /// gap → A ring, with fine radial density noise. RGB is the straight ring
 /// color; A is the density the shader composes with.
 fn bake_ring_strip() -> Vec<u8> {
-    let mut out = vec![0u8; 256 * 4];
-    for i in 0..256usize {
-        let u = i as f64 / 255.0;
+    let mut out = vec![0u8; STYLE_STRIP_SIZE as usize * 4];
+    for i in 0..STYLE_STRIP_SIZE as usize {
+        let u = i as f64 / (STYLE_STRIP_SIZE - 1) as f64;
         let base = if u < 0.16 {
             0.22
         } else if u < 0.52 {
@@ -2454,9 +2579,9 @@ fn bake_psf_rgba(size: u32) -> Vec<u8> {
 /// Bake the 256×1 blackbody LUT, 2,500 K → 12,000 K (Tanner Helland's
 /// piecewise fit — visually faithful Planckian locus, never green).
 fn bake_blackbody_lut() -> Vec<u8> {
-    let mut out = vec![0u8; 256 * 4];
-    for i in 0..256usize {
-        let kelvin = 2500.0 + 9500.0 * (i as f64 / 255.0);
+    let mut out = vec![0u8; STYLE_STRIP_SIZE as usize * 4];
+    for i in 0..STYLE_STRIP_SIZE as usize {
+        let kelvin = 2500.0 + 9500.0 * (i as f64 / (STYLE_STRIP_SIZE - 1) as f64);
         let t = kelvin / 100.0;
         let r = if t <= 66.0 {
             255.0
@@ -2534,8 +2659,6 @@ pub(crate) fn create_milkyway_set(
         );
         tex.create_view(&wgpu::TextureViewDescriptor::default())
     };
-    const PSF_SIZE: u32 = 128;
-    const ATLAS_TILE: u32 = 128;
     let psf_view = make_tex(
         "figgy milkyway psf",
         PSF_SIZE,
@@ -2544,7 +2667,7 @@ pub(crate) fn create_milkyway_set(
     );
     let lut_view = make_tex(
         "figgy milkyway blackbody lut",
-        256,
+        STYLE_STRIP_SIZE,
         1,
         &bake_blackbody_lut(),
     );
@@ -2554,7 +2677,12 @@ pub(crate) fn create_milkyway_set(
         ATLAS_TILE * 2,
         &bake_planet_atlas(ATLAS_TILE),
     );
-    let ring_view = make_tex("figgy milkyway ring strip", 256, 1, &bake_ring_strip());
+    let ring_view = make_tex(
+        "figgy milkyway ring strip",
+        STYLE_STRIP_SIZE,
+        1,
+        &bake_ring_strip(),
+    );
 
     let tex_entry = |binding| wgpu::BindGroupLayoutEntry {
         binding,
@@ -2788,8 +2916,6 @@ pub(crate) fn create_point_constellation_set(
         );
         tex.create_view(&wgpu::TextureViewDescriptor::default())
     };
-    const PSF_SIZE: u32 = 128;
-    const ATLAS_TILE: u32 = 128;
     let psf_view = make_tex(
         "figgy point constellation psf",
         PSF_SIZE,
@@ -2798,7 +2924,7 @@ pub(crate) fn create_point_constellation_set(
     );
     let lut_view = make_tex(
         "figgy point constellation blackbody lut",
-        256,
+        STYLE_STRIP_SIZE,
         1,
         &bake_blackbody_lut(),
     );
@@ -2813,7 +2939,7 @@ pub(crate) fn create_point_constellation_set(
     );
     let ring_view = make_tex(
         "figgy point constellation ring strip",
-        256,
+        STYLE_STRIP_SIZE,
         1,
         &bake_ring_strip(),
     );
@@ -4655,7 +4781,7 @@ pub struct ColumnErrorBarDraw<'a> {
 
 /// Clamp a rect into `(0..target.0, 0..target.1)`. Returns `None` if the
 /// clamped width or height is zero so callers can skip the draw entirely.
-fn clamp_rect_to_target(r: Rect, target: (u32, u32)) -> Option<Rect> {
+pub(crate) fn clamp_rect_to_target(r: Rect, target: (u32, u32)) -> Option<Rect> {
     let (tw, th) = target;
     let x0 = r.x.min(tw);
     let y0 = r.y.min(th);
@@ -4727,7 +4853,7 @@ pub fn bar_instance_count(edge_values: usize, value_values: usize) -> u32 {
 
 /// Issue draw calls for one series' data primitives. The caller must have
 /// already set the viewport (panel) and scissor (data_area).
-fn issue_series_data(pass: &mut wgpu::RenderPass<'_>, series: &SeriesLayers<'_>) {
+pub(crate) fn issue_series_data(pass: &mut wgpu::RenderPass<'_>, series: &SeriesLayers<'_>) {
     // The field is the backdrop: it paints every cell of the grid, so bars,
     // contour lines and markers all have to land on top of it.
     if let Some(f) = series.field.as_ref().filter(|f| f.drawable) {
@@ -4867,7 +4993,7 @@ fn issue_series_data(pass: &mut wgpu::RenderPass<'_>, series: &SeriesLayers<'_>)
 /// `target_size` is the pixel size of the current color attachment;
 /// `panel_rect` / `data_area` are clamped to it to avoid wgpu validation
 /// errors when a panel partially exits the surface.
-fn issue_series_picked(pass: &mut wgpu::RenderPass<'_>, series: &SeriesLayers<'_>) {
+pub(crate) fn issue_series_picked(pass: &mut wgpu::RenderPass<'_>, series: &SeriesLayers<'_>) {
     for selection in &series.selected_bars {
         pass.set_pipeline(selection.pipeline);
         pass.set_bind_group(0, selection.transform_bg, &[]);
@@ -5377,6 +5503,42 @@ mod tests {
         );
 
         let _ = pipeline;
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(std::time::Duration::from_secs(30)),
+        });
+    }
+
+    #[test]
+    fn streamed_point_style_map_reuses_rows_and_charges_only_meta() {
+        let (device, _queue) = shared_device().expect("streamed point style map GPU adapter");
+        let layout = create_scatter_style_map_bind_group_layout(&device);
+        let map = create_scatter_style_map(
+            &device,
+            &layout,
+            &[ScatterStyleSlotGpu {
+                color_premul: [1.0, 0.0, 0.0, 1.0],
+                meta: [3.0, 0.0, 1.0, 0.0],
+            }],
+            &[ScatterStyleOverrideGpu {
+                point_index: 17,
+                _pad: [0; 3],
+                color_premul: [0.0, 1.0, 0.0, 1.0],
+                meta: [3.0, 0.0, 1.0, 0.0],
+            }],
+            ScatterStyleMapMeta {
+                style_count: 1,
+                override_count: 1,
+                has_index: 1,
+                _pad: 0,
+            },
+        );
+        assert_eq!(map.meta._pad, 0);
+        let tally = crate::gpu_memory::ChargeTally::new();
+        let streamed = map.stream_bind_group(&device, &layout, 17, &tally);
+        assert_eq!(tally.bytes(), 16);
+        drop(map);
+        let _ = streamed;
         let _ = device.poll(wgpu::PollType::Wait {
             submission_index: None,
             timeout: Some(std::time::Duration::from_secs(30)),

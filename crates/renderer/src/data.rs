@@ -70,6 +70,77 @@ pub struct ColumnUploadStats {
     pub min_positive: Option<f64>,
 }
 
+/// Failure reported by a range-capable column adapter before a stream chunk is
+/// published. Existing full-column adapters remain source-compatible and
+/// report `Unsupported` until they implement the range method.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColumnRangeWriteError {
+    Unsupported,
+    InvalidRange,
+    SourceFailed,
+}
+
+impl ColumnRangeWriteError {
+    pub(crate) fn reason(self) -> &'static str {
+        match self {
+            Self::Unsupported => "source does not support range writes",
+            Self::InvalidRange => "requested source range is invalid",
+            Self::SourceFailed => "source failed while writing the requested range",
+        }
+    }
+}
+
+#[derive(Default)]
+struct EncodedBounds {
+    min: f64,
+    max: f64,
+    min_positive: Option<f64>,
+    any: bool,
+}
+
+impl EncodedBounds {
+    fn record(&mut self, hi: f32, lo: f32) {
+        let gpu_value = hi + lo;
+        let value = hi as f64 + lo as f64;
+        if !gpu_value.is_finite() || !value.is_finite() {
+            return;
+        }
+        let value = if value == 0.0 { 0.0 } else { value };
+        if self.any {
+            self.min = self.min.min(value);
+            self.max = self.max.max(value);
+        } else {
+            self.min = value;
+            self.max = value;
+            self.any = true;
+        }
+        if value > 0.0 && self.min_positive.is_none_or(|current| value < current) {
+            self.min_positive = Some(value);
+        }
+    }
+
+    fn finish(self) -> Option<crate::StreamBounds> {
+        self.any.then_some(crate::StreamBounds {
+            min: self.min,
+            max: self.max,
+            min_positive: self.min_positive,
+        })
+    }
+}
+
+fn checked_source_range(
+    total: usize,
+    start: u64,
+    len: usize,
+) -> std::result::Result<std::ops::Range<usize>, ColumnRangeWriteError> {
+    let start = usize::try_from(start).map_err(|_| ColumnRangeWriteError::InvalidRange)?;
+    let end = start
+        .checked_add(len)
+        .filter(|end| *end <= total)
+        .ok_or(ColumnRangeWriteError::InvalidRange)?;
+    Ok(start..end)
+}
+
 #[inline]
 fn record_min_positive(stats: &mut ColumnUploadStats, value: f64) {
     if !value.is_finite() || value <= 0.0 {
@@ -144,6 +215,17 @@ pub trait ColumnSource {
     /// that same pass. Keeping this method required makes an incomplete custom
     /// source fail at compile time rather than during an upload.
     fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats;
+
+    /// Write `dst.len()` scalar values beginning at the logical `start` index
+    /// directly into mapped staging. Returned bounds describe the encoded
+    /// `(value as f32, 0)` values written by this call.
+    fn write_f32_pair_range_into_with_stats(
+        &self,
+        _start: u64,
+        _dst: ColumnPairWriter<'_>,
+    ) -> std::result::Result<Option<crate::StreamBounds>, ColumnRangeWriteError> {
+        Err(ColumnRangeWriteError::Unsupported)
+    }
 }
 
 /// High-precision column upload path.
@@ -170,6 +252,51 @@ pub trait HiLoColumnSource {
     /// [`ColumnSource::write_f32_pair_le_into_with_stats`] for the required
     /// single-pass contract.
     fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats;
+
+    /// Write `dst.len()` hi/lo values beginning at the logical `start` index
+    /// directly into mapped staging. Returned bounds describe finite GPU-
+    /// reconstructible values written by this call.
+    fn write_f32_pair_range_into_with_stats(
+        &self,
+        _start: u64,
+        _dst: ColumnPairWriter<'_>,
+    ) -> std::result::Result<Option<crate::StreamBounds>, ColumnRangeWriteError> {
+        Err(ColumnRangeWriteError::Unsupported)
+    }
+}
+
+/// Borrowed range-capable source selected by registered stream encoding.
+#[derive(Clone, Copy)]
+pub enum StreamColumnSource<'a> {
+    Scalar(&'a dyn ColumnSource),
+    HiLo(&'a dyn HiLoColumnSource),
+}
+
+impl StreamColumnSource<'_> {
+    pub fn len(self) -> usize {
+        match self {
+            Self::Scalar(source) => source.len(),
+            Self::HiLo(source) => source.len(),
+        }
+    }
+
+    pub fn encoding(self) -> crate::StreamEncoding {
+        match self {
+            Self::Scalar(_) => crate::StreamEncoding::ScalarF32,
+            Self::HiLo(_) => crate::StreamEncoding::HiLoF32,
+        }
+    }
+
+    pub(crate) fn write_range(
+        self,
+        start: u64,
+        dst: ColumnPairWriter<'_>,
+    ) -> std::result::Result<Option<crate::StreamBounds>, ColumnRangeWriteError> {
+        match self {
+            Self::Scalar(source) => source.write_f32_pair_range_into_with_stats(start, dst),
+            Self::HiLo(source) => source.write_f32_pair_range_into_with_stats(start, dst),
+        }
+    }
 }
 
 // Built-in implementations for numeric column types.
@@ -210,6 +337,20 @@ impl ColumnSource for Column<f64> {
         }
         stats
     }
+    fn write_f32_pair_range_into_with_stats(
+        &self,
+        start: u64,
+        mut dst: ColumnPairWriter<'_>,
+    ) -> std::result::Result<Option<crate::StreamBounds>, ColumnRangeWriteError> {
+        let range = checked_source_range(self.data.len(), start, dst.len())?;
+        let mut bounds = EncodedBounds::default();
+        for (index, &value) in self.data[range].iter().enumerate() {
+            let hi = value as f32;
+            dst.write_pair(index, hi, 0.0);
+            bounds.record(hi, 0.0);
+        }
+        Ok(bounds.finish())
+    }
 }
 
 impl HiLoColumnSource for Column<f64> {
@@ -243,6 +384,20 @@ impl HiLoColumnSource for Column<f64> {
         }
         stats
     }
+    fn write_f32_pair_range_into_with_stats(
+        &self,
+        start: u64,
+        mut dst: ColumnPairWriter<'_>,
+    ) -> std::result::Result<Option<crate::StreamBounds>, ColumnRangeWriteError> {
+        let range = checked_source_range(self.data.len(), start, dst.len())?;
+        let mut bounds = EncodedBounds::default();
+        for (index, &value) in self.data[range].iter().enumerate() {
+            let (hi, lo) = split_f64_to_f32_pair(value);
+            dst.write_pair(index, hi, lo);
+            bounds.record(hi, lo);
+        }
+        Ok(bounds.finish())
+    }
 }
 
 impl ColumnSource for Column<f32> {
@@ -271,6 +426,19 @@ impl ColumnSource for Column<f32> {
     fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
         <Self as HiLoColumnSource>::write_f32_pair_le_into_with_stats(self, dst)
     }
+    fn write_f32_pair_range_into_with_stats(
+        &self,
+        start: u64,
+        mut dst: ColumnPairWriter<'_>,
+    ) -> std::result::Result<Option<crate::StreamBounds>, ColumnRangeWriteError> {
+        let range = checked_source_range(self.data.len(), start, dst.len())?;
+        let mut bounds = EncodedBounds::default();
+        for (index, &hi) in self.data[range].iter().enumerate() {
+            dst.write_pair(index, hi, 0.0);
+            bounds.record(hi, 0.0);
+        }
+        Ok(bounds.finish())
+    }
 }
 
 impl HiLoColumnSource for Column<f32> {
@@ -297,6 +465,13 @@ impl HiLoColumnSource for Column<f32> {
             record_min_positive(&mut stats, hi as f64);
         }
         stats
+    }
+    fn write_f32_pair_range_into_with_stats(
+        &self,
+        start: u64,
+        dst: ColumnPairWriter<'_>,
+    ) -> std::result::Result<Option<crate::StreamBounds>, ColumnRangeWriteError> {
+        <Self as ColumnSource>::write_f32_pair_range_into_with_stats(self, start, dst)
     }
 }
 
@@ -338,6 +513,20 @@ impl ColumnSource for Column<Option<f64>> {
         }
         stats
     }
+    fn write_f32_pair_range_into_with_stats(
+        &self,
+        start: u64,
+        mut dst: ColumnPairWriter<'_>,
+    ) -> std::result::Result<Option<crate::StreamBounds>, ColumnRangeWriteError> {
+        let range = checked_source_range(self.data.len(), start, dst.len())?;
+        let mut bounds = EncodedBounds::default();
+        for (index, value) in self.data[range].iter().enumerate() {
+            let hi = value.map(|value| value as f32).unwrap_or(f32::NAN);
+            dst.write_pair(index, hi, 0.0);
+            bounds.record(hi, 0.0);
+        }
+        Ok(bounds.finish())
+    }
 }
 
 impl HiLoColumnSource for Column<Option<f64>> {
@@ -371,6 +560,20 @@ impl HiLoColumnSource for Column<Option<f64>> {
         }
         stats
     }
+    fn write_f32_pair_range_into_with_stats(
+        &self,
+        start: u64,
+        mut dst: ColumnPairWriter<'_>,
+    ) -> std::result::Result<Option<crate::StreamBounds>, ColumnRangeWriteError> {
+        let range = checked_source_range(self.data.len(), start, dst.len())?;
+        let mut bounds = EncodedBounds::default();
+        for (index, value) in self.data[range].iter().enumerate() {
+            let (hi, lo) = value.map(split_f64_to_f32_pair).unwrap_or((f32::NAN, 0.0));
+            dst.write_pair(index, hi, lo);
+            bounds.record(hi, lo);
+        }
+        Ok(bounds.finish())
+    }
 }
 
 #[cfg(test)]
@@ -401,6 +604,51 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn built_in_sources_write_requested_ranges_without_full_column_buffers() {
+        let source = Column {
+            data: vec![1.0f64, 2.25, 3.5, 4.75, 6.0],
+            min: 1.0,
+            max: 6.0,
+        };
+        let mut scalar_bytes = vec![0; 2 * COLUMN_VALUE_BYTES];
+        let scalar_bounds = <Column<f64> as ColumnSource>::write_f32_pair_range_into_with_stats(
+            &source,
+            2,
+            ColumnPairWriter::from_bytes_for_test(&mut scalar_bytes),
+        )
+        .unwrap();
+        assert_eq!(decode_pairs(&scalar_bytes), vec![(3.5, 0.0), (4.75, 0.0)]);
+        assert_eq!(
+            scalar_bounds,
+            Some(crate::StreamBounds {
+                min: 3.5,
+                max: 4.75,
+                min_positive: Some(3.5),
+            })
+        );
+
+        let mut hilo_bytes = vec![0; 2 * COLUMN_VALUE_BYTES];
+        let hilo_bounds = <Column<f64> as HiLoColumnSource>::write_f32_pair_range_into_with_stats(
+            &source,
+            1,
+            ColumnPairWriter::from_bytes_for_test(&mut hilo_bytes),
+        )
+        .unwrap();
+        let pairs = decode_pairs(&hilo_bytes);
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0].0 as f64 + pairs[0].1 as f64, 2.25);
+        assert_eq!(pairs[1].0 as f64 + pairs[1].1 as f64, 3.5);
+        assert_eq!(
+            hilo_bounds,
+            Some(crate::StreamBounds {
+                min: 2.25,
+                max: 3.5,
+                min_positive: Some(2.25),
+            })
+        );
     }
 
     #[test]

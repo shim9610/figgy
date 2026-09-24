@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Figgy auto_fit_all browser probe</title>
+</head>
+<body>
+  <canvas id="chart" width="800" height="500"></canvas>
+  <script type="module">
+    const report = {
+      status: "running",
+      errors: [],
+      config: null,
+    };
+    const record = (error) => {
+      report.errors.push(error?.message ?? String(error));
+    };
+    window.addEventListener("error", (event) => record(event.error ?? event.message));
+    window.addEventListener("unhandledrejection", (event) => record(event.reason));
+    globalThis.__figgyAutoFitResult = report;
+
+    try {
+      const module = await import("./pkg/figgy.js");
+      await module.default();
+      const canvas = document.querySelector("#chart");
+      const chart = await module.FiggyChart.create(canvas);
+      chart.register_column_f32("x", new Float32Array([0, 1, 2, 3, 4, 5]));
+      chart.register_column_f32("y", new Float32Array([0, 1, 4, 9, 16, 25]));
+      chart.add_line_series("s", "x", "y", 2, "");
+      await chart.ensure_extent_engine();
+      await chart.auto_fit_all(0.05);
+      chart.frame();
+      report.config = JSON.parse(chart.get_config());
+      report.status = report.errors.length ? "error" : "ok";
+    } catch (error) {
+      record(error);
+      report.status = "error";
+    }
+    globalThis.__figgyAutoFitResult = report;
+  </script>
+</body>
+</html>

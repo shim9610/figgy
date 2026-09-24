@@ -61,6 +61,7 @@ pub enum GpuPickError {
     },
     AsyncCompileFailed(String),
     MissingColumn(ColumnId),
+    ColumnNotResident(ColumnId),
     StaleColumn {
         series_id: String,
         column_id: ColumnId,
@@ -112,6 +113,9 @@ impl fmt::Display for GpuPickError {
                 write!(f, "GPU pick pipeline compile failed: {reason}")
             }
             Self::MissingColumn(id) => write!(f, "GPU pick column is missing: {id}"),
+            Self::ColumnNotResident(id) => {
+                write!(f, "GPU pick column is registered but not resident: {id}")
+            }
             Self::StaleColumn {
                 series_id,
                 column_id,
@@ -210,6 +214,355 @@ pub(crate) struct GpuPickQuery {
     pub(crate) max_distance_px: f32,
 }
 
+/// Handles address only the currently uploaded bounded pair buffer.
+#[derive(Clone, Copy)]
+pub(crate) struct GpuStreamPickColumns {
+    pub(crate) x: ColumnHandle,
+    pub(crate) y: ColumnHandle,
+    pub(crate) style_index: Option<ColumnHandle>,
+}
+
+pub(crate) fn validate_stream_handle(
+    buffer: &wgpu::Buffer,
+    handle: ColumnHandle,
+) -> Result<(), GpuPickError> {
+    let end = (handle.len_values as u64)
+        .checked_mul(8)
+        .and_then(|bytes| handle.offset.checked_add(bytes));
+    if handle.offset % 8 != 0 || end.is_none_or(|end| end > buffer.size()) {
+        return Err(GpuPickError::DeviceLimit {
+            resource: "pick column pair range",
+            requested: end.unwrap_or(u64::MAX),
+            limit: buffer.size(),
+        });
+    }
+    Ok(())
+}
+
+/// Constant-size running GPU answer. Source bytes remain owned by the stream
+/// upload ring; every encoded chunk is reduced before that slot is reusable.
+pub(crate) struct GpuStreamPick {
+    engine: GpuPickEngine,
+    query: GpuPickQuery,
+    display_scale: f32,
+    identities: Arc<[PickIdentity]>,
+    has_chunks: bool,
+    enabled: bool,
+}
+
+impl PickPipelineBundle {
+    pub(crate) fn begin_stream(
+        self: &Arc<Self>,
+        query: GpuPickQuery,
+        display_scale: f32,
+        identities: Vec<(Option<String>, String)>,
+    ) -> Result<GpuStreamPick, GpuPickError> {
+        let reduce = GpuPickEngine::create_reduce_resources(
+            &self.device,
+            &self.ledger,
+            &self.reduce_bgl,
+            2,
+        )?;
+        let [cx, cy] = query.canvas_position_px;
+        let [x, y, w, h] = query.chart_rect_px;
+        let enabled = display_scale.is_finite()
+            && display_scale > 0.0
+            && [cx, cy, x, y, w, h, query.max_distance_px]
+                .into_iter()
+                .all(f32::is_finite)
+            && w > 0.0
+            && h > 0.0
+            && query.max_distance_px >= 0.0
+            && query.data_area_px.is_none_or(|[x, y, w, h]| {
+                [x, y, w, h].into_iter().all(f32::is_finite)
+                    && cx >= x
+                    && cx <= x + w
+                    && cy >= y
+                    && cy <= y + h
+            });
+        Ok(GpuStreamPick {
+            engine: GpuPickEngine::from_bundle_and_reduce(Arc::clone(self), reduce),
+            query,
+            display_scale,
+            identities: identities
+                .into_iter()
+                .map(|(source_id, series_id)| PickIdentity {
+                    source_id,
+                    series_id,
+                })
+                .collect(),
+            has_chunks: false,
+            enabled,
+        })
+    }
+}
+
+impl GpuStreamPick {
+    pub(crate) const PERSISTENT_BYTES: u64 = 3 * CANDIDATE_BYTES;
+    pub(crate) const READBACK_BYTES: u64 = CANDIDATE_BYTES;
+
+    /// Exact chunk scratch allocation, excluding the caller-owned uploaded
+    /// pair buffer and the constant running accumulator.
+    pub(crate) fn chunk_bytes(
+        &self,
+        descriptor: &GpuPickSeriesDescriptor<'_>,
+        paired_count: usize,
+    ) -> Result<u64, GpuPickError> {
+        let count = u32::try_from(paired_count).map_err(|_| GpuPickError::TooManyValues {
+            series_id: descriptor.series_id.clone(),
+            count: paired_count,
+        })?;
+        if count == 0 || !self.enabled {
+            return Ok(0);
+        }
+        let (words, workgroups, _, _) = gate_dispatch_layout(
+            count,
+            self.engine
+                .bundle
+                .device
+                .limits()
+                .max_compute_workgroups_per_dimension,
+        )?;
+        let map = descriptor
+            .scatter
+            .as_ref()
+            .and_then(|scatter| scatter.style_map.as_ref());
+        let slots = map.map_or(1, |map| map.style_slots.len().max(1)) as u64;
+        let overrides = map.map_or(1, |map| map.style_overrides.len().max(1)) as u64;
+        let gate_words = if count <= GPU_PICK_DIRECT_SCAN_POINTS {
+            1
+        } else {
+            words
+        };
+        u64::from(gate_words)
+            .checked_mul(GATE_MASK_BYTES)
+            .and_then(|bytes| bytes.checked_add(u64::from(workgroups) * CANDIDATE_BYTES))
+            .and_then(|bytes| {
+                bytes
+                    .checked_add(std::mem::size_of::<PickQueryParamsGpu>() as u64 + CANDIDATE_BYTES)
+            })
+            .and_then(|bytes| {
+                slots
+                    .checked_mul(std::mem::size_of::<ScatterStyleSlotGpu>() as u64)
+                    .and_then(|slots| bytes.checked_add(slots))
+            })
+            .and_then(|bytes| {
+                overrides
+                    .checked_mul(std::mem::size_of::<ScatterStyleOverrideGpu>() as u64)
+                    .and_then(|overrides| bytes.checked_add(overrides))
+            })
+            .ok_or(GpuPickError::AllocationFailed {
+                resource: "stream pick chunk scratch bytes",
+            })
+    }
+
+    /// The caller retains this charge until the final referencing submission
+    /// completes, including cancellation with recorded commands still alive.
+    pub(crate) fn charge(&self) -> SharedCharge {
+        self.engine.registry.reduce._charge.clone()
+    }
+
+    pub(crate) fn result_buffer(&self) -> Option<&wgpu::Buffer> {
+        self.has_chunks
+            .then_some(&self.engine.registry.reduce.final_result)
+    }
+
+    /// All owned indices begin at local zero. A line chunk includes one right
+    /// halo point; `owned_points` excludes that halo and `owned_segments` names
+    /// exactly the starts owned by this chunk. Style override rows keep global
+    /// indices, whereas the style-index handle addresses this chunk's lane.
+    /// Returned scratch charge must live through the chunk's GPU completion.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn encode_chunk(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        buffer: &wgpu::Buffer,
+        descriptor: GpuPickSeriesDescriptor<'_>,
+        columns: GpuStreamPickColumns,
+        series_order: u32,
+        global_point_start: u32,
+        owned_points: u32,
+        owned_segments: u32,
+    ) -> Result<Option<SharedCharge>, GpuPickError> {
+        if !self.enabled {
+            return Ok(None);
+        }
+        let identity =
+            self.identities
+                .get(series_order as usize)
+                .ok_or(GpuPickError::InvalidSeriesIndex {
+                    index: series_order as usize,
+                    len: self.identities.len(),
+                })?;
+        if identity.series_id != descriptor.series_id || identity.source_id != descriptor.source_id
+        {
+            return Err(GpuPickError::InvalidGpuResult);
+        }
+        let paired = columns.x.len_values.min(columns.y.len_values);
+        if owned_points as usize > paired
+            || owned_segments as usize > paired.saturating_sub(1)
+            || global_point_start
+                .checked_add(u32::try_from(paired.saturating_sub(1)).unwrap_or(u32::MAX))
+                .is_none()
+        {
+            return Err(GpuPickError::TooManyValues {
+                series_id: descriptor.series_id,
+                count: paired,
+            });
+        }
+        if owned_points == 0 && owned_segments == 0 {
+            return Ok(None);
+        }
+        let slot = self
+            .engine
+            .prepare_series_buffer(buffer, descriptor, columns, None)?;
+        let series = &slot.gpu;
+        let query = self.query;
+        let [cx, cy] = query.canvas_position_px;
+        let [x, y, w, h] = query.chart_rect_px;
+        let params = PickQueryParamsGpu {
+            transform: query.transform,
+            cursor_chart: [cx, cy, x, y],
+            chart_limits: [w, h, query.max_distance_px, series.max_extent_px],
+            scatter_line: [
+                series.base_radius_px,
+                series.line_half_width_px,
+                self.display_scale,
+                if series.direct_scan { 1.0 } else { 0.0 },
+            ],
+            data: [
+                series.point_count,
+                lane_base(columns.x, &slot.identity.series_id)?,
+                lane_base(columns.y, &slot.identity.series_id)?,
+                series.style_index_base,
+            ],
+            style: [
+                series.flags,
+                series.style_count,
+                series.override_count,
+                series.style_index_len,
+            ],
+            series: [
+                series.gate_word_count,
+                series_order,
+                series.base_shape_id,
+                series.dispatch_x,
+            ],
+            stream: [global_point_start, owned_points, owned_segments, 0],
+        };
+        self.engine
+            .bundle
+            .queue
+            .write_buffer(&series.query_params, 0, bytemuck::bytes_of(&params));
+        let bundle = &self.engine.bundle;
+        for (pipeline, enabled) in [
+            (&bundle.gate_x, !series.direct_scan),
+            (&bundle.gate_y, !series.direct_scan),
+            (&bundle.exact, true),
+        ] {
+            if !enabled {
+                continue;
+            }
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("figgy stream pick chunk scan"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &series.query_data_bg, &[]);
+            pass.set_bind_group(1, &series.query_work_bg, &[]);
+            pass.dispatch_workgroups(series.dispatch_x, series.dispatch_y, 1);
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("figgy stream pick chunk reduction"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&bundle.reduce);
+            pass.set_bind_group(0, &series.reduce_bg, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        let reduce = &self.engine.registry.reduce;
+        if self.has_chunks {
+            encoder.copy_buffer_to_buffer(
+                &reduce.final_result,
+                0,
+                &reduce.candidates,
+                0,
+                CANDIDATE_BYTES,
+            );
+        } else {
+            encoder.clear_buffer(&reduce.candidates, 0, None);
+        }
+        encoder.copy_buffer_to_buffer(
+            &series.result,
+            0,
+            &reduce.candidates,
+            CANDIDATE_BYTES,
+            CANDIDATE_BYTES,
+        );
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("figgy stream pick running reduction"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&bundle.reduce);
+            pass.set_bind_group(0, &reduce.bind_group, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        self.has_chunks = true;
+        Ok(Some(series._charge.clone()))
+    }
+
+    /// Call only after every required chunk has been encoded and submitted.
+    pub(crate) fn finish(self) -> Result<GpuPickTicket, GpuPickError> {
+        if !self.has_chunks {
+            return Ok(GpuPickTicket::ready_none());
+        }
+        let bundle = &self.engine.bundle;
+        let tally = ChargeTally::new();
+        let readback = create_buffer_checked(
+            &tally,
+            &bundle.device,
+            &wgpu::BufferDescriptor {
+                label: Some("figgy stream pick scalar readback"),
+                size: CANDIDATE_BYTES,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            },
+            "stream pick readback",
+        )?;
+        let mut encoder = bundle
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("figgy stream pick finish"),
+            });
+        encoder.copy_buffer_to_buffer(
+            &self.engine.registry.reduce.final_result,
+            0,
+            &readback,
+            0,
+            CANDIDATE_BYTES,
+        );
+        bundle.queue.submit([encoder.finish()]);
+        let (sender, receiver) = oneshot::channel();
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                let _ = sender.send(result);
+            });
+        Ok(GpuPickTicket {
+            state: GpuPickTicketState::Pending {
+                device: Arc::clone(&bundle.device),
+                readback,
+                receiver,
+                identities: self.identities,
+                _charge: tally.into_charge(&bundle.ledger, GpuResourceKind::Readback),
+                _scratch_charge: Some(self.engine.registry.reduce._charge.clone()),
+            },
+        })
+    }
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct GpuPickSeriesId(u32);
@@ -231,6 +584,7 @@ struct PickQueryParamsGpu {
     data: [u32; 4],
     style: [u32; 4],
     series: [u32; 4],
+    stream: [u32; 4],
 }
 
 #[repr(C)]
@@ -246,7 +600,7 @@ struct PickCandidateGpu {
     _pad: u32,
 }
 
-const _: () = assert!(std::mem::size_of::<PickQueryParamsGpu>() == 208);
+const _: () = assert!(std::mem::size_of::<PickQueryParamsGpu>() == 224);
 const _: () = assert!(std::mem::size_of::<PickCandidateGpu>() == CANDIDATE_BYTES as usize);
 
 #[derive(Clone)]
@@ -276,7 +630,7 @@ struct PickSeriesGpu {
     /// Charge for this series' gate masks, workgroup candidates, params, style
     /// rows, and scalar result. Shared across clones like `ReduceResources`.
     _charge: SharedCharge,
-    pool_identity: PoolIdentity,
+    pool_identity: Option<PoolIdentity>,
     x_column: ColumnId,
     y_column: ColumnId,
     style_index_column: Option<ColumnId>,
@@ -1059,26 +1413,63 @@ impl GpuPickEngine {
         pool: &ColumnPool,
         descriptor: GpuPickSeriesDescriptor<'_>,
     ) -> Result<PickSeriesSlot, GpuPickError> {
-        let limits = self.bundle.device.limits();
-        if pool.capacity() > limits.max_storage_buffer_binding_size {
-            return Err(GpuPickError::DeviceLimit {
-                resource: "column-pool storage binding",
-                requested: pool.capacity(),
-                limit: limits.max_storage_buffer_binding_size,
-            });
-        }
         let x_handle = pool
             .handle_for(&descriptor.x_column)
             .ok_or_else(|| GpuPickError::MissingColumn(descriptor.x_column.clone()))?;
         let y_handle = pool
             .handle_for(&descriptor.y_column)
             .ok_or_else(|| GpuPickError::MissingColumn(descriptor.y_column.clone()))?;
-        let x_allocation_epoch = pool
-            .allocation_epoch(&descriptor.x_column)
-            .ok_or_else(|| GpuPickError::MissingColumn(descriptor.x_column.clone()))?;
-        let y_allocation_epoch = pool
-            .allocation_epoch(&descriptor.y_column)
-            .ok_or_else(|| GpuPickError::MissingColumn(descriptor.y_column.clone()))?;
+        let style_index_handle = descriptor
+            .scatter
+            .as_ref()
+            .and_then(|scatter| scatter.style_map.as_ref())
+            .and_then(|map| map.style_index_column.as_ref())
+            .map(|id| {
+                pool.handle_for(id)
+                    .ok_or_else(|| GpuPickError::MissingColumn(id.clone()))
+            })
+            .transpose()?;
+        self.prepare_series_buffer(
+            pool.buffer(),
+            descriptor,
+            GpuStreamPickColumns {
+                x: x_handle,
+                y: y_handle,
+                style_index: style_index_handle,
+            },
+            Some(pool),
+        )
+    }
+
+    fn prepare_series_buffer(
+        &self,
+        buffer: &wgpu::Buffer,
+        descriptor: GpuPickSeriesDescriptor<'_>,
+        columns: GpuStreamPickColumns,
+        resident: Option<&ColumnPool>,
+    ) -> Result<PickSeriesSlot, GpuPickError> {
+        let limits = self.bundle.device.limits();
+        if buffer.size() > limits.max_storage_buffer_binding_size {
+            return Err(GpuPickError::DeviceLimit {
+                resource: "column-pool storage binding",
+                requested: buffer.size(),
+                limit: limits.max_storage_buffer_binding_size,
+            });
+        }
+        let x_handle = columns.x;
+        let y_handle = columns.y;
+        for handle in [Some(x_handle), Some(y_handle), columns.style_index]
+            .into_iter()
+            .flatten()
+        {
+            validate_stream_handle(buffer, handle)?;
+        }
+        let x_allocation_epoch = resident
+            .and_then(|pool| pool.allocation_epoch(&descriptor.x_column))
+            .unwrap_or(0);
+        let y_allocation_epoch = resident
+            .and_then(|pool| pool.allocation_epoch(&descriptor.y_column))
+            .unwrap_or(0);
         let paired_len = x_handle.len_values.min(y_handle.len_values);
         if paired_len == 0 {
             return Err(GpuPickError::EmptySeries(descriptor.series_id));
@@ -1130,12 +1521,12 @@ impl GpuPickEngine {
                 }
                 if let Some(column_id) = map.style_index_column.as_ref() {
                     flags |= FLAG_STYLE_INDEX;
-                    let handle = pool
-                        .handle_for(column_id)
+                    let handle = columns
+                        .style_index
                         .ok_or_else(|| GpuPickError::MissingColumn(column_id.clone()))?;
-                    let allocation_epoch = pool
-                        .allocation_epoch(column_id)
-                        .ok_or_else(|| GpuPickError::MissingColumn(column_id.clone()))?;
+                    let allocation_epoch = resident
+                        .and_then(|pool| pool.allocation_epoch(column_id))
+                        .unwrap_or(0);
                     style_index_base = lane_base(handle, &descriptor.series_id)?;
                     style_index_len = u32::try_from(handle.len_values).unwrap_or(u32::MAX);
                     style_index_column = Some(column_id.clone());
@@ -1267,7 +1658,7 @@ impl GpuPickEngine {
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: pool.buffer().as_entire_binding(),
+                        resource: buffer.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
@@ -1342,14 +1733,14 @@ impl GpuPickEngine {
                     &self.bundle.ledger,
                     GpuResourceKind::PickScratch,
                 ),
-                pool_identity: pool.identity(),
+                pool_identity: resident.map(ColumnPool::identity),
                 x_column: descriptor.x_column,
                 y_column: descriptor.y_column,
                 style_index_column,
                 x_handle,
                 y_handle,
                 style_index_handle,
-                pool_layout_generation: pool.layout_generation(),
+                pool_layout_generation: resident.map_or(0, ColumnPool::layout_generation),
                 x_allocation_epoch,
                 y_allocation_epoch,
                 style_index_allocation_epoch,
@@ -1411,7 +1802,11 @@ impl GpuPickEngine {
         next_series_id: &str,
     ) -> Result<PickSeriesGpu, GpuPickError> {
         let series = &current.gpu;
-        if !series.pool_identity.same_instance(target_pool_identity) {
+        if !series
+            .pool_identity
+            .as_ref()
+            .is_some_and(|identity| identity.same_instance(target_pool_identity))
+        {
             return Err(GpuPickError::ForeignColumnPool);
         }
 
@@ -1496,7 +1891,7 @@ impl GpuPickEngine {
         )?;
 
         let mut rebound = series.clone();
-        rebound.pool_identity = target_pool_identity.clone();
+        rebound.pool_identity = Some(target_pool_identity.clone());
         rebound.x_handle = x_handle;
         rebound.y_handle = y_handle;
         rebound.style_index_handle = style_index_handle;
@@ -1753,7 +2148,11 @@ impl GpuPickEngine {
         slot: &PickSeriesSlot,
     ) -> Result<(), GpuPickError> {
         let series = &slot.gpu;
-        if !series.pool_identity.same_instance(&pool.identity()) {
+        if !series
+            .pool_identity
+            .as_ref()
+            .is_some_and(|identity| identity.same_instance(&pool.identity()))
+        {
             return Err(GpuPickError::ForeignColumnPool);
         }
         if pool.layout_generation() != series.pool_layout_generation {
@@ -1908,6 +2307,12 @@ impl GpuPickEngine {
                     series.base_shape_id,
                     series.dispatch_x,
                 ],
+                stream: [
+                    0,
+                    series.point_count,
+                    series.point_count.saturating_sub(1),
+                    0,
+                ],
             };
             self.bundle
                 .queue
@@ -2034,6 +2439,7 @@ impl GpuPickEngine {
                 receiver,
                 identities: Arc::clone(&self.registry.identities),
                 _charge: readback_tally.into_charge(&self.bundle.ledger, GpuResourceKind::Readback),
+                _scratch_charge: None,
             },
         })
     }
@@ -2049,6 +2455,7 @@ enum GpuPickTicketState {
         /// Credited when the ticket resolves or is abandoned — either way the
         /// MAP_READ buffer goes with it.
         _charge: GpuByteCharge,
+        _scratch_charge: Option<SharedCharge>,
     },
 }
 
@@ -2072,6 +2479,7 @@ impl GpuPickTicket {
             identities,
             // Dropped here: resolving consumes the readback buffer.
             _charge,
+            _scratch_charge,
         } = self.state
         else {
             return Ok(None);
@@ -2561,6 +2969,277 @@ mod tests {
         assert_eq!(first.bundle.gate_y, second.bundle.gate_y);
         assert_eq!(first.bundle.exact, second.bundle.exact);
         assert_eq!(first.bundle.reduce, second.bundle.reduce);
+    }
+
+    #[test]
+    fn streamed_exact_matches_resident_at_seams_with_global_styles_and_ties() {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let slots = [ScatterStyleSlotGpu {
+            color_premul: [0.0; 4],
+            meta: [2.0, 1.0, 6.0, 0.0],
+        }];
+        let overrides = [ScatterStyleOverrideGpu {
+            point_index: 5,
+            _pad: [0; 3],
+            color_premul: [0.0; 4],
+            meta: [8.0, 2.0, 6.0, 0.0],
+        }];
+        let descriptor = |order: usize, scatter: bool| GpuPickSeriesDescriptor {
+            source_id: Some("stream-source".into()),
+            series_id: format!("stream-{order}"),
+            x_column: "x".into(),
+            y_column: "y".into(),
+            scatter: scatter.then_some(GpuPickScatter {
+                base_radius_px: 1.0,
+                base_shape_id: 0,
+                style_map: Some(GpuPickScatterStyle {
+                    style_index_column: Some("style".into()),
+                    style_slots: &slots,
+                    style_overrides: &overrides,
+                    style_meta: ScatterStyleMapMeta {
+                        style_count: 1,
+                        override_count: 1,
+                        has_index: 1,
+                        _pad: 0,
+                    },
+                }),
+            }),
+            line_width_px: Some(2.0),
+        };
+        for logarithmic in [false, true] {
+            let origin = if logarithmic {
+                0.0
+            } else {
+                1_000_000_000_000.0
+            };
+            let xs = [1.0, 2.0, 4.0, f64::NAN, 6.0, 8.0, 8.0, 9.0].map(|x| x + origin);
+            let ys = [5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0];
+            let style = [0.0f32, f32::NAN, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+            let mut config = parity_config(100, 100, (origin + 1.0, origin + 10.0), (0.0, 10.0));
+            config.bottom_x.scale = if logarithmic {
+                AxisScale::Logarithmic
+            } else {
+                AxisScale::Linear
+            };
+            config.bottom_x.inverted = logarithmic;
+            config.left_y.inverted = logarithmic;
+            let mut pool = ColumnPool::new(
+                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+                4096,
+            )
+            .unwrap();
+            pool.add_hilo_column(
+                "x".into(),
+                &f64_column(xs.to_vec()),
+                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            )
+            .unwrap();
+            pool.add_hilo_column(
+                "y".into(),
+                &f64_column(ys.to_vec()),
+                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            )
+            .unwrap();
+            pool.add_column(
+                "style".into(),
+                &f32_column(style.to_vec()),
+                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            )
+            .unwrap();
+            for scatter in [false, true] {
+                let mut resident =
+                    GpuPickEngine::new(Arc::clone(&device), Arc::clone(&queue)).unwrap();
+                for order in 0..2 {
+                    resident
+                        .add_series(&pool, descriptor(order, scatter))
+                        .unwrap();
+                }
+                for cursor in [
+                    [10.0, 50.0],
+                    [35.0, 50.0],
+                    [55.0, 50.0],
+                    [80.0, 54.0],
+                    [95.0, 50.0],
+                ] {
+                    let query = query_from_config(&config, cursor, 4.0);
+                    let expected = resolve_pick(&resident, &pool, query);
+                    for chunk_size in [1usize, 2, 3, 5] {
+                        let identities = (0..2)
+                            .map(|order| (Some("stream-source".into()), format!("stream-{order}")))
+                            .collect();
+                        let mut stream = resident
+                            .bundle
+                            .begin_stream(query, 1.0, identities)
+                            .unwrap();
+                        let mut charges = vec![stream.charge()];
+                        // Reverse both series and chunk submission order: ties
+                        // are source identities, never scheduling order.
+                        for order in (0..2).rev() {
+                            let starts = (0..xs.len()).step_by(chunk_size).collect::<Vec<_>>();
+                            for start in starts.into_iter().rev() {
+                                let owned = chunk_size.min(xs.len() - start);
+                                let end = (start + owned + 1).min(xs.len());
+                                let len = end - start;
+                                let mut pairs = Vec::new();
+                                for value in &xs[start..end] {
+                                    let (hi, lo) = split_f64_to_f32_pair(*value);
+                                    pairs.push([hi, lo]);
+                                }
+                                for value in &ys[start..end] {
+                                    let (hi, lo) = split_f64_to_f32_pair(*value);
+                                    pairs.push([hi, lo]);
+                                }
+                                for value in &style[start..end] {
+                                    pairs.push([*value, 0.0]);
+                                }
+                                let buffer = charged_buffer_init(
+                                    &ChargeTally::new(),
+                                    &device,
+                                    &wgpu::util::BufferInitDescriptor {
+                                        label: Some("stream pick test bounded source"),
+                                        contents: bytemuck::cast_slice(&pairs),
+                                        usage: wgpu::BufferUsages::STORAGE,
+                                    },
+                                );
+                                let handle = |column| ColumnHandle {
+                                    generation: 0,
+                                    offset: (column * len * 8) as u64,
+                                    byte_size: (len * 8) as u64,
+                                    len_values: len,
+                                };
+                                let mut encoder =
+                                    device.create_command_encoder(&Default::default());
+                                if let Some(charge) = stream
+                                    .encode_chunk(
+                                        &mut encoder,
+                                        &buffer,
+                                        descriptor(order, scatter),
+                                        GpuStreamPickColumns {
+                                            x: handle(0),
+                                            y: handle(1),
+                                            style_index: scatter.then(|| handle(2)),
+                                        },
+                                        order as u32,
+                                        start as u32,
+                                        owned as u32,
+                                        owned.min(xs.len() - start - 1) as u32,
+                                    )
+                                    .unwrap()
+                                {
+                                    charges.push(charge);
+                                }
+                                queue.submit([encoder.finish()]);
+                            }
+                        }
+                        let actual =
+                            pollster::block_on(stream.finish().unwrap().resolve()).unwrap();
+                        assert_eq!(
+                            expected, actual,
+                            "stream parity logarithmic={logarithmic}, scatter={scatter}, cursor={cursor:?}, chunk_size={chunk_size}"
+                        );
+                        if let (Some(expected), Some(actual)) = (&expected, &actual) {
+                            assert_eq!(
+                                expected.distance_px.to_bits(),
+                                actual.distance_px.to_bits()
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn streamed_gates_keep_boundary_segment_and_exclude_unowned_halo() {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let count = GPU_PICK_DIRECT_SCAN_POINTS as usize + 2;
+        let mut pairs = vec![[f32::NAN, 0.0]; count * 2];
+        pairs[count - 2] = [1.0, 0.0];
+        pairs[count - 1] = [9.0, 0.0];
+        pairs[2 * count - 2] = [5.0, 0.0];
+        pairs[2 * count - 1] = [5.0, 0.0];
+        let buffer = charged_buffer_init(
+            &ChargeTally::new(),
+            &device,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("stream gated pick source"),
+                contents: bytemuck::cast_slice(&pairs),
+                usage: wgpu::BufferUsages::STORAGE,
+            },
+        );
+        let columns = GpuStreamPickColumns {
+            x: ColumnHandle {
+                generation: 0,
+                offset: 0,
+                byte_size: count as u64 * 8,
+                len_values: count,
+            },
+            y: ColumnHandle {
+                generation: 0,
+                offset: count as u64 * 8,
+                byte_size: count as u64 * 8,
+                len_values: count,
+            },
+            style_index: None,
+        };
+        let bundle = PickPipelineBundle::new_observed(
+            Arc::clone(&device),
+            Arc::clone(&queue),
+            Arc::new(GpuLedger::new()),
+            &mut |_| {},
+        )
+        .unwrap();
+        for line in [false, true] {
+            let descriptor = GpuPickSeriesDescriptor {
+                source_id: None,
+                series_id: "gated-stream".into(),
+                x_column: "x".into(),
+                y_column: "y".into(),
+                scatter: (!line).then_some(GpuPickScatter {
+                    base_radius_px: 2.0,
+                    base_shape_id: 0,
+                    style_map: None,
+                }),
+                line_width_px: line.then_some(0.0),
+            };
+            let query = test_query(if line { [50.0, 50.0] } else { [90.0, 50.0] });
+            let mut stream = bundle
+                .begin_stream(query, 1.0, vec![(None, "gated-stream".into())])
+                .unwrap();
+            assert_eq!(
+                stream.charge().charged_bytes(),
+                GpuStreamPick::PERSISTENT_BYTES
+            );
+            let bytes = stream.chunk_bytes(&descriptor, count).unwrap();
+            let mut encoder = device.create_command_encoder(&Default::default());
+            let scratch = stream
+                .encode_chunk(
+                    &mut encoder,
+                    &buffer,
+                    descriptor,
+                    columns,
+                    0,
+                    1000,
+                    (count - 1) as u32,
+                    (count - 1) as u32,
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(scratch.charged_bytes(), bytes);
+            queue.submit([encoder.finish()]);
+            let answer = pollster::block_on(stream.finish().unwrap().resolve()).unwrap();
+            if line {
+                let answer = answer.expect("the last owned segment crosses the cursor");
+                assert_eq!(answer.point_index, 1000 + count - 2);
+                assert_eq!(answer.distance_px, 0.0);
+            } else {
+                assert_eq!(answer, None, "the right halo is not an owned scatter point");
+            }
+        }
     }
 
     #[test]

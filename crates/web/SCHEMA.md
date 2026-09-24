@@ -1,6 +1,13 @@
 # Config / SeriesConfig — JSON 스키마 레퍼런스
 
-적용 공개 버전: `figgy 0.9.1` / `renderer 0.11.0`.
+공개 후보 버전: `figgy 0.10.0` / `renderer 0.12.0`.
+현재 배포 버전은 `figgy 0.9.1` / `renderer 0.11.0`이다.
+
+이 문서는 `Config`와 `SeriesConfig`의 JSON 형태만 정의한다. 공개 후보의
+비상주 컬럼 등록, 구간 공급, `render_chart()` 실행·취소, 상주 가능 여부 조회는
+별도 웹 API이며 Config JSON 필드를 추가하지 않는다. API의 지원 범위와
+호출 계약은 [WASM.md](../renderer/WASM.md#exact-streaming)의 「공개 후보:
+자동 실행과 원본 구간 공급」 절을 참고한다. 현재 배포 버전에 포함됐다는 뜻은 아니다.
 
 `FiggyChart.get_config()` / `get_series()`가 반환하고 `set_config()` /
 `set_series()`가 받는 JSON의 **전체 형태**다. 아래 JSON 블록은 Rust 소스에서

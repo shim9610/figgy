@@ -15,6 +15,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
+#[cfg(test)]
+pub(crate) static FONT_REGISTRATION_TEST_LOCK: Mutex<()> = Mutex::new(());
+
 use swash::FontRef;
 use swash::scale::{Render, ScaleContext, Source};
 
@@ -1190,6 +1193,9 @@ mod tests {
     // Liberation Sans bytes double as the fixture under an alias-free name.
     #[test]
     fn register_font_bytes_resolves_new_family_and_publishes_generation() {
+        let _font_registration = FONT_REGISTRATION_TEST_LOCK
+            .lock()
+            .expect("font registration test lock poisoned");
         let before_invalid = font_generation();
         assert!(
             register_font_bytes(vec![1, 2, 3]).is_err(),
