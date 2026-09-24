@@ -2864,13 +2864,16 @@ mod web {
             Ok(())
         }
 
-        fn rebuild_styles(&mut self) {
-            let (scale, _) = self.display_scale_and_panel();
-            self.styles = self
-                .chart_series()
+        fn styles_for_surface(&mut self, surface_size: (u32, u32)) -> Result<Vec<ChartStyle>, JsValue> {
+            let logical = self.chart_config().chart_area.0;
+            let (scale, _) = renderer::fit_display_panel(
+                (logical.width, logical.height), surface_size,
+            );
+            let series = self.chart_series().to_vec();
+            series
                 .iter()
-                .map(|cfg| self.renderer.create_style_for_series_scaled(cfg, scale))
-                .collect();
+                .map(|cfg| self.renderer.create_style_for_series_scaled(cfg, scale).map_err(js_err))
+                .collect()
         }
 
         fn request_host_redraw(&mut self) {
@@ -4415,7 +4418,7 @@ mod web {
             let mut next_styles = Vec::new();
             next_styles.try_reserve(proposed.len()).map_err(js_err)?;
             for series in &proposed {
-                next_styles.push(self.renderer.create_style_for_series_scaled(series, scale));
+                next_styles.push(self.renderer.create_style_for_series_scaled(series, scale).map_err(js_err)?);
             }
             let mut next_labels = self.labels.clone();
             if let Some(index) = existing {
@@ -4775,7 +4778,7 @@ mod web {
             let mut styles = Vec::new();
             styles.try_reserve(series.len()).map_err(js_err)?;
             for cfg in &series {
-                styles.push(self.renderer.create_style_for_series_scaled(cfg, scale));
+                styles.push(self.renderer.create_style_for_series_scaled(cfg, scale).map_err(js_err)?);
             }
             let mut config = self.chart_config().clone();
             renderer::config::update_legend_symbols_preserving_text(
@@ -4816,7 +4819,7 @@ mod web {
             let mut new_styles = Vec::new();
             new_styles.try_reserve(series.len()).map_err(js_err)?;
             for cfg in &series {
-                new_styles.push(self.renderer.create_style_for_series_scaled(cfg, scale));
+                new_styles.push(self.renderer.create_style_for_series_scaled(cfg, scale).map_err(js_err)?);
             }
             self.replace_chart_config(new_cfg)?;
             if legend_content_changed {
@@ -4868,7 +4871,7 @@ mod web {
             let mut new_styles = Vec::new();
             new_styles.try_reserve(new_series.len()).map_err(js_err)?;
             for cfg in &new_series {
-                new_styles.push(self.renderer.create_style_for_series_scaled(cfg, scale));
+                new_styles.push(self.renderer.create_style_for_series_scaled(cfg, scale).map_err(js_err)?);
             }
             let mut config = self.chart_config().clone();
             if self.legend_auto_managed {
@@ -5328,10 +5331,11 @@ mod web {
         /// document into this surface.
         pub fn resize(&mut self, width: u32, height: u32) -> Result<(), JsValue> {
             let (w, h) = (width.max(1), height.max(1));
+            let styles = self.styles_for_surface((w, h))?;
             self.renderer.resize(w, h).map_err(js_err)?;
             self.surface_size = (w, h);
             self.view_dirty = true;
-            self.rebuild_styles();
+            self.styles = styles;
             Ok(())
         }
 
@@ -5502,7 +5506,7 @@ mod web {
                 .try_reserve(declarations.series.len())
                 .map_err(js_err)?;
             for item in &declarations.series {
-                styles.push(self.renderer.create_style_for_series_scaled(item, scale));
+                styles.push(self.renderer.create_style_for_series_scaled(item, scale).map_err(js_err)?);
             }
             let retained_extents = retain_valid_series_extent_jobs(
                 &declarations.series,

@@ -774,7 +774,7 @@ mod tests {
             let view = renderer
                 .create_chart_view(&chart, chart.config().chart_area.0)
                 .unwrap();
-            let style = renderer.create_style_for_series(&declaration);
+            let style = renderer.create_style_for_series(&declaration).unwrap();
             let series = [Series {
                 config: &declaration,
                 style: &style,
@@ -850,7 +850,9 @@ mod tests {
                         assert_eq!(layers.selected_bars.len(), 1);
                         assert_eq!(layers.selected_bars[0].instance, if local { 0 } else { 2 });
                     }
-                    PreparedSeries::from_layers(layers.into_series_layers(), None)
+                    PreparedSeries::from_layers(
+                        layers.into_series_layers(), None, Some(Arc::clone(&style._charge)),
+                    )
                 };
                 frame.items[0].series = vec![packet];
                 images.push(pixels(&renderer, &frame));

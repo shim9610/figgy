@@ -936,45 +936,14 @@ impl Renderer {
                 }
             }
         }
-        // Admission precedes every export-owned GPU allocation. Mapped
-        // scatter/errorbar bases keep their existing shared owners; remaining
-        // style uniforms and histogram tables are charged to this operation.
+        // Admission precedes every export-owned GPU allocation. Each
+        // ChartStyle charges its own uniforms and mapped-style buffers.
         let mut untracked_style_bytes = 0u64;
-        let mut mapped_style_bytes = 0u64;
+        let mut style_bytes = 0u64;
         for series in &completed.series {
-            untracked_style_bytes = untracked_style_bytes
-                .checked_add(4 * std::mem::size_of::<PrimitiveStyle>() as u64)
+            style_bytes = style_bytes
+                .checked_add(self.style_allocation_bytes(series)?)
                 .ok_or(StreamError::Overflow)?;
-            mapped_style_bytes = mapped_style_bytes
-                .checked_add(mapped_stream_base_bytes(series, &self.device)?)
-                .ok_or(StreamError::Overflow)?;
-            if let Some(bar) = extract_bar(&series.render_type) {
-                let overrides = bar.bar_style_overrides.as_ref().map_or(0, |rows| {
-                    rows.iter()
-                        .filter(|row| u32::try_from(row.index).is_ok())
-                        .count()
-                });
-                if overrides != 0 {
-                    let rows = (overrides as u64)
-                        .checked_mul(std::mem::size_of::<data_render::BarStyleOverrideGpu>() as u64)
-                        .ok_or(StreamError::Overflow)?;
-                    if rows > self.device.limits().max_buffer_size
-                        || rows > self.device.limits().max_storage_buffer_binding_size
-                    {
-                        return Err(StreamError::TooLarge.into());
-                    }
-                    untracked_style_bytes = untracked_style_bytes
-                        .checked_add(rows)
-                        .and_then(|bytes| {
-                            bytes.checked_add(
-                                (std::mem::size_of::<data_render::BarStyleSlotGpu>()
-                                    + std::mem::size_of::<data_render::BarStyleMapMeta>())
-                                    as u64,
-                            )
-                        })
-                        .ok_or(StreamError::Overflow)?;
-                }
-            }
         }
         if matches!(
             config.draw_style,
@@ -1001,7 +970,7 @@ impl Renderer {
             .charged_bytes()?
             .checked_add(view_bytes)
             .and_then(|bytes| bytes.checked_add(untracked_style_bytes))
-            .and_then(|bytes| bytes.checked_add(mapped_style_bytes))
+            .and_then(|bytes| bytes.checked_add(style_bytes))
             .ok_or(StreamError::Overflow)?;
         self.preflight_auxiliary_gpu_bytes(allocation_bytes)?;
         self.stream_runtime
@@ -1019,15 +988,14 @@ impl Renderer {
             &chart_view.transform_buffer,
             &data_render::scatter_transform_from_config(&config),
         );
-        let mut styles = RegisteredChartStyles {
+        let styles = RegisteredChartStyles {
             series_revision: completed.series_revision,
             styles: completed
                 .series
                 .iter()
-                .map(|series| self.create_style_for_series_scaled(series, scale))
-                .collect(),
+                .map(|series| self.create_style_for_series_scaled_inner(series, scale))
+                .collect::<Result<_>>()?,
         };
-        charge_mapped_stream_bases(&mut styles, &self.gpu_ledger);
         let tally = crate::gpu_memory::ChargeTally::new();
         tally.add(untracked_style_bytes);
         let styles_charge =

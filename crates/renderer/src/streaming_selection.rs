@@ -665,7 +665,9 @@ impl Renderer {
             )?;
             let tally = crate::gpu_memory::ChargeTally::new();
             tally.add(layers.picked.len() as u64 * std::mem::size_of::<PrimitiveStyle>() as u64);
-            let mut packet = PreparedSeries::from_layers(layers.into_series_layers(), None);
+            let mut packet = PreparedSeries::from_layers(
+                layers.into_series_layers(), None, Some(Arc::clone(&style._charge)),
+            );
             packet._column_charge = Some(page.chunk.work.shared_charge());
             packet._stream_style_charge = Some(crate::gpu_memory::shared_charge(
                 tally, &self.gpu_ledger, GpuResourceKind::Uniform,
@@ -977,7 +979,9 @@ impl Renderer {
                 (layers.picked.len() + layers.selected_bars.len()) as u64
                     * std::mem::size_of::<PrimitiveStyle>() as u64,
             );
-            let mut packet = PreparedSeries::from_layers(layers.into_series_layers(), None);
+            let mut packet = PreparedSeries::from_layers(
+                layers.into_series_layers(), None, Some(Arc::clone(&style._charge)),
+            );
             packet._column_charge = Some(chunk.work.shared_charge());
             packet._stream_style_charge = Some(crate::gpu_memory::shared_charge(
                 tally,

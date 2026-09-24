@@ -128,7 +128,7 @@ fn build_state(
     ];
     let styles: Vec<ChartStyle> = series
         .iter()
-        .map(|cfg| renderer.create_style_for_series(cfg))
+        .map(|cfg| renderer.create_style_for_series(cfg).unwrap())
         .collect();
 
     let mut config = default::default_config();
@@ -223,7 +223,7 @@ impl CallbackTrait for LabCallback {
                 changed = true;
             }
             if changed {
-                state.styles[idx] = state.renderer.create_style_for_series(&state.series[idx]);
+                state.styles[idx] = state.renderer.create_style_for_series(&state.series[idx]).unwrap();
             }
         }
 

@@ -216,7 +216,7 @@ async fn chrome_webgpu_keeps_all_1024_automatic_contour_labels() {
         .map(|index| 0.1 + 3.8 * index as f64 / (renderer::MAX_CONTOUR_LEVELS - 1) as f64)
         .collect();
     let config = automatic_series(all_levels);
-    let style = renderer.create_style_for_series(&config);
+    let style = renderer.create_style_for_series(&config).unwrap();
     let series = [Series {
         config: &config,
         style: &style,

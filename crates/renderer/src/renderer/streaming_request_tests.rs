@@ -435,13 +435,14 @@ fn mapped_base_style_storage_is_preflighted_and_charged_once() {
         r.chart_config(chart).unwrap().chart_area.0).unwrap();
     let target = draw_target(&r, 1);
     let before = r.gpu_memory_usage();
-    // Empty table dummy row 32B + one sparse row 48B + resident meta 16B.
-    assert!(r.set_memory_budget(Some(before.total_bytes() + 95)).is_none());
+    // Four primitive uniforms plus empty-table dummy row, sparse row and meta.
+    let style_bytes = r.style_allocation_bytes(&r.chart_series(chart).unwrap()[0]).unwrap();
+    assert!(r.set_memory_budget(Some(before.total_bytes() + style_bytes - 1)).is_none());
     assert!(matches!(r.begin_chart_stream_draw(chart, &view, &target, 1),
-        Err(StreamRequestError::Scheduler(StreamError::TooLarge))));
+        Err(StreamRequestError::State(FiggyError::GpuResourceLimit { resource: "chart style budget", .. }))));
     assert_eq!(r.gpu_memory_usage(), before);
     assert_eq!(r.stream_request_usage(), (0, 0, 0));
-    assert!(r.set_memory_budget(Some(before.total_bytes() + 96)).is_none());
+    assert!(r.set_memory_budget(Some(before.total_bytes() + style_bytes)).is_none());
     let extra_config = crate::default::default_config();
     let c = r.register_chart(extra_config.clone(), vec![declaration("c", "x", "a")]).unwrap();
     let d = r.register_chart(extra_config, vec![declaration("d", "x", "a")]).unwrap();
@@ -456,7 +457,7 @@ fn mapped_base_style_storage_is_preflighted_and_charged_once() {
     let first = r.begin_chart_stream_draw(chart, &view, &target, 1).unwrap();
     let admitted = r.gpu_memory_usage();
     assert_eq!(admitted.live_bytes_of(crate::GpuResourceKind::Uniform)
-        - before.live_bytes_of(crate::GpuResourceKind::Uniform), 96);
+        - before.live_bytes_of(crate::GpuResourceKind::Uniform), style_bytes);
     r.cancel_chart_stream(chart).unwrap();
     let second = r.begin_chart_stream_draw(chart, &view, &target, 1).unwrap();
     assert_ne!(first, second);

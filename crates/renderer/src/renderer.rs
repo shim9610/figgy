@@ -1838,6 +1838,7 @@ struct PreparedErrorBarLayer {
 struct PreparedSeries {
     _arc_charge: Option<crate::gpu_memory::SharedCharge>,
     _column_charge: Option<crate::gpu_memory::SharedCharge>,
+    _style_charge: Option<crate::gpu_memory::SharedCharge>,
     _stream_style_charge: Option<crate::gpu_memory::SharedCharge>,
     _stream_transform_charge: Option<crate::gpu_memory::SharedCharge>,
     field: Option<PreparedFieldLayer>,
@@ -1922,10 +1923,12 @@ impl PreparedSeries {
     fn from_layers(
         layers: data_render::SeriesLayers<'_>,
         arc_charge: Option<crate::gpu_memory::SharedCharge>,
+        style_charge: Option<crate::gpu_memory::SharedCharge>,
     ) -> Self {
         Self {
             _arc_charge: arc_charge,
             _column_charge: None,
+            _style_charge: style_charge,
             _stream_style_charge: None,
             _stream_transform_charge: None,
             field: layers.field.map(|layer| PreparedFieldLayer {
@@ -6353,6 +6356,11 @@ impl Renderer {
             .chart_states
             .get(&id)
             .ok_or(FiggyError::UnknownChart { id })?;
+        validate_renderer_series(
+            &(&self.pool, &self.streaming_sources),
+            &config,
+            &state.series,
+        )?;
         let desired = state
             .revisions
             .desired
@@ -9158,16 +9166,47 @@ impl Renderer {
     // callback's prepare before any paint, so a single shared token would
     // be overwritten before the first paint. See examples/egui_embed.rs.)
 
-    /// Build a `ChartStyle` from `cfg.render_type`'s line/scatter/errorbar
-    /// styles. Missing components default to BLACK / 1 px.
-    pub fn create_style_for_series(&self, cfg: &SeriesConfig) -> ChartStyle {
+    /// Build a budget-checked `ChartStyle` from `cfg.render_type`'s
+    /// line/scatter/errorbar styles. Missing components default to BLACK / 1 px.
+    /// The four uniforms and any mapped-style rows are admitted and charged
+    /// together before their GPU buffers are created.
+    pub fn create_style_for_series(&mut self, cfg: &SeriesConfig) -> Result<ChartStyle> {
         self.create_style_for_series_scaled(cfg, 1.0)
     }
 
     /// Scaled variant of `create_style_for_series` — every pixel size (line
     /// width, dash lengths, point radius, errorbar widths/cap) is multiplied
     /// by `scale` (used by the high-DPI export path).
-    pub fn create_style_for_series_scaled(&self, cfg: &SeriesConfig, scale: f32) -> ChartStyle {
+    pub fn create_style_for_series_scaled(
+        &mut self,
+        cfg: &SeriesConfig,
+        scale: f32,
+    ) -> Result<ChartStyle> {
+        self.create_style_for_series_scaled_inner(cfg, scale)
+    }
+
+    fn create_style_for_series_scaled_inner(
+        &self,
+        cfg: &SeriesConfig,
+        scale: f32,
+    ) -> Result<ChartStyle> {
+        let style_bytes = self.style_allocation_bytes(cfg)?;
+        let requested = self
+            .gpu_memory_usage()
+            .checked_total_bytes()
+            .and_then(|bytes| bytes.checked_add(style_bytes))
+            .ok_or(FiggyError::GpuResourceLimit {
+                resource: "chart style budget",
+                requested: u64::MAX,
+                limit: self.memory_budget.unwrap_or(u64::MAX),
+            })?;
+        if requested > self.memory_budget.unwrap_or(u64::MAX) {
+            return Err(FiggyError::GpuResourceLimit {
+                resource: "chart style budget",
+                requested,
+                limit: self.memory_budget.unwrap_or(u64::MAX),
+            });
+        }
         // Decorrelates per-series hash patterns in the styled shader entries
         // (star placement, sketch wobble). Derived from the series id, so the
         // result stays deterministic for a given config; renaming a series
@@ -9221,7 +9260,7 @@ impl Renderer {
             .and_then(|eb| self.create_errorbar_style_map_for(eb, scale));
         let bar_map =
             extract_bar(&cfg.render_type).and_then(|bar| self.create_bar_style_map_for(bar, scale));
-        self.create_style_from_primitives(
+        Ok(self.create_style_from_primitives(
             line,
             scatter,
             errorbar,
@@ -9230,10 +9269,87 @@ impl Renderer {
             errorbar_map,
             bar_map,
             scale,
-        )
+            style_bytes,
+        ))
     }
 
-    /// Shared tail of `create_style_for_series*`: allocate the three style
+    fn style_allocation_bytes(&self, cfg: &SeriesConfig) -> Result<u64> {
+        let caps = self.device.limits();
+        let max_storage = caps
+            .max_buffer_size
+            .min(u64::from(caps.max_storage_buffer_binding_size));
+        let mut total = 4u64 * std::mem::size_of::<PrimitiveStyle>() as u64;
+        let overflow = || FiggyError::GpuResourceLimit {
+            resource: "chart style bytes",
+            requested: u64::MAX,
+            limit: self.memory_budget.unwrap_or(u64::MAX),
+        };
+        let mut add_map = |
+            slots: usize,
+            slot_bytes: u64,
+            overrides: usize,
+            override_row_bytes: u64,
+        | -> Result<()> {
+            let slots = u64::try_from(slots).map_err(|_| overflow())?;
+            let overrides = u64::try_from(overrides).map_err(|_| overflow())?;
+            let style_bytes = slots.max(1).checked_mul(slot_bytes).ok_or_else(overflow)?;
+            let override_bytes = overrides.max(1)
+                .checked_mul(override_row_bytes).ok_or_else(overflow)?;
+            if style_bytes > max_storage || override_bytes > max_storage {
+                return Err(FiggyError::GpuResourceLimit {
+                    resource: "chart style map buffer",
+                    requested: style_bytes.max(override_bytes),
+                    limit: max_storage,
+                });
+            }
+            total = total.checked_add(style_bytes)
+                .and_then(|bytes| bytes.checked_add(override_bytes))
+                .and_then(|bytes| bytes.checked_add(16))
+                .ok_or_else(overflow)?;
+            Ok(())
+        };
+        if let Some(sc) = extract_scatter(&cfg.render_type) {
+            let slots = sc.point_style_table.as_ref().map_or(0, Vec::len);
+            let overrides = sc.point_style_overrides.as_ref().map_or(0, |rows| rows.iter()
+                .filter(|row| u32::try_from(row.index).is_ok()).count());
+            if sc.point_style_index_column.is_some() || slots != 0 || overrides != 0 {
+                add_map(
+                    slots,
+                    std::mem::size_of::<data_render::ScatterStyleSlotGpu>() as u64,
+                    overrides,
+                    std::mem::size_of::<data_render::ScatterStyleOverrideGpu>() as u64,
+                )?;
+            }
+        }
+        if let Some(eb) = extract_errorbar_style(&cfg.render_type) {
+            let slots = eb.error_bar_style_table.as_ref().map_or(0, Vec::len);
+            let overrides = eb.error_bar_style_overrides.as_ref().map_or(0, |rows| rows.iter()
+                .filter(|row| u32::try_from(row.index).is_ok()).count());
+            if eb.error_bar_style_index_column.is_some() || slots != 0 || overrides != 0 {
+                add_map(
+                    slots,
+                    std::mem::size_of::<data_render::ErrorBarStyleSlotGpu>() as u64,
+                    overrides,
+                    std::mem::size_of::<data_render::ErrorBarStyleOverrideGpu>() as u64,
+                )?;
+            }
+        }
+        if let Some(bar) = extract_bar(&cfg.render_type) {
+            let overrides = bar.bar_style_overrides.as_ref().map_or(0, |rows| rows.iter()
+                .filter(|row| u32::try_from(row.index).is_ok()).count());
+            if overrides != 0 {
+                add_map(
+                    1,
+                    std::mem::size_of::<data_render::BarStyleSlotGpu>() as u64,
+                    overrides,
+                    std::mem::size_of::<data_render::BarStyleOverrideGpu>() as u64,
+                )?;
+            }
+        }
+        Ok(total)
+    }
+
+    /// Shared tail of `create_style_for_series*`: allocate the four style
     /// uniform buffers and bind groups from fully-built values.
     #[allow(clippy::too_many_arguments)]
     fn create_style_from_primitives(
@@ -9246,6 +9362,7 @@ impl Renderer {
         errorbar_map: Option<data_render::ErrorBarStyleMap>,
         bar_map: Option<data_render::BarStyleMap>,
         display_scale: f32,
+        style_bytes: u64,
     ) -> ChartStyle {
         let dev = &self.device;
         let scatter_radius_px = scatter.point_radius_px;
@@ -9253,7 +9370,12 @@ impl Renderer {
         let sc_buf = data_render::create_style_uniform_buffer(dev, &scatter);
         let eb_buf = data_render::create_style_uniform_buffer(dev, &errorbar);
         let bar_buf = data_render::create_style_uniform_buffer(dev, &bar);
+        let tally = crate::gpu_memory::ChargeTally::new();
+        tally.add(style_bytes);
         ChartStyle {
+            _charge: crate::gpu_memory::shared_charge(
+                tally, &self.gpu_ledger, GpuResourceKind::Uniform,
+            ),
             line_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &line_buf),
             scatter_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &sc_buf),
             errorbar_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &eb_buf),
@@ -9841,12 +9963,9 @@ impl Renderer {
             styles
                 .try_reserve_exact(state.series.len())
                 .map_err(allocation)?;
-            styles.extend(
-                state
-                    .series
-                    .iter()
-                    .map(|series| self.create_style_for_series(series)),
-            );
+            for series in &state.series {
+                styles.push(self.create_style_for_series_scaled_inner(series, 1.0)?);
+            }
             style_updates.push((
                 item.chart_id,
                 RegisteredChartStyles {
@@ -10556,8 +10675,8 @@ impl Renderer {
         // 3) Series styles — line_width also scales (extracted from render_type).
         let scaled_styles: Vec<ChartStyle> = series
             .iter()
-            .map(|cfg| self.create_style_for_series_scaled(cfg, scale))
-            .collect();
+            .map(|cfg| self.create_style_for_series_scaled_inner(cfg, scale))
+            .collect::<Result<_>>()?;
         let series_objs: Vec<Series<'_>> = series
             .iter()
             .zip(scaled_styles.iter())
@@ -11037,6 +11156,7 @@ impl ChartView {
 /// The style uniform buffers live inside the bind groups — wgpu keeps bound
 /// resources alive, so no named buffer fields are needed.
 pub struct ChartStyle {
+    _charge: crate::gpu_memory::SharedCharge,
     line_bg: wgpu::BindGroup,
     scatter_bg: wgpu::BindGroup,
     errorbar_bg: wgpu::BindGroup,
@@ -12026,10 +12146,12 @@ impl PrepareContext<'_> {
                 series: layers
                     .into_iter()
                     .zip(&prepared_arc.series)
-                    .map(|(layers, arc)| {
+                    .zip(item.series)
+                    .map(|((layers, arc), series)| {
                         PreparedSeries::from_layers(
                             layers,
                             arc.arc.as_ref().map(|arc| Arc::clone(&arc.charge)),
+                            Some(Arc::clone(&series.style._charge)),
                         )
                     })
                     .collect(),
@@ -12136,7 +12258,9 @@ impl PrepareContext<'_> {
                 else { Err(FiggyError::UnknownColumn { id: id.into() }) },
             Some(streaming_runtime::StreamDrawPhase::Line),
         )?;
-        let mut packet = PreparedSeries::from_layers(layers.remove(0), Some(charge));
+        let mut packet = PreparedSeries::from_layers(
+            layers.remove(0), Some(charge), Some(Arc::clone(&series.style._charge)),
+        );
         if let Some(line) = &mut packet.line { line.arc = Some(arc); }
         Ok(packet)
     }
@@ -12236,7 +12360,9 @@ impl PrepareContext<'_> {
             },
             Some(phase),
         )?;
-        let mut prepared = PreparedSeries::from_layers(layers.remove(0), None);
+        let mut prepared = PreparedSeries::from_layers(
+            layers.remove(0), None, Some(Arc::clone(&series.style._charge)),
+        );
         prepared._column_charge = Some(chunk.work.shared_charge());
         Ok(prepared)
     }
@@ -13413,6 +13539,18 @@ impl Drop for WindowedRenderer<'_> {
 }
 
 impl<'w> WindowedRenderer<'w> {
+    /// Allocate a budget-checked style for this surface's renderer.
+    pub fn create_style_for_series(&mut self, cfg: &SeriesConfig) -> Result<ChartStyle> {
+        self.inner.create_style_for_series(cfg)
+    }
+
+    /// High-DPI variant of [`Self::create_style_for_series`].
+    pub fn create_style_for_series_scaled(
+        &mut self, cfg: &SeriesConfig, scale: f32,
+    ) -> Result<ChartStyle> {
+        self.inner.create_style_for_series_scaled(cfg, scale)
+    }
+
     /// Build a standalone renderer while reporting timestamp-free startup
     /// stage boundaries to `observer`.
     pub async fn for_window_async_observed(
@@ -16143,7 +16281,7 @@ mod tests {
         );
         let mut config = state_test_labelled_contour(0.0, Vec::new());
         state_test_contour_labels_mut(&mut config).visible = false;
-        let style = renderer.create_style_for_series(&config);
+        let style = renderer.create_style_for_series(&config).unwrap();
         let series = [Series {
             config: &config,
             style: &style,
@@ -16235,7 +16373,7 @@ mod tests {
             (0.0, 1.0),
         );
         let config = state_test_labelled_contour(90.0, Vec::new());
-        let style = renderer.create_style_for_series(&config);
+        let style = renderer.create_style_for_series(&config).unwrap();
         let series = [Series {
             config: &config,
             style: &style,
@@ -16420,7 +16558,7 @@ mod tests {
                 &["fz0", "fz1"],
                 crate::data_config::MAX_CONTOUR_LEVELS,
             );
-            let style = renderer.create_style_for_series(&accepted);
+            let style = renderer.create_style_for_series(&accepted).unwrap();
             let series = [Series {
                 config: &accepted,
                 style: &style,
@@ -16445,7 +16583,7 @@ mod tests {
                 &["fz0", "fz1"],
                 crate::data_config::MAX_CONTOUR_LEVELS + 1,
             );
-            let style = renderer.create_style_for_series(&rejected);
+            let style = renderer.create_style_for_series(&rejected).unwrap();
             let series = [Series {
                 config: &rejected,
                 style: &style,
@@ -16913,6 +17051,117 @@ mod tests {
         assert_eq!(renderer.chart_config(chart).unwrap(), &config_before);
         assert_eq!(renderer.chart_view_state(chart).unwrap(), view_before);
         assert_eq!(renderer.visual_revision(), visual_before);
+    }
+
+    #[test]
+    fn set_chart_config_rejects_removing_required_colorbar_without_publishing() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        for id in ["x", "y", "z"] {
+            renderer.add_column(id, &col_f64(vec![1.0, 2.0])).unwrap();
+        }
+        let mut config = crate::default::default_config();
+        config.colorbar = Some(crate::default::default_colorbar_options());
+        let series = SeriesConfig {
+            series_id: "heat".into(),
+            source_id: None,
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            render_type: DataRenderType::Heatmap {
+                matrix: crate::data_config::MatrixRef {
+                    columns: vec!["z".into()],
+                    orientation: crate::data_config::MatrixOrientation::ColumnsAreX,
+                    grid_layout: crate::data_config::GridLayout::Centers,
+                },
+                fill: crate::data_config::FieldFillConfig {
+                    mode: crate::data_config::FillMode::Continuous,
+                    shading: crate::data_config::Shading::Flat,
+                    opacity: 1.0,
+                },
+            },
+        };
+        let chart = renderer.register_chart(config.clone(), vec![series]).unwrap();
+        let stamp = renderer.chart_render_stamp(chart).unwrap();
+        let visual = renderer.visual_revision();
+        let mut invalid = config.clone();
+        invalid.colorbar = None;
+        assert!(matches!(
+            renderer.set_chart_config(chart, invalid),
+            Err(FiggyError::InvalidSeriesConfig { .. })
+        ));
+        assert_eq!(renderer.chart_config(chart).unwrap(), &config);
+        assert_eq!(renderer.chart_render_stamp(chart).unwrap(), stamp);
+        assert_eq!(renderer.visual_revision(), visual);
+    }
+
+    #[test]
+    fn style_map_and_uniforms_are_admitted_and_charged_together() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        let mut series = state_test_scatter("mapped", None, "x", "y");
+        let DataRenderType::Scatter { scatter } = &mut series.render_type else {
+            unreachable!();
+        };
+        scatter.point_style_table = Some(vec![DataScatterPointStyleConfig {
+            point_color: Some(Color::new(0.0, 1.0, 0.0, 1.0)),
+            ..Default::default()
+        }]);
+        let bytes = renderer.style_allocation_bytes(&series).unwrap();
+        assert_eq!(bytes,
+            4 * std::mem::size_of::<PrimitiveStyle>() as u64
+                + std::mem::size_of::<data_render::ScatterStyleSlotGpu>() as u64
+                + std::mem::size_of::<data_render::ScatterStyleOverrideGpu>() as u64
+                + std::mem::size_of::<data_render::ScatterStyleMapMeta>() as u64);
+        let before = renderer.gpu_memory_usage();
+        let _ = renderer.set_memory_budget(Some(before.total_bytes() + bytes - 1));
+        assert!(matches!(
+            renderer.create_style_for_series(&series),
+            Err(FiggyError::GpuResourceLimit { resource: "chart style budget", .. })
+        ));
+        let rejected = renderer.gpu_memory_usage();
+        assert_eq!(rejected.total_bytes(), before.total_bytes());
+        assert_eq!(rejected.creations_of(GpuResourceKind::Uniform), before.creations_of(GpuResourceKind::Uniform));
+
+        let _ = renderer.set_memory_budget(Some(before.total_bytes() + bytes));
+        let style = renderer.create_style_for_series(&series).unwrap();
+        assert!(style.scatter_map.is_some());
+        assert_eq!(renderer.gpu_memory_usage().live_bytes_of(GpuResourceKind::Uniform),
+            before.live_bytes_of(GpuResourceKind::Uniform) + bytes);
+        drop(style);
+        assert_eq!(renderer.gpu_memory_usage().retired_bytes_of(GpuResourceKind::Uniform),
+            before.retired_bytes_of(GpuResourceKind::Uniform) + bytes);
+    }
+
+    #[test]
+    fn prepared_frame_keeps_style_charge_after_style_owner_is_dropped() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        add_state_test_xy(&mut renderer, "x", "y", vec![0.0, 1.0]);
+        let cfg = state_test_scatter("point", None, "x", "y");
+        let chart = Chart::new(crate::default::default_config());
+        let view = renderer
+            .create_chart_view(&chart, chart.config().chart_area.0)
+            .unwrap();
+        let style_bytes = renderer.style_allocation_bytes(&cfg).unwrap();
+        let style = renderer.create_style_for_series(&cfg).unwrap();
+        let frame = {
+            let series = [Series { config: &cfg, style: &style }];
+            renderer.prepare(&[ChartDrawItem {
+                view: &view,
+                chart_config: chart.config(),
+                series: &series,
+            }]).unwrap()
+        };
+        let live_with_frame = renderer.gpu_memory_usage().live_bytes_of(GpuResourceKind::Uniform);
+        drop(style);
+        assert_eq!(renderer.gpu_memory_usage().live_bytes_of(GpuResourceKind::Uniform), live_with_frame);
+        drop(frame);
+        assert_eq!(renderer.gpu_memory_usage().live_bytes_of(GpuResourceKind::Uniform),
+            live_with_frame - style_bytes);
     }
 
     #[test]
@@ -18512,7 +18761,7 @@ mod tests {
             "counts",
             crate::data_config::BarOrientation::Vertical,
         );
-        let style = renderer.create_style_for_series(&series_cfg);
+        let style = renderer.create_style_for_series(&series_cfg).unwrap();
         let series = [Series {
             config: &series_cfg,
             style: &style,
@@ -18674,7 +18923,7 @@ mod tests {
             .create_chart_view(&chart, chart.config().chart_area.0)
             .unwrap();
         let series_cfg = state_test_line("line", "lx", "ly");
-        let style = renderer.create_style_for_series(&series_cfg);
+        let style = renderer.create_style_for_series(&series_cfg).unwrap();
         let series = [Series {
             config: &series_cfg,
             style: &style,
@@ -18723,7 +18972,7 @@ mod tests {
                 scatter: test_scatter_style(),
             },
         };
-        let style = renderer.create_style_for_series(&series_cfg);
+        let style = renderer.create_style_for_series(&series_cfg).unwrap();
         let series = [Series {
             config: &series_cfg,
             style: &style,
@@ -18778,7 +19027,7 @@ mod tests {
                 err_style: test_errorbar_style(),
             },
         };
-        let style = renderer.create_style_for_series(&series_cfg);
+        let style = renderer.create_style_for_series(&series_cfg).unwrap();
         let series = [Series {
             config: &series_cfg,
             style: &style,
@@ -19335,7 +19584,7 @@ mod tests {
     ) -> MappedStyleRender {
         let styles: Vec<ChartStyle> = series_cfgs
             .iter()
-            .map(|cfg| renderer.create_style_for_series(cfg))
+            .map(|cfg| renderer.create_style_for_series(cfg).unwrap())
             .collect();
         let w = chart.config().chart_area.0.width;
         let h = chart.config().chart_area.0.height;
@@ -19788,7 +20037,7 @@ mod tests {
         }];
 
         {
-            let style = r.create_style_for_series(&series_configs[0]);
+            let style = r.create_style_for_series(&series_configs[0]).unwrap();
             let drawable = [Series {
                 config: &series_configs[0],
                 style: &style,
@@ -19885,8 +20134,8 @@ mod tests {
                 err_style: test_errorbar_style(),
             },
         };
-        let style_a = renderer.create_style_for_series(&config_a);
-        let style_b = renderer.create_style_for_series(&config_b);
+        let style_a = renderer.create_style_for_series(&config_a).unwrap();
+        let style_b = renderer.create_style_for_series(&config_b).unwrap();
         assert_eq!(
             errorbar_direction_flags(&config_a.render_type),
             ERRORBAR_HAS_Y
@@ -20423,7 +20672,7 @@ mod tests {
                 },
             },
         };
-        let style = r.create_style_for_series(&series_cfg);
+        let style = r.create_style_for_series(&series_cfg).unwrap();
         let series = [Series {
             config: &series_cfg,
             style: &style,
@@ -20547,8 +20796,8 @@ mod tests {
         );
         let automatic_a = state_test_labelled_contour(70.0, Vec::new());
         let automatic_b = state_test_labelled_contour(260.0, Vec::new());
-        let style_a = renderer.create_style_for_series(&automatic_a);
-        let style_b = renderer.create_style_for_series(&automatic_b);
+        let style_a = renderer.create_style_for_series(&automatic_a).unwrap();
+        let style_b = renderer.create_style_for_series(&automatic_b).unwrap();
         let series_a = [Series {
             config: &automatic_a,
             style: &style_a,
@@ -20704,7 +20953,7 @@ mod tests {
             ty: -1.0,
         };
         let explicit = state_test_labelled_contour(70.0, vec![explicit_anchor]);
-        let explicit_style = renderer.create_style_for_series(&explicit);
+        let explicit_style = renderer.create_style_for_series(&explicit).unwrap();
         let explicit_series = [Series {
             config: &explicit,
             style: &explicit_style,
@@ -20756,7 +21005,7 @@ mod tests {
             unreachable!();
         };
         contour.levels = vec![2.0; crate::data_config::MAX_CONTOUR_LEVELS];
-        let style = renderer.create_style_for_series(&config);
+        let style = renderer.create_style_for_series(&config).unwrap();
         let series = [Series {
             config: &config,
             style: &style,
@@ -20794,7 +21043,7 @@ mod tests {
             (0.0, 1.0),
         );
         let old_config = state_test_labelled_contour(90.0, Vec::new());
-        let old_style = renderer.create_style_for_series(&old_config);
+        let old_style = renderer.create_style_for_series(&old_config).unwrap();
         let old_series = [Series {
             config: &old_config,
             style: &old_style,
@@ -20831,7 +21080,7 @@ mod tests {
 
         let mut replacement_config = state_test_labelled_contour(90.0, Vec::new());
         state_test_contour_labels_mut(&mut replacement_config).font_size = 20.0;
-        let replacement_style = renderer.create_style_for_series(&replacement_config);
+        let replacement_style = renderer.create_style_for_series(&replacement_config).unwrap();
         let replacement_series = [Series {
             config: &replacement_config,
             style: &replacement_style,
@@ -20950,9 +21199,9 @@ mod tests {
         let config_a = state_test_labelled_contour(70.0, Vec::new());
         let config_b = state_test_labelled_contour(420.0, Vec::new());
         let config_c = state_test_labelled_contour(140.0, Vec::new());
-        let style_a = renderer.create_style_for_series(&config_a);
-        let style_b = renderer.create_style_for_series(&config_b);
-        let style_c = renderer.create_style_for_series(&config_c);
+        let style_a = renderer.create_style_for_series(&config_a).unwrap();
+        let style_b = renderer.create_style_for_series(&config_b).unwrap();
+        let style_c = renderer.create_style_for_series(&config_c).unwrap();
         let series_a = [Series {
             config: &config_a,
             style: &style_a,
@@ -21162,7 +21411,8 @@ mod tests {
         )
         .unwrap();
         r.queue.submit([encoder.finish()]);
-        let style = r.create_style_for_series(&r.chart_series(streamed_id).unwrap()[0]);
+        let cfg = r.chart_series(streamed_id).unwrap()[0].clone();
+        let style = r.create_style_for_series(&cfg).unwrap();
         let stream_packet = {
             let (states, preparation) = r.preparation_parts();
             let state = &states[&streamed_id];
@@ -21554,7 +21804,7 @@ mod tests {
             },
         };
         let (cfg_a, cfg_b) = (mk_cfg("st_a"), mk_cfg("st_b"));
-        let style = r.create_style_for_series(&cfg_a);
+        let style = r.create_style_for_series(&cfg_a).unwrap();
         let view = r
             .create_chart_view(&chart, chart.config().chart_area.0)
             .unwrap();
@@ -21660,7 +21910,7 @@ mod tests {
                 },
             },
         };
-        let style_dash = r.create_style_for_series(&cfg_dash);
+        let style_dash = r.create_style_for_series(&cfg_dash).unwrap();
         let series_dash = [Series {
             config: &cfg_dash,
             style: &style_dash,
@@ -21772,7 +22022,7 @@ mod tests {
                 },
             },
         };
-        let style = r.create_style_for_series(&series_cfg);
+        let style = r.create_style_for_series(&series_cfg).unwrap();
         let series = [Series {
             config: &series_cfg,
             style: &style,
@@ -23103,7 +23353,7 @@ mod tests {
         let view = renderer
             .create_chart_view(&chart, chart.config().chart_area.0)
             .unwrap();
-        let style = renderer.create_style_for_series(&series_cfg);
+        let style = renderer.create_style_for_series(&series_cfg).unwrap();
         let series = [Series {
             config: &series_cfg,
             style: &style,
@@ -23159,7 +23409,7 @@ mod tests {
         let view = renderer
             .create_chart_view(&chart, chart.config().chart_area.0)
             .unwrap();
-        let style = renderer.create_style_for_series(&series_cfg);
+        let style = renderer.create_style_for_series(&series_cfg).unwrap();
         let series = [Series {
             config: &series_cfg,
             style: &style,
@@ -23239,7 +23489,7 @@ mod tests {
             .create_chart_view(&chart, chart.config().chart_area.0)
             .unwrap();
         let series_cfg = state_test_line("line", "lx", "ly");
-        let style = renderer.create_style_for_series(&series_cfg);
+        let style = renderer.create_style_for_series(&series_cfg).unwrap();
         let series = [Series {
             config: &series_cfg,
             style: &style,

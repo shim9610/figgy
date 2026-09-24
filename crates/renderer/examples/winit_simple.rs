@@ -218,7 +218,7 @@ fn build_sine_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEnt
             },
         },
     };
-    let style = renderer.create_style_for_series(&cfg_sin);
+    let style = renderer.create_style_for_series(&cfg_sin).unwrap();
     PanelEntry {
         chart,
         view,
@@ -292,8 +292,8 @@ fn build_rc_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEntry
     };
     let cfg_charge = mk("charge", "rc_t", "rc_charge", charge_color);
     let cfg_discharge = mk("discharge", "rc_t", "rc_discharge", discharge_color);
-    let style_charge = renderer.create_style_for_series(&cfg_charge);
-    let style_discharge = renderer.create_style_for_series(&cfg_discharge);
+    let style_charge = renderer.create_style_for_series(&cfg_charge).unwrap();
+    let style_discharge = renderer.create_style_for_series(&cfg_discharge).unwrap();
     PanelEntry {
         chart,
         view,
@@ -353,7 +353,7 @@ fn build_cross_section_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) ->
             },
         },
     };
-    let style = renderer.create_style_for_series(&cfg_xs);
+    let style = renderer.create_style_for_series(&cfg_xs).unwrap();
     PanelEntry {
         chart,
         view,
@@ -463,7 +463,7 @@ fn build_field_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEn
     let view = renderer.create_chart_view(&chart, rect).expect("view");
     let styles = series
         .iter()
-        .map(|cfg| renderer.create_style_for_series(cfg))
+        .map(|cfg| renderer.create_style_for_series(cfg).unwrap())
         .collect();
     PanelEntry {
         chart,
@@ -712,7 +712,7 @@ impl App {
     /// panel's series declarations, rebuilds their GPU styles, and keeps the
     /// legend swatches in sync (demo convention: legend entry i == series i).
     fn cycle_color_cycle(&mut self) {
-        let Some(renderer) = self.renderer.as_ref() else {
+        let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
         self.color_cycle_idx = (self.color_cycle_idx + 1) % COLOR_CYCLES.len();
@@ -723,7 +723,7 @@ impl App {
             panel.styles = panel
                 .series
                 .iter()
-                .map(|cfg| renderer.create_style_for_series(cfg))
+                .map(|cfg| renderer.create_style_for_series(cfg).unwrap())
                 .collect();
             panel.chart.with_decoration_change(|cfg| {
                 // The legend is one document: entries are separated by '\n'

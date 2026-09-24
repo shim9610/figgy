@@ -553,11 +553,15 @@ raw kernel 직접 호출 시 host 규약:
   예약해 예외가 루프를 죽이지 못하게 한다.
 - create/connect, `prewarm_all_with_progress`/`prewarm_all`,
   `prewarm_gpu_picking`, export,
-  `first_frame_ready`/`warm_up`, `ensure_extent_engine`, `auto_fit_all`,
+  `first_frame_ready`/`warm_up`, `ensure_extent_engine`, 상주 `auto_fit_all`,
   `pick_point` / `pick_data` 동안 generation+kernel `busy` token으로
   `frame()` / 포인터 / resize / proxy 호출을 모두 건너뛰거나 거부한다.
   `auto_fit_all`은 Promise가 끝날 때 Config에 직접 commit하므로 pending
   중 `frame()`을 부르면 안 된다.
+- facade의 스트리밍 `auto_fit_all()`은 이 raw-kernel async 호출을 사용하지 않는다.
+  렌더러에 fit을 요청하고 스트림 작업의 `done`을 기다리며 operation `busy` token을
+  보유하지 않는다. 스트림 scheduler가 청크 공급과 kernel 호출을 계속해야 하므로
+  이 동안 `busy`는 `false`일 수 있다. 변경 요청은 scheduler가 최신 상태로 조정한다.
 - facade는 busy 중 최신 resize 하나와 pointer release만 보관한다. 현재
   operation settle 뒤 release와 resize를 wasm에 적용한 다음 token을 놓는다.
   disconnect는 active kernel free를 settle까지 미루며, 이전 generation의
@@ -733,7 +737,9 @@ const png = await chart.export_png(2);
 - 데이터·뷰 변경은 다음 실행 경계에서 최신 스냅샷으로 교체한다. 제목 등 장식만
   바뀌면 데이터 커서와 누적면을 보존한다. resize/DPR 변경에는 새 물리 해상도로
   원본을 다시 그린다. `await auto_fit_all()`은 통계에 따른 축 commit과 렌더 완료를
-  기다린다. 통계는 최초 구간 업로드 때 수집하고 렌더러가 revision별로 재사용한다.
+  기다린다. 이 대기 중에는 facade의 일반 async-operation `busy` token을 잡지
+  않아 스트림 scheduler가 계속 진행한다. 통계는 최초 구간 업로드 때 수집하고
+  렌더러가 revision별로 재사용한다.
 - 선택 변경은 데이터 스트림을 재시작하지 않는다. 선택된 원본 구간만 요청하고,
   새 선택의 GPU 자원이 모두 준비될 때까지 이전 선택 표시를 유지한 뒤 한 번에
   교체한다. 공급 실패 시에도 이전 표시를 유지하며 `figgy-error`로 알린다.

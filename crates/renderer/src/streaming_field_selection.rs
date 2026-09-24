@@ -154,7 +154,7 @@ pub(super) fn packet(
             drawable: true,
         }],
     };
-    let mut packet = PreparedSeries::from_layers(layers.into_series_layers(), None);
+    let mut packet = PreparedSeries::from_layers(layers.into_series_layers(), None, None);
     packet._column_charge = Some(chunk.work.shared_charge());
     packet._stream_transform_charge = Some(view.transform_buffer.shared_charge());
     Ok(StreamSelectionPacket {

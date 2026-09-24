@@ -465,7 +465,7 @@ impl LabApp {
                 y_column: Y_IDS[i].into(),
                 render_type,
             };
-            let style = renderer.create_style_for_series(&series);
+            let style = renderer.create_style_for_series(&series).unwrap();
             panels.push(PanelEntry {
                 chart,
                 view,

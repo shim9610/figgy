@@ -511,74 +511,6 @@ pub(super) fn stream_phase_columns(
     }
 }
 
-fn mapped_stream_base_bytes(series: &SeriesConfig, device: &wgpu::Device) -> StreamResult<u64> {
-    let mut total = 0u64;
-    let max_binding = u64::from(device.limits().max_storage_buffer_binding_size)
-        .min(device.limits().max_buffer_size);
-    let maps = [
-        extract_scatter(&series.render_type).map(|scatter| {
-            (
-                scatter.point_style_index_column.is_some(),
-                scatter.point_style_table.as_ref().map_or(0, Vec::len),
-                scatter.point_style_overrides.as_ref().map_or(0, |rows| {
-                    rows.iter()
-                        .filter(|row| u32::try_from(row.index).is_ok())
-                        .count()
-                }),
-            )
-        }),
-        extract_errorbar_style(&series.render_type).map(|style| {
-            (
-                style.error_bar_style_index_column.is_some(),
-                style.error_bar_style_table.as_ref().map_or(0, Vec::len),
-                style.error_bar_style_overrides.as_ref().map_or(0, |rows| {
-                    rows.iter()
-                        .filter(|row| u32::try_from(row.index).is_ok())
-                        .count()
-                }),
-            )
-        }),
-    ];
-    for (has_index, slots, overrides) in maps.into_iter().flatten() {
-        if !has_index && slots == 0 && overrides == 0 {
-            continue;
-        }
-        let slots = u64::try_from(slots).map_err(|_| StreamError::TooLarge)?;
-        let overrides = u64::try_from(overrides).map_err(|_| StreamError::TooLarge)?;
-        if slots > u64::from(u32::MAX) || overrides > u64::from(u32::MAX) {
-            return Err(StreamError::TooLarge.into());
-        }
-        let style_bytes = slots.max(1).checked_mul(32).ok_or(StreamError::Overflow)?;
-        let override_bytes = overrides
-            .max(1)
-            .checked_mul(48)
-            .ok_or(StreamError::Overflow)?;
-        if style_bytes > max_binding || override_bytes > max_binding {
-            return Err(StreamError::TooLarge.into());
-        }
-        total = total
-            .checked_add(style_bytes)
-            .and_then(|bytes| bytes.checked_add(override_bytes))
-            .and_then(|bytes| bytes.checked_add(16))
-            .ok_or(StreamError::Overflow)?;
-    }
-    Ok(total)
-}
-
-fn charge_mapped_stream_bases(
-    styles: &mut RegisteredChartStyles,
-    ledger: &Arc<crate::gpu_memory::GpuLedger>,
-) {
-    for style in &mut styles.styles {
-        if let Some(map) = &mut style.scatter_map {
-            map.charge_stream_base(ledger);
-        }
-        if let Some(map) = &mut style.errorbar_map {
-            map.charge_stream_base(ledger);
-        }
-    }
-}
-
 fn stream_draw_phases(draw_style: &DrawStyle, series: &SeriesConfig) -> StreamResult<&'static [StreamDrawPhase]> {
     let primitives = effective_series_primitives(draw_style, &series.render_type);
     if matches!(draw_style, DrawStyle::Constellation(_)) {
@@ -3207,39 +3139,6 @@ impl Renderer {
             .as_ref()
             .is_some_and(|styles| styles.series_revision == state.revisions.series
                 && styles.styles.iter().all(|style| style.display_scale.to_bits() == display_scale.to_bits()));
-        let uncharged_base_bytes = if styles_current {
-            let mut bytes = 0u64;
-            for style in &state.prepared_styles.as_ref().unwrap().styles {
-                for map in [style.scatter_map.as_ref(), style.errorbar_map.as_ref()]
-                    .into_iter()
-                    .flatten()
-                {
-                    if !map.stream_base_is_charged() {
-                        bytes = bytes
-                            .checked_add(map.stream_base_bytes())
-                            .ok_or(StreamError::Overflow)?;
-                    }
-                }
-            }
-            bytes
-        } else {
-            let mut bytes = 0u64;
-            for series in &state.series {
-                bytes = bytes
-                    .checked_add(mapped_stream_base_bytes(series, &self.device)?)
-                    .ok_or(StreamError::Overflow)?;
-            }
-            bytes
-        };
-        if self
-            .gpu_memory_usage()
-            .total_bytes()
-            .checked_add(uncharged_base_bytes)
-            .ok_or(StreamError::Overflow)?
-            > self.memory_budget.unwrap_or(u64::MAX)
-        {
-            return Err(StreamError::TooLarge.into());
-        }
         let scheduler = &self.stream_runtime.as_ref().unwrap().scheduler;
         if scheduler.job_for_chart(chart.sequence).is_none()
             && scheduler.active_jobs() >= scheduler.limits().max_jobs
@@ -3259,12 +3158,9 @@ impl Renderer {
             styles
                 .try_reserve_exact(state.series.len())
                 .map_err(|_| StreamError::AllocationFailed)?;
-            styles.extend(
-                state
-                    .series
-                    .iter()
-                    .map(|series| self.create_style_for_series_scaled(series, display_scale)),
-            );
+            for series in &state.series {
+                styles.push(self.create_style_for_series_scaled_inner(series, display_scale)?);
+            }
             let styles = RegisteredChartStyles {
                 series_revision: state.revisions.series,
                 styles,
@@ -3301,19 +3197,8 @@ impl Renderer {
         }
         let transform = data_render::scatter_transform_from_config(config);
         let job = self.begin_chart_stream(chart)?;
-        if let Some(mut styles) = style_update {
-            charge_mapped_stream_bases(&mut styles, &self.gpu_ledger);
+        if let Some(styles) = style_update {
             self.chart_states.get_mut(&chart).unwrap().prepared_styles = Some(styles);
-        } else {
-            charge_mapped_stream_bases(
-                self.chart_states
-                    .get_mut(&chart)
-                    .unwrap()
-                    .prepared_styles
-                    .as_mut()
-                    .unwrap(),
-                &self.gpu_ledger,
-            );
         }
         let expected_view_revision = view.advance_stream_revision()?;
         let displayed_view_revision = view.advance_content_revision()?;

@@ -193,6 +193,7 @@ fn upload_phase(
     columns.try_reserve_exact(phase.chunk.columns.len()).map_err(|_| PackReject::AllocationFailed)?;
     ranges.try_reserve_exact(phase.chunk.columns.len()).map_err(|_| PackReject::AllocationFailed)?;
     let buffer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // gpu-alloc: ViewResident
         device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("figgy view-local packed rows"),
             size: total,

@@ -153,7 +153,7 @@ let cfg = SeriesConfig {
         },
     },
 };
-let style = renderer.create_style_for_series(&cfg);            // SeriesConfig → ChartStyle
+let style = renderer.create_style_for_series(&cfg).unwrap();   // budget-checked ChartStyle
 let view  = renderer.create_chart_view(&chart, chart.config().chart_area.0).unwrap();
 
 // frame loop:
@@ -745,7 +745,7 @@ pairs, which a histogram (`edges` is one longer) and a grid (two independent
 coordinate axes) are not. `pick_data` handles them through bar/field shader
 entries; fitting follows the histogram/field rules above.
 
-**`Renderer::create_style_for_series(cfg)`** extracts color/width/shape from `cfg.render_type`'s sub-styles and builds a GPU `ChartStyle` for screen paint. For export, `create_style_for_series_scaled(cfg, scale)` scales pixel widths only.
+**`Renderer::create_style_for_series(cfg)`** extracts color/width/shape from `cfg.render_type`'s sub-styles and builds a GPU `ChartStyle` for screen paint. It returns `Result` and rejects a style before allocating when its four uniforms and optional style-map buffers exceed the remaining renderer GPU budget; those bytes remain accounted for while a prepared frame still holds the style bindings. For export, `create_style_for_series_scaled(cfg, scale)` scales pixel widths only and applies the same admission check.
 
 **Single-direction errorbar** (`ScatterErrorbarY` etc.): direction presence is encoded in `PrimitiveStyle::primitive_flags` (Y=bit 0, X=bit 1). The inactive vertex slots reuse the already-bound anchor column and are collapsed before their error attributes are read, so prepare/export creates no hidden filler column and no host-maintained metadata. A real zero error remains a present, zero-length errorbar rather than being mistaken for an absent direction. (Symmetric variants reuse the same error column for lo/hi.)
 
@@ -886,7 +886,7 @@ Web cold-start and lifecycle contract:
 |---|---|
 | Raw `FiggyChart` | In a wasm browser, `create` / `create_with_progress` warm every render WGSL entry on the same `GPUDevice` through Promise-based `createRenderPipelineAsync`, discard the temporary JS pipelines, then submit and await the first empty-chart frame. Production renderer-owned optional render/style and arc/fit/picker/contour compute caches remain lazy. `prewarm_all_with_progress(callback)` publishes those actual wgpu caches with `{ scope, stage, phase }` progress; `prewarm_all()` performs the same work without a callback. `warm_up()` is a first-frame compatibility alias, not full prewarm. Creation does not enable the production picker: `prewarm_gpu_picking()` explicitly enables it and prepares the current chart, while retries and `pick_point` / `pick_data` reuse the same renderer-owned path and sticky activation error. |
 | `<figgy-chart>` startup | The `web.create / first frame / finished` progress event and `figgy-ready` are published before background picker prewarm begins. A prewarm failure emits `figgy-error` with `operation: "prewarm_gpu_picking"` and `recoverable: true`; the fulfilled `ready` promise and rendering loop remain valid. |
-| Async serialization | One generation+kernel operation token covers connect/create, `prewarm_all_with_progress` / `prewarm_all` and picker prewarm, export, `first_frame_ready` / `warm_up`, extent preparation, async fit, and pick. The facade's two full-prewarm methods pass through this existing generation-aware operation gate. While `busy`, rAF drawing and pointer/proxy kernel access do not enter wasm; only the latest resize and a pending pointer release are retained and applied after settlement. |
+| Async serialization | One generation+kernel operation token covers connect/create, `prewarm_all_with_progress` / `prewarm_all` and picker prewarm, export, `first_frame_ready` / `warm_up`, extent preparation, resident async fit, and pick. The facade's two full-prewarm methods pass through this generation-aware operation gate. While `busy`, rAF drawing and pointer/proxy kernel access do not enter wasm; only the latest resize and a pending pointer release are retained and applied after settlement. Streaming `auto_fit_all()` instead requests renderer-owned fitting and awaits its stream job without holding this token: the fit itself does not set `busy`, so the scheduler can keep calling the kernel and reconcile the latest chart state. An independent operation may still set `busy`. |
 | Disconnect/reconnect | Disconnect invalidates the generation and cancels its rAF/observer. A kernel borrowed by an active operation is freed only after that operation settles. Its stale settlement cannot clear, resize, release, or free the new generation's kernel. |
 
 Web mutation API contracts:
@@ -1191,7 +1191,7 @@ let cfg = SeriesConfig {
         },
     },
 };
-let style = renderer.create_style_for_series(&cfg);            // SeriesConfig → ChartStyle
+let style = renderer.create_style_for_series(&cfg).unwrap();   // budget-checked ChartStyle
 let view  = renderer.create_chart_view(&chart, chart.config().chart_area.0).unwrap();
 
 // frame loop:
@@ -1718,7 +1718,7 @@ line·scatter의 기존 `min(x, y)` 잘림도 같은 호출로 설명된다.
 interpolated fill은 실제 sample 끝(`Edges`에서는 경계 좌표의 중점)에, flat fill은 실제
 셀 경계에 정확히 맞는다. 선택은 `pick_data`의 bar/field shader entry가 맡는다.
 
-**`Renderer::create_style_for_series(cfg)`** 가 `cfg.render_type` 의 sub-style 에서 색/두께/shape 자동 추출 → GPU `ChartStyle` 빌드. 화면 paint 시 사용. export 는 `create_style_for_series_scaled(cfg, scale)` 로 두께만 픽셀 스케일.
+**`Renderer::create_style_for_series(cfg)`** 는 `cfg.render_type`의 sub-style에서 색·두께·shape를 추출해 화면용 GPU `ChartStyle`을 만든다. 반환형은 `Result`이며 네 uniform과 선택적 style-map 버퍼를 생성하기 전에 남은 렌더러 GPU 예산을 확인한다. 생성된 바이트는 준비된 프레임이 해당 바인딩을 보유하는 동안에도 집계된다. export의 `create_style_for_series_scaled(cfg, scale)`는 픽셀 크기만 스케일하고 동일한 예산 검사를 거친다.
 
 **한쪽 차원만 errorbar 시** (`ScatterErrorbarY` 등): 방향 유무는 `PrimitiveStyle::primitive_flags`의 Y=bit 0, X=bit 1로 명시한다. 미사용 vertex slot은 이미 바인딩된 anchor 컬럼을 재사용하며 셰이더가 error attribute를 읽기 전에 해당 방향을 접는다. 따라서 prepare/export가 숨은 filler 컬럼이나 host metadata를 만들지 않는다. 실제 오차값 0은 “방향 없음”이 아니라 길이 0인 유효 errorbar다. (Symmetric 변종은 같은 error 컬럼을 lo/hi 양쪽에 사용.)
 
@@ -1847,7 +1847,7 @@ kernel은 advanced escape hatch로 남는다.
 |---|---|
 | raw `FiggyChart` | wasm 브라우저의 `create` / `create_with_progress`는 동일 `GPUDevice`의 모든 render WGSL entry를 Promise 기반 `createRenderPipelineAsync`로 데우고 임시 JS pipeline을 버린 뒤 빈 차트 첫 frame을 submit하고 완료까지 기다린다. Production renderer-owned optional render/style과 arc/fit/picker/contour compute cache는 lazy 상태를 유지한다. `prewarm_all_with_progress(callback)`은 `{ scope, stage, phase }` progress와 함께 실제 wgpu cache를 게시하고, `prewarm_all()`은 callback 없이 같은 작업을 한다. `warm_up()`은 first-frame compatibility alias이며 full prewarm이 아니다. create는 production picker를 enable하지 않는다. `prewarm_gpu_picking()`이 명시적으로 enable하고 현재 chart를 준비하며, 재시도와 `pick_point` / `pick_data`는 sticky activation error를 포함한 같은 renderer-owned 경로를 재사용한다. |
 | `<figgy-chart>` 시작 | `web.create / first frame / finished` progress event와 `figgy-ready`를 공개한 뒤 background picker prewarm을 시작한다. 실패하면 `operation: "prewarm_gpu_picking"`, `recoverable: true`인 `figgy-error`를 내보내지만 이미 fulfilled된 `ready`와 rendering loop는 유지한다. |
-| async 직렬화 | generation+kernel operation token 하나가 connect/create, `prewarm_all_with_progress` / `prewarm_all`과 picker prewarm, export, `first_frame_ready` / `warm_up`, extent 준비, async fit, pick을 포괄한다. facade의 두 full-prewarm 메서드도 기존 generation-aware operation gate를 통과한다. `busy` 동안 rAF draw와 pointer/proxy kernel 접근은 wasm에 들어가지 않고, 최신 resize 하나와 pending pointer release만 보관해 settle 뒤 적용한다. |
+| async 직렬화 | generation+kernel operation token 하나가 connect/create, `prewarm_all_with_progress` / `prewarm_all`과 picker prewarm, export, `first_frame_ready` / `warm_up`, extent 준비, 상주 async fit, pick을 포괄한다. facade의 두 full-prewarm 메서드도 기존 generation-aware operation gate를 통과한다. `busy` 동안 rAF draw와 pointer/proxy kernel 접근은 wasm에 들어가지 않고, 최신 resize 하나와 pending pointer release만 보관해 settle 뒤 적용한다. 스트리밍 `auto_fit_all()`은 이 토큰을 잡지 않고 renderer-owned fit을 요청한 뒤 스트림 작업 완료를 기다린다. fit 자체는 `busy`를 설정하지 않아 scheduler가 kernel을 계속 호출할 수 있고, 마지막 차트 상태 요청은 스트림 작업이 조정한다. 별도 operation이 실행되면 `busy`는 true일 수 있다. |
 | disconnect/reconnect | disconnect는 generation을 무효화하고 해당 rAF/observer를 해제한다. active operation이 빌린 kernel은 operation settle 뒤에만 free한다. stale settle은 새 generation의 kernel token을 해제하거나 resize/release/free하지 못한다. |
 
 웹 mutation API 계약:

@@ -265,7 +265,7 @@ fn build_sine_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
             },
         },
     };
-    let style = renderer.create_style_for_series(&cfg);
+    let style = renderer.create_style_for_series(&cfg).unwrap();
     PanelEntry {
         chart,
         view,
@@ -330,8 +330,8 @@ fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     };
     let cfg_charge = mk("charge", "rc_t", "rc_charge", charge_color);
     let cfg_discharge = mk("discharge", "rc_t", "rc_discharge", discharge_color);
-    let style_charge = renderer.create_style_for_series(&cfg_charge);
-    let style_discharge = renderer.create_style_for_series(&cfg_discharge);
+    let style_charge = renderer.create_style_for_series(&cfg_charge).unwrap();
+    let style_discharge = renderer.create_style_for_series(&cfg_discharge).unwrap();
     PanelEntry {
         chart,
         view,
@@ -382,7 +382,7 @@ fn build_xs_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
             },
         },
     };
-    let style = renderer.create_style_for_series(&cfg);
+    let style = renderer.create_style_for_series(&cfg).unwrap();
     PanelEntry {
         chart,
         view,

@@ -1813,7 +1813,8 @@ pub fn create_style_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupL
 }
 
 pub fn create_style_uniform_buffer(device: &wgpu::Device, style: &PrimitiveStyle) -> wgpu::Buffer {
-    // gpu-alloc: uncharged(style uniforms are owned by their bind groups)
+    // gpu-alloc: caller
+    // ChartStyle owns one aggregate, budget-checked charge.
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("figgy primitive style uniform"),
         contents: bytemuck::bytes_of(style),
@@ -1887,28 +1888,9 @@ pub struct ScatterStyleMap {
     style_buf: wgpu::Buffer,
     override_buf: wgpu::Buffer,
     meta: ScatterStyleMapMeta,
-    stream_base_charge: Option<crate::gpu_memory::SharedCharge>,
 }
 
 impl ScatterStyleMap {
-    pub(crate) fn stream_base_bytes(&self) -> u64 {
-        self.style_buf.size() + self.override_buf.size() + 16
-    }
-
-    pub(crate) fn stream_base_is_charged(&self) -> bool {
-        self.stream_base_charge.is_some()
-    }
-
-    pub(crate) fn charge_stream_base(&mut self, ledger: &std::sync::Arc<crate::gpu_memory::GpuLedger>) {
-        if self.stream_base_charge.is_none() {
-            let tally = crate::gpu_memory::ChargeTally::new();
-            tally.add(self.stream_base_bytes());
-            self.stream_base_charge = Some(crate::gpu_memory::shared_charge(
-                tally, ledger, crate::gpu_memory::GpuResourceKind::Uniform,
-            ));
-        }
-    }
-
     pub(crate) fn stream_bind_group(
         &self,
         device: &wgpu::Device,
@@ -2051,19 +2033,19 @@ pub fn create_scatter_style_map(
     } else {
         overrides
     };
-    // gpu-alloc: uncharged(style rows are rebuilt per prepare and owned by the bind group)
+    // gpu-alloc: caller
     let style_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("figgy scatter style rows"),
         contents: bytemuck::cast_slice(style_slots),
         usage: wgpu::BufferUsages::STORAGE,
     });
-    // gpu-alloc: uncharged(style rows are rebuilt per prepare and owned by the bind group)
+    // gpu-alloc: caller
     let override_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("figgy scatter style override rows"),
         contents: bytemuck::cast_slice(overrides),
         usage: wgpu::BufferUsages::STORAGE,
     });
-    // gpu-alloc: uncharged(style rows are rebuilt per prepare and owned by the bind group)
+    // gpu-alloc: caller
     let meta_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("figgy scatter style map meta"),
         contents: bytemuck::bytes_of(&meta),
@@ -2093,7 +2075,6 @@ pub fn create_scatter_style_map(
         style_buf,
         override_buf,
         meta,
-        stream_base_charge: None,
     }
 }
 
@@ -2135,19 +2116,19 @@ pub fn create_bar_style_map(
         has_index: 0,
         _pad: 0,
     };
-    // gpu-alloc: uncharged(style rows are rebuilt per prepare and owned by the bind group)
+    // gpu-alloc: caller
     let style_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("figgy histogram style padding row"),
         contents: bytemuck::cast_slice(&dummy_style),
         usage: wgpu::BufferUsages::STORAGE,
     });
-    // gpu-alloc: uncharged(style rows are rebuilt per prepare and owned by the bind group)
+    // gpu-alloc: caller
     let override_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("figgy histogram style override rows"),
         contents: bytemuck::cast_slice(override_rows),
         usage: wgpu::BufferUsages::STORAGE,
     });
-    // gpu-alloc: uncharged(style rows are rebuilt per prepare and owned by the bind group)
+    // gpu-alloc: caller
     let meta_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("figgy histogram style map meta"),
         contents: bytemuck::bytes_of(&meta),

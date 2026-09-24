@@ -395,7 +395,7 @@ fn prepare_cost_is_independent_of_series_length() {
                 },
             },
         };
-        let style = renderer.create_style_for_series(&series_config);
+        let style = renderer.create_style_for_series(&series_config).unwrap();
         let series = [renderer::Series {
             config: &series_config,
             style: &style,
