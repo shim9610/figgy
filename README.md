@@ -14,10 +14,12 @@ Embed in egui / winit / any other wgpu 30 host.
 ## Public release candidate — renderer 0.12.0 / figgy 0.10.0
 
 This candidate adds renderer-owned exact nonresident streaming and the browser
-`render_chart()` job API. The renderer chooses residency for the referenced
-column closure; the web facade requests bounded original ranges, schedules
-work, and reports progress. Unchanged completed revisions are reused, while
-resize, view changes, picking, and scaled export can replay the same source.
+`render_chart()` job API. The web facade requests bounded original ranges,
+schedules work, and reports progress. For supported precise point, solid-line,
+and errorbar charts, the renderer can retain only the original rows needed by
+the current view in a chart-local GPU cache; it never promotes the connected
+whole-column closure automatically. Wider views and scaled export replay the
+source, while a narrower view can redraw from that cache.
 There is no LOD or downsampling. Supported styles and exclusions are listed in
 [WASM.md](crates/renderer/WASM.md). This source candidate does **not** mean the
 online Studio has adopted the new API. The published release remains 0.11.0 /
@@ -49,7 +51,7 @@ This repository is the supported source distribution; the crates are not publish
 - **Data fidelity contract**: renderer/web consume the model contract without silently changing original coordinates, provenance, or axis↔data correspondence. Explicit clipping, log-domain skips, NaN skips, and antialiasing limits are rendering contracts rather than data rewrites.
 - **Headless PNG export**: GPU offscreen raster at arbitrary DPI → RGBA / PNG bytes in memory (async-first; blocking wrappers on native).
 - **Interaction layer (opt-in)**: hit-testing, selection boxes, drag (axes constrained to their perpendicular, detached-axis `line_offset`), PPT-style 8-handle resize of the data area — all policy in `model`, fed by host pointer events; never runs if you don't wire it.
-- **Data picking (opt-in)**: `pick_point` retains the point/line compatibility contract, while `pick_data` additionally returns tagged histogram-bin, canonical matrix-cell, and contour-level identities. The resident path evaluates bar rectangles and field/contour geometry on the GPU from the same transform, pool, style, lattice, and level tables used to draw them. Supported nonresident picking replays bounded source ranges on the GPU and returns stable indices, not CPU-reconstructed coordinates or geometry mirrors. Hosts feed stable refs back through `Config.picked_data` for exact bin/cell/level highlighting; legacy point decoration remains available through `Config.picked_points`.
+- **Data picking (opt-in)**: `pick_point` retains the point/line compatibility contract, while `pick_data` additionally returns tagged histogram-bin, canonical matrix-cell, and contour-level identities. Resident picking evaluates bar rectangles and field/contour geometry on the GPU from the same transform, pool, style, lattice, and level tables used to draw them. A completed chart-local packed view supports GPU point/line picking with original row indices and no source replay; other nonresident streams return `null`. Low-level WASM stream-pick replay entry points reject immediately. Hosts may still feed known stable refs through `Config.picked_data` or `Config.picked_points` for bounded selection highlighting.
 - **Per-point style mapping (opt-in)**: precise scatter can bind `point_style_table` / `point_style_index_column` / `point_style_overrides`; precise errorbars can independently bind `error_bar_style_table` / `error_bar_style_index_column` / `error_bar_style_overrides`. Styled modes keep their own visual shaders and ignore these mappings.
 - **Rich-text everywhere**: titles, tick labels, and the legend share one engine — per-segment bold/italic/underline/sub/superscript/greek, per-segment color & size overrides, `'\n'` line breaks, `'\t'` table columns, fixed-width legend symbol fields.
 - **Hand-drawn sketch mode (opt-in)**: `draw_style: { mode: "sketch", amplitude_px, wavelength_px, seed }` renders the whole chart xkcd-style — axes/ticks/grid/legend wobble on the CPU raster, line wobble/dash phase uses arc-length-scan-driven GPU variants, markers/errorbars use dedicated GPU variants, and chart text automatically switches to the bundled handwritten face (Comic Neue, OFL) with per-character fallback for glyphs it lacks (CJK keeps your registered font). Deterministic (seeded), composes with dashes, and the field's absence means the precise path runs completely untouched.
@@ -773,14 +775,17 @@ Low-level native hosts may still supply `ChartDrawItem` directly. In both paths,
 
 ![figgy exact streaming architecture](crates/renderer/assets/streaming-architecture-en.png)
 
-The image shows the **on-screen** paths. The host owns replayable original data:
+The image shows the baseline **on-screen** streaming path; it does not yet show
+the optional chart-local packed-view cache. The host owns replayable original data:
 either stable TypedArrays or a `readRange` provider. The web facade handles
 browser scheduling and requests only the ranges needed for the current job; it
 does not own the stream cursor, chart state, or accumulated statistics. The
 renderer owns `Config`, ordered series, source revisions, the cursor, cached
-range summaries, and residency admission. It decides for the complete connected
-column closure whether a chart fits the resident `ColumnPool` or must use bounded
-GPU uploads and an offscreen accumulation surface. Both paths draw original
+range summaries, and view-local residency admission. Automatic streaming never
+promotes a connected whole-column closure into the global `ColumnPool`. It
+draws through bounded GPU uploads and an offscreen accumulation surface, then
+may retain the exact original rows needed by the view within the configured
+working-set and total-GPU budgets. Both paths draw original
 primitives, without LOD, sampling, or decimation. A resident chart and a
 streamed chart can coexist on one page.
 
@@ -788,10 +793,12 @@ Streaming presents completed portions while the next ranges are supplied. An
 unchanged completed revision reuses its visible result; decoration-only edits
 keep the data cursor and accumulation. A view or physical-resolution change
 replays the same source revision at the new transform. `job.cancel()` stops new
-work and releases job-owned resources after submitted GPU work settles. GPU
-picking and scaled PNG export are **not** reads from the visible accumulation
-image: they use the original registered data or replayable ranges in separate
-GPU paths. The source must remain available for these operations and for replay.
+work and releases job-owned resources after submitted GPU work settles. A
+narrower view may redraw from the packed GPU cache without rereading the source;
+other view changes replay it. GPU point/line picking uses the packed rows when
+available and returns original row indices without source replay. Other streamed
+charts do not support immediate picking. Scaled PNG export uses replayable
+original ranges in a separate GPU path, so the source must remain available.
 See [the web streaming contract](crates/renderer/WASM.md#exact-streaming)
 for the current API, support limits, and lifecycle details. Exact original-data
 processing does not imply byte-identical antialiasing across GPU backends or
@@ -1049,10 +1056,11 @@ egui / winit / 기타 wgpu 30 호스트에 임베드할 수 있다.
 ## 공개 후보 — renderer 0.12.0 / figgy 0.10.0
 
 이번 후보에는 렌더러가 소유하는 원본 데이터 스트리밍과 웹의 `render_chart()`
-작업 API가 들어간다. 렌더러가 참조 컬럼 전체의 상주 가능 여부를 판단하고, 웹
-facade는 필요한 원본 구간만 요청해 실행 일정과 진행 상태를 연결한다. 완료된
-revision은 재사용하며 화면 크기·뷰 변경, 피킹, 배율 출력에는 동일 원본을 다시
-공급할 수 있다. LOD나 다운샘플링은 없다. 지원 범위와 제외 항목은
+작업 API가 들어간다. 웹 facade는 필요한 원본 구간만 요청해 실행 일정과 진행
+상태를 연결한다. 지원되는 정밀 점·실선·에러바 차트에서는 렌더러가 현재 화면에
+필요한 원본 행만 차트별 GPU 캐시에 유지할 수 있다. 연결된 컬럼 전체를 자동으로
+상주 풀에 승격하지 않는다. 완료된 revision은 재사용하고, 더 넓은 뷰나 배율
+출력에는 동일 원본을 다시 공급할 수 있다. LOD나 다운샘플링은 없다. 지원 범위와 제외 항목은
 [WASM.md](crates/renderer/WASM.md)에 정리했다. 이 소스 후보가 공개 웹
 Studio에 적용됐다는 뜻은 아니다. 공개 검증과 배포가 끝나기 전의 실제 공개
 버전은 0.11.0 / 0.9.1이다.
@@ -1081,7 +1089,7 @@ renderer 0.10.0 / figgy 0.9.0 릴리스에 포함된 기능은 다음과 같다.
 - **데이터 무왜곡 계약**: renderer/web은 model 계약을 소비하며 원본 좌표, provenance, 축↔데이터 대응을 호스트 동의 없이 조용히 바꾸지 않는다. 명시적 clipping, log-domain skip, NaN skip, antialiasing 한계는 데이터 재작성 아닌 렌더링 계약이다.
 - **헤드리스 PNG export**: 임의 DPI 로 GPU offscreen 라스터 → 메모리 RGBA / PNG 바이트 반환 (async 우선, native 는 blocking 래퍼 제공).
 - **상호작용 레이어 (opt-in)**: 히트테스트, 선택 박스, 드래그(축은 수직 방향 제약 + 분리 축 `line_offset`), 데이터 영역 PPT 식 8핸들 리사이즈 — 정책은 전부 `model`, 호스트가 포인터 이벤트를 넣을 때만 동작.
-- **데이터 피킹 (opt-in)**: `pick_point`는 기존 point/line 호환 계약을 유지하고, `pick_data`는 여기에 histogram bin, canonical matrix cell, contour level의 tagged identity를 추가한다. 상주 경로의 bar rectangle과 field/contour 형상은 draw와 같은 transform·pool·style·lattice·level table을 읽는 GPU shader entry에서 판정한다. 지원되는 비상주 피킹은 제한된 원본 구간을 GPU에서 재생해 안정적인 인덱스를 반환하며 CPU가 원본 좌표나 geometry mirror를 복원·보관하지 않는다. stable ref는 `Config.picked_data`로 다시 넣어 bin/cell/level을 정확히 표시하고, 기존 point 장식은 `Config.picked_points`로 유지된다.
+- **데이터 피킹 (opt-in)**: `pick_point`는 기존 point/line 호환 계약을 유지하고, `pick_data`는 histogram bin, canonical matrix cell, contour level의 tagged identity를 추가한다. 상주 경로는 draw와 같은 transform·pool·style·lattice·level table을 읽는 GPU shader에서 판정한다. 완료된 차트별 패킹 뷰는 원본을 다시 읽지 않고 GPU에서 point/line을 피킹하며 원본 행 인덱스를 반환한다. 그 밖의 비상주 스트림은 `null`을 반환하고 저수준 WASM 스트림 피킹 진입점은 즉시 거절한다. 이미 알고 있는 stable ref는 `Config.picked_data` 또는 `Config.picked_points`로 지정해 필요한 행만 읽어 강조 표시할 수 있다.
 - **점별 스타일 매핑 (opt-in)**: precise scatter는 `point_style_table` / `point_style_index_column` / `point_style_overrides`를, precise errorbar는 독립적인 `error_bar_style_table` / `error_bar_style_index_column` / `error_bar_style_overrides`를 바인딩할 수 있다. styled mode는 자체 visual shader를 사용하며 이 매핑을 무시한다.
 - **리치텍스트 일원화**: 제목·틱 라벨·범례가 한 엔진 공유 — 세그먼트별 bold/italic/밑줄/첨자/그리스, 세그먼트별 색·크기 오버라이드, `'\n'` 줄바꿈, `'\t'` 표 열, 고정폭 범례 심볼 필드.
 - **손그림 스케치 모드 (opt-in)**: `draw_style: { mode: "sketch", amplitude_px, wavelength_px, seed }` 한 필드로 차트 전체를 xkcd 풍으로 — 축/틱/그리드/범례는 CPU 라스터에서, 라인의 흔들림/점선 위상은 호장 스캔 기반 GPU 변형으로, 마커/에러바는 전용 GPU 변형으로 처리되고, 차트 텍스트는 번들 손글씨 폰트(Comic Neue, OFL)로 자동 전환된다(글리프 없는 문자는 문자 단위 폴백 — CJK는 등록 폰트 유지). 시드 기반 결정적, 점선과 합성 가능, 필드가 없으면 정밀 경로가 한 바이트도 달라지지 않는다.
@@ -1734,24 +1742,28 @@ interpolated fill은 실제 sample 끝(`Edges`에서는 경계 좌표의 중점)
 
 ### 원본 데이터 스트리밍과 상주 전환
 
-![figgy 스트리밍 경로: 원본 소스, 웹 실행기, 렌더러 상태, 상주 풀 또는 청크 누적 화면](crates/renderer/assets/streaming-architecture-en.png)
+![figgy 스트리밍 기본 경로: 원본 소스, 웹 실행기, 렌더러 상태, 청크 누적 화면](crates/renderer/assets/streaming-architecture-en.png)
 
-그림은 **화면 표시 경로**를 나타낸다. 원본 데이터는 호스트가 재공급 가능한
+그림은 **기본 화면 표시 경로**를 나타내며 선택적인 차트별 패킹 뷰 캐시는 아직
+표시하지 않는다. 원본 데이터는 호스트가 재공급 가능한
 TypedArray 또는 `readRange` 공급자로 보관한다. 웹 facade는 브라우저 실행
 일정과 구간 요청을 연결하지만 스트림 커서·차트 상태·통계의 권위는 갖지 않는다.
 렌더러는 `Config`, 순서 있는 시리즈, 소스 revision, 커서, 범위 요약 캐시와
-상주 가능 여부를 소유한다. 차트에서 참조 관계로 연결된 컬럼 전체를 기준으로
-상주 `ColumnPool`에 들어갈지, 제한된 청크를 GPU에 올려 오프스크린 면에
-누적할지 결정한다. 두 경로 모두 원본 primitive를 그리며 LOD·샘플링·데시메이션은
+현재 뷰의 상주 가능 여부를 소유한다. 자동 스트리밍에서는 연결된 컬럼 전체를
+`ColumnPool`에 승격하지 않는다. 제한된 청크를 GPU에 올려 오프스크린 면에
+누적하고, 설정된 예산에 맞으면 현재 화면에 필요한 원본 행만 GPU에 유지한다.
+두 경로 모두 원본 primitive를 그리며 LOD·샘플링·데시메이션은
 하지 않는다. 같은 페이지에 상주 차트와 스트림 차트를 함께 둘 수 있다.
 
 스트림은 완료된 부분부터 화면에 보여 준다. 변경 없는 완료 revision은 결과를
 재사용하고, 제목·축 이름 같은 장식 변경은 데이터 커서와 누적면을 유지한다.
-뷰나 물리 해상도가 바뀌면 동일 revision의 원본을 새 조건으로 다시 그린다.
+더 좁은 뷰는 패킹 캐시에서 원본을 다시 읽지 않고 그릴 수 있다. 캐시 범위를
+벗어난 뷰나 물리 해상도 변경에는 동일 revision의 원본을 다시 공급한다.
 `job.cancel()`은 새 작업을 중단하고 제출된 GPU 작업이 끝난 뒤 해당 자원을
-정리한다. 피킹과 배율을 지정한 PNG 출력은 화면 누적 이미지를 읽는 기능이
-아니다. 원본 컬럼 또는 재공급 구간을 쓰는 별도 GPU 경로이므로, 호스트는 재생과
-조회가 필요한 동안 원본을 유지해야 한다. 지원 범위와 웹 API는
+정리한다. 완료된 패킹 뷰의 점·선 피킹은 패킹된 GPU 행을 조회해 원본 행 인덱스를
+반환한다. 그 밖의 비상주 스트림에는 즉시 피킹을 제공하지 않는다. 배율을 지정한
+PNG 출력은 화면 누적 이미지를 늘려 쓰지 않고 원본 구간을 다시 공급받아 그리므로,
+호스트는 재생과 출력을 위해 원본을 유지해야 한다. 지원 범위와 웹 API는
 [WASM 가이드](crates/renderer/WASM.md#exact-streaming)에
 정리했다. 원본 데이터를 빠짐없이 처리한다는 뜻과 GPU 백엔드·렌더 패스 경계의
 안티앨리어싱 픽셀이 바이트 단위로 같다는 뜻은 구별해야 한다.

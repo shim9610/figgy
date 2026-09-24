@@ -83,6 +83,16 @@ pub struct StreamingStatus {
     pub auto_fit_pending: bool,
 }
 
+/// Chart-local packed-view residency. `needed_bytes` is the exact packed
+/// payload once resident and a growing lower bound while the source is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ViewResidencyStatus {
+    pub state: &'static str,
+    pub needed_bytes: Option<u64>,
+    pub refusal_reason: Option<&'static str>,
+    pub picking_available: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamingState {
     Idle,

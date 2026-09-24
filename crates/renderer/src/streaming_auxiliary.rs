@@ -38,6 +38,30 @@ pub(super) struct StreamAuxiliaryTarget {
 }
 
 impl WindowedRenderer<'_> {
+    pub fn view_residency_status(&self, chart: ChartId) -> Result<crate::ViewResidencyStatus> {
+        self.inner.view_residency_status(chart)
+    }
+
+    pub fn is_streaming_chart(&self, chart: ChartId) -> bool {
+        self.inner.is_streaming_chart(chart)
+    }
+
+    pub async fn pick_chart_view_cache_at(
+        &mut self,
+        chart: ChartId,
+        position: [f32; 2],
+        distance: f32,
+    ) -> Result<Option<crate::PickedPoint>> {
+        self.inner.pick_chart_view_cache(chart, position, distance).await
+    }
+
+    pub fn next_view_point_index(
+        &self, chart: ChartId, source_id: Option<&str>, series_id: &str,
+        current: usize, forward: bool,
+    ) -> Option<usize> {
+        self.inner.next_view_point_index(chart, source_id, series_id, current, forward)
+    }
+
     pub fn begin_stream_export(
         &mut self,
         chart: ChartId,
@@ -122,6 +146,181 @@ impl WindowedRenderer<'_> {
 }
 
 impl Renderer {
+    /// Navigate only the valid source rows retained in a completed packed
+    /// view. This is metadata lookup; it never dispatches a pick or reads a
+    /// provider/GPU buffer.
+    pub fn next_view_point_index(
+        &self, chart: ChartId, source_id: Option<&str>, series_id: &str,
+        current: usize, forward: bool,
+    ) -> Option<usize> {
+        let draw = self.stream_runtime.as_ref()?.draws.iter().find(|draw| {
+            draw.job.chart == chart && draw.auxiliary.is_none()
+        })?;
+        let cache = draw.view_cache.as_ref()?;
+        let snapshot = draw.auto_snapshot()?;
+        let series = snapshot.series.iter().position(|series| {
+            series.series_id == series_id && series.source_id.as_deref() == source_id
+        })?;
+        let current = u32::try_from(current).ok()?;
+        cache.next_source_index(series, current, forward).map(|index| index as usize)
+    }
+
+    /// Pick only the completed chart-local packed view. This never replays a
+    /// source and never walks a resident closure in the global column pool.
+    pub async fn pick_chart_view_cache(
+        &mut self,
+        chart: ChartId,
+        position: [f32; 2],
+        distance: f32,
+    ) -> Result<Option<crate::PickedPoint>> {
+        self.service_stream_requests();
+        let Some(draw) = self.stream_runtime.as_ref()
+            .and_then(|runtime| runtime.draws.iter().find(|draw| {
+                draw.job.chart == chart && draw.auxiliary.is_none() && draw.auto_terminal(runtime)
+            })) else { return Ok(None); };
+        let job = draw.job;
+        let Some(cache) = draw.view_cache.as_ref().cloned() else { return Ok(None); };
+        self.publish_auto_stream_completion(job).map_err(StreamRequestError::into_figgy)?;
+        self.enable_gpu_picking_async().await?;
+        let snapshot = self.auto_stream_snapshot(job)
+            .ok_or(FiggyError::StaleStateToken { reason: "packed view snapshot disappeared".into() })?;
+        let plan = PickChartPlan::new(&snapshot.document_config, &snapshot.series)?;
+        let panel = snapshot.config.chart_area.0;
+        let data_area_px = snapshot.config.data_area().ok().map(|area| {
+            let area = area.0;
+            [area.x as f32, area.y as f32, area.width as f32, area.height as f32]
+        });
+        let query = crate::gpu_pick::GpuPickQuery {
+            transform: data_render::scatter_transform_from_config(&snapshot.config),
+            chart_rect_px: [panel.x as f32, panel.y as f32, panel.width as f32, panel.height as f32],
+            data_area_px,
+            canvas_position_px: position,
+            max_distance_px: distance,
+        };
+        // Give each packed page a distinct pick identity. The GPU reports a
+        // page-local index; only this one small candidate is read back, then
+        // the page's source-run table maps it to the original source index.
+        // Ranking keeps the old equal-distance order: later series wins,
+        // scatter before line, then the earliest source page.
+        let mut pick_pages = Vec::new();
+        pick_pages.try_reserve(cache.chunks.len()).map_err(|error| FiggyError::StateAllocationFailed {
+            resource: "packed-view pick page index", reason: error.to_string(),
+        })?;
+        pick_pages.extend(cache.chunks.iter().enumerate().filter_map(|(index, page)| {
+            (page.phase != StreamDrawPhase::Errorbar).then_some(index)
+        }));
+        pick_pages.sort_by_key(|&index| {
+            let page = &cache.chunks[index];
+            let phase_order = if page.phase == StreamDrawPhase::Scatter { 1 } else { 0 };
+            let first_source = page.source_runs.first().map_or(u32::MAX, |run| run.source_start);
+            (page.series, phase_order, std::cmp::Reverse(first_source))
+        });
+        let identities = pick_pages.iter().map(|&index| {
+            let series = &snapshot.series[cache.chunks[index].series];
+            (series.source_id.clone(), series.series_id.clone())
+        }).collect();
+        let mut pick = self.picker.ready_bundle()?.begin_stream(query, snapshot.display_scale, identities)?;
+        // Each page keeps its own encoder: combining large gated scans and
+        // reductions in one encoder can stall the browser WebGPU backend.
+        // Submit a bounded set of command buffers together instead.
+        const PAGES_PER_SUBMISSION: usize = 8;
+        let mut charges = Vec::new();
+        charges.try_reserve_exact(PAGES_PER_SUBMISSION).map_err(|error| {
+            FiggyError::StateAllocationFailed {
+                resource: "packed-view pick submission",
+                reason: error.to_string(),
+            }
+        })?;
+        let mut command_buffers = Vec::new();
+        command_buffers.try_reserve_exact(PAGES_PER_SUBMISSION).map_err(|error| {
+            FiggyError::StateAllocationFailed {
+                resource: "packed-view pick command buffers",
+                reason: error.to_string(),
+            }
+        })?;
+        let encoded = pick_pages.iter().enumerate().try_for_each(|(order, &page_index)| -> Result<()> {
+            let packed = &cache.chunks[page_index];
+            let series = &snapshot.series[packed.series];
+            let planned = plan.descriptors.iter().find(|descriptor| {
+                descriptor.signature.series_id == series.series_id
+                    && descriptor.signature.source_id == series.source_id
+            }).ok_or(FiggyError::StaleStateToken { reason: "packed view pick descriptor missing".into() })?;
+            let mut descriptor = planned.descriptor();
+            match packed.phase {
+                StreamDrawPhase::Scatter => descriptor.line_width_px = None,
+                StreamDrawPhase::Line => descriptor.scatter = None,
+                _ => return Err(FiggyError::StaleStateToken { reason: "unsupported packed view pick phase".into() }),
+            }
+            let phase_columns = stream_phase_columns(series, packed.phase);
+            let handle = |name: &str| -> Result<data_render::ColumnHandle> {
+                let index = phase_columns.ids[..phase_columns.count].iter()
+                    .position(|id| *id == name)
+                    .ok_or_else(|| FiggyError::UnknownColumn { id: name.into() })?;
+                packed.chunk.column_handle(packed.ranges[index]).map_err(|error| {
+                    FiggyError::InvalidSeriesConfig {
+                        series_id: series.series_id.clone(),
+                        reason: format!("invalid packed view pick lane: {error:?}"),
+                    }
+                })
+            };
+            let count = u32::try_from(packed.ranges[0].len).map_err(|_| FiggyError::StaleStateToken {
+                reason: "packed view pick count exceeds u32".into(),
+            })?;
+            let columns = crate::gpu_pick::GpuStreamPickColumns {
+                x: handle(&series.x_column)?,
+                y: handle(&series.y_column)?,
+                style_index: None,
+            };
+            let mut encoder = self.device.create_command_encoder(&Default::default());
+            let charge = pick.encode_indexed_chunk(
+                &mut encoder, &packed.chunk.work, descriptor, columns,
+                u32::try_from(order).map_err(|_| FiggyError::StaleStateToken {
+                    reason: "too many packed pick pages".into(),
+                })?, 0,
+                if packed.phase == StreamDrawPhase::Scatter { count } else { 0 },
+                if packed.phase == StreamDrawPhase::Line { count.saturating_sub(1) } else { 0 },
+            )?;
+            if let Some(charge) = charge {
+                command_buffers.push(encoder.finish());
+                charges.push(charge);
+                if charges.len() == PAGES_PER_SUBMISSION {
+                    self.queue.submit(command_buffers.drain(..));
+                    charges.clear();
+                    self.end_gpu_frame();
+                }
+            }
+            Ok(())
+        });
+        if let Err(error) = encoded {
+            drop(command_buffers);
+            drop(charges);
+            drop(pick);
+            self.end_gpu_frame();
+            return Err(error);
+        }
+        if !charges.is_empty() {
+            self.queue.submit(command_buffers.drain(..));
+            drop(charges);
+            self.end_gpu_frame();
+        }
+        let result = pick.finish()?.resolve_indexed().await?.map(|hit| -> Result<crate::PickedPoint> {
+            let page_index = *pick_pages.get(hit.series_order as usize).ok_or(
+                FiggyError::StaleStateToken { reason: "packed pick page disappeared".into() },
+            )?;
+            let source_index = cache.chunks[page_index].source_index(hit.point_index).ok_or(
+                FiggyError::StaleStateToken { reason: "packed pick selected a separator".into() },
+            )?;
+            Ok(crate::PickedPoint {
+                source_id: hit.source_id,
+                series_id: hit.series_id,
+                point_index: source_index as usize,
+                distance_px: hit.distance_px,
+            })
+        }).transpose()?;
+        self.end_gpu_frame();
+        Ok(result)
+    }
+
     /// Exact point/line replay against the completed display revision.
     pub async fn begin_stream_pick_point(
         &mut self,
@@ -279,11 +478,13 @@ impl Renderer {
             max_primitives: max_chunk,
             max_primitives_limit: max_chunk,
             pending: None,
+            preferred_work_bytes: 0,
             view_revision: Arc::clone(&snapshot.view.stream_revision),
             expected_view_revision: snapshot.view.stream_revision.load(Ordering::Acquire),
             display_view_revision: Arc::clone(&snapshot.view.content_revision),
             displayed_view_revision: snapshot.view.content_revision.load(Ordering::Acquire),
             target,
+            reusable_work: None,
             surface: None,
             display_bind_group: None,
             surface_clear: None,
@@ -307,6 +508,9 @@ impl Renderer {
             field_fit: None,
             field_fits: HashMap::new(),
             selection: selection::StreamSelectionState::default(),
+            view_candidate: None,
+            view_cache: None,
+            view_rejection: None,
         });
         Ok(StreamingOperation(operation))
     }
@@ -483,7 +687,7 @@ impl Renderer {
         };
         let mut encoder = self.device.create_command_encoder(&Default::default());
         let chunk =
-            self.accept_stream_supply_with_headroom(ticket, supply, &mut encoder, headroom)?;
+            self.accept_stream_supply_with_headroom(ticket, supply, &mut encoder, headroom, None)?;
         let result = (|| -> Result<Option<crate::gpu_memory::SharedCharge>> {
             let handles = |id: &str| -> Result<data_render::ColumnHandle> {
                 let phase_columns = stream_phase_columns(cfg, phase);
@@ -950,11 +1154,13 @@ impl Renderer {
             max_primitives,
             max_primitives_limit: max_primitives,
             pending: None,
+            preferred_work_bytes: 0,
             view_revision: Arc::clone(&snapshot.view.stream_revision),
             expected_view_revision,
             display_view_revision: Arc::clone(&snapshot.view.content_revision),
             displayed_view_revision,
             target,
+            reusable_work: None,
             surface: Some(surface),
             display_bind_group: None,
             surface_clear: None,
@@ -971,6 +1177,9 @@ impl Renderer {
             field_fit: None,
             field_fits: HashMap::new(),
             selection: selection::StreamSelectionState::default(),
+            view_candidate: None,
+            view_cache: None,
+            view_rejection: None,
         });
         self.queue.submit([encoder.finish()]);
         Ok(StreamingOperation(job))

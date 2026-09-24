@@ -17,6 +17,7 @@ pub const COLUMN_VALUE_BYTES: usize = std::mem::size_of::<f32>() * COLUMN_VALUE_
 /// index. The mapped bytes and the renderer's wgpu dependency stay private.
 pub struct ColumnPairWriter<'a> {
     dst: wgpu::WriteOnly<'a, [u8]>,
+    observer: Option<&'a mut dyn FnMut(usize, f32, f32)>,
 }
 
 impl<'a> ColumnPairWriter<'a> {
@@ -26,7 +27,16 @@ impl<'a> ColumnPairWriter<'a> {
             0,
             "column pair destination must contain complete f32 pairs"
         );
-        Self { dst }
+        Self { dst, observer: None }
+    }
+
+    pub(crate) fn new_observed(
+        dst: wgpu::WriteOnly<'a, [u8]>,
+        observer: &'a mut dyn FnMut(usize, f32, f32),
+    ) -> Self {
+        let mut writer = Self::new(dst);
+        writer.observer = Some(observer);
+        writer
     }
 
     #[cfg(test)]
@@ -55,11 +65,14 @@ impl<'a> ColumnPairWriter<'a> {
             self.len()
         );
         let start = index * COLUMN_VALUE_BYTES;
-        let hi = hi.to_le_bytes();
-        let lo = lo.to_le_bytes();
+        let hi_bytes = hi.to_le_bytes();
+        let lo_bytes = lo.to_le_bytes();
         self.dst
             .slice(start..start + COLUMN_VALUE_BYTES)
-            .copy_from_slice(&[hi[0], hi[1], hi[2], hi[3], lo[0], lo[1], lo[2], lo[3]]);
+            .copy_from_slice(&[hi_bytes[0], hi_bytes[1], hi_bytes[2], hi_bytes[3], lo_bytes[0], lo_bytes[1], lo_bytes[2], lo_bytes[3]]);
+        if let Some(observer) = self.observer.as_mut() {
+            observer(index, hi, lo);
+        }
     }
 }
 

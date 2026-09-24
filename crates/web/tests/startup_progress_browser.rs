@@ -8,7 +8,7 @@ use web_sys::HtmlCanvasElement;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
-const STARTUP_STAGES: [(&str, &str); 38] = [
+const STARTUP_STAGES: [(&str, &str); 39] = [
     ("window", "instance"),
     ("window", "surface"),
     ("window", "adapter"),
@@ -37,6 +37,7 @@ const STARTUP_STAGES: [(&str, &str); 38] = [
     ("renderer.prewarm.async", "milkyway jets"),
     ("renderer.prewarm.async", "histogram bars"),
     ("renderer.prewarm.async", "mapped histogram bars"),
+    ("renderer.prewarm.async", "histogram pixel envelope"),
     ("renderer.prewarm.async", "selected histogram bin"),
     ("renderer.prewarm.async", "heatmap field"),
     ("renderer.prewarm.async", "contour field"),

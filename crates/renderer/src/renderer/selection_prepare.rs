@@ -24,15 +24,22 @@ impl SelectionRefFilter {
 pub(super) struct SelectionRows {
     pub global_start: usize,
     pub refs: SelectionRefFilter,
+    /// A packed view page is sparse in source-index space. The selected
+    /// source row is already resolved to this page's GPU-local instance.
+    pub packed_instance: Option<u32>,
 }
 
 impl SelectionRows {
     pub const RESIDENT: Self = Self {
         global_start: 0,
         refs: SelectionRefFilter::All,
+        packed_instance: None,
     };
 
     fn instance(self, global: usize, local_count: usize) -> Option<u32> {
+        if let Some(local) = self.packed_instance {
+            return (global == self.global_start && (local as usize) < local_count).then_some(local);
+        }
         let local = global.checked_sub(self.global_start)?;
         (local < local_count)
             .then(|| u32::try_from(local).ok())
@@ -579,6 +586,7 @@ mod tests {
         let rows = SelectionRows {
             global_start: 10,
             refs: SelectionRefFilter::Typed(2),
+            packed_instance: None,
         };
         assert_eq!(rows.instance(10, 1), Some(0));
         assert_eq!(rows.instance(9, 1), None);
@@ -595,6 +603,10 @@ mod tests {
         );
         assert_eq!(SelectionRows::RESIDENT.instance(10, 11), Some(10));
         assert_eq!(SelectionRows::RESIDENT.instance(10, 10), None);
+        let packed = SelectionRows { global_start: 20, packed_instance: Some(7), ..rows };
+        assert_eq!(packed.instance(20, 8), Some(7));
+        assert_eq!(packed.instance(20, 7), None);
+        assert_eq!(packed.instance(21, 8), None);
     }
 
     fn narrow(mut handle: ColumnHandle, start: usize, count: usize) -> ColumnHandle {
@@ -816,6 +828,7 @@ mod tests {
                                 rows: SelectionRows {
                                     global_start: if local { 2 } else { 0 },
                                     refs: SelectionRefFilter::Typed(0),
+                                    packed_instance: None,
                                 },
                                 mapped_point_bg: map.as_ref(),
                             },

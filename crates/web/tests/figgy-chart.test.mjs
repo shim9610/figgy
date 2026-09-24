@@ -427,13 +427,11 @@ async function completedReplayFixture({ readRange = null, typed = false, extraCo
   await element.render_chart({ columns, readRange, maxPrimitivesPerChunk: 4 }).done;
   let pending = true;
   const handle = { free: () => kernel.calls.push(["handle-free"]) };
-  for (const kind of ["export", "pick_point", "pick_data"]) {
-    kernel[`begin_stream_${kind}`] = (...args) => {
-      kernel.calls.push([`begin-${kind}`, ...args]);
-      pending = true;
-      return handle;
-    };
-  }
+  kernel.begin_stream_export = (...args) => {
+    kernel.calls.push(["begin-export", ...args]);
+    pending = true;
+    return handle;
+  };
   kernel.stream_operation_request_ranges = (actual) => {
     assert.equal(actual, handle);
     return pending ? {
@@ -452,10 +450,6 @@ async function completedReplayFixture({ readRange = null, typed = false, extraCo
   kernel.set_stream_operation_chunk_budget = (_handle, count) => {
     kernel.calls.push(["aux-budget", count]);
   };
-  kernel.finish_stream_pick_point = () => Promise.resolve(JSON.stringify({
-    source_id: "data", series_id: "s", point_index: 4, distance_px: 0.25,
-  }));
-  kernel.finish_stream_pick_data = () => Promise.resolve(undefined);
   kernel.cancel_stream_operation_and_wait = () => {
     kernel.calls.push(["cancel-aux"]);
     return Promise.resolve();
@@ -463,41 +457,28 @@ async function completedReplayFixture({ readRange = null, typed = false, extraCo
   return { ...environment, kernel, element, values };
 }
 
-async function residencyFixture() {
-  const kernel = makeKernel("provider-residency");
-  const candidates = [];
+async function rangeStreamFixture() {
+  const kernel = makeKernel("provider-view-cache");
   let revision = 1;
+  let offset = 0;
   kernel.register_streaming_column_sources = (_ids, revisions) => { revision = revisions[0]; };
-  kernel.replace_streaming_column_sources = (_ids, revisions) => { revision = revisions[0]; };
-  kernel.begin_stream_residency = () => {
-    const candidate = { revision, offset: 0, cancelled: 0, freed: 0,
-      source_ids: ["x"], source_revisions: [revision],
-      free() { this.freed += 1; } };
-    candidates.push(candidate);
-    return candidate;
-  };
-  kernel.set_stream_residency_chunk_budget = () => {};
-  kernel.stream_residency_request_ranges = (candidate) => ({
-    status: candidate.offset === 4 ? "complete" : "ready",
-    source_ids: ["x"], source_revisions: [candidate.revision], source_lengths: [4],
-    offsets: [candidate.offset], lengths: [2], encodings: ["f32"],
-    submitted_primitives: candidate.offset, total_primitives: 4,
+  kernel.replace_streaming_column_sources = (_ids, revisions) => { revision = revisions[0]; offset = 0; };
+  kernel.request_auto_streaming_chart = () => ({
+    status: "started", source_ids: ["x"], source_revisions: [revision],
   });
-  kernel.stream_residency_submit_ranges = (candidate, ids, revisions, lengths, offsets, chunks) => {
-    assert.equal(candidate.cancelled, 0);
-    assert.equal(offsets[0], candidate.offset);
+  kernel.auto_stream_chart_request_ranges = () => ({
+    status: offset === 4 ? "complete" : "ready",
+    source_ids: ["x"], source_revisions: [revision], source_lengths: [4],
+    offsets: [offset], lengths: [2], encodings: ["f32"],
+    submitted_primitives: offset, total_primitives: 4,
+  });
+  kernel.auto_stream_chart_submit_ranges = (ids, revisions, lengths, offsets, chunks) => {
+    assert.equal(offsets[0], offset);
     assert.equal(chunks[0].length, 2);
-    kernel.calls.push(["resident-submit", candidate, chunks[0]]);
-    candidate.offset += 2;
-    return { status: "submitted", submitted_primitives: candidate.offset, total_primitives: 4 };
+    kernel.calls.push(["stream-submit", revisions[0], chunks[0]]);
+    offset += 2;
+    return { status: "submitted", submitted_primitives: offset, total_primitives: 4 };
   };
-  kernel.finish_stream_residency = (candidate) => {
-    assert.equal(candidate.offset, 4);
-    kernel.calls.push(["resident-finish", candidate]);
-  };
-  kernel.cancel_stream_residency = (candidate) => { candidate.cancelled += 1; };
-  kernel.request_auto_streaming_chart = () => { throw new Error("unexpected ordinary stream"); };
-  kernel.stream_selection_request_ranges = () => { throw new Error("unpublished residency has no stream selection surface"); };
   const { Element, state } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
   const element = new Element();
   connect(element);
@@ -514,28 +495,25 @@ async function residencyFixture() {
     maxPrimitivesPerChunk: 2, readRange,
   });
   const finishFrames = async () => { for (let index = 0; index < 6; index += 1) await runFrame(); };
-  return { kernel, element, candidates, request, runFrame, finishFrames };
+  return { kernel, element, request, runFrame, finishFrames };
 }
 
-test("range-provider residency uploads bounded ranges and publishes once", async () => {
-  const fixture = await residencyFixture();
+test("range-provider uses bounded exact stream without full-column promotion", async () => {
+  const fixture = await rangeStreamFixture();
   const reads = [];
   const job = fixture.request((request) => {
     reads.push(request);
     return new Float32Array(request.length).fill(request.offset);
   });
   await fixture.finishFrames();
-  assert.equal((await job.done).status, "resident");
+  assert.equal((await job.done).status, "complete");
   assert.deepEqual(reads.map(({ offset, length }) => [offset, length]), [[0, 2], [2, 2]]);
-  assert.equal(fixture.kernel.calls.filter(([name]) => name === "resident-finish").length, 1);
-  assert.equal(fixture.candidates[0].freed, 1);
-  assert.equal(fixture.candidates[0].cancelled, 0);
-  assert.equal((await fixture.request(() => { throw new Error("resident data reread"); }).done).status, "resident");
-  assert.equal(fixture.candidates.length, 1);
+  assert.equal(fixture.kernel.calls.filter(([name]) => name === "stream-submit").length, 2);
+  assert.equal(fixture.kernel.calls.filter(([name]) => name === "try_auto_resident_chart").length, 0);
 });
 
-test("provider residency cancellation discards late data and releases its token once", async () => {
-  const fixture = await residencyFixture();
+test("range-provider cancellation discards late data without another source read", async () => {
+  const fixture = await rangeStreamFixture();
   const late = deferred();
   const job = fixture.request(() => late.promise);
   await fixture.runFrame();
@@ -543,95 +521,19 @@ test("provider residency cancellation discards late data and releases its token 
   late.resolve(new Float32Array(2));
   await fixture.finishFrames();
   assert.equal((await job.done).status, "cancelled");
-  assert.equal(fixture.candidates[0].cancelled, 1);
-  assert.equal(fixture.candidates[0].freed, 1);
-  assert.equal(fixture.kernel.calls.filter(([name]) => name === "resident-submit").length, 0);
+  assert.equal(fixture.kernel.calls.filter(([name]) => name === "stream-submit").length, 0);
   assert.equal(fixture.kernel.calls.filter(([name]) => name === "cancel_streaming_and_wait").length, 1);
 });
-
-test("provider residency marks only the renderer-selected column closure resident", async () => {
-  const fixture = await residencyFixture();
-  const metadata = (id) => ({ id, revision: 1, length: 4, encoding: "f32" });
-  const job = fixture.element.render_chart({ columns: [metadata("x"), metadata("unused")],
-    readRange: ({ id, length }) => {
-      assert.equal(id, "x");
-      return new Float32Array(length);
-    }, maxPrimitivesPerChunk: 2,
-  });
-  await fixture.finishFrames();
-  assert.equal((await job.done).status, "resident");
-  const begin = fixture.kernel.begin_stream_residency;
-  fixture.kernel.begin_stream_residency = () => {
-    const candidate = begin();
-    candidate.source_ids = ["unused"];
-    return candidate;
-  };
-  const unused = fixture.element.render_chart({ columns: [metadata("unused")],
-    readRange: ({ length }) => new Float32Array(length), maxPrimitivesPerChunk: 2,
-  });
-  assert.equal(unused.status, "running", "unreferenced metadata must not be marked resident");
-  assert.equal(fixture.candidates.length, 2);
-  await unused.cancel();
-});
-
-test("provider residency replacement coalesces identical requests and ignores old revision reads", async () => {
-  const fixture = await residencyFixture();
-  const late = deferred();
-  const job = fixture.request(() => late.promise);
-  await fixture.runFrame();
-  assert.equal(fixture.request(() => late.promise), job);
-  const replacement = fixture.request(() => new Float32Array(2).fill(2), 2);
-  late.resolve(new Float32Array(2).fill(1));
-  await fixture.finishFrames();
-  assert.equal((await job.done).status, "superseded");
-  assert.equal((await replacement.done).status, "resident");
-  assert.equal(fixture.candidates[0].cancelled, 1);
-  assert.equal(fixture.candidates[0].freed, 1);
-  const submitted = fixture.kernel.calls.filter(([name]) => name === "resident-submit");
-  assert.equal(submitted.length, 2);
-  assert.ok(submitted.every(([, candidate, values]) => candidate.revision === 2 && values[0] === 2));
-});
-
-test("provider residency resize replaces pending candidate and drops old target reads", async () => {
-  const fixture = await residencyFixture();
-  const late = deferred();
-  let reads = 0;
-  const job = fixture.request(() => ++reads === 1 ? late.promise : new Float32Array(2).fill(2));
-  await fixture.runFrame();
-  fixture.element.setRect(800, 600);
-  fixture.element.resize();
-  await fixture.finishFrames();
-  late.resolve(new Float32Array(2).fill(1));
-  await fixture.runFrame();
-  assert.equal((await job.done).status, "resident");
-  assert.equal(fixture.candidates.length, 2);
-  assert.equal(fixture.candidates[0].cancelled, 1);
-  assert.equal(fixture.candidates[0].freed, 1);
-  assert.ok(fixture.kernel.calls.filter(([name]) => name === "resident-submit")
-    .every(([, candidate, values]) => candidate === fixture.candidates[1] && values[0] === 2));
-});
-
-test("provider residency publication failure rejects and releases unpublished candidate", async () => {
-  const fixture = await residencyFixture();
-  const failure = new Error("candidate preflight failed");
-  fixture.kernel.finish_stream_residency = () => { throw failure; };
-  const job = fixture.request(() => new Float32Array(2));
-  const rejected = assert.rejects(job.done, (error) => error === failure);
-  await fixture.finishFrames();
-  await rejected;
-  assert.equal(fixture.candidates[0].cancelled, 1);
-  assert.equal(fixture.candidates[0].freed, 1);
-  assert.equal(fixture.kernel.calls.filter(([name]) => name === "cancel_streaming_and_wait").length, 0,
-    "publication failure must not cancel an existing completed display");
-});
-
-test("completed streamed pick/export reuse retained source views without host pumping", async () => {
+test("completed stream export reuses source views and picking delegates without replay", async () => {
   const { kernel, element, values } = await completedReplayFixture({ typed: true });
   assert.deepEqual(Array.from(await element.export_png(2)), [137, 80, 78, 71]);
-  assert.equal((await element.pick_point(10, 20, 4)).point_index, 4);
+  const callsBeforePick = kernel.calls.length;
+  assert.equal(await element.pick_point(10, 20, 4), null);
   assert.equal(await element.pick_data(10, 20, 4), null);
+  assert.deepEqual(kernel.calls.slice(callsBeforePick).map(([name]) => name),
+    ["pick", "pick_data"], "stream picking may use the packed GPU cache but must not replay sources");
   const submissions = kernel.calls.filter(([name]) => name === "submit-aux");
-  assert.equal(submissions.length, 3);
+  assert.equal(submissions.length, 1);
   for (const [, ids, revisions, lengths, offsets, chunks] of submissions) {
     assert.deepEqual([...ids], ["x"]);
     assert.deepEqual([...revisions], [2]);
@@ -641,9 +543,9 @@ test("completed streamed pick/export reuse retained source views without host pu
     assert.equal(chunks[0].buffer, values.buffer, "the facade must borrow a view, not clone data");
   }
   assert.equal(kernel.calls.filter(([name]) => name === "cancel-aux").length, 0);
-  assert.equal(kernel.calls.filter(([name]) => name === "handle-free").length, 3);
-  assert.equal(kernel.calls.filter(([name]) => name === "request-free").length, 6);
-  assert.equal(kernel.calls.filter(([name]) => name === "progress-free").length, 3);
+  assert.equal(kernel.calls.filter(([name]) => name === "handle-free").length, 1);
+  assert.equal(kernel.calls.filter(([name]) => name === "request-free").length, 2);
+  assert.equal(kernel.calls.filter(([name]) => name === "progress-free").length, 1);
   assert.equal(element.busy, false);
 });
 
@@ -661,6 +563,26 @@ function selectionRequest(index, freed) {
     free() { freed.push(index); },
   };
 }
+
+test("selection-only mutations do not replay a completed stream", async () => {
+  const { kernel, element, state } = await completedReplayFixture({ typed: true });
+  let replayRequests = 0;
+  kernel.request_auto_streaming_chart = () => {
+    replayRequests += 1;
+    return { status: "complete" };
+  };
+  kernel.set_picked_points = () => {};
+  kernel.set_picked_data = () => {};
+  for (let index = 0; index < 10; index += 1) {
+    element.set_picked_points(String(index));
+    runFacadeFrame(state);
+  }
+  element.set_picked_data("null");
+  runFacadeFrame(state);
+  await flushTasks();
+  assert.equal(replayRequests, 0);
+  element.free();
+});
 
 test("selection replacement keeps old overlay until the newest bounded range resolves", async () => {
   const reads = [], freed = [], first = deferred(), newest = deferred();
@@ -880,11 +802,11 @@ test("free interrupts an unresolved stream export provider and drains before dis
   assert.equal(kernel.calls.filter(([name]) => name === "submit-aux").length, 0);
 });
 
-test("invalid stream auxiliary input is rejected and its reservation is drained", async () => {
+test("invalid stream export input is rejected and its reservation is drained", async () => {
   const { kernel, element } = await completedReplayFixture({
     readRange: () => new Float64Array([3, 4]),
   });
-  await assert.rejects(element.pick_data(10, 20, 4), /Float32Array/);
+  await assert.rejects(element.export_png(), /Float32Array/);
   assert.equal(kernel.calls.filter(([name]) => name === "submit-aux").length, 0);
   assert.equal(kernel.calls.filter(([name]) => name === "cancel-aux").length, 1);
   assert.equal(element.busy, false);
@@ -2047,103 +1969,6 @@ test("cancelled range-provider work discards late async data without submitting 
   assert.equal(renderRequests, 1, "cancel must release the replay provider reference");
 });
 
-test("resident revision change uses two-phase range handoff without eager demotion", async () => {
-  const kernel = makeKernel("resident-range-handoff");
-  const first = new Float32Array([0, 1, 2, 3]);
-  let rangeStep = 0;
-  kernel.register_streaming_columns = () => {};
-  kernel.try_auto_resident_chart = () => ({ status: "resident", reason: "admissible" });
-  kernel.request_resident_stream_handoff = (
-    ids, revisions, lengths, encodings, chunkSize,
-  ) => {
-    kernel.calls.push([
-      "request_resident_stream_handoff",
-      ids,
-      revisions,
-      lengths,
-      encodings,
-      chunkSize,
-    ]);
-    return { status: "started", source_ids: ids, source_revisions: revisions };
-  };
-  kernel.auto_stream_chart_request_ranges = () => {
-    rangeStep += 1;
-    if (rangeStep === 1) {
-      return {
-        status: "ready",
-        source_ids: ["x"],
-        source_revisions: [2],
-        source_lengths: [4],
-        offsets: [0],
-        lengths: [4],
-        encodings: ["f32"],
-        submitted_primitives: 0,
-        total_primitives: 3,
-      };
-    }
-    if (rangeStep === 2) {
-      return {
-        status: "all_submitted",
-        source_ids: [], source_revisions: [], source_lengths: [],
-        offsets: [], lengths: [], encodings: [],
-        submitted_primitives: 3, total_primitives: 3,
-      };
-    }
-    return {
-      status: "complete",
-      source_ids: [], source_revisions: [], source_lengths: [],
-      offsets: [], lengths: [], encodings: [],
-      submitted_primitives: 0, total_primitives: 0,
-    };
-  };
-  kernel.auto_stream_chart_submit_ranges = () => ({
-    status: "submitted", submitted_primitives: 3, total_primitives: 3,
-  });
-  const { Element, state } = await loadFacade({
-    createImpl: () => Promise.resolve(kernel),
-  });
-  const element = new Element();
-  connect(element);
-  await element.ready;
-  await waitForIdle(element);
-  await element.render_chart({
-    columns: [{ id: "x", revision: 1, values: first }],
-  }).done;
-
-  const job = element.render_chart({
-    columns: [{ id: "x", revision: 2, length: 4, encoding: "f32" }],
-    maxPrimitivesPerChunk: 4,
-    readRange: () => new Float32Array([4, 5, 6, 7]),
-  });
-  element.setRect(800, 600);
-  element.resize();
-  const runFrame = (time) => {
-    const [id, callback] = [...state.rafs.entries()].at(-1);
-    state.rafs.delete(id);
-    callback(time);
-  };
-  runFrame(0);
-  await flushTasks();
-  runFrame(1);
-  runFrame(2);
-  await job.done;
-
-  const handoffs = kernel.calls.filter(([name]) => name === "request_resident_stream_handoff");
-  assert.equal(handoffs.length, 2, "resize must restart the same atomic resident handoff");
-  assert.deepEqual(JSON.parse(JSON.stringify(handoffs[1])), [
-    "request_resident_stream_handoff",
-    ["x"],
-    [2],
-    [4],
-    ["f32"],
-    4,
-  ]);
-  assert.equal(
-    kernel.calls.some(([name]) => name === "demote_auto_resident_columns"),
-    false,
-  );
-});
-
 test("range-provider type mismatch fails the job and never submits", async () => {
   const kernel = makeKernel("range-provider-invalid-type");
   let submits = 0;
@@ -2193,171 +2018,30 @@ test("range-provider type mismatch fails the job and never submits", async () =>
   assert.equal(renderRequests, 1, "a failed provider must not become the resize replay source");
 });
 
-test("new range-provider revision supersedes one pending read and drops its late result", async () => {
-  const kernel = makeKernel("range-provider-supersede");
-  const oldRead = deferred();
-  let activeRevision = 0;
-  const submittedRevisions = [];
+test("typed-array render never invokes whole-column automatic promotion", async () => {
+  const kernel = makeKernel("packed-view-executor");
   kernel.register_streaming_columns = () => {};
-  kernel.try_auto_resident_chart = () => ({ status: "resident", reason: "admissible" });
-  kernel.request_resident_stream_handoff = (ids, revisions) => {
-    activeRevision = revisions[0];
-    return { status: "started", source_ids: ids, source_revisions: revisions };
-  };
-  kernel.auto_stream_chart_request_ranges = () => ({
-    status: "ready",
-    source_ids: ["x"],
-    source_revisions: [activeRevision],
-    source_lengths: [4],
-    offsets: [0],
-    lengths: [2],
-    encodings: ["f32"],
-    submitted_primitives: 0,
-    total_primitives: 3,
-  });
-  kernel.auto_stream_chart_submit_ranges = (_ids, revisions) => {
-    submittedRevisions.push(revisions[0]);
-    return { status: "submitted", submitted_primitives: 2, total_primitives: 3 };
-  };
-  kernel.interrupt_render = () => "stream_cancel_queued";
-  const { Element, state } = await loadFacade({
-    createImpl: () => Promise.resolve(kernel),
-  });
-  const element = new Element();
-  connect(element);
-  await element.ready;
-  await waitForIdle(element);
-  await element.render_chart({
-    columns: [{ id: "x", revision: 1, values: new Float32Array(4) }],
-  }).done;
-
-  const oldJob = element.render_chart({
-    columns: [{ id: "x", revision: 2, length: 4, encoding: "f32" }],
-    readRange: () => oldRead.promise,
-  });
-  let [id, callback] = [...state.rafs.entries()].at(-1);
-  state.rafs.delete(id);
-  callback(0);
-
-  const newJob = element.render_chart({
-    columns: [{ id: "x", revision: 3, length: 4, encoding: "f32" }],
-    readRange: () => new Float32Array([3, 3]),
-  });
-  assert.equal((await oldJob.done).status, "superseded");
-  [id, callback] = [...state.rafs.entries()].at(-1);
-  state.rafs.delete(id);
-  callback(1);
-  await flushTasks();
-  [id, callback] = [...state.rafs.entries()].at(-1);
-  state.rafs.delete(id);
-  callback(2);
-  oldRead.resolve(new Float32Array([2, 2]));
-  await flushTasks();
-
-  assert.deepEqual(submittedRevisions, [3]);
-  assert.equal(newJob.status, "running");
-  newJob.cancel();
-});
-
-test("high-level render job accepts renderer-selected resident execution", async () => {
-  const kernel = makeKernel("owned-resident-executor");
-  const x = new Float32Array([0, 1, 2]);
-  const y = new Float32Array([2, 1, 0]);
-  kernel.register_streaming_columns = (ids, revisions, sources) => {
-    kernel.calls.push(["register_streaming_columns", ids, revisions, sources]);
-  };
-  kernel.try_auto_resident_chart = (ids, revisions, sources) => {
-    kernel.calls.push(["try_auto_resident_chart", ids, revisions, sources]);
-    return { status: "resident", reason: "admissible" };
-  };
-  kernel.request_auto_streaming_chart = () => {
-    throw new Error("resident selection must not start a stream");
-  };
-  const { Element } = await loadFacade({
-    createImpl: () => Promise.resolve(kernel),
-  });
-  const element = new Element();
-  connect(element);
-  await element.ready;
-  await waitForIdle(element);
-
-  const progress = [];
-  const columns = [
-    { id: "x", revision: 1, values: x },
-    { id: "y", revision: 1, values: y },
-  ];
-  const job = element.render_chart({
-    columns,
-    onProgress: (event) => progress.push(event.status),
-  });
-  assert.equal(job.status, "resident");
-  assert.deepEqual(JSON.parse(JSON.stringify(await job.done)), {
-    status: "resident",
-    submittedPrimitives: 0,
-    totalPrimitives: 0,
-  });
-  assert.deepEqual(progress, ["resident"]);
-  assert.equal(
-    kernel.calls.filter(([name]) => name === "try_auto_resident_chart").length,
-    1,
-  );
-
-  const repeated = element.render_chart({ columns });
-  assert.equal(repeated.status, "resident");
-  await repeated.done;
-  assert.equal(
-    kernel.calls.filter(([name]) => name === "try_auto_resident_chart").length,
-    1,
-    "an unchanged resident request must not be re-uploaded or re-promoted",
-  );
-  element.setRect(800, 600);
-  element.resize();
-  assert.equal(
-    kernel.calls.filter(([name]) => name === "try_auto_resident_chart").length,
-    1,
-    "resident data must resize through the resident path without stream replay",
-  );
-});
-
-test("resident revision change normalizes the full closure before reselection", async () => {
-  const kernel = makeKernel("resident-demote-reselect");
-  const first = new Float32Array([0, 1]);
-  const second = new Float32Array([1, 2]);
-  let decisions = 0;
-  kernel.register_streaming_columns = () => {};
-  kernel.try_auto_resident_chart = () => ({
-    status: decisions++ === 0 ? "resident" : "streamed",
-    reason: decisions === 1 ? "admissible" : "working_set_limit",
-  });
   kernel.request_auto_streaming_chart = () => ({
-    status: "started",
-    source_ids: ["x"],
-    source_revisions: [2],
+    status: "started", source_ids: ["x", "y"], source_revisions: [1, 1],
   });
-  const { Element } = await loadFacade({
-    createImpl: () => Promise.resolve(kernel),
+  kernel.auto_stream_chart_request_ranges = () => ({
+    status: "backpressure", submitted_primitives: 0, total_primitives: 2,
   });
+  const { Element } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
   const element = new Element();
   connect(element);
   await element.ready;
   await waitForIdle(element);
-
-  await element.render_chart({
-    columns: [{ id: "x", revision: 1, values: first }],
-  }).done;
-  const streamed = element.render_chart({
-    columns: [{ id: "x", revision: 2, values: second }],
+  const job = element.render_chart({
+    columns: [
+      { id: "x", revision: 1, values: new Float32Array([0, 1, 2]) },
+      { id: "y", revision: 1, values: new Float32Array([2, 1, 0]) },
+    ],
   });
-  assert.equal(streamed.status, "running");
-  const demotion = kernel.calls.find(([name]) => name === "demote_auto_resident_columns");
-  assert.deepEqual(JSON.parse(JSON.stringify(demotion.slice(0, 3))), [
-    "demote_auto_resident_columns",
-    ["x"],
-    [2],
-  ]);
-  assert.equal(demotion[3][0], second);
+  assert.equal(job.status, "running");
+  assert.equal(kernel.calls.filter(([name]) => name === "try_auto_resident_chart").length, 0);
+  await job.cancel();
 });
-
 test("high-level streaming cancellation settles without restarting", async () => {
   const kernel = makeKernel("owned-stream-cancel");
   const x = new Float32Array([0, 1]);
@@ -3183,6 +2867,13 @@ test("facade normalizes hit and pick results without changing rejection reasons"
 
   kernel.pickDataImpl = () => Promise.resolve(undefined);
   assert.equal(await element.pick_data(1, 2, 3), null);
+  kernel.next_view_point_index = (source, series, current, forward) => {
+    assert.deepEqual([source, series, current, forward], ["source-a", "series-a", 5, true]);
+    return 9;
+  };
+  assert.equal(element.next_view_point_index("source-a", "series-a", 5, true), 9);
+  kernel.next_view_point_index = () => undefined;
+  assert.equal(element.next_view_point_index(null, "series-a", 9, false), null);
   kernel.pickDataImpl = () => Promise.resolve(JSON.stringify({
     kind: "matrix_cell",
     source_id: "source-grid",
@@ -3214,4 +2905,28 @@ test("facade normalizes hit and pick results without changing rejection reasons"
   await assert.rejects(element.pick_point(1, 2, 3), (error) => error === rawError);
   kernel.pickDataImpl = () => Promise.reject(rawError);
   await assert.rejects(element.pick_data(1, 2, 3), (error) => error === rawError);
+});
+
+test("facade exposes pool growth, detailed memory status, and awaited cleanup", async () => {
+  const kernel = makeKernel("memory");
+  let growth = null;
+  kernel.set_pool_auto_growth = (enabled) => { growth = enabled; };
+  kernel.gpu_memory_status = () => JSON.stringify({ total_bytes: 32, pool: { capacity_bytes: 16 } });
+  kernel.release_unused_gpu_memory = () => Promise.resolve(JSON.stringify({
+    total_bytes: 16, pool: { capacity_bytes: 8 },
+  }));
+  const { Element } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+
+  assert.throws(() => element.set_pool_auto_growth(1), /enabled must be a boolean/);
+  element.set_pool_auto_growth(true);
+  assert.equal(growth, true);
+  assert.equal(element.gpu_memory_status().pool.capacity_bytes, 16);
+  const cleaned = await element.release_unused_gpu_memory();
+  assert.equal(cleaned.total_bytes, 16);
+  assert.equal(cleaned.pool.capacity_bytes, 8);
+  assert.equal(element.busy, false);
 });

@@ -76,7 +76,6 @@ export class FiggyChartElement extends HTMLElement {
   #pendingRelease = null;
   #pendingPrewarm = null;
   #streamSources = new Map();
-  #residentColumns = new Set();
   #streamExecution = null;
   #streamReplay = null;
   #nextStreamExecution = 1;
@@ -359,6 +358,15 @@ export class FiggyChartElement extends HTMLElement {
     return result;
   }
 
+  #mutateSelection(method, json) {
+    const result = this.#kernelForCall()[method](json);
+    if (this.#streamReplay || this.#streamExecution || this.#streamSelection) {
+      this.#selectionDirty = true;
+      this.#queueStreamTask();
+    }
+    return result;
+  }
+
   #releaseSelectionRequest() {
     const selection = this.#streamSelection;
     this.#streamSelection = null;
@@ -372,7 +380,7 @@ export class FiggyChartElement extends HTMLElement {
   }
 
   #pumpStreamSelection() {
-    if (this.busy || this.#streamExecution?.residency) return;
+    if (this.busy) return;
     const replay = this.#streamReplay;
     const kernel = this.#kernel;
     if (!replay || !kernel) {
@@ -524,11 +532,6 @@ export class FiggyChartElement extends HTMLElement {
   #settleStreamingExecution(execution, status, error = null) {
     if (execution.settled) {
       return;
-    }
-    const residencyError = this.#releaseResidencyCandidate(execution);
-    if (residencyError && !error) {
-      error = residencyError;
-      status = "failed";
     }
     if (status === "complete") {
       execution.state.autoFitPending = JSON.parse(execution.kernel.stream_status()).auto_fit_pending;
@@ -723,11 +726,7 @@ export class FiggyChartElement extends HTMLElement {
     if (execution.draining || this.busy || !this.#kernel) return;
     execution.draining = true;
     const kernel = this.#kernel;
-    this.#runKernelOperation("stream-cancel", (current) => {
-      const error = this.#releaseResidencyCandidate(execution);
-      if (error) throw error;
-      return current.cancel_streaming_and_wait();
-    })
+    this.#runKernelOperation("stream-cancel", (current) => current.cancel_streaming_and_wait())
       .then(() => {
         if (execution.cleanupOnly) {
           if (this.#streamExecution === execution) this.#streamExecution = null;
@@ -868,19 +867,8 @@ export class FiggyChartElement extends HTMLElement {
   }
 
   #completeRangeStreamingExecution(execution) {
-    if (execution.residency) {
-      const handle = execution.residency;
-      execution.kernel.finish_stream_residency(handle);
-      execution.residency = null;
-      for (const id of execution.ids) this.#residentColumns.add(id);
-      handle.free?.();
-      execution.kernel.frame();
-      this.#settleStreamingExecution(execution, "resident");
-      return;
-    }
     for (const id of execution.ids) {
       const source = execution.rangeSources.get(id);
-      this.#residentColumns.delete(id);
       this.#streamSources.set(id, {
         revision: source.revision,
         length: source.length,
@@ -891,27 +879,9 @@ export class FiggyChartElement extends HTMLElement {
     this.#settleStreamingExecution(execution, "complete");
   }
 
-  #releaseResidencyCandidate(execution) {
-    const handle = execution.residency;
-    if (!handle) return null;
-    execution.residency = null;
-    let error = null;
-    try { execution.kernel.cancel_stream_residency(handle); }
-    catch (cause) { error = cause; }
-    try { handle.free?.(); }
-    catch (cause) { error ??= cause; }
-    return error;
-  }
-
   #failStreamingExecution(execution, error) {
-    if (execution.residency) {
-      // Failed candidate publication must not cancel the completed stream
-      // that still owns the visible data surface.
-      this.#settleStreamingExecution(execution, "failed", error);
-    } else {
-      execution.terminalError = error;
-      this.#cancelStreamingExecution(execution);
-    }
+    execution.terminalError = error;
+    this.#cancelStreamingExecution(execution);
   }
 
   #updateStreamProgress(execution, progress) {
@@ -930,49 +900,15 @@ export class FiggyChartElement extends HTMLElement {
 
   #applyStreamChunkBudget(execution) {
     if (execution.appliedChunkPrimitives !== execution.chunkPrimitives) {
-      if (execution.residency) {
-        execution.kernel.set_stream_residency_chunk_budget(execution.residency, execution.chunkPrimitives);
-      } else {
-        execution.kernel.set_stream_chunk_budget(execution.chunkPrimitives);
-      }
+      execution.kernel.set_stream_chunk_budget(execution.chunkPrimitives);
       execution.appliedChunkPrimitives = execution.chunkPrimitives;
     }
   }
 
   #restartRangeStreamingExecution(execution) {
-    if (execution.residency) {
-      const error = this.#releaseResidencyCandidate(execution);
-      if (error) throw error;
-      execution.residency = execution.kernel.begin_stream_residency(execution.chunkPrimitives);
-      if (execution.residency) {
-        execution.rangeGeneration += 1;
-        execution.rangePending = false;
-        execution.rangeResolved = null;
-        execution.rangeError = null;
-        execution.state.submittedPrimitives = 0;
-        execution.state.totalPrimitives = 0;
-        this.#bindRangeStreamingSources(execution, { status: "started",
-          source_ids: execution.residency.source_ids,
-          source_revisions: execution.residency.source_revisions });
-        execution.restartForResize = false;
-        execution.reconcileRequested = false;
-        execution.appliedChunkPrimitives = null;
-        execution.lastProgressTime = performance.now();
-        execution.state.status = "running";
-        return true;
-      }
-    }
-    const request = execution.residentHandoff
-      ? execution.kernel.request_resident_stream_handoff(
-        execution.requestIds,
-        execution.requestRevisions,
-        execution.requestLengths,
-        execution.requestEncodings,
-        execution.maxPrimitivesPerChunk,
-      )
-      : execution.kernel.request_auto_streaming_chart(
-        execution.maxPrimitivesPerChunk,
-      );
+    const request = execution.kernel.request_auto_streaming_chart(
+      execution.maxPrimitivesPerChunk,
+    );
     execution.restartForResize = false;
     execution.reconcileRequested = false;
     if (request.status === "complete") {
@@ -1022,9 +958,7 @@ export class FiggyChartElement extends HTMLElement {
       execution.rangeResolved = null;
       const args = [resolved.ids, resolved.revisions, resolved.sourceLengths,
         resolved.offsets, resolved.chunks];
-      const progress = execution.residency
-        ? execution.kernel.stream_residency_submit_ranges(execution.residency, ...args)
-        : execution.kernel.auto_stream_chart_submit_ranges(...args);
+      const progress = execution.kernel.auto_stream_chart_submit_ranges(...args);
       execution.state.status = progress.status === "all_submitted"
         ? "waiting_gpu"
         : "running";
@@ -1037,9 +971,7 @@ export class FiggyChartElement extends HTMLElement {
       return false;
     }
 
-    const request = execution.residency
-      ? execution.kernel.stream_residency_request_ranges(execution.residency)
-      : execution.kernel.auto_stream_chart_request_ranges();
+    const request = execution.kernel.auto_stream_chart_request_ranges();
     this.#updateStreamProgress(execution, request);
     if (request.status === "complete") {
       this.#completeRangeStreamingExecution(execution);
@@ -1377,7 +1309,7 @@ export class FiggyChartElement extends HTMLElement {
   }
 
   async export_png(scale = 1.0) {
-    if (this.#streamReplay) return this.#replayStreamOperation("export", [scale]);
+    if (this.#streamReplay) return this.#replayStreamExport(scale);
     return this.#runKernelOperation("export", (kernel) => kernel.export_png(scale));
   }
 
@@ -1419,12 +1351,12 @@ export class FiggyChartElement extends HTMLElement {
     }
   }
 
-  async #replayStreamOperation(kind, args) {
+  async #replayStreamExport(scale) {
     if (this.#streamExecution) {
-      throw new Error("stream picking and export require a completed render revision");
+      throw new Error("stream export requires a completed render revision");
     }
     const replay = this.#streamReplay;
-    return this.#runKernelOperation(kind, async (kernel, token) => {
+    return this.#runKernelOperation("export", async (kernel, token) => {
       const sources = new Map(replay.columns.map((column) => [column.id, column]));
       token.cancelled = new Promise((_, reject) => { token.cancel = reject; });
       token.cancelled.catch(() => {});
@@ -1433,7 +1365,7 @@ export class FiggyChartElement extends HTMLElement {
       let finished = false;
       let failed = false;
       try {
-        handle = await kernel[`begin_stream_${kind}`](...args, replay.maxPrimitivesPerChunk);
+        handle = await kernel.begin_stream_export(scale, replay.maxPrimitivesPerChunk);
         if (!this.#isCurrentOperation(token)) {
           throw new DOMException("chart disconnected during stream operation", "AbortError");
         }
@@ -1521,7 +1453,7 @@ export class FiggyChartElement extends HTMLElement {
             steps = 0;
           }
         }
-        const result = await kernel[`finish_stream_${kind}`](handle);
+        const result = await kernel.finish_stream_export(handle);
         finished = true;
         return result;
       } catch (error) {
@@ -1665,7 +1597,6 @@ export class FiggyChartElement extends HTMLElement {
     }
     this.#streamReplay = null;
     this.#streamSources.clear();
-    this.#residentColumns.clear();
     this.#lastStreamState = null;
     this.#streamRefreshRequested = false;
     if (this.#streamWake) {
@@ -1732,7 +1663,6 @@ export class FiggyChartElement extends HTMLElement {
   register_streaming_columns(ids, revisions, sources) {
     const result = this.#kernelForCall().register_streaming_columns(ids, revisions, sources);
     for (let index = 0; index < ids.length; index += 1) {
-      this.#residentColumns.delete(ids[index]);
       this.#streamSources.set(ids[index], {
         revision: revisions[index],
         values: sources[index],
@@ -1743,7 +1673,6 @@ export class FiggyChartElement extends HTMLElement {
   replace_streaming_columns(ids, revisions, sources) {
     const result = this.#kernelForCall().replace_streaming_columns(ids, revisions, sources);
     for (let index = 0; index < ids.length; index += 1) {
-      this.#residentColumns.delete(ids[index]);
       this.#streamSources.set(ids[index], {
         revision: revisions[index],
         values: sources[index],
@@ -1754,7 +1683,6 @@ export class FiggyChartElement extends HTMLElement {
   demote_auto_resident_columns(ids, revisions, sources) {
     const result = this.#kernelForCall().demote_auto_resident_columns(ids, revisions, sources);
     for (let index = 0; index < ids.length; index += 1) {
-      this.#residentColumns.delete(ids[index]);
       this.#streamSources.set(ids[index], {
         revision: revisions[index],
         values: sources[index],
@@ -1779,7 +1707,6 @@ export class FiggyChartElement extends HTMLElement {
     const rangeSources = new Map();
     const seen = new Set();
     let registeredCount = 0;
-    let residentCount = 0;
     let changedCount = 0;
     for (const column of columns) {
       if (!column || typeof column.id !== "string" || column.id.length === 0) {
@@ -1833,100 +1760,41 @@ export class FiggyChartElement extends HTMLElement {
           changedCount += 1;
         }
       }
-      residentCount += this.#residentColumns.has(column.id) ? 1 : 0;
     }
 
-    const residentAlready = residentCount === columns.length && changedCount === 0;
-    if (residentAlready) {
-      if (!Number.isSafeInteger(this.#nextStreamExecution)) {
-        throw new Error("render execution counter exhausted");
-      }
-      if (this.#streamExecution) {
-        this.#settleStreamingExecution(this.#streamExecution, "superseded");
-      }
-      kernel.frame();
-      const result = {
-        status: "resident",
-        submittedPrimitives: 0,
-        totalPrimitives: 0,
-      };
-      const state = {
-        executionId: this.#nextStreamExecution++,
-        ...result,
-        done: Promise.resolve(result),
-      };
-      try {
-        onProgress?.(result);
-      } catch (error) {
-        dispatchFiggyEvent(this, "figgy-error", {
-          error,
-          operation: "stream_progress_callback",
-          recoverable: true,
-        });
-      }
-      dispatchFiggyEvent(this, "figgy-stream-progress", result);
-      this.#lastStreamState = state;
-      return new FiggyRenderJob(state, () => Promise.resolve({ status: "resident" }));
-    }
-
-    const currentCandidate = this.#streamExecution?.residency ? this.#streamExecution : null;
-    if (currentCandidate) {
-      if (changedCount === 0 && ids.length === currentCandidate.rangeSources.size
-          && ids.every((id) => currentCandidate.rangeSources.has(id))) {
-        return currentCandidate.handle;
-      }
-      this.#settleStreamingExecution(currentCandidate, "superseded");
-    }
     if (!Number.isSafeInteger(this.#nextStreamExecution)) {
       throw new Error("stream execution counter exhausted");
     }
-    let request;
-    let residency = null;
-    if (residentCount > 0) {
-      request = kernel.request_resident_stream_handoff(
-        ids,
-        revisions,
-        lengths,
-        encodings,
-        maxPrimitivesPerChunk,
+    if (registeredCount !== 0 && registeredCount !== columns.length) {
+      throw new Error(
+        "one render request cannot mix new and registered range-provider columns",
       );
-    } else {
-      if (registeredCount !== 0 && registeredCount !== columns.length) {
-        throw new Error(
-          "one render request cannot mix new and registered range-provider columns",
-        );
-      }
-      if (registeredCount === 0) {
-        kernel.register_streaming_column_sources(ids, revisions, lengths, encodings);
-      } else if (changedCount > 0) {
-        const changedIds = [];
-        const changedRevisions = [];
-        const changedLengths = [];
-        const changedEncodings = [];
-        for (let index = 0; index < ids.length; index += 1) {
-          if (this.#streamSources.get(ids[index]).revision === revisions[index]) continue;
-          changedIds.push(ids[index]);
-          changedRevisions.push(revisions[index]);
-          changedLengths.push(lengths[index]);
-          changedEncodings.push(encodings[index]);
-        }
-        kernel.replace_streaming_column_sources(
-          changedIds,
-          changedRevisions,
-          changedLengths,
-          changedEncodings,
-        );
-      }
-      for (const [id, source] of rangeSources) {
-        this.#streamSources.set(id, { ...source });
-      }
-      if (!this.#streamExecution && typeof kernel.begin_stream_residency === "function") {
-        residency = kernel.begin_stream_residency(Math.min(maxPrimitivesPerChunk, 4096));
-      }
-      request = residency ? { status: "started", source_ids: residency.source_ids,
-        source_revisions: residency.source_revisions, revision: null }
-        : kernel.request_auto_streaming_chart(maxPrimitivesPerChunk);
     }
+    if (registeredCount === 0) {
+      kernel.register_streaming_column_sources(ids, revisions, lengths, encodings);
+    } else if (changedCount > 0) {
+      const changedIds = [];
+      const changedRevisions = [];
+      const changedLengths = [];
+      const changedEncodings = [];
+      for (let index = 0; index < ids.length; index += 1) {
+        if (this.#streamSources.get(ids[index]).revision === revisions[index]) continue;
+        changedIds.push(ids[index]);
+        changedRevisions.push(revisions[index]);
+        changedLengths.push(lengths[index]);
+        changedEncodings.push(encodings[index]);
+      }
+      kernel.replace_streaming_column_sources(
+        changedIds,
+        changedRevisions,
+        changedLengths,
+        changedEncodings,
+      );
+    }
+    for (const [id, source] of rangeSources) {
+      this.#streamSources.set(id, { ...source });
+    }
+    const request = kernel.request_auto_streaming_chart(maxPrimitivesPerChunk);
     if (request.status === "active" && this.#streamExecution) {
       return this.#streamExecution.handle;
     }
@@ -1973,18 +1841,12 @@ export class FiggyChartElement extends HTMLElement {
       revisions: [],
       sources: [],
       rangeSources,
-      residency,
       readRange,
       rangePending: false,
       rangeGeneration: 0,
       rangeResolved: null,
       rangeError: null,
       restartForResize: false,
-      residentHandoff: residentCount > 0,
-      requestIds: [...ids],
-      requestRevisions: [...revisions],
-      requestLengths: [...lengths],
-      requestEncodings: [...encodings],
       maxPrimitivesPerChunk,
       maxFrameTimeMs,
       stallTimeoutMs,
@@ -2005,7 +1867,7 @@ export class FiggyChartElement extends HTMLElement {
       this.#bindRangeStreamingSources(execution, request);
     } catch (error) {
       try {
-        if (!execution.residency) kernel.interrupt_render();
+        kernel.interrupt_render();
       } catch {
         // Preserve the source identity error.
       }
@@ -2129,7 +1991,6 @@ export class FiggyChartElement extends HTMLElement {
       );
     }
 
-    let residentAlready = false;
     if (existing === 0) {
       this.register_streaming_columns(ids, revisions, sources);
     } else {
@@ -2157,63 +2018,9 @@ export class FiggyChartElement extends HTMLElement {
         changedRevisions.push(revisions[index]);
         changedSources.push(sources[index]);
       }
-      const residentCount = ids.reduce(
-        (count, id) => count + (this.#residentColumns.has(id) ? 1 : 0),
-        0,
-      );
-      if (residentCount === ids.length && changedIds.length === 0) {
-        residentAlready = true;
-      } else if (residentCount > 0) {
-        // The renderer validates that this is the complete connected chart
-        // closure. One atomic demotion normalizes mixed authority before the
-        // next renderer-owned residency decision.
-        this.demote_auto_resident_columns(ids, revisions, sources);
-      } else if (changedIds.length > 0) {
+      if (changedIds.length > 0) {
         this.replace_streaming_columns(changedIds, changedRevisions, changedSources);
       }
-    }
-
-    const residency = residentAlready
-      ? { status: "resident", reason: "already_resident" }
-      : (!this.#streamExecution
-        ? kernel.try_auto_resident_chart(ids, revisions, sources)
-        : { status: "streamed", reason: "active_execution" });
-    if (residency.status === "resident") {
-      if (!Number.isSafeInteger(this.#nextStreamExecution)) {
-        throw new Error("render execution counter exhausted");
-      }
-      if (this.#streamExecution) {
-        this.#settleStreamingExecution(this.#streamExecution, "superseded");
-      }
-      for (const id of ids) {
-        this.#residentColumns.add(id);
-      }
-      kernel.frame();
-      const result = {
-        status: "resident",
-        submittedPrimitives: 0,
-        totalPrimitives: 0,
-      };
-      const state = {
-        executionId: this.#nextStreamExecution++,
-        ...result,
-        done: Promise.resolve(result),
-      };
-      try {
-        onProgress?.(result);
-      } catch (error) {
-        dispatchFiggyEvent(this, "figgy-error", {
-          error,
-          operation: "stream_progress_callback",
-          recoverable: true,
-        });
-      }
-      dispatchFiggyEvent(this, "figgy-stream-progress", result);
-      this.#lastStreamState = state;
-      return new FiggyRenderJob(state, () => Promise.resolve({ status: "resident" }));
-    }
-    for (const id of ids) {
-      this.#residentColumns.delete(id);
     }
 
     const request = kernel.request_auto_streaming_chart(maxPrimitivesPerChunk);
@@ -2324,6 +2131,23 @@ export class FiggyChartElement extends HTMLElement {
   streaming_capabilities() {
     return JSON.parse(this.#kernelForCall().streaming_capabilities());
   }
+  set_pool_auto_growth(enabled) {
+    if (typeof enabled !== "boolean") throw new TypeError("enabled must be a boolean");
+    return this.#kernelForCall().set_pool_auto_growth(enabled);
+  }
+  gpu_memory_status() {
+    return JSON.parse(this.#kernelForCall().gpu_memory_status());
+  }
+  async release_unused_gpu_memory() {
+    if (this.#streamExecution) {
+      throw new Error("finish or cancel the active stream before GPU pool cleanup");
+    }
+    const status = await this.#runKernelOperation(
+      "gpu-memory-cleanup",
+      (kernel) => kernel.release_unused_gpu_memory(),
+    );
+    return JSON.parse(status);
+  }
   request_auto_streaming_chart(maxPrimitivesPerChunk) {
     return this.#kernelForCall().request_auto_streaming_chart(maxPrimitivesPerChunk);
   }
@@ -2335,7 +2159,6 @@ export class FiggyChartElement extends HTMLElement {
       ids, revisions, lengths, encodings,
     );
     for (let index = 0; index < ids.length; index += 1) {
-      this.#residentColumns.delete(ids[index]);
       this.#streamSources.set(ids[index], {
         revision: revisions[index], length: lengths[index], encoding: encodings[index], values: null,
       });
@@ -2464,25 +2287,27 @@ export class FiggyChartElement extends HTMLElement {
     return hit === undefined ? null : hit;
   }
   async pick_point(x, y, maxDistancePx) {
-    const hit = this.#streamReplay
-      ? await this.#replayStreamOperation("pick_point", [x, y, maxDistancePx])
-      : await this.#runKernelOperation(
+    // The renderer only picks a completed chart-local packed view. A streamed
+    // image without that cache returns no hit; it never replays its source.
+    const hit = await this.#runKernelOperation(
       "pick",
       (kernel) => kernel.pick_point(x, y, maxDistancePx),
     );
     return hit === undefined ? null : JSON.parse(hit);
   }
   async pick_data(x, y, maxDistancePx) {
-    const hit = this.#streamReplay
-      ? await this.#replayStreamOperation("pick_data", [x, y, maxDistancePx])
-      : await this.#runKernelOperation(
+    const hit = await this.#runKernelOperation(
       "pick",
       (kernel) => kernel.pick_data(x, y, maxDistancePx),
     );
     return hit === undefined ? null : JSON.parse(hit);
   }
-  set_picked_points(json) { return this.#mutateChart("set_picked_points", json); }
-  set_picked_data(json) { return this.#mutateChart("set_picked_data", json); }
+  next_view_point_index(sourceId, seriesId, current, forward) {
+    const index = this.#kernelForCall().next_view_point_index(sourceId ?? undefined, seriesId, current, forward);
+    return index === undefined ? null : index;
+  }
+  set_picked_points(json) { return this.#mutateSelection("set_picked_points", json); }
+  set_picked_data(json) { return this.#mutateSelection("set_picked_data", json); }
   set_clear_color(r, g, b, a) { return this.#mutateChart("set_clear_color", r, g, b, a); }
   load_demo() { return this.#kernelForCall().load_demo(); }
   on_press(x, y) { return this.#mutateChart("on_press", x, y); }

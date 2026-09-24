@@ -664,19 +664,21 @@ host 계약이 아니라 디버깅/특수 embed용이다.
 
 ![figgy의 상주 및 비상주 화면 렌더링 구조](assets/streaming-architecture-en.png)
 
-이 그림은 화면 표시 경로만 나타낸다. 책임과 재실행 조건은 다음과 같다.
+이 그림은 기본 화면 표시 경로만 나타내며 선택적인 차트별 패킹 뷰 캐시는
+아직 표시하지 않는다. 책임과 재실행 조건은 다음과 같다.
 
 | 계층 | 소유하는 상태와 역할 |
 |---|---|
 | 호스트 원본 저장소 | 동일 revision의 TypedArray 또는 `readRange` 공급자를 재생·조회가 끝날 때까지 유지한다. 파일 파싱과 Worker I/O도 여기서 한다. |
 | 웹 facade | 필요한 구간만 요청·전달하고 rAF, GPU 완료 대기, 중단 신호, 진행 통지와 Promise 수명주기를 처리한다. 전체 데이터를 별도로 복제하거나 스트림 커서·통계의 권위를 갖지 않는다. |
-| 렌더러 | `Config`·시리즈·소스 revision·커서·청크 통계의 단일 진실 원본이다. 참조 관계로 연결된 컬럼 전체의 상주 가능 여부를 판단하고, 상주 풀 또는 청크 누적 경로를 고른다. |
-| GPU 화면 경로 | 상주 시 `ColumnPool`의 원본 primitive를 그리고, 비상주 시 제한된 청크를 업로드해 오프스크린 면에 누적한다. 두 경로 모두 LOD·데시메이션 없이 처리한다. |
+| 렌더러 | `Config`·시리즈·소스 revision·커서·청크 통계의 단일 진실 원본이다. 자동 스트리밍에서 연결된 컬럼 전체를 상주 풀에 승격하지 않으며, 현재 뷰에 필요한 원본 행의 패킹 가능 여부를 판단한다. |
+| GPU 화면 경로 | 명시적 상주 컬럼은 `ColumnPool`에서 그리고, 자동 스트림은 제한된 청크를 업로드해 오프스크린 면에 누적한다. 예산에 맞는 지원 차트는 현재 뷰의 원본 행만 차트별 패킹 캐시에 유지할 수 있다. 모두 LOD·데시메이션 없이 처리한다. |
 
-화면의 누적 이미지는 피킹 결과나 PNG 출력의 데이터 원본이 아니다. 완료
-revision의 피킹은 원본 컬럼 또는 필요한 구간을 GPU에 재공급하며, 배율 지정
-PNG는 별도의 해상도로 원본을 다시 그린다. 따라서 완료 직후 소스 공급자를
-버리면 이 작업과 resize/DPR 재생을 보장할 수 없다. 같은 revision의 원본은
+화면의 누적 이미지는 피킹 결과나 PNG 출력의 데이터 원본이 아니다. 완료된
+패킹 뷰의 점·선 피킹은 패킹된 GPU 행을 조회하며, 그 밖의 비상주 스트림에는
+즉시 피킹이 없다. 배율 지정 PNG는 별도의 해상도로 원본을 다시 그린다. 따라서
+완료 직후 소스 공급자를 버리면 출력과 resize/DPR 재생을 보장할 수 없다.
+같은 revision의 원본은
 불변이어야 하며, 변경할 때는 새 revision으로 등록한다. 정확한 원본 primitive
 처리와 서로 다른 GPU 백엔드·렌더 패스에서의 안티앨리어싱 RGBA 바이트 일치는
 별개의 계약이다.
@@ -705,7 +707,6 @@ const job = chart.render_chart({
   onProgress: progress => updateProgress(progress),
 });
 await job.done;
-const hit = await chart.pick_point(pixelX, pixelY, 8);
 const png = await chart.export_png(2);
 // 화면을 버릴 때: await job.cancel();
 ```
@@ -715,12 +716,12 @@ const png = await chart.export_png(2);
   facade는 배열 참조만 보관한다. 구간 뷰를 만들 때 전체 배열을 복사하지 않으며,
   필요한 구간만 WASM의 write-only staging에 기록한다. Worker에서 생성한 구간은
   transferable buffer로 넘길 수 있다. 파일 파싱·저장소·Worker I/O는 호스트 책임이다.
-- 완료 뒤에도 원본 참조 또는 `readRange`를 유지한다. resize/DPR 변경, 정확한 출력,
-  피킹에는 같은 revision의 재공급이 필요하기 때문이다. 같은 revision의 값은
+- 완료 뒤에도 원본 참조 또는 `readRange`를 유지한다. resize/DPR 변경과 정확한 출력에는
+  같은 revision의 재공급이 필요하기 때문이다. 같은 revision의 값은
   바꾸거나 버퍼를 detach하지 않는다. 변경은 새 revision으로 명시한다.
   `job.cancel()`이나 컴포넌트 해제로 해당 실행의 보관 참조를 놓는다.
-- `Config`, 시리즈, 소스 revision과 청크 커서의 권위는 렌더러다. facade는 GPU 계산이나
-  피킹을 재구현하지 않고 구간 요청과 완료 통지만 연결한다. 데이터 축소·LOD는 없다.
+- `Config`, 시리즈, 소스 revision과 청크 커서의 권위는 렌더러다. facade는 GPU 계산을
+  재구현하지 않고 구간 요청과 완료 통지만 연결한다. 데이터 축소·LOD는 없다.
 - `maxFrameTimeMs`는 측정된 동기 제출 시간을 이용한 적응형 청크 목표다. 브라우저의
   스케줄링, 공급자 코드, GPU 명령의 실행 시간을 강제로 제한하는 보장은 아니다.
   작업은 MessageChannel과 GPU 완료 통지로 진행하며 화면 표시는 rAF에 맞춘다.
@@ -738,20 +739,54 @@ const png = await chart.export_png(2);
   교체한다. 공급 실패 시에도 이전 표시를 유지하며 `figgy-error`로 알린다.
   취소되거나 더 새 선택으로 대체된 요청의 지연 응답은 반영하지 않는다.
   내보내기는 시작 시점의 선택을 유지하므로 이후 화면 선택 변경과 섞이지 않는다.
-- 완료된 스트림의 `pick_point`/`pick_data`/`export_png`는 기존 facade API를 사용한다.
-  피킹은 GPU가 전역 인덱스·identity·`distance_px`만 반환한다. PNG는 문서 크기와
+- 완료된 차트별 패킹 뷰가 있으면 `pick_point`/`pick_data`는 GPU의 패킹된
+  point/line에서 원본 행 인덱스를 반환한다. 원본 소스를 다시 읽지 않는다.
+  `next_view_point_index(sourceId, seriesId, current, forward)`는 같은 패킹 뷰에
+  실제 유지된 행 사이의 다음/이전 원본 인덱스를 동기적으로 반환한다. 대상 행이
+  없으면 `null`이며 GPU 피킹이나 공급자 조회를 다시 실행하지 않는다.
+  패킹 뷰가 없거나 아직 준비 중인 비상주 스트림은 즉시 `null`을 반환한다.
+  저수준 WASM `begin_stream_pick_*`/`finish_stream_pick_*`는 호환성을 위해 형상만
+  남기고 즉시 오류를 반환한다. 기존 상주 차트의 피킹도 그대로 지원한다. 이미 알고 있는
+  인덱스의 선택 표시는 위의 제한된 원본 구간 조회를 사용한다. `export_png`는 문서 크기와
   출력 배율로 원본을 재생하며 화면 텍스처를 늘려 쓰지 않는다. 화면 작업의 커서와
-  누적면은 변경하지 않는다. 진행 중인 revision은 miss로 속이지 않고 오류로 알린다.
+  누적면은 변경하지 않는다.
 - `inspect_column_admission(metadata)`는 encoded bytes, 한도, 거절 이유를 조회한다.
-  예약이나 모든 파생 자원의 admission 보장은 아니다. `configure_auto_residency()`로
-  전체 GPU 예산과 상주 한도를 정하면, TypedArray와 구간 공급자 경로 모두 렌더러가
-  참조 관계로 연결된 전체 컬럼의 상주 가능 여부를 판단한다. 구간 공급자는 후보 GPU
-  버퍼에 필요한 범위만 차례로 업로드하며 전체 CPU 배열을 만들지 않는다. 기존 완료
-  화면은 후보가 준비될 때까지 유지한다. 후보 실패는 기존 화면을 지우지 않는다.
-  참조 관계·소스 revision이 바뀌거나 영향을 받는 다른 차트가 렌더링 중이면 전환을
-  게시하지 않는다. 명시적인 `job.cancel()`은 해당 작업과 표시 자원을 정리한다.
-- Heatmap은 렌더·GPU 행렬 셀 피킹·선택·출력을 지원한다. 피킹은 좌표 컬럼만 재공급하고
-  전역 셀 인덱스를 반환한다. 선택 표시는 해당 셀 경계 계산에 필요한 축 이웃만 읽는다.
+  예약이나 모든 파생 자원의 admission 보장은 아니다. 이는 명시적인 전체 컬럼
+  등록용 조회이며 자동 렌더의 기준은 아니다. `configure_auto_residency()`는 전체
+  GPU 예산과 차트별 뷰 패킹 한도를 설정한다. 지원되는 precise point/solid-line/
+  errorbar 차트에서는 스트림 업로드 중 현재 화면에 필요한 원본 행만 골라 GPU에
+  유지한다. 완료된 패킹 페이지는 스트림 진행 중 GPU로 옮기며 CPU에는 현재
+  청크와 패킹 중인 페이지만 둔다. 화면 밖의 점끼리 잇는 선과 화면에 닿는
+  에러바의 원본 행도 포함한다. 상주 한도 0은 뷰 패킹을 비활성화한다.
+  참조 관계로 연결된 전체 컬럼을 자동으로 `ColumnPool`에 승격하지 않는다.
+  더 좁은 뷰는 패킹된 행에서 다시 그리고, 그 범위를 벗어나거나 배율이 바뀌면
+  원본 구간을 다시 요청한다. 지원되지 않는 형상, 패킹 한도·GPU 예산·할당 실패는
+  정확한 스트림 렌더를 유지한다. `stream_status().view_residency`에서
+  `state`, `needed_bytes`, `refusal_reason`, `picking_available`을 조회할 수 있다.
+  `needed_bytes`는 준비 중에는 현재까지의 하한, 완료 후에는 실제 패킹 바이트다.
+  명시적인 `job.cancel()`은 해당 작업과 표시 자원을 정리한다.
+- 웹의 고정 크기 컬럼 풀은 기본 16 MiB다. `set_pool_auto_growth(true)`를 호출하면
+  공간 부족 업로드에서 자동 증설을 시도한다. 기본값은 `false`이며, 증설은 장치의
+  storage binding 한도와 `configure_auto_residency()`의 전체 예산을 넘지 않는다.
+  등록·갱신·배치 등록의 GPU 할당 오류는 JS `Error.code`로 `pool_space`,
+  `budget_exceeded`, `device_limit`, `allocation_failed`를 구분한다. 가능한 경우
+  `requestedBytes`, `limitBytes`, `largestFreeBytes`, `totalFreeBytes`도 제공한다.
+  이 값은 JS safe integer 범위 안에서는 숫자, 초과 시 정확한 10진 문자열이다.
+- `gpu_memory_status()`는 GPU 요청 할당량의 live/retired/total, 풀 용량·점유·가장 큰
+  빈 영역·백업·반납 대기량, 리소스별 사용량과 등록 컬럼별 `resident`/`streamed`
+  상태를 반환한다. 이는 드라이버의 실제 VRAM 잔량 측정이 아니다.
+  `await release_unused_gpu_memory()`는 활성 스트림이 없을 때 생존 컬럼을 GPU 안에서
+  작은 풀로 옮기고 구 버퍼의 완료 fence까지 기다린다. 풀은 최소 16 MiB를 남긴다.
+  축소용 후보 버퍼도 일시적으로 필요하므로 예산·장치·할당 실패는 오류로 반환하며,
+  실패해도 생존 컬럼과 기존 바인딩은 유지한다.
+- 호스트 정책 예: 전체 예산을 `4_000_000_000`바이트, 뷰별 패킹 한도를
+  `500_000_000`바이트로 설정하고, 현재 화면에 필요한 패킹 GPU 바이트가
+  한도를 넘으면 정확한 스트림을 유지한다.
+  등록의 공간·예산 실패 시 불필요한 컬럼 제거 → 정리 API 완료 대기 → 한 번만 재시도하고,
+  계속 실패하거나 장치 한도·실제 할당 실패면 스트림 경로로 간다. 이 숫자는 호스트의
+  예시 정책이지 렌더러의 하드코딩된 기본값이 아니다.
+- 비상주 Heatmap은 렌더·선택·출력을 지원한다. 즉시 스트림 피킹은 지원하지 않는다.
+  이미 알고 있는 셀의 선택 표시는 경계 계산에 필요한 축 이웃만 읽는다.
   오토스케일은 기존 GPU 격자 범위 계산을 재사용하고 결과를 revision별로 캐시한다.
 - `streaming_capabilities()`는 현재 Config/Series의 지원 여부와 이유를 반환한다.
   `operations_require_completed_revision`은 조회·출력의 완료 조건이다. 미지원 조합은
@@ -761,7 +796,7 @@ const png = await chart.export_png(2);
 
 실제 브라우저 회귀 페이지는 `crates/web/tests/streaming-contract-probe.html`이다.
 430만 점, Worker 구간 공급, 상주 차트 동시 표시, 리사이즈, 취소, fit,
-전역 인덱스 피킹과 1배·2배 출력을 검사한다.
+패킹 뷰가 없는 스트림 피킹의 즉시 종료·원본 무조회와 1배·2배 출력을 검사한다.
 
 `pick_point`의 JSON/object/null payload와 rejection 전달 계약은 0.8에서도
 그대로다. 제출된 ticket은 readback 자원과 제출 시점의 `Arc` 기반

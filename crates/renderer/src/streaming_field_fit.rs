@@ -317,6 +317,7 @@ impl Renderer {
             supply,
             &mut encoder,
             GpuSeriesExtentTicket::FIELD_BYTES,
+            None,
         ) {
             Ok(chunk) => chunk,
             Err(error) => {

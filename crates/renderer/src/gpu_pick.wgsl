@@ -50,7 +50,8 @@ struct PickQueryParams {
     style: vec4<u32>,
     // (gate-word count, series order, base shape id, dispatch X width).
     series: vec4<u32>,
-    // (global point offset, owned scatter count, owned segment count, unused).
+    // (global point offset, owned scatter count, owned segment count,
+    //  optional original-row map word base; zero disables the map).
     stream: vec4<u32>,
 };
 
@@ -106,6 +107,13 @@ fn pick_is_finite(v: f32) -> bool {
 fn pick_read_pair(base: u32, point_index: u32) -> vec2<f32> {
     let word = base + point_index * 2u;
     return vec2<f32>(bitcast<f32>(pick_pool_words[word]), bitcast<f32>(pick_pool_words[word + 1u]));
+}
+
+fn pick_source_row(local_index: u32) -> u32 {
+    if pick_query_params.stream.w != 0u {
+        return pick_pool_words[pick_query_params.stream.w + local_index];
+    }
+    return local_index + pick_query_params.stream.x;
 }
 
 fn pick_pair_is_valid(v: vec2<f32>) -> bool {
@@ -458,9 +466,9 @@ fn pick_scatter_candidate(
     return PickCandidate(
         1u,
         series_order,
-        point_index + pick_query_params.stream.x,
+        pick_source_row(point_index),
         0u,
-        point_index + pick_query_params.stream.x,
+        pick_source_row(point_index),
         distance_sq,
         hit_distance,
         0u,
@@ -509,9 +517,9 @@ fn pick_line_candidate(
     return PickCandidate(
         1u,
         series_order,
-        point_index + pick_query_params.stream.x,
+        pick_source_row(point_index),
         1u,
-        segment_index + pick_query_params.stream.x,
+        pick_source_row(segment_index),
         distance_sq,
         sqrt(distance_sq),
         0u,

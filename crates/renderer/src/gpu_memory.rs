@@ -28,7 +28,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Number of rows in a [`GpuMemoryUsage`] report.
-pub const GPU_RESOURCE_KIND_COUNT: usize = 13;
+pub const GPU_RESOURCE_KIND_COUNT: usize = 14;
 
 /// Complete byte inputs for a side-effect-free resident admission check.
 ///
@@ -161,6 +161,8 @@ pub enum GpuResourceKind {
     ContourScratch,
     /// Bounded streaming chunk staging and work buffers, outside the resident pool.
     StreamingUpload,
+    /// Chart-local packed source rows for an exact current-view resident cache.
+    ViewResident,
 }
 
 impl GpuResourceKind {
@@ -179,6 +181,7 @@ impl GpuResourceKind {
         GpuResourceKind::FieldTable,
         GpuResourceKind::ContourScratch,
         GpuResourceKind::StreamingUpload,
+        GpuResourceKind::ViewResident,
     ];
 
     /// Row index in a [`GpuMemoryUsage`] report.
@@ -197,6 +200,7 @@ impl GpuResourceKind {
             GpuResourceKind::FieldTable => 10,
             GpuResourceKind::ContourScratch => 11,
             GpuResourceKind::StreamingUpload => 12,
+            GpuResourceKind::ViewResident => 13,
         }
     }
 
@@ -216,6 +220,7 @@ impl GpuResourceKind {
             GpuResourceKind::FieldTable => "field table",
             GpuResourceKind::ContourScratch => "contour scratch",
             GpuResourceKind::StreamingUpload => "streaming upload",
+            GpuResourceKind::ViewResident => "view resident",
         }
     }
 }
@@ -580,6 +585,15 @@ impl GpuMemoryUsage {
 pub struct TrackedBuffer {
     buffer: wgpu::Buffer,
     charge: SharedCharge,
+}
+
+impl Clone for TrackedBuffer {
+    fn clone(&self) -> Self {
+        Self {
+            buffer: self.buffer.clone(),
+            charge: Arc::clone(&self.charge),
+        }
+    }
 }
 
 impl TrackedBuffer {

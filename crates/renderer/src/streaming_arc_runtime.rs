@@ -314,7 +314,7 @@ impl Renderer {
                 label: Some("stream canonical arc replay"),
             });
         let chunk =
-            match self.accept_stream_supply_with_headroom(ticket, supply, &mut encoder, headroom) {
+            match self.accept_stream_supply_with_headroom(ticket, supply, &mut encoder, headroom, None) {
                 Ok(chunk) => chunk,
                 Err(error) => {
                     drop((encoder, buffers));

@@ -460,6 +460,7 @@ impl Renderer {
             supply,
             &mut encoder,
             field::STEP_BYTES,
+            None,
         ) {
             Ok(chunk) => chunk,
             Err(error) => {

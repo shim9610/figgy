@@ -1919,6 +1919,8 @@ mod web {
     };
 
     use renderer::{InitEvent, InitPhase};
+    use renderer::data_render::{AllocError, GrowthPolicy};
+    use renderer::gpu_memory::GpuResourceKind;
 
     use crate::borrowed_column::{
         BorrowedCastF32Column, BorrowedF32Column, BorrowedF64Column, BorrowedSplitF64Column,
@@ -1938,6 +1940,56 @@ mod web {
 
     fn js_err(e: impl std::fmt::Display) -> JsValue {
         JsValue::from_str(&e.to_string())
+    }
+
+    fn column_registration_error(error: renderer::FiggyError) -> JsValue {
+        let (code, requested, limit, largest_free, total_free) = match &error {
+            renderer::FiggyError::Pool(AllocError::OutOfSpace {
+                requested,
+                largest_free,
+                total_free,
+            }) => (
+                "pool_space",
+                Some(*requested),
+                None,
+                Some(*largest_free),
+                Some(*total_free),
+            ),
+            renderer::FiggyError::Pool(AllocError::BudgetExceeded { requested, limit, .. }) => {
+                ("budget_exceeded", Some(*requested), Some(*limit), None, None)
+            }
+            renderer::FiggyError::Pool(AllocError::ResourceLimit { requested, limit, .. })
+            | renderer::FiggyError::GpuResourceLimit { requested, limit, .. } => {
+                ("device_limit", Some(*requested), Some(*limit), None, None)
+            }
+            renderer::FiggyError::Pool(AllocError::AllocationFailed { .. })
+            | renderer::FiggyError::GpuResourceAllocationFailed { .. } => {
+                ("allocation_failed", None, None, None, None)
+            }
+            _ => ("registration_failed", None, None, None, None),
+        };
+        let js_error = js_sys::Error::new(&error.to_string());
+        let object: &JsValue = js_error.as_ref();
+        let set = |key: &str, value: JsValue| {
+            let _ = js_sys::Reflect::set(object, &JsValue::from_str(key), &value);
+        };
+        set("code", JsValue::from_str(code));
+        for (key, value) in [
+            ("requestedBytes", requested),
+            ("limitBytes", limit),
+            ("largestFreeBytes", largest_free),
+            ("totalFreeBytes", total_free),
+        ] {
+            if let Some(value) = value {
+                let js_value = if value <= 9_007_199_254_740_991 {
+                    JsValue::from_f64(value as f64)
+                } else {
+                    JsValue::from_str(&value.to_string())
+                };
+                set(key, js_value);
+            }
+        }
+        js_error.into()
     }
 
     fn js_safe_u64(value: f64, name: &str) -> Result<u64, JsValue> {
@@ -2530,24 +2582,6 @@ mod web {
         counts: Cell<(f64, f64)>,
     }
 
-    /// Renderer-owned, unpublished resident candidate. No host payload is retained.
-    #[wasm_bindgen]
-    pub struct StreamingResidencyHandle {
-        operation: renderer::StreamingResidencyOperation,
-        revision: String,
-        counts: Cell<(f64, f64)>,
-        source_ids: Vec<String>,
-        source_revisions: Vec<f64>,
-    }
-
-    #[wasm_bindgen]
-    impl StreamingResidencyHandle {
-        #[wasm_bindgen(getter)]
-        pub fn source_ids(&self) -> Vec<String> { self.source_ids.clone() }
-        #[wasm_bindgen(getter)]
-        pub fn source_revisions(&self) -> Vec<f64> { self.source_revisions.clone() }
-    }
-
     #[wasm_bindgen]
     impl AutoStreamingRangeRequestResult {
         pub fn same_selection_request(&self, other: &AutoStreamingRangeRequestResult) -> bool {
@@ -2604,38 +2638,6 @@ mod web {
         #[wasm_bindgen(getter)]
         pub fn pending_latest(&self) -> bool {
             self.pending_latest
-        }
-    }
-
-    /// Result of the renderer-owned resident/streamed selection preflight.
-    #[wasm_bindgen]
-    pub struct AutoResidencyResult {
-        status: &'static str,
-        reason: &'static str,
-        resident_working_set_bytes: f64,
-        transition_peak_bytes: f64,
-    }
-
-    #[wasm_bindgen]
-    impl AutoResidencyResult {
-        #[wasm_bindgen(getter)]
-        pub fn status(&self) -> String {
-            self.status.to_owned()
-        }
-
-        #[wasm_bindgen(getter)]
-        pub fn reason(&self) -> String {
-            self.reason.to_owned()
-        }
-
-        #[wasm_bindgen(getter)]
-        pub fn resident_working_set_bytes(&self) -> f64 {
-            self.resident_working_set_bytes
-        }
-
-        #[wasm_bindgen(getter)]
-        pub fn transition_peak_bytes(&self) -> f64 {
-            self.transition_peak_bytes
         }
     }
 
@@ -3019,7 +3021,7 @@ mod web {
                     self.renderer.begin_upsert_hilo_column(id, source)
                 }
             }
-            .map_err(js_err)?;
+            .map_err(column_registration_error)?;
             if engine_ready {
                 for request in &pending_series_extents {
                     let ticket = guard
@@ -3089,7 +3091,7 @@ mod web {
                     .zip(adapters)
                     .map(|(id, adapter)| (id.as_str(), adapter as &dyn ColumnSource)),
             );
-            self.renderer.add_columns(&refs).map_err(js_err)?;
+            self.renderer.add_columns(&refs).map_err(column_registration_error)?;
             self.columns = metadata.columns;
             self.column_revisions = metadata.revisions;
             self.next_column_revision = metadata.next_revision;
@@ -3179,9 +3181,10 @@ mod web {
                 .map_err(js_err)
         }
 
-        /// Configure resource policy, not a render mode. Subsequent high-level
-        /// render requests let the renderer choose resident or exact streamed
-        /// execution for the complete referenced-column closure.
+        /// Configure the total GPU budget and chart-local packed-view limit.
+        /// Automatic streaming keeps original sources nonresident, then caches
+        /// only source rows whose geometry reaches the current view when the
+        /// completed packed view fits both limits.
         pub fn configure_auto_residency(
             &mut self,
             memory_budget_bytes: f64,
@@ -3204,129 +3207,89 @@ mod web {
             Ok(())
         }
 
-        /// Let the renderer attempt an exact failure-atomic resident
-        /// transition. A streamed result leaves the registered sources and
-        /// their revisions untouched for the automatic stream executor.
-        pub fn try_auto_resident_chart(
-            &mut self,
-            ids: Vec<String>,
-            revisions: Vec<f64>,
-            sources: js_sys::Array,
-        ) -> Result<AutoResidencyResult, JsValue> {
-            let sources = js_stream_sources(&sources)?;
-            let revisions = validate_stream_bindings(&ids, &revisions, &sources)?;
-            let mut bindings = Vec::new();
-            bindings.try_reserve_exact(ids.len()).map_err(js_err)?;
-            for ((id, revision), source) in ids.iter().zip(revisions).zip(&sources) {
-                bindings.push(StreamSourceBinding {
-                    id,
-                    revision,
-                    source: source.source(),
-                });
+        /// Opt in to pool growth on an otherwise out-of-space upload. Growth
+        /// remains bounded by the device storage-binding limit and the
+        /// configured renderer memory budget.
+        pub fn set_pool_auto_growth(&mut self, enabled: bool) {
+            self.renderer.set_pool_growth_policy(if enabled {
+                GrowthPolicy::OnAllocFailure
+            } else {
+                GrowthPolicy::Fixed
+            });
+        }
+
+        /// Read-only accounting. These are requested GPU allocations, not a
+        /// driver VRAM measurement; retired bytes remain charged until the
+        /// queue completion callback fires.
+        pub fn gpu_memory_status(&self) -> String {
+            let usage = self.renderer.gpu_memory_usage();
+            let pool = self.renderer.pool();
+            let mut sources: Vec<_> = self
+                .columns
+                .iter()
+                .map(|(id, &length)| {
+                    let (residency, encoded_bytes) = match self.renderer.logical_column(id) {
+                        Some(renderer::LogicalColumn::Resident(slot)) => {
+                            ("resident", Some(slot.byte_size))
+                        }
+                        Some(renderer::LogicalColumn::Streamed(_)) => ("streamed", None),
+                        None => ("missing", None),
+                    };
+                    serde_json::json!({
+                        "id": id,
+                        "length": length,
+                        "revision": self.column_revisions.get(id).map(u64::to_string),
+                        "residency": residency,
+                        "encoded_bytes": encoded_bytes,
+                    })
+                })
+                .collect();
+            sources.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+            let resources: Vec<_> = GpuResourceKind::ALL
+                .into_iter()
+                .map(|kind| serde_json::json!({
+                    "kind": kind.label(),
+                    "live_bytes": usage.live_bytes_of(kind),
+                    "retired_bytes": usage.retired_bytes_of(kind),
+                }))
+                .collect();
+            serde_json::json!({
+                "total_bytes": usage.total_bytes(),
+                "live_bytes": usage.live_bytes(),
+                "retired_bytes": usage.retired_bytes(),
+                "memory_budget_bytes": self.renderer.memory_budget(),
+                "pool": {
+                    "capacity_bytes": pool.capacity(),
+                    "used_bytes": pool.used_bytes(),
+                    "free_bytes": pool.free_bytes(),
+                    "largest_free_bytes": pool.largest_free_region(),
+                    "backup_bytes": pool.backup_bytes(),
+                    "retired_bytes": pool.retired_bytes(),
+                    "auto_growth": pool.growth_policy == GrowthPolicy::OnAllocFailure,
+                },
+                "resources": resources,
+                "sources": sources,
+            }).to_string()
+        }
+
+        /// Compact live resident columns, drop the unused pool slab, and wait
+        /// for the device completion fence before reporting reclaimed bytes.
+        /// The 16 MiB startup slab remains as the minimum reusable pool.
+        pub async fn release_unused_gpu_memory(&mut self) -> Result<String, JsValue> {
+            let status = self.renderer.stream_status(self.chart_id).map_err(js_err)?;
+            if matches!(
+                status.status,
+                renderer::StreamingState::Active
+                    | renderer::StreamingState::AllSubmitted
+                    | renderer::StreamingState::Cancelling
+            ) {
+                return Err(js_err("finish or cancel the active stream before GPU pool cleanup"));
             }
-            let (display_config, _, _) = self.display_config();
-            let result = self
-                .renderer
-                .try_promote_streamed_chart_to_resident(
-                    self.chart_id,
-                    &display_config,
-                    &bindings,
-                )
-                .map_err(js_err)?;
-            let Some(report) = result else {
-                return Ok(AutoResidencyResult {
-                    status: "streamed",
-                    reason: "policy_unset",
-                    resident_working_set_bytes: 0.0,
-                    transition_peak_bytes: 0.0,
-                });
-            };
-            let resident = report.is_admissible();
-            if resident {
-                self.request_host_redraw();
-            }
-            Ok(AutoResidencyResult {
-                status: if resident { "resident" } else { "streamed" },
-                reason: resident_admission_reason(report.status),
-                resident_working_set_bytes: report.resident_working_set_bytes as f64,
-                transition_peak_bytes: report.transition_peak_bytes as f64,
-            })
-        }
-
-        pub fn begin_stream_residency(
-            &mut self, max_chunk: f64,
-        ) -> Result<Option<StreamingResidencyHandle>, JsValue> {
-            let max_chunk = js_safe_u64(max_chunk, "resident transfer chunk size")?;
-            let (config, _, _) = self.display_config();
-            let revision = self.renderer.stream_status(self.chart_id).map_err(js_err)?
-                .desired_revision.to_string();
-            let (operation, _) = self.renderer
-                .begin_stream_residency(self.chart_id, &config, max_chunk).map_err(js_err)?;
-            let Some(operation) = operation else { return Ok(None); };
-            let columns = self.renderer.stream_residency_columns(operation).map_err(js_err)?;
-            Ok(Some(StreamingResidencyHandle {
-                operation,
-                revision,
-                counts: Cell::new((0.0, 0.0)),
-                source_ids: columns.iter().map(|source| source.id.clone()).collect(),
-                source_revisions: columns.iter().map(|source| source.revision as f64).collect(),
-            }))
-        }
-
-        pub fn stream_residency_request_ranges(
-            &mut self, handle: &StreamingResidencyHandle,
-        ) -> Result<AutoStreamingRangeRequestResult, JsValue> {
-            let request = self.renderer.request_stream_residency_ranges(handle.operation).map_err(js_err)?;
-            let response = AutoStreamingRangeRequestResult::from_core(
-                request, handle.revision.clone(), handle.counts.get(),
-            )?;
-            handle.counts.set((response.submitted_primitives, response.total_primitives));
-            Ok(response)
-        }
-
-        pub fn set_stream_residency_chunk_budget(
-            &mut self, handle: &StreamingResidencyHandle, max_chunk: f64,
-        ) -> Result<(), JsValue> {
-            let max_chunk = js_safe_u64(max_chunk, "resident transfer chunk size")?;
-            self.renderer.set_stream_residency_chunk_budget(handle.operation, max_chunk).map_err(js_err)
-        }
-
-        pub fn stream_residency_submit_ranges(
-            &mut self, handle: &StreamingResidencyHandle, ids: Vec<String>,
-            revisions: Vec<f64>, source_lengths: Vec<f64>, offsets: Vec<f64>,
-            sources: js_sys::Array,
-        ) -> Result<StreamingStepResult, JsValue> {
-            let sources = js_stream_sources(&sources)?;
-            let bindings = stream_range_bindings(&ids, &revisions, &source_lengths, &offsets, &sources)?;
-            let progress = self.renderer.submit_stream_residency_ranges(handle.operation, &bindings).map_err(js_err)?;
-            let (status, submitted, total) = match progress {
-                renderer::StreamingProgress::Submitted { submitted_primitives, total_primitives } =>
-                    ("submitted", submitted_primitives, total_primitives),
-                renderer::StreamingProgress::Backpressure { submitted_primitives, total_primitives } =>
-                    ("backpressure", submitted_primitives, total_primitives),
-                renderer::StreamingProgress::AllSubmitted { total_primitives } =>
-                    ("all_submitted", total_primitives, total_primitives),
-            };
-            handle.counts.set((submitted as f64, total as f64));
-            Ok(StreamingStepResult {
-                status, revision: handle.revision.clone(), submitted_primitives: submitted as f64,
-                total_primitives: total as f64, pending_latest: false,
-            })
-        }
-
-        pub fn finish_stream_residency(
-            &mut self, handle: &StreamingResidencyHandle,
-        ) -> Result<(), JsValue> {
-            self.renderer.finish_stream_residency(handle.operation).map_err(js_err)?;
-            self.retire_series_extent_cache();
-            self.request_host_redraw();
-            Ok(())
-        }
-
-        pub fn cancel_stream_residency(
-            &mut self, handle: &StreamingResidencyHandle,
-        ) -> Result<(), JsValue> {
-            self.renderer.cancel_stream_residency(handle.operation).map_err(js_err)
+            self.renderer
+                .release_unused_pool_memory(POOL_CAPACITY)
+                .await
+                .map_err(column_registration_error)?;
+            Ok(self.gpu_memory_status())
         }
 
         /// Ask the renderer to draw the latest chart state. Decoration-only
@@ -4093,6 +4056,7 @@ mod web {
         /// Pure metadata inspection; does not poll, reserve a range, or draw.
         pub fn stream_status(&self) -> Result<String, JsValue> {
             let status = self.renderer.stream_status(self.chart_id).map_err(js_err)?;
+            let residency = self.renderer.view_residency_status(self.chart_id).map_err(js_err)?;
             let name = match status.status {
                 renderer::StreamingState::Idle => "idle",
                 renderer::StreamingState::Active => "active",
@@ -4112,6 +4076,12 @@ mod web {
                 "in_flight_chunks": status.in_flight_chunks,
                 "reserved_gpu_bytes": status.reserved_gpu_bytes,
                 "auto_fit_pending": status.auto_fit_pending,
+                "view_residency": {
+                    "state": residency.state,
+                    "needed_bytes": residency.needed_bytes,
+                    "refusal_reason": residency.refusal_reason,
+                    "picking_available": residency.picking_available,
+                },
             }).to_string())
         }
 
@@ -4145,7 +4115,7 @@ mod web {
                 "range_sources": true,
                 "adaptive_chunk_budget": true,
                 "async_cancel": true,
-                "stream_pick": render_supported,
+                "stream_pick": false,
                 "stream_export": render_supported,
                 "operations_require_completed_revision": true,
                 "contour": false,
@@ -4998,6 +4968,13 @@ mod web {
             y: f32,
             max_distance_px: f32,
         ) -> Result<JsValue, JsValue> {
+            if self.renderer.is_streaming_chart(self.chart_id) {
+                let Some(picked) = self.renderer
+                    .pick_chart_view_cache_at(self.chart_id, [x, y], max_distance_px)
+                    .await.map_err(js_err)? else { return Ok(JsValue::UNDEFINED); };
+                let json = crate::picked_point_json_string(&picked).map_err(js_err)?;
+                return Ok(JsValue::from_str(&json));
+            }
             self.prepare_gpu_picking().await?;
             let ticket = self
                 .renderer
@@ -5008,6 +4985,22 @@ mod web {
             };
             let json = crate::picked_point_json_string(&picked).map_err(js_err)?;
             Ok(JsValue::from_str(&json))
+        }
+
+        /// Move among source rows represented in the completed packed view.
+        /// Returns only the original source index; no source or GPU readback.
+        pub fn next_view_point_index(
+            &self,
+            source_id: Option<String>,
+            series_id: String,
+            current: f64,
+            forward: bool,
+        ) -> Result<JsValue, JsValue> {
+            let current = js_safe_u64(current, "current point index")?;
+            let current = usize::try_from(current).map_err(|_| js_err("point index exceeds platform size"))?;
+            Ok(self.renderer.next_view_point_index(
+                self.chart_id, source_id.as_deref(), &series_id, current, forward,
+            ).map_or(JsValue::UNDEFINED, |index| JsValue::from_f64(index as f64)))
         }
 
         /// Pick the nearest visible data primitive at canvas pixel `(x, y)`;
@@ -5022,6 +5015,19 @@ mod web {
             y: f32,
             max_distance_px: f32,
         ) -> Result<JsValue, JsValue> {
+            if self.renderer.is_streaming_chart(self.chart_id) {
+                let Some(picked) = self.renderer
+                    .pick_chart_view_cache_at(self.chart_id, [x, y], max_distance_px)
+                    .await.map_err(js_err)? else { return Ok(JsValue::UNDEFINED); };
+                let tagged = renderer::PickedData::Point {
+                    source_id: picked.source_id,
+                    series_id: picked.series_id,
+                    point_index: picked.point_index,
+                    distance_px: picked.distance_px,
+                };
+                let json = crate::picked_data_json_string(&tagged).map_err(js_err)?;
+                return Ok(JsValue::from_str(&json));
+            }
             self.prepare_gpu_picking().await?;
             let ticket = self
                 .renderer
@@ -5370,32 +5376,19 @@ mod web {
             })
         }
 
+        /// Compatibility entry point. Nonresident picking is disabled because
+        /// exact source replay can take as long as the original render.
         pub async fn begin_stream_pick_point(
-            &mut self, x: f32, y: f32, max_distance_px: f32, max_primitives_per_chunk: f64,
+            &mut self, _x: f32, _y: f32, _max_distance_px: f32, _max_primitives_per_chunk: f64,
         ) -> Result<StreamingOperationHandle, JsValue> {
-            let max_chunk = js_safe_u64(max_primitives_per_chunk, "max_primitives_per_chunk")?;
-            let operation = self.renderer.begin_stream_pick_point(
-                self.chart_id, [x, y], max_distance_px, max_chunk,
-            ).await.map_err(js_err)?;
-            Ok(StreamingOperationHandle {
-                operation,
-                revision: self.renderer.stream_status(self.chart_id).map_err(js_err)?.revision.to_string(),
-                counts: Cell::new((0.0, 0.0)),
-            })
+            Err(JsValue::from_str("stream picking is disabled; no source replay is started"))
         }
 
+        /// Compatibility entry point; always rejects without requesting ranges.
         pub async fn begin_stream_pick_data(
-            &mut self, x: f32, y: f32, max_distance_px: f32, max_primitives_per_chunk: f64,
+            &mut self, _x: f32, _y: f32, _max_distance_px: f32, _max_primitives_per_chunk: f64,
         ) -> Result<StreamingOperationHandle, JsValue> {
-            let max_chunk = js_safe_u64(max_primitives_per_chunk, "max_primitives_per_chunk")?;
-            let operation = self.renderer.begin_stream_pick_data(
-                self.chart_id, [x, y], max_distance_px, max_chunk,
-            ).await.map_err(js_err)?;
-            Ok(StreamingOperationHandle {
-                operation,
-                revision: self.renderer.stream_status(self.chart_id).map_err(js_err)?.revision.to_string(),
-                counts: Cell::new((0.0, 0.0)),
-            })
+            Err(JsValue::from_str("stream picking is disabled; no source replay is started"))
         }
 
         pub fn stream_operation_request_ranges(
@@ -5447,24 +5440,18 @@ mod web {
             Ok(js_sys::Uint8Array::from(bytes.as_slice()))
         }
 
+        /// Compatibility entry point; no streamed pick operation can start.
         pub async fn finish_stream_pick_point(
-            &mut self, handle: &StreamingOperationHandle,
+            &mut self, _handle: &StreamingOperationHandle,
         ) -> Result<JsValue, JsValue> {
-            let hit = self.renderer.finish_stream_pick_point(handle.operation).await.map_err(js_err)?;
-            match hit {
-                Some(hit) => Ok(JsValue::from_str(&crate::picked_point_json_string(&hit).map_err(js_err)?)),
-                None => Ok(JsValue::UNDEFINED),
-            }
+            Err(JsValue::from_str("stream picking is disabled"))
         }
 
+        /// Compatibility entry point; no streamed pick operation can start.
         pub async fn finish_stream_pick_data(
-            &mut self, handle: &StreamingOperationHandle,
+            &mut self, _handle: &StreamingOperationHandle,
         ) -> Result<JsValue, JsValue> {
-            let hit = self.renderer.finish_stream_pick_data(handle.operation).await.map_err(js_err)?;
-            match hit {
-                Some(hit) => Ok(JsValue::from_str(&crate::picked_data_json_string(&hit).map_err(js_err)?)),
-                None => Ok(JsValue::UNDEFINED),
-            }
+            Err(JsValue::from_str("stream picking is disabled"))
         }
 
         pub async fn cancel_stream_operation_and_wait(

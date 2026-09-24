@@ -384,6 +384,45 @@ impl GpuStreamPick {
         owned_points: u32,
         owned_segments: u32,
     ) -> Result<Option<SharedCharge>, GpuPickError> {
+        self.encode_chunk_impl(
+            encoder, buffer, descriptor, columns, series_order,
+            global_point_start, owned_points, owned_segments, 0,
+        )
+    }
+
+    /// The final u32 lane of the same packed GPU buffer maps local row slots
+    /// to original source rows. No source replay or CPU row mirror is needed.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn encode_indexed_chunk(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        buffer: &wgpu::Buffer,
+        descriptor: GpuPickSeriesDescriptor<'_>,
+        columns: GpuStreamPickColumns,
+        series_order: u32,
+        original_index_word_base: u32,
+        owned_points: u32,
+        owned_segments: u32,
+    ) -> Result<Option<SharedCharge>, GpuPickError> {
+        self.encode_chunk_impl(
+            encoder, buffer, descriptor, columns, series_order,
+            0, owned_points, owned_segments, original_index_word_base,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn encode_chunk_impl(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        buffer: &wgpu::Buffer,
+        descriptor: GpuPickSeriesDescriptor<'_>,
+        columns: GpuStreamPickColumns,
+        series_order: u32,
+        global_point_start: u32,
+        owned_points: u32,
+        owned_segments: u32,
+        original_index_word_base: u32,
+    ) -> Result<Option<SharedCharge>, GpuPickError> {
         if !self.enabled {
             return Ok(None);
         }
@@ -412,6 +451,15 @@ impl GpuStreamPick {
         }
         if owned_points == 0 && owned_segments == 0 {
             return Ok(None);
+        }
+        if original_index_word_base != 0 {
+            let required = u64::from(original_index_word_base)
+                .checked_add(paired as u64)
+                .and_then(|words| words.checked_mul(4))
+                .ok_or(GpuPickError::InvalidGpuResult)?;
+            if required > buffer.size() {
+                return Err(GpuPickError::InvalidGpuResult);
+            }
         }
         let slot = self
             .engine
@@ -448,7 +496,7 @@ impl GpuStreamPick {
                 series.base_shape_id,
                 series.dispatch_x,
             ],
-            stream: [global_point_start, owned_points, owned_segments, 0],
+            stream: [global_point_start, owned_points, owned_segments, original_index_word_base],
         };
         self.engine
             .bundle
@@ -2464,6 +2512,14 @@ pub struct GpuPickTicket {
     state: GpuPickTicketState,
 }
 
+pub(crate) struct GpuIndexedPick {
+    pub(crate) source_id: Option<String>,
+    pub(crate) series_id: String,
+    pub(crate) series_order: u32,
+    pub(crate) point_index: u32,
+    pub(crate) distance_px: f32,
+}
+
 impl GpuPickTicket {
     fn ready_none() -> Self {
         Self {
@@ -2472,6 +2528,15 @@ impl GpuPickTicket {
     }
 
     pub async fn resolve(self) -> Result<Option<PickedPoint>, GpuPickError> {
+        Ok(self.resolve_indexed().await?.map(|picked| PickedPoint {
+            source_id: picked.source_id,
+            series_id: picked.series_id,
+            point_index: picked.point_index as usize,
+            distance_px: picked.distance_px,
+        }))
+    }
+
+    pub(crate) async fn resolve_indexed(self) -> Result<Option<GpuIndexedPick>, GpuPickError> {
         let GpuPickTicketState::Pending {
             device: _device,
             readback,
@@ -2512,10 +2577,11 @@ impl GpuPickTicket {
                 if !candidate.distance_px.is_finite() {
                     return Err(GpuPickError::InvalidGpuResult);
                 }
-                Ok(Some(PickedPoint {
+                Ok(Some(GpuIndexedPick {
                     source_id: identity.source_id.clone(),
                     series_id: identity.series_id.clone(),
-                    point_index: candidate.point_index as usize,
+                    series_order: candidate.series_order,
+                    point_index: candidate.point_index,
                     distance_px: candidate.distance_px,
                 }))
             }

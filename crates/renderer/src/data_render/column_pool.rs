@@ -600,6 +600,12 @@ pub enum AllocError {
         requested: u64,
         limit: u64,
     },
+    /// A requested allocation would exceed the host-declared renderer budget.
+    BudgetExceeded {
+        resource: &'static str,
+        requested: u64,
+        limit: u64,
+    },
     /// Resource creation failed despite satisfying static device limits.
     AllocationFailed {
         resource: &'static str,
@@ -632,6 +638,14 @@ impl std::fmt::Display for AllocError {
             } => write!(
                 f,
                 "{resource} exceeds GPU buffer limit: requested {requested}, limit {limit}"
+            ),
+            AllocError::BudgetExceeded {
+                resource,
+                requested,
+                limit,
+            } => write!(
+                f,
+                "{resource} exceeds renderer memory budget: requested {requested}, limit {limit}"
             ),
             AllocError::AllocationFailed { resource, reason } => {
                 write!(f, "{resource} allocation failed: {reason}")
@@ -941,50 +955,6 @@ pub(crate) struct ColumnBatchCandidate<'a> {
     candidate: Option<ColumnPool>,
 }
 
-/// An unpublished slab filled by bounded stream tickets across host turns.
-pub(crate) struct StreamedRangeCandidate {
-    candidate: ColumnPool,
-    original_identity: PoolIdentity,
-    original_generation: u32,
-    original_layout: u64,
-    original_epoch: u64,
-    charge: crate::gpu_memory::GpuByteCharge,
-}
-
-impl StreamedRangeCandidate {
-    pub(crate) fn is_current(&self, pool: &ColumnPool) -> bool {
-        self.original_identity == pool.identity
-            && self.original_generation == pool.generation
-            && self.original_layout == pool.layout_generation
-            && self.original_epoch == pool.allocation_epoch_counter
-    }
-
-    pub(crate) fn pool(&self) -> &ColumnPool {
-        &self.candidate
-    }
-
-    pub(crate) fn set_statistics(&mut self, id: &str, bounds: Option<crate::StreamBounds>) {
-        let slot = self
-            .candidate
-            .slots
-            .get_mut(id)
-            .expect("candidate owns source");
-        slot.min = bounds.map_or(f64::INFINITY, |b| b.min);
-        slot.max = bounds.map_or(f64::NEG_INFINITY, |b| b.max);
-        slot.min_positive = bounds.and_then(|b| b.min_positive);
-    }
-
-    pub(crate) fn commit(self, pool: &mut ColumnPool) {
-        debug_assert!(self.is_current(pool));
-        ColumnBatchCandidate {
-            pool,
-            candidate: Some(self.candidate),
-        }
-        .commit();
-        self.charge.transfer_to_external_accounting();
-    }
-}
-
 impl ColumnBatchCandidate<'_> {
     fn pool(&self) -> &ColumnPool {
         self.candidate
@@ -1254,9 +1224,9 @@ pub struct ColumnDefragment<'a> {
     changed: bool,
     relocated: bool,
     legacy_result: bool,
-    /// True when this relayout enlarged the pool. On commit the old buffer,
-    /// parked in `backup` for rollback, is released.
-    grown: bool,
+    /// A resized candidate cannot reuse the old-capacity slab. On commit the
+    /// old primary, parked in `backup` for rollback, is released.
+    resized: bool,
 }
 
 impl ColumnDefragment<'_> {
@@ -1278,9 +1248,8 @@ impl ColumnDefragment<'_> {
     /// Publish the provisional state and return the legacy defragment result.
     pub fn commit(mut self) -> bool {
         self.rollback.take();
-        if self.grown {
-            // The old, smaller buffer parked in `backup` cannot serve a defrag
-            // at the new capacity. Release it instead of carrying it.
+        if self.resized {
+            // The old-capacity slab cannot serve a defrag at the new size.
             if let Some(old_slab) = self.pool.backup.take() {
                 let bytes = old_slab.size();
                 drop(old_slab);
@@ -1484,6 +1453,23 @@ impl ColumnPool {
         self.free.iter().map(|r| r.size).sum()
     }
 
+    /// Size of the optional defragmentation ping-pong slab.
+    pub fn backup_bytes(&self) -> u64 {
+        self.backup.as_ref().map_or(0, |buffer| buffer.size())
+    }
+
+    /// Release only the optional defragmentation target. The primary and all
+    /// live columns remain untouched. Call after submitted work completes.
+    pub(crate) fn release_backup(&mut self) -> u64 {
+        let Some(backup) = self.backup.take() else {
+            return 0;
+        };
+        let bytes = backup.size();
+        drop(backup);
+        self.note_buffer_retired(bytes);
+        bytes
+    }
+
     /// GPU bytes this pool holds right now: the live slab plus the ping-pong
     /// backup while one exists.
     ///
@@ -1673,190 +1659,6 @@ impl ColumnPool {
         Ok(())
     }
 
-    pub(crate) fn begin_streamed_range_candidate(
-        &self,
-        columns: &[crate::StreamColumn],
-        capacity: u64,
-        ctx: GpuAllocCtx<'_>,
-        ledger: &Arc<crate::gpu_memory::GpuLedger>,
-    ) -> Result<StreamedRangeCandidate, AllocError> {
-        let limit = buffer_ceiling(ctx.device);
-        if capacity > limit || capacity < self.capacity {
-            return Err(AllocError::ResourceLimit {
-                resource: "streamed range candidate",
-                requested: capacity,
-                limit,
-            });
-        }
-        if let Some(budget) = ctx.budget {
-            let peak = self
-                .gpu_bytes()
-                .checked_add(self.retired_bytes())
-                .and_then(|bytes| bytes.checked_add(budget.external_bytes))
-                .and_then(|bytes| bytes.checked_add(capacity))
-                .unwrap_or(u64::MAX);
-            if peak > budget.ceiling_bytes {
-                return Err(AllocError::ResourceLimit {
-                    resource: "streamed range candidate",
-                    requested: peak,
-                    limit: budget.ceiling_bytes,
-                });
-            }
-        }
-        let generation = self.checked_generation_successor()?;
-        let layout_generation = self.checked_layout_successor()?;
-        let mut epoch = self.allocation_epoch_counter;
-        let count = self.slots.len().checked_add(columns.len()).ok_or_else(|| {
-            AllocError::AllocationFailed {
-                resource: "streamed range candidate metadata",
-                reason: "column count overflow".into(),
-            }
-        })?;
-        let allocation_error =
-            |error: std::collections::TryReserveError| AllocError::AllocationFailed {
-                resource: "streamed range candidate metadata",
-                reason: error.to_string(),
-            };
-        let mut slots = HashMap::new();
-        slots.try_reserve(count).map_err(allocation_error)?;
-        let mut epochs = HashMap::new();
-        epochs.try_reserve(count).map_err(allocation_error)?;
-        let mut order = Vec::new();
-        order
-            .try_reserve_exact(self.slots.len())
-            .map_err(allocation_error)?;
-        order.extend(self.slots.values());
-        order.sort_by_key(|slot| slot.offset);
-        let mut next = 0u64;
-        for old in &order {
-            let mut slot = (*old).clone();
-            slot.offset = next;
-            slot.generation = generation;
-            next = next
-                .checked_add(slot.byte_size)
-                .ok_or(AllocError::ResourceLimit {
-                    resource: "streamed range candidate",
-                    requested: u64::MAX,
-                    limit: capacity,
-                })?;
-            epochs.insert(slot.id.clone(), self.allocation_epochs[&slot.id]);
-            slots.insert(slot.id.clone(), slot);
-        }
-        for column in columns {
-            if slots.contains_key(&column.id) {
-                return Err(AllocError::DuplicateId(column.id.clone()));
-            }
-            let raw = column.len.checked_mul(COLUMN_VALUE_BYTES as u64).ok_or(
-                AllocError::ResourceLimit {
-                    resource: "streamed range column",
-                    requested: u64::MAX,
-                    limit,
-                },
-            )?;
-            let bytes = try_align_up(raw, ALIGN).ok_or(AllocError::ResourceLimit {
-                resource: "streamed range column",
-                requested: u64::MAX,
-                limit,
-            })?;
-            let offset = next;
-            next = next.checked_add(bytes).filter(|n| *n <= capacity).ok_or(
-                AllocError::ResourceLimit {
-                    resource: "streamed range candidate",
-                    requested: next.saturating_add(bytes),
-                    limit: capacity,
-                },
-            )?;
-            epoch = epoch.checked_add(1).ok_or(AllocError::CounterExhausted {
-                counter: "allocation epoch",
-            })?;
-            epochs.insert(column.id.clone(), epoch);
-            slots.insert(
-                column.id.clone(),
-                ColumnSlot {
-                    id: column.id.clone(),
-                    offset,
-                    byte_size: bytes,
-                    len_values: usize::try_from(column.len).map_err(|_| {
-                        AllocError::ResourceLimit {
-                            resource: "streamed range column length",
-                            requested: column.len,
-                            limit: usize::MAX as u64,
-                        }
-                    })?,
-                    generation,
-                    min: f64::INFINITY,
-                    max: f64::NEG_INFINITY,
-                    min_positive: None,
-                },
-            );
-        }
-        let mut free = Vec::new();
-        if next < capacity {
-            free.try_reserve_exact(1).map_err(allocation_error)?;
-            free.push(FreeRegion {
-                offset: next,
-                size: capacity - next,
-            });
-        }
-        let primary = create_buffer_checked(
-            ctx.device,
-            &BufferDescriptor {
-                label: Some("figgy bounded streamed residency candidate"),
-                size: capacity,
-                usage: BufferUsages::VERTEX
-                    | BufferUsages::STORAGE
-                    | BufferUsages::COPY_DST
-                    | BufferUsages::COPY_SRC,
-                mapped_at_creation: false,
-            },
-            "streamed range candidate",
-        )?;
-        let charge = crate::gpu_memory::GpuByteCharge::new(
-            ledger,
-            crate::gpu_memory::GpuResourceKind::StreamingUpload,
-            primary.size(),
-        );
-        let mut encoder = ctx
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("figgy bounded streamed residency survivor copy"),
-            });
-        for old in order {
-            encoder.copy_buffer_to_buffer(
-                &self.primary,
-                old.offset,
-                &primary,
-                slots[&old.id].offset,
-                old.byte_size,
-            );
-        }
-        ctx.queue.submit([encoder.finish()]);
-        Ok(StreamedRangeCandidate {
-            original_identity: self.identity.clone(),
-            original_generation: self.generation,
-            original_layout: self.layout_generation,
-            original_epoch: self.allocation_epoch_counter,
-            charge,
-            candidate: ColumnPool {
-                identity: self.identity.clone(),
-                primary,
-                capacity,
-                slots,
-                free,
-                generation,
-                allocation_epochs: epochs,
-                allocation_epoch_counter: epoch,
-                layout_generation,
-                backup: None,
-                defrag_policy: self.defrag_policy,
-                growth_policy: self.growth_policy,
-                retired_bytes: Arc::default(),
-                peak_bytes: 0,
-                buffer_creations: 0,
-            },
-        })
-    }
-
     /// Prepare a same-id streamed-to-resident promotion without publishing any
     /// live allocator state. Sources may mix scalar and hi/lo encodings.
     ///
@@ -1941,13 +1743,13 @@ impl ColumnPool {
                     .and_then(|bytes| bytes.checked_add(self.retired_bytes()))
                     .and_then(|bytes| bytes.checked_add(total))
                     .and_then(|bytes| bytes.checked_add(capacity_after))
-                    .ok_or(AllocError::ResourceLimit {
+                    .ok_or(AllocError::BudgetExceeded {
                         resource: "streamed promotion transition",
                         requested: u64::MAX,
                         limit: budget.ceiling_bytes,
                     })?;
                 if peak > budget.ceiling_bytes {
-                    return Err(AllocError::ResourceLimit {
+                    return Err(AllocError::BudgetExceeded {
                         resource: "streamed promotion transition",
                         requested: peak,
                         limit: budget.ceiling_bytes,
@@ -2234,8 +2036,7 @@ impl ColumnPool {
         //    for its whole lifetime, so — exactly as in
         //    `begin_upsert_column_pairs_with` — there is no retry rung after a
         //    failed attempt. A pure fit check drives compaction and growth
-        //    here instead, and room that cannot be made leaves step 6 to
-        //    report the allocator's own `OutOfSpace` unchanged.
+        //    here instead; an opted-in growth reports its precise failure.
         self.make_room_for_batch(total, ctx)?;
 
         // 4) One epoch per column, reserved as a single range so a counter
@@ -2375,8 +2176,8 @@ impl ColumnPool {
     /// the same reason: the decision has to be made while the pool is still
     /// un-borrowed. Compaction happens only under
     /// [`DefragPolicy::OnAllocFailure`] and growth only under
-    /// [`GrowthPolicy::OnAllocFailure`]; failing to make room is not itself an
-    /// error, because `alloc_region` reports it with the exact free list.
+    /// [`GrowthPolicy::OnAllocFailure`]. Fixed-capacity allocation reports
+    /// `OutOfSpace`; an opted-in growth reports its own failure category.
     fn make_room_for_batch(&mut self, total: u64, ctx: GpuAllocCtx<'_>) -> Result<(), AllocError> {
         // First fit accepts the batch iff some single region is big enough.
         if self.largest_free_region() >= total {
@@ -2399,12 +2200,12 @@ impl ColumnPool {
         } else {
             self.largest_free_region()
         };
-        let _ = self.grow_for_pending_upload(ctx, total.saturating_sub(usable));
+        self.grow_for_pending_upload(ctx, total.saturating_sub(usable))?;
         Ok(())
     }
 
     /// The biggest single region first fit could serve from.
-    pub(crate) fn largest_free_region(&self) -> u64 {
+    pub fn largest_free_region(&self) -> u64 {
         self.free
             .iter()
             .map(|region| region.size)
@@ -2892,9 +2693,9 @@ impl ColumnPool {
         // Growth, when the policy allows it, has to be decided *before* the
         // upsert begins: the returned guard borrows the pool for its whole
         // lifetime, so there is no way to retry after a failed attempt. A
-        // pure `&self` fit check decides, and a growth that cannot happen
-        // leaves the attempt below to report the exact error it always did.
-        self.grow_for_upsert_if_needed(&id, byte_size, ctx);
+        // pure `&self` fit check decides. Opted-in growth failures preserve
+        // their budget/device/allocation category for the host.
+        self.grow_for_upsert_if_needed(&id, byte_size, ctx)?;
         let allocation_epoch = self.checked_allocation_epoch_successor()?;
 
         // Complete every source-dependent/fallible staging operation before
@@ -3405,16 +3206,12 @@ impl ColumnPool {
     /// Returns true iff something actually moved (caller must re-fetch
     /// handles via `handle_for`).
     /// Repack every live column into a buffer of `target_capacity`.
+    /// Equal size defragments; a different size grows or shrinks. Shrinking
+    /// requires enough capacity for all live columns and uses GPU-internal
+    /// copies, never a CPU data mirror.
     ///
-    /// `target_capacity == capacity()` is a defragmentation and behaves exactly
-    /// as it always has. A larger target is growth: the survivors are copied
-    /// into a bigger buffer by the same GPU-internal copy, and `capacity` is
-    /// republished with them. Shrinking is refused rather than silently treated
-    /// as a defrag.
-    ///
-    /// Growth drops `backup` before allocating, so the peak is the old buffer
-    /// plus the new one rather than three buffers, and because a backup sized
-    /// for the old capacity cannot serve a later defrag at the new one.
+    /// A size change drops `backup` before allocating, so the peak is the old
+    /// primary plus the candidate rather than three slabs.
     pub fn begin_relayout(
         &mut self,
         ctx: GpuAllocCtx<'_>,
@@ -3423,9 +3220,9 @@ impl ColumnPool {
         let (device, queue) = (ctx.device, ctx.queue);
         let capacity = self.plan_relayout_capacity(ctx, target_capacity)?;
         let previous_capacity = self.capacity;
-        let growing = capacity > previous_capacity;
+        let resized = capacity != previous_capacity;
         // Empty pool with no size change: just normalize the free list.
-        if self.slots.is_empty() && !growing {
+        if self.slots.is_empty() && !resized {
             let already =
                 self.free.len() == 1 && self.free[0].offset == 0 && self.free[0].size == capacity;
             if already {
@@ -3435,7 +3232,7 @@ impl ColumnPool {
                     changed: false,
                     relocated: false,
                     legacy_result: false,
-                    grown: false,
+                    resized: false,
                 });
             }
             let next_generation = self.checked_generation_successor()?;
@@ -3462,7 +3259,7 @@ impl ColumnPool {
                 changed: true,
                 relocated: false,
                 legacy_result: true,
-                grown: false,
+                resized: false,
             });
         }
 
@@ -3482,7 +3279,7 @@ impl ColumnPool {
             .iter()
             .zip(new_offsets.iter())
             .all(|(id, &n)| self.slots[id].offset == n);
-        if already_packed && !growing {
+        if already_packed && !resized {
             let tail_ok = self.free.len() <= 1
                 && self
                     .free
@@ -3495,7 +3292,7 @@ impl ColumnPool {
                     changed: false,
                     relocated: false,
                     legacy_result: false,
-                    grown: false,
+                    resized: false,
                 });
             }
             let mut normalized_free = Vec::with_capacity(usize::from(next < capacity));
@@ -3522,7 +3319,7 @@ impl ColumnPool {
                 changed: true,
                 relocated: false,
                 legacy_result: false,
-                grown: false,
+                resized: false,
             });
         }
         let next_generation = self.checked_generation_successor()?;
@@ -3543,9 +3340,8 @@ impl ColumnPool {
             });
         }
 
-        // Growth cannot reuse a backup sized for the old capacity, and holding
-        // it would make the peak three buffers instead of two.
-        if growing && let Some(stale_backup) = self.backup.take() {
+        // A resized pool cannot reuse a backup at the old capacity.
+        if resized && let Some(stale_backup) = self.backup.take() {
             self.note_buffer_retired(stale_backup.size());
         }
         // Lazily create backup with the same capacity/usage as primary.
@@ -3624,7 +3420,7 @@ impl ColumnPool {
             changed: true,
             relocated: true,
             legacy_result: true,
-            grown: growing,
+            resized,
         })
     }
 
@@ -3637,12 +3433,16 @@ impl ColumnPool {
     /// anyway) cannot cover — so a pool that merely needs packing is packed
     /// rather than enlarged, and the bytes-per-value ratio stays flat.
     ///
-    /// Silent on failure by design: the caller then hits the same
-    /// `OutOfSpace` it produced before growth existed, which is the error
-    /// released hosts already handle.
-    fn grow_for_upsert_if_needed(&mut self, id: &str, byte_size: u64, ctx: GpuAllocCtx<'_>) {
+    /// With growth disabled this is a no-op; opted-in growth reports the
+    /// actual budget, device, or allocation failure to its caller.
+    fn grow_for_upsert_if_needed(
+        &mut self,
+        id: &str,
+        byte_size: u64,
+        ctx: GpuAllocCtx<'_>,
+    ) -> Result<(), AllocError> {
         if self.growth_policy != GrowthPolicy::OnAllocFailure {
-            return;
+            return Ok(());
         }
         let replaced_existing = self.slots.contains_key(id);
         let may_compact = replaced_existing || self.defrag_policy == DefragPolicy::OnAllocFailure;
@@ -3656,10 +3456,10 @@ impl ColumnPool {
             self.largest_free_region()
         };
         if usable >= byte_size {
-            return;
+            return Ok(());
         }
         let deficit = byte_size - usable;
-        let _ = self.grow_for_pending_upload(ctx, deficit);
+        self.grow_for_pending_upload(ctx, deficit)
     }
 
     /// Enlarge enough to hold `needed_bytes` more, preferring to double.
@@ -3706,10 +3506,16 @@ impl ColumnPool {
             requested,
             limit: ceiling,
         })?;
-        if target < self.capacity {
-            return Err(AllocError::AllocationFailed {
-                resource: "column pool relayout",
-                reason: "shrinking the pool is not supported".into(),
+        let resource = if target < self.capacity {
+            "column pool shrink"
+        } else {
+            "column pool growth"
+        };
+        if target < self.used_bytes().max(ALIGN) {
+            return Err(AllocError::OutOfSpace {
+                requested: self.used_bytes(),
+                largest_free: target,
+                total_free: target,
             });
         }
         if target == self.capacity {
@@ -3717,7 +3523,7 @@ impl ColumnPool {
         }
         if target > ceiling {
             return Err(AllocError::ResourceLimit {
-                resource: "column pool growth",
+                resource,
                 requested: target,
                 limit: ceiling,
             });
@@ -3730,14 +3536,14 @@ impl ColumnPool {
                 .checked_add(self.gpu_bytes())
                 .and_then(|sum| sum.checked_add(self.retired_bytes()))
                 .and_then(|sum| sum.checked_add(target))
-                .ok_or(AllocError::ResourceLimit {
-                    resource: "column pool growth",
+                .ok_or(AllocError::BudgetExceeded {
+                    resource,
                     requested: u64::MAX,
                     limit: budget.ceiling_bytes,
                 })?;
             if peak > budget.ceiling_bytes {
-                return Err(AllocError::ResourceLimit {
-                    resource: "column pool growth",
+                return Err(AllocError::BudgetExceeded {
+                    resource,
                     requested: peak,
                     limit: budget.ceiling_bytes,
                 });
@@ -3760,6 +3566,12 @@ impl ColumnPool {
         ctx: GpuAllocCtx<'_>,
         target_capacity: u64,
     ) -> Result<bool, AllocError> {
+        if target_capacity < self.capacity {
+            return Err(AllocError::AllocationFailed {
+                resource: "column pool growth",
+                reason: "shrinking through grow_to is not supported".into(),
+            });
+        }
         Ok(self.begin_relayout(ctx, target_capacity)?.commit())
     }
 
@@ -3956,13 +3768,13 @@ mod tests {
             .grow_to(budgeted, target)
             .expect_err("growth past the budget must be refused");
         match error {
-            AllocError::ResourceLimit {
+            AllocError::BudgetExceeded {
                 requested, limit, ..
             } => {
                 assert_eq!(limit, budget);
                 assert!(requested > limit);
             }
-            other => panic!("expected ResourceLimit, got {other:?}"),
+            other => panic!("expected BudgetExceeded, got {other:?}"),
         }
         assert_eq!(pool.capacity(), capacity_before, "capacity unchanged");
         assert_eq!(
@@ -4175,16 +3987,54 @@ mod tests {
     }
 
     #[test]
-    fn relayout_refuses_to_shrink() {
+    fn relayout_shrinks_without_changing_live_values() {
         let Some((device, queue, mut pool)) = mk_pool(8 * ALIGN) else {
             return;
         };
         let ctx = GpuAllocCtx::unbudgeted(&device, &queue);
-        let error = pool
-            .grow_to(ctx, 2 * ALIGN)
-            .expect_err("shrinking must be refused, not silently treated as defrag");
-        assert!(matches!(error, AllocError::AllocationFailed { .. }));
+        let source = col_f64(vec![1.0, 2.0, 3.0]);
+        pool.add_column("keep".into(), &source, ctx).unwrap();
+        let stale = pool.handle_for("keep").unwrap();
+        assert!(matches!(
+            pool.grow_to(ctx, 2 * ALIGN),
+            Err(AllocError::AllocationFailed { .. })
+        ));
+        assert!(pool.begin_relayout(ctx, 2 * ALIGN).unwrap().commit());
+        assert_eq!(pool.capacity(), 2 * ALIGN);
+        assert_eq!(pool.backup_bytes(), 0);
+        assert!(!pool.is_valid_handle(&stale));
+        assert_eq!(
+            read_column_values(ctx, &pool, pool.handle_for("keep").unwrap()),
+            source.data
+        );
+        assert!(pool.retired_bytes() >= 8 * ALIGN);
+    }
+
+    #[test]
+    fn refused_shrink_preserves_primary_and_handle() {
+        let Some((device, queue, mut pool)) = mk_pool(8 * ALIGN) else {
+            return;
+        };
+        let ctx = GpuAllocCtx::unbudgeted(&device, &queue);
+        let source = col_f64(vec![7.0, 8.0]);
+        pool.add_column("keep".into(), &source, ctx).unwrap();
+        let handle = pool.handle_for("keep").unwrap();
+        let target = 2 * ALIGN;
+        let budgeted = GpuAllocCtx {
+            device: &device,
+            queue: &queue,
+            budget: Some(GpuBudget {
+                ceiling_bytes: pool.gpu_bytes() + target - 1,
+                external_bytes: 0,
+            }),
+        };
+        assert!(matches!(
+            pool.begin_relayout(budgeted, target),
+            Err(AllocError::BudgetExceeded { .. })
+        ));
         assert_eq!(pool.capacity(), 8 * ALIGN);
+        assert!(pool.is_valid_handle(&handle));
+        assert_eq!(read_column_values(ctx, &pool, handle), source.data);
     }
 
     #[test]

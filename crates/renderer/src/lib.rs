@@ -75,7 +75,7 @@ pub use renderer::{
     FitCommitToken, GpuPickRequest, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE, PreparedFrame, RasterImage,
     RegisteredChartDrawItem, RenderRevision, Renderer, RendererDevice, RendererLoadDemo,
     RendererVisualStamp, Series, SeriesDrawInfo, WebDerivedSnapshot, WebDerivedStamp,
-    WindowedRenderer, StreamingOperation, StreamingResidencyOperation, StreamingSelectionRequest, StreamingSelectionTicket, clamp_export_scale, display_config_for_surface, dpi_to_scale, encode_png,
+    WindowedRenderer, StreamingOperation, StreamingSelectionRequest, StreamingSelectionTicket, clamp_export_scale, display_config_for_surface, dpi_to_scale, encode_png,
     fit_display_panel,
 };
 pub use resize::{Resizable, ResizeHandle};
@@ -89,7 +89,7 @@ pub use streaming_source::{
     AutoStreamingRequest, LogicalColumn, RenderInterruptStatus, StreamBounds, StreamColumn,
     StreamEncoding, StreamRangeSourceBinding, StreamReplay, StreamSourceBinding, StreamStatistics,
     StreamingChartOptions, StreamingLimits, StreamingProgress, StreamingState, StreamingStatus,
-    StreamingUsage,
+    StreamingUsage, ViewResidencyStatus,
 };
 pub use text::MeasureText;
 pub use text_render::{CpuTextMeasure, FontPolicy};

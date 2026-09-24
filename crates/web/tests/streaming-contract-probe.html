@@ -71,7 +71,7 @@
       "Cancel pending provider, drain reservations, discard late replies",
       "Cancel active drawing and drain all submitted reservations",
       "Recovery render and bounded transferred-source audit",
-      "Completed stream GPU point and typed picking preserve global indices",
+      "Completed stream picking is disabled without source replay",
       "Exact PNG replay at document 1x and 2x leaves the screen job untouched",
       "A data-style edit replaces an unfinished revision without waiting for its source",
       "Selection keeps its prior pixels until replacement source rows arrive",
@@ -683,16 +683,11 @@
           const x = chart.canvas.width / 2, y = chart.canvas.height / 2;
           const point = await watchdog(chart.pick_point(x, y, 64), "stream point pick");
           const data = await watchdog(chart.pick_data(x, y, 64), "stream typed pick");
-          assert(point && point.point_index > maxPrimitives && point.point_index < pointCount,
-            `Point pick lost its global source index: ${JSON.stringify(point)}`);
-          assert(Number.isFinite(point.distance_px) && point.distance_px <= 64,
-            "Point pick returned an invalid pixel distance");
-          assert(data && data.distance_px === point.distance_px, "Typed pick differs from point pick for a line-only chart");
-          assert(!("data_x" in point) && !("data_y" in point), "Picking must return identity, not values");
+          assert(point === null && data === null, "Nonresident picking must remain disabled");
           const after = chart.stream_status();
           assert(after.job_id === before.job_id && after.submitted_primitives === before.submitted_primitives,
             "Picking changed the completed display job/cursor");
-          assert(provider.audit.calls > calls, "Stream picking did not replay source ranges");
+          assert(provider.audit.calls === calls, "Disabled picking replayed source ranges");
           return { point, data, before, after, sourceCalls: provider.audit.calls - calls };
         });
         await scenario(10, async () => {
