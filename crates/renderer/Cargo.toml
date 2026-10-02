@@ -12,19 +12,19 @@ model = { path = "../model" }
 bytemuck = { version = "1.19", features = ["derive"] }
 # Awaitable buffer-map signal for the async export path (works on wasm too).
 futures-channel = "0.3"
-png = "0.17"
+png = "0.18"
 wgpu = "30"
 
 # Pure-Rust CPU raster stack (axis chrome + text) — compiles on every target
 # including wasm32-unknown-unknown.
-fontdb = "0.23"
+fontdb = "0.24"
 swash = "0.2"
-tiny-skia = "0.11"
+tiny-skia = "0.12"
 
 # Blocking executor for the sync convenience wrappers — never on wasm, where
 # blocking the single thread would deadlock; use the *_async variants there.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-pollster = "0.4.0"
+pollster = "1.0"
 eframe = { version = "0.36", optional = true, default-features = false, features = ["wgpu"] }
 egui = { version = "0.36", optional = true }
 egui-wgpu = { version = "0.36", optional = true }

@@ -90,6 +90,22 @@ pub(crate) async fn yield_init_frame() {
     }
 }
 
+/// Wait for browser GPU work and retain a rejected completion Promise.
+///
+/// wgpu's callback-only completion API invokes its callback after either
+/// outcome. Startup must observe the browser Promise directly so a lost device
+/// cannot be published as a renderer whose first frame is ready.
+#[cfg(target_arch = "wasm32")]
+pub async fn wait_browser_submitted_work(queue: &wgpu::Queue) -> Result<(), String> {
+    let queue = queue
+        .as_webgpu()
+        .ok_or_else(|| "wgpu queue is not backed by a browser GPUQueue".to_owned())?;
+    wasm_bindgen_futures::JsFuture::from(queue.on_submitted_work_done())
+        .await
+        .map_err(|error| format!("WebGPU submitted work failed: {error:?}"))?;
+    Ok(())
+}
+
 /// Compile compute entry points through WebGPU's Promise-based API before
 /// wgpu publishes the production pipelines. The temporary browser pipelines
 /// only warm the same device's compiler cache; ownership remains with wgpu.

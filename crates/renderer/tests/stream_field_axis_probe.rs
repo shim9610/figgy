@@ -1,7 +1,9 @@
 //! Test-only P-00 gate: can a bounded 1x pixel-tile prepass capture the exact
-//! `axis_t` that the resident field quad supplies at 1x and 4x MSAA?
+//! pixel-center `axis_t` used by the resident field fill at 1x and 4x MSAA?
 //! This test changes no product shader or source data; failures are never skipped.
 #![cfg(not(target_arch = "wasm32"))]
+
+use wgpu::util::DeviceExt;
 
 const WIDTH: u32 = 37;
 const HEIGHT: u32 = 23;
@@ -21,8 +23,9 @@ fn pack_bits(bits: u32) -> vec4<f32> {
 }
 struct AxisBits { @location(0) x: vec4<f32>, @location(1) y: vec4<f32> };
 @fragment fn fs_axis_probe(in: FieldOut) -> AxisBits {
-    return AxisBits(pack_bits(bitcast<u32>(in.axis_t.x)),
-        pack_bits(bitcast<u32>(in.axis_t.y)));
+    let t = field_fragment_center_t(in.axis_t);
+    return AxisBits(pack_bits(bitcast<u32>(t.x)),
+        pack_bits(bitcast<u32>(t.y)));
 }
 @fragment fn fs_sample_fixture(in: FieldOut, @builtin(sample_index) sample: u32)
     -> AxisBits {
@@ -95,6 +98,7 @@ fn draw(
     encoder: &mut wgpu::CommandEncoder,
     views: (&wgpu::TextureView, &wgpu::TextureView),
     pipe: &wgpu::RenderPipeline,
+    transform: Option<&wgpu::BindGroup>,
     scissor: (u32, u32, u32, u32),
     clear: bool,
 ) {
@@ -140,6 +144,9 @@ fn draw(
     );
     pass.set_scissor_rect(scissor.0, scissor.1, scissor.2, scissor.3);
     pass.set_pipeline(pipe);
+    if let Some(transform) = transform {
+        pass.set_bind_group(0, transform, &[]);
+    }
     pass.draw(0..6, 0..1);
 }
 
@@ -292,7 +299,25 @@ fn bounded_pixel_tile_axis_t_matches_resident_field_samples() {
         label: Some("resident field shader with test-only axis entries"),
         source: wgpu::ShaderSource::Wgsl(source.into()),
     });
+    let mut transform: renderer::data_render::ScatterTransform = bytemuck::Zeroable::zeroed();
+    transform.pixel_to_ndc = [2.0 / PANEL.2 as f32, 2.0 / PANEL.3 as f32];
+    let transform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("axis probe chart geometry"),
+        contents: bytemuck::bytes_of(&transform),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    let bind_transform = |pipe: &wgpu::RenderPipeline| {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("axis probe chart geometry"),
+            layout: &pipe.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: transform_buffer.as_entire_binding(),
+            }],
+        })
+    };
     let tile_pipe = pipeline(&device, &shader, "fs_axis_probe", 1);
+    let tile_transform = bind_transform(&tile_pipe);
     let candidate_x = texture(&device, 1);
     let candidate_y = texture(&device, 1);
     let candidate_views = (
@@ -305,6 +330,7 @@ fn bounded_pixel_tile_axis_t_matches_resident_field_samples() {
             &mut encoder,
             (&candidate_views.0, &candidate_views.1),
             &tile_pipe,
+            Some(&tile_transform),
             tile,
             index == 0,
         );
@@ -319,7 +345,15 @@ fn bounded_pixel_tile_axis_t_matches_resident_field_samples() {
             target_y.create_view(&Default::default()),
         );
         let pipe = pipeline(&device, &shader, "fs_axis_probe", samples);
-        draw(&mut encoder, (&views.0, &views.1), &pipe, PANEL, true);
+        let transform = bind_transform(&pipe);
+        draw(
+            &mut encoder,
+            (&views.0, &views.1),
+            &pipe,
+            Some(&transform),
+            PANEL,
+            true,
+        );
         resident_reads.push((
             samples,
             extract(&device, &mut encoder, (&target_x, &target_y), samples),
@@ -336,6 +370,7 @@ fn bounded_pixel_tile_axis_t_matches_resident_field_samples() {
                 &mut encoder,
                 (&fixture_views.0, &fixture_views.1),
                 &fixture_pipe,
+                None,
                 PANEL,
                 true,
             );

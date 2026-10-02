@@ -478,7 +478,9 @@ impl ContourConfig {
                     .ok_or(TickError::InvalidRange)?;
                 let mut exponent = start;
                 for index in 0..iteration_count {
-                    let value = 10f64.powi(exponent);
+                    // `powi` can overflow the reciprocal's intermediate power
+                    // for negative exponents, losing valid subnormal decades.
+                    let value = 10f64.powf(f64::from(exponent));
                     if inside(value) {
                         push_contour_level(&mut out, value)?;
                     }
@@ -1232,8 +1234,8 @@ mod contour_level_tests {
         .unwrap();
 
         assert_eq!(levels.len(), 632);
-        assert_eq!(levels.first(), Some(&10f64.powi(-323)));
-        assert_eq!(levels.last(), Some(&10f64.powi(308)));
+        assert_eq!(levels.first(), Some(&1e-323));
+        assert_eq!(levels.last(), Some(&1e308));
         assert!(levels.windows(2).all(|pair| pair[0] < pair[1]));
     }
 

@@ -45,15 +45,21 @@ fn replay_fragment_key(pos: vec4<f32>, sample_index: u32) -> u32 {
 fn fresh_axis(t: f32, count: u32) -> ReplayAxis {
     return ReplayAxis(t, 0.0, 0.0, 0u, count, 0u, 0u, 0u, 0u, 0.0, 0u, 0u);
 }
-@fragment fn fs_replay_init(in: FieldOut, @builtin(sample_index) sample_index: u32)
-    -> @location(0) vec4<f32> {
+@fragment fn fs_replay_init(in: FieldOut) -> @location(0) vec4<f32> {
+    let pixel = vec2<u32>(in.pos.xy);
+    if (any(pixel < replay_tile.origin) || any(pixel - replay_tile.origin >= replay_tile.extent)) { discard; }
+    // Keep a raster-based oracle independent of production's compute init,
+    // but capture the same pixel-center shade for every covered sample.
+    let t = field_fragment_center_t(in.axis_t);
     var s: ReplayPixel;
     let cy = field_flag(FIELD_COLUMNS_ARE_Y);
-    s.x = fresh_axis(in.axis_t.x, quad_count(select(field.cols, field.rows, cy), LATTICE_QUADS));
-    s.y = fresh_axis(in.axis_t.y, quad_count(select(field.rows, field.cols, cy), LATTICE_QUADS));
+    s.x = fresh_axis(t.x, quad_count(select(field.cols, field.rows, cy), LATTICE_QUADS));
+    s.y = fresh_axis(t.y, quad_count(select(field.rows, field.cols, cy), LATTICE_QUADS));
     s.valid_mask = 0u;
-    s.sample_marker = sample_index + 1u;
-    replay_pixels[replay_fragment_key(in.pos, sample_index)] = s;
+    for (var sample_index = 0u; sample_index < replay_tile.samples; sample_index += 1u) {
+        s.sample_marker = sample_index + 1u;
+        replay_pixels[replay_fragment_key(in.pos, sample_index)] = s;
+    }
     return vec4<f32>(0.0);
 }
 fn replay_has(k: u32) -> bool {
@@ -188,6 +194,8 @@ fn replay_grid_value(s: ReplayPixel, c: u32, r: u32) -> GridValue {
 }
 @fragment fn fs_replay_final(in: FieldOut, @builtin(sample_index) sample_index: u32)
     -> @location(0) vec4<f32> {
+    let pixel = vec2<u32>(in.pos.xy);
+    if (any(pixel < replay_tile.origin) || any(pixel - replay_tile.origin >= replay_tile.extent)) { discard; }
     let s = replay_pixels[replay_fragment_key(in.pos, sample_index)];
     // An unfinished locate or wrong sample slot must fail the final-image gate,
     // rather than silently masquerading as a transparent field miss.
@@ -412,6 +420,11 @@ fn bounded_heatmap_axis_and_z_replay_matches_resident_alpha_samples() {
                     );
                     // Candidate groups have no field_pool/grid binding. Auto-layout
                     // validates this claim for every entry's reachable call graph.
+                    let init_g0 = bindings(
+                        &device,
+                        &init_pipe.get_bind_group_layout(0),
+                        &[(0, &transform)],
+                    );
                     let init_g2 = bindings(
                         &device,
                         &init_pipe.get_bind_group_layout(2),
@@ -486,7 +499,7 @@ fn bounded_heatmap_axis_and_z_replay_matches_resident_alpha_samples() {
                                 &mut encoder,
                                 &init_pipe,
                                 &candidate_view,
-                                &[(2, &init_g2), (3, &init_g3)],
+                                &[(0, &init_g0), (2, &init_g2), (3, &init_g3)],
                                 tile,
                                 first,
                             );

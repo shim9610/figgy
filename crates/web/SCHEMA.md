@@ -1,89 +1,50 @@
-# Config / SeriesConfig — JSON 스키마 레퍼런스
+<a id="config--seriesconfig--json-스키마-레퍼런스"></a>
 
-공개 후보 버전: `figgy 0.10.0` / `renderer 0.12.0`.
-현재 배포 버전은 `figgy 0.9.1` / `renderer 0.11.0`이다.
+# Config / SeriesConfig — JSON 설정 명세
 
-이 문서는 `Config`와 `SeriesConfig`의 JSON 형태만 정의한다. 공개 후보의
-비상주 컬럼 등록, 구간 공급, `render_chart()` 실행·취소, 상주 가능 여부 조회는
-별도 웹 API이며 Config JSON 필드를 추가하지 않는다. API의 지원 범위와
-호출 계약은 [WASM.md](../renderer/WASM.md#exact-streaming)의 「공개 후보:
-자동 실행과 원본 구간 공급」 절을 참고한다. 현재 배포 버전에 포함됐다는 뜻은 아니다.
+기준 소스 버전: `figgy 0.10.0` / `renderer 0.12.0` / `model 0.7.2`.
 
-`FiggyChart.get_config()` / `get_series()`가 반환하고 `set_config()` /
-`set_series()`가 받는 JSON의 **전체 형태**다. 아래 JSON 블록은 Rust 소스에서
-직접 직렬화해 생성했고, 동기화 테스트가 어긋남을 막는다:
+이 문서는 `Config`와 `SeriesConfig`의 JSON 형식을 설명한다. figgy 0.10.0의 비상주 컬럼 등록, 구간 공급, `render_chart()` 실행·취소, 상주 가능 여부 조회는 별도 웹 API이며 설정 필드를 추가하지 않는다. 지원 범위와 호출 방법은 [WASM.md](../renderer/WASM.md#exact-streaming)의 「자동 실행과 원본 구간 공급」을 참고한다.
+
+아래는 `FiggyChart.get_config()` / `get_series()`가 반환하고 `set_config()` / `set_series()`가 받는 JSON의 전체 형식이다. 예시 JSON은 Rust 타입을 직렬화해 생성했으며 다음 테스트로 소스와 일치하는지 확인한다.
 
 ```bash
 cargo test -p model --features serde --test schema_sync
 ```
 
-**타입의 진실 원본 (Rust 소스)**
+**설정 타입을 정의한 Rust 소스**
 
 | 트리 | 파일 |
 |---|---|
-| `Config` (축/타이틀/그리드/범례) | `crates/model/src/config.rs` |
+| `Config` (축·제목·격자·범례) | `crates/model/src/config.rs` |
 | `SeriesConfig` (시리즈 선언) | `crates/model/src/data_config.rs` |
 | `Color` | `crates/model/src/color.rs` |
-| `ColorMap` (연속 컬러 램프) | `crates/model/src/colormap.rs` |
+| `ColorMap` (연속 색상표) | `crates/model/src/colormap.rs` |
 | `RichText` / `RichSegment` | `crates/model/src/text.rs` |
 | `LineStylePreset` | `crates/model/src/line.rs` |
 | `LabelFormat` | `crates/model/src/format.rs` |
 | `Rect` / `ChartArea` | `crates/model/src/layout/rect.rs` |
 
-## serde 표현 규칙 (JSON을 읽을 때 알아야 할 것)
+<a id="serde-표현-규칙-json을-읽을-때-알아야-할-것"></a>
 
-- **필드 없는 enum은 문자열**: `"scale": "Logarithmic"`, `"tick": "Both"`.
-- **데이터를 가진 enum은 externally-tagged 객체**:
-  `"render_type": { "Line": { "line": { … } } }`,
-  `"err_x": { "Asymmetric": { "lower": "…", "upper": "…" } }`.
-- **newtype은 내용물로 평탄화**: `ChartArea(Rect)` → `"chart_area": { "x": …, "width": … }`.
-- **`RichSegment.text`는 char** → JSON에서 글자 1개짜리 문자열 `"V"`.
-- **세그먼트별 오버라이드는 선택 키**: `RichSegment`의 `color` / `font_size`
-  는 오버라이드가 있을 때만 직렬화된다 (없으면 키 자체가 생략 → 문서
-  레벨 `RichText.color` / `font_size` 상속). 범례 심볼이 이 방식으로
-  시리즈 색을 갖는다: `{"text":"●","color":{...}}`.
-- **`"\t"` 세그먼트 = 열 구분자**: 표처럼 각 열 폭이 문서 전체에서 가장
-  넓은 셀에 맞춰진다. 탭 자체는 렌더되지 않는다.
-- **고정폭 심볼 필드**: 세그먼트의 `field_em` (선택 키) 은 글리프 폭과
-  무관하게 advance 를 `field_em × 폰트크기` 로 고정하고 잉크를 필드
-  중앙에 둔다. `rule: true` (선택 키) 는 글리프 대신 필드 전체를 채우는
-  **그려진 수평선**이다. `rule_dash` (선택 키) 는 rule 전용 dash/gap
-  패턴이며 em 단위라 폰트 크기와 함께 스케일된다. 범례 심볼은 이
-  조합으로 어떤 형태든 정확히 같은 길이(2.0 em)가 된다: 선 =
-  `{"text":"—","rule":true,"field_em":2.0,"color":{...}}`, 점 =
-  `{"text":"●","field_em":2.0,...}`, 점선 =
-  `{"text":"—","rule":true,"field_em":2.0,"rule_dash":[0.571,0.286],...}`,
-  선+점 = rule(0.65) + 글리프(0.7) + rule(0.65).
-- **색은 0..1 float RGBA**: `{ "r": 0.8, "g": 0.1, "b": 0.1, "a": 1.0 }`.
-- **`None`이면 생략되는 series/picking provenance 키**:
-  `SeriesConfig.source_id`, `PickedPointRef.source_id`, 그리고 모든
-  `PickedDataRef` 변종의 `source_id`.
-- **`None`이면 생략되는 outer style mapping 키 (6개)**:
-  `DataScatterStyleConfig.point_style_table` / `point_style_index_column` /
-  `point_style_overrides`, `DataErrorBarStyleConfig.error_bar_style_table` /
-  `error_bar_style_index_column` / `error_bar_style_overrides`.
-- **`None`이면 생략되는 nested style 키 (7개)**:
-  `DataScatterPointStyleConfig.point_color` / `point_shape` / `point_size`,
-  `DataErrorBarPointStyleConfig.error_bar_color` / `error_bar_width` /
-  `error_bar_cap_size` / `cap_width`. 따라서 모든 nested style option이
-  `None`이면 객체는 `{}`로 직렬화된다. override의 `style`은 flatten되므로
-  이 키들은 override 객체에서도 같은 방식으로 생략된다.
-- 위 `Option` 키들과 달리 `SeriesConfig.label`은 항상 존재하며 값만
-  `null`일 수 있다.
-- **`None`이면 생략되는 contour 키 (2개)**: `ContourConfig.per_level_color`,
-  `ContourConfig.labels`. `per_level_color`가 없다는 것은 **모든 레벨이
-  `line.line_color` 단색**이라는 뜻이고, 빈 배열 `[]`(항목 0개인 표)과는
-  다른 진술이다.
-- 세그먼트 오버라이드 키와 Config의 `draw_style` / `picked_points` / `picked_data` /
-  `colorbar` 키도 생략 가능하다 (`draw_style`: `precise` = 키 자체가 생략,
-  두 picked 키: `None` = 키 자체가 생략). `picked_points: {}` 와
-  `picked_data: {}` 는 각각의 default overlay config로 파싱된다. 부분
-  업데이트가 아니라 **전체 트리 교체**이므로, `get_config()` 결과를 고쳐서
-  되돌리는 패턴을 쓸 것.
+## serde의 JSON 표현 규칙
 
-15개 omission의 canonical serde 출력은 다음과 같다. `series.source_id`, 두
-outer style의 mapping 키 6개, 두 빈 nested style의 option 키 7개,
-`picked_point.source_id`가 모두 생략되어 있다.
+- **추가 필드가 없는 열거형**은 문자열로 표시한다. 예: `"scale": "Logarithmic"`, `"tick": "Both"`.
+- **데이터를 포함한 열거형**은 종류 이름을 바깥쪽 키로 쓴다(externally tagged). 예: `"render_type": { "Line": { "line": { … } } }`, `"err_x": { "Asymmetric": { "lower": "…", "upper": "…" } }`.
+- **값 하나를 감싼 타입(newtype)**은 내부 값을 그대로 직렬화한다. 예: `ChartArea(Rect)` → `"chart_area": { "x": …, "width": … }`.
+- **`RichSegment.text`는 문자 하나**다. JSON에서는 `"V"` 같은 한 글자 문자열로 표시한다.
+- **텍스트 구간별 색·크기는 선택 항목**이다. `RichSegment.color` / `font_size`는 별도로 지정했을 때만 키를 내보낸다. 없으면 `RichText.color` / `font_size`를 따른다. 범례 기호의 색도 `{"text":"●","color":{...}}`처럼 지정한다.
+- **`"\t"` 구간은 열 구분자**다. 각 열의 너비를 문서 전체에서 가장 넓은 셀에 맞추며 탭 자체는 그리지 않는다.
+- **`field_em`은 기호 영역의 너비를 고정한다.** 다음 글자까지의 간격을 `field_em × 폰트 크기`로 잡고 글리프를 가운데 놓는다. `rule: true`이면 글리프 대신 그 영역을 채우는 수평선을 그린다. `rule_dash`는 선·공백 길이를 em 단위로 지정하므로 폰트 크기에 비례한다. 범례 기호는 모양에 관계없이 전체 너비가 2.0em이다. 선은 `{"text":"—","rule":true,"field_em":2.0,"color":{...}}`, 점은 `{"text":"●","field_em":2.0,...}`, 점선은 `{"text":"—","rule":true,"field_em":2.0,"rule_dash":[0.571,0.286],...}`로 표현한다. 선과 점의 조합은 선 0.65em + 글리프 0.7em + 선 0.65em으로 구성한다.
+- **색은 0~1 범위의 RGBA 실수 값**이다. 예: `{ "r": 0.8, "g": 0.1, "b": 0.1, "a": 1.0 }`.
+- **데이터 출처 키**인 `SeriesConfig.source_id`, `PickedPointRef.source_id`, 모든 `PickedDataRef`의 `source_id`는 `None`이면 생략한다.
+- **시리즈의 스타일 매핑 키 6개**도 `None`이면 생략한다. `DataScatterStyleConfig`의 `point_style_table` / `point_style_index_column` / `point_style_overrides`와 `DataErrorBarStyleConfig`의 `error_bar_style_table` / `error_bar_style_index_column` / `error_bar_style_overrides`가 해당한다.
+- **개별 데이터의 스타일 키 7개**도 `None`이면 생략한다. `DataScatterPointStyleConfig`의 `point_color` / `point_shape` / `point_size`와 `DataErrorBarPointStyleConfig`의 `error_bar_color` / `error_bar_width` / `error_bar_cap_size` / `cap_width`가 해당한다. 모두 비어 있으면 `{}`로 직렬화한다. 개별 덮어쓰기 항목의 `style`은 한 단계 풀어서 저장하므로 같은 생략 규칙을 따른다.
+- `SeriesConfig.label`은 위 선택 키들과 달리 항상 존재하며 값으로 `null`을 가질 수 있다.
+- **등고선의 선택 키 2개**인 `ContourConfig.per_level_color` / `labels`는 `None`이면 생략한다. `per_level_color` 생략은 모든 선에 `line.line_color`를 사용한다는 뜻이며, 빈 색상 목록 `[]`과는 다르다.
+- 텍스트 구간의 선택 키와 `Config`의 `draw_style` / `picked_points` / `picked_data` / `colorbar`도 생략할 수 있다. `draw_style`은 기본 정밀 모드일 때, 두 선택 표시 키는 `None`일 때 생략한다. `picked_points: {}`와 `picked_data: {}`는 각각 기본 선택 표시 설정으로 해석한다. `set_config()`는 일부 필드가 아니라 **전체 설정을 교체**하므로 `get_config()` 결과를 수정해 전달한다.
+
+다음 직렬화 예에서는 선택 키 15개를 생략했다. `series.source_id`, 스타일 매핑 키 6개, 개별 스타일 키 7개, `picked_point.source_id`가 해당한다.
 
 <!-- schema-sync: name=option-omissions -->
 ```json
@@ -164,13 +125,13 @@ outer style의 mapping 키 6개, 두 빈 nested style의 option 키 7개,
 | `mode` (FillMode) | `"Continuous"` `"Bands"` |
 | `shading` (Shading) | `"Flat"` `"Interpolated"` |
 
-### Timestamp label format
+<a id="timestamp-label-format"></a>
 
-Timestamp labels are configured through `LabelFormat`, not through a new axis
-scale. Data coordinates remain numeric and timestamp calendar ticks are used
-only on linear axes.
+### 시간 라벨 형식
 
-Default timestamp shape:
+시간 표시는 별도 축 스케일이 아니라 `LabelFormat`으로 설정한다. 좌표는 숫자로 유지하며 달력 기준 눈금은 선형축에서만 사용한다.
+
+시간 라벨의 기본 설정은 다음과 같다.
 
 ```text
 {
@@ -184,14 +145,11 @@ Default timestamp shape:
 }
 ```
 
-Use `"unit": "Milliseconds"` for JS timestamps. Use
-`"timezone": { "FixedOffsetMinutes": 540 }` for KST-like fixed offsets.
-Custom labels can use `"label": { "Pattern": "%Y-%m-%d %H:%M:%S.%f" }`;
-supported tokens are `%Y`, `%m`, `%d`, `%H`, `%M`, `%S`, `%f`, and `%%`.
-`AutoCalendar` measures label text and chooses coarser calendar tick units when
-needed so adjacent labels do not overlap.
+JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한국 시간처럼 고정 시차를 적용하려면 `"timezone": { "FixedOffsetMinutes": 540 }`을 지정한다.
+사용자 지정 형식은 `"label": { "Pattern": "%Y-%m-%d %H:%M:%S.%f" }`처럼 쓴다. `%Y`, `%m`, `%d`, `%H`, `%M`, `%S`, `%f`, `%%`를 지원한다.
+`AutoCalendar`는 라벨 너비를 측정하고 겹치지 않도록 달력상의 눈금 간격을 늘린다.
 
-The exact serde forms of all 12 timestamp variants are:
+시간 관련 열거형 12가지의 직렬화 형식은 다음과 같다.
 
 <!-- schema-sync: name=timestamp-variants -->
 ```json
@@ -227,73 +185,32 @@ The exact serde forms of all 12 timestamp variants are:
 }
 ```
 
-For large absolute Unix timestamps, upload browser data with
-`register_column_f64(id, Float64Array)` for a new id and
-`update_register_column_f64(id, Float64Array)` for an explicit replacement, so
-the renderer can preserve sub-f32 deltas as GPU `(hi: f32, lo: f32)` pairs.
-Use the corresponding `register_column_f32` / `update_register_column_f32`
-methods for ordinary numeric coordinates or already-relative time values.
-Registration rejects an existing id; update rejects a missing id and every
-accepted update performs an upload. `set_series` only selects registered column
-ids and never uploads column contents.
+큰 Unix 시간 값은 `register_column_f64(id, Float64Array)`로 등록하고 `update_register_column_f64(id, Float64Array)`로 교체한다. GPU에 `(hi: f32, lo: f32)` 쌍으로 저장하므로 f32 하나로 표현할 수 없는 작은 시간 차이를 보존한다. 일반 좌표나 기준 시각을 뺀 상대 시간에는 `register_column_f32` / `update_register_column_f32`를 사용할 수 있다.
+등록은 이미 있는 ID를 거부하고 교체는 없는 ID를 거부한다. 유효한 교체 요청은 항상 업로드한다. `set_series`는 등록된 컬럼을 지정할 뿐 데이터를 업로드하지 않는다.
 
-The local demo [timestamp-demo.html](timestamp-demo.html) wires this path end to
-end: `Float64Array` timestamp upload, `LabelFormat::Timestamp`, `AutoCalendar`
-tick planning, chart-width changes, and export scale changes.
+[시간축 데모](timestamp-demo.html)에서 Float64Array 업로드, 시간 라벨, 자동 달력 눈금과 차트 너비·출력 배율 변경을 확인할 수 있다.
 
-## 편집 시 의미 결합 주의
+<a id="편집-시-의미-결합-주의"></a>
 
-- `scale`을 바꾸면 `major_spacing` 해석도 바뀐다 — Linear는 데이터 단위,
-  Logarithmic은 **decade 단위** (예: `1.0` = 한 자릿수마다 major 틱).
-  데이터 범위가 1 decade 미만이면 decade 틱이 0개일 수 있다.
-- `min` / `max`: Logarithmic에서는 양수만.
-- `out_margin`을 줄이면 라벨/타이틀이 잘릴 수 있다 (레이아웃 기여 마진).
-- `line_offset`은 분리 축 오프셋 — 레이아웃 비기여, 데이터 영역 불변.
-- `inverted`는 축의 시각 방향을 반전한다. tick/grid, 데이터 렌더링,
-  `pick_point`는 같은 반전 mapping을 사용하며 `min`/`max`는 데이터 공간
-  bound로 유지된다.
-- `pick_point`는 실제 scatter marker 크기(스타일 매핑 포함)와 line stroke를
-  hit 대상으로 본다. line stroke 근처 클릭은 hit segment의 가까운 endpoint
-  데이터 점으로 스냅되고, errorbar stem/cap 자체는 pick target이 아니다.
-  `<figgy-chart>` facade 반환형은
-  `Promise<{ source_id: string | null, series_id, point_index, distance_px } | null>`이다.
-  raw `FiggyChart`는 같은 필드의 JSON string 또는 `undefined`를 Promise로
-  반환하고 facade가 이를 object / `null`로 정규화한다.
-  제출된 비동기 ticket은 제출 시점의 `source_id` / `series_id` identity를
-  소유하므로, Promise가 pending인 동안 chart/pool이 변경되거나 renderer가
-  해제되어도 그 요청의 identity가 다른 데이터로 바뀌지 않는다.
-  좌표가 필요하면 host가 `point_index`로 자신이 등록한 원본 column을 조회한다.
-- `pick_data`는 point/line에 더해 Histogram bin, Heatmap cell, Contour level을
-  같은 GPU 요청으로 고른다. facade 반환값은 `kind`가
-  `"point" | "histogram_bin" | "matrix_cell" | "contour_level"`인 tagged
-  object 또는 `null`이다. bin은 `bin_index`, cell은 canonical axis 방향의
-  `x_index`/`y_index`, contour는 `level_index`와 hit가 있던 sample-cell의
-  `x_index`/`y_index`를 제공한다. `HeatmapContour`에서 선과 cell이 겹치면
-  나중에 그려지는 contour가 우선하며, 시리즈 간 동률은 chart paint order를
-  따른다. CPU는 bar rectangle, cell bounds, contour endpoint나 f64 값을
-  복원하지 않는다. 실제 hit geometry는 보이는 draw entry와 같은 transform,
-  pool, lattice, contour 함수에서 계산된다.
-- `chart_area`는 저장/Export 기준의 논리 문서 사각형이다. Web wrapper의
-  `resize(w, h)`는 캔버스 surface만 바꾸고, 이 논리 문서를 현재 viewport에
-  uniform scale + letterbox로 맞춰 보여준다. 브라우저 창 크기 변경을
-  `chart_area` 편집으로 취급하지 말 것.
-- `set_series` / `apply_color_cycle` 같은 일반 시리즈 변경은 인식 가능한
-  자동 범례 엔트리의 **심볼 세그먼트만 갱신**한다. `'\t'` 앞의 고정폭
-  심볼 필드가 기호 영역이고, `'\t'` 뒤 텍스트는 사용자 작성 영역으로
-  보존된다. 선 색뿐 아니라 `line_style` 의 dash/dot 패턴도 기호에 반영된다.
-- `set_series_label(id, label)` 은 해당 엔트리 텍스트만 바꾸고, 빈 문자열은
-  해당 행만 제거한다. `set_config` 로 직접 편집한 `legend.content` 는 이후
-  시리즈 변경에서도 전체 재작성되지 않는다.
-- 전체 범례를 `SeriesConfig.label` 기준으로 다시 만들고 싶을 때만
-  `reset_legend_from_series_labels()` 를 명시 호출한다. 이때 legacy
-  `add_line_series(..., label)` 로 저장된 wrapper label 은 rich label 이 없는
-  시리즈의 fallback 으로만 쓰인다.
+## 설정을 함께 바꿔야 하는 경우와 편집 규칙
 
-## `picked_data` — typed data selection overlay (Config 선택 키)
+- `scale`을 바꾸면 `major_spacing`의 단위도 달라진다. `Linear`는 데이터 단위이고 `Logarithmic`은 10배 간격인 decade 단위다. 예를 들어 `1.0`은 값이 10배 커질 때마다 주 눈금을 놓는다. 범위가 10배 간격보다 좁으면 주 눈금이 없을 수도 있다.
+- 로그축의 `min` / `max`에는 양수를 지정한다.
+- `out_margin`은 배치에 필요한 여백이다. 너무 줄이면 라벨이나 제목이 잘릴 수 있다.
+- `line_offset`은 데이터 영역을 유지한 채 축만 이동시킨다. 전체 배치에는 영향을 주지 않는다.
+- `inverted`는 화면상의 축 방향을 뒤집는다. 눈금·격자·데이터·피킹은 같은 변환을 적용하며 `min` / `max`는 데이터 좌표 기준을 유지한다.
+- `pick_point`는 스타일 매핑을 반영한 점 기호 크기와 선 두께를 기준으로 선택한다. 선 근처를 클릭하면 해당 선분의 가까운 끝점을 반환한다. 오차 막대의 몸통과 끝선 자체는 선택 대상이 아니다. 웹 래퍼의 반환형은 `Promise<{ source_id: string | null, series_id, point_index, distance_px } | null>`이다. 저수준 `FiggyChart`는 같은 필드의 JSON 문자열 또는 `undefined`를 Promise로 반환하고 래퍼가 이를 객체 또는 `null`로 바꾼다. 요청은 제출 당시 식별자를 보관하므로 대기 중 차트·풀이 바뀌거나 렌더러가 해제돼도 다른 데이터를 가리키지 않는다. 좌표가 필요하면 `point_index`로 호스트의 원본 컬럼을 조회한다.
+- `pick_data`는 점·선 외에 히스토그램 구간·히트맵 셀·등고선 레벨을 같은 GPU 요청으로 선택한다. 래퍼는 `kind`가 `"point" | "histogram_bin" | "matrix_cell" | "contour_level"`인 객체 또는 `null`을 반환한다. 구간은 `bin_index`, 셀은 X·Y축 기준 `x_index` / `y_index`, 등고선은 `level_index`와 선택 지점이 속한 표본 셀의 `x_index` / `y_index`를 제공한다. `HeatmapContour`에서 선과 셀이 겹치면 나중에 그리는 등고선이 우선하며 시리즈 간 동률은 그리기 순서로 정한다. 좌표·경계·선분·f64 값을 CPU에서 복원하지 않고, 그리기와 같은 GPU 변환·풀·격자·등고선 함수로 판정한다.
+- `chart_area`는 저장과 출력에 사용하는 문서 영역이다. 웹의 `resize(w, h)`는 캔버스만 바꾸며 문서를 같은 가로세로 비율로 맞추고 남는 공간에 여백을 둔다. 브라우저 창 크기 변경은 `chart_area` 편집과 구분한다.
+- `set_series` / `apply_color_cycle`은 자동 범례에서 인식할 수 있는 기호 부분만 갱신한다. `\t` 앞의 고정 너비 영역이 기호이며, 뒤의 사용자 텍스트는 보존한다. 선 색뿐 아니라 `line_style`의 점선·도트 패턴도 반영한다.
+- `set_series_label(id, label)`은 해당 범례의 텍스트만 바꾼다. 빈 문자열이면 해당 행을 제거한다. `set_config`로 직접 편집한 `legend.content`는 이후 시리즈 변경으로 전체를 다시 쓰지 않는다.
+- 전체 범례를 `SeriesConfig.label`에서 다시 만들 때는 `reset_legend_from_series_labels()`를 호출한다. 기존 `add_line_series(..., label)`로 저장한 라벨은 리치 텍스트 라벨이 없는 시리즈에서만 대체값으로 사용한다.
 
-`Config.picked_data`는 `pick_data` 결과의 안정적인 identity만 보관한다.
-`set_picked_data(json)`은 이 필드만 교체하고 JSON `null`은 overlay를 지운다.
-기존 point-only `picked_points`와 독립적이므로 둘을 동시에 쓸 수 있다.
+<a id="picked_data--typed-data-selection-overlay-config-선택-키"></a>
+
+## `picked_data` — 데이터 종류별 선택 표시
+
+`Config.picked_data`는 `pick_data` 결과의 식별자만 보관한다. `set_picked_data(json)`은 이 필드만 교체하고 JSON `null`이면 표시를 지운다. 점 전용 `picked_points`와 독립적이므로 둘을 함께 사용할 수 있다.
 
 ```json
 {
@@ -319,55 +236,43 @@ tick planning, chart-width changes, and export scale changes.
 }
 ```
 
-각 ref에는 선택적으로 `source_id`를 넣어 같은 `series_id`를 가진 서로 다른
-host source를 구분할 수 있다. point는 기존 ring entry를, histogram은 선택된
-instance의 동일 edge/value/style bind group을, matrix/contour는 일반 draw가
-사용한 동일 field bind group을 읽는다. 따라서 축 범위나 데이터가 바뀌어도
-보이는 데이터와 overlay가 서로 다른 CPU 복원 좌표를 가질 수 없다. 유효 범위를
-벗어난 stale index는 그리지 않는다.
+각 참조에 `source_id`를 넣으면 같은 `series_id`를 가진 서로 다른 데이터 출처를 구분할 수 있다. 점은 기존 강조 테두리 렌더링을 사용한다. 히스토그램은 선택한 막대의 경계·값·스타일 바인드 그룹을, 행렬·등고선은 일반 그리기와 같은 행렬 바인드 그룹을 읽는다. 축이나 데이터를 갱신해도 선택 표시가 데이터 위치를 따라가며, 범위를 벗어난 인덱스는 그리지 않는다.
 
-## `draw_style` — 렌더 스타일 (Config 선택 키)
+<a id="draw_style--렌더-스타일-config-선택-키"></a>
 
-`Config.draw_style`은 `DrawStyle` enum이다 (`crates/model/src/config.rs`) —
-internally-tagged: `"mode"` 태그와 그 스타일의 파라미터가 **같은 객체에
-인라인**된다. **키 부재 = `precise` = 정밀 모드** — 디폴트이며 현행
-렌더와 동일하다. `precise`는 직렬화에서 키 자체가 생략되므로 아래 기본값
-JSON 블록에도 나타나지 않는다 (`{ "mode": "precise" }` 명시도 허용).
-`{ "mode": "sketch" }`를 주면 손그림(hand-drawn) 모드가 켜진다. 모드는
-**차트 전역**(Config 레벨) — 시리즈별 혼합은 없다.
+## `draw_style` — 렌더링 스타일
 
-sketch의 모든 파라미터에 디폴트가 있어 (`serde(default)`) 부분 지정이
-가능하다 — `"draw_style": { "mode": "sketch" }` 만으로 전부 디폴트로
-켜진다.
+`Config.draw_style`은 `crates/model/src/config.rs`의 `DrawStyle` 열거형이다. `"mode"`와 해당 스타일의 옵션을 같은 객체 안에 저장한다(internally tagged). 키를 생략하면 기본 정밀 모드인 `precise`다. 기본값을 직렬화할 때도 키를 생략하지만 `{ "mode": "precise" }`를 직접 지정해도 된다.
+`{ "mode": "sketch" }`는 손그림 스타일을 켠다. 스타일은 차트 전체에 적용하며 시리즈마다 다르게 지정할 수 없다.
 
-| 필드 (`mode: "sketch"`) | 타입 | 디폴트 | 의미 |
+스케치 옵션에는 모두 기본값이 있어 필요한 항목만 지정할 수 있다. `"draw_style": { "mode": "sketch" }`만 넣으면 모든 옵션에 기본값을 사용한다.
+
+| 필드 (`mode: "sketch"`) | 타입 | 기본값 | 의미 |
 |---|---|---|---|
-| `amplitude_px` | f32 | `1.5` | 경로 수직 교란 진폭 (px) |
-| `wavelength_px` | f32 | `60.0` | 교란 파장 (px) — 경로를 따라 이 간격마다 굴곡 1회 |
-| `seed` | u32 | `0` | 전역 시드 — 같은 (config, 데이터)면 결과 픽셀 동일 |
+| `amplitude_px` | f32 | `1.5` | 선에 수직인 방향으로 흔들리는 폭(px) |
+| `wavelength_px` | f32 | `60.0` | 선을 따라 한 번 굽이치는 간격(px) |
+| `seed` | u32 | `0` | 같은 설정·데이터에서 같은 패턴을 만드는 시드 |
 
 전체 형태: `"draw_style": { "mode": "sketch", "amplitude_px": 1.5,
 "wavelength_px": 60.0, "seed": 0 }` — 정밀 모드로 되돌리려면 키를
 제거한다(또는 `{ "mode": "precise" }`).
 
-`milkyway`도 같은 `draw_style` 키를 사용한다. 기존 천체사진 스타일이며,
-모든 파라미터는 default가 있으므로 `"draw_style": { "mode": "milkyway" }`만으로
-활성화된다.
+은하수 스타일도 `draw_style`로 선택한다. 모든 옵션에 기본값이 있으므로 `"draw_style": { "mode": "milkyway" }`만 지정해 사용할 수 있다.
 
 | 필드 (`mode: "milkyway"`) | 타입 | 기본값 | 의미 |
 |---|---|---|---|
-| `star_density` | f32 | `14.0` | arc 100px당 별 밀도 |
-| `ribbon_width_px` | f32 | `14.0` | 시리즈색 성운 리본 폭 |
-| `ribbon_intensity` | f32 | `0.30` | 리본 밝기 |
+| `star_density` | f32 | `14.0` | 경로 길이 100px당 별의 밀도 |
+| `ribbon_width_px` | f32 | `14.0` | 시리즈 색으로 그리는 성운 띠의 너비 |
+| `ribbon_intensity` | f32 | `0.30` | 성운 띠의 밝기 |
 | `star_scale` | f32 | `1.0` | 별 크기 배율 |
-| `star_brightness` | f32 | `1.0` | 별 광량 배율 |
-| `spread_px` | f32 | `2.5` | 별 위치 산포 |
-| `structure_scale` | f32 | `1.0` | 클럼핑/구조 스케일 |
-| `faint_bias` | f32 | `3.0` | 어두운 별 쪽 편향 |
-| `glow` | f32 | `0.55` | 축/배경 glow 강도 |
+| `star_brightness` | f32 | `1.0` | 별 밝기 배율 |
+| `spread_px` | f32 | `2.5` | 별이 경로 주위로 퍼지는 정도 |
+| `structure_scale` | f32 | `1.0` | 별 무리 등 구조의 크기 배율 |
+| `faint_bias` | f32 | `3.0` | 어두운 별의 비중을 높이는 정도 |
+| `glow` | f32 | `0.55` | 축·배경의 빛 번짐 강도 |
 | `nebula` | f32 | `1.0` | 배경 성운 강도 |
 | `dust` | f32 | `1.0` | 배경 먼지 밀도 |
-| `planet_rim` | f32 | `0.34` | scatter 행성 rim 강도 |
+| `planet_rim` | f32 | `0.34` | 산점도 행성의 가장자리 빛 강도 |
 | `seed` | u32 | `0` | 전역 시드 |
 
 전체 형태: `"draw_style": { "mode": "milkyway", "star_density": 14.0,
@@ -376,23 +281,19 @@ sketch의 모든 파라미터에 디폴트가 있어 (`serde(default)`) 부분 �
 "faint_bias": 3.0, "glow": 0.55, "nebula": 1.0, "dust": 1.0,
 "planet_rim": 0.34, "seed": 0 }`.
 
-`constellation`은 `ScatterLine` 시리즈만 지원한다. scatter 위치에는 PSF 별을
-그리고, line은 기본적으로 반투명하게 연결한다.
+별자리 스타일인 `constellation`은 `ScatterLine` 시리즈만 지원한다. 데이터 점 위치에 PSF로 별을 그리고 반투명 선으로 잇는다.
 
 | 필드 (`mode: "constellation"`) | 타입 | 기본값 | 의미 |
 |---|---|---|---|
-| `star_opacity` | f32 | `1.0` | 별 투명도 |
-| `line_opacity` | f32 | `0.45` | 연결선 투명도 |
+| `star_opacity` | f32 | `1.0` | 별의 불투명도 |
+| `line_opacity` | f32 | `0.45` | 연결선의 불투명도 |
 
 전체 형태: `"draw_style": { "mode": "constellation", "star_opacity": 1.0,
 "line_opacity": 0.45 }`.
 
 ## `get_config()` 전체 형태 — 기본값 기준
 
-기본 `Config`는 `draw_style: Precise`, `picked_points: None`,
-`picked_data: None` 이므로 `get_config()` JSON에는 세 키가 정상적으로
-생략된다. overlay를 켜려면 해당 picked 객체를 추가한다. 빈 객체 `{}` 는
-각 overlay의 기본 설정으로 파싱된다.
+기본 `Config`의 `draw_style`은 `Precise`, `picked_points`와 `picked_data`는 `None`이므로 JSON에서 이 세 키를 생략한다. 선택 표시를 사용하려면 해당 객체를 추가한다. 빈 객체 `{}`는 각각의 기본 표시 설정으로 해석한다.
 
 <!-- schema-sync: name=config -->
 ```json
@@ -707,62 +608,38 @@ sketch의 모든 파라미터에 디폴트가 있어 (`serde(default)`) 부분 �
 }
 ```
 
-## `colorbar` — 컬러바와 z 스케일 (Config 선택 키)
+<a id="colorbar--컬러바와-z-스케일-config-선택-키"></a>
 
-`Config.colorbar`는 컬러바 하나이면서 **그 차트의 z 스케일 소유자**다. 기본
-`Config`에는 없으므로(`None` = 키 자체가 생략) z 차원이 없는 문서 — 즉 면
-계열이 생기기 전에 쓰인 모든 문서 — 는 그대로 파싱된다.
+## `colorbar` — 색상 막대와 z 스케일 (Config 선택 키)
 
-핵심은 `axis`가 4축과 **같은 `AxisOptions`** 라는 점이다. `scale`
-(`"Logarithmic"` 포함) · `min`/`max` · `major_spacing` · `minor_count` ·
-`label_style`(`"Power"` 포함) · `tick` · `title_option` 이 축과 완전히 같은
-의미이고, 틱 생성 · 라벨 포맷 · 로그 처리가 **같은 코드**를 지난다.
+`Config.colorbar`는 색상 막대의 모양과 차트의 Z축 범위를 함께 정의한다. 기본 설정에는 없으며 `None`일 때 키를 생략한다. 따라서 Z축이 필요 없는 기존 문서도 그대로 읽을 수 있다.
+
+`axis`는 차트의 네 축과 같은 `AxisOptions`다. 스케일·최소·최대·눈금 간격·라벨·제목의 의미가 같으며, 로그축과 `Power` 라벨을 포함한 눈금 생성·표시를 같은 코드로 처리한다.
 
 | 필드 | 타입 | 기본값 | 의미 |
 |---|---|---|---|
-| `visible` | bool | `true` | `false`면 아무것도 그리지 않고 **밴드도 반납**한다(면은 정상 렌더) |
+| `visible` | bool | `true` | `false`이면 색상 막대와 여백을 없앤다. 행렬은 계속 그린다. |
 | `side` | Side | `"Right"` | `Left`/`Right` = 수직 바, `Top`/`Bottom` = 수평 바. 이것만으로 방향이 결정된다 |
-| `thickness_px` | f32 | `18.0` | 스트립의 짧은 쪽 |
-| `gap_px` | f32 | `24.0` | 데이터 영역과 스트립 사이 |
-| `length_frac` | f32 | `0.75` | 그 변 길이에 대한 스트립 길이 비율. `(0, 1]` |
-| `align` | BarAlign | `"Center"` | 변을 따라 어디에 둘지 (이산 앵커) |
-| `offset_x`, `offset_y` | f32 | `0.0` | 앵커에서의 자유 이동, 화면 픽셀. **마진에 기여하지 않는다**(범례·타이틀·라벨 offset과 같은 계약) — 드래그가 여기에 누적되므로 바를 끌어도 데이터 영역이 다시 흐르지 않는다 |
-| `colormap` | ColorMap | `"Viridis"` | 연속 램프 |
-| `nan_color` | Color | 완전투명 | 램프에 놓을 수 없는 z(NaN, 로그 컬러바의 비양수) |
-| `border_color` | Color | 회색(80,80,80) | 스트립 테두리 |
+| `thickness_px` | f32 | `18.0` | 색상 막대 두께 |
+| `gap_px` | f32 | `24.0` | 색상 막대의 배치 간격(px) |
+| `length_frac` | f32 | `0.75` | 배치한 변의 길이에 대한 막대 길이 비율. `(0, 1]` |
+| `align` | BarAlign | `"Center"` | 변을 따라 시작·가운데·끝 중 어디에 놓을지 지정 |
+| `offset_x`, `offset_y` | f32 | `0.0` | 기준 위치에서의 이동량(px). 드래그 결과를 누적한다. 여백 계산에 반영하지 않으므로 데이터 영역은 그대로다. |
+| `colormap` | ColorMap | `"Viridis"` | 값에 따라 연속적으로 색을 지정하는 색상표 |
+| `nan_color` | Color | 완전 투명 | 색으로 변환할 수 없는 Z값(NaN, 로그 스케일의 0 이하 값)에 사용할 색 |
+| `border_color` | Color | 회색(80,80,80) | 색상 막대 테두리 |
 | `border_width` | f32 | `1.0` | 〃 |
-| `axis` | AxisOptions | 아래 | **z 축. z 범위의 진실 원본** |
+| `axis` | AxisOptions | 아래 | Z축 범위와 눈금·라벨 설정 |
 
-따라오는 규칙:
+색상 막대는 다음 규칙을 따른다.
 
-- `Heatmap` / `Contour` / `HeatmapContour` 시리즈가 있으면 이 키가 **있어야
-  한다.** 없으면 z 범위도 colormap도 어디에도 없어 그릴 값 자체가 없으므로
-  시리즈가 거부된다.
-- 결과적으로 **차트당 z 스케일 1개**다. 한 차트의 히트맵 여러 개는 같은
-  스케일을 공유한다.
-- 컬러바 밴드 = `gap_px + thickness_px + axis.out_margin +
-  axis.major_tick_length` 이고, 그 변의 마진에 더해져 데이터 영역이 줄어든다.
-  `fit`/`resize`는 `axis.out_margin`(라벨 공간)만 조절하고 스트립 자체
-  (`thickness_px`/`gap_px`/틱 길이)는 건드리지 않는다.
-- 컬러바 축의 기본값은 4축과 두 곳이 다르다: `line_visible: false`(스트립
-  테두리가 그 선 역할을 한다)와 `tick: "Outside"`(틱이 색 위가 아니라 라벨
-  마진에 놓인다). `tick`은 `None`/`Outside`/`Inside`/`Both` 방향을,
-  `inverted`는 min→max 화면 방향을 정하며, 틱 외형은 축선과 같은
-  `line_color`/`line_width`/`line_style`을 쓴다.
-- 컬러바는 **선택 · 이동 · 크기조정**이 되는 요소다. 히트테스트 id는
-  `"colorbar"`이고, 선택하면 파란 박스 + **8개 크기조정 핸들**이 붙는다(데이터
-  영역과 함께 핸들을 가진 둘뿐인 요소). 이동은 `offset_{x,y}`에, 크기조정은
-  핸들이 잡은 변에 따라 `thickness_px`(짧은 쪽) 또는 `length_frac`(긴 쪽)에
-  들어간다 — 어느 쪽인지는 **바의 방향**이 정하고 핸들은 화면 방향만 안다.
-- 틱/축, 틱 라벨, 제목은 `"colorbar_axis"`, `"colorbar_tick_labels"`,
-  `"colorbar_title"`로 따로 선택되고 파란 선택 표시가 붙는다. 드래그는 각각
-  `axis.line_offset`, `axis.label_style.label_offset_{x,y}`,
-  `axis.title_option.offset_{x,y}`를 갱신한다. 배치와 히트박스는 모두 실제
-  컬러바 스트립 사각형에서 파생되므로 `length_frac`/`align`/bar offset/resize와
-  정확히 함께 움직인다.
-- 웹 편집은 `set_colorbar_axis(json)`으로 이 `AxisOptions` 전체를 교체하거나,
-  `set_colorbar_title(text)`로 제목을 바로 설정할 수 있다. 후자는 빈 문자열이면
-  제목을 숨기며, 두 호출 모두 컬러바가 없으면 실패한다.
+- `Heatmap` / `Contour` / `HeatmapContour`에는 이 설정이 반드시 필요하다. Z축 범위와 색상표를 여기에서 읽으므로 없으면 시리즈를 거부한다.
+- 차트당 Z축 스케일은 하나이며 여러 히트맵이 같은 스케일을 공유한다.
+- 색상 막대의 영역은 `gap_px + thickness_px + axis.out_margin + axis.major_tick_length`이며 해당 방향의 여백에 추가된다. `fit` / `resize`는 라벨 여백인 `axis.out_margin`만 조절한다. `thickness_px`, `gap_px`, 눈금 길이는 유지한다.
+- 일반 축과 다른 기본값은 `line_visible: false`와 `tick: "Outside"`다. 막대 테두리가 축선 역할을 하고 눈금은 라벨 공간에 놓인다. `tick`은 `None` / `Outside` / `Inside` / `Both`로 눈금 방향을, `inverted`는 화면상의 값 증가 방향을 정한다. 눈금 모양은 축선의 `line_color` / `line_width` / `line_style`을 따른다.
+- 색상 막대는 선택·이동·크기 조절을 지원한다. 히트테스트 ID는 `"colorbar"`다. 선택하면 데이터 영역과 마찬가지로 파란 상자와 조절점 8개를 표시한다. 이동량은 `offset_{x,y}`에 누적한다. 크기 조절은 막대 방향에 따라 짧은 쪽의 `thickness_px` 또는 긴 쪽의 `length_frac`을 바꾼다.
+- 축·눈금 라벨·제목은 `"colorbar_axis"`, `"colorbar_tick_labels"`, `"colorbar_title"`로 각각 선택한다. 드래그하면 `axis.line_offset`, `axis.label_style.label_offset_{x,y}`, `axis.title_option.offset_{x,y}`가 바뀐다. 위치와 선택 영역은 실제 막대 사각형을 기준으로 계산하므로 길이·정렬·위치·크기 변경을 함께 반영한다.
+- 웹에서는 `set_colorbar_axis(json)`으로 전체 축 설정을 바꾸거나 `set_colorbar_title(text)`로 제목을 지정한다. 빈 제목은 숨긴다. 두 호출 모두 색상 막대가 없으면 실패한다.
 
 <!-- schema-sync: name=colorbar -->
 ```json
@@ -846,52 +723,26 @@ sketch의 모든 파라미터에 디폴트가 있어 (`serde(default)`) 부분 �
 }
 ```
 
-## 면 · 막대 render_type — 전체 형태
+<a id="면--막대-render_type--전체-형태"></a>
 
-새 4종의 canonical 형태다. `Histogram`은 호스트가 미리 비닝한
-`(edges, counts)` 두 컬럼을 받고, 나머지 셋은 `MatrixRef`로 격자를 선언한다.
+## 행렬·막대 render_type의 전체 형식
 
-- `Histogram`: `bar.orientation`이 컬럼 역할을 **단독 결정**한다.
-  `"Vertical"` = `x_column`이 edges / `y_column`이 counts, `"Horizontal"`은
-  반대. 길이 관계(`edges = counts + 1`)로 역할을 추측하지 않는다.
-- `bar.width_ratio`는 각 bin 폭에서 가운데 정렬된 막대가 차지할 비율이며
-  `0..=1`로 clamp된다. 그 다음 `gap_px`가 양쪽에서 픽셀 단위로 추가 차감된다.
-  양수 폭 막대가 1픽셀보다 넓으면 최소 1픽셀을 남기도록 gap이 제한되고, 이미
-  원래 bin 폭이 1픽셀 미만이면 픽셀 열별 최댓값을 GPU에서 골라 0까지 채운다
-  (가로 히스토그램은 픽셀 행). 이 경로에서는 gap과 양수 width_ratio를 무시하며,
-  최댓값 bin의 선 두께와 알파가 양수면 영역 전체를 선 색으로 채우고,
-  아니면 면 색으로 채운다. 동률은 앞선 bin을 선택하고,
-  `width_ratio: 0`인 bin은 제외한다. 원본 컬럼은 변경하지 않는다.
-  `border_width: 0`은 외곽선을 끄며 `border_color`와 양수 두께가 외곽선을 정한다.
-- `bar.bar_style_overrides`는 `index`로 특정 bin 하나를 골라 `fill_color`,
-  `border_color`, `border_width`, `gap_px`, `width_ratio` 중 필요한 값만 덮는다.
-  같은 index가 여러 번 나오면 선언 순서대로 합성된다. baseline과 orientation은
-  시리즈 단위다. 렌더·typed pick·선택 outline이 모두 이 최종 막대 경계를 쓴다.
-- `MatrixRef.columns`: 격자를 이루는 구성 컬럼 id 목록. 별도의 데이터 보유
-  객체는 없다 — 격자는 **풀에 있는 그 컬럼들 자체**다.
-- `MatrixRef.grid_layout`: 좌표 컬럼이 셀 경계(`"Edges"`, n+1개)인지 셀
-  중심(`"Centers"`, n개)인지. **추론하지 않는다.**
-- 선언과 데이터의 개수가 어긋나도 **에러가 아니다.** 가장 작은 공통 범위까지
-  그리고 잘렸다는 사실만 알린다.
+히스토그램과 행렬 기반 세 종류의 전체 JSON 예시는 아래와 같다. `Histogram`은 호스트가 구간별로 집계한 `(edges, counts)` 컬럼을 받고, 행렬은 `MatrixRef`로 격자를 지정한다.
+
+- `Histogram`의 컬럼 역할은 `bar.orientation`으로 정한다. `"Vertical"`이면 `x_column`이 경계, `y_column`이 빈도 값이며 `"Horizontal"`은 반대다. `edges = counts + 1` 같은 길이 관계로 추측하지 않는다.
+- `bar.width_ratio`는 구간 대비 막대 너비이며 `0..=1`로 제한한다. 막대를 가운데에 놓고 `gap_px`를 양쪽으로 나누어 추가 간격을 둔다. 1픽셀보다 넓은 막대는 최소 1픽셀이 남도록 간격을 제한한다.
+- 구간 자체가 1픽셀보다 좁으면 GPU가 픽셀 열별 최댓값을 골라 0까지 채운다. 가로 히스토그램은 픽셀 행을 기준으로 한다. 이때 간격과 양수인 너비 비율은 적용하지 않는다. 최댓값 구간의 외곽선 두께와 불투명도가 모두 양수이면 외곽선 색으로, 아니면 채움색으로 그린다. 동률이면 앞선 구간을 선택한다. `width_ratio: 0`인 구간은 제외하며 원본 컬럼은 바꾸지 않는다.
+- `border_width: 0`이면 외곽선을 숨긴다. 양수이면 지정한 두께와 `border_color`를 사용한다.
+- `bar.bar_style_overrides`는 `index`로 구간을 골라 `fill_color`, `border_color`, `border_width`, `gap_px`, `width_ratio` 중 필요한 값만 바꾼다. 같은 인덱스가 여러 번 나오면 선언 순서대로 적용한다. 기준선과 방향은 시리즈 전체에 적용한다. 그리기·데이터 피킹·선택 테두리는 같은 최종 막대 경계를 사용한다.
+- `MatrixRef.columns`는 격자를 구성하는 컬럼 ID 목록이다. 별도의 데이터 객체를 만들지 않고 등록된 컬럼을 사용한다.
+- `MatrixRef.grid_layout`은 좌표가 셀 경계(`"Edges"`, n+1개)인지 중심(`"Centers"`, n개)인지 지정한다. 길이로 추측하지 않는다.
+- 선언과 데이터 크기가 다르면 공통으로 사용할 수 있는 범위까지만 그리고 잘림 여부를 알린다.
 <!-- contour-contract: scope=schema max-levels=1024 -->
-- `ContourConfig.levels`는 항상 **데이터 단위**의 명시 목록이다(자동 추론
-  variant 없음). 허용 길이는 `0..=1024`이고 1025개 이상이면 `set_series`가
-  실패한다. 배열을 조용히 자르지 않으며 이전 config, series, GPU style은
-  그대로 유지된다.
-- `ContourLabelConfig.spacing_px`는 자동 배치의 목표 간격이며 숨김 라벨과 명시
-  anchor에서도 유한한 양수여야 한다. 정상 선택은 이 간격을 목표로 하지만
-  레벨별 fallback은 더 가까운 후보를 남길 수 있다. automatic/explicit은 공통
-  1024개 용량을 쓴다. 명시 `anchors`는 유효하지 않은 `level_index`를 제거한 뒤
-  입력 순서의 앞 1024개만 사용한다. resolved 목록이 비면 자동 배치하고,
-  하나라도 남으면 그 목록이 자동 배치를 대체한다. automatic에서만 clamp된
-  frame/export scale을 spacing에 곱해 유한한 양수인지 다시 검사한다. atlas는
-  WebGPU adapter의 texture dimension 안에 들어야 하며, 위 검증 실패는 이전
-  config, series, GPU style을 보존한다. 앵커는 데이터 좌표 `(x, y)` + 데이터
-  공간 접선 `(tx, ty)`로 저장되므로 줌/팬 때 각도만 다시 투영하면 된다.
-- `ContourLabelConfig.color`는 contour 선색/`per_level_color`와 독립적인 글자색이다.
-  Decimal은 level 간격(없으면 colorbar 간격)과 `significant_digits`를 함께 사용한다.
-  선은 실제 선택된 label 사각형 안에서 끊기며 `bg_padding_px`는 배경색 유무와 무관하게
-  그 간격을 패딩한다.
+- `ContourConfig.levels`에는 데이터 단위의 등고선 값을 명시한다. 자동 추론 옵션은 없다. `0..=1024`개를 허용하며 1025개 이상이면 `set_series`가 실패한다. 배열을 잘라 처리하지 않고 이전 설정·시리즈·GPU 스타일을 유지한다.
+- `ContourLabelConfig.spacing_px`는 자동 배치의 목표 간격이다. 레벨 누락을 막기 위해 추가로 고르는 후보는 더 가까울 수 있다. 라벨을 숨겼거나 위치를 직접 지정했더라도 간격은 유한한 양수여야 한다.
+- 자동·직접 배치는 모두 최대 1024개를 사용한다. 직접 지정한 `anchors`에서는 잘못된 `level_index`를 제외하고 입력 순서대로 유효한 앞 1024개를 사용한다. 남은 항목이 없으면 자동 배치하고, 하나라도 있으면 그 목록을 사용한다.
+- 자동 배치에서는 허용 범위로 제한한 프레임·출력 배율을 간격에 곱하고 결과가 유한한 양수인지 다시 검사한다. 아틀라스는 WebGPU 어댑터의 텍스처 크기 한도를 지켜야 한다. 검증에 실패하면 이전 설정·시리즈·GPU 스타일을 유지한다. 앵커는 데이터 좌표 `(x, y)`와 접선 `(tx, ty)`으로 저장하며 확대·이동 시 화면에 다시 투영한다.
+- `ContourLabelConfig.color`는 선 색과 `per_level_color`에 영향을 받지 않는 라벨 글자색이다. 소수 표시는 등고선 간격(없으면 색상 막대 간격)과 `significant_digits`를 사용한다. 선은 실제 라벨 사각형 안에서 끊으며 `bg_padding_px`만큼 추가로 비운다. 배경색이 없어도 이 간격을 적용한다.
 
 <!-- schema-sync: name=field-render-types -->
 ```json
@@ -1122,10 +973,11 @@ sketch의 모든 파라미터에 디폴트가 있어 (`serde(default)`) 부분 �
 }
 ```
 
-## `get_series()` 전체 형태 — 최대 변형 예시
+<a id="get_series-전체-형태--최대-변형-예시"></a>
 
-`LineScatterErrorbarXY` + 두 가지 `ErrorRef` 형태 + 라벨이 모두 포함된
-한 개짜리 배열. 실제 값은 이 형태의 부분집합 변형들이다.
+## `get_series()` 전체 형식 — 모든 오차 방향을 포함한 예
+
+`LineScatterErrorbarXY`, 대칭·비대칭 `ErrorRef`, 라벨을 모두 포함한 시리즈 하나의 예다. 다른 시리즈 종류는 해당 종류에 필요한 필드만 사용한다.
 
 <!-- schema-sync: name=series -->
 ```json
@@ -1272,7 +1124,4 @@ sketch의 모든 파라미터에 디폴트가 있어 (`serde(default)`) 부분 �
 ]
 ```
 
-Errorbar style mapping is independent from scatter style mapping. `error_bar_style_index_column`
-selects rows from `error_bar_style_table`, and `error_bar_style_overrides` applies sparse
-per-point exceptions by source point index. Styled draw modes ignore this mapping; the precise
-errorbar path applies it to color, stem width, cap half-size, and cap width only.
+오차 막대와 산점도의 스타일 매핑은 독립적이다. `error_bar_style_index_column`은 `error_bar_style_table`의 행을 선택하며, `error_bar_style_overrides`는 원본 점 인덱스로 특정 값만 덮어쓴다. 정밀 모드에서 색·몸통 두께·끝선 절반 길이·끝선 두께에 적용하며 다른 렌더링 스타일은 이 매핑을 무시한다.

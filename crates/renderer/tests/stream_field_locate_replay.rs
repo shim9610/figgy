@@ -16,11 +16,11 @@ fn pack_bits(bits: u32) -> vec4<f32> {
         (bits >> 16u) & 255u, (bits >> 24u) & 255u)) / 255.0;
 }
 struct PackedHit { @location(0) identity: vec4<f32>, @location(1) frac: vec4<f32> };
-// One test-only exact equality query. Raster interpolation need not put the
-// mathematical centre pixel at the exact f32 bit-pattern 0.5.
+// Keep one explicit exact-equality query for boundary ownership; all other
+// pixels use the resident fill's canonical center coordinates.
 fn probe_t(in: FieldOut) -> f32 {
     if (u32(in.pos.x) == 18u && u32(in.pos.y) == 11u) { return 0.5; }
-    return in.axis_t.x;
+    return field_fragment_center_t(in.axis_t).x;
 }
 @fragment fn fs_locate_oracle(in: FieldOut) -> PackedHit {
     let count = quad_count(field.cols, LATTICE_QUADS);
@@ -659,6 +659,11 @@ fn bounded_gpu_axis_replay_matches_resident_global_locate() {
             u64::from(WIDTH * HEIGHT * 16),
             wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         );
+        let init_group_0 = bind_buffer(
+            &device,
+            &init_pipe.get_bind_group_layout(0),
+            &[(0, &transform_buffer)],
+        );
         let init_group_2 = bind_buffer(
             &device,
             &init_pipe.get_bind_group_layout(2),
@@ -693,7 +698,7 @@ fn bounded_gpu_axis_replay_matches_resident_global_locate() {
             &mut begin,
             &init_pipe,
             &[&init_view],
-            &[(2, &init_group_2), (3, &init_group_3)],
+            &[(0, &init_group_0), (2, &init_group_2), (3, &init_group_3)],
         );
         queue.submit([begin.finish()]);
         let ticket_len = if fixture.name == "duplicate-2pair"

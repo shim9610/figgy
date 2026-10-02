@@ -5,15 +5,19 @@ Embed in egui / winit / any other wgpu 30 host.
 
 > [한국어 문서](#한국어-문서) is available below.
 
+Code is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE). Bundled Liberation Sans and Comic Neue fonts retain their [OFL notices](crates/renderer/fonts/LICENSE-LiberationSans.txt) ([Comic Neue](crates/renderer/fonts/LICENSE-ComicNeue.txt)).
+
 > This is the workspace root README. The workspace has three crates:
 > **`crates/model`** — the pure chart model and schema authority: option/data SSoT (`Config`, `SeriesConfig`), the rich-text/legend document model, interaction policies (`Selectable`/`Draggable`/`Resizable`, `HitMap`, the single `Config::nudge` movement path), presets (`AxisPreset`, `ColorCycle`). Dependency-free; optional `serde` feature.
-> **`crates/renderer`** — the wgpu + CPU-raster machinery documented below. It owns the persistent chart registry (`ChartId` → `Config`, ordered `SeriesConfig`, selection, checked revisions), resident `ColumnPool`, nonresident logical-source metadata in the 0.12.0 candidate, picker pipeline bundle and derived single active-chart registry cache, and pending GPU-pool maintenance. Depends on `model` and re-exports its public modules.
-> **`crates/web`** — the browser package (`figgy`): public `<figgy-chart>` Custom Element facade plus a raw `FiggyChart` wasm kernel as an advanced escape hatch. The facade owns the shadow canvas, ready promise/event lifecycle, rAF loop, ResizeObserver/DPR handling, pointer mapping, async-operation busy gate, id-keyed registration metadata, UI-derived labels/styles/extents, and Promise adaptation. Picker, pool, chart, and maintenance authority remain in `Renderer`. Browser I/O: [WASM.md](crates/renderer/WASM.md) · full Config JSON schema: [SCHEMA.md](crates/web/SCHEMA.md). Build artifacts (`crates/web/pkg/`) are gitignored — build with `npx wasm-pack build crates/web --release --target web`.
+> **`crates/renderer`** — the wgpu + CPU-raster machinery documented below. It owns the persistent chart registry (`ChartId` → `Config`, ordered `SeriesConfig`, selection, checked revisions), resident `ColumnPool`, nonresident logical-source metadata in 0.12.0, picker pipeline bundle and derived single active-chart registry cache, and pending GPU-pool maintenance. Depends on `model` and re-exports its public modules.
+> **`crates/web`** — the browser package (`figgy`): public `<figgy-chart>` Custom Element facade plus a raw `FiggyChart` wasm kernel as an advanced escape hatch. The facade owns the shadow canvas, ready promise/event lifecycle, rAF loop, ResizeObserver/DPR handling, pointer mapping, async-operation busy gate, id-keyed registration metadata, UI-derived labels/styles/extents, and Promise adaptation. Picker, pool, chart, and maintenance authority remain in `Renderer`. Browser I/O: [WASM.md](crates/renderer/WASM.md) · full Config JSON schema: [SCHEMA.md](crates/web/SCHEMA.md). Build artifacts (`crates/web/pkg/`) are gitignored — build with `npx wasm-pack@0.15.0 build crates/web --release --target web --locked`.
 > **Online studio** — [figgyplot.com](https://figgyplot.com/) hosts the public web editor. It runs in-browser with local chart data, imports CSV/TSV/Excel, opens `.figgy` project files, and exports PNGs from the same wasm/WebGPU surface.
 
-## Public release candidate — renderer 0.12.0 / figgy 0.10.0
+<a id="public-release-candidate--renderer-0120--figgy-0100"></a>
 
-This candidate adds renderer-owned exact nonresident streaming and the browser
+## Source release — renderer 0.12.0 / figgy 0.10.0
+
+This release adds renderer-owned exact nonresident streaming and the browser
 `render_chart()` job API. The web facade requests bounded original ranges,
 schedules work, and reports progress. For supported precise point, solid-line,
 and errorbar charts, the renderer can retain only the original rows needed by
@@ -21,9 +25,11 @@ the current view in a chart-local GPU cache; it never promotes the connected
 whole-column closure automatically. Wider views and scaled export replay the
 source, while a narrower view can redraw from that cache.
 There is no LOD or downsampling. Supported styles and exclusions are listed in
-[WASM.md](crates/renderer/WASM.md). This source candidate does **not** mean the
-online Studio has adopted the new API. The published release remains 0.11.0 /
-0.9.1 until this candidate passes the public gate and is published.
+[WASM.md](crates/renderer/WASM.md). This source release does **not** mean the
+online Studio has adopted the new API. Build the browser package from this
+revision; the crates are distributed through this repository, not crates.io.
+The model is version **0.7.2**, including the fix for subnormal logarithmic
+contour levels. Renderer 0.12.0 and figgy 0.10.0 use wgpu 30 and Rust 1.99.0.
 
 The previous renderer 0.11.0 / figgy 0.9.1 release introduced:
 
@@ -38,15 +44,15 @@ The browser demo includes bin-count and stroke controls. Run
 
 Renderer 0.10.0 / figgy 0.9.0 introduced:
 
-- **Histogram and matrix fields are first-class GPU series.** `Histogram`, `Heatmap`, `Contour`, and `ContourFill` share the declared matrix lattice and colour-map SSoT. Heatmaps support flat or interpolated shading, contours support up to 1024 levels, and contour labels open a real gap in the underlying isoline. Automatic field fitting uses the rendered cell boundaries rather than only the sample centres.
+- **Histogram and matrix fields are first-class GPU series.** `Histogram` uses explicit bin edges/counts; `Heatmap`, `Contour`, and `HeatmapContour` share the declared matrix lattice and colour-map SSoT. Heatmaps support flat or interpolated shading, contours support up to 1024 levels, and contour labels open a real gap in the underlying isoline. Automatic field fitting uses the rendered cell boundaries rather than only the sample centres.
 - **Field interaction and styling use stable identities.** `pick_data` returns tagged point, histogram-bin, matrix-cell, or contour-level references that can be written back through `Config.picked_data`. Histograms expose width, outline colour/thickness, and per-bin overrides. Contour label text/background/number formatting is independent of per-level line colour. The colourbar exposes its full `AxisOptions`, including ticks, labels, title, reversal, and pointer-following resize handles.
 - **GPU range and startup contracts are exact and observable.** Hi/lo field-coordinate arithmetic and range reduction stay on the GPU; the reduced bounds committed to the axis SSoT are the same values used for drawing. Browser startup validates every render entry, including the contour-label width attribute, and `prewarm_all_with_progress` / `prewarm_all` can publish the renderer-owned lazy caches explicitly.
-- **GPU memory is budgeted as one renderer resource.** Pool storage, staging, export, picking, contour placement, and other out-of-pool allocations are charged against the configured device-aware limit and fail with a renderer error before an unchecked allocation.
+- **GPU memory accounting spans renderer resources.** Pool storage, staging, export, picking, and contour placement participate in allocation checks. Baked Milkyway/Constellation style textures remain an accounting exception; the reported total is not all GPU memory or driver VRAM usage. See [memory accounting](#memory-accounting-and-release).
 
 This repository is the supported source distribution; the crates are not published on crates.io. Consumers pinned to a public Git revision must update their lockfile and rebuild the wasm package. See [WASM.md](crates/renderer/WASM.md) for browser lifecycle/API details and [SCHEMA.md](crates/web/SCHEMA.md) for the complete JSON contract.
 
-- **Resident GPU columnar pool**: columns admitted to the resident path share a single GPU buffer with first-fit alloc + ping-pong defrag on fragmentation. Logical values are stored as f32 hi/lo pairs when uploaded through `HiLoColumnSource`, preserving timestamp-sized offsets on the GPU. Upload caches scalar stats (min / max / smallest-positive) for auto-fit; per-point geometry such as the dashed-line arc-length prefix is computed in place by a compute scan (`line_arc.wgsl`).
-- **Nonresident rendering (0.10.0 candidate)**: replayable columns are registered by logical ID, length, encoding, and revision without keeping their complete data in the GPU pool. The renderer requests bounded original ranges and accumulates the exact drawing; the host retains the source for replay after a view or output change. This does not decimate or downsample data. Admission, supported styles, cancellation, and completed-revision queries are described in [WASM.md](crates/renderer/WASM.md).
+- **Resident GPU columnar pool**: columns admitted to the resident path share a single GPU buffer with first-fit alloc + ping-pong defrag on fragmentation. Logical values are stored as f32 hi/lo pairs when uploaded through `HiLoColumnSource`, preserving timestamp-sized offsets on the GPU. Upload caches scalar stats (min / max / smallest-positive) for auto-fit; per-point geometry such as the dashed-line arc-length prefix is computed on the GPU by a compute scan (`line_arc.wgsl`).
+- **Nonresident rendering (0.10.0)**: replayable columns are registered by logical ID, length, encoding, and revision without keeping their complete data in the GPU pool. The renderer requests bounded original ranges and accumulates the exact drawing; the host retains the source for replay after a view or output change. This does not decimate or downsample data. Admission, supported styles, cancellation, and completed-revision queries are described in [WASM.md](crates/renderer/WASM.md).
 - **Layered compositing**: grid → data → axis/label/legend, so grid never covers the data. Axis raster can be produced as `Grid` and `Decoration` layers; `AxisLayerKind::All` remains a legacy single-pass helper.
 - **Data fidelity contract**: renderer/web consume the model contract without silently changing original coordinates, provenance, or axis↔data correspondence. Explicit clipping, log-domain skips, NaN skips, and antialiasing limits are rendering contracts rather than data rewrites.
 - **Headless PNG export**: GPU offscreen raster at arbitrary DPI → RGBA / PNG bytes in memory (async-first; blocking wrappers on native).
@@ -61,30 +67,70 @@ This repository is the supported source distribution; the crates are not publish
 - **WebAssembly-ready**: pure-Rust raster stack (tiny-skia + fontdb + swash), async init/export, runtime font registration (`register_font`) for CJK and custom families.
 - **Observable web startup**: in a wasm browser, `create` / `create_with_progress` warm every render WGSL entry on the same `GPUDevice` through Promise-based `createRenderPipelineAsync`, discard those temporary JS pipelines, and then await the first empty-chart frame. Renderer-owned optional render/style and arc/fit/picker/contour compute caches remain lazy until first use or explicit `prewarm_all_with_progress` / `prewarm_all`. `<figgy-chart>` publishes its first successful frame and `figgy-ready` before renderer-owned GPU picking is prewarmed in the background.
 
+### Native chart gallery
+
+Synthetic datasets rendered by figgy’s native headless renderer. Each GIF contains 48 separately exported frames, looping at 12 fps.
+
+**Response curves with error bars · Histogram with explicit bin edges**
+
+<p>
+  <a href="crates/renderer/assets/gallery-errorbars.png"><img src="crates/renderer/assets/gallery-errorbars.png" alt="Response curves with error bars" width="48%" align="top"></a>
+  <a href="crates/renderer/assets/gallery-histogram.png"><img src="crates/renderer/assets/gallery-histogram.png" alt="Histogram with explicit bin edges" width="48%" align="top"></a>
+</p>
+
+**Travelling waves · A moving point on a 2:3 phase portrait**
+
+<p>
+  <a href="crates/renderer/assets/gallery-wave.gif"><img src="crates/renderer/assets/gallery-wave.gif" alt="Travelling waves" width="48%" align="top"></a>
+  <a href="crates/renderer/assets/gallery-orbit.gif"><img src="crates/renderer/assets/gallery-orbit.gif" alt="A moving point on a 2:3 phase portrait" width="48%" align="top"></a>
+</p>
+
+![Interpolated heatmap with labelled contours](crates/renderer/assets/gallery-contours.png)
+
+See [the gallery guide](crates/renderer/GALLERY.md) for runnable commands, data definitions, export sizes, and validation details. GIF timing is presentation timing, not a rendering benchmark.
+
 ### Draw style preview
 
-Same growth-response data, rendered through the four chart styles:
+Growth-response charts in four styles. The Milkyway preview uses line-only series: stars and faint nebula along the curves, with no scatter planets or errorbar jets. [Reproduce this preview](crates/renderer/GALLERY.md#milkyway-line-only-preview).
 
-<table>
-  <tr>
-    <td width="50%"><strong>Precise</strong><br><img src="crates/renderer/assets/style-growth-response-precise.png" alt="Precise style growth-response chart" width="420"></td>
-    <td width="50%"><strong>Sketch</strong><br><img src="crates/renderer/assets/style-growth-response-sketch.png" alt="Sketch style growth-response chart" width="420"></td>
-  </tr>
-  <tr>
-    <td width="50%"><strong>Milkyway</strong><br><img src="crates/renderer/assets/style-growth-response-milkyway.png" alt="Milkyway style growth-response chart" width="420"></td>
-    <td width="50%"><strong>Constellation</strong><br><img src="crates/renderer/assets/style-growth-response-constellation.png" alt="Constellation style growth-response chart" width="420"></td>
-  </tr>
-</table>
+**Precise · Sketch**
+
+<p>
+  <a href="crates/renderer/assets/style-growth-response-precise.png"><img src="crates/renderer/assets/style-growth-response-precise.png" alt="Precise style growth-response chart" width="48%" align="top"></a>
+  <a href="crates/renderer/assets/style-growth-response-sketch.png"><img src="crates/renderer/assets/style-growth-response-sketch.png" alt="Sketch style growth-response chart" width="48%" align="top"></a>
+</p>
+
+**Milkyway · line only · Constellation**
+
+<p>
+  <a href="crates/renderer/assets/style-growth-response-milkyway.png"><img src="crates/renderer/assets/style-growth-response-milkyway.png" alt="Milkyway line-only growth curves with stars and faint nebula, without scatter planets" width="48%" align="top"></a>
+  <a href="crates/renderer/assets/style-growth-response-constellation.png"><img src="crates/renderer/assets/style-growth-response-constellation.png" alt="Constellation style growth-response chart" width="48%" align="top"></a>
+</p>
 
 ---
 
 ## 1. Usage
 
+### Toolchain and builds
+
+This release pins **Rust 1.99.0** in
+[`rust-toolchain.toml`](rust-toolchain.toml), including the wasm32 target,
+rustfmt and clippy. With rustup installed, commands in this checkout select
+that toolchain automatically. This is the tested development toolchain, not
+a separately verified minimum supported Rust version. Use the committed
+`Cargo.lock` with `--locked` when building this checkout; downstream Git
+consumers resolve dependencies with their own lockfile.
+
+```bash
+cargo check --locked --workspace --all-targets --all-features
+npx wasm-pack@0.15.0 build crates/web --release --target web --locked
+```
+
 ### Adding the dependency
 
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # or public Git source — candidate 0.12.0, not on crates.io.
+renderer = { path = "crates/renderer" }   # or public Git source — version 0.12.0, not on crates.io.
 wgpu     = "30"
 ```
 
@@ -103,7 +149,12 @@ egui-wgpu = "0.36"
 iced 0.14 still uses wgpu 27, so direct device/queue/render-pass sharing is
 disabled until iced publishes a wgpu 30-compatible release.
 
-### Shortest standalone example (winit + figgy alone with wgpu)
+### Standalone setup and drawing (winit + figgy)
+
+The following initialization/draw fragment belongs in a winit
+`ApplicationHandler::resumed` handler, with `event_loop: &ActiveEventLoop`.
+See [winit_simple.rs](crates/renderer/examples/winit_simple.rs) for the complete
+event loop and persistent window/renderer state.
 
 ```rust
 use std::sync::Arc;
@@ -112,7 +163,7 @@ use renderer::{
     color::Color, default, layout::{ChartArea, Rect}, line::LineStylePreset,
 };
 
-let window = Arc::new(event_loop.create_window(attrs).unwrap());
+let window = Arc::new(event_loop.create_window(winit::window::Window::default_attributes()).unwrap());
 let size = window.inner_size();
 
 // One-line setup — figgy owns instance/adapter/device/queue/surface/swap chain.
@@ -124,15 +175,21 @@ let mut renderer = Renderer::for_window(
 
 // renderer.add_column takes `&dyn ColumnSource`.
 // Implement the trait on your own type (see `ColumnSource` section below) — Vec, ndarray,
-// polars Series, mmap, anything — and you get zero-copy upload. Built-in `Column<f64>` works too.
+// polars Series, mmap, anything — native upload writes directly into mapped staging
+// without a conversion Vec. Built-in `Column<f64>` works too.
 let xs: Vec<f64> = (0..1024).map(|i| i as f64 * 0.01).collect();
 let ys: Vec<f64> = xs.iter().map(|x| x.sin()).collect();
-renderer.add_column("x", &my_source_for(0, xs)).unwrap();   // your type : ColumnSource
-renderer.add_column("y", &my_source_for(1, ys)).unwrap();
+fn column(data: Vec<f64>) -> renderer::Column<f64> {
+    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    renderer::Column { data, min, max }
+}
+renderer.add_column("x", &column(xs)).unwrap();
+renderer.add_column("y", &column(ys)).unwrap();
 
 // Chart — builder pattern.
 let mut config = default::default_config();
-config.chart_area = ChartArea(Rect { x:8, y:8, width: size.width - 16, height: size.height - 16 });
+config.chart_area = ChartArea(Rect { x:8, y:8, width: size.width.saturating_sub(16).max(1), height: size.height.saturating_sub(16).max(1) });
 let mut chart = Chart::new(config)
     .with_title("Sine")
     .with_x_title("x")
@@ -168,7 +225,7 @@ renderer.draw(Color::WHITE, &items).unwrap();   // acquire surface frame → pre
 
 ### `ColumnSource` — the data adapter trait
 
-`Renderer::add_column` takes `&dyn ColumnSource` — implement the trait on any container of yours and the data lands in the GPU pool with zero copy (no intermediate `Vec` allocation). The source writes GPU pairs and returns smallest-positive statistics in the same pass; the renderer never reads wgpu 30's write-only mapped bytes. `min` / `max` retain their source-level meaning. Scalar smallest-positive uses the actual uploaded `(value as f32, 0)` value, while hi-lo uses the recorded `hi as f64 + lo as f64`; both include only finite positive values. Use `Renderer::add_hilo_column` with `&dyn HiLoColumnSource` for large absolute timestamps or coordinates that must preserve sub-f32 deltas.
+`Renderer::add_column` takes `&dyn ColumnSource` — implement the trait on any container of yours and native upload writes into mapped staging without an intermediate conversion `Vec`. The GPU then copies staging into the column pool; “zero-copy” here means no extra CPU conversion buffer or retained CPU point mirror. The source writes GPU pairs and returns smallest-positive statistics in the same pass; the renderer never reads wgpu 30's write-only mapped bytes. `min` / `max` retain their source-level meaning. Scalar smallest-positive uses the actual uploaded `(value as f32, 0)` value, while hi-lo uses the recorded `hi as f64 + lo as f64`; both include only finite positive values. Use `Renderer::add_hilo_column` with `&dyn HiLoColumnSource` for large absolute timestamps or coordinates that must preserve sub-f32 deltas.
 
 `add_column` / `add_hilo_column` register a new id. To atomically replace an
 existing id, use `upsert_column` / `upsert_hilo_column`. `Renderer` prepares the
@@ -300,7 +357,7 @@ second policy, label pattern, chart width, and export scale while the x axis
 uses `LabelFormat::Timestamp` + `AutoCalendar` to choose non-overlapping labels.
 
 ```bash
-npx wasm-pack build crates/web --release --target web
+npx wasm-pack@0.15.0 build crates/web --release --target web --locked
 cd crates/web
 python -m http.server 8142 --bind 127.0.0.1
 # open http://127.0.0.1:8142/timestamp-demo.html
@@ -765,19 +822,40 @@ Empty text is filled in via the `Chart::with_title / with_x_title / with_y_title
 
 ## 3. Internal memory data flow
 
-![figgy internal memory and render architecture](crates/renderer/assets/architecture-state-flow-en.png)
+![figgy detailed architecture: workspace, upload, ownership, frames, GPU processing, export, caches, and retirement](crates/renderer/assets/architecture-state-flow-en.png)
 
 The renderer-owned registry is the persistent SSoT used by the browser wrapper.
 Low-level native hosts may still supply `ChartDrawItem` directly. In both paths,
 `ChartDrawItem` is prepare-only input; paint consumes only the owned token.
 
+
+### Reading the architecture diagram
+
+The numbered areas describe different boundaries, not a single chain in which
+one component owns everything below it. Native hosts own their integration and
+panel values; registered chart state and GPU machinery belong to `Renderer`.
+The web integration is shown separately and does not define native upload costs.
+
+| Area | Data flow and ownership contract |
+|---|---|
+| **1. Workspace responsibilities** | `model` defines chart declarations, layout and interaction policy without GPU resources. `renderer` implements the chart registry, GPU data processing and CPU raster integration. `web` adapts those APIs to canvas, input and browser scheduling. A low-level native host can also supply its own `ChartDrawItem` instead of using the registry. |
+| **2. Column upload and maintenance** | Borrow `ColumnSource` only during native upload; write f32 pairs and smallest-positive statistics directly into mapped staging, then copy staging into the GPU pool. The pool keeps column slots and scalar metadata, not CPU point arrays. First-fit allocation and coalescing manage free regions. A reservation restores the free list on failure; upsert prepares fallible dependent state before publication. Allocation epochs identify content replacement, while layout generation identifies relocation such as defragmentation. |
+| **3. Persistent and panel state** | `Renderer` holds registered Config/series, the pool, pipelines and shared device/queue. The host retains the returned `ChartView` and `ChartStyle`; views hold raster textures and transform resources, and styles retain GPU bindings. `WindowedRenderer` additionally retains surface/instance/adapter. CPU axis, text and grid rasterization can allocate image buffers; the column-upload contract does not prohibit those allocations. |
+| **4. Frame invalidation** | A persistent host compares renderer-issued desired/raster revisions with its last successfully presented stamp. Raster or viewport changes require a raster refresh; host-only redraw state can require drawing without changing chart state. The browser's clean rAF skips surface acquisition and drawing, while required maintenance/completion processing can continue. Failed presentation must not advance the last-presented stamp. |
+| **5. Prepare and record** | `prepare(&mut self)` resolves draw inputs and captures GPU handles, shared charges and validation stamps in `PreparedFrame`. `paint_prepared(&self)` validates that token before recording. It rejects changed views, captured columns, layouts, target pipelines or registered chart revisions. Once commands are recorded, the host must submit them before conflicting mutations; a token cannot inspect an external command buffer's later submission order. |
+| **6. GPU-derived data** | Arc-prefix scans, picking and exact primitive extents use GPU columns. Arc scan uses bounded chunks plus a carry chain, rather than a fixed whole-series 16.7M-point ceiling. Picking and fitting return compact results instead of a CPU copy of all points. Immutable derived GPU results can be shared by cache entries and prepared tokens; cache eviction alone need not release the last owner. |
+| **7. Screen and export** | Compose grid → data → decoration. Export prepares a scaled chart/view/style and offscreen target, then reads back padded row chunks and converts premultiplied RGBA to straight alpha. Row chunking bounds the readback buffer; the target, final RGBA image and PNG output still need their own memory. Resident export uses GPU columns, while streamed export replays original ranges. |
+| **8. Fidelity and caches** | Resident redraw reads original GPU columns without a data image cache. Nonresident streaming retains an accumulation surface and may admit a chart-local cache of exact source rows for supported views. Neither path introduces LOD, sampling or decimation. Clipping, invalid/log-domain samples and antialiasing remain rendering rules; different backends need not produce byte-identical pixels. |
+| **9. Accounting and retirement** | A GPU resource's shared charge survives as long as a Figgy owner retains it. After the last owner drops, retired bytes remain counted until an appropriate submission boundary and queue completion. `end_gpu_frame()` follows submission/discard of earlier commands; native hosts must service completions. The ledger describes tracked requested bytes, with the style-texture exceptions described below, rather than physical VRAM usage. |
+
 ### Exact streaming and residency
 
-![figgy exact streaming architecture](crates/renderer/assets/streaming-architecture-en.png)
+![figgy resident rendering, streaming accumulation, optional packed-view cache, and export](crates/renderer/assets/streaming-architecture-en.png)
 
-The image shows the baseline **on-screen** streaming path; it does not yet show
-the optional chart-local packed-view cache. The host owns replayable original data:
-either stable TypedArrays or a `readRange` provider. The web facade handles
+The image separates resident drawing from streaming accumulation, the optional
+chart-local packed-view GPU cache, and export by source replay. The native host
+owns replayable original data and supplies requested ranges. Browser hosts use
+stable TypedArrays or a `readRange` provider; the web facade handles
 browser scheduling and requests only the ranges needed for the current job; it
 does not own the stream cursor, chart state, or accumulated statistics. The
 renderer owns `Config`, ordered series, source revisions, the cursor, cached
@@ -808,11 +886,16 @@ render-pass boundaries.
 
 `Renderer` owns the chart registry and GPU-side state: each chart's authoritative
 `Config` and ordered `SeriesConfig`, the resident `ColumnPool`, nonresident
-logical-source metadata in the 0.12.0 candidate, render/compute pipelines,
+logical-source metadata in 0.12.0, render/compute pipelines,
 the shared picker pipeline bundle, at most one derived active-chart picker cache,
-pending pool maintenance, bind groups, per-panel GPU resources such as
-`ChartView` / `ChartStyle`, and the shared `Arc<wgpu::Device>` /
-`Arc<wgpu::Queue>`. A `ChartId` is opaque and bound to its issuing renderer.
+pending pool maintenance, renderer-level bind groups, and the shared
+`Arc<wgpu::Device>` / `Arc<wgpu::Queue>`. It creates `ChartView` and `ChartStyle`
+values and returns them to the host, which keeps them in its panel state (see
+[the egui host](crates/renderer/examples/egui_embed.rs)). A `PreparedFrame` holds
+its own GPU handles and shared charges, so dropping a host view/style does not
+necessarily release those resources. `WindowedRenderer` additionally retains
+the surface, instance, adapter, and optional MSAA target. A `ChartId` is opaque
+and bound to its issuing renderer.
 `set_chart_state` atomically validates and replaces a chart's `Config` and
 ordered series when one logical edit affects both.
 
@@ -853,8 +936,9 @@ exact-key results: equal compute inputs share one result, while changed
 geometry, data generation, or placement inputs allocate a new result and never
 overwrite the old one. Their shared GPU charges live as long as the cache or a
 prepared token owns the corresponding handles; after the last Figgy owner
-drops, retired accounting remains until the host reports queue submission with
-`end_gpu_frame()`. Explicit contour placement is immutable too. This
+drops, the charge becomes retired. After the host submits or discards all
+previously recorded commands, `end_gpu_frame()` attaches a queue-completion
+callback; the retired charge remains until that callback runs. Explicit contour placement is immutable too. This
 guarantee does not replace host frame ordering: rewriting the same `ChartView`,
 replacing a captured column, defragmenting the pool, or rebuilding target
 pipelines deliberately makes the old token stale. Commands recorded from that
@@ -869,6 +953,21 @@ Nonresident registration instead retains logical source metadata and bounded
 GPU work; its host must keep the original range provider available for exact
 replay. The renderer does not retain a full CPU copy of that source.
 
+### Memory accounting and release
+
+`gpu_memory_usage()` reports requested allocation bytes tracked by figgy, not
+physical VRAM usage. Two lazy style-texture creation paths for Milkyway and
+Constellation remain outside the regular ledger; each creates PSF, atlas, and
+strip textures. Streaming export admission separately checks their known
+payload size. These exceptions must not be read as fully accounted resources.
+
+Live resources and retired resources both count toward the tracked total.
+Dropping a Rust handle does not prove that queued GPU work has finished, and
+`end_gpu_frame()` does not itself free device memory. Native hosts must service
+completion callbacks even while idle. Native host allocations, final RGBA/PNG
+output buffers, and driver internals are outside this GPU-byte report. The
+native upload contract above does not claim control over browser JS/wasm copies.
+
 An in-flight `GpuPickTicket` owns its readback resources and an `Arc`-backed
 identity mapping captured at submission. Later chart or pool mutations, and
 even dropping the renderer, cannot remap that ticket's eventual
@@ -881,6 +980,10 @@ lifecycle. The raw `FiggyChart` wasm kernel remains available as an advanced
 escape hatch.
 
 Web cold-start and lifecycle contract:
+
+In browsers, first-frame readiness awaits the actual
+`GPUQueue.onSubmittedWorkDone()` Promise. A queue rejection or device loss
+rejects creation/readiness; it cannot publish a successful first-frame event.
 
 | Surface | Contract |
 |---|---|
@@ -1044,89 +1147,126 @@ Bundled font: Liberation Sans (SIL OFL 1.1) — `crates/renderer/fonts/LICENSE-L
 
 # figgy (한국어 문서)
 
-Rust 과학 차트 라이브러리. **CPU 라스터 (축 / 라벨 / 그리드 — tiny-skia + swash) + GPU wgpu (대량 데이터) 하이브리드** 렌더링.
-egui / winit / 기타 wgpu 30 호스트에 임베드할 수 있다.
+figgy는 Rust로 작성한 과학·공학용 차트 라이브러리다. **축·눈금·격자·텍스트는 CPU에서, 대량의 데이터는 GPU에서 그린다.** CPU 렌더링에는 tiny-skia와 swash를, GPU 렌더링에는 wgpu를 사용한다. egui, winit을 비롯한 wgpu 30 기반 애플리케이션에 통합할 수 있다.
 
-> 워크스페이스 루트 README. crate 3개로 구성:
-> **`crates/model`** — 순수 차트 모델이자 스키마 권위: 옵션/데이터 SSoT(`Config`, `SeriesConfig`), 리치텍스트/범례 문서 모델, 상호작용 정책(`Selectable`/`Draggable`/`Resizable`, `HitMap`, 단일 이동 경로 `Config::nudge`), 프리셋(`AxisPreset`, `ColorCycle`). 의존성 0, `serde` 는 선택 피쳐.
-> **`crates/renderer`** — 아래에서 문서화하는 wgpu + CPU 라스터 장치. 지속 chart registry(`ChartId` → `Config`, 순서 있는 `SeriesConfig`, selection, checked revision), 상주 `ColumnPool`, 0.12.0 후보의 비상주 논리 소스 metadata, picker pipeline bundle과 파생된 단일 active-chart registry cache, pending GPU-pool maintenance를 소유한다. `model`을 의존하고 public 모듈을 re-export한다.
-> **`crates/web`** — 브라우저 패키지(`figgy`): public `<figgy-chart>` Custom Element facade와 advanced escape hatch로 남는 raw `FiggyChart` wasm kernel. facade가 shadow canvas, ready promise/event 수명주기, rAF loop, ResizeObserver/DPR 처리, pointer mapping, async operation busy gate, id 기반 등록 metadata, UI 파생 label/style/extent, Promise 변환을 소유한다. picker, pool, chart, maintenance 권위는 `Renderer`에 남는다. 브라우저 I/O: [WASM.md](crates/renderer/WASM.md) · Config JSON 스키마: [SCHEMA.md](crates/web/SCHEMA.md). 빌드 산출물(`crates/web/pkg/`)은 gitignore — `npx wasm-pack build crates/web --release --target web` 로 빌드.
-> **웹 스튜디오** — [figgyplot.com](https://figgyplot.com/) 에 공개 웹 편집기가 있다. 브라우저 안에서 로컬 차트 데이터를 처리하고, CSV/TSV/Excel import, `.figgy` 프로젝트 열기, 같은 wasm/WebGPU 표면 기반 PNG export를 제공한다.
+워크스페이스는 다음 세 크레이트로 구성된다.
 
-## 공개 후보 — renderer 0.12.0 / figgy 0.10.0
+- **`crates/model`**: 차트 설정과 데이터 구조를 정의한다. `Config`와 `SeriesConfig`가 설정의 기준이며, 리치 텍스트·범례, 선택·드래그·크기 조절 정책, `HitMap`, 이동 처리를 모은 `Config::nudge`, 축·색상 프리셋도 이 크레이트에 있다. 기본 의존성은 없으며 `serde` 기능은 선택 사항이다.
+- **`crates/renderer`**: wgpu와 CPU 래스터 렌더링을 결합한다. 등록된 차트의 설정·시리즈 순서·선택 상태·리비전, 상주 `ColumnPool`, 피킹 파이프라인과 현재 차트의 피킹 캐시, 대기 중인 풀 정리 작업을 관리한다. 0.12.0에서는 비상주 데이터 소스의 메타데이터도 관리한다. `model`의 공개 모듈을 다시 내보내므로 렌더러 사용자는 같은 타입을 그대로 쓸 수 있다.
+- **`crates/web`**: 브라우저용 `figgy` 패키지다. 일반적인 사용에는 `<figgy-chart>` 사용자 정의 요소를 제공하며, 브라우저 동작을 직접 제어해야 할 때는 저수준 WASM 클래스인 `FiggyChart`를 사용할 수 있다. `<figgy-chart>`는 캔버스, 준비 완료 알림, 애니메이션 루프, 화면 크기·DPR 변경, 포인터 좌표 변환, 비동기 호출의 중복 실행 방지, 등록 ID와 UI용 파생 정보, Promise 변환을 담당한다. 차트·풀·피킹·풀 정리 상태는 `Renderer`가 관리한다.
 
-이번 후보에는 렌더러가 소유하는 원본 데이터 스트리밍과 웹의 `render_chart()`
-작업 API가 들어간다. 웹 facade는 필요한 원본 구간만 요청해 실행 일정과 진행
-상태를 연결한다. 지원되는 정밀 점·실선·에러바 차트에서는 렌더러가 현재 화면에
-필요한 원본 행만 차트별 GPU 캐시에 유지할 수 있다. 연결된 컬럼 전체를 자동으로
-상주 풀에 승격하지 않는다. 완료된 revision은 재사용하고, 더 넓은 뷰나 배율
-출력에는 동일 원본을 다시 공급할 수 있다. LOD나 다운샘플링은 없다. 지원 범위와 제외 항목은
-[WASM.md](crates/renderer/WASM.md)에 정리했다. 이 소스 후보가 공개 웹
-Studio에 적용됐다는 뜻은 아니다. 공개 검증과 배포가 끝나기 전의 실제 공개
-버전은 0.11.0 / 0.9.1이다.
+브라우저 사용법은 [WASM.md](crates/renderer/WASM.md), 전체 설정 형식은 [SCHEMA.md](crates/web/SCHEMA.md)를 참고한다. 빌드 결과물인 `crates/web/pkg/`는 Git에 포함하지 않는다. `npx wasm-pack@0.15.0 build crates/web --release --target web --locked`로 생성할 수 있다.
+
+**웹 스튜디오** [figgyplot.com](https://figgyplot.com/)에서는 로컬 데이터를 브라우저에서 편집할 수 있다. CSV·TSV·Excel 가져오기, `.figgy` 프로젝트 열기, WASM/WebGPU 렌더링 결과의 PNG 내보내기를 지원한다.
+
+<a id="공개-후보--renderer-0120--figgy-0100"></a>
+
+## 소스 릴리스 — renderer 0.12.0 / figgy 0.10.0
+
+이번 버전에는 원본 데이터를 나누어 그리는 스트리밍 기능과 웹 작업 API인 `render_chart()`가 추가됐다. 렌더러가 필요한 데이터 구간을 요청하면 웹 래퍼가 원본을 공급하고 작업 순서와 진행 상태를 관리한다.
+
+지원되는 정밀 모드의 점·실선·오차 막대 차트에서는 현재 화면에 필요한 원본 행만 차트별 GPU 캐시에 보관할 수 있다. 서로 연결된 컬럼 전체를 자동으로 상주 풀에 옮기지는 않는다. 완료된 결과는 재사용하며, 표시 범위를 넓히거나 출력 배율을 바꾸면 같은 원본을 다시 읽어 그린다. LOD나 다운샘플링으로 데이터를 줄이지 않는다.
+
+지원 범위와 제한 사항은 [WASM.md](crates/renderer/WASM.md)에 정리했다. 웹 스튜디오에 이 API가 적용된 것은 아니다. 이 저장소의 소스 버전은 renderer 0.12.0 / figgy 0.10.0이다. 브라우저 패키지는 해당 커밋에서 빌드하며, 크레이트는 crates.io에 배포하지 않는다.
+
+모델은 로그 등고선의 매우 작은 값 처리 수정을 포함한 **0.7.2**다. 렌더러와 웹 패키지는 wgpu 30, 개발 툴체인은 Rust 1.99.0을 사용한다.
 
 이전 renderer 0.11.0 / figgy 0.9.1 릴리스의 변경 내용:
 
-1픽셀 미만 히스토그램 bin은 GPU에서 픽셀 열별 최댓값을 골라 0까지 채운다.
-선 두께와 알파가 모두 양수면 영역 전체를 선 색으로, 아니면 면 색으로 채운다.
-원본 컬럼과 웹 API 형식은 바뀌지 않는다. Rust `ColumnBarLayer`에는 `envelope`
-필드가 추가되어 외부 struct literal은 수정해야 한다(수동 레이어에 envelope가
-없으면 `None`). 데모에는 bin 개수 슬라이더와 외곽선 토글이 있다.
-`npx serve crates/web -l 8142` 실행 후 `http://localhost:8142/`에서 확인할 수 있다.
+화면에서 폭이 1픽셀보다 좁은 히스토그램 구간은 GPU가 픽셀 열별 최댓값을 골라 0까지 채운다. 외곽선 두께와 불투명도가 모두 양수이면 외곽선 색으로, 그렇지 않으면 채움색으로 영역 전체를 그린다.
+원본 컬럼과 웹 API 형식은 그대로다. Rust의 `ColumnBarLayer`에는 `envelope` 필드가 추가됐으므로 구조체를 직접 생성하는 코드는 이 필드를 지정해야 한다. 수동으로 만든 레이어에 해당 자원이 없으면 `None`을 사용한다.
+데모에는 구간 수 조절 슬라이더와 외곽선 표시 옵션이 있다. `npx serve crates/web -l 8142`를 실행한 뒤 `http://localhost:8142/`에서 확인할 수 있다.
 
 renderer 0.10.0 / figgy 0.9.0 릴리스에 포함된 기능은 다음과 같다.
 
-- **히스토그램과 행렬 필드를 GPU 일급 시리즈로 제공한다.** `Histogram`, `Heatmap`, `Contour`, `ContourFill`이 선언된 matrix lattice와 colour-map SSoT를 공유한다. heatmap은 flat/interpolated shading을, contour는 최대 1024 level을 지원하며 라벨 위치에서는 실제 등고선을 끊는다. 필드 자동 맞춤은 sample centre가 아니라 실제 렌더링되는 cell 경계를 사용한다.
-- **필드 선택과 스타일은 stable identity를 사용한다.** `pick_data`는 point, histogram bin, matrix cell, contour level의 tagged ref를 반환하며 `Config.picked_data`로 다시 표시할 수 있다. histogram은 막대 폭, 외곽선 색/두께, 개별 bin override를 제공한다. contour label 글자색·배경·숫자 형식은 level 선 색과 독립적이다. colorbar는 tick, label, title, reverse와 포인터를 따르는 resize handle을 포함한 전체 `AxisOptions`를 노출한다.
-- **GPU 범위와 브라우저 시작 계약을 정확하고 관찰 가능하게 만들었다.** hi/lo field 좌표 연산과 범위 reduction은 GPU에 남고, 축 SSoT에 기록되는 범위는 실제 draw가 사용하는 값과 같다. 브라우저 시작은 contour-label width attribute를 포함한 모든 render entry를 검증하며, `prewarm_all_with_progress` / `prewarm_all`로 renderer-owned lazy cache를 명시적으로 게시할 수 있다.
-- **GPU 메모리를 하나의 renderer budget으로 제한한다.** pool 저장소, staging, export, picking, contour placement와 기타 pool 밖 allocation을 device-aware limit에 함께 부과하고, 검사되지 않은 할당 전에 renderer error로 실패한다.
+- **히스토그램과 행렬 데이터를 GPU에서 그린다.** `Histogram`은 구간 경계와 빈도 값을 명시적으로 받는다. `Heatmap`, `Contour`, `HeatmapContour`는 같은 행렬 격자와 색상표 설정을 사용한다. 히트맵은 셀 단위 채움과 보간을 지원하고, 등고선은 최대 1024개 레벨을 지원한다. 등고선 라벨이 놓인 곳에서는 선을 끊어 글자가 읽히도록 한다. 자동 범위 맞춤은 실제로 그려지는 셀 경계를 기준으로 한다.
+- **선택한 데이터는 식별자로 추적한다.** `pick_data`는 점·히스토그램 구간·행렬 셀·등고선 레벨을 구분하는 참조를 반환한다. 이 참조를 `Config.picked_data`에 넣으면 해당 데이터를 강조할 수 있다. 히스토그램은 막대 폭, 외곽선 색·두께, 구간별 스타일을 지원한다. 등고선 라벨의 글자색·배경·숫자 형식은 선 색과 별도로 설정한다. 색상 막대는 눈금·라벨·제목·방향 반전과 크기 조절을 포함한 전체 `AxisOptions`를 제공한다.
+- **범위 계산과 초기화 과정을 확인할 수 있다.** 행렬 좌표의 hi/lo 연산과 범위 계산은 GPU에서 수행한다. 축 설정에 기록하는 범위는 실제 그리기에 사용하는 값과 같다. 브라우저 초기화에서는 등고선 라벨의 너비 속성을 포함해 모든 렌더링 진입점을 검증한다. `prewarm_all_with_progress` 또는 `prewarm_all`을 호출하면 필요할 때 생성되는 렌더러 캐시를 미리 준비할 수 있다.
+- **주요 GPU 자원의 할당량을 추적한다.** 풀 저장소, 업로드용 스테이징 버퍼, 이미지 출력, 피킹, 등고선 라벨 배치에 메모리 예산 검사를 적용한다. 은하수·별자리 스타일의 미리 생성한 텍스처는 일반 집계에서 제외된다. 따라서 보고값은 전체 GPU 메모리나 실제 VRAM 사용량과 다르다. 자세한 범위는 [메모리 계상과 회수](#메모리-계상과-회수)를 참고한다.
 
-이 저장소가 지원되는 공개 source distribution이며 crate는 crates.io에 배포하지 않는다. 공개 Git revision을 고정한 소비자는 lockfile을 갱신하고 wasm package를 다시 빌드해야 한다. 브라우저 lifecycle/API는 [WASM.md](crates/renderer/WASM.md), 전체 JSON 계약은 [SCHEMA.md](crates/web/SCHEMA.md)를 참고한다.
+이 라이브러리는 공개 저장소의 소스로 제공하며 crates.io에는 배포하지 않는다. 특정 공개 Git 커밋을 사용하는 프로젝트는 버전을 바꿀 때 잠금 파일을 갱신하고 WASM 패키지를 다시 빌드해야 한다. 브라우저 API와 수명 관리는 [WASM.md](crates/renderer/WASM.md), JSON 형식은 [SCHEMA.md](crates/web/SCHEMA.md)에 설명돼 있다.
 
-- **상주 GPU columnar pool**: 상주 경로에 들어간 컬럼은 하나의 GPU buffer를 공유하고, first-fit 할당과 단편화 시 핑퐁 defrag를 사용한다. `HiLoColumnSource`로 올린 논리값은 f32 hi/lo 쌍으로 저장해 timestamp 크기의 offset도 GPU에서 보존한다. 업로드 시 auto-fit 용 스칼라 통계(min / max / 최소 양수)를 캐싱하고, 점선 호장 prefix 같은 per-point 지오메트리는 컴퓨트 스캔(`line_arc.wgsl`)이 제자리에서 계산한다.
-- **비상주 렌더링(0.10.0 공개 후보)**: 재공급 가능한 컬럼은 논리 ID·길이·인코딩·revision만 등록하고 전체 데이터를 GPU pool에 보관하지 않는다. 렌더러가 원본의 필요한 구간을 제한된 크기로 요청해 빠짐없이 누적해서 그리며, 화면이나 출력 조건이 바뀌면 호스트가 같은 원본을 재공급한다. 데이터 축소·다운샘플링은 하지 않는다. 입장 판단·지원 스타일·취소·완료 후 조회 계약은 [WASM.md](crates/renderer/WASM.md)에 별도로 적었다.
-- **분리 합성**: grid → data → axis/label/legend 순으로 합성 → 그리드가 데이터를 가리지 않음. axis raster는 `Grid` / `Decoration` 분리 레이어가 기본이고, `AxisLayerKind::All`은 legacy 단일 패스 helper로 남아 있음.
-- **데이터 무왜곡 계약**: renderer/web은 model 계약을 소비하며 원본 좌표, provenance, 축↔데이터 대응을 호스트 동의 없이 조용히 바꾸지 않는다. 명시적 clipping, log-domain skip, NaN skip, antialiasing 한계는 데이터 재작성 아닌 렌더링 계약이다.
-- **헤드리스 PNG export**: 임의 DPI 로 GPU offscreen 라스터 → 메모리 RGBA / PNG 바이트 반환 (async 우선, native 는 blocking 래퍼 제공).
-- **상호작용 레이어 (opt-in)**: 히트테스트, 선택 박스, 드래그(축은 수직 방향 제약 + 분리 축 `line_offset`), 데이터 영역 PPT 식 8핸들 리사이즈 — 정책은 전부 `model`, 호스트가 포인터 이벤트를 넣을 때만 동작.
-- **데이터 피킹 (opt-in)**: `pick_point`는 기존 point/line 호환 계약을 유지하고, `pick_data`는 histogram bin, canonical matrix cell, contour level의 tagged identity를 추가한다. 상주 경로는 draw와 같은 transform·pool·style·lattice·level table을 읽는 GPU shader에서 판정한다. 완료된 차트별 패킹 뷰는 원본을 다시 읽지 않고 GPU에서 point/line을 피킹하며 원본 행 인덱스를 반환한다. 그 밖의 비상주 스트림은 `null`을 반환하고 저수준 WASM 스트림 피킹 진입점은 즉시 거절한다. 이미 알고 있는 stable ref는 `Config.picked_data` 또는 `Config.picked_points`로 지정해 필요한 행만 읽어 강조 표시할 수 있다.
-- **점별 스타일 매핑 (opt-in)**: precise scatter는 `point_style_table` / `point_style_index_column` / `point_style_overrides`를, precise errorbar는 독립적인 `error_bar_style_table` / `error_bar_style_index_column` / `error_bar_style_overrides`를 바인딩할 수 있다. styled mode는 자체 visual shader를 사용하며 이 매핑을 무시한다.
-- **리치텍스트 일원화**: 제목·틱 라벨·범례가 한 엔진 공유 — 세그먼트별 bold/italic/밑줄/첨자/그리스, 세그먼트별 색·크기 오버라이드, `'\n'` 줄바꿈, `'\t'` 표 열, 고정폭 범례 심볼 필드.
-- **손그림 스케치 모드 (opt-in)**: `draw_style: { mode: "sketch", amplitude_px, wavelength_px, seed }` 한 필드로 차트 전체를 xkcd 풍으로 — 축/틱/그리드/범례는 CPU 라스터에서, 라인의 흔들림/점선 위상은 호장 스캔 기반 GPU 변형으로, 마커/에러바는 전용 GPU 변형으로 처리되고, 차트 텍스트는 번들 손글씨 폰트(Comic Neue, OFL)로 자동 전환된다(글리프 없는 문자는 문자 단위 폴백 — CJK는 등록 폰트 유지). 시드 기반 결정적, 점선과 합성 가능, 필드가 없으면 정밀 경로가 한 바이트도 달라지지 않는다.
-- **은하수(milkyway) 모드 (opt-in)**: `draw_style: { mode: "milkyway", ... }`는 차트를 천체사진처럼 렌더링한다. 라인은 시리즈색 성운 리본 위 별 사슬, scatter marker는 고리 행성, errorbar는 심우주 배경 위 양극 제트가 된다.
-- **성좌(constellation) 모드 (opt-in)**: `draw_style: { mode: "constellation", ... }`는 `ScatterLine` series만 지원한다. scatter 데이터 위치에 PSF 별을 놓고 반투명 선으로 연결한다. 파라미터 범위는 기계가 읽는 `draw_style_param_specs` metadata로 제공한다.
-- **단일 wgpu 메이저 (30)**: renderer와 활성 egui 통합은 wgpu 30을 공유한다. iced 0.14는 아직 wgpu 27 타입을 노출하므로 보존된 iced 통합 소스는 빌드 대상에 넣지 않는다.
-- **WebAssembly 지원**: 순수 Rust 라스터 스택(tiny-skia + fontdb + swash), async 초기화/export, 런타임 폰트 등록(`register_font`) 으로 CJK·커스텀 패밀리 지원.
-- **관찰 가능한 웹 초기화**: wasm 브라우저의 `create` / `create_with_progress`는 동일 `GPUDevice`의 모든 render WGSL entry를 Promise 기반 `createRenderPipelineAsync`로 데우고 임시 JS pipeline을 버린 뒤 빈 차트 첫 frame 완료까지 기다린다. Renderer-owned optional render/style과 arc/fit/picker/contour compute cache는 최초 사용 또는 명시적 `prewarm_all_with_progress` / `prewarm_all`까지 lazy다. `<figgy-chart>`는 첫 성공 frame과 `figgy-ready`를 공개한 뒤 renderer-owned GPU picker를 background prewarm한다.
+주요 기능은 다음과 같다. 선택 기능은 해당 API나 옵션을 사용할 때만 동작한다.
+
+- **상주 GPU 컬럼 풀**: 여러 컬럼이 하나의 GPU 버퍼를 공유한다. 충분한 크기의 첫 빈 공간에 할당하고, 단편화가 생기면 두 버퍼를 번갈아 사용해 재배치한다. `HiLoColumnSource`로 올린 값은 두 f32의 hi/lo 쌍으로 저장하므로 큰 타임스탬프에서도 작은 값 차이를 보존한다. 업로드할 때 최소·최대·최소 양수 값을 저장해 자동 범위 맞춤에 사용한다. 점선의 누적 경로 길이처럼 점마다 필요한 값은 GPU 스캔 연산(`line_arc.wgsl`)으로 계산한다.
+- **비상주 렌더링(0.10.0)**: 컬럼의 ID·길이·인코딩·리비전만 등록하고 전체 데이터를 GPU 풀에 보관하지 않는다. 렌더러가 제한된 크기로 원본 구간을 요청해 빠짐없이 그린다. 화면이나 출력 조건이 바뀌면 호스트가 같은 원본을 다시 공급한다. 실행 가능 조건, 지원 스타일, 취소와 완료 결과 조회는 [WASM.md](crates/renderer/WASM.md)를 참고한다.
+- **레이어 합성**: 격자, 데이터, 축·라벨·범례 순서로 그려 격자가 데이터를 가리지 않게 한다. 축 이미지는 기본적으로 `Grid`와 `Decoration` 레이어로 나눈다. 기존 단일 패스 방식은 `AxisLayerKind::All`로 사용할 수 있다.
+- **원본 데이터 보존**: 렌더러와 웹 래퍼는 모델의 설정을 따르며 원본 좌표, 데이터 출처, 축과 데이터의 대응 관계를 임의로 바꾸지 않는다. 화면 밖 자르기, 로그축에서 0 이하 값 제외, NaN 제외, 안티앨리어싱은 표시 과정에만 적용한다.
+- **창 없이 PNG 출력**: 지정한 DPI로 GPU에서 그린 뒤 RGBA 또는 PNG 바이트를 반환한다. 비동기 API를 기본으로 제공하며 네이티브에서는 동기 래퍼도 쓸 수 있다.
+- **선택·드래그·크기 조절**: 마우스 위치 판정, 선택 상자, 축에 수직인 방향으로 드래그, `line_offset`을 이용한 축 이동, 데이터 영역의 8개 조절점을 지원한다. 정책은 `model`에 정의돼 있으며 호스트가 포인터 이벤트를 전달할 때만 동작한다.
+- **데이터 피킹**: `pick_point`는 점·선 선택을, `pick_data`는 여기에 히스토그램 구간·행렬 셀·등고선 레벨 선택을 더한다. 상주 데이터는 그리기와 같은 좌표 변환·풀·스타일·격자·레벨 표를 GPU에서 읽어 판정한다. 완료된 차트별 패킹 캐시는 원본을 다시 읽지 않고 점·선을 선택하며 원본 행 인덱스를 반환한다. 그 밖의 비상주 스트림은 `null`을 반환하고 저수준 WASM 스트림 피킹 호출은 즉시 거부한다. 이미 알고 있는 데이터 참조를 `Config.picked_data` 또는 `Config.picked_points`에 지정하면 필요한 행만 읽어 강조할 수 있다.
+- **점별 스타일**: 정밀 모드의 산점도는 `point_style_table` / `point_style_index_column` / `point_style_overrides`로, 오차 막대는 별도의 `error_bar_style_table` / `error_bar_style_index_column` / `error_bar_style_overrides`로 스타일을 지정한다. 스케치·은하수·별자리 모드는 전용 셰이더를 사용하므로 이 매핑을 적용하지 않는다.
+- **리치 텍스트**: 제목·눈금 라벨·범례가 같은 텍스트 엔진을 사용한다. 구간별 굵게·기울임·밑줄·위아래 첨자·그리스 문자, 색·크기 지정, `\n` 줄바꿈, `\t` 열 정렬, 고정 너비 범례 기호를 지원한다.
+- **스케치 모드**: `draw_style: { mode: "sketch", amplitude_px, wavelength_px, seed }`로 차트 전체를 손그림처럼 표현한다. 축·눈금·격자·범례는 CPU에서, 선의 흔들림과 점선 간격은 경로 길이를 계산한 GPU에서 처리한다. 점과 오차 막대도 전용 GPU 셰이더를 쓴다. 텍스트에는 내장 손글씨 폰트 Comic Neue(OFL)를 사용하고, 없는 글자는 등록된 폰트 등으로 대체한다. 같은 시드와 입력은 같은 결과를 내며 점선과도 함께 사용할 수 있다. 이 옵션을 생략하면 기본 정밀 모드로 그린다.
+- **은하수 모드**: `draw_style: { mode: "milkyway", ... }`로 천체사진 같은 효과를 낸다. 선은 시리즈 색의 성운 띠와 별 무리로, 산점도 기호는 고리가 있는 행성으로, 오차 막대는 양방향으로 뻗는 제트로 표현한다.
+- **별자리 모드**: `draw_style: { mode: "constellation", ... }`는 `ScatterLine` 시리즈만 지원한다. 데이터 점 위치에 점광원 분포 함수(PSF)로 별을 그리고 반투명 선으로 잇는다. 프로그램에서 옵션 범위를 조회할 수 있도록 `draw_style_param_specs` 메타데이터를 제공한다.
+- **wgpu 30 통합**: 렌더러와 egui 통합이 같은 wgpu 주 버전을 사용한다. iced 0.14는 wgpu 27을 사용하므로 보관 중인 iced 통합 예제는 빌드 대상에서 제외한다.
+- **WebAssembly**: 순수 Rust로 구현된 tiny-skia·fontdb·swash와 비동기 초기화·출력 API를 사용한다. `register_font`로 실행 중에 폰트를 등록하면 한중일 문자와 사용자 지정 글꼴을 사용할 수 있다.
+- **웹 초기화 진행 알림**: `create` / `create_with_progress`는 같은 `GPUDevice`에서 `createRenderPipelineAsync`로 모든 렌더링용 WGSL 진입점을 미리 컴파일한다. 임시 JS 파이프라인을 해제한 뒤 빈 차트의 첫 프레임 완료를 기다린다. 선택적인 렌더링·스타일 자원과 경로 길이·범위 계산·피킹·등고선용 컴퓨트 캐시는 처음 사용하거나 `prewarm_all_with_progress` / `prewarm_all`을 호출할 때 생성한다. `<figgy-chart>`는 첫 프레임과 `figgy-ready` 알림을 보낸 뒤 백그라운드에서 GPU 피킹을 준비한다.
+
+### 네이티브 차트 갤러리
+
+아래 차트는 예제용 데이터를 네이티브 렌더러로 그린 결과다. GIF는 개별 PNG로 출력한 48개 프레임을 초당 12프레임으로 반복 재생한다.
+
+**오차 막대가 있는 응답 곡선 · 구간 경계를 지정한 히스토그램**
+
+<p>
+  <a href="crates/renderer/assets/gallery-errorbars.png"><img src="crates/renderer/assets/gallery-errorbars.png" alt="오차 막대가 있는 응답 곡선" width="48%" align="top"></a>
+  <a href="crates/renderer/assets/gallery-histogram.png"><img src="crates/renderer/assets/gallery-histogram.png" alt="구간 경계를 지정한 히스토그램" width="48%" align="top"></a>
+</p>
+
+**움직이는 파형 · 2:3 위상 궤적을 따라가는 점**
+
+<p>
+  <a href="crates/renderer/assets/gallery-wave.gif"><img src="crates/renderer/assets/gallery-wave.gif" alt="움직이는 파형" width="48%" align="top"></a>
+  <a href="crates/renderer/assets/gallery-orbit.gif"><img src="crates/renderer/assets/gallery-orbit.gif" alt="2:3 위상 궤적을 따라가는 점" width="48%" align="top"></a>
+</p>
+
+![라벨이 있는 등고선을 겹친 보간 히트맵](crates/renderer/assets/gallery-contours.png)
+
+실행 명령, 예제 데이터, 출력 크기와 검증 방법은 [갤러리 사용법](crates/renderer/GALLERY.md#한국어-사용법)을 참고한다. GIF 재생 속도는 보기 좋게 정한 값이며 렌더링 성능을 나타내지 않는다.
 
 ### 렌더링 스타일 미리보기
 
-같은 growth-response 데이터를 네 가지 차트 스타일로 렌더링한 비교:
+같은 성장 반응 곡선을 네 가지 스타일로 그렸다. 은하수 예제는 선만 사용해 곡선을 따라 별과 옅은 성운을 표현했다. [미리보기 생성 방법](crates/renderer/GALLERY.md#milkyway-line-only-preview)에서 설정과 실행 명령을 확인할 수 있다.
 
-<table>
-  <tr>
-    <td width="50%"><strong>정밀(Precise)</strong><br><img src="crates/renderer/assets/style-growth-response-precise.png" alt="정밀 스타일 growth-response 차트" width="420"></td>
-    <td width="50%"><strong>스케치(Sketch)</strong><br><img src="crates/renderer/assets/style-growth-response-sketch.png" alt="스케치 스타일 growth-response 차트" width="420"></td>
-  </tr>
-  <tr>
-    <td width="50%"><strong>은하수(Milkyway)</strong><br><img src="crates/renderer/assets/style-growth-response-milkyway.png" alt="은하수 스타일 growth-response 차트" width="420"></td>
-    <td width="50%"><strong>성좌(Constellation)</strong><br><img src="crates/renderer/assets/style-growth-response-constellation.png" alt="성좌 스타일 growth-response 차트" width="420"></td>
-  </tr>
-</table>
+**정밀(Precise) · 스케치(Sketch)**
+
+<p>
+  <a href="crates/renderer/assets/style-growth-response-precise.png"><img src="crates/renderer/assets/style-growth-response-precise.png" alt="정밀 스타일 성장 반응 차트" width="48%" align="top"></a>
+  <a href="crates/renderer/assets/style-growth-response-sketch.png"><img src="crates/renderer/assets/style-growth-response-sketch.png" alt="스케치 스타일 성장 반응 차트" width="48%" align="top"></a>
+</p>
+
+**은하수(Milkyway) · 선만 표시 · 별자리(Constellation)**
+
+<p>
+  <a href="crates/renderer/assets/style-growth-response-milkyway.png"><img src="crates/renderer/assets/style-growth-response-milkyway.png" alt="선만 사용해 별과 옅은 성운으로 그린 은하수 성장 곡선" width="48%" align="top"></a>
+  <a href="crates/renderer/assets/style-growth-response-constellation.png"><img src="crates/renderer/assets/style-growth-response-constellation.png" alt="별자리 스타일 성장 반응 차트" width="48%" align="top"></a>
+</p>
 
 ---
 
 ## 1. 사용법
 
+### 툴체인과 빌드
+
+[`rust-toolchain.toml`](rust-toolchain.toml)에 개발 환경을 **Rust 1.99.0**으로 고정하고 wasm32 빌드 대상, rustfmt, clippy를 지정했다. rustup이 설치돼 있으면 저장소 안에서 명령을 실행할 때 자동으로 적용된다. 이 버전으로 개발과 검증을 진행했으며, 최소 지원 Rust 버전은 별도로 확인하지 않았다.
+이 저장소를 빌드할 때는 `--locked`를 사용해 커밋된 `Cargo.lock`을 따른다. figgy를 Git 의존성으로 사용하는 프로젝트는 해당 프로젝트의 잠금 파일로 의존성을 결정한다.
+
+```bash
+cargo check --locked --workspace --all-targets --all-features
+npx wasm-pack@0.15.0 build crates/web --release --target web --locked
+```
+
 ### 의존성 추가
 
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # 또는 공개 Git source — 후보 0.12.0, crates.io 미배포.
+renderer = { path = "crates/renderer" }   # 또는 공개 Git 소스 — 버전 0.12.0, crates.io 미배포.
 wgpu     = "30"
 ```
 
-라이브러리 자체는 winit / egui / iced 어느 것에도 의존하지 않습니다. 사용하는 호스트만 추가:
+라이브러리 자체는 winit, egui, iced에 의존하지 않는다. 사용하는 UI 환경에 필요한 의존성만 추가하면 된다.
 
 ```toml
 # winit standalone
@@ -1138,10 +1278,13 @@ egui      = "0.36"
 egui-wgpu = "0.36"
 ```
 
-iced 0.14는 아직 wgpu 27을 사용한다. 따라서 iced가 wgpu 30 호환 버전을
-배포하기 전까지 device/queue/render pass 직접 공유 통합은 비활성 상태다.
+iced 0.14는 wgpu 27을 사용하므로, wgpu 30과 호환되는 iced 버전이 나올 때까지 장치·큐·렌더 패스를 직접 공유하는 통합은 사용할 수 없다.
 
-### 가장 짧은 standalone 예 (winit + figgy 단독 wgpu)
+<a id="standalone-초기화와-그리기-winit--figgy"></a>
+
+### 독립 창에서 초기화하고 그리기 (winit + figgy)
+
+다음 코드는 winit의 `ApplicationHandler::resumed` 메서드 안에서 실행하는 예다. `event_loop: &ActiveEventLoop`을 인자로 받는다. 전체 이벤트 루프와 창·렌더러 상태를 보관하는 방법은 [winit_simple.rs](crates/renderer/examples/winit_simple.rs)를 참고한다.
 
 ```rust
 use std::sync::Arc;
@@ -1150,7 +1293,7 @@ use renderer::{
     color::Color, default, layout::{ChartArea, Rect}, line::LineStylePreset,
 };
 
-let window = Arc::new(event_loop.create_window(attrs).unwrap());
+let window = Arc::new(event_loop.create_window(winit::window::Window::default_attributes()).unwrap());
 let size = window.inner_size();
 
 // 한 줄 셋업 — instance/adapter/device/queue/surface/swap chain 모두 figgy 가 소유.
@@ -1162,15 +1305,21 @@ let mut renderer = Renderer::for_window(
 
 // renderer.add_column 은 `&dyn ColumnSource` 받음.
 // 본인 데이터 타입에 trait 구현 (아래 `ColumnSource` 섹션 참조) — Vec, ndarray,
-// polars Series, mmap 등 어떤 출처든 zero-copy 업로드. 빌트인 `Column<f64>` 도 사용 가능.
+// polars Series, mmap 등 어떤 출처든 native에서는 변환 Vec 없이 mapped staging에 직접 기록.
+// 빌트인 `Column<f64>` 도 사용 가능.
 let xs: Vec<f64> = (0..1024).map(|i| i as f64 * 0.01).collect();
 let ys: Vec<f64> = xs.iter().map(|x| x.sin()).collect();
-renderer.add_column("x", &my_source_for(0, xs)).unwrap();   // your type : ColumnSource
-renderer.add_column("y", &my_source_for(1, ys)).unwrap();
+fn column(data: Vec<f64>) -> renderer::Column<f64> {
+    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    renderer::Column { data, min, max }
+}
+renderer.add_column("x", &column(xs)).unwrap();
+renderer.add_column("y", &column(ys)).unwrap();
 
 // Chart — 빌더 패턴.
 let mut config = default::default_config();
-config.chart_area = ChartArea(Rect { x:8, y:8, width: size.width - 16, height: size.height - 16 });
+config.chart_area = ChartArea(Rect { x:8, y:8, width: size.width.saturating_sub(16).max(1), height: size.height.saturating_sub(16).max(1) });
 let mut chart = Chart::new(config)
     .with_title("Sine")
     .with_x_title("x")
@@ -1204,18 +1353,17 @@ let items  = [ChartDrawItem {
 renderer.draw(Color::WHITE, &items).unwrap();   // surface frame 획득 → prepare → encoder → pass → paint_prepared → submit → present
 ```
 
-### `ColumnSource` — 데이터 어댑터 trait
+<a id="columnsource--데이터-어댑터-trait"></a>
 
-`Renderer::add_column` 의 시그니처는 `&dyn ColumnSource` 입니다 — 어떤 데이터 컨테이너든 본인 타입에 trait 구현하면 GPU pool 에 zero-copy 로 들어갑니다 (`Vec` 중간 alloc 0). source가 GPU pair 기록과 최소 양수 통계를 같은 pass에서 수행하고, renderer는 wgpu 30의 write-only mapped byte를 다시 읽지 않습니다. `min` / `max`의 source-level 의미는 그대로입니다. scalar 최소 양수는 실제 업로드된 `(value as f32, 0)`, hi-lo 최소 양수는 기록된 `hi as f64 + lo as f64` 기준이며 finite positive 값만 포함합니다.
+### `ColumnSource` — 데이터 어댑터 트레이트
 
-`add_column` / `add_hilo_column` 은 새 id 등록용이다. 기존 id를 원자적으로
-교체할 때는 `upsert_column` / `upsert_hilo_column` 을 사용한다. `Renderer`는
-새 pool 후보, 영향받는 chart revision, active picker transition, maintenance
-상태를 전부 준비한 뒤 한꺼번에 공개한다. 준비 단계가 오류를 반환하면 기존
-권위 상태가 유지된다. 추가적인 host-owned 파생 상태가 있는 통합은
-`begin_upsert_*` guard의 provisional pool을 보고 그 파생 상태를 준비한 다음
-실패하지 않고 allocation도 하지 않는 `commit`을 호출할 수 있다. host가
-picker를 별도로 재구축하지는 않는다.
+`Renderer::add_column`은 `&dyn ColumnSource`를 받는다. 사용 중인 데이터 타입에 이 트레이트를 구현하면 네이티브 환경에서 중간 변환용 `Vec` 없이 매핑된 스테이징 버퍼에 직접 기록할 수 있다. 스테이징 버퍼에서 컬럼 풀로 옮기는 작업은 GPU가 수행한다. 여기서 제로카피란 별도의 CPU 변환 버퍼나 원본 점 데이터의 CPU 복사본을 유지하지 않는다는 뜻이다.
+
+데이터 소스는 값을 GPU용 쌍으로 기록하면서 최소 양수 값도 함께 계산한다. 렌더러는 wgpu 30의 쓰기 전용 매핑 영역을 다시 읽지 않는다. `min` / `max`는 원본 데이터 기준을 유지한다. 최소 양수 값은 일반 컬럼에서는 실제 업로드한 `(value as f32, 0)`, hi/lo 컬럼에서는 기록한 `hi as f64 + lo as f64`를 기준으로 계산하며, 유한한 양수만 포함한다.
+
+`add_column` / `add_hilo_column`은 새 ID를 등록할 때 사용한다. 기존 ID의 데이터를 교체하려면 `upsert_column` / `upsert_hilo_column`을 사용한다. `Renderer`는 새 풀 상태, 영향을 받는 차트의 리비전, 피킹 캐시와 정리 작업을 모두 준비한 뒤 한꺼번에 반영한다. 준비 중 오류가 나면 기존 상태를 유지한다.
+
+호스트가 별도의 파생 상태를 관리한다면 `begin_upsert_*`가 반환한 가드의 임시 풀을 참조해 그 상태도 미리 준비할 수 있다. 이후 `commit`을 호출하면 추가 할당이나 실패 가능 작업 없이 변경을 확정한다. 피킹 자원의 갱신은 렌더러가 담당한다.
 
 ```rust
 pub trait ColumnSource {
@@ -1236,14 +1384,11 @@ pub trait ColumnSource {
 }
 ```
 
-**빌트인 구현체**: `Column<f64>`, `Column<f32>`, `Column<Option<f64>>` (null → NaN).
+**기본 제공 구현체**: `Column<f64>`, `Column<f32>`, `Column<Option<f64>>` (null → NaN).
 
-custom trait 구현은 fused method를 반드시 구현해야 한다. 불완전한 migration은
-upload 중 런타임 오류가 아니라 컴파일 오류로 드러난다. byte readback이나
-부정확한 silent fallback은 없다. `HiLoColumnSource`도 같은 이름의 fused
-method에서 `(hi, lo)` 기록과 reconstructed 통계를 함께 반환해야 한다.
+사용자 정의 `ColumnSource`는 값 기록과 통계 계산을 함께 수행하는 메서드를 반드시 구현해야 한다. 빠뜨리면 컴파일 단계에서 오류가 나므로 업로드 도중에야 문제를 발견하는 일을 피할 수 있다. 기록한 바이트를 다시 읽거나 부정확한 대체 경로를 사용하지 않는다. `HiLoColumnSource`도 같은 이름의 메서드에서 `(hi, lo)`를 기록하고, 두 값을 합쳐 계산한 통계를 반환해야 한다.
 
-**사용자 정의 — 시계열 / DataFrame / mmap / FFI 데이터 등 어떤 출처든**:
+**사용자 정의 구현 예: 시계열·DataFrame·mmap·FFI 데이터**
 
 ```rust
 struct MyTimeSeries {
@@ -1285,61 +1430,52 @@ impl renderer::ColumnSource for MyTimeSeries {
 renderer.add_column("temperature", &my_series)?;   // ↘ mapped staging memory 에 직접 write, Vec 0
 ```
 
-`f32` 네이티브 컨테이너도 같은 fused 경로를 사용한다. 값을 순회하며
-`writer.write_pair(index, value, 0.0)`를 호출한다. `ColumnPairWriter`는 mapped
-byte 대신 논리적인 pair 쓰기만 공개하므로, wgpu나 `dst.copy_from_slice(...)`
-우회 없이도 active pool upload에 중간 allocation이 생기지 않는다.
+`f32` 데이터도 같은 경로를 사용한다. 값을 순회하며 `writer.write_pair(index, value, 0.0)`를 호출하면 된다. `ColumnPairWriter`는 매핑된 바이트 배열을 직접 노출하지 않고 값 쌍을 쓰는 기능만 제공한다. wgpu를 직접 다루거나 `dst.copy_from_slice(...)`로 우회하지 않아도 중간 버퍼 없이 풀에 업로드할 수 있다.
 
-### 네이티브 example — 사인 / RC / cross-section
+<a id="네이티브-example--사인--rc--cross-section"></a>
+
+### 네이티브 예제 — 사인 곡선, RC 회로, 단면 그래프
 
 ```bash
 cargo run -p renderer --example winit_simple
 cargo run -p renderer --example egui_embed --features egui_demo
 ```
 
-각 example 은:
-- 3 panel grid (그리드 옵션 다름: 끔 / major / major+minor 점선)
-- RC panel 은 충전 + 방전 2 시리즈
-- 라인 두께 1 / 2 / 3.5 px 차등
-- 범례 표시
-- DPI 입력 + Save PNG 버튼 (egui) 또는 `S` 키 (winit) 으로 panel 별 PNG 메모리 export → `/tmp/figgy_*_panel_{i}.png`
+각 예제에서 다음 기능을 확인할 수 있다.
 
-### 브라우저 timestamp 축 데모
+- 패널 3개에 서로 다른 격자 설정 적용: 격자 없음, 주 격자선, 주 격자선과 점선 보조 격자선
+- RC 회로 패널의 충전·방전 곡선 두 개
+- 패널별 선 두께 1 / 2 / 3.5px와 범례
+- egui의 DPI 입력·Save PNG 버튼 또는 winit의 `S` 키로 패널별 PNG 저장. 예제는 메모리로 받은 PNG를 `/tmp/figgy_*_panel_{i}.png`에 저장한다.
 
-`crates/web/timestamp-demo.html` 은 absolute Unix time 값을
-`register_column_f64(Float64Array)` 로 처음 올리고
-`update_register_column_f64` 로 명시 교체하는 브라우저 timestamp 경로를
-확인하는 데모다. 시간 범위, 데이터 단위, 시간대, 소수 초 정책, 라벨 패턴,
-차트 폭, export scale 을 바꾸면서 x 축이 `LabelFormat::Timestamp` +
-`AutoCalendar` 로 겹치지 않는 라벨을 고르는지 볼 수 있다.
+<a id="브라우저-timestamp-축-데모"></a>
+
+### 브라우저 시간축 데모
+
+`crates/web/timestamp-demo.html`은 Unix 시간 값을 `register_column_f64(Float64Array)`로 등록하고 `update_register_column_f64`로 교체하는 예제다. 시간 범위, 데이터 단위, 시간대, 소수 초 표시, 라벨 형식, 차트 너비, 출력 배율을 바꿔 볼 수 있다. X축에는 `LabelFormat::Timestamp`와 `AutoCalendar`를 사용해 라벨이 겹치지 않도록 눈금 간격을 자동으로 조절한다.
 
 ```bash
-npx wasm-pack build crates/web --release --target web
+npx wasm-pack@0.15.0 build crates/web --release --target web --locked
 cd crates/web
 python -m http.server 8142 --bind 127.0.0.1
 # http://127.0.0.1:8142/timestamp-demo.html 열기
 ```
 
-### 라이브 SSoT lab — 풀 스케일에서 본 분리 API
+<a id="라이브-ssot-lab--풀-스케일에서-본-분리-api"></a>
+
+### 실시간 설정 편집 예제 — 대용량 데이터와 분리된 렌더링 API
 
 ```bash
 cargo run --release -p renderer --example ssot_lab --features egui_demo
 ```
 
-2×2 grid, panel 마다 draw style 하나씩 (Precise dashed / Sketch / Milkyway /
-Constellation), 네 시리즈가 공유 `x` 풀 컬럼 하나를 함께 읽는다. 사이드바가
-SSoT 를 라이브로 편집한다 — x 연동된 열 쌍별 pan 방향, window 폭, 시리즈당
-포인트 밀도 최대 3M (합계 12M, 5 컬럼). 모든 편집이 `Renderer::prepare` →
-`Renderer::paint_prepared` 로 흐르며 `Mutex` 도 frame 별 `update_transform`
-도 없다. 상태창의 `frames skipped` 가 0 으로 유지되어, 라이브 편집 중에도
-토큰이 stale 되지 않음을 증명한다.
+2×2 패널에 정밀 점선·스케치·은하수·별자리 스타일을 하나씩 표시한다. 네 시리즈는 GPU 풀의 `x` 컬럼 하나를 공유한다. 사이드바에서 X축이 연동된 패널 쌍의 이동 방향, 표시 범위의 너비, 시리즈당 데이터 수를 바꿀 수 있다. 최대 데이터 수는 시리즈당 300만 개, 총 1200만 개이며 컬럼은 5개다.
+
+설정 변경은 `Renderer::prepare`와 `Renderer::paint_prepared`를 거쳐 화면에 반영된다. `Mutex`나 프레임마다 별도로 호출하는 `update_transform`은 필요하지 않다. 상태창의 `frames skipped`로 편집 중 무효화된 프레임 토큰 때문에 그리기를 건너뛰었는지 확인할 수 있다.
 
 ### egui 통합 패턴 (요약)
 
-프레임이 호스트 콜백 형태에 맞게 둘로 나뉜다: 모든 변경은
-`Renderer::prepare` (`&mut self`), 순수 커맨드 기록은
-`Renderer::paint_prepared` (`&self`) — paint 콜백에서 렌더러를 `Mutex` 로
-감쌀 필요가 없다:
+호스트의 콜백 구조에 맞춰 프레임 준비와 명령 기록을 나눈다. 상태 변경은 `Renderer::prepare`가 `&mut self`로 수행하고, `Renderer::paint_prepared`는 `&self`로 그리기 명령만 기록한다. 따라서 paint 콜백에서 렌더러를 `Mutex`로 감쌀 필요가 없다.
 
 ```rust
 // CallbackResources 에 FiggyState 그대로 저장 — Mutex 없음
@@ -1367,46 +1503,25 @@ impl egui_wgpu::CallbackTrait for FiggyCallback {
 }
 ```
 
-호스트가 그 frame의 모든 command buffer를 submit한 뒤
-`renderer.end_gpu_frame()`을 정확히 한 번 호출한다. egui처럼 callback을
-스케줄링하는 host는 이전 frame이 submit된 것이 확실한 다음 frame의 첫 prepare
-전에 호출해도 된다. panel별 prepare마다 호출하면 아직 submit되지 않은 다른
-panel 자원의 retirement를 너무 일찍 지우므로 금지한다.
+호스트는 한 프레임의 명령 버퍼를 모두 GPU 큐에 제출한 뒤 `renderer.end_gpu_frame()`을 정확히 한 번 호출해야 한다. egui처럼 콜백 실행을 관리하는 호스트에서는 이전 프레임의 제출이 끝났음을 확인한 뒤 다음 프레임의 첫 prepare 직전에 호출해도 된다. 패널마다 호출하면 아직 제출하지 않은 다른 패널의 자원을 너무 일찍 회수 대상으로 넘길 수 있다.
 
-renderer가 submit까지 소유하는 경로(`WindowedRenderer::draw*`, panel export)는
-이 경계를 내부에서 알린다. 외부 pass 기록과 이 경로를 함께 쓰는 host는 먼저
-기록해 둔 command buffer를 모두 submit해야 한다. wgpu command buffer는 opaque라
-renderer가 특정 host의 미제출 참조만 식별해 선택적으로 retire할 수 없다.
+`WindowedRenderer::draw*`나 패널 출력처럼 렌더러가 직접 제출하는 경로에서는 이 처리를 내부에서 수행한다. 외부 렌더 패스 기록과 이 경로를 함께 쓴다면 미리 기록해 둔 명령 버퍼를 먼저 모두 제출해야 한다. 렌더러는 wgpu 명령 버퍼의 내부 참조를 볼 수 없으므로 호스트가 아직 제출하지 않은 자원만 따로 골라 보호할 수 없다.
 
-`paint_prepared` 는 반복 가능하다(같은 토큰을 여러 pass 에 기록 가능).
-`PreparedFrame` 이 resolve된 draw input을 소유하므로 paint에서 `items`를
-재구성하거나 다시 전달하지 않는다. 두 단계 사이에 캡처된 renderer 자원이
-바뀌면 아무것도 기록하지 않고 `FiggyError::StalePreparedFrame` 을 반환한다
-— 다음 frame 에 새로 `prepare` 하면 복구된다. automatic contour label도
-panel/item + series occurrence 단위로 같은 소유권
-규칙을 따른다. atlas와 cell table은 불변 cache 자원으로 공유하고, 각
-서로 다른 dispatch 입력은 params, transform, candidate, anchor, indirect
-args, compute bind group, GPU charge를 함께 소유하는 별도의 불변 placement
-결과를 만든다. 정확히 같은 입력 key만 결과를 재사용하고, token이 drop된 뒤에도
-다른 입력으로 기존 결과를 덮지 않는다. host command buffer가 제출 전의 옛 GPU
-handle을 보유할 수 있기 때문이다. arc/star compute 결과도 같은 exact-key 규칙을
-따르고 explicit anchor는 불변 snapshot이다. paint는 series cache를 다시 조회하지
-않는다. token으로 기록한 command buffer는 같은 `ChartView`를 다시 prepare하거나
-`refresh_axis`/`update_transform`하기 전에 제출해야 한다. 렌더러를 frame 동안
-단독 소유하는 호스트(winit 루프, wasm 래퍼)는 두 단계를 연달아 실행하는 원샷
-`Renderer::paint(&mut self, …)`
-facade 를 그대로 쓰면 된다.
+`paint_prepared`는 같은 토큰으로 여러 패스에 호출할 수 있다. `PreparedFrame`이 그리기에 필요한 입력을 보관하므로 paint 단계에서 `items`를 다시 만들거나 전달하지 않는다. 준비 후 관련 렌더러 자원이 바뀌면 아무 명령도 기록하지 않고 `FiggyError::StalePreparedFrame`을 반환한다. 다음 프레임에서 다시 `prepare`하면 된다.
 
-자세한 건 [examples/egui_embed.rs](crates/renderer/examples/egui_embed.rs).
+자동 등고선 라벨도 패널·항목과 시리즈의 각 등장 위치별로 이 소유권 규칙을 따른다. 아틀라스와 셀 표는 변경하지 않는 캐시 자원으로 공유한다. 서로 다른 컴퓨트 입력은 파라미터, 좌표 변환, 후보·앵커·간접 실행 인자 버퍼, 바인드 그룹, 메모리 집계 정보를 각각 보관하는 별도의 배치 결과를 만든다. 입력 키가 정확히 같을 때만 결과를 재사용한다. 토큰이 해제된 뒤에도 다른 입력으로 기존 결과를 덮어쓰지 않는다. 호스트의 미제출 명령 버퍼가 예전 GPU 자원을 참조할 수 있기 때문이다.
+
+경로 길이·별 위치 계산도 같은 규칙을 따르며, 직접 지정한 라벨 앵커 역시 변경하지 않는 스냅샷으로 보관한다. paint 단계에서는 시리즈 캐시를 다시 조회하지 않는다. 토큰으로 기록한 명령 버퍼는 같은 `ChartView`를 다시 준비하거나 `refresh_axis` / `update_transform`을 호출하기 전에 제출해야 한다.
+
+winit 루프나 WASM 래퍼처럼 프레임 동안 렌더러를 단독으로 사용하는 호스트는 두 단계를 연속 실행하는 `Renderer::paint(&mut self, …)`를 사용하면 된다. 전체 예제는 [egui_embed.rs](crates/renderer/examples/egui_embed.rs)를 참고한다.
 
 ### iced 통합 상태
 
-보존된 [iced 통합 소스](crates/renderer/unsupported/iced_embed_wgpu27.rs)는
-`prepare` / `paint_prepared` 소유권 패턴을 기록하지만 iced 0.14가 wgpu 27에
-머무는 동안 빌드 대상은 비활성이다. 서로 다른 wgpu 메이저의 device, queue,
-render pass 타입은 공유할 수 없다.
+[보관 중인 iced 통합 예제](crates/renderer/unsupported/iced_embed_wgpu27.rs)에서 `prepare` / `paint_prepared`의 소유권 패턴을 확인할 수 있다. 다만 iced 0.14는 wgpu 27을 사용하므로 현재 빌드 대상에서는 제외한다. 서로 다른 wgpu 주 버전의 장치·큐·렌더 패스 타입은 공유할 수 없다.
 
-### PNG export (메모리 only — 저장은 caller)
+<a id="png-export-메모리-only--저장은-caller"></a>
+
+### PNG 내보내기 — 바이트 반환과 파일 저장
 
 ```rust
 let bytes = renderer
@@ -1421,15 +1536,16 @@ let img = renderer
 // img.width, img.height, img.rgba (straight alpha, 길이 = w * h * 4)
 ```
 
-native 전용 blocking convenience wrapper는 `_async` 없는 같은 이름을 쓴다.
-`scale` 한계: `renderer::MIN_EXPORT_SCALE` (0.25) ~ `renderer::MAX_EXPORT_SCALE` (8.0) 자동 clamp.
-`renderer::dpi_to_scale(dpi)` 로 표준 DPI(96) 기준 변환.
+네이티브에서는 이름에서 `_async`를 뺀 동기 래퍼도 제공한다. 파일 저장은 호출자가 담당한다.
+`scale`은 `renderer::MIN_EXPORT_SCALE`(0.25)부터 `renderer::MAX_EXPORT_SCALE`(8.0)까지로 제한한다. DPI에서 배율을 구하려면 표준값 96 DPI를 기준으로 계산하는 `renderer::dpi_to_scale(dpi)`를 사용한다.
 
-스케일 시 모든 픽셀 dim (폰트 / 선 / 마진 / 그리드 / 범례) 비례 확대 → 시각적 동치, 픽셀만 더 촘촘.
+폰트, 선, 여백, 격자, 범례의 픽셀 크기가 모두 같은 비율로 커지므로 차트의 비례 관계를 유지하면서 해상도를 높일 수 있다.
 
 ---
 
-## 2. Config 구조체 필드 레퍼런스
+<a id="2-config-구조체-필드-레퍼런스"></a>
+
+## 2. Config 구조체의 필드
 
 ```rust
 pub struct Config {
@@ -1451,436 +1567,304 @@ pub struct Config {
 ### `ChartArea` / `Rect`
 | 필드 | 타입 | 의미 |
 |---|---|---|
-| `x, y` | u32 | 호스트 surface 좌상단 기준 패널 픽셀 위치 |
-| `width, height` | u32 | 패널 픽셀 크기. 0 이면 live raster 실패 (`InvalidChartArea`). export chart area도 0이 되지 않게 호출자가 보장해야 하며, 현재 1px clamp는 호환 guard이고 추후 명시 오류로 바뀔 수 있음 |
+| `x, y` | u32 | 호스트 화면의 왼쪽 위를 기준으로 한 패널 위치(px) |
+| `width, height` | u32 | 패널 크기(px). 0이면 화면 렌더링은 `InvalidChartArea`로 실패한다. 출력 영역도 호출자가 양수로 지정해야 한다. 현재 출력의 1px 보정은 호환성을 위한 처리이며 향후 오류로 바뀔 수 있다. |
 
 ### `AxisOptions` (top_x / bottom_x / left_y / right_y)
 | 필드 | 타입 | 의미 |
 |---|---|---|
 | `scale` | `AxisScale` | `Linear` 또는 `Logarithmic` (log10) |
-| `min, max` | f64 | 데이터 공간 범위. log scale에서는 양수 bound를 그대로 쓰고, 수동으로 들어온 0 이하/비정상 bound는 렌더러/축 경로에서 `1e-12`로 guard한다. 0 이하 데이터 샘플은 전체 range 오류가 아니라 skip/NaN 처리된다 |
-| `major_spacing` | f64 | linear: 데이터 단위, log: decade 단위 (1, 2, …) |
-| `minor_count` | usize | major 사이 minor 개수 (linear) 또는 decade 내 2..9 (log 시 8 추천) |
-| `inverted` | bool | 축의 시각 방향을 반전한다. tick/grid 위치, 데이터 렌더링, picking 이 모두 같은 반전 mapping을 사용하며 `min`/`max`는 데이터 공간 bound로 유지된다 |
+| `min, max` | f64 | 데이터 좌표 범위. 로그축에서도 양수 원본값을 지정한다. 수동 경계가 0 이하이거나 유효하지 않으면 `1e-12`로 보정한다. 데이터의 0 이하 값은 전체 범위를 거부하지 않고 그리기에서 제외하거나 NaN으로 처리한다. |
+| `major_spacing` | f64 | 주 눈금 간격. 선형축은 데이터 단위, 로그축은 decade(10배 간격) 단위 |
+| `minor_count` | usize | 선형축에서는 주 눈금 사이의 보조 눈금 수. 로그축에서는 한 decade 안의 2~9 위치에 놓으며 8을 권장한다. |
+| `inverted` | bool | 화면상의 축 방향을 뒤집는다. 눈금·격자·데이터·피킹이 같은 변환을 쓰며 `min` / `max`는 데이터 좌표 기준을 유지한다. |
 | `label_style` | `LabelStyle` | 눈금 라벨 스타일 |
 | `tick` | `TickVisibility` | `None / Outside / Inside / Both` |
-| `title_option` | `AxisTitleOptions` | 축 타이틀 텍스트 / 가시성 / 오프셋 |
-| `out_margin` | f32 | 축 바깥쪽 (라벨+타이틀 band) 픽셀 마진 |
-| `line_visible / color / width / style` | mixed | 축 선 외형. CPU raster stroke는 최소 1px로 floor되어 sub-pixel 폭이 사라지지 않음 |
-| `line_offset` | f32 | 분리 축 오프셋: 데이터 영역은 그대로 두고 축 chrome(선/틱/라벨)만 수직 방향으로 평행이동. 레이아웃 비기여 — 드래그 시스템의 축 이동이 여기에 기록됨 |
-| `major_tick_length / minor_tick_length` | f32 | tick 길이 (px) |
+| `title_option` | `AxisTitleOptions` | 축 제목의 텍스트·표시 여부·위치 |
+| `out_margin` | f32 | 축 바깥의 라벨·제목 영역 여백(px) |
+| `line_visible / color / width / style` | mixed | 축선 모양. CPU 렌더링은 1px보다 가는 선도 사라지지 않도록 최소 두께를 1px로 적용한다. |
+| `line_offset` | f32 | 데이터 영역을 유지한 채 축선·눈금·라벨을 축에 수직인 방향으로 이동한다. 전체 배치에는 영향을 주지 않으며 축 드래그 결과를 이 값에 기록한다. |
+| `major_tick_length / minor_tick_length` | f32 | 눈금 길이(px) |
 
 ### `LabelStyle`
 | 필드 | 타입 | 의미 |
 |---|---|---|
-| `visible` | bool | 라벨 표시 여부 (overall) |
+| `visible` | bool | 눈금 라벨 영역의 표시 여부 |
 | `color` | `Color` | 라벨 색 |
 | `font_size` | f32 | px |
-| `label_visible` | bool | 숫자 라벨 자체 표시 여부 (visible 과 별개로 axis 자체는 켜고 라벨만 끄기) |
-| `label_font` | String | 폰트 패밀리. 빈 문자열 → 번들 Liberation Sans |
-| `label_offset_x / y` | f32 | nudge용 미세 오프셋 (px) |
-| `format` | `LabelFormat` | `Decimal / Power / Scientific / Timestamp`. `Timestamp`는 linear axis에서 숫자 좌표를 Unix epoch 시간으로 해석하고 calendar-aware tick을 사용할 수 있음 |
+| `label_visible` | bool | 숫자 라벨 표시 여부. 축을 켠 상태에서 숫자만 숨길 수 있다. |
+| `label_font` | String | 글꼴 이름. 빈 문자열이면 내장 Liberation Sans 사용 |
+| `label_offset_x / y` | f32 | 라벨 위치를 미세 조절하는 이동량(px) |
+| `format` | `LabelFormat` | `Decimal / Power / Scientific / Timestamp`. `Timestamp`는 선형축의 숫자 좌표를 Unix 시간으로 표시하며 달력 기준 눈금을 지원한다. |
 | `significant_digits` | u8 | 유효 숫자 |
 
-`LabelFormat::Timestamp`는 데이터 좌표를 계속 숫자로 유지한다. 기본값은 UTC
-Unix seconds + `AutoCalendar` tick 계획이며, JS timestamp에는 `unit =
-Milliseconds`, 한국 시간 같은 고정 오프셋에는 `FixedOffsetMinutes(540)`을 쓴다.
-`AutoCalendar`는 tick label 폭을 측정해서 label이 겹치지 않도록 calendar step을
-자동으로 성글게 만든다. 고해상도 absolute Unix timestamp는 native에서
-`Renderer::add_hilo_column`, web에서 `register_column_f64` /
-`update_register_column_f64`(`Float64Array`)를 사용하면 GPU에서
-`(hi: f32, lo: f32)` pair로 보존된다.
-[crates/web/timestamp-demo.html](crates/web/timestamp-demo.html) 데모는 이 계약을
-시간 범위 변경, 차트 폭 변경, export scale 변경과 함께 가장 빨리 눈으로
-확인하는 경로다.
+`LabelFormat::Timestamp`는 숫자 좌표를 시간으로 표시한다. 기본값은 UTC 기준 Unix 초와 `AutoCalendar` 눈금 배치다. JavaScript 타임스탬프에는 `unit = Milliseconds`를, 한국 시간처럼 고정 시차를 적용하려면 `FixedOffsetMinutes(540)`을 사용한다.
+`AutoCalendar`는 라벨 너비를 측정하고 겹치지 않도록 달력상의 눈금 간격을 늘린다. 큰 Unix 시간 값에서도 작은 시간 차이를 보존하려면 네이티브에서는 `Renderer::add_hilo_column`, 웹에서는 `Float64Array`를 받는 `register_column_f64` / `update_register_column_f64`를 사용한다. GPU에는 `(hi: f32, lo: f32)` 쌍으로 저장된다.
+[시간축 데모](crates/web/timestamp-demo.html)에서 시간 범위, 차트 너비와 출력 배율을 바꾸며 결과를 확인할 수 있다.
 
 ### `AxisTitleOptions` / `ChartTitleOptions`
 | 필드 | 타입 | 의미 |
 |---|---|---|
-| `text` | `RichText` | greek / sub/super / bold/italic 등 styled segments |
+| `text` | `RichText` | 그리스 문자·위아래 첨자·굵게·기울임 등을 구간별로 지정한 텍스트 |
 | `visible` | bool | |
 | `offset_x / y` | f32 | nudge |
-| `top_margin` | f32 | (chart_title only) 차트 타이틀 band 높이 |
+| `top_margin` | f32 | 차트 제목 영역의 높이(`chart_title` 전용) |
 
 ### `GridOptions`
 | 필드 | 타입 | 의미 |
 |---|---|---|
-| `show_major_x/y` | bool | major 그리드 라인 |
-| `major_x/y_color, _width, _style` | mixed | major 라인 외형 (Solid / Dash / Dot 등 11 종 preset) |
-| `show_minor_x/y` | bool | minor 그리드 라인 |
-| `minor_x/y_color, _width, _style` | mixed | minor 라인 외형 |
+| `show_major_x/y` | bool | 주 격자선 |
+| `major_x/y_color, _width, _style` | mixed | 주 격자선 모양(Solid / Dash / Dot 등 프리셋 11종) |
+| `show_minor_x/y` | bool | 보조 격자선 |
+| `minor_x/y_color, _width, _style` | mixed | 보조 격자선 모양 |
 
 ### `DrawStyle`
-| 변종 / JSON mode | 의미 |
+| 종류 / JSON mode | 의미 |
 |---|---|
 | `Precise` / 생략 또는 `{ "mode": "precise" }` | 기본 정밀 렌더러. 기본 직렬화에서는 `draw_style` 키가 생략됨 |
 | `Sketch` / `{ "mode": "sketch", ... }` | 차트 전체 손그림 스타일 |
-| `Milkyway` / `{ "mode": "milkyway", ... }` | 차트 전체 천체사진 스타일. 파라미터 메타데이터는 `draw_style_param_specs("milkyway")` 에서 제공 |
-| `Constellation` / `{ "mode": "constellation", ... }` | `ScatterLine` 전용 별자리 스타일. scatter 위치의 별과 이를 잇는 투명한 선만 렌더링하며, 별 크기는 scatter `point_size`를 따른다. 파라미터 메타데이터는 `draw_style_param_specs("constellation")` 에서 제공 |
+| `Milkyway` / `{ "mode": "milkyway", ... }` | 차트 전체 천체사진 스타일. 옵션 메타데이터는 `draw_style_param_specs("milkyway")`에서 제공 |
+| `Constellation` / `{ "mode": "constellation", ... }` | `ScatterLine` 전용 별자리 스타일. 데이터 점 위치의 별과 반투명 연결선을 그린다. 별 크기는 `point_size`를 따른다. 옵션 범위는 `draw_style_param_specs("constellation")`에서 조회한다. |
 
 ### `Legend`
 | 필드 | 타입 | 의미 |
 |---|---|---|
 | `visible` | bool | |
-| `content` | `RichText` | 범례 전체가 **하나의 리치 문서**: `'\n'` 세그먼트가 줄바꿈, 심볼은 세그먼트별 `color` 오버라이드를 가진 인라인 세그먼트 — 줄바꿈·심볼 위치·글자 중간 심볼이 전부 SSoT에 명시적. `font` / `font_size` 는 그리기 시점에 적용 |
+| `content` | `RichText` | 범례 전체를 하나의 리치 텍스트로 저장한다. `\n`은 줄바꿈이며 기호는 구간별 색을 지정한 텍스트다. 줄바꿈·기호 위치·문자 사이의 기호까지 설정에 명시한다. `font` / `font_size`는 그리기 시 적용한다. |
 | `corner` | `LegendCorner` | `TopLeft / TopRight / BottomLeft / BottomRight` |
-| `padding` | f32 | legend box 내부 padding. corner 배치는 고정 data-area inset과 `offset_x / offset_y`를 사용 |
+| `padding` | f32 | 범례 상자 내부 여백. 모서리 배치는 데이터 영역 안쪽의 고정 간격과 `offset_x / offset_y`를 사용한다. |
 | `bg_color, border_color` | `Color` | 박스 배경 / 테두리 |
 
-심볼은 **고정폭 필드 세그먼트**(`field_em`)다: 형태와 무관하게 모든 심볼이
-정확히 `SYMBOL_FIELD_EM`(2.0 em × 폰트 크기)을 차지한다 — 선 마크는 필드를
-가득 채우는 그려진 선(`rule: true`), scatter 마크는 필드 중앙의 shape
-글리프(`● ■ ▲ …`), 선+점은 rule–글리프–rule 합계가 같은 폭. 점선/도트
-선 스타일은 rule 세그먼트의 `rule_dash` 로 보존되어 범례 기호도
-`LineStylePreset` 을 반영한다. 자동 구성
-엔트리는 `심볼 + ' ' + '\t' + 라벨` 형태라 라벨도 탭 열로 정렬된다.
-구성 헬퍼: `symbol_segments(kind, color)`, `series_symbol_segments(cfg)`,
-`append_legend_entry(content, symbol, label)`.
+범례 기호는 `field_em`으로 너비를 고정한 텍스트 구간이다. 모양에 관계없이 `SYMBOL_FIELD_EM`, 즉 폰트 크기의 2배 너비를 차지한다. 선 기호는 `rule: true`로 구간 전체에 수평선을 그리고, 점 기호는 가운데에 `● ■ ▲ …` 같은 글리프를 놓는다. 선과 점을 함께 표시할 때도 전체 너비는 같다.
+점선·도트 패턴은 `rule_dash`에 저장하므로 범례에도 `LineStylePreset`의 선 모양이 반영된다. 자동으로 만든 항목은 `심볼 + ' ' + '\t' + 라벨` 형식이며, 탭을 기준으로 라벨이 정렬된다. 직접 구성할 때는 `symbol_segments(kind, color)`, `series_symbol_segments(cfg)`, `append_legend_entry(content, symbol, label)`을 사용한다.
 
 ### `PickedPointsConfig`
 | 필드 | 타입 | 의미 |
 |---|---|---|
-| `visible` | bool | `picked_points`가 있을 때 overlay 표시 여부 |
-| `refs` | `Vec<PickedPointRef>` | 선택된 데이터 참조: `series_id`, 선택적 `source_id`, `point_index`. overlay는 좌표 복사본이 아니라 provenance만 저장한다 |
-| `ring_color` | `Color` | 강조 링 색 |
-| `ring_width_px` | f32 | 링 stroke 픽셀 두께 |
-| `radius_extra_px` | f32 | 원본 마커 바깥에 더하는 추가 반지름 |
+| `visible` | bool | `picked_points`가 있을 때 선택 표시를 그릴지 여부 |
+| `refs` | `Vec<PickedPointRef>` | 선택한 데이터의 `series_id`, 선택적인 `source_id`, `point_index`. 좌표 복사본 대신 출처와 인덱스를 저장한다. |
+| `ring_color` | `Color` | 강조 테두리 색 |
+| `ring_width_px` | f32 | 강조 테두리의 두께(px) |
+| `radius_extra_px` | f32 | 점 기호 바깥으로 추가할 반지름 |
 
-`picked_points` 누락 / JSON `null` 은 picked-point overlay 없음이다. JSON `{}` 는 기본 overlay 설정(`visible: true`, 빈 refs, 금색 링, 2 px stroke, +3 px radius)으로 파싱되므로, 호스트가 overlay를 켠 뒤 `refs`만 채울 수 있다.
-overlay ring은 선택된 scatter marker 반지름을 따른다(포인트별 스타일 매핑 포함). line-only pick은 스냅된 endpoint 주변에 `radius_extra_px`만 사용한다.
+`picked_points`가 없거나 JSON `null`이면 점 선택 표시를 그리지 않는다. `{}`는 기본 설정인 `visible: true`, 빈 참조 목록, 금색 테두리, 선 두께 2px, 추가 반지름 3px로 해석한다. 이 설정에 `refs`를 채워 선택한 점을 표시할 수 있다.
+강조 테두리의 크기는 점별 스타일을 포함한 산점도 기호의 반지름을 따른다. 선만 있는 시리즈에서는 선택된 끝점 주위에 `radius_extra_px`만큼의 반지름으로 그린다.
 
 ### `DataSelectionsConfig`
 
-`Config.picked_data`는 `Point`, `HistogramBin`, `MatrixCell`, `ContourLevel`
-tagged `PickedDataRef` identity를 보관한다. 모든 ref는 `series_id`와 선택적
-`source_id`를 가지며, kind별로 `point_index`, `bin_index`, canonical
-`x_index/y_index`, 또는 `level_index + x_index/y_index`만 추가한다. 시각 정책은
-`highlight_color`, `outline_width_px`, `point_radius_extra_px`,
-`contour_width_extra_px`다. 좌표·막대 경계·컨투어 segment는 저장하지 않고 일반
-draw와 동일 GPU 자원에서 현재 형상을 푼다. 범위를 벗어난 stale index는 그리지
-않는다. JSON `null`은 해제, `{}`는 빈 금색 기본 overlay다.
+`Config.picked_data`는 `PickedDataRef`로 선택 대상을 저장한다. `Point`, `HistogramBin`, `MatrixCell`, `ContourLevel`로 종류를 구분하며, 모두 `series_id`와 선택적인 `source_id`를 가진다. 종류에 따라 `point_index`, `bin_index`, X·Y축 기준 `x_index/y_index`, 또는 `level_index + x_index/y_index`가 추가된다.
+표시 모양은 `highlight_color`, `outline_width_px`, `point_radius_extra_px`, `contour_width_extra_px`로 설정한다. 좌표·막대 경계·등고선 선분은 복사해 보관하지 않고, 일반 그리기와 같은 GPU 자원에서 계산한다. 범위를 벗어난 인덱스는 그리지 않는다. JSON `null`은 선택 표시를 해제하고, `{}`는 선택 대상이 없는 금색 기본 설정을 만든다.
 
 ### `ColorBarOptions`
 | 필드 | 타입 | 의미 |
 |---|---|---|
-| `visible` | bool | `false`면 아무것도 그리지 않고 **밴드도 반납**한다(면 시리즈는 정상 렌더) |
+| `visible` | bool | `false`이면 색상 막대와 그 여백을 없앤다. 행렬 데이터는 계속 그린다. |
 | `side` | `Side` | `Left`/`Right` = 수직 바, `Top`/`Bottom` = 수평 바. 이것만으로 방향이 결정된다 |
-| `thickness_px` | f32 | 스트립의 짧은 쪽 |
-| `gap_px` | f32 | 데이터 영역과 스트립 사이 |
-| `length_frac` | f32 | 그 변 길이에 대한 스트립 길이 비율. `(0, 1]` |
-| `align` | `BarAlign` | 변을 따라 `Start` / `Center` / `End` — 앵커의 이산 절반 |
-| `offset_x`, `offset_y` | f32 | 그 앵커에서의 자유 이동, 화면 픽셀. **마진에 기여하지 않는다** — `Legend::offset_{x,y}` · 타이틀 · 라벨 offset과 같은 계약이라 바를 끌어도 데이터 영역이 다시 흐르지 않는다. 드래그가 누적되는 곳 |
+| `thickness_px` | f32 | 색상 막대 두께 |
+| `gap_px` | f32 | 색상 막대의 배치 간격(px) |
+| `length_frac` | f32 | 배치한 변의 길이에 대한 색상 막대 길이 비율. `(0, 1]` |
+| `align` | `BarAlign` | 변을 따라 시작·가운데·끝에 배치하는 `Start` / `Center` / `End` |
+| `offset_x`, `offset_y` | f32 | 기준 위치에서의 이동량(px). 드래그 결과가 누적된다. 여백 계산에는 반영하지 않으므로 막대를 움직여도 데이터 영역은 바뀌지 않는다. |
 | `colormap` | `ColorMap` | `Viridis` / `Magma` / `Turbo` / `GrayScale` / `RdBu` / `Custom { stops }` |
-| `nan_color` | `Color` | 램프에 놓을 수 없는 z(NaN, 로그 컬러바의 비양수)의 색. 기본 완전투명 |
-| `border_color`, `border_width` | `Color`, f32 | 스트립 테두리 |
-| `axis` | `AxisOptions` | **z 축 — z 범위의 단일 진실 원본** |
+| `nan_color` | `Color` | 색으로 변환할 수 없는 Z값(NaN, 로그 스케일의 0 이하 값)에 사용할 색. 기본값은 완전 투명이다. |
+| `border_color`, `border_width` | `Color`, f32 | 색상 막대 테두리 |
+| `axis` | `AxisOptions` | Z축 범위와 눈금·라벨 설정 |
 
-`axis`가 4축과 같은 `AxisOptions`인 것이 이 설계의 핵심이다. `scale`
-(`Logarithmic` 포함) · `min`/`max` · `major_spacing` · `minor_count` ·
-`label_style`(`LabelFormat::Power` 포함) · `tick` · `title_option`이 축과
-완전히 같은 의미이고, 틱 생성 · 라벨 포맷 · 로그 처리가 **같은 코드**를
-지난다(평행 구현이 아니다).
+색상 막대의 `axis`는 차트의 네 축과 같은 `AxisOptions`를 사용한다. `scale`과 `Logarithmic`, `min`/`max`, `major_spacing`, `minor_count`, `label_style`과 `LabelFormat::Power`, `tick`, `title_option`의 의미가 모두 같다. 눈금 생성, 라벨 형식, 로그 처리를 같은 코드로 수행한다.
 
-따라오는 규칙 — 전부 결정 사항이다:
+배치와 동작 규칙은 다음과 같다.
 
-- `Heatmap` / `Contour` / `HeatmapContour` 시리즈가 있으면 이 키가 **있어야
-  한다.** 없으면 z 범위도 colormap도 어디에도 없어 그릴 값 자체가 없으므로
-  렌더러가 시리즈를 거부한다(추론해서 만들지 않는다).
-- 결과적으로 **차트당 z 스케일 1개**다. 히트맵 여러 개는 같은 스케일을 공유한다.
-- 밴드 = `gap_px + thickness_px + axis.out_margin + axis.major_tick_length`,
-  그 변에만 더해진다. `fit_to_data_area` / `resize_chart_area_scaled`는
-  `axis.out_margin`(축과 같은 라벨 공간)만 조절하고 스트립 자체는 건드리지
-  않으므로 컬러바가 창 크기에 따라 얇아지지 않는다.
-- 4축과 기본값이 다른 두 곳: `line_visible: false`(스트립 테두리가 그 선 역할)와
-  `tick: Outside`(틱이 색 위가 아니라 라벨 마진에 놓인다).
-- 밴드는 그 변 마진의 **맨 바깥**이다. 차트 가장자리에서 안쪽으로 컬러바 라벨 마진 → 컬러바 틱 →
-  스트립 → `gap_px` → 그 변 축의 밴드 순이다. 축의 틱 라벨은 데이터 영역에서 바깥으로 그려져
-  비켜줄 수 없으므로, 스트립을 데이터 영역 옆에 두면 그 라벨 위에 그려진다.
-- 컬러바는 GPU 파이프라인 없이 decoration 레이어에서 CPU로 그린다. 틱·라벨·타이틀이 4축과 같은
-  헬퍼를 지나므로 로그 컬러바는 decade 틱과 10ⁿ 라벨을 로그축이 이미 쓰는 코드에서 얻는다.
-  `axis.tick`이 안/밖/양쪽을, `axis.inverted`가 화면의 min→max 방향을 정하고, 틱 외형은 축선과
-  같은 `line_color` / `line_width` / `line_style`을 그대로 쓴다.
-- 다른 크롬과 같은 **선택 · 드래그 · 리사이즈** 요소다: 히트테스트 id `"colorbar"`,
-  파란 선택 박스, 그리고 데이터 영역과 함께 **8개 리사이즈 핸들을 가진 둘뿐인 요소**다.
-  드래그는 `offset_{x,y}`에 누적되고, 핸들은 **바의 방향**에 따라 `thickness_px` 또는
-  `length_frac`을 움직인다(핸들은 화면 방향만 알고, 어느 치수인지는 nudge가 푼다). 세부 요소는
-  `"colorbar_axis"`, `"colorbar_tick_labels"`, `"colorbar_title"`로 각각 선택·표시되며,
-  드래그는 차례로 `axis.line_offset`, 라벨 offset, 제목 offset을 바꾼다. 셋 모두 실제 스트립
-  사각형에서 파생되므로 길이·정렬·이동·리사이즈 뒤에도 제목과 히트박스가 바를 그대로 따른다.
-- `ColorBarOptions::normalized_z(z) -> Option<f32>`가 z→색 정규화의 단일 원본이고
-  `color_for_z`가 그것을 적용한다. `[0,1]` 클램프이며, NaN · 로그 바의 비양수 · 퇴화 범위는
-  `None` → `nan_color`로 그린다(끝점으로 클램프하지 않는다 — "없음"과 "가장 작음"은 다른
-  사실이다). `axis.inverted`는 적용하지 않는다: 값을 어디에 그리는지를 바꾸고 어떤 색인지를
-  바꾸지 않는다.
+- `Heatmap` / `Contour` / `HeatmapContour` 시리즈에는 색상 막대 설정이 반드시 필요하다. 이 설정에서 Z축 범위와 색상표를 읽으므로, 설정이 없으면 렌더러가 시리즈를 거부한다.
+- 차트 하나는 Z축 스케일 하나를 사용한다. 여러 히트맵을 넣어도 같은 스케일을 공유한다.
+- 색상 막대가 차지하는 여백은 `gap_px + thickness_px + axis.out_margin + axis.major_tick_length`이며 배치한 쪽에만 추가된다. `fit_to_data_area` / `resize_chart_area_scaled`는 라벨 공간인 `axis.out_margin`만 조절한다. 막대 자체의 두께는 창 크기에 따라 줄어들지 않는다.
+- 일반 축과 다른 기본값은 `line_visible: false`와 `tick: Outside`다. 축선은 막대 테두리가 대신하고, 눈금은 색상 영역 바깥의 라벨 공간에 놓인다.
+- 색상 막대는 해당 방향의 여백 중 가장 바깥쪽에 배치한다. 차트 가장자리에서 안쪽으로 라벨 공간, 눈금, 색상 막대, `gap_px`, 차트 축 영역 순서다. 이렇게 배치해야 데이터 영역 바깥으로 그려지는 축 라벨을 색상 막대가 가리지 않는다.
+- 색상 막대는 별도 GPU 파이프라인 없이 CPU의 `Decoration` 레이어에서 그린다. 일반 축과 같은 코드로 로그 눈금과 10ⁿ 라벨을 만든다. `axis.tick`은 눈금의 안쪽·바깥쪽 표시를, `axis.inverted`는 화면상의 값 증가 방향을 정한다. 눈금 모양은 축선의 `line_color` / `line_width` / `line_style`을 따른다.
+- 색상 막대도 선택·드래그·크기 조절을 지원한다. 히트테스트 ID는 `"colorbar"`이며, 데이터 영역과 마찬가지로 파란 선택 상자와 조절점 8개를 표시한다. 드래그는 `offset_{x,y}`에 누적한다. 크기 조절은 막대 방향에 따라 `thickness_px` 또는 `length_frac`을 바꾼다. 화면 방향을 실제 치수 변경으로 변환하는 작업은 nudge가 담당한다.
+- 세부 요소인 `"colorbar_axis"`, `"colorbar_tick_labels"`, `"colorbar_title"`도 각각 선택할 수 있다. 드래그하면 축선·라벨·제목의 오프셋이 바뀐다. 모두 실제 색상 막대 사각형을 기준으로 계산하므로 길이·정렬·위치·크기가 바뀌어도 제목과 선택 영역이 막대를 따라간다.
+- `ColorBarOptions::normalized_z(z) -> Option<f32>`가 Z값을 색상 위치로 변환하고, `color_for_z`가 그 결과를 적용한다. 유효한 결과는 `[0,1]`로 제한한다. NaN, 로그 스케일의 0 이하 값, 너비가 없는 범위는 `None`을 반환해 `nan_color`로 표시한다. `axis.inverted`는 화면상의 위치만 바꾸며 값에 대응하는 색은 바꾸지 않는다.
 
-### `data_config` — series 선언형 스키마 (활성 API)
+<a id="data_config--series-선언형-스키마-활성-api"></a>
 
-차트별 시리즈는 모두 `data_config::SeriesConfig` 로 선언. `Renderer::paint` 가 `render_type` enum 변종으로 분기해 line / scatter / errorbar layer 를 자동 생성, 색·두께·shape 등 모든 시각 속성도 sub-style 에서 추출.
+### `data_config` — 시리즈 선언 형식
+
+차트의 시리즈는 `data_config::SeriesConfig`로 선언한다. `Renderer::paint`는 `render_type`에 따라 선·점·오차 막대 등의 레이어를 만들고 각 스타일 설정에서 색·두께·모양을 읽는다.
 
 | 타입 | 필드 | 역할 |
 |---|---|---|
-| `SeriesConfig` | `series_id, source_id?, label, x_column: ColumnId, y_column: ColumnId, render_type` | 한 시리즈의 모든 선언. `source_id`는 picking용 선택적 host provenance이고, `x_column / y_column`은 렌더러에 등록된 id로 상주 pool이나 재공급 가능한 비상주 소스를 가리킨다. web 편집 플로우에서는 `legend.content`가 live 라벨 권위이며, 일반 시리즈 편집은 인식 가능한 범례 심볼만 갱신하고 사용자 텍스트를 보존한다. `SeriesConfig.label`은 명시적 `reset_legend_from_series_labels()` 재작성에서만 권위가 된다 |
-| `DataRenderType` | 13 변종 enum | 변종별 독립 draw path. 옵셔널 struct 안 합침 |
-| `ErrorRef` | `Symmetric { column }` 또는 `Asymmetric { lower, upper }` | 에러바 컬럼 참조. Symmetric 은 ±σ, Asymmetric 은 lower/upper 분리 |
-| `DataLineStyleConfig` | `line_style, line_color, line_width` | 라인 외형 |
-| `DataScatterStyleConfig` | `point_color, point_shape, point_size, point_style_table?, point_style_index_column?, point_style_overrides?` | 점 외형. optional style map은 precise scatter에만 적용되며 table/override slot이 색, shape, 크기 또는 일부만 대체할 수 있다 |
-| `DataErrorBarStyleConfig` | `error_bar_color, _width, _cap_size, cap_width, error_bar_style_table?, error_bar_style_index_column?, error_bar_style_overrides?` | 에러바 외형. optional style map은 precise errorbar에만 적용되며 table/override slot이 색, stem width, cap half-size, cap width 또는 일부만 대체할 수 있다 |
-| `DataBarStyleConfig` | `fill_color, border_color, border_width, baseline, gap_px, width_ratio, orientation, bar_style_overrides?` | 히스토그램 외형. `width_ratio`는 bin 안에서 가운데 정렬된 막대 비율이고 sparse override는 특정 bin의 채움·외곽선·간격·폭을 바꾼다 |
-| `ScatterShape` | enum 26 변종 | Circle / Square / Triangle directions / Diamond / Cross / Plus / Pentagon / Hexagon / Octagon / Star + filled variants |
+| `SeriesConfig` | `series_id, source_id?, label, x_column: ColumnId, y_column: ColumnId, render_type` | 시리즈 설정. `source_id`는 선택 결과에서 데이터 출처를 구분하는 선택 항목이다. 컬럼 ID는 상주 풀 또는 재공급 가능한 비상주 소스를 가리킨다. 웹 편집 중 표시할 라벨은 `legend.content`를 기준으로 하며 일반 시리즈 편집은 기호만 갱신한다. `SeriesConfig.label`은 `reset_legend_from_series_labels()`로 범례를 다시 만들 때 사용한다. |
+| `DataRenderType` | 13종 열거형 | 종류마다 별도의 렌더링 경로와 필요한 설정을 가진다. |
+| `ErrorRef` | `Symmetric { column }` 또는 `Asymmetric { lower, upper }` | 오차 막대 컬럼 참조. Symmetric은 ±σ, Asymmetric은 아래·위 값을 별도 지정 |
+| `DataLineStyleConfig` | `line_style, line_color, line_width` | 선 모양 |
+| `DataScatterStyleConfig` | `point_color, point_shape, point_size, point_style_table?, point_style_index_column?, point_style_overrides?` | 점 모양. 정밀 모드에서 선택적인 스타일 표·개별 설정으로 색·모양·크기의 전체 또는 일부를 바꿀 수 있다. |
+| `DataErrorBarStyleConfig` | `error_bar_color, _width, _cap_size, cap_width, error_bar_style_table?, error_bar_style_index_column?, error_bar_style_overrides?` | 오차 막대 모양. 정밀 모드에서 색·몸통 두께·끝선 절반 길이·끝선 두께의 전체 또는 일부를 바꿀 수 있다. |
+| `DataBarStyleConfig` | `fill_color, border_color, border_width, baseline, gap_px, width_ratio, orientation, bar_style_overrides?` | 히스토그램 모양. `width_ratio`는 구간 가운데에 놓인 막대의 너비 비율이다. 개별 설정으로 특정 구간의 채움·외곽선·간격·너비를 바꿀 수 있다. |
+| `ScatterShape` | 열거형 26종 | 원·사각형·방향별 삼각형·마름모·십자·더하기·오각형·육각형·팔각형·별과 내부를 채운 형태 |
 
-**`DataRenderType` 변종 13 개**:
+**`DataRenderType`의 13가지 종류**
 
-| 변종 | 사용 sub-style | 의미 |
+| 종류 | 사용하는 스타일 | 의미 |
 |---|---|---|
-| `Line { line }` | line | 라인만 |
+| `Line { line }` | line | 선만 |
 | `Scatter { scatter }` | scatter | 점만 |
 | `ScatterLine { scatter, line }` | 둘 다 | 점 + 연결선 |
-| `ScatterErrorbarX { scatter, err_x, err_style }` | scatter + errorbar | 점 + X 에러바 |
-| `ScatterErrorbarY { scatter, err_y, err_style }` | scatter + errorbar | 점 + Y 에러바 |
-| `ScatterErrorbarXY { scatter, err_x, err_y, err_style }` | scatter + errorbar | 점 + X/Y 에러바 |
+| `ScatterErrorbarX { scatter, err_x, err_style }` | scatter + errorbar | 점 + X 오차 막대 |
+| `ScatterErrorbarY { scatter, err_y, err_style }` | scatter + errorbar | 점 + Y 오차 막대 |
+| `ScatterErrorbarXY { scatter, err_x, err_y, err_style }` | scatter + errorbar | 점 + X/Y 오차 막대 |
 | `LineScatterErrorbarX / Y / XY` | line + scatter + errorbar | 위 3 + 연결선 |
-| `Histogram { bar }` | bar | 호스트가 비닝한 `(edges, counts)` 막대. `bar.orientation`이 컬럼 역할을 **단독 결정**한다: `Vertical` = `x_column` edges / `y_column` counts, `Horizontal`은 반대. 길이 관계(`edges = counts + 1`)로 추측하지 않는다 |
+| `Histogram { bar }` | bar | 호스트가 집계한 경계·빈도 `(edges, counts)`로 막대를 그린다. `bar.orientation`이 `Vertical`이면 X컬럼이 경계, Y컬럼이 빈도이며 `Horizontal`은 반대다. `edges = counts + 1`이라는 길이 관계로 역할을 추측하지 않는다. |
 | `Heatmap { matrix, fill }` | fill | 면만 |
 | `Contour { matrix, contour }` | contour | 선만 |
 | `HeatmapContour { matrix, fill, contour }` | fill + contour | 면 + 그 위의 선 |
 
-히스토그램 폭은 먼저 `width_ratio`로 bin의 가운데 정렬된 `0..=1` 비율을
-남기고, 그다음 `gap_px`를 화면 픽셀 단위로 추가 차감한다. 단, 양수 폭 막대가
-1픽셀보다 넓으면 최소 1픽셀을 남기도록 gap을 제한한다. 원래 bin 폭이 화면에서
-1픽셀 미만이면 GPU가 각 픽셀 열에 겹치는 bin의 최댓값을 선택해 0까지 채운다.
-가로 히스토그램은 픽셀 행 기준이며, 채움은 표시 중인 축 범위에서 잘린다.
-최댓값 bin의 선 두께와 알파가 양수면 영역 전체를 선 색으로 채우고,
-그렇지 않으면 면 색으로 채운다. 동률이면 앞선 bin을 선택한다.
-이 경로에서는 gap과 양수 width_ratio로 틈을 만들지 않는다. 원본 컬럼은 유지하며
-`width_ratio = 0`인 bin은 제외한다. `border_width = 0`이면
-외곽선이 꺼지고, 양수이면 `border_color`와 두께가 적용된다.
-`bar_style_overrides`는 `index`로 특정 bin을 고르는 sparse 목록이며 각 항목이
-`fill_color`, `border_color`, `border_width`, `gap_px`, `width_ratio` 중 필요한
-값만 덮는다. baseline·orientation은 시리즈 공통이고, 렌더·typed pick·선택
-outline은 모두 같은 최종 막대 경계를 쓴다.
+히스토그램 막대는 구간 가운데에 배치하며, `width_ratio`로 구간 대비 너비를 `0..=1` 범위에서 정한다. 여기에 `gap_px`만큼의 픽셀 간격을 추가로 뺀다. 너비가 1픽셀보다 큰 막대는 최소 1픽셀이 남도록 간격을 제한한다.
 
-매트릭스 3종은 격자를 `MatrixRef { columns, orientation, grid_layout }` —
-등록된 컬럼 id 묶음 — 으로 선언한다. 별도의 매트릭스 컨테이너는 없다.
-상주 경로는 pool의 컬럼을 읽고, 지원되는 비상주 Heatmap 경로는 같은 ID의
-원본 구간을 제한된 크기로 재공급받는다. 어느 경로도 `Config`나 `series`를
-복제하지 않는다. `grid_layout`은
-좌표 컬럼이 셀 경계(`Edges`, n+1)인지 중심(`Centers`, n)인지를 말하며 길이로
-추론하지 않는다. 선언과 데이터의 개수가 어긋나도 **에러가 아니다** — 가장 작은
-공통 범위까지 그리고 잘렸다는 사실만 알린다.
+구간 자체가 화면에서 1픽셀보다 좁으면 GPU가 픽셀 열별로 겹치는 구간 중 최댓값을 골라 0까지 채운다. 가로 히스토그램은 픽셀 행을 기준으로 계산하며 표시 범위를 벗어난 부분은 자른다. 선택된 구간의 외곽선 두께와 불투명도가 모두 양수이면 외곽선 색을, 그렇지 않으면 채움색을 쓴다. 최댓값이 같으면 앞선 구간을 선택한다. 이 경로에서는 `gap_px`나 양수인 `width_ratio`로 틈을 만들지 않는다. 원본 컬럼은 유지하고 `width_ratio = 0`인 구간은 제외한다.
+
+`border_width = 0`이면 외곽선을 숨기며, 양수이면 지정한 두께와 `border_color`를 적용한다. `bar_style_overrides`에는 `index`로 특정 구간을 골라 `fill_color`, `border_color`, `border_width`, `gap_px`, `width_ratio` 중 바꿀 값만 넣는다. 기준선과 방향은 시리즈 전체에 적용된다. 그리기, 데이터 피킹, 선택 테두리는 모두 같은 최종 막대 경계를 사용한다.
+
+행렬 기반 세 종류는 등록된 컬럼 ID 묶음인 `MatrixRef { columns, orientation, grid_layout }`로 격자를 지정한다. 별도의 행렬 컨테이너를 만들지 않는다. 상주 경로에서는 풀의 컬럼을 읽고, 지원되는 비상주 히트맵 경로에서는 같은 ID의 원본 구간을 나누어 공급받는다. 두 경로 모두 `Config`나 시리즈 상태를 별도로 복제하지 않는다.
+`grid_layout`은 좌표가 셀 경계(`Edges`, n+1개)인지 중심(`Centers`, n개)인지 명시하며 배열 길이로 추측하지 않는다. 선언과 데이터의 크기가 다르면 공통으로 사용할 수 있는 범위까지만 그리고 잘림 여부를 알린다.
 
 <!-- contour-contract: scope=readme-ko max-levels=1024 -->
-`ContourConfig.levels`는 항상 데이터 단위의 명시 목록이다(자동 추론 variant
-없음 — 그리는 시점에 추론한 레벨은 config에 없는 값이다). `per_level_color:
-None`이면 모든 레벨이 `line.line_color` 단색이고, colormap에서 레벨 색을
-유도하지 않는다. 허용 길이는 `0..=1024`이며 1025개 이상은 오류이고 어떤
-레벨도 조용히 잘라내지 않는다. 캐시가 빗나갈 때 원본 목록과 선언 순서는
-유지한 채 연속된 32개 블록별 값 정렬 검색 복사본을 만든다. fragment는 최대
-32개 블록을 이진 탐색하고 실제 도달 가능한 후보만 계산한다. 한 셀에 1024개가
-실제로 모두 걸리면 선언 순서대로 1024개 전부를 합성한다. 선 자체는 면의
-이중선형 보간의 level set으로 그린다. 거리는 현재 셀의 이중선형 field를 현재
-gradient-normal 직선으로 제한해서 얻는 이차방정식 교차근이며, 전체
-piecewise-bilinear contour에 대한 전역 최단거리는 아니다.
+`ContourConfig.levels`에는 데이터 단위의 등고선 값을 명시적으로 나열한다. 렌더링 중 임의로 레벨을 만들지 않는다. `per_level_color: None`이면 모든 선에 `line.line_color`를 적용하며 색상표에서 색을 자동으로 고르지 않는다. 레벨 수는 `0..=1024`개다. 1025개 이상이면 오류를 반환하며 일부를 잘라서 그리지 않는다.
 
-비정상 레벨의 의미는 실제 업로드된 f32를 기준으로 명시된다. contour line은
-NaN과 양쪽 Infinity를 모두 제외한다. `FillMode::Bands`의 분자는 `-Infinity`
-전체와 z 이하인 유한 레벨만 세고, 분모는 선언된 전체 레벨 수를 유지한다:
-`t=(negative_infinity_count + finite_le_z + 0.5)/(declared_level_count + 1)`.
-따라서 NaN과 `+Infinity`는 분모에만 영향을 준다.
+캐시에 없는 입력은 원본 목록과 선언 순서를 유지하면서 32개씩 묶어 정렬한 검색용 복사본을 만든다. 프래그먼트 셰이더는 최대 32개 블록을 이진 탐색해 해당 셀을 지날 수 있는 레벨만 계산한다. 한 셀에 1024개가 모두 걸리면 선언 순서대로 전부 합성한다. 선은 이중선형 보간한 면에서 값이 같은 지점을 연결해 그린다. 거리 계산에는 현재 셀의 보간 함수를 기울기 방향, 즉 등고선의 법선 방향 직선으로 제한해 얻은 이차방정식의 근을 사용한다. 여러 셀에 걸친 등고선 전체의 최단거리를 구하는 방식은 아니다.
 
-`ContourLabelConfig.anchors`는 **오버라이드**다. 비어 있는 것이 정상이고, 그때는 GPU가
-데이터 영역에 `spacing_px` 격자로 씨앗을 놓고 각 씨앗을 자기 레벨의 isoline으로 투영한 뒤
-정상 선택에서는 `spacing_px` 간격을 목표로 남긴다. 단, 레벨별 fallback은 레벨을
-누락시키지 않기 위해 더 가까운 후보를 남길 수 있다. `spacing_px`는 숨김 라벨과 명시
-오버라이드에서도 항상 유한한 양수여야 한다. 자동/명시 배치는 공통으로 1024개 용량을
-쓴다. 명시 앵커는 유효하지 않은 `level_index`를 버리고 입력 순서에서 유효한 앞
-1024개만 남긴다. 이 resolved 목록이 비면 자동 배치하고, 하나라도 남으면 그 목록이
-자동 배치를 대체한다. 배율은 자동 배치 spacing에만 곱하며 export scale을 clamp한 뒤
-그 곱이 유한한 양수인지 검사한다. atlas도 adapter의 texture dimension 한계 안에
-들어야 한다. 비정상 spacing, scale 곱 overflow, atlas 초과는 renderer 상태를 발행하기
-전에 실패하므로 이전 chart와 GPU 자원이 유지된다. 앵커는 데이터 좌표 + 데이터 공간
-접선이라 줌/팬 때 다시 투영만 하면 된다.
-`ContourLabelConfig.color`가 선과 `per_level_color`에서 독립적으로 글자색을 소유한다.
-Decimal 표기는 Bottom X가 아니라 contour level 간격(없으면 colorbar 간격)을 쓰며,
-`significant_digits`도 실제로 적용하되 인접 레벨이 같은 문자열로 뭉개지지 않게 한다.
-contour fragment는 라벨 draw와 같은 선택 앵커 버퍼를 읽어 라벨 사각형 안의 선을 실제로
-그리지 않는다. `bg_padding_px`는 `bg_color`가 없어도 이 선 간격을 패딩한다.
+유한하지 않은 레벨은 실제 업로드된 f32 값을 기준으로 처리한다. 등고선에서는 NaN과 양·음의 무한대를 모두 제외한다. `FillMode::Bands`의 분자는 음의 무한대 개수와 Z값 이하인 유한 레벨 개수를 더하고, 분모에는 선언한 전체 레벨 수를 사용한다.
+`t=(negative_infinity_count + finite_le_z + 0.5)/(declared_level_count + 1)`이므로 NaN과 양의 무한대는 분모에만 영향을 준다.
 
-`Renderer::series_draw_info(chart, series_id) -> SeriesDrawInfo`가 **실제로 그려진 것**을 보는
-시리즈 공통 창구다: `drawn_count` · 매트릭스의 `cols`/`rows` · `truncated`. 컬럼 길이는 SSoT가
-아니라 데이터에서 오는 사실이므로 불일치는 에러도 중단도 아니다 — 가장 작은 공통 범위까지 그리고
-여기서 알린다. 호스트가 "edges 11개 / counts 9개였으니 막대 9개를 그렸다"를 알게 되는 경로이고,
-line·scatter의 기존 `min(x, y)` 잘림도 같은 호출로 설명된다.
+`ContourLabelConfig.anchors`는 라벨 위치를 직접 지정할 때 사용한다. 기본값인 빈 목록에서는 GPU가 데이터 영역에 `spacing_px` 간격으로 후보를 만들고 각 후보를 해당 등고선 위로 투영한다. 일반 선택에서는 이 간격을 목표로 후보를 남기지만, 레벨이 누락되지 않도록 추가로 고르는 후보는 더 가까울 수 있다.
 
-이 4종은 point-only 호환 picker를 지나지 않는다. 히스토그램은 업로드된 edge/value
-메타데이터로 fit한다. 매트릭스는 별도 field mode로 같은 GPU fit 엔진을 쓰며, CPU는
-잘림까지 반영한 셀 개수만 넘기고 GPU가 field shader와 같은 좌표 pair 풀에서
-`Edges`/`Centers` 및 cell/sample lattice 규칙을 그대로 적용한다. 그래서 contour와
-interpolated fill은 실제 sample 끝(`Edges`에서는 경계 좌표의 중점)에, flat fill은 실제
-셀 경계에 정확히 맞는다. 선택은 `pick_data`의 bar/field shader entry가 맡는다.
+`spacing_px`는 라벨을 숨겼거나 앵커를 직접 지정했더라도 항상 유한한 양수여야 한다. 자동 배치와 직접 지정 모두 최대 1024개를 사용한다. 직접 지정한 목록에서는 잘못된 `level_index`를 제외하고 유효한 앞 1024개만 남긴다. 이 결과가 비면 자동 배치하고, 하나라도 남으면 해당 목록으로 자동 배치를 대신한다.
 
-**`Renderer::create_style_for_series(cfg)`** 는 `cfg.render_type`의 sub-style에서 색·두께·shape를 추출해 화면용 GPU `ChartStyle`을 만든다. 반환형은 `Result`이며 네 uniform과 선택적 style-map 버퍼를 생성하기 전에 남은 렌더러 GPU 예산을 확인한다. 생성된 바이트는 준비된 프레임이 해당 바인딩을 보유하는 동안에도 집계된다. export의 `create_style_for_series_scaled(cfg, scale)`는 픽셀 크기만 스케일하고 동일한 예산 검사를 거친다.
+출력 배율은 자동 배치 간격에만 곱한다. 출력 배율을 허용 범위로 제한한 뒤 그 곱도 유한한 양수인지 확인한다. 라벨 아틀라스는 어댑터의 텍스처 크기 한도를 지켜야 한다. 간격 오류, 곱셈 오버플로, 아틀라스 크기 초과가 발생하면 상태를 반영하기 전에 실패하므로 기존 차트와 GPU 자원을 유지한다. 앵커는 데이터 좌표와 데이터 공간의 접선으로 저장하므로 확대·이동 시 화면 좌표로 다시 투영할 수 있다.
 
-**한쪽 차원만 errorbar 시** (`ScatterErrorbarY` 등): 방향 유무는 `PrimitiveStyle::primitive_flags`의 Y=bit 0, X=bit 1로 명시한다. 미사용 vertex slot은 이미 바인딩된 anchor 컬럼을 재사용하며 셰이더가 error attribute를 읽기 전에 해당 방향을 접는다. 따라서 prepare/export가 숨은 filler 컬럼이나 host metadata를 만들지 않는다. 실제 오차값 0은 “방향 없음”이 아니라 길이 0인 유효 errorbar다. (Symmetric 변종은 같은 error 컬럼을 lo/hi 양쪽에 사용.)
+라벨 글자색은 선 색이나 `per_level_color`와 별도로 `ContourLabelConfig.color`에서 정한다. 소수 표시는 아래쪽 X축이 아니라 등고선 레벨 간격을 기준으로 하며, 간격을 구할 수 없으면 색상 막대의 간격을 사용한다. `significant_digits`를 적용하되 인접 레벨이 같은 문자열로 표시되지 않도록 조절한다. 등고선 셰이더는 라벨을 그릴 때와 같은 앵커 버퍼를 읽어 라벨 사각형 안의 선을 그리지 않는다. `bg_color`가 없어도 `bg_padding_px`만큼 선을 더 비운다.
+
+`Renderer::series_draw_info(chart, series_id) -> SeriesDrawInfo`는 실제로 그린 데이터의 수를 알려 준다. `drawn_count`, 행렬의 `cols` / `rows`, 잘림 여부인 `truncated`를 확인할 수 있다. 컬럼 길이가 다르면 공통 범위까지만 그리고 그 결과를 보고한다. 예를 들어 경계가 11개이고 빈도 값이 9개이면 막대 9개를 그린다. 선·산점도에서 X와 Y의 길이 중 작은 쪽까지만 그리는 경우도 이 API로 확인할 수 있다.
+
+히스토그램과 행렬 기반 세 종류는 점 전용 피킹 API를 사용하지 않는다. 히스토그램의 자동 범위 맞춤은 업로드한 경계·값 메타데이터를 이용한다. 행렬은 GPU 범위 계산 엔진의 별도 모드를 사용한다. CPU는 잘림을 반영한 셀 수만 전달하고, GPU는 그리기와 같은 좌표 풀에서 `Edges` / `Centers` 및 셀·표본 격자 규칙을 적용한다. 등고선과 보간 채움은 표본의 양 끝에, 셀 단위 채움은 셀 경계에 맞춘다. `Edges`에서 표본 위치는 인접 경계의 중점이다. 선택은 `pick_data`의 막대·행렬 전용 셰이더가 담당한다.
+
+**`Renderer::create_style_for_series(cfg)`**는 시리즈 설정에서 색·두께·모양을 읽어 화면용 `ChartStyle`을 만든다. 반환형은 `Result`다. 유니폼 4개와 선택적인 스타일 매핑 버퍼를 만들기 전에 남은 GPU 예산을 검사한다. 준비된 프레임이 바인딩을 보관하는 동안에도 메모리 집계는 유지된다. 출력용 `create_style_for_series_scaled(cfg, scale)`도 같은 검사를 거치며 픽셀 크기에만 배율을 적용한다.
+
+**한 축 방향의 오차 막대만 그릴 때**(`ScatterErrorbarY` 등)는 `PrimitiveStyle::primitive_flags`의 Y=bit 0, X=bit 1로 방향을 지정한다. 사용하지 않는 정점 슬롯에는 이미 연결된 기준점 컬럼을 다시 바인딩하고, 셰이더는 오차 속성을 읽기 전에 해당 방향의 처리를 생략한다. 따라서 준비·출력 과정에서 빈 값을 채운 컬럼이나 별도 호스트 메타데이터를 만들지 않는다. 오차값 0은 방향이 없다는 뜻이 아니라 길이가 0인 유효한 오차 막대다. `Symmetric`은 같은 오차 컬럼을 양쪽에 사용한다.
 
 ### `Config::scaled(scale)` / `Config::scale_in_place(s)`
-모든 픽셀 dim 을 `scale` 배. `min/max/major_spacing`, scale enum, 색은 무변경. 고해상도 export 시 시각적 동치 보장.
+폰트·선·여백 등 픽셀 단위 크기에 배율을 적용한다. `min/max/major_spacing`, 축 스케일 종류와 색은 유지하므로 고해상도 출력에서도 같은 비례 관계를 유지한다.
 
 ### 기본값 빌더 — `renderer::default::default_config()`
-- bottom_x / left_y: 축선 + 눈금 + 라벨 + 타이틀 활성, 텍스트는 빈 segments.
-- top_x / right_y: 축선 + tick 활성, 라벨 + 타이틀 비활성, `out_margin = 8` (좁은 gap).
-- chart_title: visible, top_margin 32, 텍스트 빈 segments.
-- grid: major 만 활성, 옅은 회색.
-- legend: 비활성.
+- `bottom_x` / `left_y`: 축선·눈금·라벨·제목을 켠다. 제목 텍스트는 비어 있다.
+- `top_x` / `right_y`: 축선·눈금만 켜고 라벨·제목은 숨긴다. `out_margin = 8`로 좁은 여백을 둔다.
+- `chart_title`: 표시를 켜고 `top_margin = 32`로 설정한다. 텍스트는 비어 있다.
+- `grid`: 옅은 회색 주 격자선만 켠다.
+- `legend`: 숨긴다.
 
-빈 텍스트는 `Chart::with_title / with_x_title / with_y_title / with_legend_entry` 빌더로 채움.
+빈 텍스트는 `Chart::with_title / with_x_title / with_y_title / with_legend_entry`로 채울 수 있다.
 
 ---
 
-## 3. 내부 메모리 데이터 흐름
+<a id="3-내부-메모리-데이터-흐름"></a>
 
-![figgy 내부 메모리 및 렌더링 아키텍처](crates/renderer/assets/architecture-state-flow-kr.png)
+## 3. 내부 구조와 메모리 흐름
+
+![figgy 상세 아키텍처: 워크스페이스, 업로드, 소유권, 프레임, GPU 처리, 출력, 캐시와 회수](crates/renderer/assets/architecture-state-flow-kr.png)
+
+
+### 아키텍처 그림 읽기
+
+그림의 번호는 각 구성요소의 역할을 구분한다. 네이티브 호스트는 통합 코드와 패널 상태를 보관하고, `Renderer`는 등록된 차트와 GPU 처리를 담당한다. 위에 놓인 구성요소가 아래의 모든 자원을 소유한다는 의미는 아니다. 웹 통합은 별도로 표시했다. 브라우저의 JS·WASM 경계에서 발생하는 복사는 네이티브 업로드에는 해당하지 않는다.
+
+| 영역 | 데이터 흐름과 소유권 |
+|---|---|
+| **1. 크레이트별 역할** | `model`은 차트 설정·레이아웃·상호작용 정책을 정의하고 GPU 자원을 갖지 않는다. `renderer`는 등록된 차트, GPU 연산, CPU 래스터 렌더링을 관리한다. `web`은 이를 캔버스·입력·브라우저 실행 흐름에 연결한다. 저수준 네이티브 호스트는 차트를 등록하는 대신 `ChartDrawItem`을 직접 전달할 수도 있다. |
+| **2. 컬럼 업로드와 정리** | 네이티브에서는 업로드하는 동안만 `ColumnSource`를 빌려 f32 쌍을 매핑된 스테이징 버퍼에 쓰고 최소 양수 값을 계산한다. GPU가 데이터를 풀로 복사한 뒤에는 슬롯과 스칼라 메타데이터만 남기며 CPU 점 배열은 보관하지 않는다. 충분한 첫 빈 공간에 할당하고 인접 빈 공간은 합친다. 실패하면 예약을 취소해 빈 공간 목록을 복구한다. 교체는 관련 상태를 모두 준비한 뒤 확정한다. allocation epoch는 내용 교체를, layout generation은 재배치로 인한 위치 변경을 구분한다. |
+| **3. 차트 상태와 패널 자원** | `Renderer`는 등록된 설정·시리즈, 풀, 파이프라인과 공유 장치·큐를 보관한다. 호스트가 보관하는 `ChartView`는 래스터 텍스처와 좌표 변환 자원을, `ChartStyle`은 GPU 바인딩을 갖는다. `WindowedRenderer`는 surface·instance·adapter도 유지한다. 축·텍스트·격자의 CPU 렌더링에는 이미지 버퍼가 필요할 수 있다. 컬럼 업로드의 중간 버퍼를 없앴다고 이 이미지 할당까지 없어지는 것은 아니다. |
+| **4. 프레임 갱신 판단** | 렌더러가 발급한 desired/raster 리비전과 마지막 표시 성공 기록을 비교한다. 래스터 설정이나 표시 영역이 바뀌면 축 이미지를 갱신한다. 배경색 같은 호스트 상태는 차트 설정을 바꾸지 않고 다시 그릴 수 있다. 웹에서는 변경이 없는 프레임의 surface 획득과 그리기를 생략하되 필요한 정리·완료 처리는 계속한다. 표시가 실패하면 마지막 성공 기록을 갱신하지 않는다. |
+| **5. 준비와 명령 기록** | `prepare(&mut self)`가 입력을 확정하고 GPU 핸들·공유 할당 정보·검증용 상태를 `PreparedFrame`에 담는다. `paint_prepared(&self)`는 기록 전에 이를 검증한다. 뷰, 참조 컬럼, 풀 배치, 출력 파이프라인 또는 등록 차트 리비전이 바뀌면 거부한다. 호스트는 이 변경 전에 기존 명령을 제출해야 한다. 토큰은 외부 명령 버퍼의 제출 순서까지 검사하지 않는다. |
+| **6. GPU 파생 데이터** | 누적 경로 길이, 피킹, 실제 도형의 범위는 GPU 컬럼에서 계산한다. 경로 길이 스캔은 청크별 계산 결과를 이어받으므로 시리즈 전체에 1670만 점의 고정 상한을 두지 않는다. 피킹과 범위 계산은 전체 점을 CPU로 복사하지 않고 작은 결과만 반환한다. 캐시와 프레임 토큰이 같은 계산 결과를 공유할 수 있으므로 캐시에서 지워도 자원이 바로 해제되지는 않을 수 있다. |
+| **7. 화면 표시와 이미지 출력** | 격자·데이터·장식 순서로 합성한다. 출력할 때는 배율을 적용한 차트·뷰·스타일과 화면 밖 렌더 타깃을 준비한다. 정렬용 여백이 있는 행을 청크 단위로 읽어 오고, 알파가 미리 곱해진 RGBA를 일반 RGBA로 바꾼다. 청크 처리는 읽기 버퍼의 크기를 제한하지만 렌더 타깃·최종 RGBA·PNG의 메모리까지 없애지는 않는다. 상주 출력은 GPU 컬럼을, 스트리밍 출력은 다시 공급받은 원본 구간을 사용한다. |
+| **8. 원본 보존과 캐시** | 상주 경로는 데이터 이미지 캐시 없이 GPU 컬럼에서 다시 그린다. 비상주 경로는 누적 이미지를 유지하고, 지원되는 차트에서는 현재 화면에 필요한 원본 행만 모은 GPU 패킹 캐시를 사용할 수 있다. 두 경로 모두 LOD·샘플링·데시메이션으로 데이터를 줄이지 않는다. 화면 밖 자르기, 잘못된 값·로그 범위 밖 값 제외, 안티앨리어싱은 표시 규칙이며 GPU 백엔드 간 픽셀값 일치를 보장하지 않는다. |
+| **9. 메모리 집계와 회수** | figgy에서 자원을 참조하는 동안 공유 할당 정보도 유지한다. 마지막 참조가 해제돼도 회수 대기 바이트는 제출 경계를 알리고 GPU 큐의 작업이 끝날 때까지 집계한다. 호스트는 기존 명령을 제출하거나 폐기한 뒤 `end_gpu_frame()`을 호출해야 하며, 네이티브에서는 완료 콜백도 처리해야 한다. 아래에 설명한 스타일 텍스처 등은 집계에서 제외되며 보고값은 실제 VRAM 측정값이 아니다. |
 
 ### 원본 데이터 스트리밍과 상주 전환
 
-![figgy 스트리밍 기본 경로: 원본 소스, 웹 실행기, 렌더러 상태, 청크 누적 화면](crates/renderer/assets/streaming-architecture-en.png)
+![figgy 상주 렌더링, 스트리밍 누적 이미지, 선택적인 패킹 캐시와 원본 기반 출력](crates/renderer/assets/streaming-architecture-en.png)
 
-그림은 **기본 화면 표시 경로**를 나타내며 선택적인 차트별 패킹 뷰 캐시는 아직
-표시하지 않는다. 원본 데이터는 호스트가 재공급 가능한
-TypedArray 또는 `readRange` 공급자로 보관한다. 웹 facade는 브라우저 실행
-일정과 구간 요청을 연결하지만 스트림 커서·차트 상태·통계의 권위는 갖지 않는다.
-렌더러는 `Config`, 순서 있는 시리즈, 소스 revision, 커서, 범위 요약 캐시와
-현재 뷰의 상주 가능 여부를 소유한다. 자동 스트리밍에서는 연결된 컬럼 전체를
-`ColumnPool`에 승격하지 않는다. 제한된 청크를 GPU에 올려 오프스크린 면에
-누적하고, 설정된 예산에 맞으면 현재 화면에 필요한 원본 행만 GPU에 유지한다.
-두 경로 모두 원본 primitive를 그리며 LOD·샘플링·데시메이션은
-하지 않는다. 같은 페이지에 상주 차트와 스트림 차트를 함께 둘 수 있다.
+그림은 상주 렌더링, 스트리밍 누적 이미지, 차트별 GPU 패킹 캐시, 원본을 다시 읽는 이미지 출력을 구분한다. 네이티브 호스트는 재공급할 수 있는 원본을 보관하고 요청된 구간을 전달한다. 브라우저에서는 TypedArray나 `readRange` 공급자를 사용한다. 웹 래퍼는 실행 순서와 구간 요청을 관리하며, 차트 설정·시리즈 순서·소스 리비전·처리 위치·범위 통계·캐시 사용 여부는 렌더러가 관리한다.
 
-스트림은 완료된 부분부터 화면에 보여 준다. 변경 없는 완료 revision은 결과를
-재사용하고, 제목·축 이름 같은 장식 변경은 데이터 커서와 누적면을 유지한다.
-더 좁은 뷰는 패킹 캐시에서 원본을 다시 읽지 않고 그릴 수 있다. 캐시 범위를
-벗어난 뷰나 물리 해상도 변경에는 동일 revision의 원본을 다시 공급한다.
-`job.cancel()`은 새 작업을 중단하고 제출된 GPU 작업이 끝난 뒤 해당 자원을
-정리한다. 완료된 패킹 뷰의 점·선 피킹은 패킹된 GPU 행을 조회해 원본 행 인덱스를
-반환한다. 그 밖의 비상주 스트림에는 즉시 피킹을 제공하지 않는다. 배율을 지정한
-PNG 출력은 화면 누적 이미지를 늘려 쓰지 않고 원본 구간을 다시 공급받아 그리므로,
-호스트는 재생과 출력을 위해 원본을 유지해야 한다. 지원 범위와 웹 API는
-[WASM 가이드](crates/renderer/WASM.md#exact-streaming)에
-정리했다. 원본 데이터를 빠짐없이 처리한다는 뜻과 GPU 백엔드·렌더 패스 경계의
-안티앨리어싱 픽셀이 바이트 단위로 같다는 뜻은 구별해야 한다.
+자동 스트리밍은 연결된 컬럼 전체를 `ColumnPool`에 넣지 않는다. 원본을 제한된 청크로 GPU에 올려 화면 밖 렌더 타깃에 누적한다. 지원되는 차트에서는 예산이 허용할 때 현재 화면에 필요한 원본 행만 GPU 캐시에 남긴다. 두 경로 모두 원본 도형을 그리며 LOD·샘플링·데시메이션을 적용하지 않는다. 한 페이지에서 상주 차트와 스트리밍 차트를 함께 사용할 수 있다.
 
-renderer-owned registry가 browser wrapper의 지속 SSoT다. 저수준 native host는
-`ChartDrawItem`을 직접 전달할 수도 있다. 어느 경로든 `ChartDrawItem`은
-prepare 전용 입력이고 paint는 owned token만 소비한다.
+스트리밍은 완료된 부분부터 화면에 표시한다. 입력이 바뀌지 않은 완료 결과는 재사용하고, 제목·축 이름만 바뀌면 데이터 처리 위치와 누적 이미지를 유지한다. 표시 범위를 좁힐 때는 패킹 캐시만으로 다시 그릴 수 있다. 캐시 범위 밖을 보거나 물리 해상도가 바뀌면 같은 리비전의 원본을 다시 공급해야 한다.
+
+`job.cancel()`은 새 작업을 멈추고 이미 제출된 GPU 작업이 끝난 뒤 자원을 정리한다. 완료된 패킹 캐시에서는 GPU의 점·선을 선택하고 원본 행 인덱스를 반환할 수 있다. 그 밖의 비상주 스트림은 즉시 피킹을 지원하지 않는다. 배율을 지정한 PNG 출력은 화면 이미지를 늘리는 대신 원본을 다시 읽어 그린다. 따라서 호스트는 다시 그리기와 출력을 위해 원본을 유지해야 한다.
+
+지원 범위와 웹 API는 [WASM 가이드](crates/renderer/WASM.md#exact-streaming)를 참고한다. 원본을 빠짐없이 처리하더라도 GPU 백엔드나 렌더 패스 경계에 따라 안티앨리어싱 픽셀값은 달라질 수 있다.
+
+웹 래퍼의 차트 상태는 렌더러의 레지스트리를 기준으로 한다. 저수준 네이티브 호스트는 `ChartDrawItem`을 직접 전달할 수도 있다. 어느 경로든 `ChartDrawItem`은 준비 단계에서만 사용하며, 명령 기록 단계는 `PreparedFrame`에 보관된 입력을 사용한다.
 
 ### 소유권과 수명 경계
 
-`Renderer`는 chart registry와 GPU 측 상태의 수명 소유자다. chart별 권위
-`Config`와 순서 있는 `SeriesConfig`, 상주 `ColumnPool`, 0.12.0 후보의 비상주
-논리 소스 metadata, render/compute pipeline,
-공유 picker pipeline bundle, 최대 하나의 파생 active-chart picker cache, pending
-pool maintenance, bind group, panel별 `ChartView` / `ChartStyle` GPU 자원, 공유
-`Arc<wgpu::Device>` / `Arc<wgpu::Queue>`를 보관한다. `ChartId`는 발급한
-renderer에 결박된 opaque id다. 하나의 논리 편집이 Config와 ordered series를
-함께 바꾸면 `set_chart_state`가 두 값을 검증하고 원자적으로 교체한다.
+`Renderer`는 차트별 `Config`, 순서가 있는 `SeriesConfig`, 상주 `ColumnPool`, 비상주 소스 메타데이터(0.12.0), 렌더링·컴퓨트 파이프라인을 보관한다. 피킹 파이프라인은 공유하고, 현재 차트용 피킹 캐시는 최대 하나만 유지한다. 대기 중인 풀 정리 작업, 렌더러 공통 바인드 그룹, `Arc<wgpu::Device>`와 `Arc<wgpu::Queue>`도 관리한다.
 
-column upsert, 제거, defrag는 실패 가능한 pool/chart/revision/active-picker
-준비를 모두 끝낸 뒤 새 권위 상태를 공개한다. 동기적으로 반환되는 오류에
-대해서는 기존 pool/chart/picker가 그대로 유지되고, 마지막 공개 단계에는
-allocation이 없다. plain `remove_column`은 그 id를 참조하는 모든
-renderer-owned series를 cascade 제거하지만 어떤 `Config::legend` 문서도
-고치지 않는다. cascade 결과에 따른 범례 변경도 함께 적용해야 하는 host는
-`remove_column_with_chart_config`를 사용한다. 이 API는 pool, 영향받는 모든
-series, 해당 chart의 교체 `Config`를 같은 transaction에서 공개한다. web
-facade는 auto-managed/free-edited legend 정책에 이 결합 경계를 사용한다.
+생성해서 반환한 `ChartView`와 `ChartStyle`은 호스트가 패널 상태에 보관한다([egui 예제](crates/renderer/examples/egui_embed.rs)). `PreparedFrame` 역시 GPU 핸들과 공유 할당 정보를 유지하므로 호스트가 뷰·스타일을 해제해도 자원이 즉시 사라지지는 않을 수 있다. `WindowedRenderer`는 추가로 surface·instance·adapter와 선택적인 MSAA 렌더 타깃을 보관한다. `ChartId`는 발급한 렌더러에서만 유효하다. 설정과 시리즈를 함께 편집하려면 `set_chart_state`로 둘을 검증한 뒤 한꺼번에 교체한다.
 
-Renderer 0.9의 exact GPU picking은 chart-aware API다.
-`enable_gpu_picking()`을 한 번 호출하고, 필요하면
-`prepare_gpu_picking_for_chart(chart_id)`로 첫 pick 전에 chart registry를
-준비한 뒤 `pick_chart(chart_id, GpuPickRequest)` 또는
-`WindowedRenderer::pick_chart_at`으로 제출한다. 축 transform과 data-area clip은
-renderer가 권위 `Config`에서 계산한다. 0.7에서 공개했던 저수준
-`GpuPickEngine` 표면은 더 이상 노출하지 않는다. picker는 GPU column pool을
-직접 읽으며 CPU point mirror와 내부 `Mutex`를 두지 않는다.
-tagged point/bin/cell/contour 결과는 `pick_chart_data` /
-`WindowedRenderer::pick_chart_data_at`을 사용한다.
+컬럼 교체·제거·재배치는 풀, 차트, 리비전, 피킹 캐시를 먼저 준비하고 성공했을 때만 반영한다. 동기 준비 과정에서 오류가 나면 기존 상태를 유지하며, 마지막 반영 단계에서는 새 메모리를 할당하지 않는다. `remove_column`은 해당 컬럼을 참조하는 모든 등록 시리즈를 함께 제거하지만 `Config::legend`는 바꾸지 않는다. 범례까지 함께 바꾸려면 `remove_column_with_chart_config`를 사용한다. 이 호출은 풀, 영향을 받는 모든 시리즈, 해당 차트의 새 `Config`를 하나의 트랜잭션으로 반영한다. 웹 래퍼는 자동 범례와 직접 편집한 범례를 구분해 이 API를 사용한다.
 
-모든 변경 — `Renderer::prepare` 와 export prepare 경로 — 은 `&mut self`
-경계에서 실행되고, renderer 내부에 새 공유 락을 만들지 않는다.
-`Renderer::paint_prepared` 는 owned `PreparedFrame` 토큰을 상대로 `&self`
-로 기록하므로, 공유 참조만 제공하는 host paint 콜백에도 wrapper 락이
-필요 없다 (`Renderer` 는 `Send + Sync`).
+Renderer 0.9부터 GPU 피킹은 차트 ID를 받는 API로 제공한다. `enable_gpu_picking()`을 한 번 호출하고, 필요하면 첫 선택 전에 `prepare_gpu_picking_for_chart(chart_id)`로 준비한다. 이후 `pick_chart(chart_id, GpuPickRequest)` 또는 `WindowedRenderer::pick_chart_at`을 호출한다. 축 변환과 데이터 영역 자르기는 렌더러가 `Config`에서 계산한다. 0.7의 저수준 `GpuPickEngine`은 더 이상 공개하지 않는다. 피킹은 GPU 컬럼 풀을 직접 읽으며 CPU 점 복사본이나 내부 `Mutex`를 두지 않는다. 점·막대·셀·등고선을 구분하는 결과가 필요하면 `pick_chart_data` / `WindowedRenderer::pick_chart_data_at`을 사용한다.
 
-토큰은 resolve된 pipeline, bind group, buffer, panel geometry, column
-allocation epoch, pool layout generation, target-pipeline generation,
-캡처한 각 `ChartView`의 content revision을 보유한다. 하나라도 어긋나면
-기록 전에 `FiggyError::StalePreparedFrame`으로 실패하고 다음 frame에 다시
-prepare한다. arc/star scratch와 automatic contour placement는 compute 입력
-bit key별 불변 결과다. 같은 입력만 공유하고 geometry, data generation,
-placement 입력이 달라지면 새 결과를 만들며 기존 결과는 다시 쓰지 않는다.
-cache나 prepared token이 대응 GPU handle을 소유하는 동안 shared charge도 함께
-살아 있고, 마지막 Figgy owner가 drop된 뒤에도 retired 회계는 host가
-`end_gpu_frame()`으로 queue submit을 알릴 때까지 유지된다. explicit placement도
-불변이다. 같은 `ChartView` 재작성, 캡처 column 교체,
-pool defrag, target pipeline 재생성은 기존 토큰을 의도적으로 stale 처리한다.
-host는 그 변경 전에 기존 토큰으로 기록한 command buffer를 제출해야 한다.
+`Renderer::prepare`와 출력 준비 과정의 상태 변경은 모두 `&mut self`에서 수행한다. `Renderer::paint_prepared`는 `&self`로 토큰의 명령을 기록하므로 공유 참조만 제공하는 paint 콜백에서도 별도 잠금이 필요하지 않다. `Renderer`는 `Send + Sync`다.
 
-상주 `add_column`의 `ColumnSource` 데이터는 upload 순간에만 빌려 읽힌다.
-장기 보관되는 것은 GPU pool column과 auto-fit 용 scalar stats(min / max /
-최소 양수)뿐이며, 원본 source 참조나 CPU 측 per-point geometry는 유지하지
-않는다. dashed line 또는 constellation arc prefix 같은 per-point geometry는
-GPU pool을 compute scan해서 만든다. 비상주 등록은 논리 소스 metadata와
-제한된 GPU 작업 상태를 유지하고, 호스트가 정확한 재생을 위해 원본 구간
-공급자를 보관한다. 렌더러는 원본 전체의 CPU 사본을 보관하지 않는다.
+토큰은 확정된 파이프라인·바인드 그룹·버퍼·패널 배치와 함께 컬럼 할당 세대, 풀 배치 세대, 출력 파이프라인 세대, 각 `ChartView`의 내용 리비전을 보관한다. 하나라도 바뀌면 기록 전에 `FiggyError::StalePreparedFrame`을 반환하므로 다음 프레임에서 다시 준비해야 한다.
 
-진행 중인 `GpuPickTicket`은 readback 자원과 제출 시점의 `Arc` 기반 identity
-mapping을 직접 소유한다. 이후 chart/pool이 변경되거나 renderer가 drop되어도
-그 ticket이 반환할 `source_id` / `series_id`가 다른 대상으로 바뀌지 않는다.
+경로 길이·별 위치와 자동 등고선 라벨 배치 결과는 컴퓨트 입력의 비트값을 키로 삼는 불변 자원이다. 입력이 같을 때만 공유하고, 좌표 변환·데이터 세대·배치 입력이 다르면 새 결과를 만든다. 기존 결과를 덮어쓰지 않는다. 캐시나 토큰이 GPU 핸들을 보관하는 동안 공유 할당 정보도 유지한다. 마지막 figgy 참조가 해제되면 회수 대기 상태로 옮기고, `end_gpu_frame()`으로 제출 경계를 알린 뒤 GPU 큐의 완료 콜백이 실행될 때까지 메모리 집계에 포함한다. 호스트는 이 호출 전에 기존 명령을 모두 제출하거나 폐기해야 한다.
 
-web public surface도 같은 경계를 따른다. `<figgy-chart>` facade가 shadow
-canvas, ready promise, rAF loop, ResizeObserver/DPR 처리, pointer mapping,
-async operation busy gate, id 등록/해제 수명주기를 소유한다. raw `FiggyChart` wasm
-kernel은 advanced escape hatch로 남는다.
+직접 지정한 라벨 배치도 불변 자원이다. 같은 `ChartView`를 다시 작성하거나 참조 컬럼을 교체하거나 풀·출력 파이프라인을 재구성하면 기존 토큰은 무효가 된다. 호스트는 이 변경 전에 토큰으로 기록한 명령 버퍼를 제출해야 한다.
 
-웹 cold-start와 lifecycle 계약:
+상주 `add_column`은 업로드할 때만 `ColumnSource`를 빌린다. 이후에는 GPU 컬럼과 자동 범위 맞춤용 최소·최대·최소 양수 값만 보관한다. 원본 참조나 점별 CPU 도형 정보는 유지하지 않는다. 점선·별자리에 필요한 누적 경로 길이도 GPU 풀을 스캔해 계산한다. 비상주 경로에서는 소스 메타데이터와 제한된 GPU 작업 상태만 유지하며, 호스트가 원본을 다시 공급할 수 있어야 한다. 렌더러는 원본 전체의 CPU 복사본을 보관하지 않는다.
 
-| 표면 | 계약 |
+### 메모리 계상과 회수
+
+`gpu_memory_usage()`는 figgy가 추적하는 GPU 자원의 요청 할당량을 바이트로 반환한다. 실제 VRAM 사용량을 측정한 값은 아니다. 은하수·별자리 스타일이 필요할 때 생성하는 PSF·아틀라스·띠 텍스처는 일반 집계에서 제외된다. 다만 스트리밍 출력의 실행 가능 여부를 검사할 때는 알려진 텍스처 크기를 별도로 고려한다.
+
+사용 중인 자원(`live`)과 회수 대기 자원(`retired`)은 모두 합계에 포함한다. Rust 핸들을 해제해도 제출된 GPU 작업은 계속 실행될 수 있으며, `end_gpu_frame()` 호출만으로 장치 메모리가 반환되지는 않는다. 네이티브 호스트는 새 프레임을 그리지 않을 때도 완료 콜백을 처리해야 한다. CPU 할당, 최종 RGBA·PNG 버퍼, 드라이버 내부 메모리는 이 집계에 포함하지 않는다. 네이티브 업로드의 중간 버퍼를 없앴다는 설명이 브라우저의 JS·WASM 경계 복사까지 제어한다는 의미는 아니다.
+
+진행 중인 `GpuPickTicket`은 결과 읽기용 자원과 제출 당시의 `Arc` 기반 식별자 매핑을 직접 보관한다. 차트·풀이 바뀌거나 렌더러가 해제돼도 해당 요청의 `source_id` / `series_id`가 다른 대상을 가리키게 되지는 않는다.
+
+웹에서도 같은 소유권 경계를 따른다. `<figgy-chart>`는 내부 캔버스, `ready` Promise, rAF 루프, ResizeObserver·DPR 처리, 포인터 변환, 비동기 호출 직렬화, ID 등록·해제를 담당한다. 이 과정을 직접 제어해야 할 때만 저수준 WASM 클래스인 `FiggyChart`를 사용한다.
+
+웹의 초기화와 객체 수명 관리 규칙은 다음과 같다. 첫 프레임 준비는 실제 `GPUQueue.onSubmittedWorkDone()` Promise가 완료될 때까지 기다린다. 큐 요청이 거부되거나 장치가 소멸하면 생성·준비 오류로 전달하며 첫 프레임 성공 이벤트를 보내지 않는다.
+
+| API·상태 | 동작 규칙 |
 |---|---|
-| raw `FiggyChart` | wasm 브라우저의 `create` / `create_with_progress`는 동일 `GPUDevice`의 모든 render WGSL entry를 Promise 기반 `createRenderPipelineAsync`로 데우고 임시 JS pipeline을 버린 뒤 빈 차트 첫 frame을 submit하고 완료까지 기다린다. Production renderer-owned optional render/style과 arc/fit/picker/contour compute cache는 lazy 상태를 유지한다. `prewarm_all_with_progress(callback)`은 `{ scope, stage, phase }` progress와 함께 실제 wgpu cache를 게시하고, `prewarm_all()`은 callback 없이 같은 작업을 한다. `warm_up()`은 first-frame compatibility alias이며 full prewarm이 아니다. create는 production picker를 enable하지 않는다. `prewarm_gpu_picking()`이 명시적으로 enable하고 현재 chart를 준비하며, 재시도와 `pick_point` / `pick_data`는 sticky activation error를 포함한 같은 renderer-owned 경로를 재사용한다. |
-| `<figgy-chart>` 시작 | `web.create / first frame / finished` progress event와 `figgy-ready`를 공개한 뒤 background picker prewarm을 시작한다. 실패하면 `operation: "prewarm_gpu_picking"`, `recoverable: true`인 `figgy-error`를 내보내지만 이미 fulfilled된 `ready`와 rendering loop는 유지한다. |
-| async 직렬화 | generation+kernel operation token 하나가 connect/create, `prewarm_all_with_progress` / `prewarm_all`과 picker prewarm, export, `first_frame_ready` / `warm_up`, extent 준비, 상주 async fit, pick을 포괄한다. facade의 두 full-prewarm 메서드도 기존 generation-aware operation gate를 통과한다. `busy` 동안 rAF draw와 pointer/proxy kernel 접근은 wasm에 들어가지 않고, 최신 resize 하나와 pending pointer release만 보관해 settle 뒤 적용한다. 스트리밍 `auto_fit_all()`은 이 토큰을 잡지 않고 renderer-owned fit을 요청한 뒤 스트림 작업 완료를 기다린다. fit 자체는 `busy`를 설정하지 않아 scheduler가 kernel을 계속 호출할 수 있고, 마지막 차트 상태 요청은 스트림 작업이 조정한다. 별도 operation이 실행되면 `busy`는 true일 수 있다. |
-| disconnect/reconnect | disconnect는 generation을 무효화하고 해당 rAF/observer를 해제한다. active operation이 빌린 kernel은 operation settle 뒤에만 free한다. stale settle은 새 generation의 kernel token을 해제하거나 resize/release/free하지 못한다. |
+| 저수준 `FiggyChart` | `create` / `create_with_progress`는 같은 `GPUDevice`에서 모든 렌더링용 WGSL 진입점을 `createRenderPipelineAsync`로 미리 컴파일한다. 임시 JS 파이프라인을 해제하고 빈 차트의 첫 프레임을 제출한 뒤 완료를 기다린다. 선택적인 렌더링·스타일 자원과 경로 길이·범위·피킹·등고선 컴퓨트 캐시는 필요할 때 만든다. `prewarm_all_with_progress(callback)`은 이를 실제 wgpu 캐시에 생성하며 `{ scope, stage, phase }`를 알린다. `prewarm_all()`은 콜백 없이 같은 작업을 한다. `warm_up()`은 첫 프레임 대기용 호환 메서드다. 생성 시 피킹을 켜지는 않으며, `prewarm_gpu_picking()`으로 활성화하고 현재 차트를 준비한다. 재시도와 `pick_point` / `pick_data`도 저장된 활성화 오류를 포함한 같은 렌더러 상태를 사용한다. |
+| `<figgy-chart>` 시작 | `web.create / first frame / finished`와 `figgy-ready`를 알린 뒤 백그라운드 피킹 준비를 시작한다. 실패하면 `operation: "prewarm_gpu_picking"`, `recoverable: true`인 `figgy-error`를 보낸다. 이미 완료된 `ready`와 렌더링 루프는 유지한다. |
+| 비동기 호출 직렬화 | 연결 세대와 커널을 확인하는 작업 토큰으로 생성, 전체 사전 준비, 피킹 준비, 출력, 첫 프레임 대기, 범위 엔진 준비, 상주 자동 범위 맞춤과 피킹을 직렬화한다. 작업 중에는 rAF·포인터·대리 호출이 WASM에 접근하지 않으며 마지막 크기 변경과 포인터 해제만 보관했다가 종료 후 적용한다. 스트리밍 `auto_fit_all()`은 이 토큰 없이 렌더러에 범위 계산을 요청하고 스트림 완료를 기다린다. 스트리밍 실행기가 커널 호출을 계속하고 최신 차트 상태 요청을 반영한다. 범위 계산 자체는 busy를 켜지 않지만 별도 작업이 실행 중이면 busy일 수 있다. |
+| 연결 해제·재연결 | 연결 해제 시 이전 세대를 무효화하고 rAF와 관찰자를 정리한다. 작업 중인 커널은 작업 종료 후 해제한다. 이전 세대의 완료 처리는 새 토큰·커널에 영향을 주거나 새 세대의 크기 변경·포인터 해제·객체 해제를 수행하지 않는다. |
 
-웹 mutation API 계약:
+웹 상태 변경 API는 다음과 같다.
 
-| API | 계약 |
+| API | 동작 |
 |---|---|
-| `auto_fit_colorbar(padding)` | 모든 matrix value column의 upload metadata 합집합에 공유 colorbar z축을 맞춘다. colorbar가 없는 chart는 변경하지 않는다. |
-| `set_colorbar_axis(json)` | 기존 컬러바의 `AxisOptions` SSoT 전체를 교체한다. 틱 외형/안팎 방향/길이, 축 반전, 틱 라벨 스타일·offset, 제목 옵션을 한 경계에서 편집한다. |
-| `set_colorbar_title(text)` | 컬러바 제목을 설정하고 보이게 한다. 빈 문자열은 숨긴다. `Config.colorbar`가 없으면 실패한다. |
-| `set_contour_nice_levels(series_id, target_count, use_colormap_colors)` | colorbar 축의 tick 규칙으로 한 contour series의 explicit level을 교체하고, 선택적으로 color-map 색을 지정해 series SSoT에 기록한 뒤 level 수를 반환한다. |
-| `series_draw_info(series_id)` | `{ drawn_count, cols, rows, truncated }`를 보고한다. raw wasm `FiggyChart`는 JSON 문자열을 반환하고 `<figgy-chart>` facade는 이를 파싱한 object를 반환한다. |
-| `pick_data(x, y, max_distance_px)` | point/bin/cell/contour tagged identity 또는 `null`을 비동기로 반환한다. raw wasm은 JSON string/`undefined`, facade는 object/`null`이다. |
-| `set_picked_points(json)` | `PickedPointsConfig` 또는 `null`을 인코딩한 JSON 문자열을 받는다. renderer-owned `Config.picked_points`만 교체하며 `null`은 overlay를 지운다. 참조는 복제한 좌표가 아니라 `series_id`, 선택적 `source_id`, `point_index`를 보관한다. |
-| `set_picked_data(json)` | `DataSelectionsConfig` 또는 `null`을 받아 `Config.picked_data`만 교체한다. ref는 provenance와 stable index만 보관하고 현재 geometry는 GPU-backed chart SSoT에 남는다. |
-| `set_clear_color(r, g, b, a)` | linear RGBA 각 성분을 받아 `0..1`로 clamp하고 surface redraw를 예약한다. clear color는 host/surface 상태이므로 Config JSON을 바꾸거나 axis raster refresh를 강제하지 않는다. |
+| `auto_fit_colorbar(padding)` | 행렬 값 컬럼들의 업로드 통계를 합쳐 공유 Z축 범위를 맞춘다. 색상 막대가 없으면 차트를 바꾸지 않는다. |
+| `set_colorbar_axis(json)` | 기존 색상 막대의 전체 `AxisOptions`를 교체한다. 눈금 모양·방향·길이, 축 반전, 라벨 스타일·위치, 제목 옵션을 함께 설정한다. |
+| `set_colorbar_title(text)` | 제목을 지정하고 표시한다. 빈 문자열이면 숨기며 `Config.colorbar`가 없으면 실패한다. |
+| `set_contour_nice_levels(series_id, target_count, use_colormap_colors)` | 색상 막대 눈금 규칙으로 한 시리즈의 등고선 값을 만들고 필요하면 색상표의 색을 지정한다. 시리즈 설정에 반영한 뒤 레벨 수를 반환한다. |
+| `series_draw_info(series_id)` | `{ drawn_count, cols, rows, truncated }`를 반환한다. 저수준 WASM은 JSON 문자열, 웹 래퍼는 객체를 반환한다. |
+| `pick_data(x, y, max_distance_px)` | 점·구간·셀·등고선 레벨을 구분하는 식별자를 비동기로 반환한다. 저수준 WASM은 JSON 문자열 또는 `undefined`, 래퍼는 객체 또는 `null`이다. |
+| `set_picked_points(json)` | `PickedPointsConfig` 또는 `null`을 담은 JSON 문자열로 `Config.picked_points`만 교체한다. `null`은 선택 표시를 지운다. 참조에는 좌표 대신 `series_id`, 선택적인 `source_id`, `point_index`를 저장한다. |
+| `set_picked_data(json)` | `DataSelectionsConfig` 또는 `null`로 `Config.picked_data`만 교체한다. 참조는 출처와 인덱스만 보관하며 현재 도형은 차트의 GPU 자원에서 계산한다. |
+| `set_clear_color(r, g, b, a)` | 선형 RGBA 각 성분을 0~1로 제한하고 다시 그리기를 요청한다. 화면 배경 상태이므로 Config JSON을 바꾸거나 축 이미지를 갱신하지 않는다. |
 
-public `FiggyChart::load_demo()`는 compound failure-atomic 호출이다. 4개 컬럼,
-최종 `Config`/ordered series, active picker, host metadata, 유효한 extent cache가
-한 번에 보이며, 동기 준비 오류가 나면 이전 전체 상태가 그대로 남는다. 이
-transaction 안에서는 extent reduction을 submit하지 않고, 무효화된 extent는
-commit 뒤 기존 lazy/retry 경로가 다시 만든다. 승인된 호출은 pool capacity와
-같은 임시 GPU buffer 하나와 staging buffer 4개를 추가로 사용한다. 기존 defrag
-backup이 있으면 순간 pool 저장량은 primary + backup + 임시 full-pool buffer다.
+`FiggyChart::load_demo()`는 데모 상태 전체를 한 번에 교체한다. 컬럼 4개, 최종 `Config`와 시리즈 순서, 피킹 상태, 호스트 메타데이터, 유효한 범위 캐시를 함께 반영한다. 동기 준비 중 오류가 나면 기존 전체 상태를 유지한다. 트랜잭션 중에는 범위 계산 명령을 제출하지 않는다. 무효화된 캐시는 변경을 확정한 뒤 기존의 지연 생성·재시도 경로로 다시 만든다.
 
-이 소유권 규칙은 데이터 무왜곡 계약과 연결된다. renderer/web은 source
-column을 변형 저장하지 않고, clipping, log-domain skip, NaN skip,
-antialiasing 한계는 데이터 재작성이 아닌 렌더링 결정으로만 적용된다.
+이 작업은 풀 용량과 같은 크기의 임시 GPU 버퍼 하나와 스테이징 버퍼 4개를 추가로 사용한다. 재배치용 백업이 남아 있으면 원본 풀·백업·임시 풀이 잠시 동시에 존재한다.
+
+원본 컬럼은 변형해 저장하지 않는다. 화면 밖 자르기, 로그축의 0 이하 값 제외, NaN 제외와 안티앨리어싱은 표시 과정에만 적용한다.
 
 ### 점선 호장 스캔 (GPU)
 
-dash 위상은 매 점의 누적 픽셀 호장이 필요하고, 이는 라이브 데이터→픽셀
-변환에 의존한다. 서로 다른 compute key마다 GPU에서 생산하고, 정확히 같은
-key는 불변 결과를 재사용한다:
+점선의 시작 위치와 간격을 맞추려면 각 점까지의 누적 경로 길이가 필요하다. 이 길이는 현재 데이터→픽셀 변환에 따라 달라진다. 계산 키가 달라지면 GPU에서 새로 계산하고, 키가 정확히 같으면 이전의 불변 결과를 재사용한다.
 
 ```
 pool 컬럼 (x, y) ──┐                        Transform uniform (96 B write)
@@ -1895,30 +1879,24 @@ pool 컬럼 (x, y) ──┐                        Transform uniform (96 B writ
    호장 prefix buffer ──► 라인 파이프라인 정점 슬롯 4/5 (dash 위상)
 ```
 
-컴퓨트 인코더는 호스트의 렌더 패스보다 먼저 submit 되므로 큐 순서가 모든
-임베딩(winit / egui / iced / web)에서 API 변경 없이 순서를 보장한다.
-정확한 key는 pool layout generation, x/y offset과 allocation epoch, length,
-compute shader가 읽는 geometry transform bit 전체, optional star pitch를 포함한다.
-시리즈마다 최근 불변 결과 8개를 보관하며 miss는 새 buffer에 dispatch하고 옛
-결과를 절대 덮어쓰지 않는다. 현재 arc-prefix
-scan은 u32-addressable 범위(`u32::MAX = 4,294,967,295`) 안에서 동작한다.
-시리즈 길이나 pool element offset이 `u32`에 들어가지 않으면 dashed arc
-prefix는 생략된다. 새 series id를 삽입할 때 arc cache가 이미 256개 series id를
-보유하면 runaway churn 방지를 위해 전체 arc cache를 clear한다.
+컴퓨트 명령은 호스트의 렌더 패스보다 먼저 GPU 큐에 제출한다. 따라서 통합 환경에서도 큐의 실행 순서에 따라 계산 결과가 준비된 뒤 그리게 된다.
+계산 키에는 풀 배치 세대, X·Y 오프셋과 할당 세대, 길이, 컴퓨트 셰이더가 읽는 모든 좌표 변환 비트, 선택적인 별 배치 간격이 포함된다. 시리즈마다 최근 결과 8개를 보관하며, 없는 키는 새 버퍼에서 계산한다. 기존 결과는 덮어쓰지 않는다.
+현재 누적 경로 길이 스캔은 `u32::MAX = 4,294,967,295`로 주소를 표현할 수 있는 범위에서 동작한다. 시리즈 길이나 풀 원소 오프셋이 `u32` 범위를 넘으면 점선용 누적 경로 계산을 생략한다. 새 시리즈 ID를 추가할 때 이미 256개 ID가 캐시에 있으면 무제한 증가를 막기 위해 경로 길이 캐시 전체를 비운다.
 
-### Renderer-owned 상태와 frame invalidation
+<a id="renderer-owned-상태와-frame-invalidation"></a>
 
-지속 host는 chart를 `Renderer`에 등록하고 실제 submit/present에 성공한 마지막
-`ChartRenderStamp`를 보관한다. checked revision은 renderer만 발급한다:
+### 렌더러 상태와 다시 그리기 판단
 
-| 상태 | 현재 trigger / 처리 |
+차트를 지속적으로 표시하는 호스트는 `Renderer`에 차트를 등록하고, GPU 제출과 화면 표시에 성공한 마지막 `ChartRenderStamp`를 보관한다. 검증된 리비전은 렌더러만 발급한다.
+
+| 상태 | 다시 그리는 조건과 처리 |
 |---|---|
-| renderer `desired` revision | 승인된 시각 상태 변경, 참조 column 교체, 동기화된 font 등록은 draw 요구 |
-| renderer `raster` revision | Config, series, selection, font 변경은 보수적으로 draw 전 `refresh_axis` 요구 |
-| host `view_dirty` | surface/DPR preview geometry 변경 — raster refresh + draw |
-| host `redraw_pending` | clear color 같은 host-only surface 상태 변경 — chart 상태 복제 없이 draw |
+| 렌더러의 `desired` 리비전 | 표시 상태 변경, 참조 컬럼 교체, 동기화된 폰트 등록 시 다시 그린다. |
+| 렌더러의 `raster` 리비전 | 설정·시리즈·선택·폰트가 바뀌면 그리기 전에 `refresh_axis`를 호출한다. |
+| 호스트의 `view_dirty` | 화면 크기·DPR로 미리보기 배치가 바뀌면 축 이미지를 갱신하고 다시 그린다. |
+| 호스트의 `redraw_pending` | 배경색 등 화면 상태가 바뀌면 차트 설정을 복제하지 않고 다시 그린다. |
 
-browser frame 흐름:
+브라우저의 프레임 처리 순서는 다음과 같다.
 
 ```rust
 renderer.sync_external_invalidations()?;
@@ -1939,27 +1917,24 @@ view_dirty = false;
 redraw_pending = false;
 ```
 
-last-presented stamp와 host flag는 draw 성공 뒤에만 전진하므로 visual frame
-실패는 재시도된다. clean web rAF는 GPU surface 경로 전체를 생략한다. 상주
-경로는 다시 그릴 때 pool의 원본 primitive를 재기록하며 data-layer image
-cache를 두지 않는다. 0.12.0 후보의 비상주 경로는 부분 표시용으로 제한된 GPU
-누적면을 유지하고, 바뀌지 않은 완료 revision을 재사용한다. 어느 경로도
-데이터 LOD·샘플링·데시메이션을 적용하지 않는다.
+마지막 표시 기록과 호스트 플래그는 그리기가 성공한 뒤에만 갱신한다. 실패하면 다음 프레임에서 다시 시도한다. 변경이 없는 웹 rAF에서는 GPU 화면 출력 경로 전체를 생략한다. 상주 경로는 다시 그릴 때 GPU 풀의 원본 도형에서 명령을 만들며 데이터 이미지 캐시를 두지 않는다. 비상주 경로(0.12.0)는 부분 표시를 위한 GPU 누적 이미지를 유지하고, 입력이 바뀌지 않은 완료 결과를 재사용한다. 두 경로 모두 LOD·샘플링·데시메이션으로 데이터를 줄이지 않는다.
 
-독립 `Chart::{data_dirty,raster_dirty}` bool은 외부 `Chart`를 소유하는 저수준
-호출자용 호환 장치로 남는다. `prepare`는 이 bool을 읽거나 consume하지 않고,
-호출자가 draw를 결정했을 때 transform을 쓴다. 외부-`Chart` host는
-`raster_dirty`를 consume하고 `refresh_axis`를 호출할 책임이 있다.
+`Chart::{data_dirty,raster_dirty}`는 `Chart`를 직접 소유하는 저수준 호스트와의 호환성을 위해 남겨 둔 플래그다. `prepare`는 이 값을 읽거나 초기화하지 않고, 호출될 때 좌표 변환을 기록한다. 외부에서 `Chart`를 관리한다면 호스트가 `raster_dirty`를 확인·해제하고 `refresh_axis`를 호출해야 한다.
 
-### Log scale GPU 처리
+<a id="log-scale-gpu-처리"></a>
 
-`AxisOptions.scale = Logarithmic` 시:
-- auto-fit은 데이터에 0/음수가 섞여도 캐시된 최소 양수를 log 하한으로 사용.
-- 수동 range의 0 이하/비정상 bound는 렌더러/축 경로에서 `1e-12`로 guard한다. 단, `1e-12`보다 작은 유효 양수 bound는 그대로 보존.
-- CPU: `scatter_transform_from_config` 가 guard된 range를 log10 으로 미리 변환하고 해당 축의 `scale_log` 플래그를 설정.
-- GPU shader: `mix(v, log10(v), is_log)` — 분기 없이 ALU로 처리. 0 이하 데이터 샘플은 data path에서 NaN/skip 처리되며 config validation 실패가 아니다.
+### GPU의 로그축 처리
 
-### Export 파이프라인
+`AxisOptions.scale = Logarithmic`이면 다음 규칙을 적용한다.
+
+- 자동 범위 맞춤은 0·음수가 섞여 있어도 저장된 최소 양수 값을 하한으로 사용한다.
+- 수동으로 지정한 경계가 0 이하이거나 유효하지 않으면 `1e-12`로 보정한다. 유효한 양수는 `1e-12`보다 작아도 유지한다.
+- CPU의 `scatter_transform_from_config`가 보정된 범위를 log10으로 변환하고 해당 축의 `scale_log`를 설정한다.
+- GPU 셰이더는 `mix(v, log10(v), is_log)`로 분기 없이 계산한다. 0 이하 데이터는 NaN 처리하거나 그리기에서 제외하며, 이 때문에 설정 전체를 거부하지는 않는다.
+
+<a id="export-파이프라인"></a>
+
+### 이미지 출력 과정
 
 ```
 export_panel_rgba_async(chart, &[SeriesConfig], scale).await:
@@ -1990,4 +1965,4 @@ export_panel_rgba_async(chart, &[SeriesConfig], scale).await:
 
 ## 라이선스 / 폰트
 
-번들 폰트: Liberation Sans (SIL OFL 1.1) — `crates/renderer/fonts/LICENSE-LiberationSans.txt`. 추가 폰트는 런타임 등록 (wasm `register_font`, native `text_render::register_font_bytes`). byte-for-byte 동일 파일 재등록은 멱등이며, registry는 파일을 한 번만 저장하고 face id별 resolved backing을 재사용하며 global font generation을 올리지 않는다.
+내장 폰트 Liberation Sans는 SIL OFL 1.1을 따른다. 원문은 `crates/renderer/fonts/LICENSE-LiberationSans.txt`에 있다. 추가 폰트는 웹의 `register_font` 또는 네이티브의 `text_render::register_font_bytes`로 실행 중에 등록할 수 있다. 내용이 완전히 같은 파일을 다시 등록해도 한 번만 저장하며, 글꼴 ID별로 이미 준비한 데이터를 재사용한다. 중복 등록은 전역 폰트 세대를 증가시키지 않는다.

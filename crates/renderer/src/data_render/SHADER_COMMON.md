@@ -4,49 +4,34 @@
 > struct/function definitions are duplicated into each shader file. The
 > **single source of truth** for those duplicates lives here.
 >
-> **수정 절차 (반드시 이 순서):**
->
-> 1. 이 문서를 먼저 수정한다.
-> 2. 아래 *동기화 대상 셰이더* 목록의 **모든** 파일에서 해당 블록을
->    동일하게 수정한다. 한 파일만 고치고 끝내지 않는다.
-> 3. CPU 측 짝(`mod.rs::ScatterTransform` / `PrimitiveStyle`)도 함께
->    확인·수정한다. 크기·필드 순서가 어긋나면 GPU 메모리가 silent하게
->    오역된다.
-> 4. `cargo check && cargo test`로 빌드/테스트가 통과하는지 확인한다.
->
-> 한 군데만 수정하면 다른 셰이더는 silent하게 어긋난 채 컴파일되며,
-> 결과는 "왠지 모르게 색·위치·축이 일부 시리즈만 깨지는" 추적하기 매우
-> 어려운 렌더링 버그가 된다.
+공통 정의를 수정할 때는 다음 순서를 따른다.
+
+1. 이 문서의 해당 코드 블록을 먼저 수정한다.
+2. 아래 동기화 대상 셰이더에서 같은 블록을 모두 수정한다.
+3. 대응하는 CPU 구조체인 `mod.rs::ScatterTransform` / `PrimitiveStyle`의 크기와 필드 순서도 확인한다.
+4. `cargo check && cargo test`로 빌드와 테스트를 실행한다.
+
+한 파일만 바꾸면 컴파일은 성공해도 GPU가 메모리를 잘못 해석할 수 있다. 일부 시리즈의 색·위치·축만 어긋나는 오류를 피하려면 공통 정의를 함께 갱신해야 한다.
 
 ---
 
 ## 동기화 대상 셰이더
 
-이 파일들의 *common block* 은 항상 정확히 일치해야 한다:
+아래 파일들의 공통 블록은 항상 정확히 일치해야 한다.
 
 - `scatter_columnar.wgsl`
 - `line_columnar.wgsl`
 - `errorbar_columnar.wgsl`
 - `bar_columnar.wgsl`
 - `field_columnar.wgsl`
-- `line_arc.wgsl` (컴퓨트 — Transform / `maybe_log` / `data_to_ndc`(vec2)만
-  공유, `Style` 은 사용하지 않음)
-- `contour_anchor.wgsl` (컴퓨트 — 앵커 선택은 **화면** 공간이라 Transform이
-  필요하다. `Style` 은 사용하지 않음 → `line_arc.wgsl` 과 같은 3블록)
-- `contour_label.wgsl` (렌더 — 앵커를 NDC에 놓는다. 색·배경은 아틀라스에
-  구워져 있어 `Style` 은 사용하지 않음 → 같은 3블록)
+- `line_arc.wgsl`: 경로 길이 계산용. `Transform`, `maybe_log`, vec2 입력의 `data_to_ndc`만 공유하고 `Style`은 사용하지 않는다.
+- `contour_anchor.wgsl`: 라벨 앵커 계산용. 화면 좌표에서 위치를 선택하므로 `line_arc.wgsl`과 같은 세 블록을 사용한다.
+- `contour_label.wgsl`: 라벨 렌더링용. 앵커를 NDC에 배치하며 위 세 블록을 공유한다. 색과 배경은 아틀라스에 포함돼 있어 `Style`은 사용하지 않는다.
 
-`gpu_contour.wgsl`(마칭스퀘어 추적)과 `gpu_contour_anchor.wgsl`(버킷 방식 앵커)은 §B.4.9에서
-**삭제됐다**. 등고선은 이제 `field_columnar.wgsl::fs_contour`가 격자에서 직접 그리고, 앵커는
-`contour_anchor.wgsl`이 같은 격자에서 Newton 투영으로 잡는다 — 그래서 앵커 셰이더가 격자 샘플링 블록을
-공유한다.
+기존의 마칭 스퀘어 추적용 `gpu_contour.wgsl`과 버킷 방식의 `gpu_contour_anchor.wgsl`은 제거됐다. 현재는 `field_columnar.wgsl::fs_contour`가 격자에서 등고선을 직접 그리고, `contour_anchor.wgsl`이 뉴턴 투영으로 앵커를 구한다. 따라서 두 셰이더가 격자 샘플링 블록을 공유한다.
+기존 추적 셰이더는 데이터 좌표에서 계산해 `Transform`을 읽지 않았으므로 공통 정의 목록에 포함되지 않았고, 확대·이동과 무관하게 결과를 캐시했다.
 
-삭제 전에도 `gpu_contour.wgsl`(추적)은 이 목록에 **없었다**: 마칭스퀘어는
-데이터 공간이라 `Transform` 을 읽지 않았고, 그래서 팬·줌에 무관하게 캐시됐다.
-공간이 다르면 파일도 달랐다.
-
-`fullscreen_textured.wgsl`은 별도의 bind layout(texture/sampler)을 쓰므로
-이 SSoT의 영향을 받지 않는다.
+`fullscreen_textured.wgsl`은 텍스처·샘플러용 별도 바인드 레이아웃을 사용하므로 이 문서의 공통 정의를 사용하지 않는다.
 
 각 셰이더 안의 공통 블록은 다음 주석으로 감싸 두었다:
 
@@ -56,18 +41,14 @@
 // ───── END common block ─────
 ```
 
-그 안의 모든 정의는 본 문서의 정의와 글자 단위로 동일해야 한다.
+공통 블록의 정의는 이 문서와 바이트 단위로 같아야 한다.
 
 ---
 
 ## 1. `Transform` uniform — group 0, binding 0
 
-데이터 좌표 → NDC 변환, 로그 축 플래그, 픽셀↔NDC 환산 비율, 그리고
-활성 렌더 스타일(스케치/성좌 등)의 범용 파라미터 슬롯을 셰이더에 전달하는
-유니폼. **112바이트** (`vec2<f32>` 8개 + `array<vec4<f32>, 3>` 1개 —
-배열은 offset 64, 원소 stride 16, WGSL uniform layout). 픽셀 단위
-크기(점 반지름, cap 길이 등)는 `Style`로 이동했다 — 픽셀→NDC 환산은
-셰이더가 `pixel_to_ndc`로 직접 수행한다.
+`Transform`은 데이터 좌표를 NDC로 바꾸는 값, 로그축 여부, 픽셀과 NDC의 비율, 스케치·별자리 등 현재 스타일의 옵션을 전달한다. 크기는 **112바이트**다. `vec2<f32>` 8개와 `array<vec4<f32>, 3>` 하나로 구성되며, 배열은 바이트 오프셋 64에서 시작하고 원소 간 간격은 16바이트다.
+점 반지름과 오차 막대 끝선 길이 같은 픽셀 크기는 `Style`에 저장한다. 셰이더는 `pixel_to_ndc`로 이를 NDC 크기로 환산한다.
 
 <!-- shader-common: applies-to=scatter,line,errorbar,bar,field,arc,anchor,label -->
 ```wgsl
@@ -104,14 +85,14 @@ fn styled_point_index(local_index: u32) -> u32 {
 
 | 필드 | 의미 |
 |------|------|
-| `data_min`, `data_max` | `Config` 축 SSoT의 최종 min/max를 셰이더 좌표계로 옮긴 `(hi, lo)` 범위. 선형축은 SSoT 값 자체이고 로그축은 CPU에서 계산한 `log10(SSoT)`다. data-area 여백 때문에 별도 확장 범위를 만들지 않는다. |
-| `scale_log` | per-axis 로그 플래그. 0.0 = linear, 1.0 = log10 |
-| `pixel_to_ndc` | `(2/chart_w, 2/chart_h)` — 1픽셀이 NDC에서 몇인지. 픽셀 단위 크기(line 두께, 점 반지름, cap 길이) 환산에 쓰임 |
-| `data_to_panel_scale`, `data_to_panel_offset` | SSoT 범위 안의 정규화 좌표를 panel 좌표로 옮기는 data-area 배치 affine. 축 범위와 레이아웃 여백을 분리한다. |
+| `data_min`, `data_max` | `Config`에 지정된 축의 최소·최대를 셰이더 좌표계로 옮긴 `(hi, lo)` 범위. 선형축은 설정값을, 로그축은 CPU에서 계산한 log10 값을 쓴다. 데이터 영역 여백을 이유로 범위를 별도로 늘리지 않는다. |
+| `scale_log` | 축별 로그 변환 여부. 0.0은 선형, 1.0은 log10 |
+| `pixel_to_ndc` | `(2/chart_w, 2/chart_h)`. 픽셀 크기를 NDC 크기로 바꾸는 비율이며 선 두께·점 반지름·오차 막대 끝선 길이에 사용한다. |
+| `data_to_panel_scale`, `data_to_panel_offset` | 축 범위로 정규화한 좌표를 패널 좌표로 바꾸는 데이터 영역의 아핀 변환. 축 범위와 배치 여백을 분리한다. |
 | `style_params` | Generic style parameter slots. Interpretation belongs to the active styled entry. sketch: `[0]`=(amplitude_px, wavelength_px, seed(f32), 0), rest 0. milkyway: `[0]`=(star_density, ribbon_width_px, ribbon_intensity, seed(f32)), `[1]`=(star_scale, spread_px, faint_bias, planet_rim), `[2]`=(structure_scale, star_brightness, 0, 0). constellation: `[0]`=(star_opacity, line_opacity, 0, 0), rest 0. Seeds are stored as f32 and recovered as `u32(...)`; exact up to 2^24. CPU packing lives in renderer.rs (`StyleVariant::pack_params`, `[f32; 12]`). Precise entries do not read these slots. |
 
-**CPU 측 짝:** `src/data_render/mod.rs::ScatterTransform`
-(`#[repr(C)]`, `bytemuck::Pod`). 필드 순서·크기 1:1 일치해야 한다.
+**대응하는 CPU 구조체:** `src/data_render/mod.rs::ScatterTransform`
+(`#[repr(C)]`, `bytemuck::Pod`). 필드 순서와 크기가 정확히 일치해야 한다.
 
 `style_params[2].z` is reserved independently of the active style: it carries
 the exact **u32 bit pattern** of a streamed point/errorbar chunk's global base,
@@ -127,8 +108,7 @@ are separate and do not consume this field.
 
 ## 2. `Style` uniform — group 1, binding 0
 
-색(premultiplied alpha)과 per-primitive 옵션. **80바이트, 16바이트 정렬.**
-네 셰이더가 같은 struct를 공유하고 각자 자기 필드만 읽는다(나머지는 무시).
+`Style`은 알파를 미리 곱한 색과 도형별 옵션을 전달한다. 크기는 **80바이트**, 정렬 단위는 **16바이트**다. 공유하는 셰이더들은 각자 필요한 필드만 읽는다.
 
 <!-- shader-common: applies-to=scatter,line,errorbar,bar,field -->
 ```wgsl
@@ -156,68 +136,52 @@ struct Style {
 | 필드 | 의미 |
 |------|------|
 | `color_premul` | premultiplied RGBA. `(r·a, g·a, b·a, a)` |
-| `line_width_px` | line / errorbar 스템 두께(픽셀) |
-| `point_radius_px` | scatter 점 반지름(픽셀) |
-| `cap_half_px` | errorbar cap 반-길이(픽셀) |
-| `cap_width_px` | errorbar cap 스트로크 두께(픽셀) |
+| `line_width_px` | 선 또는 오차 막대 몸통의 두께(px) |
+| `point_radius_px` | 산점도 기호의 반지름(px) |
+| `cap_half_px` | 오차 막대 끝선 길이의 절반(px) |
+| `cap_width_px` | 오차 막대 끝선의 두께(px) |
 | `shape_id` | `ScatterShape` GPU 코드 — 0 Circle, 1 Square, 2 Triangle, 3 Diamond, 4 Cross, 5 CircleFilled, 6 SquareFilled, 7 TriangleFilled, 8 DiamondFilled, 9 TriangleDown, 10 TriangleLeft, 11 TriangleRight, 12 Plus, 13 Pentagon, 14 Hexagon, 15 Octagon, 16 Star, 17 TriangleDownFilled, 18 TriangleLeftFilled, 19 TriangleRightFilled, 20 PlusFilled, 21 CrossFilled, 22 PentagonFilled, 23 HexagonFilled, 24 OctagonFilled, 25 StarFilled |
-| `dash_len` | `dash`의 유효 스칼라 개수. 0 = solid |
-| `series_salt` | 시리즈 간 해시 탈상관 솔트 — `fnv1a(series_id)` (renderer.rs `create_style_for_series*`가 기록). 스케치/성좌 entry가 자기 해시 시드에 XOR한다. 같은 x 격자를 쓰는 시리즈들이 wobble/별 패턴을 공유하지 않게 하는 장치. 정밀 entry는 읽지 않음 |
-| `primitive_flags` | primitive별 기능 비트. errorbar는 bit 0=`Y direction present`, bit 1=`X direction present`; 나머지 primitive는 무시. 기존 패딩 슬롯을 사용하므로 레이아웃은 80바이트로 동일 |
+| `dash_len` | `dash`의 유효 스칼라 개수. 0은 실선 |
+| `series_salt` | 시리즈마다 해시 패턴을 다르게 만드는 값. `renderer.rs`의 `create_style_for_series*`가 `fnv1a(series_id)`를 기록한다. 스케치·별자리 셰이더는 이 값을 시드에 XOR해 같은 X좌표를 쓰는 시리즈에서도 선의 흔들림과 별 패턴이 겹치지 않게 한다. 정밀 모드에서는 읽지 않는다. |
+| `primitive_flags` | 도형별 기능 비트. 오차 막대는 bit 0으로 Y방향, bit 1로 X방향 사용 여부를 표시한다. 다른 도형은 읽지 않는다. 기존 패딩을 사용하므로 크기는 80바이트로 유지된다. |
 | `dash` | 최대 8개의 순차 `[on, off, ...]` 픽셀 길이 — `dash[0].xyzw` 먼저, 이어서 `dash[1].xyzw` |
 
-**CPU 측 짝:** `src/data_render/mod.rs::PrimitiveStyle`
+**대응하는 CPU 구조체:** `src/data_render/mod.rs::PrimitiveStyle`
 (`#[repr(C)]`, `bytemuck::Pod`). 패딩 포함 80바이트. `shape_id` 매핑은
 `mod.rs::shape_id()` 헬퍼가 담당한다.
 
 ### 2.1 `bar_columnar.wgsl`의 `Style` 재해석
 
-막대는 이 struct의 **바이트를 바꾸지 않고**(위 공통 `Style` 레이아웃 계약) 자기가 쓸 필드만
-읽고 쓸모없는 필드를 재해석한다. 이 표가 그 매핑의 SSoT이고, CPU 측 짝은
-`mod.rs::PrimitiveStyle::from_bar`다. **둘 중 하나만 바꾸면 색·두께·기준선이
-조용히 어긋난다.**
+막대는 공통 `Style` 구조체의 크기와 배치를 유지하면서 일부 필드를 다른 용도로 사용한다. 아래 표가 그 해석 기준이며 CPU의 `mod.rs::PrimitiveStyle::from_bar`와 일치해야 한다. 한쪽만 바꾸면 색·두께·기준선이 잘못 전달될 수 있다.
 
 | 필드 | 막대에서의 의미 |
 |------|------------------|
-| `color_premul` | 채움 색 (premultiplied) |
+| `color_premul` | 알파를 미리 곱한 채움색 |
 | `line_width_px` | 테두리 두께(픽셀) |
 | `cap_half_px` | 이웃 막대 사이 간격(픽셀). 양쪽에 절반씩 |
-| `cap_width_px` | bin 폭에서 막대가 차지하는 비율. `0..=1`로 clamp하며 가운데 정렬 |
-| `shape_id` | 0 = edges가 x축을 따라간다(수직 막대), 1 = y축(수평 막대) |
-| `dash[0]` | 테두리 색 (premultiplied) |
-| `dash[1].xy` | 기준선(baseline)을 풀과 같은 `(hi, lo)` f32 쌍으로 |
+| `cap_width_px` | 구간 너비에서 막대가 차지하는 비율. `0..=1`로 제한하고 가운데에 배치 |
+| `shape_id` | 0 = 경계가 X축을 따른다(세로 막대), 1 = Y축을 따른다(가로 막대) |
+| `dash[0]` | 알파를 미리 곱한 테두리색 |
+| `dash[1].xy` | 기준선을 풀과 같은 f32 쌍 `(hi, lo)`으로 저장 |
 | `point_radius_px` · `dash_len` · `primitive_flags` · `dash[1].zw` | 미사용 |
 
-`dash`를 쓰는 이유: 막대는 dash 패턴이 없으므로 8개 f32가 비어 있고,
-기준선을 `(hi, lo)` 쌍으로 담아야 큰 절대값에서도 정밀도가 유지된다
-(풀의 논리값 표현과 동일). 단일 f32 필드에 담으면 그 정밀도가 사라진다.
+막대는 점선 패턴을 사용하지 않으므로 `dash`의 f32 슬롯 8개를 재사용한다. 기준선은 풀의 값과 같은 `(hi, lo)` 쌍으로 저장해 큰 값에서도 정밀도를 유지한다. f32 하나로 저장하면 이 정밀도를 보존할 수 없다.
 
-`DataBarStyleConfig.bar_style_overrides`가 있으면 별도 mapped bar pipeline이
-group 2의 sparse override table을 읽는다. override는 채움색, 테두리색·두께,
-간격, 폭 비율만 바꾸며 baseline·orientation은 시리즈 단위로 유지한다. 렌더,
-typed pick, 선택 outline은 모두 같은 override 해석 규칙을 사용한다.
+`DataBarStyleConfig.bar_style_overrides`를 지정하면 개별 막대 스타일용 파이프라인이 group 2의 덮어쓰기 표를 읽는다. 채움색·테두리색·두께·간격·너비 비율만 바꾸며 기준선과 방향은 시리즈 공통값을 유지한다. 그리기·데이터 피킹·선택 테두리는 같은 해석 규칙을 적용한다.
 
 ### 2.2 `field_columnar.wgsl`의 `Style` 사용
 
-면(heatmap/밴드)은 이 struct에서 **`color_premul` 하나만** 읽고, 그 의미는
-`Config.colorbar.nan_color`(premultiplied)다 — 배치할 수 없는 z(NaN·로그에서
-비양수·퇴화 범위)를 칠하는 색. `primitive_flags`를 포함한 나머지 필드는 읽지 않는다.
+히트맵과 밴드 채움은 `color_premul`만 읽는다. 이 값은 알파를 미리 곱한 `Config.colorbar.nan_color`로, NaN·로그 스케일의 0 이하 값·너비가 없는 범위를 표시하는 색이다. `primitive_flags`를 포함한 다른 필드는 읽지 않는다.
 
-면의 나머지 파라미터는 `Style`을 재해석하지 않고 **자기 uniform**
-(`FieldParams`, group 2 binding 4)에 담는다. 막대와 다른 선택인 이유: 면은
-좌표 컬럼 lane base·격자 크기·방향·z 범위·레벨/스톱 개수까지 필요해서
-`Style`의 빈 슬롯으로는 애초에 담기지 않는다. 그러면 재해석 표를 하나 더
-만드는 것은 이득 없이 규칙만 늘리는 일이다.
+나머지 행렬 옵션은 별도 유니폼인 `FieldParams`(group 2, binding 4)에 저장한다. 좌표 컬럼의 시작 위치, 격자 크기·방향, Z축 범위, 레벨·색상 기준점 개수는 `Style`의 빈 필드에 모두 담을 수 없기 때문이다.
 
-group 2의 격자 storage + uniform은 면과 contour anchor가 공유하므로 이 SSoT의
-**동기화 대상이다**. CPU 측 짝은 `mod.rs::FieldParamsGpu` / `GridColumnGpu`이고
-그 문서 주석이 짝을 명시한다. 단, fragment lookup metadata인 binding 6은
-`field_columnar.wgsl`만 선언하며 아래 field-only contour lookup metadata 계약을
-따른다.
+group 2의 격자 스토리지와 유니폼은 행렬 렌더링과 등고선 앵커 계산이 공유하므로 동기화 대상이다. 대응하는 CPU 구조체는 `mod.rs::FieldParamsGpu` / `GridColumnGpu`다. 검색용 메타데이터인 binding 6은 `field_columnar.wgsl`에만 선언하며, 아래 5.1절의 규칙을 따른다.
 
 ---
 
-## 3. `maybe_log` — log10 인입/통과 헬퍼
+<a id="3-maybe_log--log10-인입통과-헬퍼"></a>
+
+## 3. `maybe_log` — 로그 변환 선택
 
 `is_log` 플래그(0.0 또는 1.0)에 따라 값을 그대로 통과시키거나 log10을
 적용한다. `if` 분기 없이 `mix`로 처리해 워프 단위 분기 비용을 피한다.
@@ -267,24 +231,15 @@ fn data_to_ndc(xv: vec2<f32>, yv: vec2<f32>) -> vec2<f32> {
 
 ## 5. 격자 샘플링 — group 2 (면·등고선)
 
-매트릭스 격자에서 z를 읽고 셀 안에서 이중선형 보간·**해석적 기울기**까지 계산하는 블록.
-채움(`field_columnar.wgsl`의 `fs_main`/`fs_contour`)과 라벨 앵커
-(`contour_anchor.wgsl`의 Newton 투영)가 **같은 bind group·같은 함수**로 같은 답을 얻어야
-하므로 SSoT다. 어긋나면 라벨이 자기 등고선에서 미묘하게 벗어난다.
+이 블록은 행렬의 Z값을 읽고 셀 내부의 이중선형 보간값과 해석적 기울기를 계산한다. 채움·등고선 렌더링(`field_columnar.wgsl`의 `fs_main` / `fs_contour`)과 라벨 앵커 계산(`contour_anchor.wgsl`의 뉴턴 투영)이 같은 바인드 그룹과 함수를 사용해야 한다. 서로 다르면 라벨이 등고선에서 벗어날 수 있다.
 
-`locate`가 `lattice` 인자를 받는 이유: 채움은 `Shading`이 정하는 **쿼드 격자**를 묻고, 등고선은
-z가 실제로 사는 **샘플점 격자**를 묻는다. 두 질문이 한 이진 탐색을 공유한다.
+`locate`의 `lattice` 인자는 검색할 격자를 정한다. 채움은 `Shading`에 따른 사각형 격자를, 등고선은 실제 Z값이 있는 표본 격자를 사용한다. 두 경우 모두 같은 이진 탐색을 수행한다.
 
-`level_colors`(binding 5)는 앵커 셰이더가 읽지 않지만 블록에 들어 있다 — bind group 레이아웃이
-한 벌이어야 하고, WGSL의 미사용 전역 선언은 합법이다.
+`level_colors`(binding 5)는 앵커 셰이더에서 읽지 않지만 바인드 그룹 배치를 맞추기 위해 공통 블록에 둔다. WGSL은 사용하지 않는 전역 선언을 허용한다.
 
-CPU 짝: `mod.rs::GridColumnGpu` (8 B) · `mod.rs::FieldParamsGpu` (64 B) ·
-`create_field_data_bind_group_layout`.
+대응하는 CPU 정의는 `mod.rs::GridColumnGpu`(8바이트), `mod.rs::FieldParamsGpu`(64바이트), `create_field_data_bind_group_layout`이다.
 
-`gpu_errorbar.wgsl`의 field-fit 경로는 전체 sampling block을 복제하지 않고
-아래 `*_grid_pair` 산술만 그대로 사용한다. `shader_consistency`가 각 함수 본문을
-이 SSoT와 byte-for-byte 비교한다. 따라서 GPU가 돌려준 `(hi, lo)` 경계와 실제 field
-shader가 축에 투영한 파생 경계가 서로 다른 반올림 규칙을 가질 수 없다.
+`gpu_errorbar.wgsl`의 행렬 범위 계산은 전체 샘플링 블록 대신 `*_grid_pair` 연산 함수만 공유한다. `shader_consistency`가 함수 본문을 이 문서와 바이트 단위로 비교하므로 GPU 범위 계산과 실제 그리기가 같은 반올림 규칙을 사용한다.
 
 <!-- shader-common: applies-to=field,anchor -->
 ```wgsl
@@ -504,11 +459,10 @@ fn locate(base: u32, n: u32, count: u32, axis: u32, t: f32, lattice: u32) -> Cel
     let ascending = last >= first;
     var lo = 0u;
     var hi = count;
-    // `count` is bounded by the pool's column length, so 32 halvings settle it.
-    for (var step = 0u; step < 32u; step = step + 1u) {
-        if (hi - lo <= 1u) {
-            break;
-        }
+    // Each step strictly shrinks the unsigned bracket, so a u32 count takes
+    // at most 32 halvings. Keep the loop dynamic: nested fixed-trip searches
+    // can make software GPU compilers expand contour projection excessively.
+    while (hi - lo > 1u) {
         let mid = lo + (hi - lo) / 2u;
         let tm = boundary_t(base, n, mid, axis, lattice);
         if (!f32_is_finite(tm)) {
@@ -731,37 +685,31 @@ fn grad_px(dz: vec2<f32>) -> vec2<f32> {
 }
 ```
 
-### 5.1 field-only contour lookup metadata — group 2, binding 6
+<a id="51-field-only-contour-lookup-metadata--group-2-binding-6"></a>
 
-`field_columnar.wgsl`은 공통 블록 **밖에서만** binding 6을 선언한다. 각 8바이트
-record는 `[finite_count, negative_infinity_count]`인 두 `u32`이고, 레벨 32개
-블록 하나와 위치가 같다. `finite_count`는 binding 3 블록 앞쪽의 정렬된 유한 key
-개수라 line/band 이진 탐색의 유일한 bound다. `negative_infinity_count`는 Bands의
-분자에만 더하고 line 후보에는 넣지 않는다. NaN과 +Infinity는 둘 다 검색과 분자에서
-제외한다. 레벨이 0개여도 WebGPU의 zero-sized storage binding을 피하려고
-`[0, 0]` record 하나를 업로드한다.
+### 5.1 행렬 셰이더의 등고선 검색 메타데이터 — group 2, binding 6
 
-CPU 짝은 `mod.rs::ContourLookupMetadataGpu` (8 B)와
-`create_field_data_bind_group_layout`의 **fragment-only** binding 6이다. metadata
-buffer는 `FieldTables`에서 나머지 group-2 table과 같이 만들어지고 bind group이
-수명을 소유하며, 동일 `ChargeTally`의 `FieldTable` exact-byte lump charge에 포함된다.
+`field_columnar.wgsl`은 공통 블록 밖에서 binding 6을 선언한다. 레벨 32개짜리 블록마다 `[finite_count, negative_infinity_count]`라는 u32 두 개, 총 8바이트를 기록한다.
+`finite_count`는 binding 3 블록 앞부분에 정렬해 둔 유한 레벨 수이며 선·밴드 이진 탐색의 범위를 정한다. `negative_infinity_count`는 밴드 계산의 분자에만 더하고 선 후보에는 포함하지 않는다. NaN과 양의 무한대는 검색과 분자에서 모두 제외한다. 레벨이 없어도 WebGPU의 크기 0인 스토리지 바인딩을 피하려고 `[0, 0]` 하나를 업로드한다.
+
+CPU 구조체는 `mod.rs::ContourLookupMetadataGpu`(8바이트)이며 `create_field_data_bind_group_layout`의 프래그먼트 전용 binding 6에 연결된다. 버퍼는 `FieldTables`에서 다른 group 2 표와 함께 만들고 바인드 그룹이 보관한다. 할당량은 같은 `ChargeTally`의 `FieldTable` 항목에 실제 바이트 수로 합산한다.
 
 ---
 ## 변경 체크리스트
 
-큰 변경 시 다음을 모두 확인:
+공통 정의를 변경했다면 다음 항목을 모두 확인한다.
 
 - [ ] 본 문서의 해당 블록을 먼저 수정했다.
-- [ ] `scatter_columnar.wgsl`의 common block을 수정했다.
-- [ ] `line_columnar.wgsl`의 common block을 수정했다.
-- [ ] `errorbar_columnar.wgsl`의 common block을 수정했다.
-- [ ] `bar_columnar.wgsl`의 common block을 수정했다.
-- [ ] `field_columnar.wgsl`의 common block을 수정했다.
-- [ ] `line_arc.wgsl`의 common block을 수정했다 (Transform/maybe_log/
+- [ ] `scatter_columnar.wgsl`의 공통 블록을 수정했다.
+- [ ] `line_columnar.wgsl`의 공통 블록을 수정했다.
+- [ ] `errorbar_columnar.wgsl`의 공통 블록을 수정했다.
+- [ ] `bar_columnar.wgsl`의 공통 블록을 수정했다.
+- [ ] `field_columnar.wgsl`의 공통 블록을 수정했다.
+- [ ] `line_arc.wgsl`의 공통 블록을 수정했다 (Transform/maybe_log/
       data_to_ndc(vec2) 해당 시).
-- [ ] `contour_anchor.wgsl`의 common block을 수정했다 (Transform 3블록 + 격자 샘플링 블록).
-- [ ] `contour_label.wgsl`의 common block을 수정했다 (같은 3블록).
-- [ ] `mod.rs::ScatterTransform` / `PrimitiveStyle`의 필드·바이트 크기를
-      확인했다 (struct 크기가 바뀌었다면 `expected_size` 단정문도 갱신).
+- [ ] `contour_anchor.wgsl`의 공통 블록을 수정했다 (Transform 3블록 + 격자 샘플링 블록).
+- [ ] `contour_label.wgsl`의 공통 블록을 수정했다 (같은 3블록).
+- [ ] `mod.rs::ScatterTransform` / `PrimitiveStyle`의 필드와 바이트 크기를
+      확인했다 (struct 크기가 바뀌었다면 `expected_size` 검증문도 갱신).
 - [ ] `cargo check` 통과.
-- [ ] `cargo test` 통과 (특히 pipeline compile tests).
+- [ ] `cargo test` 통과 (특히 파이프라인 컴파일 테스트).

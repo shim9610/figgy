@@ -243,7 +243,10 @@ impl Renderer {
             pipelines,
             Arc::clone(&self.gpu_ledger),
             self.stream_field_budget(
-                upload + shape.state_bytes()? + 64 + if picking { 80 } else { 0 },
+                upload
+                    + shape.state_bytes()?
+                    + field::TILE_OVERHEAD_BYTES
+                    + if picking { 80 } else { 0 },
             )?,
             &data_render::scatter_transform_from_config(config),
             &PrimitiveStyle::from_color(bar.nan_color),
@@ -352,8 +355,7 @@ impl Renderer {
                 field.max_pairs,
             )?;
             let mut encoder = self.device.create_command_encoder(&Default::default());
-            let step =
-                tile.record_init(&mut encoder, &draw.target.create_view(&Default::default()))?;
+            let step = tile.record_init(&mut encoder)?;
             self.queue.submit([encoder.finish()]);
             tile.commit(step)?;
             field.tile = Some(tile);

@@ -5165,7 +5165,9 @@ mod web {
         /// JS: `await chart.first_frame_ready();`
         pub async fn first_frame_ready(&mut self) -> Result<(), JsValue> {
             self.frame()?;
-            self.renderer.wait_submitted_work().await;
+            renderer::init::wait_browser_submitted_work(self.renderer.queue())
+                .await
+                .map_err(js_err)?;
             Ok(())
         }
 

@@ -184,7 +184,7 @@ fn effective_pool_capacity(requested: u64, caps: RendererDeviceCaps) -> u64 {
 fn issue_renderer_identity() -> Result<u64> {
     static NEXT_RENDERER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     NEXT_RENDERER_ID
-        .fetch_update(
+        .try_update(
             std::sync::atomic::Ordering::Relaxed,
             std::sync::atomic::Ordering::Relaxed,
             |current| current.checked_add(1),
@@ -11124,7 +11124,7 @@ impl ChartView {
 
     fn advance_content_revision(&self) -> Result<u64> {
         self.content_revision
-            .fetch_update(
+            .try_update(
                 std::sync::atomic::Ordering::AcqRel,
                 std::sync::atomic::Ordering::Acquire,
                 |current| current.checked_add(1),
@@ -11137,7 +11137,7 @@ impl ChartView {
 
     fn advance_stream_revision(&self) -> Result<u64> {
         self.stream_revision
-            .fetch_update(
+            .try_update(
                 std::sync::atomic::Ordering::AcqRel,
                 std::sync::atomic::Ordering::Acquire,
                 |current| current.checked_add(1),
@@ -14277,6 +14277,14 @@ impl<'w> WindowedRenderer<'w> {
         items: &[ChartDrawItem<'_>],
     ) -> Result<()> {
         self.draw(clear, items)?;
+        #[cfg(target_arch = "wasm32")]
+        crate::init::wait_browser_submitted_work(self.inner.queue())
+            .await
+            .map_err(|reason| FiggyError::GpuResourceAllocationFailed {
+                resource: "figgy first frame completion",
+                reason,
+            })?;
+        #[cfg(not(target_arch = "wasm32"))]
         self.inner.wait_submitted_work().await;
         Ok(())
     }
@@ -20768,6 +20776,75 @@ mod tests {
             Some(3),
             "the cache should hold base, changed-transform, and changed-data results"
         );
+    }
+
+    #[test]
+    fn contour_projection_matches_fixed_four_step_gpu_oracle() {
+        for x_range in [(0.0, 1.0), (-0.2, 1.2), (1.0, 0.0)] {
+            let mut images = Vec::new();
+            for legacy in [false, true] {
+                let Some(mut renderer) = state_test_renderer() else {
+                    return;
+                };
+                renderer
+                    .add_column("clx", &col_f64(vec![0.0, 0.5, 1.0]))
+                    .unwrap();
+                renderer
+                    .add_column("cly", &col_f64(vec![0.0, 0.5, 1.0]))
+                    .unwrap();
+                // A bilinear product requires repeated Newton corrections;
+                // the affine fixture converges in just one correction.
+                for (id, values) in [
+                    ("clz0", vec![0.0, 0.0, 0.0]),
+                    ("clz1", vec![0.0, 1.0, 2.0]),
+                    ("clz2", vec![0.0, 2.0, 4.0]),
+                ] {
+                    renderer.add_column(id, &col_f64(values)).unwrap();
+                }
+                if legacy {
+                    renderer.contour_label_pipelines = Some(
+                        crate::gpu_contour::ContourLabelPipelines::legacy_projection_for_test(
+                            &renderer.device,
+                            &renderer.field_bgl,
+                        ),
+                    );
+                }
+                let chart = state_test_contour_chart(
+                    Rect {
+                        x: 0,
+                        y: 0,
+                        width: 320,
+                        height: 240,
+                    },
+                    x_range,
+                );
+                let config = state_test_labelled_contour(45.0, Vec::new());
+                let style = renderer.create_style_for_series(&config).unwrap();
+                let series = [Series {
+                    config: &config,
+                    style: &style,
+                }];
+                let view = renderer
+                    .create_chart_view(&chart, chart.config().chart_area.0)
+                    .unwrap();
+                let items = [ChartDrawItem {
+                    view: &view,
+                    chart_config: chart.config(),
+                    series: &series,
+                }];
+                let prepared = renderer.prepare(&items).unwrap();
+                let pixels = paint_prepared_rgba(&renderer, &prepared, 320, 240);
+                assert!(
+                    pixels.chunks_exact(4).any(|p| p[0] > 200 && p[1] < 100 && p[2] > 200),
+                    "oracle fixture must produce automatic labels, legacy={legacy}, range={x_range:?}"
+                );
+                images.push(pixels);
+            }
+            assert_eq!(
+                images[0], images[1],
+                "four Newton corrections changed the image at {x_range:?}"
+            );
+        }
     }
 
     #[test]

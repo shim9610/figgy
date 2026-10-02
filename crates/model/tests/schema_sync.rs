@@ -473,7 +473,7 @@ fn contour_contract_docs_match_the_model_limit_and_failure_semantics() {
     let wasm = normalized_words(&wasm);
     for required in [
         "Its accepted length is `0..=1024`; 1025 or more is an error, and no level is silently truncated.",
-        "허용 길이는 `0..=1024`이며 1025개 이상은 오류이고 어떤 레벨도 조용히 잘라내지 않는다.",
+        "레벨 수는 `0..=1024`개다. 1025개 이상이면 오류를 반환하며 일부를 잘라서 그리지 않는다.",
         "Each fragment searches at most 32 blocks and runs coverage math only for reachable candidates",
         "if all 1024 levels actually cross one cell, all 1024 are composited in declaration order.",
         "Stroke distance is the quadratic crossing",
@@ -485,14 +485,14 @@ fn contour_contract_docs_match_the_model_limit_and_failure_semantics() {
         "Explicit anchors whose `level_index` is invalid are discarded",
         "only the first 1024 valid anchors are retained in input order.",
         "If that resolved list is empty, automatic placement runs; otherwise the resolved list overrides it.",
-        "한 셀에 1024개가 실제로 모두 걸리면 선언 순서대로 1024개 전부를 합성한다.",
-        "gradient-normal 직선으로 제한해서 얻는 이차방정식 교차근이며, 전체 piecewise-bilinear contour에 대한 전역 최단거리는 아니다.",
-        "레벨별 fallback은 레벨을 누락시키지 않기 위해 더 가까운 후보를 남길 수 있다.",
-        "`spacing_px`는 숨김 라벨과 명시 오버라이드에서도 항상 유한한 양수여야 한다.",
-        "자동/명시 배치는 공통으로 1024개 용량을 쓴다.",
-        "명시 앵커는 유효하지 않은 `level_index`를 버리고",
-        "입력 순서에서 유효한 앞 1024개만 남긴다.",
-        "resolved 목록이 비면 자동 배치하고, 하나라도 남으면 그 목록이 자동 배치를 대체한다.",
+        "한 셀에 1024개가 모두 걸리면 선언 순서대로 전부 합성한다.",
+        "거리 계산에는 현재 셀의 보간 함수를 기울기 방향, 즉 등고선의 법선 방향 직선으로 제한해 얻은 이차방정식의 근을 사용한다. 여러 셀에 걸친 등고선 전체의 최단거리를 구하는 방식은 아니다.",
+        "레벨이 누락되지 않도록 추가로 고르는 후보는 더 가까울 수 있다.",
+        "`spacing_px`는 라벨을 숨겼거나 앵커를 직접 지정했더라도 항상 유한한 양수여야 한다.",
+        "자동 배치와 직접 지정 모두 최대 1024개를 사용한다.",
+        "직접 지정한 목록에서는 잘못된 `level_index`를 제외하고",
+        "유효한 앞 1024개만 남긴다.",
+        "이 결과가 비면 자동 배치하고, 하나라도 남으면 해당 목록으로 자동 배치를 대신한다.",
     ] {
         assert!(
             readme.contains(required),
@@ -500,20 +500,20 @@ fn contour_contract_docs_match_the_model_limit_and_failure_semantics() {
         );
     }
     assert!(
-        schema.contains("허용 길이는 `0..=1024`이고 1025개 이상이면 `set_series`가 실패한다."),
+        schema.contains("`0..=1024`개를 허용하며 1025개 이상이면 `set_series`가 실패한다."),
         "SCHEMA contour limit contract drifted"
     );
     assert!(
-        schema.contains("이전 config, series, GPU style은 그대로 유지된다."),
+        schema.contains("배열을 잘라 처리하지 않고 이전 설정·시리즈·GPU 스타일을 유지한다."),
         "SCHEMA contour failure atomicity drifted"
     );
     for required in [
-        "레벨별 fallback은 더 가까운 후보를 남길 수 있다.",
-        "숨김 라벨과 명시 anchor에서도 유한한 양수여야 한다.",
-        "automatic/explicit은 공통 1024개 용량을 쓴다.",
-        "유효하지 않은 `level_index`를 제거한 뒤 입력 순서의 앞 1024개만 사용한다.",
-        "resolved 목록이 비면 자동 배치하고, 하나라도 남으면 그 목록이 자동 배치를 대체한다.",
-        "automatic에서만 clamp된 frame/export scale을 spacing에 곱해 유한한 양수인지 다시 검사한다.",
+        "레벨 누락을 막기 위해 추가로 고르는 후보는 더 가까울 수 있다.",
+        "라벨을 숨겼거나 위치를 직접 지정했더라도 간격은 유한한 양수여야 한다.",
+        "자동·직접 배치는 모두 최대 1024개를 사용한다.",
+        "잘못된 `level_index`를 제외하고 입력 순서대로 유효한 앞 1024개를 사용한다.",
+        "남은 항목이 없으면 자동 배치하고, 하나라도 있으면 그 목록을 사용한다.",
+        "자동 배치에서는 허용 범위로 제한한 프레임·출력 배율을 간격에 곱하고 결과가 유한한 양수인지 다시 검사한다.",
     ] {
         assert!(
             schema.contains(required),
@@ -521,19 +521,21 @@ fn contour_contract_docs_match_the_model_limit_and_failure_semantics() {
         );
     }
     assert!(
-        wasm.contains("1025개 이상이면 JavaScript 예외를 반환하고 이전 config, series 선언, GPU style을 그대로 유지"),
+        wasm.contains(
+            "1025개 이상이면 JavaScript 예외를 반환하고 이전 설정·시리즈·GPU 스타일을 유지"
+        ),
         "WASM contour failure atomicity drifted"
     );
     assert!(
-        wasm.contains("다음 frame도 이전 상태를 그린다."),
+        wasm.contains("다음 프레임도 이전 상태로 그린다."),
         "WASM contour next-frame contract drifted"
     );
     assert!(
-        wasm.contains("Contour label도 automatic/explicit 공통으로 1024개까지 지원한다."),
+        wasm.contains("등고선 라벨도 자동·직접 지정 모두 1024개까지 지원한다."),
         "WASM contour label capacity drifted"
     );
     assert!(
-        wasm.contains("WASM 전용으로 더 작은 상한을 두거나 배열을 조용히 자르는 경로는 없다."),
+        wasm.contains("WASM에만 더 작은 상한을 두거나 배열을 잘라서 처리하지 않는다."),
         "WASM contour no-truncation contract drifted"
     );
 }

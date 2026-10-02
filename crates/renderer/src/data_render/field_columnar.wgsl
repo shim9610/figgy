@@ -329,11 +329,10 @@ fn locate(base: u32, n: u32, count: u32, axis: u32, t: f32, lattice: u32) -> Cel
     let ascending = last >= first;
     var lo = 0u;
     var hi = count;
-    // `count` is bounded by the pool's column length, so 32 halvings settle it.
-    for (var step = 0u; step < 32u; step = step + 1u) {
-        if (hi - lo <= 1u) {
-            break;
-        }
+    // Each step strictly shrinks the unsigned bracket, so a u32 count takes
+    // at most 32 halvings. Keep the loop dynamic: nested fixed-trip searches
+    // can make software GPU compilers expand contour projection excessively.
+    while (hi - lo > 1u) {
         let mid = lo + (hi - lo) / 2u;
         let tm = boundary_t(base, n, mid, axis, lattice);
         if (!f32_is_finite(tm)) {
@@ -762,8 +761,20 @@ fn vs_main(@builtin(vertex_index) vid: u32) -> FieldOut {
     return out;
 }
 
+// Field fills use one shade at the pixel center for all covered MSAA samples.
+// Canonicalize the fullscreen varying so the two quad triangles and the
+// bounded compute replay select the same cell at exactly aligned boundaries.
+fn field_fragment_center_t(t: vec2<f32>) -> vec2<f32> {
+    return field_pixel_center_t(t, round(vec2<f32>(2.0) / transform.pixel_to_ndc));
+}
+
+fn field_pixel_center_t(t: vec2<f32>, size: vec2<f32>) -> vec2<f32> {
+    return (round(t * size - vec2<f32>(0.5)) + vec2<f32>(0.5)) / size;
+}
+
 @fragment
 fn fs_main(in: FieldOut) -> @location(0) vec4<f32> {
+    let t = field_fragment_center_t(in.axis_t);
     let clear = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     let columns_are_y = field_flag(FIELD_COLUMNS_ARE_Y);
     // The constituent index runs along x unless the declaration says otherwise;
@@ -771,8 +782,8 @@ fn fs_main(in: FieldOut) -> @location(0) vec4<f32> {
     // the lengths.
     let along_cells = select(field.cols, field.rows, columns_are_y);
     let across_cells = select(field.rows, field.cols, columns_are_y);
-    let x = locate(field.x_base, field.x_len, quad_count(along_cells, LATTICE_QUADS), 0u, in.axis_t.x, LATTICE_QUADS);
-    let y = locate(field.y_base, field.y_len, quad_count(across_cells, LATTICE_QUADS), 1u, in.axis_t.y, LATTICE_QUADS);
+    let x = locate(field.x_base, field.x_len, quad_count(along_cells, LATTICE_QUADS), 0u, t.x, LATTICE_QUADS);
+    let y = locate(field.y_base, field.y_len, quad_count(across_cells, LATTICE_QUADS), 1u, t.y, LATTICE_QUADS);
     if (!x.hit || !y.hit) {
         return clear;
     }
@@ -1309,7 +1320,8 @@ struct StreamFieldTicket {
 };
 struct StreamFieldTile {
     origin: vec2<u32>, extent: vec2<u32>,
-    samples: u32, pad0: u32, pad1: u32, pad2: u32,
+    samples: u32, chart_width: f32, chart_height: f32, pad0: u32,
+    viewport: vec4<f32>,
 };
 @group(3) @binding(0) var<storage, read_write> stream_field_pixels: array<StreamFieldPixel>;
 @group(3) @binding(1) var<storage, read> stream_field_chunk: array<vec2<f32>>;
@@ -1344,16 +1356,20 @@ fn cs_stream_field_pick_final() {
     }
     data_pick_output = hit;
 }
-@fragment fn fs_stream_field_init(in: FieldOut, @builtin(sample_index) sample_index: u32)
-    -> @location(0) vec4<f32> {
+@compute @workgroup_size(8, 8, 1)
+fn cs_stream_field_init(@builtin(global_invocation_id) id: vec3<u32>) {
+    if (any(id.xy >= stream_field_tile.extent) || id.z >= stream_field_tile.samples) { return; }
+    let viewport = stream_field_tile.viewport;
+    let pixel = vec2<f32>(id.xy + stream_field_tile.origin) + vec2<f32>(0.5);
+    let screen = (pixel - viewport.xy) / viewport.zw;
+    let t = field_pixel_center_t(vec2<f32>(screen.x, 1.0 - screen.y),
+        vec2<f32>(stream_field_tile.chart_width, stream_field_tile.chart_height));
     var s: StreamFieldPixel;
     let cy = field_flag(FIELD_COLUMNS_ARE_Y);
-    s.x = stream_field_fresh_axis(in.axis_t.x, quad_count(select(field.cols, field.rows, cy), LATTICE_QUADS));
-    s.y = stream_field_fresh_axis(in.axis_t.y, quad_count(select(field.rows, field.cols, cy), LATTICE_QUADS));
-    s.valid_mask = 0u;
-    s.sample_marker = sample_index + 1u;
-    stream_field_pixels[stream_field_fragment_key(in.pos, sample_index)] = s;
-    return vec4<f32>(0.0);
+    s.x = stream_field_fresh_axis(t.x, quad_count(select(field.cols, field.rows, cy), LATTICE_QUADS));
+    s.y = stream_field_fresh_axis(t.y, quad_count(select(field.rows, field.cols, cy), LATTICE_QUADS));
+    s.sample_marker = id.z + 1u;
+    stream_field_pixels[stream_field_key(id.xy, id.z)] = s;
 }
 fn stream_field_has(k: u32) -> bool {
     return k >= stream_field_ticket.start && k - stream_field_ticket.start < stream_field_ticket.len;
@@ -1473,11 +1489,16 @@ fn cs_stream_field_z(@builtin(global_invocation_id) id: vec3<u32>) {
     stream_field_pixels[p] = s;
 }
 
-@fragment fn fs_stream_field_final(in: FieldOut, @builtin(sample_index) sample_index: u32)
-    -> @location(0) vec4<f32> {
-    let s = stream_field_pixels[stream_field_fragment_key(in.pos, sample_index)];
+@fragment fn fs_stream_field_final(in: FieldOut) -> @location(0) vec4<f32> {
+    // MSAA scissor fringes can invoke this shader outside the tile. Check
+    // before unsigned subtraction: wrapping x = origin.x - 1 into u32::MAX
+    // can otherwise alias the last pixel of the preceding row in storage.
+    let pixel = vec2<u32>(in.pos.xy);
+    if (any(pixel < stream_field_tile.origin)
+        || any(pixel - stream_field_tile.origin >= stream_field_tile.extent)) { discard; }
+    let s = stream_field_pixels[stream_field_fragment_key(in.pos, 0u)];
     if (s.x.phase != 5u || s.y.phase != 5u || s.x.hit == 0u || s.y.hit == 0u
-        || s.sample_marker != sample_index + 1u) { return vec4<f32>(0.0); }
+        || s.sample_marker != 1u) { return vec4<f32>(0.0); }
     let cy = field_flag(FIELD_COLUMNS_ARE_Y);
     let fc = select(s.x.frac, s.y.frac, cy);
     let fr = select(s.y.frac, s.x.frac, cy);

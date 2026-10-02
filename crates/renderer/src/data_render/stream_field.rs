@@ -13,7 +13,20 @@ use wgpu::util::DeviceExt;
 
 pub(crate) const PIXEL_BYTES: u64 = 136;
 pub(crate) const STEP_BYTES: u64 = 32;
-const TILE_BYTES: u64 = 32;
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct TileUniform {
+    origin: [u32; 2],
+    extent: [u32; 2],
+    samples: u32,
+    chart_extent: [f32; 2],
+    _pad: u32,
+    viewport: [f32; 4],
+}
+
+const TILE_BYTES: u64 = std::mem::size_of::<TileUniform>() as u64;
+const _: () = assert!(TILE_BYTES == 48);
+pub(crate) const TILE_OVERHEAD_BYTES: u64 = TILE_BYTES + STEP_BYTES;
 
 #[derive(Clone, Copy)]
 pub(crate) struct Budget {
@@ -25,7 +38,7 @@ pub(crate) struct Budget {
 }
 
 pub(crate) struct Pipelines {
-    init: wgpu::RenderPipeline,
+    init: wgpu::ComputePipeline,
     axis: wgpu::ComputePipeline,
     z: wgpu::ComputePipeline,
     finish: wgpu::RenderPipeline,
@@ -44,7 +57,7 @@ impl Pipelines {
         if !matches!(samples, 1 | 4) {
             return Err(StreamError::InvalidLimits);
         }
-        let render = |entry, init| {
+        let render = |entry| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(entry),
                 layout: None,
@@ -64,11 +77,7 @@ impl Pipelines {
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
                         blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                        write_mask: if init {
-                            wgpu::ColorWrites::empty()
-                        } else {
-                            wgpu::ColorWrites::ALL
-                        },
+                        write_mask: wgpu::ColorWrites::ALL,
                     })],
                 }),
                 multiview_mask: None,
@@ -86,10 +95,10 @@ impl Pipelines {
             })
         };
         Ok(Self {
-            init: render("fs_stream_field_init", true),
+            init: compute("cs_stream_field_init"),
             axis: compute("cs_stream_field_axis"),
             z: compute("cs_stream_field_z"),
-            finish: render("fs_stream_field_final", false),
+            finish: render("fs_stream_field_final"),
             pick_init: compute("cs_stream_field_pick_init"),
             pick_final: compute("cs_stream_field_pick_final"),
             samples,
@@ -103,6 +112,7 @@ pub(crate) struct Resources {
     pipelines: Arc<Pipelines>,
     ledger: Arc<GpuLedger>,
     params: FieldParamsGpu,
+    chart_extent: [f32; 2],
     _buffers: [TrackedBuffer; 5],
     init_field: wgpu::BindGroup,
     axis_transform: wgpu::BindGroup,
@@ -218,6 +228,7 @@ impl Resources {
             pipelines,
             ledger,
             params: *params,
+            chart_extent: transform.pixel_to_ndc.map(|n| (2.0 / n).round()),
             _buffers: buffers,
             init_field,
             axis_transform,
@@ -469,10 +480,18 @@ impl Tile {
             bytes,
             wgpu::BufferUsages::STORAGE,
         )?;
+        let tile_params = TileUniform {
+            origin: [rect[0], rect[1]],
+            extent: [rect[2], rect[3]],
+            samples: shape.samples,
+            chart_extent: resources.chart_extent,
+            _pad: 0,
+            viewport,
+        };
         let meta = allocate_init(
             device,
             &resources.ledger,
-            bytemuck::cast_slice(&[rect[0], rect[1], rect[2], rect[3], shape.samples, 0, 0, 0]),
+            bytemuck::bytes_of(&tile_params),
             wgpu::BufferUsages::UNIFORM,
         )?;
         let init = bind(
@@ -516,12 +535,26 @@ impl Tile {
     pub(crate) fn record_init(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
-        initialized_target: &wgpu::TextureView,
     ) -> Result<RecordedStep, StreamError> {
         if self.action()? != Action::Initialize {
             return Err(StreamError::WrongState);
         }
-        self.record_draw(encoder, initialized_target, true);
+        {
+            // Enumerate the bounded tile independently of triangle coverage:
+            // MSAA helper/fringe invocations must not initialize another row.
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("stream field pixel initialization"),
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.gpu.resources.pipelines.init);
+            pass.set_bind_group(2, &self.gpu.resources.init_field, &[]);
+            pass.set_bind_group(3, &self.gpu.init, &[]);
+            pass.dispatch_workgroups(
+                self.gpu.rect[2].div_ceil(8),
+                self.gpu.rect[3].div_ceil(8),
+                self.gpu.resources.pipelines.samples,
+            );
+        }
         self.pending = true;
         Ok(self.token(None, None, None))
     }
@@ -628,7 +661,7 @@ impl Tile {
         if self.action()? != Action::Finalize {
             return Err(StreamError::WrongState);
         }
-        self.record_draw(encoder, initialized_target, false);
+        self.record_draw(encoder, initialized_target);
         self.pending = true;
         Ok(self.token(None, None, None))
     }
@@ -655,7 +688,7 @@ impl Tile {
         if self.following_action() != Action::Finalize {
             return Ok(false);
         }
-        self.record_draw(encoder, target, false);
+        self.record_draw(encoder, target);
         step.completes_tile = true;
         Ok(true)
     }
@@ -754,19 +787,10 @@ impl Tile {
         }
     }
 
-    fn record_draw(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        init: bool,
-    ) {
+    fn record_draw(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
         let r = &self.gpu.resources;
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some(if init {
-                "stream field raster initialization"
-            } else {
-                "stream field completed tile"
-            }),
+            label: Some("stream field completed tile"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target,
                 depth_slice: None,
@@ -782,16 +806,10 @@ impl Tile {
         pass.set_viewport(v[0], v[1], v[2], v[3], 0.0, 1.0);
         let tile = self.gpu.rect;
         pass.set_scissor_rect(tile[0], tile[1], tile[2], tile[3]);
-        if init {
-            pass.set_pipeline(&r.pipelines.init);
-            pass.set_bind_group(2, &r.init_field, &[]);
-            pass.set_bind_group(3, &self.gpu.init, &[]);
-        } else {
-            pass.set_pipeline(&r.pipelines.finish);
-            pass.set_bind_group(1, &r.final_style, &[]);
-            pass.set_bind_group(2, &r.final_field, &[]);
-            pass.set_bind_group(3, &self.gpu.finish, &[]);
-        }
+        pass.set_pipeline(&r.pipelines.finish);
+        pass.set_bind_group(1, &r.final_style, &[]);
+        pass.set_bind_group(2, &r.final_field, &[]);
+        pass.set_bind_group(3, &self.gpu.finish, &[]);
         pass.draw(0..6, 0..1);
     }
 }
@@ -1042,7 +1060,7 @@ mod tests {
                                 );
                                 let mut encoder =
                                     device.create_command_encoder(&Default::default());
-                                let init = tile.record_init(&mut encoder, &view).unwrap();
+                                let init = tile.record_init(&mut encoder).unwrap();
                                 assert_eq!(tile.action(), Err(StreamError::WrongState));
                                 submit_step(&queue, encoder, &mut tile, init);
                                 while let Action::Source(request) = tile.action().unwrap() {
@@ -1263,14 +1281,14 @@ mod tests {
         let view = target.create_view(&Default::default());
         let mut encoder = device.create_command_encoder(&Default::default());
         clear(&mut encoder, &view);
-        let recorded = tile.record_init(&mut encoder, &view).unwrap();
+        let recorded = tile.record_init(&mut encoder).unwrap();
         assert_eq!(tile.action(), Err(StreamError::WrongState));
         drop(encoder);
         tile.discard(recorded).unwrap();
         assert_eq!(tile.action().unwrap(), Action::Initialize);
         let mut encoder = device.create_command_encoder(&Default::default());
         clear(&mut encoder, &view);
-        let recorded = tile.record_init(&mut encoder, &view).unwrap();
+        let recorded = tile.record_init(&mut encoder).unwrap();
         submit_step(&queue, encoder, &mut tile, recorded);
         let Action::Source(request) = tile.action().unwrap() else {
             panic!("first source request");

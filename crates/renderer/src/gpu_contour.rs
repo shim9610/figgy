@@ -93,6 +93,9 @@ pub struct AnchorParamsGpu {
     /// Atlas cell height in pixels, for the overlap test.
     pub label_h_px: f32,
     pub label_vertices: u32,
+    /// Reserved CPU lane; callers retain zero for source compatibility.
+    /// The internal upload reuses its GPU copy for four Newton corrections,
+    /// corresponding to WGSL `AnchorParams.projection_steps` at offset 60.
     pub _pad0: u32,
 }
 
@@ -216,9 +219,17 @@ impl ContourLabelPipelines {
     /// `locate`/`grid_value` the fragment shader does (one SSoT block), so a label
     /// cannot land on a grid the lines were not drawn from.
     pub fn new(device: &wgpu::Device, field_bgl: &wgpu::BindGroupLayout) -> Self {
+        Self::with_anchor_source(device, field_bgl, include_str!("contour_anchor.wgsl"))
+    }
+
+    fn with_anchor_source(
+        device: &wgpu::Device,
+        field_bgl: &wgpu::BindGroupLayout,
+        anchor_source: &str,
+    ) -> Self {
         let anchor_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("figgy contour anchor shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("contour_anchor.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(anchor_source.into()),
         });
         let uniform = |binding: u32, visibility: wgpu::ShaderStages| wgpu::BindGroupLayoutEntry {
             binding,
@@ -319,6 +330,29 @@ impl ContourLabelPipelines {
             label_bgl,
             label_gap_bgl,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn legacy_projection_for_test(
+        device: &wgpu::Device,
+        field_bgl: &wgpu::BindGroupLayout,
+    ) -> Self {
+        // Differential oracle: the previously shipped fixed four corrections
+        // and 32-step search, using the same field sampling and output layout.
+        let source = include_str!("contour_anchor.wgsl");
+        let begin = source.find("    var s: ContourSample;\n").unwrap();
+        let end = source[begin..].find("        if (!s.hit) {").unwrap() + begin;
+        let mut legacy = source[..begin].to_owned();
+        legacy.push_str("    var s = contour_sample(p);\n    for (var i = 0u; i < 4u; i = i + 1u) {\n");
+        legacy.push_str(&source[end..]);
+        legacy = legacy.replace(
+            "while (hi - lo > 1u) {",
+            "for (var step = 0u; step < 32u; step = step + 1u) {\n        if (hi - lo <= 1u) { break; }",
+        );
+        let end_correction = "        if (!vec2_f32_is_finite(p)) {\n            cand[gid.x] = out;\n            return;\n        }\n    }";
+        assert!(legacy.contains(end_correction));
+        legacy = legacy.replace(end_correction, "        if (!vec2_f32_is_finite(p)) {\n            cand[gid.x] = out;\n            return;\n        }\n        s = contour_sample(p);\n    }");
+        Self::with_anchor_source(device, field_bgl, &legacy)
     }
 
     pub(crate) fn label_gap_bgl(&self) -> &wgpu::BindGroupLayout {
@@ -957,8 +991,15 @@ impl ContourLabelPlacementSlot {
             .automatic
             .as_ref()
             .expect("automatic contour slot has compute resources");
+        // Keep the public CPU record's reserved lane unchanged. Only the GPU
+        // copy carries the fixed four-correction compiler bound.
+        let gpu_params = AnchorParamsGpu { _pad0: 4, ..params };
         queue.write_buffer(&automatic.transform_buf, 0, bytemuck::bytes_of(transform));
-        queue.write_buffer(&automatic.anchor_params_buf, 0, bytemuck::bytes_of(&params));
+        queue.write_buffer(
+            &automatic.anchor_params_buf,
+            0,
+            bytemuck::bytes_of(&gpu_params),
+        );
         let total = params
             .lattice_x
             .saturating_mul(params.lattice_y)
@@ -1004,6 +1045,12 @@ pub(crate) fn try_collect<T: Copy>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn anchor_projection_uniform_keeps_its_existing_64_byte_layout() {
+        assert_eq!(std::mem::size_of::<AnchorParamsGpu>(), 64);
+        assert_eq!(std::mem::offset_of!(AnchorParamsGpu, _pad0), 60);
+    }
 
     #[test]
     fn contour_label_vertex_contract_matches_anchor_record_and_shader() {

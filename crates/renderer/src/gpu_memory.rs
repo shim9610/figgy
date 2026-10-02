@@ -310,12 +310,12 @@ pub(crate) struct RetiredBytes {
 impl RetiredBytes {
     pub(crate) fn retire(&self, bytes: u64) {
         self.total
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
                 n.checked_add(bytes)
             })
             .expect("retired GPU byte total overflow");
         self.pending
-            .fetch_update(Ordering::Release, Ordering::Relaxed, |n| {
+            .try_update(Ordering::Release, Ordering::Relaxed, |n| {
                 n.checked_add(bytes)
             })
             .expect("pending GPU byte total overflow");
@@ -331,7 +331,7 @@ impl RetiredBytes {
 
     pub(crate) fn complete(&self, bytes: u64) {
         self.total
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
                 n.checked_sub(bytes)
             })
             .expect("completed GPU byte batch exceeds retired total");
@@ -373,7 +373,7 @@ impl GpuLedger {
         self.retired[i].retire(bytes);
         // Saturating so a mis-paired credit reports zero rather than wrapping
         // to a nonsense total that would refuse every later allocation.
-        let _ = self.live[i].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
+        let _ = self.live[i].try_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
             Some(live.saturating_sub(bytes))
         });
     }
@@ -436,7 +436,7 @@ impl GpuLedger {
         let total = self.total_bytes();
         let _ = self
             .peak_bytes
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |peak| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |peak| {
                 (total > peak).then_some(total)
             });
     }
@@ -819,7 +819,7 @@ impl GpuByteCharge {
     /// commit; unlike dropping a GPU owner, this creates no retirement debt.
     pub(crate) fn transfer_to_external_accounting(mut self) {
         self.ledger.live[self.kind.index()]
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
                 live.checked_sub(self.bytes)
             })
             .expect("transferred GPU bytes are live");

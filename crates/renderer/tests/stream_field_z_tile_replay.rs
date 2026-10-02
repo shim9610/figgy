@@ -31,15 +31,19 @@ fn pixel_key(pos: vec4<f32>, sample_index: u32) -> u32 {
     return (sample_index * 23u + u32(pos.y)) * 37u + u32(pos.x);
 }
 
-@fragment fn fs_z_init(in: FieldOut, @builtin(sample_index) sample_index: u32)
-    -> @location(0) vec4<f32> {
+@fragment fn fs_z_init(in: FieldOut) -> @location(0) vec4<f32> {
+    let pixel = vec2<u32>(in.pos.xy);
+    if (any(pixel < vec2<u32>(3u, 2u)) || any(pixel >= vec2<u32>(34u, 21u))) { discard; }
+    // Fill shading is pixel-frequency; each physical sample retains its own
+    // state/marker while capturing the same canonical resident center.
+    let t = field_fragment_center_t(in.axis_t);
     let columns_are_y = field_flag(FIELD_COLUMNS_ARE_Y);
     let along = select(field.cols, field.rows, columns_are_y);
     let across = select(field.rows, field.cols, columns_are_y);
     let x = locate(field.x_base, field.x_len, quad_count(along, LATTICE_QUADS),
-        0u, in.axis_t.x, LATTICE_QUADS);
+        0u, t.x, LATTICE_QUADS);
     let y = locate(field.y_base, field.y_len, quad_count(across, LATTICE_QUADS),
-        1u, in.axis_t.y, LATTICE_QUADS);
+        1u, t.y, LATTICE_QUADS);
     var s: ZState;
     s.x_index = x.index;
     s.y_index = y.index;
@@ -51,8 +55,11 @@ fn pixel_key(pos: vec4<f32>, sample_index: u32) -> u32 {
     s.z10 = vec2<f32>(0.0);
     s.z01 = vec2<f32>(0.0);
     s.z11 = vec2<f32>(0.0);
-    s.sample_marker = sample_index + 1u;
-    z_states[pixel_key(in.pos, sample_index)] = s;
+    let sample_slots = arrayLength(&z_states) / (37u * 23u);
+    for (var sample_index = 0u; sample_index < sample_slots; sample_index += 1u) {
+        s.sample_marker = sample_index + 1u;
+        z_states[pixel_key(in.pos, sample_index)] = s;
+    }
     return vec4<f32>(0.0);
 }
 
@@ -99,6 +106,8 @@ fn cs_z_ticket(@builtin(global_invocation_id) id: vec3<u32>) {
 
 @fragment fn fs_z_final(in: FieldOut, @builtin(sample_index) sample_index: u32)
     -> @location(0) vec4<f32> {
+    let pixel = vec2<u32>(in.pos.xy);
+    if (any(pixel < vec2<u32>(3u, 2u)) || any(pixel >= vec2<u32>(34u, 21u))) { discard; }
     let clear = vec4<f32>(0.0);
     let s = z_states[pixel_key(in.pos, sample_index)];
     if (s.hit == 0u) { return clear; }

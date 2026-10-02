@@ -300,11 +300,10 @@ fn locate(base: u32, n: u32, count: u32, axis: u32, t: f32, lattice: u32) -> Cel
     let ascending = last >= first;
     var lo = 0u;
     var hi = count;
-    // `count` is bounded by the pool's column length, so 32 halvings settle it.
-    for (var step = 0u; step < 32u; step = step + 1u) {
-        if (hi - lo <= 1u) {
-            break;
-        }
+    // Each step strictly shrinks the unsigned bracket, so a u32 count takes
+    // at most 32 halvings. Keep the loop dynamic: nested fixed-trip searches
+    // can make software GPU compilers expand contour projection excessively.
+    while (hi - lo > 1u) {
         let mid = lo + (hi - lo) / 2u;
         let tm = boundary_t(base, n, mid, axis, lattice);
         if (!f32_is_finite(tm)) {
@@ -555,7 +554,9 @@ struct AnchorParams {
     label_h_px: f32,
     /// Vertices per label instance. CPU twin: `gpu_contour::LABEL_VERTICES`.
     label_vertices: u32,
-    _pad0: u32,
+    /// CPU supplies four Newton corrections. A uniform bound keeps software
+    /// GPU compilers from cloning the complete grid search for every step.
+    projection_steps: u32,
 };
 
 /// One label placement. CPU twin: `gpu_contour::LabelAnchorGpu` (32 B), and the
@@ -682,8 +683,15 @@ fn anchor_project(@builtin(global_invocation_id) gid: vec3<u32>) {
     );
 
     var p = px_to_t(cell_lo + 0.5 * step);
-    var s = contour_sample(p);
-    for (var i = 0u; i < 4u; i = i + 1u) {
+    var s: ContourSample;
+    let projection_steps = min(ap.projection_steps, 4u);
+    // Sample at the seed and after every correction, including the final one.
+    // One call site avoids duplicating the same nested grid search in the IR.
+    for (var i = 0u; i <= projection_steps; i = i + 1u) {
+        s = contour_sample(p);
+        if (i == projection_steps) {
+            break;
+        }
         if (!s.hit) {
             cand[gid.x] = out;
             return;
@@ -704,7 +712,6 @@ fn anchor_project(@builtin(global_invocation_id) gid: vec3<u32>) {
             cand[gid.x] = out;
             return;
         }
-        s = contour_sample(p);
     }
     if (!s.hit) {
         cand[gid.x] = out;

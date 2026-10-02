@@ -150,9 +150,28 @@ impl Canvas {
     }
 
     pub fn rotate_at(&mut self, degrees: f32, cx: f32, cy: f32) {
-        self.ts = self
-            .ts
-            .pre_concat(Transform::from_rotate_at(degrees, cx, cy));
+        // Exact quarter turns keep pixel axes orthogonal. sin/cos rounding at
+        // 90 degrees would otherwise perturb half-pixel baseline snapping.
+        let basis = match degrees.rem_euclid(360.0) {
+            0.0 => Some((1.0, 0.0, 0.0, 1.0)),
+            90.0 => Some((0.0, 1.0, -1.0, 0.0)),
+            180.0 => Some((-1.0, 0.0, 0.0, -1.0)),
+            270.0 => Some((0.0, -1.0, 1.0, 0.0)),
+            _ => None,
+        };
+        let rotation = if let Some((sx, ky, kx, sy)) = basis {
+            Transform::from_row(
+                sx,
+                ky,
+                kx,
+                sy,
+                cx - sx * cx - kx * cy,
+                cy - ky * cx - sy * cy,
+            )
+        } else {
+            Transform::from_rotate_at(degrees, cx, cy)
+        };
+        self.ts = self.ts.pre_concat(rotation);
     }
 
     // Primitives.
@@ -304,7 +323,6 @@ impl Canvas {
     }
 
     /// The current transform's translation, or `None` when it rotates/scales.
-    /// Text uses this to pick the resample-free integer blit path.
     pub fn translation(&self) -> Option<(f32, f32)> {
         let t = self.ts;
         if t.sx == 1.0 && t.sy == 1.0 && t.kx == 0.0 && t.ky == 0.0 {
@@ -314,11 +332,41 @@ impl Canvas {
         }
     }
 
+    /// A unit quarter-turn plus translation expressed in the unrotated glyph
+    /// axes (R^-1 * t). This lets swash handle the local subpixel phase once.
+    /// General rotations/scales retain the filtered fallback.
+    pub(crate) fn orthogonal_text_transform(&self) -> Option<(u8, f32, f32)> {
+        let t = self.ts;
+        let turn = match (t.sx, t.ky, t.kx, t.sy) {
+            (1.0, 0.0, 0.0, 1.0) => 0,
+            (0.0, 1.0, -1.0, 0.0) => 1,
+            (-1.0, 0.0, 0.0, -1.0) => 2,
+            (0.0, -1.0, 1.0, 0.0) => 3,
+            _ => return None,
+        };
+        Some((turn, t.sx * t.tx + t.ky * t.ty, t.kx * t.tx + t.sy * t.ty))
+    }
+
     /// Direct integer-position src-over blit of a glyph alpha mask tinted
     /// with `color`. No filtering — the mask must already be rasterized at
     /// the right subpixel phase (swash render offset). This is the crisp
     /// text path; AA happens exactly once, in the glyph rasterizer.
     pub fn blit_mask(&mut self, ix: i32, iy: i32, w: u32, h: u32, alpha: &[u8], color: &Color) {
+        self.blit_mask_orthogonal(ix, iy, w, h, alpha, color, 0);
+    }
+
+    /// Rotate pixel cells by an exact quarter turn, without filtering or a
+    /// temporary glyph pixmap. Coordinates already include local translation.
+    pub(crate) fn blit_mask_orthogonal(
+        &mut self,
+        ix: i32,
+        iy: i32,
+        w: u32,
+        h: u32,
+        alpha: &[u8],
+        color: &Color,
+        turn: u8,
+    ) {
         if w == 0 || h == 0 || alpha.len() < (w as usize * h as usize) {
             return;
         }
@@ -329,13 +377,19 @@ impl Canvas {
         let px = self.pix.pixels_mut();
 
         for row in 0..h as i32 {
-            let dy = iy + row;
-            if dy < 0 || dy >= dst_h {
-                continue;
-            }
             for col in 0..w as i32 {
-                let dx = ix + col;
-                if dx < 0 || dx >= dst_w {
+                let x = ix + col;
+                let y = iy + row;
+                // Map pixel cells, not their top-left points: a reversed axis
+                // needs -1 so [x, x+1) becomes [-x-1, -x).
+                let (dx, dy) = match turn {
+                    0 => (x, y),
+                    1 => (-y - 1, x),
+                    2 => (-x - 1, -y - 1),
+                    3 => (y, -x - 1),
+                    _ => unreachable!("quarter turn must be in 0..4"),
+                };
+                if dx < 0 || dx >= dst_w || dy < 0 || dy >= dst_h {
                     continue;
                 }
                 let a = alpha[(row * w as i32 + col) as usize];
@@ -364,9 +418,8 @@ impl Canvas {
         }
     }
 
-    /// Transformed glyph blit — only for rotated text (axis titles), where
-    /// resampling is unavoidable. Translation-only text must use
-    /// [`Self::blit_mask`] instead.
+    /// Filtered glyph blit for general transforms. Text at unit quarter turns
+    /// uses `blit_mask_orthogonal` instead, preserving rasterized coverage.
     pub fn draw_mask(&mut self, x: f32, y: f32, w: u32, h: u32, alpha: &[u8], color: &Color) {
         if w == 0 || h == 0 || alpha.len() < (w as usize * h as usize) {
             return;

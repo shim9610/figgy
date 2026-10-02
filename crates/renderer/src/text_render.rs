@@ -530,12 +530,14 @@ fn draw_char(
 ) -> f32 {
     let advance = glyph_extents(font, size, ch).advance;
 
-    match canvas.translation() {
+    match canvas.orthogonal_text_transform() {
         // Crisp path: snap to the pixel grid, carry the sub-pixel x phase
         // into the rasterizer, and blit without any filtering.
-        Some((tx, ty)) => {
+        Some((turn, tx, ty)) => {
             let gx = pen_x + tx;
-            let gy = (baseline + ty).round() as i32;
+            // Half-up snapping is invariant under integer translation, including
+            // the negative local coordinates of a rotated canvas.
+            let gy = (baseline + ty + 0.5).floor() as i32;
             let mut ix = gx.floor() as i32;
             let mut xbin = ((gx - gx.floor()) * 4.0).round() as u8;
             if xbin == 4 {
@@ -543,11 +545,19 @@ fn draw_char(
                 ix += 1;
             }
             with_glyph_mask(font, size, ch, xbin, |m| {
-                canvas.blit_mask(ix + m.left, gy - m.top, m.width, m.height, &m.data, color);
+                canvas.blit_mask_orthogonal(
+                    ix + m.left,
+                    gy - m.top,
+                    m.width,
+                    m.height,
+                    &m.data,
+                    color,
+                    turn,
+                );
             });
         }
-        // Rotated text (axis titles): resampling through the transform is
-        // unavoidable; render at phase 0.
+        // General transforms (non-right-angle rotation or scaling) retain
+        // the filtered fallback. Axis titles use the crisp path above.
         None => {
             with_glyph_mask(font, size, ch, 0, |m| {
                 canvas.draw_mask(
