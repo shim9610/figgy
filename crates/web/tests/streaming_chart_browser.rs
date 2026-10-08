@@ -247,7 +247,8 @@ async fn automatic_range_api_requests_only_exact_typed_array_slices() {
     assert_eq!(request.source_revisions(), revisions);
 
     let mut completed = false;
-    let mut submitted_ranges = 0usize;
+    let mut requested_offsets = Vec::new();
+    let mut last_submitted = 0.0;
     for _ in 0..128 {
         let request = chart
             .auto_stream_chart_request_ranges()
@@ -262,6 +263,9 @@ async fn automatic_range_api_requests_only_exact_typed_array_slices() {
                 assert_eq!(range_ids.len(), lengths.len());
                 assert_eq!(range_ids.len(), encodings.len());
 
+                assert_eq!(offsets.len(), 2);
+                assert_eq!(offsets[0], offsets[1]);
+                requested_offsets.push(offsets[0]);
                 let chunks = js_sys::Array::new();
                 for index in 0..range_ids.len() {
                     let start = offsets[index] as u32;
@@ -282,7 +286,6 @@ async fn automatic_range_api_requests_only_exact_typed_array_slices() {
                         chunks,
                     )
                     .expect("submit exact source ranges");
-                submitted_ranges += 1;
             }
             "backpressure" | "all_submitted" => yield_to_browser().await,
             "complete" => {
@@ -291,10 +294,17 @@ async fn automatic_range_api_requests_only_exact_typed_array_slices() {
             }
             status => panic!("unexpected automatic range status {status}"),
         }
+        let status: serde_json::Value = serde_json::from_str(&chart.stream_status().unwrap()).unwrap();
+        let submitted = status["submitted_primitives"].as_f64().expect("submitted primitives");
+        assert!(submitted >= last_submitted, "initial fit progress must not rewind");
+        last_submitted = submitted;
         chart.frame().expect("present automatic range progress");
+        chart.streaming_gpu_ready().await.expect("range stream GPU completion");
+        yield_to_browser().await;
     }
     assert!(completed, "automatic range stream did not complete");
-    assert!(submitted_ranges > 1, "small chunks must require multiple exact range requests");
+    assert_eq!(requested_offsets, vec![0.0, 2.0, 4.0, 0.0, 2.0, 4.0],
+        "one forward preview and one final exact pass; no prefix replays");
 
     let config: renderer::Config =
         serde_json::from_str(&chart.get_config().expect("get fitted range config"))

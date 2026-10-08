@@ -5851,14 +5851,28 @@ impl Renderer {
     pub fn end_gpu_frame(&mut self) {
         let batch = self.gpu_ledger.take_retirement();
         let (pool_retired, pool_bytes) = self.pool.take_retirement();
-        if pool_bytes == 0 && batch.iter().all(|bytes| *bytes == 0) {
+        if pool_bytes == 0 && batch.is_empty() {
             return;
         }
         let ledger = Arc::clone(&self.gpu_ledger);
+        #[cfg(not(target_arch = "wasm32"))]
         self.queue.on_submitted_work_done(move || {
             ledger.complete_retirement(batch);
             pool_retired.complete(pool_bytes);
         });
+        #[cfg(target_arch = "wasm32")]
+        {
+            // wgpu requires a Send completion callback even for WebGPU, but
+            // browser buffer handles must stay on their owning JS thread.
+            let (sender, receiver) = futures_channel::oneshot::channel();
+            self.queue.on_submitted_work_done(move || { let _ = sender.send(()); });
+            wasm_bindgen_futures::spawn_local(async move {
+                if receiver.await.is_ok() {
+                    ledger.complete_retirement(batch);
+                    pool_retired.complete(pool_bytes);
+                }
+            });
+        }
     }
 
     /// Service submitted GPU work and retirement callbacks without waiting.
@@ -8412,14 +8426,7 @@ impl Renderer {
             let state = chart_states
                 .get_mut(&chart)
                 .expect("resident handoff target chart remains registered");
-            state.config.top_x.min = rendered_config.top_x.min;
-            state.config.top_x.max = rendered_config.top_x.max;
-            state.config.bottom_x.min = rendered_config.bottom_x.min;
-            state.config.bottom_x.max = rendered_config.bottom_x.max;
-            state.config.left_y.min = rendered_config.left_y.min;
-            state.config.left_y.max = rendered_config.left_y.max;
-            state.config.right_y.min = rendered_config.right_y.min;
-            state.config.right_y.max = rendered_config.right_y.max;
+            streaming_runtime::copy_stream_fit_axes(&mut state.config, rendered_config);
             state.stream_auto_fit_padding = None;
             state.revisions.desired = desired;
             state.revisions.config = config;
@@ -21577,6 +21584,14 @@ mod tests {
                 timeout: Some(std::time::Duration::from_secs(30)),
             })
             .unwrap();
+        // The shared device may dispatch completion callbacks on another
+        // test's poll thread. Wait for retirement itself, not only queue work.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while r.gpu_memory_usage().retired_bytes_of(crate::GpuResourceKind::StreamingUpload) != 0 {
+            assert!(std::time::Instant::now() < deadline, "upload retirement timed out");
+            r.service_gpu_completions().unwrap();
+            std::thread::yield_now();
+        }
         assert_eq!(
             r.gpu_memory_usage()
                 .bytes_of(crate::GpuResourceKind::StreamingUpload),

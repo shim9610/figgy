@@ -256,7 +256,7 @@ impl Renderer {
         explicit_view: Option<&ChartView>,
         target: &wgpu::Texture,
     ) -> StreamResult<wgpu::SubmissionIndex> {
-        let snapshot = self.auto_stream_snapshot(ticket.job);
+        let mut snapshot = self.auto_stream_snapshot(ticket.job);
         let view = snapshot
             .as_ref()
             .map(|s| &s.view)
@@ -325,11 +325,14 @@ impl Renderer {
         let pending_fit = self.pending_auto_fit_config(ticket.job);
         match pending_fit {
             Ok(Some(config)) => {
-                drop((encoder, chunk, buffers, auxiliary, snapshot));
-                self.discard_stream_recording(ticket)?;
-                let result = self.restart_auto_stream_with_config(ticket.job, config);
-                self.end_gpu_frame();
-                return result;
+                drop(snapshot);
+                if let Err(error) = self.update_auto_stream_fit(ticket.job, config, false) {
+                    drop((encoder, chunk, buffers, auxiliary));
+                    self.discard_stream_recording(ticket)?;
+                    self.end_gpu_frame();
+                    return Err(error);
+                }
+                snapshot = self.auto_stream_snapshot(ticket.job);
             }
             Err(error) => {
                 drop((encoder, chunk, buffers));
@@ -339,6 +342,8 @@ impl Renderer {
             }
             Ok(None) => {}
         }
+        let view = snapshot.as_ref().map(|snapshot| &snapshot.view)
+            .or(explicit_view).ok_or(StreamError::WrongState)?;
         let encoded = (|| -> StreamResult<Option<SharedCharge>> {
             for (index, column) in columns.iter().enumerate() {
                 let handle = chunk.column_handle(*column)?;

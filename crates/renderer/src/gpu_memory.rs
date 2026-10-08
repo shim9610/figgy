@@ -11,7 +11,7 @@
 //! buffers `dispatch` writes — wgpu keeps the rest alive through the bind
 //! group), so a walk over named fields would under-report exactly where the
 //! per-series scratch lives. Charging at the allocation and crediting at the
-//! owner's `Drop` sees those bytes; nothing has to expose a handle it does not
+//! owner's `Drop` retires those bytes; nothing has to expose a handle it does not
 //! otherwise need.
 //!
 //! Two rules make the number safe to spend against a budget:
@@ -19,7 +19,8 @@
 //! 1. **Released is not free yet.** A dropped handle moves its bytes from
 //!    `live` to `retired` rather than out of the report, because wgpu defers
 //!    the device-side release until the queue drains. A submission boundary
-//!    snapshots retired bytes; only that submission's completion credits them.
+//!    snapshots retired bytes and tracked handles; only that submission's
+//!    completion destroys those resources and credits them.
 //! 2. **The total is never cached.** [`GpuLedger::snapshot`] is cheap
 //!    (a handful of relaxed loads) and callers read it immediately before an
 //!    allocation decision, so a budget check never runs against a stale sum.
@@ -285,13 +286,40 @@ fn texture_extent_bytes(
     total
 }
 
+/// Owns the actual allocation until the submission boundary is drained.
+/// Drop also handles renderer teardown when no live charge retains the ledger.
+#[derive(Debug)]
+enum RetiredResource {
+    Buffer(wgpu::Buffer),
+    Texture(wgpu::Texture),
+}
+impl Drop for RetiredResource {
+    fn drop(&mut self) {
+        match self {
+            Self::Buffer(buffer) => buffer.destroy(),
+            Self::Texture(texture) => texture.destroy(),
+        }
+    }
+}
+
+pub(crate) struct RetirementBatch {
+    bytes: [u64; GPU_RESOURCE_KIND_COUNT],
+    resources: Vec<RetiredResource>,
+}
+impl RetirementBatch {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.resources.is_empty() && self.bytes.iter().all(|bytes| *bytes == 0)
+    }
+}
+
 /// Running GPU byte counts, shared by every renderer subsystem.
 ///
-/// Interior mutability is by atomics, not a lock: the draw phase holds `&self`
-/// and must be able to charge an allocation without a mutable borrow, and the
-/// renderer takes no new locks (see the design's invariant list).
+/// Counters remain atomic. Final tracked owners queue physical resources for
+/// destruction at the host's submission/completion boundary. This short lock
+/// is used for retirement, never while issuing a draw or calling a GPU driver.
 #[derive(Debug)]
 pub struct GpuLedger {
+    pending_resources: std::sync::Mutex<Vec<RetiredResource>>,
     live: [AtomicU64; GPU_RESOURCE_KIND_COUNT],
     retired: [RetiredBytes; GPU_RESOURCE_KIND_COUNT],
     creations: [AtomicU64; GPU_RESOURCE_KIND_COUNT],
@@ -347,6 +375,8 @@ impl Default for GpuLedger {
 impl GpuLedger {
     pub fn new() -> Self {
         Self {
+            // host-alloc: W1-d
+            pending_resources: std::sync::Mutex::new(Vec::new()),
             live: std::array::from_fn(|_| AtomicU64::new(0)),
             retired: std::array::from_fn(|_| RetiredBytes::default()),
             creations: std::array::from_fn(|_| AtomicU64::new(0)),
@@ -386,12 +416,26 @@ impl GpuLedger {
         self.complete_retirement(self.take_retirement());
     }
 
-    pub(crate) fn take_retirement(&self) -> [u64; GPU_RESOURCE_KIND_COUNT] {
-        std::array::from_fn(|i| self.retired[i].take_pending())
+    fn retire_resource(&self, kind: GpuResourceKind, bytes: u64, resource: RetiredResource) {
+        let mut resources = self.pending_resources.lock().unwrap();
+        // host-alloc: W1-d
+        resources.push(resource);
+        self.record_retire(kind, bytes);
     }
 
-    pub(crate) fn complete_retirement(&self, batch: [u64; GPU_RESOURCE_KIND_COUNT]) {
-        for (slot, bytes) in self.retired.iter().zip(batch) {
+    pub(crate) fn take_retirement(&self) -> RetirementBatch {
+        let mut resources = self.pending_resources.lock().unwrap();
+        RetirementBatch {
+            bytes: std::array::from_fn(|i| self.retired[i].take_pending()),
+            resources: std::mem::take(&mut *resources),
+        }
+    }
+
+    pub(crate) fn complete_retirement(&self, batch: RetirementBatch) {
+        // Destroy before crediting: a JS handle drop alone does not release
+        // WebGPU allocations promptly, even after submitted work completes.
+        drop(batch.resources);
+        for (slot, bytes) in self.retired.iter().zip(batch.bytes) {
             slot.complete(bytes);
         }
     }
@@ -600,10 +644,9 @@ impl TrackedBuffer {
     /// Charge `buffer`'s size to `kind` and hold the charge.
     pub fn new(ledger: &Arc<GpuLedger>, kind: GpuResourceKind, buffer: wgpu::Buffer) -> Self {
         let bytes = buffer.size();
-        Self {
-            buffer,
-            charge: shared_byte_charge(ledger, kind, bytes),
-        }
+        let charge = shared_resource_charge(ledger, kind, bytes,
+            Some(RetiredResource::Buffer(buffer.clone())));
+        Self { buffer, charge }
     }
 
     /// The charged size, as accounted (not re-read from the buffer).
@@ -640,10 +683,9 @@ pub struct TrackedTexture {
 impl TrackedTexture {
     pub fn new(ledger: &Arc<GpuLedger>, kind: GpuResourceKind, texture: wgpu::Texture) -> Self {
         let bytes = texture_bytes(&texture);
-        Self {
-            texture,
-            charge: shared_byte_charge(ledger, kind, bytes),
-        }
+        let charge = shared_resource_charge(ledger, kind, bytes,
+            Some(RetiredResource::Texture(texture.clone())));
+        Self { texture, charge }
     }
 
     pub fn charged_bytes(&self) -> u64 {
@@ -759,8 +801,9 @@ fn buffer_init_bytes(contents_len: u64) -> u64 {
 /// device resources — wgpu handles are refcounted internally. An
 /// inline charge would be cloned with the struct: double-charged on create,
 /// double-credited on drop, and the report would drift by the number of live
-/// clones. Behind a shared refcount it is credited when the last clone dies,
-/// which is when the last handle to those buffers dies.
+/// clones. Behind a shared refcount it retires when the last clone dies.
+/// Tracked resources remain owned by the ledger until the submission boundary
+/// completes; only then are their allocations destroyed and bytes credited.
 ///
 /// Each GPU lifetime owner creates one shared charge. Cloning the owner reuses
 /// it, and an exact-key frame path does not allocate another charge.
@@ -779,8 +822,15 @@ pub fn shared_charge(
 }
 
 fn shared_byte_charge(ledger: &Arc<GpuLedger>, kind: GpuResourceKind, bytes: u64) -> SharedCharge {
+    shared_resource_charge(ledger, kind, bytes, None)
+}
+
+fn shared_resource_charge(
+    ledger: &Arc<GpuLedger>, kind: GpuResourceKind, bytes: u64,
+    resource: Option<RetiredResource>,
+) -> SharedCharge {
     // host-alloc: W1-b
-    Arc::new(GpuByteCharge::new(ledger, kind, bytes))
+    Arc::new(GpuByteCharge::with_resource(ledger, kind, bytes, resource))
 }
 
 /// A charge held on behalf of bytes whose handle is not itself trackable.
@@ -791,6 +841,7 @@ fn shared_byte_charge(ledger: &Arc<GpuLedger>, kind: GpuResourceKind, bytes: u64
 /// this guard; the last shared owner moves the lump to retired accounting.
 #[derive(Debug)]
 pub struct GpuByteCharge {
+    resource: Option<RetiredResource>,
     ledger: Arc<GpuLedger>,
     kind: GpuResourceKind,
     bytes: u64,
@@ -798,8 +849,16 @@ pub struct GpuByteCharge {
 
 impl GpuByteCharge {
     pub fn new(ledger: &Arc<GpuLedger>, kind: GpuResourceKind, bytes: u64) -> Self {
+        Self::with_resource(ledger, kind, bytes, None)
+    }
+
+    fn with_resource(
+        ledger: &Arc<GpuLedger>, kind: GpuResourceKind, bytes: u64,
+        resource: Option<RetiredResource>,
+    ) -> Self {
         ledger.record_alloc(kind, bytes);
         Self {
+            resource,
             ledger: Arc::clone(ledger),
             kind,
             bytes,
@@ -829,13 +888,53 @@ impl GpuByteCharge {
 
 impl Drop for GpuByteCharge {
     fn drop(&mut self) {
-        self.ledger.record_retire(self.kind, self.bytes);
+        if let Some(resource) = self.resource.take() {
+            self.ledger.retire_resource(self.kind, self.bytes, resource);
+        } else {
+            self.ledger.record_retire(self.kind, self.bytes);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tracked_buffer_destroy_waits_for_shared_owner_and_completed_submission() {
+        let (device, queue) = crate::data_render::shared_device().unwrap();
+        let ledger = Arc::new(GpuLedger::new());
+        let raw = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("retirement lifetime test"), size: 16,
+            usage: wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
+        });
+        let tracked = TrackedBuffer::new(&ledger, GpuResourceKind::StreamingUpload, raw.clone());
+        let prepared_owner = tracked.shared_charge();
+        drop(tracked);
+        assert!(ledger.take_retirement().is_empty());
+        assert_eq!(ledger.total_bytes(), 16);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        encoder.clear_buffer(&raw, 0, None);
+        drop(prepared_owner);
+        let batch = ledger.take_retirement();
+        assert_eq!(batch.resources.len(), 1);
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let submission = queue.submit([encoder.finish()]);
+        device.poll(wgpu::PollType::Wait {
+            submission_index: Some(submission), timeout: Some(std::time::Duration::from_secs(30)),
+        }).unwrap();
+        assert!(pollster::block_on(scope.pop()).is_none(), "recorded work must remain valid");
+        assert_eq!(ledger.snapshot().retired_bytes(), 16);
+        ledger.complete_retirement(batch);
+        assert_eq!(ledger.total_bytes(), 0);
+        // Hold a raw observer handle to prevent backend/JS garbage collection.
+        // The allocation still has to be physically destroyed at completion.
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        encoder.clear_buffer(&raw, 0, None);
+        queue.submit([encoder.finish()]);
+        assert!(pollster::block_on(scope.pop()).is_some(), "retired allocation was not destroyed");
+    }
 
     #[test]
     fn live_owner_transfer_does_not_create_retirement_debt() {
@@ -957,7 +1056,7 @@ mod tests {
 
         let batch = ledger.take_retirement();
         assert_eq!(ledger.total_bytes(), 4096, "submission does not free bytes");
-        assert_eq!(ledger.take_retirement(), [0; GPU_RESOURCE_KIND_COUNT]);
+        assert!(ledger.take_retirement().is_empty());
         ledger.complete_retirement(batch);
         assert_eq!(ledger.total_bytes(), 0);
     }

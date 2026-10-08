@@ -235,7 +235,7 @@ impl Renderer {
             draw.field_fit = None;
             self.end_gpu_frame();
             if let Some(config) = self.pending_auto_fit_config(job)? {
-                self.restart_auto_stream_with_config(job, config)?;
+                self.update_auto_stream_fit(job, config, false)?;
                 return Ok(StreamDrawRequestStatus::Backpressure);
             }
             return self.request_stream_field(job);

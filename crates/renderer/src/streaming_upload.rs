@@ -76,7 +76,7 @@ pub(crate) struct ChunkStatisticsPlan {
 pub(crate) struct RecordedChunk {
     pub work: TrackedBuffer,
     pub columns: Vec<UploadedColumn>,
-    staging: Option<TrackedBuffer>,
+    pub(crate) staging: Option<TrackedBuffer>,
 }
 
 impl RecordedChunk {
@@ -238,6 +238,7 @@ fn validate_source_layout(
     device_limit: u64,
     ledger_bytes: u64,
     reusable_work_bytes: u64,
+    reusable_staging_bytes: u64,
 ) -> Result<(Vec<UploadedColumn>, u64), ChunkUploadError> {
     if columns.is_empty() || columns.len() > budget.max_columns {
         return Err(StreamError::InvalidRange.into());
@@ -256,7 +257,7 @@ fn validate_source_layout(
     let new_work_bytes = if reusable_work_bytes >= work_bytes { 0 } else { work_bytes };
     let total = ledger_bytes
         .checked_add(budget.pool_bytes)
-        .and_then(|bytes| bytes.checked_add(work_bytes))
+        .and_then(|bytes| bytes.checked_add(if reusable_staging_bytes >= work_bytes { 0 } else { work_bytes }))
         .and_then(|bytes| bytes.checked_add(new_work_bytes))
         .ok_or(StreamError::Overflow)?;
     if input_bytes > budget.max_input_bytes
@@ -390,7 +391,7 @@ pub(crate) fn record_source_chunk_collecting_statistics_reusing<'a>(
 ) -> Result<RecordedChunk, ChunkUploadError> {
     record_source_chunk_collecting_statistics_reusing_observed(
         device, encoder, ledger, budget, columns, source_at, statistics_plans,
-        reusable_work, preferred_work_bytes, &mut |_, _, _, _| {},
+        reusable_work, preferred_work_bytes, &mut |_, _, _, _| {}, None,
     )
 }
 
@@ -405,6 +406,7 @@ pub(crate) fn record_source_chunk_collecting_statistics_reusing_observed<'a>(
     reusable_work: Option<&TrackedBuffer>,
     preferred_work_bytes: u64,
     observe: &mut dyn FnMut(usize, usize, f32, f32),
+    reusable_staging: Option<&TrackedBuffer>,
 ) -> Result<RecordedChunk, ChunkUploadError> {
     if statistics_plans.len() != columns.len() {
         return Err(StreamError::InvalidPayload.into());
@@ -448,6 +450,7 @@ pub(crate) fn record_source_chunk_collecting_statistics_reusing_observed<'a>(
             .min(u64::from(limits.max_storage_buffer_binding_size)),
         ledger_bytes,
         reusable_work.map_or(0, |work| work.size()),
+        reusable_staging.map_or(0, |staging| staging.size()),
     )?;
     let create = |label, size, usage, mapped_at_creation| {
         create_buffer_checked(
@@ -461,7 +464,12 @@ pub(crate) fn record_source_chunk_collecting_statistics_reusing_observed<'a>(
         )
         .map(|buffer| TrackedBuffer::new(ledger, GpuResourceKind::StreamingUpload, buffer))
     };
-    let staging = create("stream chunk staging", work_bytes, wgpu::BufferUsages::COPY_SRC, true)?;
+    let staging = if let Some(staging) = reusable_staging.filter(|staging| staging.size() >= work_bytes) {
+        staging.clone()
+    } else {
+        create("stream chunk staging", work_bytes,
+            wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::MAP_WRITE, true)?
+    };
     let written: Result<(), ChunkUploadError> = (|| {
         let mut mapped = staging
             .slice(..)

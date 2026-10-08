@@ -15,7 +15,21 @@ Code is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE). 
 
 <a id="public-release-candidate--renderer-0120--figgy-0100"></a>
 
-## Source release — renderer 0.12.1 / figgy 0.10.1
+## Source release — renderer 0.12.2 / figgy 0.10.2
+
+This patch stops repeated prefix replay during initial streamed fitting. Earlier
+pixels are rescaled as new chunks arrive; one final exact replay replaces the
+preview only when complete. Streaming upload buffers are reused and retired GPU
+resources are explicitly destroyed after GPU completion. Numeric axis and colorbar
+labels adapt to the available space without shrinking the font. Fitted tick settings
+are committed with the final range, and progress no longer rewinds during fitting.
+Wait for `complete` / `job.done`, not just the submitted count reaching the total.
+
+Public API signatures and the Config JSON schema are unchanged; model remains
+0.7.2. Update the Git revision and rebuild the browser package. Online Studio
+deployment is separate from this source release.
+
+### Previous patch — renderer 0.12.1 / figgy 0.10.1
 
 This patch fixes initial streamed auto-fit: partial data and axes use the same
 progressively fitted range, internal fitting keeps its current job, and final
@@ -141,7 +155,7 @@ npx wasm-pack@0.15.0 build crates/web --release --target web --locked
 
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # or public Git source — version 0.12.1, not on crates.io.
+renderer = { path = "crates/renderer" }   # or public Git source — version 0.12.2, not on crates.io.
 wgpu     = "30"
 ```
 
@@ -890,8 +904,10 @@ charts do not support immediate picking. Scaled PNG export uses replayable
 original ranges in a separate GPU path, so the source must remain available.
 Streaming does not enable auto-fit by itself. For a new chart with unknown
 bounds, request fitting before the first chunk: each partial display uses the
-bounds processed so far, and completion commits the final range. Ordinary
-redraws then preserve zoomed or restored ranges. Request auto-fit again to show
+bounds processed so far. Earlier pixels are rescaled while new chunks advance;
+a final exact replay replaces the preview only when ready. Preview widths and
+sharpness may change temporarily. Completion commits the fitted range and tick
+settings. Ordinary redraws then preserve zoomed or restored ranges. Request auto-fit again to show
 all current data; restore saved axis ranges to return to a historical view.
 See [initial fitting and call order](crates/renderer/WASM.md#streaming-fit)
 for the facade, raw WASM, and native automatic-streaming APIs.
@@ -936,13 +952,14 @@ submit through `pick_chart(chart_id, GpuPickRequest)` or
 `WindowedRenderer::pick_chart_at`. The renderer derives axis transforms and the
 data-area clip from its authoritative `Config`; the public low-level
 `GpuPickEngine` surface from 0.7 is no longer exposed. Picking reads the GPU
-column pool directly: there is no CPU point mirror and no internal `Mutex`.
+column pool directly without a CPU point mirror or a picking-state lock.
 Use `pick_chart_data` / `WindowedRenderer::pick_chart_data_at` for the tagged
 point, histogram-bin, matrix-cell, and contour-level result.
 
 Every mutation — `Renderer::prepare` and the export prepare path — runs behind
-an `&mut self` boundary and does not introduce a shared lock inside the
-renderer. `Renderer::paint_prepared` records through `&self` against an owned
+an `&mut self` boundary. GPU resource retirement uses a short internal lock
+to collect handles; it is released before GPU calls. `Renderer::paint_prepared`
+records through `&self` against an owned
 `PreparedFrame` token, so host paint callbacks that only hand out shared access
 need no wrapper lock either (`Renderer` is `Send + Sync`).
 
@@ -1180,7 +1197,15 @@ figgy는 Rust로 작성한 과학·공학용 차트 라이브러리다. **축·�
 
 <a id="공개-후보--renderer-0120--figgy-0100"></a>
 
-## 소스 릴리스 — renderer 0.12.1 / figgy 0.10.1
+## 소스 릴리스 — renderer 0.12.2 / figgy 0.10.2
+
+초기 스트림 맞춤 중 앞부분을 반복해서 읽고 그리던 문제를 고쳤다. 먼저 그린 데이터는 새 범위로 리스케일하고 새 청크를 이어 그린다. 마지막에는 원본으로 한 번 정확히 다시 그려, 완성된 화면으로 교체한다. 업로드 버퍼는 재사용하며 사용이 끝난 GPU 자원은 GPU 작업 완료 후 명시적으로 해제한다.
+
+숫자 눈금과 색상 막대 라벨은 글씨 크기를 유지하면서 화면 공간에 맞춰 표시 간격을 조절한다. 맞춤이 끝나면 축 범위와 눈금 설정을 함께 반영한다. 진행량은 되감기지 않으며, 제출량이 전체량에 도달했더라도 `complete` 또는 `job.done`까지 기다려야 한다.
+
+공개 API 형식과 Config JSON 스키마는 그대로이며 model은 0.7.2를 유지한다. 사용하려면 Git 리비전을 갱신하고 브라우저 패키지를 다시 빌드해야 한다. 온라인 스튜디오 배포는 소스 릴리스와 별개다.
+
+### 이전 패치 — renderer 0.12.1 / figgy 0.10.1
 
 첫 스트림의 자동 맞춤을 수정한 패치 버전이다. 중간 결과의 데이터와 축이 같은 범위를 사용하며, 내부 맞춤 과정에서 작업이 반복 교체되거나 최종 범위 반영 뒤 불필요하게 다시 시작되는 문제를 고쳤다. 맞춤이 끝난 뒤 일반 재그리기는 사용자가 정한 범위를 유지한다.
 
@@ -1287,7 +1312,7 @@ npx wasm-pack@0.15.0 build crates/web --release --target web --locked
 
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # 또는 공개 Git 소스 — 버전 0.12.1, crates.io 미배포.
+renderer = { path = "crates/renderer" }   # 또는 공개 Git 소스 — 버전 0.12.2, crates.io 미배포.
 wgpu     = "30"
 ```
 
@@ -1824,7 +1849,7 @@ pub struct Config {
 
 `job.cancel()`은 새 작업을 멈추고 이미 제출된 GPU 작업이 끝난 뒤 자원을 정리한다. 완료된 패킹 캐시에서는 GPU의 점·선을 선택하고 원본 행 인덱스를 반환할 수 있다. 그 밖의 비상주 스트림은 즉시 피킹을 지원하지 않는다. 배율을 지정한 PNG 출력은 화면 이미지를 늘리는 대신 원본을 다시 읽어 그린다. 따라서 호스트는 다시 그리기와 출력을 위해 원본을 유지해야 한다.
 
-스트리밍 자체는 자동 맞춤을 켜지 않는다. 범위를 모르는 새 차트는 첫 청크 전에 맞춤을 요청한다. 처리한 청크까지의 범위로 중간 결과를 표시하고, 완료하면 최종 범위를 설정에 반영한다. 이후 일반 재그리기는 확대·이동한 범위나 저장한 범위를 유지한다. 전체 데이터를 다시 보려면 자동 맞춤을 재요청하고, 과거의 특정 범위로 돌아가려면 저장한 축 범위를 복원한다. 웹 래퍼·저수준 WASM·네이티브의 호출 순서는 [범위 맞춤 사용법](crates/renderer/WASM.md#streaming-fit)을 참고한다.
+스트리밍 자체는 자동 맞춤을 켜지 않는다. 범위를 모르는 새 차트는 첫 청크 전에 맞춤을 요청한다. 앞서 그린 데이터 이미지를 새 범위로 리스케일하고 새 청크를 이어 그린다. 중간 화면의 선 두께·선명도는 잠시 달라질 수 있다. 마지막에 원본으로 한 번 정확히 다시 그려 완성된 화면으로 교체하고, 축 범위와 눈금 설정을 함께 확정한다. 이후 일반 재그리기는 확대·이동한 범위나 저장한 범위를 유지한다. 전체 데이터를 다시 보려면 자동 맞춤을 재요청하고, 과거의 특정 범위로 돌아가려면 저장한 축 범위를 복원한다. 웹 래퍼·저수준 WASM·네이티브의 호출 순서는 [범위 맞춤 사용법](crates/renderer/WASM.md#streaming-fit)을 참고한다.
 
 지원 범위와 웹 API는 [WASM 가이드](crates/renderer/WASM.md#exact-streaming)를 참고한다. 원본을 빠짐없이 처리하더라도 GPU 백엔드나 렌더 패스 경계에 따라 안티앨리어싱 픽셀값은 달라질 수 있다.
 
@@ -1838,9 +1863,9 @@ pub struct Config {
 
 컬럼 교체·제거·재배치는 풀, 차트, 리비전, 피킹 캐시를 먼저 준비하고 성공했을 때만 반영한다. 동기 준비 과정에서 오류가 나면 기존 상태를 유지하며, 마지막 반영 단계에서는 새 메모리를 할당하지 않는다. `remove_column`은 해당 컬럼을 참조하는 모든 등록 시리즈를 함께 제거하지만 `Config::legend`는 바꾸지 않는다. 범례까지 함께 바꾸려면 `remove_column_with_chart_config`를 사용한다. 이 호출은 풀, 영향을 받는 모든 시리즈, 해당 차트의 새 `Config`를 하나의 트랜잭션으로 반영한다. 웹 래퍼는 자동 범례와 직접 편집한 범례를 구분해 이 API를 사용한다.
 
-Renderer 0.9부터 GPU 피킹은 차트 ID를 받는 API로 제공한다. `enable_gpu_picking()`을 한 번 호출하고, 필요하면 첫 선택 전에 `prepare_gpu_picking_for_chart(chart_id)`로 준비한다. 이후 `pick_chart(chart_id, GpuPickRequest)` 또는 `WindowedRenderer::pick_chart_at`을 호출한다. 축 변환과 데이터 영역 자르기는 렌더러가 `Config`에서 계산한다. 0.7의 저수준 `GpuPickEngine`은 더 이상 공개하지 않는다. 피킹은 GPU 컬럼 풀을 직접 읽으며 CPU 점 복사본이나 내부 `Mutex`를 두지 않는다. 점·막대·셀·등고선을 구분하는 결과가 필요하면 `pick_chart_data` / `WindowedRenderer::pick_chart_data_at`을 사용한다.
+Renderer 0.9부터 GPU 피킹은 차트 ID를 받는 API로 제공한다. `enable_gpu_picking()`을 한 번 호출하고, 필요하면 첫 선택 전에 `prepare_gpu_picking_for_chart(chart_id)`로 준비한다. 이후 `pick_chart(chart_id, GpuPickRequest)` 또는 `WindowedRenderer::pick_chart_at`을 호출한다. 축 변환과 데이터 영역 자르기는 렌더러가 `Config`에서 계산한다. 0.7의 저수준 `GpuPickEngine`은 더 이상 공개하지 않는다. 피킹은 GPU 컬럼 풀을 직접 읽으며 CPU 점 복사본이나 피킹 상태용 잠금을 두지 않는다. 점·막대·셀·등고선을 구분하는 결과가 필요하면 `pick_chart_data` / `WindowedRenderer::pick_chart_data_at`을 사용한다.
 
-`Renderer::prepare`와 출력 준비 과정의 상태 변경은 모두 `&mut self`에서 수행한다. `Renderer::paint_prepared`는 `&self`로 토큰의 명령을 기록하므로 공유 참조만 제공하는 paint 콜백에서도 별도 잠금이 필요하지 않다. `Renderer`는 `Send + Sync`다.
+`Renderer::prepare`와 출력 준비 과정의 상태 변경은 모두 `&mut self`에서 수행한다. `Renderer::paint_prepared`는 `&self`로 토큰의 명령을 기록하므로 공유 참조만 제공하는 paint 콜백에서도 별도 잠금이 필요하지 않다. `Renderer`는 `Send + Sync`다. GPU 자원을 회수할 때는 내부 잠금으로 반환 대기 핸들을 모으고, 잠금을 해제한 뒤 GPU API를 호출한다.
 
 토큰은 확정된 파이프라인·바인드 그룹·버퍼·패널 배치와 함께 컬럼 할당 세대, 풀 배치 세대, 출력 파이프라인 세대, 각 `ChartView`의 내용 리비전을 보관한다. 하나라도 바뀌면 기록 전에 `FiggyError::StalePreparedFrame`을 반환하므로 다음 프레임에서 다시 준비해야 한다.
 

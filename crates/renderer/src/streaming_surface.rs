@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::gpu_memory::{GpuLedger, GpuResourceKind, TrackedTexture};
+use crate::gpu_memory::{GpuLedger, GpuResourceKind, TrackedBuffer, TrackedTexture};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StreamSurfaceError {
@@ -55,6 +55,9 @@ impl StreamSurfaceSpec {
 /// Cached by the runtime for a format/sample-count pair, not per update.
 pub(crate) struct StreamTransfer {
     pipeline: wgpu::RenderPipeline,
+    overlay_pipeline: wgpu::RenderPipeline,
+    rescale_pipeline: wgpu::RenderPipeline,
+    rescale_layout: wgpu::BindGroupLayout,
     layout: wgpu::BindGroupLayout,
     format: wgpu::TextureFormat,
     sample_count: u32,
@@ -98,9 +101,9 @@ impl StreamTransfer {
                 bind_group_layouts: &[Some(&layout)],
                 immediate_size: 0,
             });
-            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            let make_pipeline = |layout: &wgpu::PipelineLayout, entry, blend| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("stream prefix sample transfer"),
-                layout: Some(&pipeline_layout),
+                layout: Some(layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some("vs"),
@@ -115,19 +118,47 @@ impl StreamTransfer {
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
-                    entry_point: Some("transfer"),
+                    entry_point: Some(entry),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
-                        blend: None,
+                        blend,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                 }),
                 multiview_mask: None,
                 cache: None,
             });
+            let pipeline = make_pipeline(&pipeline_layout, "transfer", None);
+            let overlay_pipeline = make_pipeline(&pipeline_layout, "transfer", Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING));
+            let rescale_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("stream preview rescale"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2, multisampled: sample_count > 1,
+                        }, count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(32),
+                        }, count: None,
+                    },
+                ],
+            });
+            let rescale_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("stream preview rescale"), bind_group_layouts: &[Some(&rescale_layout)], immediate_size: 0,
+            });
+            let rescale_pipeline = make_pipeline(&rescale_pipeline_layout, "rescale", None);
             Self {
                 pipeline,
+                overlay_pipeline,
+                rescale_pipeline,
+                rescale_layout,
                 layout,
                 format,
                 sample_count,
@@ -145,6 +176,7 @@ pub(crate) struct StreamSurface {
     resolved: Option<TrackedTexture>,
     resolved_view: Option<wgpu::TextureView>,
     source: wgpu::BindGroup,
+    rescale: Option<(TrackedBuffer, wgpu::BindGroup, wgpu::BindGroup)>,
 }
 
 impl StreamSurface {
@@ -231,6 +263,7 @@ impl StreamSurface {
                 resolved,
                 resolved_view,
                 source,
+                rescale: None,
             }
         }))
         .map_err(|_| StreamSurfaceError::AllocationFailed)
@@ -244,12 +277,88 @@ impl StreamSurface {
         self.resolved.as_ref().unwrap_or(&self.display)
     }
 
+    pub(crate) fn prepare_rescale(
+        &mut self, device: &wgpu::Device, ledger: &Arc<GpuLedger>, transfer: &StreamTransfer,
+        budget: u64, pool_bytes: u64,
+    ) -> Result<(), StreamSurfaceError> {
+        if self.rescale.is_none() {
+            if ledger.total_bytes().saturating_add(pool_bytes).saturating_add(32) > budget {
+                return Err(StreamSurfaceError::TooLarge);
+            }
+            // gpu-alloc: caller
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("stream preview rescale parameters"), size: 32,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let buffer = TrackedBuffer::new(ledger, GpuResourceKind::Uniform, buffer);
+            let source = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("stream preview rescale source"), layout: &transfer.rescale_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.prefix.create_view(&Default::default())) },
+                    wgpu::BindGroupEntry { binding: 1, resource: buffer.as_entire_binding() },
+                ],
+            });
+            let scratch = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("stream preview rescale scratch"), layout: &transfer.layout,
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.display_view) }],
+            });
+            self.rescale = Some((buffer, source, scratch));
+        }
+        Ok(())
+    }
+
+    // Reuse the display attachment as scratch; no data-sized or per-refit textures.
+    pub(crate) fn record_rescale(
+        &mut self, device: &wgpu::Device, queue: &wgpu::Queue, ledger: &Arc<GpuLedger>,
+        transfer: &StreamTransfer, encoder: &mut wgpu::CommandEncoder,
+        mapping: &[f32; 8], clip: [u32; 4], budget: u64, pool_bytes: u64,
+    ) -> Result<(), StreamSurfaceError> {
+        self.prepare_rescale(device, ledger, transfer, budget, pool_bytes)?;
+        let (buffer, source, scratch) = self.rescale.as_ref().unwrap();
+        let mut bytes = [0u8; 32];
+        for (destination, value) in bytes.chunks_exact_mut(4).zip(mapping) {
+            destination.copy_from_slice(&value.to_le_bytes());
+        }
+        queue.write_buffer(buffer, 0, &bytes);
+        let prefix_view = self.prefix.create_view(&Default::default());
+        for (target, pipeline, source, clipped) in [
+            (&self.display_view, &transfer.rescale_pipeline, source, true),
+            (&prefix_view, &transfer.pipeline, scratch, false),
+        ] {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("stream preview rescale"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target, depth_slice: None, resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+                })], ..Default::default()
+            });
+            if clipped {
+                if clip[2] == 0 || clip[3] == 0 { continue; }
+                pass.set_scissor_rect(clip[0], clip[1], clip[2], clip[3]);
+            }
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, source, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        Ok(())
+    }
+
     /// P must have been initialized by the caller. Run only when content changes.
     /// Suffix is drawn after transfer, before the final resolve, and never into P.
     pub(crate) fn record_display(
         &self,
         transfer: &StreamTransfer,
         encoder: &mut wgpu::CommandEncoder,
+        suffix: impl FnOnce(&mut wgpu::RenderPass<'_>),
+    ) -> Result<(), StreamSurfaceError> {
+        self.record_display_layers(transfer, encoder, None, |_| {}, suffix)
+    }
+
+    pub(crate) fn record_display_layers(
+        &self, transfer: &StreamTransfer, encoder: &mut wgpu::CommandEncoder,
+        background: Option<wgpu::Color>,
+        underlay: impl FnOnce(&mut wgpu::RenderPass<'_>),
         suffix: impl FnOnce(&mut wgpu::RenderPass<'_>),
     ) -> Result<(), StreamSurfaceError> {
         if transfer.format != self.spec.format || transfer.sample_count != self.spec.sample_count {
@@ -262,7 +371,7 @@ impl StreamSurface {
                 depth_slice: None,
                 resolve_target: self.resolved_view.as_ref(),
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    load: wgpu::LoadOp::Clear(background.unwrap_or(wgpu::Color::TRANSPARENT)),
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -271,7 +380,10 @@ impl StreamSurface {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(&transfer.pipeline);
+        underlay(&mut pass);
+        pass.set_viewport(0.0, 0.0, self.spec.width as f32, self.spec.height as f32, 0.0, 1.0);
+        pass.set_scissor_rect(0, 0, self.spec.width, self.spec.height);
+        pass.set_pipeline(if background.is_some() { &transfer.overlay_pipeline } else { &transfer.pipeline });
         pass.set_bind_group(0, &self.source, &[]);
         pass.draw(0..3, 0..1);
         suffix(&mut pass);

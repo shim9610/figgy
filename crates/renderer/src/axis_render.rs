@@ -586,26 +586,10 @@ fn draw_colorbar(
     // formats through the numeric path rather than being silently dropped.
     let ls = &axis.label_style;
     if ls.visible && ls.label_visible {
-        for value in &majors {
-            let pos = point_on_rect_side(axis_fraction(*value, axis), &side, &rect);
-            match ls.format {
-                LabelFormat::Power => {
-                    let rt = format_tick_power(*value, ls.significant_digits, ls);
-                    draw_tick_label_rich(canvas, &rt, pos, side.clone(), axis, fp);
-                }
-                _ => {
-                    let text = format_tick_value(
-                        *value,
-                        &ls.format,
-                        ls.significant_digits,
-                        &axis.scale,
-                        effective_major_spacing(axis),
-                        axis.min,
-                        axis.max,
-                    );
-                    draw_tick_label(canvas, &text, pos, side.clone(), axis, fp);
-                }
-            }
+        for label in visible_numeric_labels(axis, side.clone(), fp, &majors, |value| {
+            point_on_rect_side(axis_fraction(value, axis), &side, &rect)
+        }) {
+            label.draw(canvas, side.clone(), axis, fp);
         }
     }
 
@@ -1163,29 +1147,10 @@ fn draw_axis(
                 draw_tick_label(canvas, &label.text, pos, side.clone(), axis, fp);
             }
         } else {
-            for v in &majors {
-                let pos = value_to_screen(*v, axis, side.clone(), da);
-                match ls.format {
-                    LabelFormat::Power => {
-                        let rt = format_tick_power(*v, ls.significant_digits, ls);
-                        draw_tick_label_rich(canvas, &rt, pos, side.clone(), axis, fp);
-                    }
-                    _ => {
-                        // Decimals must derive from the spacing the walker
-                        // actually used, or a guarded fallback would emit ticks
-                        // at 0.5 steps with 0-decimal labels.
-                        let text = format_tick_value(
-                            *v,
-                            &ls.format,
-                            ls.significant_digits,
-                            &axis.scale,
-                            effective_major_spacing(axis),
-                            axis.min,
-                            axis.max,
-                        );
-                        draw_tick_label(canvas, &text, pos, side.clone(), axis, fp);
-                    }
-                }
+            for label in visible_numeric_labels(axis, side.clone(), fp, &majors, |value| {
+                value_to_screen(value, axis, side.clone(), da)
+            }) {
+                label.draw(canvas, side.clone(), axis, fp);
             }
         }
     }
@@ -1653,6 +1618,111 @@ fn format_tick_value(
             format!("{:.*}", decimals, value)
         }
     }
+}
+
+enum NumericTickText {
+    Plain(String),
+    Power(RichText),
+}
+
+struct NumericTickLabel {
+    position: (f32, f32),
+    interval: (f32, f32),
+    text: NumericTickText,
+}
+
+impl NumericTickLabel {
+    fn draw(&self, canvas: &mut Canvas, side: Side, axis: &AxisOptions, fp: FontPolicy) {
+        match &self.text {
+            NumericTickText::Plain(text) => {
+                draw_tick_label(canvas, text, self.position, side, axis, fp)
+            }
+            NumericTickText::Power(text) => {
+                draw_tick_label_rich(canvas, text, self.position, side, axis, fp)
+            }
+        }
+    }
+}
+
+/// Keep numeric labels readable at the current scale without changing the
+/// document's requested ticks/grid or shrinking the font. The same placement
+/// and glyph metrics are used for measuring and drawing, including exponents.
+fn visible_numeric_labels(
+    axis: &AxisOptions,
+    side: Side,
+    fp: FontPolicy,
+    majors: &[f64],
+    position: impl Fn(f64) -> (f32, f32),
+) -> Vec<NumericTickLabel> {
+    let ls = &axis.label_style;
+    let labels: Vec<_> = majors
+        .iter()
+        .filter_map(|&value| {
+            let (text, metrics) = if matches!(ls.format, LabelFormat::Power) {
+                let text = format_tick_power(value, ls.significant_digits, ls);
+                let metrics = measure_rich_text(&text, fp);
+                (NumericTickText::Power(text), metrics)
+            } else {
+                let text = format_tick_value(
+                    value,
+                    &ls.format,
+                    ls.significant_digits,
+                    &axis.scale,
+                    effective_major_spacing(axis),
+                    axis.min,
+                    axis.max,
+                );
+                let metrics =
+                    measure_plain_text(&text, &ls.label_font, ls.font_size, false, false, fp);
+                (NumericTickText::Plain(text), metrics)
+            };
+            let position = position(value);
+            let (x, y) = label_origin(
+                side.clone(),
+                position,
+                axis.major_tick_length,
+                (ls.label_offset_x, ls.label_offset_y),
+                metrics,
+            );
+            let interval = match side {
+                Side::Top | Side::Bottom => (x, x + metrics.width),
+                Side::Left | Side::Right => (y - metrics.ascent, y + metrics.descent),
+            };
+            (interval.0.is_finite() && interval.1.is_finite()).then_some(NumericTickLabel {
+                position,
+                interval,
+                text,
+            })
+        })
+        .collect();
+    // Half an em also scales with HiDPI/PNG export, unlike a fixed pixel gap.
+    let gap = ls.font_size * 0.5;
+    let mut stride = 1;
+    loop {
+        let mut previous: Option<(f32, f32)> = None;
+        let fits = labels.iter().step_by(stride).all(|label| {
+            let current = label.interval;
+            let fits =
+                previous.is_none_or(|last| current.0 >= last.1 + gap || last.0 >= current.1 + gap);
+            previous = Some(current);
+            fits
+        });
+        if fits {
+            break;
+        }
+        // Regular 1/2/5 multiples avoid alternating crowded and sparse labels.
+        let decade = 10usize.pow(stride.ilog10());
+        stride = match stride / decade {
+            1 => 2 * decade,
+            2 => 5 * decade,
+            _ => 10 * decade,
+        };
+    }
+    labels
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, label)| (index % stride == 0).then_some(label))
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -2301,6 +2371,138 @@ mod tests {
         assert_eq!(f(150.0, 50.0), "150");
         assert_eq!(f(-0.5, 0.5), "-0.5");
         assert_eq!(f(1.5, 0.5), "1.5");
+    }
+
+    #[test]
+    fn numeric_labels_do_not_collide_on_small_scaled_or_inverted_axes() {
+        let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+            .lock()
+            .unwrap();
+        let da = DataArea(crate::layout::Rect {
+            x: 60,
+            y: 20,
+            width: 220,
+            height: 160,
+        });
+        for fp in [FontPolicy::Standard, FontPolicy::Handwritten] {
+            for side in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
+                for inverted in [false, true] {
+                    for (scale, format, min, max, spacing) in [
+                        (AxisScale::Linear, LabelFormat::Decimal, -1e6, 1e6, 1e5),
+                        (
+                            AxisScale::Linear,
+                            LabelFormat::Scientific,
+                            -1e-6,
+                            1e-6,
+                            1e-7,
+                        ),
+                        (AxisScale::Linear, LabelFormat::Power, -1e6, 1e6, 1e5),
+                        (AxisScale::Logarithmic, LabelFormat::Power, 1e-9, 1e9, 1.0),
+                    ] {
+                        let mut axis = default_config().bottom_x;
+                        axis.scale = scale;
+                        axis.label_style.format = format;
+                        axis.label_style.font_size = 24.0;
+                        axis.min = min;
+                        axis.max = max;
+                        axis.major_spacing = spacing;
+                        axis.inverted = inverted;
+                        let original = axis.clone();
+                        let majors = major_tick_values(&axis);
+                        let labels =
+                            visible_numeric_labels(&axis, side.clone(), fp, &majors, |value| {
+                                value_to_screen(value, &axis, side.clone(), &da)
+                            });
+                        assert!(
+                            labels.len() >= 2 && labels.len() < majors.len(),
+                            "crowded axes must retain useful, separated labels"
+                        );
+                        let mut intervals: Vec<_> =
+                            labels.iter().map(|label| label.interval).collect();
+                        intervals.sort_by(|a, b| a.0.total_cmp(&b.0));
+                        for pair in intervals.windows(2) {
+                            assert!(
+                                pair[1].0 - pair[0].1 >= 12.0 - 1e-4,
+                                "numeric glyph bounds must leave half an em of space"
+                            );
+                        }
+                        let distances: Vec<_> = labels
+                            .windows(2)
+                            .map(|pair| match side {
+                                Side::Top | Side::Bottom => {
+                                    (pair[1].position.0 - pair[0].position.0).abs()
+                                }
+                                Side::Left | Side::Right => {
+                                    (pair[1].position.1 - pair[0].position.1).abs()
+                                }
+                            })
+                            .collect();
+                        assert!(
+                            distances.iter().all(|d| (d - distances[0]).abs() < 0.01),
+                            "label spacing must be regular, including logarithmic axes"
+                        );
+                        assert_eq!(
+                            axis, original,
+                            "display density must not rewrite requested ticks or font size"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn numeric_label_density_recovers_on_resize_zoom_and_font_changes() {
+        let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+            .lock()
+            .unwrap();
+        let mut axis = default_config().bottom_x;
+        axis.min = 0.0;
+        axis.max = 1e6;
+        axis.major_spacing = 1e5;
+        axis.label_style.font_size = 24.0;
+        let labels = |axis: &AxisOptions, width| {
+            let da = DataArea(crate::layout::Rect {
+                x: 60,
+                y: 20,
+                width,
+                height: 160,
+            });
+            visible_numeric_labels(
+                axis,
+                Side::Bottom,
+                FontPolicy::Standard,
+                &major_tick_values(axis),
+                |value| value_to_screen(value, axis, Side::Bottom, &da),
+            )
+        };
+        let crowded = labels(&axis, 220);
+        let wide = labels(&axis, 2000);
+        assert_eq!(
+            wide.len(),
+            major_tick_values(&axis).len(),
+            "wide axes restore every label"
+        );
+        assert!(wide.len() > crowded.len());
+        let mut smaller_font = axis.clone();
+        smaller_font.label_style.font_size = 10.0;
+        assert!(labels(&smaller_font, 220).len() > crowded.len());
+        let mut zoomed = axis.clone();
+        zoomed.max = 2e5;
+        assert_eq!(
+            labels(&zoomed, 400).len(),
+            3,
+            "zoom restores labels without requiring another fit"
+        );
+        let mut hidpi = axis.clone();
+        hidpi.label_style.font_size *= 2.0;
+        hidpi.major_tick_length *= 2.0;
+        let scaled = labels(&hidpi, 440);
+        assert_eq!(
+            scaled.len(),
+            crowded.len(),
+            "HiDPI scales glyphs and gaps together"
+        );
     }
 
     #[test]
