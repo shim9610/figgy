@@ -8852,7 +8852,12 @@ impl Renderer {
         self.pending_defrag
     }
 
+    /// Settle queued stream cancellations before a host chooses its draw path,
+    /// then perform pending pool compaction. The return value reports only
+    /// whether compaction changed the pool; stream retirement may also occur
+    /// when it is false.
     pub fn process_pending_maintenance(&mut self) -> Result<bool> {
+        self.service_stream_requests();
         if !self.pending_defrag {
             return Ok(false);
         }

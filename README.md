@@ -15,7 +15,15 @@ Code is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE). 
 
 <a id="public-release-candidate--renderer-0120--figgy-0100"></a>
 
-## Source release — renderer 0.12.3 / figgy 0.10.3
+## Source release — renderer 0.12.4 / figgy 0.10.4
+
+Returning from a streaming chart to a resident chart now applies the current
+window's display coordinates and clipping on the first frame. Queued stream
+cancellation is processed before choosing the draw path, and cancellation alone
+requests a redraw. Saved axis ranges are preserved. Public API signatures and
+the Config JSON schema are unchanged; model remains 0.7.2.
+
+### Previous patch — renderer 0.12.3 / figgy 0.10.3
 
 Precise solid lines retain their visible connections to distant offscreen points,
 including the first frame of a chart created with explicit axis ranges. Replacing
@@ -165,7 +173,7 @@ npx wasm-pack@0.15.0 build crates/web --release --target web --locked
 
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # or public Git source — version 0.12.3, not on crates.io.
+renderer = { path = "crates/renderer" }   # or public Git source — version 0.12.4, not on crates.io.
 wgpu     = "30"
 ```
 
@@ -1207,7 +1215,11 @@ figgy는 Rust로 작성한 과학·공학용 차트 라이브러리다. **축·�
 
 <a id="공개-후보--renderer-0120--figgy-0100"></a>
 
-## 소스 릴리스 — renderer 0.12.3 / figgy 0.10.3
+## 소스 릴리스 — renderer 0.12.4 / figgy 0.10.4
+
+스트림 차트에서 상주 차트로 돌아올 때 첫 화면의 선이 축 밖으로 새거나 중간에서 잘리던 문제를 고쳤다. 그리기 경로를 선택하기 전에 예약된 스트림 취소를 처리해, 복귀 즉시 창 크기에 맞는 좌표와 잘라내기 영역을 적용한다. 취소만 해도 다음 프레임을 예약하며, 저장된 축 범위는 바꾸지 않는다. 공개 API 형식과 Config JSON 스키마는 그대로이며 model은 0.7.2를 유지한다.
+
+### 이전 패치 — renderer 0.12.3 / figgy 0.10.3
 
 정밀 스타일의 실선에서 화면 밖의 먼 점으로 이어지는 선이 사라지는 문제를 고쳤다. 자동 맞춤 없이 범위를 지정한 새 차트의 첫 화면에서도 연결선을 표시한다. 설정·시리즈·표시 범위를 교체하거나 스트림을 취소하면 이전 자동 맞춤 요청을 해제해, 복원한 차트에 이전 요청이 남지 않도록 했다.
 
@@ -1328,7 +1340,7 @@ npx wasm-pack@0.15.0 build crates/web --release --target web --locked
 
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # 또는 공개 Git 소스 — 버전 0.12.3, crates.io 미배포.
+renderer = { path = "crates/renderer" }   # 또는 공개 Git 소스 — 버전 0.12.4, crates.io 미배포.
 wgpu     = "30"
 ```
 

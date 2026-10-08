@@ -4953,7 +4953,10 @@ fn interrupt_is_queued_only_for_automatic_streams() {
         crate::RenderInterruptStatus::StreamCancelQueued
     );
     assert!(r.is_streaming_chart(chart_id));
-    r.service_stream_requests();
+    // The public frame-maintenance boundary must settle cancellation even
+    // without pool compaction, before the host chooses a resident draw path.
+    assert!(!r.has_pending_maintenance());
+    assert!(!r.process_pending_maintenance().unwrap());
     assert!(!r.is_streaming_chart(chart_id));
     assert_eq!(
         r.interrupt_render(chart_id).unwrap(),

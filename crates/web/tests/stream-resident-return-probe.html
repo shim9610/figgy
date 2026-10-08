@@ -1,0 +1,103 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Stream to resident display handoff</title>
+<style>body{font:16px sans-serif;margin:0}canvas{display:block}</style>
+<p id="result">Running…</p><canvas></canvas>
+<script type="module">
+import init, { FiggyChart } from '../pkg/figgy.js';
+window.probe = (async () => {
+  await init();
+  const canvas = document.querySelector('canvas');
+  const params = new URLSearchParams(location.search);
+  const width = Number(params.get('width') || 1200);
+  const height = Number(params.get('height') || 800);
+  const partial = params.has('partial');
+  const cancelOnly = params.has('cancelOnly');
+  const dpr = devicePixelRatio || 1;
+  canvas.style.width = `${width}px`; canvas.style.height = `${height}px`;
+  canvas.width = Math.round(width*dpr); canvas.height = Math.round(height*dpr);
+  const chart = await FiggyChart.create(canvas);
+  const capture = () => {
+    chart.frame();
+    const copy = new OffscreenCanvas(canvas.width, canvas.height);
+    const ctx = copy.getContext('2d'); ctx.drawImage(canvas, 0, 0);
+    return {copy, pixels:ctx.getImageData(0,0,copy.width,copy.height).data};
+  };
+  const red = (p,i) => p[i]>120 && p[i+1]<90 && p[i+2]<90 && p[i+3]>16;
+  try {
+    // Include the full-resolution accumulation surface at DPR 2.
+    chart.configure_streaming(1,2,2,1024*1024,128*1024*1024);
+    chart.configure_auto_residency(512*1024*1024,0);
+    chart.register_column_f64('rx',Float64Array.from({length:31},(_,i)=>i*1e-6));
+    chart.register_column_f64('ry',Float64Array.from({length:31},(_,i)=>-.385+.001*Math.sin(i*1.3)));
+    chart.add_line_series('resident','rx','ry',2,'');
+    const series=JSON.parse(chart.get_series());
+    series[0].render_type.Line.line.line_color={r:1,g:0,b:0,a:1};
+    chart.set_series(JSON.stringify(series));
+    const config=JSON.parse(chart.get_config());
+    config.chart_area.width=800;config.chart_area.height=600;
+    config.legend.visible=false;
+    for(const key of ['bottom_x','top_x']){config[key].min=3.8e-6;config[key].max=14.5e-6;config[key].major_spacing=2e-6;}
+    for(const key of ['left_y','right_y']){config[key].min=-.3862;config[key].max=-.3833;config[key].major_spacing=.0005;}
+    chart.set_config(JSON.stringify(config));
+    const saved=chart.get_config(), declarations=chart.get_series();
+    const before=capture();await chart.wait_submitted_work();
+    chart.set_series('[]');
+    const ids=['sx','sy'],revisions=new Float64Array([1,1]);
+    const sources=[Float64Array.from({length:2049},(_,i)=>i/2048),Float64Array.from({length:2049},(_,i)=>Math.sin(i/200))];
+    chart.register_streaming_columns(ids,revisions,sources);
+    chart.add_line_series('stream','sx','sy',2,'');
+    const streamSeries=JSON.parse(chart.get_series());
+    streamSeries[0].render_type.Line.line.line_color={r:1,g:0,b:0,a:1};
+    chart.set_series(JSON.stringify(streamSeries));
+    const streamConfig=JSON.parse(saved);
+    for(const key of ['bottom_x','top_x','left_y','right_y']){streamConfig[key].min=-1;streamConfig[key].max=1;streamConfig[key].major_spacing=.5;}
+    chart.set_config(JSON.stringify(streamConfig));
+    chart.request_auto_streaming_chart(256);
+    let complete=false;
+    for(let i=0;i<128;i++){
+      const step=chart.auto_stream_chart_step(ids,revisions,sources);
+      chart.frame();await chart.wait_submitted_work();
+      if(step.status==='complete'){complete=true;break;}
+      if(partial && step.submitted_primitives>0)break;
+    }
+    if(!partial && !complete)throw Error('stream not complete');
+    if(partial && complete)throw Error('partial case unexpectedly completed');
+    // Studio queues cancellation, evicts the stream sources, then restores
+    // the resident document before its next animation frame.
+    const interruption=chart.interrupt_render();
+    if(cancelOnly){
+      // No configuration edit or pointer event may be needed to retire a
+      // cancelled stream on an otherwise clean canvas.
+      const cancelled=capture();
+      let redPixels=0;
+      for(let i=0;i<cancelled.pixels.length;i+=4)if(red(cancelled.pixels,i))redPixels++;
+      const status=JSON.parse(chart.stream_status()).status;
+      if(status!=='cancelled'||redPixels)throw Error(`cancel-only: ${status}, red=${redPixels}`);
+      await chart.wait_submitted_work();
+    }
+    for(const id of ids)chart.remove_column(id);
+    chart.set_series(declarations);chart.set_config(saved);
+    const returned=capture();await chart.wait_submitted_work();
+    const unchanged=chart.get_config()===saved;
+    chart.on_press(canvas.width/2,canvas.height/2);
+    const selected=capture();await chart.wait_submitted_work();
+    const mismatch=p=>{
+      let count=0;for(let i=0;i<p.length;i+=4)if(red(p,i)!==red(before.pixels,i))count++;
+      return count;
+    };
+    let baselineRed=0;
+    for(let i=0;i<before.pixels.length;i+=4)if(red(before.pixels,i))baselineRed++;
+    const result={width,height,dpr,partial,cancelOnly,interruption,unchanged,baselineRed,returnMismatch:mismatch(returned.pixels),selectionMismatch:mismatch(selected.pixels)};
+    window.snapshots={};
+    for(const [key,value] of Object.entries({before,returned,selected})){
+      const blob=await value.copy.convertToBlob({type:'image/png'});
+      window.snapshots[key]=Array.from(new Uint8Array(await blob.arrayBuffer()));
+    }
+    window.probeResult=result;
+    document.querySelector('#result').textContent=JSON.stringify(result);
+    if(!unchanged||baselineRed<100||result.returnMismatch||result.selectionMismatch)throw Error(JSON.stringify(result));
+    return result;
+  } finally {chart.free();}
+})();
+</script>

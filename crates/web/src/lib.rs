@@ -3786,6 +3786,10 @@ mod web {
             self.pending_stream_handoff = None;
             Ok(match status {
                 renderer::RenderInterruptStatus::StreamCancelQueued => {
+                    // Even an otherwise clean frame must retire the cancelled
+                    // surface before deciding between streaming and resident
+                    // display coordinates.
+                    self.request_host_redraw();
                     "stream_cancel_queued".to_owned()
                 }
                 renderer::RenderInterruptStatus::Resident => "resident".to_owned(),
