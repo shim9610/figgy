@@ -1,0 +1,85 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Precise line viewport regression</title>
+<style>body{margin:16px;font:16px sans-serif}canvas{display:block;width:960px;height:640px;max-width:100%}</style>
+<p id="result">Running…</p>
+<canvas id="plot"></canvas>
+<script type="module">
+import init, {FiggyChart} from '../pkg/figgy.js';
+window.probe = (async () => {
+  await init();
+  const canvas = document.querySelector('canvas');
+  const dpr = devicePixelRatio || 1;
+  canvas.width = Math.round(960 * dpr);
+  canvas.height = Math.round(640 * dpr);
+  const results = [];
+  for (const vertical of [false, true]) {
+    for (const reverse of [false, true]) {
+      for (const span of [2, 1e4, 1e6, 1e9]) {
+        for (const bothOutside of [false, true]) {
+          // A new kernel for EVERY case: no prior fit, render or axis nudge
+          // may prepare the initial view. Set explicit ranges before data.
+          const chart = await FiggyChart.create(canvas);
+          try {
+            const initial = JSON.parse(chart.get_config());
+            for (const key of ['bottom_x','top_x','left_y','right_y']) {
+              initial[key].min = 0; initial[key].max = 1;
+            }
+            chart.set_config(JSON.stringify(initial));
+            let along = bothOutside ? [-span, span] : [-span, .5, span];
+            let across = bothOutside ? [.5, .5] : [.1, .5, .9];
+            if (reverse) { along.reverse(); across.reverse(); }
+            chart.register_column_f64('x', new Float64Array(vertical ? across : along));
+            chart.register_column_f64('y', new Float64Array(vertical ? along : across));
+            chart.add_line_series('connection', 'x', 'y', 2, '');
+            const series = JSON.parse(chart.get_series());
+            series[0].render_type.Line.line.line_color = {r:1,g:0,b:0,a:1};
+            chart.set_series(JSON.stringify(series));
+            for (const [frameIndex, shift] of [0, .001, 0].entries()) {
+              const config = JSON.parse(chart.get_config());
+              for (const key of ['bottom_x','top_x','left_y','right_y']) {
+                config[key].min = shift; config[key].max = 1 + shift;
+                config[key].line_visible = false;
+              }
+              config.legend.visible = false;
+              chart.set_config(JSON.stringify(config));
+              // Read the actual onscreen MSAA surface in the same task; PNG
+              // export alone does not exercise the browser's window target.
+              chart.frame();
+              const actual = JSON.parse(chart.get_config());
+              for (const key of ['bottom_x','top_x','left_y','right_y']) {
+                if (actual[key].min !== shift || actual[key].max !== 1 + shift) {
+                  throw Error(`explicit range changed: ${key}`);
+                }
+              }
+              const copy = new OffscreenCanvas(canvas.width, canvas.height);
+              const ctx = copy.getContext('2d'); ctx.drawImage(canvas, 0, 0);
+              const pixels = ctx.getImageData(0, 0, copy.width, copy.height).data;
+              // Default document and surface share the same size here. Derive
+              // the plot bounds through renderer hit testing, not copied margins.
+              const midX = Math.floor(copy.width / 2), midY = Math.floor(copy.height / 2);
+              const xs = [], ys = [];
+              for (let x = 0; x < copy.width; x++) if (chart.hit_test(x, midY) === 'data_area') xs.push(x);
+              for (let y = 0; y < copy.height; y++) if (chart.hit_test(midX, y) === 'data_area') ys.push(y);
+              if (!xs.length || !ys.length) throw Error('missing data area');
+              const red = (x,y) => { const i=(y*copy.width+x)*4; return pixels[i]>120 && pixels[i+1]<90 && pixels[i+2]<90 && pixels[i+3]>16; };
+              for (const fraction of [.05,.25,.5,.75,.95]) {
+                const fixed = vertical ? ys[Math.floor((ys.length-1)*fraction)] : xs[Math.floor((xs.length-1)*fraction)];
+                const present = vertical ? xs.some(x=>red(x,fixed)) : ys.some(y=>red(fixed,y));
+                if (!present) throw Error(`missing connection: ${JSON.stringify({vertical,reverse,span,bothOutside,frameIndex,shift,fraction,dpr})}`);
+              }
+              results.push({vertical,reverse,span,bothOutside,frameIndex,shift,dpr});
+              await chart.wait_submitted_work();
+            }
+          } finally { chart.free(); }
+        }
+      }
+    }
+  }
+  document.querySelector('#result').textContent = `PASS: ${results.length} window renders, DPR ${dpr}`;
+  return results;
+})().catch(error => {
+  document.querySelector('#result').textContent = error.stack || String(error);
+  throw error;
+});
+</script>

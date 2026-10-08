@@ -1205,6 +1205,9 @@ impl PreparedChartMutation<'_> {
                 self.chart_state.series = series;
             }
         }
+        // A fit belongs to the declarations that requested it. Replacing a
+        // document (including a tab restore) must not inherit that request.
+        self.chart_state.stream_auto_fit_padding = None;
         self.chart_state.revisions = self.next_revisions;
         *self.visual_revision = self.next_visual_revision;
     }
@@ -6554,6 +6557,7 @@ impl Renderer {
             .get_mut(&id)
             .ok_or(FiggyError::UnknownChart { id })?;
         view.apply_to(&mut state.config);
+        state.stream_auto_fit_padding = None;
         state.revisions.desired = desired;
         state.revisions.config = config;
         state.revisions.view = view_revision;
@@ -22356,6 +22360,62 @@ mod tests {
         config.top_x.line_visible = false;
         config.left_y.line_visible = false;
         config.right_y.line_visible = false;
+    }
+
+    /// Offscreen endpoints still contribute their connecting segment on the
+    /// first draw, including after a very deep zoom or a small axis change.
+    #[test]
+    fn precise_zoom_keeps_connections_to_distant_endpoints() {
+        let (device, queue) = crate::data_render::shared_device().expect("GPU required");
+        let mut r = Renderer::try_new(RendererDevice::new(device, queue),
+            wgpu::TextureFormat::Rgba8Unorm, 4096).unwrap();
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(Rect { x: 0, y: 0, width: 800, height: 400 });
+        config.legend.visible = false;
+        hide_axis_lines(&mut config);
+        let series = [SeriesConfig {
+            series_id: "crossing".into(), source_id: None, label: None,
+            x_column: "zx".into(), y_column: "zy".into(),
+            render_type: DataRenderType::Line { line: DataLineStyleConfig {
+                line_style: LineStylePreset::Solid, line_width: 2.0,
+                line_color: Color::new(1.0, 0.0, 0.0, 1.0),
+            } },
+        }];
+        for vertical in [false, true] {
+            for reverse in [false, true] {
+                for span in [2.0, 1e4, 1e6, 1e9] {
+                    let mut along = vec![-span, 0.5, span];
+                    let mut across = vec![0.1, 0.5, 0.9];
+                    if reverse { along.reverse(); across.reverse(); }
+                    let (x, y) = if vertical { (across, along) } else { (along, across) };
+                    let _ = r.remove_column("zx");
+                    let _ = r.remove_column("zy");
+                    r.add_column("zx", &col_f64(x)).unwrap();
+                    r.add_column("zy", &col_f64(y)).unwrap();
+                    for shift in [0.0, 0.001, 0.0] {
+                        let mut chart = Chart::new(config.clone());
+                        chart.set_x_range(shift, 1.0 + shift);
+                        chart.set_y_range(shift, 1.0 + shift);
+                        let image = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+                        let area = chart.config().data_area().unwrap().0;
+                        let red = |x: u32, y: u32| {
+                            let p = &image.rgba[((y * image.width + x) * 4) as usize..][..4];
+                            p[3] > 16 && p[0] > 120 && p[1] < 90 && p[2] < 90
+                        };
+                        for fraction in [0.05, 0.25, 0.5, 0.75, 0.95] {
+                            let present = if vertical {
+                                let y = area.y + (area.height as f32 * fraction) as u32;
+                                (area.x..area.x + area.width).any(|x| red(x, y))
+                            } else {
+                                let x = area.x + (area.width as f32 * fraction) as u32;
+                                (area.y..area.y + area.height).any(|y| red(x, y))
+                            };
+                            assert!(present, "missing connection: vertical={vertical} reverse={reverse} span={span} shift={shift} fraction={fraction}");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// A solid line stays CONTINUOUS no matter how dense the data is. With

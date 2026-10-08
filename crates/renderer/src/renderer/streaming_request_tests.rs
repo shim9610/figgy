@@ -5231,3 +5231,33 @@ fn initial_fit_rescales_earlier_points_with_logarithmic_and_inverted_axes() {
         assert!(checked);
     }
 }
+
+#[test]
+fn explicit_chart_restore_supersedes_pending_stream_fit() {
+    for mutation in ["config", "series", "state", "view", "cancel"] {
+        let (mut r, id, _) = renderer(2);
+        let config = r.chart_config(id).unwrap().clone();
+        let series = r.chart_series(id).unwrap().to_vec();
+        r.request_stream_auto_fit(id, 0.05).unwrap();
+        let view = r.create_chart_view(&Chart::new(config.clone()), config.chart_area.0).unwrap();
+        let options = crate::StreamingChartOptions {
+            size: (config.chart_area.0.width, config.chart_area.0.height),
+            clear_color: Color::WHITE, max_primitives_per_chunk: 2,
+        };
+        r.request_auto_streaming_chart(id, &view, options).unwrap();
+        match mutation {
+            "config" => r.set_chart_config(id, config.clone()).unwrap(),
+            "series" => r.set_chart_series(id, series).unwrap(),
+            "state" => r.set_chart_state(id, config.clone(), series).unwrap(),
+            "view" => r.set_chart_view_state(id, r.chart_view_state(id).unwrap()).unwrap(),
+            "cancel" => r.cancel_chart_stream(id).unwrap(),
+            _ => unreachable!(),
+        }
+        // Reusing a kernel for a restored tab must never inherit the previous
+        // document's unfinished fit, even when its config happens to be equal.
+        r.request_auto_streaming_chart(id, &view, options).unwrap();
+        assert!(!r.stream_status(id).unwrap().auto_fit_pending, "stale fit after {mutation}");
+        assert_eq!(r.chart_config(id).unwrap().bottom_x.min, config.bottom_x.min);
+        assert_eq!(r.chart_config(id).unwrap().bottom_x.max, config.bottom_x.max);
+    }
+}

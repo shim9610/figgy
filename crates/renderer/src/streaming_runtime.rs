@@ -4272,6 +4272,7 @@ impl Renderer {
         runtime
             .requests
             .retain(|request| runtime.scheduler.contains_ticket(request.ticket.ticket));
+        self.chart_states.get_mut(&chart).expect("validated chart").stream_auto_fit_padding = None;
         Ok(())
     }
 

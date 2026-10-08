@@ -15,7 +15,17 @@ Code is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE). 
 
 <a id="public-release-candidate--renderer-0120--figgy-0100"></a>
 
-## Source release — renderer 0.12.2 / figgy 0.10.2
+## Source release — renderer 0.12.3 / figgy 0.10.3
+
+Precise solid lines retain their visible connections to distant offscreen points,
+including the first frame of a chart created with explicit axis ranges. Replacing
+chart configuration, series or view, or cancelling a stream, clears its pending
+fit request so a restored chart cannot inherit an earlier fit. Public API
+signatures and the Config JSON schema are unchanged; model remains 0.7.2.
+Update the Git revision and rebuild the browser package. Studio deployment is
+separate from this source release.
+
+### Previous patch — renderer 0.12.2 / figgy 0.10.2
 
 This patch stops repeated prefix replay during initial streamed fitting. Earlier
 pixels are rescaled as new chunks arrive; one final exact replay replaces the
@@ -155,7 +165,7 @@ npx wasm-pack@0.15.0 build crates/web --release --target web --locked
 
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # or public Git source — version 0.12.2, not on crates.io.
+renderer = { path = "crates/renderer" }   # or public Git source — version 0.12.3, not on crates.io.
 wgpu     = "30"
 ```
 
@@ -1197,7 +1207,13 @@ figgy는 Rust로 작성한 과학·공학용 차트 라이브러리다. **축·�
 
 <a id="공개-후보--renderer-0120--figgy-0100"></a>
 
-## 소스 릴리스 — renderer 0.12.2 / figgy 0.10.2
+## 소스 릴리스 — renderer 0.12.3 / figgy 0.10.3
+
+정밀 스타일의 실선에서 화면 밖의 먼 점으로 이어지는 선이 사라지는 문제를 고쳤다. 자동 맞춤 없이 범위를 지정한 새 차트의 첫 화면에서도 연결선을 표시한다. 설정·시리즈·표시 범위를 교체하거나 스트림을 취소하면 이전 자동 맞춤 요청을 해제해, 복원한 차트에 이전 요청이 남지 않도록 했다.
+
+공개 API 형식과 Config JSON 스키마는 그대로이며 model은 0.7.2를 유지한다. Git 리비전을 갱신하고 브라우저 패키지를 다시 빌드해야 적용된다. 온라인 스튜디오 배포는 소스 릴리스와 별개다.
+
+### 이전 패치 — renderer 0.12.2 / figgy 0.10.2
 
 초기 스트림 맞춤 중 앞부분을 반복해서 읽고 그리던 문제를 고쳤다. 먼저 그린 데이터는 새 범위로 리스케일하고 새 청크를 이어 그린다. 마지막에는 원본으로 한 번 정확히 다시 그려, 완성된 화면으로 교체한다. 업로드 버퍼는 재사용하며 사용이 끝난 GPU 자원은 GPU 작업 완료 후 명시적으로 해제한다.
 
@@ -1312,7 +1328,7 @@ npx wasm-pack@0.15.0 build crates/web --release --target web --locked
 
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # 또는 공개 Git 소스 — 버전 0.12.2, crates.io 미배포.
+renderer = { path = "crates/renderer" }   # 또는 공개 Git 소스 — 버전 0.12.3, crates.io 미배포.
 wgpu     = "30"
 ```
 

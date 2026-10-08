@@ -130,10 +130,47 @@ struct VsOut {
 
 const LINE_AA_EXTENT_PX: f32 = 0.5;
 
+// Bound solid-line geometry before extrusion and SDF interpolation. Hardware
+// clipping an enormous quad loses its pixel-wide sides (and the distance to
+// the near endpoint) at deep zoom. Keep offscreen endpoints connected by
+// clipping the segment, never by rejecting its individual points.
+fn clip_solid_segment(first: vec2<f32>, second: vec2<f32>, pad: vec2<f32>) -> mat2x2<f32> {
+    var a = first;
+    var b = second;
+    for (var plane = 0u; plane < 4u; plane++) {
+        let axis = plane / 2u;
+        let upper = (plane & 1u) != 0u;
+        let bound = select(-1.0 - pad[axis], 1.0 + pad[axis], upper);
+        let a_out = select(a[axis] < bound, a[axis] > bound, upper);
+        let b_out = select(b[axis] < bound, b[axis] > bound, upper);
+        if (a_out && b_out) {
+            // Degenerate, outside the viewport.
+            return mat2x2<f32>(vec2<f32>(2.0), vec2<f32>(2.0));
+        }
+        if (a_out != b_out) {
+            // Anchor interpolation at the INSIDE endpoint. a + t*(b-a)
+            // with t nearly one cancels the visible position when a is far away.
+            let inside = select(a, b, a_out);
+            let outside = select(b, a, a_out);
+            let t = (bound - inside[axis]) / (outside[axis] - inside[axis]);
+            var intersection = inside + (outside - inside) * t;
+            intersection[axis] = bound;
+            if (a_out) { a = intersection; } else { b = intersection; }
+        }
+    }
+    return mat2x2<f32>(a, b);
+}
+
 @vertex
 fn vs_main(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
-    let a_ndc = data_to_ndc(in.x_a, in.y_a);
-    let b_ndc = data_to_ndc(in.x_b, in.y_b);
+    var a_ndc = data_to_ndc(in.x_a, in.y_a);
+    var b_ndc = data_to_ndc(in.x_b, in.y_b);
+    if (style.dash_len == 0u) {
+        let pad = abs(transform.pixel_to_ndc) * (max(style.line_width_px, 1.0) + 2.0);
+        let clipped = clip_solid_segment(a_ndc, b_ndc, pad);
+        a_ndc = clipped[0];
+        b_ndc = clipped[1];
+    }
 
     // Convert to pixel space so the direction vector can be normalized.
     let a_px = a_ndc / transform.pixel_to_ndc;
