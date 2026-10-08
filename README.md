@@ -15,9 +15,20 @@ Code is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE). 
 
 <a id="public-release-candidate--renderer-0120--figgy-0100"></a>
 
-## Source release — renderer 0.12.0 / figgy 0.10.0
+## Source release — renderer 0.12.1 / figgy 0.10.1
 
-This release adds renderer-owned exact nonresident streaming and the browser
+This patch fixes initial streamed auto-fit: partial data and axes use the same
+progressively fitted range, internal fitting keeps its current job, and final
+range commitment no longer starts a redundant execution. Ordinary redraws after
+fitting preserve the user's range. Public API signatures and the Config JSON
+schema are unchanged; model remains 0.7.2. See the
+[initial-fit guide](crates/renderer/WASM.md#streaming-fit) for call order.
+Update your Git revision and rebuild the browser package to use this fix.
+Publishing this source does not deploy the online Studio.
+
+### Previous feature release — renderer 0.12.0 / figgy 0.10.0
+
+The 0.12.0 / 0.10.0 release added renderer-owned exact nonresident streaming and the browser
 `render_chart()` job API. The web facade requests bounded original ranges,
 schedules work, and reports progress. For supported precise point, solid-line,
 and errorbar charts, the renderer can retain only the original rows needed by
@@ -130,7 +141,7 @@ npx wasm-pack@0.15.0 build crates/web --release --target web --locked
 
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # or public Git source — version 0.12.0, not on crates.io.
+renderer = { path = "crates/renderer" }   # or public Git source — version 0.12.1, not on crates.io.
 wgpu     = "30"
 ```
 
@@ -877,6 +888,14 @@ other view changes replay it. GPU point/line picking uses the packed rows when
 available and returns original row indices without source replay. Other streamed
 charts do not support immediate picking. Scaled PNG export uses replayable
 original ranges in a separate GPU path, so the source must remain available.
+Streaming does not enable auto-fit by itself. For a new chart with unknown
+bounds, request fitting before the first chunk: each partial display uses the
+bounds processed so far, and completion commits the final range. Ordinary
+redraws then preserve zoomed or restored ranges. Request auto-fit again to show
+all current data; restore saved axis ranges to return to a historical view.
+See [initial fitting and call order](crates/renderer/WASM.md#streaming-fit)
+for the facade, raw WASM, and native automatic-streaming APIs.
+
 See [the web streaming contract](crates/renderer/WASM.md#exact-streaming)
 for the current API, support limits, and lifecycle details. Exact original-data
 processing does not imply byte-identical antialiasing across GPU backends or
@@ -1161,13 +1180,19 @@ figgy는 Rust로 작성한 과학·공학용 차트 라이브러리다. **축·�
 
 <a id="공개-후보--renderer-0120--figgy-0100"></a>
 
-## 소스 릴리스 — renderer 0.12.0 / figgy 0.10.0
+## 소스 릴리스 — renderer 0.12.1 / figgy 0.10.1
 
-이번 버전에는 원본 데이터를 나누어 그리는 스트리밍 기능과 웹 작업 API인 `render_chart()`가 추가됐다. 렌더러가 필요한 데이터 구간을 요청하면 웹 래퍼가 원본을 공급하고 작업 순서와 진행 상태를 관리한다.
+첫 스트림의 자동 맞춤을 수정한 패치 버전이다. 중간 결과의 데이터와 축이 같은 범위를 사용하며, 내부 맞춤 과정에서 작업이 반복 교체되거나 최종 범위 반영 뒤 불필요하게 다시 시작되는 문제를 고쳤다. 맞춤이 끝난 뒤 일반 재그리기는 사용자가 정한 범위를 유지한다.
+
+공개 API 형식과 Config JSON 스키마는 그대로이며 model은 0.7.2를 유지한다. 호출 순서는 [범위 맞춤 사용법](crates/renderer/WASM.md#streaming-fit)을 참고한다. 수정 사항을 적용하려면 Git 리비전을 갱신하고 브라우저 패키지를 다시 빌드해야 한다. 소스 공개와 온라인 스튜디오 배포는 별개다.
+
+### 이전 기능 릴리스 — renderer 0.12.0 / figgy 0.10.0
+
+0.12.0 / 0.10.0에는 원본 데이터를 나누어 그리는 스트리밍 기능과 웹 작업 API인 `render_chart()`가 추가됐다. 렌더러가 필요한 데이터 구간을 요청하면 웹 래퍼가 원본을 공급하고 작업 순서와 진행 상태를 관리한다.
 
 지원되는 정밀 모드의 점·실선·오차 막대 차트에서는 현재 화면에 필요한 원본 행만 차트별 GPU 캐시에 보관할 수 있다. 서로 연결된 컬럼 전체를 자동으로 상주 풀에 옮기지는 않는다. 완료된 결과는 재사용하며, 표시 범위를 넓히거나 출력 배율을 바꾸면 같은 원본을 다시 읽어 그린다. LOD나 다운샘플링으로 데이터를 줄이지 않는다.
 
-지원 범위와 제한 사항은 [WASM.md](crates/renderer/WASM.md)에 정리했다. 웹 스튜디오에 이 API가 적용된 것은 아니다. 이 저장소의 소스 버전은 renderer 0.12.0 / figgy 0.10.0이다. 브라우저 패키지는 해당 커밋에서 빌드하며, 크레이트는 crates.io에 배포하지 않는다.
+지원 범위와 제한 사항은 [WASM.md](crates/renderer/WASM.md)에 정리했다. 브라우저 패키지는 사용할 소스 커밋에서 빌드하며, 크레이트는 crates.io에 배포하지 않는다.
 
 모델은 로그 등고선의 매우 작은 값 처리 수정을 포함한 **0.7.2**다. 렌더러와 웹 패키지는 wgpu 30, 개발 툴체인은 Rust 1.99.0을 사용한다.
 
@@ -1262,7 +1287,7 @@ npx wasm-pack@0.15.0 build crates/web --release --target web --locked
 
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # 또는 공개 Git 소스 — 버전 0.12.0, crates.io 미배포.
+renderer = { path = "crates/renderer" }   # 또는 공개 Git 소스 — 버전 0.12.1, crates.io 미배포.
 wgpu     = "30"
 ```
 
@@ -1798,6 +1823,8 @@ pub struct Config {
 스트리밍은 완료된 부분부터 화면에 표시한다. 입력이 바뀌지 않은 완료 결과는 재사용하고, 제목·축 이름만 바뀌면 데이터 처리 위치와 누적 이미지를 유지한다. 표시 범위를 좁힐 때는 패킹 캐시만으로 다시 그릴 수 있다. 캐시 범위 밖을 보거나 물리 해상도가 바뀌면 같은 리비전의 원본을 다시 공급해야 한다.
 
 `job.cancel()`은 새 작업을 멈추고 이미 제출된 GPU 작업이 끝난 뒤 자원을 정리한다. 완료된 패킹 캐시에서는 GPU의 점·선을 선택하고 원본 행 인덱스를 반환할 수 있다. 그 밖의 비상주 스트림은 즉시 피킹을 지원하지 않는다. 배율을 지정한 PNG 출력은 화면 이미지를 늘리는 대신 원본을 다시 읽어 그린다. 따라서 호스트는 다시 그리기와 출력을 위해 원본을 유지해야 한다.
+
+스트리밍 자체는 자동 맞춤을 켜지 않는다. 범위를 모르는 새 차트는 첫 청크 전에 맞춤을 요청한다. 처리한 청크까지의 범위로 중간 결과를 표시하고, 완료하면 최종 범위를 설정에 반영한다. 이후 일반 재그리기는 확대·이동한 범위나 저장한 범위를 유지한다. 전체 데이터를 다시 보려면 자동 맞춤을 재요청하고, 과거의 특정 범위로 돌아가려면 저장한 축 범위를 복원한다. 웹 래퍼·저수준 WASM·네이티브의 호출 순서는 [범위 맞춤 사용법](crates/renderer/WASM.md#streaming-fit)을 참고한다.
 
 지원 범위와 웹 API는 [WASM 가이드](crates/renderer/WASM.md#exact-streaming)를 참고한다. 원본을 빠짐없이 처리하더라도 GPU 백엔드나 렌더 패스 경계에 따라 안티앨리어싱 픽셀값은 달라질 수 있다.
 

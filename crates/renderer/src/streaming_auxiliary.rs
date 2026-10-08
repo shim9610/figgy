@@ -1059,6 +1059,7 @@ impl Renderer {
                 .ok_or(StreamError::Overflow)?,
         )?;
         let snapshot = Arc::new(AutoStreamExecutionSnapshot {
+            requested_config: config.clone(),
             desired: completed.desired,
             data_revision: completed.data_revision,
             series_revision: completed.series_revision,

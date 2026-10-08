@@ -4475,6 +4475,143 @@ fn automatic_stream_terminalizes_an_already_presented_display_after_receipts_com
 }
 
 #[test]
+fn initial_stream_fit_presents_partial_data_with_matching_axis_pixels() {
+    let _font_registration = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .expect("font registration test lock poisoned");
+    let (mut r, chart_id, _) = renderer(2);
+    let mut config = r.chart_config(chart_id).unwrap().clone();
+    config.chart_area.0 = Rect {
+        x: 0,
+        y: 0,
+        width: 320,
+        height: 240,
+    };
+    r.set_chart_config(chart_id, config.clone()).unwrap();
+    let view = r
+        .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
+        .unwrap();
+    let x = crate::Column {
+        data: (10..18).map(|n| n as f32).collect(),
+        min: 10.0,
+        max: 17.0,
+    };
+    let y = crate::Column {
+        data: (-20..-12).map(|n| n as f32).collect(),
+        min: -20.0,
+        max: -13.0,
+    };
+    let bindings = [
+        crate::StreamSourceBinding {
+            id: "x",
+            revision: 1,
+            source: crate::StreamColumnSource::Scalar(&x),
+        },
+        crate::StreamSourceBinding {
+            id: "a",
+            revision: 1,
+            source: crate::StreamColumnSource::Scalar(&y),
+        },
+    ];
+
+    // The first two segments contain exactly the first three source rows.
+    r.add_column(
+        "rx",
+        &crate::Column {
+            data: x.data[..3].to_vec(),
+            min: 10.0,
+            max: 12.0,
+        },
+    )
+    .unwrap();
+    r.add_column(
+        "ry",
+        &crate::Column {
+            data: y.data[..3].to_vec(),
+            min: -20.0,
+            max: -18.0,
+        },
+    )
+    .unwrap();
+    let mut fitted = config.clone();
+    crate::chart::apply_auto_fit_all(
+        &mut fitted,
+        &crate::FitExtent {
+            min: 10.0,
+            max: 12.0,
+            min_positive: Some(10.0),
+        },
+        &crate::FitExtent {
+            min: -20.0,
+            max: -18.0,
+            min_positive: None,
+        },
+        0.0,
+    );
+    let reference_id = r
+        .register_chart(fitted.clone(), vec![declaration("reference", "rx", "ry")])
+        .unwrap();
+    let reference_view = r
+        .create_chart_view(&Chart::new(fitted.clone()), fitted.chart_area.0)
+        .unwrap();
+    let reference = r
+        .prepare_registered(&[RegisteredChartDrawItem {
+            chart_id: reference_id,
+            view: &reference_view,
+        }])
+        .unwrap();
+    let expected = paint_frame_pixels(&r, &reference, 1);
+    assert!(
+        expected
+            .chunks_exact(4)
+            .any(|p| p[0] > 180 && p[1] < 100 && p[2] < 100)
+    );
+
+    r.request_stream_auto_fit(chart_id, 0.0).unwrap();
+    let options = crate::StreamingChartOptions {
+        size: (320, 240),
+        clear_color: Color::WHITE,
+        max_primitives_per_chunk: 2,
+    };
+    r.request_auto_streaming_chart(chart_id, &view, options)
+        .unwrap();
+    let mut saw_partial = false;
+    for _ in 0..32 {
+        assert!(matches!(
+            r.request_auto_streaming_chart(chart_id, &view, options)
+                .unwrap(),
+            crate::AutoStreamingRequest::Active { .. }
+        ));
+        r.auto_stream_chart_step(chart_id, &bindings).unwrap();
+        wait_stream_slots(&mut r, 0);
+        let status = r.stream_status(chart_id).unwrap();
+        if status.submitted_primitives == 0 {
+            continue;
+        }
+        assert!(status.auto_fit_pending);
+        assert_eq!(status.submitted_primitives, 2);
+        assert_eq!(status.total_primitives, 7);
+        let partial = r
+            .prepare_registered(&[RegisteredChartDrawItem {
+                chart_id,
+                view: &view,
+            }])
+            .unwrap();
+        assert_eq!(
+            paint_frame_pixels(&r, &partial, 1),
+            expected,
+            "partial data and its axes must both use the bounds of the received rows"
+        );
+        saw_partial = true;
+        break;
+    }
+    assert!(
+        saw_partial,
+        "must show fitted data before receiving the whole source"
+    );
+}
+
+#[test]
 fn automatic_stream_collects_bounds_in_upload_pass_and_replays_after_axis_growth() {
     let (mut r, chart_id, _) = renderer(2);
     r.request_stream_auto_fit(chart_id, 0.0).unwrap();
@@ -4516,6 +4653,12 @@ fn automatic_stream_collects_bounds_in_upload_pass_and_replays_after_axis_growth
     loop {
         steps += 1;
         assert!(steps < 128, "axis replays must converge");
+        // The web TypedArray facade reconciles before every chunk. Internal
+        // fit replays must retain the job even while live Config is unfitted.
+        assert!(matches!(
+            r.request_auto_streaming_chart(chart_id, &view, options).unwrap(),
+            crate::AutoStreamingRequest::Active { .. }
+        ), "internal fit replay was mistaken for a host edit at step {steps}");
         match r.auto_stream_chart_step(chart_id, &bindings).unwrap() {
             crate::AutoStreamingProgress::Submitted { .. } => {}
             crate::AutoStreamingProgress::Backpressure { .. } => wait_stream_slots(&mut r, 0),
@@ -4570,6 +4713,24 @@ fn automatic_stream_collects_bounds_in_upload_pass_and_replays_after_axis_growth
     assert!(matches!(r.request_auto_streaming_chart(chart_id, &view, options).unwrap(),
         crate::AutoStreamingRequest::Complete { .. }));
     assert_eq!(r.stream_status(chart_id).unwrap().job_id, completed.job_id);
+
+    // Once the initial fit has completed, a user-set range is authoritative.
+    let mut manual = r.chart_config(chart_id).unwrap().clone();
+    manual.bottom_x.min = 11.0;
+    manual.bottom_x.max = 13.0;
+    r.set_chart_config(chart_id, manual.clone()).unwrap();
+    assert!(matches!(r.request_auto_streaming_chart(chart_id, &view, options).unwrap(),
+        crate::AutoStreamingRequest::Started { .. }));
+    assert!(!r.stream_status(chart_id).unwrap().auto_fit_pending);
+    for _ in 0..128 {
+        let step = r.auto_stream_chart_step(chart_id, &bindings).unwrap();
+        wait_stream_slots(&mut r, 0);
+        r.prepare_registered(&[RegisteredChartDrawItem { chart_id, view: &view }]).unwrap();
+        if matches!(step, crate::AutoStreamingProgress::Complete { .. }) { break; }
+    }
+    assert_eq!(r.stream_status(chart_id).unwrap().status, crate::StreamingState::Complete);
+    assert_eq!(r.chart_config(chart_id).unwrap().bottom_x.min, manual.bottom_x.min);
+    assert_eq!(r.chart_config(chart_id).unwrap().bottom_x.max, manual.bottom_x.max);
 }
 
 #[test]

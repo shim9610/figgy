@@ -6,6 +6,26 @@ use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
+#[wasm_bindgen::prelude::wasm_bindgen(inline_js = "
+export function watchPresentations(canvas) {
+    const context = canvas.getContext('webgpu');
+    const original = context.getCurrentTexture;
+    const observer = { count: 0 };
+    context.getCurrentTexture = function(...args) {
+        observer.count++;
+        return original.apply(this, args);
+    };
+    return observer;
+}
+export function presentationCount(observer) { return observer.count; }
+")]
+extern "C" {
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = watchPresentations)]
+    fn watch_presentations(canvas: &web_sys::HtmlCanvasElement) -> JsValue;
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = presentationCount)]
+    fn presentation_count(observer: &JsValue) -> u32;
+}
+
 fn canvas() -> web_sys::HtmlCanvasElement {
     let document = web_sys::window()
         .expect("window")
@@ -109,9 +129,11 @@ async fn decoration_change_preserves_wasm_stream_cursor_and_mixed_typed_sources(
 
 #[wasm_bindgen_test(async)]
 async fn automatic_streaming_collects_progressive_fit_and_completes_through_public_api() {
-    let mut chart = FiggyChart::create(canvas())
+    let canvas = canvas();
+    let mut chart = FiggyChart::create(canvas.clone())
         .await
         .expect("FiggyChart.create");
+    let presentations = watch_presentations(&canvas);
     chart
         .configure_streaming(1, 2, 2, 1024.0 * 1024.0, 16.0 * 1024.0 * 1024.0)
         .expect("configure streaming");
@@ -137,11 +159,20 @@ async fn automatic_streaming_collects_progressive_fit_and_completes_through_publ
 
     let mut completed = false;
     let mut statuses = Vec::new();
+    let mut saw_partial_presentation = false;
     for _ in 0..128 {
+        let request = chart.request_auto_streaming_chart(2.0).expect("reconcile like TypedArray facade");
+        assert_ne!(request.status(), "started", "internal fit must keep its original job");
         let step = chart
             .auto_stream_chart_step(ids.clone(), revisions.clone(), sources(&x, &y))
             .expect("automatic stream step");
-        chart.frame().expect("present automatic stream progress");
+        let pending: serde_json::Value = serde_json::from_str(&chart.stream_status().unwrap()).unwrap();
+        let before_presentations = presentation_count(&presentations);
+        chart.frame().expect("present progressive fitted stream");
+        if pending["auto_fit_pending"] == true {
+            saw_partial_presentation |= step.submitted_primitives() > 0.0
+                && presentation_count(&presentations) > before_presentations;
+        }
         let status = step.status();
         statuses.push((
             status.clone(),
@@ -149,7 +180,12 @@ async fn automatic_streaming_collects_progressive_fit_and_completes_through_publ
             step.total_primitives(),
         ));
         match status.as_str() {
-            "submitted" | "backpressure" | "all_submitted" => yield_to_browser().await,
+            "submitted" | "backpressure" | "all_submitted" => {
+                // Count execution steps, not idle polls while a software GPU
+                // is still compiling or finishing the submitted chunk.
+                chart.streaming_gpu_ready().await.expect("stream GPU ready");
+                yield_to_browser().await;
+            }
             "complete" => {
                 completed = true;
                 break;
@@ -172,6 +208,9 @@ async fn automatic_streaming_collects_progressive_fit_and_completes_through_publ
             .expect("fitted config json");
     assert_eq!((config.bottom_x.min, config.bottom_x.max), (10.0, 15.0));
     assert_eq!((config.left_y.min, config.left_y.max), (-20.0, -15.0));
+    assert!(saw_partial_presentation, "fit must show incoming chunks before completion");
+    chart.frame().expect("present committed fit");
+    assert!(presentation_count(&presentations) > 0, "the fitted chart must be presented");
 }
 
 #[wasm_bindgen_test(async)]
@@ -297,7 +336,10 @@ async fn packed_view_pages_reach_gpu_during_stream_and_narrow_view_reuses_them()
         }
         chart.frame().expect("present stream progress");
         match step.status().as_str() {
-            "submitted" | "backpressure" | "all_submitted" => yield_to_browser().await,
+            "submitted" | "backpressure" | "all_submitted" => {
+                chart.streaming_gpu_ready().await.expect("stream GPU completion");
+                yield_to_browser().await;
+            }
             "complete" => { completed = true; break; }
             other => panic!("unexpected stream status {other}"),
         }
@@ -462,7 +504,10 @@ async fn large_single_phase_stream_flushes_bounded_page_before_completion() {
         }
         chart.frame().expect("present large stream");
         match step.status().as_str() {
-            "submitted" | "backpressure" | "all_submitted" => yield_to_browser().await,
+            "submitted" | "backpressure" | "all_submitted" => {
+                chart.streaming_gpu_ready().await.expect("large stream GPU completion");
+                yield_to_browser().await;
+            }
             "complete" => { complete = true; break; }
             other => panic!("unexpected large stream status {other}"),
         }

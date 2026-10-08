@@ -2,7 +2,7 @@
 
 # WebAssembly 빌드와 브라우저 사용법
 
-이 문서는 소스 릴리스 `figgy 0.10.0` / `renderer 0.12.0` / `model 0.7.2`를 기준으로 한다. 아래 스트리밍 API를 사용하려면 해당 버전의 소스에서 브라우저 패키지를 빌드한다.
+이 문서는 소스 릴리스 `figgy 0.10.1` / `renderer 0.12.1` / `model 0.7.2`를 기준으로 한다. 아래 스트리밍 API를 사용하려면 해당 버전의 소스에서 브라우저 패키지를 빌드한다.
 
 `model`과 `renderer`는 모두 `wasm32-unknown-unknown`으로 빌드할 수 있다. 이 문서는 네이티브와 웹의 차이, 브라우저 초기화, 데이터 입력, 이벤트 처리와 이미지 출력을 설명한다.
 
@@ -493,7 +493,12 @@ const job = chart.render_chart({
   stallTimeoutMs: 30000,
   onProgress: progress => updateProgress(progress),
 });
-await job.done;
+// 새 차트이고 표시 범위를 모를 때만 요청한다. 두 호출 사이에 await를 넣지 않는다.
+const fitted = chart.auto_fit_all(0.05);
+const [result] = await Promise.all([job.done, fitted]);
+if (result.status !== "complete" && result.status !== "resident") {
+  throw new Error(`stream ${result.status}`);
+}
 const png = await chart.export_png(2);
 // 화면을 버릴 때: await job.cancel();
 ```
@@ -507,10 +512,54 @@ const png = await chart.export_png(2);
 - `job.done`은 완료·상주·취소·대체 상태를 반환하며 실패하면 Promise가 거부된다. `job.cancel()`은 제출한 GPU 작업의 자원 회수까지 기다린다. 실행 중인 GPU 명령을 강제로 중단하지는 않는다. 이전 작업의 데이터 응답이 늦게 와도 새 작업에 반영하지 않는다.
 - `stream_status()`는 상태만 조회한다. 완료 후에도 누적 도형 수·리비전·작업 ID를 유지한다. 같은 입력을 다시 요청하면 원본을 다시 읽거나 그리지 않는다.
 
+<a id="streaming-fit"></a>
+
+#### 첫 스트림의 범위 맞춤과 이후 조작
+
+**스트리밍 자체는 자동 맞춤을 켜지 않는다.** 새 차트의 표시 범위를 모르면 호스트가 첫 청크 전에 한 번 요청한다. 렌더러는 지금까지 처리한 청크의 누적 범위로 데이터와 축을 함께 맞춰 표시한다. 새 청크가 범위를 넓히면 그 범위에 맞춰 다시 그리며, 전체 처리가 끝나면 최종 범위를 `Config`에 반영한다. 완료를 기다리는 동안에도 중간 결과는 화면에 표시된다.
+
+| 상황 | 호출 방법 | 결과 |
+|---|---|---|
+| 범위를 모르는 새 차트 | 첫 청크 전에 자동 맞춤 요청 | 처리한 청크까지의 범위로 계속 맞추고, 완료 시 최종 범위 확정 |
+| 저장한 차트 열기·수동 범위로 시작하기 | 설정을 복원하고 렌더링만 요청 | 저장되거나 지정된 범위 유지 |
+| 확대·축소·이동 후 다시 그리기 | 범위를 바꾸고 렌더링만 요청 | 사용자가 정한 범위 유지 |
+| 전체 데이터를 다시 보고 싶을 때 | `auto_fit_all(padding)` 재호출 | 현재 연결된 전체 시리즈에 맞춤 |
+| 과거에 저장한 범위로 정확히 돌아가기 | 저장해 둔 축 범위를 설정에 복원 | 당시 범위 복원 |
+
+자동 맞춤은 현재 데이터로 범위를 계산하는 동작이다. 데이터와 여백이 같으면 처음 맞춘 범위로 돌아가지만, 데이터가 바뀌었다면 새 데이터에 맞춘다. `padding`은 유한한 0 이상의 수이며, `0`은 여백 없음, `0.05`는 5% 여백이다. 범위 계산과 통계 재사용은 렌더러가 담당한다.
+
+현재 `Config`의 축 `min`·`max`는 숫자다. 기본값만 보고 새 차트인지, 사용자가 그 범위를 선택했는지 구분할 수 없으므로 생성·불러오기 흐름에서 자동 맞춤 여부를 정한다. 이 구분을 위해 `null`이나 생략한 범위를 전달하지 않는다. `Option<AxisRange>`나 `RangePolicy`는 현재 API에 없다.
+
+**웹 래퍼(`<figgy-chart>`)**에서는 위 예제처럼 `render_chart()`로 원본 공급자를 연결한 직후, 같은 동기 호출 구간에서 `auto_fit_all()`을 호출한다. `await job.done` 뒤에 요청하면 첫 렌더링이 기존 범위로 진행된다. 반대로 `readRange` 공급자를 연결하기 전에 맞춤을 요청하면 재공급할 원본을 찾지 못할 수 있다. 두 Promise를 함께 기다리고, 취소·대체된 작업의 결과를 현재 차트에 반영하지 않는다.
+
+확대·이동이 끝난 뒤 전체 데이터를 다시 보려면 원본 공급자를 유지한 상태에서 다음과 같이 호출한다. 이 호출은 범위 반영과 렌더링 완료까지 기다린다.
+
+```js
+await chart.auto_fit_all(0.05);
+const fittedConfig = JSON.parse(chart.get_config());
+// 속성 패널·저장 기능은 렌더러가 확정한 fittedConfig를 사용한다.
+```
+
+**저수준 WASM(`FiggyChart`)**은 실행 순서가 다르다. 컬럼과 시리즈를 등록한 뒤 `await chart.auto_fit_all(padding)`으로 요청을 등록하고, `request_auto_streaming_chart(maxPrimitivesPerChunk)`를 호출한다. 이후 호스트가 `auto_stream_chart_step(...)`과 `frame()`을 계속 실행한다. 이 경로의 스트리밍 `auto_fit_all()`은 요청 등록까지만 기다리므로 반환 직후의 설정을 최종 맞춤 결과로 저장하면 안 된다. GPU 완료를 기다리며 `complete`까지 진행한 뒤 `get_config()`를 읽는다. `all_submitted`는 제출 완료이며 최종 화면 반영 완료와 다르다.
+
+**네이티브 Rust의 자동 스트리밍**은 등록된 차트에 아래 순서로 요청한다. `renderer`, `chart_id`, `view`, `options`는 호스트가 준비한 기존 객체다.
+
+```rust
+renderer.request_stream_auto_fit(chart_id, 0.05)?;
+renderer.request_auto_streaming_chart(chart_id, &view, options)?;
+```
+
+이후 호스트의 기존 실행 루프에서 `auto_stream_chart_step`으로 요청된 원본을 공급하고, `prepare_registered`와 그리기로 중간 결과를 표시한다. GPU 완료도 처리하며 `Complete`까지 진행한 뒤 `chart_config(chart_id)`로 확정된 범위를 읽는다. `request_stream_auto_fit`은 자동 스트리밍용 요청이며, 명시적 청크 실행 API나 상주 렌더링의 범위를 바꾸는 호출은 아니다. 이후 사용자가 범위를 바꿔 다시 그릴 때는 이 요청을 반복하지 않는다.
+
+첫 맞춤이 끝난 뒤에도 같은 리비전의 원본을 다시 공급할 수 있어야 한다. 범위가 넓어졌을 때의 재그리기, 자동 맞춤 재요청, PNG 출력에 필요하다. JavaScript에서 청크별 최솟값·최댓값을 별도로 계산하거나 렌더러의 확정 범위를 매 프레임 덮어쓰지 않는다.
+
+이 절의 점진적 맞춤 수정은 `renderer 0.12.1` / `figgy 0.10.1`에 포함된다. 이전 버전에서 같은 API를 사용했더라도 소스 리비전을 갱신하고 WASM을 다시 빌드해야 한다. API 형식과 Config JSON 스키마는 바뀌지 않았다.
+
 #### 화면 변경, 선택과 출력
 
 - 데이터나 표시 범위가 바뀌면 다음 작업 단계에서 최신 상태로 교체한다. 제목 같은 장식만 바뀌면 데이터 처리 위치와 누적 이미지를 유지한다. 크기·DPR 변경 시에는 새 픽셀 해상도로 원본을 다시 그린다.
 - `await auto_fit_all()`은 통계로 계산한 축 범위의 반영과 렌더링 완료를 기다린다. 일반 비동기 호출의 `busy` 토큰을 잡지 않으므로 스트리밍 실행은 계속 진행된다. 통계는 최초 구간 업로드 때 수집하고 렌더러가 리비전별로 재사용한다.
+- 첫 스트림과 자동 맞춤 버튼의 호출 순서는 [범위 맞춤 사용법](#streaming-fit)을 따른다. 일반 재그리기는 자동 맞춤을 켜지 않는다.
 - 선택만 바뀌면 데이터 스트림을 다시 시작하지 않는다. 선택한 원본 구간만 요청하고 새 GPU 자원이 준비될 때까지 이전 표시를 유지한 뒤 한 번에 교체한다. 공급이 실패해도 이전 표시를 유지하고 `figgy-error`로 알린다. 취소되거나 다른 선택으로 대체된 요청의 지연 응답은 무시한다. 출력은 시작 당시의 선택을 사용하므로 이후 화면 선택과 섞이지 않는다.
 - 완료된 패킹 캐시가 있으면 `pick_point` / `pick_data`가 GPU의 점·선에서 원본 행 인덱스를 반환한다. 원본을 다시 읽지 않는다. `next_view_point_index(sourceId, seriesId, current, forward)`는 캐시에 남아 있는 행 중 다음·이전 원본 인덱스를 동기적으로 반환하며, 대상이 없으면 `null`이다. 이 조회로 GPU 피킹이나 공급자 요청을 다시 실행하지 않는다.
 - 패킹 캐시가 없거나 아직 준비 중인 비상주 스트림의 피킹은 즉시 `null`을 반환한다. 저수준 WASM의 `begin_stream_pick_*` / `finish_stream_pick_*`는 호환성을 위해 함수 형식만 남겨 두며 즉시 오류를 반환한다. 상주 차트의 피킹은 계속 지원한다. 이미 아는 인덱스의 선택 표시는 필요한 원본 구간만 읽어 처리한다.

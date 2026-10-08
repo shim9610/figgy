@@ -199,6 +199,9 @@ pub(super) struct AutoStreamExecutionSnapshot {
     series_revision: RenderRevision,
     view_revision: RenderRevision,
     target: StreamTargetKey,
+    /// Host input identity. Internal axis fitting may change `config` before
+    /// the fitted ranges can be committed to the live chart.
+    requested_config: Config,
     config: Config,
     /// Document pixel dimensions retained independently of the display transform.
     document_config: Config,
@@ -1095,6 +1098,7 @@ impl Renderer {
             snapshot.series_revision = state.revisions.series;
             snapshot.view_revision = state.revisions.view;
             snapshot.handoff = None;
+            snapshot.requested_config = snapshot.config.clone();
             self.try_publish_view_cache(job);
             return Ok(revision);
         }
@@ -1205,6 +1209,7 @@ impl Renderer {
             self.visual_revision = visual;
             snapshot.desired = desired;
             snapshot.view_revision = view;
+            snapshot.requested_config = snapshot.config.clone();
         }
         let revision = snapshot.desired;
         let draw = self
@@ -1511,7 +1516,7 @@ impl Renderer {
                             snapshot.data_revision == revisions.data
                                 && snapshot.series_revision == revisions.series
                                 && snapshot.view_revision == revisions.view
-                                && stream_config_equal(&snapshot.config, &render_config)
+                                && stream_config_equal(&snapshot.requested_config, &render_config)
                                 && snapshot.display_scale.to_bits() == display_scale.to_bits()
                                 && *auto_fit_padding == self.chart_states[&chart].stream_auto_fit_padding
                                 && snapshot.target == target,
@@ -1530,10 +1535,12 @@ impl Renderer {
                     pending_latest: None,
                 });
             }
-            if terminal {
-                self.publish_auto_stream_completion(job)
-                    .map_err(StreamRequestError::into_figgy)?;
-            }
+            let completed_revision = if terminal {
+                Some(self.publish_auto_stream_completion(job)
+                    .map_err(StreamRequestError::into_figgy)?)
+            } else {
+                None
+            };
             let current = self
                 .chart_states
                 .get(&chart)
@@ -1543,7 +1550,8 @@ impl Renderer {
                 && inputs_match
                 && pending_latest.is_none()
                 && current.data == revisions.data
-                && current.view == revisions.view
+                && (current.view == revisions.view
+                    || completed_revision == Some(current.desired))
             {
                 return Ok(crate::AutoStreamingRequest::Complete {
                     revision: current.desired,
@@ -1652,6 +1660,7 @@ impl Renderer {
             .and_then(|state| state.prepared_styles.take())
             .expect("successful stream-surface preparation publishes chart styles");
         let snapshot = Arc::new(AutoStreamExecutionSnapshot {
+            requested_config: config.clone(),
             desired,
             document_config: self.chart_states[&chart].config.clone(),
             display_scale,
@@ -1783,7 +1792,7 @@ impl Renderer {
             && snapshot.data_revision == data_revision
             && snapshot.series_revision == series_revision
             && snapshot.view_revision == view_revision
-            && stream_config_equal(&snapshot.config, &render_config)
+            && stream_config_equal(&snapshot.requested_config, &render_config)
             && snapshot.display_scale.to_bits() == display_scale.to_bits()
             && snapshot.target == target
             && *active_padding == auto_fit_padding
@@ -1849,6 +1858,7 @@ impl Renderer {
             .and_then(|state| state.prepared_styles.take())
             .expect("successful stream-surface preparation publishes chart styles");
         let snapshot = Arc::new(AutoStreamExecutionSnapshot {
+            requested_config: render_config.clone(),
             desired,
             document_config: self.chart_states[&chart].config.clone(),
             data_revision,
@@ -2726,13 +2736,22 @@ impl Renderer {
         let stream_view = auto_snapshot
             .as_ref()
             .map_or(view, |snapshot| &snapshot.view);
-        let display_view = view;
         let runtime = self.stream_runtime.as_ref().unwrap();
         let draw = runtime
             .draws
             .iter()
             .find(|draw| draw.job == job)
             .ok_or(StreamError::WrongState)?;
+        // During progressive fit, the live document still has its original
+        // ranges. Present ticks/labels from the same fitted view as the data;
+        // completion will commit those ranges to the document atomically.
+        let display_view = if matches!(&draw.mode,
+            StreamExecutionMode::Auto { auto_fit_padding: Some(_), .. })
+        {
+            stream_view
+        } else {
+            view
+        };
         if !Arc::ptr_eq(&stream_view.stream_revision, &draw.view_revision)
             || stream_view.stream_revision.load(Ordering::Acquire) != draw.expected_view_revision
             || (auto_snapshot.is_none()
