@@ -844,7 +844,8 @@ impl Renderer {
             crate::chart::apply_auto_fit_all(&mut config, &x, &y, padding);
             config
         };
-        if !stream_config_equal(self.chart_config(chart)?, &config) {
+        // A fit publishes all axes/ticks, even when the data layer is reusable.
+        if self.chart_config(chart)? != &config {
             self.set_chart_config(chart, config)?;
         }
         self.chart_states.get_mut(&chart).unwrap().stream_auto_fit_padding = None;
@@ -886,7 +887,7 @@ impl Renderer {
         let (x, y) = auto_stream_fit_extents(snapshot, statistics, &draw.field_fits);
         let mut config = snapshot.config.clone();
         crate::chart::apply_auto_fit_all(&mut config, &x, &y, padding);
-        Ok((!stream_config_equal(&snapshot.config, &config)).then_some(config))
+        Ok((snapshot.config != config).then_some(config))
     }
 
     fn update_auto_stream_fit(
@@ -933,7 +934,7 @@ impl Renderer {
         let previous_config = snapshot.config.clone();
         let chart = Chart::new(config.clone());
         let panel = snapshot.view.panel_rect;
-        let updated = if stream_config_equal(&snapshot.config, &config) {
+        let updated = if snapshot.config == config {
             Ok(())
         } else {
             self.refresh_axis(&mut snapshot.view, &chart, panel)
@@ -1588,7 +1589,7 @@ impl Renderer {
                             snapshot.data_revision == revisions.data
                                 && snapshot.series_revision == revisions.series
                                 && snapshot.view_revision == revisions.view
-                                && stream_config_equal(&snapshot.requested_config, &render_config)
+                                && stream_config_equal(&snapshot.requested_config, &render_config, &snapshot.series)
                                 && snapshot.display_scale.to_bits() == display_scale.to_bits()
                                 && *auto_fit_padding == self.chart_states[&chart].stream_auto_fit_padding
                                 && snapshot.target == target,
@@ -1866,7 +1867,7 @@ impl Renderer {
             && snapshot.data_revision == data_revision
             && snapshot.series_revision == series_revision
             && snapshot.view_revision == view_revision
-            && stream_config_equal(&snapshot.requested_config, &render_config)
+            && stream_config_equal(&snapshot.requested_config, &render_config, &snapshot.series)
             && snapshot.display_scale.to_bits() == display_scale.to_bits()
             && snapshot.target == target
             && *active_padding == auto_fit_padding

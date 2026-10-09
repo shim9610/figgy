@@ -6,6 +6,9 @@ use std::sync::atomic::Ordering;
 #[path = "streaming_style_runtime_tests.rs"]
 mod styled_runtime;
 
+#[path = "ssot_invalidation_tests.rs"]
+mod ssot_invalidation;
+
 fn limits(slots: usize) -> StreamLimits {
     StreamLimits {
         max_jobs: 4,
@@ -1525,7 +1528,7 @@ fn clear_draw_target(r: &Renderer, target: &wgpu::Texture) {
 }
 
 #[cfg(test)]
-fn read_draw_target(r: &Renderer, target: &wgpu::Texture) -> Vec<u8> {
+pub(super) fn read_draw_target(r: &Renderer, target: &wgpu::Texture) -> Vec<u8> {
     let resolved = r.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("test resize readback resolve"), size: target.size(), mip_level_count: 1,
         sample_count: 1, dimension: wgpu::TextureDimension::D2, format: target.format(),

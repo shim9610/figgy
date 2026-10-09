@@ -502,3 +502,60 @@ fn heatmap_runtime_typed_pick_matches_global_cells_without_z_replay() {
         }
     }
 }
+
+#[test]
+fn ssot_colorbar_edits_refresh_existing_heatmap_without_decoration_replay() {
+    use crate::config::ColorBarOptions;
+    use crate::renderer::streaming_request_tests::read_draw_target;
+    let font = crate::text_render::FONT_REGISTRATION_TEST_LOCK.lock().unwrap();
+    // Third column specifies whether the DATA colours/geometry must change.
+    let cases: &[(&str, fn(&mut ColorBarOptions), bool)] = &[
+        ("colormap", |b| b.colormap = crate::colormap::ColorMap::Magma, true),
+        ("z.min", |b| b.axis.min = 1.0, true),
+        ("z.max", |b| b.axis.max = 9.0, true),
+        ("z.scale", |b| b.axis.scale = AxisScale::Logarithmic, true),
+        ("nan_color", |b| b.nan_color = Color::new(0.0, 1.0, 0.0, 1.0), true),
+        ("visible", |b| b.visible = false, true),
+        ("thickness", |b| b.thickness_px += 4.0, true),
+        ("offset_x", |b| b.offset_x += 4.0, false),
+        ("offset_y", |b| b.offset_y += 4.0, false),
+        ("border_color", |b| b.border_color = Color::new(0.0, 1.0, 0.0, 1.0), false),
+        ("z.label_color", |b| b.axis.label_style.color = Color::new(0.0, 0.7, 0.0, 1.0), false),
+        ("z.inverted", |b| b.axis.inverted = true, false),
+    ];
+    let screen = |f: &mut Fixture| {
+        let job = f.renderer.active_stream_job(f.id).unwrap();
+        let target = wgpu::Texture::clone(f.renderer.chart_stream_display(job).unwrap());
+        read_draw_target(&f.renderer, &target)
+    };
+    let update = |f: &mut Fixture, edit: fn(&mut ColorBarOptions)| {
+        let mut config = f.chart.config().clone(); edit(config.colorbar.as_mut().unwrap());
+        f.renderer.set_chart_config(f.id,config.clone()).unwrap();
+        f.chart = Chart::new(config);
+        f.view = f.renderer.create_chart_view(&f.chart,f.chart.config().chart_area.0).unwrap();
+        f.renderer.request_auto_streaming_chart(f.id,&f.view,crate::StreamingChartOptions {
+            size:(360,240), clear_color:Color::new(0.0,0.0,0.0,0.0),max_primitives_per_chunk:2,
+        }).unwrap();
+    };
+    let mut failures = Vec::new();
+    for &(name,edit,replay) in cases {
+        let mut f = setup(false,false,false,1,2); finish_display(&mut f);
+        let before = screen(&mut f);
+        let job = f.renderer.active_stream_job(f.id).unwrap();
+        update(&mut f,edit);
+        let requested = matches!(f.renderer.auto_stream_chart_request_ranges(f.id).unwrap(),crate::AutoStreamingRangeRequest::Ready { .. });
+        if requested != replay { failures.push(format!("{name}: source replay={requested}, expected={replay}")); }
+        finish_display(&mut f);
+        let actual = screen(&mut f);
+        let mut fresh = setup(false,false,false,1,2);
+        fresh.renderer.cancel_chart_stream(fresh.id).unwrap();
+        fresh.renderer.service_stream_requests();
+        update(&mut fresh,edit); finish_display(&mut fresh);
+        let expected = screen(&mut fresh);
+        if actual != expected { failures.push(format!("{name}: stale first-frame pixels")); }
+        if actual == before { failures.push(format!("{name}: no visible change")); }
+        if !replay && f.renderer.active_stream_job(f.id) != Some(job) { failures.push(format!("{name}: decoration restarted data job")); }
+    }
+    drop(font);
+    assert!(failures.is_empty(),"{}",failures.join("\n"));
+}

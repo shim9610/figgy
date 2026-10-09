@@ -602,11 +602,38 @@ impl ChartViewState {
 /// the preserved prefix. Styled background-dependent blending must replay
 /// when its grid changes. Anything that changes data-to-pixel geometry or the set of data
 /// primitives remains a stream-breaking view change.
-fn stream_config_equal(left: &Config, right: &Config) -> bool {
-    ChartViewState::from_config(left) == ChartViewState::from_config(right)
+fn stream_config_equal(left: &Config, right: &Config, series: &[SeriesConfig]) -> bool {
+    // Data coordinates use bottom X and left Y. Top/right axis ranges only
+    // affect decoration; changing them must not replay an uncached stream.
+    left.chart_area == right.chart_area
+        && AxisViewState::from_axis(&left.bottom_x) == AxisViewState::from_axis(&right.bottom_x)
+        && AxisViewState::from_axis(&left.left_y) == AxisViewState::from_axis(&right.left_y)
         && left.data_area().ok().map(|area| area.0)
             == right.data_area().ok().map(|area| area.0)
         && left.draw_style == right.draw_style
+        // Z mapping changes the accumulated field pixels, unlike the bar's
+        // border, labels or position. XY-only charts do not consume this map.
+        && (!series.iter().any(|s| match &s.render_type {
+            DataRenderType::Heatmap { .. } | DataRenderType::HeatmapContour { .. } => true,
+            DataRenderType::Scatter { .. }
+            | DataRenderType::Line { .. }
+            | DataRenderType::ScatterLine { .. }
+            | DataRenderType::ScatterErrorbarX { .. }
+            | DataRenderType::ScatterErrorbarY { .. }
+            | DataRenderType::ScatterErrorbarXY { .. }
+            | DataRenderType::LineScatterErrorbarX { .. }
+            | DataRenderType::LineScatterErrorbarY { .. }
+            | DataRenderType::LineScatterErrorbarXY { .. }
+            | DataRenderType::Histogram { .. }
+            | DataRenderType::Contour { .. } => false,
+        })
+            || match (&left.colorbar, &right.colorbar) {
+                (Some(a), Some(b)) => a.axis.min == b.axis.min
+                    && a.axis.max == b.axis.max && a.axis.scale == b.axis.scale
+                    && a.colormap == b.colormap && a.nan_color == b.nan_color,
+                (None, None) => true,
+                _ => false,
+            })
         // Non-Precise blending may depend on the grid/background. Those
         // streams must rebuild their prefix when the grid changes.
         && (matches!(left.draw_style, crate::config::DrawStyle::Precise) || left.grid == right.grid)
@@ -4554,7 +4581,7 @@ fn prepare_load_demo_chart_plan(
             {
                 next.data = state.revisions.data.successor("chart data revision")?;
             }
-            if !stream_config_equal(&state.config, &config) {
+            if !stream_config_equal(&state.config, &config, &state.series) {
                 next.view = state.revisions.view.successor("chart view revision")?;
             }
             next.raster = state.revisions.raster.successor("chart raster revision")?;
@@ -6387,7 +6414,7 @@ impl Renderer {
             .desired
             .successor("chart desired revision")?;
         let config_revision = state.revisions.config.successor("chart config revision")?;
-        let view = if !stream_config_equal(&state.config, &config) {
+        let view = if !stream_config_equal(&state.config, &config, &state.series) {
             state.revisions.view.successor("chart view revision")?
         } else {
             state.revisions.view
@@ -6503,7 +6530,7 @@ impl Renderer {
         } else {
             state.revisions.data.successor("chart data revision")?
         };
-        let view = if !stream_config_equal(&state.config, &config) {
+        let view = if !stream_config_equal(&state.config, &config, &state.series) {
             state.revisions.view.successor("chart view revision")?
         } else {
             state.revisions.view
@@ -6861,7 +6888,7 @@ impl Renderer {
                 .as_ref()
                 .filter(|(override_chart, _)| override_chart == chart_id)
                 .and_then(|(_, config)| {
-                    (!stream_config_equal(&state.config, config))
+                    (!stream_config_equal(&state.config, config, &state.series))
                         .then(|| state.revisions.view.successor("chart view revision"))
                 })
                 .transpose()?;

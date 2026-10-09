@@ -2,7 +2,7 @@
 
 # Config / SeriesConfig — JSON 설정 명세
 
-기준 소스 버전: `figgy 0.10.5` / `renderer 0.12.5` / `model 0.7.2`.
+기준 소스 버전: `figgy 0.10.6` / `renderer 0.12.6` / `model 0.7.2`.
 
 이 문서는 `Config`와 `SeriesConfig`의 JSON 형식을 설명한다. figgy 0.10.0의 비상주 컬럼 등록, 구간 공급, `render_chart()` 실행·취소, 상주 가능 여부 조회는 별도 웹 API이며 설정 필드를 추가하지 않는다. 지원 범위와 호출 방법은 [WASM.md](../renderer/WASM.md#exact-streaming)의 「자동 실행과 원본 구간 공급」을 참고한다.
 
