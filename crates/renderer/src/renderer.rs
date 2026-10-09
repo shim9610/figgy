@@ -598,14 +598,18 @@ impl ChartViewState {
 /// Whether two configs produce the same streamed data prefix.
 ///
 /// Decoration is deliberately excluded: titles, tick-label appearance, grid
-/// colours, and other raster-only chrome are composited over the preserved
-/// prefix.  Anything that changes data-to-pixel geometry or the set of data
+/// colours (for Precise), and other raster-only chrome are composited with
+/// the preserved prefix. Styled background-dependent blending must replay
+/// when its grid changes. Anything that changes data-to-pixel geometry or the set of data
 /// primitives remains a stream-breaking view change.
 fn stream_config_equal(left: &Config, right: &Config) -> bool {
     ChartViewState::from_config(left) == ChartViewState::from_config(right)
         && left.data_area().ok().map(|area| area.0)
             == right.data_area().ok().map(|area| area.0)
         && left.draw_style == right.draw_style
+        // Non-Precise blending may depend on the grid/background. Those
+        // streams must rebuild their prefix when the grid changes.
+        && (matches!(left.draw_style, crate::config::DrawStyle::Precise) || left.grid == right.grid)
 }
 
 fn selection_config_revision(current: RenderRevision, before: &Config, after: &Config) -> Result<RenderRevision> {

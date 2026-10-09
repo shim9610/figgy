@@ -15,7 +15,16 @@ Code is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE). 
 
 <a id="public-release-candidate--renderer-0120--figgy-0100"></a>
 
-## Source release — renderer 0.12.4 / figgy 0.10.4
+## Source release — renderer 0.12.5 / figgy 0.10.5
+
+Resizing a window or changing its aspect ratio now reuses the view's packed GPU
+rows when they cover the new geometry, including stroke and marker footprints.
+The renderer requests original rows only when coverage is insufficient. Precise
+streamed charts also apply grid visibility, color, width and line-style edits
+without replaying data. Background-dependent styles rebuild when their grid
+changes. Public API signatures and the Config JSON schema are unchanged.
+
+### Previous patch — renderer 0.12.4 / figgy 0.10.4
 
 Returning from a streaming chart to a resident chart now applies the current
 window's display coordinates and clipping on the first frame. Queued stream
@@ -173,7 +182,7 @@ npx wasm-pack@0.15.0 build crates/web --release --target web --locked
 
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # or public Git source — version 0.12.4, not on crates.io.
+renderer = { path = "crates/renderer" }   # or public Git source — version 0.12.5, not on crates.io.
 wgpu     = "30"
 ```
 
@@ -1215,7 +1224,11 @@ figgy는 Rust로 작성한 과학·공학용 차트 라이브러리다. **축·�
 
 <a id="공개-후보--renderer-0120--figgy-0100"></a>
 
-## 소스 릴리스 — renderer 0.12.4 / figgy 0.10.4
+## 소스 릴리스 — renderer 0.12.5 / figgy 0.10.5
+
+창 크기나 가로세로 비율을 바꿔도, 선 두께·점 크기까지 포함한 새 화면의 필요 영역이 GPU 캐시에 있으면 원본을 다시 읽지 않는다. 캐시 범위가 부족할 때만 원본 구간을 다시 요청한다. 정밀 스타일의 스트림 차트에서는 그리드 표시·색·두께·선 모양 변경도 데이터 재생 없이 반영한다. 배경과 합성하는 방식이 다른 스타일은 그리드 변경 시 다시 그린다. 공개 API 형식과 Config JSON 스키마는 바뀌지 않았다.
+
+### 이전 패치 — renderer 0.12.4 / figgy 0.10.4
 
 스트림 차트에서 상주 차트로 돌아올 때 첫 화면의 선이 축 밖으로 새거나 중간에서 잘리던 문제를 고쳤다. 그리기 경로를 선택하기 전에 예약된 스트림 취소를 처리해, 복귀 즉시 창 크기에 맞는 좌표와 잘라내기 영역을 적용한다. 취소만 해도 다음 프레임을 예약하며, 저장된 축 범위는 바꾸지 않는다. 공개 API 형식과 Config JSON 스키마는 그대로이며 model은 0.7.2를 유지한다.
 
@@ -1340,7 +1353,7 @@ npx wasm-pack@0.15.0 build crates/web --release --target web --locked
 
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # 또는 공개 Git 소스 — 버전 0.12.4, crates.io 미배포.
+renderer = { path = "crates/renderer" }   # 또는 공개 Git 소스 — 버전 0.12.5, crates.io 미배포.
 wgpu     = "30"
 ```
 

@@ -1,0 +1,100 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>View cache resize and live grid regression</title>
+<style>body{font:16px sans-serif}canvas{display:block;max-width:100%}</style>
+<p id="result">Running…</p><canvas id="cached"></canvas><canvas id="fresh"></canvas>
+<script type="module">
+import init, {FiggyChart} from '../pkg/figgy.js';
+window.probe = (async () => {
+  await init();
+  const dpr = devicePixelRatio || 1;
+  const ids=['x','y'], revisions=new Float64Array([1,1]);
+  const sources=[Float64Array.from({length:1025},(_,i)=>-.01+i*1.02/1024),
+    Float64Array.from({length:1025},(_,i)=>.5+.3*Math.sin(i/80))];
+  const entries=[];
+  const capture=entry=>{
+    entry.chart.frame();
+    const copy=new OffscreenCanvas(entry.canvas.width,entry.canvas.height);
+    const ctx=copy.getContext('2d');ctx.drawImage(entry.canvas,0,0);
+    return ctx.getImageData(0,0,copy.width,copy.height).data;
+  };
+  const colored=(pixels,channel)=>{
+    let n=0;for(let i=0;i<pixels.length;i+=4)
+      if(pixels[i+channel]>180&&pixels[i+(channel+1)%3]<80&&pixels[i+(channel+2)%3]<80)n++;
+    return n;
+  };
+  const results=[];
+  try {
+    for(const [name,cache] of [['cached',true],['fresh',false]]){
+      const canvas=document.getElementById(name);canvas.width=400*dpr;canvas.height=300*dpr;
+      const chart=await FiggyChart.create(canvas);entries.push({chart,canvas});
+      chart.configure_streaming(1,2,2,1024*1024,128*1024*1024);
+      chart.configure_auto_residency(512*1024*1024,cache?1024*1024:0);
+      chart.register_streaming_columns(ids,revisions,sources);
+      chart.add_line_series('line','x','y',2,'');
+      const series=JSON.parse(chart.get_series());
+      series[0].render_type.Line.line.line_color={r:1,g:0,b:0,a:1};
+      chart.set_series(JSON.stringify(series));
+      const cfg=JSON.parse(chart.get_config());cfg.chart_area.width=400;cfg.chart_area.height=300;
+      cfg.legend.visible=false;
+      for(const axis of ['bottom_x','top_x','left_y','right_y']){cfg[axis].min=0;cfg[axis].max=1;cfg[axis].major_spacing=.2;}
+      for(const axis of ['x','y']){cfg.grid[`show_major_${axis}`]=true;cfg.grid[`major_${axis}_color`]={r:0,g:1,b:0,a:1};cfg.grid[`major_${axis}_width`]=3;}
+      chart.set_config(JSON.stringify(cfg));
+    }
+    async function finish(entry, cachedOnly){
+      const {chart}=entry;let sourceReads=0;
+      for(let i=0;i<256;i++){
+        if(cachedOnly){
+          const request=chart.auto_stream_chart_request_ranges();
+          const status=request.status;request.free();
+          if(status==='ready')throw Error('resize/grid requested original source rows');
+          if(status==='complete')return sourceReads;
+        }else{
+          const step=chart.auto_stream_chart_step(ids,revisions,sources);
+          const status=step.status;if(status==='submitted')sourceReads++;
+          step.free();if(status==='complete')return sourceReads;
+        }
+        chart.frame();await chart.wait_submitted_work();
+      }
+      throw Error('completion timed out');
+    }
+    for(const entry of entries){entry.chart.request_auto_streaming_chart(256).free();await finish(entry,false);}
+    const savedConfig=entries[0].chart.get_config();
+    for(const [width,height] of [[800,600],[350,700],[900,300],[400,300]]){
+      for(const [index,entry] of entries.entries()){
+        entry.canvas.width=width*dpr;entry.canvas.height=height*dpr;
+        entry.chart.resize(entry.canvas.width,entry.canvas.height);
+        entry.chart.request_auto_streaming_chart(256).free();
+        await finish(entry,index===0);
+      }
+      const a=capture(entries[0]), b=capture(entries[1]);
+      let different=0;for(let i=0;i<a.length;i++)if(a[i]!==b[i])different++;
+      const status=JSON.parse(entries[0].chart.stream_status());
+      if(different||colored(a,0)<100||status.view_residency.state!=='resident')throw Error(JSON.stringify({width,height,different,status}));
+      if(entries[0].chart.get_config()!==savedConfig)throw Error('resize changed document axes');
+      results.push({width,height,dpr,different,sourceReads:0,cache:status.view_residency});
+    }
+    for(const entry of entries){
+      const {chart}=entry;
+      const job=JSON.parse(chart.stream_status()).job_id;
+      if(colored(capture(entry),1)<100)throw Error('missing initial green grid');
+      for(const mode of ['off','blue']){
+        const cfg=JSON.parse(chart.get_config());
+        for(const axis of ['x','y']){
+          cfg.grid[`show_major_${axis}`]=mode!=='off';
+          cfg.grid[`major_${axis}_color`]={r:0,g:0,b:1,a:1};
+          cfg.grid[`major_${axis}_width`]=5;
+        }
+        chart.set_config(JSON.stringify(cfg));chart.request_auto_streaming_chart(256).free();
+        await finish(entry,true);
+        const pixels=capture(entry);
+        if(colored(pixels,1)!==0||(mode==='blue'&&colored(pixels,2)<100))throw Error(`stale grid ${mode}`);
+        if(JSON.parse(chart.stream_status()).job_id!==job)throw Error('grid restarted the stream');
+      }
+    }
+    window.probeResult={resizes:results,grid:'off/color/width passed without source reads'};
+    document.querySelector('#result').textContent=JSON.stringify(window.probeResult);
+    return window.probeResult;
+  }finally{for(const entry of entries)entry.chart.free();}
+})();
+</script>

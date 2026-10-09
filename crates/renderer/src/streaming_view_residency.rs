@@ -164,8 +164,10 @@ impl GpuViewCache {
         Ok(Self { view, chunks, packed_bytes: candidate.packed_bytes })
     }
 
-    pub(super) fn covers(&self, config: &Config) -> bool {
-        ViewBounds::from_config(config).is_some_and(|next| self.view.covers(next))
+    pub(super) fn covers(&self, config: &Config, series: &[SeriesConfig], scale: f32) -> bool {
+        ViewBounds::from_config(config)
+            .and_then(|next| next.padded(geometry_radius_px(series, scale)))
+            .is_some_and(|next| self.view.covers(next))
     }
 }
 
@@ -232,7 +234,7 @@ impl ViewPackedCandidate {
         Self { view, chunks: Vec::new(), gpu_chunks: Vec::new(), packed_bytes: 0, limit, rejected: None }
     }
 
-    pub(super) fn for_chart(config: &Config, series: &[SeriesConfig], limit: u64) -> Option<Self> {
+    pub(super) fn for_chart(config: &Config, series: &[SeriesConfig], limit: u64, scale: f32) -> Option<Self> {
         if !matches!(config.draw_style, DrawStyle::Precise) || series.is_empty() {
             return None;
         }
@@ -259,7 +261,12 @@ impl ViewPackedCandidate {
             }
         });
         if !supported { return None; }
-        Some(Self::new(ViewBounds::from_config(config)?, limit))
+        // Store a data-space coverage envelope, not a screen-size identity.
+        // The guard absorbs pixel rounding and modest AA-footprint growth on
+        // resize. It is still charged to the same bounded working-set limit.
+        let coverage = ViewBounds::from_config(config)?
+            .padded(geometry_radius_px(series, scale) + 8.0)?;
+        Some(Self::new(coverage, limit))
     }
 
     pub(super) fn push(&mut self, series: usize, phase: StreamDrawPhase, chunk: PackedViewChunk) {
@@ -655,7 +662,38 @@ impl AxisProjection {
     }
 }
 
+// Conservative bounds of the supported Precise primitives, including
+// square line caps, every marker shape (largest radius < 2r), errorbar caps,
+// and their fixed-pixel AA fringes. Mapped/overridden styles are not cached.
+fn geometry_radius_px(series: &[SeriesConfig], scale: f32) -> f64 {
+    let mut radius = 0.0f32;
+    for item in series {
+        if let Some(line) = super::extract_line(&item.render_type) {
+            radius = radius.max((line.line_width * scale).max(1.0));
+        }
+        if let Some(scatter) = super::extract_scatter(&item.render_type) {
+            radius = radius.max(2.0 * scatter.point_size.max(0.0) * scale);
+        }
+        if let Some(error) = super::extract_errorbar_style(&item.render_type) {
+            radius = radius.max((error.error_bar_cap_size.max(0.0)
+                + error.error_bar_width.max(error.cap_width).max(0.0)) * scale);
+        }
+    }
+    f64::from(radius) + 2.0
+}
+
 impl ViewBounds {
+    fn padded(mut self, radius_px: f64) -> Option<Self> {
+        let expand = |axis: &mut AxisProjection, pixels: f64| {
+            let padding = axis.span * radius_px / pixels;
+            axis.min -= padding;
+            axis.span += 2.0 * padding;
+            axis.min.is_finite() && axis.span.is_finite()
+                && (axis.min + axis.span).is_finite()
+        };
+        (expand(&mut self.x, self.width) && expand(&mut self.y, self.height)).then_some(self)
+    }
+
     fn covers(self, next: Self) -> bool {
         let axis = |old: AxisProjection, new: AxisProjection| {
             old.logarithmic == new.logarithmic
@@ -663,8 +701,7 @@ impl ViewBounds {
                 && new.min >= old.min
                 && new.min + new.span <= old.min + old.span
         };
-        next.width >= self.width && next.height >= self.height
-            && axis(self.x, next.x) && axis(self.y, next.y)
+        axis(self.x, next.x) && axis(self.y, next.y)
     }
 
     pub(super) fn from_config(config: &Config) -> Option<Self> {
@@ -739,6 +776,39 @@ mod tests {
             pair_bytes: len * 8,
             statistics: None,
         })
+    }
+
+    #[test]
+    fn cache_coverage_tracks_geometry_in_data_space_not_surface_dimensions() {
+        for logarithmic in [false, true] {
+            let mut config = crate::default::default_config();
+            config.chart_area = crate::layout::ChartArea(crate::layout::Rect { x: 0, y: 0, width: 400, height: 300 });
+            if logarithmic {
+                config.bottom_x.scale = AxisScale::Logarithmic;
+                config.bottom_x.min = 1.0;
+                config.bottom_x.max = 100.0;
+                config.bottom_x.inverted = true;
+            }
+            let series = vec![crate::data_config::SeriesConfig {
+                series_id: "edge".into(), source_id: None, label: None,
+                x_column: "x".into(), y_column: "y".into(),
+                render_type: DataRenderType::Line { line: crate::data_config::DataLineStyleConfig {
+                    line_color: crate::Color::BLACK, line_width: 2.0, line_style: LineStylePreset::Solid,
+                } },
+            }];
+            let candidate = ViewPackedCandidate::for_chart(&config, &series, 4096, 1.0).unwrap();
+            let cache = GpuViewCache { view: candidate.view, chunks: vec![], packed_bytes: 0 };
+            for size in [(800, 600), (350, 700), (900, 300), (400, 300)] {
+                let (display, _, scale) = crate::display_config_for_surface(&config, size);
+                assert!(cache.covers(&display, &series, scale), "rejected {size:?}, log={logarithmic}");
+            }
+            let mut outside = config.clone();
+            outside.bottom_x.max *= 10.0;
+            assert!(!cache.covers(&outside, &series, 1.0), "must request uncached data");
+            let mut larger = series.clone();
+            if let DataRenderType::Line { line } = &mut larger[0].render_type { line.line_width = 1000.0; }
+            assert!(!cache.covers(&config, &larger, 1.0), "new offscreen stroke footprint is not covered");
+        }
     }
 
     #[test]

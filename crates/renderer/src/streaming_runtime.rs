@@ -957,20 +957,11 @@ impl Renderer {
         snapshot.config = config;
         copy_stream_fit_axes(&mut snapshot.document_config, &snapshot.config);
 
-        let (target, clear) = {
-            let draw = self
-                .stream_runtime
-                .as_ref()
-                .unwrap()
-                .draws
-                .iter()
-                .find(|draw| draw.job == job)
-                .unwrap();
-            (
-                draw.target.clone(),
-                draw.surface_clear.ok_or(StreamError::WrongState)?,
-            )
-        };
+        let draw = self.stream_runtime.as_ref().unwrap().draws.iter()
+            .find(|draw| draw.job == job).unwrap();
+        let target = draw.target.clone();
+        let clear = draw.surface_clear.ok_or(StreamError::WrongState)?;
+        let separate_grid = matches!(snapshot.config.draw_style, crate::config::DrawStyle::Precise);
         let target_view = target.create_view(&Default::default());
         let mut encoder = self.device.create_command_encoder(&Default::default());
         let preview = !replay && self.stream_runtime.as_ref().unwrap().draws.iter()
@@ -996,30 +987,20 @@ impl Renderer {
         };
         if !preview {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("figgy automatic stream axis restart"),
+                label: Some("figgy automatic stream data restart"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &target_view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(clear),
+                        load: wgpu::LoadOp::Clear(if separate_grid { wgpu::Color::TRANSPARENT } else { clear }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
                 ..Default::default()
             });
-            if let Some(panel) = data_render::clamp_rect_to_target(snapshot.view.panel_rect, (
-                target.width(),
-                target.height(),
-            )) {
-                pass.set_viewport(
-                    panel.x as f32,
-                    panel.y as f32,
-                    panel.width as f32,
-                    panel.height as f32,
-                    0.0,
-                    1.0,
-                );
+            if !separate_grid && let Some(panel) = data_render::clamp_rect_to_target(snapshot.view.panel_rect, (target.width(), target.height())) {
+                pass.set_viewport(panel.x as f32, panel.y as f32, panel.width as f32, panel.height as f32, 0.0, 1.0);
                 pass.set_scissor_rect(panel.x, panel.y, panel.width, panel.height);
                 pass.set_pipeline(&self.pipelines.axis);
                 pass.set_bind_group(0, &snapshot.view.grid_bind_group, &[]);
@@ -1069,7 +1050,7 @@ impl Renderer {
         };
         draw.view_candidate = self.auto_resident_working_set_limit
             .filter(|limit| *limit != 0 && fit_ready && replay).and_then(|limit| {
-                view_residency::ViewPackedCandidate::for_chart(&snapshot.config, &snapshot.series, limit)
+                view_residency::ViewPackedCandidate::for_chart(&snapshot.config, &snapshot.series, limit, snapshot.display_scale)
             });
         draw.view_rejection = match self.auto_resident_working_set_limit {
             Some(0) => Some(view_residency::PackReject::Disabled),
@@ -1573,9 +1554,8 @@ impl Renderer {
             let cache = draw.view_cache.as_ref()?;
             (previous.data_revision == revisions.data
                 && previous.series_revision == revisions.series
-                && previous.display_scale.to_bits() == display_scale.to_bits()
                 && previous.config.draw_style == render_config.draw_style
-                && cache.covers(&render_config))
+                && cache.covers(&render_config, &previous.series, display_scale))
                 .then(|| Arc::clone(cache))
         });
 
@@ -1770,7 +1750,7 @@ impl Renderer {
         });
         let view_candidate = self.auto_resident_working_set_limit
             .filter(|limit| *limit != 0 && auto_fit_padding.is_none()).and_then(|limit| {
-            view_residency::ViewPackedCandidate::for_chart(&snapshot.config, &snapshot.series, limit)
+            view_residency::ViewPackedCandidate::for_chart(&snapshot.config, &snapshot.series, limit, snapshot.display_scale)
         });
         let draw = self
             .stream_runtime
@@ -1970,7 +1950,7 @@ impl Renderer {
         });
         let view_candidate = self.auto_resident_working_set_limit
             .filter(|limit| *limit != 0 && auto_fit_padding.is_none()).and_then(|limit| {
-            view_residency::ViewPackedCandidate::for_chart(&snapshot.config, &snapshot.series, limit)
+            view_residency::ViewPackedCandidate::for_chart(&snapshot.config, &snapshot.series, limit, snapshot.display_scale)
         });
         let draw = self
             .stream_runtime
@@ -2739,6 +2719,10 @@ impl Renderer {
         )?;
         let target_view = surface.prefix().create_view(&Default::default());
         let mut encoder = self.device.create_command_encoder(&Default::default());
+        let separate_grid = fit_preview || matches!(
+            display.map_or(self.chart_config(chart)?, |(config, _)| config).draw_style,
+            crate::config::DrawStyle::Precise,
+        );
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("figgy stream prefix initialization"),
@@ -2747,21 +2731,14 @@ impl Renderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(if fit_preview { wgpu::Color::TRANSPARENT } else { clear }),
+                        load: wgpu::LoadOp::Clear(if separate_grid { wgpu::Color::TRANSPARENT } else { clear }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
                 ..Default::default()
             });
-            if !fit_preview && let Some(panel) = data_render::clamp_rect_to_target(view.panel_rect, size) {
-                pass.set_viewport(
-                    panel.x as f32,
-                    panel.y as f32,
-                    panel.width as f32,
-                    panel.height as f32,
-                    0.0,
-                    1.0,
-                );
+            if !separate_grid && let Some(panel) = data_render::clamp_rect_to_target(view.panel_rect, size) {
+                pass.set_viewport(panel.x as f32, panel.y as f32, panel.width as f32, panel.height as f32, 0.0, 1.0);
                 pass.set_scissor_rect(panel.x, panel.y, panel.width, panel.height);
                 pass.set_pipeline(&self.pipelines.axis);
                 pass.set_bind_group(0, &view.grid_bind_group, &[]);
@@ -2938,12 +2915,18 @@ impl Renderer {
             None
         };
         let mut encoder = self.device.create_command_encoder(&Default::default());
+        // Styled blend equations can depend on the background. Preserve
+        // their original prefix; Precise uses a reusable transparent layer.
+        let separate_grid = draw.fit_preview || matches!(
+            auto_snapshot.as_ref().map_or(&self.chart_states[&job.chart].config, |s| &s.config).draw_style,
+            crate::config::DrawStyle::Precise,
+        );
         surface.record_display_layers(
             runtime.transfer.as_ref().ok_or(StreamError::WrongState)?,
             &mut encoder,
-            draw.fit_preview.then_some(draw.surface_clear.ok_or(StreamError::WrongState)?),
+            separate_grid.then_some(draw.surface_clear.ok_or(StreamError::WrongState)?),
             |pass| {
-                if draw.fit_preview && let Some(panel) = panel {
+                if separate_grid && let Some(panel) = panel {
                     pass.set_viewport(panel.x as f32, panel.y as f32, panel.width as f32, panel.height as f32, 0.0, 1.0);
                     pass.set_scissor_rect(panel.x, panel.y, panel.width, panel.height);
                     pass.set_pipeline(&self.pipelines.axis);
@@ -3779,17 +3762,8 @@ impl Renderer {
                 .find(|draw| draw.job == ticket.job)
                 .and_then(|draw| draw.view_candidate.as_ref());
             candidate.map(|candidate| {
-                let scale = auto_snapshot.as_ref().map_or(1.0, |snapshot| snapshot.display_scale);
-                let radius = match phase {
-                    StreamDrawPhase::Scatter => super::extract_scatter(&execution_series.render_type)
-                        .map_or(0.0, |scatter| scatter.point_size.max(0.0)),
-                    StreamDrawPhase::Line => super::extract_line(&execution_series.render_type)
-                        .map_or(0.0, |line| line.line_width.max(0.0) * 0.5),
-                    StreamDrawPhase::Errorbar => super::extract_errorbar_style(&execution_series.render_type)
-                        .map_or(0.0, |style| style.error_bar_cap_size.max(style.error_bar_width)
-                            .max(style.cap_width)),
-                    _ => 0.0,
-                };
+                // Candidate.view already includes the conservative geometry
+                // footprint and resize guard in data space for every phase.
                 let errors = if phase == StreamDrawPhase::Errorbar {
                     Some(view_residency::ErrorPairColumns::for_series(&execution_series)?)
                 } else { None };
@@ -3797,7 +3771,7 @@ impl Renderer {
                     candidate.view, &chunk.columns,
                     usize::from(execution_series.y_column != execution_series.x_column),
                     phase == StreamDrawPhase::Line,
-                    f64::from((radius + 2.0) * scale), errors,
+                    0.0, errors,
                     candidate.limit.saturating_sub(candidate.packed_bytes),
                 )
             })

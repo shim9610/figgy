@@ -813,21 +813,13 @@ fn streamed_histogram_winner_and_mapped_bins_match_resident_full_chart() {
                         assert!(!r.refresh_chart_stream_display(job, &view).unwrap());
                         if chunk_size == 4 && submissions == 0 {
                             let display = wgpu::Texture::clone(r.chart_stream_display(job).unwrap());
-                            assert_eq!(
-                                read_draw_target(&r, &display),
-                                expected_prefix,
-                                "partial orientation={orientation:?}, mapped={mapped}, samples={samples}"
-                            );
+                            assert_stream_composite_pixels(&read_draw_target(&r, &display), &expected_prefix);
                         }
                         submissions += 1;
                     }
                     assert_eq!(submissions, 2 * 16usize.div_ceil(chunk_size as usize));
                     let display = wgpu::Texture::clone(r.chart_stream_display(job).unwrap());
-                    assert_eq!(
-                        read_draw_target(&r, &display),
-                        expected,
-                        "orientation={orientation:?}, mapped={mapped}, samples={samples}, chunk={chunk_size}"
-                    );
+                    assert_stream_composite_pixels(&read_draw_target(&r, &display), &expected);
                     r.cancel_chart_stream(stream_id).unwrap();
                 }
             }
@@ -1534,7 +1526,14 @@ fn clear_draw_target(r: &Renderer, target: &wgpu::Texture) {
 
 #[cfg(test)]
 fn read_draw_target(r: &Renderer, target: &wgpu::Texture) -> Vec<u8> {
-    let resolved = draw_target(r, 1);
+    let resolved = r.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("test resize readback resolve"), size: target.size(), mip_level_count: 1,
+        sample_count: 1, dimension: wgpu::TextureDimension::D2, format: target.format(),
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let row_bytes = target.width() * 4;
+    let pitch = row_bytes.div_ceil(256) * 256;
     let source = if target.sample_count() == 1 {
         target
     } else {
@@ -1559,7 +1558,7 @@ fn read_draw_target(r: &Renderer, target: &wgpu::Texture) -> Vec<u8> {
     }
     let readback = r.device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        size: 1280 * 240,
+        size: u64::from(pitch) * u64::from(target.height()),
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -1574,8 +1573,8 @@ fn read_draw_target(r: &Renderer, target: &wgpu::Texture) -> Vec<u8> {
             buffer: &readback,
             layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(1280),
-                rows_per_image: Some(240),
+                bytes_per_row: Some(pitch),
+                rows_per_image: Some(target.height()),
             },
         },
         source.size(),
@@ -1589,7 +1588,17 @@ fn read_draw_target(r: &Renderer, target: &wgpu::Texture) -> Vec<u8> {
             timeout: Some(std::time::Duration::from_secs(30)),
         })
         .unwrap();
-    slice.get_mapped_range().unwrap().to_vec()
+    let mapped = slice.get_mapped_range().unwrap();
+    mapped.chunks_exact(pitch as usize).flat_map(|row| row[..row_bytes as usize].iter().copied()).collect()
+}
+
+// A transparent UNORM data layer is composited over the current grid. The
+// extra blend and MSAA resolve may round a channel twice; geometry, source
+// ordering and the independent resident panel are still checked separately.
+fn assert_stream_composite_pixels(actual: &[u8], expected: &[u8]) {
+    assert_eq!(actual.len(), expected.len());
+    let max_error = actual.iter().zip(expected).map(|(a,b)| a.abs_diff(*b)).max().unwrap_or(0);
+    assert!(max_error <= 2, "stream composition channel error {max_error} exceeds UNORM rounding");
 }
 
 fn paint_frame_pixels(r: &Renderer, frame: &PreparedFrame, samples: u32) -> Vec<u8> {
@@ -1859,10 +1868,9 @@ fn mixed_prepared_frame_preserves_resident_chart_and_exact_stream_output() {
                 let pixels = paint_frame_pixels(&r, &mixed, samples);
                 for row in 0..240 {
                     let a_base = row * 1280;
-                    assert_eq!(
+                    assert_stream_composite_pixels(
                         &pixels[a_base..a_base + 160 * 4],
                         &prefix_pixels[a_base..a_base + 160 * 4],
-                        "stream partial does not match direct prefix: samples={samples}, row={row}, prefix={prefix_len}"
                     );
                     let base = row * 1280 + 160 * 4;
                     assert_eq!(
@@ -1901,7 +1909,7 @@ fn mixed_prepared_frame_preserves_resident_chart_and_exact_stream_output() {
                     },
                 ])
                 .unwrap();
-            assert_eq!(paint_frame_pixels(&r, &final_frame, samples), expected);
+            assert_stream_composite_pixels(&paint_frame_pixels(&r, &final_frame, samples), &expected);
             b_only = r
                 .prepare_registered(&[RegisteredChartDrawItem {
                     chart_id: b,
@@ -2362,11 +2370,7 @@ fn ordered_stream_draw_matches_resident_pixels_across_chunk_boundaries() {
                 r.end_gpu_frame();
             }
             let display = wgpu::Texture::clone(r.chart_stream_display(job).unwrap());
-            assert_eq!(
-                read_draw_target(&r, &display),
-                complete,
-                "full chart: samples={samples}, mode={mode}"
-            );
+            assert_stream_composite_pixels(&read_draw_target(&r, &display), &complete);
             let before = r.gpu_memory_usage();
             assert!(!r.refresh_chart_stream_display(job, &view).unwrap());
             assert_eq!(r.gpu_memory_usage(), before);
@@ -5165,8 +5169,12 @@ fn fitted_stream_reads_two_forward_passes_and_swaps_exact_frame_without_flicker(
         let reference_view = r.create_chart_view(&Chart::new(fitted.clone()), fitted.chart_area.0).unwrap();
         let frame = r.prepare_registered(&[RegisteredChartDrawItem { chart_id: reference, view: &reference_view }]).unwrap();
         let expected = paint_frame_pixels(&r, &frame, samples);
-        let changed = final_pixels.iter().zip(&expected).filter(|(a,b)| a != b).count();
-        assert_eq!(changed, 0, "final frame must match exact resident pixels at samples={samples}, histogram={histogram}");
+        let max_channel_error = final_pixels.iter().zip(&expected).map(|(a,b)| a.abs_diff(*b)).max().unwrap();
+        // Data is accumulated without the grid so decoration edits need no
+        // source replay. Compositing that UNORM layer rounds once more than
+        // drawing directly onto the resident background; MSAA resolve adds
+        // another rounding. Bound the difference to two 8-bit channel steps.
+        assert!(max_channel_error <= 2, "final frame differs from resident: error={max_channel_error}, samples={samples}, histogram={histogram}");
     }
 }
 
@@ -5262,5 +5270,124 @@ fn explicit_chart_restore_supersedes_pending_stream_fit() {
         assert!(!r.stream_status(id).unwrap().auto_fit_pending, "stale fit after {mutation}");
         assert_eq!(r.chart_config(id).unwrap().bottom_x.min, config.bottom_x.min);
         assert_eq!(r.chart_config(id).unwrap().bottom_x.max, config.bottom_x.max);
+    }
+}
+
+#[test]
+fn packed_view_resize_reuses_rows_and_matches_fresh_stream() {
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK.lock().unwrap();
+    for markers in [false, true] {
+    let (mut r, id, _) = renderer(2);
+    if markers {
+        let mut series = r.chart_series(id).unwrap().to_vec();
+        let line = super::extract_line(&series[0].render_type).unwrap().clone();
+        series[0].render_type = DataRenderType::ScatterLine {
+            line,
+            scatter: DataScatterStyleConfig {
+                point_shape: ScatterShape::TriangleFilled, point_size: 7.0,
+                point_color: Color::new(0.0, 0.0, 1.0, 1.0),
+                point_style_table: None, point_style_index_column: None, point_style_overrides: None,
+            },
+        };
+        r.set_chart_series(id, series).unwrap();
+    }
+    let mut document = r.chart_config(id).unwrap().clone();
+    document.chart_area = crate::layout::ChartArea(Rect { x: 0, y: 0, width: 320, height: 240 });
+    r.set_chart_config(id, document.clone()).unwrap();
+    let budget = r.gpu_memory_usage().total_bytes() + 64 * 1024 * 1024;
+    let _ = r.set_memory_budget(Some(budget));
+    let _ = r.set_auto_resident_working_set_limit(Some(500_000_000));
+    // Includes offscreen connections, a run near the left edge, and a gap.
+    let x = crate::Column { data: vec![-2.0, 0.5, 2.0, f32::NAN, -0.005, -0.005, 0.5, 2.0], min: -2.0, max: 2.0 };
+    let y = crate::Column { data: vec![0.1, 0.5, 0.9, f32::NAN, 0.3, 0.7, 0.7, 0.7], min: 0.1, max: 0.9 };
+    let bindings = [
+        crate::StreamSourceBinding { id: "x", revision: 1, source: crate::StreamColumnSource::Scalar(&x) },
+        crate::StreamSourceBinding { id: "a", revision: 1, source: crate::StreamColumnSource::Scalar(&y) },
+    ];
+    run_auto_stream_for_view_test(&mut r, id, &document, crate::StreamingChartOptions {
+        size: (320, 240), clear_color: Color::WHITE, max_primitives_per_chunk: 8,
+    }, &bindings);
+    for size in [(640, 480), (260, 500), (900, 300), (320, 240)] {
+        let (config, panel, scale) = display_config_for_surface(&document, size);
+        let view = r.create_chart_view(&Chart::new(config.clone()), panel).unwrap();
+        let options = crate::StreamingChartOptions { size, clear_color: Color::WHITE, max_primitives_per_chunk: 8 };
+        r.request_auto_streaming_chart_with_display_scale(id, &view, config.clone(), scale, options).unwrap();
+        assert!(matches!(r.auto_stream_chart_request_ranges(id).unwrap(),
+            crate::AutoStreamingRangeRequest::AllSubmitted { .. }), "resize {size:?} requested original rows");
+        wait_stream_slots(&mut r, 0);
+        r.prepare_registered(&[RegisteredChartDrawItem { chart_id: id, view: &view }]).unwrap();
+        assert!(matches!(r.auto_stream_chart_request_ranges(id).unwrap(), crate::AutoStreamingRangeRequest::Complete { .. }));
+        let job = r.active_stream_job(id).unwrap();
+        let display = wgpu::Texture::clone(r.chart_stream_display(job).unwrap());
+        let pixels = read_draw_target(&r, &display);
+
+        let (mut fresh, fresh_id, _) = renderer(2);
+        fresh.set_chart_config(fresh_id, document.clone()).unwrap();
+        fresh.set_chart_series(fresh_id, r.chart_series(id).unwrap().to_vec()).unwrap();
+        let fresh_view = fresh.create_chart_view(&Chart::new(config.clone()), panel).unwrap();
+        fresh.request_auto_streaming_chart_with_display_scale(fresh_id, &fresh_view, config, scale, options).unwrap();
+        loop {
+            match fresh.auto_stream_chart_step(fresh_id, &bindings).unwrap() {
+                crate::AutoStreamingProgress::Submitted { .. } => {},
+                crate::AutoStreamingProgress::Backpressure { .. } => wait_stream_slots(&mut fresh, 0),
+                crate::AutoStreamingProgress::AllSubmitted { .. } => break,
+                _ => panic!("unexpected completion"),
+            }
+        }
+        wait_stream_slots(&mut fresh, 0);
+        fresh.prepare_registered(&[RegisteredChartDrawItem { chart_id: fresh_id, view: &fresh_view }]).unwrap();
+        let job = fresh.active_stream_job(fresh_id).unwrap();
+        let display = wgpu::Texture::clone(fresh.chart_stream_display(job).unwrap());
+        let expected = read_draw_target(&fresh, &display);
+        assert!(pixels.chunks_exact(4).any(|p| p[0] > 150 && p[1] < 80 && p[2] < 80));
+        assert_eq!(pixels, expected, "resize {size:?} lost boundary geometry");
+    }
+    }
+}
+
+#[test]
+fn completed_stream_grid_toggle_recomposes_without_source_replay() {
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK.lock().unwrap();
+    for cache in [false, true] {
+        let (mut r, id, _) = renderer(2);
+        let mut config = r.chart_config(id).unwrap().clone();
+        config.chart_area = crate::layout::ChartArea(Rect { x: 0, y: 0, width: 320, height: 240 });
+        config.grid.show_major_x = true;
+        config.grid.show_major_y = true;
+        config.grid.major_x_color = Color::new(0.0, 1.0, 0.0, 1.0);
+        config.grid.major_y_color = config.grid.major_x_color;
+        config.bottom_x.major_spacing = 0.2;
+        config.left_y.major_spacing = 0.2;
+        config.grid.major_x_width = 3.0;
+        config.grid.major_y_width = 3.0;
+        r.set_chart_config(id, config.clone()).unwrap();
+        let budget = r.gpu_memory_usage().total_bytes() + 64 * 1024 * 1024;
+        let _ = r.set_memory_budget(Some(budget));
+        let _ = r.set_auto_resident_working_set_limit(Some(if cache { 500_000_000 } else { 0 }));
+        let values = crate::Column { data: vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8], min: 0.1, max: 0.8 };
+        let bindings = [
+            crate::StreamSourceBinding { id: "x", revision: 1, source: crate::StreamColumnSource::Scalar(&values) },
+            crate::StreamSourceBinding { id: "a", revision: 1, source: crate::StreamColumnSource::Scalar(&values) },
+        ];
+        let options = crate::StreamingChartOptions { size: (320, 240), clear_color: Color::WHITE, max_primitives_per_chunk: 8 };
+        run_auto_stream_for_view_test(&mut r, id, &config, options, &bindings);
+        let job = r.active_stream_job(id).unwrap();
+        let green = |pixels: &[u8]| pixels.chunks_exact(4).filter(|p| p[1] > 180 && p[0] < 80 && p[2] < 80).count();
+        let display = wgpu::Texture::clone(r.chart_stream_display(job).unwrap());
+        let before = read_draw_target(&r, &display);
+        assert!(green(&before) > 100, "grid oracle is empty");
+        let prefix = read_draw_target(&r, &r.chart_stream_prefix_for_test(job).unwrap());
+        config.grid.show_major_x = false;
+        config.grid.show_major_y = false;
+        r.set_chart_config(id, config.clone()).unwrap();
+        let view = r.create_chart_view(&Chart::new(config.clone()), config.chart_area.0).unwrap();
+        r.request_auto_streaming_chart(id, &view, options).unwrap();
+        r.prepare_registered(&[RegisteredChartDrawItem { chart_id: id, view: &view }]).unwrap();
+        assert_eq!(r.active_stream_job(id), Some(job));
+        assert!(matches!(r.auto_stream_chart_request_ranges(id).unwrap(), crate::AutoStreamingRangeRequest::Complete { .. }));
+        assert_eq!(prefix, read_draw_target(&r, &r.chart_stream_prefix_for_test(job).unwrap()));
+        let display = wgpu::Texture::clone(r.chart_stream_display(job).unwrap());
+        let after = read_draw_target(&r, &display);
+        assert_eq!(green(&after), 0, "old grid remained in the data layer, cache={cache}");
     }
 }
