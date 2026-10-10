@@ -1,6 +1,9 @@
 name: Rust packages
 "on":
   push:
+    # Narrow probes have their own workflow; normal branches and all PRs keep
+    # the full package matrix, including the experimental Metal backend.
+    branches-ignore: ['experiments/metal-precision-*']
   pull_request:
   workflow_dispatch:
 permissions:

@@ -1,0 +1,16 @@
+[package]
+name = "figgy-metal-precision-probe"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+# Independent experiment; not a renderer feature or a registry dependency.
+[workspace]
+
+[dependencies]
+wgpu = "=30.0.1"
+naga = { version = "=30.0.1", features = ["wgsl-in", "msl-out"] }
+bytemuck = "1"
+pollster = "1"
+serde_json = "1"
