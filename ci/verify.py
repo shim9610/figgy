@@ -161,6 +161,7 @@ def main():
     images.mkdir(exist_ok=True)
     for key in ("FIGGY_PROBE_DIR", "FIGGY_LAYOUT_PROBE_DIR", "FIGGY_FIELD_DIAGNOSTIC_ARTIFACT_DIR"):
         os.environ.setdefault(key, str(images))
+    os.environ.setdefault("FIGGY_SHADER_COMPILE_REPORT", str(RESULTS / "shader-compilation-native.json"))
     with (RESULTS / f"{args.stage}.log").open("w", encoding="utf-8") as log:
         LOG = log
         report(f"Platform: {sys.platform}; requested backend: {os.environ.get('WGPU_BACKEND', 'automatic')}")

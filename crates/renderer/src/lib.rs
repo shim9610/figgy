@@ -6,6 +6,9 @@ pub mod data;
 pub mod data_render;
 pub mod demo;
 pub mod error;
+mod gpu_compile;
+#[cfg(target_arch = "wasm32")]
+mod browser_compile;
 pub mod gpu_contour;
 mod gpu_data_pick;
 pub mod gpu_errorbar;

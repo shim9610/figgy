@@ -19,6 +19,13 @@ cannot compile the code. The tested development toolchain and the support floor
 are recorded separately. Direct host device/queue/render-pass sharing requires
 wgpu 30; a host on another wgpu major must adapt or upgrade its integration.
 
+macOS / Metal support is **experimental and not yet stable**. Known failures
+include large-coordinate precision, picking at endpoint ties, and differences
+between resident and streamed composition. A separate precompiled Metal shader
+experiment does not change the default renderer or establish a precision guarantee.
+The experimental path is not a public Cargo feature. Existing regression checks
+remain enabled; see the source repository's backend results for tested revisions.
+
 ## Entry points and input contracts
 
 | Renderer | Input | Frame preparation |
@@ -46,6 +53,12 @@ not merely that all input primitives have been submitted. The host owns and
 retains the replayable source for the operations it enables.
 
 ## Ownership and frame validity
+
+`Renderer::prewarm_all` initializes the optional Cartesian pipelines before first
+use. Calling it again on the same renderer reuses them without creating new shader
+modules or pipelines. It does not initialize separate radial/categorical/boxplot
+renderers. WASM prewarm uses the same explicit descriptors as the production
+constructors; it does not depend on auto-layout guesses to warm a different layout.
 
 `RendererDevice` holds `Arc` handles to a device and queue created together.
 The host may share them across renderers. Their originating device must match;
@@ -98,7 +111,7 @@ or changing fields, adding required fields or enum variants, changing trait
 requirements, and adding `non_exhaustive` to existing types can break consumers.
 Incompatible changes require a new 0.x minor version and migration notes; patch
 updates must preserve the supported contract. A new wgpu major needs the same
-review. The source versions are figgy-renderer 0.13.0 and figgy-model 0.8.0. They have not
+review. The source versions are figgy-renderer 0.13.1 and figgy-model 0.8.0. They have not
 been published to crates.io; publishing a source commit does not publish a registry package.
 
 The optional serde representation is not an application file-format version.

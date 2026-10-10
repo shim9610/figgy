@@ -5,6 +5,11 @@ use std::sync::Arc;
 #[path = "streaming_replay.rs"]
 mod replay;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn compile_replay_for_test(device: &wgpu::Device, spec: StreamSurfaceSpec) {
+    replay::ReplayTransfer::new(device, spec).expect("replay compilation");
+}
+
 use crate::gpu_memory::{GpuLedger, GpuResourceKind, TrackedBuffer, TrackedTexture};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,7 +84,7 @@ impl StreamTransfer {
     ) -> Result<Self, StreamSurfaceError> {
         validate_format(format, sample_count)?;
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            let shader = crate::gpu_compile::shader_module(&device, wgpu::ShaderModuleDescriptor {
                 label: Some("stream prefix sample transfer"),
                 source: wgpu::ShaderSource::Wgsl(if sample_count > 1 {
                     include_str!("stream_sample_transfer_msaa.wgsl").into()
@@ -87,7 +92,7 @@ impl StreamTransfer {
                     include_str!("stream_sample_transfer.wgsl").into()
                 }),
             });
-            let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            let layout = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
                 label: Some("stream prefix sample source"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -100,12 +105,12 @@ impl StreamTransfer {
                     count: None,
                 }],
             });
-            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            let pipeline_layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
                 label: Some("stream prefix sample transfer"),
                 bind_group_layouts: &[Some(&layout)],
                 immediate_size: 0,
             });
-            let make_pipeline = |layout: &wgpu::PipelineLayout, entry, blend| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            let make_pipeline = |layout: &wgpu::PipelineLayout, entry, blend| crate::gpu_compile::render_pipeline(&device, &wgpu::RenderPipelineDescriptor {
                 label: Some("stream prefix sample transfer"),
                 layout: Some(layout),
                 vertex: wgpu::VertexState {
@@ -135,7 +140,7 @@ impl StreamTransfer {
             });
             let pipeline = make_pipeline(&pipeline_layout, "transfer", None);
             let overlay_pipeline = make_pipeline(&pipeline_layout, "transfer", Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING));
-            let rescale_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            let rescale_layout = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
                 label: Some("stream preview rescale"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
@@ -154,7 +159,7 @@ impl StreamTransfer {
                     },
                 ],
             });
-            let rescale_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            let rescale_pipeline_layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
                 label: Some("stream preview rescale"), bind_group_layouts: &[Some(&rescale_layout)], immediate_size: 0,
             });
             let rescale_pipeline = make_pipeline(&rescale_pipeline_layout, "rescale", None);

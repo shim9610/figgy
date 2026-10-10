@@ -1,6 +1,6 @@
 [package]
 name = "figgy-renderer"
-version = "0.13.0"
+version = "0.13.1"
 edition = "2024"
 rust-version = "1.99"
 description = "Native Rust chart renderer combining wgpu data rendering with CPU-rasterized axes and text."

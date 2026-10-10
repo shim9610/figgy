@@ -94,8 +94,8 @@ pub struct AnchorParamsGpu {
     pub label_h_px: f32,
     pub label_vertices: u32,
     /// Reserved CPU lane; callers retain zero for source compatibility.
-    /// The internal upload reuses its GPU copy for four Newton corrections,
-    /// corresponding to WGSL `AnchorParams.projection_steps` at offset 60.
+    /// Its GPU copy retains the four-correction marker at byte offset 60.
+    /// Production corrections are ordered as separate dispatches.
     pub _pad0: u32,
 }
 
@@ -190,7 +190,7 @@ pub struct LabelParamsGpu {
 const _: () = assert!(std::mem::size_of::<LabelParamsGpu>() == 32);
 const _: () = assert!(std::mem::align_of::<LabelParamsGpu>() == 16);
 
-/// Everything the label feature compiles once per device: the two anchor compute
+/// Everything the label feature compiles once per device: the anchor compute
 /// pipelines, and the module and layouts the per-target label render pipeline is
 /// built from.
 ///
@@ -198,6 +198,7 @@ const _: () = assert!(std::mem::align_of::<LabelParamsGpu>() == 16);
 /// place without the anchor pass, and the anchor pass has nothing to feed without
 /// the draw.
 pub struct ContourLabelPipelines {
+    projection_steps: Option<(wgpu::ComputePipeline, wgpu::ComputePipeline)>,
     anchor_project: wgpu::ComputePipeline,
     anchor_select: wgpu::ComputePipeline,
     /// `Transform`, visible to compute. The render side reuses the renderer's own
@@ -219,15 +220,16 @@ impl ContourLabelPipelines {
     /// `locate`/`grid_value` the fragment shader does (one SSoT block), so a label
     /// cannot land on a grid the lines were not drawn from.
     pub fn new(device: &wgpu::Device, field_bgl: &wgpu::BindGroupLayout) -> Self {
-        Self::with_anchor_source(device, field_bgl, include_str!("contour_anchor.wgsl"))
+        Self::with_anchor_source(device, field_bgl, include_str!("contour_anchor.wgsl"), true)
     }
 
     fn with_anchor_source(
         device: &wgpu::Device,
         field_bgl: &wgpu::BindGroupLayout,
         anchor_source: &str,
+        split_projection: bool,
     ) -> Self {
-        let anchor_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let anchor_module = crate::gpu_compile::shader_module(&device, wgpu::ShaderModuleDescriptor {
             label: Some("figgy contour anchor shader"),
             source: wgpu::ShaderSource::Wgsl(anchor_source.into()),
         });
@@ -255,11 +257,11 @@ impl ContourLabelPipelines {
         };
         let compute = wgpu::ShaderStages::COMPUTE;
         let anchor_transform_bgl =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
                 label: Some("figgy contour anchor transform bgl"),
                 entries: &[uniform(0, compute)],
             });
-        let anchor_io_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let anchor_io_bgl = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
             label: Some("figgy contour anchor io bgl"),
             entries: &[
                 uniform(0, compute),
@@ -269,7 +271,7 @@ impl ContourLabelPipelines {
                 storage(4, true, compute),  // per-level label widths
             ],
         });
-        let anchor_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let anchor_layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
             label: Some("figgy contour anchor layout"),
             bind_group_layouts: &[
                 Some(&anchor_transform_bgl),
@@ -279,7 +281,7 @@ impl ContourLabelPipelines {
             immediate_size: 0,
         });
         let pipeline = |entry: &str, label: &str| {
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            crate::gpu_compile::compute_pipeline(&device, &wgpu::ComputePipelineDescriptor {
                 label: Some(label),
                 layout: Some(&anchor_layout),
                 module: &anchor_module,
@@ -288,7 +290,7 @@ impl ContourLabelPipelines {
                 cache: None,
             })
         };
-        let label_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let label_bgl = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
             label: Some("figgy contour label bgl"),
             entries: &[
                 uniform(0, wgpu::ShaderStages::VERTEX),
@@ -310,7 +312,7 @@ impl ContourLabelPipelines {
                 },
             ],
         });
-        let label_gap_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let label_gap_bgl = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
             label: Some("figgy contour label gap bgl"),
             entries: &[
                 storage(0, true, wgpu::ShaderStages::FRAGMENT), // selected anchors
@@ -319,11 +321,15 @@ impl ContourLabelPipelines {
             ],
         });
         Self {
+            projection_steps: split_projection.then(|| (
+                pipeline("anchor_seed", "figgy contour anchor seed pipeline"),
+                pipeline("anchor_step", "figgy contour anchor correction pipeline"),
+            )),
             anchor_project: pipeline("anchor_project", "figgy contour anchor project pipeline"),
             anchor_select: pipeline("anchor_select", "figgy contour anchor select pipeline"),
             anchor_transform_bgl,
             anchor_io_bgl,
-            label_module: device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label_module: crate::gpu_compile::shader_module(&device, wgpu::ShaderModuleDescriptor {
                 label: Some("figgy contour label shader"),
                 source: wgpu::ShaderSource::Wgsl(include_str!("contour_label.wgsl").into()),
             }),
@@ -337,22 +343,10 @@ impl ContourLabelPipelines {
         device: &wgpu::Device,
         field_bgl: &wgpu::BindGroupLayout,
     ) -> Self {
-        // Differential oracle: the previously shipped fixed four corrections
-        // and 32-step search, using the same field sampling and output layout.
-        let source = include_str!("contour_anchor.wgsl");
-        let begin = source.find("    var s: ContourSample;\n").unwrap();
-        let end = source[begin..].find("        if (!s.hit) {").unwrap() + begin;
-        let mut legacy = source[..begin].to_owned();
-        legacy.push_str("    var s = contour_sample(p);\n    for (var i = 0u; i < 4u; i = i + 1u) {\n");
-        legacy.push_str(&source[end..]);
-        legacy = legacy.replace(
-            "while (hi - lo > 1u) {",
-            "for (var step = 0u; step < 32u; step = step + 1u) {\n        if (hi - lo <= 1u) { break; }",
-        );
-        let end_correction = "        if (!vec2_f32_is_finite(p)) {\n            cand[gid.x] = out;\n            return;\n        }\n    }";
-        assert!(legacy.contains(end_correction));
-        legacy = legacy.replace(end_correction, "        if (!vec2_f32_is_finite(p)) {\n            cand[gid.x] = out;\n            return;\n        }\n        s = contour_sample(p);\n    }");
-        Self::with_anchor_source(device, field_bgl, &legacy)
+        // Frozen pre-optimization shader, independent of the new dispatch path.
+        Self::with_anchor_source(device, field_bgl,
+            include_str!("../tests/fixtures/contour_anchor_v013.wgsl"), false)
+
     }
 
     pub(crate) fn label_gap_bgl(&self) -> &wgpu::BindGroupLayout {
@@ -369,14 +363,14 @@ impl ContourLabelPipelines {
         target_format: wgpu::TextureFormat,
         sample_count: u32,
     ) -> wgpu::RenderPipeline {
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
             label: Some("figgy contour label layout"),
             bind_group_layouts: &[Some(transform_bgl), Some(&self.label_bgl)],
             immediate_size: 0,
         });
         // One instance per anchor: the 32 B record, read straight out of the
         // buffer the anchor pass (or a host override) wrote.
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        crate::gpu_compile::render_pipeline(&device, &wgpu::RenderPipelineDescriptor {
             label: Some("figgy contour label pipeline"),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
@@ -992,7 +986,7 @@ impl ContourLabelPlacementSlot {
             .as_ref()
             .expect("automatic contour slot has compute resources");
         // Keep the public CPU record's reserved lane unchanged. Only the GPU
-        // copy carries the fixed four-correction compiler bound.
+        // copy retains the four-correction marker for the unchanged GPU ABI.
         let gpu_params = AnchorParamsGpu { _pad0: 4, ..params };
         queue.write_buffer(&automatic.transform_buf, 0, bytemuck::bytes_of(transform));
         queue.write_buffer(
@@ -1017,7 +1011,17 @@ impl ContourLabelPlacementSlot {
         pass.set_bind_group(0, &automatic.anchor_transform_bg, &[]);
         pass.set_bind_group(1, &automatic.anchor_io_bg, &[]);
         pass.set_bind_group(2, field_bg, &[]);
-        // One pass, in order: `anchor_select` reads what `anchor_project` wrote.
+        // Dispatch boundaries order scratch writes before the next correction.
+        // Reuse the candidate buffer; publish only the final projected anchors.
+        if let Some((seed, step)) = &pipelines.projection_steps {
+            pass.set_pipeline(seed);
+            pass.dispatch_workgroups(total.div_ceil(64).max(1), 1, 1);
+            pass.set_pipeline(step);
+            for _ in 0..4 {
+                pass.dispatch_workgroups(total.div_ceil(64).max(1), 1, 1);
+            }
+        }
+        // `anchor_select` reads only finalized candidates.
         // `total` is capped by `MAX_ANCHOR_CANDIDATES`, so the workgroup count
         // never approaches the per-dimension limit.
         pass.set_pipeline(&pipelines.anchor_project);

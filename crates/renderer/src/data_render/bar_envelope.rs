@@ -77,62 +77,74 @@ impl Pipelines {
                 },
                 count: None,
             };
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("histogram envelope data"),
-                entries: &[
-                    buffer(0, wgpu::BufferBindingType::Storage { read_only: true }),
-                    buffer(1, wgpu::BufferBindingType::Uniform),
-                    buffer(
-                        if compute { 3 } else { 2 },
-                        wgpu::BufferBindingType::Storage {
-                            read_only: !compute,
-                        },
-                    ),
-                ],
-            })
+            crate::gpu_compile::bind_group_layout(
+                &device,
+                &wgpu::BindGroupLayoutDescriptor {
+                    label: Some("histogram envelope data"),
+                    entries: &[
+                        buffer(0, wgpu::BufferBindingType::Storage { read_only: true }),
+                        buffer(1, wgpu::BufferBindingType::Uniform),
+                        buffer(
+                            if compute { 3 } else { 2 },
+                            wgpu::BufferBindingType::Storage {
+                                read_only: !compute,
+                            },
+                        ),
+                    ],
+                },
+            )
         };
         let compute_layout = make_layout(true);
         let render_layout = make_layout(false);
         let layout = |last: &wgpu::BindGroupLayout| {
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("histogram envelope pipeline layout"),
-                bind_group_layouts: &[Some(transform), Some(style), Some(map), Some(last)],
-                immediate_size: 0,
-            })
+            crate::gpu_compile::pipeline_layout(
+                &device,
+                &wgpu::PipelineLayoutDescriptor {
+                    label: Some("histogram envelope pipeline layout"),
+                    bind_group_layouts: &[Some(transform), Some(style), Some(map), Some(last)],
+                    immediate_size: 0,
+                },
+            )
         };
-        let compute = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("histogram pixel maxima"),
-            layout: Some(&layout(&compute_layout)),
-            module: shader,
-            entry_point: Some("reduce_bar_envelope"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
-        let render = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("histogram envelope fill"),
-            layout: Some(&layout(&render_layout)),
-            vertex: wgpu::VertexState {
+        let compute = crate::gpu_compile::compute_pipeline(
+            &device,
+            &wgpu::ComputePipelineDescriptor {
+                label: Some("histogram pixel maxima"),
+                layout: Some(&layout(&compute_layout)),
                 module: shader,
-                entry_point: Some("vs_bar_envelope"),
+                entry_point: Some("reduce_bar_envelope"),
                 compilation_options: Default::default(),
-                buffers: &[],
+                cache: None,
             },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: multisample_state(samples),
-            fragment: Some(wgpu::FragmentState {
-                module: shader,
-                entry_point: Some("fs_bar_envelope"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        );
+        let render = crate::gpu_compile::render_pipeline(
+            &device,
+            &wgpu::RenderPipelineDescriptor {
+                label: Some("histogram envelope fill"),
+                layout: Some(&layout(&render_layout)),
+                vertex: wgpu::VertexState {
+                    module: shader,
+                    entry_point: Some("vs_bar_envelope"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: multisample_state(samples),
+                fragment: Some(wgpu::FragmentState {
+                    module: shader,
+                    entry_point: Some("fs_bar_envelope"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            },
+        );
         let stream_buffer = |binding, read_only, visibility| wgpu::BindGroupLayoutEntry {
             binding,
             visibility,
@@ -154,10 +166,13 @@ impl Pipelines {
             count: None,
         };
         let stream_layout = |label, entries: &[wgpu::BindGroupLayoutEntry]| {
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some(label),
-                entries,
-            })
+            crate::gpu_compile::bind_group_layout(
+                &device,
+                &wgpu::BindGroupLayoutDescriptor {
+                    label: Some(label),
+                    entries,
+                },
+            )
         };
         let compute_stage = wgpu::ShaderStages::COMPUTE;
         let vertex_stage = wgpu::ShaderStages::VERTEX;
@@ -189,42 +204,48 @@ impl Pipelines {
             &[stream_uniform(6, vertex_stage)],
         );
         let stream_compute = |entry, data_layout: &wgpu::BindGroupLayout| {
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some(entry),
-                layout: Some(&layout(data_layout)),
-                module: shader,
-                entry_point: Some(entry),
-                compilation_options: Default::default(),
-                cache: None,
-            })
+            crate::gpu_compile::compute_pipeline(
+                &device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some(entry),
+                    layout: Some(&layout(data_layout)),
+                    module: shader,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    cache: None,
+                },
+            )
         };
         let stream_reduce = stream_compute("reduce_stream_bar_envelope", &stream_reduce_layout);
         let stream_merge = stream_compute("merge_stream_bar_envelope", &stream_merge_layout);
-        let stream_render = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("stream histogram persistent envelope"),
-            layout: Some(&layout(&stream_render_layout)),
-            vertex: wgpu::VertexState {
-                module: shader,
-                entry_point: Some("vs_stream_bar_envelope"),
-                compilation_options: Default::default(),
-                buffers: &[],
+        let stream_render = crate::gpu_compile::render_pipeline(
+            &device,
+            &wgpu::RenderPipelineDescriptor {
+                label: Some("stream histogram persistent envelope"),
+                layout: Some(&layout(&stream_render_layout)),
+                vertex: wgpu::VertexState {
+                    module: shader,
+                    entry_point: Some("vs_stream_bar_envelope"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: multisample_state(samples),
+                fragment: Some(wgpu::FragmentState {
+                    module: shader,
+                    entry_point: Some("fs_bar_envelope"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
             },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: multisample_state(samples),
-            fragment: Some(wgpu::FragmentState {
-                module: shader,
-                entry_point: Some("fs_bar_envelope"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        );
         let stream_mapped_bars = create_stream_mapped_bar_pipeline(
             device,
             shader,
@@ -711,11 +732,14 @@ fn create_stream_mapped_bar_pipeline(
     format: wgpu::TextureFormat,
     samples: u32,
 ) -> wgpu::RenderPipeline {
-    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("stream histogram mapped full-bin pipeline layout"),
-        bind_group_layouts: &[Some(transform), Some(style), Some(map), Some(offset)],
-        immediate_size: 0,
-    });
+    let layout = crate::gpu_compile::pipeline_layout(
+        &device,
+        &wgpu::PipelineLayoutDescriptor {
+            label: Some("stream histogram mapped full-bin pipeline layout"),
+            bind_group_layouts: &[Some(transform), Some(style), Some(map), Some(offset)],
+            immediate_size: 0,
+        },
+    );
     let stride = crate::data::COLUMN_VALUE_BYTES as wgpu::BufferAddress;
     const ATTR0: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
         format: wgpu::VertexFormat::Float32x2,
@@ -749,31 +773,34 @@ fn create_stream_mapped_bar_pipeline(
             attributes: &ATTR2,
         }),
     ];
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("stream histogram mapped full bins"),
-        layout: Some(&layout),
-        vertex: wgpu::VertexState {
-            module: shader,
-            entry_point: Some("vs_stream_envelope_mapped_bars"),
-            compilation_options: Default::default(),
-            buffers: &buffers,
+    crate::gpu_compile::render_pipeline(
+        &device,
+        &wgpu::RenderPipelineDescriptor {
+            label: Some("stream histogram mapped full bins"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_stream_envelope_mapped_bars"),
+                compilation_options: Default::default(),
+                buffers: &buffers,
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: multisample_state(samples),
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
         },
-        primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None,
-        multisample: multisample_state(samples),
-        fragment: Some(wgpu::FragmentState {
-            module: shader,
-            entry_point: Some("fs_main"),
-            compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState {
-                format,
-                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-        }),
-        multiview_mask: None,
-        cache: None,
-    })
+    )
 }
 
 #[cfg(test)]
@@ -821,10 +848,13 @@ mod stream_tests {
         pixels: u32,
         overrides: &[BarStyleOverrideGpu],
     ) -> (Pipelines, wgpu::BindGroup, wgpu::BindGroup, wgpu::BindGroup) {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("stream histogram test shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("bar_columnar.wgsl").into()),
-        });
+        let shader = crate::gpu_compile::shader_module(
+            &device,
+            wgpu::ShaderModuleDescriptor {
+                label: Some("stream histogram test shader"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("bar_columnar.wgsl").into()),
+            },
+        );
         let transform_bgl = create_scatter_transform_bind_group_layout(device);
         let style_bgl = create_style_bind_group_layout(device);
         let map_bgl = create_per_point_style_map_bind_group_layout(device);

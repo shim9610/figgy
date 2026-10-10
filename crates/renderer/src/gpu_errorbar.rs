@@ -389,164 +389,12 @@ impl std::fmt::Display for GpuErrorbarError {
 impl std::error::Error for GpuErrorbarError {}
 
 #[cfg(target_arch = "wasm32")]
-async fn shader_compilation_errors(shader: &wasm_bindgen::JsValue) -> Vec<String> {
-    use js_sys::{Array, Function, Promise, Reflect};
-    use wasm_bindgen::{JsCast, JsValue};
-    use wasm_bindgen_futures::JsFuture;
-
-    let Ok(method) = Reflect::get(shader, &JsValue::from_str("getCompilationInfo")) else {
-        return Vec::new();
-    };
-    let Ok(method) = method.dyn_into::<Function>() else {
-        return Vec::new();
-    };
-    let Ok(promise) = method.call0(shader) else {
-        return Vec::new();
-    };
-    let Ok(info) = JsFuture::from(Promise::from(promise)).await else {
-        return Vec::new();
-    };
-    let Ok(messages) = Reflect::get(&info, &JsValue::from_str("messages")) else {
-        return Vec::new();
-    };
-
-    Array::from(&messages)
-        .iter()
-        .filter_map(|message| {
-            let severity = Reflect::get(&message, &JsValue::from_str("type"))
-                .ok()?
-                .as_string()?;
-            if severity != "error" {
-                return None;
-            }
-            let text = Reflect::get(&message, &JsValue::from_str("message"))
-                .ok()?
-                .as_string()?;
-            let line = Reflect::get(&message, &JsValue::from_str("lineNum"))
-                .ok()
-                .and_then(|value| value.as_f64())
-                .unwrap_or_default() as u32;
-            let column = Reflect::get(&message, &JsValue::from_str("linePos"))
-                .ok()
-                .and_then(|value| value.as_f64())
-                .unwrap_or_default() as u32;
-            Some(format!("line {line}:{column}: {text}"))
-        })
-        .collect()
-}
-
-#[cfg(target_arch = "wasm32")]
 async fn warm_extent_pipelines_js(device: &wgpu::Device) -> Result<(), GpuErrorbarError> {
-    use js_sys::{Array, Function, Object, Promise, Reflect};
-    use wasm_bindgen::JsCast;
-    use wasm_bindgen::JsValue;
-    use wasm_bindgen_futures::JsFuture;
+    let mut observer = |_| {};
+    crate::init::prewarm_compute_entries_js(device, "gpu.extent.async", include_str!("gpu_errorbar.wgsl"),
+        &[("reduce_values", "reduce_values"), ("reduce_states", "reduce_states")], &mut observer)
+        .await.map_err(GpuErrorbarError::AsyncCompileFailed)
 
-    let gpu_device = device.as_webgpu().ok_or_else(|| {
-        GpuErrorbarError::AsyncCompileFailed("wgpu device is not a WebGPU handle".into())
-    })?;
-    let device_js = JsValue::from(gpu_device.clone());
-
-    let js_err = |error: JsValue| {
-        GpuErrorbarError::AsyncCompileFailed(
-            error.as_string().unwrap_or_else(|| format!("{error:?}")),
-        )
-    };
-    let call1 = |name: &str, arg: &JsValue| -> Result<JsValue, GpuErrorbarError> {
-        let method = Reflect::get(&device_js, &JsValue::from_str(name)).map_err(js_err)?;
-        let method = method
-            .dyn_into::<Function>()
-            .map_err(|_| GpuErrorbarError::AsyncCompileFailed(format!("missing {name}")))?;
-        method.call1(&device_js, arg).map_err(js_err)
-    };
-    let set = |obj: &Object, key: &str, value: &JsValue| -> Result<(), GpuErrorbarError> {
-        Reflect::set(obj, &JsValue::from_str(key), value).map_err(js_err)?;
-        Ok(())
-    };
-
-    let shader_desc = Object::new();
-    set(
-        &shader_desc,
-        "label",
-        &JsValue::from_str("figgy series fit-bound shader"),
-    )?;
-    set(
-        &shader_desc,
-        "code",
-        &JsValue::from_str(include_str!("gpu_errorbar.wgsl")),
-    )?;
-    let shader = call1("createShaderModule", shader_desc.as_ref())?;
-
-    let compute_vis = JsValue::from_f64(4.0);
-    let read_only = Object::new();
-    set(&read_only, "type", &JsValue::from_str("read-only-storage"))?;
-    let storage = Object::new();
-    set(&storage, "type", &JsValue::from_str("storage"))?;
-    let uniform = Object::new();
-    set(&uniform, "type", &JsValue::from_str("uniform"))?;
-    set(
-        &uniform,
-        "minBindingSize",
-        &JsValue::from_f64(std::mem::size_of::<ParamsGpu>() as f64),
-    )?;
-
-    let entry = |binding: u32, buffer: &Object| -> Result<Object, GpuErrorbarError> {
-        let object = Object::new();
-        set(&object, "binding", &JsValue::from_f64(f64::from(binding)))?;
-        set(&object, "visibility", &compute_vis)?;
-        set(&object, "buffer", buffer.as_ref())?;
-        Ok(object)
-    };
-    let entries = Array::of3(
-        entry(0, &read_only)?.as_ref(),
-        entry(1, &storage)?.as_ref(),
-        entry(2, &uniform)?.as_ref(),
-    );
-    let layout_desc = Object::new();
-    set(&layout_desc, "entries", entries.as_ref())?;
-    let values_bgl = call1("createBindGroupLayout", layout_desc.as_ref())?;
-    let states_bgl = call1("createBindGroupLayout", layout_desc.as_ref())?;
-
-    let pipeline_layout = |label: &str, bgl: &JsValue| -> Result<JsValue, GpuErrorbarError> {
-        let desc = Object::new();
-        set(&desc, "label", &JsValue::from_str(label))?;
-        set(&desc, "bindGroupLayouts", Array::of1(bgl).as_ref())?;
-        call1("createPipelineLayout", desc.as_ref())
-    };
-    let values_layout = pipeline_layout("figgy series fit values pipeline layout", &values_bgl)?;
-    let states_layout = pipeline_layout("figgy series fit states pipeline layout", &states_bgl)?;
-
-    for (label, layout, entry_point) in [
-        (
-            "figgy series fit initial pipeline",
-            values_layout,
-            "reduce_values",
-        ),
-        (
-            "figgy series fit state pipeline",
-            states_layout,
-            "reduce_states",
-        ),
-    ] {
-        let stage = Object::new();
-        set(&stage, "module", &shader)?;
-        set(&stage, "entryPoint", &JsValue::from_str(entry_point))?;
-        let desc = Object::new();
-        set(&desc, "label", &JsValue::from_str(label))?;
-        set(&desc, "layout", &layout)?;
-        set(&desc, "compute", stage.as_ref())?;
-        let promise = call1("createComputePipelineAsync", desc.as_ref())?;
-        if let Err(error) = JsFuture::from(Promise::from(promise)).await {
-            let mut reason = error.as_string().unwrap_or_else(|| format!("{error:?}"));
-            let diagnostics = shader_compilation_errors(&shader).await;
-            if !diagnostics.is_empty() {
-                reason.push_str("; shader diagnostics: ");
-                reason.push_str(&diagnostics.join(" | "));
-            }
-            return Err(GpuErrorbarError::AsyncCompileFailed(reason));
-        }
-    }
-    Ok(())
 }
 
 /// Pipelines and layouts intended to be created once and owned by Renderer.
@@ -590,7 +438,7 @@ impl GpuErrorbarExtentEngine {
     ) -> Self {
         observe_value(observer, INIT_SCOPE, "limits", || device.limits());
         started(observer, INIT_SCOPE, "setup");
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let shader = crate::gpu_compile::shader_module(&device, wgpu::ShaderModuleDescriptor {
             label: Some("figgy series fit-bound shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("gpu_errorbar.wgsl").into()),
         });
@@ -616,7 +464,7 @@ impl GpuErrorbarExtentEngine {
             count: None,
         };
         let make_layout = |label| {
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
                 label: Some(label),
                 entries: &[storage(0, true), storage(1, false), uniform],
             })
@@ -625,20 +473,20 @@ impl GpuErrorbarExtentEngine {
         let states_layout = make_layout("figgy series fit states layout");
 
         let values_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
                 label: Some("figgy series fit values pipeline layout"),
                 bind_group_layouts: &[Some(&values_layout)],
                 immediate_size: 0,
             });
         let states_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
                 label: Some("figgy series fit states pipeline layout"),
                 bind_group_layouts: &[Some(&states_layout)],
                 immediate_size: 0,
             });
         finished(observer, INIT_SCOPE, "setup");
         let make_pipeline = |label, layout, entry| {
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            crate::gpu_compile::compute_pipeline(&device, &wgpu::ComputePipelineDescriptor {
                 label: Some(label),
                 layout: Some(layout),
                 module: &shader,
@@ -681,7 +529,7 @@ impl GpuErrorbarExtentEngine {
         use crate::init::{observe_value_async, yield_init_frame};
         observe_value_async(observer, INIT_SCOPE, "limits", || device.limits()).await;
         started(observer, INIT_SCOPE, "setup");
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let shader = crate::gpu_compile::shader_module(&device, wgpu::ShaderModuleDescriptor {
             label: Some("figgy series fit-bound shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("gpu_errorbar.wgsl").into()),
         });
@@ -707,7 +555,7 @@ impl GpuErrorbarExtentEngine {
             count: None,
         };
         let make_layout = |label| {
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
                 label: Some(label),
                 entries: &[storage(0, true), storage(1, false), uniform],
             })
@@ -716,13 +564,13 @@ impl GpuErrorbarExtentEngine {
         let states_layout = make_layout("figgy series fit states layout");
 
         let values_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
                 label: Some("figgy series fit values pipeline layout"),
                 bind_group_layouts: &[Some(&values_layout)],
                 immediate_size: 0,
             });
         let states_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
                 label: Some("figgy series fit states pipeline layout"),
                 bind_group_layouts: &[Some(&states_layout)],
                 immediate_size: 0,
@@ -730,7 +578,7 @@ impl GpuErrorbarExtentEngine {
         finished(observer, INIT_SCOPE, "setup");
         yield_init_frame().await;
         let make_pipeline = |label, layout, entry| {
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            crate::gpu_compile::compute_pipeline(&device, &wgpu::ComputePipelineDescriptor {
                 label: Some(label),
                 layout: Some(layout),
                 module: &shader,

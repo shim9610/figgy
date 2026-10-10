@@ -1,0 +1,43 @@
+name: Experimental Metal shader precision
+"on":
+  workflow_dispatch:
+  push:
+    branches: ['experiments/metal-precision-*']
+permissions:
+  contents: read
+concurrency:
+  group: metal-precision-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  probe:
+    # Use free public runners; never silently consume private runner minutes.
+    if: github.event.repository.private == false
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_BUILD_JOBS: '3'
+      RUSTUP_TOOLCHAIN: '1.99.0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install 1.99.0 --profile minimal
+      - name: Ensure Apple Metal compiler is installed
+        run: |
+          if ! xcrun --sdk macosx metal --version; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+          xcrun --sdk macosx metal --version
+      - name: Compare default WGSL and fast / precise Metal binaries
+        run: python3 ci/metal_precision.py
+      - name: Upload shader sources, build settings and numeric results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: experimental-metal-precision
+          path: target/ci-results/metal-precision/
+          retention-days: 7
+          if-no-files-found: warn

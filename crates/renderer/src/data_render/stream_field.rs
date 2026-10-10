@@ -58,7 +58,7 @@ impl Pipelines {
             return Err(StreamError::InvalidLimits);
         }
         let render = |entry| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            crate::gpu_compile::render_pipeline(&device, &wgpu::RenderPipelineDescriptor {
                 label: Some(entry),
                 layout: None,
                 vertex: wgpu::VertexState {
@@ -85,7 +85,7 @@ impl Pipelines {
             })
         };
         let compute = |entry| {
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            crate::gpu_compile::compute_pipeline(&device, &wgpu::ComputePipelineDescriptor {
                 label: Some(entry),
                 layout: None,
                 module: shader,
@@ -956,7 +956,7 @@ mod tests {
     #[test]
     fn production_helper_matches_bounded_proof_fixtures() {
         let (device, queue) = gpu();
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let shader = crate::gpu_compile::shader_module(&device, wgpu::ShaderModuleDescriptor {
             label: None,
             source: wgpu::ShaderSource::Wgsl(include_str!("field_columnar.wgsl").into()),
         });
@@ -1209,7 +1209,7 @@ mod tests {
     #[test]
     fn tile_budget_and_recorded_ownership_fail_closed() {
         let (device, queue) = gpu();
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let shader = crate::gpu_compile::shader_module(&device, wgpu::ShaderModuleDescriptor {
             label: None,
             source: wgpu::ShaderSource::Wgsl(include_str!("field_columnar.wgsl").into()),
         });

@@ -18,6 +18,10 @@ use std::sync::Arc;
 
 mod selection_prepare;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "shader_compile_tests.rs"]
+mod shader_compile_tests;
+
 #[path = "streaming_runtime.rs"]
 mod streaming_runtime;
 pub use streaming_runtime::{
@@ -7299,6 +7303,8 @@ impl Renderer {
                 "contour.label.async",
                 include_str!("contour_anchor.wgsl"),
                 &[
+                    ("anchor_project", "anchor_seed"),
+                    ("anchor_project", "anchor_step"),
                     ("anchor_project", "anchor_project"),
                     ("anchor_select", "anchor_select"),
                 ],
@@ -20874,26 +20880,62 @@ mod tests {
 
     #[test]
     fn contour_projection_matches_fixed_four_step_gpu_oracle() {
-        for x_range in [(0.0, 1.0), (-0.2, 1.2), (1.0, 0.0)] {
+        for case in [
+            "linear",
+            "pan",
+            "inverted",
+            "log",
+            "large-offset",
+            "edges",
+            "transposed",
+            "nan",
+            "infinity",
+            "flat",
+        ] {
+            let (x, y, x_range) = match case {
+                "pan" => (vec![0.0, 0.5, 1.0], vec![0.0, 0.5, 1.0], (-0.2, 1.2)),
+                "inverted" => (vec![0.0, 0.5, 1.0], vec![0.0, 0.5, 1.0], (1.0, 0.0)),
+                "log" => (vec![1.0, 10.0, 100.0], vec![0.0, 0.5, 1.0], (1.0, 100.0)),
+                "large-offset" => (
+                    vec![1.0e9, 1.0e9 + 0.5, 1.0e9 + 1.0],
+                    vec![0.0, 0.5, 1.0],
+                    (1.0e9, 1.0e9 + 1.0),
+                ),
+                "edges" => (
+                    vec![0.0, 0.3, 0.7, 1.0],
+                    vec![0.0, 0.3, 0.7, 1.0],
+                    (0.0, 1.0),
+                ),
+                _ => (vec![0.0, 0.5, 1.0], vec![0.0, 0.5, 1.0], (0.0, 1.0)),
+            };
+            // Non-affine fields require repeated Newton corrections. Invalid
+            // samples and zero gradients must retain their rejection behavior.
+            let mut z = [
+                vec![0.0, 0.0, 0.0],
+                vec![0.0, 1.0, 2.0],
+                vec![0.0, 2.0, 4.0],
+            ];
+            match case {
+                "transposed" => z[1][2] = 3.0,
+                "nan" => z[1][1] = f64::NAN,
+                "infinity" => z[1][1] = f64::INFINITY,
+                "flat" => z = [vec![2.0; 3], vec![2.0; 3], vec![2.0; 3]],
+                _ => {}
+            }
             let mut images = Vec::new();
             for legacy in [false, true] {
-                let Some(mut renderer) = state_test_renderer() else {
-                    return;
-                };
-                renderer
-                    .add_column("clx", &col_f64(vec![0.0, 0.5, 1.0]))
-                    .unwrap();
-                renderer
-                    .add_column("cly", &col_f64(vec![0.0, 0.5, 1.0]))
-                    .unwrap();
-                // A bilinear product requires repeated Newton corrections;
-                // the affine fixture converges in just one correction.
-                for (id, values) in [
-                    ("clz0", vec![0.0, 0.0, 0.0]),
-                    ("clz1", vec![0.0, 1.0, 2.0]),
-                    ("clz2", vec![0.0, 2.0, 4.0]),
-                ] {
-                    renderer.add_column(id, &col_f64(values)).unwrap();
+                let mut renderer = state_test_renderer().expect("required GPU renderer");
+                // Scalar upload intentionally rounds to f32. This fixture
+                // must exercise the explicit hi/lo contract to retain 0.5
+                // increments at an offset of 1e9.
+                if case == "large-offset" {
+                    renderer.add_hilo_column("clx", &col_f64(x.clone())).unwrap();
+                } else {
+                    renderer.add_column("clx", &col_f64(x.clone())).unwrap();
+                }
+                renderer.add_column("cly", &col_f64(y.clone())).unwrap();
+                for (id, values) in ["clz0", "clz1", "clz2"].into_iter().zip(z.iter()) {
+                    renderer.add_column(id, &col_f64(values.clone())).unwrap();
                 }
                 if legacy {
                     renderer.contour_label_pipelines = Some(
@@ -20903,7 +20945,7 @@ mod tests {
                         ),
                     );
                 }
-                let chart = state_test_contour_chart(
+                let mut chart = state_test_contour_chart(
                     Rect {
                         x: 0,
                         y: 0,
@@ -20912,7 +20954,20 @@ mod tests {
                     },
                     x_range,
                 );
-                let config = state_test_labelled_contour(45.0, Vec::new());
+                if case == "log" {
+                    chart.config_mut().bottom_x.scale = AxisScale::Logarithmic;
+                    chart.config_mut().bottom_x.major_spacing = 1.0;
+                }
+                let mut config = state_test_labelled_contour(45.0, Vec::new());
+                let DataRenderType::Contour { matrix, .. } = &mut config.render_type else {
+                    unreachable!()
+                };
+                if case == "edges" {
+                    matrix.grid_layout = crate::data_config::GridLayout::Edges;
+                }
+                if case == "transposed" {
+                    matrix.orientation = crate::data_config::MatrixOrientation::ColumnsAreY;
+                }
                 let style = renderer.create_style_for_series(&config).unwrap();
                 let series = [Series {
                     config: &config,
@@ -20928,15 +20983,25 @@ mod tests {
                 }];
                 let prepared = renderer.prepare(&items).unwrap();
                 let pixels = paint_prepared_rgba(&renderer, &prepared, 320, 240);
-                assert!(
-                    pixels.chunks_exact(4).any(|p| p[0] > 200 && p[1] < 100 && p[2] > 200),
-                    "oracle fixture must produce automatic labels, legacy={legacy}, range={x_range:?}"
-                );
+                let has_labels = pixels
+                    .chunks_exact(4)
+                    .any(|p| p[0] > 200 && p[1] < 100 && p[2] > 200);
+                if !matches!(case, "nan" | "infinity" | "flat") {
+                    assert!(
+                        has_labels,
+                        "oracle fixture must produce automatic labels: {case}, legacy={legacy}"
+                    );
+                } else if case == "flat" {
+                    assert!(
+                        !has_labels,
+                        "a zero gradient must not produce an automatic label"
+                    );
+                }
                 images.push(pixels);
             }
             assert_eq!(
                 images[0], images[1],
-                "four Newton corrections changed the image at {x_range:?}"
+                "four Newton corrections changed the image: {case}"
             );
         }
     }

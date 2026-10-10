@@ -19,7 +19,7 @@ impl ReplayTransfer {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let multisampled = spec.sample_count > 1;
             let texture_type = if multisampled { "texture_multisampled_2d<f32>" } else { "texture_2d<f32>" };
-            let compute_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            let compute_shader = crate::gpu_compile::shader_module(&device, wgpu::ShaderModuleDescriptor {
                 label: Some("stream replay tile mask"),
                 source: wgpu::ShaderSource::Wgsl(format!(
                     "@group(0) @binding(0) var exact: {texture_type};\n@group(0) @binding(1) var baseline: {texture_type};\nconst SAMPLE_COUNT: u32 = {}u;\n{}",
@@ -30,7 +30,7 @@ impl ReplayTransfer {
             } else {
                 "@fragment fn restore(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> { return restore_pixel(vec2<i32>(p.xy), 0); }"
             };
-            let restore_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            let restore_shader = crate::gpu_compile::shader_module(&device, wgpu::ShaderModuleDescriptor {
                 label: Some("stream replay preview restoration"),
                 source: wgpu::ShaderSource::Wgsl(format!(
                     "@group(0) @binding(2) var preview: {texture_type};\n{}\n{entry}",
@@ -48,25 +48,25 @@ impl ReplayTransfer {
                 ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only },
                     has_dynamic_offset: false, min_binding_size: wgpu::BufferSize::new(4) }, count: None,
             };
-            let compute_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            let compute_layout = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
                 label: Some("stream replay mask"), entries: &[
                     texture(0,wgpu::ShaderStages::COMPUTE), texture(1,wgpu::ShaderStages::COMPUTE),
                     storage(wgpu::ShaderStages::COMPUTE,false),
                 ],
             });
-            let restore_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            let restore_layout = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
                 label: Some("stream replay restore"), entries: &[
                     texture(2,wgpu::ShaderStages::FRAGMENT), storage(wgpu::ShaderStages::FRAGMENT,true),
                 ],
             });
-            let layout = |bgl: &wgpu::BindGroupLayout| device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            let layout = |bgl: &wgpu::BindGroupLayout| crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
                 label: Some("stream replay"), bind_group_layouts: &[Some(bgl)], immediate_size: 0,
             });
-            let compute = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            let compute = crate::gpu_compile::compute_pipeline(&device, &wgpu::ComputePipelineDescriptor {
                 label: Some("stream replay mask"), layout: Some(&layout(&compute_layout)),
                 module: &compute_shader, entry_point: Some("mask"), compilation_options: Default::default(), cache: None,
             });
-            let restore = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            let restore = crate::gpu_compile::render_pipeline(&device, &wgpu::RenderPipelineDescriptor {
                 label: Some("stream replay restore"), layout: Some(&layout(&restore_layout)),
                 vertex: wgpu::VertexState { module: &restore_shader, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
                 primitive: Default::default(), depth_stencil: None,

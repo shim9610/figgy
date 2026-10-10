@@ -501,7 +501,7 @@ pub fn create_linear_sampler(device: &wgpu::Device) -> wgpu::Sampler {
 /// Bind-group layout: one 2D texture (binding 0) + one filtering sampler
 /// (binding 1), both fragment-only.
 pub fn create_texture_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
         label: Some("figgy texture+sampler layout"),
         entries: &[
             wgpu::BindGroupLayoutEntry {
@@ -569,280 +569,72 @@ pub(crate) struct ShaderModules {
 impl ShaderModules {
     pub(crate) fn new(device: &wgpu::Device) -> Self {
         Self {
-            fullscreen: device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("figgy fullscreen textured shader"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("fullscreen_textured.wgsl").into()),
-            }),
-            line: device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("figgy line columnar shader"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("line_columnar.wgsl").into()),
-            }),
-            scatter: device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("figgy scatter columnar shader"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("scatter_columnar.wgsl").into()),
-            }),
-            errorbar: device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("figgy errorbar columnar shader"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("errorbar_columnar.wgsl").into()),
-            }),
-            bar: device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("figgy bar columnar shader"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("bar_columnar.wgsl").into()),
-            }),
-            field: device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("figgy field columnar shader"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("field_columnar.wgsl").into()),
-            }),
+            fullscreen: Self::fullscreen(device),
+            line: Self::line(device),
+            scatter: Self::scatter(device),
+            errorbar: Self::errorbar(device),
+            bar: Self::bar(device),
+            field: Self::field(device),
         }
     }
-}
-
-#[cfg(target_arch = "wasm32")]
-#[derive(Clone, Copy)]
-struct BrowserVertexAttributeSpec {
-    format: &'static str,
-    offset: u32,
-    location: u32,
-}
-
-#[cfg(target_arch = "wasm32")]
-#[derive(Clone, Copy)]
-struct BrowserVertexBufferSpec {
-    stride: u32,
-    step_mode: &'static str,
-    attributes: &'static [BrowserVertexAttributeSpec],
-}
-
-#[cfg(target_arch = "wasm32")]
-#[derive(Clone, Copy)]
-enum BrowserBlend {
-    Premultiplied,
-    Additive,
-    Maximum,
-}
-
-#[cfg(target_arch = "wasm32")]
-#[derive(Clone, Copy)]
-struct BrowserRenderPipelineSpec {
-    label: &'static str,
-    vertex_entry: &'static str,
-    fragment_entry: &'static str,
-    topology: &'static str,
-    buffers: &'static [BrowserVertexBufferSpec],
-    blend: BrowserBlend,
-}
-
-#[cfg(target_arch = "wasm32")]
-const fn browser_attr(format: &'static str, location: u32) -> BrowserVertexAttributeSpec {
-    BrowserVertexAttributeSpec {
-        format,
-        offset: 0,
-        location,
+    fn fullscreen(device: &wgpu::Device) -> wgpu::ShaderModule {
+        crate::gpu_compile::shader_module(
+            device,
+            wgpu::ShaderModuleDescriptor {
+                label: Some("figgy fullscreen textured shader"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("fullscreen_textured.wgsl").into()),
+            },
+        )
+    }
+    fn line(device: &wgpu::Device) -> wgpu::ShaderModule {
+        crate::gpu_compile::shader_module(
+            device,
+            wgpu::ShaderModuleDescriptor {
+                label: Some("figgy line columnar shader"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("line_columnar.wgsl").into()),
+            },
+        )
+    }
+    fn scatter(device: &wgpu::Device) -> wgpu::ShaderModule {
+        crate::gpu_compile::shader_module(
+            device,
+            wgpu::ShaderModuleDescriptor {
+                label: Some("figgy scatter columnar shader"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("scatter_columnar.wgsl").into()),
+            },
+        )
+    }
+    fn errorbar(device: &wgpu::Device) -> wgpu::ShaderModule {
+        crate::gpu_compile::shader_module(
+            device,
+            wgpu::ShaderModuleDescriptor {
+                label: Some("figgy errorbar columnar shader"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("errorbar_columnar.wgsl").into()),
+            },
+        )
+    }
+    fn bar(device: &wgpu::Device) -> wgpu::ShaderModule {
+        crate::gpu_compile::shader_module(
+            device,
+            wgpu::ShaderModuleDescriptor {
+                label: Some("figgy bar columnar shader"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("bar_columnar.wgsl").into()),
+            },
+        )
+    }
+    fn field(device: &wgpu::Device) -> wgpu::ShaderModule {
+        crate::gpu_compile::shader_module(
+            device,
+            wgpu::ShaderModuleDescriptor {
+                label: Some("figgy field columnar shader"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("field_columnar.wgsl").into()),
+            },
+        )
     }
 }
 
-#[cfg(target_arch = "wasm32")]
-const ATTR_F32X2_0: [BrowserVertexAttributeSpec; 1] = [browser_attr("float32x2", 0)];
-#[cfg(target_arch = "wasm32")]
-const ATTR_F32X2_1: [BrowserVertexAttributeSpec; 1] = [browser_attr("float32x2", 1)];
-#[cfg(target_arch = "wasm32")]
-const ATTR_F32X2_2: [BrowserVertexAttributeSpec; 1] = [browser_attr("float32x2", 2)];
-#[cfg(target_arch = "wasm32")]
-const ATTR_F32X2_3: [BrowserVertexAttributeSpec; 1] = [browser_attr("float32x2", 3)];
-#[cfg(target_arch = "wasm32")]
-const ATTR_F32X2_4: [BrowserVertexAttributeSpec; 1] = [browser_attr("float32x2", 4)];
-#[cfg(target_arch = "wasm32")]
-const ATTR_F32X2_5: [BrowserVertexAttributeSpec; 1] = [browser_attr("float32x2", 5)];
-#[cfg(target_arch = "wasm32")]
-const ATTR_F32_3: [BrowserVertexAttributeSpec; 1] = [browser_attr("float32", 3)];
-#[cfg(target_arch = "wasm32")]
-const ATTR_F32_4: [BrowserVertexAttributeSpec; 1] = [browser_attr("float32", 4)];
-#[cfg(target_arch = "wasm32")]
-const ATTR_F32_5: [BrowserVertexAttributeSpec; 1] = [browser_attr("float32", 5)];
-#[cfg(target_arch = "wasm32")]
-const ATTR_F32_6: [BrowserVertexAttributeSpec; 1] = [browser_attr("float32", 6)];
-#[cfg(target_arch = "wasm32")]
-const fn contour_label_browser_attr(index: usize) -> BrowserVertexAttributeSpec {
-    let attribute = crate::gpu_contour::CONTOUR_LABEL_VERTEX_ATTRIBUTES[index];
-    let format = match attribute.format {
-        wgpu::VertexFormat::Float32x2 => "float32x2",
-        wgpu::VertexFormat::Uint32 => "uint32",
-        wgpu::VertexFormat::Float32 => "float32",
-        _ => panic!("unsupported contour label vertex format"),
-    };
-    BrowserVertexAttributeSpec {
-        format,
-        offset: attribute.offset as u32,
-        location: attribute.shader_location,
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-const CONTOUR_LABEL_ATTRIBUTES: [BrowserVertexAttributeSpec;
-    crate::gpu_contour::CONTOUR_LABEL_VERTEX_ATTRIBUTES.len()] = [
-    contour_label_browser_attr(0),
-    contour_label_browser_attr(1),
-    contour_label_browser_attr(2),
-    contour_label_browser_attr(3),
-    contour_label_browser_attr(4),
-];
-
-#[cfg(target_arch = "wasm32")]
-const LINE_BUFFERS: [BrowserVertexBufferSpec; 6] = [
-    BrowserVertexBufferSpec {
-        stride: 8,
-        step_mode: "instance",
-        attributes: &ATTR_F32X2_0,
-    },
-    BrowserVertexBufferSpec {
-        stride: 8,
-        step_mode: "instance",
-        attributes: &ATTR_F32X2_1,
-    },
-    BrowserVertexBufferSpec {
-        stride: 8,
-        step_mode: "instance",
-        attributes: &ATTR_F32X2_2,
-    },
-    BrowserVertexBufferSpec {
-        stride: 8,
-        step_mode: "instance",
-        attributes: &ATTR_F32X2_3,
-    },
-    BrowserVertexBufferSpec {
-        stride: 4,
-        step_mode: "instance",
-        attributes: &ATTR_F32_4,
-    },
-    BrowserVertexBufferSpec {
-        stride: 4,
-        step_mode: "instance",
-        attributes: &ATTR_F32_5,
-    },
-];
-
-#[cfg(target_arch = "wasm32")]
-const SCATTER_BUFFERS: [BrowserVertexBufferSpec; 3] = [
-    BrowserVertexBufferSpec {
-        stride: 8,
-        step_mode: "vertex",
-        attributes: &ATTR_F32X2_0,
-    },
-    BrowserVertexBufferSpec {
-        stride: 8,
-        step_mode: "instance",
-        attributes: &ATTR_F32X2_1,
-    },
-    BrowserVertexBufferSpec {
-        stride: 8,
-        step_mode: "instance",
-        attributes: &ATTR_F32X2_2,
-    },
-];
-
-#[cfg(target_arch = "wasm32")]
-const SCATTER_MAPPED_BUFFERS: [BrowserVertexBufferSpec; 4] = [
-    BrowserVertexBufferSpec {
-        stride: 8,
-        step_mode: "vertex",
-        attributes: &ATTR_F32X2_0,
-    },
-    BrowserVertexBufferSpec {
-        stride: 8,
-        step_mode: "instance",
-        attributes: &ATTR_F32X2_1,
-    },
-    BrowserVertexBufferSpec {
-        stride: 8,
-        step_mode: "instance",
-        attributes: &ATTR_F32X2_2,
-    },
-    BrowserVertexBufferSpec {
-        stride: 8,
-        step_mode: "instance",
-        attributes: &ATTR_F32_3,
-    },
-];
-
-#[cfg(target_arch = "wasm32")]
-const ERRORBAR_BUFFERS: [BrowserVertexBufferSpec; 6] = [
-    BrowserVertexBufferSpec {
-        stride: 8,
-        step_mode: "instance",
-        attributes: &ATTR_F32X2_0,
-    },
-    BrowserVertexBufferSpec {
-        stride: 8,
-        step_mode: "instance",
-        attributes: &ATTR_F32X2_1,
-    },
-    BrowserVertexBufferSpec {
-        stride: 8,
-        step_mode: "instance",
-        attributes: &ATTR_F32X2_2,
-    },
-    BrowserVertexBufferSpec {
-        stride: 8,
-        step_mode: "instance",
-        attributes: &ATTR_F32X2_3,
-    },
-    BrowserVertexBufferSpec {
-        stride: 8,
-        step_mode: "instance",
-        attributes: &ATTR_F32X2_4,
-    },
-    BrowserVertexBufferSpec {
-        stride: 8,
-        step_mode: "instance",
-        attributes: &ATTR_F32X2_5,
-    },
-];
-
-#[cfg(target_arch = "wasm32")]
-const ERRORBAR_MAPPED_BUFFERS: [BrowserVertexBufferSpec; 7] = [
-    ERRORBAR_BUFFERS[0],
-    ERRORBAR_BUFFERS[1],
-    ERRORBAR_BUFFERS[2],
-    ERRORBAR_BUFFERS[3],
-    ERRORBAR_BUFFERS[4],
-    ERRORBAR_BUFFERS[5],
-    BrowserVertexBufferSpec {
-        stride: 8,
-        step_mode: "instance",
-        attributes: &ATTR_F32_6,
-    },
-];
-
-#[cfg(target_arch = "wasm32")]
-const BAR_BUFFERS: [BrowserVertexBufferSpec; 3] = [
-    BrowserVertexBufferSpec {
-        stride: 8,
-        step_mode: "instance",
-        attributes: &ATTR_F32X2_0,
-    },
-    BrowserVertexBufferSpec {
-        stride: 8,
-        step_mode: "instance",
-        attributes: &ATTR_F32X2_1,
-    },
-    BrowserVertexBufferSpec {
-        stride: 8,
-        step_mode: "instance",
-        attributes: &ATTR_F32X2_2,
-    },
-];
-
-#[cfg(target_arch = "wasm32")]
-const CONTOUR_LABEL_BUFFERS: [BrowserVertexBufferSpec; 1] = [BrowserVertexBufferSpec {
-    stride: std::mem::size_of::<crate::gpu_contour::LabelAnchorGpu>() as u32,
-    step_mode: "instance",
-    attributes: &CONTOUR_LABEL_ATTRIBUTES,
-}];
-
-/// Warm every render shader through WebGPU's genuinely asynchronous pipeline
-/// API. The returned JS pipelines are intentionally discarded; the subsequent
-/// wgpu pipeline creation reuses the same device's shader/driver cache while
-/// retaining wgpu as the sole owner of production pipeline objects.
+/// Compile the same descriptors as the actual Rust constructors. The checked
+/// contract includes explicit layouts, vertex attributes, and blend state.
 #[cfg(target_arch = "wasm32")]
 pub(crate) async fn prewarm_browser_render_pipelines(
     device: &wgpu::Device,
@@ -850,408 +642,96 @@ pub(crate) async fn prewarm_browser_render_pipelines(
     sample_count: u32,
     observer: &mut dyn FnMut(crate::InitEvent),
 ) -> Result<(), String> {
-    use js_sys::{Array, Function, Object, Promise, Reflect};
-    use wasm_bindgen::{JsCast, JsValue};
-    use wasm_bindgen_futures::JsFuture;
-
-    let gpu_device = device
-        .as_webgpu()
-        .ok_or_else(|| "wgpu device is not backed by a browser GPUDevice".to_owned())?;
-    let device_js = JsValue::from(gpu_device.clone());
-    let js_error = |error: JsValue| {
-        error
-            .as_string()
-            .unwrap_or_else(|| format!("WebGPU pipeline compile failed: {error:?}"))
-    };
-    let method = |name: &str| -> Result<Function, String> {
-        Reflect::get(&device_js, &JsValue::from_str(name))
-            .map_err(js_error)?
-            .dyn_into()
-            .map_err(|_| format!("GPUDevice.{name} is unavailable"))
-    };
-    let create_shader = method("createShaderModule")?;
-    let create_pipeline = method("createRenderPipelineAsync")?;
-    let set = |object: &Object, key: &str, value: &JsValue| -> Result<(), String> {
-        Reflect::set(object, &JsValue::from_str(key), value).map_err(js_error)?;
-        Ok(())
-    };
-    let format = match target_format {
-        wgpu::TextureFormat::Bgra8Unorm => "bgra8unorm",
-        wgpu::TextureFormat::Bgra8UnormSrgb => "bgra8unorm-srgb",
-        wgpu::TextureFormat::Rgba8Unorm => "rgba8unorm",
-        wgpu::TextureFormat::Rgba8UnormSrgb => "rgba8unorm-srgb",
-        other => {
-            return Err(format!(
-                "unsupported browser prewarm target format: {other:?}"
-            ));
-        }
-    };
-
-    let groups: [(&str, &str, &[BrowserRenderPipelineSpec]); 7] = [
+    let groups: &[(&str, &[(&str, &str)])] = &[
         (
-            "fullscreen",
             include_str!("fullscreen_textured.wgsl"),
-            &[BrowserRenderPipelineSpec {
-                label: "fullscreen textured",
-                vertex_entry: "vs_main",
-                fragment_entry: "fs_main",
-                topology: "triangle-list",
-                buffers: &[],
-                blend: BrowserBlend::Premultiplied,
-            }],
+            &[("fullscreen textured", "figgy fullscreen textured pipeline")],
         ),
         (
-            "line",
             include_str!("line_columnar.wgsl"),
             &[
-                BrowserRenderPipelineSpec {
-                    label: "precise line",
-                    vertex_entry: "vs_main",
-                    fragment_entry: "fs_main",
-                    topology: "triangle-strip",
-                    buffers: &LINE_BUFFERS,
-                    blend: BrowserBlend::Premultiplied,
-                },
-                BrowserRenderPipelineSpec {
-                    label: "hand-drawn line",
-                    vertex_entry: "vs_sketch",
-                    fragment_entry: "fs_main",
-                    topology: "triangle-strip",
-                    buffers: &LINE_BUFFERS,
-                    blend: BrowserBlend::Premultiplied,
-                },
-                BrowserRenderPipelineSpec {
-                    label: "milkyway ribbon",
-                    vertex_entry: "vs_ribbon",
-                    fragment_entry: "fs_ribbon",
-                    topology: "triangle-strip",
-                    buffers: &LINE_BUFFERS,
-                    blend: BrowserBlend::Maximum,
-                },
-                BrowserRenderPipelineSpec {
-                    label: "milkyway stars",
-                    vertex_entry: "vs_stars",
-                    fragment_entry: "fs_stars",
-                    topology: "triangle-list",
-                    buffers: &[],
-                    blend: BrowserBlend::Additive,
-                },
-                BrowserRenderPipelineSpec {
-                    label: "constellation line",
-                    vertex_entry: "vs_main",
-                    fragment_entry: "fs_constellation_line",
-                    topology: "triangle-strip",
-                    buffers: &LINE_BUFFERS,
-                    blend: BrowserBlend::Premultiplied,
-                },
+                ("precise line", "figgy line columnar pipeline"),
+                ("hand-drawn line", "figgy line styled pipeline"),
+                ("milkyway ribbon", "figgy milkyway ribbon pipeline"),
+                ("milkyway stars", "figgy milkyway stars pipeline"),
+                (
+                    "constellation line",
+                    "figgy point constellation line pipeline",
+                ),
             ],
         ),
         (
-            "scatter",
             include_str!("scatter_columnar.wgsl"),
             &[
-                BrowserRenderPipelineSpec {
-                    label: "precise scatter",
-                    vertex_entry: "vs_main",
-                    fragment_entry: "fs_main",
-                    topology: "triangle-strip",
-                    buffers: &SCATTER_BUFFERS,
-                    blend: BrowserBlend::Premultiplied,
-                },
-                BrowserRenderPipelineSpec {
-                    label: "mapped scatter",
-                    vertex_entry: "vs_mapped",
-                    fragment_entry: "fs_mapped",
-                    topology: "triangle-strip",
-                    buffers: &SCATTER_MAPPED_BUFFERS,
-                    blend: BrowserBlend::Premultiplied,
-                },
-                BrowserRenderPipelineSpec {
-                    label: "picked point ring",
-                    vertex_entry: "vs_pick_ring",
-                    fragment_entry: "fs_pick_ring",
-                    topology: "triangle-strip",
-                    buffers: &SCATTER_BUFFERS,
-                    blend: BrowserBlend::Premultiplied,
-                },
-                BrowserRenderPipelineSpec {
-                    label: "mapped picked point ring",
-                    vertex_entry: "vs_pick_ring_mapped",
-                    fragment_entry: "fs_pick_ring",
-                    topology: "triangle-strip",
-                    buffers: &SCATTER_MAPPED_BUFFERS,
-                    blend: BrowserBlend::Premultiplied,
-                },
-                BrowserRenderPipelineSpec {
-                    label: "hand-drawn scatter",
-                    vertex_entry: "vs_sketch",
-                    fragment_entry: "fs_sketch",
-                    topology: "triangle-strip",
-                    buffers: &SCATTER_BUFFERS,
-                    blend: BrowserBlend::Premultiplied,
-                },
-                BrowserRenderPipelineSpec {
-                    label: "milkyway planets",
-                    vertex_entry: "vs_planet",
-                    fragment_entry: "fs_planet",
-                    topology: "triangle-strip",
-                    buffers: &SCATTER_BUFFERS,
-                    blend: BrowserBlend::Premultiplied,
-                },
-                BrowserRenderPipelineSpec {
-                    label: "constellation stars",
-                    vertex_entry: "vs_constellation_star",
-                    fragment_entry: "fs_constellation_star",
-                    topology: "triangle-strip",
-                    buffers: &SCATTER_BUFFERS,
-                    blend: BrowserBlend::Premultiplied,
-                },
+                ("precise scatter", "figgy scatter columnar pipeline"),
+                ("mapped scatter", "figgy scatter mapped pipeline"),
+                ("picked point ring", "figgy picked point ring pipeline"),
+                (
+                    "mapped picked point ring",
+                    "figgy picked point mapped ring pipeline",
+                ),
+                ("hand-drawn scatter", "figgy scatter styled pipeline"),
+                ("milkyway planets", "figgy milkyway planets pipeline"),
+                (
+                    "constellation stars",
+                    "figgy point constellation stars pipeline",
+                ),
             ],
         ),
         (
-            "errorbar",
             include_str!("errorbar_columnar.wgsl"),
             &[
-                BrowserRenderPipelineSpec {
-                    label: "precise errorbar",
-                    vertex_entry: "vs_main",
-                    fragment_entry: "fs_main",
-                    topology: "triangle-list",
-                    buffers: &ERRORBAR_BUFFERS,
-                    blend: BrowserBlend::Premultiplied,
-                },
-                BrowserRenderPipelineSpec {
-                    label: "mapped errorbar",
-                    vertex_entry: "vs_mapped",
-                    fragment_entry: "fs_mapped",
-                    topology: "triangle-list",
-                    buffers: &ERRORBAR_MAPPED_BUFFERS,
-                    blend: BrowserBlend::Premultiplied,
-                },
-                BrowserRenderPipelineSpec {
-                    label: "hand-drawn errorbar",
-                    vertex_entry: "vs_sketch",
-                    fragment_entry: "fs_main",
-                    topology: "triangle-list",
-                    buffers: &ERRORBAR_BUFFERS,
-                    blend: BrowserBlend::Premultiplied,
-                },
-                BrowserRenderPipelineSpec {
-                    label: "milkyway jets",
-                    vertex_entry: "vs_jet",
-                    fragment_entry: "fs_jet",
-                    topology: "triangle-list",
-                    buffers: &ERRORBAR_BUFFERS,
-                    blend: BrowserBlend::Additive,
-                },
+                ("precise errorbar", "figgy errorbar columnar pipeline"),
+                ("mapped errorbar", "figgy errorbar mapped pipeline"),
+                ("hand-drawn errorbar", "figgy errorbar styled pipeline"),
+                ("milkyway jets", "figgy milkyway jets pipeline"),
             ],
         ),
         (
-            "bar",
             include_str!("bar_columnar.wgsl"),
             &[
-                BrowserRenderPipelineSpec {
-                    label: "histogram bars",
-                    vertex_entry: "vs_envelope_bars",
-                    fragment_entry: "fs_main",
-                    topology: "triangle-list",
-                    buffers: &BAR_BUFFERS,
-                    blend: BrowserBlend::Premultiplied,
-                },
-                BrowserRenderPipelineSpec {
-                    label: "mapped histogram bars",
-                    vertex_entry: "vs_envelope_mapped_bars",
-                    fragment_entry: "fs_main",
-                    topology: "triangle-list",
-                    buffers: &BAR_BUFFERS,
-                    blend: BrowserBlend::Premultiplied,
-                },
-                BrowserRenderPipelineSpec {
-                    label: "histogram pixel envelope",
-                    vertex_entry: "vs_bar_envelope",
-                    fragment_entry: "fs_bar_envelope",
-                    topology: "triangle-list",
-                    buffers: &[],
-                    blend: BrowserBlend::Premultiplied,
-                },
-                BrowserRenderPipelineSpec {
-                    label: "selected histogram bin",
-                    vertex_entry: "vs_bar_selection",
-                    fragment_entry: "fs_main",
-                    topology: "triangle-list",
-                    buffers: &BAR_BUFFERS,
-                    blend: BrowserBlend::Premultiplied,
-                },
+                ("histogram bars", "figgy bar columnar pipeline"),
+                (
+                    "mapped histogram bars",
+                    "figgy mapped bar columnar pipeline",
+                ),
+                ("histogram pixel envelope", "histogram envelope fill"),
+                (
+                    "selected histogram bin",
+                    "figgy selected histogram bin pipeline",
+                ),
             ],
         ),
         (
-            "field",
             include_str!("field_columnar.wgsl"),
             &[
-                BrowserRenderPipelineSpec {
-                    label: "heatmap field",
-                    vertex_entry: "vs_main",
-                    fragment_entry: "fs_main",
-                    topology: "triangle-list",
-                    buffers: &[],
-                    blend: BrowserBlend::Premultiplied,
-                },
-                BrowserRenderPipelineSpec {
-                    label: "contour field",
-                    vertex_entry: "vs_main",
-                    fragment_entry: "fs_contour",
-                    topology: "triangle-list",
-                    buffers: &[],
-                    blend: BrowserBlend::Premultiplied,
-                },
-                BrowserRenderPipelineSpec {
-                    label: "label-gapped contour field",
-                    vertex_entry: "vs_main",
-                    fragment_entry: "fs_contour_labelled",
-                    topology: "triangle-list",
-                    buffers: &[],
-                    blend: BrowserBlend::Premultiplied,
-                },
-                BrowserRenderPipelineSpec {
-                    label: "selected field data",
-                    vertex_entry: "vs_main",
-                    fragment_entry: "fs_data_selection",
-                    topology: "triangle-list",
-                    buffers: &[],
-                    blend: BrowserBlend::Premultiplied,
-                },
+                ("heatmap field", "figgy field columnar pipeline"),
+                ("contour field", "figgy field contour pipeline"),
+                (
+                    "label-gapped contour field",
+                    "figgy labelled field contour pipeline",
+                ),
+                ("selected field data", "figgy selected field data pipeline"),
             ],
         ),
         (
-            "contour labels",
             include_str!("../contour_label.wgsl"),
-            &[BrowserRenderPipelineSpec {
-                label: "contour labels",
-                vertex_entry: "vs_main",
-                fragment_entry: "fs_main",
-                topology: "triangle-list",
-                buffers: &CONTOUR_LABEL_BUFFERS,
-                blend: BrowserBlend::Premultiplied,
-            }],
+            &[("contour labels", "figgy contour label pipeline")],
         ),
     ];
-
-    for (module_label, source, specs) in groups {
-        let shader_desc = Object::new();
-        set(&shader_desc, "label", &JsValue::from_str(module_label))?;
-        set(&shader_desc, "code", &JsValue::from_str(source))?;
-        let shader = create_shader
-            .call1(&device_js, shader_desc.as_ref())
-            .map_err(js_error)?;
-
-        for spec in specs {
-            crate::init::started(observer, "renderer.prewarm.async", spec.label);
-            let vertex = Object::new();
-            set(&vertex, "module", &shader)?;
-            set(&vertex, "entryPoint", &JsValue::from_str(spec.vertex_entry))?;
-            let buffers = Array::new();
-            for buffer_spec in spec.buffers {
-                let attributes = Array::new();
-                for attribute_spec in buffer_spec.attributes {
-                    let attribute = Object::new();
-                    set(
-                        &attribute,
-                        "format",
-                        &JsValue::from_str(attribute_spec.format),
-                    )?;
-                    set(
-                        &attribute,
-                        "offset",
-                        &JsValue::from_f64(attribute_spec.offset.into()),
-                    )?;
-                    set(
-                        &attribute,
-                        "shaderLocation",
-                        &JsValue::from_f64(attribute_spec.location.into()),
-                    )?;
-                    attributes.push(attribute.as_ref());
-                }
-                let buffer = Object::new();
-                set(
-                    &buffer,
-                    "arrayStride",
-                    &JsValue::from_f64(buffer_spec.stride.into()),
-                )?;
-                set(
-                    &buffer,
-                    "stepMode",
-                    &JsValue::from_str(buffer_spec.step_mode),
-                )?;
-                set(&buffer, "attributes", attributes.as_ref())?;
-                buffers.push(buffer.as_ref());
-            }
-            set(&vertex, "buffers", buffers.as_ref())?;
-
-            let fragment = Object::new();
-            set(&fragment, "module", &shader)?;
-            set(
-                &fragment,
-                "entryPoint",
-                &JsValue::from_str(spec.fragment_entry),
-            )?;
-            let color = Object::new();
-            set(&color, "srcFactor", &JsValue::from_str("one"))?;
-            set(
-                &color,
-                "dstFactor",
-                &JsValue::from_str(match spec.blend {
-                    BrowserBlend::Premultiplied => "one-minus-src-alpha",
-                    BrowserBlend::Additive | BrowserBlend::Maximum => "one",
-                }),
-            )?;
-            set(
-                &color,
-                "operation",
-                &JsValue::from_str(match spec.blend {
-                    BrowserBlend::Maximum => "max",
-                    BrowserBlend::Premultiplied | BrowserBlend::Additive => "add",
-                }),
-            )?;
-            let alpha = color.clone();
-            let blend = Object::new();
-            set(&blend, "color", color.as_ref())?;
-            set(&blend, "alpha", alpha.as_ref())?;
-            let target = Object::new();
-            set(&target, "format", &JsValue::from_str(format))?;
-            set(&target, "blend", blend.as_ref())?;
-            set(&target, "writeMask", &JsValue::from_f64(15.0))?;
-            set(&fragment, "targets", Array::of1(target.as_ref()).as_ref())?;
-
-            let primitive = Object::new();
-            set(&primitive, "topology", &JsValue::from_str(spec.topology))?;
-            let multisample = Object::new();
-            set(
-                &multisample,
-                "count",
-                &JsValue::from_f64(sample_count.into()),
-            )?;
-            set(&multisample, "mask", &JsValue::from_f64(u32::MAX.into()))?;
-            set(&multisample, "alphaToCoverageEnabled", &JsValue::FALSE)?;
-            let desc = Object::new();
-            set(&desc, "label", &JsValue::from_str(spec.label))?;
-            set(&desc, "layout", &JsValue::from_str("auto"))?;
-            set(&desc, "vertex", vertex.as_ref())?;
-            set(&desc, "fragment", fragment.as_ref())?;
-            set(&desc, "primitive", primitive.as_ref())?;
-            set(&desc, "multisample", multisample.as_ref())?;
-            let promise = create_pipeline
-                .call1(&device_js, desc.as_ref())
-                .map_err(js_error)?;
-            JsFuture::from(Promise::from(promise))
-                .await
-                .map_err(js_error)?;
-            crate::init::finished(observer, "renderer.prewarm.async", spec.label);
-            crate::init::yield_init_frame().await;
-        }
+    for (source, stages) in groups {
+        crate::browser_compile::render(
+            device,
+            source,
+            stages,
+            target_format,
+            sample_count,
+            observer,
+        )
+        .await?;
     }
     Ok(())
 }
-
 /// Build the fullscreen textured-quad pipeline. The shader emits its own
 /// vertices via `vertex_index`, so no vertex buffers are needed.
 ///
@@ -1263,10 +743,10 @@ pub fn create_fullscreen_textured_pipeline(
     bind_group_layout: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
-    let shaders = ShaderModules::new(device);
+    let shader = ShaderModules::fullscreen(device);
     create_fullscreen_textured_pipeline_with_sample_count(
         device,
-        &shaders.fullscreen,
+        &shader,
         bind_group_layout,
         target_format,
         1,
@@ -1280,13 +760,13 @@ pub(crate) fn create_fullscreen_textured_pipeline_with_sample_count(
     target_format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> wgpu::RenderPipeline {
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    let pipeline_layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
         label: Some("figgy fullscreen textured pipeline layout"),
         bind_group_layouts: &[Some(bind_group_layout)],
         immediate_size: 0,
     });
 
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    crate::gpu_compile::render_pipeline(&device, &wgpu::RenderPipelineDescriptor {
         label: Some("figgy fullscreen textured pipeline"),
         layout: Some(&pipeline_layout),
 
@@ -1530,7 +1010,7 @@ pub fn update_scatter_transform(
 /// vertex/fragment stages; exact histogram/field picking uses the same bytes in
 /// compute so hit geometry cannot diverge from the draw transform.
 pub fn create_scatter_transform_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
         label: Some("figgy scatter transform bgl"),
         entries: &[wgpu::BindGroupLayoutEntry {
             binding: 0,
@@ -1714,7 +1194,7 @@ impl DataSelectionGpu {
 pub(crate) fn create_data_selection_bind_group_layout(
     device: &wgpu::Device,
 ) -> wgpu::BindGroupLayout {
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
         label: Some("figgy typed data selection bgl"),
         entries: &[wgpu::BindGroupLayoutEntry {
             binding: 4,
@@ -1796,7 +1276,7 @@ pub fn shape_id(shape: &ScatterShape) -> u32 {
 /// Bind-group layout for the style uniform. `VERTEX_FRAGMENT` because the
 /// line vertex shader reads `line_width_px`.
 pub fn create_style_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
         label: Some("figgy primitive style bgl"),
         entries: &[wgpu::BindGroupLayoutEntry {
             binding: 0,
@@ -1982,7 +1462,7 @@ pub fn create_per_point_style_map_bind_group_layout(
         },
         count: None,
     };
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
         label: Some("figgy per-point style map bgl"),
         entries: &[
             storage(5),
@@ -2170,7 +1650,7 @@ pub fn create_star_data_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGr
         },
         count: None,
     };
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
         label: Some("figgy star data bgl"),
         entries: &[
             storage(0), // arc-length prefix
@@ -2298,10 +1778,10 @@ pub fn create_line_columnar_pipeline(
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
-    let shaders = ShaderModules::new(device);
+    let shader = ShaderModules::line(device);
     create_line_columnar_pipeline_with_sample_count(
         device,
-        &shaders.line,
+        &shader,
         transform_bgl,
         style_bgl,
         target_format,
@@ -2674,7 +2154,7 @@ pub(crate) fn create_milkyway_set(
         },
         count: None,
     };
-    let tex_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    let tex_bgl = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
         label: Some("figgy milkyway texture bgl"),
         entries: &[
             tex_entry(0), // PSF (stars)
@@ -2768,7 +2248,7 @@ pub(crate) fn create_milkyway_set(
     // Arc-driven star pass: NO vertex buffers — the VS reads the arc-length
     // prefix and the column pool as storage (group 3) and is drawn via
     // DrawIndirect args computed on the GPU from the polyline's total arc.
-    let star_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    let star_layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
         label: Some("figgy milkyway star layout"),
         bind_group_layouts: &[
             Some(transform_bgl),
@@ -2778,7 +2258,7 @@ pub(crate) fn create_milkyway_set(
         ],
         immediate_size: 0,
     });
-    let stars = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    let stars = crate::gpu_compile::render_pipeline(&device, &wgpu::RenderPipelineDescriptor {
         label: Some("figgy milkyway stars pipeline"),
         layout: Some(&star_layout),
         vertex: wgpu::VertexState {
@@ -2934,7 +2414,7 @@ pub(crate) fn create_point_constellation_set(
         },
         count: None,
     };
-    let tex_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    let tex_bgl = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
         label: Some("figgy point constellation texture bgl"),
         entries: &[
             tex_entry(0),
@@ -3042,7 +2522,7 @@ pub(crate) fn create_line_columnar_pipeline_with_entries(
     if let Some(t) = texture_bgl {
         bgls.push(Some(t));
     }
-    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    let layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
         label: Some("figgy line columnar layout"),
         bind_group_layouts: &bgls,
         immediate_size: 0,
@@ -3051,7 +2531,7 @@ pub(crate) fn create_line_columnar_pipeline_with_entries(
     let f32_stride = std::mem::size_of::<f32>() as wgpu::BufferAddress;
     let column_stride = crate::data::COLUMN_VALUE_BYTES as wgpu::BufferAddress;
 
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    crate::gpu_compile::render_pipeline(&device, &wgpu::RenderPipelineDescriptor {
         label: Some(label),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
@@ -3164,10 +2644,10 @@ pub fn create_scatter_columnar_pipeline(
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
-    let shaders = ShaderModules::new(device);
+    let shader = ShaderModules::scatter(device);
     create_scatter_columnar_pipeline_with_sample_count(
         device,
-        &shaders.scatter,
+        &shader,
         transform_bgl,
         style_bgl,
         target_format,
@@ -3210,10 +2690,10 @@ pub fn create_scatter_columnar_mapped_pipeline(
     target_format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> wgpu::RenderPipeline {
-    let shaders = ShaderModules::new(device);
+    let shader = ShaderModules::scatter(device);
     create_scatter_columnar_mapped_pipeline_with_entries(
         device,
-        &shaders.scatter,
+        &shader,
         transform_bgl,
         style_bgl,
         style_map_bgl,
@@ -3239,7 +2719,7 @@ pub(crate) fn create_scatter_columnar_mapped_pipeline_with_entries(
     fs_entry: &str,
     label: &str,
 ) -> wgpu::RenderPipeline {
-    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    let layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
         label: Some(label),
         bind_group_layouts: &[Some(transform_bgl), Some(style_bgl), Some(style_map_bgl)],
         immediate_size: 0,
@@ -3247,7 +2727,7 @@ pub(crate) fn create_scatter_columnar_mapped_pipeline_with_entries(
 
     let vec2_stride = (std::mem::size_of::<f32>() * 2) as wgpu::BufferAddress;
     let column_stride = crate::data::COLUMN_VALUE_BYTES as wgpu::BufferAddress;
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    crate::gpu_compile::render_pipeline(&device, &wgpu::RenderPipelineDescriptor {
         label: Some(label),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
@@ -3367,7 +2847,7 @@ pub(crate) fn create_scatter_columnar_pipeline_full(
     if let Some(t) = texture_bgl {
         bgls.push(Some(t));
     }
-    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    let layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
         label: Some("figgy scatter columnar layout"),
         bind_group_layouts: &bgls,
         immediate_size: 0,
@@ -3376,7 +2856,7 @@ pub(crate) fn create_scatter_columnar_pipeline_full(
     let vec2_stride = (std::mem::size_of::<f32>() * 2) as wgpu::BufferAddress;
     let column_stride = crate::data::COLUMN_VALUE_BYTES as wgpu::BufferAddress;
 
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    crate::gpu_compile::render_pipeline(&device, &wgpu::RenderPipelineDescriptor {
         label: Some(label),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
@@ -3456,10 +2936,10 @@ pub fn create_errorbar_columnar_pipeline(
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
-    let shaders = ShaderModules::new(device);
+    let shader = ShaderModules::errorbar(device);
     create_errorbar_columnar_pipeline_with_sample_count(
         device,
-        &shaders.errorbar,
+        &shader,
         transform_bgl,
         style_bgl,
         target_format,
@@ -3495,10 +2975,10 @@ pub fn create_errorbar_columnar_mapped_pipeline(
     target_format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> wgpu::RenderPipeline {
-    let shaders = ShaderModules::new(device);
+    let shader = ShaderModules::errorbar(device);
     create_errorbar_columnar_mapped_pipeline_from_shader(
         device,
-        &shaders.errorbar,
+        &shader,
         transform_bgl,
         style_bgl,
         style_map_bgl,
@@ -3516,7 +2996,7 @@ pub(crate) fn create_errorbar_columnar_mapped_pipeline_from_shader(
     target_format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> wgpu::RenderPipeline {
-    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    let layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
         label: Some("figgy errorbar mapped layout"),
         bind_group_layouts: &[Some(transform_bgl), Some(style_bgl), Some(style_map_bgl)],
         immediate_size: 0,
@@ -3596,7 +3076,7 @@ pub(crate) fn create_errorbar_columnar_mapped_pipeline_from_shader(
         }),
     ];
 
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    crate::gpu_compile::render_pipeline(&device, &wgpu::RenderPipelineDescriptor {
         label: Some("figgy errorbar mapped pipeline"),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
@@ -3676,7 +3156,7 @@ pub(crate) fn create_errorbar_columnar_pipeline_full(
     blend: wgpu::BlendState,
     label: &str,
 ) -> wgpu::RenderPipeline {
-    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    let layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
         label: Some("figgy errorbar columnar layout"),
         bind_group_layouts: &[Some(transform_bgl), Some(style_bgl)],
         immediate_size: 0,
@@ -3747,7 +3227,7 @@ pub(crate) fn create_errorbar_columnar_pipeline_full(
         }),
     ];
 
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    crate::gpu_compile::render_pipeline(&device, &wgpu::RenderPipelineDescriptor {
         label: Some(label),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
@@ -3799,10 +3279,10 @@ pub fn create_bar_columnar_pipeline(
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
-    let shaders = ShaderModules::new(device);
+    let shader = ShaderModules::bar(device);
     create_bar_columnar_pipeline_with_entry(
         device,
-        &shaders.bar,
+        &shader,
         transform_bgl,
         style_bgl,
         None,
@@ -3841,10 +3321,10 @@ pub fn create_bar_columnar_mapped_pipeline(
     style_map_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
-    let shaders = ShaderModules::new(device);
+    let shader = ShaderModules::bar(device);
     create_bar_columnar_pipeline_with_entry(
         device,
-        &shaders.bar,
+        &shader,
         transform_bgl,
         style_bgl,
         Some(style_map_bgl),
@@ -3918,7 +3398,7 @@ fn create_bar_columnar_pipeline_with_entry(
     } else {
         &base_layouts[..]
     };
-    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    let layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
         label: Some("figgy bar columnar layout"),
         bind_group_layouts,
         immediate_size: 0,
@@ -3958,7 +3438,7 @@ fn create_bar_columnar_pipeline_with_entry(
         }),
     ];
 
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    crate::gpu_compile::render_pipeline(&device, &wgpu::RenderPipelineDescriptor {
         label: Some(label),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
@@ -4107,7 +3587,7 @@ pub fn create_field_data_bind_group_layout(device: &wgpu::Device) -> wgpu::BindG
     // stage it is visible to, and the anchor pipeline binds four of its own — so
     // marking the ramp tables compute-visible for symmetry would put the layout
     // one over the limit on a conformant device.
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
         label: Some("figgy field data bgl"),
         entries: &[
             storage(0, shared), // column pool (coordinate + grid bases in the uniform)
@@ -4377,10 +3857,10 @@ pub fn create_field_columnar_pipeline(
     field_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
-    let shaders = ShaderModules::new(device);
+    let shader = ShaderModules::field(device);
     create_field_columnar_pipeline_with_sample_count(
         device,
-        &shaders.field,
+        &shader,
         transform_bgl,
         style_bgl,
         field_bgl,
@@ -4513,12 +3993,12 @@ fn create_field_columnar_pipeline_with_optional_extra_layout(
         extra_bgl,
     ];
     let layout_count = if extra_bgl.is_some() { 4 } else { 3 };
-    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    let layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
         label: Some("figgy field columnar layout"),
         bind_group_layouts: &layouts[..layout_count],
         immediate_size: 0,
     });
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    crate::gpu_compile::render_pipeline(&device, &wgpu::RenderPipelineDescriptor {
         label: Some(label),
         layout: Some(&layout),
         vertex: wgpu::VertexState {

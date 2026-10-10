@@ -44,24 +44,30 @@ mod tests {
     fn streamed_style_global_index_preserves_all_u32_bits_and_uniform_ownership() {
         let (device, queue) = shared_device().expect("streamed style GPU adapter required");
         let transform_bgl = create_scatter_transform_bind_group_layout(&device);
-        let output_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("streamed style identity probe output"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 8,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: false },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("streamed style identity probe"),
-            bind_group_layouts: &[Some(&transform_bgl), Some(&output_bgl)],
-            immediate_size: 0,
-        });
+        let output_bgl = crate::gpu_compile::bind_group_layout(
+            &device,
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("streamed style identity probe output"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            },
+        );
+        let layout = crate::gpu_compile::pipeline_layout(
+            &device,
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some("streamed style identity probe"),
+                bind_group_layouts: &[Some(&transform_bgl), Some(&output_bgl)],
+                immediate_size: 0,
+            },
+        );
         let probe = r#"
 @group(1) @binding(8) var<storage, read_write> identity_probe: array<vec4<u32>>;
 @compute @workgroup_size(4)
@@ -127,18 +133,24 @@ fn probe_identity(@builtin(global_invocation_id) gid: vec3<u32>) {
             include_str!("scatter_columnar.wgsl"),
             include_str!("errorbar_columnar.wgsl"),
         ] {
-            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("streamed style product identity probe"),
-                source: wgpu::ShaderSource::Wgsl(format!("{source}\n{probe}").into()),
-            });
-            let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("streamed style identity probe"),
-                layout: Some(&layout),
-                module: &shader,
-                entry_point: Some("probe_identity"),
-                compilation_options: Default::default(),
-                cache: None,
-            });
+            let shader = crate::gpu_compile::shader_module(
+                &device,
+                wgpu::ShaderModuleDescriptor {
+                    label: Some("streamed style product identity probe"),
+                    source: wgpu::ShaderSource::Wgsl(format!("{source}\n{probe}").into()),
+                },
+            );
+            let pipeline = crate::gpu_compile::compute_pipeline(
+                &device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some("streamed style identity probe"),
+                    layout: Some(&layout),
+                    module: &shader,
+                    entry_point: Some("probe_identity"),
+                    compilation_options: Default::default(),
+                    cache: None,
+                },
+            );
             for (&base, (bg, _charge)) in bases.iter().zip(&snapshots) {
                 let mut encoder = device.create_command_encoder(&Default::default());
                 {

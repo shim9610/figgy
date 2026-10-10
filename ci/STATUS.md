@@ -1,5 +1,24 @@
 # Recorded backend results
 
+**Current support policy: macOS / Metal is experimental and not yet stable.**
+Known failures remain enabled in the normal package matrix. The separate
+[precompiled Metal shader probe](metal-precision-probe/README.md) is an opt-in
+investigation, not a default renderer option or a completed macOS fix.
+
+Follow-up [compiler A/B diagnostics](https://github.com/shim9610/figgy/actions/runs/38046669897)
+found that disabling Metal fast-math in a temporary wgpu-hal patch made both
+precision-picking tests and the field-location integration test pass. The
+resident/streamed pixel difference remained. This identifies a compiler-sensitive
+precision issue and a separate composition issue; it does not verify all Apple GPUs.
+The new precompiled-shader experiment investigates avoiding that dependency patch.
+Its [first run](https://github.com/shim9610/figgy/actions/runs/38055501914) on Apple
+Paravirtual Metal evaluated 768 projected coordinates per path: default WGSL and
+the fast-math binary each failed 512 points; the precise binary passed all 768
+with zero measured error. This was the extracted coordinate helper harness,
+not the full picker or renderer. See the probe's recorded scope and build settings.
+
+The table below is the original recorded baseline, not the later experiment.
+
 Recorded on 2026-10-10 for public source
 [`69ada34`](https://github.com/shim9610/figgy/commit/69ada34b81bc268d9ea7fda6cce9a3d1a7182d99):
 figgy-renderer 0.13.0, figgy-model 0.8.0, figgy 0.11.0, Rust 1.99 and wgpu 30.
@@ -41,7 +60,7 @@ initialization:
   at display scale 0.5, the largest channel difference was 5; the allowed difference
   is 3. Four later tests failed after this panic poisoned their shared font lock.
 
-The cause of each independent failure has not yet been established. This evidence
+At this baseline, the causes had not yet been established; see the follow-up above. This evidence
 does not establish that physical Apple GPUs or all Metal devices behave identically.
 The checks remain enabled and their tolerances are unchanged. Until these failures
 are resolved, this source release is not verified across all three backends.

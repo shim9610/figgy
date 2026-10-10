@@ -815,12 +815,12 @@ fn create_pipeline_bundle_observed(
     observer: &mut dyn FnMut(InitEvent),
 ) -> Arc<PickPipelineBundle> {
     started(observer, INIT_SCOPE, "setup");
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    let shader = crate::gpu_compile::shader_module(&device, wgpu::ShaderModuleDescriptor {
         label: Some("figgy exact GPU pick shader"),
         source: wgpu::ShaderSource::Wgsl(include_str!("gpu_pick.wgsl").into()),
     });
 
-    let query_data_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    let query_data_bgl = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
         label: Some("figgy GPU pick query data bgl"),
         entries: &[
             storage_entry(0, true),
@@ -828,7 +828,7 @@ fn create_pipeline_bundle_observed(
             storage_entry(2, false),
         ],
     });
-    let query_work_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    let query_work_bgl = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
         label: Some("figgy GPU pick query work bgl"),
         entries: &[
             uniform_entry(0),
@@ -837,24 +837,24 @@ fn create_pipeline_bundle_observed(
             storage_entry(3, false),
         ],
     });
-    let reduce_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    let reduce_bgl = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
         label: Some("figgy GPU pick reduction bgl"),
         entries: &[storage_entry(3, true), storage_entry(4, false)],
     });
 
-    let query_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    let query_layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
         label: Some("figgy GPU pick query layout"),
         bind_group_layouts: &[Some(&query_data_bgl), Some(&query_work_bgl)],
         immediate_size: 0,
     });
-    let reduce_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    let reduce_layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
         label: Some("figgy GPU pick reduction layout"),
         bind_group_layouts: &[Some(&reduce_bgl)],
         immediate_size: 0,
     });
     finished(observer, INIT_SCOPE, "setup");
     let pipeline = |layout: &wgpu::PipelineLayout, entry: &str, label: &'static str| {
-        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        crate::gpu_compile::compute_pipeline(&device, &wgpu::ComputePipelineDescriptor {
             label: Some(label),
             layout: Some(layout),
             module: &shader,
@@ -926,12 +926,12 @@ async fn create_pipeline_bundle_observed_async(
     .await
     .map_err(GpuPickError::AsyncCompileFailed)?;
     started(observer, INIT_SCOPE, "setup");
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    let shader = crate::gpu_compile::shader_module(&device, wgpu::ShaderModuleDescriptor {
         label: Some("figgy exact GPU pick shader"),
         source: wgpu::ShaderSource::Wgsl(include_str!("gpu_pick.wgsl").into()),
     });
 
-    let query_data_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    let query_data_bgl = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
         label: Some("figgy GPU pick query data bgl"),
         entries: &[
             storage_entry(0, true),
@@ -939,7 +939,7 @@ async fn create_pipeline_bundle_observed_async(
             storage_entry(2, false),
         ],
     });
-    let query_work_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    let query_work_bgl = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
         label: Some("figgy GPU pick query work bgl"),
         entries: &[
             uniform_entry(0),
@@ -948,17 +948,17 @@ async fn create_pipeline_bundle_observed_async(
             storage_entry(3, false),
         ],
     });
-    let reduce_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    let reduce_bgl = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
         label: Some("figgy GPU pick reduction bgl"),
         entries: &[storage_entry(3, true), storage_entry(4, false)],
     });
 
-    let query_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    let query_layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
         label: Some("figgy GPU pick query layout"),
         bind_group_layouts: &[Some(&query_data_bgl), Some(&query_work_bgl)],
         immediate_size: 0,
     });
-    let reduce_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    let reduce_layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
         label: Some("figgy GPU pick reduction layout"),
         bind_group_layouts: &[Some(&reduce_bgl)],
         immediate_size: 0,
@@ -966,7 +966,7 @@ async fn create_pipeline_bundle_observed_async(
     finished(observer, INIT_SCOPE, "setup");
     yield_init_frame().await;
     let pipeline = |layout: &wgpu::PipelineLayout, entry: &str, label: &'static str| {
-        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        crate::gpu_compile::compute_pipeline(&device, &wgpu::ComputePipelineDescriptor {
             label: Some(label),
             layout: Some(layout),
             module: &shader,

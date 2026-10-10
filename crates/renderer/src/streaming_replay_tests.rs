@@ -21,7 +21,7 @@ fn clear(r: &Renderer, s: &StreamSurface, color: wgpu::Color) {
 }
 
 fn rect(r: &Renderer, s: &StreamSurface, rgba: [f32; 4], rect: [u32; 4]) {
-    let shader=r.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    let shader=crate::gpu_compile::shader_module(&r.device, wgpu::ShaderModuleDescriptor {
         label:Some("test translucent replay rectangle"),source:wgpu::ShaderSource::Wgsl(format!(r#"
         @vertex fn vs(@builtin(vertex_index) i:u32)->@builtin(position) vec4<f32> {{
             let p=array<vec2<f32>,3>(vec2(-1.,-1.),vec2(3.,-1.),vec2(-1.,3.)); return vec4(p[i],0.,1.);
@@ -29,9 +29,7 @@ fn rect(r: &Renderer, s: &StreamSurface, rgba: [f32; 4], rect: [u32; 4]) {
         @fragment fn fs()->@location(0) vec4<f32> {{ return vec4<f32>({},{},{},{}); }}
         "#,rgba[0],rgba[1],rgba[2],rgba[3]).into()),
     });
-    let pipeline = r
-        .device
-        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    let pipeline = crate::gpu_compile::render_pipeline(&r.device, &wgpu::RenderPipelineDescriptor {
             label: None,
             layout: None,
             vertex: wgpu::VertexState {

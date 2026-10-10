@@ -33,6 +33,12 @@ it is not a project file format. `egui_demo` enables the native egui examples.
 WASM compilation is also supported as a consumer example; the web wrapper is not
 part of this Rust registry package.
 
+**macOS / Metal support is experimental, not stable.** Coordinate precision,
+picking and render-path comparison regressions are still being investigated.
+The source repository contains a separate, opt-in precompiled Metal shader probe;
+it is not an enabled renderer feature or a completed precision fix. See the
+[backend status](https://github.com/shim9610/figgy/blob/master/ci/STATUS.md).
+
 The crate-level API documentation covers ownership, frame validity, target
 constraints, source replay and compatibility. Individual chart modules contain their usage
 guides. The [source repository](https://github.com/shim9610/figgy) contains the

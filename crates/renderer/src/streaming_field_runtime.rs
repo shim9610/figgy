@@ -220,14 +220,15 @@ impl Renderer {
             },
             available.min(runtime.scheduler.limits().max_in_flight_bytes),
         )?;
-        let shader = self
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
+        let shader = crate::gpu_compile::shader_module(
+            &self.device,
+            wgpu::ShaderModuleDescriptor {
                 label: Some("stream field runtime"),
                 source: wgpu::ShaderSource::Wgsl(
                     include_str!("data_render/field_columnar.wgsl").into(),
                 ),
-            });
+            },
+        );
         let pipelines = Arc::new(field::Pipelines::new(
             &self.device,
             &shader,

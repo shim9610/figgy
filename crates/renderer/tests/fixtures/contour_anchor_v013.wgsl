@@ -554,8 +554,8 @@ struct AnchorParams {
     label_h_px: f32,
     /// Vertices per label instance. CPU twin: `gpu_contour::LABEL_VERTICES`.
     label_vertices: u32,
-    /// Reserved ABI lane. The host dispatches exactly four correction steps.
-    /// The legacy differential oracle reads this as its loop bound.
+    /// CPU supplies four Newton corrections. A uniform bound keeps software
+    /// GPU compilers from cloning the complete grid search for every step.
     projection_steps: u32,
 };
 
@@ -655,59 +655,6 @@ fn level_value(level: u32) -> LevelValue {
     return out;
 }
 
-// A candidate record is private scratch until anchor_project finishes. Reuse
-// its x lane for axis-t between dispatches; no extra buffer or binding is needed.
-fn empty_anchor() -> LabelAnchor {
-    var out: LabelAnchor;
-    out.level = NO_LEVEL;
-    return out;
-}
-
-@compute @workgroup_size(64)
-fn anchor_seed(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let cells = ap.lattice_x * ap.lattice_y;
-    if (cells == 0u || gid.x >= cells * ap.level_count) { return; }
-    var out = empty_anchor();
-    let level = gid.x / cells;
-    let wanted = level_value(level);
-    if (wanted.valid && f32_is_finite(wanted.value)) {
-        let cell = gid.x % cells;
-        let step = vec2<f32>(ap.clip_w / f32(ap.lattice_x), ap.clip_h / f32(ap.lattice_y));
-        let cell_lo = vec2<f32>(
-            ap.clip_x + f32(cell % ap.lattice_x) * step.x,
-            ap.clip_y + f32(cell / ap.lattice_x) * step.y,
-        );
-        out.x = px_to_t(cell_lo + 0.5 * step);
-        out.level = level;
-    }
-    cand[gid.x] = out;
-}
-
-// One exact Newton correction. The host dispatches this same pipeline four
-// times. Keeping the field search outside an enclosing shader loop prevents
-// pathological optimizer expansion on software Vulkan compilers.
-@compute @workgroup_size(64)
-fn anchor_step(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let cells = ap.lattice_x * ap.lattice_y;
-    if (cells == 0u || gid.x >= cells * ap.level_count) { return; }
-    var state = cand[gid.x];
-    if (state.level == NO_LEVEL) { return; }
-    let s = contour_sample(state.x);
-    if (!s.hit) { cand[gid.x] = empty_anchor(); return; }
-    let want = level_value(state.level).value;
-    let g2 = dot(s.dz, s.dz);
-    let residual = s.z - want;
-    if (!f32_is_finite(g2) || g2 <= 0.0 || !f32_is_finite(residual)) {
-        cand[gid.x] = empty_anchor(); return;
-    }
-    let correction = residual * s.dz / g2;
-    if (!vec2_f32_is_finite(correction)) { cand[gid.x] = empty_anchor(); return; }
-    let p = state.x - correction;
-    if (!vec2_f32_is_finite(p)) { cand[gid.x] = empty_anchor(); return; }
-    state.x = p;
-    cand[gid.x] = state;
-}
-
 @compute @workgroup_size(64)
 fn anchor_project(@builtin(global_invocation_id) gid: vec3<u32>) {
     let cells = ap.lattice_x * ap.lattice_y;
@@ -735,14 +682,37 @@ fn anchor_project(@builtin(global_invocation_id) gid: vec3<u32>) {
         ap.clip_y + f32(cell / ap.lattice_x) * step.y,
     );
 
-    // The four corrections were dispatched in order before this final sample.
-    // Candidate x temporarily carries axis-t, never a published data coordinate.
-    if (cand[gid.x].level == NO_LEVEL) {
-        cand[gid.x] = out;
-        return;
+    var p = px_to_t(cell_lo + 0.5 * step);
+    var s: ContourSample;
+    let projection_steps = min(ap.projection_steps, 4u);
+    // Sample at the seed and after every correction, including the final one.
+    // One call site avoids duplicating the same nested grid search in the IR.
+    for (var i = 0u; i <= projection_steps; i = i + 1u) {
+        s = contour_sample(p);
+        if (i == projection_steps) {
+            break;
+        }
+        if (!s.hit) {
+            cand[gid.x] = out;
+            return;
+        }
+        let g2 = dot(s.dz, s.dz);
+        let residual = s.z - want;
+        if (!f32_is_finite(g2) || g2 <= 0.0 || !f32_is_finite(residual)) {
+            cand[gid.x] = out;
+            return;
+        }
+        let correction = residual * s.dz / g2;
+        if (!vec2_f32_is_finite(correction)) {
+            cand[gid.x] = out;
+            return;
+        }
+        p = p - correction;
+        if (!vec2_f32_is_finite(p)) {
+            cand[gid.x] = out;
+            return;
+        }
     }
-    let p = cand[gid.x].x;
-    let s = contour_sample(p);
     if (!s.hit) {
         cand[gid.x] = out;
         return;
