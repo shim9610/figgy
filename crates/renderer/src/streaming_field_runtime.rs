@@ -533,7 +533,7 @@ impl Renderer {
                     if field.next[1] >= field.scissor[1] + field.scissor[3] {
                         draw.offset = 1;
                     }
-                    draw.display_dirty = !draw.fit_replay;
+                    draw.display_dirty = true;
                 }
                 self.end_gpu_frame();
                 Ok(submission)

@@ -3,7 +3,7 @@
 //! path.
 //!
 //! House pattern (mirrors the in-crate GPU tests): every test builds its own
-//! instance/adapter/device and early-returns when no usable adapter exists.
+//! renderer on a shared device. GPU initialization failures fail the suite.
 //!
 //! Attribution strategy: in sketch mode the black deco layer (axes, ticks,
 //! titles) wobbles too, so a whole-image diff cannot attribute divergence to
@@ -21,11 +21,13 @@
 //! explicit_precise_mode_deserializes_to_precise,
 //! precise_serializes_without_key).
 
+#[path = "support/gpu.rs"]
+mod test_gpu;
+
 use std::sync::{Arc, OnceLock};
 
 use renderer::config::{DrawStyle, SketchOptions};
 use renderer::data::Column;
-use renderer::data_render::{create_instance, request_adapter, request_device};
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{
@@ -56,17 +58,15 @@ fn shared_device() -> Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> {
     static DEVICE: OnceLock<Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)>> = OnceLock::new();
     DEVICE
         .get_or_init(|| {
-            let instance = create_instance();
-            let adapter = request_adapter(&instance).ok()?;
-            let (device, queue) = request_device(&adapter).ok()?;
+            let (device, queue) = test_gpu::device();
             Some((Arc::new(device), Arc::new(queue)))
         })
         .as_ref()
         .map(|(device, queue)| (Arc::clone(device), Arc::clone(queue)))
 }
 
-/// Headless renderer, or `None` when this environment has no GPU adapter
-/// (the caller early-returns — same skip pattern as the in-crate GPU tests).
+/// Headless renderer. Initialization failures panic; the optional return type
+/// is retained for the existing fixtures.
 fn try_renderer() -> Option<Renderer> {
     let (device, queue) = shared_device()?;
     Some(

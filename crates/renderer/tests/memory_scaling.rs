@@ -24,8 +24,11 @@
 //! number means something different on every platform.
 //!
 //! Run:
-//!     cargo test -p renderer --test memory_scaling -- --nocapture
-//!     cargo test -p renderer --test memory_scaling -- --ignored   (large scale)
+//!     cargo test -p figgy-renderer --test memory_scaling -- --nocapture
+//!     cargo test -p figgy-renderer --test memory_scaling -- --ignored   (large scale)
+
+#[path = "support/gpu.rs"]
+mod test_gpu;
 
 use renderer::{Column, GpuResourceKind, GrowthPolicy, Renderer, RendererDevice};
 
@@ -89,14 +92,11 @@ fn fit(points: &[(f64, f64)]) -> Fit {
 // Scenario harness.
 
 fn shared_device() -> Option<(std::sync::Arc<wgpu::Device>, std::sync::Arc<wgpu::Queue>)> {
-    use renderer::data_render::{create_instance, request_adapter, request_device};
     use std::sync::{Arc, OnceLock};
     static DEVICE: OnceLock<Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)>> = OnceLock::new();
     DEVICE
         .get_or_init(|| {
-            let instance = create_instance();
-            let adapter = request_adapter(&instance).ok()?;
-            let (device, queue) = request_device(&adapter).ok()?;
+            let (device, queue) = test_gpu::device();
             Some((Arc::new(device), Arc::new(queue)))
         })
         .as_ref()
@@ -105,12 +105,14 @@ fn shared_device() -> Option<(std::sync::Arc<wgpu::Device>, std::sync::Arc<wgpu:
 
 fn renderer_with_pool(pool_bytes: u64) -> Option<Renderer> {
     let (device, queue) = shared_device()?;
-    Renderer::try_new(
-        RendererDevice::new(device, queue),
-        wgpu::TextureFormat::Rgba8Unorm,
-        pool_bytes,
+    Some(
+        Renderer::try_new(
+            RendererDevice::new(device, queue),
+            wgpu::TextureFormat::Rgba8Unorm,
+            pool_bytes,
+        )
+        .expect("required GPU test: renderer initialization failed"),
     )
-    .ok()
 }
 
 const COLUMN_VALUE_BYTES: u64 = 8;

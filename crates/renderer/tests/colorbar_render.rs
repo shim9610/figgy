@@ -107,17 +107,14 @@ fn probes() -> Vec<(&'static str, renderer::Config)> {
 }
 
 fn output_dir() -> PathBuf {
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("renderer crate is inside the workspace crates directory");
+    let package_root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let configured = std::env::var_os("FIGGY_LAYOUT_PROBE_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("target/arch-after"));
     if configured.is_absolute() {
         configured
     } else {
-        workspace.join(configured)
+        package_root.join(configured)
     }
 }
 

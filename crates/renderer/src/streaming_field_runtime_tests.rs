@@ -33,7 +33,26 @@ fn setup(centers: bool, interpolated: bool, columns_are_y: bool, samples: u32, i
     setup_columns(centers, interpolated, columns_are_y, samples, io, 1)
 }
 
-fn setup_columns(centers: bool, interpolated: bool, columns_are_y: bool, samples: u32, io: u64, max_columns: usize) -> Fixture {
+fn setup_columns(
+    centers: bool,
+    interpolated: bool,
+    columns_are_y: bool,
+    samples: u32,
+    io: u64,
+    max_columns: usize,
+) -> Fixture {
+    setup_columns_with_budget(centers, interpolated, columns_are_y, samples, io, max_columns, 4 * 1024 * 1024)
+}
+
+fn setup_columns_with_budget(
+    centers: bool,
+    interpolated: bool,
+    columns_are_y: bool,
+    samples: u32,
+    io: u64,
+    max_columns: usize,
+    gpu_bytes: u64,
+) -> Fixture {
     let (device, queue) = data_render::shared_device().unwrap();
     let mut renderer = Renderer::try_new_with_sample_count(
         RendererDevice::new(device, queue),
@@ -127,7 +146,7 @@ fn setup_columns(centers: bool, interpolated: bool, columns_are_y: bool, samples
             max_in_flight_chunks: 2,
             max_columns_per_chunk: max_columns,
             max_chunk_input_bytes: io.max(2) * 8,
-            max_in_flight_gpu_bytes: 4 * 1024 * 1024,
+            max_in_flight_gpu_bytes: gpu_bytes,
         })
         .unwrap();
     let view = renderer
@@ -155,6 +174,11 @@ fn setup_columns(centers: bool, interpolated: bool, columns_are_y: bool, samples
 }
 
 fn pump(f: &mut Fixture, operation: Option<StreamingOperation>) {
+    pump_count(f, operation);
+}
+
+fn pump_count(f: &mut Fixture, operation: Option<StreamingOperation>) -> usize {
+    let mut reads = 0;
     for _ in 0..10000 {
         let request = if let Some(operation) = operation {
             f.renderer
@@ -165,6 +189,7 @@ fn pump(f: &mut Fixture, operation: Option<StreamingOperation>) {
         };
         match request {
             crate::AutoStreamingRangeRequest::Ready { ranges, .. } => {
+                reads += 1;
                 assert_eq!(ranges.len(), 1);
                 let range = &ranges[0];
                 let original = &f.columns.iter().find(|(id, _)| *id == range.id).unwrap().1;
@@ -191,7 +216,7 @@ fn pump(f: &mut Fixture, operation: Option<StreamingOperation>) {
             }
             crate::AutoStreamingRangeRequest::Backpressure { .. } => f.renderer.wait_idle(),
             crate::AutoStreamingRangeRequest::AllSubmitted { .. }
-            | crate::AutoStreamingRangeRequest::Complete { .. } => return,
+            | crate::AutoStreamingRangeRequest::Complete { .. } => return reads,
         }
     }
     panic!("field replay did not terminate");
@@ -552,10 +577,204 @@ fn ssot_colorbar_edits_refresh_existing_heatmap_without_decoration_replay() {
         fresh.renderer.service_stream_requests();
         update(&mut fresh,edit); finish_display(&mut fresh);
         let expected = screen(&mut fresh);
-        if actual != expected { failures.push(format!("{name}: stale first-frame pixels")); }
-        if actual == before { failures.push(format!("{name}: no visible change")); }
-        if !replay && f.renderer.active_stream_job(f.id) != Some(job) { failures.push(format!("{name}: decoration restarted data job")); }
+        if actual != expected {
+            failures.push(format!("{name}: stale first-frame pixels"));
+        }
+        if actual == before {
+            failures.push(format!("{name}: no visible change"));
+        }
+        if !replay && f.renderer.active_stream_job(f.id) != Some(job) {
+            failures.push(format!("{name}: decoration restarted data job"));
+        }
+    }
+    drop(font);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn bounded_source_cache_heatmap_edits_recompute_pixels_without_source_reads() {
+    use crate::renderer::streaming_request_tests::read_draw_target;
+    let font = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap();
+    let edits: &[(&str, fn(&mut Config))] = &[
+        ("size", |c| c.chart_area.0.width = 320),
+        ("range", |c| c.left_y.max = 2.0),
+        ("grid", |c| {
+            c.grid.major_x_color = Color::new(0.0, 0.9, 0.0, 1.0)
+        }),
+        ("colormap", |c| {
+            c.colorbar.as_mut().unwrap().colormap = crate::colormap::ColorMap::Magma
+        }),
+        ("z.min", |c| c.colorbar.as_mut().unwrap().axis.min = 1.0),
+        ("z.max", |c| c.colorbar.as_mut().unwrap().axis.max = 9.0),
+        ("z.scale", |c| {
+            c.colorbar.as_mut().unwrap().axis.scale = AxisScale::Logarithmic
+        }),
+        ("nan_color", |c| {
+            c.colorbar.as_mut().unwrap().nan_color = Color::new(0.0, 1.0, 0.0, 1.0)
+        }),
+    ];
+    let screen = |f: &mut Fixture| {
+        let job = f.renderer.active_stream_job(f.id).unwrap();
+        let target = wgpu::Texture::clone(f.renderer.chart_stream_display(job).unwrap());
+        read_draw_target(&f.renderer, &target)
+    };
+    let start = |f: &mut Fixture, c: Config| {
+        f.renderer.set_chart_config(f.id, c.clone()).unwrap();
+        f.chart = Chart::new(c);
+        f.view = f
+            .renderer
+            .create_chart_view(&f.chart, f.chart.config().chart_area.0)
+            .unwrap();
+        f.renderer
+            .request_auto_streaming_chart(
+                f.id,
+                &f.view,
+                crate::StreamingChartOptions {
+                    size: (360, 240),
+                    clear_color: Color::new(0.0, 0.0, 0.0, 0.0),
+                    max_primitives_per_chunk: 2,
+                },
+            )
+            .unwrap();
+    };
+    let mut failures = Vec::new();
+    for &(name, edit) in edits {
+        let mut f = setup(false, false, false, 1, 2);
+        f.renderer.cancel_streaming_chart(f.id).unwrap();
+        let _ = f.renderer.set_memory_budget(Some(128 * 1024 * 1024));
+        let _ = f
+            .renderer
+            .set_auto_resident_working_set_limit(Some(1024 * 1024));
+        let c = f.chart.config().clone();
+        start(&mut f, c);
+        finish_display(&mut f);
+        let before = screen(&mut f);
+        let mut next = f.chart.config().clone();
+        edit(&mut next);
+        start(&mut f, next.clone());
+        let reads = pump_count(&mut f, None);
+        finish_display(&mut f);
+        let actual = screen(&mut f);
+        let mut fresh = setup(false, false, false, 1, 2);
+        fresh.renderer.cancel_streaming_chart(fresh.id).unwrap();
+        start(&mut fresh, next);
+        finish_display(&mut fresh);
+        if actual != screen(&mut fresh) {
+            failures.push(format!("{name}: stale first frame"));
+        }
+        if actual == before {
+            failures.push(format!("{name}: edit invisible"));
+        }
+        if reads != 0 {
+            failures.push(format!("{name}: {reads} unnecessary source requests"));
+        }
     }
     drop(font);
     assert!(failures.is_empty(),"{}",failures.join("\n"));
+}
+
+#[test]
+fn progressive_replay_heatmap_fit_publishes_tiles_before_completion() {
+    use crate::renderer::streaming_request_tests::read_draw_target;
+    let font = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap();
+    for samples in [1, 4] {
+        // Force several screen tiles, with identical geometry at MSAA 1/4.
+        let budget = 512 * 1024 * u64::from(samples);
+        let mut f = setup_columns_with_budget(false, false, false, samples, 2, 1, budget);
+        f.renderer.cancel_streaming_chart(f.id).unwrap();
+        f.renderer.request_stream_auto_fit(f.id, 0.05).unwrap();
+        let options = crate::StreamingChartOptions {
+            size: (360, 240),
+            clear_color: Color::new(0.0, 0.0, 0.0, 0.0),
+            max_primitives_per_chunk: 2,
+        };
+        f.renderer
+            .request_auto_streaming_chart(f.id, &f.view, options)
+            .unwrap();
+        let mut previous = None;
+        let mut refreshes = 0;
+        let mut previous_serial = None;
+        let mut replay_preview = None;
+        let mut complete = false;
+        for _ in 0..1024 {
+            let bindings: Vec<_> = f
+                .columns
+                .iter()
+                .map(|(id, c)| crate::StreamSourceBinding {
+                    id,
+                    revision: 5,
+                    source: crate::StreamColumnSource::HiLo(c),
+                })
+                .collect();
+            let step = f.renderer.auto_stream_chart_step(f.id, &bindings).unwrap();
+            f.renderer.wait_idle();
+            if matches!(step, crate::AutoStreamingProgress::Complete { .. }) {
+                f.chart = Chart::new(f.renderer.chart_config(f.id).unwrap().clone());
+                f.view = f
+                    .renderer
+                    .create_chart_view(&f.chart, f.chart.config().chart_area.0)
+                    .unwrap();
+            }
+            f.renderer
+                .prepare_registered(&[RegisteredChartDrawItem {
+                    chart_id: f.id,
+                    view: &f.view,
+                }])
+                .unwrap();
+            let job = f.renderer.active_stream_job(f.id).unwrap();
+            let target = wgpu::Texture::clone(f.renderer.chart_stream_display(job).unwrap());
+            let pixels = read_draw_target(&f.renderer, &target);
+            if f.renderer.progressive_replay_for_test(f.id) {
+                let serial = f.renderer.stream_runtime.as_ref().unwrap().draws.iter()
+                    .find(|draw| draw.job == job).unwrap().display_serial;
+                if previous_serial.is_some_and(|old| old != serial) {
+                    refreshes += 1;
+                }
+                previous_serial = Some(serial);
+                // Field bounds are fitted before the first tile is drawn, so
+                // this preview is already exact. Replaying identical tiles must
+                // refresh the display without erasing strips at their edges.
+                if let Some(preview) = &replay_preview {
+                    assert_eq!(&pixels, preview, "replay damaged the already exact heatmap preview");
+                } else {
+                    replay_preview = Some(pixels.clone());
+                }
+            }
+            previous = Some(pixels);
+            if matches!(step, crate::AutoStreamingProgress::Complete { .. }) {
+                complete = true;
+                break;
+            }
+        }
+        assert!(complete);
+        assert!(refreshes >= 2, "heatmap froze until final swap");
+        let final_config = f.renderer.chart_config(f.id).unwrap().clone();
+        let mut fresh = setup_columns_with_budget(false, false, false, samples, 2, 1, budget);
+        fresh.renderer.cancel_streaming_chart(fresh.id).unwrap();
+        fresh
+            .renderer
+            .set_chart_config(fresh.id, final_config.clone())
+            .unwrap();
+        fresh.chart = Chart::new(final_config);
+        fresh.view = fresh
+            .renderer
+            .create_chart_view(&fresh.chart, fresh.chart.config().chart_area.0)
+            .unwrap();
+        fresh
+            .renderer
+            .request_auto_streaming_chart(fresh.id, &fresh.view, options)
+            .unwrap();
+        finish_display(&mut fresh);
+        let job = fresh.renderer.active_stream_job(fresh.id).unwrap();
+        let target = wgpu::Texture::clone(fresh.renderer.chart_stream_display(job).unwrap());
+        assert_eq!(
+            previous.unwrap(),
+            read_draw_target(&fresh.renderer, &target)
+        );
+    }
+    drop(font);
 }

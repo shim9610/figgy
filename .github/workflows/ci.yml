@@ -1,0 +1,82 @@
+name: Rust packages
+"on":
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: rust-packages-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  CARGO_BUILD_JOBS: '3'
+  RUSTUP_TOOLCHAIN: '1.99.0'
+  PYTHONUTF8: '1'
+jobs:
+  packages:
+    # Keep the full matrix on public repositories, where standard runner time is free.
+    if: github.event.repository.private == false
+    name: ${{ matrix.os }} / ${{ matrix.backend }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            backend: vulkan
+          - os: windows-2025
+            backend: dx12
+          - os: macos-15
+            backend: metal
+    env:
+      WGPU_BACKEND: ${{ matrix.backend }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Rust
+        run: rustup toolchain install 1.99.0 --profile minimal --target wasm32-unknown-unknown
+      - name: Install Linux build and Vulkan prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libx11-dev libxkbcommon-dev libwayland-dev libegl1-mesa-dev mesa-vulkan-drivers libvulkan1
+      - name: Configure headless Linux rendering
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          runtime_dir="$RUNNER_TEMP/figgy-runtime"
+          mkdir -p "$runtime_dir"
+          chmod 700 "$runtime_dir"
+          echo "XDG_RUNTIME_DIR=$runtime_dir" >> "$GITHUB_ENV"
+          if ! compgen -G '/dev/dri/renderD*' > /dev/null; then
+            icd=$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)
+            test -n "$icd"
+            echo "VK_DRIVER_FILES=$icd" >> "$GITHUB_ENV"
+            echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+            echo "LP_NUM_THREADS=3" >> "$GITHUB_ENV"
+            echo "GPU-less runner: using Mesa lavapipe for Vulkan tests"
+          fi
+      - name: Install pinned Windows DXC and WARP
+        if: runner.os == 'Windows'
+        run: python ci/setup_windows.py
+      - name: Native and WASM checks, strict API documentation
+        run: python ci/verify.py static
+      - name: Package, extract, run rendering and pixel regressions
+        run: python ci/verify.py packages
+      - name: Upload verification logs and rendered images
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-${{ matrix.os }}-${{ matrix.backend }}
+          path: target/ci-results/
+          retention-days: 7
+          if-no-files-found: warn

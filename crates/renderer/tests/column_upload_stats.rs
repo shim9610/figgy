@@ -1,10 +1,12 @@
+#[path = "support/gpu.rs"]
+mod test_gpu;
+
 use std::cell::Cell;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use renderer::data::{COLUMN_VALUE_BYTES, split_f64_to_f32_pair};
 use renderer::data_render::column_pool::ALIGN;
-use renderer::data_render::{create_instance, request_adapter, request_device};
 use renderer::{
     AllocError, Column, ColumnHandle, ColumnPairWriter, ColumnPool, ColumnSource,
     ColumnUploadStats, HiLoColumnSource,
@@ -450,9 +452,7 @@ fn shared_device() -> Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> {
     static DEVICE: OnceLock<Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)>> = OnceLock::new();
     DEVICE
         .get_or_init(|| {
-            let instance = create_instance();
-            let adapter = request_adapter(&instance).ok()?;
-            let (device, queue) = request_device(&adapter).ok()?;
+            let (device, queue) = test_gpu::device();
             Some((Arc::new(device), Arc::new(queue)))
         })
         .as_ref()

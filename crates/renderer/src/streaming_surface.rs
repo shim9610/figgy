@@ -2,6 +2,9 @@
 
 use std::sync::Arc;
 
+#[path = "streaming_replay.rs"]
+mod replay;
+
 use crate::gpu_memory::{GpuLedger, GpuResourceKind, TrackedBuffer, TrackedTexture};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +64,7 @@ pub(crate) struct StreamTransfer {
     layout: wgpu::BindGroupLayout,
     format: wgpu::TextureFormat,
     sample_count: u32,
+    replay: Option<replay::ReplayTransfer>,
 }
 
 impl StreamTransfer {
@@ -162,6 +166,7 @@ impl StreamTransfer {
                 layout,
                 format,
                 sample_count,
+                replay: None,
             }
         }))
         .map_err(|_| StreamSurfaceError::AllocationFailed)
@@ -177,6 +182,7 @@ pub(crate) struct StreamSurface {
     resolved_view: Option<wgpu::TextureView>,
     source: wgpu::BindGroup,
     rescale: Option<(TrackedBuffer, wgpu::BindGroup, wgpu::BindGroup)>,
+    replay: Option<replay::ReplaySurface>,
 }
 
 impl StreamSurface {
@@ -264,6 +270,7 @@ impl StreamSurface {
                 resolved_view,
                 source,
                 rescale: None,
+                replay: None,
             }
         }))
         .map_err(|_| StreamSurfaceError::AllocationFailed)
@@ -361,15 +368,41 @@ impl StreamSurface {
         underlay: impl FnOnce(&mut wgpu::RenderPass<'_>),
         suffix: impl FnOnce(&mut wgpu::RenderPass<'_>),
     ) -> Result<(), StreamSurfaceError> {
+        self.record_display_chunks(
+            transfer,
+            encoder,
+            background,
+            None,
+            underlay,
+            |_| {},
+            suffix,
+        )
+    }
+
+    pub(crate) fn record_display_chunks(
+        &self,
+        transfer: &StreamTransfer,
+        encoder: &mut wgpu::CommandEncoder,
+        background: Option<wgpu::Color>,
+        replay_clip: Option<[u32; 4]>,
+        underlay: impl FnOnce(&mut wgpu::RenderPass<'_>),
+        data_suffix: impl FnOnce(&mut wgpu::RenderPass<'_>),
+        suffix: impl FnOnce(&mut wgpu::RenderPass<'_>),
+    ) -> Result<(), StreamSurfaceError> {
         if transfer.format != self.spec.format || transfer.sample_count != self.spec.sample_count {
             return Err(StreamSurfaceError::InvalidOptions);
         }
+        let replay_clip = replay_clip.filter(|_| self.has_replay());
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stream prefix to display then suffix"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &self.display_view,
                 depth_slice: None,
-                resolve_target: self.resolved_view.as_ref(),
+                resolve_target: if replay_clip.is_some() {
+                    None
+                } else {
+                    self.resolved_view.as_ref()
+                },
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(background.unwrap_or(wgpu::Color::TRANSPARENT)),
                     store: wgpu::StoreOp::Store,
@@ -386,7 +419,13 @@ impl StreamSurface {
         pass.set_pipeline(if background.is_some() { &transfer.overlay_pipeline } else { &transfer.pipeline });
         pass.set_bind_group(0, &self.source, &[]);
         pass.draw(0..3, 0..1);
-        suffix(&mut pass);
+        data_suffix(&mut pass);
+        if let Some(clip) = replay_clip {
+            drop(pass);
+            self.record_replay_restore(transfer, encoder, clip, suffix);
+        } else {
+            suffix(&mut pass);
+        }
         Ok(())
     }
 }

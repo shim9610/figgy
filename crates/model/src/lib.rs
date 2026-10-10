@@ -7,6 +7,7 @@
 //! are renderer optimizations and live in the renderer crate, which depends
 //! on this one and re-exports these modules under the same paths.
 
+pub mod categorical;
 pub mod color;
 pub mod colormap;
 pub mod config;
@@ -19,6 +20,7 @@ pub mod layout;
 pub mod legend;
 pub mod line;
 pub mod preset;
+pub mod radial;
 pub mod resize;
 pub mod select;
 pub mod text;
@@ -47,3 +49,13 @@ pub use select::{
     LegendElement, Selectable, SelectionBox,
 };
 pub use text::{MeasureText, TextExtents};
+
+pub use radial::{
+    RadialChart, RadialInteraction, RadialKind, RadialLabelFormat, RadialLabels, RadialMaterial,
+    RadialOutline, RadialSlice, RadialSplit, RadialStyle, RadialTarget,
+};
+
+pub use categorical::*;
+
+pub mod boxplot;
+pub use boxplot::*;

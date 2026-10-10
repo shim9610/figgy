@@ -15,7 +15,7 @@
 //! has its own pan direction control.
 //!
 //! Run with:
-//! `cargo run --release -p renderer --example ssot_lab --features egui_demo`
+//! `cargo run --release -p figgy-renderer --example ssot_lab --features egui_demo`
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};

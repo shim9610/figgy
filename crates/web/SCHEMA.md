@@ -2,15 +2,11 @@
 
 # Config / SeriesConfig — JSON 설정 명세
 
-기준 소스 버전: `figgy 0.10.6` / `renderer 0.12.6` / `model 0.7.2`.
+기준 소스 버전: `figgy 0.11.0` / `figgy-renderer 0.13.0` / `figgy-model 0.8.0`.
 
 이 문서는 `Config`와 `SeriesConfig`의 JSON 형식을 설명한다. figgy 0.10.0의 비상주 컬럼 등록, 구간 공급, `render_chart()` 실행·취소, 상주 가능 여부 조회는 별도 웹 API이며 설정 필드를 추가하지 않는다. 지원 범위와 호출 방법은 [WASM.md](../renderer/WASM.md#exact-streaming)의 「자동 실행과 원본 구간 공급」을 참고한다.
 
-아래는 `FiggyChart.get_config()` / `get_series()`가 반환하고 `set_config()` / `set_series()`가 받는 JSON의 전체 형식이다. 예시 JSON은 Rust 타입을 직렬화해 생성했으며 다음 테스트로 소스와 일치하는지 확인한다.
-
-```bash
-cargo test -p model --features serde --test schema_sync
-```
+아래는 `FiggyChart.get_config()` / `get_series()`가 반환하고 `set_config()` / `set_series()`가 받는 JSON의 전체 형식이다. 예시 JSON은 Rust 타입을 직렬화해 생성했다. 저장소 문서 정합성 검사에서 소스와 일치하는지 확인한다.
 
 **설정 타입을 정의한 Rust 소스**
 
@@ -730,6 +726,7 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 히스토그램과 행렬 기반 세 종류의 전체 JSON 예시는 아래와 같다. `Histogram`은 호스트가 구간별로 집계한 `(edges, counts)` 컬럼을 받고, 행렬은 `MatrixRef`로 격자를 지정한다.
 
 - `Histogram`의 컬럼 역할은 `bar.orientation`으로 정한다. `"Vertical"`이면 `x_column`이 경계, `y_column`이 빈도 값이며 `"Horizontal"`은 반대다. `edges = counts + 1` 같은 길이 관계로 추측하지 않는다.
+- 기존 히스토그램을 가로로 바꿀 때는 `bar.orientation = "Horizontal"`과 함께 `x_column = counts`, `y_column = edges`로 연결한다. X축은 빈도, Y축은 구간 범위로 설정하고 축 제목도 바꾼다. 방향만 바꾸고 컬럼 연결을 유지하면 역할이 뒤바뀐다. Rust 예제와 갱신 순서는 [히스토그램 사용법](../renderer/HISTOGRAM.md)을 참고한다.
 - `bar.width_ratio`는 구간 대비 막대 너비이며 `0..=1`로 제한한다. 막대를 가운데에 놓고 `gap_px`를 양쪽으로 나누어 추가 간격을 둔다. 1픽셀보다 넓은 막대는 최소 1픽셀이 남도록 간격을 제한한다.
 - 구간 자체가 1픽셀보다 좁으면 GPU가 픽셀 열별 최댓값을 골라 0까지 채운다. 가로 히스토그램은 픽셀 행을 기준으로 한다. 이때 간격과 양수인 너비 비율은 적용하지 않는다. 최댓값 구간의 외곽선 두께와 불투명도가 모두 양수이면 외곽선 색으로, 아니면 채움색으로 그린다. 동률이면 앞선 구간을 선택한다. `width_ratio: 0`인 구간은 제외하며 원본 컬럼은 바꾸지 않는다.
 - `border_width: 0`이면 외곽선을 숨긴다. 양수이면 지정한 두께와 `border_color`를 사용한다.

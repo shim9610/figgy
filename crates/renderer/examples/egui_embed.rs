@@ -21,7 +21,7 @@
 //!    with `renderer::Renderer::paint_prepared(pass, target, token)`.
 //!
 //! Run with:
-//! `cargo run -p renderer --example egui_embed --features egui_demo`
+//! `cargo run -p figgy-renderer --example egui_embed --features egui_demo`
 
 use std::sync::Arc;
 

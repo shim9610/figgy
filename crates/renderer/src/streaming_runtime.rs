@@ -6,6 +6,7 @@ use super::streaming_surface::{
     StreamSurface, StreamSurfaceError, StreamSurfaceSpec, StreamTransfer,
 };
 use super::*;
+use crate::gpu_memory::TrackedBuffer;
 use crate::streaming::{
     ColumnInput, ColumnRange, JobId, RequestStatus, RequestTicket, SourceStamp, StreamError,
     StreamLimits, StreamScheduler, SubmissionReceipt, ViewEpoch,
@@ -14,23 +15,24 @@ use crate::streaming_upload::{
     ChunkStatisticsPlan, ChunkUploadBudget, ChunkUploadError, RecordedChunk,
     record_chunk_collecting_statistics_reusing,
 };
-use crate::gpu_memory::TrackedBuffer;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-#[path = "streaming_auxiliary.rs"]
-mod auxiliary;
 #[path = "streaming_arc_runtime.rs"]
 mod arc_runtime;
-#[path = "streaming_field_runtime.rs"]
-mod field_runtime;
-#[path = "streaming_view_residency.rs"]
-mod view_residency;
+#[path = "streaming_auxiliary.rs"]
+mod auxiliary;
 #[path = "streaming_field_fit.rs"]
 mod field_fit;
 #[path = "streaming_field_pick.rs"]
 mod field_pick;
+#[path = "streaming_field_runtime.rs"]
+mod field_runtime;
 #[path = "streaming_selection.rs"]
 mod selection;
+#[path = "streaming_source_cache.rs"]
+mod source_cache;
+#[path = "streaming_view_residency.rs"]
+mod view_residency;
 pub use selection::{StreamingSelectionRequest, StreamingSelectionTicket};
 
 pub(super) fn is_stream_heatmap(rt: &DataRenderType) -> bool {
@@ -178,11 +180,13 @@ struct StreamSourceInput<'a> {
 enum StreamSupply<'a> {
     Encoded(&'a [StreamInput<'a>]),
     Sources(&'a [StreamSourceInput<'a>]),
+    Cached(&'a RecordedChunk),
 }
 struct NamedRequest {
     ticket: StreamTicket,
     columns: Vec<StreamRequestedColumn>,
     selection: bool,
+    source_cache_capture: bool,
 }
 struct StreamCompletion {
     receipt: SubmissionReceipt,
@@ -343,6 +347,9 @@ struct StreamDrawCursor {
     selection: selection::StreamSelectionState,
     view_candidate: Option<view_residency::ViewPackedCandidate>,
     view_cache: Option<Arc<view_residency::GpuViewCache>>,
+    source_cache: Option<Arc<source_cache::SourceCache>>,
+    source_cache_attempted: bool,
+    source_cache_writable: bool,
     view_rejection: Option<view_residency::PackReject>,
 }
 
@@ -367,8 +374,11 @@ pub(super) struct StreamRuntime {
 
 impl StreamRuntime {
     fn has_data_slots(&self, job: JobId) -> bool {
-        self.requests.iter().any(|request| request.ticket.job.id == job && !request.selection
-            && self.scheduler.contains_ticket(request.ticket.ticket))
+        self.requests.iter().any(|request| {
+            request.ticket.job.id == job
+                && !request.selection
+                && self.scheduler.contains_ticket(request.ticket.ticket)
+        })
     }
 }
 
@@ -560,15 +570,21 @@ fn stream_draw_phases(draw_style: &DrawStyle, series: &SeriesConfig) -> StreamRe
             StreamDrawPhase::Line,
             StreamDrawPhase::Scatter,
         ]),
-        DataRenderType::Heatmap { .. } => Ok(if primitives.field { &[StreamDrawPhase::Field] } else { &[] }),
-        DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. } if primitives.field || primitives.contour => Err(FiggyError::InvalidSeriesConfig {
+        DataRenderType::Heatmap { .. } => Ok(if primitives.field {
+            &[StreamDrawPhase::Field]
+        } else {
+            &[]
+        }),
+        DataRenderType::Contour { .. } | DataRenderType::HeatmapContour { .. }
+            if primitives.field || primitives.contour =>
+        {
+            Err(FiggyError::InvalidSeriesConfig {
             series_id: series.series_id.clone(),
             reason: "stream draw cursor does not yet support field or contour passes".into(),
         }
-        .into()),
-        DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. } => Ok(&[]),
+            .into())
+        }
+        DataRenderType::Contour { .. } | DataRenderType::HeatmapContour { .. } => Ok(&[]),
     }
 }
 
@@ -986,6 +1002,54 @@ impl Renderer {
         } else {
             Ok(())
         };
+        if replay {
+            let runtime = self.stream_runtime.as_mut().unwrap();
+            let draw = runtime
+                .draws
+                .iter_mut()
+                .find(|draw| draw.job == job)
+                .unwrap();
+            // Keep the upload executor's headroom. If the viewport snapshots
+            // do not fit, retain the previous atomic handoff instead of failing
+            // an otherwise valid stream or exceeding the budget.
+            let budget = self
+                .memory_budget
+                .unwrap_or(u64::MAX)
+                .saturating_sub(runtime.scheduler.limits().max_in_flight_bytes);
+            if let (Some(surface), Some(transfer)) =
+                (draw.surface.as_mut(), runtime.transfer.as_mut())
+            {
+                let panel = data_render::clamp_rect_to_target(
+                    snapshot.view.panel_rect,
+                    (target.width(), target.height()),
+                );
+                let _ = surface.begin_replay(
+                    &self.device,
+                    &self.gpu_ledger,
+                    transfer,
+                    &mut encoder,
+                    clear,
+                    |pass| {
+                        if let Some(panel) = panel {
+                            pass.set_viewport(
+                                panel.x as f32,
+                                panel.y as f32,
+                                panel.width as f32,
+                                panel.height as f32,
+                                0.0,
+                                1.0,
+                            );
+                            pass.set_scissor_rect(panel.x, panel.y, panel.width, panel.height);
+                            pass.set_pipeline(&self.pipelines.axis);
+                            pass.set_bind_group(0, &snapshot.view.grid_bind_group, &[]);
+                            pass.draw(0..3, 0..1);
+                        }
+                    },
+                    budget,
+                    self.pool.gpu_bytes() + self.pool.retired_bytes(),
+                );
+            }
+        }
         if !preview {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("figgy automatic stream data restart"),
@@ -1027,7 +1091,7 @@ impl Renderer {
             draw.fit_replay = true;
         }
         draw.expected_view_revision = expected_view_revision;
-        draw.display_dirty = !draw.fit_replay;
+        draw.display_dirty = true;
         draw.hist_envelope = None;
         draw.hist_series = None;
         draw.hist_overlay = false;
@@ -1045,8 +1109,9 @@ impl Renderer {
         // Keep the bounded streaming surface, and pack only once all fit
         // inputs are known and this replay uses the final axis window.
         let fit_ready = match &draw.mode {
-            StreamExecutionMode::Auto { statistics, .. } =>
-                field_fit::all_fit_inputs_ready(&snapshot, statistics, &draw.field_fits),
+            StreamExecutionMode::Auto { statistics, .. } => {
+                field_fit::all_fit_inputs_ready(&snapshot, statistics, &draw.field_fits)
+            }
             StreamExecutionMode::Explicit => true,
         };
         draw.view_candidate = self.auto_resident_working_set_limit
@@ -1055,7 +1120,9 @@ impl Renderer {
             });
         draw.view_rejection = match self.auto_resident_working_set_limit {
             Some(0) => Some(view_residency::PackReject::Disabled),
-            Some(_) if draw.view_candidate.is_none() && fit_ready && replay => Some(view_residency::PackReject::UnsupportedGeometry),
+            Some(_) if draw.view_candidate.is_none() && fit_ready && replay => {
+                Some(view_residency::PackReject::UnsupportedGeometry)
+            }
             _ => None,
         };
         let StreamExecutionMode::Auto {
@@ -1329,15 +1396,25 @@ impl Renderer {
         match view_residency::GpuViewCache::upload(
             candidate, &self.device, &self.queue, &self.gpu_ledger, budget, current,
         ) {
-            Ok(cache) => if let Some(draw) = self.stream_runtime.as_mut()
+            Ok(cache) => {
+                if let Some(draw) = self
+                    .stream_runtime
+                    .as_mut()
                 .and_then(|runtime| runtime.draws.iter_mut().find(|draw| draw.job == job))
             {
                 draw.view_cache = Some(Arc::new(cache));
                 draw.view_rejection = None;
-            },
-            Err(reason) => if let Some(draw) = self.stream_runtime.as_mut()
+                }
+            }
+            Err(reason) => {
+                if let Some(draw) = self
+                    .stream_runtime
+                    .as_mut()
                 .and_then(|runtime| runtime.draws.iter_mut().find(|draw| draw.job == job))
-            { draw.view_rejection = Some(reason); },
+                {
+                    draw.view_rejection = Some(reason);
+                }
+            }
         }
         self.end_gpu_frame();
     }
@@ -1347,7 +1424,9 @@ impl Renderer {
             runtime
                 .draws
                 .iter()
-                .find(|draw| draw.job.chart == chart && draw.auxiliary.is_none() && draw.surface.is_some())
+                .find(|draw| {
+                    draw.job.chart == chart && draw.auxiliary.is_none() && draw.surface.is_some()
+                })
                 .map(|draw| draw.job)
         })
     }
@@ -1544,6 +1623,32 @@ impl Renderer {
             options.max_primitives_per_chunk,
         );
 
+        let reusable_source = self
+            .stream_runtime
+            .as_ref()
+            .and_then(|runtime| {
+                runtime
+                    .draws
+                    .iter()
+                    .find(|draw| draw.job.chart == chart && draw.auxiliary.is_none())
+            })
+            .and_then(|draw| {
+                let StreamExecutionMode::Auto {
+                    snapshot: Some(previous),
+                    all_submitted: true,
+                    ..
+                } = &draw.mode
+                else {
+                    return None;
+                };
+                let cache = draw.source_cache.as_ref()?;
+                (previous.data_revision == revisions.data
+                    && self
+                        .auto_resident_working_set_limit
+                        .is_some_and(|limit| cache.bytes() <= limit))
+                .then(|| Arc::clone(cache))
+            });
+
         // Only a completed chart-local cache from the same data and series
         // may answer a new view request. Other charts and the global column
         // pool are never consulted or changed by this fast path.
@@ -1689,18 +1794,32 @@ impl Renderer {
         source_versions.sort_unstable_by(|left, right| left.id.cmp(&right.id));
 
         let mut statistics = HashMap::new();
-        statistics
-            .try_reserve(sources.len())
-            .map_err(|error| FiggyError::StateAllocationFailed {
+        statistics.try_reserve(sources.len()).map_err(|error| {
+            FiggyError::StateAllocationFailed {
                 resource: "automatic stream statistics snapshot",
                 reason: error.to_string(),
+            }
             })?;
         for id in sources.keys() {
-            let cache = self
-                .streaming_sources
-                .get(id)
-                .expect("automatic source snapshot came from the live registry")
-                .statistics_cache
+            // Partial-column statistics are job-local (histogram values and
+            // field tiles may not visit the whole source). Carry that coverage
+            // with the immutable GPU cache, rather than fabricating bounds or
+            // rereading already cached ranges in the successor job.
+            let prior = reusable_source
+                .as_ref()
+                .and_then(|_| self.stream_runtime.as_ref())
+                .and_then(|runtime| {
+                    runtime
+                        .draws
+                        .iter()
+                        .find(|d| d.job.chart == chart && d.auxiliary.is_none())
+                })
+                .and_then(|draw| match &draw.mode {
+                    StreamExecutionMode::Auto { statistics, .. } => statistics.get(id),
+                    StreamExecutionMode::Explicit => None,
+                });
+            let cache = prior
+                .unwrap_or(&self.streaming_sources[id].statistics_cache)
                 .try_coverage_copy()
                 .map_err(|error| FiggyError::StateAllocationFailed {
                     resource: "automatic stream statistics coverage",
@@ -1761,10 +1880,19 @@ impl Renderer {
             .iter_mut()
             .find(|draw| draw.job == job)
             .expect("new automatic stream cursor exists");
-        draw.view_candidate = view_candidate;
+        draw.source_cache_attempted = reusable_source.is_some();
+        draw.source_cache = reusable_source;
+        draw.source_cache_writable = false;
+        draw.view_candidate = if draw.source_cache.is_some() {
+            None
+        } else {
+            view_candidate
+        };
         draw.view_rejection = match self.auto_resident_working_set_limit {
             Some(0) => Some(view_residency::PackReject::Disabled),
-            Some(_) if draw.view_candidate.is_none() && auto_fit_padding.is_none() => Some(view_residency::PackReject::UnsupportedGeometry),
+            Some(_) if draw.view_candidate.is_none() && auto_fit_padding.is_none() => {
+                Some(view_residency::PackReject::UnsupportedGeometry)
+            }
             _ => None,
         };
         draw.mode = StreamExecutionMode::Auto {
@@ -1964,7 +2092,9 @@ impl Renderer {
         draw.view_candidate = view_candidate;
         draw.view_rejection = match self.auto_resident_working_set_limit {
             Some(0) => Some(view_residency::PackReject::Disabled),
-            Some(_) if draw.view_candidate.is_none() && auto_fit_padding.is_none() => Some(view_residency::PackReject::UnsupportedGeometry),
+            Some(_) if draw.view_candidate.is_none() && auto_fit_padding.is_none() => {
+                Some(view_residency::PackReject::UnsupportedGeometry)
+            }
             _ => None,
         };
         draw.mode = StreamExecutionMode::Auto {
@@ -2062,10 +2192,11 @@ impl Renderer {
         })
     }
 
-    /// Reserve or inspect the next exact renderer-selected ranges without
-    /// advancing the automatic CPU cursor. This is the async range-provider
-    /// boundary: the host can fetch only `Ready::ranges`, then submit them with
-    /// `auto_stream_chart_submit_ranges`.
+    /// Advance at most one cached GPU chunk, or reserve the next exact source
+    /// ranges. A cached submission returns `Backpressure`; continue polling as
+    /// usual. Only `Ready::ranges` requires host data supplied through
+    /// `auto_stream_chart_submit_ranges`. Use `stream_status` for a read-only
+    /// query that never submits work or advances the cursor.
     pub fn auto_stream_chart_request_ranges(
         &mut self,
         chart: ChartId,
@@ -2114,7 +2245,7 @@ impl Renderer {
             });
         }
         match self
-            .request_chart_stream_draw(job)
+            .request_auto_data_chunk(job)
             .map_err(StreamRequestError::into_figgy)?
         {
             StreamDrawRequestStatus::Backpressure => {
@@ -2296,7 +2427,11 @@ impl Renderer {
                 runtime
                     .draws
                     .iter()
-                    .find(|draw| draw.job.chart == chart && draw.auxiliary.is_none() && draw.surface.is_some())
+                    .find(|draw| {
+                        draw.job.chart == chart
+                            && draw.auxiliary.is_none()
+                            && draw.surface.is_some()
+                    })
                     .map(|draw| draw.job)
             })
             .ok_or_else(|| FiggyError::StaleStateToken {
@@ -2307,9 +2442,15 @@ impl Renderer {
                 reason: "streaming chart belongs to a different execution mode".into(),
             });
         }
-        if !automatic { self.pump_stream_selection_sources(job, view, sources).map_err(StreamRequestError::into_figgy)?; }
-        match self
-            .request_chart_stream_draw(job)
+        if !automatic {
+            self.pump_stream_selection_sources(job, view, sources)
+                .map_err(StreamRequestError::into_figgy)?;
+        }
+        match (if automatic {
+            self.request_auto_data_chunk(job)
+        } else {
+            self.request_chart_stream_draw(job)
+        })
             .map_err(StreamRequestError::into_figgy)?
         {
             StreamDrawRequestStatus::Backpressure => {
@@ -2429,9 +2570,15 @@ impl Renderer {
 
     /// Inspect view-local residency without reading a source or submitting GPU work.
     pub fn view_residency_status(&self, chart: ChartId) -> Result<crate::ViewResidencyStatus> {
-        self.chart_states.get(&chart).ok_or(FiggyError::UnknownChart { id: chart })?;
-        let draw = self.stream_runtime.as_ref().and_then(|runtime| runtime.draws.iter()
-            .find(|draw| draw.job.chart == chart && draw.auxiliary.is_none()));
+        self.chart_states
+            .get(&chart)
+            .ok_or(FiggyError::UnknownChart { id: chart })?;
+        let draw = self.stream_runtime.as_ref().and_then(|runtime| {
+            runtime
+                .draws
+                .iter()
+                .find(|draw| draw.job.chart == chart && draw.auxiliary.is_none())
+        });
         let Some(draw) = draw else {
             return Ok(crate::ViewResidencyStatus {
                 state: if self.is_streaming_chart(chart) { "streamed" } else { "resident" },
@@ -2467,8 +2614,11 @@ impl Renderer {
         if let Some((_, retained)) = runtime.retired_status.iter_mut().find(|(id, _)| *id == chart) {
             *retained = status;
         } else {
-            runtime.retired_status.try_reserve(1).map_err(|error| FiggyError::StateAllocationFailed {
-                resource: "retained stream status", reason: error.to_string(),
+            runtime.retired_status.try_reserve(1).map_err(|error| {
+                FiggyError::StateAllocationFailed {
+                    resource: "retained stream status",
+                    reason: error.to_string(),
+                }
             })?;
             runtime.retired_status.push((chart, status));
         }
@@ -2479,9 +2629,18 @@ impl Renderer {
     /// unchanged; the initial preflight cap and execution identity are retained.
     pub fn set_stream_chunk_budget(&mut self, chart: ChartId, primitives: u64) -> Result<()> {
         self.chart_config(chart)?;
-        let draw = self.stream_runtime.as_mut()
-            .and_then(|runtime| runtime.draws.iter_mut().find(|draw| draw.job.chart == chart && draw.auxiliary.is_none()))
-            .ok_or_else(|| FiggyError::StaleStateToken { reason: "streaming chart has no active execution".into() })?;
+        let draw = self
+            .stream_runtime
+            .as_mut()
+            .and_then(|runtime| {
+                runtime
+                    .draws
+                    .iter_mut()
+                    .find(|draw| draw.job.chart == chart && draw.auxiliary.is_none())
+            })
+            .ok_or_else(|| FiggyError::StaleStateToken {
+                reason: "streaming chart has no active execution".into(),
+            })?;
         if primitives == 0 || primitives > draw.max_primitives_limit {
             return Err(FiggyError::InvalidConfig {
                 field: "stream chunk budget", reason: "must be non-zero and no greater than the execution's initial cap",
@@ -2590,16 +2749,15 @@ impl Renderer {
             }
         }
         // The first pass has consumed every primitive. Keep progress monotone
-        // while the hidden exact replay replaces the fitted preview.
+        // while the exact replay progressively replaces the fitted preview.
         Ok((if draw.fit_replay { total } else { completed }, total))
     }
 
     pub(super) fn chart_has_stream_surface(&self, chart: ChartId) -> bool {
         self.stream_runtime.as_ref().is_some_and(|runtime| {
-            runtime
-                .draws
-                .iter()
-                .any(|draw| draw.job.chart == chart && draw.auxiliary.is_none() && draw.surface.is_some())
+            runtime.draws.iter().any(|draw| {
+                draw.job.chart == chart && draw.auxiliary.is_none() && draw.surface.is_some()
+            })
         })
     }
 
@@ -2612,10 +2770,9 @@ impl Renderer {
             .stream_runtime
             .as_ref()
             .and_then(|runtime| {
-                runtime
-                    .draws
-                    .iter()
-                    .find(|draw| draw.job.chart == chart && draw.auxiliary.is_none() && draw.surface.is_some())
+                runtime.draws.iter().find(|draw| {
+                    draw.job.chart == chart && draw.auxiliary.is_none() && draw.surface.is_some()
+                })
             })
             .ok_or(StreamError::WrongState)?;
         self.validate_stream_job(draw.job)?;
@@ -2846,10 +3003,24 @@ impl Renderer {
         {
             return Err(StreamError::Stale.into());
         }
-        if draw.fit_replay && !matches!(&draw.mode,
-            StreamExecutionMode::Auto { all_submitted: true, .. }) {
-            self.stream_runtime.as_mut().unwrap().draws.iter_mut()
-                .find(|draw| draw.job == job).unwrap().display_dirty = false;
+        if draw.fit_replay
+            && !draw.surface.as_ref().is_some_and(StreamSurface::has_replay)
+            && !matches!(
+                &draw.mode,
+                StreamExecutionMode::Auto {
+                    all_submitted: true,
+                    ..
+                }
+            )
+        {
+            self.stream_runtime
+                .as_mut()
+                .unwrap()
+                .draws
+                .iter_mut()
+                .find(|draw| draw.job == job)
+                .unwrap()
+                .display_dirty = false;
             return Ok(false);
         }
         let surface = draw.surface.as_ref().ok_or(StreamError::WrongState)?;
@@ -2922,10 +3093,22 @@ impl Renderer {
             auto_snapshot.as_ref().map_or(&self.chart_states[&job.chart].config, |s| &s.config).draw_style,
             crate::config::DrawStyle::Precise,
         );
-        surface.record_display_layers(
+        let replay_clip = (draw.fit_replay
+            && !matches!(
+                &draw.mode,
+                StreamExecutionMode::Auto {
+                    all_submitted: true,
+                    ..
+                }
+            ))
+        .then_some(data)
+        .flatten()
+        .map(|r| [r.x, r.y, r.width, r.height]);
+        surface.record_display_chunks(
             runtime.transfer.as_ref().ok_or(StreamError::WrongState)?,
             &mut encoder,
             separate_grid.then_some(draw.surface_clear.ok_or(StreamError::WrongState)?),
+            replay_clip,
             |pass| {
                 if separate_grid && let Some(panel) = panel {
                     pass.set_viewport(panel.x as f32, panel.y as f32, panel.width as f32, panel.height as f32, 0.0, 1.0);
@@ -2964,6 +3147,8 @@ impl Renderer {
                         ),
                     );
                 }
+            },
+            |pass| {
                 if let (Some(panel), Some(data)) = (panel, data) {
                     pass.set_viewport(panel.x as f32, panel.y as f32, panel.width as f32, panel.height as f32, 0.0, 1.0);
                     pass.set_scissor_rect(data.x, data.y, data.width, data.height);
@@ -2996,6 +3181,17 @@ impl Renderer {
             .iter_mut()
             .find(|draw| draw.job == job)
             .unwrap();
+        if matches!(
+            &draw.mode,
+            StreamExecutionMode::Auto {
+                all_submitted: true,
+                ..
+            }
+        ) {
+            if let Some(surface) = &mut draw.surface {
+                surface.finish_replay();
+            }
+        }
         draw.display_dirty = false;
         draw.display_serial = next_serial;
         draw.display_view_revision = Arc::clone(&display_view.content_revision);
@@ -3022,7 +3218,9 @@ impl Renderer {
             runtime
                 .draws
                 .iter()
-                .find(|draw| draw.job.chart == chart && draw.auxiliary.is_none() && draw.surface.is_some())
+                .find(|draw| {
+                    draw.job.chart == chart && draw.auxiliary.is_none() && draw.surface.is_some()
+                })
                 .map(|draw| draw.job)
         }) else {
             return Ok(None);
@@ -3083,6 +3281,17 @@ impl Renderer {
             .as_ref()
             .ok_or(StreamError::WrongState)?
             .resolved())
+    }
+
+    #[cfg(test)]
+    pub(super) fn progressive_replay_for_test(&self, chart: ChartId) -> bool {
+        self.stream_runtime.as_ref().is_some_and(|runtime| {
+            runtime.draws.iter().any(|draw| {
+                draw.job.chart == chart
+                    && draw.fit_replay
+                    && draw.surface.as_ref().is_some_and(StreamSurface::has_replay)
+            })
+        })
     }
 
     #[cfg(test)]
@@ -3259,11 +3468,13 @@ impl Renderer {
                 preferred_work_bytes = preferred_work_bytes.max(work_bytes);
             }
         }
-        let styles_current = state
-            .prepared_styles
-            .as_ref()
-            .is_some_and(|styles| styles.series_revision == state.revisions.series
-                && styles.styles.iter().all(|style| style.display_scale.to_bits() == display_scale.to_bits()));
+        let styles_current = state.prepared_styles.as_ref().is_some_and(|styles| {
+            styles.series_revision == state.revisions.series
+                && styles
+                    .styles
+                    .iter()
+                    .all(|style| style.display_scale.to_bits() == display_scale.to_bits())
+        });
         let scheduler = &self.stream_runtime.as_ref().unwrap().scheduler;
         if scheduler.job_for_chart(chart.sequence).is_none()
             && scheduler.active_jobs() >= scheduler.limits().max_jobs
@@ -3368,6 +3579,9 @@ impl Renderer {
                 selection: selection::StreamSelectionState::default(),
                 view_candidate: None,
                 view_cache: None,
+                source_cache: None,
+                source_cache_attempted: false,
+                source_cache_writable: false,
                 view_rejection: None,
             });
         Ok(job)
@@ -3437,7 +3651,12 @@ impl Renderer {
             if *phase == StreamDrawPhase::Line && draw.auxiliary_pick.is_none()
                 && arc_runtime::needs_arc(draw_style, series) {
                 let names = [series.x_column.clone(), series.y_column.clone()];
-                let config = auto_snapshot.as_ref().map_or(&self.chart_states[&job.chart].config, |snapshot| &snapshot.config).clone();
+                let config = auto_snapshot
+                    .as_ref()
+                    .map_or(&self.chart_states[&job.chart].config, |snapshot| {
+                        &snapshot.config
+                    })
+                    .clone();
                 return self.request_stream_arc(job, &config, &names, total + 1);
             }
             if draw.staging_slots.iter().any(|slot| slot.state.load(Ordering::Acquire) == 3) {
@@ -3537,7 +3756,20 @@ impl Renderer {
         self.sync_external_invalidations()?;
         self.service_stream_requests();
         self.validate_stream_job(ticket.job)?;
-        if self.stream_runtime.as_ref().unwrap().draws.iter().any(|draw| draw.job == ticket.job && draw.field.as_ref().is_some_and(|field| field.pick.is_some())) {
+        if self
+            .stream_runtime
+            .as_ref()
+            .unwrap()
+            .draws
+            .iter()
+            .any(|draw| {
+                draw.job == ticket.job
+                    && draw
+                        .field
+                        .as_ref()
+                        .is_some_and(|field| field.pick.is_some())
+            })
+        {
             return self.submit_stream_field_pick(ticket, supply, explicit_view, target);
         }
         if self.stream_runtime.as_ref().unwrap().draws.iter().any(|draw| draw.job == ticket.job && draw.field_fit.is_some()) {
@@ -3584,8 +3816,11 @@ impl Renderer {
             || self.chart_states[&ticket.job.chart].series[series_index].clone(),
             |snapshot| snapshot.series[series_index].clone(),
         );
-        let execution_config = auto_snapshot.as_ref().map_or(&self.chart_states[&ticket.job.chart].config,
-            |snapshot| &snapshot.config);
+        let execution_config = auto_snapshot
+            .as_ref()
+            .map_or(&self.chart_states[&ticket.job.chart].config, |snapshot| {
+                &snapshot.config
+            });
         let phase = *stream_draw_phases(&execution_config.draw_style, &execution_series)?
             .get(phase_index)
             .ok_or(StreamError::WrongState)?;
@@ -3843,8 +4078,11 @@ impl Renderer {
             }
         };
         if styled_points {
-            let config = auto_snapshot.as_ref().map_or(&self.chart_states[&ticket.job.chart].config,
-                |snapshot| &snapshot.config);
+            let config = auto_snapshot
+                .as_ref()
+                .map_or(&self.chart_states[&ticket.job.chart].config, |snapshot| {
+                    &snapshot.config
+                });
             let (bind_group, charge) = data_render::create_stream_point_transform_bind_group(
                 &self.gpu_ledger, &self.device, &self.transform_bgl,
                 &data_render::scatter_transform_from_config(config), draw_offset as u32,
@@ -4064,8 +4302,10 @@ impl Renderer {
                     && let Some(candidate) = draw.view_candidate.as_mut()
                 {
                     match result {
-                        Ok(chunk) if !chunk.rows.is_empty() => candidate.push(series_index, phase, chunk),
-                        Ok(_) => {},
+                        Ok(chunk) if !chunk.rows.is_empty() => {
+                            candidate.push(series_index, phase, chunk)
+                        }
+                        Ok(_) => {}
                         Err(reason) => candidate.reject(reason),
                     }
                     candidate.flush_completed(
@@ -4075,7 +4315,7 @@ impl Renderer {
                 }
                 draw.offset += primitives;
                 draw.pending = None;
-                draw.display_dirty = !draw.fit_replay;
+                draw.display_dirty = true;
                 if let Some((envelope, _, final_chunk, _, _)) = histogram {
                     if final_chunk {
                         draw.hist_envelope = None;
@@ -4390,7 +4630,12 @@ impl Renderer {
             RequestStatus::Backpressure => Ok(StreamRequestStatus::Backpressure),
             RequestStatus::Ready(ticket) => {
                 let ticket = StreamTicket { job, ticket };
-                runtime.requests.push(NamedRequest { ticket, columns, selection: false });
+                runtime.requests.push(NamedRequest {
+                    ticket,
+                    columns,
+                    selection: false,
+                    source_cache_capture: false,
+                });
                 Ok(StreamRequestStatus::Ready(ticket))
             }
         }
@@ -4474,6 +4719,7 @@ impl Renderer {
         match supply {
             StreamSupply::Encoded(inputs) => self.validate_stream_supply(ticket, inputs),
             StreamSupply::Sources(inputs) => self.validate_stream_sources(ticket, inputs),
+            StreamSupply::Cached(_) => self.validate_live_stream_request(ticket),
         }
     }
 
@@ -4872,6 +5118,10 @@ impl Renderer {
         headroom_bytes: u64,
         mut observe: Option<&mut dyn FnMut(usize, usize, f32, f32)>,
     ) -> StreamResult<RecordedChunk> {
+        if let StreamSupply::Cached(chunk) = supply {
+            // An immutable cache must NEVER become the mutable upload workspace.
+            return self.accept_cached_source(ticket, chunk);
+        }
         let runtime = self.stream_runtime.as_mut().ok_or(StreamError::Stale)?;
         let retained_selection = runtime.requests.iter().find(|request| request.ticket == ticket)
             .is_some_and(|request| request.selection);
@@ -4908,6 +5158,7 @@ impl Renderer {
                 ticket, inputs, encoder, headroom_bytes, reusable_work.as_ref(), preferred_work_bytes,
                 observe.take(), reusable_staging.as_ref(),
             ),
+            StreamSupply::Cached(_) => unreachable!("handled above"),
         };
         let chunk = match result {
             Ok(chunk) => chunk,
@@ -4940,6 +5191,7 @@ impl Renderer {
                 });
             }
         }
+        self.record_source_cache(ticket, &chunk, encoder, headroom_bytes);
         Ok(chunk)
     }
 
@@ -5055,6 +5307,7 @@ impl Renderer {
         let receipt = runtime.scheduler.submit(ticket.ticket)?;
         runtime.completions.push(StreamCompletion { receipt, done });
         let submission = self.queue.submit([commands]);
+        self.publish_source_cache_capture(ticket);
         self.queue.on_submitted_work_done(move || {
             callback_done.store(true, Ordering::Release);
         });

@@ -181,6 +181,9 @@ pub struct AutoStreamRange {
 /// Repeated calls return the same ranges until
 /// [`crate::Renderer::auto_stream_chart_submit_ranges`] commits that request or
 /// the execution is cancelled/replaced.
+/// When original pairs are already in the GPU cache, the renderer may submit
+/// one bounded chunk internally and return `Backpressure`. Keep polling; only
+/// `Ready` requires host data. `stream_status` is the read-only status query.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AutoStreamingRangeRequest {
     Ready {

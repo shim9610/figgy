@@ -7,7 +7,7 @@
 //! (star/line attributes are derived in-shader).
 //!
 //! Run with:
-//! `cargo run -p renderer --example constellation_lab --features egui_demo`
+//! `cargo run -p figgy-renderer --example constellation_lab --features egui_demo`
 
 use std::sync::Arc;
 

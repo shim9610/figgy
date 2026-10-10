@@ -10,6 +10,9 @@
 //! so the tests say where an isoline *should* be rather than where it happened to
 //! land.
 
+#[path = "support/gpu.rs"]
+mod test_gpu;
+
 use std::sync::{Arc, OnceLock};
 
 use renderer::config::AxisScale;
@@ -18,7 +21,6 @@ use renderer::data_config::{
     ContourConfig, ContourLabelAnchor, ContourLabelConfig, DataLineStyleConfig, FieldFillConfig,
     FillMode, GridLayout, MatrixOrientation, MatrixRef, Shading,
 };
-use renderer::data_render::{create_instance, request_adapter, request_device};
 use renderer::format::LabelFormat;
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
@@ -75,9 +77,7 @@ fn shared_device() -> Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> {
     static DEVICE: OnceLock<Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)>> = OnceLock::new();
     DEVICE
         .get_or_init(|| {
-            let instance = create_instance();
-            let adapter = request_adapter(&instance).ok()?;
-            let (device, queue) = request_device(&adapter).ok()?;
+            let (device, queue) = test_gpu::device();
             Some((Arc::new(device), Arc::new(queue)))
         })
         .as_ref()

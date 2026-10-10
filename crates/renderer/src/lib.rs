@@ -1,3 +1,5 @@
+#![doc = include_str!("../API.md")]
+
 pub mod axis_render;
 pub mod chart;
 pub mod data;
@@ -12,6 +14,8 @@ mod gpu_pick;
 pub mod init;
 pub mod pick;
 pub mod raster;
+pub mod radial;
+pub mod categorical;
 pub mod renderer;
 // Hand-drawn geometry helpers + the `DecoStroker` strategy — consumed by the
 // deco layer (`axis_render`) when `Config::draw_style` selects a stylized
@@ -93,3 +97,20 @@ pub use streaming_source::{
 };
 pub use text::MeasureText;
 pub use text_render::{CpuTextMeasure, FontPolicy};
+
+pub use radial::{
+    RadialChart, RadialError, RadialFrame, RadialInteraction, RadialKind, RadialLabelFormat,
+    RadialLabels, RadialMaterial, RadialOutline, RadialRenderer, RadialSlice, RadialSplit, RadialStyle,
+    RadialTarget,
+};
+
+pub use categorical::{CategoricalRenderer, CategoricalFrame, CategoricalError};
+pub use model::categorical::*;
+
+pub mod boxplot;
+pub use boxplot::{BoxPlotRenderer, BoxPlotFrame, BoxPlotError, BoxPlotPart, BoxPlotPick};
+pub use model::boxplot::*;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "../tests/support/gpu.rs"]
+mod test_gpu;

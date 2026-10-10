@@ -124,8 +124,9 @@ pub fn request_device(
 /// submission would occasionally stall — leaving the test's indefinite
 /// `poll(Wait)` spinning forever. Sharing a single device (wgpu resources are
 /// `Send + Sync` and safe to use concurrently) removes the device-creation
-/// storm while keeping test parallelism. Built once, lazily; `None` on a
-/// machine with no usable adapter so tests skip exactly as before.
+/// storm while keeping test parallelism. Initialization failure panics so a
+/// missing adapter or rejected device cannot turn a GPU test into a false pass.
+/// The Option return is retained for existing test fixture call sites.
 #[cfg(test)]
 pub(crate) fn shared_device() -> Option<(std::sync::Arc<wgpu::Device>, std::sync::Arc<wgpu::Queue>)>
 {
@@ -133,9 +134,7 @@ pub(crate) fn shared_device() -> Option<(std::sync::Arc<wgpu::Device>, std::sync
     static SHARED: OnceLock<Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)>> = OnceLock::new();
     SHARED
         .get_or_init(|| {
-            let inst = create_instance();
-            let adapter = request_adapter(&inst).ok()?;
-            let (device, queue) = request_device(&adapter).ok()?;
+            let (device, queue) = crate::test_gpu::device();
             Some((Arc::new(device), Arc::new(queue)))
         })
         .clone()
@@ -5254,7 +5253,7 @@ mod tests {
         let _instance = create_instance();
     }
 
-    /// Print adapter info when one is available; otherwise skip silently.
+    /// Print adapter info; a missing adapter is a test failure.
     /// Mostly useful locally with `cargo test -- --nocapture`.
     #[test]
     fn adapter_request_prints_info_when_available() {
@@ -5268,7 +5267,7 @@ mod tests {
                 println!("adapter driver  : {} / {}", info.driver, info.driver_info);
             }
             Err(e) => {
-                println!("no adapter available in this environment: {e}");
+                panic!("required GPU test: adapter initialization failed: {e}");
             }
         }
     }
@@ -5628,14 +5627,12 @@ mod tests {
     }
 
     /// Open a device + queue without a surface and print a few limits.
-    /// Skipped when no adapter is available.
+    /// Fails when no adapter is available.
     #[test]
     fn device_request_opens_device_and_queue() {
         let instance = create_instance();
-        let Ok(adapter) = request_adapter(&instance) else {
-            println!("no adapter — skipping device test");
-            return;
-        };
+        let adapter = request_adapter(&instance)
+            .expect("required GPU test: adapter initialization failed");
         match request_device(&adapter) {
             Ok((device, _queue)) => {
                 let limits = device.limits();

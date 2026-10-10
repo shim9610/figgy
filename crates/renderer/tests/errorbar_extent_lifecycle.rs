@@ -1,6 +1,8 @@
+#[path = "support/gpu.rs"]
+mod test_gpu;
+
 use std::sync::{Arc, OnceLock};
 
-use renderer::data_render::{create_instance, request_adapter, request_device};
 use renderer::{
     Column, GpuErrorbarError, GpuResourceKind, GpuSeriesExtentColumnIds, GpuSeriesExtentMode,
     Renderer, RendererDevice,
@@ -16,9 +18,7 @@ fn shared_device() -> Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> {
     static DEVICE: OnceLock<Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)>> = OnceLock::new();
     DEVICE
         .get_or_init(|| {
-            let instance = create_instance();
-            let adapter = request_adapter(&instance).ok()?;
-            let (device, queue) = request_device(&adapter).ok()?;
+            let (device, queue) = test_gpu::device();
             Some((Arc::new(device), Arc::new(queue)))
         })
         .as_ref()
@@ -27,12 +27,14 @@ fn shared_device() -> Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> {
 
 fn try_renderer() -> Option<Renderer> {
     let (device, queue) = shared_device()?;
-    Renderer::try_new(
-        RendererDevice::new(device, queue),
-        wgpu::TextureFormat::Bgra8Unorm,
-        1024 * 1024,
+    Some(
+        Renderer::try_new(
+            RendererDevice::new(device, queue),
+            wgpu::TextureFormat::Bgra8Unorm,
+            1024 * 1024,
+        )
+        .expect("required GPU test: renderer initialization failed"),
     )
-    .ok()
 }
 
 fn point_columns() -> GpuSeriesExtentColumnIds<'static> {

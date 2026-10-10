@@ -207,12 +207,21 @@ fn values() -> (crate::Column<f32>, crate::Column<f32>) {
 }
 
 fn fixture(config: &Config, resident: bool, cache: bool) -> (Renderer, ChartId) {
+    fixture_samples(config, resident, cache, 1)
+}
+
+fn fixture_samples(
+    config: &Config,
+    resident: bool,
+    cache: bool,
+    samples: u32,
+) -> (Renderer, ChartId) {
     let (device, queue) = data_render::shared_device().unwrap();
     let mut r = Renderer::try_new_with_sample_count(
         RendererDevice::new(device, queue),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
-        1,
+        samples,
     )
     .unwrap();
     let (x, y) = values();
@@ -243,6 +252,18 @@ fn options() -> crate::StreamingChartOptions {
 // A complete renderer frame, including its first display composition. Count
 // actual source submissions, rather than status totals (which are logical rows).
 fn frame(r: &mut Renderer, id: ChartId, resident: bool) -> (Vec<u8>, usize) {
+    let (x, y) = values();
+    frame_values(r, id, resident, &x, &y, 1)
+}
+
+fn frame_values(
+    r: &mut Renderer,
+    id: ChartId,
+    resident: bool,
+    x: &crate::Column<f32>,
+    y: &crate::Column<f32>,
+    revision: u64,
+) -> (Vec<u8>, usize) {
     let c = r.chart_config(id).unwrap().clone();
     let view = r
         .create_chart_view(&Chart::new(c.clone()), c.chart_area.0)
@@ -258,17 +279,16 @@ fn frame(r: &mut Renderer, id: ChartId, resident: bool) -> (Vec<u8>, usize) {
     }
     r.request_auto_streaming_chart(id, &view, options())
         .unwrap();
-    let (x, y) = values();
     let bindings = [
         crate::StreamSourceBinding {
             id: "x",
-            revision: 1,
-            source: crate::StreamColumnSource::Scalar(&x),
+            revision,
+            source: crate::StreamColumnSource::Scalar(x),
         },
         crate::StreamSourceBinding {
             id: "a",
-            revision: 1,
-            source: crate::StreamColumnSource::Scalar(&y),
+            revision,
+            source: crate::StreamColumnSource::Scalar(y),
         },
     ];
     let mut submissions = 0;
@@ -277,10 +297,9 @@ fn frame(r: &mut Renderer, id: ChartId, resident: bool) -> (Vec<u8>, usize) {
             r.auto_stream_chart_request_ranges(id).unwrap(),
             crate::AutoStreamingRangeRequest::Ready { .. }
         );
+        submissions += usize::from(data_requested);
         match r.auto_stream_chart_step(id, &bindings).unwrap() {
-            crate::AutoStreamingProgress::Submitted { .. } => {
-                submissions += usize::from(data_requested)
-            }
+            crate::AutoStreamingProgress::Submitted { .. } => {}
             crate::AutoStreamingProgress::Backpressure { .. } => wait_stream_slots(r, 0),
             crate::AutoStreamingProgress::AllSubmitted { .. }
             | crate::AutoStreamingProgress::Complete { .. } => break,
@@ -435,6 +454,127 @@ fn matrix(resident: bool, cache: bool) {
 fn ssot_edits_refresh_resident_first_frame() {
     matrix(true, false);
 }
+
+#[test]
+fn histogram_orientation_round_trip_refreshes_first_frame_without_reupload() {
+    use crate::data_config::{BarOrientation, DataBarStyleConfig};
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap();
+    let mut config = baseline();
+    config.bottom_x.min = 0.0;
+    config.bottom_x.max = 1.0;
+    config.left_y.min = 0.0;
+    config.left_y.max = 1.0;
+    config.legend.visible = false;
+    let mut series = declaration("hist", "x", "a");
+    series.render_type = DataRenderType::Histogram {
+        bar: DataBarStyleConfig {
+            fill_color: Color::new(0.1, 0.5, 0.8, 1.0),
+            border_color: Color::BLACK,
+            border_width: 1.0,
+            baseline: 0.0,
+            gap_px: 2.0,
+            width_ratio: 0.75,
+            orientation: BarOrientation::Vertical,
+            bar_style_overrides: None,
+        },
+    };
+    let (mut r, id) = fixture(&config, true, false);
+    r.set_chart_series(id, vec![series.clone()]).unwrap();
+    let (vertical, _) = frame(&mut r, id, true);
+    let generation = r.pool.generation();
+    let used_bytes = r.pool.used_bytes();
+    let original_buffers = r.chart_states[&id].prepared_styles.as_ref().unwrap().styles[0]
+        .bar_bg
+        .clone();
+
+    for horizontal in [true, false] {
+        if horizontal {
+            std::mem::swap(&mut series.x_column, &mut series.y_column);
+        } else {
+            series.x_column = "x".into();
+            series.y_column = "a".into();
+        }
+        let DataRenderType::Histogram { bar } = &mut series.render_type else {
+            unreachable!()
+        };
+        bar.orientation = if horizontal {
+            BarOrientation::Horizontal
+        } else {
+            BarOrientation::Vertical
+        };
+        r.set_chart_state(id, config.clone(), vec![series.clone()])
+            .unwrap();
+        let (actual, _) = frame(&mut r, id, true);
+        let (mut fresh, fresh_id) = fixture(&config, true, false);
+        fresh
+            .set_chart_series(fresh_id, vec![series.clone()])
+            .unwrap();
+        let (expected, _) = frame(&mut fresh, fresh_id, true);
+        assert_eq!(
+            actual, expected,
+            "first frame after orientation change must match fresh rendering"
+        );
+        assert_eq!(actual != vertical, horizontal);
+        assert_eq!(
+            r.pool.generation(),
+            generation,
+            "orientation must reuse column allocations"
+        );
+        assert_eq!(r.pool.used_bytes(), used_bytes);
+        let styles = r.chart_states[&id].prepared_styles.as_ref().unwrap().styles[0]
+            .bar_bg
+            .clone();
+        if horizontal {
+            assert_ne!(
+                styles, original_buffers,
+                "orientation needs refreshed bar state"
+            );
+        }
+        // Reapplying the same SSOT state must not rebuild that state again.
+        r.set_chart_state(id, config.clone(), vec![series.clone()])
+            .unwrap();
+        assert_eq!(frame(&mut r, id, true).0, expected);
+        assert_eq!(
+            r.chart_states[&id].prepared_styles.as_ref().unwrap().styles[0].bar_bg,
+            styles
+        );
+    }
+    // Repeating a changed declaration before its first prepare must not mark
+    // the previous, now-stale styles as valid for the new declaration.
+    let DataRenderType::Histogram { bar } = &mut series.render_type else {
+        unreachable!()
+    };
+    bar.fill_color = Color::new(0.8, 0.2, 0.1, 1.0);
+    r.set_chart_series(id, vec![series.clone()]).unwrap();
+    r.set_chart_series(id, vec![series.clone()]).unwrap();
+    let (recolored, _) = frame(&mut r, id, true);
+    let (mut fresh, fresh_id) = fixture(&config, true, false);
+    fresh
+        .set_chart_series(fresh_id, vec![series.clone()])
+        .unwrap();
+    assert_eq!(recolored, frame(&mut fresh, fresh_id, true).0);
+    assert_ne!(recolored, vertical);
+    let styles = r.chart_states[&id].prepared_styles.as_ref().unwrap().styles[0]
+        .bar_bg
+        .clone();
+    config.grid.show_major_x = false;
+    r.set_chart_state(id, config.clone(), vec![series.clone()])
+        .unwrap();
+    fresh
+        .set_chart_state(fresh_id, config, vec![series])
+        .unwrap();
+    assert_eq!(
+        frame(&mut r, id, true).0,
+        frame(&mut fresh, fresh_id, true).0
+    );
+    assert_eq!(
+        r.chart_states[&id].prepared_styles.as_ref().unwrap().styles[0].bar_bg,
+        styles,
+        "a full-state grid edit must reuse unchanged bar styles"
+    );
+}
 #[test]
 fn ssot_edits_refresh_stream_first_frame_without_excess_work() {
     matrix(false, false);
@@ -555,3 +695,6 @@ fn ssot_cached_fit_restores_secondary_axes_without_replaying_data() {
     assert_eq!(reads, 0);
     assert_eq!(r.active_stream_job(id), job);
 }
+
+#[path = "source_cache_invalidation_tests.rs"]
+mod source_cache_invalidation;

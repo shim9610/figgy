@@ -1,5 +1,5 @@
 //! P00 feasibility probe, not a production implementation or a portability proof.
-//! Run with `cargo test -p renderer --test stream_sample_transfer -- --nocapture`.
+//! Run with `cargo test -p figgy-renderer --test stream_sample_transfer -- --nocapture`.
 //! No adapter/device/map failures are converted into successful skipped tests.
 #![cfg(not(target_arch = "wasm32"))]
 

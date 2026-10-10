@@ -14,6 +14,7 @@ intervals inferred from observations.
 |---|---|---|
 | `gallery-errorbars.png` | Two exponential responses, 18 samples each; lines, markers and symmetric error bars | 960 × 600 |
 | `gallery-histogram.png` | 40 explicit bins over [−4, 4]; rounded counts from a two-peak analytic mixture | 960 × 600 |
+| `gallery-histogram-horizontal.png` | The same uploaded bins and counts, with horizontal bars | 960 × 600 |
 | `gallery-contours.png` | 81 × 81 samples of two Gaussian peaks; interpolated Viridis fill, 10 isolines with labels and line gaps, shared colourbar | 960 × 640 |
 | `gallery-wave.gif` | Two travelling sine waves, 401 samples each; columns replaced for every phase | 720 × 460 |
 | `gallery-orbit.gif` | A 2:3 Lissajous curve, a moving trail and a highlighted current point | 720 × 460 |
@@ -25,10 +26,10 @@ lockfile. Choose an empty output directory so frames from another run cannot be
 mixed into an animation.
 
 ```bash
-cargo run --locked -p renderer --example readme_gallery -- target/readme-gallery
+cargo run --locked -p figgy-renderer --example readme_gallery -- target/readme-gallery
 ```
 
-This writes the three static PNGs and `wave/000.png` … `wave/047.png` plus
+This writes the four static PNGs and `wave/000.png` … `wave/047.png` plus
 `orbit/000.png` … `orbit/047.png`. The optional second argument selects 2–240
 frames; the default is 48. Phases cover one period without repeating the endpoint.
 The example uses fixed axis ranges so the animation does not rescale each frame.
@@ -66,7 +67,7 @@ chosen for the README and says nothing about rendering throughput. If a differen
 frame count was requested, change `-frames:v` to match; duration is count / 12.
 
 To refresh the README, inspect the PNGs and the decoded animation frames, then
-copy the three `gallery-*.png` and two `gallery-*.gif` files into
+copy the three original `gallery-*.png` and two `gallery-*.gif` files into
 [`assets/`](assets/). Keep the numbered intermediate frames outside source control.
 The source example is the authority for formulas, styles and export settings.
 
@@ -75,7 +76,7 @@ The source example is the authority for formulas, styles and export settings.
 The Milkyway style preview uses a separate reproducible example:
 
 ```bash
-cargo run --locked -p renderer --example milkyway_line_preview -- target/milkyway-preview.png
+cargo run --locked -p figgy-renderer --example milkyway_line_preview -- target/milkyway-preview.png
 ```
 
 [`milkyway_line_preview.rs`](examples/milkyway_line_preview.rs) exports a
@@ -100,12 +101,16 @@ After inspection, copy the output to `assets/style-growth-response-milkyway.png`
 
 이 갤러리는 네이티브 렌더러가 출력한 PNG로 만들었다. `readme_gallery.rs`는 GPU 풀에 데이터를 올리고, 데이터와 축·눈금·텍스트를 합성해 PNG로 저장한다. 창이나 브라우저를 열지 않고 실행할 수 있다.
 
-- **정지 이미지 3종**: 응답 곡선과 오차 막대, 구간 40개의 히스토그램, 81×81 행렬의 보간 히트맵과 라벨이 있는 등고선이다. 모두 예제용으로 생성한 데이터이며 오차 막대의 폭도 설명을 위한 값이다.
+- **정지 이미지 4종**: 응답 곡선과 오차 막대, 구간 40개의 세로·가로 히스토그램, 81×81 행렬의 보간 히트맵과 라벨이 있는 등고선이다. 모두 예제용으로 생성한 데이터이며 오차 막대의 폭도 설명을 위한 값이다.
 - **애니메이션 2종**: 이동하는 파형과 2:3 위상 궤적이다. 프레임마다 컬럼 값을 갱신하고 PNG를 다시 출력한다. 축 범위는 고정하며 처음과 같은 위상이 되는 마지막 프레임은 제외한다.
-- **생성 순서**: 저장소 루트에서 위 `cargo run --locked` 명령을 실행하면 정지 PNG 3개와 애니메이션 프레임 96개를 만든다. 이어서 FFmpeg 명령으로 GIF 2개를 생성한다. 이전 프레임이 섞이지 않도록 빈 출력 디렉터리를 사용한다.
+- **생성 순서**: 저장소 루트에서 위 `cargo run --locked` 명령을 실행하면 정지 PNG 4개와 애니메이션 프레임 96개를 만든다. 이어서 FFmpeg 명령으로 GIF 2개를 생성한다. 이전 프레임이 섞이지 않도록 빈 출력 디렉터리를 사용한다.
 - **재생 설정**: GIF 하나당 48프레임을 초당 12프레임으로 약 4초마다 반복한다. GIF는 색을 팔레트로 줄이므로 픽셀 검사는 원본 PNG로 한다. GIF의 재생 속도는 렌더링 성능을 나타내지 않는다.
 - **검증 환경**: 일반 장비에서는 기본 GPU 선택을 따른다. 이 이미지는 실제 GPU가 없는 Linux에서 Vulkan llvmpipe로 검증했다. 예제 자체가 소프트웨어 GPU를 강제하지는 않는다. 실제 GPU의 성능이나 다른 OS에서 같은 픽셀값이 나오는지는 확인하지 않았다.
 
 갤러리를 갱신할 때는 출력 오류 여부, 불투명 배경과 유효한 색상 픽셀, 축 제목·눈금·범례·색상 막대 배치를 확인한다. GIF도 디코딩해 프레임 수, 프레임 간 변화, 반복 설정을 검사한다. 검증을 마친 PNG 3개와 GIF 2개만 `assets/`에 복사한다.
 
 일반 Rust 사용법은 [README](../../README.md#1-사용법), 브라우저 초기화·수명 관리·입출력은 [WASM.md](WASM.md), 전체 설정 형식은 [SCHEMA.md](../web/SCHEMA.md)를 참고한다.
+
+The horizontal PNG is an additional orientation example. For the column bindings, axis settings and live updates, see [Histogram orientation](HISTOGRAM.md).
+
+가로 히스토그램 PNG는 방향 설정을 보여주는 추가 예제다. 컬럼 연결과 축 설정, 기존 차트의 방향 변경은 [히스토그램 사용법](HISTOGRAM.md)을 참고한다.

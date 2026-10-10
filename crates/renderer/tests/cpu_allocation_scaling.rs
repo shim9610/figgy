@@ -12,7 +12,10 @@
 //! string per column, whatever its length).
 //!
 //! Run:
-//!     cargo test -p renderer --test cpu_allocation_scaling -- --nocapture
+//!     cargo test -p figgy-renderer --test cpu_allocation_scaling -- --nocapture
+
+#[path = "support/gpu.rs"]
+mod test_gpu;
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
@@ -95,10 +98,7 @@ fn measurement_guard() -> MutexGuard<'static, ()> {
 }
 
 fn no_gpu(context: &str) {
-    if std::env::var_os("FIGGY_REQUIRE_GPU_TESTS").is_some() {
-        panic!("{context}: no GPU adapter while FIGGY_REQUIRE_GPU_TESTS is set");
-    }
-    eprintln!("no GPU adapter; skipping {context}");
+    panic!("required GPU test: {context}: GPU initialization failed");
 }
 
 fn settle_gpu(renderer: &Renderer) {
@@ -123,17 +123,16 @@ fn least_squares(points: &[(f64, f64)]) -> (f64, f64) {
 }
 
 fn renderer_with_pool(pool_bytes: u64) -> Option<Renderer> {
-    use renderer::data_render::{create_instance, request_adapter, request_device};
     use std::sync::Arc;
-    let instance = create_instance();
-    let adapter = request_adapter(&instance).ok()?;
-    let (device, queue) = request_device(&adapter).ok()?;
-    Renderer::try_new(
-        RendererDevice::new(Arc::new(device), Arc::new(queue)),
-        wgpu::TextureFormat::Rgba8Unorm,
-        pool_bytes,
+    let (device, queue) = test_gpu::device();
+    Some(
+        Renderer::try_new(
+            RendererDevice::new(Arc::new(device), Arc::new(queue)),
+            wgpu::TextureFormat::Rgba8Unorm,
+            pool_bytes,
+        )
+        .expect("required GPU test: renderer initialization failed"),
     )
-    .ok()
 }
 
 #[test]

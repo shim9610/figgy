@@ -1,7 +1,7 @@
 //! Minimal precise-style scatter render probe — regression check for the
 //! "plain scatter renders a black panel" report.
 //!
-//! Run: `cargo run -p renderer --example precise_scatter_probe`
+//! Run: `cargo run -p figgy-renderer --example precise_scatter_probe`
 
 use std::sync::Arc;
 

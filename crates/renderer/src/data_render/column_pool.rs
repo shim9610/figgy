@@ -4407,7 +4407,8 @@ mod tests {
     )> {
         // Shared device across the test binary — see `data_render::shared_device`.
         let (device, queue) = crate::data_render::shared_device()?;
-        let pool = ColumnPool::new(GpuAllocCtx::unbudgeted(&device, &queue), cap).ok()?;
+        let pool = ColumnPool::new(GpuAllocCtx::unbudgeted(&device, &queue), cap)
+            .expect("required GPU test: pool initialization failed");
         Some((device, queue, pool))
     }
 

@@ -1,10 +1,12 @@
+#[path = "support/gpu.rs"]
+mod test_gpu;
+
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use renderer::data::COLUMN_VALUE_BYTES;
 use renderer::data_render::column_pool::ALIGN;
-use renderer::data_render::{create_instance, request_adapter, request_device};
 use renderer::line::LineStylePreset;
 use renderer::{
     Chart, Color, Column, ColumnHandle, ColumnPairWriter, ColumnSource, ColumnUploadStats,
@@ -71,9 +73,7 @@ fn shared_device() -> Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> {
     static DEVICE: OnceLock<Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)>> = OnceLock::new();
     DEVICE
         .get_or_init(|| {
-            let instance = create_instance();
-            let adapter = request_adapter(&instance).ok()?;
-            let (device, queue) = request_device(&adapter).ok()?;
+            let (device, queue) = test_gpu::device();
             Some((Arc::new(device), Arc::new(queue)))
         })
         .as_ref()
@@ -82,12 +82,14 @@ fn shared_device() -> Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> {
 
 fn try_renderer(capacity: u64) -> Option<Renderer> {
     let (device, queue) = shared_device()?;
-    Renderer::try_new(
-        RendererDevice::new(device, queue),
-        wgpu::TextureFormat::Rgba8Unorm,
-        capacity,
+    Some(
+        Renderer::try_new(
+            RendererDevice::new(device, queue),
+            wgpu::TextureFormat::Rgba8Unorm,
+            capacity,
+        )
+        .expect("required GPU test: renderer initialization failed"),
     )
-    .ok()
 }
 
 fn handle_tuple(handle: ColumnHandle) -> (u32, u64, u64, usize) {

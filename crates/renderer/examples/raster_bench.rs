@@ -2,7 +2,7 @@
 //! every `refresh_axis` (= every set_config / pan / zoom commit), per style.
 //! No GPU needed.
 //!
-//! Run: `cargo run --release -p renderer --example raster_bench`
+//! Run: `cargo run --release -p figgy-renderer --example raster_bench`
 
 use std::time::Instant;
 

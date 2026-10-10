@@ -1,6 +1,6 @@
 //! Headless sketch-mode demo — exports PNGs comparing precise vs sketch.
 //!
-//! Run: `cargo run -p renderer --example sketch_demo`
+//! Run: `cargo run -p figgy-renderer --example sketch_demo`
 //! Output: `target/sketch_demo/{precise,sketch,sketch_tour}.png`
 
 use std::sync::Arc;

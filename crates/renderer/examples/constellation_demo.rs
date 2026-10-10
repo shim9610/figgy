@@ -1,7 +1,7 @@
 //! Milkyway demo — line element as a star chain over a nebula ribbon.
 //! Exports parameter-sweep PNGs for visual review.
 //!
-//! Run: `cargo run -p renderer --example constellation_demo`
+//! Run: `cargo run -p figgy-renderer --example constellation_demo`
 //! Output: `target/constellation_demo/*.png`
 
 use std::sync::Arc;

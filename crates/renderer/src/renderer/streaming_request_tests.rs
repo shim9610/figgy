@@ -621,7 +621,13 @@ fn streamed_histogram_winner_and_mapped_bins_match_resident_full_chart() {
         .chain(std::iter::once(12.0))
         .collect();
     let values: Vec<f32> = (0..16)
-        .map(|i| if i == 5 { f32::NAN } else { 1.0 + ((i * 7) % 9) as f32 })
+        .map(|i| {
+            if i == 5 {
+                f32::NAN
+            } else {
+                1.0 + ((i * 7) % 9) as f32
+            }
+        })
         .collect();
     for orientation in [
         crate::data_config::BarOrientation::Vertical,
@@ -640,8 +646,12 @@ fn streamed_histogram_winner_and_mapped_bins_match_resident_full_chart() {
                 .unwrap();
                 r.configure_streaming_runtime(limits(2)).unwrap();
                 let (x, y, rx, ry) = match orientation {
-                    crate::data_config::BarOrientation::Vertical => ("edge", "value", "redge", "rvalue"),
-                    crate::data_config::BarOrientation::Horizontal => ("value", "edge", "rvalue", "redge"),
+                    crate::data_config::BarOrientation::Vertical => {
+                        ("edge", "value", "redge", "rvalue")
+                    }
+                    crate::data_config::BarOrientation::Horizontal => {
+                        ("value", "edge", "rvalue", "redge")
+                    }
                 };
                 let mut edge_source = source("edge", 1);
                 edge_source.len = edges.len() as u64;
@@ -693,7 +703,8 @@ fn streamed_histogram_winner_and_mapped_bins_match_resident_full_chart() {
                             gap_px: 0.0,
                             width_ratio: 1.0,
                             orientation: orientation.clone(),
-                            bar_style_overrides: mapped.then(|| vec![
+                            bar_style_overrides: mapped.then(|| {
+                                vec![
                                 crate::data_config::DataBarStyleOverride {
                                     index: 2,
                                     style: crate::data_config::DataBarBinStyleConfig {
@@ -708,7 +719,8 @@ fn streamed_histogram_winner_and_mapped_bins_match_resident_full_chart() {
                                         ..Default::default()
                                     },
                                 },
-                            ]),
+                                ]
+                            }),
                         },
                     };
                     series
@@ -1102,7 +1114,7 @@ fn automatic_stream_builds_chart_local_packed_rows_without_promoting_global_colu
     ];
     loop {
         match r.auto_stream_chart_step(chart_id, &bindings).unwrap() {
-            crate::AutoStreamingProgress::Submitted { .. } => {},
+            crate::AutoStreamingProgress::Submitted { .. } => {}
             crate::AutoStreamingProgress::Backpressure { .. } => wait_stream_slots(&mut r, 0),
             crate::AutoStreamingProgress::AllSubmitted { .. } => break,
             crate::AutoStreamingProgress::Complete { .. } => panic!("premature completion"),
@@ -3982,9 +3994,7 @@ fn resident_range_handoff_keeps_old_authority_until_complete_then_commits_once()
                 )
                 .unwrap();
             }
-            crate::AutoStreamingRangeRequest::Backpressure { .. } => {
-                wait_stream_slots(&mut r, 0)
-            }
+            crate::AutoStreamingRangeRequest::Backpressure { .. } => wait_stream_slots(&mut r, 0),
             crate::AutoStreamingRangeRequest::AllSubmitted { .. } => {
                 wait_stream_slots(&mut r, 0);
                 let frame = r
@@ -4164,7 +4174,7 @@ fn newer_resident_range_handoff_replaces_only_the_automatic_candidate() {
         )
         .unwrap()
     {
-        crate::AutoStreamingRequest::Started { .. } => {},
+        crate::AutoStreamingRequest::Started { .. } => {}
         request => panic!("first handoff did not start: {request:?}"),
     }
     match r
@@ -4177,7 +4187,7 @@ fn newer_resident_range_handoff_replaces_only_the_automatic_candidate() {
         )
         .unwrap()
     {
-        crate::AutoStreamingRequest::Started { .. } => {},
+        crate::AutoStreamingRequest::Started { .. } => {}
         request => panic!("replacement handoff did not start: {request:?}"),
     }
 
@@ -4732,12 +4742,27 @@ fn automatic_stream_collects_bounds_in_upload_pass_and_replays_after_axis_growth
     for _ in 0..128 {
         let step = r.auto_stream_chart_step(chart_id, &bindings).unwrap();
         wait_stream_slots(&mut r, 0);
-        r.prepare_registered(&[RegisteredChartDrawItem { chart_id, view: &view }]).unwrap();
-        if matches!(step, crate::AutoStreamingProgress::Complete { .. }) { break; }
+        r.prepare_registered(&[RegisteredChartDrawItem {
+            chart_id,
+            view: &view,
+        }])
+        .unwrap();
+        if matches!(step, crate::AutoStreamingProgress::Complete { .. }) {
+            break;
     }
-    assert_eq!(r.stream_status(chart_id).unwrap().status, crate::StreamingState::Complete);
-    assert_eq!(r.chart_config(chart_id).unwrap().bottom_x.min, manual.bottom_x.min);
-    assert_eq!(r.chart_config(chart_id).unwrap().bottom_x.max, manual.bottom_x.max);
+    }
+    assert_eq!(
+        r.stream_status(chart_id).unwrap().status,
+        crate::StreamingState::Complete
+    );
+    assert_eq!(
+        r.chart_config(chart_id).unwrap().bottom_x.min,
+        manual.bottom_x.min
+    );
+    assert_eq!(
+        r.chart_config(chart_id).unwrap().bottom_x.max,
+        manual.bottom_x.max
+    );
 }
 
 #[test]
@@ -5053,8 +5078,13 @@ fn progressive_fit_releases_resources_across_repeated_cancel_and_refit() {
             if matches!(step, crate::AutoStreamingProgress::Complete { .. }) { complete = true; break; }
         }
         assert!(complete);
-        assert!(r.gpu_memory_usage().creations_of(GpuResourceKind::StreamingUpload) - upload_creations <= 3,
-            "one work buffer and at most two staging buffers must survive all fit replays");
+        assert!(
+            r.gpu_memory_usage()
+                .creations_of(GpuResourceKind::StreamingUpload)
+                - upload_creations
+                <= 4,
+            "one work buffer, two staging buffers and one viewport tile mask must survive all fit replays"
+        );
         let fitted = r.chart_config(chart_id).unwrap();
         assert_eq!((fitted.bottom_x.min, fitted.bottom_x.max), (0.0, (rows - 1) as f64));
         assert_eq!((fitted.left_y.min, fitted.left_y.max), (0.0, (rows - 1) as f64 * 2.0));
@@ -5074,23 +5104,40 @@ fn progressive_fit_releases_resources_across_repeated_cancel_and_refit() {
 }
 
 #[test]
-fn fitted_stream_reads_two_forward_passes_and_swaps_exact_frame_without_flicker() {
-    let _font_registration = crate::text_render::FONT_REGISTRATION_TEST_LOCK.lock().unwrap();
+fn fitted_stream_two_passes_reveal_exact_chunks_before_completion() {
+    let _font_registration = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap();
     use std::cell::RefCell;
     struct Observed {
         column: crate::Column<f32>,
         offsets: RefCell<Vec<u64>>,
     }
     impl crate::ColumnSource for Observed {
-        fn len(&self) -> usize { self.column.data.len() }
-        fn min(&self) -> f64 { self.column.min as f64 }
-        fn max(&self) -> f64 { self.column.max as f64 }
-        fn write_f32_le_into(&self, _: &mut [u8]) { panic!("stream must request ranges"); }
-        fn write_f32_pair_le_into_with_stats(&self, _: crate::ColumnPairWriter<'_>) -> crate::ColumnUploadStats {
+        fn len(&self) -> usize {
+            self.column.data.len()
+        }
+        fn min(&self) -> f64 {
+            self.column.min as f64
+        }
+        fn max(&self) -> f64 {
+            self.column.max as f64
+        }
+        fn write_f32_le_into(&self, _: &mut [u8]) {
             panic!("stream must request ranges");
         }
-        fn write_f32_pair_range_into_with_stats(&self, start: u64, dst: crate::ColumnPairWriter<'_>)
-            -> std::result::Result<Option<crate::StreamBounds>, crate::ColumnRangeWriteError> {
+        fn write_f32_pair_le_into_with_stats(
+            &self,
+            _: crate::ColumnPairWriter<'_>,
+        ) -> crate::ColumnUploadStats {
+            panic!("stream must request ranges");
+        }
+        fn write_f32_pair_range_into_with_stats(
+            &self,
+            start: u64,
+            dst: crate::ColumnPairWriter<'_>,
+        ) -> std::result::Result<Option<crate::StreamBounds>, crate::ColumnRangeWriteError>
+        {
             self.offsets.borrow_mut().push(start);
             crate::ColumnSource::write_f32_pair_range_into_with_stats(&self.column, start, dst)
         }
@@ -5136,7 +5183,7 @@ fn fitted_stream_reads_two_forward_passes_and_swaps_exact_frame_without_flicker(
         let mut last_submitted = 0;
         let mut preview = None;
         let mut final_pixels = None;
-        let mut frozen_frames = 0;
+        let mut refined_frames = 0;
         for _ in 0..128 {
             let step = r.auto_stream_chart_step(chart, &bindings).unwrap();
             wait_stream_slots(&mut r, 0);
@@ -5150,14 +5197,40 @@ fn fitted_stream_reads_two_forward_passes_and_swaps_exact_frame_without_flicker(
             let frame = r.prepare_registered(&[RegisteredChartDrawItem { chart_id: chart, view: &view }]).unwrap();
             let pixels = paint_frame_pixels(&r, &frame, samples);
             let calls = x.offsets.borrow().len();
-            if calls == 8 { preview = Some(pixels.clone()); }
+            if samples == 1 && !histogram && calls >= 8 {
+                if let Some(directory) = std::env::var_os("FIGGY_REPLAY_CAPTURE_DIR") {
+                    let directory = std::path::PathBuf::from(directory);
+                    std::fs::create_dir_all(&directory).unwrap();
+                    let path = directory.join(format!("line-{calls:02}.png"));
+                    let mut png = png::Encoder::new(std::fs::File::create(path).unwrap(), 320, 240);
+                    png.set_color(png::ColorType::Rgba);
+                    png.set_depth(png::BitDepth::Eight);
+                    png.write_header()
+                        .unwrap()
+                        .write_image_data(&pixels)
+                        .unwrap();
+                }
+            }
+            if calls == 8 {
+                preview = Some(pixels.clone());
+            }
             if calls > 8 && calls < 16 {
-                assert_eq!(&pixels, preview.as_ref().unwrap(), "hidden exact replay exposed a partial/blank frame");
-                frozen_frames += 1;
+                if &pixels != preview.as_ref().unwrap() {
+                    refined_frames += 1;
+                }
+                assert!(
+                    pixels
+                        .chunks_exact(4)
+                        .any(|p| p[0] > 180 && p[1] < 100 && p[2] < 100),
+                    "second pass exposed an empty chart"
+                );
             }
             if matches!(step, crate::AutoStreamingProgress::Complete { .. }) { final_pixels = Some(pixels); break; }
         }
-        assert!(frozen_frames > 0);
+        assert!(
+            refined_frames >= 2,
+            "second pass froze the preview until completion: {refined_frames} visible updates"
+        );
         let expected_offsets: Vec<_> = (0..2).flat_map(|_| (0..128).step_by(16)).collect();
         assert_eq!(*x.offsets.borrow(), expected_offsets, "each prefix must be read once plus one final replay");
         assert_eq!(*y.offsets.borrow(), expected_offsets);
@@ -5232,13 +5305,18 @@ fn initial_fit_rescales_earlier_points_with_logarithmic_and_inverted_axes() {
             let px = (f64::from(area.x) + normalized(2.0, &config.bottom_x) * f64::from(area.width)).round() as i32;
             let py = (f64::from(area.y) + (1.0 - normalized(4.0, &config.left_y)) * f64::from(area.height)).round() as i32;
             let pixels = paint_frame_pixels(&r, &frame, 1);
-            let earlier_point_is_visible = (-3..=3).any(|dy| (-3..=3).any(|dx| {
+            let earlier_point_is_visible = (-3..=3).any(|dy| {
+                (-3..=3).any(|dx| {
                 let (x, y) = (px + dx, py + dy);
                 if !(0..320).contains(&x) || !(0..240).contains(&y) { return false; }
                 let p = &pixels[((y * 320 + x) * 4) as usize..][..4];
                 p[0] > 160 && p[1] < 120 && p[2] < 120
-            }));
-            assert!(earlier_point_is_visible, "earlier point lost during rescale: log={logarithmic}, inverted={inverted}, pixel=({px},{py})");
+                })
+            });
+            assert!(
+                earlier_point_is_visible,
+                "earlier point lost during rescale: log={logarithmic}, inverted={inverted}, pixel=({px},{py})"
+            );
             checked = true;
             break;
         }
@@ -5331,8 +5409,10 @@ fn packed_view_resize_reuses_rows_and_matches_fresh_stream() {
         fresh.request_auto_streaming_chart_with_display_scale(fresh_id, &fresh_view, config, scale, options).unwrap();
         loop {
             match fresh.auto_stream_chart_step(fresh_id, &bindings).unwrap() {
-                crate::AutoStreamingProgress::Submitted { .. } => {},
-                crate::AutoStreamingProgress::Backpressure { .. } => wait_stream_slots(&mut fresh, 0),
+                    crate::AutoStreamingProgress::Submitted { .. } => {}
+                    crate::AutoStreamingProgress::Backpressure { .. } => {
+                        wait_stream_slots(&mut fresh, 0)
+                    }
                 crate::AutoStreamingProgress::AllSubmitted { .. } => break,
                 _ => panic!("unexpected completion"),
             }
@@ -5375,7 +5455,12 @@ fn completed_stream_grid_toggle_recomposes_without_source_replay() {
         let options = crate::StreamingChartOptions { size: (320, 240), clear_color: Color::WHITE, max_primitives_per_chunk: 8 };
         run_auto_stream_for_view_test(&mut r, id, &config, options, &bindings);
         let job = r.active_stream_job(id).unwrap();
-        let green = |pixels: &[u8]| pixels.chunks_exact(4).filter(|p| p[1] > 180 && p[0] < 80 && p[2] < 80).count();
+        let green = |pixels: &[u8]| {
+            pixels
+                .chunks_exact(4)
+                .filter(|p| p[1] > 180 && p[0] < 80 && p[2] < 80)
+                .count()
+        };
         let display = wgpu::Texture::clone(r.chart_stream_display(job).unwrap());
         let before = read_draw_target(&r, &display);
         assert!(green(&before) > 100, "grid oracle is empty");
@@ -5393,4 +5478,142 @@ fn completed_stream_grid_toggle_recomposes_without_source_replay() {
         let after = read_draw_target(&r, &display);
         assert_eq!(green(&after), 0, "old grid remained in the data layer, cache={cache}");
     }
+}
+
+#[test]
+fn progressive_replay_styled_fit_finishes_exactly_and_cancel_retires_snapshots() {
+    let font = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap();
+    for style in [
+        DrawStyle::Sketch(Default::default()),
+        DrawStyle::Milkyway(Default::default()),
+        DrawStyle::Constellation(Default::default()),
+    ] {
+        for cancel in [false, true] {
+            let (mut r, id, _) = renderer(2);
+            let mut config = r.chart_config(id).unwrap().clone();
+            config.chart_area.0.width = 320;
+            config.chart_area.0.height = 240;
+            config.draw_style = style.clone();
+            let mut series = declaration("s", "x", "a");
+            let scatter = DataScatterStyleConfig {
+                point_color: Color::new(0.8, 0.1, 0.1, 0.5),
+                point_size: 10.0,
+                point_shape: ScatterShape::CircleFilled,
+                point_style_table: None,
+                point_style_index_column: None,
+                point_style_overrides: None,
+            };
+            if matches!(style, DrawStyle::Constellation(_)) {
+                let line = super::extract_line(&series.render_type).unwrap().clone();
+                series.render_type = DataRenderType::ScatterLine { line, scatter };
+            } else {
+                series.render_type = DataRenderType::Scatter { scatter };
+            }
+            r.set_chart_state(id, config.clone(), vec![series.clone()])
+                .unwrap();
+            let x = crate::Column {
+                data: vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+                min: 1.0,
+                max: 8.0,
+            };
+            let y = crate::Column {
+                data: vec![0.2, 0.8, 0.3, 0.7, 0.4, 0.6, 0.5, 1.2],
+                min: 0.2,
+                max: 1.2,
+            };
+            let bindings = [
+                crate::StreamSourceBinding {
+                    id: "x",
+                    revision: 1,
+                    source: crate::StreamColumnSource::Scalar(&x),
+                },
+                crate::StreamSourceBinding {
+                    id: "a",
+                    revision: 1,
+                    source: crate::StreamColumnSource::Scalar(&y),
+                },
+            ];
+            let mut view = r
+                .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
+                .unwrap();
+            let options = crate::StreamingChartOptions {
+                size: (320, 240),
+                clear_color: Color::WHITE,
+                max_primitives_per_chunk: 2,
+            };
+            r.request_stream_auto_fit(id, 0.05).unwrap();
+            r.request_auto_streaming_chart(id, &view, options).unwrap();
+            let mut previous = None;
+            let mut changed = 0;
+            let mut completed = false;
+            for _ in 0..256 {
+                let step = r.auto_stream_chart_step(id, &bindings).unwrap();
+                wait_stream_slots(&mut r, 0);
+                if matches!(step, crate::AutoStreamingProgress::Complete { .. }) {
+                    let c = r.chart_config(id).unwrap().clone();
+                    r.refresh_axis(&mut view, &Chart::new(c.clone()), c.chart_area.0)
+                        .unwrap();
+                }
+                r.prepare_registered(&[RegisteredChartDrawItem {
+                    chart_id: id,
+                    view: &view,
+                }])
+                .unwrap();
+                let job = r.active_stream_job(id).unwrap();
+                let target = wgpu::Texture::clone(r.chart_stream_display(job).unwrap());
+                let pixels = read_draw_target(&r, &target);
+                if r.progressive_replay_for_test(id) {
+                    if previous.as_ref().is_some_and(|old| old != &pixels) {
+                        changed += 1;
+                    }
+                    if cancel {
+                        r.cancel_streaming_chart(id).unwrap();
+                        r.end_gpu_frame();
+                        r.wait_idle();
+                        r.service_stream_requests();
+                        assert!(!r.progressive_replay_for_test(id));
+                        assert_eq!(
+                            r.gpu_memory_usage()
+                                .live_bytes_of(crate::gpu_memory::GpuResourceKind::StreamingUpload),
+                            0
+                        );
+                        completed = true;
+                        break;
+                    }
+                }
+                previous = Some(pixels);
+                if matches!(step, crate::AutoStreamingProgress::Complete { .. }) {
+                    completed = true;
+                    break;
+                }
+            }
+            assert!(
+                completed,
+                "fit did not terminate: {style:?},cancel={cancel}"
+            );
+            if cancel {
+                continue;
+            }
+            assert!(
+                changed > 0,
+                "styled replay never updated before completion: {style:?}"
+            );
+            let fitted = r.chart_config(id).unwrap().clone();
+            let (mut fresh, fid, _) = renderer(2);
+            fresh
+                .set_chart_state(fid, fitted.clone(), vec![series])
+                .unwrap();
+            run_auto_stream_for_view_test(&mut fresh, fid, &fitted, options, &bindings);
+            let job = fresh.active_stream_job(fid).unwrap();
+            let target = wgpu::Texture::clone(fresh.chart_stream_display(job).unwrap());
+            assert_eq!(
+                previous.unwrap(),
+                read_draw_target(&fresh, &target),
+                "styled final frame changed: {style:?}"
+            );
+        }
+    }
+    drop(font);
 }

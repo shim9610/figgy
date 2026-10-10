@@ -10,6 +10,9 @@
 //! `data_area()` + axis range the renderer uses, so the assertions name where a
 //! bar *should* be rather than where it happens to have landed.
 
+#[path = "support/gpu.rs"]
+mod test_gpu;
+
 use std::sync::{Arc, OnceLock};
 
 use renderer::config::AxisScale;
@@ -17,7 +20,6 @@ use renderer::data::Column;
 use renderer::data_config::{
     BarOrientation, DataBarBinStyleConfig, DataBarStyleConfig, DataBarStyleOverride,
 };
-use renderer::data_render::{create_instance, request_adapter, request_device};
 use renderer::layout::{ChartArea, Rect};
 use renderer::{
     Chart, Color, DataRenderType, DataSelectionsConfig, PickedDataRef, RasterImage, Renderer,
@@ -60,9 +62,7 @@ fn shared_device() -> Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> {
     static DEVICE: OnceLock<Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)>> = OnceLock::new();
     DEVICE
         .get_or_init(|| {
-            let instance = create_instance();
-            let adapter = request_adapter(&instance).ok()?;
-            let (device, queue) = request_device(&adapter).ok()?;
+            let (device, queue) = test_gpu::device();
             Some((Arc::new(device), Arc::new(queue)))
         })
         .as_ref()
@@ -734,6 +734,121 @@ fn horizontal_bars_run_along_x() {
     }
 }
 
+#[test]
+fn horizontal_log_count_axis_clips_zero_baseline_and_preserves_endpoints() {
+    let mut renderer = try_renderer().expect("horizontal regression requires a GPU adapter");
+    renderer
+        .add_column("edges", &col_f64(EDGES.to_vec()))
+        .unwrap();
+    let counts = [1.0, 100.0, 10.0, 1000.0];
+    renderer
+        .add_column("counts", &col_f64(counts.to_vec()))
+        .unwrap();
+    let mut chart = bare_chart();
+    chart.set_y_range(0.0, 4.0);
+    chart.config_mut().bottom_x.scale = AxisScale::Logarithmic;
+    chart.config_mut().bottom_x.min = 0.1;
+    chart.config_mut().bottom_x.max = 10_000.0;
+    // Isolate the bar at the left clip edge from inward Y tick marks.
+    chart.config_mut().left_y.tick = renderer::config::TickVisibility::None;
+    let series = [histogram(
+        "counts",
+        "edges",
+        BarOrientation::Horizontal,
+        2.0,
+        0.0,
+    )];
+    for scale in [1.0, 1.5, 2.0] {
+        let img = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
+        let da = chart.config().data_area().unwrap();
+        for (i, count) in counts.iter().enumerate() {
+            let y = (data_y_to_px(&chart, i as f64 + 0.5) * scale).round() as u32;
+            let right = (0..img.width)
+                .rev()
+                .find(|&x| is_fill(pixel(&img, x, y)))
+                .expect("every horizontal log bin must have fill");
+            let expected =
+                (da.x as f64 + (count.log10() + 1.0) / 5.0 * da.width as f64) * scale as f64;
+            assert!(
+                (right as f64 - expected).abs() <= 4.0,
+                "scale={scale}, bin={i}, right={right}, expected={expected}"
+            );
+            assert!(
+                is_fill(pixel(&img, ((da.x + 2) as f32 * scale) as u32, y)),
+                "zero baseline must extend to the clipped left edge: scale={scale} bin={i}, da={da:?}, y={y}, pixel={:?}",
+                pixel(&img, ((da.x + 2) as f32 * scale) as u32, y)
+            );
+        }
+    }
+}
+
+#[test]
+fn horizontal_signed_bars_keep_bin_override_and_selected_width() {
+    let mut renderer = try_renderer().expect("horizontal regression requires a GPU adapter");
+    renderer
+        .add_column("edges", &col_f64(vec![0.0, 1.0, 3.0, 4.0]))
+        .unwrap();
+    renderer
+        .add_column("counts", &col_f64(vec![-2.0, 4.0, 0.0]))
+        .unwrap();
+    let mut chart = bare_chart();
+    chart.set_x_range(-3.0, 5.0);
+    chart.set_y_range(0.0, 4.0);
+    let mut s = histogram("counts", "edges", BarOrientation::Horizontal, 0.0, 0.0);
+    let DataRenderType::Histogram { bar } = &mut s.render_type else {
+        unreachable!()
+    };
+    bar.width_ratio = 0.8;
+    bar.bar_style_overrides = Some(vec![DataBarStyleOverride {
+        index: 1,
+        style: DataBarBinStyleConfig {
+            fill_color: Some(Color::new(0.0, 1.0, 0.0, 1.0)),
+            width_ratio: Some(0.5),
+            ..Default::default()
+        },
+    }]);
+    let series = [s];
+    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let at = |x, y| {
+        pixel(
+            &img,
+            data_x_to_px(&chart, x).round() as u32,
+            data_y_to_px(&chart, y).round() as u32,
+        )
+    };
+    assert!(
+        is_fill(at(-1.0, 0.5)),
+        "negative value extends left from zero"
+    );
+    assert!(!is_fill(at(1.0, 0.5)), "negative bin must not extend right");
+    assert!(is_override_fill(at(2.0, 2.0)));
+    for y in [1.2, 2.8, 3.5] {
+        assert!(
+            !is_fill(at(2.0, y)) && !is_override_fill(at(2.0, y)),
+            "gap/zero bin at {y}"
+        );
+    }
+    chart.config_mut().picked_data = Some(DataSelectionsConfig {
+        visible: true,
+        refs: vec![PickedDataRef::HistogramBin {
+            source_id: None,
+            series_id: "hist".into(),
+            bin_index: 1,
+        }],
+        highlight_color: Color::new(1.0, 0.0, 1.0, 1.0),
+        outline_width_px: 3.0,
+        point_radius_extra_px: 0.0,
+        contour_width_extra_px: 0.0,
+    });
+    let selected = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let ys: Vec<u32> = (0..selected.height)
+        .filter(|&y| (0..selected.width).any(|x| is_selection(pixel(&selected, x, y))))
+        .collect();
+    assert!(!ys.is_empty(), "selected horizontal bin has an outline");
+    assert!((*ys.first().unwrap() as f32 - data_y_to_px(&chart, 2.5)).abs() <= 4.0);
+    assert!((*ys.last().unwrap() as f32 - data_y_to_px(&chart, 1.5)).abs() <= 4.0);
+}
+
 /// A declaration that outruns its data draws the bins it can and reports the
 /// truncation — it does not error, and it does not read past the data.
 #[test]
@@ -845,10 +960,7 @@ fn histogram_probe_renders_every_orientation_and_scale() {
         return;
     };
     let dir = {
-        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(std::path::Path::parent)
-            .expect("renderer crate is inside the workspace crates directory");
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let configured = std::env::var_os("FIGGY_LAYOUT_PROBE_DIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::PathBuf::from("target/arch-after"));

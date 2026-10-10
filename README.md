@@ -15,7 +15,29 @@ Code is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE). 
 
 <a id="public-release-candidate--renderer-0120--figgy-0100"></a>
 
-## Source release — renderer 0.12.6 / figgy 0.10.6
+## Source release — figgy-renderer 0.13.0 / figgy-model 0.8.0 / figgy 0.11.0
+
+This release adds bounded [pie/donut](crates/renderer/RADIAL.md),
+[categorical bar](crates/renderer/CATEGORICAL.md) and [boxplot](crates/renderer/BOXPLOT.md)
+renderers with editable models, procedural materials, picking and PNG output. Their
+small-data contracts are separate from the Cartesian streaming API. Horizontal
+histogram coverage, bounded stream-source caching and progressive replacement of the final
+initial-fit preview are covered by renderer regression tests.
+
+**Cargo package names change** to `figgy-renderer` and `figgy-model`; Rust imports remain
+`renderer` and `model`. Add the corresponding `package` key to existing Git dependencies
+when updating their revision. Use `features = ["serde"]` on the renderer to serialize
+its re-exported model types. Rust 1.99 and wgpu 30 are the supported baseline.
+These are source releases; neither crate has been published to crates.io. The WASM
+wrapper remains `figgy` and has `publish = false` for the Rust registry. The new bounded
+renderers have Rust APIs and are not exposed by the existing `FiggyChart` JS wrapper.
+
+[CI and verification](ci/README.md) runs native builds, renderer/pixel regressions and
+isolated package tests on standard Linux/Vulkan, Windows/DX12 and macOS/Metal runners.
+See [API contracts and migration](crates/renderer/API.md) for ownership and compatibility.
+Online Studio deployment is separate from this source release.
+
+### Previous patch — renderer 0.12.6 / figgy 0.10.6
 
 Streamed heatmaps now redraw when their colormap, z range, z scale or missing-value
 color changes. Editing the top/right axes no longer replays unchanged data, while
@@ -177,8 +199,8 @@ Growth-response charts in four styles. The Milkyway preview uses line-only serie
 This release pins **Rust 1.99.0** in
 [`rust-toolchain.toml`](rust-toolchain.toml), including the wasm32 target,
 rustfmt and clippy. With rustup installed, commands in this checkout select
-that toolchain automatically. This is the tested development toolchain, not
-a separately verified minimum supported Rust version. Use the committed
+that toolchain automatically. The package manifests declare Rust 1.99 as the
+support floor; earlier toolchains have not been validated. Use the committed
 `Cargo.lock` with `--locked` when building this checkout; downstream Git
 consumers resolve dependencies with their own lockfile.
 
@@ -187,11 +209,26 @@ cargo check --locked --workspace --all-targets --all-features
 npx wasm-pack@0.15.0 build crates/web --release --target web --locked
 ```
 
+### Package names and compatibility
+
+Development packages are now named `figgy-renderer` and `figgy-model`; Rust imports
+remain `renderer::...` and `model::...`. When moving a Git dependency to a revision
+with this rename, add the corresponding `package` key while retaining its existing
+dependency alias. Older public revisions still use their original package names.
+These packages have not yet been published to crates.io.
+
+Use the renderer's optional `serde` feature for serialization of its re-exported
+model types; no direct model dependency is needed for that. Rust 1.99 is the
+explicit support floor and direct host GPU sharing requires wgpu 30. The WASM
+wrapper remains a separate consumer and is excluded from Rust registry publishing.
+See [Rust API contracts](crates/renderer/API.md) for ownership, frame lifetimes,
+render targets and compatibility policy.
+
 ### Adding the dependency
 
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # or public Git source — version 0.12.6, not on crates.io.
+renderer = { package = "figgy-renderer", path = "crates/renderer" }   # or public Git source — version 0.13.0, not on crates.io.
 wgpu     = "30"
 ```
 
@@ -397,8 +434,8 @@ without exposing wgpu or permitting a `dst.copy_from_slice(...)` shortcut.
 ### Native examples — sine / RC / cross-section
 
 ```bash
-cargo run -p renderer --example winit_simple
-cargo run -p renderer --example egui_embed --features egui_demo
+cargo run -p figgy-renderer --example winit_simple
+cargo run -p figgy-renderer --example egui_embed --features egui_demo
 ```
 
 Each example shows:
@@ -427,7 +464,7 @@ python -m http.server 8142 --bind 127.0.0.1
 ### Live SSoT lab — the split API at pool scale
 
 ```bash
-cargo run --release -p renderer --example ssot_lab --features egui_demo
+cargo run --release -p figgy-renderer --example ssot_lab --features egui_demo
 ```
 
 A 2×2 grid, one draw style per panel (Precise dashed / Sketch / Milkyway /
@@ -516,6 +553,36 @@ The retained [iced integration source](crates/renderer/unsupported/iced_embed_wg
 documents the intended `prepare` / `paint_prepared` ownership pattern, but its
 build target is disabled while iced 0.14 remains on wgpu 27. wgpu device,
 queue, and render-pass types cannot be shared across major versions.
+
+### Box plots
+
+`BoxPlotRenderer` draws precomputed quartiles, medians, whiskers, means and outliers
+with matte/satin surfaces, individual styles, grouped layouts and either direction.
+Notches use explicit median confidence intervals. See the [box plot guide](crates/renderer/BOXPLOT.md)
+or run `cargo run -p figgy-renderer --example boxplot_editor --features egui_demo`.
+This bounded resident API is not yet connected to web Studio.
+
+### Categorical bars
+
+`CategoricalRenderer` draws grouped, stacked and 100% stacked bars in either direction.
+The bounded model owns category IDs, series and optional values separately from `ColumnSource`.
+Per-bar colors, materials, rounding, outlines, label formats and selection are editable in the SSOT.
+See the [categorical API guide](crates/renderer/CATEGORICAL.md) or run
+`cargo run -p figgy-renderer --example categorical_editor --features egui_demo`.
+This API is not yet connected to web Studio.
+
+### Radial charts
+
+`RadialRenderer` draws resident pie, donut, and pie-of-pie charts, with procedural
+matte, ceramic, satin/brushed-metal, toon, and other surfaces. Rounded sector corners,
+outlines, hover/selection, per-slice colors and styles, and label content live in the
+SSOT model. It shares the host wgpu device and does not use column streams.
+Try the [native editor](crates/renderer/examples/radial_editor.rs) with
+`cargo run -p figgy-renderer --example radial_editor --features egui_demo`. See the [radial chart API and example](crates/renderer/RADIAL.md).
+This API is not yet wired into the web Studio UI.
+The guide covers [option defaults and ranges](crates/renderer/RADIAL.md#스타일-옵션-기본값과-범위),
+[per-slice editing](crates/renderer/RADIAL.md#ssot-편집과-선택), and
+[host update order](crates/renderer/RADIAL.md#호스트의-갱신-순서), including frame ownership and export.
 
 ### PNG export (memory only — saving is the caller's job)
 
@@ -768,6 +835,9 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::paint` branches 
 | `Contour { matrix, contour }` | contour | Contour lines only |
 | `HeatmapContour { matrix, fill, contour }` | fill + contour | Filled field with lines over it |
 
+For a runnable vertical/horizontal example and atomic direction changes, see
+[Histogram orientation](crates/renderer/HISTOGRAM.md).
+
 Histogram width is resolved in two stages: `width_ratio` keeps a centred
 `0..=1` fraction of the bin, then `gap_px` removes a fixed screen-space amount.
 The gap is capped to leave at least one pixel for wider positive-width bars.
@@ -931,18 +1001,32 @@ streamed chart can coexist on one page.
 Streaming presents completed portions while the next ranges are supplied. An
 unchanged completed revision reuses its visible result; decoration-only edits
 keep the data cursor and accumulation. A view or physical-resolution change
-replays the same source revision at the new transform. `job.cancel()` stops new
-work and releases job-owned resources after submitted GPU work settles. A
-narrower view may redraw from the packed GPU cache without rereading the source;
-other view changes replay it. GPU point/line picking uses the packed rows when
+redraws at the new transform. Eligible GPU caches supply retained original rows;
+missing ranges are requested from the source provider. `job.cancel()` stops new
+work and releases job-owned resources after submitted GPU work settles. GPU point/line picking uses the packed rows when
 available and returns original row indices without source replay. Other streamed
 charts do not support immediate picking. Scaled PNG export uses replayable
 original ranges in a separate GPU path, so the source must remain available.
+Dashed lines, histograms, heatmaps and supported styled streams can also reuse
+an original-source GPU cache. This cache preserves ordering and adjacency, and
+is admitted only when all referenced columns fit the per-chart working-set cap,
+the device buffer limit and the total GPU budget. It copies uploaded pairs on
+the GPU, without retaining CPU payloads. Resize, DPR, axis, grid and heatmap
+colour-mapping edits recompute geometry and pixels from those pairs. Source
+revision changes invalidate the cache; missing ranges and oversized sources use
+ordinary streaming. This cache does not add immediate picking or change the
+packed-view `view_residency` status. Export still requires the source provider.
+
 Streaming does not enable auto-fit by itself. For a new chart with unknown
 bounds, request fitting before the first chunk: each partial display uses the
 bounds processed so far. Earlier pixels are rescaled while new chunks advance;
-a final exact replay replaces the preview only when ready. Preview widths and
-sharpness may change temporarily. Completion commits the fitted range and tick
+the final exact replay progressively replaces updated screen pixels while
+retaining the preview elsewhere. Each pixel uses one image, without blending
+both data images; decorations are drawn once. Unfinished overlapping geometry
+in a replaced tile can change temporarily. On completion only the exact image
+remains. If viewport-sized scratch resources do not fit the GPU budget, the
+preview remains until the final swap. Preview widths and sharpness may change
+temporarily. Completion commits the fitted range and tick
 settings. Ordinary redraws then preserve zoomed or restored ranges. Request auto-fit again to show
 all current data; restore saved axis ranges to return to a historical view.
 See [initial fitting and call order](crates/renderer/WASM.md#streaming-fit)
@@ -1233,7 +1317,26 @@ figgy는 Rust로 작성한 과학·공학용 차트 라이브러리다. **축·�
 
 <a id="공개-후보--renderer-0120--figgy-0100"></a>
 
-## 소스 릴리스 — renderer 0.12.6 / figgy 0.10.6
+## 소스 릴리스 — figgy-renderer 0.13.0 / figgy-model 0.8.0 / figgy 0.11.0
+
+[파이·도넛](crates/renderer/RADIAL.md), [범주형 막대](crates/renderer/CATEGORICAL.md),
+[박스플롯](crates/renderer/BOXPLOT.md) 렌더러를 추가했다. 개별 항목 편집, 셰이더 질감,
+선택과 PNG 출력을 지원하며, 대용량 스트리밍과는 별도의 소량 데이터 계약을 사용한다.
+가로 히스토그램, 스트림 원본 구간의 제한된 캐시, 초기 fit 마지막 단계의 순차 화면 갱신도
+렌더러 회귀 테스트로 검사한다.
+
+**Cargo 패키지명은 `figgy-renderer`·`figgy-model`로 바뀐다.** Rust 코드의 `renderer`·`model`
+이름은 유지한다. 기존 Git 의존성을 갱신할 때는 선택한 리비전과 함께 `package` 키를 추가한다.
+직렬화가 필요하면 렌더러에 `features = ["serde"]`를 지정하면 된다. 지원 기준은 Rust 1.99와
+wgpu 30이다. 아직 crates.io에 게시하지 않았으며, WASM 래퍼 `figgy`는 Rust registry 게시
+대상에서 제외했다. 새 소량 데이터 렌더러는 Rust API로 제공하며, 기존 `FiggyChart` JS 래퍼에는
+노출하지 않는다.
+
+[CI 안내](ci/README.md)에 세 OS의 빌드·렌더링·픽셀·독립 패키지 검사와 재실행 방법을 정리했다.
+[API 계약](crates/renderer/API.md)에서 소유권과 마이그레이션 방법을 확인할 수 있다.
+온라인 스튜디오 배포는 이번 소스 공개와 별개다.
+
+### 이전 패치 — renderer 0.12.6 / figgy 0.10.6
 
 스트리밍 히트맵의 색상표·Z 범위·Z 스케일·결측값 색을 바꾸면 데이터 화면도 갱신한다. 위쪽·오른쪽 축만 바꿀 때는 데이터를 다시 읽지 않으며, 명시적으로 오토핏을 호출하면 모든 축을 정상 복원한다. 네이티브 회귀 테스트는 이미 그린 차트의 SSOT 설정을 하나씩 바꿔 첫 갱신 화면을 새 차트와 비교하고, 원본 요청·작업 ID·GPU 자원 재사용도 검사한다. 공개 API 형식과 Config JSON 스키마는 그대로다.
 
@@ -1354,7 +1457,7 @@ renderer 0.10.0 / figgy 0.9.0 릴리스에 포함된 기능은 다음과 같다.
 
 ### 툴체인과 빌드
 
-[`rust-toolchain.toml`](rust-toolchain.toml)에 개발 환경을 **Rust 1.99.0**으로 고정하고 wasm32 빌드 대상, rustfmt, clippy를 지정했다. rustup이 설치돼 있으면 저장소 안에서 명령을 실행할 때 자동으로 적용된다. 이 버전으로 개발과 검증을 진행했으며, 최소 지원 Rust 버전은 별도로 확인하지 않았다.
+[`rust-toolchain.toml`](rust-toolchain.toml)에 개발 환경을 **Rust 1.99.0**으로 고정하고 wasm32 빌드 대상, rustfmt, clippy를 지정했다. rustup이 설치돼 있으면 저장소 안에서 명령을 실행할 때 자동으로 적용된다. 패키지 manifest에도 지원 하한을 Rust 1.99로 명시했다. 그보다 낮은 버전은 검증하지 않았다.
 이 저장소를 빌드할 때는 `--locked`를 사용해 커밋된 `Cargo.lock`을 따른다. figgy를 Git 의존성으로 사용하는 프로젝트는 해당 프로젝트의 잠금 파일로 의존성을 결정한다.
 
 ```bash
@@ -1364,9 +1467,19 @@ npx wasm-pack@0.15.0 build crates/web --release --target web --locked
 
 ### 의존성 추가
 
+Cargo 패키지 이름은 `figgy-renderer`·`figgy-model`로 정리했다. Rust의
+`renderer::…`·`model::…` 경로는 유지한다. 이름을 바꾼 Git 리비전으로 갱신할 때는
+Cargo 의존성에 `package`를 추가한다. 이전 공개 리비전은 기존 패키지명을 사용한다.
+두 패키지는 아직 crates.io에 게시하지 않았다.
+
+렌더러의 `serde` 기능을 켜면 재노출된 모델 타입을 직렬화할 수 있다. 이를 위해 모델을
+직접 의존할 필요는 없다. 지원 Rust 하한은 1.99이며 GPU를 직접 공유하려면 호스트도
+wgpu 30을 사용해야 한다. WASM 래퍼는 별도 소비 예제로 유지하고 Rust registry 게시에서는
+제외한다. 소유권·프레임 수명·출력 타깃·호환성은 [API 계약](crates/renderer/API.md)에 정리했다.
+
 ```toml
 [dependencies]
-renderer = { path = "crates/renderer" }   # 또는 공개 Git 소스 — 버전 0.12.6, crates.io 미배포.
+renderer = { package = "figgy-renderer", path = "crates/renderer" }   # 또는 공개 Git 소스 — 버전 0.13.0, crates.io 미배포.
 wgpu     = "30"
 ```
 
@@ -1541,8 +1654,8 @@ renderer.add_column("temperature", &my_series)?;   // ↘ mapped staging memory 
 ### 네이티브 예제 — 사인 곡선, RC 회로, 단면 그래프
 
 ```bash
-cargo run -p renderer --example winit_simple
-cargo run -p renderer --example egui_embed --features egui_demo
+cargo run -p figgy-renderer --example winit_simple
+cargo run -p figgy-renderer --example egui_embed --features egui_demo
 ```
 
 각 예제에서 다음 기능을 확인할 수 있다.
@@ -1570,7 +1683,7 @@ python -m http.server 8142 --bind 127.0.0.1
 ### 실시간 설정 편집 예제 — 대용량 데이터와 분리된 렌더링 API
 
 ```bash
-cargo run --release -p renderer --example ssot_lab --features egui_demo
+cargo run --release -p figgy-renderer --example ssot_lab --features egui_demo
 ```
 
 2×2 패널에 정밀 점선·스케치·은하수·별자리 스타일을 하나씩 표시한다. 네 시리즈는 GPU 풀의 `x` 컬럼 하나를 공유한다. 사이드바에서 X축이 연동된 패널 쌍의 이동 방향, 표시 범위의 너비, 시리즈당 데이터 수를 바꿀 수 있다. 최대 데이터 수는 시리즈당 300만 개, 총 1200만 개이며 컬럼은 5개다.
@@ -1624,6 +1737,33 @@ winit 루프나 WASM 래퍼처럼 프레임 동안 렌더러를 단독으로 사
 [보관 중인 iced 통합 예제](crates/renderer/unsupported/iced_embed_wgpu27.rs)에서 `prepare` / `paint_prepared`의 소유권 패턴을 확인할 수 있다. 다만 iced 0.14는 wgpu 27을 사용하므로 현재 빌드 대상에서는 제외한다. 서로 다른 wgpu 주 버전의 장치·큐·렌더 패스 타입은 공유할 수 없다.
 
 <a id="png-export-메모리-only--저장은-caller"></a>
+
+### 박스플롯 — 개발 중 API
+
+`BoxPlotRenderer`는 미리 집계한 사분위수·중앙값·수염·평균·이상치를 그린다.
+가로·세로 및 그룹 배치, 무광·금속 질감, 개별 색·스타일과 선택을 지원한다.
+노치는 입력받은 중앙값 신뢰구간으로 그린다. [사용법](crates/renderer/BOXPLOT.md)과
+`boxplot_editor` 예제를 참고한다. 소규모 상주형 API이며 웹 Studio UI에는 아직 연결하지 않았다.
+
+### 범주형 막대 — 개발 중 API
+
+`CategoricalRenderer`는 가로·세로 묶음, 누적, 100% 누적 막대를 그린다. 소규모 범주·시리즈·값을
+직접 담는 별도 계약이며 `ColumnSource`를 사용하지 않는다. 막대별 색·재질·모서리·외곽선·표기와
+선택 상태는 SSOT에서 편집한다. [API 사용법](crates/renderer/CATEGORICAL.md)을 참고하거나
+`cargo run -p figgy-renderer --example categorical_editor --features egui_demo`로 편집기를 실행한다.
+웹 Studio 연결은 별도 작업이다.
+
+### 원형 차트 — 개발 중 API
+
+`RadialRenderer`는 파이·도넛·‘기타’ 분할 차트를 그린다. 무광·세라믹·새틴 금속·툰 등의
+재질, 둥근 모서리, 외곽선, 호버·선택을 지원한다. 조각별 색·스타일·표기 내용은 SSOT 모델에서
+편집한다. 소수의 범주 데이터를 한 번에 받아 그리며 호스트의 wgpu 장치를 공유한다.
+[네이티브 편집기](crates/renderer/examples/radial_editor.rs)는
+`cargo run -p figgy-renderer --example radial_editor --features egui_demo`로 실행한다. [사용법과 예제](crates/renderer/RADIAL.md)를 참고한다.
+웹 Studio의 차트 생성 메뉴에는 아직 연결하지 않았다.
+문서에 [옵션 기본값과 범위](crates/renderer/RADIAL.md#스타일-옵션-기본값과-범위),
+[조각별 편집과 상속](crates/renderer/RADIAL.md#ssot-편집과-선택),
+[호스트 갱신 순서](crates/renderer/RADIAL.md#호스트의-갱신-순서), 프레임 수명과 내보내기를 정리했다.
 
 ### PNG 내보내기 — 바이트 반환과 파일 저장
 
@@ -1821,6 +1961,8 @@ pub struct Config {
 | `Contour { matrix, contour }` | contour | 선만 |
 | `HeatmapContour { matrix, fill, contour }` | fill + contour | 면 + 그 위의 선 |
 
+세로·가로 설정과 기존 차트의 방향 변경 예제는 [히스토그램 사용법](crates/renderer/HISTOGRAM.md)에 있다.
+
 히스토그램 막대는 구간 가운데에 배치하며, `width_ratio`로 구간 대비 너비를 `0..=1` 범위에서 정한다. 여기에 `gap_px`만큼의 픽셀 간격을 추가로 뺀다. 너비가 1픽셀보다 큰 막대는 최소 1픽셀이 남도록 간격을 제한한다.
 
 구간 자체가 화면에서 1픽셀보다 좁으면 GPU가 픽셀 열별로 겹치는 구간 중 최댓값을 골라 0까지 채운다. 가로 히스토그램은 픽셀 행을 기준으로 계산하며 표시 범위를 벗어난 부분은 자른다. 선택된 구간의 외곽선 두께와 불투명도가 모두 양수이면 외곽선 색을, 그렇지 않으면 채움색을 쓴다. 최댓값이 같으면 앞선 구간을 선택한다. 이 경로에서는 `gap_px`나 양수인 `width_ratio`로 틈을 만들지 않는다. 원본 컬럼은 유지하고 `width_ratio = 0`인 구간은 제외한다.
@@ -1899,11 +2041,13 @@ pub struct Config {
 
 자동 스트리밍은 연결된 컬럼 전체를 `ColumnPool`에 넣지 않는다. 원본을 제한된 청크로 GPU에 올려 화면 밖 렌더 타깃에 누적한다. 지원되는 차트에서는 예산이 허용할 때 현재 화면에 필요한 원본 행만 GPU 캐시에 남긴다. 두 경로 모두 원본 도형을 그리며 LOD·샘플링·데시메이션을 적용하지 않는다. 한 페이지에서 상주 차트와 스트리밍 차트를 함께 사용할 수 있다.
 
-스트리밍은 완료된 부분부터 화면에 표시한다. 입력이 바뀌지 않은 완료 결과는 재사용하고, 제목·축 이름만 바뀌면 데이터 처리 위치와 누적 이미지를 유지한다. 표시 범위를 좁힐 때는 패킹 캐시만으로 다시 그릴 수 있다. 캐시 범위 밖을 보거나 물리 해상도가 바뀌면 같은 리비전의 원본을 다시 공급해야 한다.
+스트리밍은 완료된 부분부터 화면에 표시한다. 입력이 바뀌지 않은 완료 결과는 재사용하고, 제목·축 이름만 바뀌면 데이터 처리 위치와 누적 이미지를 유지한다. 표시 범위나 물리 해상도가 바뀌면 새 좌표 변환으로 다시 그린다. 필요한 원본이 GPU 캐시에 있으면 재사용하고, 빠진 구간만 호스트에 다시 요청한다.
 
 `job.cancel()`은 새 작업을 멈추고 이미 제출된 GPU 작업이 끝난 뒤 자원을 정리한다. 완료된 패킹 캐시에서는 GPU의 점·선을 선택하고 원본 행 인덱스를 반환할 수 있다. 그 밖의 비상주 스트림은 즉시 피킹을 지원하지 않는다. 배율을 지정한 PNG 출력은 화면 이미지를 늘리는 대신 원본을 다시 읽어 그린다. 따라서 호스트는 다시 그리기와 출력을 위해 원본을 유지해야 한다.
 
-스트리밍 자체는 자동 맞춤을 켜지 않는다. 범위를 모르는 새 차트는 첫 청크 전에 맞춤을 요청한다. 앞서 그린 데이터 이미지를 새 범위로 리스케일하고 새 청크를 이어 그린다. 중간 화면의 선 두께·선명도는 잠시 달라질 수 있다. 마지막에 원본으로 한 번 정확히 다시 그려 완성된 화면으로 교체하고, 축 범위와 눈금 설정을 함께 확정한다. 이후 일반 재그리기는 확대·이동한 범위나 저장한 범위를 유지한다. 전체 데이터를 다시 보려면 자동 맞춤을 재요청하고, 과거의 특정 범위로 돌아가려면 저장한 축 범위를 복원한다. 웹 래퍼·저수준 WASM·네이티브의 호출 순서는 [범위 맞춤 사용법](crates/renderer/WASM.md#streaming-fit)을 참고한다.
+스트리밍 자체는 자동 맞춤을 켜지 않는다. 범위를 모르는 새 차트는 첫 청크 전에 맞춤을 요청한다. 앞서 그린 데이터 이미지를 새 범위로 리스케일하고 새 청크를 이어 그린다. 중간 화면의 선 두께·선명도는 잠시 달라질 수 있다. 2순회에서는 원본을 한 번 다시 읽으면서 새 청크가 반영된 화면 구역부터 정밀 결과로 교체한다. 나머지 구역은 미리보기를 유지하고, 두 데이터 이미지를 겹쳐 합성하지 않는다. 같은 구역에 겹친 미처리 도형의 중간 모습은 잠시 달라질 수 있지만, 완료 시에는 정밀 결과만 사용한다. 화면 크기에 비례하는 임시 자원이 GPU 예산에 들어오지 않으면 기존처럼 완료 후 한꺼번에 교체한다. 축 범위와 눈금 설정은 완료 때 함께 확정한다. 이후 일반 재그리기는 확대·이동한 범위나 저장한 범위를 유지한다. 전체 데이터를 다시 보려면 자동 맞춤을 재요청하고, 과거의 특정 범위로 돌아가려면 저장한 축 범위를 복원한다. 웹 래퍼·저수준 WASM·네이티브의 호출 순서는 [범위 맞춤 사용법](crates/renderer/WASM.md#streaming-fit)을 참고한다.
+
+점선·히스토그램·히트맵과 지원되는 스타일 스트림은 원본 순서와 인접 관계를 보존하는 GPU 캐시도 사용할 수 있다. 참조 컬럼 전체의 hi/lo 인코딩 크기가 차트별 상주 한도·장치의 단일 버퍼 한도·전체 GPU 예산에 들어올 때만 사용한다. 청크를 올리면서 GPU 안에서 복사하며 CPU 데이터 복사본은 남기지 않는다. 크기·DPR·축·그리드·히트맵 색상 매핑이 바뀌면 새 설정으로 다시 계산한다. 데이터 리비전이 바뀌면 이전 캐시를 사용하지 않고, 빠진 구간이나 한도보다 큰 원본은 일반 스트리밍으로 처리한다. 이 캐시는 즉시 피킹을 추가하지 않으며 `view_residency`는 기존의 패킹된 뷰 상태를 나타낸다. 출력과 캐시 미적중에 대비해 원본 공급자는 계속 보관해야 한다.
 
 지원 범위와 웹 API는 [WASM 가이드](crates/renderer/WASM.md#exact-streaming)를 참고한다. 원본을 빠짐없이 처리하더라도 GPU 백엔드나 렌더 패스 경계에 따라 안티앨리어싱 픽셀값은 달라질 수 있다.
 

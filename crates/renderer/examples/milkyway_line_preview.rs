@@ -1,5 +1,5 @@
 //! README Milkyway preview: line-generated stars and nebula only.
-//! cargo run --locked -p renderer --example milkyway_line_preview -- target/milkyway-preview.png
+//! cargo run --locked -p figgy-renderer --example milkyway_line_preview -- target/milkyway-preview.png
 //! Do not replace Line with ScatterLine/LineScatterErrorbar: those add planets/jets.
 use renderer::config::{DrawStyle, LegendCorner, LegendEntryKind, MilkywayOptions};
 use renderer::data::Column;

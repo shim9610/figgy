@@ -1,6 +1,6 @@
 //! Render the README gallery through the native, headless figgy export API.
 //!
-//! cargo run --locked -p renderer --example readme_gallery -- target/readme-gallery
+//! cargo run --locked -p figgy-renderer --example readme_gallery -- target/readme-gallery
 //! Optional second argument: animation frame count (default 48, at 12 fps).
 //! All datasets are synthetic. A missing GPU adapter is an error, not a skip.
 
@@ -196,7 +196,7 @@ fn histogram(r: &mut Renderer, out: &Path) -> Result {
         .collect();
     r.add_column("bin-edges", &column(edges))?;
     r.add_column("bin-counts", &column(counts))?;
-    let specs = [series(
+    let mut specs = [series(
         "distribution",
         "bin-edges",
         "bin-counts",
@@ -221,7 +221,30 @@ fn histogram(r: &mut Renderer, out: &Path) -> Result {
     );
     c.set_x_range(-4.2, 4.2);
     c.set_y_range(0.0, 120.0);
-    save(r, &c, &specs, &out.join("gallery-histogram.png"))
+    save(r, &c, &specs, &out.join("gallery-histogram.png"))?;
+
+    // Orientation defines the column roles; reuse the uploaded columns and
+    // exchange their bindings together with the axis ranges and titles.
+    let s = &mut specs[0];
+    std::mem::swap(&mut s.x_column, &mut s.y_column);
+    let DataRenderType::Histogram { bar } = &mut s.render_type else {
+        unreachable!()
+    };
+    bar.orientation = BarOrientation::Horizontal;
+    let mut horizontal = chart(
+        "A two-population distribution",
+        "Count",
+        "Measured value",
+        (960, 600),
+    );
+    horizontal.set_x_range(0.0, 120.0);
+    horizontal.set_y_range(-4.2, 4.2);
+    save(
+        r,
+        &horizontal,
+        &specs,
+        &out.join("gallery-histogram-horizontal.png"),
+    )
 }
 
 fn contours(r: &mut Renderer, out: &Path) -> Result {

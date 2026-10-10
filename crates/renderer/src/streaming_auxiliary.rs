@@ -153,9 +153,12 @@ impl Renderer {
         &self, chart: ChartId, source_id: Option<&str>, series_id: &str,
         current: usize, forward: bool,
     ) -> Option<usize> {
-        let draw = self.stream_runtime.as_ref()?.draws.iter().find(|draw| {
-            draw.job.chart == chart && draw.auxiliary.is_none()
-        })?;
+        let draw = self
+            .stream_runtime
+            .as_ref()?
+            .draws
+            .iter()
+            .find(|draw| draw.job.chart == chart && draw.auxiliary.is_none())?;
         let cache = draw.view_cache.as_ref()?;
         let snapshot = draw.auto_snapshot()?;
         let series = snapshot.series.iter().position(|series| {
@@ -174,10 +177,13 @@ impl Renderer {
         distance: f32,
     ) -> Result<Option<crate::PickedPoint>> {
         self.service_stream_requests();
-        let Some(draw) = self.stream_runtime.as_ref()
-            .and_then(|runtime| runtime.draws.iter().find(|draw| {
+        let Some(draw) = self.stream_runtime.as_ref().and_then(|runtime| {
+            runtime.draws.iter().find(|draw| {
                 draw.job.chart == chart && draw.auxiliary.is_none() && draw.auto_terminal(runtime)
-            })) else { return Ok(None); };
+            })
+        }) else {
+            return Ok(None);
+        };
         let job = draw.job;
         let Some(cache) = draw.view_cache.as_ref().cloned() else { return Ok(None); };
         self.publish_auto_stream_completion(job).map_err(StreamRequestError::into_figgy)?;
@@ -225,18 +231,18 @@ impl Renderer {
         // Submit a bounded set of command buffers together instead.
         const PAGES_PER_SUBMISSION: usize = 8;
         let mut charges = Vec::new();
-        charges.try_reserve_exact(PAGES_PER_SUBMISSION).map_err(|error| {
-            FiggyError::StateAllocationFailed {
+        charges
+            .try_reserve_exact(PAGES_PER_SUBMISSION)
+            .map_err(|error| FiggyError::StateAllocationFailed {
                 resource: "packed-view pick submission",
                 reason: error.to_string(),
-            }
         })?;
         let mut command_buffers = Vec::new();
-        command_buffers.try_reserve_exact(PAGES_PER_SUBMISSION).map_err(|error| {
-            FiggyError::StateAllocationFailed {
+        command_buffers
+            .try_reserve_exact(PAGES_PER_SUBMISSION)
+            .map_err(|error| FiggyError::StateAllocationFailed {
                 resource: "packed-view pick command buffers",
                 reason: error.to_string(),
-            }
         })?;
         let encoded = pick_pages.iter().enumerate().try_for_each(|(order, &page_index)| -> Result<()> {
             let packed = &cache.chunks[page_index];
@@ -249,22 +255,29 @@ impl Renderer {
             match packed.phase {
                 StreamDrawPhase::Scatter => descriptor.line_width_px = None,
                 StreamDrawPhase::Line => descriptor.scatter = None,
-                _ => return Err(FiggyError::StaleStateToken { reason: "unsupported packed view pick phase".into() }),
+                        _ => {
+                            return Err(FiggyError::StaleStateToken {
+                                reason: "unsupported packed view pick phase".into(),
+                            });
+                        }
             }
             let phase_columns = stream_phase_columns(series, packed.phase);
             let handle = |name: &str| -> Result<data_render::ColumnHandle> {
                 let index = phase_columns.ids[..phase_columns.count].iter()
                     .position(|id| *id == name)
                     .ok_or_else(|| FiggyError::UnknownColumn { id: name.into() })?;
-                packed.chunk.column_handle(packed.ranges[index]).map_err(|error| {
-                    FiggyError::InvalidSeriesConfig {
+                        packed
+                            .chunk
+                            .column_handle(packed.ranges[index])
+                            .map_err(|error| FiggyError::InvalidSeriesConfig {
                         series_id: series.series_id.clone(),
                         reason: format!("invalid packed view pick lane: {error:?}"),
-                    }
                 })
             };
-            let count = u32::try_from(packed.ranges[0].len).map_err(|_| FiggyError::StaleStateToken {
+                    let count = u32::try_from(packed.ranges[0].len).map_err(|_| {
+                        FiggyError::StaleStateToken {
                 reason: "packed view pick count exceeds u32".into(),
+                        }
             })?;
             let columns = crate::gpu_pick::GpuStreamPickColumns {
                 x: handle(&series.x_column)?,
@@ -513,6 +526,9 @@ impl Renderer {
             selection: selection::StreamSelectionState::default(),
             view_candidate: None,
             view_cache: None,
+            source_cache: None,
+            source_cache_attempted: false,
+            source_cache_writable: false,
             view_rejection: None,
         });
         Ok(StreamingOperation(operation))
@@ -1154,6 +1170,9 @@ impl Renderer {
             selection: selection::StreamSelectionState::default(),
             view_candidate: None,
             view_cache: None,
+            source_cache: None,
+            source_cache_attempted: false,
+            source_cache_writable: false,
             view_rejection: None,
         });
         self.queue.submit([encoder.finish()]);
@@ -1193,12 +1212,31 @@ impl Renderer {
             .stream_progress_counts(job)
             .map_err(StreamRequestError::into_figgy)?;
         if request == StreamDrawRequestStatus::AllSubmitted
-            && self.stream_runtime.as_ref().unwrap().draws.iter().find(|draw| draw.job == job).unwrap().auxiliary_pick.is_none() {
-            match self.request_selection_job(job).map_err(StreamRequestError::into_figgy)? {
-                StreamingSelectionRequest::Ready { ticket, .. } => request = StreamDrawRequestStatus::Ready(ticket.raw()),
-                StreamingSelectionRequest::Backpressure { .. } => request = StreamDrawRequestStatus::Backpressure,
-                StreamingSelectionRequest::Complete { .. } => {},
-                StreamingSelectionRequest::Failed { .. } => return Err(StreamRequestError::from(StreamError::WrongState).into_figgy()),
+            && self
+                .stream_runtime
+                .as_ref()
+                .unwrap()
+                .draws
+                .iter()
+                .find(|draw| draw.job == job)
+                .unwrap()
+                .auxiliary_pick
+                .is_none()
+        {
+            match self
+                .request_selection_job(job)
+                .map_err(StreamRequestError::into_figgy)?
+            {
+                StreamingSelectionRequest::Ready { ticket, .. } => {
+                    request = StreamDrawRequestStatus::Ready(ticket.raw())
+                }
+                StreamingSelectionRequest::Backpressure { .. } => {
+                    request = StreamDrawRequestStatus::Backpressure
+                }
+                StreamingSelectionRequest::Complete { .. } => {}
+                StreamingSelectionRequest::Failed { .. } => {
+                    return Err(StreamRequestError::from(StreamError::WrongState).into_figgy());
+                }
             }
         }
         Ok(match request {

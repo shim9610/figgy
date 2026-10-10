@@ -1,13 +1,21 @@
 [package]
-name = "renderer"
-version = "0.12.6"
+name = "figgy-renderer"
+version = "0.13.0"
 edition = "2024"
-description = "wgpu + CPU-raster hybrid chart renderer for the figgy workspace."
+rust-version = "1.99"
+description = "Native Rust chart renderer combining wgpu data rendering with CPU-rasterized axes and text."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/shim9610/figgy"
+readme = "README.md"
+keywords = ["plotting", "charts", "wgpu", "visualization"]
+categories = ["graphics", "rendering", "visualization"]
+
+# Registry package identity changes; existing Rust import paths do not.
+[lib]
+name = "renderer"
 
 [dependencies]
-model = { path = "../model" }
+model = { package = "figgy-model", path = "../model", version = "0.8.0" }
 
 bytemuck = { version = "1.19", features = ["derive"] }
 # Awaitable buffer-map signal for the async export path (works on wasm too).
@@ -25,7 +33,7 @@ tiny-skia = "0.12"
 # blocking the single thread would deadlock; use the *_async variants there.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster = "1.0"
-eframe = { version = "0.36", optional = true, default-features = false, features = ["wgpu"] }
+eframe = { version = "0.36", optional = true, default-features = false, features = ["wgpu", "x11", "wayland"] }
 egui = { version = "0.36", optional = true }
 egui-wgpu = { version = "0.36", optional = true }
 
@@ -42,8 +50,10 @@ web-sys = { version = "0.3", features = ["Window"] }
 
 [dev-dependencies]
 winit = "0.30.13"
+serde_json = "1"
 
 [features]
+serde = ["model/serde"]
 egui_demo = ["dep:eframe", "dep:egui", "dep:egui-wgpu"]
 
 [[example]]
@@ -68,4 +78,22 @@ required-features = ["egui_demo"]
 [[example]]
 name = "ssot_lab"
 path = "examples/ssot_lab.rs"
+required-features = ["egui_demo"]
+
+[[example]]
+name = "radial_editor"
+path = "examples/radial_editor.rs"
+required-features = ["egui_demo"]
+
+[[example]]
+name = "categorical_editor"
+path = "examples/categorical_editor.rs"
+required-features = ["egui_demo"]
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[[example]]
+name = "boxplot_editor"
+path = "examples/boxplot_editor.rs"
 required-features = ["egui_demo"]

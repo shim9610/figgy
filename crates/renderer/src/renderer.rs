@@ -20,11 +20,13 @@ mod selection_prepare;
 
 #[path = "streaming_runtime.rs"]
 mod streaming_runtime;
-pub use streaming_runtime::{StreamingOperation, StreamingSelectionRequest, StreamingSelectionTicket};
-#[path = "streaming_surface.rs"]
-mod streaming_surface;
+pub use streaming_runtime::{
+    StreamingOperation, StreamingSelectionRequest, StreamingSelectionTicket,
+};
 #[cfg(test)]
 mod streaming_request_tests;
+#[path = "streaming_surface.rs"]
+mod streaming_surface;
 
 use crate::axis_render;
 use crate::chart::Chart;
@@ -1227,6 +1229,22 @@ impl PreparedChartMutation<'_> {
     fn commit(self) {
         if let Some(picker) = self.picker {
             picker.commit();
+        }
+        // Hosts may submit the full SSOT after a config-only edit or repeat
+        // an identical state. Keep valid GPU style bindings when the ordered
+        // declarations are unchanged, without altering mutation revisions.
+        let same_series = match &self.values {
+            ChartMutationValues::Config(_) => true,
+            ChartMutationValues::Series(series) | ChartMutationValues::State { series, .. } => {
+                self.chart_state.series == *series
+            }
+        };
+        if same_series {
+            if let Some(styles) = &mut self.chart_state.prepared_styles {
+                if styles.series_revision == self.chart_state.revisions.series {
+                    styles.series_revision = self.next_revisions.series;
+                }
+            }
         }
         match self.values {
             ChartMutationValues::Config(config) => self.chart_state.config = config,
@@ -4760,7 +4778,10 @@ fn push_fit_column_stamp(
             revision: streamed.column.revision,
             fit_epoch: streamed.fit_epoch,
         })
-        .or_else(|| pool.allocation_epoch(id).map(FitColumnSourceStamp::ResidentAllocation))
+        .or_else(|| {
+            pool.allocation_epoch(id)
+                .map(FitColumnSourceStamp::ResidentAllocation)
+        })
         .ok_or_else(|| FiggyError::UnknownColumn { id: id.to_string() })?;
     columns.push(FitColumnStamp {
         role,
@@ -5872,7 +5893,9 @@ impl Renderer {
     /// promote/demote API. Returning the previous cap makes temporary host
     /// policy changes reversible without another getter.
     pub fn set_auto_resident_working_set_limit(&mut self, limit: Option<u64>) -> Option<u64> {
-        std::mem::replace(&mut self.auto_resident_working_set_limit, limit)
+        let previous = std::mem::replace(&mut self.auto_resident_working_set_limit, limit);
+        self.enforce_source_cache_policy();
+        previous
     }
 
     /// Submission boundary: the host has submitted or discarded every command
@@ -6882,7 +6905,9 @@ impl Renderer {
                 .transpose()?;
             let selection_revision = config_override.as_ref()
                 .filter(|(override_chart, _)| override_chart == chart_id)
-                .map(|(_, config)| selection_config_revision(state.revisions.selection, &state.config, config))
+                .map(|(_, config)| {
+                    selection_config_revision(state.revisions.selection, &state.config, config)
+                })
                 .transpose()?;
             let view = config_override
                 .as_ref()
@@ -8283,10 +8308,9 @@ impl Renderer {
             }
         }
 
-        let count = u64::try_from(handoff.columns.len()).map_err(|_| {
-            FiggyError::CounterExhausted {
+        let count =
+            u64::try_from(handoff.columns.len()).map_err(|_| FiggyError::CounterExhausted {
                 counter: "stream source fit epoch",
-            }
         })?;
         let final_fit_epoch = self.next_stream_source_fit_epoch.checked_add(count).ok_or(
             FiggyError::CounterExhausted {
@@ -8347,13 +8371,11 @@ impl Renderer {
             let cache = statistics
                 .iter()
                 .find_map(|(id, cache)| (id == &source.id).then_some(cache))
-                .ok_or_else(|| {
-                    FiggyError::StaleStateToken {
+                .ok_or_else(|| FiggyError::StaleStateToken {
                         reason: format!(
                             "stream handoff has no statistics for column {:?}",
                             source.id
                         ),
-                    }
                 })?;
             if !cache.covers(0..source.len) {
                 return Err(FiggyError::StaleStateToken {
@@ -8363,11 +8385,12 @@ impl Renderer {
                     ),
                 });
             }
-            let cache = cache.try_coverage_copy().map_err(|error| {
-                FiggyError::StateAllocationFailed {
+            let cache =
+                cache
+                    .try_coverage_copy()
+                    .map_err(|error| FiggyError::StateAllocationFailed {
                     resource: "resident stream handoff statistics",
                     reason: error.to_string(),
-                }
             })?;
             fit_epoch = fit_epoch
                 .checked_add(1)
@@ -9335,8 +9358,8 @@ impl Renderer {
             slots: usize,
             slot_bytes: u64,
             overrides: usize,
-            override_row_bytes: u64,
-        | -> Result<()> {
+                           override_row_bytes: u64|
+         -> Result<()> {
             let slots = u64::try_from(slots).map_err(|_| overflow())?;
             let overrides = u64::try_from(overrides).map_err(|_| overflow())?;
             let style_bytes = slots.max(1).checked_mul(slot_bytes).ok_or_else(overflow)?;
@@ -9357,8 +9380,11 @@ impl Renderer {
         };
         if let Some(sc) = extract_scatter(&cfg.render_type) {
             let slots = sc.point_style_table.as_ref().map_or(0, Vec::len);
-            let overrides = sc.point_style_overrides.as_ref().map_or(0, |rows| rows.iter()
-                .filter(|row| u32::try_from(row.index).is_ok()).count());
+            let overrides = sc.point_style_overrides.as_ref().map_or(0, |rows| {
+                rows.iter()
+                    .filter(|row| u32::try_from(row.index).is_ok())
+                    .count()
+            });
             if sc.point_style_index_column.is_some() || slots != 0 || overrides != 0 {
                 add_map(
                     slots,
@@ -9370,8 +9396,11 @@ impl Renderer {
         }
         if let Some(eb) = extract_errorbar_style(&cfg.render_type) {
             let slots = eb.error_bar_style_table.as_ref().map_or(0, Vec::len);
-            let overrides = eb.error_bar_style_overrides.as_ref().map_or(0, |rows| rows.iter()
-                .filter(|row| u32::try_from(row.index).is_ok()).count());
+            let overrides = eb.error_bar_style_overrides.as_ref().map_or(0, |rows| {
+                rows.iter()
+                    .filter(|row| u32::try_from(row.index).is_ok())
+                    .count()
+            });
             if eb.error_bar_style_index_column.is_some() || slots != 0 || overrides != 0 {
                 add_map(
                     slots,
@@ -9382,8 +9411,11 @@ impl Renderer {
             }
         }
         if let Some(bar) = extract_bar(&cfg.render_type) {
-            let overrides = bar.bar_style_overrides.as_ref().map_or(0, |rows| rows.iter()
-                .filter(|row| u32::try_from(row.index).is_ok()).count());
+            let overrides = bar.bar_style_overrides.as_ref().map_or(0, |rows| {
+                rows.iter()
+                    .filter(|row| u32::try_from(row.index).is_ok())
+                    .count()
+            });
             if overrides != 0 {
                 add_map(
                     1,
@@ -10084,11 +10116,10 @@ impl Renderer {
         &mut self,
         items: &[RegisteredChartDrawItem<'_>],
     ) -> streaming_runtime::StreamResult<PreparedFrame> {
-        let allocation = |error: std::collections::TryReserveError| {
-            FiggyError::StateAllocationFailed {
+        let allocation =
+            |error: std::collections::TryReserveError| FiggyError::StateAllocationFailed {
                 resource: "mixed chart prepare inputs",
                 reason: error.to_string(),
-            }
         };
         let mut resident = Vec::new();
         let mut displays = Vec::new();
@@ -12298,11 +12329,25 @@ impl PrepareContext<'_> {
         Self::validate_stream_series(config, series.config)?;
         let specs = [Series { config: series.config, style: series.style }];
         let mut layers = self.build_series_layers_with_columns(
-            view, config, &specs, pipelines,
-            PreparedSeriesProducts { arcs: &[], contours: &[] },
-            pipelines.style_set(&config.draw_style), pool,
-            |id| if id == series.config.x_column { Ok(x) } else if id == series.config.y_column { Ok(y) }
-                else { Err(FiggyError::UnknownColumn { id: id.into() }) },
+            view,
+            config,
+            &specs,
+            pipelines,
+            PreparedSeriesProducts {
+                arcs: &[],
+                contours: &[],
+            },
+            pipelines.style_set(&config.draw_style),
+            pool,
+            |id| {
+                if id == series.config.x_column {
+                    Ok(x)
+                } else if id == series.config.y_column {
+                    Ok(y)
+                } else {
+                    Err(FiggyError::UnknownColumn { id: id.into() })
+                }
+            },
             Some(streaming_runtime::StreamDrawPhase::Line),
         )?;
         let mut packet = PreparedSeries::from_layers(
@@ -12606,7 +12651,7 @@ impl PrepareContext<'_> {
                 };
                 let style_map = series.style.bar_map.as_ref();
                 Some(data_render::ColumnBarLayer {
-                    envelope: phase.is_none().then(||
+                    envelope: phase.is_none().then(|| {
                         pipelines
                             .bar_envelope
                             .as_ref()
@@ -12629,8 +12674,8 @@ impl PrepareContext<'_> {
                                 &view.transform_bg,
                                 &series.style.bar_bg,
                                 style_map.map(|map| &map.bind_group),
-                            ),
-                    ),
+                            )
+                    }),
                     pipeline: style_map.map_or_else(
                         || {
                             pipelines
@@ -14439,12 +14484,14 @@ mod tests {
 
     fn state_test_renderer_with_capacity(pool_capacity: u64) -> Option<Renderer> {
         let (device, queue) = crate::data_render::shared_device()?;
-        Renderer::try_new(
-            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
-            wgpu::TextureFormat::Rgba8Unorm,
-            pool_capacity,
+        Some(
+            Renderer::try_new(
+                RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+                wgpu::TextureFormat::Rgba8Unorm,
+                pool_capacity,
+            )
+            .expect("required GPU test: renderer initialization failed"),
         )
-        .ok()
     }
 
     fn state_test_renderer() -> Option<Renderer> {
