@@ -131,7 +131,7 @@ def packages(allow_dirty):
         # tests or doctests. Collect failures, but keep the final exit nonzero.
         failures = []
         for args in (
-            [*base, "--no-fail-fast", "--lib", "--tests", "--", "--test-threads=1"],
+            [*base, "--no-fail-fast", "--lib", "--tests", "--", "--test-threads=1", "--nocapture"],
             [*base, "--no-fail-fast", "--doc"],
         ):
             try:

@@ -1,6 +1,6 @@
 # Recorded backend results
 
-Recorded on 2026-10-10 at 10:20 UTC for public source
+Recorded on 2026-10-10 for public source
 [`69ada34`](https://github.com/shim9610/figgy/commit/69ada34b81bc268d9ea7fda6cce9a3d1a7182d99):
 figgy-renderer 0.13.0, figgy-model 0.8.0, figgy 0.11.0, Rust 1.99 and wgpu 30.
 See the [Actions run](https://github.com/shim9610/figgy/actions/runs/38043202249)
@@ -10,8 +10,23 @@ not a claim that every backend passes or that physical GPUs were tested.
 | Standard runner | Actual rendering adapter | Build / WASM / API docs | Extracted package tests |
 | --- | --- | --- | --- |
 | Ubuntu 24.04 / Vulkan | llvmpipe, LLVM 20.1.2, Mesa 25.2.8 | Passed | Passed; 954 distinct tests, 3 ignored probes; GPU smoke repeated separately; 6 expected initialization failures verified |
-| Windows 2025 / DX12 | See run log | Passed | Initial run still pending at the time of this record |
+| Windows 2025 / DX12 | Microsoft Basic Render Driver, WARP 1.0.20.0 | Passed | Model 216 passed; renderer tests reported failures before this run was superseded; no completed suite result |
 | macOS 15 ARM64 / Metal | Apple Paravirtual device | Passed | Failed; model 216 passed; renderer unit tests 558 passed, 7 failed, 1 ignored |
+
+## Windows observations
+
+The WARP adapter, device creation and GPU submission smoke test passed. The renderer
+unit-test binary reported failures, beginning with
+`data_render::stream_point_style_tests::tests::streamed_style_point_and_errorbar_entries_match_resident_pixels`.
+Later streaming and resident-renderer tests also reported failures. Picking tests
+continued to make progress, so the long-running job was not simply stuck at startup.
+
+The job was cancelled by a newer push before the unit-test binary completed. The
+first workflow captured panic details until that binary finished, so its partial
+log does not establish the causes or a final failure count. This is **not a passing
+Windows result**. Follow-up runs stream test output immediately with `--nocapture`
+and keep independent test binaries running after failures. Rendering checks and
+their existing tolerances remain enabled on WARP.
 
 ## Known Metal failures
 
@@ -59,8 +74,10 @@ shared-lock failure cascade. The Actions package job additionally tests the actu
 ## 한국어 요약
 
 공개 기본 러너에서 세 OS의 빌드·WASM 컴파일·API 문서 검사는 통과했다.
-Linux의 패키지·렌더링·픽셀 검사도 통과했다. Windows의 전체 테스트는 이 기록을
-작성할 당시 실행 중이었다. 최종 결과는 위 Actions 링크에서 확인할 수 있다.
+Linux의 패키지·렌더링·픽셀 검사도 통과했다. Windows는 WARP 장치 생성과 모델 테스트가
+통과했지만 렌더러 테스트에서 실패가 발생했다. 새 푸시로 실행이 대체돼 전체 결과는 없으며,
+Windows 검증이 통과한 상태가 아니다. 이후 실행은 중간 종료 시에도 패닉 원인을 볼 수
+있도록 로그를 즉시 출력한다.
 
 macOS의 가상 Metal 장치에서는 정밀 피킹 2개와 스트리밍 픽셀 비교 1개가 실패했다.
 나머지 4개 실패는 앞선 패닉으로 공유 잠금이 오염돼 발생했다. 테스트를 생략하거나

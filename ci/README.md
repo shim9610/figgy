@@ -42,6 +42,8 @@ consult the commit's Actions run and the [recorded backend results](STATUS.md).
 Independent test binaries, doctests and missing-adapter checks continue after a test
 failure, while the final job still fails. This prevents one failing suite from hiding
 the rest of the backend results.
+Test output is streamed immediately, so a cancellation or timeout does not hide
+panic details until the end of a large test binary.
 
 ## Run locally
 
