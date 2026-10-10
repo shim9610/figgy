@@ -27,8 +27,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-15
-            backend: metal
+          - os: windows-2025
+            backend: dx12
     env:
       WGPU_BACKEND: ${{ matrix.backend }}
     steps:

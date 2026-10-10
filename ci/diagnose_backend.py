@@ -18,6 +18,8 @@ STYLE = "data_render::stream_point_style_tests::tests::streamed_style_point_and_
 
 
 def command(args, name, extra=None):
+    if os.name == "nt":
+        name = name.replace("baseline-", "explicit-dxc-")
     env = os.environ.copy()
     env.update(extra or {})
     env["FIGGY_DIAG_IMAGES"] = str(OUT / name)
@@ -48,6 +50,9 @@ if os.name == "nt":
     for path in (ROOT / "target/debug", ROOT / "target/debug/deps"):
         path.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(os.environ["FIGGY_TEST_WARP_DLL"], path / "d3d10warp.dll")
+        for dll in ("dxcompiler.dll", "dxil.dll"):
+            shutil.copyfile(Path(os.environ["FIGGY_DIAG_DXC_DIR"]) / dll, path / dll)
+    print("Controlled DXC selection:", os.environ["WGPU_DX12_COMPILER"], "DLLs next to test executables", flush=True)
 
 for i, name in enumerate(PICK):
     test(f"baseline-pick-{i}", name)
@@ -56,6 +61,10 @@ test("baseline-styled-stream", STYLE)
 test("baseline-stream-start", "renderer::streaming_request_tests::automatic_range_request_is_stable_until_submit_advances_the_cpu_cursor")
 test("baseline-prewarm", "renderer::tests::full_prewarm_materializes_every_deferred_pipeline")
 test("baseline-field-locate", "bounded_gpu_axis_replay_matches_resident_global_locate", target="stream_field_locate_replay")
+
+if os.name == "nt":
+    test("explicit-dxc-pixel-no-grid", PIXEL, {"FIGGY_DIAG_DATA_ONLY": "1", "FIGGY_DIAG_NO_GRID": "1"})
+    test("explicit-dxc-pixel-opaque", PIXEL, {"FIGGY_DIAG_DATA_ONLY": "1", "FIGGY_DIAG_OPAQUE": "1"})
 
 if sys.platform == "darwin":
     for variant, extra in [
