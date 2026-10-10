@@ -38,6 +38,10 @@ renderers have Rust APIs and are not exposed by the existing `FiggyChart` JS wra
 isolated package tests on standard Linux/Vulkan, Windows/DX12 and macOS/Metal runners.
 The [recorded results and known backend failures](ci/STATUS.md) distinguish completed
 checks from configured coverage.
+**macOS / Metal support is experimental and not yet stable.** Known coordinate
+precision, picking and render-path comparison failures remain under investigation.
+An opt-in [precompiled Metal shader experiment](ci/metal-precision-probe/README.md)
+tests a possible precision fix; it does not change the default renderer.
 See [API contracts and migration](crates/renderer/API.md) for ownership and compatibility.
 Online Studio deployment is separate from this source release.
 
@@ -1338,6 +1342,9 @@ wgpu 30이다. 아직 crates.io에 게시하지 않았으며, WASM 래퍼 `figgy
 
 [CI 안내](ci/README.md)에 세 OS의 빌드·렌더링·픽셀·독립 패키지 검사와 재실행 방법을 정리했다.
 [실행 결과와 확인된 문제](ci/STATUS.md)에는 실제 통과한 검사와 남은 백엔드 문제를 기록했다.
+**macOS / Metal 지원은 아직 불안정한 실험 단계다.** 좌표 정밀도·피킹·렌더링 경로 간
+비교에서 확인된 문제를 조사하고 있다. [정밀 Metal 셰이더 실험](ci/metal-precision-probe/README.md)은
+별도로 실행하며 기본 렌더링 경로는 바꾸지 않는다.
 [API 계약](crates/renderer/API.md)에서 소유권과 마이그레이션 방법을 확인할 수 있다.
 온라인 스튜디오 배포는 이번 소스 공개와 별개다.
 

@@ -16,6 +16,12 @@ The actual adapter and backend are printed in each run. A missing adapter, rejec
 device or failed render **fails the job**; there is no successful CPU-only fallback
 for the Metal job and no skipped GPU initialization.
 
+macOS / Metal support is currently **experimental, not stable**. Its normal matrix
+job continues to report failures. The separate, opt-in
+[Metal precision experiment](metal-precision-probe/README.md) compares default WGSL
+with fast and precise precompiled Metal shaders without patching wgpu. Success in
+that narrowly scoped probe is not a passing renderer/package matrix.
+
 ## What runs on every OS
 
 1. Native workspace checks with default and all optional features, including examples.
@@ -75,6 +81,8 @@ can use their installed driver instead; the setup script is specific to GitHub r
 세 운영체제에서 네이티브 빌드, WASM 컴파일, API 문서 링크, 압축을 푼 패키지의
 단위·통합·문서 테스트를 실행한다. Linux는 GPU가 없을 때 lavapipe를 쓰고,
 Windows는 WARP, macOS는 러너에 노출된 Metal 장치를 쓴다. 유료 GPU 러너는 사용하지 않는다.
+macOS / Metal은 아직 불안정한 실험 단계다. 정밀 Metal 셰이더 실험과 기존 전체 검사는
+별도로 실행하며, 작은 실험의 성공으로 기존 실패를 통과 처리하지 않는다.
 
 실제로 그린 픽셀, 설정 변경 후 화면, 캐시 재사용, 스트리밍과 메모리를 검사한다.
 장치를 만들 수 없거나 렌더링에 실패하면 CI도 실패한다. 운영체제별 로그와 진단 이미지는

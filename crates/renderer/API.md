@@ -19,6 +19,13 @@ cannot compile the code. The tested development toolchain and the support floor
 are recorded separately. Direct host device/queue/render-pass sharing requires
 wgpu 30; a host on another wgpu major must adapt or upgrade its integration.
 
+macOS / Metal support is **experimental and not yet stable**. Known failures
+include large-coordinate precision, picking at endpoint ties, and differences
+between resident and streamed composition. A separate precompiled Metal shader
+experiment does not change the default renderer or establish a precision guarantee.
+The experimental path is not a public Cargo feature. Existing regression checks
+remain enabled; see the source repository's backend results for tested revisions.
+
 ## Entry points and input contracts
 
 | Renderer | Input | Frame preparation |

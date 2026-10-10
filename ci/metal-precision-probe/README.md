@@ -62,6 +62,26 @@ entry point, compiled binaries, exact compiler arguments, shader hashes and
 per-fixture numeric results. The workflow log records compiler and adapter details.
 The independent Cargo lockfile pins the experiment's dependencies.
 
+## First measured result — 2026-10-10
+
+[Run 38055501914](https://github.com/shim9610/figgy/actions/runs/38055501914),
+experiment commit `bee79ef78f969c50b0ed0dd70c05a062d6d42c52`:
+macOS 15 ARM64, Apple Paravirtual device, Apple Metal compiler 32023.620,
+unmodified wgpu/Naga 30.0.1. Each variant evaluated the same 768 points.
+
+| Path | Points outside the bound | Largest pixel-coordinate error |
+| --- | ---: | ---: |
+| Default WGSL → wgpu Metal | 512 / 768 | 3810 |
+| Same generated MSL, `-ffast-math` binary | 512 / 768 | 3810 |
+| Same generated MSL, `-fno-fast-math` binary | 0 / 768 | 0 |
+
+All failures in this fixture set were at the positive/negative large epochs.
+The ordinary zero-epoch cases passed on every path. The precise binary preserved
+the fractional coordinates without a Cargo patch. A Linux Vulkan control on
+llvmpipe/Mesa 25.0.7 also produced zero error for all 768 points using default WGSL.
+These are measured results for this harness and adapter, not certification of the
+full renderer, line picking, logarithmic axes or physical Apple GPUs.
+
 ## Promotion conditions
 
 First validate binding and precision behavior in this small harness. Then integrate

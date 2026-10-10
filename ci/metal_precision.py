@@ -16,7 +16,14 @@ def run(args):
 
 
 def main():
+    if sys.argv[1:] not in ([], ["--generate-only"], ["--vulkan-control"]):
+        raise SystemExit("usage: metal_precision.py [--generate-only | --vulkan-control]")
     OUT.mkdir(parents=True, exist_ok=True)
+    # A failed retry must not upload a successful report from an earlier run.
+    for name in ["probe.wgsl", "probe.metal", "entry.txt", "fast.air", "precise.air",
+                 "fast.metallib", "precise.metallib", "build.json", "metal-results.json",
+                 "vulkan-control.json"]:
+        (OUT / name).unlink(missing_ok=True)
     cargo = ["cargo", "run", "--locked", "--manifest-path", str(MANIFEST), "--"]
     run([*cargo, "generate", str(OUT), str(ROOT)])
     if sys.argv[1:] == ["--generate-only"]:
@@ -24,8 +31,6 @@ def main():
     if sys.argv[1:] == ["--vulkan-control"]:
         run([*cargo, "vulkan", str(OUT)])
         return
-    if sys.argv[1:]:
-        raise SystemExit("usage: metal_precision.py [--generate-only | --vulkan-control]")
     if sys.platform != "darwin":
         raise SystemExit("Metal execution requires macOS; generation is not a passing Metal test")
     run(["xcrun", "--sdk", "macosx", "metal", "--version"])

@@ -71,6 +71,36 @@ fn precision_probe(@builtin(global_invocation_id) gid: vec3<u32>) {
     )
     .validate(&module)
     .unwrap();
+    // Refuse a future production ABI change before generating unchecked Metal
+    // code for the manually packed host uniform below.
+    for (name, expected_span, expected_offsets) in [
+        (
+            "PickQueryTransform",
+            112,
+            vec![0, 8, 16, 24, 32, 40, 48, 56, 64],
+        ),
+        (
+            "PickQueryParams",
+            224,
+            vec![0, 112, 128, 144, 160, 176, 192, 208],
+        ),
+    ] {
+        let ty = module
+            .types
+            .iter()
+            .find(|(_, ty)| ty.name.as_deref() == Some(name))
+            .unwrap()
+            .1;
+        let naga::TypeInner::Struct { ref members, span } = ty.inner else {
+            panic!("expected struct {name}");
+        };
+        assert_eq!(span, expected_span, "production ABI size changed: {name}");
+        assert_eq!(
+            members.iter().map(|m| m.offset).collect::<Vec<_>>(),
+            expected_offsets,
+            "production ABI offsets changed: {name}"
+        );
+    }
     // Match the explicit wgpu layout: two compute storage buffers in group 0,
     // followed by one compute uniform in group 1. No dynamic arrays, vertex
     // pulling, overrides or workgroup allocations are used by this probe.
