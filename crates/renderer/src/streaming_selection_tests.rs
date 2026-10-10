@@ -56,7 +56,7 @@ fn fixture_with_display(
             RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
             wgpu::TextureFormat::Rgba8Unorm,
             8192,
-            4,
+            std::env::var("FIGGY_DIAG_SAMPLES").ok().and_then(|s| s.parse().ok()).unwrap_or(4),
         )
         .unwrap()
     };
@@ -152,7 +152,21 @@ fn fixture_with_display(
             },
         },
     };
-    let series = vec![point, bar];
+    let mut series = vec![point, bar];
+    if std::env::var("FIGGY_DIAG_OPAQUE").as_deref() == Ok("1") {
+        for row in &mut series {
+            match &mut row.render_type {
+                DataRenderType::Scatter { scatter } => scatter.point_color.a = 1.0,
+                DataRenderType::Histogram { bar } => { bar.fill_color.a = 1.0; bar.border_color.a = 1.0; }
+                _ => unreachable!(),
+            }
+        }
+    }
+    match std::env::var("FIGGY_DIAG_SERIES").as_deref() {
+        Ok("scatter") => { series.remove(1); }
+        Ok("bars") => { series.remove(0); }
+        _ => {},
+    }
     let mut config = crate::default::default_config();
     config.chart_area = crate::layout::ChartArea(Rect {
         x: 0,
@@ -160,6 +174,10 @@ fn fixture_with_display(
         width: 320,
         height: 240,
     });
+    if std::env::var("FIGGY_DIAG_NO_GRID").as_deref() == Ok("1") {
+        config.grid.show_major_x = false; config.grid.show_major_y = false;
+        config.grid.show_minor_x = false; config.grid.show_minor_y = false;
+    }
     let mut chart = Chart::new(config);
     chart.set_x_range(0.0, 1.0);
     chart.set_y_range(0.0, 1.0);
@@ -673,7 +691,9 @@ fn stream_selection_and_data_match_resident_at_exact_display_scale() {
         assert_eq!(actual.len(), expected.rgba.len());
         let max_error = actual.iter().zip(&expected.rgba)
             .map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+        diagnostic_pixels("data", scale, expected.width, expected.height, &actual, &expected.rgba);
         assert!(max_error <= 3, "data display scale {scale}: channel error {max_error}");
+        if std::env::var("FIGGY_DIAG_DATA_ONLY").as_deref() == Ok("1") { continue; }
         select(chart.config_mut(), &[10, 2, 10]);
         r.set_chart_config(id, chart.config().clone()).unwrap();
         pump(&mut r, id, &values);
@@ -685,6 +705,25 @@ fn stream_selection_and_data_match_resident_at_exact_display_scale() {
         assert_eq!(actual.len(), expected.rgba.len());
         let max_error = actual.iter().zip(&expected.rgba)
             .map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+        diagnostic_pixels("selection", scale, expected.width, expected.height, &actual, &expected.rgba);
         assert!(max_error <= 3, "selection display scale {scale}: channel error {max_error}");
+    }
+}
+
+fn diagnostic_pixels(phase: &str, scale: f32, width: u32, height: u32, actual: &[u8], expected: &[u8]) {
+    let max_error = actual.iter().zip(expected).map(|(a,b)| a.abs_diff(*b)).max().unwrap();
+    let changed = actual.chunks_exact(4).zip(expected.chunks_exact(4)).filter(|(a,b)| a != b).count();
+    eprintln!("DIAG phase={phase} scale={scale} size={width}x{height} max_error={max_error} changed_pixels={changed}");
+    for (i, (a,b)) in actual.chunks_exact(4).zip(expected.chunks_exact(4)).enumerate().filter(|(_, (a,b))| a.iter().zip(*b).any(|(x,y)| x.abs_diff(*y) == max_error && max_error > 0)).take(12) {
+        eprintln!("DIAG worst x={} y={} actual={a:?} expected={b:?}", i % width as usize, i / width as usize);
+    }
+    if let Ok(root) = std::env::var("FIGGY_DIAG_IMAGES") {
+        std::fs::create_dir_all(&root).unwrap();
+        for (name, rgba) in [("actual", actual), ("expected", expected)] {
+            let path = std::path::Path::new(&root).join(format!("{phase}-{scale}-{name}.png"));
+            let mut encoder = png::Encoder::new(std::fs::File::create(path).unwrap(), width, height);
+            encoder.set_color(png::ColorType::Rgba); encoder.set_depth(png::BitDepth::Eight);
+            encoder.write_header().unwrap().write_image_data(rgba).unwrap();
+        }
     }
 }

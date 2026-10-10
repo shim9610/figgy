@@ -474,7 +474,9 @@ fn probe_identity(@builtin(global_invocation_id) gid: vec3<u32>) {
                         chunk,
                         true,
                     );
-                    assert_eq!(oracle, actual, "{} {samples}x chunk={chunk}", case.name);
+                    let differences: Vec<_> = oracle.chunks_exact(4).zip(actual.chunks_exact(4)).enumerate().filter(|(_, (a,b))| a != b).take(12).collect();
+                    let max_error = oracle.iter().zip(&actual).map(|(a,b)| a.abs_diff(*b)).max().unwrap();
+                    assert!(oracle == actual, "{} {samples}x chunk={chunk} max_error={max_error} first_differences={differences:?}", case.name);
                 }
             }
         }

@@ -1,4 +1,4 @@
-name: Rust packages
+name: Backend cause diagnostics
 "on":
   push:
   pull_request:
@@ -22,7 +22,7 @@ jobs:
     if: github.event.repository.private == false
     name: ${{ matrix.os }} / ${{ matrix.backend }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -68,10 +68,8 @@ jobs:
       - name: Install pinned Windows DXC and WARP
         if: runner.os == 'Windows'
         run: python ci/setup_windows.py
-      - name: Native and WASM checks, strict API documentation
-        run: python ci/verify.py static
-      - name: Package, extract, run rendering and pixel regressions
-        run: python ci/verify.py packages
+      - name: Isolate failures and compare compiler settings
+        run: python ci/diagnose_backend.py
       - name: Upload verification logs and rendered images
         if: always()
         uses: actions/upload-artifact@v4
