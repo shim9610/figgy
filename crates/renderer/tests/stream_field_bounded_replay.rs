@@ -4,6 +4,9 @@
 //! the full oracle pool are test-only. This is not a production executor.
 #![cfg(not(target_arch = "wasm32"))]
 
+#[path = "support/gpu.rs"]
+mod test_gpu;
+
 use renderer;
 #[path = "support/stream_field_fixture.rs"]
 mod fixture;
@@ -287,13 +290,12 @@ fn dispatch(
 
 #[test]
 fn bounded_heatmap_axis_and_z_replay_matches_resident_alpha_samples() {
-    let instance = renderer::data_render::create_instance();
-    let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
-        .expect("P-00 requires GPU; no skip");
+    let instance = test_gpu::instance();
+    let adapter = test_gpu::adapter(&instance);
     eprintln!("bounded field replay adapter: {:?}", adapter.get_info());
     let support = adapter.get_texture_format_features(wgpu::TextureFormat::Rgba8Unorm);
     assert!(support.flags.sample_count_supported(1) && support.flags.sample_count_supported(4));
-    let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+    let (device, queue) = test_gpu::request_device(&adapter, &Default::default());
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("resident field plus bounded replay proof"),
         source: wgpu::ShaderSource::Wgsl(shader_source().into()),

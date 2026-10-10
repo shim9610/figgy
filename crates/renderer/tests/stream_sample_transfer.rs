@@ -3,6 +3,9 @@
 //! No adapter/device/map failures are converted into successful skipped tests.
 #![cfg(not(target_arch = "wasm32"))]
 
+#[path = "support/gpu.rs"]
+mod test_gpu;
+
 const WIDTH: u32 = 256;
 const HEIGHT: u32 = 16;
 
@@ -348,14 +351,10 @@ fn verify_fixture(
 
 #[test]
 fn same_format_per_sample_transfer_then_transparent_suffix_is_exact() {
-    let instance = renderer::data_render::create_instance();
-    let adapter =
-        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-            .expect("P00 requires a GPU adapter; unavailable is NOT a passing experiment");
+    let instance = test_gpu::instance();
+    let adapter = test_gpu::adapter(&instance);
     eprintln!("P00 adapter: {:?}", adapter.get_info());
-    let (device, queue) =
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-            .expect("P00 GPU device creation failed");
+    let (device, queue) = test_gpu::request_device(&adapter, &Default::default());
     let mut failures = Vec::new();
     let mut tested = 0;
     for format in [

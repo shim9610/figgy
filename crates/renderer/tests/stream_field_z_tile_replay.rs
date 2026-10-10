@@ -6,6 +6,9 @@
 //! not implement or claim an integrated streamed Heatmap product path.
 #![cfg(not(target_arch = "wasm32"))]
 
+#[path = "support/gpu.rs"]
+mod test_gpu;
+
 use bytemuck::Zeroable;
 use wgpu::util::DeviceExt;
 
@@ -507,9 +510,8 @@ fn setup_fixture(
 
 #[test]
 fn bounded_gpu_heatmap_z_tickets_match_resident_colour_samples_and_tile_seam() {
-    let instance = renderer::data_render::create_instance();
-    let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
-        .expect("field z P-00 requires a native GPU adapter; no skip");
+    let instance = test_gpu::instance();
+    let adapter = test_gpu::adapter(&instance);
     eprintln!("field z P-00 adapter: {:?}", adapter.get_info());
     let support = adapter.get_texture_format_features(wgpu::TextureFormat::Rgba8Unorm);
     assert!(
@@ -519,8 +521,7 @@ fn bounded_gpu_heatmap_z_tickets_match_resident_colour_samples_and_tile_seam() {
             && support.flags.sample_count_supported(4),
         "field z P-00 1x/4x Rgba8Unorm unsupported: {support:?}"
     );
-    let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))
-        .expect("field z P-00 device creation failed");
+    let (device, queue) = test_gpu::request_device(&adapter, &Default::default());
     let source = format!(
         "{}\n{}",
         include_str!("../src/data_render/field_columnar.wgsl"),

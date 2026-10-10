@@ -1,4 +1,7 @@
 #![cfg(not(target_arch = "wasm32"))]
+
+#[path = "support/gpu.rs"]
+mod test_gpu;
 use renderer::{Color, RendererDevice, radial::*};
 use std::sync::{Arc, OnceLock};
 // A test may register fonts or poll the shared GPU and execute another test's
@@ -7,10 +10,7 @@ static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 fn gpu() -> RendererDevice {
     static GPU: OnceLock<RendererDevice> = OnceLock::new();
     GPU.get_or_init(|| {
-        let instance = renderer::data_render::create_instance();
-        let adapter =
-            renderer::data_render::request_adapter(&instance).expect("native GPU adapter required");
-        let (d, q) = renderer::data_render::request_device(&adapter).unwrap();
+        let (d, q) = test_gpu::device();
         RendererDevice::new(Arc::new(d), Arc::new(q))
     })
     .clone()

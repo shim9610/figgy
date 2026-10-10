@@ -2,6 +2,9 @@
 //! working buffers. This is not a streaming renderer or a portability proof.
 #![cfg(not(target_arch = "wasm32"))]
 
+#[path = "support/gpu.rs"]
+mod test_gpu;
+
 use renderer::data_render::ScatterTransform;
 use renderer::data_render::line_arc::create_arc_scan_pipelines;
 use wgpu::util::DeviceExt;
@@ -118,15 +121,11 @@ struct Gpu {
 
 impl Gpu {
     fn new() -> Self {
-        let instance = wgpu::Instance::default();
-        let adapter =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-                .expect("P-00 requires a GPU adapter; no skipped experiment");
+        let instance = test_gpu::instance();
+        let adapter = test_gpu::adapter(&instance);
         assert!(adapter.limits().max_compute_workgroup_size_x >= WG);
         assert!(adapter.limits().max_compute_invocations_per_workgroup >= WG);
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-                .expect("P-00 requires a GPU device");
+        let (device, queue) = test_gpu::request_device(&adapter, &Default::default());
         let source = test_shader();
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("P-00 source plus local replay kernels"),

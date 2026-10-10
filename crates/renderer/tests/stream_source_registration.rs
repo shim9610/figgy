@@ -1,5 +1,8 @@
 #![cfg(not(target_arch = "wasm32"))]
 
+#[path = "support/gpu.rs"]
+mod test_gpu;
+
 use std::sync::{Arc, OnceLock};
 
 use renderer::default::default_config;
@@ -12,11 +15,7 @@ use renderer::{
 fn renderer() -> Renderer {
     static GPU: OnceLock<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> = OnceLock::new();
     let (device, queue) = GPU.get_or_init(|| {
-        let instance = renderer::data_render::create_instance();
-        let adapter =
-            renderer::data_render::request_adapter(&instance).expect("GPU adapter required");
-        let (device, queue) =
-            renderer::data_render::request_device(&adapter).expect("GPU device required");
+        let (device, queue) = test_gpu::device();
         (Arc::new(device), Arc::new(queue))
     });
     Renderer::try_new(

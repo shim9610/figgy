@@ -127,11 +127,25 @@ def packages(allow_dirty):
         run(["cargo", "test", "--offline", "--locked", "-p", "figgy-renderer",
              "--features", "serde", "--test", "gpu_required", "--", "--nocapture",
              "--test-threads=1"], cwd=extracted)
-        run([*base, "--lib", "--tests", "--", "--test-threads=1"], cwd=extracted)
-        run([*base, "--doc"], cwd=extracted)
-        gpu_failure_checks(extracted)
-        if sys.platform.startswith("linux"):
-            gpu_failure_checks(extracted, missing_driver=extracted / "missing-vulkan-driver.json")
+        # A failed unit-test binary must not hide independent chart integration
+        # tests or doctests. Collect failures, but keep the final exit nonzero.
+        failures = []
+        for args in (
+            [*base, "--no-fail-fast", "--lib", "--tests", "--", "--test-threads=1"],
+            [*base, "--no-fail-fast", "--doc"],
+        ):
+            try:
+                run(args, cwd=extracted)
+            except subprocess.CalledProcessError as error:
+                failures.append(str(error))
+        try:
+            gpu_failure_checks(extracted)
+            if sys.platform.startswith("linux"):
+                gpu_failure_checks(extracted, missing_driver=extracted / "missing-vulkan-driver.json")
+        except RuntimeError as error:
+            failures.append(str(error))
+        if failures:
+            raise RuntimeError("Package verification failed:\n" + "\n".join(failures))
         report("PASS: extracted package tests, doctests, and missing-GPU failure checks")
 
 

@@ -3,6 +3,9 @@
 //! Full-axis oracle storage and readback exist only inside this test.
 #![cfg(not(target_arch = "wasm32"))]
 
+#[path = "support/gpu.rs"]
+mod test_gpu;
+
 use wgpu::util::DeviceExt;
 
 const WIDTH: u32 = 37;
@@ -519,9 +522,8 @@ fn at(rows: &[[u32; 4]], x: u32, y: u32, sample: u32) -> [u32; 4] {
 
 #[test]
 fn bounded_gpu_axis_replay_matches_resident_global_locate() {
-    let instance = renderer::data_render::create_instance();
-    let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
-        .expect("field locate P-00 requires a GPU adapter; no skip");
+    let instance = test_gpu::instance();
+    let adapter = test_gpu::adapter(&instance);
     eprintln!("field locate P-00 adapter: {:?}", adapter.get_info());
     let features = adapter.get_texture_format_features(wgpu::TextureFormat::Rgba8Unorm);
     assert!(
@@ -531,8 +533,7 @@ fn bounded_gpu_axis_replay_matches_resident_global_locate() {
             && features.flags.sample_count_supported(4),
         "field locate 1x/4x probe unsupported: {features:?}"
     );
-    let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))
-        .expect("field locate P-00 device creation failed");
+    let (device, queue) = test_gpu::request_device(&adapter, &Default::default());
     let source = format!(
         "{}\n{}",
         include_str!("../src/data_render/field_columnar.wgsl"),

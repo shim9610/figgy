@@ -3,6 +3,9 @@
 //! This test changes no product shader or source data; failures are never skipped.
 #![cfg(not(target_arch = "wasm32"))]
 
+#[path = "support/gpu.rs"]
+mod test_gpu;
+
 use wgpu::util::DeviceExt;
 
 const WIDTH: u32 = 37;
@@ -275,10 +278,8 @@ fn at(rows: &[[u32; 4]], x: u32, y: u32, sample: u32) -> [u32; 4] {
 
 #[test]
 fn bounded_pixel_tile_axis_t_matches_resident_field_samples() {
-    let instance = renderer::data_render::create_instance();
-    let adapter =
-        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-            .expect("field axis P-00 requires a GPU adapter, not a skipped test");
+    let instance = test_gpu::instance();
+    let adapter = test_gpu::adapter(&instance);
     eprintln!("field axis P-00 adapter: {:?}", adapter.get_info());
     let format_features = adapter.get_texture_format_features(wgpu::TextureFormat::Rgba8Unorm);
     assert!(
@@ -288,8 +289,7 @@ fn bounded_pixel_tile_axis_t_matches_resident_field_samples() {
             && format_features.flags.sample_count_supported(4),
         "Rgba8Unorm 1x/4x sample probe unsupported: {format_features:?}"
     );
-    let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))
-        .expect("field axis P-00 GPU device creation failed");
+    let (device, queue) = test_gpu::request_device(&adapter, &Default::default());
     let source = format!(
         "{}\n{}",
         include_str!("../src/data_render/field_columnar.wgsl"),

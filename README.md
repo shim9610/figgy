@@ -1,5 +1,7 @@
 # figgy
 
+[![Rust packages](https://github.com/shim9610/figgy/actions/workflows/ci.yml/badge.svg)](https://github.com/shim9610/figgy/actions/workflows/ci.yml)
+
 Rust scientific chart library. **CPU raster (axes / labels / grid — tiny-skia + swash) + GPU wgpu (large data) hybrid** rendering.
 Embed in egui / winit / any other wgpu 30 host.
 
@@ -34,6 +36,8 @@ renderers have Rust APIs and are not exposed by the existing `FiggyChart` JS wra
 
 [CI and verification](ci/README.md) runs native builds, renderer/pixel regressions and
 isolated package tests on standard Linux/Vulkan, Windows/DX12 and macOS/Metal runners.
+The [recorded results and known backend failures](ci/STATUS.md) distinguish completed
+checks from configured coverage.
 See [API contracts and migration](crates/renderer/API.md) for ownership and compatibility.
 Online Studio deployment is separate from this source release.
 
@@ -1333,6 +1337,7 @@ wgpu 30이다. 아직 crates.io에 게시하지 않았으며, WASM 래퍼 `figgy
 노출하지 않는다.
 
 [CI 안내](ci/README.md)에 세 OS의 빌드·렌더링·픽셀·독립 패키지 검사와 재실행 방법을 정리했다.
+[실행 결과와 확인된 문제](ci/STATUS.md)에는 실제 통과한 검사와 남은 백엔드 문제를 기록했다.
 [API 계약](crates/renderer/API.md)에서 소유권과 마이그레이션 방법을 확인할 수 있다.
 온라인 스튜디오 배포는 이번 소스 공개와 별개다.
 
