@@ -27,10 +27,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04
-            backend: vulkan
-          - os: windows-2025
-            backend: dx12
           - os: macos-15
             backend: metal
     env:

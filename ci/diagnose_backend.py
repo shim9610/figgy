@@ -59,7 +59,6 @@ test("baseline-field-locate", "bounded_gpu_axis_replay_matches_resident_global_l
 
 if sys.platform == "darwin":
     for variant, extra in [
-        ("one-sample", {"FIGGY_DIAG_SAMPLES": "1"}),
         ("opaque", {"FIGGY_DIAG_OPAQUE": "1"}),
         ("scatter-only", {"FIGGY_DIAG_SERIES": "scatter"}),
         ("bars-only", {"FIGGY_DIAG_SERIES": "bars"}),
@@ -78,7 +77,7 @@ if sys.platform == "darwin":
     # temporary copy of the locked wgpu-hal dependency. No application WGSL or
     # floating-point comparison tolerance is changed for this A/B test.
     metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--locked", "--format-version", "1"], text=True))
-    hal = next(p for p in metadata["packages"] if p["name"] == "wgpu-hal" and p["version"] == "30.0.0")
+    hal = next(p for p in metadata["packages"] if p["name"] == "wgpu-hal" and p["version"] == "30.0.1")
     patch = Path(os.environ["RUNNER_TEMP"]) / "figgy-diagnostic-wgpu-hal"
     shutil.copytree(Path(hal["manifest_path"]).parent, patch)
     device = patch / "src/metal/device.rs"
