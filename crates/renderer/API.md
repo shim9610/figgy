@@ -116,3 +116,32 @@ been published to crates.io; publishing a source commit does not publish a regis
 
 The optional serde representation is not an application file-format version.
 Same-version round-trip tests do not promise arbitrary cross-version migrations.
+
+## Detached Cartesian pipeline preparation
+
+`Renderer::for_window_minimal_async_observed` creates a window with the basic
+render shader variants instead of compiling every optional style/field entry.
+Before using ordinary charts, prepare `PreparationFeature::Basic` (which also
+includes arc scans and fit reduction). The existing constructors and `prewarm_all`
+retain their prior eager-prewarm behavior.
+
+`begin_preparation(feature)` returns an owned `PipelinePreparation`, or `None`
+when that group is already ready. Its consuming `compile(observer).await` owns
+GPU handles and the originating renderer's memory ledger, **not a renderer borrow**.
+Frames and config edits may proceed on the renderer while it awaits compilation.
+`install_preparation(result)` merges the actual prepared caches synchronously,
+rejecting another renderer/device/target generation. It never publishes chart data,
+config, selection, view ranges, or a render revision. Dropping an unfinished job
+or an uninstalled result releases its handles. Hosts deduplicate concurrent requests
+per renderer and feature, serialize installation with other renderer calls, and
+ignore results after their renderer has been disposed.
+
+`PreparationFeature::ALL`, `for_chart(config, series)` and `preparation_ready`
+provide the host's feature inventory and gating contract. Background compilation
+can start for all groups after Basic is installed. Before calling a render path,
+the host must ensure the current declarations' required groups are ready; before
+picking, also ensure Picking. This opt-in API does not change legacy lazy creation.
+The groups cover Cartesian resident pipelines, matching `prewarm_all`; nonresident
+matrix/tile streaming and separate radial/categorical/boxplot renderers are not
+part of this inventory. GPU-driver contention can still delay frames; detached
+ownership is not a frame-time guarantee.

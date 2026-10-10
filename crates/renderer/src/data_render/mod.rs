@@ -557,6 +557,7 @@ pub(crate) fn multisample_state(sample_count: u32) -> wgpu::MultisampleState {
 
 /// One compiled module per WGSL file. Precise, mapped, pick-ring, and styled
 /// pipelines reuse these instead of re-running naga on the same source.
+#[derive(Clone)]
 pub(crate) struct ShaderModules {
     pub fullscreen: wgpu::ShaderModule,
     pub line: wgpu::ShaderModule,
@@ -642,6 +643,14 @@ pub(crate) async fn prewarm_browser_render_pipelines(
     sample_count: u32,
     observer: &mut dyn FnMut(crate::InitEvent),
 ) -> Result<(), String> {
+    prewarm_browser_render_feature(device, target_format, sample_count, None, observer).await
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn prewarm_browser_render_feature(
+    device: &wgpu::Device, target_format: wgpu::TextureFormat, sample_count: u32,
+    feature: Option<crate::PreparationFeature>, observer: &mut dyn FnMut(crate::InitEvent),
+) -> Result<(), String> {
     let groups: &[(&str, &[(&str, &str)])] = &[
         (
             include_str!("fullscreen_textured.wgsl"),
@@ -726,6 +735,7 @@ pub(crate) async fn prewarm_browser_render_pipelines(
             stages,
             target_format,
             sample_count,
+            feature,
             observer,
         )
         .await?;

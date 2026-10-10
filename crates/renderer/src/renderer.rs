@@ -13,6 +13,9 @@
 //! `try_new` returns `Result<_, FiggyError>` so unsupported target formats and
 //! device resource limits are reported before wgpu validation can abort.
 
+mod preparation;
+pub use preparation::{PreparationFeature, PipelinePreparation, PreparedPipelines};
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -3403,6 +3406,7 @@ async fn create_target_pipelines_observed_async(
     _per_point_style_map_bgl: &wgpu::BindGroupLayout,
     surface_format: wgpu::TextureFormat,
     sample_count: u32,
+    _minimal: bool,
     observer: &mut dyn FnMut(InitEvent),
 ) -> Result<TargetPipelines> {
     let shaders = observe_value_async(observer, "renderer", "shader modules", || {
@@ -3410,7 +3414,7 @@ async fn create_target_pipelines_observed_async(
     })
     .await;
     #[cfg(target_arch = "wasm32")]
-    data_render::prewarm_browser_render_pipelines(device, surface_format, sample_count, observer)
+    data_render::prewarm_browser_render_feature(device, surface_format, sample_count, _minimal.then_some(PreparationFeature::Basic), observer)
         .await
         .map_err(|reason| FiggyError::GpuResourceAllocationFailed {
             resource: "browser render pipeline prewarm",
@@ -3803,13 +3807,14 @@ impl TargetPipelines {
         data_selection_bgl: &wgpu::BindGroupLayout,
         field_bgl: &wgpu::BindGroupLayout,
         star_data_bgl: &wgpu::BindGroupLayout,
-        label_pipelines: &crate::gpu_contour::ContourLabelPipelines,
+        label_pipelines: Option<&crate::gpu_contour::ContourLabelPipelines>,
+        feature: Option<PreparationFeature>,
         surface_format: wgpu::TextureFormat,
         observer: &mut dyn FnMut(InitEvent),
     ) {
         macro_rules! ensure {
             ($field:ident, $stage:literal, $create:expr) => {
-                if self.$field.is_none() {
+                if self.$field.is_none() && feature.is_none_or(|f| f.includes_field(stringify!($field))) {
                     self.$field = Some(
                         observe_value_async(observer, "renderer.prewarm", $stage, || $create).await,
                     );
@@ -4001,7 +4006,7 @@ impl TargetPipelines {
                 transform_bgl,
                 style_bgl,
                 field_bgl,
-                label_pipelines.label_gap_bgl(),
+                label_pipelines.expect("field preparation owns labels").label_gap_bgl(),
                 surface_format,
                 self.sample_count,
             )
@@ -4022,7 +4027,7 @@ impl TargetPipelines {
         ensure!(
             contour_label,
             "contour labels",
-            label_pipelines.render_pipeline(
+            label_pipelines.expect("field preparation owns labels").render_pipeline(
                 device,
                 transform_bgl,
                 surface_format,
@@ -4035,7 +4040,7 @@ impl TargetPipelines {
             (StyleKey::Milkyway, "milkyway style"),
             (StyleKey::Constellation, "constellation style"),
         ] {
-            if self.styled.contains_key(&key) {
+            if feature.is_some_and(|f| f.style_key() != Some(key)) || self.styled.contains_key(&key) {
                 continue;
             }
             let set = observe_value_async(observer, "renderer.prewarm", stage, || {
@@ -5364,6 +5369,7 @@ impl Renderer {
         pool_capacity_bytes: u64,
         target_sample_count: u32,
         gpu_ledger: Arc<GpuLedger>,
+        minimal: bool,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<Self> {
         let RendererDevice { device, queue } = gpu;
@@ -5424,6 +5430,7 @@ impl Renderer {
             &per_point_style_map_bgl,
             surface_format,
             target_sample_count,
+            minimal,
             observer,
         )
         .await?;
@@ -7333,9 +7340,8 @@ impl Renderer {
                 &self.data_selection_bgl,
                 &self.field_bgl,
                 &self.star_data_bgl,
-                self.contour_label_pipelines
-                    .as_ref()
-                    .expect("contour label pipelines were prepared"),
+                self.contour_label_pipelines.as_ref(),
+                None,
                 self.surface_format,
                 observer,
             )
@@ -9083,6 +9089,21 @@ impl Renderer {
         pool_capacity_bytes: u64,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<WindowedRenderer<'w>> {
+        Self::for_window_prepared_async(target, size, pool_capacity_bytes, false, observer).await
+    }
+
+    /// Create only basic render pipelines; optional preparations are detached jobs.
+    pub async fn for_window_minimal_async_observed<'w>(
+        target: impl Into<wgpu::SurfaceTarget<'w>>, size: (u32, u32),
+        pool_capacity_bytes: u64, observer: &mut dyn FnMut(InitEvent),
+    ) -> Result<WindowedRenderer<'w>> {
+        Self::for_window_prepared_async(target, size, pool_capacity_bytes, true, observer).await
+    }
+
+    async fn for_window_prepared_async<'w>(
+        target: impl Into<wgpu::SurfaceTarget<'w>>, size: (u32, u32),
+        pool_capacity_bytes: u64, minimal: bool, observer: &mut dyn FnMut(InitEvent),
+    ) -> Result<WindowedRenderer<'w>> {
         let instance = observe_value(observer, "window", "instance", data_render::create_instance);
         let surface = observe_result(observer, "window", "surface", || {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -9155,6 +9176,7 @@ impl Renderer {
             pool_capacity_bytes,
             target_sample_count,
             Arc::clone(&gpu_ledger),
+            minimal,
             observer,
         )
         .await?;
@@ -13637,6 +13659,11 @@ impl Drop for WindowedRenderer<'_> {
 }
 
 impl<'w> WindowedRenderer<'w> {
+    /// Publish an owned preparation without retaining a mutable borrow while it compiles.
+    pub fn install_preparation(&mut self, prepared: PreparedPipelines) -> Result<()> {
+        self.inner.install_preparation(prepared)
+    }
+
     /// Allocate a budget-checked style for this surface's renderer.
     pub fn create_style_for_series(&mut self, cfg: &SeriesConfig) -> Result<ChartStyle> {
         self.inner.create_style_for_series(cfg)
