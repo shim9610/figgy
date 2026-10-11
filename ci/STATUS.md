@@ -1,9 +1,45 @@
 # Recorded backend results
 
 **Current support policy: macOS / Metal is experimental and not yet stable.**
-Known failures remain enabled in the normal package matrix. The separate
+All regression checks remain enabled in the normal package matrix. The separate
 [precompiled Metal shader probe](metal-precision-probe/README.md) is an opt-in
-investigation, not a default renderer option or a completed macOS fix.
+investigation, not a default renderer option. Standard CI uses software/virtual
+adapters; physical Intel/AMD/NVIDIA/Apple driver coverage remains outstanding.
+
+## Renderer 0.14.0 integration (2026-10-11)
+
+Use the [master branch package runs](https://github.com/shim9610/figgy/actions/workflows/ci.yml?query=branch%3Amaster)
+for the merged revision's result. A configured job or a narrowly scoped experiment
+is not a completed package-suite pass.
+
+- **Windows compiler setup:** `WGPU_DX12_COMPILER` now receives `dxc`, not the DLL
+  path. Pinned DXC DLLs are placed beside each extracted test executable. Previously
+  wgpu ignored the invalid value and fell back to FXC, producing loop-unroll and
+  internal compiler errors before some rendering checks could run.
+- **Metal coordinate precision:** explicit `fma` rounding boundaries preserve
+  hi/lo residuals and field-grid subtraction. The [unmodified-wgpu experiment](https://github.com/shim9610/figgy/actions/runs/38109490393)
+  passed all 768 projection cases with this formulation; the default expression
+  failed 512. A [second probe](https://github.com/shim9610/figgy/actions/runs/38109681517)
+  also covered a non-binary viewport/range ratio. This experiment isolates arithmetic;
+  the full matrix additionally checks picking, contours and field interpolation.
+- **Line midpoint picking:** CPU and GPU select the earlier endpoint within the
+  projected f32 rounding uncertainty. Regressions check both sides of the midpoint.
+- **Transparent pixel comparisons:** compare composited colors on both black and
+  white, keeping the three-code-value visible-color limit and separately bounding
+  alpha error to one. The old unpremultiplied-RGB comparison amplified subpixel
+  rounding at low alpha. Counterexamples reject lost coverage and visible changes.
+- **Contour projection oracle:** the old four-correction loop remains independent
+  from the new dispatch sequence and shares current coordinate math. Every RGBA
+  channel must stay within one 8-bit code value. The Metal edge fixture differed
+  at 45 pixels by one color code value, with identical alpha; large vector dumps
+  are replaced by a bounded diagnostic.
+
+Local Linux/lavapipe validation passed 735 renderer tests, with three existing
+opt-in probes ignored. Actual Chromium/SwiftShader execution passed six WASM tests
+covering prewarm, startup events and contour/label pixels, plus the wrapper lifecycle
+gate. These browser checks are separate from the three-OS native package matrix.
+
+## Earlier investigation and baseline
 
 Follow-up [compiler A/B diagnostics](https://github.com/shim9610/figgy/actions/runs/38046669897)
 found that disabling Metal fast-math in a temporary wgpu-hal patch made both
@@ -47,7 +83,7 @@ Windows result**. Follow-up runs stream test output immediately with `--nocaptur
 and keep independent test binaries running after failures. Rendering checks and
 their existing tolerances remain enabled on WARP.
 
-## Known Metal failures
+## Metal failures at the 0.13.0 baseline
 
 The Metal adapter and device were created successfully. These tests failed after
 initialization:
@@ -62,8 +98,9 @@ initialization:
 
 At this baseline, the causes had not yet been established; see the follow-up above. This evidence
 does not establish that physical Apple GPUs or all Metal devices behave identically.
-The checks remain enabled and their tolerances are unchanged. Until these failures
-are resolved, this source release is not verified across all three backends.
+At that revision the checks retained their original tolerances, and the source
+release was not verified across all three backends. The 0.14.0 changes above record
+the subsequent fixes and the specific pixel-comparison changes.
 
 The first run stopped before the independent renderer integration-test binaries on
 Metal. The CI follow-up uses `--no-fail-fast` and continues with doctests and negative
@@ -92,13 +129,11 @@ shared-lock failure cascade. The Actions package job additionally tests the actu
 
 ## 한국어 요약
 
-공개 기본 러너에서 세 OS의 빌드·WASM 컴파일·API 문서 검사는 통과했다.
-Linux의 패키지·렌더링·픽셀 검사도 통과했다. Windows는 WARP 장치 생성과 모델 테스트가
-통과했지만 렌더러 테스트에서 실패가 발생했다. 새 푸시로 실행이 대체돼 전체 결과는 없으며,
-Windows 검증이 통과한 상태가 아니다. 이후 실행은 중간 종료 시에도 패닉 원인을 볼 수
-있도록 로그를 즉시 출력한다.
+0.14.0에서는 Windows의 DXC 선택 오류와 Metal의 좌표 반올림·중점 피킹 문제를 수정했다.
+투명 픽셀은 검정·흰색 배경에 합성한 색과 알파를 각각 비교하며, 등고선 최적화 전후는
+RGBA 채널마다 8비트 한 단계 이내여야 통과한다. 검사 생략으로 실패를 숨기지 않는다.
+로컬 렌더러 735개 검사와 실제 브라우저 WASM 검사 6개, 래퍼 수명 검사도 통과했다.
 
-macOS의 가상 Metal 장치에서는 정밀 피킹 2개와 스트리밍 픽셀 비교 1개가 실패했다.
-나머지 4개 실패는 앞선 패닉으로 공유 잠금이 오염돼 발생했다. 테스트를 생략하거나
-허용 오차를 늘리지 않았으며, 세 백엔드 검증이 완료됐다고 표시하지 않는다.
-실제 Apple GPU에서도 같은 문제가 발생하는지는 별도 확인이 필요하다.
+위 표와 실패 목록은 0.13.0 당시 기록이다. 병합된 리비전의 세 OS 최종 결과는
+[master CI](https://github.com/shim9610/figgy/actions/workflows/ci.yml?query=branch%3Amaster)에서
+확인해야 한다. macOS는 계속 실험 단계로 표시하며, 실제 Apple GPU 검증은 별도로 남아 있다.

@@ -19,10 +19,11 @@ cannot compile the code. The tested development toolchain and the support floor
 are recorded separately. Direct host device/queue/render-pass sharing requires
 wgpu 30; a host on another wgpu major must adapt or upgrade its integration.
 
-macOS / Metal support is **experimental and not yet stable**. Known failures
-include large-coordinate precision, picking at endpoint ties, and differences
-between resident and streamed composition. A separate precompiled Metal shader
-experiment does not change the default renderer or establish a precision guarantee.
+macOS / Metal support is **experimental and not yet stable**. Version 0.14.0 uses
+explicit FMA rounding boundaries for hi/lo coordinates and a shared CPU/GPU rule
+for midpoint picking uncertainty. Physical Apple GPU coverage remains outstanding.
+A separate precompiled Metal shader experiment does not change the default renderer
+or establish a precision guarantee; no dependency patch or precompiled shader is required.
 The experimental path is not a public Cargo feature. Existing regression checks
 remain enabled; see the source repository's backend results for tested revisions.
 
@@ -111,8 +112,43 @@ or changing fields, adding required fields or enum variants, changing trait
 requirements, and adding `non_exhaustive` to existing types can break consumers.
 Incompatible changes require a new 0.x minor version and migration notes; patch
 updates must preserve the supported contract. A new wgpu major needs the same
-review. The source versions are figgy-renderer 0.13.1 and figgy-model 0.8.0. They have not
+review. The source versions are figgy-renderer 0.14.0 and figgy-model 0.8.0. They have not
 been published to crates.io; publishing a source commit does not publish a registry package.
 
 The optional serde representation is not an application file-format version.
 Same-version round-trip tests do not promise arbitrary cross-version migrations.
+
+## Detached Cartesian pipeline preparation
+
+`Renderer::for_window_minimal_async_observed` creates a window with the basic
+render shader variants instead of compiling every optional style/field entry.
+Before using ordinary charts, prepare `PreparationFeature::Basic` (which also
+includes arc scans and fit reduction). The existing constructors and `prewarm_all`
+retain their prior eager-prewarm behavior.
+
+`begin_preparation(feature)` returns an owned `PipelinePreparation`, or `None`
+when that group is already ready. Its consuming `compile(observer).await` owns
+GPU handles and the originating renderer's memory ledger, **not a renderer borrow**.
+Frames and config edits may proceed on the renderer while it awaits compilation.
+`install_preparation(result)` merges the actual prepared caches synchronously,
+rejecting another renderer/device/target generation. It never publishes chart data,
+config, selection, view ranges, or a render revision. Dropping an unfinished job
+or an uninstalled result releases its handles. Hosts deduplicate concurrent requests
+per renderer and feature, serialize installation with other renderer calls, and
+ignore results after their renderer has been disposed.
+
+`PreparationFeature::ALL`, `for_chart(config, series)` and `preparation_ready`
+provide the host's feature inventory and gating contract. Background compilation
+can start for all groups after Basic is installed. Before calling a render path,
+the host must ensure the current declarations' required groups are ready; before
+picking, also ensure Picking. This opt-in API does not change legacy lazy creation.
+The groups cover Cartesian resident pipelines, matching `prewarm_all`; nonresident
+matrix/tile streaming and separate radial/categorical/boxplot renderers are not
+part of this inventory. GPU-driver contention can still delay frames; detached
+ownership is not a frame-time guarantee.
+
+
+Line picking treats a midpoint difference within the projected coordinates' f32
+rounding uncertainty as a tie and chooses the earlier endpoint, on both CPU and
+GPU. Points outside that narrow interval still choose the nearer endpoint. This
+makes exact midpoint selection stable across native compiler backends.

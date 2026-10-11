@@ -34,9 +34,12 @@ def main():
         ["build/native/bin/x64/d3d10warp.dll"], destination,
     )
     with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
-        env.write(f"WGPU_DX12_COMPILER={destination / 'dxcompiler.dll'}\n")
+        env.write("WGPU_DX12_COMPILER=dxc\n")
+        env.write(f"FIGGY_TEST_DXC_DIR={destination}\n")
         env.write(f"FIGGY_TEST_WARP_DLL={destination / 'd3d10warp.dll'}\n")
         env.write("FIGGY_TEST_FORCE_FALLBACK=1\n")
+    with open(os.environ["GITHUB_PATH"], "a", encoding="utf-8") as path:
+        path.write(f"{destination}\n")
     print("Installed checksum-verified DXC and WARP; tests require the DX12 fallback adapter.")
 
 

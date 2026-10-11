@@ -3940,7 +3940,12 @@ mod tests {
 
         // Segment start 63 and endpoint 64 straddle two 32-index gate words.
         // The start word must still retain and exact-test that segment.
-        for (cursor, expected_index) in [([635.0, 50.0], 63), ([637.5, 50.0], 64)] {
+        for (cursor, expected_index) in [
+            ([634.998, 50.0], 63),
+            ([635.0, 50.0], 63),
+            ([635.002, 50.0], 64),
+            ([637.5, 50.0], 64),
+        ] {
             let cpu = cpu_pick(&config, &cpu_series, &cpu_columns, cursor, 0.01);
             let gpu = resolve_pick(&engine, &pool, query_from_config(&config, cursor, 0.01));
             assert_pick_parity(cpu.clone(), gpu);

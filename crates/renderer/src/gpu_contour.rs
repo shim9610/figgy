@@ -343,10 +343,19 @@ impl ContourLabelPipelines {
         device: &wgpu::Device,
         field_bgl: &wgpu::BindGroupLayout,
     ) -> Self {
-        // Frozen pre-optimization shader, independent of the new dispatch path.
-        Self::with_anchor_source(device, field_bgl,
-            include_str!("../tests/fixtures/contour_anchor_v013.wgsl"), false)
-
+        // Freeze the old four-step projection algorithm, but use the same
+        // coordinate ABI/math as production. Otherwise the oracle itself loses
+        // hi/lo residuals on Metal and cannot test dispatch equivalence there.
+        let legacy = include_str!("../tests/fixtures/contour_anchor_v013.wgsl");
+        let current = include_str!("contour_anchor.wgsl");
+        let common = |source: &str| {
+            let start = source.find("// ───── BEGIN common block").unwrap();
+            let end = source.find("// ───── END common block").unwrap();
+            start..end
+        };
+        let mut source = legacy.to_owned();
+        source.replace_range(common(legacy), &current[common(current)]);
+        Self::with_anchor_source(device, field_bgl, &source, false)
     }
 
     pub(crate) fn label_gap_bgl(&self) -> &wgpu::BindGroupLayout {

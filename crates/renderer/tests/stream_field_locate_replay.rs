@@ -162,13 +162,13 @@ fn cs_replay(@builtin(global_invocation_id) id: vec3<u32>) {
         case 3u: { s.a_bits = bitcast<u32>(v); s.phase = 4u; }
         case 4u: {
             let a = bitcast<f32>(s.a_bits);
-            let span = v - a;
+            let span = grid_rounded_subtract(v, a);
             if (!f32_is_finite(span)) {
                 s.phase = 6u;
             } else {
                 var frac = 0.0;
                 if (span != 0.0) {
-                    frac = (t - a) / span;
+                    frac = grid_rounded_subtract(t, a) / span;
                     if (!f32_is_finite(frac)) {
                         s.phase = 6u;
                         states[p] = s;

@@ -135,11 +135,11 @@ fn field_uses_samples() -> bool {
 
 // Byte-for-byte twins of the field grid-pair arithmetic.
 fn grid_rounded_add(a: f32, b: f32) -> f32 {
-    return bitcast<f32>(bitcast<u32>(a + b));
+    return fma(1.0, a, b);
 }
 
 fn grid_rounded_subtract(a: f32, b: f32) -> f32 {
-    return bitcast<f32>(bitcast<u32>(a - b));
+    return fma(1.0, a, -b);
 }
 
 fn normalize_grid_pair(v: vec2<f32>) -> vec2<f32> {
@@ -234,11 +234,11 @@ fn pair_value(v: vec2<f32>) -> f32 {
 // Error-free addition for finite, non-overflowing f32 inputs. The returned
 // pair carries the rounded sum in x and its residual in y.
 fn rounded_add(a: f32, b: f32) -> f32 {
-    return bitcast<f32>(bitcast<u32>(a + b));
+    return fma(1.0, a, b);
 }
 
 fn rounded_subtract(a: f32, b: f32) -> f32 {
-    return bitcast<f32>(bitcast<u32>(a - b));
+    return fma(1.0, a, -b);
 }
 
 fn two_sum(a: f32, b: f32) -> vec2<f32> {

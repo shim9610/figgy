@@ -17,7 +17,15 @@ Code is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE). 
 
 <a id="public-release-candidate--renderer-0120--figgy-0100"></a>
 
-## Source release — figgy-renderer 0.13.1 / figgy-model 0.8.0 / figgy 0.11.1
+## Source release — figgy-renderer 0.14.0 / figgy-model 0.8.0 / figgy 0.11.2
+
+Optional Cartesian pipelines can now compile in owned preparation jobs while the
+renderer remains available for chart edits and frames. A short checked install
+merges only GPU caches. Existing constructors and full-prewarm behavior remain
+available. See the [preparation API](crates/renderer/API.md#detached-cartesian-pipeline-preparation).
+The model and Config schema are unchanged.
+
+### Previous patch — renderer 0.13.1 / figgy 0.11.1
 
 This patch reduces shader compilation stalls and avoids mismatched browser prewarm
 layouts. Contour labels retain the same four projection corrections, precision
@@ -45,12 +53,13 @@ renderers have Rust APIs and are not exposed by the existing `FiggyChart` JS wra
 
 [CI and verification](ci/README.md) runs native builds, renderer/pixel regressions and
 isolated package tests on standard Linux/Vulkan, Windows/DX12 and macOS/Metal runners.
-The [recorded results and known backend failures](ci/STATUS.md) distinguish completed
+The [recorded results and backend fixes](ci/STATUS.md) distinguish completed
 checks from configured coverage.
-**macOS / Metal support is experimental and not yet stable.** Known coordinate
-precision, picking and render-path comparison failures remain under investigation.
+**macOS / Metal support is experimental and not yet stable.** Renderer 0.14.0 fixes
+the identified coordinate-rounding and midpoint-picking issues in shared WGSL.
+Physical Apple GPU coverage remains outstanding; consult the exact revision's CI.
 An opt-in [precompiled Metal shader experiment](ci/metal-precision-probe/README.md)
-tests a possible precision fix; it does not change the default renderer.
+compares compiler behavior; the default renderer requires no precompiled shader or wgpu patch.
 See [API contracts and migration](crates/renderer/API.md) for ownership and compatibility.
 Online Studio deployment is separate from this source release.
 
@@ -245,7 +254,7 @@ render targets and compatibility policy.
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", path = "crates/renderer" }   # or public Git source — version 0.13.1, not on crates.io.
+renderer = { package = "figgy-renderer", path = "crates/renderer" }   # or public Git source — version 0.14.0, not on crates.io.
 wgpu     = "30"
 ```
 
@@ -1334,7 +1343,15 @@ figgy는 Rust로 작성한 과학·공학용 차트 라이브러리다. **축·�
 
 <a id="공개-후보--renderer-0120--figgy-0100"></a>
 
-## 소스 릴리스 — figgy-renderer 0.13.1 / figgy-model 0.8.0 / figgy 0.11.1
+## 소스 릴리스 — figgy-renderer 0.14.0 / figgy-model 0.8.0 / figgy 0.11.2
+
+선택 기능의 파이프라인을 별도 작업으로 준비하면서 차트를 계속 편집하고 그릴 수 있다.
+준비 결과를 설치할 때는 같은 렌더러와 출력 대상인지 확인한 뒤 GPU 캐시만 합친다.
+기존 생성자와 전체 예열 API도 그대로 사용할 수 있다.
+[파이프라인 준비 API](crates/renderer/API.md#detached-cartesian-pipeline-preparation)에 사용 계약을 정리했다.
+모델과 Config 스키마는 바뀌지 않았다.
+
+### 이전 패치 — renderer 0.13.1 / figgy 0.11.1
 
 이번 패치는 셰이더 컴파일 지연과 브라우저의 중복 컴파일을 줄인다. 등고선 라벨의
 4회 위치 보정, 정밀 계산, 안티앨리어싱은 유지한다. 모든 셰이더 진입점의 컴파일 시간을
@@ -1358,10 +1375,11 @@ wgpu 30이다. 아직 crates.io에 게시하지 않았으며, WASM 래퍼 `figgy
 노출하지 않는다.
 
 [CI 안내](ci/README.md)에 세 OS의 빌드·렌더링·픽셀·독립 패키지 검사와 재실행 방법을 정리했다.
-[실행 결과와 확인된 문제](ci/STATUS.md)에는 실제 통과한 검사와 남은 백엔드 문제를 기록했다.
-**macOS / Metal 지원은 아직 불안정한 실험 단계다.** 좌표 정밀도·피킹·렌더링 경로 간
-비교에서 확인된 문제를 조사하고 있다. [정밀 Metal 셰이더 실험](ci/metal-precision-probe/README.md)은
-별도로 실행하며 기본 렌더링 경로는 바꾸지 않는다.
+[실행 결과와 백엔드 수정 내역](ci/STATUS.md)에서 검증 범위를 확인할 수 있다.
+**macOS / Metal 지원은 아직 불안정한 실험 단계다.** 0.14.0에서는 좌표 계산의 반올림과
+선분 중점 피킹 문제를 공통 WGSL에서 수정했다. 실제 Apple GPU 검증은 아직 남아 있으므로
+사용할 리비전의 CI 결과를 확인해야 한다. [정밀 Metal 셰이더 실험](ci/metal-precision-probe/README.md)은
+컴파일러 동작을 비교하는 별도 검사다. 기본 렌더러에는 미리 컴파일한 셰이더나 wgpu 패치가 필요 없다.
 [API 계약](crates/renderer/API.md)에서 소유권과 마이그레이션 방법을 확인할 수 있다.
 온라인 스튜디오 배포는 이번 소스 공개와 별개다.
 
@@ -1508,7 +1526,7 @@ wgpu 30을 사용해야 한다. WASM 래퍼는 별도 소비 예제로 유지하
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", path = "crates/renderer" }   # 또는 공개 Git 소스 — 버전 0.13.1, crates.io 미배포.
+renderer = { package = "figgy-renderer", path = "crates/renderer" }   # 또는 공개 Git 소스 — 버전 0.14.0, crates.io 미배포.
 wgpu     = "30"
 ```
 

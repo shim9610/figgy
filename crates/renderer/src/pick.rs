@@ -463,7 +463,10 @@ fn line_segment_pick(
         return None;
     }
     let hit_dist = (center_dist - half_width.max(0.0)).max(0.0);
-    let snapped_index = if t <= 0.5 {
+    // Match the GPU's lower-index tie rule within projected f32 uncertainty.
+    let coordinate_scale = ax.abs().max(ay.abs()).max(bx.abs()).max(by.abs()).max(1.0);
+    let midpoint_tolerance = (f32::EPSILON * coordinate_scale / len_sq.sqrt()).min(0.25);
+    let snapped_index = if t <= 0.5 + midpoint_tolerance {
         point_index
     } else {
         point_index + 1

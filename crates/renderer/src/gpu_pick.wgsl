@@ -130,12 +130,12 @@ fn pick_axis_pair_to_t(v: vec2<f32>, axis: u32) -> f32 {
     let max_hi = pick_query_params.transform.data_max[axis];
     let min_lo = pick_query_params.transform.data_min_lo[axis];
     let max_lo = pick_query_params.transform.data_max_lo[axis];
-    let linear_num = (v.x - min_hi) + (v.y - min_lo);
-    let range = (max_hi - min_hi) + (max_lo - min_lo);
+    let linear_num = fma(1.0, v.x - min_hi, v.y - min_lo);
+    let range = fma(1.0, max_hi - min_hi, max_lo - min_lo);
     let log_num = (pick_log10(raw) - min_hi) - min_lo;
     let data_t = mix(linear_num / range, log_num / range, pick_query_params.transform.scale_log[axis]);
-    return pick_query_params.transform.data_to_panel_offset[axis]
-        + data_t * pick_query_params.transform.data_to_panel_scale[axis];
+    return fma(data_t, pick_query_params.transform.data_to_panel_scale[axis],
+        pick_query_params.transform.data_to_panel_offset[axis]);
 }
 
 fn pick_project_axis_pair(v: vec2<f32>, axis: u32) -> f32 {
@@ -512,7 +512,12 @@ fn pick_line_candidate(
     if !pick_is_finite(distance_sq) || distance_sq > maximum_sq {
         return pick_invalid_candidate(series_order);
     }
-    let use_b = t > 0.5;
+    // Projected endpoints are f32. Reciprocal/fused evaluation can put an
+    // exact midpoint a rounding step on either side of 0.5 across backends.
+    // Resolve that uncertainty by the same lower-index rule as the CPU picker.
+    let coordinate_scale = max(max(max(abs(a_px.x), abs(a_px.y)), max(abs(b_px.x), abs(b_px.y))), 1.0);
+    let midpoint_tolerance = min(PICK_F32_EPSILON * coordinate_scale / sqrt(length_sq), 0.25);
+    let use_b = t > 0.5 + midpoint_tolerance;
     let point_index = select(segment_index, segment_index + 1u, use_b);
     return PickCandidate(
         1u,
