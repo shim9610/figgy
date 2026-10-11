@@ -546,7 +546,7 @@ impl DataPickPipelineBundle {
                 layout: Some(&histogram_layout),
                 module: bar_shader,
                 entry_point: Some("pick_histogram_bin"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                compilation_options: crate::gpu_compile::workgroup_options(&device),
                 cache: None,
             })
         });

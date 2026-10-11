@@ -525,6 +525,7 @@ fn a_batch_upload_costs_less_host_heap_per_column_than_one_at_a_time() {
         )
         .unwrap();
     renderer.end_gpu_frame();
+    settle_gpu(&renderer);
 
     println!("\nhost allocations for {COLUMNS} columns, singles vs one batch");
     println!(
@@ -550,16 +551,20 @@ fn a_batch_upload_costs_less_host_heap_per_column_than_one_at_a_time() {
             .map(|(id, source)| (id.as_str(), source as &dyn ColumnSource))
             .collect();
 
+        settle_gpu(&renderer);
         let calls_before = calls();
         for (id, source) in single_ids.iter().zip(&sources) {
             renderer.add_column(id.as_str(), source).unwrap();
         }
         renderer.end_gpu_frame();
+        settle_gpu(&renderer);
         let singles = calls() - calls_before;
 
+        settle_gpu(&renderer);
         let calls_before = calls();
         renderer.add_columns(&batch).unwrap();
         renderer.end_gpu_frame();
+        settle_gpu(&renderer);
         let batched = calls() - calls_before;
 
         println!(
@@ -580,7 +585,8 @@ fn a_batch_upload_costs_less_host_heap_per_column_than_one_at_a_time() {
              A per-value or per-chunk host allocation would show up here.",
             batched as f64 / COLUMNS as f64
         );
-        batch_points.push(((values * 4) as f64, batched as f64));
+        // The measured allocation count covers all columns in the batch.
+        batch_points.push(((COLUMNS * values * 4) as f64, batched as f64));
     }
 
     // Same column count, 64× the data: the count must not follow the data.

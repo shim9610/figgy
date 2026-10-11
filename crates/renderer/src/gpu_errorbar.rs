@@ -491,7 +491,7 @@ impl GpuErrorbarExtentEngine {
                 layout: Some(layout),
                 module: &shader,
                 entry_point: Some(entry),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                compilation_options: crate::gpu_compile::workgroup_options(device),
                 cache: None,
             })
         };
@@ -583,7 +583,7 @@ impl GpuErrorbarExtentEngine {
                 layout: Some(layout),
                 module: &shader,
                 entry_point: Some(entry),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                compilation_options: crate::gpu_compile::workgroup_options(device),
                 cache: None,
             })
         };
@@ -1923,5 +1923,48 @@ mod tests {
         assert_eq!(extent.x.min, pair_sum(raw[0]));
         assert_eq!(extent.x.max, pair_sum(raw[1]));
         assert_eq!(extent.y.min_positive, Some(0.25));
+    }
+    #[test]
+    fn reduction_boundaries_and_reuse_have_bounded_first_completion() {
+        let (device, queue) = crate::data_render::shared_device().expect("required adapter");
+        let engine = GpuErrorbarExtentEngine::new(&device);
+        for count in [1_usize, 63, 64, 65, 127, 128, 129, 4097] {
+            let mut pool = ColumnPool::new(
+                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+                1024 * 1024,
+            )
+            .unwrap();
+            let xs: Vec<f32> = (0..count).map(|i| 13.5 + i as f32 * 0.25).collect();
+            let ys: Vec<f32> = (0..count).map(|i| -50.0 + (i % 17) as f32 * 1.75).collect();
+            let x_expected = (xs[0] as f64, xs[count - 1] as f64);
+            let y_expected = (
+                ys.iter().copied().fold(f32::INFINITY, f32::min) as f64,
+                ys.iter().copied().fold(f32::NEG_INFINITY, f32::max) as f64,
+            );
+            let x = add_f32(&mut pool, &device, &queue, "boundary-x", xs);
+            let y = add_f32(&mut pool, &device, &queue, "boundary-y", ys);
+            for _ in 0..2 {
+                let started = std::time::Instant::now();
+                let actual = resolve_series(
+                    &engine,
+                    &device,
+                    &queue,
+                    &pool,
+                    GpuSeriesExtentMode::Points,
+                    series_columns(x, y),
+                )
+                .unwrap();
+                let elapsed = started.elapsed();
+                eprintln!("extent count={count}: GPU completion {elapsed:?}");
+                if device.adapter_info().backend == wgpu::Backend::Dx12 {
+                    assert!(
+                        elapsed < std::time::Duration::from_secs(5),
+                        "first-use extent stalled: {elapsed:?}"
+                    );
+                }
+                assert_eq!((actual.x.min, actual.x.max), x_expected, "x count={count}");
+                assert_eq!((actual.y.min, actual.y.max), y_expected, "y count={count}");
+            }
+        }
     }
 }

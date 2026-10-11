@@ -6,6 +6,17 @@ All regression checks remain enabled in the normal package matrix. The separate
 investigation, not a default renderer option. Standard CI uses software/virtual
 adapters; physical Intel/AMD/NVIDIA/Apple driver coverage remains outstanding.
 
+## Renderer 0.14.1 Windows initialization workaround (2026-10-11)
+
+Windows DX12 uses explicit per-invocation zeroing and a barrier for six shared-array
+compute entries. Other backends retain automatic initialization. The implementation
+preserves the zero-value contract instead of globally disabling it. The
+[diagnostic comparison](https://github.com/shim9610/figgy/actions/runs/38123340767)
+identified the aggregate initialization DXIL as the trigger for WARP's first-use
+JIT stall; see [scope and regression checks](shader-compilation.md#windows-dx12-workgroup-initialization).
+The normal package matrix remains enabled on all three operating systems. Its
+result must be read from the exact revision's run, separately from that diagnostic.
+
 ## Renderer 0.14.0 integration (2026-10-11)
 
 Use the [master branch package runs](https://github.com/shim9610/figgy/actions/workflows/ci.yml?query=branch%3Amaster)

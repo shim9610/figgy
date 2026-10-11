@@ -631,6 +631,17 @@ struct DataPickCandidate {
 
 var<workgroup> data_pick_shared: array<DataPickCandidate, DATA_PICK_WORKGROUP_SIZE>;
 
+// Windows DX12: bounded per-invocation zeroing avoids aggregate DXIL stores.
+// Keep this override paired with gpu_compile::workgroup_options.
+override FIGGY_EXPLICIT_WORKGROUP_ZERO: bool = false;
+
+fn figgy_zero_workgroup(local_index: u32) {
+    if FIGGY_EXPLICIT_WORKGROUP_ZERO {
+        data_pick_shared[local_index] = DataPickCandidate();
+        workgroupBarrier();
+    }
+}
+
 fn data_pick_finite(v: f32) -> bool {
     return (bitcast<u32>(v) & 0x7f800000u) != 0x7f800000u;
 }
@@ -729,6 +740,7 @@ fn data_pick_bar(bin_index: u32) -> DataPickCandidate {
 
 @compute @workgroup_size(DATA_PICK_WORKGROUP_SIZE)
 fn pick_histogram_bin(@builtin(local_invocation_index) local_index: u32) {
+    figgy_zero_workgroup(local_index);
     var best = data_pick_invalid();
     var index = local_index;
     while (index < data_pick_query.data.z) {

@@ -101,6 +101,17 @@ const WG: u32 = 256u;
 
 var<workgroup> scan_shared: array<f32, 256>;
 
+// Windows DX12: bounded per-invocation zeroing avoids aggregate DXIL stores.
+// Keep this override paired with gpu_compile::workgroup_options.
+override FIGGY_EXPLICIT_WORKGROUP_ZERO: bool = false;
+
+fn figgy_zero_workgroup(local_index: u32) {
+    if FIGGY_EXPLICIT_WORKGROUP_ZERO {
+        scan_shared[local_index] = f32();
+        workgroupBarrier();
+    }
+}
+
 fn point_px(i: u32) -> vec2<f32> {
     let xi = params.x_base + i * 2u;
     let yi = params.y_base + i * 2u;
@@ -131,6 +142,7 @@ fn scan_block(
     @builtin(local_invocation_id) lid_v: vec3<u32>,
     @builtin(workgroup_id) wid: vec3<u32>,
 ) {
+    figgy_zero_workgroup(lid_v.x);
     let i = gid.x;
     let lid = lid_v.x;
     var v = 0.0;

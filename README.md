@@ -17,7 +17,15 @@ Code is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE). 
 
 <a id="public-release-candidate--renderer-0120--figgy-0100"></a>
 
-## Source release — figgy-renderer 0.14.0 / figgy-model 0.8.0 / figgy 0.11.2
+## Source release — figgy-renderer 0.14.1 / figgy-model 0.8.0 / figgy 0.11.3
+
+Windows DX12 now uses explicit per-invocation initialization for the shared
+arrays in extent reduction, picking and arc scans. This avoids WARP's first-use
+compiler stall while preserving zero values and synchronization. Other backends,
+public APIs and chart output contracts are unchanged. See the
+[workaround and regression checks](ci/shader-compilation.md#windows-dx12-workgroup-initialization).
+
+### Previous feature release — renderer 0.14.0 / figgy 0.11.2
 
 Optional Cartesian pipelines can now compile in owned preparation jobs while the
 renderer remains available for chart edits and frames. A short checked install
@@ -254,7 +262,7 @@ render targets and compatibility policy.
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", path = "crates/renderer" }   # or public Git source — version 0.14.0, not on crates.io.
+renderer = { package = "figgy-renderer", path = "crates/renderer" }   # or public Git source — version 0.14.1, not on crates.io.
 wgpu     = "30"
 ```
 
@@ -1343,7 +1351,14 @@ figgy는 Rust로 작성한 과학·공학용 차트 라이브러리다. **축·�
 
 <a id="공개-후보--renderer-0120--figgy-0100"></a>
 
-## 소스 릴리스 — figgy-renderer 0.14.0 / figgy-model 0.8.0 / figgy 0.11.2
+## 소스 릴리스 — figgy-renderer 0.14.1 / figgy-model 0.8.0 / figgy 0.11.3
+
+Windows DX12에서는 범위 계산·피킹·호장 스캔의 공유 배열을 각 실행 단위가 나눠서
+초기화한다. 초기값과 동기화 보장을 유지하면서 WARP의 첫 실행 컴파일 지연을 피한다.
+다른 백엔드와 공개 API, 차트 출력 계약은 그대로다.
+[우회 방식과 회귀 검사](ci/shader-compilation.md#windows-dx12-workgroup-initialization)에 근거를 정리했다.
+
+### 이전 기능 릴리스 — renderer 0.14.0 / figgy 0.11.2
 
 선택 기능의 파이프라인을 별도 작업으로 준비하면서 차트를 계속 편집하고 그릴 수 있다.
 준비 결과를 설치할 때는 같은 렌더러와 출력 대상인지 확인한 뒤 GPU 캐시만 합친다.
@@ -1526,7 +1541,7 @@ wgpu 30을 사용해야 한다. WASM 래퍼는 별도 소비 예제로 유지하
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", path = "crates/renderer" }   # 또는 공개 Git 소스 — 버전 0.14.0, crates.io 미배포.
+renderer = { package = "figgy-renderer", path = "crates/renderer" }   # 또는 공개 Git 소스 — 버전 0.14.1, crates.io 미배포.
 wgpu     = "30"
 ```
 

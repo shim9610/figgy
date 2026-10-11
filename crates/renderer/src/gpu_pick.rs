@@ -859,7 +859,11 @@ fn create_pipeline_bundle_observed(
             layout: Some(layout),
             module: &shader,
             entry_point: Some(entry),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            compilation_options: if matches!(entry, "pick_exact_candidates" | "pick_reduce_candidates") {
+                crate::gpu_compile::workgroup_options(&device)
+            } else {
+                wgpu::PipelineCompilationOptions::default()
+            },
             cache: None,
         })
     };
@@ -971,7 +975,11 @@ async fn create_pipeline_bundle_observed_async(
             layout: Some(layout),
             module: &shader,
             entry_point: Some(entry),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            compilation_options: if matches!(entry, "pick_exact_candidates" | "pick_reduce_candidates") {
+                crate::gpu_compile::workgroup_options(&device)
+            } else {
+                wgpu::PipelineCompilationOptions::default()
+            },
             cache: None,
         })
     };

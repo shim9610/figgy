@@ -365,7 +365,11 @@ pub fn create_arc_scan_pipelines_observed(
                 layout: Some(layout),
                 module: &shader,
                 entry_point: Some(entry),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                compilation_options: if entry == "scan_block" {
+                    crate::gpu_compile::workgroup_options(&device)
+                } else {
+                    wgpu::PipelineCompilationOptions::default()
+                },
                 cache: None,
             },
         )

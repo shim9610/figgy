@@ -8,6 +8,10 @@
 #[path = "shader_compile_capture.rs"]
 pub(crate) mod capture;
 
+#[path = "workgroup_init.rs"]
+mod workgroup_init;
+pub(crate) use workgroup_init::compilation_options as workgroup_options;
+
 #[cfg(any(test, target_arch = "wasm32"))]
 pub(crate) fn source_key(source: &str) -> String {
     // Stable content identity, not a security digest. The contract regression

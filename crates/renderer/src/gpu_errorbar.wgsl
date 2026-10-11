@@ -61,6 +61,17 @@ struct Params {
 
 var<workgroup> shared_states: array<SeriesState, 64>;
 
+// Windows DX12: bounded per-invocation zeroing avoids aggregate DXIL stores.
+// Keep this override paired with gpu_compile::workgroup_options.
+override FIGGY_EXPLICIT_WORKGROUP_ZERO: bool = false;
+
+fn figgy_zero_workgroup(local_index: u32) {
+    if FIGGY_EXPLICIT_WORKGROUP_ZERO {
+        shared_states[local_index] = SeriesState();
+        workgroupBarrier();
+    }
+}
+
 fn mode() -> u32 {
     return params.offsets_1.z;
 }
@@ -600,6 +611,7 @@ fn reduce_values(
     @builtin(local_invocation_index) local_index: u32,
     @builtin(workgroup_id) workgroup_id: vec3<u32>,
 ) {
+    figgy_zero_workgroup(local_index);
     var local_state = empty_series_state();
     let stride = dispatch_groups() * WORKGROUP_SIZE;
     var index = global_id.x;
@@ -629,6 +641,7 @@ fn reduce_states(
     @builtin(local_invocation_index) local_index: u32,
     @builtin(workgroup_id) workgroup_id: vec3<u32>,
 ) {
+    figgy_zero_workgroup(local_index);
     var local_state = empty_series_state();
     let stride = dispatch_groups() * WORKGROUP_SIZE;
     var index = global_id.x;

@@ -32,6 +32,41 @@ unchanged. This change reorganizes compilation and dispatch, not chart quality.
   wrappers. Native test builds capture the actual descriptors and durations;
   normal builds call wgpu directly. Coverage fails on a missing WGSL file or entry.
 
+## Windows DX12 workgroup initialization
+
+Renderer 0.14.1 uses an internal, DX12-only override on Windows for six compute
+entries: `reduce_values`, `reduce_states`, `pick_exact_candidates`,
+`pick_reduce_candidates`, `pick_histogram_bin` and `scan_block`. Each invocation
+zeros its own shared-array element and all invocations synchronize before any
+calculation. Only these pipelines disable the now-redundant automatic zeroing.
+Every field, including padding, is initialized. The two small replay-mask atomics
+retain automatic initialization. Vulkan, Metal and browser WebGPU keep their
+existing initialization policy; no dependency fork or shader passthrough is used.
+
+The trigger was identified using actual Naga HLSL, actual DXC DXIL and symbolized
+WARP ETW stacks. Naga's single-invocation aggregate zero becomes 768 or 512 static
+stores in DXIL. WARP 1.0.20 spent about 97% of first-completion CPU samples in its
+use/dependency/liveness analyses. A same-invocation loop with the same initialization
+and barrier reduced extent completion from 17.61s to 0.166s; distributed element
+initialization took 0.175s. These are individual Windows software-adapter diagnostic
+measurements, not physical-GPU throughput claims. See the
+[causal comparison run](https://github.com/shim9610/figgy/actions/runs/38123340767).
+
+Regression tests inspect the WGSL entry ordering and exercise the actual production
+initializers after poisoning every field. They check cross-invocation visibility
+across four workgroups and repeated dispatches, including a 5-second DX12 budget
+for creation plus first completion. Production extent reduction separately tests
+1/63/64/65/127/128/129/4097 inputs, exact bounds and reuse, with a first-completion
+budget. Pipeline capture checks that all six real constructors select the intended
+policy. Browser metadata strips only the native workaround override and retains
+WebGPU's normal automatic initialization. Rendering and pixel assertions remain
+enabled on all three CI backends.
+
+The batch allocation test also now waits for submitted GPU work before taking its
+measurements and divides batch allocations by the entire batch's input bytes.
+The previous denominator counted one column although the numerator covered 64.
+The existing per-column and per-MiB limits are unchanged.
+
 The old four-step automatic placement algorithm is frozen under
 `crates/renderer/tests/fixtures/`. Its test loader replaces the marked shared
 coordinate/sampling block with current SSOT math, so Metal coordinate fixes apply

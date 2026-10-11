@@ -100,6 +100,17 @@ struct PickCandidate {
 
 var<workgroup> pick_shared_candidates: array<PickCandidate, PICK_WORKGROUP_SIZE>;
 
+// Windows DX12: bounded per-invocation zeroing avoids aggregate DXIL stores.
+// Keep this override paired with gpu_compile::workgroup_options.
+override FIGGY_EXPLICIT_WORKGROUP_ZERO: bool = false;
+
+fn figgy_zero_workgroup(local_index: u32) {
+    if FIGGY_EXPLICIT_WORKGROUP_ZERO {
+        pick_shared_candidates[local_index] = PickCandidate();
+        workgroupBarrier();
+    }
+}
+
 fn pick_is_finite(v: f32) -> bool {
     return v == v && abs(v) <= PICK_F32_MAX;
 }
@@ -568,6 +579,7 @@ fn pick_exact_candidates(
     @builtin(workgroup_id) workgroup_id: vec3<u32>,
     @builtin(local_invocation_index) local_index: u32,
 ) {
+    figgy_zero_workgroup(local_index);
     let group_index = pick_linear_workgroup_id(workgroup_id);
     let word_index = group_index * PICK_WORKGROUP_SIZE + local_index;
     let series_order = pick_query_params.series.y;
@@ -644,6 +656,7 @@ fn pick_exact_candidates(
 
 @compute @workgroup_size(PICK_WORKGROUP_SIZE)
 fn pick_reduce_candidates(@builtin(local_invocation_index) local_index: u32) {
+    figgy_zero_workgroup(local_index);
     var best = pick_invalid_candidate(0u);
     let count = arrayLength(&pick_reduce_inputs);
     var index = local_index;
