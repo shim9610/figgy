@@ -82,18 +82,18 @@ fn noise(p: vec2<f32>) -> f32 {
     let i=floor(p);let f=fract(p);let u=f*f*(3.0-2.0*f);
     return mix(mix(hash(i),hash(i+vec2(1.0,0.0)),u.x),mix(hash(i+vec2(0.0,1.0)),hash(i+vec2(1.0)),u.x),u.y);
 }
-// Continuous solid noise: paper must vary in z on an extruded wall, not
+// Continuous solid noise: rough surfaces must vary in z on an extruded wall, not
 // repeat a top-plane sample down its entire height. No face UV seams.
-fn paper_noise(p: vec3<f32>) -> f32 {
+fn material_noise(p: vec3<f32>) -> f32 {
     let z=floor(p.z);let f=fract(p.z);let blend=f*f*(3.0-2.0*f);
     return mix(noise(p.xy+z*vec2(37.0,91.0)),noise(p.xy+(z+1.0)*vec2(37.0,91.0)),blend);
 }
-fn paper_band(p: vec3<f32>,frequency: vec3<f32>,pixels: f32) -> f32 {
+fn material_band(p: vec3<f32>,frequency: vec3<f32>,pixels: f32) -> f32 {
     // Keep coordinates fixed in object space. Fade frequencies that cannot be
     // resolved at this output size/angle instead of changing the pattern scale.
     let cycles=max(max(frequency.x,frequency.y),frequency.z)/max(pixels,1.0);
     let resolved=1.0-smoothstep(0.3,0.85,cycles);
-    return (paper_noise(p*frequency)-0.5)*resolved;
+    return (material_noise(p*frequency)-0.5)*resolved;
 }
 fn surface(s: Sector,h: Hit,view: vec3<f32>) -> vec3<f32> {
     let kind=u32(s.material.x);
@@ -128,16 +128,24 @@ fn surface(s: Sector,h: Hit,view: vec3<f32>) -> vec3<f32> {
     if kind==4u {
         let q=vec3(p,h.p.z*s.material.w)+vec3(s.detail.w);
         let pixels=s.geometry.z*max(abs(dot(h.n,view)),0.08)/s.material.w;
-        let paper_grain=paper_band(q,vec3(90.0),pixels);
-        let fibres=paper_band(q,vec3(32.0,90.0,80.0),pixels);
-        let pulp=paper_band(q,vec3(22.0),pixels);
+        let paper_grain=material_band(q,vec3(90.0),pixels);
+        let fibres=material_band(q,vec3(32.0,90.0,80.0),pixels);
+        let pulp=material_band(q,vec3(22.0),pixels);
         base*=1.0+s.material.z*(paper_grain*0.14+fibres*0.045+pulp*0.012);
         lighting=0.8+0.2*diffuse;
     }
     if kind==5u {
-        let rings=sin((p.x*28.0+noise(p*3.0)*4.0+sin(p.y*4.0))*3.0);
-        base*=1.0+s.material.z*(rings*0.24+(grain-0.5)*0.2);
-        spec=pow(max(dot(h.n,half_dir),0.0),28.0)*0.15;
+        // Unpatterned, rough plywood: irregular fine fibres, not decorative
+        // annual rings. Object-space z varies the grain along the wall
+        // height and shares the same surface treatment with the top face.
+        let q=vec3(p,h.p.z*s.material.w)+vec3(s.detail.w);
+        let pixels=s.geometry.z*max(abs(dot(h.n,view)),0.08)/s.material.w;
+        let fibres=material_band(q,vec3(72.0,85.0,90.0),pixels);
+        let fine=material_band(q,vec3(150.0,125.0,135.0),pixels);
+        let pores=material_band(q,vec3(22.0,28.0,24.0),pixels);
+        base*=1.0+s.material.z*(fibres*0.22+fine*0.10+pores*0.04);
+        lighting=0.7+0.3*diffuse;
+        spec=pow(max(dot(h.n,half_dir),0.0),mix(48.0,8.0,s.material.y))*s.rounding.w*0.025*(1.0-s.material.y);
     }
     if kind==7u { lighting=select(select(0.5,0.76,diffuse>0.3),1.0,diffuse>0.7); }
     if kind==8u {
@@ -166,6 +174,11 @@ fn hit_pixel(pixel: vec2<f32>,s: Sector) -> Hit {
         return Hit(10000.0,vec3(0.0),vec3(0.0));
     }
     return hit_sector(vec3(xy.x,xy.y*cs+sn*3.0,-xy.y*sn+cs*3.0-s.rounding.z),vec3(0.0,-sn,-cs),s);
+}
+fn crosses_top_wall(a: Hit,b: Hit) -> bool {
+    // Classify the visible geometric surface, including the middle of a bevel.
+    // Testing first hits avoids drawing hidden edges through the solid.
+    return b.t<9999.0 && (a.n.z>=0.70710678)!=(b.n.z>=0.70710678);
 }
 fn scene(pixel: vec2<f32>) -> vec4<f32> {
     var color=vec4(globals.background.rgb*globals.background.a,globals.background.a);
@@ -202,7 +215,18 @@ fn scene(pixel: vec2<f32>) -> vec4<f32> {
                 let band=s.outline.w*select(0.5,1.0,is_rim);
                 let offsets=array<vec2<f32>,4>(vec2(band,0.0),vec2(-band,0.0),vec2(0.0,band),vec2(0.0,-band));
                 var border=false;
-                for(var j=0u;j<4u;j++) { border=border || hit_pixel(pixel+offsets[j],s).t>=9999.0; }
+                for(var j=0u;j<4u;j++) {
+                    let neighbor=hit_pixel(pixel+offsets[j],s);
+                    border=neighbor.t>=9999.0;
+                    if !border && crosses_top_wall(h,neighbor) {
+                        // A crease is inked on both faces, unlike the inward
+                        // silhouette band. Keep the total logical width equal.
+                        if is_rim {
+                            border=crosses_top_wall(h,hit_pixel(pixel+offsets[j]*0.5,s));
+                        } else { border=true; }
+                    }
+                    if border { break; }
+                }
                 if border { rgb=mix(rgb,s.outline_color.rgb,s.outline_color.a*max(enabled,s.outline.z)); }
             }
             color=vec4(rgb,1.0);

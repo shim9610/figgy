@@ -6,6 +6,24 @@ All regression checks remain enabled in the normal package matrix. The separate
 investigation, not a default renderer option. Standard CI uses software/virtual
 adapters; physical Intel/AMD/NVIDIA/Apple driver coverage remains outstanding.
 
+## Renderer 0.15.1 radial surfaces and export (2026-10-11)
+
+Three native regressions cover visible top/wall outline creases (pie/donut,
+bevel, rim/separator isolation, width zero and 1×/2×), nonperiodic wood grain
+that varies along wall height, and decoded PNGs retaining partial hover and
+persistent click selection. The PNG check also runs as an explicit WebGPU test;
+it compares selected geometry with full hover, verifies physical lift and
+checks that clearing selection restores the original pixels. The native package
+matrix runs these checks on Linux/Vulkan, Windows/DX12 and macOS/Metal.
+
+Local Linux/Mesa lavapipe checks pass. Use this revision's
+[Actions run](https://github.com/shim9610/figgy/actions/workflows/ci.yml) for the
+three-OS result. The separate browser gate uses Chromium 151/SwiftShader; standard
+CI does not execute browser tests. This covers the renderer export contract,
+not the deployed Studio's selection-to-export state transfer. The website must
+pass the same `RadialChart.interaction` used for display; see
+[the export workflow](../crates/renderer/RADIAL.md#ssot-편집과-선택).
+
 ## Renderer 0.15.0 bounded chart interaction (2026-10-11)
 
 This source release pairs renderer 0.15.0 with model 0.9.0 and figgy 0.12.0.

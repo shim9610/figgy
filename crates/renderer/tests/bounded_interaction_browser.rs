@@ -112,3 +112,18 @@ async fn all_bounded_decorations_select_drag_rerender_and_export_on_webgpu() {
     );
     r.end_frame();
 }
+
+#[path = "support/radial_export.rs"]
+mod radial_export;
+#[wasm_bindgen_test(async)]
+async fn radial_png_preserves_hover_progress_and_persistent_selection_on_webgpu() {
+    let instance = renderer::data_render::create_instance();
+    let adapter = renderer::data_render::request_adapter_async(&instance)
+        .await
+        .unwrap();
+    let (device, queue) = renderer::data_render::request_device_async(&adapter)
+        .await
+        .unwrap();
+    assert!(device.as_webgpu().is_some());
+    radial_export::check(RendererDevice::new(Arc::new(device), Arc::new(queue))).await;
+}

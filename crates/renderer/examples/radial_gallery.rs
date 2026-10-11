@@ -59,6 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("enamel", RadialMaterial::Enamel),
         ("brushed-metal", RadialMaterial::BrushedMetal),
         ("paper", RadialMaterial::Paper),
+        ("plywood", RadialMaterial::Wood),
         ("hatch", RadialMaterial::Hatch),
         ("pearl", RadialMaterial::Pearl),
     ] {
@@ -71,12 +72,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         if matches!(
             material,
-            RadialMaterial::Hatch | RadialMaterial::Pearl | RadialMaterial::Paper
+            RadialMaterial::Hatch
+                | RadialMaterial::Pearl
+                | RadialMaterial::Paper
+                | RadialMaterial::Wood
         ) {
             c.style.texture_strength = 0.7;
         }
+        if material == RadialMaterial::Wood {
+            c.style.roughness = 0.9;
+            c.style.gloss = 0.1;
+        }
         cases.push((name.to_owned(), c));
     }
+    let mut outlined = base();
+    outlined.title = "Raised pie / visible rim and separators".into();
+    outlined.kind = RadialKind::Pie;
+    outlined.style.material = RadialMaterial::Flat;
+    outlined.style.depth = 0.3;
+    outlined.style.bevel = 0.0;
+    outlined.style.gap_degrees = 0.0;
+    outlined.style.inner_corner = 0.0;
+    outlined.style.outer_corner = 0.0;
+    outlined.style.outline.rim = true;
+    outlined.style.outline.separators = true;
+    outlined.slices = vec![
+        RadialSlice::new("Control", 2., Color::from_rgb8(140, 69, 147)),
+        RadialSlice::new("Low", 3., Color::from_rgb8(108, 157, 148)),
+        RadialSlice::new("Medium", 4., Color::from_rgb8(224, 164, 77)),
+        RadialSlice::new("High", 5., Color::from_rgb8(107, 142, 182)),
+    ];
+    cases.push(("outlined-raised-pie".into(), outlined));
     for (name, amount) in [("corners-sharp", 0.0), ("corners-rounded", 0.12)] {
         let mut c = base();
         c.title = name.into();

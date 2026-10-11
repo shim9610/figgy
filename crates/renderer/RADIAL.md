@@ -109,7 +109,7 @@ WASM은 같은 `prepare`/`draw`를 쓰고, 출력에는 `export_rgba_async(...).
 | `Hatch` | 대각선 해칭 |
 | `Pearl` | 곡면 가장자리의 약한 펄 색 변화 |
 | `Paper` | 윗면·옆면에 이어지는 미세한 무광 종이 결 |
-| `Wood` | 굽은 결 무늬와 약한 광택 |
+| `Wood` | 굵은 무늬 없이 미세하고 불규칙한 잔결을 가진 거친 무광 합판 |
 
 `tilt_degrees`(0~65), `depth`(반지름의 0~0.4), `gap_degrees`(0~8), `bevel`(0~0.1),
 `roughness`(0.05~1), `texture_strength`(0~1), `texture_scale`(0.1~8), `light`, `shadow`를
@@ -125,10 +125,11 @@ WASM은 같은 `prepare`/`draw`를 쓰고, 출력에는 `export_rgba_async(...).
 `gloss`(0~1)는 반사광 강도, `roughness`는 퍼짐, `texture_angle_degrees`는 표면 무늬 방향을
 조절한다. 같은 조명에서도 재질에 따라 적용 방식이 다르다. 물리 기반 렌더러 전체를 구현한
 것은 아니며, 차트의 범주 색을 유지하는 스타일화된 셰이딩이다.
-종이는 높이까지 포함한 연속적인 질감 좌표를 사용해 옆면에 세로줄이 생기지 않도록 한다.
+종이와 우드는 높이까지 포함한 연속적인 질감 좌표를 사용해 옆면에 세로줄이 생기지 않도록 한다.
 출력 크기와 면의 기울기로 구분할 수 없는 미세 무늬는 약하게 줄여 깜빡임을 억제한다. `Flat`은 광택·질감을 사용하지
-않고, `Toon`은 거칠기 대신 고정 명암 단계를 사용한다. `Wood`는 기존 API 호환을 위해 남기되
-새 갤러리와 편집기의 추천 목록에는 노출하지 않는다.
+않고, `Toon`은 거칠기 대신 고정 명암 단계를 사용한다. `Wood`는 나이테나 규칙적인 줄무늬를
+그리지 않는다. 조각의 원래 색을 유지하면서 잔결을 더한다. 거친 합판 표현은
+`texture_strength = 0.7`, `roughness = 0.9`, `gloss = 0.1`부터 조정할 수 있다.
 
 ### 스타일 옵션 기본값과 범위
 
@@ -237,8 +238,32 @@ chart.interaction.selected = Some(target);
 차트 크기는 호버로 바뀌지 않는다. PNG는 넘긴 모델의 선택·호버 상태를 그대로 포함한다.
 일시 상태 없는 PNG가 필요하면 모델 복사본의 `interaction`을 `Default::default()`로 초기화한다.
 
+화면과 같은 들림을 내보내려면 **화면에 사용한 모델의 상호작용 상태까지** 출력용 모델에
+넘겨야 한다. 라벨 선택인 `decorations.selected`는 조각 선택인 `interaction.selected`와
+별개다. UI의 선택 목록만 갱신해도 렌더러의 조각 선택 상태가 자동으로 바뀌지는 않는다.
+
+```rust,no_run
+# async fn export_selected(renderer: &mut renderer::RadialRenderer, chart: &renderer::RadialChart)
+# -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+// 현재 선택과 호버 진행도를 포함한 스냅샷을 잡는다.
+let snapshot = chart.clone();
+let image = renderer.export_rgba_async(&snapshot, (1000, 600), 2.0).await?;
+let png = renderer::encode_png(&image)?;
+# Ok(png)
+# }
+```
+
+호버만 사용하면 내보내기 버튼으로 포인터가 이동할 때 들림이 해제될 수 있다. 클릭해서
+고른 조각을 계속 띄우려면 `interaction.selected = Some(target)`를 유지한다. 애니메이션 중간
+모양까지 남기려면 원하는 시점에 모델을 복사하고, 내보내기 전에 `interaction`을 초기화하거나
+`hover_progress`를 0으로 바꾸지 않는다. 렌더러는 호출 시 받은 상태를 그리며 웹 UI 상태를 따로
+조회하지 않는다.
+
+
 `style.outline`의 `rim`(바깥·구멍 윤곽), `separators`(조각 경계), `emphasis`(호버·선택 강조)는
-각각 켜고 끌 수 있다. 색·알파·논리 픽셀 두께를 조절하며 숨은 뒷면의 선을 투과해 그리지 않는다.
+각각 켜고 끌 수 있다. 입체 차트의 `rim`은 보이는 윗면과 바깥·안쪽 벽 사이의 경계도 포함한다.
+`separators`는 절단면과 윗면 사이의 조각 경계에도 적용된다. 색·알파·논리 픽셀 두께를 조절하며
+숨은 뒷면의 선을 투과해 그리지 않는다. 베벨이 있으면 둥근 모서리의 중간을 따른다.
 조각이 맞붙은 공유 경계는 각 조각 안쪽에 반 폭씩 그린다. 라벨과 연결선은 재질 셰이딩을 받지 않는다.
 
 ### 호스트의 갱신 순서

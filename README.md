@@ -17,7 +17,16 @@ Code is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE). 
 
 <a id="public-release-candidate--renderer-0120--figgy-0100"></a>
 
-## Source release — renderer 0.15.0 / model 0.9.0 / figgy 0.12.0
+## Source release — renderer 0.15.1 / model 0.9.0 / figgy 0.12.1
+
+Radial outlines now include visible top/wall creases on raised pies and donuts.
+Wood uses fine, irregular matte plywood grain on every face, without annual-ring
+bands or repeated wall stripes. PNG regressions verify hover progress and persistent
+selection at 1× and 2× on native and WebGPU. Public APIs and the model schema are
+unchanged. See the [radial guide](crates/renderer/RADIAL.md) and
+[verification scope](ci/STATUS.md#renderer-0151-radial-surfaces-and-export-2026-10-11).
+
+### Previous feature release — renderer 0.15.0 / model 0.9.0 / figgy 0.12.0
 
 Bounded chart titles, axes, tick/category labels, legends and data labels now expose
 renderer-measured hit maps and position editing through the existing `Selectable` /
@@ -275,7 +284,7 @@ render targets and compatibility policy.
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", path = "crates/renderer" }   # or public Git source — version 0.15.0, not on crates.io.
+renderer = { package = "figgy-renderer", path = "crates/renderer" }   # or public Git source — version 0.15.1, not on crates.io.
 wgpu     = "30"
 ```
 
@@ -1365,7 +1374,15 @@ figgy는 Rust로 작성한 과학·공학용 차트 라이브러리다. **축·�
 
 <a id="공개-후보--renderer-0120--figgy-0100"></a>
 
-## 소스 릴리스 — renderer 0.15.0 / model 0.9.0 / figgy 0.12.0
+## 소스 릴리스 — renderer 0.15.1 / model 0.9.0 / figgy 0.12.1
+
+입체 파이·도넛의 윗면과 옆면 사이에 빠졌던 경계선을 그린다. 우드 재질은 나이테와 반복되는
+세로줄을 없애고, 모든 면에 미세하고 불규칙한 무광 합판 질감을 적용한다. 네이티브와 WebGPU의
+1배·2배 PNG에서 호버 진행도와 클릭 선택에 따른 들림을 검사한다. 공개 API와 모델 형식은
+그대로다. [원형 차트 사용법](crates/renderer/RADIAL.md)과
+[검증 범위](ci/STATUS.md#renderer-0151-radial-surfaces-and-export-2026-10-11)를 참고한다.
+
+### 이전 기능 릴리스 — renderer 0.15.0 / model 0.9.0 / figgy 0.12.0
 
 원형·범주형 막대·박스플롯의 제목·축·눈금·범주 라벨·범례·값 라벨을 기존 선택·드래그 계약으로
 편집할 수 있다. [사용 흐름과 호환성](crates/renderer/INTERACTION.md).
@@ -1566,7 +1583,7 @@ wgpu 30을 사용해야 한다. WASM 래퍼는 별도 소비 예제로 유지하
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", path = "crates/renderer" }   # 또는 공개 Git 소스 — 버전 0.15.0, crates.io 미배포.
+renderer = { package = "figgy-renderer", path = "crates/renderer" }   # 또는 공개 Git 소스 — 버전 0.15.1, crates.io 미배포.
 wgpu     = "30"
 ```
 

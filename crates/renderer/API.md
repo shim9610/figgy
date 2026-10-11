@@ -113,7 +113,7 @@ or changing fields, adding required fields or enum variants, changing trait
 requirements, and adding `non_exhaustive` to existing types can break consumers.
 Incompatible changes require a new 0.x minor version and migration notes; patch
 updates must preserve the supported contract. A new wgpu major needs the same
-review. The source versions are figgy-renderer 0.15.0 and figgy-model 0.9.0. They have not
+review. The source versions are figgy-renderer 0.15.1 and figgy-model 0.9.0. They have not
 been published to crates.io; publishing a source commit does not publish a registry package.
 
 The optional serde representation is not an application file-format version.

@@ -787,3 +787,201 @@ fn radial_paper_wall_grain_varies_with_height_instead_of_extruding_stripes() {
         "no visible grain along wall height"
     );
 }
+
+fn save_surface_probe(name: &str, image: &renderer::RasterImage) {
+    if let Ok(dir) = std::env::var("FIGGY_INTERACTION_ARTIFACTS") {
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            format!("{dir}/{name}.png"),
+            renderer::encode_png(image).unwrap(),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn radial_raised_rims_include_visible_top_wall_creases() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut r = renderer();
+    for (hole, bevel, tilt, scale) in [(0.0, 0.0, 35.0, 1.0), (0.45, 0.04, 55.0, 2.0)] {
+        let mut c = RadialChart {
+            labels: RadialLabels::None,
+            kind: if hole == 0.0 {
+                RadialKind::Pie
+            } else {
+                RadialKind::Donut { inner_radius: hole }
+            },
+            slices: vec![RadialSlice::new(
+                "Surface",
+                1.0,
+                Color::from_rgb8(180, 180, 180),
+            )],
+            style: RadialStyle {
+                depth: 0.3,
+                tilt_degrees: tilt,
+                bevel,
+                hover_lift: 0.0,
+                outline: RadialOutline {
+                    width: 2.0,
+                    color: Color::BLACK,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let plain = r.export_rgba(&c, (384, 320), scale).unwrap();
+        drain(&r);
+        c.style.outline.rim = true;
+        let outlined = r.export_rgba(&c, (384, 320), scale).unwrap();
+        save_surface_probe(
+            if hole == 0.0 {
+                "raised-pie-rim"
+            } else {
+                "raised-donut-rim"
+            },
+            &outlined,
+        );
+        drain(&r);
+        // Derive the cylinder's extent from untextured pixels, independently of
+        // the shader's outline implementation. Its silhouette is symmetric
+        // about the projection of the solid's mid-height.
+        let (mut x0, mut x1, mut y0, mut y1) = (plain.width, 0, plain.height, 0);
+        for y in 0..plain.height {
+            for x in 0..plain.width {
+                if plain.rgba[((y * plain.width + x) * 4) as usize] < 220 {
+                    x0 = x0.min(x);
+                    x1 = x1.max(x);
+                    y0 = y0.min(y);
+                    y1 = y1.max(y);
+                }
+            }
+        }
+        let radius = (x1 - x0 + 1) as f32 * 0.5;
+        let cx = (x0 + x1 + 1) as f32 * 0.5;
+        let cy = (y0 + y1 + 1) as f32 * 0.5;
+        let angle = tilt.to_radians();
+        let inset = bevel * (1.0 - std::f32::consts::FRAC_1_SQRT_2);
+        let mut probes = vec![
+            (1.0 - inset, 45.0_f32),
+            (1.0 - inset, 90.0),
+            (1.0 - inset, 135.0),
+        ];
+        if hole > 0.0 {
+            probes.extend([
+                (hole + inset, 225.0),
+                (hole + inset, 270.0),
+                (hole + inset, 315.0),
+            ]);
+        }
+        for (radial, theta) in probes {
+            let theta = theta.to_radians();
+            let x = cx + radius * radial * theta.cos();
+            let y = cy
+                + radius
+                    * (radial * theta.sin() * angle.cos()
+                        - (c.style.depth * 0.5 - inset) * angle.sin());
+            let pad = (3.0 * scale).ceil() as i32;
+            let mut strongest_ink = 0;
+            for dy in -pad..=pad {
+                for dx in -pad..=pad {
+                    let i = (((y as i32 + dy) as u32 * plain.width + (x as i32 + dx) as u32) * 4)
+                        as usize;
+                    strongest_ink =
+                        strongest_ink.max(plain.rgba[i].saturating_sub(outlined.rgba[i]));
+                }
+            }
+            assert!(
+                strongest_ink > 100,
+                "missing visible top/wall crease: hole={hole}, bevel={bevel}, tilt={tilt}, scale={scale}, theta={theta}, ink={strongest_ink}"
+            );
+        }
+        // A full circle has no slice separator; that switch must not turn rims on.
+        c.style.outline.rim = false;
+        c.style.outline.separators = true;
+        assert_eq!(
+            r.export_rgba(&c, (384, 320), scale).unwrap().rgba,
+            plain.rgba
+        );
+        drain(&r);
+        c.style.outline.rim = true;
+        c.style.outline.width = 0.0;
+        assert_eq!(
+            r.export_rgba(&c, (384, 320), scale).unwrap().rgba,
+            plain.rgba
+        );
+        drain(&r);
+    }
+}
+
+#[test]
+fn radial_wood_is_matte_irregular_surface_grain_not_bands_or_wall_stripes() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut r = renderer();
+    let mut c = RadialChart {
+        labels: RadialLabels::None,
+        slices: vec![RadialSlice::new(
+            "Plywood",
+            1.0,
+            Color::from_rgb8(180, 180, 180),
+        )],
+        style: RadialStyle {
+            material: RadialMaterial::Wood,
+            depth: 0.4,
+            tilt_degrees: 55.0,
+            bevel: 0.0,
+            texture_strength: 0.0,
+            shadow: false,
+            hover_lift: 0.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let plain = r.export_rgba(&c, (512, 512), 1.0).unwrap();
+    drain(&r);
+    c.style.texture_strength = 1.0;
+    let grain = r.export_rgba(&c, (512, 512), 1.0).unwrap();
+    save_surface_probe("plywood-surface", &grain);
+    let residual = |x: usize, y: usize| -> f64 {
+        let i = (y * 512 + x) * 4;
+        f64::from(grain.rgba[i]) - f64::from(plain.rgba[i])
+    };
+    let bottom = (0..512)
+        .rev()
+        .find(|&y| plain.rgba[(y * 512 + 256) * 4] < 230)
+        .unwrap();
+    let (mut horizontal, mut vertical) = (0.0, 0.0);
+    for y in bottom - 36..bottom - 10 {
+        for x in 236..276 {
+            horizontal += (residual(x, y) - residual(x + 1, y)).powi(2);
+            vertical += (residual(x, y) - residual(x, y + 1)).powi(2);
+        }
+    }
+    assert!(horizontal > 10.0, "wood texture disappeared");
+    assert!(
+        vertical > horizontal * 0.2,
+        "wood repeats top-plane stripes down the wall: horizontal={horizontal}, vertical={vertical}"
+    );
+    // Wide, high-contrast annual-ring bands are not an unpatterned plywood
+    // surface. Bound texture contrast on a face whose untextured color is flat.
+    let mut energy = 0.0;
+    for y in 188..228 {
+        for x in 188..324 {
+            energy += residual(x, y).powi(2);
+        }
+    }
+    let rms = (energy / (40.0 * 136.0)).sqrt();
+    assert!(
+        (0.5..12.0).contains(&rms),
+        "surface grain absent or dominated by bands: rms={rms}"
+    );
+    drain(&r);
+}
+
+#[path = "support/radial_export.rs"]
+mod radial_export;
+#[test]
+fn radial_png_preserves_hover_progress_and_persistent_selection() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    pollster::block_on(radial_export::check(gpu()));
+}
