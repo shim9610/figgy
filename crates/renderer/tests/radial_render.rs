@@ -614,6 +614,7 @@ fn radial_ssot_fields_are_explicit() {
     let RadialChart {
         decorations: _,
         title: _,
+        chart_title: _,
         slices: _,
         kind: _,
         start_angle_degrees: _,
@@ -629,6 +630,12 @@ fn radial_ssot_fields_are_explicit() {
         label_color: _,
         background: _,
     } = RadialChart::default();
+    // Independent title fields are covered by the three CPU layout/pixel tests.
+    // Keep this exhaustive so additions require an explicit editing/cache review.
+    let renderer::BoundedTitleOptions {
+        visible: _,
+        text: renderer::text::RichText { segments: _, color: _, font_size: _, font: _ },
+    } = renderer::BoundedTitleOptions::from_legacy("Title", "", 16., Color::BLACK);
     let RadialStyle {
         material: _,
         tilt_degrees: _,
