@@ -2,12 +2,22 @@
 //! Renderer-measured decoration hit maps. Data picking remains on the chart frame.
 //! Coordinates and drag deltas are chart-local logical pixels, not framebuffer pixels.
 use crate::raster::{Canvas, Paint};
-use crate::text_render::{draw_plain_text, measure_plain_text};
+use crate::text_render::{draw_plain_text, measure_plain_text, draw_rich_text, measure_rich_text};
 use crate::{CpuTextMeasure, FontPolicy, HitId, HitMap};
 use model::{
     DecorationElement, DecorationId, DecorationLayout,
     layout::{NudgeResult, RectF},
 };
+
+
+pub(crate) fn scaled_rich_text(text: &model::text::RichText, scale: f32) -> model::text::RichText {
+    let mut text = text.clone();
+    text.font_size *= scale;
+    for segment in &mut text.segments {
+        if let Some(size) = &mut segment.font_size { *size *= scale; }
+    }
+    text
+}
 
 pub struct DecorationMap {
     state: DecorationLayout,
@@ -213,6 +223,19 @@ impl<'a> DecorationPainter<'a> {
                 false,
                 FontPolicy::Standard,
             );
+        }
+    }
+    pub fn rich_text(&mut self, id: DecorationId, canvas: &mut Canvas,
+        text: &model::text::RichText, x: f32, baseline: f32) {
+        if text.segments.is_empty() { return; }
+        let text = scaled_rich_text(text, self.scale);
+        let m = measure_rich_text(&text, FontPolicy::Standard);
+        self.add(id.clone(), RectF { x, y: baseline - m.ascent / self.scale,
+            width: m.width / self.scale, height: m.height() / self.scale });
+        let p = self.offset(&id);
+        if self.enabled {
+            draw_rich_text(canvas, &text,
+                ((x + p[0]) * self.scale, (baseline + p[1]) * self.scale), FontPolicy::Standard);
         }
     }
     /// A -90 degree axis title. Offsets remain screen-space, so horizontal

@@ -231,7 +231,11 @@ pub struct BoxPlotChart {
     /// Editable decoration positions and selection, in logical pixels.
     #[cfg_attr(feature = "serde", serde(default))]
     pub decorations: crate::DecorationLayout,
+    /// Legacy plain title, used only when `chart_title` is absent.
     pub title: String,
+    /// Independent rich title. Position remains in `decorations`.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub chart_title: Option<crate::BoundedTitleOptions>,
     pub categories: Vec<Category>,
     pub series: Vec<BoxPlotSeries>,
     pub direction: BoxPlotDirection,
@@ -261,6 +265,7 @@ impl Default for BoxPlotChart {
         Self {
             decorations: Default::default(),
             title: String::new(),
+            chart_title: None,
             categories: vec![],
             series: vec![],
             direction: BoxPlotDirection::Vertical,
@@ -286,6 +291,15 @@ impl Default for BoxPlotChart {
     }
 }
 impl BoxPlotChart {
+    pub fn resolved_title(&self) -> crate::BoundedTitleOptions {
+        self.chart_title.clone().unwrap_or_else(|| crate::BoundedTitleOptions::from_legacy(
+            &self.title, &self.font_family, self.font_size, self.text_color))
+    }
+    /// Freeze the legacy title's appearance before independently editing labels.
+    pub fn normalize_title(&mut self) {
+        if self.chart_title.is_none() { self.chart_title = Some(self.resolved_title()); }
+    }
+
     pub fn summary(&self, target: &BoxPlotTarget) -> Option<&BoxSummary> {
         let i = self
             .categories
@@ -359,6 +373,7 @@ impl BoxPlotChart {
     }
     pub fn validate(&self) -> Result<(), &'static str> {
         self.decorations.validate()?;
+        self.resolved_title().validate()?;
         let (n, m) = (self.categories.len(), self.series.len());
         if n == 0 || n > MAX_BOX_CATEGORIES || m == 0 || m > MAX_BOX_SERIES || n * m > MAX_BOXES {
             return Err("boxplot limits: 1..64 categories, 1..16 series, at most 512 entries");

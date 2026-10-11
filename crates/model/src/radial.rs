@@ -289,7 +289,11 @@ pub struct RadialChart {
     /// Editable decoration positions and selection, in logical pixels.
     #[cfg_attr(feature = "serde", serde(default))]
     pub decorations: crate::DecorationLayout,
+    /// Legacy plain title, used only when `chart_title` is absent.
     pub title: String,
+    /// Independent rich title. Position remains in `decorations`.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub chart_title: Option<crate::BoundedTitleOptions>,
     pub slices: Vec<RadialSlice>,
     pub kind: RadialKind,
     /// Clockwise from the right; -90 starts at the top.
@@ -315,6 +319,7 @@ impl Default for RadialChart {
         Self {
             decorations: Default::default(),
             title: String::new(),
+            chart_title: None,
             slices: Vec::new(),
             kind: RadialKind::Pie,
             start_angle_degrees: -90.0,
@@ -405,6 +410,15 @@ fn validate_style(s: &RadialStyle) -> Result<(), &'static str> {
     Ok(())
 }
 impl RadialChart {
+    pub fn resolved_title(&self) -> crate::BoundedTitleOptions {
+        self.chart_title.clone().unwrap_or_else(|| crate::BoundedTitleOptions::from_legacy(
+            &self.title, &self.font_family, self.font_size, self.label_color))
+    }
+    /// Freeze the legacy title's appearance before independently editing labels.
+    pub fn normalize_title(&mut self) {
+        if self.chart_title.is_none() { self.chart_title = Some(self.resolved_title()); }
+    }
+
     /// Resolve an original array index; invalid groups/indices return None.
     pub fn slice(&self, target: RadialTarget) -> Option<&RadialSlice> {
         match target.group {
@@ -460,6 +474,7 @@ impl RadialChart {
     /// device limits, label layout and GPU budget when preparing a frame.
     pub fn validate(&self) -> Result<(), &'static str> {
         self.decorations.validate()?;
+        self.resolved_title().validate()?;
         total(&self.slices)?;
         if !kind(self.kind) || !self.start_angle_degrees.is_finite() {
             return Err("invalid radial shape or start angle");
