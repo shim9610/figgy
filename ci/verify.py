@@ -106,6 +106,9 @@ def packages(allow_dirty):
             for path in (extracted / "target/debug", extracted / "target/debug/deps"):
                 path.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(warp, path / "d3d10warp.dll")
+                if dxc := os.environ.get("FIGGY_TEST_DXC_DIR"):
+                    for dll in ("dxcompiler.dll", "dxil.dll"):
+                        shutil.copyfile(Path(dxc) / dll, path / dll)
         members = [f"{name}-{by_name[name]['version']}" for name in PACKAGES]
         for member in members:
             archive = Path(metadata["target_directory"]) / "package" / f"{member}.crate"
