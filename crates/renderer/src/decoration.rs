@@ -69,6 +69,33 @@ impl DecorationMap {
     ) -> Option<NudgeResult> {
         Some(self.map.get(id)?.as_draggable()?.drag_by(layout, dx, dy))
     }
+    pub fn hit_resize_handle(
+        &self,
+        id: HitId,
+        position: [f32; 2],
+    ) -> Option<crate::resize::ResizeHandle> {
+        self.map.get(id)?.as_resizable()?.hit_resize_handle(
+            &self.state,
+            &CpuTextMeasure::for_style(&Default::default()),
+            position[0],
+            position[1],
+        )
+    }
+    pub fn resize_by(
+        &self,
+        layout: &mut DecorationLayout,
+        id: HitId,
+        handle: crate::resize::ResizeHandle,
+        dx: f32,
+        dy: f32,
+    ) -> Option<NudgeResult> {
+        Some(
+            self.map
+                .get(id)?
+                .as_resizable()?
+                .resize_by(layout, handle, dx, dy),
+        )
+    }
     pub(crate) fn draw_selection(&self, canvas: &mut Canvas, scale: f32) {
         let Some((id, _)) = self
             .entries
@@ -83,6 +110,12 @@ impl DecorationMap {
             selection.rect.width *= scale;
             selection.rect.height *= scale;
             selection.stroke_width *= scale;
+            for handle in &mut selection.handles {
+                handle.x *= scale;
+                handle.y *= scale;
+                handle.width *= scale;
+                handle.height *= scale;
+            }
             crate::axis_render::draw_selection_boxes(canvas, &[selection]);
         }
     }
@@ -285,9 +318,10 @@ impl<'a> DecorationPainter<'a> {
     pub fn finish(mut self) -> DecorationMap {
         // Background axes first; foreground text/legend wins at overlaps.
         self.entries.sort_by_key(|e| match e.id {
-            DecorationId::Axis(_) => 0,
-            DecorationId::AxisLabel(_) => 1,
-            _ => 2,
+            DecorationId::DataArea => 0,
+            DecorationId::Axis(_) => 1,
+            DecorationId::AxisLabel(_) => 2,
+            _ => 3,
         });
         let labels: Vec<_> = self
             .entries

@@ -161,6 +161,17 @@ pub(super) fn layout(
         } else {
             fs + 12.0
         };
+    let automatic_area = crate::layout::RectF {
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top,
+    };
+    let area = c
+        .decorations
+        .resolve_data_area(automatic_area)
+        .map_err(invalid)?;
+    let (left, top, right, bottom) = (area.x, area.y, area.x + area.width, area.y + area.height);
     if right - left < 80.0 || bottom - top < 60.0 {
         return Err(invalid(
             "categorical labels leave too little plot space; enlarge canvas",
@@ -207,10 +218,12 @@ pub(super) fn layout(
     let mut front = Canvas::new(if annotate { pw } else { 1 }, if annotate { ph } else { 1 })
         .ok_or(invalid("annotation allocation failed"))?;
     let mut decorations = DecorationPainter::new(&c.decorations, size, scale, annotate);
+    decorations.add(DecorationId::DataArea, automatic_area);
     crate::axis_render::draw_bounded_decorations(
         &crate::axis_render::BoundedAxisDecorations {
             size,
             plot: [left, top, right, bottom],
+            left_title_x: fs + 4. + left - automatic_area.x,
             horizontal,
             zero: Some(axis(0.0)),
             ticks: &ticks,

@@ -12,6 +12,10 @@ use crate::{
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DecorationId {
+    /// The plot layout region; registered behind labels and axes.
+    DataArea,
+    /// Mutation target used by the common resize policy, not a separate hit.
+    DataAreaEdge(Side),
     ChartTitle,
     Axis(Side),
     AxisLabel(Side),
@@ -32,6 +36,8 @@ impl DecorationId {
             Side::Right => "right",
         };
         match self {
+            Self::DataArea => "data_area".into(),
+            Self::DataAreaEdge(s) => format!("data_area_edge_{}", side(s)),
             Self::ChartTitle => "chart_title".into(),
             Self::Axis(s) => format!("axis_{}", side(s)),
             Self::AxisLabel(s) => format!("tick_labels_{}", side(s)),
@@ -65,6 +71,9 @@ pub struct DecorationOffset {
     serde(default)
 )]
 pub struct DecorationLayout {
+    /// Explicit plot region in logical pixels. None uses the measured automatic
+    /// region; a chosen region must fit inside it to retain space for labels.
+    pub data_area: Option<RectF>,
     pub offsets: Vec<DecorationOffset>,
     /// Decoration selection is separate from data selection and hover.
     pub selected: Option<DecorationId>,
@@ -87,15 +96,45 @@ impl DecorationLayout {
         p
     }
     pub fn reset(&mut self, id: &DecorationId) {
+        if *id == DecorationId::DataArea {
+            self.data_area = None;
+        }
         self.offsets.retain(|o| &o.element != id);
     }
+    pub fn resolve_data_area(&self, automatic: RectF) -> Result<RectF, &'static str> {
+        let r = self.data_area.unwrap_or(automatic);
+        if ![r.x, r.y, r.width, r.height, r.x + r.width, r.y + r.height]
+            .into_iter()
+            .all(f32::is_finite)
+            || r.x < 0.
+            || r.y < 0.
+            || r.width < 80.
+            || r.height < 60.
+            || r.x < automatic.x
+            || r.y < automatic.y
+            || r.x + r.width > automatic.x + automatic.width
+            || r.y + r.height > automatic.y + automatic.height
+        {
+            return Err(
+                "data area must fit the measured plot region and be at least 80 by 60 logical pixels",
+            );
+        }
+        Ok(r)
+    }
     pub fn validate(&self) -> Result<(), &'static str> {
+        if let Some(r) = self.data_area {
+            self.resolve_data_area(r)?;
+        }
         if self.offsets.len() > 1024 {
             return Err("too many decoration offsets");
         }
         for (i, o) in self.offsets.iter().enumerate() {
             if o.offset.iter().any(|x| !x.is_finite())
                 || self.offsets[..i].iter().any(|p| p.element == o.element)
+                || matches!(
+                    o.element,
+                    DecorationId::DataArea | DecorationId::DataAreaEdge(_)
+                )
             {
                 return Err("decoration offsets must be finite and unique");
             }
@@ -124,11 +163,19 @@ pub struct DecorationElement {
 }
 impl Selectable<DecorationLayout> for DecorationElement {
     fn bounds(&self, cfg: &DecorationLayout, _: &dyn MeasureText) -> Option<RectF> {
+        match self.id {
+            DecorationId::DataArea => return cfg.resolve_data_area(self.base_bounds).ok(),
+            DecorationId::DataAreaEdge(_) => return None,
+            _ => {}
+        }
         let p = cfg.effective_offset(&self.id);
         Some(self.base_bounds.translated(p[0], p[1]))
     }
     fn as_draggable(&self) -> Option<&dyn Draggable<DecorationLayout>> {
         Some(self)
+    }
+    fn as_resizable(&self) -> Option<&dyn crate::resize::Resizable<DecorationLayout>> {
+        (self.id == DecorationId::DataArea).then_some(self)
     }
     fn element_id(&self) -> String {
         self.id.element_id()
@@ -139,12 +186,88 @@ impl Draggable<DecorationLayout> for DecorationElement {
         self.clone()
     }
 }
+impl crate::resize::Resizable<DecorationLayout> for DecorationElement {
+    fn resize_targets(&self, handle: crate::resize::ResizeHandle) -> (Option<Self>, Option<Self>) {
+        use crate::resize::ResizeHandle::*;
+        let edge = |side| {
+            let mut e = self.clone();
+            e.id = DecorationId::DataAreaEdge(side);
+            e
+        };
+        let x = match handle {
+            NW | W | SW => Some(edge(Side::Left)),
+            NE | E | SE => Some(edge(Side::Right)),
+            N | S => None,
+        };
+        let y = match handle {
+            NW | N | NE => Some(edge(Side::Top)),
+            SW | S | SE => Some(edge(Side::Bottom)),
+            E | W => None,
+        };
+        (x, y)
+    }
+    fn resize_by(
+        &self,
+        cfg: &mut DecorationLayout,
+        handle: crate::resize::ResizeHandle,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        let reject = NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        if self.id != DecorationId::DataArea || !dx.is_finite() || !dy.is_finite() {
+            return reject;
+        }
+        let (x, y) = self.resize_targets(handle);
+        let mut trial = cfg.clone();
+        for (element, dx, dy) in [(x, dx, 0.), (y, 0., dy)] {
+            if let Some(element) = element {
+                if trial.nudge(element, dx, dy) != NudgeResult::Moved {
+                    return reject;
+                }
+            }
+        }
+        *cfg = trial;
+        NudgeResult::Moved
+    }
+}
 impl DragConfig for DecorationLayout {
     type Element = DecorationElement;
     fn nudge(&mut self, element: DecorationElement, mut dx: f32, mut dy: f32) -> NudgeResult {
         let reject = NudgeResult::Rejected(NudgeReject::OutOfBounds);
         if !dx.is_finite() || !dy.is_finite() {
             return reject;
+        }
+        if matches!(
+            element.id,
+            DecorationId::DataArea | DecorationId::DataAreaEdge(_)
+        ) {
+            let Ok(mut r) = self.resolve_data_area(element.base_bounds) else {
+                return reject;
+            };
+            match element.id {
+                DecorationId::DataArea => {
+                    r.x += dx;
+                    r.y += dy;
+                }
+                DecorationId::DataAreaEdge(Side::Left) => {
+                    r.x += dx;
+                    r.width -= dx;
+                }
+                DecorationId::DataAreaEdge(Side::Right) => r.width += dx,
+                DecorationId::DataAreaEdge(Side::Top) => {
+                    r.y += dy;
+                    r.height -= dy;
+                }
+                DecorationId::DataAreaEdge(Side::Bottom) => r.height += dy,
+                _ => unreachable!(),
+            }
+            let mut trial = self.clone();
+            trial.data_area = Some(r);
+            if trial.resolve_data_area(element.base_bounds).is_err() {
+                return reject;
+            }
+            self.data_area = Some(r);
+            return NudgeResult::Moved;
         }
         if let DecorationId::Axis(side) = &element.id {
             match side {
@@ -183,6 +306,76 @@ impl DragConfig for DecorationLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn area_handles_move_only_their_edges_and_reject_atomically() {
+        use crate::resize::{Resizable, ResizeHandle::*};
+        let e = DecorationElement {
+            id: DecorationId::DataArea,
+            base_bounds: RectF {
+                x: 20.,
+                y: 20.,
+                width: 240.,
+                height: 160.,
+            },
+            canvas_size: (300, 200),
+            followers: vec![],
+        };
+        let original = RectF {
+            x: 50.,
+            y: 50.,
+            width: 150.,
+            height: 90.,
+        };
+        for (handle, left, right, top, bottom) in [
+            (NW, true, false, true, false),
+            (N, false, false, true, false),
+            (NE, false, true, true, false),
+            (E, false, true, false, false),
+            (SE, false, true, false, true),
+            (S, false, false, false, true),
+            (SW, true, false, false, true),
+            (W, true, false, false, false),
+        ] {
+            let mut state = DecorationLayout {
+                data_area: Some(original),
+                ..Default::default()
+            };
+            assert_eq!(e.resize_by(&mut state, handle, 7., 9.), NudgeResult::Moved);
+            let r = state.data_area.unwrap();
+            assert_eq!(r.x, original.x + if left { 7. } else { 0. });
+            assert_eq!(r.y, original.y + if top { 9. } else { 0. });
+            assert_eq!(
+                r.x + r.width,
+                original.x + original.width + if right { 7. } else { 0. }
+            );
+            assert_eq!(
+                r.y + r.height,
+                original.y + original.height + if bottom { 9. } else { 0. }
+            );
+        }
+        let mut state = DecorationLayout {
+            data_area: Some(original),
+            ..Default::default()
+        };
+        let before = state.clone();
+        for (dx, dy) in [
+            (7., -1000.),
+            (f32::NAN, 0.),
+            (0., f32::INFINITY),
+            (100., 0.),
+        ] {
+            assert!(matches!(
+                e.resize_by(&mut state, NW, dx, dy),
+                NudgeResult::Rejected(_)
+            ));
+            assert_eq!(state, before);
+        }
+        state.reset(&DecorationId::DataArea);
+        assert_eq!(
+            state.resolve_data_area(e.base_bounds).unwrap(),
+            e.base_bounds
+        );
+    }
     fn element(id: DecorationId) -> DecorationElement {
         DecorationElement {
             id,
@@ -232,6 +425,7 @@ mod tests {
     #[test]
     fn duplicate_nonfinite_and_parallel_axis_offsets_are_rejected() {
         let mut state = DecorationLayout {
+            data_area: None,
             offsets: vec![DecorationOffset {
                 element: DecorationId::Legend,
                 offset: [f32::NAN, 0.],

@@ -81,6 +81,7 @@ struct Editor {
     frame: Option<Arc<BoxPlotFrame>>,
     target: Option<(wgpu::Texture, egui::TextureId)>,
     error: String,
+    resize_handle: Option<renderer::resize::ResizeHandle>,
 }
 impl Editor {
     fn new(
@@ -157,6 +158,7 @@ impl Editor {
             frame: None,
             target: None,
             error: String::new(),
+            resize_handle: None,
         })
     }
     fn draw(&mut self, size: (u32, u32), scale: f32) -> Result<(), BoxPlotError> {
@@ -340,6 +342,19 @@ impl eframe::App for Editor {
                         );
                         style(ui, &mut self.chart.style);
                     }
+                    let editing_area =
+                        self.chart.decorations.selected == Some(renderer::DecorationId::DataArea);
+                    if ui
+                        .selectable_label(editing_area, "Edit plot area")
+                        .clicked()
+                    {
+                        self.chart.decorations.selected = if editing_area {
+                            None
+                        } else {
+                            Some(renderer::DecorationId::DataArea)
+                        };
+                        self.chart.selected = None;
+                    }
                     if let Some(selected) = self.chart.decorations.selected.clone() {
                         ui.label(format!("Decoration: {}", selected.element_id()));
                         if ui.button("Reset position").clicked() {
@@ -374,9 +389,28 @@ impl eframe::App for Editor {
                 let frame = self.frame.as_ref()?;
                 let map = frame.decorations();
                 let hit = map.hit_test([p.x - rect.left(), p.y - rect.top()])?;
-                Some(map.element(hit)?.id.clone())
+                let key = map.element(hit)?.id.clone();
+                // Foreground labels win; otherwise data wins over the area
+                // until the user explicitly selects the area for editing.
+                if key == renderer::DecorationId::DataArea
+                    && self.chart.decorations.selected != Some(key.clone())
+                    && frame
+                        .hit_test([p.x - rect.left(), p.y - rect.top()])
+                        .is_some()
+                {
+                    return None;
+                }
+                Some(key)
             });
-            if response.clicked() || response.drag_started() {
+            if response.drag_started() {
+                self.resize_handle = ctx.input(|i| i.pointer.press_origin()).and_then(|p| {
+                    let map = self.frame.as_ref()?.decorations();
+                    let selected = self.chart.decorations.selected.as_ref()?;
+                    let (id, _) = map.entries().find(|(_, e)| &e.id == selected)?;
+                    map.hit_resize_handle(id, [p.x - rect.left(), p.y - rect.top()])
+                });
+            }
+            if (response.clicked() || response.drag_started()) && self.resize_handle.is_none() {
                 self.chart.decorations.selected = decoration.clone();
             }
             if response.dragged() {
@@ -386,9 +420,31 @@ impl eframe::App for Editor {
                     let map = frame.decorations();
                     if let Some((id, _)) = map.entries().find(|(_, e)| &e.id == selected) {
                         let delta = ctx.input(|i| i.pointer.delta());
-                        map.drag_by(&mut self.chart.decorations, id, delta.x, delta.y);
+                        let previous = self.chart.decorations.clone();
+                        if let Some(handle) = self.resize_handle {
+                            map.resize_by(
+                                &mut self.chart.decorations,
+                                id,
+                                handle,
+                                delta.x,
+                                delta.y,
+                            );
+                        } else {
+                            map.drag_by(&mut self.chart.decorations, id, delta.x, delta.y);
+                        }
+                        // Keep the last feasible model when text no longer fits.
+                        if self
+                            .renderer
+                            .prepare(&self.chart, logical, ctx.pixels_per_point())
+                            .is_err()
+                        {
+                            self.chart.decorations = previous;
+                        }
                     }
                 }
+            }
+            if response.drag_stopped() {
+                self.resize_handle = None;
             }
             let hovered = response
                 .hover_pos()

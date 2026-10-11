@@ -320,3 +320,11 @@ fn inside_radial_labels_pick_at_lifted_position_and_drag_without_jump() {
     save("radial-inside-label-selected", &image);
     r.end_frame();
 }
+
+#[path = "support/bounded_area.rs"]
+mod bounded_area;
+#[test]
+fn bounded_area_select_resize_move_pick_and_export() {
+    let _guard = LOCK.lock().unwrap();
+    pollster::block_on(bounded_area::check(gpu()));
+}

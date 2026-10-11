@@ -6,6 +6,7 @@ use model::{Category, DecorationId};
 pub(crate) struct BoundedAxisDecorations<'a> {
     pub size: (u32, u32),
     pub plot: [f32; 4],
+    pub left_title_x: f32,
     pub horizontal: bool,
     pub zero: Option<f32>,
     pub ticks: &'a [(f32, String)],
@@ -177,7 +178,7 @@ pub(crate) fn draw_bounded_decorations(
             front,
             p.font_family,
             side_title,
-            fs + 4.,
+            p.left_title_x,
             (top + bottom) * 0.5,
             fs,
             p.color,

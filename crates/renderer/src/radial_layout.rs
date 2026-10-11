@@ -66,6 +66,19 @@ pub(super) fn layout(
     };
     let top = if chart.title.is_empty() { 24.0 } else { 70.0 };
     let bottom = h - 24.0;
+    let automatic_area = crate::layout::RectF {
+        x: 24.,
+        y: top,
+        width: w - 48.,
+        height: bottom - top,
+    };
+    let area = chart
+        .decorations
+        .resolve_data_area(automatic_area)
+        .map_err(RadialError::Invalid)?;
+    decorations.add(DecorationId::DataArea, automatic_area);
+    let (top, bottom) = (area.y, area.y + area.height);
+
     if !chart.title.is_empty() {
         let title_size = chart.font_size * 1.5 * scale;
         let tw = width(chart, &chart.title, title_size);
@@ -96,18 +109,21 @@ pub(super) fn layout(
     for (g, (slices, kind, start)) in groups.into_iter().enumerate() {
         let total = slices.iter().map(|s| s.value).sum::<f64>();
         let (left, right) = if chart.split.is_none() {
-            (0.0, w)
+            (area.x, area.x + area.width)
         } else if g == 0 {
-            (0.0, w * 0.6)
+            (area.x, area.x + (area.width + 48.) * 0.6 - 48.)
         } else {
-            (w * 0.6, w)
+            (area.x + (area.width + 48.) * 0.6, area.x + area.width)
         };
         let max_explode = slices
             .iter()
             .filter(|s| s.value > 0.0)
             .map(|s| s.explode)
             .fold(0.0, f32::max);
-        let mut margin = 24.0;
+        // The automatic area already reserves 24 logical pixels at both
+        // outer edges (and either side of the split). Keep the original
+        // default geometry while leaving room for all eight resize handles.
+        let mut margin = 0.0;
         let outside =
             |slice: &RadialSlice| slice.labels.unwrap_or(chart.labels) == RadialLabels::Outside;
         if slices.iter().any(outside) {
@@ -117,7 +133,7 @@ pub(super) fn layout(
                 .flat_map(|s| chart.label_lines(s, total))
                 .map(|line| width(chart, &line, chart.font_size))
                 .fold(0.0, f32::max);
-            margin = max_label + 36.0;
+            margin = max_label + 12.0;
         }
         let tilt = chart.style.tilt_degrees.to_radians();
         let cs = tilt.cos();

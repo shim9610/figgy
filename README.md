@@ -17,7 +17,17 @@ Code is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE). 
 
 <a id="public-release-candidate--renderer-0120--figgy-0100"></a>
 
-## Source release — renderer 0.15.1 / model 0.9.0 / figgy 0.12.1
+## Source release — renderer 0.16.0 / model 0.10.0 / figgy 0.13.0
+
+Radial, categorical and boxplot frames now expose the plot area through the same
+`Selectable`, `Draggable` and eight-handle `Resizable` contracts as Cartesian
+charts. Area edits rebuild geometry, axes, labels, picking and exports from the
+model; they do not stretch a rendered image. `DecorationLayout.data_area` stores
+an optional logical-pixel rectangle; `None` keeps automatic layout. See the
+[workflow, hit priority and migration](crates/renderer/INTERACTION.md) and
+[verification scope](ci/STATUS.md#renderer-0160-bounded-area-editing-2026-10-11).
+
+### Previous patch — renderer 0.15.1 / model 0.9.0 / figgy 0.12.1
 
 Radial outlines now include visible top/wall creases on raised pies and donuts.
 Wood uses fine, irregular matte plywood grain on every face, without annual-ring
@@ -284,7 +294,7 @@ render targets and compatibility policy.
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", path = "crates/renderer" }   # or public Git source — version 0.15.1, not on crates.io.
+renderer = { package = "figgy-renderer", path = "crates/renderer" }   # or public Git source — version 0.16.0, not on crates.io.
 wgpu     = "30"
 ```
 
@@ -1374,7 +1384,16 @@ figgy는 Rust로 작성한 과학·공학용 차트 라이브러리다. **축·�
 
 <a id="공개-후보--renderer-0120--figgy-0100"></a>
 
-## 소스 릴리스 — renderer 0.15.1 / model 0.9.0 / figgy 0.12.1
+## 소스 릴리스 — renderer 0.16.0 / model 0.10.0 / figgy 0.13.0
+
+원형·범주형 막대·박스플롯의 그리기 영역도 기존 `Selectable`, `Draggable`, `Resizable`로
+선택하고 옮기거나 8개 핸들로 크기를 조정할 수 있다. 바뀐 영역에서 도형·축·라벨·피킹·PNG를
+다시 계산한다. 이미 그린 이미지를 늘이지 않는다. `DecorationLayout.data_area`에 논리 픽셀
+사각형을 저장하며, `None`이면 자동으로 배치한다.
+[호출 순서와 호환성](crates/renderer/INTERACTION.md),
+[검증 범위](ci/STATUS.md#renderer-0160-bounded-area-editing-2026-10-11)를 참고한다.
+
+### 이전 패치 — renderer 0.15.1 / model 0.9.0 / figgy 0.12.1
 
 입체 파이·도넛의 윗면과 옆면 사이에 빠졌던 경계선을 그린다. 우드 재질은 나이테와 반복되는
 세로줄을 없애고, 모든 면에 미세하고 불규칙한 무광 합판 질감을 적용한다. 네이티브와 WebGPU의
@@ -1583,7 +1602,7 @@ wgpu 30을 사용해야 한다. WASM 래퍼는 별도 소비 예제로 유지하
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", path = "crates/renderer" }   # 또는 공개 Git 소스 — 버전 0.15.1, crates.io 미배포.
+renderer = { package = "figgy-renderer", path = "crates/renderer" }   # 또는 공개 Git 소스 — 버전 0.16.0, crates.io 미배포.
 wgpu     = "30"
 ```
 

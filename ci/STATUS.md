@@ -6,6 +6,22 @@ All regression checks remain enabled in the normal package matrix. The separate
 investigation, not a default renderer option. Standard CI uses software/virtual
 adapters; physical Intel/AMD/NVIDIA/Apple driver coverage remains outstanding.
 
+## Renderer 0.16.0 bounded area editing (2026-10-11)
+
+Renderer 0.16.0 / model 0.10.0 / figgy 0.13.0 add bounded plot-area selection,
+dragging and all eight resize handles through the common traits. A shared
+native/WebGPU regression exercises radial, categorical and boxplot frames at
+1x/2x: immutable prior frames, cache invalidation/reuse, axis lengths, visible
+handles, data-pixel picking, PNG decoding, serialization and automatic-layout
+reset. Model tests cover all eight handle directions and atomic corner rejection.
+Default radial gallery pixels are compared with the preceding surface patch.
+The native editors demonstrate handle capture and rollback of infeasible edits.
+
+Read the exact revision's [Actions run](https://github.com/shim9610/figgy/actions/workflows/ci.yml)
+for completed backend results. Browser validation is a separate Chromium/SwiftShader
+gate; the three-OS package matrix runs native tests. This does not deploy or test
+the external Studio's UI wiring.
+
 ## Renderer 0.15.1 radial surfaces and export (2026-10-11)
 
 Three native regressions cover visible top/wall outline creases (pie/donut,
