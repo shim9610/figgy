@@ -575,7 +575,7 @@ struct LabelAnchor {
 /// which is the same answer for a stale level index.
 const NO_LEVEL: u32 = 0xffffffffu;
 
-/// Labels `anchor_select` can hold in workgroup storage. CPU twin:
+/// Labels `anchor_select` can hold in invocation-private storage. CPU twin:
 /// `gpu_contour::MAX_CONTOUR_LABELS_TOTAL`.
 const MAX_KEPT: u32 = 1024u;
 
@@ -790,11 +790,12 @@ fn anchor_project(@builtin(global_invocation_id) gid: vec3<u32>) {
     cand[gid.x] = out;
 }
 
-/// Kept labels' screen positions and box radii, for the overlap test. Workgroup
-/// storage rather than a buffer: `anchor_select` is a single invocation, so this
-/// never crosses one.
-var<workgroup> kept_px: array<vec2<f32>, 1024>;
-var<workgroup> kept_r: array<f32, 1024>;
+/// Kept labels' screen positions and box radii, for the overlap test.
+/// Only the single invocation in `anchor_select` uses this scratch storage.
+/// Private arrays retain WGSL initialization guarantees without shared-memory
+/// initialization, which makes WARP's first dispatch disproportionately costly.
+var<private> kept_px: array<vec2<f32>, 1024>;
+var<private> kept_r: array<f32, 1024>;
 
 /// Half the diagonal of level `i`'s label box, in pixels.
 fn label_radius(i: u32) -> f32 {

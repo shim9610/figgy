@@ -41,7 +41,7 @@ pub const LABEL_VERTICES: u32 = 6;
 
 /// Anchors `anchor_select` may keep, for the whole series.
 ///
-/// A ceiling, and also the size of the workgroup arrays the select pass compares
+/// A ceiling, and also the size of the private arrays the select pass compares
 /// against — GPU twin: `contour_anchor.wgsl::MAX_KEPT`. Automatic and explicit
 /// placement share the model's full 1024-level capacity.
 pub const MAX_CONTOUR_LABELS_TOTAL: u32 = 1024;
@@ -355,6 +355,16 @@ impl ContourLabelPipelines {
         };
         let mut source = legacy.to_owned();
         source.replace_range(common(legacy), &current[common(current)]);
+        // Selection is still one invocation in both versions. Keep its scratch
+        // address space aligned, without changing the frozen projection loop.
+        // Otherwise the oracle incurs WARP's slow workgroup initialization.
+        for name in ["kept_px", "kept_r"] {
+            let old = format!("var<workgroup> {name}:");
+            let new = format!("var<private> {name}:");
+            assert_eq!(source.matches(&old).count(), 1);
+            assert_eq!(current.matches(&new).count(), 1);
+            source = source.replace(&old, &new);
+        }
         Self::with_anchor_source(device, field_bgl, &source, false)
     }
 

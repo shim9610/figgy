@@ -16,11 +16,15 @@ is not a completed package-suite pass.
   path. Pinned DXC DLLs are placed beside each extracted test executable. Previously
   wgpu ignored the invalid value and fell back to FXC, producing loop-unroll and
   internal compiler errors before some rendering checks could run.
-- **Windows shader debug mode:** wgpu's default test-build `DEBUG` flag passes
-  `-Od` to DXC. WARP then exceeded the 30-second completion deadline in contour
-  fixtures. Windows CI sets `WGPU_DEBUG=0` while explicitly retaining API and
-  indirect-call validation. The deadline and pixel assertions stay unchanged;
-  offscreen test readback now checks completion and mapping errors before access.
+- **Windows first contour dispatch:** the single-invocation label selector now
+  uses private arrays instead of workgroup arrays. In the
+  [WARP memory A/B probe](https://github.com/shim9610/figgy/actions/runs/38115192492),
+  first GPU completion fell from about 85 seconds to 0.23 seconds; cache replay
+  and exact 1,024-label checks passed. WGSL initialization guarantees and label
+  selection order are unchanged. The 30-second deadline is unchanged, and test
+  readback checks completion and mapping errors before accessing a buffer.
+  Disabling the instance debug flag did not fix the delay: wgpu already avoids
+  debug shaders on this WARP version. CI retains its default validation flags.
 - **Metal coordinate precision:** explicit `fma` rounding boundaries preserve
   hi/lo residuals and field-grid subtraction. The [unmodified-wgpu experiment](https://github.com/shim9610/figgy/actions/runs/38109490393)
   passed all 768 projection cases with this formulation; the default expression

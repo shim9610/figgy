@@ -314,8 +314,7 @@ fn contour_level_search_constants_match_the_model_limit() {
 }
 
 #[test]
-fn contour_label_capacity_and_workgroup_storage_match_the_model_contract() {
-    const WEBGPU_MIN_WORKGROUP_STORAGE_BYTES: usize = 16_384;
+fn contour_label_capacity_and_private_storage_match_the_model_contract() {
     const KEPT_POSITION_BYTES: usize = 1024 * std::mem::size_of::<[f32; 2]>();
     const KEPT_RADIUS_BYTES: usize = 1024 * std::mem::size_of::<f32>();
 
@@ -323,9 +322,6 @@ fn contour_label_capacity_and_workgroup_storage_match_the_model_contract() {
     assert_eq!(renderer::gpu_contour::MAX_CONTOUR_LABELS_TOTAL, 1024);
     assert!(renderer::gpu_contour::MAX_ANCHOR_CANDIDATES >= renderer::MAX_CONTOUR_LEVELS as u32);
     assert_eq!(KEPT_POSITION_BYTES + KEPT_RADIUS_BYTES, 12_288);
-    const {
-        assert!(KEPT_POSITION_BYTES + KEPT_RADIUS_BYTES <= WEBGPU_MIN_WORKGROUP_STORAGE_BYTES);
-    }
 
     let rust = read("src/gpu_contour.rs");
     let shader = read("src/contour_anchor.wgsl");
@@ -334,8 +330,10 @@ fn contour_label_capacity_and_workgroup_storage_match_the_model_contract() {
         rust.contains("MAX_ANCHOR_CANDIDATES >= crate::data_config::MAX_CONTOUR_LEVELS as u32")
     );
     assert!(shader.contains("const MAX_KEPT: u32 = 1024u;"));
-    assert!(shader.contains("var<workgroup> kept_px: array<vec2<f32>, 1024>;"));
-    assert!(shader.contains("var<workgroup> kept_r: array<f32, 1024>;"));
+    assert!(shader.contains("var<private> kept_px: array<vec2<f32>, 1024>;"));
+    assert!(shader.contains("var<private> kept_r: array<f32, 1024>;"));
+    assert!(shader.contains("@compute @workgroup_size(1)\nfn anchor_select()"));
+    assert!(!shader.contains("var<workgroup>"));
 }
 
 #[test]

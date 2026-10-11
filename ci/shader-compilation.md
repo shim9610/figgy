@@ -15,6 +15,10 @@ unchanged. This change reorganizes compilation and dispatch, not chart quality.
   working buffer or bind group is allocated. The two new pipelines are cached.
   There are five additional
   dispatches per automatic placement, with the same five field samples per candidate.
+- The single-invocation contour selector uses private scratch arrays instead of
+  workgroup memory. A Windows WARP comparison measured first GPU completion at
+  about 85 seconds before and 0.23 seconds after; repeated dispatches were already
+  fast. Label selection order, capacity and initialization guarantees are unchanged.
 - WASM async prewarm now uses descriptors generated from the real Rust constructors.
   An auto-layout pipeline did not warm the subsequently created explicit-layout
   pipeline. Binding sizes/visibility, vertex inputs, blend state and sample count
@@ -29,9 +33,11 @@ unchanged. This change reorganizes compilation and dispatch, not chart quality.
   normal builds call wgpu directly. Coverage fails on a missing WGSL file or entry.
 
 The old four-step automatic placement algorithm is frozen under
-`crates/renderer/tests/fixtures/`. Its test loader replaces only the marked shared
+`crates/renderer/tests/fixtures/`. Its test loader replaces the marked shared
 coordinate/sampling block with current SSOT math, so Metal coordinate fixes apply
-to both algorithms. The old projection loop and new dispatch sequence remain
+to both algorithms. It also gives the two selection scratch arrays the same private
+address space as production. The selector has one invocation; private arrays keep
+WGSL initialization guarantees while avoiding expensive WARP workgroup initialization. The old projection loop and new dispatch sequence remain
 independent. Same-backend image comparisons cover nonlinear
 fields, panning, inverted/log axes, large coordinates, grid edges, transposed matrices,
 NaN/infinity and zero gradients. Each output RGBA channel must differ by at most

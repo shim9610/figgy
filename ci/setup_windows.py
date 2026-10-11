@@ -35,11 +35,6 @@ def main():
     )
     with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
         env.write("WGPU_DX12_COMPILER=dxc\n")
-        # wgpu's DEBUG flag adds DXC -Od. Exercise optimized production shaders
-        # on the software adapter while keeping API and indirect-call validation.
-        env.write("WGPU_DEBUG=0\n")
-        env.write("WGPU_VALIDATION=1\n")
-        env.write("WGPU_VALIDATION_INDIRECT_CALL=1\n")
         env.write(f"FIGGY_TEST_DXC_DIR={destination}\n")
         env.write(f"FIGGY_TEST_WARP_DLL={destination / 'd3d10warp.dll'}\n")
         env.write("FIGGY_TEST_FORCE_FALLBACK=1\n")
