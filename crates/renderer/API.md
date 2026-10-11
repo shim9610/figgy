@@ -111,7 +111,7 @@ or changing fields, adding required fields or enum variants, changing trait
 requirements, and adding `non_exhaustive` to existing types can break consumers.
 Incompatible changes require a new 0.x minor version and migration notes; patch
 updates must preserve the supported contract. A new wgpu major needs the same
-review. The source versions are figgy-renderer 0.13.1 and figgy-model 0.8.0. They have not
+review. The source versions are figgy-renderer 0.14.0 and figgy-model 0.8.0. They have not
 been published to crates.io; publishing a source commit does not publish a registry package.
 
 The optional serde representation is not an application file-format version.
@@ -145,3 +145,9 @@ The groups cover Cartesian resident pipelines, matching `prewarm_all`; nonreside
 matrix/tile streaming and separate radial/categorical/boxplot renderers are not
 part of this inventory. GPU-driver contention can still delay frames; detached
 ownership is not a frame-time guarantee.
+
+
+Line picking treats a midpoint difference within the projected coordinates' f32
+rounding uncertainty as a tie and chooses the earlier endpoint, on both CPU and
+GPU. Points outside that narrow interval still choose the nearer endpoint. This
+makes exact midpoint selection stable across native compiler backends.

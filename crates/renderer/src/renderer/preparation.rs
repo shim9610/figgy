@@ -96,7 +96,15 @@ impl PreparationFeature {
                 DataRenderType::Heatmap { .. }
                 | DataRenderType::Contour { .. }
                 | DataRenderType::HeatmapContour { .. } => Self::Fields,
-                _ => Self::Basic,
+                DataRenderType::Scatter { .. }
+                | DataRenderType::Line { .. }
+                | DataRenderType::ScatterLine { .. }
+                | DataRenderType::ScatterErrorbarX { .. }
+                | DataRenderType::ScatterErrorbarY { .. }
+                | DataRenderType::ScatterErrorbarXY { .. }
+                | DataRenderType::LineScatterErrorbarX { .. }
+                | DataRenderType::LineScatterErrorbarY { .. }
+                | DataRenderType::LineScatterErrorbarXY { .. } => Self::Basic,
             };
             if !result.contains(&group) {
                 result.push(group);

@@ -100,11 +100,11 @@ fn maybe_log(v: f32, is_log: f32) -> f32 {
 
 fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f32, is_log: f32, panel_scale: f32, panel_offset: f32) -> f32 {
     let raw = v.x + v.y;
-    let linear_num = (v.x - min_hi) + (v.y - min_lo);
-    let range = (max_hi - min_hi) + (max_lo - min_lo);
+    let linear_num = fma(1.0, v.x - min_hi, v.y - min_lo);
+    let range = fma(1.0, max_hi - min_hi, max_lo - min_lo);
     let log_num = (maybe_log(raw, is_log) - min_hi) - min_lo;
     let data_t = mix(linear_num / range, log_num / range, is_log);
-    return panel_offset + data_t * panel_scale;
+    return fma(data_t, panel_scale, panel_offset);
 }
 
 fn data_to_ndc(xv: vec2<f32>, yv: vec2<f32>) -> vec2<f32> {
@@ -186,16 +186,16 @@ fn pool_pair(base: u32, i: u32) -> vec2<f32> {
 }
 
 fn grid_rounded_add(a: f32, b: f32) -> f32 {
-    return bitcast<f32>(bitcast<u32>(a + b));
+    return fma(1.0, a, b);
 }
 
 fn grid_rounded_subtract(a: f32, b: f32) -> f32 {
-    return bitcast<f32>(bitcast<u32>(a - b));
+    return fma(1.0, a, -b);
 }
 
-/// Normalize a finite pair with error-free addition. The bitcasts expose every
-/// f32 rounding boundary so field rendering and fit reduction cannot be
-/// reassociated differently by their backends.
+/// Normalize a finite pair with error-free addition. Explicit fma additions
+/// preserve rounding boundaries on Metal; round-trip bitcasts are eliminated
+/// by optimizers and do not prevent reassociation.
 fn normalize_grid_pair(v: vec2<f32>) -> vec2<f32> {
     let sum = grid_rounded_add(v.x, v.y);
     let b_virtual = grid_rounded_subtract(sum, v.x);
@@ -347,7 +347,7 @@ fn locate(base: u32, n: u32, count: u32, axis: u32, t: f32, lattice: u32) -> Cel
     }
     let a = boundary_t(base, n, lo, axis, lattice);
     let b = boundary_t(base, n, lo + 1u, axis, lattice);
-    let span = b - a;
+    let span = grid_rounded_subtract(b, a);
     if (!f32_is_finite(a) || !f32_is_finite(b) || !f32_is_finite(span)) {
         return out;
     }
@@ -355,7 +355,7 @@ fn locate(base: u32, n: u32, count: u32, axis: u32, t: f32, lattice: u32) -> Cel
     // A zero-width quad (a lone centre) has no inside; treat it as its start.
     var frac = 0.0;
     if (span != 0.0) {
-        frac = (t - a) / span;
+        frac = grid_rounded_subtract(t, a) / span;
         if (!f32_is_finite(frac)) {
             return out;
         }
@@ -1445,11 +1445,11 @@ fn stream_field_advance_axis(input: StreamFieldAxis) -> StreamFieldAxis {
         s.a = v;
         s.phase = 4u;
     } else if (s.phase == 4u) {
-        let span = v - s.a;
+        let span = grid_rounded_subtract(v, s.a);
         if (!f32_is_finite(span)) { s.phase = 6u; return s; }
         var frac = 0.0;
         if (span != 0.0) {
-            frac = (s.t - s.a) / span;
+            frac = grid_rounded_subtract(s.t, s.a) / span;
             if (!f32_is_finite(frac)) { s.phase = 6u; return s; }
         }
         s.index = s.lo;

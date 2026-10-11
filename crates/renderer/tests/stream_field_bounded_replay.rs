@@ -139,11 +139,11 @@ fn advance_axis(input: ReplayAxis) -> ReplayAxis {
         s.a = v;
         s.phase = 4u;
     } else if (s.phase == 4u) {
-        let span = v - s.a;
+        let span = grid_rounded_subtract(v, s.a);
         if (!f32_is_finite(span)) { s.phase = 6u; return s; }
         var frac = 0.0;
         if (span != 0.0) {
-            frac = (s.t - s.a) / span;
+            frac = grid_rounded_subtract(s.t, s.a) / span;
             if (!f32_is_finite(frac)) { s.phase = 6u; return s; }
         }
         s.index = s.lo;

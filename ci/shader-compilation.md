@@ -28,8 +28,11 @@ unchanged. This change reorganizes compilation and dispatch, not chart quality.
   wrappers. Native test builds capture the actual descriptors and durations;
   normal builds call wgpu directly. Coverage fails on a missing WGSL file or entry.
 
-The automatic placement shader from before this change is frozen under
-`crates/renderer/tests/fixtures/`. Same-backend image comparisons cover nonlinear
+The old four-step automatic placement algorithm is frozen under
+`crates/renderer/tests/fixtures/`. Its test loader replaces only the marked shared
+coordinate/sampling block with current SSOT math, so Metal coordinate fixes apply
+to both algorithms. The old projection loop and new dispatch sequence remain
+independent. Same-backend image comparisons cover nonlinear
 fields, panning, inverted/log axes, large coordinates, grid edges, transposed matrices,
 NaN/infinity and zero gradients. Existing shader SSOT and renderer tests remain enabled.
 

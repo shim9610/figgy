@@ -667,24 +667,55 @@ fn stream_selection_and_data_match_resident_at_exact_display_scale() {
         }
         let expected = resident.export_panel_rgba(&chart, &series, scale).unwrap();
         let actual = screen(&mut r, id, &view);
-        // This fixture overlaps translucent scatter, fill and border layers.
-        // Separate data/grid composition accumulates up to three UNORM channel
-        // steps of rounding, without resampling geometry or selection.
-        assert_eq!(actual.len(), expected.rgba.len());
-        let max_error = actual.iter().zip(&expected.rgba)
-            .map(|(a, b)| a.abs_diff(*b)).max().unwrap();
-        assert!(max_error <= 3, "data display scale {scale}: channel error {max_error}");
+        assert_display_equivalent(&actual, &expected.rgba, &format!("data display scale {scale}"));
         select(chart.config_mut(), &[10, 2, 10]);
         r.set_chart_config(id, chart.config().clone()).unwrap();
         pump(&mut r, id, &values);
         let expected = resident.export_panel_rgba(&chart, &series, scale).unwrap();
         let actual = screen(&mut r, id, &view);
-        // This fixture overlaps translucent scatter, fill and border layers.
-        // Separate data/grid composition accumulates up to three UNORM channel
-        // steps of rounding, without resampling geometry or selection.
-        assert_eq!(actual.len(), expected.rgba.len());
-        let max_error = actual.iter().zip(&expected.rgba)
-            .map(|(a, b)| a.abs_diff(*b)).max().unwrap();
-        assert!(max_error <= 3, "selection display scale {scale}: channel error {max_error}");
+        assert_display_equivalent(&actual, &expected.rgba, &format!("selection display scale {scale}"));
     }
+}
+
+// PNGs contain straight-alpha RGB, whereas attachments blend premultiplied
+// channels. Dividing by alpha during export amplifies a one-code-value rounding
+// difference (e.g. alpha=55 turns it into almost five straight RGB values).
+// Compare the visible result on both black and white: these bound the error on
+// every background, independently per channel. Keep the three-code-value
+// composition bound and additionally limit alpha to one code value.
+fn display_error(actual: &[u8], expected: &[u8]) -> (u32, u32) {
+    assert_eq!(actual.len(), expected.len());
+    assert_eq!(actual.len() % 4, 0);
+    let mut alpha_error = 0;
+    let mut color_error_times_255 = 0;
+    for (a, b) in actual.chunks_exact(4).zip(expected.chunks_exact(4)) {
+        alpha_error = alpha_error.max(u32::from(a[3].abs_diff(b[3])));
+        for channel in 0..3 {
+            for background in [0_i32, 255] {
+                let composite = |p: &[u8]| i32::from(p[channel]) * i32::from(p[3])
+                    + background * (255 - i32::from(p[3]));
+                color_error_times_255 = color_error_times_255.max(composite(a).abs_diff(composite(b)));
+            }
+        }
+    }
+    (alpha_error, color_error_times_255)
+}
+
+fn assert_display_equivalent(actual: &[u8], expected: &[u8], context: &str) {
+    let (alpha_error, color_error) = display_error(actual, expected);
+    assert!(alpha_error <= 1, "{context}: alpha error {alpha_error}");
+    assert!(color_error <= 3 * 255,
+        "{context}: composited channel error {}", color_error as f32 / 255.0);
+}
+
+#[test]
+fn display_comparison_measures_alpha_composition_and_rejects_visible_changes() {
+    // Observed Metal rounding: a five-value straight RGB difference represents
+    // just over one premultiplied code value, not a five-value display change.
+    assert_display_equivalent(&[88, 116, 190, 55], &[88, 121, 190, 55], "low alpha");
+    assert_eq!(display_error(&[255, 0, 0, 0], &[0, 255, 255, 0]), (0, 0));
+    // Loss of coverage and changed visible colour must still fail the bound.
+    assert!(display_error(&[0, 0, 0, 0], &[0, 0, 0, 64]).0 > 1);
+    assert!(display_error(&[255, 0, 0, 64], &[0, 0, 0, 64]).1 > 3 * 255);
+    assert!(display_error(&[0, 0, 0, 255], &[4, 0, 0, 255]).1 > 3 * 255);
 }
