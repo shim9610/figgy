@@ -16,6 +16,11 @@ is not a completed package-suite pass.
   path. Pinned DXC DLLs are placed beside each extracted test executable. Previously
   wgpu ignored the invalid value and fell back to FXC, producing loop-unroll and
   internal compiler errors before some rendering checks could run.
+- **Windows shader debug mode:** wgpu's default test-build `DEBUG` flag passes
+  `-Od` to DXC. WARP then exceeded the 30-second completion deadline in contour
+  fixtures. Windows CI sets `WGPU_DEBUG=0` while explicitly retaining API and
+  indirect-call validation. The deadline and pixel assertions stay unchanged;
+  offscreen test readback now checks completion and mapping errors before access.
 - **Metal coordinate precision:** explicit `fma` rounding boundaries preserve
   hi/lo residuals and field-grid subtraction. The [unmodified-wgpu experiment](https://github.com/shim9610/figgy/actions/runs/38109490393)
   passed all 768 projection cases with this formulation; the default expression

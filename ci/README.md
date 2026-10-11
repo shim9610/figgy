@@ -26,6 +26,10 @@ that narrowly scoped probe is not a passing renderer/package matrix.
 Windows CI selects `WGPU_DX12_COMPILER=dxc` and installs pinned DXC DLLs beside
 the extracted test executables. This variable takes a compiler name, not a DLL path.
 An invalid value previously left wgpu using FXC, which failed to compile some entries.
+It also sets `WGPU_DEBUG=0`: wgpu otherwise passes `-Od` to DXC in test builds,
+making WARP execution exceptionally slow. `WGPU_VALIDATION=1` and
+`WGPU_VALIDATION_INDIRECT_CALL=1` retain validation while exercising optimized
+production shaders. GPU completion deadlines and pixel tolerances are unchanged.
 
 ## What runs on every OS
 

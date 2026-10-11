@@ -19672,11 +19672,21 @@ mod tests {
             .queue
             .submit(std::iter::once(recorded.command_buffer));
         let slice = recorded.readback.slice(..);
-        slice.map_async(wgpu::MapMode::Read, |_| {});
-        let _ = renderer.device.poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: Some(std::time::Duration::from_secs(30)),
+        let (mapped_tx, mapped_rx) = std::sync::mpsc::sync_channel(1);
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = mapped_tx.send(result);
         });
+        renderer
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .expect("offscreen GPU work completes before readback");
+        mapped_rx
+            .try_recv()
+            .expect("offscreen mapping callback ran during GPU completion")
+            .expect("offscreen readback mapping succeeds");
         let mapped = slice
             .get_mapped_range()
             .expect("offscreen readback is mapped");
