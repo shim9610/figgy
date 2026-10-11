@@ -3259,7 +3259,19 @@ mod tests {
             &mut |_| {},
         )
         .unwrap();
-        for line in [false, true] {
+        // Exact centerline hits must survive reciprocal rounding; near misses
+        // and points beyond either endpoint must not become infinite-line hits.
+        // The right halo is available to the last segment, never to scatter.
+        for (line, cursor, expected_local_index) in [
+            (false, [90.0, 50.0], None),
+            (false, [10.0, 50.0], Some(count - 2)),
+            (true, [50.0, 50.0], Some(count - 2)),
+            (true, [30.0, 50.0], Some(count - 2)),
+            (true, [70.0, 50.0], Some(count - 1)),
+            (true, [50.0, 50.001], None),
+            (true, [5.0, 50.0], None),
+            (true, [95.0, 50.0], None),
+        ] {
             let descriptor = GpuPickSeriesDescriptor {
                 source_id: None,
                 series_id: "gated-stream".into(),
@@ -3272,7 +3284,7 @@ mod tests {
                 }),
                 line_width_px: line.then_some(0.0),
             };
-            let query = test_query(if line { [50.0, 50.0] } else { [90.0, 50.0] });
+            let query = test_query(cursor);
             let mut stream = bundle
                 .begin_stream(query, 1.0, vec![(None, "gated-stream".into())])
                 .unwrap();
@@ -3298,12 +3310,14 @@ mod tests {
             assert_eq!(scratch.charged_bytes(), bytes);
             queue.submit([encoder.finish()]);
             let answer = pollster::block_on(stream.finish().unwrap().resolve()).unwrap();
-            if line {
-                let answer = answer.expect("the last owned segment crosses the cursor");
-                assert_eq!(answer.point_index, 1000 + count - 2);
+            if let Some(expected_local_index) = expected_local_index {
+                let answer = answer.unwrap_or_else(|| {
+                    panic!("owned primitive at cursor was missed: line={line}, cursor={cursor:?}")
+                });
+                assert_eq!(answer.point_index, 1000 + expected_local_index);
                 assert_eq!(answer.distance_px, 0.0);
             } else {
-                assert_eq!(answer, None, "the right halo is not an owned scatter point");
+                assert_eq!(answer, None, "unexpected hit: line={line}, cursor={cursor:?}");
             }
         }
     }

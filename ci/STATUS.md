@@ -24,6 +24,13 @@ is not a completed package-suite pass.
   the full matrix additionally checks picking, contours and field interpolation.
 - **Line midpoint picking:** CPU and GPU select the earlier endpoint within the
   projected f32 rounding uncertainty. Regressions check both sides of the midpoint.
+- **Zero-distance line picking:** interior distance is measured perpendicular to
+  the segment instead of reconstructing a rounded closest point. The
+  [DX12/WARP A/B probe](https://github.com/shim9610/figgy/actions/runs/38111540388)
+  measured a false `9.5367386e-7 px` distance for a cursor on a horizontal line in
+  the old path, which missed at zero tolerance; the corrected path returns exactly
+  zero and the expected hit. CPU and GPU use the same formula. Finite endpoints,
+  near misses and unowned streaming halos remain covered; no hit tolerance increased.
 - **Transparent pixel comparisons:** compare composited colors on both black and
   white, keeping the three-code-value visible-color limit and separately bounding
   alpha error to one. The old unpremultiplied-RGB comparison amplified subpixel

@@ -498,9 +498,20 @@ fn pick_line_candidate(
     }
     let cursor_delta = pick_query_params.cursor_chart.xy - a_px;
     let t = clamp((cursor_delta.x * segment.x + cursor_delta.y * segment.y) / length_sq, 0.0, 1.0);
-    let closest = a_px + segment * t;
-    let delta = closest - pick_query_params.cursor_chart.xy;
-    let center_distance = sqrt(fma(delta.x, delta.x, delta.y * delta.y));
+    // For interior hits use perpendicular distance directly. Reconstructing
+    // a + segment * t can turn reciprocal rounding into a false nonzero
+    // distance even for a cursor exactly on a horizontal/vertical segment.
+    // Endpoint regions still measure distance to the finite segment ends.
+    var center_distance: f32;
+    if t <= 0.0 {
+        center_distance = sqrt(fma(cursor_delta.x, cursor_delta.x, cursor_delta.y * cursor_delta.y));
+    } else if t >= 1.0 {
+        let delta = pick_query_params.cursor_chart.xy - b_px;
+        center_distance = sqrt(fma(delta.x, delta.x, delta.y * delta.y));
+    } else {
+        let cross = fma(cursor_delta.x, segment.y, -cursor_delta.y * segment.x);
+        center_distance = abs(cross) / sqrt(length_sq);
+    }
     if !pick_is_finite(center_distance) {
         return pick_invalid_candidate(series_order);
     }

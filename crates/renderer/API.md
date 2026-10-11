@@ -152,3 +152,7 @@ Line picking treats a midpoint difference within the projected coordinates' f32
 rounding uncertainty as a tie and chooses the earlier endpoint, on both CPU and
 GPU. Points outside that narrow interval still choose the nearer endpoint. This
 makes exact midpoint selection stable across native compiler backends.
+Interior line distance uses the perpendicular distance to the segment. Beyond an
+endpoint it uses distance to that endpoint. This avoids reconstructing a rounded
+closest point that can falsely reject an exact centerline hit at zero tolerance;
+it does not add a pick radius or turn finite segments into infinite lines.

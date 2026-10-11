@@ -454,11 +454,20 @@ fn line_segment_pick(
     }
 
     let t = (((x - ax) * sx + (y - ay) * sy) / len_sq).clamp(0.0, 1.0);
-    let closest_x = ax + sx * t;
-    let closest_y = ay + sy * t;
-    let dx = closest_x - x;
-    let dy = closest_y - y;
-    let center_dist = dx.mul_add(dx, dy * dy).sqrt();
+    // Match GPU picking without reconstructing a rounded closest point.
+    // Interior distance comes from the perpendicular; outside the segment
+    // it comes from the nearest endpoint, preserving the finite-segment test.
+    let center_dist = if t <= 0.0 {
+        let dx = x - ax;
+        let dy = y - ay;
+        dx.mul_add(dx, dy * dy).sqrt()
+    } else if t >= 1.0 {
+        let dx = x - bx;
+        let dy = y - by;
+        dx.mul_add(dx, dy * dy).sqrt()
+    } else {
+        (x - ax).mul_add(sy, -(y - ay) * sx).abs() / len_sq.sqrt()
+    };
     if !center_dist.is_finite() {
         return None;
     }
@@ -530,6 +539,28 @@ mod tests {
     };
     use crate::layout::{ChartArea, Rect};
     use crate::line::LineStylePreset;
+
+    #[test]
+    fn segment_distance_preserves_centerlines_and_finite_endpoints() {
+        for (a, b, cursor, expected_sq, expected_index) in [
+            ([10.0, 50.0], [90.0, 50.0], [50.0, 50.0], 0.0, 0),
+            ([10.0, 50.0], [90.0, 50.0], [70.0, 50.0], 0.0, 1),
+            ([10.0, 50.0], [90.0, 50.0], [5.0, 50.0], 25.0, 0),
+            ([10.0, 50.0], [90.0, 50.0], [95.0, 50.0], 25.0, 1),
+            ([10.0, 50.0], [90.0, 50.0], [50.0, 53.0], 9.0, 0),
+            ([50.0, 10.0], [50.0, 90.0], [50.0, 30.0], 0.0, 0),
+            ([0.0, 0.0], [30.0, 40.0], [11.0, 23.0], 25.0, 0),
+        ] {
+            let (distance_sq, index) = line_segment_pick(cursor, a, b, 0.0, 0).unwrap();
+            assert!((distance_sq - expected_sq).abs() < 0.0001);
+            assert_eq!(index, expected_index);
+        }
+        assert_eq!(
+            line_segment_pick([50.0, 53.0], [10.0, 50.0], [90.0, 50.0], 1.0, 0),
+            Some((4.0, 0))
+        );
+        assert_eq!(line_segment_pick([1.0, 1.0], [0.0, 0.0], [0.0, 0.0], 0.0, 0), None);
+    }
 
     struct Columns(HashMap<ColumnId, Vec<f32>>);
 
