@@ -21026,9 +21026,22 @@ mod tests {
                 }
                 images.push(pixels);
             }
-            assert_eq!(
-                images[0], images[1],
-                "four Newton corrections changed the image: {case}"
+            // The old fused loop and four dispatches round intermediate f32
+            // values at different compiler boundaries. On Metal this can move
+            // antialiasing across one 8-bit quantization threshold (45 pixels
+            // in the edge fixture), without changing the projection algorithm.
+            // Bound every channel, including alpha; a displaced/missing contour
+            // or label still fails. Do not dump two 300 KB vectors on failure.
+            assert_eq!(images[0].len(), images[1].len());
+            let max_error = images[0]
+                .iter()
+                .zip(&images[1])
+                .map(|(a, b)| a.abs_diff(*b))
+                .max()
+                .unwrap();
+            assert!(
+                max_error <= 1,
+                "four Newton corrections changed the image: {case}, max channel error {max_error}"
             );
         }
     }

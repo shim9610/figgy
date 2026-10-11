@@ -19,10 +19,11 @@ cannot compile the code. The tested development toolchain and the support floor
 are recorded separately. Direct host device/queue/render-pass sharing requires
 wgpu 30; a host on another wgpu major must adapt or upgrade its integration.
 
-macOS / Metal support is **experimental and not yet stable**. Known failures
-include large-coordinate precision, picking at endpoint ties, and differences
-between resident and streamed composition. A separate precompiled Metal shader
-experiment does not change the default renderer or establish a precision guarantee.
+macOS / Metal support is **experimental and not yet stable**. Version 0.14.0 uses
+explicit FMA rounding boundaries for hi/lo coordinates and a shared CPU/GPU rule
+for midpoint picking uncertainty. Physical Apple GPU coverage remains outstanding.
+A separate precompiled Metal shader experiment does not change the default renderer
+or establish a precision guarantee; no dependency patch or precompiled shader is required.
 The experimental path is not a public Cargo feature. Existing regression checks
 remain enabled; see the source repository's backend results for tested revisions.
 

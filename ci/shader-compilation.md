@@ -34,7 +34,11 @@ coordinate/sampling block with current SSOT math, so Metal coordinate fixes appl
 to both algorithms. The old projection loop and new dispatch sequence remain
 independent. Same-backend image comparisons cover nonlinear
 fields, panning, inverted/log axes, large coordinates, grid edges, transposed matrices,
-NaN/infinity and zero gradients. Existing shader SSOT and renderer tests remain enabled.
+NaN/infinity and zero gradients. Each output RGBA channel must differ by at most
+one 8-bit code value: the old loop and separate dispatches can cross an AA rounding
+threshold on Metal (45 pixels in the edge fixture, with identical alpha). This is
+not a spatial tolerance; shifted or missing contours still fail. Existing shader
+SSOT and renderer tests remain enabled.
 
 ## Measured in the Linux cloud environment
 
@@ -87,7 +91,9 @@ field searches and the enclosing correction loop. No specific compiler pass was
 profiled, and this is not evidence of the same pathology on physical GPUs. The
 extra dispatch boundaries may affect steady-state label-placement time differently
 on different drivers. Windows and macOS must run their normal matrix; existing
-Metal precision issues are not resolved by this optimization.
+Metal precision issues are not resolved by the dispatch optimization alone. The
+0.14.0 integration separately fixes coordinate-rounding boundaries and midpoint
+picking in shared WGSL; see [backend results and fixes](STATUS.md).
 
 ## 한국어 요약
 

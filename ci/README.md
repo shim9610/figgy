@@ -16,11 +16,16 @@ The actual adapter and backend are printed in each run. A missing adapter, rejec
 device or failed render **fails the job**; there is no successful CPU-only fallback
 for the Metal job and no skipped GPU initialization.
 
-macOS / Metal support is currently **experimental, not stable**. Its normal matrix
-job continues to report failures. The separate, opt-in
+macOS / Metal support is currently **experimental, not stable**. Its full matrix
+job remains required; see the exact revision's result and [fix history](STATUS.md).
+The separate, opt-in
 [Metal precision experiment](metal-precision-probe/README.md) compares default WGSL
 with fast and precise precompiled Metal shaders without patching wgpu. Success in
 that narrowly scoped probe is not a passing renderer/package matrix.
+
+Windows CI selects `WGPU_DX12_COMPILER=dxc` and installs pinned DXC DLLs beside
+the extracted test executables. This variable takes a compiler name, not a DLL path.
+An invalid value previously left wgpu using FXC, which failed to compile some entries.
 
 ## What runs on every OS
 
