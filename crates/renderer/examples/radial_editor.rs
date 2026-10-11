@@ -111,18 +111,7 @@ impl Editor {
             ],
             ..Default::default()
         };
-        chart.style = RadialStyle {
-            material: RadialMaterial::Ceramic,
-            depth: 0.16,
-            // Match the approved oblique mockup; 0 degrees is straight overhead.
-            tilt_degrees: 55.0,
-            inner_corner: 0.045,
-            outer_corner: 0.045,
-            bevel: 0.025,
-            gap_degrees: 1.4,
-            shadow: true,
-            ..Default::default()
-        };
+        chart.style = RadialStyle::three_dimensional();
         Ok(Self {
             state,
             renderer,
@@ -294,6 +283,12 @@ impl eframe::App for Editor {
                         }
                         style(ui, &mut self.chart.style);
                     }
+                    if let Some(selected) = self.chart.decorations.selected.clone() {
+                        ui.label(format!("Decoration: {}", selected.element_id()));
+                        if ui.button("Reset position").clicked() {
+                            self.chart.decorations.reset(&selected);
+                        }
+                    }
                     if !self.error.is_empty() {
                         ui.colored_label(egui::Color32::RED, &self.error);
                     }
@@ -308,17 +303,44 @@ impl eframe::App for Editor {
             let logical = (available.x.floor() as u32, available.y.floor() as u32);
             let (rect, response) = ui.allocate_exact_size(
                 egui::vec2(logical.0 as f32, logical.1 as f32),
-                egui::Sense::click(),
+                egui::Sense::click_and_drag(),
             );
-            let hovered = response.hover_pos().and_then(|p| {
+            // Prepare before picking: resize and inspector edits must not use old bounds.
+            if let Err(e) = self.draw(logical, ctx.pixels_per_point()) {
+                self.error = e.to_string();
+            }
+            let decoration = response.interact_pointer_pos().and_then(|p| {
                 let frame = self.frame.as_ref()?;
-                let point = [p.x - rect.left(), p.y - rect.top()];
-                frame.hit_test(point).or_else(|| {
-                    frame
-                        .hit_test_at_rest(point)
-                        .filter(|t| Some(*t) == self.chart.interaction.hovered)
-                })
+                let map = frame.decorations();
+                let hit = map.hit_test([p.x - rect.left(), p.y - rect.top()])?;
+                Some(map.element(hit)?.id.clone())
             });
+            if response.clicked() || response.drag_started() {
+                self.chart.decorations.selected = decoration.clone();
+            }
+            if response.dragged() {
+                if let (Some(frame), Some(selected)) =
+                    (&self.frame, &self.chart.decorations.selected.clone())
+                {
+                    let map = frame.decorations();
+                    if let Some((id, _)) = map.entries().find(|(_, e)| &e.id == selected) {
+                        let delta = ctx.input(|i| i.pointer.delta());
+                        map.drag_by(&mut self.chart.decorations, id, delta.x, delta.y);
+                    }
+                }
+            }
+            let hovered = response
+                .hover_pos()
+                .filter(|_| decoration.is_none())
+                .and_then(|p| {
+                    let frame = self.frame.as_ref()?;
+                    let point = [p.x - rect.left(), p.y - rect.top()];
+                    frame.hit_test(point).or_else(|| {
+                        frame
+                            .hit_test_at_rest(point)
+                            .filter(|t| Some(*t) == self.chart.interaction.hovered)
+                    })
+                });
             if response.clicked() {
                 self.chart.interaction.selected = hovered;
             }

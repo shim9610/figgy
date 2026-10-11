@@ -17,7 +17,20 @@ Code is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE). 
 
 <a id="public-release-candidate--renderer-0120--figgy-0100"></a>
 
-## Source release — figgy-renderer 0.14.1 / figgy-model 0.8.0 / figgy 0.11.3
+## Source release — renderer 0.15.0 / model 0.9.0 / figgy 0.12.0
+
+Bounded chart titles, axes, tick/category labels, legends and data labels now expose
+renderer-measured hit maps and position editing through the existing `Selectable` /
+`Draggable` contracts. [Interaction workflow](crates/renderer/INTERACTION.md).
+Rust struct literals that specify every bounded chart field must add
+`decorations: Default::default()`; existing JSON defaults it automatically.
+The `FiggyChart` JavaScript facade still does not expose bounded charts.
+The native editors demonstrate selection and dragging; the radial editor starts
+with the explicit 3D preset. Existing flat chart defaults remain unchanged.
+See [verification scope](ci/STATUS.md#renderer-0150-bounded-chart-interaction-2026-10-11)
+and this revision's Actions run for the three-OS result.
+
+### Previous patch — figgy-renderer 0.14.1 / figgy-model 0.8.0 / figgy 0.11.3
 
 Windows DX12 now uses explicit per-invocation initialization for the shared
 arrays in extent reduction, picking and arc scans. This avoids WARP's first-use
@@ -262,7 +275,7 @@ render targets and compatibility policy.
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", path = "crates/renderer" }   # or public Git source — version 0.14.1, not on crates.io.
+renderer = { package = "figgy-renderer", path = "crates/renderer" }   # or public Git source — version 0.15.0, not on crates.io.
 wgpu     = "30"
 ```
 
@@ -594,7 +607,8 @@ queue, and render-pass types cannot be shared across major versions.
 with matte/satin surfaces, individual styles, grouped layouts and either direction.
 Notches use explicit median confidence intervals. See the [box plot guide](crates/renderer/BOXPLOT.md)
 or run `cargo run -p figgy-renderer --example boxplot_editor --features egui_demo`.
-This bounded resident API is not yet connected to web Studio.
+Titles, axes, labels and legends use the [shared interaction API](crates/renderer/INTERACTION.md).
+Studio integration and deployment are separate.
 
 ### Categorical bars
 
@@ -603,7 +617,7 @@ The bounded model owns category IDs, series and optional values separately from 
 Per-bar colors, materials, rounding, outlines, label formats and selection are editable in the SSOT.
 See the [categorical API guide](crates/renderer/CATEGORICAL.md) or run
 `cargo run -p figgy-renderer --example categorical_editor --features egui_demo`.
-This API is not yet connected to web Studio.
+Studio integration and deployment are separate.
 
 ### Radial charts
 
@@ -613,7 +627,7 @@ outlines, hover/selection, per-slice colors and styles, and label content live i
 SSOT model. It shares the host wgpu device and does not use column streams.
 Try the [native editor](crates/renderer/examples/radial_editor.rs) with
 `cargo run -p figgy-renderer --example radial_editor --features egui_demo`. See the [radial chart API and example](crates/renderer/RADIAL.md).
-This API is not yet wired into the web Studio UI.
+Studio integration and deployment are separate.
 The guide covers [option defaults and ranges](crates/renderer/RADIAL.md#스타일-옵션-기본값과-범위),
 [per-slice editing](crates/renderer/RADIAL.md#ssot-편집과-선택), and
 [host update order](crates/renderer/RADIAL.md#호스트의-갱신-순서), including frame ownership and export.
@@ -1351,7 +1365,18 @@ figgy는 Rust로 작성한 과학·공학용 차트 라이브러리다. **축·�
 
 <a id="공개-후보--renderer-0120--figgy-0100"></a>
 
-## 소스 릴리스 — figgy-renderer 0.14.1 / figgy-model 0.8.0 / figgy 0.11.3
+## 소스 릴리스 — renderer 0.15.0 / model 0.9.0 / figgy 0.12.0
+
+원형·범주형 막대·박스플롯의 제목·축·눈금·범주 라벨·범례·값 라벨을 기존 선택·드래그 계약으로
+편집할 수 있다. [사용 흐름과 호환성](crates/renderer/INTERACTION.md).
+새 차트의 모든 필드를 명시하는 Rust 구조체 리터럴에는 `decorations: Default::default()`를
+추가한다. 이전 JSON은 기본값으로 읽는다. 기존 `FiggyChart` JavaScript 클래스의 새 차트
+연결은 별도 작업이다. 네이티브 편집기에서 선택·드래그를 확인할 수 있으며, 원형 편집기는
+명시적인 3D 프리셋으로 시작한다. 기존 차트의 평면 기본값은 유지한다.
+[검증 범위](ci/STATUS.md#renderer-0150-bounded-chart-interaction-2026-10-11)와
+해당 리비전의 Actions 실행에서 세 OS 결과를 확인할 수 있다.
+
+### 이전 패치 — figgy-renderer 0.14.1 / figgy-model 0.8.0 / figgy 0.11.3
 
 Windows DX12에서는 범위 계산·피킹·호장 스캔의 공유 배열을 각 실행 단위가 나눠서
 초기화한다. 초기값과 동기화 보장을 유지하면서 WARP의 첫 실행 컴파일 지연을 피한다.
@@ -1541,7 +1566,7 @@ wgpu 30을 사용해야 한다. WASM 래퍼는 별도 소비 예제로 유지하
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", path = "crates/renderer" }   # 또는 공개 Git 소스 — 버전 0.14.1, crates.io 미배포.
+renderer = { package = "figgy-renderer", path = "crates/renderer" }   # 또는 공개 Git 소스 — 버전 0.15.0, crates.io 미배포.
 wgpu     = "30"
 ```
 
@@ -1800,14 +1825,14 @@ winit 루프나 WASM 래퍼처럼 프레임 동안 렌더러를 단독으로 사
 
 <a id="png-export-메모리-only--저장은-caller"></a>
 
-### 박스플롯 — 개발 중 API
+### 박스플롯 — 소량 데이터 API
 
 `BoxPlotRenderer`는 미리 집계한 사분위수·중앙값·수염·평균·이상치를 그린다.
 가로·세로 및 그룹 배치, 무광·금속 질감, 개별 색·스타일과 선택을 지원한다.
 노치는 입력받은 중앙값 신뢰구간으로 그린다. [사용법](crates/renderer/BOXPLOT.md)과
-`boxplot_editor` 예제를 참고한다. 소규모 상주형 API이며 웹 Studio UI에는 아직 연결하지 않았다.
+`boxplot_editor` 예제를 참고한다. 제목·축·라벨·범례 편집은 [공통 선택·이동 API](crates/renderer/INTERACTION.md)를 사용한다. 웹 Studio 연결과 배포는 별도다.
 
-### 범주형 막대 — 개발 중 API
+### 범주형 막대 — 소량 데이터 API
 
 `CategoricalRenderer`는 가로·세로 묶음, 누적, 100% 누적 막대를 그린다. 소규모 범주·시리즈·값을
 직접 담는 별도 계약이며 `ColumnSource`를 사용하지 않는다. 막대별 색·재질·모서리·외곽선·표기와
@@ -1815,14 +1840,14 @@ winit 루프나 WASM 래퍼처럼 프레임 동안 렌더러를 단독으로 사
 `cargo run -p figgy-renderer --example categorical_editor --features egui_demo`로 편집기를 실행한다.
 웹 Studio 연결은 별도 작업이다.
 
-### 원형 차트 — 개발 중 API
+### 원형 차트 — 소량 데이터 API
 
 `RadialRenderer`는 파이·도넛·‘기타’ 분할 차트를 그린다. 무광·세라믹·새틴 금속·툰 등의
 재질, 둥근 모서리, 외곽선, 호버·선택을 지원한다. 조각별 색·스타일·표기 내용은 SSOT 모델에서
 편집한다. 소수의 범주 데이터를 한 번에 받아 그리며 호스트의 wgpu 장치를 공유한다.
 [네이티브 편집기](crates/renderer/examples/radial_editor.rs)는
 `cargo run -p figgy-renderer --example radial_editor --features egui_demo`로 실행한다. [사용법과 예제](crates/renderer/RADIAL.md)를 참고한다.
-웹 Studio의 차트 생성 메뉴에는 아직 연결하지 않았다.
+웹 Studio 연결과 배포는 별도다.
 문서에 [옵션 기본값과 범위](crates/renderer/RADIAL.md#스타일-옵션-기본값과-범위),
 [조각별 편집과 상속](crates/renderer/RADIAL.md#ssot-편집과-선택),
 [호스트 갱신 순서](crates/renderer/RADIAL.md#호스트의-갱신-순서), 프레임 수명과 내보내기를 정리했다.

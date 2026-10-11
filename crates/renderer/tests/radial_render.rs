@@ -612,6 +612,7 @@ fn radial_secondary_controls_and_detail_edits_are_not_stale() {
 fn radial_ssot_fields_are_explicit() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let RadialChart {
+        decorations: _,
         title: _,
         slices: _,
         kind: _,

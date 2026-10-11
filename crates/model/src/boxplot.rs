@@ -228,6 +228,9 @@ impl BoxPlotOverride {
     serde(default)
 )]
 pub struct BoxPlotChart {
+    /// Editable decoration positions and selection, in logical pixels.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub decorations: crate::DecorationLayout,
     pub title: String,
     pub categories: Vec<Category>,
     pub series: Vec<BoxPlotSeries>,
@@ -256,6 +259,7 @@ pub struct BoxPlotChart {
 impl Default for BoxPlotChart {
     fn default() -> Self {
         Self {
+            decorations: Default::default(),
             title: String::new(),
             categories: vec![],
             series: vec![],
@@ -354,6 +358,7 @@ impl BoxPlotChart {
         Ok(())
     }
     pub fn validate(&self) -> Result<(), &'static str> {
+        self.decorations.validate()?;
         let (n, m) = (self.categories.len(), self.series.len());
         if n == 0 || n > MAX_BOX_CATEGORIES || m == 0 || m > MAX_BOX_SERIES || n * m > MAX_BOXES {
             return Err("boxplot limits: 1..64 categories, 1..16 series, at most 512 entries");

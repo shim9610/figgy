@@ -133,7 +133,7 @@ renderer.end_frame();
 WASM에서는 `export_rgba_async(...).await`를 쓴다. 동기판은 네이티브 전용이다. 결과는
 straight-alpha RGBA8이며 PNG는 기존 `encode_png`로 인코딩한다. 내보내기에는 현재 강조 상태가
 포함된다. 강조 없는 결과가 필요하면 내보낼 복사본의 `hovered`와 `selected`를 비운다.
-현재 웹 Studio UI에는 연결하지 않았다.
+웹 Studio 연결과 배포는 별도로 관리한다.
 
 ## 캐시와 소유권
 
@@ -194,3 +194,9 @@ NO_HEADLESS=1 CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runne
 네이티브는 Linux Vulkan llvmpipe, 브라우저는 Chromium 151.0.7922.173의 SwiftShader WebGPU로
 검증했다. SwiftShader는 GPU 없는 검증 환경에서만 사용하며 제품의 기본 설정이 아니다.
 실제 GPU·다른 OS/브라우저 조합은 아직 검증하지 않았다.
+
+## 제목·축·라벨·범례 선택과 이동
+
+데이터 도형의 `hit_test`와 별도로 `frame.decorations()`가 렌더러에서 측정한 히트맵을 제공한다.
+기존 `Selectable`·`Draggable` 계약으로 `chart.decorations`를 갱신하고 `prepare`한다.
+좌표 단위, 요소별 이동 규칙, 캐시·저장 복원 및 웹 연결은 [공통 상호작용 가이드](INTERACTION.md)를 참고한다.

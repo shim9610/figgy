@@ -63,6 +63,7 @@ const _: () =
 /// single-sample target; four analytic subpixel samples provide edge AA.
 /// Labels are rasterized at the requested output resolution, never upscaled.
 pub struct RadialFrame {
+    decorations: crate::decoration::DecorationMap,
     _gpu: RendererDevice,
     size: (u32, u32),
     pipeline: wgpu::RenderPipeline,
@@ -75,6 +76,10 @@ pub struct RadialFrame {
     scale: f32,
 }
 impl RadialFrame {
+    /// Renderer-measured decorations using the common HitMap/Draggable contract.
+    pub fn decorations(&self) -> &crate::decoration::DecorationMap {
+        &self.decorations
+    }
     /// True when annotation GPU storage is shared (e.g. hover/material-only edits).
     pub fn shares_annotations_with(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self._annotations, &other._annotations)
@@ -415,6 +420,7 @@ impl RadialRenderer {
             ],
         });
         let frame = Arc::new(RadialFrame {
+            decorations: l.decorations,
             _gpu: self.gpu.clone(),
             size: (width, height),
             pipeline: self.pipeline.clone(),
@@ -617,7 +623,17 @@ impl RadialRenderer {
 }
 
 // Only properties read by annotation/layout generation survive. Appearance and
-// transient selection do not invalidate the rasterized label texture.
+// ordinary data selection do not invalidate the rasterized label texture.
+// Edited/selected inside labels are rasterized at their current lifted position.
+fn raster_moves_inside_labels(chart: &RadialChart) -> bool {
+    let has_inside = chart.slices.iter()
+        .chain(chart.split.iter().flat_map(|s| s.children.iter()))
+        .any(|s| s.value > 0.0 && s.labels.unwrap_or(chart.labels) == RadialLabels::Inside);
+    has_inside && (matches!(chart.decorations.selected, Some(model::DecorationId::RadialLabel(_)))
+        || chart.decorations.offsets.iter()
+            .any(|o| matches!(o.element, model::DecorationId::RadialLabel(_))))
+}
+
 fn annotation_key(chart: &RadialChart) -> RadialChart {
     fn style(s: &RadialStyle) -> RadialStyle {
         RadialStyle {
@@ -630,7 +646,9 @@ fn annotation_key(chart: &RadialChart) -> RadialChart {
     }
     let mut c = chart.clone();
     c.style = style(&c.style);
-    c.interaction = RadialInteraction::default();
+    if !raster_moves_inside_labels(chart) {
+        c.interaction = RadialInteraction::default();
+    }
     c.background = crate::Color::WHITE;
     for slice in c
         .slices

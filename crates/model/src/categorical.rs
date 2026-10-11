@@ -166,6 +166,9 @@ impl CategoryBarOverride {
     serde(default)
 )]
 pub struct CategoricalChart {
+    /// Editable decoration positions and selection, in logical pixels.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub decorations: crate::DecorationLayout,
     pub title: String,
     pub categories: Vec<Category>,
     pub series: Vec<BarSeries>,
@@ -195,6 +198,7 @@ pub struct CategoricalChart {
 impl Default for CategoricalChart {
     fn default() -> Self {
         Self {
+            decorations: Default::default(),
             title: String::new(),
             categories: vec![],
             series: vec![],
@@ -291,6 +295,7 @@ impl CategoricalChart {
         Ok(())
     }
     pub fn validate(&self) -> Result<(), &'static str> {
+        self.decorations.validate()?;
         let n = self.categories.len();
         let m = self.series.len();
         if n == 0 || n > MAX_CATEGORIES || m == 0 || m > MAX_BAR_SERIES || n * m > MAX_CATEGORY_BARS

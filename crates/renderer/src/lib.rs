@@ -118,3 +118,6 @@ pub use model::boxplot::*;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "../tests/support/gpu.rs"]
 mod test_gpu;
+
+pub use model::decoration::{DecorationId, DecorationLayout, DecorationOffset};
+pub mod decoration;

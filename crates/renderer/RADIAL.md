@@ -3,7 +3,7 @@
 `RadialChart`는 소수의 범주와 구성 비율을 보여 주는 파이·도넛 차트다. `RadialRenderer`는
 기존 렌더러와 같은 wgpu 장치·큐를 사용할 수 있다. 축, 컬럼 풀, 자동 fit, 스트리밍 작업은
 사용하지 않는다. 범주 값과 스타일을 모두 담은 모델을 넘기면 불변 프레임을 만든다.
-이 API는 renderer crate의 독립 렌더링 경로이며, 웹 Studio의 차트 생성 메뉴에는 아직 연결하지 않았다.
+이 API는 renderer crate의 독립 렌더링 경로다. 웹 Studio 연결과 배포는 별도로 관리한다.
 
 ## API 구성
 
@@ -54,10 +54,7 @@ let mut chart = RadialChart {
     labels: RadialLabels::Outside,
     ..Default::default()
 };
-chart.style.material = RadialMaterial::Ceramic;
-chart.style.tilt_degrees = 55.0;
-chart.style.depth = 0.18;
-chart.style.shadow = true;
+chart.style = renderer::RadialStyle::three_dimensional();
 
 // 논리 크기는 1000×600, 실제 출력은 2000×1200이다.
 // 글자와 도형을 이 해상도로 다시 그린다.
@@ -98,7 +95,7 @@ WASM은 같은 `prepare`/`draw`를 쓰고, 출력에는 `export_rgba_async(...).
 ## 재질과 입체 표현
 
 모델 기본값은 정면에서 내려다본 평면 파이다. 재질을 바꾸는 것만으로 기울기나 깊이가
-바뀌지는 않는다. 갤러리처럼 입체 도넛을 만들려면 `kind`, `tilt_degrees`, `depth`도 지정한다.
+바뀌지는 않는다. 입체 기본 뷰는 `RadialStyle::three_dimensional()`로 지정한다. 세라믹·기울기 55°·깊이 0.16·둥근 모서리·그림자를 함께 설정하며, 각 필드는 이후 개별 편집할 수 있다. 도넛 모양은 별도로 `kind`에서 지정한다.
 
 | 설정 | 표현 |
 |---|---|
@@ -340,3 +337,9 @@ cargo run -p figgy-renderer --example radial_gallery -- target/radial-gallery
 검사한다. 모델 테스트는 직렬화 왕복과 기존 스냅샷의 기본값 복원도 검사한다.
 종이 재질은 무늬를 끈 화면과의 픽셀 차이를 비교해, 옆면 높이 방향에도 결이 변하는지 검사한다.
 이를 통해 종이 결이 세로줄로 늘어나는 회귀를 잡는다.
+
+## 제목·축·라벨·범례 선택과 이동
+
+데이터 도형의 `hit_test`와 별도로 `frame.decorations()`가 렌더러에서 측정한 히트맵을 제공한다.
+기존 `Selectable`·`Draggable` 계약으로 `chart.decorations`를 갱신하고 `prepare`한다.
+좌표 단위, 요소별 이동 규칙, 캐시·저장 복원 및 웹 연결은 [공통 상호작용 가이드](INTERACTION.md)를 참고한다.

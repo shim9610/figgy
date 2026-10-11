@@ -12,6 +12,7 @@
 //! area follows, and ticks/data stay aligned by construction.
 
 use crate::config::Config;
+use crate::drag::DragConfig;
 use crate::layout::{Element, NudgeReject, NudgeResult, RectF, Side};
 use crate::select::{ColorBarElement, DataAreaElement, SELECTION_PADDING, Selectable};
 use crate::text::MeasureText;
@@ -70,17 +71,17 @@ pub fn handle_rects(rect: &RectF) -> [(ResizeHandle, RectF); 8] {
 
 /// A selectable element whose extent can be adjusted by dragging the eight
 /// handles on its selection box.
-pub trait Resizable: Selectable {
+pub trait Resizable<C: DragConfig = Config>: Selectable<C> {
     /// The nudge elements a handle's (horizontal, vertical) motion drives —
     /// the only thing an implementation defines. `None` components are
     /// discarded (an edge-midpoint handle resizes along one dimension).
-    fn resize_targets(&self, handle: ResizeHandle) -> (Option<Element>, Option<Element>);
+    fn resize_targets(&self, handle: ResizeHandle) -> (Option<C::Element>, Option<C::Element>);
 
     /// Default handle geometry: eight squares on the selection box (element
     /// bounds + [`SELECTION_PADDING`]).
     fn resize_handles(
         &self,
-        cfg: &Config,
+        cfg: &C,
         measure: &dyn MeasureText,
     ) -> Option<[(ResizeHandle, RectF); 8]> {
         let rect = self.bounds(cfg, measure)?.expanded(SELECTION_PADDING);
@@ -90,7 +91,7 @@ pub trait Resizable: Selectable {
     /// Default handle hit test.
     fn hit_resize_handle(
         &self,
-        cfg: &Config,
+        cfg: &C,
         measure: &dyn MeasureText,
         x: f32,
         y: f32,
@@ -104,7 +105,7 @@ pub trait Resizable: Selectable {
     /// Default resize pipeline: each motion component routes through
     /// [`Config::nudge`] on its target element, so resize obeys exactly the
     /// same feasibility rules as dragging those elements directly.
-    fn resize_by(&self, cfg: &mut Config, handle: ResizeHandle, dx: f32, dy: f32) -> NudgeResult {
+    fn resize_by(&self, cfg: &mut C, handle: ResizeHandle, dx: f32, dy: f32) -> NudgeResult {
         let (h_target, v_target) = self.resize_targets(handle);
         let mut moved = false;
         let mut attempted = false;

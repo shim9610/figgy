@@ -91,7 +91,8 @@ UI subregion or a multisampled host pass, draw to a matching offscreen texture a
 composite it. Supported formats are RGBA8/BGRA8, linear or sRGB.
 
 Small-chart `prepare` takes logical size and scale; picking takes logical
-coordinates. Frame sizes and exposed geometry rectangles are physical pixels.
+coordinates. Frame sizes and data geometry rectangles are physical pixels;
+`frame.decorations()` exposes its hit bounds and selection boxes in logical pixels.
 Prepare at the actual output scale to rasterize labels at that resolution.
 Each module documents its accepted size/scale bounds; the Cartesian export scale
 contract differs from the small-chart contract.
@@ -112,7 +113,7 @@ or changing fields, adding required fields or enum variants, changing trait
 requirements, and adding `non_exhaustive` to existing types can break consumers.
 Incompatible changes require a new 0.x minor version and migration notes; patch
 updates must preserve the supported contract. A new wgpu major needs the same
-review. The source versions are figgy-renderer 0.14.0 and figgy-model 0.8.0. They have not
+review. The source versions are figgy-renderer 0.15.0 and figgy-model 0.9.0. They have not
 been published to crates.io; publishing a source commit does not publish a registry package.
 
 The optional serde representation is not an application file-format version.
@@ -156,3 +157,7 @@ Interior line distance uses the perpendicular distance to the segment. Beyond an
 endpoint it uses distance to that endpoint. This avoids reconstructing a rounded
 closest point that can falsely reject an exact centerline hit at zero tolerance;
 it does not add a pick radius or turn finite segments into infinite lines.
+
+## Bounded chart decoration interaction
+
+Radial, categorical and boxplot frames expose `decorations()`, a renderer-measured hit map using the existing `HitMap` / `Selectable` / `Draggable` contracts. See [interaction workflow](INTERACTION.md) for selection, logical-pixel dragging, SSOT persistence and host integration.

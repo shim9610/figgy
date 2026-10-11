@@ -231,6 +231,24 @@ pub struct RadialStyle {
     /// Finite pattern rotation in degrees, reduced modulo 360 by the renderer.
     pub texture_angle_degrees: f32,
 }
+impl RadialStyle {
+    /// Oblique 3D view used by the native editor. Explicit preset so existing
+    /// flat charts and serialized styles do not silently change appearance.
+    pub fn three_dimensional() -> Self {
+        Self {
+            material: RadialMaterial::Ceramic,
+            depth: 0.16,
+            tilt_degrees: 55.0,
+            inner_corner: 0.045,
+            outer_corner: 0.045,
+            bevel: 0.025,
+            gap_degrees: 1.4,
+            shadow: true,
+            ..Self::default()
+        }
+    }
+}
+
 impl Default for RadialStyle {
     fn default() -> Self {
         Self {
@@ -268,6 +286,9 @@ pub struct RadialSplit {
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RadialChart {
+    /// Editable decoration positions and selection, in logical pixels.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub decorations: crate::DecorationLayout,
     pub title: String,
     pub slices: Vec<RadialSlice>,
     pub kind: RadialKind,
@@ -292,6 +313,7 @@ pub struct RadialChart {
 impl Default for RadialChart {
     fn default() -> Self {
         Self {
+            decorations: Default::default(),
             title: String::new(),
             slices: Vec::new(),
             kind: RadialKind::Pie,
@@ -437,6 +459,7 @@ impl RadialChart {
     /// This checks model constraints; the renderer additionally checks output size,
     /// device limits, label layout and GPU budget when preparing a frame.
     pub fn validate(&self) -> Result<(), &'static str> {
+        self.decorations.validate()?;
         total(&self.slices)?;
         if !kind(self.kind) || !self.start_angle_degrees.is_finite() {
             return Err("invalid radial shape or start angle");

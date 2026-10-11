@@ -1,0 +1,102 @@
+# 새 차트의 선택과 이동
+
+원형·범주형 막대·박스플롯은 데이터 모델이 서로 다르지만, 제목·축·라벨·범례의 선택과
+이동은 기존 `HitMap → Selectable → Draggable` 계약을 사용한다. 포인터 이벤트 전달과
+드래그 중 프레임 요청은 호스트가 담당한다. 클릭 영역이나 라벨 위치를 호스트에서 다시 계산하지 않는다.
+
+## 데이터 선택과 장식 요소 선택
+
+- `frame.hit_test([x, y])`는 기존대로 조각·막대·박스의 **데이터**를 고른다.
+- `frame.decorations().hit_test([x, y])`는 제목·축·라벨·범례를 고른다.
+- 겹치는 곳에서는 장식 요소를 먼저 검사한다. 조각 위의 내부 라벨도 이 순서로 선택한다.
+- 좌표와 이동량은 차트 내부의 **논리 픽셀**이다. CSS로 확대된 캔버스라면 화면 좌표를
+  차트의 논리 크기로 변환한다. DPR을 곱한 framebuffer 좌표를 넘기지 않는다.
+
+장식 요소 선택은 `chart.decorations.selected`, 데이터 선택은 기존 `selected` 또는
+`interaction.selected`에 저장한다. 별개 상태이므로 호스트가 한 종류만 선택하려면
+다른 쪽 선택을 명시적으로 지운다. 원형 호버의 `interaction.hovered`도 그대로 사용한다.
+
+| 요소 | `DecorationId` | 이동 규칙 |
+|---|---|---|
+| 차트 제목 | `ChartTitle` | 화면 방향으로 자유 이동 |
+| 축 선 | `Axis(Side)` | 축에 수직인 방향만 이동. 데이터·그리드는 고정, 눈금 글자는 축을 따라 이동 |
+| 눈금·범주 라벨 | `AxisLabel(Side)` | 해당 축의 라벨 묶음을 이동 |
+| 축 제목 | `AxisTitle(Side)` | 회전된 제목도 포인터의 화면 방향으로 이동 |
+| 범례 | `Legend` | 기호와 모든 행을 함께 이동 |
+| 원형 조각 라벨 | `RadialLabel(RadialTarget)` | 이름·수치 줄을 함께 이동. 외부 라벨 연결선 끝도 갱신 |
+| 막대·박스 값 라벨 | `DataLabel { category_id, series_id }` | 해당 데이터 라벨만 이동. 재정렬해도 같은 ID에 적용 |
+
+원형에는 축과 범례를 그리지 않으므로 이들의 히트 영역도 없다. 숨긴 제목·라벨·범례는
+히트맵에 등록되지 않는다. 축 라벨은 기존 Cartesian 계약처럼 묶음 선택이며, 범주 이름 하나마다
+독립적으로 이동하는 계약은 아니다. 데이터 영역의 리사이즈나 데이터 값 자체를 드래그로 바꾸는 기능은
+이번 장식 요소 이동 API에 포함하지 않는다.
+
+## 호출 순서
+
+```rust,no_run
+use renderer::{RadialChart, RadialRenderer, DecorationId};
+# fn edit(renderer: &mut RadialRenderer, chart: &mut RadialChart) -> Result<(), renderer::RadialError> {
+// 실제 모델/크기/DPR에 맞춰 준비한 프레임으로만 선택한다.
+let frame = renderer.prepare(chart, (800, 520), 2.0)?;
+let map = frame.decorations();
+if let Some(hit) = map.hit_test([120.0, 180.0]) {
+    let target: DecorationId = map.element(hit).unwrap().id.clone();
+    chart.decorations.selected = Some(target);
+
+    // 프레임별 포인터 이동량. 누적 drag_delta를 매번 더하지 않는다.
+    let result = map.drag_by(&mut chart.decorations, hit, 8.0, -4.0);
+    // result: Some(Moved), Some(Rejected(OutOfBounds)), 또는 없는 hit면 None.
+    // 거절 시 상태는 바뀌지 않는다.
+    let _ = result;
+}
+let next_frame = renderer.prepare(chart, (800, 520), 2.0)?;
+// next_frame.draw(...) 또는 renderer.export_rgba_async(...).
+# Ok(()) }
+```
+
+기존 트레잇을 직접 사용하는 경로도 같다.
+
+```rust,no_run
+# fn drag(map: &renderer::decoration::DecorationMap, hit: renderer::HitId,
+#         chart: &mut renderer::RadialChart) {
+let element = map.hit_map().get(hit).unwrap();
+let result = element.as_draggable().unwrap()
+    .drag_by(&mut chart.decorations, 8.0, -4.0);
+# let _ = result;
+# }
+```
+
+`HitId`는 해당 프레임 히트맵에서만 유효하다. 장기간 저장할 때는 `DecorationId`를 쓴다.
+크기·폰트·데이터·방향·모양을 바꾼 다음에는 `prepare`한 새 프레임에서 다시 조회한다.
+`map.bounds(hit)`와 `map.selection_box(hit)`도 논리 픽셀이다. 선택 테두리는 공통
+`SelectionBox` 규칙으로 렌더러가 그린다.
+
+## SSOT와 캐시
+
+`decorations.offsets`가 자동 배치 결과에 더할 논리 픽셀 이동량을 보관한다.
+`decorations.reset(&id)`는 해당 요소를 자동 위치로 되돌린다. 세 모델의 `serde` 옵션으로
+이 상태를 직렬화·복원할 수 있으며, 이전 문서에 `decorations`가 없으면 기본 위치와 선택 없음으로 읽는다.
+원형 조각 ID는 원본 배열 인덱스이므로 조각을 재정렬할 때 호스트가 관련 선택·이동 상태도 대응시켜야 한다.
+
+위치·장식 선택 변경은 라벨 텍스처 캐시를 무효화한다. 재질·데이터 호버처럼 글자 위치를
+바꾸지 않는 변경은 이전처럼 라벨 텍스처를 재사용한다. 동일 모델·크기·배율이면 프레임을 재사용한다.
+이전 `Arc<Frame>`의 그림과 히트맵은 새 모델을 편집해도 바뀌지 않는다.
+
+기본 내부 원형 라벨은 호버 시 기존 셰이더의 이동과 라스터 캐시 재사용을 유지한다.
+원형 라벨을 직접 옮기거나 선택 테두리를 표시하는 동안에는 내부 라벨과 테두리의 위치를 CPU에서
+함께 계산한다. 이 상태에서 호버 높이가 바뀌면 라벨 라스터도 갱신한다. 텍스트를 여러 번 리사이즈해서
+누적하는 방식은 사용하지 않는다.
+
+## 기존 API 및 웹 연결
+
+`Selectable`, `Draggable`, `Resizable`, `HitMap`은 상태 타입을 받도록 확장했고 기본 타입은
+기존 `Config`다. 기존 Cartesian 호출은 그대로 사용한다. 새 차트는 `DecorationLayout`을 넘긴다.
+세 차트 모델에 필드가 추가됐으므로 Rust에서 모든 필드를 명시한 구조체 리터럴은
+`decorations: Default::default()`를 추가해야 한다.
+
+이 문서는 renderer crate의 Rust API다. 기존 `FiggyChart` JavaScript 클래스에 새 차트를
+자동으로 연결하지 않는다. 별도 WASM 호스트는 이 히트맵·ID·드래그 결과를 노출하고, SSOT 변경 후
+새 프레임을 그려야 한다. 이 변경만으로 figgyplot.com 배포본이 갱신되는 것은 아니다.
+
+작동하는 네이티브 연결 예제는 `radial_editor`, `categorical_editor`, `boxplot_editor`다.
+제목·범례·라벨을 클릭해 선택하고 드래그하며, `Reset position`으로 되돌릴 수 있다.

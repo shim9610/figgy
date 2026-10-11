@@ -140,6 +140,7 @@ fn distance(bar: &Bar, p: [f32; 2]) -> f32 {
 /// single-sample target; four analytic subpixel samples provide edge AA.
 /// Labels are rasterized at the requested output resolution, never upscaled.
 pub struct BoxPlotFrame {
+    decorations: crate::decoration::DecorationMap,
     _gpu: RendererDevice,
     size: (u32, u32),
     pipeline: wgpu::RenderPipeline,
@@ -153,6 +154,10 @@ pub struct BoxPlotFrame {
     clip: [f32; 4],
 }
 impl BoxPlotFrame {
+    /// Renderer-measured decorations using the common HitMap/Draggable contract.
+    pub fn decorations(&self) -> &crate::decoration::DecorationMap {
+        &self.decorations
+    }
     /// True when annotation GPU storage is shared (e.g. hover/material-only edits).
     pub fn shares_annotations_with(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self._annotations, &other._annotations)
@@ -490,6 +495,7 @@ impl BoxPlotRenderer {
             ],
         });
         let frame = Arc::new(BoxPlotFrame {
+            decorations: l.decorations,
             _gpu: self.gpu.clone(),
             size: (width, height),
             pipeline: self.pipeline.clone(),

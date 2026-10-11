@@ -6,6 +6,28 @@ All regression checks remain enabled in the normal package matrix. The separate
 investigation, not a default renderer option. Standard CI uses software/virtual
 adapters; physical Intel/AMD/NVIDIA/Apple driver coverage remains outstanding.
 
+## Renderer 0.15.0 bounded chart interaction (2026-10-11)
+
+This source release pairs renderer 0.15.0 with model 0.9.0 and figgy 0.12.0.
+The [interaction guide](../crates/renderer/INTERACTION.md) covers renderer-owned
+hit geometry, the shared selection/drag contracts, SSOT offsets and migration.
+Boxplot and categorical chrome now share decoration drawing; their bounded data
+models remain separate from Cartesian streaming. Existing Cartesian interactions
+and saved flat radial styles retain their contracts.
+
+The three-OS package matrix includes four new native interaction regressions:
+radial outside/inside labels, boxplot axes/legend, and categorical data labels.
+They check actual pixels after edits, selection, logical coordinates at different
+scales, serialization, immutable old frames, data geometry and cache reuse.
+Use the exact revision's [Actions run](https://github.com/shim9610/figgy/actions/workflows/ci.yml)
+for its completed result; earlier release results do not cover these changes.
+
+Separate local validation passed the four native tests on Linux/Mesa lavapipe
+and one Chromium 151.0.7922.173/SwiftShader browser test covering all three
+renderers' interaction and image-export paths. This verifies renderer APIs,
+not Studio event wiring or a figgyplot.com deployment. Standard CI does not run
+that browser test. No physical GPU coverage is implied.
+
 ## Renderer 0.14.1 Windows initialization workaround (2026-10-11)
 
 Windows DX12 uses explicit per-invocation zeroing and a barrier for six shared-array

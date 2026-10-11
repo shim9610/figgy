@@ -14,7 +14,7 @@
 
 use crate::color::Color;
 use crate::config::{AxisOptions, Config, TickVisibility};
-use crate::drag::Draggable;
+use crate::drag::{DragConfig, Draggable};
 use crate::layout::{
     RectF, Side, TitleBand, axis_offset, axis_title_placement, axis_visibility_rect,
     chart_title_placement, colorbar_rect, colorbar_title_placement, label_origin, label_rect,
@@ -53,18 +53,18 @@ pub struct SelectionBox {
 /// Implementations provide [`Self::bounds`] only. Selection behavior lives in
 /// the default methods so it is identical across elements; override them only
 /// to change the policy itself.
-pub trait Selectable {
+pub trait Selectable<C: DragConfig = Config> {
     /// Interaction bounds of this element under `cfg`, or `None` when the
     /// element is hidden, empty, or the layout is infeasible. Text-bearing
     /// elements use `measure`; tick-label elements remain representative
     /// strips rather than exact rendered-label unions.
-    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF>;
+    fn bounds(&self, cfg: &C, measure: &dyn MeasureText) -> Option<RectF>;
 
     /// Default selection policy: a blue box [`SELECTION_PADDING`] px outside
     /// the bounds, stroked [`SELECTION_STROKE_WIDTH`] px in
     /// [`SELECTION_COLOR`]. Resizable elements additionally carry the eight
     /// resize handle squares.
-    fn selection_box(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<SelectionBox> {
+    fn selection_box(&self, cfg: &C, measure: &dyn MeasureText) -> Option<SelectionBox> {
         let rect = self.bounds(cfg, measure)?.expanded(SELECTION_PADDING);
         let handles = match self.as_resizable() {
             Some(_) => crate::resize::handle_rects(&rect)
@@ -82,7 +82,7 @@ pub trait Selectable {
     }
 
     /// Default hit test: point-in-bounds.
-    fn contains(&self, cfg: &Config, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
+    fn contains(&self, cfg: &C, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
         self.bounds(cfg, measure).is_some_and(|b| b.contains(x, y))
     }
 
@@ -90,7 +90,7 @@ pub trait Selectable {
     /// same way. Returns the id the map will report from `hit_test`.
     /// (`Send + Sync` because hosts store hit maps in cross-thread render
     /// state, e.g. egui's `CallbackResources`.)
-    fn register_into(self, map: &mut HitMap) -> HitId
+    fn register_into(self, map: &mut HitMap<C>) -> HitId
     where
         Self: Sized + Send + Sync + 'static,
     {
@@ -100,14 +100,14 @@ pub trait Selectable {
     /// This element's drag capability, if any. Elements that also implement
     /// [`Draggable`] override this with `Some(self)`. Lets hosts go from a
     /// [`HitMap`] hit straight to dragging without knowing concrete types.
-    fn as_draggable(&self) -> Option<&dyn Draggable> {
+    fn as_draggable(&self) -> Option<&dyn Draggable<C>> {
         None
     }
 
     /// This element's resize capability, if any. Elements that also implement
     /// [`Resizable`] override this with `Some(self)` — their selection box
     /// then grows the eight resize handles automatically.
-    fn as_resizable(&self) -> Option<&dyn Resizable> {
+    fn as_resizable(&self) -> Option<&dyn Resizable<C>> {
         None
     }
 
@@ -142,17 +142,68 @@ pub struct HitId(usize);
 /// elements like the data area first, small foreground elements like titles
 /// last). The model owns this because hit-testing is pure bounds geometry;
 /// the renderer only supplies the [`MeasureText`] implementation.
-pub struct HitMap {
-    entries: Vec<Box<dyn Selectable + Send + Sync>>,
+pub struct HitMap<C: DragConfig = Config> {
+    entries: Vec<Box<dyn Selectable<C> + Send + Sync>>,
 }
 
-impl HitMap {
-    pub fn new() -> Self {
+impl<C: DragConfig> HitMap<C> {
+    /// Create a map for an explicit state type; Cartesian callers keep `new()`.
+    pub fn for_state() -> Self {
         Self {
             entries: Vec::new(),
         }
     }
 
+    pub fn register(&mut self, el: impl Selectable<C> + Send + Sync + 'static) -> HitId {
+        self.entries.push(Box::new(el));
+        HitId(self.entries.len() - 1)
+    }
+
+    /// Topmost element containing `(x, y)` — entries are tested in reverse
+    /// registration order.
+    pub fn hit_test(&self, cfg: &C, measure: &dyn MeasureText, x: f32, y: f32) -> Option<HitId> {
+        self.entries
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, el)| el.contains(cfg, measure, x, y))
+            .map(|(i, _)| HitId(i))
+    }
+
+    pub fn get(&self, id: HitId) -> Option<&(dyn Selectable<C> + Send + Sync)> {
+        self.entries.get(id.0).map(|b| b.as_ref())
+    }
+
+    /// Selection highlight for a registered element — the registered
+    /// element's [`Selectable::selection_box`] policy.
+    pub fn selection_box(
+        &self,
+        id: HitId,
+        cfg: &C,
+        measure: &dyn MeasureText,
+    ) -> Option<SelectionBox> {
+        self.get(id)?.selection_box(cfg, measure)
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+impl Default for HitMap<Config> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HitMap<Config> {
+    pub fn new() -> Self {
+        Self::for_state()
+    }
     /// The standard registration set for a single chart panel, back-to-front:
     /// data area → axes → tick-label bands → axis titles → legend → chart
     /// title → colourbar strip → colourbar axis → colourbar labels →
@@ -180,57 +231,6 @@ impl HitMap {
         map.register(ColorBarLabelElement);
         map.register(ColorBarTitleElement);
         map
-    }
-
-    pub fn register(&mut self, el: impl Selectable + Send + Sync + 'static) -> HitId {
-        self.entries.push(Box::new(el));
-        HitId(self.entries.len() - 1)
-    }
-
-    /// Topmost element containing `(x, y)` — entries are tested in reverse
-    /// registration order.
-    pub fn hit_test(
-        &self,
-        cfg: &Config,
-        measure: &dyn MeasureText,
-        x: f32,
-        y: f32,
-    ) -> Option<HitId> {
-        self.entries
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, el)| el.contains(cfg, measure, x, y))
-            .map(|(i, _)| HitId(i))
-    }
-
-    pub fn get(&self, id: HitId) -> Option<&(dyn Selectable + Send + Sync)> {
-        self.entries.get(id.0).map(|b| b.as_ref())
-    }
-
-    /// Selection highlight for a registered element — the registered
-    /// element's [`Selectable::selection_box`] policy.
-    pub fn selection_box(
-        &self,
-        id: HitId,
-        cfg: &Config,
-        measure: &dyn MeasureText,
-    ) -> Option<SelectionBox> {
-        self.get(id)?.selection_box(cfg, measure)
-    }
-
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-}
-
-impl Default for HitMap {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

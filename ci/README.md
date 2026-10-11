@@ -39,7 +39,9 @@ GPU completion deadlines and pixel tolerances are unchanged.
 4. Extraction outside the checkout, followed by model/renderer unit tests, integration
    tests and doctests with `serde` enabled. This includes native GPU pixel, SSOT edit,
    cache reuse, streaming, picking and memory regressions, plus radial, categorical
-   and boxplot rendering tests.
+   and boxplot rendering tests. Bounded interaction regressions select and drag
+   renderer-measured titles, axes, labels and legends, verify changed pixels and
+   unchanged data geometry, and check serialization, scale and cache reuse.
 5. Three subprocess checks with no enabled adapters: each must run its intended test
    and fail on adapter initialization. An unsupported device-limit request tests the
    device-error path. Linux additionally exercises an unavailable Vulkan driver.

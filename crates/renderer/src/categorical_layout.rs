@@ -1,44 +1,18 @@
 use super::*;
-use crate::raster::{Canvas, Paint};
-use crate::text_render::{FontPolicy, draw_plain_text, measure_plain_text};
+use crate::decoration::{DecorationMap, DecorationPainter};
+use crate::raster::Canvas;
+use crate::text_render::{FontPolicy, measure_plain_text};
+use model::DecorationId;
 use model::config::{AxisOptions, AxisScale};
 
 pub(super) struct Layout {
     pub bars: Vec<Bar>,
     pub targets: Vec<CategoryBarTarget>,
     pub annotations: Vec<u8>,
+    pub decorations: DecorationMap,
 }
 fn measure(c: &CategoricalChart, s: &str, size: f32) -> f32 {
     measure_plain_text(s, &c.font_family, size, false, false, FontPolicy::Standard).width
-}
-fn text(
-    canvas: &mut Canvas,
-    c: &CategoricalChart,
-    s: &str,
-    x: f32,
-    y: f32,
-    size: f32,
-    color: crate::Color,
-    scale: f32,
-) {
-    draw_plain_text(
-        canvas,
-        s,
-        (x * scale, y * scale),
-        color,
-        &c.font_family,
-        size * scale,
-        false,
-        false,
-        FontPolicy::Standard,
-    );
-}
-fn line(canvas: &mut Canvas, a: (f32, f32), b: (f32, f32), color: crate::Color, scale: f32) {
-    canvas.draw_line(
-        (a.0 * scale, a.1 * scale),
-        (b.0 * scale, b.1 * scale),
-        &Paint::stroke(&color, scale),
-    );
 }
 fn number(v: f64) -> String {
     if v == 0.0 {
@@ -232,178 +206,38 @@ pub(super) fn layout(
         .ok_or(invalid("annotation allocation failed"))?;
     let mut front = Canvas::new(if annotate { pw } else { 1 }, if annotate { ph } else { 1 })
         .ok_or(invalid("annotation allocation failed"))?;
-    if annotate {
-        if !c.title.is_empty() {
-            let tw = measure(c, &c.title, fs * 1.5);
-            if tw > w - 32.0 {
-                return Err(invalid("title does not fit"));
-            }
-            text(
-                &mut front,
-                c,
-                &c.title,
-                (w - tw) * 0.5,
-                fs * 1.5 + 12.0,
-                fs * 1.5,
-                c.text_color,
-                scale,
-            );
-        }
-        let grid = crate::Color::from_rgb8(224, 229, 235);
-        for (t, label) in &ticks {
-            if horizontal {
-                let x = left + t * (right - left);
-                if c.grid {
-                    line(&mut back, (x, top), (x, bottom), grid, scale);
-                }
-                text(
-                    &mut front,
-                    c,
-                    label,
-                    x - measure(c, label, fs) * 0.5,
-                    bottom + fs + 8.0,
-                    fs,
-                    c.text_color,
-                    scale,
-                );
-            } else {
-                let y = bottom - t * (bottom - top);
-                if c.grid {
-                    line(&mut back, (left, y), (right, y), grid, scale);
-                }
-                text(
-                    &mut front,
-                    c,
-                    label,
-                    left - measure(c, label, fs) - 10.0,
-                    y + fs * 0.32,
-                    fs,
-                    c.text_color,
-                    scale,
-                );
-            }
-        }
-        if horizontal {
-            line(
-                &mut back,
-                (axis(0.0), top),
-                (axis(0.0), bottom),
-                c.text_color,
-                scale,
-            );
-        } else {
-            line(
-                &mut back,
-                (left, axis(0.0)),
-                (right, axis(0.0)),
-                c.text_color,
-                scale,
-            );
-        }
-        for (i, cat) in c.categories.iter().enumerate() {
-            let center = if horizontal {
-                top + (i as f32 + 0.5) * slot
-            } else {
-                left + (i as f32 + 0.5) * slot
-            };
-            let tw = measure(c, &cat.label, fs);
-            if horizontal {
-                text(
-                    &mut front,
-                    c,
-                    &cat.label,
-                    left - tw - 10.0,
-                    center + fs * 0.32,
-                    fs,
-                    c.text_color,
-                    scale,
-                );
-            } else {
-                text(
-                    &mut front,
-                    c,
-                    &cat.label,
-                    center - tw * 0.5,
-                    bottom + fs + 8.0,
-                    fs,
-                    c.text_color,
-                    scale,
-                );
-            }
-        }
-        if !axis_title.is_empty() {
-            let tw = measure(c, axis_title, fs);
-            if tw > right - left {
-                return Err(invalid("axis title does not fit"));
-            }
-            text(
-                &mut front,
-                c,
-                axis_title,
-                (left + right - tw) * 0.5,
-                bottom + 2.0 * fs + 22.0,
-                fs,
-                c.text_color,
-                scale,
-            );
-        }
-        let side_title = if horizontal {
-            &c.category_title
-        } else {
-            &c.value_title
-        };
-        if !side_title.is_empty() {
-            let tw = measure(c, side_title, fs);
-            if tw > bottom - top {
-                return Err(invalid("axis title does not fit"));
-            }
-            let x = fs + 4.0;
-            let y = (top + bottom) * 0.5;
-            front.save();
-            front.rotate_at(-90.0, x * scale, y * scale);
-            text(
-                &mut front,
-                c,
-                side_title,
-                x - tw * 0.5,
-                y,
-                fs,
-                c.text_color,
-                scale,
-            );
-            front.restore();
-        }
-        for (r, x, _, series) in &legend {
-            let total = legend
+    let mut decorations = DecorationPainter::new(&c.decorations, size, scale, annotate);
+    crate::axis_render::draw_bounded_decorations(
+        &crate::axis_render::BoundedAxisDecorations {
+            size,
+            plot: [left, top, right, bottom],
+            horizontal,
+            zero: Some(axis(0.0)),
+            ticks: &ticks,
+            categories: &c.categories,
+            title: &c.title,
+            value_title: &c.value_title,
+            category_title: &c.category_title,
+            font_family: &c.font_family,
+            font_size: fs,
+            color: c.text_color,
+            grid: c.grid,
+            legend: legend
                 .iter()
-                .filter(|(rr, _, _, _)| rr == r)
-                .map(|(_, _, v, _)| v)
-                .sum::<f32>();
-            let lx = (w - total) * 0.5 + x;
-            let ly = h - legend_height + 12.0 + *r as f32 * (fs + 12.0);
-            back.draw_rect(
-                lx * scale,
-                (ly - fs * 0.65) * scale,
-                fs * scale,
-                fs * 0.65 * scale,
-                &Paint::fill(&series.color),
-            );
-            text(
-                &mut front,
-                c,
-                &series.label,
-                lx + fs + 7.0,
-                ly,
-                fs,
-                c.text_color,
-                scale,
-            );
-        }
-    }
+                .map(|(row, x, width, s)| (*row, *x, *width, s.label.as_str(), s.color))
+                .collect(),
+            legend_height,
+        },
+        &mut decorations,
+        &mut back,
+        &mut front,
+    )
+    .map_err(invalid)?;
     let mut out = Layout {
         bars: Vec::new(),
         targets: Vec::new(),
         annotations: Vec::new(),
+        decorations: DecorationPainter::new(&c.decorations, size, scale, false).finish(),
     };
     let mut text_boxes: Vec<[f32; 4]> = Vec::new();
     for s in &segments {
@@ -523,9 +357,6 @@ pub(super) fn layout(
             });
             out.targets.push(s.target.clone());
         }
-        if !annotate {
-            continue;
-        }
         let mode = edit.and_then(|o| o.labels).unwrap_or(c.labels);
         if mode == CategoryBarLabels::None {
             continue;
@@ -590,9 +421,23 @@ pub(super) fn layout(
         } else {
             c.text_color
         };
-        text(&mut front, c, &label, x, y, fs, ink, scale);
+        decorations.text(
+            DecorationId::DataLabel {
+                category_id: s.target.category_id.clone(),
+                series_id: s.target.series_id.clone(),
+            },
+            &mut front,
+            &c.font_family,
+            &label,
+            x,
+            y,
+            fs,
+            ink,
+        );
     }
+    out.decorations = decorations.finish();
     if annotate {
+        out.decorations.draw_selection(&mut front, scale);
         out.annotations = back.into_rgba();
         out.annotations.extend(front.into_rgba());
     }

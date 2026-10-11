@@ -196,6 +196,12 @@ editing, color changes, resets, direction, grid, legend and category reordering.
 직접 범위를 지정하면 영역 밖의 도형과 선택 판정을 함께 자른다. 글자가 겹치는 크기에서는
 오류를 반환하므로 창을 넓히거나 글자·표기 항목을 줄여야 한다.
 
-현재는 네이티브 예제와 WASM 렌더러 API까지 제공한다. 웹 Studio 편집 UI에는 아직
-연결하지 않았다. 초기 입력 상한은 64범주·16시리즈·총 512항목, 이상치 4096개이며
+네이티브 예제와 WASM으로 컴파일할 수 있는 Rust 렌더러 API를 제공한다. 웹 Studio
+연결과 배포는 별도로 관리한다. 입력 상한은 64범주·16시리즈·총 512항목, 이상치 4096개이며
 상자 하나에는 이상치를 최대 128개 받는다. 대용량 스트리밍은 이 계약에 포함하지 않는다.
+
+## 제목·축·라벨·범례 선택과 이동
+
+데이터 도형의 `hit_test`와 별도로 `frame.decorations()`가 렌더러에서 측정한 히트맵을 제공한다.
+기존 `Selectable`·`Draggable` 계약으로 `chart.decorations`를 갱신하고 `prepare`한다.
+좌표 단위, 요소별 이동 규칙, 캐시·저장 복원 및 웹 연결은 [공통 상호작용 가이드](INTERACTION.md)를 참고한다.

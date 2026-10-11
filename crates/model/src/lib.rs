@@ -15,6 +15,8 @@ pub mod data;
 pub mod data_config;
 pub mod default;
 pub mod drag;
+pub mod decoration;
+pub use decoration::{DecorationId, DecorationLayout, DecorationOffset, DecorationElement};
 pub mod format;
 pub mod layout;
 pub mod legend;

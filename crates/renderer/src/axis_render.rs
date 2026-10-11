@@ -1073,6 +1073,32 @@ fn draw_grid(canvas: &mut Canvas, config: &Config, da: &DataArea, fp: FontPolicy
     }
 }
 
+#[path = "bounded_axes.rs"]
+mod bounded;
+pub(crate) use bounded::{BoundedAxisDecorations, draw_bounded_decorations};
+
+fn draw_axis_segment(
+    canvas: &mut Canvas,
+    p0: (f32, f32),
+    p1: (f32, f32),
+    paint: &Paint,
+    stroker: &DecoStroker,
+    tag: &str,
+) {
+    stroker.stroke_segment(canvas, p0, p1, paint, tag);
+}
+pub(crate) fn draw_precise_axis_segment(
+    canvas: &mut Canvas,
+    p0: (f32, f32),
+    p1: (f32, f32),
+    color: Color,
+    width: f32,
+) {
+    draw_axis_segment(
+        canvas, p0, p1, &Paint::stroke(&color, width), &DecoStroker::Precise, "bounded_axis",
+    );
+}
+
 fn draw_axis(
     canvas: &mut Canvas,
     axis: &AxisOptions,
@@ -1097,7 +1123,7 @@ fn draw_axis(
     if axis.line_visible {
         let paint = stroke_paint(&axis.line_color, axis.line_width, &axis.line_style);
         let tag = format!("axis_{}", side_tag(&side));
-        stroker.stroke_segment(canvas, p0, p1, &paint, &tag);
+        draw_axis_segment(canvas, p0, p1, &paint, stroker, &tag);
     }
 
     // 2) Major / minor ticks

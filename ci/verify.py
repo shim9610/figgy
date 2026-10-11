@@ -162,7 +162,8 @@ def main():
     RESULTS.mkdir(parents=True, exist_ok=True)
     images = RESULTS / "images"
     images.mkdir(exist_ok=True)
-    for key in ("FIGGY_PROBE_DIR", "FIGGY_LAYOUT_PROBE_DIR", "FIGGY_FIELD_DIAGNOSTIC_ARTIFACT_DIR"):
+    for key in ("FIGGY_PROBE_DIR", "FIGGY_LAYOUT_PROBE_DIR", "FIGGY_FIELD_DIAGNOSTIC_ARTIFACT_DIR",
+                "FIGGY_INTERACTION_ARTIFACTS"):
         os.environ.setdefault(key, str(images))
     os.environ.setdefault("FIGGY_SHADER_COMPILE_REPORT", str(RESULTS / "shader-compilation-native.json"))
     with (RESULTS / f"{args.stage}.log").open("w", encoding="utf-8") as log:

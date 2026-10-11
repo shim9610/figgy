@@ -1,6 +1,8 @@
 use super::*;
+use crate::decoration::{DecorationMap, DecorationPainter};
 use crate::raster::{Canvas, Paint};
-use crate::text_render::{FontPolicy, draw_plain_text, measure_plain_text};
+use crate::text_render::{FontPolicy, measure_plain_text};
+use model::DecorationId;
 use std::f32::consts::TAU;
 
 pub(super) struct Layout {
@@ -8,6 +10,7 @@ pub(super) struct Layout {
     pub groups: [[f32; 4]; 2],
     pub holes: [f32; 2],
     pub annotations: Vec<u8>,
+    pub decorations: DecorationMap,
     pub targets: Vec<RadialTarget>,
 }
 fn width(c: &RadialChart, text: &str, size: f32) -> f32 {
@@ -20,27 +23,6 @@ fn width(c: &RadialChart, text: &str, size: f32) -> f32 {
         FontPolicy::Standard,
     )
     .width
-}
-fn text(
-    canvas: &mut Canvas,
-    c: &RadialChart,
-    s: &str,
-    x: f32,
-    y: f32,
-    size: f32,
-    color: crate::Color,
-) {
-    draw_plain_text(
-        canvas,
-        s,
-        (x, y),
-        color,
-        &c.font_family,
-        size,
-        false,
-        false,
-        FontPolicy::Standard,
-    );
 }
 fn projected(s: &Sector, angle: f32, r: f32) -> (f32, f32) {
     let mid = s.arc[0] + s.arc[1] * 0.5;
@@ -73,16 +55,18 @@ pub(super) fn layout(
         },
     )
     .ok_or(RadialError::Invalid("could not allocate label canvas"))?;
+    let mut decorations = DecorationPainter::new(&chart.decorations, size, scale, annotate);
     let mut out = Layout {
         sectors: Vec::new(),
         groups: [[0.0; 4]; 2],
         holes: [0.0; 2],
         annotations: Vec::new(),
+        decorations: DecorationPainter::new(&chart.decorations, size, scale, false).finish(),
         targets: Vec::new(),
     };
     let top = if chart.title.is_empty() { 24.0 } else { 70.0 };
     let bottom = h - 24.0;
-    if annotate && !chart.title.is_empty() {
+    if !chart.title.is_empty() {
         let title_size = chart.font_size * 1.5 * scale;
         let tw = width(chart, &chart.title, title_size);
         if tw > (w - 32.0) * scale {
@@ -90,13 +74,14 @@ pub(super) fn layout(
                 "title does not fit; increase chart width or shorten it",
             ));
         }
-        text(
+        decorations.text(
+            DecorationId::ChartTitle,
             &mut canvas,
-            chart,
+            &chart.font_family,
             &chart.title,
-            (w * scale - tw) * 0.5,
-            42.0 * scale,
-            title_size,
+            (w * scale - tw) * 0.5 / scale,
+            42.0,
+            title_size / scale,
             chart.label_color,
         );
     }
@@ -248,7 +233,9 @@ pub(super) fn layout(
                 effects: [
                     amount * style.hover_brightness,
                     style.texture_angle_degrees.rem_euclid(360.0).to_radians(),
-                    if slice.labels.unwrap_or(chart.labels) == RadialLabels::Inside {
+                    if slice.labels.unwrap_or(chart.labels) == RadialLabels::Inside
+                        && !raster_moves_inside_labels(chart)
+                    {
                         1.0
                     } else {
                         0.0
@@ -265,14 +252,18 @@ pub(super) fn layout(
         }
         let sectors = &out.sectors[first..];
         let positive: Vec<_> = slices.iter().filter(|s| s.value > 0.0).collect();
-        if annotate {
-            for (s, slice) in sectors.iter().zip(&positive) {
+        {
+            for ((s, slice), target) in sectors.iter().zip(&positive).zip(&out.targets[first..]) {
                 if slice.labels.unwrap_or(chart.labels) != RadialLabels::Inside {
                     continue;
                 }
                 let mid = s.arc[0] + s.arc[1] * 0.5;
                 let r = (s.geometry[3] + 1.0) * 0.5;
-                let (x, y) = projected(s, mid, r.max(0.6));
+                let (x, mut y) = projected(s, mid, r.max(0.6));
+                let lift = s.rounding[2] * s.arc[2].sin() * s.geometry[2];
+                if raster_moves_inside_labels(chart) {
+                    y -= lift;
+                }
                 let fs = chart.font_size * scale;
                 let lines = chart.label_lines(slice, total);
                 // Fail visibly instead of hiding or silently truncating categories.
@@ -296,26 +287,31 @@ pub(super) fn layout(
                     chart.label_color
                 });
                 for (i, line) in lines.iter().enumerate() {
-                    text(
+                    decorations.text(
+                        DecorationId::RadialLabel(*target),
                         &mut canvas,
-                        chart,
+                        &chart.font_family,
                         line,
-                        x - width(chart, line, fs) * 0.5,
-                        y + (i as f32 * 1.2 - (lines.len() - 1) as f32 * 0.6 + 0.45) * fs,
-                        fs,
+                        (x - width(chart, line, fs) * 0.5) / scale,
+                        (y + (i as f32 * 1.2 - (lines.len() - 1) as f32 * 0.6 + 0.45) * fs) / scale,
+                        fs / scale,
                         color,
                     );
                 }
+                if !raster_moves_inside_labels(chart) {
+                    decorations.shift_hit(&DecorationId::RadialLabel(*target), 0., -lift / scale);
+                }
             }
         }
-        if annotate {
+        {
             for left_side in [true, false] {
                 let mut labels: Vec<_> = sectors
                     .iter()
                     .zip(&positive)
-                    .filter(|(_, slice)| outside(slice))
-                    .filter(|(s, _)| ((s.arc[0] + s.arc[1] * 0.5).cos() < 0.0) == left_side)
-                    .map(|(s, slice)| {
+                    .zip(&out.targets[first..])
+                    .filter(|((_, slice), _)| outside(slice))
+                    .filter(|((s, _), _)| ((s.arc[0] + s.arc[1] * 0.5).cos() < 0.0) == left_side)
+                    .map(|((s, slice), target)| {
                         let mid = s.arc[0] + s.arc[1] * 0.5;
                         let mut anchor = projected(s, mid, 1.015);
                         // The front silhouette is the bottom of the extruded wall,
@@ -323,7 +319,7 @@ pub(super) fn layout(
                         if mid.sin() > 0.0 {
                             anchor.1 += s.arc[3] * s.arc[2].sin() * s.geometry[2];
                         }
-                        (anchor, slice)
+                        (anchor, slice, *target)
                     })
                     .collect();
                 labels.sort_by(|a, b| a.0.1.total_cmp(&b.0.1));
@@ -338,7 +334,7 @@ pub(super) fn layout(
                 }
                 let mut ys = Vec::new();
                 let mut prev = min - step;
-                for (anchor, _) in &labels {
+                for (anchor, _, _) in &labels {
                     let y = anchor.1.clamp(min, max).max(prev + step);
                     ys.push(y);
                     prev = y;
@@ -357,10 +353,16 @@ pub(super) fn layout(
                     })
                     * scale;
                 let rule = Paint::stroke(&crate::Color::new(0.48, 0.53, 0.6, 0.75), scale);
-                for ((anchor, slice), y) in labels.into_iter().zip(ys) {
+                for ((anchor, slice, target), y) in labels.into_iter().zip(ys) {
                     let tx = elbow + if left_side { -8.0 * scale } else { 8.0 * scale };
-                    canvas.draw_line(anchor, (elbow, y), &rule);
-                    canvas.draw_line((elbow, y), (tx, y), &rule);
+                    let offset = decorations
+                        .offset(&DecorationId::RadialLabel(target))
+                        .map(|v| v * scale);
+                    if annotate {
+                        let elbow = (elbow + offset[0], y + offset[1]);
+                        canvas.draw_line(anchor, elbow, &rule);
+                        canvas.draw_line(elbow, (tx + offset[0], y + offset[1]), &rule);
+                    }
                     let lines = chart.label_lines(slice, total);
                     for (i, line) in lines.iter().enumerate() {
                         let x = if left_side {
@@ -368,13 +370,14 @@ pub(super) fn layout(
                         } else {
                             tx
                         };
-                        text(
+                        decorations.text(
+                            DecorationId::RadialLabel(target),
                             &mut canvas,
-                            chart,
+                            &chart.font_family,
                             line,
-                            x,
-                            y + (i as f32 * 1.2 - 0.15) * fs,
-                            fs,
+                            x / scale,
+                            (y + (i as f32 * 1.2 - 0.15) * fs) / scale,
+                            fs / scale,
                             slice.label_color.unwrap_or(chart.label_color),
                         );
                     }
@@ -401,7 +404,9 @@ pub(super) fn layout(
             );
         }
     }
+    out.decorations = decorations.finish();
     if annotate {
+        out.decorations.draw_selection(&mut canvas, scale);
         out.annotations = canvas.into_rgba();
     }
     Ok(out)

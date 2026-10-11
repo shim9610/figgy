@@ -26,12 +26,25 @@ use crate::select::{
     Selectable,
 };
 
+/// State that owns position changes. Existing Cartesian callers use `Config`;
+/// bounded chart decorations use their own SSOT without duplicating hit/drag policy.
+pub trait DragConfig {
+    type Element;
+    fn nudge(&mut self, element: Self::Element, dx: f32, dy: f32) -> NudgeResult;
+}
+impl DragConfig for Config {
+    type Element = Element;
+    fn nudge(&mut self, element: Element, dx: f32, dy: f32) -> NudgeResult {
+        Config::nudge(self, element, dx, dy)
+    }
+}
+
 /// A selectable object whose position can be adjusted by drag & drop.
-pub trait Draggable: Selectable {
+pub trait Draggable<C: DragConfig = Config>: Selectable<C> {
     /// The nudge-path element this drag target moves. This mapping is the
     /// only thing an implementation defines; movement itself happens in
     /// [`Self::drag_by`].
-    fn nudge_element(&self) -> Element;
+    fn nudge_element(&self) -> C::Element;
 
     /// Default drag pipeline: apply the pointer delta through
     /// [`Config::nudge`]. Returns [`NudgeResult::Rejected`] (and leaves `cfg`
@@ -40,7 +53,7 @@ pub trait Draggable: Selectable {
     /// Call this per pointer-move with the frame delta; the accumulated
     /// offset lands in the element's `offset_x` / `offset_y` config fields,
     /// so a drop needs no extra commit step.
-    fn drag_by(&self, cfg: &mut Config, dx: f32, dy: f32) -> NudgeResult {
+    fn drag_by(&self, cfg: &mut C, dx: f32, dy: f32) -> NudgeResult {
         cfg.nudge(self.nudge_element(), dx, dy)
     }
 }
