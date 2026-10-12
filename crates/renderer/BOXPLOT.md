@@ -131,9 +131,12 @@ labels. All-missing charts get a finite default range.
 
 Minimum logical canvas: 240×200; scale: 0.5–4. Text is rasterized at the actual
 output resolution. Four geometric subpixel samples smooth the data silhouettes.
-If category labels, series slots or explicitly enabled data labels do not fit,
-prepare returns a layout error: enlarge the canvas, extend the range for data
-labels, shorten labels, or hide them. Labels never silently overlap.
+Once the chart is prepared, use `frame.decorations().hit_test([x, y])` to select
+a value label and `drag_by(&mut chart.decorations, hit, dx, dy)` to position it.
+Movement uses logical pixels and accepts fractional deltas for fine adjustments.
+Each value label has its own category/series identity; axis tick labels move as a
+group. Prepare a new frame after moving a label and use its updated hit map.
+Export preserves those offsets. See the [interaction guide](INTERACTION.md).
 
 ## Ownership, caching, export
 
@@ -194,8 +197,7 @@ editing, color changes, resets, direction, grid, legend and category reordering.
 
 색이나 호버 강조를 바꿔도 통계값의 좌표는 움직이지 않는다. 기본 자동 범위는 숨긴
 평균·이상치·신뢰구간까지 포함하므로 표시 옵션을 켜고 끄는 것만으로 축이 바뀌지 않는다.
-직접 범위를 지정하면 영역 밖의 도형과 선택 판정을 함께 자른다. 글자가 겹치는 크기에서는
-오류를 반환하므로 창을 넓히거나 글자·표기 항목을 줄여야 한다.
+직접 범위를 지정하면 영역 밖의 도형과 선택 판정을 함께 자른다.
 
 네이티브 예제와 WASM으로 컴파일할 수 있는 Rust 렌더러 API를 제공한다. 웹 Studio
 연결과 배포는 별도로 관리한다. 입력 상한은 64범주·16시리즈·총 512항목, 이상치 4096개이며

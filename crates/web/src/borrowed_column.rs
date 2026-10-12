@@ -1,8 +1,6 @@
 //! Borrowed adapters for streaming web column inputs into renderer staging
 //! buffers without constructing an owned per-value mirror.
 
-use std::{ops::Range, rc::Rc};
-
 use renderer::data::{COLUMN_VALUE_BYTES, split_f64_to_f32_pair};
 use renderer::{
     ColumnPairWriter, ColumnRangeWriteError, ColumnSource, ColumnUploadStats, HiLoColumnSource,
@@ -63,276 +61,6 @@ fn record_min_positive(stats: &mut ColumnUploadStats, value: f64) {
 fn write_pair_bytes(dst: &mut [u8], hi: f32, lo: f32) {
     dst[..4].copy_from_slice(&hi.to_le_bytes());
     dst[4..].copy_from_slice(&lo.to_le_bytes());
-}
-
-/// One immutable wasm-boundary allocation that can back one column or many
-/// range views without copying its payload.
-///
-/// `Box<[T]>` is intentional: wasm-bindgen can transfer ownership of the
-/// allocation it creates while copying a JavaScript typed array into wasm
-/// memory. The outer `Rc` only shares that allocation between batch views.
-#[derive(Debug)]
-pub(crate) struct OwnedColumnBuffer<T> {
-    data: Rc<Box<[T]>>,
-}
-
-impl<T> Clone for OwnedColumnBuffer<T> {
-    fn clone(&self) -> Self {
-        Self {
-            data: Rc::clone(&self.data),
-        }
-    }
-}
-
-impl<T> OwnedColumnBuffer<T> {
-    pub(crate) fn new(data: Box<[T]>) -> Self {
-        Self {
-            data: Rc::new(data),
-        }
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        self.data.len()
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.data.is_empty()
-    }
-
-    fn slice(&self, range: &Range<usize>) -> Option<&[T]> {
-        self.data.get(range.clone())
-    }
-
-    #[cfg(test)]
-    fn shares_allocation_with(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.data, &other.data)
-    }
-}
-
-/// Immutable scalar-f32 view over a boundary-owned allocation.
-#[derive(Debug, Clone)]
-pub(crate) struct OwnedF32Column {
-    buffer: OwnedColumnBuffer<f32>,
-    range: Range<usize>,
-    min: f32,
-    max: f32,
-}
-
-impl OwnedF32Column {
-    pub(crate) fn new(data: Box<[f32]>) -> Self {
-        let buffer = OwnedColumnBuffer::new(data);
-        let end = buffer.len();
-        Self::from_buffer(&buffer, 0..end).expect("the whole owned f32 buffer is a valid range")
-    }
-
-    pub(crate) fn from_buffer(
-        buffer: &OwnedColumnBuffer<f32>,
-        range: Range<usize>,
-    ) -> Result<Self, ColumnRangeWriteError> {
-        let data = buffer
-            .slice(&range)
-            .ok_or(ColumnRangeWriteError::InvalidRange)?;
-        let borrowed = BorrowedF32Column::new(data);
-        Ok(Self {
-            buffer: buffer.clone(),
-            range,
-            min: borrowed.min,
-            max: borrowed.max,
-        })
-    }
-
-    fn data(&self) -> &[f32] {
-        self.buffer
-            .slice(&self.range)
-            .expect("an owned f32 column keeps its validated range")
-    }
-
-    fn borrowed(&self) -> BorrowedF32Column<'_> {
-        BorrowedF32Column {
-            data: self.data(),
-            min: self.min,
-            max: self.max,
-        }
-    }
-}
-
-impl ColumnSource for OwnedF32Column {
-    fn len(&self) -> usize {
-        self.range.len()
-    }
-
-    fn min(&self) -> f64 {
-        self.min as f64
-    }
-
-    fn max(&self) -> f64 {
-        self.max as f64
-    }
-
-    fn write_f32_le_into(&self, dst: &mut [u8]) {
-        ColumnSource::write_f32_le_into(&self.borrowed(), dst);
-    }
-
-    fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
-        ColumnSource::write_f32_zero_lo_pair_le_into(&self.borrowed(), dst);
-    }
-
-    fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
-        ColumnSource::write_f32_pair_le_into_with_stats(&self.borrowed(), dst)
-    }
-
-    fn write_f32_pair_range_into_with_stats(
-        &self,
-        start: u64,
-        dst: ColumnPairWriter<'_>,
-    ) -> Result<Option<StreamBounds>, ColumnRangeWriteError> {
-        ColumnSource::write_f32_pair_range_into_with_stats(&self.borrowed(), start, dst)
-    }
-}
-
-impl HiLoColumnSource for OwnedF32Column {
-    fn len(&self) -> usize {
-        self.range.len()
-    }
-
-    fn min(&self) -> f64 {
-        self.min as f64
-    }
-
-    fn max(&self) -> f64 {
-        self.max as f64
-    }
-
-    fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
-        HiLoColumnSource::write_f32_pair_le_into(&self.borrowed(), dst);
-    }
-
-    fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
-        HiLoColumnSource::write_f32_pair_le_into_with_stats(&self.borrowed(), dst)
-    }
-
-    fn write_f32_pair_range_into_with_stats(
-        &self,
-        start: u64,
-        dst: ColumnPairWriter<'_>,
-    ) -> Result<Option<StreamBounds>, ColumnRangeWriteError> {
-        ColumnSource::write_f32_pair_range_into_with_stats(&self.borrowed(), start, dst)
-    }
-}
-
-/// Immutable hi/lo-f64 view over a boundary-owned allocation.
-///
-/// Its `ColumnSource` pair methods deliberately use the split `(hi, lo)`
-/// encoding too, so an f64 matrix batch retains the same precision as a
-/// single-column `HiLoColumnSource` upload.
-#[derive(Debug, Clone)]
-pub(crate) struct OwnedF64Column {
-    buffer: OwnedColumnBuffer<f64>,
-    range: Range<usize>,
-    min: f64,
-    max: f64,
-}
-
-impl OwnedF64Column {
-    pub(crate) fn new(data: Box<[f64]>) -> Self {
-        let buffer = OwnedColumnBuffer::new(data);
-        let end = buffer.len();
-        Self::from_buffer(&buffer, 0..end).expect("the whole owned f64 buffer is a valid range")
-    }
-
-    pub(crate) fn from_buffer(
-        buffer: &OwnedColumnBuffer<f64>,
-        range: Range<usize>,
-    ) -> Result<Self, ColumnRangeWriteError> {
-        let data = buffer
-            .slice(&range)
-            .ok_or(ColumnRangeWriteError::InvalidRange)?;
-        let borrowed = BorrowedF64Column::new(data);
-        Ok(Self {
-            buffer: buffer.clone(),
-            range,
-            min: borrowed.min,
-            max: borrowed.max,
-        })
-    }
-
-    fn data(&self) -> &[f64] {
-        self.buffer
-            .slice(&self.range)
-            .expect("an owned f64 column keeps its validated range")
-    }
-
-    fn borrowed(&self) -> BorrowedF64Column<'_> {
-        BorrowedF64Column {
-            data: self.data(),
-            min: self.min,
-            max: self.max,
-        }
-    }
-}
-
-impl ColumnSource for OwnedF64Column {
-    fn len(&self) -> usize {
-        self.range.len()
-    }
-
-    fn min(&self) -> f64 {
-        self.min
-    }
-
-    fn max(&self) -> f64 {
-        self.max
-    }
-
-    fn write_f32_le_into(&self, dst: &mut [u8]) {
-        ColumnSource::write_f32_le_into(&self.borrowed(), dst);
-    }
-
-    fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
-        HiLoColumnSource::write_f32_pair_le_into(&self.borrowed(), dst);
-    }
-
-    fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
-        HiLoColumnSource::write_f32_pair_le_into_with_stats(&self.borrowed(), dst)
-    }
-
-    fn write_f32_pair_range_into_with_stats(
-        &self,
-        start: u64,
-        dst: ColumnPairWriter<'_>,
-    ) -> Result<Option<StreamBounds>, ColumnRangeWriteError> {
-        HiLoColumnSource::write_f32_pair_range_into_with_stats(&self.borrowed(), start, dst)
-    }
-}
-
-impl HiLoColumnSource for OwnedF64Column {
-    fn len(&self) -> usize {
-        self.range.len()
-    }
-
-    fn min(&self) -> f64 {
-        self.min
-    }
-
-    fn max(&self) -> f64 {
-        self.max
-    }
-
-    fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
-        HiLoColumnSource::write_f32_pair_le_into(&self.borrowed(), dst);
-    }
-
-    fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
-        HiLoColumnSource::write_f32_pair_le_into_with_stats(&self.borrowed(), dst)
-    }
-
-    fn write_f32_pair_range_into_with_stats(
-        &self,
-        start: u64,
-        dst: ColumnPairWriter<'_>,
-    ) -> Result<Option<StreamBounds>, ColumnRangeWriteError> {
-        HiLoColumnSource::write_f32_pair_range_into_with_stats(&self.borrowed(), start, dst)
-    }
 }
 
 /// Borrowed `f32` column with upload-time scalar statistics.
@@ -876,6 +604,279 @@ impl ColumnSource for BorrowedSplitF64Column<'_> {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
+    // Owned input fixtures exercise shared ranges through the borrowed adapters.
+    use std::{ops::Range, rc::Rc};
+
+    /// One immutable wasm-boundary allocation that can back one column or many
+    /// range views without copying its payload.
+    ///
+    /// `Box<[T]>` is intentional: wasm-bindgen can transfer ownership of the
+    /// allocation it creates while copying a JavaScript typed array into wasm
+    /// memory. The outer `Rc` only shares that allocation between batch views.
+    #[derive(Debug)]
+    pub(crate) struct OwnedColumnBuffer<T> {
+        data: Rc<Box<[T]>>,
+    }
+
+    impl<T> Clone for OwnedColumnBuffer<T> {
+        fn clone(&self) -> Self {
+            Self {
+                data: Rc::clone(&self.data),
+            }
+        }
+    }
+
+    impl<T> OwnedColumnBuffer<T> {
+        pub(crate) fn new(data: Box<[T]>) -> Self {
+            Self {
+                data: Rc::new(data),
+            }
+        }
+
+        pub(crate) fn len(&self) -> usize {
+            self.data.len()
+        }
+
+        pub(crate) fn is_empty(&self) -> bool {
+            self.data.is_empty()
+        }
+
+        fn slice(&self, range: &Range<usize>) -> Option<&[T]> {
+            self.data.get(range.clone())
+        }
+
+        #[cfg(test)]
+        fn shares_allocation_with(&self, other: &Self) -> bool {
+            Rc::ptr_eq(&self.data, &other.data)
+        }
+    }
+
+    /// Immutable scalar-f32 view over a boundary-owned allocation.
+    #[derive(Debug, Clone)]
+    pub(crate) struct OwnedF32Column {
+        buffer: OwnedColumnBuffer<f32>,
+        range: Range<usize>,
+        min: f32,
+        max: f32,
+    }
+
+    impl OwnedF32Column {
+        pub(crate) fn new(data: Box<[f32]>) -> Self {
+            let buffer = OwnedColumnBuffer::new(data);
+            let end = buffer.len();
+            Self::from_buffer(&buffer, 0..end).expect("the whole owned f32 buffer is a valid range")
+        }
+
+        pub(crate) fn from_buffer(
+            buffer: &OwnedColumnBuffer<f32>,
+            range: Range<usize>,
+        ) -> Result<Self, ColumnRangeWriteError> {
+            let data = buffer
+                .slice(&range)
+                .ok_or(ColumnRangeWriteError::InvalidRange)?;
+            let borrowed = BorrowedF32Column::new(data);
+            Ok(Self {
+                buffer: buffer.clone(),
+                range,
+                min: borrowed.min,
+                max: borrowed.max,
+            })
+        }
+
+        fn data(&self) -> &[f32] {
+            self.buffer
+                .slice(&self.range)
+                .expect("an owned f32 column keeps its validated range")
+        }
+
+        fn borrowed(&self) -> BorrowedF32Column<'_> {
+            BorrowedF32Column {
+                data: self.data(),
+                min: self.min,
+                max: self.max,
+            }
+        }
+    }
+
+    impl ColumnSource for OwnedF32Column {
+        fn len(&self) -> usize {
+            self.range.len()
+        }
+
+        fn min(&self) -> f64 {
+            self.min as f64
+        }
+
+        fn max(&self) -> f64 {
+            self.max as f64
+        }
+
+        fn write_f32_le_into(&self, dst: &mut [u8]) {
+            ColumnSource::write_f32_le_into(&self.borrowed(), dst);
+        }
+
+        fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
+            ColumnSource::write_f32_zero_lo_pair_le_into(&self.borrowed(), dst);
+        }
+
+        fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
+            ColumnSource::write_f32_pair_le_into_with_stats(&self.borrowed(), dst)
+        }
+
+        fn write_f32_pair_range_into_with_stats(
+            &self,
+            start: u64,
+            dst: ColumnPairWriter<'_>,
+        ) -> Result<Option<StreamBounds>, ColumnRangeWriteError> {
+            ColumnSource::write_f32_pair_range_into_with_stats(&self.borrowed(), start, dst)
+        }
+    }
+
+    impl HiLoColumnSource for OwnedF32Column {
+        fn len(&self) -> usize {
+            self.range.len()
+        }
+
+        fn min(&self) -> f64 {
+            self.min as f64
+        }
+
+        fn max(&self) -> f64 {
+            self.max as f64
+        }
+
+        fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
+            HiLoColumnSource::write_f32_pair_le_into(&self.borrowed(), dst);
+        }
+
+        fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
+            HiLoColumnSource::write_f32_pair_le_into_with_stats(&self.borrowed(), dst)
+        }
+
+        fn write_f32_pair_range_into_with_stats(
+            &self,
+            start: u64,
+            dst: ColumnPairWriter<'_>,
+        ) -> Result<Option<StreamBounds>, ColumnRangeWriteError> {
+            ColumnSource::write_f32_pair_range_into_with_stats(&self.borrowed(), start, dst)
+        }
+    }
+
+    /// Immutable hi/lo-f64 view over a boundary-owned allocation.
+    ///
+    /// Its `ColumnSource` pair methods deliberately use the split `(hi, lo)`
+    /// encoding too, so an f64 matrix batch retains the same precision as a
+    /// single-column `HiLoColumnSource` upload.
+    #[derive(Debug, Clone)]
+    pub(crate) struct OwnedF64Column {
+        buffer: OwnedColumnBuffer<f64>,
+        range: Range<usize>,
+        min: f64,
+        max: f64,
+    }
+
+    impl OwnedF64Column {
+        pub(crate) fn new(data: Box<[f64]>) -> Self {
+            let buffer = OwnedColumnBuffer::new(data);
+            let end = buffer.len();
+            Self::from_buffer(&buffer, 0..end).expect("the whole owned f64 buffer is a valid range")
+        }
+
+        pub(crate) fn from_buffer(
+            buffer: &OwnedColumnBuffer<f64>,
+            range: Range<usize>,
+        ) -> Result<Self, ColumnRangeWriteError> {
+            let data = buffer
+                .slice(&range)
+                .ok_or(ColumnRangeWriteError::InvalidRange)?;
+            let borrowed = BorrowedF64Column::new(data);
+            Ok(Self {
+                buffer: buffer.clone(),
+                range,
+                min: borrowed.min,
+                max: borrowed.max,
+            })
+        }
+
+        fn data(&self) -> &[f64] {
+            self.buffer
+                .slice(&self.range)
+                .expect("an owned f64 column keeps its validated range")
+        }
+
+        fn borrowed(&self) -> BorrowedF64Column<'_> {
+            BorrowedF64Column {
+                data: self.data(),
+                min: self.min,
+                max: self.max,
+            }
+        }
+    }
+
+    impl ColumnSource for OwnedF64Column {
+        fn len(&self) -> usize {
+            self.range.len()
+        }
+
+        fn min(&self) -> f64 {
+            self.min
+        }
+
+        fn max(&self) -> f64 {
+            self.max
+        }
+
+        fn write_f32_le_into(&self, dst: &mut [u8]) {
+            ColumnSource::write_f32_le_into(&self.borrowed(), dst);
+        }
+
+        fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
+            HiLoColumnSource::write_f32_pair_le_into(&self.borrowed(), dst);
+        }
+
+        fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
+            HiLoColumnSource::write_f32_pair_le_into_with_stats(&self.borrowed(), dst)
+        }
+
+        fn write_f32_pair_range_into_with_stats(
+            &self,
+            start: u64,
+            dst: ColumnPairWriter<'_>,
+        ) -> Result<Option<StreamBounds>, ColumnRangeWriteError> {
+            HiLoColumnSource::write_f32_pair_range_into_with_stats(&self.borrowed(), start, dst)
+        }
+    }
+
+    impl HiLoColumnSource for OwnedF64Column {
+        fn len(&self) -> usize {
+            self.range.len()
+        }
+
+        fn min(&self) -> f64 {
+            self.min
+        }
+
+        fn max(&self) -> f64 {
+            self.max
+        }
+
+        fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
+            HiLoColumnSource::write_f32_pair_le_into(&self.borrowed(), dst);
+        }
+
+        fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
+            HiLoColumnSource::write_f32_pair_le_into_with_stats(&self.borrowed(), dst)
+        }
+
+        fn write_f32_pair_range_into_with_stats(
+            &self,
+            start: u64,
+            dst: ColumnPairWriter<'_>,
+        ) -> Result<Option<StreamBounds>, ColumnRangeWriteError> {
+            HiLoColumnSource::write_f32_pair_range_into_with_stats(&self.borrowed(), start, dst)
+        }
+    }
+
     use super::*;
     use std::sync::{Arc, OnceLock};
     use std::time::Duration;

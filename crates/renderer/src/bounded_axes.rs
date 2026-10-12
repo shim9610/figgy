@@ -1,7 +1,7 @@
 //! Shared bounded-axis decorations. Values/category planning stays with each
 //! data model; drawing and measured interaction geometry are produced together.
 use super::*;
-use crate::decoration::DecorationPainter;
+use crate::decoration::{DecorationPainter, LabelPlacer};
 use model::{Category, DecorationId};
 pub(crate) struct BoundedAxisDecorations<'a> {
     pub size: (u32, u32),
@@ -30,6 +30,24 @@ pub(crate) fn draw_bounded_decorations(
     let [left, top, right, bottom] = p.plot;
     let (w, h) = (p.size.0 as f32, p.size.1 as f32);
     let fs = p.font_size;
+    let mut bottom_labels = LabelPlacer::new(
+        RectF {
+            x: 4.,
+            y: bottom + 3.,
+            width: w - 8.,
+            height: (h - bottom - 7.).max(0.),
+        },
+        [false, true],
+    );
+    let mut left_labels = LabelPlacer::new(
+        RectF {
+            x: 4.,
+            y: 4.,
+            width: (left - 8.).max(0.),
+            height: h - 8.,
+        },
+        [true, false],
+    );
     let measure = |text: &str, size: f32| {
         measure_plain_text(
             text,
@@ -79,6 +97,18 @@ pub(crate) fn draw_bounded_decorations(
             }
             (left - measure(label, fs) - 10., y + fs * 0.32, Side::Left)
         };
+        let (x, y) = d.place_text(
+            if side == Side::Bottom {
+                &mut bottom_labels
+            } else {
+                &mut left_labels
+            },
+            p.font_family,
+            label,
+            x,
+            y,
+            fs,
+        );
         d.text(
             DecorationId::AxisLabel(side),
             front,
@@ -137,6 +167,18 @@ pub(crate) fn draw_bounded_decorations(
                 Side::Bottom,
             )
         };
+        let (x, y) = d.place_text(
+            if side == Side::Bottom {
+                &mut bottom_labels
+            } else {
+                &mut left_labels
+            },
+            p.font_family,
+            &cat.label,
+            x,
+            y,
+            fs,
+        );
         d.text(
             DecorationId::AxisLabel(side),
             front,

@@ -100,6 +100,7 @@ pub(crate) enum RequestStatus {
 }
 
 /// Borrowed only for `accept`; never stored by the scheduler.
+#[cfg(test)]
 pub(crate) struct ColumnInput<'a> {
     pub range: ColumnRange,
     pub bytes: &'a [u8],
@@ -383,6 +384,7 @@ impl StreamScheduler {
     /// adapter. `record` must be transactional: on error/panic it must discard
     /// its temporary GPU resources/commands, never publish partial work.
     /// Scheduler state stays Requested on writer error or unwind.
+    #[cfg(test)]
     pub(crate) fn accept<T>(
         &mut self,
         ticket: RequestTicket,

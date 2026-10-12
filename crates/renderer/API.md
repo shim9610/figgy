@@ -63,8 +63,9 @@ retains the replayable source for the operations it enables.
 1. Create one `RendererDevice` from the host's matching wgpu device/queue handles.
    Use `Renderer::try_new` for Cartesian charts or the bounded renderer's `new`.
    Window helpers are optional; a headless application does not need a window.
-2. For Cartesian charts, upload columns, build `Chart`/`SeriesConfig`, and use
-   `prepare` + `paint_prepared`, or the panel export helpers. Renderer-managed chart
+2. For Cartesian charts, upload columns, build `Chart`/`SeriesConfig`, create a
+   `ChartView` and a `ChartStyle` for each series, then use `prepare` +
+   `paint_prepared`, or the panel export helpers. Renderer-managed chart
    IDs instead use `register_chart`, `set_chart_config`/`set_chart_series` and
    `prepare_registered`; editing an unrelated local `Config` does not edit that ID.
    For bounded charts, edit the `RadialChart`, `CategoricalChart` or `BoxPlotChart`
@@ -74,8 +75,11 @@ retains the replayable source for the operations it enables.
    chart-local logical pixels. Cartesian `GpuPickRequest` instead carries a
    physical canvas position, physical display panel and display scale. Do not
    reuse one coordinate convention for both APIs.
-4. Store the target in the model, edit its values/styles or decoration layout,
-   prepare again, draw, and submit. A stored frame is not a live view of the model.
+4. Store the target in the model and edit its values/styles or decoration layout.
+   For Cartesian charts, refresh the view's changed axes/decorations and rebuild
+   affected caller-owned styles as described below, then prepare, draw and submit.
+   Bounded renderers update their derived resources in `prepare`.
+   A stored frame is not a live view of the model.
    For a resize that may fail layout validation, prepare a trial model before
    replacing the displayed model. The host requests frames and advances animations.
 5. Export the same model state to RGBA/PNG. Selection and hover emphasis are model
@@ -87,6 +91,67 @@ retains the replayable source for the operations it enables.
    Cartesian window drawing and panel export handle their own submission boundary;
    submit pending external commands before invoking those helpers. Native hosts
    poll the device to process completion callbacks. Retained frames retain resources.
+
+### Cartesian edits: update the derived inputs before preparing
+
+`ChartView` holds rasterized axes, grid and decorations. `ChartStyle` holds GPU
+style data derived from a `SeriesConfig`. Editing the config does not update
+either object automatically in the caller-owned `prepare` path.
+
+| Change | Required work before the next `prepare` |
+| --- | --- |
+| Axis range, ticks, grid, title, legend, decoration layout or panel size | Call `refresh_axis` with the current chart and panel rectangle. Use `refresh_axis_with_selection` when displaying selection boxes. |
+| Series appearance, mapped styles or series identity | Recreate the affected `ChartStyle` with `create_style_for_series`, or its scaled variant at the display scale. Refresh decorations too if labels or legend appearance changed. |
+| Column values | Finish the upload/upsert before preparing. Refresh axes/decorations if the edit also changes their config. |
+| Renderer-owned chart ID | Commit edits with `set_chart_config` / `set_chart_series`, refresh the caller-owned view from that registered config, then call `prepare_registered`. This path maintains the series-style cache itself. |
+
+`prepare` updates transforms and derived GPU data; it does **not** rerasterize
+the view or recreate the `ChartStyle` values supplied by the caller.
+`update_transform` alone also leaves axis labels and the grid unchanged.
+Use the chart's dirty state or `ChartRenderStamp::needs_raster_since` to decide
+when to refresh; unchanged frames can reuse the existing view and styles.
+
+This helper shows the caller-owned path after a series-style edit at scale 1.
+It conservatively refreshes decorations and rebuilds every style. A host can
+rebuild only the affected styles; an axis-only edit can reuse them all.
+Submit or discard commands using the previous frame **before** calling it.
+
+```rust,no_run
+use renderer::{
+    Chart, ChartDrawItem, ChartStyle, ChartView, FiggyError, PreparedFrame,
+    Renderer, Series, SeriesConfig,
+};
+use renderer::layout::Rect;
+
+fn prepare_after_series_edit(
+    renderer: &mut Renderer,
+    chart: &Chart,
+    view: &mut ChartView,
+    configs: &[SeriesConfig],
+    panel: Rect,
+) -> Result<(Vec<ChartStyle>, PreparedFrame), FiggyError> {
+    let styles = configs.iter()
+        .map(|config| renderer.create_style_for_series(config))
+        .collect::<Result<Vec<_>, _>>()?;
+    renderer.refresh_axis(view, chart, panel)?;
+    let series: Vec<_> = configs.iter().zip(&styles)
+        .map(|(config, style)| Series { config, style })
+        .collect();
+    let frame = renderer.prepare(&[ChartDrawItem {
+        view,
+        chart_config: chart.config(),
+        series: &series,
+    }])?;
+    // Store the styles for later frames, paint this token, then submit.
+    Ok((styles, frame))
+}
+```
+
+Panel export helpers build their own scaled view and styles from the supplied
+configs. A correct PNG does not establish that a separately displayed view has
+been refreshed. Apply the same model edits to both paths.
+
+### Bounded chart example
 
 This bounded example accepts the host GPU pair, selects from a displayed frame,
 changes a slice color and exports the resulting model. It is compiled as a doctest;
@@ -130,13 +195,33 @@ Cartesian operations return `FiggyError`; bounded renderers use `RadialError`,
 replacing the last valid display. Device loss and external allocation failure still
 need host recovery; a configured memory budget is not a driver success guarantee.
 
-## Ownership and frame validity
+## Construction and prewarming
 
-`Renderer::prewarm_all` initializes the optional Cartesian pipelines before first
-use. Calling it again on the same renderer reuses them without creating new shader
-modules or pipelines. It does not initialize separate radial/categorical/boxplot
-renderers. WASM prewarm uses the same explicit descriptors as the production
-constructors; it does not depend on auto-layout guesses to warm a different layout.
+Construction and full Cartesian prewarming are separate operations:
+
+| Entry point | Work performed |
+| --- | --- |
+| `Renderer::try_new` / `try_new_observed` | Validate device capabilities and create the initial column pool, shared layouts/sampler, shader modules, unit quad and axis pipeline. Optional resident data/style, arc/fit/contour-label and picking pipelines remain lazy. |
+| Native `for_window` / `for_window_async` (including observed variants) | Create and retain instance/adapter/device/queue, configure a surface and optional MSAA target, then initialize the same base renderer resources. |
+| Browser `for_window_async` / `for_window_async_observed` | In addition to window setup, await temporary JavaScript warmup pipelines for the Cartesian render entries. Those temporary pipelines are discarded; they do not populate the renderer's retained optional caches. |
+| `for_window_minimal_async_observed` | Limit that browser render warmup to `PreparationFeature::Basic` entries. On native targets it has the same base initialization as the ordinary async constructor. It does not install a completed Basic preparation group. |
+| `prewarm_all` / `prewarm_all_observed` | Compile and retain the resident Cartesian graphics/style pipelines, contour-label compute, arc scans, fit reduction and GPU picking machinery for the current renderer/target generation. |
+
+Normal preparation creates missing pipelines lazily. To move that work before
+first use, await `prewarm_all`, or compile and install the required detached
+preparation groups described below. Repeating prewarm reuses installed caches
+while they remain valid; changing the target format or sample count can require
+new target pipelines. Shader-module creation and temporary browser warmup can
+still involve driver compilation work during construction.
+
+Full prewarm does not prepare future chart data, views, series styles, label
+atlases or result buffers, and is not a guarantee of allocation-free or
+compilation-free first drawing. Separate radial/categorical/boxplot renderers
+and nonresident matrix/tile streaming pipelines are outside this prewarm scope.
+Browser warmup uses explicit production-compatible descriptors rather than
+auto-layout guesses; temporary JS warmup and installed wgpu caches remain distinct.
+
+## Ownership and frame validity
 
 `RendererDevice` holds `Arc` handles to a device and queue created together.
 The host may share them across renderers. Their originating device must match;
@@ -155,10 +240,31 @@ required by the host loop so completion callbacks can retire resources. Do not
 retain every historical frame in a live-edit loop. Window helpers manage their
 documented submission boundaries.
 
-Each renderer accounts for its own resources; shared-device applications must
-combine those budgets and their own target allocations. These counters are not
-total process memory or driver VRAM measurements. Static limits and budget checks
-do not guarantee that an external driver allocation will succeed.
+## GPU memory accounting and budget scope
+
+`Renderer::gpu_memory_usage()` combines the column pool's byte counts with the
+renderer ledger's tracked allocations. Live and retired bytes both count.
+Dropping the final tracked owner retires its resources; a submission boundary
+captures them, and GPU completion releases their handles and byte credits.
+`end_gpu_frame()` alone does not make those bytes available for reuse.
+
+`set_memory_budget` sets an allocation policy used by checked allocation and
+admission paths, including pool growth. It is **not a hard ceiling on all GPU
+memory** or an interception of every device allocation. The initial pool is
+created before a budget is set. Lowering the budget does not shrink or evict
+resources: the setter applies the policy and returns `Some(current_total)` if
+the tracked total already exceeds it, otherwise `None` (also when disabling it).
+
+The regular ledger excludes lazy Milkyway/Constellation style textures (PSF,
+planet atlas, blackbody LUT and ring strip); streaming export admission separately
+checks their known payload size. CPU allocations, final RGBA/PNG bytes, host-owned
+GPU targets, other renderers' resources and shader/pipeline/driver internals are
+also outside this report. Counts describe requested tracked bytes, not measured
+physical VRAM residency. Admission checks do not reserve future allocations.
+
+For a shared device, combine renderer budgets with host allocations and leave
+headroom for untracked resources. Device limits and a passing budget check do not
+guarantee driver allocation success; handle allocation failure and device loss.
 
 ## Render targets, coordinates and output
 
@@ -193,7 +299,7 @@ or changing fields, adding required fields or enum variants, changing trait
 requirements, and adding `non_exhaustive` to existing types can break consumers.
 Incompatible changes require a new 0.x minor version and migration notes; patch
 updates must preserve the supported contract. A new wgpu major needs the same
-review. The source versions are figgy-renderer 0.16.0 and figgy-model 0.10.0. They have not
+review. The source versions are figgy-renderer 0.16.1 and figgy-model 0.10.0. They have not
 been published to crates.io; publishing a source commit does not publish a registry package.
 
 The optional serde representation is not an application file-format version.
@@ -201,11 +307,12 @@ Same-version round-trip tests do not promise arbitrary cross-version migrations.
 
 ## Detached Cartesian pipeline preparation
 
-`Renderer::for_window_minimal_async_observed` creates a window with the basic
-render shader variants instead of compiling every optional style/field entry.
-Before using ordinary charts, prepare `PreparationFeature::Basic` (which also
-includes arc scans and fit reduction). The existing constructors and `prewarm_all`
-retain their prior eager-prewarm behavior.
+`Renderer::for_window_minimal_async_observed` limits temporary browser render
+warmup as described above. A host using detached preparation to gate first use
+must compile and install `PreparationFeature::Basic` (which also includes arc
+scans and fit reduction), plus the groups needed by its charts. Construction
+alone does not mark Basic ready. Ordinary `prepare` still supports lazy creation;
+`prewarm_all` explicitly prepares all resident Cartesian groups.
 
 `begin_preparation(feature)` returns an owned `PipelinePreparation`, or `None`
 when that group is already ready. Its consuming `compile(observer).await` owns

@@ -5180,8 +5180,10 @@ mod web {
             self.first_frame_ready().await
         }
 
-        /// Compile every renderer pipeline while reporting the exact current
-        /// stage as `{ scope, stage, phase }` objects. The chart is mutably
+        /// Prepare the resident Cartesian pipeline groups while reporting the
+        /// current stage as `{ scope, stage, phase }` objects. Separate bounded
+        /// renderers, nonresident matrix/tile pipelines and future chart-specific
+        /// allocations are outside this scope. The chart is mutably
         /// borrowed until the Promise settles; hosts must keep their normal
         /// async busy gate active and queue chart work rather than calling the
         /// kernel from the callback.
@@ -5198,7 +5200,9 @@ mod web {
             Ok(())
         }
 
-        /// Compile every renderer pipeline without a progress callback.
+        /// Prepare the same resident Cartesian groups as prewarm_all_with_progress,
+        /// without a progress callback. The host must prevent other calls on this
+        /// kernel until the Promise settles; wasm-bindgen does not queue them.
         pub async fn prewarm_all(&mut self) -> Result<(), JsValue> {
             self.renderer.prewarm_all().await.map_err(js_err)?;
             self.request_host_redraw();
@@ -5347,9 +5351,14 @@ mod web {
 
         /// Export the panel as PNG bytes at `scale ×` resolution.
         /// JS: `const png = await chart.export_png(2.0);`
-        /// (`&mut self`: the renderer's export runs its prepare phase —
-        /// transform uniforms + arc-prefix compute; wasm-bindgen serializes
-        /// access, so this changes nothing for JS callers.)
+        /// Holds a mutable borrow of this WASM object until the Promise settles.
+        /// wasm-bindgen checks borrows; it does not queue concurrent calls.
+        /// While awaiting export, the host must prevent every other call on the
+        /// same object, including frame(), getters, edits, resize, picking and free().
+        /// Overlapping access can throw "recursive use of an object". Release the
+        /// host's per-instance operation gate in finally on success or rejection.
+        /// The example `<figgy-chart>` facade supplies that gate and rejects competing
+        /// application calls; raw FiggyChart callers must manage it themselves.
         /// Automatic contour placement validates `spacing_px * scale` after the
         /// export scale is clamped. Explicit placement does not multiply spacing.
         /// Scale-product overflow or an atlas beyond the adapter texture limit

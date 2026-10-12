@@ -38,7 +38,7 @@ render targets and compatibility policy.
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", path = "crates/renderer" }   # or public Git source — version 0.16.0, not on crates.io.
+renderer = { package = "figgy-renderer", path = "crates/renderer" }   # or public Git source — version 0.16.1, not on crates.io.
 wgpu     = "30"
 ```
 
@@ -50,6 +50,22 @@ already have access to this dependency through the renderer manifest.
 For the full model-edit → prepare → pick → redraw → export sequence, including
 the distinction between logical and physical pointer coordinates, see
 [the native API workflow](API.md#native-edit-pick-and-export-workflow).
+
+Cartesian hosts own the derived `ChartView` and, with `prepare`, the series'
+`ChartStyle` values. After changing axes, grid, labels, legend or panel size, call
+`refresh_axis` (or `refresh_axis_with_selection`) before preparing. Recreate
+affected styles after series appearance/mapping/identity changes, using the same
+display scale. `prepare` updates transforms and GPU data but does not perform
+those two steps. The registered-chart path maintains its own style cache after
+`set_chart_config` / `set_chart_series`; its caller-owned view still needs refresh.
+See the [edit table and compiled example](API.md#cartesian-edits-update-the-derived-inputs-before-preparing).
+
+Constructors initialize base resources; they do not eagerly populate every
+pipeline cache. Use explicit `prewarm_all` or detached preparation when needed,
+following the [constructor/prewarm table](API.md#construction-and-prewarming).
+`set_memory_budget` is a policy for checked allocations, not a hard VRAM ceiling;
+the [budget contract](API.md#gpu-memory-accounting-and-budget-scope) lists its
+initial-pool behavior, tracked lifetime and exclusions.
 
 The default library features require neither winit, egui nor iced. Pull in only
 the host you actually use; `egui_demo` enables the optional egui example dependencies:
@@ -458,7 +474,7 @@ wgpu 30을 사용해야 한다. WASM 래퍼는 별도 소비 예제로 유지하
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", path = "crates/renderer" }   # 또는 공개 Git 소스 — 버전 0.16.0, crates.io 미배포.
+renderer = { package = "figgy-renderer", path = "crates/renderer" }   # 또는 공개 Git 소스 — 버전 0.16.1, crates.io 미배포.
 wgpu     = "30"
 ```
 
@@ -649,7 +665,7 @@ cargo run -p figgy-renderer --example egui_embed --features egui_demo
 
 ### 브라우저 통합 예제 — 시간축
 
-`crates/web/timestamp-demo.html`은 Unix 시간 값을 `register_column_f64(Float64Array)`로 등록하고 `update_register_column_f64`로 교체하는 예제다. 시간 범위, 데이터 단위, 시간대, 소수 초 표시, 라벨 형식, 차트 너비, 출력 배율을 바꿔 볼 수 있다. X축에는 `LabelFormat::Timestamp`와 `AutoCalendar`를 사용해 라벨이 겹치지 않도록 눈금 간격을 자동으로 조절한다.
+`crates/web/timestamp-demo.html`은 Unix 시간 값을 `register_column_f64(Float64Array)`로 등록하고 `update_register_column_f64`로 교체하는 예제다. 시간 범위, 데이터 단위, 시간대, 소수 초 표시, 라벨 형식, 차트 너비, 출력 배율을 바꿔 볼 수 있다. X축에는 `LabelFormat::Timestamp`와 `AutoCalendar`를 사용해 눈금 간격을 자동으로 조절한다.
 
 ```bash
 npx wasm-pack@0.15.0 build crates/web --release --target web --locked

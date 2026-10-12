@@ -8,7 +8,9 @@ use std::sync::Arc;
 use crate::StreamBounds;
 use crate::data::{COLUMN_VALUE_BYTES, ColumnPairWriter, StreamColumnSource};
 use crate::gpu_memory::{GpuLedger, GpuResourceKind, TrackedBuffer};
-use crate::streaming::{ColumnInput, ColumnRange, SourceEncoding, StreamError};
+use crate::streaming::{ColumnRange, StreamError};
+#[cfg(test)]
+use crate::streaming::{ColumnInput, SourceEncoding};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ChunkUploadBudget {
@@ -37,6 +39,7 @@ pub(crate) enum ChunkUploadError {
     Input(StreamError),
     AllocationFailed,
     MappingFailed,
+    #[cfg(test)]
     WriterFailed,
     SourceWrite {
         index: usize,
@@ -143,6 +146,7 @@ impl RecordedChunk {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn charged_bytes(&self) -> u64 {
         self.work.charged_bytes() + self.staging.as_ref().map_or(0, TrackedBuffer::charged_bytes)
     }
@@ -171,6 +175,7 @@ fn work_allocation_bytes(
     if fits { preferred } else { required }
 }
 
+#[cfg(test)]
 fn validate_layout(
     columns: &[ColumnInput<'_>],
     budget: ChunkUploadBudget,
@@ -287,6 +292,7 @@ fn validate_source_layout(
 }
 
 /// Record one copy, without submitting or registering data in `ColumnPool`.
+#[cfg(test)]
 pub(crate) fn record_chunk(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
@@ -301,6 +307,7 @@ pub(crate) fn record_chunk(
 /// logical extrema only inside each plan's uncovered source ranges. Statistics
 /// are calculated while each pair is copied into staging; no second data pass
 /// or retained payload is introduced.
+#[cfg(test)]
 pub(crate) fn record_chunk_collecting_statistics(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
@@ -314,6 +321,7 @@ pub(crate) fn record_chunk_collecting_statistics(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn record_chunk_collecting_statistics_reusing(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
@@ -330,6 +338,7 @@ pub(crate) fn record_chunk_collecting_statistics_reusing(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn record_chunk_collecting_statistics_reusing_observed(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
@@ -378,6 +387,7 @@ pub(crate) fn record_chunk_collecting_statistics_reusing_observed(
 /// Ask range-capable host sources to write directly into mapped staging. The
 /// source references and mapped bytes are borrowed only for this call; no
 /// encoded CPU payload is allocated or retained.
+#[cfg(test)]
 pub(crate) fn record_source_chunk_collecting_statistics_reusing<'a>(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
@@ -534,6 +544,7 @@ pub(crate) fn record_source_chunk_collecting_statistics_reusing_observed<'a>(
     })
 }
 
+#[cfg(test)]
 fn record_chunk_maybe_collecting(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
@@ -550,6 +561,7 @@ fn record_chunk_maybe_collecting(
     )
 }
 
+#[cfg(test)]
 fn record_chunk_maybe_collecting_observed(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
@@ -635,6 +647,7 @@ fn record_chunk_maybe_collecting_observed(
     Ok(chunk)
 }
 
+#[cfg(test)]
 fn record_chunk_with(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
@@ -651,6 +664,7 @@ fn record_chunk_with(
     )
 }
 
+#[cfg(test)]
 fn record_chunk_with_observed(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
@@ -678,6 +692,7 @@ fn create_buffer_checked(
     .map_err(|_| ChunkUploadError::AllocationFailed)
 }
 
+#[cfg(test)]
 fn record_chunk_with_factory(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
@@ -695,6 +710,7 @@ fn record_chunk_with_factory(
     )
 }
 
+#[cfg(test)]
 fn record_chunk_with_factory_observed(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,

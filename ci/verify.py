@@ -51,6 +51,9 @@ def static():
     env["RUSTDOCFLAGS"] = env.get("RUSTDOCFLAGS", "") + " -D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links"
     run(["cargo", "doc", "--locked", "--no-deps", "--all-features",
          "-p", PACKAGES[0], "-p", PACKAGES[1]], env=env)
+    # Catch links to native-only methods in the separate WASM API pages.
+    run(["cargo", "doc", "--locked", "--no-deps", "--features", "serde",
+         "-p", PACKAGES[1], "--target", "wasm32-unknown-unknown"], env=env)
 
 
 def locked_external_packages(lock):

@@ -772,10 +772,12 @@ pub(crate) struct ArcBufferPlan {
 }
 
 impl ArcBufferPlan {
+    #[cfg(test)]
     pub(crate) fn buffer_count(self) -> usize {
         6 + self.chunks as usize * 3 + if self.star { 3 } else { 0 }
     }
 
+    #[cfg(test)]
     pub(crate) fn visit_sizes(self, mut visit: impl FnMut(u64)) {
         // arc, sums0, sums1, sums2, carry, transform
         visit(u64::from(self.n.max(1)) * 4);

@@ -239,6 +239,7 @@ impl Resources {
         }))
     }
 
+    #[cfg(test)]
     pub(crate) fn charged_bytes(&self) -> u64 {
         self._buffers.iter().map(TrackedBuffer::charged_bytes).sum()
     }
@@ -528,6 +529,7 @@ impl Tile {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn charged_bytes(&self) -> u64 {
         self.gpu.state.charged_bytes() + self.gpu.meta.charged_bytes()
     }
@@ -653,6 +655,7 @@ impl Tile {
 
     /// No provisional tile is blended into P. This becomes legal only after
     /// all axis sweeps and every effective Z column/range were committed.
+    #[cfg(test)]
     pub(crate) fn record_final(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,

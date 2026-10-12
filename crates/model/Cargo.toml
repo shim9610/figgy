@@ -15,6 +15,10 @@ include = ["/Cargo.toml", "/Cargo.lock", "/LICENSE-*", "/README.md", "/src/**"]
 [lib]
 name = "model"
 
+[package.metadata.docs.rs]
+features = ["serde"]
+targets = []
+
 # Definitions only — dependency-free by default. The optional `serde` feature
 # adds Serialize/Deserialize across the SSoT tree so hosts (e.g. the wasm
 # wrapper) can round-trip the whole Config as JSON.

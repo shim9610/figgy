@@ -6,6 +6,53 @@ does not imply a standalone JavaScript product or a Studio deployment.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
+## Source patch — renderer 0.16.1 / model 0.10.0 / figgy 0.13.1
+
+- GPU resource retirement now transfers handles and their byte credits together
+  through an atomic queue. Destruction and credit return still follow submission
+  completion; retained prepared frames keep their resources alive.
+- Bounded chart labels use bounded first-frame placement and size adjustments.
+  Public model types, editing APIs and data-validation contracts are unchanged.
+- Renderer tests independently verify selection borders and reset at 1×/2×,
+  and directly pick all eight plot-area resize handles before applying each edit.
+- Test-only stream adapters and accounting helpers no longer enter normal
+  library builds. Remove an unused internal browser-prewarm wrapper; CI now
+  rejects compiler and rustdoc warnings on all three platforms.
+- API guidance distinguishes construction from retained pipeline prewarming,
+  defines tracked-memory budget scope, and includes the required Cartesian
+  axis/style refresh steps. The WASM example documents host-managed async access.
+- The model remains 0.10.0. The WASM integration example advances to 0.13.1
+  with the renderer dependency; this does not publish a registry crate or Studio.
+
+## Registry release preparation — not yet published
+
+The intended first registry versions are **figgy-renderer 0.16.1** and
+**figgy-model 0.10.0**. Rust imports remain `renderer` and `model`; the renderer
+re-exports the model types. The patch below preserves public API signatures and
+the model schema.
+
+- The API landing pages start with installation and complete examples. The native
+  PNG quick start includes the shipped `line` source directly and is compiled as
+  a doctest. The model example creates and edits a chart without a GPU.
+- docs.rs builds use `serde`, without GUI demo features. The renderer documents
+  native Linux and WASM APIs; documentation compilation needs no graphics adapter.
+- Registry archives retain code, shaders, fonts/notices, guides, examples and test
+  fixtures. Gallery captures and unsupported host integrations stay in Git; the
+  renderer archive is approximately 2 MiB instead of 9.2 MiB.
+- The public Linux/Vulkan, Windows/DX12 and experimental macOS/Metal package matrix
+  runs on non-draft PRs. Branch, merge and tag pushes do not run a duplicate matrix.
+  Strict documentation checks cover both native and WASM APIs. Bounded chart
+  regressions also exercise each supported decoration's public select/drag/reset
+  path at 1×/2×, cache reuse, old-frame immutability and serialized state restoration.
+
+Until publication, use the Git dependency in the [renderer quick start](crates/renderer/README.md#install-and-run)
+or [model guide](crates/model/README.md#install). The eventual registry dependencies
+are `renderer = { package = "figgy-renderer", version = "0.16.1" }` and, for
+model-only consumers, `model = { package = "figgy-model", version = "0.10.0" }`.
+Native integration requires Rust 1.99 and wgpu 30. macOS/Metal remains experimental;
+physical GPU driver certification is outside the software/virtual CI results.
+The browser wrapper is an example with `publish = false`, not a registry product.
+
 ## Source release — renderer 0.16.0 / model 0.10.0 / figgy 0.13.0
 
 Radial, categorical and boxplot frames now expose the plot area through the same

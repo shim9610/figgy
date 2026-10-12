@@ -8,6 +8,11 @@ master/merge pushes and tag pushes do not start it. A push to an open PR trigger
 one PR run; a newer run cancels the older run for that PR. Draft PRs wait until
 they are ready. Failed jobs can be rerun from that PR's Actions run.
 
+The pinned Rust toolchain treats compiler and rustdoc warnings as errors in all
+three jobs, including examples, tests and the extracted registry packages.
+Test-only input adapters and inspection helpers compile only with `cfg(test)`;
+the normal native and WASM libraries do not carry those fixtures.
+
 Prepare changes on a public candidate branch and open a PR to request CI. All
 three backend jobs still run, including experimental Metal; removing the push
 trigger does not reduce test coverage. The separate Metal precision probe is
@@ -50,10 +55,50 @@ selector uses private scratch arrays; this avoids WARP's expensive first-use
 workgroup initialization without changing label selection or initialization guarantees.
 GPU completion deadlines and pixel tolerances are unchanged.
 
+## Security analysis
+
+The separate `CodeQL` workflow runs only for public, non-draft pull requests,
+using the same opened/updated/reopened/ready-for-review events as the package
+matrix. It has no push, scheduled or manual trigger. It analyzes Rust, Python,
+JavaScript/TypeScript and GitHub Actions with the `security-extended` query suite
+on standard Ubuntu runners. CodeQL actions are pinned to exact commit IDs.
+
+The Rust analysis uses CodeQL's supported `none` build mode. This source analysis
+does not run GPU tests, prove coverage of every feature/target configuration, or
+analyze WGSL shaders. The native/WASM builds and renderer pixel regressions remain
+in the package matrix. The other CodeQL languages also use analysis without a
+project build. No application build script is explicitly run by this workflow.
+
+Rust CodeQL can report incomplete procedural-macro expansion and internal type
+inference diagnostics even when analysis/upload succeeds and the Rust compiler
+checks pass. Inspect the SARIF diagnostics and extraction counts in the job log;
+zero PR findings do not establish complete Rust coverage. Preparing the native
+build outputs alone did not resolve the observed extractor limitation. Such
+diagnostics are retained, and the compiler and GPU regressions remain independent
+required checks.
+
+The workflow uses `pull_request`, not `pull_request_target`, with read-only source
+access and `security-events: write` for results. It requires no repository secret
+and does not change source or merge a suggested fix. GitHub's PR code-scanning
+results distinguish successful analysis from vulnerability findings; a green
+analyzer job alone is not a claim that no alerts exist. Review the PR's findings
+and the repository's configured severity thresholds. SARIF reports are retained
+for seven days as `codeql-<language>` artifacts so results can also be inspected
+without repository security-administration access.
+
+There is no scan of every default-branch push or periodic rescan of unchanged
+code under this PR-only policy. CodeQL reports a workflow warning recommending a
+push trigger for default-branch alerts; this is expected with the chosen policy.
+Use the PR findings view, rather than interpreting an empty default-branch alert
+list as a clean scan. Dependabot alerts remain a separate source of
+known dependency vulnerability reports. Report suspected vulnerabilities through
+[the security policy](../SECURITY.md).
+
 ## What runs on every OS
 
 1. Native workspace checks with default and all optional features, including examples.
-2. Compilation for `wasm32-unknown-unknown` and strict Rust API documentation links.
+2. Compilation for `wasm32-unknown-unknown` and strict Rust API documentation links
+   on native and WASM targets. The WASM check catches links to native-only methods.
 3. Creation and Cargo verification of both `.crate` archives, without registry upload.
    Archive contents must include source resources, font/license notices, guides,
    examples and test fixtures. Gallery assets and unsupported integrations are
@@ -74,6 +119,12 @@ on the same backend. They are not an assertion that all drivers produce byte-ide
 images. Existing opt-in stress/probe tests remain `#[ignore]` and are reported by Rust.
 Tests run sequentially so GPU memory measurements do not overlap. These are headless
 native renderer tests; WASM compilation is not a browser execution test.
+
+The docs.rs metadata enables `serde` without GUI demo dependencies. Renderer API
+pages are built for native Linux and WASM; the model needs only the native default
+target. These builds do not initialize a graphics adapter. Hosted docs.rs execution
+and registry resolution are verified after publication; local rustdoc builds do not
+claim that the unpublished packages are already available there.
 
 Logs and generated diagnostic PNGs are uploaded as `verification-<runner>-<backend>`
 artifacts, including on failure, and retained for seven days. The logs identify which

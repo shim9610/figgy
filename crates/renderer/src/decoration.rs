@@ -9,6 +9,88 @@ use model::{
     layout::{NudgeResult, RectF},
 };
 
+/// Bounded, deterministic placement of automatic label rectangles. Manual
+/// offsets are applied afterwards by DecorationPainter and never fed back here.
+pub(crate) struct LabelPlacer {
+    bounds: RectF,
+    axes: [bool; 2],
+    placed: Vec<RectF>,
+}
+impl LabelPlacer {
+    pub fn new(bounds: RectF, axes: [bool; 2]) -> Self {
+        Self {
+            bounds,
+            axes,
+            placed: Vec::new(),
+        }
+    }
+
+    pub fn place(&mut self, preferred: RectF) -> RectF {
+        let clamp = |r: RectF| RectF {
+            x: r.x.clamp(
+                self.bounds.x,
+                self.bounds.x + (self.bounds.width - r.width).max(0.),
+            ),
+            y: r.y.clamp(
+                self.bounds.y,
+                self.bounds.y + (self.bounds.height - r.height).max(0.),
+            ),
+            ..r
+        };
+        // Search from the nearest in-bounds position. Starting at a clipped
+        // statistic far outside the viewport would collapse every candidate
+        // onto the same edge.
+        let origin = clamp(preferred);
+        let mut best = origin;
+        let mut best_score = (f32::INFINITY, f32::INFINITY);
+        // At most nine candidates, including the original position. A crowded
+        // canvas still yields a frame; there is no unbounded relaxation loop.
+        for (dx, dy) in [
+            (0., 0.),
+            (0., 1.),
+            (0., -1.),
+            (1., 0.),
+            (-1., 0.),
+            (0., 2.),
+            (0., -2.),
+            (2., 0.),
+            (-2., 0.),
+        ] {
+            let x = origin.x
+                + if self.axes[0] {
+                    dx * (preferred.width + 4.)
+                } else {
+                    0.
+                };
+            let y = origin.y
+                + if self.axes[1] {
+                    dy * (preferred.height + 4.)
+                } else {
+                    0.
+                };
+            let r = clamp(RectF { x, y, ..preferred });
+            let overlap: f32 = self
+                .placed
+                .iter()
+                .map(|q| {
+                    ((r.x + r.width + 3.).min(q.x + q.width + 3.) - r.x.max(q.x)).max(0.)
+                        * ((r.y + r.height + 2.).min(q.y + q.height + 2.) - r.y.max(q.y)).max(0.)
+                })
+                .sum();
+            let distance = (r.x - preferred.x).powi(2) + (r.y - preferred.y).powi(2);
+            if (overlap, distance) < best_score {
+                best = r;
+                best_score = (overlap, distance);
+            }
+            if overlap == 0. && distance == 0. {
+                break;
+            }
+        }
+        self.placed.push(best);
+        best
+    }
+}
+
 pub struct DecorationMap {
     state: DecorationLayout,
     map: HitMap<DecorationLayout>,
@@ -145,6 +227,32 @@ impl<'a> DecorationPainter<'a> {
     }
     pub fn offset(&self, id: &DecorationId) -> [f32; 2] {
         self.state.effective_offset(id)
+    }
+    pub fn place_text(
+        &self,
+        placer: &mut LabelPlacer,
+        family: &str,
+        text: &str,
+        x: f32,
+        y: f32,
+        size: f32,
+    ) -> (f32, f32) {
+        let m = measure_plain_text(
+            text,
+            family,
+            size * self.scale,
+            false,
+            false,
+            FontPolicy::Standard,
+        );
+        let preferred = RectF {
+            x,
+            y: y - m.ascent / self.scale,
+            width: m.width / self.scale,
+            height: (m.ascent + m.descent) / self.scale,
+        };
+        let placed = placer.place(preferred);
+        (x + placed.x - preferred.x, y + placed.y - preferred.y)
     }
     pub fn add(&mut self, id: DecorationId, rect: RectF) {
         if rect.width <= 0. || rect.height <= 0. {

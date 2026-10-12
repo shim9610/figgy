@@ -1,5 +1,5 @@
 use super::*;
-use crate::decoration::{DecorationMap, DecorationPainter};
+use crate::decoration::{DecorationMap, DecorationPainter, LabelPlacer};
 use crate::raster::Canvas;
 use crate::text_render::{FontPolicy, measure_plain_text};
 use model::DecorationId;
@@ -182,22 +182,6 @@ pub(super) fn layout(
     } else {
         (right - left) / c.categories.len() as f32
     };
-    if (!horizontal && category_width > slot - 8.0) || (horizontal && fs + 8.0 > slot) {
-        return Err(invalid(
-            "category labels overlap; enlarge canvas or shorten labels",
-        ));
-    }
-    if horizontal
-        && ticks.windows(2).any(|t| {
-            (t[1].0 - t[0].0) * (right - left)
-                < (measure(c, &t[0].1, fs) + measure(c, &t[1].1, fs)) * 0.5 + 8.0
-        })
-    {
-        return Err(invalid("value ticks overlap; enlarge canvas"));
-    }
-    if !horizontal && (bottom - top) / (tick_count.max(1) as f32) < fs + 4.0 {
-        return Err(invalid("value ticks overlap; enlarge canvas"));
-    }
     let group = c.mode == CategoryBarMode::Grouped;
     let bars_per_slot = if group { c.series.len() } else { 1 };
     let thickness =
@@ -252,7 +236,15 @@ pub(super) fn layout(
         annotations: Vec::new(),
         decorations: DecorationPainter::new(&c.decorations, size, scale, false).finish(),
     };
-    let mut text_boxes: Vec<[f32; 4]> = Vec::new();
+    let mut labels = LabelPlacer::new(
+        crate::layout::RectF {
+            x: 4.,
+            y: 4.,
+            width: w - 8.,
+            height: h - 8.,
+        },
+        [true, true],
+    );
     for s in &segments {
         let series = &c.series[s.series_index];
         let edit = c.bar_override(&s.target);
@@ -407,29 +399,21 @@ pub(super) fn layout(
                 },
             )
         };
-        let bounds = [x, y - fs, x + tw, y + fs * 0.2];
-        let fits = (!inside || (tw + 8.0 <= rect[2] - rect[0] && fs * 1.4 <= rect[3] - rect[1]))
-            && x >= 0.0
-            && x + tw <= w
-            && y - fs >= 0.0
-            && y < h;
-        let overlaps = text_boxes.iter().any(|q| {
-            bounds[0] < q[2] + 3.0
-                && bounds[2] + 3.0 > q[0]
-                && bounds[1] < q[3] + 2.0
-                && bounds[3] + 2.0 > q[1]
-        });
-        if !fits || overlaps {
-            if mode == CategoryBarLabels::Auto {
-                continue;
-            } else {
-                return Err(invalid(
-                    "bar labels do not fit; enlarge canvas, reduce text or use Auto",
-                ));
-            }
+        // Auto may omit values that cannot fit inside their own stack segment.
+        // Explicit labels remain available through the decoration hit map.
+        if mode == CategoryBarLabels::Auto
+            && inside
+            && (tw + 8.0 > rect[2] - rect[0] || fs * 1.4 > rect[3] - rect[1])
+        {
+            continue;
         }
-        text_boxes.push(bounds);
-        let ink = if inside && color.r * 0.2126 + color.g * 0.7152 + color.b * 0.0722 < 0.55 {
+        let (x, y) = decorations.place_text(&mut labels, &c.font_family, &label, x, y, fs);
+        let on_bar = inside
+            && x >= rect[0]
+            && x + tw <= rect[2]
+            && y - fs >= rect[1]
+            && y + fs * 0.2 <= rect[3];
+        let ink = if on_bar && color.r * 0.2126 + color.g * 0.7152 + color.b * 0.0722 < 0.55 {
             crate::Color::WHITE
         } else {
             c.text_color

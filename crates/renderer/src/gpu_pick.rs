@@ -358,6 +358,7 @@ impl GpuStreamPick {
 
     /// The caller retains this charge until the final referencing submission
     /// completes, including cancellation with recorded commands still alive.
+    #[cfg(test)]
     pub(crate) fn charge(&self) -> SharedCharge {
         self.engine.registry.reduce._charge.clone()
     }

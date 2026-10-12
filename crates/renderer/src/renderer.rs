@@ -2386,7 +2386,7 @@ impl std::ops::Deref for RegisteredStreamColumn {
     }
 }
 
-/// Facade bundling every figgy GPU resource.
+/// Cartesian renderer owning its column pool, views' shared resources and pipeline caches.
 pub struct Renderer {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
@@ -2474,16 +2474,16 @@ pub struct Renderer {
 
     surface_format: wgpu::TextureFormat,
 
-    /// Byte ledger for every GPU resource **outside** the column pool. The
-    /// pool reports its own bytes from the buffers it holds, so the ledger
-    /// plus the pool is the whole footprint — see [`Self::gpu_memory_usage`].
+    /// Byte ledger for tracked GPU allocations outside the column pool. The
+    /// pool reports its own bytes separately. This is not the whole device
+    /// footprint; see [`Self::gpu_memory_usage`] for exclusions.
     ///
-    /// Shared by `Arc` because tracked resources credit their bytes back from
-    /// `Drop`, which can run anywhere, and because `WindowedRenderer` owns the
-    /// MSAA target outside this struct.
+    /// Shared by `Arc` because final-owner `Drop` can retire resources from
+    /// another thread, and `WindowedRenderer` owns its tracked MSAA target
+    /// outside this struct. Credits return after submission completion.
     gpu_ledger: Arc<GpuLedger>,
 
-    /// Host-declared ceiling for all renderer GPU bytes, pool included.
+    /// Host allocation policy for budget-checked paths, pool growth included.
     ///
     /// `None` (the default) means device limits are the only bound, which is
     /// the 0.9 behavior. When set, it rides into every pool allocation as
@@ -2494,7 +2494,7 @@ pub struct Renderer {
 
     /// Host policy for renderer-selected streamed -> resident transitions.
     /// `None` keeps native callers in explicit-control mode. This is separate
-    /// from `memory_budget`: the latter caps all renderer GPU resources, while
+    /// from `memory_budget`: the latter governs checked allocation paths, while
     /// this cap decides whether one complete chart-column closure belongs in
     /// the resident representation.
     auto_resident_working_set_limit: Option<u64>,
@@ -5183,7 +5183,12 @@ fn finish_browser_error_scopes(
 }
 
 impl Renderer {
-    /// Initialize every figgy GPU resource against the given device/queue pair.
+    /// Initialize base Cartesian resources against the given device/queue pair.
+    ///
+    /// Creates the column pool, shared layouts/sampler, shader modules, unit
+    /// quad and axis pipeline. Optional data/style and compute pipelines are
+    /// lazy. Use [`Self::prewarm_all`] or detached preparation to install them
+    /// before first use; construction does not prepare chart-specific data.
     ///
     /// `pool_capacity_bytes` is the requested total size of the GPU column
     /// pool (sum of all chart data). It is clamped to what the device can
@@ -5205,8 +5210,8 @@ impl Renderer {
         Self::try_new_with_sample_count(gpu, surface_format, pool_capacity_bytes, 1)
     }
 
-    /// Initialize every figgy GPU resource and report timestamp-free startup
-    /// stage boundaries to `observer`.
+    /// Initialize the same base resources as [`Self::try_new`] and report
+    /// timestamp-free startup stage boundaries to `observer`.
     pub fn try_new_observed(
         gpu: RendererDevice,
         surface_format: wgpu::TextureFormat,
@@ -5496,18 +5501,19 @@ impl Renderer {
         &self.pool
     }
 
-    /// Every GPU byte this renderer currently accounts for, one row per
-    /// [`GpuResourceKind`].
+    /// Requested bytes of tracked GPU allocations, one row per [`GpuResourceKind`].
     ///
     /// The pool row comes from the pool itself (its live slab plus the
     /// ping-pong backup while one exists); every other row comes from the
-    /// ledger. Released bytes stay in the report as *retired* until the frame
-    /// boundary, because wgpu defers the device-side release — spending them
-    /// before then over-commits.
+    /// ledger. Final-owner drops move bytes to *retired*. A submission boundary
+    /// captures retired resources; their bytes remain charged until GPU completion,
+    /// when the handles are destroyed and their credits returned.
     ///
-    /// Not a measurement of driver-side residency: it is what figgy asked the
-    /// device for. Free VRAM is not portably observable, so this plus the
-    /// device limits plus [`Self::set_memory_budget`] is the whole defence.
+    /// This excludes lazy Milkyway/Constellation style textures, host-owned GPU
+    /// resources, other renderers, CPU/output buffers and shader/pipeline/driver
+    /// internals. It is not a measurement of physical VRAM residency. Streaming
+    /// export admission separately checks known style-texture payload sizes.
+    /// See [`Self::set_memory_budget`] for the allocation policy's scope.
     pub fn gpu_memory_usage(&self) -> GpuMemoryUsage {
         self.gpu_ledger
             .snapshot()
@@ -5520,7 +5526,7 @@ impl Renderer {
             .with_peak_at_least(self.pool.peak_bytes())
     }
 
-    /// The host-declared ceiling for all renderer GPU bytes, if any.
+    /// The host allocation budget, if any; see [`Self::set_memory_budget`] for scope.
     pub fn memory_budget(&self) -> Option<u64> {
         self.memory_budget
     }
@@ -5875,10 +5881,12 @@ impl Renderer {
         ))
     }
 
-    /// Declare a ceiling for all renderer GPU bytes, pool included.
+    /// Set the host budget used by checked allocation and admission paths.
     ///
-    /// **What it governs.** Growth. It applies from the next allocation onward
-    /// and never shrinks what is already held, and in particular it does *not*
+    /// **What it governs.** Checks at participating allocation paths, including
+    /// pool growth. This is not a universal device allocator or a hard VRAM
+    /// ceiling; see [`Self::gpu_memory_usage`] for accounting exclusions.
+    /// Setting a budget never shrinks or evicts what is held, and it does *not*
     /// retroactively bound the pool's initial capacity: that slab is created
     /// during construction from the `pool_capacity_bytes` the host itself
     /// passed, before any budget exists. A pool growth that would cross the
@@ -5886,8 +5894,8 @@ impl Renderer {
     /// pool already reports for a device ceiling, so no host learns a new error
     /// shape.
     ///
-    /// **Returns** the current total when the new ceiling is already below it,
-    /// `None` when the ceiling has room. The ceiling is applied either way: a
+    /// **Returns** the current tracked total when the new ceiling is below it,
+    /// `None` when the total fits or the budget is disabled. The policy is applied either way: a
     /// host that lowers it deliberately, intending to release something next,
     /// gets what it asked for. But it learns at the call rather than at
     /// whatever growth fails later — the reason this returns anything at all.
@@ -7293,12 +7301,19 @@ impl Renderer {
         self.finish_errorbar_extent_engine_preparation(warm_result)
     }
 
-    /// Compile and retain every renderer-owned pipeline before first use.
+    /// Compile and retain the resident Cartesian pipeline groups before first use.
+    ///
+    /// Covers data/style rendering, contour-label compute, arc scans, fit reduction
+    /// and GPU picking. Separate bounded renderers and nonresident matrix/tile
+    /// streaming pipelines are outside this scope. Chart-specific data, views,
+    /// styles, atlases and result buffers can still require allocation afterwards.
     ///
     /// The observer receives a started/finished pair around each independently
     /// scheduled stage. On wasm every finished stage yields to the browser so
     /// host UI and file parsing remain live while the renderer is preparing.
-    /// Repeated calls are cheap: already-published caches are reused.
+    /// Repeated calls reuse installed caches while their target generation remains
+    /// valid. A target-format or sample-count change can require new pipelines.
+    /// This does not guarantee zero driver compilation cost on the first draw.
     pub async fn prewarm_all_observed(
         &mut self,
         observer: &mut dyn FnMut(InitEvent),
@@ -7385,6 +7400,8 @@ impl Renderer {
         Ok(())
     }
 
+    /// Prepare the resident Cartesian groups described by [`Self::prewarm_all_observed`]
+    /// without progress callbacks.
     pub async fn prewarm_all(&mut self) -> Result<()> {
         let mut noop = |_| {};
         self.prewarm_all_observed(&mut noop).await
@@ -9061,14 +9078,20 @@ impl Renderer {
     // For hosts where figgy renders the window directly (e.g. winit). Caller
     // writes zero lines of wgpu setup code.
 
-    /// Build every GPU resource plus a surface and swap chain from a window
-    /// handle. The returned [`WindowedRenderer`] manages the surface and
+    /// Build base Cartesian resources and a surface from a window handle.
+    /// The returned [`WindowedRenderer`] retains the instance, adapter and GPU
+    /// handles, manages the surface and
     /// expects `draw` to be called once per frame.
     ///
     /// `target` can be anything convertible to `wgpu::SurfaceTarget`
     /// (`Arc<winit::Window>`, a raw-handle wrapper, a web canvas, …). The
     /// figgy crate does not depend on winit types itself. On wasm, drive this
     /// from the host event loop (e.g. `wasm_bindgen_futures::spawn_local`).
+    ///
+    /// In a browser this also awaits temporary JS render-pipeline warmup; those
+    /// pipelines are discarded and do not populate the renderer's optional
+    /// caches. Native construction has no JS warmup. Both leave resident optional
+    /// caches lazy; use [`Self::prewarm_all`] or detached preparation explicitly.
     pub async fn for_window_async<'w>(
         target: impl Into<wgpu::SurfaceTarget<'w>>,
         size: (u32, u32),
@@ -9078,8 +9101,8 @@ impl Renderer {
         Self::for_window_async_observed(target, size, pool_capacity_bytes, &mut observer).await
     }
 
-    /// Build a standalone renderer while reporting timestamp-free startup
-    /// stage boundaries to `observer`.
+    /// Build a standalone renderer as in [`Self::for_window_async`], reporting
+    /// timestamp-free startup stage boundaries to `observer`.
     // Keep the Arc-based RendererDevice API identical across targets. wgpu's
     // WebGPU handles are intentionally !Send/!Sync on the wasm main thread.
     #[cfg_attr(target_arch = "wasm32", allow(clippy::arc_with_non_send_sync))]
@@ -9092,7 +9115,13 @@ impl Renderer {
         Self::for_window_prepared_async(target, size, pool_capacity_bytes, false, observer).await
     }
 
-    /// Create only basic render pipelines; optional preparations are detached jobs.
+    /// Limit temporary browser render warmup to Basic entries during window setup.
+    ///
+    /// Native initialization is the same as [`Self::for_window_async_observed`].
+    /// This does not install the retained Basic preparation group. A host gating
+    /// first use must compile and install Basic and its other required groups via
+    /// [`Self::begin_preparation`], or call [`Self::prewarm_all`]. Normal frame
+    /// preparation can also create missing pipelines lazily.
     pub async fn for_window_minimal_async_observed<'w>(
         target: impl Into<wgpu::SurfaceTarget<'w>>, size: (u32, u32),
         pool_capacity_bytes: u64, observer: &mut dyn FnMut(InitEvent),
@@ -9268,6 +9297,9 @@ impl Renderer {
     /// line/scatter/errorbar styles. Missing components default to BLACK / 1 px.
     /// The four uniforms and any mapped-style rows are admitted and charged
     /// together before their GPU buffers are created.
+    /// This is a derived snapshot: after editing the series' appearance, mappings
+    /// or identity, recreate it before [`Self::prepare`]. That method does not
+    /// update caller-owned styles. The registered-chart path manages its own cache.
     pub fn create_style_for_series(&mut self, cfg: &SeriesConfig) -> Result<ChartStyle> {
         self.create_style_for_series_scaled(cfg, 1.0)
     }
@@ -9732,9 +9764,12 @@ impl Renderer {
         })
     }
 
-    /// When only the axis range (`AxisOptions { scale, min, max }`) changes,
-    /// only the transform uniform buffer needs to be rewritten. No CPU
-    /// raster, no texture rebuild — one GPU write.
+    /// Write only the data transform uniform; leave axis/grid/decorations unchanged.
+    ///
+    /// An axis-range edit normally needs [`Self::refresh_axis`] as well to update
+    /// tick labels and the grid. In the prepare/paint flow, refresh those raster
+    /// layers and let [`Self::prepare`] write the transform from the same config;
+    /// no separate call to this method is needed.
     pub fn update_transform(&mut self, view: &ChartView, chart: &Chart) -> Result<()> {
         let t = data_render::scatter_transform_from_config(chart.config());
         view.advance_stream_revision()?;
@@ -9972,6 +10007,11 @@ impl Renderer {
     }
     /// Mutable half of the frame: finish every state change the draw needs,
     /// before any render pass opens.
+    ///
+    /// Does not rerasterize axes/decorations or rebuild caller-owned styles.
+    /// Refresh a changed view with [`Self::refresh_axis`] (or its selection
+    /// variant), and recreate affected styles with [`Self::create_style_for_series`]
+    /// before calling this method. Unchanged inputs may be reused.
     ///
     /// Runs the styled-pipeline ensure (compiles pipeline sets the items
     /// need but the cache lacks), writes each panel's data→NDC transform
@@ -10632,7 +10672,7 @@ impl Renderer {
     /// Async because the GPU→CPU readback must yield to the browser on wasm;
     /// on native the await resolves immediately (the device is polled to
     /// completion inline). Native callers can use the blocking
-    /// [`Self::export_panel_rgba`] wrapper instead. `&mut self` for the same
+    /// `Renderer::export_panel_rgba` wrapper instead (native only). `&mut self` for the same
     /// reason as [`Self::paint`]: the prepare phase (arc prefixes; the
     /// export's styled pipelines live in a per-call set instead).
     pub async fn export_panel_rgba_async(
@@ -12330,6 +12370,7 @@ impl PrepareContext<'_> {
         Ok(())
     }
 
+    #[cfg(test)]
     fn build_stream_series(
         &self,
         view: &ChartView,
@@ -13973,13 +14014,14 @@ impl<'w> WindowedRenderer<'w> {
         self.inner.defragment()
     }
 
-    /// Declare a ceiling for all renderer GPU bytes — see
-    /// [`Renderer::set_memory_budget`], including what the ceiling does and does
+    /// Set the allocation policy described by [`Renderer::set_memory_budget`],
+    /// including what the budget does and does
     /// not govern and what a returned total means.
     ///
     /// The window's MSAA target is charged to the same ledger as the
-    /// renderer's own resources, so the ceiling covers it and the immutable
-    /// [`Renderer::gpu_memory_usage`] reached through `Deref` reports it.
+    /// renderer's tracked resources, and the immutable [`Renderer::gpu_memory_usage`]
+    /// reached through `Deref` reports it. This does not account for all backend
+    /// surface/swapchain resources or enforce a device-wide ceiling.
     #[must_use = "a returned total means the new ceiling is already exceeded"]
     pub fn set_memory_budget(&mut self, budget: Option<u64>) -> Option<u64> {
         self.inner.set_memory_budget(budget)
