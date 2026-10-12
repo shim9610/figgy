@@ -50,7 +50,7 @@ coordinates, hit priority, incremental deltas, rejected edits and export state.
 The [streaming capacity demo](streaming_capacity_demo.rs) and [SSOT lab](ssot_lab.rs)
 cover larger Cartesian datasets; both require `egui_demo`.
 
-The [browser integration example](../../web/README.md) is a separate WASM consumer.
+The [browser integration example](https://github.com/shim9610/figgy/blob/master/crates/web/README.md) is a separate WASM consumer.
 It demonstrates a host bridge and does not expose every native chart API.
 
 ## 한국어 안내

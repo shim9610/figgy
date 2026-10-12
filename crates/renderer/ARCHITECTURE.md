@@ -1,7 +1,7 @@
 # Rendering architecture / 렌더링 구조
 
 Native rendering, data ownership, GPU memory and frame invalidation.
-For runnable examples, start with the [README](../../README.md).
+For runnable examples, start with the [README](https://github.com/shim9610/figgy/blob/master/README.md).
 
 | Component | Role |
 |---|---|
@@ -10,7 +10,7 @@ For runnable examples, start with the [README](../../README.md).
 | `crates/web` | Example application adapter: wasm-bindgen, canvas events and frame scheduling |
 
 The browser lifecycle descriptions below describe that example adapter, not a
-JavaScript API for every renderer. [Browser example scope](../web/README.md).
+JavaScript API for every renderer. [Browser example scope](https://github.com/shim9610/figgy/blob/master/crates/web/README.md).
 
 - **Resident GPU columnar pool**: columns admitted to the resident path share a single GPU buffer with first-fit alloc + ping-pong defrag on fragmentation. Logical values are stored as f32 hi/lo pairs when uploaded through `HiLoColumnSource`, preserving timestamp-sized offsets on the GPU. Upload caches scalar stats (min / max / smallest-positive) for auto-fit; per-point geometry such as the dashed-line arc-length prefix is computed on the GPU by a compute scan (`line_arc.wgsl`).
 - **Nonresident rendering (0.10.0)**: replayable columns are registered by logical ID, length, encoding, and revision without keeping their complete data in the GPU pool. The renderer requests bounded original ranges and accumulates the exact drawing; the host retains the source for replay after a view or output change. This does not decimate or downsample data. Admission, supported styles, cancellation, and completed-revision queries are described in [WASM.md](WASM.md).
@@ -30,7 +30,7 @@ JavaScript API for every renderer. [Browser example scope](../web/README.md).
 
 ## 3. Internal memory data flow
 
-![figgy detailed architecture: workspace, upload, ownership, frames, GPU processing, export, caches, and retirement](assets/architecture-state-flow-en.png)
+![figgy detailed architecture: workspace, upload, ownership, frames, GPU processing, export, caches, and retirement](https://raw.githubusercontent.com/shim9610/figgy/53d6a40dcd4d438692aa6a7fac811cf2d75705e6/crates/renderer/assets/architecture-state-flow-en.png)
 
 The renderer-owned registry is the persistent SSoT used by the browser wrapper.
 Low-level native hosts may still supply `ChartDrawItem` directly. In both paths,
@@ -58,7 +58,7 @@ The web integration is shown separately and does not define native upload costs.
 
 ### Exact streaming and residency
 
-![figgy resident rendering, streaming accumulation, optional packed-view cache, and export](assets/streaming-architecture-en.png)
+![figgy resident rendering, streaming accumulation, optional packed-view cache, and export](https://raw.githubusercontent.com/shim9610/figgy/53d6a40dcd4d438692aa6a7fac811cf2d75705e6/crates/renderer/assets/streaming-architecture-en.png)
 
 The image separates resident drawing from streaming accumulation, the optional
 chart-local packed-view GPU cache, and export by source replay. The native host
@@ -394,7 +394,7 @@ export_panel_rgba_async(chart, &[SeriesConfig], scale).await:
 
 ## 3. 내부 구조와 메모리 흐름
 
-![figgy 상세 아키텍처: 워크스페이스, 업로드, 소유권, 프레임, GPU 처리, 출력, 캐시와 회수](assets/architecture-state-flow-kr.png)
+![figgy 상세 아키텍처: 워크스페이스, 업로드, 소유권, 프레임, GPU 처리, 출력, 캐시와 회수](https://raw.githubusercontent.com/shim9610/figgy/53d6a40dcd4d438692aa6a7fac811cf2d75705e6/crates/renderer/assets/architecture-state-flow-kr.png)
 
 
 ### 아키텍처 그림 읽기
@@ -415,7 +415,7 @@ export_panel_rgba_async(chart, &[SeriesConfig], scale).await:
 
 ### 원본 데이터 스트리밍과 상주 전환
 
-![figgy 상주 렌더링, 스트리밍 누적 이미지, 선택적인 패킹 캐시와 원본 기반 출력](assets/streaming-architecture-en.png)
+![figgy 상주 렌더링, 스트리밍 누적 이미지, 선택적인 패킹 캐시와 원본 기반 출력](https://raw.githubusercontent.com/shim9610/figgy/53d6a40dcd4d438692aa6a7fac811cf2d75705e6/crates/renderer/assets/streaming-architecture-en.png)
 
 그림은 상주 렌더링, 스트리밍 누적 이미지, 차트별 GPU 패킹 캐시, 원본을 다시 읽는 이미지 출력을 구분한다. 네이티브 호스트는 재공급할 수 있는 원본을 보관하고 요청된 구간을 전달한다. 브라우저에서는 TypedArray나 `readRange` 공급자를 사용한다. 웹 래퍼는 실행 순서와 구간 요청을 관리하며, 차트 설정·시리즈 순서·소스 리비전·처리 위치·범위 통계·캐시 사용 여부는 렌더러가 관리한다.
 

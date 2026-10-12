@@ -5,7 +5,8 @@ host's wgpu device/queue and owns a separate resource ledger. This API
 is independent of `ColumnSource` and automatic streaming. Multiple series are
 placed side by side in each category. Stacking is not a box-plot operation.
 
-The native and WASM renderer APIs are available; web Studio has no UI binding yet.
+The native and WASM renderer APIs are available. A browser host must wire its own
+events and UI to them; this library guide does not establish deployed Studio status.
 
 ## Input and first render
 
@@ -204,4 +205,4 @@ editing, color changes, resets, direction, grid, legend and category reordering.
 
 데이터 도형의 `hit_test`와 별도로 `frame.decorations()`가 렌더러에서 측정한 히트맵을 제공한다.
 기존 `Selectable`·`Draggable` 계약으로 `chart.decorations`를 갱신하고 `prepare`한다.
-좌표 단위, 요소별 이동 규칙, 캐시·저장 복원 및 웹 연결은 [공통 상호작용 가이드](INTERACTION.md)를 참고한다.
+좌표 단위, 요소별 이동 규칙, 캐시·저장 복원 및 웹 연결은 [공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)를 참고한다.
