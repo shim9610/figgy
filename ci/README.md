@@ -8,6 +8,11 @@ master/merge pushes and tag pushes do not start it. A push to an open PR trigger
 one PR run; a newer run cancels the older run for that PR. Draft PRs wait until
 they are ready. Failed jobs can be rerun from that PR's Actions run.
 
+The pinned Rust toolchain treats compiler and rustdoc warnings as errors in all
+three jobs, including examples, tests and the extracted registry packages.
+Test-only input adapters and inspection helpers compile only with `cfg(test)`;
+the normal native and WASM libraries do not carry those fixtures.
+
 Prepare changes on a public candidate branch and open a PR to request CI. All
 three backend jobs still run, including experimental Metal; removing the push
 trigger does not reduce test coverage. The separate Metal precision probe is

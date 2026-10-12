@@ -8,13 +8,14 @@ use super::streaming_surface::{
 use super::*;
 use crate::gpu_memory::TrackedBuffer;
 use crate::streaming::{
-    ColumnInput, ColumnRange, JobId, RequestStatus, RequestTicket, SourceStamp, StreamError,
+    ColumnRange, JobId, RequestStatus, RequestTicket, SourceStamp, StreamError,
     StreamLimits, StreamScheduler, SubmissionReceipt, ViewEpoch,
 };
 use crate::streaming_upload::{
     ChunkStatisticsPlan, ChunkUploadBudget, ChunkUploadError, RecordedChunk,
-    record_chunk_collecting_statistics_reusing,
 };
+#[cfg(test)]
+use crate::{streaming::ColumnInput, streaming_upload::record_chunk_collecting_statistics_reusing};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 #[path = "streaming_arc_runtime.rs"]
@@ -163,6 +164,8 @@ pub(crate) struct StreamRequestedColumn {
     pub column: String,
     pub range: ColumnRange,
 }
+// Encoded payloads are a low-level regression fixture; production binds ColumnSource.
+#[cfg(test)]
 pub(crate) struct StreamInput<'a> {
     pub column: &'a str,
     /// Little-endian scalar f32 or interleaved hi/lo f32 pairs, per request.
@@ -178,6 +181,7 @@ struct StreamSourceInput<'a> {
 }
 #[derive(Clone, Copy)]
 enum StreamSupply<'a> {
+    #[cfg(test)]
     Encoded(&'a [StreamInput<'a>]),
     Sources(&'a [StreamSourceInput<'a>]),
     Cached(&'a RecordedChunk),
@@ -2921,6 +2925,7 @@ impl Renderer {
     }
 
     /// The owned prefix cannot be substituted by host input at supply time.
+    #[cfg(test)]
     pub(crate) fn submit_chart_stream_surface(
         &mut self,
         ticket: StreamTicket,
@@ -3261,6 +3266,7 @@ impl Renderer {
 
     /// Borrowed current output, not an immutable PreparedFrame snapshot. The
     /// frame compositor must finish its use before the next refresh or mutation.
+    #[cfg(test)]
     pub(crate) fn chart_stream_display(&mut self, job: StreamJob) -> StreamResult<&TrackedTexture> {
         self.sync_external_invalidations()?;
         self.service_stream_requests();
@@ -3311,6 +3317,7 @@ impl Renderer {
     /// Prepare one exact data-only execution against an already initialized
     /// target. The caller must not rewrite the view or target while this job is
     /// active. Config and series are always read from the chart registry.
+    #[cfg(test)]
     pub(crate) fn begin_chart_stream_draw(
         &mut self,
         chart: ChartId,
@@ -3731,6 +3738,7 @@ impl Renderer {
 
     /// Own the entire upload/draw submission. Invalid target/view/ticket checks
     /// precede upload; cursor progress is published only after queue submission.
+    #[cfg(test)]
     pub(crate) fn submit_chart_stream_draw(
         &mut self,
         ticket: StreamTicket,
@@ -4662,6 +4670,7 @@ impl Renderer {
 
     /// Preflight borrowed payload and source authority without creating GPU
     /// resources. Histogram's persistent reduction must call this first too.
+    #[cfg(test)]
     fn validate_stream_supply(
         &mut self,
         ticket: StreamTicket,
@@ -4717,6 +4726,7 @@ impl Renderer {
         supply: StreamSupply<'_>,
     ) -> StreamResult<()> {
         match supply {
+            #[cfg(test)]
             StreamSupply::Encoded(inputs) => self.validate_stream_supply(ticket, inputs),
             StreamSupply::Sources(inputs) => self.validate_stream_sources(ticket, inputs),
             StreamSupply::Cached(_) => self.validate_live_stream_request(ticket),
@@ -5037,6 +5047,7 @@ impl Renderer {
 
     /// Validates live authority and every borrowed payload before allocating or
     /// calling the staging writer. Success is Recorded, NOT drawn or submitted.
+    #[cfg(test)]
     pub(crate) fn accept_stream_columns(
         &mut self,
         ticket: StreamTicket,
@@ -5048,6 +5059,7 @@ impl Renderer {
 
     /// Keep room for a bounded GPU owner created only after a successful
     /// upload. A failed staging upload therefore cannot allocate that owner.
+    #[cfg(test)]
     fn accept_stream_columns_with_headroom(
         &mut self,
         ticket: StreamTicket,
@@ -5150,6 +5162,7 @@ impl Renderer {
             }
         }
         let result = match supply {
+            #[cfg(test)]
             StreamSupply::Encoded(inputs) => self.accept_stream_columns_with_headroom(
                 ticket, inputs, encoder, headroom_bytes, reusable_work.as_ref(), preferred_work_bytes,
                 observe.take(),

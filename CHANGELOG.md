@@ -15,6 +15,9 @@ does not imply a standalone JavaScript product or a Studio deployment.
   Public model types, editing APIs and data-validation contracts are unchanged.
 - Renderer tests independently verify selection borders and reset at 1×/2×,
   and directly pick all eight plot-area resize handles before applying each edit.
+- Test-only stream adapters and accounting helpers no longer enter normal
+  library builds. Remove an unused internal browser-prewarm wrapper; CI now
+  rejects compiler and rustdoc warnings on all three platforms.
 - API guidance distinguishes construction from retained pipeline prewarming,
   defines tracked-memory budget scope, and includes the required Cartesian
   axis/style refresh steps. The WASM example documents host-managed async access.

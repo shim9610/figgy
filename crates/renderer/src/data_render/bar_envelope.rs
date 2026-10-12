@@ -38,7 +38,6 @@ pub(crate) struct Persistent {
     map: wgpu::BindGroup,
     winners: wgpu::Buffer,
     pixels: u32,
-    map_bytes: u64,
     _charge: SharedCharge,
 }
 
@@ -47,7 +46,6 @@ pub(crate) struct StreamChunk {
     offset_bg: wgpu::BindGroup,
     map: wgpu::BindGroup,
     count: u32,
-    charged_bytes: u64,
     _charge: SharedCharge,
 }
 
@@ -547,7 +545,6 @@ impl Pipelines {
             offset_bg,
             map: persistent.map.clone(),
             count,
-            charged_bytes: local_bytes,
             _charge: Arc::new(tally.into_charge(ledger, GpuResourceKind::StreamingUpload)),
         })
     }
@@ -639,7 +636,6 @@ impl Persistent {
             map,
             winners,
             pixels,
-            map_bytes,
             _charge: Arc::new(tally.into_charge(ledger, GpuResourceKind::StreamingUpload)),
         })
     }
@@ -664,8 +660,9 @@ impl Persistent {
         pass.draw(0..6, 0..self.pixels);
     }
 
+    #[cfg(test)]
     pub(crate) fn charged_bytes(&self) -> u64 {
-        u64::from(self.pixels) * 16 + self.map_bytes
+        self._charge.charged_bytes()
     }
 }
 
@@ -699,8 +696,9 @@ impl StreamChunk {
         pass.draw(0..BAR_VERTICES_PER_INSTANCE, 0..self.count);
     }
 
+    #[cfg(test)]
     pub(crate) fn charged_bytes(&self) -> u64 {
-        self.charged_bytes
+        self._charge.charged_bytes()
     }
 }
 

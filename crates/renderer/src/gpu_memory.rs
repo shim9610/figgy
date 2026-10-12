@@ -943,6 +943,7 @@ impl GpuByteCharge {
     /// Transfer a still-live buffer to an owner accounted outside this ledger.
     /// The caller publishes the replacement accounting in the same infallible
     /// commit; unlike dropping a GPU owner, this creates no retirement debt.
+    #[cfg(test)]
     pub(crate) fn transfer_to_external_accounting(mut self) {
         self.ledger.live[self.kind.index()]
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |live| {

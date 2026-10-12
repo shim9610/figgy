@@ -230,6 +230,7 @@ impl GpuStreamDataPick {
     pub(crate) const CHUNK_BYTES: u64 = std::mem::size_of::<DataPickQueryGpu>() as u64;
     pub(crate) const READBACK_BYTES: u64 = DATA_PICK_CANDIDATE_BYTES;
 
+    #[cfg(test)]
     pub(crate) fn charge(&self) -> SharedCharge {
         self.charge.clone()
     }

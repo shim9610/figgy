@@ -12370,6 +12370,7 @@ impl PrepareContext<'_> {
         Ok(())
     }
 
+    #[cfg(test)]
     fn build_stream_series(
         &self,
         view: &ChartView,

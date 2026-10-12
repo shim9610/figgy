@@ -634,18 +634,6 @@ impl ShaderModules {
     }
 }
 
-/// Compile the same descriptors as the actual Rust constructors. The checked
-/// contract includes explicit layouts, vertex attributes, and blend state.
-#[cfg(target_arch = "wasm32")]
-pub(crate) async fn prewarm_browser_render_pipelines(
-    device: &wgpu::Device,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-    observer: &mut dyn FnMut(crate::InitEvent),
-) -> Result<(), String> {
-    prewarm_browser_render_feature(device, target_format, sample_count, None, observer).await
-}
-
 #[cfg(target_arch = "wasm32")]
 pub(crate) async fn prewarm_browser_render_feature(
     device: &wgpu::Device, target_format: wgpu::TextureFormat, sample_count: u32,
