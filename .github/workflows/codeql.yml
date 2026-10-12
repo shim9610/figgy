@@ -13,6 +13,10 @@ jobs:
     name: CodeQL / ${{ matrix.language }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: '3'
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/codeql-cargo
+      CODEQL_EXTRACTOR_RUST_OPTION_CARGO_TARGET_DIR: ${{ github.workspace }}/target/codeql-cargo
     permissions:
       contents: read
       security-events: write
@@ -27,7 +31,15 @@ jobs:
           persist-credentials: false
       - name: Install the Rust toolchain
         if: matrix.language == 'rust'
-        run: rustup toolchain install 1.99.0 --profile minimal
+        run: rustup toolchain install 1.99.0 --profile minimal --component rust-src
+      - name: Install Rust build prerequisites
+        if: matrix.language == 'rust'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libx11-dev libxkbcommon-dev libwayland-dev libegl1-mesa-dev
+      - name: Prepare Rust macros and build scripts
+        if: matrix.language == 'rust'
+        run: cargo check --locked --workspace --all-targets --all-features
       - name: Initialize CodeQL
         uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
         with:
