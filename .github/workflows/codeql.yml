@@ -22,7 +22,7 @@ jobs:
         language: [rust, python, javascript-typescript, actions]
     steps:
       - name: Check out the PR merge commit
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       - name: Install the Rust toolchain
@@ -38,3 +38,12 @@ jobs:
         uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
         with:
           category: /language:${{ matrix.language }}
+          output: codeql-results
+      - name: Retain analysis reports
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: codeql-${{ matrix.language }}
+          path: codeql-results/*.sarif
+          retention-days: 7
+          if-no-files-found: warn

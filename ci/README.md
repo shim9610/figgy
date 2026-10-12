@@ -74,10 +74,15 @@ access and `security-events: write` for results. It requires no repository secre
 and does not change source or merge a suggested fix. GitHub's PR code-scanning
 results distinguish successful analysis from vulnerability findings; a green
 analyzer job alone is not a claim that no alerts exist. Review the PR's findings
-and the repository's configured severity thresholds.
+and the repository's configured severity thresholds. SARIF reports are retained
+for seven days as `codeql-<language>` artifacts so results can also be inspected
+without repository security-administration access.
 
 There is no scan of every default-branch push or periodic rescan of unchanged
-code under this PR-only policy. Dependabot alerts remain a separate source of
+code under this PR-only policy. CodeQL reports a workflow warning recommending a
+push trigger for default-branch alerts; this is expected with the chosen policy.
+Use the PR findings view, rather than interpreting an empty default-branch alert
+list as a clean scan. Dependabot alerts remain a separate source of
 known dependency vulnerability reports. Report suspected vulnerabilities through
 [the security policy](../SECURITY.md).
 
