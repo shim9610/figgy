@@ -277,6 +277,71 @@ fn inside_radial_labels_pick_at_lifted_position_and_drag_without_jump() {
     c.style.tilt_degrees = 55.;
     c.style.depth = 0.18;
     let key = DecorationId::RadialLabel(RadialTarget::main(0));
+    // Inside-label annotations have a separate lifted rendering path. Keep
+    // data hover fixed while changing only decoration selection at both DPIs.
+    for scale in [1., 2.] {
+        for hovered in [false, true] {
+            c.interaction.hovered = hovered.then_some(RadialTarget::main(0));
+            c.interaction.hover_progress = if hovered { 1. } else { 0. };
+            let frame = r.prepare(&c, (600, 420), scale).unwrap();
+            let selection = frame
+                .decorations()
+                .selection_box(id(frame.decorations(), &key))
+                .unwrap();
+            let unselected = r.export_rgba(&c, (600, 420), scale).unwrap();
+            c.decorations.selected = Some(key.clone());
+            let selected_frame = r.prepare(&c, (600, 420), scale).unwrap();
+            let label = frame
+                .decorations()
+                .bounds(id(frame.decorations(), &key))
+                .unwrap();
+            assert_eq!(
+                selected_frame
+                    .decorations()
+                    .bounds(id(selected_frame.decorations(), &key)),
+                Some(label)
+            );
+            let selected = r.export_rgba(&c, (600, 420), scale).unwrap();
+            save(
+                &format!("radial-inside-before-hover-{hovered}-{scale}x"),
+                &unselected,
+            );
+            save(
+                &format!("radial-inside-after-hover-{hovered}-{scale}x"),
+                &selected,
+            );
+            let context = format!("inside radial label, hovered={hovered}, scale={scale}");
+            if hovered {
+                bounded_area::assert_selection_with_rerasterized_label(
+                    &unselected,
+                    &selected,
+                    &selection,
+                    scale,
+                    label,
+                    &context,
+                );
+            } else {
+                bounded_area::assert_selection_only(
+                    &unselected,
+                    &selected,
+                    &selection,
+                    scale,
+                    &context,
+                );
+            }
+            save(
+                &format!("radial-inside-selection-only-hover-{hovered}-{scale}x"),
+                &selected,
+            );
+            c.decorations.selected = None;
+            assert_eq!(
+                r.export_rgba(&c, (600, 420), scale).unwrap().rgba,
+                unselected.rgba
+            );
+            r.end_frame();
+        }
+    }
+    c.interaction = Default::default();
     let rest = r.prepare(&c, (600, 420), 2.).unwrap();
     let base = rest
         .decorations()
@@ -344,6 +409,56 @@ fn every_bounded_decoration_uses_public_edit_reset_and_snapshot_contracts() {
                         .decorations()
                         .bounds(id(f.decorations(), &DecorationId::DataArea));
                     let before = r.export_rgba(&c, (800, 600), scale).unwrap();
+                    // Selection is the only mutation here: movement must not mask
+                    // a missing selection border or stale annotation cache.
+                    let unselected_model = c.clone();
+                    let selection = f
+                        .decorations()
+                        .selection_box(id(f.decorations(), &key))
+                        .unwrap();
+                    c.decorations.selected = Some(key.clone());
+                    let selected_frame = r.prepare(&c, (800, 600), scale).unwrap();
+                    assert!(!f.shares_annotations_with(&selected_frame));
+                    assert!(Arc::ptr_eq(
+                        &selected_frame,
+                        &r.prepare(&c, (800, 600), scale).unwrap()
+                    ));
+                    for (_, element) in f.decorations().entries() {
+                        assert_eq!(
+                            f.decorations().bounds(id(f.decorations(), &element.id)),
+                            selected_frame
+                                .decorations()
+                                .bounds(id(selected_frame.decorations(), &element.id)),
+                            "selection changed {:?} geometry",
+                            element.id
+                        );
+                    }
+                    let selected = r.export_rgba(&c, (800, 600), scale).unwrap();
+                    bounded_area::assert_selection_only(
+                        &before,
+                        &selected,
+                        &selection,
+                        scale,
+                        &format!("{} {key:?} at {scale}x", stringify!($renderer)),
+                    );
+                    let artifact_key: String = format!("{key:?}")
+                        .chars()
+                        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+                        .collect();
+                    save(
+                        &format!(
+                            "{}-{artifact_key}-selection-only-{scale}x",
+                            stringify!($renderer)
+                        ),
+                        &selected,
+                    );
+                    c.decorations.selected = None;
+                    assert_eq!(c, unselected_model);
+                    assert_eq!(
+                        r.export_rgba(&c, (800, 600), scale).unwrap().rgba,
+                        before.rgba,
+                        "selection removal did not restore {key:?} pixels"
+                    );
                     let (dx, dy) = match key {
                         DecorationId::Axis(Side::Left) => (8.0, 0.0),
                         DecorationId::Axis(Side::Bottom) => (0.0, -8.0),

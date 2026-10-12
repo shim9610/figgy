@@ -90,7 +90,6 @@ chart.selected = Some(target);
 - `labels`: `None` / `Inside` / `Outside` / `Auto`(기본).
   개별 `labels: None`은 상속, `Some(CategoryBarLabels::None)`은 숨기기다.
 - `Auto`: 묶음은 바깥, 누적은 안쪽에 표시하며 공간이 부족한 값 라벨은 생략한다.
-  명시적인 `Inside`·`Outside`가 겹치거나 들어가지 않으면 오류를 반환한다.
   누적 중간 조각은 `Outside`를 사용할 수 없다.
 - `label_format`: `Value`(기본) / `Percent` / `ValuePercent` / `CategoryValue`.
   100% 누적도 값 라벨을 자동으로 퍼센트로 바꾸지 않는다. 원하는 표기를 명시한다.
@@ -99,10 +98,15 @@ chart.selected = Some(target);
 - `font_size`: 논리 픽셀 8~32(기본 14), `font_family`: 기본 `sans-serif`.
 - 범주·시리즈 이름과 ID는 제어 문자 없이 80자까지, 제목·축 제목은 160자까지다.
 
-범례는 폭에 맞춰 줄을 나눈다. 범주 이름이나 축 눈금이 겹치면 조용히 잘라내지 않고 오류를
-반환한다. 캔버스를 키우거나 이름을 줄이거나 가로 방향을 사용한다. 내부 값 라벨은 막대 색에
+범례는 폭에 맞춰 줄을 나눈다. 내부 값 라벨은 막대 색에
 따라 밝은 글자/차트의 `text_color`를 선택한다. 시리즈 범례는 개별 막대 색이 아닌 시리즈 색이다.
 한글 등 추가 글꼴은 기존 `register_font_bytes` 경로를 사용한다. 글꼴 등록 후에는 캐시를 갱신한다.
+
+Visible value labels can be selected through `frame.decorations().hit_test([x, y])` and moved
+individually with `drag_by(&mut chart.decorations, hit, dx, dy)`. Prepare a new
+frame after moving labels.
+Fractional logical-pixel deltas allow fine adjustments, and export preserves the
+offsets. Axis tick labels move as a group. See [manual label placement](INTERACTION.md#manual-label-placement).
 
 ## 렌더링, 선택과 내보내기
 

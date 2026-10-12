@@ -69,7 +69,7 @@ palettes, axes, materials and labels change the same chart APIs.
 ## Quick start
 
 Use **Rust 1.99 or later** and a working GPU driver. The repository pins Rust 1.99.0.
-The source release is renderer **0.16.0** / model **0.10.0**; these crates are not
+The source release is renderer **0.16.1** / model **0.10.0**; these crates are not
 published on crates.io yet. Add the public Git revision to your application's
 `Cargo.toml`:
 

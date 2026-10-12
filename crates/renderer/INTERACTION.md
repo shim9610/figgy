@@ -34,6 +34,17 @@
 독립적으로 이동하는 계약은 아니다. 영역 조정은 데이터 값이나 축 범위를 바꾸지 않는다.
 데이터 값 자체를 드래그로 바꾸는 기능과도 별개다.
 
+## Manual label placement
+
+Use the displayed frame's decoration hit map to select and drag labels. Each
+radial label and each bar/box value label can move independently; axis tick labels
+move together as a group. Drag deltas are floating-point logical pixels, so small
+fractional adjustments are supported. Store selection in `decorations.selected`,
+apply `drag_by` to `chart.decorations`, and prepare a new frame before drawing or
+using the updated hit map. Export uses the same stored offsets.
+
+Reset an element with `decorations.reset(&id)` to restore its automatic position.
+
 ## 호출 순서
 
 ```rust,no_run
@@ -112,8 +123,8 @@ if map.resize_by(&mut trial.decorations, id, ResizeHandle::SE, -80., -60.)
 DPR이나 PNG 배율은 저장한 논리 영역을 바꾸지 않는다. 캔버스 크기·글꼴·라벨이 바뀌어 지정한
 영역이 들어가지 않으면 `prepare`가 거절한다. 자동 크기로 되돌리려면
 `decorations.reset(&DecorationId::DataArea)` 또는 `data_area = None`을 사용한다.
-핸들의 기하 제약을 벗어난 조정은 원자적으로 거절하며, 글자 겹침 같은 추가 배치 검사는
-`prepare`가 담당한다. 위 예제처럼 복사본에서 준비가 성공한 뒤 원본에 반영하면 실패 시
+핸들의 기하 제약을 벗어난 조정은 원자적으로 거절한다.
+위 예제처럼 복사본에서 준비가 성공한 뒤 원본에 반영하면 실패 시
 마지막 유효 화면과 설정을 유지할 수 있다.
 
 영역 히트맵은 가장 뒤에 등록한다. 별도 데이터 피킹과 조합하는 호스트는 `DataArea`에 맞았더라도

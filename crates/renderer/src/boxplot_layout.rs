@@ -1,5 +1,5 @@
 use super::*;
-use crate::decoration::{DecorationMap, DecorationPainter};
+use crate::decoration::{DecorationMap, DecorationPainter, LabelPlacer};
 use crate::raster::Canvas;
 use crate::text_render::{FontPolicy, measure_plain_text};
 use model::DecorationId;
@@ -200,22 +200,6 @@ pub(super) fn layout(
     } else {
         (right - left) / c.categories.len() as f32
     };
-    if (!horizontal && category_width > slot - 8.0) || (horizontal && fs + 8.0 > slot) {
-        return Err(invalid(
-            "category labels overlap; enlarge canvas or shorten labels",
-        ));
-    }
-    if horizontal
-        && ticks.windows(2).any(|t| {
-            (t[1].0 - t[0].0) * (right - left)
-                < (measure(c, &t[0].1, fs) + measure(c, &t[1].1, fs)) * 0.5 + 8.0
-        })
-    {
-        return Err(invalid("value ticks overlap; enlarge canvas"));
-    }
-    if !horizontal && (bottom - top) / (tick_count.max(1) as f32) < fs + 4.0 {
-        return Err(invalid("value ticks overlap; enlarge canvas"));
-    }
     let bars_per_slot = c.series.len();
     let thickness =
         (slot * c.group_width - c.box_gap * (bars_per_slot - 1) as f32) / bars_per_slot as f32;
@@ -270,7 +254,7 @@ pub(super) fn layout(
         decorations: DecorationPainter::new(&c.decorations, size, scale, false).finish(),
         clip: [left * scale, top * scale, right * scale, bottom * scale],
     };
-    let mut text_boxes: Vec<[f32; 4]> = vec![];
+    let mut labels = LabelPlacer::new(area, [true, true]);
     for (i, category) in c.categories.iter().enumerate() {
         for (j, series) in c.series.iter().enumerate() {
             let Some(v) = &series.values[i] else {
@@ -528,23 +512,8 @@ pub(super) fn layout(
                     } else {
                         (middle - tw * 0.5, end - 10.0)
                     };
-                    let bounds = [x, y - fs, x + tw, y + fs * 0.2];
-                    if x < left
-                        || x + tw > right
-                        || y - fs < top
-                        || y > bottom
-                        || text_boxes.iter().any(|q| {
-                            bounds[0] < q[2] + 3.0
-                                && bounds[2] + 3.0 > q[0]
-                                && bounds[1] < q[3] + 2.0
-                                && bounds[3] + 2.0 > q[1]
-                        })
-                    {
-                        return Err(invalid(
-                            "box labels do not fit; enlarge canvas, extend range, or hide labels",
-                        ));
-                    }
-                    text_boxes.push(bounds);
+                    let (x, y) =
+                        decorations.place_text(&mut labels, &c.font_family, &label, x, y, fs);
                     decorations.text(
                         DecorationId::DataLabel {
                             category_id: target.category_id.clone(),

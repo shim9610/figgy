@@ -154,8 +154,11 @@ Use `pick_chart_data` / `WindowedRenderer::pick_chart_data_at` for the tagged
 point, histogram-bin, matrix-cell, and contour-level result.
 
 Every mutation — `Renderer::prepare` and the export prepare path — runs behind
-an `&mut self` boundary. GPU resource retirement uses a short internal lock
-to collect handles; it is released before GPU calls. `Renderer::paint_prepared`
+an `&mut self` boundary. Final GPU owners hand retired handles and their exact
+byte credits to an atomic queue, without a renderer retirement mutex. The host
+submission boundary drains a bounded number of entries; completion destroys
+those handles before crediting their bytes. Queue operations can spin/yield under
+contention, so this does not promise wait-free progress. `Renderer::paint_prepared`
 records through `&self` against an owned
 `PreparedFrame` token, so host paint callbacks that only hand out shared access
 need no wrapper lock either (`Renderer` is `Send + Sync`).
@@ -194,6 +197,12 @@ Constellation remain outside the regular ledger; each creates PSF, atlas, and
 strip textures. Streaming export admission separately checks their known
 payload size. These exceptions must not be read as fully accounted resources.
 
+`set_memory_budget` is a policy used by participating allocation/admission paths,
+not a hard cap on every device allocation. It does not retroactively constrain
+the constructor's initial pool or evict existing resources. Admission is not a
+reservation. See the [budget contract](API.md#gpu-memory-accounting-and-budget-scope)
+for return values, exclusions and shared-device host responsibilities.
+
 Live resources and retired resources both count toward the tracked total.
 Dropping a Rust handle does not prove that queued GPU work has finished, and
 `end_gpu_frame()` does not itself free device memory. Native hosts must service
@@ -212,7 +221,8 @@ handling, pointer mapping, async-operation busy gate, and id register/unregister
 lifecycle. The raw `FiggyChart` wasm kernel remains available as an advanced
 escape hatch.
 
-Web cold-start and lifecycle contract:
+Web cold-start and lifecycle contract (see also the
+[native/browser constructor and prewarm comparison](API.md#construction-and-prewarming)):
 
 In browsers, first-frame readiness awaits the actual
 `GPUQueue.onSubmittedWorkDone()` Promise. A queue rejection or device loss
@@ -224,6 +234,12 @@ rejects creation/readiness; it cannot publish a successful first-frame event.
 | `<figgy-chart>` startup | The `web.create / first frame / finished` progress event and `figgy-ready` are published before background picker prewarm begins. A prewarm failure emits `figgy-error` with `operation: "prewarm_gpu_picking"` and `recoverable: true`; the fulfilled `ready` promise and rendering loop remain valid. |
 | Async serialization | One generation+kernel operation token covers connect/create, `prewarm_all_with_progress` / `prewarm_all` and picker prewarm, export, `first_frame_ready` / `warm_up`, extent preparation, resident async fit, and pick. The facade's two full-prewarm methods pass through this generation-aware operation gate. While `busy`, rAF drawing and pointer/proxy kernel access do not enter wasm; only the latest resize and a pending pointer release are retained and applied after settlement. Streaming `auto_fit_all()` instead requests renderer-owned fitting and awaits its stream job without holding this token: the fit itself does not set `busy`, so the scheduler can keep calling the kernel and reconcile the latest chart state. An independent operation may still set `busy`. |
 | Disconnect/reconnect | Disconnect invalidates the generation and cancels its rAF/observer. A kernel borrowed by an active operation is freed only after that operation settles. Its stale settlement cannot clear, resize, release, or free the new generation's kernel. |
+
+The example facade enforces that gate; wasm-bindgen itself checks borrows and
+does not serialize or queue calls. Competing application calls to the facade
+are rejected while busy, rather than queued. Raw kernel users must prevent
+same-object access until an async mutable borrow settles, including on failure;
+see [WASM call ownership](WASM.md#raw-kernel-call-ownership).
 
 Web mutation API contracts:
 
@@ -443,7 +459,7 @@ export_panel_rgba_async(chart, &[SeriesConfig], scale).await:
 
 Renderer 0.9부터 GPU 피킹은 차트 ID를 받는 API로 제공한다. `enable_gpu_picking()`을 한 번 호출하고, 필요하면 첫 선택 전에 `prepare_gpu_picking_for_chart(chart_id)`로 준비한다. 이후 `pick_chart(chart_id, GpuPickRequest)` 또는 `WindowedRenderer::pick_chart_at`을 호출한다. 축 변환과 데이터 영역 자르기는 렌더러가 `Config`에서 계산한다. 0.7의 저수준 `GpuPickEngine`은 더 이상 공개하지 않는다. 피킹은 GPU 컬럼 풀을 직접 읽으며 CPU 점 복사본이나 피킹 상태용 잠금을 두지 않는다. 점·막대·셀·등고선을 구분하는 결과가 필요하면 `pick_chart_data` / `WindowedRenderer::pick_chart_data_at`을 사용한다.
 
-`Renderer::prepare`와 출력 준비 과정의 상태 변경은 모두 `&mut self`에서 수행한다. `Renderer::paint_prepared`는 `&self`로 토큰의 명령을 기록하므로 공유 참조만 제공하는 paint 콜백에서도 별도 잠금이 필요하지 않다. `Renderer`는 `Send + Sync`다. GPU 자원을 회수할 때는 내부 잠금으로 반환 대기 핸들을 모으고, 잠금을 해제한 뒤 GPU API를 호출한다.
+`Renderer::prepare`와 출력 준비 과정의 상태 변경은 모두 `&mut self`에서 수행한다. `Renderer::paint_prepared`는 `&self`로 토큰의 명령을 기록하므로 공유 참조만 제공하는 paint 콜백에서도 별도 잠금이 필요하지 않다. `Renderer`는 `Send + Sync`다. GPU 자원 회수는 mutex 없이 원자적 큐로 핸들과 해당 바이트 수를 함께 전달한다. 제출 경계에서 모은 자원은 GPU 완료 후 파괴하고 집계에서 차감한다.
 
 토큰은 확정된 파이프라인·바인드 그룹·버퍼·패널 배치와 함께 컬럼 할당 세대, 풀 배치 세대, 출력 파이프라인 세대, 각 `ChartView`의 내용 리비전을 보관한다. 하나라도 바뀌면 기록 전에 `FiggyError::StalePreparedFrame`을 반환하므로 다음 프레임에서 다시 준비해야 한다.
 

@@ -339,6 +339,52 @@ pub async fn export_png(&mut self, scale: f32) -> Result<js_sys::Uint8Array, JsV
 // 필요할 때 host가 new Blob([png], { type: "image/png" })로 변환한다.
 ```
 
+#### Raw kernel call ownership
+
+`export_png` holds an async mutable borrow of the raw `FiggyChart` until its
+Promise settles. **wasm-bindgen does not queue or serialize overlapping calls.**
+During that interval, another call on the same kernel can throw
+`"recursive use of an object"`, including a synchronous getter, `frame()`, an
+edit, resize, picking or `free()`. Do not use `Promise.all` for operations on
+that same object. Separate kernel instances need separate operation gates.
+
+For a raw-kernel host, all access paths must consult one per-instance gate.
+Pause/skip rendering and pointer calls while busy; reject or defer application
+operations explicitly. Keep the gate held across the whole `await` and release
+it in `finally`, whether the operation succeeds or rejects. Never free a kernel
+while an operation still borrows it. A minimal pattern for an already-created,
+fixed-lifetime kernel is:
+
+```js
+let busy = false;
+
+async function withKernelOperation(operation) {
+  if (busy) throw new Error("chart is busy");
+  busy = true;
+  try {
+    return await operation(kernel);
+  } finally {
+    busy = false;
+  }
+}
+
+function tick() {
+  requestAnimationFrame(tick);
+  if (!busy) kernel.frame();
+}
+
+const png = await withKernelOperation((chart) => chart.export_png(2.0));
+// Getters, edits, pointer handlers, resize and disposal must honor `busy` too.
+```
+
+The example `<figgy-chart>` facade already owns a generation-aware gate for
+its asynchronous kernel operations. Competing application calls reject with
+`"figgy chart is busy"`; it is not a general call queue. Only the latest resize
+and a pending pointer release are retained internally for settlement. Use that
+facade's methods consistently rather than bypassing it through the raw kernel.
+Hosts supporting disconnect/reconnect must also follow the lifetime rules in
+[section 3.9](#39-async-메서드와-객체-잠금-필독).
+
 동기 출력 함수 `export_panel_png_bytes`는 웹 빌드에서 제외된다. 웹에서는 비동기 버전을 사용해야 한다.
 
 <a id="37-프리셋--fieldless-enum-그대로-노출"></a>
@@ -390,7 +436,7 @@ chart.set_series(JSON.stringify(series));  // GPU 스타일 재빌드 포함
 
 ### 3.9 비동기 호출 중 객체 접근 제한
 
-wasm-bindgen의 비동기 메서드가 실행 중일 때 같은 객체의 다른 메서드를 호출하면 `"recursive use of an object"` 예외가 발생한다. 웹 래퍼는 이를 내부에서 방지한다. 저수준 커널을 직접 사용한다면 다음 규칙을 지켜야 한다.
+`&mut self`를 빌리는 비동기 메서드가 실행 중일 때 같은 객체에 다시 접근하면 `"recursive use of an object"` 예외가 발생할 수 있다. wasm-bindgen은 호출을 대기열에 넣지 않는다. 예제 웹 래퍼는 작업 중인 객체에 대한 추가 호출을 거부한다. 저수준 커널을 직접 사용한다면 다음 규칙을 지켜야 한다.
 
 - rAF 루프는 WASM을 호출하기 전에 다음 `requestAnimationFrame(tick)`을 예약한다. 예외가 발생해도 루프가 끊어지지 않게 하기 위해서다.
 - 생성·연결, 두 전체 사전 준비 메서드, `prewarm_gpu_picking`, 출력, `first_frame_ready` / `warm_up`, `ensure_extent_engine`, 상주 `auto_fit_all`, `pick_point` / `pick_data`가 실행되는 동안 연결 세대와 커널을 확인하는 `busy` 토큰을 유지한다. 그동안 `frame()`·포인터·크기 변경·대리 호출은 생략하거나 거부한다. 상주 `auto_fit_all`은 완료 시 설정을 직접 바꾸므로 실행 중 `frame()`을 호출할 수 없다.
@@ -530,7 +576,7 @@ const png = await chart.export_png(2);
 
 **스트리밍 자체는 자동 맞춤을 켜지 않는다.** 새 차트의 표시 범위를 모르면 호스트가 첫 청크 전에 한 번 요청한다. 렌더러는 원본 구간을 앞으로 읽으면서 누적 범위를 계산한다. 새 청크로 범위가 넓어지면 앞서 그린 데이터 이미지를 GPU에서 리스케일하고 새 청크를 이어 그린다. 축과 눈금은 새 범위로 따로 그리므로 이전 눈금이 이미지와 함께 늘어나거나 잔상으로 남지 않는다.
 
-숫자 눈금 라벨은 현재 축 범위에서 실제 글자 크기와 화면 길이를 재어, 서로 겹치지 않는 일정한 간격으로 표시한다. 화면을 넓히거나 확대하면 생략했던 숫자가 다시 나타난다. 글꼴 크기와 설정의 주 눈금·격자 간격은 유지하며, 지수 표기·반전 축·색상 막대에도 같은 규칙을 적용한다. PNG 배율에 맞춰 글자 사이 여백도 함께 커진다.
+숫자 눈금 라벨은 현재 축 범위에서 실제 글자 크기와 화면 길이를 재어, 일정한 간격으로 표시한다. 화면을 넓히거나 확대하면 생략했던 숫자가 다시 나타난다. 글꼴 크기와 설정의 주 눈금·격자 간격은 유지하며, 지수 표기·반전 축·색상 막대에도 같은 규칙을 적용한다. PNG 배율에 맞춰 글자 사이 여백도 함께 커진다.
 
 초기 fit의 중간 화면은 미리보기다. 리스케일 때문에 점 크기·선 두께·선명도가 잠시 달라질 수 있다. 전체 범위가 확정되면 원본을 **한 번만** 다시 읽어 정밀하게 그린다. 이 2순회에서도 새 청크가 반영된 화면 구역부터 갱신하고, 나머지 구역은 1순회 미리보기를 유지한다. 화면 전체를 지우거나 끝날 때까지 표시를 멈추지 않는다. 두 이미지를 덧그리지 않고 픽셀마다 하나를 선택하므로 반투명 중첩이나 AA가 이중으로 합성되지 않는다. 글씨·축·선택 표시는 별도로 한 번만 그린다.
 

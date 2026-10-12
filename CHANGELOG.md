@@ -6,12 +6,27 @@ does not imply a standalone JavaScript product or a Studio deployment.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
+## Source patch — renderer 0.16.1 / model 0.10.0 / figgy 0.13.1
+
+- GPU resource retirement now transfers handles and their byte credits together
+  through an atomic queue. Destruction and credit return still follow submission
+  completion; retained prepared frames keep their resources alive.
+- Bounded chart labels use bounded first-frame placement and size adjustments.
+  Public model types, editing APIs and data-validation contracts are unchanged.
+- Renderer tests independently verify selection borders and reset at 1×/2×,
+  and directly pick all eight plot-area resize handles before applying each edit.
+- API guidance distinguishes construction from retained pipeline prewarming,
+  defines tracked-memory budget scope, and includes the required Cartesian
+  axis/style refresh steps. The WASM example documents host-managed async access.
+- The model remains 0.10.0. The WASM integration example advances to 0.13.1
+  with the renderer dependency; this does not publish a registry crate or Studio.
+
 ## Registry release preparation — not yet published
 
-The intended first registry versions remain **figgy-renderer 0.16.0** and
+The intended first registry versions are **figgy-renderer 0.16.1** and
 **figgy-model 0.10.0**. Rust imports remain `renderer` and `model`; the renderer
-re-exports the model types. No additional API, schema, shader or behavior change
-is introduced by this preparation.
+re-exports the model types. The patch below preserves public API signatures and
+the model schema.
 
 - The API landing pages start with installation and complete examples. The native
   PNG quick start includes the shipped `line` source directly and is compiled as
@@ -29,7 +44,7 @@ is introduced by this preparation.
 
 Until publication, use the Git dependency in the [renderer quick start](crates/renderer/README.md#install-and-run)
 or [model guide](crates/model/README.md#install). The eventual registry dependencies
-are `renderer = { package = "figgy-renderer", version = "0.16.0" }` and, for
+are `renderer = { package = "figgy-renderer", version = "0.16.1" }` and, for
 model-only consumers, `model = { package = "figgy-model", version = "0.10.0" }`.
 Native integration requires Rust 1.99 and wgpu 30. macOS/Metal remains experimental;
 physical GPU driver certification is outside the software/virtual CI results.

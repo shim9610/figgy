@@ -166,13 +166,14 @@ pub(super) fn layout(
                     + shadow_margin
             })
             .fold(0.0, f32::max);
+        // Labels cannot consume the entire chart. Keep the existing geometry
+        // when it fits, and cap their reserved margin on a crowded canvas.
+        margin = margin.min(((right - left) * 0.5 - 40.0 * (1.0 + max_explode)).max(0.));
         let radius = ((right - left - 2.0 * margin) / (2.0 * (1.0 + max_explode)))
             .min((bottom - top) / extent);
         let radius = if g == 1 { radius * 0.76 } else { radius };
         if radius < 32.0 {
-            return Err(RadialError::Invalid(
-                "radial labels do not fit; enlarge the canvas or use fewer/shorter labels",
-            ));
+            return Err(RadialError::Invalid("radial data area is too small"));
         }
         let center = [
             (left + right) * 0.5,
@@ -282,20 +283,19 @@ pub(super) fn layout(
                 }
                 let fs = chart.font_size * scale;
                 let lines = chart.label_lines(slice, total);
-                // Fail visibly instead of hiding or silently truncating categories.
-                let available = (s.arc[1] * r * s.geometry[2] * s.arc[2].cos())
-                    .min(s.geometry[2] * (1.0 - s.geometry[3]));
-                if lines
+                let text_width = lines
                     .iter()
                     .map(|s| width(chart, s, fs))
-                    .fold(0.0, f32::max)
-                    > available * 1.05
-                    || fs * (lines.len() as f32 * 1.2) > available
-                {
-                    return Err(RadialError::Invalid(
-                        "inside labels do not fit; use outside labels or a larger canvas",
-                    ));
-                }
+                    .fold(0.0, f32::max);
+                // Keep inside glyphs anchored to their slice, so the cached
+                // hover translation and measured hit map still agree. Fit the
+                // text to the available face instead of rejecting the chart.
+                let available = (s.arc[1] * r * s.geometry[2] * s.arc[2].cos())
+                    .min(s.geometry[2] * (1.0 - s.geometry[3]));
+                let fit = (available * 1.05 / text_width.max(1.))
+                    .min(available / (fs * lines.len() as f32 * 1.2))
+                    .min(1.);
+                let fs = (fs * fit).max(scale);
                 let luminance = s.color[0] * 0.2126 + s.color[1] * 0.7152 + s.color[2] * 0.0722;
                 let color = slice.label_color.unwrap_or(if luminance < 0.5 {
                     crate::Color::WHITE
@@ -339,15 +339,13 @@ pub(super) fn layout(
                     })
                     .collect();
                 labels.sort_by(|a, b| a.0.1.total_cmp(&b.0.1));
-                let fs = chart.font_size * scale;
-                let step = fs * 2.7;
-                let min = (top + chart.font_size) * scale;
-                let max = (bottom - chart.font_size * 1.4) * scale;
-                if (labels.len().saturating_sub(1)) as f32 * step > max - min {
-                    return Err(RadialError::Invalid(
-                        "too many outside labels for this height",
-                    ));
-                }
+                let intervals = labels.len().saturating_sub(1) as f32;
+                let fs = (chart.font_size * scale)
+                    .min((bottom - top) * scale / (2.4 + 2.7 * intervals))
+                    .max(scale);
+                let min = top * scale + fs;
+                let max = (bottom * scale - fs * 1.4).max(min);
+                let step = (fs * 2.7).min((max - min) / intervals.max(1.));
                 let mut ys = Vec::new();
                 let mut prev = min - step;
                 for (anchor, _, _) in &labels {

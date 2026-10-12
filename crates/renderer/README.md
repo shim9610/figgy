@@ -16,7 +16,7 @@ The default library has no GUI framework dependency.
 ## Install and run
 
 Use Rust **1.99 or later** and a working graphics adapter/driver. This source
-release is **0.16.0** and has not yet been published to crates.io. Until publication,
+release is **0.16.1** and has not yet been published to crates.io. Until publication,
 use the verified public Git revision below in your application's `Cargo.toml`:
 
 ```toml
@@ -28,8 +28,8 @@ pollster = "1"
 
 The Cargo package is **`figgy-renderer`**; the Rust import is **`renderer`**.
 For a local checkout, replace `git`/`rev` with `path = "../figgy/crates/renderer"`.
-After 0.16.0 is published and verified, the registry dependency will be
-`renderer = { package = "figgy-renderer", version = "0.16.0" }`.
+After 0.16.1 is published and verified, the registry dependency will be
+`renderer = { package = "figgy-renderer", version = "0.16.1" }`.
 
 Copy the complete [line example](https://github.com/shim9610/figgy/blob/master/crates/renderer/examples/line.rs)
 into `src/main.rs` and run `cargo run`. It creates a device, uploads two columns,
@@ -54,17 +54,22 @@ Hosts that already own a matching wgpu 30 device/queue can share them through
 The renderer re-exports model types: most applications do not need a separate
 `figgy-model` dependency. Bounded charts do not use column sources or streaming
 and do not compute statistics from raw samples. All four renderers can share a
-`RendererDevice`; each maintains its own resource budget.
+`RendererDevice`; each maintains its own resource budget. Budgets apply to checked
+allocation paths, not total device VRAM; see the
+[accounting scope](https://github.com/shim9610/figgy/blob/master/crates/renderer/API.md#gpu-memory-accounting-and-budget-scope).
 
 ## Edit, pick and export
 
-Prepare and draw the current model, pick against the displayed frame, edit the
-model, then prepare again. Export that same model to preserve selection, moved
+Prepare and draw the current model, pick against the displayed frame, then edit
+the model. For Cartesian charts, refresh changed axes/decorations and recreate
+affected caller-owned `ChartStyle` values before preparing again. Bounded chart
+renderers update their derived resources in `prepare`.
+Export that same model to preserve selection, moved
 labels and the drawing area. Data picking and decoration hit maps are separate;
 use the renderer's measured bounds when selecting titles, labels, axes or handles.
 
 The [API workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer/API.md#native-edit-pick-and-export-workflow)
-includes an edit/pick/export example and explains frame lifetime and coordinate
+includes Cartesian refresh and bounded edit/export examples, and explains frame lifetime and coordinate
 units. [Interaction contracts](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)
 cover shared selection, dragging and area handles. Runnable editors are
 `winit_simple`, `radial_editor`, `categorical_editor` and `boxplot_editor`;

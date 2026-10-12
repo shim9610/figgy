@@ -1,10 +1,12 @@
-//! GPU memory accounting — the renderer's single funnel.
+//! Byte accounting for tracked GPU allocations.
 //!
-//! Every GPU byte figgy holds is either inside the column pool (the data
-//! itself) or outside it (panel textures, MSAA targets, export targets and
-//! readbacks, arc-scan scratch, pick scratch, uniforms, LUTs). The pool can
-//! always report its own bytes from its capacity, so this module accounts for
-//! *everything else* and the renderer grafts the pool row in when it reports.
+//! The column pool reports its own slab/backup bytes. This ledger tracks
+//! participating allocations outside it, such as panel/MSAA/export targets,
+//! readbacks, arc/pick scratch and style buffers; the renderer adds the pool
+//! row when reporting. It does not intercept every device allocation. Lazy
+//! Milkyway/Constellation style textures, host-owned resources and driver
+//! internals are excluded. See [`crate::Renderer::gpu_memory_usage`] and
+//! [`crate::Renderer::set_memory_budget`] for report and budget scope.
 //!
 //! Why a ledger instead of walking the live objects: buffers deliberately
 //! disappear into bind groups (`line_arc::ArcScratch` names only the two
@@ -14,16 +16,17 @@
 //! owner's `Drop` retires those bytes; nothing has to expose a handle it does not
 //! otherwise need.
 //!
-//! Two rules make the number safe to spend against a budget:
+//! Accounting rules for tracked resources:
 //!
 //! 1. **Released is not free yet.** A dropped handle moves its bytes from
 //!    `live` to `retired` rather than out of the report, because wgpu defers
 //!    the device-side release until the queue drains. A submission boundary
 //!    snapshots retired bytes and tracked handles; only that submission's
 //!    completion destroys those resources and credits them.
-//! 2. **The total is never cached.** [`GpuLedger::snapshot`] is cheap
-//!    (a handful of relaxed loads) and callers read it immediately before an
-//!    allocation decision, so a budget check never runs against a stale sum.
+//! 2. **Read counters at the decision.** [`GpuLedger::snapshot`] rereads atomic
+//!    counters rather than a cached estimate. These independent relaxed loads
+//!    are not a transaction across concurrent retirement/completion, and a
+//!    snapshot does not reserve bytes for a future allocation.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -124,7 +127,7 @@ impl ResidentAdmission {
     }
 }
 
-/// The kind every GPU allocation is charged to.
+/// Accounting categories for tracked GPU allocations.
 ///
 /// One row per kind in the report, so a memory regression names the
 /// subsystem that caused it instead of a single opaque total.
@@ -292,14 +295,28 @@ fn texture_extent_bytes(
 enum RetiredResource {
     Buffer(wgpu::Buffer),
     Texture(wgpu::Texture),
+    #[cfg(test)]
+    Probe(Arc<std::sync::atomic::AtomicUsize>),
 }
 impl Drop for RetiredResource {
     fn drop(&mut self) {
         match self {
             Self::Buffer(buffer) => buffer.destroy(),
             Self::Texture(texture) => texture.destroy(),
+            #[cfg(test)]
+            Self::Probe(drops) => {
+                drops.fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
+}
+
+/// Keep the handle and its credit together across concurrent owner drops.
+#[derive(Debug)]
+struct RetiredAllocation {
+    kind: GpuResourceKind,
+    bytes: u64,
+    resource: RetiredResource,
 }
 
 pub(crate) struct RetirementBatch {
@@ -315,11 +332,12 @@ impl RetirementBatch {
 /// Running GPU byte counts, shared by every renderer subsystem.
 ///
 /// Counters remain atomic. Final tracked owners queue physical resources for
-/// destruction at the host's submission/completion boundary. This short lock
-/// is used for retirement, never while issuing a draw or calling a GPU driver.
+/// destruction at the host's submission/completion boundary. Ownership crosses
+/// an atomic queue without a renderer mutex. Queue publication may spin/yield
+/// under contention; this is not a wait-free or frame-time guarantee.
 #[derive(Debug)]
 pub struct GpuLedger {
-    pending_resources: std::sync::Mutex<Vec<RetiredResource>>,
+    pending_resources: concurrent_queue::ConcurrentQueue<RetiredAllocation>,
     live: [AtomicU64; GPU_RESOURCE_KIND_COUNT],
     retired: [RetiredBytes; GPU_RESOURCE_KIND_COUNT],
     creations: [AtomicU64; GPU_RESOURCE_KIND_COUNT],
@@ -337,16 +355,23 @@ pub(crate) struct RetiredBytes {
 
 impl RetiredBytes {
     pub(crate) fn retire(&self, bytes: u64) {
-        self.total
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                n.checked_add(bytes)
-            })
-            .expect("retired GPU byte total overflow");
+        self.add_total(bytes);
         self.pending
             .try_update(Ordering::Release, Ordering::Relaxed, |n| {
                 n.checked_add(bytes)
             })
             .expect("pending GPU byte total overflow");
+    }
+
+    // Physical resources carry their own pending credit in the queue entry.
+    // Publishing it through the independent byte-only counter could let a
+    // completion credit bytes before the corresponding handle was drained.
+    fn add_total(&self, bytes: u64) {
+        self.total
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                n.checked_add(bytes)
+            })
+            .expect("retired GPU byte total overflow");
     }
 
     pub(crate) fn total(&self) -> u64 {
@@ -376,7 +401,7 @@ impl GpuLedger {
     pub fn new() -> Self {
         Self {
             // host-alloc: W1-d
-            pending_resources: std::sync::Mutex::new(Vec::new()),
+            pending_resources: concurrent_queue::ConcurrentQueue::unbounded(),
             live: std::array::from_fn(|_| AtomicU64::new(0)),
             retired: std::array::from_fn(|_| RetiredBytes::default()),
             creations: std::array::from_fn(|_| AtomicU64::new(0)),
@@ -401,9 +426,13 @@ impl GpuLedger {
     pub fn record_retire(&self, kind: GpuResourceKind, bytes: u64) {
         let i = kind.index();
         self.retired[i].retire(bytes);
+        self.remove_live(kind, bytes);
+    }
+
+    fn remove_live(&self, kind: GpuResourceKind, bytes: u64) {
         // Saturating so a mis-paired credit reports zero rather than wrapping
         // to a nonsense total that would refuse every later allocation.
-        let _ = self.live[i].try_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
+        let _ = self.live[kind.index()].try_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
             Some(live.saturating_sub(bytes))
         });
     }
@@ -417,18 +446,41 @@ impl GpuLedger {
     }
 
     fn retire_resource(&self, kind: GpuResourceKind, bytes: u64, resource: RetiredResource) {
-        let mut resources = self.pending_resources.lock().unwrap();
+        self.retired[kind.index()].add_total(bytes);
+        self.remove_live(kind, bytes);
         // host-alloc: W1-d
-        resources.push(resource);
-        self.record_retire(kind, bytes);
+        self.pending_resources
+            .push(RetiredAllocation {
+                kind,
+                bytes,
+                resource,
+            })
+            .expect("the unbounded retirement queue is never closed");
     }
 
     pub(crate) fn take_retirement(&self) -> RetirementBatch {
-        let mut resources = self.pending_resources.lock().unwrap();
-        RetirementBatch {
+        // Bound work by the observed item count rather than draining forever
+        // while other threads release owners. This is not an atomic epoch
+        // cutoff when multiple callers drain concurrently. Hosts still submit
+        // or discard recorded work before announcing the submission boundary.
+        let count = self.pending_resources.len();
+        let mut batch = RetirementBatch {
             bytes: std::array::from_fn(|i| self.retired[i].take_pending()),
-            resources: std::mem::take(&mut *resources),
+            // host-alloc: W1-d
+            resources: Vec::with_capacity(count),
+        };
+        for _ in 0..count {
+            let Ok(allocation) = self.pending_resources.pop() else {
+                break;
+            };
+            let row = &mut batch.bytes[allocation.kind.index()];
+            *row = row
+                .checked_add(allocation.bytes)
+                .expect("retirement batch overflow");
+            // host-alloc: W1-d
+            batch.resources.push(allocation.resource);
         }
+        batch
     }
 
     pub(crate) fn complete_retirement(&self, batch: RetirementBatch) {
@@ -487,6 +539,9 @@ impl GpuLedger {
 }
 
 /// A snapshot of the ledger, one row per [`GpuResourceKind`].
+///
+/// Requested tracked bytes, not physical VRAM usage or a complete inventory of
+/// device allocations. See [`crate::Renderer::gpu_memory_usage`] for exclusions.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GpuMemoryUsage {
     live: [u64; GPU_RESOURCE_KIND_COUNT],
@@ -644,8 +699,12 @@ impl TrackedBuffer {
     /// Charge `buffer`'s size to `kind` and hold the charge.
     pub fn new(ledger: &Arc<GpuLedger>, kind: GpuResourceKind, buffer: wgpu::Buffer) -> Self {
         let bytes = buffer.size();
-        let charge = shared_resource_charge(ledger, kind, bytes,
-            Some(RetiredResource::Buffer(buffer.clone())));
+        let charge = shared_resource_charge(
+            ledger,
+            kind,
+            bytes,
+            Some(RetiredResource::Buffer(buffer.clone())),
+        );
         Self { buffer, charge }
     }
 
@@ -683,8 +742,12 @@ pub struct TrackedTexture {
 impl TrackedTexture {
     pub fn new(ledger: &Arc<GpuLedger>, kind: GpuResourceKind, texture: wgpu::Texture) -> Self {
         let bytes = texture_bytes(&texture);
-        let charge = shared_resource_charge(ledger, kind, bytes,
-            Some(RetiredResource::Texture(texture.clone())));
+        let charge = shared_resource_charge(
+            ledger,
+            kind,
+            bytes,
+            Some(RetiredResource::Texture(texture.clone())),
+        );
         Self { texture, charge }
     }
 
@@ -826,7 +889,9 @@ fn shared_byte_charge(ledger: &Arc<GpuLedger>, kind: GpuResourceKind, bytes: u64
 }
 
 fn shared_resource_charge(
-    ledger: &Arc<GpuLedger>, kind: GpuResourceKind, bytes: u64,
+    ledger: &Arc<GpuLedger>,
+    kind: GpuResourceKind,
+    bytes: u64,
     resource: Option<RetiredResource>,
 ) -> SharedCharge {
     // host-alloc: W1-b
@@ -853,7 +918,9 @@ impl GpuByteCharge {
     }
 
     fn with_resource(
-        ledger: &Arc<GpuLedger>, kind: GpuResourceKind, bytes: u64,
+        ledger: &Arc<GpuLedger>,
+        kind: GpuResourceKind,
+        bytes: u64,
         resource: Option<RetiredResource>,
     ) -> Self {
         ledger.record_alloc(kind, bytes);
@@ -900,13 +967,118 @@ impl Drop for GpuByteCharge {
 mod tests {
     use super::*;
 
+    fn retire_probe(
+        ledger: &Arc<GpuLedger>,
+        kind: GpuResourceKind,
+        bytes: u64,
+        drops: &Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        drop(GpuByteCharge::with_resource(
+            ledger,
+            kind,
+            bytes,
+            Some(RetiredResource::Probe(Arc::clone(drops))),
+        ));
+    }
+
+    #[test]
+    fn mixed_retirement_batches_destroy_and_credit_only_their_own_resources() {
+        use std::sync::atomic::AtomicUsize;
+        let ledger = Arc::new(GpuLedger::new());
+        let first_drop = Arc::new(AtomicUsize::new(0));
+        let second_drop = Arc::new(AtomicUsize::new(0));
+        let late_drop = Arc::new(AtomicUsize::new(0));
+        drop(GpuByteCharge::new(&ledger, GpuResourceKind::ArcScan, 64));
+        retire_probe(&ledger, GpuResourceKind::PanelTexture, 128, &first_drop);
+        let first = ledger.take_retirement();
+        retire_probe(&ledger, GpuResourceKind::Uniform, 256, &second_drop);
+        drop(GpuByteCharge::new(&ledger, GpuResourceKind::Readback, 512));
+        let second = ledger.take_retirement();
+        retire_probe(&ledger, GpuResourceKind::PanelTexture, 1024, &late_drop);
+
+        assert_eq!(ledger.total_bytes(), 64 + 128 + 256 + 512 + 1024);
+        assert_eq!(first_drop.load(Ordering::Relaxed), 0);
+        assert_eq!(second_drop.load(Ordering::Relaxed), 0);
+        ledger.complete_retirement(second);
+        assert_eq!(second_drop.load(Ordering::Relaxed), 1);
+        assert_eq!(first_drop.load(Ordering::Relaxed), 0);
+        assert_eq!(late_drop.load(Ordering::Relaxed), 0);
+        assert_eq!(ledger.total_bytes(), 64 + 128 + 1024);
+        ledger.complete_retirement(first);
+        assert_eq!(first_drop.load(Ordering::Relaxed), 1);
+        assert_eq!(late_drop.load(Ordering::Relaxed), 0);
+        assert_eq!(ledger.total_bytes(), 1024);
+        ledger.complete_retirement(ledger.take_retirement());
+        assert_eq!(late_drop.load(Ordering::Relaxed), 1);
+        assert_eq!(ledger.total_bytes(), 0);
+        assert!(ledger.take_retirement().is_empty());
+    }
+
+    #[test]
+    fn last_ledger_owner_destroys_undrained_resources() {
+        use std::sync::atomic::AtomicUsize;
+        let ledger = Arc::new(GpuLedger::new());
+        let drops = Arc::new(AtomicUsize::new(0));
+        retire_probe(&ledger, GpuResourceKind::PanelTexture, 128, &drops);
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        drop(ledger);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn concurrent_final_owner_drops_preserve_resources_and_credits() {
+        use std::sync::{Barrier, atomic::AtomicUsize};
+        const THREADS: usize = 8;
+        const PER_THREAD: usize = 257;
+        let ledger = Arc::new(GpuLedger::new());
+        let drops = Arc::new(AtomicUsize::new(0));
+        let done = AtomicUsize::new(0);
+        let barrier = Barrier::new(THREADS + 1);
+        std::thread::scope(|scope| {
+            for worker in 0..THREADS {
+                let (ledger, drops, done, barrier) = (&ledger, &drops, &done, &barrier);
+                scope.spawn(move || {
+                    barrier.wait();
+                    for _ in 0..PER_THREAD {
+                        let owner = GpuByteCharge::with_resource(
+                            ledger,
+                            GpuResourceKind::ALL[worker],
+                            (worker + 1) as u64,
+                            Some(RetiredResource::Probe(Arc::clone(drops))),
+                        );
+                        drop(owner);
+                    }
+                    done.fetch_add(1, Ordering::Release);
+                });
+            }
+            barrier.wait();
+            while done.load(Ordering::Acquire) != THREADS {
+                ledger.complete_retirement(ledger.take_retirement());
+                std::thread::yield_now();
+            }
+        });
+        ledger.complete_retirement(ledger.take_retirement());
+        assert_eq!(drops.load(Ordering::Relaxed), THREADS * PER_THREAD);
+        assert_eq!(ledger.total_bytes(), 0);
+        assert!(ledger.take_retirement().is_empty());
+        for worker in 0..THREADS {
+            assert_eq!(
+                ledger.snapshot().creations_of(GpuResourceKind::ALL[worker]),
+                PER_THREAD as u64
+            );
+        }
+    }
+
     #[test]
     fn tracked_buffer_destroy_waits_for_shared_owner_and_completed_submission() {
         let (device, queue) = crate::data_render::shared_device().unwrap();
         let ledger = Arc::new(GpuLedger::new());
         let raw = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("retirement lifetime test"), size: 16,
-            usage: wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
+            label: Some("retirement lifetime test"),
+            size: 16,
+            usage: wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
         let tracked = TrackedBuffer::new(&ledger, GpuResourceKind::StreamingUpload, raw.clone());
         let prepared_owner = tracked.shared_charge();
@@ -920,10 +1092,16 @@ mod tests {
         assert_eq!(batch.resources.len(), 1);
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let submission = queue.submit([encoder.finish()]);
-        device.poll(wgpu::PollType::Wait {
-            submission_index: Some(submission), timeout: Some(std::time::Duration::from_secs(30)),
-        }).unwrap();
-        assert!(pollster::block_on(scope.pop()).is_none(), "recorded work must remain valid");
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submission),
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .unwrap();
+        assert!(
+            pollster::block_on(scope.pop()).is_none(),
+            "recorded work must remain valid"
+        );
         assert_eq!(ledger.snapshot().retired_bytes(), 16);
         ledger.complete_retirement(batch);
         assert_eq!(ledger.total_bytes(), 0);
@@ -933,7 +1111,10 @@ mod tests {
         let mut encoder = device.create_command_encoder(&Default::default());
         encoder.clear_buffer(&raw, 0, None);
         queue.submit([encoder.finish()]);
-        assert!(pollster::block_on(scope.pop()).is_some(), "retired allocation was not destroyed");
+        assert!(
+            pollster::block_on(scope.pop()).is_some(),
+            "retired allocation was not destroyed"
+        );
     }
 
     #[test]
