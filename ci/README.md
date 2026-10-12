@@ -55,6 +55,32 @@ selector uses private scratch arrays; this avoids WARP's expensive first-use
 workgroup initialization without changing label selection or initialization guarantees.
 GPU completion deadlines and pixel tolerances are unchanged.
 
+## Security analysis
+
+The separate `CodeQL` workflow runs only for public, non-draft pull requests,
+using the same opened/updated/reopened/ready-for-review events as the package
+matrix. It has no push, scheduled or manual trigger. It analyzes Rust, Python,
+JavaScript/TypeScript and GitHub Actions with the `security-extended` query suite
+on standard Ubuntu runners. CodeQL actions are pinned to exact commit IDs.
+
+The Rust analysis uses CodeQL's supported `none` build mode. This source analysis
+does not run GPU tests, prove coverage of every feature/target configuration, or
+analyze WGSL shaders. The native/WASM builds and renderer pixel regressions remain
+in the package matrix. The other CodeQL languages also use analysis without a
+project build. No application build script is explicitly run by this workflow.
+
+The workflow uses `pull_request`, not `pull_request_target`, with read-only source
+access and `security-events: write` for results. It requires no repository secret
+and does not change source or merge a suggested fix. GitHub's PR code-scanning
+results distinguish successful analysis from vulnerability findings; a green
+analyzer job alone is not a claim that no alerts exist. Review the PR's findings
+and the repository's configured severity thresholds.
+
+There is no scan of every default-branch push or periodic rescan of unchanged
+code under this PR-only policy. Dependabot alerts remain a separate source of
+known dependency vulnerability reports. Report suspected vulnerabilities through
+[the security policy](../SECURITY.md).
+
 ## What runs on every OS
 
 1. Native workspace checks with default and all optional features, including examples.

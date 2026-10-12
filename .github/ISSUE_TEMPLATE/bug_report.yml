@@ -1,0 +1,58 @@
+name: Bug report
+description: Report a renderer, model or integration-example defect.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For security vulnerabilities, use https://github.com/shim9610/figgy/security/advisories/new.
+        Use synthetic data. Remove credentials and private information from code, logs and images.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Native renderer
+        - Chart model
+        - WASM integration example
+        - Documentation or examples
+        - Unsure
+    validations:
+      required: true
+  - type: input
+    id: revision
+    attributes:
+      label: Package version or Git revision
+      placeholder: figgy-renderer version, or the exact commit from Cargo.lock
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Rust version, GPU/driver and backend. For WASM, also include the browser and host/wrapper revision. Write unknown for details you cannot obtain.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Provide a small code sample with synthetic input and the exact action sequence. Include axis ranges, dimensions, scale and sample count when relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+      description: Say whether this happens on the first frame, after an edit or interaction, during streaming, or on export.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs and images
+      description: Include the first error and stack trace, or before/after images. Do not paste credentials or confidential data.
+  - type: textarea
+    id: regression
+    attributes:
+      label: Last working version or comparison
+      description: If known, include a working revision, backend or platform. Leave blank if not tested.

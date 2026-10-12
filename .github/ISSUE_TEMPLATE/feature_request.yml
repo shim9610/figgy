@@ -1,0 +1,22 @@
+name: Feature request
+description: Discuss a chart capability, API change or documentation improvement.
+body:
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Use case
+      description: What are you trying to draw or do, and what prevents it today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the input data and desired API or interaction. Synthetic examples or visual references help.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and constraints
+      description: Include existing workarounds, expected data size, target platforms and export or interaction needs.

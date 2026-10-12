@@ -242,6 +242,11 @@ Linux/Vulkan and Windows/DX12 are covered by native rendering and pixel tests.
 **macOS/Metal support remains experimental.** CI uses software or virtual GPU
 adapters; its results do not establish coverage of every physical GPU driver.
 
+## Contributing and security
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for bug reports, development checks and pull
+requests. Report suspected vulnerabilities privately using [SECURITY.md](SECURITY.md).
+
 ## License
 
 Code: [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE).
