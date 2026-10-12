@@ -1,13 +1,13 @@
 # Native Rust usage / Rust 사용법
 
-[Start here](../../README.md#quick-start) · [한국어 시작하기](../../README.ko.md#빠른-시작)
+[Start here](https://github.com/shim9610/figgy/blob/master/README.md#quick-start) · [한국어 시작하기](https://github.com/shim9610/figgy/blob/master/README.ko.md#빠른-시작)
 
 ## 1. Usage
 
 ### Toolchain and builds
 
 This release pins **Rust 1.99.0** in
-[`rust-toolchain.toml`](../../rust-toolchain.toml), including the wasm32 target,
+[`rust-toolchain.toml`](https://github.com/shim9610/figgy/blob/master/rust-toolchain.toml), including the wasm32 target,
 rustfmt and clippy. With rustup installed, commands in this checkout select
 that toolchain automatically. The package manifests declare Rust 1.99 as the
 support floor; earlier toolchains have not been validated. Use the committed
@@ -42,20 +42,32 @@ renderer = { package = "figgy-renderer", path = "crates/renderer" }   # or publi
 wgpu     = "30"
 ```
 
-The library itself depends on neither winit, egui, nor iced. Pull in only the host you actually use:
+The path is relative to the consuming application's `Cargo.toml`; replace it with
+the actual checkout location. A standalone program that calls `pollster::block_on`
+(as the `line` example does) must also declare `pollster = "1.0"`. Crate examples
+already have access to this dependency through the renderer manifest.
+
+For the full model-edit → prepare → pick → redraw → export sequence, including
+the distinction between logical and physical pointer coordinates, see
+[the native API workflow](API.md#native-edit-pick-and-export-workflow).
+
+The default library features require neither winit, egui nor iced. Pull in only
+the host you actually use; `egui_demo` enables the optional egui example dependencies:
 
 ```toml
 # winit standalone
 winit = "0.30"
 
 # egui embedded
-eframe    = { version = "0.36", default-features = false, features = ["wgpu"] }
+eframe    = { version = "0.36", default-features = false, features = ["wgpu", "x11", "wayland"] }
 egui      = "0.36"
 egui-wgpu = "0.36"
 ```
 
 iced 0.14 still uses wgpu 27, so direct device/queue/render-pass sharing is
 disabled until iced publishes a wgpu 30-compatible release.
+The X11/Wayland features above enable Linux window creation; select the Linux
+window backends appropriate for your host.
 
 ### Standalone setup and drawing (winit + figgy)
 
@@ -359,7 +371,7 @@ Full version: [examples/egui_embed.rs](examples/egui_embed.rs).
 
 ### iced integration status
 
-The retained [iced integration source](unsupported/iced_embed_wgpu27.rs)
+The retained [iced integration source](https://github.com/shim9610/figgy/blob/master/crates/renderer/unsupported/iced_embed_wgpu27.rs)
 documents the intended `prepare` / `paint_prepared` ownership pattern, but its
 build target is disabled while iced 0.14 remains on wgpu 27. wgpu device,
 queue, and render-pass types cannot be shared across major versions.
@@ -424,7 +436,7 @@ When scaling, every pixel-based dimension (font / line / margin / grid / legend)
 
 ### 툴체인과 빌드
 
-[`rust-toolchain.toml`](../../rust-toolchain.toml)에 개발 환경을 **Rust 1.99.0**으로 고정하고 wasm32 빌드 대상, rustfmt, clippy를 지정했다. rustup이 설치돼 있으면 저장소 안에서 명령을 실행할 때 자동으로 적용된다. 패키지 manifest에도 지원 하한을 Rust 1.99로 명시했다. 그보다 낮은 버전은 검증하지 않았다.
+[`rust-toolchain.toml`](https://github.com/shim9610/figgy/blob/master/rust-toolchain.toml)에 개발 환경을 **Rust 1.99.0**으로 고정하고 wasm32 빌드 대상, rustfmt, clippy를 지정했다. rustup이 설치돼 있으면 저장소 안에서 명령을 실행할 때 자동으로 적용된다. 패키지 manifest에도 지원 하한을 Rust 1.99로 명시했다. 그보다 낮은 버전은 검증하지 않았다.
 이 저장소를 빌드할 때는 `--locked`를 사용해 커밋된 `Cargo.lock`을 따른다. figgy를 Git 의존성으로 사용하는 프로젝트는 해당 프로젝트의 잠금 파일로 의존성을 결정한다.
 
 ```bash
@@ -450,14 +462,15 @@ renderer = { package = "figgy-renderer", path = "crates/renderer" }   # 또는 �
 wgpu     = "30"
 ```
 
-라이브러리 자체는 winit, egui, iced에 의존하지 않는다. 사용하는 UI 환경에 필요한 의존성만 추가하면 된다.
+Default library features do not require winit, egui or iced; `egui_demo` enables
+the optional egui example dependencies. Select only the host integration you use.
 
 ```toml
 # winit standalone
 winit = "0.30"
 
 # egui 임베드
-eframe    = { version = "0.36", default-features = false, features = ["wgpu"] }
+eframe    = { version = "0.36", default-features = false, features = ["wgpu", "x11", "wayland"] }
 egui      = "0.36"
 egui-wgpu = "0.36"
 ```
@@ -701,7 +714,7 @@ winit 루프나 WASM 래퍼처럼 프레임 동안 렌더러를 단독으로 사
 
 ### iced 통합 상태
 
-[보관 중인 iced 통합 예제](unsupported/iced_embed_wgpu27.rs)에서 `prepare` / `paint_prepared`의 소유권 패턴을 확인할 수 있다. 다만 iced 0.14는 wgpu 27을 사용하므로 현재 빌드 대상에서는 제외한다. 서로 다른 wgpu 주 버전의 장치·큐·렌더 패스 타입은 공유할 수 없다.
+[보관 중인 iced 통합 예제](https://github.com/shim9610/figgy/blob/master/crates/renderer/unsupported/iced_embed_wgpu27.rs)에서 `prepare` / `paint_prepared`의 소유권 패턴을 확인할 수 있다. 다만 iced 0.14는 wgpu 27을 사용하므로 현재 빌드 대상에서는 제외한다. 서로 다른 wgpu 주 버전의 장치·큐·렌더 패스 타입은 공유할 수 없다.
 
 <a id="png-export-메모리-only--저장은-caller"></a>
 

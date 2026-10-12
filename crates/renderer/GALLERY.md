@@ -111,7 +111,7 @@ frame count was requested, change `-frames:v` to match; duration is count / 12.
 
 To refresh the README, inspect the PNGs and the decoded animation frames, then
 copy the four Cartesian `gallery-*.png` and two `gallery-*.gif` files into
-[`assets/`](assets/). Keep the numbered intermediate frames outside source control.
+[`assets/`](https://github.com/shim9610/figgy/tree/master/crates/renderer/assets). Keep the numbered intermediate frames outside source control.
 The source example is the authority for formulas, styles and export settings.
 
 Generate the additional still images with:
@@ -194,7 +194,7 @@ After inspection, copy the output to `assets/style-growth-response-constellation
 
 갤러리를 갱신할 때는 출력 오류 여부, 불투명 배경과 유효한 색상 픽셀, 축 제목·눈금·범례·색상 막대 배치를 확인한다. GIF도 디코딩해 프레임 수, 프레임 간 변화, 반복 설정을 검사한다. 위 표의 출력 파일만 `assets/`에 복사하고 중간 프레임은 소스 관리에 넣지 않는다.
 
-일반 Rust 사용법은 [빠른 시작](../../README.ko.md#빠른-시작)과 [상세 사용법](USAGE.md), 브라우저 통합 예제의 초기화·수명 관리·입출력은 [WASM.md](WASM.md), JSON 형식은 [SCHEMA.md](../web/SCHEMA.md)를 참고한다.
+일반 Rust 사용법은 [빠른 시작](https://github.com/shim9610/figgy/blob/master/README.ko.md#빠른-시작)과 [상세 사용법](USAGE.md), 브라우저 통합 예제의 초기화·수명 관리·입출력은 [WASM.md](WASM.md), JSON 형식은 [SCHEMA.md](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md)를 참고한다.
 
 The horizontal PNG is an additional orientation example. For the column bindings, axis settings and live updates, see [Histogram orientation](HISTOGRAM.md).
 

@@ -9,6 +9,11 @@ repository = "https://github.com/shim9610/figgy"
 readme = "README.md"
 keywords = ["plotting", "charts", "wgpu", "visualization"]
 categories = ["graphics", "rendering", "visualization"]
+# Ship reproducible code/examples/tests, not gallery captures or unsupported hosts.
+include = [
+    "/Cargo.toml", "/Cargo.lock", "/LICENSE-*", "/*.md",
+    "/src/**", "/fonts/**", "/examples/**", "/tests/**",
+]
 
 # Registry package identity changes; existing Rust import paths do not.
 [lib]

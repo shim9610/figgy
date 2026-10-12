@@ -19,6 +19,11 @@ cannot compile the code. The tested development toolchain and the support floor
 are recorded separately. Direct host device/queue/render-pass sharing requires
 wgpu 30; a host on another wgpu major must adapt or upgrade its integration.
 
+For a complete headless Cartesian program, run the shipped `line` example.
+The source repository's [example index](https://github.com/shim9610/figgy/blob/master/crates/renderer/examples/README.md)
+maps each chart to its input, output and command. Gallery images are repository
+assets; they are not runtime resources required by the crate.
+
 macOS / Metal support is **experimental and not yet stable**. Version 0.14.0 uses
 explicit FMA rounding boundaries for hi/lo coordinates and a shared CPU/GPU rule
 for midpoint picking uncertainty. Physical Apple GPU coverage remains outstanding.
@@ -52,6 +57,78 @@ revision. Bounded renderer memory does not make a one-shot source replayable.
 Initial fit previews can be approximate; completion denotes the final render,
 not merely that all input primitives have been submitted. The host owns and
 retains the replayable source for the operations it enables.
+
+## Native edit, pick and export workflow
+
+1. Create one `RendererDevice` from the host's matching wgpu device/queue handles.
+   Use `Renderer::try_new` for Cartesian charts or the bounded renderer's `new`.
+   Window helpers are optional; a headless application does not need a window.
+2. For Cartesian charts, upload columns, build `Chart`/`SeriesConfig`, and use
+   `prepare` + `paint_prepared`, or the panel export helpers. Renderer-managed chart
+   IDs instead use `register_chart`, `set_chart_config`/`set_chart_series` and
+   `prepare_registered`; editing an unrelated local `Config` does not edit that ID.
+   For bounded charts, edit the `RadialChart`, `CategoricalChart` or `BoxPlotChart`
+   passed to `prepare`. Normal edits do not require `clear_cache`.
+3. Hit-test the frame currently displayed. Bounded data uses `frame.hit_test`;
+   titles/axes/labels/legends/plot areas use `frame.decorations()`. Both take
+   chart-local logical pixels. Cartesian `GpuPickRequest` instead carries a
+   physical canvas position, physical display panel and display scale. Do not
+   reuse one coordinate convention for both APIs.
+4. Store the target in the model, edit its values/styles or decoration layout,
+   prepare again, draw, and submit. A stored frame is not a live view of the model.
+   For a resize that may fail layout validation, prepare a trial model before
+   replacing the displayed model. The host requests frames and advances animations.
+5. Export the same model state to RGBA/PNG. Selection and hover emphasis are model
+   state; clearing them or exporting another copy changes the output. Hide only
+   decoration handles by clearing `decorations.selected` in an export clone while
+   preserving data selection, offsets and `data_area`. The caller stores PNG bytes.
+6. Release obsolete frame references. Custom render-pass hosts call
+   `end_gpu_frame` / `end_frame` after submitting or discarding their commands.
+   Cartesian window drawing and panel export handle their own submission boundary;
+   submit pending external commands before invoking those helpers. Native hosts
+   poll the device to process completion callbacks. Retained frames retain resources.
+
+This bounded example accepts the host GPU pair, selects from a displayed frame,
+changes a slice color and exports the resulting model. It is compiled as a doctest;
+the interactive editors demonstrate render-pass submission and pointer events.
+
+```rust,no_run
+use renderer::{Color, RadialChart, RadialRenderer, RadialSlice, RendererDevice};
+
+async fn edit_and_export(
+    gpu: RendererDevice,
+    pointer: [f32; 2], // chart-local logical pixels
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut renderer = RadialRenderer::new(gpu, wgpu::TextureFormat::Rgba8Unorm)?;
+    let mut chart = RadialChart {
+        slices: vec![
+            RadialSlice::new("A", 30.0, Color::from_rgb8(40, 140, 200)),
+            RadialSlice::new("B", 70.0, Color::from_rgb8(220, 160, 60)),
+        ],
+        ..Default::default()
+    };
+    let displayed = renderer.prepare(&chart, (800, 600), 1.0)?;
+    chart.interaction.selected = displayed.hit_test(pointer);
+    chart.slices[0].color = Color::from_rgb8(50, 180, 150);
+    // Export prepares the edited model at the requested resolution (1600 x 1200).
+    let image = renderer.export_rgba_async(&chart, (800, 600), 2.0).await?;
+    drop(displayed);
+    renderer.end_frame();
+    Ok(renderer::encode_png(&image)?)
+}
+```
+
+Automatic streaming renders the registered range unless explicitly asked to fit.
+Use `request_stream_auto_fit(chart_id, padding)` for the next automatic execution
+when the initial range is unknown, or when the user requests a fresh fit. Do not
+call it for every chunk, repaint, tab switch or aspect-ratio change. Manual streaming
+and resident drawing do not consume that request. Inspect `StreamingStatus` and
+`auto_fit_pending`; submitted input alone is not the final-image completion signal.
+
+Cartesian operations return `FiggyError`; bounded renderers use `RadialError`,
+`CategoricalError` and `BoxPlotError`. Handle validation/layout/budget errors before
+replacing the last valid display. Device loss and external allocation failure still
+need host recovery; a configured memory budget is not a driver success guarantee.
 
 ## Ownership and frame validity
 
@@ -104,9 +181,12 @@ available. No project file persistence or application event loop is required.
 ## Compatibility policy
 
 Changing package identity requires a Cargo dependency declaration update; it does
-not rename Rust items. This release adds the bounded chart modules while retaining existing Cartesian
-function signatures, model fields and enum variants. Public low-level modules remain available; they must not
-be removed silently during packaging.
+not rename Rust items. Bounded chart modules are already part of the public source
+release. Version 0.16.0 / model 0.10.0 added plot-area decoration state and targets:
+fully specified `DecorationLayout` literals need `data_area: None`, and exhaustive
+`DecorationId` matches need `DataArea` and `DataAreaEdge`. See the interaction guide
+for migration details. Packaging work does not change those contracts. Public
+low-level modules remain available; they must not be removed silently during packaging.
 
 The public Rust surface includes struct literals and exhaustive enums. Removing
 or changing fields, adding required fields or enum variants, changing trait
@@ -160,4 +240,4 @@ it does not add a pick radius or turn finite segments into infinite lines.
 
 ## Bounded chart decoration interaction
 
-Radial, categorical and boxplot frames expose `decorations()`, a renderer-measured hit map using the existing `HitMap` / `Selectable` / `Draggable` contracts. See [interaction workflow](INTERACTION.md) for selection, logical-pixel dragging, SSOT persistence and host integration.
+Radial, categorical and boxplot frames expose `decorations()`, a renderer-measured hit map using the existing `HitMap` / `Selectable` / `Draggable` contracts. See [interaction workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md) for selection, logical-pixel dragging, SSOT persistence and host integration.

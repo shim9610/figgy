@@ -6,7 +6,7 @@ Rust 렌더러의 WASM/WebGPU 지원과 `crates/web`의 예제 래퍼를 구분�
 아래 `FiggyChart`, `<figgy-chart>`와 JavaScript 호출 방법은 **브라우저 통합 예제의 계약**이다.
 Rust 라이브러리가 모든 차트를 JavaScript API로 제공한다는 뜻은 아니다.
 원형·범주형 막대·박스플롯은 이 래퍼에 노출하지 않는다.
-간단한 빌드·실행 방법은 [예제 안내](../web/README.md)를 참고한다.
+간단한 빌드·실행 방법은 [예제 안내](https://github.com/shim9610/figgy/blob/master/crates/web/README.md)를 참고한다.
 
 이 문서는 소스 릴리스 `figgy 0.13.0` / `figgy-renderer 0.16.0` / `figgy-model 0.10.0`를 기준으로 한다. 아래 스트리밍 API를 사용하려면 해당 버전의 소스에서 브라우저 패키지를 빌드한다.
 
@@ -384,7 +384,7 @@ chart.set_series(JSON.stringify(series));  // GPU 스타일 재빌드 포함
 `set_config`는 JSON을 검증한 뒤 `set_chart_config(chart_id, config)`로 렌더러의 설정을 교체한다. desired/config/raster 리비전이 갱신되므로 다음 `frame()`은 `ChartRenderStamp`를 비교해 다시 그리기와 축 이미지 갱신을 수행한다.
 축 스케일을 바꾸면 `major_spacing`의 단위도 바뀐다. 선형축에서는 데이터 단위이고 로그축에서는 10배 간격을 뜻하는 decade 단위다. `set_x_range` 같은 편의 함수는 이를 맞춰 주지만 JSON을 직접 편집할 때는 함께 수정해야 한다. `AxisOptions.inverted`도 JSON 필드로 지정한다. 축·데이터·피킹이 같은 방향 반전을 적용한다.
 
-전체 필드와 열거형 값, serde 표현 규칙, 함께 수정해야 하는 옵션은 [SCHEMA.md](../web/SCHEMA.md)를 참고한다. 이 문서의 JSON 예시는 Rust 소스에서 생성하며 저장소 문서 정합성 검사에서 일치 여부를 확인한다.
+전체 필드와 열거형 값, serde 표현 규칙, 함께 수정해야 하는 옵션은 [SCHEMA.md](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md)를 참고한다. 이 문서의 JSON 예시는 Rust 소스에서 생성하며 저장소 문서 정합성 검사에서 일치 여부를 확인한다.
 
 <a id="39-async-메서드와-객체-잠금-필독"></a>
 
@@ -423,7 +423,7 @@ npx wasm-pack@0.15.0 build crates/web --release --target web --locked
 | `figgy.d.ts` | 자동 생성한 TypeScript 타입 정의. 저수준 WASM API 형식을 확인할 수 있다. |
 | `package.json` | npm용 패키지 메타데이터 |
 
-일반 웹 API는 `crates/web/figgy-chart.js`가 제공한다. `pkg/`에서 생성되는 파일이 아니므로 함께 배포해야 한다. 이 파일은 내부 캔버스, rAF, DPR·포인터 좌표 변환, 선택·드래그·크기 조절, ResizeObserver, 준비 이벤트와 비동기 호출 직렬화를 담당한다. 사용 예제는 `crates/web/index.html`, 전체 JSON 설정은 [SCHEMA.md](../web/SCHEMA.md)를 참고한다.
+일반 웹 API는 `crates/web/figgy-chart.js`가 제공한다. `pkg/`에서 생성되는 파일이 아니므로 함께 배포해야 한다. 이 파일은 내부 캔버스, rAF, DPR·포인터 좌표 변환, 선택·드래그·크기 조절, ResizeObserver, 준비 이벤트와 비동기 호출 직렬화를 담당한다. 사용 예제는 `crates/web/index.html`, 전체 JSON 설정은 [SCHEMA.md](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md)를 참고한다.
 
 로컬에서는 HTTP 서버로 열어 확인한다.
 
@@ -467,7 +467,7 @@ cd crates/web && python -m http.server 8137   # wasm은 file:// 불가
 
 아래 API는 figgy 0.10.0부터 제공한다. `render_chart()`가 작업 실행을 관리하므로 앱에서 `auto_stream_chart_step()`이나 `frame()`을 반복 호출할 필요가 없다. 네이티브 Rust에서 빌린 `ColumnSource`를 사용하는 방식과 청크 실행 API는 그대로 유지한다.
 
-![figgy의 상주 및 비상주 화면 렌더링 구조](assets/streaming-architecture-en.png)
+![figgy의 상주 및 비상주 화면 렌더링 구조](https://raw.githubusercontent.com/shim9610/figgy/53d6a40dcd4d438692aa6a7fac811cf2d75705e6/crates/renderer/assets/streaming-architecture-en.png)
 
 그림은 공통 렌더러의 상주 경로, 스트리밍 누적 이미지, 선택적인 GPU 패킹 캐시, 원본을 다시 읽는 출력을 보여 준다. 브라우저에서는 다음과 같이 역할을 나눈다.
 

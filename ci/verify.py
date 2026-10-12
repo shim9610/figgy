@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Validate sources or extracted registry packages; never upload packages."""
 import argparse
+import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import posixpath
+import re
 import shlex
 import shutil
 import subprocess
@@ -11,6 +14,7 @@ import sys
 import tarfile
 import tempfile
 import tomllib
+from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGES = ("figgy-model", "figgy-renderer")
@@ -54,6 +58,46 @@ def locked_external_packages(lock):
             for p in tomllib.loads(lock.read_text())["package"] if "source" in p}
 
 
+def audit_archive(archive, source):
+    """Keep distributable code, licenses and docs complete without gallery payload."""
+    with tarfile.open(archive) as package:
+        files = {str(PurePosixPath(m.name).relative_to(archive.stem)): m
+                 for m in package.getmembers() if m.isfile()}
+        required = {"Cargo.toml", "Cargo.toml.orig", "Cargo.lock", "README.md",
+                    "LICENSE-MIT", "LICENSE-APACHE"}
+        required.update(p.name for p in source.glob("*.md"))
+        for directory in ("src", "fonts", "examples", "tests"):
+            required.update(p.relative_to(source).as_posix()
+                            for p in (source / directory).rglob("*") if p.is_file())
+        missing = required - files.keys()
+        extra = files.keys() - required - {".cargo_vcs_info.json"}
+        if missing or extra:
+            raise RuntimeError(f"{archive.name}: missing {sorted(missing)}; unexpected {sorted(extra)}")
+        # Guides remain readable after extraction. Repository-only assets and
+        # sibling-crate links must use public URLs, not broken relative paths.
+        links = 0
+        for name, member in files.items():
+            if not name.endswith(".md"):
+                continue
+            document = package.extractfile(member).read().decode("utf-8")
+            targets = re.findall(r'\]\(([^\s)]+)\)|(?:src|href)="([^"]+)"', document)
+            for markdown, html in targets:
+                url = urlsplit(markdown or html)
+                if url.scheme or url.netloc or not url.path:
+                    continue
+                target = posixpath.normpath(posixpath.join(
+                    posixpath.dirname(name), unquote(url.path)))
+                if target not in files and not any(n.startswith(target + "/") for n in files):
+                    raise RuntimeError(f"{archive.name}: {name} links outside package: {url.path}")
+                links += 1
+        result = {"archive": archive.name, "bytes": archive.stat().st_size,
+                  "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+                  "files": sorted(files), "relative_document_links": links}
+        report(f"PASS: {archive.name}: {len(files)} files, {result['bytes']} bytes; "
+               f"licenses, source resources and {links} relative document links verified")
+        return result
+
+
 def gpu_failure_checks(cwd, *, missing_driver=None):
     env = os.environ.copy()
     if missing_driver is None:
@@ -93,6 +137,12 @@ def packages(allow_dirty):
     if allow_dirty:
         args.append("--allow-dirty")
     run(args)
+    audits = []
+    for name in PACKAGES:
+        info = by_name[name]
+        archive = Path(metadata["target_directory"]) / "package" / f"{name}-{info['version']}.crate"
+        audits.append(audit_archive(archive, Path(info["manifest_path"]).parent))
+    (RESULTS / "package-audit.json").write_text(json.dumps(audits, indent=2) + "\n", encoding="utf-8")
     # A directory outside the checkout catches accidental sibling/source dependencies.
     with tempfile.TemporaryDirectory(prefix="figgy-packages-") as directory:
         extracted = Path(directory).resolve()

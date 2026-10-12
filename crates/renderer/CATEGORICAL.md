@@ -165,7 +165,8 @@ cargo test -p figgy-renderer --doc
 편집기에서 막대를 클릭하거나 목록으로 선택해 색·재질·표기를 바꿀 수 있다. `Whole chart`는
 공통 설정을 편집하고 `Reset individual settings`는 선택한 막대의 개별 설정을 지운다.
 화면은 창 크기와 DPR에 맞춘 GPU 타깃에 직접 그리며 PNG를 확대해서 표시하지 않는다.
-이 API는 개발 중이며 아직 공개 저장소 릴리스에 포함하지 않았다.
+Publication status: this API is included in the public source release. The Rust
+registry package has not yet been published; Studio integration is a separate host task.
 
 ### 회귀 테스트 범위
 
@@ -199,4 +200,4 @@ NO_HEADLESS=1 CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runne
 
 데이터 도형의 `hit_test`와 별도로 `frame.decorations()`가 렌더러에서 측정한 히트맵을 제공한다.
 기존 `Selectable`·`Draggable` 계약으로 `chart.decorations`를 갱신하고 `prepare`한다.
-좌표 단위, 요소별 이동 규칙, 캐시·저장 복원 및 웹 연결은 [공통 상호작용 가이드](INTERACTION.md)를 참고한다.
+좌표 단위, 요소별 이동 규칙, 캐시·저장 복원 및 웹 연결은 [공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)를 참고한다.

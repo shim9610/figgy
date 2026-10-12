@@ -9,6 +9,7 @@ repository = "https://github.com/shim9610/figgy"
 readme = "README.md"
 keywords = ["plotting", "charts", "visualization"]
 categories = ["graphics", "visualization"]
+include = ["/Cargo.toml", "/Cargo.lock", "/LICENSE-*", "/README.md", "/src/**"]
 
 # Preserve the Rust import path used by existing Git consumers.
 [lib]

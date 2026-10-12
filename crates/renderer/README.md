@@ -6,7 +6,10 @@ headless export helpers. No GUI framework is required by the default features.
 
 [Quick start and gallery](https://github.com/shim9610/figgy#quick-start) ·
 [Runnable chart examples](https://github.com/shim9610/figgy/tree/master/crates/renderer/examples) ·
-[Native usage](USAGE.md) · [Configuration](CONFIG.md) · [Architecture](ARCHITECTURE.md).
+[Native usage](https://github.com/shim9610/figgy/blob/master/crates/renderer/USAGE.md) ·
+[API contracts](https://github.com/shim9610/figgy/blob/master/crates/renderer/API.md) ·
+[Configuration](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md) ·
+[Architecture](https://github.com/shim9610/figgy/blob/master/crates/renderer/ARCHITECTURE.md).
 
 The Cargo package is **`figgy-renderer`**; the Rust library name remains
 **`renderer`** to preserve existing imports. This source release has not yet
@@ -30,6 +33,15 @@ name. Older public revisions still use the old package name.
 These renderers share a host-provided `RendererDevice`. Their data models and
 GPU budgets are separate. Small charts do not require column sources or streaming.
 
+Start with the complete [native line example](https://github.com/shim9610/figgy/blob/master/crates/renderer/examples/line.rs):
+it creates a device, uploads two columns and exports a PNG. From a source checkout,
+run `cargo run --locked -p figgy-renderer --example line`. Extracted packages need
+the model dependency available; until publication, test them with a local model patch.
+For interaction, use `winit_simple` or the `radial_editor`, `categorical_editor`
+and `boxplot_editor` examples (the latter three require `--features egui_demo`).
+The [edit/pick/export workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer/API.md#native-edit-pick-and-export-workflow)
+explains which model to edit and when to prepare a new frame.
+
 Rust **1.99** is the declared support floor. Direct GPU sharing requires **wgpu 30**.
 Lower Rust versions have not been validated. The optional `serde` feature enables
 serialization of re-exported model types without a separate model dependency;
@@ -49,7 +61,10 @@ guides. The [source repository](https://github.com/shim9610/figgy) contains the
 gallery and full native integration examples.
 
 Code is licensed under MIT OR Apache-2.0. Bundled fonts retain their respective
-OFL notices in `fonts/`.
+OFL notices in `fonts/`. The package includes source, shaders, fonts, guides,
+runnable examples and test fixtures. Gallery PNG/GIF assets and the unsupported
+iced integration source stay in the Git repository and are not installed with
+the crate. Architecture illustrations link to a fixed public source revision.
 
 Native package tests run with `cargo test --features serde`. They include GPU
 pixel, cache and memory regressions and require a working adapter and device;

@@ -166,7 +166,7 @@ WASM은 같은 `prepare`/`draw`를 쓰고, 출력에는 `export_rgba_async(...).
 원형 배치 영역은 공통 히트맵의 `DecorationId::DataArea`로 선택·이동·리사이즈한다.
 `decorations.data_area = None`이면 자동 배치하며, 지정한 논리 영역은 PNG에도 적용한다.
 그림을 늘이지 않고 새 영역에서 원·연결선·라벨을 다시 계산한다.
-[8개 핸들, 제약과 호스트 호출 순서](INTERACTION.md#그리기-영역-선택과-크기-조정)를 참고한다.
+[8개 핸들, 제약과 호스트 호출 순서](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#그리기-영역-선택과-크기-조정)를 참고한다.
 
 ## 라벨과 갱신
 
@@ -320,7 +320,10 @@ fn update_hover(
 JSON의 누락 필드 호환과 Rust 소스 호환은 다르다. 이전 `RadialSlice` 구조체 리터럴은 새 필드가
 필요하므로 `RadialSlice::new`를 사용하는 편이 좋다. 차트·스타일은 `..Default::default()`나
 기존 값의 복사본을 사용한다. 새 재질을 추가했으므로 재질 enum을 빠짐없이 분기하는 호스트도
-분기를 갱신해야 한다. 이 원형 차트 API는 아직 개발 중이며 공개 릴리스에 포함하지 않았다.
+분기를 갱신해야 한다.
+
+Publication status: this API is included in the public source release. The Rust
+registry package has not yet been published; Studio integration is a separate host task.
 
 ## 네이티브 편집 예제
 
@@ -374,4 +377,4 @@ cargo run -p figgy-renderer --example radial_gallery -- target/radial-gallery
 
 데이터 도형의 `hit_test`와 별도로 `frame.decorations()`가 렌더러에서 측정한 히트맵을 제공한다.
 기존 `Selectable`·`Draggable` 계약으로 `chart.decorations`를 갱신하고 `prepare`한다.
-좌표 단위, 요소별 이동 규칙, 캐시·저장 복원 및 웹 연결은 [공통 상호작용 가이드](INTERACTION.md)를 참고한다.
+좌표 단위, 요소별 이동 규칙, 캐시·저장 복원 및 웹 연결은 [공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)를 참고한다.

@@ -1,15 +1,11 @@
 name: Rust packages
 "on":
-  push:
-    # Narrow probes have their own workflow; normal branches and all PRs keep
-    # the full package matrix, including the experimental Metal backend.
-    branches-ignore: ['experiments/metal-precision-*']
   pull_request:
-  workflow_dispatch:
+    types: [opened, synchronize, reopened, ready_for_review]
 permissions:
   contents: read
 concurrency:
-  group: rust-packages-${{ github.workflow }}-${{ github.ref }}
+  group: rust-packages-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 env:
   CARGO_TERM_COLOR: never
@@ -21,8 +17,8 @@ env:
   PYTHONUTF8: '1'
 jobs:
   packages:
-    # Keep the full matrix on public repositories, where standard runner time is free.
-    if: github.event.repository.private == false
+    # Standard public runners only; draft PRs wait until ready for review.
+    if: github.event.repository.private == false && github.event.pull_request.draft == false
     name: ${{ matrix.os }} / ${{ matrix.backend }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90

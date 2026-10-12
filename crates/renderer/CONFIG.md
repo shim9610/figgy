@@ -1,7 +1,7 @@
 # Configuration reference / 설정 명세
 
 This reference describes the Rust model shared by native and WASM consumers.
-The optional JSON representation is described in [SCHEMA.md](../web/SCHEMA.md).
+The optional JSON representation is described in [SCHEMA.md](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md).
 
 ## 2. Config struct field reference
 
@@ -64,7 +64,7 @@ do not overlap. Use `Renderer::add_hilo_column` (native) or
 `register_column_f64` / `update_register_column_f64` (web `Float64Array`) for
 high-resolution absolute Unix timestamps; those paths preserve sub-f32 deltas
 on the GPU as f32 hi/lo pairs.
-The browser demo at [crates/web/timestamp-demo.html](../web/timestamp-demo.html)
+The browser demo at [crates/web/timestamp-demo.html](https://github.com/shim9610/figgy/blob/master/crates/web/timestamp-demo.html)
 is the quickest visual check for range changes, chart-width changes, and export
 scale against that contract.
 
@@ -406,7 +406,7 @@ pub struct Config {
 
 `LabelFormat::Timestamp`는 숫자 좌표를 시간으로 표시한다. 기본값은 UTC 기준 Unix 초와 `AutoCalendar` 눈금 배치다. JavaScript 타임스탬프에는 `unit = Milliseconds`를, 한국 시간처럼 고정 시차를 적용하려면 `FixedOffsetMinutes(540)`을 사용한다.
 `AutoCalendar`는 라벨 너비를 측정하고 겹치지 않도록 달력상의 눈금 간격을 늘린다. 큰 Unix 시간 값에서도 작은 시간 차이를 보존하려면 네이티브에서는 `Renderer::add_hilo_column`, 웹에서는 `Float64Array`를 받는 `register_column_f64` / `update_register_column_f64`를 사용한다. GPU에는 `(hi: f32, lo: f32)` 쌍으로 저장된다.
-[시간축 데모](../web/timestamp-demo.html)에서 시간 범위, 차트 너비와 출력 배율을 바꾸며 결과를 확인할 수 있다.
+[시간축 데모](https://github.com/shim9610/figgy/blob/master/crates/web/timestamp-demo.html)에서 시간 범위, 차트 너비와 출력 배율을 바꾸며 결과를 확인할 수 있다.
 
 ### `AxisTitleOptions` / `ChartTitleOptions`
 | 필드 | 타입 | 의미 |

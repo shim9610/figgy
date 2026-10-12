@@ -1,8 +1,6 @@
 name: Experimental Metal shader precision
 "on":
   workflow_dispatch:
-  push:
-    branches: ['experiments/metal-precision-*']
 permissions:
   contents: read
 concurrency:

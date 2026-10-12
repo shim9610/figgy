@@ -1,5 +1,24 @@
 # Build and rendering verification
 
+## When CI runs
+
+The full three-OS matrix runs only for **public, non-draft pull requests** when
+opened, updated, reopened or marked ready for review. Branch pushes without a PR,
+master/merge pushes and tag pushes do not start it. A push to an open PR triggers
+one PR run; a newer run cancels the older run for that PR. Draft PRs wait until
+they are ready. Failed jobs can be rerun from that PR's Actions run.
+
+Prepare changes on a public candidate branch and open a PR to request CI. All
+three backend jobs still run, including experimental Metal; removing the push
+trigger does not reduce test coverage. The separate Metal precision probe is
+manual-only. The private dev repository's repository-audit workflow is also
+manual-only; its local pre-commit and repository checks remain available.
+
+GitHub's standard hosted runner compute is free for public repositories. Private
+hosted runs use the account's included minutes and may be billed beyond its plan;
+manually starting a private audit can still consume that allowance. Artifact
+storage has its own limits. This policy uses no larger paid runners.
+
 The public GitHub Actions workflow uses **standard hosted runners**:
 
 | Runner | Requested backend | Rendering device |
@@ -36,6 +55,10 @@ GPU completion deadlines and pixel tolerances are unchanged.
 1. Native workspace checks with default and all optional features, including examples.
 2. Compilation for `wasm32-unknown-unknown` and strict Rust API documentation links.
 3. Creation and Cargo verification of both `.crate` archives, without registry upload.
+   Archive contents must include source resources, font/license notices, guides,
+   examples and test fixtures. Gallery assets and unsupported integrations are
+   excluded; relative guide links must resolve inside the extracted package.
+   `package-audit.json` records exact sizes, SHA-256 values and file inventories.
 4. Extraction outside the checkout, followed by model/renderer unit tests, integration
    tests and doctests with `serde` enabled. This includes native GPU pixel, SSOT edit,
    cache reuse, streaming, picking and memory regressions, plus radial, categorical
