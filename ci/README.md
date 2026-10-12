@@ -63,13 +63,19 @@ matrix. It has no push, scheduled or manual trigger. It analyzes Rust, Python,
 JavaScript/TypeScript and GitHub Actions with the `security-extended` query suite
 on standard Ubuntu runners. CodeQL actions are pinned to exact commit IDs.
 
-The Rust analysis uses CodeQL's supported `none` extraction mode. Before analysis,
-a locked native check with all targets/features prepares procedural macros and
-build-script outputs. The extractor shares that Cargo output directory. This
-source analysis does not run GPU tests, prove coverage of every feature/target
-configuration, or analyze WGSL shaders. The native/WASM builds and renderer pixel
-regressions remain in the package matrix. The other CodeQL languages use analysis
-without a project build.
+The Rust analysis uses CodeQL's supported `none` build mode. This source analysis
+does not run GPU tests, prove coverage of every feature/target configuration, or
+analyze WGSL shaders. The native/WASM builds and renderer pixel regressions remain
+in the package matrix. The other CodeQL languages also use analysis without a
+project build. No application build script is explicitly run by this workflow.
+
+Rust CodeQL can report incomplete procedural-macro expansion and internal type
+inference diagnostics even when analysis/upload succeeds and the Rust compiler
+checks pass. Inspect the SARIF diagnostics and extraction counts in the job log;
+zero PR findings do not establish complete Rust coverage. Preparing the native
+build outputs alone did not resolve the observed extractor limitation. Such
+diagnostics are retained, and the compiler and GPU regressions remain independent
+required checks.
 
 The workflow uses `pull_request`, not `pull_request_target`, with read-only source
 access and `security-events: write` for results. It requires no repository secret
