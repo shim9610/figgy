@@ -1,11 +1,11 @@
-# The wasm-bindgen wrapper — the outward-facing build artifact. The package
+# The example application's wasm-bindgen wrapper. The package
 # is named `figgy` (the project name) because that's what the generated
 # JS/wasm files are called: `figgy.js`, `figgy_bg.wasm`, `figgy.d.ts`.
 [package]
 name = "figgy"
 version = "0.13.0"
 edition = "2024"
-description = "figgy chart component for the web — wasm-bindgen wrapper over the renderer."
+description = "Browser integration example using wasm-bindgen and the figgy Rust renderer."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/shim9610/figgy"
 # WASM consumer/example; not part of the Rust registry release.

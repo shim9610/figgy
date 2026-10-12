@@ -1,6 +1,12 @@
 <a id="webassembly-빌드와-웹-io-가이드"></a>
 
-# WebAssembly 빌드와 브라우저 사용법
+# WebAssembly 지원과 브라우저 통합 예제
+
+Rust 렌더러의 WASM/WebGPU 지원과 `crates/web`의 예제 래퍼를 구분한다.
+아래 `FiggyChart`, `<figgy-chart>`와 JavaScript 호출 방법은 **브라우저 통합 예제의 계약**이다.
+Rust 라이브러리가 모든 차트를 JavaScript API로 제공한다는 뜻은 아니다.
+원형·범주형 막대·박스플롯은 이 래퍼에 노출하지 않는다.
+간단한 빌드·실행 방법은 [예제 안내](../web/README.md)를 참고한다.
 
 이 문서는 소스 릴리스 `figgy 0.13.0` / `figgy-renderer 0.16.0` / `figgy-model 0.10.0`를 기준으로 한다. 아래 스트리밍 API를 사용하려면 해당 버전의 소스에서 브라우저 패키지를 빌드한다.
 

@@ -4,6 +4,10 @@ A native Rust chart renderer: wgpu draws data, while tiny-skia and swash rasteri
 axes and text. Embed it in an existing wgpu application or use its window and
 headless export helpers. No GUI framework is required by the default features.
 
+[Quick start and gallery](https://github.com/shim9610/figgy#quick-start) ·
+[Runnable chart examples](https://github.com/shim9610/figgy/tree/master/crates/renderer/examples) ·
+[Native usage](USAGE.md) · [Configuration](CONFIG.md) · [Architecture](ARCHITECTURE.md).
+
 The Cargo package is **`figgy-renderer`**; the Rust library name remains
 **`renderer`** to preserve existing imports. This source release has not yet
 been published to crates.io. For a source checkout:

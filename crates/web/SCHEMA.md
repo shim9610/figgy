@@ -2,6 +2,10 @@
 
 # Config / SeriesConfig — JSON 설정 명세
 
+`crates/web`의 [브라우저 통합 예제](README.md)가 사용하는 JSON 형식이다.
+설정 타입 자체는 Rust 모델에 정의되며 `serde`로 직렬화할 수 있다.
+이 문서는 별도 JavaScript 라이브러리의 전체 기능 목록을 뜻하지 않는다.
+
 기준 소스 버전: `figgy 0.13.0` / `figgy-renderer 0.16.0` / `figgy-model 0.10.0`.
 
 이 문서는 `Config`와 `SeriesConfig`의 JSON 형식을 설명한다. figgy 0.10.0의 비상주 컬럼 등록, 구간 공급, `render_chart()` 실행·취소, 상주 가능 여부 조회는 별도 웹 API이며 설정 필드를 추가하지 않는다. 지원 범위와 호출 방법은 [WASM.md](../renderer/WASM.md#exact-streaming)의 「자동 실행과 원본 구간 공급」을 참고한다.
