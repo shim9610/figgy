@@ -17,7 +17,7 @@ Version **0.10.0** has not yet been published to crates.io. Until publication:
 
 ```toml
 [dependencies]
-model = { package = "figgy-model", git = "https://github.com/shim9610/figgy", rev = "76cf7c9b9550fc6f555f1e27c672c339b01dfa8c" }
+model = { package = "figgy-model", git = "https://github.com/shim9610/figgy", rev = "0ae96fcb2d6c0ad5bd6167cc32f0e54b231162e0" }
 ```
 
 For a local checkout, replace `git`/`rev` with `path = "../figgy/crates/model"`.
