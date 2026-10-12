@@ -6,6 +6,35 @@ does not imply a standalone JavaScript product or a Studio deployment.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
+## Registry release preparation — not yet published
+
+The intended first registry versions remain **figgy-renderer 0.16.0** and
+**figgy-model 0.10.0**. Rust imports remain `renderer` and `model`; the renderer
+re-exports the model types. No additional API, schema, shader or behavior change
+is introduced by this preparation.
+
+- The API landing pages start with installation and complete examples. The native
+  PNG quick start includes the shipped `line` source directly and is compiled as
+  a doctest. The model example creates and edits a chart without a GPU.
+- docs.rs builds use `serde`, without GUI demo features. The renderer documents
+  native Linux and WASM APIs; documentation compilation needs no graphics adapter.
+- Registry archives retain code, shaders, fonts/notices, guides, examples and test
+  fixtures. Gallery captures and unsupported host integrations stay in Git; the
+  renderer archive is approximately 2 MiB instead of 9.2 MiB.
+- The public Linux/Vulkan, Windows/DX12 and experimental macOS/Metal package matrix
+  runs on non-draft PRs. Branch, merge and tag pushes do not run a duplicate matrix.
+  Strict documentation checks cover both native and WASM APIs. Bounded chart
+  regressions also exercise each supported decoration's public select/drag/reset
+  path at 1×/2×, cache reuse, old-frame immutability and serialized state restoration.
+
+Until publication, use the Git dependency in the [renderer quick start](crates/renderer/README.md#install-and-run)
+or [model guide](crates/model/README.md#install). The eventual registry dependencies
+are `renderer = { package = "figgy-renderer", version = "0.16.0" }` and, for
+model-only consumers, `model = { package = "figgy-model", version = "0.10.0" }`.
+Native integration requires Rust 1.99 and wgpu 30. macOS/Metal remains experimental;
+physical GPU driver certification is outside the software/virtual CI results.
+The browser wrapper is an example with `publish = false`, not a registry product.
+
 ## Source release — renderer 0.16.0 / model 0.10.0 / figgy 0.13.0
 
 Radial, categorical and boxplot frames now expose the plot area through the same

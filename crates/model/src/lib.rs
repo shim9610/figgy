@@ -1,11 +1,4 @@
-//! figgy model layer — the chart option SSoT (`Config`, `SeriesConfig`), data
-//! container definitions (`Column`, `DataCell`), and preset policies
-//! (`default_config`, tick / label / layout rules).
-//!
-//! No GPU, raster, or windowing dependencies — and no render-side machinery:
-//! dirty-flag tracking (`Chart`) and the GPU upload adapter (`ColumnSource`)
-//! are renderer optimizations and live in the renderer crate, which depends
-//! on this one and re-exports these modules under the same paths.
+#![doc = include_str!("../README.md")]
 
 pub mod categorical;
 pub mod color;

@@ -10632,7 +10632,7 @@ impl Renderer {
     /// Async because the GPU→CPU readback must yield to the browser on wasm;
     /// on native the await resolves immediately (the device is polled to
     /// completion inline). Native callers can use the blocking
-    /// [`Self::export_panel_rgba`] wrapper instead. `&mut self` for the same
+    /// `Renderer::export_panel_rgba` wrapper instead (native only). `&mut self` for the same
     /// reason as [`Self::paint`]: the prepare phase (arc prefixes; the
     /// export's styled pipelines live in a per-call set instead).
     pub async fn export_panel_rgba_async(

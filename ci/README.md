@@ -53,7 +53,8 @@ GPU completion deadlines and pixel tolerances are unchanged.
 ## What runs on every OS
 
 1. Native workspace checks with default and all optional features, including examples.
-2. Compilation for `wasm32-unknown-unknown` and strict Rust API documentation links.
+2. Compilation for `wasm32-unknown-unknown` and strict Rust API documentation links
+   on native and WASM targets. The WASM check catches links to native-only methods.
 3. Creation and Cargo verification of both `.crate` archives, without registry upload.
    Archive contents must include source resources, font/license notices, guides,
    examples and test fixtures. Gallery assets and unsupported integrations are
@@ -74,6 +75,12 @@ on the same backend. They are not an assertion that all drivers produce byte-ide
 images. Existing opt-in stress/probe tests remain `#[ignore]` and are reported by Rust.
 Tests run sequentially so GPU memory measurements do not overlap. These are headless
 native renderer tests; WASM compilation is not a browser execution test.
+
+The docs.rs metadata enables `serde` without GUI demo dependencies. Renderer API
+pages are built for native Linux and WASM; the model needs only the native default
+target. These builds do not initialize a graphics adapter. Hosted docs.rs execution
+and registry resolution are verified after publication; local rustdoc builds do not
+claim that the unpublished packages are already available there.
 
 Logs and generated diagnostic PNGs are uploaded as `verification-<runner>-<backend>`
 artifacts, including on failure, and retained for seven days. The logs identify which

@@ -1,3 +1,7 @@
+#![doc = include_str!("../README.md")]
+#![doc = "\n## First chart: render a PNG\n\nThis is the complete native `line` example. With the dependencies above, copy it into `src/main.rs` and run `cargo run`. Rendering needs a working adapter; building the documentation does not.\n\n```rust,no_run\n"]
+#![doc = include_str!("../examples/line.rs")]
+#![doc = "\n```\n\nFor embedding, reuse your host's device/queue instead of the example's adapter setup. For editing, picking and exporting the current state, follow the workflow below.\n"]
 #![doc = include_str!("../API.md")]
 
 pub mod axis_render;

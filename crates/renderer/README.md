@@ -1,8 +1,10 @@
 # figgy-renderer
 
-A native Rust chart renderer: wgpu draws data, while tiny-skia and swash rasterize
-axes and text. Embed it in an existing wgpu application or use its window and
-headless export helpers. No GUI framework is required by the default features.
+A native Rust chart renderer for scientific plots, styled dashboards and small
+data charts. Draw lines, scatter plots, error bars, histograms, heatmaps, contours,
+pies, donuts, categorical bars and boxplots; edit their models and export PNGs.
+Embed charts in an existing wgpu application or render without a window.
+The default library has no GUI framework dependency.
 
 [Quick start and gallery](https://github.com/shim9610/figgy#quick-start) ·
 [Runnable chart examples](https://github.com/shim9610/figgy/tree/master/crates/renderer/examples) ·
@@ -11,43 +13,80 @@ headless export helpers. No GUI framework is required by the default features.
 [Configuration](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md) ·
 [Architecture](https://github.com/shim9610/figgy/blob/master/crates/renderer/ARCHITECTURE.md).
 
-The Cargo package is **`figgy-renderer`**; the Rust library name remains
-**`renderer`** to preserve existing imports. This source release has not yet
-been published to crates.io. For a source checkout:
+## Install and run
+
+Use Rust **1.99 or later** and a working graphics adapter/driver. This source
+release is **0.16.0** and has not yet been published to crates.io. Until publication,
+use the verified public Git revision below in your application's `Cargo.toml`:
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", path = "../figgy/crates/renderer" }
+renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy", rev = "f2f2563f9930a3ff9e96d4b366d5056a2260f711" }
 wgpu = "30"
+pollster = "1"
 ```
 
-For an existing Git dependency, retain its URL/revision and dependency key, and
-add `package = "figgy-renderer"`. The selected revision must contain that package
-name. Older public revisions still use the old package name.
+The Cargo package is **`figgy-renderer`**; the Rust import is **`renderer`**.
+For a local checkout, replace `git`/`rev` with `path = "../figgy/crates/renderer"`.
+After 0.16.0 is published and verified, the registry dependency will be
+`renderer = { package = "figgy-renderer", version = "0.16.0" }`.
 
-- `Renderer`: column-based scientific charts, fields and replayable streaming.
-- `RadialRenderer`: bounded pie/donut charts and procedural materials.
-- `CategoricalRenderer`: bounded individual, grouped and stacked bars.
-- `BoxPlotRenderer`: supplied statistical summaries, including grouped/notched boxes.
+Copy the complete [line example](https://github.com/shim9610/figgy/blob/master/crates/renderer/examples/line.rs)
+into `src/main.rs` and run `cargo run`. It creates a device, uploads two columns,
+draws axes and a sine wave, and writes a 960 × 600 `line.png` without opening a window.
+It is also included below on the generated API landing page. From a source
+checkout, run `cargo run --locked -p figgy-renderer --example line -- line.png`.
 
-These renderers share a host-provided `RendererDevice`. Their data models and
-GPU budgets are separate. Small charts do not require column sources or streaming.
+The application needs its own `wgpu` and `pollster` dependencies for this example.
+Hosts with an async executor can await export directly instead of using pollster.
+Hosts that already own a matching wgpu 30 device/queue can share them through
+`RendererDevice`. They do not need a second device or a particular GUI toolkit.
 
-Start with the complete [native line example](https://github.com/shim9610/figgy/blob/master/crates/renderer/examples/line.rs):
-it creates a device, uploads two columns and exports a PNG. From a source checkout,
-run `cargo run --locked -p figgy-renderer --example line`. Extracted packages need
-the model dependency available; until publication, test them with a local model patch.
-For interaction, use `winit_simple` or the `radial_editor`, `categorical_editor`
-and `boxplot_editor` examples (the latter three require `--features egui_demo`).
-The [edit/pick/export workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer/API.md#native-edit-pick-and-export-workflow)
-explains which model to edit and when to prepare a new frame.
+## Choose a renderer
 
-Rust **1.99** is the declared support floor. Direct GPU sharing requires **wgpu 30**.
-Lower Rust versions have not been validated. The optional `serde` feature enables
-serialization of re-exported model types without a separate model dependency;
-it is not a project file format. `egui_demo` enables the native egui examples.
-WASM compilation is also supported as a consumer example; the web wrapper is not
-part of this Rust registry package.
+| Charts | Entry point | Input and guide |
+| --- | --- | --- |
+| Lines, scatter, error bars, histograms, heatmaps, contours | `Renderer` | Numeric columns and `SeriesConfig`; [native usage](https://github.com/shim9610/figgy/blob/master/crates/renderer/USAGE.md) |
+| Pies and donuts, including 3D/material styles | `RadialRenderer` | `RadialChart` with bounded slice values; [radial guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADIAL.md) |
+| Individual, grouped and stacked bars | `CategoricalRenderer` | `CategoricalChart` with category/series IDs; [bar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/CATEGORICAL.md) |
+| Grouped/notched boxes and outliers | `BoxPlotRenderer` | `BoxPlotChart` with supplied statistics; [boxplot guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/BOXPLOT.md) |
+
+The renderer re-exports model types: most applications do not need a separate
+`figgy-model` dependency. Bounded charts do not use column sources or streaming
+and do not compute statistics from raw samples. All four renderers can share a
+`RendererDevice`; each maintains its own resource budget.
+
+## Edit, pick and export
+
+Prepare and draw the current model, pick against the displayed frame, edit the
+model, then prepare again. Export that same model to preserve selection, moved
+labels and the drawing area. Data picking and decoration hit maps are separate;
+use the renderer's measured bounds when selecting titles, labels, axes or handles.
+
+The [API workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer/API.md#native-edit-pick-and-export-workflow)
+includes an edit/pick/export example and explains frame lifetime and coordinate
+units. [Interaction contracts](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)
+cover shared selection, dragging and area handles. Runnable editors are
+`winit_simple`, `radial_editor`, `categorical_editor` and `boxplot_editor`;
+the last three require `--features egui_demo`.
+
+Replayable Cartesian streams use an explicit fit request when the initial range
+is unknown or the user requests fit. Do not request fit on every chunk, repaint
+or tab switch. Wait for final completion before treating the image as exact.
+
+## Features and platform support
+
+| Feature | Purpose |
+| --- | --- |
+| Default (no optional features) | Native renderer, headless output and host integration |
+| `serde` | Serialization of re-exported model types; no application file format |
+| `egui_demo` | Optional dependencies for native GUI examples |
+
+Direct GPU sharing requires **wgpu 30**. CI covers native Linux/Vulkan,
+Windows/DX12 and macOS/Metal, plus WASM compilation. Software Vulkan/WARP and
+virtualized Metal results do not certify every physical GPU driver. Lower Rust
+versions have not been validated. WASM is an integration path; the separate web
+wrapper and figgyplot.com Studio are not part of this Rust registry package.
 
 **macOS / Metal support is experimental, not stable.** Coordinate precision,
 picking and render-path comparison regressions are still being investigated.
@@ -55,10 +94,13 @@ The source repository contains a separate, opt-in precompiled Metal shader probe
 it is not an enabled renderer feature or a completed precision fix. See the
 [backend status](https://github.com/shim9610/figgy/blob/master/ci/STATUS.md).
 
-The crate-level API documentation covers ownership, frame validity, target
-constraints, source replay and compatibility. Individual chart modules contain their usage
-guides. The [source repository](https://github.com/shim9610/figgy) contains the
-gallery and full native integration examples.
+API documentation builds without a GPU. docs.rs is configured for native Linux
+and WASM with `serde`; GUI example dependencies are not needed for those builds.
+To browse locally, run `cargo doc --locked -p figgy-renderer --features serde --no-deps --open`.
+The [source repository](https://github.com/shim9610/figgy) contains the gallery and
+full native integration examples.
+
+## License and verification
 
 Code is licensed under MIT OR Apache-2.0. Bundled fonts retain their respective
 OFL notices in `fonts/`. The package includes source, shaders, fonts, guides,

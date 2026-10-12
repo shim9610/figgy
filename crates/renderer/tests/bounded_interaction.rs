@@ -328,3 +328,141 @@ fn bounded_area_select_resize_move_pick_and_export() {
     let _guard = LOCK.lock().unwrap();
     pollster::block_on(bounded_area::check(gpu()));
 }
+
+#[test]
+fn every_bounded_decoration_uses_public_edit_reset_and_snapshot_contracts() {
+    let _guard = LOCK.lock().unwrap();
+    macro_rules! check {
+        ($renderer:ident, $chart:expr, $keys:expr) => {{
+            let mut r = $renderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+            let mut c = $chart;
+            for scale in [1.0, 2.0] {
+                for key in $keys {
+                    c.decorations = Default::default();
+                    let f = r.prepare(&c, (800, 600), scale).unwrap();
+                    let area = f
+                        .decorations()
+                        .bounds(id(f.decorations(), &DecorationId::DataArea));
+                    let before = r.export_rgba(&c, (800, 600), scale).unwrap();
+                    let (dx, dy) = match key {
+                        DecorationId::Axis(Side::Left) => (8.0, 0.0),
+                        DecorationId::Axis(Side::Bottom) => (0.0, -8.0),
+                        DecorationId::Legend | DecorationId::AxisLabel(Side::Bottom) => (7.0, -5.0),
+                        _ => (7.0, 5.0),
+                    };
+                    let old = moved(f.decorations(), &mut c.decorations, &key, dx, dy);
+                    c.decorations.selected = Some(key.clone());
+                    let edited = r.prepare(&c, (800, 600), scale).unwrap();
+                    assert_eq!(
+                        edited.decorations().bounds(id(edited.decorations(), &key)),
+                        Some(old.translated(dx, dy)),
+                        "{} {key:?} at {scale}x",
+                        stringify!($renderer)
+                    );
+                    assert_eq!(f.decorations().bounds(id(f.decorations(), &key)), Some(old));
+                    assert_eq!(
+                        edited
+                            .decorations()
+                            .bounds(id(edited.decorations(), &DecorationId::DataArea)),
+                        area,
+                        "moving a decoration changed the data area"
+                    );
+                    assert!(!f.shares_annotations_with(&edited));
+                    assert!(Arc::ptr_eq(
+                        &edited,
+                        &r.prepare(&c, (800, 600), scale).unwrap()
+                    ));
+                    let after = r.export_rgba(&c, (800, 600), scale).unwrap();
+                    assert_ne!(before.rgba, after.rgba, "{key:?} edit was invisible");
+                    #[cfg(feature = "serde")]
+                    {
+                        let restored =
+                            serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+                        assert_eq!(c, restored);
+                        assert_eq!(
+                            r.export_rgba(&restored, (800, 600), scale).unwrap().rgba,
+                            after.rgba
+                        );
+                    }
+                    c.decorations.reset(&key);
+                    c.decorations.selected = None;
+                    assert_eq!(
+                        r.export_rgba(&c, (800, 600), scale).unwrap().rgba,
+                        before.rgba
+                    );
+                    r.end_frame();
+                }
+            }
+            c.title.clear();
+            let hidden = r.prepare(&c, (800, 600), 1.0).unwrap();
+            assert!(
+                !hidden
+                    .decorations()
+                    .entries()
+                    .any(|(_, e)| e.id == DecorationId::ChartTitle)
+            );
+            r.end_frame();
+        }};
+    }
+    let color = Color::from_rgb8(70, 130, 180);
+    check!(
+        RadialRenderer,
+        RadialChart {
+            title: "Editable donut title".into(),
+            kind: RadialKind::Donut { inner_radius: 0.5 },
+            slices: vec![
+                RadialSlice::new("A", 35.0, color),
+                RadialSlice::new("B", 65.0, Color::BLACK)
+            ],
+            ..Default::default()
+        },
+        [
+            DecorationId::ChartTitle,
+            DecorationId::RadialLabel(RadialTarget::main(0))
+        ]
+    );
+    let keys = [
+        DecorationId::ChartTitle,
+        DecorationId::Legend,
+        DecorationId::Axis(Side::Left),
+        DecorationId::Axis(Side::Bottom),
+        DecorationId::AxisLabel(Side::Left),
+        DecorationId::AxisLabel(Side::Bottom),
+        DecorationId::AxisTitle(Side::Left),
+        DecorationId::AxisTitle(Side::Bottom),
+        DecorationId::DataLabel {
+            category_id: "a".into(),
+            series_id: "s".into(),
+        },
+    ];
+    check!(
+        CategoricalRenderer,
+        CategoricalChart {
+            title: "Editable bar title".into(),
+            category_title: "Group".into(),
+            value_title: "Value".into(),
+            categories: vec![Category::new("a", "Control")],
+            series: vec![BarSeries::new("s", "Response", vec![Some(35.0)], color)],
+            ..Default::default()
+        },
+        keys.clone()
+    );
+    check!(
+        BoxPlotRenderer,
+        BoxPlotChart {
+            title: "Editable box title".into(),
+            category_title: "Group".into(),
+            value_title: "Value".into(),
+            categories: vec![Category::new("a", "Control")],
+            series: vec![BoxPlotSeries::new(
+                "s",
+                "Distribution",
+                vec![Some(BoxSummary::new(10.0, 25.0, 38.0, 52.0, 70.0))],
+                color
+            )],
+            labels: BoxPlotLabels::Median,
+            ..Default::default()
+        },
+        keys.clone()
+    );
+}
