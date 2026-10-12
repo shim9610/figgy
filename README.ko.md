@@ -47,7 +47,7 @@
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy", rev = "5cfab582bd5c7fd3d9be92259a1dadcbbf1d1f2e" }
+renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy", rev = "76cf7c9b9550fc6f555f1e27c672c339b01dfa8c" }
 wgpu = "30"
 pollster = "1"
 ```

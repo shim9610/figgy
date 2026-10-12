@@ -21,7 +21,7 @@ use the verified public Git revision below in your application's `Cargo.toml`:
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy", rev = "f2f2563f9930a3ff9e96d4b366d5056a2260f711" }
+renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy", rev = "76cf7c9b9550fc6f555f1e27c672c339b01dfa8c" }
 wgpu = "30"
 pollster = "1"
 ```
