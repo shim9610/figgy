@@ -1,4 +1,4 @@
-# Source release history
+# Release history
 
 `figgy-renderer` and `figgy-model` are the Rust library packages. `figgy` in this
 history is the separate browser integration example in `crates/web`; its version
@@ -24,9 +24,9 @@ does not imply a standalone JavaScript product or a Studio deployment.
 - The model remains 0.10.0. The WASM integration example advances to 0.13.1
   with the renderer dependency; this does not publish a registry crate or Studio.
 
-## Registry release preparation — not yet published
+## First crates.io release — 2026-10-13
 
-The intended first registry versions are **figgy-renderer 0.16.1** and
+The first published registry versions are **figgy-renderer 0.16.1** and
 **figgy-model 0.10.0**. Rust imports remain `renderer` and `model`; the renderer
 re-exports the model types. The patch below preserves public API signatures and
 the model schema.
@@ -45,8 +45,8 @@ the model schema.
   regressions also exercise each supported decoration's public select/drag/reset
   path at 1×/2×, cache reuse, old-frame immutability and serialized state restoration.
 
-Until publication, use the Git dependency in the [renderer quick start](crates/renderer/README.md#install-and-run)
-or [model guide](crates/model/README.md#install). The eventual registry dependencies
+Use the crates.io dependency in the [renderer quick start](crates/renderer/README.md#install-and-run)
+or [model guide](crates/model/README.md#install). The registry dependencies
 are `renderer = { package = "figgy-renderer", version = "0.16.1" }` and, for
 model-only consumers, `model = { package = "figgy-model", version = "0.10.0" }`.
 Native integration requires Rust 1.99 and wgpu 30. macOS/Metal remains experimental;

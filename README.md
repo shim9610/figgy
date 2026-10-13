@@ -69,13 +69,13 @@ palettes, axes, materials and labels change the same chart APIs.
 ## Quick start
 
 Use **Rust 1.99 or later** and a working GPU driver. The repository pins Rust 1.99.0.
-The source release is renderer **0.16.1** / model **0.10.0**; these crates are not
-published on crates.io yet. Add the public Git revision to your application's
+Install renderer **0.16.1** from [crates.io](https://crates.io/crates/figgy-renderer).
+It includes model **0.10.0**. Add these dependencies to your application's
 `Cargo.toml`:
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy", rev = "0ae96fcb2d6c0ad5bd6167cc32f0e54b231162e0" }
+renderer = { package = "figgy-renderer", version = "0.16.1" }
 wgpu = "30"
 pollster = "1"
 ```

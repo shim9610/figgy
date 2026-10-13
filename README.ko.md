@@ -42,12 +42,12 @@
 ## 빠른 시작
 
 **Rust 1.99 이상**과 정상 동작하는 GPU 드라이버가 필요합니다. 저장소의 툴체인은 1.99.0으로
-고정했습니다. 현재 소스 버전은 renderer **0.16.1**, model **0.10.0**이며 아직 crates.io에
-게시하지 않았습니다. 애플리케이션의 `Cargo.toml`에 공개 Git 커밋을 지정합니다.
+고정했습니다. renderer **0.16.1**, model **0.10.0**은 crates.io에 게시됐습니다.
+애플리케이션의 `Cargo.toml`에 다음 의존성을 추가합니다.
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy", rev = "0ae96fcb2d6c0ad5bd6167cc32f0e54b231162e0" }
+renderer = { package = "figgy-renderer", version = "0.16.1" }
 wgpu = "30"
 pollster = "1"
 ```

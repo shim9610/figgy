@@ -13,16 +13,14 @@ versions have not been validated.
 ## Install
 
 The Cargo package is **`figgy-model`**; its Rust import is **`model`**.
-Version **0.10.0** has not yet been published to crates.io. Until publication:
+Version **0.10.0** is available on [crates.io](https://crates.io/crates/figgy-model):
 
 ```toml
 [dependencies]
-model = { package = "figgy-model", git = "https://github.com/shim9610/figgy", rev = "0ae96fcb2d6c0ad5bd6167cc32f0e54b231162e0" }
+model = { package = "figgy-model", version = "0.10.0" }
 ```
 
-For a local checkout, replace `git`/`rev` with `path = "../figgy/crates/model"`.
-After publication and verification, use
-`model = { package = "figgy-model", version = "0.10.0" }`.
+For a local checkout, replace `version` with `path = "../figgy/crates/model"`.
 Add `features = ["serde"]` only when serialization is needed. No feature is
 required for creating, editing or validating models.
 

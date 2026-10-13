@@ -15,21 +15,19 @@ The default library has no GUI framework dependency.
 
 ## Install and run
 
-Use Rust **1.99 or later** and a working graphics adapter/driver. This source
-release is **0.16.1** and has not yet been published to crates.io. Until publication,
-use the verified public Git revision below in your application's `Cargo.toml`:
+Use Rust **1.99 or later** and a working graphics adapter/driver. Version **0.16.1**
+is available on [crates.io](https://crates.io/crates/figgy-renderer).
+Add these dependencies to your application's `Cargo.toml`:
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy", rev = "0ae96fcb2d6c0ad5bd6167cc32f0e54b231162e0" }
+renderer = { package = "figgy-renderer", version = "0.16.1" }
 wgpu = "30"
 pollster = "1"
 ```
 
 The Cargo package is **`figgy-renderer`**; the Rust import is **`renderer`**.
-For a local checkout, replace `git`/`rev` with `path = "../figgy/crates/renderer"`.
-After 0.16.1 is published and verified, the registry dependency will be
-`renderer = { package = "figgy-renderer", version = "0.16.1" }`.
+For a local checkout, replace `version` with `path = "../figgy/crates/renderer"`.
 
 Copy the complete [line example](https://github.com/shim9610/figgy/blob/master/crates/renderer/examples/line.rs)
 into `src/main.rs` and run `cargo run`. It creates a device, uploads two columns,
