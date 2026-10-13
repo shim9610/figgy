@@ -169,8 +169,8 @@ cargo test -p figgy-renderer --doc
 편집기에서 막대를 클릭하거나 목록으로 선택해 색·재질·표기를 바꿀 수 있다. `Whole chart`는
 공통 설정을 편집하고 `Reset individual settings`는 선택한 막대의 개별 설정을 지운다.
 화면은 창 크기와 DPR에 맞춘 GPU 타깃에 직접 그리며 PNG를 확대해서 표시하지 않는다.
-Publication status: this API is included in the public source release. The Rust
-registry package has not yet been published; Studio integration is a separate host task.
+Publication status: this API is included in `figgy-renderer` 0.16.1 on crates.io.
+Studio integration is a separate host task.
 
 ### 회귀 테스트 범위
 

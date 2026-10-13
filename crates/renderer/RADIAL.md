@@ -321,8 +321,8 @@ JSON의 누락 필드 호환과 Rust 소스 호환은 다르다. 이전 `RadialS
 기존 값의 복사본을 사용한다. 새 재질을 추가했으므로 재질 enum을 빠짐없이 분기하는 호스트도
 분기를 갱신해야 한다.
 
-Publication status: this API is included in the public source release. The Rust
-registry package has not yet been published; Studio integration is a separate host task.
+Publication status: this API is included in `figgy-renderer` 0.16.1 on crates.io.
+Studio integration is a separate host task.
 
 ## 네이티브 편집 예제
 
