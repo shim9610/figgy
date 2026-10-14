@@ -123,8 +123,8 @@ native renderer tests; WASM compilation is not a browser execution test.
 The docs.rs metadata enables `serde` without GUI demo dependencies. Renderer API
 pages are built for native Linux and WASM; the model needs only the native default
 target. These builds do not initialize a graphics adapter. Hosted docs.rs execution
-and registry resolution are verified after publication; local rustdoc builds do not
-claim that the unpublished packages are already available there.
+and registry resolution are verified after publication; local rustdoc builds alone
+do not verify hosted availability or registry resolution.
 
 Logs and generated diagnostic PNGs are uploaded as `verification-<runner>-<backend>`
 artifacts, including on failure, and retained for seven days. The logs identify which
