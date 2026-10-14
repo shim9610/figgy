@@ -245,3 +245,45 @@ fn colorbar_selection_and_resize_probe() {
         fs::write(dir.join(format!("colorbar-{name}.png")), png).expect("write probe png");
     }
 }
+
+/// Issue #6: a negative chart-title margin used to grow a 320x240 chart's data
+/// area to height `u32::MAX`, and the CPU colourbar raster then iterated over
+/// billions of bands. The model must reject the layout, and the raster must
+/// return promptly instead of spinning.
+#[test]
+fn negative_title_margin_does_not_explode_the_colorbar_raster() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let mut cfg = renderer::default::default_config();
+    cfg.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: 320,
+        height: 240,
+    });
+    cfg.colorbar = Some(renderer::default::default_colorbar_options());
+    cfg.chart_title.top_margin = -1e38;
+
+    assert!(
+        cfg.validate().is_err(),
+        "validate must reject the title margin"
+    );
+    assert!(
+        cfg.data_area().is_err(),
+        "data_area must not escape the chart area"
+    );
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result =
+            try_raster_chart_layer_to_rgba_with_selection(&cfg, AxisLayerKind::Decoration, &[])
+                .map(|rgba| rgba.len());
+        let _ = tx.send(result);
+    });
+    let len = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("CPU colourbar raster did not finish within 10 s")
+        .expect("raster of the canvas itself still succeeds");
+    assert_eq!(len, 320 * 240 * 4);
+}

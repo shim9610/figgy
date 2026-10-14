@@ -154,6 +154,17 @@ impl Config {
         let ca = &self.chart_area;
         let m = self.margins();
 
+        // A negative or non-finite margin would push the data area outside the
+        // chart area: a negative title margin passes the overflow checks below
+        // and grows the height past the canvas, saturating to `u32::MAX` in the
+        // cast. Every margin is a reserved band, so it must be finite and >= 0.
+        if [m.top, m.bottom, m.left, m.right]
+            .iter()
+            .any(|v| !(v.is_finite() && *v >= 0.0))
+        {
+            return Err(LayoutError::Infeasible);
+        }
+
         let h_need = m.left + m.right;
         if h_need > ca.width as f32 {
             return Err(LayoutError::OverflowHorizontal {
@@ -178,12 +189,23 @@ impl Config {
             return Err(LayoutError::EmptyDataArea);
         }
 
-        Ok(DataArea(Rect {
+        let rect = Rect {
             x: x.floor() as u32,
             y: y.floor() as u32,
             width: w.floor() as u32,
             height: h.floor() as u32,
-        }))
+        };
+        // f32 rounding on very large chart areas must not let the floored rect
+        // poke past the chart area either.
+        let fits = |start: u32, len: u32, ca_start: u32, ca_len: u32| {
+            start >= ca_start
+                && u64::from(start) + u64::from(len) <= u64::from(ca_start) + u64::from(ca_len)
+        };
+        if !fits(rect.x, rect.width, ca.x, ca.width) || !fits(rect.y, rect.height, ca.y, ca.height)
+        {
+            return Err(LayoutError::TargetOutOfChartArea);
+        }
+        Ok(DataArea(rect))
     }
 
     /// How far this side's axis band is pushed in from the chart-area edge by
@@ -198,6 +220,12 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), LayoutError> {
+        // The title band is reserved space like an axis margin: it has to be
+        // finite and non-negative, and it has to fit (checked by `data_area`).
+        let title = self.chart_title.top_margin;
+        if !(title.is_finite() && title >= 0.0) {
+            return Err(LayoutError::Infeasible);
+        }
         let _ = self.data_area()?;
         for axis in [&self.top_x, &self.bottom_x, &self.left_y, &self.right_y] {
             axis_dims_feasible(axis)?;
@@ -244,7 +272,7 @@ mod tests {
     use super::{Side, colorbar_contribution};
     use crate::config::Config;
     use crate::default::{default_colorbar_options, default_config};
-    use crate::layout::LayoutError;
+    use crate::layout::{ChartArea, LayoutError, Rect};
 
     fn config_with_colorbar(side: Side) -> Config {
         let mut cfg = default_config();
@@ -398,5 +426,60 @@ mod tests {
                 "length_frac {frac} must be rejected"
             );
         }
+    }
+
+    // Issue #6: a negative title margin passed the overflow checks and grew the
+    // data area of a 320x240 chart to height u32::MAX, which the colourbar
+    // raster then tried to fill band by band.
+    fn small_chart_with_title_margin(top_margin: f32) -> Config {
+        let mut cfg = config_with_colorbar(Side::Right);
+        cfg.chart_area = ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 240,
+        });
+        cfg.chart_title.top_margin = top_margin;
+        cfg
+    }
+
+    #[test]
+    fn a_negative_or_non_finite_title_margin_is_rejected() {
+        assert!(small_chart_with_title_margin(0.0).validate().is_ok());
+        for margin in [-1e38, -1.0, f32::NAN, f32::NEG_INFINITY] {
+            let cfg = small_chart_with_title_margin(margin);
+            assert_eq!(
+                cfg.validate(),
+                Err(LayoutError::Infeasible),
+                "validate must reject title margin {margin}"
+            );
+        }
+        // Without validate(), data_area() still refuses any margin that would
+        // carry the data area outside the chart area.
+        for margin in [-1e38, f32::NAN, f32::NEG_INFINITY] {
+            assert_eq!(
+                small_chart_with_title_margin(margin).data_area(),
+                Err(LayoutError::Infeasible),
+                "data_area must reject title margin {margin}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_title_margin_taller_than_the_chart_is_rejected() {
+        let cfg = small_chart_with_title_margin(1e38);
+        assert!(matches!(
+            cfg.validate(),
+            Err(LayoutError::OverflowVertical { .. })
+        ));
+    }
+
+    // Any negative margin, not only the title's, must not escape the chart area
+    // through data_area(), even when validate() is skipped.
+    #[test]
+    fn data_area_rejects_negative_axis_margins() {
+        let mut cfg = default_config();
+        cfg.left_y.out_margin = -1e9;
+        assert_eq!(cfg.data_area(), Err(LayoutError::Infeasible));
     }
 }

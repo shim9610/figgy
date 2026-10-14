@@ -6,6 +6,15 @@ does not imply a standalone JavaScript product or a Studio deployment.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
+## Unreleased
+
+- `Config::validate` rejects a negative or non-finite `chart_title.top_margin`
+  with `LayoutError::Infeasible`, as it already did for axis and colourbar
+  dimensions. `Config::data_area` refuses a side whose total margin is negative
+  or non-finite and verifies that the returned rect lies inside the chart area, so
+  a malformed title margin can no longer produce a `u32::MAX`-tall data area and
+  a CPU colourbar raster over billions of bands (#6).
+
 ## Source patch — renderer 0.16.1 / model 0.10.0 / figgy 0.13.1
 
 - GPU resource retirement now transfers handles and their byte credits together
