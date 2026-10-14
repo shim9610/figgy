@@ -47,6 +47,11 @@ pub enum LayoutError {
     Infeasible,
 }
 
+/// How much of the data area, in pixels along each axis, must stay inside the
+/// chart area when margins push it past the chart edges, so its selection box
+/// and resize handles remain reachable.
+pub const MIN_VISIBLE_DATA_AREA_PX: u32 = 8;
+
 // Margin contribution helpers (used by sub-modules).
 //
 // Every contribution is counted regardless of visibility. `label_offset_{x,y}`
@@ -154,13 +159,12 @@ impl Config {
         let ca = &self.chart_area;
         let m = self.margins();
 
-        // A negative or non-finite margin would push the data area outside the
-        // chart area: a negative title margin passes the overflow checks below
-        // and grows the height past the canvas, saturating to `u32::MAX` in the
-        // cast. Every margin is a reserved band, so it must be finite and >= 0.
+        // A negative margin is just a coordinate: it moves that edge of the data
+        // area out past the chart edge, which is allowed. A NaN or infinite one
+        // is not a coordinate at all.
         if [m.top, m.bottom, m.left, m.right]
             .iter()
-            .any(|v| !(v.is_finite() && *v >= 0.0))
+            .any(|v| !v.is_finite())
         {
             return Err(LayoutError::Infeasible);
         }
@@ -189,19 +193,35 @@ impl Config {
             return Err(LayoutError::EmptyDataArea);
         }
 
+        // `Rect` is unsigned, so the data area cannot start above or left of the
+        // canvas origin, nor end past `u32::MAX`: the cast would saturate and
+        // silently move the opposite edge instead.
+        let max = f64::from(u32::MAX);
+        if x < 0.0
+            || y < 0.0
+            || f64::from(x) + f64::from(w) > max
+            || f64::from(y) + f64::from(h) > max
+        {
+            return Err(LayoutError::TargetOutOfChartArea);
+        }
         let rect = Rect {
             x: x.floor() as u32,
             y: y.floor() as u32,
             width: w.floor() as u32,
             height: h.floor() as u32,
         };
-        // f32 rounding on very large chart areas must not let the floored rect
-        // poke past the chart area either.
-        let fits = |start: u32, len: u32, ca_start: u32, ca_len: u32| {
-            start >= ca_start
-                && u64::from(start) + u64::from(len) <= u64::from(ca_start) + u64::from(ca_len)
+        // The data area may run past the chart edges, but it must keep a
+        // grabbable strip on screen: once it is entirely outside, it can no
+        // longer be selected or dragged back. A data area smaller than the
+        // strip only has to stay wholly inside.
+        let keeps_visible_edge = |start: u32, len: u32, ca_start: u32, ca_len: u32| {
+            let lo = i64::from(start.max(ca_start));
+            let hi =
+                (i64::from(start) + i64::from(len)).min(i64::from(ca_start) + i64::from(ca_len));
+            hi - lo >= i64::from(MIN_VISIBLE_DATA_AREA_PX.min(len).min(ca_len))
         };
-        if !fits(rect.x, rect.width, ca.x, ca.width) || !fits(rect.y, rect.height, ca.y, ca.height)
+        if !keeps_visible_edge(rect.x, rect.width, ca.x, ca.width)
+            || !keeps_visible_edge(rect.y, rect.height, ca.y, ca.height)
         {
             return Err(LayoutError::TargetOutOfChartArea);
         }
@@ -220,12 +240,6 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), LayoutError> {
-        // The title band is reserved space like an axis margin: it has to be
-        // finite and non-negative, and it has to fit (checked by `data_area`).
-        let title = self.chart_title.top_margin;
-        if !(title.is_finite() && title >= 0.0) {
-            return Err(LayoutError::Infeasible);
-        }
         let _ = self.data_area()?;
         for axis in [&self.top_x, &self.bottom_x, &self.left_y, &self.right_y] {
             axis_dims_feasible(axis)?;
@@ -428,14 +442,14 @@ mod tests {
         }
     }
 
-    // Issue #6: a negative title margin passed the overflow checks and grew the
-    // data area of a 320x240 chart to height u32::MAX, which the colourbar
-    // raster then tried to fill band by band.
-    fn small_chart_with_title_margin(top_margin: f32) -> Config {
+    // Issue #6: a negative title margin is a coordinate, not an error. It may
+    // push the data area past the chart edge, as long as the unsigned rect can
+    // hold it and a grabbable strip stays on screen.
+    fn small_chart(y: u32, top_margin: f32) -> Config {
         let mut cfg = config_with_colorbar(Side::Right);
         cfg.chart_area = ChartArea(Rect {
             x: 0,
-            y: 0,
+            y,
             width: 320,
             height: 240,
         });
@@ -443,43 +457,184 @@ mod tests {
         cfg
     }
 
-    #[test]
-    fn a_negative_or_non_finite_title_margin_is_rejected() {
-        assert!(small_chart_with_title_margin(0.0).validate().is_ok());
-        for margin in [-1e38, -1.0, f32::NAN, f32::NEG_INFINITY] {
-            let cfg = small_chart_with_title_margin(margin);
-            assert_eq!(
-                cfg.validate(),
-                Err(LayoutError::Infeasible),
-                "validate must reject title margin {margin}"
-            );
-        }
-        // Without validate(), data_area() still refuses any margin that would
-        // carry the data area outside the chart area.
-        for margin in [-1e38, f32::NAN, f32::NEG_INFINITY] {
-            assert_eq!(
-                small_chart_with_title_margin(margin).data_area(),
-                Err(LayoutError::Infeasible),
-                "data_area must reject title margin {margin}"
-            );
-        }
+    fn bottom_edge(cfg: &Config) -> f32 {
+        cfg.chart_area.y as f32 + cfg.chart_area.height as f32 - cfg.margins().bottom
     }
 
     #[test]
-    fn a_title_margin_taller_than_the_chart_is_rejected() {
-        let cfg = small_chart_with_title_margin(1e38);
-        assert!(matches!(
-            cfg.validate(),
-            Err(LayoutError::OverflowVertical { .. })
-        ));
+    fn a_negative_title_margin_is_a_coordinate() {
+        for (y, margin) in [(0, -5.0), (100, -60.0), (100, -90.0)] {
+            let cfg = small_chart(y, margin);
+            assert!(cfg.validate().is_ok(), "y {y}, title margin {margin}");
+            let da = cfg.data_area().expect("data area").0;
+            // The top edge follows the margin; the bottom edge does not move.
+            assert_eq!(da.y as f32, (y as f32 + cfg.margins().top).floor());
+            assert_eq!((da.y + da.height) as f32, bottom_edge(&cfg).floor());
+        }
+        // Running past the chart's top edge is allowed when the canvas has room.
+        assert!(small_chart(100, -90.0).data_area().unwrap().0.y < 100);
     }
 
-    // Any negative margin, not only the title's, must not escape the chart area
-    // through data_area(), even when validate() is skipped.
+    // `Rect` is unsigned: a data area starting above the canvas origin used to
+    // saturate to y = 0 and keep its height, moving the bottom edge down.
     #[test]
-    fn data_area_rejects_negative_axis_margins() {
-        let mut cfg = default_config();
-        cfg.left_y.out_margin = -1e9;
-        assert_eq!(cfg.data_area(), Err(LayoutError::Infeasible));
+    fn a_data_area_above_the_canvas_origin_is_refused_not_shifted() {
+        let cfg = small_chart(0, -60.0);
+        assert!(cfg.margins().top < 0.0);
+        assert_eq!(cfg.data_area(), Err(LayoutError::TargetOutOfChartArea));
+        assert!(cfg.validate().is_err());
+        // The issue's reproduction.
+        assert_eq!(
+            small_chart(0, -1e38).data_area(),
+            Err(LayoutError::TargetOutOfChartArea)
+        );
+    }
+
+    #[test]
+    fn a_non_finite_margin_is_rejected() {
+        for margin in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let cfg = small_chart(100, margin);
+            assert_eq!(cfg.data_area(), Err(LayoutError::Infeasible), "{margin}");
+            assert!(cfg.validate().is_err());
+        }
+    }
+
+    // Past `u32::MAX` the unsigned rect cannot hold the far edge.
+    #[test]
+    fn a_data_area_past_u32_max_is_refused() {
+        let mut cfg = small_chart(0, 32.0);
+        cfg.bottom_x.out_margin = -1e38;
+        assert_eq!(cfg.data_area(), Err(LayoutError::TargetOutOfChartArea));
+    }
+
+    // The data area must keep MIN_VISIBLE_DATA_AREA_PX inside the chart area,
+    // so it can still be selected and dragged back.
+    #[test]
+    fn the_data_area_keeps_a_visible_strip() {
+        use super::MIN_VISIBLE_DATA_AREA_PX as MIN;
+        let base = small_chart(100, 32.0);
+        let ca_bottom = (base.chart_area.y + base.chart_area.height) as f32;
+        let top = base.margins().top;
+        // Choose the title margin so the data area starts `inside` px above the
+        // chart's bottom edge.
+        let with_strip = |inside: f32| {
+            let mut cfg = base.clone();
+            let shift = ca_bottom - inside - (cfg.chart_area.y as f32 + top);
+            cfg.chart_title.top_margin += shift;
+            cfg.bottom_x.out_margin -= shift;
+            cfg
+        };
+        assert!(with_strip(MIN as f32).data_area().is_ok());
+        assert_eq!(
+            with_strip(MIN as f32 - 1.0).data_area(),
+            Err(LayoutError::TargetOutOfChartArea)
+        );
+        assert_eq!(
+            with_strip(-20.0).data_area(),
+            Err(LayoutError::TargetOutOfChartArea)
+        );
+        // A data area smaller than the strip only has to stay inside.
+        let mut tiny = base.clone();
+        let m = tiny.margins();
+        tiny.bottom_x.out_margin += tiny.chart_area.height as f32 - m.top - m.bottom - 3.0;
+        let da = tiny.data_area().expect("tiny data area").0;
+        assert!(da.height < MIN);
+    }
+
+    // The selection box of every chrome element is derived from `data_area()`,
+    // so an interaction that left it erroring would drop the selection. Drive
+    // random edge drags, data-area moves, margin edits and resizes from random
+    // valid layouts: the layout must stay valid after each step, whether the
+    // step was applied or refused, and the display copy must never trip the
+    // origin or visible-strip guard.
+    #[test]
+    fn interactions_from_a_valid_layout_never_lose_the_data_area() {
+        use crate::layout::{Element, FitStrategy};
+
+        let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f32 / (1u64 << 53) as f32
+        };
+        let sides = [Side::Top, Side::Bottom, Side::Left, Side::Right];
+        let mut checked = 0usize;
+
+        for _ in 0..1500 {
+            let mut cfg = default_config();
+            cfg.chart_area = ChartArea(Rect {
+                x: (next() * 5000.0) as u32,
+                y: (next() * 5000.0) as u32,
+                width: 40 + (next() * 4000.0) as u32,
+                height: 40 + (next() * 4000.0) as u32,
+            });
+            cfg.chart_title.top_margin = next() * 120.0;
+            for side in &sides {
+                super::axis_mut(&mut cfg, side).out_margin = next() * 90.0;
+            }
+            if next() < 0.5 {
+                let mut bar = default_colorbar_options();
+                bar.side = sides[(next() * 4.0) as usize % 4].clone();
+                cfg.colorbar = Some(bar);
+            }
+            if cfg.validate().is_err() {
+                continue;
+            }
+
+            for _ in 0..150 {
+                let side = sides[(next() * 4.0) as usize % 4].clone();
+                let (dx, dy) = ((next() - 0.5) * 120.0, (next() - 0.5) * 120.0);
+                let before = cfg.clone();
+                match (next() * 6.0) as u32 {
+                    0 | 1 => {
+                        let _ = cfg.nudge(Element::DataAreaEdge(side), dx, dy);
+                    }
+                    2 => {
+                        let _ = cfg.nudge(Element::DataArea, dx, dy);
+                    }
+                    3 => {
+                        let _ = cfg.set_side_margin(side, next() * 300.0);
+                    }
+                    4 => {
+                        let ca = cfg.chart_area.0;
+                        let _ = cfg.resize_chart_area_scaled(ChartArea(Rect {
+                            x: ca.x,
+                            y: ca.y,
+                            width: 20 + (next() * 4000.0) as u32,
+                            height: 20 + (next() * 4000.0) as u32,
+                        }));
+                    }
+                    _ => {
+                        let m = cfg.margins();
+                        let _ = cfg.set_margins(
+                            super::Margins {
+                                top: m.top + dy,
+                                ..m
+                            },
+                            FitStrategy::ProportionalScale,
+                        );
+                    }
+                }
+                assert!(
+                    cfg.validate().is_ok(),
+                    "an interaction left an invalid layout: {:?} -> {:?}",
+                    before.margins(),
+                    cfg.margins()
+                );
+                // The display copy (high-DPI scale) must stay valid too.
+                let scale = 0.5 + next() * 3.5;
+                let shown = cfg.scaled(scale);
+                match shown.data_area() {
+                    Ok(_)
+                    | Err(LayoutError::OverflowHorizontal { .. })
+                    | Err(LayoutError::OverflowVertical { .. })
+                    | Err(LayoutError::EmptyDataArea) => {}
+                    Err(e) => panic!("display scale {scale} hit a new rejection: {e:?}"),
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked > 100_000, "only {checked} steps exercised");
     }
 }

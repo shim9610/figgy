@@ -810,20 +810,26 @@ mod tests {
 
     // Issue #6: every renderer edit entry point (`register_chart`,
     // `set_chart_config`, `set_chart_state`, `set_chart_view_state`) runs this
-    // gate before touching state, so a malformed title margin is refused as an
-    // error and the previous config stays published.
+    // gate before touching state. A negative title margin is a coordinate and
+    // passes; one that would carry the data area above the canvas origin, or a
+    // non-finite one, is refused and the previous config stays published.
     #[test]
-    fn validate_renderer_config_rejects_a_malformed_title_margin() {
-        let mut ok = dummy_config();
-        ok.colorbar = Some(crate::default::default_colorbar_options());
-        assert!(validate_renderer_config(&ok).is_ok());
+    fn validate_renderer_config_takes_title_margins_as_coordinates() {
+        let mut cfg = dummy_config();
+        cfg.colorbar = Some(crate::default::default_colorbar_options());
+        assert_eq!(cfg.chart_area.0.y, 0);
+        assert!(validate_renderer_config(&cfg).is_ok());
 
-        for margin in [-1e38, -1.0, f32::NAN, f32::NEG_INFINITY, f32::INFINITY] {
-            let mut cfg = ok.clone();
-            cfg.chart_title.top_margin = margin;
+        let with_title = |margin: f32| {
+            let mut c = cfg.clone();
+            c.chart_title.top_margin = margin;
+            c
+        };
+        assert!(validate_renderer_config(&with_title(-5.0)).is_ok());
+        for margin in [-1e38, f32::NAN, f32::NEG_INFINITY, f32::INFINITY] {
             assert!(
                 matches!(
-                    validate_renderer_config(&cfg),
+                    validate_renderer_config(&with_title(margin)),
                     Err(FiggyError::InvalidConfig {
                         field: "layout",
                         ..

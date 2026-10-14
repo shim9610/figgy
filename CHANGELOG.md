@@ -8,12 +8,17 @@ does not imply a standalone JavaScript product or a Studio deployment.
 
 ## Unreleased
 
-- `Config::validate` rejects a negative or non-finite `chart_title.top_margin`
-  with `LayoutError::Infeasible`, as it already did for axis and colourbar
-  dimensions. `Config::data_area` refuses a side whose total margin is negative
-  or non-finite and verifies that the returned rect lies inside the chart area, so
-  a malformed title margin can no longer produce a `u32::MAX`-tall data area and
-  a CPU colourbar raster over billions of bands (#6).
+- The CPU colourbar raster draws only the bands that land on the canvas. A
+  strip following a data area that runs far past the chart edges no longer
+  costs work proportional to its length (#6: billions of bands on a 320×240
+  canvas).
+- Negative margins remain coordinates that may move the data area past the
+  chart edges. `Config::data_area` now refuses a layout it cannot represent or
+  that would leave nothing to grab: a non-finite margin (`Infeasible`), a data
+  area starting above or left of the canvas origin or ending past `u32::MAX`,
+  and one keeping less than `MIN_VISIBLE_DATA_AREA_PX` (8 px, or its whole
+  size if smaller) inside the chart area (`TargetOutOfChartArea`). Previously
+  a start above the origin saturated to 0 and moved the opposite edge.
 
 ## Source patch — renderer 0.16.1 / model 0.10.0 / figgy 0.13.1
 
