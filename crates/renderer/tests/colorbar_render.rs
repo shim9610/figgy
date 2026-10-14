@@ -245,3 +245,62 @@ fn colorbar_selection_and_resize_probe() {
         fs::write(dir.join(format!("colorbar-{name}.png")), png).expect("write probe png");
     }
 }
+
+/// Issue #6: margins may carry the data area far past the canvas, and the
+/// colourbar strip follows it. The CPU raster must draw only the bands on the
+/// canvas instead of iterating over the whole strip (once billions of bands).
+#[test]
+fn colorbar_raster_work_is_bounded_by_the_canvas() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let mut cfg = renderer::default::default_config();
+    cfg.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: 320,
+        height: 240,
+    });
+    cfg.colorbar = Some(renderer::default::default_colorbar_options());
+    // A data area about four billion pixels tall that still starts on screen.
+    cfg.bottom_x.out_margin = -4.0e9;
+    let da = cfg.data_area().expect("representable data area").0;
+    assert!(da.height > 3_000_000_000, "data area height {}", da.height);
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result =
+            try_raster_chart_layer_to_rgba_with_selection(&cfg, AxisLayerKind::Decoration, &[]);
+        let _ = tx.send(result);
+    });
+    let rgba = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("CPU colourbar raster did not finish within 10 s")
+        .expect("raster succeeds");
+    assert_eq!(rgba.len(), 320 * 240 * 4);
+    // The visible part of the strip is still painted.
+    assert!(
+        rgba.as_chunks::<4>().0.iter().any(|px| px[3] != 0),
+        "nothing was drawn"
+    );
+}
+
+/// The issue's reproduction: a title margin of -1e38 would start the data area
+/// above the canvas origin, which the unsigned rect cannot hold. It is refused,
+/// and the raster returns promptly with nothing in the data-area layers.
+#[test]
+fn issue_6_title_margin_reproduction_returns_promptly() {
+    let mut cfg = renderer::default::default_config();
+    cfg.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: 320,
+        height: 240,
+    });
+    cfg.colorbar = Some(renderer::default::default_colorbar_options());
+    cfg.chart_title.top_margin = -1e38;
+    assert!(cfg.validate().is_err());
+    let rgba = try_raster_chart_layer_to_rgba_with_selection(&cfg, AxisLayerKind::Decoration, &[])
+        .expect("raster succeeds");
+    assert_eq!(rgba.len(), 320 * 240 * 4);
+}

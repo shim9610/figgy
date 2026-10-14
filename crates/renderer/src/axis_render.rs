@@ -633,7 +633,27 @@ fn draw_colorbar_strip(canvas: &mut Canvas, bar: &crate::config::ColorBarOptions
     let bands = (length.floor() as usize).max(1);
     let step = length / bands as f32;
 
-    for i in 0..bands {
+    // Only the bands that land on the canvas are drawn. The strip follows the
+    // data area, which may run far past the chart edges; without this the work
+    // grows with the strip's length rather than the canvas (issue #6: a strip
+    // billions of pixels long). Band colours still come from the full length.
+    let Some((vx0, vy0, vx1, vy1)) = canvas.visible_bounds() else {
+        return;
+    };
+    let (cross_lo, cross_hi, along_lo, along_hi, start) = if vertical {
+        (rect.x, rect.x + rect.width, vy0, vy1, rect.y)
+    } else {
+        (rect.y, rect.y + rect.height, vx0, vx1, rect.x)
+    };
+    let (cross_vis_lo, cross_vis_hi) = if vertical { (vx0, vx1) } else { (vy0, vy1) };
+    if cross_hi <= cross_vis_lo || cross_lo >= cross_vis_hi {
+        return;
+    }
+    let band_at = |pos: f32| ((f64::from(pos) - f64::from(start)) / f64::from(step)).max(0.0);
+    let first = (band_at(along_lo).floor() as usize).min(bands);
+    let last = (band_at(along_hi).ceil() as usize).min(bands);
+
+    for i in first..last {
         // Screen fraction of this band's centre, measured from the low end of
         // the axis (bottom for a vertical bar, left for a horizontal one).
         let along = (i as f32 + 0.5) / bands as f32;

@@ -132,6 +132,30 @@ impl Canvas {
         (self.pix.width(), self.pix.height())
     }
 
+    /// The pixmap's bounds mapped back through the current transform, as
+    /// `(min_x, min_y, max_x, max_y)` in drawing coordinates. Anything drawn
+    /// outside this box is clipped away, so loops whose work grows with the
+    /// drawn geometry can skip it. `None` for a non-invertible transform.
+    pub(crate) fn visible_bounds(&self) -> Option<(f32, f32, f32, f32)> {
+        let inv = self.ts.invert()?;
+        let (w, h) = (self.pix.width() as f32, self.pix.height() as f32);
+        let mut corners = [
+            tiny_skia::Point::from_xy(0.0, 0.0),
+            tiny_skia::Point::from_xy(w, 0.0),
+            tiny_skia::Point::from_xy(0.0, h),
+            tiny_skia::Point::from_xy(w, h),
+        ];
+        inv.map_points(&mut corners);
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for p in corners {
+            x0 = x0.min(p.x);
+            y0 = y0.min(p.y);
+            x1 = x1.max(p.x);
+            y1 = y1.max(p.y);
+        }
+        Some((x0, y0, x1, y1))
+    }
+
     // Transform stack — same accumulation semantics as a skia canvas: a
     // transform pushed later applies to drawn coordinates first.
 
