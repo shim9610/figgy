@@ -808,6 +808,32 @@ mod tests {
         assert_eq!(chart.config(), &config);
     }
 
+    // Issue #6: every renderer edit entry point (`register_chart`,
+    // `set_chart_config`, `set_chart_state`, `set_chart_view_state`) runs this
+    // gate before touching state, so a malformed title margin is refused as an
+    // error and the previous config stays published.
+    #[test]
+    fn validate_renderer_config_rejects_a_malformed_title_margin() {
+        let mut ok = dummy_config();
+        ok.colorbar = Some(crate::default::default_colorbar_options());
+        assert!(validate_renderer_config(&ok).is_ok());
+
+        for margin in [-1e38, -1.0, f32::NAN, f32::NEG_INFINITY, f32::INFINITY] {
+            let mut cfg = ok.clone();
+            cfg.chart_title.top_margin = margin;
+            assert!(
+                matches!(
+                    validate_renderer_config(&cfg),
+                    Err(FiggyError::InvalidConfig {
+                        field: "layout",
+                        ..
+                    })
+                ),
+                "title margin {margin} must be refused at the renderer boundary"
+            );
+        }
+    }
+
     // The colourbar's z axis goes through the same renderer-side gate as the
     // four chart axes. A log colourbar starting at zero has no `t` for its
     // lowest colour, exactly as a log x axis starting at zero has no screen
