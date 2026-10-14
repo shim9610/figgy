@@ -6,6 +6,20 @@ does not imply a standalone JavaScript product or a Studio deployment.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
+## Unreleased
+
+- The CPU colourbar raster draws only the bands that land on the canvas. A
+  strip following a data area that runs far past the chart edges no longer
+  costs work proportional to its length (#6: billions of bands on a 320×240
+  canvas).
+- Negative margins remain coordinates that may move the data area past the
+  chart edges. `Config::data_area` now refuses a layout it cannot represent or
+  that would leave nothing to grab: a non-finite margin (`Infeasible`), a data
+  area starting above or left of the canvas origin or ending past `u32::MAX`,
+  and one keeping less than `MIN_VISIBLE_DATA_AREA_PX` (8 px, or its whole
+  size if smaller) inside the chart area (`TargetOutOfChartArea`). Previously
+  a start above the origin saturated to 0 and moved the opposite edge.
+
 ## Source patch — renderer 0.16.1 / model 0.10.0 / figgy 0.13.1
 
 - GPU resource retirement now transfers handles and their byte credits together
