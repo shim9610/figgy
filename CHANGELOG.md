@@ -1,8 +1,11 @@
-# Source release history
+# Release history
 
 `figgy-renderer` and `figgy-model` are the Rust library packages. `figgy` in this
 history is the separate browser integration example in `crates/web`; its version
 does not imply a standalone JavaScript product or a Studio deployment.
+
+Publication statements in older source-release entries describe those releases
+at the time. The first crates.io publication is recorded below.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
@@ -38,9 +41,9 @@ does not imply a standalone JavaScript product or a Studio deployment.
 - The model remains 0.10.0. The WASM integration example advances to 0.13.1
   with the renderer dependency; this does not publish a registry crate or Studio.
 
-## Registry release preparation — not yet published
+## First crates.io release — 2026-10-13
 
-The intended first registry versions are **figgy-renderer 0.16.1** and
+The first published registry versions are **figgy-renderer 0.16.1** and
 **figgy-model 0.10.0**. Rust imports remain `renderer` and `model`; the renderer
 re-exports the model types. The patch below preserves public API signatures and
 the model schema.
@@ -59,13 +62,22 @@ the model schema.
   regressions also exercise each supported decoration's public select/drag/reset
   path at 1×/2×, cache reuse, old-frame immutability and serialized state restoration.
 
-Until publication, use the Git dependency in the [renderer quick start](crates/renderer/README.md#install-and-run)
-or [model guide](crates/model/README.md#install). The eventual registry dependencies
+Use the crates.io dependency in the [renderer quick start](crates/renderer/README.md#install-and-run)
+or [model guide](crates/model/README.md#install). The registry dependencies
 are `renderer = { package = "figgy-renderer", version = "0.16.1" }` and, for
 model-only consumers, `model = { package = "figgy-model", version = "0.10.0" }`.
 Native integration requires Rust 1.99 and wgpu 30. macOS/Metal remains experimental;
 physical GPU driver certification is outside the software/virtual CI results.
 The browser wrapper is an example with `publish = false`, not a registry product.
+
+The published 0.16.1 renderer and 0.10.0 model archives still contain the earlier
+unpublished/Git installation guidance. Their versioned docs.rs pages and crates.io
+READMEs are generated from those archives; merging these source documentation
+corrections or requesting a docs.rs rebuild cannot replace them. Corrected registry
+READMEs and API documentation require a subsequent release of each affected crate.
+A documentation-only patch release is sufficient; no public API, model schema or
+rendering change is needed. The old version URLs will retain the original text.
+This source correction does not publish or increment either package.
 
 ## Source release — renderer 0.16.0 / model 0.10.0 / figgy 0.13.0
 
@@ -256,6 +268,12 @@ This repository is the supported source distribution; the crates are not publish
 
 아래 `figgy` 버전은 `crates/web`의 브라우저 통합 예제를 가리킨다.
 Rust 렌더러의 버전 및 Studio 배포와는 구분한다.
+
+아래 과거 소스 릴리스의 미배포 설명은 당시 상태다. 최초 crates.io 배포는
+2026-10-13의 renderer 0.16.1 / model 0.10.0이며, 현재 설치법은 각 패키지의
+README를 따른다. 이미 배포한 버전의 docs.rs·crates.io README는 소스 문서 수정이나
+docs.rs 재빌드로 바뀌지 않는다. 수정된 공개 문서는 각 패키지의 후속 배포에 반영되며,
+문서만 고치는 패치 릴리스로 충분하다. 기존 버전 URL은 원문을 유지한다.
 
 ## 소스 릴리스 — renderer 0.16.0 / model 0.10.0 / figgy 0.13.0
 
