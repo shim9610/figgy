@@ -104,9 +104,7 @@ pub use streaming_source::{
     StreamingUsage, ViewResidencyStatus,
 };
 pub use text::MeasureText;
-pub use text_render::{
-    CpuTextMeasure, FontPolicy, available_font_families, font_family_available, register_font_bytes,
-};
+pub use text_render::{CpuTextMeasure, FontPolicy};
 
 pub use radial::{
     RadialChart, RadialError, RadialFrame, RadialInteraction, RadialKind, RadialLabelFormat,

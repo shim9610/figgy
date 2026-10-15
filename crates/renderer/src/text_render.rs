@@ -195,9 +195,10 @@ const BUNDLED_FAMILY: &str = "Liberation Sans";
 /// `RichText.font` never fails to render: a family that is neither registered
 /// ([`register_font_bytes`]) nor installed (native system font database) falls
 /// back to the bundled face. Hosts that want to report a typo or a missing font
-/// check the name here first. Matching is exactly the one resolution uses
-/// (fontdb's exact, case-sensitive family name), so `true` means resolution
-/// finds a face for the family. The empty string names the bundled face and
+/// check the name here first. Matching is the one resolution uses (fontdb's
+/// exact, case-sensitive family name), so `true` means resolution finds a face
+/// for the family. On wasm only registered fonts count: there is no system
+/// font database. The empty string names the bundled face and
 /// is always available. Generic CSS names such as `"sans-serif"` are not
 /// family names and report `false`, because resolution falls back for them.
 ///
@@ -217,28 +218,6 @@ pub fn font_family_available(family: &str) -> bool {
     system_family_available(family)
 }
 
-/// Every family name [`font_family_available`] accepts, sorted and without
-/// duplicates: the bundled face, registered fonts, and (native only) the
-/// system font database. Intended for error messages and font pickers.
-pub fn available_font_families() -> Vec<String> {
-    let mut families = vec![BUNDLED_FAMILY.to_string()];
-    {
-        let registered = registered_fonts()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        families.extend(face_family_names(&registered.db));
-    }
-    families.extend(system_family_names());
-    families.sort();
-    families.dedup();
-    families
-}
-
-fn face_family_names(db: &fontdb::Database) -> impl Iterator<Item = String> + '_ {
-    db.faces()
-        .flat_map(|face| face.families.iter().map(|(name, _)| name.clone()))
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 fn system_family_available(family: &str) -> bool {
     query_font(font_db(), family, false, false).is_some()
@@ -247,16 +226,6 @@ fn system_family_available(family: &str) -> bool {
 #[cfg(target_arch = "wasm32")]
 fn system_family_available(_family: &str) -> bool {
     false
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn system_family_names() -> Vec<String> {
-    face_family_names(font_db()).collect()
-}
-
-#[cfg(target_arch = "wasm32")]
-fn system_family_names() -> Vec<String> {
-    Vec::new()
 }
 
 fn lookup_registered_font(family: &str, bold: bool, italic: bool) -> Option<(&'static [u8], u32)> {
@@ -1335,14 +1304,10 @@ mod tests {
         );
         assert!(!font_family_available("sans-serif"));
 
-        // A registered family becomes available, and is listed.
+        // A registered family becomes available.
         let families = register_font_bytes(HANDWRITTEN_REGULAR.to_vec()).unwrap();
         assert_eq!(families, ["Comic Neue"]);
         assert!(font_family_available("Comic Neue"));
-        let listed = available_font_families();
-        assert!(listed.iter().any(|f| f == "Comic Neue"));
-        assert!(listed.iter().any(|f| f == BUNDLED_FAMILY));
-        assert!(listed.windows(2).all(|w| w[0] < w[1]), "sorted and unique");
         // And it is the face resolution now returns, not the fallback.
         assert_ne!(
             resolve_font("Comic Neue", false, false).key,

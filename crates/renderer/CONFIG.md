@@ -51,7 +51,7 @@ pub struct Config {
 | `color` | `Color` | Label color |
 | `font_size` | f32 | px |
 | `label_visible` | bool | Number labels themselves (separate from `visible`, e.g. show the axis but hide labels) |
-| `label_font` | String | Font family. Empty string → bundled Liberation Sans |
+| `label_font` | String | Font family. Empty string → bundled Liberation Sans. A family that is neither registered nor installed also falls back to it; `text_render::font_family_available(name)` tells hosts whether a name resolves |
 | `label_offset_x / y` | f32 | Fine nudge offset (px) |
 | `format` | `LabelFormat` | `Decimal / Power / Scientific / Timestamp`. `Timestamp` interprets numeric values as Unix epoch time on linear axes and can use calendar-aware ticks |
 | `significant_digits` | u8 | |
@@ -399,7 +399,7 @@ pub struct Config {
 | `color` | `Color` | 라벨 색 |
 | `font_size` | f32 | px |
 | `label_visible` | bool | 숫자 라벨 표시 여부. 축을 켠 상태에서 숫자만 숨길 수 있다. |
-| `label_font` | String | 글꼴 이름. 빈 문자열이면 내장 Liberation Sans 사용 |
+| `label_font` | String | 글꼴 이름. 빈 문자열이면 내장 Liberation Sans 사용. 등록되지도 설치되지도 않은 이름도 이 글꼴로 대체되며, 호스트는 `text_render::font_family_available(name)`으로 이름이 해석되는지 확인할 수 있다 |
 | `label_offset_x / y` | f32 | 라벨 위치를 미세 조절하는 이동량(px) |
 | `format` | `LabelFormat` | `Decimal / Power / Scientific / Timestamp`. `Timestamp`는 선형축의 숫자 좌표를 Unix 시간으로 표시하며 달력 기준 눈금을 지원한다. |
 | `significant_digits` | u8 | 유효 숫자 |

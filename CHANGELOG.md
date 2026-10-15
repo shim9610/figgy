@@ -11,6 +11,12 @@ at the time. The first crates.io publication is recorded below.
 
 ## Unreleased
 
+- `text_render::font_family_available(family)` reports whether a
+  `RichText.font` / `label_font` family resolves to a registered or installed
+  face instead of silently falling back to the bundled Liberation Sans. It
+  uses resolution's exact, case-sensitive match; the empty string and
+  `"Liberation Sans"` are always available, and on wasm only registered fonts
+  count. Rendering and the fallback itself are unchanged.
 - The CPU colourbar strip no longer shows translucent seams when its start or
   length falls on a fractional pixel. Interior band edges now snap to device
   pixels, so no pixel takes two partial anti-aliased covers; a grayscale strip
