@@ -1731,32 +1731,85 @@ mod tests {
         }
     }
 
-    // U+207B (superscript minus) is missing from every bundled face. With
-    // the default font it draws a real glyph when some installed face
-    // covers it; installed fonts vary across CI hosts, so the assertion is
-    // skipped when the fallback chain finds no face.
+    /// Whether `font` maps `ch` to a glyph with an outline. A test-local
+    /// check, independent of the coverage helper the fallback chain uses.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn outline_drawn(font: FontRef<'_>, ch: char, scale: &mut ScaleContext) -> bool {
+        let glyph = font.charmap().map(ch);
+        glyph != 0
+            && scale
+                .builder(font)
+                .size(FALLBACK_SIZE)
+                .build()
+                .scale_outline(glyph)
+                .is_some_and(|outline| !outline.is_empty())
+    }
+
+    /// Whether any face installed on this host draws `ch`, in any style.
+    /// This runs its own system scan, so it does not depend on the fallback
+    /// chain: if the chain's system step breaks, the test fails instead of
+    /// skipping.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn installed_face_draws(ch: char) -> bool {
+        let mut db = fontdb::Database::new();
+        db.load_system_fonts();
+        let mut scale = ScaleContext::new();
+        db.faces().any(|face| {
+            db.with_face_data(face.id, |data, index| {
+                FontRef::from_index(data, index as usize)
+                    .is_some_and(|font| outline_drawn(font, ch, &mut scale))
+            })
+            .unwrap_or(false)
+        })
+    }
+
+    // U+207B (superscript minus) is missing from every bundled face, and
+    // tests register only bundled faces, so with the default font only an
+    // installed system face can draw it. Installed fonts vary across CI
+    // hosts: the assertion runs only when some installed face draws it.
+    // The chain picks one face per family per requested style (CSS
+    // matching), and the covering face may be another style, so at least
+    // one of the four styles must draw a real glyph.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn superscript_minus_draws_from_an_installed_face_when_one_covers_it() {
         let _font_registration = FONT_REGISTRATION_TEST_LOCK
             .lock()
             .expect("font registration test lock poisoned");
         let ch = '\u{207B}';
-        assert!(!draws(embedded_font(false, false), ch), "fixture");
-        if find_fallback(ch, false, false).is_none() {
+        let mut scale = ScaleContext::new();
+        let bundled = [
+            EMBEDDED_REGULAR,
+            EMBEDDED_BOLD,
+            EMBEDDED_ITALIC,
+            EMBEDDED_BOLD_ITALIC,
+            HANDWRITTEN_REGULAR,
+            HANDWRITTEN_BOLD,
+        ];
+        for bytes in bundled {
+            let font = FontRef::from_index(bytes, 0).unwrap();
+            assert!(!outline_drawn(font, ch, &mut scale), "fixture");
+        }
+        if !installed_face_draws(ch) {
             return;
         }
         let policy = FontPolicy::Standard;
-        let minus = measure_plain_text("\u{207B}", "", FALLBACK_SIZE, false, false, policy);
-        let draw = |runs: &[(&str, f32)]| draw_runs(runs, "", false, false, policy);
+        let mut real_glyph = false;
+        for (bold, italic) in STYLES {
+            let minus = measure_plain_text("\u{207B}", "", FALLBACK_SIZE, bold, italic, policy);
+            let draw = |runs: &[(&str, f32)]| draw_runs(runs, "", bold, italic, policy);
+            assert!(
+                draw(&[("\u{207B}X", 4.0)]) == draw(&[("\u{207B}", 4.0), ("X", 4.0 + minus.width)]),
+                "the pen after U+207B (bold={bold} italic={italic}) must sit where \
+                 measurement ends it"
+            );
+            let drawn = draw(&[("\u{207B}", 4.0)]);
+            real_glyph |= has_ink(&drawn) && drawn != draw(&[(NOTDEF_TEXT, 4.0)]);
+        }
         assert!(
-            draw(&[("\u{207B}X", 4.0)]) == draw(&[("\u{207B}", 4.0), ("X", 4.0 + minus.width)]),
-            "the pen after U+207B must sit where measurement ends it"
-        );
-        let drawn = draw(&[("\u{207B}", 4.0)]);
-        assert!(has_ink(&drawn), "U+207B must ink");
-        assert!(
-            drawn != draw(&[(NOTDEF_TEXT, 4.0)]),
-            "U+207B must not draw the .notdef box"
+            real_glyph,
+            "an installed face draws U+207B, so the default font must draw it in \
+             at least one style instead of the .notdef box"
         );
     }
 
