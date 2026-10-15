@@ -118,7 +118,8 @@
 | `render_type` (DataRenderType, 태그) | `"Scatter"` `"Line"` `"ScatterLine"` `"ScatterErrorbarX"` `"ScatterErrorbarY"` `"ScatterErrorbarXY"` `"LineScatterErrorbarX"` `"LineScatterErrorbarY"` `"LineScatterErrorbarXY"` `"Histogram"` `"Heatmap"` `"Contour"` `"HeatmapContour"` |
 | `err_x` / `err_y` (ErrorRef, 태그) | `"Symmetric"` (`{column}`) / `"Asymmetric"` (`{lower, upper}`) |
 | `side` (Side) | `"Top"` `"Bottom"` `"Left"` `"Right"` |
-| `align` (BarAlign) | `"Start"` `"Center"` `"End"` |
+| `align` (BarAlign, 색상 막대) | `"Start"` `"Center"` `"End"` |
+| `align` (TextAlign, RichText) | `"Left"` `"Center"` `"Right"` |
 | `colormap` (ColorMap) | `"Viridis"` `"Magma"` `"Turbo"` `"GrayScale"` `"RdBu"` `{ "Custom": { "stops": [Color, …] } }` |
 | `orientation` (BarOrientation) | `"Vertical"` `"Horizontal"` |
 | `orientation` (MatrixOrientation) | `"ColumnsAreX"` `"ColumnsAreY"` |

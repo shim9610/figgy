@@ -47,7 +47,7 @@ pub enum TextAlign {
 
 impl TextAlign {
     /// `true` for the default, `Left`. Used to keep it out of serialized JSON.
-    pub fn is_left(&self) -> bool {
+    fn is_left(&self) -> bool {
         *self == TextAlign::Left
     }
 

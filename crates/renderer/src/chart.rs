@@ -399,14 +399,15 @@ impl Chart {
     // Text builders (raster only).
 
     /// Set the chart title text as plain segments. For styled segments
-    /// (bold, italic, …) edit `config_mut().chart_title.text` directly, then
-    /// call [`Self::fit_chart_title_margin`].
+    /// (bold, italic, …) edit `config_mut().chart_title.text` directly; a host
+    /// that wants the same band fit then calls
+    /// [`crate::layout::fit_chart_title_margin`] with
+    /// [`CpuTextMeasure::for_style`].
     ///
     /// As a helper it also derives the coupled title band: when the new text
     /// is taller than `top_margin` (a multi-line title, `'\n'`), the band
-    /// grows so the first line is not clipped at the top of the chart (see
-    /// [`Self::fit_chart_title_margin`]). A title that fits leaves the band
-    /// unchanged.
+    /// grows so the first line is not clipped at the top of the chart. A
+    /// title that fits leaves the band unchanged.
     pub fn with_title(mut self, text: &str) -> Self {
         fill_plain_segments(&mut self.config.chart_title.text, text);
         self.fit_chart_title_margin();
@@ -416,13 +417,9 @@ impl Chart {
 
     /// Grow `chart_title.top_margin` when the title, measured with the font
     /// this chart's draw style renders, is taller than its band
-    /// ([`crate::layout::fit_chart_title_margin`]).
-    ///
-    /// A title that fits leaves the band unchanged, and the band is never
-    /// shrunk. [`Self::with_title`] calls it; a host editing the title through
-    /// [`Self::config_mut`] may call it to get the same helper behaviour.
-    /// Returns whether the band changed (which marks the raster dirty).
-    pub fn fit_chart_title_margin(&mut self) -> bool {
+    /// ([`crate::layout::fit_chart_title_margin`]). Returns whether the band
+    /// changed, which marks the raster dirty.
+    fn fit_chart_title_margin(&mut self) -> bool {
         let measure = CpuTextMeasure::for_style(&self.config.draw_style);
         let changed = crate::layout::fit_chart_title_margin(&mut self.config, &measure);
         self.raster_dirty |= changed;

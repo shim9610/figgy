@@ -34,8 +34,10 @@ type FontLookupKey = (String, bool, bool);
 /// requested style: the chain after the primary face is the same whichever
 /// family missed.
 type FallbackKey = (char, bool, bool);
-/// Stable (leaked) swash backing bytes and face index of one fontdb face.
-type FaceBacking = (&'static [u8], u32);
+/// One fontdb face parsed once over stable (leaked) backing bytes. Keeping the
+/// parsed `FontRef` keeps one swash `CacheKey` per face, so every character
+/// and thread that resolves to the face shares its scaler and glyph caches.
+type FaceBacking = FontRef<'static>;
 type FaceBackingCache = HashMap<fontdb::ID, FaceBacking>;
 
 struct ResolvedFontCache {
@@ -222,8 +224,10 @@ pub fn register_font_bytes(bytes: Vec<u8>) -> Result<Vec<String>, String> {
     Ok(families)
 }
 
-/// Family name of the bundled default face. Naming it resolves to the same
-/// glyphs whether or not the system also has it installed.
+/// Family name of the bundled default face. Naming it always resolves to a
+/// Liberation Sans face (registered, installed, or the bundled copy, in normal
+/// resolution order), so it is always available; which copy is drawn is not
+/// guaranteed to be the bundled one.
 const BUNDLED_FAMILY: &str = "Liberation Sans";
 
 /// Whether `family` names a face the text stack can actually draw with,
@@ -234,9 +238,10 @@ const BUNDLED_FAMILY: &str = "Liberation Sans";
 /// back to the bundled face. Hosts that want to report a typo or a missing font
 /// check the name here first. Matching is the one resolution uses (fontdb's
 /// exact, case-sensitive family name), so `true` means resolution finds a face
-/// for the family. On wasm only registered fonts count: there is no system
-/// font database. The empty string names the bundled face and
-/// is always available. Generic CSS names such as `"sans-serif"` are not
+/// for the family. The empty string and `"Liberation Sans"` both name the
+/// bundled face and are always available, on wasm included; apart from those,
+/// on wasm only registered fonts count, because there is no system font
+/// database. Generic CSS names such as `"sans-serif"` are not
 /// family names and report `false`, because resolution falls back for them.
 ///
 /// Reads registered fonts under the registry mutex resolution already takes,
@@ -292,8 +297,11 @@ fn stable_face_backing(
         return Some(*face);
     }
     let face = db.with_face_data(id, |data, index| {
-        (&*Box::leak(data.to_vec().into_boxed_slice()), index)
-    })?;
+        // Parse before copying, so a face swash cannot read is never leaked.
+        FontRef::from_index(data, index as usize)?;
+        let bytes: &'static [u8] = Box::leak(data.to_vec().into_boxed_slice());
+        FontRef::from_index(bytes, index as usize)
+    })??;
     faces.insert(id, face);
     Some(face)
 }
@@ -442,11 +450,9 @@ fn fallback_font(ch: char, bold: bool, italic: bool) -> Option<FontRef<'static>>
 /// already consults system fonts on native. The registry and system face
 /// caches are locked one at a time, never nested.
 fn find_fallback(ch: char, bold: bool, italic: bool) -> Option<FontRef<'static>> {
-    let stable = |(bytes, index): FaceBacking| FontRef::from_index(bytes, index as usize);
     lookup_registered_fallback(ch, bold, italic)
-        .and_then(stable)
         .or_else(|| Some(embedded_font(bold, italic)).filter(|face| draws(*face, ch)))
-        .or_else(|| lookup_system_fallback(ch, bold, italic).and_then(stable))
+        .or_else(|| lookup_system_fallback(ch, bold, italic))
 }
 
 /// Bundled fonts parsed exactly once — `FontRef::from_index` mints a fresh
@@ -563,7 +569,6 @@ fn resolve_font(family: &str, bold: bool, italic: bool) -> FontRef<'static> {
         }
         let resolved = lookup_registered_font(family, bold, italic)
             .or_else(|| lookup_system_font(family, bold, italic))
-            .and_then(|(bytes, index)| FontRef::from_index(bytes, index as usize))
             .unwrap_or_else(|| embedded_font(bold, italic));
         cache.fonts.insert(key, resolved);
         resolved
@@ -1544,8 +1549,8 @@ mod tests {
         let first_face = fonts.lookup("Liberation Sans", false, false).unwrap();
         let resolved_count = fonts.resolved_faces.len();
         let second_face = fonts.lookup("Liberation Sans", false, false).unwrap();
-        assert_eq!(second_face.0.as_ptr(), first_face.0.as_ptr());
-        assert_eq!(second_face.1, first_face.1);
+        assert_eq!(second_face.data.as_ptr(), first_face.data.as_ptr());
+        assert_eq!(second_face.key, first_face.key, "one parsed face, one cache key");
         assert_eq!(
             fonts.resolved_faces.len(),
             resolved_count,
@@ -1705,11 +1710,6 @@ mod tests {
             "the bold-italic face draws 'α'"
         );
         assert!(draw("Comic Neue", true, true) == draw("", true, true));
-
-        // Leave the registered family complete, so upright lookups of
-        // "Liberation Sans" later in this process cannot match the italic faces.
-        register_font_bytes(EMBEDDED_REGULAR.to_vec()).unwrap();
-        register_font_bytes(EMBEDDED_BOLD.to_vec()).unwrap();
     }
 
     // A zero-width space inside a Comic Neue run (which lacks U+200B) takes

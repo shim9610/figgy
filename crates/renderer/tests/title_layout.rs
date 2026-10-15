@@ -106,9 +106,10 @@ fn with_title_grows_the_band_so_a_multi_line_title_is_not_clipped() {
     );
 
     // Fitting is idempotent and grow-only.
-    assert!(!chart.fit_chart_title_margin());
+    let measure = CpuTextMeasure::for_style(&cfg.draw_style);
+    assert!(!renderer::layout::fit_chart_title_margin(chart.config_mut(), &measure));
     chart.config_mut().chart_title.top_margin = 200.0;
-    assert!(!chart.fit_chart_title_margin());
+    assert!(!renderer::layout::fit_chart_title_margin(chart.config_mut(), &measure));
     assert_eq!(chart.config().chart_title.top_margin, 200.0);
 }
 
