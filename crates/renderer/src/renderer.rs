@@ -13208,6 +13208,21 @@ fn effective_series_primitives(
     }
 }
 
+/// Whether `style` draws every primitive `render_type` draws in the precise
+/// style.
+///
+/// A stylized mode silently skips the primitives it has no entry point for
+/// (bars, fields and contours outside precise; everything but marker lines in
+/// constellation), so a host that lets such a series reach the renderer gets
+/// an empty plot instead of an error. This is the single answer to "will this
+/// series be drawn": it compares the same per-style primitive selection the
+/// renderer uses at prepare time against the precise selection, so a host
+/// validating with it can never disagree with what is actually drawn.
+pub fn draw_style_supports(style: &DrawStyle, render_type: &DataRenderType) -> bool {
+    effective_series_primitives(style, render_type)
+        == effective_series_primitives(&DrawStyle::Precise, render_type)
+}
+
 /// Whether the constellation style has a rendering for this render type.
 ///
 /// Exhaustive rather than `matches!(rt, ScatterLine { .. })` for the same reason
@@ -17049,6 +17064,96 @@ mod tests {
             }),
             Some(GpuSeriesExtentMode::Line)
         );
+    }
+
+    #[test]
+    fn draw_style_supports_matches_the_primitives_each_style_draws() {
+        let line = DataLineStyleConfig {
+            line_style: LineStylePreset::Solid,
+            line_color: Color::BLACK,
+            line_width: 1.0,
+        };
+        let scatter = crate::data_config::DataScatterStyleConfig {
+            point_color: Color::BLACK,
+            point_shape: crate::data_config::ScatterShape::Circle,
+            point_size: 4.0,
+            point_style_table: None,
+            point_style_index_column: None,
+            point_style_overrides: None,
+        };
+        let matrix = crate::data_config::MatrixRef {
+            columns: vec!["z0".into()],
+            orientation: crate::data_config::MatrixOrientation::ColumnsAreX,
+            grid_layout: crate::data_config::GridLayout::Centers,
+        };
+        let fill = crate::data_config::FieldFillConfig {
+            mode: crate::data_config::FillMode::Continuous,
+            shading: crate::data_config::Shading::Flat,
+            opacity: 1.0,
+        };
+        let contour = crate::data_config::ContourConfig {
+            levels: vec![1.0],
+            line: line.clone(),
+            per_level_color: None,
+            labels: None,
+        };
+        let line_rt = DataRenderType::Line { line: line.clone() };
+        let scatter_rt = DataRenderType::Scatter {
+            scatter: scatter.clone(),
+        };
+        let marker_line_rt = DataRenderType::ScatterLine {
+            scatter,
+            line: line.clone(),
+        };
+        let precise_only = [
+            DataRenderType::Histogram {
+                bar: crate::data_config::DataBarStyleConfig {
+                    fill_color: Color::BLACK,
+                    border_color: Color::BLACK,
+                    border_width: 1.0,
+                    baseline: 0.0,
+                    gap_px: 1.0,
+                    width_ratio: 1.0,
+                    orientation: crate::data_config::BarOrientation::Vertical,
+                    bar_style_overrides: None,
+                },
+            },
+            DataRenderType::Heatmap {
+                matrix: matrix.clone(),
+                fill: fill.clone(),
+            },
+            DataRenderType::Contour {
+                matrix: matrix.clone(),
+                contour: contour.clone(),
+            },
+            DataRenderType::HeatmapContour {
+                matrix,
+                fill,
+                contour,
+            },
+        ];
+        let sketch = DrawStyle::Sketch(Default::default());
+        let milkyway = DrawStyle::Milkyway(Default::default());
+        let constellation = DrawStyle::Constellation(Default::default());
+
+        for rt in [&line_rt, &scatter_rt, &marker_line_rt]
+            .into_iter()
+            .chain(&precise_only)
+        {
+            assert!(draw_style_supports(&DrawStyle::Precise, rt), "{rt:?}");
+        }
+        for rt in [&line_rt, &scatter_rt, &marker_line_rt] {
+            assert!(draw_style_supports(&sketch, rt), "sketch {rt:?}");
+            assert!(draw_style_supports(&milkyway, rt), "milkyway {rt:?}");
+        }
+        for rt in &precise_only {
+            assert!(!draw_style_supports(&sketch, rt), "sketch {rt:?}");
+            assert!(!draw_style_supports(&milkyway, rt), "milkyway {rt:?}");
+            assert!(!draw_style_supports(&constellation, rt), "constellation {rt:?}");
+        }
+        assert!(draw_style_supports(&constellation, &marker_line_rt));
+        assert!(!draw_style_supports(&constellation, &line_rt));
+        assert!(!draw_style_supports(&constellation, &scatter_rt));
     }
 
     #[test]

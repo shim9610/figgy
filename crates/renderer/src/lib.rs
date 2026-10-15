@@ -87,7 +87,7 @@ pub use renderer::{
     FitCommitToken, GpuPickRequest, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE, PreparedFrame, RasterImage,
     RegisteredChartDrawItem, RenderRevision, Renderer, RendererDevice, RendererLoadDemo,
     RendererVisualStamp, Series, SeriesDrawInfo, WebDerivedSnapshot, WebDerivedStamp,
-    WindowedRenderer, StreamingOperation, StreamingSelectionRequest, StreamingSelectionTicket, clamp_export_scale, display_config_for_surface, dpi_to_scale, encode_png,
+    WindowedRenderer, StreamingOperation, StreamingSelectionRequest, StreamingSelectionTicket, clamp_export_scale, display_config_for_surface, dpi_to_scale, draw_style_supports, encode_png,
     fit_display_panel,
 };
 pub use resize::{Resizable, ResizeHandle};
@@ -104,7 +104,9 @@ pub use streaming_source::{
     StreamingUsage, ViewResidencyStatus,
 };
 pub use text::MeasureText;
-pub use text_render::{CpuTextMeasure, FontPolicy};
+pub use text_render::{
+    CpuTextMeasure, FontPolicy, available_font_families, font_family_available, register_font_bytes,
+};
 
 pub use radial::{
     RadialChart, RadialError, RadialFrame, RadialInteraction, RadialKind, RadialLabelFormat,

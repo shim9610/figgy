@@ -665,10 +665,20 @@ fn draw_colorbar_strip(canvas: &mut Canvas, bar: &crate::config::ColorBarOptions
         };
         let paint = Paint::fill(&bar.colormap.sample(value_fraction));
         let offset = i as f32 * step;
+        // Each band but the last also covers the next band's span; the next
+        // band, drawn after it, paints over that overlap. Bands start at
+        // fractional positions, so a pixel on a shared edge is only partly
+        // covered by each band. Two anti-aliased partial covers composite to
+        // alpha c + (1 - c)², not 1, and along the strip that leaves
+        // translucent rows whose phase drifts into visible plateaus. Under
+        // the overlap the earlier band covers the edge pixel fully and the
+        // later one blends over it: the edge stays opaque, and its colour is
+        // still the coverage-weighted mix of the two bands.
+        let extent = if i + 1 < bands { 2.0 * step } else { step };
         if vertical {
-            canvas.draw_rect(rect.x, rect.y + offset, rect.width, step, &paint);
+            canvas.draw_rect(rect.x, rect.y + offset, rect.width, extent, &paint);
         } else {
-            canvas.draw_rect(rect.x + offset, rect.y, step, rect.height, &paint);
+            canvas.draw_rect(rect.x + offset, rect.y, extent, rect.height, &paint);
         }
     }
 }
@@ -2925,6 +2935,64 @@ mod tests {
                 3,
                 &format!("{side:?} right of a horizontal bar is axis.max"),
             );
+        }
+    }
+
+    /// A strip whose length is not a whole number of pixels still paints every
+    /// interior pixel opaque and its ramp monotonically. Bands then start at
+    /// fractional positions; drawn edge to edge, each shared edge pixel was two
+    /// partial anti-aliased covers whose composite stays translucent, and the
+    /// drifting phase of those edges showed as plateaus with jumps at about a
+    /// third and two thirds of a grayscale bar.
+    #[test]
+    fn a_fractional_length_strip_is_opaque_and_monotonic() {
+        for side in [Side::Right, Side::Top] {
+            for length_frac in [0.75, 0.6137, 0.9] {
+                let mut cfg = colorbar_config(side.clone());
+                let bar = cfg.colorbar.as_mut().expect("colourbar");
+                bar.length_frac = length_frac;
+                bar.colormap = crate::colormap::ColorMap::GrayScale;
+                let rect = strip_rect(&cfg);
+                let rgba = raster(&cfg);
+                let vertical = matches!(side, Side::Left | Side::Right);
+                // Skip the outermost pixel at each end: the strip's own ends
+                // are anti-aliased against the background, as they should be.
+                let (lo, hi) = if vertical {
+                    (rect.y.ceil() as u32 + 1, (rect.y + rect.height).floor() as u32 - 1)
+                } else {
+                    (rect.x.ceil() as u32 + 1, (rect.x + rect.width).floor() as u32 - 1)
+                };
+                let mid = if vertical {
+                    rect.x + rect.width * 0.5
+                } else {
+                    rect.y + rect.height * 0.5
+                };
+                // Walk from the axis.min end so the gray level must rise.
+                let along: Vec<u32> = if vertical {
+                    (lo..hi).rev().collect()
+                } else {
+                    (lo..hi).collect()
+                };
+                let mut previous = 0u8;
+                for pos in along {
+                    let p = if vertical {
+                        pixel_at(&rgba, mid, pos as f32 + 0.5)
+                    } else {
+                        pixel_at(&rgba, pos as f32 + 0.5, mid)
+                    };
+                    assert_eq!(
+                        p[3], 255,
+                        "{side:?} length_frac {length_frac}: pixel {pos} is translucent {p:?}"
+                    );
+                    assert!(
+                        p[0] >= previous,
+                        "{side:?} length_frac {length_frac}: gray falls at pixel {pos} \
+                         ({previous} -> {})",
+                        p[0]
+                    );
+                    previous = p[0];
+                }
+            }
         }
     }
 

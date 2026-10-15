@@ -185,6 +185,80 @@ pub fn register_font_bytes(bytes: Vec<u8>) -> Result<Vec<String>, String> {
     Ok(families)
 }
 
+/// Family name of the bundled default face. Naming it resolves to the same
+/// glyphs whether or not the system also has it installed.
+const BUNDLED_FAMILY: &str = "Liberation Sans";
+
+/// Whether `family` names a face the text stack can actually draw with,
+/// rather than one it silently replaces with the bundled Liberation Sans.
+///
+/// `RichText.font` never fails to render: a family that is neither registered
+/// ([`register_font_bytes`]) nor installed (native system font database) falls
+/// back to the bundled face. Hosts that want to report a typo or a missing font
+/// check the name here first. Matching is exactly the one resolution uses
+/// (fontdb's exact, case-sensitive family name), so `true` means resolution
+/// finds a face for the family. The empty string names the bundled face and
+/// is always available. Generic CSS names such as `"sans-serif"` are not
+/// family names and report `false`, because resolution falls back for them.
+///
+/// Reads registered fonts under the registry mutex resolution already takes,
+/// and the system database through its immutable `OnceLock`; no new lock.
+pub fn font_family_available(family: &str) -> bool {
+    if family.is_empty() || family == BUNDLED_FAMILY {
+        return true;
+    }
+    let registered = registered_fonts()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if query_font(&registered.db, family, false, false).is_some() {
+        return true;
+    }
+    drop(registered);
+    system_family_available(family)
+}
+
+/// Every family name [`font_family_available`] accepts, sorted and without
+/// duplicates: the bundled face, registered fonts, and (native only) the
+/// system font database. Intended for error messages and font pickers.
+pub fn available_font_families() -> Vec<String> {
+    let mut families = vec![BUNDLED_FAMILY.to_string()];
+    {
+        let registered = registered_fonts()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        families.extend(face_family_names(&registered.db));
+    }
+    families.extend(system_family_names());
+    families.sort();
+    families.dedup();
+    families
+}
+
+fn face_family_names(db: &fontdb::Database) -> impl Iterator<Item = String> + '_ {
+    db.faces()
+        .flat_map(|face| face.families.iter().map(|(name, _)| name.clone()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn system_family_available(family: &str) -> bool {
+    query_font(font_db(), family, false, false).is_some()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn system_family_available(_family: &str) -> bool {
+    false
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn system_family_names() -> Vec<String> {
+    face_family_names(font_db()).collect()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn system_family_names() -> Vec<String> {
+    Vec::new()
+}
+
 fn lookup_registered_font(family: &str, bold: bool, italic: bool) -> Option<(&'static [u8], u32)> {
     registered_fonts()
         .lock()
@@ -1245,6 +1319,35 @@ mod tests {
         // that ship Liberation Sans; only the embedded-vs-registered relation
         // is asserted, plus that pre-registration resolution succeeded.
         let _ = fallback;
+    }
+
+    #[test]
+    fn font_family_available_reports_what_resolution_finds() {
+        let _font_registration = FONT_REGISTRATION_TEST_LOCK
+            .lock()
+            .expect("font registration test lock poisoned");
+        assert!(font_family_available(""), "empty names the bundled face");
+        assert!(font_family_available(BUNDLED_FAMILY));
+        assert!(!font_family_available("Definitely Not A Font"));
+        assert!(
+            !font_family_available("liberation sans"),
+            "matching is resolution's exact, case-sensitive family match"
+        );
+        assert!(!font_family_available("sans-serif"));
+
+        // A registered family becomes available, and is listed.
+        let families = register_font_bytes(HANDWRITTEN_REGULAR.to_vec()).unwrap();
+        assert_eq!(families, ["Comic Neue"]);
+        assert!(font_family_available("Comic Neue"));
+        let listed = available_font_families();
+        assert!(listed.iter().any(|f| f == "Comic Neue"));
+        assert!(listed.iter().any(|f| f == BUNDLED_FAMILY));
+        assert!(listed.windows(2).all(|w| w[0] < w[1]), "sorted and unique");
+        // And it is the face resolution now returns, not the fallback.
+        assert_ne!(
+            resolve_font("Comic Neue", false, false).key,
+            embedded_font(false, false).key
+        );
     }
 
     #[test]
