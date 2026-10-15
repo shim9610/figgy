@@ -11,6 +11,12 @@ at the time. The first crates.io publication is recorded below.
 
 ## Unreleased
 
+- The CPU colourbar strip no longer shows translucent seams when its start or
+  length falls on a fractional pixel. Interior band edges now snap to device
+  pixels, so no pixel takes two partial anti-aliased covers; a grayscale strip
+  previously showed plateaus and jumps at about a third and two thirds of its
+  length. Band colours, ramp sampling (translucent stops included) and the
+  strip geometry are unchanged.
 - The CPU colourbar raster draws only the bands that land on the canvas. A
   strip following a data area that runs far past the chart edges no longer
   costs work proportional to its length (#6: billions of bands on a 320×240

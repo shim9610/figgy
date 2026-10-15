@@ -653,6 +653,26 @@ fn draw_colorbar_strip(canvas: &mut Canvas, bar: &crate::config::ColorBarOptions
     let first = (band_at(along_lo).floor() as usize).min(bands);
     let last = (band_at(along_hi).ceil() as usize).min(bands);
 
+    // Interior band edges snap to device pixels — the pixmap grid, read from
+    // the visible bounds so a translated canvas snaps too. Left at fractional
+    // positions, a pixel on a shared edge takes two partial anti-aliased
+    // covers, which composite to alpha c + (1 - c)² rather than the band's
+    // own alpha: translucent rows whose drifting phase showed as plateaus and
+    // jumps along the strip. `step >= 1` keeps every snapped band non-empty.
+    // Only the strip's two outer ends stay fractional, anti-aliased against
+    // the background like any other edge.
+    let grid = f64::from(if vertical { vy0 } else { vx0 });
+    let edge = |k: usize| -> f32 {
+        if k == 0 {
+            start
+        } else if k >= bands {
+            start + length
+        } else {
+            let pos = f64::from(start) + k as f64 * f64::from(step);
+            ((pos - grid).round() + grid) as f32
+        }
+    };
+
     for i in first..last {
         // Screen fraction of this band's centre, measured from the low end of
         // the axis (bottom for a vertical bar, left for a horizontal one).
@@ -664,21 +684,11 @@ fn draw_colorbar_strip(canvas: &mut Canvas, bar: &crate::config::ColorBarOptions
             screen_fraction
         };
         let paint = Paint::fill(&bar.colormap.sample(value_fraction));
-        let offset = i as f32 * step;
-        // Each band but the last also covers the next band's span; the next
-        // band, drawn after it, paints over that overlap. Bands start at
-        // fractional positions, so a pixel on a shared edge is only partly
-        // covered by each band. Two anti-aliased partial covers composite to
-        // alpha c + (1 - c)², not 1, and along the strip that leaves
-        // translucent rows whose phase drifts into visible plateaus. Under
-        // the overlap the earlier band covers the edge pixel fully and the
-        // later one blends over it: the edge stays opaque, and its colour is
-        // still the coverage-weighted mix of the two bands.
-        let extent = if i + 1 < bands { 2.0 * step } else { step };
+        let (lo, hi) = (edge(i), edge(i + 1));
         if vertical {
-            canvas.draw_rect(rect.x, rect.y + offset, rect.width, extent, &paint);
+            canvas.draw_rect(rect.x, lo, rect.width, hi - lo, &paint);
         } else {
-            canvas.draw_rect(rect.x + offset, rect.y, extent, rect.height, &paint);
+            canvas.draw_rect(lo, rect.y, hi - lo, rect.height, &paint);
         }
     }
 }
@@ -2938,62 +2948,116 @@ mod tests {
         }
     }
 
-    /// A strip whose length is not a whole number of pixels still paints every
-    /// interior pixel opaque and its ramp monotonically. Bands then start at
-    /// fractional positions; drawn edge to edge, each shared edge pixel was two
-    /// partial anti-aliased covers whose composite stays translucent, and the
-    /// drifting phase of those edges showed as plateaus with jumps at about a
-    /// third and two thirds of a grayscale bar.
+    /// The strip's interior pixels along its centre line, walked from the
+    /// `axis.min` end. Both outer end pixels are skipped: the strip's own ends
+    /// are anti-aliased against the background, as any edge is.
+    fn strip_centre_line(cfg: &Config) -> Vec<[u8; 4]> {
+        let bar = cfg.colorbar.as_ref().expect("colourbar");
+        let rect = strip_rect(cfg);
+        let rgba = raster(cfg);
+        let vertical = matches!(bar.side, Side::Left | Side::Right);
+        let (lo, hi) = if vertical {
+            (rect.y.ceil() as u32 + 1, (rect.y + rect.height).floor() as u32 - 1)
+        } else {
+            (rect.x.ceil() as u32 + 1, (rect.x + rect.width).floor() as u32 - 1)
+        };
+        let along: Vec<u32> = if vertical {
+            (lo..hi).rev().collect()
+        } else {
+            (lo..hi).collect()
+        };
+        along
+            .into_iter()
+            .map(|pos| {
+                if vertical {
+                    pixel_at(&rgba, rect.x + rect.width * 0.5, pos as f32 + 0.5)
+                } else {
+                    pixel_at(&rgba, pos as f32 + 0.5, rect.y + rect.height * 0.5)
+                }
+            })
+            .collect()
+    }
+
+    /// Every interior pixel of a strip carries exactly the band's own colour,
+    /// whatever the strip's sub-pixel phase. With band edges at fractional
+    /// positions, each shared edge pixel was two partial anti-aliased covers
+    /// whose composite stayed translucent, and the drifting phase of those
+    /// edges showed as plateaus with jumps at about a third and two thirds of
+    /// a grayscale bar. A fractional length and a fractional start (an offset
+    /// of half a pixel) both produce that phase.
     #[test]
-    fn a_fractional_length_strip_is_opaque_and_monotonic() {
+    fn a_strip_at_any_sub_pixel_phase_is_opaque_and_monotonic() {
         for side in [Side::Right, Side::Top] {
-            for length_frac in [0.75, 0.6137, 0.9] {
+            for (length_frac, half_pixel_offset) in
+                [(0.75, false), (0.6137, false), (0.9, true), (1.0, true)]
+            {
                 let mut cfg = colorbar_config(side.clone());
                 let bar = cfg.colorbar.as_mut().expect("colourbar");
                 bar.length_frac = length_frac;
                 bar.colormap = crate::colormap::ColorMap::GrayScale;
-                let rect = strip_rect(&cfg);
-                let rgba = raster(&cfg);
-                let vertical = matches!(side, Side::Left | Side::Right);
-                // Skip the outermost pixel at each end: the strip's own ends
-                // are anti-aliased against the background, as they should be.
-                let (lo, hi) = if vertical {
-                    (rect.y.ceil() as u32 + 1, (rect.y + rect.height).floor() as u32 - 1)
-                } else {
-                    (rect.x.ceil() as u32 + 1, (rect.x + rect.width).floor() as u32 - 1)
-                };
-                let mid = if vertical {
-                    rect.x + rect.width * 0.5
-                } else {
-                    rect.y + rect.height * 0.5
-                };
-                // Walk from the axis.min end so the gray level must rise.
-                let along: Vec<u32> = if vertical {
-                    (lo..hi).rev().collect()
-                } else {
-                    (lo..hi).collect()
-                };
+                if half_pixel_offset {
+                    bar.offset_x = 0.5;
+                    bar.offset_y = 0.5;
+                }
                 let mut previous = 0u8;
-                for pos in along {
-                    let p = if vertical {
-                        pixel_at(&rgba, mid, pos as f32 + 0.5)
-                    } else {
-                        pixel_at(&rgba, pos as f32 + 0.5, mid)
-                    };
-                    assert_eq!(
-                        p[3], 255,
-                        "{side:?} length_frac {length_frac}: pixel {pos} is translucent {p:?}"
-                    );
-                    assert!(
-                        p[0] >= previous,
-                        "{side:?} length_frac {length_frac}: gray falls at pixel {pos} \
-                         ({previous} -> {})",
-                        p[0]
-                    );
+                for (i, p) in strip_centre_line(&cfg).into_iter().enumerate() {
+                    let what = format!("{side:?} frac {length_frac} offset {half_pixel_offset} px {i}");
+                    assert_eq!(p[3], 255, "{what}: translucent {p:?}");
+                    assert!(p[0] >= previous, "{what}: gray falls {previous} -> {}", p[0]);
                     previous = p[0];
                 }
             }
         }
+    }
+
+    /// A translucent ramp keeps its own alpha in the strip, as the GPU field
+    /// keeps it in a cell: no pixel is painted by two bands, so none comes out
+    /// more opaque than the stop it samples, including at the first band.
+    #[test]
+    fn a_translucent_ramp_keeps_its_alpha_in_the_strip() {
+        for side in [Side::Right, Side::Top] {
+            let mut cfg = colorbar_config(side.clone());
+            let bar = cfg.colorbar.as_mut().expect("colourbar");
+            bar.length_frac = 0.75;
+            bar.offset_x = 0.5;
+            bar.offset_y = 0.5;
+            bar.colormap = crate::colormap::ColorMap::Custom {
+                stops: vec![Color::new(0.0, 0.0, 0.0, 0.5), Color::new(1.0, 1.0, 1.0, 0.5)],
+            };
+            let mut previous = 0u8;
+            for (i, p) in strip_centre_line(&cfg).into_iter().enumerate() {
+                assert!(
+                    (p[3] as i32 - 128).abs() <= 1,
+                    "{side:?} px {i}: alpha {} is not the stop's 128",
+                    p[3]
+                );
+                // Premultiplied at a constant alpha, the gray still rises.
+                assert!(p[0] >= previous, "{side:?} px {i}: gray falls {previous} -> {}", p[0]);
+                previous = p[0];
+            }
+        }
+    }
+
+    /// The strip's long side edges are covered once along their whole length:
+    /// at a fractional cross position the edge column's partial coverage is
+    /// the same for every band rather than heavier where bands overlap.
+    #[test]
+    fn a_strip_side_edge_has_one_coverage_along_its_length() {
+        let mut cfg = colorbar_config(Side::Right);
+        let bar = cfg.colorbar.as_mut().expect("colourbar");
+        bar.length_frac = 0.75;
+        bar.offset_x = 0.5;
+        bar.colormap = crate::colormap::ColorMap::GrayScale;
+        let rect = strip_rect(&cfg);
+        assert_ne!(rect.x.fract(), 0.0, "the probe needs a fractional side edge");
+        let rgba = raster(&cfg);
+        let column = rect.x.floor();
+        let rows = (rect.y.ceil() as u32 + 1)..((rect.y + rect.height).floor() as u32 - 1);
+        let alphas: Vec<u8> = rows
+            .map(|y| pixel_at(&rgba, column + 0.5, y as f32 + 0.5)[3])
+            .collect();
+        let (min, max) = (alphas.iter().min().unwrap(), alphas.iter().max().unwrap());
+        assert!(max - min <= 1, "side-edge coverage varies along the strip: {min}..{max}");
     }
 
     /// The §B.5 pin: the colour drawn where a value's tick lands is the colour
