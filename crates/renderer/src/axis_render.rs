@@ -1299,6 +1299,9 @@ fn value_to_screen(value: f64, axis: &AxisOptions, side: Side, da: &DataArea) ->
 const MAX_MAJOR_INTERVALS: usize = 1000;
 const MAX_MINOR_SUBDIVISIONS: usize = 100;
 const MAX_LOG_DECADES: usize = 1024;
+/// The largest decade step the log walker takes; `RenderWarning`'s message
+/// states the same bound.
+pub(crate) const MAX_LOG_DECADE_STEP: i32 = i32::MAX;
 const GRID_EPSILON: f64 = 1.0e-9;
 
 fn range_in_spacing_units(axis: &AxisOptions, spacing: f64) -> Option<f64> {
@@ -1455,7 +1458,7 @@ fn effective_log_decade_step(axis: &AxisOptions) -> i32 {
     } else {
         1.0
     };
-    step.min(f64::from(i32::MAX)) as i32
+    step.min(f64::from(MAX_LOG_DECADE_STEP)) as i32
 }
 
 fn major_tick_values_for_axis(
@@ -2866,6 +2869,15 @@ mod tests {
                     used: 1.0,
                 },
                 ["colorbar.axis.major_spacing", "0.5", "1-decade"],
+            ),
+            (
+                // Whole but past the cap: the line states the full range.
+                RenderWarning::LogDecadeStepAdjusted {
+                    axis: WarningAxis::LeftY,
+                    requested: 3.0e9,
+                    used: f64::from(MAX_LOG_DECADE_STEP),
+                },
+                ["left_y.major_spacing", "3000000000.0", "2147483647-decade"],
             ),
         ] {
             let message = warning.to_string();

@@ -13,6 +13,8 @@
 
 use std::fmt;
 
+use crate::axis_render::MAX_LOG_DECADE_STEP;
+
 /// The axis a [`RenderWarning`] is about, named after its `Config` field.
 ///
 /// `Display` prints the field path a host would point a user at
@@ -105,7 +107,9 @@ pub enum RenderWarning {
         used: usize,
     },
     /// A logarithmic axis' `major_spacing`, the decade step between major
-    /// ticks, is not a whole number of at least 1 (or is past `i32::MAX`).
+    /// ticks, is not a whole number from 1 to `i32::MAX`: a fractional step
+    /// is floored, one below 1 or non-finite draws 1, and one past
+    /// `i32::MAX` draws `i32::MAX`.
     LogDecadeStepAdjusted {
         /// The axis whose setting was adjusted.
         axis: WarningAxis,
@@ -166,8 +170,9 @@ impl fmt::Display for RenderWarning {
                 used,
             } => write!(
                 f,
-                "{axis}.major_spacing {requested:?} is not a whole number of decades of at least 1; \
-                 drawn with a {used}-decade step instead"
+                "{axis}.major_spacing {requested:?} is not a whole number of decades \
+                 from 1 to {max}; drawn with a {used}-decade step instead",
+                max = MAX_LOG_DECADE_STEP
             ),
         }
     }
