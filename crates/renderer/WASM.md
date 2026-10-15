@@ -500,7 +500,7 @@ cd crates/web && python -m http.server 8137   # wasm은 file:// 불가
 | 선택 표시 | `set_picked_points(json)`은 `PickedPointsConfig` 또는 `null` JSON 문자열로 `Config.picked_points`만 교체한다. `set_picked_data(json)`는 점·막대·셀·등고선 선택을 같은 방식으로 바꾼다. `null`은 표시를 지운다. 출처·인덱스만 보관하며 원본 좌표의 CPU 복사본은 만들지 않는다. |
 | 배경 | `set_clear_color(r, g, b, a)`는 선형 RGBA를 성분별 0~1로 제한하고 다시 그리기를 요청한다. 화면 상태만 바꾸므로 Config JSON이나 축 이미지는 갱신하지 않는다. |
 | 출력 | `export_png(scale)`은 PNG의 `Uint8Array`를 비동기로 반환한다. |
-| 제목 | `set_title`, `set_x_title`, `set_y_title`, `set_colorbar_title`. 색상 막대 제목에 빈 문자열을 주면 숨긴다. |
+| 제목 | `set_title`, `set_x_title`, `set_y_title`, `set_colorbar_title`. 색상 막대 제목에 빈 문자열을 주면 숨긴다. `set_title`은 헬퍼이므로 제목이 제목 영역보다 높으면 `chart_title.top_margin`을 함께 늘린다. 영역에 들어가는 제목은 여백을 바꾸지 않는다. |
 
 점별 스타일은 `set_series(json)` / `get_series()`로 설정한다. 정밀 모드의 산점도는 `point_style_table` / `point_style_index_column` / `point_style_overrides`를, 오차 막대는 `error_bar_style_table` / `error_bar_style_index_column` / `error_bar_style_overrides`를 사용한다. 별도 WASM 메서드를 추가하지 않으며 다른 렌더링 스타일에서는 이 매핑을 무시한다.
 

@@ -11,6 +11,19 @@ at the time. The first crates.io publication is recorded below.
 
 ## Unreleased
 
+- `RichText` gains `align: TextAlign` (`Left` default, `Center`, `Right`;
+  re-exported from both crate roots). Each line of a multi-line text is offset
+  inside the block by none, half or all of its slack; tab cells move with their
+  line, and the measured envelope (selection and hit boxes) is unchanged. JSON
+  without `align` parses as `Left`, and `Left` is not serialized. Migration:
+  fully specified `RichText` literals need `align: TextAlign::Left`.
+- The title helpers no longer clip a multi-line or enlarged chart title.
+  `Chart::with_title` and the web example's `set_title` call
+  `layout::fit_chart_title_margin`, which grows `chart_title.top_margin` to the
+  measured title plus the default band's padding only when the title block is
+  taller than the band (exactly the titles that were clipped); every title
+  that already fit renders as before. The band is never shrunk. A
+  `top_margin` injected directly through the SSOT is kept as given.
 - `AxisOptions.range_locked` is a host-owned marker that an axis range was
   fixed by the user or host. The renderer stores and serializes it but never
   reads or writes it: auto-fit still runs only when the host requests it and

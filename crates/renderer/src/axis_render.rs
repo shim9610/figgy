@@ -16,7 +16,7 @@ use crate::layout::{
 use crate::line::LineStylePreset;
 use crate::select::SelectionBox;
 use crate::sketch::DecoStroker;
-use crate::text::{RichSegment, RichText};
+use crate::text::{RichSegment, RichText, TextAlign};
 use crate::text_render::{
     FontPolicy, draw_plain_text, draw_rich_text, measure_plain_text, measure_rich_text,
 };
@@ -1916,6 +1916,7 @@ fn format_tick_power(value: f64, sig_digits: u8, ls: &LabelStyle) -> RichText {
         color: ls.color,
         font_size: ls.font_size,
         font: ls.label_font.clone(),
+        align: TextAlign::Left,
     };
 
     if value == 0.0 {

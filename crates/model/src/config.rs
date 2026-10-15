@@ -12,6 +12,12 @@ pub struct ChartTitleOptions {
     pub visible: bool,
     pub offset_x: f32,
     pub offset_y: f32,
+    /// Height of the title band at the top of the chart area; the title is
+    /// centred in it. The title helpers grow it through
+    /// [`fit_chart_title_margin`] when the title is taller than the band; a
+    /// value injected directly is kept as given.
+    ///
+    /// [`fit_chart_title_margin`]: crate::layout::fit_chart_title_margin
     pub top_margin: f32,
 }
 

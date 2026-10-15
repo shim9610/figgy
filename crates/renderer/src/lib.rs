@@ -103,7 +103,7 @@ pub use streaming_source::{
     StreamingChartOptions, StreamingLimits, StreamingProgress, StreamingState, StreamingStatus,
     StreamingUsage, ViewResidencyStatus,
 };
-pub use text::MeasureText;
+pub use text::{MeasureText, TextAlign};
 pub use text_render::{CpuTextMeasure, FontPolicy};
 
 pub use radial::{

@@ -293,7 +293,7 @@ fully specified `DecorationLayout` literals need `data_area: None`, and exhausti
 `DecorationId` matches need `DataArea` and `DataAreaEdge`. See the interaction guide
 for migration details. The unreleased `AxisOptions.range_locked` field is additive
 in JSON (serde default) but fully specified `AxisOptions` literals need
-`range_locked: false`.
+`range_locked: false`; likewise `RichText.align` needs `align: TextAlign::Left`.
 Packaging work does not change those contracts. Public
 low-level modules remain available; they must not be removed silently during packaging.
 

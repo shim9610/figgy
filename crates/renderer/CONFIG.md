@@ -72,10 +72,10 @@ scale against that contract.
 ### `AxisTitleOptions` / `ChartTitleOptions`
 | Field | Type | Meaning |
 |---|---|---|
-| `text` | `RichText` | greek / sub/super / bold/italic styled segments |
+| `text` | `RichText` | greek / sub/super / bold/italic styled segments; `align` (`Left` default / `Center` / `Right`) places the lines of multi-line text |
 | `visible` | bool | |
 | `offset_x / y` | f32 | nudge |
-| `top_margin` | f32 | (chart_title only) chart-title band height |
+| `top_margin` | f32 | (chart_title only) chart-title band height; the title is centred in it. The title helpers (`Chart::with_title`, the web `set_title`) grow it through `layout::fit_chart_title_margin` when the title is taller than the band; a value injected directly is kept as given |
 
 ### `GridOptions`
 | Field | Type | Meaning |
@@ -413,10 +413,10 @@ pub struct Config {
 ### `AxisTitleOptions` / `ChartTitleOptions`
 | 필드 | 타입 | 의미 |
 |---|---|---|
-| `text` | `RichText` | 그리스 문자·위아래 첨자·굵게·기울임 등을 구간별로 지정한 텍스트 |
+| `text` | `RichText` | 그리스 문자·위아래 첨자·굵게·기울임 등을 구간별로 지정한 텍스트. `align`(기본 `Left` / `Center` / `Right`)은 여러 줄 텍스트의 각 줄 위치를 정한다. |
 | `visible` | bool | |
 | `offset_x / y` | f32 | nudge |
-| `top_margin` | f32 | 차트 제목 영역의 높이(`chart_title` 전용) |
+| `top_margin` | f32 | 차트 제목 영역의 높이(`chart_title` 전용). 제목은 이 영역의 가운데에 놓인다. 제목 헬퍼(`Chart::with_title`, 웹 `set_title`)는 제목이 영역보다 높을 때 `layout::fit_chart_title_margin`으로 이 값을 늘리며, 설정에 직접 넣은 값은 그대로 둔다. |
 
 ### `GridOptions`
 | 필드 | 타입 | 의미 |

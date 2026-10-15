@@ -318,6 +318,7 @@ fn representative_label_extents(
         color: ls.color,
         font_size: ls.font_size,
         font: ls.label_font.clone(),
+        align: crate::text::TextAlign::Left,
     };
     measure.measure_rich(&sample)
 }

@@ -43,7 +43,7 @@ pub use select::{
     ColorBarElement, ColorBarLabelElement, ColorBarTitleElement, DataAreaElement, HitId, HitMap,
     LegendElement, Selectable, SelectionBox,
 };
-pub use text::{MeasureText, TextExtents};
+pub use text::{MeasureText, TextAlign, TextExtents};
 
 pub use radial::{
     RadialChart, RadialInteraction, RadialKind, RadialLabelFormat, RadialLabels, RadialMaterial,

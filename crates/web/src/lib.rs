@@ -676,6 +676,16 @@ fn prepare_demo_column_metadata(
     })
 }
 
+/// Replace the chart title with plain `text` and grow its band to hold it, as
+/// `Chart::with_title` does natively, so a multi-line title set from the
+/// browser is not clipped at the top of the chart.
+#[cfg(any(target_arch = "wasm32", test))]
+fn set_plain_chart_title(config: &mut renderer::Config, text: &str) {
+    config.chart_title.text.segments = renderer::text::rich_segments_from_text(text);
+    let measure = renderer::CpuTextMeasure::for_style(&config.draw_style);
+    renderer::layout::fit_chart_title_margin(config, &measure);
+}
+
 #[cfg(any(target_arch = "wasm32", test))]
 struct PreparedDemoDeclarations {
     config: renderer::Config,
@@ -746,6 +756,7 @@ fn prepare_demo_declarations(
             color: config.legend.content.color,
             font_size: config.legend.content.font_size,
             font: config.legend.content.font.clone(),
+            align: config.legend.content.align,
         };
         let item = SeriesConfig {
             series_id: series_id.to_string(),
@@ -814,8 +825,8 @@ mod tests {
         prepare_batch_column_metadata, prepare_column_metadata, prepare_demo_column_metadata,
         prepare_demo_declarations, retain_valid_series_extent_jobs, select_series_extent_job_map,
         series_extent_key_matches_config, series_extent_mode, series_extent_needs_submission,
-        series_extent_request_from, validate_column_batch, validate_column_data_len,
-        validate_column_registry_action,
+        series_extent_request_from, set_plain_chart_title, validate_column_batch,
+        validate_column_data_len, validate_column_registry_action,
     };
     use crate::scalar_job::{SeriesExtentJob, SeriesExtentStatus};
 
@@ -905,6 +916,25 @@ mod tests {
                 "dirty-state mask {bits:05b}"
             );
         }
+    }
+
+    // `set_title` grows the title band like `Chart::with_title`: a single
+    // default-size line keeps the default band, and a three-line title gets a
+    // band at least as tall as its block, so its first line is not clipped.
+    #[test]
+    fn set_plain_chart_title_grows_the_band_to_hold_a_multi_line_title() {
+        use renderer::text_render::{FontPolicy, measure_rich_text};
+
+        let default_band = renderer::default::default_config().chart_title.top_margin;
+        let mut config = renderer::default::default_config();
+        set_plain_chart_title(&mut config, "figgy");
+        assert_eq!(config.chart_title.top_margin, default_band);
+
+        set_plain_chart_title(&mut config, "first\nsecond\nthird");
+        let block = measure_rich_text(&config.chart_title.text, FontPolicy::Standard);
+        assert!(block.height() > default_band);
+        assert!(config.chart_title.top_margin >= block.height());
+        assert!(config.data_area().is_ok());
     }
 
     #[test]
@@ -1932,8 +1962,8 @@ mod web {
         active_series_extent_requests, consume_successful_frame, frame_decision,
         prepare_batch_column_metadata, prepare_column_metadata, prepare_demo_column_metadata,
         prepare_demo_declarations, retain_valid_series_extent_jobs, select_series_extent_job_map,
-        series_extent_key_matches_config, series_extent_mode, validate_column_batch,
-        validate_column_data_len, validate_column_registry_action,
+        series_extent_key_matches_config, series_extent_mode, set_plain_chart_title,
+        validate_column_batch, validate_column_data_len, validate_column_registry_action,
     };
 
     const POOL_CAPACITY: u64 = 16 * 1024 * 1024;
@@ -2824,6 +2854,7 @@ mod web {
                 color: content.color,
                 font_size: content.font_size,
                 font: content.font.clone(),
+                align: content.align,
             }
         }
 
@@ -4716,7 +4747,7 @@ mod web {
 
         pub fn set_title(&mut self, text: &str) -> Result<(), JsValue> {
             let mut config = self.chart_config().clone();
-            config.chart_title.text.segments = rich_segments_from_text(text);
+            set_plain_chart_title(&mut config, text);
             self.replace_chart_config(config)
         }
 

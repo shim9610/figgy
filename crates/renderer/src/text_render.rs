@@ -780,6 +780,12 @@ fn measure_line(segments: &[RichSegment], rt: &RichText, policy: FontPolicy) -> 
     }
 }
 
+/// Width of the whole block: its widest line. Measurement reports it, and
+/// drawing aligns every line inside it, so the two cannot disagree.
+fn block_width(line_metrics: &[TextMetrics]) -> f32 {
+    line_metrics.iter().map(|m| m.width).fold(0.0, f32::max)
+}
+
 /// Baseline-to-baseline advance between two lines. Ink envelopes alone make
 /// descender-less lines collapse together, so clamp to a nominal line height
 /// derived from the font size. Shared by draw + measure.
@@ -899,6 +905,7 @@ fn draw_dashed_rule(canvas: &mut Canvas, rect: RectF, color: &Color, dash_em: &[
 #[cfg(test)]
 mod dashed_rule_tests {
     use super::*;
+    use crate::text::TextAlign;
 
     #[test]
     fn dashed_rule_renders_visible_gaps_inside_fixed_field() {
@@ -911,6 +918,7 @@ mod dashed_rule_tests {
             color: Color::BLACK,
             font_size: 16.0,
             font: String::new(),
+            align: TextAlign::Left,
         };
         let mut canvas = Canvas::new(48, 32).unwrap();
         draw_rich_text(&mut canvas, &rt, (4.0, 20.0), FontPolicy::Standard);
@@ -931,20 +939,33 @@ mod dashed_rule_tests {
 
 // Public rendering API.
 
-/// Draw `rt` at `origin` (left edge, baseline **of the first line**). The
-/// caller is responsible for measuring and alignment — this function does
-/// not align. `'\n'` segments start a new line; subsequent baselines advance
-/// by the previous line's descent + the next line's ascent.
+/// Draw `rt` at `origin` (left edge of the block, baseline **of the first
+/// line**). The caller is responsible for measuring and placing the block —
+/// this function does not position it. `'\n'` segments start a new line;
+/// subsequent baselines advance by the previous line's descent + the next
+/// line's ascent. Inside the block, which is as wide as its widest line, each
+/// line is offset by `rt.align` ([`TextAlign::line_offset`]); its tab-column
+/// cells move with it.
+///
+/// [`TextAlign::line_offset`]: crate::text::TextAlign::line_offset
 pub fn draw_rich_text(canvas: &mut Canvas, rt: &RichText, origin: (f32, f32), policy: FontPolicy) {
     let doc = layout_doc(rt, policy);
     let (x, mut baseline) = origin;
+    let block_width = block_width(&doc.line_metrics);
 
     for (i, cells) in doc.line_cells.iter().enumerate() {
         if i > 0 {
             baseline += line_advance(&doc.line_metrics[i - 1], &doc.line_metrics[i], rt);
         }
+        let line_x = x + rt.align.line_offset(block_width, doc.line_metrics[i].width);
         for (k, cell) in cells.iter().enumerate() {
-            draw_line_segments(canvas, cell, rt, (x + doc.col_starts[k], baseline), policy);
+            draw_line_segments(
+                canvas,
+                cell,
+                rt,
+                (line_x + doc.col_starts[k], baseline),
+                policy,
+            );
         }
     }
 }
@@ -1001,7 +1022,7 @@ pub fn measure_rich_text(rt: &RichText, policy: FontPolicy) -> TextMetrics {
     }
 
     let metrics = layout_doc(rt, policy).line_metrics;
-    let width = metrics.iter().map(|m| m.width).fold(0.0, f32::max);
+    let width = block_width(&metrics);
     let ascent = metrics[0].ascent;
     // Everything below the first baseline: accumulate the same baseline
     // advances `draw_rich_text` uses, then the last line's own descent.
@@ -1108,7 +1129,7 @@ pub fn measure_plain_text(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::text::rich_segments_from_text;
+    use crate::text::{TextAlign, rich_segments_from_text};
 
     fn measure_rich_text_std(rt: &RichText) -> TextMetrics {
         measure_rich_text(rt, FontPolicy::Standard)
@@ -1227,6 +1248,7 @@ mod tests {
             color: Color::BLACK,
             font_size: 18.0,
             font: String::new(),
+            align: TextAlign::Left,
         };
         let plain = measure_rich_text_std(&mk("V0"));
         let sub = measure_rich_text_std(&mk("V₀"));
@@ -1370,6 +1392,7 @@ mod tests {
             color: Color::BLACK,
             font_size: 16.0,
             font: String::new(),
+            align: TextAlign::Left,
         };
         let line = measure_rich_text_std(&mk(&LegendEntryKind::Line));
         let scatter = measure_rich_text_std(&mk(&LegendEntryKind::Scatter));
@@ -1412,6 +1435,7 @@ mod tests {
             color: Color::BLACK,
             font_size: 16.0,
             font: String::new(),
+            align: TextAlign::Left,
         };
         // Line 1 pre-tab cell ("WWW") is much wider than line 2's ("i").
         let rt = mk("WWW\tX\ni\tX");
@@ -1447,6 +1471,127 @@ mod tests {
         let _ = leftmost_ink;
     }
 
+    fn aligned(s: &str, align: TextAlign) -> RichText {
+        RichText {
+            align,
+            ..RichText::plain(s, Color::BLACK, 16.0, "")
+        }
+    }
+
+    fn draw_to_rgba(rt: &RichText, size: (u32, u32), origin: (f32, f32)) -> Vec<u8> {
+        let mut canvas = Canvas::new(size.0, size.1).unwrap();
+        draw_rich_text(&mut canvas, rt, origin, FontPolicy::Standard);
+        canvas.into_rgba()
+    }
+
+    /// Leftmost inked column at or right of `x0` within `rows`.
+    fn leftmost_ink(rgba: &[u8], width: u32, rows: std::ops::Range<u32>, x0: u32) -> Option<u32> {
+        (x0..width).find(|&x| {
+            rows.clone()
+                .any(|y| rgba[((y * width + x) * 4 + 3) as usize] > 0)
+        })
+    }
+
+    // `Left` is the layout every text had before alignment existed. This is
+    // that layout, verbatim — each line's cells at `x + col_start` — and the
+    // aligned draw must reproduce it pixel for pixel, tab columns included.
+    #[test]
+    fn left_alignment_reproduces_the_unaligned_layout_exactly() {
+        fn unaligned_draw(canvas: &mut Canvas, rt: &RichText, origin: (f32, f32)) {
+            let doc = layout_doc(rt, FontPolicy::Standard);
+            let (x, mut baseline) = origin;
+            for (i, cells) in doc.line_cells.iter().enumerate() {
+                if i > 0 {
+                    baseline += line_advance(&doc.line_metrics[i - 1], &doc.line_metrics[i], rt);
+                }
+                for (k, cell) in cells.iter().enumerate() {
+                    let cell_origin = (x + doc.col_starts[k], baseline);
+                    draw_line_segments(canvas, cell, rt, cell_origin, FontPolicy::Standard);
+                }
+            }
+        }
+
+        for text in [
+            "WWW\tX\ni\tlonger cell\nmid",
+            "short\na much longer line\n\nx",
+        ] {
+            let rt = aligned(text, TextAlign::Left);
+            for origin in [(10.25, 30.5), (-0.0, 18.0)] {
+                let mut expected = Canvas::new(300, 120).unwrap();
+                unaligned_draw(&mut expected, &rt, origin);
+                let expected = expected.into_rgba();
+                assert!(expected.chunks_exact(4).any(|p| p[3] > 0));
+                assert!(
+                    draw_to_rgba(&rt, (300, 120), origin) == expected,
+                    "{text:?} at {origin:?}"
+                );
+            }
+        }
+    }
+
+    // Center/Right move each line by half/all of its slack (block width minus
+    // line width). The widest line has none and stays put, and the measured
+    // block envelope is the same for every alignment.
+    #[test]
+    fn center_and_right_offset_each_line_by_its_slack() {
+        let text = "WWWWWW\nii";
+        let left = measure_rich_text_std(&aligned(text, TextAlign::Left));
+        for align in [TextAlign::Center, TextAlign::Right] {
+            assert_eq!(measure_rich_text_std(&aligned(text, align)), left);
+        }
+        let slack = left.width - measure_rich_text_std(&aligned("ii", TextAlign::Left)).width;
+        assert!(slack > 40.0, "fixture needs a visible slack, got {slack}");
+
+        let (w, h, origin) = (200u32, 60u32, (20.0, 20.0));
+        let rgba = |align| draw_to_rgba(&aligned(text, align), (w, h), origin);
+        let (l, c, r) = (
+            rgba(TextAlign::Left),
+            rgba(TextAlign::Center),
+            rgba(TextAlign::Right),
+        );
+        // Rows down to the first baseline hold only the widest line's ink.
+        let first_line = |rgba: &[u8]| rgba[..(21 * w * 4) as usize].to_vec();
+        assert!(first_line(&c) == first_line(&l) && first_line(&r) == first_line(&l));
+
+        let second_line_x = |rgba: &[u8]| leftmost_ink(rgba, w, 24..h, 0).unwrap() as f32;
+        let base = second_line_x(&l);
+        for (rgba, expected) in [(&c, slack * 0.5), (&r, slack)] {
+            let moved = second_line_x(rgba) - base;
+            assert!(
+                (moved - expected).abs() <= 1.0,
+                "second line moved {moved} px, expected {expected}"
+            );
+        }
+    }
+
+    // A line's tab-column cells move with it: under Right alignment the short
+    // line's first cell and its second cell shift by the same slack, so the
+    // cell layout inside the line is preserved.
+    #[test]
+    fn tab_cells_move_with_their_aligned_line() {
+        let text = "WWW\tXXX\ni\tX";
+        let x_w = measure_rich_text_std(&aligned("X", TextAlign::Left)).width;
+        let slack = 2.0 * x_w;
+        let wide = measure_rich_text_std(&aligned("WWW", TextAlign::Left)).width;
+
+        let (w, h, origin) = (200u32, 60u32, (10.0, 20.0));
+        let l = draw_to_rgba(&aligned(text, TextAlign::Left), (w, h), origin);
+        let r = draw_to_rgba(&aligned(text, TextAlign::Right), (w, h), origin);
+        let rows = 24..h;
+        let cut = (origin.0 + wide - 0.5) as u32;
+        let first_cell = |rgba: &[u8]| leftmost_ink(rgba, w, rows.clone(), 0).unwrap() as f32;
+        let second_cell =
+            |rgba: &[u8], from: u32| leftmost_ink(rgba, w, rows.clone(), from).unwrap() as f32;
+        let first_moved = first_cell(&r) - first_cell(&l);
+        let second_moved = second_cell(&r, cut + slack as u32) - second_cell(&l, cut);
+        for moved in [first_moved, second_moved] {
+            assert!(
+                (moved - slack).abs() <= 1.0,
+                "cell moved {moved} px, expected the line slack {slack}"
+            );
+        }
+    }
+
     // '\n' segments break lines: the envelope grows vertically, width is the
     // widest line, and drawing puts ink in two vertically separated bands.
     #[test]
@@ -1456,6 +1601,7 @@ mod tests {
             color: Color::BLACK,
             font_size: 16.0,
             font: String::new(),
+            align: TextAlign::Left,
         };
         let one = measure_rich_text_std(&mk("abc"));
         let two = measure_rich_text_std(&mk("abc\nde"));
@@ -1496,6 +1642,7 @@ mod tests {
             color: Color::BLACK, // document default stays black
             font_size: 24.0,
             font: String::new(),
+            align: TextAlign::Left,
         };
 
         let mut canvas = Canvas::new(60, 40).unwrap();
@@ -1533,6 +1680,7 @@ mod tests {
                 color: Color::BLACK,
                 font_size: 16.0,
                 font: String::new(),
+                align: TextAlign::Left,
             }
         };
         let plain = measure_rich_text_std(&mk(false));
@@ -1560,12 +1708,14 @@ mod tests {
             color: Color::BLACK,
             font_size: 18.0,
             font: String::new(),
+            align: TextAlign::Left,
         };
         let sup = RichText {
             segments: rich_segments_from_text("10³"), // '³' maps to a superscript segment
             color: Color::BLACK,
             font_size: 18.0,
             font: String::new(),
+            align: TextAlign::Left,
         };
         let m_plain = measure_rich_text_std(&plain);
         let m_sup = measure_rich_text_std(&sup);
