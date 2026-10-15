@@ -199,6 +199,7 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 - `out_margin`은 배치에 필요한 여백이다. 너무 줄이면 라벨이나 제목이 잘릴 수 있다.
 - `line_offset`은 데이터 영역을 유지한 채 축만 이동시킨다. 전체 배치에는 영향을 주지 않는다.
 - `inverted`는 화면상의 축 방향을 뒤집는다. 눈금·격자·데이터·피킹은 같은 변환을 적용하며 `min` / `max`는 데이터 좌표 기준을 유지한다.
+- `range_locked`는 호스트가 그 축의 범위를 직접 정했다는 표시다. 렌더러는 저장·직렬화만 하고 읽거나 바꾸지 않는다. 자동 맞춤은 호스트가 요청할 때만 실행되며 요청하면 모든 축을 맞춘다. 호스트는 생성·불러오기 흐름에서 이 값을 보고 자동 맞춤 요청 여부를 정하고, 범위를 고정할 때 짝이 되는 두 축(`bottom_x`/`top_x`, `left_y`/`right_y`)에 함께 기록한다. 이 필드가 없는 이전 JSON은 `false`로 읽는다.
 - `pick_point`는 스타일 매핑을 반영한 점 기호 크기와 선 두께를 기준으로 선택한다. 선 근처를 클릭하면 해당 선분의 가까운 끝점을 반환한다. 오차 막대의 몸통과 끝선 자체는 선택 대상이 아니다. 웹 래퍼의 반환형은 `Promise<{ source_id: string | null, series_id, point_index, distance_px } | null>`이다. 저수준 `FiggyChart`는 같은 필드의 JSON 문자열 또는 `undefined`를 Promise로 반환하고 래퍼가 이를 객체 또는 `null`로 바꾼다. 요청은 제출 당시 식별자를 보관하므로 대기 중 차트·풀이 바뀌거나 렌더러가 해제돼도 다른 데이터를 가리키지 않는다. 좌표가 필요하면 `point_index`로 호스트의 원본 컬럼을 조회한다.
 - `pick_data`는 점·선 외에 히스토그램 구간·히트맵 셀·등고선 레벨을 같은 GPU 요청으로 선택한다. 래퍼는 `kind`가 `"point" | "histogram_bin" | "matrix_cell" | "contour_level"`인 객체 또는 `null`을 반환한다. 구간은 `bin_index`, 셀은 X·Y축 기준 `x_index` / `y_index`, 등고선은 `level_index`와 선택 지점이 속한 표본 셀의 `x_index` / `y_index`를 제공한다. `HeatmapContour`에서 선과 셀이 겹치면 나중에 그리는 등고선이 우선하며 시리즈 간 동률은 그리기 순서로 정한다. 좌표·경계·선분·f64 값을 CPU에서 복원하지 않고, 그리기와 같은 GPU 변환·풀·격자·등고선 함수로 판정한다.
 - `chart_area`는 저장과 출력에 사용하는 문서 영역이다. 웹의 `resize(w, h)`는 캔버스만 바꾸며 문서를 같은 가로세로 비율로 맞추고 남는 공간에 여백을 둔다. 브라우저 창 크기 변경은 `chart_area` 편집과 구분한다.
@@ -356,7 +357,8 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
     "line_width": 1.0,
     "line_style": "Solid",
     "major_tick_length": 5.0,
-    "minor_tick_length": 3.0
+    "minor_tick_length": 3.0,
+    "range_locked": false
   },
   "bottom_x": {
     "scale": "Linear",
@@ -410,7 +412,8 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
     "line_width": 1.0,
     "line_style": "Solid",
     "major_tick_length": 5.0,
-    "minor_tick_length": 3.0
+    "minor_tick_length": 3.0,
+    "range_locked": false
   },
   "left_y": {
     "scale": "Linear",
@@ -464,7 +467,8 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
     "line_width": 1.0,
     "line_style": "Solid",
     "major_tick_length": 5.0,
-    "minor_tick_length": 3.0
+    "minor_tick_length": 3.0,
+    "range_locked": false
   },
   "right_y": {
     "scale": "Linear",
@@ -518,7 +522,8 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
     "line_width": 1.0,
     "line_style": "Solid",
     "major_tick_length": 5.0,
-    "minor_tick_length": 3.0
+    "minor_tick_length": 3.0,
+    "range_locked": false
   },
   "chart_title": {
     "text": {
@@ -718,7 +723,8 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
     "line_width": 1.0,
     "line_style": "Solid",
     "major_tick_length": 5.0,
-    "minor_tick_length": 3.0
+    "minor_tick_length": 3.0,
+    "range_locked": false
   }
 }
 ```

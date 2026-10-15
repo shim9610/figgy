@@ -11,6 +11,11 @@ at the time. The first crates.io publication is recorded below.
 
 ## Unreleased
 
+- `AxisOptions.range_locked` is a host-owned marker that an axis range was
+  fixed by the user or host. The renderer stores and serializes it but never
+  reads or writes it: auto-fit still runs only when the host requests it and
+  fits every axis. JSON without the field reads `false`. Migration: fully
+  specified `AxisOptions` literals need `range_locked: false`.
 - `draw_style_supports(style, render_type)` reports whether a draw style draws
   every primitive of a render type, from the same selection prepare uses.
   Sketch and Milkyway draw line, scatter and errorbar series and skip bars,

@@ -43,6 +43,7 @@ pub struct Config {
 | `line_visible / color / width / style` | mixed | Axis line appearance. CPU raster strokes floor to 1 px, so sub-pixel widths do not disappear |
 | `line_offset` | f32 | Detached-axis offset: shifts the axis chrome (line/ticks/labels) perpendicular to itself while the data area stays put. Layout-neutral; the drag system's axis movement lands here |
 | `major_tick_length / minor_tick_length` | f32 | Tick mark length (px) |
+| `range_locked` | bool | Host-owned marker that the range was fixed by the user or host. Stored and serialized only; the renderer never reads or writes it, and auto-fit still runs only on request. Default `false`; JSON without it reads `false` |
 
 ### `LabelStyle`
 | Field | Type | Meaning |
@@ -391,6 +392,7 @@ pub struct Config {
 | `line_visible / color / width / style` | mixed | 축선 모양. CPU 렌더링은 1px보다 가는 선도 사라지지 않도록 최소 두께를 1px로 적용한다. |
 | `line_offset` | f32 | 데이터 영역을 유지한 채 축선·눈금·라벨을 축에 수직인 방향으로 이동한다. 전체 배치에는 영향을 주지 않으며 축 드래그 결과를 이 값에 기록한다. |
 | `major_tick_length / minor_tick_length` | f32 | 눈금 길이(px) |
+| `range_locked` | bool | 사용자나 호스트가 범위를 직접 정했다는 호스트 소유 표시. 저장·직렬화만 하며 렌더러는 읽거나 바꾸지 않고, 자동 맞춤은 여전히 요청할 때만 실행된다. 기본값 `false`, 필드가 없는 JSON은 `false`로 읽는다 |
 
 ### `LabelStyle`
 | 필드 | 타입 | 의미 |

@@ -109,6 +109,18 @@ pub struct AxisOptions {
     // Tick mark lengths. `margins()` uses `major_tick_length`.
     pub major_tick_length: f32,
     pub minor_tick_length: f32,
+
+    /// Host-owned marker that this axis's range was fixed by the user or
+    /// host rather than fitted to the data. The renderer stores it and carries
+    /// it through serialization, but never reads or writes it: auto-fit runs
+    /// only when the host requests it and fits every axis as documented, and
+    /// explicit range setters leave the marker as it is. A host reads it in
+    /// its creation/load flow to decide whether to request a fit, writing it
+    /// on both axes of a pair (`bottom_x`/`top_x`, `left_y`/`right_y`) when it
+    /// fixes a range. Documents written before the field existed parse as
+    /// `false`.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub range_locked: bool,
 }
 
 /// Hand-drawn ("sketch") render-mode parameters. Every field has a default —
@@ -1306,5 +1318,83 @@ mod draw_style_serde_tests {
         assert_eq!(json["draw_style"]["star_density"], 22.0);
         let back: Config = serde_json::from_value(json).expect("parse back");
         assert_eq!(back.draw_style, cfg.draw_style);
+    }
+}
+
+// `range_locked` is additive schema: documents written before the field
+// existed must parse as unlocked, and a lock must survive a round trip on every
+// axis that carries one — the four chart axes and the colourbar's z axis.
+#[cfg(test)]
+mod range_locked_tests {
+    use crate::default::{default_colorbar_options, default_config};
+
+    #[test]
+    fn every_default_axis_starts_unlocked() {
+        let mut cfg = default_config();
+        cfg.colorbar = Some(default_colorbar_options());
+        let bar = cfg.colorbar.as_ref().expect("colourbar");
+        for axis in [
+            &cfg.top_x,
+            &cfg.bottom_x,
+            &cfg.left_y,
+            &cfg.right_y,
+            &bar.axis,
+        ] {
+            assert!(!axis.range_locked);
+        }
+    }
+
+    #[test]
+    fn scaling_keeps_the_lock() {
+        let mut cfg = default_config();
+        cfg.bottom_x.range_locked = true;
+        let mut bar = default_colorbar_options();
+        bar.axis.range_locked = true;
+        cfg.colorbar = Some(bar);
+
+        let scaled = cfg.scaled(2.0);
+        assert!(scaled.bottom_x.range_locked);
+        assert!(!scaled.left_y.range_locked);
+        assert!(scaled.colorbar.expect("colourbar").axis.range_locked);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn lock_round_trips_on_chart_and_colorbar_axes() {
+        let mut cfg = default_config();
+        cfg.bottom_x.range_locked = true;
+        cfg.right_y.range_locked = true;
+        let mut bar = default_colorbar_options();
+        bar.axis.range_locked = true;
+        cfg.colorbar = Some(bar);
+
+        let json = serde_json::to_value(&cfg).expect("serialize Config");
+        assert_eq!(json["bottom_x"]["range_locked"], true);
+        assert_eq!(json["left_y"]["range_locked"], false);
+        let back: super::Config = serde_json::from_value(json).expect("parse back");
+        assert_eq!(back, cfg);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn legacy_axis_json_without_the_field_parses_as_unlocked() {
+        let mut cfg = default_config();
+        cfg.colorbar = Some(default_colorbar_options());
+        let mut json = serde_json::to_value(&cfg).expect("serialize Config");
+        for axis in ["top_x", "bottom_x", "left_y", "right_y"] {
+            let removed = json[axis]
+                .as_object_mut()
+                .expect("axis object")
+                .remove("range_locked");
+            assert_eq!(removed, Some(serde_json::json!(false)));
+        }
+        json["colorbar"]["axis"]
+            .as_object_mut()
+            .expect("colourbar axis object")
+            .remove("range_locked")
+            .expect("colourbar axis serializes the lock");
+
+        let legacy: super::Config = serde_json::from_value(json).expect("legacy document parses");
+        assert_eq!(legacy, cfg);
     }
 }
