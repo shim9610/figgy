@@ -14,6 +14,7 @@ use crate::layout::{
     label_origin, legend_rect, point_on_rect_side,
 };
 use crate::line::LineStylePreset;
+use crate::render_warning::{RenderWarning, SpacingRejection, WarningAxis};
 use crate::select::SelectionBox;
 use crate::sketch::DecoStroker;
 use crate::text::{RichSegment, RichText, TextAlign};
@@ -70,24 +71,9 @@ pub fn try_raster_chart_layer_to_rgba_with_selection(
     layer: AxisLayerKind,
     selection: &[SelectionBox],
 ) -> crate::Result<Vec<u8>> {
-    use crate::layout::{ChartArea, Rect};
-
-    let w = config.chart_area.0.width;
-    let h = config.chart_area.0.height;
-    if w == 0 || h == 0 {
-        return Err(crate::FiggyError::InvalidChartArea {
-            width: w,
-            height: h,
-        });
-    }
-
-    let mut raster_cfg = config.clone();
-    raster_cfg.chart_area = ChartArea(Rect {
-        x: 0,
-        y: 0,
-        width: w,
-        height: h,
-    });
+    let raster_cfg = raster_frame_config(config)?;
+    let w = raster_cfg.chart_area.0.width;
+    let h = raster_cfg.chart_area.0.height;
 
     let Some(mut canvas) = Canvas::new(w, h) else {
         return Err(crate::FiggyError::RasterWrapFailed {
@@ -121,6 +107,32 @@ pub fn try_raster_chart_layer_to_rgba_with_selection(
     }
 
     Ok(canvas.into_rgba())
+}
+
+/// `config` in the CPU raster's frame: the raster buffer covers exactly the
+/// chart area, so the chart area moves to the origin. [`tick_warnings`] derives
+/// from the same frame as the raster, so the two cannot disagree about the
+/// data area.
+fn raster_frame_config(config: &Config) -> crate::Result<Config> {
+    use crate::layout::{ChartArea, Rect};
+
+    let w = config.chart_area.0.width;
+    let h = config.chart_area.0.height;
+    if w == 0 || h == 0 {
+        return Err(crate::FiggyError::InvalidChartArea {
+            width: w,
+            height: h,
+        });
+    }
+
+    let mut raster_cfg = config.clone();
+    raster_cfg.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: w,
+        height: h,
+    });
+    Ok(raster_cfg)
 }
 
 /// Draw selection highlight boxes — the raster realization of the model's
@@ -501,16 +513,9 @@ fn draw_colorbar(
     stroker: &DecoStroker,
     fp: FontPolicy,
 ) {
-    let Some(bar) = config.colorbar.as_ref() else {
+    let Some((bar, rect)) = drawn_colorbar(config, da) else {
         return;
     };
-    if !bar.visible {
-        return;
-    }
-    let rect = colorbar_rect(&config.chart_area, da, config.chart_title.top_margin, bar);
-    if !(rect.width > 0.0 && rect.height > 0.0) {
-        return;
-    }
 
     draw_colorbar_strip(canvas, bar, &rect);
 
@@ -607,6 +612,21 @@ fn draw_colorbar(
         let placement = colorbar_title_placement(side, &rect, axis, (to.offset_x, to.offset_y), m);
         draw_placed_title(canvas, &to.text, placement, fp);
     }
+}
+
+/// The colourbar and its strip rect when [`draw_colorbar`] draws one: present,
+/// visible and not degenerate. [`tick_warnings`] reports the bar's axis only
+/// then.
+fn drawn_colorbar<'a>(
+    config: &'a Config,
+    da: &DataArea,
+) -> Option<(&'a crate::config::ColorBarOptions, RectF)> {
+    let bar = config.colorbar.as_ref()?;
+    if !bar.visible {
+        return None;
+    }
+    let rect = colorbar_rect(&config.chart_area, da, config.chart_title.top_margin, bar);
+    (rect.width > 0.0 && rect.height > 0.0).then_some((bar, rect))
 }
 
 /// Paint the ramp into the strip rect.
@@ -1335,13 +1355,43 @@ fn automatic_linear_spacing(axis: &AxisOptions) -> f64 {
 /// falls back to the auto spacing for the current range instead of blanking
 /// the axis. Callers must have validated the range as finite and non-empty.
 pub(crate) fn effective_major_spacing(axis: &AxisOptions) -> f64 {
-    let sp = axis.major_spacing;
-    if range_in_spacing_units(axis, sp).is_some_and(|units| units <= MAX_MAJOR_INTERVALS as f64)
-        && spacing_advances_range(axis, sp)
-    {
-        return sp;
+    match major_spacing_rejection(axis) {
+        None => axis.major_spacing,
+        Some(_) => automatic_linear_spacing(axis),
     }
-    automatic_linear_spacing(axis)
+}
+
+/// Why [`effective_major_spacing`] does not walk `axis.major_spacing`, or
+/// `None` when it does. The one decision behind both the fallback and its
+/// [`RenderWarning::MajorSpacingReplaced`], so the two cannot disagree.
+///
+/// The reason is meaningful for a walkable range only, the same precondition
+/// [`effective_major_spacing`] has: any other range refuses every spacing
+/// (reported as `TooManyTicks`, because its interval count cannot be measured)
+/// and the walkers draw no linear ticks on it.
+fn major_spacing_rejection(axis: &AxisOptions) -> Option<SpacingRejection> {
+    let sp = axis.major_spacing;
+    if !sp.is_finite() {
+        Some(SpacingRejection::NonFinite)
+    } else if sp <= 0.0 {
+        Some(SpacingRejection::NotPositive)
+    } else if !range_in_spacing_units(axis, sp)
+        .is_some_and(|units| units <= MAX_MAJOR_INTERVALS as f64)
+    {
+        Some(SpacingRejection::TooManyTicks {
+            limit: MAX_MAJOR_INTERVALS,
+        })
+    } else if !spacing_advances_range(axis, sp) {
+        Some(SpacingRejection::BelowResolution)
+    } else {
+        None
+    }
+}
+
+/// Minor ticks the linear walker draws per major interval: `minor_count`,
+/// clamped so the walk stays O(majors × subdivisions) whatever arrives.
+fn drawn_minor_count(axis: &AxisOptions) -> usize {
+    axis.minor_count.min(MAX_MINOR_SUBDIVISIONS - 1)
 }
 
 /// Range a tick walker may iterate: finite ends, positive span. NaN/±inf
@@ -1520,7 +1570,7 @@ fn minor_tick_values(axis: &AxisOptions) -> Vec<f64> {
             if !walkable_range(axis) {
                 return out;
             }
-            let subdivisions = axis.minor_count.min(MAX_MINOR_SUBDIVISIONS - 1) + 1;
+            let subdivisions = drawn_minor_count(axis) + 1;
             let step = effective_major_spacing(axis) / subdivisions as f64;
             let max_intervals = MAX_MAJOR_INTERVALS
                 .saturating_mul(subdivisions)
@@ -1565,6 +1615,93 @@ fn minor_tick_values(axis: &AxisOptions) -> Vec<f64> {
         }
     }
     out
+}
+
+// Tick-guard warnings.
+//
+// The walkers above substitute tick settings that would blank an axis or walk
+// it without bound. `tick_warnings` reports those substitutions by asking the
+// walkers' own guards (`major_spacing_rejection`, `drawn_minor_count`,
+// `effective_log_decade_step`) and the draw path's own gates
+// (`timestamp_tick_plan`, `drawn_colorbar`) rather than restating them.
+
+/// The tick settings the axis raster of `config` replaces with ones it can
+/// draw. Empty when every setting is drawn as written, and when the raster
+/// draws no axes at all (no data area).
+///
+/// The decoration layer walks all four chart axes whatever their tick and
+/// label visibility, and the colourbar's axis whenever the bar is drawn, so
+/// those are the axes reported. Depends on `config` alone; the renderer
+/// derives it exactly when it rasterizes a `ChartView`.
+pub(crate) fn tick_warnings(config: &Config) -> Vec<RenderWarning> {
+    let mut out = Vec::new();
+    let Ok(config) = raster_frame_config(config) else {
+        return out;
+    };
+    let Ok(da) = config.data_area() else {
+        return out;
+    };
+    let fp = FontPolicy::for_style(&config.draw_style);
+    for (which, axis, side) in [
+        (WarningAxis::BottomX, &config.bottom_x, Side::Bottom),
+        (WarningAxis::TopX, &config.top_x, Side::Top),
+        (WarningAxis::LeftY, &config.left_y, Side::Left),
+        (WarningAxis::RightY, &config.right_y, Side::Right),
+    ] {
+        // The plan the raster uses: calendar ticks walk neither
+        // `major_spacing` nor `minor_count`.
+        if timestamp_tick_plan(axis, side, &da, fp).is_some() {
+            continue;
+        }
+        push_walker_warnings(&mut out, which, axis);
+    }
+    // The colourbar walks the numeric walkers directly (no calendar plan).
+    if let Some((bar, _)) = drawn_colorbar(&config, &da) {
+        push_walker_warnings(&mut out, WarningAxis::ColorBar, &bar.axis);
+    }
+    out
+}
+
+/// The substitutions [`major_tick_values`] / [`minor_tick_values`] make for
+/// one axis.
+fn push_walker_warnings(out: &mut Vec<RenderWarning>, which: WarningAxis, axis: &AxisOptions) {
+    match axis.scale {
+        AxisScale::Linear => {
+            // Both linear walkers draw nothing on any other range.
+            if !walkable_range(axis) {
+                return;
+            }
+            if let Some(reason) = major_spacing_rejection(axis) {
+                out.push(RenderWarning::MajorSpacingReplaced {
+                    axis: which,
+                    requested: axis.major_spacing,
+                    used: effective_major_spacing(axis),
+                    reason,
+                });
+            }
+            let used = drawn_minor_count(axis);
+            if used != axis.minor_count {
+                out.push(RenderWarning::MinorCountClamped {
+                    axis: which,
+                    requested: axis.minor_count,
+                    used,
+                });
+            }
+        }
+        AxisScale::Logarithmic => {
+            // Log minors are 2a..9a in every decade whatever the count; only
+            // the decade step of the majors is substituted.
+            let used = f64::from(effective_log_decade_step(axis));
+            // `!=`, not a negated `==`: a NaN request was substituted too.
+            if used != axis.major_spacing {
+                out.push(RenderWarning::LogDecadeStepAdjusted {
+                    axis: which,
+                    requested: axis.major_spacing,
+                    used,
+                });
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2409,6 +2546,333 @@ mod tests {
             assert!(minors.len() <= MAX_LOG_DECADES * 8);
             assert!(minors.iter().all(|value| value.is_finite() && *value > 0.0));
             assert!(minors.windows(2).all(|pair| pair[0] < pair[1]));
+        }
+    }
+
+    /// The default config with a 0..10 bottom axis at `major_spacing`. Every
+    /// other tick setting draws as written.
+    fn spacing_config(major_spacing: f64) -> Config {
+        let mut cfg = default_config();
+        cfg.bottom_x.min = 0.0;
+        cfg.bottom_x.max = 10.0;
+        cfg.bottom_x.major_spacing = major_spacing;
+        cfg
+    }
+
+    fn spacing_warning(requested: f64, used: f64, reason: SpacingRejection) -> RenderWarning {
+        RenderWarning::MajorSpacingReplaced {
+            axis: WarningAxis::BottomX,
+            requested,
+            used,
+            reason,
+        }
+    }
+
+    #[test]
+    fn a_replaced_major_spacing_warns_with_the_spacing_drawn() {
+        let too_many = SpacingRejection::TooManyTicks {
+            limit: MAX_MAJOR_INTERVALS,
+        };
+        for (requested, reason) in [
+            (1e-9, too_many),
+            // Positive, but the interval count overflows.
+            (f64::from_bits(1), too_many),
+            (0.0, SpacingRejection::NotPositive),
+            (-2.0, SpacingRejection::NotPositive),
+            (f64::INFINITY, SpacingRejection::NonFinite),
+        ] {
+            let cfg = spacing_config(requested);
+            // The raster walks the automatic spacing for 0..10, which is 2.
+            assert_eq!(
+                major_tick_values(&cfg.bottom_x),
+                [0.0, 2.0, 4.0, 6.0, 8.0, 10.0]
+            );
+            assert_eq!(
+                tick_warnings(&cfg),
+                [spacing_warning(requested, 2.0, reason)],
+                "{requested:?}"
+            );
+        }
+
+        // NaN never compares equal, so match on the warning instead.
+        let warnings = tick_warnings(&spacing_config(f64::NAN));
+        assert!(
+            matches!(
+                warnings.as_slice(),
+                [RenderWarning::MajorSpacingReplaced {
+                    axis: WarningAxis::BottomX,
+                    requested,
+                    used: 2.0,
+                    reason: SpacingRejection::NonFinite,
+                }] if requested.is_nan()
+            ),
+            "{warnings:?}"
+        );
+
+        // A quarter of an ulp at 1.0: few enough intervals, but
+        // `min + spacing == min`, so the walk could not advance.
+        let mut cfg = spacing_config(f64::EPSILON / 4.0);
+        cfg.bottom_x.min = 1.0;
+        cfg.bottom_x.max = 1.0 + 4.0 * f64::EPSILON;
+        let used = effective_major_spacing(&cfg.bottom_x);
+        assert_ne!(used, cfg.bottom_x.major_spacing);
+        let majors = major_tick_values(&cfg.bottom_x);
+        assert!(
+            majors.windows(2).all(|pair| pair[1] - pair[0] == used),
+            "{majors:?}"
+        );
+        assert_eq!(
+            tick_warnings(&cfg),
+            [spacing_warning(
+                f64::EPSILON / 4.0,
+                used,
+                SpacingRejection::BelowResolution
+            )]
+        );
+    }
+
+    #[test]
+    fn tick_settings_drawn_as_written_raise_no_warning() {
+        assert!(tick_warnings(&default_config()).is_empty());
+
+        // The densest spacing the walker honours, the largest minor count it
+        // honours, whole log decades and a drawn colourbar.
+        let mut cfg = spacing_config(0.01);
+        cfg.bottom_x.minor_count = MAX_MINOR_SUBDIVISIONS - 1;
+        cfg.left_y.scale = AxisScale::Logarithmic;
+        cfg.left_y.min = 1.0;
+        cfg.left_y.max = 1.0e6;
+        cfg.left_y.major_spacing = 3.0;
+        cfg.colorbar = Some(crate::default::default_colorbar_options());
+        assert_eq!(
+            major_tick_values(&cfg.bottom_x).len(),
+            MAX_MAJOR_INTERVALS + 1
+        );
+        assert!(tick_warnings(&cfg).is_empty(), "{:?}", tick_warnings(&cfg));
+    }
+
+    #[test]
+    fn an_oversized_minor_count_warns_with_the_count_drawn() {
+        let mut cfg = spacing_config(2.0);
+        cfg.bottom_x.minor_count = 500;
+        assert_eq!(
+            tick_warnings(&cfg),
+            [RenderWarning::MinorCountClamped {
+                axis: WarningAxis::BottomX,
+                requested: 500,
+                used: 99,
+            }]
+        );
+        // 99 minors in each of the five major intervals is what is drawn.
+        assert_eq!(minor_tick_values(&cfg.bottom_x).len(), 5 * 99);
+
+        cfg.bottom_x.minor_count = usize::MAX;
+        assert_eq!(
+            tick_warnings(&cfg),
+            [RenderWarning::MinorCountClamped {
+                axis: WarningAxis::BottomX,
+                requested: usize::MAX,
+                used: 99,
+            }]
+        );
+
+        // A log axis draws 2a..9a whatever the count, by design, not by guard.
+        cfg.bottom_x.scale = AxisScale::Logarithmic;
+        cfg.bottom_x.min = 1.0;
+        cfg.bottom_x.major_spacing = 1.0;
+        assert!(tick_warnings(&cfg).is_empty());
+    }
+
+    #[test]
+    fn a_log_decade_step_that_is_not_whole_warns_with_the_step_drawn() {
+        let mut cfg = default_config();
+        cfg.left_y.scale = AxisScale::Logarithmic;
+        cfg.left_y.min = 1.0;
+        cfg.left_y.max = 1.0e6;
+        let log_warning = |requested: f64, used: f64| RenderWarning::LogDecadeStepAdjusted {
+            axis: WarningAxis::LeftY,
+            requested,
+            used,
+        };
+
+        cfg.left_y.major_spacing = 2.5;
+        assert_eq!(tick_warnings(&cfg), [log_warning(2.5, 2.0)]);
+        assert_eq!(major_tick_values(&cfg.left_y), [1.0, 1.0e2, 1.0e4, 1.0e6]);
+
+        for requested in [0.5, 0.0, -3.0, f64::INFINITY] {
+            cfg.left_y.major_spacing = requested;
+            assert_eq!(tick_warnings(&cfg), [log_warning(requested, 1.0)]);
+        }
+        cfg.left_y.major_spacing = 1.0e12;
+        assert_eq!(
+            tick_warnings(&cfg),
+            [log_warning(1.0e12, f64::from(i32::MAX))]
+        );
+        cfg.left_y.major_spacing = f64::NAN;
+        assert!(matches!(
+            tick_warnings(&cfg).as_slice(),
+            [RenderWarning::LogDecadeStepAdjusted { used: 1.0, .. }]
+        ));
+
+        cfg.left_y.major_spacing = 2.0;
+        assert!(tick_warnings(&cfg).is_empty());
+    }
+
+    #[test]
+    fn calendar_ticks_walk_no_spacing_and_raise_no_warning() {
+        use crate::format::{TimestampLabelFormat, TimestampTickPolicy};
+
+        // One hour of Unix seconds with a stale spacing and minor count.
+        let mut cfg = spacing_config(1e-9);
+        cfg.bottom_x.max = 3_600.0;
+        cfg.bottom_x.minor_count = 500;
+        cfg.bottom_x.label_style.format = LabelFormat::Timestamp(TimestampLabelFormat::default());
+        let da = cfg.data_area().unwrap();
+        let fp = FontPolicy::for_style(&cfg.draw_style);
+        assert!(timestamp_tick_plan(&cfg.bottom_x, Side::Bottom, &da, fp).is_some());
+        assert!(tick_warnings(&cfg).is_empty(), "{:?}", tick_warnings(&cfg));
+
+        // The numeric policy walks both settings, so both are reported.
+        cfg.bottom_x.label_style.format = LabelFormat::Timestamp(TimestampLabelFormat {
+            tick_policy: TimestampTickPolicy::NumericSpacing,
+            ..TimestampLabelFormat::default()
+        });
+        let warned: Vec<_> = tick_warnings(&cfg)
+            .iter()
+            .map(RenderWarning::axis)
+            .collect();
+        assert_eq!(warned, [WarningAxis::BottomX, WarningAxis::BottomX]);
+
+        // Calendar ticks the planner cannot fit under its tick limit fall back
+        // to the numeric walker, which is then reported like any other axis.
+        cfg.bottom_x.label_style.format = LabelFormat::Timestamp(TimestampLabelFormat::default());
+        cfg.bottom_x.min = -3.0e13;
+        cfg.bottom_x.max = 3.0e13;
+        cfg.bottom_x.minor_count = 4;
+        cfg.bottom_x.major_spacing = 0.0;
+        assert!(timestamp_tick_plan(&cfg.bottom_x, Side::Bottom, &da, fp).is_none());
+        let used = effective_major_spacing(&cfg.bottom_x);
+        assert_eq!(
+            tick_warnings(&cfg),
+            [spacing_warning(0.0, used, SpacingRejection::NotPositive)]
+        );
+    }
+
+    #[test]
+    fn every_axis_the_decoration_layer_walks_is_reported() {
+        // draw_axis walks all four axes whatever their tick and label
+        // visibility, so hidden ticks still report.
+        let mut cfg = default_config();
+        for axis in [
+            &mut cfg.bottom_x,
+            &mut cfg.top_x,
+            &mut cfg.left_y,
+            &mut cfg.right_y,
+        ] {
+            axis.major_spacing = 0.0;
+            axis.tick = TickVisibility::None;
+            axis.label_style.visible = false;
+        }
+        let warned: Vec<_> = tick_warnings(&cfg)
+            .iter()
+            .map(RenderWarning::axis)
+            .collect();
+        assert_eq!(
+            warned,
+            [
+                WarningAxis::BottomX,
+                WarningAxis::TopX,
+                WarningAxis::LeftY,
+                WarningAxis::RightY
+            ]
+        );
+
+        // The colourbar's axis is reported while the bar is drawn.
+        let mut cfg = default_config();
+        let mut bar = crate::default::default_colorbar_options();
+        bar.axis.major_spacing = 1e-9;
+        cfg.colorbar = Some(bar);
+        let bar_axis = &cfg.colorbar.as_ref().unwrap().axis;
+        assert_eq!(
+            tick_warnings(&cfg),
+            [RenderWarning::MajorSpacingReplaced {
+                axis: WarningAxis::ColorBar,
+                requested: 1e-9,
+                used: effective_major_spacing(bar_axis),
+                reason: SpacingRejection::TooManyTicks {
+                    limit: MAX_MAJOR_INTERVALS,
+                },
+            }]
+        );
+        cfg.colorbar.as_mut().unwrap().visible = false;
+        assert!(tick_warnings(&cfg).is_empty());
+    }
+
+    #[test]
+    fn warnings_follow_the_raster_frame_of_an_offset_chart_area() {
+        let drawn = |cfg: &Config| {
+            try_raster_chart_layer_to_rgba(cfg, AxisLayerKind::Decoration)
+                .unwrap()
+                .chunks_exact(4)
+                .any(|px| px[3] != 0)
+        };
+        let mut cfg = spacing_config(0.0);
+        cfg.chart_area = crate::layout::ChartArea(crate::layout::Rect {
+            x: 40,
+            y: 30,
+            width: 320,
+            height: 240,
+        });
+        assert!(drawn(&cfg));
+        assert_eq!(
+            tick_warnings(&cfg),
+            [spacing_warning(0.0, 2.0, SpacingRejection::NotPositive)]
+        );
+
+        // A negative left margin keeps the data area on the surface at this
+        // offset, but in the raster's own frame it would start left of the
+        // origin: the raster draws no axes, and nothing is reported.
+        cfg.left_y.out_margin -= cfg.margins().left + 20.0;
+        assert_eq!(cfg.margins().left, -20.0);
+        assert!(cfg.data_area().is_ok());
+        assert!(!drawn(&cfg));
+        assert!(tick_warnings(&cfg).is_empty());
+
+        // No raster at all for an empty chart area, and no warnings.
+        cfg.chart_area.0.width = 0;
+        assert!(try_raster_chart_layer_to_rgba(&cfg, AxisLayerKind::Decoration).is_err());
+        assert!(tick_warnings(&cfg).is_empty());
+    }
+
+    #[test]
+    fn warning_messages_name_the_setting_and_both_values_on_one_line() {
+        for (warning, parts) in [
+            (
+                spacing_warning(1e-9, 2.0, SpacingRejection::TooManyTicks { limit: 1000 }),
+                ["bottom_x.major_spacing", "1e-9", "2.0"],
+            ),
+            (
+                RenderWarning::MinorCountClamped {
+                    axis: WarningAxis::TopX,
+                    requested: 500,
+                    used: 99,
+                },
+                ["top_x.minor_count", "500", "99"],
+            ),
+            (
+                RenderWarning::LogDecadeStepAdjusted {
+                    axis: WarningAxis::ColorBar,
+                    requested: 0.5,
+                    used: 1.0,
+                },
+                ["colorbar.axis.major_spacing", "0.5", "1-decade"],
+            ),
+        ] {
+            let message = warning.to_string();
+            assert!(!message.contains('\n'), "{message}");
+            for part in parts {
+                assert!(message.contains(part), "{message:?} lacks {part:?}");
+            }
         }
     }
 

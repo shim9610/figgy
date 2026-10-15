@@ -853,6 +853,11 @@ impl App {
                     eprintln!("[refresh_axis] {e}");
                     return;
                 }
+                // Tick settings the new raster could not draw as written. Only
+                // re-derived here, on a dirty-driven refresh — never per frame.
+                for warning in panel.view.render_warnings() {
+                    eprintln!("[render_warning] panel {i}: {warning}");
+                }
             }
         }
 

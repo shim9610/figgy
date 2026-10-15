@@ -9761,6 +9761,7 @@ impl Renderer {
             stream_revision: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             panel_rect,
             grid_space_gen: None,
+            render_warnings: axis_render::tick_warnings(chart.config()),
         })
     }
 
@@ -9879,6 +9880,7 @@ impl Renderer {
             h,
         )?;
         view.panel_rect = panel_rect;
+        view.render_warnings = axis_render::tick_warnings(chart.config());
 
         Ok(())
     }
@@ -11261,11 +11263,31 @@ pub struct ChartView {
     /// uploaded into `grid_texture` (`None` = non-cached content). Lets
     /// `refresh_axis` skip the full-panel texture write on cache hits.
     grid_space_gen: Option<u64>,
+    /// Tick-guard substitutions in the current raster, derived from the chart
+    /// that `create_chart_view` or the last successful `refresh_axis*`
+    /// rasterized.
+    render_warnings: Vec<crate::RenderWarning>,
 }
 
 impl ChartView {
     pub fn panel_rect(&self) -> Rect {
         self.panel_rect
+    }
+
+    /// The tick settings this view's current axis raster drew differently
+    /// from how its chart's config wrote them: an impossible `major_spacing`
+    /// drawn at automatic spacing, a clamped `minor_count`, an adjusted log
+    /// decade step. Empty when every setting is drawn as written.
+    ///
+    /// [`Renderer::create_chart_view`] sets it, and every successful
+    /// [`Renderer::refresh_axis`] / [`Renderer::refresh_axis_with_selection`]
+    /// re-derives it from the chart it rasterized; nothing else changes it.
+    /// A host that refreshes only when its dirty flag or
+    /// [`ChartRenderStamp::needs_raster_since`] says the raster changed reads
+    /// it right after that refresh. Compare with the previous list to report
+    /// changes only; a NaN `requested` never compares equal.
+    pub fn render_warnings(&self) -> &[crate::RenderWarning] {
+        &self.render_warnings
     }
 
     fn advance_content_revision(&self) -> Result<u64> {

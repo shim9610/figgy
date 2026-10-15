@@ -33,8 +33,8 @@ pub struct Config {
 |---|---|---|
 | `scale` | `AxisScale` | `Linear` or `Logarithmic` (log10) |
 | `min, max` | f64 | Data-space range. For log scale, positive bounds are used as-is; manual non-positive/non-finite bounds are guarded to `1e-12` on renderer/axis paths. Non-positive data samples are skipped/NaN-handled rather than making the whole range invalid |
-| `major_spacing` | f64 | linear: data units; log: decade step (1, 2, …) |
-| `minor_count` | usize | minors per major (linear) or sub-decade 2..9 (8 recommended for log) |
+| `major_spacing` | f64 | linear: data units; log: decade step (1, 2, …). The raster draws a linear spacing that is non-finite, ≤ 0, too small to advance from the range ends, or over 1000 intervals across the range at the automatic spacing instead, and floors a log step to a whole number ≥ 1 (a non-finite one draws 1). Each substitution is reported by `ChartView::render_warnings` after the next refresh |
+| `minor_count` | usize | minors per major (linear) or sub-decade 2..9 (8 recommended for log). A linear count over 99 draws 99 minors per major and is reported the same way |
 | `inverted` | bool | Reverses the visual direction of this axis. Tick/grid placement, data rendering, and picking all use the same reversed mapping; `min`/`max` remain the data-space bounds |
 | `label_style` | `LabelStyle` | Tick-label styling |
 | `tick` | `TickVisibility` | `None / Outside / Inside / Both` |
@@ -382,8 +382,8 @@ pub struct Config {
 |---|---|---|
 | `scale` | `AxisScale` | `Linear` 또는 `Logarithmic` (log10) |
 | `min, max` | f64 | 데이터 좌표 범위. 로그축에서도 양수 원본값을 지정한다. 수동 경계가 0 이하이거나 유효하지 않으면 `1e-12`로 보정한다. 데이터의 0 이하 값은 전체 범위를 거부하지 않고 그리기에서 제외하거나 NaN으로 처리한다. |
-| `major_spacing` | f64 | 주 눈금 간격. 선형축은 데이터 단위, 로그축은 decade(10배 간격) 단위 |
-| `minor_count` | usize | 선형축에서는 주 눈금 사이의 보조 눈금 수. 로그축에서는 한 decade 안의 2~9 위치에 놓으며 8을 권장한다. |
+| `major_spacing` | f64 | 주 눈금 간격. 선형축은 데이터 단위, 로그축은 decade(10배 간격) 단위. 선형축 간격이 유한하지 않거나 0 이하이거나, 너무 작아 범위 끝에서 나아가지 못하거나, 범위를 1000구간 넘게 나누면 자동 간격으로 그린다. 로그축 간격은 내림해 1 이상의 정수로 적용하고 유한하지 않으면 1로 그린다. 이렇게 바꾼 값은 다음 갱신 뒤 `ChartView::render_warnings`로 알린다. |
+| `minor_count` | usize | 선형축에서는 주 눈금 사이의 보조 눈금 수. 로그축에서는 한 decade 안의 2~9 위치에 놓으며 8을 권장한다. 선형축에서 99를 넘으면 주 눈금 사이에 99개만 그리고 같은 방식으로 알린다. |
 | `inverted` | bool | 화면상의 축 방향을 뒤집는다. 눈금·격자·데이터·피킹이 같은 변환을 쓰며 `min` / `max`는 데이터 좌표 기준을 유지한다. |
 | `label_style` | `LabelStyle` | 눈금 라벨 스타일 |
 | `tick` | `TickVisibility` | `None / Outside / Inside / Both` |

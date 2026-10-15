@@ -11,6 +11,17 @@ at the time. The first crates.io publication is recorded below.
 
 ## Unreleased
 
+- `ChartView::render_warnings` reports the tick settings the axis raster
+  replaced instead of substituting them silently: a linear `major_spacing` that
+  is non-finite, not positive, too small to advance or over 1000 intervals
+  (drawn at automatic spacing), a linear `minor_count` over 99, and a log decade
+  step that is not a whole number ≥ 1. Each `RenderWarning` names the axis
+  (`WarningAxis`), the value as written and the value drawn; a replaced spacing
+  also says why (`SpacingRejection`). `create_chart_view` and each successful
+  `refresh_axis` / `refresh_axis_with_selection` re-derive the list from the
+  chart they rasterized, so hosts read it in their dirty-driven refresh branch
+  and nothing is computed per frame. Additive: no signature changes, and the
+  drawn output is unchanged.
 - `RichText` gains `align: TextAlign` (`Left` default, `Center`, `Right`;
   re-exported from both crate roots). Each line of a multi-line text is offset
   inside the block by none, half or all of its slack; tab cells move with their

@@ -23,6 +23,7 @@ pub mod pick;
 pub mod raster;
 pub mod radial;
 pub mod categorical;
+mod render_warning;
 pub mod renderer;
 // Hand-drawn geometry helpers + the `DecoStroker` strategy — consumed by the
 // deco layer (`axis_render`) when `Config::draw_style` selects a stylized
@@ -81,6 +82,7 @@ pub use gpu_pick::{GpuPickError, GpuPickTicket};
 pub use init::{INIT_EVENT_SCHEMA_VERSION, InitEvent, InitPhase};
 pub use pick::{PickedData, PickedPoint, PointColumnLookup, PointPickOptions, pick_nearest_point};
 pub use preset::{AxisPreset, ColorCycle};
+pub use render_warning::{RenderWarning, SpacingRejection, WarningAxis};
 pub use renderer::{
     PreparationFeature, PipelinePreparation, PreparedPipelines,
     AxisViewState, ChartDrawItem, ChartId, ChartRenderStamp, ChartStyle, ChartView, ChartViewState,

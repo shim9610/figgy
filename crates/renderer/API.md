@@ -111,6 +111,16 @@ the view or recreate the `ChartStyle` values supplied by the caller.
 Use the chart's dirty state or `ChartRenderStamp::needs_raster_since` to decide
 when to refresh; unchanged frames can reuse the existing view and styles.
 
+In that refresh branch, call `refresh_axis` and then read
+`view.render_warnings()`. It lists the tick settings the new raster could not
+draw as written, as `RenderWarning`s: for example a `major_spacing` drawn at
+automatic spacing or a clamped `minor_count` (limits in the
+[configuration reference](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md)).
+`create_chart_view` and every successful refresh re-derive the list from the
+chart they rasterized, so it changes on dirty-driven raster refreshes and never
+per frame. To report only changes, compare it with the list read after the
+previous refresh; a NaN `requested` value compares unequal to itself.
+
 This helper shows the caller-owned path after a series-style edit at scale 1.
 It conservatively refreshes decorations and rebuilds every style. A host can
 rebuild only the affected styles; an axis-only edit can reuse them all.

@@ -60,6 +60,14 @@ those two steps. The registered-chart path maintains its own style cache after
 `set_chart_config` / `set_chart_series`; its caller-owned view still needs refresh.
 See the [edit table and compiled example](API.md#cartesian-edits-update-the-derived-inputs-before-preparing).
 
+The refresh also reports tick settings the axis raster could not draw as written.
+Read `view.render_warnings()` in the same branch that calls `refresh_axis`: each
+`RenderWarning` names the axis, the value as written and the value drawn, such
+as a `major_spacing` that would need more than 1000 intervals and was drawn at
+automatic spacing. The list is re-derived only when the view is rasterized, so a
+host that refreshes on its dirty flag never pays for it per frame. Compare it
+with the previous list to show only changes.
+
 Constructors initialize base resources; they do not eagerly populate every
 pipeline cache. Use explicit `prewarm_all` or detached preparation when needed,
 following the [constructor/prewarm table](API.md#construction-and-prewarming).
