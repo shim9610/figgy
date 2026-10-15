@@ -44,6 +44,13 @@ pub use ::model::{
     resize, select, text, tick,
 };
 
+/// The `figgy-renderer` package version this build was compiled from.
+///
+/// Hosts that persist renderer settings stamp and check it, so they name the
+/// renderer that produced a document without hard-coding a version number
+/// that silently goes stale when the dependency is updated.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 // Public API re-exports.
 pub use chart::{Chart, FitExtent, errorbar_extent};
 pub use color::Color;
