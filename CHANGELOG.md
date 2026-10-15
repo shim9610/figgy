@@ -11,6 +11,11 @@ at the time. The first crates.io publication is recorded below.
 
 ## Unreleased
 
+- `draw_style_supports(style, render_type)` reports whether a draw style draws
+  every primitive of a render type, from the same selection prepare uses.
+  Sketch and Milkyway draw line, scatter and errorbar series and skip bars,
+  fields and contours; Constellation draws `ScatterLine` only. Prepare skips
+  an unsupported series without an error, so hosts can now reject it up front.
 - `text_render::font_family_available(family)` reports whether a
   `RichText.font` / `label_font` family resolves to a registered or installed
   face instead of silently falling back to the bundled Liberation Sans. It

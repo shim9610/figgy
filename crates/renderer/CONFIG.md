@@ -88,8 +88,8 @@ scale against that contract.
 | Variant / JSON mode | Meaning |
 |---|---|
 | `Precise` / omitted or `{ "mode": "precise" }` | Default scientific renderer; serialized default omits `draw_style` |
-| `Sketch` / `{ "mode": "sketch", ... }` | Hand-drawn chart-wide style |
-| `Milkyway` / `{ "mode": "milkyway", ... }` | Astrophotograph chart-wide style. Parameter metadata comes from `draw_style_param_specs("milkyway")` |
+| `Sketch` / `{ "mode": "sketch", ... }` | Hand-drawn chart-wide style. Draws line, scatter and errorbar series; bars, fields and contours are skipped (query with `draw_style_supports`) |
+| `Milkyway` / `{ "mode": "milkyway", ... }` | Astrophotograph chart-wide style. Draws line, scatter and errorbar series; bars, fields and contours are skipped (query with `draw_style_supports`). Parameter metadata comes from `draw_style_param_specs("milkyway")` |
 | `Constellation` / `{ "mode": "constellation", ... }` | ScatterLine-only star chart style. Parameter metadata comes from `draw_style_param_specs("constellation")` |
 
 ### `Legend`
@@ -428,8 +428,8 @@ pub struct Config {
 | 종류 / JSON mode | 의미 |
 |---|---|
 | `Precise` / 생략 또는 `{ "mode": "precise" }` | 기본 정밀 렌더러. 기본 직렬화에서는 `draw_style` 키가 생략됨 |
-| `Sketch` / `{ "mode": "sketch", ... }` | 차트 전체 손그림 스타일 |
-| `Milkyway` / `{ "mode": "milkyway", ... }` | 차트 전체 천체사진 스타일. 옵션 메타데이터는 `draw_style_param_specs("milkyway")`에서 제공 |
+| `Sketch` / `{ "mode": "sketch", ... }` | 차트 전체 손그림 스타일. 선·산점도·오차 막대 시리즈를 그리고 막대·필드·등고선은 그리지 않는다(`draw_style_supports`로 확인) |
+| `Milkyway` / `{ "mode": "milkyway", ... }` | 차트 전체 천체사진 스타일. 선·산점도·오차 막대 시리즈를 그리고 막대·필드·등고선은 그리지 않는다(`draw_style_supports`로 확인). 옵션 메타데이터는 `draw_style_param_specs("milkyway")`에서 제공 |
 | `Constellation` / `{ "mode": "constellation", ... }` | `ScatterLine` 전용 별자리 스타일. 데이터 점 위치의 별과 반투명 연결선을 그린다. 별 크기는 `point_size`를 따른다. 옵션 범위는 `draw_style_param_specs("constellation")`에서 조회한다. |
 
 ### `Legend`

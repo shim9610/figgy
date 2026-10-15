@@ -13211,13 +13211,19 @@ fn effective_series_primitives(
 /// Whether `style` draws every primitive `render_type` draws in the precise
 /// style.
 ///
-/// A stylized mode silently skips the primitives it has no entry point for
-/// (bars, fields and contours outside precise; everything but marker lines in
-/// constellation), so a host that lets such a series reach the renderer gets
-/// an empty plot instead of an error. This is the single answer to "will this
-/// series be drawn": it compares the same per-style primitive selection the
-/// renderer uses at prepare time against the precise selection, so a host
-/// validating with it can never disagree with what is actually drawn.
+/// `false` exactly when the style has no entry point for one of those
+/// primitives: Sketch and Milkyway draw line, scatter and errorbar series but
+/// not bars, fields or contours; Constellation draws marker lines
+/// (`ScatterLine`) only. Prepare then skips that series without an error, so a
+/// host that validates with this predicate can reject the combination
+/// instead of drawing an empty plot. It compares the per-style primitive
+/// selection prepare itself uses against the precise one, so the two cannot
+/// drift apart. Errorbars have no primitive of their own here: they follow the
+/// series' scatter, and Constellation drops errorbar series entirely.
+///
+/// `true` answers for resident drawing. Streaming has its own limits and can
+/// still reject a supported combination with an error; see
+/// `inspect_streaming_capability`.
 pub fn draw_style_supports(style: &DrawStyle, render_type: &DataRenderType) -> bool {
     effective_series_primitives(style, render_type)
         == effective_series_primitives(&DrawStyle::Precise, render_type)
@@ -17102,7 +17108,7 @@ mod tests {
             scatter: scatter.clone(),
         };
         let marker_line_rt = DataRenderType::ScatterLine {
-            scatter,
+            scatter: scatter.clone(),
             line: line.clone(),
         };
         let precise_only = [
@@ -17132,9 +17138,66 @@ mod tests {
                 contour,
             },
         ];
+        let err = crate::data_config::DataErrorBarStyleConfig {
+            error_bar_color: Color::BLACK,
+            error_bar_width: 1.0,
+            error_bar_cap_size: 4.0,
+            cap_width: 1.0,
+            error_bar_style_table: None,
+            error_bar_style_index_column: None,
+            error_bar_style_overrides: None,
+        };
+        let sigma = || crate::data_config::ErrorRef::Symmetric {
+            column: "e".into(),
+        };
+        let errorbar_types = [
+            DataRenderType::ScatterErrorbarX {
+                scatter: scatter.clone(),
+                err_x: sigma(),
+                err_style: err.clone(),
+            },
+            DataRenderType::ScatterErrorbarY {
+                scatter: scatter.clone(),
+                err_y: sigma(),
+                err_style: err.clone(),
+            },
+            DataRenderType::ScatterErrorbarXY {
+                scatter: scatter.clone(),
+                err_x: sigma(),
+                err_y: sigma(),
+                err_style: err.clone(),
+            },
+            DataRenderType::LineScatterErrorbarX {
+                scatter: scatter.clone(),
+                line: line.clone(),
+                err_x: sigma(),
+                err_style: err.clone(),
+            },
+            DataRenderType::LineScatterErrorbarY {
+                scatter: scatter.clone(),
+                line: line.clone(),
+                err_y: sigma(),
+                err_style: err.clone(),
+            },
+            DataRenderType::LineScatterErrorbarXY {
+                scatter: scatter.clone(),
+                line: line.clone(),
+                err_x: sigma(),
+                err_y: sigma(),
+                err_style: err,
+            },
+        ];
         let sketch = DrawStyle::Sketch(Default::default());
         let milkyway = DrawStyle::Milkyway(Default::default());
         let constellation = DrawStyle::Constellation(Default::default());
+        // Errorbars follow the series' scatter in Sketch and Milkyway; the
+        // constellation style drops errorbar series entirely.
+        for rt in &errorbar_types {
+            assert!(draw_style_supports(&DrawStyle::Precise, rt), "{rt:?}");
+            assert!(draw_style_supports(&sketch, rt), "sketch {rt:?}");
+            assert!(draw_style_supports(&milkyway, rt), "milkyway {rt:?}");
+            assert!(!draw_style_supports(&constellation, rt), "constellation {rt:?}");
+        }
 
         for rt in [&line_rt, &scatter_rt, &marker_line_rt]
             .into_iter()
