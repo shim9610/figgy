@@ -50,7 +50,7 @@ impl fmt::Display for WarningAxis {
 ///
 /// New reasons may be added as new variants. The fields of existing variants
 /// are frozen.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum SpacingRejection {
     /// NaN or infinite.

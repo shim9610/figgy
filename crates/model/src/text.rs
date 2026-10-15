@@ -9,7 +9,9 @@ pub struct RichText {
     pub font_size: f32,
     /// Font family name (e.g. "Noto Sans"). Resolved by the renderer's text
     /// stack: runtime-registered fonts → system fonts (native only) →
-    /// bundled Liberation Sans. Empty string = bundled font.
+    /// bundled Liberation Sans. Empty string = bundled font. A character the
+    /// resolved face cannot draw falls back per character to registered
+    /// fonts, the bundled face, then (native only) installed system fonts.
     pub font: String,
     /// Where each line of a multi-line text sits inside the block. Additive
     /// schema: documents written before it existed parse as `Left` (the only

@@ -201,6 +201,9 @@ fn load_registered_font(
 /// Returns the family names the file declares, or an error when the bytes
 /// parse to no usable face. Registering the exact same bytes again is
 /// idempotent; different font files declaring the same family still coexist.
+/// A registered face also supplies characters the configured family cannot
+/// draw (per-character fallback), so registering a font can change text
+/// whose `font` names another family.
 pub fn register_font_bytes(bytes: Vec<u8>) -> Result<Vec<String>, String> {
     let mut fonts = registered_fonts()
         .lock()
@@ -1701,6 +1704,11 @@ mod tests {
             "the bold-italic face draws 'α'"
         );
         assert!(draw("Comic Neue", true, true) == draw("", true, true));
+
+        // Leave the registered family complete, so upright lookups of
+        // "Liberation Sans" later in this process cannot match the italic faces.
+        register_font_bytes(EMBEDDED_REGULAR.to_vec()).unwrap();
+        register_font_bytes(EMBEDDED_BOLD.to_vec()).unwrap();
     }
 
     // A zero-width space inside a Comic Neue run (which lacks U+200B) takes

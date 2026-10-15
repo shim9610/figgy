@@ -106,6 +106,8 @@ struct PanelEntry {
     styles: Vec<ChartStyle>,
     /// Selectable elements of this panel (axes / titles / data area).
     hitmap: HitMap,
+    /// Warnings from the last raster refresh, so only changes are logged.
+    reported_warnings: Vec<renderer::RenderWarning>,
 }
 
 struct App {
@@ -225,6 +227,7 @@ fn build_sine_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEnt
         series: vec![cfg_sin],
         styles: vec![style],
         hitmap: HitMap::standard_chart(),
+        reported_warnings: Vec::new(),
     }
 }
 
@@ -300,6 +303,7 @@ fn build_rc_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEntry
         series: vec![cfg_charge, cfg_discharge],
         styles: vec![style_charge, style_discharge],
         hitmap: HitMap::standard_chart(),
+        reported_warnings: Vec::new(),
     }
 }
 
@@ -360,6 +364,7 @@ fn build_cross_section_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) ->
         series: vec![cfg_xs],
         styles: vec![style],
         hitmap: HitMap::standard_chart(),
+        reported_warnings: Vec::new(),
     }
 }
 
@@ -471,6 +476,7 @@ fn build_field_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEn
         series,
         styles,
         hitmap: HitMap::standard_chart(),
+        reported_warnings: Vec::new(),
     }
 }
 
@@ -853,10 +859,15 @@ impl App {
                     eprintln!("[refresh_axis] {e}");
                     return;
                 }
-                // Tick settings the new raster could not draw as written. Only
-                // re-derived here, on a dirty-driven refresh — never per frame.
-                for warning in panel.view.render_warnings() {
-                    eprintln!("[render_warning] panel {i}: {warning}");
+                // Tick settings the new raster could not draw as written. They
+                // are re-derived on every dirty-driven refresh (a drag refreshes
+                // each frame), so log only when the list changes.
+                let warnings = panel.view.render_warnings();
+                if warnings != panel.reported_warnings.as_slice() {
+                    for warning in warnings {
+                        eprintln!("[render_warning] panel {i}: {warning}");
+                    }
+                    panel.reported_warnings = warnings.to_vec();
                 }
             }
         }
