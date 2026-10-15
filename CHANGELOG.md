@@ -68,6 +68,20 @@ at the time. The first crates.io publication is recorded below.
   and one keeping less than `MIN_VISIBLE_DATA_AREA_PX` (8 px, or its whole
   size if smaller) inside the chart area (`TargetOutOfChartArea`). Previously
   a start above the origin saturated to 0 and moved the opposite edge.
+- Characters missing from the selected font no longer draw as `.notdef` boxes
+  when another available face can draw them (for example Greek in a Latin-only
+  family; U+207B, which the bundled Liberation Sans lacks, comes from an
+  installed system font on native hosts that have one). Measurement and drawing take each such character from the first
+  face that can draw it: fonts added with `register_font_bytes`, family by
+  family in registration order with the requested bold/italic matched as in a
+  family lookup; then the bundled Liberation Sans of the same style; then, on
+  native targets only, installed system fonts in family-name order. Faces
+  without outlines (colour-bitmap emoji) do not count, since text rasterizes
+  from outlines. Registered and bundled faces resolve identically on native
+  and wasm, and a registered font now also supplies characters the configured
+  family lacks (for example Hangul in a Latin label font). Glyphs the selected
+  face covers, including Comic Neue in sketch mode, render as before; text
+  containing previously missing characters measures and draws differently.
 
 ## Source patch — renderer 0.16.1 / model 0.10.0 / figgy 0.13.1
 

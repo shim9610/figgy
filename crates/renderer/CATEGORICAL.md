@@ -100,7 +100,9 @@ chart.selected = Some(target);
 
 범례는 폭에 맞춰 줄을 나눈다. 내부 값 라벨은 막대 색에
 따라 밝은 글자/차트의 `text_color`를 선택한다. 시리즈 범례는 개별 막대 색이 아닌 시리즈 색이다.
-한글 등 추가 글꼴은 기존 `register_font_bytes` 경로를 사용한다. 글꼴 등록 후에는 캐시를 갱신한다.
+한글 등 추가 글꼴은 기존 `register_font_bytes` 경로를 사용한다. `font_family`에 없는 글자는 글자마다
+등록 글꼴, 내장 Liberation Sans, 설치된 시스템 글꼴(네이티브 전용) 순으로 찾아 그린다.
+글꼴 등록 후에는 캐시를 갱신한다.
 
 Visible value labels can be selected through `frame.decorations().hit_test([x, y])` and moved
 individually with `drag_by(&mut chart.decorations, hit, dx, dy)`. Prepare a new

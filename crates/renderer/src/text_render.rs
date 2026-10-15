@@ -3,7 +3,10 @@
 //! No window or event-loop dependency — the caller passes in a canvas and we
 //! draw into it. Liberation Sans (SIL OFL 1.1) is bundled in four styles, so
 //! rendering always succeeds even on systems without the requested font: if
-//! `RichText.font` is empty or unresolvable, the bundled font is used.
+//! `RichText.font` is empty or unresolvable, the bundled font is used. A
+//! character the resolved face cannot draw falls back per character to a face
+//! that can (registered faces, the bundled face, then system faces on native),
+//! so it does not render as a `.notdef` box.
 //!
 //! Layering: the segment layout policy (super/subscript scaling and shifts,
 //! kerning gaps, underline bars, greek mapping, the measure envelope) lives
@@ -27,14 +30,20 @@ use crate::raster::Canvas;
 use crate::text::{RichSegment, RichText, greek_char};
 
 type FontLookupKey = (String, bool, bool);
-#[cfg(not(target_arch = "wasm32"))]
-type SystemFaceBacking = (&'static [u8], u32);
-#[cfg(not(target_arch = "wasm32"))]
-type SystemFaceCache = HashMap<fontdb::ID, SystemFaceBacking>;
+/// Per-character fallback decisions depend only on the character and the
+/// requested style: the chain after the primary face is the same whichever
+/// family missed.
+type FallbackKey = (char, bool, bool);
+/// Stable (leaked) swash backing bytes and face index of one fontdb face.
+type FaceBacking = (&'static [u8], u32);
+type FaceBackingCache = HashMap<fontdb::ID, FaceBacking>;
 
 struct ResolvedFontCache {
     generation: u64,
     fonts: HashMap<FontLookupKey, FontRef<'static>>,
+    /// Face drawing each character its primary face cannot draw; `None`
+    /// records that no face can, so the chain is not walked again.
+    fallbacks: HashMap<FallbackKey, Option<FontRef<'static>>>,
 }
 
 impl ResolvedFontCache {
@@ -42,6 +51,18 @@ impl ResolvedFontCache {
         Self {
             generation: 0,
             fonts: HashMap::new(),
+            fallbacks: HashMap::new(),
+        }
+    }
+
+    /// Forget every decision made under an older font generation: a newly
+    /// registered face may now win a family lookup or draw a character.
+    fn revalidate(&mut self) {
+        let generation = font_generation();
+        if self.generation != generation {
+            self.generation = generation;
+            self.fonts.clear();
+            self.fallbacks.clear();
         }
     }
 }
@@ -96,7 +117,8 @@ struct RegisteredFonts {
     ///
     /// A runtime registration invalidates the thread-local family lookup, but
     /// it must not copy and leak an already-resolved face again afterward.
-    resolved_faces: HashMap<fontdb::ID, (&'static [u8], u32)>,
+    /// Family lookups and per-character fallback share it.
+    resolved_faces: FaceBackingCache,
 }
 
 impl RegisteredFonts {
@@ -124,16 +146,27 @@ impl RegisteredFonts {
         Ok((families, Some(successor)))
     }
 
-    fn lookup(&mut self, family: &str, bold: bool, italic: bool) -> Option<(&'static [u8], u32)> {
+    fn lookup(&mut self, family: &str, bold: bool, italic: bool) -> Option<FaceBacking> {
         let id = query_font(&self.db, family, bold, italic)?;
-        if let Some(face) = self.resolved_faces.get(&id) {
-            return Some(*face);
+        stable_face_backing(&self.db, &mut self.resolved_faces, id)
+    }
+
+    /// Registered face that draws `ch`: registered families in registration
+    /// order (the first family name each face reports, first seen first),
+    /// each through the same style matching as a family lookup.
+    fn fallback(&mut self, ch: char, bold: bool, italic: bool) -> Option<FaceBacking> {
+        // Faces are never removed, so fontdb iterates them in insertion
+        // (registration) order.
+        let mut families: Vec<&str> = Vec::new();
+        for face in self.db.faces() {
+            if let Some((name, _)) = face.families.first()
+                && !families.contains(&name.as_str())
+            {
+                families.push(name);
+            }
         }
-        let face = self.db.with_face_data(id, |data, index| {
-            (&*Box::leak(data.to_vec().into_boxed_slice()), index)
-        })?;
-        self.resolved_faces.insert(id, face);
-        Some(face)
+        let id = first_face_drawing(&self.db, families, ch, bold, italic)?;
+        stable_face_backing(&self.db, &mut self.resolved_faces, id)
     }
 }
 
@@ -178,9 +211,10 @@ pub fn register_font_bytes(bytes: Vec<u8>) -> Result<Vec<String>, String> {
         return Ok(families);
     };
     // A family that previously missed (and was cached as the bundled
-    // fallback) may now resolve — invalidate every thread's resolution
-    // cache via the generation counter. Glyph caches key on each font's
-    // own CacheKey, so they stay valid.
+    // fallback) may now resolve, and a character no face could draw may now
+    // have one — invalidate every thread's resolution and fallback caches
+    // via the generation counter. Glyph caches key on each font's own
+    // CacheKey, so they stay valid.
     FONT_GENERATION.store(successor, std::sync::atomic::Ordering::Release);
     Ok(families)
 }
@@ -228,11 +262,71 @@ fn system_family_available(_family: &str) -> bool {
     false
 }
 
-fn lookup_registered_font(family: &str, bold: bool, italic: bool) -> Option<(&'static [u8], u32)> {
+fn lookup_registered_font(family: &str, bold: bool, italic: bool) -> Option<FaceBacking> {
     registered_fonts()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .lookup(family, bold, italic)
+}
+
+fn lookup_registered_fallback(ch: char, bold: bool, italic: bool) -> Option<FaceBacking> {
+    registered_fonts()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .fallback(ch, bold, italic)
+}
+
+/// Stable backing for fontdb face `id`: from `faces`, or by copying and
+/// leaking the face's bytes once. Registered and system lookups — family
+/// resolution and per-character fallback alike — all go through here, so a
+/// face is leaked at most once per face id.
+fn stable_face_backing(
+    db: &fontdb::Database,
+    faces: &mut FaceBackingCache,
+    id: fontdb::ID,
+) -> Option<FaceBacking> {
+    if let Some(face) = faces.get(&id) {
+        return Some(*face);
+    }
+    let face = db.with_face_data(id, |data, index| {
+        (&*Box::leak(data.to_vec().into_boxed_slice()), index)
+    })?;
+    faces.insert(id, face);
+    Some(face)
+}
+
+/// Whether `face` can draw `ch`: its charmap maps `ch` to a real glyph
+/// rather than `.notdef` (glyph 0), and the face has outlines. Glyphs
+/// rasterize from outline sources only, so a bitmap-only face (colour emoji)
+/// would map the character yet draw nothing.
+fn draws(face: FontRef<'_>, ch: char) -> bool {
+    const OUTLINE_TABLES: [&[u8; 4]; 3] = [b"glyf", b"CFF ", b"CFF2"];
+    face.charmap().map(ch) != 0
+        && OUTLINE_TABLES
+            .iter()
+            .any(|tag| face.table(swash::tag_from_bytes(tag)).is_some())
+}
+
+/// First of `families`, in the order given, whose face for the requested
+/// style (fontdb's CSS matching, as in a family lookup) draws `ch`. Probing
+/// only borrows each candidate's data (registered bytes or a temporary file
+/// mapping), so nothing is copied or leaked here.
+fn first_face_drawing<'a>(
+    db: &fontdb::Database,
+    families: impl IntoIterator<Item = &'a str>,
+    ch: char,
+    bold: bool,
+    italic: bool,
+) -> Option<fontdb::ID> {
+    families
+        .into_iter()
+        .filter_map(|family| query_font(db, family, bold, italic))
+        .find(|&id| {
+            db.with_face_data(id, |data, index| {
+                FontRef::from_index(data, index as usize).is_some_and(|face| draws(face, ch))
+            })
+            .unwrap_or(false)
+        })
 }
 
 fn query_font(db: &fontdb::Database, family: &str, bold: bool, italic: bool) -> Option<fontdb::ID> {
@@ -260,7 +354,9 @@ fn query_font(db: &fontdb::Database, family: &str, bold: bool, italic: bool) -> 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub enum FontPolicy {
     /// Normal resolution: `RichText.font` family → registered fonts →
-    /// system DB (native) → bundled Liberation Sans.
+    /// system DB (native) → bundled Liberation Sans. A character that face
+    /// cannot draw falls back PER CHARACTER to registered faces, the bundled
+    /// Liberation Sans, then system faces (native) that can.
     #[default]
     Standard,
     /// Sketch mode: every glyph the bundled handwritten face (Comic Neue)
@@ -296,7 +392,11 @@ fn handwritten_font(bold: bool) -> FontRef<'static> {
 
 /// Resolve the font for ONE glyph under `policy`. The handwritten policy
 /// checks the glyph's coverage first and falls back to the standard chain
-/// per character — never to a notdef box.
+/// per character. The standard chain is the family's resolved face, then,
+/// when that face cannot draw the character, the per-character fallback
+/// chain ([`fallback_font`]). Only a character no face can draw keeps the
+/// primary face's `.notdef` box. Measurement and drawing both resolve glyphs
+/// here, so layout and raster agree on the face.
 fn glyph_font(
     policy: FontPolicy,
     family: &str,
@@ -306,11 +406,44 @@ fn glyph_font(
 ) -> FontRef<'static> {
     if policy == FontPolicy::Handwritten {
         let hand = handwritten_font(bold);
-        if hand.charmap().map(ch) != 0 {
+        if draws(hand, ch) {
             return hand;
         }
     }
-    resolve_font(family, bold, italic)
+    let primary = resolve_font(family, bold, italic);
+    if draws(primary, ch) {
+        return primary;
+    }
+    fallback_font(ch, bold, italic).unwrap_or(primary)
+}
+
+/// Face that draws `ch` when the primary face cannot, or `None` when no face
+/// can. Decided once per (char, bold, italic) per thread per font
+/// generation: a miss probes candidate faces, a repeat is one map lookup.
+fn fallback_font(ch: char, bold: bool, italic: bool) -> Option<FontRef<'static>> {
+    RESOLVED.with(|cell| {
+        let mut cache = cell.borrow_mut();
+        cache.revalidate();
+        *cache
+            .fallbacks
+            .entry((ch, bold, italic))
+            .or_insert_with(|| find_fallback(ch, bold, italic))
+    })
+}
+
+/// The chain after the primary face: (a) runtime-registered faces, (b) the
+/// bundled Liberation Sans of the same style, (c) on native only, installed
+/// system faces. Anything resolvable on every target (registered, bundled)
+/// therefore resolves identically on native and wasm; installed system fonts
+/// are a native-only last resort, consistent with family resolution, which
+/// already consults system fonts on native. The registry and system face
+/// caches are locked one at a time, never nested.
+fn find_fallback(ch: char, bold: bool, italic: bool) -> Option<FontRef<'static>> {
+    let stable = |(bytes, index): FaceBacking| FontRef::from_index(bytes, index as usize);
+    lookup_registered_fallback(ch, bold, italic)
+        .and_then(stable)
+        .or_else(|| Some(embedded_font(bold, italic)).filter(|face| draws(*face, ch)))
+        .or_else(|| lookup_system_fallback(ch, bold, italic).and_then(stable))
 }
 
 /// Bundled fonts parsed exactly once — `FontRef::from_index` mints a fresh
@@ -345,39 +478,72 @@ pub(crate) fn font_generation() -> u64 {
 }
 
 thread_local! {
-    /// Resolved `FontRef` per (family, bold, italic), per thread — the hot
-    /// path of measure/draw (called per segment, including during pointer
-    /// hit-testing) stays lock-free. Stable backing bytes are cached by
-    /// fontdb face id in the process-wide registered/system face caches, so
-    /// thread-local misses reuse the same backing instead of copying it.
+    /// Resolved `FontRef` per (family, bold, italic) and fallback face per
+    /// (char, bold, italic), per thread — the hot path of measure/draw
+    /// (called per segment, including during pointer hit-testing) stays
+    /// lock-free. Stable backing bytes are cached by fontdb face id in the
+    /// process-wide registered/system face caches, so thread-local misses
+    /// reuse the same backing instead of copying it.
     static RESOLVED: RefCell<ResolvedFontCache> = RefCell::new(ResolvedFontCache::new());
 }
 
+/// Stable backing for a system face id. Family lookups and fallback
+/// decisions share this cache, so a system face's bytes are copied at most
+/// once however many families, characters or threads resolve to it.
 #[cfg(not(target_arch = "wasm32"))]
-fn lookup_system_font(family: &str, bold: bool, italic: bool) -> Option<(&'static [u8], u32)> {
-    let db = font_db();
-    let id = query_font(db, family, bold, italic)?;
-    static RESOLVED_SYSTEM_FACES: OnceLock<Mutex<SystemFaceCache>> = OnceLock::new();
+fn system_face_backing(id: fontdb::ID) -> Option<FaceBacking> {
+    static RESOLVED_SYSTEM_FACES: OnceLock<Mutex<FaceBackingCache>> = OnceLock::new();
     let mut resolved = RESOLVED_SYSTEM_FACES
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(face) = resolved.get(&id) {
-        return Some(*face);
-    }
-    let face = db.with_face_data(id, |data, index| {
-        (&*Box::leak(data.to_vec().into_boxed_slice()), index)
-    })?;
-    resolved.insert(id, face);
-    Some(face)
+    stable_face_backing(font_db(), &mut resolved, id)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn lookup_system_font(family: &str, bold: bool, italic: bool) -> Option<FaceBacking> {
+    system_face_backing(query_font(font_db(), family, bold, italic)?)
 }
 
 #[cfg(target_arch = "wasm32")]
-fn lookup_system_font(_family: &str, _bold: bool, _italic: bool) -> Option<(&'static [u8], u32)> {
+fn lookup_system_font(_family: &str, _bold: bool, _italic: bool) -> Option<FaceBacking> {
     None
 }
 
-/// Resolve a font, falling back to the bundled font. Always succeeds.
+/// System family names (the first name each face reports) in sorted order,
+/// so the fallback choice does not depend on font install order. Computed
+/// once: the system database never changes after its scan.
+#[cfg(not(target_arch = "wasm32"))]
+fn system_fallback_families() -> &'static [&'static str] {
+    static FAMILIES: OnceLock<Vec<&'static str>> = OnceLock::new();
+    FAMILIES.get_or_init(|| {
+        let mut families: Vec<&'static str> = font_db()
+            .faces()
+            .filter_map(|face| face.families.first().map(|(name, _)| name.as_str()))
+            .collect();
+        families.sort_unstable();
+        families.dedup();
+        families
+    })
+}
+
+/// System face that draws `ch`. Probing runs without the face cache lock:
+/// the database never changes after its scan, and only the chosen face is
+/// copied.
+#[cfg(not(target_arch = "wasm32"))]
+fn lookup_system_fallback(ch: char, bold: bool, italic: bool) -> Option<FaceBacking> {
+    let families = system_fallback_families().iter().copied();
+    system_face_backing(first_face_drawing(font_db(), families, ch, bold, italic)?)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn lookup_system_fallback(_ch: char, _bold: bool, _italic: bool) -> Option<FaceBacking> {
+    None
+}
+
+/// Resolve a family's primary face, falling back to the bundled font.
+/// Always succeeds. Characters the face cannot draw are handled per glyph by
+/// [`glyph_font`].
 /// 1) If `family` is non-empty, query runtime-registered fonts (all targets),
 ///    then the system font database (native only).
 /// 2) Otherwise (or on miss), return the bundled Liberation Sans variant.
@@ -387,11 +553,7 @@ fn resolve_font(family: &str, bold: bool, italic: bool) -> FontRef<'static> {
     }
     RESOLVED.with(|cell| {
         let mut cache = cell.borrow_mut();
-        let generation = font_generation();
-        if cache.generation != generation {
-            cache.generation = generation;
-            cache.fonts.clear();
-        }
+        cache.revalidate();
         let key = (family.to_string(), bold, italic);
         if let Some(hit) = cache.fonts.get(&key) {
             return *hit;
@@ -1078,7 +1240,8 @@ fn segment_kern_before(seg: &RichSegment, base: f32) -> f32 {
 }
 
 // Plain (single-style) text rendering — used for tick labels etc.
-// Shares the same system/bundle fallback as RichText via `resolve_font`.
+// Shares the same font resolution and per-glyph fallback as RichText via
+// `glyph_font`.
 
 /// Draw single-style text at `origin` (left, baseline).
 #[allow(clippy::too_many_arguments)]
@@ -1141,6 +1304,11 @@ mod tests {
     // so sketch charts never render tofu and CJK metrics stay identical.
     #[test]
     fn handwritten_policy_swaps_covered_glyphs_and_falls_back_per_char() {
+        // A registration between the two glyph-level lookups below would
+        // redo the fallback decision for '가' with a fresh `FontRef`.
+        let _font_registration = FONT_REGISTRATION_TEST_LOCK
+            .lock()
+            .expect("font registration test lock poisoned");
         let std_m = measure_plain_text("Agile 42", "", 20.0, false, false, FontPolicy::Standard);
         let hand_m =
             measure_plain_text("Agile 42", "", 20.0, false, false, FontPolicy::Handwritten);
@@ -1161,14 +1329,14 @@ mod tests {
         );
 
         // Glyph-level: covered chars resolve to the handwritten face, the
-        // rest to the standard resolution.
+        // rest to the standard chain (including its per-glyph fallback).
         assert_eq!(
             glyph_font(FontPolicy::Handwritten, "", false, false, 'A').key,
             handwritten_font(false).key,
         );
         assert_eq!(
             glyph_font(FontPolicy::Handwritten, "", false, false, '가').key,
-            resolve_font("", false, false).key,
+            glyph_font(FontPolicy::Standard, "", false, false, '가').key,
         );
         // Bold maps to the bundled bold face (real weight, not synthetic).
         assert_ne!(handwritten_font(true).key, handwritten_font(false).key);
@@ -1379,6 +1547,216 @@ mod tests {
             fonts.resolved_faces.len(),
             resolved_count,
             "resolving the same face again must reuse its stable backing bytes"
+        );
+    }
+
+    const STYLES: [(bool, bool); 4] = [(false, false), (true, false), (false, true), (true, true)];
+    const FALLBACK_SIZE: f32 = 24.0;
+    /// A noncharacter no face maps, so it draws the primary face's `.notdef`.
+    const NOTDEF_TEXT: &str = "\u{10FFFF}";
+
+    /// Draw single-style `runs` of (text, left x) onto one fresh canvas, in
+    /// order, on a shared baseline.
+    fn draw_runs(
+        runs: &[(&str, f32)],
+        family: &str,
+        bold: bool,
+        italic: bool,
+        policy: FontPolicy,
+    ) -> Vec<u8> {
+        let mut canvas = Canvas::new(160, 40).unwrap();
+        for &(text, x) in runs {
+            draw_plain_text(
+                &mut canvas,
+                text,
+                (x, 28.0),
+                Color::BLACK,
+                family,
+                FALLBACK_SIZE,
+                bold,
+                italic,
+                policy,
+            );
+        }
+        canvas.into_rgba()
+    }
+
+    fn has_ink(rgba: &[u8]) -> bool {
+        rgba.chunks_exact(4).any(|p| p[3] > 0)
+    }
+
+    // A character a registered Latin-only family lacks (Comic Neue has no
+    // Greek) takes a face that draws it: measurement advances exactly as far
+    // as drawing does, and the ink is not Comic Neue's `.notdef` box.
+    #[test]
+    fn missing_glyph_in_registered_family_measures_as_it_draws() {
+        let _font_registration = FONT_REGISTRATION_TEST_LOCK
+            .lock()
+            .expect("font registration test lock poisoned");
+        let families = register_font_bytes(HANDWRITTEN_REGULAR.to_vec()).unwrap();
+        assert_eq!(families, ["Comic Neue"]);
+        for (bold, italic) in STYLES {
+            let policy = FontPolicy::Standard;
+            let measure = |text: &str| {
+                measure_plain_text(text, "Comic Neue", FALLBACK_SIZE, bold, italic, policy)
+            };
+            let draw = |runs: &[(&str, f32)]| draw_runs(runs, "Comic Neue", bold, italic, policy);
+            let alpha = measure("α");
+            assert!(
+                draw(&[("αX", 4.0)]) == draw(&[("α", 4.0), ("X", 4.0 + alpha.width)]),
+                "the pen after 'α' (bold={bold} italic={italic}) must sit where \
+                 measurement ends it"
+            );
+            let mut segments = rich_segments_from_text("α");
+            segments[0].bold = bold;
+            segments[0].italic = italic;
+            let rich = RichText {
+                segments,
+                color: Color::BLACK,
+                font_size: FALLBACK_SIZE,
+                font: "Comic Neue".to_string(),
+            };
+            assert_eq!(measure_rich_text(&rich, policy).width, alpha.width);
+
+            let drawn = draw(&[("α", 4.0)]);
+            assert!(has_ink(&drawn), "fallback 'α' must ink");
+            assert!(
+                drawn != draw(&[(NOTDEF_TEXT, 4.0)]),
+                "'α' (bold={bold} italic={italic}) must not be the .notdef box"
+            );
+            assert_ne!(alpha, measure(NOTDEF_TEXT));
+        }
+    }
+
+    // The per-glyph fallback sits behind the handwritten face: under the
+    // sketch policy every glyph Comic Neue covers keeps the bundled
+    // handwritten face whatever the family — including a registered copy of
+    // Comic Neue, which rasterizes differently (hinted, not emboldened).
+    #[test]
+    fn sketch_policy_keeps_comic_neue_for_covered_glyphs() {
+        let _font_registration = FONT_REGISTRATION_TEST_LOCK
+            .lock()
+            .expect("font registration test lock poisoned");
+        register_font_bytes(HANDWRITTEN_REGULAR.to_vec()).unwrap();
+        let text = "Agile 42";
+        let policy = FontPolicy::Handwritten;
+        for (bold, italic) in STYLES {
+            let measure = |family: &str| {
+                measure_plain_text(text, family, FALLBACK_SIZE, bold, italic, policy)
+            };
+            let draw = |family: &str| draw_runs(&[(text, 4.0)], family, bold, italic, policy);
+            let standard =
+                measure_plain_text(text, "", FALLBACK_SIZE, bold, italic, FontPolicy::Standard);
+            assert_ne!(measure(""), standard, "fixture: sketch swaps the face");
+            for family in ["Comic Neue", BUNDLED_FAMILY, "Definitely Not A Font"] {
+                assert_eq!(measure(family), measure(""), "{family:?} bold={bold}");
+                assert!(
+                    draw(family) == draw(""),
+                    "{family:?} (bold={bold} italic={italic}) must keep the handwritten face"
+                );
+            }
+        }
+    }
+
+    // A fallback decision is redone when a registration publishes a new font
+    // generation. Only this test registers the Liberation Sans italic faces:
+    // first the italic face is the registered match for a bold-italic 'α'
+    // (style before weight), then the bold-italic face takes over.
+    #[test]
+    fn registering_a_covering_face_changes_the_fallback() {
+        let _font_registration = FONT_REGISTRATION_TEST_LOCK
+            .lock()
+            .expect("font registration test lock poisoned");
+        register_font_bytes(HANDWRITTEN_REGULAR.to_vec()).unwrap();
+        let measure = |family: &str, bold: bool, italic: bool| {
+            measure_plain_text(
+                "α",
+                family,
+                FALLBACK_SIZE,
+                bold,
+                italic,
+                FontPolicy::Standard,
+            )
+        };
+        let draw = |family: &str, bold: bool, italic: bool| {
+            draw_runs(&[("α", 4.0)], family, bold, italic, FontPolicy::Standard)
+        };
+        let italic = register_font_bytes(EMBEDDED_ITALIC.to_vec()).unwrap();
+        assert_eq!(italic, [BUNDLED_FAMILY]);
+        let before = measure("Comic Neue", true, true);
+        assert_eq!(
+            before,
+            measure("", false, true),
+            "the italic face draws 'α'"
+        );
+        assert!(draw("Comic Neue", true, true) == draw("", false, true));
+
+        let bold_italic = register_font_bytes(EMBEDDED_BOLD_ITALIC.to_vec()).unwrap();
+        assert_eq!(bold_italic, [BUNDLED_FAMILY]);
+        let after = measure("Comic Neue", true, true);
+        assert_ne!(after, before, "the new registration must be seen");
+        assert_eq!(
+            after,
+            measure("", true, true),
+            "the bold-italic face draws 'α'"
+        );
+        assert!(draw("Comic Neue", true, true) == draw("", true, true));
+    }
+
+    // A zero-width space inside a Comic Neue run (which lacks U+200B) takes
+    // a face's empty glyph instead of Comic Neue's `.notdef` box.
+    #[test]
+    fn zero_width_space_in_comic_neue_draws_no_box() {
+        let _font_registration = FONT_REGISTRATION_TEST_LOCK
+            .lock()
+            .expect("font registration test lock poisoned");
+        register_font_bytes(HANDWRITTEN_REGULAR.to_vec()).unwrap();
+        for (family, policy) in [
+            ("Comic Neue", FontPolicy::Standard),
+            ("Comic Neue", FontPolicy::Handwritten),
+            ("", FontPolicy::Handwritten),
+        ] {
+            let measure =
+                |text: &str| measure_plain_text(text, family, FALLBACK_SIZE, false, false, policy);
+            let draw = |text: &str| draw_runs(&[(text, 4.0)], family, false, false, policy);
+            assert_eq!(
+                measure("a\u{200B}b"),
+                measure("ab"),
+                "{family:?} {policy:?}"
+            );
+            assert!(
+                draw("a\u{200B}b") == draw("ab"),
+                "{family:?} {policy:?}: U+200B must draw nothing"
+            );
+        }
+    }
+
+    // U+207B (superscript minus) is missing from every bundled face. With
+    // the default font it draws a real glyph when some installed face
+    // covers it; installed fonts vary across CI hosts, so the assertion is
+    // skipped when the fallback chain finds no face.
+    #[test]
+    fn superscript_minus_draws_from_an_installed_face_when_one_covers_it() {
+        let _font_registration = FONT_REGISTRATION_TEST_LOCK
+            .lock()
+            .expect("font registration test lock poisoned");
+        let ch = '\u{207B}';
+        assert!(!draws(embedded_font(false, false), ch), "fixture");
+        if find_fallback(ch, false, false).is_none() {
+            return;
+        }
+        let policy = FontPolicy::Standard;
+        let minus = measure_plain_text("\u{207B}", "", FALLBACK_SIZE, false, false, policy);
+        let draw = |runs: &[(&str, f32)]| draw_runs(runs, "", false, false, policy);
+        assert!(
+            draw(&[("\u{207B}X", 4.0)]) == draw(&[("\u{207B}", 4.0), ("X", 4.0 + minus.width)]),
+            "the pen after U+207B must sit where measurement ends it"
+        );
+        let drawn = draw(&[("\u{207B}", 4.0)]);
+        assert!(has_ink(&drawn), "U+207B must ink");
+        assert!(
+            drawn != draw(&[(NOTDEF_TEXT, 4.0)]),
+            "U+207B must not draw the .notdef box"
         );
     }
 

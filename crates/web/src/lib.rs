@@ -3174,8 +3174,13 @@ mod web {
         /// Register a font (TTF/OTF/TTC bytes) for SSoT `font` family names.
         /// Returns the family names the file declares — use them verbatim in
         /// `content.font` / label styles. Registered fonts win over native
-        /// system fonts, so resolution behaves identically on web and
-        /// desktop. Already-drawn text re-rasterizes on the next `frame()`.
+        /// system fonts. A character the chosen face cannot draw falls back
+        /// per character to registered fonts (in registration order), then
+        /// the bundled Liberation Sans, then, on desktop only, installed
+        /// system fonts. Resolution through registered and bundled faces is
+        /// therefore identical on web and desktop; installed system fonts
+        /// are a desktop-only fallback. Already-drawn text re-rasterizes on
+        /// the next `frame()`.
         ///
         /// JS: `chart.register_font(new Uint8Array(await (await fetch(url)).arrayBuffer()))`
         pub fn register_font(&mut self, bytes: &[u8]) -> Result<Vec<String>, JsValue> {

@@ -35,7 +35,7 @@ cargo check --locked -p figgy-renderer --target wasm32-unknown-unknown
 
 CPU 렌더링에는 순수 Rust로 구현된 tiny-skia·fontdb·swash를 사용한다. 기존 skia-safe의 `wasm32-unknown-emscripten` 대상은 wasm-bindgen에서 사용하는 `wasm32-unknown-unknown`과 함께 쓸 수 없어 교체했다.
 
-Liberation Sans 네 가지 글꼴을 내장하므로 웹에서도 이 폰트의 문자를 그릴 수 있다. 시스템 폰트 검색은 네이티브에서만 지원한다. 웹에서 다른 폰트를 쓰려면 `register_font(Uint8Array)`로 TTF/OTF 파일을 등록한다. 폰트는 등록된 폰트, 시스템 폰트, 내장 대체 폰트 순으로 찾는다.
+Liberation Sans 네 가지 글꼴을 내장하므로 웹에서도 이 폰트의 문자를 그릴 수 있다. 시스템 폰트 검색은 네이티브에서만 지원한다. 웹에서 다른 폰트를 쓰려면 `register_font(Uint8Array)`로 TTF/OTF 파일을 등록한다. 폰트는 등록된 폰트, 시스템 폰트, 내장 대체 폰트 순으로 찾는다. 찾은 폰트에 없는 글자는 글자마다 등록 폰트(등록한 순서), 같은 굵기·기울기의 내장 Liberation Sans, 설치된 시스템 폰트(글꼴 이름순, 네이티브 전용) 순으로 그 글자를 그릴 수 있는 폰트를 찾아 그린다. 등록 폰트와 내장 폰트에서 찾는 글자는 웹과 네이티브에서 결과가 같다. 어느 폰트에도 없는 글자만 처음 찾은 폰트의 `.notdef` 상자로 표시한다.
 
 <a id="2-타겟-게이트--동기-api는-native-전용-async는-어디서나"></a>
 
@@ -449,7 +449,7 @@ chart.set_series(JSON.stringify(series));  // GPU 스타일 재빌드 포함
 
 - **메인 스레드 사용**: 축·장식의 CPU 렌더링은 메인 스레드에서 실행한다. 기존 측정에서는 글리프 캐시 적용 후 600×460 패널의 release 빌드에서 프레임당 약 0.4ms였으며, 실제 비용은 환경과 차트에 따라 달라진다. 더 큰 작업은 `OffscreenCanvas`와 Web Worker로 옮길 수 있다. SharedArrayBuffer를 쓰는 WASM 스레드를 사용하려면 서버의 COOP/COEP 헤더로 교차 출처 격리를 설정해야 한다.
 - **WebGPU 지원**: HTTPS나 루프백 주소에서 `navigator.gpu` 존재 여부와 어댑터·장치 요청 성공을 확인한다. 지원 여부는 브라우저 버전뿐 아니라 OS·GPU·드라이버·브라우저 정책에 따라 다르다. 이 렌더러는 컴퓨트·스토리지 버퍼와 WebGPU 초기화를 사용하므로 wgpu의 `webgl` 기능만 켜서 WebGL2로 대체할 수 없다. 일반 환경에서는 브라우저의 기본 GPU 선택을 따른다. 실제 GPU가 없는 Linux 검증 환경에서만 별도 실행 설정으로 SwiftShader Vulkan을 사용할 수 있다.
-- **폰트**: 내장 Liberation Sans에는 한중일 문자가 없다. 한글을 표시하려면 `register_font(Uint8Array)`로 TTF/OTF 파일을 등록하고 반환된 글꼴 이름을 `font`에 지정한다. fontdb는 WOFF2를 읽지 못한다. 스케치 모드는 내장 Comic Neue(OFL)를 사용한다. 이 폰트에 없는 한중일·그리스 문자 등은 글자별로 등록 폰트와 Liberation Sans에서 찾아 그린다. 따라서 등록한 한글 폰트는 스케치 모드에서도 사용할 수 있다.
+- **폰트**: 내장 Liberation Sans에는 한중일 문자가 없다. 한글을 표시하려면 `register_font(Uint8Array)`로 TTF/OTF 파일을 등록한다. 반환된 글꼴 이름을 `font`에 지정하면 그 폰트로 그린다. 지정하지 않아도 선택한 폰트에 없는 한글은 글자마다 등록 폰트에서 찾아 그린다. fontdb는 WOFF2를 읽지 못한다. 스케치 모드는 내장 Comic Neue(OFL)를 사용한다. 이 폰트에 없는 한중일·그리스 문자 등은 글자마다 `font`의 폰트로 그리고, 그 폰트에도 없으면 등록 폰트와 Liberation Sans에서 찾는다. 따라서 등록한 한글 폰트는 스케치 모드에서도 사용할 수 있다.
 - **동기 대기 금지**: WASM에서 `pollster::block_on`을 사용하면 교착 상태가 발생할 수 있다. 구현은 비동기로 작성하고 동기 래퍼는 `#[cfg(not(target_arch = "wasm32"))]`로 네이티브에서만 빌드한다.
 
 ## 5. 빌드 산출물 — `crates/web` → `pkg/`
@@ -482,7 +482,7 @@ cd crates/web && python -m http.server 8137   # wasm은 file:// 불가
 | 분류 | 메서드와 동작 |
 |---|---|
 | 객체 수명 | `ready` Promise, `figgy-ready` / `figgy-init-progress` / `figgy-error` / `figgy-select` / `figgy-drag` / `figgy-release` / `figgy-resize` 이벤트, `free()`. 첫 프레임과 준비 완료 알림 후 백그라운드 피킹 준비를 시작한다. 실패하면 `operation: "prewarm_gpu_picking"`, `recoverable: true`인 `figgy-error`를 보내며 준비 완료 상태는 유지한다. |
-| 폰트 | `register_font(Uint8Array)`는 TTF/OTF/TTC를 등록하고 글꼴 이름 배열을 반환한다. 반환된 이름을 `font`에 사용할 수 있다. 등록 폰트가 시스템 폰트보다 우선한다. 내용이 같은 파일은 중복 저장하거나 폰트 세대를 늘리지 않으며 글꼴 ID별 데이터를 재사용한다. 찾을 수 없는 글꼴은 내장 Liberation Sans로 대체한다. 한글은 별도 폰트 등록이 필요하다. |
+| 폰트 | `register_font(Uint8Array)`는 TTF/OTF/TTC를 등록하고 글꼴 이름 배열을 반환한다. 반환된 이름을 `font`에 사용할 수 있다. 등록 폰트가 시스템 폰트보다 우선한다. 내용이 같은 파일은 중복 저장하거나 폰트 세대를 늘리지 않으며 글꼴 ID별 데이터를 재사용한다. 찾을 수 없는 글꼴은 내장 Liberation Sans로 대체한다. 고른 폰트에 없는 글자는 글자마다 등록 폰트(등록한 순서), 내장 Liberation Sans 순으로 그 글자가 있는 폰트를 찾아 그린다. 브라우저에서는 설치된 시스템 폰트를 찾지 않으므로 한글을 표시하려면 한글 폰트를 등록해야 한다. |
 | 스타일 옵션 | 독립 함수 `draw_style_modes()`는 모드 이름의 JSON 배열을, `draw_style_param_specs(mode)`는 `{key, min, max, default, integer}`의 JSON 배열을 반환한다. UI 슬라이더를 만들 때 이 값을 사용한다. 최소·최대는 권장 범위이며 설정은 바깥 값도 허용하고 렌더러가 안전상 필요한 제한만 적용한다. 기본값은 모델의 `Default`와 테스트로 일치시킨다. |
 | 컬럼 등록·교체·제거 | `register_column_f32/f64(id, TypedArray)`는 새 ID를 등록한다. `register_columns_f32/f64(ids, TypedArray, valuesPerColumn)`은 연속된 배열로 새 컬럼을 한 번에 등록하며 전체 성공 또는 전체 실패한다. `update_register_column_f32/f64(id, TypedArray)`는 기존 ID를 매번 업로드해 교체한다. `remove_column(id)`로 제거한다. |
 | 시리즈 | `add_line_series(id, x, y, width, label)`은 추가 또는 교체, `remove_series(id)`는 제거다. |
