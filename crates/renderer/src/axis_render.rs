@@ -2577,7 +2577,7 @@ mod tests {
             limit: MAX_MAJOR_INTERVALS,
         };
         for (requested, reason) in [
-            (1e-9, too_many),
+            (1e-9, too_many.clone()),
             // Positive, but the interval count overflows.
             (f64::from_bits(1), too_many),
             (0.0, SpacingRejection::NotPositive),

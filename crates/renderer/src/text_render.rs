@@ -1618,6 +1618,7 @@ mod tests {
                 color: Color::BLACK,
                 font_size: FALLBACK_SIZE,
                 font: "Comic Neue".to_string(),
+                align: crate::text::TextAlign::Left,
             };
             assert_eq!(measure_rich_text(&rich, policy).width, alpha.width);
 
