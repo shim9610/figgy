@@ -9,6 +9,23 @@ at the time. The first crates.io publication is recorded below.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
+## Unreleased — independent bounded titles
+
+- Restore the bounded rich-title patches previously used by the Studio Git
+  consumer (`83a5c83`, `40de171`) on the published 0.17.0 code line.
+  `RadialChart`, `CategoricalChart` and `BoxPlotChart` gain optional
+  `chart_title: Option<BoundedTitleOptions>` with independent visibility and
+  `RichText` (font, size, color, segment styles and `TextAlign`). Legacy JSON
+  without the field still uses the plain `title` and shared label style.
+  Editors call `normalize_title()` once before editing labels to preserve
+  the original title appearance. Title hit bounds, dragging and export use
+  the same renderer metrics at every output scale.
+- Rust migration: exhaustive chart struct literals need `chart_title: None`;
+  literals using `..Default::default()` remain valid. This public field addition
+  requires coordinated release versions; this PR does not publish or relabel
+  renderer 0.17.0/model 0.11.0. See the interaction guide and `bounded_titles`
+  example. The existing label collision handling is retained.
+
 ## Upcoming release — renderer 0.17.0 / model 0.11.0 / figgy 0.14.0
 
 New 0.x minor versions: `RichText.align` is a new public field, so fully

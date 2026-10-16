@@ -127,3 +127,6 @@ mod test_gpu;
 
 pub use model::decoration::{DecorationId, DecorationLayout, DecorationOffset};
 pub mod decoration;
+
+mod bounded_title;
+pub use model::BoundedTitleOptions;

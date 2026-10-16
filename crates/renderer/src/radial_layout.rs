@@ -64,7 +64,8 @@ pub(super) fn layout(
         decorations: DecorationPainter::new(&chart.decorations, size, scale, false).finish(),
         targets: Vec::new(),
     };
-    let top = if chart.title.is_empty() { 24.0 } else { 70.0 };
+    let title = crate::bounded_title::TitleLayout::new(chart.resolved_title(), scale, true);
+    let top = title.top;
     let bottom = h - 24.0;
     let automatic_area = crate::layout::RectF {
         x: 24.,
@@ -79,25 +80,9 @@ pub(super) fn layout(
     decorations.add(DecorationId::DataArea, automatic_area);
     let (top, bottom) = (area.y, area.y + area.height);
 
-    if !chart.title.is_empty() {
-        let title_size = chart.font_size * 1.5 * scale;
-        let tw = width(chart, &chart.title, title_size);
-        if tw > (w - 32.0) * scale {
-            return Err(RadialError::Invalid(
-                "title does not fit; increase chart width or shorten it",
-            ));
-        }
-        decorations.text(
-            DecorationId::ChartTitle,
-            &mut canvas,
-            &chart.font_family,
-            &chart.title,
-            (w * scale - tw) * 0.5 / scale,
-            42.0,
-            title_size / scale,
-            chart.label_color,
-        );
-    }
+    title
+        .draw(&mut decorations, &mut canvas, w)
+        .map_err(RadialError::Invalid)?;
     let mut groups = vec![(
         &chart.slices,
         chart.kind,
@@ -424,4 +409,108 @@ pub(super) fn layout(
         out.annotations = canvas.into_rgba();
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::*;
+    use model::{Color, DecorationId};
+    fn bounds(map: &DecorationMap, title: bool) -> Option<crate::layout::RectF> {
+        map.entries()
+            .find(|(_, e)| {
+                if title {
+                    e.id == DecorationId::ChartTitle
+                } else {
+                    matches!(e.id, DecorationId::RadialLabel(_))
+                }
+            })
+            .and_then(|(id, _)| map.bounds(id))
+    }
+    fn crop(bytes: &[u8], r: crate::layout::RectF, scale: f32) -> Vec<u8> {
+        let width = (800. * scale) as usize;
+        let height = (520. * scale) as usize;
+        let front = &bytes[bytes.len() - width * height * 4..];
+        let x0 = (r.x * scale).floor().max(0.) as usize;
+        let x1 = ((r.x + r.width) * scale).ceil().min(width as f32) as usize;
+        let y0 = (r.y * scale).floor().max(0.) as usize;
+        let y1 = ((r.y + r.height) * scale).ceil().min(height as f32) as usize;
+        (y0..y1)
+            .flat_map(|y| {
+                front[(y * width + x0) * 4..(y * width + x1) * 4]
+                    .iter()
+                    .copied()
+            })
+            .collect()
+    }
+    #[test]
+    fn title_and_label_styles_render_independently() {
+        let mut c = RadialChart {
+            slices: vec![
+                RadialSlice::new("A", 30., Color::BLACK),
+                RadialSlice::new("B", 70., Color::BLACK),
+            ],
+            ..Default::default()
+        };
+        c.title = "Independent title".into();
+        for scale in [1., 2.] {
+            let legacy = layout(&c, (800, 520), scale, true).unwrap();
+            c.normalize_title();
+            let original = layout(&c, (800, 520), scale, true).unwrap();
+            assert_eq!(
+                legacy.annotations, original.annotations,
+                "normalization must preserve appearance"
+            );
+            let tb = bounds(&original.decorations, true).unwrap();
+            let lb = bounds(&original.decorations, false).unwrap();
+            let title_ink = crop(&original.annotations, tb, scale);
+            assert!(title_ink.chunks_exact(4).any(|p| p[3] != 0));
+            let saved = c.clone();
+            c.font_size *= 1.25;
+            c.label_color = Color::new(0.8, 0.1, 0.1, 1.);
+            let labels = layout(&c, (800, 520), scale, true).unwrap();
+            assert_eq!(bounds(&labels.decorations, true), Some(tb));
+            assert_eq!(
+                crop(&labels.annotations, tb, scale),
+                title_ink,
+                "label edits changed title pixels"
+            );
+            assert!(bounds(&labels.decorations, false).unwrap().height > lb.height);
+            c = saved.clone();
+            c.chart_title.as_mut().unwrap().text.font_size += 6.;
+            let sized = layout(&c, (800, 520), scale, true).unwrap();
+            assert!(bounds(&sized.decorations, true).unwrap().height > tb.height);
+            let label = bounds(&sized.decorations, false).unwrap();
+            assert!(
+                (label.height - lb.height).abs() < 0.01 && (label.width - lb.width).abs() < 0.01,
+                "title edit resized label glyphs"
+            );
+            c = saved.clone();
+            c.chart_title.as_mut().unwrap().text.color = Color::new(0.1, 0.7, 0.1, 1.);
+            let colored = layout(&c, (800, 520), scale, true).unwrap();
+            assert_ne!(crop(&colored.annotations, tb, scale), title_ink);
+            assert_eq!(
+                crop(&colored.annotations, lb, scale),
+                crop(&original.annotations, lb, scale),
+                "title color changed label pixels"
+            );
+            c = saved.clone();
+            c.chart_title.as_mut().unwrap().text.segments[0].bold = true;
+            c.chart_title.as_mut().unwrap().text.segments[1].superscript = true;
+            let rich = layout(&c, (800, 520), scale, true).unwrap();
+            assert_ne!(
+                crop(&rich.annotations, tb, scale),
+                title_ink,
+                "rich text is actually painted"
+            );
+            c.chart_title.as_mut().unwrap().visible = false;
+            assert!(
+                bounds(
+                    &layout(&c, (800, 520), scale, true).unwrap().decorations,
+                    true
+                )
+                .is_none()
+            );
+            c = saved;
+        }
+    }
 }

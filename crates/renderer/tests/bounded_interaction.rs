@@ -581,3 +581,107 @@ fn every_bounded_decoration_uses_public_edit_reset_and_snapshot_contracts() {
         keys.clone()
     );
 }
+
+#[test]
+fn independent_rich_titles_refresh_export_cache_and_keep_public_drag_contract() {
+    let _guard = LOCK.lock().unwrap();
+    // All operations use public model/frame/decoration APIs. CPU layout tests
+    // separately compare title vs label crops at both output scales.
+    macro_rules! check {
+        ($renderer:ty, $chart:expr) => {{
+            let mut r = <$renderer>::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+            let mut c = $chart;
+            c.title = "Title H2O".into();
+            c.normalize_title();
+            for scale in [1., 2.] {
+                let original = c.clone();
+                let first = r.prepare(&c, (800, 520), scale).unwrap();
+                let same = r.prepare(&c, (800, 520), scale).unwrap();
+                assert!(first.shares_annotations_with(&same));
+                let before = r.export_rgba(&c, (800, 520), scale).unwrap();
+                let t = c.chart_title.as_mut().unwrap();
+                t.text.segments = text::rich_segments_from_text("Independent title\nH2O");
+                t.text.segments[0].bold = true;
+                t.text
+                    .segments
+                    .iter_mut()
+                    .find(|s| s.text == '2')
+                    .unwrap()
+                    .subscript = true;
+                t.text.align = TextAlign::Right;
+                t.text.color = Color::from_rgb8(160, 30, 70);
+                let edited = r.prepare(&c, (800, 520), scale).unwrap();
+                assert!(!first.shares_annotations_with(&edited));
+                let after = r.export_rgba(&c, (800, 520), scale).unwrap();
+                assert_ne!(before.rgba, after.rgba);
+                // The cached renderer must match a fresh renderer for the edit.
+                let mut fresh = <$renderer>::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+                assert_eq!(
+                    fresh.export_rgba(&c, (800, 520), scale).unwrap().rgba,
+                    after.rgba
+                );
+                let key = DecorationId::ChartTitle;
+                let old = moved(edited.decorations(), &mut c.decorations, &key, 9., 7.);
+                let dragged = r.prepare(&c, (800, 520), scale).unwrap();
+                let bounds = dragged
+                    .decorations()
+                    .bounds(id(dragged.decorations(), &key))
+                    .unwrap();
+                assert_eq!(bounds, old.translated(9., 7.));
+                let image = r.export_rgba(&c, (800, 520), scale).unwrap();
+                assert!(ink(&image, bounds, scale) > 20);
+                let encoded = encode_png(&image).unwrap();
+                assert_eq!(&encoded[..8], b"\x89PNG\r\n\x1a\n");
+                #[cfg(feature = "serde")]
+                {
+                    let restored =
+                        serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+                    assert_eq!(
+                        r.export_rgba(&restored, (800, 520), scale).unwrap().rgba,
+                        image.rgba
+                    );
+                }
+                c.chart_title.as_mut().unwrap().visible = false;
+                let hidden = r.prepare(&c, (800, 520), scale).unwrap();
+                assert!(!hidden.decorations().entries().any(|(_, e)| e.id == key));
+                assert_ne!(
+                    r.export_rgba(&c, (800, 520), scale).unwrap().rgba,
+                    image.rgba
+                );
+                c = original;
+                r.end_frame();
+            }
+        }};
+    }
+    check!(
+        RadialRenderer,
+        RadialChart {
+            slices: vec![
+                RadialSlice::new("A", 30., Color::BLACK),
+                RadialSlice::new("B", 70., Color::from_rgb8(70, 120, 170))
+            ],
+            ..Default::default()
+        }
+    );
+    check!(
+        CategoricalRenderer,
+        CategoricalChart {
+            categories: vec![Category::new("a", "A")],
+            series: vec![BarSeries::new("s", "Values", vec![Some(3.)], Color::BLACK)],
+            ..Default::default()
+        }
+    );
+    check!(
+        BoxPlotRenderer,
+        BoxPlotChart {
+            categories: vec![Category::new("a", "A")],
+            series: vec![BoxPlotSeries::new(
+                "s",
+                "Summary",
+                vec![Some(BoxSummary::new(1., 2., 3., 4., 5.))],
+                Color::BLACK
+            )],
+            ..Default::default()
+        }
+    );
+}
