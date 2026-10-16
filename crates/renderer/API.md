@@ -24,7 +24,7 @@ The source repository's [example index](https://github.com/shim9610/figgy/blob/m
 maps each chart to its input, output and command. Gallery images are repository
 assets; they are not runtime resources required by the crate.
 
-macOS / Metal support is **experimental and not yet stable**. Version 0.14.0 uses
+macOS / Metal support is **experimental and not yet stable**. Since version 0.14.0, the renderer uses
 explicit FMA rounding boundaries for hi/lo coordinates and a shared CPU/GPU rule
 for midpoint picking uncertainty. Physical Apple GPU coverage remains outstanding.
 A separate precompiled Metal shader experiment does not change the default renderer
@@ -79,6 +79,12 @@ field setters:
 | `with_title(...)` | Replace the title text and grow its band when the measured text is taller than the current band. The band never shrinks. |
 | `with_x_title(...)` / `with_y_title(...)` | Replace the bottom/left axis title text; these helpers do not fit margins. |
 
+Fit padding is an explicit caller argument: `0.05` adds 5% on each side of a
+linear range, while `0.0` adds no padding. The renderer does not impose a global
+5% default; a binding or UI may choose its own convenience default. Opposite
+axis options remain independent in raw `Config`; host-side linked editing is a
+convenience policy, not renderer-owned link metadata.
+
 To change only the X range while keeping the current tick settings:
 
 ```rust
@@ -106,6 +112,10 @@ Keeping tick settings does not keep ticks at the same screen coordinates or
 guarantee the same number of visible labels: those depend on the new range and
 available space. Raster safety limits can still substitute unusable tick settings
 without rewriting the config; read `ChartView::render_warnings()` after refresh.
+Numeric tick labels may use a coarser display stride to avoid overlaps, without
+changing tick/grid positions or the config. Number format and requested precision
+are controlled by `label_style.format` and `label_style.significant_digits`,
+including colorbar labels; unusually long labels still need explicit margin space.
 Calendar-based timestamp ticks follow their own layout policy. Direct injection
 also remains subject to config validation. After any edit, refresh the derived
 view as described below. Neither editing the SSOT nor using a helper redraws a

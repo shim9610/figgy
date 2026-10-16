@@ -158,9 +158,11 @@ DPR이나 PNG 배율은 저장한 논리 영역을 바꾸지 않는다. 캔버�
 분기하는 코드는 `DataArea`, `DataAreaEdge(Side)`를 처리해야 한다. `DataAreaEdge`는 리사이즈
 내부의 변이 대상이며 별도 히트 영역으로 등록하지 않는다. 이전 JSON은 영역을 자동 배치로 읽는다.
 
-이 문서는 renderer crate의 Rust API다. 기존 `FiggyChart` JavaScript 클래스에 새 차트를
-자동으로 연결하지 않는다. 별도 WASM 호스트는 이 히트맵·ID·드래그 결과를 노출하고, SSOT 변경 후
-새 프레임을 그려야 한다. 이 변경만으로 figgyplot.com 배포본이 갱신되는 것은 아니다.
+이 문서는 renderer crate의 Rust API다. Cartesian용 `FiggyChart`와 별도로 현재 WASM
+래퍼는 원형·범주형 막대·박스플롯을 위한 `FiggyBoundedChart`를 제공한다. 이 클래스는
+히트맵·ID·선택·드래그·크기 조정·출력을 노출하며, 호스트는 포인터 이벤트를 연결하고
+SSOT 변경 후 새 프레임을 그린다. 초기 표시는 `first_frame_ready()`를 기다린다.
+[WASM API](WASM.md)를 참고한다. 이 소스 변경만으로 figgyplot.com 배포본이 갱신되는 것은 아니다.
 
 작동하는 네이티브 연결 예제는 `radial_editor`, `categorical_editor`, `boxplot_editor`다.
 제목·범례·라벨을 클릭해 선택하고 드래그하며, `Reset position`으로 되돌릴 수 있다.

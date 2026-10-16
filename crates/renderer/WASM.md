@@ -467,7 +467,7 @@ chart.set_series(JSON.stringify(series));  // GPU 스타일 재빌드 포함
 `&mut self`를 빌리는 비동기 메서드가 실행 중일 때 같은 객체에 다시 접근하면 `"recursive use of an object"` 예외가 발생할 수 있다. wasm-bindgen은 호출을 대기열에 넣지 않는다. 예제 웹 래퍼는 작업 중인 객체에 대한 추가 호출을 거부한다. 저수준 커널을 직접 사용한다면 다음 규칙을 지켜야 한다.
 
 - rAF 루프는 WASM을 호출하기 전에 다음 `requestAnimationFrame(tick)`을 예약한다. 예외가 발생해도 루프가 끊어지지 않게 하기 위해서다.
-- 생성·연결, 두 전체 사전 준비 메서드, `prewarm_gpu_picking`, 출력, `first_frame_ready` / `warm_up`, `ensure_extent_engine`, 상주 `auto_fit_all`, `pick_point` / `pick_data`가 실행되는 동안 연결 세대와 커널을 확인하는 `busy` 토큰을 유지한다. 그동안 `frame()`·포인터·크기 변경·대리 호출은 생략하거나 거부한다. 상주 `auto_fit_all`은 완료 시 설정을 직접 바꾸므로 실행 중 `frame()`을 호출할 수 없다.
+- 생성·연결, 두 전체 사전 준비 메서드, `prewarm_gpu_picking`, 출력, `first_frame_ready` / `warm_up`, `ensure_extent_engine`, 상주 `auto_fit_all`, `pick_point` / `pick_data`가 실행되는 동안 연결 세대와 커널을 확인하는 `busy` 토큰을 유지한다. 저수준 `selection_details()`의 비동기 GPU 읽기 중에도 같은 접근 제한을 적용한다. 그동안 `frame()`·포인터·크기 변경·대리 호출은 생략하거나 거부한다. 상주 `auto_fit_all`은 완료 시 설정을 직접 바꾸므로 실행 중 `frame()`을 호출할 수 없다.
 - 웹 래퍼의 스트리밍 `auto_fit_all()`은 위 저수준 비동기 메서드를 호출하지 않는다. 렌더러에 범위 계산을 요청하고 스트리밍 작업의 `done`을 기다린다. 청크 공급과 커널 호출을 계속해야 하므로 일반 `busy` 토큰을 잡지 않으며, 작업 중 `busy`가 `false`일 수 있다. 스트리밍 실행기가 변경 요청을 최신 상태에 맞춰 반영한다.
 - 웹 래퍼는 작업 중 마지막 크기 변경과 포인터 해제만 보관한다. 작업이 끝나면 이를 WASM에 적용한 뒤 토큰을 해제한다. 연결을 끊어도 사용 중인 커널은 작업 종료 후 해제한다. 이전 연결 세대의 작업이 끝났다고 새 세대의 토큰을 해제해서는 안 된다.
 
@@ -715,26 +715,47 @@ renderer.request_auto_streaming_chart(chart_id, &view, options)?;
 `radial`, `categorical`, and `boxplot` documents to browser hosts. It uses the
 same native renderer, decoration maps, slice/bar/box picking, and drag/resize
 policies. The host owns pointer events, animation scheduling, and synchronization.
-`set_document` validates and prepares before replacing the document; unspecified
-fields must be preserved by the caller's SSOT patch. `get_document`,
+Creation asynchronously precompiles the requested family's rendering pipeline
+and prepares its document. It does not submit the first visible frame: call
+`await view.first_frame_ready()` before reporting Ready. That method submits a
+frame and awaits the actual GPU completion Promise; rejection/device loss is
+returned to the host. `frame()` alone only submits work.
+
+`set_document(documentJson, width, height)` validates and prepares before
+replacing the document; unspecified fields must be preserved by the caller's
+SSOT patch. `get_document`,
 `decorations`, `hit_decoration`, `select_decoration`, `resize_handle`, `drag`,
 `pick`, `hover`, `step_selection`, `clear_selection`, `resize`, `frame`, and
 async `export_png` cover interactive editing and export. Coordinates and drag
 deltas are document logical pixels; canvas resize does not change export size.
-`hover` returns whether another frame is needed. Keep the object alive until
-all async calls finish; `free()` releases its GPU resources.
+`hover(x, y, dt)` returns whether another frame is needed; pass `null` for both
+coordinates when the pointer leaves. `step_selection(backwards)` takes one
+boolean, unlike the Cartesian two-axis navigation method. `drag(target, dx,
+dy, handle)` accepts a resize handle such as `"SE"`, or `null` for a move.
+Keep the object alive until all async calls finish; `free()` releases its GPU resources.
 
 For Cartesian hosts, `FiggyChart.decoration_bounds(id)` returns measured bounds
 and resize handles in physical canvas pixels. `step_selection(dx, dy)` navigates
-resident point or matrix selections using source indices, without copying arrays.
+resident point, histogram or matrix selections using source indices, without
+copying arrays. Histogram bin navigation follows the category direction:
+`dx` for vertical bars and `dy` for horizontal bars; the other delta switches
+between series of the same orientation. Indices clamp to the selected series.
+`await chart.selection_details()` returns a JSON string with selected resident
+GPU values (or `"null"` for no supported selection). Histogram fields are
+`identity`, `series_id`, `index`, `bin_start`, `bin_end`, `value`, and
+`orientation`; `identity` uses a flat `kind` tag. Points and matrix cells are
+also supported. These raw methods have no `<figgy-chart>` forwarding methods.
+See the [selection JSON contract](../web/SCHEMA.md#resident-selection-details).
+Hold the host's async gate during selected-value reads as well as exports.
 
 ```js
 // document is a validated RadialChart JSON value, e.g. serialized by its model.
 const view = await FiggyBoundedChart.create(canvas, "radial", JSON.stringify(document), 960, 600);
+await view.first_frame_ready(); // only now report Ready and enable interactions
 const point = [320, 240]; // logical document coordinates
 const selected = JSON.parse(view.pick(...point, true)); // click toggles selection
 view.select_decoration("chart_title");
-view.drag("chart_title", 12, 6); // changes only this decoration's offset
+view.drag("chart_title", 12, 6, null); // changes only this decoration's offset
 view.frame();
 const png = await view.export_png(1);
 view.free();

@@ -9,13 +9,14 @@ at the time. The first crates.io publication is recorded below.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
-## Release — renderer 0.17.0 / model 0.11.0 / figgy 0.14.0
+## Upcoming release — renderer 0.17.0 / model 0.11.0 / figgy 0.14.0
 
 New 0.x minor versions: `RichText.align` is a new public field, so fully
 specified `RichText` literals need the migration noted below. JSON without
 `align` still parses. The WASM integration example
 advances to 0.14.0 with the renderer dependency. This entry does not itself
-publish a registry crate.
+publish a registry crate. As verified on 2026-10-16, crates.io still contains
+renderer 0.16.1 and model 0.10.0; this entry describes the release being prepared.
 
 - The raw WASM host adds `FiggyBoundedChart` for radial, categorical and boxplot
   documents, using the existing renderer's geometry, decoration drag/resize,
@@ -24,6 +25,26 @@ publish a registry crate.
   `decoration_bounds` and source-index `step_selection` for host UI parity;
   `HitMap::find` resolves stable element IDs. These APIs do not add automatic
   layout or mutate unrelated SSOT properties.
+- `FiggyChart.selection_details` reads selected resident GPU values for points,
+  histogram bins and matrix cells without retaining source arrays. Histogram
+  reports include bin boundaries, stored value and orientation; keyboard
+  navigation follows the orientation and clamps when switching compatible series.
+- Line and scatter paths omit non-finite coordinates and non-positive values
+  on logarithmic axes without rejecting the remaining data. A line segment
+  touching an invalid endpoint leaves a gap; precise, sketch, ribbon/arc and
+  star paths agree, and invisible points cannot be picked. Histogram zero
+  baselines retain their positive-range clipping behavior.
+- Numeric tick precision now respects `LabelStyle.significant_digits` for
+  arbitrary auto-fit intervals and logarithmic labels. A step such as 1.312815
+  no longer forces six decimal places, avoiding unnecessary title overlap and
+  colorbar clipping. Linear decimal labels keep a shared precision with a
+  spacing-derived minimum; crowded numeric labels use a regular stride
+  without changing ticks, grid positions, margins or title anchors. Contour
+  label precision uses the level spacing rather than the bottom X-axis spacing.
+- Bounded renderers add `new_async` for checked asynchronous browser pipeline
+  compilation; native construction keeps the existing synchronous behavior.
+  The bounded web host's `first_frame_ready` waits for submitted GPU work and
+  reports a rejected completion instead of announcing an unusable chart.
 - `ChartView::render_warnings` reports the tick settings the axis raster
   replaced instead of substituting them silently: a linear `major_spacing` that
   is non-finite, not positive, too small to advance or over 1000 intervals

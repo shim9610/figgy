@@ -25,7 +25,9 @@ Development packages are now named `figgy-renderer` and `figgy-model`; Rust impo
 remain `renderer::...` and `model::...`. When moving a Git dependency to a revision
 with this rename, add the corresponding `package` key while retaining its existing
 dependency alias. Older public revisions still use their original package names.
-The published versions are `figgy-renderer` 0.17.0 and `figgy-model` 0.11.0.
+This checkout targets `figgy-renderer` 0.17.0 and `figgy-model` 0.11.0. The
+dependency examples below use these versions and apply once they are published;
+use a local path to try a checkout before publication.
 
 Use the renderer's optional `serde` feature for serialization of its re-exported
 model types; no direct model dependency is needed for that. Rust 1.99 is the
@@ -480,7 +482,10 @@ npx wasm-pack@0.15.0 build crates/web --release --target web --locked
 Cargo 패키지 이름은 `figgy-renderer`·`figgy-model`로 정리했다. Rust의
 `renderer::…`·`model::…` 경로는 유지한다. 이름을 바꾼 Git 리비전으로 갱신할 때는
 Cargo 의존성에 `package`를 추가한다. 이전 공개 리비전은 기존 패키지명을 사용한다.
-`figgy-renderer` 0.17.0과 `figgy-model` 0.11.0은 crates.io에 게시됐다.
+이 소스의 릴리스 대상은 `figgy-renderer` 0.17.0과 `figgy-model` 0.11.0이다.
+아래 의존성 예제는 해당 버전이 게시되면 사용하며, 게시 전에는
+`version` 대신 `path = "../figgy/crates/renderer"`처럼
+애플리케이션 기준 경로를 지정해 현재 소스를 사용한다.
 
 렌더러의 `serde` 기능을 켜면 재노출된 모델 타입을 직렬화할 수 있다. 이를 위해 모델을
 직접 의존할 필요는 없다. 지원 Rust 하한은 1.99이며 GPU를 직접 공유하려면 호스트도
