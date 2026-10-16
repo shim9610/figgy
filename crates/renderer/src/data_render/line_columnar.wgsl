@@ -98,6 +98,23 @@ fn data_to_ndc(xv: vec2<f32>, yv: vec2<f32>) -> vec2<f32> {
     let ty = axis_pair_to_t(yv, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y, transform.data_to_panel_scale.y, transform.data_to_panel_offset.y);
     return vec2<f32>(tx, ty) * 2.0 - 1.0;
 }
+
+// Mask source samples explicitly: NaN/Inf clipping is not portable in WGSL.
+// Logarithmic coordinate domains exclude nonpositive samples, while bars and
+// errorbar extents retain their separate baseline/clipping rules.
+fn sample_finite(v: f32) -> bool {
+    return (bitcast<u32>(v) & 0x7f800000u) != 0x7f800000u;
+}
+
+fn sample_valid(xv: vec2<f32>, yv: vec2<f32>) -> bool {
+    let x = xv.x + xv.y;
+    let y = yv.x + yv.y;
+    return sample_finite(xv.x) && sample_finite(xv.y)
+        && sample_finite(yv.x) && sample_finite(yv.y)
+        && sample_finite(x) && sample_finite(y)
+        && (transform.scale_log.x == 0.0 || x > 0.0)
+        && (transform.scale_log.y == 0.0 || y > 0.0);
+}
 // ───── END common block ─────
 
 struct VsIn {
@@ -163,6 +180,11 @@ fn clip_solid_segment(first: vec2<f32>, second: vec2<f32>, pad: vec2<f32>) -> ma
 
 @vertex
 fn vs_main(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
+    if (!sample_valid(in.x_a, in.y_a) || !sample_valid(in.x_b, in.y_b)) {
+        var masked: VsOut;
+        masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+        return masked;
+    }
     var a_ndc = data_to_ndc(in.x_a, in.y_a);
     var b_ndc = data_to_ndc(in.x_b, in.y_b);
     if (style.dash_len == 0u) {
@@ -320,10 +342,15 @@ const SKETCH_SUBDIV: u32 = 8u;
 // continuous across the shared endpoint of adjacent segments. The outer
 // points keep vs_main's square-cap extension so joints stay seamless, and
 // dash phase still comes from the same cumulative arc interpolation as vs_main, so
-// dashed+sketch composes for free. Non-finite endpoints (NaN gaps, log of
-// ≤ 0) propagate through mix() and clip, same as the precise path.
+// dashed+sketch composes for free. Invalid endpoints are explicitly masked
+// before extrusion, as in the precise path.
 @vertex
 fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
+    if (!sample_valid(in.x_a, in.y_a) || !sample_valid(in.x_b, in.y_b)) {
+        var masked: VsOut;
+        masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+        return masked;
+    }
     let a_ndc = data_to_ndc(in.x_a, in.y_a);
     let b_ndc = data_to_ndc(in.x_b, in.y_b);
 
@@ -440,6 +467,11 @@ struct RibbonOut {
 
 @vertex
 fn vs_ribbon(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> RibbonOut {
+    if (!sample_valid(in.x_a, in.y_a) || !sample_valid(in.x_b, in.y_b)) {
+        var masked: RibbonOut;
+        masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+        return masked;
+    }
     let a_px = data_to_ndc(in.x_a, in.y_a) / transform.pixel_to_ndc;
     let b_px = data_to_ndc(in.x_b, in.y_b) / transform.pixel_to_ndc;
     let delta = b_px - a_px;
@@ -586,6 +618,13 @@ fn vs_stars(
     // flat span (boundary ties) dies instead of drawing inside a gap.
     if (seg_len <= 0.0) { alive = false; }
     let t = clamp((arc_here - seg_a) / max(seg_len, 1e-6), 0.0, 1.0);
+
+    if (!sample_valid(star_pool_pair(star_vsp.x_base, lo), star_pool_pair(star_vsp.y_base, lo))
+        || !sample_valid(star_pool_pair(star_vsp.x_base, lo + 1u), star_pool_pair(star_vsp.y_base, lo + 1u))) {
+        var masked: StarOut;
+        masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+        return masked;
+    }
 
     let a_px = data_to_ndc(star_pool_pair(star_vsp.x_base, lo), star_pool_pair(star_vsp.y_base, lo))
         / transform.pixel_to_ndc;

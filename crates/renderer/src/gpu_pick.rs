@@ -4279,8 +4279,8 @@ mod tests {
         let mut config = parity_config(120, 100, (1.0, 1_000.0), (0.0, 10.0));
         config.bottom_x.scale = AxisScale::Logarithmic;
         config.left_y.inverted = true;
-        let xs = [f32::NAN, f32::INFINITY, 10.0, 100.0];
-        let ys = [5.0, 5.0, 2.0, 8.0];
+        let xs = [f32::NAN, f32::INFINITY, 0.0, -1.0, 10.0, 100.0];
+        let ys = [5.0, 5.0, 5.0, 5.0, 2.0, 8.0];
         let cpu_columns = CpuColumns::new(&[("parity-log-x", &xs), ("parity-log-y", &ys)]);
         let scatter = DataScatterStyleConfig {
             point_color: Color::BLACK,
@@ -4334,12 +4334,21 @@ mod tests {
             )
             .unwrap();
 
-        for (cursor, expected_index) in [([40.0, 20.0], 2), ([80.0, 80.0], 3)] {
+        for (cursor, expected_index) in [([40.0, 20.0], 4), ([80.0, 80.0], 5)] {
             let cpu = cpu_pick(&config, &cpu_series, &cpu_columns, cursor, 0.0);
             let gpu = resolve_pick(&engine, &pool, query_from_config(&config, cursor, 0.0));
             assert_pick_parity(cpu.clone(), gpu);
             assert_eq!(cpu.unwrap().point_index, expected_index);
         }
+
+        // Invalid samples must not become pickable at the old 1e-30 clamp,
+        // even when that artificial coordinate lies inside the visible range.
+        let mut tiny = config.clone();
+        tiny.bottom_x.min = 1e-31;
+        tiny.bottom_x.max = 1e-29;
+        let cursor = [60.0, 50.0];
+        assert!(cpu_pick(&tiny, &cpu_series, &cpu_columns, cursor, 2.0).is_none());
+        assert!(resolve_pick(&engine, &pool, query_from_config(&tiny, cursor, 2.0)).is_none());
 
         for (cursor, max_distance) in [
             ([f32::NAN, 20.0], 1.0),

@@ -619,3 +619,143 @@ fn sketch_composes_with_dash() {
         "sketch+dash nearly empty: dashed {cd} px vs solid {cs} px (expected > 25 %)"
     );
 }
+
+/// A noisy nonpositive sample creates a gap, exactly like an explicitly masked
+/// sample. In particular it must not become a line down to the log-axis edge,
+/// advance dash phase, or seed Milkyway stars along the missing segments.
+#[test]
+fn logarithmic_lines_mask_nonpositive_samples_in_every_draw_style() {
+    use renderer::config::{AxisScale, ConstellationOptions, MilkywayOptions};
+    for log_x in [false, true] {
+        for draw_style in [
+            DrawStyle::Precise,
+            DrawStyle::Sketch(SketchOptions::default()),
+            DrawStyle::Milkyway(MilkywayOptions::default()),
+            DrawStyle::Constellation(ConstellationOptions::default()),
+        ] {
+            let Some(mut r) = try_renderer() else { return };
+            let positions = vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
+            let noisy = vec![1.0, 3.0, -2.0, 0.0, 2.0, 5.0, 8.0, 12.0];
+            let masked = vec![1.0, 3.0, f64::NAN, f64::NAN, 2.0, 5.0, 8.0, 12.0];
+            r.add_column("position", &col_f64(positions)).unwrap();
+            r.add_column("noisy", &col_f64(noisy)).unwrap();
+            r.add_column("masked", &col_f64(masked)).unwrap();
+            let mut chart = bare_chart(480, 320);
+            chart.config_mut().draw_style = draw_style.clone();
+            if log_x {
+                chart.set_x_range(0.5, 20.0);
+                chart.set_y_range(-0.5, 7.5);
+                chart.config_mut().bottom_x.scale = AxisScale::Logarithmic;
+            } else {
+                chart.set_x_range(-0.5, 7.5);
+                chart.set_y_range(0.5, 20.0);
+                chart.config_mut().left_y.scale = AxisScale::Logarithmic;
+            }
+            for preset in [LineStylePreset::Solid, LineStylePreset::Dash] {
+                let series = |values| {
+                    let (x, y) = if log_x {
+                        (values, "position")
+                    } else {
+                        ("position", values)
+                    };
+                    let mut series = line_series("signal", x, y, RED, preset);
+                    if matches!(draw_style, DrawStyle::Constellation(_)) {
+                        let DataRenderType::Line { line } = series.render_type else {
+                            unreachable!()
+                        };
+                        let DataRenderType::Scatter { scatter } =
+                            scatter_series("signal", x, y, RED).render_type
+                        else {
+                            unreachable!()
+                        };
+                        series.render_type = DataRenderType::ScatterLine { line, scatter };
+                    }
+                    series
+                };
+                let actual = r
+                    .export_panel_rgba(&chart, &[series("noisy")], 1.0)
+                    .unwrap();
+                let expected = r
+                    .export_panel_rgba(&chart, &[series("masked")], 1.0)
+                    .unwrap();
+                assert_bytes_eq(
+                    &actual,
+                    &expected,
+                    "logarithmic noise must leave a masked gap",
+                );
+                let blank = r.export_panel_rgba(&chart, &[], 1.0).unwrap();
+                assert!(
+                    actual.rgba != blank.rgba,
+                    "positive segments must remain visible; log_x={log_x}, style={draw_style:?}, preset={preset:?}; alpha={}",
+                    actual.rgba.chunks_exact(4).filter(|p| p[3] > 0).count()
+                );
+            }
+        }
+    }
+}
+
+/// A log range containing the shader's historical 1e-30 clamp catches the
+/// otherwise hidden bug where zero/negative markers reappear at that floor.
+#[test]
+fn logarithmic_scatter_masks_nonpositive_samples_below_old_clamp_floor() {
+    use renderer::config::{AxisScale, ConstellationOptions};
+    for log_x in [false, true] {
+        for draw_style in [
+            DrawStyle::Precise,
+            DrawStyle::Sketch(SketchOptions::default()),
+            DrawStyle::Constellation(ConstellationOptions::default()),
+        ] {
+            let Some(mut r) = try_renderer() else { return };
+            r.add_column("position", &col_f64(vec![1.0, 2.0, 3.0, 4.0]))
+                .unwrap();
+            r.add_column("noisy", &col_f64(vec![0.0, -1.0, 1e-30, 4e-30]))
+                .unwrap();
+            r.add_column("masked", &col_f64(vec![f64::NAN, f64::NAN, 1e-30, 4e-30]))
+                .unwrap();
+            let mut chart = bare_chart(480, 320);
+            chart.config_mut().draw_style = draw_style.clone();
+            if log_x {
+                chart.set_x_range(1e-31, 1e-29);
+                chart.set_y_range(0.0, 5.0);
+                chart.config_mut().bottom_x.scale = AxisScale::Logarithmic;
+            } else {
+                chart.set_x_range(0.0, 5.0);
+                chart.set_y_range(1e-31, 1e-29);
+                chart.config_mut().left_y.scale = AxisScale::Logarithmic;
+            }
+            let series = |values| {
+                let (x, y) = if log_x {
+                    (values, "position")
+                } else {
+                    ("position", values)
+                };
+                let mut series = scatter_series("signal", x, y, GREEN);
+                if matches!(draw_style, DrawStyle::Constellation(_)) {
+                    let DataRenderType::Scatter { scatter } = series.render_type else {
+                        unreachable!()
+                    };
+                    let DataRenderType::Line { line } =
+                        line_series("signal", x, y, GREEN, LineStylePreset::Solid).render_type
+                    else {
+                        unreachable!()
+                    };
+                    series.render_type = DataRenderType::ScatterLine { line, scatter };
+                }
+                series
+            };
+            let actual = r
+                .export_panel_rgba(&chart, &[series("noisy")], 1.0)
+                .unwrap();
+            let expected = r
+                .export_panel_rgba(&chart, &[series("masked")], 1.0)
+                .unwrap();
+            assert_bytes_eq(&actual, &expected, "nonpositive log markers must be masked");
+            let blank = r.export_panel_rgba(&chart, &[], 1.0).unwrap();
+            assert!(
+                actual.rgba != blank.rgba,
+                "positive markers must remain visible; log_x={log_x}, style={draw_style:?}; alpha={}",
+                actual.rgba.chunks_exact(4).filter(|p| p[3] > 0).count()
+            );
+        }
+    }
+}

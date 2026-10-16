@@ -79,6 +79,23 @@ fn data_to_ndc(xv: vec2<f32>, yv: vec2<f32>) -> vec2<f32> {
     let ty = axis_pair_to_t(yv, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y, transform.data_to_panel_scale.y, transform.data_to_panel_offset.y);
     return vec2<f32>(tx, ty) * 2.0 - 1.0;
 }
+
+// Mask source samples explicitly: NaN/Inf clipping is not portable in WGSL.
+// Logarithmic coordinate domains exclude nonpositive samples, while bars and
+// errorbar extents retain their separate baseline/clipping rules.
+fn sample_finite(v: f32) -> bool {
+    return (bitcast<u32>(v) & 0x7f800000u) != 0x7f800000u;
+}
+
+fn sample_valid(xv: vec2<f32>, yv: vec2<f32>) -> bool {
+    let x = xv.x + xv.y;
+    let y = yv.x + yv.y;
+    return sample_finite(xv.x) && sample_finite(xv.y)
+        && sample_finite(yv.x) && sample_finite(yv.y)
+        && sample_finite(x) && sample_finite(y)
+        && (transform.scale_log.x == 0.0 || x > 0.0)
+        && (transform.scale_log.y == 0.0 || y > 0.0);
+}
 // ───── END common block ─────
 
 struct VsIn {
@@ -164,6 +181,11 @@ fn rotate2(p: vec2<f32>, a: f32) -> vec2<f32> {
 
 @vertex
 fn vs_main(in: VsIn) -> VsOut {
+    if (!sample_valid(in.x, in.y)) {
+        var masked: VsOut;
+        masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+        return masked;
+    }
     let center_ndc = data_to_ndc(in.x, in.y);
     let half_px =
         visual_shape_radius(base_shape_id(style.shape_id), style.point_radius_px) + QUAD_MARGIN_PX;
@@ -429,6 +451,11 @@ fn resolve_mapped_style(style_index: f32, inst: u32) -> ResolvedMappedStyle {
 
 @vertex
 fn vs_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> VsMappedOut {
+    if (!sample_valid(in.x, in.y)) {
+        var masked: VsMappedOut;
+        masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+        return masked;
+    }
     let resolved = resolve_mapped_style(in.style_index, inst);
     let center_ndc = data_to_ndc(in.x, in.y);
     let half_px =
@@ -469,6 +496,11 @@ struct VsPickRingOut {
 
 @vertex
 fn vs_pick_ring(in: VsIn) -> VsPickRingOut {
+    if (!sample_valid(in.x, in.y)) {
+        var masked: VsPickRingOut;
+        masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+        return masked;
+    }
     let center_ndc = data_to_ndc(in.x, in.y);
     let radius = max(style.point_radius_px, 0.0);
     let half_px = radius + max(style.line_width_px, 0.0) * 0.5 + QUAD_MARGIN_PX;
@@ -483,6 +515,11 @@ fn vs_pick_ring(in: VsIn) -> VsPickRingOut {
 
 @vertex
 fn vs_pick_ring_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> VsPickRingOut {
+    if (!sample_valid(in.x, in.y)) {
+        var masked: VsPickRingOut;
+        masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+        return masked;
+    }
     let resolved = resolve_mapped_style(in.style_index, inst);
     let center_ndc = data_to_ndc(in.x, in.y);
     // Pick-ring mapped mode uses style.cap_half_px as radius_extra_px. The
@@ -548,6 +585,11 @@ struct VsSketchOut {
 // same expanded scale.
 @vertex
 fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> VsSketchOut {
+    if (!sample_valid(in.x, in.y)) {
+        var masked: VsSketchOut;
+        masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+        return masked;
+    }
     let center_ndc = data_to_ndc(in.x, in.y);
 
     let amp = max(transform.style_params[0].x, 0.0);
@@ -624,6 +666,11 @@ struct VsConstellationStarOut {
 
 @vertex
 fn vs_constellation_star(in: VsIn, @builtin(instance_index) inst: u32) -> VsConstellationStarOut {
+    if (!sample_valid(in.x, in.y)) {
+        var masked: VsConstellationStarOut;
+        masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+        return masked;
+    }
     let center_ndc = data_to_ndc(in.x, in.y);
 
     let seed = style.series_salt;
@@ -704,6 +751,11 @@ struct VsPlanetOut {
 
 @vertex
 fn vs_planet(in: VsIn, @builtin(instance_index) inst: u32) -> VsPlanetOut {
+    if (!sample_valid(in.x, in.y)) {
+        var masked: VsPlanetOut;
+        masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+        return masked;
+    }
     let center_ndc = data_to_ndc(in.x, in.y);
 
     let half_px = style.point_radius_px * PLANET_QUAD_EXTENT + QUAD_MARGIN_PX;
