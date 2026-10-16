@@ -688,14 +688,27 @@ fn independent_rich_titles_refresh_export_cache_and_keep_public_drag_contract() 
 
 // The layer foundation fields route interaction and reserve the annotation
 // layer; neither changes a bounded frame's pixels, geometry or hit map. Editing
-// them must therefore hand back the cached frame and its label raster, while a
-// real edit still rebuilds both.
+// one layer's field must hand back the other layers' cached frame and label
+// raster, and the cached frame plus that edit must export the same bytes as a
+// fresh renderer given the final state. A base-layer edit still rebuilds.
 #[test]
 fn layer_fields_reuse_cached_frames() {
     let _guard = LOCK.lock().unwrap();
-    let gpu = gpu();
+    let device = gpu();
+    fn fresh_radial(c: &RadialChart) -> Vec<u8> {
+        let mut r = RadialRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+        r.export_rgba(c, (800, 520), 1.).unwrap().rgba
+    }
+    fn fresh_categorical(c: &CategoricalChart) -> Vec<u8> {
+        let mut r = CategoricalRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+        r.export_rgba(c, (800, 520), 1.).unwrap().rgba
+    }
+    fn fresh_boxplot(c: &BoxPlotChart) -> Vec<u8> {
+        let mut r = BoxPlotRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+        r.export_rgba(c, (800, 520), 1.).unwrap().rgba
+    }
 
-    let mut r = RadialRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut r = RadialRenderer::new(device.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
     let mut c = RadialChart {
         title: "Layer fields".into(),
         slices: vec![
@@ -705,22 +718,35 @@ fn layer_fields_reuse_cached_frames() {
         ..Default::default()
     };
     let f = r.prepare(&c, (800, 520), 1.).unwrap();
-    c.active_layer = LayerRef::Annotations;
-    c.annotations.visible = false;
-    let g = r.prepare(&c, (800, 520), 1.).unwrap();
-    assert!(
-        Arc::ptr_eq(&f, &g),
-        "radial layer fields must reuse the frame"
-    );
-    assert!(f.shares_annotations_with(&g));
+    let before = r.export_rgba(&c, (800, 520), 1.).unwrap().rgba;
+    let edits: [(&str, fn(&mut RadialChart)); 2] = [
+        ("annotations.visible", |c| c.annotations.visible = false),
+        ("active_layer", |c| c.active_layer = LayerRef::Annotations),
+    ];
+    for (name, apply) in edits {
+        apply(&mut c);
+        let g = r.prepare(&c, (800, 520), 1.).unwrap();
+        assert!(Arc::ptr_eq(&f, &g), "radial {name}: frame must be reused");
+        assert!(
+            f.shares_annotations_with(&g),
+            "radial {name}: label raster must be reused"
+        );
+        let cached = r.export_rgba(&c, (800, 520), 1.).unwrap().rgba;
+        assert!(cached == before, "radial {name}: pixels changed");
+        assert!(
+            cached == fresh_radial(&c),
+            "radial {name}: cached export differs from a fresh render"
+        );
+    }
     c.title = "Edited".into();
     let h = r.prepare(&c, (800, 520), 1.).unwrap();
     assert!(
-        !Arc::ptr_eq(&g, &h),
+        !Arc::ptr_eq(&f, &h),
         "a title edit must still rebuild the frame"
     );
+    assert!(r.export_rgba(&c, (800, 520), 1.).unwrap().rgba == fresh_radial(&c));
 
-    let mut r = CategoricalRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut r = CategoricalRenderer::new(device.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
     let mut c = CategoricalChart {
         title: "Layer fields".into(),
         categories: vec![
@@ -736,19 +762,35 @@ fn layer_fields_reuse_cached_frames() {
         ..Default::default()
     };
     let f = r.prepare(&c, (800, 520), 1.).unwrap();
-    c.active_layer = LayerRef::Annotations;
-    c.annotations.visible = false;
-    let g = r.prepare(&c, (800, 520), 1.).unwrap();
-    assert!(
-        Arc::ptr_eq(&f, &g),
-        "categorical layer fields must reuse the frame"
-    );
-    assert!(f.shares_annotations_with(&g));
+    let before = r.export_rgba(&c, (800, 520), 1.).unwrap().rgba;
+    let edits: [(&str, fn(&mut CategoricalChart)); 2] = [
+        ("annotations.visible", |c| c.annotations.visible = false),
+        ("active_layer", |c| c.active_layer = LayerRef::Annotations),
+    ];
+    for (name, apply) in edits {
+        apply(&mut c);
+        let g = r.prepare(&c, (800, 520), 1.).unwrap();
+        assert!(
+            Arc::ptr_eq(&f, &g),
+            "categorical {name}: frame must be reused"
+        );
+        assert!(
+            f.shares_annotations_with(&g),
+            "categorical {name}: label raster must be reused"
+        );
+        let cached = r.export_rgba(&c, (800, 520), 1.).unwrap().rgba;
+        assert!(cached == before, "categorical {name}: pixels changed");
+        assert!(
+            cached == fresh_categorical(&c),
+            "categorical {name}: cached export differs from a fresh render"
+        );
+    }
     c.title = "Edited".into();
     let h = r.prepare(&c, (800, 520), 1.).unwrap();
-    assert!(!Arc::ptr_eq(&g, &h));
+    assert!(!Arc::ptr_eq(&f, &h));
+    assert!(r.export_rgba(&c, (800, 520), 1.).unwrap().rgba == fresh_categorical(&c));
 
-    let mut r = BoxPlotRenderer::new(gpu, wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut r = BoxPlotRenderer::new(device, wgpu::TextureFormat::Rgba8Unorm).unwrap();
     let mut c = BoxPlotChart {
         title: "Layer fields".into(),
         value_title: "Value".into(),
@@ -769,15 +811,28 @@ fn layer_fields_reuse_cached_frames() {
         ..Default::default()
     };
     let f = r.prepare(&c, (800, 520), 1.).unwrap();
-    c.active_layer = LayerRef::Annotations;
-    c.annotations.visible = false;
-    let g = r.prepare(&c, (800, 520), 1.).unwrap();
-    assert!(
-        Arc::ptr_eq(&f, &g),
-        "boxplot layer fields must reuse the frame"
-    );
-    assert!(f.shares_annotations_with(&g));
+    let before = r.export_rgba(&c, (800, 520), 1.).unwrap().rgba;
+    let edits: [(&str, fn(&mut BoxPlotChart)); 2] = [
+        ("annotations.visible", |c| c.annotations.visible = false),
+        ("active_layer", |c| c.active_layer = LayerRef::Annotations),
+    ];
+    for (name, apply) in edits {
+        apply(&mut c);
+        let g = r.prepare(&c, (800, 520), 1.).unwrap();
+        assert!(Arc::ptr_eq(&f, &g), "boxplot {name}: frame must be reused");
+        assert!(
+            f.shares_annotations_with(&g),
+            "boxplot {name}: label raster must be reused"
+        );
+        let cached = r.export_rgba(&c, (800, 520), 1.).unwrap().rgba;
+        assert!(cached == before, "boxplot {name}: pixels changed");
+        assert!(
+            cached == fresh_boxplot(&c),
+            "boxplot {name}: cached export differs from a fresh render"
+        );
+    }
     c.title = "Edited".into();
     let h = r.prepare(&c, (800, 520), 1.).unwrap();
-    assert!(!Arc::ptr_eq(&g, &h));
+    assert!(!Arc::ptr_eq(&f, &h));
+    assert!(r.export_rgba(&c, (800, 520), 1.).unwrap().rgba == fresh_boxplot(&c));
 }

@@ -16,6 +16,10 @@ struct Edit {
     name: &'static str,
     apply: fn(&mut Config),
     work: Work,
+    /// The edit changes the config at all.
+    differs: bool,
+    /// The edit changes visible pixels. A layer-only edit differs without
+    /// changing pixels.
     visible: bool,
 }
 
@@ -25,13 +29,30 @@ fn edits() -> Vec<Edit> {
         ($path:ident $(.$field:ident)*, $value:expr, $work:ident) => {
             cases.push(Edit { name: stringify!($path $(.$field)*),
                 apply: |c| c.$path $(.$field)* = $value,
-                work: Work::$work, visible: true });
+                work: Work::$work, differs: true, visible: true });
         };
     }
     cases.push(Edit {
         name: "identical config",
         apply: |_| {},
         work: Work::Prefix,
+        differs: false,
+        visible: false,
+    });
+    // Layer foundation: each field is an edit of its own layer only. Pixels,
+    // data work and the data job must stay exactly as they were.
+    cases.push(Edit {
+        name: "active_layer",
+        apply: |c| c.active_layer = crate::LayerRef::Annotations,
+        work: Work::Prefix,
+        differs: true,
+        visible: false,
+    });
+    cases.push(Edit {
+        name: "annotations.visible",
+        apply: |c| c.annotations.visible = false,
+        work: Work::Prefix,
+        differs: true,
         visible: false,
     });
     macro_rules! grid {
@@ -149,12 +170,14 @@ fn edits() -> Vec<Edit> {
         name: "chart_area.width",
         apply: |c| c.chart_area.0.width = 300,
         work: Work::Packed,
+        differs: true,
         visible: true,
     });
     cases.push(Edit {
         name: "chart_area.height",
         apply: |c| c.chart_area.0.height = 220,
         work: Work::Packed,
+        differs: true,
         visible: true,
     });
     edit!(draw_style, DrawStyle::Sketch(Default::default()), Replay);
@@ -363,7 +386,7 @@ fn matrix(resident: bool, cache: bool) {
         (edit.apply)(&mut next);
         assert_eq!(
             next != c,
-            edit.visible,
+            edit.differs,
             "{} must edit one property",
             edit.name
         );
