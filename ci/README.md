@@ -96,6 +96,13 @@ known dependency vulnerability reports. Report suspected vulnerabilities through
 
 ## What runs on every OS
 
+Before compilation, `ci/verify.py static` runs the package-document regression
+tests and checks package-local links using offline `cargo package --list`.
+The tracked `.githooks/pre-push` runs the same checker against each outgoing
+commit's archived source, so a repaired working tree cannot hide a broken branch
+being pushed. See [hook installation](../CONTRIBUTING.md#build-and-test).
+The extracted-archive audit reuses the same link rules after packaging.
+
 1. Native workspace checks with default and all optional features, including examples.
 2. Compilation for `wasm32-unknown-unknown` and strict Rust API documentation links
    on native and WASM targets. The WASM check catches links to native-only methods.
