@@ -685,3 +685,99 @@ fn independent_rich_titles_refresh_export_cache_and_keep_public_drag_contract() 
         }
     );
 }
+
+// The layer foundation fields route interaction and reserve the annotation
+// layer; neither changes a bounded frame's pixels, geometry or hit map. Editing
+// them must therefore hand back the cached frame and its label raster, while a
+// real edit still rebuilds both.
+#[test]
+fn layer_fields_reuse_cached_frames() {
+    let _guard = LOCK.lock().unwrap();
+    let gpu = gpu();
+
+    let mut r = RadialRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut c = RadialChart {
+        title: "Layer fields".into(),
+        slices: vec![
+            RadialSlice::new("High", 35., Color::from_rgb8(100, 145, 185)),
+            RadialSlice::new("Low", 65., Color::from_rgb8(175, 95, 140)),
+        ],
+        ..Default::default()
+    };
+    let f = r.prepare(&c, (800, 520), 1.).unwrap();
+    c.active_layer = LayerRef::Annotations;
+    c.annotations.visible = false;
+    let g = r.prepare(&c, (800, 520), 1.).unwrap();
+    assert!(
+        Arc::ptr_eq(&f, &g),
+        "radial layer fields must reuse the frame"
+    );
+    assert!(f.shares_annotations_with(&g));
+    c.title = "Edited".into();
+    let h = r.prepare(&c, (800, 520), 1.).unwrap();
+    assert!(
+        !Arc::ptr_eq(&g, &h),
+        "a title edit must still rebuild the frame"
+    );
+
+    let mut r = CategoricalRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut c = CategoricalChart {
+        title: "Layer fields".into(),
+        categories: vec![
+            Category::new("a", "Control"),
+            Category::new("b", "Treatment"),
+        ],
+        series: vec![BarSeries::new(
+            "s",
+            "Trial",
+            vec![Some(30.), Some(60.)],
+            Color::from_rgb8(60, 130, 210),
+        )],
+        ..Default::default()
+    };
+    let f = r.prepare(&c, (800, 520), 1.).unwrap();
+    c.active_layer = LayerRef::Annotations;
+    c.annotations.visible = false;
+    let g = r.prepare(&c, (800, 520), 1.).unwrap();
+    assert!(
+        Arc::ptr_eq(&f, &g),
+        "categorical layer fields must reuse the frame"
+    );
+    assert!(f.shares_annotations_with(&g));
+    c.title = "Edited".into();
+    let h = r.prepare(&c, (800, 520), 1.).unwrap();
+    assert!(!Arc::ptr_eq(&g, &h));
+
+    let mut r = BoxPlotRenderer::new(gpu, wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut c = BoxPlotChart {
+        title: "Layer fields".into(),
+        value_title: "Value".into(),
+        category_title: "Group".into(),
+        categories: vec![
+            Category::new("a", "Control"),
+            Category::new("b", "Treatment"),
+        ],
+        series: vec![BoxPlotSeries::new(
+            "s",
+            "Distribution",
+            vec![
+                Some(BoxSummary::new(10., 25., 38., 52., 70.)),
+                Some(BoxSummary::new(18., 32., 47., 61., 80.)),
+            ],
+            Color::from_rgb8(60, 130, 210),
+        )],
+        ..Default::default()
+    };
+    let f = r.prepare(&c, (800, 520), 1.).unwrap();
+    c.active_layer = LayerRef::Annotations;
+    c.annotations.visible = false;
+    let g = r.prepare(&c, (800, 520), 1.).unwrap();
+    assert!(
+        Arc::ptr_eq(&f, &g),
+        "boxplot layer fields must reuse the frame"
+    );
+    assert!(f.shares_annotations_with(&g));
+    c.title = "Edited".into();
+    let h = r.prepare(&c, (800, 520), 1.).unwrap();
+    assert!(!Arc::ptr_eq(&g, &h));
+}

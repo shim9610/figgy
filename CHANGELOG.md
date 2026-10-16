@@ -19,8 +19,10 @@ at the time. The first crates.io publication is recorded below.
   omitted from JSON at their defaults, so existing documents parse and
   serialize byte-identically. `DecorationId` gains `Overlay { layer, inner }`
   (`overlay_<n>:<inner id>`) and `Annotation(index)` (`annotation_<n>`); no hit
-  map registers them yet. Drawn pixels do not depend on either field. See the
-  interaction guide and configuration reference.
+  map registers them yet. Drawn pixels do not depend on either field, and the
+  bounded frame and label raster caches exclude both from their keys, so
+  editing them reuses the cached frame. See the interaction guide and
+  configuration reference.
 - Rust migration: exhaustive chart struct literals need `active_layer` and
   `annotations` (or `..Default::default()`); exhaustive matches on
   `DecorationId` need the two new arms. This public field addition is released

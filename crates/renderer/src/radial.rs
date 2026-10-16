@@ -313,7 +313,7 @@ impl RadialRenderer {
         }
         let fonts = crate::text_render::font_generation();
         if let Some((c, s, k, generation, frame)) = &self.cached {
-            if c == chart && *s == size && *k == scale && *generation == fonts {
+            if frame_eq(c, chart) && *s == size && *k == scale && *generation == fonts {
                 return Ok(Arc::clone(frame));
             }
         }
@@ -455,7 +455,7 @@ impl RadialRenderer {
             scale,
         });
         self.annotations_cached = Some((key, size, scale, fonts, annotations));
-        self.cached = Some((chart.clone(), size, scale, fonts, Arc::clone(&frame)));
+        self.cached = Some((frame_key(chart), size, scale, fonts, Arc::clone(&frame)));
         Ok(frame)
     }
     /// Drop internal frame/annotation references. External frames stay valid.
@@ -664,6 +664,59 @@ fn raster_moves_inside_labels(chart: &RadialChart) -> bool {
             .any(|o| matches!(o.element, model::DecorationId::RadialLabel(_))))
 }
 
+/// The part of the chart this frame's pixels, geometry and hit map depend on.
+/// `active_layer` only routes interaction and the annotation layer is drawn
+/// by its own pass, so editing either must reuse the cached frame and its
+/// label raster rather than rebuild them.
+fn frame_key(chart: &RadialChart) -> RadialChart {
+    let mut c = chart.clone();
+    c.active_layer = Default::default();
+    c.annotations = Default::default();
+    c
+}
+/// `frame_key(a) == frame_key(b)` without cloning, for the per-frame cache
+/// hit check. Exhaustive so a new field must be classified here.
+fn frame_eq(a: &RadialChart, b: &RadialChart) -> bool {
+    let RadialChart {
+        decorations,
+        title,
+        chart_title,
+        active_layer,
+        annotations,
+        slices,
+        kind,
+        start_angle_degrees,
+        split,
+        style,
+        labels,
+        label_format,
+        label_decimals,
+        value_suffix,
+        interaction,
+        font_family,
+        font_size,
+        label_color,
+        background,
+    } = a;
+    let _ = (active_layer, annotations);
+    decorations == &b.decorations
+        && title == &b.title
+        && chart_title == &b.chart_title
+        && slices == &b.slices
+        && kind == &b.kind
+        && start_angle_degrees == &b.start_angle_degrees
+        && split == &b.split
+        && style == &b.style
+        && labels == &b.labels
+        && label_format == &b.label_format
+        && label_decimals == &b.label_decimals
+        && value_suffix == &b.value_suffix
+        && interaction == &b.interaction
+        && font_family == &b.font_family
+        && font_size == &b.font_size
+        && label_color == &b.label_color
+        && background == &b.background
+}
 fn annotation_key(chart: &RadialChart) -> RadialChart {
     fn style(s: &RadialStyle) -> RadialStyle {
         RadialStyle {
@@ -674,7 +727,7 @@ fn annotation_key(chart: &RadialChart) -> RadialChart {
             ..Default::default()
         }
     }
-    let mut c = chart.clone();
+    let mut c = frame_key(chart);
     c.style = style(&c.style);
     if !raster_moves_inside_labels(chart) {
         c.interaction = RadialInteraction::default();
@@ -691,4 +744,27 @@ fn annotation_key(chart: &RadialChart) -> RadialChart {
         }
     }
     c
+}
+
+#[cfg(test)]
+mod layer_cache_key_tests {
+    use super::*;
+    #[test]
+    fn frame_and_annotation_keys_ignore_layer_fields_only() {
+        let base = RadialChart {
+            slices: vec![RadialSlice::new("a", 1., crate::Color::WHITE)],
+            ..Default::default()
+        };
+        let mut layered = base.clone();
+        layered.active_layer = model::LayerRef::Annotations;
+        layered.annotations.visible = false;
+        assert_eq!(frame_key(&base), frame_key(&layered));
+        assert!(frame_eq(&frame_key(&base), &layered));
+        assert_eq!(annotation_key(&base), annotation_key(&layered));
+        let mut edited = base.clone();
+        edited.title = "x".into();
+        assert_ne!(frame_key(&base), frame_key(&edited));
+        assert!(!frame_eq(&frame_key(&base), &edited));
+        assert_ne!(annotation_key(&base), annotation_key(&edited));
+    }
 }

@@ -617,8 +617,9 @@ fn radial_ssot_fields_are_explicit() {
         chart_title: _,
         // Layer foundation: `active_layer` only routes interaction and never
         // changes pixels; `annotations` is the container the annotation layer
-        // fills later. Both take part in the whole-chart cache comparison, so
-        // editing them re-renders the frame (over-invalidation, not a defect).
+        // fills later. `frame_key` strips both before the frame and label
+        // raster cache comparisons, so editing either reuses the cached frame
+        // (covered by `layer_fields_reuse_cached_frames` in bounded_interaction).
         active_layer: _,
         annotations: _,
         slices: _,

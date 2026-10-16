@@ -216,8 +216,9 @@ wraps an element identity with its overlay index (`overlay_<n>:<inner id>`) and
 `Annotation(index)` names an annotation item (`annotation_<n>`). No hit map
 registers them yet; hosts that match on `DecorationId` should treat them like
 any other unknown decoration. Explicit Rust chart literals need the two new
-fields (or `..Default::default()`); whole-chart equality used by the bounded
-frame caches includes them, so editing either re-renders the frame.
+fields (or `..Default::default()`). The bounded frame and label raster caches
+strip both fields from their keys, so editing either reuses the cached frame;
+only the layer's own pass will depend on them.
 
 Run `cargo run --locked -p figgy-renderer --example bounded_titles` for a complete
 native PNG example covering all three families, multiline alignment and a
