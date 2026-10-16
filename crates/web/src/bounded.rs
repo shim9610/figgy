@@ -75,7 +75,10 @@ impl DocumentChart {
     pub fn select_at(&mut self, frame: &DocumentFrame, point: [f32; 2], toggle: bool) {
         match (self, frame) {
             (Self::Radial(c), DocumentFrame::Radial(f)) => {
-                let hit = f.hit_test(point);
+                let hit = f.hit_test(point).or_else(|| {
+                    f.hit_test_at_rest(point)
+                        .filter(|t| Some(*t) == c.interaction.hovered)
+                });
                 c.interaction.selected = if toggle && hit == c.interaction.selected {
                     None
                 } else {
@@ -296,7 +299,7 @@ impl DocumentFrame {
     }
     pub fn has_data(&self, p: [f32; 2]) -> bool {
         match self {
-            Self::Radial(f) => f.hit_test(p).is_some(),
+            Self::Radial(f) => f.hit_test(p).is_some() || f.hit_test_at_rest(p).is_some(),
             Self::Categorical(f) => f.hit_test(p).is_some(),
             Self::BoxPlot(f) => f.hit_test(p).is_some(),
         }
