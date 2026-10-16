@@ -708,3 +708,22 @@ renderer.request_auto_streaming_chart(chart_id, &view, options)?;
 - `free()`로 인스턴스를 해제하면 풀 버퍼·파이프라인·텍스처·surface의 참조를 정리한다. GC의 FinalizationRegistry도 정리를 지원하지만 실행 시점이 정해져 있지 않으므로 SPA에서 컴포넌트를 제거할 때는 `free()`를 직접 호출한다.
 
 현재 `wasm-opt`는 꺼져 있다. wasm-pack에 포함된 Binaryen이 최신 rustc 출력의 일부 기능에서 비정상 종료되기 때문이다(`crates/web/Cargo.toml` 참고). Rust의 release 최적화는 적용한다. 추가 용량 절감이 필요하면 호환되는 최신 Binaryen으로 검증한 뒤 다시 활성화할 수 있다.
+
+### Bounded chart host
+
+`FiggyBoundedChart.create(canvas, family, documentJson, width, height)` exposes
+`radial`, `categorical`, and `boxplot` documents to browser hosts. It uses the
+same native renderer, decoration maps, slice/bar/box picking, and drag/resize
+policies. The host owns pointer events, animation scheduling, and synchronization.
+`set_document` validates and prepares before replacing the document; unspecified
+fields must be preserved by the caller's SSOT patch. `get_document`,
+`decorations`, `hit_decoration`, `select_decoration`, `resize_handle`, `drag`,
+`pick`, `hover`, `step_selection`, `clear_selection`, `resize`, `frame`, and
+async `export_png` cover interactive editing and export. Coordinates and drag
+deltas are document logical pixels; canvas resize does not change export size.
+`hover` returns whether another frame is needed. Keep the object alive until
+all async calls finish; `free()` releases its GPU resources.
+
+For Cartesian hosts, `FiggyChart.decoration_bounds(id)` returns measured bounds
+and resize handles in physical canvas pixels. `step_selection(dx, dy)` navigates
+resident point or matrix selections using source indices, without copying arrays.

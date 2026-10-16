@@ -5207,6 +5207,96 @@ mod web {
                 .map(|el| el.element_id())
         }
 
+        /// Renderer-measured decoration bounds in physical canvas pixels.
+        pub fn decoration_bounds(&self, target: &str) -> Result<String, JsValue> {
+            let (config, _, _) = self.display_config();
+            let id = self.hitmap.find(target);
+            let value=id.and_then(|id|self.hitmap.selection_box(id,&config,&CpuTextMeasure::for_style(&config.draw_style))).map(|b|serde_json::json!({"rect":[b.rect.x,b.rect.y,b.rect.width,b.rect.height],"handles":b.handles.iter().map(|r|vec![r.x,r.y,r.width,r.height]).collect::<Vec<_>>()}));
+            serde_json::to_string(&value).map_err(js_err)
+        }
+        /// Move the resident typed data selection using source indices.
+        pub fn step_selection(&mut self, dx: i32, dy: i32) -> Result<bool, JsValue> {
+            let mut cfg = self.chart_config().clone();
+            let Some(reference) = cfg.picked_data.as_mut().and_then(|s| s.refs.first_mut()) else {
+                return Ok(false);
+            };
+            let Some(position) = self
+                .chart_series()
+                .iter()
+                .position(|s| s.series_id == reference.series_id())
+            else {
+                return Ok(false);
+            };
+            let shift = |index: usize, delta: i32, count: usize| {
+                index
+                    .saturating_add_signed(delta as isize)
+                    .min(count.saturating_sub(1))
+            };
+            match reference {
+                renderer::config::PickedDataRef::Point {
+                    series_id,
+                    source_id,
+                    point_index,
+                } => {
+                    let points =
+                        self.chart_series()
+                            .iter()
+                            .filter(|s| {
+                                let style = serde_json::to_value(&s.render_type).unwrap();
+                                style.as_object().unwrap().values().next().is_some_and(|v| {
+                                    v["line"].is_object() || v["scatter"].is_object()
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                    let Some(index) = points.iter().position(|s| s.series_id == *series_id) else {
+                        return Ok(false);
+                    };
+                    let series = points[shift(index, dy, points.len())];
+                    let count = self.columns[&series.x_column].min(self.columns[&series.y_column]);
+                    *series_id = series.series_id.clone();
+                    *source_id = series.source_id.clone();
+                    *point_index = shift(*point_index, dx, count);
+                }
+                renderer::config::PickedDataRef::MatrixCell {
+                    x_index, y_index, ..
+                } => {
+                    let series = &self.chart_series()[position];
+                    let style = serde_json::to_value(&series.render_type).map_err(js_err)?;
+                    let matrix = &style.as_object().unwrap().values().next().unwrap()["matrix"];
+                    let edges = usize::from(matrix["grid_layout"] == "Edges");
+                    let columns = matrix["columns"]
+                        .as_array()
+                        .ok_or_else(|| js_err("selected matrix no longer exists"))?;
+                    let depth = columns
+                        .iter()
+                        .filter_map(|c| self.columns.get(c.as_str()?))
+                        .copied()
+                        .min()
+                        .unwrap_or(0);
+                    let (nx, ny) = if matrix["orientation"] == "ColumnsAreY" {
+                        (depth, columns.len())
+                    } else {
+                        (columns.len(), depth)
+                    };
+                    *x_index = shift(
+                        *x_index,
+                        dx,
+                        nx.min(self.columns[&series.x_column].saturating_sub(edges)),
+                    );
+                    *y_index = shift(
+                        *y_index,
+                        dy,
+                        ny.min(self.columns[&series.y_column].saturating_sub(edges)),
+                    );
+                }
+                _ => return Ok(false),
+            }
+            if cfg == *self.chart_config() {
+                return Ok(false);
+            }
+            self.replace_chart_config(cfg)?;
+            Ok(true)
+        }
         async fn prepare_gpu_picking(&mut self) -> Result<(), JsValue> {
             self.renderer
                 .enable_gpu_picking_async()
@@ -6209,3 +6299,6 @@ mod web {
 
 #[cfg(target_arch = "wasm32")]
 pub use web::*;
+
+#[cfg(target_arch = "wasm32")]
+mod bounded;

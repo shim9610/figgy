@@ -174,6 +174,14 @@ impl<C: DragConfig> HitMap<C> {
         self.entries.get(id.0).map(|b| b.as_ref())
     }
 
+    /// Resolve a stable element name without reconstructing renderer geometry.
+    pub fn find(&self, name: &str) -> Option<HitId> {
+        self.entries
+            .iter()
+            .position(|e| e.element_id() == name)
+            .map(HitId)
+    }
+
     /// Selection highlight for a registered element — the registered
     /// element's [`Selectable::selection_box`] policy.
     pub fn selection_box(
