@@ -11,6 +11,19 @@ from package_docs import ROOT, audit_document_links, check_checkout
 
 
 class PackageDocumentationTests(unittest.TestCase):
+    def test_windows_inventory_accepts_nested_document_targets(self):
+        with tempfile.TemporaryDirectory(prefix="figgy-windows-list-") as temporary:
+            root = Path(temporary)
+            for name in ("model", "renderer"):
+                package = root / "crates" / name
+                package.mkdir(parents=True)
+                (package / "README.md").write_text(
+                    "[example](examples/demo.rs) [lock](Cargo.lock)\n")
+            inventory = subprocess.CompletedProcess(
+                [], 0, stdout="README.md\r\nexamples\\demo.rs\r\n")
+            with patch("package_docs.subprocess.run", return_value=inventory):
+                check_checkout(root)
+
     def test_real_packages_with_empty_cargo_cache(self):
         # Hosted runners start without a registry index. Test the actual
         # manifests, including serde and the unpublished model dependency.

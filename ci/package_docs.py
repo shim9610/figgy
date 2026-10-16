@@ -43,7 +43,9 @@ def check_checkout(root):
             ["cargo", "package", "--list", "--offline", "--allow-dirty",
              "--exclude-lockfile", "--manifest-path", str(source / "Cargo.toml")],
             cwd=root, check=True, text=True, encoding="utf-8", stdout=subprocess.PIPE)
-        files = set(result.stdout.splitlines())
+        # Cargo prints native paths on Windows; Markdown and tar entries use
+        # forward slashes on every platform.
+        files = {name.replace("\\", "/") for name in result.stdout.splitlines()}
         # Normal release packaging includes this generated file, so links to
         # it are valid. Actual archive validation checks that it is present.
         files.add("Cargo.lock")
