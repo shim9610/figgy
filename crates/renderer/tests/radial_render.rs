@@ -615,6 +615,12 @@ fn radial_ssot_fields_are_explicit() {
         decorations: _,
         title: _,
         chart_title: _,
+        // Layer foundation: `active_layer` only routes interaction and never
+        // changes pixels; `annotations` is the container the annotation layer
+        // fills later. Both take part in the whole-chart cache comparison, so
+        // editing them re-renders the frame (over-invalidation, not a defect).
+        active_layer: _,
+        annotations: _,
         slices: _,
         kind: _,
         start_angle_degrees: _,

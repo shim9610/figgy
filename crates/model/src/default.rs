@@ -24,6 +24,7 @@ use crate::config::{
     DrawStyle, GridOptions, LabelStyle, Legend, LegendCorner, TickVisibility,
 };
 use crate::format::LabelFormat;
+use crate::layer::{AnnotationLayer, LayerRef};
 use crate::layout::{ChartArea, Rect, Side};
 use crate::line::LineStylePreset;
 use crate::text::{RichText, TextAlign};
@@ -302,5 +303,7 @@ pub fn default_config() -> Config {
         colorbar: None,
         // Precise mode. Stylized modes are opt-in (`DrawStyle::Sketch(..)`).
         draw_style: DrawStyle::Precise,
+        active_layer: LayerRef::Base,
+        annotations: AnnotationLayer::default(),
     }
 }

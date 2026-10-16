@@ -1,6 +1,7 @@
 use crate::color::Color;
 use crate::colormap::ColorMap;
 use crate::format::LabelFormat;
+use crate::layer::{AnnotationLayer, LayerRef};
 use crate::layout::{ChartArea, Side};
 use crate::line::LineStylePreset;
 use crate::text::RichText;
@@ -687,6 +688,21 @@ pub struct Config {
         serde(default, skip_serializing_if = "DrawStyle::is_precise")
     )]
     pub draw_style: DrawStyle,
+    /// The layer that receives pointer interaction. `Base` (default, key
+    /// absent in JSON) is today's single-layer behavior. Drawn pixels do not
+    /// depend on this field; only hit-map registration and selection chrome do.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "LayerRef::is_base")
+    )]
+    pub active_layer: LayerRef,
+    /// The dedicated annotation layer. Default (key absent in JSON) is a
+    /// visible, empty layer.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "AnnotationLayer::is_default")
+    )]
+    pub annotations: AnnotationLayer,
 }
 
 impl Config {
@@ -973,6 +989,54 @@ mod draw_style_serde_tests {
     /// no `"draw_style"` key: exactly the shape of pre-sketch documents.
     fn default_config_json() -> serde_json::Value {
         serde_json::to_value(default_config()).expect("serialize Config")
+    }
+
+    // The layer foundation is additive schema in the same way: both keys are
+    // absent at their defaults (so every document written before them is
+    // byte-identical), parse to the defaults when missing, and round-trip
+    // when set. The same two fields exist on every bounded chart struct.
+    #[test]
+    fn layer_fields_default_and_are_omitted_from_json() {
+        use crate::{AnnotationLayer, LayerRef};
+        let json = default_config_json();
+        assert!(json.get("active_layer").is_none(), "{json}");
+        assert!(json.get("annotations").is_none(), "{json}");
+        let cfg: Config = serde_json::from_value(json).expect("pre-layer document parses");
+        assert_eq!(cfg.active_layer, LayerRef::Base);
+        assert_eq!(cfg.annotations, AnnotationLayer::default());
+
+        let mut cfg = default_config();
+        cfg.active_layer = LayerRef::Overlay(1);
+        cfg.annotations.visible = false;
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(json["active_layer"], serde_json::json!({ "Overlay": 1 }));
+        assert_eq!(json["annotations"], serde_json::json!({ "visible": false }));
+        let back: Config = serde_json::from_value(json).unwrap();
+        assert_eq!(back, cfg);
+
+        for (name, json) in [
+            (
+                "radial",
+                serde_json::to_value(crate::radial::RadialChart::default()).unwrap(),
+            ),
+            (
+                "categorical",
+                serde_json::to_value(crate::categorical::CategoricalChart::default()).unwrap(),
+            ),
+            (
+                "boxplot",
+                serde_json::to_value(crate::boxplot::BoxPlotChart::default()).unwrap(),
+            ),
+        ] {
+            assert!(json.get("active_layer").is_none(), "{name}: {json}");
+            assert!(json.get("annotations").is_none(), "{name}: {json}");
+        }
+        let mut radial = crate::radial::RadialChart::default();
+        radial.active_layer = LayerRef::Annotations;
+        let json = serde_json::to_value(&radial).unwrap();
+        assert_eq!(json["active_layer"], serde_json::json!("Annotations"));
+        let back: crate::radial::RadialChart = serde_json::from_value(json).unwrap();
+        assert_eq!(back, radial);
     }
 
     #[test]

@@ -239,6 +239,19 @@ pub struct BoxPlotChart {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub chart_title: Option<crate::BoundedTitleOptions>,
+    /// The layer that receives pointer interaction. Bounded charts have no
+    /// overlays, so only `Base` and `Annotations` are meaningful here.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "crate::LayerRef::is_base")
+    )]
+    pub active_layer: crate::LayerRef,
+    /// The dedicated annotation layer, shared with every chart family.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "crate::AnnotationLayer::is_default")
+    )]
+    pub annotations: crate::AnnotationLayer,
     pub categories: Vec<Category>,
     pub series: Vec<BoxPlotSeries>,
     pub direction: BoxPlotDirection,
@@ -269,6 +282,8 @@ impl Default for BoxPlotChart {
             decorations: Default::default(),
             title: String::new(),
             chart_title: None,
+            active_layer: Default::default(),
+            annotations: Default::default(),
             categories: vec![],
             series: vec![],
             direction: BoxPlotDirection::Vertical,

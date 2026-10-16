@@ -9,6 +9,24 @@ at the time. The first crates.io publication is recorded below.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
+## Unreleased — layer and annotation foundation
+
+- Add the SSOT shape shared by the planned overlay layers (secondary Y axes,
+  subplots) and the dedicated annotation layer, without any behavior change.
+  `Config`, `RadialChart`, `CategoricalChart` and `BoxPlotChart` gain
+  `active_layer: LayerRef` (`Base` default, `Overlay(index)`, `Annotations`)
+  and `annotations: AnnotationLayer { visible }`. Both are `serde(default)` and
+  omitted from JSON at their defaults, so existing documents parse and
+  serialize byte-identically. `DecorationId` gains `Overlay { layer, inner }`
+  (`overlay_<n>:<inner id>`) and `Annotation(index)` (`annotation_<n>`); no hit
+  map registers them yet. Drawn pixels do not depend on either field. See the
+  interaction guide and configuration reference.
+- Rust migration: exhaustive chart struct literals need `active_layer` and
+  `annotations` (or `..Default::default()`); exhaustive matches on
+  `DecorationId` need the two new arms. This public field addition is released
+  with the next renderer/model minor versions together with the bounded title
+  change below.
+
 ## Unreleased — independent bounded titles
 
 - Restore the bounded rich-title patches previously used by the Studio Git

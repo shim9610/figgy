@@ -126,6 +126,7 @@ pub use model::boxplot::*;
 mod test_gpu;
 
 pub use model::decoration::{DecorationId, DecorationLayout, DecorationOffset};
+pub use model::{AnnotationLayer, LayerRef};
 pub mod decoration;
 
 mod bounded_title;

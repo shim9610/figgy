@@ -198,6 +198,27 @@ read as `Left`. Explicit Rust chart literals need `chart_title: None` (or use
 `..Default::default()`). This restores a previously unmerged Git-only API; it
 is not present in the published 0.17.0 archive.
 
+## Layer and annotation foundation
+
+Every chart family (`Config`, `RadialChart`, `CategoricalChart`, `BoxPlotChart`)
+carries `active_layer: LayerRef` and `annotations: AnnotationLayer`. Both are
+`serde(default)` and omitted from JSON at their defaults, so existing documents
+parse and serialize unchanged. `LayerRef::Base` is the single layer every chart
+has today; `Overlay(index)` and `Annotations` address the overlay layers and
+the dedicated annotation layer that the follow-up features add. The active
+layer is document state one level above element selection: it will decide
+which layer's elements the hit map registers, while `selected`, `picked_points`
+and `picked_data` keep naming the element inside that layer. Drawn pixels never
+depend on `active_layer`.
+
+`DecorationId` gains two variants for those layers. `Overlay { layer, inner }`
+wraps an element identity with its overlay index (`overlay_<n>:<inner id>`) and
+`Annotation(index)` names an annotation item (`annotation_<n>`). No hit map
+registers them yet; hosts that match on `DecorationId` should treat them like
+any other unknown decoration. Explicit Rust chart literals need the two new
+fields (or `..Default::default()`); whole-chart equality used by the bounded
+frame caches includes them, so editing either re-renders the frame.
+
 Run `cargo run --locked -p figgy-renderer --example bounded_titles` for a complete
 native PNG example covering all three families, multiline alignment and a
 subscript. See [the example source](examples/bounded_titles.rs). Hosts still
