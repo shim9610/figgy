@@ -727,3 +727,15 @@ all async calls finish; `free()` releases its GPU resources.
 For Cartesian hosts, `FiggyChart.decoration_bounds(id)` returns measured bounds
 and resize handles in physical canvas pixels. `step_selection(dx, dy)` navigates
 resident point or matrix selections using source indices, without copying arrays.
+
+```js
+// document is a validated RadialChart JSON value, e.g. serialized by its model.
+const view = await FiggyBoundedChart.create(canvas, "radial", JSON.stringify(document), 960, 600);
+const point = [320, 240]; // logical document coordinates
+const selected = JSON.parse(view.pick(...point, true)); // click toggles selection
+view.select_decoration("chart_title");
+view.drag("chart_title", 12, 6); // changes only this decoration's offset
+view.frame();
+const png = await view.export_png(1);
+view.free();
+```

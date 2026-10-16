@@ -17,6 +17,13 @@ specified `RichText` literals need the migration noted below. JSON without
 advances to 0.14.0 with the renderer dependency. This entry does not itself
 publish a registry crate.
 
+- The raw WASM host adds `FiggyBoundedChart` for radial, categorical and boxplot
+  documents, using the existing renderer's geometry, decoration drag/resize,
+  hover, typed selection and PNG export. Radial clicks retain the hovered
+  slice's resting hit target during lift animation. `FiggyChart` adds measured
+  `decoration_bounds` and source-index `step_selection` for host UI parity;
+  `HitMap::find` resolves stable element IDs. These APIs do not add automatic
+  layout or mutate unrelated SSOT properties.
 - `ChartView::render_warnings` reports the tick settings the axis raster
   replaced instead of substituting them silently: a linear `major_spacing` that
   is non-finite, not positive, too small to advance or over 1000 intervals
