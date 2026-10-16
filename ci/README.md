@@ -97,7 +97,10 @@ known dependency vulnerability reports. Report suspected vulnerabilities through
 ## What runs on every OS
 
 Before compilation, `ci/verify.py static` runs the package-document regression
-tests and checks package-local links using offline `cargo package --list`.
+tests and checks package-local links using offline
+`cargo package --list --exclude-lockfile`. Excluding generated lockfile work
+avoids dependency resolution, including on runners with an empty Cargo cache;
+normal release packaging still includes and validates `Cargo.lock`.
 The tracked `.githooks/pre-push` runs the same checker against each outgoing
 commit's archived source, so a repaired working tree cannot hide a broken branch
 being pushed. See [hook installation](../CONTRIBUTING.md#build-and-test).

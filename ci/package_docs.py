@@ -36,13 +36,17 @@ def audit_document_links(package, files, read_text):
 def check_checkout(root):
     for directory in PACKAGE_DIRS:
         source = root / directory
-        # --list follows Cargo's actual include/exclude rules. It does not
-        # resolve dependencies, build packages, or need an available registry.
+        # --list alone still resolves dependencies to generate Cargo.lock.
+        # Exclude that generated file so even an empty Cargo cache works
+        # offline; all source files still follow Cargo's include/exclude rules.
         result = subprocess.run(
             ["cargo", "package", "--list", "--offline", "--allow-dirty",
-             "--manifest-path", str(source / "Cargo.toml")],
+             "--exclude-lockfile", "--manifest-path", str(source / "Cargo.toml")],
             cwd=root, check=True, text=True, encoding="utf-8", stdout=subprocess.PIPE)
         files = set(result.stdout.splitlines())
+        # Normal release packaging includes this generated file, so links to
+        # it are valid. Actual archive validation checks that it is present.
+        files.add("Cargo.lock")
         links = audit_document_links(directory, files,
                                      lambda name: (source / name).read_text(encoding="utf-8"))
         print(f"PASS: {directory}: {links} package-local documentation links", flush=True)
