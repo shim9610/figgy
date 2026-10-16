@@ -58,6 +58,59 @@ Initial fit previews can be approximate; completion denotes the final render,
 not merely that all input primitives have been submitted. The host owns and
 retains the replayable source for the operations it enables.
 
+## Direct SSOT edits and convenience helpers
+
+`Config` is the single source of truth (SSOT). For precise control, start from
+the current config and change only the fields you intend to change. Direct
+edits do not run range fitting, choose tick spacing or enlarge the title band.
+For example, change an axis's `min` and `max` to pan or zoom while preserving
+its `major_spacing`, `minor_count` and label format. Update both axes of a pair
+only when they should share the new range; they remain independent fields.
+
+`Chart` convenience helpers perform the related adjustments documented by each
+method. They are useful for automatic setup and fitting, and are not all simple
+field setters:
+
+| Operation | Config changes |
+| --- | --- |
+| `config_mut()` / `with_axis_range_change(...)` / `with_decoration_change(...)` | Only the fields the caller writes; these accessors also mark the relevant derived resources dirty. |
+| `set_x_range(...)` / `set_y_range(...)` | Set both axes in the pair and choose major spacing, minor count, label format and precision from the bottom/left axis's scale. Linear axes retain an existing timestamp format. |
+| `auto_fit_x*` / `auto_fit_y*` / `auto_fit_colorbar*` | Derive a range from data or supplied extents with padding, then apply the associated tick and label adjustments. |
+| `with_title(...)` | Replace the title text and grow its band when the measured text is taller than the current band. The band never shrinks. |
+| `with_x_title(...)` / `with_y_title(...)` | Replace the bottom/left axis title text; these helpers do not fit margins. |
+
+To change only the X range while keeping the current tick settings:
+
+```rust
+use renderer::{Chart, default::default_config};
+
+let mut chart = Chart::new(default_config());
+let ticks = chart.config().bottom_x.major_spacing;
+chart.with_axis_range_change(|cfg| {
+    for axis in [&mut cfg.bottom_x, &mut cfg.top_x] {
+        axis.min = 20.0;
+        axis.max = 80.0;
+    }
+});
+assert_eq!(chart.config().bottom_x.major_spacing, ticks);
+```
+
+Use `with_axis_range_change` for range/scale edits, `with_decoration_change` for
+decoration edits, or `config_mut` for general edits. For a title change that must
+keep the exact margin, assign `cfg.chart_title.text.segments` inside a decoration
+edit instead of calling `with_title`. Renderer-owned charts require submitting
+the edited config through `Renderer::set_chart_config`; changing a detached
+copy does not update the registered chart.
+
+Keeping tick settings does not keep ticks at the same screen coordinates or
+guarantee the same number of visible labels: those depend on the new range and
+available space. Raster safety limits can still substitute unusable tick settings
+without rewriting the config; read `ChartView::render_warnings()` after refresh.
+Calendar-based timestamp ticks follow their own layout policy. Direct injection
+also remains subject to config validation. After any edit, refresh the derived
+view as described below. Neither editing the SSOT nor using a helper redraws a
+caller-owned `ChartView` by itself.
+
 ## Native edit, pick and export workflow
 
 1. Create one `RendererDevice` from the host's matching wgpu device/queue handles.
@@ -301,10 +354,9 @@ not rename Rust items. Bounded chart modules are already part of the public sour
 release. Version 0.16.0 / model 0.10.0 added plot-area decoration state and targets:
 fully specified `DecorationLayout` literals need `data_area: None`, and exhaustive
 `DecorationId` matches need `DataArea` and `DataAreaEdge`. See the interaction guide
-for migration details. Version 0.17.0 / model 0.11.0 added `AxisOptions.range_locked`
-and `RichText.align`; both are additive in JSON (serde default), but fully specified
-`AxisOptions` literals need `range_locked: false` and `RichText` literals need
-`align: TextAlign::Left`.
+for migration details. Version 0.17.0 / model 0.11.0 added `RichText.align`;
+JSON without it parses as `Left`, but fully specified `RichText` literals need
+`align: TextAlign::Left`. `AxisOptions` has no new required field in this release.
 Packaging work does not change those contracts. Public
 low-level modules remain available; they must not be removed silently during packaging.
 

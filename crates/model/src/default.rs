@@ -114,7 +114,6 @@ pub fn default_axis_options_x() -> AxisOptions {
         line_style: LineStylePreset::Solid,
         major_tick_length: 5.0,
         minor_tick_length: 3.0,
-        range_locked: false,
     }
 }
 
@@ -139,7 +138,6 @@ pub fn default_axis_options_y() -> AxisOptions {
         line_style: LineStylePreset::Solid,
         major_tick_length: 5.0,
         minor_tick_length: 3.0,
-        range_locked: false,
     }
 }
 
@@ -174,7 +172,6 @@ pub fn default_axis_options_colorbar() -> AxisOptions {
         line_style: LineStylePreset::Solid,
         major_tick_length: 5.0,
         minor_tick_length: 3.0,
-        range_locked: false,
     }
 }
 

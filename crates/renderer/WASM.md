@@ -403,6 +403,34 @@ color_cycle_css(ColorCycle.Vivid);  // → ["rgb(0 32 240 / 1)", …] 호스트 
 
 ### 3.8 설정과 시리즈를 JSON으로 읽고 쓰기
 
+Use SSOT injection for selective control: read the current config, edit only
+the fields you want to change, and submit the complete config with `set_config`.
+For example, this changes the X range while retaining both axes' tick spacing,
+minor count, label format and other settings:
+
+```js
+const rangeConfig = JSON.parse(chart.get_config());
+for (const axis of [rangeConfig.bottom_x, rangeConfig.top_x]) {
+  axis.min = 20;
+  axis.max = 80;
+}
+chart.set_config(JSON.stringify(rangeConfig));
+// The next frame uses the new range; request a frame through your host loop.
+```
+
+Use `auto_fit_x`, `auto_fit_y`, `auto_fit_all` or `auto_fit_colorbar` when you
+want the helper to derive bounds and their associated tick/label settings.
+`set_title` also grows the title band when needed; directly edit
+`chart_title.text` when its existing margin must stay fixed. `set_x_title` and
+`set_y_title` change only their axis-title text. Helpers adjust the fields
+specified by their contracts; they do not imply a general layout optimizer.
+For the native equivalents, see [direct SSOT edits and convenience helpers](API.md#direct-ssot-edits-and-convenience-helpers).
+
+Direct injection still uses normal validation and rendering safety limits.
+Preserving tick settings preserves their data-space meaning, not their screen
+positions or the number of visible labels. `set_config` also cancels pending
+auto-fit work tied to the replaced config; request another fit only when wanted.
+
 `Config`와 `Vec<SeriesConfig>`는 GPU 핸들이 없는 데이터 구조다. `model`의 `serde` 기능을 켜면 전체를 JSON으로 직렬화할 수 있다. 이 기능은 기본적으로 꺼져 있어 불필요한 의존성을 추가하지 않는다. 웹 래퍼의 `get_config` / `set_config` / `get_series` / `set_series`로 설정을 읽고 수정할 수 있다.
 
 ```js
@@ -600,7 +628,7 @@ const png = await chart.export_png(2);
 
 자동 맞춤은 현재 데이터로 범위를 계산하는 동작이다. 데이터와 여백이 같으면 처음 맞춘 범위로 돌아가지만, 데이터가 바뀌었다면 새 데이터에 맞춘다. `padding`은 유한한 0 이상의 수이며, `0`은 여백 없음, `0.05`는 5% 여백이다. 범위 계산과 통계 재사용은 렌더러가 담당한다.
 
-현재 `Config`의 축 `min`·`max`는 숫자다. 기본값만 보고 새 차트인지, 사용자가 그 범위를 선택했는지 구분할 수 없으므로 생성·불러오기 흐름에서 자동 맞춤 여부를 정한다. 이 구분을 위해 `null`이나 생략한 범위를 전달하지 않는다. `Option<AxisRange>`나 `RangePolicy`는 현재 API에 없다. 호스트가 범위를 직접 정했다는 사실을 문서에 남기려면 축의 `range_locked` 표시를 쓴다. 렌더러는 이 값을 저장·직렬화만 하며, 생성·불러오기 흐름에서 이 값을 읽고 자동 맞춤 여부를 정하는 것은 호스트다.
+현재 `Config`의 축 `min`·`max`는 숫자다. 기본값만 보고 새 차트인지, 사용자가 그 범위를 선택했는지 구분할 수 없으므로 생성·불러오기 흐름에서 자동 맞춤 여부를 정한다. 이 구분을 위해 `null`이나 생략한 범위를 전달하지 않는다. `Option<AxisRange>`나 `RangePolicy`는 현재 API에 없다.
 
 **웹 래퍼(`<figgy-chart>`)**에서는 위 예제처럼 `render_chart()`로 원본 공급자를 연결한 직후, 같은 동기 호출 구간에서 `auto_fit_all()`을 호출한다. `await job.done` 뒤에 요청하면 첫 렌더링이 기존 범위로 진행된다. 반대로 `readRange` 공급자를 연결하기 전에 맞춤을 요청하면 재공급할 원본을 찾지 못할 수 있다. 두 Promise를 함께 기다리고, 취소·대체된 작업의 결과를 현재 차트에 반영하지 않는다.
 

@@ -4957,6 +4957,9 @@ mod web {
 
         // ---- titles ----
 
+        /// Set plain title text and grow its band if needed. For a text-only
+        /// edit that keeps the exact margin, use `get_config` / `set_config`
+        /// and change only `chart_title.text`.
         pub fn set_title(&mut self, text: &str) -> Result<(), JsValue> {
             let mut config = self.chart_config().clone();
             set_plain_chart_title(&mut config, text);
@@ -5060,6 +5063,11 @@ mod web {
         /// Replace the whole option SSoT from JSON. Marks everything dirty —
         /// the next `frame()` re-rasters the chrome and refreshes the
         /// transform, exactly like any other config edit.
+        /// Use `get_config`, edit only the desired fields, then submit the
+        /// complete config here for selective control. For example, writing
+        /// only axis `min` / `max` preserves tick and label settings, whereas
+        /// the auto-fit helpers derive those settings along with the range.
+        /// This call does not auto-fit ranges or fit the title band.
         /// JS: `chart.set_config(JSON.stringify(cfg));`
         pub fn set_config(&mut self, json: &str) -> Result<(), JsValue> {
             let new_cfg: renderer::Config = serde_json::from_str(json).map_err(js_err)?;

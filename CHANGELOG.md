@@ -11,9 +11,9 @@ at the time. The first crates.io publication is recorded below.
 
 ## Release — renderer 0.17.0 / model 0.11.0 / figgy 0.14.0
 
-New 0.x minor versions: `AxisOptions.range_locked` and `RichText.align` are new
-public fields, so fully specified struct literals need the migrations noted
-below. JSON without either field still parses. The WASM integration example
+New 0.x minor versions: `RichText.align` is a new public field, so fully
+specified `RichText` literals need the migration noted below. JSON without
+`align` still parses. The WASM integration example
 advances to 0.14.0 with the renderer dependency. This entry does not itself
 publish a registry crate.
 
@@ -41,11 +41,10 @@ publish a registry crate.
   taller than the band (exactly the titles that were clipped); every title
   that already fit renders as before. The band is never shrunk. A
   `top_margin` injected directly through the SSOT is kept as given.
-- `AxisOptions.range_locked` is a host-owned marker that an axis range was
-  fixed by the user or host. The renderer stores and serializes it but never
-  reads or writes it: auto-fit still runs only when the host requests it and
-  fits every axis. JSON without the field reads `false`. Migration: fully
-  specified `AxisOptions` literals need `range_locked: false`.
+- The API guide distinguishes direct SSOT edits from convenience helpers.
+  Editing only axis `min` / `max` preserves tick settings; `set_*_range` and
+  `auto_fit_*` also choose ticks and label formatting. Title helpers document
+  whether they fit the title band or change only text.
 - `draw_style_supports(style, render_type)` reports whether a draw style draws
   every primitive of a render type, from the same selection prepare uses.
   Sketch and Milkyway draw line, scatter and errorbar series and skip bars,

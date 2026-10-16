@@ -34,6 +34,13 @@ wrapper remains a separate consumer and is excluded from Rust registry publishin
 See [Rust API contracts](API.md) for ownership, frame lifetimes,
 render targets and compatibility policy.
 
+For selective edits, change only the desired fields in the current `Config`
+(the SSOT). For example, write axis `min` / `max` through
+`Chart::with_axis_range_change` to preserve tick settings. Convenience helpers
+such as `set_x_range`, `auto_fit_*` and `with_title` also adjust related ticks,
+labels or title layout. See the [operation table and range-only example](API.md#direct-ssot-edits-and-convenience-helpers)
+before choosing an edit path.
+
 ### Adding the dependency
 
 ```toml
