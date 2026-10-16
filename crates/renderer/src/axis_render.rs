@@ -3317,6 +3317,23 @@ mod tests {
         cfg
     }
 
+    /// `colorbar_config` on the given scale: the linear bar as is, or a log
+    /// bar over five decades. Bands are even in screen space on either scale,
+    /// so the strip's pixels must not depend on it.
+    fn colorbar_config_on(side: Side, scale: &AxisScale) -> Config {
+        let mut cfg = colorbar_config(side);
+        if *scale == AxisScale::Logarithmic {
+            let axis = &mut cfg.colorbar.as_mut().expect("colourbar").axis;
+            axis.scale = AxisScale::Logarithmic;
+            axis.min = 1.0e-2;
+            axis.max = 1.0e3;
+            axis.major_spacing = 1.0;
+        }
+        cfg
+    }
+
+    const BAR_SCALES: [AxisScale; 2] = [AxisScale::Linear, AxisScale::Logarithmic];
+
     fn strip_rect(cfg: &Config) -> RectF {
         let da = cfg.data_area().expect("data area");
         colorbar_rect(
@@ -3464,24 +3481,32 @@ mod tests {
     /// of half a pixel) both produce that phase.
     #[test]
     fn a_strip_at_any_sub_pixel_phase_is_opaque_and_monotonic() {
-        for side in [Side::Right, Side::Top] {
-            for (length_frac, half_pixel_offset) in
-                [(0.75, false), (0.6137, false), (0.9, true), (1.0, true)]
-            {
-                let mut cfg = colorbar_config(side.clone());
-                let bar = cfg.colorbar.as_mut().expect("colourbar");
-                bar.length_frac = length_frac;
-                bar.colormap = crate::colormap::ColorMap::GrayScale;
-                if half_pixel_offset {
-                    bar.offset_x = 0.5;
-                    bar.offset_y = 0.5;
-                }
-                let mut previous = 0u8;
-                for (i, p) in strip_centre_line(&cfg).into_iter().enumerate() {
-                    let what = format!("{side:?} frac {length_frac} offset {half_pixel_offset} px {i}");
-                    assert_eq!(p[3], 255, "{what}: translucent {p:?}");
-                    assert!(p[0] >= previous, "{what}: gray falls {previous} -> {}", p[0]);
-                    previous = p[0];
+        for scale in &BAR_SCALES {
+            for side in [Side::Right, Side::Top] {
+                for (length_frac, half_pixel_offset) in
+                    [(0.75, false), (0.6137, false), (0.9, true), (1.0, true)]
+                {
+                    let mut cfg = colorbar_config_on(side.clone(), scale);
+                    let bar = cfg.colorbar.as_mut().expect("colourbar");
+                    bar.length_frac = length_frac;
+                    bar.colormap = crate::colormap::ColorMap::GrayScale;
+                    if half_pixel_offset {
+                        bar.offset_x = 0.5;
+                        bar.offset_y = 0.5;
+                    }
+                    let mut previous = 0u8;
+                    for (i, p) in strip_centre_line(&cfg).into_iter().enumerate() {
+                        let what = format!(
+                            "{scale:?} {side:?} frac {length_frac} offset {half_pixel_offset} px {i}"
+                        );
+                        assert_eq!(p[3], 255, "{what}: translucent {p:?}");
+                        assert!(
+                            p[0] >= previous,
+                            "{what}: gray falls {previous} -> {}",
+                            p[0]
+                        );
+                        previous = p[0];
+                    }
                 }
             }
         }
@@ -3492,25 +3517,34 @@ mod tests {
     /// more opaque than the stop it samples, including at the first band.
     #[test]
     fn a_translucent_ramp_keeps_its_alpha_in_the_strip() {
-        for side in [Side::Right, Side::Top] {
-            let mut cfg = colorbar_config(side.clone());
-            let bar = cfg.colorbar.as_mut().expect("colourbar");
-            bar.length_frac = 0.75;
-            bar.offset_x = 0.5;
-            bar.offset_y = 0.5;
-            bar.colormap = crate::colormap::ColorMap::Custom {
-                stops: vec![Color::new(0.0, 0.0, 0.0, 0.5), Color::new(1.0, 1.0, 1.0, 0.5)],
-            };
-            let mut previous = 0u8;
-            for (i, p) in strip_centre_line(&cfg).into_iter().enumerate() {
-                assert!(
-                    (p[3] as i32 - 128).abs() <= 1,
-                    "{side:?} px {i}: alpha {} is not the stop's 128",
-                    p[3]
-                );
-                // Premultiplied at a constant alpha, the gray still rises.
-                assert!(p[0] >= previous, "{side:?} px {i}: gray falls {previous} -> {}", p[0]);
-                previous = p[0];
+        for scale in &BAR_SCALES {
+            for side in [Side::Right, Side::Top] {
+                let mut cfg = colorbar_config_on(side.clone(), scale);
+                let bar = cfg.colorbar.as_mut().expect("colourbar");
+                bar.length_frac = 0.75;
+                bar.offset_x = 0.5;
+                bar.offset_y = 0.5;
+                bar.colormap = crate::colormap::ColorMap::Custom {
+                    stops: vec![
+                        Color::new(0.0, 0.0, 0.0, 0.5),
+                        Color::new(1.0, 1.0, 1.0, 0.5),
+                    ],
+                };
+                let mut previous = 0u8;
+                for (i, p) in strip_centre_line(&cfg).into_iter().enumerate() {
+                    assert!(
+                        (p[3] as i32 - 128).abs() <= 1,
+                        "{scale:?} {side:?} px {i}: alpha {} is not the stop's 128",
+                        p[3]
+                    );
+                    // Premultiplied at a constant alpha, the gray still rises.
+                    assert!(
+                        p[0] >= previous,
+                        "{scale:?} {side:?} px {i}: gray falls {previous} -> {}",
+                        p[0]
+                    );
+                    previous = p[0];
+                }
             }
         }
     }
@@ -3520,21 +3554,30 @@ mod tests {
     /// the same for every band rather than heavier where bands overlap.
     #[test]
     fn a_strip_side_edge_has_one_coverage_along_its_length() {
-        let mut cfg = colorbar_config(Side::Right);
-        let bar = cfg.colorbar.as_mut().expect("colourbar");
-        bar.length_frac = 0.75;
-        bar.offset_x = 0.5;
-        bar.colormap = crate::colormap::ColorMap::GrayScale;
-        let rect = strip_rect(&cfg);
-        assert_ne!(rect.x.fract(), 0.0, "the probe needs a fractional side edge");
-        let rgba = raster(&cfg);
-        let column = rect.x.floor();
-        let rows = (rect.y.ceil() as u32 + 1)..((rect.y + rect.height).floor() as u32 - 1);
-        let alphas: Vec<u8> = rows
-            .map(|y| pixel_at(&rgba, column + 0.5, y as f32 + 0.5)[3])
-            .collect();
-        let (min, max) = (alphas.iter().min().unwrap(), alphas.iter().max().unwrap());
-        assert!(max - min <= 1, "side-edge coverage varies along the strip: {min}..{max}");
+        for scale in &BAR_SCALES {
+            let mut cfg = colorbar_config_on(Side::Right, scale);
+            let bar = cfg.colorbar.as_mut().expect("colourbar");
+            bar.length_frac = 0.75;
+            bar.offset_x = 0.5;
+            bar.colormap = crate::colormap::ColorMap::GrayScale;
+            let rect = strip_rect(&cfg);
+            assert_ne!(
+                rect.x.fract(),
+                0.0,
+                "{scale:?}: the probe needs a fractional side edge"
+            );
+            let rgba = raster(&cfg);
+            let column = rect.x.floor();
+            let rows = (rect.y.ceil() as u32 + 1)..((rect.y + rect.height).floor() as u32 - 1);
+            let alphas: Vec<u8> = rows
+                .map(|y| pixel_at(&rgba, column + 0.5, y as f32 + 0.5)[3])
+                .collect();
+            let (min, max) = (alphas.iter().min().unwrap(), alphas.iter().max().unwrap());
+            assert!(
+                max - min <= 1,
+                "{scale:?}: side-edge coverage varies along the strip: {min}..{max}"
+            );
+        }
     }
 
     /// The §B.5 pin: the colour drawn where a value's tick lands is the colour
