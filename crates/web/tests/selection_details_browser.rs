@@ -124,7 +124,8 @@ async fn histogram_selection_reads_live_gpu_bins_and_steps_in_both_orientations(
         assert_eq!(selected["bin_end"], origin + 1.5);
         assert_eq!(selected["value"], 1.25);
         assert_eq!(selected["orientation"], orientation);
-        assert_eq!(selected["identity"]["HistogramBin"]["bin_index"], 1);
+        assert_eq!(selected["identity"]["kind"], "histogram_bin");
+        assert_eq!(selected["identity"]["bin_index"], 1);
         assert!(chart.step_selection(bin_move.0, bin_move.1).unwrap());
         assert_eq!(details(&chart).await["index"], 2);
         assert!(!chart.step_selection(bin_move.0, bin_move.1).unwrap());
@@ -136,7 +137,7 @@ async fn histogram_selection_reads_live_gpu_bins_and_steps_in_both_orientations(
         assert_eq!(selected["bin_end"], 4.0);
         assert_eq!(selected["value"], 3.5);
         assert_eq!(
-            selected["identity"]["HistogramBin"]["source_id"],
+            selected["identity"]["source_id"],
             format!("source-short-{id}")
         );
     }
