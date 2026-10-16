@@ -142,11 +142,8 @@ pub(super) fn layout(
     } else {
         24.0
     };
-    let top = if c.title.is_empty() {
-        32.0
-    } else {
-        fs * 1.5 + 42.0
-    };
+    let title = crate::bounded_title::TitleLayout::new(c.resolved_title(), scale, false);
+    let top = title.top;
     let axis_title = if horizontal {
         &c.value_title
     } else {
@@ -212,7 +209,7 @@ pub(super) fn layout(
             zero: Some(axis(0.0)),
             ticks: &ticks,
             categories: &c.categories,
-            title: &c.title,
+            title: &title,
             value_title: &c.value_title,
             category_title: &c.category_title,
             font_family: &c.font_family,
@@ -439,4 +436,111 @@ pub(super) fn layout(
         out.annotations.extend(front.into_rgba());
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::*;
+    use model::{Color, DecorationId};
+    fn bounds(map: &DecorationMap, title: bool) -> Option<crate::layout::RectF> {
+        map.entries()
+            .find(|(_, e)| {
+                if title {
+                    e.id == DecorationId::ChartTitle
+                } else {
+                    matches!(e.id, DecorationId::AxisLabel(crate::layout::Side::Bottom))
+                }
+            })
+            .and_then(|(id, _)| map.bounds(id))
+    }
+    fn crop(bytes: &[u8], r: crate::layout::RectF, scale: f32) -> Vec<u8> {
+        let width = (800. * scale) as usize;
+        let height = (520. * scale) as usize;
+        let front = &bytes[bytes.len() - width * height * 4..];
+        let x0 = (r.x * scale).floor().max(0.) as usize;
+        let x1 = ((r.x + r.width) * scale).ceil().min(width as f32) as usize;
+        let y0 = (r.y * scale).floor().max(0.) as usize;
+        let y1 = ((r.y + r.height) * scale).ceil().min(height as f32) as usize;
+        (y0..y1)
+            .flat_map(|y| {
+                front[(y * width + x0) * 4..(y * width + x1) * 4]
+                    .iter()
+                    .copied()
+            })
+            .collect()
+    }
+    #[test]
+    fn title_and_label_styles_render_independently() {
+        let mut c = CategoricalChart {
+            categories: vec![Category::new("a", "A"), Category::new("b", "B")],
+            series: vec![BarSeries::new(
+                "s",
+                "Series",
+                vec![Some(30.), Some(70.)],
+                Color::BLACK,
+            )],
+            ..Default::default()
+        };
+        c.title = "Independent title".into();
+        for scale in [1., 2.] {
+            let legacy = layout(&c, (800, 520), scale, true).unwrap();
+            c.normalize_title();
+            let original = layout(&c, (800, 520), scale, true).unwrap();
+            assert_eq!(
+                legacy.annotations, original.annotations,
+                "normalization must preserve appearance"
+            );
+            let tb = bounds(&original.decorations, true).unwrap();
+            let lb = bounds(&original.decorations, false).unwrap();
+            let title_ink = crop(&original.annotations, tb, scale);
+            assert!(title_ink.chunks_exact(4).any(|p| p[3] != 0));
+            let saved = c.clone();
+            c.font_size *= 1.25;
+            c.text_color = Color::new(0.8, 0.1, 0.1, 1.);
+            let labels = layout(&c, (800, 520), scale, true).unwrap();
+            assert_eq!(bounds(&labels.decorations, true), Some(tb));
+            assert_eq!(
+                crop(&labels.annotations, tb, scale),
+                title_ink,
+                "label edits changed title pixels"
+            );
+            assert!(bounds(&labels.decorations, false).unwrap().height > lb.height);
+            c = saved.clone();
+            c.chart_title.as_mut().unwrap().text.font_size += 6.;
+            let sized = layout(&c, (800, 520), scale, true).unwrap();
+            assert!(bounds(&sized.decorations, true).unwrap().height > tb.height);
+            let label = bounds(&sized.decorations, false).unwrap();
+            assert!(
+                (label.height - lb.height).abs() < 0.01 && (label.width - lb.width).abs() < 0.01,
+                "title edit resized label glyphs"
+            );
+            c = saved.clone();
+            c.chart_title.as_mut().unwrap().text.color = Color::new(0.1, 0.7, 0.1, 1.);
+            let colored = layout(&c, (800, 520), scale, true).unwrap();
+            assert_ne!(crop(&colored.annotations, tb, scale), title_ink);
+            assert_eq!(
+                crop(&colored.annotations, lb, scale),
+                crop(&original.annotations, lb, scale),
+                "title color changed label pixels"
+            );
+            c = saved.clone();
+            c.chart_title.as_mut().unwrap().text.segments[0].bold = true;
+            c.chart_title.as_mut().unwrap().text.segments[1].superscript = true;
+            let rich = layout(&c, (800, 520), scale, true).unwrap();
+            assert_ne!(
+                crop(&rich.annotations, tb, scale),
+                title_ink,
+                "rich text is actually painted"
+            );
+            c.chart_title.as_mut().unwrap().visible = false;
+            assert!(
+                bounds(
+                    &layout(&c, (800, 520), scale, true).unwrap().decorations,
+                    true
+                )
+                .is_none()
+            );
+            c = saved;
+        }
+    }
 }

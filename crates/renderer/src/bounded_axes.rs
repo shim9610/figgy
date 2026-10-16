@@ -11,7 +11,7 @@ pub(crate) struct BoundedAxisDecorations<'a> {
     pub zero: Option<f32>,
     pub ticks: &'a [(f32, String)],
     pub categories: &'a [Category],
-    pub title: &'a str,
+    pub title: &'a crate::bounded_title::TitleLayout,
     pub value_title: &'a str,
     pub category_title: &'a str,
     pub font_family: &'a str,
@@ -59,22 +59,7 @@ pub(crate) fn draw_bounded_decorations(
         )
         .width
     };
-    if !p.title.is_empty() {
-        let tw = measure(p.title, fs * 1.5);
-        if tw > w - 32. {
-            return Err("title does not fit");
-        }
-        d.text(
-            DecorationId::ChartTitle,
-            front,
-            p.font_family,
-            p.title,
-            (w - tw) * 0.5,
-            fs * 1.5 + 12.,
-            fs * 1.5,
-            p.color,
-        );
-    }
+    p.title.draw(d, front, w)?;
     for (t, label) in p.ticks {
         let (x, y, side) = if p.horizontal {
             let x = left + t * (right - left);

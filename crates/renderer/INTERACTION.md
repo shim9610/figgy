@@ -166,3 +166,39 @@ SSOT 변경 후 새 프레임을 그린다. 초기 표시는 `first_frame_ready(
 
 작동하는 네이티브 연결 예제는 `radial_editor`, `categorical_editor`, `boxplot_editor`다.
 제목·범례·라벨을 클릭해 선택하고 드래그하며, `Reset position`으로 되돌릴 수 있다.
+
+## Independent bounded chart titles
+
+`RadialChart`, `CategoricalChart` and `BoxPlotChart` accept an optional
+`chart_title: BoundedTitleOptions { visible, text: RichText }`. When present it
+is authoritative. The legacy plain `title` is a fallback only. Call
+`normalize_title()` once when loading an old document into an editor: it copies
+its title, family, color and former `font_size * 1.5` size into the independent
+rich document. Later label size/color/family edits do not alter that document.
+Native code can set `chart_title` directly; the old plain API remains available.
+
+The existing `DecorationId::ChartTitle` and `decorations.offsets` remain the only
+position authority. Do not add a second host-side title offset or HTML overlay.
+Renderer layout, annotation cache keys, hit/selection bounds and PNG export use
+the same rich text metrics, including per-segment styles and output scale.
+Hidden titles are not registered in the hit map. Automatic plot space accounts
+for title metrics; incompatible explicit data areas fail preparation atomically.
+
+Title font sizes are 6–160 logical pixels, with at most 512 characters and eight
+lines. The label font fields still control axis/category/data/legend text as
+specified by each bounded family. They no longer control an explicit title.
+CPU layout tests change label and title styles independently and inspect actual
+annotation pixels and glyph bounds at 1× and 2× output scale.
+
+
+Multi-line titles also support `text.align` (`TextAlign::Left`, `Center`, or
+`Right`) inside the measured text block. `normalize_title()` preserves legacy
+appearance by using `Left`; existing saved rich titles without `align` also
+read as `Left`. Explicit Rust chart literals need `chart_title: None` (or use
+`..Default::default()`). This restores a previously unmerged Git-only API; it
+is not present in the published 0.17.0 archive.
+
+Run `cargo run --locked -p figgy-renderer --example bounded_titles` for a complete
+native PNG example covering all three families, multiline alignment and a
+subscript. See [the example source](examples/bounded_titles.rs). Hosts still
+own editor widgets, Undo and file storage; no HTML overlay is required.
