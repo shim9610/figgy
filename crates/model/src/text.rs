@@ -47,6 +47,7 @@ pub enum TextAlign {
 
 impl TextAlign {
     /// `true` for the default, `Left`. Used to keep it out of serialized JSON.
+    #[cfg(feature = "serde")]
     fn is_left(&self) -> bool {
         *self == TextAlign::Left
     }
