@@ -23,6 +23,20 @@ at the time. The first crates.io publication is recorded below.
   bounded frame and label raster caches exclude both from their keys, so
   editing them reuses the cached frame. See the interaction guide and
   configuration reference.
+- The registry's revisions now follow a single exhaustive classification of
+  `Config` fields instead of refreshing the axis raster on every config
+  replacement. `set_chart_config` and `set_chart_state` leave every revision
+  unchanged for an identical config, bump `desired` and `config` for any
+  change, bump `raster` only for chrome fields (`raster_config_equal`: chart
+  area, axes, title, grid, legend, colourbar, draw style, plus any series
+  change), `view` for data geometry (`stream_config_equal`) and `selection`
+  for `picked_*`. The SSOT invalidation matrix asserts those revisions and the
+  pixel oracle for every `Config` field, now including `chart_area.x` / `y`,
+  `label_font`, `significant_digits`, the Milkyway and Constellation styles
+  and every colourbar field, behind an exhaustive destructuring guard so a new
+  field cannot land unclassified. Hosts that relied on an identical
+  `set_chart_config` call to force a raster refresh should edit the chart or
+  refresh the view directly.
 - Rust migration: exhaustive chart struct literals need `active_layer` and
   `annotations` (or `..Default::default()`); exhaustive matches on
   `DecorationId` need the two new arms. This public field addition is released
