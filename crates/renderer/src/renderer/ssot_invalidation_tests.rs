@@ -223,9 +223,19 @@ fn edits() -> Vec<Edit> {
         });
     }
     edit!(draw_style, DrawStyle::Sketch(Default::default()), Replay);
-    edit!(draw_style, DrawStyle::Milkyway(Default::default()), Replay);
-    // The stream pass rejects arc-driven stars outright, so the constellation
-    // style is a resident-only case here.
+    // The stream pass rejects Milkyway line series outright (arc-driven star
+    // chains, `validate_stream_series`), and draws no primitive at all for a
+    // Line series in the constellation style (`constellation_supports`), so
+    // neither style has a stream first frame to compare: resident-only cases.
+    cases.push(Edit {
+        name: "draw_style (Milkyway)",
+        apply: |c| c.draw_style = DrawStyle::Milkyway(Default::default()),
+        work: Work::Replay,
+        differs: true,
+        raster: true,
+        pixels: Pixels::Changed,
+        streams: false,
+    });
     cases.push(Edit {
         name: "draw_style (Constellation)",
         apply: |c| c.draw_style = DrawStyle::Constellation(Default::default()),
