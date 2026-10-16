@@ -72,8 +72,9 @@ fn chart() -> CategoricalChart {
 async fn categorical_materials_cache_edits_and_async_png_work_on_webgpu() {
     let (_instance, gpu) = gpu().await;
     scope(gpu.device());
-    let mut renderer =
-        CategoricalRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut renderer = CategoricalRenderer::new_async(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)
+        .await
+        .unwrap();
     let mut chart = chart();
     let target = CategoryBarTarget::new("a", "one");
     let first = renderer.prepare(&chart, (640, 440), 1.).unwrap();
@@ -145,7 +146,9 @@ async fn categorical_fractional_stack_edges_and_512_entries_work_on_webgpu() {
     let (_instance, gpu) = gpu().await;
     scope(gpu.device());
     let mut renderer =
-        CategoricalRenderer::new(gpu.clone(), wgpu::TextureFormat::Bgra8UnormSrgb).unwrap();
+        CategoricalRenderer::new_async(gpu.clone(), wgpu::TextureFormat::Bgra8UnormSrgb)
+            .await
+            .unwrap();
     let mut c = chart();
     c.mode = CategoryBarMode::Stacked;
     c.labels = CategoryBarLabels::None;
@@ -223,7 +226,9 @@ async fn categorical_fractional_stack_edges_and_512_entries_work_on_webgpu() {
 async fn radial_paper_material_and_hover_render_on_webgpu() {
     let (_instance, gpu) = gpu().await;
     scope(gpu.device());
-    let mut renderer = RadialRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut renderer = RadialRenderer::new_async(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)
+        .await
+        .unwrap();
     let mut c = RadialChart {
         slices: vec![
             RadialSlice::new("A", 40., Color::from_rgb8(50, 140, 220)),

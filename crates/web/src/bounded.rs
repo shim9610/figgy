@@ -211,21 +211,27 @@ enum DocumentFrame {
     BoxPlot(Arc<BoxPlotFrame>),
 }
 impl DocumentRenderer {
-    pub fn new(
+    pub async fn new_async(
         gpu: RendererDevice,
         chart: &DocumentChart,
         format: wgpu::TextureFormat,
     ) -> Result<Self, JsValue> {
         Ok(match chart {
-            DocumentChart::Radial(_) => {
-                Self::Radial(RadialRenderer::new(gpu, format).map_err(js_err)?)
-            }
-            DocumentChart::Categorical(_) => {
-                Self::Categorical(CategoricalRenderer::new(gpu, format).map_err(js_err)?)
-            }
-            DocumentChart::BoxPlot(_) => {
-                Self::BoxPlot(BoxPlotRenderer::new(gpu, format).map_err(js_err)?)
-            }
+            DocumentChart::Radial(_) => Self::Radial(
+                RadialRenderer::new_async(gpu, format)
+                    .await
+                    .map_err(js_err)?,
+            ),
+            DocumentChart::Categorical(_) => Self::Categorical(
+                CategoricalRenderer::new_async(gpu, format)
+                    .await
+                    .map_err(js_err)?,
+            ),
+            DocumentChart::BoxPlot(_) => Self::BoxPlot(
+                BoxPlotRenderer::new_async(gpu, format)
+                    .await
+                    .map_err(js_err)?,
+            ),
         })
     }
     pub fn prepare(
@@ -363,7 +369,7 @@ impl FiggyBoundedChart {
         )
         .map_err(js_err)?;
         let gpu = RendererDevice::new(Arc::new(device), Arc::new(queue));
-        let mut renderer = DocumentRenderer::new(gpu.clone(), &chart, config.format)?;
+        let mut renderer = DocumentRenderer::new_async(gpu.clone(), &chart, config.format).await?;
         let frame = renderer.prepare(&chart, (width, height), 1.)?;
         Ok(Self {
             surface,
@@ -445,6 +451,16 @@ impl FiggyBoundedChart {
         self.renderer.end_frame();
         Ok(())
     }
+    /// Submit one frame and wait for actual GPU completion. Hosts must await
+    /// this before publishing Ready; rejected completion (including device
+    /// loss) is returned to the caller instead of reporting an unusable chart.
+    pub async fn first_frame_ready(&mut self) -> Result<(), JsValue> {
+        self.frame()?;
+        renderer::init::wait_browser_submitted_work(self.gpu.queue())
+            .await
+            .map_err(js_err)
+    }
+
     pub async fn export_png(&mut self, scale: f32) -> Result<js_sys::Uint8Array, JsValue> {
         let image = self.renderer.export(&self.chart, self.size, scale).await?;
         let bytes = renderer::encode_png(&image).map_err(js_err)?;

@@ -38,7 +38,9 @@ async fn all_bounded_decorations_select_drag_rerender_and_export_on_webgpu() {
         .unwrap();
     assert!(device.as_webgpu().is_some());
     let gpu = RendererDevice::new(Arc::new(device), Arc::new(queue));
-    let mut r = RadialRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut r = RadialRenderer::new_async(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)
+        .await
+        .unwrap();
     let mut c = RadialChart {
         title: "Radial".into(),
         kind: RadialKind::Donut { inner_radius: 0.5 },
@@ -63,7 +65,9 @@ async fn all_bounded_decorations_select_drag_rerender_and_export_on_webgpu() {
             .starts_with(b"\x89PNG\r\n\x1a\n")
     );
     r.end_frame();
-    let mut r = CategoricalRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut r = CategoricalRenderer::new_async(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)
+        .await
+        .unwrap();
     let mut c = CategoricalChart {
         title: "Bars".into(),
         categories: vec![Category::new("a", "Control")],
@@ -87,7 +91,9 @@ async fn all_bounded_decorations_select_drag_rerender_and_export_on_webgpu() {
         r.export_rgba_async(&c, (800, 520), 1.).await.unwrap().rgba
     );
     r.end_frame();
-    let mut r = BoxPlotRenderer::new(gpu, wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut r = BoxPlotRenderer::new_async(gpu, wgpu::TextureFormat::Rgba8Unorm)
+        .await
+        .unwrap();
     let mut c = BoxPlotChart {
         title: "Boxes".into(),
         categories: vec![Category::new("a", "Control")],

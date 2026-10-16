@@ -147,6 +147,28 @@ pub struct RadialRenderer {
     cached: Option<(RadialChart, (u32, u32), f32, u64, Arc<RadialFrame>)>,
 }
 impl RadialRenderer {
+    /// Initialize browser pipelines through WebGPU's asynchronous compiler.
+    /// Uses the checked production pipeline descriptors before publishing the
+    /// wgpu-owned pipeline. Native hosts use the ordinary synchronous constructor.
+    pub async fn new_async(
+        gpu: RendererDevice,
+        format: wgpu::TextureFormat,
+    ) -> Result<Self, RadialError> {
+        #[cfg(target_arch = "wasm32")]
+        crate::browser_compile::render(
+            gpu.device(),
+            include_str!("radial.wgsl"),
+            &[("radial surfaces", "radial surfaces")],
+            format,
+            1,
+            None,
+            &mut |_| {},
+        )
+        .await
+        .map_err(RadialError::Gpu)?;
+        Self::new(gpu, format)
+    }
+
     /// Share the host device/queue. Supports RGBA8/BGRA8, linear or sRGB targets.
     /// Starts with a separate 256 MiB resource budget, not the Cartesian ledger.
     pub fn new(gpu: RendererDevice, format: wgpu::TextureFormat) -> Result<Self, RadialError> {
