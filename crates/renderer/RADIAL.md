@@ -74,7 +74,9 @@ RGBA8/BGRA8 포맷, `frame.size()` 크기, sample count 1이어야 한다. 가�
 장치의 텍스처 크기 한도를 넘을 수 없다. `draw`는 viewport와 scissor를 타깃 전체로 설정한다.
 UI의 일부 영역에 넣으려면 이 크기의 별도 텍스처에 그린 뒤 호스트가 배치한다.
 
-WASM은 같은 `prepare`/`draw`를 쓰고, 출력에는 `export_rgba_async(...).await`를 사용한다.
+WASM 생성에는 `RadialRenderer::new_async(gpu, format).await`를 사용해 브라우저
+파이프라인 컴파일을 기다린다. 이후 같은 `prepare`/`draw`를 쓰고, 출력에는
+`export_rgba_async(...).await`를 사용한다.
 동기 `export_rgba`는 네이티브 전용이다. PNG 인코딩은 기존 `encode_png`를 사용한다.
 
 ## 값과 분할 원
@@ -182,8 +184,9 @@ WASM은 같은 `prepare`/`draw`를 쓰고, 출력에는 `export_rgba_async(...).
 내부 라벨의 자동 대비 색이 달라질 수 있는 변경은 라벨을 갱신한다. 이미 받은 프레임은 바뀌지 않으므로 준비 중인 화면과
 새 화면의 상태가 섞이지 않는다. 유효하지 않은 입력이나 예산 초과도 기존 프레임을 덮어쓰지 않는다.
 
-라벨은 기존 글꼴 등록과 fallback 경로를 사용한다. 네이티브는 시스템 글꼴을 찾을 수 있지만,
-브라우저에서 한글을 표시하려면 기존 `register_font_bytes`로 한글 글꼴을 등록해야 한다.
+라벨은 기존 글꼴 등록과 대체 경로를 사용한다. 지정한 글꼴에 없는 글자는 글자마다 등록 글꼴,
+내장 Liberation Sans, 설치된 시스템 글꼴(네이티브 전용) 순으로 찾아 그린다. 브라우저에서는
+시스템 글꼴을 찾지 않으므로 한글을 표시하려면 기존 `register_font_bytes`로 한글 글꼴을 등록해야 한다.
 
 
 ## SSOT 편집과 선택
@@ -321,7 +324,8 @@ JSON의 누락 필드 호환과 Rust 소스 호환은 다르다. 이전 `RadialS
 기존 값의 복사본을 사용한다. 새 재질을 추가했으므로 재질 enum을 빠짐없이 분기하는 호스트도
 분기를 갱신해야 한다.
 
-Publication status: this API is included in `figgy-renderer` 0.16.1 on crates.io.
+Publication history: the radial API was included in `figgy-renderer` 0.16.1 on
+crates.io. This guide describes the current source; `new_async` requires 0.17.0.
 Studio integration is a separate host task.
 
 ## 네이티브 편집 예제

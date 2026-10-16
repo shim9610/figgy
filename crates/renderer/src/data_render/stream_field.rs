@@ -58,41 +58,47 @@ impl Pipelines {
             return Err(StreamError::InvalidLimits);
         }
         let render = |entry| {
-            crate::gpu_compile::render_pipeline(&device, &wgpu::RenderPipelineDescriptor {
-                label: Some(entry),
-                layout: None,
-                vertex: wgpu::VertexState {
-                    module: shader,
-                    entry_point: Some("vs_main"),
-                    compilation_options: Default::default(),
-                    buffers: &[],
+            crate::gpu_compile::render_pipeline(
+                &device,
+                &wgpu::RenderPipelineDescriptor {
+                    label: Some(entry),
+                    layout: None,
+                    vertex: wgpu::VertexState {
+                        module: shader,
+                        entry_point: Some("vs_main"),
+                        compilation_options: Default::default(),
+                        buffers: &[],
+                    },
+                    primitive: Default::default(),
+                    depth_stencil: None,
+                    multisample: super::multisample_state(samples),
+                    fragment: Some(wgpu::FragmentState {
+                        module: shader,
+                        entry_point: Some(entry),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                    }),
+                    multiview_mask: None,
+                    cache: None,
                 },
-                primitive: Default::default(),
-                depth_stencil: None,
-                multisample: super::multisample_state(samples),
-                fragment: Some(wgpu::FragmentState {
+            )
+        };
+        let compute = |entry| {
+            crate::gpu_compile::compute_pipeline(
+                &device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some(entry),
+                    layout: None,
                     module: shader,
                     entry_point: Some(entry),
                     compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-        let compute = |entry| {
-            crate::gpu_compile::compute_pipeline(&device, &wgpu::ComputePipelineDescriptor {
-                label: Some(entry),
-                layout: None,
-                module: shader,
-                entry_point: Some(entry),
-                compilation_options: Default::default(),
-                cache: None,
-            })
+                    cache: None,
+                },
+            )
         };
         Ok(Self {
             init: compute("cs_stream_field_init"),
@@ -354,21 +360,71 @@ pub(crate) struct PickTile {
 }
 
 impl PickTile {
-    pub(crate) fn new(device: &wgpu::Device, resources: Arc<Resources>, budget: Budget, max_pairs: u32,
-        query: crate::gpu_data_pick::GpuStreamFieldQuery) -> Result<Self, StreamError> {
-        let tile = Tile::new(device, Arc::clone(&resources), budget, TileShape { width: 1, height: 1, samples: 1 },
-            [0.0, 0.0, 1.0, 1.0], [0, 0, 1, 1], [0, 0, 1, 1], max_pairs)?;
+    pub(crate) fn new(
+        device: &wgpu::Device,
+        resources: Arc<Resources>,
+        budget: Budget,
+        max_pairs: u32,
+        query: crate::gpu_data_pick::GpuStreamFieldQuery,
+    ) -> Result<Self, StreamError> {
+        let tile = Tile::new(
+            device,
+            Arc::clone(&resources),
+            budget,
+            TileShape {
+                width: 1,
+                height: 1,
+                samples: 1,
+            },
+            [0.0, 0.0, 1.0, 1.0],
+            [0, 0, 1, 1],
+            [0, 0, 1, 1],
+            max_pairs,
+        )?;
         let pipelines = &resources.pipelines;
-        let init_query = bind(device, &pipelines.pick_init.get_bind_group_layout(1), &[(1, &query.query)]);
-        let init_field = bind(device, &pipelines.pick_init.get_bind_group_layout(2), &[(4, &resources._buffers[2])]);
-        let init_state = bind(device, &pipelines.pick_init.get_bind_group_layout(3), &[(0, &tile.gpu.state)]);
-        let final_query = bind(device, &pipelines.pick_final.get_bind_group_layout(1), &[(1, &query.query), (3, &query.candidate)]);
-        let final_state = bind(device, &pipelines.pick_final.get_bind_group_layout(3), &[(0, &tile.gpu.state)]);
-        Ok(Self { tile, init_query, init_field, init_state, final_query, final_state, _query: Arc::new(query) })
+        let init_query = bind(
+            device,
+            &pipelines.pick_init.get_bind_group_layout(1),
+            &[(1, &query.query)],
+        );
+        let init_field = bind(
+            device,
+            &pipelines.pick_init.get_bind_group_layout(2),
+            &[(4, &resources._buffers[2])],
+        );
+        let init_state = bind(
+            device,
+            &pipelines.pick_init.get_bind_group_layout(3),
+            &[(0, &tile.gpu.state)],
+        );
+        let final_query = bind(
+            device,
+            &pipelines.pick_final.get_bind_group_layout(1),
+            &[(1, &query.query), (3, &query.candidate)],
+        );
+        let final_state = bind(
+            device,
+            &pipelines.pick_final.get_bind_group_layout(3),
+            &[(0, &tile.gpu.state)],
+        );
+        Ok(Self {
+            tile,
+            init_query,
+            init_field,
+            init_state,
+            final_query,
+            final_state,
+            _query: Arc::new(query),
+        })
     }
 
-    pub(crate) fn initialize(&mut self, encoder: &mut wgpu::CommandEncoder) -> Result<RecordedStep, StreamError> {
-        if self.tile.action()? != Action::Initialize { return Err(StreamError::WrongState); }
+    pub(crate) fn initialize(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> Result<RecordedStep, StreamError> {
+        if self.tile.action()? != Action::Initialize {
+            return Err(StreamError::WrongState);
+        }
         {
             let mut pass = encoder.begin_compute_pass(&Default::default());
             pass.set_pipeline(&self.tile.gpu.resources.pipelines.pick_init);
@@ -383,16 +439,41 @@ impl PickTile {
         Ok(step)
     }
 
-    pub(crate) fn action(&self) -> Result<Action, StreamError> { self.tile.action() }
-    pub(crate) fn commit(&mut self, step: RecordedStep) -> Result<(), StreamError> { self.tile.commit(step) }
-    pub(crate) fn discard(&mut self, step: RecordedStep) -> Result<(), StreamError> { self.tile.discard(step) }
+    pub(crate) fn action(&self) -> Result<Action, StreamError> {
+        self.tile.action()
+    }
+    pub(crate) fn commit(&mut self, step: RecordedStep) -> Result<(), StreamError> {
+        self.tile.commit(step)
+    }
+    pub(crate) fn discard(&mut self, step: RecordedStep) -> Result<(), StreamError> {
+        self.tile.discard(step)
+    }
 
-    pub(crate) fn record_source(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, budget: Budget,
-        request: SourceRequest, work: &wgpu::Buffer, base: u32, charge: SharedCharge) -> Result<(RecordedStep, bool), StreamError> {
-        if !matches!(request.role, SourceRole::Axis(_)) { return Err(StreamError::WrongState); }
-        let mut step = self.tile.record_source(device, encoder, budget, request, work, base, charge)?;
+    pub(crate) fn record_source(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        budget: Budget,
+        request: SourceRequest,
+        work: &wgpu::Buffer,
+        base: u32,
+        charge: SharedCharge,
+    ) -> Result<(RecordedStep, bool), StreamError> {
+        if !matches!(request.role, SourceRole::Axis(_)) {
+            return Err(StreamError::WrongState);
+        }
+        let mut step = self
+            .tile
+            .record_source(device, encoder, budget, request, work, base, charge)?;
         step._pick_query = Some(Arc::clone(&self._query));
-        let complete = matches!(self.tile.following_action(), Action::Source(SourceRequest { role: SourceRole::ZColumn(0), start: 0, .. }));
+        let complete = matches!(
+            self.tile.following_action(),
+            Action::Source(SourceRequest {
+                role: SourceRole::ZColumn(0),
+                start: 0,
+                ..
+            })
+        );
         if complete {
             let mut pass = encoder.begin_compute_pass(&Default::default());
             pass.set_pipeline(&self.tile.gpu.resources.pipelines.pick_final);
@@ -671,7 +752,11 @@ impl Tile {
 
     pub(crate) fn commit(&mut self, step: RecordedStep) -> Result<(), StreamError> {
         self.validate_step(&step)?;
-        self.action = if step.completes_tile { Action::Complete } else { self.following_action() };
+        self.action = if step.completes_tile {
+            Action::Complete
+        } else {
+            self.following_action()
+        };
         self.pending = false;
         Ok(())
     }
@@ -959,10 +1044,13 @@ mod tests {
     #[test]
     fn production_helper_matches_bounded_proof_fixtures() {
         let (device, queue) = gpu();
-        let shader = crate::gpu_compile::shader_module(&device, wgpu::ShaderModuleDescriptor {
-            label: None,
-            source: wgpu::ShaderSource::Wgsl(include_str!("field_columnar.wgsl").into()),
-        });
+        let shader = crate::gpu_compile::shader_module(
+            &device,
+            wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(include_str!("field_columnar.wgsl").into()),
+            },
+        );
         let budget = Budget {
             max_renderer_bytes: 128 * 1024,
             pool_bytes: 0,
@@ -1212,10 +1300,13 @@ mod tests {
     #[test]
     fn tile_budget_and_recorded_ownership_fail_closed() {
         let (device, queue) = gpu();
-        let shader = crate::gpu_compile::shader_module(&device, wgpu::ShaderModuleDescriptor {
-            label: None,
-            source: wgpu::ShaderSource::Wgsl(include_str!("field_columnar.wgsl").into()),
-        });
+        let shader = crate::gpu_compile::shader_module(
+            &device,
+            wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(include_str!("field_columnar.wgsl").into()),
+            },
+        );
         let ledger = Arc::new(GpuLedger::new());
         let budget = Budget {
             max_renderer_bytes: 64 * 1024,

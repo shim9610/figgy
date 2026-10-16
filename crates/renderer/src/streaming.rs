@@ -210,26 +210,52 @@ impl StreamScheduler {
     }
 
     pub(crate) fn active_jobs(&self) -> usize {
-        self.active.iter().enumerate().filter(|(index, job)| {
-            !self.active[..*index].iter().any(|prior| prior.chart_key == job.chart_key)
-        }).count()
+        self.active
+            .iter()
+            .enumerate()
+            .filter(|(index, job)| {
+                !self.active[..*index]
+                    .iter()
+                    .any(|prior| prior.chart_key == job.chart_key)
+            })
+            .count()
     }
 
     /// One independent replay per live chart; all slots and bytes remain shared.
-    pub(crate) fn start_auxiliary(&mut self, chart_key: u64, source: SourceStamp, view: ViewEpoch) -> Result<JobId, StreamError> {
-        if self.job_for_chart(chart_key).is_none() || self.active.iter().any(|job| job.chart_key == chart_key && job.auxiliary) {
+    pub(crate) fn start_auxiliary(
+        &mut self,
+        chart_key: u64,
+        source: SourceStamp,
+        view: ViewEpoch,
+    ) -> Result<JobId, StreamError> {
+        if self.job_for_chart(chart_key).is_none()
+            || self
+                .active
+                .iter()
+                .any(|job| job.chart_key == chart_key && job.auxiliary)
+        {
             return Err(StreamError::TooManyJobs);
         }
         let next = self.next_job.checked_add(1).ok_or(StreamError::Overflow)?;
-        self.active.try_reserve(1).map_err(|_| StreamError::AllocationFailed)?;
+        self.active
+            .try_reserve(1)
+            .map_err(|_| StreamError::AllocationFailed)?;
         let id = JobId(next);
-        self.active.push(ActiveJob { chart_key, auxiliary: true, id, source, view });
+        self.active.push(ActiveJob {
+            chart_key,
+            auxiliary: true,
+            id,
+            source,
+            view,
+        });
         self.next_job = next;
         Ok(id)
     }
 
     pub(crate) fn contains_job(&self, chart_key: u64, id: JobId) -> bool {
-        self.active.iter().any(|job| job.chart_key == chart_key && job.id == id)
+        self.active
+            .iter()
+            .any(|job| job.chart_key == chart_key && job.id == id)
     }
 
     pub(crate) fn cancel_chart(&mut self, chart_key: u64) {
@@ -251,8 +277,12 @@ impl StreamScheduler {
     }
 
     pub(crate) fn job_usage(&self, sequence: u64) -> (usize, u64) {
-        self.slots.iter().filter(|slot| slot.ticket.job.0 == sequence)
-            .fold((0, 0), |(count, bytes), slot| (count + 1, bytes + slot.charged_bytes))
+        self.slots
+            .iter()
+            .filter(|slot| slot.ticket.job.0 == sequence)
+            .fold((0, 0), |(count, bytes), slot| {
+                (count + 1, bytes + slot.charged_bytes)
+            })
     }
 
     pub(crate) fn limits(&self) -> StreamLimits {
@@ -532,20 +562,47 @@ mod tests {
 
     #[test]
     fn auxiliary_jobs_share_admission_without_replacing_display_or_escaping_chart_bound() {
-        let mut s = StreamScheduler::new(1, StreamLimits { max_jobs: 1, max_slots: 1,
-            max_columns_per_request: 4, max_chunk_bytes: 64, max_in_flight_bytes: 64 }).unwrap();
+        let mut s = StreamScheduler::new(
+            1,
+            StreamLimits {
+                max_jobs: 1,
+                max_slots: 1,
+                max_columns_per_request: 4,
+                max_chunk_bytes: 64,
+                max_in_flight_bytes: 64,
+            },
+        )
+        .unwrap();
         let display = s.start_job(1, SourceStamp(1), ViewEpoch(1)).unwrap();
         let aux = s.start_auxiliary(1, SourceStamp(1), ViewEpoch(1)).unwrap();
         assert_eq!(s.job_for_chart(1), Some(display));
         assert_eq!(s.active_jobs(), 1);
-        assert_eq!(s.start_auxiliary(1, SourceStamp(1), ViewEpoch(1)), Err(StreamError::TooManyJobs));
-        let range = ColumnRange { column: 0, revision: 1, source_len: 1, offset: 0, len: 1, encoding: SourceEncoding::ScalarF32 };
-        let RequestStatus::Ready(pending) = s.request(aux, &[range]).unwrap() else { panic!() };
-        assert_eq!(s.request(display, &[range]).unwrap(), RequestStatus::Backpressure);
+        assert_eq!(
+            s.start_auxiliary(1, SourceStamp(1), ViewEpoch(1)),
+            Err(StreamError::TooManyJobs)
+        );
+        let range = ColumnRange {
+            column: 0,
+            revision: 1,
+            source_len: 1,
+            offset: 0,
+            len: 1,
+            encoding: SourceEncoding::ScalarF32,
+        };
+        let RequestStatus::Ready(pending) = s.request(aux, &[range]).unwrap() else {
+            panic!()
+        };
+        assert_eq!(
+            s.request(display, &[range]).unwrap(),
+            RequestStatus::Backpressure
+        );
         s.cancel_chart(1);
         assert!(s.is_requested(pending));
         assert_eq!(s.active_jobs(), 1);
-        assert_eq!(s.start_job(2, SourceStamp(1), ViewEpoch(1)), Err(StreamError::TooManyJobs));
+        assert_eq!(
+            s.start_job(2, SourceStamp(1), ViewEpoch(1)),
+            Err(StreamError::TooManyJobs)
+        );
         let replacement = s.start_job(1, SourceStamp(2), ViewEpoch(2)).unwrap();
         assert!(s.contains_job(1, aux));
         s.cancel(aux);

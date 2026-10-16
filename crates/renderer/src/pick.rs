@@ -489,6 +489,9 @@ fn project_data_to_canvas_px(
     x: f32,
     y: f32,
 ) -> Option<(f32, f32)> {
+    if (transform.scale_log[0] != 0.0 && x <= 0.0) || (transform.scale_log[1] != 0.0 && y <= 0.0) {
+        return None;
+    }
     let axis_t = |value: f32, axis: usize| {
         let min_hi = transform.data_min[axis];
         let max_hi = transform.data_max[axis];
@@ -559,7 +562,10 @@ mod tests {
             line_segment_pick([50.0, 53.0], [10.0, 50.0], [90.0, 50.0], 1.0, 0),
             Some((4.0, 0))
         );
-        assert_eq!(line_segment_pick([1.0, 1.0], [0.0, 0.0], [0.0, 0.0], 0.0, 0), None);
+        assert_eq!(
+            line_segment_pick([1.0, 1.0], [0.0, 0.0], [0.0, 0.0], 0.0, 0),
+            None
+        );
     }
 
     struct Columns(HashMap<ColumnId, Vec<f32>>);

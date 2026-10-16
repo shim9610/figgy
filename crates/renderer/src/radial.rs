@@ -147,6 +147,28 @@ pub struct RadialRenderer {
     cached: Option<(RadialChart, (u32, u32), f32, u64, Arc<RadialFrame>)>,
 }
 impl RadialRenderer {
+    /// Initialize browser pipelines through WebGPU's asynchronous compiler.
+    /// Uses the checked production pipeline descriptors before publishing the
+    /// wgpu-owned pipeline. Native hosts use the ordinary synchronous constructor.
+    pub async fn new_async(
+        gpu: RendererDevice,
+        format: wgpu::TextureFormat,
+    ) -> Result<Self, RadialError> {
+        #[cfg(target_arch = "wasm32")]
+        crate::browser_compile::render(
+            gpu.device(),
+            include_str!("radial.wgsl"),
+            &[("radial surfaces", "radial surfaces")],
+            format,
+            1,
+            None,
+            &mut |_| {},
+        )
+        .await
+        .map_err(RadialError::Gpu)?;
+        Self::new(gpu, format)
+    }
+
     /// Share the host device/queue. Supports RGBA8/BGRA8, linear or sRGB targets.
     /// Starts with a separate 256 MiB resource budget, not the Cartesian ledger.
     pub fn new(gpu: RendererDevice, format: wgpu::TextureFormat) -> Result<Self, RadialError> {
@@ -626,11 +648,19 @@ impl RadialRenderer {
 // ordinary data selection do not invalidate the rasterized label texture.
 // Edited/selected inside labels are rasterized at their current lifted position.
 fn raster_moves_inside_labels(chart: &RadialChart) -> bool {
-    let has_inside = chart.slices.iter()
+    let has_inside = chart
+        .slices
+        .iter()
         .chain(chart.split.iter().flat_map(|s| s.children.iter()))
         .any(|s| s.value > 0.0 && s.labels.unwrap_or(chart.labels) == RadialLabels::Inside);
-    has_inside && (matches!(chart.decorations.selected, Some(model::DecorationId::RadialLabel(_)))
-        || chart.decorations.offsets.iter()
+    has_inside
+        && (matches!(
+            chart.decorations.selected,
+            Some(model::DecorationId::RadialLabel(_))
+        ) || chart
+            .decorations
+            .offsets
+            .iter()
             .any(|o| matches!(o.element, model::DecorationId::RadialLabel(_))))
 }
 

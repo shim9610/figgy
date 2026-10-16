@@ -25,14 +25,28 @@ a public issue. Do not upload credentials or confidential datasets.
 
 Clone this repository and use its pinned Rust 1.99.0 toolchain. Rustup installs the
 toolchain and `wasm32-unknown-unknown` target from `rust-toolchain.toml`. Python 3.12
-or newer is needed for the package checks.
+or newer is needed for the package checks. Before installing the hook below,
+check `git config --get core.hooksPath` and existing `.git/hooks`. Preserve any
+custom hooks and chain this guard instead of replacing their configuration.
 
 ```sh
 git clone https://github.com/shim9610/figgy.git
 cd figgy
+git config --local core.hooksPath .githooks
 cargo check --locked --workspace --all-targets
 cargo test --locked -p figgy-model --all-features
 ```
+
+The tracked pre-push hook checks the exact commits being pushed, including a
+branch other than the current checkout. It checks links against Cargo's actual
+package file lists offline, without building or uploading. A repository-relative
+link to a sibling crate can work on GitHub but break after registry extraction;
+use a public source URL for those links. Run `python3 -B ci/package_docs.py` to
+check uncommitted documentation before committing.
+
+Hook installation is local to each clone. A custom hook must forward Git's
+original stdin to `.githooks/pre-push` when chaining it. CI runs the same package-link
+guard early even when a local hook is bypassed.
 
 The model tests do not require a GPU. Renderer tests need a working graphics
 adapter and driver; software adapters are valid test environments when identified
@@ -42,7 +56,9 @@ as such. Run the regression relevant to your change, for example:
 cargo test --locked -p figgy-renderer --test bounded_interaction -- --test-threads=1
 ```
 
-For the same build/documentation and extracted-package checks used in CI:
+Format with `cargo fmt --all` before committing; CI rejects unformatted code.
+For the same formatting, build/documentation and extracted-package checks used
+in CI:
 
 ```sh
 python3 ci/verify.py static

@@ -106,6 +106,7 @@ mod legend_update_tests {
     use super::*;
     use crate::data_config::DataLineStyleConfig;
     use crate::line::LineStylePreset;
+    use crate::text::TextAlign;
 
     fn line_cfg(color: Color, line_style: LineStylePreset) -> SeriesConfig {
         SeriesConfig {
@@ -130,6 +131,7 @@ mod legend_update_tests {
             color: Color::BLACK,
             font_size: 14.0,
             font: String::new(),
+            align: TextAlign::Left,
         }
     }
 
@@ -516,6 +518,7 @@ mod tests {
     use super::*;
     use crate::data_config::DataLineStyleConfig;
     use crate::line::LineStylePreset;
+    use crate::text::TextAlign;
 
     fn line_cfg(color: Color) -> SeriesConfig {
         line_cfg_style(color, LineStylePreset::Solid)
@@ -544,6 +547,7 @@ mod tests {
             color: Color::BLACK,
             font_size: 14.0,
             font: String::new(),
+            align: TextAlign::Left,
         }
     }
 
@@ -786,6 +790,7 @@ mod tests {
             color: Color::BLACK,
             font_size: 12.0,
             font: String::new(),
+            align: TextAlign::Left,
         };
         for cfg in &series {
             append_legend_entry(&mut content, series_symbol_segments(cfg), "label");

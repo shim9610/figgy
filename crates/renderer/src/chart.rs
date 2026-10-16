@@ -1,6 +1,12 @@
 //! User-facing `Chart` — wraps a `Config` with rescale / auto_fit helpers.
 //!
 //! `Config` is the SSoT for chart options (axes, labels, margins, colors).
+//! Edit only the desired config fields for precise control. For example,
+//! changing axis `min` / `max` directly preserves its tick and label settings.
+//! Convenience helpers may derive related settings: `set_x_range` chooses
+//! ticks and label formatting as well as bounds, and `with_title` can grow
+//! the title band. Each helper documents the fields it adjusts.
+//!
 //! `Chart` adds one-line conveniences (`set_x_range`, `auto_fit_x`, …) plus
 //! dirty-flag tracking: `data_dirty` (GPU transform only) and `raster_dirty`
 //! (CPU axis raster) are set automatically based on the kind of `Config`
@@ -12,6 +18,7 @@ use crate::data_render::ColumnPool;
 use crate::error::{FiggyError, Result};
 use crate::format::LabelFormat;
 use crate::text::{RichText, rich_segments_from_text};
+use crate::text_render::CpuTextMeasure;
 
 /// Apply min/max and scale-appropriate tick settings to one axis.
 pub(crate) fn apply_axis_range(
@@ -348,6 +355,8 @@ impl Chart {
     /// General mutable access. Sets both dirty flags because the caller may
     /// touch anything. Prefer `with_axis_range_change` / `with_decoration_change`
     /// when the kind of change is known.
+    /// Only the caller's assignments change the config: this accessor does
+    /// not fit ranges, choose ticks or fit the title band.
     pub fn config_mut(&mut self) -> &mut Config {
         self.data_dirty = true;
         self.raster_dirty = true;
@@ -356,6 +365,10 @@ impl Chart {
 
     /// Mutate where only axis range / scale changes. Raster is invalidated
     /// because tick labels need to be repositioned within the same chart_area.
+    /// Change only `min` / `max` here to preserve tick spacing, minor count
+    /// and label formatting. Unlike [`Self::set_x_range`] / [`Self::set_y_range`],
+    /// this accessor performs no coupled config adjustments. Change both axes
+    /// of a pair explicitly when they should share the new range.
     pub fn with_axis_range_change<F: FnOnce(&mut Config)>(&mut self, f: F) {
         f(&mut self.config);
         self.data_dirty = true;
@@ -363,6 +376,9 @@ impl Chart {
     }
 
     /// Decoration-only change (titles, colors, margins, …): raster only.
+    /// Only the fields written by the closure change. In particular, assigning
+    /// title segments here keeps `top_margin`; [`Self::with_title`] also fits
+    /// that band. The caller still refreshes the view before preparing.
     pub fn with_decoration_change<F: FnOnce(&mut Config)>(&mut self, f: F) {
         f(&mut self.config);
         self.raster_dirty = true;
@@ -398,11 +414,31 @@ impl Chart {
     // Text builders (raster only).
 
     /// Set the chart title text as plain segments. For styled segments
-    /// (bold, italic, …) edit `config_mut().chart_title.text` directly.
+    /// (bold, italic, …) edit `config_mut().chart_title.text` directly; a host
+    /// that wants the same band fit then calls
+    /// [`crate::layout::fit_chart_title_margin`] with
+    /// [`CpuTextMeasure::for_style`].
+    ///
+    /// As a helper it also derives the coupled title band: when the new text
+    /// is taller than `top_margin` (a multi-line title, `'\n'`), the band
+    /// grows so the first line is not clipped at the top of the chart. A
+    /// title that fits leaves the band unchanged.
     pub fn with_title(mut self, text: &str) -> Self {
         fill_plain_segments(&mut self.config.chart_title.text, text);
+        self.fit_chart_title_margin();
         self.raster_dirty = true;
         self
+    }
+
+    /// Grow `chart_title.top_margin` when the title, measured with the font
+    /// this chart's draw style renders, is taller than its band
+    /// ([`crate::layout::fit_chart_title_margin`]). Returns whether the band
+    /// changed, which marks the raster dirty.
+    fn fit_chart_title_margin(&mut self) -> bool {
+        let measure = CpuTextMeasure::for_style(&self.config.draw_style);
+        let changed = crate::layout::fit_chart_title_margin(&mut self.config, &measure);
+        self.raster_dirty |= changed;
+        changed
     }
 
     /// Set the bottom X axis title text.
@@ -443,11 +479,16 @@ impl Chart {
 
     // Axis-range helpers.
 
-    /// Set both X axes (top + bottom) at once.
+    /// Set both X ranges (top + bottom) and derive their tick/label settings.
+    ///
+    /// This is a convenience helper for automatic setup. To keep the current
+    /// ticks and formatting, write only `min` / `max` through
+    /// [`Self::with_axis_range_change`] instead.
     ///
     /// Branches on the bottom axis's scale:
     /// - **Linear**: `major_spacing = nice_spacing(max - min)` (1·2·5 sequence),
-    ///   `minor_count = 4`, `format = Decimal`, `sig_digits = 3`.
+    ///   `minor_count = 4`, `format = Decimal` (an existing timestamp format
+    ///   is retained), `sig_digits = 3`.
     /// - **Logarithmic**: `major_spacing = log_decade_step(min, max)`
     ///   (1 / 2 / N decades), `minor_count = 8` (2..9 within each decade),
     ///   `format = Power` (10ⁿ superscript), `sig_digits = 1`.
@@ -459,7 +500,10 @@ impl Chart {
         });
     }
 
-    /// Set both Y axes (left + right). Log/linear branching mirrors X.
+    /// Set both Y ranges (left + right) and derive their tick/label settings.
+    /// Log/linear branching uses the left axis's scale and mirrors
+    /// [`Self::set_x_range`]. To preserve ticks and formatting, write only
+    /// `min` / `max` through [`Self::with_axis_range_change`] instead.
     pub fn set_y_range(&mut self, min: f64, max: f64) {
         let log = matches!(self.config.left_y.scale, AxisScale::Logarithmic);
         self.with_axis_range_change(|c| {
@@ -502,6 +546,9 @@ impl Chart {
     /// web exact-series reducer, call this directly. No-op on a degenerate
     /// extent (non-finite or zero span) and on a log axis with no positive
     /// bound to anchor to.
+    /// A successful fit calls [`Self::set_x_range`], so it also chooses ticks
+    /// and label formatting for both X axes. For range-only edits, write the
+    /// chosen bounds through [`Self::with_axis_range_change`] instead.
     pub fn auto_fit_x_extent(&mut self, ext: &FitExtent, padding_ratio: f64) {
         let Some((min, max)) = fitted_axis_range(&self.config.bottom_x, ext, padding_ratio) else {
             return;
@@ -520,6 +567,8 @@ impl Chart {
 
     /// Fit the chart's z axis to a prepared extent. The colourbar owns the
     /// z scale, so a chart without one is intentionally left unchanged.
+    /// A successful fit also chooses colourbar ticks and label formatting.
+    /// To preserve them, directly edit only `colorbar.axis.min` / `max`.
     pub fn auto_fit_colorbar_extent(&mut self, ext: &FitExtent, padding_ratio: f64) {
         let Some(axis) = self.config.colorbar.as_ref().map(|bar| &bar.axis) else {
             return;
@@ -640,6 +689,49 @@ mod tests {
     }
 
     #[test]
+    fn direct_range_edits_preserve_custom_ticks_and_other_config() {
+        for scale in [AxisScale::Linear, AxisScale::Logarithmic] {
+            let mut config = dummy_config();
+            for axis in [&mut config.bottom_x, &mut config.top_x] {
+                axis.scale = scale.clone();
+                axis.min = 1.0;
+                axis.max = 1000.0;
+                axis.major_spacing = 3.0;
+                axis.minor_count = 2;
+                axis.label_style.format = LabelFormat::Scientific;
+                axis.label_style.significant_digits = 6;
+            }
+            // The top axis is independently configured, even when sharing bounds.
+            config.top_x.major_spacing = 2.0;
+            let mut expected = config.clone();
+            expected.bottom_x.min = 10.0;
+            expected.bottom_x.max = 100.0;
+            expected.top_x.min = 10.0;
+            expected.top_x.max = 100.0;
+
+            for general_access in [false, true] {
+                let mut chart = Chart::new(config.clone());
+                chart.consume_data_dirty();
+                chart.consume_raster_dirty();
+                let edit = |cfg: &mut Config| {
+                    for axis in [&mut cfg.bottom_x, &mut cfg.top_x] {
+                        axis.min = 10.0;
+                        axis.max = 100.0;
+                    }
+                };
+                if general_access {
+                    edit(chart.config_mut());
+                } else {
+                    chart.with_axis_range_change(edit);
+                }
+                assert_eq!(chart.config(), &expected);
+                assert!(chart.data_dirty());
+                assert!(chart.raster_dirty());
+            }
+        }
+    }
+
+    #[test]
     fn linear_range_preserves_timestamp_label_format() {
         let mut c = Chart::new(dummy_config());
         c.config_mut().bottom_x.label_style.format =
@@ -670,6 +762,27 @@ mod tests {
         });
         assert!(!c.data_dirty(), "decoration change must not set data_dirty");
         assert!(c.raster_dirty());
+    }
+
+    // Fitting the title band is a decoration change like any other margin
+    // edit: it marks only the raster dirty, and only when the band moved.
+    #[test]
+    fn fit_chart_title_margin_marks_the_raster_dirty_only_when_it_grows() {
+        let mut c = Chart::new(dummy_config());
+        c.with_decoration_change(|cfg| {
+            cfg.chart_title.text.segments = rich_segments_from_text("one\ntwo\nthree");
+        });
+        c.consume_data_dirty();
+        c.consume_raster_dirty();
+
+        assert!(c.fit_chart_title_margin());
+        assert!(c.config().chart_title.top_margin > 32.0);
+        assert!(c.raster_dirty());
+        assert!(!c.data_dirty());
+
+        c.consume_raster_dirty();
+        assert!(!c.fit_chart_title_margin(), "already fits");
+        assert!(!c.raster_dirty());
     }
 
     #[test]

@@ -14,7 +14,7 @@
 //! device resource limits are reported before wgpu validation can abort.
 
 mod preparation;
-pub use preparation::{PreparationFeature, PipelinePreparation, PreparedPipelines};
+pub use preparation::{PipelinePreparation, PreparationFeature, PreparedPipelines};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -648,7 +648,11 @@ fn stream_config_equal(left: &Config, right: &Config, series: &[SeriesConfig]) -
         && (matches!(left.draw_style, crate::config::DrawStyle::Precise) || left.grid == right.grid)
 }
 
-fn selection_config_revision(current: RenderRevision, before: &Config, after: &Config) -> Result<RenderRevision> {
+fn selection_config_revision(
+    current: RenderRevision,
+    before: &Config,
+    after: &Config,
+) -> Result<RenderRevision> {
     if before.picked_points != after.picked_points || before.picked_data != after.picked_data {
         current.successor("chart selection revision")
     } else {
@@ -1677,7 +1681,9 @@ impl ColumnRemovalPlan {
                 state.revisions.config = update
                     .config_revision
                     .expect("config replacement revision was prepared");
-                state.revisions.selection = update.selection_revision.expect("selection revision was prepared");
+                state.revisions.selection = update
+                    .selection_revision
+                    .expect("selection revision was prepared");
                 if let Some(view) = update.view {
                     state.revisions.view = view;
                 }
@@ -2288,9 +2294,7 @@ impl StreamStatisticsCache {
                 .any(|covered| covered.start <= range.start && covered.end >= range.end)
     }
 
-    fn try_coverage_copy(
-        &self,
-    ) -> std::result::Result<Self, std::collections::TryReserveError> {
+    fn try_coverage_copy(&self) -> std::result::Result<Self, std::collections::TryReserveError> {
         let mut covered = Vec::new();
         covered.try_reserve_exact(self.covered.len())?;
         covered.extend(self.covered.iter().cloned());
@@ -3414,12 +3418,18 @@ async fn create_target_pipelines_observed_async(
     })
     .await;
     #[cfg(target_arch = "wasm32")]
-    data_render::prewarm_browser_render_feature(device, surface_format, sample_count, _minimal.then_some(PreparationFeature::Basic), observer)
-        .await
-        .map_err(|reason| FiggyError::GpuResourceAllocationFailed {
-            resource: "browser render pipeline prewarm",
-            reason,
-        })?;
+    data_render::prewarm_browser_render_feature(
+        device,
+        surface_format,
+        sample_count,
+        _minimal.then_some(PreparationFeature::Basic),
+        observer,
+    )
+    .await
+    .map_err(|reason| FiggyError::GpuResourceAllocationFailed {
+        resource: "browser render pipeline prewarm",
+        reason,
+    })?;
     let axis = observe_value_async(
         observer,
         "renderer",
@@ -3814,7 +3824,9 @@ impl TargetPipelines {
     ) {
         macro_rules! ensure {
             ($field:ident, $stage:literal, $create:expr) => {
-                if self.$field.is_none() && feature.is_none_or(|f| f.includes_field(stringify!($field))) {
+                if self.$field.is_none()
+                    && feature.is_none_or(|f| f.includes_field(stringify!($field)))
+                {
                     self.$field = Some(
                         observe_value_async(observer, "renderer.prewarm", $stage, || $create).await,
                     );
@@ -4006,7 +4018,9 @@ impl TargetPipelines {
                 transform_bgl,
                 style_bgl,
                 field_bgl,
-                label_pipelines.expect("field preparation owns labels").label_gap_bgl(),
+                label_pipelines
+                    .expect("field preparation owns labels")
+                    .label_gap_bgl(),
                 surface_format,
                 self.sample_count,
             )
@@ -4027,12 +4041,9 @@ impl TargetPipelines {
         ensure!(
             contour_label,
             "contour labels",
-            label_pipelines.expect("field preparation owns labels").render_pipeline(
-                device,
-                transform_bgl,
-                surface_format,
-                self.sample_count,
-            )
+            label_pipelines
+                .expect("field preparation owns labels")
+                .render_pipeline(device, transform_bgl, surface_format, self.sample_count,)
         );
 
         for (key, stage) in [
@@ -4040,7 +4051,8 @@ impl TargetPipelines {
             (StyleKey::Milkyway, "milkyway style"),
             (StyleKey::Constellation, "constellation style"),
         ] {
-            if feature.is_some_and(|f| f.style_key() != Some(key)) || self.styled.contains_key(&key) {
+            if feature.is_some_and(|f| f.style_key() != Some(key)) || self.styled.contains_key(&key)
+            {
                 continue;
             }
             let set = observe_value_async(observer, "renderer.prewarm", stage, || {
@@ -4600,7 +4612,8 @@ fn prepare_load_demo_chart_plan(
             .successor("chart desired revision")?;
         if is_target {
             next.config = state.revisions.config.successor("chart config revision")?;
-            next.selection = selection_config_revision(state.revisions.selection, &state.config, &config)?;
+            next.selection =
+                selection_config_revision(state.revisions.selection, &state.config, &config)?;
             next.series = state.revisions.series.successor("chart series revision")?;
             if !data_series_declarations_equal(&state.series, &series)
                 || series_list_references_any_column(&state.series, DEMO_COLUMN_IDS.iter().copied())
@@ -4956,13 +4969,8 @@ fn build_web_derived_snapshot_from_state(
         state,
         data_revision,
     )?;
-    let fit_token = build_fit_token_from_state(
-        pool,
-        streaming_sources,
-        renderer_identity,
-        chart_id,
-        state,
-    )?;
+    let fit_token =
+        build_fit_token_from_state(pool, streaming_sources, renderer_identity, chart_id, state)?;
     let mut series = Vec::new();
     series
         .try_reserve(state.series.len())
@@ -5941,7 +5949,9 @@ impl Renderer {
             // wgpu requires a Send completion callback even for WebGPU, but
             // browser buffer handles must stay on their owning JS thread.
             let (sender, receiver) = futures_channel::oneshot::channel();
-            self.queue.on_submitted_work_done(move || { let _ = sender.send(()); });
+            self.queue.on_submitted_work_done(move || {
+                let _ = sender.send(());
+            });
             wasm_bindgen_futures::spawn_local(async move {
                 if receiver.await.is_ok() {
                     ledger.complete_retirement(batch);
@@ -6466,7 +6476,8 @@ impl Renderer {
         let mut next_revisions = state.revisions;
         next_revisions.desired = desired;
         next_revisions.config = config_revision;
-        next_revisions.selection = selection_config_revision(state.revisions.selection, &state.config, &config)?;
+        next_revisions.selection =
+            selection_config_revision(state.revisions.selection, &state.config, &config)?;
         next_revisions.view = view;
         next_revisions.raster = raster;
 
@@ -6582,7 +6593,8 @@ impl Renderer {
         let mut next_revisions = state.revisions;
         next_revisions.desired = desired;
         next_revisions.config = config_revision;
-        next_revisions.selection = selection_config_revision(state.revisions.selection, &state.config, &config)?;
+        next_revisions.selection =
+            selection_config_revision(state.revisions.selection, &state.config, &config)?;
         next_revisions.series = series_revision;
         next_revisions.data = data;
         next_revisions.view = view;
@@ -6922,7 +6934,8 @@ impl Renderer {
             let config_revision = replace_config
                 .then(|| state.revisions.config.successor("chart config revision"))
                 .transpose()?;
-            let selection_revision = config_override.as_ref()
+            let selection_revision = config_override
+                .as_ref()
                 .filter(|(override_chart, _)| override_chart == chart_id)
                 .map(|(_, config)| {
                     selection_config_revision(state.revisions.selection, &state.config, config)
@@ -7521,12 +7534,11 @@ impl Renderer {
                 reason: "complete statistics already committed for this revision",
             });
         }
-        let next_fit_epoch = self
-            .next_stream_source_fit_epoch
-            .checked_add(1)
-            .ok_or(FiggyError::CounterExhausted {
+        let next_fit_epoch = self.next_stream_source_fit_epoch.checked_add(1).ok_or(
+            FiggyError::CounterExhausted {
                 counter: "stream source fit epoch",
-            })?;
+            },
+        )?;
         let source = self
             .streaming_sources
             .get_mut(id)
@@ -7581,12 +7593,11 @@ impl Renderer {
         let count = u64::try_from(columns.len()).map_err(|_| FiggyError::CounterExhausted {
             counter: "stream source fit epoch",
         })?;
-        let final_fit_epoch = self
-            .next_stream_source_fit_epoch
-            .checked_add(count)
-            .ok_or(FiggyError::CounterExhausted {
+        let final_fit_epoch = self.next_stream_source_fit_epoch.checked_add(count).ok_or(
+            FiggyError::CounterExhausted {
                 counter: "stream source fit epoch",
-            })?;
+            },
+        )?;
         let invalidation =
             self.prepare_columns_invalidation(columns.iter().map(|s| s.id.as_str()))?;
         self.streaming_sources
@@ -7611,9 +7622,11 @@ impl Renderer {
         })?;
         let mut fit_epoch = self.next_stream_source_fit_epoch;
         for mut source in columns {
-            fit_epoch = fit_epoch.checked_add(1).ok_or(FiggyError::CounterExhausted {
-                counter: "stream source fit epoch",
-            })?;
+            fit_epoch = fit_epoch
+                .checked_add(1)
+                .ok_or(FiggyError::CounterExhausted {
+                    counter: "stream source fit epoch",
+                })?;
             if source.len == 0 {
                 source.statistics = crate::StreamStatistics::Known(None);
             }
@@ -8340,7 +8353,7 @@ impl Renderer {
         let count =
             u64::try_from(handoff.columns.len()).map_err(|_| FiggyError::CounterExhausted {
                 counter: "stream source fit epoch",
-        })?;
+            })?;
         let final_fit_epoch = self.next_stream_source_fit_epoch.checked_add(count).ok_or(
             FiggyError::CounterExhausted {
                 counter: "stream source fit epoch",
@@ -8353,8 +8366,8 @@ impl Renderer {
             .chart_states
             .get(&chart)
             .ok_or(FiggyError::UnknownChart { id: chart })?;
-        let final_desired = invalidation
-            .prospective_desired_revision(chart, current.revisions.desired);
+        let final_desired =
+            invalidation.prospective_desired_revision(chart, current.revisions.desired);
         let auto_fit_revisions = if auto_fit_padding.is_some() {
             Some((
                 final_desired.successor("chart desired revision")?,
@@ -8401,10 +8414,10 @@ impl Renderer {
                 .iter()
                 .find_map(|(id, cache)| (id == &source.id).then_some(cache))
                 .ok_or_else(|| FiggyError::StaleStateToken {
-                        reason: format!(
-                            "stream handoff has no statistics for column {:?}",
-                            source.id
-                        ),
+                    reason: format!(
+                        "stream handoff has no statistics for column {:?}",
+                        source.id
+                    ),
                 })?;
             if !cache.covers(0..source.len) {
                 return Err(FiggyError::StaleStateToken {
@@ -8418,9 +8431,9 @@ impl Renderer {
                 cache
                     .try_coverage_copy()
                     .map_err(|error| FiggyError::StateAllocationFailed {
-                    resource: "resident stream handoff statistics",
-                    reason: error.to_string(),
-            })?;
+                        resource: "resident stream handoff statistics",
+                        reason: error.to_string(),
+                    })?;
             fit_epoch = fit_epoch
                 .checked_add(1)
                 .ok_or(FiggyError::CounterExhausted {
@@ -8909,8 +8922,12 @@ impl Renderer {
                                 .get(&chart_id)
                                 .ok_or(FiggyError::UnknownChart { id: chart_id })?;
                             let plan = PickChartPlan::new(&state.config, &state.series)?;
-                            self.picker
-                                .prepare_active_pool_mutation(relayout.pool(), chart_id, plan, &[])?
+                            self.picker.prepare_active_pool_mutation(
+                                relayout.pool(),
+                                chart_id,
+                                plan,
+                                &[],
+                            )?
                         }
                         None => None,
                     }
@@ -9123,15 +9140,20 @@ impl Renderer {
     /// [`Self::begin_preparation`], or call [`Self::prewarm_all`]. Normal frame
     /// preparation can also create missing pipelines lazily.
     pub async fn for_window_minimal_async_observed<'w>(
-        target: impl Into<wgpu::SurfaceTarget<'w>>, size: (u32, u32),
-        pool_capacity_bytes: u64, observer: &mut dyn FnMut(InitEvent),
+        target: impl Into<wgpu::SurfaceTarget<'w>>,
+        size: (u32, u32),
+        pool_capacity_bytes: u64,
+        observer: &mut dyn FnMut(InitEvent),
     ) -> Result<WindowedRenderer<'w>> {
         Self::for_window_prepared_async(target, size, pool_capacity_bytes, true, observer).await
     }
 
     async fn for_window_prepared_async<'w>(
-        target: impl Into<wgpu::SurfaceTarget<'w>>, size: (u32, u32),
-        pool_capacity_bytes: u64, minimal: bool, observer: &mut dyn FnMut(InitEvent),
+        target: impl Into<wgpu::SurfaceTarget<'w>>,
+        size: (u32, u32),
+        pool_capacity_bytes: u64,
+        minimal: bool,
+        observer: &mut dyn FnMut(InitEvent),
     ) -> Result<WindowedRenderer<'w>> {
         let instance = observe_value(observer, "window", "instance", data_render::create_instance);
         let surface = observe_result(observer, "window", "surface", || {
@@ -9414,17 +9436,18 @@ impl Renderer {
             requested: u64::MAX,
             limit: self.memory_budget.unwrap_or(u64::MAX),
         };
-        let mut add_map = |
-            slots: usize,
-            slot_bytes: u64,
-            overrides: usize,
+        let mut add_map = |slots: usize,
+                           slot_bytes: u64,
+                           overrides: usize,
                            override_row_bytes: u64|
          -> Result<()> {
             let slots = u64::try_from(slots).map_err(|_| overflow())?;
             let overrides = u64::try_from(overrides).map_err(|_| overflow())?;
             let style_bytes = slots.max(1).checked_mul(slot_bytes).ok_or_else(overflow)?;
-            let override_bytes = overrides.max(1)
-                .checked_mul(override_row_bytes).ok_or_else(overflow)?;
+            let override_bytes = overrides
+                .max(1)
+                .checked_mul(override_row_bytes)
+                .ok_or_else(overflow)?;
             if style_bytes > max_storage || override_bytes > max_storage {
                 return Err(FiggyError::GpuResourceLimit {
                     resource: "chart style map buffer",
@@ -9432,7 +9455,8 @@ impl Renderer {
                     limit: max_storage,
                 });
             }
-            total = total.checked_add(style_bytes)
+            total = total
+                .checked_add(style_bytes)
                 .and_then(|bytes| bytes.checked_add(override_bytes))
                 .and_then(|bytes| bytes.checked_add(16))
                 .ok_or_else(overflow)?;
@@ -9513,7 +9537,9 @@ impl Renderer {
         tally.add(style_bytes);
         ChartStyle {
             _charge: crate::gpu_memory::shared_charge(
-                tally, &self.gpu_ledger, GpuResourceKind::Uniform,
+                tally,
+                &self.gpu_ledger,
+                GpuResourceKind::Uniform,
             ),
             line_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &line_buf),
             scatter_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &sc_buf),
@@ -9761,6 +9787,7 @@ impl Renderer {
             stream_revision: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             panel_rect,
             grid_space_gen: None,
+            render_warnings: axis_render::tick_warnings(chart.config()),
         })
     }
 
@@ -9879,6 +9906,7 @@ impl Renderer {
             h,
         )?;
         view.panel_rect = panel_rect;
+        view.render_warnings = axis_render::tick_warnings(chart.config());
 
         Ok(())
     }
@@ -10188,13 +10216,19 @@ impl Renderer {
             |error: std::collections::TryReserveError| FiggyError::StateAllocationFailed {
                 resource: "mixed chart prepare inputs",
                 reason: error.to_string(),
-        };
+            };
         let mut resident = Vec::new();
         let mut displays = Vec::new();
         let mut streamed = Vec::new();
-        resident.try_reserve_exact(items.len()).map_err(allocation)?;
-        displays.try_reserve_exact(items.len()).map_err(allocation)?;
-        streamed.try_reserve_exact(items.len()).map_err(allocation)?;
+        resident
+            .try_reserve_exact(items.len())
+            .map_err(allocation)?;
+        displays
+            .try_reserve_exact(items.len())
+            .map_err(allocation)?;
+        streamed
+            .try_reserve_exact(items.len())
+            .map_err(allocation)?;
         self.sync_external_invalidations()?;
         self.service_stream_requests();
         for item in items {
@@ -10222,7 +10256,10 @@ impl Renderer {
             }
         }
         let mut resident_items = std::mem::take(&mut frame.items).into_iter();
-        frame.items.try_reserve_exact(items.len()).map_err(allocation)?;
+        frame
+            .items
+            .try_reserve_exact(items.len())
+            .map_err(allocation)?;
         frame
             .registered_charts
             .try_reserve_exact(items.len() - resident.len())
@@ -11261,11 +11298,31 @@ pub struct ChartView {
     /// uploaded into `grid_texture` (`None` = non-cached content). Lets
     /// `refresh_axis` skip the full-panel texture write on cache hits.
     grid_space_gen: Option<u64>,
+    /// Tick-guard substitutions in the current raster, derived from the chart
+    /// that `create_chart_view` or the last successful `refresh_axis*`
+    /// rasterized.
+    render_warnings: Vec<crate::RenderWarning>,
 }
 
 impl ChartView {
     pub fn panel_rect(&self) -> Rect {
         self.panel_rect
+    }
+
+    /// The tick settings this view's current axis raster drew differently
+    /// from how its chart's config wrote them: an impossible `major_spacing`
+    /// drawn at automatic spacing, a clamped `minor_count`, an adjusted log
+    /// decade step. Empty when every setting is drawn as written.
+    ///
+    /// [`Renderer::create_chart_view`] sets it, and every successful
+    /// [`Renderer::refresh_axis`] / [`Renderer::refresh_axis_with_selection`]
+    /// re-derives it from the chart it rasterized; nothing else changes it.
+    /// A host that refreshes only when its dirty flag or
+    /// [`ChartRenderStamp::needs_raster_since`] says the raster changed reads
+    /// it right after that refresh. Compare with the previous list to report
+    /// changes only; a NaN `requested` never compares equal.
+    pub fn render_warnings(&self) -> &[crate::RenderWarning] {
+        &self.render_warnings
     }
 
     fn advance_content_revision(&self) -> Result<u64> {
@@ -12357,8 +12414,7 @@ impl PrepareContext<'_> {
     fn validate_stream_series(config: &Config, series: &SeriesConfig) -> Result<()> {
         let unsupported = || FiggyError::InvalidSeriesConfig {
             series_id: series.series_id.clone(),
-            reason: "stream pass does not yet support contours or arc-driven stars"
-                .into(),
+            reason: "stream pass does not yet support contours or arc-driven stars".into(),
         };
         let primitives = effective_series_primitives(&config.draw_style, &series.render_type);
         if primitives.contour
@@ -12380,7 +12436,15 @@ impl PrepareContext<'_> {
         columns: &[crate::streaming::ColumnRange],
         phase: streaming_runtime::StreamDrawPhase,
     ) -> Result<PreparedSeries> {
-        self.build_stream_series_with_pipelines(view, config, series, chunk, columns, phase, self.pipelines)
+        self.build_stream_series_with_pipelines(
+            view,
+            config,
+            series,
+            chunk,
+            columns,
+            phase,
+            self.pipelines,
+        )
     }
 
     fn build_stream_arc_series(
@@ -12396,7 +12460,10 @@ impl PrepareContext<'_> {
         pipelines: &TargetPipelines,
     ) -> Result<PreparedSeries> {
         Self::validate_stream_series(config, series.config)?;
-        let specs = [Series { config: series.config, style: series.style }];
+        let specs = [Series {
+            config: series.config,
+            style: series.style,
+        }];
         let mut layers = self.build_series_layers_with_columns(
             view,
             config,
@@ -12420,9 +12487,13 @@ impl PrepareContext<'_> {
             Some(streaming_runtime::StreamDrawPhase::Line),
         )?;
         let mut packet = PreparedSeries::from_layers(
-            layers.remove(0), Some(charge), Some(Arc::clone(&series.style._charge)),
+            layers.remove(0),
+            Some(charge),
+            Some(Arc::clone(&series.style._charge)),
         );
-        if let Some(line) = &mut packet.line { line.arc = Some(arc); }
+        if let Some(line) = &mut packet.line {
+            line.arc = Some(arc);
+        }
         Ok(packet)
     }
 
@@ -12456,10 +12527,12 @@ impl PrepareContext<'_> {
             });
         }
         let expected = streaming_runtime::stream_phase_columns(series.config, phase);
-        let first = columns.first().ok_or_else(|| FiggyError::InvalidSeriesConfig {
-            series_id: series.config.series_id.clone(),
-            reason: "streamed primitive has no supplied columns".into(),
-        })?;
+        let first = columns
+            .first()
+            .ok_or_else(|| FiggyError::InvalidSeriesConfig {
+                series_id: series.config.series_id.clone(),
+                reason: "streamed primitive has no supplied columns".into(),
+            })?;
         let bins = if phase == streaming_runtime::StreamDrawPhase::Histogram {
             if streaming_runtime::histogram_edge_column(series.config)
                 == Some(series.config.x_column.as_str())
@@ -12522,7 +12595,9 @@ impl PrepareContext<'_> {
             Some(phase),
         )?;
         let mut prepared = PreparedSeries::from_layers(
-            layers.remove(0), None, Some(Arc::clone(&series.style._charge)),
+            layers.remove(0),
+            None,
+            Some(Arc::clone(&series.style._charge)),
         );
         prepared._column_charge = Some(chunk.work.shared_charge());
         Ok(prepared)
@@ -12974,27 +13049,33 @@ impl PrepareContext<'_> {
                 selected_bars,
                 selected_fields,
             } = if phase.is_some() {
-                selection_prepare::SelectionLayers { picked: Vec::new(), selected_bars: Vec::new(), selected_fields: Vec::new() }
-            } else { self.build_selection_layers(
-                view,
-                chart_config,
-                series,
-                pipelines,
-                selection_prepare::SelectionColumns {
-                    buffer: column_buffer,
-                    x: x_h,
-                    y: y_h,
-                    bar: bar.as_ref().map(|layer| (layer.edges, layer.values)),
-                    rows: selection_prepare::SelectionRows::RESIDENT,
-                    mapped_point_bg: None,
-                },
-                products
-                    .contours
-                    .get(idx)
-                    .and_then(|series| series.scratch.as_ref()),
-                styled.is_none(),
-                &mut lookup,
-            )? };
+                selection_prepare::SelectionLayers {
+                    picked: Vec::new(),
+                    selected_bars: Vec::new(),
+                    selected_fields: Vec::new(),
+                }
+            } else {
+                self.build_selection_layers(
+                    view,
+                    chart_config,
+                    series,
+                    pipelines,
+                    selection_prepare::SelectionColumns {
+                        buffer: column_buffer,
+                        x: x_h,
+                        y: y_h,
+                        bar: bar.as_ref().map(|layer| (layer.edges, layer.values)),
+                        rows: selection_prepare::SelectionRows::RESIDENT,
+                        mapped_point_bg: None,
+                    },
+                    products
+                        .contours
+                        .get(idx)
+                        .and_then(|series| series.scratch.as_ref()),
+                    styled.is_none(),
+                    &mut lookup,
+                )?
+            };
 
             out.push(data_render::SeriesLayers {
                 field,
@@ -13206,6 +13287,27 @@ fn effective_series_primitives(
         // draws no bars at all, the same answer `constellation_supports` gives.
         bar: matches!(draw_style, DrawStyle::Precise) && has_bar(render_type),
     }
+}
+
+/// Whether `style` draws every primitive `render_type` draws in the precise
+/// style.
+///
+/// `false` exactly when the style has no entry point for one of those
+/// primitives: Sketch and Milkyway draw line, scatter and errorbar series but
+/// not bars, fields or contours; Constellation draws marker lines
+/// (`ScatterLine`) only. Prepare then skips that series without an error, so a
+/// host that validates with this predicate can reject the combination
+/// instead of drawing an empty plot. It compares the per-style primitive
+/// selection prepare itself uses against the precise one, so the two cannot
+/// drift apart. Errorbars have no primitive of their own here: they follow the
+/// series' scatter, and Constellation drops errorbar series entirely.
+///
+/// `true` answers for resident drawing. Streaming has its own limits and can
+/// still reject a supported combination with an error; see
+/// `inspect_streaming_capability`.
+pub fn draw_style_supports(style: &DrawStyle, render_type: &DataRenderType) -> bool {
+    effective_series_primitives(style, render_type)
+        == effective_series_primitives(&DrawStyle::Precise, render_type)
 }
 
 /// Whether the constellation style has a rendering for this render type.
@@ -13712,7 +13814,9 @@ impl<'w> WindowedRenderer<'w> {
 
     /// High-DPI variant of [`Self::create_style_for_series`].
     pub fn create_style_for_series_scaled(
-        &mut self, cfg: &SeriesConfig, scale: f32,
+        &mut self,
+        cfg: &SeriesConfig,
+        scale: f32,
     ) -> Result<ChartStyle> {
         self.inner.create_style_for_series_scaled(cfg, scale)
     }
@@ -13790,17 +13894,11 @@ impl<'w> WindowedRenderer<'w> {
         self.inner.add_columns(columns)
     }
 
-    pub fn register_streamed_columns(
-        &mut self,
-        columns: Vec<crate::StreamColumn>,
-    ) -> Result<()> {
+    pub fn register_streamed_columns(&mut self, columns: Vec<crate::StreamColumn>) -> Result<()> {
         self.inner.register_streamed_columns(columns)
     }
 
-    pub fn replace_streamed_columns(
-        &mut self,
-        columns: Vec<crate::StreamColumn>,
-    ) -> Result<()> {
+    pub fn replace_streamed_columns(&mut self, columns: Vec<crate::StreamColumn>) -> Result<()> {
         self.inner.replace_streamed_columns(columns)
     }
 
@@ -13902,17 +14000,40 @@ impl<'w> WindowedRenderer<'w> {
     }
 
     pub fn request_auto_streaming_chart_with_display_scale(
-        &mut self, chart: ChartId, view: &ChartView, render_config: Config,
-        display_scale: f32, options: crate::StreamingChartOptions,
+        &mut self,
+        chart: ChartId,
+        view: &ChartView,
+        render_config: Config,
+        display_scale: f32,
+        options: crate::StreamingChartOptions,
     ) -> Result<crate::AutoStreamingRequest> {
-        self.inner.request_auto_streaming_chart_with_display_scale(chart, view, render_config, display_scale, options)
+        self.inner.request_auto_streaming_chart_with_display_scale(
+            chart,
+            view,
+            render_config,
+            display_scale,
+            options,
+        )
     }
 
     pub fn request_resident_stream_handoff_with_display_scale(
-        &mut self, chart: ChartId, view: &ChartView, render_config: Config, display_scale: f32,
-        columns: Vec<crate::StreamColumn>, options: crate::StreamingChartOptions,
+        &mut self,
+        chart: ChartId,
+        view: &ChartView,
+        render_config: Config,
+        display_scale: f32,
+        columns: Vec<crate::StreamColumn>,
+        options: crate::StreamingChartOptions,
     ) -> Result<crate::AutoStreamingRequest> {
-        self.inner.request_resident_stream_handoff_with_display_scale(chart, view, render_config, display_scale, columns, options)
+        self.inner
+            .request_resident_stream_handoff_with_display_scale(
+                chart,
+                view,
+                render_config,
+                display_scale,
+                columns,
+                options,
+            )
     }
 
     pub fn auto_stream_chart_step(
@@ -14044,7 +14165,9 @@ impl<'w> WindowedRenderer<'w> {
 
     /// See [`Renderer::release_unused_pool_memory`].
     pub async fn release_unused_pool_memory(&mut self, minimum_capacity: u64) -> Result<()> {
-        self.inner.release_unused_pool_memory(minimum_capacity).await
+        self.inner
+            .release_unused_pool_memory(minimum_capacity)
+            .await
     }
 
     pub fn set_defrag_policy(&mut self, policy: DefragPolicy) {
@@ -14647,7 +14770,9 @@ mod tests {
             &self,
             _dst: crate::data::ColumnPairWriter<'_>,
         ) -> crate::data::ColumnUploadStats {
-            crate::data::ColumnUploadStats { min_positive: Some(1.0) }
+            crate::data::ColumnUploadStats {
+                min_positive: Some(1.0),
+            }
         }
 
         fn write_f32_pair_range_into_with_stats(
@@ -14687,7 +14812,9 @@ mod tests {
             &self,
             _dst: crate::data::ColumnPairWriter<'_>,
         ) -> crate::data::ColumnUploadStats {
-            crate::data::ColumnUploadStats { min_positive: Some(1.0) }
+            crate::data::ColumnUploadStats {
+                min_positive: Some(1.0),
+            }
         }
 
         fn write_f32_pair_range_into_with_stats(
@@ -14721,7 +14848,9 @@ mod tests {
             &self,
             _dst: crate::data::ColumnPairWriter<'_>,
         ) -> crate::data::ColumnUploadStats {
-            crate::data::ColumnUploadStats { min_positive: Some(1.0) }
+            crate::data::ColumnUploadStats {
+                min_positive: Some(1.0),
+            }
         }
 
         fn write_f32_pair_range_into_with_stats(
@@ -14763,8 +14892,7 @@ mod tests {
             Some((renderer, chart))
         }
 
-        let Some((mut renderer, chart)) =
-            setup("mutable-len", crate::StreamEncoding::ScalarF32)
+        let Some((mut renderer, chart)) = setup("mutable-len", crate::StreamEncoding::ScalarF32)
         else {
             return;
         };
@@ -14790,17 +14918,23 @@ mod tests {
             .expect("mutable len must not panic")
             .expect("the first validated length must drive the complete promotion");
         assert!(report.is_admissible());
-        assert_eq!(source.calls.get(), 1, "source length must be read exactly once");
+        assert_eq!(
+            source.calls.get(),
+            1,
+            "source length must be read exactly once"
+        );
         let slot = renderer.pool.slot("mutable-len").unwrap();
         assert_eq!(slot.len_values, 1);
-        assert_eq!((slot.min, slot.max, slot.min_positive), (1.0, 1.0, Some(1.0)));
+        assert_eq!(
+            (slot.min, slot.max, slot.min_positive),
+            (1.0, 1.0, Some(1.0))
+        );
         assert!(!renderer.streaming_sources.contains_key("mutable-len"));
         assert_eq!(renderer.stream_revision_lineage["mutable-len"], 1);
         assert_ne!(revision_snapshot(&renderer, chart), before);
         assert_eq!(renderer.pending_defrag, pending_before);
 
-        let Some((mut renderer, chart)) =
-            setup("panicking-writer", crate::StreamEncoding::HiLoF32)
+        let Some((mut renderer, chart)) = setup("panicking-writer", crate::StreamEncoding::HiLoF32)
         else {
             return;
         };
@@ -14824,10 +14958,12 @@ mod tests {
         }));
         assert!(matches!(
             result.expect("writer panic must be contained"),
-            Err(FiggyError::Pool(data_render::AllocError::AllocationFailed {
-                resource: "streamed promotion source",
-                ..
-            }))
+            Err(FiggyError::Pool(
+                data_render::AllocError::AllocationFailed {
+                    resource: "streamed promotion source",
+                    ..
+                }
+            ))
         ));
         assert!(renderer.pool.slot("panicking-writer").is_none());
         assert!(renderer.streaming_sources.contains_key("panicking-writer"));
@@ -14838,8 +14974,7 @@ mod tests {
         assert_eq!(renderer.pending_defrag, pending_before);
         assert_eq!(renderer.picker.active.is_some(), picker_before);
 
-        let Some((mut renderer, chart)) =
-            setup("invalid-bounds", crate::StreamEncoding::ScalarF32)
+        let Some((mut renderer, chart)) = setup("invalid-bounds", crate::StreamEncoding::ScalarF32)
         else {
             return;
         };
@@ -14862,10 +14997,12 @@ mod tests {
         }));
         assert!(matches!(
             result.expect("invalid statistics must not panic"),
-            Err(FiggyError::Pool(data_render::AllocError::AllocationFailed {
-                resource: "streamed promotion source",
-                ..
-            }))
+            Err(FiggyError::Pool(
+                data_render::AllocError::AllocationFailed {
+                    resource: "streamed promotion source",
+                    ..
+                }
+            ))
         ));
         assert!(renderer.pool.slot("invalid-bounds").is_none());
         assert!(renderer.streaming_sources.contains_key("invalid-bounds"));
@@ -14879,11 +15016,14 @@ mod tests {
     #[test]
     fn stream_statistics_cache_coalesces_coverage_and_encoded_bounds() {
         let mut cache = StreamStatisticsCache::default();
-        cache.insert_measured(4..8, Some(crate::StreamBounds {
-            min: -99.0,
-            max: 99.0,
-            min_positive: Some(99.0),
-        }));
+        cache.insert_measured(
+            4..8,
+            Some(crate::StreamBounds {
+                min: -99.0,
+                max: 99.0,
+                min_positive: Some(99.0),
+            }),
+        );
         assert_eq!(cache.covered, vec![4..8]);
         assert_eq!(cache.uncovered(0..12).unwrap(), vec![0..4, 8..12]);
         assert_eq!(cache.bounds.unwrap().max, 99.0);
@@ -14930,9 +15070,7 @@ mod tests {
             MAX_STREAM_STATISTICS_RANGES + 1
         );
         assert_eq!(
-            fragmented.coverage_len_after_insert(
-                &(1..MAX_STREAM_STATISTICS_RANGES as u64 * 2)
-            ),
+            fragmented.coverage_len_after_insert(&(1..MAX_STREAM_STATISTICS_RANGES as u64 * 2)),
             1,
             "a bridge is allowed to collapse even a full fragmented cache"
         );
@@ -17052,6 +17190,157 @@ mod tests {
     }
 
     #[test]
+    fn draw_style_supports_matches_the_primitives_each_style_draws() {
+        let line = DataLineStyleConfig {
+            line_style: LineStylePreset::Solid,
+            line_color: Color::BLACK,
+            line_width: 1.0,
+        };
+        let scatter = crate::data_config::DataScatterStyleConfig {
+            point_color: Color::BLACK,
+            point_shape: crate::data_config::ScatterShape::Circle,
+            point_size: 4.0,
+            point_style_table: None,
+            point_style_index_column: None,
+            point_style_overrides: None,
+        };
+        let matrix = crate::data_config::MatrixRef {
+            columns: vec!["z0".into()],
+            orientation: crate::data_config::MatrixOrientation::ColumnsAreX,
+            grid_layout: crate::data_config::GridLayout::Centers,
+        };
+        let fill = crate::data_config::FieldFillConfig {
+            mode: crate::data_config::FillMode::Continuous,
+            shading: crate::data_config::Shading::Flat,
+            opacity: 1.0,
+        };
+        let contour = crate::data_config::ContourConfig {
+            levels: vec![1.0],
+            line: line.clone(),
+            per_level_color: None,
+            labels: None,
+        };
+        let line_rt = DataRenderType::Line { line: line.clone() };
+        let scatter_rt = DataRenderType::Scatter {
+            scatter: scatter.clone(),
+        };
+        let marker_line_rt = DataRenderType::ScatterLine {
+            scatter: scatter.clone(),
+            line: line.clone(),
+        };
+        let precise_only = [
+            DataRenderType::Histogram {
+                bar: crate::data_config::DataBarStyleConfig {
+                    fill_color: Color::BLACK,
+                    border_color: Color::BLACK,
+                    border_width: 1.0,
+                    baseline: 0.0,
+                    gap_px: 1.0,
+                    width_ratio: 1.0,
+                    orientation: crate::data_config::BarOrientation::Vertical,
+                    bar_style_overrides: None,
+                },
+            },
+            DataRenderType::Heatmap {
+                matrix: matrix.clone(),
+                fill: fill.clone(),
+            },
+            DataRenderType::Contour {
+                matrix: matrix.clone(),
+                contour: contour.clone(),
+            },
+            DataRenderType::HeatmapContour {
+                matrix,
+                fill,
+                contour,
+            },
+        ];
+        let err = crate::data_config::DataErrorBarStyleConfig {
+            error_bar_color: Color::BLACK,
+            error_bar_width: 1.0,
+            error_bar_cap_size: 4.0,
+            cap_width: 1.0,
+            error_bar_style_table: None,
+            error_bar_style_index_column: None,
+            error_bar_style_overrides: None,
+        };
+        let sigma = || crate::data_config::ErrorRef::Symmetric { column: "e".into() };
+        let errorbar_types = [
+            DataRenderType::ScatterErrorbarX {
+                scatter: scatter.clone(),
+                err_x: sigma(),
+                err_style: err.clone(),
+            },
+            DataRenderType::ScatterErrorbarY {
+                scatter: scatter.clone(),
+                err_y: sigma(),
+                err_style: err.clone(),
+            },
+            DataRenderType::ScatterErrorbarXY {
+                scatter: scatter.clone(),
+                err_x: sigma(),
+                err_y: sigma(),
+                err_style: err.clone(),
+            },
+            DataRenderType::LineScatterErrorbarX {
+                scatter: scatter.clone(),
+                line: line.clone(),
+                err_x: sigma(),
+                err_style: err.clone(),
+            },
+            DataRenderType::LineScatterErrorbarY {
+                scatter: scatter.clone(),
+                line: line.clone(),
+                err_y: sigma(),
+                err_style: err.clone(),
+            },
+            DataRenderType::LineScatterErrorbarXY {
+                scatter: scatter.clone(),
+                line: line.clone(),
+                err_x: sigma(),
+                err_y: sigma(),
+                err_style: err,
+            },
+        ];
+        let sketch = DrawStyle::Sketch(Default::default());
+        let milkyway = DrawStyle::Milkyway(Default::default());
+        let constellation = DrawStyle::Constellation(Default::default());
+        // Errorbars follow the series' scatter in Sketch and Milkyway; the
+        // constellation style drops errorbar series entirely.
+        for rt in &errorbar_types {
+            assert!(draw_style_supports(&DrawStyle::Precise, rt), "{rt:?}");
+            assert!(draw_style_supports(&sketch, rt), "sketch {rt:?}");
+            assert!(draw_style_supports(&milkyway, rt), "milkyway {rt:?}");
+            assert!(
+                !draw_style_supports(&constellation, rt),
+                "constellation {rt:?}"
+            );
+        }
+
+        for rt in [&line_rt, &scatter_rt, &marker_line_rt]
+            .into_iter()
+            .chain(&precise_only)
+        {
+            assert!(draw_style_supports(&DrawStyle::Precise, rt), "{rt:?}");
+        }
+        for rt in [&line_rt, &scatter_rt, &marker_line_rt] {
+            assert!(draw_style_supports(&sketch, rt), "sketch {rt:?}");
+            assert!(draw_style_supports(&milkyway, rt), "milkyway {rt:?}");
+        }
+        for rt in &precise_only {
+            assert!(!draw_style_supports(&sketch, rt), "sketch {rt:?}");
+            assert!(!draw_style_supports(&milkyway, rt), "milkyway {rt:?}");
+            assert!(
+                !draw_style_supports(&constellation, rt),
+                "constellation {rt:?}"
+            );
+        }
+        assert!(draw_style_supports(&constellation, &marker_line_rt));
+        assert!(!draw_style_supports(&constellation, &line_rt));
+        assert!(!draw_style_supports(&constellation, &scatter_rt));
+    }
+
+    #[test]
     fn renderer_field_fit_resolves_the_same_sample_endpoints_as_contour_draw() {
         let Some(mut renderer) = state_test_renderer() else {
             return;
@@ -17259,7 +17548,9 @@ mod tests {
                 },
             },
         };
-        let chart = renderer.register_chart(config.clone(), vec![series]).unwrap();
+        let chart = renderer
+            .register_chart(config.clone(), vec![series])
+            .unwrap();
         let stamp = renderer.chart_render_stamp(chart).unwrap();
         let visual = renderer.visual_revision();
         let mut invalid = config.clone();
@@ -17287,29 +17578,45 @@ mod tests {
             ..Default::default()
         }]);
         let bytes = renderer.style_allocation_bytes(&series).unwrap();
-        assert_eq!(bytes,
+        assert_eq!(
+            bytes,
             4 * std::mem::size_of::<PrimitiveStyle>() as u64
                 + std::mem::size_of::<data_render::ScatterStyleSlotGpu>() as u64
                 + std::mem::size_of::<data_render::ScatterStyleOverrideGpu>() as u64
-                + std::mem::size_of::<data_render::ScatterStyleMapMeta>() as u64);
+                + std::mem::size_of::<data_render::ScatterStyleMapMeta>() as u64
+        );
         let before = renderer.gpu_memory_usage();
         let _ = renderer.set_memory_budget(Some(before.total_bytes() + bytes - 1));
         assert!(matches!(
             renderer.create_style_for_series(&series),
-            Err(FiggyError::GpuResourceLimit { resource: "chart style budget", .. })
+            Err(FiggyError::GpuResourceLimit {
+                resource: "chart style budget",
+                ..
+            })
         ));
         let rejected = renderer.gpu_memory_usage();
         assert_eq!(rejected.total_bytes(), before.total_bytes());
-        assert_eq!(rejected.creations_of(GpuResourceKind::Uniform), before.creations_of(GpuResourceKind::Uniform));
+        assert_eq!(
+            rejected.creations_of(GpuResourceKind::Uniform),
+            before.creations_of(GpuResourceKind::Uniform)
+        );
 
         let _ = renderer.set_memory_budget(Some(before.total_bytes() + bytes));
         let style = renderer.create_style_for_series(&series).unwrap();
         assert!(style.scatter_map.is_some());
-        assert_eq!(renderer.gpu_memory_usage().live_bytes_of(GpuResourceKind::Uniform),
-            before.live_bytes_of(GpuResourceKind::Uniform) + bytes);
+        assert_eq!(
+            renderer
+                .gpu_memory_usage()
+                .live_bytes_of(GpuResourceKind::Uniform),
+            before.live_bytes_of(GpuResourceKind::Uniform) + bytes
+        );
         drop(style);
-        assert_eq!(renderer.gpu_memory_usage().retired_bytes_of(GpuResourceKind::Uniform),
-            before.retired_bytes_of(GpuResourceKind::Uniform) + bytes);
+        assert_eq!(
+            renderer
+                .gpu_memory_usage()
+                .retired_bytes_of(GpuResourceKind::Uniform),
+            before.retired_bytes_of(GpuResourceKind::Uniform) + bytes
+        );
     }
 
     #[test]
@@ -17326,19 +17633,35 @@ mod tests {
         let style_bytes = renderer.style_allocation_bytes(&cfg).unwrap();
         let style = renderer.create_style_for_series(&cfg).unwrap();
         let frame = {
-            let series = [Series { config: &cfg, style: &style }];
-            renderer.prepare(&[ChartDrawItem {
-                view: &view,
-                chart_config: chart.config(),
-                series: &series,
-            }]).unwrap()
+            let series = [Series {
+                config: &cfg,
+                style: &style,
+            }];
+            renderer
+                .prepare(&[ChartDrawItem {
+                    view: &view,
+                    chart_config: chart.config(),
+                    series: &series,
+                }])
+                .unwrap()
         };
-        let live_with_frame = renderer.gpu_memory_usage().live_bytes_of(GpuResourceKind::Uniform);
+        let live_with_frame = renderer
+            .gpu_memory_usage()
+            .live_bytes_of(GpuResourceKind::Uniform);
         drop(style);
-        assert_eq!(renderer.gpu_memory_usage().live_bytes_of(GpuResourceKind::Uniform), live_with_frame);
+        assert_eq!(
+            renderer
+                .gpu_memory_usage()
+                .live_bytes_of(GpuResourceKind::Uniform),
+            live_with_frame
+        );
         drop(frame);
-        assert_eq!(renderer.gpu_memory_usage().live_bytes_of(GpuResourceKind::Uniform),
-            live_with_frame - style_bytes);
+        assert_eq!(
+            renderer
+                .gpu_memory_usage()
+                .live_bytes_of(GpuResourceKind::Uniform),
+            live_with_frame - style_bytes
+        );
     }
 
     #[test]
@@ -21008,7 +21331,9 @@ mod tests {
                 // must exercise the explicit hi/lo contract to retain 0.5
                 // increments at an offset of 1e9.
                 if case == "large-offset" {
-                    renderer.add_hilo_column("clx", &col_f64(x.clone())).unwrap();
+                    renderer
+                        .add_hilo_column("clx", &col_f64(x.clone()))
+                        .unwrap();
                 } else {
                     renderer.add_column("clx", &col_f64(x.clone())).unwrap();
                 }
@@ -21408,7 +21733,9 @@ mod tests {
 
         let mut replacement_config = state_test_labelled_contour(90.0, Vec::new());
         state_test_contour_labels_mut(&mut replacement_config).font_size = 20.0;
-        let replacement_style = renderer.create_style_for_series(&replacement_config).unwrap();
+        let replacement_style = renderer
+            .create_style_for_series(&replacement_config)
+            .unwrap();
         let replacement_series = [Series {
             config: &replacement_config,
             style: &replacement_style,
@@ -21831,8 +22158,15 @@ mod tests {
         // The shared device may dispatch completion callbacks on another
         // test's poll thread. Wait for retirement itself, not only queue work.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while r.gpu_memory_usage().retired_bytes_of(crate::GpuResourceKind::StreamingUpload) != 0 {
-            assert!(std::time::Instant::now() < deadline, "upload retirement timed out");
+        while r
+            .gpu_memory_usage()
+            .retired_bytes_of(crate::GpuResourceKind::StreamingUpload)
+            != 0
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "upload retirement timed out"
+            );
             r.service_gpu_completions().unwrap();
             std::thread::yield_now();
         }
@@ -22607,27 +22941,49 @@ mod tests {
     #[test]
     fn precise_zoom_keeps_connections_to_distant_endpoints() {
         let (device, queue) = crate::data_render::shared_device().expect("GPU required");
-        let mut r = Renderer::try_new(RendererDevice::new(device, queue),
-            wgpu::TextureFormat::Rgba8Unorm, 4096).unwrap();
+        let mut r = Renderer::try_new(
+            RendererDevice::new(device, queue),
+            wgpu::TextureFormat::Rgba8Unorm,
+            4096,
+        )
+        .unwrap();
         let mut config = crate::default::default_config();
-        config.chart_area = crate::layout::ChartArea(Rect { x: 0, y: 0, width: 800, height: 400 });
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 800,
+            height: 400,
+        });
         config.legend.visible = false;
         hide_axis_lines(&mut config);
         let series = [SeriesConfig {
-            series_id: "crossing".into(), source_id: None, label: None,
-            x_column: "zx".into(), y_column: "zy".into(),
-            render_type: DataRenderType::Line { line: DataLineStyleConfig {
-                line_style: LineStylePreset::Solid, line_width: 2.0,
-                line_color: Color::new(1.0, 0.0, 0.0, 1.0),
-            } },
+            series_id: "crossing".into(),
+            source_id: None,
+            label: None,
+            x_column: "zx".into(),
+            y_column: "zy".into(),
+            render_type: DataRenderType::Line {
+                line: DataLineStyleConfig {
+                    line_style: LineStylePreset::Solid,
+                    line_width: 2.0,
+                    line_color: Color::new(1.0, 0.0, 0.0, 1.0),
+                },
+            },
         }];
         for vertical in [false, true] {
             for reverse in [false, true] {
                 for span in [2.0, 1e4, 1e6, 1e9] {
                     let mut along = vec![-span, 0.5, span];
                     let mut across = vec![0.1, 0.5, 0.9];
-                    if reverse { along.reverse(); across.reverse(); }
-                    let (x, y) = if vertical { (across, along) } else { (along, across) };
+                    if reverse {
+                        along.reverse();
+                        across.reverse();
+                    }
+                    let (x, y) = if vertical {
+                        (across, along)
+                    } else {
+                        (along, across)
+                    };
                     let _ = r.remove_column("zx");
                     let _ = r.remove_column("zy");
                     r.add_column("zx", &col_f64(x)).unwrap();
@@ -22650,7 +23006,10 @@ mod tests {
                                 let x = area.x + (area.width as f32 * fraction) as u32;
                                 (area.y..area.y + area.height).any(|y| red(x, y))
                             };
-                            assert!(present, "missing connection: vertical={vertical} reverse={reverse} span={span} shift={shift} fraction={fraction}");
+                            assert!(
+                                present,
+                                "missing connection: vertical={vertical} reverse={reverse} span={span} shift={shift} fraction={fraction}"
+                            );
                         }
                     }
                 }
@@ -23203,8 +23562,7 @@ mod tests {
         );
         assert_eq!(
             usage.pool_bytes(),
-            renderer.pool.capacity() * 2
-                + usage.retired_bytes_of(GpuResourceKind::ColumnPool)
+            renderer.pool.capacity() * 2 + usage.retired_bytes_of(GpuResourceKind::ColumnPool)
         );
     }
 
@@ -23359,8 +23717,12 @@ mod tests {
         let Some(mut renderer) = state_test_renderer_with_capacity(1024 * 1024) else {
             return;
         };
-        renderer.add_column("keep", &col_f64(vec![1.0, 2.0, 3.0])).unwrap();
-        renderer.add_column("drop", &col_f64(vec![4.0, 5.0, 6.0])).unwrap();
+        renderer
+            .add_column("keep", &col_f64(vec![1.0, 2.0, 3.0]))
+            .unwrap();
+        renderer
+            .add_column("drop", &col_f64(vec![4.0, 5.0, 6.0]))
+            .unwrap();
         renderer.remove_column("drop").unwrap();
         let old_handle = renderer.handle_for("keep").unwrap();
         let before = renderer.gpu_memory_usage().total_bytes();
@@ -25512,9 +25874,11 @@ mod tests {
                 .iter()
                 .any(|request| { request.column == "auto-live-y" && request.range.revision == 1 })
         );
-        assert!(requested.iter().all(|request| {
-            request.column != "auto-live-x" || request.range.revision != 1
-        }));
+        assert!(
+            requested
+                .iter()
+                .all(|request| { request.column != "auto-live-x" || request.range.revision != 1 })
+        );
         assert_ne!(active_revision, latest);
     }
 

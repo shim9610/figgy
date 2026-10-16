@@ -9,8 +9,102 @@ at the time. The first crates.io publication is recorded below.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
-## Unreleased
+## Upcoming release — renderer 0.17.0 / model 0.11.0 / figgy 0.14.0
 
+New 0.x minor versions: `RichText.align` is a new public field, so fully
+specified `RichText` literals need the migration noted below. JSON without
+`align` still parses. The WASM integration example
+advances to 0.14.0 with the renderer dependency. This entry does not itself
+publish a registry crate. As verified on 2026-10-16, crates.io still contains
+renderer 0.16.1 and model 0.10.0; this entry describes the release being prepared.
+
+- The raw WASM host adds `FiggyBoundedChart` for radial, categorical and boxplot
+  documents, using the existing renderer's geometry, decoration drag/resize,
+  hover, typed selection and PNG export. Radial clicks retain the hovered
+  slice's resting hit target during lift animation. `FiggyChart` adds measured
+  `decoration_bounds` and source-index `step_selection` for host UI parity;
+  `HitMap::find` resolves stable element IDs. These APIs do not add automatic
+  layout or mutate unrelated SSOT properties.
+- `FiggyChart.selection_details` reads selected resident GPU values for points,
+  histogram bins and matrix cells without retaining source arrays. Histogram
+  reports include bin boundaries, stored value and orientation; keyboard
+  navigation follows the orientation and clamps when switching compatible series.
+- Line and scatter paths omit non-finite coordinates and non-positive values
+  on logarithmic axes without rejecting the remaining data. A line segment
+  touching an invalid endpoint leaves a gap; precise, sketch, ribbon/arc and
+  star paths agree, and invisible points cannot be picked. Histogram zero
+  baselines retain their positive-range clipping behavior.
+- Numeric tick precision now respects `LabelStyle.significant_digits` for
+  arbitrary auto-fit intervals and logarithmic labels. A step such as 1.312815
+  no longer forces six decimal places, avoiding unnecessary title overlap and
+  colorbar clipping. Linear decimal labels keep a shared precision with a
+  spacing-derived minimum; crowded numeric labels use a regular stride
+  without changing ticks, grid positions, margins or title anchors. Contour
+  label precision uses the level spacing rather than the bottom X-axis spacing.
+- Bounded renderers add `new_async` for checked asynchronous browser pipeline
+  compilation; native construction keeps the existing synchronous behavior.
+  The bounded web host's `first_frame_ready` waits for submitted GPU work and
+  reports a rejected completion instead of announcing an unusable chart.
+- `ChartView::render_warnings` reports the tick settings the axis raster
+  replaced instead of substituting them silently: a linear `major_spacing` that
+  is non-finite, not positive, too small to advance or over 1000 intervals
+  (drawn at automatic spacing), a linear `minor_count` over 99, and a log decade
+  step that is not a whole number from 1 to `i32::MAX`. Each `RenderWarning`
+  names the axis (`WarningAxis`), the value as written and the value drawn; a
+  replaced spacing also says why (`SpacingRejection`). `create_chart_view` and
+  each successful `refresh_axis` / `refresh_axis_with_selection` re-derive the
+  list from the chart they rasterized, so hosts read it in their dirty-driven
+  refresh branch and nothing is computed per frame. Additive: no signature
+  changes, and the drawn output is unchanged.
+- `RichText` gains `align: TextAlign` (`Left` default, `Center`, `Right`;
+  re-exported from both crate roots). Each line of a multi-line text is offset
+  inside the block by none, half or all of its slack; tab cells move with their
+  line, and the measured envelope (selection and hit boxes) is unchanged. JSON
+  without `align` parses as `Left`, and `Left` is not serialized. Migration:
+  fully specified `RichText` literals need `align: TextAlign::Left`.
+- The title helpers no longer clip a multi-line or enlarged chart title.
+  `Chart::with_title` and the web example's `set_title` call
+  `layout::fit_chart_title_margin`, which grows `chart_title.top_margin` to the
+  measured title plus the default band's padding only when the title block is
+  taller than the band (exactly the titles that were clipped); every title
+  that already fit renders as before. The band is never shrunk. A
+  `top_margin` injected directly through the SSOT is kept as given.
+- The API guide distinguishes direct SSOT edits from convenience helpers.
+  Editing only axis `min` / `max` preserves tick settings; `set_*_range` and
+  `auto_fit_*` also choose ticks and label formatting. Title helpers document
+  whether they fit the title band or change only text.
+- `draw_style_supports(style, render_type)` reports whether a draw style draws
+  every primitive of a render type, from the same selection prepare uses.
+  Sketch and Milkyway draw line, scatter and errorbar series and skip bars,
+  fields and contours; Constellation draws `ScatterLine` only. Prepare skips
+  an unsupported series without an error, so hosts can now reject it up front.
+- `text_render::font_family_available(family)` reports whether a
+  `RichText.font` / `label_font` family resolves to a registered or installed
+  face instead of silently falling back to the bundled Liberation Sans. It
+  uses resolution's exact, case-sensitive match; the empty string and
+  `"Liberation Sans"` are always available, and on wasm only registered fonts
+  count. The check itself changes no rendering.
+- Characters missing from the selected font no longer draw as `.notdef` boxes
+  when another available face can draw them (for example Greek in a Latin-only
+  family; U+207B, which the bundled Liberation Sans lacks, comes from an
+  installed system font on native hosts that have one). Measurement and
+  drawing take each such character from the first face that can draw it:
+  fonts added with `register_font_bytes`, family by family in registration
+  order with the requested bold/italic matched as in a family lookup; then the
+  bundled Liberation Sans of the same style; then, on native targets only,
+  installed system fonts in family-name order. Faces without outlines
+  (colour-bitmap emoji) do not count, since text rasterizes from outlines.
+  Registered and bundled faces resolve identically on native and wasm, and a
+  registered font now also supplies characters the configured family lacks
+  (for example Hangul in a Latin label font). Glyphs the selected face covers,
+  including Comic Neue in sketch mode, render as before; text containing
+  previously missing characters measures and draws differently.
+- The CPU colourbar strip no longer shows translucent seams when its start or
+  length falls on a fractional pixel. Interior band edges now snap to device
+  pixels, so no pixel takes two partial anti-aliased covers; a grayscale strip
+  previously showed plateaus and jumps at about a third and two thirds of its
+  length. Band colours, ramp sampling (translucent stops included) and the
+  strip geometry are unchanged.
 - The CPU colourbar raster draws only the bands that land on the canvas. A
   strip following a data area that runs far past the chart edges no longer
   costs work proportional to its length (#6: billions of bands on a 320×240
@@ -22,6 +116,8 @@ at the time. The first crates.io publication is recorded below.
   and one keeping less than `MIN_VISIBLE_DATA_AREA_PX` (8 px, or its whole
   size if smaller) inside the chart area (`TargetOutOfChartArea`). Previously
   a start above the origin saturated to 0 and moved the opposite edge.
+- The workspace is formatted with rustfmt, and `ci/verify.py static` (run by CI)
+  now starts with `cargo fmt --all --check`.
 
 ## Source patch — renderer 0.16.1 / model 0.10.0 / figgy 0.13.1
 

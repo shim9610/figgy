@@ -6,7 +6,10 @@ is independent of `ColumnSource` and automatic streaming. Multiple series are
 placed side by side in each category. Stacking is not a box-plot operation.
 
 The native and WASM renderer APIs are available. A browser host must wire its own
-events and UI to them; this library guide does not establish deployed Studio status.
+events and UI to them; the separate [WASM wrapper](WASM.md) exposes
+`FiggyBoundedChart` for this purpose. When using the Rust renderer in WASM,
+await `BoxPlotRenderer::new_async(gpu, format)` before preparing frames. This
+library guide does not establish deployed Studio status.
 
 ## Input and first render
 

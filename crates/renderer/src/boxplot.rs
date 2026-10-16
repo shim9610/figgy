@@ -169,7 +169,10 @@ impl BoxPlotFrame {
             return None;
         }
         let p = [position[0] * self.scale, position[1] * self.scale];
-        if p[0] < self.clip[0] || p[1] < self.clip[1] || p[0] >= self.clip[2] || p[1] >= self.clip[3]
+        if p[0] < self.clip[0]
+            || p[1] < self.clip[1]
+            || p[0] >= self.clip[2]
+            || p[1] >= self.clip[3]
         {
             return None;
         }
@@ -229,6 +232,28 @@ pub struct BoxPlotRenderer {
     cached: Option<(BoxPlotChart, (u32, u32), f32, u64, Arc<BoxPlotFrame>)>,
 }
 impl BoxPlotRenderer {
+    /// Initialize browser pipelines through WebGPU's asynchronous compiler.
+    /// Uses the checked production pipeline descriptors before publishing the
+    /// wgpu-owned pipeline. Native hosts use the ordinary synchronous constructor.
+    pub async fn new_async(
+        gpu: RendererDevice,
+        format: wgpu::TextureFormat,
+    ) -> Result<Self, BoxPlotError> {
+        #[cfg(target_arch = "wasm32")]
+        crate::browser_compile::render(
+            gpu.device(),
+            include_str!("boxplot.wgsl"),
+            &[("boxplot surfaces", "boxplot surfaces")],
+            format,
+            1,
+            None,
+            &mut |_| {},
+        )
+        .await
+        .map_err(BoxPlotError::Gpu)?;
+        Self::new(gpu, format)
+    }
+
     /// Share the host device/queue. Supports RGBA8/BGRA8, linear or sRGB targets.
     /// Starts with a separate 256 MiB resource budget, not the Cartesian ledger.
     pub fn new(gpu: RendererDevice, format: wgpu::TextureFormat) -> Result<Self, BoxPlotError> {
@@ -244,75 +269,87 @@ impl BoxPlotRenderer {
             ));
         }
         let device = gpu.device();
-        let layout = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
-            label: Some("boxplot chart"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(48),
+        let layout = crate::gpu_compile::bind_group_layout(
+            &device,
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("boxplot chart"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(48),
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(144),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(144),
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-            ],
-        });
-        let pl = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
-            label: Some("boxplot chart"),
-            bind_group_layouts: &[Some(&layout)],
-            immediate_size: 0,
-        });
-        let shader = crate::gpu_compile::shader_module(&device, wgpu::ShaderModuleDescriptor {
-            label: Some("boxplot surfaces"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("boxplot.wgsl").into()),
-        });
-        let pipeline = crate::gpu_compile::render_pipeline(&device, &wgpu::RenderPipelineDescriptor {
-            label: Some("boxplot surfaces"),
-            layout: Some(&pl),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[],
+                ],
             },
-            primitive: Default::default(),
-            depth_stencil: None,
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        );
+        let pl = crate::gpu_compile::pipeline_layout(
+            &device,
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some("boxplot chart"),
+                bind_group_layouts: &[Some(&layout)],
+                immediate_size: 0,
+            },
+        );
+        let shader = crate::gpu_compile::shader_module(
+            &device,
+            wgpu::ShaderModuleDescriptor {
+                label: Some("boxplot surfaces"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("boxplot.wgsl").into()),
+            },
+        );
+        let pipeline = crate::gpu_compile::render_pipeline(
+            &device,
+            &wgpu::RenderPipelineDescriptor {
+                label: Some("boxplot surfaces"),
+                layout: Some(&pl),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            },
+        );
         Ok(Self {
             gpu,
             format,

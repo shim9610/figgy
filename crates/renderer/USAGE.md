@@ -25,7 +25,9 @@ Development packages are now named `figgy-renderer` and `figgy-model`; Rust impo
 remain `renderer::...` and `model::...`. When moving a Git dependency to a revision
 with this rename, add the corresponding `package` key while retaining its existing
 dependency alias. Older public revisions still use their original package names.
-The published versions are `figgy-renderer` 0.16.1 and `figgy-model` 0.10.0.
+This checkout targets `figgy-renderer` 0.17.0 and `figgy-model` 0.11.0. The
+dependency examples below use these versions and apply once they are published;
+use a local path to try a checkout before publication.
 
 Use the renderer's optional `serde` feature for serialization of its re-exported
 model types; no direct model dependency is needed for that. Rust 1.99 is the
@@ -34,11 +36,18 @@ wrapper remains a separate consumer and is excluded from Rust registry publishin
 See [Rust API contracts](API.md) for ownership, frame lifetimes,
 render targets and compatibility policy.
 
+For selective edits, change only the desired fields in the current `Config`
+(the SSOT). For example, write axis `min` / `max` through
+`Chart::with_axis_range_change` to preserve tick settings. Convenience helpers
+such as `set_x_range`, `auto_fit_*` and `with_title` also adjust related ticks,
+labels or title layout. See the [operation table and range-only example](API.md#direct-ssot-edits-and-convenience-helpers)
+before choosing an edit path.
+
 ### Adding the dependency
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", version = "0.16.1" }
+renderer = { package = "figgy-renderer", version = "0.17.0" }
 wgpu     = "30"
 ```
 
@@ -59,6 +68,14 @@ display scale. `prepare` updates transforms and GPU data but does not perform
 those two steps. The registered-chart path maintains its own style cache after
 `set_chart_config` / `set_chart_series`; its caller-owned view still needs refresh.
 See the [edit table and compiled example](API.md#cartesian-edits-update-the-derived-inputs-before-preparing).
+
+The refresh also reports tick settings the axis raster could not draw as written.
+Read `view.render_warnings()` in the same branch that calls `refresh_axis`: each
+`RenderWarning` names the axis, the value as written and the value drawn, such
+as a `major_spacing` that would need more than 1000 intervals and was drawn at
+automatic spacing. The list is re-derived only when the view is rasterized, so a
+host that refreshes on its dirty flag never pays for it per frame. Compare it
+with the previous list to show only changes.
 
 Constructors initialize base resources; they do not eagerly populate every
 pipeline cache. Use explicit `prewarm_all` or detached preparation when needed,
@@ -465,7 +482,10 @@ npx wasm-pack@0.15.0 build crates/web --release --target web --locked
 Cargo 패키지 이름은 `figgy-renderer`·`figgy-model`로 정리했다. Rust의
 `renderer::…`·`model::…` 경로는 유지한다. 이름을 바꾼 Git 리비전으로 갱신할 때는
 Cargo 의존성에 `package`를 추가한다. 이전 공개 리비전은 기존 패키지명을 사용한다.
-`figgy-renderer` 0.16.1과 `figgy-model` 0.10.0은 crates.io에 게시됐다.
+이 소스의 릴리스 대상은 `figgy-renderer` 0.17.0과 `figgy-model` 0.11.0이다.
+아래 의존성 예제는 해당 버전이 게시되면 사용하며, 게시 전에는
+`version` 대신 `path = "../figgy/crates/renderer"`처럼
+애플리케이션 기준 경로를 지정해 현재 소스를 사용한다.
 
 렌더러의 `serde` 기능을 켜면 재노출된 모델 타입을 직렬화할 수 있다. 이를 위해 모델을
 직접 의존할 필요는 없다. 지원 Rust 하한은 1.99이며 GPU를 직접 공유하려면 호스트도
@@ -474,7 +494,7 @@ wgpu 30을 사용해야 한다. WASM 래퍼는 별도 소비 예제로 유지하
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", version = "0.16.1" }
+renderer = { package = "figgy-renderer", version = "0.17.0" }
 wgpu     = "30"
 ```
 

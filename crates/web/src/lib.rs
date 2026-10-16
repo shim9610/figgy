@@ -676,6 +676,16 @@ fn prepare_demo_column_metadata(
     })
 }
 
+/// Replace the chart title with plain `text` and grow its band to hold it, as
+/// `Chart::with_title` does natively, so a multi-line title set from the
+/// browser is not clipped at the top of the chart.
+#[cfg(any(target_arch = "wasm32", test))]
+fn set_plain_chart_title(config: &mut renderer::Config, text: &str) {
+    config.chart_title.text.segments = renderer::text::rich_segments_from_text(text);
+    let measure = renderer::CpuTextMeasure::for_style(&config.draw_style);
+    renderer::layout::fit_chart_title_margin(config, &measure);
+}
+
 #[cfg(any(target_arch = "wasm32", test))]
 struct PreparedDemoDeclarations {
     config: renderer::Config,
@@ -746,6 +756,7 @@ fn prepare_demo_declarations(
             color: config.legend.content.color,
             font_size: config.legend.content.font_size,
             font: config.legend.content.font.clone(),
+            align: config.legend.content.align,
         };
         let item = SeriesConfig {
             series_id: series_id.to_string(),
@@ -814,8 +825,8 @@ mod tests {
         prepare_batch_column_metadata, prepare_column_metadata, prepare_demo_column_metadata,
         prepare_demo_declarations, retain_valid_series_extent_jobs, select_series_extent_job_map,
         series_extent_key_matches_config, series_extent_mode, series_extent_needs_submission,
-        series_extent_request_from, validate_column_batch, validate_column_data_len,
-        validate_column_registry_action,
+        series_extent_request_from, set_plain_chart_title, validate_column_batch,
+        validate_column_data_len, validate_column_registry_action,
     };
     use crate::scalar_job::{SeriesExtentJob, SeriesExtentStatus};
 
@@ -905,6 +916,25 @@ mod tests {
                 "dirty-state mask {bits:05b}"
             );
         }
+    }
+
+    // `set_title` grows the title band like `Chart::with_title`: a single
+    // default-size line keeps the default band, and a three-line title gets a
+    // band at least as tall as its block, so its first line is not clipped.
+    #[test]
+    fn set_plain_chart_title_grows_the_band_to_hold_a_multi_line_title() {
+        use renderer::text_render::{FontPolicy, measure_rich_text};
+
+        let default_band = renderer::default::default_config().chart_title.top_margin;
+        let mut config = renderer::default::default_config();
+        set_plain_chart_title(&mut config, "figgy");
+        assert_eq!(config.chart_title.top_margin, default_band);
+
+        set_plain_chart_title(&mut config, "first\nsecond\nthird");
+        let block = measure_rich_text(&config.chart_title.text, FontPolicy::Standard);
+        assert!(block.height() > default_band);
+        assert!(config.chart_title.top_margin >= block.height());
+        assert!(config.data_area().is_ok());
     }
 
     #[test]
@@ -1912,15 +1942,15 @@ mod web {
     use renderer::{
         Chart, ChartDrawItem, ChartId, ChartRenderStamp, ChartStyle, ChartView, Color,
         ColumnSource, CpuTextMeasure, DataLineStyleConfig, DataRenderType, DefragPolicy, FitExtent,
-        HiLoColumnSource, HitId, HitMap, Renderer, ResizeHandle as ModelResizeHandle, SelectionBox,
-        RegisteredChartDrawItem, Series, SeriesConfig, StreamColumn, StreamEncoding,
-        StreamRangeSourceBinding, StreamReplay, StreamSourceBinding, StreamStatistics,
-        StreamingChartOptions, StreamingLimits, WindowedRenderer,
+        HiLoColumnSource, HitId, HitMap, RegisteredChartDrawItem, Renderer,
+        ResizeHandle as ModelResizeHandle, SelectionBox, Series, SeriesConfig, StreamColumn,
+        StreamEncoding, StreamRangeSourceBinding, StreamReplay, StreamSourceBinding,
+        StreamStatistics, StreamingChartOptions, StreamingLimits, WindowedRenderer,
     };
 
-    use renderer::{InitEvent, InitPhase};
     use renderer::data_render::{AllocError, GrowthPolicy};
     use renderer::gpu_memory::GpuResourceKind;
+    use renderer::{InitEvent, InitPhase};
 
     use crate::borrowed_column::{
         BorrowedCastF32Column, BorrowedF32Column, BorrowedF64Column, BorrowedSplitF64Column,
@@ -1932,8 +1962,8 @@ mod web {
         active_series_extent_requests, consume_successful_frame, frame_decision,
         prepare_batch_column_metadata, prepare_column_metadata, prepare_demo_column_metadata,
         prepare_demo_declarations, retain_valid_series_extent_jobs, select_series_extent_job_map,
-        series_extent_key_matches_config, series_extent_mode, validate_column_batch,
-        validate_column_data_len, validate_column_registry_action,
+        series_extent_key_matches_config, series_extent_mode, set_plain_chart_title,
+        validate_column_batch, validate_column_data_len, validate_column_registry_action,
     };
 
     const POOL_CAPACITY: u64 = 16 * 1024 * 1024;
@@ -1955,13 +1985,21 @@ mod web {
                 Some(*largest_free),
                 Some(*total_free),
             ),
-            renderer::FiggyError::Pool(AllocError::BudgetExceeded { requested, limit, .. }) => {
-                ("budget_exceeded", Some(*requested), Some(*limit), None, None)
-            }
-            renderer::FiggyError::Pool(AllocError::ResourceLimit { requested, limit, .. })
-            | renderer::FiggyError::GpuResourceLimit { requested, limit, .. } => {
-                ("device_limit", Some(*requested), Some(*limit), None, None)
-            }
+            renderer::FiggyError::Pool(AllocError::BudgetExceeded {
+                requested, limit, ..
+            }) => (
+                "budget_exceeded",
+                Some(*requested),
+                Some(*limit),
+                None,
+                None,
+            ),
+            renderer::FiggyError::Pool(AllocError::ResourceLimit {
+                requested, limit, ..
+            })
+            | renderer::FiggyError::GpuResourceLimit {
+                requested, limit, ..
+            } => ("device_limit", Some(*requested), Some(*limit), None, None),
             renderer::FiggyError::Pool(AllocError::AllocationFailed { .. })
             | renderer::FiggyError::GpuResourceAllocationFailed { .. } => {
                 ("allocation_failed", None, None, None, None)
@@ -2046,13 +2084,24 @@ mod web {
     }
 
     fn stream_range_bindings<'a>(
-        ids: &'a [String], revisions: &[f64], source_lengths: &[f64], offsets: &[f64],
+        ids: &'a [String],
+        revisions: &[f64],
+        source_lengths: &[f64],
+        offsets: &[f64],
         sources: &'a [JsStreamColumn],
     ) -> Result<Vec<StreamRangeSourceBinding<'a>>, JsValue> {
-        if [revisions.len(), source_lengths.len(), offsets.len(), sources.len()]
-            .into_iter().any(|len| len != ids.len())
+        if [
+            revisions.len(),
+            source_lengths.len(),
+            offsets.len(),
+            sources.len(),
+        ]
+        .into_iter()
+        .any(|len| len != ids.len())
         {
-            return Err(js_err("range ids, revisions, source lengths, offsets, and typed arrays must have equal lengths"));
+            return Err(js_err(
+                "range ids, revisions, source lengths, offsets, and typed arrays must have equal lengths",
+            ));
         }
         let mut bindings = Vec::new();
         bindings.try_reserve_exact(ids.len()).map_err(js_err)?;
@@ -2433,7 +2482,9 @@ mod web {
     #[wasm_bindgen]
     impl StreamingStepResult {
         #[wasm_bindgen(getter)]
-        pub fn revision(&self) -> String { self.revision.clone() }
+        pub fn revision(&self) -> String {
+            self.revision.clone()
+        }
         #[wasm_bindgen(getter)]
         pub fn status(&self) -> String {
             self.status.to_owned()
@@ -2471,13 +2522,21 @@ mod web {
     #[wasm_bindgen]
     impl AutoStreamingRequestResult {
         #[wasm_bindgen(getter)]
-        pub fn revision(&self) -> String { self.revision.clone() }
+        pub fn revision(&self) -> String {
+            self.revision.clone()
+        }
         #[wasm_bindgen(getter)]
-        pub fn job_id(&self) -> Option<String> { self.job_id.clone() }
+        pub fn job_id(&self) -> Option<String> {
+            self.job_id.clone()
+        }
         #[wasm_bindgen(getter)]
-        pub fn submitted_primitives(&self) -> f64 { self.submitted_primitives }
+        pub fn submitted_primitives(&self) -> f64 {
+            self.submitted_primitives
+        }
         #[wasm_bindgen(getter)]
-        pub fn total_primitives(&self) -> f64 { self.total_primitives }
+        pub fn total_primitives(&self) -> f64 {
+            self.total_primitives
+        }
         #[wasm_bindgen(getter)]
         pub fn status(&self) -> String {
             self.status.to_owned()
@@ -2524,41 +2583,74 @@ mod web {
         ) -> Result<Self, JsValue> {
             let mut response = Self {
                 selection_ticket: None,
-                status: "backpressure", revision,
-                source_ids: Vec::new(), source_revisions: Vec::new(),
-                source_lengths: Vec::new(), offsets: Vec::new(), lengths: Vec::new(),
-                encodings: Vec::new(), submitted_primitives: 0.0,
-                total_primitives: 0.0, pending_latest: false,
+                status: "backpressure",
+                revision,
+                source_ids: Vec::new(),
+                source_revisions: Vec::new(),
+                source_lengths: Vec::new(),
+                offsets: Vec::new(),
+                lengths: Vec::new(),
+                encodings: Vec::new(),
+                submitted_primitives: 0.0,
+                total_primitives: 0.0,
+                pending_latest: false,
             };
             match request {
                 renderer::AutoStreamingRangeRequest::Ready {
-                    submitted_primitives, total_primitives, ranges, ..
+                    submitted_primitives,
+                    total_primitives,
+                    ranges,
+                    ..
                 } => {
                     response.status = "ready";
                     response.submitted_primitives = submitted_primitives as f64;
                     response.total_primitives = total_primitives as f64;
-                    response.source_ids.try_reserve_exact(ranges.len()).map_err(js_err)?;
-                    response.source_revisions.try_reserve_exact(ranges.len()).map_err(js_err)?;
-                    response.source_lengths.try_reserve_exact(ranges.len()).map_err(js_err)?;
-                    response.offsets.try_reserve_exact(ranges.len()).map_err(js_err)?;
-                    response.lengths.try_reserve_exact(ranges.len()).map_err(js_err)?;
-                    response.encodings.try_reserve_exact(ranges.len()).map_err(js_err)?;
+                    response
+                        .source_ids
+                        .try_reserve_exact(ranges.len())
+                        .map_err(js_err)?;
+                    response
+                        .source_revisions
+                        .try_reserve_exact(ranges.len())
+                        .map_err(js_err)?;
+                    response
+                        .source_lengths
+                        .try_reserve_exact(ranges.len())
+                        .map_err(js_err)?;
+                    response
+                        .offsets
+                        .try_reserve_exact(ranges.len())
+                        .map_err(js_err)?;
+                    response
+                        .lengths
+                        .try_reserve_exact(ranges.len())
+                        .map_err(js_err)?;
+                    response
+                        .encodings
+                        .try_reserve_exact(ranges.len())
+                        .map_err(js_err)?;
                     for range in ranges {
                         response.source_ids.push(range.id);
                         response.source_revisions.push(range.revision as f64);
                         response.source_lengths.push(range.source_len as f64);
                         response.offsets.push(range.offset as f64);
                         response.lengths.push(range.len as f64);
-                        response.encodings.push(stream_encoding_name(range.encoding).to_owned());
+                        response
+                            .encodings
+                            .push(stream_encoding_name(range.encoding).to_owned());
                     }
                 }
                 renderer::AutoStreamingRangeRequest::Backpressure {
-                    submitted_primitives, total_primitives, ..
+                    submitted_primitives,
+                    total_primitives,
+                    ..
                 } => {
                     response.submitted_primitives = submitted_primitives as f64;
                     response.total_primitives = total_primitives as f64;
                 }
-                renderer::AutoStreamingRangeRequest::AllSubmitted { total_primitives, .. } => {
+                renderer::AutoStreamingRangeRequest::AllSubmitted {
+                    total_primitives, ..
+                } => {
                     response.status = "all_submitted";
                     response.submitted_primitives = total_primitives as f64;
                     response.total_primitives = total_primitives as f64;
@@ -2589,7 +2681,9 @@ mod web {
         }
 
         #[wasm_bindgen(getter)]
-        pub fn revision(&self) -> String { self.revision.clone() }
+        pub fn revision(&self) -> String {
+            self.revision.clone()
+        }
         #[wasm_bindgen(getter)]
         pub fn status(&self) -> String {
             self.status.to_owned()
@@ -2652,12 +2746,8 @@ mod web {
                 "derived_buffer_limit"
             }
             renderer::ResidentAdmissionStatus::ArithmeticOverflow => "arithmetic_overflow",
-            renderer::ResidentAdmissionStatus::WorkingSetLimitExceeded => {
-                "working_set_limit"
-            }
-            renderer::ResidentAdmissionStatus::DeviceBufferLimitExceeded => {
-                "device_buffer_limit"
-            }
+            renderer::ResidentAdmissionStatus::WorkingSetLimitExceeded => "working_set_limit",
+            renderer::ResidentAdmissionStatus::DeviceBufferLimitExceeded => "device_buffer_limit",
             renderer::ResidentAdmissionStatus::PoolCapacityUnavailable => {
                 "pool_capacity_unavailable"
             }
@@ -2824,6 +2914,7 @@ mod web {
                 color: content.color,
                 font_size: content.font_size,
                 font: content.font.clone(),
+                align: content.align,
             }
         }
 
@@ -2864,15 +2955,21 @@ mod web {
             Ok(())
         }
 
-        fn styles_for_surface(&mut self, surface_size: (u32, u32)) -> Result<Vec<ChartStyle>, JsValue> {
+        fn styles_for_surface(
+            &mut self,
+            surface_size: (u32, u32),
+        ) -> Result<Vec<ChartStyle>, JsValue> {
             let logical = self.chart_config().chart_area.0;
-            let (scale, _) = renderer::fit_display_panel(
-                (logical.width, logical.height), surface_size,
-            );
+            let (scale, _) =
+                renderer::fit_display_panel((logical.width, logical.height), surface_size);
             let series = self.chart_series().to_vec();
             series
                 .iter()
-                .map(|cfg| self.renderer.create_style_for_series_scaled(cfg, scale).map_err(js_err))
+                .map(|cfg| {
+                    self.renderer
+                        .create_style_for_series_scaled(cfg, scale)
+                        .map_err(js_err)
+                })
                 .collect()
         }
 
@@ -3094,7 +3191,9 @@ mod web {
                     .zip(adapters)
                     .map(|(id, adapter)| (id.as_str(), adapter as &dyn ColumnSource)),
             );
-            self.renderer.add_columns(&refs).map_err(column_registration_error)?;
+            self.renderer
+                .add_columns(&refs)
+                .map_err(column_registration_error)?;
             self.columns = metadata.columns;
             self.column_revisions = metadata.revisions;
             self.next_column_revision = metadata.next_revision;
@@ -3143,8 +3242,13 @@ mod web {
         /// Register a font (TTF/OTF/TTC bytes) for SSoT `font` family names.
         /// Returns the family names the file declares — use them verbatim in
         /// `content.font` / label styles. Registered fonts win over native
-        /// system fonts, so resolution behaves identically on web and
-        /// desktop. Already-drawn text re-rasterizes on the next `frame()`.
+        /// system fonts. A character the chosen face cannot draw falls back
+        /// per character to registered fonts (in registration order), then
+        /// the bundled Liberation Sans, then, on desktop only, installed
+        /// system fonts. Resolution through registered and bundled faces is
+        /// therefore identical on web and desktop; installed system fonts
+        /// are a desktop-only fallback. Already-drawn text re-rasterizes on
+        /// the next `frame()`.
         ///
         /// JS: `chart.register_font(new Uint8Array(await (await fetch(url)).arrayBuffer()))`
         pub fn register_font(&mut self, bytes: &[u8]) -> Result<Vec<String>, JsValue> {
@@ -3193,8 +3297,7 @@ mod web {
             memory_budget_bytes: f64,
             working_set_limit_bytes: f64,
         ) -> Result<(), JsValue> {
-            let memory_budget_bytes =
-                js_safe_u64(memory_budget_bytes, "memory_budget_bytes")?;
+            let memory_budget_bytes = js_safe_u64(memory_budget_bytes, "memory_budget_bytes")?;
             let working_set_limit_bytes =
                 js_safe_u64(working_set_limit_bytes, "working_set_limit_bytes")?;
             let current = self.renderer.gpu_memory_usage().total_bytes();
@@ -3250,11 +3353,13 @@ mod web {
             sources.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
             let resources: Vec<_> = GpuResourceKind::ALL
                 .into_iter()
-                .map(|kind| serde_json::json!({
-                    "kind": kind.label(),
-                    "live_bytes": usage.live_bytes_of(kind),
-                    "retired_bytes": usage.retired_bytes_of(kind),
-                }))
+                .map(|kind| {
+                    serde_json::json!({
+                        "kind": kind.label(),
+                        "live_bytes": usage.live_bytes_of(kind),
+                        "retired_bytes": usage.retired_bytes_of(kind),
+                    })
+                })
                 .collect();
             serde_json::json!({
                 "total_bytes": usage.total_bytes(),
@@ -3272,7 +3377,8 @@ mod web {
                 },
                 "resources": resources,
                 "sources": sources,
-            }).to_string()
+            })
+            .to_string()
         }
 
         /// Compact live resident columns, drop the unused pool slab, and wait
@@ -3286,7 +3392,9 @@ mod web {
                     | renderer::StreamingState::AllSubmitted
                     | renderer::StreamingState::Cancelling
             ) {
-                return Err(js_err("finish or cancel the active stream before GPU pool cleanup"));
+                return Err(js_err(
+                    "finish or cancel the active stream before GPU pool cleanup",
+                ));
             }
             self.renderer
                 .release_unused_pool_memory(POOL_CAPACITY)
@@ -3302,10 +3410,8 @@ mod web {
             &mut self,
             max_primitives_per_chunk: f64,
         ) -> Result<AutoStreamingRequestResult, JsValue> {
-            let max_primitives_per_chunk = js_safe_u64(
-                max_primitives_per_chunk,
-                "max_primitives_per_chunk",
-            )?;
+            let max_primitives_per_chunk =
+                js_safe_u64(max_primitives_per_chunk, "max_primitives_per_chunk")?;
             let (display_config, _, display_scale) = self.display_config();
             let result = self
                 .renderer
@@ -3329,7 +3435,9 @@ mod web {
                 renderer::AutoStreamingRequest::Started { sources, .. } => {
                     let mut source_ids = Vec::new();
                     let mut source_revisions = Vec::new();
-                    source_ids.try_reserve_exact(sources.len()).map_err(js_err)?;
+                    source_ids
+                        .try_reserve_exact(sources.len())
+                        .map_err(js_err)?;
                     source_revisions
                         .try_reserve_exact(sources.len())
                         .map_err(js_err)?;
@@ -3405,7 +3513,12 @@ mod web {
                     ..
                 } => StreamingStepResult {
                     status: "submitted",
-                    revision: self.renderer.stream_status(self.chart_id).map_err(js_err)?.revision.to_string(),
+                    revision: self
+                        .renderer
+                        .stream_status(self.chart_id)
+                        .map_err(js_err)?
+                        .revision
+                        .to_string(),
                     submitted_primitives: submitted_primitives as f64,
                     total_primitives: total_primitives as f64,
                     pending_latest: false,
@@ -3416,17 +3529,26 @@ mod web {
                     ..
                 } => StreamingStepResult {
                     status: "backpressure",
-                    revision: self.renderer.stream_status(self.chart_id).map_err(js_err)?.revision.to_string(),
+                    revision: self
+                        .renderer
+                        .stream_status(self.chart_id)
+                        .map_err(js_err)?
+                        .revision
+                        .to_string(),
                     submitted_primitives: submitted_primitives as f64,
                     total_primitives: total_primitives as f64,
                     pending_latest: false,
                 },
                 renderer::AutoStreamingProgress::AllSubmitted {
-                    total_primitives,
-                    ..
+                    total_primitives, ..
                 } => StreamingStepResult {
                     status: "all_submitted",
-                    revision: self.renderer.stream_status(self.chart_id).map_err(js_err)?.revision.to_string(),
+                    revision: self
+                        .renderer
+                        .stream_status(self.chart_id)
+                        .map_err(js_err)?
+                        .revision
+                        .to_string(),
                     submitted_primitives: total_primitives as f64,
                     total_primitives: total_primitives as f64,
                     pending_latest: false,
@@ -3435,7 +3557,12 @@ mod web {
                     let counts = self.renderer.stream_status(self.chart_id).map_err(js_err)?;
                     StreamingStepResult {
                         status: "complete",
-                        revision: self.renderer.stream_status(self.chart_id).map_err(js_err)?.revision.to_string(),
+                        revision: self
+                            .renderer
+                            .stream_status(self.chart_id)
+                            .map_err(js_err)?
+                            .revision
+                            .to_string(),
                         submitted_primitives: counts.submitted_primitives as f64,
                         total_primitives: counts.total_primitives as f64,
                         pending_latest: pending_latest.is_some(),
@@ -3557,13 +3684,13 @@ mod web {
                         .ok_or_else(|| js_err("column revision counter exhausted"))?,
                 );
             }
-            let max_primitives_per_chunk = js_safe_u64(
-                max_primitives_per_chunk,
-                "max_primitives_per_chunk",
-            )?;
+            let max_primitives_per_chunk =
+                js_safe_u64(max_primitives_per_chunk, "max_primitives_per_chunk")?;
             let mut source_ids = Vec::new();
             let mut source_revisions = Vec::new();
-            source_ids.try_reserve_exact(columns.len()).map_err(js_err)?;
+            source_ids
+                .try_reserve_exact(columns.len())
+                .map_err(js_err)?;
             source_revisions
                 .try_reserve_exact(columns.len())
                 .map_err(js_err)?;
@@ -3644,8 +3771,12 @@ mod web {
             };
             let counts = self.renderer.stream_status(self.chart_id).map_err(js_err)?;
             let response = AutoStreamingRangeRequestResult::from_core(
-                result, counts.revision.to_string(),
-                (counts.submitted_primitives as f64, counts.total_primitives as f64),
+                result,
+                counts.revision.to_string(),
+                (
+                    counts.submitted_primitives as f64,
+                    counts.total_primitives as f64,
+                ),
             )?;
             if response.status == "complete" {
                 if let Some(pending) = self.pending_stream_handoff.take() {
@@ -3662,55 +3793,108 @@ mod web {
         }
 
         /// Independent selected-row request; it never advances the data cursor.
-        pub fn stream_selection_request_ranges(&mut self) -> Result<AutoStreamingRangeRequestResult, JsValue> {
-            let request = self.renderer.request_stream_selection_ranges(self.chart_id).map_err(js_err)?;
-            let revision_name = self.renderer.stream_status(self.chart_id).map_err(js_err)?.desired_revision.to_string();
+        pub fn stream_selection_request_ranges(
+            &mut self,
+        ) -> Result<AutoStreamingRangeRequestResult, JsValue> {
+            let request = self
+                .renderer
+                .request_stream_selection_ranges(self.chart_id)
+                .map_err(js_err)?;
+            let revision_name = self
+                .renderer
+                .stream_status(self.chart_id)
+                .map_err(js_err)?
+                .desired_revision
+                .to_string();
             let (ticket, _revision, request) = match request {
-                renderer::StreamingSelectionRequest::Ready { ticket, revision, ranges } =>
-                    (Some(ticket), revision, renderer::AutoStreamingRangeRequest::Ready {
-                        revision, ranges, submitted_primitives: 0, total_primitives: 0,
-                    }),
-                renderer::StreamingSelectionRequest::Backpressure { revision } =>
-                    (None, revision, renderer::AutoStreamingRangeRequest::Backpressure {
-                        revision, submitted_primitives: 0, total_primitives: 0,
-                    }),
-                renderer::StreamingSelectionRequest::Complete { revision } =>
-                    (None, revision, renderer::AutoStreamingRangeRequest::Complete {
-                        revision, pending_latest: None,
-                    }),
+                renderer::StreamingSelectionRequest::Ready {
+                    ticket,
+                    revision,
+                    ranges,
+                } => (
+                    Some(ticket),
+                    revision,
+                    renderer::AutoStreamingRangeRequest::Ready {
+                        revision,
+                        ranges,
+                        submitted_primitives: 0,
+                        total_primitives: 0,
+                    },
+                ),
+                renderer::StreamingSelectionRequest::Backpressure { revision } => (
+                    None,
+                    revision,
+                    renderer::AutoStreamingRangeRequest::Backpressure {
+                        revision,
+                        submitted_primitives: 0,
+                        total_primitives: 0,
+                    },
+                ),
+                renderer::StreamingSelectionRequest::Complete { revision } => (
+                    None,
+                    revision,
+                    renderer::AutoStreamingRangeRequest::Complete {
+                        revision,
+                        pending_latest: None,
+                    },
+                ),
                 renderer::StreamingSelectionRequest::Failed { revision } => {
                     let mut response = AutoStreamingRangeRequestResult::from_core(
-                        renderer::AutoStreamingRangeRequest::Complete { revision, pending_latest: None },
-                        revision_name, (0.0, 0.0),
+                        renderer::AutoStreamingRangeRequest::Complete {
+                            revision,
+                            pending_latest: None,
+                        },
+                        revision_name,
+                        (0.0, 0.0),
                     )?;
                     response.status = "failed";
                     return Ok(response);
                 }
             };
-            let mut result = AutoStreamingRangeRequestResult::from_core(request, revision_name, (0.0, 0.0))?;
+            let mut result =
+                AutoStreamingRangeRequestResult::from_core(request, revision_name, (0.0, 0.0))?;
             result.selection_ticket = ticket;
             Ok(result)
         }
 
         pub fn stream_selection_submit_ranges(
-            &mut self, request: &AutoStreamingRangeRequestResult, ids: Vec<String>,
-            revisions: Vec<f64>, source_lengths: Vec<f64>, offsets: Vec<f64>, sources: js_sys::Array,
+            &mut self,
+            request: &AutoStreamingRangeRequestResult,
+            ids: Vec<String>,
+            revisions: Vec<f64>,
+            source_lengths: Vec<f64>,
+            offsets: Vec<f64>,
+            sources: js_sys::Array,
         ) -> Result<(), JsValue> {
-            let ticket = request.selection_ticket.ok_or_else(|| js_err("not a selected-row request"))?;
+            let ticket = request
+                .selection_ticket
+                .ok_or_else(|| js_err("not a selected-row request"))?;
             let sources = js_stream_sources(&sources)?;
-            let bindings = stream_range_bindings(&ids, &revisions, &source_lengths, &offsets, &sources)?;
-            self.renderer.submit_stream_selection_ranges(ticket, &bindings).map_err(js_err)?;
+            let bindings =
+                stream_range_bindings(&ids, &revisions, &source_lengths, &offsets, &sources)?;
+            self.renderer
+                .submit_stream_selection_ranges(ticket, &bindings)
+                .map_err(js_err)?;
             self.request_host_redraw();
             Ok(())
         }
 
-        pub fn discard_stream_selection_request(&mut self, request: &AutoStreamingRangeRequestResult) -> Result<(), JsValue> {
-            let ticket = request.selection_ticket.ok_or_else(|| js_err("not a selected-row request"))?;
-            self.renderer.abandon_stream_selection(ticket).map_err(js_err)
+        pub fn discard_stream_selection_request(
+            &mut self,
+            request: &AutoStreamingRangeRequestResult,
+        ) -> Result<(), JsValue> {
+            let ticket = request
+                .selection_ticket
+                .ok_or_else(|| js_err("not a selected-row request"))?;
+            self.renderer
+                .abandon_stream_selection(ticket)
+                .map_err(js_err)
         }
 
         pub fn suspend_stream_selection(&mut self) -> Result<(), JsValue> {
-            self.renderer.suspend_stream_selection(self.chart_id).map_err(js_err)
+            self.renderer
+                .suspend_stream_selection(self.chart_id)
+                .map_err(js_err)
         }
 
         /// Submit exactly the typed-array chunks named by the pending range
@@ -3724,7 +3908,8 @@ mod web {
             sources: js_sys::Array,
         ) -> Result<StreamingStepResult, JsValue> {
             let sources = js_stream_sources(&sources)?;
-            let bindings = stream_range_bindings(&ids, &revisions, &source_lengths, &offsets, &sources)?;
+            let bindings =
+                stream_range_bindings(&ids, &revisions, &source_lengths, &offsets, &sources)?;
             let progress = self
                 .renderer
                 .auto_stream_chart_submit_ranges(self.chart_id, &bindings)
@@ -3736,7 +3921,12 @@ mod web {
                     ..
                 } => StreamingStepResult {
                     status: "submitted",
-                    revision: self.renderer.stream_status(self.chart_id).map_err(js_err)?.revision.to_string(),
+                    revision: self
+                        .renderer
+                        .stream_status(self.chart_id)
+                        .map_err(js_err)?
+                        .revision
+                        .to_string(),
                     submitted_primitives: submitted_primitives as f64,
                     total_primitives: total_primitives as f64,
                     pending_latest: false,
@@ -3747,17 +3937,26 @@ mod web {
                     ..
                 } => StreamingStepResult {
                     status: "backpressure",
-                    revision: self.renderer.stream_status(self.chart_id).map_err(js_err)?.revision.to_string(),
+                    revision: self
+                        .renderer
+                        .stream_status(self.chart_id)
+                        .map_err(js_err)?
+                        .revision
+                        .to_string(),
                     submitted_primitives: submitted_primitives as f64,
                     total_primitives: total_primitives as f64,
                     pending_latest: false,
                 },
                 renderer::AutoStreamingProgress::AllSubmitted {
-                    total_primitives,
-                    ..
+                    total_primitives, ..
                 } => StreamingStepResult {
                     status: "all_submitted",
-                    revision: self.renderer.stream_status(self.chart_id).map_err(js_err)?.revision.to_string(),
+                    revision: self
+                        .renderer
+                        .stream_status(self.chart_id)
+                        .map_err(js_err)?
+                        .revision
+                        .to_string(),
                     submitted_primitives: total_primitives as f64,
                     total_primitives: total_primitives as f64,
                     pending_latest: false,
@@ -3766,7 +3965,12 @@ mod web {
                     let counts = self.renderer.stream_status(self.chart_id).map_err(js_err)?;
                     StreamingStepResult {
                         status: "complete",
-                        revision: self.renderer.stream_status(self.chart_id).map_err(js_err)?.revision.to_string(),
+                        revision: self
+                            .renderer
+                            .stream_status(self.chart_id)
+                            .map_err(js_err)?
+                            .revision
+                            .to_string(),
                         submitted_primitives: counts.submitted_primitives as f64,
                         total_primitives: counts.total_primitives as f64,
                         pending_latest: pending_latest.is_some(),
@@ -3874,7 +4078,9 @@ mod web {
                         .ok_or_else(|| js_err("column revision counter exhausted"))?,
                 );
             }
-            self.renderer.replace_streamed_columns(columns).map_err(js_err)?;
+            self.renderer
+                .replace_streamed_columns(columns)
+                .map_err(js_err)?;
             self.columns = next_columns;
             self.column_revisions = next_revisions;
             self.next_column_revision = next_column_revision;
@@ -3942,10 +4148,8 @@ mod web {
         /// Start or restart this chart's exact streaming surface and renderer-
         /// owned CPU cursor. No LOD or downsampling is performed.
         pub fn begin_streaming(&mut self, max_primitives_per_chunk: f64) -> Result<(), JsValue> {
-            let max_primitives_per_chunk = js_safe_u64(
-                max_primitives_per_chunk,
-                "max_primitives_per_chunk",
-            )?;
+            let max_primitives_per_chunk =
+                js_safe_u64(max_primitives_per_chunk, "max_primitives_per_chunk")?;
             let (display_config, _, _) = self.display_config();
             let display_chart = Chart::new(display_config);
             self.renderer
@@ -3998,7 +4202,12 @@ mod web {
                     self.request_host_redraw();
                     StreamingStepResult {
                         status: "submitted",
-                        revision: self.renderer.stream_status(self.chart_id).map_err(js_err)?.revision.to_string(),
+                        revision: self
+                            .renderer
+                            .stream_status(self.chart_id)
+                            .map_err(js_err)?
+                            .revision
+                            .to_string(),
                         submitted_primitives: submitted_primitives as f64,
                         total_primitives: total_primitives as f64,
                         pending_latest: false,
@@ -4009,7 +4218,12 @@ mod web {
                     total_primitives,
                 } => StreamingStepResult {
                     status: "backpressure",
-                    revision: self.renderer.stream_status(self.chart_id).map_err(js_err)?.revision.to_string(),
+                    revision: self
+                        .renderer
+                        .stream_status(self.chart_id)
+                        .map_err(js_err)?
+                        .revision
+                        .to_string(),
                     submitted_primitives: submitted_primitives as f64,
                     total_primitives: total_primitives as f64,
                     pending_latest: false,
@@ -4017,7 +4231,12 @@ mod web {
                 renderer::StreamingProgress::AllSubmitted { total_primitives } => {
                     StreamingStepResult {
                         status: "all_submitted",
-                        revision: self.renderer.stream_status(self.chart_id).map_err(js_err)?.revision.to_string(),
+                        revision: self
+                            .renderer
+                            .stream_status(self.chart_id)
+                            .map_err(js_err)?
+                            .revision
+                            .to_string(),
                         submitted_primitives: total_primitives as f64,
                         total_primitives: total_primitives as f64,
                         pending_latest: false,
@@ -4038,12 +4257,17 @@ mod web {
         /// retired renderer-owned surfaces have crossed the completion fence.
         pub async fn cancel_streaming_and_wait(&mut self) -> Result<(), JsValue> {
             self.pending_stream_handoff = None;
-            self.renderer.cancel_streaming_chart_and_wait(self.chart_id).await.map_err(js_err)
+            self.renderer
+                .cancel_streaming_chart_and_wait(self.chart_id)
+                .await
+                .map_err(js_err)
         }
 
         pub fn set_stream_chunk_budget(&mut self, primitives: f64) -> Result<(), JsValue> {
             let primitives = js_safe_u64(primitives, "stream chunk budget")?;
-            self.renderer.set_stream_chunk_budget(self.chart_id, primitives).map_err(js_err)
+            self.renderer
+                .set_stream_chunk_budget(self.chart_id, primitives)
+                .map_err(js_err)
         }
 
         /// Wake after work already submitted to this queue completes. The
@@ -4055,7 +4279,9 @@ mod web {
                 let _ = sender.send(());
             });
             wasm_bindgen_futures::future_to_promise(async move {
-                receiver.await.map_err(|_| js_err("stream GPU completion callback was dropped"))?;
+                receiver
+                    .await
+                    .map_err(|_| js_err("stream GPU completion callback was dropped"))?;
                 Ok(JsValue::UNDEFINED)
             })
         }
@@ -4063,7 +4289,10 @@ mod web {
         /// Pure metadata inspection; does not poll, reserve a range, or draw.
         pub fn stream_status(&self) -> Result<String, JsValue> {
             let status = self.renderer.stream_status(self.chart_id).map_err(js_err)?;
-            let residency = self.renderer.view_residency_status(self.chart_id).map_err(js_err)?;
+            let residency = self
+                .renderer
+                .view_residency_status(self.chart_id)
+                .map_err(js_err)?;
             let name = match status.status {
                 renderer::StreamingState::Idle => "idle",
                 renderer::StreamingState::Active => "active",
@@ -4089,13 +4318,16 @@ mod web {
                     "refusal_reason": residency.refusal_reason,
                     "picking_available": residency.picking_available,
                 },
-            }).to_string())
+            })
+            .to_string())
         }
 
         /// Metadata-only admission for incoming columns; no payload is read,
         /// registered, uploaded, or reserved. Chart-derived buffers are excluded.
         pub fn inspect_column_admission(&self, lengths: Vec<f64>) -> Result<String, JsValue> {
-            let lengths = lengths.into_iter().map(|value| js_safe_u64(value, "column length"))
+            let lengths = lengths
+                .into_iter()
+                .map(|value| js_safe_u64(value, "column length"))
                 .collect::<Result<Vec<_>, _>>()?;
             let report = self.renderer.inspect_column_admission(&lengths);
             Ok(serde_json::json!({
@@ -4110,7 +4342,8 @@ mod web {
                 "device_buffer_limit_bytes": report.device_buffer_limit_bytes,
                 "includes_chart_derived_resources": false,
                 "reservation": false,
-            }).to_string())
+            })
+            .to_string())
         }
 
         pub fn streaming_capabilities(&self) -> String {
@@ -4126,19 +4359,25 @@ mod web {
                 "stream_export": render_supported,
                 "operations_require_completed_revision": true,
                 "contour": false,
-            }).to_string()
+            })
+            .to_string()
         }
 
         /// Synchronous fit request routing, allowing the facade to wait for
         /// renderer progress without holding a wasm mutable borrow.
         pub fn request_stream_auto_fit(&mut self, padding: f64) -> Result<bool, JsValue> {
             let streamed = self.chart_series().iter().any(|series| {
-                referenced_columns(series).into_iter().any(|id| matches!(
-                    self.renderer.logical_column(id), Some(renderer::LogicalColumn::Streamed(_))
-                ))
+                referenced_columns(series).into_iter().any(|id| {
+                    matches!(
+                        self.renderer.logical_column(id),
+                        Some(renderer::LogicalColumn::Streamed(_))
+                    )
+                })
             });
             if streamed {
-                self.renderer.request_stream_auto_fit(self.chart_id, padding).map_err(js_err)?;
+                self.renderer
+                    .request_stream_auto_fit(self.chart_id, padding)
+                    .map_err(js_err)?;
             }
             Ok(streamed)
         }
@@ -4422,7 +4661,11 @@ mod web {
             let mut next_styles = Vec::new();
             next_styles.try_reserve(proposed.len()).map_err(js_err)?;
             for series in &proposed {
-                next_styles.push(self.renderer.create_style_for_series_scaled(series, scale).map_err(js_err)?);
+                next_styles.push(
+                    self.renderer
+                        .create_style_for_series_scaled(series, scale)
+                        .map_err(js_err)?,
+                );
             }
             let mut next_labels = self.labels.clone();
             if let Some(index) = existing {
@@ -4714,9 +4957,12 @@ mod web {
 
         // ---- titles ----
 
+        /// Set plain title text and grow its band if needed. For a text-only
+        /// edit that keeps the exact margin, use `get_config` / `set_config`
+        /// and change only `chart_title.text`.
         pub fn set_title(&mut self, text: &str) -> Result<(), JsValue> {
             let mut config = self.chart_config().clone();
-            config.chart_title.text.segments = rich_segments_from_text(text);
+            set_plain_chart_title(&mut config, text);
             self.replace_chart_config(config)
         }
 
@@ -4782,7 +5028,11 @@ mod web {
             let mut styles = Vec::new();
             styles.try_reserve(series.len()).map_err(js_err)?;
             for cfg in &series {
-                styles.push(self.renderer.create_style_for_series_scaled(cfg, scale).map_err(js_err)?);
+                styles.push(
+                    self.renderer
+                        .create_style_for_series_scaled(cfg, scale)
+                        .map_err(js_err)?,
+                );
             }
             let mut config = self.chart_config().clone();
             renderer::config::update_legend_symbols_preserving_text(
@@ -4813,6 +5063,11 @@ mod web {
         /// Replace the whole option SSoT from JSON. Marks everything dirty —
         /// the next `frame()` re-rasters the chrome and refreshes the
         /// transform, exactly like any other config edit.
+        /// Use `get_config`, edit only the desired fields, then submit the
+        /// complete config here for selective control. For example, writing
+        /// only axis `min` / `max` preserves tick and label settings, whereas
+        /// the auto-fit helpers derive those settings along with the range.
+        /// This call does not auto-fit ranges or fit the title band.
         /// JS: `chart.set_config(JSON.stringify(cfg));`
         pub fn set_config(&mut self, json: &str) -> Result<(), JsValue> {
             let new_cfg: renderer::Config = serde_json::from_str(json).map_err(js_err)?;
@@ -4823,7 +5078,11 @@ mod web {
             let mut new_styles = Vec::new();
             new_styles.try_reserve(series.len()).map_err(js_err)?;
             for cfg in &series {
-                new_styles.push(self.renderer.create_style_for_series_scaled(cfg, scale).map_err(js_err)?);
+                new_styles.push(
+                    self.renderer
+                        .create_style_for_series_scaled(cfg, scale)
+                        .map_err(js_err)?,
+                );
             }
             self.replace_chart_config(new_cfg)?;
             if legend_content_changed {
@@ -4875,7 +5134,11 @@ mod web {
             let mut new_styles = Vec::new();
             new_styles.try_reserve(new_series.len()).map_err(js_err)?;
             for cfg in &new_series {
-                new_styles.push(self.renderer.create_style_for_series_scaled(cfg, scale).map_err(js_err)?);
+                new_styles.push(
+                    self.renderer
+                        .create_style_for_series_scaled(cfg, scale)
+                        .map_err(js_err)?,
+                );
             }
             let mut config = self.chart_config().clone();
             if self.legend_auto_managed {
@@ -4944,6 +5207,306 @@ mod web {
                 .map(|el| el.element_id())
         }
 
+        /// Renderer-measured decoration bounds in physical canvas pixels.
+        pub fn decoration_bounds(&self, target: &str) -> Result<String, JsValue> {
+            let (config, _, _) = self.display_config();
+            let id = self.hitmap.find(target);
+            let value=id.and_then(|id|self.hitmap.selection_box(id,&config,&CpuTextMeasure::for_style(&config.draw_style))).map(|b|serde_json::json!({"rect":[b.rect.x,b.rect.y,b.rect.width,b.rect.height],"handles":b.handles.iter().map(|r|vec![r.x,r.y,r.width,r.height]).collect::<Vec<_>>()}));
+            serde_json::to_string(&value).map_err(js_err)
+        }
+        // Copy only the selected scalar pairs out of the resident GPU pool.
+        // Registered source arrays are not retained or reconstructed on CPU.
+        async fn read_selection_samples(
+            &self,
+            samples: &[(String, usize)],
+        ) -> Result<Vec<f64>, JsValue> {
+            let offsets = samples
+                .iter()
+                .map(|(column, index)| {
+                    let handle = self
+                        .renderer
+                        .pool()
+                        .handle_for(column)
+                        .ok_or_else(|| js_err("selected column no longer exists"))?;
+                    if *index >= handle.len_values {
+                        return Err(js_err("selected index is outside the column"));
+                    }
+                    Ok(handle.offset + *index as u64 * 8)
+                })
+                .collect::<Result<Vec<_>, JsValue>>()?;
+            let buffer = self
+                .renderer
+                .device()
+                .create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("figgy selected values"),
+                    size: offsets.len() as u64 * 8,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                });
+            let mut encoder = self
+                .renderer
+                .device()
+                .create_command_encoder(&Default::default());
+            for (index, offset) in offsets.iter().enumerate() {
+                encoder.copy_buffer_to_buffer(
+                    self.renderer.pool().buffer(),
+                    *offset,
+                    &buffer,
+                    index as u64 * 8,
+                    8,
+                );
+            }
+            self.renderer.queue().submit([encoder.finish()]);
+            let slice = buffer.slice(..);
+            let (sender, receiver) = futures_channel::oneshot::channel();
+            slice.map_async(wgpu::MapMode::Read, move |result| {
+                let _ = sender.send(result);
+            });
+            receiver.await.map_err(js_err)?.map_err(js_err)?;
+            let mapped = slice.get_mapped_range().map_err(js_err)?;
+            let values = mapped
+                .chunks_exact(8)
+                .map(|pair| {
+                    f32::from_le_bytes(pair[..4].try_into().unwrap()) as f64
+                        + f32::from_le_bytes(pair[4..].try_into().unwrap()) as f64
+                })
+                .collect();
+            drop(mapped);
+            buffer.unmap();
+            Ok(values)
+        }
+
+        /// Inspect the first resident typed selection as JSON, or `"null"` when
+        /// none is selected. Only selected GPU samples are read back. Histograms
+        /// expose `bin_start`, `bin_end`, `value`, and `orientation`; the value
+        /// is the stored height (also valid for weighted/density histograms).
+        /// Point and matrix selections expose their coordinates and cell value.
+        pub async fn selection_details(&self) -> Result<String, JsValue> {
+            use renderer::config::PickedDataRef;
+            let Some(reference) = self
+                .chart_config()
+                .picked_data
+                .as_ref()
+                .and_then(|selection| selection.refs.first())
+                .cloned()
+            else {
+                return Ok("null".into());
+            };
+            let series = self
+                .chart_series()
+                .iter()
+                .find(|series| series.series_id == reference.series_id())
+                .cloned()
+                .ok_or_else(|| js_err("selected series no longer exists"))?;
+            let mut result =
+                serde_json::json!({"identity": reference, "series_id": series.series_id});
+            match &reference {
+                PickedDataRef::Point { point_index, .. } => {
+                    let values = self
+                        .read_selection_samples(&[
+                            (series.x_column, *point_index),
+                            (series.y_column, *point_index),
+                        ])
+                        .await?;
+                    result["index"] = serde_json::json!(point_index);
+                    result["x"] = serde_json::json!(values[0]);
+                    result["y"] = serde_json::json!(values[1]);
+                }
+                PickedDataRef::HistogramBin { bin_index, .. } => {
+                    let renderer::DataRenderType::Histogram { bar } = &series.render_type else {
+                        return Err(js_err("selected series is not a histogram"));
+                    };
+                    let (edges, heights) = match bar.orientation {
+                        renderer::data_config::BarOrientation::Vertical => {
+                            (&series.x_column, &series.y_column)
+                        }
+                        renderer::data_config::BarOrientation::Horizontal => {
+                            (&series.y_column, &series.x_column)
+                        }
+                    };
+                    let values = self
+                        .read_selection_samples(&[
+                            (edges.clone(), *bin_index),
+                            (edges.clone(), bin_index + 1),
+                            (heights.clone(), *bin_index),
+                        ])
+                        .await?;
+                    result["index"] = serde_json::json!(bin_index);
+                    result["bin_start"] = serde_json::json!(values[0]);
+                    result["bin_end"] = serde_json::json!(values[1]);
+                    result["value"] = serde_json::json!(values[2]);
+                    result["orientation"] = serde_json::json!(bar.orientation);
+                }
+                PickedDataRef::MatrixCell {
+                    x_index, y_index, ..
+                } => {
+                    let style = serde_json::to_value(&series.render_type).map_err(js_err)?;
+                    let matrix = &style.as_object().unwrap().values().next().unwrap()["matrix"];
+                    let across_x = matrix["orientation"] == "ColumnsAreY";
+                    let column_index = if across_x { *y_index } else { *x_index };
+                    let sample_index = if across_x { *x_index } else { *y_index };
+                    let column = matrix["columns"][column_index]
+                        .as_str()
+                        .ok_or_else(|| js_err("selected cell no longer exists"))?;
+                    let mut samples = vec![
+                        (series.x_column.clone(), *x_index),
+                        (series.y_column.clone(), *y_index),
+                        (column.into(), sample_index),
+                    ];
+                    let edges = matrix["grid_layout"] == "Edges";
+                    if edges {
+                        samples.extend([
+                            (series.x_column, x_index + 1),
+                            (series.y_column, y_index + 1),
+                        ]);
+                    }
+                    let values = self.read_selection_samples(&samples).await?;
+                    result["x_index"] = serde_json::json!(x_index);
+                    result["y_index"] = serde_json::json!(y_index);
+                    result["x"] = serde_json::json!(if edges {
+                        (values[0] + values[3]) * 0.5
+                    } else {
+                        values[0]
+                    });
+                    result["y"] = serde_json::json!(if edges {
+                        (values[1] + values[4]) * 0.5
+                    } else {
+                        values[1]
+                    });
+                    result["value"] = serde_json::json!(values[2]);
+                }
+                _ => return Ok("null".into()),
+            }
+            serde_json::to_string(&result).map_err(js_err)
+        }
+
+        /// Move the resident typed data selection using source indices.
+        pub fn step_selection(&mut self, dx: i32, dy: i32) -> Result<bool, JsValue> {
+            let mut cfg = self.chart_config().clone();
+            let Some(reference) = cfg.picked_data.as_mut().and_then(|s| s.refs.first_mut()) else {
+                return Ok(false);
+            };
+            let Some(position) = self
+                .chart_series()
+                .iter()
+                .position(|s| s.series_id == reference.series_id())
+            else {
+                return Ok(false);
+            };
+            let shift = |index: usize, delta: i32, count: usize| {
+                index
+                    .saturating_add_signed(delta as isize)
+                    .min(count.saturating_sub(1))
+            };
+            match reference {
+                renderer::config::PickedDataRef::Point {
+                    series_id,
+                    source_id,
+                    point_index,
+                } => {
+                    let points =
+                        self.chart_series()
+                            .iter()
+                            .filter(|s| {
+                                let style = serde_json::to_value(&s.render_type).unwrap();
+                                style.as_object().unwrap().values().next().is_some_and(|v| {
+                                    v["line"].is_object() || v["scatter"].is_object()
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                    let Some(index) = points.iter().position(|s| s.series_id == *series_id) else {
+                        return Ok(false);
+                    };
+                    let series = points[shift(index, dy, points.len())];
+                    let count = self.columns[&series.x_column].min(self.columns[&series.y_column]);
+                    *series_id = series.series_id.clone();
+                    *source_id = series.source_id.clone();
+                    *point_index = shift(*point_index, dx, count);
+                }
+                renderer::config::PickedDataRef::HistogramBin {
+                    series_id,
+                    source_id,
+                    bin_index,
+                } => {
+                    let renderer::DataRenderType::Histogram { bar } =
+                        &self.chart_series()[position].render_type
+                    else {
+                        return Ok(false);
+                    };
+                    let horizontal = matches!(
+                        bar.orientation,
+                        renderer::data_config::BarOrientation::Horizontal
+                    );
+                    let histograms = self
+                        .chart_series()
+                        .iter()
+                        .filter(|s| {
+                            matches!(&s.render_type,
+                            renderer::DataRenderType::Histogram { bar: other }
+                            if other.orientation == bar.orientation)
+                        })
+                        .collect::<Vec<_>>();
+                    let index = histograms
+                        .iter()
+                        .position(|s| s.series_id == *series_id)
+                        .unwrap();
+                    let (bin_delta, series_delta) = if horizontal { (dy, dx) } else { (dx, dy) };
+                    let series = histograms[shift(index, series_delta, histograms.len())];
+                    let (edges, values) = if horizontal {
+                        (&series.y_column, &series.x_column)
+                    } else {
+                        (&series.x_column, &series.y_column)
+                    };
+                    let count = self.columns[edges]
+                        .saturating_sub(1)
+                        .min(self.columns[values]);
+                    if count == 0 {
+                        return Ok(false);
+                    }
+                    *series_id = series.series_id.clone();
+                    *source_id = series.source_id.clone();
+                    *bin_index = shift(*bin_index, bin_delta, count);
+                }
+                renderer::config::PickedDataRef::MatrixCell {
+                    x_index, y_index, ..
+                } => {
+                    let series = &self.chart_series()[position];
+                    let style = serde_json::to_value(&series.render_type).map_err(js_err)?;
+                    let matrix = &style.as_object().unwrap().values().next().unwrap()["matrix"];
+                    let edges = usize::from(matrix["grid_layout"] == "Edges");
+                    let columns = matrix["columns"]
+                        .as_array()
+                        .ok_or_else(|| js_err("selected matrix no longer exists"))?;
+                    let depth = columns
+                        .iter()
+                        .filter_map(|c| self.columns.get(c.as_str()?))
+                        .copied()
+                        .min()
+                        .unwrap_or(0);
+                    let (nx, ny) = if matrix["orientation"] == "ColumnsAreY" {
+                        (depth, columns.len())
+                    } else {
+                        (columns.len(), depth)
+                    };
+                    *x_index = shift(
+                        *x_index,
+                        dx,
+                        nx.min(self.columns[&series.x_column].saturating_sub(edges)),
+                    );
+                    *y_index = shift(
+                        *y_index,
+                        dy,
+                        ny.min(self.columns[&series.y_column].saturating_sub(edges)),
+                    );
+                }
+                _ => return Ok(false),
+            }
+            if cfg == *self.chart_config() {
+                return Ok(false);
+            }
+            self.replace_chart_config(cfg)?;
+            Ok(true)
+        }
         async fn prepare_gpu_picking(&mut self) -> Result<(), JsValue> {
             self.renderer
                 .enable_gpu_picking_async()
@@ -4976,9 +5539,14 @@ mod web {
             max_distance_px: f32,
         ) -> Result<JsValue, JsValue> {
             if self.renderer.is_streaming_chart(self.chart_id) {
-                let Some(picked) = self.renderer
+                let Some(picked) = self
+                    .renderer
                     .pick_chart_view_cache_at(self.chart_id, [x, y], max_distance_px)
-                    .await.map_err(js_err)? else { return Ok(JsValue::UNDEFINED); };
+                    .await
+                    .map_err(js_err)?
+                else {
+                    return Ok(JsValue::UNDEFINED);
+                };
                 let json = crate::picked_point_json_string(&picked).map_err(js_err)?;
                 return Ok(JsValue::from_str(&json));
             }
@@ -5004,10 +5572,18 @@ mod web {
             forward: bool,
         ) -> Result<JsValue, JsValue> {
             let current = js_safe_u64(current, "current point index")?;
-            let current = usize::try_from(current).map_err(|_| js_err("point index exceeds platform size"))?;
-            Ok(self.renderer.next_view_point_index(
-                self.chart_id, source_id.as_deref(), &series_id, current, forward,
-            ).map_or(JsValue::UNDEFINED, |index| JsValue::from_f64(index as f64)))
+            let current = usize::try_from(current)
+                .map_err(|_| js_err("point index exceeds platform size"))?;
+            Ok(self
+                .renderer
+                .next_view_point_index(
+                    self.chart_id,
+                    source_id.as_deref(),
+                    &series_id,
+                    current,
+                    forward,
+                )
+                .map_or(JsValue::UNDEFINED, |index| JsValue::from_f64(index as f64)))
         }
 
         /// Pick the nearest visible data primitive at canvas pixel `(x, y)`;
@@ -5023,9 +5599,14 @@ mod web {
             max_distance_px: f32,
         ) -> Result<JsValue, JsValue> {
             if self.renderer.is_streaming_chart(self.chart_id) {
-                let Some(picked) = self.renderer
+                let Some(picked) = self
+                    .renderer
                     .pick_chart_view_cache_at(self.chart_id, [x, y], max_distance_px)
-                    .await.map_err(js_err)? else { return Ok(JsValue::UNDEFINED); };
+                    .await
+                    .map_err(js_err)?
+                else {
+                    return Ok(JsValue::UNDEFINED);
+                };
                 let tagged = renderer::PickedData::Point {
                     source_id: picked.source_id,
                     series_id: picked.series_id,
@@ -5298,10 +5879,12 @@ mod web {
                     // independent resident series without requesting it from
                     // the column pool.
                     .filter(|(_, config)| {
-                        !referenced_columns(config).into_iter().any(|id| matches!(
-                            self.renderer.logical_column(id),
-                            Some(renderer::LogicalColumn::Streamed(_))
-                        ))
+                        !referenced_columns(config).into_iter().any(|id| {
+                            matches!(
+                                self.renderer.logical_column(id),
+                                Some(renderer::LogicalColumn::Streamed(_))
+                            )
+                        })
                     })
                     .map(|(style, config)| Series { config, style })
                     .collect();
@@ -5382,15 +5965,23 @@ mod web {
         /// Begin an independent replay of the completed stream. The facade
         /// supplies only renderer-requested ranges between these calls.
         pub fn begin_stream_export(
-            &mut self, scale: f32, max_primitives_per_chunk: f64,
+            &mut self,
+            scale: f32,
+            max_primitives_per_chunk: f64,
         ) -> Result<StreamingOperationHandle, JsValue> {
             let max_chunk = js_safe_u64(max_primitives_per_chunk, "max_primitives_per_chunk")?;
-            let operation = self.renderer.begin_stream_export(
-                self.chart_id, scale, self.clear_color, max_chunk,
-            ).map_err(js_err)?;
+            let operation = self
+                .renderer
+                .begin_stream_export(self.chart_id, scale, self.clear_color, max_chunk)
+                .map_err(js_err)?;
             Ok(StreamingOperationHandle {
                 operation,
-                revision: self.renderer.stream_status(self.chart_id).map_err(js_err)?.revision.to_string(),
+                revision: self
+                    .renderer
+                    .stream_status(self.chart_id)
+                    .map_err(js_err)?
+                    .revision
+                    .to_string(),
                 counts: Cell::new((0.0, 0.0)),
             })
         }
@@ -5398,85 +5989,136 @@ mod web {
         /// Compatibility entry point. Nonresident picking is disabled because
         /// exact source replay can take as long as the original render.
         pub async fn begin_stream_pick_point(
-            &mut self, _x: f32, _y: f32, _max_distance_px: f32, _max_primitives_per_chunk: f64,
+            &mut self,
+            _x: f32,
+            _y: f32,
+            _max_distance_px: f32,
+            _max_primitives_per_chunk: f64,
         ) -> Result<StreamingOperationHandle, JsValue> {
-            Err(JsValue::from_str("stream picking is disabled; no source replay is started"))
+            Err(JsValue::from_str(
+                "stream picking is disabled; no source replay is started",
+            ))
         }
 
         /// Compatibility entry point; always rejects without requesting ranges.
         pub async fn begin_stream_pick_data(
-            &mut self, _x: f32, _y: f32, _max_distance_px: f32, _max_primitives_per_chunk: f64,
+            &mut self,
+            _x: f32,
+            _y: f32,
+            _max_distance_px: f32,
+            _max_primitives_per_chunk: f64,
         ) -> Result<StreamingOperationHandle, JsValue> {
-            Err(JsValue::from_str("stream picking is disabled; no source replay is started"))
+            Err(JsValue::from_str(
+                "stream picking is disabled; no source replay is started",
+            ))
         }
 
         pub fn stream_operation_request_ranges(
-            &mut self, handle: &StreamingOperationHandle,
+            &mut self,
+            handle: &StreamingOperationHandle,
         ) -> Result<AutoStreamingRangeRequestResult, JsValue> {
-            let request = self.renderer.request_stream_operation_ranges(handle.operation).map_err(js_err)?;
+            let request = self
+                .renderer
+                .request_stream_operation_ranges(handle.operation)
+                .map_err(js_err)?;
             let response = AutoStreamingRangeRequestResult::from_core(
-                request, handle.revision.clone(), handle.counts.get(),
+                request,
+                handle.revision.clone(),
+                handle.counts.get(),
             )?;
-            handle.counts.set((response.submitted_primitives, response.total_primitives));
+            handle
+                .counts
+                .set((response.submitted_primitives, response.total_primitives));
             Ok(response)
         }
 
         pub fn set_stream_operation_chunk_budget(
-            &mut self, handle: &StreamingOperationHandle, max_primitives: f64,
+            &mut self,
+            handle: &StreamingOperationHandle,
+            max_primitives: f64,
         ) -> Result<(), JsValue> {
             let budget = js_safe_u64(max_primitives, "stream operation chunk budget")?;
-            self.renderer.set_stream_operation_chunk_budget(handle.operation, budget).map_err(js_err)
+            self.renderer
+                .set_stream_operation_chunk_budget(handle.operation, budget)
+                .map_err(js_err)
         }
 
         pub fn stream_operation_submit_ranges(
-            &mut self, handle: &StreamingOperationHandle, ids: Vec<String>,
-            revisions: Vec<f64>, source_lengths: Vec<f64>, offsets: Vec<f64>,
+            &mut self,
+            handle: &StreamingOperationHandle,
+            ids: Vec<String>,
+            revisions: Vec<f64>,
+            source_lengths: Vec<f64>,
+            offsets: Vec<f64>,
             sources: js_sys::Array,
         ) -> Result<StreamingStepResult, JsValue> {
             let sources = js_stream_sources(&sources)?;
-            let bindings = stream_range_bindings(&ids, &revisions, &source_lengths, &offsets, &sources)?;
-            let progress = self.renderer.submit_stream_operation_ranges(handle.operation, &bindings).map_err(js_err)?;
+            let bindings =
+                stream_range_bindings(&ids, &revisions, &source_lengths, &offsets, &sources)?;
+            let progress = self
+                .renderer
+                .submit_stream_operation_ranges(handle.operation, &bindings)
+                .map_err(js_err)?;
             let (status, submitted, total) = match progress {
-                renderer::StreamingProgress::Submitted { submitted_primitives, total_primitives } =>
-                    ("submitted", submitted_primitives, total_primitives),
-                renderer::StreamingProgress::Backpressure { submitted_primitives, total_primitives } =>
-                    ("backpressure", submitted_primitives, total_primitives),
-                renderer::StreamingProgress::AllSubmitted { total_primitives } =>
-                    ("all_submitted", total_primitives, total_primitives),
+                renderer::StreamingProgress::Submitted {
+                    submitted_primitives,
+                    total_primitives,
+                } => ("submitted", submitted_primitives, total_primitives),
+                renderer::StreamingProgress::Backpressure {
+                    submitted_primitives,
+                    total_primitives,
+                } => ("backpressure", submitted_primitives, total_primitives),
+                renderer::StreamingProgress::AllSubmitted { total_primitives } => {
+                    ("all_submitted", total_primitives, total_primitives)
+                }
             };
             handle.counts.set((submitted as f64, total as f64));
             Ok(StreamingStepResult {
-                status, revision: handle.revision.clone(), submitted_primitives: submitted as f64,
-                total_primitives: total as f64, pending_latest: false,
+                status,
+                revision: handle.revision.clone(),
+                submitted_primitives: submitted as f64,
+                total_primitives: total as f64,
+                pending_latest: false,
             })
         }
 
         pub async fn finish_stream_export(
-            &mut self, handle: &StreamingOperationHandle,
+            &mut self,
+            handle: &StreamingOperationHandle,
         ) -> Result<js_sys::Uint8Array, JsValue> {
-            let image = self.renderer.finish_stream_export(handle.operation).await.map_err(js_err)?;
+            let image = self
+                .renderer
+                .finish_stream_export(handle.operation)
+                .await
+                .map_err(js_err)?;
             let bytes = renderer::encode_png(&image).map_err(js_err)?;
             Ok(js_sys::Uint8Array::from(bytes.as_slice()))
         }
 
         /// Compatibility entry point; no streamed pick operation can start.
         pub async fn finish_stream_pick_point(
-            &mut self, _handle: &StreamingOperationHandle,
+            &mut self,
+            _handle: &StreamingOperationHandle,
         ) -> Result<JsValue, JsValue> {
             Err(JsValue::from_str("stream picking is disabled"))
         }
 
         /// Compatibility entry point; no streamed pick operation can start.
         pub async fn finish_stream_pick_data(
-            &mut self, _handle: &StreamingOperationHandle,
+            &mut self,
+            _handle: &StreamingOperationHandle,
         ) -> Result<JsValue, JsValue> {
             Err(JsValue::from_str("stream picking is disabled"))
         }
 
         pub async fn cancel_stream_operation_and_wait(
-            &mut self, handle: &StreamingOperationHandle,
+            &mut self,
+            handle: &StreamingOperationHandle,
         ) -> Result<(), JsValue> {
-            self.renderer.cancel_stream_operation_and_wait(handle.operation).await.map_err(js_err)
+            self.renderer
+                .cancel_stream_operation_and_wait(handle.operation)
+                .await
+                .map_err(js_err)
         }
 
         /// Load the bundled demo (sine + RC charge curves) — lets a frontend
@@ -5521,7 +6163,11 @@ mod web {
                 .try_reserve(declarations.series.len())
                 .map_err(js_err)?;
             for item in &declarations.series {
-                styles.push(self.renderer.create_style_for_series_scaled(item, scale).map_err(js_err)?);
+                styles.push(
+                    self.renderer
+                        .create_style_for_series_scaled(item, scale)
+                        .map_err(js_err)?,
+                );
             }
             let retained_extents = retain_valid_series_extent_jobs(
                 &declarations.series,
@@ -5863,3 +6509,6 @@ mod web {
 
 #[cfg(target_arch = "wasm32")]
 pub use web::*;
+
+#[cfg(target_arch = "wasm32")]
+mod bounded;

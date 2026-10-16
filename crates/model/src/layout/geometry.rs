@@ -1,5 +1,5 @@
-use crate::config::{AxisOptions, BarAlign, ColorBarOptions, LegendCorner, TickVisibility};
-use crate::text::TextExtents;
+use crate::config::{AxisOptions, BarAlign, ColorBarOptions, Config, LegendCorner, TickVisibility};
+use crate::text::{MeasureText, TextExtents};
 
 use super::{ChartArea, DataArea, RectF, Side};
 
@@ -215,6 +215,55 @@ pub fn chart_title_placement(
         rotation_center: origin,
         rotation_degrees: 0.0,
     }
+}
+
+/// Room the default title band leaves around one default-size title line: the
+/// default `top_margin` minus that line's nominal height, its font size (the
+/// em box the renderer also gives a line without ink). Derived rather than
+/// restated, so fitted bands follow the defaults if they change.
+fn chart_title_band_padding() -> f32 {
+    let defaults = crate::default::default_chart_title_options();
+    (defaults.top_margin - defaults.text.font_size).max(0.0)
+}
+
+/// Grow `cfg.chart_title.top_margin` when the measured title is taller than
+/// its band.
+///
+/// [`chart_title_placement`] centres the title block in the band, so a block
+/// taller than the band starts above the chart area and its first line is
+/// clipped. Only in that case the band grows to the block's height plus the
+/// room the default band gives a single default-size line, rounded up to a
+/// whole pixel. A title that already fits is left exactly as it is: text is
+/// measured by its ink, so refitting every title would move the data area
+/// whenever the title's letters changed.
+///
+/// The band is never shrunk, so a margin the host made larger is kept.
+/// Nothing changes when the title is hidden or empty, when the measurement is
+/// not finite, when the margin is NaN (validation reports it), or when the
+/// taller band would leave no valid data area in a chart that had one.
+///
+/// This is the title helpers' half of the helper contract: `Chart::with_title`
+/// and the web example's `set_title` derive the band from the text they set.
+/// A `top_margin` injected directly through the SSoT is kept as given.
+/// Returns whether the band changed.
+pub fn fit_chart_title_margin(cfg: &mut Config, measure: &dyn MeasureText) -> bool {
+    let title = &cfg.chart_title;
+    if !title.visible || title.text.segments.is_empty() {
+        return false;
+    }
+    let height = measure.measure_rich(&title.text).height();
+    let current = title.top_margin;
+    if !height.is_finite() || current.is_nan() || height <= current {
+        return false;
+    }
+    let required = (height + chart_title_band_padding()).ceil();
+    let had_data_area = cfg.data_area().is_ok();
+    cfg.chart_title.top_margin = required;
+    if had_data_area && cfg.data_area().is_err() {
+        cfg.chart_title.top_margin = current;
+        return false;
+    }
+    true
 }
 
 /// The margin geometry an axis title is placed inside.
@@ -631,6 +680,116 @@ mod tests {
                 local
             );
         }
+    }
+
+    /// 8 px per char on the widest line, 10 up / 3 down per line, 13 px line
+    /// pitch — the shape of the renderer's multi-line envelope.
+    struct LineMeasure;
+    impl MeasureText for LineMeasure {
+        fn measure_rich(&self, rt: &crate::text::RichText) -> TextExtents {
+            let text: String = rt.segments.iter().map(|s| s.text).collect();
+            let lines = text.split('\n').count();
+            let widest = text.split('\n').map(|l| l.chars().count()).max();
+            TextExtents {
+                width: widest.unwrap_or(0) as f32 * 8.0,
+                ascent: 10.0,
+                descent: 3.0 + (lines - 1) as f32 * 13.0,
+            }
+        }
+    }
+
+    fn titled(text: &str) -> Config {
+        let mut cfg = default_config();
+        cfg.chart_title.text.segments = crate::text::rich_segments_from_text(text);
+        cfg
+    }
+
+    #[test]
+    fn the_title_band_padding_comes_from_the_defaults() {
+        let defaults = crate::default::default_chart_title_options();
+        assert_eq!(
+            chart_title_band_padding(),
+            defaults.top_margin - defaults.text.font_size
+        );
+    }
+
+    // A three-line title (39 px) is taller than the default 32 px band, so
+    // centring it would start above the chart area. Fitting grows the band to
+    // the block plus the default padding, which the placement then centres.
+    #[test]
+    fn fitting_grows_the_band_to_hold_a_multi_line_title() {
+        let mut cfg = titled("one\ntwo\nthree");
+        let m = LineMeasure.measure_rich(&cfg.chart_title.text);
+        assert!(m.height() > cfg.chart_title.top_margin);
+
+        assert!(fit_chart_title_margin(&mut cfg, &LineMeasure));
+        let band = cfg.chart_title.top_margin;
+        assert_eq!(band, (m.height() + chart_title_band_padding()).ceil());
+
+        let ca = &cfg.chart_area;
+        let rect = chart_title_placement(ca, band, (0.0, 0.0), m).rect(m);
+        assert!(rect.y >= ca.y as f32, "first line inside the chart area");
+        assert!(
+            rect.y + rect.height <= ca.y as f32 + band,
+            "block inside the band"
+        );
+        assert!(cfg.data_area().is_ok());
+
+        // Already fitted: a second call is a no-op.
+        assert!(!fit_chart_title_margin(&mut cfg, &LineMeasure));
+        assert_eq!(cfg.chart_title.top_margin, band);
+    }
+
+    #[test]
+    fn fitting_leaves_a_single_default_line_and_a_larger_band_alone() {
+        let mut cfg = titled("Title");
+        assert!(!fit_chart_title_margin(&mut cfg, &LineMeasure));
+        assert_eq!(
+            cfg,
+            titled("Title"),
+            "the default band already fits one line"
+        );
+
+        // A block that fits the band, even with less than the default padding
+        // around it, renders today without clipping and is left alone.
+        let mut snug = titled("Title");
+        snug.chart_title.top_margin = 14.0;
+        assert!(LineMeasure.measure_rich(&snug.chart_title.text).height() <= 14.0);
+        assert!(!fit_chart_title_margin(&mut snug, &LineMeasure));
+        assert_eq!(snug.chart_title.top_margin, 14.0);
+
+        // Grow-only: a band the user enlarged is never shrunk to the text.
+        let mut roomy = titled("one\ntwo\nthree");
+        roomy.chart_title.top_margin = 120.0;
+        assert!(!fit_chart_title_margin(&mut roomy, &LineMeasure));
+        assert_eq!(roomy.chart_title.top_margin, 120.0);
+    }
+
+    #[test]
+    fn fitting_skips_hidden_empty_and_unusable_titles() {
+        let mut empty = default_config();
+        assert!(!fit_chart_title_margin(&mut empty, &LineMeasure));
+        assert_eq!(empty, default_config());
+
+        let mut hidden = titled("one\ntwo\nthree");
+        hidden.chart_title.visible = false;
+        assert!(!fit_chart_title_margin(&mut hidden, &LineMeasure));
+        assert_eq!(hidden.chart_title.top_margin, 32.0);
+
+        // A non-finite margin is left for validation to report.
+        let mut nan = titled("one\ntwo\nthree");
+        nan.chart_title.top_margin = f32::NAN;
+        assert!(!fit_chart_title_margin(&mut nan, &LineMeasure));
+        assert!(nan.chart_title.top_margin.is_nan());
+
+        // Growing would leave no data area in a chart that had one: the band
+        // stays as it was.
+        let mut short = titled(&["line"; 40].join("\n"));
+        short.chart_area.0.height = 300;
+        assert!(short.data_area().is_ok());
+        assert!(!fit_chart_title_margin(&mut short, &LineMeasure));
+        assert_eq!(short.chart_title.top_margin, 32.0);
+        assert!(short.data_area().is_ok());
     }
 
     #[test]

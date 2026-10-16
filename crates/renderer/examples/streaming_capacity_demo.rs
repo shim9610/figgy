@@ -7,8 +7,8 @@
 //! `cargo run --release -p figgy-renderer --example streaming_capacity_demo --features egui_demo`
 //! Add `-- --benchmark` to run the default 1 GiB virtual source once and print measured timings.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use eframe::egui_wgpu::{self, CallbackTrait};
@@ -95,8 +95,7 @@ impl VirtualColumn {
                 // Twelve continuous triangle waves make submitted chunks visibly
                 // accumulate from left to right without distributing points over
                 // the entire plot area.
-                let phase = ((index as u64 * 12) % self.len.saturating_sub(1).max(1) as u64)
-                    as f64
+                let phase = ((index as u64 * 12) % self.len.saturating_sub(1).max(1) as u64) as f64
                     / denominator;
                 let triangle = 1.0 - (phase * 2.0 - 1.0).abs();
                 0.1 + triangle * 0.8
@@ -124,18 +123,21 @@ fn checked_range(
 }
 
 impl ColumnSource for VirtualColumn {
-    fn len(&self) -> usize { self.len }
-    fn min(&self) -> f64 { 0.0 }
-    fn max(&self) -> f64 { 1.0 }
+    fn len(&self) -> usize {
+        self.len
+    }
+    fn min(&self) -> f64 {
+        0.0
+    }
+    fn max(&self) -> f64 {
+        1.0
+    }
 
     fn write_f32_le_into(&self, _dst: &mut [u8]) {
         panic!("streaming demo must not request a full-column buffer")
     }
 
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        _dst: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats {
+    fn write_f32_pair_le_into_with_stats(&self, _dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
         panic!("streaming demo must not request a full-column writer")
     }
 
@@ -166,18 +168,21 @@ impl ColumnSource for VirtualColumn {
 }
 
 impl HiLoColumnSource for VirtualColumn {
-    fn len(&self) -> usize { self.len }
-    fn min(&self) -> f64 { 0.0 }
-    fn max(&self) -> f64 { 1.0 }
+    fn len(&self) -> usize {
+        self.len
+    }
+    fn min(&self) -> f64 {
+        0.0
+    }
+    fn max(&self) -> f64 {
+        1.0
+    }
 
     fn write_f32_pair_le_into(&self, _dst: &mut [u8]) {
         panic!("streaming demo must not request a full-column buffer")
     }
 
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        _dst: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats {
+    fn write_f32_pair_le_into_with_stats(&self, _dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
         panic!("streaming demo must not request a full-column writer")
     }
 
@@ -324,15 +329,28 @@ impl DemoState {
 
     fn start(&mut self, request: RunRequest, surface_size: (u32, u32)) -> renderer::Result<()> {
         self.cancel(Phase::Idle);
-        self.revision = self.revision.checked_add(1).ok_or(FiggyError::CounterExhausted {
-            counter: "streaming demo revision",
-        })?;
+        self.revision = self
+            .revision
+            .checked_add(1)
+            .ok_or(FiggyError::CounterExhausted {
+                counter: "streaming demo revision",
+            })?;
         let points = request.point_count();
         self.x.len = points as usize;
         self.y.len = points as usize;
         self.renderer.replace_streamed_columns(vec![
-            Self::metadata("stream-x", points, self.revision, request.precision.encoding()),
-            Self::metadata("stream-y", points, self.revision, request.precision.encoding()),
+            Self::metadata(
+                "stream-x",
+                points,
+                self.revision,
+                request.precision.encoding(),
+            ),
+            Self::metadata(
+                "stream-y",
+                points,
+                self.revision,
+                request.precision.encoding(),
+            ),
         ])?;
         self.renderer.begin_streaming_chart(
             self.chart_id,
@@ -374,7 +392,8 @@ impl DemoState {
                         source: StreamColumnSource::Scalar(&self.y),
                     },
                 ];
-                self.renderer.stream_chart_step(self.chart_id, &self.view, &sources)?
+                self.renderer
+                    .stream_chart_step(self.chart_id, &self.view, &sources)?
             }
             Precision::F64HiLo => {
                 let sources = [
@@ -389,14 +408,17 @@ impl DemoState {
                         source: StreamColumnSource::HiLo(&self.y),
                     },
                 ];
-                self.renderer.stream_chart_step(self.chart_id, &self.view, &sources)?
+                self.renderer
+                    .stream_chart_step(self.chart_id, &self.view, &sources)?
             }
         };
         Ok(progress)
     }
 
     fn advance(&mut self) {
-        let Some(started) = self.started else { return; };
+        let Some(started) = self.started else {
+            return;
+        };
         let deadline = Instant::now() + STEP_BUDGET;
         if self.snapshot.phase == Phase::Running {
             loop {
@@ -409,9 +431,9 @@ impl DemoState {
                     }) => {
                         self.snapshot.submitted = submitted_primitives;
                         self.snapshot.submitted_chunks += 1;
-                        self.snapshot.first_submit_ms.get_or_insert_with(|| {
-                            started.elapsed().as_secs_f64() * 1000.0
-                        });
+                        self.snapshot
+                            .first_submit_ms
+                            .get_or_insert_with(|| started.elapsed().as_secs_f64() * 1000.0);
                     }
                     Ok(StreamingProgress::Backpressure {
                         submitted_primitives,
@@ -455,15 +477,15 @@ impl DemoState {
     fn sample_gpu_usage(&mut self) {
         let usage = self.renderer.streaming_usage();
         self.snapshot.peak_in_flight_chunks = self
-            .snapshot.peak_in_flight_chunks
+            .snapshot
+            .peak_in_flight_chunks
             .max(usage.in_flight_chunks);
         self.snapshot.peak_reserved_gpu_bytes = self
-            .snapshot.peak_reserved_gpu_bytes
+            .snapshot
+            .peak_reserved_gpu_bytes
             .max(usage.reserved_gpu_bytes);
-        self.snapshot.renderer_accounted_gpu_peak_bytes = self
-            .renderer
-            .gpu_memory_usage()
-            .peak_bytes();
+        self.snapshot.renderer_accounted_gpu_peak_bytes =
+            self.renderer.gpu_memory_usage().peak_bytes();
     }
 
     fn record_prepare_interval(&mut self) {
@@ -483,11 +505,11 @@ impl DemoState {
         }
         self.frame_intervals_ms.sort_by(f64::total_cmp);
         let count = self.frame_intervals_ms.len();
-        self.snapshot.mean_frame_interval_ms = Some(
-            self.frame_intervals_ms.iter().sum::<f64>() / count as f64,
+        self.snapshot.mean_frame_interval_ms =
+            Some(self.frame_intervals_ms.iter().sum::<f64>() / count as f64);
+        self.snapshot.p95_frame_interval_ms = Some(
+            self.frame_intervals_ms[((count as f64 * 0.95).ceil() as usize).saturating_sub(1)],
         );
-        self.snapshot.p95_frame_interval_ms =
-            Some(self.frame_intervals_ms[((count as f64 * 0.95).ceil() as usize).saturating_sub(1)]);
         self.snapshot.max_frame_interval_ms = self.frame_intervals_ms.last().copied();
     }
 
@@ -496,15 +518,19 @@ impl DemoState {
         if !changed {
             return Ok(());
         }
-        let restart = self
-            .pending_start
-            .take()
-            .or_else(|| self.snapshot.phase.active().then_some(self.last_request).flatten());
+        let restart = self.pending_start.take().or_else(|| {
+            self.snapshot
+                .phase
+                .active()
+                .then_some(self.last_request)
+                .flatten()
+        });
         self.cancel(Phase::Cancelled);
         self.chart.config_mut().chart_area = ChartArea(panel_rect);
         self.renderer
             .set_chart_config(self.chart_id, self.chart.config().clone())?;
-        self.renderer.refresh_axis(&mut self.view, &self.chart, panel_rect)?;
+        self.renderer
+            .refresh_axis(&mut self.view, &self.chart, panel_rect)?;
         self.surface_size = surface_size;
         if let Some(request) = restart {
             self.pending_start = Some(request);
@@ -574,8 +600,12 @@ impl CallbackTrait for DemoCallback {
         pass: &mut wgpu::RenderPass<'static>,
         resources: &egui_wgpu::CallbackResources,
     ) {
-        let Some(state) = resources.get::<DemoState>() else { return; };
-        let Some(prepared) = state.prepared.as_ref() else { return; };
+        let Some(state) = resources.get::<DemoState>() else {
+            return;
+        };
+        let Some(prepared) = state.prepared.as_ref() else {
+            return;
+        };
         let result = state.renderer.paint_prepared(
             pass,
             (info.screen_size_px[0], info.screen_size_px[1]),
@@ -642,7 +672,12 @@ impl DemoApp {
             DemoState::metadata("stream-x", 2, 1, StreamEncoding::HiLoF32),
             DemoState::metadata("stream-y", 2, 1, StreamEncoding::HiLoF32),
         ])?;
-        let placeholder = Rect { x: 0, y: 100, width: 800, height: 500 };
+        let placeholder = Rect {
+            x: 0,
+            y: 100,
+            width: 800,
+            height: 500,
+        };
         let mut config = renderer::default::default_config();
         config.chart_area = ChartArea(placeholder);
         let foreground = renderer::Color::new(0.92, 0.92, 0.94, 1.0);
@@ -686,29 +721,41 @@ impl DemoApp {
         };
         let chart_id = renderer.register_chart(chart.config().clone(), vec![series])?;
         let view = renderer.create_chart_view(&chart, placeholder)?;
-        render_state.renderer.write().callback_resources.insert(DemoState {
-            renderer,
-            chart,
-            chart_id,
-            view,
-            x: VirtualColumn { len: 2, axis: VirtualAxis::X },
-            y: VirtualColumn { len: 2, axis: VirtualAxis::Y },
-            revision: 1,
-            pending_start: None,
-            last_request: None,
-            started: None,
-            first_paint_encoded_us: AtomicU64::new(0),
-            last_prepare_at: None,
-            frame_intervals_ms: Vec::new(),
-            surface_size: (0, 0),
-            snapshot: Snapshot::default(),
-            prepared: None,
-        });
+        render_state
+            .renderer
+            .write()
+            .callback_resources
+            .insert(DemoState {
+                renderer,
+                chart,
+                chart_id,
+                view,
+                x: VirtualColumn {
+                    len: 2,
+                    axis: VirtualAxis::X,
+                },
+                y: VirtualColumn {
+                    len: 2,
+                    axis: VirtualAxis::Y,
+                },
+                revision: 1,
+                pending_start: None,
+                last_request: None,
+                started: None,
+                first_paint_encoded_us: AtomicU64::new(0),
+                last_prepare_at: None,
+                frame_intervals_ms: Vec::new(),
+                surface_size: (0, 0),
+                snapshot: Snapshot::default(),
+                prepared: None,
+            });
         Ok(())
     }
 
     fn cleanup(&mut self) {
-        let Some(render_state) = self.render_state.take() else { return; };
+        let Some(render_state) = self.render_state.take() else {
+            return;
+        };
         if let Some(mut state) = render_state
             .renderer
             .write()
@@ -762,7 +809,11 @@ impl eframe::App for DemoApp {
             egui::ComboBox::from_id_salt("precision")
                 .selected_text(self.precision.label())
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.precision, Precision::F32, Precision::F32.label());
+                    ui.selectable_value(
+                        &mut self.precision,
+                        Precision::F32,
+                        Precision::F32.label(),
+                    );
                     ui.selectable_value(
                         &mut self.precision,
                         Precision::F64HiLo,
@@ -791,18 +842,28 @@ impl eframe::App for DemoApp {
 
         let (snapshot, pending, first_paint_us) = {
             let mut guard = render_state.renderer.write();
-            let state = guard.callback_resources.get_mut::<DemoState>().expect("demo state");
+            let state = guard
+                .callback_resources
+                .get_mut::<DemoState>()
+                .expect("demo state");
             if start {
                 state.pending_start = Some(request);
             }
-            if self.benchmark && state.snapshot.phase == Phase::Idle && state.pending_start.is_none() {
+            if self.benchmark
+                && state.snapshot.phase == Phase::Idle
+                && state.pending_start.is_none()
+            {
                 state.pending_start = Some(request);
             }
             if cancel {
                 state.cancel(Phase::Cancelled);
             }
             let first_paint_us = state.first_paint_encoded_us.load(Ordering::Relaxed);
-            (state.snapshot.clone(), state.pending_start.is_some(), first_paint_us)
+            (
+                state.snapshot.clone(),
+                state.pending_start.is_some(),
+                first_paint_us,
+            )
         };
         let progress = if snapshot.points == 0 {
             0.0
@@ -812,7 +873,10 @@ impl eframe::App for DemoApp {
         ui.add(egui::ProgressBar::new(progress.clamp(0.0, 1.0)).show_percentage());
         ui.horizontal_wrapped(|ui| {
             ui.strong(format!("Status: {}", snapshot.phase.label()));
-            ui.label(format!("Submitted: {} / {} points", snapshot.submitted, snapshot.points));
+            ui.label(format!(
+                "Submitted: {} / {} points",
+                snapshot.submitted, snapshot.points
+            ));
             if snapshot.bytes != 0 {
                 ui.label(format!(
                     "Active input: {:.3} GiB",

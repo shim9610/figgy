@@ -6,9 +6,9 @@
 설정 타입 자체는 Rust 모델에 정의되며 `serde`로 직렬화할 수 있다.
 이 문서는 별도 JavaScript 라이브러리의 전체 기능 목록을 뜻하지 않는다.
 
-기준 소스 버전: `figgy 0.13.0` / `figgy-renderer 0.16.0` / `figgy-model 0.10.0`.
+기준 소스 버전: `figgy 0.14.0` / `figgy-renderer 0.17.0` / `figgy-model 0.11.0`.
 
-이 문서는 `Config`와 `SeriesConfig`의 JSON 형식을 설명한다. figgy 0.10.0의 비상주 컬럼 등록, 구간 공급, `render_chart()` 실행·취소, 상주 가능 여부 조회는 별도 웹 API이며 설정 필드를 추가하지 않는다. 지원 범위와 호출 방법은 [WASM.md](../renderer/WASM.md#exact-streaming)의 「자동 실행과 원본 구간 공급」을 참고한다.
+이 문서는 `Config`와 `SeriesConfig`의 JSON 형식을 설명한다. 비상주 컬럼 등록, 구간 공급, `render_chart()` 실행·취소, 상주 가능 여부 조회는 별도 웹 API이며 설정 필드를 추가하지 않는다. 지원 범위와 호출 방법은 [WASM.md](../renderer/WASM.md#exact-streaming)의 「자동 실행과 원본 구간 공급」을 참고한다.
 
 아래는 `FiggyChart.get_config()` / `get_series()`가 반환하고 `set_config()` / `set_series()`가 받는 JSON의 전체 형식이다. 예시 JSON은 Rust 타입을 직렬화해 생성했다. 저장소 문서 정합성 검사에서 소스와 일치하는지 확인한다.
 
@@ -30,11 +30,13 @@
 ## serde의 JSON 표현 규칙
 
 - **추가 필드가 없는 열거형**은 문자열로 표시한다. 예: `"scale": "Logarithmic"`, `"tick": "Both"`.
-- **데이터를 포함한 열거형**은 종류 이름을 바깥쪽 키로 쓴다(externally tagged). 예: `"render_type": { "Line": { "line": { … } } }`, `"err_x": { "Asymmetric": { "lower": "…", "upper": "…" } }`.
+- **대부분의 데이터를 포함한 열거형**은 종류 이름을 바깥쪽 키로 쓴다(externally tagged). 예: `"render_type": { "Line": { "line": { … } } }`, `"err_x": { "Asymmetric": { "lower": "…", "upper": "…" } }`.
+- **선택 참조는 내부 태그를 사용한다.** `PickedDataRef`는 `{ "kind": "histogram_bin", "series_id": "hist", "bin_index": 2 }`처럼 `kind`와 필드를 같은 객체에 둔다. `{ "HistogramBin": { ... } }` 형식이 아니다. `DrawStyle`은 같은 방식으로 `mode`를 태그로 쓴다.
 - **값 하나를 감싼 타입(newtype)**은 내부 값을 그대로 직렬화한다. 예: `ChartArea(Rect)` → `"chart_area": { "x": …, "width": … }`.
 - **`RichSegment.text`는 문자 하나**다. JSON에서는 `"V"` 같은 한 글자 문자열로 표시한다.
 - **텍스트 구간별 색·크기는 선택 항목**이다. `RichSegment.color` / `font_size`는 별도로 지정했을 때만 키를 내보낸다. 없으면 `RichText.color` / `font_size`를 따른다. 범례 기호의 색도 `{"text":"●","color":{...}}`처럼 지정한다.
 - **`"\t"` 구간은 열 구분자**다. 각 열의 너비를 문서 전체에서 가장 넓은 셀에 맞추며 탭 자체는 그리지 않는다.
+- **`RichText.align`은 여러 줄 텍스트의 줄 정렬**이다. `"Left"`(기본), `"Center"`, `"Right"` 중 하나이며 기본값이면 키를 내보내지 않는다. 블록 너비는 가장 넓은 줄이 정하므로 정렬해도 측정 크기와 선택 영역은 바뀌지 않는다.
 - **`field_em`은 기호 영역의 너비를 고정한다.** 다음 글자까지의 간격을 `field_em × 폰트 크기`로 잡고 글리프를 가운데 놓는다. `rule: true`이면 글리프 대신 그 영역을 채우는 수평선을 그린다. `rule_dash`는 선·공백 길이를 em 단위로 지정하므로 폰트 크기에 비례한다. 범례 기호는 모양에 관계없이 전체 너비가 2.0em이다. 선은 `{"text":"—","rule":true,"field_em":2.0,"color":{...}}`, 점은 `{"text":"●","field_em":2.0,...}`, 점선은 `{"text":"—","rule":true,"field_em":2.0,"rule_dash":[0.571,0.286],...}`로 표현한다. 선과 점의 조합은 선 0.65em + 글리프 0.7em + 선 0.65em으로 구성한다.
 - **색은 0~1 범위의 RGBA 실수 값**이다. 예: `{ "r": 0.8, "g": 0.1, "b": 0.1, "a": 1.0 }`.
 - **데이터 출처 키**인 `SeriesConfig.source_id`, `PickedPointRef.source_id`, 모든 `PickedDataRef`의 `source_id`는 `None`이면 생략한다.
@@ -117,7 +119,8 @@
 | `render_type` (DataRenderType, 태그) | `"Scatter"` `"Line"` `"ScatterLine"` `"ScatterErrorbarX"` `"ScatterErrorbarY"` `"ScatterErrorbarXY"` `"LineScatterErrorbarX"` `"LineScatterErrorbarY"` `"LineScatterErrorbarXY"` `"Histogram"` `"Heatmap"` `"Contour"` `"HeatmapContour"` |
 | `err_x` / `err_y` (ErrorRef, 태그) | `"Symmetric"` (`{column}`) / `"Asymmetric"` (`{lower, upper}`) |
 | `side` (Side) | `"Top"` `"Bottom"` `"Left"` `"Right"` |
-| `align` (BarAlign) | `"Start"` `"Center"` `"End"` |
+| `align` (BarAlign, 색상 막대) | `"Start"` `"Center"` `"End"` |
+| `align` (TextAlign, RichText) | `"Left"` `"Center"` `"Right"` |
 | `colormap` (ColorMap) | `"Viridis"` `"Magma"` `"Turbo"` `"GrayScale"` `"RdBu"` `{ "Custom": { "stops": [Color, …] } }` |
 | `orientation` (BarOrientation) | `"Vertical"` `"Horizontal"` |
 | `orientation` (MatrixOrientation) | `"ColumnsAreX"` `"ColumnsAreY"` |
@@ -194,12 +197,21 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 
 ## 설정을 함께 바꿔야 하는 경우와 편집 규칙
 
+For precise edits, start from `get_config()`, change only the intended fields,
+and submit the complete config through `set_config()`. For example, change only
+axis `min` / `max` to keep the current tick spacing, minor count and label format.
+The axes are independent; edit both members of a pair only when they should
+share the new range. Convenience calls such as `auto_fit_x`, `auto_fit_all`
+and `set_title` can also adjust ticks or title layout. See the
+[SSOT and helper contracts](https://github.com/shim9610/figgy/blob/master/crates/renderer/API.md#direct-ssot-edits-and-convenience-helpers)
+and the [WASM edit workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer/WASM.md).
+
 - `scale`을 바꾸면 `major_spacing`의 단위도 달라진다. `Linear`는 데이터 단위이고 `Logarithmic`은 10배 간격인 decade 단위다. 예를 들어 `1.0`은 값이 10배 커질 때마다 주 눈금을 놓는다. 범위가 10배 간격보다 좁으면 주 눈금이 없을 수도 있다.
 - 로그축의 `min` / `max`에는 양수를 지정한다.
 - `out_margin`은 배치에 필요한 여백이다. 너무 줄이면 라벨이나 제목이 잘릴 수 있다.
 - `line_offset`은 데이터 영역을 유지한 채 축만 이동시킨다. 전체 배치에는 영향을 주지 않는다.
 - `inverted`는 화면상의 축 방향을 뒤집는다. 눈금·격자·데이터·피킹은 같은 변환을 적용하며 `min` / `max`는 데이터 좌표 기준을 유지한다.
-- `pick_point`는 스타일 매핑을 반영한 점 기호 크기와 선 두께를 기준으로 선택한다. 선 근처를 클릭하면 해당 선분의 가까운 끝점을 반환한다. 오차 막대의 몸통과 끝선 자체는 선택 대상이 아니다. 웹 래퍼의 반환형은 `Promise<{ source_id: string | null, series_id, point_index, distance_px } | null>`이다. 저수준 `FiggyChart`는 같은 필드의 JSON 문자열 또는 `undefined`를 Promise로 반환하고 래퍼가 이를 객체 또는 `null`로 바꾼다. 요청은 제출 당시 식별자를 보관하므로 대기 중 차트·풀이 바뀌거나 렌더러가 해제돼도 다른 데이터를 가리키지 않는다. 좌표가 필요하면 `point_index`로 호스트의 원본 컬럼을 조회한다.
+- `pick_point`는 스타일 매핑을 반영한 점 기호 크기와 선 두께를 기준으로 선택한다. 선 근처를 클릭하면 해당 선분의 가까운 끝점을 반환한다. 오차 막대의 몸통과 끝선 자체는 선택 대상이 아니다. 웹 래퍼의 반환형은 `Promise<{ source_id: string | null, series_id, point_index, distance_px } | null>`이다. 저수준 `FiggyChart`는 같은 필드의 JSON 문자열 또는 `undefined`를 Promise로 반환하고 래퍼가 이를 객체 또는 `null`로 바꾼다. 요청은 제출 당시 식별자를 보관하므로 대기 중 차트·풀이 바뀌거나 렌더러가 해제돼도 다른 데이터를 가리키지 않는다. 좌표가 필요하면 `point_index`로 호스트의 원본 컬럼을 조회하거나, 현재 상주 선택을 `FiggyChart.selection_details()`로 읽는다.
 - `pick_data`는 점·선 외에 히스토그램 구간·히트맵 셀·등고선 레벨을 같은 GPU 요청으로 선택한다. 래퍼는 `kind`가 `"point" | "histogram_bin" | "matrix_cell" | "contour_level"`인 객체 또는 `null`을 반환한다. 구간은 `bin_index`, 셀은 X·Y축 기준 `x_index` / `y_index`, 등고선은 `level_index`와 선택 지점이 속한 표본 셀의 `x_index` / `y_index`를 제공한다. `HeatmapContour`에서 선과 셀이 겹치면 나중에 그리는 등고선이 우선하며 시리즈 간 동률은 그리기 순서로 정한다. 좌표·경계·선분·f64 값을 CPU에서 복원하지 않고, 그리기와 같은 GPU 변환·풀·격자·등고선 함수로 판정한다.
 - `chart_area`는 저장과 출력에 사용하는 문서 영역이다. 웹의 `resize(w, h)`는 캔버스만 바꾸며 문서를 같은 가로세로 비율로 맞추고 남는 공간에 여백을 둔다. 브라우저 창 크기 변경은 `chart_area` 편집과 구분한다.
 - `set_series` / `apply_color_cycle`은 자동 범례에서 인식할 수 있는 기호 부분만 갱신한다. `\t` 앞의 고정 너비 영역이 기호이며, 뒤의 사용자 텍스트는 보존한다. 선 색뿐 아니라 `line_style`의 점선·도트 패턴도 반영한다.
@@ -237,6 +249,49 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 ```
 
 각 참조에 `source_id`를 넣으면 같은 `series_id`를 가진 서로 다른 데이터 출처를 구분할 수 있다. 점은 기존 강조 테두리 렌더링을 사용한다. 히스토그램은 선택한 막대의 경계·값·스타일 바인드 그룹을, 행렬·등고선은 일반 그리기와 같은 행렬 바인드 그룹을 읽는다. 축이나 데이터를 갱신해도 선택 표시가 데이터 위치를 따라가며, 범위를 벗어난 인덱스는 그리지 않는다.
+
+<a id="resident-selection-details"></a>
+
+### Resident selection values and keyboard navigation
+
+The raw `FiggyChart.selection_details()` method returns a `Promise<string>`.
+Parse that JSON string to inspect the first reference in `Config.picked_data.refs`.
+An absent selection or an unsupported reference kind (currently `contour_level`)
+returns the JSON string `"null"`. A missing series/column or out-of-range sample
+rejects the Promise. This method reads only the selected scalar samples from
+the resident GPU pool; it does not retain or reconstruct source arrays, perform
+a new pick, or inspect `Config.picked_points`.
+
+For a selected histogram bin, the parsed result has this shape:
+
+```json
+{
+  "identity": { "kind": "histogram_bin", "source_id": "samples", "series_id": "hist", "bin_index": 2 },
+  "series_id": "hist",
+  "index": 2,
+  "bin_start": 1.0,
+  "bin_end": 1.5,
+  "value": 0.25,
+  "orientation": "Vertical"
+}
+```
+
+`source_id` is omitted from `identity` when absent. `value` is the stored bin
+height: it may be a count, weight, density or stairs value. Horizontal
+histograms return `"Horizontal"` and use the Y column for bin edges. Point
+results contain `index`, `x`, and `y`; matrix results contain `x_index`,
+`y_index`, `x`, `y`, and `value`, with cell centers reported for edge grids.
+All results include the flat tagged `identity` and `series_id`.
+
+`FiggyChart.step_selection(dx, dy)` is synchronous and returns whether the
+selection changed. For vertical histograms, `dx` moves between bins and `dy`
+between histogram series of the same orientation; horizontal histograms swap
+those roles. Bin indices clamp to the chosen series' available edges and
+values. For points, `dx` changes the source index and `dy` changes the
+point-bearing series. For matrices, `dx` and `dy` change the respective cell
+indices. Contour references are not moved by this helper. These methods are
+raw WASM exports, not `<figgy-chart>` wrapper methods; hosts must keep their
+async gate held during `selection_details()`.
 
 <a id="draw_style--렌더-스타일-config-선택-키"></a>
 
@@ -727,9 +782,9 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 
 ## 행렬·막대 render_type의 전체 형식
 
-히스토그램과 행렬 기반 세 종류의 전체 JSON 예시는 아래와 같다. `Histogram`은 호스트가 구간별로 집계한 `(edges, counts)` 컬럼을 받고, 행렬은 `MatrixRef`로 격자를 지정한다.
+히스토그램과 행렬 기반 세 종류의 전체 JSON 예시는 아래와 같다. `Histogram`은 호스트가 준비한 `(edges, values)` 컬럼을 받고, 행렬은 `MatrixRef`로 격자를 지정한다.
 
-- `Histogram`의 컬럼 역할은 `bar.orientation`으로 정한다. `"Vertical"`이면 `x_column`이 경계, `y_column`이 빈도 값이며 `"Horizontal"`은 반대다. `edges = counts + 1` 같은 길이 관계로 추측하지 않는다.
+- `Histogram`의 컬럼 역할은 `bar.orientation`으로 정한다. `"Vertical"`이면 `x_column`이 경계, `y_column`이 구간별 값(빈도·가중치·밀도 등)이며 `"Horizontal"`은 반대다. `edges = counts + 1` 같은 길이 관계로 추측하지 않는다.
 - 기존 히스토그램을 가로로 바꿀 때는 `bar.orientation = "Horizontal"`과 함께 `x_column = counts`, `y_column = edges`로 연결한다. X축은 빈도, Y축은 구간 범위로 설정하고 축 제목도 바꾼다. 방향만 바꾸고 컬럼 연결을 유지하면 역할이 뒤바뀐다. Rust 예제와 갱신 순서는 [히스토그램 사용법](../renderer/HISTOGRAM.md)을 참고한다.
 - `bar.width_ratio`는 구간 대비 막대 너비이며 `0..=1`로 제한한다. 막대를 가운데에 놓고 `gap_px`를 양쪽으로 나누어 추가 간격을 둔다. 1픽셀보다 넓은 막대는 최소 1픽셀이 남도록 간격을 제한한다.
 - 구간 자체가 1픽셀보다 좁으면 GPU가 픽셀 열별 최댓값을 골라 0까지 채운다. 가로 히스토그램은 픽셀 행을 기준으로 한다. 이때 간격과 양수인 너비 비율은 적용하지 않는다. 최댓값 구간의 외곽선 두께와 불투명도가 모두 양수이면 외곽선 색으로, 아니면 채움색으로 그린다. 동률이면 앞선 구간을 선택한다. `width_ratio: 0`인 구간은 제외하며 원본 컬럼은 바꾸지 않는다.

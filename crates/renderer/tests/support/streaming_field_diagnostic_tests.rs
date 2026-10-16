@@ -271,9 +271,17 @@ fn heatmap_browser_fixture_backend_diagnostic() {
     let _font = crate::text_render::FONT_REGISTRATION_TEST_LOCK
         .lock()
         .unwrap();
-    eprintln!("FIELD compiler default={:?}, environment={:?}",
-        wgpu::InstanceDescriptor::new_without_display_handle().backend_options.dx12.shader_compiler,
-        wgpu::InstanceDescriptor::new_without_display_handle_from_env().backend_options.dx12.shader_compiler);
+    eprintln!(
+        "FIELD compiler default={:?}, environment={:?}",
+        wgpu::InstanceDescriptor::new_without_display_handle()
+            .backend_options
+            .dx12
+            .shader_compiler,
+        wgpu::InstanceDescriptor::new_without_display_handle_from_env()
+            .backend_options
+            .dx12
+            .shader_compiler
+    );
     let instance =
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
     let adapter = data_render::request_adapter(&instance).unwrap();

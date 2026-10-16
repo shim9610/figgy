@@ -26,7 +26,7 @@ use crate::config::{
 use crate::format::LabelFormat;
 use crate::layout::{ChartArea, Rect, Side};
 use crate::line::LineStylePreset;
-use crate::text::RichText;
+use crate::text::{RichText, TextAlign};
 
 /// Empty RichText (no segments). Filled in by builders.
 pub fn default_rich_text() -> RichText {
@@ -35,6 +35,7 @@ pub fn default_rich_text() -> RichText {
         color: Color::BLACK,
         font_size: 12.0,
         font: String::new(),
+        align: TextAlign::Left,
     }
 }
 
@@ -46,6 +47,7 @@ pub fn default_chart_title_options() -> ChartTitleOptions {
             color: Color::BLACK,
             font_size: 28.0,
             font: String::new(),
+            align: TextAlign::Left,
         },
         visible: true,
         offset_x: 0.0,
@@ -63,6 +65,7 @@ pub fn default_axis_title_options() -> AxisTitleOptions {
             color: Color::BLACK,
             font_size: 22.0,
             font: String::new(),
+            align: TextAlign::Left,
         },
         visible: true,
         offset_x: 0.0,
@@ -232,6 +235,7 @@ pub fn default_legend() -> Legend {
             color: Color::BLACK,
             font_size: 14.0,
             font: String::new(),
+            align: TextAlign::Left,
         },
         corner: LegendCorner::TopRight,
         offset_x: 0.0,

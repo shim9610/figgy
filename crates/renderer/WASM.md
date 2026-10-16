@@ -8,7 +8,7 @@ Rust 라이브러리가 모든 차트를 JavaScript API로 제공한다는 뜻�
 원형·범주형 막대·박스플롯은 이 래퍼에 노출하지 않는다.
 간단한 빌드·실행 방법은 [예제 안내](https://github.com/shim9610/figgy/blob/master/crates/web/README.md)를 참고한다.
 
-이 문서는 소스 릴리스 `figgy 0.13.0` / `figgy-renderer 0.16.0` / `figgy-model 0.10.0`를 기준으로 한다. 아래 스트리밍 API를 사용하려면 해당 버전의 소스에서 브라우저 패키지를 빌드한다.
+이 문서는 소스 릴리스 `figgy 0.14.0` / `figgy-renderer 0.17.0` / `figgy-model 0.11.0`를 기준으로 한다. 아래 스트리밍 API를 사용하려면 해당 버전의 소스에서 브라우저 패키지를 빌드한다.
 
 `model`과 `renderer`는 모두 `wasm32-unknown-unknown`으로 빌드할 수 있다. 이 문서는 네이티브와 웹의 차이, 브라우저 초기화, 데이터 입력, 이벤트 처리와 이미지 출력을 설명한다.
 
@@ -35,7 +35,7 @@ cargo check --locked -p figgy-renderer --target wasm32-unknown-unknown
 
 CPU 렌더링에는 순수 Rust로 구현된 tiny-skia·fontdb·swash를 사용한다. 기존 skia-safe의 `wasm32-unknown-emscripten` 대상은 wasm-bindgen에서 사용하는 `wasm32-unknown-unknown`과 함께 쓸 수 없어 교체했다.
 
-Liberation Sans 네 가지 글꼴을 내장하므로 웹에서도 이 폰트의 문자를 그릴 수 있다. 시스템 폰트 검색은 네이티브에서만 지원한다. 웹에서 다른 폰트를 쓰려면 `register_font(Uint8Array)`로 TTF/OTF 파일을 등록한다. 폰트는 등록된 폰트, 시스템 폰트, 내장 대체 폰트 순으로 찾는다.
+Liberation Sans 네 가지 글꼴을 내장하므로 웹에서도 이 폰트의 문자를 그릴 수 있다. 시스템 폰트 검색은 네이티브에서만 지원한다. 웹에서 다른 폰트를 쓰려면 `register_font(Uint8Array)`로 TTF/OTF 파일을 등록한다. 폰트는 등록된 폰트, 시스템 폰트, 내장 대체 폰트 순으로 찾는다. 찾은 폰트에 없는 글자는 글자마다 등록 폰트(등록한 순서), 같은 굵기·기울기의 내장 Liberation Sans, 설치된 시스템 폰트(글꼴 이름순, 네이티브 전용) 순으로 그 글자를 그릴 수 있는 폰트를 찾아 그린다. 등록 폰트와 내장 폰트에서 찾는 글자는 웹과 네이티브에서 결과가 같다. 어느 폰트에도 없는 글자만 처음 찾은 폰트의 `.notdef` 상자로 표시한다.
 
 <a id="2-타겟-게이트--동기-api는-native-전용-async는-어디서나"></a>
 
@@ -403,6 +403,34 @@ color_cycle_css(ColorCycle.Vivid);  // → ["rgb(0 32 240 / 1)", …] 호스트 
 
 ### 3.8 설정과 시리즈를 JSON으로 읽고 쓰기
 
+Use SSOT injection for selective control: read the current config, edit only
+the fields you want to change, and submit the complete config with `set_config`.
+For example, this changes the X range while retaining both axes' tick spacing,
+minor count, label format and other settings:
+
+```js
+const rangeConfig = JSON.parse(chart.get_config());
+for (const axis of [rangeConfig.bottom_x, rangeConfig.top_x]) {
+  axis.min = 20;
+  axis.max = 80;
+}
+chart.set_config(JSON.stringify(rangeConfig));
+// The next frame uses the new range; request a frame through your host loop.
+```
+
+Use `auto_fit_x`, `auto_fit_y`, `auto_fit_all` or `auto_fit_colorbar` when you
+want the helper to derive bounds and their associated tick/label settings.
+`set_title` also grows the title band when needed; directly edit
+`chart_title.text` when its existing margin must stay fixed. `set_x_title` and
+`set_y_title` change only their axis-title text. Helpers adjust the fields
+specified by their contracts; they do not imply a general layout optimizer.
+For the native equivalents, see [direct SSOT edits and convenience helpers](API.md#direct-ssot-edits-and-convenience-helpers).
+
+Direct injection still uses normal validation and rendering safety limits.
+Preserving tick settings preserves their data-space meaning, not their screen
+positions or the number of visible labels. `set_config` also cancels pending
+auto-fit work tied to the replaced config; request another fit only when wanted.
+
 `Config`와 `Vec<SeriesConfig>`는 GPU 핸들이 없는 데이터 구조다. `model`의 `serde` 기능을 켜면 전체를 JSON으로 직렬화할 수 있다. 이 기능은 기본적으로 꺼져 있어 불필요한 의존성을 추가하지 않는다. 웹 래퍼의 `get_config` / `set_config` / `get_series` / `set_series`로 설정을 읽고 수정할 수 있다.
 
 ```js
@@ -439,7 +467,7 @@ chart.set_series(JSON.stringify(series));  // GPU 스타일 재빌드 포함
 `&mut self`를 빌리는 비동기 메서드가 실행 중일 때 같은 객체에 다시 접근하면 `"recursive use of an object"` 예외가 발생할 수 있다. wasm-bindgen은 호출을 대기열에 넣지 않는다. 예제 웹 래퍼는 작업 중인 객체에 대한 추가 호출을 거부한다. 저수준 커널을 직접 사용한다면 다음 규칙을 지켜야 한다.
 
 - rAF 루프는 WASM을 호출하기 전에 다음 `requestAnimationFrame(tick)`을 예약한다. 예외가 발생해도 루프가 끊어지지 않게 하기 위해서다.
-- 생성·연결, 두 전체 사전 준비 메서드, `prewarm_gpu_picking`, 출력, `first_frame_ready` / `warm_up`, `ensure_extent_engine`, 상주 `auto_fit_all`, `pick_point` / `pick_data`가 실행되는 동안 연결 세대와 커널을 확인하는 `busy` 토큰을 유지한다. 그동안 `frame()`·포인터·크기 변경·대리 호출은 생략하거나 거부한다. 상주 `auto_fit_all`은 완료 시 설정을 직접 바꾸므로 실행 중 `frame()`을 호출할 수 없다.
+- 생성·연결, 두 전체 사전 준비 메서드, `prewarm_gpu_picking`, 출력, `first_frame_ready` / `warm_up`, `ensure_extent_engine`, 상주 `auto_fit_all`, `pick_point` / `pick_data`가 실행되는 동안 연결 세대와 커널을 확인하는 `busy` 토큰을 유지한다. 저수준 `selection_details()`의 비동기 GPU 읽기 중에도 같은 접근 제한을 적용한다. 그동안 `frame()`·포인터·크기 변경·대리 호출은 생략하거나 거부한다. 상주 `auto_fit_all`은 완료 시 설정을 직접 바꾸므로 실행 중 `frame()`을 호출할 수 없다.
 - 웹 래퍼의 스트리밍 `auto_fit_all()`은 위 저수준 비동기 메서드를 호출하지 않는다. 렌더러에 범위 계산을 요청하고 스트리밍 작업의 `done`을 기다린다. 청크 공급과 커널 호출을 계속해야 하므로 일반 `busy` 토큰을 잡지 않으며, 작업 중 `busy`가 `false`일 수 있다. 스트리밍 실행기가 변경 요청을 최신 상태에 맞춰 반영한다.
 - 웹 래퍼는 작업 중 마지막 크기 변경과 포인터 해제만 보관한다. 작업이 끝나면 이를 WASM에 적용한 뒤 토큰을 해제한다. 연결을 끊어도 사용 중인 커널은 작업 종료 후 해제한다. 이전 연결 세대의 작업이 끝났다고 새 세대의 토큰을 해제해서는 안 된다.
 
@@ -449,7 +477,7 @@ chart.set_series(JSON.stringify(series));  // GPU 스타일 재빌드 포함
 
 - **메인 스레드 사용**: 축·장식의 CPU 렌더링은 메인 스레드에서 실행한다. 기존 측정에서는 글리프 캐시 적용 후 600×460 패널의 release 빌드에서 프레임당 약 0.4ms였으며, 실제 비용은 환경과 차트에 따라 달라진다. 더 큰 작업은 `OffscreenCanvas`와 Web Worker로 옮길 수 있다. SharedArrayBuffer를 쓰는 WASM 스레드를 사용하려면 서버의 COOP/COEP 헤더로 교차 출처 격리를 설정해야 한다.
 - **WebGPU 지원**: HTTPS나 루프백 주소에서 `navigator.gpu` 존재 여부와 어댑터·장치 요청 성공을 확인한다. 지원 여부는 브라우저 버전뿐 아니라 OS·GPU·드라이버·브라우저 정책에 따라 다르다. 이 렌더러는 컴퓨트·스토리지 버퍼와 WebGPU 초기화를 사용하므로 wgpu의 `webgl` 기능만 켜서 WebGL2로 대체할 수 없다. 일반 환경에서는 브라우저의 기본 GPU 선택을 따른다. 실제 GPU가 없는 Linux 검증 환경에서만 별도 실행 설정으로 SwiftShader Vulkan을 사용할 수 있다.
-- **폰트**: 내장 Liberation Sans에는 한중일 문자가 없다. 한글을 표시하려면 `register_font(Uint8Array)`로 TTF/OTF 파일을 등록하고 반환된 글꼴 이름을 `font`에 지정한다. fontdb는 WOFF2를 읽지 못한다. 스케치 모드는 내장 Comic Neue(OFL)를 사용한다. 이 폰트에 없는 한중일·그리스 문자 등은 글자별로 등록 폰트와 Liberation Sans에서 찾아 그린다. 따라서 등록한 한글 폰트는 스케치 모드에서도 사용할 수 있다.
+- **폰트**: 내장 Liberation Sans에는 한중일 문자가 없다. 한글을 표시하려면 `register_font(Uint8Array)`로 TTF/OTF 파일을 등록한다. 반환된 글꼴 이름을 `font`에 지정하면 그 폰트로 그린다. 지정하지 않아도 선택한 폰트에 없는 한글은 글자마다 등록 폰트에서 찾아 그린다. fontdb는 WOFF2를 읽지 못한다. 스케치 모드는 내장 Comic Neue(OFL)를 사용한다. 이 폰트에 없는 한중일·그리스 문자 등은 글자마다 `font`의 폰트로 그리고, 그 폰트에도 없으면 등록 폰트와 Liberation Sans에서 찾는다. 따라서 등록한 한글 폰트는 스케치 모드에서도 사용할 수 있다.
 - **동기 대기 금지**: WASM에서 `pollster::block_on`을 사용하면 교착 상태가 발생할 수 있다. 구현은 비동기로 작성하고 동기 래퍼는 `#[cfg(not(target_arch = "wasm32"))]`로 네이티브에서만 빌드한다.
 
 ## 5. 빌드 산출물 — `crates/web` → `pkg/`
@@ -482,7 +510,7 @@ cd crates/web && python -m http.server 8137   # wasm은 file:// 불가
 | 분류 | 메서드와 동작 |
 |---|---|
 | 객체 수명 | `ready` Promise, `figgy-ready` / `figgy-init-progress` / `figgy-error` / `figgy-select` / `figgy-drag` / `figgy-release` / `figgy-resize` 이벤트, `free()`. 첫 프레임과 준비 완료 알림 후 백그라운드 피킹 준비를 시작한다. 실패하면 `operation: "prewarm_gpu_picking"`, `recoverable: true`인 `figgy-error`를 보내며 준비 완료 상태는 유지한다. |
-| 폰트 | `register_font(Uint8Array)`는 TTF/OTF/TTC를 등록하고 글꼴 이름 배열을 반환한다. 반환된 이름을 `font`에 사용할 수 있다. 등록 폰트가 시스템 폰트보다 우선한다. 내용이 같은 파일은 중복 저장하거나 폰트 세대를 늘리지 않으며 글꼴 ID별 데이터를 재사용한다. 찾을 수 없는 글꼴은 내장 Liberation Sans로 대체한다. 한글은 별도 폰트 등록이 필요하다. |
+| 폰트 | `register_font(Uint8Array)`는 TTF/OTF/TTC를 등록하고 글꼴 이름 배열을 반환한다. 반환된 이름을 `font`에 사용할 수 있다. 등록 폰트가 시스템 폰트보다 우선한다. 내용이 같은 파일은 중복 저장하거나 폰트 세대를 늘리지 않으며 글꼴 ID별 데이터를 재사용한다. 찾을 수 없는 글꼴은 내장 Liberation Sans로 대체한다. 고른 폰트에 없는 글자는 글자마다 등록 폰트(등록한 순서), 내장 Liberation Sans 순으로 그 글자가 있는 폰트를 찾아 그린다. 브라우저에서는 설치된 시스템 폰트를 찾지 않으므로 한글을 표시하려면 한글 폰트를 등록해야 한다. |
 | 스타일 옵션 | 독립 함수 `draw_style_modes()`는 모드 이름의 JSON 배열을, `draw_style_param_specs(mode)`는 `{key, min, max, default, integer}`의 JSON 배열을 반환한다. UI 슬라이더를 만들 때 이 값을 사용한다. 최소·최대는 권장 범위이며 설정은 바깥 값도 허용하고 렌더러가 안전상 필요한 제한만 적용한다. 기본값은 모델의 `Default`와 테스트로 일치시킨다. |
 | 컬럼 등록·교체·제거 | `register_column_f32/f64(id, TypedArray)`는 새 ID를 등록한다. `register_columns_f32/f64(ids, TypedArray, valuesPerColumn)`은 연속된 배열로 새 컬럼을 한 번에 등록하며 전체 성공 또는 전체 실패한다. `update_register_column_f32/f64(id, TypedArray)`는 기존 ID를 매번 업로드해 교체한다. `remove_column(id)`로 제거한다. |
 | 시리즈 | `add_line_series(id, x, y, width, label)`은 추가 또는 교체, `remove_series(id)`는 제거다. |
@@ -500,7 +528,7 @@ cd crates/web && python -m http.server 8137   # wasm은 file:// 불가
 | 선택 표시 | `set_picked_points(json)`은 `PickedPointsConfig` 또는 `null` JSON 문자열로 `Config.picked_points`만 교체한다. `set_picked_data(json)`는 점·막대·셀·등고선 선택을 같은 방식으로 바꾼다. `null`은 표시를 지운다. 출처·인덱스만 보관하며 원본 좌표의 CPU 복사본은 만들지 않는다. |
 | 배경 | `set_clear_color(r, g, b, a)`는 선형 RGBA를 성분별 0~1로 제한하고 다시 그리기를 요청한다. 화면 상태만 바꾸므로 Config JSON이나 축 이미지는 갱신하지 않는다. |
 | 출력 | `export_png(scale)`은 PNG의 `Uint8Array`를 비동기로 반환한다. |
-| 제목 | `set_title`, `set_x_title`, `set_y_title`, `set_colorbar_title`. 색상 막대 제목에 빈 문자열을 주면 숨긴다. |
+| 제목 | `set_title`, `set_x_title`, `set_y_title`, `set_colorbar_title`. 색상 막대 제목에 빈 문자열을 주면 숨긴다. `set_title`은 헬퍼이므로 제목이 제목 영역보다 높으면 `chart_title.top_margin`을 함께 늘린다. 영역에 들어가는 제목은 여백을 바꾸지 않는다. |
 
 점별 스타일은 `set_series(json)` / `get_series()`로 설정한다. 정밀 모드의 산점도는 `point_style_table` / `point_style_index_column` / `point_style_overrides`를, 오차 막대는 `error_bar_style_table` / `error_bar_style_index_column` / `error_bar_style_overrides`를 사용한다. 별도 WASM 메서드를 추가하지 않으며 다른 렌더링 스타일에서는 이 매핑을 무시한다.
 
@@ -680,3 +708,55 @@ renderer.request_auto_streaming_chart(chart_id, &view, options)?;
 - `free()`로 인스턴스를 해제하면 풀 버퍼·파이프라인·텍스처·surface의 참조를 정리한다. GC의 FinalizationRegistry도 정리를 지원하지만 실행 시점이 정해져 있지 않으므로 SPA에서 컴포넌트를 제거할 때는 `free()`를 직접 호출한다.
 
 현재 `wasm-opt`는 꺼져 있다. wasm-pack에 포함된 Binaryen이 최신 rustc 출력의 일부 기능에서 비정상 종료되기 때문이다(`crates/web/Cargo.toml` 참고). Rust의 release 최적화는 적용한다. 추가 용량 절감이 필요하면 호환되는 최신 Binaryen으로 검증한 뒤 다시 활성화할 수 있다.
+
+### Bounded chart host
+
+`FiggyBoundedChart.create(canvas, family, documentJson, width, height)` exposes
+`radial`, `categorical`, and `boxplot` documents to browser hosts. It uses the
+same native renderer, decoration maps, slice/bar/box picking, and drag/resize
+policies. The host owns pointer events, animation scheduling, and synchronization.
+Creation asynchronously precompiles the requested family's rendering pipeline
+and prepares its document. It does not submit the first visible frame: call
+`await view.first_frame_ready()` before reporting Ready. That method submits a
+frame and awaits the actual GPU completion Promise; rejection/device loss is
+returned to the host. `frame()` alone only submits work.
+
+`set_document(documentJson, width, height)` validates and prepares before
+replacing the document; unspecified fields must be preserved by the caller's
+SSOT patch. `get_document`,
+`decorations`, `hit_decoration`, `select_decoration`, `resize_handle`, `drag`,
+`pick`, `hover`, `step_selection`, `clear_selection`, `resize`, `frame`, and
+async `export_png` cover interactive editing and export. Coordinates and drag
+deltas are document logical pixels; canvas resize does not change export size.
+`hover(x, y, dt)` returns whether another frame is needed; pass `null` for both
+coordinates when the pointer leaves. `step_selection(backwards)` takes one
+boolean, unlike the Cartesian two-axis navigation method. `drag(target, dx,
+dy, handle)` accepts a resize handle such as `"SE"`, or `null` for a move.
+Keep the object alive until all async calls finish; `free()` releases its GPU resources.
+
+For Cartesian hosts, `FiggyChart.decoration_bounds(id)` returns measured bounds
+and resize handles in physical canvas pixels. `step_selection(dx, dy)` navigates
+resident point, histogram or matrix selections using source indices, without
+copying arrays. Histogram bin navigation follows the category direction:
+`dx` for vertical bars and `dy` for horizontal bars; the other delta switches
+between series of the same orientation. Indices clamp to the selected series.
+`await chart.selection_details()` returns a JSON string with selected resident
+GPU values (or `"null"` for no supported selection). Histogram fields are
+`identity`, `series_id`, `index`, `bin_start`, `bin_end`, `value`, and
+`orientation`; `identity` uses a flat `kind` tag. Points and matrix cells are
+also supported. These raw methods have no `<figgy-chart>` forwarding methods.
+See the [selection JSON contract](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md#resident-selection-details).
+Hold the host's async gate during selected-value reads as well as exports.
+
+```js
+// document is a validated RadialChart JSON value, e.g. serialized by its model.
+const view = await FiggyBoundedChart.create(canvas, "radial", JSON.stringify(document), 960, 600);
+await view.first_frame_ready(); // only now report Ready and enable interactions
+const point = [320, 240]; // logical document coordinates
+const selected = JSON.parse(view.pick(...point, true)); // click toggles selection
+view.select_decoration("chart_title");
+view.drag("chart_title", 12, 6, null); // changes only this decoration's offset
+view.frame();
+const png = await view.export_png(1);
+view.free();
+```

@@ -100,7 +100,9 @@ chart.selected = Some(target);
 
 범례는 폭에 맞춰 줄을 나눈다. 내부 값 라벨은 막대 색에
 따라 밝은 글자/차트의 `text_color`를 선택한다. 시리즈 범례는 개별 막대 색이 아닌 시리즈 색이다.
-한글 등 추가 글꼴은 기존 `register_font_bytes` 경로를 사용한다. 글꼴 등록 후에는 캐시를 갱신한다.
+한글 등 추가 글꼴은 기존 `register_font_bytes` 경로를 사용한다. `font_family`에 없는 글자는 글자마다
+등록 글꼴, 내장 Liberation Sans, 설치된 시스템 글꼴(네이티브 전용) 순으로 찾아 그린다.
+글꼴 등록 후에는 캐시를 갱신한다.
 
 Visible value labels can be selected through `frame.decorations().hit_test([x, y])` and moved
 individually with `drag_by(&mut chart.decorations, hit, dx, dy)`. Prepare a new
@@ -134,7 +136,8 @@ renderer.end_frame();
 `None`으로 해제하며 렌더러가 포인터를 읽거나 애니메이션 타이머를 돌리지 않는다.
 `bar_rect(target)`은 보이는 막대의 **물리 픽셀** 경계이며, 둥근 모서리 바깥까지 포함한다.
 
-WASM에서는 `export_rgba_async(...).await`를 쓴다. 동기판은 네이티브 전용이다. 결과는
+WASM 생성에는 `CategoricalRenderer::new_async(gpu, format).await`를 사용해
+브라우저 파이프라인 컴파일을 기다린다. 출력에는 `export_rgba_async(...).await`를 쓴다. 동기판은 네이티브 전용이다. 결과는
 straight-alpha RGBA8이며 PNG는 기존 `encode_png`로 인코딩한다. 내보내기에는 현재 강조 상태가
 포함된다. 강조 없는 결과가 필요하면 내보낼 복사본의 `hovered`와 `selected`를 비운다.
 웹 Studio 연결과 배포는 별도로 관리한다.
@@ -169,7 +172,8 @@ cargo test -p figgy-renderer --doc
 편집기에서 막대를 클릭하거나 목록으로 선택해 색·재질·표기를 바꿀 수 있다. `Whole chart`는
 공통 설정을 편집하고 `Reset individual settings`는 선택한 막대의 개별 설정을 지운다.
 화면은 창 크기와 DPR에 맞춘 GPU 타깃에 직접 그리며 PNG를 확대해서 표시하지 않는다.
-Publication status: this API is included in `figgy-renderer` 0.16.1 on crates.io.
+Publication history: the categorical API was included in `figgy-renderer` 0.16.1
+on crates.io. This guide describes the current source; `new_async` requires 0.17.0.
 Studio integration is a separate host task.
 
 ### 회귀 테스트 범위

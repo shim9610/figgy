@@ -718,7 +718,7 @@ checksum = "b97b65636e5b9ef369943878ac74335ba1c55c1cb6adbf1e2c293c624248d693"
 
 [[package]]
 name = "figgy"
-version = "0.13.1"
+version = "0.14.0"
 dependencies = [
  "console_error_panic_hook",
  "figgy-renderer",
@@ -734,7 +734,7 @@ dependencies = [
 
 [[package]]
 name = "figgy-model"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -742,7 +742,7 @@ dependencies = [
 
 [[package]]
 name = "figgy-renderer"
-version = "0.16.1"
+version = "0.17.0"
 dependencies = [
  "bytemuck",
  "concurrent-queue",

@@ -375,14 +375,10 @@ impl JsStreamColumn {
         use wasm_bindgen::JsCast;
 
         if value.is_instance_of::<js_sys::Float32Array>() {
-            return Ok(Self::F32(JsF32StreamSource(
-                value.clone().unchecked_into(),
-            )));
+            return Ok(Self::F32(JsF32StreamSource(value.clone().unchecked_into())));
         }
         if value.is_instance_of::<js_sys::Float64Array>() {
-            return Ok(Self::F64(JsF64StreamSource(
-                value.clone().unchecked_into(),
-            )));
+            return Ok(Self::F64(JsF64StreamSource(value.clone().unchecked_into())));
         }
         Err("stream source must be a Float32Array or Float64Array")
     }
@@ -411,7 +407,11 @@ impl JsStreamColumn {
 
 #[cfg(target_arch = "wasm32")]
 fn js_f32_extreme(values: &JsF32StreamSource, min: bool) -> f64 {
-    let mut result = if min { f32::INFINITY } else { f32::NEG_INFINITY };
+    let mut result = if min {
+        f32::INFINITY
+    } else {
+        f32::NEG_INFINITY
+    };
     for index in 0..values.0.length() {
         let value = values.0.get_index(index);
         result = if min {
@@ -480,7 +480,11 @@ impl ColumnSource for JsF32StreamSource {
 
 #[cfg(target_arch = "wasm32")]
 fn js_f64_extreme(values: &JsF64StreamSource, min: bool) -> f64 {
-    let mut result = if min { f64::INFINITY } else { f64::NEG_INFINITY };
+    let mut result = if min {
+        f64::INFINITY
+    } else {
+        f64::NEG_INFINITY
+    };
     for index in 0..values.0.length() {
         let value = values.0.get_index(index);
         result = if min {
@@ -719,7 +723,10 @@ mod tests {
             ColumnSource::write_f32_zero_lo_pair_le_into(&self.borrowed(), dst);
         }
 
-        fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
+        fn write_f32_pair_le_into_with_stats(
+            &self,
+            dst: ColumnPairWriter<'_>,
+        ) -> ColumnUploadStats {
             ColumnSource::write_f32_pair_le_into_with_stats(&self.borrowed(), dst)
         }
 
@@ -749,7 +756,10 @@ mod tests {
             HiLoColumnSource::write_f32_pair_le_into(&self.borrowed(), dst);
         }
 
-        fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
+        fn write_f32_pair_le_into_with_stats(
+            &self,
+            dst: ColumnPairWriter<'_>,
+        ) -> ColumnUploadStats {
             HiLoColumnSource::write_f32_pair_le_into_with_stats(&self.borrowed(), dst)
         }
 
@@ -834,7 +844,10 @@ mod tests {
             HiLoColumnSource::write_f32_pair_le_into(&self.borrowed(), dst);
         }
 
-        fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
+        fn write_f32_pair_le_into_with_stats(
+            &self,
+            dst: ColumnPairWriter<'_>,
+        ) -> ColumnUploadStats {
             HiLoColumnSource::write_f32_pair_le_into_with_stats(&self.borrowed(), dst)
         }
 
@@ -864,7 +877,10 @@ mod tests {
             HiLoColumnSource::write_f32_pair_le_into(&self.borrowed(), dst);
         }
 
-        fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
+        fn write_f32_pair_le_into_with_stats(
+            &self,
+            dst: ColumnPairWriter<'_>,
+        ) -> ColumnUploadStats {
             HiLoColumnSource::write_f32_pair_le_into_with_stats(&self.borrowed(), dst)
         }
 

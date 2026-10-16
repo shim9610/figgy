@@ -163,10 +163,19 @@ impl Capture {
         options: &wgpu::PipelineCompilationOptions<'_>,
     ) -> Value {
         assert!(
-            options.zero_initialize_workgroup_memory || (
-                options.constants == [(super::workgroup_init::EXPLICIT_ZERO, 1.0)]
-                && matches!(entry, Some("reduce_values" | "reduce_states" | "pick_exact_candidates" | "pick_reduce_candidates" | "pick_histogram_bin" | "scan_block"))
-            ),
+            options.zero_initialize_workgroup_memory
+                || (options.constants == [(super::workgroup_init::EXPLICIT_ZERO, 1.0)]
+                    && matches!(
+                        entry,
+                        Some(
+                            "reduce_values"
+                                | "reduce_states"
+                                | "pick_exact_candidates"
+                                | "pick_reduce_candidates"
+                                | "pick_histogram_bin"
+                                | "scan_block"
+                        )
+                    )),
             "Benchmark must retain workgroup initialization"
         );
         json!({"module":self.shaders.get(module).expect("Shader escaped capture"),"entryPoint":entry.expect("Explicit entry required"),"constants":options.constants.iter().map(|(k,v)| (k.to_string(),*v)).collect::<std::collections::BTreeMap<_,_>>()})
@@ -201,7 +210,9 @@ impl Capture {
                 let index = desc[stage]["module"].as_u64().unwrap() as usize;
                 // Browser WebGPU always provides automatic workgroup zeroing.
                 // The native DX12 workaround is not part of its descriptor.
-                desc[stage]["constants"].as_object_mut().unwrap()
+                desc[stage]["constants"]
+                    .as_object_mut()
+                    .unwrap()
                     .remove(super::workgroup_init::EXPLICIT_ZERO);
                 let key = super::source_key(self.sources[index]["code"].as_str().unwrap());
                 if let Some(previous) = &source {

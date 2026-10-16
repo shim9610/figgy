@@ -6,9 +6,14 @@ a canvas, forwards pointer events, schedules frames and adapts async calls.
 
 The library packages are `figgy-renderer` and `figgy-model`. This example keeps
 the Cargo name `figgy` for its generated JS/WASM filenames and has `publish = false`.
-It is not the JavaScript counterpart of every Rust API: the wrapper does **not**
-expose the bounded radial, categorical or boxplot renderers. Those APIs are
-demonstrated in the [native examples](../renderer/examples/README.md).
+The source versions are `figgy 0.14.0`, `figgy-renderer 0.17.0`, and
+`figgy-model 0.11.0`; the example package is built from source, not published to crates.io.
+
+The generated module exports `FiggyChart` for Cartesian charts and
+`FiggyBoundedChart` for radial (including donuts), categorical and boxplot
+charts. The `<figgy-chart>` custom element wraps `FiggyChart` only. Hosts using
+`FiggyBoundedChart` own their canvas events and scheduling; see the
+[bounded host API](../renderer/WASM.md#bounded-chart-host).
 
 ## Build and run
 
@@ -37,6 +42,30 @@ not checked into the source snapshot.
 | [src/lib.rs](src/lib.rs) | wasm-bindgen bridge to the renderer |
 | [WASM guide](../renderer/WASM.md) | Build, lifecycle, streaming, async export and wrapper methods |
 | [JSON reference](SCHEMA.md) | The example wrapper's representation of the shared model |
+
+## Readiness and selected values
+
+Await `FiggyChart.create(canvas)` before using a raw Cartesian chart. It
+prepares its rendering pipelines and waits for its initial empty frame.
+After installing data/configuration, `await chart.first_frame_ready()` submits
+that state and waits for GPU completion. For bounded charts, creation prepares
+the requested family, and the host must explicitly await
+`view.first_frame_ready()` before presenting the chart as ready. Device loss or
+rejected GPU completion must be treated as initialization failure.
+
+A raw Cartesian host can inspect its current typed selection with
+`JSON.parse(await chart.selection_details())`. Histogram results include the
+selected bin's boundaries, stored value and orientation; points and matrix
+cells expose coordinates and cell values. Only the selected GPU samples are
+read back. `chart.step_selection(dx, dy)` moves the selection through resident
+data. These two methods are raw `FiggyChart` exports, not custom-element
+forwarders. See the [selection contract](SCHEMA.md#resident-selection-details).
+
+Serialize asynchronous operations and keep rendering, pointer edits, resize
+and disposal behind the same gate until the operation finishes. This includes
+selected-value reads; wasm-bindgen does not queue competing calls. The
+[async host guide](../renderer/WASM.md#39-async-메서드와-객체-잠금-필독)
+describes the lifecycle contract.
 
 ## Linking a live demo from GitHub
 

@@ -15,13 +15,15 @@ The default library has no GUI framework dependency.
 
 ## Install and run
 
-Use Rust **1.99 or later** and a working graphics adapter/driver. Version **0.16.1**
-is available on [crates.io](https://crates.io/crates/figgy-renderer).
+Use Rust **1.99 or later** and a working graphics adapter/driver. This source
+targets **0.17.0**, with model **0.11.0**. The dependency below installs this
+release from [crates.io](https://crates.io/crates/figgy-renderer) once available;
+use the local path below for a checkout before publication.
 Add these dependencies to your application's `Cargo.toml`:
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", version = "0.16.1" }
+renderer = { package = "figgy-renderer", version = "0.17.0" }
 wgpu = "30"
 pollster = "1"
 ```

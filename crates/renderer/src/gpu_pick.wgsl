@@ -131,6 +131,11 @@ fn pick_pair_is_valid(v: vec2<f32>) -> bool {
     return pick_is_finite(v.x) && pick_is_finite(v.y) && pick_is_finite(v.x + v.y);
 }
 
+fn pick_coordinate_is_valid(v: vec2<f32>, axis: u32) -> bool {
+    return pick_pair_is_valid(v)
+        && (pick_query_params.transform.scale_log[axis] == 0.0 || v.x + v.y > 0.0);
+}
+
 fn pick_log10(v: f32) -> f32 {
     return log(max(v, 1e-30)) / log(10.0);
 }
@@ -455,7 +460,7 @@ fn pick_scatter_candidate(
     y: vec2<f32>,
 ) -> PickCandidate {
     let series_order = pick_query_params.series.y;
-    if !pick_pair_is_valid(x) || !pick_pair_is_valid(y) {
+    if !pick_coordinate_is_valid(x, 0u) || !pick_coordinate_is_valid(y, 1u) {
         return pick_invalid_candidate(series_order);
     }
     let radius = pick_resolve_scatter_radius(point_index);
@@ -494,7 +499,7 @@ fn pick_line_candidate(
     by: vec2<f32>,
 ) -> PickCandidate {
     let series_order = pick_query_params.series.y;
-    if !pick_pair_is_valid(ax) || !pick_pair_is_valid(ay) || !pick_pair_is_valid(bx) || !pick_pair_is_valid(by) {
+    if !pick_coordinate_is_valid(ax, 0u) || !pick_coordinate_is_valid(ay, 1u) || !pick_coordinate_is_valid(bx, 0u) || !pick_coordinate_is_valid(by, 1u) {
         return pick_invalid_candidate(series_order);
     }
     let a_px = pick_project_pair(ax, ay);

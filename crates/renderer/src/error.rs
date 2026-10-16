@@ -16,7 +16,10 @@ pub enum FiggyError {
     GpuPick(crate::gpu_pick::GpuPickError),
 
     /// `Config.chart_area` has zero size (cannot raster).
-    InvalidChartArea { width: u32, height: u32 },
+    InvalidChartArea {
+        width: u32,
+        height: u32,
+    },
 
     /// A renderer-owned chart config violates a render invariant.
     InvalidConfig {
@@ -25,22 +28,32 @@ pub enum FiggyError {
     },
 
     /// CPU raster target allocation failed — typically a zero/oversized area.
-    RasterWrapFailed { reason: String },
+    RasterWrapFailed {
+        reason: String,
+    },
 
     /// No compatible wgpu adapter found.
     AdapterUnavailable,
 
     /// wgpu device creation failed (unsupported limits/features).
-    DeviceCreationFailed { reason: String },
+    DeviceCreationFailed {
+        reason: String,
+    },
 
     /// wgpu surface creation failed (window handle incompatibility).
-    SurfaceCreationFailed { reason: String },
+    SurfaceCreationFailed {
+        reason: String,
+    },
 
     /// wgpu surface configuration failed (unsupported/empty capabilities).
-    SurfaceConfigurationFailed { reason: String },
+    SurfaceConfigurationFailed {
+        reason: String,
+    },
 
     /// Acquiring the next surface texture failed.
-    SurfaceAcquireFailed { reason: String },
+    SurfaceAcquireFailed {
+        reason: String,
+    },
 
     /// The render target format cannot be used by figgy's blended pipelines.
     UnsupportedSurfaceFormat {
@@ -62,7 +75,9 @@ pub enum FiggyError {
     },
 
     /// Referenced column id is not registered.
-    UnknownColumn { id: String },
+    UnknownColumn {
+        id: String,
+    },
 
     /// Registered host source has no resident GPU allocation yet.
     ColumnNotResident {
@@ -75,16 +90,24 @@ pub enum FiggyError {
     },
 
     /// The column id belongs to renderer maintenance and is not host-mutable.
-    ReservedColumnId { id: String },
+    ReservedColumnId {
+        id: String,
+    },
 
     /// Renderer-owned chart id is not live in this renderer.
-    UnknownChart { id: crate::renderer::ChartId },
+    UnknownChart {
+        id: crate::renderer::ChartId,
+    },
 
     /// A checked identity/revision issuer has no successor.
-    CounterExhausted { counter: &'static str },
+    CounterExhausted {
+        counter: &'static str,
+    },
 
     /// An invocation token no longer identifies current renderer state.
-    StaleStateToken { reason: String },
+    StaleStateToken {
+        reason: String,
+    },
 
     /// A renderer-state candidate could not reserve CPU memory before commit.
     StateAllocationFailed {
@@ -94,17 +117,25 @@ pub enum FiggyError {
 
     /// A series declaration is internally inconsistent for the requested
     /// render path.
-    InvalidSeriesConfig { series_id: String, reason: String },
+    InvalidSeriesConfig {
+        series_id: String,
+        reason: String,
+    },
 
     /// Handle generation no longer matches after an invalidating pool mutation.
-    StaleHandle { generation: u32, current: u32 },
+    StaleHandle {
+        generation: u32,
+        current: u32,
+    },
 
     /// A `PreparedFrame` no longer matches its captured renderer resources —
     /// for example it belongs to another renderer, the target pipeline or pool
     /// layout changed, a captured column allocation was replaced, or a
     /// captured `ChartView` was rewritten after `Renderer::prepare`.
     /// Recovery: build the current items and call `prepare` again.
-    StalePreparedFrame { reason: String },
+    StalePreparedFrame {
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for FiggyError {

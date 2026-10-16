@@ -5,14 +5,15 @@
 #![doc = include_str!("../API.md")]
 
 pub mod axis_render;
+#[cfg(target_arch = "wasm32")]
+mod browser_compile;
+pub mod categorical;
 pub mod chart;
 pub mod data;
 pub mod data_render;
 pub mod demo;
 pub mod error;
 mod gpu_compile;
-#[cfg(target_arch = "wasm32")]
-mod browser_compile;
 pub mod gpu_contour;
 mod gpu_data_pick;
 pub mod gpu_errorbar;
@@ -20,9 +21,9 @@ pub mod gpu_memory;
 mod gpu_pick;
 pub mod init;
 pub mod pick;
-pub mod raster;
 pub mod radial;
-pub mod categorical;
+pub mod raster;
+mod render_warning;
 pub mod renderer;
 // Hand-drawn geometry helpers + the `DecoStroker` strategy — consumed by the
 // deco layer (`axis_render`) when `Config::draw_style` selects a stylized
@@ -81,14 +82,15 @@ pub use gpu_pick::{GpuPickError, GpuPickTicket};
 pub use init::{INIT_EVENT_SCHEMA_VERSION, InitEvent, InitPhase};
 pub use pick::{PickedData, PickedPoint, PointColumnLookup, PointPickOptions, pick_nearest_point};
 pub use preset::{AxisPreset, ColorCycle};
+pub use render_warning::{RenderWarning, SpacingRejection, WarningAxis};
 pub use renderer::{
-    PreparationFeature, PipelinePreparation, PreparedPipelines,
     AxisViewState, ChartDrawItem, ChartId, ChartRenderStamp, ChartStyle, ChartView, ChartViewState,
-    FitCommitToken, GpuPickRequest, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE, PreparedFrame, RasterImage,
-    RegisteredChartDrawItem, RenderRevision, Renderer, RendererDevice, RendererLoadDemo,
-    RendererVisualStamp, Series, SeriesDrawInfo, WebDerivedSnapshot, WebDerivedStamp,
-    WindowedRenderer, StreamingOperation, StreamingSelectionRequest, StreamingSelectionTicket, clamp_export_scale, display_config_for_surface, dpi_to_scale, encode_png,
-    fit_display_panel,
+    FitCommitToken, GpuPickRequest, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE, PipelinePreparation,
+    PreparationFeature, PreparedFrame, PreparedPipelines, RasterImage, RegisteredChartDrawItem,
+    RenderRevision, Renderer, RendererDevice, RendererLoadDemo, RendererVisualStamp, Series,
+    SeriesDrawInfo, StreamingOperation, StreamingSelectionRequest, StreamingSelectionTicket,
+    WebDerivedSnapshot, WebDerivedStamp, WindowedRenderer, clamp_export_scale,
+    display_config_for_surface, dpi_to_scale, draw_style_supports, encode_png, fit_display_panel,
 };
 pub use resize::{Resizable, ResizeHandle};
 pub use select::{
@@ -103,20 +105,20 @@ pub use streaming_source::{
     StreamingChartOptions, StreamingLimits, StreamingProgress, StreamingState, StreamingStatus,
     StreamingUsage, ViewResidencyStatus,
 };
-pub use text::MeasureText;
+pub use text::{MeasureText, TextAlign};
 pub use text_render::{CpuTextMeasure, FontPolicy};
 
 pub use radial::{
     RadialChart, RadialError, RadialFrame, RadialInteraction, RadialKind, RadialLabelFormat,
-    RadialLabels, RadialMaterial, RadialOutline, RadialRenderer, RadialSlice, RadialSplit, RadialStyle,
-    RadialTarget,
+    RadialLabels, RadialMaterial, RadialOutline, RadialRenderer, RadialSlice, RadialSplit,
+    RadialStyle, RadialTarget,
 };
 
-pub use categorical::{CategoricalRenderer, CategoricalFrame, CategoricalError};
+pub use categorical::{CategoricalError, CategoricalFrame, CategoricalRenderer};
 pub use model::categorical::*;
 
 pub mod boxplot;
-pub use boxplot::{BoxPlotRenderer, BoxPlotFrame, BoxPlotError, BoxPlotPart, BoxPlotPick};
+pub use boxplot::{BoxPlotError, BoxPlotFrame, BoxPlotPart, BoxPlotPick, BoxPlotRenderer};
 pub use model::boxplot::*;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

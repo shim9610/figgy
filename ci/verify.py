@@ -5,8 +5,6 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
-import posixpath
-import re
 import shlex
 import shutil
 import subprocess
@@ -14,7 +12,7 @@ import sys
 import tarfile
 import tempfile
 import tomllib
-from urllib.parse import unquote, urlsplit
+from package_docs import audit_document_links, check_checkout
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGES = ("figgy-model", "figgy-renderer")
@@ -44,6 +42,11 @@ def run(args, *, cwd=ROOT, env=None, capture=False):
 
 
 def static():
+    # Catch package-relative documentation mistakes before any compilation.
+    run([sys.executable, "-B", "-m", "unittest", "discover", "-s", "ci", "-p", "test_package_docs.py"])
+    check_checkout(ROOT)
+    # Formatting is also checked before any build.
+    run(["cargo", "fmt", "--all", "--check"])
     run(["cargo", "check", "--locked", "--workspace", "--all-targets"])
     run(["cargo", "check", "--locked", "--workspace", "--all-targets", "--all-features"])
     run(["cargo", "check", "--locked", "--workspace", "--target", "wasm32-unknown-unknown"])
@@ -78,21 +81,9 @@ def audit_archive(archive, source):
             raise RuntimeError(f"{archive.name}: missing {sorted(missing)}; unexpected {sorted(extra)}")
         # Guides remain readable after extraction. Repository-only assets and
         # sibling-crate links must use public URLs, not broken relative paths.
-        links = 0
-        for name, member in files.items():
-            if not name.endswith(".md"):
-                continue
-            document = package.extractfile(member).read().decode("utf-8")
-            targets = re.findall(r'\]\(([^\s)]+)\)|(?:src|href)="([^"]+)"', document)
-            for markdown, html in targets:
-                url = urlsplit(markdown or html)
-                if url.scheme or url.netloc or not url.path:
-                    continue
-                target = posixpath.normpath(posixpath.join(
-                    posixpath.dirname(name), unquote(url.path)))
-                if target not in files and not any(n.startswith(target + "/") for n in files):
-                    raise RuntimeError(f"{archive.name}: {name} links outside package: {url.path}")
-                links += 1
+        links = audit_document_links(
+            archive.name, files,
+            lambda name: package.extractfile(files[name]).read().decode("utf-8"))
         result = {"archive": archive.name, "bytes": archive.stat().st_size,
                   "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
                   "files": sorted(files), "relative_document_links": links}

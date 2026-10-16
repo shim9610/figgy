@@ -70,7 +70,9 @@ fn chart() -> BoxPlotChart {
 async fn boxplot_notches_materials_selection_cache_and_png_work_on_webgpu() {
     let (_instance, gpu) = gpu().await;
     scope(gpu.device());
-    let mut r = BoxPlotRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut r = BoxPlotRenderer::new_async(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)
+        .await
+        .unwrap();
     let mut c = chart();
     c.style.notched = true;
     let f = r.prepare(&c, (640, 440), 1.).unwrap();
@@ -110,7 +112,9 @@ async fn boxplot_notches_materials_selection_cache_and_png_work_on_webgpu() {
 async fn boxplot_srgb_clipping_individual_edits_and_degenerate_statistics_work_on_webgpu() {
     let (_instance, gpu) = gpu().await;
     scope(gpu.device());
-    let mut r = BoxPlotRenderer::new(gpu.clone(), wgpu::TextureFormat::Bgra8UnormSrgb).unwrap();
+    let mut r = BoxPlotRenderer::new_async(gpu.clone(), wgpu::TextureFormat::Bgra8UnormSrgb)
+        .await
+        .unwrap();
     let mut c = chart();
     c.direction = BoxPlotDirection::Horizontal;
     let t = BoxPlotTarget::new("a", "s");

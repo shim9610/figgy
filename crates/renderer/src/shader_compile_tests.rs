@@ -147,9 +147,24 @@ fn all_shader_compilation_times_and_entry_coverage() {
     let mut used = HashSet::new();
     for pipeline in &capture.pipelines {
         let compute = &pipeline["descriptor"]["compute"];
-        if matches!(compute["entryPoint"].as_str(), Some("reduce_values" | "reduce_states" | "pick_exact_candidates" | "pick_reduce_candidates" | "pick_histogram_bin" | "scan_block")) {
-            let explicit = compute["constants"]["FIGGY_EXPLICIT_WORKGROUP_ZERO"].as_f64() == Some(1.0);
-            assert_eq!(explicit, cfg!(target_os = "windows") && device.adapter_info().backend == wgpu::Backend::Dx12, "incorrect workgroup initialization policy: {compute}");
+        if matches!(
+            compute["entryPoint"].as_str(),
+            Some(
+                "reduce_values"
+                    | "reduce_states"
+                    | "pick_exact_candidates"
+                    | "pick_reduce_candidates"
+                    | "pick_histogram_bin"
+                    | "scan_block"
+            )
+        ) {
+            let explicit =
+                compute["constants"]["FIGGY_EXPLICIT_WORKGROUP_ZERO"].as_f64() == Some(1.0);
+            assert_eq!(
+                explicit,
+                cfg!(target_os = "windows") && device.adapter_info().backend == wgpu::Backend::Dx12,
+                "incorrect workgroup initialization policy: {compute}"
+            );
         }
         for stage in ["compute", "vertex", "fragment"] {
             let s = &pipeline["descriptor"][stage];

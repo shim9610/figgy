@@ -10,8 +10,8 @@ pub use geometry::{
     LABEL_GAP, LEGEND_INSET, TitleBand, TitlePlacement, axis_anchor, axis_offset,
     axis_title_offset_to_screen, axis_title_placement, axis_visibility_extent,
     axis_visibility_rect, chart_title_placement, colorbar_rect, colorbar_title_placement,
-    label_origin, label_rect, legend_rect, point_on_rect_side, rect_axis_visibility_rect,
-    screen_offset_to_axis_title,
+    fit_chart_title_margin, label_origin, label_rect, legend_rect, point_on_rect_side,
+    rect_axis_visibility_rect, screen_offset_to_axis_title,
 };
 pub use nudge::{Element, NudgeReject, NudgeResult};
 pub use rect::{ChartArea, DataArea, Rect, RectF};

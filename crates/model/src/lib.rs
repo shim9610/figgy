@@ -6,10 +6,10 @@ pub mod colormap;
 pub mod config;
 pub mod data;
 pub mod data_config;
+pub mod decoration;
 pub mod default;
 pub mod drag;
-pub mod decoration;
-pub use decoration::{DecorationId, DecorationLayout, DecorationOffset, DecorationElement};
+pub use decoration::{DecorationElement, DecorationId, DecorationLayout, DecorationOffset};
 pub mod format;
 pub mod layout;
 pub mod legend;
@@ -43,7 +43,7 @@ pub use select::{
     ColorBarElement, ColorBarLabelElement, ColorBarTitleElement, DataAreaElement, HitId, HitMap,
     LegendElement, Selectable, SelectionBox,
 };
-pub use text::{MeasureText, TextExtents};
+pub use text::{MeasureText, TextAlign, TextExtents};
 
 pub use radial::{
     RadialChart, RadialInteraction, RadialKind, RadialLabelFormat, RadialLabels, RadialMaterial,

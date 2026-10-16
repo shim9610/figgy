@@ -38,7 +38,8 @@ impl SelectionRows {
 
     fn instance(self, global: usize, local_count: usize) -> Option<u32> {
         if let Some(local) = self.packed_instance {
-            return (global == self.global_start && (local as usize) < local_count).then_some(local);
+            return (global == self.global_start && (local as usize) < local_count)
+                .then_some(local);
         }
         let local = global.checked_sub(self.global_start)?;
         (local < local_count)
@@ -603,7 +604,11 @@ mod tests {
         );
         assert_eq!(SelectionRows::RESIDENT.instance(10, 11), Some(10));
         assert_eq!(SelectionRows::RESIDENT.instance(10, 10), None);
-        let packed = SelectionRows { global_start: 20, packed_instance: Some(7), ..rows };
+        let packed = SelectionRows {
+            global_start: 20,
+            packed_instance: Some(7),
+            ..rows
+        };
         assert_eq!(packed.instance(20, 8), Some(7));
         assert_eq!(packed.instance(20, 7), None);
         assert_eq!(packed.instance(21, 8), None);
@@ -851,7 +856,9 @@ mod tests {
                         assert_eq!(layers.selected_bars[0].instance, if local { 0 } else { 2 });
                     }
                     PreparedSeries::from_layers(
-                        layers.into_series_layers(), None, Some(Arc::clone(&style._charge)),
+                        layers.into_series_layers(),
+                        None,
+                        Some(Arc::clone(&style._charge)),
                     )
                 };
                 frame.items[0].series = vec![packet];

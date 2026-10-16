@@ -76,6 +76,23 @@ fn data_to_ndc(xv: vec2<f32>, yv: vec2<f32>) -> vec2<f32> {
     let ty = axis_pair_to_t(yv, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y, transform.data_to_panel_scale.y, transform.data_to_panel_offset.y);
     return vec2<f32>(tx, ty) * 2.0 - 1.0;
 }
+
+// Mask source samples explicitly: NaN/Inf clipping is not portable in WGSL.
+// Logarithmic coordinate domains exclude nonpositive samples, while bars and
+// errorbar extents retain their separate baseline/clipping rules.
+fn sample_finite(v: f32) -> bool {
+    return (bitcast<u32>(v) & 0x7f800000u) != 0x7f800000u;
+}
+
+fn sample_valid(xv: vec2<f32>, yv: vec2<f32>) -> bool {
+    let x = xv.x + xv.y;
+    let y = yv.x + yv.y;
+    return sample_finite(xv.x) && sample_finite(xv.y)
+        && sample_finite(yv.x) && sample_finite(yv.y)
+        && sample_finite(x) && sample_finite(y)
+        && (transform.scale_log.x == 0.0 || x > 0.0)
+        && (transform.scale_log.y == 0.0 || y > 0.0);
+}
 // ───── END common block ─────
 
 struct ArcParams {
@@ -112,6 +129,12 @@ fn figgy_zero_workgroup(local_index: u32) {
     }
 }
 
+fn point_valid(i: u32) -> bool {
+    let xi = params.x_base + i * 2u;
+    let yi = params.y_base + i * 2u;
+    return sample_valid(vec2<f32>(pool[xi], pool[xi + 1u]), vec2<f32>(pool[yi], pool[yi + 1u]));
+}
+
 fn point_px(i: u32) -> vec2<f32> {
     let xi = params.x_base + i * 2u;
     let yi = params.y_base + i * 2u;
@@ -129,6 +152,10 @@ fn seg_init(@builtin(global_invocation_id) gid: vec3<u32>) {
     let g = params.start + i;
     if (g == 0u) {
         dst[0] = 0.0;
+        return;
+    }
+    if (!point_valid(g - 1u) || !point_valid(g)) {
+        dst[g] = 0.0;
         return;
     }
     let d = distance(point_px(g - 1u), point_px(g));

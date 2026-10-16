@@ -8,9 +8,9 @@ use std::sync::Arc;
 use crate::StreamBounds;
 use crate::data::{COLUMN_VALUE_BYTES, ColumnPairWriter, StreamColumnSource};
 use crate::gpu_memory::{GpuLedger, GpuResourceKind, TrackedBuffer};
-use crate::streaming::{ColumnRange, StreamError};
 #[cfg(test)]
 use crate::streaming::{ColumnInput, SourceEncoding};
+use crate::streaming::{ColumnRange, StreamError};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ChunkUploadBudget {
@@ -84,7 +84,11 @@ pub(crate) struct RecordedChunk {
 
 impl RecordedChunk {
     pub(crate) fn from_packed_view(work: TrackedBuffer, columns: Vec<UploadedColumn>) -> Self {
-        Self { work, columns, staging: None }
+        Self {
+            work,
+            columns,
+            staging: None,
+        }
     }
     /// Resolve a checked subrange for the current chunk's queued draw. The
     /// work buffer may be overwritten by a later submission, so this handle
@@ -148,7 +152,11 @@ impl RecordedChunk {
 
     #[cfg(test)]
     pub(crate) fn charged_bytes(&self) -> u64 {
-        self.work.charged_bytes() + self.staging.as_ref().map_or(0, TrackedBuffer::charged_bytes)
+        self.work.charged_bytes()
+            + self
+                .staging
+                .as_ref()
+                .map_or(0, TrackedBuffer::charged_bytes)
     }
 }
 
@@ -167,8 +175,11 @@ fn work_allocation_bytes(
     let preferred = preferred.max(required);
     let fits = preferred <= budget.max_work_buffer_bytes.min(device_limit)
         && usize::try_from(preferred).is_ok()
-        && required.checked_add(preferred).is_some_and(|bytes| bytes <= budget.max_upload_bytes)
-        && ledger_bytes.checked_add(budget.pool_bytes)
+        && required
+            .checked_add(preferred)
+            .is_some_and(|bytes| bytes <= budget.max_upload_bytes)
+        && ledger_bytes
+            .checked_add(budget.pool_bytes)
             .and_then(|bytes| bytes.checked_add(required))
             .and_then(|bytes| bytes.checked_add(preferred))
             .is_some_and(|bytes| bytes <= budget.renderer_budget_bytes);
@@ -205,7 +216,11 @@ fn validate_layout(
     // Every value is eight bytes: mapping and buffer-copy padding are already
     // included, with no zero-sized buffers or unaligned final copies.
     let upload_bytes = work_bytes.checked_mul(2).ok_or(StreamError::Overflow)?;
-    let new_work_bytes = if reusable_work_bytes >= work_bytes { 0 } else { work_bytes };
+    let new_work_bytes = if reusable_work_bytes >= work_bytes {
+        0
+    } else {
+        work_bytes
+    };
     let total = ledger_bytes
         .checked_add(budget.pool_bytes)
         .and_then(|bytes| bytes.checked_add(work_bytes))
@@ -259,10 +274,20 @@ fn validate_source_layout(
             .ok_or(StreamError::Overflow)?;
     }
     let upload_bytes = work_bytes.checked_mul(2).ok_or(StreamError::Overflow)?;
-    let new_work_bytes = if reusable_work_bytes >= work_bytes { 0 } else { work_bytes };
+    let new_work_bytes = if reusable_work_bytes >= work_bytes {
+        0
+    } else {
+        work_bytes
+    };
     let total = ledger_bytes
         .checked_add(budget.pool_bytes)
-        .and_then(|bytes| bytes.checked_add(if reusable_staging_bytes >= work_bytes { 0 } else { work_bytes }))
+        .and_then(|bytes| {
+            bytes.checked_add(if reusable_staging_bytes >= work_bytes {
+                0
+            } else {
+                work_bytes
+            })
+        })
         .and_then(|bytes| bytes.checked_add(new_work_bytes))
         .ok_or(StreamError::Overflow)?;
     if input_bytes > budget.max_input_bytes
@@ -317,7 +342,14 @@ pub(crate) fn record_chunk_collecting_statistics(
     statistics_plans: &[ChunkStatisticsPlan],
 ) -> Result<RecordedChunk, ChunkUploadError> {
     record_chunk_collecting_statistics_reusing(
-        device, encoder, ledger, budget, columns, statistics_plans, None, 0,
+        device,
+        encoder,
+        ledger,
+        budget,
+        columns,
+        statistics_plans,
+        None,
+        0,
     )
 }
 
@@ -333,8 +365,15 @@ pub(crate) fn record_chunk_collecting_statistics_reusing(
     preferred_work_bytes: u64,
 ) -> Result<RecordedChunk, ChunkUploadError> {
     record_chunk_collecting_statistics_reusing_observed(
-        device, encoder, ledger, budget, columns, statistics_plans,
-        reusable_work, preferred_work_bytes, &mut |_, _, _, _| {},
+        device,
+        encoder,
+        ledger,
+        budget,
+        columns,
+        statistics_plans,
+        reusable_work,
+        preferred_work_bytes,
+        &mut |_, _, _, _| {},
     )
 }
 
@@ -400,8 +439,17 @@ pub(crate) fn record_source_chunk_collecting_statistics_reusing<'a>(
     preferred_work_bytes: u64,
 ) -> Result<RecordedChunk, ChunkUploadError> {
     record_source_chunk_collecting_statistics_reusing_observed(
-        device, encoder, ledger, budget, columns, source_at, statistics_plans,
-        reusable_work, preferred_work_bytes, &mut |_, _, _, _| {}, None,
+        device,
+        encoder,
+        ledger,
+        budget,
+        columns,
+        source_at,
+        statistics_plans,
+        reusable_work,
+        preferred_work_bytes,
+        &mut |_, _, _, _| {},
+        None,
     )
 }
 
@@ -423,8 +471,7 @@ pub(crate) fn record_source_chunk_collecting_statistics_reusing_observed<'a>(
     }
     for (index, (range, plan)) in columns.iter().zip(statistics_plans).enumerate() {
         let supplied = source_at(index);
-        if supplied.source.encoding() != range.encoding || supplied.source_len != range.source_len
-        {
+        if supplied.source.encoding() != range.encoding || supplied.source_len != range.source_len {
             return Err(StreamError::InvalidPayload.into());
         }
         let supplied_len =
@@ -474,12 +521,17 @@ pub(crate) fn record_source_chunk_collecting_statistics_reusing_observed<'a>(
         )
         .map(|buffer| TrackedBuffer::new(ledger, GpuResourceKind::StreamingUpload, buffer))
     };
-    let staging = if let Some(staging) = reusable_staging.filter(|staging| staging.size() >= work_bytes) {
-        staging.clone()
-    } else {
-        create("stream chunk staging", work_bytes,
-            wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::MAP_WRITE, true)?
-    };
+    let staging =
+        if let Some(staging) = reusable_staging.filter(|staging| staging.size() >= work_bytes) {
+            staging.clone()
+        } else {
+            create(
+                "stream chunk staging",
+                work_bytes,
+                wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::MAP_WRITE,
+                true,
+            )?
+        };
     let written: Result<(), ChunkUploadError> = (|| {
         let mut mapped = staging
             .slice(..)
@@ -522,8 +574,12 @@ pub(crate) fn record_source_chunk_collecting_statistics_reusing_observed<'a>(
         work.clone()
     } else {
         let capacity = work_allocation_bytes(
-            work_bytes, preferred_work_bytes, budget,
-            limits.max_buffer_size.min(u64::from(limits.max_storage_buffer_binding_size)),
+            work_bytes,
+            preferred_work_bytes,
+            budget,
+            limits
+                .max_buffer_size
+                .min(u64::from(limits.max_storage_buffer_binding_size)),
             ledger_bytes,
         );
         create(
@@ -556,8 +612,15 @@ fn record_chunk_maybe_collecting(
     preferred_work_bytes: u64,
 ) -> Result<RecordedChunk, ChunkUploadError> {
     record_chunk_maybe_collecting_observed(
-        device, encoder, ledger, budget, columns, statistics_plans,
-        reusable_work, preferred_work_bytes, None,
+        device,
+        encoder,
+        ledger,
+        budget,
+        columns,
+        statistics_plans,
+        reusable_work,
+        preferred_work_bytes,
+        None,
     )
 }
 
@@ -608,9 +671,9 @@ fn record_chunk_maybe_collecting_observed(
                 {
                     collect_index += 1;
                 }
-                let collect = collect_ranges.get(collect_index).is_some_and(|range| {
-                    range.start <= global_index && global_index < range.end
-                });
+                let collect = collect_ranges
+                    .get(collect_index)
+                    .is_some_and(|range| range.start <= global_index && global_index < range.end);
                 if collect {
                     let gpu_value = hi + lo;
                     let value = hi as f64 + lo as f64;
@@ -659,8 +722,15 @@ fn record_chunk_with(
     preferred_work_bytes: u64,
 ) -> Result<RecordedChunk, ChunkUploadError> {
     record_chunk_with_observed(
-        device, encoder, ledger, budget, columns, write, reusable_work,
-        preferred_work_bytes, None,
+        device,
+        encoder,
+        ledger,
+        budget,
+        columns,
+        write,
+        reusable_work,
+        preferred_work_bytes,
+        None,
     )
 }
 
@@ -676,9 +746,18 @@ fn record_chunk_with_observed(
     preferred_work_bytes: u64,
     observe: Option<&mut dyn FnMut(usize, usize, f32, f32)>,
 ) -> Result<RecordedChunk, ChunkUploadError> {
-    record_chunk_with_factory_observed(device, encoder, ledger, budget, columns, write, reusable_work, preferred_work_bytes, observe, |desc| {
-        create_buffer_checked(device, desc)
-    })
+    record_chunk_with_factory_observed(
+        device,
+        encoder,
+        ledger,
+        budget,
+        columns,
+        write,
+        reusable_work,
+        preferred_work_bytes,
+        observe,
+        |desc| create_buffer_checked(device, desc),
+    )
 }
 
 fn create_buffer_checked(
@@ -705,8 +784,16 @@ fn record_chunk_with_factory(
     allocate: impl FnMut(&wgpu::BufferDescriptor<'_>) -> Result<wgpu::Buffer, ChunkUploadError>,
 ) -> Result<RecordedChunk, ChunkUploadError> {
     record_chunk_with_factory_observed(
-        device, encoder, ledger, budget, columns, write, reusable_work,
-        preferred_work_bytes, None, allocate,
+        device,
+        encoder,
+        ledger,
+        budget,
+        columns,
+        write,
+        reusable_work,
+        preferred_work_bytes,
+        None,
+        allocate,
     )
 }
 
@@ -743,7 +830,12 @@ fn record_chunk_with_factory_observed(
         })
         .map(|buffer| TrackedBuffer::new(ledger, GpuResourceKind::StreamingUpload, buffer))
     };
-    let staging = create("stream chunk staging", work_bytes, wgpu::BufferUsages::COPY_SRC, true)?;
+    let staging = create(
+        "stream chunk staging",
+        work_bytes,
+        wgpu::BufferUsages::COPY_SRC,
+        true,
+    )?;
     // Keep the caller's encoder entirely untouched until all writers succeed.
     // Unwinding releases the mapped view before unmapping or dropping staging.
     let written = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -756,7 +848,10 @@ fn record_chunk_with_factory_observed(
             let end = (column.offset_bytes + column.pair_bytes) as usize;
             if let Some(observe) = observe.as_mut() {
                 let mut on_pair = |row, hi, lo| observe(column_index, row, hi, lo);
-                write(input, ColumnPairWriter::new_observed(mapped.slice(start..end), &mut on_pair))?;
+                write(
+                    input,
+                    ColumnPairWriter::new_observed(mapped.slice(start..end), &mut on_pair),
+                )?;
             } else {
                 write(input, ColumnPairWriter::new(mapped.slice(start..end)))?;
             }
@@ -770,8 +865,12 @@ fn record_chunk_with_factory_observed(
         work.clone()
     } else {
         let capacity = work_allocation_bytes(
-            work_bytes, preferred_work_bytes, budget,
-            limits.max_buffer_size.min(u64::from(limits.max_storage_buffer_binding_size)),
+            work_bytes,
+            preferred_work_bytes,
+            budget,
+            limits
+                .max_buffer_size
+                .min(u64::from(limits.max_storage_buffer_binding_size)),
             ledger_bytes,
         );
         create(
@@ -1329,8 +1428,8 @@ mod tests {
 
     #[test]
     fn ordered_chunks_overwrite_one_work_buffer_without_changing_prior_draw_bytes() {
-        let (device, queue) = crate::data_render::shared_device()
-            .expect("stream work reuse requires a GPU adapter");
+        let (device, queue) =
+            crate::data_render::shared_device().expect("stream work reuse requires a GPU adapter");
         let ledger = Arc::new(GpuLedger::new());
         let first_bytes = 1f32.to_le_bytes();
         let second_bytes = 2f32.to_le_bytes();
@@ -1340,8 +1439,16 @@ mod tests {
         };
         let mut first_encoder = device.create_command_encoder(&Default::default());
         let first = record_chunk_maybe_collecting(
-            &device, &mut first_encoder, &ledger, budget(), &[make_input(&first_bytes)], None, None, 32,
-        ).unwrap();
+            &device,
+            &mut first_encoder,
+            &ledger,
+            budget(),
+            &[make_input(&first_bytes)],
+            None,
+            None,
+            32,
+        )
+        .unwrap();
         assert_eq!(first.work.size(), 32, "reserve the admitted chunk cap once");
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("reused work ordered readback"),
@@ -1355,12 +1462,21 @@ mod tests {
         // new bytes only after the previous draw/readback consumed the buffer.
         let mut second_encoder = device.create_command_encoder(&Default::default());
         let second = record_chunk_maybe_collecting(
-            &device, &mut second_encoder, &ledger, budget(), &[make_input(&second_bytes)],
-            None, Some(&first.work), 0,
-        ).unwrap();
+            &device,
+            &mut second_encoder,
+            &ledger,
+            budget(),
+            &[make_input(&second_bytes)],
+            None,
+            Some(&first.work),
+            0,
+        )
+        .unwrap();
         second_encoder.copy_buffer_to_buffer(&second.work, 0, &readback, 8, 8);
         assert_eq!(
-            ledger.snapshot().creations_of(GpuResourceKind::StreamingUpload),
+            ledger
+                .snapshot()
+                .creations_of(GpuResourceKind::StreamingUpload),
             3,
             "two chunks need two staging allocations but only one work allocation",
         );
@@ -1370,14 +1486,21 @@ mod tests {
         });
         drop((first, second));
         let submitted = queue.submit([second_encoder.finish()]);
-        device.poll(wgpu::PollType::Wait {
-            submission_index: Some(submitted),
-            timeout: Some(std::time::Duration::from_secs(30)),
-        }).unwrap();
-        receiver.recv_timeout(std::time::Duration::from_secs(30)).unwrap().unwrap();
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submitted),
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .unwrap();
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .unwrap()
+            .unwrap();
         let mapped = readback.slice(..).get_mapped_range().unwrap();
-        let words: Vec<u32> = mapped.chunks_exact(4)
-            .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap())).collect();
+        let words: Vec<u32> = mapped
+            .chunks_exact(4)
+            .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+            .collect();
         assert_eq!(words, [1f32.to_bits(), 0, 2f32.to_bits(), 0]);
     }
 
@@ -1402,21 +1525,42 @@ mod tests {
             offset: 0,
             ..range(0, 1, SourceEncoding::ScalarF32)
         };
-        let second_range = ColumnRange { offset: 1, ..first_range };
+        let second_range = ColumnRange {
+            offset: 1,
+            ..first_range
+        };
         let mut first_encoder = device.create_command_encoder(&Default::default());
         let first = record_source_chunk_collecting_statistics_reusing(
-            &device, &mut first_encoder, &ledger, budget(),
-            &[first_range], supply, &plans, None, 16,
-        ).unwrap();
+            &device,
+            &mut first_encoder,
+            &ledger,
+            budget(),
+            &[first_range],
+            supply,
+            &plans,
+            None,
+            16,
+        )
+        .unwrap();
         assert_eq!(first.work.size(), 16);
         let mut second_encoder = device.create_command_encoder(&Default::default());
         let second = record_source_chunk_collecting_statistics_reusing(
-            &device, &mut second_encoder, &ledger, budget(),
-            &[second_range], supply, &plans, Some(&first.work), 16,
-        ).unwrap();
+            &device,
+            &mut second_encoder,
+            &ledger,
+            budget(),
+            &[second_range],
+            supply,
+            &plans,
+            Some(&first.work),
+            16,
+        )
+        .unwrap();
         assert_eq!(second.work.size(), 16);
         assert_eq!(
-            ledger.snapshot().creations_of(GpuResourceKind::StreamingUpload),
+            ledger
+                .snapshot()
+                .creations_of(GpuResourceKind::StreamingUpload),
             3,
             "two mapped staging buffers and one reusable work buffer",
         );
@@ -1569,13 +1713,21 @@ mod tests {
         ));
         assert_eq!(ledger.snapshot().total_creations(), 0);
         for panic in [false, true] {
-            let result =
-                record_chunk_with(&device, &mut encoder, &ledger, budget(), &inputs, |_, _| {
+            let result = record_chunk_with(
+                &device,
+                &mut encoder,
+                &ledger,
+                budget(),
+                &inputs,
+                |_, _| {
                     if panic {
                         panic!("injected writer panic");
                     }
                     Err(ChunkUploadError::WriterFailed)
-                }, None, 0);
+                },
+                None,
+                0,
+            );
             assert!(matches!(result, Err(ChunkUploadError::WriterFailed)));
         }
         assert_eq!(ledger.snapshot().live_bytes(), 0);

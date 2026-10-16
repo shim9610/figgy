@@ -9,8 +9,59 @@ pub struct RichText {
     pub font_size: f32,
     /// Font family name (e.g. "Noto Sans"). Resolved by the renderer's text
     /// stack: runtime-registered fonts → system fonts (native only) →
-    /// bundled Liberation Sans. Empty string = bundled font.
+    /// bundled Liberation Sans. Empty string = bundled font. A character the
+    /// resolved face cannot draw falls back per character to registered
+    /// fonts, the bundled face, then (native only) installed system fonts.
     pub font: String,
+    /// Where each line of a multi-line text sits inside the block. Additive
+    /// schema: documents written before it existed parse as `Left` (the only
+    /// layout they could have had), and `Left` is not serialized, so their
+    /// JSON round-trips unchanged.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "TextAlign::is_left")
+    )]
+    pub align: TextAlign,
+}
+
+/// Horizontal alignment of the lines of a [`RichText`] inside its block.
+///
+/// The block is as wide as its widest line, and placement code positions that
+/// block; alignment only decides where each shorter line spends its slack
+/// (the block width minus its own width): none of it before the line, half,
+/// or all. The block's measured envelope is therefore the same for every
+/// alignment, so selection and hit boxes need no change, and single-line text
+/// (no slack) is unaffected. Tab-column cells move with their line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum TextAlign {
+    /// Every line starts at the block's left edge — the layout all text had
+    /// before alignment existed.
+    #[default]
+    Left,
+    /// Each line is centred on the block.
+    Center,
+    /// Every line ends at the block's right edge.
+    Right,
+}
+
+impl TextAlign {
+    /// `true` for the default, `Left`. Used to keep it out of serialized JSON.
+    #[cfg(feature = "serde")]
+    fn is_left(&self) -> bool {
+        *self == TextAlign::Left
+    }
+
+    /// Horizontal offset of a line `line_width` wide inside a block
+    /// `block_width` wide. `Left` is exactly `0.0` whatever the widths, so
+    /// left-aligned layout never depends on the slack arithmetic.
+    pub fn line_offset(self, block_width: f32, line_width: f32) -> f32 {
+        match self {
+            TextAlign::Left => 0.0,
+            TextAlign::Center => (block_width - line_width) * 0.5,
+            TextAlign::Right => block_width - line_width,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -120,6 +171,7 @@ impl RichText {
             color,
             font_size,
             font: font.into(),
+            align: TextAlign::Left,
         }
     }
 }
@@ -357,5 +409,47 @@ mod tests {
             !json.contains("font_size"),
             "None font_size must be skipped: {json}"
         );
+    }
+
+    // `align` is additive schema too: a document written before it existed
+    // parses as `Left`, `Left` does not serialize (so existing JSON stays
+    // byte-identical), and the other alignments round-trip by name.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn align_defaults_to_left_and_round_trips() {
+        let old = r#"{"segments":[],"color":{"r":0.0,"g":0.0,"b":0.0,"a":1.0},"font_size":12.0,"font":""}"#;
+        let rt: RichText = serde_json::from_str(old).expect("pre-align document parses");
+        assert_eq!(rt.align, TextAlign::Left);
+        assert_eq!(rt, RichText::plain("", Color::BLACK, 12.0, ""));
+        assert_eq!(
+            serde_json::to_string(&rt).unwrap(),
+            old,
+            "a left-aligned document must serialize exactly as before"
+        );
+
+        for align in [TextAlign::Center, TextAlign::Right] {
+            let rt = RichText {
+                align,
+                ..RichText::plain("a\nbc", Color::BLACK, 12.0, "")
+            };
+            let json = serde_json::to_string(&rt).unwrap();
+            assert!(json.contains(&format!(r#""align":"{align:?}""#)), "{json}");
+            let back: RichText = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, rt);
+        }
+    }
+
+    #[test]
+    fn align_spends_none_half_or_all_of_the_slack() {
+        assert_eq!(TextAlign::default(), TextAlign::Left);
+        assert_eq!(TextAlign::Left.line_offset(100.0, 40.0), 0.0);
+        assert_eq!(TextAlign::Center.line_offset(100.0, 40.0), 30.0);
+        assert_eq!(TextAlign::Right.line_offset(100.0, 40.0), 60.0);
+        // The widest line has no slack and never moves.
+        for align in [TextAlign::Left, TextAlign::Center, TextAlign::Right] {
+            assert_eq!(align.line_offset(100.0, 100.0), 0.0);
+        }
+        // Left never depends on the widths, even unusable ones.
+        assert_eq!(TextAlign::Left.line_offset(f32::NAN, 1.0), 0.0);
     }
 }

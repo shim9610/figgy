@@ -24,7 +24,7 @@ The source repository's [example index](https://github.com/shim9610/figgy/blob/m
 maps each chart to its input, output and command. Gallery images are repository
 assets; they are not runtime resources required by the crate.
 
-macOS / Metal support is **experimental and not yet stable**. Version 0.14.0 uses
+macOS / Metal support is **experimental and not yet stable**. Since version 0.14.0, the renderer uses
 explicit FMA rounding boundaries for hi/lo coordinates and a shared CPU/GPU rule
 for midpoint picking uncertainty. Physical Apple GPU coverage remains outstanding.
 A separate precompiled Metal shader experiment does not change the default renderer
@@ -57,6 +57,69 @@ revision. Bounded renderer memory does not make a one-shot source replayable.
 Initial fit previews can be approximate; completion denotes the final render,
 not merely that all input primitives have been submitted. The host owns and
 retains the replayable source for the operations it enables.
+
+## Direct SSOT edits and convenience helpers
+
+`Config` is the single source of truth (SSOT). For precise control, start from
+the current config and change only the fields you intend to change. Direct
+edits do not run range fitting, choose tick spacing or enlarge the title band.
+For example, change an axis's `min` and `max` to pan or zoom while preserving
+its `major_spacing`, `minor_count` and label format. Update both axes of a pair
+only when they should share the new range; they remain independent fields.
+
+`Chart` convenience helpers perform the related adjustments documented by each
+method. They are useful for automatic setup and fitting, and are not all simple
+field setters:
+
+| Operation | Config changes |
+| --- | --- |
+| `config_mut()` / `with_axis_range_change(...)` / `with_decoration_change(...)` | Only the fields the caller writes; these accessors also mark the relevant derived resources dirty. |
+| `set_x_range(...)` / `set_y_range(...)` | Set both axes in the pair and choose major spacing, minor count, label format and precision from the bottom/left axis's scale. Linear axes retain an existing timestamp format. |
+| `auto_fit_x*` / `auto_fit_y*` / `auto_fit_colorbar*` | Derive a range from data or supplied extents with padding, then apply the associated tick and label adjustments. |
+| `with_title(...)` | Replace the title text and grow its band when the measured text is taller than the current band. The band never shrinks. |
+| `with_x_title(...)` / `with_y_title(...)` | Replace the bottom/left axis title text; these helpers do not fit margins. |
+
+Fit padding is an explicit caller argument: `0.05` adds 5% on each side of a
+linear range, while `0.0` adds no padding. The renderer does not impose a global
+5% default; a binding or UI may choose its own convenience default. Opposite
+axis options remain independent in raw `Config`; host-side linked editing is a
+convenience policy, not renderer-owned link metadata.
+
+To change only the X range while keeping the current tick settings:
+
+```rust
+use renderer::{Chart, default::default_config};
+
+let mut chart = Chart::new(default_config());
+let ticks = chart.config().bottom_x.major_spacing;
+chart.with_axis_range_change(|cfg| {
+    for axis in [&mut cfg.bottom_x, &mut cfg.top_x] {
+        axis.min = 20.0;
+        axis.max = 80.0;
+    }
+});
+assert_eq!(chart.config().bottom_x.major_spacing, ticks);
+```
+
+Use `with_axis_range_change` for range/scale edits, `with_decoration_change` for
+decoration edits, or `config_mut` for general edits. For a title change that must
+keep the exact margin, assign `cfg.chart_title.text.segments` inside a decoration
+edit instead of calling `with_title`. Renderer-owned charts require submitting
+the edited config through `Renderer::set_chart_config`; changing a detached
+copy does not update the registered chart.
+
+Keeping tick settings does not keep ticks at the same screen coordinates or
+guarantee the same number of visible labels: those depend on the new range and
+available space. Raster safety limits can still substitute unusable tick settings
+without rewriting the config; read `ChartView::render_warnings()` after refresh.
+Numeric tick labels may use a coarser display stride to avoid overlaps, without
+changing tick/grid positions or the config. Number format and requested precision
+are controlled by `label_style.format` and `label_style.significant_digits`,
+including colorbar labels; unusually long labels still need explicit margin space.
+Calendar-based timestamp ticks follow their own layout policy. Direct injection
+also remains subject to config validation. After any edit, refresh the derived
+view as described below. Neither editing the SSOT nor using a helper redraws a
+caller-owned `ChartView` by itself.
 
 ## Native edit, pick and export workflow
 
@@ -110,6 +173,16 @@ the view or recreate the `ChartStyle` values supplied by the caller.
 `update_transform` alone also leaves axis labels and the grid unchanged.
 Use the chart's dirty state or `ChartRenderStamp::needs_raster_since` to decide
 when to refresh; unchanged frames can reuse the existing view and styles.
+
+In that refresh branch, call `refresh_axis` and then read
+`view.render_warnings()`. It lists the tick settings the new raster could not
+draw as written, as `RenderWarning`s: for example a `major_spacing` drawn at
+automatic spacing or a clamped `minor_count` (limits in the
+[configuration reference](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md)).
+`create_chart_view` and every successful refresh re-derive the list from the
+chart they rasterized, so it changes on dirty-driven raster refreshes and never
+per frame. To report only changes, compare it with the list read after the
+previous refresh; a NaN `requested` value compares unequal to itself.
 
 This helper shows the caller-owned path after a series-style edit at scale 1.
 It conservatively refreshes decorations and rebuilds every style. A host can
@@ -291,7 +364,10 @@ not rename Rust items. Bounded chart modules are already part of the public sour
 release. Version 0.16.0 / model 0.10.0 added plot-area decoration state and targets:
 fully specified `DecorationLayout` literals need `data_area: None`, and exhaustive
 `DecorationId` matches need `DataArea` and `DataAreaEdge`. See the interaction guide
-for migration details. Packaging work does not change those contracts. Public
+for migration details. Version 0.17.0 / model 0.11.0 added `RichText.align`;
+JSON without it parses as `Left`, but fully specified `RichText` literals need
+`align: TextAlign::Left`. `AxisOptions` has no new required field in this release.
+Packaging work does not change those contracts. Public
 low-level modules remain available; they must not be removed silently during packaging.
 
 The public Rust surface includes struct literals and exhaustive enums. Removing
@@ -299,8 +375,9 @@ or changing fields, adding required fields or enum variants, changing trait
 requirements, and adding `non_exhaustive` to existing types can break consumers.
 Incompatible changes require a new 0.x minor version and migration notes; patch
 updates must preserve the supported contract. A new wgpu major needs the same
-review. The published crates.io versions are figgy-renderer 0.16.1 and figgy-model 0.10.0.
-Later source commits do not replace those immutable registry artifacts.
+review. This source release is figgy-renderer 0.17.0 and figgy-model 0.11.0; the first
+crates.io release was 0.16.1 / 0.10.0. Later source commits do not replace published,
+immutable registry artifacts.
 
 The optional serde representation is not an application file-format version.
 Same-version round-trip tests do not promise arbitrary cross-version migrations.

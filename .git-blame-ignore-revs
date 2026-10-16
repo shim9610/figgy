@@ -1,0 +1,4 @@
+# Bulk reformat commits; skip with git blame --ignore-revs-file .git-blame-ignore-revs
+# or once: git config blame.ignoreRevsFile .git-blame-ignore-revs
+# Format the workspace with cargo fmt
+23e684272719777a9722f693e2e95d7226e5c6e6

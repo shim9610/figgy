@@ -667,13 +667,21 @@ fn stream_selection_and_data_match_resident_at_exact_display_scale() {
         }
         let expected = resident.export_panel_rgba(&chart, &series, scale).unwrap();
         let actual = screen(&mut r, id, &view);
-        assert_display_equivalent(&actual, &expected.rgba, &format!("data display scale {scale}"));
+        assert_display_equivalent(
+            &actual,
+            &expected.rgba,
+            &format!("data display scale {scale}"),
+        );
         select(chart.config_mut(), &[10, 2, 10]);
         r.set_chart_config(id, chart.config().clone()).unwrap();
         pump(&mut r, id, &values);
         let expected = resident.export_panel_rgba(&chart, &series, scale).unwrap();
         let actual = screen(&mut r, id, &view);
-        assert_display_equivalent(&actual, &expected.rgba, &format!("selection display scale {scale}"));
+        assert_display_equivalent(
+            &actual,
+            &expected.rgba,
+            &format!("selection display scale {scale}"),
+        );
     }
 }
 
@@ -692,9 +700,11 @@ fn display_error(actual: &[u8], expected: &[u8]) -> (u32, u32) {
         alpha_error = alpha_error.max(u32::from(a[3].abs_diff(b[3])));
         for channel in 0..3 {
             for background in [0_i32, 255] {
-                let composite = |p: &[u8]| i32::from(p[channel]) * i32::from(p[3])
-                    + background * (255 - i32::from(p[3]));
-                color_error_times_255 = color_error_times_255.max(composite(a).abs_diff(composite(b)));
+                let composite = |p: &[u8]| {
+                    i32::from(p[channel]) * i32::from(p[3]) + background * (255 - i32::from(p[3]))
+                };
+                color_error_times_255 =
+                    color_error_times_255.max(composite(a).abs_diff(composite(b)));
             }
         }
     }
@@ -704,8 +714,11 @@ fn display_error(actual: &[u8], expected: &[u8]) -> (u32, u32) {
 fn assert_display_equivalent(actual: &[u8], expected: &[u8], context: &str) {
     let (alpha_error, color_error) = display_error(actual, expected);
     assert!(alpha_error <= 1, "{context}: alpha error {alpha_error}");
-    assert!(color_error <= 3 * 255,
-        "{context}: composited channel error {}", color_error as f32 / 255.0);
+    assert!(
+        color_error <= 3 * 255,
+        "{context}: composited channel error {}",
+        color_error as f32 / 255.0
+    );
 }
 
 #[test]

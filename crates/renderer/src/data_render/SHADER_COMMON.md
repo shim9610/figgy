@@ -237,6 +237,34 @@ fn data_to_ndc(xv: vec2<f32>, yv: vec2<f32>) -> vec2<f32> {
 
 ---
 
+### Coordinate sample validity (line, scatter and arc)
+
+Nonpositive coordinates on logarithmic axes are omitted without changing source
+columns. A line segment is omitted when either endpoint is invalid; arc length
+also skips that segment so dashes and stars do not advance across the gap.
+Vertices collapse to a finite position outside the viewport instead of depending
+on NaN propagation. Bars and errorbar extents keep their own clipping rules.
+
+<!-- shader-common: applies-to=scatter,line,arc -->
+```wgsl
+// Mask source samples explicitly: NaN/Inf clipping is not portable in WGSL.
+// Logarithmic coordinate domains exclude nonpositive samples, while bars and
+// errorbar extents retain their separate baseline/clipping rules.
+fn sample_finite(v: f32) -> bool {
+    return (bitcast<u32>(v) & 0x7f800000u) != 0x7f800000u;
+}
+
+fn sample_valid(xv: vec2<f32>, yv: vec2<f32>) -> bool {
+    let x = xv.x + xv.y;
+    let y = yv.x + yv.y;
+    return sample_finite(xv.x) && sample_finite(xv.y)
+        && sample_finite(yv.x) && sample_finite(yv.y)
+        && sample_finite(x) && sample_finite(y)
+        && (transform.scale_log.x == 0.0 || x > 0.0)
+        && (transform.scale_log.y == 0.0 || y > 0.0);
+}
+```
+
 ## 5. 격자 샘플링 — group 2 (면·등고선)
 
 이 블록은 행렬의 Z값을 읽고 셀 내부의 이중선형 보간값과 해석적 기울기를 계산한다. 채움·등고선 렌더링(`field_columnar.wgsl`의 `fs_main` / `fs_contour`)과 라벨 앵커 계산(`contour_anchor.wgsl`의 뉴턴 투영)이 같은 바인드 그룹과 함수를 사용해야 한다. 서로 다르면 라벨이 등고선에서 벗어날 수 있다.

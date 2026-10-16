@@ -41,7 +41,15 @@ fn setup_columns(
     io: u64,
     max_columns: usize,
 ) -> Fixture {
-    setup_columns_with_budget(centers, interpolated, columns_are_y, samples, io, max_columns, 4 * 1024 * 1024)
+    setup_columns_with_budget(
+        centers,
+        interpolated,
+        columns_are_y,
+        samples,
+        io,
+        max_columns,
+        4 * 1024 * 1024,
+    )
 }
 
 fn setup_columns_with_budget(
@@ -202,7 +210,11 @@ fn pump_count(f: &mut Fixture, operation: Option<StreamingOperation>) -> usize {
                     revision: range.revision,
                     source_len: range.source_len,
                     offset: range.offset,
-                    source: if range.encoding == crate::StreamEncoding::HiLoF32 { crate::StreamColumnSource::HiLo(&payload) } else { crate::StreamColumnSource::Scalar(&payload) },
+                    source: if range.encoding == crate::StreamEncoding::HiLoF32 {
+                        crate::StreamColumnSource::HiLo(&payload)
+                    } else {
+                        crate::StreamColumnSource::Scalar(&payload)
+                    },
                 }];
                 if let Some(operation) = operation {
                     f.renderer
@@ -454,21 +466,44 @@ fn heatmap_runtime_fit_uses_exact_gpu_lattice_and_cached_refit() {
 fn pump_pick(f: &mut Fixture, operation: StreamingOperation) -> usize {
     let mut reads = 0;
     for _ in 0..1000 {
-        match f.renderer.request_stream_operation_ranges(operation).unwrap() {
+        match f
+            .renderer
+            .request_stream_operation_ranges(operation)
+            .unwrap()
+        {
             crate::AutoStreamingRangeRequest::Ready { ranges, .. } => {
                 assert_eq!(ranges.len(), 1);
                 let range = &ranges[0];
-                assert!(range.id == "x" || range.id == "y", "field picking must not read Z");
+                assert!(
+                    range.id == "x" || range.id == "y",
+                    "field picking must not read Z"
+                );
                 let original = &f.columns.iter().find(|(id, _)| *id == range.id).unwrap().1;
-                let payload = column(original.data[range.offset as usize..(range.offset + range.len) as usize].to_vec());
-                f.renderer.submit_stream_operation_ranges(operation, &[crate::StreamRangeSourceBinding {
-                    id: &range.id, revision: range.revision, source_len: range.source_len, offset: range.offset,
-                    source: if range.encoding == crate::StreamEncoding::HiLoF32 { crate::StreamColumnSource::HiLo(&payload) } else { crate::StreamColumnSource::Scalar(&payload) },
-                }]).unwrap();
+                let payload = column(
+                    original.data[range.offset as usize..(range.offset + range.len) as usize]
+                        .to_vec(),
+                );
+                f.renderer
+                    .submit_stream_operation_ranges(
+                        operation,
+                        &[crate::StreamRangeSourceBinding {
+                            id: &range.id,
+                            revision: range.revision,
+                            source_len: range.source_len,
+                            offset: range.offset,
+                            source: if range.encoding == crate::StreamEncoding::HiLoF32 {
+                                crate::StreamColumnSource::HiLo(&payload)
+                            } else {
+                                crate::StreamColumnSource::Scalar(&payload)
+                            },
+                        }],
+                    )
+                    .unwrap();
                 reads += 1;
             }
             crate::AutoStreamingRangeRequest::Backpressure { .. } => f.renderer.wait_idle(),
-            crate::AutoStreamingRangeRequest::AllSubmitted { .. } | crate::AutoStreamingRangeRequest::Complete { .. } => return reads,
+            crate::AutoStreamingRangeRequest::AllSubmitted { .. }
+            | crate::AutoStreamingRangeRequest::Complete { .. } => return reads,
         }
     }
     panic!("field pick did not terminate");
@@ -476,15 +511,25 @@ fn pump_pick(f: &mut Fixture, operation: StreamingOperation) -> usize {
 
 #[test]
 fn heatmap_runtime_typed_pick_matches_global_cells_without_z_replay() {
-    let _font = crate::text_render::FONT_REGISTRATION_TEST_LOCK.lock().unwrap();
+    let _font = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap();
     for (case, centers, interpolated, cy, hilo) in [
-        (0, false, false, false, false), (1, true, false, true, true),
-        (2, false, true, true, true), (3, true, true, false, false),
-        (4, false, false, false, true), (5, true, true, true, true),
+        (0, false, false, false, false),
+        (1, true, false, true, true),
+        (2, false, true, true, true),
+        (3, true, true, false, false),
+        (4, false, false, false, true),
+        (5, true, true, true, true),
     ] {
         let mut f = setup(centers, interpolated, cy, 1, 2);
-        if case == 4 { f.columns[0].1.data[1] = 3.0; f.columns[0].1.data[2] = 1.0; }
-        if case == 5 { f.columns[1].1.data[1] = f64::NAN; }
+        if case == 4 {
+            f.columns[0].1.data[1] = 3.0;
+            f.columns[0].1.data[2] = 1.0;
+        }
+        if case == 5 {
+            f.columns[1].1.data[1] = f64::NAN;
+        }
         if case == 1 {
             let mut config = f.chart.config().clone();
             config.bottom_x.scale = AxisScale::Logarithmic;
@@ -492,38 +537,99 @@ fn heatmap_runtime_typed_pick_matches_global_cells_without_z_replay() {
             f.chart = Chart::new(config.clone());
             f.renderer.set_chart_config(f.id, config).unwrap();
         }
-        f.renderer.replace_streamed_columns(f.columns.iter().map(|(id, values)| crate::StreamColumn {
-            id: (*id).into(), len: values.data.len() as u64, revision: 6,
-            encoding: if hilo { crate::StreamEncoding::HiLoF32 } else { crate::StreamEncoding::ScalarF32 },
-            replay: crate::StreamReplay::RandomAccess, statistics: crate::StreamStatistics::Unknown,
-        }).collect()).unwrap();
+        f.renderer
+            .replace_streamed_columns(
+                f.columns
+                    .iter()
+                    .map(|(id, values)| crate::StreamColumn {
+                        id: (*id).into(),
+                        len: values.data.len() as u64,
+                        revision: 6,
+                        encoding: if hilo {
+                            crate::StreamEncoding::HiLoF32
+                        } else {
+                            crate::StreamEncoding::ScalarF32
+                        },
+                        replay: crate::StreamReplay::RandomAccess,
+                        statistics: crate::StreamStatistics::Unknown,
+                    })
+                    .collect(),
+            )
+            .unwrap();
         let mut overlay = f.series[0].clone();
         overlay.series_id = "painted-last".into();
         f.series.push(overlay);
         f.renderer.set_chart_series(f.id, f.series.clone()).unwrap();
-        f.renderer.request_auto_streaming_chart(f.id, &f.view, crate::StreamingChartOptions {
-            size: (360, 240), clear_color: Color::new(0.0, 0.0, 0.0, 0.0), max_primitives_per_chunk: 2,
-        }).unwrap();
+        f.renderer
+            .request_auto_streaming_chart(
+                f.id,
+                &f.view,
+                crate::StreamingChartOptions {
+                    size: (360, 240),
+                    clear_color: Color::new(0.0, 0.0, 0.0, 0.0),
+                    max_primitives_per_chunk: 2,
+                },
+            )
+            .unwrap();
         finish_display(&mut f);
         let (device, queue) = data_render::shared_device().unwrap();
-        let mut resident = Renderer::try_new(RendererDevice::new(device, queue), wgpu::TextureFormat::Rgba8Unorm, 4096).unwrap();
+        let mut resident = Renderer::try_new(
+            RendererDevice::new(device, queue),
+            wgpu::TextureFormat::Rgba8Unorm,
+            4096,
+        )
+        .unwrap();
         for (id, column) in &f.columns {
-            if hilo { resident.add_hilo_column(*id, column).unwrap(); } else { resident.add_column(*id, column).unwrap(); }
+            if hilo {
+                resident.add_hilo_column(*id, column).unwrap();
+            } else {
+                resident.add_column(*id, column).unwrap();
+            }
         }
-        let chart_id = resident.register_chart(f.chart.config().clone(), f.series.clone()).unwrap();
+        let chart_id = resident
+            .register_chart(f.chart.config().clone(), f.series.clone())
+            .unwrap();
         resident.enable_gpu_picking().unwrap();
         let data = f.chart.config().data_area().unwrap().0;
-        for fraction in [[0.13, 0.17], [0.42, 0.68], [0.76, 0.33], [0.94, 0.92], [-1.0, -1.0]] {
-            let position = [data.x as f32 + data.width as f32 * fraction[0], data.y as f32 + data.height as f32 * fraction[1]];
-            let query = GpuPickRequest { canvas_position_px: position, display_panel_px: f.chart.config().chart_area.0, display_scale: 1.0, max_distance_px: 5.0 };
-            let expected = pollster::block_on(resident.pick_chart_data(chart_id, query).unwrap().resolve()).unwrap();
-            let operation = pollster::block_on(f.renderer.begin_stream_pick_data(f.id, position, 5.0, 2)).unwrap();
+        for fraction in [
+            [0.13, 0.17],
+            [0.42, 0.68],
+            [0.76, 0.33],
+            [0.94, 0.92],
+            [-1.0, -1.0],
+        ] {
+            let position = [
+                data.x as f32 + data.width as f32 * fraction[0],
+                data.y as f32 + data.height as f32 * fraction[1],
+            ];
+            let query = GpuPickRequest {
+                canvas_position_px: position,
+                display_panel_px: f.chart.config().chart_area.0,
+                display_scale: 1.0,
+                max_distance_px: 5.0,
+            };
+            let expected =
+                pollster::block_on(resident.pick_chart_data(chart_id, query).unwrap().resolve())
+                    .unwrap();
+            let operation =
+                pollster::block_on(f.renderer.begin_stream_pick_data(f.id, position, 5.0, 2))
+                    .unwrap();
             pump_pick(&mut f, operation);
             let actual = pollster::block_on(f.renderer.finish_stream_pick_data(operation)).unwrap();
             assert_eq!(actual, expected, "case={case} fraction={fraction:?}");
-            let legacy = pollster::block_on(f.renderer.begin_stream_pick_point(f.id, position, 5.0, 2)).unwrap();
-            assert_eq!(pump_pick(&mut f, legacy), 0, "legacy point picker skips matrix inputs");
-            assert!(pollster::block_on(f.renderer.finish_stream_pick_point(legacy)).unwrap().is_none());
+            let legacy =
+                pollster::block_on(f.renderer.begin_stream_pick_point(f.id, position, 5.0, 2))
+                    .unwrap();
+            assert_eq!(
+                pump_pick(&mut f, legacy),
+                0,
+                "legacy point picker skips matrix inputs"
+            );
+            assert!(
+                pollster::block_on(f.renderer.finish_stream_pick_point(legacy))
+                    .unwrap()
+                    .is_none()
+            );
         }
     }
 }
@@ -532,20 +638,38 @@ fn heatmap_runtime_typed_pick_matches_global_cells_without_z_replay() {
 fn ssot_colorbar_edits_refresh_existing_heatmap_without_decoration_replay() {
     use crate::config::ColorBarOptions;
     use crate::renderer::streaming_request_tests::read_draw_target;
-    let font = crate::text_render::FONT_REGISTRATION_TEST_LOCK.lock().unwrap();
+    let font = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap();
     // Third column specifies whether the DATA colours/geometry must change.
     let cases: &[(&str, fn(&mut ColorBarOptions), bool)] = &[
-        ("colormap", |b| b.colormap = crate::colormap::ColorMap::Magma, true),
+        (
+            "colormap",
+            |b| b.colormap = crate::colormap::ColorMap::Magma,
+            true,
+        ),
         ("z.min", |b| b.axis.min = 1.0, true),
         ("z.max", |b| b.axis.max = 9.0, true),
         ("z.scale", |b| b.axis.scale = AxisScale::Logarithmic, true),
-        ("nan_color", |b| b.nan_color = Color::new(0.0, 1.0, 0.0, 1.0), true),
+        (
+            "nan_color",
+            |b| b.nan_color = Color::new(0.0, 1.0, 0.0, 1.0),
+            true,
+        ),
         ("visible", |b| b.visible = false, true),
         ("thickness", |b| b.thickness_px += 4.0, true),
         ("offset_x", |b| b.offset_x += 4.0, false),
         ("offset_y", |b| b.offset_y += 4.0, false),
-        ("border_color", |b| b.border_color = Color::new(0.0, 1.0, 0.0, 1.0), false),
-        ("z.label_color", |b| b.axis.label_style.color = Color::new(0.0, 0.7, 0.0, 1.0), false),
+        (
+            "border_color",
+            |b| b.border_color = Color::new(0.0, 1.0, 0.0, 1.0),
+            false,
+        ),
+        (
+            "z.label_color",
+            |b| b.axis.label_style.color = Color::new(0.0, 0.7, 0.0, 1.0),
+            false,
+        ),
         ("z.inverted", |b| b.axis.inverted = true, false),
     ];
     let screen = |f: &mut Fixture| {
@@ -554,28 +678,49 @@ fn ssot_colorbar_edits_refresh_existing_heatmap_without_decoration_replay() {
         read_draw_target(&f.renderer, &target)
     };
     let update = |f: &mut Fixture, edit: fn(&mut ColorBarOptions)| {
-        let mut config = f.chart.config().clone(); edit(config.colorbar.as_mut().unwrap());
-        f.renderer.set_chart_config(f.id,config.clone()).unwrap();
+        let mut config = f.chart.config().clone();
+        edit(config.colorbar.as_mut().unwrap());
+        f.renderer.set_chart_config(f.id, config.clone()).unwrap();
         f.chart = Chart::new(config);
-        f.view = f.renderer.create_chart_view(&f.chart,f.chart.config().chart_area.0).unwrap();
-        f.renderer.request_auto_streaming_chart(f.id,&f.view,crate::StreamingChartOptions {
-            size:(360,240), clear_color:Color::new(0.0,0.0,0.0,0.0),max_primitives_per_chunk:2,
-        }).unwrap();
+        f.view = f
+            .renderer
+            .create_chart_view(&f.chart, f.chart.config().chart_area.0)
+            .unwrap();
+        f.renderer
+            .request_auto_streaming_chart(
+                f.id,
+                &f.view,
+                crate::StreamingChartOptions {
+                    size: (360, 240),
+                    clear_color: Color::new(0.0, 0.0, 0.0, 0.0),
+                    max_primitives_per_chunk: 2,
+                },
+            )
+            .unwrap();
     };
     let mut failures = Vec::new();
-    for &(name,edit,replay) in cases {
-        let mut f = setup(false,false,false,1,2); finish_display(&mut f);
+    for &(name, edit, replay) in cases {
+        let mut f = setup(false, false, false, 1, 2);
+        finish_display(&mut f);
         let before = screen(&mut f);
         let job = f.renderer.active_stream_job(f.id).unwrap();
-        update(&mut f,edit);
-        let requested = matches!(f.renderer.auto_stream_chart_request_ranges(f.id).unwrap(),crate::AutoStreamingRangeRequest::Ready { .. });
-        if requested != replay { failures.push(format!("{name}: source replay={requested}, expected={replay}")); }
+        update(&mut f, edit);
+        let requested = matches!(
+            f.renderer.auto_stream_chart_request_ranges(f.id).unwrap(),
+            crate::AutoStreamingRangeRequest::Ready { .. }
+        );
+        if requested != replay {
+            failures.push(format!(
+                "{name}: source replay={requested}, expected={replay}"
+            ));
+        }
         finish_display(&mut f);
         let actual = screen(&mut f);
-        let mut fresh = setup(false,false,false,1,2);
+        let mut fresh = setup(false, false, false, 1, 2);
         fresh.renderer.cancel_chart_stream(fresh.id).unwrap();
         fresh.renderer.service_stream_requests();
-        update(&mut fresh,edit); finish_display(&mut fresh);
+        update(&mut fresh, edit);
+        finish_display(&mut fresh);
         let expected = screen(&mut fresh);
         if actual != expected {
             failures.push(format!("{name}: stale first-frame pixels"));
@@ -672,7 +817,7 @@ fn bounded_source_cache_heatmap_edits_recompute_pixels_without_source_reads() {
         }
     }
     drop(font);
-    assert!(failures.is_empty(),"{}",failures.join("\n"));
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]
@@ -729,8 +874,16 @@ fn progressive_replay_heatmap_fit_publishes_tiles_before_completion() {
             let target = wgpu::Texture::clone(f.renderer.chart_stream_display(job).unwrap());
             let pixels = read_draw_target(&f.renderer, &target);
             if f.renderer.progressive_replay_for_test(f.id) {
-                let serial = f.renderer.stream_runtime.as_ref().unwrap().draws.iter()
-                    .find(|draw| draw.job == job).unwrap().display_serial;
+                let serial = f
+                    .renderer
+                    .stream_runtime
+                    .as_ref()
+                    .unwrap()
+                    .draws
+                    .iter()
+                    .find(|draw| draw.job == job)
+                    .unwrap()
+                    .display_serial;
                 if previous_serial.is_some_and(|old| old != serial) {
                     refreshes += 1;
                 }
@@ -739,7 +892,10 @@ fn progressive_replay_heatmap_fit_publishes_tiles_before_completion() {
                 // this preview is already exact. Replaying identical tiles must
                 // refresh the display without erasing strips at their edges.
                 if let Some(preview) = &replay_preview {
-                    assert_eq!(&pixels, preview, "replay damaged the already exact heatmap preview");
+                    assert_eq!(
+                        &pixels, preview,
+                        "replay damaged the already exact heatmap preview"
+                    );
                 } else {
                     replay_preview = Some(pixels.clone());
                 }

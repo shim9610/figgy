@@ -81,7 +81,7 @@ fn orthogonal_text_clipping_matches_rotated_horizontal_clipping() {
 #[test]
 fn rich_titles_preserve_premultiplied_color_at_fractional_rotation_centers() {
     use renderer::{
-        text::{RichText, rich_segments_from_text},
+        text::{RichText, TextAlign, rich_segments_from_text},
         text_render::draw_rich_text,
     };
     let mut segments = rich_segments_from_text("Area m2");
@@ -91,6 +91,7 @@ fn rich_titles_preserve_premultiplied_color_at_fractional_rotation_centers() {
         color: Color::new(0.8, 0.2, 0.1, 0.6),
         font_size: 18.0,
         font: "Liberation Sans".into(),
+        align: TextAlign::Left,
     };
     for clockwise in [false, true] {
         let mut horizontal = Canvas::new(SIZE as u32, SIZE as u32).unwrap();

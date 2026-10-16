@@ -27,7 +27,10 @@ impl<'a> ColumnPairWriter<'a> {
             0,
             "column pair destination must contain complete f32 pairs"
         );
-        Self { dst, observer: None }
+        Self {
+            dst,
+            observer: None,
+        }
     }
 
     pub(crate) fn new_observed(
@@ -69,7 +72,16 @@ impl<'a> ColumnPairWriter<'a> {
         let lo_bytes = lo.to_le_bytes();
         self.dst
             .slice(start..start + COLUMN_VALUE_BYTES)
-            .copy_from_slice(&[hi_bytes[0], hi_bytes[1], hi_bytes[2], hi_bytes[3], lo_bytes[0], lo_bytes[1], lo_bytes[2], lo_bytes[3]]);
+            .copy_from_slice(&[
+                hi_bytes[0],
+                hi_bytes[1],
+                hi_bytes[2],
+                hi_bytes[3],
+                lo_bytes[0],
+                lo_bytes[1],
+                lo_bytes[2],
+                lo_bytes[3],
+            ]);
         if let Some(observer) = self.observer.as_mut() {
             observer(index, hi, lo);
         }
