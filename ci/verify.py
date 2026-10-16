@@ -44,6 +44,8 @@ def run(args, *, cwd=ROOT, env=None, capture=False):
 
 
 def static():
+    # Formatting first: it is the cheapest check and needs no build.
+    run(["cargo", "fmt", "--all", "--check"])
     run(["cargo", "check", "--locked", "--workspace", "--all-targets"])
     run(["cargo", "check", "--locked", "--workspace", "--all-targets", "--all-features"])
     run(["cargo", "check", "--locked", "--workspace", "--target", "wasm32-unknown-unknown"])

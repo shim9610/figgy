@@ -207,7 +207,8 @@ initialization event compatibility. See [optimization measurements and limitatio
 
 ## Run locally
 
-Requires Rust 1.99, Python 3.12 or newer, and the `wasm32-unknown-unknown` target.
+Requires Rust 1.99 with the `rustfmt` component, Python 3.12 or newer, and the
+`wasm32-unknown-unknown` target. `static` starts with `cargo fmt --all --check`.
 From the checkout root:
 
 ```sh

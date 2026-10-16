@@ -42,7 +42,9 @@ as such. Run the regression relevant to your change, for example:
 cargo test --locked -p figgy-renderer --test bounded_interaction -- --test-threads=1
 ```
 
-For the same build/documentation and extracted-package checks used in CI:
+Format with `cargo fmt --all` before committing; CI rejects unformatted code.
+For the same formatting, build/documentation and extracted-package checks used
+in CI:
 
 ```sh
 python3 ci/verify.py static
