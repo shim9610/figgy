@@ -34,6 +34,10 @@ struct Edit {
     differs: bool,
     raster: bool,
     pixels: Pixels,
+    /// Whether the nonresident stream pass accepts the edited chart at all.
+    /// A rejected combination is a contract of its own and is not a
+    /// first-frame case there.
+    streams: bool,
 }
 
 fn edits() -> Vec<Edit> {
@@ -42,7 +46,8 @@ fn edits() -> Vec<Edit> {
         ($path:ident $(.$field:ident)*, $value:expr, $work:ident) => {
             cases.push(Edit { name: stringify!($path $(.$field)*),
                 apply: |c| c.$path $(.$field)* = $value,
-                work: Work::$work, differs: true, raster: true, pixels: Pixels::Changed });
+                work: Work::$work, differs: true, raster: true, pixels: Pixels::Changed,
+                streams: true });
         };
     }
     cases.push(Edit {
@@ -52,6 +57,7 @@ fn edits() -> Vec<Edit> {
         differs: false,
         raster: false,
         pixels: Pixels::Unchanged,
+        streams: true,
     });
     // Layer foundation: each field is an edit of its own layer only. Pixels,
     // the axis raster, data work and the data job must stay exactly as they were.
@@ -62,6 +68,7 @@ fn edits() -> Vec<Edit> {
         differs: true,
         raster: false,
         pixels: Pixels::Unchanged,
+        streams: true,
     });
     cases.push(Edit {
         name: "annotations.visible",
@@ -70,6 +77,7 @@ fn edits() -> Vec<Edit> {
         differs: true,
         raster: false,
         pixels: Pixels::Unchanged,
+        streams: true,
     });
     // The family lookup order is registered, installed, then bundled, so
     // naming the bundled face explicitly may or may not pick a different
@@ -81,6 +89,7 @@ fn edits() -> Vec<Edit> {
         differs: true,
         raster: true,
         pixels: Pixels::Any,
+        streams: true,
     });
     edit!(bottom_x.label_style.significant_digits, 5, Prefix);
     macro_rules! grid {
@@ -210,15 +219,22 @@ fn edits() -> Vec<Edit> {
             differs: true,
             raster: true,
             pixels: Pixels::Changed,
+            streams: true,
         });
     }
     edit!(draw_style, DrawStyle::Sketch(Default::default()), Replay);
     edit!(draw_style, DrawStyle::Milkyway(Default::default()), Replay);
-    edit!(
-        draw_style,
-        DrawStyle::Constellation(Default::default()),
-        Replay
-    );
+    // The stream pass rejects arc-driven stars outright, so the constellation
+    // style is a resident-only case here.
+    cases.push(Edit {
+        name: "draw_style (Constellation)",
+        apply: |c| c.draw_style = DrawStyle::Constellation(Default::default()),
+        work: Work::Replay,
+        differs: true,
+        raster: true,
+        pixels: Pixels::Changed,
+        streams: false,
+    });
     // Adding a colourbar reserves its band, so the data area moves.
     cases.push(Edit {
         name: "colorbar (None -> Some)",
@@ -227,6 +243,7 @@ fn edits() -> Vec<Edit> {
         differs: true,
         raster: true,
         pixels: Pixels::Changed,
+        streams: true,
     });
     cases
 }
@@ -246,6 +263,7 @@ fn colorbar_edits() -> Vec<Edit> {
                 differs: true,
                 raster: true,
                 pixels: Pixels::$pixels,
+                streams: true,
             });
         };
     }
@@ -256,6 +274,7 @@ fn colorbar_edits() -> Vec<Edit> {
         differs: true,
         raster: true,
         pixels: Pixels::Changed,
+        streams: true,
     });
     bar!(visible, false, Packed, Changed);
     bar!(side, Side::Left, Packed, Changed);
@@ -531,6 +550,9 @@ fn matrix(resident: bool, cache: bool) {
         .into_iter()
         .flat_map(|(c, cases)| cases.into_iter().map(move |edit| (c.clone(), edit)))
     {
+        if !resident && !edit.streams {
+            continue;
+        }
         let (mut r, id) = fixture(&c, resident, cache);
         let (before, _) = frame(&mut r, id, resident);
         let job = r.active_stream_job(id);
