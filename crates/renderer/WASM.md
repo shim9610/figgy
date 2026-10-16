@@ -8,7 +8,7 @@ Rust 라이브러리가 모든 차트를 JavaScript API로 제공한다는 뜻�
 원형·범주형 막대·박스플롯은 이 래퍼에 노출하지 않는다.
 간단한 빌드·실행 방법은 [예제 안내](https://github.com/shim9610/figgy/blob/master/crates/web/README.md)를 참고한다.
 
-이 문서는 소스 릴리스 `figgy 0.13.0` / `figgy-renderer 0.16.0` / `figgy-model 0.10.0`를 기준으로 한다. 아래 스트리밍 API를 사용하려면 해당 버전의 소스에서 브라우저 패키지를 빌드한다.
+이 문서는 소스 릴리스 `figgy 0.14.0` / `figgy-renderer 0.17.0` / `figgy-model 0.11.0`를 기준으로 한다. 아래 스트리밍 API를 사용하려면 해당 버전의 소스에서 브라우저 패키지를 빌드한다.
 
 `model`과 `renderer`는 모두 `wasm32-unknown-unknown`으로 빌드할 수 있다. 이 문서는 네이티브와 웹의 차이, 브라우저 초기화, 데이터 입력, 이벤트 처리와 이미지 출력을 설명한다.
 

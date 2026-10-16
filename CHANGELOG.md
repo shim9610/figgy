@@ -9,7 +9,13 @@ at the time. The first crates.io publication is recorded below.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
-## Unreleased
+## Release — renderer 0.17.0 / model 0.11.0 / figgy 0.14.0
+
+New 0.x minor versions: `AxisOptions.range_locked` and `RichText.align` are new
+public fields, so fully specified struct literals need the migrations noted
+below. JSON without either field still parses. The WASM integration example
+advances to 0.14.0 with the renderer dependency. This entry does not itself
+publish a registry crate.
 
 - `ChartView::render_warnings` reports the tick settings the axis raster
   replaced instead of substituting them silently: a linear `major_spacing` that
@@ -83,6 +89,8 @@ at the time. The first crates.io publication is recorded below.
   and one keeping less than `MIN_VISIBLE_DATA_AREA_PX` (8 px, or its whole
   size if smaller) inside the chart area (`TargetOutOfChartArea`). Previously
   a start above the origin saturated to 0 and moved the opposite edge.
+- The workspace is formatted with rustfmt, and `ci/verify.py static` (run by CI)
+  now starts with `cargo fmt --all --check`.
 
 ## Source patch — renderer 0.16.1 / model 0.10.0 / figgy 0.13.1
 

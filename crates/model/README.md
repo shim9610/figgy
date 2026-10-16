@@ -13,11 +13,11 @@ versions have not been validated.
 ## Install
 
 The Cargo package is **`figgy-model`**; its Rust import is **`model`**.
-Version **0.10.0** is available on [crates.io](https://crates.io/crates/figgy-model):
+Version **0.11.0** is available on [crates.io](https://crates.io/crates/figgy-model):
 
 ```toml
 [dependencies]
-model = { package = "figgy-model", version = "0.10.0" }
+model = { package = "figgy-model", version = "0.11.0" }
 ```
 
 For a local checkout, replace `version` with `path = "../figgy/crates/model"`.

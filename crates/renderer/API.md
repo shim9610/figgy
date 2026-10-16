@@ -301,9 +301,10 @@ not rename Rust items. Bounded chart modules are already part of the public sour
 release. Version 0.16.0 / model 0.10.0 added plot-area decoration state and targets:
 fully specified `DecorationLayout` literals need `data_area: None`, and exhaustive
 `DecorationId` matches need `DataArea` and `DataAreaEdge`. See the interaction guide
-for migration details. The unreleased `AxisOptions.range_locked` field is additive
-in JSON (serde default) but fully specified `AxisOptions` literals need
-`range_locked: false`; likewise `RichText.align` needs `align: TextAlign::Left`.
+for migration details. Version 0.17.0 / model 0.11.0 added `AxisOptions.range_locked`
+and `RichText.align`; both are additive in JSON (serde default), but fully specified
+`AxisOptions` literals need `range_locked: false` and `RichText` literals need
+`align: TextAlign::Left`.
 Packaging work does not change those contracts. Public
 low-level modules remain available; they must not be removed silently during packaging.
 
@@ -312,8 +313,9 @@ or changing fields, adding required fields or enum variants, changing trait
 requirements, and adding `non_exhaustive` to existing types can break consumers.
 Incompatible changes require a new 0.x minor version and migration notes; patch
 updates must preserve the supported contract. A new wgpu major needs the same
-review. The published crates.io versions are figgy-renderer 0.16.1 and figgy-model 0.10.0.
-Later source commits do not replace those immutable registry artifacts.
+review. This source release is figgy-renderer 0.17.0 and figgy-model 0.11.0; the first
+crates.io release was 0.16.1 / 0.10.0. Later source commits do not replace published,
+immutable registry artifacts.
 
 The optional serde representation is not an application file-format version.
 Same-version round-trip tests do not promise arbitrary cross-version migrations.

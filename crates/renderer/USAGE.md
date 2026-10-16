@@ -25,7 +25,7 @@ Development packages are now named `figgy-renderer` and `figgy-model`; Rust impo
 remain `renderer::...` and `model::...`. When moving a Git dependency to a revision
 with this rename, add the corresponding `package` key while retaining its existing
 dependency alias. Older public revisions still use their original package names.
-The published versions are `figgy-renderer` 0.16.1 and `figgy-model` 0.10.0.
+The published versions are `figgy-renderer` 0.17.0 and `figgy-model` 0.11.0.
 
 Use the renderer's optional `serde` feature for serialization of its re-exported
 model types; no direct model dependency is needed for that. Rust 1.99 is the
@@ -38,7 +38,7 @@ render targets and compatibility policy.
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", version = "0.16.1" }
+renderer = { package = "figgy-renderer", version = "0.17.0" }
 wgpu     = "30"
 ```
 
@@ -473,7 +473,7 @@ npx wasm-pack@0.15.0 build crates/web --release --target web --locked
 Cargo 패키지 이름은 `figgy-renderer`·`figgy-model`로 정리했다. Rust의
 `renderer::…`·`model::…` 경로는 유지한다. 이름을 바꾼 Git 리비전으로 갱신할 때는
 Cargo 의존성에 `package`를 추가한다. 이전 공개 리비전은 기존 패키지명을 사용한다.
-`figgy-renderer` 0.16.1과 `figgy-model` 0.10.0은 crates.io에 게시됐다.
+`figgy-renderer` 0.17.0과 `figgy-model` 0.11.0은 crates.io에 게시됐다.
 
 렌더러의 `serde` 기능을 켜면 재노출된 모델 타입을 직렬화할 수 있다. 이를 위해 모델을
 직접 의존할 필요는 없다. 지원 Rust 하한은 1.99이며 GPU를 직접 공유하려면 호스트도
@@ -482,7 +482,7 @@ wgpu 30을 사용해야 한다. WASM 래퍼는 별도 소비 예제로 유지하
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", version = "0.16.1" }
+renderer = { package = "figgy-renderer", version = "0.17.0" }
 wgpu     = "30"
 ```
 
