@@ -315,9 +315,10 @@ fn colorbar_edits() -> Vec<Edit> {
     );
     bar!(axis.label_style.significant_digits, 5, Prefix, Changed);
     bar!(axis.title_option.visible, true, Prefix, Changed);
+    // The baseline already titles the bar "Z" (hidden), so edit to a new string.
     bar!(
         axis.title_option.text,
-        RichText::plain("Z", Color::BLACK, 10.0, ""),
+        RichText::plain("Zed", Color::BLACK, 10.0, ""),
         Prefix,
         Any
     );
