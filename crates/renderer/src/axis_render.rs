@@ -1748,25 +1748,16 @@ fn draw_tick(
 
 // Tick labels.
 
-/// Decimal places every tick on an axis shares, derived from the major
-/// spacing: just enough digits to represent one step exactly. Per-value
-/// significant digits would mix forms on one axis ("0 / 50.0 / 100 / 150"),
-/// which reads as a bug.
+/// Minimum shared decimal count that keeps adjacent ticks distinguishable.
+/// Only the step's magnitude matters: an auto-fit step such as 1.312815 must
+/// not force six decimals when the label style requests three significant
+/// digits. A decimal rounding quantum no larger than the step prevents two
+/// adjacent ticks from collapsing to the same label.
 fn decimals_from_spacing(spacing: f64) -> usize {
     if !spacing.is_finite() || spacing <= 0.0 {
         return 0;
     }
-    let mut d = (-spacing.log10().floor()).max(0.0) as usize;
-    // Custom spacings off the 1·2·5 grid (e.g. 2.5) need one more place
-    // when one step still doesn't land on a whole number of that grid.
-    while d < 6 {
-        let scaled = spacing * 10f64.powi(d as i32);
-        if (scaled - scaled.round()).abs() < 1e-9 {
-            break;
-        }
-        d += 1;
-    }
-    d.min(15)
+    (-spacing.log10().floor()).clamp(0.0, 15.0) as usize
 }
 
 /// Decimal places needed to make `significant_digits` observable without
@@ -1792,19 +1783,27 @@ fn format_tick_value(
     range_min: f64,
     range_max: f64,
 ) -> String {
-    // Log scale: ignore sig_digits padding and use a minimal form.
+    let sig = sig_digits.clamp(1, 15) as usize;
     if matches!(scale, AxisScale::Logarithmic) {
         if value == 0.0 {
             return "0".into();
         }
         return match format {
-            LabelFormat::Decimal | LabelFormat::Power => format!("{}", value),
-            LabelFormat::Scientific => format!("{:e}", value),
+            // Logarithmic ticks span orders of magnitude. Round each value to
+            // the requested precision, then omit padding on exact decades.
+            // Scientific rounding also preserves tiny positive values that a
+            // fixed decimal-place cap would turn into zero.
+            LabelFormat::Decimal | LabelFormat::Power => format!("{:.*e}", sig - 1, value)
+                .parse::<f64>()
+                .ok()
+                .filter(|rounded| rounded.is_finite())
+                .unwrap_or(value)
+                .to_string(),
+            LabelFormat::Scientific => format!("{:.*e}", sig - 1, value),
             LabelFormat::Timestamp(_) => format!("{}", value),
         };
     }
 
-    let sig = sig_digits.clamp(1, 15) as usize;
     match format {
         LabelFormat::Scientific => format!("{:.*e}", sig.saturating_sub(1), value),
         LabelFormat::Timestamp(cfg) => crate::time_axis::format_timestamp_numeric_tick(
@@ -2901,7 +2900,9 @@ mod tests {
         assert_eq!(decimals_from_spacing(50.0), 0);
         assert_eq!(decimals_from_spacing(0.5), 1);
         assert_eq!(decimals_from_spacing(0.02), 2);
-        assert_eq!(decimals_from_spacing(2.5), 1);
+        assert_eq!(decimals_from_spacing(2.5), 0);
+        assert_eq!(decimals_from_spacing(1.3128152), 0);
+        assert_eq!(decimals_from_spacing(0.025), 2);
 
         let f = |v: f64, sp: f64| {
             format_tick_value(
@@ -3081,6 +3082,173 @@ mod tests {
             "0.5",
             "spacing remains a floor so adjacent values cannot collapse"
         );
+    }
+
+    #[test]
+    fn arbitrary_fit_spacing_respects_requested_precision() {
+        let format = |value, digits| {
+            format_tick_value(
+                value,
+                &LabelFormat::Decimal,
+                digits,
+                &AxisScale::Linear,
+                1.3128152,
+                0.0,
+                6.564076,
+            )
+        };
+        assert_eq!(format(6.564076, 2), "6.6");
+        assert_eq!(format(6.564076, 3), "6.56");
+        assert_eq!(format(5.2512608, 3), "5.25");
+        assert_eq!(format(6.564076, 7), "6.564076");
+        for step in [0.025, 0.5, 1.3128152, 2.5] {
+            let labels: Vec<_> = (0..6)
+                .map(|i| {
+                    format_tick_value(
+                        i as f64 * step,
+                        &LabelFormat::Decimal,
+                        1,
+                        &AxisScale::Linear,
+                        step,
+                        0.0,
+                        step * 5.0,
+                    )
+                })
+                .collect();
+            assert!(
+                labels.windows(2).all(|pair| pair[0] != pair[1]),
+                "{step}: {labels:?}"
+            );
+        }
+        let (config, mut labels) = contour_label_fixture();
+        labels.significant_digits = 3;
+        assert_eq!(
+            contour_label_texts(&config, &labels, &[0.0, 1.3128152, 2.6256304]),
+            ["0", "1.31", "2.63"]
+        );
+    }
+
+    #[test]
+    fn logarithmic_labels_respect_precision_without_losing_tiny_values() {
+        let format = |value, digits, style| {
+            format_tick_value(
+                value,
+                &style,
+                digits,
+                &AxisScale::Logarithmic,
+                1.0,
+                1e-30,
+                1e30,
+            )
+        };
+        assert_eq!(format(3.162277660168, 2, LabelFormat::Decimal), "3.2");
+        assert_eq!(format(3.162277660168, 4, LabelFormat::Decimal), "3.162");
+        assert_eq!(
+            format(3.162277660168, 4, LabelFormat::Scientific),
+            "3.162e0"
+        );
+        for value in [1e-30, 0.01, 0.1, 1.0, 10.0, 1e30] {
+            assert_eq!(format(value, 3, LabelFormat::Decimal), value.to_string());
+        }
+        assert_eq!(
+            format(f64::MAX, 2, LabelFormat::Decimal)
+                .parse::<f64>()
+                .unwrap(),
+            f64::MAX
+        );
+        let tiny = format(3.162277660168e-30, 2, LabelFormat::Decimal);
+        assert_eq!(tiny.parse::<f64>().unwrap(), 3.2e-30);
+    }
+
+    #[test]
+    fn fitted_numeric_labels_fit_default_title_and_colorbar_bands() {
+        let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+            .lock()
+            .unwrap();
+        let mut config = default_config();
+        config.left_y.title_option.text.segments = "Positive samples (log)"
+            .chars()
+            .map(RichSegment::plain)
+            .collect();
+        config.left_y.min = 0.0;
+        config.left_y.max = 6.564076;
+        config.left_y.major_spacing = 1.3128152;
+        config.colorbar = Some(crate::default::default_colorbar_options());
+        config.colorbar.as_mut().unwrap().axis.min = 0.0;
+        config.colorbar.as_mut().unwrap().axis.max = 6.564076;
+        config.colorbar.as_mut().unwrap().axis.major_spacing = 1.3128152;
+        for scale in [1.0, 2.0] {
+            let config = config.scaled(scale);
+            let da = config.data_area().unwrap();
+            let fp = FontPolicy::Standard;
+            let axis = &config.left_y;
+            let metrics = measure_rich_text(&axis.title_option.text, fp);
+            let title = axis_title_placement(
+                Side::Left,
+                &config.chart_area,
+                &da,
+                TitleBand {
+                    out_margin: axis.out_margin,
+                    chart_title_margin: config.chart_title.top_margin,
+                    edge_inset: config.colorbar_band(&Side::Left),
+                },
+                (0.0, 0.0),
+                metrics,
+            )
+            .rect(metrics);
+            let labels =
+                visible_numeric_labels(axis, Side::Left, fp, &major_tick_values(axis), |value| {
+                    value_to_screen(value, axis, Side::Left, &da)
+                });
+            let bounds = |label: &NumericTickLabel, axis: &AxisOptions, side| {
+                let NumericTickText::Plain(text) = &label.text else {
+                    panic!("decimal label")
+                };
+                let ls = &axis.label_style;
+                let metrics =
+                    measure_plain_text(text, &ls.label_font, ls.font_size, false, false, fp);
+                crate::layout::label_rect(
+                    label_origin(
+                        side,
+                        label.position,
+                        axis.major_tick_length,
+                        (ls.label_offset_x, ls.label_offset_y),
+                        metrics,
+                    ),
+                    metrics,
+                )
+            };
+            for label in &labels {
+                let rect = bounds(label, axis, Side::Left);
+                assert!(
+                    rect.x > title.x + title.width,
+                    "label/title overlap at scale {scale}: label {rect:?}, title {title:?}"
+                );
+            }
+            let bar = config.colorbar.as_ref().unwrap();
+            let strip = strip_rect(&config);
+            let labels = visible_numeric_labels(
+                &bar.axis,
+                Side::Right,
+                fp,
+                &major_tick_values(&bar.axis),
+                |value| {
+                    point_on_rect_side(
+                        ((value - bar.axis.min) / (bar.axis.max - bar.axis.min)) as f32,
+                        &Side::Right,
+                        &strip,
+                    )
+                },
+            );
+            for label in &labels {
+                let rect = bounds(label, &bar.axis, Side::Right);
+                assert!(
+                    rect.x + rect.width
+                        <= (config.chart_area.0.x + config.chart_area.0.width) as f32,
+                    "colorbar label clipped at scale {scale}: {rect:?}"
+                );
+            }
+        }
     }
 
     #[test]

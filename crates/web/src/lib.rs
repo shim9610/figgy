@@ -5214,6 +5214,172 @@ mod web {
             let value=id.and_then(|id|self.hitmap.selection_box(id,&config,&CpuTextMeasure::for_style(&config.draw_style))).map(|b|serde_json::json!({"rect":[b.rect.x,b.rect.y,b.rect.width,b.rect.height],"handles":b.handles.iter().map(|r|vec![r.x,r.y,r.width,r.height]).collect::<Vec<_>>()}));
             serde_json::to_string(&value).map_err(js_err)
         }
+        // Copy only the selected scalar pairs out of the resident GPU pool.
+        // Registered source arrays are not retained or reconstructed on CPU.
+        async fn read_selection_samples(
+            &self,
+            samples: &[(String, usize)],
+        ) -> Result<Vec<f64>, JsValue> {
+            let offsets = samples
+                .iter()
+                .map(|(column, index)| {
+                    let handle = self
+                        .renderer
+                        .pool()
+                        .handle_for(column)
+                        .ok_or_else(|| js_err("selected column no longer exists"))?;
+                    if *index >= handle.len_values {
+                        return Err(js_err("selected index is outside the column"));
+                    }
+                    Ok(handle.offset + *index as u64 * 8)
+                })
+                .collect::<Result<Vec<_>, JsValue>>()?;
+            let buffer = self
+                .renderer
+                .device()
+                .create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("figgy selected values"),
+                    size: offsets.len() as u64 * 8,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                });
+            let mut encoder = self
+                .renderer
+                .device()
+                .create_command_encoder(&Default::default());
+            for (index, offset) in offsets.iter().enumerate() {
+                encoder.copy_buffer_to_buffer(
+                    self.renderer.pool().buffer(),
+                    *offset,
+                    &buffer,
+                    index as u64 * 8,
+                    8,
+                );
+            }
+            self.renderer.queue().submit([encoder.finish()]);
+            let slice = buffer.slice(..);
+            let (sender, receiver) = futures_channel::oneshot::channel();
+            slice.map_async(wgpu::MapMode::Read, move |result| {
+                let _ = sender.send(result);
+            });
+            receiver.await.map_err(js_err)?.map_err(js_err)?;
+            let mapped = slice.get_mapped_range().map_err(js_err)?;
+            let values = mapped
+                .chunks_exact(8)
+                .map(|pair| {
+                    f32::from_le_bytes(pair[..4].try_into().unwrap()) as f64
+                        + f32::from_le_bytes(pair[4..].try_into().unwrap()) as f64
+                })
+                .collect();
+            drop(mapped);
+            buffer.unmap();
+            Ok(values)
+        }
+
+        /// Inspect the first resident typed selection as JSON, or `"null"` when
+        /// none is selected. Only selected GPU samples are read back. Histograms
+        /// expose `bin_start`, `bin_end`, `value`, and `orientation`; the value
+        /// is the stored height (also valid for weighted/density histograms).
+        /// Point and matrix selections expose their coordinates and cell value.
+        pub async fn selection_details(&self) -> Result<String, JsValue> {
+            use renderer::config::PickedDataRef;
+            let Some(reference) = self
+                .chart_config()
+                .picked_data
+                .as_ref()
+                .and_then(|selection| selection.refs.first())
+                .cloned()
+            else {
+                return Ok("null".into());
+            };
+            let series = self
+                .chart_series()
+                .iter()
+                .find(|series| series.series_id == reference.series_id())
+                .cloned()
+                .ok_or_else(|| js_err("selected series no longer exists"))?;
+            let mut result =
+                serde_json::json!({"identity": reference, "series_id": series.series_id});
+            match &reference {
+                PickedDataRef::Point { point_index, .. } => {
+                    let values = self
+                        .read_selection_samples(&[
+                            (series.x_column, *point_index),
+                            (series.y_column, *point_index),
+                        ])
+                        .await?;
+                    result["index"] = serde_json::json!(point_index);
+                    result["x"] = serde_json::json!(values[0]);
+                    result["y"] = serde_json::json!(values[1]);
+                }
+                PickedDataRef::HistogramBin { bin_index, .. } => {
+                    let renderer::DataRenderType::Histogram { bar } = &series.render_type else {
+                        return Err(js_err("selected series is not a histogram"));
+                    };
+                    let (edges, heights) = match bar.orientation {
+                        renderer::data_config::BarOrientation::Vertical => {
+                            (&series.x_column, &series.y_column)
+                        }
+                        renderer::data_config::BarOrientation::Horizontal => {
+                            (&series.y_column, &series.x_column)
+                        }
+                    };
+                    let values = self
+                        .read_selection_samples(&[
+                            (edges.clone(), *bin_index),
+                            (edges.clone(), bin_index + 1),
+                            (heights.clone(), *bin_index),
+                        ])
+                        .await?;
+                    result["index"] = serde_json::json!(bin_index);
+                    result["bin_start"] = serde_json::json!(values[0]);
+                    result["bin_end"] = serde_json::json!(values[1]);
+                    result["value"] = serde_json::json!(values[2]);
+                    result["orientation"] = serde_json::json!(bar.orientation);
+                }
+                PickedDataRef::MatrixCell {
+                    x_index, y_index, ..
+                } => {
+                    let style = serde_json::to_value(&series.render_type).map_err(js_err)?;
+                    let matrix = &style.as_object().unwrap().values().next().unwrap()["matrix"];
+                    let across_x = matrix["orientation"] == "ColumnsAreY";
+                    let column_index = if across_x { *y_index } else { *x_index };
+                    let sample_index = if across_x { *x_index } else { *y_index };
+                    let column = matrix["columns"][column_index]
+                        .as_str()
+                        .ok_or_else(|| js_err("selected cell no longer exists"))?;
+                    let mut samples = vec![
+                        (series.x_column.clone(), *x_index),
+                        (series.y_column.clone(), *y_index),
+                        (column.into(), sample_index),
+                    ];
+                    let edges = matrix["grid_layout"] == "Edges";
+                    if edges {
+                        samples.extend([
+                            (series.x_column, x_index + 1),
+                            (series.y_column, y_index + 1),
+                        ]);
+                    }
+                    let values = self.read_selection_samples(&samples).await?;
+                    result["x_index"] = serde_json::json!(x_index);
+                    result["y_index"] = serde_json::json!(y_index);
+                    result["x"] = serde_json::json!(if edges {
+                        (values[0] + values[3]) * 0.5
+                    } else {
+                        values[0]
+                    });
+                    result["y"] = serde_json::json!(if edges {
+                        (values[1] + values[4]) * 0.5
+                    } else {
+                        values[1]
+                    });
+                    result["value"] = serde_json::json!(values[2]);
+                }
+                _ => return Ok("null".into()),
+            }
+            serde_json::to_string(&result).map_err(js_err)
+        }
+
         /// Move the resident typed data selection using source indices.
         pub fn step_selection(&mut self, dx: i32, dy: i32) -> Result<bool, JsValue> {
             let mut cfg = self.chart_config().clone();
@@ -5256,6 +5422,50 @@ mod web {
                     *series_id = series.series_id.clone();
                     *source_id = series.source_id.clone();
                     *point_index = shift(*point_index, dx, count);
+                }
+                renderer::config::PickedDataRef::HistogramBin {
+                    series_id,
+                    source_id,
+                    bin_index,
+                } => {
+                    let renderer::DataRenderType::Histogram { bar } =
+                        &self.chart_series()[position].render_type
+                    else {
+                        return Ok(false);
+                    };
+                    let horizontal = matches!(
+                        bar.orientation,
+                        renderer::data_config::BarOrientation::Horizontal
+                    );
+                    let histograms = self
+                        .chart_series()
+                        .iter()
+                        .filter(|s| {
+                            matches!(&s.render_type,
+                            renderer::DataRenderType::Histogram { bar: other }
+                            if other.orientation == bar.orientation)
+                        })
+                        .collect::<Vec<_>>();
+                    let index = histograms
+                        .iter()
+                        .position(|s| s.series_id == *series_id)
+                        .unwrap();
+                    let (bin_delta, series_delta) = if horizontal { (dy, dx) } else { (dx, dy) };
+                    let series = histograms[shift(index, series_delta, histograms.len())];
+                    let (edges, values) = if horizontal {
+                        (&series.y_column, &series.x_column)
+                    } else {
+                        (&series.x_column, &series.y_column)
+                    };
+                    let count = self.columns[edges]
+                        .saturating_sub(1)
+                        .min(self.columns[values]);
+                    if count == 0 {
+                        return Ok(false);
+                    }
+                    *series_id = series.series_id.clone();
+                    *source_id = series.source_id.clone();
+                    *bin_index = shift(*bin_index, bin_delta, count);
                 }
                 renderer::config::PickedDataRef::MatrixCell {
                     x_index, y_index, ..
