@@ -229,10 +229,13 @@ impl ContourLabelPipelines {
         anchor_source: &str,
         split_projection: bool,
     ) -> Self {
-        let anchor_module = crate::gpu_compile::shader_module(&device, wgpu::ShaderModuleDescriptor {
-            label: Some("figgy contour anchor shader"),
-            source: wgpu::ShaderSource::Wgsl(anchor_source.into()),
-        });
+        let anchor_module = crate::gpu_compile::shader_module(
+            &device,
+            wgpu::ShaderModuleDescriptor {
+                label: Some("figgy contour anchor shader"),
+                source: wgpu::ShaderSource::Wgsl(anchor_source.into()),
+            },
+        );
         let uniform = |binding: u32, visibility: wgpu::ShaderStages| wgpu::BindGroupLayoutEntry {
             binding,
             visibility,
@@ -256,83 +259,105 @@ impl ContourLabelPipelines {
             }
         };
         let compute = wgpu::ShaderStages::COMPUTE;
-        let anchor_transform_bgl =
-            crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
+        let anchor_transform_bgl = crate::gpu_compile::bind_group_layout(
+            &device,
+            &wgpu::BindGroupLayoutDescriptor {
                 label: Some("figgy contour anchor transform bgl"),
                 entries: &[uniform(0, compute)],
-            });
-        let anchor_io_bgl = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
-            label: Some("figgy contour anchor io bgl"),
-            entries: &[
-                uniform(0, compute),
-                storage(1, false, compute), // candidates
-                storage(2, false, compute), // kept anchors
-                storage(3, false, compute), // label draw-indirect args
-                storage(4, true, compute),  // per-level label widths
-            ],
-        });
-        let anchor_layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
-            label: Some("figgy contour anchor layout"),
-            bind_group_layouts: &[
-                Some(&anchor_transform_bgl),
-                Some(&anchor_io_bgl),
-                Some(field_bgl),
-            ],
-            immediate_size: 0,
-        });
+            },
+        );
+        let anchor_io_bgl = crate::gpu_compile::bind_group_layout(
+            &device,
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("figgy contour anchor io bgl"),
+                entries: &[
+                    uniform(0, compute),
+                    storage(1, false, compute), // candidates
+                    storage(2, false, compute), // kept anchors
+                    storage(3, false, compute), // label draw-indirect args
+                    storage(4, true, compute),  // per-level label widths
+                ],
+            },
+        );
+        let anchor_layout = crate::gpu_compile::pipeline_layout(
+            &device,
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some("figgy contour anchor layout"),
+                bind_group_layouts: &[
+                    Some(&anchor_transform_bgl),
+                    Some(&anchor_io_bgl),
+                    Some(field_bgl),
+                ],
+                immediate_size: 0,
+            },
+        );
         let pipeline = |entry: &str, label: &str| {
-            crate::gpu_compile::compute_pipeline(&device, &wgpu::ComputePipelineDescriptor {
-                label: Some(label),
-                layout: Some(&anchor_layout),
-                module: &anchor_module,
-                entry_point: Some(entry),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                cache: None,
-            })
+            crate::gpu_compile::compute_pipeline(
+                &device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&anchor_layout),
+                    module: &anchor_module,
+                    entry_point: Some(entry),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    cache: None,
+                },
+            )
         };
-        let label_bgl = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
-            label: Some("figgy contour label bgl"),
-            entries: &[
-                uniform(0, wgpu::ShaderStages::VERTEX),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+        let label_bgl = crate::gpu_compile::bind_group_layout(
+            &device,
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("figgy contour label bgl"),
+                entries: &[
+                    uniform(0, wgpu::ShaderStages::VERTEX),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-        let label_gap_bgl = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
-            label: Some("figgy contour label gap bgl"),
-            entries: &[
-                storage(0, true, wgpu::ShaderStages::FRAGMENT), // selected anchors
-                storage(1, true, wgpu::ShaderStages::FRAGMENT), // draw args / count
-                uniform(3, wgpu::ShaderStages::FRAGMENT),       // atlas cell geometry
-            ],
-        });
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            },
+        );
+        let label_gap_bgl = crate::gpu_compile::bind_group_layout(
+            &device,
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("figgy contour label gap bgl"),
+                entries: &[
+                    storage(0, true, wgpu::ShaderStages::FRAGMENT), // selected anchors
+                    storage(1, true, wgpu::ShaderStages::FRAGMENT), // draw args / count
+                    uniform(3, wgpu::ShaderStages::FRAGMENT),       // atlas cell geometry
+                ],
+            },
+        );
         Self {
-            projection_steps: split_projection.then(|| (
-                pipeline("anchor_seed", "figgy contour anchor seed pipeline"),
-                pipeline("anchor_step", "figgy contour anchor correction pipeline"),
-            )),
+            projection_steps: split_projection.then(|| {
+                (
+                    pipeline("anchor_seed", "figgy contour anchor seed pipeline"),
+                    pipeline("anchor_step", "figgy contour anchor correction pipeline"),
+                )
+            }),
             anchor_project: pipeline("anchor_project", "figgy contour anchor project pipeline"),
             anchor_select: pipeline("anchor_select", "figgy contour anchor select pipeline"),
             anchor_transform_bgl,
             anchor_io_bgl,
-            label_module: crate::gpu_compile::shader_module(&device, wgpu::ShaderModuleDescriptor {
-                label: Some("figgy contour label shader"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("contour_label.wgsl").into()),
-            }),
+            label_module: crate::gpu_compile::shader_module(
+                &device,
+                wgpu::ShaderModuleDescriptor {
+                    label: Some("figgy contour label shader"),
+                    source: wgpu::ShaderSource::Wgsl(include_str!("contour_label.wgsl").into()),
+                },
+            ),
             label_bgl,
             label_gap_bgl,
         }
@@ -382,52 +407,58 @@ impl ContourLabelPipelines {
         target_format: wgpu::TextureFormat,
         sample_count: u32,
     ) -> wgpu::RenderPipeline {
-        let layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
-            label: Some("figgy contour label layout"),
-            bind_group_layouts: &[Some(transform_bgl), Some(&self.label_bgl)],
-            immediate_size: 0,
-        });
+        let layout = crate::gpu_compile::pipeline_layout(
+            &device,
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some("figgy contour label layout"),
+                bind_group_layouts: &[Some(transform_bgl), Some(&self.label_bgl)],
+                immediate_size: 0,
+            },
+        );
         // One instance per anchor: the 32 B record, read straight out of the
         // buffer the anchor pass (or a host override) wrote.
-        crate::gpu_compile::render_pipeline(&device, &wgpu::RenderPipelineDescriptor {
-            label: Some("figgy contour label pipeline"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &self.label_module,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<LabelAnchorGpu>() as u64,
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &CONTOUR_LABEL_VERTEX_ATTRIBUTES,
-                })],
+        crate::gpu_compile::render_pipeline(
+            &device,
+            &wgpu::RenderPipelineDescriptor {
+                label: Some("figgy contour label pipeline"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &self.label_module,
+                    entry_point: Some("vs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<LabelAnchorGpu>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &CONTOUR_LABEL_VERTEX_ATTRIBUTES,
+                    })],
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: None,
+                multisample: crate::data_render::multisample_state(sample_count),
+                fragment: Some(wgpu::FragmentState {
+                    module: &self.label_module,
+                    entry_point: Some("fs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: target_format,
+                        // The atlas is tiny-skia output, which is premultiplied, so
+                        // the baked colour and background arrive as drawn.
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
             },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: crate::data_render::multisample_state(sample_count),
-            fragment: Some(wgpu::FragmentState {
-                module: &self.label_module,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    // The atlas is tiny-skia output, which is premultiplied, so
-                    // the baked colour and background arrive as drawn.
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        })
+        )
     }
 }
 

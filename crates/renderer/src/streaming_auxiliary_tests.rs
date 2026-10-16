@@ -251,7 +251,9 @@ fn completed_stream_export_uses_latest_decoration_without_restarting_data() {
     let (mut renderer, id, _, chart, series, x, y) = setup(false);
     let original_job = renderer.active_stream_job(id);
     let original_count = renderer.stream_status(id).unwrap().submitted_primitives;
-    let first = renderer.begin_stream_export(id, 1.0, Color::new(0.0, 0.0, 0.0, 0.0), 3).unwrap();
+    let first = renderer
+        .begin_stream_export(id, 1.0, Color::new(0.0, 0.0, 0.0, 0.0), 3)
+        .unwrap();
     let mut latest = chart.config().clone();
     latest.chart_title.visible = true;
     latest.chart_title.text.segments = crate::text::rich_segments_from_text("Latest decoration");
@@ -259,19 +261,40 @@ fn completed_stream_export_uses_latest_decoration_without_restarting_data() {
     pump(&mut renderer, first, &x, &y);
     let old_export = pollster::block_on(renderer.finish_stream_export(first)).unwrap();
     let (device, queue) = data_render::shared_device().unwrap();
-    let mut resident = Renderer::try_new(RendererDevice::new(device, queue), wgpu::TextureFormat::Rgba8Unorm, 16384).unwrap();
+    let mut resident = Renderer::try_new(
+        RendererDevice::new(device, queue),
+        wgpu::TextureFormat::Rgba8Unorm,
+        16384,
+    )
+    .unwrap();
     resident.add_column("x", &x).unwrap();
     resident.add_column("y", &y).unwrap();
     let old_expected = resident.export_panel_rgba(&chart, &series, 1.0).unwrap();
-    assert!(old_export.rgba == old_expected.rgba, "already-started export must stay frozen");
-    let second = renderer.begin_stream_export(id, 1.0, Color::new(0.0, 0.0, 0.0, 0.0), 3).unwrap();
+    assert!(
+        old_export.rgba == old_expected.rgba,
+        "already-started export must stay frozen"
+    );
+    let second = renderer
+        .begin_stream_export(id, 1.0, Color::new(0.0, 0.0, 0.0, 0.0), 3)
+        .unwrap();
     pump(&mut renderer, second, &x, &y);
     let new_export = pollster::block_on(renderer.finish_stream_export(second)).unwrap();
-    let new_expected = resident.export_panel_rgba(&Chart::new(latest), &series, 1.0).unwrap();
-    assert!(old_expected.rgba != new_expected.rgba, "fixture must change visible decoration");
-    assert!(new_export.rgba == new_expected.rgba, "new export must capture current decoration");
+    let new_expected = resident
+        .export_panel_rgba(&Chart::new(latest), &series, 1.0)
+        .unwrap();
+    assert!(
+        old_expected.rgba != new_expected.rgba,
+        "fixture must change visible decoration"
+    );
+    assert!(
+        new_export.rgba == new_expected.rgba,
+        "new export must capture current decoration"
+    );
     assert_eq!(renderer.active_stream_job(id), original_job);
-    assert_eq!(renderer.stream_status(id).unwrap().submitted_primitives, original_count);
+    assert_eq!(
+        renderer.stream_status(id).unwrap().submitted_primitives,
+        original_count
+    );
 }
 
 #[test]

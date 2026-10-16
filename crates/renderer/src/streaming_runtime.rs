@@ -8,8 +8,8 @@ use super::streaming_surface::{
 use super::*;
 use crate::gpu_memory::TrackedBuffer;
 use crate::streaming::{
-    ColumnRange, JobId, RequestStatus, RequestTicket, SourceStamp, StreamError,
-    StreamLimits, StreamScheduler, SubmissionReceipt, ViewEpoch,
+    ColumnRange, JobId, RequestStatus, RequestTicket, SourceStamp, StreamError, StreamLimits,
+    StreamScheduler, SubmissionReceipt, ViewEpoch,
 };
 use crate::streaming_upload::{
     ChunkStatisticsPlan, ChunkUploadBudget, ChunkUploadError, RecordedChunk,
@@ -304,9 +304,11 @@ impl StreamStagingSlot {
         self.ticket = None;
         self.state.store(2, Ordering::Release);
         let state = Arc::clone(&self.state);
-        self.buffer.slice(..).map_async(wgpu::MapMode::Write, move |result| {
-            state.store(if result.is_ok() { 0 } else { 3 }, Ordering::Release);
-        });
+        self.buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Write, move |result| {
+                state.store(if result.is_ok() { 0 } else { 3 }, Ordering::Release);
+            });
     }
 }
 
@@ -550,13 +552,24 @@ pub(super) fn stream_phase_columns(
     }
 }
 
-fn stream_draw_phases(draw_style: &DrawStyle, series: &SeriesConfig) -> StreamResult<&'static [StreamDrawPhase]> {
+fn stream_draw_phases(
+    draw_style: &DrawStyle,
+    series: &SeriesConfig,
+) -> StreamResult<&'static [StreamDrawPhase]> {
     let primitives = effective_series_primitives(draw_style, &series.render_type);
     if matches!(draw_style, DrawStyle::Constellation(_)) {
-        return Ok(if primitives.line { &[StreamDrawPhase::Line, StreamDrawPhase::Scatter] } else { &[] });
+        return Ok(if primitives.line {
+            &[StreamDrawPhase::Line, StreamDrawPhase::Scatter]
+        } else {
+            &[]
+        });
     }
     match &series.render_type {
-        DataRenderType::Histogram { .. } => Ok(if primitives.bar { &[StreamDrawPhase::Histogram] } else { &[] }),
+        DataRenderType::Histogram { .. } => Ok(if primitives.bar {
+            &[StreamDrawPhase::Histogram]
+        } else {
+            &[]
+        }),
         DataRenderType::Line { .. } => Ok(&[StreamDrawPhase::Line]),
         DataRenderType::Scatter { .. } => Ok(&[StreamDrawPhase::Scatter]),
         DataRenderType::ScatterLine { .. } => {
@@ -583,9 +596,9 @@ fn stream_draw_phases(draw_style: &DrawStyle, series: &SeriesConfig) -> StreamRe
             if primitives.field || primitives.contour =>
         {
             Err(FiggyError::InvalidSeriesConfig {
-            series_id: series.series_id.clone(),
-            reason: "stream draw cursor does not yet support field or contour passes".into(),
-        }
+                series_id: series.series_id.clone(),
+                reason: "stream draw cursor does not yet support field or contour passes".into(),
+            }
             .into())
         }
         DataRenderType::Contour { .. } | DataRenderType::HeatmapContour { .. } => Ok(&[]),
@@ -604,8 +617,10 @@ fn stream_fit_extent(bounds: crate::StreamBounds) -> crate::FitExtent {
 // remains in the destination document when a scaled display view is used.
 pub(super) fn copy_stream_fit_axes(target: &mut Config, source: &Config) {
     for (to, from) in [
-        (&mut target.bottom_x, &source.bottom_x), (&mut target.top_x, &source.top_x),
-        (&mut target.left_y, &source.left_y), (&mut target.right_y, &source.right_y),
+        (&mut target.bottom_x, &source.bottom_x),
+        (&mut target.top_x, &source.top_x),
+        (&mut target.left_y, &source.left_y),
+        (&mut target.right_y, &source.right_y),
     ] {
         to.min = from.min;
         to.max = from.max;
@@ -621,12 +636,16 @@ pub(super) fn copy_stream_fit_axes(target: &mut Config, source: &Config) {
 fn preview_pixel_mapping(old: &Config, new: &Config) -> Option<[f32; 8]> {
     let a = old.data_area().ok()?.0;
     let b = new.data_area().ok()?.0;
-    if a.width == 0 || a.height == 0 || b.width == 0 || b.height == 0 { return None; }
+    if a.width == 0 || a.height == 0 || b.width == 0 || b.height == 0 {
+        return None;
+    }
     let old_t = data_render::scatter_transform_from_config(old);
     let new_t = data_render::scatter_transform_from_config(new);
     let bounds = |t: &data_render::ScatterTransform, i: usize| {
-        (f64::from(t.data_min[i]) + f64::from(t.data_min_lo[i]),
-         f64::from(t.data_max[i]) + f64::from(t.data_max_lo[i]))
+        (
+            f64::from(t.data_min[i]) + f64::from(t.data_min_lo[i]),
+            f64::from(t.data_max[i]) + f64::from(t.data_max_lo[i]),
+        )
     };
     let (ox0, ox1) = bounds(&old_t, 0);
     let (nx0, nx1) = bounds(&new_t, 0);
@@ -635,11 +654,23 @@ fn preview_pixel_mapping(old: &Config, new: &Config) -> Option<[f32; 8]> {
     let sx = (nx1 - nx0) / (ox1 - ox0) * f64::from(a.width) / f64::from(b.width);
     let sy = (ny1 - ny0) / (oy1 - oy0) * f64::from(a.height) / f64::from(b.height);
     let dx = f64::from(a.x) + (nx0 - ox0) / (ox1 - ox0) * f64::from(a.width) - sx * f64::from(b.x);
-    let dy = f64::from(a.y) + f64::from(a.height) - sy * (f64::from(b.y) + f64::from(b.height))
+    let dy = f64::from(a.y) + f64::from(a.height)
+        - sy * (f64::from(b.y) + f64::from(b.height))
         - (ny0 - oy0) / (oy1 - oy0) * f64::from(a.height);
-    let result = [sx as f32, sy as f32, dx as f32, dy as f32,
-        a.x as f32, a.y as f32, a.x as f32 + a.width as f32, a.y as f32 + a.height as f32];
-    result.iter().all(|value| value.is_finite()).then_some(result)
+    let result = [
+        sx as f32,
+        sy as f32,
+        dx as f32,
+        dy as f32,
+        a.x as f32,
+        a.y as f32,
+        a.x as f32 + a.width as f32,
+        a.y as f32 + a.height as f32,
+    ];
+    result
+        .iter()
+        .all(|value| value.is_finite())
+        .then_some(result)
 }
 
 fn stream_cached_extent(
@@ -699,8 +730,16 @@ fn auto_stream_fit_extents(
     for (index, series) in snapshot.series.iter().enumerate() {
         if is_stream_heatmap(&series.render_type) {
             if let Some(Some(extent)) = field_fits.get(&index) {
-                x.union(&crate::FitExtent { min: extent.x.min, max: extent.x.max, min_positive: extent.x.min_positive });
-                y.union(&crate::FitExtent { min: extent.y.min, max: extent.y.max, min_positive: extent.y.min_positive });
+                x.union(&crate::FitExtent {
+                    min: extent.x.min,
+                    max: extent.x.max,
+                    min_positive: extent.x.min_positive,
+                });
+                y.union(&crate::FitExtent {
+                    min: extent.y.min,
+                    max: extent.y.max,
+                    min_positive: extent.y.min_positive,
+                });
             }
             continue;
         }
@@ -847,18 +886,42 @@ fn resolve_stream_range_source<'a>(
 }
 
 impl Renderer {
-    pub(super) fn try_cached_stream_auto_fit(&mut self, chart: ChartId, padding: f64) -> Result<bool> {
+    pub(super) fn try_cached_stream_auto_fit(
+        &mut self,
+        chart: ChartId,
+        padding: f64,
+    ) -> Result<bool> {
         let config = {
-            let Some(runtime) = self.stream_runtime.as_ref() else { return Ok(false); };
-            let Some(draw) = runtime.draws.iter().find(|draw| draw.job.chart == chart && draw.auxiliary.is_none()) else { return Ok(false); };
-            let StreamExecutionMode::Auto { snapshot: Some(snapshot), statistics, .. } = &draw.mode else { return Ok(false); };
-            let state = self.chart_states.get(&chart).ok_or(FiggyError::UnknownChart { id: chart })?;
+            let Some(runtime) = self.stream_runtime.as_ref() else {
+                return Ok(false);
+            };
+            let Some(draw) = runtime
+                .draws
+                .iter()
+                .find(|draw| draw.job.chart == chart && draw.auxiliary.is_none())
+            else {
+                return Ok(false);
+            };
+            let StreamExecutionMode::Auto {
+                snapshot: Some(snapshot),
+                statistics,
+                ..
+            } = &draw.mode
+            else {
+                return Ok(false);
+            };
+            let state = self
+                .chart_states
+                .get(&chart)
+                .ok_or(FiggyError::UnknownChart { id: chart })?;
             if !draw.auto_terminal(runtime)
                 || snapshot.data_revision != state.revisions.data
                 || snapshot.series_revision != state.revisions.series
                 || snapshot.view_revision != state.revisions.view
                 || !field_fit::all_fit_inputs_ready(snapshot, statistics, &draw.field_fits)
-            { return Ok(false); }
+            {
+                return Ok(false);
+            }
             let (x, y) = auto_stream_fit_extents(snapshot, statistics, &draw.field_fits);
             let mut config = state.config.clone();
             crate::chart::apply_auto_fit_all(&mut config, &x, &y, padding);
@@ -868,7 +931,10 @@ impl Renderer {
         if self.chart_config(chart)? != &config {
             self.set_chart_config(chart, config)?;
         }
-        self.chart_states.get_mut(&chart).unwrap().stream_auto_fit_padding = None;
+        self.chart_states
+            .get_mut(&chart)
+            .unwrap()
+            .stream_auto_fit_padding = None;
         Ok(true)
     }
 
@@ -944,8 +1010,7 @@ impl Renderer {
                 };
                 *slot = Some(snapshot);
                 return Err(FiggyError::StaleStateToken {
-                    reason: "automatic stream snapshot was retained across an axis restart"
-                        .into(),
+                    reason: "automatic stream snapshot was retained across an axis restart".into(),
                 }
                 .into());
             }
@@ -978,28 +1043,64 @@ impl Renderer {
         snapshot.config = config;
         copy_stream_fit_axes(&mut snapshot.document_config, &snapshot.config);
 
-        let draw = self.stream_runtime.as_ref().unwrap().draws.iter()
-            .find(|draw| draw.job == job).unwrap();
+        let draw = self
+            .stream_runtime
+            .as_ref()
+            .unwrap()
+            .draws
+            .iter()
+            .find(|draw| draw.job == job)
+            .unwrap();
         let target = draw.target.clone();
         let clear = draw.surface_clear.ok_or(StreamError::WrongState)?;
-        let separate_grid = matches!(snapshot.config.draw_style, crate::config::DrawStyle::Precise);
+        let separate_grid = matches!(
+            snapshot.config.draw_style,
+            crate::config::DrawStyle::Precise
+        );
         let target_view = target.create_view(&Default::default());
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        let preview = !replay && self.stream_runtime.as_ref().unwrap().draws.iter()
-            .find(|draw| draw.job == job).unwrap().fit_preview;
+        let preview = !replay
+            && self
+                .stream_runtime
+                .as_ref()
+                .unwrap()
+                .draws
+                .iter()
+                .find(|draw| draw.job == job)
+                .unwrap()
+                .fit_preview;
         let rescaled = if preview {
             let mapping = preview_pixel_mapping(&previous_config, &snapshot.config);
             let size = (target.width(), target.height());
-            let clip = data_render::clamp_rect_to_target(snapshot.config.data_area()
-                .map_or(snapshot.view.panel_rect, |area| area.0), size);
+            let clip = data_render::clamp_rect_to_target(
+                snapshot
+                    .config
+                    .data_area()
+                    .map_or(snapshot.view.panel_rect, |area| area.0),
+                size,
+            );
             let runtime = self.stream_runtime.as_mut().unwrap();
-            let draw = runtime.draws.iter_mut().find(|draw| draw.job == job).unwrap();
+            let draw = runtime
+                .draws
+                .iter_mut()
+                .find(|draw| draw.job == job)
+                .unwrap();
             match (mapping, clip) {
-                (Some(mapping), Some(clip)) => draw.surface.as_mut().ok_or(StreamError::WrongState)?
-                    .record_rescale(&self.device, &self.queue, &self.gpu_ledger,
-                        runtime.transfer.as_ref().ok_or(StreamError::WrongState)?, &mut encoder,
-                        &mapping, [clip.x, clip.y, clip.width, clip.height],
-                        self.memory_budget.unwrap_or(u64::MAX), self.pool.gpu_bytes() + self.pool.retired_bytes())
+                (Some(mapping), Some(clip)) => draw
+                    .surface
+                    .as_mut()
+                    .ok_or(StreamError::WrongState)?
+                    .record_rescale(
+                        &self.device,
+                        &self.queue,
+                        &self.gpu_ledger,
+                        runtime.transfer.as_ref().ok_or(StreamError::WrongState)?,
+                        &mut encoder,
+                        &mapping,
+                        [clip.x, clip.y, clip.width, clip.height],
+                        self.memory_budget.unwrap_or(u64::MAX),
+                        self.pool.gpu_bytes() + self.pool.retired_bytes(),
+                    )
                     .map_err(StreamRequestError::from),
                 _ => Ok(()),
             }
@@ -1062,14 +1163,30 @@ impl Renderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(if separate_grid { wgpu::Color::TRANSPARENT } else { clear }),
+                        load: wgpu::LoadOp::Clear(if separate_grid {
+                            wgpu::Color::TRANSPARENT
+                        } else {
+                            clear
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
                 ..Default::default()
             });
-            if !separate_grid && let Some(panel) = data_render::clamp_rect_to_target(snapshot.view.panel_rect, (target.width(), target.height())) {
-                pass.set_viewport(panel.x as f32, panel.y as f32, panel.width as f32, panel.height as f32, 0.0, 1.0);
+            if !separate_grid
+                && let Some(panel) = data_render::clamp_rect_to_target(
+                    snapshot.view.panel_rect,
+                    (target.width(), target.height()),
+                )
+            {
+                pass.set_viewport(
+                    panel.x as f32,
+                    panel.y as f32,
+                    panel.width as f32,
+                    panel.height as f32,
+                    0.0,
+                    1.0,
+                );
                 pass.set_scissor_rect(panel.x, panel.y, panel.width, panel.height);
                 pass.set_pipeline(&self.pipelines.axis);
                 pass.set_bind_group(0, &snapshot.view.grid_bind_group, &[]);
@@ -1118,9 +1235,16 @@ impl Renderer {
             }
             StreamExecutionMode::Explicit => true,
         };
-        draw.view_candidate = self.auto_resident_working_set_limit
-            .filter(|limit| *limit != 0 && fit_ready && replay).and_then(|limit| {
-                view_residency::ViewPackedCandidate::for_chart(&snapshot.config, &snapshot.series, limit, snapshot.display_scale)
+        draw.view_candidate = self
+            .auto_resident_working_set_limit
+            .filter(|limit| *limit != 0 && fit_ready && replay)
+            .and_then(|limit| {
+                view_residency::ViewPackedCandidate::for_chart(
+                    &snapshot.config,
+                    &snapshot.series,
+                    limit,
+                    snapshot.display_scale,
+                )
             });
         draw.view_rejection = match self.auto_resident_working_set_limit {
             Some(0) => Some(view_residency::PackReject::Disabled),
@@ -1254,8 +1378,8 @@ impl Renderer {
             self.try_publish_view_cache(job);
             return Ok(revision);
         }
-        let statistic_count = u64::try_from(statistic_copies.len())
-            .map_err(|_| StreamError::Overflow)?;
+        let statistic_count =
+            u64::try_from(statistic_copies.len()).map_err(|_| StreamError::Overflow)?;
         let final_fit_epoch = self
             .next_stream_source_fit_epoch
             .checked_add(statistic_count)
@@ -1278,10 +1402,7 @@ impl Renderer {
                     .revisions
                     .desired
                     .successor("chart desired revision")?,
-                state
-                    .revisions
-                    .config
-                    .successor("chart config revision")?,
+                state.revisions.config.successor("chart config revision")?,
                 state.revisions.view.successor("chart view revision")?,
                 state.revisions.raster.successor("chart raster revision")?,
                 self.visual_revision.successor("renderer visual revision")?,
@@ -1384,10 +1505,16 @@ impl Renderer {
     }
 
     fn try_publish_view_cache(&mut self, job: StreamJob) {
-        let Some(draw) = self.stream_runtime.as_mut()
+        let Some(draw) = self
+            .stream_runtime
+            .as_mut()
             .and_then(|runtime| runtime.draws.iter_mut().find(|draw| draw.job == job))
-        else { return; };
-        let Some(candidate) = draw.view_candidate.take() else { return; };
+        else {
+            return;
+        };
+        let Some(candidate) = draw.view_candidate.take() else {
+            return;
+        };
         if let Some(reason) = candidate.rejected {
             draw.view_rejection = Some(reason);
             return;
@@ -1398,23 +1525,28 @@ impl Renderer {
         };
         let current = self.gpu_memory_usage().total_bytes();
         match view_residency::GpuViewCache::upload(
-            candidate, &self.device, &self.queue, &self.gpu_ledger, budget, current,
+            candidate,
+            &self.device,
+            &self.queue,
+            &self.gpu_ledger,
+            budget,
+            current,
         ) {
             Ok(cache) => {
                 if let Some(draw) = self
                     .stream_runtime
                     .as_mut()
-                .and_then(|runtime| runtime.draws.iter_mut().find(|draw| draw.job == job))
-            {
-                draw.view_cache = Some(Arc::new(cache));
-                draw.view_rejection = None;
+                    .and_then(|runtime| runtime.draws.iter_mut().find(|draw| draw.job == job))
+                {
+                    draw.view_cache = Some(Arc::new(cache));
+                    draw.view_rejection = None;
                 }
             }
             Err(reason) => {
                 if let Some(draw) = self
                     .stream_runtime
                     .as_mut()
-                .and_then(|runtime| runtime.draws.iter_mut().find(|draw| draw.job == job))
+                    .and_then(|runtime| runtime.draws.iter_mut().find(|draw| draw.job == job))
                 {
                     draw.view_rejection = Some(reason);
                 }
@@ -1447,19 +1579,41 @@ impl Renderer {
         cache: Arc<view_residency::GpuViewCache>,
     ) -> StreamResult<()> {
         let snapshot = self.auto_stream_snapshot(job).ok_or(StreamError::Stale)?;
-        let target = self.stream_runtime.as_ref().unwrap().draws.iter()
-            .find(|draw| draw.job == job).ok_or(StreamError::Stale)?.target.clone();
+        let target = self
+            .stream_runtime
+            .as_ref()
+            .unwrap()
+            .draws
+            .iter()
+            .find(|draw| draw.job == job)
+            .ok_or(StreamError::Stale)?
+            .target
+            .clone();
         let mut packets = Vec::new();
-        packets.try_reserve_exact(cache.chunks.len()).map_err(|_| StreamError::AllocationFailed)?;
+        packets
+            .try_reserve_exact(cache.chunks.len())
+            .map_err(|_| StreamError::AllocationFailed)?;
         {
             let (_, preparation) = self.preparation_parts();
             for packed in &cache.chunks {
-                let config = snapshot.series.get(packed.series).ok_or(StreamError::Stale)?;
-                let style = snapshot.styles.styles.get(packed.series).ok_or(StreamError::Stale)?;
+                let config = snapshot
+                    .series
+                    .get(packed.series)
+                    .ok_or(StreamError::Stale)?;
+                let style = snapshot
+                    .styles
+                    .styles
+                    .get(packed.series)
+                    .ok_or(StreamError::Stale)?;
                 let series = Series { config, style };
                 let packet = preparation.build_stream_series_with_pipelines(
-                    &snapshot.view, &snapshot.config, &series,
-                    &packed.chunk, &packed.ranges, packed.phase, preparation.pipelines,
+                    &snapshot.view,
+                    &snapshot.config,
+                    &series,
+                    &packed.chunk,
+                    &packed.ranges,
+                    packed.phase,
+                    preparation.pipelines,
                 )?;
                 packets.push(packet);
             }
@@ -1467,22 +1621,40 @@ impl Renderer {
         let size = (target.width(), target.height());
         let panel = data_render::clamp_rect_to_target(snapshot.view.panel_rect, size);
         let data = data_render::clamp_rect_to_target(
-            snapshot.config.data_area().map_or(snapshot.view.panel_rect, |area| area.0), size,
+            snapshot
+                .config
+                .data_area()
+                .map_or(snapshot.view.panel_rect, |area| area.0),
+            size,
         );
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("figgy packed view redraw"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("figgy packed view redraw"),
+            });
         if let (Some(panel), Some(data)) = (panel, data) {
             let target_view = target.create_view(&Default::default());
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("figgy packed view prefix"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target_view, depth_slice: None, resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                    view: &target_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
                 })],
                 ..Default::default()
             });
-            pass.set_viewport(panel.x as f32, panel.y as f32, panel.width as f32, panel.height as f32, 0.0, 1.0);
+            pass.set_viewport(
+                panel.x as f32,
+                panel.y as f32,
+                panel.width as f32,
+                panel.height as f32,
+                0.0,
+                1.0,
+            );
             pass.set_scissor_rect(data.x, data.y, data.width, data.height);
             for (packed, packet) in cache.chunks.iter().zip(&packets) {
                 let mut layers = packet.layers();
@@ -1505,8 +1677,14 @@ impl Renderer {
             }
         }
         self.queue.submit([encoder.finish()]);
-        let draw = self.stream_runtime.as_mut().unwrap().draws.iter_mut()
-            .find(|draw| draw.job == job).ok_or(StreamError::Stale)?;
+        let draw = self
+            .stream_runtime
+            .as_mut()
+            .unwrap()
+            .draws
+            .iter_mut()
+            .find(|draw| draw.job == job)
+            .ok_or(StreamError::Stale)?;
         draw.view_cache = Some(cache);
         draw.view_candidate = None;
         draw.view_rejection = None;
@@ -1523,21 +1701,39 @@ impl Renderer {
 
     #[cfg(test)]
     pub(crate) fn view_cache_test_status(&self, chart: ChartId) -> Option<(usize, u64)> {
-        self.stream_runtime.as_ref()?.draws.iter()
+        self.stream_runtime
+            .as_ref()?
+            .draws
+            .iter()
             .find(|draw| draw.job.chart == chart && draw.auxiliary.is_none())?
-            .view_cache.as_ref().map(|cache| (cache.chunks.len(), cache.packed_bytes))
+            .view_cache
+            .as_ref()
+            .map(|cache| (cache.chunks.len(), cache.packed_bytes))
     }
 
     #[cfg(test)]
     pub(crate) fn view_selection_ring_count(&self, chart: ChartId) -> Option<usize> {
-        let draw = self.stream_runtime.as_ref()?.draws.iter()
+        let draw = self
+            .stream_runtime
+            .as_ref()?
+            .draws
+            .iter()
             .find(|draw| draw.job.chart == chart && draw.auxiliary.is_none())?;
-        Some(draw.selection.ready.iter().map(|packet| packet.packet.layers().picked.len()).sum())
+        Some(
+            draw.selection
+                .ready
+                .iter()
+                .map(|packet| packet.packet.layers().picked.len())
+                .sum(),
+        )
     }
 
     #[cfg(test)]
     pub(crate) fn stream_target_test(&self, chart: ChartId) -> Option<wgpu::Texture> {
-        self.stream_runtime.as_ref()?.draws.iter()
+        self.stream_runtime
+            .as_ref()?
+            .draws
+            .iter()
             .find(|draw| draw.job.chart == chart && draw.auxiliary.is_none())
             .map(|draw| draw.target.clone())
     }
@@ -1600,15 +1796,28 @@ impl Renderer {
         render_config: Config,
         options: crate::StreamingChartOptions,
     ) -> Result<crate::AutoStreamingRequest> {
-        self.request_auto_streaming_chart_with_display_scale(chart, _view, render_config, 1.0, options)
+        self.request_auto_streaming_chart_with_display_scale(
+            chart,
+            _view,
+            render_config,
+            1.0,
+            options,
+        )
     }
 
     pub fn request_auto_streaming_chart_with_display_scale(
-        &mut self, chart: ChartId, _view: &ChartView, render_config: Config,
-        display_scale: f32, options: crate::StreamingChartOptions,
+        &mut self,
+        chart: ChartId,
+        _view: &ChartView,
+        render_config: Config,
+        display_scale: f32,
+        options: crate::StreamingChartOptions,
     ) -> Result<crate::AutoStreamingRequest> {
         if !display_scale.is_finite() || display_scale <= 0.0 {
-            return Err(FiggyError::InvalidConfig { field: "stream display scale", reason: "must be finite and positive" });
+            return Err(FiggyError::InvalidConfig {
+                field: "stream display scale",
+                reason: "must be finite and positive",
+            });
         }
         crate::chart::validate_renderer_config(&render_config)?;
         self.sync_external_invalidations()?;
@@ -1656,18 +1865,31 @@ impl Renderer {
         // Only a completed chart-local cache from the same data and series
         // may answer a new view request. Other charts and the global column
         // pool are never consulted or changed by this fast path.
-        let reusable_view = self.stream_runtime.as_ref().and_then(|runtime| {
-            runtime.draws.iter().find(|draw| draw.job.chart == chart && draw.auxiliary.is_none())
-        }).and_then(|draw| {
-            let StreamExecutionMode::Auto { snapshot: Some(previous), all_submitted: true, .. } = &draw.mode
-                else { return None; };
-            let cache = draw.view_cache.as_ref()?;
-            (previous.data_revision == revisions.data
-                && previous.series_revision == revisions.series
-                && previous.config.draw_style == render_config.draw_style
-                && cache.covers(&render_config, &previous.series, display_scale))
+        let reusable_view = self
+            .stream_runtime
+            .as_ref()
+            .and_then(|runtime| {
+                runtime
+                    .draws
+                    .iter()
+                    .find(|draw| draw.job.chart == chart && draw.auxiliary.is_none())
+            })
+            .and_then(|draw| {
+                let StreamExecutionMode::Auto {
+                    snapshot: Some(previous),
+                    all_submitted: true,
+                    ..
+                } = &draw.mode
+                else {
+                    return None;
+                };
+                let cache = draw.view_cache.as_ref()?;
+                (previous.data_revision == revisions.data
+                    && previous.series_revision == revisions.series
+                    && previous.config.draw_style == render_config.draw_style
+                    && cache.covers(&render_config, &previous.series, display_scale))
                 .then(|| Arc::clone(cache))
-        });
+            });
 
         if let Some(job) = self.active_stream_job(chart) {
             let (automatic, terminal, active_revision, pending_latest, inputs_match) = {
@@ -1698,9 +1920,14 @@ impl Renderer {
                             snapshot.data_revision == revisions.data
                                 && snapshot.series_revision == revisions.series
                                 && snapshot.view_revision == revisions.view
-                                && stream_config_equal(&snapshot.requested_config, &render_config, &snapshot.series)
+                                && stream_config_equal(
+                                    &snapshot.requested_config,
+                                    &render_config,
+                                    &snapshot.series,
+                                )
                                 && snapshot.display_scale.to_bits() == display_scale.to_bits()
-                                && *auto_fit_padding == self.chart_states[&chart].stream_auto_fit_padding
+                                && *auto_fit_padding
+                                    == self.chart_states[&chart].stream_auto_fit_padding
                                 && snapshot.target == target,
                         )
                     }
@@ -1718,8 +1945,10 @@ impl Renderer {
                 });
             }
             let completed_revision = if terminal {
-                Some(self.publish_auto_stream_completion(job)
-                    .map_err(StreamRequestError::into_figgy)?)
+                Some(
+                    self.publish_auto_stream_completion(job)
+                        .map_err(StreamRequestError::into_figgy)?,
+                )
             } else {
                 None
             };
@@ -1732,8 +1961,7 @@ impl Renderer {
                 && inputs_match
                 && pending_latest.is_none()
                 && current.data == revisions.data
-                && (current.view == revisions.view
-                    || completed_revision == Some(current.desired))
+                && (current.view == revisions.view || completed_revision == Some(current.desired))
             {
                 return Ok(crate::AutoStreamingRequest::Complete {
                     revision: current.desired,
@@ -1803,7 +2031,7 @@ impl Renderer {
                 resource: "automatic stream statistics snapshot",
                 reason: error.to_string(),
             }
-            })?;
+        })?;
         for id in sources.keys() {
             // Partial-column statistics are job-local (histogram values and
             // field tiles may not visit the whole source). Carry that coverage
@@ -1872,10 +2100,17 @@ impl Renderer {
             view: owned_view,
             handoff: None,
         });
-        let view_candidate = self.auto_resident_working_set_limit
-            .filter(|limit| *limit != 0 && auto_fit_padding.is_none()).and_then(|limit| {
-            view_residency::ViewPackedCandidate::for_chart(&snapshot.config, &snapshot.series, limit, snapshot.display_scale)
-        });
+        let view_candidate = self
+            .auto_resident_working_set_limit
+            .filter(|limit| *limit != 0 && auto_fit_padding.is_none())
+            .and_then(|limit| {
+                view_residency::ViewPackedCandidate::for_chart(
+                    &snapshot.config,
+                    &snapshot.series,
+                    limit,
+                    snapshot.display_scale,
+                )
+            });
         let draw = self
             .stream_runtime
             .as_mut()
@@ -1933,15 +2168,30 @@ impl Renderer {
         columns: Vec<crate::StreamColumn>,
         options: crate::StreamingChartOptions,
     ) -> Result<crate::AutoStreamingRequest> {
-        self.request_resident_stream_handoff_with_display_scale(chart, _view, render_config, 1.0, columns, options)
+        self.request_resident_stream_handoff_with_display_scale(
+            chart,
+            _view,
+            render_config,
+            1.0,
+            columns,
+            options,
+        )
     }
 
     pub fn request_resident_stream_handoff_with_display_scale(
-        &mut self, chart: ChartId, _view: &ChartView, render_config: Config, display_scale: f32,
-        columns: Vec<crate::StreamColumn>, options: crate::StreamingChartOptions,
+        &mut self,
+        chart: ChartId,
+        _view: &ChartView,
+        render_config: Config,
+        display_scale: f32,
+        columns: Vec<crate::StreamColumn>,
+        options: crate::StreamingChartOptions,
     ) -> Result<crate::AutoStreamingRequest> {
         if !display_scale.is_finite() || display_scale <= 0.0 {
-            return Err(FiggyError::InvalidConfig { field: "stream display scale", reason: "must be finite and positive" });
+            return Err(FiggyError::InvalidConfig {
+                field: "stream display scale",
+                reason: "must be finite and positive",
+            });
         }
         crate::chart::validate_renderer_config(&render_config)?;
         self.sync_external_invalidations()?;
@@ -1954,8 +2204,9 @@ impl Renderer {
                 .is_some_and(|draw| matches!(draw.mode, StreamExecutionMode::Auto { .. }));
             if !automatic {
                 return Err(FiggyError::StaleStateToken {
-                    reason: "an explicit streaming execution is active for the resident handoff chart"
-                        .into(),
+                    reason:
+                        "an explicit streaming execution is active for the resident handoff chart"
+                            .into(),
                 });
             }
         }
@@ -1982,19 +2233,38 @@ impl Renderer {
         // Validate the candidate closure above even when the execution can be
         // reused. Invalid or stale metadata must never take a coalescing shortcut.
         if let Some(runtime) = self.stream_runtime.as_ref()
-            && let Some(draw) = runtime.draws.iter().find(|draw| draw.job.chart == chart && draw.auxiliary.is_none())
+            && let Some(draw) = runtime
+                .draws
+                .iter()
+                .find(|draw| draw.job.chart == chart && draw.auxiliary.is_none())
             && let StreamExecutionMode::Auto {
-                snapshot: Some(snapshot), auto_fit_padding: active_padding, ..
+                snapshot: Some(snapshot),
+                auto_fit_padding: active_padding,
+                ..
             } = &draw.mode
             && snapshot.handoff.as_ref().is_some_and(|current| {
                 current.columns.len() == handoff.columns.len()
-                    && handoff.columns.iter().all(|column| current.columns.contains(column))
+                    && handoff
+                        .columns
+                        .iter()
+                        .all(|column| current.columns.contains(column))
                     && current.allocation_epochs.len() == handoff.allocation_epochs.len()
-                    && handoff.allocation_epochs.iter().all(|epoch| current.allocation_epochs.contains(epoch))
-                    && current.expected_stream_revisions.len() == handoff.expected_stream_revisions.len()
-                    && handoff.expected_stream_revisions.iter().all(|revision| current.expected_stream_revisions.contains(revision))
-                    && current.expected_chart_revisions.len() == handoff.expected_chart_revisions.len()
-                    && handoff.expected_chart_revisions.iter().all(|revision| current.expected_chart_revisions.contains(revision))
+                    && handoff
+                        .allocation_epochs
+                        .iter()
+                        .all(|epoch| current.allocation_epochs.contains(epoch))
+                    && current.expected_stream_revisions.len()
+                        == handoff.expected_stream_revisions.len()
+                    && handoff
+                        .expected_stream_revisions
+                        .iter()
+                        .all(|revision| current.expected_stream_revisions.contains(revision))
+                    && current.expected_chart_revisions.len()
+                        == handoff.expected_chart_revisions.len()
+                    && handoff
+                        .expected_chart_revisions
+                        .iter()
+                        .all(|revision| current.expected_chart_revisions.contains(revision))
             })
             && snapshot.data_revision == data_revision
             && snapshot.series_revision == series_revision
@@ -2081,10 +2351,17 @@ impl Renderer {
             view: owned_view,
             handoff: Some(handoff),
         });
-        let view_candidate = self.auto_resident_working_set_limit
-            .filter(|limit| *limit != 0 && auto_fit_padding.is_none()).and_then(|limit| {
-            view_residency::ViewPackedCandidate::for_chart(&snapshot.config, &snapshot.series, limit, snapshot.display_scale)
-        });
+        let view_candidate = self
+            .auto_resident_working_set_limit
+            .filter(|limit| *limit != 0 && auto_fit_padding.is_none())
+            .and_then(|limit| {
+                view_residency::ViewPackedCandidate::for_chart(
+                    &snapshot.config,
+                    &snapshot.series,
+                    limit,
+                    snapshot.display_scale,
+                )
+            });
         let draw = self
             .stream_runtime
             .as_mut()
@@ -2131,7 +2408,8 @@ impl Renderer {
             .ok_or_else(|| FiggyError::StaleStateToken {
                 reason: "automatic streaming chart has no active execution".into(),
             })?;
-        self.pump_stream_selection_sources(job, None, sources).map_err(StreamRequestError::into_figgy)?;
+        self.pump_stream_selection_sources(job, None, sources)
+            .map_err(StreamRequestError::into_figgy)?;
         let (revision, pending_latest, terminal) = {
             let runtime = self.stream_runtime.as_ref().unwrap();
             let draw = runtime
@@ -2160,7 +2438,18 @@ impl Renderer {
                 draw.auto_terminal(runtime),
             )
         };
-        if terminal && self.stream_runtime.as_ref().unwrap().draws.iter().find(|draw| draw.job == job).unwrap().selection.terminal() {
+        if terminal
+            && self
+                .stream_runtime
+                .as_ref()
+                .unwrap()
+                .draws
+                .iter()
+                .find(|draw| draw.job == job)
+                .unwrap()
+                .selection
+                .terminal()
+        {
             let revision = self
                 .publish_auto_stream_completion(job)
                 .map_err(StreamRequestError::into_figgy)?;
@@ -2455,7 +2744,7 @@ impl Renderer {
         } else {
             self.request_chart_stream_draw(job)
         })
-            .map_err(StreamRequestError::into_figgy)?
+        .map_err(StreamRequestError::into_figgy)?
         {
             StreamDrawRequestStatus::Backpressure => {
                 let (submitted_primitives, total_primitives) = self
@@ -2470,8 +2759,21 @@ impl Renderer {
                 let (_, total_primitives) = self
                     .stream_progress_counts(job)
                     .map_err(StreamRequestError::into_figgy)?;
-                if !self.stream_runtime.as_ref().unwrap().draws.iter().find(|draw| draw.job == job).unwrap().selection.terminal() {
-                    return Ok(crate::StreamingProgress::Submitted { submitted_primitives: total_primitives, total_primitives });
+                if !self
+                    .stream_runtime
+                    .as_ref()
+                    .unwrap()
+                    .draws
+                    .iter()
+                    .find(|draw| draw.job == job)
+                    .unwrap()
+                    .selection
+                    .terminal()
+                {
+                    return Ok(crate::StreamingProgress::Submitted {
+                        submitted_primitives: total_primitives,
+                        total_primitives,
+                    });
                 }
                 Ok(crate::StreamingProgress::AllSubmitted { total_primitives })
             }
@@ -2523,7 +2825,10 @@ impl Renderer {
     /// submitting work, publishing fit results, or requesting a redraw.
     pub fn stream_status(&self, chart: ChartId) -> Result<crate::StreamingStatus> {
         use crate::StreamingState;
-        let state = self.chart_states.get(&chart).ok_or(FiggyError::UnknownChart { id: chart })?;
+        let state = self
+            .chart_states
+            .get(&chart)
+            .ok_or(FiggyError::UnknownChart { id: chart })?;
         let mut status = crate::StreamingStatus {
             status: StreamingState::Idle,
             job_id: None,
@@ -2536,28 +2841,49 @@ impl Renderer {
             reserved_gpu_bytes: 0,
             auto_fit_pending: state.stream_auto_fit_padding.is_some(),
         };
-        let Some(runtime) = self.stream_runtime.as_ref() else { return Ok(status); };
-        if let Some(draw) = runtime.draws.iter().find(|draw| draw.job.chart == chart && draw.auxiliary.is_none()) {
+        let Some(runtime) = self.stream_runtime.as_ref() else {
+            return Ok(status);
+        };
+        if let Some(draw) = runtime
+            .draws
+            .iter()
+            .find(|draw| draw.job.chart == chart && draw.auxiliary.is_none())
+        {
             status.job_id = Some(draw.job.id.sequence());
-            let (submitted, total) = self.stream_progress_counts(draw.job)
+            let (submitted, total) = self
+                .stream_progress_counts(draw.job)
                 .map_err(StreamRequestError::into_figgy)?;
             status.submitted_primitives = submitted;
             status.total_primitives = total;
             status.status = StreamingState::Active;
             if let StreamExecutionMode::Auto {
-                snapshot, published_revision, auto_fit_padding, final_fit_published,
-                cancel_requested, all_submitted, ..
-            } = &draw.mode {
-                status.revision = published_revision.or_else(|| snapshot.as_ref().map(|s| s.desired))
+                snapshot,
+                published_revision,
+                auto_fit_padding,
+                final_fit_published,
+                cancel_requested,
+                all_submitted,
+                ..
+            } = &draw.mode
+            {
+                status.revision = published_revision
+                    .or_else(|| snapshot.as_ref().map(|s| s.desired))
                     .map_or(status.revision, |revision| revision.sequence);
                 status.published_revision = published_revision.map(|revision| revision.sequence);
                 status.auto_fit_pending |= auto_fit_padding.is_some() && !final_fit_published;
-                status.status = if *cancel_requested { StreamingState::Cancelling }
-                    else if draw.auto_terminal(runtime) && *final_fit_published { StreamingState::Complete }
-                    else if *all_submitted { StreamingState::AllSubmitted }
-                    else { StreamingState::Active };
+                status.status = if *cancel_requested {
+                    StreamingState::Cancelling
+                } else if draw.auto_terminal(runtime) && *final_fit_published {
+                    StreamingState::Complete
+                } else if *all_submitted {
+                    StreamingState::AllSubmitted
+                } else {
+                    StreamingState::Active
+                };
             }
-        } else if let Some((_, retained)) = runtime.retired_status.iter().find(|(id, _)| *id == chart) {
+        } else if let Some((_, retained)) =
+            runtime.retired_status.iter().find(|(id, _)| *id == chart)
+        {
             status = *retained;
             status.desired_revision = state.revisions.desired.sequence;
             status.auto_fit_pending = state.stream_auto_fit_padding.is_some();
@@ -2585,27 +2911,42 @@ impl Renderer {
         });
         let Some(draw) = draw else {
             return Ok(crate::ViewResidencyStatus {
-                state: if self.is_streaming_chart(chart) { "streamed" } else { "resident" },
-                needed_bytes: None, refusal_reason: None,
+                state: if self.is_streaming_chart(chart) {
+                    "streamed"
+                } else {
+                    "resident"
+                },
+                needed_bytes: None,
+                refusal_reason: None,
                 picking_available: !self.is_streaming_chart(chart),
             });
         };
         if let Some(cache) = &draw.view_cache {
             return Ok(crate::ViewResidencyStatus {
-                state: "resident", needed_bytes: Some(cache.packed_bytes),
-                refusal_reason: None, picking_available: true,
+                state: "resident",
+                needed_bytes: Some(cache.packed_bytes),
+                refusal_reason: None,
+                picking_available: true,
             });
         }
         if let Some(candidate) = &draw.view_candidate {
             return Ok(crate::ViewResidencyStatus {
-                state: if candidate.rejected.is_some() { "streamed" } else { "promoting" },
-                needed_bytes: candidate.rejected.is_none().then_some(candidate.packed_bytes),
+                state: if candidate.rejected.is_some() {
+                    "streamed"
+                } else {
+                    "promoting"
+                },
+                needed_bytes: candidate
+                    .rejected
+                    .is_none()
+                    .then_some(candidate.packed_bytes),
                 refusal_reason: candidate.rejected.map(|reason| reason.as_str()),
                 picking_available: false,
             });
         }
         Ok(crate::ViewResidencyStatus {
-            state: "streamed", needed_bytes: None,
+            state: "streamed",
+            needed_bytes: None,
             refusal_reason: draw.view_rejection.map(|reason| reason.as_str()),
             picking_available: false,
         })
@@ -2613,9 +2954,18 @@ impl Renderer {
 
     fn retain_stream_status(&mut self, chart: ChartId) -> Result<()> {
         let status = self.stream_status(chart)?;
-        if status.job_id.is_none() { return Ok(()); }
-        let runtime = self.stream_runtime.as_mut().expect("status belongs to runtime");
-        if let Some((_, retained)) = runtime.retired_status.iter_mut().find(|(id, _)| *id == chart) {
+        if status.job_id.is_none() {
+            return Ok(());
+        }
+        let runtime = self
+            .stream_runtime
+            .as_mut()
+            .expect("status belongs to runtime");
+        if let Some((_, retained)) = runtime
+            .retired_status
+            .iter_mut()
+            .find(|(id, _)| *id == chart)
+        {
             *retained = status;
         } else {
             runtime.retired_status.try_reserve(1).map_err(|error| {
@@ -2647,7 +2997,8 @@ impl Renderer {
             })?;
         if primitives == 0 || primitives > draw.max_primitives_limit {
             return Err(FiggyError::InvalidConfig {
-                field: "stream chunk budget", reason: "must be non-zero and no greater than the execution's initial cap",
+                field: "stream chunk budget",
+                reason: "must be non-zero and no greater than the execution's initial cap",
             });
         }
         draw.max_primitives = primitives;
@@ -2664,7 +3015,9 @@ impl Renderer {
         self.wait_submitted_work().await;
         self.service_stream_requests();
         if self.stream_status(chart)?.in_flight_chunks != 0 {
-            return Err(FiggyError::StaleStateToken { reason: "cancelled stream still owns an uncompleted recording".into() });
+            return Err(FiggyError::StaleStateToken {
+                reason: "cancelled stream still owns an uncompleted recording".into(),
+            });
         }
         Ok(())
     }
@@ -2684,10 +3037,14 @@ impl Renderer {
     /// Validate the configured chart against the currently connected exact
     /// streaming passes. This does not allocate resources or start a job.
     pub fn inspect_streaming_capability(&self, chart: ChartId) -> Result<()> {
-        let state = self.chart_states.get(&chart).ok_or(FiggyError::UnknownChart { id: chart })?;
+        let state = self
+            .chart_states
+            .get(&chart)
+            .ok_or(FiggyError::UnknownChart { id: chart })?;
         for series in &state.series {
             PrepareContext::validate_stream_series(&state.config, series)?;
-            stream_draw_phases(&state.config.draw_style, series).map_err(StreamRequestError::into_figgy)?;
+            stream_draw_phases(&state.config.draw_style, series)
+                .map_err(StreamRequestError::into_figgy)?;
         }
         Ok(())
     }
@@ -2726,8 +3083,10 @@ impl Renderer {
         );
         let mut completed = 0u64;
         let mut total = 0u64;
-        let draw_style = auto_snapshot.as_ref().map_or(&self.chart_states[&job.chart].config.draw_style,
-            |snapshot| &snapshot.config.draw_style);
+        let draw_style = auto_snapshot.as_ref().map_or(
+            &self.chart_states[&job.chart].config.draw_style,
+            |snapshot| &snapshot.config.draw_style,
+        );
         for (series_index, series) in series.iter().enumerate() {
             for (phase_index, phase) in stream_draw_phases(draw_style, series)?.iter().enumerate() {
                 let phase_total = stream_phase_total(series, *phase, |id| {
@@ -2804,7 +3163,16 @@ impl Renderer {
         clear: wgpu::Color,
         max_primitives: u64,
     ) -> StreamResult<StreamJob> {
-        self.begin_chart_stream_surface_with_sources(chart, view, size, clear, max_primitives, None, None, false)
+        self.begin_chart_stream_surface_with_sources(
+            chart,
+            view,
+            size,
+            clear,
+            max_primitives,
+            None,
+            None,
+            false,
+        )
     }
 
     fn begin_chart_stream_surface_with_sources(
@@ -2856,10 +3224,21 @@ impl Renderer {
                 .ok_or(StreamError::Overflow)?,
         )?;
         if fit_preview {
-            surface.prepare_rescale(&self.device, &self.gpu_ledger,
-                self.stream_runtime.as_ref().unwrap().transfer.as_ref().unwrap(),
+            surface.prepare_rescale(
+                &self.device,
+                &self.gpu_ledger,
+                self.stream_runtime
+                    .as_ref()
+                    .unwrap()
+                    .transfer
+                    .as_ref()
+                    .unwrap(),
                 self.memory_budget.unwrap_or(u64::MAX),
-                self.pool.gpu_bytes().checked_add(self.pool.retired_bytes()).ok_or(StreamError::Overflow)?)?;
+                self.pool
+                    .gpu_bytes()
+                    .checked_add(self.pool.retired_bytes())
+                    .ok_or(StreamError::Overflow)?,
+            )?;
         }
         let display_view = surface.resolved().create_view(&Default::default());
         let display_bind_group = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2881,10 +3260,13 @@ impl Renderer {
         )?;
         let target_view = surface.prefix().create_view(&Default::default());
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        let separate_grid = fit_preview || matches!(
-            display.map_or(self.chart_config(chart)?, |(config, _)| config).draw_style,
-            crate::config::DrawStyle::Precise,
-        );
+        let separate_grid = fit_preview
+            || matches!(
+                display
+                    .map_or(self.chart_config(chart)?, |(config, _)| config)
+                    .draw_style,
+                crate::config::DrawStyle::Precise,
+            );
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("figgy stream prefix initialization"),
@@ -2893,14 +3275,27 @@ impl Renderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(if separate_grid { wgpu::Color::TRANSPARENT } else { clear }),
+                        load: wgpu::LoadOp::Clear(if separate_grid {
+                            wgpu::Color::TRANSPARENT
+                        } else {
+                            clear
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
                 ..Default::default()
             });
-            if !separate_grid && let Some(panel) = data_render::clamp_rect_to_target(view.panel_rect, size) {
-                pass.set_viewport(panel.x as f32, panel.y as f32, panel.width as f32, panel.height as f32, 0.0, 1.0);
+            if !separate_grid
+                && let Some(panel) = data_render::clamp_rect_to_target(view.panel_rect, size)
+            {
+                pass.set_viewport(
+                    panel.x as f32,
+                    panel.y as f32,
+                    panel.width as f32,
+                    panel.height as f32,
+                    0.0,
+                    1.0,
+                );
                 pass.set_scissor_rect(panel.x, panel.y, panel.width, panel.height);
                 pass.set_pipeline(&self.pipelines.axis);
                 pass.set_bind_group(0, &view.grid_bind_group, &[]);
@@ -2991,9 +3386,13 @@ impl Renderer {
         // During progressive fit, the live document still has its original
         // ranges. Present ticks/labels from the same fitted view as the data;
         // completion will commit those ranges to the document atomically.
-        let display_view = if matches!(&draw.mode,
-            StreamExecutionMode::Auto { auto_fit_padding: Some(_), .. })
-        {
+        let display_view = if matches!(
+            &draw.mode,
+            StreamExecutionMode::Auto {
+                auto_fit_padding: Some(_),
+                ..
+            }
+        ) {
             stream_view
         } else {
             view
@@ -3001,10 +3400,7 @@ impl Renderer {
         if !Arc::ptr_eq(&stream_view.stream_revision, &draw.view_revision)
             || stream_view.stream_revision.load(Ordering::Acquire) != draw.expected_view_revision
             || (auto_snapshot.is_none()
-                && !Arc::ptr_eq(
-                    &display_view.content_revision,
-                    &draw.display_view_revision,
-                ))
+                && !Arc::ptr_eq(&display_view.content_revision, &draw.display_view_revision))
         {
             return Err(StreamError::Stale.into());
         }
@@ -3029,13 +3425,9 @@ impl Renderer {
             return Ok(false);
         }
         let surface = draw.surface.as_ref().ok_or(StreamError::WrongState)?;
-        let display_source_changed = !Arc::ptr_eq(
-            &display_view.content_revision,
-            &draw.display_view_revision,
-        );
-        let current_display_view_revision = display_view
-            .content_revision
-            .load(Ordering::Acquire);
+        let display_source_changed =
+            !Arc::ptr_eq(&display_view.content_revision, &draw.display_view_revision);
+        let current_display_view_revision = display_view.content_revision.load(Ordering::Acquire);
         let auto_receipts_complete = matches!(
             &draw.mode,
             StreamExecutionMode::Auto {
@@ -3094,10 +3486,14 @@ impl Renderer {
         let mut encoder = self.device.create_command_encoder(&Default::default());
         // Styled blend equations can depend on the background. Preserve
         // their original prefix; Precise uses a reusable transparent layer.
-        let separate_grid = draw.fit_preview || matches!(
-            auto_snapshot.as_ref().map_or(&self.chart_states[&job.chart].config, |s| &s.config).draw_style,
-            crate::config::DrawStyle::Precise,
-        );
+        let separate_grid = draw.fit_preview
+            || matches!(
+                auto_snapshot
+                    .as_ref()
+                    .map_or(&self.chart_states[&job.chart].config, |s| &s.config)
+                    .draw_style,
+                crate::config::DrawStyle::Precise,
+            );
         let replay_clip = (draw.fit_replay
             && !matches!(
                 &draw.mode,
@@ -3116,7 +3512,14 @@ impl Renderer {
             replay_clip,
             |pass| {
                 if separate_grid && let Some(panel) = panel {
-                    pass.set_viewport(panel.x as f32, panel.y as f32, panel.width as f32, panel.height as f32, 0.0, 1.0);
+                    pass.set_viewport(
+                        panel.x as f32,
+                        panel.y as f32,
+                        panel.width as f32,
+                        panel.height as f32,
+                        0.0,
+                        1.0,
+                    );
                     pass.set_scissor_rect(panel.x, panel.y, panel.width, panel.height);
                     pass.set_pipeline(&self.pipelines.axis);
                     pass.set_bind_group(0, &display_view.grid_bind_group, &[]);
@@ -3155,7 +3558,14 @@ impl Renderer {
             },
             |pass| {
                 if let (Some(panel), Some(data)) = (panel, data) {
-                    pass.set_viewport(panel.x as f32, panel.y as f32, panel.width as f32, panel.height as f32, 0.0, 1.0);
+                    pass.set_viewport(
+                        panel.x as f32,
+                        panel.y as f32,
+                        panel.width as f32,
+                        panel.height as f32,
+                        0.0,
+                        1.0,
+                    );
                     pass.set_scissor_rect(data.x, data.y, data.width, data.height);
                     for selected in &draw.selection.ready {
                         data_render::issue_series_picked(pass, &selected.packet.layers());
@@ -3389,7 +3799,14 @@ impl Renderer {
                         .or_else(|| self.streaming_sources.get(id).map(|source| &source.column))
                 };
                 if *phase == StreamDrawPhase::Field {
-                    field_runtime::preflight(&self.device, limits, config, series, max_primitives_per_chunk, source_metadata)?;
+                    field_runtime::preflight(
+                        &self.device,
+                        limits,
+                        config,
+                        series,
+                        max_primitives_per_chunk,
+                        source_metadata,
+                    )?;
                     continue;
                 }
                 let columns = stream_phase_columns(series, *phase);
@@ -3407,8 +3824,10 @@ impl Renderer {
                 if total == 0 {
                     continue;
                 }
-                if *phase == StreamDrawPhase::Line && arc_runtime::needs_arc(&config.draw_style, series)
-                    && total >= u64::from(u32::MAX) {
+                if *phase == StreamDrawPhase::Line
+                    && arc_runtime::needs_arc(&config.draw_style, series)
+                    && total >= u64::from(u32::MAX)
+                {
                     return Err(StreamError::TooLarge.into());
                 }
                 let primitives = total.min(max_primitives_per_chunk);
@@ -3444,7 +3863,9 @@ impl Renderer {
                 let mut work_bytes = 0u64;
                 for id in &columns.ids[..columns.count] {
                     let source = source_metadata(id).ok_or(StreamError::InvalidRange)?;
-                    let rows = if *phase == StreamDrawPhase::Line && arc_runtime::needs_arc(&config.draw_style, series) {
+                    let rows = if *phase == StreamDrawPhase::Line
+                        && arc_runtime::needs_arc(&config.draw_style, series)
+                    {
                         (total + 1).min(max_primitives_per_chunk).min(257)
                     } else {
                         stream_phase_request_len(series, *phase, id, primitives)?
@@ -3516,11 +3937,22 @@ impl Renderer {
             .unwrap()
             .styles;
         for (series_config, style) in state.series.iter().zip(styles) {
-            let series = [Series { config: series_config, style }];
+            let series = [Series {
+                config: series_config,
+                style,
+            }];
             self.pipelines.ensure_styles_for_items(
-                &self.device, &self.queue, &self.transform_bgl, &self.style_bgl,
-                &self.star_data_bgl, self.surface_format,
-                &[ChartDrawItem { view, chart_config: config, series: &series }],
+                &self.device,
+                &self.queue,
+                &self.transform_bgl,
+                &self.style_bgl,
+                &self.star_data_bgl,
+                self.surface_format,
+                &[ChartDrawItem {
+                    view,
+                    chart_config: config,
+                    series: &series,
+                }],
             );
             self.pipelines.ensure_precise_variants_for_items(
                 &self.device,
@@ -3617,8 +4049,10 @@ impl Renderer {
             || self.chart_states[&job.chart].series.as_slice(),
             |snapshot| snapshot.series.as_slice(),
         );
-        let draw_style = auto_snapshot.as_ref().map_or(&self.chart_states[&job.chart].config.draw_style,
-            |snapshot| &snapshot.config.draw_style);
+        let draw_style = auto_snapshot.as_ref().map_or(
+            &self.chart_states[&job.chart].config.draw_style,
+            |snapshot| &snapshot.config.draw_style,
+        );
         while let Some(series) = series_list.get(draw.series) {
             let phases = stream_draw_phases(draw_style, series)?;
             let Some(phase) = phases.get(draw.phase_index) else {
@@ -3655,8 +4089,10 @@ impl Renderer {
                 }
                 return self.request_stream_field(job);
             }
-            if *phase == StreamDrawPhase::Line && draw.auxiliary_pick.is_none()
-                && arc_runtime::needs_arc(draw_style, series) {
+            if *phase == StreamDrawPhase::Line
+                && draw.auxiliary_pick.is_none()
+                && arc_runtime::needs_arc(draw_style, series)
+            {
                 let names = [series.x_column.clone(), series.y_column.clone()];
                 let config = auto_snapshot
                     .as_ref()
@@ -3666,12 +4102,18 @@ impl Renderer {
                     .clone();
                 return self.request_stream_arc(job, &config, &names, total + 1);
             }
-            if draw.staging_slots.iter().any(|slot| slot.state.load(Ordering::Acquire) == 3) {
+            if draw
+                .staging_slots
+                .iter()
+                .any(|slot| slot.state.load(Ordering::Acquire) == 3)
+            {
                 return Err(StreamRequestError::Upload(ChunkUploadError::MappingFailed));
             }
             if draw.staging_slots.len() >= runtime.scheduler.limits().max_slots
-                && !draw.staging_slots.iter().any(|slot|
-                    slot.ticket.is_none() && slot.state.load(Ordering::Acquire) == 0)
+                && !draw
+                    .staging_slots
+                    .iter()
+                    .any(|slot| slot.ticket.is_none() && slot.state.load(Ordering::Acquire) == 0)
             {
                 return Ok(StreamDrawRequestStatus::Backpressure);
             }
@@ -3780,18 +4222,45 @@ impl Renderer {
         {
             return self.submit_stream_field_pick(ticket, supply, explicit_view, target);
         }
-        if self.stream_runtime.as_ref().unwrap().draws.iter().any(|draw| draw.job == ticket.job && draw.field_fit.is_some()) {
+        if self
+            .stream_runtime
+            .as_ref()
+            .unwrap()
+            .draws
+            .iter()
+            .any(|draw| draw.job == ticket.job && draw.field_fit.is_some())
+        {
             return self.submit_stream_field_fit(ticket, supply, explicit_view, target);
         }
-        if self.stream_runtime.as_ref().unwrap().draws.iter().any(|draw| draw.job == ticket.job && draw.field.is_some()) {
+        if self
+            .stream_runtime
+            .as_ref()
+            .unwrap()
+            .draws
+            .iter()
+            .any(|draw| draw.job == ticket.job && draw.field.is_some())
+        {
             return self.submit_stream_field_supply(ticket, supply, explicit_view, target);
         }
-        if self.stream_runtime.as_ref().unwrap().draws.iter().any(|draw| draw.job == ticket.job && draw.arc.is_some()) {
+        if self
+            .stream_runtime
+            .as_ref()
+            .unwrap()
+            .draws
+            .iter()
+            .any(|draw| draw.job == ticket.job && draw.arc.is_some())
+        {
             return self.submit_stream_arc_supply(ticket, supply, explicit_view, target);
         }
         let mut auto_snapshot = self.auto_stream_snapshot(ticket.job);
-        let auxiliary = self.stream_runtime.as_ref().unwrap().draws.iter()
-            .find(|draw| draw.job == ticket.job).and_then(|draw| draw.auxiliary.clone());
+        let auxiliary = self
+            .stream_runtime
+            .as_ref()
+            .unwrap()
+            .draws
+            .iter()
+            .find(|draw| draw.job == ticket.job)
+            .and_then(|draw| draw.auxiliary.clone());
         let view = match auto_snapshot.as_ref() {
             Some(snapshot) => &snapshot.view,
             None => explicit_view.ok_or(StreamError::WrongState)?,
@@ -3857,11 +4326,33 @@ impl Renderer {
             columns[0].len.saturating_sub(phase.halo())
         };
         self.validate_stream_supply_kind(ticket, supply)?;
-        if self.stream_runtime.as_ref().unwrap().draws.iter().any(|draw| draw.job == ticket.job && draw.auxiliary_pick.is_some()) {
-            return self.submit_stream_pick_supply(ticket, supply, series_index, phase, &columns[..column_count], draw_offset, primitives);
+        if self
+            .stream_runtime
+            .as_ref()
+            .unwrap()
+            .draws
+            .iter()
+            .any(|draw| draw.job == ticket.job && draw.auxiliary_pick.is_some())
+        {
+            return self.submit_stream_pick_supply(
+                ticket,
+                supply,
+                series_index,
+                phase,
+                &columns[..column_count],
+                draw_offset,
+                primitives,
+            );
         }
-        let fit_preview = self.stream_runtime.as_ref().unwrap().draws.iter()
-            .find(|draw| draw.job == ticket.job).unwrap().fit_preview;
+        let fit_preview = self
+            .stream_runtime
+            .as_ref()
+            .unwrap()
+            .draws
+            .iter()
+            .find(|draw| draw.job == ticket.job)
+            .unwrap()
+            .fit_preview;
         let histogram = if phase == StreamDrawPhase::Histogram {
             let execution_styles = auto_snapshot.as_ref().map_or_else(
                 || {
@@ -3890,7 +4381,10 @@ impl Renderer {
             let envelope = match existing {
                 Some(envelope) => Arc::clone(envelope),
                 None => Arc::new(data_render::bar_envelope::Persistent::new(
-                    auxiliary.as_ref().and_then(|aux| aux.pipelines.as_ref()).unwrap_or(&self.pipelines)
+                    auxiliary
+                        .as_ref()
+                        .and_then(|aux| aux.pipelines.as_ref())
+                        .unwrap_or(&self.pipelines)
                         .bar_envelope
                         .as_ref()
                         .ok_or(StreamError::WrongState)?,
@@ -3926,8 +4420,14 @@ impl Renderer {
         } else {
             None
         };
-        let transform_headroom = if styled_points { data_render::STREAM_POINT_TRANSFORM_BYTES } else { 0 };
-        let mapped_style_headroom = if styled_points { 0 } else {
+        let transform_headroom = if styled_points {
+            data_render::STREAM_POINT_TRANSFORM_BYTES
+        } else {
+            0
+        };
+        let mapped_style_headroom = if styled_points {
+            0
+        } else {
             let style = auto_snapshot.as_ref().map_or_else(
                 || {
                     &self.chart_states[&ticket.job.chart]
@@ -3961,7 +4461,12 @@ impl Renderer {
         if let Some((envelope, true, _, _, _)) = &histogram {
             envelope.record_clear(&mut encoder);
         }
-        let capture_enabled = self.stream_runtime.as_ref().unwrap().draws.iter()
+        let capture_enabled = self
+            .stream_runtime
+            .as_ref()
+            .unwrap()
+            .draws
+            .iter()
             .find(|draw| draw.job == ticket.job)
             .and_then(|draw| draw.view_candidate.as_ref())
             .is_some_and(|candidate| candidate.rejected.is_none());
@@ -3971,7 +4476,12 @@ impl Renderer {
             ) {
                 Ok(capture) => Some(capture),
                 Err(reason) => {
-                    if let Some(candidate) = self.stream_runtime.as_mut().unwrap().draws.iter_mut()
+                    if let Some(candidate) = self
+                        .stream_runtime
+                        .as_mut()
+                        .unwrap()
+                        .draws
+                        .iter_mut()
                         .find(|draw| draw.job == ticket.job)
                         .and_then(|draw| draw.view_candidate.as_mut())
                     {
@@ -3980,7 +4490,9 @@ impl Renderer {
                     None
                 }
             }
-        } else { None };
+        } else {
+            None
+        };
         let observing = pair_capture.is_some();
         let chunk = match {
             let mut observe = |column, row, hi, lo| {
@@ -3989,7 +4501,9 @@ impl Renderer {
                 }
             };
             self.accept_stream_supply_with_headroom(
-                ticket, supply, &mut encoder,
+                ticket,
+                supply,
+                &mut encoder,
                 mapped_style_headroom + transform_headroom,
                 observing.then_some(&mut observe as &mut dyn FnMut(usize, usize, f32, f32)),
             )
@@ -4002,24 +4516,37 @@ impl Renderer {
             }
         };
         let pending_pack = if let Some(capture) = pair_capture.as_ref() {
-            let candidate = self.stream_runtime.as_ref().unwrap().draws.iter()
+            let candidate = self
+                .stream_runtime
+                .as_ref()
+                .unwrap()
+                .draws
+                .iter()
                 .find(|draw| draw.job == ticket.job)
                 .and_then(|draw| draw.view_candidate.as_ref());
             candidate.map(|candidate| {
                 // Candidate.view already includes the conservative geometry
                 // footprint and resize guard in data space for every phase.
                 let errors = if phase == StreamDrawPhase::Errorbar {
-                    Some(view_residency::ErrorPairColumns::for_series(&execution_series)?)
-                } else { None };
+                    Some(view_residency::ErrorPairColumns::for_series(
+                        &execution_series,
+                    )?)
+                } else {
+                    None
+                };
                 capture.pack(
-                    candidate.view, &chunk.columns,
+                    candidate.view,
+                    &chunk.columns,
                     usize::from(execution_series.y_column != execution_series.x_column),
                     phase == StreamDrawPhase::Line,
-                    0.0, errors,
+                    0.0,
+                    errors,
                     candidate.limit.saturating_sub(candidate.packed_bytes),
                 )
             })
-        } else { None };
+        } else {
+            None
+        };
         let pending_fit = match self.pending_auto_fit_config(ticket.job) {
             Ok(config) => config,
             Err(error) => {
@@ -4040,8 +4567,11 @@ impl Renderer {
             }
             auto_snapshot = self.auto_stream_snapshot(ticket.job);
         }
-        let view = auto_snapshot.as_ref().map(|snapshot| &snapshot.view)
-            .or(explicit_view).ok_or(StreamError::WrongState)?;
+        let view = auto_snapshot
+            .as_ref()
+            .map(|snapshot| &snapshot.view)
+            .or(explicit_view)
+            .ok_or(StreamError::WrongState)?;
         let built = {
             let (states, preparation) = self.preparation_parts();
             let (config, series_config, style) = auto_snapshot.as_ref().map_or_else(
@@ -4072,7 +4602,10 @@ impl Renderer {
                 &chunk,
                 &columns[..column_count],
                 phase,
-                auxiliary.as_ref().and_then(|aux| aux.pipelines.as_ref()).unwrap_or(preparation.pipelines),
+                auxiliary
+                    .as_ref()
+                    .and_then(|aux| aux.pipelines.as_ref())
+                    .unwrap_or(preparation.pipelines),
             )
         };
         let mut packet = match built {
@@ -4092,11 +4625,18 @@ impl Renderer {
                     &snapshot.config
                 });
             let (bind_group, charge) = data_render::create_stream_point_transform_bind_group(
-                &self.gpu_ledger, &self.device, &self.transform_bgl,
-                &data_render::scatter_transform_from_config(config), draw_offset as u32,
+                &self.gpu_ledger,
+                &self.device,
+                &self.transform_bgl,
+                &data_render::scatter_transform_from_config(config),
+                draw_offset as u32,
             );
-            if let Some(layer) = &mut packet.scatter { layer.transform_bg = bind_group.clone(); }
-            if let Some(layer) = &mut packet.errorbar { layer.transform_bg = bind_group; }
+            if let Some(layer) = &mut packet.scatter {
+                layer.transform_bg = bind_group.clone();
+            }
+            if let Some(layer) = &mut packet.errorbar {
+                layer.transform_bg = bind_group;
+            }
             packet._stream_transform_charge = Some(charge);
         }
         if mapped_style_headroom != 0 {
@@ -4159,7 +4699,10 @@ impl Renderer {
             let recorded = (|| -> std::result::Result<_, StreamError> {
                 let layers = packet.layers();
                 let bar = layers.bar.as_ref().ok_or(StreamError::WrongState)?;
-                auxiliary.as_ref().and_then(|aux| aux.pipelines.as_ref()).unwrap_or(&self.pipelines)
+                auxiliary
+                    .as_ref()
+                    .and_then(|aux| aux.pipelines.as_ref())
+                    .unwrap_or(&self.pipelines)
                     .bar_envelope
                     .as_ref()
                     .ok_or(StreamError::WrongState)?
@@ -4278,7 +4821,8 @@ impl Renderer {
             // Preview envelopes belong to this chunk's pixel window. Bake
             // them into the data image so future rescaling moves them too.
             if let Some((envelope, _, final_chunk, _, _)) = &histogram
-                && (*final_chunk || fit_preview) {
+                && (*final_chunk || fit_preview)
+            {
                 let bar_bg = auto_snapshot.as_ref().map_or_else(
                     || {
                         &self.chart_states[&ticket.job.chart]
@@ -4317,8 +4861,11 @@ impl Renderer {
                         Err(reason) => candidate.reject(reason),
                     }
                     candidate.flush_completed(
-                        &self.device, &self.queue, &self.gpu_ledger,
-                        self.memory_budget, current_gpu_bytes,
+                        &self.device,
+                        &self.queue,
+                        &self.gpu_ledger,
+                        self.memory_budget,
+                        current_gpu_bytes,
                     );
                 }
                 draw.offset += primitives;
@@ -4395,7 +4942,9 @@ impl Renderer {
             }
         }
         let states = &self.chart_states;
-        runtime.retired_status.retain(|(chart, _)| states.contains_key(chart));
+        runtime
+            .retired_status
+            .retain(|(chart, _)| states.contains_key(chart));
         let identity = self.renderer_identity;
         let target_valid = runtime.target_generation == self.target_pipeline_generation;
         let StreamRuntime {
@@ -4418,7 +4967,10 @@ impl Renderer {
                 renderer_identity: identity,
                 sequence: key,
             };
-            if draws.iter().any(|draw| draw.job.id == job && draw.auxiliary.is_some()) {
+            if draws
+                .iter()
+                .any(|draw| draw.job.id == job && draw.auxiliary.is_some())
+            {
                 states.contains_key(&chart)
             } else if draws
                 .iter()
@@ -4443,7 +4995,9 @@ impl Renderer {
             }
         }
         runtime.draws.retain(|draw| {
-            runtime.scheduler.contains_job(draw.job.chart.sequence, draw.job.id)
+            runtime
+                .scheduler
+                .contains_job(draw.job.chart.sequence, draw.job.id)
         });
         runtime
             .requests
@@ -4474,7 +5028,9 @@ impl Renderer {
             .as_mut()
             .ok_or(StreamError::InvalidLimits)?;
         let id = runtime.scheduler.start_job(chart.sequence, source, view)?;
-        runtime.draws.retain(|draw| draw.job.chart != chart || draw.auxiliary.is_some());
+        runtime
+            .draws
+            .retain(|draw| draw.job.chart != chart || draw.auxiliary.is_some());
         runtime
             .requests
             .retain(|request| runtime.scheduler.contains_ticket(request.ticket.ticket));
@@ -4491,18 +5047,26 @@ impl Renderer {
             .as_mut()
             .ok_or(StreamError::InvalidLimits)?;
         runtime.scheduler.cancel_chart(chart.sequence);
-        runtime.draws.retain(|draw| draw.job.chart != chart || draw.auxiliary.is_some());
+        runtime
+            .draws
+            .retain(|draw| draw.job.chart != chart || draw.auxiliary.is_some());
         runtime
             .requests
             .retain(|request| runtime.scheduler.contains_ticket(request.ticket.ticket));
-        self.chart_states.get_mut(&chart).expect("validated chart").stream_auto_fit_padding = None;
+        self.chart_states
+            .get_mut(&chart)
+            .expect("validated chart")
+            .stream_auto_fit_padding = None;
         Ok(())
     }
 
     fn validate_stream_job(&self, job: StreamJob) -> StreamResult<()> {
         if job.chart.renderer_identity != self.renderer_identity
             || !self.chart_states.contains_key(&job.chart)
-            || !self.stream_runtime.as_ref().is_some_and(|runtime| runtime.scheduler.contains_job(job.chart.sequence, job.id))
+            || !self
+                .stream_runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.scheduler.contains_job(job.chart.sequence, job.id))
         {
             return Err(StreamError::Stale.into());
         }
@@ -4534,7 +5098,10 @@ impl Renderer {
         let mut input_bytes = 0u64;
         let mut charged_bytes = 0u64;
         for range in ranges {
-            if !series.iter().any(|s| series_references_column(s, range.column)) {
+            if !series
+                .iter()
+                .any(|s| series_references_column(s, range.column))
+            {
                 return Err(StreamError::InvalidRange.into());
             }
             let (revision, source_len, encoding) = auto_snapshot
@@ -4785,8 +5352,19 @@ impl Renderer {
             .try_reserve_exact(request.columns.len())
             .map_err(|_| StreamError::AllocationFailed)?;
         plans.resize_with(request.columns.len(), ChunkStatisticsPlan::default);
-        if request.selection || self.stream_runtime.as_ref().unwrap().draws.iter().any(|draw| draw.job == ticket.job && draw.auxiliary.is_some()) {
-            return Ok(PreparedStreamStatistics { plans, sources: Vec::new() });
+        if request.selection
+            || self
+                .stream_runtime
+                .as_ref()
+                .unwrap()
+                .draws
+                .iter()
+                .any(|draw| draw.job == ticket.job && draw.auxiliary.is_some())
+        {
+            return Ok(PreparedStreamStatistics {
+                plans,
+                sources: Vec::new(),
+            });
         }
         let automatic = self.stream_job_is_auto(ticket.job);
         let mut order = Vec::new();
@@ -4945,10 +5523,24 @@ impl Renderer {
         chunk: &RecordedChunk,
         prepared: PreparedStreamStatistics,
     ) {
-        if self.stream_runtime.as_ref().unwrap().requests.iter().any(|request| request.ticket == ticket && request.selection) {
+        if self
+            .stream_runtime
+            .as_ref()
+            .unwrap()
+            .requests
+            .iter()
+            .any(|request| request.ticket == ticket && request.selection)
+        {
             return;
         }
-        if self.stream_runtime.as_ref().unwrap().draws.iter().any(|draw| draw.job == ticket.job && draw.auxiliary.is_some()) {
+        if self
+            .stream_runtime
+            .as_ref()
+            .unwrap()
+            .draws
+            .iter()
+            .any(|draw| draw.job == ticket.job && draw.auxiliary.is_some())
+        {
             return;
         }
         if self.stream_job_is_auto(ticket.job) {
@@ -5093,10 +5685,11 @@ impl Renderer {
         let budget = self.stream_upload_budget(headroom_bytes)?;
         let runtime = self.stream_runtime.as_mut().unwrap();
         let mut upload_error = None;
-        let result = runtime
-            .scheduler
-            .accept(ticket.ticket, &numeric, |columns| {
-                if let Some(observe) = observe.as_mut() {
+        let result =
+            runtime
+                .scheduler
+                .accept(ticket.ticket, &numeric, |columns| {
+                    if let Some(observe) = observe.as_mut() {
                     crate::streaming_upload::record_chunk_collecting_statistics_reusing_observed(
                         &self.device, encoder, &self.gpu_ledger, budget, columns,
                         &prepared.plans, reusable_work, preferred_work_bytes, *observe,
@@ -5111,7 +5704,7 @@ impl Renderer {
                     upload_error = Some(error);
                     StreamError::WriterFailed
                 })
-            });
+                });
         let chunk = result.map_err(|error| {
             upload_error.map_or(
                 StreamRequestError::Scheduler(error),
@@ -5135,20 +5728,37 @@ impl Renderer {
             return self.accept_cached_source(ticket, chunk);
         }
         let runtime = self.stream_runtime.as_mut().ok_or(StreamError::Stale)?;
-        let retained_selection = runtime.requests.iter().find(|request| request.ticket == ticket)
+        let retained_selection = runtime
+            .requests
+            .iter()
+            .find(|request| request.ticket == ticket)
             .is_some_and(|request| request.selection);
         let slot_limit = runtime.scheduler.limits().max_slots;
-        let draw = runtime.draws.iter_mut().find(|draw| draw.job == ticket.job)
+        let draw = runtime
+            .draws
+            .iter_mut()
+            .find(|draw| draw.job == ticket.job)
             .ok_or(StreamError::Stale)?;
-        let reusable_work = (!retained_selection).then(|| draw.reusable_work.clone()).flatten();
-        let preferred_work_bytes = if retained_selection { 0 } else { draw.preferred_work_bytes };
-        let reuse_staging = !retained_selection && matches!(supply, StreamSupply::Sources(_))
-            && draw.auxiliary.is_none() && draw.field.is_none() && draw.arc.is_none();
+        let reusable_work = (!retained_selection)
+            .then(|| draw.reusable_work.clone())
+            .flatten();
+        let preferred_work_bytes = if retained_selection {
+            0
+        } else {
+            draw.preferred_work_bytes
+        };
+        let reuse_staging = !retained_selection
+            && matches!(supply, StreamSupply::Sources(_))
+            && draw.auxiliary.is_none()
+            && draw.field.is_none()
+            && draw.arc.is_none();
         let mut staging_index = None;
         let mut reusable_staging = None;
         if reuse_staging {
-            if let Some(index) = draw.staging_slots.iter().position(|slot|
-                slot.ticket.is_none() && slot.state.load(Ordering::Acquire) == 0)
+            if let Some(index) = draw
+                .staging_slots
+                .iter()
+                .position(|slot| slot.ticket.is_none() && slot.state.load(Ordering::Acquire) == 0)
             {
                 let slot = &mut draw.staging_slots[index];
                 slot.state.store(1, Ordering::Release);
@@ -5158,18 +5768,31 @@ impl Renderer {
             } else if draw.staging_slots.len() >= slot_limit {
                 return Err(StreamError::WrongState.into());
             } else {
-                draw.staging_slots.try_reserve(1).map_err(|_| StreamError::AllocationFailed)?;
+                draw.staging_slots
+                    .try_reserve(1)
+                    .map_err(|_| StreamError::AllocationFailed)?;
             }
         }
         let result = match supply {
             #[cfg(test)]
             StreamSupply::Encoded(inputs) => self.accept_stream_columns_with_headroom(
-                ticket, inputs, encoder, headroom_bytes, reusable_work.as_ref(), preferred_work_bytes,
+                ticket,
+                inputs,
+                encoder,
+                headroom_bytes,
+                reusable_work.as_ref(),
+                preferred_work_bytes,
                 observe.take(),
             ),
             StreamSupply::Sources(inputs) => self.accept_stream_sources_with_headroom(
-                ticket, inputs, encoder, headroom_bytes, reusable_work.as_ref(), preferred_work_bytes,
-                observe.take(), reusable_staging.as_ref(),
+                ticket,
+                inputs,
+                encoder,
+                headroom_bytes,
+                reusable_work.as_ref(),
+                preferred_work_bytes,
+                observe.take(),
+                reusable_staging.as_ref(),
             ),
             StreamSupply::Cached(_) => unreachable!("handled above"),
         };
@@ -5179,28 +5802,46 @@ impl Renderer {
                 // A failed writer leaves the encoder untouched. Validation
                 // may have failed before unmap, so unmap before remapping too.
                 if let Some(index) = staging_index {
-                    let draw = self.stream_runtime.as_mut().unwrap().draws.iter_mut()
-                        .find(|draw| draw.job == ticket.job).unwrap();
+                    let draw = self
+                        .stream_runtime
+                        .as_mut()
+                        .unwrap()
+                        .draws
+                        .iter_mut()
+                        .find(|draw| draw.job == ticket.job)
+                        .unwrap();
                     draw.staging_slots[index].buffer.unmap();
                     draw.staging_slots[index].remap();
                 }
                 return Err(error);
             }
         };
-        let draw = self.stream_runtime.as_mut().unwrap().draws.iter_mut()
-            .find(|draw| draw.job == ticket.job).ok_or(StreamError::Stale)?;
+        let draw = self
+            .stream_runtime
+            .as_mut()
+            .unwrap()
+            .draws
+            .iter_mut()
+            .find(|draw| draw.job == ticket.job)
+            .ok_or(StreamError::Stale)?;
         if !retained_selection {
             draw.reusable_work = (draw.preferred_work_bytes == 0
                 || chunk.work.size() >= draw.preferred_work_bytes)
                 .then(|| chunk.work.clone());
         }
         if reuse_staging {
-            let buffer = chunk.staging.as_ref().ok_or(StreamError::WrongState)?.clone();
+            let buffer = chunk
+                .staging
+                .as_ref()
+                .ok_or(StreamError::WrongState)?
+                .clone();
             if let Some(index) = staging_index {
                 draw.staging_slots[index].buffer = buffer;
             } else {
                 draw.staging_slots.push(StreamStagingSlot {
-                    buffer, state: Arc::new(AtomicU8::new(1)), ticket: Some(ticket),
+                    buffer,
+                    state: Arc::new(AtomicU8::new(1)),
+                    ticket: Some(ticket),
                 });
             }
         }
@@ -5232,14 +5873,31 @@ impl Renderer {
             };
             if let Some(observe) = observe.as_mut() {
                 crate::streaming_upload::record_source_chunk_collecting_statistics_reusing_observed(
-                    &self.device, encoder, &self.gpu_ledger, budget, ranges,
-                    source_at, &prepared.plans, reusable_work, preferred_work_bytes, *observe, reusable_staging,
+                    &self.device,
+                    encoder,
+                    &self.gpu_ledger,
+                    budget,
+                    ranges,
+                    source_at,
+                    &prepared.plans,
+                    reusable_work,
+                    preferred_work_bytes,
+                    *observe,
+                    reusable_staging,
                 )
             } else {
                 crate::streaming_upload::record_source_chunk_collecting_statistics_reusing_observed(
-                    &self.device, encoder, &self.gpu_ledger, budget, ranges,
-                    source_at, &prepared.plans, reusable_work, preferred_work_bytes,
-                    &mut |_, _, _, _| {}, reusable_staging,
+                    &self.device,
+                    encoder,
+                    &self.gpu_ledger,
+                    budget,
+                    ranges,
+                    source_at,
+                    &prepared.plans,
+                    reusable_work,
+                    preferred_work_bytes,
+                    &mut |_, _, _, _| {},
+                    reusable_staging,
                 )
             }
             .map_err(|error| {
@@ -5276,10 +5934,15 @@ impl Renderer {
     }
 
     fn remap_stream_staging(&mut self, ticket: StreamTicket) {
-        if let Some(draw) = self.stream_runtime.as_mut().and_then(|runtime|
-            runtime.draws.iter_mut().find(|draw| draw.job == ticket.job)) {
+        if let Some(draw) = self
+            .stream_runtime
+            .as_mut()
+            .and_then(|runtime| runtime.draws.iter_mut().find(|draw| draw.job == ticket.job))
+        {
             for slot in &mut draw.staging_slots {
-                if slot.ticket == Some(ticket) { slot.remap(); }
+                if slot.ticket == Some(ticket) {
+                    slot.remap();
+                }
             }
         }
     }

@@ -84,84 +84,116 @@ impl StreamTransfer {
     ) -> Result<Self, StreamSurfaceError> {
         validate_format(format, sample_count)?;
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let shader = crate::gpu_compile::shader_module(&device, wgpu::ShaderModuleDescriptor {
-                label: Some("stream prefix sample transfer"),
-                source: wgpu::ShaderSource::Wgsl(if sample_count > 1 {
-                    include_str!("stream_sample_transfer_msaa.wgsl").into()
-                } else {
-                    include_str!("stream_sample_transfer.wgsl").into()
-                }),
-            });
-            let layout = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
-                label: Some("stream prefix sample source"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: sample_count > 1,
-                    },
-                    count: None,
-                }],
-            });
-            let pipeline_layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
-                label: Some("stream prefix sample transfer"),
-                bind_group_layouts: &[Some(&layout)],
-                immediate_size: 0,
-            });
-            let make_pipeline = |layout: &wgpu::PipelineLayout, entry, blend| crate::gpu_compile::render_pipeline(&device, &wgpu::RenderPipelineDescriptor {
-                label: Some("stream prefix sample transfer"),
-                layout: Some(layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs"),
-                    compilation_options: Default::default(),
-                    buffers: &[],
+            let shader = crate::gpu_compile::shader_module(
+                &device,
+                wgpu::ShaderModuleDescriptor {
+                    label: Some("stream prefix sample transfer"),
+                    source: wgpu::ShaderSource::Wgsl(if sample_count > 1 {
+                        include_str!("stream_sample_transfer_msaa.wgsl").into()
+                    } else {
+                        include_str!("stream_sample_transfer.wgsl").into()
+                    }),
                 },
-                primitive: Default::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState {
-                    count: sample_count,
-                    ..Default::default()
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some(entry),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            });
-            let pipeline = make_pipeline(&pipeline_layout, "transfer", None);
-            let overlay_pipeline = make_pipeline(&pipeline_layout, "transfer", Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING));
-            let rescale_layout = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
-                label: Some("stream preview rescale"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
+            );
+            let layout = crate::gpu_compile::bind_group_layout(
+                &device,
+                &wgpu::BindGroupLayoutDescriptor {
+                    label: Some("stream prefix sample source"),
+                    entries: &[wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
                             sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                            view_dimension: wgpu::TextureViewDimension::D2, multisampled: sample_count > 1,
-                        }, count: None,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: sample_count > 1,
+                        },
+                        count: None,
+                    }],
+                },
+            );
+            let pipeline_layout = crate::gpu_compile::pipeline_layout(
+                &device,
+                &wgpu::PipelineLayoutDescriptor {
+                    label: Some("stream prefix sample transfer"),
+                    bind_group_layouts: &[Some(&layout)],
+                    immediate_size: 0,
+                },
+            );
+            let make_pipeline = |layout: &wgpu::PipelineLayout, entry, blend| {
+                crate::gpu_compile::render_pipeline(
+                    &device,
+                    &wgpu::RenderPipelineDescriptor {
+                        label: Some("stream prefix sample transfer"),
+                        layout: Some(layout),
+                        vertex: wgpu::VertexState {
+                            module: &shader,
+                            entry_point: Some("vs"),
+                            compilation_options: Default::default(),
+                            buffers: &[],
+                        },
+                        primitive: Default::default(),
+                        depth_stencil: None,
+                        multisample: wgpu::MultisampleState {
+                            count: sample_count,
+                            ..Default::default()
+                        },
+                        fragment: Some(wgpu::FragmentState {
+                            module: &shader,
+                            entry_point: Some(entry),
+                            compilation_options: Default::default(),
+                            targets: &[Some(wgpu::ColorTargetState {
+                                format,
+                                blend,
+                                write_mask: wgpu::ColorWrites::ALL,
+                            })],
+                        }),
+                        multiview_mask: None,
+                        cache: None,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(32),
-                        }, count: None,
-                    },
-                ],
-            });
-            let rescale_pipeline_layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
-                label: Some("stream preview rescale"), bind_group_layouts: &[Some(&rescale_layout)], immediate_size: 0,
-            });
+                )
+            };
+            let pipeline = make_pipeline(&pipeline_layout, "transfer", None);
+            let overlay_pipeline = make_pipeline(
+                &pipeline_layout,
+                "transfer",
+                Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+            );
+            let rescale_layout = crate::gpu_compile::bind_group_layout(
+                &device,
+                &wgpu::BindGroupLayoutDescriptor {
+                    label: Some("stream preview rescale"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: sample_count > 1,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: wgpu::BufferSize::new(32),
+                            },
+                            count: None,
+                        },
+                    ],
+                },
+            );
+            let rescale_pipeline_layout = crate::gpu_compile::pipeline_layout(
+                &device,
+                &wgpu::PipelineLayoutDescriptor {
+                    label: Some("stream preview rescale"),
+                    bind_group_layouts: &[Some(&rescale_layout)],
+                    immediate_size: 0,
+                },
+            );
             let rescale_pipeline = make_pipeline(&rescale_pipeline_layout, "rescale", None);
             Self {
                 pipeline,
@@ -290,30 +322,53 @@ impl StreamSurface {
     }
 
     pub(crate) fn prepare_rescale(
-        &mut self, device: &wgpu::Device, ledger: &Arc<GpuLedger>, transfer: &StreamTransfer,
-        budget: u64, pool_bytes: u64,
+        &mut self,
+        device: &wgpu::Device,
+        ledger: &Arc<GpuLedger>,
+        transfer: &StreamTransfer,
+        budget: u64,
+        pool_bytes: u64,
     ) -> Result<(), StreamSurfaceError> {
         if self.rescale.is_none() {
-            if ledger.total_bytes().saturating_add(pool_bytes).saturating_add(32) > budget {
+            if ledger
+                .total_bytes()
+                .saturating_add(pool_bytes)
+                .saturating_add(32)
+                > budget
+            {
                 return Err(StreamSurfaceError::TooLarge);
             }
             // gpu-alloc: caller
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("stream preview rescale parameters"), size: 32,
+                label: Some("stream preview rescale parameters"),
+                size: 32,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
             let buffer = TrackedBuffer::new(ledger, GpuResourceKind::Uniform, buffer);
             let source = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("stream preview rescale source"), layout: &transfer.rescale_layout,
+                label: Some("stream preview rescale source"),
+                layout: &transfer.rescale_layout,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.prefix.create_view(&Default::default())) },
-                    wgpu::BindGroupEntry { binding: 1, resource: buffer.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(
+                            &self.prefix.create_view(&Default::default()),
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: buffer.as_entire_binding(),
+                    },
                 ],
             });
             let scratch = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("stream preview rescale scratch"), layout: &transfer.layout,
-                entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.display_view) }],
+                label: Some("stream preview rescale scratch"),
+                layout: &transfer.layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.display_view),
+                }],
             });
             self.rescale = Some((buffer, source, scratch));
         }
@@ -322,9 +377,16 @@ impl StreamSurface {
 
     // Reuse the display attachment as scratch; no data-sized or per-refit textures.
     pub(crate) fn record_rescale(
-        &mut self, device: &wgpu::Device, queue: &wgpu::Queue, ledger: &Arc<GpuLedger>,
-        transfer: &StreamTransfer, encoder: &mut wgpu::CommandEncoder,
-        mapping: &[f32; 8], clip: [u32; 4], budget: u64, pool_bytes: u64,
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        ledger: &Arc<GpuLedger>,
+        transfer: &StreamTransfer,
+        encoder: &mut wgpu::CommandEncoder,
+        mapping: &[f32; 8],
+        clip: [u32; 4],
+        budget: u64,
+        pool_bytes: u64,
     ) -> Result<(), StreamSurfaceError> {
         self.prepare_rescale(device, ledger, transfer, budget, pool_bytes)?;
         let (buffer, source, scratch) = self.rescale.as_ref().unwrap();
@@ -341,12 +403,20 @@ impl StreamSurface {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stream preview rescale"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target, depth_slice: None, resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
-                })], ..Default::default()
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
             });
             if clipped {
-                if clip[2] == 0 || clip[3] == 0 { continue; }
+                if clip[2] == 0 || clip[3] == 0 {
+                    continue;
+                }
                 pass.set_scissor_rect(clip[0], clip[1], clip[2], clip[3]);
             }
             pass.set_pipeline(pipeline);
@@ -368,7 +438,9 @@ impl StreamSurface {
     }
 
     pub(crate) fn record_display_layers(
-        &self, transfer: &StreamTransfer, encoder: &mut wgpu::CommandEncoder,
+        &self,
+        transfer: &StreamTransfer,
+        encoder: &mut wgpu::CommandEncoder,
         background: Option<wgpu::Color>,
         underlay: impl FnOnce(&mut wgpu::RenderPass<'_>),
         suffix: impl FnOnce(&mut wgpu::RenderPass<'_>),
@@ -419,9 +491,20 @@ impl StreamSurface {
             multiview_mask: None,
         });
         underlay(&mut pass);
-        pass.set_viewport(0.0, 0.0, self.spec.width as f32, self.spec.height as f32, 0.0, 1.0);
+        pass.set_viewport(
+            0.0,
+            0.0,
+            self.spec.width as f32,
+            self.spec.height as f32,
+            0.0,
+            1.0,
+        );
         pass.set_scissor_rect(0, 0, self.spec.width, self.spec.height);
-        pass.set_pipeline(if background.is_some() { &transfer.overlay_pipeline } else { &transfer.pipeline });
+        pass.set_pipeline(if background.is_some() {
+            &transfer.overlay_pipeline
+        } else {
+            &transfer.pipeline
+        });
         pass.set_bind_group(0, &self.source, &[]);
         pass.draw(0..3, 0..1);
         data_suffix(&mut pass);

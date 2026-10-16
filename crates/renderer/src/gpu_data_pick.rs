@@ -194,10 +194,17 @@ impl DataPickPipelineBundle {
 }
 
 impl GpuStreamDataPick {
-    pub(crate) fn field_enabled(&self) -> bool { self.enabled }
+    pub(crate) fn field_enabled(&self) -> bool {
+        self.enabled
+    }
 
-    pub(crate) fn field_query(&self, paint_order: u32) -> Result<GpuStreamFieldQuery, crate::gpu_pick::GpuPickError> {
-        if paint_order as usize >= self.identities.len() { return Err(crate::gpu_pick::GpuPickError::InvalidGpuResult); }
+    pub(crate) fn field_query(
+        &self,
+        paint_order: u32,
+    ) -> Result<GpuStreamFieldQuery, crate::gpu_pick::GpuPickError> {
+        if paint_order as usize >= self.identities.len() {
+            return Err(crate::gpu_pick::GpuPickError::InvalidGpuResult);
+        }
         let [cx, cy] = self.query.canvas_position_px;
         let [x, y, w, h] = self.query.chart_rect_px;
         let nx = ((cx - x) / w) * 2.0 - 1.0;
@@ -205,15 +212,26 @@ impl GpuStreamDataPick {
         let params = DataPickQueryGpu {
             cursor_ndc_t: [nx, ny, (nx + 1.0) * 0.5, (ny + 1.0) * 0.5],
             limits: [self.query.max_distance_px, 0.0, 0.0, 0.0],
-            data: [DATA_PICK_FLAG_FILL, paint_order, 0, 0], bases: [0; 4], baseline: [0.0; 4],
+            data: [DATA_PICK_FLAG_FILL, paint_order, 0, 0],
+            bases: [0; 4],
+            baseline: [0.0; 4],
         };
         let tally = ChargeTally::new();
-        let query = charged_buffer_init(&tally, &self.bundle.device, &wgpu::util::BufferInitDescriptor {
-            label: Some("stream field pick query"), contents: bytemuck::bytes_of(&params), usage: wgpu::BufferUsages::UNIFORM,
-        });
-        Ok(GpuStreamFieldQuery { query, candidate: self.candidate.clone(),
+        let query = charged_buffer_init(
+            &tally,
+            &self.bundle.device,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("stream field pick query"),
+                contents: bytemuck::bytes_of(&params),
+                usage: wgpu::BufferUsages::UNIFORM,
+            },
+        );
+        Ok(GpuStreamFieldQuery {
+            query,
+            candidate: self.candidate.clone(),
             _query_charge: shared_charge(tally, &self.bundle.ledger, GpuResourceKind::PickScratch),
-            _candidate_charge: Arc::clone(&self.charge) })
+            _candidate_charge: Arc::clone(&self.charge),
+        })
     }
 
     pub(crate) fn encode_field_candidate(&mut self, encoder: &mut wgpu::CommandEncoder) {
@@ -521,73 +539,100 @@ impl DataPickPipelineBundle {
         observer: &mut dyn FnMut(InitEvent),
     ) -> Arc<Self> {
         started(observer, INIT_SCOPE, "setup");
-        let query_bgl = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
-            label: Some("figgy typed data pick query bgl"),
-            entries: &[
-                compute_uniform_entry(1),
-                compute_storage_entry(2, true),
-                compute_storage_entry(3, false),
-            ],
-        });
-        let histogram_layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
-            label: Some("figgy histogram data pick layout"),
-            bind_group_layouts: &[Some(transform_bgl), Some(&query_bgl), Some(bar_style_bgl)],
-            immediate_size: 0,
-        });
-        let field_layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
-            label: Some("figgy field data pick layout"),
-            bind_group_layouts: &[Some(transform_bgl), Some(&query_bgl), Some(field_bgl)],
-            immediate_size: 0,
-        });
+        let query_bgl = crate::gpu_compile::bind_group_layout(
+            &device,
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("figgy typed data pick query bgl"),
+                entries: &[
+                    compute_uniform_entry(1),
+                    compute_storage_entry(2, true),
+                    compute_storage_entry(3, false),
+                ],
+            },
+        );
+        let histogram_layout = crate::gpu_compile::pipeline_layout(
+            &device,
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some("figgy histogram data pick layout"),
+                bind_group_layouts: &[Some(transform_bgl), Some(&query_bgl), Some(bar_style_bgl)],
+                immediate_size: 0,
+            },
+        );
+        let field_layout = crate::gpu_compile::pipeline_layout(
+            &device,
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some("figgy field data pick layout"),
+                bind_group_layouts: &[Some(transform_bgl), Some(&query_bgl), Some(field_bgl)],
+                immediate_size: 0,
+            },
+        );
         finished(observer, INIT_SCOPE, "setup");
 
         let histogram = observe_value(observer, INIT_SCOPE, "pick_histogram_bin", || {
-            crate::gpu_compile::compute_pipeline(&device, &wgpu::ComputePipelineDescriptor {
-                label: Some("figgy histogram data pick pipeline"),
-                layout: Some(&histogram_layout),
-                module: bar_shader,
-                entry_point: Some("pick_histogram_bin"),
-                compilation_options: crate::gpu_compile::workgroup_options(&device),
-                cache: None,
-            })
+            crate::gpu_compile::compute_pipeline(
+                &device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some("figgy histogram data pick pipeline"),
+                    layout: Some(&histogram_layout),
+                    module: bar_shader,
+                    entry_point: Some("pick_histogram_bin"),
+                    compilation_options: crate::gpu_compile::workgroup_options(&device),
+                    cache: None,
+                },
+            )
         });
         let field = observe_value(observer, INIT_SCOPE, "pick_field_data", || {
-            crate::gpu_compile::compute_pipeline(&device, &wgpu::ComputePipelineDescriptor {
-                label: Some("figgy field data pick pipeline"),
-                layout: Some(&field_layout),
-                module: field_shader,
-                entry_point: Some("pick_field_data"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                cache: None,
-            })
+            crate::gpu_compile::compute_pipeline(
+                &device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some("figgy field data pick pipeline"),
+                    layout: Some(&field_layout),
+                    module: field_shader,
+                    entry_point: Some("pick_field_data"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    cache: None,
+                },
+            )
         });
         let empty_bar_style_map =
             crate::data_render::create_bar_style_map(&device, bar_style_bgl, &[]).bind_group;
-        let stream_reduce_bgl = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
-            label: Some("figgy streamed typed pick reduction bgl"),
-            entries: &[
-                compute_storage_entry(0, true),
-                compute_storage_entry(1, false),
-            ],
-        });
-        let stream_reduce_layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
-            label: Some("figgy streamed typed pick reduction layout"),
-            bind_group_layouts: &[Some(&stream_reduce_bgl)],
-            immediate_size: 0,
-        });
-        let stream_reduce_shader = crate::gpu_compile::shader_module(&device, wgpu::ShaderModuleDescriptor {
-            label: Some("figgy streamed typed pick reduction shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("gpu_stream_data_pick.wgsl").into()),
-        });
+        let stream_reduce_bgl = crate::gpu_compile::bind_group_layout(
+            &device,
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("figgy streamed typed pick reduction bgl"),
+                entries: &[
+                    compute_storage_entry(0, true),
+                    compute_storage_entry(1, false),
+                ],
+            },
+        );
+        let stream_reduce_layout = crate::gpu_compile::pipeline_layout(
+            &device,
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some("figgy streamed typed pick reduction layout"),
+                bind_group_layouts: &[Some(&stream_reduce_bgl)],
+                immediate_size: 0,
+            },
+        );
+        let stream_reduce_shader = crate::gpu_compile::shader_module(
+            &device,
+            wgpu::ShaderModuleDescriptor {
+                label: Some("figgy streamed typed pick reduction shader"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("gpu_stream_data_pick.wgsl").into()),
+            },
+        );
         let make_reduce = |entry: &'static str| {
-            crate::gpu_compile::compute_pipeline(&device, &wgpu::ComputePipelineDescriptor {
-                label: Some(entry),
-                layout: Some(&stream_reduce_layout),
-                module: &stream_reduce_shader,
-                entry_point: Some(entry),
-                compilation_options: Default::default(),
-                cache: None,
-            })
+            crate::gpu_compile::compute_pipeline(
+                &device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some(entry),
+                    layout: Some(&stream_reduce_layout),
+                    module: &stream_reduce_shader,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    cache: None,
+                },
+            )
         };
         let stream_reduce_data = observe_value(observer, INIT_SCOPE, "stream_reduce_data", || {
             make_reduce("accumulate_data")
@@ -1241,16 +1286,24 @@ mod stream_tests {
     use wgpu::util::DeviceExt;
 
     fn bundle(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Arc<DataPickPipelineBundle> {
-        let bar = crate::gpu_compile::shader_module(&device, wgpu::ShaderModuleDescriptor {
-            label: None,
-            source: wgpu::ShaderSource::Wgsl(include_str!("data_render/bar_columnar.wgsl").into()),
-        });
-        let field = crate::gpu_compile::shader_module(&device, wgpu::ShaderModuleDescriptor {
-            label: None,
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("data_render/field_columnar.wgsl").into(),
-            ),
-        });
+        let bar = crate::gpu_compile::shader_module(
+            &device,
+            wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(
+                    include_str!("data_render/bar_columnar.wgsl").into(),
+                ),
+            },
+        );
+        let field = crate::gpu_compile::shader_module(
+            &device,
+            wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(
+                    include_str!("data_render/field_columnar.wgsl").into(),
+                ),
+            },
+        );
         let transform = data_render::create_scatter_transform_bind_group_layout(&device);
         let field_bgl = data_render::create_field_data_bind_group_layout(&device);
         let style = data_render::create_per_point_style_map_bind_group_layout(&device);

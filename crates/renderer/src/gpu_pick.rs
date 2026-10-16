@@ -386,8 +386,15 @@ impl GpuStreamPick {
         owned_segments: u32,
     ) -> Result<Option<SharedCharge>, GpuPickError> {
         self.encode_chunk_impl(
-            encoder, buffer, descriptor, columns, series_order,
-            global_point_start, owned_points, owned_segments, 0,
+            encoder,
+            buffer,
+            descriptor,
+            columns,
+            series_order,
+            global_point_start,
+            owned_points,
+            owned_segments,
+            0,
         )
     }
 
@@ -406,8 +413,15 @@ impl GpuStreamPick {
         owned_segments: u32,
     ) -> Result<Option<SharedCharge>, GpuPickError> {
         self.encode_chunk_impl(
-            encoder, buffer, descriptor, columns, series_order,
-            0, owned_points, owned_segments, original_index_word_base,
+            encoder,
+            buffer,
+            descriptor,
+            columns,
+            series_order,
+            0,
+            owned_points,
+            owned_segments,
+            original_index_word_base,
         )
     }
 
@@ -497,7 +511,12 @@ impl GpuStreamPick {
                 series.base_shape_id,
                 series.dispatch_x,
             ],
-            stream: [global_point_start, owned_points, owned_segments, original_index_word_base],
+            stream: [
+                global_point_start,
+                owned_points,
+                owned_segments,
+                original_index_word_base,
+            ],
         };
         self.engine
             .bundle
@@ -816,57 +835,81 @@ fn create_pipeline_bundle_observed(
     observer: &mut dyn FnMut(InitEvent),
 ) -> Arc<PickPipelineBundle> {
     started(observer, INIT_SCOPE, "setup");
-    let shader = crate::gpu_compile::shader_module(&device, wgpu::ShaderModuleDescriptor {
-        label: Some("figgy exact GPU pick shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("gpu_pick.wgsl").into()),
-    });
+    let shader = crate::gpu_compile::shader_module(
+        &device,
+        wgpu::ShaderModuleDescriptor {
+            label: Some("figgy exact GPU pick shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("gpu_pick.wgsl").into()),
+        },
+    );
 
-    let query_data_bgl = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
-        label: Some("figgy GPU pick query data bgl"),
-        entries: &[
-            storage_entry(0, true),
-            storage_entry(1, false),
-            storage_entry(2, false),
-        ],
-    });
-    let query_work_bgl = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
-        label: Some("figgy GPU pick query work bgl"),
-        entries: &[
-            uniform_entry(0),
-            storage_entry(1, true),
-            storage_entry(2, true),
-            storage_entry(3, false),
-        ],
-    });
-    let reduce_bgl = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
-        label: Some("figgy GPU pick reduction bgl"),
-        entries: &[storage_entry(3, true), storage_entry(4, false)],
-    });
+    let query_data_bgl = crate::gpu_compile::bind_group_layout(
+        &device,
+        &wgpu::BindGroupLayoutDescriptor {
+            label: Some("figgy GPU pick query data bgl"),
+            entries: &[
+                storage_entry(0, true),
+                storage_entry(1, false),
+                storage_entry(2, false),
+            ],
+        },
+    );
+    let query_work_bgl = crate::gpu_compile::bind_group_layout(
+        &device,
+        &wgpu::BindGroupLayoutDescriptor {
+            label: Some("figgy GPU pick query work bgl"),
+            entries: &[
+                uniform_entry(0),
+                storage_entry(1, true),
+                storage_entry(2, true),
+                storage_entry(3, false),
+            ],
+        },
+    );
+    let reduce_bgl = crate::gpu_compile::bind_group_layout(
+        &device,
+        &wgpu::BindGroupLayoutDescriptor {
+            label: Some("figgy GPU pick reduction bgl"),
+            entries: &[storage_entry(3, true), storage_entry(4, false)],
+        },
+    );
 
-    let query_layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
-        label: Some("figgy GPU pick query layout"),
-        bind_group_layouts: &[Some(&query_data_bgl), Some(&query_work_bgl)],
-        immediate_size: 0,
-    });
-    let reduce_layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
-        label: Some("figgy GPU pick reduction layout"),
-        bind_group_layouts: &[Some(&reduce_bgl)],
-        immediate_size: 0,
-    });
+    let query_layout = crate::gpu_compile::pipeline_layout(
+        &device,
+        &wgpu::PipelineLayoutDescriptor {
+            label: Some("figgy GPU pick query layout"),
+            bind_group_layouts: &[Some(&query_data_bgl), Some(&query_work_bgl)],
+            immediate_size: 0,
+        },
+    );
+    let reduce_layout = crate::gpu_compile::pipeline_layout(
+        &device,
+        &wgpu::PipelineLayoutDescriptor {
+            label: Some("figgy GPU pick reduction layout"),
+            bind_group_layouts: &[Some(&reduce_bgl)],
+            immediate_size: 0,
+        },
+    );
     finished(observer, INIT_SCOPE, "setup");
     let pipeline = |layout: &wgpu::PipelineLayout, entry: &str, label: &'static str| {
-        crate::gpu_compile::compute_pipeline(&device, &wgpu::ComputePipelineDescriptor {
-            label: Some(label),
-            layout: Some(layout),
-            module: &shader,
-            entry_point: Some(entry),
-            compilation_options: if matches!(entry, "pick_exact_candidates" | "pick_reduce_candidates") {
-                crate::gpu_compile::workgroup_options(&device)
-            } else {
-                wgpu::PipelineCompilationOptions::default()
+        crate::gpu_compile::compute_pipeline(
+            &device,
+            &wgpu::ComputePipelineDescriptor {
+                label: Some(label),
+                layout: Some(layout),
+                module: &shader,
+                entry_point: Some(entry),
+                compilation_options: if matches!(
+                    entry,
+                    "pick_exact_candidates" | "pick_reduce_candidates"
+                ) {
+                    crate::gpu_compile::workgroup_options(&device)
+                } else {
+                    wgpu::PipelineCompilationOptions::default()
+                },
+                cache: None,
             },
-            cache: None,
-        })
+        )
     };
 
     Arc::new(PickPipelineBundle {
@@ -931,58 +974,82 @@ async fn create_pipeline_bundle_observed_async(
     .await
     .map_err(GpuPickError::AsyncCompileFailed)?;
     started(observer, INIT_SCOPE, "setup");
-    let shader = crate::gpu_compile::shader_module(&device, wgpu::ShaderModuleDescriptor {
-        label: Some("figgy exact GPU pick shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("gpu_pick.wgsl").into()),
-    });
+    let shader = crate::gpu_compile::shader_module(
+        &device,
+        wgpu::ShaderModuleDescriptor {
+            label: Some("figgy exact GPU pick shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("gpu_pick.wgsl").into()),
+        },
+    );
 
-    let query_data_bgl = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
-        label: Some("figgy GPU pick query data bgl"),
-        entries: &[
-            storage_entry(0, true),
-            storage_entry(1, false),
-            storage_entry(2, false),
-        ],
-    });
-    let query_work_bgl = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
-        label: Some("figgy GPU pick query work bgl"),
-        entries: &[
-            uniform_entry(0),
-            storage_entry(1, true),
-            storage_entry(2, true),
-            storage_entry(3, false),
-        ],
-    });
-    let reduce_bgl = crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
-        label: Some("figgy GPU pick reduction bgl"),
-        entries: &[storage_entry(3, true), storage_entry(4, false)],
-    });
+    let query_data_bgl = crate::gpu_compile::bind_group_layout(
+        &device,
+        &wgpu::BindGroupLayoutDescriptor {
+            label: Some("figgy GPU pick query data bgl"),
+            entries: &[
+                storage_entry(0, true),
+                storage_entry(1, false),
+                storage_entry(2, false),
+            ],
+        },
+    );
+    let query_work_bgl = crate::gpu_compile::bind_group_layout(
+        &device,
+        &wgpu::BindGroupLayoutDescriptor {
+            label: Some("figgy GPU pick query work bgl"),
+            entries: &[
+                uniform_entry(0),
+                storage_entry(1, true),
+                storage_entry(2, true),
+                storage_entry(3, false),
+            ],
+        },
+    );
+    let reduce_bgl = crate::gpu_compile::bind_group_layout(
+        &device,
+        &wgpu::BindGroupLayoutDescriptor {
+            label: Some("figgy GPU pick reduction bgl"),
+            entries: &[storage_entry(3, true), storage_entry(4, false)],
+        },
+    );
 
-    let query_layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
-        label: Some("figgy GPU pick query layout"),
-        bind_group_layouts: &[Some(&query_data_bgl), Some(&query_work_bgl)],
-        immediate_size: 0,
-    });
-    let reduce_layout = crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
-        label: Some("figgy GPU pick reduction layout"),
-        bind_group_layouts: &[Some(&reduce_bgl)],
-        immediate_size: 0,
-    });
+    let query_layout = crate::gpu_compile::pipeline_layout(
+        &device,
+        &wgpu::PipelineLayoutDescriptor {
+            label: Some("figgy GPU pick query layout"),
+            bind_group_layouts: &[Some(&query_data_bgl), Some(&query_work_bgl)],
+            immediate_size: 0,
+        },
+    );
+    let reduce_layout = crate::gpu_compile::pipeline_layout(
+        &device,
+        &wgpu::PipelineLayoutDescriptor {
+            label: Some("figgy GPU pick reduction layout"),
+            bind_group_layouts: &[Some(&reduce_bgl)],
+            immediate_size: 0,
+        },
+    );
     finished(observer, INIT_SCOPE, "setup");
     yield_init_frame().await;
     let pipeline = |layout: &wgpu::PipelineLayout, entry: &str, label: &'static str| {
-        crate::gpu_compile::compute_pipeline(&device, &wgpu::ComputePipelineDescriptor {
-            label: Some(label),
-            layout: Some(layout),
-            module: &shader,
-            entry_point: Some(entry),
-            compilation_options: if matches!(entry, "pick_exact_candidates" | "pick_reduce_candidates") {
-                crate::gpu_compile::workgroup_options(&device)
-            } else {
-                wgpu::PipelineCompilationOptions::default()
+        crate::gpu_compile::compute_pipeline(
+            &device,
+            &wgpu::ComputePipelineDescriptor {
+                label: Some(label),
+                layout: Some(layout),
+                module: &shader,
+                entry_point: Some(entry),
+                compilation_options: if matches!(
+                    entry,
+                    "pick_exact_candidates" | "pick_reduce_candidates"
+                ) {
+                    crate::gpu_compile::workgroup_options(&device)
+                } else {
+                    wgpu::PipelineCompilationOptions::default()
+                },
+                cache: None,
             },
-            cache: None,
-        })
+        )
     };
 
     let gate_x = observe_value_async(observer, INIT_SCOPE, "pick_gate_x", || {
@@ -3326,7 +3393,10 @@ mod tests {
                 assert_eq!(answer.point_index, 1000 + expected_local_index);
                 assert_eq!(answer.distance_px, 0.0);
             } else {
-                assert_eq!(answer, None, "unexpected hit: line={line}, cursor={cursor:?}");
+                assert_eq!(
+                    answer, None,
+                    "unexpected hit: line={line}, cursor={cursor:?}"
+                );
             }
         }
     }

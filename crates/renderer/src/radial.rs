@@ -626,11 +626,19 @@ impl RadialRenderer {
 // ordinary data selection do not invalidate the rasterized label texture.
 // Edited/selected inside labels are rasterized at their current lifted position.
 fn raster_moves_inside_labels(chart: &RadialChart) -> bool {
-    let has_inside = chart.slices.iter()
+    let has_inside = chart
+        .slices
+        .iter()
         .chain(chart.split.iter().flat_map(|s| s.children.iter()))
         .any(|s| s.value > 0.0 && s.labels.unwrap_or(chart.labels) == RadialLabels::Inside);
-    has_inside && (matches!(chart.decorations.selected, Some(model::DecorationId::RadialLabel(_)))
-        || chart.decorations.offsets.iter()
+    has_inside
+        && (matches!(
+            chart.decorations.selected,
+            Some(model::DecorationId::RadialLabel(_))
+        ) || chart
+            .decorations
+            .offsets
+            .iter()
             .any(|o| matches!(o.element, model::DecorationId::RadialLabel(_))))
 }
 

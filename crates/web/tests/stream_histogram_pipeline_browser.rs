@@ -5,7 +5,9 @@ use std::sync::Arc;
 use renderer::{
     Chart, Color, DataRenderType, RegisteredChartDrawItem, Renderer, RendererDevice, SeriesConfig,
     data::Column,
-    data_config::{BarOrientation, DataBarBinStyleConfig, DataBarStyleConfig, DataBarStyleOverride},
+    data_config::{
+        BarOrientation, DataBarBinStyleConfig, DataBarStyleConfig, DataBarStyleOverride,
+    },
     data_render::{create_instance, request_adapter_async, request_device_async},
     default,
     layout::{ChartArea, Rect},
@@ -129,5 +131,8 @@ async fn dawn_accepts_stream_histogram_shader_entries_on_resident_prepare() {
         }])
         .expect("histogram preparation failed");
     let error = validation_error(&device).await;
-    assert!(error.is_none(), "Chrome/Dawn rejected histogram pipelines: {error:?}");
+    assert!(
+        error.is_none(),
+        "Chrome/Dawn rejected histogram pipelines: {error:?}"
+    );
 }

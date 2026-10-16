@@ -512,8 +512,14 @@ impl Renderer {
             return Err(error);
         }
         let ticket = loop {
-            let draw = self.stream_runtime.as_ref().unwrap().draws.iter()
-                .find(|draw| draw.job == job).unwrap();
+            let draw = self
+                .stream_runtime
+                .as_ref()
+                .unwrap()
+                .draws
+                .iter()
+                .find(|draw| draw.job == job)
+                .unwrap();
             if draw.selection.complete {
                 return Ok(StreamingSelectionRequest::Complete { revision });
             }
@@ -534,8 +540,14 @@ impl Renderer {
                 )
             });
             let Some((entry, next_cursor)) = next else {
-                let draw = self.stream_runtime.as_mut().unwrap().draws.iter_mut()
-                    .find(|draw| draw.job == job).unwrap();
+                let draw = self
+                    .stream_runtime
+                    .as_mut()
+                    .unwrap()
+                    .draws
+                    .iter_mut()
+                    .find(|draw| draw.job == job)
+                    .unwrap();
                 draw.selection.ready = std::mem::take(&mut draw.selection.candidate);
                 draw.selection.complete = true;
                 draw.display_dirty = true;
@@ -543,7 +555,8 @@ impl Renderer {
                 return Ok(StreamingSelectionRequest::Complete { revision });
             };
             if let Some(cache) = draw.view_cache.clone()
-                && !entry.bar && entry.field.is_none()
+                && !entry.bar
+                && entry.field.is_none()
             {
                 self.append_packed_selection_entry(job, &config, entry, next_cursor, &cache)?;
                 continue;
@@ -564,10 +577,18 @@ impl Renderer {
                 return Ok(StreamingSelectionRequest::Backpressure { revision });
             };
             let runtime = self.stream_runtime.as_mut().unwrap();
-            runtime.requests.iter_mut().find(|request| request.ticket == ticket)
-                .unwrap().selection = true;
-            let state = &mut runtime.draws.iter_mut().find(|draw| draw.job == job)
-                .unwrap().selection;
+            runtime
+                .requests
+                .iter_mut()
+                .find(|request| request.ticket == ticket)
+                .unwrap()
+                .selection = true;
+            let state = &mut runtime
+                .draws
+                .iter_mut()
+                .find(|draw| draw.job == job)
+                .unwrap()
+                .selection;
             state.pending = Some(ticket);
             state.entry = Some(entry);
             state.next_cursor = next_cursor;
@@ -613,8 +634,15 @@ impl Renderer {
         let Some((page, local)) = cache.point_page(entry.series, source_index) else {
             // No selected marker lies in the completed view. In particular,
             // do not ask the source for an offscreen row just to draw a ring.
-            let state = &mut self.stream_runtime.as_mut().unwrap().draws.iter_mut()
-                .find(|draw| draw.job == job).unwrap().selection;
+            let state = &mut self
+                .stream_runtime
+                .as_mut()
+                .unwrap()
+                .draws
+                .iter_mut()
+                .find(|draw| draw.job == job)
+                .unwrap()
+                .selection;
             state.cursor = next_cursor;
             return Ok(());
         };
@@ -623,37 +651,53 @@ impl Renderer {
         let style = &snapshot.styles.styles[entry.series];
         let view = &snapshot.view;
         self.pipelines.ensure_precise_variants_for_items(
-            &self.device, &self.transform_bgl, &self.style_bgl,
-            &self.per_point_style_map_bgl, &self.data_selection_bgl,
-            &self.field_bgl, self.contour_label_pipelines.as_ref(),
+            &self.device,
+            &self.transform_bgl,
+            &self.style_bgl,
+            &self.per_point_style_map_bgl,
+            &self.data_selection_bgl,
+            &self.field_bgl,
+            self.contour_label_pipelines.as_ref(),
             self.surface_format,
             &[ChartDrawItem {
-                view, chart_config: config,
-                series: &[Series { config: series_config, style }],
+                view,
+                chart_config: config,
+                series: &[Series {
+                    config: series_config,
+                    style,
+                }],
             }],
         );
         let packet = {
             let (_, preparation) = self.preparation_parts();
             let phase_columns = stream_phase_columns(series_config, page.phase);
             let lookup = |id: &str| -> Result<ColumnHandle> {
-                let index = phase_columns.ids[..phase_columns.count].iter()
+                let index = phase_columns.ids[..phase_columns.count]
+                    .iter()
                     .position(|column| *column == id)
                     .ok_or_else(|| FiggyError::UnknownColumn { id: id.into() })?;
-                page.chunk.column_handle(page.ranges[index]).map_err(|error| {
-                    FiggyError::InvalidSeriesConfig {
+                page.chunk
+                    .column_handle(page.ranges[index])
+                    .map_err(|error| FiggyError::InvalidSeriesConfig {
                         series_id: series_config.series_id.clone(),
                         reason: format!("invalid packed selection lane: {error:?}"),
-                    }
-                })
+                    })
             };
             let x = lookup(&series_config.x_column)?;
             let y = lookup(&series_config.y_column)?;
             let layers = preparation.build_selection_layers(
-                view, config, &Series { config: series_config, style },
+                view,
+                config,
+                &Series {
+                    config: series_config,
+                    style,
+                },
                 preparation.pipelines,
                 SelectionColumns {
                     buffer: &page.chunk.work,
-                    x, y, bar: None,
+                    x,
+                    y,
+                    bar: None,
                     rows: SelectionRows {
                         global_start: entry.index,
                         refs: entry.filter,
@@ -661,22 +705,38 @@ impl Renderer {
                     },
                     mapped_point_bg: None,
                 },
-                None, true, lookup,
+                None,
+                true,
+                lookup,
             )?;
             let tally = crate::gpu_memory::ChargeTally::new();
             tally.add(layers.picked.len() as u64 * std::mem::size_of::<PrimitiveStyle>() as u64);
             let mut packet = PreparedSeries::from_layers(
-                layers.into_series_layers(), None, Some(Arc::clone(&style._charge)),
+                layers.into_series_layers(),
+                None,
+                Some(Arc::clone(&style._charge)),
             );
             packet._column_charge = Some(page.chunk.work.shared_charge());
             packet._stream_style_charge = Some(crate::gpu_memory::shared_charge(
-                tally, &self.gpu_ledger, GpuResourceKind::Uniform,
+                tally,
+                &self.gpu_ledger,
+                GpuResourceKind::Uniform,
             ));
             packet._stream_transform_charge = Some(view.transform_buffer.shared_charge());
-            StreamSelectionPacket { packet, _map_charge: None }
+            StreamSelectionPacket {
+                packet,
+                _map_charge: None,
+            }
         };
-        let state = &mut self.stream_runtime.as_mut().unwrap().draws.iter_mut()
-            .find(|draw| draw.job == job).unwrap().selection;
+        let state = &mut self
+            .stream_runtime
+            .as_mut()
+            .unwrap()
+            .draws
+            .iter_mut()
+            .find(|draw| draw.job == job)
+            .unwrap()
+            .selection;
         state.candidate.push(packet);
         state.cursor = next_cursor;
         self.end_gpu_frame();
@@ -870,15 +930,20 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("stream selection rows"),
             });
-        let chunk =
-            match self.accept_stream_supply_with_headroom(ticket, supply, &mut encoder, headroom, None) {
-                Ok(chunk) => chunk,
-                Err(error) => {
-                    drop(encoder);
-                    self.end_gpu_frame();
-                    return Err(error);
-                }
-            };
+        let chunk = match self.accept_stream_supply_with_headroom(
+            ticket,
+            supply,
+            &mut encoder,
+            headroom,
+            None,
+        ) {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                drop(encoder);
+                self.end_gpu_frame();
+                return Err(error);
+            }
+        };
         let packet = (|| -> StreamResult<StreamSelectionPacket> {
             let (states, preparation) = self.preparation_parts();
             let series_config = snapshot.as_ref().map_or_else(
@@ -980,7 +1045,9 @@ impl Renderer {
                     * std::mem::size_of::<PrimitiveStyle>() as u64,
             );
             let mut packet = PreparedSeries::from_layers(
-                layers.into_series_layers(), None, Some(Arc::clone(&style._charge)),
+                layers.into_series_layers(),
+                None,
+                Some(Arc::clone(&style._charge)),
             );
             packet._column_charge = Some(chunk.work.shared_charge());
             packet._stream_style_charge = Some(crate::gpu_memory::shared_charge(

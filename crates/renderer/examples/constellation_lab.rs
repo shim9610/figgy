@@ -223,7 +223,10 @@ impl CallbackTrait for LabCallback {
                 changed = true;
             }
             if changed {
-                state.styles[idx] = state.renderer.create_style_for_series(&state.series[idx]).unwrap();
+                state.styles[idx] = state
+                    .renderer
+                    .create_style_for_series(&state.series[idx])
+                    .unwrap();
             }
         }
 

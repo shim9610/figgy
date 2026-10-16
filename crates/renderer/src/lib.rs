@@ -5,14 +5,15 @@
 #![doc = include_str!("../API.md")]
 
 pub mod axis_render;
+#[cfg(target_arch = "wasm32")]
+mod browser_compile;
+pub mod categorical;
 pub mod chart;
 pub mod data;
 pub mod data_render;
 pub mod demo;
 pub mod error;
 mod gpu_compile;
-#[cfg(target_arch = "wasm32")]
-mod browser_compile;
 pub mod gpu_contour;
 mod gpu_data_pick;
 pub mod gpu_errorbar;
@@ -20,9 +21,8 @@ pub mod gpu_memory;
 mod gpu_pick;
 pub mod init;
 pub mod pick;
-pub mod raster;
 pub mod radial;
-pub mod categorical;
+pub mod raster;
 mod render_warning;
 pub mod renderer;
 // Hand-drawn geometry helpers + the `DecoStroker` strategy — consumed by the
@@ -110,15 +110,15 @@ pub use text_render::{CpuTextMeasure, FontPolicy};
 
 pub use radial::{
     RadialChart, RadialError, RadialFrame, RadialInteraction, RadialKind, RadialLabelFormat,
-    RadialLabels, RadialMaterial, RadialOutline, RadialRenderer, RadialSlice, RadialSplit, RadialStyle,
-    RadialTarget,
+    RadialLabels, RadialMaterial, RadialOutline, RadialRenderer, RadialSlice, RadialSplit,
+    RadialStyle, RadialTarget,
 };
 
-pub use categorical::{CategoricalRenderer, CategoricalFrame, CategoricalError};
+pub use categorical::{CategoricalError, CategoricalFrame, CategoricalRenderer};
 pub use model::categorical::*;
 
 pub mod boxplot;
-pub use boxplot::{BoxPlotRenderer, BoxPlotFrame, BoxPlotError, BoxPlotPart, BoxPlotPick};
+pub use boxplot::{BoxPlotError, BoxPlotFrame, BoxPlotPart, BoxPlotPick, BoxPlotRenderer};
 pub use model::boxplot::*;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

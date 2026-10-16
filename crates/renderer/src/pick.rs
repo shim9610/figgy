@@ -559,7 +559,10 @@ mod tests {
             line_segment_pick([50.0, 53.0], [10.0, 50.0], [90.0, 50.0], 1.0, 0),
             Some((4.0, 0))
         );
-        assert_eq!(line_segment_pick([1.0, 1.0], [0.0, 0.0], [0.0, 0.0], 0.0, 0), None);
+        assert_eq!(
+            line_segment_pick([1.0, 1.0], [0.0, 0.0], [0.0, 0.0], 0.0, 0),
+            None
+        );
     }
 
     struct Columns(HashMap<ColumnId, Vec<f32>>);

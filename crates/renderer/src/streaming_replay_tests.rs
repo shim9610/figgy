@@ -29,7 +29,9 @@ fn rect(r: &Renderer, s: &StreamSurface, rgba: [f32; 4], rect: [u32; 4]) {
         @fragment fn fs()->@location(0) vec4<f32> {{ return vec4<f32>({},{},{},{}); }}
         "#,rgba[0],rgba[1],rgba[2],rgba[3]).into()),
     });
-    let pipeline = crate::gpu_compile::render_pipeline(&r.device, &wgpu::RenderPipelineDescriptor {
+    let pipeline = crate::gpu_compile::render_pipeline(
+        &r.device,
+        &wgpu::RenderPipelineDescriptor {
             label: None,
             layout: None,
             vertex: wgpu::VertexState {
@@ -56,7 +58,8 @@ fn rect(r: &Renderer, s: &StreamSurface, rgba: [f32; 4], rect: [u32; 4]) {
             }),
             multiview_mask: None,
             cache: None,
-        });
+        },
+    );
     let view = s.prefix.create_view(&Default::default());
     let mut e = r.device.create_command_encoder(&Default::default());
     {
@@ -103,7 +106,9 @@ fn display(
 
 #[test]
 fn progressive_replay_selects_one_image_without_double_alpha_or_blank_suffix() {
-    let _font = crate::text_render::FONT_REGISTRATION_TEST_LOCK.lock().unwrap();
+    let _font = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap();
     let (device, queue) = crate::data_render::shared_device().unwrap();
     for samples in [1, 4] {
         for opaque in [false, true] {

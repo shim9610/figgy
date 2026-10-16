@@ -313,15 +313,20 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("stream canonical arc replay"),
             });
-        let chunk =
-            match self.accept_stream_supply_with_headroom(ticket, supply, &mut encoder, headroom, None) {
-                Ok(chunk) => chunk,
-                Err(error) => {
-                    drop((encoder, buffers));
-                    self.end_gpu_frame();
-                    return Err(error);
-                }
-            };
+        let chunk = match self.accept_stream_supply_with_headroom(
+            ticket,
+            supply,
+            &mut encoder,
+            headroom,
+            None,
+        ) {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                drop((encoder, buffers));
+                self.end_gpu_frame();
+                return Err(error);
+            }
+        };
         let pending_fit = self.pending_auto_fit_config(ticket.job);
         match pending_fit {
             Ok(Some(config)) => {
@@ -342,8 +347,11 @@ impl Renderer {
             }
             Ok(None) => {}
         }
-        let view = snapshot.as_ref().map(|snapshot| &snapshot.view)
-            .or(explicit_view).ok_or(StreamError::WrongState)?;
+        let view = snapshot
+            .as_ref()
+            .map(|snapshot| &snapshot.view)
+            .or(explicit_view)
+            .ok_or(StreamError::WrongState)?;
         let encoded = (|| -> StreamResult<Option<SharedCharge>> {
             for (index, column) in columns.iter().enumerate() {
                 let handle = chunk.column_handle(*column)?;

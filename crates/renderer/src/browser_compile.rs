@@ -160,8 +160,14 @@ pub(crate) async fn render(
         other => return Err(format!("Unsupported prewarm target: {other:?}")),
     };
     let device = JsValue::from(device.as_webgpu().ok_or("WebGPU device required")?.clone());
-    let stages: Vec<_> = stages.iter().copied().filter(|(_, label)| feature.is_none_or(|f| f.includes_label(label))).collect();
-    if stages.is_empty() { return Ok(()); }
+    let stages: Vec<_> = stages
+        .iter()
+        .copied()
+        .filter(|(_, label)| feature.is_none_or(|f| f.includes_label(label)))
+        .collect();
+    if stages.is_empty() {
+        return Ok(());
+    }
     let mut candidates = Vec::new();
     for desc in descriptors(source, "render")? {
         // Auto-layout streaming pipelines are constructed lazily by their own
@@ -172,7 +178,12 @@ pub(crate) async fn render(
         if get(&get(&desc, "multisample")?, "count")?.as_f64() != Some(f64::from(samples)) {
             continue;
         }
-        if feature.is_none_or(|f| get(&desc, "label").ok().and_then(|v| v.as_string()).is_some_and(|label| f.includes_label(&label))) {
+        if feature.is_none_or(|f| {
+            get(&desc, "label")
+                .ok()
+                .and_then(|v| v.as_string())
+                .is_some_and(|label| f.includes_label(&label))
+        }) {
             candidates.push(desc);
         }
     }

@@ -195,19 +195,34 @@ fn draw_registered(r: &mut Renderer, id: ChartId, view: &ChartView, samples: u32
 // Opt-in diagnostic artifacts only. Original PNGs retain the exact readback bytes;
 // the crop is nearest-neighbour enlarged, and the mask is explicitly not a render.
 fn save_visual_comparison(expected: &[u8], actual: &[u8], label: &str) {
-    let Some(directory) = std::env::var_os("FIGGY_STYLE_EXPORT_ARTIFACT_DIR") else { return };
+    let Some(directory) = std::env::var_os("FIGGY_STYLE_EXPORT_ARTIFACT_DIR") else {
+        return;
+    };
     assert_eq!(expected.len(), 320 * 240 * 4);
     let directory = std::path::PathBuf::from(directory);
     std::fs::create_dir_all(&directory).unwrap();
-    let name: String = label.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+    let name: String = label
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
     let save = |suffix: &str, width, height, rgba: Vec<u8>| {
-        std::fs::write(directory.join(format!("{name}-{suffix}.png")),
-            encode_png(&RasterImage { width, height, rgba }).unwrap()).unwrap();
+        std::fs::write(
+            directory.join(format!("{name}-{suffix}.png")),
+            encode_png(&RasterImage {
+                width,
+                height,
+                rgba,
+            })
+            .unwrap(),
+        )
+        .unwrap();
     };
     save("resident", 320, 240, expected.to_vec());
     save("streamed", 320, 240, actual.to_vec());
     let mut pair = vec![224; 648 * 240 * 4];
-    for pixel in pair.chunks_exact_mut(4) { pixel[3] = 255; }
+    for pixel in pair.chunks_exact_mut(4) {
+        pixel[3] = 255;
+    }
     for y in 0..240 {
         let row = y * 320 * 4..(y + 1) * 320 * 4;
         pair[y * 648 * 4..(y * 648 + 320) * 4].copy_from_slice(&expected[row.clone()]);
@@ -218,18 +233,28 @@ fn save_visual_comparison(expected: &[u8], actual: &[u8], label: &str) {
     let mut histogram = [0usize; 256];
     let mut maximum = (0u8, 0usize);
     let mut mask_difference = 0usize;
-    for (i, (a, b)) in expected.chunks_exact(4).zip(actual.chunks_exact(4)).enumerate() {
+    for (i, (a, b)) in expected
+        .chunks_exact(4)
+        .zip(actual.chunks_exact(4))
+        .enumerate()
+    {
         let delta = a.iter().zip(b).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
         histogram[usize::from(delta)] += 1;
-        if delta > maximum.0 { maximum = (delta, i); }
-        if delta > 0 { mask[i * 4..i * 4 + 4].copy_from_slice(&[255, 0, 255, 255]); }
+        if delta > maximum.0 {
+            maximum = (delta, i);
+        }
+        if delta > 0 {
+            mask[i * 4..i * 4 + 4].copy_from_slice(&[255, 0, 255, 255]);
+        }
         mask_difference += usize::from((a != [255; 4]) != (b != [255; 4]));
     }
     save("difference-locations-not-render", 320, 240, mask);
     let x0 = (maximum.1 % 320).saturating_sub(20).min(280);
     let y0 = (maximum.1 / 320).saturating_sub(20).min(200);
     let mut crop = vec![224; 648 * 320 * 4];
-    for pixel in crop.chunks_exact_mut(4) { pixel[3] = 255; }
+    for pixel in crop.chunks_exact_mut(4) {
+        pixel[3] = 255;
+    }
     for (side, pixels) in [expected, actual].into_iter().enumerate() {
         for y in 0..320 {
             for x in 0..320 {
@@ -240,9 +265,17 @@ fn save_visual_comparison(expected: &[u8], actual: &[u8], label: &str) {
         }
     }
     save("max-delta-crop-8x", 648, 320, crop);
-    eprintln!("visual artifacts {name}: max delta {} at ({},{}), crop origin ({x0},{y0}), nonwhite mask differences={mask_difference}, delta histogram={:?}",
-        maximum.0, maximum.1 % 320, maximum.1 / 320,
-        histogram.iter().enumerate().filter(|(_, n)| **n > 0).collect::<Vec<_>>());
+    eprintln!(
+        "visual artifacts {name}: max delta {} at ({},{}), crop origin ({x0},{y0}), nonwhite mask differences={mask_difference}, delta histogram={:?}",
+        maximum.0,
+        maximum.1 % 320,
+        maximum.1 / 320,
+        histogram
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| **n > 0)
+            .collect::<Vec<_>>()
+    );
 }
 
 fn mismatch(expected: &[u8], actual: &[u8], label: &str) -> Option<String> {
@@ -268,130 +301,226 @@ fn compare_isolated_stream_chunks(
     declarations: &[SeriesConfig],
 ) {
     let pairs = std::env::var_os("FIGGY_STYLE_EXPORT_TWO_CHUNKS").is_some();
-    let samples = if std::env::var_os("FIGGY_STYLE_EXPORT_NO_MSAA").is_some() { 1 } else { 4 };
-    resident.ensure_target(wgpu::TextureFormat::Rgba8Unorm, samples).unwrap();
+    let samples = if std::env::var_os("FIGGY_STYLE_EXPORT_NO_MSAA").is_some() {
+        1
+    } else {
+        4
+    };
+    resident
+        .ensure_target(wgpu::TextureFormat::Rgba8Unorm, samples)
+        .unwrap();
     let count = fixture[0].1.data.len();
     let mut streamed = Renderer::try_new_with_sample_count(
         RendererDevice::new(Arc::clone(&resident.device), Arc::clone(&resident.queue)),
-        wgpu::TextureFormat::Rgba8Unorm, 8192, samples,
-    ).unwrap();
+        wgpu::TextureFormat::Rgba8Unorm,
+        8192,
+        samples,
+    )
+    .unwrap();
     streamed.configure_streaming_runtime(limits(2)).unwrap();
-    streamed.register_streamed_columns(fixture.iter().map(|(id, _)| {
-        let mut column = source(id, 1);
-        column.len = count as u64;
-        column
-    }).collect()).unwrap();
+    streamed
+        .register_streamed_columns(
+            fixture
+                .iter()
+                .map(|(id, _)| {
+                    let mut column = source(id, 1);
+                    column.len = count as u64;
+                    column
+                })
+                .collect(),
+        )
+        .unwrap();
     let chart = Chart::new(config.clone());
-    let resident_view = resident.create_chart_view(&chart, config.chart_area.0).unwrap();
-    let stream_view = streamed.create_chart_view(&chart, config.chart_area.0).unwrap();
+    let resident_view = resident
+        .create_chart_view(&chart, config.chart_area.0)
+        .unwrap();
+    let stream_view = streamed
+        .create_chart_view(&chart, config.chart_area.0)
+        .unwrap();
     let data_area = config.data_area().unwrap().0;
     let original_y = &fixture.iter().find(|(id, _)| *id == "y").unwrap().1;
     let mut failures = Vec::new();
     let mut tested = 0;
     for declaration in declarations {
-        let resident_id = resident.register_chart(config.clone(), vec![declaration.clone()]).unwrap();
-        let stream_id = streamed.register_chart(config.clone(), vec![declaration.clone()]).unwrap();
-        let sizes: &[u64] = if pairs { &[1, 3, 7, 10, 19] } else { &[1, 3, 7, 19] };
+        let resident_id = resident
+            .register_chart(config.clone(), vec![declaration.clone()])
+            .unwrap();
+        let stream_id = streamed
+            .register_chart(config.clone(), vec![declaration.clone()])
+            .unwrap();
+        let sizes: &[u64] = if pairs {
+            &[1, 3, 7, 10, 19]
+        } else {
+            &[1, 3, 7, 19]
+        };
         for &chunk_size in sizes {
-          for shift in 0..if pairs { 2 } else { 1 } {
-            let target = draw_target(&streamed, samples);
-            clear_draw_target(&streamed, &target);
-            let job = streamed.begin_chart_stream_draw(stream_id, &stream_view, &target, chunk_size).unwrap();
-            let mut phases = [0usize; 2];
-            let mut pair_start = 0;
-            loop {
-                streamed.service_stream_requests();
-                let ticket = match streamed.request_chart_stream_draw(job).unwrap() {
-                    StreamDrawRequestStatus::Ready(ticket) => ticket,
-                    StreamDrawRequestStatus::AllSubmitted => break,
-                    StreamDrawRequestStatus::Backpressure => panic!("isolated chunk was awaited"),
-                };
-                let columns: Vec<_> = streamed.stream_request_columns(ticket).unwrap().iter()
-                    .map(|column| (column.column.clone(), column.range)).collect();
-                let first = columns[0].1;
-                let start = first.offset as usize;
-                let end = start + first.len as usize;
-                let errorbar = columns.iter().any(|(id, _)| id == "ex_lo");
-                let phase_index = usize::from(!errorbar);
-                let completes_pair = pairs && phases[phase_index] >= shift
-                    && (phases[phase_index] - shift) % 2 == 1;
-                assert!(columns.iter().all(|(_, range)| range.offset == first.offset && range.len == first.len));
-                let inputs: Vec<_> = columns.iter().map(|(id, range)| {
-                    let values = &fixture.iter().find(|(key, _)| key == id).unwrap().1.data;
-                    StreamInput { column: id, bytes: bytemuck::cast_slice(
-                        &values[range.offset as usize..(range.offset + range.len) as usize]) }
-                }).collect();
+            for shift in 0..if pairs { 2 } else { 1 } {
+                let target = draw_target(&streamed, samples);
+                clear_draw_target(&streamed, &target);
+                let job = streamed
+                    .begin_chart_stream_draw(stream_id, &stream_view, &target, chunk_size)
+                    .unwrap();
+                let mut phases = [0usize; 2];
+                let mut pair_start = 0;
+                loop {
+                    streamed.service_stream_requests();
+                    let ticket = match streamed.request_chart_stream_draw(job).unwrap() {
+                        StreamDrawRequestStatus::Ready(ticket) => ticket,
+                        StreamDrawRequestStatus::AllSubmitted => break,
+                        StreamDrawRequestStatus::Backpressure => {
+                            panic!("isolated chunk was awaited")
+                        }
+                    };
+                    let columns: Vec<_> = streamed
+                        .stream_request_columns(ticket)
+                        .unwrap()
+                        .iter()
+                        .map(|column| (column.column.clone(), column.range))
+                        .collect();
+                    let first = columns[0].1;
+                    let start = first.offset as usize;
+                    let end = start + first.len as usize;
+                    let errorbar = columns.iter().any(|(id, _)| id == "ex_lo");
+                    let phase_index = usize::from(!errorbar);
+                    let completes_pair = pairs
+                        && phases[phase_index] >= shift
+                        && (phases[phase_index] - shift) % 2 == 1;
+                    assert!(
+                        columns.iter().all(
+                            |(_, range)| range.offset == first.offset && range.len == first.len
+                        )
+                    );
+                    let inputs: Vec<_> = columns
+                        .iter()
+                        .map(|(id, range)| {
+                            let values = &fixture.iter().find(|(key, _)| key == id).unwrap().1.data;
+                            StreamInput {
+                                column: id,
+                                bytes: bytemuck::cast_slice(
+                                    &values[range.offset as usize
+                                        ..(range.offset + range.len) as usize],
+                                ),
+                            }
+                        })
+                        .collect();
 
-                if pairs && !completes_pair {
-                    pair_start = start;
-                    clear_draw_target(&streamed, &target);
-                    streamed.submit_chart_stream_draw(ticket, &inputs, &stream_view, &target).unwrap();
-                    streamed.wait_idle();
+                    if pairs && !completes_pair {
+                        pair_start = start;
+                        clear_draw_target(&streamed, &target);
+                        streamed
+                            .submit_chart_stream_draw(ticket, &inputs, &stream_view, &target)
+                            .unwrap();
+                        streamed.wait_idle();
+                        streamed.end_gpu_frame();
+                        phases[phase_index] += 1;
+                        continue;
+                    }
+                    let start = if pairs { pair_start } else { start };
+
+                    // The ordinary resident path keeps all original instance IDs.
+                    // NaN suppresses rows outside this ticket without rebasing seeds.
+                    let mut resident_y = original_y.clone();
+                    resident_y.data[..start].fill(f32::NAN);
+                    resident_y.data[end..].fill(f32::NAN);
+                    resident.upsert_column("y", &resident_y).unwrap();
+                    let frame = resident
+                        .prepare_registered(&[RegisteredChartDrawItem {
+                            chart_id: resident_id,
+                            view: &resident_view,
+                        }])
+                        .unwrap();
+                    let reference = draw_target(resident, samples);
+                    clear_draw_target(resident, &reference);
+                    let reference_view = reference.create_view(&Default::default());
+                    let mut encoder = resident.device.create_command_encoder(&Default::default());
+                    {
+                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: &reference_view,
+                                depth_slice: None,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Load,
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            })],
+                            ..Default::default()
+                        });
+                        pass.set_viewport(0.0, 0.0, 320.0, 240.0, 0.0, 1.0);
+                        pass.set_scissor_rect(
+                            data_area.x,
+                            data_area.y,
+                            data_area.width,
+                            data_area.height,
+                        );
+                        let mut layers = frame.items[0].series[0].layers();
+                        if errorbar {
+                            layers.scatter = None;
+                        } else {
+                            layers.errorbar = None;
+                        }
+                        data_render::issue_series_data(&mut pass, &layers);
+                    }
+                    resident.queue.submit([encoder.finish()]);
+                    let expected = read_draw_target(resident, &reference);
+                    drop(frame);
+                    resident.end_gpu_frame();
+
+                    // Paired mode retains the first chunk's MSAA samples without an
+                    // intermediate resolve. Single mode begins with a blank target.
+                    if !pairs {
+                        clear_draw_target(&streamed, &target);
+                    }
+                    streamed
+                        .submit_chart_stream_draw(ticket, &inputs, &stream_view, &target)
+                        .unwrap();
+                    let actual = read_draw_target(&streamed, &target);
                     streamed.end_gpu_frame();
-                    phases[phase_index] += 1;
-                    continue;
+                    let label = format!(
+                        "{} chunk(s) {} {} [{start},{end}) max={chunk_size} MSAA={samples}",
+                        if pairs { 2 } else { 1 },
+                        declaration.series_id,
+                        if errorbar { "errorbar" } else { "scatter" }
+                    );
+                    if let Some(reason) = mismatch(&expected, &actual, &label) {
+                        failures.push(reason);
+                    }
+                    let expected_ink = expected
+                        .chunks_exact(4)
+                        .filter(|p| *p != [255, 255, 255, 255])
+                        .count();
+                    assert!(
+                        expected_ink > 0
+                            || original_y.data[start..end].iter().all(|v| !v.is_finite()),
+                        "{label}: reference must actually draw the requested range"
+                    );
+                    let mask_diff = expected
+                        .chunks_exact(4)
+                        .zip(actual.chunks_exact(4))
+                        .filter(|(a, b)| {
+                            (**a != [255, 255, 255, 255]) != (**b != [255, 255, 255, 255])
+                        })
+                        .count();
+                    assert_eq!(mask_diff, 0, "{label}: binary mask differs");
+                    phases[usize::from(!errorbar)] += 1;
+                    tested += 1;
                 }
-                let start = if pairs { pair_start } else { start };
-
-                // The ordinary resident path keeps all original instance IDs.
-                // NaN suppresses rows outside this ticket without rebasing seeds.
-                let mut resident_y = original_y.clone();
-                resident_y.data[..start].fill(f32::NAN);
-                resident_y.data[end..].fill(f32::NAN);
-                resident.upsert_column("y", &resident_y).unwrap();
-                let frame = resident.prepare_registered(&[RegisteredChartDrawItem {
-                    chart_id: resident_id, view: &resident_view,
-                }]).unwrap();
-                let reference = draw_target(resident, samples);
-                clear_draw_target(resident, &reference);
-                let reference_view = reference.create_view(&Default::default());
-                let mut encoder = resident.device.create_command_encoder(&Default::default());
-                {
-                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &reference_view, depth_slice: None, resolve_target: None,
-                            ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-                        })], ..Default::default()
-                    });
-                    pass.set_viewport(0.0, 0.0, 320.0, 240.0, 0.0, 1.0);
-                    pass.set_scissor_rect(data_area.x, data_area.y, data_area.width, data_area.height);
-                    let mut layers = frame.items[0].series[0].layers();
-                    if errorbar { layers.scatter = None; } else { layers.errorbar = None; }
-                    data_render::issue_series_data(&mut pass, &layers);
-                }
-                resident.queue.submit([encoder.finish()]);
-                let expected = read_draw_target(resident, &reference);
-                drop(frame);
-                resident.end_gpu_frame();
-
-                // Paired mode retains the first chunk's MSAA samples without an
-                // intermediate resolve. Single mode begins with a blank target.
-                if !pairs { clear_draw_target(&streamed, &target); }
-                streamed.submit_chart_stream_draw(ticket, &inputs, &stream_view, &target).unwrap();
-                let actual = read_draw_target(&streamed, &target);
-                streamed.end_gpu_frame();
-                let label = format!("{} chunk(s) {} {} [{start},{end}) max={chunk_size} MSAA={samples}",
-                    if pairs { 2 } else { 1 }, declaration.series_id, if errorbar { "errorbar" } else { "scatter" });
-                if let Some(reason) = mismatch(&expected, &actual, &label) {
-                    failures.push(reason);
-                }
-                let expected_ink = expected.chunks_exact(4).filter(|p| *p != [255, 255, 255, 255]).count();
-                assert!(expected_ink > 0 || original_y.data[start..end].iter().all(|v| !v.is_finite()),
-                    "{label}: reference must actually draw the requested range");
-                let mask_diff = expected.chunks_exact(4).zip(actual.chunks_exact(4))
-                    .filter(|(a, b)| (**a != [255, 255, 255, 255]) != (**b != [255, 255, 255, 255])).count();
-                assert_eq!(mask_diff, 0, "{label}: binary mask differs");
-                phases[usize::from(!errorbar)] += 1;
-                tested += 1;
+                assert_eq!(phases, [count.div_ceil(chunk_size as usize); 2]);
+                eprintln!(
+                    "chunk comparison paired={pairs} shift={shift} {} MSAA={samples} max={chunk_size}: errorbar={}, scatter={}, RGBA failures so far={}",
+                    declaration.series_id,
+                    phases[0],
+                    phases[1],
+                    failures.len()
+                );
+                streamed.cancel_chart_stream(stream_id).unwrap();
             }
-            assert_eq!(phases, [count.div_ceil(chunk_size as usize); 2]);
-            eprintln!("chunk comparison paired={pairs} shift={shift} {} MSAA={samples} max={chunk_size}: errorbar={}, scatter={}, RGBA failures so far={}",
-                declaration.series_id, phases[0], phases[1], failures.len());
-            streamed.cancel_chart_stream(stream_id).unwrap();
-          }
         }
     }
-    eprintln!("isolated real-runtime chunk comparisons={tested}, exact RGBA failures={}", failures.len());
+    eprintln!(
+        "isolated real-runtime chunk comparisons={tested}, exact RGBA failures={}",
+        failures.len()
+    );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
@@ -401,25 +530,54 @@ fn compare_stream_phase_pairs(
     config: &Config,
     declarations: &[SeriesConfig],
 ) {
-    let samples = if std::env::var_os("FIGGY_STYLE_EXPORT_NO_MSAA").is_some() { 1 } else { 4 };
-    resident.ensure_target(wgpu::TextureFormat::Rgba8Unorm, samples).unwrap();
+    let samples = if std::env::var_os("FIGGY_STYLE_EXPORT_NO_MSAA").is_some() {
+        1
+    } else {
+        4
+    };
+    resident
+        .ensure_target(wgpu::TextureFormat::Rgba8Unorm, samples)
+        .unwrap();
     let count = fixture[0].1.data.len();
     let mut streamed = Renderer::try_new_with_sample_count(
         RendererDevice::new(Arc::clone(&resident.device), Arc::clone(&resident.queue)),
-        wgpu::TextureFormat::Rgba8Unorm, 8192, samples,
-    ).unwrap();
+        wgpu::TextureFormat::Rgba8Unorm,
+        8192,
+        samples,
+    )
+    .unwrap();
     streamed.configure_streaming_runtime(limits(2)).unwrap();
-    streamed.register_streamed_columns(fixture.iter().map(|(id, _)| {
-        let mut column = source(id, 1); column.len = count as u64; column
-    }).collect()).unwrap();
+    streamed
+        .register_streamed_columns(
+            fixture
+                .iter()
+                .map(|(id, _)| {
+                    let mut column = source(id, 1);
+                    column.len = count as u64;
+                    column
+                })
+                .collect(),
+        )
+        .unwrap();
     let chart = Chart::new(config.clone());
-    let resident_view = resident.create_chart_view(&chart, config.chart_area.0).unwrap();
-    let stream_view = streamed.create_chart_view(&chart, config.chart_area.0).unwrap();
-    let resident_id = resident.register_chart(config.clone(), declarations.to_vec()).unwrap();
-    let stream_id = streamed.register_chart(config.clone(), declarations.to_vec()).unwrap();
-    let frame = resident.prepare_registered(&[RegisteredChartDrawItem {
-        chart_id: resident_id, view: &resident_view,
-    }]).unwrap();
+    let resident_view = resident
+        .create_chart_view(&chart, config.chart_area.0)
+        .unwrap();
+    let stream_view = streamed
+        .create_chart_view(&chart, config.chart_area.0)
+        .unwrap();
+    let resident_id = resident
+        .register_chart(config.clone(), declarations.to_vec())
+        .unwrap();
+    let stream_id = streamed
+        .register_chart(config.clone(), declarations.to_vec())
+        .unwrap();
+    let frame = resident
+        .prepare_registered(&[RegisteredChartDrawItem {
+            chart_id: resident_id,
+            view: &resident_view,
+        }])
+        .unwrap();
     let data = config.data_area().unwrap().0;
     let mut failures = Vec::new();
     for first_stage in 0..declarations.len() * 2 - 1 {
@@ -430,15 +588,25 @@ fn compare_stream_phase_pairs(
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &reference_view, depth_slice: None, resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-                })], ..Default::default()
+                    view: &reference_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
             });
             pass.set_viewport(0.0, 0.0, 320.0, 240.0, 0.0, 1.0);
             pass.set_scissor_rect(data.x, data.y, data.width, data.height);
             for stage in first_stage..first_stage + 2 {
                 let mut layers = frame.items[0].series[stage / 2].layers();
-                if stage % 2 == 0 { layers.scatter = None; } else { layers.errorbar = None; }
+                if stage % 2 == 0 {
+                    layers.scatter = None;
+                } else {
+                    layers.errorbar = None;
+                }
                 data_render::issue_series_data(&mut pass, &layers);
             }
         }
@@ -446,30 +614,61 @@ fn compare_stream_phase_pairs(
         let expected = read_draw_target(resident, &reference);
         let target = draw_target(&streamed, samples);
         clear_draw_target(&streamed, &target);
-        let job = streamed.begin_chart_stream_draw(stream_id, &stream_view, &target, count as u64).unwrap();
+        let job = streamed
+            .begin_chart_stream_draw(stream_id, &stream_view, &target, count as u64)
+            .unwrap();
         for stage in 0..first_stage + 2 {
             streamed.service_stream_requests();
-            let StreamDrawRequestStatus::Ready(ticket) = streamed.request_chart_stream_draw(job).unwrap()
-                else { panic!("two-phase request was not ready") };
-            let columns: Vec<_> = streamed.stream_request_columns(ticket).unwrap().iter()
-                .map(|column| (column.column.clone(), column.range)).collect();
-            assert!(columns.iter().all(|(_, range)| range.offset == 0 && range.len == count as u64));
-            let inputs: Vec<_> = columns.iter().map(|(id, _)| StreamInput {
-                column: id, bytes: bytemuck::cast_slice(&fixture.iter().find(|(key, _)| key == id).unwrap().1.data),
-            }).collect();
-            if stage == first_stage { clear_draw_target(&streamed, &target); }
-            streamed.submit_chart_stream_draw(ticket, &inputs, &stream_view, &target).unwrap();
+            let StreamDrawRequestStatus::Ready(ticket) =
+                streamed.request_chart_stream_draw(job).unwrap()
+            else {
+                panic!("two-phase request was not ready")
+            };
+            let columns: Vec<_> = streamed
+                .stream_request_columns(ticket)
+                .unwrap()
+                .iter()
+                .map(|column| (column.column.clone(), column.range))
+                .collect();
+            assert!(
+                columns
+                    .iter()
+                    .all(|(_, range)| range.offset == 0 && range.len == count as u64)
+            );
+            let inputs: Vec<_> = columns
+                .iter()
+                .map(|(id, _)| StreamInput {
+                    column: id,
+                    bytes: bytemuck::cast_slice(
+                        &fixture.iter().find(|(key, _)| key == id).unwrap().1.data,
+                    ),
+                })
+                .collect();
+            if stage == first_stage {
+                clear_draw_target(&streamed, &target);
+            }
+            streamed
+                .submit_chart_stream_draw(ticket, &inputs, &stream_view, &target)
+                .unwrap();
             streamed.wait_idle();
             streamed.end_gpu_frame();
         }
         let actual = read_draw_target(&streamed, &target);
-        let label = format!("two phase chunks {first_stage}->{} MSAA={samples}", first_stage + 1);
-        let mask_diff = expected.chunks_exact(4).zip(actual.chunks_exact(4))
-            .filter(|(a, b)| (**a != [255, 255, 255, 255]) != (**b != [255, 255, 255, 255])).count();
+        let label = format!(
+            "two phase chunks {first_stage}->{} MSAA={samples}",
+            first_stage + 1
+        );
+        let mask_diff = expected
+            .chunks_exact(4)
+            .zip(actual.chunks_exact(4))
+            .filter(|(a, b)| (**a != [255, 255, 255, 255]) != (**b != [255, 255, 255, 255]))
+            .count();
         if let Some(reason) = mismatch(&expected, &actual, &label) {
             eprintln!("{reason}; binary mask differing={mask_diff}");
             failures.push(reason);
-        } else { eprintln!("{label}: exact RGBA match; binary mask differing={mask_diff}"); }
+        } else {
+            eprintln!("{label}: exact RGBA match; binary mask differing={mask_diff}");
+        }
         streamed.cancel_chart_stream(stream_id).unwrap();
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
@@ -489,7 +688,11 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
                 .map(|i| {
                     (match id {
                         "x" => 0.08 + (i % 9) as f64 * 0.1,
-                        "y" if i == 11 && std::env::var_os("FIGGY_STYLE_EXPORT_NO_NAN").is_none() => f64::NAN,
+                        "y" if i == 11
+                            && std::env::var_os("FIGGY_STYLE_EXPORT_NO_NAN").is_none() =>
+                        {
+                            f64::NAN
+                        }
                         "y" => 0.11 + ((i * 7) % 13) as f64 * 0.055,
                         "ex_lo" => 0.03,
                         "ex_hi" => 0.06,
@@ -509,12 +712,22 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
             )
         })
         .collect();
-    let config = test_config(if std::env::var_os("FIGGY_STYLE_EXPORT_PRECISE").is_some() {
-        DrawStyle::Precise
-    } else { styles()[0].clone() });
+    let config = test_config(
+        if std::env::var_os("FIGGY_STYLE_EXPORT_PRECISE").is_some() {
+            DrawStyle::Precise
+        } else {
+            styles()[0].clone()
+        },
+    );
     let series: Vec<_> = ["front", "back"]
         .into_iter()
-        .take(if std::env::var_os("FIGGY_STYLE_EXPORT_ONE_SERIES").is_some() { 1 } else { 2 })
+        .take(
+            if std::env::var_os("FIGGY_STYLE_EXPORT_ONE_SERIES").is_some() {
+                1
+            } else {
+                2
+            },
+        )
         .enumerate()
         .map(|(i, id)| {
             let mut tint = if i == 0 {
@@ -522,9 +735,13 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
             } else {
                 Color::new(0.1, 0.4, 0.9, 0.55)
             };
-            if std::env::var_os("FIGGY_STYLE_EXPORT_OPAQUE").is_some() { tint.a = 1.0; }
+            if std::env::var_os("FIGGY_STYLE_EXPORT_OPAQUE").is_some() {
+                tint.a = 1.0;
+            }
             let mut point = scatter(tint);
-            if std::env::var_os("FIGGY_STYLE_EXPORT_NO_SCATTER").is_some() { point.point_size = 0.0; }
+            if std::env::var_os("FIGGY_STYLE_EXPORT_NO_SCATTER").is_some() {
+                point.point_size = 0.0;
+            }
             let mut error = error_style(tint);
             if std::env::var_os("FIGGY_STYLE_EXPORT_NO_ERROR").is_some() {
                 error.error_bar_width = 0.0;
@@ -548,12 +765,12 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
         .collect();
     // This focused backend regression deliberately honors WGPU_BACKEND so the
     // browser/Dawn D3D12 result can be compared with native D3D12 and Vulkan.
-    let instance = wgpu::Instance::new(
-        wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
-    );
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
     let adapter = data_render::request_adapter(&instance).expect("style export GPU required");
     eprintln!("style export adapter: {:?}", adapter.get_info());
-    let (device, queue) = data_render::request_device(&adapter).expect("style export device required");
+    let (device, queue) =
+        data_render::request_device(&adapter).expect("style export device required");
     let (device, queue) = (Arc::new(device), Arc::new(queue));
     let make = || {
         Renderer::try_new(
@@ -568,7 +785,8 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
         resident.add_column(*id, values).unwrap();
     }
     if std::env::var_os("FIGGY_STYLE_EXPORT_SINGLE_CHUNK").is_some()
-        || std::env::var_os("FIGGY_STYLE_EXPORT_TWO_CHUNKS").is_some() {
+        || std::env::var_os("FIGGY_STYLE_EXPORT_TWO_CHUNKS").is_some()
+    {
         compare_isolated_stream_chunks(&mut resident, &fixture, &config, &series);
         return;
     }
@@ -577,60 +795,122 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
         return;
     }
     if std::env::var_os("FIGGY_STYLE_EXPORT_PASS_CONTROL").is_some() {
-        let samples = if std::env::var_os("FIGGY_STYLE_EXPORT_NO_MSAA").is_some() { 1 } else { 4 };
-        resident.ensure_target(wgpu::TextureFormat::Rgba8Unorm, samples).unwrap();
-        let chart = resident.register_chart(config.clone(), series.clone()).unwrap();
-        let view = resident.create_chart_view(&Chart::new(config.clone()), config.chart_area.0).unwrap();
-        let frame = resident.prepare_registered(&[RegisteredChartDrawItem { chart_id: chart, view: &view }]).unwrap();
+        let samples = if std::env::var_os("FIGGY_STYLE_EXPORT_NO_MSAA").is_some() {
+            1
+        } else {
+            4
+        };
+        resident
+            .ensure_target(wgpu::TextureFormat::Rgba8Unorm, samples)
+            .unwrap();
+        let chart = resident
+            .register_chart(config.clone(), series.clone())
+            .unwrap();
+        let view = resident
+            .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
+            .unwrap();
+        let frame = resident
+            .prepare_registered(&[RegisteredChartDrawItem {
+                chart_id: chart,
+                view: &view,
+            }])
+            .unwrap();
         let item = &frame.items[0];
         let stage_count = item.series.len() * 2 + 2;
         let issued_stages = RefCell::new(Vec::new());
         let draw = |pass: &mut wgpu::RenderPass<'_>, stage: usize| {
             issued_stages.borrow_mut().push(stage);
             let panel = item.view.panel_rect;
-            pass.set_viewport(panel.x as f32, panel.y as f32, panel.width as f32, panel.height as f32, 0.0, 1.0);
+            pass.set_viewport(
+                panel.x as f32,
+                panel.y as f32,
+                panel.width as f32,
+                panel.height as f32,
+                0.0,
+                1.0,
+            );
             if stage == 0 || stage == stage_count - 1 {
                 pass.set_scissor_rect(panel.x, panel.y, panel.width, panel.height);
                 pass.set_pipeline(&item.axis_pipeline);
-                pass.set_bind_group(0, if stage == 0 { &item.view.grid_bind_group } else { &item.view.decoration_bind_group }, &[]);
+                pass.set_bind_group(
+                    0,
+                    if stage == 0 {
+                        &item.view.grid_bind_group
+                    } else {
+                        &item.view.decoration_bind_group
+                    },
+                    &[],
+                );
                 pass.draw(0..3, 0..1);
             } else {
                 let data = item.data_area;
                 pass.set_scissor_rect(data.x, data.y, data.width, data.height);
                 let mut layers = item.series[(stage - 1) / 2].layers();
-                if stage % 2 == 1 { layers.scatter = None; } else { layers.errorbar = None; }
+                if stage % 2 == 1 {
+                    layers.scatter = None;
+                } else {
+                    layers.errorbar = None;
+                }
                 data_render::issue_series_data(pass, &layers);
             }
         };
-        let pixels: Vec<_> = [false, true].into_iter().map(|split| {
-            issued_stages.borrow_mut().clear();
-            let target = draw_target(&resident, samples);
-            clear_draw_target(&resident, &target);
-            let view = target.create_view(&Default::default());
-            let mut encoder = resident.device.create_command_encoder(&Default::default());
-            for part in 0..if split { stage_count } else { 1 } {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view, depth_slice: None, resolve_target: None,
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-                    })], ..Default::default()
-                });
-                if split { draw(&mut pass, part); } else { for stage in 0..stage_count { draw(&mut pass, stage); } }
-            }
-            assert_eq!(*issued_stages.borrow(), (0..stage_count).collect::<Vec<_>>());
-            eprintln!("pass-control split={split} issued stages: {:?}", issued_stages.borrow());
-            resident.queue.submit([encoder.finish()]);
-            read_draw_target(&resident, &target)
-        }).collect();
+        let pixels: Vec<_> = [false, true]
+            .into_iter()
+            .map(|split| {
+                issued_stages.borrow_mut().clear();
+                let target = draw_target(&resident, samples);
+                clear_draw_target(&resident, &target);
+                let view = target.create_view(&Default::default());
+                let mut encoder = resident.device.create_command_encoder(&Default::default());
+                for part in 0..if split { stage_count } else { 1 } {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        ..Default::default()
+                    });
+                    if split {
+                        draw(&mut pass, part);
+                    } else {
+                        for stage in 0..stage_count {
+                            draw(&mut pass, stage);
+                        }
+                    }
+                }
+                assert_eq!(
+                    *issued_stages.borrow(),
+                    (0..stage_count).collect::<Vec<_>>()
+                );
+                eprintln!(
+                    "pass-control split={split} issued stages: {:?}",
+                    issued_stages.borrow()
+                );
+                resident.queue.submit([encoder.finish()]);
+                read_draw_target(&resident, &target)
+            })
+            .collect();
         for metric in ["nonwhite", "chroma", "darkness"] {
             for threshold in [1u16, 2, 4, 8, 16, 32, 64, 128] {
                 let value = |pixel: &[u8]| -> u16 {
                     match metric {
                         "nonwhite" => 255 - u16::from(*pixel[..3].iter().min().unwrap()),
-                        "chroma" => u16::from(*pixel[..3].iter().max().unwrap())
-                            - u16::from(*pixel[..3].iter().min().unwrap()),
-                        "darkness" => 255 - ((2126 * u32::from(pixel[0])
-                            + 7152 * u32::from(pixel[1]) + 722 * u32::from(pixel[2]) + 5000) / 10000) as u16,
+                        "chroma" => {
+                            u16::from(*pixel[..3].iter().max().unwrap())
+                                - u16::from(*pixel[..3].iter().min().unwrap())
+                        }
+                        "darkness" => {
+                            255 - ((2126 * u32::from(pixel[0])
+                                + 7152 * u32::from(pixel[1])
+                                + 722 * u32::from(pixel[2])
+                                + 5000)
+                                / 10000) as u16
+                        }
                         _ => unreachable!(),
                     }
                 };
@@ -643,10 +923,27 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
                     only[0] += usize::from(a && !b);
                     only[1] += usize::from(b && !a);
                 }
-                eprintln!("binary {metric} threshold={threshold}: active={active:?}, only={only:?}, differing={}", only[0] + only[1]);
+                eprintln!(
+                    "binary {metric} threshold={threshold}: active={active:?}, only={only:?}, differing={}",
+                    only[0] + only[1]
+                );
             }
         }
-        assert!(mismatch(&pixels[0], &pixels[1], "same packets, different render pass boundaries").is_none(), "{}", mismatch(&pixels[0], &pixels[1], "same packets, different render pass boundaries").unwrap());
+        assert!(
+            mismatch(
+                &pixels[0],
+                &pixels[1],
+                "same packets, different render pass boundaries"
+            )
+            .is_none(),
+            "{}",
+            mismatch(
+                &pixels[0],
+                &pixels[1],
+                "same packets, different render pass boundaries"
+            )
+            .unwrap()
+        );
         return;
     }
     let expected = pollster::block_on(resident.export_panel_rgba_with_clear_async(
@@ -656,7 +953,11 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
         Color::WHITE,
     ))
     .unwrap();
-    let chunks = if std::env::var_os("FIGGY_STYLE_EXPORT_UNSPLIT").is_some() { vec![19] } else { vec![1, 3, 7] };
+    let chunks = if std::env::var_os("FIGGY_STYLE_EXPORT_UNSPLIT").is_some() {
+        vec![19]
+    } else {
+        vec![1, 3, 7]
+    };
     for chunk in chunks {
         let mut streamed = make();
         streamed

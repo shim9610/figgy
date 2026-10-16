@@ -391,10 +391,18 @@ impl std::error::Error for GpuErrorbarError {}
 #[cfg(target_arch = "wasm32")]
 async fn warm_extent_pipelines_js(device: &wgpu::Device) -> Result<(), GpuErrorbarError> {
     let mut observer = |_| {};
-    crate::init::prewarm_compute_entries_js(device, "gpu.extent.async", include_str!("gpu_errorbar.wgsl"),
-        &[("reduce_values", "reduce_values"), ("reduce_states", "reduce_states")], &mut observer)
-        .await.map_err(GpuErrorbarError::AsyncCompileFailed)
-
+    crate::init::prewarm_compute_entries_js(
+        device,
+        "gpu.extent.async",
+        include_str!("gpu_errorbar.wgsl"),
+        &[
+            ("reduce_values", "reduce_values"),
+            ("reduce_states", "reduce_states"),
+        ],
+        &mut observer,
+    )
+    .await
+    .map_err(GpuErrorbarError::AsyncCompileFailed)
 }
 
 /// Pipelines and layouts intended to be created once and owned by Renderer.
@@ -438,10 +446,13 @@ impl GpuErrorbarExtentEngine {
     ) -> Self {
         observe_value(observer, INIT_SCOPE, "limits", || device.limits());
         started(observer, INIT_SCOPE, "setup");
-        let shader = crate::gpu_compile::shader_module(&device, wgpu::ShaderModuleDescriptor {
-            label: Some("figgy series fit-bound shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("gpu_errorbar.wgsl").into()),
-        });
+        let shader = crate::gpu_compile::shader_module(
+            &device,
+            wgpu::ShaderModuleDescriptor {
+                label: Some("figgy series fit-bound shader"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("gpu_errorbar.wgsl").into()),
+            },
+        );
 
         let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
             binding,
@@ -464,36 +475,46 @@ impl GpuErrorbarExtentEngine {
             count: None,
         };
         let make_layout = |label| {
-            crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
-                label: Some(label),
-                entries: &[storage(0, true), storage(1, false), uniform],
-            })
+            crate::gpu_compile::bind_group_layout(
+                &device,
+                &wgpu::BindGroupLayoutDescriptor {
+                    label: Some(label),
+                    entries: &[storage(0, true), storage(1, false), uniform],
+                },
+            )
         };
         let values_layout = make_layout("figgy series fit values layout");
         let states_layout = make_layout("figgy series fit states layout");
 
-        let values_pipeline_layout =
-            crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
+        let values_pipeline_layout = crate::gpu_compile::pipeline_layout(
+            &device,
+            &wgpu::PipelineLayoutDescriptor {
                 label: Some("figgy series fit values pipeline layout"),
                 bind_group_layouts: &[Some(&values_layout)],
                 immediate_size: 0,
-            });
-        let states_pipeline_layout =
-            crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
+            },
+        );
+        let states_pipeline_layout = crate::gpu_compile::pipeline_layout(
+            &device,
+            &wgpu::PipelineLayoutDescriptor {
                 label: Some("figgy series fit states pipeline layout"),
                 bind_group_layouts: &[Some(&states_layout)],
                 immediate_size: 0,
-            });
+            },
+        );
         finished(observer, INIT_SCOPE, "setup");
         let make_pipeline = |label, layout, entry| {
-            crate::gpu_compile::compute_pipeline(&device, &wgpu::ComputePipelineDescriptor {
-                label: Some(label),
-                layout: Some(layout),
-                module: &shader,
-                entry_point: Some(entry),
-                compilation_options: crate::gpu_compile::workgroup_options(device),
-                cache: None,
-            })
+            crate::gpu_compile::compute_pipeline(
+                &device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(layout),
+                    module: &shader,
+                    entry_point: Some(entry),
+                    compilation_options: crate::gpu_compile::workgroup_options(device),
+                    cache: None,
+                },
+            )
         };
         let reduce_values = observe_value(observer, INIT_SCOPE, "reduce_values", || {
             make_pipeline(
@@ -529,10 +550,13 @@ impl GpuErrorbarExtentEngine {
         use crate::init::{observe_value_async, yield_init_frame};
         observe_value_async(observer, INIT_SCOPE, "limits", || device.limits()).await;
         started(observer, INIT_SCOPE, "setup");
-        let shader = crate::gpu_compile::shader_module(&device, wgpu::ShaderModuleDescriptor {
-            label: Some("figgy series fit-bound shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("gpu_errorbar.wgsl").into()),
-        });
+        let shader = crate::gpu_compile::shader_module(
+            &device,
+            wgpu::ShaderModuleDescriptor {
+                label: Some("figgy series fit-bound shader"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("gpu_errorbar.wgsl").into()),
+            },
+        );
 
         let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
             binding,
@@ -555,37 +579,47 @@ impl GpuErrorbarExtentEngine {
             count: None,
         };
         let make_layout = |label| {
-            crate::gpu_compile::bind_group_layout(&device, &wgpu::BindGroupLayoutDescriptor {
-                label: Some(label),
-                entries: &[storage(0, true), storage(1, false), uniform],
-            })
+            crate::gpu_compile::bind_group_layout(
+                &device,
+                &wgpu::BindGroupLayoutDescriptor {
+                    label: Some(label),
+                    entries: &[storage(0, true), storage(1, false), uniform],
+                },
+            )
         };
         let values_layout = make_layout("figgy series fit values layout");
         let states_layout = make_layout("figgy series fit states layout");
 
-        let values_pipeline_layout =
-            crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
+        let values_pipeline_layout = crate::gpu_compile::pipeline_layout(
+            &device,
+            &wgpu::PipelineLayoutDescriptor {
                 label: Some("figgy series fit values pipeline layout"),
                 bind_group_layouts: &[Some(&values_layout)],
                 immediate_size: 0,
-            });
-        let states_pipeline_layout =
-            crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
+            },
+        );
+        let states_pipeline_layout = crate::gpu_compile::pipeline_layout(
+            &device,
+            &wgpu::PipelineLayoutDescriptor {
                 label: Some("figgy series fit states pipeline layout"),
                 bind_group_layouts: &[Some(&states_layout)],
                 immediate_size: 0,
-            });
+            },
+        );
         finished(observer, INIT_SCOPE, "setup");
         yield_init_frame().await;
         let make_pipeline = |label, layout, entry| {
-            crate::gpu_compile::compute_pipeline(&device, &wgpu::ComputePipelineDescriptor {
-                label: Some(label),
-                layout: Some(layout),
-                module: &shader,
-                entry_point: Some(entry),
-                compilation_options: crate::gpu_compile::workgroup_options(device),
-                cache: None,
-            })
+            crate::gpu_compile::compute_pipeline(
+                &device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(layout),
+                    module: &shader,
+                    entry_point: Some(entry),
+                    compilation_options: crate::gpu_compile::workgroup_options(device),
+                    cache: None,
+                },
+            )
         };
         let reduce_values = observe_value_async(observer, INIT_SCOPE, "reduce_values", || {
             make_pipeline(
@@ -976,16 +1010,28 @@ pub struct GpuSeriesExtentTicket {
 }
 
 impl GpuSeriesExtentTicket {
-    pub(crate) const FIELD_BYTES: u64 = SERIES_STATE_BYTES * 3 + std::mem::size_of::<ParamsGpu>() as u64;
+    pub(crate) const FIELD_BYTES: u64 =
+        SERIES_STATE_BYTES * 3 + std::mem::size_of::<ParamsGpu>() as u64;
 
     /// Nonblocking counterpart used by renderer-owned streaming continuations.
     /// `None` means pending; `Some(None)` is a completed empty drawable extent.
-    pub(crate) fn try_resolve(&mut self) -> Result<Option<Option<GpuSeriesExtent>>, GpuErrorbarError> {
-        let Some(result) = self.core.receiver.try_recv().map_err(|_| GpuErrorbarError::ReadbackSenderDropped)? else {
+    pub(crate) fn try_resolve(
+        &mut self,
+    ) -> Result<Option<Option<GpuSeriesExtent>>, GpuErrorbarError> {
+        let Some(result) = self
+            .core
+            .receiver
+            .try_recv()
+            .map_err(|_| GpuErrorbarError::ReadbackSenderDropped)?
+        else {
             return Ok(None);
         };
         result.map_err(|error| GpuErrorbarError::ReadbackMapFailed(format!("{error:?}")))?;
-        let mapped = self.core.readback.slice(0..SERIES_STATE_BYTES).get_mapped_range()
+        let mapped = self
+            .core
+            .readback
+            .slice(0..SERIES_STATE_BYTES)
+            .get_mapped_range()
             .map_err(|error| GpuErrorbarError::ReadbackMapFailed(format!("{error:?}")))?;
         let state = bytemuck::pod_read_unaligned::<SeriesStateGpu>(&mapped);
         drop(mapped);
