@@ -1155,7 +1155,12 @@ pub(crate) fn draw_precise_axis_segment(
     width: f32,
 ) {
     draw_axis_segment(
-        canvas, p0, p1, &Paint::stroke(&color, width), &DecoStroker::Precise, "bounded_axis",
+        canvas,
+        p0,
+        p1,
+        &Paint::stroke(&color, width),
+        &DecoStroker::Precise,
+        "bounded_axis",
     );
 }
 
@@ -3451,9 +3456,15 @@ mod tests {
         let rgba = raster(cfg);
         let vertical = matches!(bar.side, Side::Left | Side::Right);
         let (lo, hi) = if vertical {
-            (rect.y.ceil() as u32 + 1, (rect.y + rect.height).floor() as u32 - 1)
+            (
+                rect.y.ceil() as u32 + 1,
+                (rect.y + rect.height).floor() as u32 - 1,
+            )
         } else {
-            (rect.x.ceil() as u32 + 1, (rect.x + rect.width).floor() as u32 - 1)
+            (
+                rect.x.ceil() as u32 + 1,
+                (rect.x + rect.width).floor() as u32 - 1,
+            )
         };
         let along: Vec<u32> = if vertical {
             (lo..hi).rev().collect()

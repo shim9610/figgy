@@ -84,13 +84,13 @@ pub use pick::{PickedData, PickedPoint, PointColumnLookup, PointPickOptions, pic
 pub use preset::{AxisPreset, ColorCycle};
 pub use render_warning::{RenderWarning, SpacingRejection, WarningAxis};
 pub use renderer::{
-    PreparationFeature, PipelinePreparation, PreparedPipelines,
     AxisViewState, ChartDrawItem, ChartId, ChartRenderStamp, ChartStyle, ChartView, ChartViewState,
-    FitCommitToken, GpuPickRequest, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE, PreparedFrame, RasterImage,
-    RegisteredChartDrawItem, RenderRevision, Renderer, RendererDevice, RendererLoadDemo,
-    RendererVisualStamp, Series, SeriesDrawInfo, WebDerivedSnapshot, WebDerivedStamp,
-    WindowedRenderer, StreamingOperation, StreamingSelectionRequest, StreamingSelectionTicket, clamp_export_scale, display_config_for_surface, dpi_to_scale, draw_style_supports, encode_png,
-    fit_display_panel,
+    FitCommitToken, GpuPickRequest, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE, PipelinePreparation,
+    PreparationFeature, PreparedFrame, PreparedPipelines, RasterImage, RegisteredChartDrawItem,
+    RenderRevision, Renderer, RendererDevice, RendererLoadDemo, RendererVisualStamp, Series,
+    SeriesDrawInfo, StreamingOperation, StreamingSelectionRequest, StreamingSelectionTicket,
+    WebDerivedSnapshot, WebDerivedStamp, WindowedRenderer, clamp_export_scale,
+    display_config_for_surface, dpi_to_scale, draw_style_supports, encode_png, fit_display_panel,
 };
 pub use resize::{Resizable, ResizeHandle};
 pub use select::{

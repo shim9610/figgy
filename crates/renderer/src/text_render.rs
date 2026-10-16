@@ -1550,7 +1550,10 @@ mod tests {
         let resolved_count = fonts.resolved_faces.len();
         let second_face = fonts.lookup("Liberation Sans", false, false).unwrap();
         assert_eq!(second_face.data.as_ptr(), first_face.data.as_ptr());
-        assert_eq!(second_face.key, first_face.key, "one parsed face, one cache key");
+        assert_eq!(
+            second_face.key, first_face.key,
+            "one parsed face, one cache key"
+        );
         assert_eq!(
             fonts.resolved_faces.len(),
             resolved_count,

@@ -17169,9 +17169,7 @@ mod tests {
             error_bar_style_index_column: None,
             error_bar_style_overrides: None,
         };
-        let sigma = || crate::data_config::ErrorRef::Symmetric {
-            column: "e".into(),
-        };
+        let sigma = || crate::data_config::ErrorRef::Symmetric { column: "e".into() };
         let errorbar_types = [
             DataRenderType::ScatterErrorbarX {
                 scatter: scatter.clone(),
@@ -17218,7 +17216,10 @@ mod tests {
             assert!(draw_style_supports(&DrawStyle::Precise, rt), "{rt:?}");
             assert!(draw_style_supports(&sketch, rt), "sketch {rt:?}");
             assert!(draw_style_supports(&milkyway, rt), "milkyway {rt:?}");
-            assert!(!draw_style_supports(&constellation, rt), "constellation {rt:?}");
+            assert!(
+                !draw_style_supports(&constellation, rt),
+                "constellation {rt:?}"
+            );
         }
 
         for rt in [&line_rt, &scatter_rt, &marker_line_rt]
@@ -17234,7 +17235,10 @@ mod tests {
         for rt in &precise_only {
             assert!(!draw_style_supports(&sketch, rt), "sketch {rt:?}");
             assert!(!draw_style_supports(&milkyway, rt), "milkyway {rt:?}");
-            assert!(!draw_style_supports(&constellation, rt), "constellation {rt:?}");
+            assert!(
+                !draw_style_supports(&constellation, rt),
+                "constellation {rt:?}"
+            );
         }
         assert!(draw_style_supports(&constellation, &marker_line_rt));
         assert!(!draw_style_supports(&constellation, &line_rt));
