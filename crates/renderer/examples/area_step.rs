@@ -1,11 +1,12 @@
 //! Area fills and step lines on Cartesian line series: a filled area under a
 //! line, a confidence band between two lines, and the three step modes.
 //! cargo run --locked -p figgy-renderer --example area_step -- target/area-step
+#[allow(dead_code)]
 #[path = "support/gallery.rs"]
 mod gallery;
 
 use renderer::{
-    Chart, Color, DataRenderType, SeriesConfig,
+    Color, DataRenderType, SeriesConfig,
     data_config::{DataLineStyleConfig, LineFill, LineInterpolation},
 };
 

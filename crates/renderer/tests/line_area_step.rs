@@ -185,7 +185,8 @@ fn expect(img: &RasterImage, chart: &Chart, x: f64, y: f64, pred: fn(&[u8]) -> b
     if pred(&p) {
         return;
     }
-    let line_ink = pred as usize == is_red as usize || pred as usize == is_blue as usize;
+    let line_ink = std::ptr::fn_addr_eq(pred, is_red as fn(&[u8]) -> bool)
+        || std::ptr::fn_addr_eq(pred, is_blue as fn(&[u8]) -> bool);
     if line_ink {
         let hit =
             (-1..=1).any(|dy| (-1..=1).any(|dx| pred(&pixel(img, px + dx as f32, py + dy as f32))));
