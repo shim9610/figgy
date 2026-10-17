@@ -521,8 +521,8 @@ cd crates/web && python -m http.server 8137   # wasm은 file:// 불가
 | 컬럼 등록·교체·제거 | `register_column_f32/f64(id, TypedArray)`는 새 ID를 등록한다. `register_columns_f32/f64(ids, TypedArray, valuesPerColumn)`은 연속된 배열로 새 컬럼을 한 번에 등록하며 전체 성공 또는 전체 실패한다. `update_register_column_f32/f64(id, TypedArray)`는 기존 ID를 매번 업로드해 교체한다. `remove_column(id)`로 제거한다. |
 | 시리즈 | `add_line_series(id, x, y, width, label)`은 추가 또는 교체, `remove_series(id)`는 제거다. |
 | 범례 | `set_series_label(id, label)`로 텍스트를 바꾼다. 줄바꿈과 유니코드 첨자를 지원하며 빈 문자열이면 해당 행을 지운다. `set_series` / `apply_color_cycle`은 인식 가능한 자동 기호만 갱신하고 사용자 텍스트는 보존한다. 전체 재생성은 `reset_legend_from_series_labels()`를 호출한다. 직접 편집할 때는 `legend.content`의 줄바꿈·탭·고정 너비 기호·구간별 색을 사용한다. 기호의 `field_em`은 2.0em이며 선은 `rule:true`, 점선 패턴은 `rule_dash`로 지정한다. `content.font` / `font_size`와 구간별 설정은 그리기 시 적용한다. |
-| 위치 판정 | `hit_test(x, y)`는 요소 ID 또는 `null`을 반환한다. 데이터 영역·축·눈금 라벨·제목·색상 막대와 그 세부 요소를 구분한다. 선택 상태 자체는 바꾸지 않는다. 위치는 렌더러의 레이아웃에서 계산하므로 호스트가 별도로 상자를 관리할 필요가 없다. 등록 요소는 활성 레이어를 따른다. 오버레이가 활성이면 `overlay_<n>:axis_right`, `overlay_<n>:tick_labels_right`, `overlay_<n>:axis_title_right`, `overlay_<n>:legend`가 답하고 기본 Y 축은 답하지 않는다. |
-| 레이어 | `set_active_layer(json)`은 `"Base"`, `{ "Overlay": n }`, `"Annotations"` JSON으로 상호작용 대상 레이어를 정하고 히트 맵을 그 레이어로 다시 만든다. 레이어가 바뀌면 요소 선택을 지운다. 범위 밖 오버레이 인덱스는 `"Base"`로 저장하며 저장된 값을 JSON으로 돌려준다. `active_layer()`는 현재 값을 JSON으로 돌려준다. `auto_fit_overlay_y(layer, col, pad)`는 `auto_fit_y`와 같은 규칙으로 오버레이 Y 축을 맞춘다. 오버레이 자체(`overlays` 배열)는 `get_config` / `set_config`로 편집한다. 그려지는 픽셀은 활성 레이어에 의존하지 않는다. |
+| 위치 판정 | `hit_test(x, y)`는 요소 ID 또는 `null`을 반환한다. 데이터 영역·축·눈금 라벨·제목·색상 막대와 그 세부 요소를 구분한다. 선택 상태 자체는 바꾸지 않는다. 위치는 렌더러의 레이아웃에서 계산하므로 호스트가 별도로 상자를 관리할 필요가 없다. 등록 요소는 활성 레이어를 따른다. 오버레이가 활성이면 `overlay_<n>:axis_right`, `overlay_<n>:tick_labels_right`, `overlay_<n>:axis_title_right`, `overlay_<n>:legend`가 답하고 기본 Y 축은 답하지 않는다. `"Annotations"`가 활성이고 주석 층이 보이면 그려진 주석 항목이 공유 요소 위에서 `annotation_<n>`으로 답하고, 다른 레이어에서는 클릭이 주석을 통과한다. `decoration_bounds(id)`는 `annotation_<n>`도 받아 그 항목의 선택 상자를 돌려준다. |
+| 레이어 | `set_active_layer(json)`은 `"Base"`, `{ "Overlay": n }`, `"Annotations"` JSON으로 상호작용 대상 레이어를 정하고 히트 맵을 그 레이어로 다시 만든다. 레이어가 바뀌면 요소 선택과 주석 선택을 지운다(데이터 선택은 유지). 범위 밖 오버레이 인덱스는 `"Base"`로 저장하며 저장된 값을 JSON으로 돌려준다. `active_layer()`는 현재 값을 JSON으로 돌려준다. `auto_fit_overlay_y(layer, col, pad)`는 `auto_fit_y`와 같은 규칙으로 오버레이 Y 축을 맞춘다. 오버레이 자체(`overlays` 배열)는 `get_config` / `set_config`로 편집한다. 그려지는 픽셀은 활성 레이어에 의존하지 않는다. |
 | 데이터 피킹 | `pick_point(x, y, max_distance_px)`는 `Promise<{ source_id: string \| null, series_id, point_index, distance_px } \| null>`을 반환한다. 점은 스타일을 반영한 기호 크기, 선은 선분과의 거리로 판정하고 가까운 끝점을 고른다. 오차 막대 몸통·끝선은 대상이 아니다. 좌표는 반환된 인덱스로 원본 컬럼에서 조회한다. |
 | 전체 사전 준비 | `prewarm_all_with_progress(callback)`은 상주 렌더링·스타일·경로 길이·범위·피킹·등고선용 캐시를 생성하고 `{ scope, stage, phase }`를 알린다. `prewarm_all()`은 콜백 없이 같은 작업을 한다. 둘 다 연결 세대를 확인하는 작업 직렬화 장치를 사용한다. `warm_up()`은 첫 프레임 대기용 호환 메서드다. |
 | 피킹 준비 | 준비 완료 후 백그라운드에서 실행한다. `prewarm_gpu_picking()`으로 미리 준비하거나 재시도할 수 있다. 저수준 API와 래퍼 모두 렌더러의 같은 파이프라인과 차트 캐시를 사용한다. |
@@ -531,7 +531,7 @@ cd crates/web && python -m http.server 8137   # wasm은 file:// 불가
 | 피킹 기준 | 최종 장식 픽셀 대신 원본 점·선분을 기준으로 한다. 산점도는 지정한 기호 반지름을, 선은 인접 원본 점 사이의 직선을 사용한다. 점선의 공백, 사각 끝 모양, 스케치의 흔들림은 판정 경로에 영향을 주지 않는다. |
 | 설정 읽기·쓰기 | `get_config()` / `set_config(json)`, `get_series()` / `set_series(json)`. `set_colorbar_axis(json)`은 색상 막대의 전체 `AxisOptions`를 교체한다. |
 | 프리셋 | `apply_axis_preset(AxisPreset)`, `apply_color_cycle(ColorCycle)`, `color_cycle_css(cycle)`. |
-| 포인터 입력 | 웹 래퍼가 포인터 이벤트를 처리한다. 직접 전달할 때는 `on_press(x, y)`, `on_move(dx, dy)`, `on_release()`, `has_selection()`을 사용한다. |
+| 포인터 입력 | 웹 래퍼가 포인터 이벤트를 처리한다. 직접 전달할 때는 `on_press(x, y)`, `on_move(dx, dy)`, `on_release()`, `has_selection()`을 사용한다. 이 경로는 활성 레이어를 따른다. `"Annotations"`가 활성이면 선택된 주석의 핸들이 먼저 답하고, 그다음 위치의 주석 항목을 선택해(요소 선택은 지움) `on_move`로 끌며, 주석이 없는 곳을 누르면 아래 공유 요소로 넘어가고 주석 선택을 지운다. `has_selection()`은 요소나 주석이 선택돼 있으면 `true`다. |
 | 선택 표시 | `set_picked_points(json)`은 `PickedPointsConfig` 또는 `null` JSON 문자열로 `Config.picked_points`만 교체한다. `set_picked_data(json)`는 점·막대·셀·등고선 선택을 같은 방식으로 바꾼다. `null`은 표시를 지운다. 출처·인덱스만 보관하며 원본 좌표의 CPU 복사본은 만들지 않는다. |
 | 배경 | `set_clear_color(r, g, b, a)`는 선형 RGBA를 성분별 0~1로 제한하고 다시 그리기를 요청한다. 화면 상태만 바꾸므로 Config JSON이나 축 이미지는 갱신하지 않는다. |
 | 출력 | `export_png(scale)`은 PNG의 `Uint8Array`를 비동기로 반환한다. 문서 출력이므로 오버레이 레이어도 함께 합성한다. |
@@ -761,10 +761,21 @@ it is host state like the decoration selection, and selecting an annotation
 clears the decoration selection and vice versa. A bounded chart with a visible
 span is drawn with the frame's `HostClear` background and the chart background
 as the clear colour, so the underlay shows below the bars; charts without one
-keep the opaque frame and white clear they always had. Routing `on_press` /
-`hit_decoration` to annotations by `active_layer` follows the overlay layers
-(#11); until then hosts query `hit_annotation` first when the annotation tool
-is active.
+keep the opaque frame and white clear they always had.
+
+The pointer methods follow the active layer. `FiggyBoundedChart` gains
+`set_active_layer(json)` / `active_layer()` (`"Base"` or `"Annotations"`; an
+`{ "Overlay": n }` is stored as `"Base"`, and the stored layer is returned as
+JSON). While `"Annotations"` is active and the layer is shown,
+`hit_decoration` answers drawn items as `"annotation_<n>"` above every
+decoration, and `select_decoration`, `resize_handle` and `drag` accept that id;
+on `"Base"` the items are not part of the route and clicks pass through them.
+`pick` and `hover` keep addressing bars, boxes and slices on every layer. A
+layer change clears `decorations.selected` (an annotation included) and keeps
+the data selection; the frame and its label raster are reused. On `FiggyChart`
+the same route drives `hit_test`, `on_press` / `on_move` and
+`decoration_bounds`, as listed in the method table above. The index-based
+annotation methods keep working on every layer.
 
 For Cartesian hosts, `FiggyChart.decoration_bounds(id)` returns measured bounds
 and resize handles in physical canvas pixels. `step_selection(dx, dy)` navigates

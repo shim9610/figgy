@@ -8,7 +8,7 @@ use crate::annotation::{
 use crate::config::LegendCorner;
 use crate::layout::{ChartArea, NudgeResult, RectF};
 use crate::text::RichText;
-use crate::{AnnotationSkip, RenderWarning};
+use crate::{AnnotationSkip, LayerRef, RenderWarning};
 
 const PANEL: Rect = Rect {
     x: 0,
@@ -562,5 +562,334 @@ fn export_scales_annotations_and_reports_unplaceable_items() {
                 "item {index}: {b:?} vs {a:?}"
             );
         }
+    }
+}
+
+// Pointer routing by the active layer (#12 step 4).
+
+/// The annotated chart, alone or as a layered document with one overlay
+/// axis on the right; the overlay scales no series.
+fn routed_documents() -> [Config; 2] {
+    let single = annotated_config();
+    let mut layered = single.clone();
+    let mut overlay = crate::OverlayLayer::default();
+    overlay.y_axis.min = 0.0;
+    overlay.y_axis.max = 40.0;
+    overlay.y_axis.major_spacing = 10.0;
+    overlay.y_axis.out_margin = 30.0;
+    overlay.y_axis.label_style.font_size = 10.0;
+    layered.overlays.push(overlay);
+    [single, layered]
+}
+
+fn centre(r: RectF) -> [f32; 2] {
+    [r.x + r.width * 0.5, r.y + r.height * 0.5]
+}
+
+/// The stable name of a routed hit.
+fn routed_name(map: &crate::HitMap, hit: Option<crate::LayerHit>) -> Option<String> {
+    match hit? {
+        crate::LayerHit::Annotation { index, .. } => {
+            Some(crate::DecorationId::Annotation(index).element_id())
+        }
+        crate::LayerHit::Element(id) => map.get(id).map(|e| e.element_id()),
+    }
+}
+
+/// A brand-new renderer and view for `config` whose overlay carries the
+/// selection box of annotation `selected`, painted once.
+fn fresh_selected(config: &Config, selected: Option<usize>) -> Vec<u8> {
+    let (mut r, id) = fixture(config);
+    let mut view = r
+        .create_chart_view(&Chart::new(config.clone()), PANEL)
+        .unwrap();
+    r.refresh_annotations(&mut view, &Chart::new(config.clone()), PANEL, selected)
+        .unwrap();
+    paint(&mut r, id, &view)
+}
+
+// While `Annotations` is active the drawn items sit on top of the shared
+// elements; on `Base` and on an overlay they are not registered, so the same
+// point reaches the element below (the legend under the text box). The base
+// Y axes answer only on `Base`, overlay elements only on their overlay, and
+// a hidden layer lets every click through. Routing is the same at 1x and 2x:
+// the scaled view's items sit at the doubled points.
+#[test]
+fn active_layer_routes_pointer_hits_to_annotations_and_lets_others_pass() {
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for document in routed_documents() {
+        let layered = !document.overlays.is_empty();
+        let (r, _) = fixture(&document);
+        let base_view = r
+            .create_chart_view(&Chart::new(document.clone()), PANEL)
+            .unwrap();
+        let items: Vec<(usize, RectF)> = base_view
+            .annotation_map()
+            .entries()
+            .map(|(id, e)| (e.index, base_view.annotation_map().bounds(id).unwrap()))
+            .collect();
+        assert_eq!(items.len(), 4);
+        let axis_left = {
+            let map = crate::HitMap::standard_chart();
+            let id = map.find("axis_left").unwrap();
+            map.get(id)
+                .unwrap()
+                .bounds(
+                    &document,
+                    &crate::CpuTextMeasure::for_style(&document.draw_style),
+                )
+                .unwrap()
+        };
+        let mut layers = vec![LayerRef::Base, LayerRef::Annotations];
+        if layered {
+            layers.push(LayerRef::Overlay(0));
+        }
+        for scale in [1.0f32, 2.0] {
+            let mut config = document.scaled(scale);
+            let view = r
+                .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
+                .unwrap();
+            let at = |p: [f32; 2]| [p[0] * scale, p[1] * scale];
+            for layer in &layers {
+                config.set_active_layer(*layer);
+                let map = crate::HitMap::for_active_layer(&config);
+                // The text box covers the legend: the legend's centre is
+                // under both at every scale.
+                let legend = centre(
+                    map.get(map.find("legend").unwrap())
+                        .unwrap()
+                        .bounds(
+                            &config,
+                            &crate::CpuTextMeasure::for_style(&config.draw_style),
+                        )
+                        .unwrap(),
+                );
+                let route =
+                    |p: [f32; 2]| routed_name(&map, view.hit_test_active_layer(&config, &map, p));
+                // Registration sets: annotation items never enter the
+                // element map, the base Y axes are registered on `Base`
+                // only and the overlay's axis on its own layer only.
+                for index in 0..4 {
+                    assert!(map.find(&format!("annotation_{index}")).is_none());
+                }
+                assert_eq!(map.find("axis_left").is_some(), *layer == LayerRef::Base);
+                assert_eq!(
+                    map.find("overlay_0:axis_right").is_some(),
+                    *layer == LayerRef::Overlay(0)
+                );
+                assert!(map.find("legend").is_some() && map.find("data_area").is_some());
+                let left = route(at(centre(axis_left)));
+                assert_eq!(
+                    left.as_deref() == Some("axis_left"),
+                    *layer == LayerRef::Base,
+                    "scale {scale} {layer:?}: {left:?} on the left axis"
+                );
+                if *layer == LayerRef::Annotations {
+                    for (index, bounds) in &items {
+                        let hit = view.hit_test_active_layer(&config, &map, at(centre(*bounds)));
+                        let Some(crate::LayerHit::Annotation { index: picked, id }) = hit else {
+                            panic!("scale {scale}: item {index} centre routed to {hit:?}");
+                        };
+                        // Items may overlap; the topmost wins and must contain the point.
+                        assert!(
+                            picked == *index
+                                || view
+                                    .annotation_map()
+                                    .bounds(id)
+                                    .unwrap()
+                                    .contains(at(centre(*bounds))[0], at(centre(*bounds))[1]),
+                        );
+                    }
+                    assert_eq!(
+                        route(legend).as_deref(),
+                        Some("annotation_2"),
+                        "scale {scale}: the text box must sit above the legend"
+                    );
+                    // A hidden layer is out of the route.
+                    let mut hidden = config.clone();
+                    hidden.annotations.visible = false;
+                    let hit = view.hit_test_active_layer(&hidden, &map, legend);
+                    assert!(
+                        !matches!(hit, Some(crate::LayerHit::Annotation { .. })),
+                        "{hit:?}"
+                    );
+                } else {
+                    for (_, bounds) in &items {
+                        let hit = view.hit_test_active_layer(&config, &map, at(centre(*bounds)));
+                        assert!(
+                            !matches!(hit, Some(crate::LayerHit::Annotation { .. })),
+                            "scale {scale} {layer:?}: an annotation answered"
+                        );
+                    }
+                    assert_eq!(
+                        route(legend).as_deref(),
+                        Some("legend"),
+                        "scale {scale} {layer:?}: the click must pass through to the legend"
+                    );
+                }
+            }
+        }
+    }
+}
+
+// Switching to the annotation layer, selecting and dragging an item through
+// the route and switching back touch neither the data nor any grid or
+// decoration texture: only the annotation layer re-rasterizes, and the
+// cached view paints the bytes of a renderer that only ever saw the final
+// state. Dragged anchors keep their kind and survive a JSON round trip.
+#[test]
+fn layer_switches_and_routed_drags_keep_the_other_caches_and_paint_fresh_bytes() {
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for config in routed_documents() {
+        let (mut r, id) = fixture(&config);
+        let mut view = r
+            .create_chart_view(&Chart::new(config.clone()), PANEL)
+            .unwrap();
+        let first = paint(&mut r, id, &view);
+        assert_eq!(first, fresh(&config));
+        let stamps = view.layer_stamps();
+        let generations = view.layer_raster_generations();
+        let chrome_unchanged = |view: &ChartView| {
+            let now = view.layer_stamps();
+            assert_eq!((now.grid, now.decoration), (stamps.grid, stamps.decoration));
+            assert_eq!(view.layer_raster_generations(), generations);
+        };
+
+        // 1) Entering the layer: a draw, no raster of any kind.
+        let before = r.chart_render_stamp(id).unwrap();
+        assert_eq!(
+            r.set_active_layer(id, LayerRef::Annotations).unwrap(),
+            LayerRef::Annotations
+        );
+        let after = r.chart_render_stamp(id).unwrap();
+        assert!(after.needs_draw_since(Some(&before)));
+        assert!(!after.needs_raster_since(Some(&before)));
+        assert!(!after.needs_annotation_raster_since(Some(&before)));
+        let active = r.chart_config(id).unwrap().clone();
+        assert_eq!(paint(&mut r, id, &view), first);
+        assert_eq!(first, fresh(&active));
+        chrome_unchanged(&view);
+
+        // 2) A routed press selects the text box: an annotation refresh only.
+        let map = crate::HitMap::for_active_layer(&active);
+        let text_box = view
+            .annotation_map()
+            .bounds(view.annotation_map().find(2).unwrap())
+            .unwrap();
+        let Some(crate::LayerHit::Annotation { index: 2, id: hit }) =
+            view.hit_test_active_layer(&active, &map, centre(text_box))
+        else {
+            panic!("the text box did not answer");
+        };
+        r.refresh_annotations(&mut view, &Chart::new(active.clone()), PANEL, Some(2))
+            .unwrap();
+        chrome_unchanged(&view);
+        assert_eq!(view.layer_stamps().annotations, stamps.annotations + 1);
+        let selected = paint(&mut r, id, &view);
+        assert_ne!(selected, first);
+        assert_eq!(selected, fresh_selected(&active, Some(2)));
+
+        // 3) Drag the routed item and the arrow's `to` handle.
+        let annotations = view.annotation_map();
+        let space = *annotations.space();
+        let mut edited = active.clone();
+        assert_eq!(
+            annotations.drag_by(&mut edited.annotations, hit, 9.0, 7.0),
+            Some(NudgeResult::Moved)
+        );
+        let to_px = space
+            .anchor_to_px(&Anchor::Data { x: 1.8, y: 1.0 })
+            .unwrap();
+        let Some(crate::LayerHit::Annotation {
+            index: 3,
+            id: arrow,
+        }) = view.hit_test_active_layer(&active, &map, to_px)
+        else {
+            panic!("the arrow tip did not answer");
+        };
+        let handle = annotations
+            .hit_resize_handle(arrow, to_px)
+            .expect("endpoint handle");
+        assert_eq!(
+            annotations.resize_by(&mut edited.annotations, arrow, handle, -10.0, 5.0),
+            Some(NudgeResult::Moved)
+        );
+        match (
+            &edited.annotations.items[2].kind,
+            &edited.annotations.items[3].kind,
+        ) {
+            (AnnotationKind::Text { anchor, .. }, AnnotationKind::Arrow { from, to, .. }) => {
+                assert_eq!(anchor.kind(), AnchorKind::Ratio);
+                let moved = space.anchor_to_px(anchor).unwrap();
+                assert!((moved[0] - text_box.x - 9.0).abs() < 1e-2);
+                assert!((moved[1] - text_box.y - 7.0).abs() < 1e-2);
+                assert_eq!(*from, Anchor::Data { x: 1.2, y: 0.2 });
+                assert_eq!(to.kind(), AnchorKind::Data);
+                let tip = space.anchor_to_px(to).unwrap();
+                assert!((tip[0] - to_px[0] + 10.0).abs() < 1e-2);
+                assert!((tip[1] - to_px[1] - 5.0).abs() < 1e-2);
+            }
+            _ => unreachable!(),
+        }
+        let before = r.chart_render_stamp(id).unwrap();
+        r.set_chart_config(id, edited.clone()).unwrap();
+        let after = r.chart_render_stamp(id).unwrap();
+        assert!(!after.needs_raster_since(Some(&before)));
+        assert!(after.needs_annotation_raster_since(Some(&before)));
+        r.refresh_annotations(&mut view, &Chart::new(edited.clone()), PANEL, Some(2))
+            .unwrap();
+        chrome_unchanged(&view);
+        assert_eq!(paint(&mut r, id, &view), fresh_selected(&edited, Some(2)));
+        #[cfg(feature = "serde")]
+        {
+            let json = serde_json::to_string(&edited).unwrap();
+            assert!(json.contains(r#""active_layer":"Annotations""#), "{json}");
+            let restored: Config = serde_json::from_str(&json).unwrap();
+            assert_eq!(restored.active_layer, LayerRef::Annotations);
+            for (a, b) in restored
+                .annotations
+                .items
+                .iter()
+                .zip(&edited.annotations.items)
+            {
+                assert_eq!(
+                    std::mem::discriminant(&a.kind),
+                    std::mem::discriminant(&b.kind)
+                );
+            }
+            assert_eq!(
+                fresh_selected(&restored, Some(2)),
+                fresh_selected(&edited, Some(2))
+            );
+        }
+
+        // 4) Leaving the layer: the host drops the annotation selection with
+        //    it; still no grid or decoration raster.
+        let before = r.chart_render_stamp(id).unwrap();
+        assert_eq!(
+            r.set_active_layer(id, LayerRef::Base).unwrap(),
+            LayerRef::Base
+        );
+        let after = r.chart_render_stamp(id).unwrap();
+        assert!(!after.needs_raster_since(Some(&before)));
+        assert!(!after.needs_annotation_raster_since(Some(&before)));
+        let last = r.chart_config(id).unwrap().clone();
+        r.refresh_annotations(&mut view, &Chart::new(last.clone()), PANEL, None)
+            .unwrap();
+        chrome_unchanged(&view);
+        assert_eq!(paint(&mut r, id, &view), fresh(&last));
+        let map = crate::HitMap::for_active_layer(&last);
+        let moved = view
+            .annotation_map()
+            .bounds(view.annotation_map().find(2).unwrap())
+            .unwrap();
+        assert!(!matches!(
+            view.hit_test_active_layer(&last, &map, centre(moved)),
+            Some(crate::LayerHit::Annotation { .. })
+        ));
     }
 }

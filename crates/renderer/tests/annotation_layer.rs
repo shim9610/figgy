@@ -234,10 +234,7 @@ macro_rules! family_contract {
     };
 }
 
-family_contract!(
-    categorical_annotation_layer_contract,
-    CategoricalRenderer,
-    CategoricalChart,
+fn annotated_categorical() -> CategoricalChart {
     CategoricalChart {
         title: "Annotated bars".into(),
         categories: vec![
@@ -271,14 +268,10 @@ family_contract!(
             ],
         },
         ..Default::default()
-    },
-    |c| c.annotations.items[0] = span(AnnotationAxis::X, 1.5, 2.5)
-);
+    }
+}
 
-family_contract!(
-    boxplot_annotation_layer_contract,
-    BoxPlotRenderer,
-    BoxPlotChart,
+fn annotated_boxplot() -> BoxPlotChart {
     BoxPlotChart {
         title: "Annotated boxes".into(),
         value_title: "Value".into(),
@@ -317,14 +310,10 @@ family_contract!(
             ],
         },
         ..Default::default()
-    },
-    |c| c.annotations.items[0] = span(AnnotationAxis::X, 40., 55.)
-);
+    }
+}
 
-family_contract!(
-    radial_annotation_layer_contract,
-    RadialRenderer,
-    RadialChart,
+fn annotated_radial() -> RadialChart {
     RadialChart {
         title: "Annotated donut".into(),
         kind: RadialKind::Donut { inner_radius: 0.5 },
@@ -345,8 +334,245 @@ family_contract!(
             ],
         },
         ..Default::default()
-    },
+    }
+}
+
+family_contract!(
+    categorical_annotation_layer_contract,
+    CategoricalRenderer,
+    CategoricalChart,
+    annotated_categorical(),
+    |c| c.annotations.items[0] = span(AnnotationAxis::X, 1.5, 2.5)
+);
+
+family_contract!(
+    boxplot_annotation_layer_contract,
+    BoxPlotRenderer,
+    BoxPlotChart,
+    annotated_boxplot(),
+    |c| c.annotations.items[0] = span(AnnotationAxis::X, 40., 55.)
+);
+
+family_contract!(
+    radial_annotation_layer_contract,
+    RadialRenderer,
+    RadialChart,
+    annotated_radial(),
     |c| c.annotations.items[0] = boxed_text(Anchor::Ratio { x: 0.7, y: 0.8 })
+);
+
+/// The anchors of every item, by kind only: a drag must keep each anchor's
+/// kind.
+fn anchor_kinds(layer: &AnnotationLayer) -> Vec<Vec<AnchorKind>> {
+    layer
+        .items
+        .iter()
+        .map(|item| match &item.kind {
+            AnnotationKind::Text { anchor, .. } => vec![anchor.kind()],
+            AnnotationKind::Arrow { from, to, .. } => vec![from.kind(), to.kind()],
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
+/// The pointer route of every family (#12 step 4): the annotation items sit
+/// on top of every decoration while `Annotations` is active and are not part
+/// of the route otherwise; a layer switch reuses the frame and both caches
+/// and exports the same bytes as a fresh renderer; it clears the decoration
+/// selection and keeps the data selection; a routed handle drag keeps the
+/// anchors' kinds and round-trips JSON. Logical routing is identical at 1x
+/// and 2x.
+macro_rules! family_routing {
+    ($name:ident, $renderer:ident, $chart:ident, $build:expr, $select_data:expr, $data_selected:expr) => {
+        #[test]
+        fn $name() {
+            let _guard = LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            fn fresh(c: &$chart, scale: f32) -> Vec<u8> {
+                let mut r = $renderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+                r.export_rgba(c, SIZE, scale).unwrap().rgba
+            }
+            let select_data: fn(&mut $chart) = $select_data;
+            let data_selected: fn(&$chart) -> bool = $data_selected;
+            let mut r = $renderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+            let mut routes = Vec::new();
+            for scale in [1., 2.] {
+                let mut c: $chart = $build;
+                assert_eq!(c.active_layer(), LayerRef::Base);
+                let f = r.prepare(&c, SIZE, scale).unwrap();
+                let a = r.prepare_annotations(&c, SIZE, scale).unwrap();
+                let decorations = f.decorations();
+                let annotations = a.annotations();
+                let centre = |b: RectF| [b.x + b.width * 0.5, b.y + b.height * 0.5];
+                let items: Vec<(usize, [f32; 2])> = annotations
+                    .entries()
+                    .map(|(id, e)| (e.index, centre(annotations.bounds(id).unwrap())))
+                    .collect();
+                assert_eq!(items.len(), c.annotations.items.len());
+                let (title_id, title) = decorations
+                    .entries()
+                    .find(|(_, e)| e.id == DecorationId::ChartTitle)
+                    .map(|(id, _)| (id, centre(decorations.bounds(id).unwrap())))
+                    .expect("title is registered");
+                assert!(
+                    annotations.hit_test(title).is_none(),
+                    "an item covers the title"
+                );
+                let route =
+                    |layer: LayerRef, p: [f32; 2]| a.hit_test_active_layer(layer, decorations, p);
+
+                // `Base` and an out-of-range overlay: items are not routed.
+                for layer in [LayerRef::Base, LayerRef::Overlay(3)] {
+                    for (index, p) in &items {
+                        assert!(
+                            !matches!(route(layer, *p), Some(LayerHit::Annotation { .. })),
+                            "scale {scale} {layer:?}: item {index} answered"
+                        );
+                        assert_eq!(
+                            route(layer, *p),
+                            decorations.hit_test(*p).map(LayerHit::Element)
+                        );
+                    }
+                    assert_eq!(route(layer, title), Some(LayerHit::Element(title_id)));
+                }
+
+                // Entering the layer reuses the frame and both caches and
+                // exports the bytes of a fresh renderer; the decoration
+                // selection is cleared, the data selection kept.
+                let before = r.export_rgba(&c, SIZE, scale).unwrap().rgba;
+                c.decorations.selected = Some(DecorationId::ChartTitle);
+                select_data(&mut c);
+                assert_eq!(
+                    c.set_active_layer(LayerRef::Annotations),
+                    LayerRef::Annotations
+                );
+                assert_eq!(c.decorations.selected, None);
+                assert!(data_selected(&c));
+                select_data(&mut c);
+                let mut plain = c.clone();
+                plain.active_layer = LayerRef::Base;
+                assert!(Arc::ptr_eq(
+                    &r.prepare(&plain, SIZE, scale).unwrap(),
+                    &r.prepare(&c, SIZE, scale).unwrap()
+                ));
+                let switched = r.prepare_annotations(&c, SIZE, scale).unwrap();
+                assert!(
+                    switched
+                        .shares_rasters_with(&r.prepare_annotations(&plain, SIZE, scale).unwrap())
+                );
+                let entered = r.export_rgba(&c, SIZE, scale).unwrap().rgba;
+                assert!(entered == r.export_rgba(&plain, SIZE, scale).unwrap().rgba);
+                assert!(
+                    entered == fresh(&c, scale),
+                    "scale {scale}: switch differs from fresh"
+                );
+                assert!(before.len() == entered.len());
+                // The frame with the data selection, which the rest reuses.
+                let g = r.prepare(&c, SIZE, scale).unwrap();
+
+                // `Annotations`: every item answers on top (the topmost one
+                // under its centre must contain it), decorations below.
+                let mut routed = Vec::new();
+                for (index, p) in &items {
+                    let Some(LayerHit::Annotation { index: picked, id }) =
+                        route(LayerRef::Annotations, *p)
+                    else {
+                        panic!("scale {scale}: item {index} was not routed");
+                    };
+                    assert!(
+                        picked == *index || annotations.bounds(id).unwrap().contains(p[0], p[1])
+                    );
+                    routed.push(picked);
+                }
+                assert_eq!(
+                    route(LayerRef::Annotations, title),
+                    Some(LayerHit::Element(title_id))
+                );
+                routes.push(routed);
+                // A hidden layer is out of the route.
+                let mut hidden = c.clone();
+                hidden.annotations.visible = false;
+                let h = r.prepare_annotations(&hidden, SIZE, scale).unwrap();
+                for (_, p) in &items {
+                    assert!(!matches!(
+                        h.hit_test_active_layer(LayerRef::Annotations, decorations, *p),
+                        Some(LayerHit::Annotation { .. })
+                    ));
+                }
+
+                // A routed press selects the first item with handles; its
+                // handle drags through the map and keeps the anchor kinds.
+                let (index, id) = annotations
+                    .entries()
+                    .find(|(id, _)| !annotations.selection_box(*id).unwrap().handles.is_empty())
+                    .map(|(id, e)| (e.index, id))
+                    .expect("an item with handles");
+                c.decorations.selected = Some(DecorationId::Annotation(index));
+                let handle_square = annotations.selection_box(id).unwrap().handles[0];
+                let handle = annotations
+                    .hit_resize_handle(id, centre(handle_square))
+                    .expect("live handle");
+                let kinds = anchor_kinds(&c.annotations);
+                let mut dragged = c.clone();
+                assert_eq!(
+                    annotations.resize_by(&mut dragged.annotations, id, handle, 3., 3.),
+                    Some(NudgeResult::Moved)
+                );
+                assert_ne!(dragged.annotations, c.annotations);
+                assert_eq!(anchor_kinds(&dragged.annotations), kinds);
+                assert!(Arc::ptr_eq(&g, &r.prepare(&dragged, SIZE, scale).unwrap()));
+                assert!(
+                    r.export_rgba(&dragged, SIZE, scale).unwrap().rgba == fresh(&dragged, scale)
+                );
+                #[cfg(feature = "serde")]
+                {
+                    let json = serde_json::to_string(&dragged).unwrap();
+                    assert!(json.contains(r#""active_layer":"Annotations""#), "{json}");
+                    let restored: $chart = serde_json::from_str(&json).unwrap();
+                    assert_eq!(restored, dragged);
+                }
+
+                // Leaving the layer clears the annotation selection only.
+                assert_eq!(dragged.set_active_layer(LayerRef::Base), LayerRef::Base);
+                assert_eq!(dragged.decorations.selected, None);
+                assert!(data_selected(&dragged));
+                assert!(Arc::ptr_eq(&g, &r.prepare(&dragged, SIZE, scale).unwrap()));
+                assert!(
+                    r.export_rgba(&dragged, SIZE, scale).unwrap().rgba == fresh(&dragged, scale)
+                );
+                r.end_frame();
+            }
+            assert_eq!(routes[0], routes[1], "1x and 2x route differently");
+        }
+    };
+}
+
+family_routing!(
+    categorical_active_layer_routing,
+    CategoricalRenderer,
+    CategoricalChart,
+    annotated_categorical(),
+    |c| c.selected = Some(CategoryBarTarget::new("a", "s")),
+    |c| c.selected.is_some()
+);
+
+family_routing!(
+    boxplot_active_layer_routing,
+    BoxPlotRenderer,
+    BoxPlotChart,
+    annotated_boxplot(),
+    |c| c.selected = Some(BoxPlotTarget::new("a", "s")),
+    |c| c.selected.is_some()
+);
+
+family_routing!(
+    radial_active_layer_routing,
+    RadialRenderer,
+    RadialChart,
+    annotated_radial(),
+    |c| c.interaction.selected = Some(RadialTarget::main(0)),
+    |c| c.interaction.selected.is_some()
 );
 
 // A span is composited below the bars: the bar keeps its colour inside the

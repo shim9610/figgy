@@ -1,7 +1,7 @@
 //! Raw WASM host for radial, categorical and box charts. The renderer owns all geometry.
 use renderer::{
     AnnotationLayer, BoundedAnnotationFrame, DecorationId, DecorationLayout, FrameBackground,
-    RendererDevice, boxplot::*, categorical::*, layout::Rect, radial::*,
+    LayerHit, LayerRef, RendererDevice, boxplot::*, categorical::*, layout::Rect, radial::*,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -36,6 +36,20 @@ impl DocumentChart {
             Self::Radial(c) => &mut c.decorations,
             Self::Categorical(c) => &mut c.decorations,
             Self::BoxPlot(c) => &mut c.decorations,
+        }
+    }
+    pub fn active_layer(&self) -> LayerRef {
+        match self {
+            Self::Radial(c) => c.active_layer(),
+            Self::Categorical(c) => c.active_layer(),
+            Self::BoxPlot(c) => c.active_layer(),
+        }
+    }
+    pub fn set_active_layer(&mut self, layer: LayerRef) -> LayerRef {
+        match self {
+            Self::Radial(c) => c.set_active_layer(layer),
+            Self::Categorical(c) => c.set_active_layer(layer),
+            Self::BoxPlot(c) => c.set_active_layer(layer),
         }
     }
     pub fn annotations(&self) -> &AnnotationLayer {
@@ -539,9 +553,22 @@ impl FiggyBoundedChart {
         let values=map.entries().filter_map(|(id,e)|map.selection_box(id).map(|b|json!({"id":e.id.element_id(),"rect":[b.rect.x,b.rect.y,b.rect.width,b.rect.height],"handles":b.handles.iter().map(|r|vec![r.x,r.y,r.width,r.height]).collect::<Vec<_>>()}))).collect::<Vec<_>>();
         serde_json::to_string(&values).map_err(js_err)
     }
+    /// The topmost decoration under a point, as its stable id. While the
+    /// annotation layer is active (and shown) its drawn items sit on top of
+    /// every decoration and answer as `"annotation_<n>"`; on the base layer
+    /// they are not registered and clicks pass through them.
     pub fn hit_decoration(&self, x: f32, y: f32, edit_area: bool) -> Option<String> {
         let map = self.frame.decorations();
-        let id = map.hit_test([x, y])?;
+        let id =
+            match self
+                .annotations
+                .hit_test_active_layer(self.chart.active_layer(), map, [x, y])?
+            {
+                LayerHit::Annotation { index, .. } => {
+                    return Some(DecorationId::Annotation(index).element_id());
+                }
+                LayerHit::Element(id) => id,
+            };
         let e = map.element(id)?;
         if e.id == renderer::DecorationId::DataArea
             && !edit_area
@@ -552,17 +579,22 @@ impl FiggyBoundedChart {
         }
         Some(e.id.element_id())
     }
+    /// Select a decoration by the id `hit_decoration` reported, or none.
+    /// An `"annotation_<n>"` id selects that drawn annotation
+    /// (`decorations.selected = Annotation(n)`).
     pub fn select_decoration(&mut self, target: Option<String>) -> Result<(), JsValue> {
         let selected = match target {
             Some(name) => Some(
-                self.frame
-                    .decorations()
-                    .entries()
-                    .find(|(_, e)| e.id.element_id() == name)
-                    .ok_or_else(|| js_err("unknown decoration"))?
-                    .1
-                    .id
-                    .clone(),
+                self.drawn_annotation(&name)
+                    .map(DecorationId::Annotation)
+                    .or_else(|| {
+                        self.frame
+                            .decorations()
+                            .entries()
+                            .find(|(_, e)| e.id.element_id() == name)
+                            .map(|(_, e)| e.id.clone())
+                    })
+                    .ok_or_else(|| js_err("unknown decoration"))?,
             ),
             None => None,
         };
@@ -570,7 +602,18 @@ impl FiggyBoundedChart {
         self.chart.decorations_mut().selected = selected;
         Ok(())
     }
+    /// The drawn annotation an `"annotation_<n>"` id names, as its index.
+    fn drawn_annotation(&self, target: &str) -> Option<usize> {
+        self.annotations
+            .annotations()
+            .entries()
+            .find(|(_, e)| e.id().element_id() == target)
+            .map(|(_, e)| e.index)
+    }
     pub fn resize_handle(&self, target: &str, x: f32, y: f32) -> Option<String> {
+        if let Some(index) = self.drawn_annotation(target) {
+            return self.annotation_handle(index as u32, x, y);
+        }
         let map = self.frame.decorations();
         let (id, _) = map.entries().find(|(_, e)| e.id.element_id() == target)?;
         map.hit_resize_handle(id, [x, y]).map(|h| format!("{h:?}"))
@@ -584,6 +627,9 @@ impl FiggyBoundedChart {
     ) -> Result<bool, JsValue> {
         if !dx.is_finite() || !dy.is_finite() {
             return Err(js_err("drag must be finite"));
+        }
+        if let Some(index) = self.drawn_annotation(target) {
+            return self.drag_annotation(index as u32, dx, dy, handle);
         }
         use renderer::resize::ResizeHandle::*;
         let map = self.frame.decorations();
@@ -624,6 +670,25 @@ impl FiggyBoundedChart {
         self.frame = frame;
         self.annotations = annotations;
         Ok(())
+    }
+    /// Set the layer that receives pointer interaction: `"Base"` or
+    /// `"Annotations"` as JSON (bounded charts have no overlays, so an
+    /// `{ "Overlay": n }` is stored as `"Base"`). A change clears the
+    /// decoration selection (`decorations.selected`, an annotation
+    /// included); the data selection is kept. Returns the stored layer as
+    /// JSON. Drawn pixels never depend on it.
+    pub fn set_active_layer(&mut self, json: &str) -> Result<String, JsValue> {
+        let layer: LayerRef = serde_json::from_str(json).map_err(js_err)?;
+        let mut next = self.chart.clone();
+        let stored = next.set_active_layer(layer);
+        if next != self.chart {
+            self.adopt(next)?;
+        }
+        serde_json::to_string(&stored).map_err(js_err)
+    }
+    /// The layer that receives pointer interaction, as JSON.
+    pub fn active_layer(&self) -> Result<String, JsValue> {
+        serde_json::to_string(&self.chart.active_layer()).map_err(js_err)
     }
     fn annotation_hit_id(&self, index: usize) -> Result<renderer::HitId, JsValue> {
         self.annotations

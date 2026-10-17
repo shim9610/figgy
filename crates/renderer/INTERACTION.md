@@ -206,18 +206,20 @@ carries `active_layer: LayerRef` and `annotations: AnnotationLayer`. Both are
 parse and serialize unchanged. `LayerRef::Base` is the single layer every chart
 has today; `Overlay(index)` and `Annotations` address the overlay layers (#11)
 and the dedicated annotation layer below. The active layer is document state
-one level above element selection: it will decide which layer's elements the
-base hit map registers, while `selected`, `picked_points` and `picked_data`
+one level above element selection: it decides which layer's elements the
+pointer route registers, while `selected`, `picked_points` and `picked_data`
 keep naming the element inside that layer. Drawn pixels never depend on
-`active_layer`, and routing the base hit map by it lands with #11; until then
-the annotation layer's own hit map (next section) is queried explicitly.
+`active_layer`. The overlay layers route through the Cartesian hit map (see
+"Overlay layers") and the annotation layer puts its own hit map on top of the
+chart's (see "Pointer route by the active layer" below).
 
 `DecorationId` has two variants for those layers. `Overlay { layer, inner }`
 wraps an element identity with its overlay index (`overlay_<n>:<inner id>`) and
 `Annotation(index)` names an annotation item (`annotation_<n>`). The Cartesian
 hit map registers the `Overlay` ids for the active overlay (see "Overlay
-layers"); annotation items are hit-tested through their own `AnnotationMap`
-(see "Annotation layer"). Explicit Rust chart literals need the two fields (or
+layers"); annotation items are hit-tested through their own `AnnotationMap`,
+which the pointer route tests on top while `Annotations` is active (see
+"Annotation layer"). Explicit Rust chart literals need the two fields (or
 `..Default::default()`). The bounded frame and label raster caches strip both
 fields from their keys, so editing either reuses the cached frame; only the
 annotation pass depends on them.
@@ -397,6 +399,53 @@ chart frame. Cartesian hosts pass the selected index to `refresh_annotations`;
 the view remembers it for later axis refreshes. The box is drawn on the
 overlay, above everything.
 
+**Pointer route by the active layer.** The annotation layer is
+`LayerRef::Annotations` and uses the same `active_layer` API as the overlay
+layers. While it is active and shown, the drawn items sit on top of the
+chart's own hit map, so the reverse-order rule puts them above everything;
+while any other layer is active they are not part of the route and clicks
+pass through them. Two maps make one route because the item bounds are
+measured by the renderer into the annotation layer's own
+`HitMap<AnnotationLayer>`:
+
+- Cartesian: `ChartView::hit_test_active_layer(&config, &hit_map, point)`
+  tests the view's annotation map first and then `hit_map`, the
+  `HitMap::for_active_layer(&config)` map. For `Annotations` that map holds the
+  shared elements (data area, both X axes with their labels and titles, the
+  merged legend, the chart title and the colourbar) and no Y axis of the base
+  or any overlay, in a single-layer chart and in a layered document alike.
+  `config` is the config the view was refreshed with (the display config of a
+  scaled view).
+- Bounded: `BoundedAnnotationFrame::hit_test_active_layer(chart.active_layer(),
+  frame.decorations(), point)` tests the items above every decoration of the
+  frame; the decorations all stay registered below them, because a bounded
+  chart has no other layer whose elements could be excluded. Bars, boxes and
+  slices are not part of either map and keep answering through the frame's own
+  `hit_test` on every layer, as GPU data picking keeps addressing the base
+  layer on Cartesian charts.
+
+Both return a `LayerHit`: `Annotation { index, id }` (select
+`DecorationId::Annotation(index)` and drag through the annotation map with
+`id`) or `Element(id)` of the chart's own map. `AnnotationMap::route(active,
+layer, point, below)` is the shared rule for hosts that keep their own maps;
+`AnnotationMap::receives_pointer(active, layer)` says whether the items take
+part, which a hidden layer (`visible = false`) never does.
+
+Changing the layer clears the element selection, as on overlay layers: the
+registry drops its `HitId`, the WASM wrapper drops the annotation selection
+when the layer changes away from or into `Annotations`, and the bounded
+`set_active_layer` (`RadialChart`, `CategoricalChart`, `BoxPlotChart`, with an
+`Overlay` stored as `Base`) clears `decorations.selected`. The data selection
+(`picked_*`, the bounded charts' selected bar, box or slice) is kept. A layer
+switch changes no raster revision of its own: the data, grid and decoration
+textures and the bounded frame and label raster are reused, and only a cleared
+selection redraws its selection chrome. Selecting or dragging an item through
+the route is an annotation refresh only, and the cached layers paint the bytes
+of a fresh render of the final state. The index-based methods
+(`AnnotationMap::find`, `drag_by`, `resize_by` and the WASM `*_annotation`
+methods) keep working on every layer for hosts with their own annotation
+tool.
+
 ```rust,no_run
 use renderer::{Anchor, Annotation, AnnotationAxis, AnnotationKind, DecorationId};
 # fn edit(renderer: &mut renderer::CategoricalRenderer, chart: &mut renderer::CategoricalChart)
@@ -437,8 +486,10 @@ The WASM wrappers expose the layer on both classes (`FiggyChart`,
 `add_annotation(json)`, `set_annotation(index, json)`,
 `remove_annotation(index)`, `set_annotations_visible(bool)`,
 `pointer_to_anchor(x, y, "Data" | "Ratio")` and `annotation_warnings()`; see
-[the WASM guide](WASM.md). Registering annotation elements on the base hit map
-when `active_layer == Annotations` is the follow-up after #11.
+[the WASM guide](WASM.md). Their pointer methods (`hit_test`, `on_press`,
+`on_move` and `decoration_bounds` on `FiggyChart`; `hit_decoration`,
+`select_decoration`, `resize_handle` and `drag` on `FiggyBoundedChart`) follow
+the route above and name items as `"annotation_<n>"`.
 
 Run `cargo run --locked -p figgy-renderer --example bounded_titles` for a complete
 native PNG example covering all three families, multiline alignment and a

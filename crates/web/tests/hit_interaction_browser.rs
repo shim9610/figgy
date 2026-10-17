@@ -173,3 +173,78 @@ async fn colorbar_axis_labels_and_title_edit_select_and_drag_independently() {
         6.0
     );
 }
+
+// The pointer route follows the active layer: annotation items answer and
+// drag only while `"Annotations"` is active, and leaving that layer clears the
+// annotation selection.
+#[wasm_bindgen_test(async)]
+async fn annotation_layer_routes_press_and_drag_by_active_layer() {
+    let mut chart = FiggyChart::create(canvas())
+        .await
+        .expect("FiggyChart.create");
+    let mut config = chart_config(&chart);
+    config.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: 960,
+        height: 640,
+    });
+    chart
+        .set_config(&serde_json::to_string(&config).unwrap())
+        .expect("set config");
+    let item = renderer::Annotation::new(renderer::AnnotationKind::Text {
+        anchor: renderer::Anchor::Ratio { x: 0.4, y: 0.4 },
+        text: renderer::text::RichText::plain("note", renderer::Color::BLACK, 14.0, ""),
+        box_style: None,
+    });
+    assert_eq!(
+        chart
+            .add_annotation(&serde_json::to_string(&item).unwrap())
+            .expect("add annotation"),
+        0
+    );
+    chart.frame().expect("frame");
+    let drawn: serde_json::Value = serde_json::from_str(&chart.annotations().unwrap()).unwrap();
+    let rect = &drawn[0]["rect"];
+    let point = (
+        (rect[0].as_f64().unwrap() + rect[2].as_f64().unwrap() * 0.5) as f32,
+        (rect[1].as_f64().unwrap() + rect[3].as_f64().unwrap() * 0.5) as f32,
+    );
+
+    // Base: the item is not part of the route.
+    assert_ne!(
+        chart.hit_test(point.0, point.1).as_deref(),
+        Some("annotation_0")
+    );
+    chart.on_press(point.0, point.1).unwrap();
+    chart.on_release();
+    assert_eq!(chart.selected_annotation(), None);
+
+    // Annotations: the item answers on top, a press selects it and a move
+    // drags it, keeping its ratio anchor.
+    assert_eq!(
+        chart.set_active_layer(r#""Annotations""#).unwrap(),
+        r#""Annotations""#
+    );
+    assert_eq!(
+        chart.hit_test(point.0, point.1).as_deref(),
+        Some("annotation_0")
+    );
+    assert!(chart.on_press(point.0, point.1).unwrap());
+    assert_eq!(chart.selected_annotation(), Some(0));
+    assert!(chart.has_selection());
+    chart.on_move(24.0, 16.0).unwrap();
+    chart.on_release();
+    let moved = match &chart_config(&chart).annotations.items[0].kind {
+        renderer::AnnotationKind::Text { anchor, .. } => *anchor,
+        _ => unreachable!(),
+    };
+    let renderer::Anchor::Ratio { x, y } = moved else {
+        panic!("the anchor changed kind: {moved:?}");
+    };
+    assert!(x > 0.4 && y > 0.4, "{moved:?}");
+
+    // Leaving the layer clears the annotation selection.
+    chart.set_active_layer(r#""Base""#).unwrap();
+    assert_eq!(chart.selected_annotation(), None);
+}

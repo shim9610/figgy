@@ -33,7 +33,7 @@ pub use model::annotation::{
     AxisSpace, BoxStyle, PixelSpace,
 };
 use model::annotation::{arrow_label_rect, geometry, line_label_rect};
-use model::{AnnotationLayer, DecorationId, layout::NudgeResult};
+use model::{AnnotationLayer, DecorationId, LayerRef, layout::NudgeResult};
 
 /// The anchor space of a Cartesian chart: the chart area is the panel, the
 /// data area the plot, and `bottom_x` / `left_y` the two value axes (the
@@ -197,6 +197,64 @@ impl AnnotationMap {
                 .as_resizable()?
                 .resize_by(layer, handle, dx, dy),
         )
+    }
+}
+
+/// What a pointer hit on the active layer's route names: an annotation item
+/// or an element of the chart's own hit map (the Cartesian
+/// [`HitMap::for_active_layer`] map or a bounded frame's
+/// [`DecorationMap`](crate::decoration::DecorationMap)).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LayerHit {
+    /// An annotation item: its index in `annotations.items` (the
+    /// `DecorationId::Annotation(index)` it selects) and its id in the
+    /// frame's [`AnnotationMap`].
+    Annotation { index: usize, id: HitId },
+    /// An element of the chart's own hit map.
+    Element(HitId),
+}
+
+impl AnnotationMap {
+    /// Whether pointer events reach the annotation items: only while the
+    /// annotation layer is the active layer and is shown. `layer` is the
+    /// document's current annotation layer (its `visible` flag never
+    /// re-rasterizes, so the map's own copy may be older).
+    pub fn receives_pointer(active: LayerRef, layer: &AnnotationLayer) -> bool {
+        active == LayerRef::Annotations && layer.visible
+    }
+
+    /// The pointer route of the active layer: the annotation items sit on
+    /// top of the chart's own hit map while `active` is
+    /// [`LayerRef::Annotations`] (and the layer is shown), so a hit on an
+    /// item wins and anything else falls through to `below`, the chart's
+    /// own hit test. While another layer is active the items are not part
+    /// of the route at all and every click passes through to `below`.
+    pub fn route(
+        &self,
+        active: LayerRef,
+        layer: &AnnotationLayer,
+        position: [f32; 2],
+        below: impl FnOnce() -> Option<HitId>,
+    ) -> Option<LayerHit> {
+        self.route_when(Self::receives_pointer(active, layer), position, below)
+    }
+
+    fn route_when(
+        &self,
+        receives_pointer: bool,
+        position: [f32; 2],
+        below: impl FnOnce() -> Option<HitId>,
+    ) -> Option<LayerHit> {
+        if receives_pointer
+            && let Some(id) = self.hit_test(position)
+            && let Some(element) = self.element(id)
+        {
+            return Some(LayerHit::Annotation {
+                index: element.index,
+                id,
+            });
+        }
+        below().map(LayerHit::Element)
     }
 }
 
@@ -671,6 +729,27 @@ impl BoundedAnnotationFrame {
         self.rasters.map.warnings()
     }
 
+    /// The pointer route of a bounded chart whose active layer is `active`
+    /// (an `Overlay` reads as `Base`): while the annotation layer is active
+    /// and shown, its items sit on top of every decoration of `decorations`
+    /// (the chart frame's map, in the same chart-local coordinates), which
+    /// all stay registered below them; otherwise the items are not part of
+    /// the route and the decorations answer alone. Data targets are not
+    /// part of either map and keep answering through the frame's own
+    /// `hit_test` on every layer.
+    pub fn hit_test_active_layer(
+        &self,
+        active: LayerRef,
+        decorations: &crate::decoration::DecorationMap,
+        position: [f32; 2],
+    ) -> Option<LayerHit> {
+        self.rasters.map.route_when(
+            active.bounded() == LayerRef::Annotations && self.visible,
+            position,
+            || decorations.hit_test(position),
+        )
+    }
+
     /// Physical size of the textures, matching the chart frame.
     pub fn size(&self) -> (u32, u32) {
         self.size
@@ -904,6 +983,86 @@ mod tests {
     fn pixel(rgba: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {
         let i = ((y * w + x) * 4) as usize;
         [rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]]
+    }
+
+    // The pointer route: the items answer on top only while the annotation
+    // layer is active and shown; elsewhere, and where no item is, the chart's
+    // own hit test below answers. Routing never re-rasterizes.
+    #[test]
+    fn route_puts_items_on_top_only_for_the_active_annotation_layer() {
+        let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut layer = AnnotationLayer {
+            visible: true,
+            items: vec![Annotation::new(AnnotationKind::Span {
+                axis: AnnotationAxis::X,
+                from: 2.,
+                to: 4.,
+                fill: Color::from_rgba(1., 0., 0., 0.5),
+            })],
+        };
+        let map = rasterize(&RasterRequest {
+            layer: &layer,
+            space: space(),
+            origin: [0., 0.],
+            size: (200, 120),
+            scale: 1.,
+            selected: None,
+            policy: FontPolicy::Standard,
+        })
+        .map;
+        let span = map.find(0).unwrap();
+        let inside = [80., 50.];
+        let outside = [150., 50.];
+        let below = map_below();
+        let element = |p: [f32; 2]| (p == outside || p == inside).then_some(below);
+        assert_eq!(
+            map.route(LayerRef::Annotations, &layer, inside, || element(inside)),
+            Some(LayerHit::Annotation { index: 0, id: span })
+        );
+        assert_eq!(
+            map.route(LayerRef::Annotations, &layer, outside, || element(outside)),
+            Some(LayerHit::Element(below))
+        );
+        assert_eq!(
+            map.route(LayerRef::Annotations, &layer, [-5., -5.], || None),
+            None
+        );
+        for active in [LayerRef::Base, LayerRef::Overlay(0)] {
+            assert_eq!(
+                map.route(active, &layer, inside, || element(inside)),
+                Some(LayerHit::Element(below)),
+                "{active:?}"
+            );
+            assert_eq!(map.route(active, &layer, inside, || None), None);
+        }
+        layer.visible = false;
+        assert!(!AnnotationMap::receives_pointer(
+            LayerRef::Annotations,
+            &layer
+        ));
+        assert_eq!(
+            map.route(LayerRef::Annotations, &layer, inside, || element(inside)),
+            Some(LayerHit::Element(below))
+        );
+    }
+
+    /// Some id of another map, standing in for the chart's own hit test.
+    fn map_below() -> HitId {
+        let mut map = HitMap::<AnnotationLayer>::for_state();
+        let _ = map.register(AnnotationElement {
+            index: 0,
+            space: space(),
+            text_size: None,
+            handle: None,
+        });
+        map.register(AnnotationElement {
+            index: 1,
+            space: space(),
+            text_size: None,
+            handle: None,
+        })
     }
 
     #[test]
