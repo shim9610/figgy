@@ -428,7 +428,10 @@ fn overlay_edits() -> Vec<Edit> {
         Changed
     );
     overlay!(y_axis.line_width, 3.0, Prefix, Changed);
-    overlay!(y_axis.line_style, LineStylePreset::Dash, Prefix, Changed);
+    // The overlay axis line sits on the parent's own right axis line, which
+    // the SSOT keeps drawing underneath: a dash pattern shows that solid line
+    // through its gaps, so the composite may come out identical.
+    overlay!(y_axis.line_style, LineStylePreset::Dash, Prefix, Any);
     overlay!(y_axis.line_offset, 6.0, Prefix, Changed);
     overlay!(y_axis.label_style.label_visible, false, Prefix, Changed);
     overlay!(y_axis.label_style.visible, false, Prefix, Changed);
