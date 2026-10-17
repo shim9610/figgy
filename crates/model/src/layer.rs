@@ -38,8 +38,8 @@ impl LayerRef {
 ///
 /// Composited as two textures (an underlay below the data and an overlay
 /// above every decoration) but toggled, selected and edited as one unit.
-/// The annotation items are added by the annotation feature; this container
-/// exists so every chart family already carries the layer and its visibility.
+/// Items are addressed by index as `DecorationId::Annotation(index)`; see
+/// [`crate::annotation`] for the item kinds and the interaction policy.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "serde",
@@ -49,11 +49,17 @@ impl LayerRef {
 pub struct AnnotationLayer {
     /// Skips the layer's composite draws without re-rasterizing anything.
     pub visible: bool,
+    /// The annotations in draw order. Omitted from JSON when empty.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
+    pub items: Vec<crate::annotation::Annotation>,
 }
 
 impl Default for AnnotationLayer {
     fn default() -> Self {
-        Self { visible: true }
+        Self {
+            visible: true,
+            items: Vec::new(),
+        }
     }
 }
 
@@ -82,7 +88,13 @@ mod tests {
         let layer = AnnotationLayer::default();
         assert!(layer.visible);
         assert!(layer.is_default());
-        assert!(!AnnotationLayer { visible: false }.is_default());
+        assert!(
+            !AnnotationLayer {
+                visible: false,
+                items: Vec::new()
+            }
+            .is_default()
+        );
     }
 
     #[cfg(feature = "serde")]
