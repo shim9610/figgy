@@ -202,9 +202,10 @@ impl Config {
     /// Keep every linked axis equal to its target. With `previous` (the
     /// document before an edit), a host edit of a linked axis is carried to
     /// the root of its chain first, so the whole link group moves; an edit
-    /// of the root itself wins over member edits made in the same call.
-    /// Range, scale, direction and tick spacing are linked; the axis' line,
-    /// label and title style stay the subplot's own.
+    /// of the root itself wins over member edits made in the same call. An
+    /// edit is a change of range, scale or direction; the edited axis' tick
+    /// spacing travels with it. Range, scale, direction and tick spacing are
+    /// linked; the axis' line, label and title style stay the subplot's own.
     pub fn sync_subplot_links(&mut self, previous: Option<&Config>) {
         for x in [true, false] {
             if let Some(previous) = previous {
@@ -520,13 +521,12 @@ fn copy_axis_range(from: &AxisOptions, to: &mut AxisOptions) {
     to.minor_count = from.minor_count;
 }
 
+/// Whether an axis keeps its range, scale and direction: what decides which
+/// member of a link group was edited. Tick spacing is not compared, because
+/// a range writer such as a view state re-derives it from an unchanged range;
+/// it travels with the edited range instead.
 fn same_axis_range(a: &AxisOptions, b: &AxisOptions) -> bool {
-    a.scale == b.scale
-        && a.min == b.min
-        && a.max == b.max
-        && a.inverted == b.inverted
-        && a.major_spacing == b.major_spacing
-        && a.minor_count == b.minor_count
+    a.scale == b.scale && a.min == b.min && a.max == b.max && a.inverted == b.inverted
 }
 
 /// A hidden axis: `template` (canonical defaults) carrying only `axis`'s
@@ -1089,6 +1089,18 @@ mod tests {
         both.sync_subplot_links(Some(&cfg));
         assert_eq!(both.bottom_x.max, 30.0);
         assert_eq!(both.subplots[1].config.bottom_x.max, 30.0);
+
+        // A writer that re-derives the root's tick spacing from its unchanged
+        // range does not count as a root edit: the member's range still wins
+        // and its spacing travels with it.
+        let mut respaced = cfg.clone();
+        respaced.bottom_x.major_spacing = 6.0;
+        respaced.subplots[1].config.bottom_x.max = 12.0;
+        respaced.subplots[1].config.bottom_x.major_spacing = 3.0;
+        respaced.sync_subplot_links(Some(&cfg));
+        assert_eq!(respaced.bottom_x.max, 12.0);
+        assert_eq!(respaced.bottom_x.major_spacing, 3.0);
+        assert_eq!(respaced.subplots[1].config.bottom_x.major_spacing, 3.0);
 
         // Without a previous document the stored member values are reset.
         let mut stale = cfg.clone();
