@@ -9,6 +9,9 @@ mod styled_runtime;
 #[path = "ssot_invalidation_tests.rs"]
 mod ssot_invalidation;
 
+#[path = "annotation_layer_tests.rs"]
+mod annotation_layer;
+
 fn limits(slots: usize) -> StreamLimits {
     StreamLimits {
         max_jobs: 4,

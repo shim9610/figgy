@@ -4587,8 +4587,10 @@ pub fn draw_chart_panel_columnar(
     panel_rect: Rect,
     data_area: Rect,
     grid: AxisLayer<'_>,
+    annotation_underlay: Option<AxisLayer<'_>>,
     series_list: &[SeriesLayers<'_>],
     decoration: AxisLayer<'_>,
+    annotation_overlay: Option<AxisLayer<'_>>,
 ) {
     let Some(panel_clamped) = clamp_rect_to_target(panel_rect, target_size) else {
         return;
@@ -4617,6 +4619,13 @@ pub fn draw_chart_panel_columnar(
     pass.set_bind_group(0, grid.bind_group, &[]);
     pass.draw(0..3, 0..1);
 
+    // 1b) Annotation underlay (spans): below the data, above the grid.
+    if let Some(layer) = annotation_underlay {
+        pass.set_pipeline(layer.pipeline);
+        pass.set_bind_group(0, layer.bind_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+
     // 2) Data primitives — scissor once to data_area, then issue every series.
     pass.set_scissor_rect(
         data_clamped.x,
@@ -4641,6 +4650,13 @@ pub fn draw_chart_panel_columnar(
     pass.set_pipeline(decoration.pipeline);
     pass.set_bind_group(0, decoration.bind_group, &[]);
     pass.draw(0..3, 0..1);
+
+    // 4) Annotation overlay: topmost, above every decoration.
+    if let Some(layer) = annotation_overlay {
+        pass.set_pipeline(layer.pipeline);
+        pass.set_bind_group(0, layer.bind_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
 }
 
 // Tests.

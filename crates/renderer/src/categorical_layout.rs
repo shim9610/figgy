@@ -10,6 +10,9 @@ pub(super) struct Layout {
     pub targets: Vec<CategoryBarTarget>,
     pub annotations: Vec<u8>,
     pub decorations: DecorationMap,
+    /// Anchor space for the annotation layer: the category index axis and
+    /// the value axis, oriented by the chart direction.
+    pub space: crate::annotation::PixelSpace,
 }
 fn measure(c: &CategoricalChart, s: &str, size: f32) -> f32 {
     measure_plain_text(s, &c.font_family, size, false, false, FontPolicy::Standard).width
@@ -232,6 +235,13 @@ pub(super) fn layout(
         targets: Vec::new(),
         annotations: Vec::new(),
         decorations: DecorationPainter::new(&c.decorations, size, scale, false).finish(),
+        space: annotation_space(
+            (w, h),
+            area,
+            horizontal,
+            c.categories.len(),
+            [plan.min * unit, plan.max * unit],
+        ),
     };
     let mut labels = LabelPlacer::new(
         crate::layout::RectF {
@@ -436,6 +446,47 @@ pub(super) fn layout(
         out.annotations.extend(front.into_rgba());
     }
     Ok(out)
+}
+
+/// The annotation anchor space of a bounded bar or box chart: the value axis
+/// is linear over the drawn range, the category axis counts categories (the
+/// first category is centred at coordinate 0) and runs top-down when the
+/// bars are horizontal.
+pub(super) fn annotation_space(
+    size: (f32, f32),
+    area: crate::layout::RectF,
+    horizontal: bool,
+    categories: usize,
+    value_range: [f64; 2],
+) -> crate::annotation::PixelSpace {
+    use crate::annotation::{AxisMap, AxisSpace, PixelSpace};
+    let value = AxisSpace {
+        map: AxisMap::Linear {
+            min: value_range[0],
+            max: value_range[1],
+        },
+        inverted: false,
+    };
+    let category = |inverted: bool| AxisSpace {
+        map: AxisMap::Index { count: categories },
+        inverted,
+    };
+    let (x, y) = if horizontal {
+        (value, category(true))
+    } else {
+        (category(false), value)
+    };
+    PixelSpace {
+        panel: crate::layout::RectF {
+            x: 0.,
+            y: 0.,
+            width: size.0,
+            height: size.1,
+        },
+        plot: area,
+        x,
+        y,
+    }
 }
 
 #[cfg(test)]

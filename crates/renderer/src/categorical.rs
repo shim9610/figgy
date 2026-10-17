@@ -96,6 +96,8 @@ pub struct CategoricalFrame {
     geometry: Vec<Bar>,
     targets: Vec<CategoryBarTarget>,
     scale: f32,
+    space: crate::annotation::PixelSpace,
+    background: crate::annotation::FrameBackground,
 }
 impl CategoricalFrame {
     /// Renderer-measured decorations using the common HitMap/Draggable contract.
@@ -105,6 +107,15 @@ impl CategoricalFrame {
     /// True when annotation GPU storage is shared (e.g. hover/material-only edits).
     pub fn shares_annotations_with(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self._annotations, &other._annotations)
+    }
+    /// The anchor space of this frame for the annotation layer, in logical
+    /// pixels: the plot area and the two document axes.
+    pub fn annotation_space(&self) -> crate::annotation::PixelSpace {
+        self.space
+    }
+    /// How this frame treats the chart background.
+    pub fn background(&self) -> crate::annotation::FrameBackground {
+        self.background
     }
     /// Pick a visible nonzero bar in chart-local logical pixels. IDs remain stable
     /// across category/series reordering. Zero and missing values have no surface.
@@ -152,7 +163,12 @@ pub struct CategoricalRenderer {
     ledger: Arc<GpuLedger>,
     budget: u64,
     annotations_cached: Option<(CategoricalChart, (u32, u32), f32, u64, Arc<TrackedTexture>)>,
-    cached: Option<(
+    /// The dedicated annotation layer, drawn around the frame by its own pass.
+    annotation_layer: crate::annotation::BoundedAnnotationCache,
+    background: crate::annotation::FrameBackground,
+    /// One frame per background mode, so an export that needs `HostClear`
+    /// beside an interactive `Opaque` frame does not evict it.
+    cached: Vec<(
         CategoricalChart,
         (u32, u32),
         f32,
@@ -287,9 +303,65 @@ impl CategoricalRenderer {
             // host-alloc: W1-a
             ledger: Arc::new(GpuLedger::new()),
             budget: 256 * 1024 * 1024,
-            cached: None,
+            cached: Vec::new(),
             annotations_cached: None,
+            annotation_layer: crate::annotation::BoundedAnnotationCache::new(format),
+            background: Default::default(),
         })
+    }
+    /// How frames treat the chart background. `Opaque` (default) paints it in
+    /// the frame's own draw; `HostClear` leaves it to the host's clear colour
+    /// so an annotation underlay drawn before the frame shows through. A
+    /// host that switches to `HostClear` clears with `chart.background`.
+    pub fn set_background(&mut self, background: crate::annotation::FrameBackground) {
+        self.background = background;
+    }
+    pub fn background(&self) -> crate::annotation::FrameBackground {
+        self.background
+    }
+    /// The annotation layer of `chart` for the frame [`Self::prepare`]
+    /// returns for the same arguments: two textures and their hit map, cached
+    /// like the frame. Draw it around the frame (`draw_underlay`, the frame,
+    /// `draw_overlay`); when it draws an underlay the frame must be prepared
+    /// with [`crate::annotation::FrameBackground::HostClear`].
+    pub fn prepare_annotations(
+        &mut self,
+        chart: &CategoricalChart,
+        size: (u32, u32),
+        scale: f32,
+    ) -> Result<Arc<crate::annotation::BoundedAnnotationFrame>, CategoricalError> {
+        let frame = self.prepare(chart, size, scale)?;
+        self.prepare_annotations_for(&frame, chart, scale)
+    }
+    fn prepare_annotations_for(
+        &mut self,
+        frame: &CategoricalFrame,
+        chart: &CategoricalChart,
+        scale: f32,
+    ) -> Result<Arc<crate::annotation::BoundedAnnotationFrame>, CategoricalError> {
+        let selected = crate::annotation::selected_index(chart.decorations.selected.as_ref());
+        let space = frame.annotation_space();
+        if self.annotation_layer.needs_raster(
+            &chart.annotations,
+            space,
+            frame.size,
+            scale,
+            selected,
+        ) {
+            self.admit(
+                self.annotation_layer
+                    .bytes_needed(&chart.annotations, frame.size),
+            )?;
+        }
+        Ok(self.annotation_layer.prepare(
+            &self.gpu,
+            &self.ledger,
+            &chart.annotations,
+            space,
+            frame.size,
+            scale,
+            selected,
+        ))
     }
     /// Accounted live resources plus resources awaiting submission completion.
     pub fn gpu_memory_usage(&self) -> GpuMemoryUsage {
@@ -321,6 +393,15 @@ impl CategoricalRenderer {
         size: (u32, u32),
         scale: f32,
     ) -> Result<Arc<CategoricalFrame>, CategoricalError> {
+        self.prepare_frame(chart, size, scale, self.background)
+    }
+    fn prepare_frame(
+        &mut self,
+        chart: &CategoricalChart,
+        size: (u32, u32),
+        scale: f32,
+        background: crate::annotation::FrameBackground,
+    ) -> Result<Arc<CategoricalFrame>, CategoricalError> {
         chart.validate().map_err(CategoricalError::Invalid)?;
         if size.0 < 240 || size.1 < 200 || !scale.is_finite() || !(0.5..=4.0).contains(&scale) {
             return Err(CategoricalError::Invalid(
@@ -328,10 +409,16 @@ impl CategoricalRenderer {
             ));
         }
         let fonts = crate::text_render::font_generation();
-        if let Some((c, s, k, generation, frame)) = &self.cached {
-            if frame_eq(c, chart) && *s == size && *k == scale && *generation == fonts {
-                return Ok(Arc::clone(frame));
-            }
+        if let Some((_, _, _, _, frame)) =
+            self.cached.iter().find(|(c, s, k, generation, frame)| {
+                frame_eq(c, chart)
+                    && *s == size
+                    && *k == scale
+                    && *generation == fonts
+                    && frame.background == background
+            })
+        {
+            return Ok(Arc::clone(frame));
         }
         let width = (size.0 as f64 * f64::from(scale)).round();
         let height = (size.1 as f64 * f64::from(scale)).round();
@@ -365,12 +452,16 @@ impl CategoricalRenderer {
                 l.bars.len() as f32,
                 if self.format.is_srgb() { 1.0 } else { 0.0 },
             ],
-            background: [
-                chart.background.r,
-                chart.background.g,
-                chart.background.b,
-                chart.background.a,
-            ],
+            background: match background {
+                crate::annotation::FrameBackground::Opaque => [
+                    chart.background.r,
+                    chart.background.g,
+                    chart.background.b,
+                    chart.background.a,
+                ],
+                // Written as transparent: the frame leaves the host clear.
+                crate::annotation::FrameBackground::HostClear => [0.0; 4],
+            },
         };
         let device = self.gpu.device();
         // gpu-alloc: Uniform
@@ -464,16 +555,22 @@ impl CategoricalRenderer {
             geometry: l.bars,
             targets: l.targets,
             scale,
+            space: l.space,
+            background,
         });
         self.annotations_cached = Some((key, size, scale, fonts, annotations));
-        self.cached = Some((frame_key(chart), size, scale, fonts, Arc::clone(&frame)));
+        self.cached
+            .retain(|(_, _, _, _, cached)| cached.background != background);
+        self.cached
+            .push((frame_key(chart), size, scale, fonts, Arc::clone(&frame)));
         Ok(frame)
     }
     /// Drop internal frame/annotation references. External frames stay valid.
     /// Retired allocation credits are processed through [`Self::end_frame`].
     pub fn clear_cache(&mut self) {
-        self.cached = None;
+        self.cached.clear();
         self.annotations_cached = None;
+        self.annotation_layer.clear();
     }
     /// Call after submitting/discarding ALL recorded frames, including old
     /// snapshots. Completion credits are asynchronous, as in Renderer.
@@ -510,6 +607,32 @@ impl CategoricalRenderer {
         scale: f32,
     ) -> Result<RasterImage, CategoricalError> {
         let frame = self.prepare(chart, size, scale)?;
+        let annotations = self.prepare_annotations_for(&frame, chart, scale)?;
+        // An underlay only shows through a frame that leaves the background to
+        // the clear colour; the export clears with the chart background then.
+        let host_clear = annotations.draws_underlay()
+            || frame.background == crate::annotation::FrameBackground::HostClear;
+        let frame =
+            if host_clear && frame.background != crate::annotation::FrameBackground::HostClear {
+                self.prepare_frame(
+                    chart,
+                    size,
+                    scale,
+                    crate::annotation::FrameBackground::HostClear,
+                )?
+            } else {
+                frame
+            };
+        let clear = if host_clear {
+            wgpu::Color {
+                r: f64::from(chart.background.r),
+                g: f64::from(chart.background.g),
+                b: f64::from(chart.background.b),
+                a: f64::from(chart.background.a),
+            }
+        } else {
+            wgpu::Color::TRANSPARENT
+        };
         let (width, height) = frame.size;
         let stride = (u64::from(width) * 4).div_ceil(256) * 256;
         let bytes = stride * u64::from(height);
@@ -554,13 +677,15 @@ impl CategoricalRenderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        load: wgpu::LoadOp::Clear(clear),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
                 ..Default::default()
             });
+            annotations.draw_underlay(&mut pass);
             frame.draw(&mut pass);
+            annotations.draw_overlay(&mut pass);
         }
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
@@ -665,7 +790,20 @@ fn frame_key(chart: &CategoricalChart) -> CategoricalChart {
     let mut c = chart.clone();
     c.active_layer = Default::default();
     c.annotations = Default::default();
+    // Selecting an annotation draws its box on the annotation overlay.
+    if crate::annotation::selected_index(c.decorations.selected.as_ref()).is_some() {
+        c.decorations.selected = None;
+    }
     c
+}
+/// `decorations` compared as `frame_key` normalizes them.
+fn decorations_eq(a: &model::DecorationLayout, b: &model::DecorationLayout) -> bool {
+    let base = |d: &model::DecorationLayout| {
+        d.selected
+            .clone()
+            .filter(|s| crate::annotation::selected_index(Some(s)).is_none())
+    };
+    a.data_area == b.data_area && a.offsets == b.offsets && base(a) == base(b)
 }
 /// `frame_key(a) == frame_key(b)` without cloning, for the per-frame cache
 /// hit check. Exhaustive so a new field must be classified here.
@@ -700,7 +838,7 @@ fn frame_eq(a: &CategoricalChart, b: &CategoricalChart) -> bool {
         background,
     } = a;
     let _ = (active_layer, annotations);
-    decorations == &b.decorations
+    decorations_eq(decorations, &b.decorations)
         && title == &b.title
         && chart_title == &b.chart_title
         && categories == &b.categories
