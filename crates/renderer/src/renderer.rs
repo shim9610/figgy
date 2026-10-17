@@ -43,7 +43,7 @@ use crate::data::{ColumnSource, HiLoColumnSource};
 use crate::data_config::{
     DataBarBinStyleConfig, DataBarStyleConfig, DataErrorBarPointStyleConfig,
     DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterPointStyleConfig,
-    DataScatterStyleConfig, ErrorRef, ScatterShape, SeriesConfig,
+    DataScatterStyleConfig, ErrorRef, LineFill, LineInterpolation, ScatterShape, SeriesConfig,
 };
 use crate::data_render::{
     self, AxisLayer, ColumnBarSelectionLayer, ColumnErrorBarDraw, ColumnFieldSelectionLayer,
@@ -458,6 +458,8 @@ struct ArcResultKey {
     /// style parameter changes must not retraverse the data.
     geometry_transform_bits: [u32; 16],
     star_pitch_bits: Option<u32>,
+    /// Step interpolation mode: a stepped path has a different arc length.
+    step_mode: u32,
 }
 
 struct ArcResultEntry {
@@ -880,6 +882,8 @@ struct PickResourceSignature {
     y_column: ColumnId,
     primitives: EffectiveSeriesPrimitives,
     line_width_bits: Option<u32>,
+    /// The line's step mode: a stepped path is picked along its pieces.
+    line_step_mode: u32,
     scatter: Option<PickScatterSignature>,
 }
 
@@ -955,6 +959,7 @@ struct OwnedGpuPickSeriesDescriptor {
     signature: PickSeriesSignature,
     scatter: Option<OwnedGpuPickScatter>,
     line_width_px: Option<f32>,
+    line_interpolation: LineInterpolation,
 }
 
 impl OwnedGpuPickSeriesDescriptor {
@@ -966,6 +971,7 @@ impl OwnedGpuPickSeriesDescriptor {
             y_column: self.signature.resource.y_column.clone(),
             scatter: self.scatter.as_ref().map(OwnedGpuPickScatter::descriptor),
             line_width_px: self.line_width_px,
+            line_interpolation: self.line_interpolation,
         }
     }
 }
@@ -1118,16 +1124,19 @@ impl PickChartPlan {
                 (None, None)
             };
 
-            let line_width_px = primitives.line.then(|| {
+            let line = primitives.line.then(|| {
                 extract_line(&series.render_type)
                     .expect("effective line primitive has line configuration")
-                    .line_width
             });
+            let line_width_px = line.map(|line| line.line_width);
+            let line_interpolation =
+                line.map_or(LineInterpolation::Linear, |line| line.interpolation);
             let resource = PickResourceSignature {
                 x_column: series.x_column.clone(),
                 y_column: series.y_column.clone(),
                 primitives,
                 line_width_bits: line_width_px.map(f32::to_bits),
+                line_step_mode: crate::line_step::step_mode(line_interpolation),
                 scatter: scatter_signature,
             };
             descriptors.push(OwnedGpuPickSeriesDescriptor {
@@ -1138,6 +1147,7 @@ impl PickChartPlan {
                 },
                 scatter,
                 line_width_px,
+                line_interpolation,
             });
         }
 
@@ -1808,6 +1818,17 @@ struct PreparedSeriesProducts<'a> {
     contours: &'a [PreparedContourSeries],
 }
 
+struct PreparedAreaLayer {
+    pipeline: wgpu::RenderPipeline,
+    transform_bg: wgpu::BindGroup,
+    style_bg: wgpu::BindGroup,
+    pool_buffer: wgpu::Buffer,
+    x: ColumnHandle,
+    y: ColumnHandle,
+    base: ColumnHandle,
+    verts_per_instance: u32,
+}
+
 struct PreparedLineLayer {
     pipeline: wgpu::RenderPipeline,
     transform_bg: wgpu::BindGroup,
@@ -1944,6 +1965,7 @@ struct PreparedSeries {
     _style_charge: Option<crate::gpu_memory::SharedCharge>,
     _stream_style_charge: Option<crate::gpu_memory::SharedCharge>,
     _stream_transform_charge: Option<crate::gpu_memory::SharedCharge>,
+    area: Option<PreparedAreaLayer>,
     field: Option<PreparedFieldLayer>,
     bar: Option<PreparedBarLayer>,
     contour: Option<PreparedContourLayer>,
@@ -2034,6 +2056,16 @@ impl PreparedSeries {
             _style_charge: style_charge,
             _stream_style_charge: None,
             _stream_transform_charge: None,
+            area: layers.area.map(|layer| PreparedAreaLayer {
+                pipeline: layer.pipeline.clone(),
+                transform_bg: layer.transform_bg.clone(),
+                style_bg: layer.style_bg.clone(),
+                pool_buffer: layer.pool_buffer.clone(),
+                x: layer.x,
+                y: layer.y,
+                base: layer.base,
+                verts_per_instance: layer.verts_per_instance,
+            }),
             field: layers.field.map(|layer| PreparedFieldLayer {
                 pipeline: layer.pipeline.clone(),
                 transform_bg: layer.transform_bg.clone(),
@@ -2158,6 +2190,19 @@ impl PreparedSeries {
 
     fn layers(&self) -> data_render::SeriesLayers<'_> {
         data_render::SeriesLayers {
+            area: self
+                .area
+                .as_ref()
+                .map(|layer| data_render::ColumnAreaLayer {
+                    pipeline: &layer.pipeline,
+                    transform_bg: &layer.transform_bg,
+                    style_bg: &layer.style_bg,
+                    pool_buffer: &layer.pool_buffer,
+                    x: layer.x,
+                    y: layer.y,
+                    base: layer.base,
+                    verts_per_instance: layer.verts_per_instance,
+                }),
             field: self
                 .field
                 .as_ref()
@@ -3266,6 +3311,10 @@ struct TargetPipelines {
     shaders: data_render::ShaderModules,
     axis: wgpu::RenderPipeline,
     line: Option<wgpu::RenderPipeline>,
+    /// The line shader's `vs_area` / `fs_area` fill, compiled when a line
+    /// series declares a fill. Used in every draw style: the fill is a flat
+    /// precise primitive under whatever the style draws for the line.
+    area: Option<wgpu::RenderPipeline>,
     scatter: Option<wgpu::RenderPipeline>,
     scatter_mapped: Option<wgpu::RenderPipeline>,
     pick_ring: Option<wgpu::RenderPipeline>,
@@ -3418,6 +3467,7 @@ fn create_target_pipelines_observed(
             },
         ),
         line: None,
+        area: None,
         scatter: None,
         scatter_mapped: None,
         pick_ring: None,
@@ -3487,6 +3537,7 @@ async fn create_target_pipelines_observed_async(
         shaders,
         axis,
         line: None,
+        area: None,
         scatter: None,
         scatter_mapped: None,
         pick_ring: None,
@@ -3559,6 +3610,7 @@ impl TargetPipelines {
         let mut need_contour = false;
         let mut need_contour_label = false;
         let mut need_line = false;
+        let mut need_area = false;
         let mut need_scatter = false;
         let mut need_errorbar = false;
         let mut need_bar = false;
@@ -3593,6 +3645,12 @@ impl TargetPipelines {
                         PickedDataRef::MatrixCell { .. } | PickedDataRef::ContourLevel { .. }
                     )
                 });
+            }
+            // The area fill is drawn under every style's line with the one
+            // precise area pipeline.
+            for series in item.series {
+                need_area |=
+                    series_has_line_fill(&item.chart_config.draw_style, &series.config.render_type);
             }
             if style_variant(&item.chart_config.draw_style).is_some() {
                 if item.chart_config.picked_points.is_some() {
@@ -3643,6 +3701,16 @@ impl TargetPipelines {
                     self.sample_count,
                 ),
             );
+        }
+        if need_area && self.area.is_none() {
+            self.area = Some(data_render::create_line_area_pipeline_with_sample_count(
+                device,
+                &self.shaders.line,
+                transform_bgl,
+                style_bgl,
+                surface_format,
+                self.sample_count,
+            ));
         }
         if need_scatter && self.scatter.is_none() {
             self.scatter = Some(
@@ -3876,6 +3944,18 @@ impl TargetPipelines {
             line,
             "precise line",
             data_render::create_line_columnar_pipeline_with_sample_count(
+                device,
+                &self.shaders.line,
+                transform_bgl,
+                style_bgl,
+                surface_format,
+                self.sample_count,
+            )
+        );
+        ensure!(
+            area,
+            "line area fill",
+            data_render::create_line_area_pipeline_with_sample_count(
                 device,
                 &self.shaders.line,
                 transform_bgl,
@@ -4804,6 +4884,7 @@ fn validate_renderer_series(
         }
         validate_contour_level_count(&item.series_id, &item.render_type)?;
         validate_contour_label_config(&item.series_id, &item.render_type)?;
+        validate_line_fill(pool, series.iter(), item)?;
         if let Some(matrix) = extract_matrix(&item.render_type) {
             // A grid column that is not registered would read whatever else
             // happens to be at that offset. Count mismatches between the
@@ -4812,6 +4893,56 @@ fn validate_renderer_series(
             for column in &matrix.columns {
                 validate_registered_column(pool, column)?;
             }
+        }
+    }
+    Ok(())
+}
+
+/// A line fill's declaration must resolve before any GPU work: a finite
+/// baseline, or a referenced series that exists in the same chart, is not the
+/// series itself, shares its x column and has a registered y column. A
+/// different x column would need resampling — renderer-derived data — so it
+/// is an error, not a fallback.
+fn validate_line_fill<'s>(
+    pool: &impl ColumnRegistration,
+    series: impl IntoIterator<Item = &'s SeriesConfig>,
+    item: &SeriesConfig,
+) -> Result<()> {
+    let Some(line) = extract_line(&item.render_type) else {
+        return Ok(());
+    };
+    let invalid = |reason: String| FiggyError::InvalidSeriesConfig {
+        series_id: item.series_id.clone(),
+        reason,
+    };
+    match line.fill.as_ref() {
+        None => {}
+        Some(LineFill::ToBaseline(baseline)) => {
+            if !baseline.is_finite() {
+                return Err(invalid("line fill baseline must be finite".into()));
+            }
+        }
+        Some(LineFill::ToSeries(target)) => {
+            if *target == item.series_id {
+                return Err(invalid(
+                    "line fill cannot reference the series itself".into(),
+                ));
+            }
+            let target = series
+                .into_iter()
+                .find(|other| other.series_id == *target)
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "line fill references series `{target}`, which is not in this chart"
+                    ))
+                })?;
+            if target.x_column != item.x_column {
+                return Err(invalid(format!(
+                    "line fill to series `{}` requires the same x column: `{}` vs `{}`",
+                    target.series_id, item.x_column, target.x_column
+                )));
+            }
+            validate_registered_column(pool, &target.y_column)?;
         }
     }
     Ok(())
@@ -7175,6 +7306,7 @@ impl Renderer {
         // Recreate only the lazy variants that were already live so a format
         // change does not re-eager unused data/mapped/ring pipelines.
         let had_line = self.pipelines.line.is_some();
+        let had_area = self.pipelines.area.is_some();
         let had_scatter = self.pipelines.scatter.is_some();
         let had_errorbar = self.pipelines.errorbar.is_some();
         let had_scatter_mapped = self.pipelines.scatter_mapped.is_some();
@@ -7203,6 +7335,16 @@ impl Renderer {
                     target_sample_count,
                 ),
             );
+        }
+        if had_area {
+            self.pipelines.area = Some(data_render::create_line_area_pipeline_with_sample_count(
+                &self.device,
+                &self.pipelines.shaders.line,
+                &self.transform_bgl,
+                &self.style_bgl,
+                surface_format,
+                target_sample_count,
+            ));
         }
         if had_scatter {
             self.pipelines.scatter = Some(
@@ -9443,10 +9585,33 @@ impl Renderer {
                 let mut s =
                     PrimitiveStyle::from_color_with_width(l.line_color, l.line_width * scale);
                 s.pack_dash_pattern(l.line_style.pattern(), scale);
+                // Bits 2-3: the step interpolation mode the line entries read.
+                s.primitive_flags = crate::line_step::step_flag_bits(l.interpolation);
                 s
             }
             None => PrimitiveStyle::from_color_with_width(Color::BLACK, 1.0),
         };
+        // The fill's `Style` reinterpretation (SHADER_COMMON.md §2.2): fill
+        // colour, the step mode, the fill-to-series bit and the baseline as
+        // the pool's `(hi, lo)` pair in `dash[1].xy`.
+        let area = extract_line(&cfg.render_type)
+            .and_then(|l| l.fill.as_ref().map(|fill| (l, fill)))
+            .map(|(l, fill)| {
+                let mut s = PrimitiveStyle::from_color(l.effective_fill_color());
+                s.primitive_flags = crate::line_step::step_flag_bits(l.interpolation);
+                match fill {
+                    LineFill::ToBaseline(baseline) => {
+                        let (hi, lo) = crate::data::split_f64_to_f32_pair(*baseline);
+                        s.dash[1][0] = hi;
+                        s.dash[1][1] = lo;
+                    }
+                    LineFill::ToSeries(_) => {
+                        s.primitive_flags |= crate::line_step::AREA_FILL_TO_SERIES;
+                    }
+                }
+                s.series_salt = series_salt;
+                s
+            });
         let scatter = match extract_scatter(&cfg.render_type) {
             Some(sc) => {
                 let mut s = PrimitiveStyle::from_color(sc.point_color);
@@ -9488,6 +9653,7 @@ impl Renderer {
             extract_bar(&cfg.render_type).and_then(|bar| self.create_bar_style_map_for(bar, scale));
         Ok(self.create_style_from_primitives(
             line,
+            area,
             scatter,
             errorbar,
             bar,
@@ -9504,7 +9670,9 @@ impl Renderer {
         let max_storage = caps
             .max_buffer_size
             .min(u64::from(caps.max_storage_buffer_binding_size));
-        let mut total = 4u64 * std::mem::size_of::<PrimitiveStyle>() as u64;
+        let primitive_uniforms =
+            4 + u64::from(extract_line(&cfg.render_type).is_some_and(|line| line.fill.is_some()));
+        let mut total = primitive_uniforms * std::mem::size_of::<PrimitiveStyle>() as u64;
         let overflow = || FiggyError::GpuResourceLimit {
             resource: "chart style bytes",
             requested: u64::MAX,
@@ -9589,9 +9757,11 @@ impl Renderer {
     /// Shared tail of `create_style_for_series*`: allocate the four style
     /// uniform buffers and bind groups from fully-built values.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn create_style_from_primitives(
         &self,
         line: PrimitiveStyle,
+        area: Option<PrimitiveStyle>,
         scatter: PrimitiveStyle,
         errorbar: PrimitiveStyle,
         bar: PrimitiveStyle,
@@ -9604,6 +9774,7 @@ impl Renderer {
         let dev = &self.device;
         let scatter_radius_px = scatter.point_radius_px;
         let line_buf = data_render::create_style_uniform_buffer(dev, &line);
+        let area_buf = area.map(|area| data_render::create_style_uniform_buffer(dev, &area));
         let sc_buf = data_render::create_style_uniform_buffer(dev, &scatter);
         let eb_buf = data_render::create_style_uniform_buffer(dev, &errorbar);
         let bar_buf = data_render::create_style_uniform_buffer(dev, &bar);
@@ -9616,6 +9787,9 @@ impl Renderer {
                 GpuResourceKind::Uniform,
             ),
             line_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &line_buf),
+            area_bg: area_buf
+                .as_ref()
+                .map(|buf| data_render::create_style_bind_group(dev, &self.style_bgl, buf)),
             scatter_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &sc_buf),
             errorbar_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &eb_buf),
             bar_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &bar_buf),
@@ -10762,10 +10936,16 @@ impl Renderer {
         y_id: &str,
         t: &data_render::ScatterTransform,
         star_pitch: Option<f32>,
+        interpolation: LineInterpolation,
     ) -> Option<PreparedArc> {
-        self.preparation_parts()
-            .1
-            .ensure_arc_prefix(series_id, x_id, y_id, t, star_pitch)
+        self.preparation_parts().1.ensure_arc_prefix(
+            series_id,
+            x_id,
+            y_id,
+            t,
+            star_pitch,
+            interpolation,
+        )
     }
 
     // Headless PNG export.
@@ -10876,6 +11056,7 @@ impl Renderer {
 
         for config in series {
             validate_contour_level_count(config.series_id.as_str(), &config.render_type)?;
+            validate_line_fill(&self.pool, series.iter(), config)?;
         }
         let scale = clamp_export_scale(scale);
         let mut contour_spacings = Vec::with_capacity(series.len());
@@ -11435,6 +11616,9 @@ impl ChartView {
 pub struct ChartStyle {
     _charge: crate::gpu_memory::SharedCharge,
     line_bg: wgpu::BindGroup,
+    /// The area fill's `Style` (fill colour, baseline, fill flags), only when
+    /// the series' line declares a fill.
+    area_bg: Option<wgpu::BindGroup>,
     scatter_bg: wgpu::BindGroup,
     errorbar_bg: wgpu::BindGroup,
     bar_bg: wgpu::BindGroup,
@@ -11492,6 +11676,11 @@ impl PrepareContext<'_> {
                 validate_contour_level_count(
                     series.config.series_id.as_str(),
                     &series.config.render_type,
+                )?;
+                validate_line_fill(
+                    self.pool,
+                    item.series.iter().map(|series| series.config),
+                    series.config,
                 )?;
                 let contour_enabled = effective_series_primitives(
                     &item.chart_config.draw_style,
@@ -12358,6 +12547,8 @@ impl PrepareContext<'_> {
                         &cfg.y_column,
                         &t,
                         if line { star_pitch } else { None },
+                        extract_line(&cfg.render_type)
+                            .map_or(LineInterpolation::Linear, |l| l.interpolation),
                     )
                 } else {
                     None
@@ -12496,6 +12687,21 @@ impl PrepareContext<'_> {
             || (primitives.line && matches!(config.draw_style, DrawStyle::Milkyway(_)))
         {
             return Err(unsupported());
+        }
+        // A fill between two series needs index-aligned chunks of two streams,
+        // which nonresident streaming cannot guarantee, and a stepped line's
+        // arc prefix is not part of the streamed canonical scan. Both are
+        // resident-only by design, rejected here rather than drawn wrong.
+        if primitives.line
+            && let Some(line) = extract_line(&series.render_type)
+            && (line.fill.is_some() || !line.interpolation.is_linear())
+        {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: "line fill and step interpolation require GPU-resident columns; \
+                         streamed sources are not supported"
+                    .into(),
+            });
         }
         Ok(())
     }
@@ -12919,6 +13125,8 @@ impl PrepareContext<'_> {
                 None
             };
 
+            let interpolation =
+                extract_line(rt).map_or(LineInterpolation::Linear, |line| line.interpolation);
             let line = if primitives.line
                 && phase.is_none_or(|phase| phase == streaming_runtime::StreamDrawPhase::Line)
             {
@@ -12936,8 +13144,77 @@ impl PrepareContext<'_> {
                     x: x_h,
                     y: y_h,
                     arc,
-                    verts_per_instance: line_pick.verts,
+                    // One strip per step piece, joined per `strip_slot`.
+                    verts_per_instance: data_render::line_strip_vertex_count(
+                        line_pick.verts,
+                        interpolation,
+                    ),
                     texture_bg: line_pick.texture_bg,
+                })
+            } else {
+                None
+            };
+
+            // The area fill under / beside the line. Resident only: the fill
+            // between two series needs index-aligned columns that no streamed
+            // chunking can guarantee, and `validate_stream_series` has already
+            // rejected a streamed fill before this point. The second y column
+            // is the referenced series' own, resolved from the same series
+            // list; `validate_line_fill` checked the reference and its x
+            // column before any GPU work.
+            let area = if line.is_some()
+                && phase.is_none()
+                && let Some(fill) = extract_line(rt).and_then(|line| line.fill.as_ref())
+            {
+                let base = match fill {
+                    LineFill::ToBaseline(_) => y_h,
+                    LineFill::ToSeries(target) => {
+                        let target = series_specs
+                            .iter()
+                            .map(|other| other.config)
+                            .find(|other| other.series_id == *target)
+                            .ok_or_else(|| FiggyError::InvalidSeriesConfig {
+                                series_id: cfg.series_id.clone(),
+                                reason: format!(
+                                    "line fill references series `{target}`, which is not in \
+                                     this chart"
+                                ),
+                            })?;
+                        if target.x_column != cfg.x_column {
+                            return Err(FiggyError::InvalidSeriesConfig {
+                                series_id: cfg.series_id.clone(),
+                                reason: format!(
+                                    "line fill to series `{}` requires the same x column: \
+                                     `{}` vs `{}`",
+                                    target.series_id, cfg.x_column, target.x_column
+                                ),
+                            });
+                        }
+                        lookup(&target.y_column)?
+                    }
+                };
+                Some(data_render::ColumnAreaLayer {
+                    pipeline: pipelines
+                        .area
+                        .as_ref()
+                        .expect("prepare ensured line area pipeline"),
+                    transform_bg: &view.transform_bg,
+                    style_bg: series.style.area_bg.as_ref().ok_or_else(|| {
+                        FiggyError::InvalidSeriesConfig {
+                            series_id: cfg.series_id.clone(),
+                            reason: "series style was created without its line fill; \
+                                     recreate the style for the current series config"
+                                .into(),
+                        }
+                    })?,
+                    pool_buffer: column_buffer,
+                    x: x_h,
+                    y: y_h,
+                    base,
+                    verts_per_instance: data_render::line_strip_vertex_count(
+                        data_render::LINE_PRECISE_VERTICES_PER_INSTANCE,
+                        interpolation,
+                    ),
                 })
             } else {
                 None
@@ -13152,6 +13429,7 @@ impl PrepareContext<'_> {
             };
 
             out.push(data_render::SeriesLayers {
+                area,
                 field,
                 bar,
                 contour,
@@ -13216,7 +13494,9 @@ impl PrepareContext<'_> {
         y_id: &str,
         t: &data_render::ScatterTransform,
         star_pitch: Option<f32>,
+        interpolation: LineInterpolation,
     ) -> Option<PreparedArc> {
+        let step_mode = crate::line_step::step_mode(interpolation);
         if self.arc_pipelines.is_none() {
             *self.arc_pipelines = Some(data_render::line_arc::create_arc_scan_pipelines(
                 &self.device,
@@ -13239,6 +13519,7 @@ impl PrepareContext<'_> {
             y_allocation_epoch,
             geometry_transform_bits,
             star_pitch_bits: star_pitch.map(f32::to_bits),
+            step_mode,
         };
 
         // Runaway-churn backstop: ids of long-removed series would otherwise
@@ -13278,6 +13559,7 @@ impl PrepareContext<'_> {
             self.caps.max_compute_workgroups_per_dimension,
             chunk_override,
             star_pitch.is_some().then_some(&self.star_data_bgl),
+            step_mode,
         )?; // None only on a zero-dispatch-limit adapter; try_new rejects those.
 
         let mut encoder = self
@@ -13361,6 +13643,15 @@ fn effective_series_primitives(
         // draws no bars at all, the same answer `constellation_supports` gives.
         bar: matches!(draw_style, DrawStyle::Precise) && has_bar(render_type),
     }
+}
+
+/// Whether a line series with a fill draws it under `draw_style`: the fill
+/// follows the line, so it is drawn exactly when the style draws the line.
+/// Not part of [`EffectiveSeriesPrimitives`] because the fill is a property of
+/// the line (no hit target, no pick registry entry of its own).
+fn series_has_line_fill(draw_style: &DrawStyle, render_type: &DataRenderType) -> bool {
+    effective_series_primitives(draw_style, render_type).line
+        && extract_line(render_type).is_some_and(|line| line.fill.is_some())
 }
 
 /// Whether `style` draws every primitive `render_type` draws in the precise
@@ -15436,6 +15727,9 @@ mod tests {
                     line_style: LineStylePreset::Solid,
                     line_color: Color::new(0.1, 0.2, 0.3, 1.0),
                     line_width: 1.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         }
@@ -15454,6 +15748,9 @@ mod tests {
                     line_style: LineStylePreset::Solid,
                     line_color: Color::new(0.1, 0.2, 0.3, 1.0),
                     line_width: 1.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         }
@@ -15863,6 +16160,9 @@ mod tests {
                         line_style: LineStylePreset::Solid,
                         line_color: Color::BLACK,
                         line_width: 2.0,
+                        fill: None,
+                        fill_color: None,
+                        interpolation: crate::data_config::LineInterpolation::Linear,
                     },
                     per_level_color: None,
                     labels: None,
@@ -16445,6 +16745,9 @@ mod tests {
                 line_style: LineStylePreset::Solid,
                 line_color: Color::BLACK,
                 line_width: 1.0,
+                fill: None,
+                fill_color: None,
+                interpolation: crate::data_config::LineInterpolation::Linear,
             },
             per_level_color: None,
             labels: None,
@@ -17206,6 +17509,9 @@ mod tests {
                 line_style: LineStylePreset::Solid,
                 line_color: Color::BLACK,
                 line_width: 1.0,
+                fill: None,
+                fill_color: None,
+                interpolation: crate::data_config::LineInterpolation::Linear,
             },
             per_level_color: None,
             labels: None,
@@ -17257,6 +17563,9 @@ mod tests {
                     line_style: LineStylePreset::Solid,
                     line_color: Color::BLACK,
                     line_width: 1.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             }),
             Some(GpuSeriesExtentMode::Line)
@@ -17269,6 +17578,9 @@ mod tests {
             line_style: LineStylePreset::Solid,
             line_color: Color::BLACK,
             line_width: 1.0,
+            fill: None,
+            fill_color: None,
+            interpolation: crate::data_config::LineInterpolation::Linear,
         };
         let scatter = crate::data_config::DataScatterStyleConfig {
             point_color: Color::BLACK,
@@ -19756,6 +20068,9 @@ mod tests {
                     line_style: crate::line::LineStylePreset::Solid,
                     line_color: Color::new(0.4, 0.7, 1.0, 1.0),
                     line_width: 2.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         }];
@@ -20835,6 +21150,9 @@ mod tests {
                     line_style: crate::line::LineStylePreset::Solid,
                     line_color: color,
                     line_width: 2.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         };
@@ -20924,6 +21242,9 @@ mod tests {
                     line_style: crate::line::LineStylePreset::Solid,
                     line_color: Color::new(1.0, 1.0, 1.0, 1.0),
                     line_width: 2.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         };
@@ -21126,7 +21447,14 @@ mod tests {
 
             let t = data_render::scatter_transform_from_config(chart.config());
             let (arc_buf, len_bytes) = r
-                .ensure_arc_prefix(&format!("s_{case}"), &xid, &yid, &t, None)
+                .ensure_arc_prefix(
+                    &format!("s_{case}"),
+                    &xid,
+                    &yid,
+                    &t,
+                    None,
+                    LineInterpolation::Linear,
+                )
                 .expect("arc prefix")
                 .prefix;
 
@@ -21191,6 +21519,153 @@ mod tests {
         }
     }
 
+    /// A stepped line's arc prefix sums its axis-aligned pieces in pixel
+    /// space — the same corners the vertex shader draws and the picker walks
+    /// — so the dash phase advances along the stepped path. Each mode is a
+    /// distinct cache key: the prefix of one mode is never reused for
+    /// another, and the linear prefix stays what it was.
+    #[test]
+    fn gpu_arc_prefix_follows_the_stepped_path_per_interpolation_mode() {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let mut r = Renderer::try_new(
+            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+            wgpu::TextureFormat::Bgra8Unorm,
+            4 * 1024 * 1024,
+        )
+        .unwrap();
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 900,
+            height: 600,
+        });
+        let mut chart = Chart::new(config);
+        chart.set_x_range(0.0, 1.0);
+        chart.set_y_range(-1.2, 1.2);
+        let t = data_render::scatter_transform_from_config(chart.config());
+
+        // Uneven x spacing and a NaN gap: the gap's segments contribute 0 to
+        // every mode, and the gap stays exactly where the line breaks.
+        let n = 300usize;
+        let xs: Vec<f64> = (0..n).map(|i| (i as f64 / n as f64).powf(1.3)).collect();
+        let ys: Vec<f64> = (0..n)
+            .map(|i| {
+                if i == 150 {
+                    f64::NAN
+                } else {
+                    (i as f64 * 0.37).sin()
+                }
+            })
+            .collect();
+        r.add_column("step_ax", &col_f64(xs.clone())).unwrap();
+        r.add_column("step_ay", &col_f64(ys.clone())).unwrap();
+
+        let read = |device: &wgpu::Device,
+                    queue: &wgpu::Queue,
+                    arc_buf: &wgpu::Buffer,
+                    len_bytes: u64|
+         -> Vec<f32> {
+            let readback = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: len_bytes,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut enc = device.create_command_encoder(&Default::default());
+            enc.copy_buffer_to_buffer(arc_buf, 0, &readback, 0, len_bytes);
+            queue.submit(std::iter::once(enc.finish()));
+            let slice = readback.slice(..);
+            slice.map_async(wgpu::MapMode::Read, |_| {});
+            let _ = device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(30)),
+            });
+            bytemuck::cast_slice(&slice.get_mapped_range().expect("arc readback mapped")).to_vec()
+        };
+        // Pixel position of a (hi, lo) pair point, mirroring the shader.
+        let px = |x: (f32, f32), y: (f32, f32)| -> (f32, f32) {
+            let axis_ndc = |(hi, lo): (f32, f32), axis: usize| {
+                let numerator = (hi - t.data_min[axis]) + (lo - t.data_min_lo[axis]);
+                let range = (t.data_max[axis] - t.data_min[axis])
+                    + (t.data_max_lo[axis] - t.data_min_lo[axis]);
+                let data_t = numerator / range;
+                let panel_t = t.data_to_panel_offset[axis] + data_t * t.data_to_panel_scale[axis];
+                panel_t * 2.0 - 1.0
+            };
+            (
+                axis_ndc(x, 0) / t.pixel_to_ndc[0],
+                axis_ndc(y, 1) / t.pixel_to_ndc[1],
+            )
+        };
+        let pair = crate::data::split_f64_to_f32_pair;
+        let mut prefixes = Vec::new();
+        for mode in [
+            LineInterpolation::Linear,
+            LineInterpolation::StepPre,
+            LineInterpolation::StepPost,
+            LineInterpolation::StepMid,
+        ] {
+            let (arc_buf, len_bytes) = r
+                .ensure_arc_prefix("stepped", "step_ax", "step_ay", &t, None, mode)
+                .expect("arc prefix")
+                .prefix;
+            let gpu = read(&device, &queue, &arc_buf, len_bytes);
+            assert_eq!(gpu.len(), n, "{mode:?}: length");
+
+            // Sequential CPU reference over the stepped pieces.
+            let mut acc = 0.0f32;
+            let mut reference = vec![0.0f32];
+            for i in 1..n {
+                if !ys[i - 1].is_finite() || !ys[i].is_finite() {
+                    reference.push(acc);
+                    continue;
+                }
+                let (xa, ya, xb, yb) = (pair(xs[i - 1]), pair(ys[i - 1]), pair(xs[i]), pair(ys[i]));
+                let xm = ((xa.0 + xb.0) * 0.5, (xa.1 + xb.1) * 0.5);
+                let pieces: Vec<((f32, f32), (f32, f32), (f32, f32), (f32, f32))> = match mode {
+                    LineInterpolation::Linear => vec![(xa, ya, xb, yb)],
+                    LineInterpolation::StepPre => vec![(xa, ya, xa, yb), (xa, yb, xb, yb)],
+                    LineInterpolation::StepPost => vec![(xa, ya, xb, ya), (xb, ya, xb, yb)],
+                    LineInterpolation::StepMid => {
+                        vec![(xa, ya, xm, ya), (xm, ya, xm, yb), (xm, yb, xb, yb)]
+                    }
+                };
+                for (x0, y0, x1, y1) in pieces {
+                    let a = px(x0, y0);
+                    let b = px(x1, y1);
+                    acc += ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+                }
+                reference.push(acc);
+            }
+            let total = reference.last().copied().unwrap_or(0.0).max(1.0);
+            for (i, (g, c)) in gpu.iter().zip(reference.iter()).enumerate() {
+                assert!(
+                    (g - c).abs() <= total * 2e-4 + 0.05,
+                    "{mode:?}: arc[{i}] gpu={g} cpu={c} (total {total})"
+                );
+            }
+            prefixes.push((mode, gpu));
+        }
+        // A stepped path is longer than the chord, and every mode has its own
+        // cached result for the same columns and transform.
+        let linear_total = prefixes[0].1[n - 1];
+        for (mode, gpu) in &prefixes[1..] {
+            assert!(
+                gpu[n - 1] > linear_total * 1.05,
+                "{mode:?}: stepped total {} should exceed the linear {linear_total}",
+                gpu[n - 1]
+            );
+        }
+        assert_eq!(
+            r.arc_cache["stepped"].len(),
+            4,
+            "one cached scan per interpolation mode"
+        );
+    }
+
     #[test]
     fn arc_prefix_cache_never_exceeds_limit_on_new_series_churn() {
         let Some((device, queue)) = crate::data_render::shared_device() else {
@@ -21223,8 +21698,15 @@ mod tests {
         for i in 0..=ARC_PREFIX_CACHE_LIMIT {
             let series_id = format!("arc-cache-series-{i}");
             assert!(
-                r.ensure_arc_prefix(&series_id, "arc_cache_x", "arc_cache_y", &t, None,)
-                    .is_some()
+                r.ensure_arc_prefix(
+                    &series_id,
+                    "arc_cache_x",
+                    "arc_cache_y",
+                    &t,
+                    None,
+                    LineInterpolation::Linear,
+                )
+                .is_some()
             );
             assert!(
                 r.arc_cache.len() <= ARC_PREFIX_CACHE_LIMIT,
@@ -21277,6 +21759,9 @@ mod tests {
                     line_style: crate::line::LineStylePreset::Dash,
                     line_color: Color::new(1.0, 1.0, 1.0, 1.0),
                     line_width: 2.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         };
@@ -21335,7 +21820,14 @@ mod tests {
         let mut changed_transform = base_transform;
         changed_transform.pixel_to_ndc[0] *= 0.5;
         let changed = r
-            .ensure_arc_prefix("arc-cache", "cache_x", "cache_y", &changed_transform, None)
+            .ensure_arc_prefix(
+                "arc-cache",
+                "cache_x",
+                "cache_y",
+                &changed_transform,
+                None,
+                LineInterpolation::Linear,
+            )
             .expect("changed geometry arc result");
         let changed_arc = Arc::clone(&changed.prefix.0);
         assert!(
@@ -21345,7 +21837,14 @@ mod tests {
         drop(changed);
 
         let changed_again = r
-            .ensure_arc_prefix("arc-cache", "cache_x", "cache_y", &changed_transform, None)
+            .ensure_arc_prefix(
+                "arc-cache",
+                "cache_x",
+                "cache_y",
+                &changed_transform,
+                None,
+                LineInterpolation::Linear,
+            )
             .expect("cached changed geometry arc result");
         assert!(
             Arc::ptr_eq(&changed_arc, &changed_again.prefix.0),
@@ -21355,7 +21854,14 @@ mod tests {
         let mut style_only = changed_transform;
         style_only.style_params[0][0] = 123.0;
         let style_only_result = r
-            .ensure_arc_prefix("arc-cache", "cache_x", "cache_y", &style_only, None)
+            .ensure_arc_prefix(
+                "arc-cache",
+                "cache_x",
+                "cache_y",
+                &style_only,
+                None,
+                LineInterpolation::Linear,
+            )
             .expect("style-only arc result");
         assert!(
             Arc::ptr_eq(&changed_arc, &style_only_result.prefix.0),
@@ -21365,7 +21871,14 @@ mod tests {
         r.upsert_column("cache_y", &col_f64(vec![0.0, 0.8, 0.25]))
             .unwrap();
         let changed_data = r
-            .ensure_arc_prefix("arc-cache", "cache_x", "cache_y", &base_transform, None)
+            .ensure_arc_prefix(
+                "arc-cache",
+                "cache_x",
+                "cache_y",
+                &base_transform,
+                None,
+                LineInterpolation::Linear,
+            )
             .expect("changed data generation arc result");
         assert!(
             !Arc::ptr_eq(&changed_arc, &changed_data.prefix.0),
@@ -22106,6 +22619,9 @@ mod tests {
                     line_style: LineStylePreset::Solid,
                     line_color: Color::new(1.0, 0.0, 0.0, 0.5),
                     line_width: 5.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         };
@@ -22333,6 +22849,9 @@ mod tests {
                     line_style: LineStylePreset::Solid,
                     line_color: Color::new(1.0, 0.0, 0.0, 1.0),
                     line_width: 5.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         };
@@ -22568,6 +23087,9 @@ mod tests {
                     line_style: crate::line::LineStylePreset::Solid,
                     line_color: Color::new(1.0, 1.0, 1.0, 1.0),
                     line_width: 1.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         };
@@ -22675,6 +23197,9 @@ mod tests {
                     line_style: crate::line::LineStylePreset::Dash,
                     line_color: Color::new(1.0, 1.0, 1.0, 1.0),
                     line_width: 1.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         };
@@ -22787,6 +23312,9 @@ mod tests {
                     line_style: crate::line::LineStylePreset::Solid,
                     line_color: Color::new(0.4, 0.7, 1.0, 1.0),
                     line_width: 2.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         };
@@ -22973,6 +23501,9 @@ mod tests {
                     line_style: crate::line::LineStylePreset::Solid,
                     line_color: Color::new(1.0, 0.0, 0.0, 1.0),
                     line_width: 1.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         }];
@@ -23065,6 +23596,9 @@ mod tests {
                     line_style: LineStylePreset::Solid,
                     line_width: 2.0,
                     line_color: Color::new(1.0, 0.0, 0.0, 1.0),
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         }];
@@ -23173,6 +23707,9 @@ mod tests {
                     line_style: crate::line::LineStylePreset::Solid,
                     line_color: Color::new(1.0, 0.0, 0.0, 1.0),
                     line_width: 1.5,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         }];
@@ -23265,6 +23802,9 @@ mod tests {
                     line_style: crate::line::LineStylePreset::Solid,
                     line_color: Color::new(1.0, 0.0, 0.0, 1.0),
                     line_width: 1.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         }];
@@ -23333,6 +23873,9 @@ mod tests {
                     line_style: crate::line::LineStylePreset::Solid,
                     line_color: Color::new(1.0, 0.0, 0.0, 1.0),
                     line_width: 1.5,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         };
@@ -23487,6 +24030,9 @@ mod tests {
                     line_style: crate::line::LineStylePreset::Dash, // [8, 4]
                     line_color: Color::new(1.0, 0.0, 0.0, 1.0),
                     line_width: 2.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         }];

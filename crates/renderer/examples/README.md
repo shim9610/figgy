@@ -11,6 +11,7 @@ for machines without a GPU.
 |---|---|---|
 | [line.rs](line.rs) | Two `f64` columns → `line.png`; complete minimal setup | `cargo run --locked -p figgy-renderer --example line` |
 | [gallery_concepts.rs](gallery_concepts.rs) | Six visual recipes: dark monitoring, light analytics, editorial sketch, pop-art pie, pearl donut and topographic color | `cargo run --locked -p figgy-renderer --example gallery_concepts -- target/concepts` |
+| [area_step.rs](area_step.rs) | Shared x column → area under a line, a band between two lines and the three step modes | `cargo run --locked -p figgy-renderer --example area_step -- target/area-step` |
 | [error_bars.rs](error_bars.rs) | X/Y/error columns → lines, markers and symmetric error bars | `cargo run --locked -p figgy-renderer --example error_bars -- target/error-bars` |
 | [histogram.rs](histogram.rs) | N+1 bin edges and N counts → vertical and horizontal histograms | `cargo run --locked -p figgy-renderer --example histogram -- target/histogram` |
 | [heatmap_contours.rs](heatmap_contours.rs) | Coordinate axes and matrix columns → heatmap, labeled contours and colorbar | `cargo run --locked -p figgy-renderer --example heatmap_contours -- target/heatmap-contours` |

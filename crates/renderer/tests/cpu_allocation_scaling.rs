@@ -391,6 +391,9 @@ fn prepare_cost_is_independent_of_series_length() {
                     line_style: renderer::line::LineStylePreset::Solid,
                     line_color: renderer::Color::new(0.1, 0.2, 0.3, 1.0),
                     line_width: 1.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: renderer::data_config::LineInterpolation::Linear,
                 },
             },
         };

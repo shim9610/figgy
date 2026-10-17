@@ -10,7 +10,9 @@
 //   1. `seg_init`     — dst[start+i] = pixel length of segment (g-1, g) at
 //                       global index g = start+i; 0 at g=0. Non-finite
 //                       endpoints (NaN gaps, log of ≤0) contribute 0 so the
-//                       phase stays continuous across gaps.
+//                       phase stays continuous across gaps. A step mode
+//                       (`params.mode`) sums the stepped pieces instead of
+//                       the straight distance.
 //   2. `scan_block`   — in-place per-256-block inclusive scan of the chunk,
 //                       block totals written to `sums` (Hillis–Steele in
 //                       workgroup memory).
@@ -95,6 +97,79 @@ fn sample_valid(xv: vec2<f32>, yv: vec2<f32>) -> bool {
 }
 // ───── END common block ─────
 
+// ──────────── step interpolation (NOT part of the common block) ────────────
+// A step mode draws every instance (segment a → b) as axis-aligned pieces.
+// Piece corners live in DATA space so every consumer projects the same
+// points: the line, area, sketch, ribbon and star entries here, the
+// arc-length scan (line_arc.wgsl, `params.mode`) and the GPU picker
+// (gpu_pick.wgsl, in its own pick_* ABI). `step_piece_count`, `step_piece`
+// and `step_piece_len_px` must stay byte-identical between line_columnar.wgsl
+// and line_arc.wgsl (shader_consistency checks); the CPU twin is
+// `line_step::step_pieces` in the renderer crate.
+const LINE_STEP_SHIFT: u32 = 2u;
+const LINE_STEP_MASK: u32 = 3u;
+const LINE_STEP_LINEAR: u32 = 0u;
+const LINE_STEP_PRE: u32 = 1u;
+const LINE_STEP_POST: u32 = 2u;
+const LINE_STEP_MID: u32 = 3u;
+
+fn step_piece_count(mode: u32) -> u32 {
+    if (mode == LINE_STEP_PRE || mode == LINE_STEP_POST) {
+        return 2u;
+    }
+    if (mode == LINE_STEP_MID) {
+        return 3u;
+    }
+    return 1u;
+}
+
+// Data-space (hi, lo) corners of piece `k` of the stepped segment a → b.
+struct StepPiece {
+    x0: vec2<f32>,
+    y0: vec2<f32>,
+    x1: vec2<f32>,
+    y1: vec2<f32>,
+};
+
+fn step_piece(xa: vec2<f32>, ya: vec2<f32>, xb: vec2<f32>, yb: vec2<f32>, mode: u32, k: u32) -> StepPiece {
+    var p: StepPiece;
+    p.x0 = xa;
+    p.y0 = ya;
+    p.x1 = xb;
+    p.y1 = yb;
+    if (mode == LINE_STEP_PRE) {
+        // Riser at x_a, then the run at y_b.
+        if (k == 0u) { p.x1 = xa; } else { p.y0 = yb; }
+    } else if (mode == LINE_STEP_POST) {
+        // Run at y_a, then the riser at x_b.
+        if (k == 0u) { p.y1 = ya; } else { p.x0 = xb; }
+    } else if (mode == LINE_STEP_MID) {
+        // The riser sits at the DATA-space midpoint of the two x values, not
+        // the pixel midpoint — the two differ on a logarithmic axis, and the
+        // CPU picker places it in data units too.
+        let xm = (xa + xb) * 0.5;
+        if (k == 0u) {
+            p.x1 = xm;
+            p.y1 = ya;
+        } else if (k == 1u) {
+            p.x0 = xm;
+            p.x1 = xm;
+        } else {
+            p.x0 = xm;
+            p.y0 = yb;
+        }
+    }
+    return p;
+}
+
+// Pixel length of one piece, with the arc scan's projection.
+fn step_piece_len_px(p: StepPiece) -> f32 {
+    let a_px = data_to_ndc(p.x0, p.y0) / transform.pixel_to_ndc;
+    let b_px = data_to_ndc(p.x1, p.y1) / transform.pixel_to_ndc;
+    return distance(a_px, b_px);
+}
+// ─────────────────────── end step interpolation ───────────────────────
+
 struct ArcParams {
     // Element count of this dispatch's window into `dst`.
     len: u32,
@@ -105,6 +180,12 @@ struct ArcParams {
     // First element of the window: kernels address dst[start + i]. Zero for
     // the sums buffers; the chunk offset for windows into the arc buffer.
     start: u32,
+    // Step interpolation mode (LINE_STEP_*): seg_init sums the stepped
+    // pieces' pixel lengths so the dash phase follows the drawn path.
+    mode: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 };
 
 @group(1) @binding(0) var<storage, read> pool: array<f32>;
@@ -135,12 +216,25 @@ fn point_valid(i: u32) -> bool {
     return sample_valid(vec2<f32>(pool[xi], pool[xi + 1u]), vec2<f32>(pool[yi], pool[yi + 1u]));
 }
 
-fn point_px(i: u32) -> vec2<f32> {
-    let xi = params.x_base + i * 2u;
-    let yi = params.y_base + i * 2u;
-    let x = vec2<f32>(pool[xi], pool[xi + 1u]);
-    let y = vec2<f32>(pool[yi], pool[yi + 1u]);
-    return data_to_ndc(x, y) / transform.pixel_to_ndc;
+fn point_pair(base: u32, i: u32) -> vec2<f32> {
+    let j = base + i * 2u;
+    return vec2<f32>(pool[j], pool[j + 1u]);
+}
+
+// Pixel length of the (possibly stepped) path from point i to point j: the
+// straight distance for a linear polyline, the sum of the axis-aligned
+// pieces for a step mode — exactly what the line vertex entries draw.
+fn segment_px(i: u32, j: u32) -> f32 {
+    let xa = point_pair(params.x_base, i);
+    let ya = point_pair(params.y_base, i);
+    let xb = point_pair(params.x_base, j);
+    let yb = point_pair(params.y_base, j);
+    var total = 0.0;
+    let pieces = step_piece_count(params.mode);
+    for (var k = 0u; k < pieces; k = k + 1u) {
+        total = total + step_piece_len_px(step_piece(xa, ya, xb, yb, params.mode, k));
+    }
+    return total;
 }
 
 @compute @workgroup_size(256)
@@ -158,7 +252,7 @@ fn seg_init(@builtin(global_invocation_id) gid: vec3<u32>) {
         dst[g] = 0.0;
         return;
     }
-    let d = distance(point_px(g - 1u), point_px(g));
+    let d = segment_px(g - 1u, g);
     // Finite guard: NaN fails `d == d`, infinities fail the magnitude check.
     dst[g] = select(0.0, d, d == d && d < 1e30);
 }

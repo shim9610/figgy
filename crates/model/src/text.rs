@@ -111,6 +111,14 @@ pub struct RichSegment {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub rule_dash: Option<Vec<f32>>,
+    /// Optional band painted under a rule segment, from the rule down to the
+    /// baseline: the legend mark of a filled line series. `None` draws the
+    /// rule alone. Ignored on glyph segments.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub rule_band: Option<Color>,
 }
 
 impl RichSegment {
@@ -130,6 +138,7 @@ impl RichSegment {
             field_em: None,
             rule: false,
             rule_dash: None,
+            rule_band: None,
         }
     }
 
@@ -151,6 +160,15 @@ impl RichSegment {
         Self {
             rule_dash: (!dash_em.is_empty()).then_some(dash_em),
             ..Self::rule(width_em, color)
+        }
+    }
+
+    /// The same rule with a band under it in `band`: the mark of a line series
+    /// that fills the area under or beside its line.
+    pub fn with_rule_band(self, band: Option<Color>) -> Self {
+        Self {
+            rule_band: band,
+            ..self
         }
     }
 

@@ -198,6 +198,9 @@ pub(crate) struct GpuPickSeriesDescriptor<'a> {
     pub(crate) scatter: Option<GpuPickScatter<'a>>,
     /// Full production picker line width.  The engine applies `max(0) / 2`.
     pub(crate) line_width_px: Option<f32>,
+    /// How the line connects its samples. A step mode makes the picker walk
+    /// the same axis-aligned pieces the line shader draws.
+    pub(crate) line_interpolation: crate::data_config::LineInterpolation,
 }
 
 /// Query state which integration can derive directly from `Config`.
@@ -517,6 +520,7 @@ impl GpuStreamPick {
                 owned_segments,
                 original_index_word_base,
             ],
+            line: [series.line_step_mode, 0, 0, 0],
         };
         self.engine
             .bundle
@@ -653,6 +657,7 @@ struct PickQueryParamsGpu {
     style: [u32; 4],
     series: [u32; 4],
     stream: [u32; 4],
+    line: [u32; 4],
 }
 
 #[repr(C)]
@@ -668,7 +673,7 @@ struct PickCandidateGpu {
     _pad: u32,
 }
 
-const _: () = assert!(std::mem::size_of::<PickQueryParamsGpu>() == 224);
+const _: () = assert!(std::mem::size_of::<PickQueryParamsGpu>() == 240);
 const _: () = assert!(std::mem::size_of::<PickCandidateGpu>() == CANDIDATE_BYTES as usize);
 
 #[derive(Clone)]
@@ -725,6 +730,7 @@ struct PickSeriesGpu {
     base_radius_px: f32,
     base_shape_id: u32,
     line_half_width_px: f32,
+    line_step_mode: u32,
     max_extent_px: f32,
     style_count: u32,
     override_count: u32,
@@ -1668,6 +1674,7 @@ impl GpuPickEngine {
             flags |= FLAG_LINE;
             max_extent_px = max_extent_px.max(line_half_width_px);
         }
+        let line_step_mode = crate::line_step::step_mode(descriptor.line_interpolation);
         if flags & (FLAG_SCATTER | FLAG_LINE) == 0 {
             return Err(GpuPickError::NoPickPrimitive(descriptor.series_id));
         }
@@ -1884,6 +1891,7 @@ impl GpuPickEngine {
                 base_radius_px,
                 base_shape_id,
                 line_half_width_px,
+                line_step_mode,
                 max_extent_px,
                 style_count,
                 override_count,
@@ -2437,6 +2445,7 @@ impl GpuPickEngine {
                     series.point_count.saturating_sub(1),
                     0,
                 ],
+                line: [series.line_step_mode, 0, 0, 0],
             };
             self.bundle
                 .queue
@@ -2869,6 +2878,9 @@ mod tests {
                     line_style: LineStylePreset::Solid,
                     line_color: Color::BLACK,
                     line_width,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         }
@@ -2890,6 +2902,7 @@ mod tests {
                 style_map: None,
             }),
             line_width_px: None,
+            line_interpolation: crate::data_config::LineInterpolation::Linear,
         }
     }
 
@@ -3149,6 +3162,7 @@ mod tests {
                 }),
             }),
             line_width_px: Some(2.0),
+            line_interpolation: crate::data_config::LineInterpolation::Linear,
         };
         for logarithmic in [false, true] {
             let origin = if logarithmic {
@@ -3359,6 +3373,7 @@ mod tests {
                     style_map: None,
                 }),
                 line_width_px: line.then_some(0.0),
+                line_interpolation: crate::data_config::LineInterpolation::Linear,
             };
             let query = test_query(cursor);
             let mut stream = bundle
@@ -3761,6 +3776,7 @@ mod tests {
                         }),
                     }),
                     line_width_px: None,
+                    line_interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             )
             .unwrap();
@@ -3846,6 +3862,7 @@ mod tests {
                         style_map: None,
                     }),
                     line_width_px: None,
+                    line_interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             )
             .unwrap();
@@ -3873,6 +3890,7 @@ mod tests {
                         }),
                     }),
                     line_width_px: None,
+                    line_interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             )
             .unwrap();
@@ -3886,6 +3904,7 @@ mod tests {
                     y_column: "scale-line-y".into(),
                     scatter: None,
                     line_width_px: Some(6.0),
+                    line_interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             )
             .unwrap();
@@ -4027,6 +4046,7 @@ mod tests {
                     y_column: "parity-ly".into(),
                     scatter: None,
                     line_width_px: Some(0.0),
+                    line_interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             )
             .unwrap();
@@ -4094,6 +4114,7 @@ mod tests {
                     y_column: "gate-line-y".into(),
                     scatter: None,
                     line_width_px: Some(0.0),
+                    line_interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             )
             .unwrap();
@@ -4154,6 +4175,7 @@ mod tests {
                         style_map: None,
                     }),
                     line_width_px: None,
+                    line_interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             )
             .unwrap();
@@ -4231,6 +4253,7 @@ mod tests {
                         style_map: None,
                     }),
                     line_width_px: None,
+                    line_interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             )
             .unwrap();
@@ -4330,6 +4353,7 @@ mod tests {
                         style_map: None,
                     }),
                     line_width_px: None,
+                    line_interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             )
             .unwrap();
@@ -4367,6 +4391,197 @@ mod tests {
         }
     }
 
+    /// A stepped line is picked along its axis-aligned pieces on both
+    /// pickers: hits on a run, on a riser and near the corners resolve to the
+    /// same source index at the same distance, on linear and logarithmic
+    /// axes, and the straight chord between two samples is not pickable.
+    #[test]
+    fn exact_gpu_step_lines_match_cpu_picker_on_runs_risers_and_corners() {
+        use crate::data_config::LineInterpolation;
+
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        // Three samples: a rising step, then a falling one with a long riser.
+        let xs = [1.0f32, 3.0, 7.0];
+        let ys = [1.0f32, 5.0, 2.0];
+        let cpu_columns = CpuColumns::new(&[
+            ("parity-step-x", xs.as_slice()),
+            ("parity-step-y", ys.as_slice()),
+        ]);
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            64 * 1024,
+        )
+        .unwrap();
+        pool.add_column(
+            "parity-step-x".into(),
+            &f32_column(xs.to_vec()),
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        )
+        .unwrap();
+        pool.add_column(
+            "parity-step-y".into(),
+            &f32_column(ys.to_vec()),
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        )
+        .unwrap();
+
+        for logarithmic in [false, true] {
+            let mut config = parity_config(400, 400, (1.0, 8.0), (1.0, 8.0));
+            if logarithmic {
+                config.bottom_x.scale = AxisScale::Logarithmic;
+                config.left_y.scale = AxisScale::Logarithmic;
+            }
+            // Cursor positions in canvas pixels, from data coordinates through
+            // the chart's own data area and scale.
+            let to_px = |x: f32, y: f32| -> [f32; 2] {
+                let area = config.data_area().unwrap().0;
+                let t = |v: f32, min: f64, max: f64| {
+                    if logarithmic {
+                        (f64::from(v).log10() - min.log10()) / (max.log10() - min.log10())
+                    } else {
+                        (f64::from(v) - min) / (max - min)
+                    }
+                };
+                let tx = t(x, config.bottom_x.min, config.bottom_x.max);
+                let ty = t(y, config.left_y.min, config.left_y.max);
+                [
+                    area.x as f32 + tx as f32 * area.width as f32,
+                    (area.y + area.height) as f32 - ty as f32 * area.height as f32,
+                ]
+            };
+            for mode in [
+                LineInterpolation::Linear,
+                LineInterpolation::StepPre,
+                LineInterpolation::StepPost,
+                LineInterpolation::StepMid,
+            ] {
+                let mut cpu_series = line_series(
+                    "step",
+                    Some("step-source"),
+                    "parity-step-x",
+                    "parity-step-y",
+                    3.0,
+                );
+                let DataRenderType::Line { line } = &mut cpu_series.render_type else {
+                    unreachable!()
+                };
+                line.interpolation = mode;
+                let cpu_series = [cpu_series];
+                let mut engine =
+                    GpuPickEngine::new(Arc::clone(&device), Arc::clone(&queue)).unwrap();
+                engine
+                    .add_series(
+                        &pool,
+                        GpuPickSeriesDescriptor {
+                            source_id: Some("step-source".into()),
+                            series_id: "step".into(),
+                            x_column: "parity-step-x".into(),
+                            y_column: "parity-step-y".into(),
+                            scatter: None,
+                            line_width_px: Some(3.0),
+                            line_interpolation: mode,
+                        },
+                    )
+                    .unwrap();
+                // Data-space probes: on the first run / riser, on the long
+                // falling riser of the second segment, just past the step-mid
+                // midpoint, and on the chord between samples 0 and 1 (which
+                // only the linear line touches).
+                let probes = [
+                    (2.0f32, 1.0f32),
+                    (1.0, 3.0),
+                    (3.0, 3.0),
+                    (2.0, 5.0),
+                    (2.0, 3.0),
+                    (5.0, 4.5),
+                    (5.0, 2.5),
+                    (7.0, 3.5),
+                    (3.0, 4.0),
+                    (5.2, 5.0),
+                    (4.8, 2.0),
+                    (6.9, 4.9),
+                ];
+                let mut hits = 0;
+                for (x, y) in probes {
+                    for max_distance in [0.75, 6.0, 40.0] {
+                        let cursor = to_px(x, y);
+                        let cpu =
+                            cpu_pick(&config, &cpu_series, &cpu_columns, cursor, max_distance);
+                        let gpu = resolve_pick(
+                            &engine,
+                            &pool,
+                            query_from_config(&config, cursor, max_distance),
+                        );
+                        hits += usize::from(cpu.is_some());
+                        assert_pick_parity(cpu, gpu);
+                    }
+                }
+                assert!(
+                    hits >= 3,
+                    "{mode:?} log={logarithmic}: too few hits ({hits}) to be meaningful"
+                );
+                // Mode-specific resolution on a linear axis, checked on the
+                // CPU side (the GPU side agreed above).
+                if !logarithmic {
+                    let pick = |x: f32, y: f32| {
+                        cpu_pick(&config, &cpu_series, &cpu_columns, to_px(x, y), 0.75)
+                            .map(|p| p.point_index)
+                    };
+                    match mode {
+                        LineInterpolation::Linear => {
+                            assert_eq!(
+                                pick(2.0, 3.0),
+                                Some(0),
+                                "linear: the exact midpoint ties to the lower index"
+                            );
+                            assert_eq!(pick(2.5, 4.0), Some(1), "linear: on the chord, nearer B");
+                            assert_eq!(pick(2.0, 1.0), None, "linear: no run at y_a");
+                        }
+                        LineInterpolation::StepPost => {
+                            assert_eq!(pick(2.0, 1.0), Some(0), "post: on the run at y_a");
+                            assert_eq!(pick(3.0, 4.0), Some(1), "post: high on the riser at x_b");
+                            assert_eq!(pick(2.0, 3.0), None, "post: the chord is not drawn");
+                        }
+                        LineInterpolation::StepPre => {
+                            assert_eq!(pick(1.0, 3.0), Some(0), "pre: low on the riser at x_a");
+                            assert_eq!(pick(2.0, 5.0), Some(1), "pre: on the run at y_b");
+                            assert_eq!(pick(2.0, 3.0), None, "pre: the chord is not drawn");
+                        }
+                        LineInterpolation::StepMid => {
+                            assert_eq!(
+                                pick(2.0, 3.0),
+                                Some(0),
+                                "mid: the riser's midpoint ties to the lower index"
+                            );
+                            assert_eq!(
+                                pick(4.8, 5.0),
+                                Some(1),
+                                "mid: the run at y_a before the midpoint"
+                            );
+                            assert_eq!(
+                                pick(5.2, 2.0),
+                                Some(2),
+                                "mid: the run at y_b after the midpoint"
+                            );
+                            assert_eq!(
+                                pick(5.2, 5.0),
+                                None,
+                                "mid: nothing at y_a after the midpoint"
+                            );
+                            assert_eq!(
+                                pick(4.8, 2.0),
+                                None,
+                                "mid: nothing at y_b before the midpoint"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn exact_gpu_equal_distance_ties_match_cpu_series_and_primitive_order() {
         let Some((device, queue)) = crate::data_render::shared_device() else {
@@ -4395,6 +4610,9 @@ mod tests {
             line_style: LineStylePreset::Solid,
             line_color: Color::BLACK,
             line_width: 0.0,
+            fill: None,
+            fill_color: None,
+            interpolation: crate::data_config::LineInterpolation::Linear,
         };
         let first_series = SeriesConfig {
             series_id: "first".into(),
@@ -4452,6 +4670,7 @@ mod tests {
                         style_map: None,
                     }),
                     line_width_px: Some(0.0),
+                    line_interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             )
             .unwrap();
@@ -4485,6 +4704,7 @@ mod tests {
                         style_map: None,
                     }),
                     line_width_px: None,
+                    line_interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             )
             .unwrap();
@@ -4541,6 +4761,7 @@ mod tests {
                         style_map: None,
                     }),
                     line_width_px: None,
+                    line_interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             )
             .unwrap();
@@ -5154,6 +5375,7 @@ mod tests {
                         }),
                     }),
                     line_width_px: None,
+                    line_interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             )
             .unwrap();

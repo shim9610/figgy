@@ -87,6 +87,9 @@ fn setup(
                     line_color: Color::new(0.2, 0.6, 0.8, 0.45),
                     line_width: 2.0,
                     line_style: LineStylePreset::Solid,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             }
         },

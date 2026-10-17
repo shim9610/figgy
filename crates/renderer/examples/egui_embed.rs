@@ -262,6 +262,9 @@ fn build_sine_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
                 line_style: LineStylePreset::Solid,
                 line_color,
                 line_width: line_w,
+                fill: None,
+                fill_color: None,
+                interpolation: renderer::data_config::LineInterpolation::Linear,
             },
         },
     };
@@ -325,6 +328,9 @@ fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
                 line_style: LineStylePreset::Solid,
                 line_color: color,
                 line_width: line_w,
+                fill: None,
+                fill_color: None,
+                interpolation: renderer::data_config::LineInterpolation::Linear,
             },
         },
     };
@@ -379,6 +385,9 @@ fn build_xs_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
                 line_style: LineStylePreset::Solid,
                 line_color,
                 line_width: line_w,
+                fill: None,
+                fill_color: None,
+                interpolation: renderer::data_config::LineInterpolation::Linear,
             },
         },
     };

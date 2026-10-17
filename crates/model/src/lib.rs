@@ -35,7 +35,7 @@ pub use data_config::{
     DataBarBinStyleConfig, DataBarStyleOverride, DataErrorBarPointStyleConfig,
     DataErrorBarPointStyleOverride, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
     DataScatterPointStyleConfig, DataScatterPointStyleOverride, DataScatterStyleConfig, ErrorRef,
-    MAX_CONTOUR_LEVELS, ScatterShape, SeriesConfig,
+    LineFill, LineInterpolation, MAX_CONTOUR_LEVELS, ScatterShape, SeriesConfig, SeriesRef,
 };
 pub use drag::Draggable;
 pub use preset::{AxisPreset, ColorCycle};

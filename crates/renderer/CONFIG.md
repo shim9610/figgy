@@ -240,7 +240,7 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::paint` branches 
 | `SeriesConfig` | `series_id, source_id?, label, x_column: ColumnId, y_column: ColumnId, render_type` | Full series declaration. `source_id` is optional host provenance for picking; `x_column / y_column` are renderer-registered ids, resident in the pool or backed by a replayable nonresident source. In the web editing flow, `legend.content` is the live label authority; ordinary series edits update recognized legend symbols only and preserve user text. `SeriesConfig.label` becomes authoritative only for an explicit `reset_legend_from_series_labels()` rebuild |
 | `DataRenderType` | enum, 13 variants | One independent draw path per variant. Optional struct merging avoided |
 | `ErrorRef` | `Symmetric { column }` or `Asymmetric { lower, upper }` | Errorbar column reference. Symmetric = ±σ, Asymmetric = lower/upper split |
-| `DataLineStyleConfig` | `line_style, line_color, line_width` | Line appearance |
+| `DataLineStyleConfig` | `line_style, line_color, line_width, fill?, fill_color?, interpolation` | Line appearance. `fill` adds an area under the line (`ToBaseline(y)`) or between this line and another series (`ToSeries(series_id)`); `fill_color` defaults to `line_color` at a quarter of its alpha; `interpolation` is `Linear` (default), `StepPre`, `StepPost` or `StepMid`. See [Area fill and step lines](#area-fill-and-step-lines) |
 | `DataScatterStyleConfig` | `point_color, point_shape, point_size, point_style_table?, point_style_index_column?, point_style_overrides?` | Point appearance. The optional style map applies only to precise scatter; each table/override slot can replace color, shape, size, or any subset |
 | `DataErrorBarStyleConfig` | `error_bar_color, _width, _cap_size, cap_width, error_bar_style_table?, error_bar_style_index_column?, error_bar_style_overrides?` | Errorbar appearance. The optional style map applies only to precise errorbars; each table/override slot can replace color, stem width, cap half-size, cap width, or any subset |
 | `DataBarStyleConfig` | `fill_color, border_color, border_width, baseline, gap_px, width_ratio, orientation, bar_style_overrides?` | Histogram appearance. `width_ratio` controls the centred fraction of each bin; sparse overrides replace fill, outline, gap, or width for selected bin indices |
@@ -264,6 +264,63 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::paint` branches 
 
 For a runnable vertical/horizontal example and atomic direction changes, see
 [Histogram orientation](HISTOGRAM.md).
+
+<a id="area-fill-and-step-lines"></a>
+
+#### Area fill and step lines
+
+Every render type that draws a line (`Line`, `ScatterLine` and the
+`LineScatterErrorbar*` variants) reads three optional line settings. All of
+them are omitted from JSON at their defaults, so existing documents parse and
+serialize unchanged.
+
+- `fill: Option<LineFill>` paints the area between the line and a reference.
+  `LineFill::ToBaseline(y)` fills to a constant data value (`0.0` is the usual
+  area chart); `LineFill::ToSeries(series_id)` fills between this line and the
+  referenced series' line, index-aligned the way an errorbar reads its extra
+  columns. Fill between requires both series to share the **same x column**;
+  a different x column, an unknown series or a self reference is an explicit
+  `InvalidSeriesConfig` error, never a resampled fallback. The referenced
+  series' own interpolation is not consulted: the fill follows this line's.
+- `fill_color: Option<Color>` is the fill's colour. `None` derives it from
+  `line_color` with the alpha multiplied by
+  `DataLineStyleConfig::DEFAULT_FILL_ALPHA` (0.25);
+  `effective_fill_color()` returns the value actually painted.
+- `interpolation: LineInterpolation` connects consecutive samples with
+  straight segments (`Linear`), or with axis-aligned step pieces: `StepPre`
+  rises at `x[i]` to `y[i + 1]` and runs to `x[i + 1]`; `StepPost` runs at
+  `y[i]` to `x[i + 1]` and rises there; `StepMid` runs, rises at the
+  **data-space** midpoint of the two x values (not the pixel midpoint, which
+  differs on a logarithmic axis) and runs again. The dash phase, the arc-length
+  scan behind it and both pickers follow the stepped path, so a dashed step
+  line keeps its pattern around every corner and a pick on a riser resolves to
+  the nearer of the two source indices by position along the path.
+
+Draw order inside a panel is "every series' fill, then every series' body,
+then every picked highlight", each loop in SSOT series order with no
+automatic sorting. Another series' fill therefore never covers this series'
+line, and fills composite over each other in declaration order. The fill is a
+property of the line, not a hit target: `pick_point` / `pick_data` and the
+selection overlay keep working on the line's samples, and selecting the
+series selects its fill. The legend mark of a filled series carries a band of
+the fill colour under its rule, inside the same fixed-width symbol field.
+
+Constraints, documented and tested rather than masked:
+
+- Fills assume an x-monotonic series. Where x doubles back, the trapezoids
+  overlap and a translucent fill blends twice.
+- Both forms need GPU-resident columns. A streamed (nonresident) series with a
+  fill or a step mode is rejected by `inspect_streaming_capability` and the
+  streaming prepare path with an explicit error; chunked streams cannot
+  guarantee the index alignment a fill between two series needs.
+- A gap in the line (a non-finite sample, or a nonpositive sample on a
+  logarithmic axis) breaks the fill exactly where it breaks the line.
+- On a logarithmic y axis a baseline at or below zero has no position. It is
+  clamped to the axis minimum instead of masking the whole area — an explicit
+  exception to the rule that nonpositive values on a logarithmic axis are
+  omitted.
+- Fills are drawn in every draw style with the precise geometry; a sketch,
+  milkyway or constellation line keeps its own stroke on top.
 
 Histogram width is resolved in two stages: `width_ratio` keeps a centred
 `0..=1` fraction of the bin, then `gap_px` removes a fixed screen-space amount.
@@ -551,7 +608,7 @@ pub struct Config {
 | `SeriesConfig` | `series_id, source_id?, label, x_column: ColumnId, y_column: ColumnId, render_type` | 시리즈 설정. `source_id`는 선택 결과에서 데이터 출처를 구분하는 선택 항목이다. 컬럼 ID는 상주 풀 또는 재공급 가능한 비상주 소스를 가리킨다. 웹 편집 중 표시할 라벨은 `legend.content`를 기준으로 하며 일반 시리즈 편집은 기호만 갱신한다. `SeriesConfig.label`은 `reset_legend_from_series_labels()`로 범례를 다시 만들 때 사용한다. |
 | `DataRenderType` | 13종 열거형 | 종류마다 별도의 렌더링 경로와 필요한 설정을 가진다. |
 | `ErrorRef` | `Symmetric { column }` 또는 `Asymmetric { lower, upper }` | 오차 막대 컬럼 참조. Symmetric은 ±σ, Asymmetric은 아래·위 값을 별도 지정 |
-| `DataLineStyleConfig` | `line_style, line_color, line_width` | 선 모양 |
+| `DataLineStyleConfig` | `line_style, line_color, line_width, fill?, fill_color?, interpolation` | 선 모양. `fill`은 선 아래(`ToBaseline(y)`) 또는 다른 시리즈까지(`ToSeries(series_id)`) 면을 채우고, `fill_color`는 생략 시 `line_color`의 알파를 1/4로 줄인 색이며, `interpolation`은 `Linear`(기본)·`StepPre`·`StepPost`·`StepMid`다. [면 채움과 계단선](#면-채움과-계단선) 참고 |
 | `DataScatterStyleConfig` | `point_color, point_shape, point_size, point_style_table?, point_style_index_column?, point_style_overrides?` | 점 모양. 정밀 모드에서 선택적인 스타일 표·개별 설정으로 색·모양·크기의 전체 또는 일부를 바꿀 수 있다. |
 | `DataErrorBarStyleConfig` | `error_bar_color, _width, _cap_size, cap_width, error_bar_style_table?, error_bar_style_index_column?, error_bar_style_overrides?` | 오차 막대 모양. 정밀 모드에서 색·몸통 두께·끝선 절반 길이·끝선 두께의 전체 또는 일부를 바꿀 수 있다. |
 | `DataBarStyleConfig` | `fill_color, border_color, border_width, baseline, gap_px, width_ratio, orientation, bar_style_overrides?` | 히스토그램 모양. `width_ratio`는 구간 가운데에 놓인 막대의 너비 비율이다. 개별 설정으로 특정 구간의 채움·외곽선·간격·너비를 바꿀 수 있다. |
@@ -574,6 +631,26 @@ pub struct Config {
 | `HeatmapContour { matrix, fill, contour }` | fill + contour | 면 + 그 위의 선 |
 
 세로·가로 설정과 기존 차트의 방향 변경 예제는 [히스토그램 사용법](HISTOGRAM.md)에 있다.
+
+<a id="면-채움과-계단선"></a>
+
+#### 면 채움과 계단선
+
+선을 그리는 모든 종류(`Line`, `ScatterLine`, `LineScatterErrorbar*`)는 세 가지 선택 설정을 읽는다. 모두 기본값이면 JSON에서 생략하므로 기존 문서는 그대로 읽고 쓴다.
+
+- `fill: Option<LineFill>`은 선과 기준 사이의 면을 채운다. `LineFill::ToBaseline(y)`는 데이터 값 `y`까지(보통 `0.0`), `LineFill::ToSeries(series_id)`는 지정한 시리즈의 선까지 같은 인덱스끼리 채운다(오차 막대가 추가 컬럼을 읽는 방식과 같다). 두 시리즈 사이 채움은 **같은 x 컬럼**을 써야 하며, x 컬럼이 다르거나 시리즈가 없거나 자기 자신을 가리키면 재표본화하지 않고 `InvalidSeriesConfig` 오류를 돌려준다. 상대 시리즈의 `interpolation`은 읽지 않고 이 선의 보간을 따른다.
+- `fill_color: Option<Color>`는 채움색이다. 생략하면 `line_color`의 알파에 `DataLineStyleConfig::DEFAULT_FILL_ALPHA`(0.25)를 곱한 색을 쓰며, `effective_fill_color()`가 실제로 칠하는 색을 돌려준다.
+- `interpolation: LineInterpolation`은 표본 사이를 직선(`Linear`) 또는 축에 평행한 계단 조각으로 잇는다. `StepPre`는 `x[i]`에서 `y[i + 1]`로 먼저 오른 뒤 `x[i + 1]`까지 수평으로, `StepPost`는 `y[i]`로 `x[i + 1]`까지 간 뒤 그 자리에서 오르고, `StepMid`는 두 x 값의 **데이터 좌표 중점**에서(픽셀 중점이 아니다. 로그축에서는 둘이 다르다) 오른다. 점선 위상, 그 바탕인 호 길이 스캔, CPU·GPU 피킹이 모두 계단 경로를 따르므로 점선 계단선은 모서리마다 패턴이 이어지고, 수직선 위를 클릭하면 경로상 위치에 따라 두 원본 인덱스 중 가까운 쪽을 돌려준다.
+
+패널 안의 그리기 순서는 "모든 시리즈의 채움 → 모든 시리즈의 본체 → 모든 선택 강조"이며, 각 단계는 SSOT 시리즈 순서를 그대로 따르고 자동 정렬은 없다. 따라서 다른 시리즈의 채움이 이 시리즈의 선을 덮는 일은 구조상 없고, 채움끼리는 선언 순서대로 겹친다. 채움은 선의 속성이지 별도 히트 대상이 아니다. `pick_point` / `pick_data`와 선택 표시는 선의 표본을 기준으로 동작하며 시리즈를 선택하면 채움도 함께 선택된다. 채움이 있는 시리즈의 범례 기호는 같은 고정 너비 영역 안에서 선 아래에 채움색 띠를 그린다.
+
+가리지 않고 문서화·테스트하는 제약:
+
+- 채움은 x가 단조인 시리즈를 전제한다. x가 되돌아가는 구간에서는 사다리꼴이 겹쳐 반투명 채움이 두 번 섞인다.
+- 두 형식 모두 GPU 상주 컬럼이 필요하다. 비상주(스트리밍) 시리즈에 채움이나 계단 보간을 지정하면 `inspect_streaming_capability`와 스트리밍 준비 경로가 명시적 오류를 돌려준다. 청크 단위 스트림은 두 시리즈 사이 채움에 필요한 인덱스 정렬을 보장할 수 없다.
+- 선의 끊김(유한하지 않은 표본, 로그축의 0 이하 표본)은 같은 자리에서 채움도 끊는다.
+- 로그 y축에서 0 이하 기준선은 위치가 없다. 면 전체를 지우는 대신 축 최솟값으로 고정한다. 로그축의 0 이하 값을 생략하는 규칙의 명시적 예외다.
+- 채움은 모든 그리기 스타일에서 정밀 기하로 그리며, 스케치·밀키웨이·별자리 선은 그 위에 각자의 획을 올린다.
 
 히스토그램 막대는 구간 가운데에 배치하며, `width_ratio`로 구간 대비 너비를 `0..=1` 범위에서 정한다. 여기에 `gap_px`만큼의 픽셀 간격을 추가로 뺀다. 너비가 1픽셀보다 큰 막대는 최소 1픽셀이 남도록 간격을 제한한다.
 

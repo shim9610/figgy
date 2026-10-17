@@ -24,6 +24,9 @@ pub fn line(color: Color, width: f32) -> DataLineStyleConfig {
         line_style: LineStylePreset::Solid,
         line_color: color,
         line_width: width,
+        fill: None,
+        fill_color: None,
+        interpolation: renderer::data_config::LineInterpolation::Linear,
     }
 }
 

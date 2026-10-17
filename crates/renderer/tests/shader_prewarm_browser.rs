@@ -140,6 +140,9 @@ async fn real_prewarm_reuses_pipelines_and_draws_contour_labels() {
                     line_style: renderer::line::LineStylePreset::Solid,
                     line_color: Color::new(0., 0.2, 0.8, 1.),
                     line_width: 2.,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: renderer::data_config::LineInterpolation::Linear,
                 },
                 per_level_color: None,
                 labels: Some(ContourLabelConfig {

@@ -798,6 +798,10 @@ const UNDERLINE_Y_OFFSET_RATIO: f32 = 0.1; // below baseline
 // their ink (~0.3 em above the baseline) so rules and shape glyphs align.
 const RULE_Y_RATIO: f32 = 0.3; // above baseline
 const RULE_THICKNESS_RATIO: f32 = 0.09;
+// Fill band under a rule (legend mark of a filled line series): from the
+// rule's center down to this many em above the baseline, so it stays inside
+// the glyph ascent and never changes the line's measured extents.
+const RULE_BAND_BOTTOM_RATIO: f32 = 0.05;
 /// Horizontal kerning gap inserted before a super/sub segment, as a fraction
 /// of the base font_size. Prevents visual collision from italic overhang or
 /// size mismatch with the preceding glyph.
@@ -983,6 +987,19 @@ fn draw_line_segments(
             let field = seg.field_em.unwrap_or(1.0) * base;
             let t = (base * RULE_THICKNESS_RATIO).max(1.0);
             let ry = y - base * RULE_Y_RATIO - t * 0.5;
+            // The band goes under the rule first, so a dashed rule's gaps
+            // show the band and a solid rule covers its top edge.
+            if let Some(band) = &seg.rule_band {
+                let top = y - base * RULE_Y_RATIO;
+                let bottom = y - base * RULE_BAND_BOTTOM_RATIO;
+                canvas.draw_rect(
+                    pen_x,
+                    top,
+                    field,
+                    (bottom - top).max(1.0),
+                    &crate::raster::Paint::fill(band),
+                );
+            }
             if let Some(pattern) = &seg.rule_dash {
                 draw_dashed_rule(
                     canvas,
@@ -1076,6 +1093,53 @@ fn draw_dashed_rule(canvas: &mut Canvas, rect: RectF, color: &Color, dash_em: &[
 mod dashed_rule_tests {
     use super::*;
     use crate::text::TextAlign;
+
+    // The band of a filled line's legend mark is painted under the rule in
+    // the band colour, inside the rule's fixed field, and leaves the measured
+    // width and height of the mark unchanged.
+    #[test]
+    fn rule_band_fills_under_the_rule_without_changing_the_symbol_metrics() {
+        let band = Color::new(0.0, 0.0, 1.0, 1.0);
+        let make = |band: Option<Color>| RichText {
+            segments: vec![
+                RichSegment::rule(2.0, Some(Color::new(1.0, 0.0, 0.0, 1.0))).with_rule_band(band),
+            ],
+            color: Color::BLACK,
+            font_size: 16.0,
+            font: String::new(),
+            align: TextAlign::Left,
+        };
+        let plain = make(None);
+        let banded = make(Some(band));
+        assert_eq!(
+            measure_rich_text(&plain, FontPolicy::Standard),
+            measure_rich_text(&banded, FontPolicy::Standard)
+        );
+
+        let mut canvas = Canvas::new(48, 32).unwrap();
+        draw_rich_text(&mut canvas, &banded, (4.0, 24.0), FontPolicy::Standard);
+        let rgba = canvas.into_rgba();
+        let px =
+            |x: u32, y: u32| &rgba[((y * 48 + x) * 4) as usize..((y * 48 + x) * 4 + 4) as usize];
+        // Rule center: 0.3 em above the baseline, i.e. y ≈ 24 − 4.8.
+        let rule = px(20, 19);
+        assert!(rule[0] > 200 && rule[2] < 60, "rule row is red: {rule:?}");
+        // Halfway between the rule and the baseline: the band.
+        let in_band = px(20, 22);
+        assert!(
+            in_band[2] > 200 && in_band[0] < 60,
+            "band row is blue: {in_band:?}"
+        );
+        // Below the baseline and outside the field: nothing.
+        assert_eq!(px(20, 26)[3], 0);
+        assert_eq!(px(40, 22)[3], 0);
+        let mut plain_canvas = Canvas::new(48, 32).unwrap();
+        draw_rich_text(&mut plain_canvas, &plain, (4.0, 24.0), FontPolicy::Standard);
+        assert_eq!(
+            plain_canvas.into_rgba()[((22 * 48 + 20) * 4 + 3) as usize],
+            0
+        );
+    }
 
     #[test]
     fn dashed_rule_renders_visible_gaps_inside_fixed_field() {
