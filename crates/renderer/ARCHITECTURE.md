@@ -299,7 +299,8 @@ the sole issuer of its checked revisions:
 | State | Current trigger/handling |
 |---|---|
 | renderer `desired` revision | Any accepted visible chart edit, a referenced column replacement, or synchronized font registration requires a draw |
-| renderer `raster` revision | A config edit that changes the axis chrome (chart area, axes, title, grid, legend, colourbar, draw style), a series change, or a font registration requires `refresh_axis` before drawing. Selection (`picked_*`), `active_layer` and `annotations` edits and identical replacements do not touch it; the classification is `raster_config_equal`, tested field by field by the SSOT invalidation matrix |
+| renderer `raster` revision | A config edit that changes the axis chrome (chart area, axes, title, grid, legend, colourbar, draw style), a series change, or a font registration requires `refresh_axis` before drawing. Selection (`picked_*`), `active_layer` and `annotations` edits and identical replacements do not touch it; the classification is `raster_config_equal`, tested field by field by the SSOT invalidation matrix. `refresh_axis` also redoes the annotation rasters, because the anchor space follows the axes and the data area |
+| renderer `annotation` revision | An edit of `annotations.items` requires `refresh_annotations` before drawing: it rewrites the annotation underlay and overlay textures and the annotation hit map only, never the grid or decoration texture (`ChartView::layer_stamps` counts each layer's writes). Toggling `annotations.visible` bumps neither this nor `raster`: the draw skips the two composites. Classification `annotation_config_revision`, tested by the SSOT matrix's annotation suite |
 | host `view_dirty` | Surface/DPR preview geometry changed; refresh raster and draw |
 | host `redraw_pending` | Host-only surface state such as clear color changed; draw without duplicating chart state |
 
@@ -538,7 +539,8 @@ pool 컬럼 (x, y) ──┐                        Transform uniform (96 B writ
 | 상태 | 다시 그리는 조건과 처리 |
 |---|---|
 | 렌더러의 `desired` 리비전 | 표시 상태 변경, 참조 컬럼 교체, 동기화된 폰트 등록 시 다시 그린다. |
-| 렌더러의 `raster` 리비전 | 축 장식에 영향을 주는 설정 편집(차트 영역, 축, 제목, 그리드, 범례, 색상 막대, 그리기 스타일), 시리즈 변경, 폰트 등록이 있으면 그리기 전에 `refresh_axis`를 호출한다. 선택(`picked_*`), `active_layer`, `annotations` 편집과 동일한 설정 교체는 이 리비전을 바꾸지 않는다. 분류는 `raster_config_equal`이며 SSOT 무효화 매트릭스가 필드별로 검사한다. |
+| 렌더러의 `raster` 리비전 | 축 장식에 영향을 주는 설정 편집(차트 영역, 축, 제목, 그리드, 범례, 색상 막대, 그리기 스타일), 시리즈 변경, 폰트 등록이 있으면 그리기 전에 `refresh_axis`를 호출한다. 선택(`picked_*`), `active_layer`, `annotations` 편집과 동일한 설정 교체는 이 리비전을 바꾸지 않는다. 분류는 `raster_config_equal`이며 SSOT 무효화 매트릭스가 필드별로 검사한다. 앵커 공간이 축과 데이터 영역을 따르므로 `refresh_axis`는 주석 래스터도 함께 다시 만든다. |
+| 렌더러의 `annotation` 리비전 | `annotations.items` 편집이 있으면 그리기 전에 `refresh_annotations`를 호출한다. 주석 underlay·overlay 텍스처와 주석 히트 맵만 다시 쓰고 그리드·장식 텍스처는 건드리지 않는다(`ChartView::layer_stamps`가 층별 쓰기 횟수를 센다). `annotations.visible` 토글은 이 리비전도 `raster`도 바꾸지 않고 합성 두 번만 건너뛴다. 분류는 `annotation_config_revision`이며 SSOT 매트릭스의 주석 스위트가 검사한다. |
 | 호스트의 `view_dirty` | 화면 크기·DPR로 미리보기 배치가 바뀌면 축 이미지를 갱신하고 다시 그린다. |
 | 호스트의 `redraw_pending` | 배경색 등 화면 상태가 바뀌면 차트 설정을 복제하지 않고 다시 그린다. |
 

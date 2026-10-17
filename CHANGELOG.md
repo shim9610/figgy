@@ -9,6 +9,80 @@ at the time. The first crates.io publication is recorded below.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
+## Unreleased — annotation layer
+
+- Add the dedicated annotation layer to every chart family (#12, steps 1–3).
+  `AnnotationLayer` gains `items: Vec<Annotation>`; an `Annotation` is an
+  `id`, a `visible` flag and one of `ReferenceLine { axis, value, style, label }`,
+  `Span { axis, from, to, fill }`, `Text { anchor, text, box_style }` or
+  `Arrow { from, to, style, text }`, with `Anchor::Data` (axis coordinates that
+  follow zoom and range changes) or `Anchor::Ratio` (plot-area fractions, fixed
+  on screen). `AnnotationAxis::X` / `Y` are screen axes in every family:
+  `bottom_x` / `left_y` on Cartesian charts, the category index axis and the
+  value axis on bar and box charts, no value axes on radial charts. Non-finite
+  values and unplaceable anchors are not errors: the raster skips the item and
+  reports `RenderWarning::AnnotationSkipped { index, reason }`
+  (`AnnotationSkip::{NonFinite, NoValueAxis, OutOfRange, EmptyText}`);
+  `RenderWarning::axis()` now returns `Option<WarningAxis>`. Malformed styles
+  are rejected by `AnnotationLayer::validate`, part of config validation.
+  Annotations never change the data-area margins and are not nudged by the
+  label placer. The JSON shape is additive: an empty `items` is omitted.
+- One shared CPU raster pass draws the layer into two panel textures composited
+  with the existing fullscreen textured pipeline: the underlay (spans) below
+  the data and the overlay above every decoration. Cartesian panels draw
+  grid → underlay → data → picked highlight → decoration → overlay, on the
+  resident path, in stream displays and in `export_panel_*` (at the export
+  scale). `ChartView` carries the textures, `ChartView::annotation_map()` and
+  `ChartView::layer_stamps()`; `annotations.items` has its own `annotation`
+  revision (`ChartRenderStamp::needs_annotation_raster_since`), answered by
+  `Renderer::refresh_annotations(view, chart, panel_rect, selected)`, which
+  rewrites the two annotation textures and the annotation hit map only.
+  `refresh_axis*` redoes them with the axis raster; `annotations.visible`
+  bumps no raster revision and only skips the composites. Bounded renderers
+  return the layer as `prepare_annotations(chart, size, scale)` →
+  `Arc<BoundedAnnotationFrame>` (`draw_underlay`, `draw_overlay`,
+  `annotations()`, `render_warnings()`, `shares_rasters_with`), cached beside
+  the frame so an annotation edit or an annotation selection reuses the chart
+  frame and its label raster. The new `FrameBackground` option
+  (`set_background`, default `Opaque`) lets a frame leave its background to
+  the host clear so an underlay shows below bars and boxes; frames are cached
+  per mode and `export_rgba` picks the mode itself. `Frame::annotation_space()`
+  / `pixel_space_for_config` expose each family's anchor space (`PixelSpace`,
+  the `AnnotationSpace` trait).
+- Every annotation has the standard interaction: `AnnotationLayer` implements
+  `DragConfig` and `AnnotationElement` the `Selectable` / `Draggable` /
+  `Resizable` contracts, exposed as an `AnnotationMap` (the `DecorationMap`
+  shape). Items drag as a whole; a span's edges, a reference line's value and
+  an arrow's endpoints have their own selection-box handles under the compass
+  names; out-of-range moves are rejected atomically and anchors keep their
+  kind (`Anchor::converted` switches kinds in place). Bounded charts select an
+  annotation through `decorations.selected = Annotation(index)` without
+  rebuilding the frame; Cartesian hosts pass the index to
+  `refresh_annotations`. Registering annotation elements on the base hit map
+  when `active_layer == Annotations` follows the overlay layers (#11).
+- The WASM wrappers `FiggyChart` and `FiggyBoundedChart` expose
+  `annotations`, `hit_annotation`, `select_annotation`, `selected_annotation`,
+  `annotation_handle`, `drag_annotation`, `add_annotation`, `set_annotation`,
+  `remove_annotation`, `set_annotations_visible`, `pointer_to_anchor` and
+  `annotation_warnings`; a bounded chart with a visible span is drawn with the
+  host-clear frame and the chart background as the clear colour.
+- Tests: the SSOT invalidation matrix classifies `annotations.items` (annotation
+  revision only) and `annotations.visible` (draw only) on resident and streamed
+  charts; the Cartesian layer tests prove that an annotation refresh rewrites
+  neither the grid nor the decoration texture and that the cached view paints
+  the bytes of a fresh renderer, that spans sit below the data and text boxes
+  above the legend, that drags round-trip, and that 1× / 2× exports share
+  metrics with the hit map; the bounded tests prove the same frame reuse,
+  export parity, selection, drags and radial data-anchor warnings for all
+  three families. Guides: configuration reference, interaction guide
+  (annotation layer), architecture (revision table), bounded family guides,
+  WASM guide and JSON schema.
+- Rust migration: exhaustive `AnnotationLayer` literals need `items`;
+  exhaustive matches on `RenderWarning` need `AnnotationSkipped`, and
+  `RenderWarning::axis()` is an `Option`. `draw_chart_panel_columnar` takes
+  the two optional annotation layers. Released with the next renderer/model
+  minor versions together with the other Unreleased entries below.
+
 ## Unreleased — layer and annotation foundation
 
 - Add the SSOT shape shared by the planned overlay layers (secondary Y axes,

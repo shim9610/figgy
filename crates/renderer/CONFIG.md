@@ -27,7 +27,7 @@ pub struct Config {
     pub colorbar: Option<ColorBarOptions>,   // the colourbar AND the chart's z scale
     pub draw_style: DrawStyle,
     pub active_layer: LayerRef,              // interaction target layer; `Base` = today's behavior
-    pub annotations: AnnotationLayer,        // dedicated annotation layer (visibility; items follow)
+    pub annotations: AnnotationLayer,        // dedicated annotation layer: visibility + items
 }
 ```
 
@@ -109,19 +109,73 @@ scale against that contract.
 
 ### `LayerRef` / `AnnotationLayer`
 
-The layer foundation shared by every chart family (`Config`, `RadialChart`,
-`CategoricalChart`, `BoxPlotChart`). Neither field changes drawn pixels.
+The layer fields shared by every chart family (`Config`, `RadialChart`,
+`CategoricalChart`, `BoxPlotChart`).
 
 | Field | Meaning |
 |---|---|
-| `active_layer: LayerRef` | The layer that receives pointer interaction: `Base` (default, omitted from JSON), `Overlay(index)` or `Annotations`. Decides which layer's elements the hit map registers; element selection (`selected`, `picked_points`, `picked_data`) lives one level below it. Bounded charts have no overlays, so `Overlay` falls back to `Base` there. |
-| `annotations: AnnotationLayer { visible }` | The dedicated annotation layer, composited as an underlay below the data and an overlay above every decoration but toggled and edited as one unit. Default (visible, no items) is omitted from JSON. |
+| `active_layer: LayerRef` | The layer that receives pointer interaction: `Base` (default, omitted from JSON), `Overlay(index)` or `Annotations`. Decides which layer's elements the hit map registers; element selection (`selected`, `picked_points`, `picked_data`) lives one level below it. Bounded charts have no overlays, so `Overlay` falls back to `Base` there. Drawn pixels never depend on it. Routing the base hit map by this field arrives with the overlay layers (#11); the annotation layer already owns its own hit map (see the [interaction guide](INTERACTION.md#annotation-layer)). |
+| `annotations: AnnotationLayer { visible, items }` | The dedicated annotation layer: `items` in draw order, composited as an underlay below the data (spans) and an overlay above every decoration (everything else) but toggled, selected and edited as one unit. `visible = false` skips the two composite draws without re-rasterizing anything. The default (visible, no items) is omitted from JSON, and so is an empty `items`. |
 
-Overlay layers, the selection API and the annotation items are tracked in
-issues #11 and #12; this foundation only reserves the SSOT shape so documents
-and hosts written now stay valid. Overlay elements are addressed as
-`DecorationId::Overlay { layer, inner }` (`overlay_<n>:<inner id>`) and
-annotation items as `DecorationId::Annotation(index)` (`annotation_<n>`).
+Overlay elements are addressed as `DecorationId::Overlay { layer, inner }`
+(`overlay_<n>:<inner id>`), tracked in #11, and annotation items as
+`DecorationId::Annotation(index)` (`annotation_<n>`), the item's position in
+`items`.
+
+#### `Annotation`
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | `String` | Free host label that survives reordering. Empty by default and omitted from JSON then |
+| `visible` | `bool` | A hidden item is neither drawn nor registered in the hit map; its geometry is kept. `true` by default and omitted then |
+| `kind` | `AnnotationKind` | One of the four variants below, externally tagged like every other enum: `"kind": {"Span": {...}}` |
+
+| `AnnotationKind` | Fields | Where and how it is drawn |
+|---|---|---|
+| `ReferenceLine` | `axis: AnnotationAxis`, `value: f64`, `style: AnnotationLineStyle`, `label: Option<RichText>` | Overlay. A line across the whole plot area at `value`: vertical for `X`, horizontal for `Y`. The label sits inside the plot at the line's top (`X`) or left (`Y`) end |
+| `Span` | `axis: AnnotationAxis`, `from: f64`, `to: f64`, `fill: Color` | Underlay, below the data, so a translucent fill never tints it. The band between `from` and `to`, clipped to the plot area; a band partly outside is clipped, one entirely outside is skipped |
+| `Text` | `anchor: Anchor`, `text: RichText`, `box_style: Option<BoxStyle>` | Overlay. The text block's top-left corner (the frame's corner when boxed) sits at the anchor, anywhere in the panel; a block that would leave the panel is skipped |
+| `Arrow` | `from: Anchor`, `to: Anchor`, `style: ArrowStyle`, `text: Option<RichText>` | Overlay. A shaft from `from` to `to` with a filled triangular head at `to`; the label is centred beside the shaft's midpoint, on its upper side |
+
+`AnnotationAxis` is `X` (horizontal on screen) or `Y` (vertical) in every
+family. Cartesian charts map them to `bottom_x` / `left_y`, the axes the data
+transform draws against, with the same linear and logarithmic rules as series
+(a non-positive value on a log axis has no position). Bar and box charts map
+them by their direction: `Vertical` bars put the category index on `X` and the
+value on `Y`, `Horizontal` bars the other way round. The category axis counts
+categories, the first centred at coordinate `0`, so `-0.5..0.5` is the first
+category's slot. Radial charts have no value axes at all.
+
+`Anchor` is either `{"Data": {"x": f64, "y": f64}}`, a coordinate on the two
+document axes that follows zoom and range changes, or
+`{"Ratio": {"x": f32, "y": f32}}`, a fraction of the plot area, `(0, 0)` at its
+top-left and `(1, 1)` at its bottom-right corner, fixed on screen. Ratio values
+outside `0..1` place a text box or arrow endpoint outside the plot area but
+inside the panel. `Anchor::converted(&space, kind)` switches between the two
+kinds while keeping the screen position.
+
+The styles are `serde(default)` with these defaults:
+
+| Type | Fields |
+|---|---|
+| `AnnotationLineStyle` | `color` (dark grey), `width: f32` (1.5), `style: LineStylePreset` (`Solid`) |
+| `BoxStyle` | `fill` (white, alpha 0.9), `border_color` (dark grey), `border_width` (1.0), `padding` (4.0) between border and text |
+| `ArrowStyle` | `line: AnnotationLineStyle`, `head_length` (10.0), `head_width` (8.0) |
+
+Every pixel dimension (strokes, text sizes, padding, arrow heads) scales with
+`Config::scaled` like the rest of the chart, so a 2× export draws the layer at
+2× with the same metrics as its 1× hit map. Values and anchors do not scale.
+
+Validation (`AnnotationLayer::validate`, part of config validation): at most
+1024 items, finite colours in `0..1`, widths `0..64`, arrow heads `0..256`,
+texts within the bounded title limits (font size 6..160, 512 segments, eight
+lines). Non-finite values and anchors are **not** errors: the raster skips the
+item, keeps it in the document and reports
+`RenderWarning::AnnotationSkipped { index, reason }` with `NonFinite`,
+`NoValueAxis` (a data anchor or axis value on a radial chart), `OutOfRange` (no
+position on its axis or outside the panel) or `EmptyText`. Annotations never
+take part in the data-area margin computation (a new text box does not shrink
+the plot) and the automatic label placer never nudges them.
 
 ### `Legend`
 | Field | Type | Meaning |
@@ -399,7 +453,7 @@ pub struct Config {
     pub colorbar: Option<ColorBarOptions>,   // the colourbar AND the chart's z scale
     pub draw_style: DrawStyle,
     pub active_layer: LayerRef,              // interaction target layer; `Base` = today's behavior
-    pub annotations: AnnotationLayer,        // dedicated annotation layer (visibility; items follow)
+    pub annotations: AnnotationLayer,        // dedicated annotation layer: visibility + items
 }
 ```
 
@@ -470,17 +524,61 @@ pub struct Config {
 ### `LayerRef` / `AnnotationLayer`
 
 모든 차트 종류(`Config`, `RadialChart`, `CategoricalChart`, `BoxPlotChart`)가 공유하는
-레이어 기반 필드다. 두 필드 모두 그려지는 픽셀을 바꾸지 않는다.
+레이어 필드다.
 
 | 필드 | 의미 |
 |---|---|
-| `active_layer: LayerRef` | 포인터 상호작용을 받는 레이어. `Base`(기본값, JSON에서 생략), `Overlay(index)`, `Annotations` 중 하나다. 히트 맵에 어느 레이어의 요소를 등록할지 정하며, 요소 선택(`selected`, `picked_points`, `picked_data`)은 그 아래 단계다. bounded 차트에는 오버레이가 없으므로 `Overlay`는 `Base`로 되돌린다. |
-| `annotations: AnnotationLayer { visible }` | 전용 주석 층. 데이터 아래의 underlay와 모든 장식 위의 overlay 두 장으로 합성하되 켜고 끄기와 편집은 한 단위로 다룬다. 기본값(보임, 항목 없음)은 JSON에서 생략한다. |
+| `active_layer: LayerRef` | 포인터 상호작용을 받는 레이어. `Base`(기본값, JSON에서 생략), `Overlay(index)`, `Annotations` 중 하나다. 히트 맵에 어느 레이어의 요소를 등록할지 정하며, 요소 선택(`selected`, `picked_points`, `picked_data`)은 그 아래 단계다. bounded 차트에는 오버레이가 없으므로 `Overlay`는 `Base`로 되돌린다. 그려지는 픽셀은 이 값에 의존하지 않는다. 이 값으로 기본 히트 맵을 라우팅하는 단계는 오버레이 레이어(#11)와 함께 들어오고, 주석 층은 이미 자체 히트 맵을 가진다([상호작용 가이드](INTERACTION.md#annotation-layer)). |
+| `annotations: AnnotationLayer { visible, items }` | 전용 주석 층. `items`를 그리는 순서대로 담으며, 구간(span)은 데이터 아래의 underlay에, 나머지는 모든 장식 위의 overlay에 합성하되 켜고 끄기·선택·편집은 한 단위로 다룬다. `visible = false`는 합성 두 번만 건너뛰고 어떤 래스터도 다시 만들지 않는다. 기본값(보임, 항목 없음)과 빈 `items`는 JSON에서 생략한다. |
 
-오버레이 레이어, 선택 API, 주석 항목은 이슈 #11과 #12에서 다룬다. 이 기반은 지금 작성한
-문서와 호스트가 그대로 유효하도록 SSOT 형태만 예약한다. 오버레이 요소는
-`DecorationId::Overlay { layer, inner }`(`overlay_<n>:<inner id>`), 주석 항목은
-`DecorationId::Annotation(index)`(`annotation_<n>`)로 식별한다.
+오버레이 요소는 `DecorationId::Overlay { layer, inner }`(`overlay_<n>:<inner id>`, #11에서 다룸),
+주석 항목은 `items` 안의 위치로 `DecorationId::Annotation(index)`(`annotation_<n>`)로 식별한다.
+
+#### `Annotation`
+
+| 필드 | 타입 | 의미 |
+|---|---|---|
+| `id` | `String` | 재정렬에도 유지되는 호스트용 자유 라벨. 기본값은 빈 문자열이며 그때 JSON에서 생략한다 |
+| `visible` | `bool` | 숨긴 항목은 그리지도 히트 맵에 등록하지도 않고 기하만 보존한다. 기본 `true`, 그때 생략 |
+| `kind` | `AnnotationKind` | 아래 네 종류 중 하나. 다른 enum처럼 외부 태그 방식(`"kind": {"Span": {...}}`)이다 |
+
+| `AnnotationKind` | 필드 | 그리는 위치와 방식 |
+|---|---|---|
+| `ReferenceLine` | `axis: AnnotationAxis`, `value: f64`, `style: AnnotationLineStyle`, `label: Option<RichText>` | overlay. 플롯 영역 전체를 가로지르는 선. `X`면 세로선, `Y`면 가로선이며 라벨은 선의 위쪽(`X`) 또는 왼쪽(`Y`) 끝 안쪽에 둔다 |
+| `Span` | `axis: AnnotationAxis`, `from: f64`, `to: f64`, `fill: Color` | underlay(데이터 아래). 반투명 채움이 데이터를 물들이지 않는다. `from`과 `to` 사이의 띠를 플롯 영역에 잘라 그리며, 일부만 벗어나면 잘라 그리고 전부 벗어나면 건너뛴다 |
+| `Text` | `anchor: Anchor`, `text: RichText`, `box_style: Option<BoxStyle>` | overlay. 텍스트 블록(상자가 있으면 상자)의 왼쪽 위 모서리를 앵커에 두며 패널 안이면 어디든 놓을 수 있다. 패널을 벗어나는 블록은 건너뛴다 |
+| `Arrow` | `from: Anchor`, `to: Anchor`, `style: ArrowStyle`, `text: Option<RichText>` | overlay. `from`에서 `to`로 향하는 선과 `to` 끝의 채운 삼각형 머리. 라벨은 선 중점 옆 위쪽에 가운데 정렬한다 |
+
+`AnnotationAxis`는 모든 차트에서 `X`(화면 가로)와 `Y`(화면 세로)다. Cartesian 차트는
+데이터 변환이 쓰는 `bottom_x` / `left_y`에 대응하며 시리즈와 같은 선형·로그 규칙을 따른다
+(로그축의 0 이하 값은 위치가 없다). 막대·박스 차트는 방향에 따라 대응한다. `Vertical`이면 `X`가
+범주 인덱스, `Y`가 값 축이고 `Horizontal`이면 반대다. 범주 축은 범주를 세며 첫 범주의 중심이
+좌표 `0`이므로 `-0.5..0.5`가 첫 범주의 슬롯이다. 원형 차트에는 값 축이 없다.
+
+`Anchor`는 `{"Data": {"x": f64, "y": f64}}`(두 문서 축의 좌표. 확대·범위 변경을 따라간다)
+또는 `{"Ratio": {"x": f32, "y": f32}}`(플롯 영역의 비율. `(0, 0)`이 왼쪽 위, `(1, 1)`이 오른쪽
+아래이며 화면에 고정된다) 중 하나다. `0..1` 밖의 비율은 텍스트 상자나 화살표 끝을 플롯 밖,
+패널 안에 둔다. `Anchor::converted(&space, kind)`는 화면 위치를 유지한 채 종류를 바꾼다.
+
+스타일은 모두 `serde(default)`이며 기본값은 다음과 같다.
+
+| 타입 | 필드 |
+|---|---|
+| `AnnotationLineStyle` | `color`(짙은 회색), `width: f32`(1.5), `style: LineStylePreset`(`Solid`) |
+| `BoxStyle` | `fill`(흰색, 알파 0.9), `border_color`(짙은 회색), `border_width`(1.0), 테두리와 글자 사이 `padding`(4.0) |
+| `ArrowStyle` | `line: AnnotationLineStyle`, `head_length`(10.0), `head_width`(8.0) |
+
+선 굵기·글자 크기·여백·화살표 머리 같은 픽셀 치수는 `Config::scaled`로 차트의 다른 치수와
+함께 배율이 적용되므로 2배 출력은 1배 히트 맵과 같은 기준으로 2배 크기로 그린다. 값과 앵커는
+배율과 무관하다.
+
+검증(`AnnotationLayer::validate`, 설정 검증에 포함)은 항목 1024개 이하, `0..1`의 유한한 색,
+굵기 `0..64`, 화살표 머리 `0..256`, bounded 제목과 같은 텍스트 제한(글자 크기 6..160, 512
+세그먼트, 8줄)을 본다. 유한하지 않은 값과 앵커는 오류가 **아니다**. 래스터가 그 항목을
+건너뛰고 문서에는 그대로 두며 `RenderWarning::AnnotationSkipped { index, reason }`으로
+알린다. 이유는 `NonFinite`, `NoValueAxis`(원형 차트의 데이터 앵커나 축 값), `OutOfRange`(축
+범위나 패널 밖), `EmptyText` 중 하나다. 주석은 데이터 영역 여백 계산에 참여하지 않으며(텍스트
+상자를 추가해도 플롯이 줄지 않는다) 자동 라벨 배치기가 밀어내지도 않는다.
 
 ### `Legend`
 | 필드 | 타입 | 의미 |

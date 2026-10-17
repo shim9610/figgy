@@ -75,7 +75,12 @@ Read `view.render_warnings()` in the same branch that calls `refresh_axis`: each
 as a `major_spacing` that would need more than 1000 intervals and was drawn at
 automatic spacing. The list is re-derived only when the view is rasterized, so a
 host that refreshes on its dirty flag never pays for it per frame. Compare it
-with the previous list to show only changes.
+with the previous list to show only changes. The same list ends with the
+annotation layer's `AnnotationSkipped` warnings: an edit of
+`config.annotations.items` is a third dirty source,
+`ChartRenderStamp::needs_annotation_raster_since`, answered by
+`refresh_annotations`, which rewrites only the two annotation textures (see
+[the annotation layer](INTERACTION.md#annotation-layer)).
 
 Constructors initialize base resources; they do not eagerly populate every
 pipeline cache. Use explicit `prewarm_all` or detached preparation when needed,

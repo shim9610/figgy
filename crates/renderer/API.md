@@ -425,3 +425,19 @@ it does not add a pick radius or turn finite segments into infinite lines.
 ## Bounded chart decoration interaction
 
 Radial, categorical and boxplot frames expose `decorations()`, a renderer-measured hit map using the existing `HitMap` / `Selectable` / `Draggable` contracts. See [interaction workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md) for selection, logical-pixel dragging, SSOT persistence and host integration.
+
+## Annotation layer
+
+Every chart family carries `annotations: AnnotationLayer` (reference lines,
+spans, text boxes, arrows). Cartesian views rasterize it into two more
+`ChartView` textures: `refresh_axis*` redoes them with the axis raster and
+`Renderer::refresh_annotations(view, chart, panel_rect, selected)` redoes them
+alone when `ChartRenderStamp::needs_annotation_raster_since` or the annotation
+selection changed; `ChartView::annotation_map()` is the layer's hit map. Bounded
+renderers return the layer as `prepare_annotations(chart, size, scale)` →
+`Arc<BoundedAnnotationFrame>`, drawn as `draw_underlay`, the frame, `draw_overlay`
+(an underlay needs `set_background(FrameBackground::HostClear)` and a clear with
+the chart background; `export_rgba` handles that itself). Items the raster could
+not place are `RenderWarning::AnnotationSkipped` on `render_warnings()`. See the
+[annotation section of the interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer)
+and the [configuration reference](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#layerref--annotationlayer).
