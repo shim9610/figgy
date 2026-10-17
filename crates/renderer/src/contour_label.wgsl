@@ -95,6 +95,12 @@ struct LabelParams {
 };
 
 @group(1) @binding(0) var<uniform> lp: LabelParams;
+
+/// How far the label quad extends past its measured content, in pixels. The
+/// content-to-texel map has slope `(w - 1) / w`, so reaching the gutter's texel
+/// centre takes a little over one pixel for short labels; two leaves margin.
+/// Everything past that centre is clamped to it and is transparent.
+const LABEL_EDGE_PX: f32 = 2.0;
 @group(1) @binding(2) var atlas: texture_2d<f32>;
 @group(1) @binding(3) var atlas_samp: sampler;
 
@@ -175,14 +181,23 @@ fn vs_main(
     }
     let up = vec2<f32>(-right.y, right.x);
 
-    let local = corner * vec2<f32>(w, cell_h);
+    // The quad reaches `LABEL_EDGE_PX` past the measured content on every
+    // side. A baked background box fills its content to the edge, so a quad
+    // that ended there would make the box edge the rasterized quad edge:
+    // stair-stepped once the label is rotated. Past the content the sample
+    // below runs into the transparent gutter, so the texture filter fades the
+    // box edge over one texel, exactly as it does for the glyphs inside it.
+    let content = vec2<f32>(w, cell_h);
+    let local = corner * (content + vec2<f32>(2.0 * LABEL_EDGE_PX));
     let offset_px = right * local.x + up * local.y;
     out.pos = vec4<f32>(centre + offset_px * transform.pixel_to_ndc, 0.0, 1.0);
 
-    // `f` is the corner in [0, 1] over the measured content. Sampling starts and
-    // ends at texel centres, then clamps to this cell's inner edge. The gutter
-    // remains outside the sampled interval and absorbs linear-filter support.
-    let f = corner + vec2<f32>(0.5, 0.5);
+    // `f` is the position in [0, 1] over the measured content, and runs past
+    // that interval on the extended edge. Content maps to texel centres as it
+    // always has; the same affine map continues into the gutter, and the clamp
+    // below stops at this cell's outermost texel centres, which are gutter and
+    // therefore transparent. Linear filtering never reaches a neighbour.
+    let f = local / content + vec2<f32>(0.5, 0.5);
     let cell_origin = vec2<f32>(
         f32(column) * lp.cell_stride_w,
         f32(row) * lp.cell_stride_h,
@@ -195,11 +210,12 @@ fn vs_main(
     let content_sample_hi = content_origin
         + max(vec2<f32>(w, cell_h) - vec2<f32>(0.5), vec2<f32>(0.5));
     let sample_hi = min(content_sample_hi, cell_sample_hi);
+    let cell_edge_lo = cell_origin + vec2<f32>(0.5);
     // Texture v grows downward while `local.y` grows upward.
     let sample_px = clamp(
         mix(sample_lo, sample_hi, vec2<f32>(f.x, 1.0 - f.y)),
-        sample_lo,
-        sample_hi,
+        cell_edge_lo,
+        cell_sample_hi + vec2<f32>(lp.gutter),
     );
     out.uv = sample_px / vec2<f32>(lp.atlas_w, lp.atlas_h);
     return out;

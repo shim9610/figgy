@@ -758,6 +758,16 @@ fn anchor_project(@builtin(global_invocation_id) gid: vec3<u32>) {
         cand[gid.x] = out;
         return;
     }
+    // A small residual alone is not an isoline. In a near-flat region a seed
+    // can settle on a shallow extremum that is within `tolerance` of the level
+    // without the level ever being reached there. A bilinear cell attains its
+    // extremes at its corners, so the level set passes through this cell
+    // exactly when the level lies within the corner range: the same condition
+    // under which the stroke draws a line here.
+    if (want < s.z_lo || want > s.z_hi) {
+        cand[gid.x] = out;
+        return;
+    }
     let hit_px = t_to_px(p);
     if (!vec2_f32_is_finite(hit_px)
         || hit_px.x < cell_lo.x || hit_px.x >= cell_lo.x + step.x
