@@ -171,15 +171,8 @@ pub fn display_config_for_surface(
 /// as before subplots existed: its `chart_area` becomes `document_rect`.
 pub fn place_document(config: &Config, scale: f32, document_rect: Rect) -> Config {
     let mut placed = config.scaled(scale);
-    let detached = (0..config.overlays.len()).any(|index| config.overlay_is_detached(index));
-    if !detached {
-        let area = crate::layout::ChartArea(document_rect);
-        for overlay in placed.overlays.iter_mut() {
-            if let Some(own) = overlay.chart_area.as_mut() {
-                *own = area.clone();
-            }
-        }
-        placed.chart_area = area;
+    if config.subplots.is_empty() {
+        placed.chart_area = crate::layout::ChartArea(document_rect);
         return placed;
     }
     let document = placed.document_area();
@@ -626,6 +619,11 @@ pub struct ChartViewState {
     /// applied to a chart must carry exactly as many entries as the chart has
     /// overlays; the X range is shared, so one call moves every layer.
     pub overlay_y: Vec<AxisViewState>,
+    /// One entry per subplot, in `Config::subplots` order, each the view
+    /// state of that subplot's chart (its own `subplots` empty). A linked
+    /// axis reads as its target's range; writing a new range to it moves the
+    /// whole link group, in the same call as everything else.
+    pub subplots: Vec<ChartViewState>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -671,6 +669,10 @@ impl ChartViewState {
                 .iter()
                 .map(|overlay| AxisViewState::from_axis(&overlay.y_axis))
                 .collect(),
+            subplots: (0..config.subplots.len())
+                .filter_map(|index| config.subplot_config(index))
+                .map(|subplot| Self::from_config(&subplot))
+                .collect(),
         }
     }
 
@@ -682,6 +684,9 @@ impl ChartViewState {
         self.right_y.apply_to(&mut config.right_y);
         for (state, overlay) in self.overlay_y.iter().zip(&mut config.overlays) {
             state.apply_to(&mut overlay.y_axis);
+        }
+        for (state, subplot) in self.subplots.iter().zip(&mut config.subplots) {
+            state.apply_to(&mut subplot.config);
         }
     }
 }
@@ -702,6 +707,7 @@ fn stream_config_equal(left: &Config, right: &Config, series: &[SeriesConfig]) -
         && left.data_area().ok().map(|area| area.0)
             == right.data_area().ok().map(|area| area.0)
         && overlay_geometry_equal(left, right)
+        && subplot_geometry_equal(left, right, series)
         && left.draw_style == right.draw_style
         // Z mapping changes the accumulated field pixels, unlike the bar's
         // border, labels or position. XY-only charts do not consume this map.
@@ -768,6 +774,7 @@ fn raster_config_equal(left: &Config, right: &Config) -> bool {
         colorbar,
         draw_style,
         overlays,
+        subplots,
         active_layer: _,
         annotations: _,
     } = left;
@@ -784,25 +791,35 @@ fn raster_config_equal(left: &Config, right: &Config) -> bool {
         // Every overlay field is chrome of its own panel (its axis, its
         // legend) or decides which panel draws a series.
         && overlays == &right.overlays
+        // A subplot is a chart of its own: every field is its panels' chrome,
+        // its series list or its links.
+        && subplots == &right.subplots
 }
 
 /// Whether two configs map data to the same pixels on every layer: the
-/// overlay count, each overlay's Y range, the series each one scales, its
-/// area and the data area it is drawn against. Decoration-only overlay edits
-/// (axis colour, legend) are not geometry.
+/// overlay count, each overlay's Y range and the series each one scales.
+/// Decoration-only overlay edits (axis colour, legend) are not geometry.
 fn overlay_geometry_equal(left: &Config, right: &Config) -> bool {
     left.overlays.len() == right.overlays.len()
-        && left
-            .overlays
-            .iter()
-            .zip(&right.overlays)
-            .enumerate()
-            .all(|(index, (a, b))| {
-                AxisViewState::from_axis(&a.y_axis) == AxisViewState::from_axis(&b.y_axis)
-                    && a.series == b.series
-                    && a.chart_area == b.chart_area
-                    && left.overlay_data_area(index).ok() == right.overlay_data_area(index).ok()
-            })
+        && left.overlays.iter().zip(&right.overlays).all(|(a, b)| {
+            AxisViewState::from_axis(&a.y_axis) == AxisViewState::from_axis(&b.y_axis)
+                && a.series == b.series
+        })
+}
+
+/// Whether two configs map data to the same pixels in every subplot: the
+/// subplot count, the series each one draws and, per subplot chart with its
+/// links applied, the same geometry `stream_config_equal` compares for the
+/// parent.
+fn subplot_geometry_equal(left: &Config, right: &Config, series: &[SeriesConfig]) -> bool {
+    left.subplots.len() == right.subplots.len()
+        && (0..left.subplots.len()).all(|index| {
+            left.subplots[index].series == right.subplots[index].series
+                && match (left.subplot_config(index), right.subplot_config(index)) {
+                    (Some(a), Some(b)) => stream_config_equal(&a, &b, series),
+                    _ => false,
+                }
+        })
 }
 
 /// The annotation raster revision follows the layer's items only. Its
@@ -1117,7 +1134,7 @@ fn active_layer_pick_inputs(
     config: &Config,
     series: &[SeriesConfig],
 ) -> std::result::Result<(Config, Vec<SeriesConfig>), crate::gpu_pick::GpuPickError> {
-    if config.overlays.is_empty() {
+    if !is_layered(config) {
         return Ok((config.clone(), series.to_vec()));
     }
     let layer = match config.active_layer() {
@@ -1128,10 +1145,8 @@ fn active_layer_pick_inputs(
         expand_for_render(config).map_err(|_| crate::gpu_pick::GpuPickError::AllocationFailed {
             resource: "renderer pick layer expansion",
         })?;
-    let index = match layer {
-        crate::LayerRef::Overlay(index) => index + 1,
-        crate::LayerRef::Base | crate::LayerRef::Annotations => 0,
-    };
+    let index = panel_index(config, panels.len(), layer);
+    let layer = config.panel_layers()[index];
     let panel = panels
         .into_iter()
         .nth(index)
@@ -4854,6 +4869,9 @@ fn validate_chart_view_state(view: &ChartViewState) -> Result<()> {
     for axis in &view.overlay_y {
         validate_axis_view_state("overlays.y_axis", axis)?;
     }
+    for subplot in &view.subplots {
+        validate_chart_view_state(subplot)?;
+    }
     Ok(())
 }
 
@@ -6814,6 +6832,8 @@ impl Renderer {
         validate_renderer_series(&(&self.pool, &self.streaming_sources), &config, &series)?;
         self.require_resident_overlay_series(&config, &series)?;
         config.set_active_layer(config.active_layer);
+        // Linked subplot axes are stored equal to their targets.
+        config.sync_subplot_links(None);
         let id_value = self
             .next_chart_id
             .checked_add(1)
@@ -6892,6 +6912,10 @@ impl Renderer {
         // The registry never holds a layer address past the overlay list: an
         // out-of-range `Overlay(i)` recovers to `Base` here, as the setter does.
         config.set_active_layer(config.active_layer);
+        // A linked subplot axis edited in this call moves its whole link
+        // group here, inside this one `&mut self` call: no frame can show one
+        // member moved and another not.
+        config.sync_subplot_links(Some(&state.config));
         // Each revision follows exactly the fields it depends on: an identical
         // config changes nothing, a layer-only or selection-only edit draws
         // again without re-rasterizing the axis chrome.
@@ -6996,24 +7020,28 @@ impl Renderer {
         Ok(self.chart_config(id)?.active_layer())
     }
 
-    /// A series an overlay layer scales must be resident: the nonresident
-    /// stream pass draws one panel, so a streamed series on an overlay is an
-    /// explicit error rather than a silently mis-scaled drawing.
+    /// A series an overlay layer scales or a subplot draws must be resident:
+    /// the nonresident stream pass draws one panel, so a streamed series on
+    /// another panel is an explicit error rather than a silently mis-scaled
+    /// drawing.
     fn require_resident_overlay_series(
         &self,
         config: &Config,
         series: &[SeriesConfig],
     ) -> Result<()> {
         for item in series {
-            if matches!(
-                config.layer_of_series(&item.series_id),
-                crate::LayerRef::Overlay(_)
-            ) && self.require_resident_series(item).is_err()
+            let layer = config.layer_of_series(&item.series_id);
+            if !matches!(layer, crate::LayerRef::Base)
+                && self.require_resident_series(item).is_err()
             {
+                let reason = if matches!(layer, crate::LayerRef::Overlay(_)) {
+                    "a nonresident streaming series cannot be scaled by an overlay layer"
+                } else {
+                    "a nonresident streaming series cannot be drawn by a subplot"
+                };
                 return Err(FiggyError::InvalidSeriesConfig {
                     series_id: item.series_id.clone(),
-                    reason: "a nonresident streaming series cannot be scaled by an overlay layer"
-                        .into(),
+                    reason: reason.into(),
                 });
             }
         }
@@ -7092,6 +7120,7 @@ impl Renderer {
             .chart_states
             .get(&id)
             .ok_or(FiggyError::UnknownChart { id })?;
+        config.sync_subplot_links(Some(&state.config));
         let config_changed = state.config != config;
         let series_changed = state.series != series;
         let clear_selection =
@@ -7184,8 +7213,24 @@ impl Renderer {
                 reason: "a view state must carry one Y range per overlay layer",
             });
         }
+        if view.subplots.len() != state.config.subplots.len()
+            || view
+                .subplots
+                .iter()
+                .zip(&state.config.subplots)
+                .any(|(view, subplot)| {
+                    !view.subplots.is_empty()
+                        || view.overlay_y.len() != subplot.config.overlays.len()
+                })
+        {
+            return Err(FiggyError::InvalidConfig {
+                field: "subplots",
+                reason: "a view state must carry one view per subplot, each with one Y range per overlay layer",
+            });
+        }
         let mut prospective_config = state.config.clone();
         view.apply_to(&mut prospective_config);
+        prospective_config.sync_subplot_links(Some(&state.config));
         crate::chart::validate_renderer_config(&prospective_config)?;
         let desired = state
             .revisions
@@ -7200,7 +7245,8 @@ impl Renderer {
             .chart_states
             .get_mut(&id)
             .ok_or(FiggyError::UnknownChart { id })?;
-        view.apply_to(&mut state.config);
+        // The validated document, links already carried: one write.
+        state.config = prospective_config;
         state.stream_auto_fit_padding = None;
         state.revisions.desired = desired;
         state.revisions.config = config;
@@ -12541,9 +12587,7 @@ impl PrepareContext<'_> {
         // here, so everything below sees single-layer panels only.
         // A frame without layered items is drawn from the caller's slice as
         // it is, so it pays no allocation for expansion.
-        let layered = items
-            .iter()
-            .any(|item| !item.chart_config.overlays.is_empty());
+        let layered = items.iter().any(|item| is_layered(item.chart_config));
         let storage = if layered {
             Some(PanelDrawStorage::expand(items)?)
         } else {
@@ -14483,12 +14527,30 @@ impl PrepareContext<'_> {
     }
 }
 
+/// Whether `config` draws as more than one panel: it has overlays or
+/// subplots.
+fn is_layered(config: &Config) -> bool {
+    !config.overlays.is_empty() || !config.subplots.is_empty()
+}
+
+/// The panel that draws `layer` among the `count` panels `config` drew as
+/// (`Config::panel_layers` order). A layer past them — after the fallback
+/// to the base panel — is drawn by the base panel.
+fn panel_index(config: &Config, count: usize, layer: crate::LayerRef) -> usize {
+    config
+        .panel_layers()
+        .iter()
+        .take(count)
+        .position(|panel| *panel == layer)
+        .unwrap_or(0)
+}
+
 /// The internal panels a document draws as, base first. A document without
-/// overlays is drawn exactly as it is written (no expansion, no data-area
-/// requirement), so every existing single-layer chart is unchanged; a layered
-/// document goes through `Config::expand`.
+/// overlays and subplots is drawn exactly as it is written (no expansion, no
+/// data-area requirement), so every existing single-layer chart is
+/// unchanged; a layered document goes through `Config::expand`.
 fn expand_for_render(config: &Config) -> Result<Vec<Config>> {
-    if config.overlays.is_empty() {
+    if !is_layered(config) {
         let mut panel = config.clone();
         panel.active_layer = crate::LayerRef::Base;
         return Ok(vec![panel]);
@@ -14497,6 +14559,12 @@ fn expand_for_render(config: &Config) -> Result<Vec<Config>> {
         return Err(FiggyError::InvalidConfig {
             field: "overlays",
             reason: "a series id may belong to at most one overlay layer",
+        });
+    }
+    if let Err(reason) = config.validate_subplots() {
+        return Err(FiggyError::InvalidConfig {
+            field: "subplots",
+            reason,
         });
     }
     match config.expand() {
@@ -14512,6 +14580,7 @@ fn expand_for_render(config: &Config) -> Result<Vec<Config>> {
         Err(_) => {
             let mut panel = config.clone();
             panel.overlays.clear();
+            panel.subplots.clear();
             panel.active_layer = crate::LayerRef::Base;
             Ok(vec![panel])
         }
@@ -14551,18 +14620,33 @@ fn raster_grid_layer(config: &Config, overlay: bool, w: u32, h: u32) -> Result<V
 /// own), tagged with its layer; its other axes are copies of the base
 /// panel's and would repeat the base warnings.
 fn merged_render_warnings(config: &Config, panels: &[Config]) -> Vec<crate::RenderWarning> {
-    let mut merged = axis_render::tick_warnings(&panels[0]);
-    for (index, panel) in panels.iter().enumerate().skip(1) {
-        let own = match config.overlay_placement(index - 1).map(|p| p.y_side()) {
-            Some(crate::layout::Side::Left) => crate::WarningAxis::LeftY,
-            _ => crate::WarningAxis::RightY,
-        };
-        merged.extend(
-            axis_render::tick_warnings(panel)
-                .into_iter()
-                .filter(|warning| warning.axis() == Some(own))
-                .map(|warning| warning.with_axis(crate::WarningAxis::OverlayY(index - 1))),
-        );
+    let layers = config.panel_layers();
+    let mut merged = Vec::new();
+    for (panel, layer) in panels.iter().zip(layers) {
+        for warning in axis_render::tick_warnings(panel) {
+            let axis = warning.axis();
+            let tagged = match (layer, axis) {
+                (crate::LayerRef::Base, _) => Some(warning),
+                (crate::LayerRef::Overlay(index), Some(crate::WarningAxis::RightY)) => {
+                    Some(warning.with_axis(crate::WarningAxis::OverlayY(index)))
+                }
+                // A subplot is a chart of its own: all of its own warnings,
+                // tagged with the subplot.
+                (crate::LayerRef::Subplot(index), Some(axis)) => {
+                    crate::SubplotAxis::from_panel(axis)
+                        .map(|axis| warning.with_axis(crate::WarningAxis::Subplot { index, axis }))
+                }
+                (
+                    crate::LayerRef::SubplotOverlay(index, overlay),
+                    Some(crate::WarningAxis::RightY),
+                ) => Some(warning.with_axis(crate::WarningAxis::Subplot {
+                    index,
+                    axis: crate::SubplotAxis::OverlayY(overlay),
+                })),
+                _ => None,
+            };
+            merged.extend(tagged);
+        }
     }
     merged
 }
@@ -14570,9 +14654,9 @@ fn merged_render_warnings(config: &Config, panels: &[Config]) -> Vec<crate::Rend
 /// Where one internal panel is drawn on the surface.
 struct PanelPlace {
     /// The panel's rectangle on the surface: the host's panel rect for the
-    /// parent's area, else the layer's own area moved with the parent.
+    /// parent's panels, else the subplot's own area moved with the parent.
     rect: Rect,
-    /// The first panel of an area: it owns the grid slot and the Milkyway
+    /// The first panel of a chart: it owns the grid slot and the Milkyway
     /// backdrop there.
     draws_backdrop: bool,
 }
@@ -14584,18 +14668,12 @@ fn panel_places(config: &Config, panels: &[Config], panel_rect: Rect) -> Vec<Pan
     let dx = i64::from(panel_rect.x) - i64::from(parent.x);
     let dy = i64::from(panel_rect.y) - i64::from(parent.y);
     let shift = |value: u32, by: i64| (i64::from(value) + by).clamp(0, i64::from(u32::MAX)) as u32;
-    let mut places = Vec::with_capacity(panels.len());
-    places.push(PanelPlace {
-        rect: panel_rect,
-        draws_backdrop: true,
-    });
-    for index in 0..panels.len().saturating_sub(1) {
-        let place = match config.overlay_placement(index) {
-            Some(
-                placement @ (crate::OverlayPlacement::AreaLead
-                | crate::OverlayPlacement::OnArea { .. }),
-            ) => {
-                let area = config.overlay_area(index).0;
+    panels
+        .iter()
+        .zip(config.panel_layers())
+        .map(|(panel, layer)| match layer {
+            crate::LayerRef::Subplot(_) | crate::LayerRef::SubplotOverlay(..) => {
+                let area = panel.chart_area.0;
                 PanelPlace {
                     rect: Rect {
                         x: shift(area.x, dx),
@@ -14603,17 +14681,15 @@ fn panel_places(config: &Config, panels: &[Config], panel_rect: Rect) -> Vec<Pan
                         width: area.width,
                         height: area.height,
                     },
-                    draws_backdrop: placement == crate::OverlayPlacement::AreaLead,
+                    draws_backdrop: matches!(layer, crate::LayerRef::Subplot(_)),
                 }
             }
-            Some(crate::OverlayPlacement::OnParent) | None => PanelPlace {
+            layer => PanelPlace {
                 rect: panel_rect,
-                draws_backdrop: false,
+                draws_backdrop: layer == crate::LayerRef::Base,
             },
-        };
-        places.push(place);
-    }
-    places
+        })
+        .collect()
 }
 
 /// Each selection box goes to the topmost panel whose rectangle holds the
@@ -14665,18 +14741,15 @@ impl<'a> PanelDrawStorage<'a> {
         let mut views = Vec::new();
         let mut counts = Vec::new();
         for item in items {
-            if item.chart_config.overlays.is_empty() {
+            if !is_layered(item.chart_config) {
                 continue;
             }
             let panels = expand_for_render(item.chart_config)?;
             let panel_views = layer_views(item.view, panels.len())?;
             let mut partition: Vec<Vec<Series<'a>>> = vec![Vec::new(); panels.len()];
             for entry in item.series {
-                let slot = match item.chart_config.layer_of_series(&entry.config.series_id) {
-                    crate::LayerRef::Overlay(index) => index + 1,
-                    crate::LayerRef::Base | crate::LayerRef::Annotations => 0,
-                };
-                partition[slot].push(*entry);
+                let layer = item.chart_config.layer_of_series(&entry.config.series_id);
+                partition[panel_index(item.chart_config, panels.len(), layer)].push(*entry);
             }
             counts.push(panels.len());
             configs.extend(panels);
@@ -14699,7 +14772,7 @@ impl<'a> PanelDrawStorage<'a> {
         let mut counts = self.counts.iter();
         let mut next = 0;
         for item in source {
-            if item.chart_config.overlays.is_empty() {
+            if !is_layered(item.chart_config) {
                 out.push(ChartDrawItem {
                     view: item.view,
                     chart_config: item.chart_config,
@@ -14728,7 +14801,7 @@ impl PanelDrawStorage<'_> {
         source
             .iter()
             .map(|item| {
-                if item.chart_config.overlays.is_empty() {
+                if !is_layered(item.chart_config) {
                     1
                 } else {
                     *counts.next().expect("one count per layered item")
@@ -14766,7 +14839,7 @@ fn lift_annotation_overlays(items: &mut [PreparedItem], group_sizes: &[usize]) {
 
 /// How many panels `config` draws as; see [`expand_for_render`].
 fn render_panel_count(config: &Config) -> usize {
-    if config.overlays.is_empty() {
+    if !is_layered(config) {
         1
     } else {
         expand_for_render(config).map_or(1, |panels| panels.len())

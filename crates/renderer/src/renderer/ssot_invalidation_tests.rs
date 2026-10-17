@@ -484,26 +484,6 @@ fn overlay_edits() -> Vec<Edit> {
     );
     overlay!(y_axis.title_option.offset_x, 4.0, Prefix, Changed);
     overlay!(y_axis.title_option.offset_y, 4.0, Prefix, Changed);
-    // An area of its own turns the layer into a subplot in the lower half of
-    // the parent's area: its series is drawn against another data area, so
-    // the edit is geometry, and the subplot panel draws its own chrome.
-    cases.push(Edit {
-        name: "overlays[0].chart_area (None -> Some)",
-        apply: |c| {
-            c.overlays[0].chart_area = Some(crate::layout::ChartArea(Rect {
-                x: 0,
-                y: 120,
-                width: 320,
-                height: 120,
-            }))
-        },
-        work: Work::Packed,
-        differs: true,
-        raster: true,
-        annotation: false,
-        pixels: Pixels::Changed,
-        streams: false,
-    });
     cases.push(Edit {
         name: "overlays[0].legend (None -> Some)",
         apply: |c| {
@@ -519,6 +499,109 @@ fn overlay_edits() -> Vec<Edit> {
         pixels: Pixels::Changed,
         streams: false,
     });
+    cases
+}
+
+/// Subplot edits run against a baseline whose one series is drawn by a
+/// subplot in the lower half of the surface, with its own axes. The
+/// subplot's ranges, area, series list and links are geometry of its own
+/// panel; its chrome is not. None of these documents stream: the stream
+/// pass rejects subplots as a contract of its own.
+fn subplot_edits() -> Vec<Edit> {
+    let mut cases = Vec::new();
+    macro_rules! subplot {
+        ($name:expr, $apply:expr, $work:ident, $raster:expr, $pixels:ident) => {
+            cases.push(Edit {
+                name: $name,
+                apply: $apply,
+                work: Work::$work,
+                differs: true,
+                raster: $raster,
+                annotation: false,
+                pixels: Pixels::$pixels,
+                streams: false,
+            });
+        };
+    }
+    subplot!(
+        "subplots (one -> none)",
+        |c| c.subplots.clear(),
+        Packed,
+        true,
+        Changed
+    );
+    subplot!(
+        "active_layer (subplot)",
+        |c| c.active_layer = crate::LayerRef::Subplot(0),
+        Prefix,
+        false,
+        Unchanged
+    );
+    subplot!(
+        "subplots[0].series",
+        |c| c.subplots[0].series.clear(),
+        Packed,
+        true,
+        Changed
+    );
+    subplot!(
+        "subplots[0].link_y (None -> Parent)",
+        |c| c.subplots[0].link_y = Some(crate::CellRef::Parent),
+        Packed,
+        true,
+        Changed
+    );
+    subplot!(
+        "subplots[0].config.chart_area.height",
+        |c| c.subplots[0].config.chart_area.0.height = 110,
+        Packed,
+        true,
+        Changed
+    );
+    subplot!(
+        "subplots[0].config.left_y.max",
+        |c| c.subplots[0].config.left_y.max = 3.0,
+        Packed,
+        true,
+        Changed
+    );
+    subplot!(
+        "subplots[0].config.bottom_x.min",
+        |c| c.subplots[0].config.bottom_x.min = -0.5,
+        Packed,
+        true,
+        Changed
+    );
+    subplot!(
+        "subplots[0].config.left_y.out_margin",
+        |c| c.subplots[0].config.left_y.out_margin = 40.0,
+        Packed,
+        true,
+        Changed
+    );
+    subplot!(
+        "subplots[0].config.left_y.line_color",
+        |c| c.subplots[0].config.left_y.line_color = Color::new(0.1, 0.8, 0.2, 1.0),
+        Prefix,
+        true,
+        Changed
+    );
+    subplot!(
+        "subplots[0].config.grid.show_major_x",
+        |c| c.subplots[0].config.grid.show_major_x = false,
+        Prefix,
+        true,
+        Changed
+    );
+    subplot!(
+        "subplots[0].config.chart_title.text",
+        |c| {
+            c.subplots[0].config.chart_title.text = RichText::plain("Lower", Color::BLACK, 10.0, "")
+        },
+        Prefix,
+        true,
+        Changed
+    );
     cases
 }
 
@@ -549,6 +632,37 @@ fn baseline() -> Config {
     c.grid.show_major_y = true;
     c.grid.show_minor_x = true;
     c.grid.show_minor_y = true;
+    c
+}
+
+/// The baseline in the upper half of the surface and a subplot in the lower
+/// half drawing its one series, with its own axes, title and grid.
+fn baseline_with_subplot() -> Config {
+    let mut c = baseline();
+    c.chart_area.0.height = 120;
+    c.chart_title.top_margin = 14.0;
+    for a in [&mut c.bottom_x, &mut c.left_y, &mut c.top_x, &mut c.right_y] {
+        a.out_margin = 18.0;
+        a.title_option.visible = false;
+    }
+    let mut chart = c.clone();
+    chart.chart_area = crate::layout::ChartArea(Rect {
+        x: 0,
+        y: 120,
+        width: 320,
+        height: 120,
+    });
+    chart.chart_title.text = RichText::plain("Below", Color::BLACK, 10.0, "");
+    chart.legend.visible = false;
+    chart.left_y.min = 0.0;
+    chart.left_y.max = 2.0;
+    chart.left_y.major_spacing = 0.5;
+    c.subplots.push(crate::Subplot {
+        config: chart,
+        series: vec!["s".into()],
+        link_x: None,
+        link_y: None,
+    });
     c
 }
 
@@ -876,6 +990,7 @@ fn matrix(resident: bool, cache: bool) {
         (baseline(), edits()),
         (baseline_with_colorbar(), colorbar_edits()),
         (baseline_with_overlay(), overlay_edits()),
+        (baseline_with_subplot(), subplot_edits()),
         (baseline_with_annotations(), annotation_edits()),
     ];
     eprintln!(
@@ -1044,6 +1159,7 @@ fn config_fields_are_classified() {
         colorbar,         // colorbar_edits(): band fields Packed, the rest Prefix
         draw_style: _,    // Sketch / Milkyway / Constellation: Replay
         overlays,         // overlay_edits(): range/series/band Packed, the rest Prefix
+        subplots,         // subplot_edits(): geometry/series/links Packed, chrome Prefix
         active_layer: _,  // layer only: no raster, no pixels
         annotations: _,   // annotation_edits(): annotation revision only
     } = baseline_with_colorbar();
@@ -1141,12 +1257,21 @@ fn config_fields_are_classified() {
         items: _,
     } = crate::AnnotationLayer::default();
     let crate::OverlayLayer {
-        y_axis: _,     // every AxisOptions field, as overlay!(y_axis.*)
-        series: _,     // overlays[0].series
-        legend: _,     // overlays[0].legend (None -> Some)
-        chart_area: _, // overlays[0].chart_area (None -> Some)
+        y_axis: _, // every AxisOptions field, as overlay!(y_axis.*)
+        series: _, // overlays[0].series
+        legend: _, // overlays[0].legend (None -> Some)
     } = overlays.into_iter().next().unwrap_or_default();
     let _ = baseline_with_overlay();
+    // A subplot's chart is a `Config` classified by the same catalogue (its
+    // geometry and its chrome, `subplot_edits`); its series list and links
+    // decide what it draws and against which range.
+    let crate::Subplot {
+        config: _, // subplots[0].config.* (geometry Packed, chrome Prefix)
+        series: _, // subplots[0].series
+        link_x: _, // same rule as link_y
+        link_y: _, // subplots[0].link_y (None -> Parent)
+    } = subplots.into_iter().next().unwrap_or_default();
+    let _ = baseline_with_subplot();
 }
 
 #[test]

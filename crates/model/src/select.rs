@@ -16,7 +16,6 @@ use crate::color::Color;
 use crate::config::{AxisOptions, Config, TickVisibility};
 use crate::decoration::DecorationId;
 use crate::drag::{DragConfig, Draggable};
-use crate::expand::OverlayPlacement;
 use crate::layer::LayerRef;
 use crate::layout::{
     Element, NudgeReject, NudgeResult, RectF, Side, TitleBand, axis_offset, axis_title_placement,
@@ -250,12 +249,9 @@ impl HitMap<Config> {
     /// shared elements come first — data area, the two X axes with their
     /// label bands and titles, the merged legend, the chart title and the
     /// colourbar chrome — and the active layer's own elements last, so the
-    /// reverse-order hit test puts them on top: for `Overlay(i)` its Y axis,
-    /// that axis' label band and title, and its per-layer legend
-    /// (`DecorationId::Overlay { layer: i, .. }` ids, `overlay_<i>:…`). A
-    /// layer drawn in an area of its own also registers that area's data
-    /// area and its copies of the two X axes, between the shared elements
-    /// and its Y axis.
+    /// reverse-order hit test puts them on top: for `Overlay(i)` its right
+    /// Y axis, that axis' label band and title, and its per-layer legend
+    /// (`DecorationId::Overlay { layer: i, .. }` ids, `overlay_<i>:…`).
     /// The inactive layers' elements are not registered at all, so a click
     /// on them passes through to the active layer; the base panel's Y axes
     /// are therefore absent while an overlay or the annotation layer is
@@ -265,14 +261,22 @@ impl HitMap<Config> {
     /// `ChartView::hit_test_active_layer`) tests them on top of this map
     /// while that layer is active and skips them on every other layer.
     ///
+    /// `Subplot(i)` and `SubplotOverlay(i, j)` register exactly the set that
+    /// subplot's own chart registers for `Base` or `Overlay(j)`, wrapped as
+    /// [`SubplotElement`]s (`subplot_<i>:…` ids); the parent's elements are
+    /// not registered then, since a subplot shares none of them.
+    ///
     /// The set depends only on the active layer, the overlay count and the
-    /// active overlay's placement, so a host rebuilds the map when any of
-    /// them changes; `HitId`s from a previous map are not valid in the new
+    /// active subplot's overlay count, so a host rebuilds the map when any
+    /// of them changes; `HitId`s from a previous map are not valid in the new
     /// one.
     pub fn for_active_layer(cfg: &Config) -> Self {
         let layer = cfg.active_layer();
         if layer == LayerRef::Base {
             return Self::standard_chart();
+        }
+        if let LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) = layer {
+            return Self::for_subplot(cfg, index, layer);
         }
         let mut map = Self::new();
         map.register(DataAreaElement);
@@ -291,29 +295,149 @@ impl HitMap<Config> {
         map.register(ColorBarAxisElement);
         map.register(ColorBarLabelElement);
         map.register(ColorBarTitleElement);
-        if let LayerRef::Overlay(index) = layer
-            && let Some(placement) = cfg.overlay_placement(index)
-        {
-            // A layer in an area of its own also carries that area's data
-            // area and its copies of the X axes, before its own Y axis.
-            let sides = if placement == OverlayPlacement::OnParent {
-                vec![placement.y_side()]
-            } else {
-                map.register(OverlayDataAreaElement::new(index));
-                vec![Side::Top, Side::Bottom, placement.y_side()]
-            };
-            for side in sides.iter().cloned() {
-                map.register(OverlayAxisElement { layer: index, side });
-            }
-            for side in sides.iter().cloned() {
-                map.register(OverlayAxisLabelElement { layer: index, side });
-            }
-            for side in sides {
-                map.register(OverlayAxisTitleElement { layer: index, side });
-            }
+        if let LayerRef::Overlay(index) = layer {
+            map.register(OverlayAxisElement { layer: index });
+            map.register(OverlayAxisLabelElement { layer: index });
+            map.register(OverlayAxisTitleElement { layer: index });
             map.register(OverlayLegendElement { layer: index });
         }
         map
+    }
+}
+
+impl HitMap<Config> {
+    /// The registration set of an active subplot: exactly the set its own
+    /// chart registers for its own active layer (`Base`, or `Overlay(j)` for
+    /// `SubplotOverlay(index, j)`), each element wrapped in a
+    /// [`SubplotElement`]. A subplot shares no element with the parent, so
+    /// nothing else is registered.
+    fn for_subplot(cfg: &Config, index: usize, layer: LayerRef) -> Self {
+        let Some(mut subplot) = cfg.subplot_config(index) else {
+            return Self::standard_chart();
+        };
+        subplot.active_layer = match layer {
+            LayerRef::SubplotOverlay(_, overlay) => LayerRef::Overlay(overlay),
+            _ => LayerRef::Base,
+        };
+        let inner = Self::for_active_layer(&subplot);
+        let mut map = Self::new();
+        for element in inner.entries {
+            map.register(SubplotElement {
+                subplot: index,
+                inner: element,
+            });
+        }
+        map
+    }
+}
+
+/// An element of subplot `subplot`'s own chart, registered while that
+/// subplot (or one of its overlays) is the active layer.
+///
+/// It measures against the subplot's chart ([`Config::subplot_config`]) and
+/// applies a drag or resize to that chart through the element's own policy,
+/// then stores the result in `subplots[subplot].config`, so every rule of the
+/// single chart (data-area margins, axis offsets, overlay axes, legends)
+/// holds unchanged inside a subplot. The id is the inner id prefixed with
+/// `subplot_<n>:`.
+pub struct SubplotElement {
+    pub subplot: usize,
+    inner: Box<dyn Selectable + Send + Sync>,
+}
+
+impl std::fmt::Debug for SubplotElement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubplotElement")
+            .field("subplot", &self.subplot)
+            .field("inner", &self.inner.element_id())
+            .finish()
+    }
+}
+
+impl SubplotElement {
+    /// Run `edit` on the subplot's chart and store what it moved. The linked
+    /// axis ranges stay their targets' and the subplot's own active layer
+    /// and annotation layer are not part of the edit.
+    fn edit(&self, cfg: &mut Config, edit: impl FnOnce(&mut Config) -> NudgeResult) -> NudgeResult {
+        let Some(mut chart) = cfg.subplot_config(self.subplot) else {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        };
+        let result = edit(&mut chart);
+        if result == NudgeResult::Moved {
+            let stored = &mut cfg.subplots[self.subplot].config;
+            chart.active_layer = stored.active_layer;
+            chart.annotations = std::mem::take(&mut stored.annotations);
+            *stored = chart;
+        }
+        result
+    }
+}
+
+impl Selectable for SubplotElement {
+    fn element_id(&self) -> String {
+        format!("subplot_{}:{}", self.subplot, self.inner.element_id())
+    }
+
+    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
+        self.inner
+            .bounds(&cfg.subplot_config(self.subplot)?, measure)
+    }
+
+    fn as_draggable(&self) -> Option<&dyn Draggable> {
+        self.inner.as_draggable().map(|_| self as &dyn Draggable)
+    }
+
+    fn as_resizable(&self) -> Option<&dyn Resizable> {
+        self.inner.as_resizable().map(|_| self as &dyn Resizable)
+    }
+}
+
+impl Draggable for SubplotElement {
+    fn nudge_element(&self) -> Element {
+        self.inner
+            .as_draggable()
+            .map_or(Element::DataArea, |drag| drag.nudge_element())
+    }
+
+    fn drag_by(&self, cfg: &mut Config, dx: f32, dy: f32) -> NudgeResult {
+        let Some(drag) = self.inner.as_draggable() else {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        };
+        self.edit(cfg, |chart| drag.drag_by(chart, dx, dy))
+    }
+}
+
+impl Resizable for SubplotElement {
+    fn resize_targets(
+        &self,
+        handle: crate::resize::ResizeHandle,
+    ) -> (Option<Element>, Option<Element>) {
+        self.inner
+            .as_resizable()
+            .map_or((None, None), |resize| resize.resize_targets(handle))
+    }
+
+    fn resize_by(
+        &self,
+        cfg: &mut Config,
+        handle: crate::resize::ResizeHandle,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        let Some(resize) = self.inner.as_resizable() else {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        };
+        self.edit(cfg, |chart| resize.resize_by(chart, handle, dx, dy))
+    }
+
+    fn resize_handles(
+        &self,
+        cfg: &Config,
+        measure: &dyn MeasureText,
+    ) -> Option<[(crate::resize::ResizeHandle, RectF); 8]> {
+        self.inner
+            .as_resizable()?
+            .resize_handles(&cfg.subplot_config(self.subplot)?, measure)
     }
 }
 
@@ -350,81 +474,27 @@ pub struct DataAreaElement;
 #[derive(Debug, Clone, PartialEq)]
 pub struct LegendElement;
 
-/// One axis of overlay layer `layer` — line plus tick band.
+/// The right Y axis of overlay layer `layer` — line plus tick band.
 ///
-/// `side` is where the layer draws it: its own Y axis on the side of its
-/// placement (`OverlayPlacement::y_side`), or `Top` / `Bottom` for the copy
-/// of the parent's X axis drawn in the layer's own area. Overlay elements
-/// measure against the internal panel that draws them (`Config::overlay_panel`
-/// of the layer, or of its area's first layer for the X axes) and write a
-/// drag back into `overlays[layer].y_axis` for the Y axis, or into the
-/// parent's `top_x` / `bottom_x` for an X axis, which exists once.
+/// Overlay elements measure against the overlay's internal panel
+/// (`Config::overlay_panel`), whose data area is the group data area, and
+/// write a drag back into `overlays[layer].y_axis` only, so the parent's own
+/// right axis never moves on their behalf.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OverlayAxisElement {
     pub layer: usize,
-    pub side: Side,
 }
 
-/// The tick-label band of one axis of overlay layer `layer`; see
-/// [`OverlayAxisElement`] for `side`.
+/// The tick-label band of overlay layer `layer`'s Y axis.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OverlayAxisLabelElement {
     pub layer: usize,
-    pub side: Side,
 }
 
-/// The title of one axis of overlay layer `layer`; see
-/// [`OverlayAxisElement`] for `side`.
+/// The title of overlay layer `layer`'s Y axis.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OverlayAxisTitleElement {
     pub layer: usize,
-    pub side: Side,
-}
-
-/// The data area of an overlay layer drawn in an area of its own. Dragging
-/// it moves the area — every layer of that area together — and its eight
-/// handles move the area's edges; the parent and the other areas stay put.
-/// The area is whole pixels, so the sub-pixel part of each pointer delta is
-/// carried to the next one instead of being dropped.
-#[derive(Debug)]
-pub struct OverlayDataAreaElement {
-    pub layer: usize,
-    carry: [std::sync::atomic::AtomicU32; 2],
-}
-
-impl OverlayDataAreaElement {
-    pub fn new(layer: usize) -> Self {
-        Self {
-            layer,
-            carry: [
-                std::sync::atomic::AtomicU32::new(0.0_f32.to_bits()),
-                std::sync::atomic::AtomicU32::new(0.0_f32.to_bits()),
-            ],
-        }
-    }
-
-    /// Add `delta` to the carried remainder of `axis` and take its whole
-    /// pixels.
-    fn whole_pixels(&self, axis: usize, delta: f32) -> i64 {
-        use std::sync::atomic::Ordering;
-        let total = f32::from_bits(self.carry[axis].load(Ordering::Relaxed)) + delta;
-        let whole = total.trunc();
-        self.carry[axis].store((total - whole).to_bits(), Ordering::Relaxed);
-        whole as i64
-    }
-
-    fn reset_carry(&self) {
-        use std::sync::atomic::Ordering;
-        for carry in &self.carry {
-            carry.store(0.0_f32.to_bits(), Ordering::Relaxed);
-        }
-    }
-}
-
-impl PartialEq for OverlayDataAreaElement {
-    fn eq(&self, other: &Self) -> bool {
-        self.layer == other.layer
-    }
 }
 
 /// The per-layer legend of overlay layer `layer` (`OverlayLayer::legend`);
@@ -797,10 +867,9 @@ impl Selectable for LegendElement {
     }
 }
 
-// Overlay layer elements. Bounds come from the expanded panel that draws
-// them; a drag is applied to that panel through the ordinary nudge path and
-// only the moved fields are copied back into the document: the layer's own
-// axis, or the parent's X axis, which exists once.
+// Overlay layer elements. Bounds come from the overlay's expanded panel; a
+// drag is applied to that panel through the ordinary nudge path and only the
+// moved fields are copied back into the overlay's own options.
 
 fn overlay_id(layer: usize, inner: DecorationId) -> String {
     DecorationId::Overlay {
@@ -810,25 +879,7 @@ fn overlay_id(layer: usize, inner: DecorationId) -> String {
     .element_id()
 }
 
-/// The panel that draws `side` of overlay `layer`: its own, except for the X
-/// axes of a later layer of an area, which that area's first layer draws.
-fn overlay_chrome_panel(cfg: &Config, layer: usize, side: &Side) -> Option<Config> {
-    match (cfg.overlay_placement(layer)?, side) {
-        (OverlayPlacement::OnArea { lead }, Side::Top | Side::Bottom) => cfg.overlay_panel(lead),
-        _ => cfg.overlay_panel(layer),
-    }
-}
-
-/// `true` when overlay `layer` draws (or carries the copy of) `side`.
-fn overlay_has_side(cfg: &Config, layer: usize, side: &Side) -> bool {
-    match cfg.overlay_placement(layer) {
-        None => false,
-        Some(OverlayPlacement::OnParent) => *side == Side::Right,
-        Some(placement) => matches!(side, Side::Top | Side::Bottom) || *side == placement.y_side(),
-    }
-}
-
-/// Copy the drag-owned fields of a panel axis back to the document axis.
+/// Copy the drag-owned fields of a panel's right axis back to the overlay.
 /// `out_margin` is group geometry and never moves through these elements.
 fn adopt_overlay_axis(target: &mut AxisOptions, panel: &AxisOptions) {
     target.line_offset = panel.line_offset;
@@ -845,43 +896,24 @@ fn drag_overlay_axis_element(
     dx: f32,
     dy: f32,
 ) -> NudgeResult {
-    let side = match &element {
-        Element::Axis(side) | Element::AxisLabel(side) | Element::AxisTitle(side) => side.clone(),
-        _ => return NudgeResult::Rejected(NudgeReject::OutOfBounds),
-    };
-    if !overlay_has_side(cfg, layer, &side) {
-        return NudgeResult::Rejected(NudgeReject::OutOfBounds);
-    }
-    let Some(mut panel) = overlay_chrome_panel(cfg, layer, &side) else {
+    let Some(mut panel) = cfg.overlay_panel(layer) else {
         return NudgeResult::Rejected(NudgeReject::OutOfBounds);
     };
     let result = panel.nudge(element, dx, dy);
     if result == NudgeResult::Moved {
-        let moved = crate::layout::axis_options_mut(&mut panel, &side).clone();
-        let target = match side {
-            Side::Top => &mut cfg.top_x,
-            Side::Bottom => &mut cfg.bottom_x,
-            Side::Left | Side::Right => &mut cfg.overlays[layer].y_axis,
-        };
-        adopt_overlay_axis(target, &moved);
+        adopt_overlay_axis(&mut cfg.overlays[layer].y_axis, &panel.right_y);
     }
     result
 }
 
 impl Selectable for OverlayAxisElement {
     fn element_id(&self) -> String {
-        overlay_id(self.layer, DecorationId::Axis(self.side.clone()))
+        overlay_id(self.layer, DecorationId::Axis(Side::Right))
     }
 
     fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        if !overlay_has_side(cfg, self.layer, &self.side) {
-            return None;
-        }
-        let panel = overlay_chrome_panel(cfg, self.layer, &self.side)?;
-        AxisElement {
-            side: self.side.clone(),
-        }
-        .bounds(&panel, measure)
+        let panel = cfg.overlay_panel(self.layer)?;
+        AxisElement { side: Side::Right }.bounds(&panel, measure)
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -891,7 +923,7 @@ impl Selectable for OverlayAxisElement {
 
 impl Draggable for OverlayAxisElement {
     fn nudge_element(&self) -> Element {
-        Element::Axis(self.side.clone())
+        Element::Axis(Side::Right)
     }
 
     fn drag_by(&self, cfg: &mut Config, dx: f32, dy: f32) -> NudgeResult {
@@ -901,18 +933,12 @@ impl Draggable for OverlayAxisElement {
 
 impl Selectable for OverlayAxisLabelElement {
     fn element_id(&self) -> String {
-        overlay_id(self.layer, DecorationId::AxisLabel(self.side.clone()))
+        overlay_id(self.layer, DecorationId::AxisLabel(Side::Right))
     }
 
     fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        if !overlay_has_side(cfg, self.layer, &self.side) {
-            return None;
-        }
-        let panel = overlay_chrome_panel(cfg, self.layer, &self.side)?;
-        AxisLabelElement {
-            side: self.side.clone(),
-        }
-        .bounds(&panel, measure)
+        let panel = cfg.overlay_panel(self.layer)?;
+        AxisLabelElement { side: Side::Right }.bounds(&panel, measure)
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -922,7 +948,7 @@ impl Selectable for OverlayAxisLabelElement {
 
 impl Draggable for OverlayAxisLabelElement {
     fn nudge_element(&self) -> Element {
-        Element::AxisLabel(self.side.clone())
+        Element::AxisLabel(Side::Right)
     }
 
     fn drag_by(&self, cfg: &mut Config, dx: f32, dy: f32) -> NudgeResult {
@@ -932,18 +958,12 @@ impl Draggable for OverlayAxisLabelElement {
 
 impl Selectable for OverlayAxisTitleElement {
     fn element_id(&self) -> String {
-        overlay_id(self.layer, DecorationId::AxisTitle(self.side.clone()))
+        overlay_id(self.layer, DecorationId::AxisTitle(Side::Right))
     }
 
     fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        if !overlay_has_side(cfg, self.layer, &self.side) {
-            return None;
-        }
-        let panel = overlay_chrome_panel(cfg, self.layer, &self.side)?;
-        AxisTitleElement {
-            side: self.side.clone(),
-        }
-        .bounds(&panel, measure)
+        let panel = cfg.overlay_panel(self.layer)?;
+        AxisTitleElement { side: Side::Right }.bounds(&panel, measure)
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -953,7 +973,7 @@ impl Selectable for OverlayAxisTitleElement {
 
 impl Draggable for OverlayAxisTitleElement {
     fn nudge_element(&self) -> Element {
-        Element::AxisTitle(self.side.clone())
+        Element::AxisTitle(Side::Right)
     }
 
     fn drag_by(&self, cfg: &mut Config, dx: f32, dy: f32) -> NudgeResult {
@@ -999,124 +1019,6 @@ impl Draggable for OverlayLegendElement {
         {
             legend.offset_x = panel.legend.offset_x;
             legend.offset_y = panel.legend.offset_y;
-        }
-        result
-    }
-}
-
-/// Move the edges of overlay `layer`'s area — and of every layer sharing it —
-/// by whole pixels: `left`/`top` move the near edges, `right`/`bottom` the far
-/// ones (a pure move passes the same delta for both). Rejected atomically
-/// when an edge would leave the coordinate space or the area would lose its
-/// data area.
-fn move_overlay_area(cfg: &mut Config, layer: usize, edges: [i64; 4]) -> NudgeResult {
-    if !cfg.overlay_is_detached(layer) {
-        return NudgeResult::Rejected(NudgeReject::OutOfBounds);
-    }
-    if edges == [0; 4] {
-        return NudgeResult::Moved;
-    }
-    let old = cfg.overlay_area(layer);
-    let [left, top, right, bottom] = edges;
-    let x0 = i64::from(old.x) + left;
-    let y0 = i64::from(old.y) + top;
-    let x1 = i64::from(old.x) + i64::from(old.width) + right;
-    let y1 = i64::from(old.y) + i64::from(old.height) + bottom;
-    let max = i64::from(u32::MAX);
-    if x0 < 0 || y0 < 0 || x1 > max || y1 > max || x1 <= x0 || y1 <= y0 {
-        return NudgeResult::Rejected(NudgeReject::OutOfBounds);
-    }
-    let moved = crate::layout::ChartArea(crate::layout::Rect {
-        x: x0 as u32,
-        y: y0 as u32,
-        width: (x1 - x0) as u32,
-        height: (y1 - y0) as u32,
-    });
-    let mut trial = cfg.clone();
-    for overlay in &mut trial.overlays {
-        if overlay.chart_area.as_ref() == Some(&old) {
-            overlay.chart_area = Some(moved.clone());
-        }
-    }
-    if trial.overlay_data_area(layer).is_err() {
-        return NudgeResult::Rejected(NudgeReject::OutOfBounds);
-    }
-    *cfg = trial;
-    NudgeResult::Moved
-}
-
-impl Selectable for OverlayDataAreaElement {
-    fn element_id(&self) -> String {
-        overlay_id(self.layer, DecorationId::DataArea)
-    }
-
-    fn bounds(&self, cfg: &Config, _: &dyn MeasureText) -> Option<RectF> {
-        if !cfg.overlay_is_detached(self.layer) {
-            return None;
-        }
-        let area = cfg.overlay_data_area(self.layer).ok()?;
-        Some(RectF::from_rect(&area.0))
-    }
-
-    fn as_draggable(&self) -> Option<&dyn Draggable> {
-        Some(self)
-    }
-
-    fn as_resizable(&self) -> Option<&dyn Resizable> {
-        Some(self)
-    }
-}
-
-impl Draggable for OverlayDataAreaElement {
-    fn nudge_element(&self) -> Element {
-        Element::DataArea
-    }
-
-    fn drag_by(&self, cfg: &mut Config, dx: f32, dy: f32) -> NudgeResult {
-        let dx = self.whole_pixels(0, dx);
-        let dy = self.whole_pixels(1, dy);
-        let result = move_overlay_area(cfg, self.layer, [dx, dy, dx, dy]);
-        if result != NudgeResult::Moved {
-            self.reset_carry();
-        }
-        result
-    }
-}
-
-impl Resizable for OverlayDataAreaElement {
-    /// The same compass mapping as the parent's data area; the edges are
-    /// applied to the layer's area by [`Self::resize_by`].
-    fn resize_targets(
-        &self,
-        handle: crate::resize::ResizeHandle,
-    ) -> (Option<Element>, Option<Element>) {
-        DataAreaElement.resize_targets(handle)
-    }
-
-    fn resize_by(
-        &self,
-        cfg: &mut Config,
-        handle: crate::resize::ResizeHandle,
-        dx: f32,
-        dy: f32,
-    ) -> NudgeResult {
-        let (horizontal, vertical) = self.resize_targets(handle);
-        let dx = self.whole_pixels(0, dx);
-        let dy = self.whole_pixels(1, dy);
-        let mut edges = [0_i64; 4];
-        match horizontal {
-            Some(Element::DataAreaEdge(Side::Left)) => edges[0] = dx,
-            Some(Element::DataAreaEdge(Side::Right)) => edges[2] = dx,
-            _ => {}
-        }
-        match vertical {
-            Some(Element::DataAreaEdge(Side::Top)) => edges[1] = dy,
-            Some(Element::DataAreaEdge(Side::Bottom)) => edges[3] = dy,
-            _ => {}
-        }
-        let result = move_overlay_area(cfg, self.layer, edges);
-        if result != NudgeResult::Moved {
-            self.reset_carry();
         }
         result
     }
@@ -1329,205 +1231,120 @@ mod tests {
         assert_eq!(cfg, snapshot);
     }
 
-    /// The 800x600 parent in the top half of a 800x1000 document and a
-    /// subplot in the bottom 400 rows with two layers.
+    /// The 800x600 parent and below it a subplot with its own axes, an
+    /// overlay, and a Y axis linked to the parent's.
     fn cfg_with_subplot() -> Config {
         let mut cfg = cfg_800x600();
-        let area = Some(crate::layout::ChartArea(crate::layout::Rect {
+        let mut subplot = crate::layer::Subplot::default();
+        subplot.config.chart_area = ChartArea(Rect {
             x: 0,
             y: 600,
             width: 800,
             height: 400,
-        }));
-        let mut lead = crate::layer::OverlayLayer::default();
-        lead.y_axis.title_option.visible = true;
-        lead.y_axis.title_option.text = RichText::plain("Flow", Color::BLACK, 12.0, "");
-        lead.y_axis.out_margin = 80.0;
-        lead.series = vec!["flow".into()];
-        lead.chart_area = area.clone();
-        cfg.overlays.push(lead);
-        let mut twin = crate::layer::OverlayLayer::default();
-        twin.series = vec!["level".into()];
-        twin.chart_area = area;
-        cfg.overlays.push(twin);
+        });
+        subplot.config.bottom_x.min = 10.0;
+        subplot.config.bottom_x.max = 20.0;
+        subplot.config.overlays.push(crate::layer::OverlayLayer {
+            series: vec!["level".into()],
+            ..Default::default()
+        });
+        subplot.series = vec!["flow".into()];
+        subplot.link_y = Some(crate::layer::CellRef::Parent);
+        cfg.subplots.push(subplot);
+        cfg.sync_subplot_links(None);
         cfg
     }
 
-    // A subplot's first layer registers its area's data area, the X axis
-    // copies and its Y axis on the left; a later layer of the area the same
-    // with its Y axis on the right.
+    // An active subplot registers exactly its own chart's set under
+    // `subplot_<n>:` ids and none of the parent's elements; its overlay
+    // registers the subplot's overlay set.
     #[test]
-    fn subplot_layers_register_their_area() {
+    fn a_subplot_registers_its_own_chart_set() {
         let mut cfg = cfg_with_subplot();
-        cfg.set_active_layer(LayerRef::Overlay(0));
+        cfg.set_active_layer(LayerRef::Subplot(0));
         let ids = ids_of(&HitMap::for_active_layer(&cfg));
-        assert_eq!(
-            &ids[13..],
-            [
-                "overlay_0:data_area",
-                "overlay_0:axis_top",
-                "overlay_0:axis_bottom",
-                "overlay_0:axis_left",
-                "overlay_0:tick_labels_top",
-                "overlay_0:tick_labels_bottom",
-                "overlay_0:tick_labels_left",
-                "overlay_0:axis_title_top",
-                "overlay_0:axis_title_bottom",
-                "overlay_0:axis_title_left",
-                "overlay_0:legend",
-            ]
-        );
-        cfg.set_active_layer(LayerRef::Overlay(1));
+        let own: Vec<String> = ids_of(&HitMap::standard_chart())
+            .into_iter()
+            .map(|id| format!("subplot_0:{id}"))
+            .collect();
+        assert_eq!(ids, own);
+        cfg.set_active_layer(LayerRef::SubplotOverlay(0, 0));
         let ids = ids_of(&HitMap::for_active_layer(&cfg));
-        assert_eq!(ids[13], "overlay_1:data_area");
-        assert!(ids.contains(&"overlay_1:axis_right".to_string()));
-        assert!(!ids.contains(&"overlay_1:axis_left".to_string()));
-        assert!(ids.contains(&"overlay_1:axis_bottom".to_string()));
+        assert!(ids.contains(&"subplot_0:overlay_0:axis_right".to_string()));
+        assert!(!ids.contains(&"subplot_0:axis_left".to_string()));
+        assert!(ids.iter().all(|id| id.starts_with("subplot_0:")));
     }
 
-    // Hits in the subplot resolve to the subplot's elements, measured in its
-    // area; the X axis copies write the parent's X axes, the left axis the
-    // layer's own axis.
+    // Hits resolve in the subplot's own area; drags and resizes use the
+    // single-chart policies on the subplot's chart and land in
+    // `subplots[0].config` only, keeping the link.
     #[test]
-    fn subplot_elements_hit_and_drag_their_owners() {
+    fn subplot_elements_hit_drag_and_resize_their_own_chart() {
         let mut cfg = cfg_with_subplot();
-        cfg.set_active_layer(LayerRef::Overlay(0));
+        cfg.set_active_layer(LayerRef::Subplot(0));
         let map = HitMap::for_active_layer(&cfg);
-        let da = cfg.overlay_data_area(0).unwrap().0;
+        let da = cfg.subplot_config(0).unwrap().data_area().unwrap().0;
         assert!(da.y >= 600);
-        let mid_x = da.x as f32 + da.width as f32 / 2.0;
-        let mid_y = da.y as f32 + da.height as f32 / 2.0;
-        let hit = map.hit_test(&cfg, &FixedMeasure, mid_x, mid_y).unwrap();
-        assert_eq!(map.get(hit).unwrap().element_id(), "overlay_0:data_area");
+        let centre = (
+            da.x as f32 + da.width as f32 / 2.0,
+            da.y as f32 + da.height as f32 / 2.0,
+        );
         let hit = map
-            .hit_test(&cfg, &FixedMeasure, da.x as f32 + 1.0, mid_y)
+            .hit_test(&cfg, &FixedMeasure, centre.0, centre.1)
             .unwrap();
-        assert_eq!(map.get(hit).unwrap().element_id(), "overlay_0:axis_left");
-        // A point in the parent's data area still reaches the shared one.
+        let element = map.get(hit).unwrap();
+        assert_eq!(element.element_id(), "subplot_0:data_area");
+        // The parent's data area does not answer while a subplot is active.
         let parent = cfg.data_area().unwrap().0;
-        let hit = map
-            .hit_test(
+        assert!(
+            map.hit_test(
                 &cfg,
                 &FixedMeasure,
-                parent.x as f32 + 50.0,
-                parent.y as f32 + 50.0,
+                parent.x as f32 + 40.0,
+                parent.y as f32 + 40.0
             )
-            .unwrap();
-        assert_eq!(map.get(hit).unwrap().element_id(), "data_area");
-
-        let before = cfg.clone();
-        let left = map.find("overlay_0:axis_left").unwrap();
-        let drag = map.get(left).unwrap().as_draggable().unwrap();
-        assert_eq!(drag.drag_by(&mut cfg, 9.0, 0.0), NudgeResult::Moved);
-        assert_eq!(cfg.overlays[0].y_axis.line_offset, 9.0);
-        assert_eq!(cfg.left_y, before.left_y);
-
-        let labels = map.find("overlay_0:tick_labels_bottom").unwrap();
-        let bounds = map
-            .get(labels)
-            .unwrap()
-            .bounds(&cfg, &FixedMeasure)
-            .unwrap();
-        assert!(bounds.y > (da.y + da.height) as f32, "{bounds:?}");
-        let drag = map.get(labels).unwrap().as_draggable().unwrap();
-        assert_eq!(drag.drag_by(&mut cfg, 2.0, 3.0), NudgeResult::Moved);
-        // One X axis: the parent's offset moved, for every area.
-        assert_eq!(cfg.bottom_x.label_style.label_offset_x, 2.0);
-        assert_eq!(cfg.bottom_x.label_style.label_offset_y, 3.0);
-        assert_eq!(cfg.overlays, {
-            let mut overlays = before.overlays.clone();
-            overlays[0].y_axis.line_offset = 9.0;
-            overlays
-        });
-
-        // The later layer reaches the same X axis copy through the first
-        // layer's panel.
-        cfg.set_active_layer(LayerRef::Overlay(1));
-        let map = HitMap::for_active_layer(&cfg);
-        let axis = map.find("overlay_1:axis_bottom").unwrap();
-        let drag = map.get(axis).unwrap().as_draggable().unwrap();
-        assert_eq!(drag.drag_by(&mut cfg, 0.0, -4.0), NudgeResult::Moved);
-        assert_eq!(cfg.bottom_x.line_offset, -4.0);
-        let right = map.find("overlay_1:axis_right").unwrap();
-        assert!(
-            map.get(right)
-                .unwrap()
-                .bounds(&cfg, &FixedMeasure)
-                .unwrap()
-                .x
-                >= (da.x + da.width) as f32 - 10.0
+            .is_none()
         );
-    }
 
-    // Dragging a subplot's data area moves its area — both layers of it —
-    // carrying sub-pixel deltas; its handles move the area's edges; nothing
-    // of the parent moves, and an impossible move is refused atomically.
-    #[test]
-    fn a_subplot_data_area_moves_and_resizes_its_area() {
-        let mut cfg = cfg_with_subplot();
-        cfg.set_active_layer(LayerRef::Overlay(1));
-        let map = HitMap::for_active_layer(&cfg);
-        let id = map.find("overlay_1:data_area").unwrap();
-        let element = map.get(id).unwrap();
         let before = cfg.clone();
         let drag = element.as_draggable().unwrap();
-        for _ in 0..4 {
-            assert_eq!(drag.drag_by(&mut cfg, 0.25, 0.5), NudgeResult::Moved);
-        }
-        let area = cfg.overlay_area(0).0;
-        assert_eq!((area.x, area.y), (1, 602));
-        assert_eq!(cfg.overlays[1].chart_area, cfg.overlays[0].chart_area);
-        assert_eq!(cfg.chart_area, before.chart_area);
-        assert_eq!(cfg.margins(), before.margins());
-        assert_eq!(cfg.bottom_x, before.bottom_x);
+        assert_eq!(drag.drag_by(&mut cfg, 10.0, -6.0), NudgeResult::Moved);
+        let moved = cfg.subplot_config(0).unwrap().data_area().unwrap().0;
+        assert_eq!((moved.x, moved.y), (da.x + 10, da.y - 6));
+        assert_eq!(cfg.data_area(), before.data_area());
+        assert_eq!(cfg.left_y, before.left_y);
+        assert_eq!(cfg.subplots[0].link_y, before.subplots[0].link_y);
+        assert_eq!(cfg.subplots[0].config.left_y.max, cfg.left_y.max);
 
         let resize = element.as_resizable().unwrap();
-        assert!(
+        assert_eq!(
             element
                 .selection_box(&cfg, &FixedMeasure)
                 .unwrap()
                 .handles
-                .len()
-                == 8
+                .len(),
+            8
         );
+        let handle = resize
+            .resize_handles(&cfg, &FixedMeasure)
+            .unwrap()
+            .into_iter()
+            .find(|(handle, _)| *handle == crate::resize::ResizeHandle::E)
+            .unwrap();
+        assert!(handle.1.x > moved.x as f32);
         assert_eq!(
-            resize.resize_by(&mut cfg, crate::resize::ResizeHandle::SE, 20.0, -50.0),
+            resize.resize_by(&mut cfg, crate::resize::ResizeHandle::E, -30.0, 0.0),
             NudgeResult::Moved
         );
-        let area = cfg.overlay_area(1).0;
-        assert_eq!(
-            (area.x, area.y, area.width, area.height),
-            (1, 602, 820, 350)
-        );
-        assert_eq!(cfg.overlays[1].chart_area, cfg.overlays[0].chart_area);
-        assert_eq!(
-            resize.resize_by(&mut cfg, crate::resize::ResizeHandle::W, 5.0, 0.0),
-            NudgeResult::Moved
-        );
-        assert_eq!(cfg.overlay_area(0).0.x, 6);
-        assert_eq!(cfg.overlay_area(0).0.width, 815);
+        let resized = cfg.subplot_config(0).unwrap().data_area().unwrap().0;
+        assert_eq!(resized.width, moved.width - 30);
+        assert_eq!(cfg.margins(), before.margins());
 
-        let snapshot = cfg.clone();
-        assert_eq!(
-            drag.drag_by(&mut cfg, -100.0, 0.0),
-            NudgeResult::Rejected(NudgeReject::OutOfBounds)
-        );
-        assert_eq!(
-            resize.resize_by(&mut cfg, crate::resize::ResizeHandle::N, 0.0, 340.0),
-            NudgeResult::Rejected(NudgeReject::OutOfBounds)
-        );
-        assert_eq!(cfg, snapshot);
-        // A layer on the parent has no area of its own to move.
-        let mut plain = cfg_with_overlay();
-        assert!(
-            OverlayDataAreaElement::new(0)
-                .bounds(&plain, &FixedMeasure)
-                .is_none()
-        );
-        assert_eq!(
-            OverlayDataAreaElement::new(0).drag_by(&mut plain, 5.0, 5.0),
-            NudgeResult::Rejected(NudgeReject::OutOfBounds)
-        );
+        let axis = map.find("subplot_0:axis_bottom").unwrap();
+        let drag = map.get(axis).unwrap().as_draggable().unwrap();
+        assert_eq!(drag.drag_by(&mut cfg, 0.0, 5.0), NudgeResult::Moved);
+        assert_eq!(cfg.subplots[0].config.bottom_x.line_offset, 5.0);
+        assert_eq!(cfg.bottom_x, before.bottom_x);
     }
 
     #[test]

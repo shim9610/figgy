@@ -12,6 +12,9 @@ mod ssot_invalidation;
 #[path = "overlay_layer_tests.rs"]
 mod overlay_layers;
 
+#[path = "subplot_tests.rs"]
+mod subplots;
+
 #[path = "annotation_layer_tests.rs"]
 mod annotation_layer;
 

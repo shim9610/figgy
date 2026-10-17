@@ -2853,11 +2853,7 @@ mod web {
         hitmap: HitMap,
         /// The (active layer, overlay count) the hit map was registered for.
         /// Either change rebuilds it with `HitMap::for_active_layer`.
-        hitmap_layer: (
-            renderer::LayerRef,
-            usize,
-            Option<renderer::OverlayPlacement>,
-        ),
+        hitmap_layer: (renderer::LayerRef, usize, Option<usize>),
         dragging: bool,
         resizing: Option<ModelResizeHandle>,
         cycle: renderer::ColorCycle,
@@ -2920,9 +2916,8 @@ mod web {
         }
 
         /// The hit map's registration set depends only on the active layer,
-        /// the overlay count and the active overlay's placement (on the
-        /// parent, or first or later layer of an area of its own). Rebuild it
-        /// when any of them changed; the registry has already dropped any
+        /// the overlay count and the active subplot's overlay count. Rebuild
+        /// it when any of them changed; the registry has already dropped any
         /// `HitId` of the previous map. A layer change also clears the
         /// annotation selection: it is the element selection of the
         /// annotation layer, one level below the layer like the registry's
@@ -2930,11 +2925,15 @@ mod web {
         fn sync_hitmap(&mut self) {
             let config = self.chart_config();
             let layer = config.active_layer();
-            let placement = match layer {
-                renderer::LayerRef::Overlay(index) => config.overlay_placement(index),
-                renderer::LayerRef::Base | renderer::LayerRef::Annotations => None,
+            let subplot_overlays = match layer {
+                renderer::LayerRef::Subplot(index)
+                | renderer::LayerRef::SubplotOverlay(index, _) => config
+                    .subplots
+                    .get(index)
+                    .map(|subplot| subplot.config.overlays.len()),
+                _ => None,
             };
-            let key = (layer, config.overlays.len(), placement);
+            let key = (layer, config.overlays.len(), subplot_overlays);
             if key != self.hitmap_layer {
                 let layer_changed = key.0 != self.hitmap_layer.0;
                 self.hitmap = HitMap::for_active_layer(config);
@@ -4903,8 +4902,36 @@ mod web {
             Ok(())
         }
 
+        /// Fit subplot `index`'s X (`axis = "x"`) or Y (`axis = "y"`) axis to
+        /// the union of the given columns' cached statistics with
+        /// proportional padding. A linked axis moves its whole link group.
+        /// An index past the subplot list or another axis name is an error.
+        /// JS: `chart.auto_fit_subplot(0, "y", ["flow"], 0.05)`
+        pub fn auto_fit_subplot(
+            &mut self,
+            index: usize,
+            axis: &str,
+            columns: Vec<String>,
+            padding: f64,
+        ) -> Result<(), JsValue> {
+            if index >= self.chart_config().subplots.len() {
+                return Err(js_err("subplot index is out of range"));
+            }
+            let ids: Vec<&str> = columns.iter().map(String::as_str).collect();
+            let mut chart = Chart::new(self.chart_config().clone());
+            match axis {
+                "x" => chart.auto_fit_subplot_x_union(self.renderer.pool(), index, &ids, padding),
+                "y" => chart.auto_fit_subplot_y_union(self.renderer.pool(), index, &ids, padding),
+                _ => return Err(js_err("axis must be \"x\" or \"y\"")),
+            }
+            .map_err(js_err)?;
+            self.replace_chart_config(chart.config().clone())?;
+            Ok(())
+        }
+
         /// Set the layer that receives pointer interaction: `"Base"`,
-        /// `{ "Overlay": index }` or `"Annotations"` as JSON. The hit map is
+        /// `{ "Overlay": index }`, `"Annotations"`, `{ "Subplot": index }` or
+        /// `{ "SubplotOverlay": [subplot, overlay] }` as JSON. The hit map is
         /// rebuilt for that layer (`HitMap::for_active_layer`) and the
         /// element selection is cleared when the layer changes. An overlay
         /// index past the overlay list is stored as `"Base"`; the stored

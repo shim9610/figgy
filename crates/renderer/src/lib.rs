@@ -86,7 +86,9 @@ pub use gpu_pick::{GpuPickError, GpuPickTicket};
 pub use init::{INIT_EVENT_SCHEMA_VERSION, InitEvent, InitPhase};
 pub use pick::{PickedData, PickedPoint, PointColumnLookup, PointPickOptions, pick_nearest_point};
 pub use preset::{AxisPreset, ColorCycle};
-pub use render_warning::{AnnotationSkip, RenderWarning, SpacingRejection, WarningAxis};
+pub use render_warning::{
+    AnnotationSkip, RenderWarning, SpacingRejection, SubplotAxis, WarningAxis,
+};
 pub use renderer::{
     AxisViewState, ChartDrawItem, ChartId, ChartRenderStamp, ChartStyle, ChartView,
     ChartViewLayerStamps, ChartViewState, FitCommitToken, GpuPickRequest, MAX_EXPORT_SCALE,
@@ -102,7 +104,7 @@ pub use select::{
     AxisElement, AxisLabelElement, AxisTitleElement, ChartTitleElement, ColorBarAxisElement,
     ColorBarElement, ColorBarLabelElement, ColorBarTitleElement, DataAreaElement, HitId, HitMap,
     LegendElement, OverlayAxisElement, OverlayAxisLabelElement, OverlayAxisTitleElement,
-    OverlayDataAreaElement, OverlayLegendElement, Selectable, SelectionBox,
+    OverlayLegendElement, Selectable, SelectionBox, SubplotElement,
 };
 pub use streaming_source::{
     AutoStreamRange, AutoStreamSourceVersion, AutoStreamingProgress, AutoStreamingRangeRequest,
@@ -135,8 +137,8 @@ pub use model::decoration::{DecorationId, DecorationLayout, DecorationOffset};
 pub use model::{
     Anchor, AnchorKind, Annotation, AnnotationAxis, AnnotationElement, AnnotationHandle,
     AnnotationKind, AnnotationLayer, AnnotationLineStyle, AnnotationSpace, ArrowStyle, AxisMap,
-    AxisSpace, BoxStyle, ExpandedPanel, Expansion, LayerRef, OverlayLayer, OverlayPlacement,
-    PixelSpace,
+    AxisSpace, BoxStyle, CellRef, ExpandedPanel, Expansion, LayerRef, OverlayLayer, PixelSpace,
+    Subplot,
 };
 pub mod decoration;
 

@@ -11,52 +11,59 @@ at the time. The first crates.io publication is recorded below.
 
 ## Unreleased — subplots
 
-- Subplots through the overlay layers (issue #11, work item 5): `OverlayLayer`
-  gains `chart_area: Option<ChartArea>`. `None` (omitted from JSON) or the
-  parent's own area keeps today's twin-axis overlay; any other rectangle draws
-  the layer there, in the same surface coordinates as the parent. Layers with
-  equal areas overlap in that area, so a subplot can carry its own secondary
-  axis without a second nesting level. Existing documents parse and serialize
+- Subplots (issue #11, work item 5): `Config` gains `subplots: Vec<Subplot>`,
+  more charts drawn in the same document. A `Subplot { config, series,
+  link_x, link_y }` is a complete Cartesian chart with its own `chart_area`
+  (in the parent's surface coordinates), all four axes, title, grid, legend,
+  colourbar, style and secondary Y axes (`config.overlays`); the document's own
+  `Config` stays the first chart, so a 2×2 grid is the parent plus three
+  subplots. Nothing is shared unless linked: `link_x` / `link_y` (`CellRef::
+  Parent` or an earlier `CellRef::Subplot(j)`) make `bottom_x` / `left_y`
+  follow the target's range, scale, direction and tick spacing while the
+  axis style stays the subplot's own. The field is `serde(default)` and
+  omitted when empty, so existing documents parse and serialize
   byte-identically.
-- Placement (`Config::overlay_placement` → `OverlayPlacement::{OnParent,
-  AreaLead, OnArea { lead }}`): an area's first layer draws its `y_axis` on the
-  left together with the parent's grid and the parent's `top_x` / `bottom_x`
-  as written (one X range and one X style for every area); later layers of the
-  area draw their axis on the right. `Config::expand` derives each area
-  group's margins from its own bands (`Config::overlay_data_area`) and never
-  lets a subplot widen the parent's right band. `Config::document_area` is the
-  union of every area, `Config::translate_areas` moves them together,
-  `Config::overlay_area` / `overlay_is_detached` answer per layer, and
-  `Config::scaled` / `Config::validate` cover the new field.
-- Rendering: every subplot panel is drawn at its own area with its own grid,
-  decoration and transform resources and raster cache, so a subplot edit
-  re-rasterizes only that area's panels and the cached frame is byte-identical
-  to a fresh render. Each selection box goes to the topmost panel of the area
-  it sits in; the document's annotation layer stays in the parent's area, and
-  its pointer route (#12, `ChartView::hit_test_active_layer`) answers there
-  only while `Annotations` is active.
-  `display_config_for_surface` fits the whole document and returns where the
-  parent's area lands (new `place_document`); `GpuPickRequest::display_panel_px`
-  is the displayed document rect, and picking the active subplot layer uses its
-  own area. `export_document_*` renders the union; `export_panel_*` keeps the
-  parent's area. Tick warnings of an area's left axis are tagged
-  `WarningAxis::OverlayY(index)` like the right ones. The stream view-geometry
-  comparison includes each layer's area and data area.
-- Interaction: while a subplot layer is active, `HitMap::for_active_layer`
-  registers its area's data area (`OverlayDataAreaElement`,
-  `overlay_<n>:data_area`), the area's X axis copies and its Y axis on the
-  side it is drawn. X axis copies write the parent's `top_x` / `bottom_x`;
-  the subplot's data area drag moves its area (every layer of it) and its
-  eight handles move the area's edges, carrying sub-pixel pointer deltas. The
-  WASM wrapper rebuilds its hit map when the active overlay's placement
-  changes and fits the document union to the canvas. New native example
-  `subplots`.
-- Rust migration: exhaustive `OverlayLayer` literals need `chart_area` (or
-  `..Default::default()`); `OverlayAxisElement`, `OverlayAxisLabelElement` and
-  `OverlayAxisTitleElement` gain `side: Side`. Released with the next
-  renderer/model minor versions together with the other unreleased entries.
-  See the configuration reference (`OverlayLayer`, "Subplots"), the
-  interaction guide and the WASM guide.
+- One value per link group: `Config::subplot_config(i)` resolves a subplot
+  with its links applied, `Config::sync_subplot_links(previous)` carries an
+  edit of any linked axis to the root of its group and stores every member
+  equal to it, and `Config::subplot_link_root` names the root. The registry
+  runs it inside `register_chart`, `set_chart_config`, `set_chart_state` and
+  `set_chart_view_state`, so a linked edit moves every member in one
+  `&mut self` call. `ChartViewState::subplots` carries one view state per
+  subplot. `Chart::set_subplot_x_range` / `set_subplot_y_range` and
+  `auto_fit_subplot_{x,y}_{extent,union}` write the root of a linked axis.
+  `Config::validate_subplots` rejects nested subplots, an annotation layer on
+  a subplot, a link to a later subplot and a series id drawn twice.
+- Rendering: `Config::expand` appends each subplot's panels after the
+  parent's (`Config::panel_layers` gives the order), each in its own area with
+  its own data area, raster cache and transform, so an edit of one chart
+  re-rasterizes that chart's panels only and the cached frame is
+  byte-identical to a fresh render. Each selection box goes to the topmost
+  panel of the chart it sits in. The document covers the union of every chart
+  area (`Config::document_area`, `Config::translate_areas`):
+  `display_config_for_surface` fits it and returns where the parent lands (new
+  `place_document`), `GpuPickRequest::display_panel_px` is the displayed
+  document rect, `export_document_*` renders the union and `export_panel_*`
+  keeps the parent's area. The annotation layer stays in the parent's area and
+  its pointer route answers there only while `Annotations` is active. Subplot
+  warnings are tagged `WarningAxis::Subplot { index, axis: SubplotAxis }`.
+  Streaming rejects a document with subplots and a streamed series drawn by a
+  subplot, as it does for overlays.
+- Interaction: `LayerRef` gains `Subplot(i)` and `SubplotOverlay(i, j)`, with
+  the same out-of-range recovery as `Overlay`. While one is active
+  `HitMap::for_active_layer` registers exactly that subplot's own set,
+  wrapped as `SubplotElement`s (`subplot_<i>:…` ids); drags and resizes use
+  the single-chart policies on the subplot's chart and land in
+  `subplots[i].config`. The WASM wrapper accepts the new layers, rebuilds its
+  hit map when the active subplot's overlay count changes and adds
+  `auto_fit_subplot(index, "x" | "y", columns, padding)`. New native example
+  `subplots` (a 2×2 grid with one linked X axis and one twin Y axis).
+- Rust migration: exhaustive `Config` literals need `subplots` (or
+  `..Default::default()`), `ChartViewState` literals need `subplots`, and
+  exhaustive matches on `LayerRef` need the two new variants (`WarningAxis` is
+  `non_exhaustive`). Released with the next renderer/model minor versions
+  together with the other unreleased entries. See the configuration reference
+  (`Subplot`), the interaction guide (subplots) and the WASM guide.
 
 ## Unreleased — overlay layers
 

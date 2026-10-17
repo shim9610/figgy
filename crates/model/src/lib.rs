@@ -12,14 +12,14 @@ pub mod drag;
 pub use decoration::{DecorationElement, DecorationId, DecorationLayout, DecorationOffset};
 pub mod annotation;
 pub mod expand;
-pub use expand::{ExpandedPanel, Expansion, OverlayPlacement};
+pub use expand::{ExpandedPanel, Expansion};
 pub mod layer;
 pub use annotation::{
     Anchor, AnchorKind, Annotation, AnnotationAxis, AnnotationElement, AnnotationHandle,
     AnnotationKind, AnnotationLineStyle, AnnotationSpace, ArrowStyle, AxisMap, AxisSpace, BoxStyle,
     PixelSpace,
 };
-pub use layer::{AnnotationLayer, LayerRef, OverlayLayer};
+pub use layer::{AnnotationLayer, CellRef, LayerRef, OverlayLayer, Subplot};
 pub mod format;
 pub mod layout;
 pub mod legend;
@@ -52,7 +52,7 @@ pub use select::{
     AxisElement, AxisLabelElement, AxisTitleElement, ChartTitleElement, ColorBarAxisElement,
     ColorBarElement, ColorBarLabelElement, ColorBarTitleElement, DataAreaElement, HitId, HitMap,
     LegendElement, OverlayAxisElement, OverlayAxisLabelElement, OverlayAxisTitleElement,
-    OverlayDataAreaElement, OverlayLegendElement, Selectable, SelectionBox,
+    OverlayLegendElement, Selectable, SelectionBox, SubplotElement,
 };
 pub use text::{MeasureText, TextAlign, TextExtents};
 

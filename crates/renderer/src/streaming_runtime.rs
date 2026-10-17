@@ -893,18 +893,23 @@ fn resolve_stream_range_source<'a>(
 }
 
 /// The nonresident stream pass draws one panel. A document with overlay
-/// layers composites several, and a streamed series on an overlay is an
-/// explicit error (not a planned feature), so streaming rejects the document
+/// layers or subplots composites several, and a streamed series on another
+/// panel is an explicit error (not a planned feature), so streaming rejects the document
 /// as a whole before any resource is allocated.
 pub(crate) fn reject_layered_streaming(config: &Config) -> Result<()> {
-    if config.overlays.is_empty() {
-        Ok(())
-    } else {
-        Err(FiggyError::InvalidConfig {
+    if !config.overlays.is_empty() {
+        return Err(FiggyError::InvalidConfig {
             field: "overlays",
             reason: "nonresident streaming is not supported for a document with overlay layers",
-        })
+        });
     }
+    if !config.subplots.is_empty() {
+        return Err(FiggyError::InvalidConfig {
+            field: "subplots",
+            reason: "nonresident streaming is not supported for a document with subplots",
+        });
+    }
+    Ok(())
 }
 
 impl Renderer {

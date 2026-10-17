@@ -129,7 +129,7 @@ fn right_total(cfg: &Config) -> f32 {
 ///
 /// Overlay Y axes are drawn on the right side of the one data area, so the
 /// right margin is group geometry: the widest band of the parent axis and
-/// every overlay axis drawn on the parent's area (`out_margin + major_tick_length`, plus the colourbar
+/// every overlay axis (`out_margin + major_tick_length`, plus the colourbar
 /// band, which is the same for all of them). Expressing the group as an
 /// effective parent `out_margin` keeps `right_total` the same expression as
 /// the three other sides, so a document without overlays computes exactly the
@@ -139,9 +139,6 @@ pub(super) fn right_out_margin_effective(cfg: &Config) -> f32 {
     let fixed = tick_contribution(&cfg.right_y) + colorbar_contribution(cfg, &Side::Right);
     cfg.overlays
         .iter()
-        .enumerate()
-        .filter(|(index, _)| !cfg.overlay_is_detached(*index))
-        .map(|(_, overlay)| overlay)
         .fold(cfg.right_y.out_margin, |widest, overlay| {
             let band = overlay.y_axis.out_margin
                 + tick_contribution(&overlay.y_axis)
@@ -151,8 +148,8 @@ pub(super) fn right_out_margin_effective(cfg: &Config) -> f32 {
         })
 }
 
-/// After a write of the parent's right margin: make every overlay band on
-/// the parent's area fit inside the parent's, so the group right margin is exactly the parent's.
+/// After a write of the parent's right margin: make every overlay band fit
+/// inside the parent's, so the group right margin is exactly the parent's.
 /// A data-area edge drag or a fit sets group geometry, and the group is what
 /// the host sees move. Nothing changes for a document without overlays.
 pub(super) fn sync_overlay_right_margins(cfg: &mut Config) {
@@ -160,13 +157,7 @@ pub(super) fn sync_overlay_right_margins(cfg: &mut Config) {
         return;
     }
     let own = cfg.right_y.out_margin + tick_contribution(&cfg.right_y);
-    let parent = cfg.chart_area.clone();
-    for overlay in cfg.overlays.iter_mut().filter(|overlay| {
-        overlay
-            .chart_area
-            .as_ref()
-            .is_none_or(|area| *area == parent)
-    }) {
+    for overlay in &mut cfg.overlays {
         let out = own - tick_contribution(&overlay.y_axis);
         overlay.y_axis.out_margin = if out > 0.0 { out } else { 0.0 };
     }
@@ -311,17 +302,15 @@ impl Config {
         if self.validate_overlays().is_err() {
             return Err(LayoutError::Infeasible);
         }
-        // An overlay with an area of its own must leave its area group a
-        // data area, exactly as the parent must leave one.
-        for index in 0..self.overlays.len() {
-            if let Some(area) = self.overlays[index].chart_area.as_ref() {
-                if area.width == 0 || area.height == 0 {
-                    return Err(LayoutError::EmptyDataArea);
-                }
-                if self.overlay_is_detached(index) {
-                    self.overlay_data_area(index)?;
-                }
-            }
+        // Every subplot is a chart of its own and is held to the same rules,
+        // with its links applied.
+        if self.validate_subplots().is_err() {
+            return Err(LayoutError::Infeasible);
+        }
+        for index in 0..self.subplots.len() {
+            self.subplot_config(index)
+                .ok_or(LayoutError::Infeasible)?
+                .validate()?;
         }
         if let Some(bar) = self.colorbar.as_ref() {
             // The z axis is held to the same dimensional rules as the four

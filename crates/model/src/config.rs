@@ -1,7 +1,7 @@
 use crate::color::Color;
 use crate::colormap::ColorMap;
 use crate::format::LabelFormat;
-use crate::layer::{AnnotationLayer, LayerRef, OverlayLayer};
+use crate::layer::{AnnotationLayer, LayerRef, OverlayLayer, Subplot};
 use crate::layout::{ChartArea, Side};
 use crate::line::LineStylePreset;
 use crate::text::RichText;
@@ -698,6 +698,15 @@ pub struct Config {
         serde(default, skip_serializing_if = "Vec::is_empty")
     )]
     pub overlays: Vec<OverlayLayer>,
+    /// More charts drawn in the same document, each with its own chart area
+    /// and its own axes; axes are shared only through a subplot's links.
+    /// Empty (key absent in JSON) is the single chart every document had
+    /// before the field. See [`Subplot`].
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
+    pub subplots: Vec<Subplot>,
     /// The layer that receives pointer interaction. `Base` (default, key
     /// absent in JSON) is today's single-layer behavior. Drawn pixels do not
     /// depend on this field; only hit-map registration and selection chrome do.
@@ -757,18 +766,9 @@ impl Config {
         self.legend.padding *= s;
         scale_rich_text(&mut self.legend.content, s);
 
-        // Overlay layers carry their own axis, optional legend and optional
-        // area; all are pixel-dimensioned like the parent's and scale by the
-        // same rules.
+        // Overlay layers carry their own axis and optional legend; both are
+        // pixel-dimensioned like the parent's and scale by the same rules.
         for overlay in &mut self.overlays {
-            // An area of its own scales by the same rounding as the parent's,
-            // so a layer area equal to the parent's stays equal.
-            if let Some(area) = overlay.chart_area.as_mut() {
-                area.0.x = scale_u32(area.0.x);
-                area.0.y = scale_u32(area.0.y);
-                area.0.width = scale_u32(area.0.width);
-                area.0.height = scale_u32(area.0.height);
-            }
             scale_axis_in_place(&mut overlay.y_axis, s);
             if let Some(legend) = overlay.legend.as_mut() {
                 legend.offset_x *= s;
@@ -776,6 +776,12 @@ impl Config {
                 legend.padding *= s;
                 scale_rich_text(&mut legend.content, s);
             }
+        }
+
+        // A subplot is a chart of its own, scaled by the same rules; its
+        // chart area scales with the same rounding as the parent's.
+        for subplot in &mut self.subplots {
+            subplot.config.scale_in_place(s);
         }
 
         if let Some(picked_points) = self.picked_points.as_mut() {

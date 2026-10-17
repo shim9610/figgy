@@ -270,6 +270,14 @@ pub(crate) fn validate_renderer_config(config: &Config) -> Result<()> {
             reason: "a series id may belong to at most one overlay layer",
         })?;
 
+    // The subplot rules come before the layout check, which also expands
+    // each subplot, so a broken link or nesting reports as what it is.
+    config
+        .validate_subplots()
+        .map_err(|reason| FiggyError::InvalidConfig {
+            field: "subplots",
+            reason,
+        })?;
     config.validate().map_err(|_| FiggyError::InvalidConfig {
         field: "layout",
         reason: "margins and visual dimensions must produce a non-empty data area",
@@ -288,6 +296,19 @@ pub(crate) fn validate_renderer_config(config: &Config) -> Result<()> {
             field: "overlays",
             reason: "the overlay layers must share one non-empty data area",
         })?;
+    }
+    if !config.subplots.is_empty() {
+        // Every subplot is a chart of its own, held to the same rules with
+        // its links applied.
+        for index in 0..config.subplots.len() {
+            let subplot = config
+                .subplot_config(index)
+                .ok_or(FiggyError::InvalidConfig {
+                    field: "subplots",
+                    reason: "subplot index out of range",
+                })?;
+            validate_renderer_config(&subplot)?;
+        }
     }
     Ok(())
 }
@@ -606,6 +627,108 @@ impl Chart {
             ext.union(&Self::slot_extent(pool, id)?);
         }
         self.auto_fit_overlay_y_extent(layer, &ext, padding_ratio);
+        Ok(())
+    }
+
+    /// Set subplot `index`'s X range (top + bottom) and derive its tick and
+    /// label settings, the subplot counterpart of [`Self::set_x_range`]. A
+    /// linked `bottom_x` writes the root of its link group, so every linked
+    /// chart moves with it. An `index` past the subplot list is a no-op.
+    pub fn set_subplot_x_range(&mut self, index: usize, min: f64, max: f64) {
+        self.set_subplot_range(index, true, min, max);
+    }
+
+    /// Set subplot `index`'s Y range (left + right); see
+    /// [`Self::set_subplot_x_range`].
+    pub fn set_subplot_y_range(&mut self, index: usize, min: f64, max: f64) {
+        self.set_subplot_range(index, false, min, max);
+    }
+
+    fn set_subplot_range(&mut self, index: usize, x: bool, min: f64, max: f64) {
+        if index >= self.config.subplots.len() {
+            return;
+        }
+        let root = self.config.subplot_link_root(index, x);
+        self.with_axis_range_change(|config| {
+            let pair = |chart: &mut Config| {
+                let (main, secondary) = if x {
+                    (&mut chart.bottom_x, &mut chart.top_x)
+                } else {
+                    (&mut chart.left_y, &mut chart.right_y)
+                };
+                let log = matches!(main.scale, AxisScale::Logarithmic);
+                apply_axis_range(main, min, max, log);
+                apply_axis_range(secondary, min, max, log);
+            };
+            match root {
+                crate::CellRef::Parent => pair(config),
+                crate::CellRef::Subplot(root) => pair(&mut config.subplots[root].config),
+            }
+            if root != crate::CellRef::Subplot(index) {
+                pair(&mut config.subplots[index].config);
+            }
+            config.sync_subplot_links(None);
+        });
+    }
+
+    /// Fit subplot `index`'s X axis to a prepared [`FitExtent`] — see
+    /// [`Self::auto_fit_x_extent`]. An `index` past the list is a no-op.
+    pub fn auto_fit_subplot_x_extent(&mut self, index: usize, ext: &FitExtent, padding_ratio: f64) {
+        let Some((min, max)) = self
+            .config
+            .subplot_config(index)
+            .and_then(|chart| fitted_axis_range(&chart.bottom_x, ext, padding_ratio))
+        else {
+            return;
+        };
+        self.set_subplot_x_range(index, min, max);
+    }
+
+    /// Fit subplot `index`'s Y axis to a prepared [`FitExtent`] — see
+    /// [`Self::auto_fit_y_extent`].
+    pub fn auto_fit_subplot_y_extent(&mut self, index: usize, ext: &FitExtent, padding_ratio: f64) {
+        let Some((min, max)) = self
+            .config
+            .subplot_config(index)
+            .and_then(|chart| fitted_axis_range(&chart.left_y, ext, padding_ratio))
+        else {
+            return;
+        };
+        self.set_subplot_y_range(index, min, max);
+    }
+
+    /// Auto-fit subplot `index`'s X axis to the union range of the given
+    /// columns' cached statistics — the subplot counterpart of
+    /// [`Self::auto_fit_x_union`].
+    pub fn auto_fit_subplot_x_union(
+        &mut self,
+        pool: &ColumnPool,
+        index: usize,
+        x_ids: &[&str],
+        padding_ratio: f64,
+    ) -> Result<()> {
+        let mut ext = FitExtent::EMPTY;
+        for id in x_ids {
+            ext.union(&Self::slot_extent(pool, id)?);
+        }
+        self.auto_fit_subplot_x_extent(index, &ext, padding_ratio);
+        Ok(())
+    }
+
+    /// Auto-fit subplot `index`'s Y axis to the union range of the given
+    /// columns' cached statistics.
+    pub fn auto_fit_subplot_y_union(
+        &mut self,
+        pool: &ColumnPool,
+        index: usize,
+        y_ids: &[&str],
+        padding_ratio: f64,
+    ) -> Result<()> {
+        let mut ext = FitExtent::EMPTY;
+        for id in y_ids {
+            ext.union(&Self::slot_extent(pool, id)?);
+        }
+        self.auto_fit_subplot_y_extent(index, &ext, padding_ratio);
         Ok(())
     }
 

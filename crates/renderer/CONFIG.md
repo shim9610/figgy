@@ -26,7 +26,8 @@ pub struct Config {
     pub picked_data: Option<DataSelectionsConfig>,
     pub colorbar: Option<ColorBarOptions>,   // the colourbar AND the chart's z scale
     pub draw_style: DrawStyle,
-    pub overlays: Vec<OverlayLayer>,         // secondary Y axes and subplots, each scaling the series it lists
+    pub overlays: Vec<OverlayLayer>,         // secondary right Y axes, each scaling the series it lists
+    pub subplots: Vec<Subplot>,              // more charts in the same document, each with its own axes
     pub active_layer: LayerRef,              // interaction target layer; `Base` = today's behavior
     pub annotations: AnnotationLayer,        // dedicated annotation layer: visibility + items
 }
@@ -115,7 +116,7 @@ The layer fields shared by every chart family (`Config`, `RadialChart`,
 
 | Field | Meaning |
 |---|---|
-| `active_layer: LayerRef` | The layer that receives pointer interaction: `Base` (default, omitted from JSON), `Overlay(index)` or `Annotations`. Decides which layer's elements the hit map registers (`HitMap::for_active_layer`); with `Annotations` the annotation items are tested on top of the chart's own hit map and on every other layer clicks pass through them (`ChartView::hit_test_active_layer`, `BoundedAnnotationFrame::hit_test_active_layer`). Element selection (`selected`, `picked_points`, `picked_data`) lives one level below it and a layer change clears it, the data selection excepted. An `Overlay` index past `overlays` reads and is stored as `Base`; bounded charts have no overlays, so `Overlay` falls back to `Base` there (`active_layer()` / `set_active_layer` on `RadialChart`, `CategoricalChart` and `BoxPlotChart`, the setter clearing `decorations.selected` on a change). |
+| `active_layer: LayerRef` | The layer that receives pointer interaction: `Base` (default, omitted from JSON), `Overlay(index)`, `Annotations`, `Subplot(index)` or `SubplotOverlay(subplot, overlay)`. Decides which layer's elements the hit map registers (`HitMap::for_active_layer`); with `Annotations` the annotation items are tested on top of the chart's own hit map and on every other layer clicks pass through them (`ChartView::hit_test_active_layer`, `BoundedAnnotationFrame::hit_test_active_layer`). Element selection (`selected`, `picked_points`, `picked_data`) lives one level below it and a layer change clears it, the data selection excepted. An `Overlay` or `Subplot` index past its list reads and is stored as `Base`, a `SubplotOverlay` whose overlay is missing as its `Subplot`; bounded charts have no overlays or subplots, so those fall back to `Base` there (`active_layer()` / `set_active_layer` on `RadialChart`, `CategoricalChart` and `BoxPlotChart`, the setter clearing `decorations.selected` on a change). |
 | `annotations: AnnotationLayer { visible, items }` | The dedicated annotation layer: `items` in draw order, composited as an underlay below the data (spans) and an overlay above every decoration (everything else) but toggled, selected and edited as one unit. `visible = false` skips the two composite draws without re-rasterizing anything. The default (visible, no items) is omitted from JSON, and so is an empty `items`. |
 
 Overlay elements are addressed as `DecorationId::Overlay { layer, inner }`
@@ -193,7 +194,6 @@ overlays, and nonresident streaming rejects a document that has any.
 | `y_axis` | `AxisOptions` | The overlay's Y axis, drawn on the right. `min` / `max` / `scale` / `inverted` map the overlay's series to pixels; `out_margin + major_tick_length` is its band in the shared right margin, which is the widest band of the parent `right_y` and every overlay (`Config::margins`). Defaults to the default left-axis options (labels and line visible). |
 | `series` | `Vec<String>` | Ids of the series this layer scales, from the chart's single series list. An id may belong to at most one overlay (`Config::validate_overlays`); an id with no declaration is ignored; every other series belongs to the base layer. Omitted from JSON when empty. |
 | `legend` | `Option<Legend>` | A legend drawn in this layer's panel. `None` (omitted) keeps the single merged legend on the parent for every layer's series. |
-| `chart_area` | `Option<ChartArea>` | The rectangle this layer is drawn in, in the same surface coordinates as the parent's `chart_area`. `None` (omitted) or an area equal to the parent's draws the layer on top of the parent's area. Any other area makes the layer a subplot; see below. |
 
 The renderer draws the document as one internal panel per layer through
 `Config::expand()`: the base panel is the parent without its overlays; each
@@ -209,38 +209,46 @@ scales the overlay axes and legends like the parent's. The parent's own
 `right_y` stays as written: hide its line and ticks when an overlay should have
 the right band to itself.
 
-**Subplots.** A layer whose `chart_area` differs from the parent's is drawn in
-that rectangle instead of on top of the parent. Layers with equal areas form
-one area group and are drawn on top of each other there, by the same rules as
-layers on the parent, with the group's first layer (the lowest index) in the
-parent's place (`Config::overlay_placement` answers `OnParent`, `AreaLead` or
-`OnArea { lead }`):
-
-- The first layer draws its `y_axis` on the **left**, the parent's grid and
-  the parent's `top_x` / `bottom_x` exactly as written. The X range and X axis
-  style exist once, on the parent, so every area shows the same X axes and one
-  X edit reaches all of them. It draws no title, colourbar or annotation
-  layer, and its top band has no title margin.
-- Every later layer of the group draws its `y_axis` on the **right**, like an
-  overlay of the parent.
-- The group's data area is its area minus the X axis bands, the first
-  layer's Y band on the left and, on the right, the widest of the parent's
-  `right_y` band and the later layers' bands (`Config::overlay_data_area`). A
-  subplot never widens the parent's right band.
-
-The document covers the union of the parent's area and every layer area
-(`Config::document_area`); the document export renders that rectangle and a
-display fits it to the surface, moving every area with the parent
-(`Config::translate_areas`, `display_config_for_surface`, `place_document`).
-The parent's title, merged legend, colourbar and the document's one annotation
-layer stay in the parent's area. `Config::scaled` scales each layer area like
-the parent's, so equal areas stay equal. `Config::validate` rejects an empty
-layer area and one with no room for its data area.
-
 `active_layer` addresses one layer for interaction (`Config::active_layer()`
 applies the out-of-range fallback, `set_active_layer` stores it) and
 `Config::layer_of_series(id)` answers which layer scales a series. See the
 interaction guide for the hit map, selection and export behaviour.
+
+### `Subplot` (`Config::subplots`)
+
+A subplot is one more chart drawn in the same document. `subplots` is empty
+(key absent in JSON) for every document written before the field. Each
+subplot is a complete Cartesian chart with its own `chart_area` (in the
+parent's surface coordinates), all four axes, title, grid, legend, colourbar,
+style and secondary Y axes; nothing is shared with the parent or another
+subplot unless a link says so. The document's own `Config` stays the first
+chart, so a 2×2 grid is the parent plus three subplots.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `config` | `Config` | The subplot's chart. Its `overlays` are secondary Y axes inside it (one nesting level: its own `subplots` must be empty). Its `annotations` must stay default, since the document has one annotation layer, on the parent; its `active_layer` is ignored. |
+| `series` | `Vec<String>` | Ids of the series this subplot draws, from the document's single series list, including the ones its own overlays scale. An id belongs to at most one subplot and to no parent overlay (`Config::validate_subplots`); ids with no declaration are ignored. Omitted from JSON when empty. |
+| `link_x` | `Option<CellRef>` | `None` (default, omitted): the X axis is the subplot's own. `Some(CellRef::Parent)` or `Some(CellRef::Subplot(j))` with `j` below this subplot's index: `bottom_x` follows the target's `bottom_x` range, scale, direction and tick spacing (`major_spacing`, `minor_count`). Line, label and title style stay the subplot's own. |
+| `link_y` | `Option<CellRef>` | The same for `left_y`. |
+
+A link group has one value: `Config::subplot_config(i)` resolves subplot `i`
+with its linked axes copied from the root of their chain, and
+`Config::sync_subplot_links(previous)` stores the linked fields equal to their
+root. Given the document before an edit, it first carries an edit of any
+member to the root, so writing a new range to a linked axis moves the whole
+group; an edit of the root itself wins. The registry runs it inside every
+config, state and view-state replacement, so a linked edit lands on every
+chart in one `&mut self` call. `Chart::set_subplot_x_range` /
+`set_subplot_y_range` and `auto_fit_subplot_{x,y}_{extent,union}` write the
+root of a linked axis directly.
+
+The renderer expands every subplot by the same rules as the parent
+(`Config::expand`, after the parent's panels, `Config::panel_layers` gives
+their order), each in its own area with its own data area. The document covers
+the union of every chart area (`Config::document_area`): the document export
+renders it, a display fits it to the surface and moves every chart with the
+parent (`Config::translate_areas`, `display_config_for_surface`,
+`place_document`). `Config::scaled` scales each subplot like the parent.
 
 ### `Legend`
 | Field | Type | Meaning |
@@ -574,7 +582,8 @@ pub struct Config {
     pub picked_data: Option<DataSelectionsConfig>,
     pub colorbar: Option<ColorBarOptions>,   // the colourbar AND the chart's z scale
     pub draw_style: DrawStyle,
-    pub overlays: Vec<OverlayLayer>,         // secondary Y axes and subplots, each scaling the series it lists
+    pub overlays: Vec<OverlayLayer>,         // secondary right Y axes, each scaling the series it lists
+    pub subplots: Vec<Subplot>,              // more charts in the same document, each with its own axes
     pub active_layer: LayerRef,              // interaction target layer; `Base` = today's behavior
     pub annotations: AnnotationLayer,        // dedicated annotation layer: visibility + items
 }
@@ -651,7 +660,7 @@ pub struct Config {
 
 | 필드 | 의미 |
 |---|---|
-| `active_layer: LayerRef` | 포인터 상호작용을 받는 레이어. `Base`(기본값, JSON에서 생략), `Overlay(index)`, `Annotations` 중 하나다. 히트 맵에 어느 레이어의 요소를 등록할지 정하며(`HitMap::for_active_layer`), `Annotations`일 때는 주석 항목을 차트 자체 히트 맵 위에서 먼저 검사하고 다른 레이어에서는 클릭이 주석을 통과한다(`ChartView::hit_test_active_layer`, `BoundedAnnotationFrame::hit_test_active_layer`). 요소 선택(`selected`, `picked_points`, `picked_data`)은 그 아래 단계이고 레이어가 바뀌면 데이터 선택을 뺀 요소 선택을 지운다. `overlays` 범위 밖의 `Overlay` 인덱스는 `Base`로 읽고 저장한다. bounded 차트에는 오버레이가 없으므로 `Overlay`는 `Base`로 되돌린다(`RadialChart`, `CategoricalChart`, `BoxPlotChart`의 `active_layer()` / `set_active_layer`, 바뀌면 세터가 `decorations.selected`를 지운다). |
+| `active_layer: LayerRef` | 포인터 상호작용을 받는 레이어. `Base`(기본값, JSON에서 생략), `Overlay(index)`, `Annotations`, `Subplot(index)`, `SubplotOverlay(subplot, overlay)` 중 하나다. 히트 맵에 어느 레이어의 요소를 등록할지 정하며(`HitMap::for_active_layer`), `Annotations`일 때는 주석 항목을 차트 자체 히트 맵 위에서 먼저 검사하고 다른 레이어에서는 클릭이 주석을 통과한다(`ChartView::hit_test_active_layer`, `BoundedAnnotationFrame::hit_test_active_layer`). 요소 선택(`selected`, `picked_points`, `picked_data`)은 그 아래 단계이고 레이어가 바뀌면 데이터 선택을 뺀 요소 선택을 지운다. 범위 밖의 `Overlay`·`Subplot` 인덱스는 `Base`로, 오버레이가 없는 `SubplotOverlay`는 그 `Subplot`으로 읽고 저장한다. bounded 차트에는 오버레이와 서브플롯이 없으므로 이들은 `Base`로 되돌린다(`RadialChart`, `CategoricalChart`, `BoxPlotChart`의 `active_layer()` / `set_active_layer`, 바뀌면 세터가 `decorations.selected`를 지운다). |
 | `annotations: AnnotationLayer { visible, items }` | 전용 주석 층. `items`를 그리는 순서대로 담으며, 구간(span)은 데이터 아래의 underlay에, 나머지는 모든 장식 위의 overlay에 합성하되 켜고 끄기·선택·편집은 한 단위로 다룬다. `visible = false`는 합성 두 번만 건너뛰고 어떤 래스터도 다시 만들지 않는다. 기본값(보임, 항목 없음)과 빈 `items`는 JSON에서 생략한다. |
 
 오버레이 요소는 `DecorationId::Overlay { layer, inner }`(`overlay_<n>:<inner id>`, 아래 `OverlayLayer` 참고),
@@ -716,7 +725,6 @@ pub struct Config {
 | `y_axis` | `AxisOptions` | 오른쪽에 그리는 오버레이 Y 축. `min` / `max` / `scale` / `inverted`가 이 레이어 시리즈의 픽셀 변환을 정한다. `out_margin + major_tick_length`가 공유 오른쪽 여백 안의 띠이며, 오른쪽 여백은 부모 `right_y`와 모든 오버레이 띠 중 가장 넓은 값이다(`Config::margins`). 기본값은 왼쪽 축 기본 옵션(라벨·축선 보임)이다. |
 | `series` | `Vec<String>` | 이 레이어가 스케일하는 시리즈 id. 차트의 단일 시리즈 목록에서 참조한다. 한 id는 최대 한 오버레이에만 속할 수 있고(`Config::validate_overlays`), 선언이 없는 id는 무시하며, 나머지 시리즈는 기본 레이어에 속한다. 비어 있으면 JSON에서 생략한다. |
 | `legend` | `Option<Legend>` | 이 레이어 패널에 그리는 범례. `None`(생략)이면 부모의 합친 범례 하나가 모든 레이어의 시리즈를 나열한다. |
-| `chart_area` | `Option<ChartArea>` | 이 레이어를 그리는 사각형. 부모 `chart_area`와 같은 표면 좌표를 쓴다. `None`(생략)이거나 부모 영역과 같으면 부모 영역 위에 겹쳐 그린다. 다른 영역이면 서브플롯이 된다. 아래를 참고한다. |
 
 렌더러는 `Config::expand()`로 문서를 레이어마다 하나의 내부 패널로 그린다. 기본 패널은
 오버레이를 뺀 부모이고, 오버레이 패널은 변환을 위해 부모의 X 범위를 유지하되 X 축·그리드·
@@ -728,30 +736,39 @@ pub struct Config {
 `Config::scaled`는 오버레이 축과 범례도 부모와 같은 규칙으로 배율을 적용한다. 부모의
 `right_y`는 적힌 대로 두므로, 오버레이 축이 오른쪽 띠를 독점하게 하려면 그 축선과 눈금을 끈다.
 
-**서브플롯.** `chart_area`가 부모와 다른 레이어는 부모 위가 아니라 그 사각형에 그린다.
-영역이 같은 레이어끼리는 한 영역 그룹이 되어 그 자리에서 겹쳐 그리며, 규칙은 부모 위의
-레이어와 같고 그룹의 첫 레이어(가장 작은 인덱스)가 부모 자리를 맡는다
-(`Config::overlay_placement`가 `OnParent`, `AreaLead`, `OnArea { lead }` 중 하나로 답한다).
-
-- 첫 레이어는 자기 `y_axis`를 **왼쪽**에 그리고, 부모의 그리드와 부모 `top_x` / `bottom_x`를
-  적힌 그대로 그린다. X 범위와 X 축 스타일은 부모에 한 번만 있으므로 모든 영역에 같은 X 축이
-  보이고, X 를 한 번 고치면 모든 영역에 반영된다. 제목·색상 막대·주석 층은 그리지 않으며 위쪽
-  띠에 제목 여백도 두지 않는다.
-- 그룹의 나머지 레이어는 부모의 오버레이처럼 자기 `y_axis`를 **오른쪽**에 그린다.
-- 그룹의 데이터 영역은 영역에서 X 축 띠, 왼쪽의 첫 레이어 Y 띠, 오른쪽의 부모 `right_y` 띠와
-  나머지 레이어 띠 중 가장 넓은 값을 뺀 사각형이다(`Config::overlay_data_area`). 서브플롯은
-  부모의 오른쪽 띠를 넓히지 않는다.
-
-문서는 부모 영역과 모든 레이어 영역의 합집합을 덮는다(`Config::document_area`). 문서 출력은
-이 사각형을 그리고, 화면 표시는 이 사각형을 표면에 맞추면서 모든 영역을 부모와 함께 옮긴다
-(`Config::translate_areas`, `display_config_for_surface`, `place_document`). 부모의 제목,
-합친 범례, 색상 막대, 문서에 하나뿐인 주석 층은 부모 영역에 남는다. `Config::scaled`는 레이어
-영역도 부모 영역과 같은 규칙으로 배율을 적용하므로 같은 영역은 계속 같다. `Config::validate`는
-빈 레이어 영역과 데이터 영역이 들어갈 자리가 없는 레이어 영역을 거부한다.
-
 `active_layer`는 상호작용 대상 레이어 하나를 가리키고(`Config::active_layer()`는 범위 밖
 인덱스를 `Base`로 읽고 `set_active_layer`가 저장한다) `Config::layer_of_series(id)`는 시리즈를
 스케일하는 레이어를 답한다. 히트 맵·선택·출력 동작은 상호작용 안내서를 참고한다.
+
+### `Subplot` (`Config::subplots`)
+
+서브플롯은 같은 문서에 그리는 차트 하나다. 이 필드가 생기기 전 문서는 모두 `subplots`가
+비어 있다(JSON에서 키 생략). 각 서브플롯은 자기 `chart_area`(부모와 같은 표면 좌표), 축 4개,
+제목, 그리드, 범례, 색상 막대, 스타일, 보조 Y 축을 모두 가진 완전한 Cartesian 차트이며,
+링크로 묶지 않으면 부모나 다른 서브플롯과 아무것도 공유하지 않는다. 문서 자체의 `Config`가
+첫 번째 차트이므로 2×2 그리드는 부모 하나와 서브플롯 셋이다.
+
+| 필드 | 타입 | 의미 |
+|---|---|---|
+| `config` | `Config` | 서브플롯의 차트. 그 `overlays`는 서브플롯 안의 보조 Y 축이다(중첩은 한 단계라서 그 `subplots`는 비어 있어야 한다). 주석 층은 문서에 하나뿐이고 부모에 있으므로 그 `annotations`는 기본값이어야 하며, 그 `active_layer`는 무시한다. |
+| `series` | `Vec<String>` | 이 서브플롯이 그리는 시리즈 id. 문서의 단일 시리즈 목록에서 참조하며 서브플롯 오버레이가 스케일하는 시리즈도 포함한다. 한 id는 최대 한 서브플롯에만 속하고 부모 오버레이에는 속할 수 없다(`Config::validate_subplots`). 선언이 없는 id는 무시한다. 비어 있으면 JSON에서 생략한다. |
+| `link_x` | `Option<CellRef>` | `None`(기본값, 생략)이면 X 축은 서브플롯 자신의 것이다. `Some(CellRef::Parent)` 또는 이 서브플롯보다 작은 `j`의 `Some(CellRef::Subplot(j))`이면 `bottom_x`의 범위·스케일·방향·눈금 간격(`major_spacing`, `minor_count`)이 대상의 `bottom_x`를 따른다. 축선·라벨·제목 스타일은 서브플롯 자신의 것이다. |
+| `link_y` | `Option<CellRef>` | `left_y`에 대해 같은 규칙. |
+
+링크 묶음에는 값이 하나뿐이다. `Config::subplot_config(i)`는 링크된 축을 체인의 뿌리에서 복사해
+서브플롯 `i`를 해석하고, `Config::sync_subplot_links(previous)`는 링크된 필드를 뿌리와 같게
+저장한다. 편집 전 문서를 주면 먼저 묶음 구성원의 편집을 뿌리로 옮기므로, 링크된 축에 새
+범위를 쓰면 묶음 전체가 움직이고 뿌리 자신의 편집이 우선한다. 레지스트리는 설정·상태·뷰 상태를
+바꿀 때마다 이를 실행하므로, 링크 편집은 `&mut self` 호출 한 번 안에서 모든 차트에 반영된다.
+`Chart::set_subplot_x_range` / `set_subplot_y_range`와 `auto_fit_subplot_{x,y}_{extent,union}`은
+링크된 축의 뿌리에 직접 쓴다.
+
+렌더러는 모든 서브플롯을 부모와 같은 규칙으로 전개하며(`Config::expand`, 부모 패널 다음 순서는
+`Config::panel_layers`) 각 서브플롯은 자기 영역과 자기 데이터 영역을 갖는다. 문서는 모든 차트
+영역의 합집합을 덮는다(`Config::document_area`). 문서 출력은 이 사각형을 그리고, 화면 표시는
+이 사각형을 표면에 맞추면서 모든 차트를 부모와 함께 옮긴다(`Config::translate_areas`,
+`display_config_for_surface`, `place_document`). `Config::scaled`는 서브플롯에도 부모와 같은
+규칙으로 배율을 적용한다.
 
 ### `Legend`
 | 필드 | 타입 | 의미 |

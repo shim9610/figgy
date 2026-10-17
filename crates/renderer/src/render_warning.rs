@@ -40,6 +40,51 @@ pub enum WarningAxis {
     /// `Config::overlays[index]`. A layered view merges every panel's
     /// warnings into one list, and this tag says which layer one is about.
     OverlayY(usize),
+    /// An axis of subplot `index`: `axis` names it inside
+    /// `Config::subplots[index].config`.
+    Subplot { index: usize, axis: SubplotAxis },
+}
+
+/// An axis inside one subplot's chart, named after its field there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum SubplotAxis {
+    BottomX,
+    TopX,
+    LeftY,
+    RightY,
+    ColorBar,
+    /// The Y axis of the subplot's overlay `index`.
+    OverlayY(usize),
+}
+
+impl SubplotAxis {
+    /// The subplot-local name of an axis a subplot panel reported, or `None`
+    /// for an axis that is not one of a single chart's own.
+    pub fn from_panel(axis: WarningAxis) -> Option<Self> {
+        Some(match axis {
+            WarningAxis::BottomX => Self::BottomX,
+            WarningAxis::TopX => Self::TopX,
+            WarningAxis::LeftY => Self::LeftY,
+            WarningAxis::RightY => Self::RightY,
+            WarningAxis::ColorBar => Self::ColorBar,
+            WarningAxis::OverlayY(index) => Self::OverlayY(index),
+            WarningAxis::Subplot { .. } => return None,
+        })
+    }
+}
+
+impl fmt::Display for SubplotAxis {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BottomX => f.write_str("bottom_x"),
+            Self::TopX => f.write_str("top_x"),
+            Self::LeftY => f.write_str("left_y"),
+            Self::RightY => f.write_str("right_y"),
+            Self::ColorBar => f.write_str("colorbar.axis"),
+            Self::OverlayY(index) => write!(f, "overlays[{index}].y_axis"),
+        }
+    }
 }
 
 impl fmt::Display for WarningAxis {
@@ -51,6 +96,7 @@ impl fmt::Display for WarningAxis {
             Self::RightY => f.write_str("right_y"),
             Self::ColorBar => f.write_str("colorbar.axis"),
             Self::OverlayY(index) => write!(f, "overlays[{index}].y_axis"),
+            Self::Subplot { index, axis } => write!(f, "subplots[{index}].config.{axis}"),
         }
     }
 }
