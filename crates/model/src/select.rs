@@ -261,13 +261,22 @@ impl HitMap<Config> {
     /// `ChartView::hit_test_active_layer`) tests them on top of this map
     /// while that layer is active and skips them on every other layer.
     ///
-    /// The set depends only on the active layer and the overlay count, so a
-    /// host rebuilds the map when either changes; `HitId`s from a previous
-    /// map are not valid in the new one.
+    /// `Subplot(i)` and `SubplotOverlay(i, j)` register exactly the set that
+    /// subplot's own chart registers for `Base` or `Overlay(j)`, wrapped as
+    /// [`SubplotElement`]s (`subplot_<i>:…` ids); the parent's elements are
+    /// not registered then, since a subplot shares none of them.
+    ///
+    /// The set depends only on the active layer, the overlay count and the
+    /// active subplot's overlay count, so a host rebuilds the map when any
+    /// of them changes; `HitId`s from a previous map are not valid in the new
+    /// one.
     pub fn for_active_layer(cfg: &Config) -> Self {
         let layer = cfg.active_layer();
         if layer == LayerRef::Base {
             return Self::standard_chart();
+        }
+        if let LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) = layer {
+            return Self::for_subplot(cfg, index, layer);
         }
         let mut map = Self::new();
         map.register(DataAreaElement);
@@ -293,6 +302,142 @@ impl HitMap<Config> {
             map.register(OverlayLegendElement { layer: index });
         }
         map
+    }
+}
+
+impl HitMap<Config> {
+    /// The registration set of an active subplot: exactly the set its own
+    /// chart registers for its own active layer (`Base`, or `Overlay(j)` for
+    /// `SubplotOverlay(index, j)`), each element wrapped in a
+    /// [`SubplotElement`]. A subplot shares no element with the parent, so
+    /// nothing else is registered.
+    fn for_subplot(cfg: &Config, index: usize, layer: LayerRef) -> Self {
+        let Some(mut subplot) = cfg.subplot_config(index) else {
+            return Self::standard_chart();
+        };
+        subplot.active_layer = match layer {
+            LayerRef::SubplotOverlay(_, overlay) => LayerRef::Overlay(overlay),
+            _ => LayerRef::Base,
+        };
+        let inner = Self::for_active_layer(&subplot);
+        let mut map = Self::new();
+        for element in inner.entries {
+            map.register(SubplotElement {
+                subplot: index,
+                inner: element,
+            });
+        }
+        map
+    }
+}
+
+/// An element of subplot `subplot`'s own chart, registered while that
+/// subplot (or one of its overlays) is the active layer.
+///
+/// It measures against the subplot's chart ([`Config::subplot_config`]) and
+/// applies a drag or resize to that chart through the element's own policy,
+/// then stores the result in `subplots[subplot].config`, so every rule of the
+/// single chart (data-area margins, axis offsets, overlay axes, legends)
+/// holds unchanged inside a subplot. The id is the inner id prefixed with
+/// `subplot_<n>:`.
+pub struct SubplotElement {
+    pub subplot: usize,
+    inner: Box<dyn Selectable + Send + Sync>,
+}
+
+impl std::fmt::Debug for SubplotElement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubplotElement")
+            .field("subplot", &self.subplot)
+            .field("inner", &self.inner.element_id())
+            .finish()
+    }
+}
+
+impl SubplotElement {
+    /// Run `edit` on the subplot's chart and store what it moved. The linked
+    /// axis ranges stay their targets' and the subplot's own active layer
+    /// and annotation layer are not part of the edit.
+    fn edit(&self, cfg: &mut Config, edit: impl FnOnce(&mut Config) -> NudgeResult) -> NudgeResult {
+        let Some(mut chart) = cfg.subplot_config(self.subplot) else {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        };
+        let result = edit(&mut chart);
+        if result == NudgeResult::Moved {
+            let stored = &mut cfg.subplots[self.subplot].config;
+            chart.active_layer = stored.active_layer;
+            chart.annotations = std::mem::take(&mut stored.annotations);
+            *stored = chart;
+        }
+        result
+    }
+}
+
+impl Selectable for SubplotElement {
+    fn element_id(&self) -> String {
+        format!("subplot_{}:{}", self.subplot, self.inner.element_id())
+    }
+
+    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
+        self.inner
+            .bounds(&cfg.subplot_config(self.subplot)?, measure)
+    }
+
+    fn as_draggable(&self) -> Option<&dyn Draggable> {
+        self.inner.as_draggable().map(|_| self as &dyn Draggable)
+    }
+
+    fn as_resizable(&self) -> Option<&dyn Resizable> {
+        self.inner.as_resizable().map(|_| self as &dyn Resizable)
+    }
+}
+
+impl Draggable for SubplotElement {
+    fn nudge_element(&self) -> Element {
+        self.inner
+            .as_draggable()
+            .map_or(Element::DataArea, |drag| drag.nudge_element())
+    }
+
+    fn drag_by(&self, cfg: &mut Config, dx: f32, dy: f32) -> NudgeResult {
+        let Some(drag) = self.inner.as_draggable() else {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        };
+        self.edit(cfg, |chart| drag.drag_by(chart, dx, dy))
+    }
+}
+
+impl Resizable for SubplotElement {
+    fn resize_targets(
+        &self,
+        handle: crate::resize::ResizeHandle,
+    ) -> (Option<Element>, Option<Element>) {
+        self.inner
+            .as_resizable()
+            .map_or((None, None), |resize| resize.resize_targets(handle))
+    }
+
+    fn resize_by(
+        &self,
+        cfg: &mut Config,
+        handle: crate::resize::ResizeHandle,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        let Some(resize) = self.inner.as_resizable() else {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        };
+        self.edit(cfg, |chart| resize.resize_by(chart, handle, dx, dy))
+    }
+
+    fn resize_handles(
+        &self,
+        cfg: &Config,
+        measure: &dyn MeasureText,
+    ) -> Option<[(crate::resize::ResizeHandle, RectF); 8]> {
+        self.inner
+            .as_resizable()?
+            .resize_handles(&cfg.subplot_config(self.subplot)?, measure)
     }
 }
 
@@ -1084,6 +1229,122 @@ mod tests {
             NudgeResult::Rejected(NudgeReject::OutOfBounds)
         );
         assert_eq!(cfg, snapshot);
+    }
+
+    /// The 800x600 parent and below it a subplot with its own axes, an
+    /// overlay, and a Y axis linked to the parent's.
+    fn cfg_with_subplot() -> Config {
+        let mut cfg = cfg_800x600();
+        let mut subplot = crate::layer::Subplot::default();
+        subplot.config.chart_area = ChartArea(Rect {
+            x: 0,
+            y: 600,
+            width: 800,
+            height: 400,
+        });
+        subplot.config.bottom_x.min = 10.0;
+        subplot.config.bottom_x.max = 20.0;
+        subplot.config.overlays.push(crate::layer::OverlayLayer {
+            series: vec!["level".into()],
+            ..Default::default()
+        });
+        subplot.series = vec!["flow".into()];
+        subplot.link_y = Some(crate::layer::CellRef::Parent);
+        cfg.subplots.push(subplot);
+        cfg.sync_subplot_links(None);
+        cfg
+    }
+
+    // An active subplot registers exactly its own chart's set under
+    // `subplot_<n>:` ids and none of the parent's elements; its overlay
+    // registers the subplot's overlay set.
+    #[test]
+    fn a_subplot_registers_its_own_chart_set() {
+        let mut cfg = cfg_with_subplot();
+        cfg.set_active_layer(LayerRef::Subplot(0));
+        let ids = ids_of(&HitMap::for_active_layer(&cfg));
+        let own: Vec<String> = ids_of(&HitMap::standard_chart())
+            .into_iter()
+            .map(|id| format!("subplot_0:{id}"))
+            .collect();
+        assert_eq!(ids, own);
+        cfg.set_active_layer(LayerRef::SubplotOverlay(0, 0));
+        let ids = ids_of(&HitMap::for_active_layer(&cfg));
+        assert!(ids.contains(&"subplot_0:overlay_0:axis_right".to_string()));
+        assert!(!ids.contains(&"subplot_0:axis_left".to_string()));
+        assert!(ids.iter().all(|id| id.starts_with("subplot_0:")));
+    }
+
+    // Hits resolve in the subplot's own area; drags and resizes use the
+    // single-chart policies on the subplot's chart and land in
+    // `subplots[0].config` only, keeping the link.
+    #[test]
+    fn subplot_elements_hit_drag_and_resize_their_own_chart() {
+        let mut cfg = cfg_with_subplot();
+        cfg.set_active_layer(LayerRef::Subplot(0));
+        let map = HitMap::for_active_layer(&cfg);
+        let da = cfg.subplot_config(0).unwrap().data_area().unwrap().0;
+        assert!(da.y >= 600);
+        let centre = (
+            da.x as f32 + da.width as f32 / 2.0,
+            da.y as f32 + da.height as f32 / 2.0,
+        );
+        let hit = map
+            .hit_test(&cfg, &FixedMeasure, centre.0, centre.1)
+            .unwrap();
+        let element = map.get(hit).unwrap();
+        assert_eq!(element.element_id(), "subplot_0:data_area");
+        // The parent's data area does not answer while a subplot is active.
+        let parent = cfg.data_area().unwrap().0;
+        assert!(
+            map.hit_test(
+                &cfg,
+                &FixedMeasure,
+                parent.x as f32 + 40.0,
+                parent.y as f32 + 40.0
+            )
+            .is_none()
+        );
+
+        let before = cfg.clone();
+        let drag = element.as_draggable().unwrap();
+        assert_eq!(drag.drag_by(&mut cfg, 10.0, -6.0), NudgeResult::Moved);
+        let moved = cfg.subplot_config(0).unwrap().data_area().unwrap().0;
+        assert_eq!((moved.x, moved.y), (da.x + 10, da.y - 6));
+        assert_eq!(cfg.data_area(), before.data_area());
+        assert_eq!(cfg.left_y, before.left_y);
+        assert_eq!(cfg.subplots[0].link_y, before.subplots[0].link_y);
+        assert_eq!(cfg.subplots[0].config.left_y.max, cfg.left_y.max);
+
+        let resize = element.as_resizable().unwrap();
+        assert_eq!(
+            element
+                .selection_box(&cfg, &FixedMeasure)
+                .unwrap()
+                .handles
+                .len(),
+            8
+        );
+        let handle = resize
+            .resize_handles(&cfg, &FixedMeasure)
+            .unwrap()
+            .into_iter()
+            .find(|(handle, _)| *handle == crate::resize::ResizeHandle::E)
+            .unwrap();
+        assert!(handle.1.x > moved.x as f32);
+        assert_eq!(
+            resize.resize_by(&mut cfg, crate::resize::ResizeHandle::E, -30.0, 0.0),
+            NudgeResult::Moved
+        );
+        let resized = cfg.subplot_config(0).unwrap().data_area().unwrap().0;
+        assert_eq!(resized.width, moved.width - 30);
+        assert_eq!(cfg.margins(), before.margins());
+
+        let axis = map.find("subplot_0:axis_bottom").unwrap();
+        let drag = map.get(axis).unwrap().as_draggable().unwrap();
+        assert_eq!(drag.drag_by(&mut cfg, 0.0, 5.0), NudgeResult::Moved);
+        assert_eq!(cfg.subplots[0].config.bottom_x.line_offset, 5.0);
+        assert_eq!(cfg.bottom_x, before.bottom_x);
     }
 
     #[test]

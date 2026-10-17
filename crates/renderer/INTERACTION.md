@@ -315,9 +315,75 @@ annotation textures.
 level (overlays have no layers of their own); bounded charts cannot be overlay
 layers; a nonresident streaming series listed by an overlay is rejected by
 every registry entry point, and the stream request paths reject a document
-with overlays as a whole. Subplot grids are a separate feature.
+with overlays as a whole. Subplots are charts of their own; see the next
+section.
 Run `cargo run --locked -p figgy-renderer --example overlay_axes` for a native
 twin-axis export; see [the example source](examples/overlay_axes.rs).
+
+## Subplots
+
+A `Config` with `subplots` is one document with several charts: the parent
+and every subplot, each a complete chart with its own area and axes (see
+[`Subplot`](CONFIG.md#subplot-configsubplots)). Axes are independent unless a
+subplot links its `bottom_x` or `left_y` to the parent or an earlier subplot;
+a link group then has one range, scale, direction and tick spacing.
+
+**Views and caches.** The parent's panels are drawn at the `panel_rect` a host
+passes to `create_chart_view` / `refresh_axis*`; every subplot panel is drawn
+at its own area moved by the same offset, with its own grid, decoration and
+transform resources and its own raster cache (`layer_raster_generations()`
+lists the parent's panels and then each subplot's). An edit of one chart
+re-rasterizes that chart's panels only, a linked range edit exactly the
+charts of its link group, and the cached frame stays byte-identical to a fresh
+render. Each selection box is composited into the decoration texture of the
+topmost panel whose rectangle holds the box's centre. The registry classifies
+every `subplots` field as a raster edit; a subplot's area, data area, linked
+or own ranges and series list are also geometry (the `view` revision).
+
+**Interaction target.** `LayerRef::Subplot(i)` addresses subplot `i` and
+`LayerRef::SubplotOverlay(i, j)` overlay `j` inside it. While one is active,
+`HitMap::for_active_layer` registers exactly the set that subplot's own chart
+registers for `Base` or `Overlay(j)`, each element wrapped as a
+`SubplotElement` with a `subplot_<i>:` id prefix (`subplot_0:data_area`,
+`subplot_0:axis_left`, `subplot_0:overlay_0:axis_right`, …), and none of the
+parent's. Every element measures against the subplot's chart
+(`Config::subplot_config`) and applies a drag or resize through its own
+single-chart policy to that chart, stored back in `subplots[i].config`: the
+subplot's data area moves and resizes through its own margins, its axes,
+labels, titles and legend move as on any chart. The set depends on the active
+layer, the overlay count and the active subplot's overlay count; rebuild the
+map when any of them changes. A subplot or overlay index past its list
+recovers to `Base`, a missing subplot overlay to its subplot. GPU picking of an
+active subplot layer uses that subplot's panel in its own area and only the
+series it draws.
+
+**Linked axes.** `ChartViewState::subplots` carries one view state per
+subplot (a linked axis reads as its root's range) and must match the
+document's subplot and subplot-overlay counts. One `set_chart_view_state`,
+`set_chart_config` or `set_chart_state` call carries an edit of any linked
+axis to the root of its group and moves every member in the same call
+(`Config::sync_subplot_links`), so no frame can show one linked chart moved and
+another not.
+
+**Display, export and annotations.** `display_config_for_surface` fits the
+whole document (`Config::document_area`, the union of every chart area) to the
+surface and returns the rect where the parent's area lands;
+`GpuPickRequest::display_panel_px` is the displayed document rect
+(`fit_display_panel` of the document area). The document export renders the
+union; `export_panel_*` keeps the parent's area. The document's one annotation
+layer stays in the parent's area: it is drawn there only, anchored in the
+parent's axes, and its items answer the pointer route
+(`ChartView::hit_test_active_layer`) only while `Annotations` is active; with
+a subplot active the route reaches the subplot's own elements.
+`ChartView::render_warnings` tags a subplot's warnings
+`WarningAxis::Subplot { index, axis }` (`subplots[i].config.<axis>`).
+
+**Limits.** Subplots nest one level (a subplot's chart has overlays but no
+subplots), are Cartesian only, keep no annotation layer of their own, and a
+nonresident streaming series drawn by a subplot is rejected like one on an
+overlay; the stream request paths reject a document with subplots as a whole.
+Run `cargo run --locked -p figgy-renderer --example subplots` for a native
+2×2 export; see [the example source](examples/subplots.rs).
 
 ## Annotation layer
 

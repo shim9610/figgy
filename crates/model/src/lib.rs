@@ -19,7 +19,7 @@ pub use annotation::{
     AnnotationKind, AnnotationLineStyle, AnnotationSpace, ArrowStyle, AxisMap, AxisSpace, BoxStyle,
     PixelSpace,
 };
-pub use layer::{AnnotationLayer, LayerRef, OverlayLayer};
+pub use layer::{AnnotationLayer, CellRef, LayerRef, OverlayLayer, Subplot};
 pub mod format;
 pub mod layout;
 pub mod legend;
@@ -52,7 +52,7 @@ pub use select::{
     AxisElement, AxisLabelElement, AxisTitleElement, ChartTitleElement, ColorBarAxisElement,
     ColorBarElement, ColorBarLabelElement, ColorBarTitleElement, DataAreaElement, HitId, HitMap,
     LegendElement, OverlayAxisElement, OverlayAxisLabelElement, OverlayAxisTitleElement,
-    OverlayLegendElement, Selectable, SelectionBox,
+    OverlayLegendElement, Selectable, SelectionBox, SubplotElement,
 };
 pub use text::{MeasureText, TextAlign, TextExtents};
 

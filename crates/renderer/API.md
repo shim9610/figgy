@@ -225,8 +225,12 @@ configs. A correct PNG does not establish that a separately displayed view has
 been refreshed. Apply the same model edits to both paths. A `Config` with
 `overlays` is exported as a whole by the `export_document_*` helpers (every
 layer composited in order); the `export_panel_*` helpers render its base panel
-only, and the two are byte-identical for a document without overlays. See the
-[overlay layer contract](INTERACTION.md#overlay-layers).
+only, and the two are byte-identical for a document without overlays. A
+document with `subplots` (more charts, each with its own axes) exports the
+union of every chart area (`Config::document_area`), and a display fits that
+union with `display_config_for_surface`. See the
+[overlay layer contract](INTERACTION.md#overlay-layers) and
+[subplots](INTERACTION.md#subplots).
 
 ### Bounded chart example
 

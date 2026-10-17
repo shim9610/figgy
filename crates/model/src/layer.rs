@@ -27,6 +27,13 @@ pub enum LayerRef {
     Overlay(usize),
     /// The dedicated annotation layer.
     Annotations,
+    /// A subplot by index into the document's subplot list: its own chart
+    /// with its own axes. Out of range, it reads as `Base`.
+    Subplot(usize),
+    /// Overlay `overlay` of subplot `subplot` (a secondary Y axis inside that
+    /// subplot). An overlay index past the subplot's list reads as the
+    /// subplot itself; a subplot index past the list reads as `Base`.
+    SubplotOverlay(usize, usize),
 }
 
 impl LayerRef {
@@ -36,10 +43,10 @@ impl LayerRef {
     }
 
     /// The layer as a bounded chart reads it. Bounded charts have no
-    /// overlays, so any `Overlay` index falls back to `Base`.
+    /// overlays and no subplots, so those indices fall back to `Base`.
     pub fn bounded(self) -> Self {
         match self {
-            Self::Overlay(_) => Self::Base,
+            Self::Overlay(_) | Self::Subplot(_) | Self::SubplotOverlay(..) => Self::Base,
             layer => layer,
         }
     }
@@ -158,6 +165,85 @@ impl OverlayLayer {
     }
 }
 
+/// A chart of the document that a link can point at: the parent (the
+/// document's own `Config`) or one of its subplots.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum CellRef {
+    /// The document's own chart.
+    Parent,
+    /// `subplots[index]`.
+    Subplot(usize),
+}
+
+/// One more chart drawn in the same document: a subplot.
+///
+/// A subplot is a complete Cartesian chart of its own: its `config` carries
+/// its own `chart_area` (in the parent's surface coordinates), all four
+/// axes, title, grid, legend, colourbar, style and secondary Y axes
+/// (`config.overlays`). Nothing is shared with the parent or the other
+/// subplots unless a link says so: `link_x` / `link_y` make this subplot's
+/// `bottom_x` / `left_y` range, scale, direction and tick spacing follow
+/// another chart's, whose values are then the only ones that count (the linked fields are
+/// kept equal to them by `Config::sync_subplot_links`).
+///
+/// Series are referenced by id from the document's single series list, as
+/// overlays reference theirs. The document covers the union of every chart
+/// area (`Config::document_area`), keeps one annotation layer (on the
+/// parent) and one interaction target (`Config::active_layer`).
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
+pub struct Subplot {
+    /// The subplot's chart. Its own `subplots` must be empty (one level of
+    /// nesting), its `annotations` default (the document has one annotation
+    /// layer) and its `active_layer` is ignored.
+    pub config: crate::config::Config,
+    /// Ids of the series this subplot draws, including the ones its own
+    /// overlays scale. Each id may belong to at most one subplot and to no
+    /// parent overlay; ids with no declaration are ignored. Omitted from JSON
+    /// when empty.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
+    pub series: Vec<String>,
+    /// `None` (default, omitted): the X axis is this subplot's own. `Some`:
+    /// `bottom_x` follows the target's `bottom_x` range, scale, direction and
+    /// tick spacing (`major_spacing`, `minor_count`); its style stays its own.
+    /// The target must be the parent or a subplot with a lower index.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub link_x: Option<CellRef>,
+    /// The same for `left_y` and the target's `left_y`.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub link_y: Option<CellRef>,
+}
+
+impl Default for Subplot {
+    /// The default chart, no series and no links.
+    fn default() -> Self {
+        Self {
+            config: crate::default::default_config(),
+            series: Vec::new(),
+            link_x: None,
+            link_y: None,
+        }
+    }
+}
+
+impl Subplot {
+    /// `true` when this subplot draws `series_id`, on its base layer or on
+    /// one of its overlays.
+    pub fn owns_series(&self, series_id: &str) -> bool {
+        self.series.iter().any(|id| id == series_id)
+            || self
+                .config
+                .overlays
+                .iter()
+                .any(|overlay| overlay.owns_series(series_id))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,6 +254,40 @@ mod tests {
         assert!(LayerRef::Base.is_base());
         assert!(!LayerRef::Overlay(0).is_base());
         assert!(!LayerRef::Annotations.is_base());
+        assert!(!LayerRef::Subplot(0).is_base());
+        assert_eq!(LayerRef::Subplot(1).bounded(), LayerRef::Base);
+        assert_eq!(LayerRef::SubplotOverlay(1, 0).bounded(), LayerRef::Base);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn subplots_round_trip_and_omit_their_defaults() {
+        let json = serde_json::to_value(Subplot::default()).unwrap();
+        assert!(json.get("config").is_some());
+        for key in ["series", "link_x", "link_y"] {
+            assert!(json.get(key).is_none(), "{key}: {json}");
+        }
+        let subplot = Subplot {
+            series: vec!["flow".into()],
+            link_x: Some(CellRef::Parent),
+            link_y: Some(CellRef::Subplot(0)),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&subplot).unwrap();
+        assert_eq!(json["link_x"], serde_json::json!("Parent"));
+        assert_eq!(json["link_y"], serde_json::json!({"Subplot": 0}));
+        let back: Subplot = serde_json::from_value(json).unwrap();
+        assert_eq!(back, subplot);
+        for (layer, text) in [
+            (LayerRef::Subplot(2), r#"{"Subplot":2}"#),
+            (
+                LayerRef::SubplotOverlay(2, 1),
+                r#"{"SubplotOverlay":[2,1]}"#,
+            ),
+        ] {
+            assert_eq!(serde_json::to_string(&layer).unwrap(), text);
+            assert_eq!(serde_json::from_str::<LayerRef>(text).unwrap(), layer);
+        }
     }
 
     #[test]

@@ -302,6 +302,16 @@ impl Config {
         if self.validate_overlays().is_err() {
             return Err(LayoutError::Infeasible);
         }
+        // Every subplot is a chart of its own and is held to the same rules,
+        // with its links applied.
+        if self.validate_subplots().is_err() {
+            return Err(LayoutError::Infeasible);
+        }
+        for index in 0..self.subplots.len() {
+            self.subplot_config(index)
+                .ok_or(LayoutError::Infeasible)?
+                .validate()?;
+        }
         if let Some(bar) = self.colorbar.as_ref() {
             // The z axis is held to the same dimensional rules as the four
             // chart axes — it contributes to a margin the same way.

@@ -9,6 +9,62 @@ at the time. The first crates.io publication is recorded below.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
+## Unreleased — subplots
+
+- Subplots (issue #11, work item 5): `Config` gains `subplots: Vec<Subplot>`,
+  more charts drawn in the same document. A `Subplot { config, series,
+  link_x, link_y }` is a complete Cartesian chart with its own `chart_area`
+  (in the parent's surface coordinates), all four axes, title, grid, legend,
+  colourbar, style and secondary Y axes (`config.overlays`); the document's own
+  `Config` stays the first chart, so a 2×2 grid is the parent plus three
+  subplots. Nothing is shared unless linked: `link_x` / `link_y` (`CellRef::
+  Parent` or an earlier `CellRef::Subplot(j)`) make `bottom_x` / `left_y`
+  follow the target's range, scale, direction and tick spacing while the
+  axis style stays the subplot's own. The field is `serde(default)` and
+  omitted when empty, so existing documents parse and serialize
+  byte-identically.
+- One value per link group: `Config::subplot_config(i)` resolves a subplot
+  with its links applied, `Config::sync_subplot_links(previous)` carries an
+  edit of any linked axis to the root of its group and stores every member
+  equal to it, and `Config::subplot_link_root` names the root. The registry
+  runs it inside `register_chart`, `set_chart_config`, `set_chart_state` and
+  `set_chart_view_state`, so a linked edit moves every member in one
+  `&mut self` call. `ChartViewState::subplots` carries one view state per
+  subplot. `Chart::set_subplot_x_range` / `set_subplot_y_range` and
+  `auto_fit_subplot_{x,y}_{extent,union}` write the root of a linked axis.
+  `Config::validate_subplots` rejects nested subplots, an annotation layer on
+  a subplot, a link to a later subplot and a series id drawn twice.
+- Rendering: `Config::expand` appends each subplot's panels after the
+  parent's (`Config::panel_layers` gives the order), each in its own area with
+  its own data area, raster cache and transform, so an edit of one chart
+  re-rasterizes that chart's panels only and the cached frame is
+  byte-identical to a fresh render. Each selection box goes to the topmost
+  panel of the chart it sits in. The document covers the union of every chart
+  area (`Config::document_area`, `Config::translate_areas`):
+  `display_config_for_surface` fits it and returns where the parent lands (new
+  `place_document`), `GpuPickRequest::display_panel_px` is the displayed
+  document rect, `export_document_*` renders the union and `export_panel_*`
+  keeps the parent's area. The annotation layer stays in the parent's area and
+  its pointer route answers there only while `Annotations` is active. Subplot
+  warnings are tagged `WarningAxis::Subplot { index, axis: SubplotAxis }`.
+  Streaming rejects a document with subplots and a streamed series drawn by a
+  subplot, as it does for overlays.
+- Interaction: `LayerRef` gains `Subplot(i)` and `SubplotOverlay(i, j)`, with
+  the same out-of-range recovery as `Overlay`. While one is active
+  `HitMap::for_active_layer` registers exactly that subplot's own set,
+  wrapped as `SubplotElement`s (`subplot_<i>:…` ids); drags and resizes use
+  the single-chart policies on the subplot's chart and land in
+  `subplots[i].config`. The WASM wrapper accepts the new layers, rebuilds its
+  hit map when the active subplot's overlay count changes and adds
+  `auto_fit_subplot(index, "x" | "y", columns, padding)`. New native example
+  `subplots` (a 2×2 grid with one linked X axis and one twin Y axis).
+- Rust migration: exhaustive `Config` literals need `subplots` (or
+  `..Default::default()`), `ChartViewState` literals need `subplots`, and
+  exhaustive matches on `LayerRef` need the two new variants (`WarningAxis` is
+  `non_exhaustive`). Released with the next renderer/model minor versions
+  together with the other unreleased entries. See the configuration reference
+  (`Subplot`), the interaction guide (subplots) and the WASM guide.
+
 ## Unreleased — overlay layers
 
 - `Config` gains `overlays: Vec<OverlayLayer>` (issue #11, work items 1–4):
