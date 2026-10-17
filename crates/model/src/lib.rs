@@ -10,6 +10,8 @@ pub mod decoration;
 pub mod default;
 pub mod drag;
 pub use decoration::{DecorationElement, DecorationId, DecorationLayout, DecorationOffset};
+pub mod layer;
+pub use layer::{AnnotationLayer, LayerRef};
 pub mod format;
 pub mod layout;
 pub mod legend;

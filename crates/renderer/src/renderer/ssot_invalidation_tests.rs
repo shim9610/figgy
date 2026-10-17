@@ -4,6 +4,7 @@
 use super::*;
 use crate::config::{AxisScale, DrawStyle, TickVisibility};
 use crate::gpu_memory::GpuResourceKind;
+use crate::layout::Side;
 use crate::text::RichText;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -12,11 +13,31 @@ enum Work {
     Packed,
     Replay,
 }
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Pixels {
+    /// The first updated frame must differ from the frame before the edit.
+    Changed,
+    /// The first updated frame must be byte-identical to the frame before.
+    Unchanged,
+    /// Either; the edit's visible effect depends on the host's font set.
+    Any,
+}
+/// One single-property edit and the work it is allowed to cause. `work` is the
+/// data-side classification (and the `view` revision: everything but `Prefix`
+/// changes the data transform or area); `raster` is whether the CPU axis
+/// chrome must be rasterized again (the `raster` revision); `differs` is
+/// whether the config changed at all (the `desired` and `config` revisions).
 struct Edit {
     name: &'static str,
     apply: fn(&mut Config),
     work: Work,
-    visible: bool,
+    differs: bool,
+    raster: bool,
+    pixels: Pixels,
+    /// Whether the nonresident stream pass accepts the edited chart at all.
+    /// A rejected combination is a contract of its own and is not a
+    /// first-frame case there.
+    streams: bool,
 }
 
 fn edits() -> Vec<Edit> {
@@ -25,15 +46,52 @@ fn edits() -> Vec<Edit> {
         ($path:ident $(.$field:ident)*, $value:expr, $work:ident) => {
             cases.push(Edit { name: stringify!($path $(.$field)*),
                 apply: |c| c.$path $(.$field)* = $value,
-                work: Work::$work, visible: true });
+                work: Work::$work, differs: true, raster: true, pixels: Pixels::Changed,
+                streams: true });
         };
     }
     cases.push(Edit {
         name: "identical config",
         apply: |_| {},
         work: Work::Prefix,
-        visible: false,
+        differs: false,
+        raster: false,
+        pixels: Pixels::Unchanged,
+        streams: true,
     });
+    // Layer foundation: each field is an edit of its own layer only. Pixels,
+    // the axis raster, data work and the data job must stay exactly as they were.
+    cases.push(Edit {
+        name: "active_layer",
+        apply: |c| c.active_layer = crate::LayerRef::Annotations,
+        work: Work::Prefix,
+        differs: true,
+        raster: false,
+        pixels: Pixels::Unchanged,
+        streams: true,
+    });
+    cases.push(Edit {
+        name: "annotations.visible",
+        apply: |c| c.annotations.visible = false,
+        work: Work::Prefix,
+        differs: true,
+        raster: false,
+        pixels: Pixels::Unchanged,
+        streams: true,
+    });
+    // The family lookup order is registered, installed, then bundled, so
+    // naming the bundled face explicitly may or may not pick a different
+    // installed copy on a given host; the raster still has to be redone.
+    cases.push(Edit {
+        name: "bottom_x.label_style.label_font",
+        apply: |c| c.bottom_x.label_style.label_font = "Liberation Sans".into(),
+        work: Work::Prefix,
+        differs: true,
+        raster: true,
+        pixels: Pixels::Any,
+        streams: true,
+    });
+    edit!(bottom_x.label_style.significant_digits, 5, Prefix);
     macro_rules! grid {
         ($show:ident, $color:ident, $width:ident, $style:ident) => {
             edit!(grid.$show, false, Prefix);
@@ -145,19 +203,156 @@ fn edits() -> Vec<Edit> {
         Prefix
     );
     // ChartArea is a tuple struct, so use explicit single-field edits.
-    cases.push(Edit {
-        name: "chart_area.width",
-        apply: |c| c.chart_area.0.width = 300,
-        work: Work::Packed,
-        visible: true,
-    });
-    cases.push(Edit {
-        name: "chart_area.height",
-        apply: |c| c.chart_area.0.height = 220,
-        work: Work::Packed,
-        visible: true,
-    });
+    for (name, apply) in [
+        (
+            "chart_area.x",
+            (|c: &mut Config| c.chart_area.0.x = 8) as fn(&mut Config),
+        ),
+        ("chart_area.y", |c| c.chart_area.0.y = 8),
+        ("chart_area.width", |c| c.chart_area.0.width = 300),
+        ("chart_area.height", |c| c.chart_area.0.height = 220),
+    ] {
+        cases.push(Edit {
+            name,
+            apply,
+            work: Work::Packed,
+            differs: true,
+            raster: true,
+            pixels: Pixels::Changed,
+            streams: true,
+        });
+    }
     edit!(draw_style, DrawStyle::Sketch(Default::default()), Replay);
+    // The stream pass rejects Milkyway line series outright (arc-driven star
+    // chains, `validate_stream_series`), and draws no primitive at all for a
+    // Line series in the constellation style (`constellation_supports`), so
+    // neither style has a stream first frame to compare: resident-only cases.
+    cases.push(Edit {
+        name: "draw_style (Milkyway)",
+        apply: |c| c.draw_style = DrawStyle::Milkyway(Default::default()),
+        work: Work::Replay,
+        differs: true,
+        raster: true,
+        pixels: Pixels::Changed,
+        streams: false,
+    });
+    cases.push(Edit {
+        name: "draw_style (Constellation)",
+        apply: |c| c.draw_style = DrawStyle::Constellation(Default::default()),
+        work: Work::Replay,
+        differs: true,
+        raster: true,
+        pixels: Pixels::Changed,
+        streams: false,
+    });
+    // Adding a colourbar reserves its band, so the data area moves.
+    cases.push(Edit {
+        name: "colorbar (None -> Some)",
+        apply: |c| c.colorbar = Some(crate::default::default_colorbar_options()),
+        work: Work::Packed,
+        differs: true,
+        raster: true,
+        pixels: Pixels::Changed,
+        streams: true,
+    });
+    cases
+}
+
+/// Colourbar edits run against a baseline that already has one. The band
+/// (`gap_px + thickness_px + axis.out_margin + axis.major_tick_length` on its
+/// side, when visible) is part of the data area, so those fields are geometry
+/// edits; everything else on the bar is axis chrome.
+fn colorbar_edits() -> Vec<Edit> {
+    let mut cases = Vec::new();
+    macro_rules! bar {
+        ($($field:ident).+, $value:expr, $work:ident, $pixels:ident) => {
+            cases.push(Edit {
+                name: concat!("colorbar.", stringify!($($field).+)),
+                apply: |c| c.colorbar.as_mut().unwrap().$($field).+ = $value,
+                work: Work::$work,
+                differs: true,
+                raster: true,
+                pixels: Pixels::$pixels,
+                streams: true,
+            });
+        };
+    }
+    cases.push(Edit {
+        name: "colorbar (Some -> None)",
+        apply: |c| c.colorbar = None,
+        work: Work::Packed,
+        differs: true,
+        raster: true,
+        pixels: Pixels::Changed,
+        streams: true,
+    });
+    bar!(visible, false, Packed, Changed);
+    bar!(side, Side::Left, Packed, Changed);
+    bar!(thickness_px, 30.0, Packed, Changed);
+    bar!(gap_px, 10.0, Packed, Changed);
+    bar!(axis.out_margin, 42.0, Packed, Changed);
+    bar!(axis.major_tick_length, 8.0, Packed, Changed);
+    bar!(length_frac, 0.5, Prefix, Changed);
+    bar!(align, crate::config::BarAlign::Start, Prefix, Changed);
+    bar!(offset_x, 4.0, Prefix, Changed);
+    bar!(offset_y, 4.0, Prefix, Changed);
+    bar!(colormap, crate::ColorMap::Magma, Prefix, Changed);
+    // Only field cells wear `nan_color`; an XY chart's strip never shows it.
+    bar!(nan_color, Color::new(1.0, 0.0, 1.0, 1.0), Prefix, Unchanged);
+    bar!(
+        border_color,
+        Color::new(0.9, 0.1, 0.1, 1.0),
+        Prefix,
+        Changed
+    );
+    bar!(border_width, 3.0, Prefix, Changed);
+    bar!(axis.min, 0.2, Prefix, Changed);
+    bar!(axis.max, 2.0, Prefix, Changed);
+    bar!(axis.scale, AxisScale::Logarithmic, Prefix, Changed);
+    bar!(axis.inverted, true, Prefix, Changed);
+    bar!(axis.major_spacing, 0.3, Prefix, Changed);
+    bar!(axis.minor_count, 1, Prefix, Any);
+    bar!(axis.tick, TickVisibility::None, Prefix, Any);
+    bar!(axis.minor_tick_length, 6.0, Prefix, Any);
+    bar!(axis.line_visible, true, Prefix, Changed);
+    bar!(axis.line_color, Color::new(0.1, 0.8, 0.2, 1.0), Prefix, Any);
+    bar!(axis.line_width, 3.0, Prefix, Any);
+    bar!(axis.line_style, LineStylePreset::Dash, Prefix, Any);
+    bar!(axis.line_offset, 4.0, Prefix, Any);
+    bar!(axis.label_style.label_visible, false, Prefix, Changed);
+    bar!(axis.label_style.visible, false, Prefix, Changed);
+    bar!(
+        axis.label_style.color,
+        Color::new(0.0, 0.5, 0.9, 1.0),
+        Prefix,
+        Changed
+    );
+    bar!(axis.label_style.font_size, 12.0, Prefix, Changed);
+    bar!(
+        axis.label_style.label_font,
+        "Liberation Sans".into(),
+        Prefix,
+        Any
+    );
+    bar!(axis.label_style.label_offset_x, 4.0, Prefix, Changed);
+    bar!(axis.label_style.label_offset_y, 4.0, Prefix, Changed);
+    bar!(
+        axis.label_style.format,
+        crate::format::LabelFormat::Scientific,
+        Prefix,
+        Changed
+    );
+    bar!(axis.label_style.significant_digits, 5, Prefix, Changed);
+    bar!(axis.title_option.visible, true, Prefix, Changed);
+    // The baseline already titles the bar "Z" (hidden), so edit to a new string.
+    bar!(
+        axis.title_option.text,
+        RichText::plain("Zed", Color::BLACK, 10.0, ""),
+        Prefix,
+        Any
+    );
+    bar!(axis.title_option.offset_x, 4.0, Prefix, Any);
+    bar!(axis.title_option.offset_y, 4.0, Prefix, Any);
     cases
 }
 
@@ -188,6 +383,18 @@ fn baseline() -> Config {
     c.grid.show_major_y = true;
     c.grid.show_minor_x = true;
     c.grid.show_minor_y = true;
+    c
+}
+
+/// The baseline plus a visible colourbar whose z axis is valid in every scale.
+fn baseline_with_colorbar() -> Config {
+    let mut c = baseline();
+    let mut bar = crate::default::default_colorbar_options();
+    bar.axis.min = 0.1;
+    bar.axis.max = 1.0;
+    bar.axis.major_spacing = 0.2;
+    bar.axis.title_option.text = RichText::plain("Z", Color::BLACK, 10.0, "");
+    c.colorbar = Some(bar);
     c
 }
 
@@ -341,13 +548,21 @@ fn matrix(resident: bool, cache: bool) {
         .lock()
         .unwrap();
     let mut failures = Vec::new();
-    let cases = edits();
+    let suites = [
+        (baseline(), edits()),
+        (baseline_with_colorbar(), colorbar_edits()),
+    ];
     eprintln!(
         "SSOT: {} single-property cases, resident={resident}, cache={cache}",
-        cases.len()
+        suites.iter().map(|(_, cases)| cases.len()).sum::<usize>()
     );
-    for edit in cases {
-        let c = baseline();
+    for (c, edit) in suites
+        .into_iter()
+        .flat_map(|(c, cases)| cases.into_iter().map(move |edit| (c.clone(), edit)))
+    {
+        if !resident && !edit.streams {
+            continue;
+        }
         let (mut r, id) = fixture(&c, resident, cache);
         let (before, _) = frame(&mut r, id, resident);
         let job = r.active_stream_job(id);
@@ -363,11 +578,13 @@ fn matrix(resident: bool, cache: bool) {
         (edit.apply)(&mut next);
         assert_eq!(
             next != c,
-            edit.visible,
+            edit.differs,
             "{} must edit one property",
             edit.name
         );
+        let revisions = r.chart_states[&id].revisions;
         r.set_chart_config(id, next.clone()).unwrap();
+        let updated = r.chart_states[&id].revisions;
         let (actual, reads) = frame(&mut r, id, resident);
         let (mut fresh, fresh_id) = fixture(&next, resident, false);
         let (expected, _) = frame(&mut fresh, fresh_id, resident);
@@ -377,14 +594,37 @@ fn matrix(resident: bool, cache: bool) {
                 failures.push(format!("{label}: {msg}"));
             }
         };
+        // The registry's revisions must follow the classification exactly:
+        // no refresh that the edit does not need, none missing that it does.
+        check(
+            (updated.desired != revisions.desired) == edit.differs,
+            "desired revision does not follow whether the config changed",
+        );
+        check(
+            (updated.config != revisions.config) == edit.differs,
+            "config revision does not follow whether the config changed",
+        );
+        check(
+            (updated.raster != revisions.raster) == edit.raster,
+            "raster revision does not follow the chrome classification",
+        );
+        check(
+            (updated.view != revisions.view) == (edit.work != Work::Prefix),
+            "view revision does not follow the geometry classification",
+        );
+        check(
+            updated.selection == revisions.selection,
+            "a non-selection edit changed the selection revision",
+        );
         check(
             actual == expected,
             "first updated frame differs from fresh final-state render",
         );
-        check(
-            (actual != before) == edit.visible,
-            "mutation oracle did not change visible pixels as expected",
-        );
+        match edit.pixels {
+            Pixels::Changed => check(actual != before, "edit did not change visible pixels"),
+            Pixels::Unchanged => check(actual == before, "edit changed visible pixels"),
+            Pixels::Any => {}
+        }
         if let Some(style_buffer) = style_buffer {
             check(
                 r.chart_states[&id].prepared_styles.as_ref().unwrap().styles[0].line_bg
@@ -448,6 +688,121 @@ fn matrix(resident: bool, cache: bool) {
         failures.len(),
         failures.join("\n")
     );
+}
+
+// Every `Config` field must be classified by the matrix above or by the
+// selection test below. Destructuring without `..` makes a new field a
+// compile error until it is, which is also what keeps `raster_config_equal`
+// and `stream_config_equal` honest: the registry's revisions are tested
+// against this same catalogue.
+#[test]
+fn config_fields_are_classified() {
+    use crate::config::{
+        AxisOptions, AxisTitleOptions, ChartTitleOptions, ColorBarOptions, GridOptions, LabelStyle,
+    };
+    let Config {
+        chart_area: _,    // chart_area.x/y/width/height: Packed
+        top_x,            // axis!(top_x) + top_x range/scale/inverted: Prefix
+        bottom_x: _,      // axis!(bottom_x) + range/scale/inverted: Packed/Replay
+        left_y: _,        // axis!(left_y) + range/scale/inverted: Packed/Replay
+        right_y: _,       // axis!(right_y) + range/scale/inverted: Prefix
+        chart_title,      // chart_title.*: Prefix, top_margin: Packed
+        grid,             // grid!(...): Prefix
+        legend: _,        // legend.*: Prefix (Legend fields listed inline)
+        picked_points: _, // ssot_selection_edits_replace_only_the_overlay
+        picked_data: _,   // selection revision, same classification as picked_points
+        colorbar,         // colorbar_edits(): band fields Packed, the rest Prefix
+        draw_style: _,    // Sketch / Milkyway / Constellation: Replay
+        active_layer: _,  // layer only: no raster, no pixels
+        annotations: _,   // layer only: no raster, no pixels
+    } = baseline_with_colorbar();
+    let AxisOptions {
+        scale: _,
+        min: _,
+        max: _,
+        major_spacing: _,
+        minor_count: _,
+        inverted: _,
+        label_style,
+        tick: _,
+        title_option,
+        out_margin: _,
+        line_offset: _,
+        line_visible: _,
+        line_color: _,
+        line_width: _,
+        line_style: _,
+        major_tick_length: _,
+        minor_tick_length: _,
+    } = top_x;
+    let LabelStyle {
+        visible: _,
+        color: _,
+        font_size: _,
+        label_visible: _,
+        label_font: _,
+        label_offset_x: _,
+        label_offset_y: _,
+        format: _,
+        significant_digits: _,
+    } = label_style;
+    let AxisTitleOptions {
+        text: _,
+        visible: _,
+        offset_x: _,
+        offset_y: _,
+    } = title_option;
+    let ChartTitleOptions {
+        text: _,
+        visible: _,
+        offset_x: _,
+        offset_y: _,
+        top_margin: _,
+    } = chart_title;
+    let GridOptions {
+        show_major_x: _,
+        major_x_color: _,
+        major_x_width: _,
+        major_x_style: _,
+        show_major_y: _,
+        major_y_color: _,
+        major_y_width: _,
+        major_y_style: _,
+        show_minor_x: _,
+        minor_x_color: _,
+        minor_x_width: _,
+        minor_x_style: _,
+        show_minor_y: _,
+        minor_y_color: _,
+        minor_y_width: _,
+        minor_y_style: _,
+    } = grid;
+    let crate::legend::Legend {
+        visible: _,
+        content: _,
+        corner: _,
+        offset_x: _,
+        offset_y: _,
+        padding: _,
+        bg_color: _,
+        border_color: _,
+    } = baseline().legend;
+    let ColorBarOptions {
+        visible: _,
+        side: _,
+        thickness_px: _,
+        gap_px: _,
+        length_frac: _,
+        align: _,
+        offset_x: _,
+        offset_y: _,
+        colormap: _,
+        nan_color: _,
+        border_color: _,
+        border_width: _,
+        axis: _,
+    } = colorbar.expect("the colourbar baseline has a colourbar");
+    let crate::AnnotationLayer { visible: _ } = crate::AnnotationLayer::default();
 }
 
 #[test]
@@ -637,7 +992,22 @@ fn ssot_selection_edits_replace_only_the_overlay() {
             let prefix = job.map(|j| r.chart_stream_prefix_for_test(j).unwrap());
             let data_pixels = prefix.as_ref().map(|t| read_draw_target(&r, t));
             edit(c.picked_points.as_mut().unwrap());
+            let revisions = r.chart_states[&id].revisions;
             r.set_chart_config(id, c.clone()).unwrap();
+            let updated = r.chart_states[&id].revisions;
+            assert_ne!(updated.desired, revisions.desired, "{name}: no draw");
+            assert_ne!(
+                updated.selection, revisions.selection,
+                "{name}: no selection"
+            );
+            assert_eq!(
+                updated.raster, revisions.raster,
+                "{name}: selection re-rasterized"
+            );
+            assert_eq!(
+                updated.view, revisions.view,
+                "{name}: selection changed the view"
+            );
             let (actual, reads) = frame(&mut r, id, resident);
             let (mut fresh, fresh_id) = setup(&c, false);
             let (expected, _) = frame(&mut fresh, fresh_id, resident);

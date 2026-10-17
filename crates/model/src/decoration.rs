@@ -26,6 +26,16 @@ pub enum DecorationId {
         category_id: String,
         series_id: String,
     },
+    /// An element of an overlay layer, addressed by the layer index and the
+    /// element's identity inside that layer. Overlay expansion registers the
+    /// active overlay's elements under this wrapper so drag policies reach the
+    /// right layer.
+    Overlay {
+        layer: usize,
+        inner: Box<DecorationId>,
+    },
+    /// An item of the annotation layer by index into its item list.
+    Annotation(usize),
 }
 impl DecorationId {
     pub fn element_id(&self) -> String {
@@ -54,6 +64,8 @@ impl DecorationId {
                 series_id.len(),
                 series_id
             ),
+            Self::Overlay { layer, inner } => format!("overlay_{layer}:{}", inner.element_id()),
+            Self::Annotation(index) => format!("annotation_{index}"),
         }
     }
 }
@@ -306,6 +318,48 @@ impl DragConfig for DecorationLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Layer-addressed identities get stable element-id strings that embed the
+    // wrapped element's own id, so hosts keying UI on these strings can route
+    // by layer without parsing the enum.
+    #[test]
+    fn layer_decoration_ids_have_stable_element_ids() {
+        let axis = DecorationId::Overlay {
+            layer: 1,
+            inner: Box::new(DecorationId::Axis(Side::Right)),
+        };
+        assert_eq!(axis.element_id(), "overlay_1:axis_right");
+        let nested_label = DecorationId::Overlay {
+            layer: 0,
+            inner: Box::new(DecorationId::AxisLabel(Side::Left)),
+        };
+        assert_eq!(nested_label.element_id(), "overlay_0:tick_labels_left");
+        assert_eq!(DecorationId::Annotation(3).element_id(), "annotation_3");
+        // Base-layer ids are unchanged by the addition.
+        assert_eq!(DecorationId::Axis(Side::Right).element_id(), "axis_right");
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn layer_decoration_ids_round_trip() {
+        for id in [
+            DecorationId::Overlay {
+                layer: 2,
+                inner: Box::new(DecorationId::Legend),
+            },
+            DecorationId::Annotation(0),
+        ] {
+            let json = serde_json::to_string(&id).unwrap();
+            let back: DecorationId = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, id, "{json}");
+        }
+        let mut layout = DecorationLayout::default();
+        layout.selected = Some(DecorationId::Annotation(4));
+        let json = serde_json::to_string(&layout).unwrap();
+        let back: DecorationLayout = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, layout);
+    }
+
     #[test]
     fn area_handles_move_only_their_edges_and_reject_atomically() {
         use crate::resize::{Resizable, ResizeHandle::*};

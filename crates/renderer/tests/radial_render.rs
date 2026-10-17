@@ -615,6 +615,13 @@ fn radial_ssot_fields_are_explicit() {
         decorations: _,
         title: _,
         chart_title: _,
+        // Layer foundation: `active_layer` only routes interaction and never
+        // changes pixels; `annotations` is the container the annotation layer
+        // fills later. `frame_key` strips both before the frame and label
+        // raster cache comparisons, so editing either reuses the cached frame
+        // (covered by `layer_fields_reuse_cached_frames` in bounded_interaction).
+        active_layer: _,
+        annotations: _,
         slices: _,
         kind: _,
         start_angle_degrees: _,

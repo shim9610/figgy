@@ -299,7 +299,7 @@ the sole issuer of its checked revisions:
 | State | Current trigger/handling |
 |---|---|
 | renderer `desired` revision | Any accepted visible chart edit, a referenced column replacement, or synchronized font registration requires a draw |
-| renderer `raster` revision | Config, series, selection, or font changes conservatively require `refresh_axis` before drawing |
+| renderer `raster` revision | A config edit that changes the axis chrome (chart area, axes, title, grid, legend, colourbar, draw style), a series change, or a font registration requires `refresh_axis` before drawing. Selection (`picked_*`), `active_layer` and `annotations` edits and identical replacements do not touch it; the classification is `raster_config_equal`, tested field by field by the SSOT invalidation matrix |
 | host `view_dirty` | Surface/DPR preview geometry changed; refresh raster and draw |
 | host `redraw_pending` | Host-only surface state such as clear color changed; draw without duplicating chart state |
 
@@ -538,7 +538,7 @@ pool 컬럼 (x, y) ──┐                        Transform uniform (96 B writ
 | 상태 | 다시 그리는 조건과 처리 |
 |---|---|
 | 렌더러의 `desired` 리비전 | 표시 상태 변경, 참조 컬럼 교체, 동기화된 폰트 등록 시 다시 그린다. |
-| 렌더러의 `raster` 리비전 | 설정·시리즈·선택·폰트가 바뀌면 그리기 전에 `refresh_axis`를 호출한다. |
+| 렌더러의 `raster` 리비전 | 축 장식에 영향을 주는 설정 편집(차트 영역, 축, 제목, 그리드, 범례, 색상 막대, 그리기 스타일), 시리즈 변경, 폰트 등록이 있으면 그리기 전에 `refresh_axis`를 호출한다. 선택(`picked_*`), `active_layer`, `annotations` 편집과 동일한 설정 교체는 이 리비전을 바꾸지 않는다. 분류는 `raster_config_equal`이며 SSOT 무효화 매트릭스가 필드별로 검사한다. |
 | 호스트의 `view_dirty` | 화면 크기·DPR로 미리보기 배치가 바뀌면 축 이미지를 갱신하고 다시 그린다. |
 | 호스트의 `redraw_pending` | 배경색 등 화면 상태가 바뀌면 차트 설정을 복제하지 않고 다시 그린다. |
 

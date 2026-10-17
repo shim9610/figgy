@@ -660,6 +660,44 @@ fn selection_config_revision(
     }
 }
 
+/// Whether two configs rasterize the same axis chrome (grid and decoration
+/// textures). This is the single classification of `Config` fields for the
+/// raster revision: a field listed as `_` here never touches the CPU raster,
+/// every other field does. Exhaustive so a new field must be classified.
+///
+/// - `picked_points` / `picked_data` are the GPU selection overlay
+///   (`selection_config_revision`).
+/// - `active_layer` only routes interaction; `annotations` is the dedicated
+///   annotation layer, composited by its own pass.
+fn raster_config_equal(left: &Config, right: &Config) -> bool {
+    let Config {
+        chart_area,
+        top_x,
+        bottom_x,
+        left_y,
+        right_y,
+        chart_title,
+        grid,
+        legend,
+        picked_points: _,
+        picked_data: _,
+        colorbar,
+        draw_style,
+        active_layer: _,
+        annotations: _,
+    } = left;
+    chart_area == &right.chart_area
+        && top_x == &right.top_x
+        && bottom_x == &right.bottom_x
+        && left_y == &right.left_y
+        && right_y == &right.right_y
+        && chart_title == &right.chart_title
+        && grid == &right.grid
+        && legend == &right.legend
+        && colorbar == &right.colorbar
+        && draw_style == &right.draw_style
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct ColumnContentStamp {
     id: ColumnId,
@@ -6461,17 +6499,33 @@ impl Renderer {
             &config,
             &state.series,
         )?;
-        let desired = state
-            .revisions
-            .desired
-            .successor("chart desired revision")?;
-        let config_revision = state.revisions.config.successor("chart config revision")?;
+        // Each revision follows exactly the fields it depends on: an identical
+        // config changes nothing, a layer-only or selection-only edit draws
+        // again without re-rasterizing the axis chrome.
+        let changed = state.config != config;
+        let desired = if changed {
+            state
+                .revisions
+                .desired
+                .successor("chart desired revision")?
+        } else {
+            state.revisions.desired
+        };
+        let config_revision = if changed {
+            state.revisions.config.successor("chart config revision")?
+        } else {
+            state.revisions.config
+        };
         let view = if !stream_config_equal(&state.config, &config, &state.series) {
             state.revisions.view.successor("chart view revision")?
         } else {
             state.revisions.view
         };
-        let raster = state.revisions.raster.successor("chart raster revision")?;
+        let raster = if raster_config_equal(&state.config, &config) {
+            state.revisions.raster
+        } else {
+            state.revisions.raster.successor("chart raster revision")?
+        };
         let visual = self.visual_revision.successor("renderer visual revision")?;
         let mut next_revisions = state.revisions;
         next_revisions.desired = desired;
@@ -6572,12 +6626,26 @@ impl Renderer {
             .chart_states
             .get(&id)
             .ok_or(FiggyError::UnknownChart { id })?;
-        let desired = state
-            .revisions
-            .desired
-            .successor("chart desired revision")?;
-        let config_revision = state.revisions.config.successor("chart config revision")?;
-        let series_revision = state.revisions.series.successor("chart series revision")?;
+        let config_changed = state.config != config;
+        let series_changed = state.series != series;
+        let desired = if config_changed || series_changed {
+            state
+                .revisions
+                .desired
+                .successor("chart desired revision")?
+        } else {
+            state.revisions.desired
+        };
+        let config_revision = if config_changed {
+            state.revisions.config.successor("chart config revision")?
+        } else {
+            state.revisions.config
+        };
+        let series_revision = if series_changed {
+            state.revisions.series.successor("chart series revision")?
+        } else {
+            state.revisions.series
+        };
         let data = if data_series_declarations_equal(&state.series, &series) {
             state.revisions.data
         } else {
@@ -6588,7 +6656,13 @@ impl Renderer {
         } else {
             state.revisions.view
         };
-        let raster = state.revisions.raster.successor("chart raster revision")?;
+        // Series declarations feed the legend and the raster's series-aware
+        // tick guards, so a series change re-rasterizes like a chrome edit.
+        let raster = if raster_config_equal(&state.config, &config) && !series_changed {
+            state.revisions.raster
+        } else {
+            state.revisions.raster.successor("chart raster revision")?
+        };
         let visual = self.visual_revision.successor("renderer visual revision")?;
         let mut next_revisions = state.revisions;
         next_revisions.desired = desired;
@@ -17727,17 +17801,41 @@ mod tests {
         let after_maintenance = renderer.chart_render_stamp(chart).unwrap();
         assert_eq!(after_maintenance, initial);
 
+        // Replacing the config with an identical one is not an edit.
         let same_config = renderer.chart_config(chart).unwrap().clone();
         renderer.set_chart_config(chart, same_config).unwrap();
+        let unchanged = renderer.chart_render_stamp(chart).unwrap();
+        assert_eq!(unchanged, initial);
+
+        // A chrome edit draws and re-rasterizes the axis layers.
+        let mut chrome_config = renderer.chart_config(chart).unwrap().clone();
+        chrome_config.chart_title.visible = !chrome_config.chart_title.visible;
+        renderer.set_chart_config(chart, chrome_config).unwrap();
         let decoration = renderer.chart_render_stamp(chart).unwrap();
         assert!(decoration.needs_draw_since(Some(&initial)));
         assert!(decoration.needs_raster_since(Some(&initial)));
+
+        // Layer-only and selection-only edits draw without touching the raster.
+        let mut layer_config = renderer.chart_config(chart).unwrap().clone();
+        layer_config.active_layer = crate::LayerRef::Annotations;
+        layer_config.annotations.visible = false;
+        renderer.set_chart_config(chart, layer_config).unwrap();
+        let layer = renderer.chart_render_stamp(chart).unwrap();
+        assert!(layer.needs_draw_since(Some(&decoration)));
+        assert!(!layer.needs_raster_since(Some(&decoration)));
+        let mut picked_config = renderer.chart_config(chart).unwrap().clone();
+        picked_config.picked_points = Some(crate::config::PickedPointsConfig::default());
+        renderer.set_chart_config(chart, picked_config).unwrap();
+        let picked = renderer.chart_render_stamp(chart).unwrap();
+        assert!(picked.needs_draw_since(Some(&layer)));
+        assert!(!picked.needs_raster_since(Some(&layer)));
 
         let mut view_config = renderer.chart_config(chart).unwrap().clone();
         view_config.bottom_x.min -= 1.0;
         renderer.set_chart_config(chart, view_config).unwrap();
         let view = renderer.chart_render_stamp(chart).unwrap();
-        assert!(view.needs_draw_since(Some(&decoration)));
+        assert!(view.needs_draw_since(Some(&picked)));
+        assert!(view.needs_raster_since(Some(&picked)));
 
         renderer
             .upsert_column("x", &col_f64(vec![10.0, 11.0]))

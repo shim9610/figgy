@@ -26,6 +26,8 @@ pub struct Config {
     pub picked_data: Option<DataSelectionsConfig>,
     pub colorbar: Option<ColorBarOptions>,   // the colourbar AND the chart's z scale
     pub draw_style: DrawStyle,
+    pub active_layer: LayerRef,              // interaction target layer; `Base` = today's behavior
+    pub annotations: AnnotationLayer,        // dedicated annotation layer (visibility; items follow)
 }
 ```
 
@@ -104,6 +106,22 @@ scale against that contract.
 | `Sketch` / `{ "mode": "sketch", ... }` | Hand-drawn chart-wide style. Draws line, scatter and errorbar series; bars, fields and contours are skipped (query with `draw_style_supports`) |
 | `Milkyway` / `{ "mode": "milkyway", ... }` | Astrophotograph chart-wide style. Draws line, scatter and errorbar series; bars, fields and contours are skipped (query with `draw_style_supports`). Parameter metadata comes from `draw_style_param_specs("milkyway")` |
 | `Constellation` / `{ "mode": "constellation", ... }` | ScatterLine-only star chart style. Parameter metadata comes from `draw_style_param_specs("constellation")` |
+
+### `LayerRef` / `AnnotationLayer`
+
+The layer foundation shared by every chart family (`Config`, `RadialChart`,
+`CategoricalChart`, `BoxPlotChart`). Neither field changes drawn pixels.
+
+| Field | Meaning |
+|---|---|
+| `active_layer: LayerRef` | The layer that receives pointer interaction: `Base` (default, omitted from JSON), `Overlay(index)` or `Annotations`. Decides which layer's elements the hit map registers; element selection (`selected`, `picked_points`, `picked_data`) lives one level below it. Bounded charts have no overlays, so `Overlay` falls back to `Base` there. |
+| `annotations: AnnotationLayer { visible }` | The dedicated annotation layer, composited as an underlay below the data and an overlay above every decoration but toggled and edited as one unit. Default (visible, no items) is omitted from JSON. |
+
+Overlay layers, the selection API and the annotation items are tracked in
+issues #11 and #12; this foundation only reserves the SSOT shape so documents
+and hosts written now stay valid. Overlay elements are addressed as
+`DecorationId::Overlay { layer, inner }` (`overlay_<n>:<inner id>`) and
+annotation items as `DecorationId::Annotation(index)` (`annotation_<n>`).
 
 ### `Legend`
 | Field | Type | Meaning |
@@ -380,6 +398,8 @@ pub struct Config {
     pub picked_data: Option<DataSelectionsConfig>,
     pub colorbar: Option<ColorBarOptions>,   // the colourbar AND the chart's z scale
     pub draw_style: DrawStyle,
+    pub active_layer: LayerRef,              // interaction target layer; `Base` = today's behavior
+    pub annotations: AnnotationLayer,        // dedicated annotation layer (visibility; items follow)
 }
 ```
 
@@ -446,6 +466,21 @@ pub struct Config {
 | `Sketch` / `{ "mode": "sketch", ... }` | 차트 전체 손그림 스타일. 선·산점도·오차 막대 시리즈를 그리고 막대·필드·등고선은 그리지 않는다(`draw_style_supports`로 확인) |
 | `Milkyway` / `{ "mode": "milkyway", ... }` | 차트 전체 천체사진 스타일. 선·산점도·오차 막대 시리즈를 그리고 막대·필드·등고선은 그리지 않는다(`draw_style_supports`로 확인). 옵션 메타데이터는 `draw_style_param_specs("milkyway")`에서 제공 |
 | `Constellation` / `{ "mode": "constellation", ... }` | `ScatterLine` 전용 별자리 스타일. 데이터 점 위치의 별과 반투명 연결선을 그린다. 별 크기는 `point_size`를 따른다. 옵션 범위는 `draw_style_param_specs("constellation")`에서 조회한다. |
+
+### `LayerRef` / `AnnotationLayer`
+
+모든 차트 종류(`Config`, `RadialChart`, `CategoricalChart`, `BoxPlotChart`)가 공유하는
+레이어 기반 필드다. 두 필드 모두 그려지는 픽셀을 바꾸지 않는다.
+
+| 필드 | 의미 |
+|---|---|
+| `active_layer: LayerRef` | 포인터 상호작용을 받는 레이어. `Base`(기본값, JSON에서 생략), `Overlay(index)`, `Annotations` 중 하나다. 히트 맵에 어느 레이어의 요소를 등록할지 정하며, 요소 선택(`selected`, `picked_points`, `picked_data`)은 그 아래 단계다. bounded 차트에는 오버레이가 없으므로 `Overlay`는 `Base`로 되돌린다. |
+| `annotations: AnnotationLayer { visible }` | 전용 주석 층. 데이터 아래의 underlay와 모든 장식 위의 overlay 두 장으로 합성하되 켜고 끄기와 편집은 한 단위로 다룬다. 기본값(보임, 항목 없음)은 JSON에서 생략한다. |
+
+오버레이 레이어, 선택 API, 주석 항목은 이슈 #11과 #12에서 다룬다. 이 기반은 지금 작성한
+문서와 호스트가 그대로 유효하도록 SSOT 형태만 예약한다. 오버레이 요소는
+`DecorationId::Overlay { layer, inner }`(`overlay_<n>:<inner id>`), 주석 항목은
+`DecorationId::Annotation(index)`(`annotation_<n>`)로 식별한다.
 
 ### `Legend`
 | 필드 | 타입 | 의미 |

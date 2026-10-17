@@ -297,6 +297,19 @@ pub struct RadialChart {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub chart_title: Option<crate::BoundedTitleOptions>,
+    /// The layer that receives pointer interaction. Bounded charts have no
+    /// overlays, so only `Base` and `Annotations` are meaningful here.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "crate::LayerRef::is_base")
+    )]
+    pub active_layer: crate::LayerRef,
+    /// The dedicated annotation layer, shared with every chart family.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "crate::AnnotationLayer::is_default")
+    )]
+    pub annotations: crate::AnnotationLayer,
     pub slices: Vec<RadialSlice>,
     pub kind: RadialKind,
     /// Clockwise from the right; -90 starts at the top.
@@ -323,6 +336,8 @@ impl Default for RadialChart {
             decorations: Default::default(),
             title: String::new(),
             chart_title: None,
+            active_layer: Default::default(),
+            annotations: Default::default(),
             slices: Vec::new(),
             kind: RadialKind::Pie,
             start_angle_degrees: -90.0,

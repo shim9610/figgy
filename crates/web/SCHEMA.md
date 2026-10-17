@@ -45,6 +45,7 @@
 - `SeriesConfig.label`은 위 선택 키들과 달리 항상 존재하며 값으로 `null`을 가질 수 있다.
 - **등고선의 선택 키 2개**인 `ContourConfig.per_level_color` / `labels`는 `None`이면 생략한다. `per_level_color` 생략은 모든 선에 `line.line_color`를 사용한다는 뜻이며, 빈 색상 목록 `[]`과는 다르다.
 - 텍스트 구간의 선택 키와 `Config`의 `draw_style` / `picked_points` / `picked_data` / `colorbar`도 생략할 수 있다. `draw_style`은 기본 정밀 모드일 때, 두 선택 표시 키는 `None`일 때 생략한다. `picked_points: {}`와 `picked_data: {}`는 각각 기본 선택 표시 설정으로 해석한다. `set_config()`는 일부 필드가 아니라 **전체 설정을 교체**하므로 `get_config()` 결과를 수정해 전달한다.
+- **레이어 기반 키 2개**인 `active_layer`와 `annotations`도 기본값이면 생략한다. `active_layer`는 `"Base"`(기본), `{ "Overlay": 0 }`, `"Annotations"` 중 하나이고, `annotations`는 `{ "visible": true }` 형태다. bounded 차트 JSON(`RadialChart` 등)도 같은 두 키를 가진다. 두 키는 그려지는 픽셀을 바꾸지 않으며, 오버레이와 주석 기능이 들어오기 전까지 호스트가 설정할 이유는 없다.
 
 다음 직렬화 예에서는 선택 키 15개를 생략했다. `series.source_id`, 스타일 매핑 키 6개, 개별 스타일 키 7개, `picked_point.source_id`가 해당한다.
 

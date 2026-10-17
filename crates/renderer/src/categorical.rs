@@ -329,7 +329,7 @@ impl CategoricalRenderer {
         }
         let fonts = crate::text_render::font_generation();
         if let Some((c, s, k, generation, frame)) = &self.cached {
-            if c == chart && *s == size && *k == scale && *generation == fonts {
+            if frame_eq(c, chart) && *s == size && *k == scale && *generation == fonts {
                 return Ok(Arc::clone(frame));
             }
         }
@@ -466,7 +466,7 @@ impl CategoricalRenderer {
             scale,
         });
         self.annotations_cached = Some((key, size, scale, fonts, annotations));
-        self.cached = Some((chart.clone(), size, scale, fonts, Arc::clone(&frame)));
+        self.cached = Some((frame_key(chart), size, scale, fonts, Arc::clone(&frame)));
         Ok(frame)
     }
     /// Drop internal frame/annotation references. External frames stay valid.
@@ -657,8 +657,77 @@ impl CategoricalRenderer {
 
 // Preserve colors for legend and inside-label contrast. Material/outline/interaction
 // edits share the two-layer annotation atlas; geometry and text edits rebuild it.
-fn annotation_key(chart: &CategoricalChart) -> CategoricalChart {
+/// The part of the chart this frame's pixels, geometry and hit map depend on.
+/// `active_layer` only routes interaction and the annotation layer is drawn
+/// by its own pass, so editing either must reuse the cached frame and its
+/// label raster rather than rebuild them.
+fn frame_key(chart: &CategoricalChart) -> CategoricalChart {
     let mut c = chart.clone();
+    c.active_layer = Default::default();
+    c.annotations = Default::default();
+    c
+}
+/// `frame_key(a) == frame_key(b)` without cloning, for the per-frame cache
+/// hit check. Exhaustive so a new field must be classified here.
+fn frame_eq(a: &CategoricalChart, b: &CategoricalChart) -> bool {
+    let CategoricalChart {
+        decorations,
+        title,
+        chart_title,
+        active_layer,
+        annotations,
+        categories,
+        series,
+        mode,
+        direction,
+        style,
+        overrides,
+        hovered,
+        selected,
+        labels,
+        label_format,
+        label_decimals,
+        value_suffix,
+        value_title,
+        category_title,
+        grid,
+        legend,
+        group_width,
+        bar_gap,
+        font_family,
+        font_size,
+        text_color,
+        background,
+    } = a;
+    let _ = (active_layer, annotations);
+    decorations == &b.decorations
+        && title == &b.title
+        && chart_title == &b.chart_title
+        && categories == &b.categories
+        && series == &b.series
+        && mode == &b.mode
+        && direction == &b.direction
+        && style == &b.style
+        && overrides == &b.overrides
+        && hovered == &b.hovered
+        && selected == &b.selected
+        && labels == &b.labels
+        && label_format == &b.label_format
+        && label_decimals == &b.label_decimals
+        && value_suffix == &b.value_suffix
+        && value_title == &b.value_title
+        && category_title == &b.category_title
+        && grid == &b.grid
+        && legend == &b.legend
+        && group_width == &b.group_width
+        && bar_gap == &b.bar_gap
+        && font_family == &b.font_family
+        && font_size == &b.font_size
+        && text_color == &b.text_color
+        && background == &b.background
+}
+fn annotation_key(chart: &CategoricalChart) -> CategoricalChart {
+    let mut c = frame_key(chart);
     c.hovered = None;
     c.selected = None;
     c.background = crate::Color::WHITE;
@@ -672,4 +741,24 @@ fn annotation_key(chart: &CategoricalChart) -> CategoricalChart {
     c.overrides
         .retain(|o| o.color.is_some() || o.labels.is_some() || o.label_format.is_some());
     c
+}
+
+#[cfg(test)]
+mod layer_cache_key_tests {
+    use super::*;
+    #[test]
+    fn frame_and_annotation_keys_ignore_layer_fields_only() {
+        let base = CategoricalChart::default();
+        let mut layered = base.clone();
+        layered.active_layer = model::LayerRef::Annotations;
+        layered.annotations.visible = false;
+        assert_eq!(frame_key(&base), frame_key(&layered));
+        assert!(frame_eq(&frame_key(&base), &layered));
+        assert_eq!(annotation_key(&base), annotation_key(&layered));
+        let mut edited = base.clone();
+        edited.title = "x".into();
+        assert_ne!(frame_key(&base), frame_key(&edited));
+        assert!(!frame_eq(&frame_key(&base), &edited));
+        assert_ne!(annotation_key(&base), annotation_key(&edited));
+    }
 }
