@@ -43,6 +43,9 @@ fn line_series(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
                 line_style: LineStylePreset::Solid,
                 line_color: color,
                 line_width: 2.0,
+                fill: None,
+                fill_color: None,
+                interpolation: renderer::data_config::LineInterpolation::Linear,
             },
         },
     }

@@ -181,7 +181,7 @@ mod tests {
         assert_eq!(sizes.len(), plan.buffer_count());
         assert_eq!(sizes[0], 513 * 4);
         assert_eq!(&sizes[1..6], &[8, 4, 4, 4, 112]);
-        assert_eq!(&sizes[6..12], &[16; 6]);
+        assert_eq!(&sizes[6..12], &[32; 6]);
         assert_eq!(&sizes[12..], &[16, 8, 16]);
 
         assert!(buffer_plan(1, 0, None, false).is_none());
@@ -637,7 +637,14 @@ pub(crate) struct ArcParams {
     pub(crate) x_base: u32,
     pub(crate) y_base: u32,
     pub(crate) start: u32,
+    /// Step interpolation mode (`line_step::step_mode`): `seg_init` sums the
+    /// stepped pieces' pixel lengths. Zero for the sums windows and for
+    /// streamed lines, which reject step modes.
+    pub(crate) mode: u32,
+    pub(crate) _pad: [u32; 3],
 }
+
+const _: () = assert!(std::mem::size_of::<ArcParams>() == 32);
 
 /// One 256-lane leaf of a canonical scan chunk. Its supply range includes the
 /// predecessor only when the global first point is not zero. The caller owns
@@ -720,6 +727,8 @@ impl ArcReplayLeaf {
             x_base,
             y_base,
             start: self.local_start,
+            mode: 0,
+            _pad: [0; 3],
         }
     }
 
@@ -755,7 +764,9 @@ struct StarVsParams {
     n_points: u32,
     x_base: u32,
     y_base: u32,
-    _pad: u32,
+    /// Step interpolation mode, so a star's arc position lands on the same
+    /// stepped piece the scan measured.
+    mode: u32,
 }
 
 /// Allocation-only twin of [`ArcScratch::build`]. Resident admission uses
@@ -860,6 +871,7 @@ impl ArcScratch {
         max_workgroups_per_dimension: u32,
         chunk_capacity_override: Option<u32>,
         star_data_bgl: Option<&wgpu::BindGroupLayout>,
+        step_mode: u32,
     ) -> Option<Self> {
         let plan = buffer_plan(
             n,
@@ -990,6 +1002,8 @@ impl ArcScratch {
                     x_base,
                     y_base,
                     start,
+                    mode: step_mode,
+                    _pad: [0; 3],
                 },
             );
             let p_s0 = params_buf(
@@ -999,6 +1013,8 @@ impl ArcScratch {
                     x_base: 0,
                     y_base: 0,
                     start: 0,
+                    mode: 0,
+                    _pad: [0; 3],
                 },
             );
             let p_s1 = params_buf(
@@ -1008,6 +1024,8 @@ impl ArcScratch {
                     x_base: 0,
                     y_base: 0,
                     start: 0,
+                    mode: 0,
+                    _pad: [0; 3],
                 },
             );
             chunks.push(ChunkBinds {
@@ -1066,7 +1084,7 @@ impl ArcScratch {
                         n_points: n,
                         x_base,
                         y_base,
-                        _pad: 0,
+                        mode: step_mode,
                     }),
                     usage: wgpu::BufferUsages::UNIFORM,
                 },
@@ -1367,6 +1385,7 @@ mod replay_product_tests {
                 max_workgroups,
                 Some(cap),
                 None,
+                0,
             )
             .expect("resident oracle build");
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1460,6 +1479,8 @@ mod replay_product_tests {
                             x_base: 0,
                             y_base: 0,
                             start: 0,
+                            mode: 0,
+                            _pad: [0; 3],
                         },
                     );
                     let upper_params = init(
@@ -1469,6 +1490,8 @@ mod replay_product_tests {
                             x_base: 0,
                             y_base: 0,
                             start: 0,
+                            mode: 0,
+                            _pad: [0; 3],
                         },
                     );
                     let top_storage = pipelines.replay_storage_bind_group(

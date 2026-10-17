@@ -70,6 +70,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 line_style: LineStylePreset::Solid,
                 line_color: Color::from_rgb8(34, 104, 198),
                 line_width: 2.5,
+                fill: None,
+                fill_color: None,
+                interpolation: renderer::data_config::LineInterpolation::Linear,
             },
         },
     }];

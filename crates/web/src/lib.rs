@@ -769,6 +769,9 @@ fn prepare_demo_declarations(
                     line_style: LineStylePreset::Solid,
                     line_color: color,
                     line_width: 2.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: renderer::data_config::LineInterpolation::Linear,
                 },
             },
         };
@@ -858,6 +861,9 @@ mod tests {
             line_style: renderer::line::LineStylePreset::Solid,
             line_color: Color::BLACK,
             line_width: 1.0,
+            fill: None,
+            fill_color: None,
+            interpolation: renderer::data_config::LineInterpolation::Linear,
         }
     }
 
@@ -4674,6 +4680,9 @@ mod web {
                         line_style: LineStylePreset::Solid,
                         line_color: color,
                         line_width: line_width.max(0.5),
+                        fill: None,
+                        fill_color: None,
+                        interpolation: renderer::data_config::LineInterpolation::Linear,
                     },
                 },
             };

@@ -118,6 +118,9 @@ fn build_state(
                 line_style: LineStylePreset::Solid,
                 line_color: color,
                 line_width: 2.0,
+                fill: None,
+                fill_color: None,
+                interpolation: renderer::data_config::LineInterpolation::Linear,
             },
         },
     };

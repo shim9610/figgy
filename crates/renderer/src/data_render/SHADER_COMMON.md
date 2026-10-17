@@ -24,7 +24,7 @@
 - `errorbar_columnar.wgsl`
 - `bar_columnar.wgsl`
 - `field_columnar.wgsl`
-- `line_arc.wgsl`: 경로 길이 계산용. `Transform`, `maybe_log`, vec2 입력의 `data_to_ndc`만 공유하고 `Style`은 사용하지 않는다.
+- `line_arc.wgsl`: 경로 길이 계산용. `Transform`, `maybe_log`, vec2 입력의 `data_to_ndc`만 공유하고 `Style`은 사용하지 않는다. 공통 블록 밖의 계단 보간 헬퍼(`step_piece_count` / `step_piece` / `step_piece_len_px`)는 `line_columnar.wgsl`과 바이트 단위로 같아야 하며 `shader_consistency`가 검사한다.
 - `contour_anchor.wgsl`: 라벨 앵커 계산용. 화면 좌표에서 위치를 선택하므로 `line_arc.wgsl`과 같은 세 블록을 사용한다.
 - `contour_label.wgsl`: 라벨 렌더링용. 앵커를 NDC에 배치하며 위 세 블록을 공유한다. 색과 배경은 아틀라스에 포함돼 있어 `Style`은 사용하지 않는다.
 
@@ -131,7 +131,10 @@ struct Style {
     // share a star/wobble pattern; precise entries never read it.
     series_salt: u32,
     // Primitive-specific feature bits. Errorbar uses bit 0 for Y and bit 1
-    // for X; every other primitive ignores this field.
+    // for X. Line entries read bits 2-3 as the step interpolation mode
+    // (0 linear, 1 step-pre, 2 step-post, 3 step-mid) and the area entry
+    // also reads bit 4 (fill to a series instead of a baseline); every
+    // other primitive ignores this field.
     primitive_flags: u32,
     dash: array<vec4<f32>, 2>,
 };
@@ -149,7 +152,7 @@ struct Style {
 | `shape_id` | `ScatterShape` GPU 코드 — 0 Circle, 1 Square, 2 Triangle, 3 Diamond, 4 Cross, 5 CircleFilled, 6 SquareFilled, 7 TriangleFilled, 8 DiamondFilled, 9 TriangleDown, 10 TriangleLeft, 11 TriangleRight, 12 Plus, 13 Pentagon, 14 Hexagon, 15 Octagon, 16 Star, 17 TriangleDownFilled, 18 TriangleLeftFilled, 19 TriangleRightFilled, 20 PlusFilled, 21 CrossFilled, 22 PentagonFilled, 23 HexagonFilled, 24 OctagonFilled, 25 StarFilled |
 | `dash_len` | `dash`의 유효 스칼라 개수. 0은 실선 |
 | `series_salt` | 시리즈마다 해시 패턴을 다르게 만드는 값. `renderer.rs`의 `create_style_for_series*`가 `fnv1a(series_id)`를 기록한다. 스케치·별자리 셰이더는 이 값을 시드에 XOR해 같은 X좌표를 쓰는 시리즈에서도 선의 흔들림과 별 패턴이 겹치지 않게 한다. 정밀 모드에서는 읽지 않는다. |
-| `primitive_flags` | 도형별 기능 비트. 오차 막대는 bit 0으로 Y방향, bit 1로 X방향 사용 여부를 표시한다. 다른 도형은 읽지 않는다. 기존 패딩을 사용하므로 크기는 80바이트로 유지된다. |
+| `primitive_flags` | 도형별 기능 비트. 오차 막대는 bit 0으로 Y방향, bit 1로 X방향 사용 여부를 표시한다. 선 엔트리(`vs_main`/`vs_sketch`/`vs_ribbon`/`vs_area`)는 bit 2-3을 계단 보간 모드(0 직선, 1 StepPre, 2 StepPost, 3 StepMid)로 읽고, 면 채움 엔트리 `vs_area`는 bit 4를 "기준선 대신 다른 시리즈까지 채움"으로 읽는다. 다른 도형은 읽지 않는다. 기존 패딩을 사용하므로 크기는 80바이트로 유지된다. CPU 상수는 `mod.rs::LINE_STEP_SHIFT` / `AREA_FILL_TO_SERIES`. |
 | `dash` | 최대 8개의 순차 `[on, off, ...]` 픽셀 길이 — `dash[0].xyzw` 먼저, 이어서 `dash[1].xyzw` |
 
 **대응하는 CPU 구조체:** `src/data_render/mod.rs::PrimitiveStyle`
@@ -175,7 +178,21 @@ struct Style {
 
 `DataBarStyleConfig.bar_style_overrides`를 지정하면 개별 막대 스타일용 파이프라인이 group 2의 덮어쓰기 표를 읽는다. 채움색·테두리색·두께·간격·너비 비율만 바꾸며 기준선과 방향은 시리즈 공통값을 유지한다. 그리기·데이터 피킹·선택 테두리는 같은 해석 규칙을 적용한다.
 
-### 2.2 `field_columnar.wgsl`의 `Style` 사용
+### 2.2 `line_columnar.wgsl`의 면 채움 엔트리 `vs_area` / `fs_area`
+
+선 아래(또는 두 선 사이) 면 채움은 선 셰이더의 별도 엔트리와 별도 파이프라인("figgy line area pipeline")으로 그린다. 공통 `Style` 구조체를 그대로 쓰되 일부 필드를 막대처럼 다른 용도로 쓴다. CPU 쪽 작성자는 `renderer.rs::create_style_for_series_scaled_inner`(`area` 스타일)이며 아래 표와 일치해야 한다.
+
+| 필드 | 면 채움에서의 의미 |
+|------|------------------|
+| `color_premul` | 알파를 미리 곱한 채움색 (`DataLineStyleConfig::effective_fill_color`) |
+| `primitive_flags` | bit 2-3 계단 보간 모드(선과 동일), bit 4 = `LineFill::ToSeries`(슬롯 4/5의 두 번째 y 컬럼까지 채움). 0이면 `LineFill::ToBaseline` |
+| `dash[1].xy` | 기준선을 풀과 같은 f32 쌍 `(hi, lo)`으로 저장 (막대와 같은 규칙). `ToSeries`에서는 읽지 않는다 |
+| `series_salt` | 선과 같은 값 |
+| 나머지 | 미사용 |
+
+정점 슬롯 0-3은 선과 같고(x_a, y_a, x_b, y_b), 슬롯 4/5는 호 길이 대신 `(hi, lo)` 쌍으로 묶인 두 번째 y 컬럼(`y2_a`, `y2_b`)이다. 기준선 채움은 y 컬럼을 슬롯 4/5에 더미로 묶는다. 인스턴스 하나가 선분 하나이며 계단 모드에서는 선과 같은 조각 수만큼 사다리꼴을 낸다. 로그 y축에서 0 이하 기준선은 샘플처럼 가리지 않고 축 최솟값으로 고정한다(명시적 예외).
+
+### 2.3 `field_columnar.wgsl`의 `Style` 사용
 
 히트맵과 밴드 채움은 `color_premul`만 읽는다. 이 값은 알파를 미리 곱한 `Config.colorbar.nan_color`로, NaN·로그 스케일의 0 이하 값·너비가 없는 범위를 표시하는 색이다. `primitive_flags`를 포함한 다른 필드는 읽지 않는다.
 

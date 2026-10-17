@@ -346,3 +346,32 @@ Run `cargo run --locked -p figgy-renderer --example bounded_titles` for a comple
 native PNG example covering all three families, multiline alignment and a
 subscript. See [the example source](examples/bounded_titles.rs). Hosts still
 own editor widgets, Undo and file storage; no HTML overlay is required.
+
+## Area fill and step lines on Cartesian line series
+
+A Cartesian line series can fill the area under its line or between its line
+and another series (`DataLineStyleConfig.fill`) and connect its samples with
+step pieces (`DataLineStyleConfig.interpolation`); see the
+[configuration reference](CONFIG.md#area-fill-and-step-lines). Interaction
+contracts:
+
+- The fill is a property of the line, not a hit target. `pick_point` and
+  `pick_data` keep resolving the line's samples; the picked-point ring and the
+  typed selection overlay are drawn after every fill and every body, so a fill
+  never covers a highlight. Selecting the series selects its fill.
+- A pick on a stepped line walks the same axis-aligned pieces the line draws.
+  The nearest piece wins and the result snaps to the nearer source index by
+  position along the stepped path, so a hit on a riser still names one of the
+  two samples it joins; the straight chord between two samples is not
+  pickable in a step mode. CPU and GPU pickers agree on this, including the
+  data-space midpoint of `StepMid`.
+- Editing `fill`, `fill_color` or `interpolation` is a series declaration
+  change: the registry moves the data revision (like any `render_type` edit),
+  leaves the view and selection revisions alone, reuses the column
+  allocations, and the first frame after the edit is what a fresh renderer
+  draws for the final state.
+- The legend mark of a filled series carries a band in the fill colour under
+  its rule; `series_symbol_segments` emits it and `RichSegment.rule_band`
+  stores it, inside the fixed-width symbol field, so legend hit bounds do not
+  change.
+

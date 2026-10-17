@@ -27,6 +27,21 @@
 // each joint, which shatters the pattern on curves.) Solid lines bind the X
 // column as inert filler — the fragment stage never reads the varying when
 // dash_len == 0.
+//
+// Step interpolation (Style.primitive_flags bits 2-3) draws every instance as
+// 2 or 3 axis-aligned pieces instead of one straight segment. The strip then
+// carries one 4-vertex quad per piece with two duplicated vertices between
+// pieces (degenerate triangles), so the pipeline and the instance count stay
+// the same and only the per-instance vertex count changes — see
+// `strip_slot` and the CPU twin `line_strip_vertex_count` in mod.rs. The
+// arc-length scan (line_arc.wgsl) and the GPU/CPU pickers walk the same
+// pieces, so dash phase and picking stay on the stepped path.
+//
+// `vs_area` / `fs_area` fill the area under the line (to a baseline carried
+// in Style.dash[1].xy) or between this line and a second y column bound in
+// slots 4/5 (Style.primitive_flags bit 4). One instance per segment emits one
+// trapezoid per step piece. It is a separate pipeline ("figgy line area
+// pipeline") because its slots 4/5 are (hi, lo) pairs, not arc lengths.
 
 // ───── BEGIN common block (SHADER_COMMON.md) ─────
 struct Transform {
@@ -72,7 +87,10 @@ struct Style {
     // share a star/wobble pattern; precise entries never read it.
     series_salt: u32,
     // Primitive-specific feature bits. Errorbar uses bit 0 for Y and bit 1
-    // for X; every other primitive ignores this field.
+    // for X. Line entries read bits 2-3 as the step interpolation mode
+    // (0 linear, 1 step-pre, 2 step-post, 3 step-mid) and the area entry
+    // also reads bit 4 (fill to a series instead of a baseline); every
+    // other primitive ignores this field.
     primitive_flags: u32,
     dash: array<vec4<f32>, 2>,
 };
@@ -147,6 +165,122 @@ struct VsOut {
 
 const LINE_AA_EXTENT_PX: f32 = 0.5;
 
+// ──────────── step interpolation (NOT part of the common block) ────────────
+// A step mode draws every instance (segment a → b) as axis-aligned pieces.
+// Piece corners live in DATA space so every consumer projects the same
+// points: the line, area, sketch, ribbon and star entries here, the
+// arc-length scan (line_arc.wgsl, `params.mode`) and the GPU picker
+// (gpu_pick.wgsl, in its own pick_* ABI). `step_piece_count`, `step_piece`
+// and `step_piece_len_px` must stay byte-identical between line_columnar.wgsl
+// and line_arc.wgsl (shader_consistency checks); the CPU twin is
+// `line_step::step_pieces` in the renderer crate.
+const LINE_STEP_SHIFT: u32 = 2u;
+const LINE_STEP_MASK: u32 = 3u;
+const LINE_STEP_LINEAR: u32 = 0u;
+const LINE_STEP_PRE: u32 = 1u;
+const LINE_STEP_POST: u32 = 2u;
+const LINE_STEP_MID: u32 = 3u;
+
+fn step_piece_count(mode: u32) -> u32 {
+    if (mode == LINE_STEP_PRE || mode == LINE_STEP_POST) {
+        return 2u;
+    }
+    if (mode == LINE_STEP_MID) {
+        return 3u;
+    }
+    return 1u;
+}
+
+// Data-space (hi, lo) corners of piece `k` of the stepped segment a → b.
+struct StepPiece {
+    x0: vec2<f32>,
+    y0: vec2<f32>,
+    x1: vec2<f32>,
+    y1: vec2<f32>,
+};
+
+fn step_piece(xa: vec2<f32>, ya: vec2<f32>, xb: vec2<f32>, yb: vec2<f32>, mode: u32, k: u32) -> StepPiece {
+    var p: StepPiece;
+    p.x0 = xa;
+    p.y0 = ya;
+    p.x1 = xb;
+    p.y1 = yb;
+    if (mode == LINE_STEP_PRE) {
+        // Riser at x_a, then the run at y_b.
+        if (k == 0u) { p.x1 = xa; } else { p.y0 = yb; }
+    } else if (mode == LINE_STEP_POST) {
+        // Run at y_a, then the riser at x_b.
+        if (k == 0u) { p.y1 = ya; } else { p.x0 = xb; }
+    } else if (mode == LINE_STEP_MID) {
+        // The riser sits at the DATA-space midpoint of the two x values, not
+        // the pixel midpoint — the two differ on a logarithmic axis, and the
+        // CPU picker places it in data units too.
+        let xm = (xa + xb) * 0.5;
+        if (k == 0u) {
+            p.x1 = xm;
+            p.y1 = ya;
+        } else if (k == 1u) {
+            p.x0 = xm;
+            p.x1 = xm;
+        } else {
+            p.x0 = xm;
+            p.y0 = yb;
+        }
+    }
+    return p;
+}
+
+// Pixel length of one piece, with the arc scan's projection.
+fn step_piece_len_px(p: StepPiece) -> f32 {
+    let a_px = data_to_ndc(p.x0, p.y0) / transform.pixel_to_ndc;
+    let b_px = data_to_ndc(p.x1, p.y1) / transform.pixel_to_ndc;
+    return distance(a_px, b_px);
+}
+// ─────────────────────── end step interpolation ───────────────────────
+
+const AREA_FILL_TO_SERIES: u32 = 16u;
+
+fn line_step_mode() -> u32 {
+    return (style.primitive_flags >> LINE_STEP_SHIFT) & LINE_STEP_MASK;
+}
+
+// Summed pixel length of the pieces before piece `k` — where piece `k`
+// starts along the segment's own arc.
+fn step_prefix_px(in: VsIn, mode: u32, k: u32) -> f32 {
+    var total = 0.0;
+    for (var j = 0u; j < k; j = j + 1u) {
+        total = total + step_piece_len_px(step_piece(in.x_a, in.y_a, in.x_b, in.y_b, mode, j));
+    }
+    return total;
+}
+
+// Strip position → (piece, local vertex) for an instance made of `pieces`
+// strips of `per_piece` vertices each, joined by two duplicated vertices per
+// joint: the last vertex of the piece and the first of the next, which fold
+// the connecting triangles to zero area. Total = pieces · per_piece +
+// 2 · (pieces − 1); a one-piece instance is exactly the plain strip. CPU
+// twin: `line_strip_vertex_count` in data_render/mod.rs.
+struct StripSlot {
+    piece: u32,
+    local: u32,
+};
+
+fn strip_slot(vid: u32, per_piece: u32) -> StripSlot {
+    let block = vid / (per_piece + 2u);
+    let r = vid % (per_piece + 2u);
+    var slot: StripSlot;
+    slot.piece = block;
+    slot.local = r;
+    if (r == per_piece) {
+        slot.local = per_piece - 1u;
+    }
+    if (r == per_piece + 1u) {
+        slot.piece = block + 1u;
+        slot.local = 0u;
+    }
+    return slot;
+}
+
 // Bound solid-line geometry before extrusion and SDF interpolation. Hardware
 // clipping an enormous quad loses its pixel-wide sides (and the distance to
 // the near endpoint) at deep zoom. Keep offscreen endpoints connected by
@@ -185,8 +319,13 @@ fn vs_main(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
         masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
         return masked;
     }
-    var a_ndc = data_to_ndc(in.x_a, in.y_a);
-    var b_ndc = data_to_ndc(in.x_b, in.y_b);
+    // One quad per step piece; a linear line is the single piece a → b.
+    let mode = line_step_mode();
+    let slot = strip_slot(vid, 4u);
+    let piece = step_piece(in.x_a, in.y_a, in.x_b, in.y_b, mode, slot.piece);
+    let last_piece = slot.piece + 1u == step_piece_count(mode);
+    var a_ndc = data_to_ndc(piece.x0, piece.y0);
+    var b_ndc = data_to_ndc(piece.x1, piece.y1);
     if (style.dash_len == 0u) {
         let pad = abs(transform.pixel_to_ndc) * (max(style.line_width_px, 1.0) + 2.0);
         let clipped = clip_solid_segment(a_ndc, b_ndc, pad);
@@ -211,8 +350,8 @@ fn vs_main(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
     let aa_extent = select(LINE_AA_EXTENT_PX, 0.0, style.dash_len > 0u);
     let geom_half_w = half_w + aa_extent;
 
-    let at_b = vid >= 2u;
-    let on_pos = (vid & 1u) == 1u;
+    let at_b = slot.local >= 2u;
+    let on_pos = (slot.local & 1u) == 1u;
     let center_px = select(a_px, b_px, at_b);
     let side = select(-1.0, 1.0, on_pos);
 
@@ -220,14 +359,21 @@ fn vs_main(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
     // both ends. Adjacent quads then overlap at the joint, which keeps the
     // stroke CONTINUOUS when segments are sub-pixel (dense / noisy data
     // flips the direction at every point; butt-ended quads degenerate into
-    // disconnected slivers there — the "stippled line" artifact).
+    // disconnected slivers there — the "stippled line" artifact). Step
+    // pieces get the same treatment at their corners.
     let cap = select(-geom_half_w, geom_half_w, at_b);
     let corner_px = center_px + dir * cap + normal_px * geom_half_w * side;
     let corner_ndc = corner_px * transform.pixel_to_ndc;
 
+    // Dash phase: this piece starts at the segment's arc plus the pieces
+    // before it and ends at the scanned prefix for B on the last piece, so
+    // the phase is continuous through every corner and across the joint.
+    let arc_start = arc.arc_a + step_prefix_px(in, mode, slot.piece);
+    let arc_end = select(arc_start + len, arc.arc_b, last_piece);
+
     var out: VsOut;
     out.pos = vec4<f32>(corner_ndc, 0.0, 1.0);
-    out.dist_px = select(arc.arc_a - half_w, arc.arc_b + half_w, at_b);
+    out.dist_px = select(arc_start - half_w, arc_end + half_w, at_b);
     out.along_px = select(-geom_half_w, len + geom_half_w, at_b);
     out.side_px = geom_half_w * side;
     out.segment_len_px = len;
@@ -306,6 +452,90 @@ fn fs_constellation_line(in: VsOut) -> @location(0) vec4<f32> {
     return line_fragment_color(in, vec4<f32>(style.color_premul.rgb * a, style.color_premul.a * a));
 }
 
+// ───────────────── area fill (NOT part of the common block) ─────────────────
+// `vs_area` fills under the line or between two lines. Slots 0-3 are the
+// line's own (x_a, y_a, x_b, y_b); slots 4/5 carry the second y column as
+// (hi, lo) pairs with the same one-value shift (fill to a series), or the y
+// column itself as inert filler (fill to a baseline, read from
+// Style.dash[1].xy — the bar shader's baseline convention). Each step piece
+// is one trapezoid (p0, q0, p1, q1): the line piece on top, its base piece
+// below, both produced by the same `step_piece` so their x corners agree.
+// Hardware clipping is enough here — there is no stroke SDF to protect.
+struct VsAreaBase {
+    @location(4) base_a: vec2<f32>,
+    @location(5) base_b: vec2<f32>,
+};
+
+struct AreaOut {
+    @builtin(position) pos: vec4<f32>,
+};
+
+fn area_baseline() -> vec2<f32> {
+    return vec2<f32>(style.dash[1].x, style.dash[1].y);
+}
+
+// A baseline at or below zero on a logarithmic y axis has no position. The
+// line's samples would be masked there; masking the baseline would delete the
+// whole area instead, so it is clamped to the axis minimum (data_t = 0). This
+// is the documented exception to the sample_valid rule.
+fn area_baseline_ndc_y(base: vec2<f32>) -> f32 {
+    let value = base.x + base.y;
+    if (transform.scale_log.y != 0.0 && !(value > 0.0)) {
+        return transform.data_to_panel_offset.y * 2.0 - 1.0;
+    }
+    return data_to_ndc(vec2<f32>(1.0, 0.0), base).y;
+}
+
+@vertex
+fn vs_area(in: VsIn, base: VsAreaBase, @builtin(vertex_index) vid: u32) -> AreaOut {
+    var masked: AreaOut;
+    masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+    if (!sample_valid(in.x_a, in.y_a) || !sample_valid(in.x_b, in.y_b)) {
+        return masked;
+    }
+    let to_series = (style.primitive_flags & AREA_FILL_TO_SERIES) != 0u;
+    if (to_series && (!sample_valid(in.x_a, base.base_a) || !sample_valid(in.x_b, base.base_b))) {
+        // A gap in either line breaks the fill exactly where it breaks the
+        // line.
+        return masked;
+    }
+    let baseline = area_baseline();
+    if (!to_series && (!sample_finite(baseline.x) || !sample_finite(baseline.y))) {
+        return masked;
+    }
+
+    let mode = line_step_mode();
+    let slot = strip_slot(vid, 4u);
+    let top = step_piece(in.x_a, in.y_a, in.x_b, in.y_b, mode, slot.piece);
+    // The base path steps with the same x corners: a baseline is constant, a
+    // second series follows this series' interpolation.
+    let base_ya = select(baseline, base.base_a, to_series);
+    let base_yb = select(baseline, base.base_b, to_series);
+    let bottom = step_piece(in.x_a, base_ya, in.x_b, base_yb, mode, slot.piece);
+
+    let at_b = slot.local >= 2u;
+    let on_base = (slot.local & 1u) == 1u;
+    let x = select(top.x0, top.x1, at_b);
+    let y_top = select(top.y0, top.y1, at_b);
+    let y_base = select(bottom.y0, bottom.y1, at_b);
+    var ndc = data_to_ndc(x, y_top);
+    if (on_base) {
+        if (to_series) {
+            ndc = data_to_ndc(x, y_base);
+        } else {
+            ndc.y = area_baseline_ndc_y(y_base);
+        }
+    }
+    var out: AreaOut;
+    out.pos = vec4<f32>(ndc, 0.0, 1.0);
+    return out;
+}
+
+@fragment
+fn fs_area(in: AreaOut) -> @location(0) vec4<f32> {
+    return style.color_premul;
+}
+
 // ──────────────── sketch mode (NOT part of the common block) ────────────────
 // Hand-drawn entry point selected as a separate pipeline variant. The precise
 // entries above never read the sketch Transform fields.
@@ -351,8 +581,13 @@ fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
         masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
         return masked;
     }
-    let a_ndc = data_to_ndc(in.x_a, in.y_a);
-    let b_ndc = data_to_ndc(in.x_b, in.y_b);
+    // Each step piece is its own 2·(S+1) strip, joined like vs_main's quads.
+    let mode = line_step_mode();
+    let slot = strip_slot(vid, 2u * (SKETCH_SUBDIV + 1u));
+    let piece = step_piece(in.x_a, in.y_a, in.x_b, in.y_b, mode, slot.piece);
+    let last_piece = slot.piece + 1u == step_piece_count(mode);
+    let a_ndc = data_to_ndc(piece.x0, piece.y0);
+    let b_ndc = data_to_ndc(piece.x1, piece.y1);
 
     let a_px = a_ndc / transform.pixel_to_ndc;
     let b_px = b_ndc / transform.pixel_to_ndc;
@@ -366,8 +601,8 @@ fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
     let aa_extent = select(LINE_AA_EXTENT_PX, 0.0, style.dash_len > 0u);
     let geom_half_w = half_w + aa_extent;
 
-    let k = vid / 2u;
-    let on_pos = (vid & 1u) == 1u;
+    let k = slot.local / 2u;
+    let on_pos = (slot.local & 1u) == 1u;
     let t = f32(k) / f32(SKETCH_SUBDIV);
     let center_px = mix(a_px, b_px, t);
     let side = select(-1.0, 1.0, on_pos);
@@ -378,7 +613,9 @@ fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
     if (k == 0u) { cap = -geom_half_w; }
     if (k == SKETCH_SUBDIV) { cap = geom_half_w; }
 
-    let arc_at = mix(arc.arc_a, arc.arc_b, t);
+    let arc_start = arc.arc_a + step_prefix_px(in, mode, slot.piece);
+    let arc_end = select(arc_start + len, arc.arc_b, last_piece);
+    let arc_at = mix(arc_start, arc_end, t);
     let amp = max(transform.style_params[0].x, 0.0);
     let wav = transform.style_params[0].y;
     let seed = u32(transform.style_params[0].z) ^ style.series_salt;
@@ -472,8 +709,13 @@ fn vs_ribbon(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> RibbonOut
         masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
         return masked;
     }
-    let a_px = data_to_ndc(in.x_a, in.y_a) / transform.pixel_to_ndc;
-    let b_px = data_to_ndc(in.x_b, in.y_b) / transform.pixel_to_ndc;
+    // Step pieces: one ribbon strip per piece, joined like vs_main's quads.
+    let mode = line_step_mode();
+    let slot = strip_slot(vid, 2u * (CONS_RIBBON_SUBDIV + 1u));
+    let piece = step_piece(in.x_a, in.y_a, in.x_b, in.y_b, mode, slot.piece);
+    let last_piece = slot.piece + 1u == step_piece_count(mode);
+    let a_px = data_to_ndc(piece.x0, piece.y0) / transform.pixel_to_ndc;
+    let b_px = data_to_ndc(piece.x1, piece.y1) / transform.pixel_to_ndc;
     let delta = b_px - a_px;
     let len = length(delta);
     let dir = select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6);
@@ -484,9 +726,9 @@ fn vs_ribbon(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> RibbonOut
     // is invisible under additive blending.
     let half_geom = max(transform.style_params[0].y, 1.0);
 
-    let k = vid / 2u;
+    let k = slot.local / 2u;
     let t = f32(k) / f32(CONS_RIBBON_SUBDIV);
-    let side = select(-1.0, 1.0, (vid & 1u) == 1u);
+    let side = select(-1.0, 1.0, (slot.local & 1u) == 1u);
 
     // Square-cap extension on both strip ends, like vs_main: adjacent
     // segments then overlap at every joint, sealing the outer-bend wedge
@@ -501,7 +743,9 @@ fn vs_ribbon(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> RibbonOut
 
     let seed = u32(transform.style_params[0].w) ^ style.series_salt;
     let intensity_cfg = max(transform.style_params[0].z, 0.0);
-    let arc_px = mix(arc.arc_a, arc.arc_b, t);
+    let arc_start = arc.arc_a + step_prefix_px(in, mode, slot.piece);
+    let arc_end = select(arc_start + len, arc.arc_b, last_piece);
+    let arc_px = mix(arc_start, arc_end, t);
 
     var out: RibbonOut;
     out.pos = vec4<f32>(corner_px * transform.pixel_to_ndc, 0.0, 1.0);
@@ -548,7 +792,9 @@ struct StarVsParams {
     n_points: u32,
     x_base: u32,
     y_base: u32,
-    _pad: u32,
+    // Step interpolation mode of the polyline (LINE_STEP_*), so a star's arc
+    // position lands on the same stepped piece the ribbon and scan used.
+    mode: u32,
 };
 @group(3) @binding(0) var<storage, read> star_arc: array<f32>;
 @group(3) @binding(1) var<storage, read> star_pool: array<f32>;
@@ -626,12 +872,31 @@ fn vs_stars(
         return masked;
     }
 
-    let a_px = data_to_ndc(star_pool_pair(star_vsp.x_base, lo), star_pool_pair(star_vsp.y_base, lo))
-        / transform.pixel_to_ndc;
-    let b_px = data_to_ndc(
-        star_pool_pair(star_vsp.x_base, lo + 1u),
-        star_pool_pair(star_vsp.y_base, lo + 1u),
-    ) / transform.pixel_to_ndc;
+    // Walk the segment's step pieces to the one holding `arc_here`; a linear
+    // polyline has the single piece lo → lo + 1 and keeps t as computed.
+    let x_lo = star_pool_pair(star_vsp.x_base, lo);
+    let y_lo = star_pool_pair(star_vsp.y_base, lo);
+    let x_hi = star_pool_pair(star_vsp.x_base, lo + 1u);
+    let y_hi = star_pool_pair(star_vsp.y_base, lo + 1u);
+    var piece = step_piece(x_lo, y_lo, x_hi, y_hi, star_vsp.mode, 0u);
+    var t_piece = t;
+    let pieces = step_piece_count(star_vsp.mode);
+    if (pieces > 1u) {
+        var arc_in = arc_here - seg_a;
+        var k = 0u;
+        loop {
+            piece = step_piece(x_lo, y_lo, x_hi, y_hi, star_vsp.mode, k);
+            let piece_len = step_piece_len_px(piece);
+            if (k + 1u >= pieces || arc_in <= piece_len) {
+                t_piece = clamp(arc_in / max(piece_len, 1e-6), 0.0, 1.0);
+                break;
+            }
+            arc_in = arc_in - piece_len;
+            k = k + 1u;
+        }
+    }
+    let a_px = data_to_ndc(piece.x0, piece.y0) / transform.pixel_to_ndc;
+    let b_px = data_to_ndc(piece.x1, piece.y1) / transform.pixel_to_ndc;
     let delta = b_px - a_px;
     let len = length(delta);
     let dir = select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6);
@@ -671,7 +936,7 @@ fn vs_stars(
     let r_star = star_scale * (0.9 + 3.4 * pow(b, 0.7));
     let quad_half = r_star * 4.0;
 
-    var center = mix(a_px, b_px, t) + normal_px * off;
+    var center = mix(a_px, b_px, t_piece) + normal_px * off;
     if (is_companion) {
         let ang = cons_h(slot, 0x0A46u, seed) * 6.2831853;
         // px-denominated structure constant — scales with the resolution

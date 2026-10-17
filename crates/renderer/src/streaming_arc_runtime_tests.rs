@@ -117,6 +117,9 @@ fn parity_with_samples(
         line_width: 2.5,
         line_color: Color::new(0.2, 0.6, 0.8, 0.45),
         line_style,
+        fill: None,
+        fill_color: None,
+        interpolation: crate::data_config::LineInterpolation::Linear,
     };
     let render_type = if matches!(chart.config().draw_style, DrawStyle::Constellation(_)) {
         DataRenderType::ScatterLine {

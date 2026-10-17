@@ -217,6 +217,9 @@ fn build_sine_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEnt
                 line_style: LineStylePreset::Solid,
                 line_color,
                 line_width: line_w,
+                fill: None,
+                fill_color: None,
+                interpolation: renderer::data_config::LineInterpolation::Linear,
             },
         },
     };
@@ -290,6 +293,9 @@ fn build_rc_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEntry
                 line_style: LineStylePreset::Solid,
                 line_color: color,
                 line_width: line_w,
+                fill: None,
+                fill_color: None,
+                interpolation: renderer::data_config::LineInterpolation::Linear,
             },
         },
     };
@@ -354,6 +360,9 @@ fn build_cross_section_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) ->
                 line_style: LineStylePreset::Solid,
                 line_color,
                 line_width: line_w,
+                fill: None,
+                fill_color: None,
+                interpolation: renderer::data_config::LineInterpolation::Linear,
             },
         },
     };
@@ -446,6 +455,9 @@ fn build_field_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEn
                     line_style: LineStylePreset::Solid,
                     line_color: Color::from_rgb8(20, 20, 20),
                     line_width: 1.5,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: renderer::data_config::LineInterpolation::Linear,
                 },
                 per_level_color: None,
                 labels: Some(ContourLabelConfig {

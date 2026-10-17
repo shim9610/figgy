@@ -83,6 +83,60 @@ at the time. The first crates.io publication is recorded below.
   the two optional annotation layers. Released with the next renderer/model
   minor versions together with the other Unreleased entries below.
 
+## Unreleased — area fill and step lines
+
+- Cartesian line series can fill the area under the line or between two
+  lines, and connect their samples with steps. `DataLineStyleConfig` gains
+  `fill: Option<LineFill>` (`ToBaseline(f64)`, default `0.0`, or
+  `ToSeries(SeriesRef)` for an index-aligned fill between this line and
+  another series that shares the same x column), `fill_color: Option<Color>`
+  (`None` derives the line colour at `DEFAULT_FILL_ALPHA` = 0.25 alpha; see
+  `effective_fill_color`) and `interpolation: LineInterpolation`
+  (`Linear` default, `StepPre`, `StepPost`, `StepMid` with the riser at the
+  data-space midpoint). All three are `serde(default)` and omitted from JSON
+  at their defaults, so existing documents parse and serialize
+  byte-identically.
+- The data pass gains a fill loop: every series' fill is drawn before every
+  series' body and every picked highlight, each loop in SSOT series order
+  with no automatic sorting, so another series' fill can never cover this
+  series' line and fills composite in declaration order. The fill is a
+  property of the line, not a hit target. The line shader gains the
+  `vs_area` / `fs_area` entries on their own pipeline ("figgy line area
+  pipeline"); the `Style` uniform keeps its 80 bytes, with the step mode in
+  `primitive_flags` bits 2-3 and the fill-to-series bit 4 (SHADER_COMMON.md
+  §2.2). Step pieces are drawn by the same line pipelines with a larger
+  per-instance strip; the arc-length scan (`line_arc.wgsl`, `ArcParams.mode`)
+  and the CPU and GPU pickers walk the same pieces, so dashes keep their
+  phase through corners and a pick on a riser resolves to the nearer source
+  index by position along the path. The streaming arc replay's parameter
+  uniforms grow to 32 bytes.
+- Constraints, documented and tested rather than masked: fills assume
+  x-monotonic series (a doubled-back series blends its overlapping
+  trapezoids twice); fill between two series requires the same x column and
+  rejects a different column, an unknown series or a self reference with
+  `InvalidSeriesConfig`; both fills and step modes require GPU-resident
+  columns and are rejected on streamed sources by
+  `inspect_streaming_capability` and the streaming prepare path; a gap in the
+  line breaks the fill where it breaks the line; a nonpositive baseline on a
+  logarithmic y axis is clamped to the axis minimum instead of masking the
+  area (an explicit exception to the nonpositive-sample rule).
+- The legend mark of a filled series shows a band of the fill colour under
+  its rule inside the fixed-width symbol field: `RichSegment` gains
+  `rule_band: Option<Color>` (`serde(default)`, omitted when `None`) and
+  `series_symbol_segments` emits it. Editing `fill`, `fill_color` or
+  `interpolation` moves the data revision like any other `render_type`
+  change, leaves the view and selection revisions alone, reuses column
+  allocations and refreshes the first frame to a fresh renderer's output.
+  The GPU picker's query uniform gains the step mode (240 bytes); the pick
+  registry signature includes it, so a step edit rebuilds only that series'
+  pick slot. `DataLineStyleConfig` implements `Default`.
+- Rust migration: exhaustive `DataLineStyleConfig` literals need `fill`,
+  `fill_color` and `interpolation` (or `..Default::default()`); exhaustive
+  `RichSegment` literals need `rule_band`. This public field addition is
+  released with the next renderer/model minor versions together with the
+  other Unreleased entries below. See the configuration reference
+  ("Area fill and step lines") and the interaction guide.
+
 ## Unreleased — layer and annotation foundation
 
 - Add the SSOT shape shared by the planned overlay layers (secondary Y axes,
