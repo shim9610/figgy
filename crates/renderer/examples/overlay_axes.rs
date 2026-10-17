@@ -74,7 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         width: 960,
         height: 600,
     });
-    config.left_y.out_margin = 80.0;
+    config.left_y.out_margin = 110.0;
     config.bottom_x.out_margin = 70.0;
     config.top_x.out_margin = 24.0;
     // The parent's own right axis is decoration only; hide its line and ticks
@@ -87,7 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // for both layers.
     let mut overlay = OverlayLayer::default();
     overlay.series = vec!["pressure".into()];
-    overlay.y_axis.out_margin = 90.0;
+    overlay.y_axis.out_margin = 120.0;
     overlay.y_axis.title_option.visible = true;
     overlay.y_axis.title_option.text =
         RichText::plain("Pressure (hPa)", Color::from_rgb8(176, 64, 32), 22.0, "");
