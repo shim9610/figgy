@@ -9,6 +9,27 @@ at the time. The first crates.io publication is recorded below.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
+## Unreleased — contour label fixes
+
+- Automatic contour labels are placed only where their level is actually
+  crossed (#19). The anchor pass used to accept any projected seed whose value
+  was within its tolerance of the level, so in a near-flat region a shallow
+  extremum just short of a level (for example a minimum of +0.0004 against
+  level 0) received a label with no isoline anywhere near it. A seed is now
+  kept only if the level lies within the corner range of the cell it lands
+  in, the same condition under which the stroke draws a line there. Labels on
+  real isolines are unchanged.
+- Rotated contour label backgrounds (`bg_color`) are antialiased (#20). The
+  label quad ended exactly at the edge of its baked background box, so the box
+  edge was the rasterized quad edge and stair-stepped at any non-axis-aligned
+  angle while the glyphs inside stayed smooth. The quad now extends two pixels
+  past its content into the atlas cell's transparent gutter, continuing the
+  same content-to-texel map, so the texture filter fades the box edge over one
+  texel. Interior sampling, the label size, the contour line gap and labels
+  without a background are unchanged; axis-aligned box edges gain the same
+  one-texel antialiasing.
+- No API, model or serialization change.
+
 ## Unreleased — subplots
 
 - Subplots (issue #11, work item 5): `Config` gains `subplots: Vec<Subplot>`,

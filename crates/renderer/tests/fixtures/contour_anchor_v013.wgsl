@@ -728,6 +728,12 @@ fn anchor_project(@builtin(global_invocation_id) gid: vec3<u32>) {
         cand[gid.x] = out;
         return;
     }
+    // Shared acceptance rule (issue #19): the level must be crossed inside the
+    // cell the anchor lands in. The oracle freezes the projection loop only.
+    if (want < s.z_lo || want > s.z_hi) {
+        cand[gid.x] = out;
+        return;
+    }
     let hit_px = t_to_px(p);
     if (!vec2_f32_is_finite(hit_px)
         || hit_px.x < cell_lo.x || hit_px.x >= cell_lo.x + step.x

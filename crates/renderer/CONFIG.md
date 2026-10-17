@@ -502,7 +502,11 @@ NaN and `+Infinity` therefore affect only the denominator.
 
 `ContourLabelConfig.anchors` is an **override**. Empty is the normal case: the GPU
 places the labels itself, seeding a lattice at `spacing_px` over the data area and
-projecting each seed onto its level's isoline. Normal selection targets
+projecting each seed onto its level's isoline. A projected seed is kept only if the
+level is actually crossed inside the cell it lands in (the cell's corner range
+contains the level, the same condition under which the stroke draws there), so a
+shallow extremum that merely comes close to a level is never labelled. Normal
+selection targets
 `spacing_px` separation, but the per-level fallback may keep a closer candidate
 rather than omit a level. `spacing_px` must always be finite and greater than zero,
 including for hidden labels and explicit overrides. Automatic and explicit
@@ -522,7 +526,9 @@ an x-axis interval, and `significant_digits` remains effective without allowing
 adjacent levels to collapse to one string. The contour fragment reads the same
 selected-anchor buffer as the label draw and omits stroke coverage inside each
 label rectangle. `bg_padding_px` pads that real line gap whether `bg_color` is
-opaque or absent.
+opaque or absent. A `bg_color` box is antialiased at any rotation: the label quad
+extends past the box into the atlas cell's transparent gutter, so the box edge is
+filtered like the glyphs inside it rather than rasterized as the quad edge.
 
 `Renderer::series_draw_info(chart, series_id) -> SeriesDrawInfo` is the
 series-common window onto what actually drew: `drawn_count`, a matrix' `cols` /
@@ -900,13 +906,13 @@ pub struct Config {
 유한하지 않은 레벨은 실제 업로드된 f32 값을 기준으로 처리한다. 등고선에서는 NaN과 양·음의 무한대를 모두 제외한다. `FillMode::Bands`의 분자는 음의 무한대 개수와 Z값 이하인 유한 레벨 개수를 더하고, 분모에는 선언한 전체 레벨 수를 사용한다.
 `t=(negative_infinity_count + finite_le_z + 0.5)/(declared_level_count + 1)`이므로 NaN과 양의 무한대는 분모에만 영향을 준다.
 
-`ContourLabelConfig.anchors`는 라벨 위치를 직접 지정할 때 사용한다. 기본값인 빈 목록에서는 GPU가 데이터 영역에 `spacing_px` 간격으로 후보를 만들고 각 후보를 해당 등고선 위로 투영한다. 일반 선택에서는 이 간격을 목표로 후보를 남기지만, 레벨이 누락되지 않도록 추가로 고르는 후보는 더 가까울 수 있다.
+`ContourLabelConfig.anchors`는 라벨 위치를 직접 지정할 때 사용한다. 기본값인 빈 목록에서는 GPU가 데이터 영역에 `spacing_px` 간격으로 후보를 만들고 각 후보를 해당 등고선 위로 투영한다. 투영된 후보는 도착한 셀 안에서 레벨을 실제로 가로지를 때만 남는다. 셀 꼭짓점 값의 범위가 레벨을 포함해야 하며, 이는 선을 그리는 조건과 같다. 따라서 레벨에 가깝기만 한 얕은 극값에는 라벨을 붙이지 않는다. 일반 선택에서는 이 간격을 목표로 후보를 남기지만, 레벨이 누락되지 않도록 추가로 고르는 후보는 더 가까울 수 있다.
 
 `spacing_px`는 라벨을 숨겼거나 앵커를 직접 지정했더라도 항상 유한한 양수여야 한다. 자동 배치와 직접 지정 모두 최대 1024개를 사용한다. 직접 지정한 목록에서는 잘못된 `level_index`를 제외하고 유효한 앞 1024개만 남긴다. 이 결과가 비면 자동 배치하고, 하나라도 남으면 해당 목록으로 자동 배치를 대신한다.
 
 출력 배율은 자동 배치 간격에만 곱한다. 출력 배율을 허용 범위로 제한한 뒤 그 곱도 유한한 양수인지 확인한다. 라벨 아틀라스는 어댑터의 텍스처 크기 한도를 지켜야 한다. 간격 오류, 곱셈 오버플로, 아틀라스 크기 초과가 발생하면 상태를 반영하기 전에 실패하므로 기존 차트와 GPU 자원을 유지한다. 앵커는 데이터 좌표와 데이터 공간의 접선으로 저장하므로 확대·이동 시 화면 좌표로 다시 투영할 수 있다.
 
-라벨 글자색은 선 색이나 `per_level_color`와 별도로 `ContourLabelConfig.color`에서 정한다. 소수 표시는 아래쪽 X축이 아니라 등고선 레벨 간격을 기준으로 하며, 간격을 구할 수 없으면 색상 막대의 간격을 사용한다. `significant_digits`를 적용하되 인접 레벨이 같은 문자열로 표시되지 않도록 조절한다. 등고선 셰이더는 라벨을 그릴 때와 같은 앵커 버퍼를 읽어 라벨 사각형 안의 선을 그리지 않는다. `bg_color`가 없어도 `bg_padding_px`만큼 선을 더 비운다.
+라벨 글자색은 선 색이나 `per_level_color`와 별도로 `ContourLabelConfig.color`에서 정한다. 소수 표시는 아래쪽 X축이 아니라 등고선 레벨 간격을 기준으로 하며, 간격을 구할 수 없으면 색상 막대의 간격을 사용한다. `significant_digits`를 적용하되 인접 레벨이 같은 문자열로 표시되지 않도록 조절한다. 등고선 셰이더는 라벨을 그릴 때와 같은 앵커 버퍼를 읽어 라벨 사각형 안의 선을 그리지 않는다. `bg_color`가 없어도 `bg_padding_px`만큼 선을 더 비운다. `bg_color` 상자는 어떤 각도로 회전해도 가장자리가 부드럽다. 라벨 사각형이 상자 바깥의 투명한 아틀라스 여백까지 이어져, 상자 가장자리가 사각형 경계로 잘리지 않고 글자처럼 텍스처 필터링을 거친다.
 
 `Renderer::series_draw_info(chart, series_id) -> SeriesDrawInfo`는 실제로 그린 데이터의 수를 알려 준다. `drawn_count`, 행렬의 `cols` / `rows`, 잘림 여부인 `truncated`를 확인할 수 있다. 컬럼 길이가 다르면 공통 범위까지만 그리고 그 결과를 보고한다. 예를 들어 경계가 11개이고 빈도 값이 9개이면 막대 9개를 그린다. 선·산점도에서 X와 Y의 길이 중 작은 쪽까지만 그리는 경우도 이 API로 확인할 수 있다.
 

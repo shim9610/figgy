@@ -23373,6 +23373,142 @@ mod tests {
         }
     }
 
+    /// Paint one contour-only series with automatic labels on a 320×240 panel
+    /// and return the RGBA frame. Labels carry an opaque magenta background, a
+    /// colour nothing else in this chart uses.
+    fn render_labelled_contour_for_test(
+        columns: &[(&str, Vec<f64>)],
+        x: &str,
+        y: &str,
+        z: &[&str],
+        levels: Vec<f64>,
+        spacing_px: f32,
+    ) -> Vec<u8> {
+        let mut renderer = state_test_renderer().expect("required GPU renderer");
+        for (id, values) in columns {
+            renderer.add_column(*id, &col_f64(values.clone())).unwrap();
+        }
+        let chart = state_test_contour_chart(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 320,
+                height: 240,
+            },
+            (0.0, 1.0),
+        );
+        let mut config = state_test_labelled_contour(spacing_px, Vec::new());
+        let DataRenderType::Contour { matrix, contour } = &mut config.render_type else {
+            unreachable!()
+        };
+        matrix.columns = z.iter().map(|id| (*id).into()).collect();
+        contour.levels = levels;
+        config.x_column = x.into();
+        config.y_column = y.into();
+        let style = renderer.create_style_for_series(&config).unwrap();
+        let series = [Series {
+            config: &config,
+            style: &style,
+        }];
+        let view = renderer
+            .create_chart_view(&chart, chart.config().chart_area.0)
+            .unwrap();
+        let items = [ChartDrawItem {
+            view: &view,
+            chart_config: chart.config(),
+            series: &series,
+        }];
+        let prepared = renderer.prepare(&items).unwrap();
+        paint_prepared_rgba(&renderer, &prepared, 320, 240)
+    }
+
+    fn label_background_pixels(rgba: &[u8]) -> usize {
+        rgba.chunks_exact(4)
+            .filter(|p| p[0] > 200 && p[1] < 100 && p[2] > 200)
+            .count()
+    }
+
+    // Issue #19. An automatic anchor is only valid where its level is actually
+    // crossed inside the cell it lands in, which is the same test the stroke
+    // uses. A strictly positive field with a shallow minimum just below the
+    // projection tolerance used to accept a level-0 anchor at that minimum,
+    // where no isoline exists.
+    #[test]
+    fn automatic_contour_labels_require_a_level_crossing_in_their_cell() {
+        let grid: Vec<f64> = (0..24).map(|i| i as f64 / 23.0).collect();
+        let field = |x: f64, y: f64| 4.0e-4 + 0.05 * ((x - 0.3).powi(2) + (y - 0.4).powi(2));
+        let ids: Vec<String> = (0..grid.len()).map(|i| format!("nfz{i}")).collect();
+        let mut columns = vec![("nfx", grid.clone()), ("nfy", grid.clone())];
+        for (i, id) in ids.iter().enumerate() {
+            columns.push((
+                id.as_str(),
+                grid.iter().map(|y| field(grid[i], *y)).collect(),
+            ));
+        }
+        let z: Vec<&str> = ids.iter().map(String::as_str).collect();
+        // A level the field does cross still gets labels in this setup, so the
+        // assertion below cannot pass merely because nothing is drawn.
+        let crossed =
+            render_labelled_contour_for_test(&columns, "nfx", "nfy", &z, vec![0.01], 40.0);
+        assert!(
+            label_background_pixels(&crossed) > 0,
+            "a crossed level must still be labelled"
+        );
+        let uncrossed =
+            render_labelled_contour_for_test(&columns, "nfx", "nfy", &z, vec![0.0], 40.0);
+        assert_eq!(
+            label_background_pixels(&uncrossed),
+            0,
+            "a level the field never crosses must not be labelled"
+        );
+    }
+
+    // Issue #20. A rotated label quad used to end exactly at the edge of its
+    // baked background box, so the box edge was the rasterized quad edge and
+    // stair-stepped. The quad now reaches into the transparent gutter and the
+    // texture filter antialiases the box edge like the glyphs inside it.
+    #[test]
+    fn rotated_contour_label_background_edges_are_antialiased() {
+        let columns = [
+            ("clx", vec![0.0, 0.5, 1.0]),
+            ("cly", vec![0.0, 0.5, 1.0]),
+            ("clz0", vec![0.0, 1.0, 2.0]),
+            ("clz1", vec![1.0, 2.0, 3.0]),
+            ("clz2", vec![2.0, 3.0, 4.0]),
+        ];
+        // z = i + j: the level-2 isoline is the panel's diagonal, so the one
+        // label is rotated away from both axes.
+        let rgba = render_labelled_contour_for_test(
+            &columns,
+            "clx",
+            "cly",
+            &["clz0", "clz1", "clz2"],
+            vec![2.0],
+            400.0,
+        );
+        // The panel clears to transparent black, so the frame is premultiplied
+        // magenta over nothing: an opaque box pixel is (255, 0, 255, 255) and a
+        // partially covered edge pixel is (a, 0, a, a). Glyphs are drawn over the
+        // opaque box and stay opaque, so they are never counted as edge.
+        let solid = rgba
+            .chunks_exact(4)
+            .filter(|p| p[0] >= 250 && p[1] <= 2 && p[2] >= 250 && p[3] == 255)
+            .count();
+        let edge = rgba
+            .chunks_exact(4)
+            .filter(|p| {
+                let premultiplied_magenta =
+                    p[1] <= 2 && p[0].abs_diff(p[2]) <= 2 && p[0].abs_diff(p[3]) <= 2;
+                premultiplied_magenta && (8..=247).contains(&p[3])
+            })
+            .count();
+        assert!(solid > 100, "the label background must be drawn: {solid}");
+        assert!(
+            edge >= 40,
+            "a rotated label background needs antialiased edges, found {edge} partial pixels"
+        );
+    }
+
     #[test]
     fn contour_label_placements_reuse_only_exact_dispatch_keys() {
         let Some(mut renderer) = state_test_renderer() else {
