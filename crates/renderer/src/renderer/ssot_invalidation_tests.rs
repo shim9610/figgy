@@ -930,6 +930,92 @@ fn histogram_orientation_round_trip_refreshes_first_frame_without_reupload() {
         "a full-state grid edit must reuse unchanged bar styles"
     );
 }
+/// Line fill and step interpolation are series declarations: each edit
+/// refreshes the first frame to exactly what a fresh renderer draws for the
+/// final state, moves only the data revision (never the view or selection),
+/// reuses the column allocations, and an identical re-declaration changes
+/// nothing.
+#[test]
+fn line_fill_and_step_edits_refresh_first_frame_without_reupload() {
+    use crate::data_config::{DataLineStyleConfig, LineFill, LineInterpolation};
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap();
+    let mut config = baseline();
+    config.legend.visible = false;
+    let mut series = declaration("s", "x", "a");
+    let (mut r, id) = fixture(&config, true, false);
+    let (plain, _) = frame(&mut r, id, true);
+    let generation = r.pool.generation();
+    let used_bytes = r.pool.used_bytes();
+    let mut previous = plain;
+    let edits: [(&str, fn(&mut DataLineStyleConfig)); 5] = [
+        ("fill to baseline", |line| {
+            line.fill = Some(LineFill::ToBaseline(0.0));
+        }),
+        ("fill colour", |line| {
+            line.fill_color = Some(Color::new(0.1, 0.6, 0.2, 0.5));
+        }),
+        ("step post with fill", |line| {
+            line.interpolation = LineInterpolation::StepPost;
+        }),
+        ("step mid without fill", |line| {
+            line.fill = None;
+            line.interpolation = LineInterpolation::StepMid;
+        }),
+        ("back to linear", |line| {
+            line.interpolation = LineInterpolation::Linear;
+        }),
+    ];
+    for (name, apply) in edits {
+        let DataRenderType::Line { line } = &mut series.render_type else {
+            unreachable!()
+        };
+        apply(line);
+        let revisions = r.chart_states[&id].revisions;
+        r.set_chart_series(id, vec![series.clone()]).unwrap();
+        let updated = r.chart_states[&id].revisions;
+        assert_ne!(
+            updated.data, revisions.data,
+            "{name}: a render_type edit is a data declaration change"
+        );
+        assert_eq!(updated.view, revisions.view, "{name}: no view replay");
+        assert_eq!(updated.selection, revisions.selection, "{name}");
+        let (actual, _) = frame(&mut r, id, true);
+        let (mut fresh, fresh_id) = fixture(&config, true, false);
+        fresh
+            .set_chart_series(fresh_id, vec![series.clone()])
+            .unwrap();
+        let (expected, _) = frame(&mut fresh, fresh_id, true);
+        assert_eq!(
+            actual, expected,
+            "{name}: first frame must match a fresh renderer"
+        );
+        assert_ne!(actual, previous, "{name}: the edit must be visible");
+        previous = actual;
+        assert_eq!(r.pool.generation(), generation, "{name}: no re-upload");
+        assert_eq!(r.pool.used_bytes(), used_bytes, "{name}");
+        // An identical re-declaration leaves the data revision and the frame.
+        let revisions = r.chart_states[&id].revisions;
+        r.set_chart_series(id, vec![series.clone()]).unwrap();
+        assert_eq!(r.chart_states[&id].revisions.data, revisions.data, "{name}");
+        assert_eq!(frame(&mut r, id, true).0, expected, "{name}: stable");
+    }
+    // Back to the original declaration: the plain line, pixel for pixel.
+    assert_eq!(previous, frame(&mut r, id, true).0);
+    let mut fresh_plain = declaration("s", "x", "a");
+    let DataRenderType::Line { line } = &mut fresh_plain.render_type else {
+        unreachable!()
+    };
+    line.interpolation = LineInterpolation::Linear;
+    r.set_chart_series(id, vec![fresh_plain]).unwrap();
+    let (mut fresh, fresh_id) = fixture(&config, true, false);
+    assert_eq!(
+        frame(&mut r, id, true).0,
+        frame(&mut fresh, fresh_id, true).0
+    );
+}
+
 #[test]
 fn ssot_edits_refresh_stream_first_frame_without_excess_work() {
     matrix(false, false);

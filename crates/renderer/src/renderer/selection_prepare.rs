@@ -68,6 +68,7 @@ pub(super) struct SelectionLayers<'a> {
 impl<'a> SelectionLayers<'a> {
     pub fn into_series_layers(self) -> data_render::SeriesLayers<'a> {
         data_render::SeriesLayers {
+            area: None,
             field: None,
             bar: None,
             contour: None,

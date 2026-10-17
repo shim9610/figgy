@@ -126,6 +126,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                     line_color: color,
                     line_width: 2.0,
                     line_style: LineStylePreset::Solid,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: renderer::data_config::LineInterpolation::Linear,
                 },
             },
         });

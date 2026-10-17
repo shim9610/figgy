@@ -20,6 +20,7 @@ pub mod gpu_errorbar;
 pub mod gpu_memory;
 mod gpu_pick;
 pub mod init;
+pub(crate) mod line_step;
 pub mod pick;
 pub mod radial;
 pub mod raster;
@@ -60,7 +61,8 @@ pub use data::{
 pub use data_config::{
     DataBarBinStyleConfig, DataBarStyleOverride, DataErrorBarPointStyleConfig,
     DataErrorBarPointStyleOverride, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
-    DataScatterStyleConfig, ErrorRef, MAX_CONTOUR_LEVELS, ScatterShape, SeriesConfig,
+    DataScatterStyleConfig, ErrorRef, LineFill, LineInterpolation, MAX_CONTOUR_LEVELS,
+    ScatterShape, SeriesConfig, SeriesRef,
 };
 pub use data_render::{
     AllocError, ColumnHandle, ColumnId, ColumnPool, DefragPolicy, GpuAllocCtx, GpuBudget,
