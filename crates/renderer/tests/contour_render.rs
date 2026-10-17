@@ -805,7 +805,7 @@ fn contour_probe_renders_lines_and_filled_bands() {
         .expect("coordinates");
     renderer.add_columns(&batch).expect("saddle grid");
 
-    let dir = std::env::var("FIGGY_PROBE_DIR").unwrap_or_else(|_| ".".to_string());
+    let dir = probe_dir();
     let bar = colorbar(-1.0, 1.0);
     let chart = bare_chart(bar);
     // Labels: one anchor per level, placed on that level's line with the tangent
@@ -2009,7 +2009,17 @@ fn field_panel_probe_matches_the_winit_demo() {
         },
     }];
     let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
-    let dir = std::env::var("FIGGY_PROBE_DIR").unwrap_or_else(|_| ".".to_string());
+    let dir = probe_dir();
     let png = encode_png(&img).expect("encode");
     std::fs::write(format!("{dir}/probe_contour_demo_panel.png"), png).expect("write probe");
+}
+
+/// Where the visual probes land: `$FIGGY_PROBE_DIR` when set, otherwise
+/// Cargo's per-target scratch directory under `target/`, so a plain test run
+/// never writes into the source tree.
+fn probe_dir() -> String {
+    let dir = std::env::var("FIGGY_PROBE_DIR")
+        .unwrap_or_else(|_| env!("CARGO_TARGET_TMPDIR").to_string());
+    std::fs::create_dir_all(&dir).expect("create probe directory");
+    dir
 }

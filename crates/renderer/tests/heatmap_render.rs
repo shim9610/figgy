@@ -1038,7 +1038,7 @@ fn heatmap_probe_renders_every_shading_and_fill() {
             vec![1.5, 3.5],
         ),
     ];
-    let dir = std::env::var("FIGGY_PROBE_DIR").unwrap_or_else(|_| ".".to_string());
+    let dir = probe_dir();
     for (name, shading, mode, levels) in cases {
         let series = vec![heatmap(
             &["z0", "z1", "z2"],
@@ -1052,4 +1052,14 @@ fn heatmap_probe_renders_every_shading_and_fill() {
         let png = encode_png(&img).expect("encode");
         std::fs::write(format!("{dir}/probe_heatmap_{name}.png"), png).expect("write probe");
     }
+}
+
+/// Where the visual probes land: `$FIGGY_PROBE_DIR` when set, otherwise
+/// Cargo's per-target scratch directory under `target/`, so a plain test run
+/// never writes into the source tree.
+fn probe_dir() -> String {
+    let dir = std::env::var("FIGGY_PROBE_DIR")
+        .unwrap_or_else(|_| env!("CARGO_TARGET_TMPDIR").to_string());
+    std::fs::create_dir_all(&dir).expect("create probe directory");
+    dir
 }
