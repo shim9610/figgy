@@ -1948,7 +1948,7 @@ mod web {
     use renderer::{
         Chart, ChartDrawItem, ChartId, ChartRenderStamp, ChartStyle, ChartView, Color,
         ColumnSource, CpuTextMeasure, DataLineStyleConfig, DataRenderType, DefragPolicy, FitExtent,
-        HiLoColumnSource, HitId, HitMap, RegisteredChartDrawItem, Renderer,
+        HiLoColumnSource, HitId, HitMap, LayerHit, RegisteredChartDrawItem, Renderer,
         ResizeHandle as ModelResizeHandle, SelectionBox, Series, SeriesConfig, StreamColumn,
         StreamEncoding, StreamRangeSourceBinding, StreamReplay, StreamSourceBinding,
         StreamStatistics, StreamingChartOptions, StreamingLimits, WindowedRenderer,
@@ -2280,6 +2280,7 @@ mod web {
             last_presented_stamp: None,
             selected_annotation: None,
             annotation_selection_dirty: false,
+            annotation_pointer: false,
         };
 
         emit_init_progress(
@@ -2869,6 +2870,10 @@ mod web {
         selected_annotation: Option<usize>,
         /// The annotation selection changed since the overlay was drawn.
         annotation_selection_dirty: bool,
+        /// The pointer press that started the current drag or handle drag
+        /// landed on the selected annotation (the annotation layer's route),
+        /// so `on_move` edits the annotation instead of a chart element.
+        annotation_pointer: bool,
     }
 
     impl FiggyChart {
@@ -2912,15 +2917,23 @@ mod web {
 
         /// The hit map's registration set depends only on the active layer
         /// and the overlay count. Rebuild it when either changed; the
-        /// registry has already dropped any `HitId` of the previous map.
+        /// registry has already dropped any `HitId` of the previous map. A
+        /// layer change also clears the annotation selection: it is the
+        /// element selection of the annotation layer, one level below the
+        /// layer like the registry's `HitId`.
         fn sync_hitmap(&mut self) {
             let config = self.chart_config();
             let key = (config.active_layer(), config.overlays.len());
             if key != self.hitmap_layer {
+                let layer_changed = key.0 != self.hitmap_layer.0;
                 self.hitmap = HitMap::for_active_layer(config);
                 self.hitmap_layer = key;
                 self.dragging = false;
                 self.resizing = None;
+                self.annotation_pointer = false;
+                if layer_changed {
+                    self.set_selected_annotation(None);
+                }
             }
         }
 
@@ -5308,17 +5321,20 @@ mod web {
         /// active its elements answer as `"overlay_<n>:axis_right"`,
         /// `"overlay_<n>:tick_labels_right"`, `"overlay_<n>:axis_title_right"`
         /// and `"overlay_<n>:legend"`, and the base Y axes do not answer.
+        /// While the annotation layer is active (and shown) its drawn items
+        /// sit on top and answer as `"annotation_<n>"`; on every other layer
+        /// they are not registered and clicks pass through them.
         pub fn hit_test(&self, x: f32, y: f32) -> Option<String> {
             let (display_config, _, _) = self.display_config();
-            self.hitmap
-                .hit_test(
-                    &display_config,
-                    &CpuTextMeasure::for_style(&display_config.draw_style),
-                    x,
-                    y,
-                )
-                .and_then(|id| self.hitmap.get(id))
-                .map(|el| el.element_id())
+            match self
+                .view
+                .hit_test_active_layer(&display_config, &self.hitmap, [x, y])?
+            {
+                LayerHit::Annotation { index, .. } => {
+                    Some(renderer::DecorationId::Annotation(index).element_id())
+                }
+                LayerHit::Element(id) => self.hitmap.get(id).map(|el| el.element_id()),
+            }
         }
 
         fn set_selected_annotation(&mut self, selected: Option<usize>) {
@@ -5334,6 +5350,30 @@ mod web {
                 .annotation_map()
                 .find(index)
                 .ok_or_else(|| js_err("annotation is not drawn in the current frame"))
+        }
+
+        /// Move an annotation or one of its handles by a delta in physical
+        /// canvas pixels, the frame's anchor space. `Ok(false)` for a
+        /// rejected move; the config is unchanged then.
+        fn move_annotation(
+            &mut self,
+            index: usize,
+            dx: f32,
+            dy: f32,
+            handle: Option<ModelResizeHandle>,
+        ) -> Result<bool, JsValue> {
+            let id = self.annotation_hit_id(index)?;
+            let map = self.view.annotation_map();
+            let mut config = self.chart_config().clone();
+            let result = match handle {
+                Some(h) => map.resize_by(&mut config.annotations, id, h, dx, dy),
+                None => map.drag_by(&mut config.annotations, id, dx, dy),
+            };
+            if result != Some(NudgeResult::Moved) {
+                return Ok(false);
+            }
+            self.replace_chart_config(config)?;
+            Ok(true)
         }
 
         // ---- annotation layer ----
@@ -5423,23 +5463,15 @@ mod web {
                 return Err(js_err("drag must be finite"));
             }
             use ModelResizeHandle::*;
-            let id = self.annotation_hit_id(index as usize)?;
-            let map = self.view.annotation_map();
-            let mut config = self.chart_config().clone();
-            let result = if let Some(name) = handle {
-                let h = [N, S, W, E, NW, NE, SW, SE]
-                    .into_iter()
-                    .find(|h| format!("{h:?}") == name)
-                    .ok_or_else(|| js_err("unknown resize handle"))?;
-                map.resize_by(&mut config.annotations, id, h, dx, dy)
-            } else {
-                map.drag_by(&mut config.annotations, id, dx, dy)
-            };
-            if result != Some(NudgeResult::Moved) {
-                return Ok(false);
-            }
-            self.replace_chart_config(config)?;
-            Ok(true)
+            let handle = handle
+                .map(|name| {
+                    [N, S, W, E, NW, NE, SW, SE]
+                        .into_iter()
+                        .find(|h| format!("{h:?}") == name)
+                        .ok_or_else(|| js_err("unknown resize handle"))
+                })
+                .transpose()?;
+            self.move_annotation(index as usize, dx, dy, handle)
         }
 
         /// Append an `Annotation` (JSON, the same shape as in `get_config`)
@@ -5520,8 +5552,22 @@ mod web {
         }
 
         /// Renderer-measured decoration bounds in physical canvas pixels.
+        /// An `"annotation_<n>"` id that `hit_test` reports resolves to the
+        /// drawn item's selection box.
         pub fn decoration_bounds(&self, target: &str) -> Result<String, JsValue> {
             let (config, _, _) = self.display_config();
+            let annotations = self.view.annotation_map();
+            if let Some(b) = annotations
+                .entries()
+                .find(|(_, e)| e.id().element_id() == target)
+                .and_then(|(id, _)| annotations.selection_box(id))
+            {
+                let value = serde_json::json!({
+                    "rect": [b.rect.x, b.rect.y, b.rect.width, b.rect.height],
+                    "handles": b.handles.iter().map(|r| vec![r.x, r.y, r.width, r.height]).collect::<Vec<_>>(),
+                });
+                return serde_json::to_string(&value).map_err(js_err);
+            }
             let id = self.hitmap.find(target);
             let value=id.and_then(|id|self.hitmap.selection_box(id,&config,&CpuTextMeasure::for_style(&config.draw_style))).map(|b|serde_json::json!({"rect":[b.rect.x,b.rect.y,b.rect.width,b.rect.height],"handles":b.handles.iter().map(|r|vec![r.x,r.y,r.width,r.height]).collect::<Vec<_>>()}));
             serde_json::to_string(&value).map_err(js_err)
@@ -5963,8 +6009,46 @@ mod web {
 
         /// Pointer press. Returns `true` while something is selected.
         /// The host can mirror that state in its own UI.
+        ///
+        /// The press follows the active layer's route: while the annotation
+        /// layer is active (and shown), the selected annotation's handles win
+        /// first, then a drawn item under the point is selected (clearing
+        /// the element selection) and dragged by `on_move`; a press that
+        /// misses every item falls through to the shared elements below and
+        /// clears the annotation selection. On every other layer the items
+        /// are not part of the route.
         pub fn on_press(&mut self, x: f32, y: f32) -> Result<bool, JsValue> {
             let (display_config, _, _) = self.display_config();
+            let routes_annotations = renderer::AnnotationMap::receives_pointer(
+                display_config.active_layer(),
+                &display_config.annotations,
+            );
+            if routes_annotations
+                && let Some(index) = self.selected_annotation
+                && let Ok(id) = self.annotation_hit_id(index)
+                && let Some(handle) = self.view.annotation_map().hit_resize_handle(id, [x, y])
+            {
+                self.resizing = Some(handle);
+                self.dragging = false;
+                self.annotation_pointer = true;
+                return Ok(true);
+            }
+            if let Some(LayerHit::Annotation { index, .. }) =
+                self.view
+                    .hit_test_active_layer(&display_config, &self.hitmap, [x, y])
+            {
+                if self.chart_selection().is_some() {
+                    self.renderer
+                        .set_chart_selection(self.chart_id, None)
+                        .map_err(js_err)?;
+                }
+                self.set_selected_annotation(Some(index));
+                self.resizing = None;
+                self.dragging = true;
+                self.annotation_pointer = true;
+                return Ok(true);
+            }
+            self.annotation_pointer = false;
             let selected = self.chart_selection();
             // Resize handles on the selected element win over hit-testing.
             if let Some(id) = selected
@@ -5997,7 +6081,7 @@ mod web {
                     .set_chart_selection(self.chart_id, new_sel)
                     .map_err(js_err)?;
             }
-            if new_sel.is_some() {
+            if new_sel.is_some() || routes_annotations {
                 self.set_selected_annotation(None);
             }
             self.resizing = None;
@@ -6006,7 +6090,19 @@ mod web {
         }
 
         /// Pointer move with frame delta — drags or resizes the selection.
+        /// After a press on an annotation the delta moves that item (or the
+        /// pressed handle) through the frame's anchor space.
         pub fn on_move(&mut self, dx: f32, dy: f32) -> Result<(), JsValue> {
+            if self.annotation_pointer {
+                if let Some(index) = self.selected_annotation
+                    && (self.dragging || self.resizing.is_some())
+                    && dx.is_finite()
+                    && dy.is_finite()
+                {
+                    self.move_annotation(index, dx, dy, self.resizing)?;
+                }
+                return Ok(());
+            }
             let Some(id) = self.chart_selection() else {
                 return Ok(());
             };
@@ -6032,10 +6128,12 @@ mod web {
         pub fn on_release(&mut self) {
             self.dragging = false;
             self.resizing = None;
+            self.annotation_pointer = false;
         }
 
+        /// `true` while a chart element or an annotation is selected.
         pub fn has_selection(&self) -> bool {
-            self.chart_selection().is_some()
+            self.chart_selection().is_some() || self.selected_annotation.is_some()
         }
 
         // ---- frame / resize / export ----

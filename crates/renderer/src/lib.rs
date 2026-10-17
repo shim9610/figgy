@@ -48,7 +48,7 @@ pub use ::model::{
 };
 
 // Public API re-exports.
-pub use annotation::{AnnotationMap, BoundedAnnotationFrame, FrameBackground};
+pub use annotation::{AnnotationMap, BoundedAnnotationFrame, FrameBackground, LayerHit};
 pub use chart::{Chart, FitExtent, errorbar_extent};
 pub use color::Color;
 pub use colormap::{ColorMap, LUT_LEN};

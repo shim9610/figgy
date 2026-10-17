@@ -61,7 +61,7 @@ at the time. The first crates.io publication is recorded below.
 
 ## Unreleased — annotation layer
 
-- Add the dedicated annotation layer to every chart family (#12, steps 1–3).
+- Add the dedicated annotation layer to every chart family (#12, steps 1–4).
   `AnnotationLayer` gains `items: Vec<Annotation>`; an `Annotation` is an
   `id`, a `visible` flag and one of `ReferenceLine { axis, value, style, label }`,
   `Span { axis, from, to, fill }`, `Text { anchor, text, box_style }` or
@@ -108,14 +108,37 @@ at the time. The first crates.io publication is recorded below.
   kind (`Anchor::converted` switches kinds in place). Bounded charts select an
   annotation through `decorations.selected = Annotation(index)` without
   rebuilding the frame; Cartesian hosts pass the index to
-  `refresh_annotations`. Registering annotation elements on the base hit map
-  when `active_layer == Annotations` follows the overlay layers (#11).
+  `refresh_annotations`.
+- Pointer route by the active layer (#12, step 4): while
+  `active_layer == LayerRef::Annotations` and the layer is shown, the drawn
+  items sit on top of the chart's own hit map; on every other layer they are
+  not part of the route and clicks pass through them.
+  `ChartView::hit_test_active_layer(config, hit_map, point)` tests the view's
+  annotation map above `HitMap::for_active_layer` (whose `Annotations` set is
+  the shared elements, for single-layer charts and layered documents alike),
+  `BoundedAnnotationFrame::hit_test_active_layer(active, decorations, point)`
+  tests the items above every decoration of a bounded frame, and
+  `AnnotationMap::route` / `receives_pointer` state the shared rule; both
+  return `LayerHit::{Annotation { index, id }, Element(id)}`. `RadialChart`,
+  `CategoricalChart` and `BoxPlotChart` gain `active_layer()` /
+  `set_active_layer` (an `Overlay` reads and is stored as `Base`; a change
+  clears `decorations.selected` and keeps the data selection), and
+  `LayerRef::bounded()`. A layer switch reuses the data, grid and decoration
+  textures and the bounded frames; routed selection and drags refresh the
+  annotation layer only.
 - The WASM wrappers `FiggyChart` and `FiggyBoundedChart` expose
   `annotations`, `hit_annotation`, `select_annotation`, `selected_annotation`,
   `annotation_handle`, `drag_annotation`, `add_annotation`, `set_annotation`,
   `remove_annotation`, `set_annotations_visible`, `pointer_to_anchor` and
   `annotation_warnings`; a bounded chart with a visible span is drawn with the
   host-clear frame and the chart background as the clear colour.
+  Their pointer methods follow the route: `FiggyChart.hit_test`, `on_press` /
+  `on_move` (handles of the selected item first, then a press selects and
+  drags an item) and `decoration_bounds` answer `"annotation_<n>"`, and a
+  layer change clears the annotation selection; `has_selection` also counts
+  it. `FiggyBoundedChart` gains `set_active_layer` / `active_layer`, and its
+  `hit_decoration`, `select_decoration`, `resize_handle` and `drag` take the
+  same ids. The index-based annotation methods keep working on every layer.
 - Tests: the SSOT invalidation matrix classifies `annotations.items` (annotation
   revision only) and `annotations.visible` (draw only) on resident and streamed
   charts; the Cartesian layer tests prove that an annotation refresh rewrites
@@ -124,7 +147,13 @@ at the time. The first crates.io publication is recorded below.
   above the legend, that drags round-trip, and that 1× / 2× exports share
   metrics with the hit map; the bounded tests prove the same frame reuse,
   export parity, selection, drags and radial data-anchor warnings for all
-  three families. Guides: configuration reference, interaction guide
+  three families. The routing tests register per-layer sets for single-layer
+  and layered Cartesian documents, put the items above the legend only while
+  `Annotations` is active (1× and 2×), pass hidden layers through, keep every
+  grid, decoration and bounded frame cache across a layer switch, paint the
+  bytes of a fresh renderer after routed selection and handle drags, and keep
+  anchor kinds through JSON for all three bounded families. Guides:
+  configuration reference, interaction guide
   (annotation layer), architecture (revision table), bounded family guides,
   WASM guide and JSON schema.
 - Rust migration: exhaustive `AnnotationLayer` literals need `items`;
