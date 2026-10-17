@@ -216,10 +216,12 @@ pub struct Annotation {
     pub kind: AnnotationKind,
 }
 
+#[cfg(feature = "serde")]
 fn default_visible() -> bool {
     true
 }
 
+#[cfg(feature = "serde")]
 fn is_visible(visible: &bool) -> bool {
     *visible
 }
