@@ -43,8 +43,8 @@ mod time_axis;
 // (`chart` and `data` are renderer modules: dirty-flag tracking and the
 // `ColumnSource` upload adapter are render-side machinery.)
 pub use ::model::{
-    color, colormap, config, data_config, default, drag, format, layout, legend, line, preset,
-    resize, select, text, tick,
+    color, colormap, config, data_config, default, drag, expand, format, layout, legend, line,
+    preset, resize, select, text, tick,
 };
 
 // Public API re-exports.
@@ -101,7 +101,8 @@ pub use resize::{Resizable, ResizeHandle};
 pub use select::{
     AxisElement, AxisLabelElement, AxisTitleElement, ChartTitleElement, ColorBarAxisElement,
     ColorBarElement, ColorBarLabelElement, ColorBarTitleElement, DataAreaElement, HitId, HitMap,
-    LegendElement, Selectable, SelectionBox,
+    LegendElement, OverlayAxisElement, OverlayAxisLabelElement, OverlayAxisTitleElement,
+    OverlayLegendElement, Selectable, SelectionBox,
 };
 pub use streaming_source::{
     AutoStreamRange, AutoStreamSourceVersion, AutoStreamingProgress, AutoStreamingRangeRequest,
@@ -134,7 +135,7 @@ pub use model::decoration::{DecorationId, DecorationLayout, DecorationOffset};
 pub use model::{
     Anchor, AnchorKind, Annotation, AnnotationAxis, AnnotationElement, AnnotationHandle,
     AnnotationKind, AnnotationLayer, AnnotationLineStyle, AnnotationSpace, ArrowStyle, AxisMap,
-    AxisSpace, BoxStyle, LayerRef, PixelSpace,
+    AxisSpace, BoxStyle, ExpandedPanel, Expansion, LayerRef, OverlayLayer, PixelSpace,
 };
 pub mod decoration;
 

@@ -9,6 +9,9 @@ mod styled_runtime;
 #[path = "ssot_invalidation_tests.rs"]
 mod ssot_invalidation;
 
+#[path = "overlay_layer_tests.rs"]
+mod overlay_layers;
+
 #[path = "annotation_layer_tests.rs"]
 mod annotation_layer;
 

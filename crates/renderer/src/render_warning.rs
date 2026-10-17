@@ -36,17 +36,22 @@ pub enum WarningAxis {
     RightY,
     /// The colourbar's value axis, `ColorBarOptions::axis` of `Config::colorbar`.
     ColorBar,
+    /// The Y axis of overlay layer `index`, `OverlayLayer::y_axis` of
+    /// `Config::overlays[index]`. A layered view merges every panel's
+    /// warnings into one list, and this tag says which layer one is about.
+    OverlayY(usize),
 }
 
 impl fmt::Display for WarningAxis {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::BottomX => "bottom_x",
-            Self::TopX => "top_x",
-            Self::LeftY => "left_y",
-            Self::RightY => "right_y",
-            Self::ColorBar => "colorbar.axis",
-        })
+        match self {
+            Self::BottomX => f.write_str("bottom_x"),
+            Self::TopX => f.write_str("top_x"),
+            Self::LeftY => f.write_str("left_y"),
+            Self::RightY => f.write_str("right_y"),
+            Self::ColorBar => f.write_str("colorbar.axis"),
+            Self::OverlayY(index) => write!(f, "overlays[{index}].y_axis"),
+        }
     }
 }
 
@@ -162,6 +167,21 @@ impl RenderWarning {
             | Self::LogDecadeStepAdjusted { axis, .. } => Some(*axis),
             Self::AnnotationSkipped { .. } => None,
         }
+    }
+
+    /// The same warning about `axis`; a warning that is not about an axis is
+    /// returned unchanged. Overlay panels are rasterized from an
+    /// internal config whose right axis is the overlay's, so their warnings
+    /// are re-tagged with the layer they belong to.
+    pub fn with_axis(mut self, axis: WarningAxis) -> Self {
+        match &mut self {
+            Self::MajorSpacingReplaced { axis: slot, .. }
+            | Self::MinorCountClamped { axis: slot, .. }
+            | Self::LogDecadeStepAdjusted { axis: slot, .. } => *slot = axis,
+            // Not about an axis; nothing to re-tag.
+            Self::AnnotationSkipped { .. } => {}
+        }
+        self
     }
 }
 

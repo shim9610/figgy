@@ -370,6 +370,138 @@ fn colorbar_edits() -> Vec<Edit> {
     cases
 }
 
+/// Overlay edits run against a baseline whose one series is scaled by an
+/// overlay layer. The overlay's Y range, scale, direction and series list are
+/// geometry of its own panel; its band (`out_margin + major_tick_length`)
+/// widens the shared right margin, so those are data-area edits; the rest is
+/// chrome of the overlay panel. None of these documents stream: the stream
+/// pass rejects overlays as a contract of its own.
+fn overlay_edits() -> Vec<Edit> {
+    let mut cases = Vec::new();
+    macro_rules! overlay {
+        ($($field:ident).+, $value:expr, $work:ident, $pixels:ident) => {
+            cases.push(Edit {
+                name: concat!("overlays[0].", stringify!($($field).+)),
+                apply: |c| c.overlays[0].$($field).+ = $value,
+                work: Work::$work,
+                differs: true,
+                raster: true,
+                annotation: false,
+                pixels: Pixels::$pixels,
+                streams: false,
+            });
+        };
+    }
+    cases.push(Edit {
+        name: "overlays (one -> none)",
+        apply: |c| c.overlays.clear(),
+        work: Work::Packed,
+        differs: true,
+        raster: true,
+        annotation: false,
+        pixels: Pixels::Changed,
+        streams: false,
+    });
+    cases.push(Edit {
+        name: "overlays (one -> two)",
+        apply: |c| {
+            let mut overlay = crate::OverlayLayer::default();
+            overlay.y_axis.out_margin = 60.0;
+            overlay.y_axis.line_offset = 40.0;
+            c.overlays.push(overlay);
+        },
+        work: Work::Packed,
+        differs: true,
+        raster: true,
+        annotation: false,
+        pixels: Pixels::Changed,
+        streams: false,
+    });
+    cases.push(Edit {
+        name: "active_layer (overlay)",
+        apply: |c| c.active_layer = crate::LayerRef::Overlay(0),
+        work: Work::Prefix,
+        differs: true,
+        raster: false,
+        annotation: false,
+        pixels: Pixels::Unchanged,
+        streams: false,
+    });
+    overlay!(series, Vec::new(), Packed, Changed);
+    overlay!(y_axis.min, -2.0, Packed, Changed);
+    overlay!(y_axis.max, 4.0, Packed, Changed);
+    overlay!(y_axis.scale, AxisScale::Logarithmic, Packed, Changed);
+    overlay!(y_axis.inverted, true, Packed, Changed);
+    overlay!(y_axis.out_margin, 70.0, Packed, Changed);
+    overlay!(y_axis.major_tick_length, 12.0, Packed, Changed);
+    overlay!(y_axis.major_spacing, 0.25, Prefix, Changed);
+    overlay!(y_axis.minor_count, 3, Prefix, Changed);
+    overlay!(y_axis.tick, TickVisibility::None, Prefix, Changed);
+    overlay!(y_axis.minor_tick_length, 6.0, Prefix, Changed);
+    overlay!(y_axis.line_visible, false, Prefix, Changed);
+    overlay!(
+        y_axis.line_color,
+        Color::new(0.1, 0.8, 0.2, 1.0),
+        Prefix,
+        Changed
+    );
+    overlay!(y_axis.line_width, 3.0, Prefix, Changed);
+    // The overlay axis line sits on the parent's own right axis line, which
+    // the SSOT keeps drawing underneath: a dash pattern shows that solid line
+    // through its gaps, so the composite may come out identical.
+    overlay!(y_axis.line_style, LineStylePreset::Dash, Prefix, Any);
+    overlay!(y_axis.line_offset, 6.0, Prefix, Changed);
+    overlay!(y_axis.label_style.label_visible, false, Prefix, Changed);
+    overlay!(y_axis.label_style.visible, false, Prefix, Changed);
+    overlay!(
+        y_axis.label_style.color,
+        Color::new(0.0, 0.5, 0.9, 1.0),
+        Prefix,
+        Changed
+    );
+    overlay!(y_axis.label_style.font_size, 13.0, Prefix, Changed);
+    overlay!(
+        y_axis.label_style.label_font,
+        "Liberation Sans".into(),
+        Prefix,
+        Any
+    );
+    overlay!(y_axis.label_style.label_offset_x, 4.0, Prefix, Changed);
+    overlay!(y_axis.label_style.label_offset_y, 4.0, Prefix, Changed);
+    overlay!(
+        y_axis.label_style.format,
+        crate::format::LabelFormat::Scientific,
+        Prefix,
+        Changed
+    );
+    overlay!(y_axis.label_style.significant_digits, 5, Prefix, Changed);
+    overlay!(y_axis.title_option.visible, false, Prefix, Changed);
+    overlay!(
+        y_axis.title_option.text,
+        RichText::plain("Pressure", Color::BLACK, 10.0, ""),
+        Prefix,
+        Changed
+    );
+    overlay!(y_axis.title_option.offset_x, 4.0, Prefix, Changed);
+    overlay!(y_axis.title_option.offset_y, 4.0, Prefix, Changed);
+    cases.push(Edit {
+        name: "overlays[0].legend (None -> Some)",
+        apply: |c| {
+            let mut legend = crate::default::default_legend();
+            legend.visible = true;
+            legend.content = RichText::plain("Overlay", Color::BLACK, 10.0, "");
+            c.overlays[0].legend = Some(legend);
+        },
+        work: Work::Prefix,
+        differs: true,
+        raster: true,
+        annotation: false,
+        pixels: Pixels::Changed,
+        streams: false,
+    });
+    cases
+}
+
 fn baseline() -> Config {
     let mut c = crate::default::default_config();
     c.chart_area = crate::layout::ChartArea(Rect {
@@ -551,6 +683,25 @@ fn baseline_with_colorbar() -> Config {
     c
 }
 
+/// The baseline with its series moved to one overlay layer: a right-hand Y
+/// axis with its own positive range (so a log edit is valid), a band wider
+/// than the parent's right axis, and a titled axis.
+fn baseline_with_overlay() -> Config {
+    let mut c = baseline();
+    let mut overlay = crate::OverlayLayer::default();
+    overlay.y_axis.min = 0.1;
+    overlay.y_axis.max = 2.0;
+    overlay.y_axis.major_spacing = 0.5;
+    overlay.y_axis.minor_count = 1;
+    overlay.y_axis.out_margin = 45.0;
+    overlay.y_axis.label_style.font_size = 10.0;
+    overlay.y_axis.title_option.visible = true;
+    overlay.y_axis.title_option.text = RichText::plain("Right", Color::BLACK, 10.0, "");
+    overlay.series = vec!["s".into()];
+    c.overlays.push(overlay);
+    c
+}
+
 fn values() -> (crate::Column<f32>, crate::Column<f32>) {
     (
         crate::Column {
@@ -704,6 +855,7 @@ fn matrix(resident: bool, cache: bool) {
     let suites = [
         (baseline(), edits()),
         (baseline_with_colorbar(), colorbar_edits()),
+        (baseline_with_overlay(), overlay_edits()),
         (baseline_with_annotations(), annotation_edits()),
     ];
     eprintln!(
@@ -871,6 +1023,7 @@ fn config_fields_are_classified() {
         picked_data: _,   // selection revision, same classification as picked_points
         colorbar,         // colorbar_edits(): band fields Packed, the rest Prefix
         draw_style: _,    // Sketch / Milkyway / Constellation: Replay
+        overlays,         // overlay_edits(): range/series/band Packed, the rest Prefix
         active_layer: _,  // layer only: no raster, no pixels
         annotations: _,   // annotation_edits(): annotation revision only
     } = baseline_with_colorbar();
@@ -967,6 +1120,12 @@ fn config_fields_are_classified() {
         visible: _,
         items: _,
     } = crate::AnnotationLayer::default();
+    let crate::OverlayLayer {
+        y_axis: _, // every AxisOptions field, as overlay!(y_axis.*)
+        series: _, // overlays[0].series
+        legend: _, // overlays[0].legend (None -> Some)
+    } = overlays.into_iter().next().unwrap_or_default();
+    let _ = baseline_with_overlay();
 }
 
 #[test]

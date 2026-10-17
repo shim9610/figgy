@@ -14,11 +14,13 @@
 
 use crate::color::Color;
 use crate::config::{AxisOptions, Config, TickVisibility};
+use crate::decoration::DecorationId;
 use crate::drag::{DragConfig, Draggable};
+use crate::layer::LayerRef;
 use crate::layout::{
-    RectF, Side, TitleBand, axis_offset, axis_title_placement, axis_visibility_rect,
-    chart_title_placement, colorbar_rect, colorbar_title_placement, label_origin, label_rect,
-    legend_rect, point_on_rect_side, rect_axis_visibility_rect,
+    Element, NudgeReject, NudgeResult, RectF, Side, TitleBand, axis_offset, axis_title_placement,
+    axis_visibility_rect, chart_title_placement, colorbar_rect, colorbar_title_placement,
+    label_origin, label_rect, legend_rect, point_on_rect_side, rect_axis_visibility_rect,
 };
 use crate::resize::Resizable;
 use crate::text::MeasureText;
@@ -240,6 +242,54 @@ impl HitMap<Config> {
         map.register(ColorBarTitleElement);
         map
     }
+
+    /// The registration set for the layer `cfg.active_layer()` addresses.
+    ///
+    /// `Base` is exactly [`Self::standard_chart`]. For any other layer the
+    /// shared elements come first — data area, the two X axes with their
+    /// label bands and titles, the merged legend, the chart title and the
+    /// colourbar chrome — and the active layer's own elements last, so the
+    /// reverse-order hit test puts them on top: for `Overlay(i)` its right
+    /// Y axis, that axis' label band and title, and its per-layer legend
+    /// (`DecorationId::Overlay { layer: i, .. }` ids, `overlay_<i>:…`).
+    /// The inactive layers' elements are not registered at all, so a click
+    /// on them passes through to the active layer; the base panel's Y axes
+    /// are therefore absent while an overlay or the annotation layer is
+    /// active. The annotation layer registers no items of its own yet.
+    ///
+    /// The set depends only on the active layer and the overlay count, so a
+    /// host rebuilds the map when either changes; `HitId`s from a previous
+    /// map are not valid in the new one.
+    pub fn for_active_layer(cfg: &Config) -> Self {
+        let layer = cfg.active_layer();
+        if layer == LayerRef::Base {
+            return Self::standard_chart();
+        }
+        let mut map = Self::new();
+        map.register(DataAreaElement);
+        for side in [Side::Top, Side::Bottom] {
+            map.register(AxisElement { side });
+        }
+        for side in [Side::Top, Side::Bottom] {
+            map.register(AxisLabelElement { side });
+        }
+        for side in [Side::Top, Side::Bottom] {
+            map.register(AxisTitleElement { side });
+        }
+        map.register(LegendElement);
+        map.register(ChartTitleElement);
+        map.register(ColorBarElement);
+        map.register(ColorBarAxisElement);
+        map.register(ColorBarLabelElement);
+        map.register(ColorBarTitleElement);
+        if let LayerRef::Overlay(index) = layer {
+            map.register(OverlayAxisElement { layer: index });
+            map.register(OverlayAxisLabelElement { layer: index });
+            map.register(OverlayAxisTitleElement { layer: index });
+            map.register(OverlayLegendElement { layer: index });
+        }
+        map
+    }
 }
 
 // Selectable chart elements.
@@ -275,12 +325,42 @@ pub struct DataAreaElement;
 #[derive(Debug, Clone, PartialEq)]
 pub struct LegendElement;
 
+/// The right Y axis of overlay layer `layer` — line plus tick band.
+///
+/// Overlay elements measure against the overlay's internal panel
+/// (`Config::overlay_panel`), whose data area is the group data area, and
+/// write a drag back into `overlays[layer].y_axis` only, so the parent's own
+/// right axis never moves on their behalf.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OverlayAxisElement {
+    pub layer: usize,
+}
+
+/// The tick-label band of overlay layer `layer`'s Y axis.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OverlayAxisLabelElement {
+    pub layer: usize,
+}
+
+/// The title of overlay layer `layer`'s Y axis.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OverlayAxisTitleElement {
+    pub layer: usize,
+}
+
+/// The per-layer legend of overlay layer `layer` (`OverlayLayer::legend`);
+/// no bounds while the overlay has none.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OverlayLegendElement {
+    pub layer: usize,
+}
+
 /// The colourbar strip.
 ///
 /// Carries no side of its own: the bar's `side` lives in `Config.colorbar`, and
 /// a copy here would be a mirror that can disagree with what is drawn. That is
 /// also why the resize handles map to screen-side edges
-/// ([`Element::ColorBarEdge`](crate::layout::Element::ColorBarEdge)) and let
+/// ([`Element::ColorBarEdge`]) and let
 /// nudge resolve which dimension each one drives.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ColorBarElement;
@@ -638,6 +718,163 @@ impl Selectable for LegendElement {
     }
 }
 
+// Overlay layer elements. Bounds come from the overlay's expanded panel; a
+// drag is applied to that panel through the ordinary nudge path and only the
+// moved fields are copied back into the overlay's own options.
+
+fn overlay_id(layer: usize, inner: DecorationId) -> String {
+    DecorationId::Overlay {
+        layer,
+        inner: Box::new(inner),
+    }
+    .element_id()
+}
+
+/// Copy the drag-owned fields of a panel's right axis back to the overlay.
+/// `out_margin` is group geometry and never moves through these elements.
+fn adopt_overlay_axis(target: &mut AxisOptions, panel: &AxisOptions) {
+    target.line_offset = panel.line_offset;
+    target.label_style.label_offset_x = panel.label_style.label_offset_x;
+    target.label_style.label_offset_y = panel.label_style.label_offset_y;
+    target.title_option.offset_x = panel.title_option.offset_x;
+    target.title_option.offset_y = panel.title_option.offset_y;
+}
+
+fn drag_overlay_axis_element(
+    cfg: &mut Config,
+    layer: usize,
+    element: Element,
+    dx: f32,
+    dy: f32,
+) -> NudgeResult {
+    let Some(mut panel) = cfg.overlay_panel(layer) else {
+        return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+    };
+    let result = panel.nudge(element, dx, dy);
+    if result == NudgeResult::Moved {
+        adopt_overlay_axis(&mut cfg.overlays[layer].y_axis, &panel.right_y);
+    }
+    result
+}
+
+impl Selectable for OverlayAxisElement {
+    fn element_id(&self) -> String {
+        overlay_id(self.layer, DecorationId::Axis(Side::Right))
+    }
+
+    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
+        let panel = cfg.overlay_panel(self.layer)?;
+        AxisElement { side: Side::Right }.bounds(&panel, measure)
+    }
+
+    fn as_draggable(&self) -> Option<&dyn Draggable> {
+        Some(self)
+    }
+}
+
+impl Draggable for OverlayAxisElement {
+    fn nudge_element(&self) -> Element {
+        Element::Axis(Side::Right)
+    }
+
+    fn drag_by(&self, cfg: &mut Config, dx: f32, dy: f32) -> NudgeResult {
+        drag_overlay_axis_element(cfg, self.layer, self.nudge_element(), dx, dy)
+    }
+}
+
+impl Selectable for OverlayAxisLabelElement {
+    fn element_id(&self) -> String {
+        overlay_id(self.layer, DecorationId::AxisLabel(Side::Right))
+    }
+
+    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
+        let panel = cfg.overlay_panel(self.layer)?;
+        AxisLabelElement { side: Side::Right }.bounds(&panel, measure)
+    }
+
+    fn as_draggable(&self) -> Option<&dyn Draggable> {
+        Some(self)
+    }
+}
+
+impl Draggable for OverlayAxisLabelElement {
+    fn nudge_element(&self) -> Element {
+        Element::AxisLabel(Side::Right)
+    }
+
+    fn drag_by(&self, cfg: &mut Config, dx: f32, dy: f32) -> NudgeResult {
+        drag_overlay_axis_element(cfg, self.layer, self.nudge_element(), dx, dy)
+    }
+}
+
+impl Selectable for OverlayAxisTitleElement {
+    fn element_id(&self) -> String {
+        overlay_id(self.layer, DecorationId::AxisTitle(Side::Right))
+    }
+
+    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
+        let panel = cfg.overlay_panel(self.layer)?;
+        AxisTitleElement { side: Side::Right }.bounds(&panel, measure)
+    }
+
+    fn as_draggable(&self) -> Option<&dyn Draggable> {
+        Some(self)
+    }
+}
+
+impl Draggable for OverlayAxisTitleElement {
+    fn nudge_element(&self) -> Element {
+        Element::AxisTitle(Side::Right)
+    }
+
+    fn drag_by(&self, cfg: &mut Config, dx: f32, dy: f32) -> NudgeResult {
+        drag_overlay_axis_element(cfg, self.layer, self.nudge_element(), dx, dy)
+    }
+}
+
+impl Selectable for OverlayLegendElement {
+    fn element_id(&self) -> String {
+        overlay_id(self.layer, DecorationId::Legend)
+    }
+
+    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
+        cfg.overlays.get(self.layer)?.legend.as_ref()?;
+        let panel = cfg.overlay_panel(self.layer)?;
+        LegendElement.bounds(&panel, measure)
+    }
+
+    fn as_draggable(&self) -> Option<&dyn Draggable> {
+        Some(self)
+    }
+}
+
+impl Draggable for OverlayLegendElement {
+    fn nudge_element(&self) -> Element {
+        Element::Legend
+    }
+
+    fn drag_by(&self, cfg: &mut Config, dx: f32, dy: f32) -> NudgeResult {
+        if cfg
+            .overlays
+            .get(self.layer)
+            .is_none_or(|overlay| overlay.legend.is_none())
+        {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        }
+        let Some(mut panel) = cfg.overlay_panel(self.layer) else {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        };
+        let result = panel.nudge(Element::Legend, dx, dy);
+        if result == NudgeResult::Moved
+            && let Some(legend) = cfg.overlays[self.layer].legend.as_mut()
+        {
+            legend.offset_x = panel.legend.offset_x;
+            legend.offset_y = panel.legend.offset_y;
+        }
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -711,6 +948,169 @@ mod tests {
             height: 600,
         });
         cfg
+    }
+
+    fn cfg_with_overlay() -> Config {
+        let mut cfg = cfg_800x600();
+        let mut overlay = crate::layer::OverlayLayer::default();
+        overlay.y_axis.title_option.visible = true;
+        overlay.y_axis.title_option.text = RichText::plain("Pressure", Color::BLACK, 12.0, "");
+        overlay.y_axis.out_margin = 100.0;
+        overlay.series = vec!["p".into()];
+        cfg.overlays.push(overlay);
+        cfg
+    }
+
+    fn ids_of(map: &HitMap) -> Vec<String> {
+        (0..map.len())
+            .map(|i| map.get(HitId(i)).unwrap().element_id())
+            .collect()
+    }
+
+    // `Base` registers exactly the standard set; an active overlay registers
+    // the shared elements first and its own elements last, and never the
+    // base panel's Y axes. The annotation layer registers only the shared set.
+    #[test]
+    fn active_layer_registration_sets() {
+        let mut cfg = cfg_with_overlay();
+        assert_eq!(
+            ids_of(&HitMap::for_active_layer(&cfg)),
+            ids_of(&HitMap::standard_chart())
+        );
+        cfg.set_active_layer(LayerRef::Overlay(0));
+        let ids = ids_of(&HitMap::for_active_layer(&cfg));
+        assert_eq!(
+            ids,
+            [
+                "data_area",
+                "axis_top",
+                "axis_bottom",
+                "tick_labels_top",
+                "tick_labels_bottom",
+                "axis_title_top",
+                "axis_title_bottom",
+                "legend",
+                "chart_title",
+                "colorbar",
+                "colorbar_axis",
+                "colorbar_tick_labels",
+                "colorbar_title",
+                "overlay_0:axis_right",
+                "overlay_0:tick_labels_right",
+                "overlay_0:axis_title_right",
+                "overlay_0:legend",
+            ]
+        );
+        assert!(!ids.iter().any(|id| id == "axis_left" || id == "axis_right"));
+        cfg.set_active_layer(LayerRef::Annotations);
+        let ids = ids_of(&HitMap::for_active_layer(&cfg));
+        assert_eq!(ids.len(), 13);
+        assert!(!ids.iter().any(|id| id.starts_with("overlay_")));
+        // An out-of-range index is the base set.
+        cfg.active_layer = LayerRef::Overlay(3);
+        assert_eq!(
+            ids_of(&HitMap::for_active_layer(&cfg)),
+            ids_of(&HitMap::standard_chart())
+        );
+    }
+
+    // The overlay's elements sit where the overlay panel draws them: on the
+    // right side of the group data area. A hit there resolves to the overlay
+    // axis, and a drag moves `overlays[0].y_axis` only.
+    #[test]
+    fn overlay_elements_hit_and_drag_the_overlay_axis_only() {
+        let mut cfg = cfg_with_overlay();
+        cfg.set_active_layer(LayerRef::Overlay(0));
+        let map = HitMap::for_active_layer(&cfg);
+        let da = cfg.data_area().unwrap().0;
+        let panel = cfg.overlay_panel(0).unwrap();
+        assert_eq!(panel.data_area().unwrap().0, da);
+        let right_edge = (da.x + da.width) as f32;
+        let mid_y = da.y as f32 + da.height as f32 / 2.0;
+        // Ticks point inside by default: the axis band starts at the edge.
+        let hit = map
+            .hit_test(&cfg, &FixedMeasure, right_edge - 1.0, mid_y)
+            .expect("the overlay axis band is on the right edge");
+        assert_eq!(map.get(hit).unwrap().element_id(), "overlay_0:axis_right");
+        let labels = map.find("overlay_0:tick_labels_right").unwrap();
+        let label_bounds = map
+            .get(labels)
+            .unwrap()
+            .bounds(&cfg, &FixedMeasure)
+            .unwrap();
+        assert!(label_bounds.x > right_edge, "{label_bounds:?}");
+        let title = map.find("overlay_0:axis_title_right").unwrap();
+        let title_bounds = map.get(title).unwrap().bounds(&cfg, &FixedMeasure).unwrap();
+        assert!(title_bounds.x > label_bounds.x, "{title_bounds:?}");
+        // No per-layer legend: no bounds, no hit.
+        let legend = map.find("overlay_0:legend").unwrap();
+        assert!(
+            map.get(legend)
+                .unwrap()
+                .bounds(&cfg, &FixedMeasure)
+                .is_none()
+        );
+
+        let before = cfg.clone();
+        let axis = map.get(hit).unwrap().as_draggable().unwrap();
+        assert_eq!(axis.drag_by(&mut cfg, -12.0, 40.0), NudgeResult::Moved);
+        assert_eq!(cfg.overlays[0].y_axis.line_offset, -12.0);
+        assert_eq!(cfg.right_y, before.right_y);
+        assert_eq!(cfg.data_area().unwrap().0, da);
+        let labels_drag = map.get(labels).unwrap().as_draggable().unwrap();
+        assert_eq!(labels_drag.drag_by(&mut cfg, 3.0, -4.0), NudgeResult::Moved);
+        assert_eq!(cfg.overlays[0].y_axis.label_style.label_offset_x, 3.0);
+        assert_eq!(cfg.overlays[0].y_axis.label_style.label_offset_y, -4.0);
+        let title_drag = map.get(title).unwrap().as_draggable().unwrap();
+        assert_eq!(title_drag.drag_by(&mut cfg, 0.0, 10.0), NudgeResult::Moved);
+        assert_ne!(
+            cfg.overlays[0].y_axis.title_option,
+            before.overlays[0].y_axis.title_option
+        );
+        assert_eq!(cfg.right_y, before.right_y);
+        assert_eq!(cfg.left_y, before.left_y);
+        assert_eq!(
+            cfg.overlays[0].y_axis.out_margin,
+            before.overlays[0].y_axis.out_margin
+        );
+        // A move that would leave the chart area is refused atomically.
+        let snapshot = cfg.clone();
+        assert_eq!(
+            axis.drag_by(&mut cfg, 10_000.0, 0.0),
+            NudgeResult::Rejected(NudgeReject::OutOfBounds)
+        );
+        assert_eq!(cfg, snapshot);
+    }
+
+    #[test]
+    fn overlay_legend_is_selectable_only_when_present() {
+        let mut cfg = cfg_with_overlay();
+        cfg.set_active_layer(LayerRef::Overlay(0));
+        let mut legend = crate::default::default_legend();
+        legend.visible = true;
+        legend.content = RichText {
+            segments: rich_segments_from_text("P"),
+            ..legend.content
+        };
+        cfg.overlays[0].legend = Some(legend);
+        let map = HitMap::for_active_layer(&cfg);
+        let id = map.find("overlay_0:legend").unwrap();
+        let bounds = map.get(id).unwrap().bounds(&cfg, &FixedMeasure).unwrap();
+        let hit = map
+            .hit_test(&cfg, &FixedMeasure, bounds.x + 1.0, bounds.y + 1.0)
+            .unwrap();
+        assert_eq!(hit, id, "the overlay legend is on top of the shared legend");
+        let drag = map.get(id).unwrap().as_draggable().unwrap();
+        assert_eq!(drag.drag_by(&mut cfg, -5.0, 6.0), NudgeResult::Moved);
+        let moved = cfg.overlays[0].legend.as_ref().unwrap();
+        assert_eq!((moved.offset_x, moved.offset_y), (-5.0, 6.0));
+        assert_eq!((cfg.legend.offset_x, cfg.legend.offset_y), (0.0, 0.0));
+        cfg.overlays[0].legend = None;
+        assert!(map.get(id).unwrap().bounds(&cfg, &FixedMeasure).is_none());
+        assert_eq!(
+            drag.drag_by(&mut cfg, 1.0, 1.0),
+            NudgeResult::Rejected(NudgeReject::OutOfBounds)
+        );
     }
 
     #[test]

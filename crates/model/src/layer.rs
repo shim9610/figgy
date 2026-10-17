@@ -1,10 +1,12 @@
 //! Layer addressing and the annotation layer container.
 //!
 //! This module is the shared foundation for overlay layers (secondary axes and
-//! subplots) and for the dedicated annotation layer. It only defines the
-//! public SSOT types; expansion into internal panels, hit-map routing and the
-//! annotation items themselves arrive with their own features. Every chart
-//! family carries the same two fields so one selection API covers all of them.
+//! subplots) and for the dedicated annotation layer. It defines the public
+//! SSOT types: the layer address, the annotation container and the overlay
+//! layer. Expansion into internal panels lives in [`crate::expand`], hit-map
+//! routing in [`crate::select::HitMap::for_active_layer`]; the annotation
+//! items arrive with their own feature. Every chart family carries the same
+//! `active_layer` / `annotations` pair so one selection API covers all of them.
 
 /// Which layer of a chart document receives pointer interaction.
 ///
@@ -71,6 +73,63 @@ impl AnnotationLayer {
     }
 }
 
+/// One overlay layer of a Cartesian document: a second Y axis drawn on the
+/// right side of the shared data area, with the series that are scaled by it.
+///
+/// An overlay holds only what may differ from the parent `Config`: its Y
+/// axis, the ids of the series it owns and an optional legend of its own. The
+/// chart area, both X axes, the chart title, the shared legend, the grid, the
+/// colourbar and `draw_style` exist exactly once, on the parent, so the type
+/// itself guarantees that a document has one X range and one plot rectangle.
+/// Expansion (`Config::expand`) turns the parent and its overlays into one
+/// internal panel each; those panels are never serialized.
+///
+/// Series are referenced by `series_id` from the chart's single series list,
+/// so the series declarations, their styles, column references and picking
+/// stay where they are today. A series id listed by no overlay belongs to the
+/// base layer; an id listed by two overlays is a configuration error.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
+pub struct OverlayLayer {
+    /// The overlay's own Y axis, drawn on the right side of the data area.
+    /// Its `min` / `max` / `scale` / `inverted` are the data-to-pixel mapping
+    /// of the overlay's series. `out_margin` contributes to the shared right
+    /// margin; the group takes the widest band of the parent and every
+    /// overlay (`Config::margins`).
+    pub y_axis: crate::config::AxisOptions,
+    /// Ids of the series this layer scales. Each id may appear in at most one
+    /// overlay; ids with no matching series declaration are ignored.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
+    pub series: Vec<String>,
+    /// An optional legend drawn in this layer's panel. `None` (the default)
+    /// means the parent's single merged legend lists every layer's series.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub legend: Option<crate::legend::Legend>,
+}
+
+impl Default for OverlayLayer {
+    /// A right-hand Y axis with the default Y label style, no series and no
+    /// legend of its own.
+    fn default() -> Self {
+        Self {
+            y_axis: crate::default::default_axis_options_y(),
+            series: Vec::new(),
+            legend: None,
+        }
+    }
+}
+
+impl OverlayLayer {
+    /// `true` when this overlay scales `series_id`.
+    pub fn owns_series(&self, series_id: &str) -> bool {
+        self.series.iter().any(|id| id == series_id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,6 +168,47 @@ mod tests {
             let back: LayerRef = serde_json::from_str(json).unwrap();
             assert_eq!(back, layer);
         }
+    }
+
+    #[test]
+    fn overlay_layer_defaults_to_an_unassigned_right_axis() {
+        let layer = OverlayLayer::default();
+        assert_eq!(layer.y_axis, crate::default::default_axis_options_y());
+        assert!(layer.series.is_empty());
+        assert!(layer.legend.is_none());
+        assert!(!layer.owns_series("a"));
+        let layer = OverlayLayer {
+            series: vec!["a".into()],
+            ..Default::default()
+        };
+        assert!(layer.owns_series("a"));
+        assert!(!layer.owns_series("b"));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn overlay_layer_omits_its_optional_keys_and_round_trips() {
+        let json = serde_json::to_value(OverlayLayer::default()).unwrap();
+        assert!(json.get("y_axis").is_some());
+        assert!(json.get("series").is_none(), "{json}");
+        assert!(json.get("legend").is_none(), "{json}");
+        let back: OverlayLayer = serde_json::from_value(json).unwrap();
+        assert_eq!(back, OverlayLayer::default());
+
+        let layer = OverlayLayer {
+            series: vec!["pressure".into()],
+            legend: Some(crate::default::default_legend()),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&layer).unwrap();
+        assert_eq!(json["series"], serde_json::json!(["pressure"]));
+        assert!(json["legend"].is_object());
+        let back: OverlayLayer = serde_json::from_value(json).unwrap();
+        assert_eq!(back, layer);
+        // A document written with only the axis still parses.
+        let partial: OverlayLayer = serde_json::from_str(r#"{"series":["a"]}"#).unwrap();
+        assert_eq!(partial.y_axis, OverlayLayer::default().y_axis);
+        assert_eq!(partial.series, vec!["a".to_string()]);
     }
 
     #[cfg(feature = "serde")]

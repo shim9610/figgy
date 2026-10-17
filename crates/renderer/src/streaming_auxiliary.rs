@@ -955,7 +955,7 @@ impl Renderer {
         max_primitives: u64,
     ) -> StreamResult<StreamingOperation> {
         self.service_stream_requests();
-        self.chart_config(chart)?;
+        crate::renderer::streaming_runtime::reject_layered_streaming(self.chart_config(chart)?)?;
         let runtime = self
             .stream_runtime
             .as_ref()

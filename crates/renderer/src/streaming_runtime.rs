@@ -892,6 +892,21 @@ fn resolve_stream_range_source<'a>(
     })
 }
 
+/// The nonresident stream pass draws one panel. A document with overlay
+/// layers composites several, and a streamed series on an overlay is an
+/// explicit error (not a planned feature), so streaming rejects the document
+/// as a whole before any resource is allocated.
+pub(crate) fn reject_layered_streaming(config: &Config) -> Result<()> {
+    if config.overlays.is_empty() {
+        Ok(())
+    } else {
+        Err(FiggyError::InvalidConfig {
+            field: "overlays",
+            reason: "nonresident streaming is not supported for a document with overlay layers",
+        })
+    }
+}
+
 impl Renderer {
     pub(super) fn try_cached_stream_auto_fit(
         &mut self,
@@ -1775,6 +1790,7 @@ impl Renderer {
         view: &ChartView,
         options: crate::StreamingChartOptions,
     ) -> Result<()> {
+        reject_layered_streaming(self.chart_config(chart)?)?;
         let clear = wgpu::Color {
             r: f64::from(options.clear_color.r),
             g: f64::from(options.clear_color.g),
@@ -1841,6 +1857,8 @@ impl Renderer {
             });
         }
         crate::chart::validate_renderer_config(&render_config)?;
+        reject_layered_streaming(&render_config)?;
+        reject_layered_streaming(self.chart_config(chart)?)?;
         self.sync_external_invalidations()?;
         self.service_stream_requests();
         let revisions = self
@@ -2215,6 +2233,8 @@ impl Renderer {
             });
         }
         crate::chart::validate_renderer_config(&render_config)?;
+        reject_layered_streaming(&render_config)?;
+        reject_layered_streaming(self.chart_config(chart)?)?;
         self.sync_external_invalidations()?;
         self.service_stream_requests();
         if let Some(job) = self.active_stream_job(chart) {
@@ -3062,6 +3082,7 @@ impl Renderer {
             .chart_states
             .get(&chart)
             .ok_or(FiggyError::UnknownChart { id: chart })?;
+        reject_layered_streaming(&state.config)?;
         for series in &state.series {
             PrepareContext::validate_stream_series(&state.config, series)?;
             stream_draw_phases(&state.config.draw_style, series)
