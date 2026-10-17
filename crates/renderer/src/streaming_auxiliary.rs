@@ -1235,6 +1235,13 @@ impl Renderer {
             pass.set_pipeline(&auxiliary.pipelines.as_ref().unwrap().axis);
             pass.set_bind_group(0, &snapshot.view.grid_bind_group, &[]);
             pass.draw(0..3, 0..1);
+            if let (Some(underlay), _) = snapshot
+                .view
+                .annotation_bind_groups(snapshot.annotations_visible())
+            {
+                pass.set_bind_group(0, underlay, &[]);
+                pass.draw(0..3, 0..1);
+            }
         }
         let runtime = self.stream_runtime.as_mut().unwrap();
         let id = runtime.scheduler.start_auxiliary(
@@ -1540,6 +1547,14 @@ impl Renderer {
                 pass.set_pipeline(&auxiliary.pipelines.as_ref().unwrap().axis);
                 pass.set_bind_group(0, &auxiliary.snapshot.view.decoration_bind_group, &[]);
                 pass.draw(0..3, 0..1);
+                if let (_, Some(overlay)) = auxiliary
+                    .snapshot
+                    .view
+                    .annotation_bind_groups(auxiliary.snapshot.annotations_visible())
+                {
+                    pass.set_bind_group(0, overlay, &[]);
+                    pass.draw(0..3, 0..1);
+                }
             })
             .map_err(|error| StreamRequestError::from(error).into_figgy())?;
         let texture = wgpu::Texture::clone(surface.resolved());

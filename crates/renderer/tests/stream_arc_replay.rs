@@ -228,10 +228,12 @@ impl Gpu {
     }
 
     fn params(&self, len: u32, x_base: u32, y_base: u32, start: u32) -> wgpu::Buffer {
+        // `ArcParams` is 32 bytes: the four addressing words, the step
+        // interpolation mode (0 = linear here) and three padding words.
         initialized(
             &self.device,
             "P-00 original ArcParams",
-            bytemuck::cast_slice(&[len, x_base, y_base, start]),
+            bytemuck::cast_slice(&[len, x_base, y_base, start, 0, 0, 0, 0]),
             wgpu::BufferUsages::UNIFORM,
         )
     }

@@ -37,17 +37,20 @@
 - **텍스트 구간별 색·크기는 선택 항목**이다. `RichSegment.color` / `font_size`는 별도로 지정했을 때만 키를 내보낸다. 없으면 `RichText.color` / `font_size`를 따른다. 범례 기호의 색도 `{"text":"●","color":{...}}`처럼 지정한다.
 - **`"\t"` 구간은 열 구분자**다. 각 열의 너비를 문서 전체에서 가장 넓은 셀에 맞추며 탭 자체는 그리지 않는다.
 - **`RichText.align`은 여러 줄 텍스트의 줄 정렬**이다. `"Left"`(기본), `"Center"`, `"Right"` 중 하나이며 기본값이면 키를 내보내지 않는다. 블록 너비는 가장 넓은 줄이 정하므로 정렬해도 측정 크기와 선택 영역은 바뀌지 않는다.
+- **`rule_band`는 채움이 있는 선의 범례 띠**다. `rule: true`인 구간에 `rule_band: Color`가 있으면 수평선 아래에 그 색의 띠를 같은 고정 너비 안에 그린다. 생략하면 선만 그린다. `series_symbol_segments`는 `fill`이 있는 선 시리즈에 `effective_fill_color()`를 띠 색으로 넣는다.
 - **`field_em`은 기호 영역의 너비를 고정한다.** 다음 글자까지의 간격을 `field_em × 폰트 크기`로 잡고 글리프를 가운데 놓는다. `rule: true`이면 글리프 대신 그 영역을 채우는 수평선을 그린다. `rule_dash`는 선·공백 길이를 em 단위로 지정하므로 폰트 크기에 비례한다. 범례 기호는 모양에 관계없이 전체 너비가 2.0em이다. 선은 `{"text":"—","rule":true,"field_em":2.0,"color":{...}}`, 점은 `{"text":"●","field_em":2.0,...}`, 점선은 `{"text":"—","rule":true,"field_em":2.0,"rule_dash":[0.571,0.286],...}`로 표현한다. 선과 점의 조합은 선 0.65em + 글리프 0.7em + 선 0.65em으로 구성한다.
 - **색은 0~1 범위의 RGBA 실수 값**이다. 예: `{ "r": 0.8, "g": 0.1, "b": 0.1, "a": 1.0 }`.
 - **데이터 출처 키**인 `SeriesConfig.source_id`, `PickedPointRef.source_id`, 모든 `PickedDataRef`의 `source_id`는 `None`이면 생략한다.
 - **시리즈의 스타일 매핑 키 6개**도 `None`이면 생략한다. `DataScatterStyleConfig`의 `point_style_table` / `point_style_index_column` / `point_style_overrides`와 `DataErrorBarStyleConfig`의 `error_bar_style_table` / `error_bar_style_index_column` / `error_bar_style_overrides`가 해당한다.
 - **개별 데이터의 스타일 키 7개**도 `None`이면 생략한다. `DataScatterPointStyleConfig`의 `point_color` / `point_shape` / `point_size`와 `DataErrorBarPointStyleConfig`의 `error_bar_color` / `error_bar_width` / `error_bar_cap_size` / `cap_width`가 해당한다. 모두 비어 있으면 `{}`로 직렬화한다. 개별 덮어쓰기 항목의 `style`은 한 단계 풀어서 저장하므로 같은 생략 규칙을 따른다.
 - `SeriesConfig.label`은 위 선택 키들과 달리 항상 존재하며 값으로 `null`을 가질 수 있다.
+- **선 스타일의 선택 키 3개**인 `DataLineStyleConfig.fill` / `fill_color` / `interpolation`은 기본값이면 생략한다. `fill`은 `{ "ToBaseline": 0.0 }` 또는 `{ "ToSeries": "<series_id>" }`이고, `fill_color`는 `Color`, `interpolation`은 `"Linear"`(기본)·`"StepPre"`·`"StepPost"`·`"StepMid"`다. `ToSeries`는 같은 차트에서 같은 `x_column`을 쓰는 다른 시리즈를 가리켜야 하며, 두 시리즈 모두 상주 컬럼이어야 한다. 자세한 의미는 [면 채움과 계단선](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#면-채움과-계단선)을 참고한다.
 - **등고선의 선택 키 2개**인 `ContourConfig.per_level_color` / `labels`는 `None`이면 생략한다. `per_level_color` 생략은 모든 선에 `line.line_color`를 사용한다는 뜻이며, 빈 색상 목록 `[]`과는 다르다.
 - 텍스트 구간의 선택 키와 `Config`의 `draw_style` / `picked_points` / `picked_data` / `colorbar`도 생략할 수 있다. `draw_style`은 기본 정밀 모드일 때, 두 선택 표시 키는 `None`일 때 생략한다. `picked_points: {}`와 `picked_data: {}`는 각각 기본 선택 표시 설정으로 해석한다. `set_config()`는 일부 필드가 아니라 **전체 설정을 교체**하므로 `get_config()` 결과를 수정해 전달한다.
-- **레이어 키 3개**인 `overlays`, `active_layer`, `annotations`도 기본값이면 생략한다. `overlays`는 `OverlayLayer` 배열이며 비어 있으면 생략한다. 각 항목은 `{ "y_axis": AxisOptions, "series": ["id", ...], "legend": Legend }` 형태로, `series`는 비어 있으면, `legend`는 `null`이면 생략하고 `y_axis`는 항상 쓴다(빠지면 기본 Y 축 옵션으로 읽는다). 한 시리즈 id는 최대 한 오버레이에만 적을 수 있고, 적지 않은 시리즈는 기본 레이어에 속한다. `active_layer`는 `"Base"`(기본), `{ "Overlay": 0 }`, `"Annotations"` 중 하나이고 `overlays` 범위 밖 인덱스는 `"Base"`로 저장한다. `annotations`는 `{ "visible": true }` 형태다. bounded 차트 JSON(`RadialChart` 등)은 `active_layer`와 `annotations`만 가지며 오버레이가 없다. `active_layer`와 `annotations`는 그려지는 픽셀을 바꾸지 않고, `overlays`는 오버레이 축과 그 시리즈의 스케일을 바꾼다. `set_active_layer(json)` / `active_layer()`가 `active_layer`만 바꾸고 읽는다.
+- **레이어 키 3개**인 `overlays`, `active_layer`, `annotations`도 기본값이면 생략한다. `active_layer`는 `"Base"`(기본), `{ "Overlay": 0 }`, `"Annotations"` 중 하나이고 그려지는 픽셀을 바꾸지 않으며, `overlays` 범위 밖 인덱스는 `"Base"`로 저장한다. `set_active_layer(json)` / `active_layer()`가 이 키만 바꾸고 읽는다. `annotations`는 `{ "visible": true, "items": [...] }`이며 빈 `items`는 생략한다. bounded 차트 JSON(`RadialChart` 등)은 `active_layer`와 `annotations`만 가지며 오버레이가 없다. 각 항목은 `{ "id": "mean", "visible": true, "kind": { "ReferenceLine": { "axis": "Y", "value": 0.5, "style": { "color": {...}, "width": 1.5, "style": "Dash" }, "label": <RichText | null> } } }` 형태이고 `id`가 빈 문자열이거나 `visible`이 `true`면 그 키를 생략한다. `kind`는 `ReferenceLine` / `Span { axis, from, to, fill }` / `Text { anchor, text, box_style }` / `Arrow { from, to, style, text }` 중 하나이며, 앵커는 `{ "Data": { "x": 1.0, "y": 2.0 } }` 또는 `{ "Ratio": { "x": 0.5, "y": 0.5 } }`다. 필드 의미·기본값·검증 규칙은 [설정 레퍼런스](../renderer/CONFIG.md#layerref--annotationlayer)에 있다. 유한하지 않은 값은 오류가 아니라 `annotation_warnings()`로 보고되는 건너뜀이다.
+  `overlays`는 `OverlayLayer` 배열이며 비어 있으면 생략한다. 각 항목은 `{ "y_axis": AxisOptions, "series": ["id", ...], "legend": Legend }` 형태로, `series`는 비어 있으면, `legend`는 `null`이면 생략하고 `y_axis`는 항상 쓴다(빠지면 기본 Y 축 옵션으로 읽는다). 한 시리즈 id는 최대 한 오버레이에만 적을 수 있고, 적지 않은 시리즈는 기본 레이어에 속한다. `overlays`는 오버레이 축과 그 시리즈의 스케일을 바꾼다. 주석은 부모 축 기준으로 기본 레이어에 한 번 그린다.
 
-다음 직렬화 예에서는 선택 키 15개를 생략했다. `series.source_id`, 스타일 매핑 키 6개, 개별 스타일 키 7개, `picked_point.source_id`가 해당한다.
+다음 직렬화 예에서는 선택 키 18개를 생략했다. `series.source_id`, 선 스타일의 선택 키 3개(`fill` / `fill_color` / `interpolation`), 스타일 매핑 키 6개, 개별 스타일 키 7개, `picked_point.source_id`가 해당한다.
 
 <!-- schema-sync: name=option-omissions -->
 ```json
@@ -114,6 +117,8 @@
 | `label` (TimestampLabelMode) | `"Auto"` `{ "Pattern": "%Y-%m-%d %H:%M:%S.%f" }` |
 | `fractional` (FractionalSecondDigits) | `"Auto"` `{ "Fixed": 3 }` |
 | `tick_policy` (TimestampTickPolicy) | `"AutoCalendar"` `"NumericSpacing"` |
+| `interpolation` (LineInterpolation) | `"Linear"` `"StepPre"` `"StepPost"` `"StepMid"` |
+| `fill` (LineFill, 태그) | `"ToBaseline"` (`f64`) / `"ToSeries"` (`series_id` 문자열) |
 | `line_style` (LineStylePreset) | `"Solid"` `"Dash"` `"Dot"` `"DashDot"` `"DashDotDot"` `"ShortDash"` `"ShortDot"` `"ShortDashDot"` `"LongDash"` `"LongDashDot"` `"LongDashDotDot"` |
 | `corner` (LegendCorner) | `"TopLeft"` `"TopRight"` `"BottomLeft"` `"BottomRight"` |
 | `point_shape` (ScatterShape) | `"Circle"` `"Square"` `"Triangle"` `"Diamond"` `"Cross"` `"CircleFilled"` `"SquareFilled"` `"TriangleFilled"` `"DiamondFilled"` `"TriangleDown"` `"TriangleLeft"` `"TriangleRight"` `"Plus"` `"Pentagon"` `"Hexagon"` `"Octagon"` `"Star"` `"TriangleDownFilled"` `"TriangleLeftFilled"` `"TriangleRightFilled"` `"PlusFilled"` `"CrossFilled"` `"PentagonFilled"` `"HexagonFilled"` `"OctagonFilled"` `"StarFilled"` |
@@ -212,10 +217,10 @@ and the [WASM edit workflow](https://github.com/shim9610/figgy/blob/master/crate
 - `out_margin`은 배치에 필요한 여백이다. 너무 줄이면 라벨이나 제목이 잘릴 수 있다.
 - `line_offset`은 데이터 영역을 유지한 채 축만 이동시킨다. 전체 배치에는 영향을 주지 않는다.
 - `inverted`는 화면상의 축 방향을 뒤집는다. 눈금·격자·데이터·피킹은 같은 변환을 적용하며 `min` / `max`는 데이터 좌표 기준을 유지한다.
-- `pick_point`는 스타일 매핑을 반영한 점 기호 크기와 선 두께를 기준으로 선택한다. 선 근처를 클릭하면 해당 선분의 가까운 끝점을 반환한다. 오차 막대의 몸통과 끝선 자체는 선택 대상이 아니다. 웹 래퍼의 반환형은 `Promise<{ source_id: string | null, series_id, point_index, distance_px } | null>`이다. 저수준 `FiggyChart`는 같은 필드의 JSON 문자열 또는 `undefined`를 Promise로 반환하고 래퍼가 이를 객체 또는 `null`로 바꾼다. 요청은 제출 당시 식별자를 보관하므로 대기 중 차트·풀이 바뀌거나 렌더러가 해제돼도 다른 데이터를 가리키지 않는다. 좌표가 필요하면 `point_index`로 호스트의 원본 컬럼을 조회하거나, 현재 상주 선택을 `FiggyChart.selection_details()`로 읽는다.
+- `pick_point`는 스타일 매핑을 반영한 점 기호 크기와 선 두께를 기준으로 선택한다. 선 근처를 클릭하면 해당 선분의 가까운 끝점을 반환한다. 계단선(`interpolation`이 `Step*`)은 그려진 계단 조각을 기준으로 판정하며 경로상 위치가 가까운 끝점을 돌려준다. 면 채움(`fill`)은 선택 대상이 아니다. 오차 막대의 몸통과 끝선 자체는 선택 대상이 아니다. 웹 래퍼의 반환형은 `Promise<{ source_id: string | null, series_id, point_index, distance_px } | null>`이다. 저수준 `FiggyChart`는 같은 필드의 JSON 문자열 또는 `undefined`를 Promise로 반환하고 래퍼가 이를 객체 또는 `null`로 바꾼다. 요청은 제출 당시 식별자를 보관하므로 대기 중 차트·풀이 바뀌거나 렌더러가 해제돼도 다른 데이터를 가리키지 않는다. 좌표가 필요하면 `point_index`로 호스트의 원본 컬럼을 조회하거나, 현재 상주 선택을 `FiggyChart.selection_details()`로 읽는다.
 - `pick_data`는 점·선 외에 히스토그램 구간·히트맵 셀·등고선 레벨을 같은 GPU 요청으로 선택한다. 래퍼는 `kind`가 `"point" | "histogram_bin" | "matrix_cell" | "contour_level"`인 객체 또는 `null`을 반환한다. 구간은 `bin_index`, 셀은 X·Y축 기준 `x_index` / `y_index`, 등고선은 `level_index`와 선택 지점이 속한 표본 셀의 `x_index` / `y_index`를 제공한다. `HeatmapContour`에서 선과 셀이 겹치면 나중에 그리는 등고선이 우선하며 시리즈 간 동률은 그리기 순서로 정한다. 좌표·경계·선분·f64 값을 CPU에서 복원하지 않고, 그리기와 같은 GPU 변환·풀·격자·등고선 함수로 판정한다.
 - `chart_area`는 저장과 출력에 사용하는 문서 영역이다. 웹의 `resize(w, h)`는 캔버스만 바꾸며 문서를 같은 가로세로 비율로 맞추고 남는 공간에 여백을 둔다. 브라우저 창 크기 변경은 `chart_area` 편집과 구분한다.
-- `set_series` / `apply_color_cycle`은 자동 범례에서 인식할 수 있는 기호 부분만 갱신한다. `\t` 앞의 고정 너비 영역이 기호이며, 뒤의 사용자 텍스트는 보존한다. 선 색뿐 아니라 `line_style`의 점선·도트 패턴도 반영한다.
+- `set_series` / `apply_color_cycle`은 자동 범례에서 인식할 수 있는 기호 부분만 갱신한다. `\t` 앞의 고정 너비 영역이 기호이며, 뒤의 사용자 텍스트는 보존한다. 선 색뿐 아니라 `line_style`의 점선·도트 패턴과 `fill`의 채움색 띠(`rule_band`)도 반영한다.
 - `set_series_label(id, label)`은 해당 범례의 텍스트만 바꾼다. 빈 문자열이면 해당 행을 제거한다. `set_config`로 직접 편집한 `legend.content`는 이후 시리즈 변경으로 전체를 다시 쓰지 않는다.
 - 전체 범례를 `SeriesConfig.label`에서 다시 만들 때는 `reset_legend_from_series_labels()`를 호출한다. 기존 `add_line_series(..., label)`로 저장한 라벨은 리치 텍스트 라벨이 없는 시리즈에서만 대체값으로 사용한다.
 

@@ -274,6 +274,15 @@ pub(crate) fn validate_renderer_config(config: &Config) -> Result<()> {
         field: "layout",
         reason: "margins and visual dimensions must produce a non-empty data area",
     })?;
+    // Malformed annotation styles are rejected like any other config field;
+    // non-finite values and anchors are not malformed, the raster skips them.
+    config
+        .annotations
+        .validate()
+        .map_err(|reason| FiggyError::InvalidConfig {
+            field: "annotations",
+            reason,
+        })?;
     if !config.overlays.is_empty() {
         config.expand().map_err(|_| FiggyError::InvalidConfig {
             field: "overlays",

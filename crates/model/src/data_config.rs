@@ -132,12 +132,147 @@ pub enum DataRenderType {
     },
 }
 
+/// Identifier of another series in the same chart: its `series_id`. Plain
+/// `String`, like [`ColumnId`] — resolution against the chart's series list is
+/// the renderer's job.
+pub type SeriesRef = String;
+
+/// What a line series fills: the region between the line and a baseline or
+/// between the line and another series' line.
+///
+/// The fill is a property of the line. It is not a hit target of its own —
+/// selecting the line selects its fill — and it is drawn before every series
+/// body, in series order, so another series' fill can never cover this
+/// series' line. Fills composite over each other in series order; there is no
+/// automatic sorting.
+///
+/// A fill assumes an x-monotonic series. A series whose x runs back on itself
+/// produces trapezoids that overlap and blend twice; the renderer documents
+/// and tests that outcome rather than masking it.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum LineFill {
+    /// Fill between the line and a constant y value in data units. `0.0` is
+    /// the usual area chart. On a logarithmic y axis a baseline at or below
+    /// zero has no position and is clamped to the axis minimum instead of
+    /// masking the whole area — an explicit exception to the rule that
+    /// nonpositive samples on a logarithmic axis are omitted.
+    ToBaseline(f64),
+    /// Fill between this line and another series' line, index-aligned: value
+    /// `i` of this series pairs with value `i` of the referenced series, the
+    /// way an errorbar reads its extra columns. Both series must share the
+    /// same x column; a different x column is an explicit error, because
+    /// resampling would be renderer-derived data. Both series' columns must
+    /// be GPU resident; streamed sources are rejected.
+    ToSeries(SeriesRef),
+}
+
+impl Default for LineFill {
+    /// `ToBaseline(0.0)`.
+    fn default() -> Self {
+        Self::ToBaseline(0.0)
+    }
+}
+
+/// How consecutive samples of a line series are connected.
+///
+/// A step mode draws every segment as axis-aligned pieces instead of one
+/// straight segment. Dash phase, picking and the arc-length scan all follow the
+/// stepped path, so a dashed step line keeps its pattern around every corner
+/// and a pick on a riser still resolves to one of the two source indices.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum LineInterpolation {
+    /// Straight segments between consecutive samples.
+    #[default]
+    Linear,
+    /// The value changes at the *start* of each segment: a vertical riser at
+    /// `x[i]` up to `y[i + 1]`, then a horizontal run to `x[i + 1]`.
+    StepPre,
+    /// The value is held until the *end* of each segment: a horizontal run at
+    /// `y[i]` to `x[i + 1]`, then a vertical riser to `y[i + 1]`.
+    StepPost,
+    /// The value changes halfway: a horizontal run at `y[i]` to the midpoint
+    /// of `x[i]` and `x[i + 1]` (in data units), a riser there, then a
+    /// horizontal run at `y[i + 1]`.
+    StepMid,
+}
+
+impl LineInterpolation {
+    /// `true` for [`Self::Linear`]. The serde default predicate: the field is
+    /// omitted from JSON at its default so existing documents round-trip
+    /// byte-identically.
+    pub fn is_linear(&self) -> bool {
+        matches!(self, Self::Linear)
+    }
+
+    /// Axis-aligned pieces one segment is drawn as: 1 for `Linear`, 2 for
+    /// `StepPre` / `StepPost`, 3 for `StepMid`.
+    pub fn piece_count(self) -> u32 {
+        match self {
+            Self::Linear => 1,
+            Self::StepPre | Self::StepPost => 2,
+            Self::StepMid => 3,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DataLineStyleConfig {
     pub line_style: LineStylePreset,
     pub line_color: Color,
     pub line_width: f32,
+    /// Area under the line or between two lines. `None` draws the line alone.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub fill: Option<LineFill>,
+    /// Fill colour. `None` derives it from `line_color`: the same hue with
+    /// the alpha multiplied by [`Self::DEFAULT_FILL_ALPHA`]; see
+    /// [`Self::effective_fill_color`].
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub fill_color: Option<Color>,
+    /// How consecutive samples are connected. `Linear` by default and omitted
+    /// from JSON at that default.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "LineInterpolation::is_linear")
+    )]
+    pub interpolation: LineInterpolation,
+}
+
+impl Default for DataLineStyleConfig {
+    /// A solid, opaque black, 1 px line with no fill and linear interpolation.
+    fn default() -> Self {
+        Self {
+            line_style: LineStylePreset::Solid,
+            line_color: Color::BLACK,
+            line_width: 1.0,
+            fill: None,
+            fill_color: None,
+            interpolation: crate::data_config::LineInterpolation::Linear,
+        }
+    }
+}
+
+impl DataLineStyleConfig {
+    /// Alpha multiplier applied to `line_color` when `fill_color` is `None`.
+    pub const DEFAULT_FILL_ALPHA: f32 = 0.25;
+
+    /// The colour the fill is painted with: `fill_color`, or `line_color` with
+    /// its alpha multiplied by [`Self::DEFAULT_FILL_ALPHA`]. Meaningful only
+    /// when `fill` is `Some`; the legend band and the renderer both read it.
+    pub fn effective_fill_color(&self) -> Color {
+        self.fill_color.unwrap_or(Color {
+            a: self.line_color.a * Self::DEFAULT_FILL_ALPHA,
+            ..self.line_color
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -952,6 +1087,72 @@ mod serde_tests {
         assert_eq!(back, err);
     }
 
+    // The line fields added for area fill and step lines are all defaulted and
+    // omitted at their defaults, so a document written before them parses and
+    // serializes byte-identically.
+    #[test]
+    fn legacy_line_style_json_round_trips_without_fill_or_interpolation_keys() {
+        use super::{DataLineStyleConfig, LineInterpolation};
+
+        let legacy = serde_json::json!({
+            "line_style": "Dash",
+            "line_color": { "r": 0.5, "g": 0.25, "b": 0.75, "a": 1.0 },
+            "line_width": 2.0
+        });
+        let parsed: DataLineStyleConfig =
+            serde_json::from_value(legacy.clone()).expect("parse legacy line style");
+        assert_eq!(parsed.fill, None);
+        assert_eq!(parsed.fill_color, None);
+        assert_eq!(parsed.interpolation, LineInterpolation::Linear);
+        assert_eq!(
+            serde_json::to_value(&parsed).expect("serialize legacy line style"),
+            legacy,
+            "defaults must not add keys to a legacy document"
+        );
+    }
+
+    #[test]
+    fn line_fill_and_interpolation_round_trip_and_keep_their_spelling() {
+        use super::{DataLineStyleConfig, LineFill, LineInterpolation};
+
+        let line = DataLineStyleConfig {
+            line_style: crate::line::LineStylePreset::Solid,
+            line_color: Color::from_rgb8(10, 20, 30),
+            line_width: 1.5,
+            fill: Some(LineFill::ToSeries("lower".into())),
+            fill_color: Some(Color::from_rgba(0.5, 0.5, 0.5, 0.25)),
+            interpolation: LineInterpolation::StepMid,
+        };
+        let json = serde_json::to_value(&line).expect("serialize line style");
+        assert_eq!(json["fill"], serde_json::json!({ "ToSeries": "lower" }));
+        assert_eq!(json["interpolation"], "StepMid");
+        assert_eq!(json["fill_color"]["a"], 0.25);
+        let back: DataLineStyleConfig = serde_json::from_value(json).expect("parse line style");
+        assert_eq!(back, line);
+
+        let baseline = DataLineStyleConfig {
+            fill: Some(LineFill::ToBaseline(-1.0)),
+            ..DataLineStyleConfig::default()
+        };
+        let json = serde_json::to_value(&baseline).expect("serialize baseline fill");
+        assert_eq!(json["fill"], serde_json::json!({ "ToBaseline": -1.0 }));
+        assert!(json.get("fill_color").is_none());
+        assert!(json.get("interpolation").is_none());
+        let back: DataLineStyleConfig = serde_json::from_value(json).expect("parse baseline fill");
+        assert_eq!(back, baseline);
+
+        for (mode, spelling) in [
+            (LineInterpolation::StepPre, "StepPre"),
+            (LineInterpolation::StepPost, "StepPost"),
+            (LineInterpolation::StepMid, "StepMid"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(mode).expect("serialize interpolation"),
+                serde_json::json!(spelling)
+            );
+        }
+    }
+
     #[test]
     fn legacy_histogram_style_defaults_to_full_width_without_overrides() {
         let legacy = serde_json::json!({
@@ -994,6 +1195,9 @@ mod serde_tests {
                 line_style: LineStylePreset::Solid,
                 line_color: Color::BLACK,
                 line_width: 1.5,
+                fill: None,
+                fill_color: None,
+                interpolation: crate::data_config::LineInterpolation::Linear,
             },
             per_level_color: Some(vec![Color::from_rgb8(255, 0, 0)]),
             labels: Some(ContourLabelConfig {
@@ -1071,6 +1275,9 @@ mod serde_tests {
                 line_style: LineStylePreset::Solid,
                 line_color: Color::BLACK,
                 line_width: 1.0,
+                fill: None,
+                fill_color: None,
+                interpolation: crate::data_config::LineInterpolation::Linear,
             },
             per_level_color: None,
             labels: None,
@@ -1118,6 +1325,38 @@ mod serde_tests {
 }
 
 #[cfg(test)]
+mod line_style_tests {
+    use super::*;
+
+    #[test]
+    fn line_fill_defaults_to_the_zero_baseline_and_the_line_colour_at_quarter_alpha() {
+        assert_eq!(LineFill::default(), LineFill::ToBaseline(0.0));
+        let line = DataLineStyleConfig {
+            line_color: Color::from_rgba(0.2, 0.4, 0.6, 0.8),
+            ..DataLineStyleConfig::default()
+        };
+        assert_eq!(
+            line.effective_fill_color(),
+            Color::from_rgba(0.2, 0.4, 0.6, 0.8 * DataLineStyleConfig::DEFAULT_FILL_ALPHA)
+        );
+        let explicit = DataLineStyleConfig {
+            fill_color: Some(Color::WHITE),
+            ..line
+        };
+        assert_eq!(explicit.effective_fill_color(), Color::WHITE);
+    }
+
+    #[test]
+    fn step_modes_split_a_segment_into_axis_aligned_pieces() {
+        assert!(LineInterpolation::default().is_linear());
+        assert_eq!(LineInterpolation::Linear.piece_count(), 1);
+        assert_eq!(LineInterpolation::StepPre.piece_count(), 2);
+        assert_eq!(LineInterpolation::StepPost.piece_count(), 2);
+        assert_eq!(LineInterpolation::StepMid.piece_count(), 3);
+    }
+}
+
+#[cfg(test)]
 mod contour_level_tests {
     use super::*;
     use crate::config::AxisScale;
@@ -1138,6 +1377,9 @@ mod contour_level_tests {
                 line_style: LineStylePreset::Solid,
                 line_color: Color::BLACK,
                 line_width: 1.0,
+                fill: None,
+                fill_color: None,
+                interpolation: crate::data_config::LineInterpolation::Linear,
             },
             per_level_color: None,
             labels: None,

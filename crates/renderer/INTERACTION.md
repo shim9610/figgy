@@ -204,22 +204,23 @@ Every chart family (`Config`, `RadialChart`, `CategoricalChart`, `BoxPlotChart`)
 carries `active_layer: LayerRef` and `annotations: AnnotationLayer`. Both are
 `serde(default)` and omitted from JSON at their defaults, so existing documents
 parse and serialize unchanged. `LayerRef::Base` is the single layer every chart
-has today; `Overlay(index)` and `Annotations` address the overlay layers and
-the dedicated annotation layer that the follow-up features add. The active
-layer is document state one level above element selection: it will decide
-which layer's elements the hit map registers, while `selected`, `picked_points`
-and `picked_data` keep naming the element inside that layer. Drawn pixels never
-depend on `active_layer`.
+has today; `Overlay(index)` and `Annotations` address the overlay layers (#11)
+and the dedicated annotation layer below. The active layer is document state
+one level above element selection: it will decide which layer's elements the
+base hit map registers, while `selected`, `picked_points` and `picked_data`
+keep naming the element inside that layer. Drawn pixels never depend on
+`active_layer`, and routing the base hit map by it lands with #11; until then
+the annotation layer's own hit map (next section) is queried explicitly.
 
-`DecorationId` gains two variants for those layers. `Overlay { layer, inner }`
+`DecorationId` has two variants for those layers. `Overlay { layer, inner }`
 wraps an element identity with its overlay index (`overlay_<n>:<inner id>`) and
 `Annotation(index)` names an annotation item (`annotation_<n>`). The Cartesian
-hit map registers the `Overlay` ids for the active overlay (next section); no
-hit map registers annotation items yet, so hosts that match on `DecorationId`
-should treat those like any other unknown decoration. Explicit Rust chart
-literals need the two new fields (or `..Default::default()`). The bounded frame
-and label raster caches strip both fields from their keys, so editing either
-reuses the cached frame; only the layer's own pass will depend on them.
+hit map registers the `Overlay` ids for the active overlay (see "Overlay
+layers"); annotation items are hit-tested through their own `AnnotationMap`
+(see "Annotation layer"). Explicit Rust chart literals need the two fields (or
+`..Default::default()`). The bounded frame and label raster caches strip both
+fields from their keys, so editing either reuses the cached frame; only the
+annotation pass depends on them.
 
 ## Overlay layers
 
@@ -300,6 +301,14 @@ into one image; the existing `export_panel_*` entry points stay and render the
 base panel only. For a document without overlays both produce byte-identical
 images. The WASM `export_png` exports the document.
 
+**Annotations on a layered document.** The document has one annotation layer.
+It is rasterized once, on the base view, with anchors in the parent's own axes
+(`bottom_x` / `left_y`) and the group data area. Its underlay is composited
+below the base panel's data and its overlay above the topmost panel's
+decoration, so text boxes and arrows sit above every layer. Annotation edits
+never invalidate a panel's axis raster cache. Overlay panels carry no
+annotation textures.
+
 **Limits of this version.** Overlays own no X axis (no twiny); nesting is one
 level (overlays have no layers of their own); bounded charts cannot be overlay
 layers; a nonresident streaming series listed by an overlay is rejected by
@@ -308,7 +317,159 @@ with overlays as a whole. Subplot grids are a separate feature.
 Run `cargo run --locked -p figgy-renderer --example overlay_axes` for a native
 twin-axis export; see [the example source](examples/overlay_axes.rs).
 
+## Annotation layer
+
+Reference lines, spans, text boxes and arrows live in
+`annotations: AnnotationLayer { visible, items }` of every chart family (item
+kinds, anchors, styles and validation are in the
+[configuration reference](CONFIG.md#layerref--annotationlayer)). One shared CPU
+raster pass draws the layer into two panel-sized textures: the *underlay*
+(spans) is composited below the data and the *overlay* (lines, text, arrows and
+the annotation selection box) above every decoration, with the fullscreen
+textured pipeline the grid and decoration rasters already use. Family shaders
+and decoration rasters are untouched. The fixed order is:
+
+- Cartesian panels: grid → annotation underlay → data → picked highlight →
+  decoration → annotation overlay.
+- Bounded charts: annotation underlay → the frame's own draw → annotation
+  overlay. The frame paints an opaque background by default, so an underlay
+  only shows through a frame prepared with
+  `FrameBackground::HostClear` (`set_background`), which leaves the background
+  to the host's clear colour; the host then clears with `chart.background`.
+  `export_rgba` switches to that mode by itself whenever an underlay exists and
+  keeps one cached frame per mode, so an export never evicts the interactive
+  frame.
+
+A text box may overlap the legend; the user resolves that by moving the box.
+Annotations do not take part in the data-area margins and the label placer
+never nudges them.
+
+**Anchor space.** The only thing the layer needs from a chart family is the
+anchor ↔ pixel conversion, the `AnnotationSpace` trait implemented by the
+`PixelSpace` each frame derives from its layout (`pixel_space_for_config` for
+Cartesian configs, `Frame::annotation_space()` for bounded frames,
+`AnnotationMap::space()` on any map). Cartesian charts convert data anchors
+through `bottom_x` / `left_y`; bar and box charts through the category index
+axis and the value axis; radial charts place ratio anchors only and report
+data anchors as warnings. Drags are converted back through the same space,
+so a data-anchored item follows later zooms and a ratio-anchored one stays
+put. `Anchor::converted(&space, kind)` switches kinds without moving.
+
+**Revisions and caches.** `annotations.items` has its own raster revision.
+On registered Cartesian charts `ChartRenderStamp::needs_annotation_raster_since`
+says when to call `Renderer::refresh_annotations(view, chart, panel_rect,
+selected)`, which rewrites the two annotation textures and the annotation hit
+map and nothing else (`ChartView::layer_stamps()` counts each layer's writes;
+the cached view plus that refresh paints the same bytes as a fresh renderer).
+`refresh_axis*` redoes the annotation rasters too, because the anchor space
+follows the axes and the data area, so a host that refreshes the axis raster
+needs no second call for the same frame. Toggling `visible` bumps no raster
+revision at all: the draw skips the two composites. On bounded charts
+`prepare_annotations(chart, size, scale)` returns an
+`Arc<BoundedAnnotationFrame>` cached beside the frame: an item edit or a
+selection change returns the same `Arc<Frame>` with the same label raster and
+a new annotation frame; a `visible` toggle returns an annotation frame that
+`shares_rasters_with` the previous one.
+
+**Hit map, selection and handles.** The layer owns a `HitMap<AnnotationLayer>`
+(`AnnotationLayer` implements `DragConfig`) exposed as an `AnnotationMap`:
+`ChartView::annotation_map()` after a refresh, `BoundedAnnotationFrame::
+annotations()` after `prepare_annotations`. It has the `DecorationMap` shape:
+`hit_test`, `element` (index and measured text size), `find(index)`,
+`bounds`, `selection_box`, `drag_by`, `hit_resize_handle`, `resize_by`,
+`warnings`, `space`. Coordinates are logical pixels of the frame: chart-local
+for bounded charts, the chart area's frame for Cartesian charts. Every item
+has the common blue selection box; the handles it carries are the item's own:
+a span's two edges (`W`/`E` or `N`/`S`), a reference line's two value handles,
+an arrow's two endpoints (the endpoint further left is `W`, the other `E`;
+`N`/`S` for a vertical arrow); a text box has none. `resize_by` with that
+compass name moves the handle, `drag_by` moves the whole item. Moves that
+would leave the axis range (lines, span edges), the plot (a whole span) or the
+panel (text, arrow endpoints) are rejected atomically. Later items win where
+items overlap. Hidden items and items the raster skipped are not registered;
+the skipped ones are `RenderWarning::AnnotationSkipped` on
+`ChartView::render_warnings()` / `BoundedAnnotationFrame::render_warnings()`.
+
+Selection follows each family's convention. Bounded charts store it in the
+shared `decorations.selected = Some(DecorationId::Annotation(index))`; the
+frame caches ignore that value, so selecting an annotation never rebuilds the
+chart frame. Cartesian hosts pass the selected index to `refresh_annotations`;
+the view remembers it for later axis refreshes. The box is drawn on the
+overlay, above everything.
+
+```rust,no_run
+use renderer::{Anchor, Annotation, AnnotationAxis, AnnotationKind, DecorationId};
+# fn edit(renderer: &mut renderer::CategoricalRenderer, chart: &mut renderer::CategoricalChart)
+# -> Result<(), renderer::CategoricalError> {
+chart.annotations.items.push(Annotation::new(AnnotationKind::Span {
+    axis: AnnotationAxis::X, from: -0.5, to: 0.5, fill: renderer::Color::new(1., 0., 0., 0.3),
+}));
+chart.annotations.items.push(Annotation::new(AnnotationKind::Text {
+    anchor: Anchor::Ratio { x: 0.6, y: 0.1 },
+    text: renderer::text::RichText::plain("note", renderer::Color::BLACK, 12., ""),
+    box_style: Some(Default::default()),
+}));
+let frame = renderer.prepare(chart, (800, 520), 2.0)?;
+let layer = renderer.prepare_annotations(chart, (800, 520), 2.0)?;
+if let Some(hit) = layer.annotations().hit_test([400.0, 60.0]) {
+    let index = layer.annotations().element(hit).unwrap().index;
+    chart.decorations.selected = Some(DecorationId::Annotation(index));
+    // Frame delta in logical pixels; the anchor is written back through the frame's space.
+    let _ = layer.annotations().drag_by(&mut chart.annotations, hit, 8.0, -4.0);
+}
+let layer = renderer.prepare_annotations(chart, (800, 520), 2.0)?;
+// In the pass: layer.draw_underlay(pass); frame.draw(pass); layer.draw_overlay(pass).
+# let _ = frame; let _ = layer;
+# Ok(()) }
+```
+
+The Cartesian call order is the usual one plus the annotation branch:
+`refresh_axis*` when the raster stamp changed (it carries the annotations
+along), else `refresh_annotations` when the annotation stamp or the selection
+changed, then `prepare` / `paint`. `export_panel_*` rasterizes the layer at the
+export scale from the same scaled config as the axes, so 1× and 2× exports use
+the metrics of their hit maps.
+
+The WASM wrappers expose the layer on both classes (`FiggyChart`,
+`FiggyBoundedChart`): `annotations()`, `hit_annotation(x, y)`,
+`select_annotation(index | null)`, `selected_annotation()`,
+`annotation_handle(index, x, y)`, `drag_annotation(index, dx, dy, handle)`,
+`add_annotation(json)`, `set_annotation(index, json)`,
+`remove_annotation(index)`, `set_annotations_visible(bool)`,
+`pointer_to_anchor(x, y, "Data" | "Ratio")` and `annotation_warnings()`; see
+[the WASM guide](WASM.md). Registering annotation elements on the base hit map
+when `active_layer == Annotations` is the follow-up after #11.
+
 Run `cargo run --locked -p figgy-renderer --example bounded_titles` for a complete
 native PNG example covering all three families, multiline alignment and a
 subscript. See [the example source](examples/bounded_titles.rs). Hosts still
 own editor widgets, Undo and file storage; no HTML overlay is required.
+
+## Area fill and step lines on Cartesian line series
+
+A Cartesian line series can fill the area under its line or between its line
+and another series (`DataLineStyleConfig.fill`) and connect its samples with
+step pieces (`DataLineStyleConfig.interpolation`); see the
+[configuration reference](CONFIG.md#area-fill-and-step-lines). Interaction
+contracts:
+
+- The fill is a property of the line, not a hit target. `pick_point` and
+  `pick_data` keep resolving the line's samples; the picked-point ring and the
+  typed selection overlay are drawn after every fill and every body, so a fill
+  never covers a highlight. Selecting the series selects its fill.
+- A pick on a stepped line walks the same axis-aligned pieces the line draws.
+  The nearest piece wins and the result snaps to the nearer source index by
+  position along the stepped path, so a hit on a riser still names one of the
+  two samples it joins; the straight chord between two samples is not
+  pickable in a step mode. CPU and GPU pickers agree on this, including the
+  data-space midpoint of `StepMid`.
+- Editing `fill`, `fill_color` or `interpolation` is a series declaration
+  change: the registry moves the data revision (like any `render_type` edit),
+  leaves the view and selection revisions alone, reuses the column
+  allocations, and the first frame after the edit is what a fresh renderer
+  draws for the final state.
+- The legend mark of a filled series carries a band in the fill colour under
+  its rule; `series_symbol_segments` emits it and `RichSegment.rule_band`
+  stores it, inside the fixed-width symbol field, so legend hit bounds do not
+  change.
+

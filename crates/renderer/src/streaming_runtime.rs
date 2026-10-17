@@ -223,6 +223,13 @@ pub(super) struct AutoStreamExecutionSnapshot {
     handoff: Option<Arc<ResidentStreamHandoff>>,
 }
 
+impl AutoStreamExecutionSnapshot {
+    /// Whether the snapshot's chart composites its annotation layer.
+    pub(super) fn annotations_visible(&self) -> bool {
+        self.config.annotations.visible
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct StreamTargetKey {
     size: (u32, u32),
@@ -1163,6 +1170,13 @@ impl Renderer {
                             pass.set_pipeline(&self.pipelines.axis);
                             pass.set_bind_group(0, &snapshot.view.grid_bind_group, &[]);
                             pass.draw(0..3, 0..1);
+                            if let (Some(underlay), _) = snapshot
+                                .view
+                                .annotation_bind_groups(snapshot.annotations_visible())
+                            {
+                                pass.set_bind_group(0, underlay, &[]);
+                                pass.draw(0..3, 0..1);
+                            }
                         }
                     },
                     budget,
@@ -1206,6 +1220,13 @@ impl Renderer {
                 pass.set_pipeline(&self.pipelines.axis);
                 pass.set_bind_group(0, &snapshot.view.grid_bind_group, &[]);
                 pass.draw(0..3, 0..1);
+                if let (Some(underlay), _) = snapshot
+                    .view
+                    .annotation_bind_groups(snapshot.annotations_visible())
+                {
+                    pass.set_bind_group(0, underlay, &[]);
+                    pass.draw(0..3, 0..1);
+                }
             }
         }
         let expected_view_revision = snapshot.view.stream_revision.load(Ordering::Acquire);
@@ -3526,6 +3547,13 @@ impl Renderer {
         .then_some(data)
         .flatten()
         .map(|r| [r.x, r.y, r.width, r.height]);
+        // The annotation layer composites around the display like around a
+        // resident panel: spans below the data, the rest above the chrome.
+        // `visible` is a draw-time choice read from the live document, like
+        // the resident path's prepare-time capture: it needs no new snapshot.
+        let annotations_visible = self.chart_states[&job.chart].config.annotations.visible;
+        let (annotation_underlay, annotation_overlay) =
+            display_view.annotation_bind_groups(annotations_visible);
         surface.record_display_chunks(
             runtime.transfer.as_ref().ok_or(StreamError::WrongState)?,
             &mut encoder,
@@ -3545,6 +3573,10 @@ impl Renderer {
                     pass.set_pipeline(&self.pipelines.axis);
                     pass.set_bind_group(0, &display_view.grid_bind_group, &[]);
                     pass.draw(0..3, 0..1);
+                    if let Some(underlay) = annotation_underlay {
+                        pass.set_bind_group(0, underlay, &[]);
+                        pass.draw(0..3, 0..1);
+                    }
                 }
             },
             |pass| {
@@ -3605,6 +3637,10 @@ impl Renderer {
                     pass.set_pipeline(&self.pipelines.axis);
                     pass.set_bind_group(0, &display_view.decoration_bind_group, &[]);
                     pass.draw(0..3, 0..1);
+                    if let Some(overlay) = annotation_overlay {
+                        pass.set_bind_group(0, overlay, &[]);
+                        pass.draw(0..3, 0..1);
+                    }
                 }
             },
         )?;

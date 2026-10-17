@@ -209,3 +209,16 @@ NO_HEADLESS=1 CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runne
 데이터 도형의 `hit_test`와 별도로 `frame.decorations()`가 렌더러에서 측정한 히트맵을 제공한다.
 기존 `Selectable`·`Draggable` 계약으로 `chart.decorations`를 갱신하고 `prepare`한다.
 좌표 단위, 요소별 이동 규칙, 캐시·저장 복원 및 웹 연결은 [공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)를 참고한다.
+
+
+### 주석 층
+
+`chart.annotations`의 기준선·구간·텍스트 상자·화살표는 막대 프레임 주위에 별도 패스로 그린다.
+`AnnotationAxis::X`는 화면 가로, `Y`는 화면 세로다. `Vertical`이면 `X`가 범주 인덱스(첫 범주 중심이 0,
+`-0.5..0.5`가 첫 슬롯), `Y`가 값 축이고 `Horizontal`이면 반대다. 구간은 데이터 아래(underlay)에
+그리므로 구간이 있을 때는 `set_background(FrameBackground::HostClear)`로 프레임을 준비하고 호스트가
+`chart.background`로 지운다. `export_rgba`는 이를 스스로 처리한다.
+`prepare_annotations(chart, size, scale)`의 `BoundedAnnotationFrame`을 `draw_underlay` →
+`frame.draw` → `draw_overlay` 순서로 그리고 히트 맵은 `annotations()`로 얻는다. 주석 편집과
+`decorations.selected = Annotation(i)` 선택은 막대 프레임과 라벨 래스터를 다시 만들지 않는다.
+자세한 계약은 [공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer)를 참고한다.

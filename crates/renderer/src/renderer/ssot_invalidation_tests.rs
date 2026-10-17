@@ -2,6 +2,7 @@
 //! frame and the work needed to produce it. The pixel oracle is a fresh renderer
 //! with the final state, never an invalidation predicate from the implementation.
 use super::*;
+use crate::annotation::{Anchor, Annotation, AnnotationAxis, AnnotationKind};
 use crate::config::{AxisScale, DrawStyle, TickVisibility};
 use crate::gpu_memory::GpuResourceKind;
 use crate::layout::Side;
@@ -25,14 +26,17 @@ enum Pixels {
 /// One single-property edit and the work it is allowed to cause. `work` is the
 /// data-side classification (and the `view` revision: everything but `Prefix`
 /// changes the data transform or area); `raster` is whether the CPU axis
-/// chrome must be rasterized again (the `raster` revision); `differs` is
-/// whether the config changed at all (the `desired` and `config` revisions).
+/// chrome must be rasterized again (the `raster` revision); `annotation` is
+/// whether the annotation layer's own rasters must be redone (the
+/// `annotation` revision, `annotations.items` only); `differs` is whether the
+/// config changed at all (the `desired` and `config` revisions).
 struct Edit {
     name: &'static str,
     apply: fn(&mut Config),
     work: Work,
     differs: bool,
     raster: bool,
+    annotation: bool,
     pixels: Pixels,
     /// Whether the nonresident stream pass accepts the edited chart at all.
     /// A rejected combination is a contract of its own and is not a
@@ -46,8 +50,8 @@ fn edits() -> Vec<Edit> {
         ($path:ident $(.$field:ident)*, $value:expr, $work:ident) => {
             cases.push(Edit { name: stringify!($path $(.$field)*),
                 apply: |c| c.$path $(.$field)* = $value,
-                work: Work::$work, differs: true, raster: true, pixels: Pixels::Changed,
-                streams: true });
+                work: Work::$work, differs: true, raster: true, annotation: false,
+                pixels: Pixels::Changed, streams: true });
         };
     }
     cases.push(Edit {
@@ -56,6 +60,7 @@ fn edits() -> Vec<Edit> {
         work: Work::Prefix,
         differs: false,
         raster: false,
+        annotation: false,
         pixels: Pixels::Unchanged,
         streams: true,
     });
@@ -67,6 +72,7 @@ fn edits() -> Vec<Edit> {
         work: Work::Prefix,
         differs: true,
         raster: false,
+        annotation: false,
         pixels: Pixels::Unchanged,
         streams: true,
     });
@@ -76,6 +82,7 @@ fn edits() -> Vec<Edit> {
         work: Work::Prefix,
         differs: true,
         raster: false,
+        annotation: false,
         pixels: Pixels::Unchanged,
         streams: true,
     });
@@ -88,6 +95,7 @@ fn edits() -> Vec<Edit> {
         work: Work::Prefix,
         differs: true,
         raster: true,
+        annotation: false,
         pixels: Pixels::Any,
         streams: true,
     });
@@ -218,6 +226,7 @@ fn edits() -> Vec<Edit> {
             work: Work::Packed,
             differs: true,
             raster: true,
+            annotation: false,
             pixels: Pixels::Changed,
             streams: true,
         });
@@ -233,6 +242,7 @@ fn edits() -> Vec<Edit> {
         work: Work::Replay,
         differs: true,
         raster: true,
+        annotation: false,
         pixels: Pixels::Changed,
         streams: false,
     });
@@ -242,6 +252,7 @@ fn edits() -> Vec<Edit> {
         work: Work::Replay,
         differs: true,
         raster: true,
+        annotation: false,
         pixels: Pixels::Changed,
         streams: false,
     });
@@ -252,6 +263,7 @@ fn edits() -> Vec<Edit> {
         work: Work::Packed,
         differs: true,
         raster: true,
+        annotation: false,
         pixels: Pixels::Changed,
         streams: true,
     });
@@ -272,6 +284,7 @@ fn colorbar_edits() -> Vec<Edit> {
                 work: Work::$work,
                 differs: true,
                 raster: true,
+                annotation: false,
                 pixels: Pixels::$pixels,
                 streams: true,
             });
@@ -283,6 +296,7 @@ fn colorbar_edits() -> Vec<Edit> {
         work: Work::Packed,
         differs: true,
         raster: true,
+        annotation: false,
         pixels: Pixels::Changed,
         streams: true,
     });
@@ -372,6 +386,7 @@ fn overlay_edits() -> Vec<Edit> {
                 work: Work::$work,
                 differs: true,
                 raster: true,
+                annotation: false,
                 pixels: Pixels::$pixels,
                 streams: false,
             });
@@ -383,6 +398,7 @@ fn overlay_edits() -> Vec<Edit> {
         work: Work::Packed,
         differs: true,
         raster: true,
+        annotation: false,
         pixels: Pixels::Changed,
         streams: false,
     });
@@ -397,6 +413,7 @@ fn overlay_edits() -> Vec<Edit> {
         work: Work::Packed,
         differs: true,
         raster: true,
+        annotation: false,
         pixels: Pixels::Changed,
         streams: false,
     });
@@ -406,6 +423,7 @@ fn overlay_edits() -> Vec<Edit> {
         work: Work::Prefix,
         differs: true,
         raster: false,
+        annotation: false,
         pixels: Pixels::Unchanged,
         streams: false,
     });
@@ -477,6 +495,7 @@ fn overlay_edits() -> Vec<Edit> {
         work: Work::Prefix,
         differs: true,
         raster: true,
+        annotation: false,
         pixels: Pixels::Changed,
         streams: false,
     });
@@ -510,6 +529,145 @@ fn baseline() -> Config {
     c.grid.show_major_y = true;
     c.grid.show_minor_x = true;
     c.grid.show_minor_y = true;
+    c
+}
+
+/// Annotation edits run against a baseline that already has one item of each
+/// kind, so a `visible` toggle has pixels to hide. Items are the only field
+/// of the layer that re-rasterizes it, and they never touch the axis raster,
+/// the data transform or the data job; `visible` only skips the composite.
+fn annotation_edits() -> Vec<Edit> {
+    fn case(name: &'static str, apply: fn(&mut Config), annotation: bool, pixels: Pixels) -> Edit {
+        Edit {
+            name,
+            apply,
+            work: Work::Prefix,
+            differs: true,
+            raster: false,
+            annotation,
+            pixels,
+            streams: true,
+        }
+    }
+    vec![
+        case(
+            "annotations.visible (with items)",
+            |c| c.annotations.visible = false,
+            false,
+            Pixels::Changed,
+        ),
+        case(
+            "annotations.items[span].to",
+            |c| match &mut c.annotations.items[0].kind {
+                AnnotationKind::Span { to, .. } => *to = 1.2,
+                _ => unreachable!(),
+            },
+            true,
+            Pixels::Changed,
+        ),
+        case(
+            "annotations.items[line].value",
+            |c| match &mut c.annotations.items[1].kind {
+                AnnotationKind::ReferenceLine { value, .. } => *value = 0.3,
+                _ => unreachable!(),
+            },
+            true,
+            Pixels::Changed,
+        ),
+        case(
+            "annotations.items[text].anchor",
+            |c| match &mut c.annotations.items[2].kind {
+                AnnotationKind::Text { anchor, .. } => *anchor = Anchor::Ratio { x: 0.6, y: 0.6 },
+                _ => unreachable!(),
+            },
+            true,
+            Pixels::Changed,
+        ),
+        case(
+            "annotations.items[arrow].to",
+            |c| match &mut c.annotations.items[3].kind {
+                AnnotationKind::Arrow { to, .. } => *to = Anchor::Data { x: 1.0, y: 0.7 },
+                _ => unreachable!(),
+            },
+            true,
+            Pixels::Changed,
+        ),
+        case(
+            "annotations.items[line].visible",
+            |c| c.annotations.items[1].visible = false,
+            true,
+            Pixels::Changed,
+        ),
+        case(
+            "annotations.items (push)",
+            |c| {
+                c.annotations
+                    .items
+                    .push(Annotation::new(AnnotationKind::Span {
+                        axis: AnnotationAxis::Y,
+                        from: 0.25,
+                        to: 0.35,
+                        fill: Color::new(0.1, 0.6, 0.2, 0.4),
+                    }))
+            },
+            true,
+            Pixels::Changed,
+        ),
+        case(
+            "annotations.items (clear)",
+            |c| c.annotations.items.clear(),
+            true,
+            Pixels::Changed,
+        ),
+        // An item that cannot be placed is a warning, not a pixel: the
+        // raster is redone (the items changed) and nothing is drawn for it.
+        case(
+            "annotations.items (push non-finite line)",
+            |c| {
+                c.annotations
+                    .items
+                    .push(Annotation::new(AnnotationKind::ReferenceLine {
+                        axis: AnnotationAxis::X,
+                        value: f64::NAN,
+                        style: Default::default(),
+                        label: None,
+                    }))
+            },
+            true,
+            Pixels::Unchanged,
+        ),
+    ]
+}
+
+/// The baseline plus one annotation of each kind inside the drawn ranges.
+fn baseline_with_annotations() -> Config {
+    let mut c = baseline();
+    let text = RichText::plain("note", Color::BLACK, 11.0, "");
+    c.annotations.items = vec![
+        Annotation::new(AnnotationKind::Span {
+            axis: AnnotationAxis::X,
+            from: 0.4,
+            to: 0.8,
+            fill: Color::new(0.9, 0.3, 0.1, 0.35),
+        }),
+        Annotation::new(AnnotationKind::ReferenceLine {
+            axis: AnnotationAxis::Y,
+            value: 0.5,
+            style: Default::default(),
+            label: Some(text.clone()),
+        }),
+        Annotation::new(AnnotationKind::Text {
+            anchor: Anchor::Ratio { x: 0.1, y: 0.1 },
+            text: text.clone(),
+            box_style: Some(Default::default()),
+        }),
+        Annotation::new(AnnotationKind::Arrow {
+            from: Anchor::Data { x: 0.2, y: 0.3 },
+            to: Anchor::Data { x: 1.2, y: 0.6 },
+            style: Default::default(),
+            text: Some(text),
+        }),
+    ];
     c
 }
 
@@ -698,6 +856,7 @@ fn matrix(resident: bool, cache: bool) {
         (baseline(), edits()),
         (baseline_with_colorbar(), colorbar_edits()),
         (baseline_with_overlay(), overlay_edits()),
+        (baseline_with_annotations(), annotation_edits()),
     ];
     eprintln!(
         "SSOT: {} single-property cases, resident={resident}, cache={cache}",
@@ -762,6 +921,10 @@ fn matrix(resident: bool, cache: bool) {
         check(
             updated.selection == revisions.selection,
             "a non-selection edit changed the selection revision",
+        );
+        check(
+            (updated.annotation != revisions.annotation) == edit.annotation,
+            "annotation revision does not follow the annotation item classification",
         );
         check(
             actual == expected,
@@ -862,7 +1025,7 @@ fn config_fields_are_classified() {
         draw_style: _,    // Sketch / Milkyway / Constellation: Replay
         overlays,         // overlay_edits(): range/series/band Packed, the rest Prefix
         active_layer: _,  // layer only: no raster, no pixels
-        annotations: _,   // layer only: no raster, no pixels
+        annotations: _,   // annotation_edits(): annotation revision only
     } = baseline_with_colorbar();
     let AxisOptions {
         scale: _,
@@ -950,7 +1113,13 @@ fn config_fields_are_classified() {
         border_width: _,
         axis: _,
     } = colorbar.expect("the colourbar baseline has a colourbar");
-    let crate::AnnotationLayer { visible: _ } = crate::AnnotationLayer::default();
+    // The annotation layer: `visible` skips the composite only (no raster,
+    // no annotation raster); `items` redo the annotation rasters only
+    // (`annotation_edits`, the annotation revision), never the axis raster.
+    let crate::AnnotationLayer {
+        visible: _,
+        items: _,
+    } = crate::AnnotationLayer::default();
     let crate::OverlayLayer {
         y_axis: _, // every AxisOptions field, as overlay!(y_axis.*)
         series: _, // overlays[0].series
@@ -1084,6 +1253,92 @@ fn histogram_orientation_round_trip_refreshes_first_frame_without_reupload() {
         "a full-state grid edit must reuse unchanged bar styles"
     );
 }
+/// Line fill and step interpolation are series declarations: each edit
+/// refreshes the first frame to exactly what a fresh renderer draws for the
+/// final state, moves only the data revision (never the view or selection),
+/// reuses the column allocations, and an identical re-declaration changes
+/// nothing.
+#[test]
+fn line_fill_and_step_edits_refresh_first_frame_without_reupload() {
+    use crate::data_config::{DataLineStyleConfig, LineFill, LineInterpolation};
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap();
+    let mut config = baseline();
+    config.legend.visible = false;
+    let mut series = declaration("s", "x", "a");
+    let (mut r, id) = fixture(&config, true, false);
+    let (plain, _) = frame(&mut r, id, true);
+    let generation = r.pool.generation();
+    let used_bytes = r.pool.used_bytes();
+    let mut previous = plain;
+    let edits: [(&str, fn(&mut DataLineStyleConfig)); 5] = [
+        ("fill to baseline", |line| {
+            line.fill = Some(LineFill::ToBaseline(0.0));
+        }),
+        ("fill colour", |line| {
+            line.fill_color = Some(Color::new(0.1, 0.6, 0.2, 0.5));
+        }),
+        ("step post with fill", |line| {
+            line.interpolation = LineInterpolation::StepPost;
+        }),
+        ("step mid without fill", |line| {
+            line.fill = None;
+            line.interpolation = LineInterpolation::StepMid;
+        }),
+        ("back to linear", |line| {
+            line.interpolation = LineInterpolation::Linear;
+        }),
+    ];
+    for (name, apply) in edits {
+        let DataRenderType::Line { line } = &mut series.render_type else {
+            unreachable!()
+        };
+        apply(line);
+        let revisions = r.chart_states[&id].revisions;
+        r.set_chart_series(id, vec![series.clone()]).unwrap();
+        let updated = r.chart_states[&id].revisions;
+        assert_ne!(
+            updated.data, revisions.data,
+            "{name}: a render_type edit is a data declaration change"
+        );
+        assert_eq!(updated.view, revisions.view, "{name}: no view replay");
+        assert_eq!(updated.selection, revisions.selection, "{name}");
+        let (actual, _) = frame(&mut r, id, true);
+        let (mut fresh, fresh_id) = fixture(&config, true, false);
+        fresh
+            .set_chart_series(fresh_id, vec![series.clone()])
+            .unwrap();
+        let (expected, _) = frame(&mut fresh, fresh_id, true);
+        assert_eq!(
+            actual, expected,
+            "{name}: first frame must match a fresh renderer"
+        );
+        assert_ne!(actual, previous, "{name}: the edit must be visible");
+        previous = actual;
+        assert_eq!(r.pool.generation(), generation, "{name}: no re-upload");
+        assert_eq!(r.pool.used_bytes(), used_bytes, "{name}");
+        // An identical re-declaration leaves the data revision and the frame.
+        let revisions = r.chart_states[&id].revisions;
+        r.set_chart_series(id, vec![series.clone()]).unwrap();
+        assert_eq!(r.chart_states[&id].revisions.data, revisions.data, "{name}");
+        assert_eq!(frame(&mut r, id, true).0, expected, "{name}: stable");
+    }
+    // Back to the original declaration: the plain line, pixel for pixel.
+    assert_eq!(previous, frame(&mut r, id, true).0);
+    let mut fresh_plain = declaration("s", "x", "a");
+    let DataRenderType::Line { line } = &mut fresh_plain.render_type else {
+        unreachable!()
+    };
+    line.interpolation = LineInterpolation::Linear;
+    r.set_chart_series(id, vec![fresh_plain]).unwrap();
+    let (mut fresh, fresh_id) = fixture(&config, true, false);
+    assert_eq!(
+        frame(&mut r, id, true).0,
+        frame(&mut fresh, fresh_id, true).0
+    );
+}
+
 #[test]
 fn ssot_edits_refresh_stream_first_frame_without_excess_work() {
     matrix(false, false);

@@ -1049,6 +1049,7 @@ mod tests {
                                 None => (pool.buffer(), resident_x, resident_y),
                             };
                             let layers = SeriesLayers {
+                                area: None,
                                 field: None,
                                 bar: None,
                                 contour: None,

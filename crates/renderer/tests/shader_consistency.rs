@@ -482,6 +482,41 @@ fn no_bare_texture_sample_in_any_shader() {
     );
 }
 
+// The step-interpolation helpers are deliberately outside the common block
+// (`line_arc.wgsl` has no `Style`), but the line entries and the arc scan must
+// split a segment into exactly the same pieces or the dash phase drifts from
+// the drawn corners. The GPU picker carries its own `pick_` copy of the same
+// rules; its agreement with the CPU picker is a GPU parity test instead.
+#[test]
+fn step_interpolation_helpers_match_between_the_line_and_arc_shaders() {
+    let line = read(shader_path_for("line"));
+    let arc = read(shader_path_for("arc"));
+    for name in ["step_piece_count", "step_piece", "step_piece_len_px"] {
+        assert_eq!(
+            wgsl_function(&line, name),
+            wgsl_function(&arc, name),
+            "`{name}` differs between line_columnar.wgsl and line_arc.wgsl"
+        );
+    }
+    for constant in [
+        "const LINE_STEP_SHIFT: u32 = 2u;",
+        "const LINE_STEP_MASK: u32 = 3u;",
+        "const LINE_STEP_LINEAR: u32 = 0u;",
+        "const LINE_STEP_PRE: u32 = 1u;",
+        "const LINE_STEP_POST: u32 = 2u;",
+        "const LINE_STEP_MID: u32 = 3u;",
+    ] {
+        assert!(line.contains(constant), "line_columnar.wgsl: {constant}");
+        assert!(arc.contains(constant), "line_arc.wgsl: {constant}");
+    }
+    // The picker's copy keeps the data-space midpoint rule under its own
+    // names; the rest of its agreement is the CPU/GPU pick parity test.
+    let pick = read("src/gpu_pick.wgsl");
+    assert!(pick.contains("fn pick_step_piece("));
+    assert!(pick.contains("let xm = (ax + bx) * 0.5;"));
+    assert!(line.contains("let xm = (xa + xb) * 0.5;"));
+}
+
 #[test]
 fn every_targeted_shader_has_begin_end_markers() {
     for short in TARGETS {

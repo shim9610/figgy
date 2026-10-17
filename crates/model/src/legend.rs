@@ -120,6 +120,9 @@ mod legend_update_tests {
                     line_style,
                     line_color: color,
                     line_width: 1.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         }
@@ -231,13 +234,14 @@ mod legend_update_tests {
 }
 
 /// Line sample: a drawn rule filling the whole symbol field — exact length,
-/// unlike any dash glyph.
-fn line_symbol(color: Color, style: LineStylePreset) -> Vec<RichSegment> {
+/// unlike any dash glyph. `band` paints the fill colour under the rule, inside
+/// the same fixed field, for a series that fills the area under its line.
+fn line_symbol(color: Color, style: LineStylePreset, band: Option<Color>) -> Vec<RichSegment> {
     let seg = match rule_dash_em(style) {
         Some(dash) => RichSegment::dashed_rule(SYMBOL_FIELD_EM, Some(color), dash),
         None => RichSegment::rule(SYMBOL_FIELD_EM, Some(color)),
     };
-    vec![seg]
+    vec![seg.with_rule_band(band)]
 }
 
 /// Point sample: the shape's glyph centered in the symbol field.
@@ -253,19 +257,23 @@ fn scatter_symbol(shape: &ScatterShape, color: Color) -> Vec<RichSegment> {
 /// exactly [`SYMBOL_FIELD_EM`] so the combined mark is as long as a lone
 /// line mark.
 fn line_scatter_symbol(shape: &ScatterShape, color: Color) -> Vec<RichSegment> {
-    line_scatter_symbol_with_style(shape, color, LineStylePreset::Solid)
+    line_scatter_symbol_with_style(shape, color, LineStylePreset::Solid, None)
 }
 
 fn line_scatter_symbol_with_style(
     shape: &ScatterShape,
     color: Color,
     style: LineStylePreset,
+    band: Option<Color>,
 ) -> Vec<RichSegment> {
     let glyph_em = 0.7;
     let rule_em = (SYMBOL_FIELD_EM - glyph_em) * 0.5;
-    let rule = |width_em| match rule_dash_em(style) {
-        Some(dash) => RichSegment::dashed_rule(width_em, Some(color), dash),
-        None => RichSegment::rule(width_em, Some(color)),
+    let rule = |width_em| {
+        match rule_dash_em(style) {
+            Some(dash) => RichSegment::dashed_rule(width_em, Some(color), dash),
+            None => RichSegment::rule(width_em, Some(color)),
+        }
+        .with_rule_band(band)
     };
     vec![
         rule(rule_em),
@@ -279,7 +287,7 @@ fn line_scatter_symbol_with_style(
 /// independent of the document-level text color.
 pub fn symbol_segments(kind: &LegendEntryKind, color: Color) -> Vec<RichSegment> {
     match kind {
-        LegendEntryKind::Line => line_symbol(color, LineStylePreset::Solid),
+        LegendEntryKind::Line => line_symbol(color, LineStylePreset::Solid, None),
         LegendEntryKind::Scatter => scatter_symbol(&ScatterShape::CircleFilled, color),
         LegendEntryKind::LineScatter => line_scatter_symbol(&ScatterShape::CircleFilled, color),
     }
@@ -300,9 +308,17 @@ fn blank_symbol() -> Vec<RichSegment> {
 
 /// Symbol segments matching a series declaration: line / scatter / combined,
 /// shape and color taken from the render type's sub-styles.
+///
+/// A line with a fill carries a band of the fill colour under its rule
+/// ([`DataLineStyleConfig::effective_fill_color`]), inside the same fixed
+/// symbol field.
+///
+/// [`DataLineStyleConfig::effective_fill_color`]: crate::data_config::DataLineStyleConfig::effective_fill_color
 pub fn series_symbol_segments(cfg: &SeriesConfig) -> Vec<RichSegment> {
     match &cfg.render_type {
-        DataRenderType::Line { line } => line_symbol(line.line_color, line.line_style),
+        DataRenderType::Line { line } => {
+            line_symbol(line.line_color, line.line_style, line_fill_band(line))
+        }
         // A bar reads as a filled swatch; the glyph is already in the shape
         // table, so no new symbol machinery.
         DataRenderType::Histogram { bar } => {
@@ -312,7 +328,7 @@ pub fn series_symbol_segments(cfg: &SeriesConfig) -> Vec<RichSegment> {
         // the mark — the fill's colours belong to the colourbar.
         DataRenderType::Contour { contour, .. }
         | DataRenderType::HeatmapContour { contour, .. } => {
-            line_symbol(contour.line.line_color, contour.line.line_style)
+            line_symbol(contour.line.line_color, contour.line.line_style, None)
         }
         DataRenderType::Heatmap { .. } => blank_symbol(),
         DataRenderType::Scatter { scatter }
@@ -325,7 +341,12 @@ pub fn series_symbol_segments(cfg: &SeriesConfig) -> Vec<RichSegment> {
         | DataRenderType::LineScatterErrorbarX { scatter, line, .. }
         | DataRenderType::LineScatterErrorbarY { scatter, line, .. }
         | DataRenderType::LineScatterErrorbarXY { scatter, line, .. } => {
-            line_scatter_symbol_with_style(&scatter.point_shape, line.line_color, line.line_style)
+            line_scatter_symbol_with_style(
+                &scatter.point_shape,
+                line.line_color,
+                line.line_style,
+                line_fill_band(line),
+            )
         }
     }
 }
@@ -342,6 +363,12 @@ pub fn series_symbol_segments(cfg: &SeriesConfig) -> Vec<RichSegment> {
 /// `content.segments` themselves without the `'\n'`.
 pub fn append_legend_entry(content: &mut RichText, symbol: Vec<RichSegment>, label: &str) {
     append_legend_entry_rich(content, symbol, rich_segments_from_text(label));
+}
+
+/// The legend band colour of a line series: its fill colour when it has a
+/// fill, nothing otherwise.
+fn line_fill_band(line: &crate::data_config::DataLineStyleConfig) -> Option<Color> {
+    line.fill.as_ref().map(|_| line.effective_fill_color())
 }
 
 /// Append one legend entry using already-styled label segments.
@@ -536,6 +563,9 @@ mod tests {
                     line_style,
                     line_color: color,
                     line_width: 1.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         }
@@ -559,6 +589,63 @@ mod tests {
         assert_eq!(segs[0].text, '—');
         assert_eq!(segs[0].color, Some(red));
         assert_eq!(segs[0].font_size, None); // size stays live via the document
+    }
+
+    // A filled line carries its fill colour as a band under the rule, and a
+    // line without a fill carries none: the band is the legend's only
+    // difference between the two, so the symbol field keeps its width.
+    #[test]
+    fn filled_line_symbols_carry_the_fill_band_under_every_rule() {
+        use crate::data_config::{DataLineStyleConfig, DataScatterStyleConfig, LineFill};
+
+        let red = Color::new(1.0, 0.0, 0.0, 1.0);
+        let mut filled = line_cfg(red);
+        let DataRenderType::Line { line } = &mut filled.render_type else {
+            unreachable!()
+        };
+        line.fill = Some(LineFill::ToBaseline(0.0));
+        let segs = series_symbol_segments(&filled);
+        assert_eq!(segs.len(), 1);
+        assert!(segs[0].rule);
+        assert_eq!(segs[0].color, Some(red));
+        assert_eq!(
+            segs[0].rule_band,
+            Some(Color::new(
+                1.0,
+                0.0,
+                0.0,
+                DataLineStyleConfig::DEFAULT_FILL_ALPHA
+            )),
+            "the default band is the line colour at the default fill alpha"
+        );
+        assert_eq!(series_symbol_segments(&line_cfg(red))[0].rule_band, None);
+
+        // An explicit fill colour wins, and a line + marker mark bands both
+        // half rules while the glyph between them stays plain.
+        let blue = Color::new(0.0, 0.0, 1.0, 0.5);
+        let combined = SeriesConfig {
+            render_type: DataRenderType::ScatterLine {
+                scatter: DataScatterStyleConfig {
+                    point_color: red,
+                    point_shape: ScatterShape::CircleFilled,
+                    point_size: 3.0,
+                    point_style_table: None,
+                    point_style_index_column: None,
+                    point_style_overrides: None,
+                },
+                line: DataLineStyleConfig {
+                    fill: Some(LineFill::ToSeries("other".into())),
+                    fill_color: Some(blue),
+                    ..DataLineStyleConfig::default()
+                },
+            },
+            ..line_cfg(red)
+        };
+        let segs = series_symbol_segments(&combined);
+        assert_eq!(segs.len(), 3);
+        assert_eq!(segs[0].rule_band, Some(blue));
+        assert_eq!(segs[1].rule_band, None);
+        assert_eq!(segs[2].rule_band, Some(blue));
     }
 
     #[test]
@@ -708,6 +795,9 @@ mod tests {
                 line_style: LineStylePreset::Dash,
                 line_color: color,
                 line_width: 1.0,
+                fill: None,
+                fill_color: None,
+                interpolation: crate::data_config::LineInterpolation::Linear,
             },
             per_level_color: None,
             labels: None,

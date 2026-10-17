@@ -654,6 +654,7 @@ pub(crate) async fn prewarm_browser_render_feature(
             include_str!("line_columnar.wgsl"),
             &[
                 ("precise line", "figgy line columnar pipeline"),
+                ("line area fill", "figgy line area pipeline"),
                 ("hand-drawn line", "figgy line styled pipeline"),
                 ("milkyway ribbon", "figgy milkyway ribbon pipeline"),
                 ("milkyway stars", "figgy milkyway stars pipeline"),
@@ -1837,10 +1838,108 @@ pub(crate) fn create_line_columnar_pipeline_with_sample_count(
     )
 }
 
+/// Strip vertices per instance (one straight segment) for the precise
+/// `vs_main` line entry and the `vs_area` fill entry: one quad.
+pub const LINE_PRECISE_VERTICES_PER_INSTANCE: u32 = 4;
+
 /// Strip vertex count per instance for the sketch line pipeline:
 /// `2 * (S + 1)` with the subdivision constant `S = 8` — must match
 /// `SKETCH_SUBDIV` in `line_columnar.wgsl`.
 pub const LINE_SKETCH_VERTICES_PER_INSTANCE: u32 = 18;
+
+/// Strip vertices one line instance draws under `interpolation`: every step
+/// piece is one strip of `per_piece` vertices and consecutive pieces are
+/// joined by two duplicated vertices. Twin of `strip_slot` in
+/// `line_columnar.wgsl`.
+pub fn line_strip_vertex_count(
+    per_piece: u32,
+    interpolation: crate::data_config::LineInterpolation,
+) -> u32 {
+    crate::line_step::strip_vertex_count(per_piece, interpolation)
+}
+
+/// The area-fill pipeline: `vs_area` / `fs_area` of the line shader, one
+/// trapezoid per segment (per step piece) between the line and its baseline
+/// or a second y column. Slots 0-3 are the line's; slots 4/5 carry the second
+/// y column as `(hi, lo)` pairs with the same one-value shift (the y column
+/// itself as inert filler for a baseline fill).
+pub(crate) fn create_line_area_pipeline_with_sample_count(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    let layout = crate::gpu_compile::pipeline_layout(
+        &device,
+        &wgpu::PipelineLayoutDescriptor {
+            label: Some("figgy line area layout"),
+            bind_group_layouts: &[Some(transform_bgl), Some(style_bgl)],
+            immediate_size: 0,
+        },
+    );
+    let column_stride = crate::data::COLUMN_VALUE_BYTES as wgpu::BufferAddress;
+    const ATTRS: [[wgpu::VertexAttribute; 1]; 6] = {
+        let mut attrs = [[wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x2,
+            offset: 0,
+            shader_location: 0,
+        }]; 6];
+        let mut i = 0;
+        while i < 6 {
+            attrs[i][0].shader_location = i as u32;
+            i += 1;
+        }
+        attrs
+    };
+    let buffers: Vec<Option<wgpu::VertexBufferLayout<'_>>> = ATTRS
+        .iter()
+        .map(|attributes| {
+            Some(wgpu::VertexBufferLayout {
+                array_stride: column_stride,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes,
+            })
+        })
+        .collect();
+    crate::gpu_compile::render_pipeline(
+        &device,
+        &wgpu::RenderPipelineDescriptor {
+            label: Some("figgy line area pipeline"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_area"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &buffers,
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: multisample_state(sample_count),
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_area"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        },
+    )
+}
 
 /// Milkyway ribbon strip vertices per instance — `2·(S+1)`, twin of
 /// `CONS_RIBBON_SUBDIV` in `line_columnar.wgsl`.
@@ -4131,11 +4230,31 @@ pub struct ColumnLineLayer<'a> {
     /// Strip vertices per instance — must match `pipeline`'s vertex entry:
     /// 4 for the precise `vs_main`, [`LINE_SKETCH_VERTICES_PER_INSTANCE`]
     /// for the sketch `vs_sketch`, [`MILKYWAY_RIBBON_VERTICES`] for
-    /// the milkyway ribbon.
+    /// the milkyway ribbon — each per step piece, joined per
+    /// [`line_strip_vertex_count`].
     pub verts_per_instance: u32,
     /// Style textures (group 2) when `pipeline`'s layout includes them —
     /// the milkyway/constellation PSF/LUT bind group. `None` for precise/sketch.
     pub texture_bg: Option<&'a wgpu::BindGroup>,
+}
+
+/// The area fill of one columnar line series: under the line to a baseline,
+/// or between the line and a second series' y column (`base`), index-aligned
+/// over the same x column. Drawn by `issue_series_fill` before every series
+/// body, so no fill can cover another series' line.
+pub struct ColumnAreaLayer<'a> {
+    pub pipeline: &'a wgpu::RenderPipeline,
+    pub transform_bg: &'a wgpu::BindGroup,
+    pub style_bg: &'a wgpu::BindGroup,
+    pub pool_buffer: &'a wgpu::Buffer,
+    pub x: ColumnHandle,
+    pub y: ColumnHandle,
+    /// Second y column for a fill between two lines; the y column itself for
+    /// a baseline fill, bound as inert filler.
+    pub base: ColumnHandle,
+    /// Strip vertices per instance: [`LINE_PRECISE_VERTICES_PER_INSTANCE`] per
+    /// step piece through [`line_strip_vertex_count`].
+    pub verts_per_instance: u32,
 }
 
 /// One columnar field (heatmap / band) series.
@@ -4273,6 +4392,10 @@ pub struct ColumnFieldSelectionLayer<'a> {
 
 /// One series' data primitives. A panel can hold multiple of these.
 pub struct SeriesLayers<'a> {
+    /// A line's area fill. Not drawn by `issue_series_data`: every series'
+    /// fill is issued first by `issue_series_fill`, in series order, before
+    /// any series body — see `draw_chart_panel_columnar`.
+    pub area: Option<ColumnAreaLayer<'a>>,
     /// The field covers the whole grid, so it goes under everything else —
     /// see `issue_series_data` for the full order.
     pub field: Option<ColumnFieldLayer<'a>>,
@@ -4377,7 +4500,8 @@ fn draw_line_layer(pass: &mut wgpu::RenderPass<'_>, l: &ColumnLineLayer<'_>) {
         }
     }
     // Per-instance vertex count decided where the pipeline variant was
-    // picked: 4 (precise) / 18 (sketch, constellation ribbon).
+    // picked: 4 (precise) / 18 (sketch, constellation ribbon) per step piece,
+    // through `line_strip_vertex_count`.
     pass.draw(0..l.verts_per_instance, 0..(count - 1));
 }
 
@@ -4390,6 +4514,40 @@ fn draw_line_layer(pass: &mut wgpu::RenderPass<'_>, l: &ColumnLineLayer<'_>) {
 /// last bar of a correctly-shaped histogram.
 pub fn bar_instance_count(edge_values: usize, value_values: usize) -> u32 {
     edge_values.saturating_sub(1).min(value_values) as u32
+}
+
+/// Issue one series' area fill. Called for every series before any series
+/// body (`draw_chart_panel_columnar`): the data pass is "every fill → every
+/// body → every picked highlight", in SSOT series order with no sorting, so
+/// a fill composites over earlier fills and under every line.
+pub(crate) fn issue_series_fill(pass: &mut wgpu::RenderPass<'_>, series: &SeriesLayers<'_>) {
+    let Some(a) = series.area.as_ref() else {
+        return;
+    };
+    let count = a.x.len_values.min(a.y.len_values).min(a.base.len_values) as u32;
+    if count < 2 {
+        return;
+    }
+    pass.set_pipeline(a.pipeline);
+    pass.set_bind_group(0, a.transform_bg, &[]);
+    pass.set_bind_group(1, a.style_bg, &[]);
+    let x_full = a.x.byte_range();
+    let y_full = a.y.byte_range();
+    let base_full = a.base.byte_range();
+    let shift = crate::data::COLUMN_VALUE_BYTES as u64;
+    pass.set_vertex_buffer(0, a.pool_buffer.slice(x_full.clone()));
+    pass.set_vertex_buffer(1, a.pool_buffer.slice(y_full.clone()));
+    pass.set_vertex_buffer(2, a.pool_buffer.slice((x_full.start + shift)..x_full.end));
+    pass.set_vertex_buffer(3, a.pool_buffer.slice((y_full.start + shift)..y_full.end));
+    // The second y column, one logical value apart like x/y, so instance i
+    // sees base[i] and base[i + 1].
+    pass.set_vertex_buffer(4, a.pool_buffer.slice(base_full.clone()));
+    pass.set_vertex_buffer(
+        5,
+        a.pool_buffer
+            .slice((base_full.start + shift)..base_full.end),
+    );
+    pass.draw(0..a.verts_per_instance, 0..(count - 1));
 }
 
 /// Issue draw calls for one series' data primitives. The caller must have
@@ -4587,8 +4745,10 @@ pub fn draw_chart_panel_columnar(
     panel_rect: Rect,
     data_area: Rect,
     grid: AxisLayer<'_>,
+    annotation_underlay: Option<AxisLayer<'_>>,
     series_list: &[SeriesLayers<'_>],
     decoration: AxisLayer<'_>,
+    annotation_overlay: Option<AxisLayer<'_>>,
 ) {
     let Some(panel_clamped) = clamp_rect_to_target(panel_rect, target_size) else {
         return;
@@ -4617,13 +4777,26 @@ pub fn draw_chart_panel_columnar(
     pass.set_bind_group(0, grid.bind_group, &[]);
     pass.draw(0..3, 0..1);
 
-    // 2) Data primitives — scissor once to data_area, then issue every series.
+    // 1b) Annotation underlay (spans): below the data, above the grid.
+    if let Some(layer) = annotation_underlay {
+        pass.set_pipeline(layer.pipeline);
+        pass.set_bind_group(0, layer.bind_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+
+    // 2) Data primitives — scissor once to data_area, then issue every series:
+    //    every fill, then every body, then every picked highlight, each loop
+    //    in SSOT series order. The fill loop comes first by construction so
+    //    another series' fill can never cover this series' line.
     pass.set_scissor_rect(
         data_clamped.x,
         data_clamped.y,
         data_clamped.width,
         data_clamped.height,
     );
+    for s in series_list {
+        issue_series_fill(pass, s);
+    }
     for s in series_list {
         issue_series_data(pass, s);
     }
@@ -4641,6 +4814,13 @@ pub fn draw_chart_panel_columnar(
     pass.set_pipeline(decoration.pipeline);
     pass.set_bind_group(0, decoration.bind_group, &[]);
     pass.draw(0..3, 0..1);
+
+    // 4) Annotation overlay: topmost, above every decoration.
+    if let Some(layer) = annotation_overlay {
+        pass.set_pipeline(layer.pipeline);
+        pass.set_bind_group(0, layer.bind_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
 }
 
 // Tests.

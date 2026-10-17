@@ -1171,6 +1171,9 @@ fn styled_stream_runtime_matches_resident_pixels_and_ignores_point_maps() {
                                     line_color: color,
                                     line_width: 2.5,
                                     line_style: LineStylePreset::Solid,
+                                    fill: None,
+                                    fill_color: None,
+                                    interpolation: crate::data_config::LineInterpolation::Linear,
                                 },
                             }
                         } else if errorbars {
@@ -1363,6 +1366,9 @@ fn styled_stream_suppressed_histogram_and_fields_are_exact_noops() {
                         line_color: Color::BLACK,
                         line_width: 2.0,
                         line_style: LineStylePreset::Solid,
+                        fill: None,
+                        fill_color: None,
+                        interpolation: crate::data_config::LineInterpolation::Linear,
                     },
                     per_level_color: None,
                     labels: None,
@@ -1480,6 +1486,9 @@ fn streamed_line_capability_matches_connected_arc_and_heatmap_paths() {
                     line_color: Color::BLACK,
                     line_width: 2.0,
                     line_style: dash,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             };
             let id = r.register_chart(config, vec![series]).unwrap();

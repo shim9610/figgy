@@ -6,10 +6,14 @@
 //! axis or walk it in millions of steps and draw a substitute instead. Each
 //! substitution is described by a [`RenderWarning`].
 //!
+//! The annotation layer reports in the same way: an item whose value or
+//! anchor cannot be placed is not an error of the document, it is skipped by
+//! the annotation raster and described by [`RenderWarning::AnnotationSkipped`].
+//!
 //! [`crate::ChartView::render_warnings`] holds the warnings of the view's
 //! latest raster. They are derived when `create_chart_view` or a successful
-//! `refresh_axis` rasterizes the view, from the same chart, and never per
-//! frame.
+//! `refresh_axis` / `refresh_annotations` rasterizes the view, from the same
+//! chart, and never per frame.
 
 use std::fmt;
 
@@ -73,10 +77,31 @@ pub enum SpacingRejection {
     },
 }
 
-/// A tick setting the axis raster replaced with one it can draw.
+/// Why the annotation raster skipped an item.
 ///
-/// Every variant names the axis, the value as written (`requested`) and the
-/// value the raster actually drew (`used`). `used` has the type of the
+/// New reasons may be added as new variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum AnnotationSkip {
+    /// A value or anchor coordinate is NaN or infinite.
+    NonFinite,
+    /// A data anchor or axis value on a chart whose axis carries no values
+    /// (a radial chart), so only ratio anchors can be placed.
+    NoValueAxis,
+    /// The value or anchor has no position on its axis: outside the axis
+    /// range for a reference line, a span entirely outside it, a text box or
+    /// arrow endpoint outside the panel, or a non-positive value on a
+    /// logarithmic axis.
+    OutOfRange,
+    /// A text item without any text.
+    EmptyText,
+}
+
+/// A setting the raster drew differently from how it was written, or an
+/// annotation it did not draw.
+///
+/// The tick variants name the axis, the value as written (`requested`) and
+/// the value the raster actually drew (`used`). `used` has the type of the
 /// `AxisOptions` field it stands in for, so it can be written back as is.
 /// Floating-point values are reported exactly as the renderer saw them, so
 /// `requested` can be NaN, which never compares equal.
@@ -123,19 +148,29 @@ pub enum RenderWarning {
         /// The whole number of decades drawn between major ticks.
         used: f64,
     },
+    /// `annotations.items[index]` was not drawn and not registered in the
+    /// annotation hit map. The item itself is kept and still serializes.
+    AnnotationSkipped {
+        /// Index into `AnnotationLayer::items`.
+        index: usize,
+        /// Why it has no position.
+        reason: AnnotationSkip,
+    },
 }
 
 impl RenderWarning {
-    /// The axis this warning is about.
-    pub fn axis(&self) -> WarningAxis {
+    /// The axis this warning is about; `None` for an annotation warning.
+    pub fn axis(&self) -> Option<WarningAxis> {
         match self {
             Self::MajorSpacingReplaced { axis, .. }
             | Self::MinorCountClamped { axis, .. }
-            | Self::LogDecadeStepAdjusted { axis, .. } => *axis,
+            | Self::LogDecadeStepAdjusted { axis, .. } => Some(*axis),
+            Self::AnnotationSkipped { .. } => None,
         }
     }
 
-    /// The same warning about `axis`. Overlay panels are rasterized from an
+    /// The same warning about `axis`; a warning that is not about an axis is
+    /// returned unchanged. Overlay panels are rasterized from an
     /// internal config whose right axis is the overlay's, so their warnings
     /// are re-tagged with the layer they belong to.
     pub fn with_axis(mut self, axis: WarningAxis) -> Self {
@@ -143,6 +178,8 @@ impl RenderWarning {
             Self::MajorSpacingReplaced { axis: slot, .. }
             | Self::MinorCountClamped { axis: slot, .. }
             | Self::LogDecadeStepAdjusted { axis: slot, .. } => *slot = axis,
+            // Not about an axis; nothing to re-tag.
+            Self::AnnotationSkipped { .. } => {}
         }
         self
     }
@@ -190,6 +227,17 @@ impl fmt::Display for RenderWarning {
                 "{axis}.major_spacing {requested:?} is not a whole number of decades \
                  from 1 to {max}; drawn with a {used}-decade step instead",
                 max = MAX_LOG_DECADE_STEP
+            ),
+            Self::AnnotationSkipped { index, reason } => write!(
+                f,
+                "annotations.items[{index}] was not drawn: {}",
+                match reason {
+                    AnnotationSkip::NonFinite => "a value or anchor is not finite",
+                    AnnotationSkip::NoValueAxis =>
+                        "this chart has no value axis for data coordinates",
+                    AnnotationSkip::OutOfRange => "its position is outside the axis range or panel",
+                    AnnotationSkip::EmptyText => "it has no text",
+                }
             ),
         }
     }

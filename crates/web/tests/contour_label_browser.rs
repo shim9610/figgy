@@ -187,6 +187,9 @@ fn automatic_series(levels: Vec<f64>) -> SeriesConfig {
                     line_style: LineStylePreset::Solid,
                     line_color: transparent,
                     line_width: 1.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: renderer::data_config::LineInterpolation::Linear,
                 },
                 per_level_color: Some(vec![transparent; count]),
                 labels: Some(ContourLabelConfig {

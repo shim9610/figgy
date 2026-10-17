@@ -267,17 +267,39 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
             if !ax.is_finite() || !ay.is_finite() || !bx.is_finite() || !by.is_finite() {
                 continue;
             }
+            // Both endpoints must be placeable before any piece is tested —
+            // the same gate the GPU picker applies to the segment.
+            if project_data_to_canvas_px(config, &transform, ax, ay).is_none()
+                || project_data_to_canvas_px(config, &transform, bx, by).is_none()
+            {
+                continue;
+            }
 
-            let Some((a_px, a_py)) = project_data_to_canvas_px(config, &transform, ax, ay) else {
+            // A step mode walks the same axis-aligned pieces the line shader
+            // draws; a linear segment is its single piece.
+            let (pieces, piece_count) =
+                crate::line_step::step_pieces([ax, ay], [bx, by], line.interpolation);
+            let mut pieces_px = [([0.0f32; 2], [0.0f32; 2]); 3];
+            let mut projected = true;
+            for (piece, out) in pieces[..piece_count].iter().zip(pieces_px.iter_mut()) {
+                let Some(a) = project_data_to_canvas_px(config, &transform, piece.a[0], piece.a[1])
+                else {
+                    projected = false;
+                    break;
+                };
+                let Some(b) = project_data_to_canvas_px(config, &transform, piece.b[0], piece.b[1])
+                else {
+                    projected = false;
+                    break;
+                };
+                *out = ([a.0, a.1], [b.0, b.1]);
+            }
+            if !projected {
                 continue;
-            };
-            let Some((b_px, b_py)) = project_data_to_canvas_px(config, &transform, bx, by) else {
-                continue;
-            };
+            }
             let Some((dist_sq, point_index)) = line_segment_pick(
                 [canvas_x, canvas_y],
-                [a_px, a_py],
-                [b_px, b_py],
+                &pieces_px[..piece_count],
                 half_width,
                 i,
             ) else {
@@ -436,51 +458,88 @@ fn shape_visual_radius_px(shape: &ScatterShape, radius: f32) -> f32 {
     radius * scale
 }
 
+/// Distance² from `cursor` to the stroke of one segment drawn as `pieces`
+/// (projected canvas pixels, in draw order), and the source index the hit
+/// snaps to.
+///
+/// Every piece is tested and the nearest wins (the earlier piece on a tie).
+/// The snapped index follows the position of the hit along the whole stepped
+/// path — 0 at the segment's first sample, 1 at its second — so a hit on a
+/// riser resolves to the nearer of the two source indices, never to a corner
+/// that is not a sample. A linear segment is its single piece and keeps the
+/// straight-segment rule bit for bit. Twin of `pick_line_candidate` in
+/// `gpu_pick.wgsl`.
 fn line_segment_pick(
     cursor: [f32; 2],
-    a: [f32; 2],
-    b: [f32; 2],
+    pieces: &[([f32; 2], [f32; 2])],
     half_width: f32,
     point_index: usize,
 ) -> Option<(f32, usize)> {
     let [x, y] = cursor;
-    let [ax, ay] = a;
-    let [bx, by] = b;
-    let sx = bx - ax;
-    let sy = by - ay;
-    let len_sq = sx.mul_add(sx, sy * sy);
-    if !len_sq.is_finite() || len_sq <= f32::EPSILON {
-        return None;
+    let mut coordinate_scale = 1.0f32;
+    let mut total_len = 0.0f32;
+    let mut prefix_len = 0.0f32;
+    let mut best: Option<(f32, f32, f32, f32)> = None; // (dist_sq, t, prefix, len)
+    for &([ax, ay], [bx, by]) in pieces {
+        coordinate_scale = coordinate_scale
+            .max(ax.abs())
+            .max(ay.abs())
+            .max(bx.abs())
+            .max(by.abs());
+        let sx = bx - ax;
+        let sy = by - ay;
+        let len_sq = sx.mul_add(sx, sy * sy);
+        if !len_sq.is_finite() {
+            return None;
+        }
+        // A zero-length piece (a riser between equal values, or a degenerate
+        // linear segment) has no stroke to hit.
+        if len_sq <= f32::EPSILON {
+            continue;
+        }
+        let len = len_sq.sqrt();
+        let t = (((x - ax) * sx + (y - ay) * sy) / len_sq).clamp(0.0, 1.0);
+        // Match GPU picking without reconstructing a rounded closest point.
+        // Interior distance comes from the perpendicular; outside the segment
+        // it comes from the nearest endpoint, preserving the finite-segment test.
+        let center_dist = if t <= 0.0 {
+            let dx = x - ax;
+            let dy = y - ay;
+            dx.mul_add(dx, dy * dy).sqrt()
+        } else if t >= 1.0 {
+            let dx = x - bx;
+            let dy = y - by;
+            dx.mul_add(dx, dy * dy).sqrt()
+        } else {
+            (x - ax).mul_add(sy, -(y - ay) * sx).abs() / len
+        };
+        if !center_dist.is_finite() {
+            return None;
+        }
+        let hit_dist = (center_dist - half_width.max(0.0)).max(0.0);
+        let dist_sq = hit_dist * hit_dist;
+        if dist_sq.is_finite() && best.is_none_or(|(best_sq, ..)| dist_sq < best_sq) {
+            best = Some((dist_sq, t, prefix_len, len));
+        }
+        prefix_len += len;
+        total_len += len;
     }
-
-    let t = (((x - ax) * sx + (y - ay) * sy) / len_sq).clamp(0.0, 1.0);
-    // Match GPU picking without reconstructing a rounded closest point.
-    // Interior distance comes from the perpendicular; outside the segment
-    // it comes from the nearest endpoint, preserving the finite-segment test.
-    let center_dist = if t <= 0.0 {
-        let dx = x - ax;
-        let dy = y - ay;
-        dx.mul_add(dx, dy * dy).sqrt()
-    } else if t >= 1.0 {
-        let dx = x - bx;
-        let dy = y - by;
-        dx.mul_add(dx, dy * dy).sqrt()
+    let (dist_sq, t, prefix, len) = best?;
+    // Position along the whole stepped path. A linear segment keeps `t`
+    // itself: `(t · len) / len` is not bit-exact.
+    let position = if pieces.len() > 1 {
+        (prefix + t * len) / total_len
     } else {
-        (x - ax).mul_add(sy, -(y - ay) * sx).abs() / len_sq.sqrt()
+        t
     };
-    if !center_dist.is_finite() {
-        return None;
-    }
-    let hit_dist = (center_dist - half_width.max(0.0)).max(0.0);
     // Match the GPU's lower-index tie rule within projected f32 uncertainty.
-    let coordinate_scale = ax.abs().max(ay.abs()).max(bx.abs()).max(by.abs()).max(1.0);
-    let midpoint_tolerance = (f32::EPSILON * coordinate_scale / len_sq.sqrt()).min(0.25);
-    let snapped_index = if t <= 0.5 + midpoint_tolerance {
+    let midpoint_tolerance = (f32::EPSILON * coordinate_scale / total_len).min(0.25);
+    let snapped_index = if position <= 0.5 + midpoint_tolerance {
         point_index
     } else {
         point_index + 1
     };
-    Some((hit_dist * hit_dist, snapped_index))
+    Some((dist_sq, snapped_index))
 }
 
 fn project_data_to_canvas_px(
@@ -554,18 +613,53 @@ mod tests {
             ([50.0, 10.0], [50.0, 90.0], [50.0, 30.0], 0.0, 0),
             ([0.0, 0.0], [30.0, 40.0], [11.0, 23.0], 25.0, 0),
         ] {
-            let (distance_sq, index) = line_segment_pick(cursor, a, b, 0.0, 0).unwrap();
+            let (distance_sq, index) = line_segment_pick(cursor, &[(a, b)], 0.0, 0).unwrap();
             assert!((distance_sq - expected_sq).abs() < 0.0001);
             assert_eq!(index, expected_index);
         }
         assert_eq!(
-            line_segment_pick([50.0, 53.0], [10.0, 50.0], [90.0, 50.0], 1.0, 0),
+            line_segment_pick([50.0, 53.0], &[([10.0, 50.0], [90.0, 50.0])], 1.0, 0),
             Some((4.0, 0))
         );
         assert_eq!(
-            line_segment_pick([1.0, 1.0], [0.0, 0.0], [0.0, 0.0], 0.0, 0),
+            line_segment_pick([1.0, 1.0], &[([0.0, 0.0], [0.0, 0.0])], 0.0, 0),
             None
         );
+    }
+
+    // A stepped segment is picked along its pieces: the nearest piece wins,
+    // a zero-length riser is skipped rather than invalidating the segment,
+    // and the snapped index follows the position along the whole path.
+    #[test]
+    fn stepped_segment_distance_walks_every_piece_and_snaps_by_path_position() {
+        // step-post from (10, 10) to (90, 50): run at y = 10, riser at x = 90.
+        let post = [([10.0, 10.0], [90.0, 10.0]), ([90.0, 10.0], [90.0, 50.0])];
+        // On the run, a quarter along the path: index 0.
+        assert_eq!(
+            line_segment_pick([30.0, 10.0], &post, 0.0, 4),
+            Some((0.0, 4))
+        );
+        // On the riser: past the midpoint of the 120 px path, index 1.
+        assert_eq!(
+            line_segment_pick([90.0, 40.0], &post, 0.0, 4),
+            Some((0.0, 5))
+        );
+        // Far from the run but near the riser: the riser's distance wins.
+        let (dist_sq, index) = line_segment_pick([95.0, 45.0], &post, 0.0, 4).unwrap();
+        assert!((dist_sq - 25.0).abs() < 1e-4);
+        assert_eq!(index, 5);
+        // The straight chord between the endpoints is NOT part of the path.
+        let (dist_sq, _) = line_segment_pick([50.0, 30.0], &post, 0.0, 4).unwrap();
+        assert!((dist_sq - 400.0).abs() < 1e-3);
+        // A riser between equal values has zero length and is skipped.
+        let flat = [([10.0, 10.0], [90.0, 10.0]), ([90.0, 10.0], [90.0, 10.0])];
+        assert_eq!(
+            line_segment_pick([90.0, 10.0], &flat, 0.0, 0),
+            Some((0.0, 1))
+        );
+        // Every piece degenerate: nothing to hit.
+        let point = [([5.0, 5.0], [5.0, 5.0]), ([5.0, 5.0], [5.0, 5.0])];
+        assert_eq!(line_segment_pick([5.0, 5.0], &point, 0.0, 0), None);
     }
 
     struct Columns(HashMap<ColumnId, Vec<f32>>);
@@ -619,6 +713,9 @@ mod tests {
                     line_style: LineStylePreset::Solid,
                     line_color: Color::BLACK,
                     line_width: 1.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         }

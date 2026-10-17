@@ -4,6 +4,7 @@
 #![doc = "\n```\n\nFor embedding, reuse your host's device/queue instead of the example's adapter setup. For editing, picking and exporting the current state, follow the workflow below.\n"]
 #![doc = include_str!("../API.md")]
 
+pub mod annotation;
 pub mod axis_render;
 #[cfg(target_arch = "wasm32")]
 mod browser_compile;
@@ -20,6 +21,7 @@ pub mod gpu_errorbar;
 pub mod gpu_memory;
 mod gpu_pick;
 pub mod init;
+pub(crate) mod line_step;
 pub mod pick;
 pub mod radial;
 pub mod raster;
@@ -46,6 +48,7 @@ pub use ::model::{
 };
 
 // Public API re-exports.
+pub use annotation::{AnnotationMap, BoundedAnnotationFrame, FrameBackground};
 pub use chart::{Chart, FitExtent, errorbar_extent};
 pub use color::Color;
 pub use colormap::{ColorMap, LUT_LEN};
@@ -60,7 +63,8 @@ pub use data::{
 pub use data_config::{
     DataBarBinStyleConfig, DataBarStyleOverride, DataErrorBarPointStyleConfig,
     DataErrorBarPointStyleOverride, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
-    DataScatterStyleConfig, ErrorRef, MAX_CONTOUR_LEVELS, ScatterShape, SeriesConfig,
+    DataScatterStyleConfig, ErrorRef, LineFill, LineInterpolation, MAX_CONTOUR_LEVELS,
+    ScatterShape, SeriesConfig, SeriesRef,
 };
 pub use data_render::{
     AllocError, ColumnHandle, ColumnId, ColumnPool, DefragPolicy, GpuAllocCtx, GpuBudget,
@@ -82,15 +86,16 @@ pub use gpu_pick::{GpuPickError, GpuPickTicket};
 pub use init::{INIT_EVENT_SCHEMA_VERSION, InitEvent, InitPhase};
 pub use pick::{PickedData, PickedPoint, PointColumnLookup, PointPickOptions, pick_nearest_point};
 pub use preset::{AxisPreset, ColorCycle};
-pub use render_warning::{RenderWarning, SpacingRejection, WarningAxis};
+pub use render_warning::{AnnotationSkip, RenderWarning, SpacingRejection, WarningAxis};
 pub use renderer::{
-    AxisViewState, ChartDrawItem, ChartId, ChartRenderStamp, ChartStyle, ChartView, ChartViewState,
-    FitCommitToken, GpuPickRequest, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE, PipelinePreparation,
-    PreparationFeature, PreparedFrame, PreparedPipelines, RasterImage, RegisteredChartDrawItem,
-    RenderRevision, Renderer, RendererDevice, RendererLoadDemo, RendererVisualStamp, Series,
-    SeriesDrawInfo, StreamingOperation, StreamingSelectionRequest, StreamingSelectionTicket,
-    WebDerivedSnapshot, WebDerivedStamp, WindowedRenderer, clamp_export_scale,
-    display_config_for_surface, dpi_to_scale, draw_style_supports, encode_png, fit_display_panel,
+    AxisViewState, ChartDrawItem, ChartId, ChartRenderStamp, ChartStyle, ChartView,
+    ChartViewLayerStamps, ChartViewState, FitCommitToken, GpuPickRequest, MAX_EXPORT_SCALE,
+    MIN_EXPORT_SCALE, PipelinePreparation, PreparationFeature, PreparedFrame, PreparedPipelines,
+    RasterImage, RegisteredChartDrawItem, RenderRevision, Renderer, RendererDevice,
+    RendererLoadDemo, RendererVisualStamp, Series, SeriesDrawInfo, StreamingOperation,
+    StreamingSelectionRequest, StreamingSelectionTicket, WebDerivedSnapshot, WebDerivedStamp,
+    WindowedRenderer, clamp_export_scale, display_config_for_surface, dpi_to_scale,
+    draw_style_supports, encode_png, fit_display_panel,
 };
 pub use resize::{Resizable, ResizeHandle};
 pub use select::{
@@ -127,7 +132,11 @@ pub use model::boxplot::*;
 mod test_gpu;
 
 pub use model::decoration::{DecorationId, DecorationLayout, DecorationOffset};
-pub use model::{AnnotationLayer, ExpandedPanel, Expansion, LayerRef, OverlayLayer};
+pub use model::{
+    Anchor, AnchorKind, Annotation, AnnotationAxis, AnnotationElement, AnnotationHandle,
+    AnnotationKind, AnnotationLayer, AnnotationLineStyle, AnnotationSpace, ArrowStyle, AxisMap,
+    AxisSpace, BoxStyle, ExpandedPanel, Expansion, LayerRef, OverlayLayer, PixelSpace,
+};
 pub mod decoration;
 
 mod bounded_title;

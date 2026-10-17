@@ -2090,7 +2090,7 @@
         "layout": 4
       },
       "kind": "compute",
-      "source": "238af09f8a483ec3"
+      "source": "4e4919cb57fb9c44"
     },
     {
       "descriptor": {
@@ -2102,7 +2102,7 @@
         "layout": 5
       },
       "kind": "compute",
-      "source": "238af09f8a483ec3"
+      "source": "4e4919cb57fb9c44"
     },
     {
       "descriptor": {
@@ -2162,7 +2162,7 @@
         "layout": 5
       },
       "kind": "compute",
-      "source": "238af09f8a483ec3"
+      "source": "4e4919cb57fb9c44"
     },
     {
       "descriptor": {
@@ -2174,7 +2174,7 @@
         "layout": 4
       },
       "kind": "compute",
-      "source": "238af09f8a483ec3"
+      "source": "4e4919cb57fb9c44"
     },
     {
       "descriptor": {
@@ -2186,7 +2186,7 @@
         "layout": "auto"
       },
       "kind": "compute",
-      "source": "6596ecc3c3135b1a"
+      "source": "6f10789ebea70c6c"
     },
     {
       "descriptor": {
@@ -2198,7 +2198,7 @@
         "layout": "auto"
       },
       "kind": "compute",
-      "source": "6596ecc3c3135b1a"
+      "source": "6f10789ebea70c6c"
     },
     {
       "descriptor": {
@@ -2210,7 +2210,7 @@
         "layout": "auto"
       },
       "kind": "compute",
-      "source": "6596ecc3c3135b1a"
+      "source": "6f10789ebea70c6c"
     },
     {
       "descriptor": {
@@ -2222,7 +2222,7 @@
         "layout": "auto"
       },
       "kind": "compute",
-      "source": "6596ecc3c3135b1a"
+      "source": "6f10789ebea70c6c"
     },
     {
       "descriptor": {
@@ -2234,7 +2234,7 @@
         "layout": "auto"
       },
       "kind": "compute",
-      "source": "6596ecc3c3135b1a"
+      "source": "6f10789ebea70c6c"
     },
     {
       "descriptor": {
@@ -2270,7 +2270,7 @@
         "layout": 14
       },
       "kind": "compute",
-      "source": "092d8da8629fe07f"
+      "source": "2552bba387d5bb53"
     },
     {
       "descriptor": {
@@ -2282,7 +2282,7 @@
         "layout": 0
       },
       "kind": "compute",
-      "source": "3cc9f681dad72567"
+      "source": "9ed234508ddd3dd6"
     },
     {
       "descriptor": {
@@ -2294,7 +2294,7 @@
         "layout": 21
       },
       "kind": "compute",
-      "source": "6596ecc3c3135b1a"
+      "source": "6f10789ebea70c6c"
     },
     {
       "descriptor": {
@@ -2306,7 +2306,7 @@
         "layout": 0
       },
       "kind": "compute",
-      "source": "3cc9f681dad72567"
+      "source": "9ed234508ddd3dd6"
     },
     {
       "descriptor": {
@@ -2318,7 +2318,7 @@
         "layout": 0
       },
       "kind": "compute",
-      "source": "3cc9f681dad72567"
+      "source": "9ed234508ddd3dd6"
     },
     {
       "descriptor": {
@@ -2330,7 +2330,7 @@
         "layout": 22
       },
       "kind": "compute",
-      "source": "092d8da8629fe07f"
+      "source": "2552bba387d5bb53"
     },
     {
       "descriptor": {
@@ -2342,7 +2342,7 @@
         "layout": 36
       },
       "kind": "compute",
-      "source": "3cc9f681dad72567"
+      "source": "9ed234508ddd3dd6"
     },
     {
       "descriptor": {
@@ -2354,7 +2354,7 @@
         "layout": 16
       },
       "kind": "compute",
-      "source": "092d8da8629fe07f"
+      "source": "2552bba387d5bb53"
     },
     {
       "descriptor": {
@@ -2378,7 +2378,7 @@
         "layout": 15
       },
       "kind": "compute",
-      "source": "092d8da8629fe07f"
+      "source": "2552bba387d5bb53"
     },
     {
       "descriptor": {
@@ -2402,7 +2402,7 @@
         "layout": 5
       },
       "kind": "compute",
-      "source": "238af09f8a483ec3"
+      "source": "4e4919cb57fb9c44"
     },
     {
       "descriptor": {
@@ -2414,7 +2414,7 @@
         "layout": 5
       },
       "kind": "compute",
-      "source": "238af09f8a483ec3"
+      "source": "4e4919cb57fb9c44"
     },
     {
       "descriptor": {
@@ -2426,7 +2426,7 @@
         "layout": 3
       },
       "kind": "compute",
-      "source": "238af09f8a483ec3"
+      "source": "4e4919cb57fb9c44"
     },
     {
       "descriptor": {
@@ -2438,7 +2438,7 @@
         "layout": 5
       },
       "kind": "compute",
-      "source": "238af09f8a483ec3"
+      "source": "4e4919cb57fb9c44"
     },
     {
       "descriptor": {
@@ -2582,6 +2582,232 @@
       "descriptor": {
         "fragment": {
           "constants": {},
+          "entryPoint": "fs_area",
+          "targets": [
+            {
+              "blend": {
+                "alpha": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                },
+                "color": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                }
+              },
+              "format": "rgba8unorm",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy line area pipeline",
+        "layout": 20,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 1,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-strip",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 0
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 1
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 2
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 3
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 4
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 5
+                }
+              ],
+              "stepMode": "instance"
+            }
+          ],
+          "constants": {},
+          "entryPoint": "vs_area"
+        }
+      },
+      "kind": "render",
+      "source": "b42b9ba29a459906"
+    },
+    {
+      "descriptor": {
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_area",
+          "targets": [
+            {
+              "blend": {
+                "alpha": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                },
+                "color": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                }
+              },
+              "format": "rgba8unorm",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy line area pipeline",
+        "layout": 20,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 4,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-strip",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 0
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 1
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 2
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 3
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 4
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 5
+                }
+              ],
+              "stepMode": "instance"
+            }
+          ],
+          "constants": {},
+          "entryPoint": "vs_area"
+        }
+      },
+      "kind": "render",
+      "source": "b42b9ba29a459906"
+    },
+    {
+      "descriptor": {
+        "fragment": {
+          "constants": {},
           "entryPoint": "fs_bar_envelope",
           "targets": [
             {
@@ -2622,7 +2848,7 @@
         }
       },
       "kind": "render",
-      "source": "092d8da8629fe07f"
+      "source": "2552bba387d5bb53"
     },
     {
       "descriptor": {
@@ -2668,7 +2894,7 @@
         }
       },
       "kind": "render",
-      "source": "092d8da8629fe07f"
+      "source": "2552bba387d5bb53"
     },
     {
       "descriptor": {
@@ -2714,7 +2940,7 @@
         }
       },
       "kind": "render",
-      "source": "092d8da8629fe07f"
+      "source": "2552bba387d5bb53"
     },
     {
       "descriptor": {
@@ -2760,7 +2986,7 @@
         }
       },
       "kind": "render",
-      "source": "092d8da8629fe07f"
+      "source": "2552bba387d5bb53"
     },
     {
       "descriptor": {
@@ -2873,7 +3099,7 @@
         }
       },
       "kind": "render",
-      "source": "0d1387fab00708e7"
+      "source": "b42b9ba29a459906"
     },
     {
       "descriptor": {
@@ -2986,7 +3212,7 @@
         }
       },
       "kind": "render",
-      "source": "0d1387fab00708e7"
+      "source": "b42b9ba29a459906"
     },
     {
       "descriptor": {
@@ -3066,7 +3292,7 @@
         }
       },
       "kind": "render",
-      "source": "8ac31ba2ae805619"
+      "source": "d7ebc9b86a0c9daf"
     },
     {
       "descriptor": {
@@ -3146,7 +3372,7 @@
         }
       },
       "kind": "render",
-      "source": "8ac31ba2ae805619"
+      "source": "d7ebc9b86a0c9daf"
     },
     {
       "descriptor": {
@@ -3192,7 +3418,7 @@
         }
       },
       "kind": "render",
-      "source": "6596ecc3c3135b1a"
+      "source": "6f10789ebea70c6c"
     },
     {
       "descriptor": {
@@ -3238,7 +3464,7 @@
         }
       },
       "kind": "render",
-      "source": "6596ecc3c3135b1a"
+      "source": "6f10789ebea70c6c"
     },
     {
       "descriptor": {
@@ -3284,7 +3510,7 @@
         }
       },
       "kind": "render",
-      "source": "6596ecc3c3135b1a"
+      "source": "6f10789ebea70c6c"
     },
     {
       "descriptor": {
@@ -3330,7 +3556,7 @@
         }
       },
       "kind": "render",
-      "source": "6596ecc3c3135b1a"
+      "source": "6f10789ebea70c6c"
     },
     {
       "descriptor": {
@@ -3376,7 +3602,7 @@
         }
       },
       "kind": "render",
-      "source": "6596ecc3c3135b1a"
+      "source": "6f10789ebea70c6c"
     },
     {
       "descriptor": {
@@ -3422,7 +3648,7 @@
         }
       },
       "kind": "render",
-      "source": "6596ecc3c3135b1a"
+      "source": "6f10789ebea70c6c"
     },
     {
       "descriptor": {
@@ -3535,7 +3761,7 @@
         }
       },
       "kind": "render",
-      "source": "2f11bc05481f29c9"
+      "source": "128500c354e2e3fd"
     },
     {
       "descriptor": {
@@ -3648,7 +3874,7 @@
         }
       },
       "kind": "render",
-      "source": "2f11bc05481f29c9"
+      "source": "128500c354e2e3fd"
     },
     {
       "descriptor": {
@@ -3728,7 +3954,7 @@
         }
       },
       "kind": "render",
-      "source": "092d8da8629fe07f"
+      "source": "2552bba387d5bb53"
     },
     {
       "descriptor": {
@@ -3808,7 +4034,7 @@
         }
       },
       "kind": "render",
-      "source": "092d8da8629fe07f"
+      "source": "2552bba387d5bb53"
     },
     {
       "descriptor": {
@@ -3888,7 +4114,7 @@
         }
       },
       "kind": "render",
-      "source": "092d8da8629fe07f"
+      "source": "2552bba387d5bb53"
     },
     {
       "descriptor": {
@@ -4157,7 +4383,7 @@
         }
       },
       "kind": "render",
-      "source": "2f11bc05481f29c9"
+      "source": "128500c354e2e3fd"
     },
     {
       "descriptor": {
@@ -4270,7 +4496,7 @@
         }
       },
       "kind": "render",
-      "source": "2f11bc05481f29c9"
+      "source": "128500c354e2e3fd"
     },
     {
       "descriptor": {
@@ -4383,7 +4609,7 @@
         }
       },
       "kind": "render",
-      "source": "2f11bc05481f29c9"
+      "source": "128500c354e2e3fd"
     },
     {
       "descriptor": {
@@ -4496,7 +4722,7 @@
         }
       },
       "kind": "render",
-      "source": "2f11bc05481f29c9"
+      "source": "128500c354e2e3fd"
     },
     {
       "descriptor": {
@@ -4542,7 +4768,7 @@
         }
       },
       "kind": "render",
-      "source": "6596ecc3c3135b1a"
+      "source": "6f10789ebea70c6c"
     },
     {
       "descriptor": {
@@ -4588,7 +4814,7 @@
         }
       },
       "kind": "render",
-      "source": "6596ecc3c3135b1a"
+      "source": "6f10789ebea70c6c"
     },
     {
       "descriptor": {
@@ -4793,7 +5019,7 @@
         }
       },
       "kind": "render",
-      "source": "0d1387fab00708e7"
+      "source": "b42b9ba29a459906"
     },
     {
       "descriptor": {
@@ -4906,7 +5132,7 @@
         }
       },
       "kind": "render",
-      "source": "0d1387fab00708e7"
+      "source": "b42b9ba29a459906"
     },
     {
       "descriptor": {
@@ -5019,7 +5245,7 @@
         }
       },
       "kind": "render",
-      "source": "0d1387fab00708e7"
+      "source": "b42b9ba29a459906"
     },
     {
       "descriptor": {
@@ -5132,7 +5358,7 @@
         }
       },
       "kind": "render",
-      "source": "0d1387fab00708e7"
+      "source": "b42b9ba29a459906"
     },
     {
       "descriptor": {
@@ -5212,7 +5438,7 @@
         }
       },
       "kind": "render",
-      "source": "092d8da8629fe07f"
+      "source": "2552bba387d5bb53"
     },
     {
       "descriptor": {
@@ -5292,7 +5518,7 @@
         }
       },
       "kind": "render",
-      "source": "092d8da8629fe07f"
+      "source": "2552bba387d5bb53"
     },
     {
       "descriptor": {
@@ -5372,7 +5598,7 @@
         }
       },
       "kind": "render",
-      "source": "092d8da8629fe07f"
+      "source": "2552bba387d5bb53"
     },
     {
       "descriptor": {
@@ -5452,7 +5678,7 @@
         }
       },
       "kind": "render",
-      "source": "8ac31ba2ae805619"
+      "source": "d7ebc9b86a0c9daf"
     },
     {
       "descriptor": {
@@ -5532,7 +5758,7 @@
         }
       },
       "kind": "render",
-      "source": "8ac31ba2ae805619"
+      "source": "d7ebc9b86a0c9daf"
     },
     {
       "descriptor": {
@@ -5612,7 +5838,7 @@
         }
       },
       "kind": "render",
-      "source": "092d8da8629fe07f"
+      "source": "2552bba387d5bb53"
     },
     {
       "descriptor": {
@@ -5692,7 +5918,7 @@
         }
       },
       "kind": "render",
-      "source": "092d8da8629fe07f"
+      "source": "2552bba387d5bb53"
     },
     {
       "descriptor": {
@@ -5772,7 +5998,7 @@
         }
       },
       "kind": "render",
-      "source": "092d8da8629fe07f"
+      "source": "2552bba387d5bb53"
     },
     {
       "descriptor": {
@@ -5852,7 +6078,7 @@
         }
       },
       "kind": "render",
-      "source": "092d8da8629fe07f"
+      "source": "2552bba387d5bb53"
     },
     {
       "descriptor": {
@@ -5976,7 +6202,7 @@
         }
       },
       "kind": "render",
-      "source": "2f11bc05481f29c9"
+      "source": "128500c354e2e3fd"
     },
     {
       "descriptor": {
@@ -6100,7 +6326,7 @@
         }
       },
       "kind": "render",
-      "source": "2f11bc05481f29c9"
+      "source": "128500c354e2e3fd"
     },
     {
       "descriptor": {
@@ -6191,7 +6417,7 @@
         }
       },
       "kind": "render",
-      "source": "8ac31ba2ae805619"
+      "source": "d7ebc9b86a0c9daf"
     },
     {
       "descriptor": {
@@ -6282,7 +6508,7 @@
         }
       },
       "kind": "render",
-      "source": "8ac31ba2ae805619"
+      "source": "d7ebc9b86a0c9daf"
     },
     {
       "descriptor": {
@@ -6373,7 +6599,7 @@
         }
       },
       "kind": "render",
-      "source": "8ac31ba2ae805619"
+      "source": "d7ebc9b86a0c9daf"
     },
     {
       "descriptor": {
@@ -6464,7 +6690,7 @@
         }
       },
       "kind": "render",
-      "source": "8ac31ba2ae805619"
+      "source": "d7ebc9b86a0c9daf"
     },
     {
       "descriptor": {
@@ -6544,7 +6770,7 @@
         }
       },
       "kind": "render",
-      "source": "8ac31ba2ae805619"
+      "source": "d7ebc9b86a0c9daf"
     },
     {
       "descriptor": {
@@ -6624,7 +6850,7 @@
         }
       },
       "kind": "render",
-      "source": "8ac31ba2ae805619"
+      "source": "d7ebc9b86a0c9daf"
     },
     {
       "descriptor": {
@@ -6704,7 +6930,7 @@
         }
       },
       "kind": "render",
-      "source": "8ac31ba2ae805619"
+      "source": "d7ebc9b86a0c9daf"
     },
     {
       "descriptor": {
@@ -6784,7 +7010,7 @@
         }
       },
       "kind": "render",
-      "source": "8ac31ba2ae805619"
+      "source": "d7ebc9b86a0c9daf"
     },
     {
       "descriptor": {
@@ -6897,7 +7123,7 @@
         }
       },
       "kind": "render",
-      "source": "0d1387fab00708e7"
+      "source": "b42b9ba29a459906"
     },
     {
       "descriptor": {
@@ -7010,7 +7236,7 @@
         }
       },
       "kind": "render",
-      "source": "0d1387fab00708e7"
+      "source": "b42b9ba29a459906"
     },
     {
       "descriptor": {
@@ -7090,7 +7316,7 @@
         }
       },
       "kind": "render",
-      "source": "8ac31ba2ae805619"
+      "source": "d7ebc9b86a0c9daf"
     },
     {
       "descriptor": {
@@ -7170,7 +7396,7 @@
         }
       },
       "kind": "render",
-      "source": "8ac31ba2ae805619"
+      "source": "d7ebc9b86a0c9daf"
     },
     {
       "descriptor": {
@@ -7216,7 +7442,7 @@
         }
       },
       "kind": "render",
-      "source": "0d1387fab00708e7"
+      "source": "b42b9ba29a459906"
     },
     {
       "descriptor": {
@@ -7262,7 +7488,7 @@
         }
       },
       "kind": "render",
-      "source": "0d1387fab00708e7"
+      "source": "b42b9ba29a459906"
     },
     {
       "descriptor": {
@@ -7308,7 +7534,7 @@
         }
       },
       "kind": "render",
-      "source": "6596ecc3c3135b1a"
+      "source": "6f10789ebea70c6c"
     },
     {
       "descriptor": {
@@ -7354,7 +7580,7 @@
         }
       },
       "kind": "render",
-      "source": "6596ecc3c3135b1a"
+      "source": "6f10789ebea70c6c"
     },
     {
       "descriptor": {

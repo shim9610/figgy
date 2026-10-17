@@ -1,7 +1,7 @@
 //! Canonical scan leaves are independent of host IO tickets. Only one leaf's
 //! original pairs and the bounded canonical sums tree live on the GPU.
 use super::*;
-use crate::data_render::line_arc::{ArcParams, ArcReplayChunk, ArcReplayLeaf, WG};
+use crate::data_render::line_arc::{ArcParams, ArcReplayChunk, ArcReplayLeaf, ArcReplayParams, WG};
 use crate::gpu_memory::{
     ChargeTally, SharedCharge, charged_buffer, charged_buffer_init, shared_charge,
 };
@@ -303,8 +303,17 @@ impl Renderer {
             return Err(StreamError::InvalidRange.into());
         }
         let complete_leaf = filled + supplied == leaf.supply_len;
+        // Exact uniform bytes the completed leaf allocates below: its
+        // `ArcParams` and `ArcReplayParams`, plus the top/upper `ArcParams`
+        // pair on the last leaf of a non-drawing replay.
+        let arc_params = std::mem::size_of::<ArcParams>() as u64;
+        let replay_params = std::mem::size_of::<ArcReplayParams>() as u64;
         let headroom = if complete_leaf {
-            if !drawing && last_leaf { 64 } else { 32 }
+            if !drawing && last_leaf {
+                arc_params * 3 + replay_params
+            } else {
+                arc_params + replay_params
+            }
         } else {
             0
         };
@@ -394,6 +403,8 @@ impl Renderer {
                         x_base: 0,
                         y_base: 0,
                         start: 0,
+                        mode: 0,
+                        _pad: [0; 3],
                     }),
                 )
             });
@@ -405,6 +416,8 @@ impl Renderer {
                         x_base: 0,
                         y_base: 0,
                         start: 0,
+                        mode: 0,
+                        _pad: [0; 3],
                     }),
                 )
             });

@@ -53,7 +53,16 @@ struct PickQueryParams {
     // (global point offset, owned scatter count, owned segment count,
     //  optional original-row map word base; zero disables the map).
     stream: vec4<u32>,
+    // (step interpolation mode: 0 linear, 1 step-pre, 2 step-post,
+    //  3 step-mid; the rest reserved). Mirrors the line shader's
+    //  Style.primitive_flags bits 2-3 so a pick lands on the drawn path.
+    line: vec4<u32>,
 };
+
+const PICK_STEP_LINEAR: u32 = 0u;
+const PICK_STEP_PRE: u32 = 1u;
+const PICK_STEP_POST: u32 = 2u;
+const PICK_STEP_MID: u32 = 3u;
 
 struct PickScatterStyleSlot {
     color_premul: vec4<f32>,
@@ -491,6 +500,52 @@ fn pick_scatter_candidate(
     );
 }
 
+// Data-space corners of step piece `k` of the segment a → b. Same rules as
+// `step_piece` in line_columnar.wgsl (data-space midpoint for step-mid), in
+// this shader's own pick_* ABI; the CPU twin is `line_step::step_pieces`.
+struct PickStepPiece {
+    x0: vec2<f32>,
+    y0: vec2<f32>,
+    x1: vec2<f32>,
+    y1: vec2<f32>,
+};
+
+fn pick_step_piece_count(mode: u32) -> u32 {
+    if mode == PICK_STEP_PRE || mode == PICK_STEP_POST {
+        return 2u;
+    }
+    if mode == PICK_STEP_MID {
+        return 3u;
+    }
+    return 1u;
+}
+
+fn pick_step_piece(ax: vec2<f32>, ay: vec2<f32>, bx: vec2<f32>, by: vec2<f32>, mode: u32, k: u32) -> PickStepPiece {
+    var p: PickStepPiece;
+    p.x0 = ax;
+    p.y0 = ay;
+    p.x1 = bx;
+    p.y1 = by;
+    if mode == PICK_STEP_PRE {
+        if k == 0u { p.x1 = ax; } else { p.y0 = by; }
+    } else if mode == PICK_STEP_POST {
+        if k == 0u { p.y1 = ay; } else { p.x0 = bx; }
+    } else if mode == PICK_STEP_MID {
+        let xm = (ax + bx) * 0.5;
+        if k == 0u {
+            p.x1 = xm;
+            p.y1 = ay;
+        } else if k == 1u {
+            p.x0 = xm;
+            p.x1 = xm;
+        } else {
+            p.x0 = xm;
+            p.y0 = by;
+        }
+    }
+    return p;
+}
+
 fn pick_line_candidate(
     segment_index: u32,
     ax: vec2<f32>,
@@ -502,49 +557,87 @@ fn pick_line_candidate(
     if !pick_coordinate_is_valid(ax, 0u) || !pick_coordinate_is_valid(ay, 1u) || !pick_coordinate_is_valid(bx, 0u) || !pick_coordinate_is_valid(by, 1u) {
         return pick_invalid_candidate(series_order);
     }
-    let a_px = pick_project_pair(ax, ay);
-    let b_px = pick_project_pair(bx, by);
-    if !pick_is_finite(a_px.x) || !pick_is_finite(a_px.y) || !pick_is_finite(b_px.x) || !pick_is_finite(b_px.y) {
-        return pick_invalid_candidate(series_order);
-    }
-    let segment = b_px - a_px;
-    let length_sq = fma(segment.x, segment.x, segment.y * segment.y);
-    if !pick_is_finite(length_sq) || length_sq <= PICK_F32_EPSILON {
-        return pick_invalid_candidate(series_order);
-    }
-    let cursor_delta = pick_query_params.cursor_chart.xy - a_px;
-    let t = clamp((cursor_delta.x * segment.x + cursor_delta.y * segment.y) / length_sq, 0.0, 1.0);
-    // For interior hits use perpendicular distance directly. Reconstructing
-    // a + segment * t can turn reciprocal rounding into a false nonzero
-    // distance even for a cursor exactly on a horizontal/vertical segment.
-    // Endpoint regions still measure distance to the finite segment ends.
-    var center_distance: f32;
-    if t <= 0.0 {
-        center_distance = sqrt(fma(cursor_delta.x, cursor_delta.x, cursor_delta.y * cursor_delta.y));
-    } else if t >= 1.0 {
-        let delta = pick_query_params.cursor_chart.xy - b_px;
-        center_distance = sqrt(fma(delta.x, delta.x, delta.y * delta.y));
-    } else {
-        let cross = fma(cursor_delta.x, segment.y, -cursor_delta.y * segment.x);
-        center_distance = abs(cross) / sqrt(length_sq);
-    }
-    if !pick_is_finite(center_distance) {
-        return pick_invalid_candidate(series_order);
-    }
+    // A step mode tests every axis-aligned piece of the segment and keeps the
+    // nearest (lowest piece index on a tie); a linear segment is its single
+    // piece and reproduces the straight-segment rule exactly.
+    let mode = pick_query_params.line.x;
+    let pieces = pick_step_piece_count(mode);
     let line_half_width =
         pick_query_params.scatter_line.y * pick_query_params.scatter_line.z;
-    let hit_distance = max(center_distance - line_half_width, 0.0);
-    let distance_sq = hit_distance * hit_distance;
     let maximum_sq = pick_query_params.chart_limits.z * pick_query_params.chart_limits.z;
-    if !pick_is_finite(distance_sq) || distance_sq > maximum_sq {
+    var coordinate_scale = 1.0;
+    var total_length = 0.0;
+    var prefix_length = 0.0;
+    var best_distance_sq = PICK_F32_MAX;
+    var best_found = false;
+    var best_t = 0.0;
+    var best_prefix = 0.0;
+    var best_length = 0.0;
+    for (var k = 0u; k < pieces; k = k + 1u) {
+        let piece = pick_step_piece(ax, ay, bx, by, mode, k);
+        let a_px = pick_project_pair(piece.x0, piece.y0);
+        let b_px = pick_project_pair(piece.x1, piece.y1);
+        if !pick_is_finite(a_px.x) || !pick_is_finite(a_px.y) || !pick_is_finite(b_px.x) || !pick_is_finite(b_px.y) {
+            return pick_invalid_candidate(series_order);
+        }
+        coordinate_scale = max(coordinate_scale, max(max(abs(a_px.x), abs(a_px.y)), max(abs(b_px.x), abs(b_px.y))));
+        let segment = b_px - a_px;
+        let length_sq = fma(segment.x, segment.x, segment.y * segment.y);
+        if !pick_is_finite(length_sq) {
+            return pick_invalid_candidate(series_order);
+        }
+        // A zero-length piece (a riser between equal values, or a degenerate
+        // linear segment) has no stroke to hit.
+        if length_sq <= PICK_F32_EPSILON {
+            continue;
+        }
+        let length = sqrt(length_sq);
+        let cursor_delta = pick_query_params.cursor_chart.xy - a_px;
+        let t = clamp((cursor_delta.x * segment.x + cursor_delta.y * segment.y) / length_sq, 0.0, 1.0);
+        // For interior hits use perpendicular distance directly. Reconstructing
+        // a + segment * t can turn reciprocal rounding into a false nonzero
+        // distance even for a cursor exactly on a horizontal/vertical segment.
+        // Endpoint regions still measure distance to the finite segment ends.
+        var center_distance: f32;
+        if t <= 0.0 {
+            center_distance = sqrt(fma(cursor_delta.x, cursor_delta.x, cursor_delta.y * cursor_delta.y));
+        } else if t >= 1.0 {
+            let delta = pick_query_params.cursor_chart.xy - b_px;
+            center_distance = sqrt(fma(delta.x, delta.x, delta.y * delta.y));
+        } else {
+            let cross = fma(cursor_delta.x, segment.y, -cursor_delta.y * segment.x);
+            center_distance = abs(cross) / length;
+        }
+        if !pick_is_finite(center_distance) {
+            return pick_invalid_candidate(series_order);
+        }
+        let hit_distance = max(center_distance - line_half_width, 0.0);
+        let distance_sq = hit_distance * hit_distance;
+        if pick_is_finite(distance_sq) && distance_sq < best_distance_sq {
+            best_distance_sq = distance_sq;
+            best_found = true;
+            best_t = t;
+            best_prefix = prefix_length;
+            best_length = length;
+        }
+        prefix_length = prefix_length + length;
+        total_length = total_length + length;
+    }
+    if !best_found || best_distance_sq > maximum_sq {
         return pick_invalid_candidate(series_order);
+    }
+    let distance_sq = best_distance_sq;
+    // Where along the whole stepped path the hit lies, 0 at A and 1 at B. A
+    // linear segment keeps t itself: `(t · len) / len` is not bit-exact.
+    var position = best_t;
+    if pieces > 1u {
+        position = (best_prefix + best_t * best_length) / total_length;
     }
     // Projected endpoints are f32. Reciprocal/fused evaluation can put an
     // exact midpoint a rounding step on either side of 0.5 across backends.
     // Resolve that uncertainty by the same lower-index rule as the CPU picker.
-    let coordinate_scale = max(max(max(abs(a_px.x), abs(a_px.y)), max(abs(b_px.x), abs(b_px.y))), 1.0);
-    let midpoint_tolerance = min(PICK_F32_EPSILON * coordinate_scale / sqrt(length_sq), 0.25);
-    let use_b = t > 0.5 + midpoint_tolerance;
+    let midpoint_tolerance = min(PICK_F32_EPSILON * coordinate_scale / total_length, 0.25);
+    let use_b = position > 0.5 + midpoint_tolerance;
     let point_index = select(segment_index, segment_index + 1u, use_b);
     return PickCandidate(
         1u,

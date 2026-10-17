@@ -522,7 +522,11 @@ fn render_warnings_are_merged_with_a_layer_tag() {
     let view = r
         .create_chart_view(&Chart::new(config.clone()), PANEL)
         .unwrap();
-    let axes: Vec<WarningAxis> = view.render_warnings().iter().map(|w| w.axis()).collect();
+    let axes: Vec<WarningAxis> = view
+        .render_warnings()
+        .iter()
+        .filter_map(|w| w.axis())
+        .collect();
     assert_eq!(axes, vec![WarningAxis::BottomX, WarningAxis::OverlayY(1)]);
     assert_eq!(
         view.render_warnings()[1].to_string().split(' ').next(),

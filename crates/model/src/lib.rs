@@ -10,9 +10,15 @@ pub mod decoration;
 pub mod default;
 pub mod drag;
 pub use decoration::{DecorationElement, DecorationId, DecorationLayout, DecorationOffset};
+pub mod annotation;
 pub mod expand;
 pub use expand::{ExpandedPanel, Expansion};
 pub mod layer;
+pub use annotation::{
+    Anchor, AnchorKind, Annotation, AnnotationAxis, AnnotationElement, AnnotationHandle,
+    AnnotationKind, AnnotationLineStyle, AnnotationSpace, ArrowStyle, AxisMap, AxisSpace, BoxStyle,
+    PixelSpace,
+};
 pub use layer::{AnnotationLayer, LayerRef, OverlayLayer};
 pub mod format;
 pub mod layout;
@@ -37,7 +43,7 @@ pub use data_config::{
     DataBarBinStyleConfig, DataBarStyleOverride, DataErrorBarPointStyleConfig,
     DataErrorBarPointStyleOverride, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
     DataScatterPointStyleConfig, DataScatterPointStyleOverride, DataScatterStyleConfig, ErrorRef,
-    MAX_CONTOUR_LEVELS, ScatterShape, SeriesConfig,
+    LineFill, LineInterpolation, MAX_CONTOUR_LEVELS, ScatterShape, SeriesConfig, SeriesRef,
 };
 pub use drag::Draggable;
 pub use preset::{AxisPreset, ColorCycle};

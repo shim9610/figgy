@@ -25,6 +25,9 @@ fn line(id: &str, y: &str, color: Color) -> SeriesConfig {
                 line_style: LineStylePreset::Solid,
                 line_color: color,
                 line_width: 2.5,
+                fill: None,
+                fill_color: None,
+                interpolation: renderer::data_config::LineInterpolation::Linear,
             },
         },
     }

@@ -67,6 +67,9 @@ renderers update their derived resources in `prepare`.
 Export that same model to preserve selection, moved
 labels and the drawing area. Data picking and decoration hit maps are separate;
 use the renderer's measured bounds when selecting titles, labels, axes or handles.
+Reference lines, shaded spans, text boxes and arrows live in the chart's
+annotation layer, drawn by one pass around every family's frame with its own
+hit map and cache; see the [interaction guide](INTERACTION.md#annotation-layer).
 
 The [API workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer/API.md#native-edit-pick-and-export-workflow)
 includes Cartesian refresh and bounded edit/export examples, and explains frame lifetime and coordinate

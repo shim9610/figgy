@@ -1,6 +1,7 @@
 //! Raw WASM host for radial, categorical and box charts. The renderer owns all geometry.
 use renderer::{
-    DecorationLayout, RendererDevice, boxplot::*, categorical::*, layout::Rect, radial::*,
+    AnnotationLayer, BoundedAnnotationFrame, DecorationId, DecorationLayout, FrameBackground,
+    RendererDevice, boxplot::*, categorical::*, layout::Rect, radial::*,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -35,6 +36,38 @@ impl DocumentChart {
             Self::Radial(c) => &mut c.decorations,
             Self::Categorical(c) => &mut c.decorations,
             Self::BoxPlot(c) => &mut c.decorations,
+        }
+    }
+    pub fn annotations(&self) -> &AnnotationLayer {
+        match self {
+            Self::Radial(c) => &c.annotations,
+            Self::Categorical(c) => &c.annotations,
+            Self::BoxPlot(c) => &c.annotations,
+        }
+    }
+    pub fn annotations_mut(&mut self) -> &mut AnnotationLayer {
+        match self {
+            Self::Radial(c) => &mut c.annotations,
+            Self::Categorical(c) => &mut c.annotations,
+            Self::BoxPlot(c) => &mut c.annotations,
+        }
+    }
+    pub fn background(&self) -> renderer::Color {
+        match self {
+            Self::Radial(c) => c.background,
+            Self::Categorical(c) => c.background,
+            Self::BoxPlot(c) => c.background,
+        }
+    }
+    /// A visible span needs the frame to leave the background to the host
+    /// clear, so the underlay drawn before it shows through. Charts without
+    /// one keep today's opaque frame and white clear exactly.
+    pub fn frame_background(&self) -> FrameBackground {
+        let layer = self.annotations();
+        if layer.visible && layer.items.iter().any(|i| i.visible && i.is_underlay()) {
+            FrameBackground::HostClear
+        } else {
+            FrameBackground::Opaque
         }
     }
     #[allow(dead_code)]
@@ -234,22 +267,33 @@ impl DocumentRenderer {
             ),
         })
     }
+    /// The chart frame and its annotation layer for one document state.
     pub fn prepare(
         &mut self,
         chart: &DocumentChart,
         size: (u32, u32),
         scale: f32,
-    ) -> Result<DocumentFrame, JsValue> {
+    ) -> Result<(DocumentFrame, Arc<BoundedAnnotationFrame>), JsValue> {
+        let background = chart.frame_background();
         match (self, chart) {
-            (Self::Radial(r), DocumentChart::Radial(c)) => Ok(DocumentFrame::Radial(
-                r.prepare(c, size, scale).map_err(js_err)?,
-            )),
-            (Self::Categorical(r), DocumentChart::Categorical(c)) => Ok(
-                DocumentFrame::Categorical(r.prepare(c, size, scale).map_err(js_err)?),
-            ),
-            (Self::BoxPlot(r), DocumentChart::BoxPlot(c)) => Ok(DocumentFrame::BoxPlot(
-                r.prepare(c, size, scale).map_err(js_err)?,
-            )),
+            (Self::Radial(r), DocumentChart::Radial(c)) => {
+                r.set_background(background);
+                let frame = r.prepare(c, size, scale).map_err(js_err)?;
+                let annotations = r.prepare_annotations(c, size, scale).map_err(js_err)?;
+                Ok((DocumentFrame::Radial(frame), annotations))
+            }
+            (Self::Categorical(r), DocumentChart::Categorical(c)) => {
+                r.set_background(background);
+                let frame = r.prepare(c, size, scale).map_err(js_err)?;
+                let annotations = r.prepare_annotations(c, size, scale).map_err(js_err)?;
+                Ok((DocumentFrame::Categorical(frame), annotations))
+            }
+            (Self::BoxPlot(r), DocumentChart::BoxPlot(c)) => {
+                r.set_background(background);
+                let frame = r.prepare(c, size, scale).map_err(js_err)?;
+                let annotations = r.prepare_annotations(c, size, scale).map_err(js_err)?;
+                Ok((DocumentFrame::BoxPlot(frame), annotations))
+            }
             _ => Err(js_err("cannot change chart family")),
         }
     }
@@ -330,6 +374,7 @@ pub struct FiggyBoundedChart {
     chart: DocumentChart,
     renderer: DocumentRenderer,
     frame: DocumentFrame,
+    annotations: Arc<BoundedAnnotationFrame>,
     size: (u32, u32),
 }
 #[wasm_bindgen]
@@ -370,7 +415,7 @@ impl FiggyBoundedChart {
         .map_err(js_err)?;
         let gpu = RendererDevice::new(Arc::new(device), Arc::new(queue));
         let mut renderer = DocumentRenderer::new_async(gpu.clone(), &chart, config.format).await?;
-        let frame = renderer.prepare(&chart, (width, height), 1.)?;
+        let (frame, annotations) = renderer.prepare(&chart, (width, height), 1.)?;
         Ok(Self {
             surface,
             _instance: instance,
@@ -380,6 +425,7 @@ impl FiggyBoundedChart {
             chart,
             renderer,
             frame,
+            annotations,
             size: (width, height),
         })
     }
@@ -399,9 +445,10 @@ impl FiggyBoundedChart {
             width,
             height,
         })?;
-        let frame = self.renderer.prepare(&next, (width, height), 1.)?;
+        let (frame, annotations) = self.renderer.prepare(&next, (width, height), 1.)?;
         self.chart = next;
         self.frame = frame;
+        self.annotations = annotations;
         self.size = (width, height);
         Ok(())
     }
@@ -415,7 +462,23 @@ impl FiggyBoundedChart {
         let scale = (self.surface_config.width as f32 / self.size.0 as f32)
             .min(self.surface_config.height as f32 / self.size.1 as f32)
             .clamp(0.5, 4.);
-        self.frame = self.renderer.prepare(&self.chart, self.size, scale)?;
+        let (frame, annotations) = self.renderer.prepare(&self.chart, self.size, scale)?;
+        self.frame = frame;
+        self.annotations = annotations;
+        // A frame that leaves its background to the clear needs the chart
+        // background there; every other frame keeps the white clear it had.
+        let clear = match self.chart.frame_background() {
+            FrameBackground::HostClear => {
+                let c = self.chart.background();
+                wgpu::Color {
+                    r: f64::from(c.r),
+                    g: f64::from(c.g),
+                    b: f64::from(c.b),
+                    a: f64::from(c.a),
+                }
+            }
+            FrameBackground::Opaque => wgpu::Color::WHITE,
+        };
         let surface = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f)
             | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
@@ -438,13 +501,17 @@ impl FiggyBoundedChart {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                        load: wgpu::LoadOp::Clear(clear),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
                 ..Default::default()
             });
+            // Fixed order: spans below the chart, every other annotation and
+            // the annotation selection box above all decorations.
+            self.annotations.draw_underlay(&mut pass);
             self.frame.draw(&mut pass);
+            self.annotations.draw_overlay(&mut pass);
         }
         self.gpu.queue().submit([encoder.finish()]);
         self.gpu.queue().present(surface);
@@ -537,10 +604,190 @@ impl FiggyBoundedChart {
         if result != Some(renderer::layout::NudgeResult::Moved) {
             return Ok(false);
         }
-        let frame = self.renderer.prepare(&next, self.size, 1.)?;
+        let (frame, annotations) = self.renderer.prepare(&next, self.size, 1.)?;
         self.chart = next;
         self.frame = frame;
+        self.annotations = annotations;
         Ok(true)
+    }
+    /// Validate and prepare an edited document, then adopt it; the previous
+    /// chart and frames stay on failure.
+    fn adopt(&mut self, next: DocumentChart) -> Result<(), JsValue> {
+        next.validate(Rect {
+            x: 0,
+            y: 0,
+            width: self.size.0,
+            height: self.size.1,
+        })?;
+        let (frame, annotations) = self.renderer.prepare(&next, self.size, 1.)?;
+        self.chart = next;
+        self.frame = frame;
+        self.annotations = annotations;
+        Ok(())
+    }
+    fn annotation_hit_id(&self, index: usize) -> Result<renderer::HitId, JsValue> {
+        self.annotations
+            .annotations()
+            .find(index)
+            .ok_or_else(|| js_err("annotation is not drawn in the current frame"))
+    }
+
+    // Annotation layer. Coordinates are document logical pixels like the
+    // decoration methods; the layer's items live in the document JSON.
+
+    /// The drawn annotations as JSON: `index`, `id`, `kind`, the selection
+    /// box `rect` and `handles`, and `selected`. Skipped items are listed by
+    /// `annotation_warnings` instead.
+    pub fn annotations(&self) -> Result<String, JsValue> {
+        let map = self.annotations.annotations();
+        let items = &self.chart.annotations().items;
+        let selected = AnnotationLayer::selected_index(self.chart.decorations().selected.as_ref());
+        let values = map
+            .entries()
+            .filter_map(|(id, e)| {
+                let item = items.get(e.index)?;
+                let b = map.selection_box(id)?;
+                Some(json!({
+                    "index": e.index,
+                    "id": item.id,
+                    "element": e.id().element_id(),
+                    "kind": crate::annotation_kind_name(&item.kind),
+                    "rect": [b.rect.x, b.rect.y, b.rect.width, b.rect.height],
+                    "handles": b.handles.iter().map(|r| vec![r.x, r.y, r.width, r.height]).collect::<Vec<_>>(),
+                    "selected": selected == Some(e.index),
+                }))
+            })
+            .collect::<Vec<_>>();
+        serde_json::to_string(&values).map_err(js_err)
+    }
+    /// The topmost drawn annotation under a point, as its index.
+    pub fn hit_annotation(&self, x: f32, y: f32) -> Option<u32> {
+        let map = self.annotations.annotations();
+        let id = map.hit_test([x, y])?;
+        map.element(id).map(|e| e.index as u32)
+    }
+    /// Select one annotation (`decorations.selected = Annotation(index)`) or
+    /// none. Clears the data and decoration selections like
+    /// `select_decoration`.
+    pub fn select_annotation(&mut self, index: Option<u32>) -> Result<(), JsValue> {
+        let selected = match index {
+            Some(i) if (i as usize) < self.chart.annotations().items.len() => {
+                Some(DecorationId::Annotation(i as usize))
+            }
+            Some(_) => return Err(js_err("unknown annotation")),
+            None => None,
+        };
+        let mut next = self.chart.clone();
+        next.clear_selection();
+        next.decorations_mut().selected = selected;
+        self.adopt(next)
+    }
+    pub fn selected_annotation(&self) -> Option<u32> {
+        AnnotationLayer::selected_index(self.chart.decorations().selected.as_ref())
+            .map(|i| i as u32)
+    }
+    /// The compass name of the annotation's live handle under a point.
+    pub fn annotation_handle(&self, index: u32, x: f32, y: f32) -> Option<String> {
+        let id = self.annotation_hit_id(index as usize).ok()?;
+        self.annotations
+            .annotations()
+            .hit_resize_handle(id, [x, y])
+            .map(|h| format!("{h:?}"))
+    }
+    /// Move an annotation, or one of its handles, by a pointer delta.
+    /// Returns `false` for a rejected move; the document is unchanged then.
+    pub fn drag_annotation(
+        &mut self,
+        index: u32,
+        dx: f32,
+        dy: f32,
+        handle: Option<String>,
+    ) -> Result<bool, JsValue> {
+        if !dx.is_finite() || !dy.is_finite() {
+            return Err(js_err("drag must be finite"));
+        }
+        use renderer::resize::ResizeHandle::*;
+        let id = self.annotation_hit_id(index as usize)?;
+        let map = self.annotations.annotations();
+        let mut next = self.chart.clone();
+        let result = if let Some(name) = handle {
+            let h = [N, S, W, E, NW, NE, SW, SE]
+                .into_iter()
+                .find(|h| format!("{h:?}") == name)
+                .ok_or_else(|| js_err("unknown resize handle"))?;
+            map.resize_by(next.annotations_mut(), id, h, dx, dy)
+        } else {
+            map.drag_by(next.annotations_mut(), id, dx, dy)
+        };
+        if result != Some(renderer::layout::NudgeResult::Moved) {
+            return Ok(false);
+        }
+        self.adopt(next)?;
+        Ok(true)
+    }
+    /// Append an `Annotation` JSON value and return its index.
+    pub fn add_annotation(&mut self, json: &str) -> Result<u32, JsValue> {
+        let item: renderer::Annotation = serde_json::from_str(json).map_err(js_err)?;
+        let mut next = self.chart.clone();
+        next.annotations_mut().items.push(item);
+        let index = next.annotations().items.len() - 1;
+        self.adopt(next)?;
+        Ok(index as u32)
+    }
+    /// Replace the annotation at `index`.
+    pub fn set_annotation(&mut self, index: u32, json: &str) -> Result<(), JsValue> {
+        let item: renderer::Annotation = serde_json::from_str(json).map_err(js_err)?;
+        let mut next = self.chart.clone();
+        let slot = next
+            .annotations_mut()
+            .items
+            .get_mut(index as usize)
+            .ok_or_else(|| js_err("unknown annotation"))?;
+        *slot = item;
+        self.adopt(next)
+    }
+    /// Remove the annotation at `index`; later indices move down one and the
+    /// selection follows or clears.
+    pub fn remove_annotation(&mut self, index: u32) -> Result<(), JsValue> {
+        let index = index as usize;
+        let mut next = self.chart.clone();
+        if index >= next.annotations().items.len() {
+            return Err(js_err("unknown annotation"));
+        }
+        next.annotations_mut().items.remove(index);
+        let selected = next.decorations().selected.clone();
+        next.decorations_mut().selected = match selected {
+            Some(DecorationId::Annotation(i)) if i == index => None,
+            Some(DecorationId::Annotation(i)) if i > index => Some(DecorationId::Annotation(i - 1)),
+            other => other,
+        };
+        self.adopt(next)
+    }
+    /// Show or hide the whole annotation layer without re-rasterizing it.
+    pub fn set_annotations_visible(&mut self, visible: bool) -> Result<(), JsValue> {
+        let mut next = self.chart.clone();
+        next.annotations_mut().visible = visible;
+        self.adopt(next)
+    }
+    /// The `Anchor` JSON at a point for `"Data"` or `"Ratio"`; `null` when
+    /// the point has no such position (a radial chart has no data anchors).
+    pub fn pointer_to_anchor(&self, x: f32, y: f32, kind: &str) -> Result<String, JsValue> {
+        let kind = match kind {
+            "Data" => renderer::AnchorKind::Data,
+            "Ratio" => renderer::AnchorKind::Ratio,
+            _ => return Err(js_err("anchor kind must be \"Data\" or \"Ratio\"")),
+        };
+        use renderer::AnnotationSpace;
+        let anchor = self
+            .annotations
+            .annotations()
+            .space()
+            .px_to_anchor([x, y], kind);
+        serde_json::to_string(&anchor).map_err(js_err)
+    }
+    /// Annotations the current frame skipped, as `[{index, reason}]`.
+    pub fn annotation_warnings(&self) -> Result<String, JsValue> {
+        crate::annotation_warnings_json(self.annotations.render_warnings())
     }
     pub fn pick(&mut self, x: f32, y: f32, toggle: bool) -> Result<String, JsValue> {
         self.chart.decorations_mut().selected = None;

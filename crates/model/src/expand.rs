@@ -26,8 +26,9 @@
 //!   each panel keeps only the picked references of its own series, so an
 //!   edit of one layer leaves every other panel's config, and with it the
 //!   renderer's per-panel raster cache, untouched.
-//! - Expansion ignores `active_layer` and `annotations`; the panels always
-//!   carry the defaults.
+//! - Expansion ignores `active_layer`; the panels always carry `Base`. The
+//!   document's one annotation layer stays on the base panel, anchored in
+//!   the parent's axes; overlay panels carry an empty one.
 
 use crate::config::{AxisOptions, Config, TickVisibility};
 use crate::default::{
@@ -148,7 +149,7 @@ impl Config {
         let mut panel = self.clone();
         panel.overlays.clear();
         panel.active_layer = LayerRef::Base;
-        panel.annotations = AnnotationLayer::default();
+        // The document's one annotation layer is drawn with the base panel.
         retain_layer_picks(&mut panel, self, LayerRef::Base);
         align_margins(&mut panel, group, data_area)?;
         Ok(panel)
@@ -384,7 +385,6 @@ mod tests {
         assert_eq!(expansion.panels.len(), 1);
         let mut expected = cfg.clone();
         expected.active_layer = LayerRef::Base;
-        expected.annotations = AnnotationLayer::default();
         assert_eq!(expansion.panels[0].config, expected);
         assert_eq!(expansion.panels[0].layer, LayerRef::Base);
         assert_eq!(expansion.data_area, cfg.data_area().unwrap());

@@ -364,6 +364,9 @@ fn panel_recipe(i: usize) -> (DrawStyle, &'static str, DataRenderType) {
         line_style: style,
         line_color: color,
         line_width: w,
+        fill: None,
+        fill_color: None,
+        interpolation: renderer::data_config::LineInterpolation::Linear,
     };
     let scatter = |color: Color, size| DataScatterStyleConfig {
         point_color: color,

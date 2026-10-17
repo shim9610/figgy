@@ -68,7 +68,10 @@ struct Style {
     // share a star/wobble pattern; precise entries never read it.
     series_salt: u32,
     // Primitive-specific feature bits. Errorbar uses bit 0 for Y and bit 1
-    // for X; every other primitive ignores this field.
+    // for X. Line entries read bits 2-3 as the step interpolation mode
+    // (0 linear, 1 step-pre, 2 step-post, 3 step-mid) and the area entry
+    // also reads bit 4 (fill to a series instead of a baseline); every
+    // other primitive ignores this field.
     primitive_flags: u32,
     dash: array<vec4<f32>, 2>,
 };

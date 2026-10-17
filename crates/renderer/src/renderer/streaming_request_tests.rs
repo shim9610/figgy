@@ -12,6 +12,9 @@ mod ssot_invalidation;
 #[path = "overlay_layer_tests.rs"]
 mod overlay_layers;
 
+#[path = "annotation_layer_tests.rs"]
+mod annotation_layer;
+
 fn limits(slots: usize) -> StreamLimits {
     StreamLimits {
         max_jobs: 4,
@@ -45,6 +48,9 @@ fn declaration(id: &str, x: &str, y: &str) -> SeriesConfig {
                 line_style: LineStylePreset::Solid,
                 line_width: 2.0,
                 line_color: Color::new(1.0, 0.0, 0.0, 1.0),
+                fill: None,
+                fill_color: None,
+                interpolation: crate::data_config::LineInterpolation::Linear,
             },
         },
     }
@@ -98,6 +104,9 @@ fn streaming_accepts_mapped_errorbars_but_rejects_contour() {
                 line_style: LineStylePreset::Solid,
                 line_width: 1.0,
                 line_color: Color::new(0.0, 0.0, 0.0, 1.0),
+                fill: None,
+                fill_color: None,
+                interpolation: crate::data_config::LineInterpolation::Linear,
             },
             per_level_color: None,
             labels: None,
@@ -601,6 +610,9 @@ fn six_distinct_errorbar_columns_obey_request_column_limit_before_job_start() {
             line_style: LineStylePreset::Solid,
             line_width: 2.0,
             line_color: Color::new(0.0, 0.0, 0.0, 1.0),
+            fill: None,
+            fill_color: None,
+            interpolation: crate::data_config::LineInterpolation::Linear,
         },
         err_x: ErrorRef::Asymmetric {
             lower: "ex_lo".into(),
@@ -1662,6 +1674,9 @@ fn packed_view_combined_errorbar_redraw_matches_exact_stream_pixels() {
                 line_style: LineStylePreset::Solid,
                 line_width: 2.0,
                 line_color: Color::new(1.0, 0.0, 0.0, 1.0),
+                fill: None,
+                fill_color: None,
+                interpolation: crate::data_config::LineInterpolation::Linear,
             },
             err_x: ErrorRef::Symmetric { column: "e".into() },
             err_style: DataErrorBarStyleConfig {
@@ -2066,6 +2081,9 @@ fn mixed_prepared_frame_preserves_resident_chart_and_exact_stream_output() {
                     line_style: LineStylePreset::Solid,
                     line_width: 4.0,
                     line_color: Color::new(1.0, 0.0, 0.0, 0.6),
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             };
             let mut resident_a = stream_series.clone();
@@ -2373,6 +2391,9 @@ fn ordered_stream_draw_matches_resident_pixels_across_chunk_boundaries() {
                     line_style: LineStylePreset::Solid,
                     line_width: 5.0,
                     line_color: color,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 };
                 let scatter = DataScatterStyleConfig {
                     point_color: if id == "red" {

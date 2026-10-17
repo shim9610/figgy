@@ -43,7 +43,7 @@ use crate::data::{ColumnSource, HiLoColumnSource};
 use crate::data_config::{
     DataBarBinStyleConfig, DataBarStyleConfig, DataErrorBarPointStyleConfig,
     DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterPointStyleConfig,
-    DataScatterStyleConfig, ErrorRef, ScatterShape, SeriesConfig,
+    DataScatterStyleConfig, ErrorRef, LineFill, LineInterpolation, ScatterShape, SeriesConfig,
 };
 use crate::data_render::{
     self, AxisLayer, ColumnBarSelectionLayer, ColumnErrorBarDraw, ColumnFieldSelectionLayer,
@@ -123,6 +123,26 @@ pub fn fit_display_panel(logical_size: (u32, u32), surface_size: (u32, u32)) -> 
             height: panel_h,
         },
     )
+}
+
+/// The annotation raster of a chart at its config's scale: the config
+/// already carries export or display scaling in its pixel dims, exactly as
+/// the axis raster is drawn, so the annotation raster is drawn at 1:1.
+fn annotation_raster_for_chart(
+    chart: &Chart,
+    selected: Option<usize>,
+) -> crate::annotation::AnnotationRaster {
+    let config = chart.config();
+    let area = config.chart_area.0;
+    crate::annotation::rasterize(&crate::annotation::RasterRequest {
+        layer: &config.annotations,
+        space: crate::annotation::pixel_space_for_config(config),
+        origin: [area.x as f32, area.y as f32],
+        size: (area.width.max(1), area.height.max(1)),
+        scale: 1.0,
+        selected,
+        policy: crate::text_render::FontPolicy::for_style(&config.draw_style),
+    })
 }
 
 /// Derive the scaled display config and centered panel for a surface.
@@ -458,6 +478,8 @@ struct ArcResultKey {
     /// style parameter changes must not retraverse the data.
     geometry_transform_bits: [u32; 16],
     star_pitch_bits: Option<u32>,
+    /// Step interpolation mode: a stepped path has a different arc length.
+    step_mode: u32,
 }
 
 struct ArcResultEntry {
@@ -525,6 +547,7 @@ pub struct ChartRenderStamp {
     chart_id: ChartId,
     desired: RenderRevision,
     raster: RenderRevision,
+    annotation: RenderRevision,
 }
 
 impl ChartRenderStamp {
@@ -537,6 +560,20 @@ impl ChartRenderStamp {
             previous.renderer_identity != self.renderer_identity
                 || previous.chart_id != self.chart_id
                 || previous.raster != self.raster
+        })
+    }
+
+    /// Whether the annotation layer's rasters must be redone since
+    /// `previous`: an edit of `annotations.items`. A `refresh_axis` redoes
+    /// them as well, so a host that refreshes the axis raster needs no
+    /// separate annotation refresh for the same frame; otherwise it calls
+    /// [`Renderer::refresh_annotations`]. Toggling `annotations.visible`
+    /// never sets this: it only skips the composite.
+    pub fn needs_annotation_raster_since(&self, previous: Option<&Self>) -> bool {
+        previous.is_none_or(|previous| {
+            previous.renderer_identity != self.renderer_identity
+                || previous.chart_id != self.chart_id
+                || previous.annotation != self.annotation
         })
     }
 }
@@ -681,7 +718,8 @@ fn selection_config_revision(
 /// - `picked_points` / `picked_data` are the GPU selection overlay
 ///   (`selection_config_revision`).
 /// - `active_layer` only routes interaction; `annotations` is the dedicated
-///   annotation layer, composited by its own pass.
+///   annotation layer, rasterized by its own pass under its own revision
+///   (`annotation_config_revision`).
 fn raster_config_equal(left: &Config, right: &Config) -> bool {
     let Config {
         chart_area,
@@ -724,6 +762,22 @@ fn overlay_geometry_equal(left: &Config, right: &Config) -> bool {
             AxisViewState::from_axis(&a.y_axis) == AxisViewState::from_axis(&b.y_axis)
                 && a.series == b.series
         })
+}
+
+/// The annotation raster revision follows the layer's items only. Its
+/// `visible` flag skips the composite without touching any texture, and the
+/// anchor space (axes, data area) is chrome, so a change there already bumps
+/// the raster revision whose refresh redoes the annotation rasters too.
+fn annotation_config_revision(
+    current: RenderRevision,
+    before: &Config,
+    after: &Config,
+) -> Result<RenderRevision> {
+    if before.annotations.items != after.annotations.items {
+        current.successor("chart annotation revision")
+    } else {
+        Ok(current)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -827,6 +881,11 @@ struct ChartRevisions {
     view: RenderRevision,
     selection: RenderRevision,
     raster: RenderRevision,
+    /// The annotation layer's own raster revision: follows
+    /// `annotations.items` only, so an annotation edit re-rasterizes the two
+    /// annotation textures and nothing else, and a `visible` toggle
+    /// re-rasterizes nothing.
+    annotation: RenderRevision,
 }
 
 impl ChartRevisions {
@@ -839,6 +898,7 @@ impl ChartRevisions {
             view: revision,
             selection: revision,
             raster: revision,
+            annotation: revision,
         }
     }
 }
@@ -908,6 +968,8 @@ struct PickResourceSignature {
     y_column: ColumnId,
     primitives: EffectiveSeriesPrimitives,
     line_width_bits: Option<u32>,
+    /// The line's step mode: a stepped path is picked along its pieces.
+    line_step_mode: u32,
     scatter: Option<PickScatterSignature>,
 }
 
@@ -983,6 +1045,7 @@ struct OwnedGpuPickSeriesDescriptor {
     signature: PickSeriesSignature,
     scatter: Option<OwnedGpuPickScatter>,
     line_width_px: Option<f32>,
+    line_interpolation: LineInterpolation,
 }
 
 impl OwnedGpuPickSeriesDescriptor {
@@ -994,6 +1057,7 @@ impl OwnedGpuPickSeriesDescriptor {
             y_column: self.signature.resource.y_column.clone(),
             scatter: self.scatter.as_ref().map(OwnedGpuPickScatter::descriptor),
             line_width_px: self.line_width_px,
+            line_interpolation: self.line_interpolation,
         }
     }
 }
@@ -1192,16 +1256,19 @@ impl PickChartPlan {
                 (None, None)
             };
 
-            let line_width_px = primitives.line.then(|| {
+            let line = primitives.line.then(|| {
                 extract_line(&series.render_type)
                     .expect("effective line primitive has line configuration")
-                    .line_width
             });
+            let line_width_px = line.map(|line| line.line_width);
+            let line_interpolation =
+                line.map_or(LineInterpolation::Linear, |line| line.interpolation);
             let resource = PickResourceSignature {
                 x_column: series.x_column.clone(),
                 y_column: series.y_column.clone(),
                 primitives,
                 line_width_bits: line_width_px.map(f32::to_bits),
+                line_step_mode: crate::line_step::step_mode(line_interpolation),
                 scatter: scatter_signature,
             };
             descriptors.push(OwnedGpuPickSeriesDescriptor {
@@ -1212,6 +1279,7 @@ impl PickChartPlan {
                 },
                 scatter,
                 line_width_px,
+                line_interpolation,
             });
         }
 
@@ -1882,6 +1950,17 @@ struct PreparedSeriesProducts<'a> {
     contours: &'a [PreparedContourSeries],
 }
 
+struct PreparedAreaLayer {
+    pipeline: wgpu::RenderPipeline,
+    transform_bg: wgpu::BindGroup,
+    style_bg: wgpu::BindGroup,
+    pool_buffer: wgpu::Buffer,
+    x: ColumnHandle,
+    y: ColumnHandle,
+    base: ColumnHandle,
+    verts_per_instance: u32,
+}
+
 struct PreparedLineLayer {
     pipeline: wgpu::RenderPipeline,
     transform_bg: wgpu::BindGroup,
@@ -2018,6 +2097,7 @@ struct PreparedSeries {
     _style_charge: Option<crate::gpu_memory::SharedCharge>,
     _stream_style_charge: Option<crate::gpu_memory::SharedCharge>,
     _stream_transform_charge: Option<crate::gpu_memory::SharedCharge>,
+    area: Option<PreparedAreaLayer>,
     field: Option<PreparedFieldLayer>,
     bar: Option<PreparedBarLayer>,
     contour: Option<PreparedContourLayer>,
@@ -2035,12 +2115,73 @@ struct PreparedSeries {
 struct PreparedView {
     grid_bind_group: wgpu::BindGroup,
     decoration_bind_group: wgpu::BindGroup,
+    /// The annotation layer's textures, `None` where the layer drew nothing
+    /// on that side; skipped entirely while the layer is hidden.
+    annotation_underlay_bind_group: Option<wgpu::BindGroup>,
+    annotation_overlay_bind_group: Option<wgpu::BindGroup>,
+    annotations_visible: bool,
     _grid_charge: crate::gpu_memory::SharedCharge,
     _decoration_charge: crate::gpu_memory::SharedCharge,
+    _annotation_charges: Vec<crate::gpu_memory::SharedCharge>,
     _transform_charge: crate::gpu_memory::SharedCharge,
     content_revision: Arc<std::sync::atomic::AtomicU64>,
     expected_content_revision: u64,
     panel_rect: Rect,
+}
+
+impl PreparedView {
+    /// Snapshot a view's bindings. `annotations_visible` comes from the
+    /// chart config at prepare time, so toggling the layer needs no refresh.
+    fn capture(
+        view: &ChartView,
+        expected_content_revision: u64,
+        annotations_visible: bool,
+    ) -> Self {
+        Self {
+            grid_bind_group: view.grid_bind_group.clone(),
+            decoration_bind_group: view.decoration_bind_group.clone(),
+            annotation_underlay_bind_group: view
+                .annotation_underlay
+                .as_ref()
+                .map(|l| l.bind_group.clone()),
+            annotation_overlay_bind_group: view
+                .annotation_overlay
+                .as_ref()
+                .map(|l| l.bind_group.clone()),
+            annotations_visible,
+            _grid_charge: view.grid_texture.shared_charge(),
+            _decoration_charge: view.decoration_texture.shared_charge(),
+            _annotation_charges: view
+                .annotation_underlay
+                .iter()
+                .chain(view.annotation_overlay.iter())
+                .map(|l| l.texture.shared_charge())
+                .collect(),
+            _transform_charge: view.transform_buffer.shared_charge(),
+            content_revision: Arc::clone(&view.content_revision),
+            expected_content_revision,
+            panel_rect: view.panel_rect,
+        }
+    }
+
+    fn annotation_layers<'a>(
+        &'a self,
+        pipeline: &'a wgpu::RenderPipeline,
+    ) -> (Option<AxisLayer<'a>>, Option<AxisLayer<'a>>) {
+        if !self.annotations_visible {
+            return (None, None);
+        }
+        let layer = |bind_group: &'a Option<wgpu::BindGroup>| {
+            bind_group.as_ref().map(|bind_group| AxisLayer {
+                pipeline,
+                bind_group,
+            })
+        };
+        (
+            layer(&self.annotation_underlay_bind_group),
+            layer(&self.annotation_overlay_bind_group),
+        )
+    }
 }
 
 /// Complete owned render input for one panel.
@@ -2108,6 +2249,16 @@ impl PreparedSeries {
             _style_charge: style_charge,
             _stream_style_charge: None,
             _stream_transform_charge: None,
+            area: layers.area.map(|layer| PreparedAreaLayer {
+                pipeline: layer.pipeline.clone(),
+                transform_bg: layer.transform_bg.clone(),
+                style_bg: layer.style_bg.clone(),
+                pool_buffer: layer.pool_buffer.clone(),
+                x: layer.x,
+                y: layer.y,
+                base: layer.base,
+                verts_per_instance: layer.verts_per_instance,
+            }),
             field: layers.field.map(|layer| PreparedFieldLayer {
                 pipeline: layer.pipeline.clone(),
                 transform_bg: layer.transform_bg.clone(),
@@ -2232,6 +2383,19 @@ impl PreparedSeries {
 
     fn layers(&self) -> data_render::SeriesLayers<'_> {
         data_render::SeriesLayers {
+            area: self
+                .area
+                .as_ref()
+                .map(|layer| data_render::ColumnAreaLayer {
+                    pipeline: &layer.pipeline,
+                    transform_bg: &layer.transform_bg,
+                    style_bg: &layer.style_bg,
+                    pool_buffer: &layer.pool_buffer,
+                    x: layer.x,
+                    y: layer.y,
+                    base: layer.base,
+                    verts_per_instance: layer.verts_per_instance,
+                }),
             field: self
                 .field
                 .as_ref()
@@ -3340,6 +3504,10 @@ struct TargetPipelines {
     shaders: data_render::ShaderModules,
     axis: wgpu::RenderPipeline,
     line: Option<wgpu::RenderPipeline>,
+    /// The line shader's `vs_area` / `fs_area` fill, compiled when a line
+    /// series declares a fill. Used in every draw style: the fill is a flat
+    /// precise primitive under whatever the style draws for the line.
+    area: Option<wgpu::RenderPipeline>,
     scatter: Option<wgpu::RenderPipeline>,
     scatter_mapped: Option<wgpu::RenderPipeline>,
     pick_ring: Option<wgpu::RenderPipeline>,
@@ -3492,6 +3660,7 @@ fn create_target_pipelines_observed(
             },
         ),
         line: None,
+        area: None,
         scatter: None,
         scatter_mapped: None,
         pick_ring: None,
@@ -3561,6 +3730,7 @@ async fn create_target_pipelines_observed_async(
         shaders,
         axis,
         line: None,
+        area: None,
         scatter: None,
         scatter_mapped: None,
         pick_ring: None,
@@ -3633,6 +3803,7 @@ impl TargetPipelines {
         let mut need_contour = false;
         let mut need_contour_label = false;
         let mut need_line = false;
+        let mut need_area = false;
         let mut need_scatter = false;
         let mut need_errorbar = false;
         let mut need_bar = false;
@@ -3667,6 +3838,12 @@ impl TargetPipelines {
                         PickedDataRef::MatrixCell { .. } | PickedDataRef::ContourLevel { .. }
                     )
                 });
+            }
+            // The area fill is drawn under every style's line with the one
+            // precise area pipeline.
+            for series in item.series {
+                need_area |=
+                    series_has_line_fill(&item.chart_config.draw_style, &series.config.render_type);
             }
             if style_variant(&item.chart_config.draw_style).is_some() {
                 if item.chart_config.picked_points.is_some() {
@@ -3717,6 +3894,16 @@ impl TargetPipelines {
                     self.sample_count,
                 ),
             );
+        }
+        if need_area && self.area.is_none() {
+            self.area = Some(data_render::create_line_area_pipeline_with_sample_count(
+                device,
+                &self.shaders.line,
+                transform_bgl,
+                style_bgl,
+                surface_format,
+                self.sample_count,
+            ));
         }
         if need_scatter && self.scatter.is_none() {
             self.scatter = Some(
@@ -3950,6 +4137,18 @@ impl TargetPipelines {
             line,
             "precise line",
             data_render::create_line_columnar_pipeline_with_sample_count(
+                device,
+                &self.shaders.line,
+                transform_bgl,
+                style_bgl,
+                surface_format,
+                self.sample_count,
+            )
+        );
+        ensure!(
+            area,
+            "line area fill",
+            data_render::create_line_area_pipeline_with_sample_count(
                 device,
                 &self.shaders.line,
                 transform_bgl,
@@ -4882,6 +5081,7 @@ fn validate_renderer_series(
         }
         validate_contour_level_count(&item.series_id, &item.render_type)?;
         validate_contour_label_config(&item.series_id, &item.render_type)?;
+        validate_line_fill(pool, series.iter(), item)?;
         if let Some(matrix) = extract_matrix(&item.render_type) {
             // A grid column that is not registered would read whatever else
             // happens to be at that offset. Count mismatches between the
@@ -4890,6 +5090,56 @@ fn validate_renderer_series(
             for column in &matrix.columns {
                 validate_registered_column(pool, column)?;
             }
+        }
+    }
+    Ok(())
+}
+
+/// A line fill's declaration must resolve before any GPU work: a finite
+/// baseline, or a referenced series that exists in the same chart, is not the
+/// series itself, shares its x column and has a registered y column. A
+/// different x column would need resampling — renderer-derived data — so it
+/// is an error, not a fallback.
+fn validate_line_fill<'s>(
+    pool: &impl ColumnRegistration,
+    series: impl IntoIterator<Item = &'s SeriesConfig>,
+    item: &SeriesConfig,
+) -> Result<()> {
+    let Some(line) = extract_line(&item.render_type) else {
+        return Ok(());
+    };
+    let invalid = |reason: String| FiggyError::InvalidSeriesConfig {
+        series_id: item.series_id.clone(),
+        reason,
+    };
+    match line.fill.as_ref() {
+        None => {}
+        Some(LineFill::ToBaseline(baseline)) => {
+            if !baseline.is_finite() {
+                return Err(invalid("line fill baseline must be finite".into()));
+            }
+        }
+        Some(LineFill::ToSeries(target)) => {
+            if *target == item.series_id {
+                return Err(invalid(
+                    "line fill cannot reference the series itself".into(),
+                ));
+            }
+            let target = series
+                .into_iter()
+                .find(|other| other.series_id == *target)
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "line fill references series `{target}`, which is not in this chart"
+                    ))
+                })?;
+            if target.x_column != item.x_column {
+                return Err(invalid(format!(
+                    "line fill to series `{}` requires the same x column: `{}` vs `{}`",
+                    target.series_id, item.x_column, target.x_column
+                )));
+            }
+            validate_registered_column(pool, &target.y_column)?;
         }
     }
     Ok(())
@@ -6491,6 +6741,7 @@ impl Renderer {
             chart_id: id,
             desired: state.revisions.desired,
             raster: state.revisions.raster,
+            annotation: state.revisions.annotation,
         })
     }
 
@@ -6633,6 +6884,8 @@ impl Renderer {
                 .selection
                 .successor("chart selection revision")?;
         }
+        next_revisions.annotation =
+            annotation_config_revision(state.revisions.annotation, &state.config, &config)?;
         next_revisions.view = view;
         next_revisions.raster = raster;
 
@@ -6839,6 +7092,8 @@ impl Renderer {
                 .selection
                 .successor("chart selection revision")?;
         }
+        next_revisions.annotation =
+            annotation_config_revision(state.revisions.annotation, &state.config, &config)?;
         next_revisions.series = series_revision;
         next_revisions.data = data;
         next_revisions.view = view;
@@ -7354,6 +7609,7 @@ impl Renderer {
         // Recreate only the lazy variants that were already live so a format
         // change does not re-eager unused data/mapped/ring pipelines.
         let had_line = self.pipelines.line.is_some();
+        let had_area = self.pipelines.area.is_some();
         let had_scatter = self.pipelines.scatter.is_some();
         let had_errorbar = self.pipelines.errorbar.is_some();
         let had_scatter_mapped = self.pipelines.scatter_mapped.is_some();
@@ -7382,6 +7638,16 @@ impl Renderer {
                     target_sample_count,
                 ),
             );
+        }
+        if had_area {
+            self.pipelines.area = Some(data_render::create_line_area_pipeline_with_sample_count(
+                &self.device,
+                &self.pipelines.shaders.line,
+                &self.transform_bgl,
+                &self.style_bgl,
+                surface_format,
+                target_sample_count,
+            ));
         }
         if had_scatter {
             self.pipelines.scatter = Some(
@@ -9623,10 +9889,33 @@ impl Renderer {
                 let mut s =
                     PrimitiveStyle::from_color_with_width(l.line_color, l.line_width * scale);
                 s.pack_dash_pattern(l.line_style.pattern(), scale);
+                // Bits 2-3: the step interpolation mode the line entries read.
+                s.primitive_flags = crate::line_step::step_flag_bits(l.interpolation);
                 s
             }
             None => PrimitiveStyle::from_color_with_width(Color::BLACK, 1.0),
         };
+        // The fill's `Style` reinterpretation (SHADER_COMMON.md §2.2): fill
+        // colour, the step mode, the fill-to-series bit and the baseline as
+        // the pool's `(hi, lo)` pair in `dash[1].xy`.
+        let area = extract_line(&cfg.render_type)
+            .and_then(|l| l.fill.as_ref().map(|fill| (l, fill)))
+            .map(|(l, fill)| {
+                let mut s = PrimitiveStyle::from_color(l.effective_fill_color());
+                s.primitive_flags = crate::line_step::step_flag_bits(l.interpolation);
+                match fill {
+                    LineFill::ToBaseline(baseline) => {
+                        let (hi, lo) = crate::data::split_f64_to_f32_pair(*baseline);
+                        s.dash[1][0] = hi;
+                        s.dash[1][1] = lo;
+                    }
+                    LineFill::ToSeries(_) => {
+                        s.primitive_flags |= crate::line_step::AREA_FILL_TO_SERIES;
+                    }
+                }
+                s.series_salt = series_salt;
+                s
+            });
         let scatter = match extract_scatter(&cfg.render_type) {
             Some(sc) => {
                 let mut s = PrimitiveStyle::from_color(sc.point_color);
@@ -9668,6 +9957,7 @@ impl Renderer {
             extract_bar(&cfg.render_type).and_then(|bar| self.create_bar_style_map_for(bar, scale));
         Ok(self.create_style_from_primitives(
             line,
+            area,
             scatter,
             errorbar,
             bar,
@@ -9684,7 +9974,9 @@ impl Renderer {
         let max_storage = caps
             .max_buffer_size
             .min(u64::from(caps.max_storage_buffer_binding_size));
-        let mut total = 4u64 * std::mem::size_of::<PrimitiveStyle>() as u64;
+        let primitive_uniforms =
+            4 + u64::from(extract_line(&cfg.render_type).is_some_and(|line| line.fill.is_some()));
+        let mut total = primitive_uniforms * std::mem::size_of::<PrimitiveStyle>() as u64;
         let overflow = || FiggyError::GpuResourceLimit {
             resource: "chart style bytes",
             requested: u64::MAX,
@@ -9769,9 +10061,11 @@ impl Renderer {
     /// Shared tail of `create_style_for_series*`: allocate the four style
     /// uniform buffers and bind groups from fully-built values.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn create_style_from_primitives(
         &self,
         line: PrimitiveStyle,
+        area: Option<PrimitiveStyle>,
         scatter: PrimitiveStyle,
         errorbar: PrimitiveStyle,
         bar: PrimitiveStyle,
@@ -9784,6 +10078,7 @@ impl Renderer {
         let dev = &self.device;
         let scatter_radius_px = scatter.point_radius_px;
         let line_buf = data_render::create_style_uniform_buffer(dev, &line);
+        let area_buf = area.map(|area| data_render::create_style_uniform_buffer(dev, &area));
         let sc_buf = data_render::create_style_uniform_buffer(dev, &scatter);
         let eb_buf = data_render::create_style_uniform_buffer(dev, &errorbar);
         let bar_buf = data_render::create_style_uniform_buffer(dev, &bar);
@@ -9796,6 +10091,9 @@ impl Renderer {
                 GpuResourceKind::Uniform,
             ),
             line_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &line_buf),
+            area_bg: area_buf
+                .as_ref()
+                .map(|buf| data_render::create_style_bind_group(dev, &self.style_bgl, buf)),
             scatter_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &sc_buf),
             errorbar_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &eb_buf),
             bar_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &bar_buf),
@@ -9976,12 +10274,32 @@ impl Renderer {
                 font_generation,
             )?);
         }
-        view.render_warnings = merged_render_warnings(&panels);
+        // Annotation layer: two optional textures from one shared raster
+        // pass. One layer per document, on the base view, anchored in the
+        // parent's own axis space (the group data area).
+        let w = panel_rect.width.max(1);
+        let h = panel_rect.height.max(1);
+        let annotations = annotation_raster_for_chart(chart, None);
+        view.annotation_underlay = annotations
+            .underlay
+            .as_deref()
+            .map(|rgba| self.create_layer_texture(rgba, w, h))
+            .transpose()?;
+        view.annotation_overlay = annotations
+            .overlay
+            .as_deref()
+            .map(|rgba| self.create_layer_texture(rgba, w, h))
+            .transpose()?;
+        view.annotation_map = annotations.map;
+        view.tick_warnings = merged_render_warnings(&panels);
+        view.rebuild_render_warnings();
         Ok(view)
     }
 
-    /// One panel's GPU resources from one internal config. `overlay` panels
-    /// never draw the Milkyway backdrop: the grid slot belongs to the base.
+    /// One panel's grid, decoration and transform resources from one
+    /// internal config. `overlay` panels never draw the Milkyway backdrop:
+    /// the grid slot belongs to the base. No panel carries annotation
+    /// textures here; `create_chart_view` gives them to the base view.
     fn create_panel_view(
         &self,
         config: &Config,
@@ -9994,50 +10312,14 @@ impl Renderer {
 
         // Grid layer (drawn below data): raster + texture + bind group.
         let grid_rgba = raster_grid_layer(config, overlay, w, h)?;
-        let grid_tex = TrackedTexture::new(
-            &self.gpu_ledger,
-            GpuResourceKind::PanelTexture,
-            data_render::upload_rgba_texture(
-                &self.device,
-                &self.queue,
-                self.caps.max_texture_dimension_2d,
-                w,
-                h,
-                &grid_rgba,
-            )?,
-        );
-        let grid_view_t = grid_tex.create_view(&wgpu::TextureViewDescriptor::default());
-        let grid_bg = data_render::create_texture_bind_group(
-            &self.device,
-            &self.texture_bgl,
-            &grid_view_t,
-            &self.sampler,
-        );
+        let grid = self.create_layer_texture(&grid_rgba, w, h)?;
 
         // Decoration layer (drawn above data).
         let dec_rgba = axis_render::try_raster_chart_layer_to_rgba(
             config,
             axis_render::AxisLayerKind::Decoration,
         )?;
-        let dec_tex = TrackedTexture::new(
-            &self.gpu_ledger,
-            GpuResourceKind::PanelTexture,
-            data_render::upload_rgba_texture(
-                &self.device,
-                &self.queue,
-                self.caps.max_texture_dimension_2d,
-                w,
-                h,
-                &dec_rgba,
-            )?,
-        );
-        let dec_view_t = dec_tex.create_view(&wgpu::TextureViewDescriptor::default());
-        let dec_bg = data_render::create_texture_bind_group(
-            &self.device,
-            &self.texture_bgl,
-            &dec_view_t,
-            &self.sampler,
-        );
+        let decoration = self.create_layer_texture(&dec_rgba, w, h)?;
 
         let t = data_render::scatter_transform_from_config(config);
         let transform_buffer = TrackedBuffer::new(
@@ -10052,26 +10334,145 @@ impl Renderer {
         );
 
         Ok(ChartView {
-            grid_texture: grid_tex,
-            grid_bind_group: grid_bg,
-            decoration_texture: dec_tex,
-            decoration_bind_group: dec_bg,
+            grid_texture: grid.texture,
+            grid_bind_group: grid.bind_group,
+            decoration_texture: decoration.texture,
+            decoration_bind_group: decoration.bind_group,
+            annotation_underlay: None,
+            annotation_overlay: None,
+            annotation_map: crate::annotation::AnnotationMap::empty(
+                crate::annotation::pixel_space_for_config(config),
+            ),
+            annotation_selected: None,
+            layer_stamps: ChartViewLayerStamps {
+                grid: 1,
+                decoration: 1,
+                annotations: 1,
+            },
             transform_buffer,
             transform_bg,
             content_revision: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             stream_revision: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             panel_rect,
             grid_space_gen: None,
-            render_warnings: axis_render::tick_warnings(config),
+            tick_warnings: axis_render::tick_warnings(config),
+            render_warnings: Vec::new(),
             overlay_views: Vec::new(),
-            raster_key: Some(PanelRasterKey {
-                config: config.clone(),
-                selection: Vec::new(),
+            raster_key: Some(PanelRasterKey::new(
+                config,
+                &[],
                 font_generation,
                 panel_rect,
-            }),
+            )),
             raster_generation: 1,
         })
+    }
+
+    /// Upload one panel-sized raster as a texture with its bind group.
+    fn create_layer_texture(
+        &self,
+        rgba: &[u8],
+        w: u32,
+        h: u32,
+    ) -> Result<crate::annotation::LayerTexture> {
+        let texture = TrackedTexture::new(
+            &self.gpu_ledger,
+            GpuResourceKind::PanelTexture,
+            data_render::upload_rgba_texture(
+                &self.device,
+                &self.queue,
+                self.caps.max_texture_dimension_2d,
+                w,
+                h,
+                rgba,
+            )?,
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = data_render::create_texture_bind_group(
+            &self.device,
+            &self.texture_bgl,
+            &view,
+            &self.sampler,
+        );
+        Ok(crate::annotation::LayerTexture {
+            texture,
+            bind_group,
+        })
+    }
+
+    /// Re-rasterize only the annotation layer of `view` from `chart`:
+    /// the underlay and overlay textures, the annotation hit map and the
+    /// annotation warnings. The grid and decoration textures are not
+    /// touched, so an annotation edit never rewrites axis labels. `selected`
+    /// is the annotation whose selection box the overlay draws; the view
+    /// remembers it for the next `refresh_axis*`.
+    ///
+    /// Call it when [`ChartRenderStamp::needs_annotation_raster_since`] says
+    /// the items changed or when the annotation selection changed. A panel
+    /// rect that differs from the view's moves the anchor space as well, so
+    /// that case refreshes every layer like [`Self::refresh_axis`].
+    pub fn refresh_annotations(
+        &mut self,
+        view: &mut ChartView,
+        chart: &Chart,
+        panel_rect: Rect,
+        selected: Option<usize>,
+    ) -> Result<()> {
+        view.annotation_selected = selected;
+        if view.panel_rect != panel_rect {
+            return self.refresh_axis(view, chart, panel_rect);
+        }
+        view.advance_content_revision()?;
+        self.refresh_annotation_layers(view, chart, panel_rect)
+    }
+
+    fn refresh_annotation_layers(
+        &self,
+        view: &mut ChartView,
+        chart: &Chart,
+        panel_rect: Rect,
+    ) -> Result<()> {
+        let w = panel_rect.width.max(1);
+        let h = panel_rect.height.max(1);
+        let raster = annotation_raster_for_chart(chart, view.annotation_selected);
+        self.refresh_optional_layer(
+            &mut view.annotation_underlay,
+            raster.underlay.as_deref(),
+            w,
+            h,
+        )?;
+        self.refresh_optional_layer(
+            &mut view.annotation_overlay,
+            raster.overlay.as_deref(),
+            w,
+            h,
+        )?;
+        view.annotation_map = raster.map;
+        view.layer_stamps.annotations += 1;
+        view.rebuild_render_warnings();
+        Ok(())
+    }
+
+    fn refresh_optional_layer(
+        &self,
+        slot: &mut Option<crate::annotation::LayerTexture>,
+        rgba: Option<&[u8]>,
+        w: u32,
+        h: u32,
+    ) -> Result<()> {
+        match (slot.as_mut(), rgba) {
+            (Some(layer), Some(rgba)) => {
+                self.refresh_one_layer(&mut layer.texture, &mut layer.bind_group, rgba, w, h)
+            }
+            (None, Some(rgba)) => {
+                *slot = Some(self.create_layer_texture(rgba, w, h)?);
+                Ok(())
+            }
+            (_, None) => {
+                *slot = None;
+                Ok(())
+            }
+        }
     }
 
     /// Write only the data transform uniform; leave axis/grid/decorations unchanged.
@@ -10152,7 +10553,11 @@ impl Renderer {
             )?;
         }
         view.panel_rect = panel_rect;
-        view.render_warnings = merged_render_warnings(&panels);
+        view.tick_warnings = merged_render_warnings(&panels);
+        // The anchor space follows the axes and the data area, which this
+        // refresh may have moved, so the annotation layer is redone here as
+        // well; its own revision covers item edits between axis refreshes.
+        self.refresh_annotation_layers(view, chart, panel_rect)?;
         Ok(())
     }
 
@@ -10169,12 +10574,7 @@ impl Renderer {
     ) -> Result<()> {
         let w = panel_rect.width.max(1);
         let h = panel_rect.height.max(1);
-        let key = PanelRasterKey {
-            config: config.clone(),
-            selection: selection.to_vec(),
-            font_generation,
-            panel_rect,
-        };
+        let key = PanelRasterKey::new(config, selection, font_generation, panel_rect);
         if view.raster_key.as_ref() == Some(&key) {
             // Same raster: the revisions still advance so a token prepared
             // before this call is retired, exactly as for a real rewrite.
@@ -10218,6 +10618,7 @@ impl Renderer {
                 h,
             )?;
             view.grid_space_gen = None;
+            view.layer_stamps.grid += 1;
         }
 
         self.refresh_one_layer(
@@ -10227,8 +10628,9 @@ impl Renderer {
             w,
             h,
         )?;
+        view.layer_stamps.decoration += 1;
         view.panel_rect = panel_rect;
-        view.render_warnings = axis_render::tick_warnings(config);
+        view.tick_warnings = axis_render::tick_warnings(config);
         view.raster_key = Some(key);
         view.raster_generation = view.raster_generation.wrapping_add(1);
 
@@ -10275,6 +10677,7 @@ impl Renderer {
                 h,
             )?;
             view.grid_space_gen = Some(cache.bake_gen);
+            view.layer_stamps.grid += 1;
         }
         Ok(())
     }
@@ -10655,19 +11058,13 @@ impl Renderer {
                     data: state.revisions.data,
                 });
                 frame.items.push(PreparedItem {
-                    view: PreparedView {
-                        grid_bind_group: item.view.grid_bind_group.clone(),
-                        decoration_bind_group: item.view.decoration_bind_group.clone(),
-                        _grid_charge: item.view.grid_texture.shared_charge(),
-                        _decoration_charge: item.view.decoration_texture.shared_charge(),
-                        _transform_charge: item.view.transform_buffer.shared_charge(),
-                        content_revision: Arc::clone(&item.view.content_revision),
-                        expected_content_revision: item
-                            .view
+                    view: PreparedView::capture(
+                        item.view,
+                        item.view
                             .content_revision
                             .load(std::sync::atomic::Ordering::Acquire),
-                        panel_rect: item.view.panel_rect,
-                    },
+                        state.config.annotations.visible,
+                    ),
                     data_area: state
                         .config
                         .data_area()
@@ -11018,6 +11415,8 @@ impl Renderer {
             }
             let panel_rect = item.view.panel_rect;
             let series_list: Vec<_> = item.series.iter().map(PreparedSeries::layers).collect();
+            let (annotation_underlay, annotation_overlay) =
+                item.view.annotation_layers(&item.axis_pipeline);
 
             // The single style decision per panel: the chart's `DrawStyle`
             // resolves to a cached styled pipeline set (compiled by the
@@ -11034,11 +11433,13 @@ impl Renderer {
                     pipeline: &item.axis_pipeline,
                     bind_group: &item.view.grid_bind_group,
                 },
+                annotation_underlay,
                 &series_list,
                 AxisLayer {
                     pipeline: &item.axis_pipeline,
                     bind_group: &item.view.decoration_bind_group,
                 },
+                annotation_overlay,
             );
         }
         Ok(())
@@ -11069,10 +11470,16 @@ impl Renderer {
         y_id: &str,
         t: &data_render::ScatterTransform,
         star_pitch: Option<f32>,
+        interpolation: LineInterpolation,
     ) -> Option<PreparedArc> {
-        self.preparation_parts()
-            .1
-            .ensure_arc_prefix(series_id, x_id, y_id, t, star_pitch)
+        self.preparation_parts().1.ensure_arc_prefix(
+            series_id,
+            x_id,
+            y_id,
+            t,
+            star_pitch,
+            interpolation,
+        )
     }
 
     // Headless PNG export.
@@ -11282,6 +11689,7 @@ impl Renderer {
 
         for config in series {
             validate_contour_level_count(config.series_id.as_str(), &config.render_type)?;
+            validate_line_fill(&self.pool, series.iter(), config)?;
         }
         let scale = clamp_export_scale(scale);
         let orig = chart.config().chart_area.0;
@@ -11345,8 +11753,10 @@ impl Renderer {
         // item per panel. A panel export keeps the base panel only.
         let storage = PanelDrawStorage::expand(&document)?;
         let mut items = storage.items(&document);
+        let mut group_sizes = storage.group_sizes(&document);
         if scope == ExportScope::Panel {
             items.truncate(1);
+            group_sizes = vec![1];
         }
         let items = items.as_slice();
         let mut contour_spacings = Vec::with_capacity(items.len());
@@ -11454,12 +11864,13 @@ impl Renderer {
         let (prepared_contours, _) =
             self.ensure_contour_scratches(items, scale, &contour_spacings)?;
         let prepared_arcs = self.prepare_arc_items(items)?;
-        let (prepared_items, _) = self.resolve_prepared_items(
+        let (mut prepared_items, _) = self.resolve_prepared_items(
             items,
             &prepared_arcs,
             &prepared_contours,
             &export_target_pipelines,
         )?;
+        lift_annotation_overlays(&mut prepared_items, &group_sizes);
 
         // 5) Readback buffer. Allocate at most the hardware limit and read rows
         // sequentially if the full image would exceed it.
@@ -11779,6 +12190,16 @@ pub struct ChartView {
     grid_bind_group: wgpu::BindGroup,
     decoration_texture: TrackedTexture,
     decoration_bind_group: wgpu::BindGroup,
+    /// The annotation layer: spans below the data, everything else above
+    /// every decoration. `None` where the layer drew nothing on that side.
+    /// Refreshed by `refresh_axis*` (the anchor space may have moved) and by
+    /// `refresh_annotations` (the items changed); never by anything else.
+    annotation_underlay: Option<crate::annotation::LayerTexture>,
+    annotation_overlay: Option<crate::annotation::LayerTexture>,
+    annotation_map: crate::annotation::AnnotationMap,
+    /// The annotation whose selection box the overlay carries.
+    annotation_selected: Option<usize>,
+    layer_stamps: ChartViewLayerStamps,
     transform_buffer: TrackedBuffer,
     transform_bg: wgpu::BindGroup,
     content_revision: Arc<std::sync::atomic::AtomicU64>,
@@ -11791,10 +12212,12 @@ pub struct ChartView {
     /// uploaded into `grid_texture` (`None` = non-cached content). Lets
     /// `refresh_axis` skip the full-panel texture write on cache hits.
     grid_space_gen: Option<u64>,
-    /// Tick-guard substitutions in the current raster, derived from the chart
-    /// that `create_chart_view` or the last successful `refresh_axis*`
+    /// Tick-guard substitutions in the current axis raster, derived from the
+    /// chart that `create_chart_view` or the last successful `refresh_axis*`
     /// rasterized. On a layered view this is the merged list of every panel,
     /// overlay warnings tagged `WarningAxis::OverlayY(index)`.
+    tick_warnings: Vec<crate::RenderWarning>,
+    /// `tick_warnings` followed by the annotation layer's skipped items.
     render_warnings: Vec<crate::RenderWarning>,
     /// One nested single-panel view per overlay layer, in `Config::overlays`
     /// order. Each holds its own grid and decoration textures and transform
@@ -11819,6 +12242,36 @@ struct PanelRasterKey {
     panel_rect: Rect,
 }
 
+impl PanelRasterKey {
+    /// The annotation layer has its own rasters and revision, so it is not
+    /// part of the axis key: an annotation edit keeps every panel's cache.
+    fn new(
+        config: &Config,
+        selection: &[crate::select::SelectionBox],
+        font_generation: u64,
+        panel_rect: Rect,
+    ) -> Self {
+        let mut config = config.clone();
+        config.annotations = crate::AnnotationLayer::default();
+        Self {
+            config,
+            selection: selection.to_vec(),
+            font_generation,
+            panel_rect,
+        }
+    }
+}
+
+/// How many times each raster layer of a [`ChartView`] has been written,
+/// starting at 1 for the view's creation. Lets a host or a test prove that a
+/// refresh touched only the layer it was asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ChartViewLayerStamps {
+    pub grid: u64,
+    pub decoration: u64,
+    pub annotations: u64,
+}
+
 impl ChartView {
     pub fn panel_rect(&self) -> Rect {
         self.panel_rect
@@ -11841,6 +12294,48 @@ impl ChartView {
             .collect()
     }
 
+    /// Renderer-measured annotation hit map of the current annotation
+    /// raster, in the chart's own coordinates (the chart area's frame).
+    /// Rebuilt by `refresh_axis*` and `refresh_annotations`; a `HitId` from
+    /// it is valid until the next of those calls.
+    pub fn annotation_map(&self) -> &crate::annotation::AnnotationMap {
+        &self.annotation_map
+    }
+
+    /// The annotation whose selection box the overlay currently carries, as
+    /// last passed to [`Renderer::refresh_annotations`].
+    pub fn annotation_selected(&self) -> Option<usize> {
+        self.annotation_selected
+    }
+
+    pub fn layer_stamps(&self) -> ChartViewLayerStamps {
+        self.layer_stamps
+    }
+
+    fn rebuild_render_warnings(&mut self) {
+        self.render_warnings = self
+            .tick_warnings
+            .iter()
+            .chain(self.annotation_map.warnings())
+            .cloned()
+            .collect();
+    }
+
+    /// Bind groups of the annotation textures for the stream display
+    /// composition, which draws underlay and overlay itself.
+    pub(crate) fn annotation_bind_groups(
+        &self,
+        visible: bool,
+    ) -> (Option<&wgpu::BindGroup>, Option<&wgpu::BindGroup>) {
+        if !visible {
+            return (None, None);
+        }
+        (
+            self.annotation_underlay.as_ref().map(|l| &l.bind_group),
+            self.annotation_overlay.as_ref().map(|l| &l.bind_group),
+        )
+    }
+
     /// The tick settings this view's current axis raster drew differently
     /// from how its chart's config wrote them: an impossible `major_spacing`
     /// drawn at automatic spacing, a clamped `minor_count`, an adjusted log
@@ -11853,6 +12348,10 @@ impl ChartView {
     /// [`ChartRenderStamp::needs_raster_since`] says the raster changed reads
     /// it right after that refresh. Compare with the previous list to report
     /// changes only; a NaN `requested` never compares equal.
+    ///
+    /// The tick warnings are followed by the annotation layer's
+    /// `AnnotationSkipped` warnings, re-derived by `refresh_annotations` and
+    /// by every `refresh_axis*` (the latter redoes the annotation raster).
     pub fn render_warnings(&self) -> &[crate::RenderWarning] {
         &self.render_warnings
     }
@@ -11893,6 +12392,9 @@ impl ChartView {
 pub struct ChartStyle {
     _charge: crate::gpu_memory::SharedCharge,
     line_bg: wgpu::BindGroup,
+    /// The area fill's `Style` (fill colour, baseline, fill flags), only when
+    /// the series' line declares a fill.
+    area_bg: Option<wgpu::BindGroup>,
     scatter_bg: wgpu::BindGroup,
     errorbar_bg: wgpu::BindGroup,
     bar_bg: wgpu::BindGroup,
@@ -11946,9 +12448,25 @@ impl PrepareContext<'_> {
     fn prepare(&mut self, items: &[ChartDrawItem<'_>]) -> Result<PreparedFrame> {
         // One expansion path: a layered document becomes one item per panel
         // here, so everything below sees single-layer panels only.
-        let storage = PanelDrawStorage::expand(items)?;
-        let items = storage.items(items);
-        let items = items.as_slice();
+        // A frame without layered items is drawn from the caller's slice as
+        // it is, so it pays no allocation for expansion.
+        let layered = items
+            .iter()
+            .any(|item| !item.chart_config.overlays.is_empty());
+        let storage = if layered {
+            Some(PanelDrawStorage::expand(items)?)
+        } else {
+            None
+        };
+        let group_sizes = storage
+            .as_ref()
+            .map(|storage| storage.group_sizes(items))
+            .unwrap_or_default();
+        let expanded = storage.as_ref().map(|storage| storage.items(items));
+        let items: &[ChartDrawItem<'_>] = match &expanded {
+            Some(expanded) => expanded.as_slice(),
+            None => items,
+        };
         let mut contour_spacings = Vec::with_capacity(items.len());
         for item in items {
             let mut per_series = Vec::with_capacity(item.series.len());
@@ -11956,6 +12474,11 @@ impl PrepareContext<'_> {
                 validate_contour_level_count(
                     series.config.series_id.as_str(),
                     &series.config.render_type,
+                )?;
+                validate_line_fill(
+                    self.pool,
+                    item.series.iter().map(|series| series.config),
+                    series.config,
                 )?;
                 let contour_enabled = effective_series_primitives(
                     &item.chart_config.draw_style,
@@ -12000,12 +12523,15 @@ impl PrepareContext<'_> {
             self.ensure_contour_scratches(items, 1.0, &contour_spacings)?;
         grid_sources.append(&mut contour_sources);
         let prepared_arcs = self.prepare_arc_items(items)?;
-        let (items, column_sources) = self.resolve_prepared_items(
+        let (mut items, column_sources) = self.resolve_prepared_items(
             items,
             &prepared_arcs,
             &prepared_contours,
             &self.pipelines,
         )?;
+        if layered {
+            lift_annotation_overlays(&mut items, &group_sizes);
+        }
         Ok(PreparedFrame {
             renderer_identity: self.renderer_identity,
             items,
@@ -12822,6 +13348,8 @@ impl PrepareContext<'_> {
                         &cfg.y_column,
                         &t,
                         if line { star_pitch } else { None },
+                        extract_line(&cfg.render_type)
+                            .map_or(LineInterpolation::Linear, |l| l.interpolation),
                     )
                 } else {
                     None
@@ -12868,16 +13396,11 @@ impl PrepareContext<'_> {
             }
 
             prepared.push(PreparedItem {
-                view: PreparedView {
-                    grid_bind_group: item.view.grid_bind_group.clone(),
-                    decoration_bind_group: item.view.decoration_bind_group.clone(),
-                    _grid_charge: item.view.grid_texture.shared_charge(),
-                    _decoration_charge: item.view.decoration_texture.shared_charge(),
-                    _transform_charge: item.view.transform_buffer.shared_charge(),
-                    content_revision: Arc::clone(&item.view.content_revision),
-                    expected_content_revision: prepared_arc.view_revision,
-                    panel_rect: item.view.panel_rect,
-                },
+                view: PreparedView::capture(
+                    item.view,
+                    prepared_arc.view_revision,
+                    item.chart_config.annotations.visible,
+                ),
                 data_area: item
                     .chart_config
                     .data_area()
@@ -12960,6 +13483,21 @@ impl PrepareContext<'_> {
             || (primitives.line && matches!(config.draw_style, DrawStyle::Milkyway(_)))
         {
             return Err(unsupported());
+        }
+        // A fill between two series needs index-aligned chunks of two streams,
+        // which nonresident streaming cannot guarantee, and a stepped line's
+        // arc prefix is not part of the streamed canonical scan. Both are
+        // resident-only by design, rejected here rather than drawn wrong.
+        if primitives.line
+            && let Some(line) = extract_line(&series.render_type)
+            && (line.fill.is_some() || !line.interpolation.is_linear())
+        {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: "line fill and step interpolation require GPU-resident columns; \
+                         streamed sources are not supported"
+                    .into(),
+            });
         }
         Ok(())
     }
@@ -13383,6 +13921,8 @@ impl PrepareContext<'_> {
                 None
             };
 
+            let interpolation =
+                extract_line(rt).map_or(LineInterpolation::Linear, |line| line.interpolation);
             let line = if primitives.line
                 && phase.is_none_or(|phase| phase == streaming_runtime::StreamDrawPhase::Line)
             {
@@ -13400,8 +13940,77 @@ impl PrepareContext<'_> {
                     x: x_h,
                     y: y_h,
                     arc,
-                    verts_per_instance: line_pick.verts,
+                    // One strip per step piece, joined per `strip_slot`.
+                    verts_per_instance: data_render::line_strip_vertex_count(
+                        line_pick.verts,
+                        interpolation,
+                    ),
                     texture_bg: line_pick.texture_bg,
+                })
+            } else {
+                None
+            };
+
+            // The area fill under / beside the line. Resident only: the fill
+            // between two series needs index-aligned columns that no streamed
+            // chunking can guarantee, and `validate_stream_series` has already
+            // rejected a streamed fill before this point. The second y column
+            // is the referenced series' own, resolved from the same series
+            // list; `validate_line_fill` checked the reference and its x
+            // column before any GPU work.
+            let area = if line.is_some()
+                && phase.is_none()
+                && let Some(fill) = extract_line(rt).and_then(|line| line.fill.as_ref())
+            {
+                let base = match fill {
+                    LineFill::ToBaseline(_) => y_h,
+                    LineFill::ToSeries(target) => {
+                        let target = series_specs
+                            .iter()
+                            .map(|other| other.config)
+                            .find(|other| other.series_id == *target)
+                            .ok_or_else(|| FiggyError::InvalidSeriesConfig {
+                                series_id: cfg.series_id.clone(),
+                                reason: format!(
+                                    "line fill references series `{target}`, which is not in \
+                                     this chart"
+                                ),
+                            })?;
+                        if target.x_column != cfg.x_column {
+                            return Err(FiggyError::InvalidSeriesConfig {
+                                series_id: cfg.series_id.clone(),
+                                reason: format!(
+                                    "line fill to series `{}` requires the same x column: \
+                                     `{}` vs `{}`",
+                                    target.series_id, cfg.x_column, target.x_column
+                                ),
+                            });
+                        }
+                        lookup(&target.y_column)?
+                    }
+                };
+                Some(data_render::ColumnAreaLayer {
+                    pipeline: pipelines
+                        .area
+                        .as_ref()
+                        .expect("prepare ensured line area pipeline"),
+                    transform_bg: &view.transform_bg,
+                    style_bg: series.style.area_bg.as_ref().ok_or_else(|| {
+                        FiggyError::InvalidSeriesConfig {
+                            series_id: cfg.series_id.clone(),
+                            reason: "series style was created without its line fill; \
+                                     recreate the style for the current series config"
+                                .into(),
+                        }
+                    })?,
+                    pool_buffer: column_buffer,
+                    x: x_h,
+                    y: y_h,
+                    base,
+                    verts_per_instance: data_render::line_strip_vertex_count(
+                        data_render::LINE_PRECISE_VERTICES_PER_INSTANCE,
+                        interpolation,
+                    ),
                 })
             } else {
                 None
@@ -13616,6 +14225,7 @@ impl PrepareContext<'_> {
             };
 
             out.push(data_render::SeriesLayers {
+                area,
                 field,
                 bar,
                 contour,
@@ -13680,7 +14290,9 @@ impl PrepareContext<'_> {
         y_id: &str,
         t: &data_render::ScatterTransform,
         star_pitch: Option<f32>,
+        interpolation: LineInterpolation,
     ) -> Option<PreparedArc> {
+        let step_mode = crate::line_step::step_mode(interpolation);
         if self.arc_pipelines.is_none() {
             *self.arc_pipelines = Some(data_render::line_arc::create_arc_scan_pipelines(
                 &self.device,
@@ -13703,6 +14315,7 @@ impl PrepareContext<'_> {
             y_allocation_epoch,
             geometry_transform_bits,
             star_pitch_bits: star_pitch.map(f32::to_bits),
+            step_mode,
         };
 
         // Runaway-churn backstop: ids of long-removed series would otherwise
@@ -13742,6 +14355,7 @@ impl PrepareContext<'_> {
             self.caps.max_compute_workgroups_per_dimension,
             chunk_override,
             star_pitch.is_some().then_some(&self.star_data_bgl),
+            step_mode,
         )?; // None only on a zero-dispatch-limit adapter; try_new rejects those.
 
         let mut encoder = self
@@ -13850,7 +14464,7 @@ fn merged_render_warnings(panels: &[Config]) -> Vec<crate::RenderWarning> {
         merged.extend(
             axis_render::tick_warnings(panel)
                 .into_iter()
-                .filter(|warning| warning.axis() == crate::WarningAxis::RightY)
+                .filter(|warning| warning.axis() == Some(crate::WarningAxis::RightY))
                 .map(|warning| warning.with_axis(crate::WarningAxis::OverlayY(index - 1))),
         );
     }
@@ -13943,6 +14557,40 @@ impl<'a> PanelDrawStorage<'a> {
     }
 }
 
+impl PanelDrawStorage<'_> {
+    /// Panels per source item, in source order (1 for a single-layer item).
+    fn group_sizes(&self, source: &[ChartDrawItem<'_>]) -> Vec<usize> {
+        let mut counts = self.counts.iter();
+        source
+            .iter()
+            .map(|item| {
+                if item.chart_config.overlays.is_empty() {
+                    1
+                } else {
+                    *counts.next().expect("one count per layered item")
+                }
+            })
+            .collect()
+    }
+}
+
+/// The document's annotation layer is rasterized once, on the base view; its
+/// underlay stays under the base panel's data and its overlay moves to the
+/// topmost panel of the group, so it sits above every layer's decoration.
+fn lift_annotation_overlays(items: &mut [PreparedItem], group_sizes: &[usize]) {
+    let mut start = 0;
+    for &size in group_sizes {
+        if size > 1 && start + size <= items.len() {
+            let overlay = items[start].view.annotation_overlay_bind_group.take();
+            let visible = items[start].view.annotations_visible;
+            let top = &mut items[start + size - 1].view;
+            top.annotation_overlay_bind_group = overlay;
+            top.annotations_visible = visible;
+        }
+        start += size;
+    }
+}
+
 /// How many panels `config` draws as; see [`expand_for_render`].
 fn render_panel_count(config: &Config) -> usize {
     if config.overlays.is_empty() {
@@ -13999,6 +14647,15 @@ fn effective_series_primitives(
         // draws no bars at all, the same answer `constellation_supports` gives.
         bar: matches!(draw_style, DrawStyle::Precise) && has_bar(render_type),
     }
+}
+
+/// Whether a line series with a fill draws it under `draw_style`: the fill
+/// follows the line, so it is drawn exactly when the style draws the line.
+/// Not part of [`EffectiveSeriesPrimitives`] because the fill is a property of
+/// the line (no hit target, no pick registry entry of its own).
+fn series_has_line_fill(draw_style: &DrawStyle, render_type: &DataRenderType) -> bool {
+    effective_series_primitives(draw_style, render_type).line
+        && extract_line(render_type).is_some_and(|line| line.fill.is_some())
 }
 
 /// Whether `style` draws every primitive `render_type` draws in the precise
@@ -15060,6 +15717,17 @@ impl<'w> WindowedRenderer<'w> {
     ) -> Result<()> {
         self.inner
             .refresh_axis_with_selection(view, chart, panel_rect, selection)
+    }
+
+    pub fn refresh_annotations(
+        &mut self,
+        view: &mut ChartView,
+        chart: &Chart,
+        panel_rect: Rect,
+        selected: Option<usize>,
+    ) -> Result<()> {
+        self.inner
+            .refresh_annotations(view, chart, panel_rect, selected)
     }
 
     pub fn update_transform(&mut self, view: &ChartView, chart: &Chart) -> Result<()> {
@@ -16152,6 +16820,9 @@ mod tests {
                     line_style: LineStylePreset::Solid,
                     line_color: Color::new(0.1, 0.2, 0.3, 1.0),
                     line_width: 1.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         }
@@ -16170,6 +16841,9 @@ mod tests {
                     line_style: LineStylePreset::Solid,
                     line_color: Color::new(0.1, 0.2, 0.3, 1.0),
                     line_width: 1.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         }
@@ -16579,6 +17253,9 @@ mod tests {
                         line_style: LineStylePreset::Solid,
                         line_color: Color::BLACK,
                         line_width: 2.0,
+                        fill: None,
+                        fill_color: None,
+                        interpolation: crate::data_config::LineInterpolation::Linear,
                     },
                     per_level_color: None,
                     labels: None,
@@ -17161,6 +17838,9 @@ mod tests {
                 line_style: LineStylePreset::Solid,
                 line_color: Color::BLACK,
                 line_width: 1.0,
+                fill: None,
+                fill_color: None,
+                interpolation: crate::data_config::LineInterpolation::Linear,
             },
             per_level_color: None,
             labels: None,
@@ -17922,6 +18602,9 @@ mod tests {
                 line_style: LineStylePreset::Solid,
                 line_color: Color::BLACK,
                 line_width: 1.0,
+                fill: None,
+                fill_color: None,
+                interpolation: crate::data_config::LineInterpolation::Linear,
             },
             per_level_color: None,
             labels: None,
@@ -17973,6 +18656,9 @@ mod tests {
                     line_style: LineStylePreset::Solid,
                     line_color: Color::BLACK,
                     line_width: 1.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             }),
             Some(GpuSeriesExtentMode::Line)
@@ -17985,6 +18671,9 @@ mod tests {
             line_style: LineStylePreset::Solid,
             line_color: Color::BLACK,
             line_width: 1.0,
+            fill: None,
+            fill_color: None,
+            interpolation: crate::data_config::LineInterpolation::Linear,
         };
         let scatter = crate::data_config::DataScatterStyleConfig {
             point_color: Color::BLACK,
@@ -20472,6 +21161,9 @@ mod tests {
                     line_style: crate::line::LineStylePreset::Solid,
                     line_color: Color::new(0.4, 0.7, 1.0, 1.0),
                     line_width: 2.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         }];
@@ -21551,6 +22243,9 @@ mod tests {
                     line_style: crate::line::LineStylePreset::Solid,
                     line_color: color,
                     line_width: 2.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         };
@@ -21640,6 +22335,9 @@ mod tests {
                     line_style: crate::line::LineStylePreset::Solid,
                     line_color: Color::new(1.0, 1.0, 1.0, 1.0),
                     line_width: 2.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         };
@@ -21842,7 +22540,14 @@ mod tests {
 
             let t = data_render::scatter_transform_from_config(chart.config());
             let (arc_buf, len_bytes) = r
-                .ensure_arc_prefix(&format!("s_{case}"), &xid, &yid, &t, None)
+                .ensure_arc_prefix(
+                    &format!("s_{case}"),
+                    &xid,
+                    &yid,
+                    &t,
+                    None,
+                    LineInterpolation::Linear,
+                )
                 .expect("arc prefix")
                 .prefix;
 
@@ -21907,6 +22612,153 @@ mod tests {
         }
     }
 
+    /// A stepped line's arc prefix sums its axis-aligned pieces in pixel
+    /// space — the same corners the vertex shader draws and the picker walks
+    /// — so the dash phase advances along the stepped path. Each mode is a
+    /// distinct cache key: the prefix of one mode is never reused for
+    /// another, and the linear prefix stays what it was.
+    #[test]
+    fn gpu_arc_prefix_follows_the_stepped_path_per_interpolation_mode() {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let mut r = Renderer::try_new(
+            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+            wgpu::TextureFormat::Bgra8Unorm,
+            4 * 1024 * 1024,
+        )
+        .unwrap();
+        let mut config = crate::default::default_config();
+        config.chart_area = crate::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 900,
+            height: 600,
+        });
+        let mut chart = Chart::new(config);
+        chart.set_x_range(0.0, 1.0);
+        chart.set_y_range(-1.2, 1.2);
+        let t = data_render::scatter_transform_from_config(chart.config());
+
+        // Uneven x spacing and a NaN gap: the gap's segments contribute 0 to
+        // every mode, and the gap stays exactly where the line breaks.
+        let n = 300usize;
+        let xs: Vec<f64> = (0..n).map(|i| (i as f64 / n as f64).powf(1.3)).collect();
+        let ys: Vec<f64> = (0..n)
+            .map(|i| {
+                if i == 150 {
+                    f64::NAN
+                } else {
+                    (i as f64 * 0.37).sin()
+                }
+            })
+            .collect();
+        r.add_column("step_ax", &col_f64(xs.clone())).unwrap();
+        r.add_column("step_ay", &col_f64(ys.clone())).unwrap();
+
+        let read = |device: &wgpu::Device,
+                    queue: &wgpu::Queue,
+                    arc_buf: &wgpu::Buffer,
+                    len_bytes: u64|
+         -> Vec<f32> {
+            let readback = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: len_bytes,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut enc = device.create_command_encoder(&Default::default());
+            enc.copy_buffer_to_buffer(arc_buf, 0, &readback, 0, len_bytes);
+            queue.submit(std::iter::once(enc.finish()));
+            let slice = readback.slice(..);
+            slice.map_async(wgpu::MapMode::Read, |_| {});
+            let _ = device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(30)),
+            });
+            bytemuck::cast_slice(&slice.get_mapped_range().expect("arc readback mapped")).to_vec()
+        };
+        // Pixel position of a (hi, lo) pair point, mirroring the shader.
+        let px = |x: (f32, f32), y: (f32, f32)| -> (f32, f32) {
+            let axis_ndc = |(hi, lo): (f32, f32), axis: usize| {
+                let numerator = (hi - t.data_min[axis]) + (lo - t.data_min_lo[axis]);
+                let range = (t.data_max[axis] - t.data_min[axis])
+                    + (t.data_max_lo[axis] - t.data_min_lo[axis]);
+                let data_t = numerator / range;
+                let panel_t = t.data_to_panel_offset[axis] + data_t * t.data_to_panel_scale[axis];
+                panel_t * 2.0 - 1.0
+            };
+            (
+                axis_ndc(x, 0) / t.pixel_to_ndc[0],
+                axis_ndc(y, 1) / t.pixel_to_ndc[1],
+            )
+        };
+        let pair = crate::data::split_f64_to_f32_pair;
+        let mut prefixes = Vec::new();
+        for mode in [
+            LineInterpolation::Linear,
+            LineInterpolation::StepPre,
+            LineInterpolation::StepPost,
+            LineInterpolation::StepMid,
+        ] {
+            let (arc_buf, len_bytes) = r
+                .ensure_arc_prefix("stepped", "step_ax", "step_ay", &t, None, mode)
+                .expect("arc prefix")
+                .prefix;
+            let gpu = read(&device, &queue, &arc_buf, len_bytes);
+            assert_eq!(gpu.len(), n, "{mode:?}: length");
+
+            // Sequential CPU reference over the stepped pieces.
+            let mut acc = 0.0f32;
+            let mut reference = vec![0.0f32];
+            for i in 1..n {
+                if !ys[i - 1].is_finite() || !ys[i].is_finite() {
+                    reference.push(acc);
+                    continue;
+                }
+                let (xa, ya, xb, yb) = (pair(xs[i - 1]), pair(ys[i - 1]), pair(xs[i]), pair(ys[i]));
+                let xm = ((xa.0 + xb.0) * 0.5, (xa.1 + xb.1) * 0.5);
+                let pieces: Vec<((f32, f32), (f32, f32), (f32, f32), (f32, f32))> = match mode {
+                    LineInterpolation::Linear => vec![(xa, ya, xb, yb)],
+                    LineInterpolation::StepPre => vec![(xa, ya, xa, yb), (xa, yb, xb, yb)],
+                    LineInterpolation::StepPost => vec![(xa, ya, xb, ya), (xb, ya, xb, yb)],
+                    LineInterpolation::StepMid => {
+                        vec![(xa, ya, xm, ya), (xm, ya, xm, yb), (xm, yb, xb, yb)]
+                    }
+                };
+                for (x0, y0, x1, y1) in pieces {
+                    let a = px(x0, y0);
+                    let b = px(x1, y1);
+                    acc += ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+                }
+                reference.push(acc);
+            }
+            let total = reference.last().copied().unwrap_or(0.0).max(1.0);
+            for (i, (g, c)) in gpu.iter().zip(reference.iter()).enumerate() {
+                assert!(
+                    (g - c).abs() <= total * 2e-4 + 0.05,
+                    "{mode:?}: arc[{i}] gpu={g} cpu={c} (total {total})"
+                );
+            }
+            prefixes.push((mode, gpu));
+        }
+        // A stepped path is longer than the chord, and every mode has its own
+        // cached result for the same columns and transform.
+        let linear_total = prefixes[0].1[n - 1];
+        for (mode, gpu) in &prefixes[1..] {
+            assert!(
+                gpu[n - 1] > linear_total * 1.05,
+                "{mode:?}: stepped total {} should exceed the linear {linear_total}",
+                gpu[n - 1]
+            );
+        }
+        assert_eq!(
+            r.arc_cache["stepped"].len(),
+            4,
+            "one cached scan per interpolation mode"
+        );
+    }
+
     #[test]
     fn arc_prefix_cache_never_exceeds_limit_on_new_series_churn() {
         let Some((device, queue)) = crate::data_render::shared_device() else {
@@ -21939,8 +22791,15 @@ mod tests {
         for i in 0..=ARC_PREFIX_CACHE_LIMIT {
             let series_id = format!("arc-cache-series-{i}");
             assert!(
-                r.ensure_arc_prefix(&series_id, "arc_cache_x", "arc_cache_y", &t, None,)
-                    .is_some()
+                r.ensure_arc_prefix(
+                    &series_id,
+                    "arc_cache_x",
+                    "arc_cache_y",
+                    &t,
+                    None,
+                    LineInterpolation::Linear,
+                )
+                .is_some()
             );
             assert!(
                 r.arc_cache.len() <= ARC_PREFIX_CACHE_LIMIT,
@@ -21993,6 +22852,9 @@ mod tests {
                     line_style: crate::line::LineStylePreset::Dash,
                     line_color: Color::new(1.0, 1.0, 1.0, 1.0),
                     line_width: 2.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         };
@@ -22051,7 +22913,14 @@ mod tests {
         let mut changed_transform = base_transform;
         changed_transform.pixel_to_ndc[0] *= 0.5;
         let changed = r
-            .ensure_arc_prefix("arc-cache", "cache_x", "cache_y", &changed_transform, None)
+            .ensure_arc_prefix(
+                "arc-cache",
+                "cache_x",
+                "cache_y",
+                &changed_transform,
+                None,
+                LineInterpolation::Linear,
+            )
             .expect("changed geometry arc result");
         let changed_arc = Arc::clone(&changed.prefix.0);
         assert!(
@@ -22061,7 +22930,14 @@ mod tests {
         drop(changed);
 
         let changed_again = r
-            .ensure_arc_prefix("arc-cache", "cache_x", "cache_y", &changed_transform, None)
+            .ensure_arc_prefix(
+                "arc-cache",
+                "cache_x",
+                "cache_y",
+                &changed_transform,
+                None,
+                LineInterpolation::Linear,
+            )
             .expect("cached changed geometry arc result");
         assert!(
             Arc::ptr_eq(&changed_arc, &changed_again.prefix.0),
@@ -22071,7 +22947,14 @@ mod tests {
         let mut style_only = changed_transform;
         style_only.style_params[0][0] = 123.0;
         let style_only_result = r
-            .ensure_arc_prefix("arc-cache", "cache_x", "cache_y", &style_only, None)
+            .ensure_arc_prefix(
+                "arc-cache",
+                "cache_x",
+                "cache_y",
+                &style_only,
+                None,
+                LineInterpolation::Linear,
+            )
             .expect("style-only arc result");
         assert!(
             Arc::ptr_eq(&changed_arc, &style_only_result.prefix.0),
@@ -22081,7 +22964,14 @@ mod tests {
         r.upsert_column("cache_y", &col_f64(vec![0.0, 0.8, 0.25]))
             .unwrap();
         let changed_data = r
-            .ensure_arc_prefix("arc-cache", "cache_x", "cache_y", &base_transform, None)
+            .ensure_arc_prefix(
+                "arc-cache",
+                "cache_x",
+                "cache_y",
+                &base_transform,
+                None,
+                LineInterpolation::Linear,
+            )
             .expect("changed data generation arc result");
         assert!(
             !Arc::ptr_eq(&changed_arc, &changed_data.prefix.0),
@@ -22822,6 +23712,9 @@ mod tests {
                     line_style: LineStylePreset::Solid,
                     line_color: Color::new(1.0, 0.0, 0.0, 0.5),
                     line_width: 5.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         };
@@ -23049,6 +23942,9 @@ mod tests {
                     line_style: LineStylePreset::Solid,
                     line_color: Color::new(1.0, 0.0, 0.0, 1.0),
                     line_width: 5.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         };
@@ -23284,6 +24180,9 @@ mod tests {
                     line_style: crate::line::LineStylePreset::Solid,
                     line_color: Color::new(1.0, 1.0, 1.0, 1.0),
                     line_width: 1.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         };
@@ -23391,6 +24290,9 @@ mod tests {
                     line_style: crate::line::LineStylePreset::Dash,
                     line_color: Color::new(1.0, 1.0, 1.0, 1.0),
                     line_width: 1.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         };
@@ -23503,6 +24405,9 @@ mod tests {
                     line_style: crate::line::LineStylePreset::Solid,
                     line_color: Color::new(0.4, 0.7, 1.0, 1.0),
                     line_width: 2.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         };
@@ -23689,6 +24594,9 @@ mod tests {
                     line_style: crate::line::LineStylePreset::Solid,
                     line_color: Color::new(1.0, 0.0, 0.0, 1.0),
                     line_width: 1.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         }];
@@ -23781,6 +24689,9 @@ mod tests {
                     line_style: LineStylePreset::Solid,
                     line_width: 2.0,
                     line_color: Color::new(1.0, 0.0, 0.0, 1.0),
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         }];
@@ -23889,6 +24800,9 @@ mod tests {
                     line_style: crate::line::LineStylePreset::Solid,
                     line_color: Color::new(1.0, 0.0, 0.0, 1.0),
                     line_width: 1.5,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         }];
@@ -23981,6 +24895,9 @@ mod tests {
                     line_style: crate::line::LineStylePreset::Solid,
                     line_color: Color::new(1.0, 0.0, 0.0, 1.0),
                     line_width: 1.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         }];
@@ -24049,6 +24966,9 @@ mod tests {
                     line_style: crate::line::LineStylePreset::Solid,
                     line_color: Color::new(1.0, 0.0, 0.0, 1.0),
                     line_width: 1.5,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         };
@@ -24203,6 +25123,9 @@ mod tests {
                     line_style: crate::line::LineStylePreset::Dash, // [8, 4]
                     line_color: Color::new(1.0, 0.0, 0.0, 1.0),
                     line_width: 2.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
                 },
             },
         }];
