@@ -1,0 +1,20 @@
+[package]
+name = "figgy-playground"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+description = "Interactive debug bench for every figgy chart family (winit + egui host)."
+
+# Standalone debug app: not a workspace member, not a renderer feature, and it
+# changes nothing in the library crates. It only consumes their public API.
+[workspace]
+
+[dependencies]
+renderer = { package = "figgy-renderer", path = "../../crates/renderer" }
+wgpu = "30"
+winit = "0.30.13"
+egui = "0.36"
+egui-wgpu = "0.36"
+egui-winit = { version = "0.36", default-features = false, features = ["clipboard", "x11", "wayland"] }
+pollster = "1.0"
