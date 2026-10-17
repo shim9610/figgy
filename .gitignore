@@ -1,5 +1,5 @@
-# Cargo build output
-/target/
+# Cargo build output and test renders written under any crate
+target/
 
 # Python bytecode from the ci/ scripts
 __pycache__/
