@@ -309,6 +309,18 @@ impl Default for BoxPlotChart {
     }
 }
 impl BoxPlotChart {
+    /// The layer that receives pointer interaction. Bounded charts have no
+    /// overlays, so an `Overlay` value reads as `Base`.
+    pub fn active_layer(&self) -> crate::LayerRef {
+        self.active_layer.bounded()
+    }
+    /// Set the interaction target layer and return the stored value
+    /// (`Overlay` is stored as `Base`). A change clears
+    /// `decorations.selected`, which names an element of the previous
+    /// layer's pointer route; the data selection is kept.
+    pub fn set_active_layer(&mut self, layer: crate::LayerRef) -> crate::LayerRef {
+        crate::layer::set_bounded_active_layer(&mut self.active_layer, &mut self.decorations, layer)
+    }
     pub fn resolved_title(&self) -> crate::BoundedTitleOptions {
         self.chart_title.clone().unwrap_or_else(|| {
             crate::BoundedTitleOptions::from_legacy(

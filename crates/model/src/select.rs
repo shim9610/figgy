@@ -259,12 +259,16 @@ impl HitMap<Config> {
     /// The inactive layers' elements are not registered at all, so a click
     /// on them passes through to the active layer; the base panel's Y axes
     /// are therefore absent while an overlay or the annotation layer is
-    /// active. The annotation layer registers no items of its own yet.
+    /// active. For `Annotations` the map holds the shared elements only:
+    /// the annotation items live in their own renderer-measured
+    /// `HitMap<AnnotationLayer>`, and the pointer route (the renderer's
+    /// `ChartView::hit_test_active_layer`) tests them on top of this map
+    /// while that layer is active and skips them on every other layer.
     ///
     /// The set depends only on the active layer, the overlay count and the
     /// active overlay's placement, so a host rebuilds the map when any of
-    /// them changes; `HitId`s from a previous
-    /// map are not valid in the new one.
+    /// them changes; `HitId`s from a previous map are not valid in the new
+    /// one.
     pub fn for_active_layer(cfg: &Config) -> Self {
         let layer = cfg.active_layer();
         if layer == LayerRef::Base {

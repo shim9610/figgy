@@ -34,6 +34,34 @@ impl LayerRef {
     pub fn is_base(&self) -> bool {
         matches!(self, Self::Base)
     }
+
+    /// The layer as a bounded chart reads it. Bounded charts have no
+    /// overlays, so any `Overlay` index falls back to `Base`.
+    pub fn bounded(self) -> Self {
+        match self {
+            Self::Overlay(_) => Self::Base,
+            layer => layer,
+        }
+    }
+}
+
+/// The shared `set_active_layer` of the bounded chart families: store the
+/// layer with the overlay fallback and, when it actually changes, clear the
+/// decoration selection, which names an element of the previous layer's
+/// pointer route (a decoration below the annotations, or an
+/// `Annotation(index)`). The data selection lives in the chart's own fields
+/// and is kept, as `picked_*` is on Cartesian charts.
+pub(crate) fn set_bounded_active_layer(
+    active: &mut LayerRef,
+    decorations: &mut crate::DecorationLayout,
+    layer: LayerRef,
+) -> LayerRef {
+    let layer = layer.bounded();
+    if active.bounded() != layer {
+        decorations.selected = None;
+    }
+    *active = layer;
+    layer
 }
 
 /// The dedicated annotation layer of a chart document.
@@ -159,6 +187,87 @@ mod tests {
         assert!(LayerRef::Base.is_base());
         assert!(!LayerRef::Overlay(0).is_base());
         assert!(!LayerRef::Annotations.is_base());
+    }
+
+    #[test]
+    fn bounded_layers_fall_back_and_clear_the_decoration_selection_on_change() {
+        use crate::decoration::DecorationId;
+        assert_eq!(LayerRef::Overlay(0).bounded(), LayerRef::Base);
+        assert_eq!(LayerRef::Annotations.bounded(), LayerRef::Annotations);
+        let mut active = LayerRef::Base;
+        let mut decorations = crate::DecorationLayout {
+            selected: Some(DecorationId::Legend),
+            ..Default::default()
+        };
+        // An overlay is stored as `Base`, which is no change: the selection stays.
+        assert_eq!(
+            set_bounded_active_layer(&mut active, &mut decorations, LayerRef::Overlay(2)),
+            LayerRef::Base
+        );
+        assert_eq!(decorations.selected, Some(DecorationId::Legend));
+        assert_eq!(
+            set_bounded_active_layer(&mut active, &mut decorations, LayerRef::Annotations),
+            LayerRef::Annotations
+        );
+        assert_eq!(active, LayerRef::Annotations);
+        assert_eq!(decorations.selected, None);
+        decorations.selected = Some(DecorationId::Annotation(1));
+        set_bounded_active_layer(&mut active, &mut decorations, LayerRef::Annotations);
+        assert_eq!(decorations.selected, Some(DecorationId::Annotation(1)));
+        set_bounded_active_layer(&mut active, &mut decorations, LayerRef::Base);
+        assert_eq!(decorations.selected, None);
+        // A raw out-of-range value read from JSON counts as `Base`.
+        active = LayerRef::Overlay(5);
+        decorations.selected = Some(DecorationId::Legend);
+        set_bounded_active_layer(&mut active, &mut decorations, LayerRef::Base);
+        assert_eq!(active, LayerRef::Base);
+        assert_eq!(decorations.selected, Some(DecorationId::Legend));
+    }
+
+    // Every bounded family stores its layer through the shared setter, reads
+    // an `Overlay` as `Base`, and keeps `Annotations` through JSON.
+    #[test]
+    fn bounded_charts_set_and_read_their_active_layer() {
+        use crate::decoration::DecorationId;
+        macro_rules! check {
+            ($chart:ty, $data:expr) => {{
+                let mut c = <$chart>::default();
+                let select_data: fn(&mut $chart) = $data;
+                assert_eq!(c.active_layer(), LayerRef::Base);
+                c.active_layer = LayerRef::Overlay(1);
+                assert_eq!(c.active_layer(), LayerRef::Base);
+                c.decorations.selected = Some(DecorationId::Annotation(0));
+                select_data(&mut c);
+                let with_data = c.clone();
+                assert_eq!(c.set_active_layer(LayerRef::Annotations), LayerRef::Annotations);
+                assert_eq!(c.decorations.selected, None);
+                let mut expected = with_data.clone();
+                expected.active_layer = LayerRef::Annotations;
+                expected.decorations.selected = None;
+                assert_eq!(c, expected, "only the layer and the decoration selection change");
+                #[cfg(feature = "serde")]
+                {
+                    let json = serde_json::to_value(&c).unwrap();
+                    assert_eq!(json["active_layer"], serde_json::json!("Annotations"));
+                    let back: $chart = serde_json::from_value(json).unwrap();
+                    assert_eq!(back, c);
+                    let mut legacy = serde_json::to_value(<$chart>::default()).unwrap();
+                    assert!(legacy.get("active_layer").is_none());
+                    legacy["active_layer"] = serde_json::json!({ "Overlay": 0 });
+                    let read: $chart = serde_json::from_value(legacy).unwrap();
+                    assert_eq!(read.active_layer(), LayerRef::Base);
+                }
+            }};
+        }
+        check!(crate::radial::RadialChart, |c| {
+            c.interaction.selected = Some(crate::radial::RadialTarget::main(0))
+        });
+        check!(crate::categorical::CategoricalChart, |c| {
+            c.selected = Some(crate::categorical::CategoryBarTarget::new("a", "s"))
+        });
+        check!(crate::boxplot::BoxPlotChart, |c| {
+            c.selected = Some(crate::boxplot::BoxPlotTarget::new("a", "s"))
+        });
     }
 
     #[test]

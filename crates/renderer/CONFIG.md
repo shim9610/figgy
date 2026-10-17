@@ -115,7 +115,7 @@ The layer fields shared by every chart family (`Config`, `RadialChart`,
 
 | Field | Meaning |
 |---|---|
-| `active_layer: LayerRef` | The layer that receives pointer interaction: `Base` (default, omitted from JSON), `Overlay(index)` or `Annotations`. Decides which layer's elements the hit map registers (`HitMap::for_active_layer`); element selection (`selected`, `picked_points`, `picked_data`) lives one level below it. An `Overlay` index past `overlays` reads and is stored as `Base`; bounded charts have no overlays, so `Overlay` falls back to `Base` there. |
+| `active_layer: LayerRef` | The layer that receives pointer interaction: `Base` (default, omitted from JSON), `Overlay(index)` or `Annotations`. Decides which layer's elements the hit map registers (`HitMap::for_active_layer`); with `Annotations` the annotation items are tested on top of the chart's own hit map and on every other layer clicks pass through them (`ChartView::hit_test_active_layer`, `BoundedAnnotationFrame::hit_test_active_layer`). Element selection (`selected`, `picked_points`, `picked_data`) lives one level below it and a layer change clears it, the data selection excepted. An `Overlay` index past `overlays` reads and is stored as `Base`; bounded charts have no overlays, so `Overlay` falls back to `Base` there (`active_layer()` / `set_active_layer` on `RadialChart`, `CategoricalChart` and `BoxPlotChart`, the setter clearing `decorations.selected` on a change). |
 | `annotations: AnnotationLayer { visible, items }` | The dedicated annotation layer: `items` in draw order, composited as an underlay below the data (spans) and an overlay above every decoration (everything else) but toggled, selected and edited as one unit. `visible = false` skips the two composite draws without re-rasterizing anything. The default (visible, no items) is omitted from JSON, and so is an empty `items`. |
 
 Overlay elements are addressed as `DecorationId::Overlay { layer, inner }`
@@ -651,7 +651,7 @@ pub struct Config {
 
 | 필드 | 의미 |
 |---|---|
-| `active_layer: LayerRef` | 포인터 상호작용을 받는 레이어. `Base`(기본값, JSON에서 생략), `Overlay(index)`, `Annotations` 중 하나다. 히트 맵에 어느 레이어의 요소를 등록할지 정하며(`HitMap::for_active_layer`), 요소 선택(`selected`, `picked_points`, `picked_data`)은 그 아래 단계다. `overlays` 범위 밖의 `Overlay` 인덱스는 `Base`로 읽고 저장한다. bounded 차트에는 오버레이가 없으므로 `Overlay`는 `Base`로 되돌린다. |
+| `active_layer: LayerRef` | 포인터 상호작용을 받는 레이어. `Base`(기본값, JSON에서 생략), `Overlay(index)`, `Annotations` 중 하나다. 히트 맵에 어느 레이어의 요소를 등록할지 정하며(`HitMap::for_active_layer`), `Annotations`일 때는 주석 항목을 차트 자체 히트 맵 위에서 먼저 검사하고 다른 레이어에서는 클릭이 주석을 통과한다(`ChartView::hit_test_active_layer`, `BoundedAnnotationFrame::hit_test_active_layer`). 요소 선택(`selected`, `picked_points`, `picked_data`)은 그 아래 단계이고 레이어가 바뀌면 데이터 선택을 뺀 요소 선택을 지운다. `overlays` 범위 밖의 `Overlay` 인덱스는 `Base`로 읽고 저장한다. bounded 차트에는 오버레이가 없으므로 `Overlay`는 `Base`로 되돌린다(`RadialChart`, `CategoricalChart`, `BoxPlotChart`의 `active_layer()` / `set_active_layer`, 바뀌면 세터가 `decorations.selected`를 지운다). |
 | `annotations: AnnotationLayer { visible, items }` | 전용 주석 층. `items`를 그리는 순서대로 담으며, 구간(span)은 데이터 아래의 underlay에, 나머지는 모든 장식 위의 overlay에 합성하되 켜고 끄기·선택·편집은 한 단위로 다룬다. `visible = false`는 합성 두 번만 건너뛰고 어떤 래스터도 다시 만들지 않는다. 기본값(보임, 항목 없음)과 빈 `items`는 JSON에서 생략한다. |
 
 오버레이 요소는 `DecorationId::Overlay { layer, inner }`(`overlay_<n>:<inner id>`, 아래 `OverlayLayer` 참고),

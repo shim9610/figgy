@@ -12369,6 +12369,30 @@ impl ChartView {
         &self.annotation_map
     }
 
+    /// The pointer route of the active layer at `position`: while
+    /// `config.active_layer()` is `Annotations` (and the layer is shown) the
+    /// annotation items of this view sit on top of `hit_map`, otherwise only
+    /// `hit_map` answers and clicks pass through the items. `config` is the
+    /// config the view was last refreshed with (the display config of a
+    /// scaled view) and `hit_map` its [`crate::HitMap::for_active_layer`] map, so
+    /// both maps measure in the same pixels.
+    pub fn hit_test_active_layer(
+        &self,
+        config: &Config,
+        hit_map: &crate::HitMap,
+        position: [f32; 2],
+    ) -> Option<crate::annotation::LayerHit> {
+        self.annotation_map
+            .route(config.active_layer(), &config.annotations, position, || {
+                hit_map.hit_test(
+                    config,
+                    &crate::CpuTextMeasure::for_style(&config.draw_style),
+                    position[0],
+                    position[1],
+                )
+            })
+    }
+
     /// The annotation whose selection box the overlay currently carries, as
     /// last passed to [`Renderer::refresh_annotations`].
     pub fn annotation_selected(&self) -> Option<usize> {

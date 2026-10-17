@@ -909,3 +909,54 @@ fn a_subplot_document_is_displayed_and_picked_as_one_document() {
     assert_eq!(picked.series_id, "s1");
     assert_eq!(picked.point_index, 3);
 }
+
+// The pointer route of #12 on a subplot document: the annotation items live
+// in the parent's area and answer only while `Annotations` is active; with a
+// subplot layer active the route passes through them and the subplot's own
+// elements answer in its area.
+#[test]
+fn the_annotation_route_stays_in_the_parent_area_of_a_subplot_document() {
+    use crate::annotation::{Anchor, Annotation, AnnotationKind};
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut config = subplot_config();
+    config.annotations.items = vec![Annotation::new(AnnotationKind::Text {
+        anchor: Anchor::Ratio { x: 0.4, y: 0.3 },
+        text: RichText::plain("note", Color::BLACK, 11.0, ""),
+        box_style: Some(Default::default()),
+    })];
+    let r = renderer();
+    let view = r
+        .create_chart_view(&Chart::new(config.clone()), UPPER)
+        .unwrap();
+    let map = view.annotation_map();
+    let note = map.bounds(map.find(0).unwrap()).unwrap();
+    let note = [note.x + note.width / 2.0, note.y + note.height / 2.0];
+    assert!(
+        note[1] < UPPER.height as f32,
+        "the item is in the parent's area"
+    );
+    let subplot = config.overlay_data_area(0).unwrap().0;
+    let inside = [
+        subplot.x as f32 + subplot.width as f32 / 2.0,
+        subplot.y as f32 + subplot.height as f32 / 2.0,
+    ];
+    let name = |hits: &HitMap, hit: Option<crate::LayerHit>| match hit {
+        Some(crate::LayerHit::Annotation { index, .. }) => format!("annotation_{index}"),
+        Some(crate::LayerHit::Element(id)) => hits.get(id).unwrap().element_id(),
+        None => "none".into(),
+    };
+
+    config.set_active_layer(LayerRef::Annotations);
+    let hits = HitMap::for_active_layer(&config);
+    let route = |p| name(&hits, view.hit_test_active_layer(&config, &hits, p));
+    assert_eq!(route(note), "annotation_0");
+    assert_eq!(route(inside), "none", "the subplot has no annotation items");
+
+    config.set_active_layer(LayerRef::Overlay(0));
+    let hits = HitMap::for_active_layer(&config);
+    let route = |p| name(&hits, view.hit_test_active_layer(&config, &hits, p));
+    assert_ne!(route(note), "annotation_0", "the click passes through");
+    assert_eq!(route(inside), "overlay_0:data_area");
+}
