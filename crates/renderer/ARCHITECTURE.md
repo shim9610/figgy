@@ -299,7 +299,7 @@ the sole issuer of its checked revisions:
 | State | Current trigger/handling |
 |---|---|
 | renderer `desired` revision | Any accepted visible chart edit, a referenced column replacement, or synchronized font registration requires a draw |
-| renderer `raster` revision | A config edit that changes the axis chrome (chart area, axes, title, grid, legend, colourbar, draw style), a series change, or a font registration requires `refresh_axis` before drawing. Selection (`picked_*`), `active_layer` and `annotations` edits and identical replacements do not touch it; the classification is `raster_config_equal`, tested field by field by the SSOT invalidation matrix |
+| renderer `raster` revision | A config edit that changes the axis chrome (chart area, axes, title, grid, legend, colourbar, draw style, any `overlays` field), a series change, or a font registration requires `refresh_axis` before drawing. Selection (`picked_*`), `active_layer` and `annotations` edits and identical replacements do not touch it, except that a layer change which clears an element selection advances it; the classification is `raster_config_equal`, tested field by field by the SSOT invalidation matrix. A layered view refreshes only the panels whose internal config changed |
 | host `view_dirty` | Surface/DPR preview geometry changed; refresh raster and draw |
 | host `redraw_pending` | Host-only surface state such as clear color changed; draw without duplicating chart state |
 
@@ -383,6 +383,13 @@ export_panel_rgba_async(chart, &[SeriesConfig], scale).await:
         ↓
     Caller decides: std::fs::write / clipboard / network / ...
 ```
+
+`export_document_rgba_async` follows the same pipeline for a layered document:
+the one temporary `ChartView` holds a panel per layer, `Config::expand()` turns
+the scaled document into one draw item per panel, and the panels composite in
+layer order into the same offscreen texture. `export_panel_*` keeps only the
+base panel of that expansion; for a document without overlays the two images
+are byte-identical.
 
 ---
 
@@ -538,7 +545,7 @@ pool 컬럼 (x, y) ──┐                        Transform uniform (96 B writ
 | 상태 | 다시 그리는 조건과 처리 |
 |---|---|
 | 렌더러의 `desired` 리비전 | 표시 상태 변경, 참조 컬럼 교체, 동기화된 폰트 등록 시 다시 그린다. |
-| 렌더러의 `raster` 리비전 | 축 장식에 영향을 주는 설정 편집(차트 영역, 축, 제목, 그리드, 범례, 색상 막대, 그리기 스타일), 시리즈 변경, 폰트 등록이 있으면 그리기 전에 `refresh_axis`를 호출한다. 선택(`picked_*`), `active_layer`, `annotations` 편집과 동일한 설정 교체는 이 리비전을 바꾸지 않는다. 분류는 `raster_config_equal`이며 SSOT 무효화 매트릭스가 필드별로 검사한다. |
+| 렌더러의 `raster` 리비전 | 축 장식에 영향을 주는 설정 편집(차트 영역, 축, 제목, 그리드, 범례, 색상 막대, 그리기 스타일, `overlays`의 모든 필드), 시리즈 변경, 폰트 등록이 있으면 그리기 전에 `refresh_axis`를 호출한다. 선택(`picked_*`), `active_layer`, `annotations` 편집과 동일한 설정 교체는 이 리비전을 바꾸지 않는다. 단, 레이어 변경이 요소 선택을 지우면 올린다. 분류는 `raster_config_equal`이며 SSOT 무효화 매트릭스가 필드별로 검사한다. 레이어가 있는 뷰는 내부 설정이 바뀐 패널만 다시 래스터한다. |
 | 호스트의 `view_dirty` | 화면 크기·DPR로 미리보기 배치가 바뀌면 축 이미지를 갱신하고 다시 그린다. |
 | 호스트의 `redraw_pending` | 배경색 등 화면 상태가 바뀌면 차트 설정을 복제하지 않고 다시 그린다. |
 
@@ -601,6 +608,8 @@ export_panel_rgba_async(chart, &[SeriesConfig], scale).await:
     premul→straight α 변환, 패딩 행 제거 (채널 스왑 없음 — 타겟이 이미 RGBA)
         ↓
     RasterImage { width, height, rgba: Vec<u8> }   ← API 반환
+    (export_document_rgba_async: 레이어마다 한 패널을 같은 텍스처에 순서대로 합성.
+     export_panel_*는 기본 패널만 그리며, 오버레이가 없으면 두 결과는 바이트 단위로 같다)
         ↓
     encode_png(&img) → Vec<u8>                      ← PNG 바이트
         ↓

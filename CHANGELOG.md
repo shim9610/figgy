@@ -9,6 +9,56 @@ at the time. The first crates.io publication is recorded below.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
+## Unreleased — overlay layers
+
+- `Config` gains `overlays: Vec<OverlayLayer>` (issue #11, work items 1–4):
+  secondary Y axes drawn on the right side of the shared data area, each
+  scaling the series it lists. `OverlayLayer { y_axis, series, legend }` holds
+  only what may differ per layer; the chart area, both X axes, the title, the
+  grid, the merged legend, the colourbar and `draw_style` exist once on the
+  parent. The field is `serde(default)` and omitted when empty, so existing
+  documents parse and serialize byte-identically. `Config::expand()` is the
+  one expansion path into internal single-layer panels that share the group
+  data area (`Expansion { panels, data_area }`); `Config::margins()` now
+  reports the group right band, `fit_to_data_area` / the data-area drag write
+  it through the parent axis, and `Config::scaled` scales overlay axes and
+  legends. `Config::layer_of_series`, `validate_overlays`,
+  `active_layer()` (out-of-range fallback) and `set_active_layer` complete the
+  model API.
+- Interaction target layer: `Renderer::set_active_layer` / `active_layer`
+  (also on `WindowedRenderer` and the WASM wrapper as JSON) store the layer,
+  clear the element selection on a change and recover an out-of-range index to
+  `Base` through every registry entry point. `HitMap::for_active_layer(cfg)`
+  registers the shared elements first and the active overlay's
+  `OverlayAxisElement` / `OverlayAxisLabelElement` / `OverlayAxisTitleElement` /
+  `OverlayLegendElement` last (`overlay_<n>:…` ids); their drags write back
+  into `overlays[n]` only. GPU picking addresses the active layer's panel and
+  series. The WASM wrapper rebuilds its hit map when the layer or overlay
+  count changes and adds `auto_fit_overlay_y`.
+- Rendering: `ChartView` holds one panel per layer (`overlay_count`,
+  `layer_raster_generations`), `create_chart_view` / `refresh_axis*` keep the
+  panel set in step with the document and re-rasterize only the panels whose
+  internal config changed, so a layer edit leaves the other layers' textures
+  intact and the cached view draws byte-identically to a fresh render.
+  `prepare`, `prepare_registered` and export expand a layered item into one
+  draw item per panel; picked highlights keep item order. Render warnings are
+  merged with `WarningAxis::OverlayY(index)`. `ChartViewState::overlay_y`
+  carries one Y range per overlay so one linked range edit moves every layer
+  atomically. `Series` is now `Copy`.
+- Export: `export_document_rgba_async` / `export_document_png_bytes_async`
+  (with `_with_clear` and blocking native variants) render the whole document;
+  `export_panel_*` stay and render the base panel. The WASM `export_png`
+  exports the document. New native example `overlay_axes`.
+- Limits by design: overlays own no X axis, nest one level, exclude bounded
+  charts, and a nonresident streaming series listed by an overlay is rejected
+  (`InvalidSeriesConfig`); the stream request paths reject a document with
+  overlays (`InvalidConfig { field: "overlays" }`).
+- Rust migration: exhaustive `Config` literals need `overlays` (or
+  `..Default::default()`), `ChartViewState` literals need `overlay_y`, and
+  exhaustive matches on `WarningAxis` need `OverlayY`. Released with the next
+  renderer/model minor versions together with the other unreleased entries.
+  See the interaction guide, the configuration reference and the WASM guide.
+
 ## Unreleased — layer and annotation foundation
 
 - Add the SSOT shape shared by the planned overlay layers (secondary Y axes,

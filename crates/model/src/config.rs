@@ -1,7 +1,7 @@
 use crate::color::Color;
 use crate::colormap::ColorMap;
 use crate::format::LabelFormat;
-use crate::layer::{AnnotationLayer, LayerRef};
+use crate::layer::{AnnotationLayer, LayerRef, OverlayLayer};
 use crate::layout::{ChartArea, Side};
 use crate::line::LineStylePreset;
 use crate::text::RichText;
@@ -688,9 +688,21 @@ pub struct Config {
         serde(default, skip_serializing_if = "DrawStyle::is_precise")
     )]
     pub draw_style: DrawStyle,
+    /// Overlay layers: secondary Y axes drawn on the right side of the shared
+    /// data area, each scaling the series it lists. Empty (key absent in
+    /// JSON) is the single-layer chart every document had before the field.
+    /// The renderer expands the document into one internal panel per layer
+    /// with [`Config::expand`]; see [`OverlayLayer`].
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
+    pub overlays: Vec<OverlayLayer>,
     /// The layer that receives pointer interaction. `Base` (default, key
     /// absent in JSON) is today's single-layer behavior. Drawn pixels do not
     /// depend on this field; only hit-map registration and selection chrome do.
+    /// An `Overlay` index past the end of `overlays` reads as `Base`
+    /// ([`Config::active_layer`]).
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "LayerRef::is_base")
@@ -744,6 +756,18 @@ impl Config {
         self.legend.offset_y *= s;
         self.legend.padding *= s;
         scale_rich_text(&mut self.legend.content, s);
+
+        // Overlay layers carry their own axis and optional legend; both are
+        // pixel-dimensioned like the parent's and scale by the same rules.
+        for overlay in &mut self.overlays {
+            scale_axis_in_place(&mut overlay.y_axis, s);
+            if let Some(legend) = overlay.legend.as_mut() {
+                legend.offset_x *= s;
+                legend.offset_y *= s;
+                legend.padding *= s;
+                scale_rich_text(&mut legend.content, s);
+            }
+        }
 
         if let Some(picked_points) = self.picked_points.as_mut() {
             picked_points.ring_width_px *= s;
@@ -1001,6 +1025,7 @@ mod draw_style_serde_tests {
         let json = default_config_json();
         assert!(json.get("active_layer").is_none(), "{json}");
         assert!(json.get("annotations").is_none(), "{json}");
+        assert!(json.get("overlays").is_none(), "{json}");
         let cfg: Config = serde_json::from_value(json).expect("pre-layer document parses");
         assert_eq!(cfg.active_layer, LayerRef::Base);
         assert_eq!(cfg.annotations, AnnotationLayer::default());
@@ -1008,9 +1033,16 @@ mod draw_style_serde_tests {
         let mut cfg = default_config();
         cfg.active_layer = LayerRef::Overlay(1);
         cfg.annotations.visible = false;
+        cfg.overlays.push(crate::layer::OverlayLayer {
+            series: vec!["b".into()],
+            ..Default::default()
+        });
+        cfg.overlays.push(crate::layer::OverlayLayer::default());
         let json = serde_json::to_value(&cfg).unwrap();
         assert_eq!(json["active_layer"], serde_json::json!({ "Overlay": 1 }));
         assert_eq!(json["annotations"], serde_json::json!({ "visible": false }));
+        assert_eq!(json["overlays"].as_array().map(Vec::len), Some(2));
+        assert_eq!(json["overlays"][0]["series"], serde_json::json!(["b"]));
         let back: Config = serde_json::from_value(json).unwrap();
         assert_eq!(back, cfg);
 

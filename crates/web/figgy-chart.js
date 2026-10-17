@@ -2224,6 +2224,11 @@ export class FiggyChartElement extends HTMLElement {
   remove_series(seriesId) { return this.#mutateChart("remove_series", seriesId); }
   auto_fit_x(column, padding) { return this.#mutateChart("auto_fit_x", column, padding); }
   auto_fit_y(column, padding) { return this.#mutateChart("auto_fit_y", column, padding); }
+  auto_fit_overlay_y(layer, column, padding) {
+    return this.#mutateChart("auto_fit_overlay_y", layer, column, padding);
+  }
+  set_active_layer(json) { return JSON.parse(this.#mutateChart("set_active_layer", json)); }
+  active_layer() { return JSON.parse(this.#kernelForCall().active_layer()); }
   auto_fit_colorbar(padding) { return this.#mutateChart("auto_fit_colorbar", padding); }
   async auto_fit_all(padding) {
     const kernel = this.#kernelForCall();

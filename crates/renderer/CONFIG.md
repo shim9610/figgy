@@ -26,6 +26,7 @@ pub struct Config {
     pub picked_data: Option<DataSelectionsConfig>,
     pub colorbar: Option<ColorBarOptions>,   // the colourbar AND the chart's z scale
     pub draw_style: DrawStyle,
+    pub overlays: Vec<OverlayLayer>,         // secondary right Y axes, each scaling the series it lists
     pub active_layer: LayerRef,              // interaction target layer; `Base` = today's behavior
     pub annotations: AnnotationLayer,        // dedicated annotation layer (visibility; items follow)
 }
@@ -114,14 +115,48 @@ The layer foundation shared by every chart family (`Config`, `RadialChart`,
 
 | Field | Meaning |
 |---|---|
-| `active_layer: LayerRef` | The layer that receives pointer interaction: `Base` (default, omitted from JSON), `Overlay(index)` or `Annotations`. Decides which layer's elements the hit map registers; element selection (`selected`, `picked_points`, `picked_data`) lives one level below it. Bounded charts have no overlays, so `Overlay` falls back to `Base` there. |
+| `active_layer: LayerRef` | The layer that receives pointer interaction: `Base` (default, omitted from JSON), `Overlay(index)` or `Annotations`. Decides which layer's elements the hit map registers (`HitMap::for_active_layer`); element selection (`selected`, `picked_points`, `picked_data`) lives one level below it. An `Overlay` index past `overlays` reads and is stored as `Base`; bounded charts have no overlays, so `Overlay` falls back to `Base` there. |
 | `annotations: AnnotationLayer { visible }` | The dedicated annotation layer, composited as an underlay below the data and an overlay above every decoration but toggled and edited as one unit. Default (visible, no items) is omitted from JSON. |
 
-Overlay layers, the selection API and the annotation items are tracked in
-issues #11 and #12; this foundation only reserves the SSOT shape so documents
-and hosts written now stay valid. Overlay elements are addressed as
+Overlay layers are the `overlays` field below; the annotation items are
+tracked in issue #12. Overlay elements are addressed as
 `DecorationId::Overlay { layer, inner }` (`overlay_<n>:<inner id>`) and
 annotation items as `DecorationId::Annotation(index)` (`annotation_<n>`).
+
+### `OverlayLayer` (`Config::overlays`)
+
+An overlay layer is a second Y axis drawn on the right side of the shared data
+area, scaling the series it lists. `overlays` is empty (key absent in JSON) for
+every document written before the field; a layered document is still one
+`Config`: the chart area, both X axes, the title, the grid, the merged legend,
+the colourbar and `draw_style` exist once, on the parent, and only the fields
+below exist per layer. Bounded charts (radial, categorical, box plot) have no
+overlays, and nonresident streaming rejects a document that has any.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `y_axis` | `AxisOptions` | The overlay's Y axis, drawn on the right. `min` / `max` / `scale` / `inverted` map the overlay's series to pixels; `out_margin + major_tick_length` is its band in the shared right margin, which is the widest band of the parent `right_y` and every overlay (`Config::margins`). Defaults to the default left-axis options (labels and line visible). |
+| `series` | `Vec<String>` | Ids of the series this layer scales, from the chart's single series list. An id may belong to at most one overlay (`Config::validate_overlays`); an id with no declaration is ignored; every other series belongs to the base layer. Omitted from JSON when empty. |
+| `legend` | `Option<Legend>` | A legend drawn in this layer's panel. `None` (omitted) keeps the single merged legend on the parent for every layer's series. |
+
+The renderer draws the document as one internal panel per layer through
+`Config::expand()`: the base panel is the parent without its overlays; each
+overlay panel keeps the parent's X range for its transform but draws no X axis,
+grid, title or colourbar, carries the overlay's range on a hidden left axis and
+draws the overlay's `y_axis` on the right. Every panel's margins are lifted to
+the group's, so `data_area()` is the same rectangle for all of them and for
+the parent; `Expansion { panels, data_area }` returns them. Expansion is pure,
+copies configuration only and never serializes the panels. A data-area edge
+drag or `fit_to_data_area` writes the group band through the parent's
+`right_y.out_margin` and pulls every overlay band inside it. `Config::scaled`
+scales the overlay axes and legends like the parent's. The parent's own
+`right_y` stays as written: hide its line and ticks when an overlay should have
+the right band to itself.
+
+`active_layer` addresses one layer for interaction (`Config::active_layer()`
+applies the out-of-range fallback, `set_active_layer` stores it) and
+`Config::layer_of_series(id)` answers which layer scales a series. See the
+interaction guide for the hit map, selection and export behaviour.
 
 ### `Legend`
 | Field | Type | Meaning |
@@ -398,6 +433,7 @@ pub struct Config {
     pub picked_data: Option<DataSelectionsConfig>,
     pub colorbar: Option<ColorBarOptions>,   // the colourbar AND the chart's z scale
     pub draw_style: DrawStyle,
+    pub overlays: Vec<OverlayLayer>,         // secondary right Y axes, each scaling the series it lists
     pub active_layer: LayerRef,              // interaction target layer; `Base` = today's behavior
     pub annotations: AnnotationLayer,        // dedicated annotation layer (visibility; items follow)
 }
@@ -474,13 +510,40 @@ pub struct Config {
 
 | 필드 | 의미 |
 |---|---|
-| `active_layer: LayerRef` | 포인터 상호작용을 받는 레이어. `Base`(기본값, JSON에서 생략), `Overlay(index)`, `Annotations` 중 하나다. 히트 맵에 어느 레이어의 요소를 등록할지 정하며, 요소 선택(`selected`, `picked_points`, `picked_data`)은 그 아래 단계다. bounded 차트에는 오버레이가 없으므로 `Overlay`는 `Base`로 되돌린다. |
+| `active_layer: LayerRef` | 포인터 상호작용을 받는 레이어. `Base`(기본값, JSON에서 생략), `Overlay(index)`, `Annotations` 중 하나다. 히트 맵에 어느 레이어의 요소를 등록할지 정하며(`HitMap::for_active_layer`), 요소 선택(`selected`, `picked_points`, `picked_data`)은 그 아래 단계다. `overlays` 범위 밖의 `Overlay` 인덱스는 `Base`로 읽고 저장한다. bounded 차트에는 오버레이가 없으므로 `Overlay`는 `Base`로 되돌린다. |
 | `annotations: AnnotationLayer { visible }` | 전용 주석 층. 데이터 아래의 underlay와 모든 장식 위의 overlay 두 장으로 합성하되 켜고 끄기와 편집은 한 단위로 다룬다. 기본값(보임, 항목 없음)은 JSON에서 생략한다. |
 
-오버레이 레이어, 선택 API, 주석 항목은 이슈 #11과 #12에서 다룬다. 이 기반은 지금 작성한
-문서와 호스트가 그대로 유효하도록 SSOT 형태만 예약한다. 오버레이 요소는
+오버레이 레이어는 아래 `overlays` 필드이고, 주석 항목은 이슈 #12에서 다룬다. 오버레이 요소는
 `DecorationId::Overlay { layer, inner }`(`overlay_<n>:<inner id>`), 주석 항목은
 `DecorationId::Annotation(index)`(`annotation_<n>`)로 식별한다.
+
+### `OverlayLayer` (`Config::overlays`)
+
+오버레이 레이어는 공유 데이터 영역의 오른쪽에 그리는 두 번째 Y 축이며, 자기가 나열한 시리즈를
+그 축으로 스케일한다. 이 필드가 생기기 전 문서는 모두 `overlays`가 비어 있다(JSON에서 키 생략).
+레이어가 있어도 문서는 하나의 `Config`다. 차트 영역, 두 X 축, 제목, 그리드, 합친 범례,
+색상 막대, `draw_style`은 부모에 한 번만 있고 아래 필드만 레이어마다 있다. bounded 차트
+(원형·범주형 막대·박스플롯)에는 오버레이가 없고, 비상주 스트리밍은 오버레이가 있는 문서를 거부한다.
+
+| 필드 | 타입 | 의미 |
+|---|---|---|
+| `y_axis` | `AxisOptions` | 오른쪽에 그리는 오버레이 Y 축. `min` / `max` / `scale` / `inverted`가 이 레이어 시리즈의 픽셀 변환을 정한다. `out_margin + major_tick_length`가 공유 오른쪽 여백 안의 띠이며, 오른쪽 여백은 부모 `right_y`와 모든 오버레이 띠 중 가장 넓은 값이다(`Config::margins`). 기본값은 왼쪽 축 기본 옵션(라벨·축선 보임)이다. |
+| `series` | `Vec<String>` | 이 레이어가 스케일하는 시리즈 id. 차트의 단일 시리즈 목록에서 참조한다. 한 id는 최대 한 오버레이에만 속할 수 있고(`Config::validate_overlays`), 선언이 없는 id는 무시하며, 나머지 시리즈는 기본 레이어에 속한다. 비어 있으면 JSON에서 생략한다. |
+| `legend` | `Option<Legend>` | 이 레이어 패널에 그리는 범례. `None`(생략)이면 부모의 합친 범례 하나가 모든 레이어의 시리즈를 나열한다. |
+
+렌더러는 `Config::expand()`로 문서를 레이어마다 하나의 내부 패널로 그린다. 기본 패널은
+오버레이를 뺀 부모이고, 오버레이 패널은 변환을 위해 부모의 X 범위를 유지하되 X 축·그리드·
+제목·색상 막대를 그리지 않으며, 숨긴 왼쪽 축에 오버레이 범위를 싣고 오른쪽에 오버레이
+`y_axis`를 그린다. 모든 패널의 여백을 그룹 여백으로 올리므로 `data_area()`는 모든 패널과
+부모에서 같은 사각형이며 `Expansion { panels, data_area }`로 돌려준다. 확장은 순수 함수이고
+설정만 복사하며 패널을 직렬화하지 않는다. 데이터 영역 가장자리 드래그나 `fit_to_data_area`는
+부모 `right_y.out_margin`으로 그룹 띠를 쓰고 모든 오버레이 띠를 그 안으로 맞춘다.
+`Config::scaled`는 오버레이 축과 범례도 부모와 같은 규칙으로 배율을 적용한다. 부모의
+`right_y`는 적힌 대로 두므로, 오버레이 축이 오른쪽 띠를 독점하게 하려면 그 축선과 눈금을 끈다.
+
+`active_layer`는 상호작용 대상 레이어 하나를 가리키고(`Config::active_layer()`는 범위 밖
+인덱스를 `Base`로 읽고 `set_active_layer`가 저장한다) `Config::layer_of_series(id)`는 시리즈를
+스케일하는 레이어를 답한다. 히트 맵·선택·출력 동작은 상호작용 안내서를 참고한다.
 
 ### `Legend`
 | 필드 | 타입 | 의미 |

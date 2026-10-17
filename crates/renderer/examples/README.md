@@ -10,6 +10,7 @@ for machines without a GPU.
 | Example | Input / output | Run |
 |---|---|---|
 | [line.rs](line.rs) | Two `f64` columns → `line.png`; complete minimal setup | `cargo run --locked -p figgy-renderer --example line` |
+| [overlay_axes.rs](overlay_axes.rs) | Temperature on the base layer, pressure on an overlay layer with its own right Y axis → one document PNG | `cargo run --locked -p figgy-renderer --example overlay_axes -- target/overlay-axes.png` |
 | [gallery_concepts.rs](gallery_concepts.rs) | Six visual recipes: dark monitoring, light analytics, editorial sketch, pop-art pie, pearl donut and topographic color | `cargo run --locked -p figgy-renderer --example gallery_concepts -- target/concepts` |
 | [error_bars.rs](error_bars.rs) | X/Y/error columns → lines, markers and symmetric error bars | `cargo run --locked -p figgy-renderer --example error_bars -- target/error-bars` |
 | [histogram.rs](histogram.rs) | N+1 bin edges and N counts → vertical and horizontal histograms | `cargo run --locked -p figgy-renderer --example histogram -- target/histogram` |

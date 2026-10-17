@@ -213,12 +213,100 @@ depend on `active_layer`.
 
 `DecorationId` gains two variants for those layers. `Overlay { layer, inner }`
 wraps an element identity with its overlay index (`overlay_<n>:<inner id>`) and
-`Annotation(index)` names an annotation item (`annotation_<n>`). No hit map
-registers them yet; hosts that match on `DecorationId` should treat them like
-any other unknown decoration. Explicit Rust chart literals need the two new
-fields (or `..Default::default()`). The bounded frame and label raster caches
-strip both fields from their keys, so editing either reuses the cached frame;
-only the layer's own pass will depend on them.
+`Annotation(index)` names an annotation item (`annotation_<n>`). The Cartesian
+hit map registers the `Overlay` ids for the active overlay (next section); no
+hit map registers annotation items yet, so hosts that match on `DecorationId`
+should treat those like any other unknown decoration. Explicit Rust chart
+literals need the two new fields (or `..Default::default()`). The bounded frame
+and label raster caches strip both fields from their keys, so editing either
+reuses the cached frame; only the layer's own pass will depend on them.
+
+## Overlay layers
+
+A Cartesian `Config` with `overlays` is one document drawn as several internal
+panels: the base layer and one panel per overlay, each a plain single-layer
+`Config` produced by `Config::expand()` that shares the parent's chart area and
+data area (see [`OverlayLayer`](CONFIG.md#overlaylayer-configoverlays)). The
+renderer, the registry and the export path all expand through that one
+function; hosts never build panels themselves.
+
+**Views and caches.** `ChartView` holds one grid texture, one decoration
+texture and one transform uniform per panel (`overlay_count()`), created by
+`create_chart_view` and kept in step by every `refresh_axis*` call: a layer
+added since the last refresh gets its textures there, a removed one drops
+them. Each panel caches the internal config, selection boxes, font generation
+and panel rect of its last raster, so a refresh re-rasterizes only the panels
+whose internal config changed. Editing one layer's axis, legend or range
+leaves the other layers' textures untouched, and the frame drawn from the
+cached view plus the refreshed layer is byte-identical to a fresh render of
+the final state (`layer_raster_generations()` exposes the per-panel counts;
+the renderer test suite asserts both properties). An edit of the shared
+geometry — the group right band, the chart area, a shared axis — lifts every
+panel's margins and refreshes them all. Selection boxes are composited into the
+topmost panel's decoration texture, above every layer. The registry classifies
+every `overlays` field as a raster edit (`raster_config_equal`); an overlay's
+range, scale, direction, band or series list is also a geometry edit (the
+`view` revision), its colours and legend are not.
+
+**Drawing order and pixels.** Panels composite in layer order, each as
+grid → data (then its picked highlights) → decoration, so the picked-highlight
+order is "A data → A highlight → B data → B highlight". Overlay panels draw
+no grid, X axis, title or colourbar and, in the Milkyway style, no backdrop.
+Drawn pixels never depend on `active_layer`, and inactive layers are not
+dimmed; editing chrome belongs to the host. `ChartView::render_warnings` merges
+every panel's tick warnings, overlay ones tagged `WarningAxis::OverlayY(index)`.
+
+**Interaction target.** `Renderer::set_active_layer(chart, LayerRef)` and
+`active_layer(chart)` choose the layer the hit map addresses; the model has the
+same `Config::set_active_layer` / `active_layer()` for low-level hosts and the
+WASM wrapper exposes `set_active_layer(json)` / `active_layer()`. Build the hit
+map with `HitMap::for_active_layer(&config)`: `Base` is exactly
+`standard_chart()`; an active overlay registers the shared elements first (data
+area, both X axes with their label bands and titles, the merged legend, chart
+title, colourbar) and its own elements last — `overlay_<n>:axis_right`,
+`overlay_<n>:tick_labels_right`, `overlay_<n>:axis_title_right` and
+`overlay_<n>:legend` — so the reverse-order test puts the active layer on
+top. Inactive layers' elements are not registered, so clicks pass through: the
+base Y axes do not answer while an overlay or the annotation layer is active.
+The set depends only on the active layer and the overlay count; rebuild the map
+when either changes. Overlay elements measure against the overlay's panel and
+write a drag back into `overlays[n].y_axis` (line offset, label and title
+offsets) or `overlays[n].legend` only. The data area is group geometry: its
+drag and its eight handles move the shared rectangle through the parent's
+margins and pull every overlay band along.
+
+Changing the layer clears the element selection — a `HitId` belongs to the
+previous layer's map — and advances the raster revision when there was one, so
+the selection chrome is redrawn; the data revision is untouched. An `Overlay`
+index past the overlay list is stored as `Base` by the setter and by every
+config replacement, so deleting the active overlay recovers to `Base`. GPU
+data picking (`pick_chart`, `pick_chart_data`) addresses the active layer: it
+uses that layer's panel (its Y range, the group data area) and only the series
+it scales; the base layer answers while the annotation layer is active.
+
+**Linked axes.** X is shared by construction, so one `set_chart_config` or
+`set_chart_view_state` call moves every layer; `ChartViewState::overlay_y`
+carries one Y range per overlay and must have exactly as many entries as the
+document has overlays. Every panel's transform is written from that one config
+snapshot in the same `prepare`, so a frame in which the base moved and an
+overlay did not cannot be produced. Auto-fit for an overlay axis uses the same
+cached column statistics: `Chart::auto_fit_overlay_y_extent` /
+`auto_fit_overlay_y_union` / `set_overlay_y_range` natively,
+`auto_fit_overlay_y(layer, column, padding)` in the WASM wrapper.
+
+**Export.** `export_document_rgba_async` / `export_document_png_bytes_async`
+(and their `_with_clear` and blocking native variants) render the whole group
+into one image; the existing `export_panel_*` entry points stay and render the
+base panel only. For a document without overlays both produce byte-identical
+images. The WASM `export_png` exports the document.
+
+**Limits of this version.** Overlays own no X axis (no twiny); nesting is one
+level (overlays have no layers of their own); bounded charts cannot be overlay
+layers; a nonresident streaming series listed by an overlay is rejected by
+every registry entry point, and the stream request paths reject a document
+with overlays as a whole. Subplot grids are a separate feature.
+Run `cargo run --locked -p figgy-renderer --example overlay_axes` for a native
+twin-axis export; see [the example source](examples/overlay_axes.rs).
 
 Run `cargo run --locked -p figgy-renderer --example bounded_titles` for a complete
 native PNG example covering all three families, multiline alignment and a

@@ -329,10 +329,13 @@ impl Config {
 
         if dx != 0.0 {
             let new_left = self.left_y.out_margin + dx;
-            let new_right = self.right_y.out_margin - dx;
+            // The right band is group geometry (overlay axes share it), so
+            // the move starts from the group's band, not the parent's own.
+            let new_right = super::right_out_margin_effective(self) - dx;
             if new_left >= 0.0 && new_right >= 0.0 {
                 self.left_y.out_margin = new_left;
                 self.right_y.out_margin = new_right;
+                super::sync_overlay_right_margins(self);
                 moved = true;
             }
         }
@@ -556,15 +559,23 @@ impl Config {
         if dm == 0.0 {
             return NudgeResult::Moved;
         }
-        let old = axis_ref(self, &side).out_margin;
+        let old = match side {
+            // The right band is group geometry shared with the overlay axes.
+            Side::Right => super::right_out_margin_effective(self),
+            Side::Top | Side::Bottom | Side::Left => axis_ref(self, &side).out_margin,
+        };
         let new = old + dm;
         if new < 0.0 {
             return NudgeResult::Rejected(NudgeReject::OutOfBounds);
         }
+        let backup = self.clone();
         axis_mut(self, &side).out_margin = new;
+        if side == Side::Right {
+            super::sync_overlay_right_margins(self);
+        }
         // The shifted margin must still leave a valid data area.
         if self.data_area().is_err() {
-            axis_mut(self, &side).out_margin = old;
+            *self = backup;
             return NudgeResult::Rejected(NudgeReject::OutOfBounds);
         }
         NudgeResult::Moved

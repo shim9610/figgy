@@ -2264,6 +2264,7 @@ mod web {
             alive: Rc::new(Cell::new(true)),
             color_seq: 0,
             hitmap: HitMap::standard_chart(),
+            hitmap_layer: (renderer::LayerRef::Base, 0),
             dragging: false,
             resizing: None,
             cycle: renderer::ColorCycle::Classic,
@@ -2841,6 +2842,9 @@ mod web {
         /// Monotonic color assignment for newly registered series.
         color_seq: usize,
         hitmap: HitMap,
+        /// The (active layer, overlay count) the hit map was registered for.
+        /// Either change rebuilds it with `HitMap::for_active_layer`.
+        hitmap_layer: (renderer::LayerRef, usize),
         dragging: bool,
         resizing: Option<ModelResizeHandle>,
         cycle: renderer::ColorCycle,
@@ -2876,7 +2880,9 @@ mod web {
         fn replace_chart_config(&mut self, config: renderer::Config) -> Result<(), JsValue> {
             self.renderer
                 .set_chart_config(self.chart_id, config)
-                .map_err(js_err)
+                .map_err(js_err)?;
+            self.sync_hitmap();
+            Ok(())
         }
 
         fn replace_chart_state(
@@ -2886,7 +2892,23 @@ mod web {
         ) -> Result<(), JsValue> {
             self.renderer
                 .set_chart_state(self.chart_id, config, series)
-                .map_err(js_err)
+                .map_err(js_err)?;
+            self.sync_hitmap();
+            Ok(())
+        }
+
+        /// The hit map's registration set depends only on the active layer
+        /// and the overlay count. Rebuild it when either changed; the
+        /// registry has already dropped any `HitId` of the previous map.
+        fn sync_hitmap(&mut self) {
+            let config = self.chart_config();
+            let key = (config.active_layer(), config.overlays.len());
+            if key != self.hitmap_layer {
+                self.hitmap = HitMap::for_active_layer(config);
+                self.hitmap_layer = key;
+                self.dragging = false;
+                self.resizing = None;
+            }
         }
 
         fn display_scale_and_panel(&self) -> (f32, Rect) {
@@ -4792,6 +4814,52 @@ mod web {
             Ok(())
         }
 
+        /// Fit overlay layer `layer`'s Y axis to a column's cached statistics
+        /// with proportional padding, the overlay counterpart of `auto_fit_y`.
+        /// A layer index past the overlay list is an error.
+        /// JS: `chart.auto_fit_overlay_y(0, "pressure", 0.05)`
+        pub fn auto_fit_overlay_y(
+            &mut self,
+            layer: usize,
+            column: &str,
+            padding: f64,
+        ) -> Result<(), JsValue> {
+            if layer >= self.chart_config().overlays.len() {
+                return Err(js_err("overlay layer index is out of range"));
+            }
+            let mut chart = Chart::new(self.chart_config().clone());
+            chart
+                .auto_fit_overlay_y_union(self.renderer.pool(), layer, &[column], padding)
+                .map_err(js_err)?;
+            self.replace_chart_config(chart.config().clone())?;
+            Ok(())
+        }
+
+        /// Set the layer that receives pointer interaction: `"Base"`,
+        /// `{ "Overlay": index }` or `"Annotations"` as JSON. The hit map is
+        /// rebuilt for that layer (`HitMap::for_active_layer`) and the
+        /// element selection is cleared when the layer changes. An overlay
+        /// index past the overlay list is stored as `"Base"`; the stored
+        /// layer is returned as JSON. Drawn pixels never depend on it.
+        /// JS: `chart.set_active_layer(JSON.stringify({ Overlay: 0 }))`
+        pub fn set_active_layer(&mut self, json: &str) -> Result<String, JsValue> {
+            let layer: renderer::LayerRef = serde_json::from_str(json).map_err(js_err)?;
+            let stored = self
+                .renderer
+                .set_active_layer(self.chart_id, layer)
+                .map_err(js_err)?;
+            self.sync_hitmap();
+            serde_json::to_string(&stored).map_err(js_err)
+        }
+
+        /// The layer that receives pointer interaction, as JSON, with the
+        /// out-of-range fallback applied.
+        /// JS: `JSON.parse(chart.active_layer())`
+        pub fn active_layer(&self) -> Result<String, JsValue> {
+            let layer = self.renderer.active_layer(self.chart_id).map_err(js_err)?;
+            serde_json::to_string(&layer).map_err(js_err)
+        }
+
         /// Fit BOTH axes to the union of every registered series, leaving a
         /// uniform `padding` fraction of the data span as margin on each
         /// side (`0.0` = no padding, `0.05` = 5% top/bottom/left/right).
@@ -5193,7 +5261,11 @@ mod web {
         /// `"colorbar_axis"`, `"colorbar_tick_labels"`,
         /// `"colorbar_title"`, …) or `null`. Pure geometry, no selection state
         /// change: the renderer's own layout answers, so hosts don't have to
-        /// re-derive box positions for hover cursors / context UI.
+        /// re-derive box positions for hover cursors / context UI. The set of
+        /// registered elements follows the active layer: while an overlay is
+        /// active its elements answer as `"overlay_<n>:axis_right"`,
+        /// `"overlay_<n>:tick_labels_right"`, `"overlay_<n>:axis_title_right"`
+        /// and `"overlay_<n>:legend"`, and the base Y axes do not answer.
         pub fn hit_test(&self, x: f32, y: f32) -> Option<String> {
             let (display_config, _, _) = self.display_config();
             self.hitmap
@@ -5932,7 +6004,10 @@ mod web {
             Ok(())
         }
 
-        /// Export the panel as PNG bytes at `scale ×` resolution.
+        /// Export the document as PNG bytes at `scale ×` resolution: the base
+        /// layer and every overlay layer composited into one image, exactly
+        /// as the canvas shows them. A document without overlays exports the
+        /// same bytes as the per-panel renderer export.
         /// JS: `const png = await chart.export_png(2.0);`
         /// Holds a mutable borrow of this WASM object until the Promise settles.
         /// wasm-bindgen checks borrows; it does not queue concurrent calls.
@@ -5951,7 +6026,7 @@ mod web {
             let series = self.chart_series().to_vec();
             let bytes = self
                 .renderer
-                .export_panel_png_bytes_with_clear_async(
+                .export_document_png_bytes_with_clear_async(
                     &export_chart,
                     &series,
                     scale,

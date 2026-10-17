@@ -552,6 +552,10 @@ pub struct ChartViewState {
     pub bottom_x: AxisViewState,
     pub left_y: AxisViewState,
     pub right_y: AxisViewState,
+    /// One entry per overlay layer, in `Config::overlays` order. A view state
+    /// applied to a chart must carry exactly as many entries as the chart has
+    /// overlays; the X range is shared, so one call moves every layer.
+    pub overlay_y: Vec<AxisViewState>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -592,6 +596,11 @@ impl ChartViewState {
             bottom_x: AxisViewState::from_axis(&config.bottom_x),
             left_y: AxisViewState::from_axis(&config.left_y),
             right_y: AxisViewState::from_axis(&config.right_y),
+            overlay_y: config
+                .overlays
+                .iter()
+                .map(|overlay| AxisViewState::from_axis(&overlay.y_axis))
+                .collect(),
         }
     }
 
@@ -601,6 +610,9 @@ impl ChartViewState {
         self.bottom_x.apply_to(&mut config.bottom_x);
         self.left_y.apply_to(&mut config.left_y);
         self.right_y.apply_to(&mut config.right_y);
+        for (state, overlay) in self.overlay_y.iter().zip(&mut config.overlays) {
+            state.apply_to(&mut overlay.y_axis);
+        }
     }
 }
 
@@ -619,6 +631,7 @@ fn stream_config_equal(left: &Config, right: &Config, series: &[SeriesConfig]) -
         && AxisViewState::from_axis(&left.left_y) == AxisViewState::from_axis(&right.left_y)
         && left.data_area().ok().map(|area| area.0)
             == right.data_area().ok().map(|area| area.0)
+        && overlay_geometry_equal(left, right)
         && left.draw_style == right.draw_style
         // Z mapping changes the accumulated field pixels, unlike the bar's
         // border, labels or position. XY-only charts do not consume this map.
@@ -683,6 +696,7 @@ fn raster_config_equal(left: &Config, right: &Config) -> bool {
         picked_data: _,
         colorbar,
         draw_style,
+        overlays,
         active_layer: _,
         annotations: _,
     } = left;
@@ -696,6 +710,20 @@ fn raster_config_equal(left: &Config, right: &Config) -> bool {
         && legend == &right.legend
         && colorbar == &right.colorbar
         && draw_style == &right.draw_style
+        // Every overlay field is chrome of its own panel (its axis, its
+        // legend) or decides which panel draws a series.
+        && overlays == &right.overlays
+}
+
+/// Whether two configs map data to the same pixels on every layer: the
+/// overlay count, each overlay's Y range and the series each one scales.
+/// Decoration-only overlay edits (axis colour, legend) are not geometry.
+fn overlay_geometry_equal(left: &Config, right: &Config) -> bool {
+    left.overlays.len() == right.overlays.len()
+        && left.overlays.iter().zip(&right.overlays).all(|(a, b)| {
+            AxisViewState::from_axis(&a.y_axis) == AxisViewState::from_axis(&b.y_axis)
+                && a.series == b.series
+        })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -975,7 +1003,53 @@ struct PickChartPlan {
     signature: PickChartSignature,
 }
 
+/// The panel and series a pick addresses: the active layer's. Picking a
+/// layered document reads the active layer's internal panel (its Y range and
+/// the group data area) and only the series that layer scales; the base
+/// layer answers while the annotation layer is active, which has no series.
+/// A document without overlays is its own panel.
+fn active_layer_pick_inputs(
+    config: &Config,
+    series: &[SeriesConfig],
+) -> std::result::Result<(Config, Vec<SeriesConfig>), crate::gpu_pick::GpuPickError> {
+    if config.overlays.is_empty() {
+        return Ok((config.clone(), series.to_vec()));
+    }
+    let layer = match config.active_layer() {
+        crate::LayerRef::Annotations => crate::LayerRef::Base,
+        layer => layer,
+    };
+    let panels =
+        expand_for_render(config).map_err(|_| crate::gpu_pick::GpuPickError::AllocationFailed {
+            resource: "renderer pick layer expansion",
+        })?;
+    let index = match layer {
+        crate::LayerRef::Overlay(index) => index + 1,
+        crate::LayerRef::Base | crate::LayerRef::Annotations => 0,
+    };
+    let panel = panels
+        .into_iter()
+        .nth(index)
+        .expect("expansion yields one panel per layer");
+    let subset = series
+        .iter()
+        .filter(|item| config.layer_of_series(&item.series_id) == layer)
+        .cloned()
+        .collect();
+    Ok((panel, subset))
+}
+
 impl PickChartPlan {
+    /// The plan for the active layer of `config`; see
+    /// [`active_layer_pick_inputs`].
+    fn for_active_layer(
+        config: &Config,
+        series: &[SeriesConfig],
+    ) -> std::result::Result<Self, crate::gpu_pick::GpuPickError> {
+        let (panel, subset) = active_layer_pick_inputs(config, series)?;
+        Self::new(&panel, &subset)
+    }
+
     fn new(
         config: &Config,
         series: &[SeriesConfig],
@@ -1482,7 +1556,7 @@ impl RendererPicker {
         series: &[SeriesConfig],
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         let bundle = self.ready_bundle()?;
-        let plan = PickChartPlan::new(config, series)?;
+        let plan = PickChartPlan::for_active_layer(config, series)?;
         if self
             .active
             .as_ref()
@@ -1535,7 +1609,7 @@ impl RendererPicker {
                 return Ok(Some(PreparedActivePickerMutation::Clear(&mut self.active)));
             }
         }
-        let plan = PickChartPlan::new(config, series)?;
+        let plan = PickChartPlan::for_active_layer(config, series)?;
         self.prepare_active_plan(pool, chart_id, plan, &[], false)
     }
 
@@ -2784,7 +2858,7 @@ fn prepare_picker_for_pool_mutation<'picker>(
     let state = chart_states
         .get(&chart_id)
         .ok_or(FiggyError::UnknownChart { id: chart_id })?;
-    let plan = PickChartPlan::new(&state.config, &state.series)?;
+    let plan = PickChartPlan::for_active_layer(&state.config, &state.series)?;
     Ok(picker.prepare_active_pool_mutation(
         pool,
         chart_id,
@@ -4536,7 +4610,11 @@ fn validate_chart_view_state(view: &ChartViewState) -> Result<()> {
     validate_axis_view_state("top_x", &view.top_x)?;
     validate_axis_view_state("bottom_x", &view.bottom_x)?;
     validate_axis_view_state("left_y", &view.left_y)?;
-    validate_axis_view_state("right_y", &view.right_y)
+    validate_axis_view_state("right_y", &view.right_y)?;
+    for axis in &view.overlay_y {
+        validate_axis_view_state("overlays.y_axis", axis)?;
+    }
+    Ok(())
 }
 
 fn validate_error_ref_columns(pool: &impl ColumnRegistration, error: &ErrorRef) -> Result<()> {
@@ -6098,11 +6176,11 @@ impl Renderer {
         request: GpuPickRequest,
     ) -> std::result::Result<crate::gpu_pick::GpuPickTicket, crate::gpu_pick::GpuPickError> {
         self.prepare_gpu_picking_for_chart(id)?;
-        let config = &self
+        let state = self
             .chart_states
             .get(&id)
-            .ok_or(crate::gpu_pick::GpuPickError::UnknownChart(id))?
-            .config;
+            .ok_or(crate::gpu_pick::GpuPickError::UnknownChart(id))?;
+        let (config, _) = active_layer_pick_inputs(&state.config, &state.series)?;
         let mut display_config = config.scaled(request.display_scale);
         display_config.chart_area = crate::layout::ChartArea(request.display_panel_px);
         let chart_rect = display_config.chart_area.0;
@@ -6157,7 +6235,10 @@ impl Renderer {
             for series in &state.series {
                 self.require_resident_series(series)?;
             }
-            (state.config.clone(), state.series.clone())
+            // The typed query answers for the active layer only, with that
+            // layer's panel (its Y range) and the series it scales, so its
+            // paint orders agree with the point query's registry.
+            active_layer_pick_inputs(&state.config, &state.series)?
         };
 
         // Submit the established point/line query first. It stays point-only,
@@ -6422,9 +6503,15 @@ impl Renderer {
 
     /// Register one renderer-owned chart. The id issuer and visual revision
     /// are checked before any state is published.
-    pub fn register_chart(&mut self, config: Config, series: Vec<SeriesConfig>) -> Result<ChartId> {
+    pub fn register_chart(
+        &mut self,
+        mut config: Config,
+        series: Vec<SeriesConfig>,
+    ) -> Result<ChartId> {
         crate::chart::validate_renderer_config(&config)?;
         validate_renderer_series(&(&self.pool, &self.streaming_sources), &config, &series)?;
+        self.require_resident_overlay_series(&config, &series)?;
+        config.set_active_layer(config.active_layer);
         let id_value = self
             .next_chart_id
             .checked_add(1)
@@ -6488,7 +6575,7 @@ impl Renderer {
         Ok(())
     }
 
-    pub fn set_chart_config(&mut self, id: ChartId, config: Config) -> Result<()> {
+    pub fn set_chart_config(&mut self, id: ChartId, mut config: Config) -> Result<()> {
         crate::chart::validate_renderer_config(&config)?;
         let state = self
             .chart_states
@@ -6499,10 +6586,19 @@ impl Renderer {
             &config,
             &state.series,
         )?;
+        self.require_resident_overlay_series(&config, &state.series)?;
+        // The registry never holds a layer address past the overlay list: an
+        // out-of-range `Overlay(i)` recovers to `Base` here, as the setter does.
+        config.set_active_layer(config.active_layer);
         // Each revision follows exactly the fields it depends on: an identical
         // config changes nothing, a layer-only or selection-only edit draws
         // again without re-rasterizing the axis chrome.
         let changed = state.config != config;
+        // Element selection lives one level below the layer: a `HitId` names
+        // an entry of the hit map registered for the previous layer, so a
+        // layer change clears it, and its selection chrome must be redrawn.
+        let layer_changed = state.config.active_layer() != config.active_layer();
+        let clear_selection = layer_changed && state.selected.is_some();
         let desired = if changed {
             state
                 .revisions
@@ -6521,7 +6617,7 @@ impl Renderer {
         } else {
             state.revisions.view
         };
-        let raster = if raster_config_equal(&state.config, &config) {
+        let raster = if raster_config_equal(&state.config, &config) && !clear_selection {
             state.revisions.raster
         } else {
             state.revisions.raster.successor("chart raster revision")?
@@ -6532,6 +6628,11 @@ impl Renderer {
         next_revisions.config = config_revision;
         next_revisions.selection =
             selection_config_revision(state.revisions.selection, &state.config, &config)?;
+        if clear_selection {
+            next_revisions.selection = next_revisions
+                .selection
+                .successor("chart selection revision")?;
+        }
         next_revisions.view = view;
         next_revisions.raster = raster;
 
@@ -6545,6 +6646,9 @@ impl Renderer {
             &config,
             &chart_state.series,
         )?;
+        if clear_selection {
+            chart_state.selected = None;
+        }
         PreparedChartMutation {
             chart_state,
             visual_revision: &mut self.visual_revision,
@@ -6554,6 +6658,61 @@ impl Renderer {
             picker,
         }
         .commit();
+        Ok(())
+    }
+
+    /// Set the layer that receives pointer interaction and the hit map
+    /// registers (`HitMap::for_active_layer`). An `Overlay` index past the
+    /// end of the overlay list is stored as `Base`; the stored layer is
+    /// returned. When the layer actually changes, the element selection is
+    /// cleared (a `HitId` belongs to the previous layer's map) and, if there
+    /// was one, the raster revision advances so the selection chrome is
+    /// redrawn on the next refresh; the data revision is untouched. This is
+    /// the document's `active_layer` field, so `chart_config` reflects it.
+    pub fn set_active_layer(
+        &mut self,
+        id: ChartId,
+        layer: crate::LayerRef,
+    ) -> Result<crate::LayerRef> {
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        let mut config = state.config.clone();
+        let stored = config.set_active_layer(layer);
+        if config != state.config {
+            self.set_chart_config(id, config)?;
+        }
+        Ok(stored)
+    }
+
+    /// The layer that receives pointer interaction, with the out-of-range
+    /// fallback applied.
+    pub fn active_layer(&self, id: ChartId) -> Result<crate::LayerRef> {
+        Ok(self.chart_config(id)?.active_layer())
+    }
+
+    /// A series an overlay layer scales must be resident: the nonresident
+    /// stream pass draws one panel, so a streamed series on an overlay is an
+    /// explicit error rather than a silently mis-scaled drawing.
+    fn require_resident_overlay_series(
+        &self,
+        config: &Config,
+        series: &[SeriesConfig],
+    ) -> Result<()> {
+        for item in series {
+            if matches!(
+                config.layer_of_series(&item.series_id),
+                crate::LayerRef::Overlay(_)
+            ) && self.require_resident_series(item).is_err()
+            {
+                return Err(FiggyError::InvalidSeriesConfig {
+                    series_id: item.series_id.clone(),
+                    reason: "a nonresident streaming series cannot be scaled by an overlay layer"
+                        .into(),
+                });
+            }
+        }
         Ok(())
     }
 
@@ -6569,6 +6728,7 @@ impl Renderer {
             &state.config,
             &series,
         )?;
+        self.require_resident_overlay_series(&state.config, &series)?;
         let desired = state
             .revisions
             .desired
@@ -6617,17 +6777,21 @@ impl Renderer {
     pub fn set_chart_state(
         &mut self,
         id: ChartId,
-        config: Config,
+        mut config: Config,
         series: Vec<SeriesConfig>,
     ) -> Result<()> {
         crate::chart::validate_renderer_config(&config)?;
         validate_renderer_series(&(&self.pool, &self.streaming_sources), &config, &series)?;
+        self.require_resident_overlay_series(&config, &series)?;
+        config.set_active_layer(config.active_layer);
         let state = self
             .chart_states
             .get(&id)
             .ok_or(FiggyError::UnknownChart { id })?;
         let config_changed = state.config != config;
         let series_changed = state.series != series;
+        let clear_selection =
+            state.config.active_layer() != config.active_layer() && state.selected.is_some();
         let desired = if config_changed || series_changed {
             state
                 .revisions
@@ -6658,17 +6822,23 @@ impl Renderer {
         };
         // Series declarations feed the legend and the raster's series-aware
         // tick guards, so a series change re-rasterizes like a chrome edit.
-        let raster = if raster_config_equal(&state.config, &config) && !series_changed {
-            state.revisions.raster
-        } else {
-            state.revisions.raster.successor("chart raster revision")?
-        };
+        let raster =
+            if raster_config_equal(&state.config, &config) && !series_changed && !clear_selection {
+                state.revisions.raster
+            } else {
+                state.revisions.raster.successor("chart raster revision")?
+            };
         let visual = self.visual_revision.successor("renderer visual revision")?;
         let mut next_revisions = state.revisions;
         next_revisions.desired = desired;
         next_revisions.config = config_revision;
         next_revisions.selection =
             selection_config_revision(state.revisions.selection, &state.config, &config)?;
+        if clear_selection {
+            next_revisions.selection = next_revisions
+                .selection
+                .successor("chart selection revision")?;
+        }
         next_revisions.series = series_revision;
         next_revisions.data = data;
         next_revisions.view = view;
@@ -6681,6 +6851,9 @@ impl Renderer {
         let picker = self
             .picker
             .prepare_active_chart_mutation(&self.pool, id, &config, &series)?;
+        if clear_selection {
+            chart_state.selected = None;
+        }
         PreparedChartMutation {
             chart_state,
             visual_revision: &mut self.visual_revision,
@@ -6699,6 +6872,12 @@ impl Renderer {
             .chart_states
             .get(&id)
             .ok_or(FiggyError::UnknownChart { id })?;
+        if view.overlay_y.len() != state.config.overlays.len() {
+            return Err(FiggyError::InvalidConfig {
+                field: "overlays",
+                reason: "a view state must carry one Y range per overlay layer",
+            });
+        }
         let mut prospective_config = state.config.clone();
         view.apply_to(&mut prospective_config);
         crate::chart::validate_renderer_config(&prospective_config)?;
@@ -7088,7 +7267,7 @@ impl Renderer {
                         .transpose()?;
                     Some((
                         active.chart_id,
-                        PickChartPlan::new(
+                        PickChartPlan::for_active_layer(
                             override_config.unwrap_or(&state.config),
                             candidate.as_deref().unwrap_or(&state.series),
                         )?,
@@ -8684,12 +8863,12 @@ impl Renderer {
         let picker = match picker.active.as_ref().map(|active| active.chart_id) {
             Some(active_id) => {
                 let plan = if active_id == chart_id {
-                    PickChartPlan::new(&chart_plan.config, &chart_plan.series)?
+                    PickChartPlan::for_active_layer(&chart_plan.config, &chart_plan.series)?
                 } else {
                     let state = chart_states
                         .get(&active_id)
                         .ok_or(FiggyError::UnknownChart { id: active_id })?;
-                    PickChartPlan::new(&state.config, &state.series)?
+                    PickChartPlan::for_active_layer(&state.config, &state.series)?
                 };
                 picker.prepare_active_pool_mutation(
                     inner.pool(),
@@ -8941,7 +9120,7 @@ impl Renderer {
                         .chart_states
                         .get(&chart_id)
                         .ok_or(FiggyError::UnknownChart { id: chart_id })?;
-                    let plan = PickChartPlan::new(&state.config, &state.series)?;
+                    let plan = PickChartPlan::for_active_layer(&state.config, &state.series)?;
                     self.picker.prepare_active_pool_mutation(
                         defragment.pool(),
                         chart_id,
@@ -8995,7 +9174,8 @@ impl Renderer {
                                 .chart_states
                                 .get(&chart_id)
                                 .ok_or(FiggyError::UnknownChart { id: chart_id })?;
-                            let plan = PickChartPlan::new(&state.config, &state.series)?;
+                            let plan =
+                                PickChartPlan::for_active_layer(&state.config, &state.series)?;
                             self.picker.prepare_active_pool_mutation(
                                 relayout.pool(),
                                 chart_id,
@@ -9785,14 +9965,35 @@ impl Renderer {
     /// `chart.config_mut().chart_area` must match `panel_rect` before this
     /// call so the axis raster is drawn correctly.
     pub fn create_chart_view(&self, chart: &Chart, panel_rect: Rect) -> Result<ChartView> {
+        let panels = expand_for_render(chart.config())?;
+        let font_generation = crate::text_render::font_generation();
+        let mut view = self.create_panel_view(&panels[0], panel_rect, false, font_generation)?;
+        for panel in &panels[1..] {
+            view.overlay_views.push(self.create_panel_view(
+                panel,
+                panel_rect,
+                true,
+                font_generation,
+            )?);
+        }
+        view.render_warnings = merged_render_warnings(&panels);
+        Ok(view)
+    }
+
+    /// One panel's GPU resources from one internal config. `overlay` panels
+    /// never draw the Milkyway backdrop: the grid slot belongs to the base.
+    fn create_panel_view(
+        &self,
+        config: &Config,
+        panel_rect: Rect,
+        overlay: bool,
+        font_generation: u64,
+    ) -> Result<ChartView> {
         let w = panel_rect.width.max(1);
         let h = panel_rect.height.max(1);
 
         // Grid layer (drawn below data): raster + texture + bind group.
-        let grid_rgba = axis_render::try_raster_chart_layer_to_rgba(
-            chart.config(),
-            axis_render::AxisLayerKind::Grid,
-        )?;
+        let grid_rgba = raster_grid_layer(config, overlay, w, h)?;
         let grid_tex = TrackedTexture::new(
             &self.gpu_ledger,
             GpuResourceKind::PanelTexture,
@@ -9815,7 +10016,7 @@ impl Renderer {
 
         // Decoration layer (drawn above data).
         let dec_rgba = axis_render::try_raster_chart_layer_to_rgba(
-            chart.config(),
+            config,
             axis_render::AxisLayerKind::Decoration,
         )?;
         let dec_tex = TrackedTexture::new(
@@ -9838,7 +10039,7 @@ impl Renderer {
             &self.sampler,
         );
 
-        let t = data_render::scatter_transform_from_config(chart.config());
+        let t = data_render::scatter_transform_from_config(config);
         let transform_buffer = TrackedBuffer::new(
             &self.gpu_ledger,
             GpuResourceKind::Uniform,
@@ -9861,7 +10062,15 @@ impl Renderer {
             stream_revision: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             panel_rect,
             grid_space_gen: None,
-            render_warnings: axis_render::tick_warnings(chart.config()),
+            render_warnings: axis_render::tick_warnings(config),
+            overlay_views: Vec::new(),
+            raster_key: Some(PanelRasterKey {
+                config: config.clone(),
+                selection: Vec::new(),
+                font_generation,
+                panel_rect,
+            }),
+            raster_generation: 1,
         })
     }
 
@@ -9872,10 +10081,14 @@ impl Renderer {
     /// layers and let [`Self::prepare`] write the transform from the same config;
     /// no separate call to this method is needed.
     pub fn update_transform(&mut self, view: &ChartView, chart: &Chart) -> Result<()> {
-        let t = data_render::scatter_transform_from_config(chart.config());
+        let panels = expand_for_render(chart.config())?;
+        let views = layer_views(view, panels.len())?;
         view.advance_stream_revision()?;
         view.advance_content_revision()?;
-        data_render::update_scatter_transform(&self.queue, &view.transform_buffer, &t);
+        for (panel, layer_view) in panels.iter().zip(views) {
+            let t = data_render::scatter_transform_from_config(panel);
+            data_render::update_scatter_transform(&self.queue, &layer_view.transform_buffer, &t);
+        }
         Ok(())
     }
 
@@ -9909,11 +10122,68 @@ impl Renderer {
         panel_rect: Rect,
         selection: &[crate::select::SelectionBox],
     ) -> Result<()> {
+        let panels = expand_for_render(chart.config())?;
+        let font_generation = crate::text_render::font_generation();
+        // The view follows the document's layer count: a layer added since
+        // the last refresh gets its textures here, a removed one drops them.
+        view.overlay_views.truncate(panels.len() - 1);
+        while view.overlay_views.len() < panels.len() - 1 {
+            let panel = &panels[view.overlay_views.len() + 1];
+            let layer = self.create_panel_view(panel, panel_rect, true, font_generation)?;
+            view.overlay_views.push(layer);
+        }
+        // Selection boxes are composited into the topmost panel so they sit
+        // above every layer's decoration, as they did above the single one.
+        let top = panels.len() - 1;
+        for (index, panel) in panels.iter().enumerate() {
+            let boxes = if index == top { selection } else { &[] };
+            let layer_view = if index == 0 {
+                &mut *view
+            } else {
+                &mut view.overlay_views[index - 1]
+            };
+            self.refresh_panel_view(
+                layer_view,
+                panel,
+                panel_rect,
+                boxes,
+                index > 0,
+                font_generation,
+            )?;
+        }
+        view.panel_rect = panel_rect;
+        view.render_warnings = merged_render_warnings(&panels);
+        Ok(())
+    }
+
+    /// Refresh one panel's textures from its internal config, unless the
+    /// textures already hold exactly this raster.
+    fn refresh_panel_view(
+        &mut self,
+        view: &mut ChartView,
+        config: &Config,
+        panel_rect: Rect,
+        selection: &[crate::select::SelectionBox],
+        overlay: bool,
+        font_generation: u64,
+    ) -> Result<()> {
         let w = panel_rect.width.max(1);
         let h = panel_rect.height.max(1);
+        let key = PanelRasterKey {
+            config: config.clone(),
+            selection: selection.to_vec(),
+            font_generation,
+            panel_rect,
+        };
+        if view.raster_key.as_ref() == Some(&key) {
+            // Same raster: the revisions still advance so a token prepared
+            // before this call is retired, exactly as for a real rewrite.
+            view.advance_content_revision()?;
+            return Ok(());
+        }
 
         let dec_rgba = axis_render::try_raster_chart_layer_to_rgba_with_selection(
-            chart.config(),
+            config,
             axis_render::AxisLayerKind::Decoration,
             selection,
         )?;
@@ -9926,7 +10196,10 @@ impl Renderer {
         // so it is cached by (size, nebula, dust, seed): a pan/zoom/config
         // commit re-rasters only the decoration layer, and a view whose grid
         // texture already holds the cached generation skips the upload too.
-        if let crate::config::DrawStyle::Milkyway(c) = &chart.config().draw_style {
+        // Overlay panels never draw the backdrop; the base panel owns it.
+        if let crate::config::DrawStyle::Milkyway(c) = &config.draw_style
+            && !overlay
+        {
             let key = SpaceBgKey {
                 w,
                 h,
@@ -9936,7 +10209,7 @@ impl Renderer {
             };
             if !self.space_bg.as_ref().is_some_and(|s| s.key == key) {
                 let rgba = axis_render::try_raster_chart_layer_to_rgba(
-                    chart.config(),
+                    config,
                     axis_render::AxisLayerKind::Grid,
                 )?;
                 let bake_gen = self.space_bg.as_ref().map_or(1, |s| s.bake_gen + 1);
@@ -9958,10 +10231,7 @@ impl Renderer {
                 view.grid_space_gen = Some(cache.bake_gen);
             }
         } else {
-            let grid_rgba = axis_render::try_raster_chart_layer_to_rgba(
-                chart.config(),
-                axis_render::AxisLayerKind::Grid,
-            )?;
+            let grid_rgba = raster_grid_layer(config, overlay, w, h)?;
             self.refresh_one_layer(
                 &mut view.grid_texture,
                 &mut view.grid_bind_group,
@@ -9980,7 +10250,9 @@ impl Renderer {
             h,
         )?;
         view.panel_rect = panel_rect;
-        view.render_warnings = axis_render::tick_warnings(chart.config());
+        view.render_warnings = axis_render::tick_warnings(config);
+        view.raster_key = Some(key);
+        view.raster_generation = view.raster_generation.wrapping_add(1);
 
         Ok(())
     }
@@ -10801,6 +11073,92 @@ impl Renderer {
         .await
     }
 
+    /// Render the whole document — the base layer and every overlay layer
+    /// composited in order — offscreen at `scale × original` pixel
+    /// dimensions and return an RGBA buffer. Same contract as
+    /// [`Self::export_panel_rgba_async`] otherwise; for a document without
+    /// overlays the two produce byte-identical images. The panel export of a
+    /// layered document draws its base panel only (with the group data
+    /// area), which is what a per-panel export means.
+    pub async fn export_document_rgba_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<RasterImage> {
+        self.export_document_rgba_with_clear_async(
+            chart,
+            series,
+            scale,
+            crate::color::Color::from_rgba(0.0, 0.0, 0.0, 0.0),
+        )
+        .await
+    }
+
+    /// [`Self::export_document_rgba_async`] with an explicit clear color.
+    pub async fn export_document_rgba_with_clear_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+        clear: crate::color::Color,
+    ) -> Result<RasterImage> {
+        self.export_rgba_with_clear_scoped(chart, series, scale, clear, ExportScope::Document)
+            .await
+    }
+
+    /// Convenience wrapper: export the document, then encode PNG bytes.
+    pub async fn export_document_png_bytes_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<Vec<u8>> {
+        let img = self
+            .export_document_rgba_async(chart, series, scale)
+            .await?;
+        encode_png(&img)
+    }
+
+    /// Convenience wrapper: export the document PNG with an explicit clear
+    /// color.
+    pub async fn export_document_png_bytes_with_clear_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+        clear: crate::color::Color,
+    ) -> Result<Vec<u8>> {
+        let img = self
+            .export_document_rgba_with_clear_async(chart, series, scale, clear)
+            .await?;
+        encode_png(&img)
+    }
+
+    /// Blocking wrapper around [`Self::export_document_rgba_async`]. Native
+    /// only.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export_document_rgba(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<RasterImage> {
+        pollster::block_on(self.export_document_rgba_async(chart, series, scale))
+    }
+
+    /// Blocking wrapper around [`Self::export_document_png_bytes_async`].
+    /// Native only.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export_document_png_bytes(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<Vec<u8>> {
+        pollster::block_on(self.export_document_png_bytes_async(chart, series, scale))
+    }
+
     /// Export a panel with an explicit clear color behind the chart.
     ///
     /// Wrapped in device error scopes. Export is where figgy asks for its
@@ -10832,12 +11190,24 @@ impl Renderer {
         scale: f32,
         clear: crate::color::Color,
     ) -> Result<RasterImage> {
+        self.export_rgba_with_clear_scoped(chart, series, scale, clear, ExportScope::Panel)
+            .await
+    }
+
+    async fn export_rgba_with_clear_scoped(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+        clear: crate::color::Color,
+        scope: ExportScope,
+    ) -> Result<RasterImage> {
         for item in series {
             self.require_resident_series(item)?;
         }
         #[cfg(target_arch = "wasm32")]
         let result = self
-            .export_panel_rgba_with_clear_inner(chart, series, scale, clear)
+            .export_rgba_with_clear_inner(chart, series, scale, clear, scope)
             .await;
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -10845,11 +11215,11 @@ impl Renderer {
             // wgpu 30's scope guard pops itself on drop, so an early return
             // inside the body cannot leave a scope on the device's stack for the
             // next caller to inherit.
-            let scope = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+            let scope_guard = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
             let rendered = self
-                .export_panel_rgba_with_clear_inner(chart, series, scale, clear)
+                .export_rgba_with_clear_inner(chart, series, scale, clear, scope)
                 .await;
-            let out_of_memory = scope.pop().await;
+            let out_of_memory = scope_guard.pop().await;
             match (rendered, out_of_memory) {
                 (Ok(_), Some(error)) => Err(FiggyError::GpuResourceAllocationFailed {
                     resource: "figgy export target",
@@ -10864,12 +11234,13 @@ impl Renderer {
         result
     }
 
-    async fn export_panel_rgba_with_clear_inner(
+    async fn export_rgba_with_clear_inner(
         &mut self,
         chart: &Chart,
         series: &[SeriesConfig],
         scale: f32,
         clear: crate::color::Color,
+        scope: ExportScope,
     ) -> Result<RasterImage> {
         #[cfg(target_arch = "wasm32")]
         let browser_scopes = BrowserErrorScopes::push(&self.device, "figgy export target")?;
@@ -10878,18 +11249,6 @@ impl Renderer {
             validate_contour_level_count(config.series_id.as_str(), &config.render_type)?;
         }
         let scale = clamp_export_scale(scale);
-        let mut contour_spacings = Vec::with_capacity(series.len());
-        for config in series {
-            let contour_enabled =
-                effective_series_primitives(&chart.config().draw_style, &config.render_type)
-                    .contour;
-            contour_spacings.push(preflight_contour_label_spacing(
-                config.series_id.as_str(),
-                &config.render_type,
-                contour_enabled,
-                scale,
-            )?);
-        }
         let orig = chart.config().chart_area.0;
         let w = ((orig.width as f32) * scale).round().max(1.0) as u32;
         let h = ((orig.height as f32) * scale).round().max(1.0) as u32;
@@ -10942,11 +11301,37 @@ impl Renderer {
                 style: st,
             })
             .collect();
-        let items = [ChartDrawItem {
+        let document = [ChartDrawItem {
             view: &view,
             chart_config: scaled_chart.config(),
             series: &series_objs,
         }];
+        // One expansion path with `prepare`: the layered document becomes one
+        // item per panel. A panel export keeps the base panel only.
+        let storage = PanelDrawStorage::expand(&document)?;
+        let mut items = storage.items();
+        if scope == ExportScope::Panel {
+            items.truncate(1);
+        }
+        let items = items.as_slice();
+        let mut contour_spacings = Vec::with_capacity(items.len());
+        for item in items {
+            let mut per_series = Vec::with_capacity(item.series.len());
+            for series in item.series {
+                let contour_enabled = effective_series_primitives(
+                    &item.chart_config.draw_style,
+                    &series.config.render_type,
+                )
+                .contour;
+                per_series.push(preflight_contour_label_spacing(
+                    series.config.series_id.as_str(),
+                    &series.config.render_type,
+                    contour_enabled,
+                    scale,
+                )?);
+            }
+            contour_spacings.push(per_series);
+        }
 
         // 3.5) Per-item prepare phase (transform uniform write + arc-prefix
         // dispatch) — submitted before the render pass below, so queue order
@@ -11007,7 +11392,7 @@ impl Renderer {
             export_format,
             export_sample_count,
         );
-        self.ensure_contour_label_pipelines(&items);
+        self.ensure_contour_label_pipelines(items);
         export_target_pipelines.ensure_precise_variants_for_items(
             &self.device,
             &self.transform_bgl,
@@ -11017,7 +11402,7 @@ impl Renderer {
             &self.field_bgl,
             self.contour_label_pipelines.as_ref(),
             export_format,
-            &items,
+            items,
         );
         export_target_pipelines.ensure_styles_for_items(
             &self.device,
@@ -11026,17 +11411,16 @@ impl Renderer {
             &self.style_bgl,
             &self.star_data_bgl,
             export_format,
-            &items,
+            items,
         );
         // Export renders immediately rather than handing out a token, so the
         // receipts have nothing to be held for.
-        let _ = self.ensure_field_scratches(&items)?;
-        let contour_spacings = [contour_spacings];
+        let _ = self.ensure_field_scratches(items)?;
         let (prepared_contours, _) =
-            self.ensure_contour_scratches(&items, scale, &contour_spacings)?;
-        let prepared_arcs = self.prepare_arc_items(&items)?;
+            self.ensure_contour_scratches(items, scale, &contour_spacings)?;
+        let prepared_arcs = self.prepare_arc_items(items)?;
         let (prepared_items, _) = self.resolve_prepared_items(
-            &items,
+            items,
             &prepared_arcs,
             &prepared_contours,
             &export_target_pipelines,
@@ -11374,13 +11758,52 @@ pub struct ChartView {
     grid_space_gen: Option<u64>,
     /// Tick-guard substitutions in the current raster, derived from the chart
     /// that `create_chart_view` or the last successful `refresh_axis*`
-    /// rasterized.
+    /// rasterized. On a layered view this is the merged list of every panel,
+    /// overlay warnings tagged `WarningAxis::OverlayY(index)`.
     render_warnings: Vec<crate::RenderWarning>,
+    /// One nested single-panel view per overlay layer, in `Config::overlays`
+    /// order. Each holds its own grid and decoration textures and transform
+    /// uniform; none nests further (one level of layering).
+    overlay_views: Vec<ChartView>,
+    /// What this panel's textures hold: the internal panel config, the
+    /// selection boxes composited into its decoration texture, the font
+    /// generation and the panel rect of the last raster. A refresh that
+    /// arrives with the same key uploads nothing, which is what keeps the
+    /// other layers' textures untouched when one layer is edited.
+    raster_key: Option<PanelRasterKey>,
+    /// Counts the rasters uploaded into this panel's textures.
+    raster_generation: u64,
+}
+
+/// Cache key of one panel's grid and decoration rasters.
+#[derive(Clone, PartialEq)]
+struct PanelRasterKey {
+    config: Config,
+    selection: Vec<crate::select::SelectionBox>,
+    font_generation: u64,
+    panel_rect: Rect,
 }
 
 impl ChartView {
     pub fn panel_rect(&self) -> Rect {
         self.panel_rect
+    }
+
+    /// The number of overlay layers this view holds textures for, which is
+    /// the overlay count of the config it was created or last refreshed with.
+    pub fn overlay_count(&self) -> usize {
+        self.overlay_views.len()
+    }
+
+    /// How many rasters have been uploaded into each panel's textures, base
+    /// panel first and then one entry per overlay. An edit of one layer
+    /// advances only that layer's entry (and the top panel's, when the
+    /// selection boxes it carries change); a frame that reuses a panel's
+    /// cached raster leaves its entry alone.
+    pub fn layer_raster_generations(&self) -> Vec<u64> {
+        std::iter::once(self.raster_generation)
+            .chain(self.overlay_views.iter().map(|view| view.raster_generation))
+            .collect()
     }
 
     /// The tick settings this view's current axis raster drew differently
@@ -11447,6 +11870,7 @@ pub struct ChartStyle {
 
 /// One drawable series — `data_config::SeriesConfig` (declarative) plus a
 /// `ChartStyle` (GPU uniform buffers). The unit of input to `Renderer::paint`.
+#[derive(Clone, Copy)]
 pub struct Series<'a> {
     /// Column ids + render type + label. Pure declaration, no GPU state.
     pub config: &'a SeriesConfig,
@@ -11485,6 +11909,11 @@ struct PrepareContext<'a> {
 
 impl PrepareContext<'_> {
     fn prepare(&mut self, items: &[ChartDrawItem<'_>]) -> Result<PreparedFrame> {
+        // One expansion path: a layered document becomes one item per panel
+        // here, so everything below sees single-layer panels only.
+        let storage = PanelDrawStorage::expand(items)?;
+        let items = storage.items();
+        let items = items.as_slice();
         let mut contour_spacings = Vec::with_capacity(items.len());
         for item in items {
             let mut per_series = Vec::with_capacity(item.series.len());
@@ -13314,6 +13743,143 @@ impl PrepareContext<'_> {
     }
 }
 
+/// The internal panels a document draws as, base first. A document without
+/// overlays is drawn exactly as it is written (no expansion, no data-area
+/// requirement), so every existing single-layer chart is unchanged; a layered
+/// document goes through `Config::expand`.
+fn expand_for_render(config: &Config) -> Result<Vec<Config>> {
+    if config.overlays.is_empty() {
+        let mut panel = config.clone();
+        panel.active_layer = crate::LayerRef::Base;
+        return Ok(vec![panel]);
+    }
+    if config.validate_overlays().is_err() {
+        return Err(FiggyError::InvalidConfig {
+            field: "overlays",
+            reason: "a series id may belong to at most one overlay layer",
+        });
+    }
+    match config.expand() {
+        Ok(expansion) => Ok(expansion
+            .panels
+            .into_iter()
+            .map(|panel| panel.config)
+            .collect()),
+        // No data area at this size (a preview squeezed below its margins):
+        // a single-layer chart draws its chrome and no data there, so a
+        // layered one draws its base panel the same way instead of failing
+        // the frame. The next larger size expands normally again.
+        Err(_) => {
+            let mut panel = config.clone();
+            panel.overlays.clear();
+            panel.active_layer = crate::LayerRef::Base;
+            Ok(vec![panel])
+        }
+    }
+}
+
+/// The view of each panel, base first. A view created or refreshed with
+/// fewer overlays than the document now has cannot draw it; refresh first.
+fn layer_views(view: &ChartView, panels: usize) -> Result<Vec<&ChartView>> {
+    if view.overlay_views.len() + 1 < panels {
+        return Err(FiggyError::StaleStateToken {
+            reason: format!(
+                "the chart view holds {} overlay layers but the document has {}; \
+                 refresh the view before drawing",
+                view.overlay_views.len(),
+                panels - 1
+            ),
+        });
+    }
+    Ok(std::iter::once(view)
+        .chain(view.overlay_views.iter())
+        .take(panels)
+        .collect())
+}
+
+/// The grid texture of one panel. An overlay panel in the Milkyway style gets
+/// a transparent texture: the backdrop is the base panel's.
+fn raster_grid_layer(config: &Config, overlay: bool, w: u32, h: u32) -> Result<Vec<u8>> {
+    if overlay && matches!(config.draw_style, DrawStyle::Milkyway(_)) {
+        return Ok(vec![0; (w as usize) * (h as usize) * 4]);
+    }
+    axis_render::try_raster_chart_layer_to_rgba(config, axis_render::AxisLayerKind::Grid)
+}
+
+/// Every panel's tick warnings as one list. An overlay panel reports only
+/// its own right axis, tagged with its layer; its hidden axes are copies of
+/// the base panel's and would repeat the base warnings.
+fn merged_render_warnings(panels: &[Config]) -> Vec<crate::RenderWarning> {
+    let mut merged = axis_render::tick_warnings(&panels[0]);
+    for (index, panel) in panels.iter().enumerate().skip(1) {
+        merged.extend(
+            axis_render::tick_warnings(panel)
+                .into_iter()
+                .filter(|warning| warning.axis() == crate::WarningAxis::RightY)
+                .map(|warning| warning.with_axis(crate::WarningAxis::OverlayY(index - 1))),
+        );
+    }
+    merged
+}
+
+/// What an export renders: one panel or the whole layered document.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExportScope {
+    Panel,
+    Document,
+}
+
+/// Owned storage for the internal panels of a prepare or export call: the
+/// expanded configs and each panel's slice of the series, so the per-panel
+/// `ChartDrawItem`s can borrow from one place. Expansion copies configuration
+/// only; the series entries are the caller's references.
+struct PanelDrawStorage<'a> {
+    configs: Vec<Config>,
+    series: Vec<Vec<Series<'a>>>,
+    views: Vec<&'a ChartView>,
+}
+
+impl<'a> PanelDrawStorage<'a> {
+    fn expand(items: &[ChartDrawItem<'a>]) -> Result<Self> {
+        let mut configs = Vec::new();
+        let mut series = Vec::new();
+        let mut views = Vec::new();
+        for item in items {
+            let panels = expand_for_render(item.chart_config)?;
+            let panel_views = layer_views(item.view, panels.len())?;
+            let mut partition: Vec<Vec<Series<'a>>> = vec![Vec::new(); panels.len()];
+            for entry in item.series {
+                let slot = match item.chart_config.layer_of_series(&entry.config.series_id) {
+                    crate::LayerRef::Overlay(index) => index + 1,
+                    crate::LayerRef::Base | crate::LayerRef::Annotations => 0,
+                };
+                partition[slot].push(*entry);
+            }
+            configs.extend(panels);
+            series.extend(partition);
+            views.extend(panel_views);
+        }
+        Ok(Self {
+            configs,
+            series,
+            views,
+        })
+    }
+
+    fn items(&self) -> Vec<ChartDrawItem<'_>> {
+        self.configs
+            .iter()
+            .zip(&self.series)
+            .zip(&self.views)
+            .map(|((chart_config, series), view)| ChartDrawItem {
+                view,
+                chart_config,
+                series,
+            })
+            .collect()
+    }
+}
+
 /// One chart panel to draw: view + chart config + series slice.
 pub struct ChartDrawItem<'a> {
     pub view: &'a ChartView,
@@ -14373,6 +14939,18 @@ impl<'w> WindowedRenderer<'w> {
         self.inner.set_chart_selection(id, selected)
     }
 
+    pub fn set_active_layer(
+        &mut self,
+        id: ChartId,
+        layer: crate::LayerRef,
+    ) -> Result<crate::LayerRef> {
+        self.inner.set_active_layer(id, layer)
+    }
+
+    pub fn active_layer(&self, id: ChartId) -> Result<crate::LayerRef> {
+        self.inner.active_layer(id)
+    }
+
     pub fn sync_external_invalidations(&mut self) -> Result<bool> {
         self.inner.sync_external_invalidations()
     }
@@ -14491,6 +15069,72 @@ impl<'w> WindowedRenderer<'w> {
         self.inner
             .export_panel_png_bytes_with_clear_async(chart, series, scale, clear)
             .await
+    }
+
+    pub async fn export_document_rgba_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<RasterImage> {
+        self.inner
+            .export_document_rgba_async(chart, series, scale)
+            .await
+    }
+
+    pub async fn export_document_rgba_with_clear_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+        clear: crate::color::Color,
+    ) -> Result<RasterImage> {
+        self.inner
+            .export_document_rgba_with_clear_async(chart, series, scale, clear)
+            .await
+    }
+
+    pub async fn export_document_png_bytes_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<Vec<u8>> {
+        self.inner
+            .export_document_png_bytes_async(chart, series, scale)
+            .await
+    }
+
+    pub async fn export_document_png_bytes_with_clear_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+        clear: crate::color::Color,
+    ) -> Result<Vec<u8>> {
+        self.inner
+            .export_document_png_bytes_with_clear_async(chart, series, scale, clear)
+            .await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export_document_rgba(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<RasterImage> {
+        self.inner.export_document_rgba(chart, series, scale)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export_document_png_bytes(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<Vec<u8>> {
+        self.inner.export_document_png_bytes(chart, series, scale)
     }
 
     /// Reconfigure the swap chain after a window resize. The caller is then

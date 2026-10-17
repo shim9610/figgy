@@ -240,10 +240,46 @@ pub(crate) fn validate_renderer_config(config: &Config) -> Result<()> {
         }
     }
 
+    // Overlay Y axes are ranges of the same kind, and the layer membership
+    // must be unambiguous before a series is drawn on one panel.
+    for overlay in &config.overlays {
+        let axis = &overlay.y_axis;
+        if !axis.min.is_finite() || !axis.max.is_finite() {
+            return Err(FiggyError::InvalidConfig {
+                field: "overlays.y_axis",
+                reason: "axis bounds must be finite",
+            });
+        }
+        if axis.max <= axis.min {
+            return Err(FiggyError::InvalidConfig {
+                field: "overlays.y_axis",
+                reason: "axis max must be greater than min",
+            });
+        }
+        if matches!(axis.scale, AxisScale::Logarithmic) && axis.min <= 0.0 {
+            return Err(FiggyError::InvalidConfig {
+                field: "overlays.y_axis",
+                reason: "logarithmic axis bounds must be positive",
+            });
+        }
+    }
+    config
+        .validate_overlays()
+        .map_err(|_| FiggyError::InvalidConfig {
+            field: "overlays",
+            reason: "a series id may belong to at most one overlay layer",
+        })?;
+
     config.validate().map_err(|_| FiggyError::InvalidConfig {
         field: "layout",
         reason: "margins and visual dimensions must produce a non-empty data area",
     })?;
+    if !config.overlays.is_empty() {
+        config.expand().map_err(|_| FiggyError::InvalidConfig {
+            field: "overlays",
+            reason: "the overlay layers must share one non-empty data area",
+        })?;
+    }
     Ok(())
 }
 
@@ -510,6 +546,58 @@ impl Chart {
             apply_axis_range(&mut c.left_y, min, max, log);
             apply_axis_range(&mut c.right_y, min, max, log);
         });
+    }
+
+    /// Set overlay layer `layer`'s Y range and derive its tick/label settings,
+    /// the overlay counterpart of [`Self::set_y_range`]. Log/linear branching
+    /// uses that axis' own scale. A `layer` past the overlay list is a no-op.
+    pub fn set_overlay_y_range(&mut self, layer: usize, min: f64, max: f64) {
+        let Some(log) = self
+            .config
+            .overlays
+            .get(layer)
+            .map(|overlay| matches!(overlay.y_axis.scale, AxisScale::Logarithmic))
+        else {
+            return;
+        };
+        self.with_axis_range_change(|c| {
+            if let Some(overlay) = c.overlays.get_mut(layer) {
+                apply_axis_range(&mut overlay.y_axis, min, max, log);
+            }
+        });
+    }
+
+    /// Fit overlay layer `layer`'s Y axis to a prepared [`FitExtent`] — see
+    /// [`Self::auto_fit_y_extent`]. A `layer` past the overlay list is a
+    /// no-op.
+    pub fn auto_fit_overlay_y_extent(&mut self, layer: usize, ext: &FitExtent, padding_ratio: f64) {
+        let Some((min, max)) = self
+            .config
+            .overlays
+            .get(layer)
+            .and_then(|overlay| fitted_axis_range(&overlay.y_axis, ext, padding_ratio))
+        else {
+            return;
+        };
+        self.set_overlay_y_range(layer, min, max);
+    }
+
+    /// Auto-fit overlay layer `layer`'s Y axis to the union range of the
+    /// given columns' cached statistics — the overlay counterpart of
+    /// [`Self::auto_fit_y_union`].
+    pub fn auto_fit_overlay_y_union(
+        &mut self,
+        pool: &ColumnPool,
+        layer: usize,
+        y_ids: &[&str],
+        padding_ratio: f64,
+    ) -> Result<()> {
+        let mut ext = FitExtent::EMPTY;
+        for id in y_ids {
+            ext.union(&Self::slot_extent(pool, id)?);
+        }
+        self.auto_fit_overlay_y_extent(layer, &ext, padding_ratio);
+        Ok(())
     }
 
     /// Pad `[min, max]` by `padding_ratio · (max - min)` on each side
