@@ -360,7 +360,7 @@ pub struct OverlayLegendElement {
 /// Carries no side of its own: the bar's `side` lives in `Config.colorbar`, and
 /// a copy here would be a mirror that can disagree with what is drawn. That is
 /// also why the resize handles map to screen-side edges
-/// ([`Element::ColorBarEdge`](crate::layout::Element::ColorBarEdge)) and let
+/// ([`Element::ColorBarEdge`]) and let
 /// nudge resolve which dimension each one drives.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ColorBarElement;
