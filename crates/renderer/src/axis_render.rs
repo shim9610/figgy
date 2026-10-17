@@ -2746,7 +2746,7 @@ mod tests {
         });
         let warned: Vec<_> = tick_warnings(&cfg)
             .iter()
-            .map(RenderWarning::axis)
+            .filter_map(RenderWarning::axis)
             .collect();
         assert_eq!(warned, [WarningAxis::BottomX, WarningAxis::BottomX]);
 
@@ -2782,7 +2782,7 @@ mod tests {
         }
         let warned: Vec<_> = tick_warnings(&cfg)
             .iter()
-            .map(RenderWarning::axis)
+            .filter_map(RenderWarning::axis)
             .collect();
         assert_eq!(
             warned,

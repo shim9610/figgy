@@ -346,6 +346,28 @@ impl Canvas {
         }
     }
 
+    /// Fill a closed polygon through `points` (non-zero winding). Fewer than
+    /// three finite points draw nothing.
+    pub fn fill_polygon(&mut self, points: &[(f32, f32)], paint: &Paint) {
+        if points.len() < 3 || points.iter().any(|(x, y)| !x.is_finite() || !y.is_finite()) {
+            return;
+        }
+        let mut pb = PathBuilder::new();
+        pb.move_to(points[0].0, points[0].1);
+        for &(x, y) in &points[1..] {
+            pb.line_to(x, y);
+        }
+        pb.close();
+        let Some(path) = pb.finish() else { return };
+        self.pix.fill_path(
+            &path,
+            &paint.shader_paint(),
+            tiny_skia::FillRule::Winding,
+            self.ts,
+            None,
+        );
+    }
+
     /// The current transform's translation, or `None` when it rotates/scales.
     pub fn translation(&self) -> Option<(f32, f32)> {
         let t = self.ts;

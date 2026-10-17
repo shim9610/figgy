@@ -10,7 +10,13 @@ pub mod decoration;
 pub mod default;
 pub mod drag;
 pub use decoration::{DecorationElement, DecorationId, DecorationLayout, DecorationOffset};
+pub mod annotation;
 pub mod layer;
+pub use annotation::{
+    Anchor, AnchorKind, Annotation, AnnotationAxis, AnnotationElement, AnnotationHandle,
+    AnnotationKind, AnnotationLineStyle, AnnotationSpace, ArrowStyle, AxisMap, AxisSpace, BoxStyle,
+    PixelSpace,
+};
 pub use layer::{AnnotationLayer, LayerRef};
 pub mod format;
 pub mod layout;

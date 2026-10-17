@@ -500,6 +500,7 @@ impl RadialChart {
     /// device limits, label layout and GPU budget when preparing a frame.
     pub fn validate(&self) -> Result<(), &'static str> {
         self.decorations.validate()?;
+        self.annotations.validate()?;
         self.resolved_title().validate()?;
         total(&self.slices)?;
         if !kind(self.kind) || !self.start_angle_degrees.is_finite() {

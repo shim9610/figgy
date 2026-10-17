@@ -336,6 +336,7 @@ impl CategoricalChart {
     }
     pub fn validate(&self) -> Result<(), &'static str> {
         self.decorations.validate()?;
+        self.annotations.validate()?;
         self.resolved_title().validate()?;
         let n = self.categories.len();
         let m = self.series.len();

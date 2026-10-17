@@ -734,6 +734,31 @@ boolean, unlike the Cartesian two-axis navigation method. `drag(target, dx,
 dy, handle)` accepts a resize handle such as `"SE"`, or `null` for a move.
 Keep the object alive until all async calls finish; `free()` releases its GPU resources.
 
+Both classes expose the annotation layer with the same method set:
+`annotations()` (drawn items as JSON: `index`, `id`, `element`, `kind`,
+selection `rect` and `handles`, `selected`), `hit_annotation(x, y)` (the
+topmost item index or `undefined`), `select_annotation(index | null)` and
+`selected_annotation()`, `annotation_handle(index, x, y)` (the live handle's
+compass name, e.g. `"W"`), `drag_annotation(index, dx, dy, handle | null)`
+(returns `false` for a rejected move), `add_annotation(json)` (returns the new
+index), `set_annotation(index, json)`, `remove_annotation(index)`,
+`set_annotations_visible(bool)`, `pointer_to_anchor(x, y, "Data" | "Ratio")`
+(the `Anchor` JSON at a point, or `null`) and `annotation_warnings()`
+(`[{index, reason}]` for items the raster skipped). Item JSON is the
+`Annotation` shape of the config document (see the
+[JSON schema](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md)).
+Coordinates are the same as the class's other hit methods: document logical
+pixels on `FiggyBoundedChart`, physical canvas pixels on `FiggyChart`. On
+`FiggyBoundedChart` the selection is `decorations.selected`; on `FiggyChart`
+it is host state like the decoration selection, and selecting an annotation
+clears the decoration selection and vice versa. A bounded chart with a visible
+span is drawn with the frame's `HostClear` background and the chart background
+as the clear colour, so the underlay shows below the bars; charts without one
+keep the opaque frame and white clear they always had. Routing `on_press` /
+`hit_decoration` to annotations by `active_layer` follows the overlay layers
+(#11); until then hosts query `hit_annotation` first when the annotation tool
+is active.
+
 For Cartesian hosts, `FiggyChart.decoration_bounds(id)` returns measured bounds
 and resize handles in physical canvas pixels. `step_selection(dx, dy)` navigates
 resident point, histogram or matrix selections using source indices, without

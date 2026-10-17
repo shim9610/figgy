@@ -2277,6 +2277,8 @@ mod web {
             view_dirty: false,
             redraw_pending: true,
             last_presented_stamp: None,
+            selected_annotation: None,
+            annotation_selection_dirty: false,
         };
 
         emit_init_progress(
@@ -2858,6 +2860,11 @@ mod web {
         redraw_pending: bool,
         /// Renderer-issued identity of the state last presented onscreen.
         last_presented_stamp: Option<ChartRenderStamp>,
+        /// The annotation whose selection box the overlay draws. Host state
+        /// like the decoration selection; not part of the config JSON.
+        selected_annotation: Option<usize>,
+        /// The annotation selection changed since the overlay was drawn.
+        annotation_selection_dirty: bool,
     }
 
     impl FiggyChart {
@@ -3217,6 +3224,32 @@ mod web {
             }
             Ok(())
         }
+    }
+
+    /// The variant name of an annotation kind, as its JSON key.
+    pub(crate) fn annotation_kind_name(kind: &renderer::AnnotationKind) -> &'static str {
+        match kind {
+            renderer::AnnotationKind::ReferenceLine { .. } => "ReferenceLine",
+            renderer::AnnotationKind::Span { .. } => "Span",
+            renderer::AnnotationKind::Text { .. } => "Text",
+            renderer::AnnotationKind::Arrow { .. } => "Arrow",
+        }
+    }
+
+    /// `RenderWarning::AnnotationSkipped` entries as `[{index, reason}]`.
+    pub(crate) fn annotation_warnings_json(
+        warnings: &[renderer::RenderWarning],
+    ) -> Result<String, JsValue> {
+        let values = warnings
+            .iter()
+            .filter_map(|w| match w {
+                renderer::RenderWarning::AnnotationSkipped { index, reason } => {
+                    Some(serde_json::json!({ "index": index, "reason": format!("{reason:?}") }))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        serde_json::to_string(&values).map_err(js_err)
     }
 
     impl Drop for FiggyChart {
@@ -5216,6 +5249,204 @@ mod web {
                 .map(|el| el.element_id())
         }
 
+        fn set_selected_annotation(&mut self, selected: Option<usize>) {
+            if self.selected_annotation != selected {
+                self.selected_annotation = selected;
+                self.annotation_selection_dirty = true;
+                self.redraw_pending = true;
+            }
+        }
+
+        fn annotation_hit_id(&self, index: usize) -> Result<HitId, JsValue> {
+            self.view
+                .annotation_map()
+                .find(index)
+                .ok_or_else(|| js_err("annotation is not drawn in the current frame"))
+        }
+
+        // ---- annotation layer ----
+
+        /// The drawn annotations of the current frame as JSON: `index`, `id`,
+        /// `kind`, the selection box `rect` and its `handles` in physical
+        /// canvas pixels, and `selected`. Items the raster skipped are
+        /// absent here and listed by `annotation_warnings`.
+        pub fn annotations(&self) -> Result<String, JsValue> {
+            let map = self.view.annotation_map();
+            let items = &self.chart_config().annotations.items;
+            let values = map
+                .entries()
+                .filter_map(|(id, e)| {
+                    let item = items.get(e.index)?;
+                    let b = map.selection_box(id)?;
+                    Some(serde_json::json!({
+                        "index": e.index,
+                        "id": item.id,
+                        "element": e.id().element_id(),
+                        "kind": annotation_kind_name(&item.kind),
+                        "rect": [b.rect.x, b.rect.y, b.rect.width, b.rect.height],
+                        "handles": b.handles.iter().map(|r| vec![r.x, r.y, r.width, r.height]).collect::<Vec<_>>(),
+                        "selected": self.selected_annotation == Some(e.index),
+                    }))
+                })
+                .collect::<Vec<_>>();
+            serde_json::to_string(&values).map_err(js_err)
+        }
+
+        /// The topmost drawn annotation under a point in physical canvas
+        /// pixels, as its index.
+        pub fn hit_annotation(&self, x: f32, y: f32) -> Option<u32> {
+            let map = self.view.annotation_map();
+            let id = map.hit_test([x, y])?;
+            map.element(id).map(|e| e.index as u32)
+        }
+
+        /// Select one annotation (its box and handles are drawn on the
+        /// overlay) or none. Selecting an annotation clears the decoration
+        /// selection; selecting a decoration with `on_press` clears this.
+        pub fn select_annotation(&mut self, index: Option<u32>) -> Result<(), JsValue> {
+            let index = index.map(|i| i as usize);
+            if let Some(i) = index
+                && i >= self.chart_config().annotations.items.len()
+            {
+                return Err(js_err("unknown annotation"));
+            }
+            if index.is_some() && self.chart_selection().is_some() {
+                self.renderer
+                    .set_chart_selection(self.chart_id, None)
+                    .map_err(js_err)?;
+            }
+            self.set_selected_annotation(index);
+            Ok(())
+        }
+
+        pub fn selected_annotation(&self) -> Option<u32> {
+            self.selected_annotation.map(|i| i as u32)
+        }
+
+        /// The compass name (`"W"`, `"E"`, ...) of the annotation's handle
+        /// under a point, or none. Only the handles `annotations` lists are
+        /// live: a span's two edges, a line's two value handles, an arrow's
+        /// two endpoints.
+        pub fn annotation_handle(&self, index: u32, x: f32, y: f32) -> Option<String> {
+            let id = self.annotation_hit_id(index as usize).ok()?;
+            self.view
+                .annotation_map()
+                .hit_resize_handle(id, [x, y])
+                .map(|h| format!("{h:?}"))
+        }
+
+        /// Move an annotation, or one of its handles, by a pointer delta in
+        /// physical canvas pixels. The delta is converted back into the
+        /// item's anchors through the frame's anchor space and written to
+        /// the config; a move that would leave the plot or panel is rejected
+        /// and returns `false`.
+        pub fn drag_annotation(
+            &mut self,
+            index: u32,
+            dx: f32,
+            dy: f32,
+            handle: Option<String>,
+        ) -> Result<bool, JsValue> {
+            if !dx.is_finite() || !dy.is_finite() {
+                return Err(js_err("drag must be finite"));
+            }
+            use ModelResizeHandle::*;
+            let id = self.annotation_hit_id(index as usize)?;
+            let map = self.view.annotation_map();
+            let mut config = self.chart_config().clone();
+            let result = if let Some(name) = handle {
+                let h = [N, S, W, E, NW, NE, SW, SE]
+                    .into_iter()
+                    .find(|h| format!("{h:?}") == name)
+                    .ok_or_else(|| js_err("unknown resize handle"))?;
+                map.resize_by(&mut config.annotations, id, h, dx, dy)
+            } else {
+                map.drag_by(&mut config.annotations, id, dx, dy)
+            };
+            if result != Some(NudgeResult::Moved) {
+                return Ok(false);
+            }
+            self.replace_chart_config(config)?;
+            Ok(true)
+        }
+
+        /// Append an `Annotation` (JSON, the same shape as in `get_config`)
+        /// and return its index.
+        pub fn add_annotation(&mut self, json: &str) -> Result<u32, JsValue> {
+            let item: renderer::Annotation = serde_json::from_str(json).map_err(js_err)?;
+            let mut config = self.chart_config().clone();
+            config.annotations.items.push(item);
+            let index = config.annotations.items.len() - 1;
+            self.replace_chart_config(config)?;
+            Ok(index as u32)
+        }
+
+        /// Replace the annotation at `index` with an `Annotation` JSON value.
+        pub fn set_annotation(&mut self, index: u32, json: &str) -> Result<(), JsValue> {
+            let item: renderer::Annotation = serde_json::from_str(json).map_err(js_err)?;
+            let mut config = self.chart_config().clone();
+            let slot = config
+                .annotations
+                .items
+                .get_mut(index as usize)
+                .ok_or_else(|| js_err("unknown annotation"))?;
+            *slot = item;
+            self.replace_chart_config(config)
+        }
+
+        /// Remove the annotation at `index`. Later items move down one
+        /// index; the selection follows or clears.
+        pub fn remove_annotation(&mut self, index: u32) -> Result<(), JsValue> {
+            let index = index as usize;
+            let mut config = self.chart_config().clone();
+            if index >= config.annotations.items.len() {
+                return Err(js_err("unknown annotation"));
+            }
+            config.annotations.items.remove(index);
+            self.replace_chart_config(config)?;
+            let selected = match self.selected_annotation {
+                Some(i) if i == index => None,
+                Some(i) if i > index => Some(i - 1),
+                other => other,
+            };
+            self.set_selected_annotation(selected);
+            Ok(())
+        }
+
+        /// Show or hide the whole annotation layer. Hiding skips the two
+        /// composite draws and re-rasterizes nothing.
+        pub fn set_annotations_visible(&mut self, visible: bool) -> Result<(), JsValue> {
+            let mut config = self.chart_config().clone();
+            config.annotations.visible = visible;
+            self.replace_chart_config(config)
+        }
+
+        /// The anchor (`Anchor` JSON) at a point in physical canvas pixels,
+        /// as `"Data"` or `"Ratio"`, for placing a new text box or arrow
+        /// where the user clicked. `null` when the point has no data
+        /// position (outside a log axis, or the chart has no value axes).
+        pub fn pointer_to_anchor(&self, x: f32, y: f32, kind: &str) -> Result<String, JsValue> {
+            let kind = match kind {
+                "Data" => renderer::AnchorKind::Data,
+                "Ratio" => renderer::AnchorKind::Ratio,
+                _ => return Err(js_err("anchor kind must be \"Data\" or \"Ratio\"")),
+            };
+            use renderer::AnnotationSpace;
+            let anchor = self
+                .view
+                .annotation_map()
+                .space()
+                .px_to_anchor([x, y], kind);
+            serde_json::to_string(&anchor).map_err(js_err)
+        }
+
+        /// Annotations the current raster skipped, as `[{index, reason}]`
+        /// with `reason` one of `NonFinite`, `NoValueAxis`, `OutOfRange`,
+        /// `EmptyText`.
+        pub fn annotation_warnings(&self) -> Result<String, JsValue> {
+            annotation_warnings_json(self.view.render_warnings())
+        }
+
         /// Renderer-measured decoration bounds in physical canvas pixels.
         pub fn decoration_bounds(&self, target: &str) -> Result<String, JsValue> {
             let (config, _, _) = self.display_config();
@@ -5694,6 +5925,9 @@ mod web {
                     .set_chart_selection(self.chart_id, new_sel)
                     .map_err(js_err)?;
             }
+            if new_sel.is_some() {
+                self.set_selected_annotation(None);
+            }
             self.resizing = None;
             self.dragging = dragging;
             Ok(new_sel.is_some())
@@ -5811,6 +6045,12 @@ mod web {
                 .map_err(js_err)?;
             let renderer_dirty = current_stamp.needs_draw_since(self.last_presented_stamp.as_ref());
             let raster_dirty = current_stamp.needs_raster_since(self.last_presented_stamp.as_ref());
+            // The annotation layer has its own raster revision: an item edit
+            // or a changed annotation selection redraws the two annotation
+            // textures only; `refresh_axis` redoes them with the axis raster.
+            let annotation_dirty = current_stamp
+                .needs_annotation_raster_since(self.last_presented_stamp.as_ref())
+                || self.annotation_selection_dirty;
             let decision = frame_decision(
                 renderer_dirty,
                 raster_dirty,
@@ -5865,6 +6105,18 @@ mod web {
                     )
                     .map_err(js_err)?;
             }
+            if (annotation_dirty && !refresh_raster)
+                || self.view.annotation_selected() != self.selected_annotation
+            {
+                self.renderer
+                    .refresh_annotations(
+                        &mut self.view,
+                        &display_chart,
+                        panel_rect,
+                        self.selected_annotation,
+                    )
+                    .map_err(js_err)?;
+            }
 
             if self.renderer.is_streaming_chart(self.chart_id) {
                 self.renderer
@@ -5911,6 +6163,7 @@ mod web {
             // renderer-issued onscreen stamp. Any earlier failure leaves the
             // frame dirty so the next persistent rAF retries it.
             consume_successful_frame(&mut self.view_dirty, &mut self.redraw_pending);
+            self.annotation_selection_dirty = false;
             self.last_presented_stamp = Some(current_stamp);
             Ok(())
         }

@@ -12,6 +12,9 @@ pub(super) struct Layout {
     pub annotations: Vec<u8>,
     pub decorations: DecorationMap,
     pub targets: Vec<RadialTarget>,
+    /// Anchor space for the annotation layer: the plot area with no value
+    /// axes, so only ratio anchors can be placed on a radial chart.
+    pub space: crate::annotation::PixelSpace,
 }
 fn width(c: &RadialChart, text: &str, size: f32) -> f32 {
     measure_plain_text(
@@ -63,6 +66,22 @@ pub(super) fn layout(
         annotations: Vec::new(),
         decorations: DecorationPainter::new(&chart.decorations, size, scale, false).finish(),
         targets: Vec::new(),
+        space: crate::annotation::PixelSpace {
+            panel: crate::layout::RectF {
+                x: 0.,
+                y: 0.,
+                width: w,
+                height: h,
+            },
+            plot: crate::layout::RectF {
+                x: 0.,
+                y: 0.,
+                width: w,
+                height: h,
+            },
+            x: crate::annotation::AxisSpace::NONE,
+            y: crate::annotation::AxisSpace::NONE,
+        },
     };
     let title = crate::bounded_title::TitleLayout::new(chart.resolved_title(), scale, true);
     let top = title.top;
@@ -78,6 +97,7 @@ pub(super) fn layout(
         .resolve_data_area(automatic_area)
         .map_err(RadialError::Invalid)?;
     decorations.add(DecorationId::DataArea, automatic_area);
+    out.space.plot = area;
     let (top, bottom) = (area.y, area.y + area.height);
 
     title

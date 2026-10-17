@@ -381,3 +381,14 @@ cargo run -p figgy-renderer --example radial_gallery -- target/radial-gallery
 데이터 도형의 `hit_test`와 별도로 `frame.decorations()`가 렌더러에서 측정한 히트맵을 제공한다.
 기존 `Selectable`·`Draggable` 계약으로 `chart.decorations`를 갱신하고 `prepare`한다.
 좌표 단위, 요소별 이동 규칙, 캐시·저장 복원 및 웹 연결은 [공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)를 참고한다.
+
+
+### 주석 층
+
+`chart.annotations`의 텍스트 상자와 화살표는 프레임 위에 별도 패스로 그린다. 원형 차트에는 값 축이
+없으므로 `Anchor::Ratio`(플롯 영역 비율)만 배치할 수 있고, `Anchor::Data`와 기준선·구간은
+`RenderWarning::AnnotationSkipped { reason: NoValueAxis }`로 보고하고 건너뛴다.
+`renderer.prepare_annotations(chart, size, scale)`가 돌려주는 `BoundedAnnotationFrame`을
+`draw_underlay` → `frame.draw` → `draw_overlay` 순서로 그리고, 히트 맵은 `annotations()`로
+얻는다. 주석 편집과 `decorations.selected = Annotation(i)` 선택은 프레임과 라벨 래스터를 다시 만들지
+않는다. 자세한 계약은 [공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer)를 참고한다.

@@ -755,6 +755,10 @@ impl Config {
             picked_data.contour_width_extra_px *= s;
         }
 
+        // Annotation strokes, text and box padding are pixel dims; their
+        // values and anchors are data or plot fractions and stay put.
+        self.annotations.scale_in_place(s);
+
         // The colourbar's axis goes through the same helper as the four chart
         // axes — a new pixel field on `AxisOptions` must not be scalable on the
         // chart axes and silently fixed on the colourbar's. `length_frac` is a

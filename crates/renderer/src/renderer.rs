@@ -125,6 +125,26 @@ pub fn fit_display_panel(logical_size: (u32, u32), surface_size: (u32, u32)) -> 
     )
 }
 
+/// The annotation raster of a chart at its config's scale: the config
+/// already carries export or display scaling in its pixel dims, exactly as
+/// the axis raster is drawn, so the annotation raster is drawn at 1:1.
+fn annotation_raster_for_chart(
+    chart: &Chart,
+    selected: Option<usize>,
+) -> crate::annotation::AnnotationRaster {
+    let config = chart.config();
+    let area = config.chart_area.0;
+    crate::annotation::rasterize(&crate::annotation::RasterRequest {
+        layer: &config.annotations,
+        space: crate::annotation::pixel_space_for_config(config),
+        origin: [area.x as f32, area.y as f32],
+        size: (area.width.max(1), area.height.max(1)),
+        scale: 1.0,
+        selected,
+        policy: crate::text_render::FontPolicy::for_style(&config.draw_style),
+    })
+}
+
 /// Derive the scaled display config and centered panel for a surface.
 pub fn display_config_for_surface(
     config: &Config,
@@ -527,6 +547,7 @@ pub struct ChartRenderStamp {
     chart_id: ChartId,
     desired: RenderRevision,
     raster: RenderRevision,
+    annotation: RenderRevision,
 }
 
 impl ChartRenderStamp {
@@ -539,6 +560,20 @@ impl ChartRenderStamp {
             previous.renderer_identity != self.renderer_identity
                 || previous.chart_id != self.chart_id
                 || previous.raster != self.raster
+        })
+    }
+
+    /// Whether the annotation layer's rasters must be redone since
+    /// `previous`: an edit of `annotations.items`. A `refresh_axis` redoes
+    /// them as well, so a host that refreshes the axis raster needs no
+    /// separate annotation refresh for the same frame; otherwise it calls
+    /// [`Renderer::refresh_annotations`]. Toggling `annotations.visible`
+    /// never sets this: it only skips the composite.
+    pub fn needs_annotation_raster_since(&self, previous: Option<&Self>) -> bool {
+        previous.is_none_or(|previous| {
+            previous.renderer_identity != self.renderer_identity
+                || previous.chart_id != self.chart_id
+                || previous.annotation != self.annotation
         })
     }
 }
@@ -670,7 +705,8 @@ fn selection_config_revision(
 /// - `picked_points` / `picked_data` are the GPU selection overlay
 ///   (`selection_config_revision`).
 /// - `active_layer` only routes interaction; `annotations` is the dedicated
-///   annotation layer, composited by its own pass.
+///   annotation layer, rasterized by its own pass under its own revision
+///   (`annotation_config_revision`).
 fn raster_config_equal(left: &Config, right: &Config) -> bool {
     let Config {
         chart_area,
@@ -698,6 +734,22 @@ fn raster_config_equal(left: &Config, right: &Config) -> bool {
         && legend == &right.legend
         && colorbar == &right.colorbar
         && draw_style == &right.draw_style
+}
+
+/// The annotation raster revision follows the layer's items only. Its
+/// `visible` flag skips the composite without touching any texture, and the
+/// anchor space (axes, data area) is chrome, so a change there already bumps
+/// the raster revision whose refresh redoes the annotation rasters too.
+fn annotation_config_revision(
+    current: RenderRevision,
+    before: &Config,
+    after: &Config,
+) -> Result<RenderRevision> {
+    if before.annotations.items != after.annotations.items {
+        current.successor("chart annotation revision")
+    } else {
+        Ok(current)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -801,6 +853,11 @@ struct ChartRevisions {
     view: RenderRevision,
     selection: RenderRevision,
     raster: RenderRevision,
+    /// The annotation layer's own raster revision: follows
+    /// `annotations.items` only, so an annotation edit re-rasterizes the two
+    /// annotation textures and nothing else, and a `visible` toggle
+    /// re-rasterizes nothing.
+    annotation: RenderRevision,
 }
 
 impl ChartRevisions {
@@ -813,6 +870,7 @@ impl ChartRevisions {
             view: revision,
             selection: revision,
             raster: revision,
+            annotation: revision,
         }
     }
 }
@@ -1983,12 +2041,73 @@ struct PreparedSeries {
 struct PreparedView {
     grid_bind_group: wgpu::BindGroup,
     decoration_bind_group: wgpu::BindGroup,
+    /// The annotation layer's textures, `None` where the layer drew nothing
+    /// on that side; skipped entirely while the layer is hidden.
+    annotation_underlay_bind_group: Option<wgpu::BindGroup>,
+    annotation_overlay_bind_group: Option<wgpu::BindGroup>,
+    annotations_visible: bool,
     _grid_charge: crate::gpu_memory::SharedCharge,
     _decoration_charge: crate::gpu_memory::SharedCharge,
+    _annotation_charges: Vec<crate::gpu_memory::SharedCharge>,
     _transform_charge: crate::gpu_memory::SharedCharge,
     content_revision: Arc<std::sync::atomic::AtomicU64>,
     expected_content_revision: u64,
     panel_rect: Rect,
+}
+
+impl PreparedView {
+    /// Snapshot a view's bindings. `annotations_visible` comes from the
+    /// chart config at prepare time, so toggling the layer needs no refresh.
+    fn capture(
+        view: &ChartView,
+        expected_content_revision: u64,
+        annotations_visible: bool,
+    ) -> Self {
+        Self {
+            grid_bind_group: view.grid_bind_group.clone(),
+            decoration_bind_group: view.decoration_bind_group.clone(),
+            annotation_underlay_bind_group: view
+                .annotation_underlay
+                .as_ref()
+                .map(|l| l.bind_group.clone()),
+            annotation_overlay_bind_group: view
+                .annotation_overlay
+                .as_ref()
+                .map(|l| l.bind_group.clone()),
+            annotations_visible,
+            _grid_charge: view.grid_texture.shared_charge(),
+            _decoration_charge: view.decoration_texture.shared_charge(),
+            _annotation_charges: view
+                .annotation_underlay
+                .iter()
+                .chain(view.annotation_overlay.iter())
+                .map(|l| l.texture.shared_charge())
+                .collect(),
+            _transform_charge: view.transform_buffer.shared_charge(),
+            content_revision: Arc::clone(&view.content_revision),
+            expected_content_revision,
+            panel_rect: view.panel_rect,
+        }
+    }
+
+    fn annotation_layers<'a>(
+        &'a self,
+        pipeline: &'a wgpu::RenderPipeline,
+    ) -> (Option<AxisLayer<'a>>, Option<AxisLayer<'a>>) {
+        if !self.annotations_visible {
+            return (None, None);
+        }
+        let layer = |bind_group: &'a Option<wgpu::BindGroup>| {
+            bind_group.as_ref().map(|bind_group| AxisLayer {
+                pipeline,
+                bind_group,
+            })
+        };
+        (
+            layer(&self.annotation_underlay_bind_group),
+            layer(&self.annotation_overlay_bind_group),
+        )
+    }
 }
 
 /// Complete owned render input for one panel.
@@ -6541,6 +6660,7 @@ impl Renderer {
             chart_id: id,
             desired: state.revisions.desired,
             raster: state.revisions.raster,
+            annotation: state.revisions.annotation,
         })
     }
 
@@ -6663,6 +6783,8 @@ impl Renderer {
         next_revisions.config = config_revision;
         next_revisions.selection =
             selection_config_revision(state.revisions.selection, &state.config, &config)?;
+        next_revisions.annotation =
+            annotation_config_revision(state.revisions.annotation, &state.config, &config)?;
         next_revisions.view = view;
         next_revisions.raster = raster;
 
@@ -6800,6 +6922,8 @@ impl Renderer {
         next_revisions.config = config_revision;
         next_revisions.selection =
             selection_config_revision(state.revisions.selection, &state.config, &config)?;
+        next_revisions.annotation =
+            annotation_config_revision(state.revisions.annotation, &state.config, &config)?;
         next_revisions.series = series_revision;
         next_revisions.data = data;
         next_revisions.view = view;
@@ -10012,6 +10136,19 @@ impl Renderer {
             &self.sampler,
         );
 
+        // Annotation layer: two optional textures from one shared raster pass.
+        let annotations = annotation_raster_for_chart(chart, None);
+        let annotation_underlay = annotations
+            .underlay
+            .as_deref()
+            .map(|rgba| self.create_layer_texture(rgba, w, h))
+            .transpose()?;
+        let annotation_overlay = annotations
+            .overlay
+            .as_deref()
+            .map(|rgba| self.create_layer_texture(rgba, w, h))
+            .transpose()?;
+
         let t = data_render::scatter_transform_from_config(chart.config());
         let transform_buffer = TrackedBuffer::new(
             &self.gpu_ledger,
@@ -10024,19 +10161,138 @@ impl Renderer {
             &transform_buffer,
         );
 
-        Ok(ChartView {
+        let mut view = ChartView {
             grid_texture: grid_tex,
             grid_bind_group: grid_bg,
             decoration_texture: dec_tex,
             decoration_bind_group: dec_bg,
+            annotation_underlay,
+            annotation_overlay,
+            annotation_map: annotations.map,
+            annotation_selected: None,
+            layer_stamps: ChartViewLayerStamps {
+                grid: 1,
+                decoration: 1,
+                annotations: 1,
+            },
             transform_buffer,
             transform_bg,
             content_revision: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             stream_revision: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             panel_rect,
             grid_space_gen: None,
-            render_warnings: axis_render::tick_warnings(chart.config()),
+            tick_warnings: axis_render::tick_warnings(chart.config()),
+            render_warnings: Vec::new(),
+        };
+        view.rebuild_render_warnings();
+        Ok(view)
+    }
+
+    /// Upload one panel-sized raster as a texture with its bind group.
+    fn create_layer_texture(
+        &self,
+        rgba: &[u8],
+        w: u32,
+        h: u32,
+    ) -> Result<crate::annotation::LayerTexture> {
+        let texture = TrackedTexture::new(
+            &self.gpu_ledger,
+            GpuResourceKind::PanelTexture,
+            data_render::upload_rgba_texture(
+                &self.device,
+                &self.queue,
+                self.caps.max_texture_dimension_2d,
+                w,
+                h,
+                rgba,
+            )?,
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = data_render::create_texture_bind_group(
+            &self.device,
+            &self.texture_bgl,
+            &view,
+            &self.sampler,
+        );
+        Ok(crate::annotation::LayerTexture {
+            texture,
+            bind_group,
         })
+    }
+
+    /// Re-rasterize only the annotation layer of `view` from `chart`:
+    /// the underlay and overlay textures, the annotation hit map and the
+    /// annotation warnings. The grid and decoration textures are not
+    /// touched, so an annotation edit never rewrites axis labels. `selected`
+    /// is the annotation whose selection box the overlay draws; the view
+    /// remembers it for the next `refresh_axis*`.
+    ///
+    /// Call it when [`ChartRenderStamp::needs_annotation_raster_since`] says
+    /// the items changed or when the annotation selection changed. A panel
+    /// rect that differs from the view's moves the anchor space as well, so
+    /// that case refreshes every layer like [`Self::refresh_axis`].
+    pub fn refresh_annotations(
+        &mut self,
+        view: &mut ChartView,
+        chart: &Chart,
+        panel_rect: Rect,
+        selected: Option<usize>,
+    ) -> Result<()> {
+        view.annotation_selected = selected;
+        if view.panel_rect != panel_rect {
+            return self.refresh_axis(view, chart, panel_rect);
+        }
+        view.advance_content_revision()?;
+        self.refresh_annotation_layers(view, chart, panel_rect)
+    }
+
+    fn refresh_annotation_layers(
+        &self,
+        view: &mut ChartView,
+        chart: &Chart,
+        panel_rect: Rect,
+    ) -> Result<()> {
+        let w = panel_rect.width.max(1);
+        let h = panel_rect.height.max(1);
+        let raster = annotation_raster_for_chart(chart, view.annotation_selected);
+        self.refresh_optional_layer(
+            &mut view.annotation_underlay,
+            raster.underlay.as_deref(),
+            w,
+            h,
+        )?;
+        self.refresh_optional_layer(
+            &mut view.annotation_overlay,
+            raster.overlay.as_deref(),
+            w,
+            h,
+        )?;
+        view.annotation_map = raster.map;
+        view.layer_stamps.annotations += 1;
+        view.rebuild_render_warnings();
+        Ok(())
+    }
+
+    fn refresh_optional_layer(
+        &self,
+        slot: &mut Option<crate::annotation::LayerTexture>,
+        rgba: Option<&[u8]>,
+        w: u32,
+        h: u32,
+    ) -> Result<()> {
+        match (slot.as_mut(), rgba) {
+            (Some(layer), Some(rgba)) => {
+                self.refresh_one_layer(&mut layer.texture, &mut layer.bind_group, rgba, w, h)
+            }
+            (None, Some(rgba)) => {
+                *slot = Some(self.create_layer_texture(rgba, w, h)?);
+                Ok(())
+            }
+            (_, None) => {
+                *slot = None;
+                Ok(())
+            }
+        }
     }
 
     /// Write only the data transform uniform; leave axis/grid/decorations unchanged.
@@ -10130,6 +10386,7 @@ impl Renderer {
                     h,
                 )?;
                 view.grid_space_gen = Some(cache.bake_gen);
+                view.layer_stamps.grid += 1;
             }
         } else {
             let grid_rgba = axis_render::try_raster_chart_layer_to_rgba(
@@ -10144,6 +10401,7 @@ impl Renderer {
                 h,
             )?;
             view.grid_space_gen = None;
+            view.layer_stamps.grid += 1;
         }
 
         self.refresh_one_layer(
@@ -10153,8 +10411,13 @@ impl Renderer {
             w,
             h,
         )?;
+        view.layer_stamps.decoration += 1;
         view.panel_rect = panel_rect;
-        view.render_warnings = axis_render::tick_warnings(chart.config());
+        view.tick_warnings = axis_render::tick_warnings(chart.config());
+        // The anchor space follows the axes and the data area, which this
+        // refresh may have moved, so the annotation layer is redone here as
+        // well; its own revision covers item edits between axis refreshes.
+        self.refresh_annotation_layers(view, chart, panel_rect)?;
 
         Ok(())
     }
@@ -10524,19 +10787,13 @@ impl Renderer {
                     data: state.revisions.data,
                 });
                 frame.items.push(PreparedItem {
-                    view: PreparedView {
-                        grid_bind_group: item.view.grid_bind_group.clone(),
-                        decoration_bind_group: item.view.decoration_bind_group.clone(),
-                        _grid_charge: item.view.grid_texture.shared_charge(),
-                        _decoration_charge: item.view.decoration_texture.shared_charge(),
-                        _transform_charge: item.view.transform_buffer.shared_charge(),
-                        content_revision: Arc::clone(&item.view.content_revision),
-                        expected_content_revision: item
-                            .view
+                    view: PreparedView::capture(
+                        item.view,
+                        item.view
                             .content_revision
                             .load(std::sync::atomic::Ordering::Acquire),
-                        panel_rect: item.view.panel_rect,
-                    },
+                        state.config.annotations.visible,
+                    ),
                     data_area: state
                         .config
                         .data_area()
@@ -10885,6 +11142,8 @@ impl Renderer {
             }
             let panel_rect = item.view.panel_rect;
             let series_list: Vec<_> = item.series.iter().map(PreparedSeries::layers).collect();
+            let (annotation_underlay, annotation_overlay) =
+                item.view.annotation_layers(&item.axis_pipeline);
 
             // The single style decision per panel: the chart's `DrawStyle`
             // resolves to a cached styled pipeline set (compiled by the
@@ -10901,11 +11160,13 @@ impl Renderer {
                     pipeline: &item.axis_pipeline,
                     bind_group: &item.view.grid_bind_group,
                 },
+                annotation_underlay,
                 &series_list,
                 AxisLayer {
                     pipeline: &item.axis_pipeline,
                     bind_group: &item.view.decoration_bind_group,
                 },
+                annotation_overlay,
             );
         }
         Ok(())
@@ -11541,6 +11802,16 @@ pub struct ChartView {
     grid_bind_group: wgpu::BindGroup,
     decoration_texture: TrackedTexture,
     decoration_bind_group: wgpu::BindGroup,
+    /// The annotation layer: spans below the data, everything else above
+    /// every decoration. `None` where the layer drew nothing on that side.
+    /// Refreshed by `refresh_axis*` (the anchor space may have moved) and by
+    /// `refresh_annotations` (the items changed); never by anything else.
+    annotation_underlay: Option<crate::annotation::LayerTexture>,
+    annotation_overlay: Option<crate::annotation::LayerTexture>,
+    annotation_map: crate::annotation::AnnotationMap,
+    /// The annotation whose selection box the overlay carries.
+    annotation_selected: Option<usize>,
+    layer_stamps: ChartViewLayerStamps,
     transform_buffer: TrackedBuffer,
     transform_bg: wgpu::BindGroup,
     content_revision: Arc<std::sync::atomic::AtomicU64>,
@@ -11553,15 +11824,69 @@ pub struct ChartView {
     /// uploaded into `grid_texture` (`None` = non-cached content). Lets
     /// `refresh_axis` skip the full-panel texture write on cache hits.
     grid_space_gen: Option<u64>,
-    /// Tick-guard substitutions in the current raster, derived from the chart
-    /// that `create_chart_view` or the last successful `refresh_axis*`
+    /// Tick-guard substitutions in the current axis raster, derived from the
+    /// chart that `create_chart_view` or the last successful `refresh_axis*`
     /// rasterized.
+    tick_warnings: Vec<crate::RenderWarning>,
+    /// `tick_warnings` followed by the annotation layer's skipped items.
     render_warnings: Vec<crate::RenderWarning>,
+}
+
+/// How many times each raster layer of a [`ChartView`] has been written,
+/// starting at 1 for the view's creation. Lets a host or a test prove that a
+/// refresh touched only the layer it was asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ChartViewLayerStamps {
+    pub grid: u64,
+    pub decoration: u64,
+    pub annotations: u64,
 }
 
 impl ChartView {
     pub fn panel_rect(&self) -> Rect {
         self.panel_rect
+    }
+
+    /// Renderer-measured annotation hit map of the current annotation
+    /// raster, in the chart's own coordinates (the chart area's frame).
+    /// Rebuilt by `refresh_axis*` and `refresh_annotations`; a `HitId` from
+    /// it is valid until the next of those calls.
+    pub fn annotation_map(&self) -> &crate::annotation::AnnotationMap {
+        &self.annotation_map
+    }
+
+    /// The annotation whose selection box the overlay currently carries, as
+    /// last passed to [`Renderer::refresh_annotations`].
+    pub fn annotation_selected(&self) -> Option<usize> {
+        self.annotation_selected
+    }
+
+    pub fn layer_stamps(&self) -> ChartViewLayerStamps {
+        self.layer_stamps
+    }
+
+    fn rebuild_render_warnings(&mut self) {
+        self.render_warnings = self
+            .tick_warnings
+            .iter()
+            .chain(self.annotation_map.warnings())
+            .cloned()
+            .collect();
+    }
+
+    /// Bind groups of the annotation textures for the stream display
+    /// composition, which draws underlay and overlay itself.
+    pub(crate) fn annotation_bind_groups(
+        &self,
+        visible: bool,
+    ) -> (Option<&wgpu::BindGroup>, Option<&wgpu::BindGroup>) {
+        if !visible {
+            return (None, None);
+        }
+        (
+            self.annotation_underlay.as_ref().map(|l| &l.bind_group),
+            self.annotation_overlay.as_ref().map(|l| &l.bind_group),
+        )
     }
 
     /// The tick settings this view's current axis raster drew differently
@@ -11576,6 +11901,10 @@ impl ChartView {
     /// [`ChartRenderStamp::needs_raster_since`] says the raster changed reads
     /// it right after that refresh. Compare with the previous list to report
     /// changes only; a NaN `requested` never compares equal.
+    ///
+    /// The tick warnings are followed by the annotation layer's
+    /// `AnnotationSkipped` warnings, re-derived by `refresh_annotations` and
+    /// by every `refresh_axis*` (the latter redoes the annotation raster).
     pub fn render_warnings(&self) -> &[crate::RenderWarning] {
         &self.render_warnings
     }
@@ -12595,16 +12924,11 @@ impl PrepareContext<'_> {
             }
 
             prepared.push(PreparedItem {
-                view: PreparedView {
-                    grid_bind_group: item.view.grid_bind_group.clone(),
-                    decoration_bind_group: item.view.decoration_bind_group.clone(),
-                    _grid_charge: item.view.grid_texture.shared_charge(),
-                    _decoration_charge: item.view.decoration_texture.shared_charge(),
-                    _transform_charge: item.view.transform_buffer.shared_charge(),
-                    content_revision: Arc::clone(&item.view.content_revision),
-                    expected_content_revision: prepared_arc.view_revision,
-                    panel_rect: item.view.panel_rect,
-                },
+                view: PreparedView::capture(
+                    item.view,
+                    prepared_arc.view_revision,
+                    item.chart_config.annotations.visible,
+                ),
                 data_area: item
                     .chart_config
                     .data_area()
@@ -14701,6 +15025,17 @@ impl<'w> WindowedRenderer<'w> {
     ) -> Result<()> {
         self.inner
             .refresh_axis_with_selection(view, chart, panel_rect, selection)
+    }
+
+    pub fn refresh_annotations(
+        &mut self,
+        view: &mut ChartView,
+        chart: &Chart,
+        panel_rect: Rect,
+        selected: Option<usize>,
+    ) -> Result<()> {
+        self.inner
+            .refresh_annotations(view, chart, panel_rect, selected)
     }
 
     pub fn update_transform(&mut self, view: &ChartView, chart: &Chart) -> Result<()> {

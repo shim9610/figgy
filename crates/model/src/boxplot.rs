@@ -399,6 +399,7 @@ impl BoxPlotChart {
     }
     pub fn validate(&self) -> Result<(), &'static str> {
         self.decorations.validate()?;
+        self.annotations.validate()?;
         self.resolved_title().validate()?;
         let (n, m) = (self.categories.len(), self.series.len());
         if n == 0 || n > MAX_BOX_CATEGORIES || m == 0 || m > MAX_BOX_SERIES || n * m > MAX_BOXES {
