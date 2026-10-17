@@ -10178,7 +10178,14 @@ impl Renderer {
         if view.raster_key.as_ref() == Some(&key) {
             // Same raster: the revisions still advance so a token prepared
             // before this call is retired, exactly as for a real rewrite.
+            // The Milkyway backdrop keeps its own cache and stamp: a view
+            // created with a direct grid raster adopts the shared bake here.
             view.advance_content_revision()?;
+            if let crate::config::DrawStyle::Milkyway(c) = &config.draw_style
+                && !overlay
+            {
+                self.refresh_space_backdrop(view, config, c, w, h)?;
+            }
             return Ok(());
         }
 
@@ -10200,36 +10207,7 @@ impl Renderer {
         if let crate::config::DrawStyle::Milkyway(c) = &config.draw_style
             && !overlay
         {
-            let key = SpaceBgKey {
-                w,
-                h,
-                nebula: c.nebula.to_bits(),
-                dust: c.dust.to_bits(),
-                seed: c.seed,
-            };
-            if !self.space_bg.as_ref().is_some_and(|s| s.key == key) {
-                let rgba = axis_render::try_raster_chart_layer_to_rgba(
-                    config,
-                    axis_render::AxisLayerKind::Grid,
-                )?;
-                let bake_gen = self.space_bg.as_ref().map_or(1, |s| s.bake_gen + 1);
-                self.space_bg = Some(SpaceBgCache {
-                    key,
-                    bake_gen,
-                    rgba,
-                });
-            }
-            let cache = self.space_bg.as_ref().expect("space_bg baked above");
-            if view.grid_space_gen != Some(cache.bake_gen) {
-                self.refresh_one_layer(
-                    &mut view.grid_texture,
-                    &mut view.grid_bind_group,
-                    &cache.rgba,
-                    w,
-                    h,
-                )?;
-                view.grid_space_gen = Some(cache.bake_gen);
-            }
+            self.refresh_space_backdrop(view, config, c, w, h)?;
         } else {
             let grid_rgba = raster_grid_layer(config, overlay, w, h)?;
             self.refresh_one_layer(
@@ -10254,6 +10232,50 @@ impl Renderer {
         view.raster_key = Some(key);
         view.raster_generation = view.raster_generation.wrapping_add(1);
 
+        Ok(())
+    }
+
+    /// Bake the Milkyway backdrop for `(w, h, nebula, dust, seed)` unless the
+    /// renderer already holds it, and upload it into the view's grid texture
+    /// unless the view already holds that generation.
+    fn refresh_space_backdrop(
+        &mut self,
+        view: &mut ChartView,
+        config: &Config,
+        c: &crate::config::MilkywayOptions,
+        w: u32,
+        h: u32,
+    ) -> Result<()> {
+        let key = SpaceBgKey {
+            w,
+            h,
+            nebula: c.nebula.to_bits(),
+            dust: c.dust.to_bits(),
+            seed: c.seed,
+        };
+        if !self.space_bg.as_ref().is_some_and(|s| s.key == key) {
+            let rgba = axis_render::try_raster_chart_layer_to_rgba(
+                config,
+                axis_render::AxisLayerKind::Grid,
+            )?;
+            let bake_gen = self.space_bg.as_ref().map_or(1, |s| s.bake_gen + 1);
+            self.space_bg = Some(SpaceBgCache {
+                key,
+                bake_gen,
+                rgba,
+            });
+        }
+        let cache = self.space_bg.as_ref().expect("space_bg baked above");
+        if view.grid_space_gen != Some(cache.bake_gen) {
+            self.refresh_one_layer(
+                &mut view.grid_texture,
+                &mut view.grid_bind_group,
+                &cache.rgba,
+                w,
+                h,
+            )?;
+            view.grid_space_gen = Some(cache.bake_gen);
+        }
         Ok(())
     }
 
@@ -10566,6 +10588,9 @@ impl Renderer {
         let mut resident = Vec::new();
         let mut displays = Vec::new();
         let mut streamed = Vec::new();
+        // Prepared items a resident chart contributes: one per panel of its
+        // layered document (`expand_for_render`); zero for a streamed chart.
+        let mut panel_counts = Vec::new();
         resident
             .try_reserve_exact(items.len())
             .map_err(allocation)?;
@@ -10575,11 +10600,19 @@ impl Renderer {
         streamed
             .try_reserve_exact(items.len())
             .map_err(allocation)?;
+        panel_counts
+            .try_reserve_exact(items.len())
+            .map_err(allocation)?;
         self.sync_external_invalidations()?;
         self.service_stream_requests();
         for item in items {
-            self.chart_config(item.chart_id)?;
+            let config = self.chart_config(item.chart_id)?;
             let active = self.chart_has_stream_surface(item.chart_id);
+            panel_counts.push(if active {
+                0
+            } else {
+                render_panel_count(config)
+            });
             if active {
                 self.preflight_chart_stream_display(item.chart_id, item.view)?;
             }
@@ -10604,13 +10637,13 @@ impl Renderer {
         let mut resident_items = std::mem::take(&mut frame.items).into_iter();
         frame
             .items
-            .try_reserve_exact(items.len())
+            .try_reserve_exact(items.len() - resident.len() + panel_counts.iter().sum::<usize>())
             .map_err(allocation)?;
         frame
             .registered_charts
             .try_reserve_exact(items.len() - resident.len())
             .map_err(allocation)?;
-        for (item, display) in items.iter().zip(displays) {
+        for (item, (display, count)) in items.iter().zip(displays.into_iter().zip(panel_counts)) {
             if let Some(display) = display {
                 let state = self
                     .chart_states
@@ -10645,11 +10678,13 @@ impl Renderer {
                     stream_display: Some(display),
                 });
             } else {
-                frame.items.push(resident_items.next().ok_or(
-                    streaming_runtime::StreamRequestError::Scheduler(
-                        crate::streaming::StreamError::WrongState,
-                    ),
-                )?);
+                for _ in 0..count {
+                    frame.items.push(resident_items.next().ok_or(
+                        streaming_runtime::StreamRequestError::Scheduler(
+                            crate::streaming::StreamError::WrongState,
+                        ),
+                    )?);
+                }
             }
         }
         Ok(frame)
@@ -11309,7 +11344,7 @@ impl Renderer {
         // One expansion path with `prepare`: the layered document becomes one
         // item per panel. A panel export keeps the base panel only.
         let storage = PanelDrawStorage::expand(&document)?;
-        let mut items = storage.items();
+        let mut items = storage.items(&document);
         if scope == ExportScope::Panel {
             items.truncate(1);
         }
@@ -11912,7 +11947,7 @@ impl PrepareContext<'_> {
         // One expansion path: a layered document becomes one item per panel
         // here, so everything below sees single-layer panels only.
         let storage = PanelDrawStorage::expand(items)?;
-        let items = storage.items();
+        let items = storage.items(items);
         let items = items.as_slice();
         let mut contour_spacings = Vec::with_capacity(items.len());
         for item in items {
@@ -13833,10 +13868,16 @@ enum ExportScope {
 /// expanded configs and each panel's slice of the series, so the per-panel
 /// `ChartDrawItem`s can borrow from one place. Expansion copies configuration
 /// only; the series entries are the caller's references.
+///
+/// Only layered items are materialized here; a single-layer item is drawn
+/// through the caller's own references, so a frame without overlays
+/// allocates nothing for expansion.
 struct PanelDrawStorage<'a> {
     configs: Vec<Config>,
     series: Vec<Vec<Series<'a>>>,
     views: Vec<&'a ChartView>,
+    /// Panels per layered source item, in source order.
+    counts: Vec<usize>,
 }
 
 impl<'a> PanelDrawStorage<'a> {
@@ -13844,7 +13885,11 @@ impl<'a> PanelDrawStorage<'a> {
         let mut configs = Vec::new();
         let mut series = Vec::new();
         let mut views = Vec::new();
+        let mut counts = Vec::new();
         for item in items {
+            if item.chart_config.overlays.is_empty() {
+                continue;
+            }
             let panels = expand_for_render(item.chart_config)?;
             let panel_views = layer_views(item.view, panels.len())?;
             let mut partition: Vec<Vec<Series<'a>>> = vec![Vec::new(); panels.len()];
@@ -13855,6 +13900,7 @@ impl<'a> PanelDrawStorage<'a> {
                 };
                 partition[slot].push(*entry);
             }
+            counts.push(panels.len());
             configs.extend(panels);
             series.extend(partition);
             views.extend(panel_views);
@@ -13863,20 +13909,46 @@ impl<'a> PanelDrawStorage<'a> {
             configs,
             series,
             views,
+            counts,
         })
     }
 
-    fn items(&self) -> Vec<ChartDrawItem<'_>> {
-        self.configs
-            .iter()
-            .zip(&self.series)
-            .zip(&self.views)
-            .map(|((chart_config, series), view)| ChartDrawItem {
-                view,
-                chart_config,
-                series,
-            })
-            .collect()
+    /// The per-panel draw items of `source` (the items `expand` was given),
+    /// in source order: a single-layer item as it is, a layered item as its
+    /// expanded panels.
+    fn items<'s>(&'s self, source: &'s [ChartDrawItem<'a>]) -> Vec<ChartDrawItem<'s>> {
+        let mut out = Vec::with_capacity(source.len() + self.configs.len());
+        let mut counts = self.counts.iter();
+        let mut next = 0;
+        for item in source {
+            if item.chart_config.overlays.is_empty() {
+                out.push(ChartDrawItem {
+                    view: item.view,
+                    chart_config: item.chart_config,
+                    series: item.series,
+                });
+                continue;
+            }
+            let count = *counts.next().expect("one count per layered item");
+            for index in next..next + count {
+                out.push(ChartDrawItem {
+                    view: self.views[index],
+                    chart_config: &self.configs[index],
+                    series: &self.series[index],
+                });
+            }
+            next += count;
+        }
+        out
+    }
+}
+
+/// How many panels `config` draws as; see [`expand_for_render`].
+fn render_panel_count(config: &Config) -> usize {
+    if config.overlays.is_empty() {
+        1
+    } else {
+        expand_for_render(config).map_or(1, |panels| panels.len())
     }
 }
 
