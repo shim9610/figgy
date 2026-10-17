@@ -757,9 +757,18 @@ impl Config {
         self.legend.padding *= s;
         scale_rich_text(&mut self.legend.content, s);
 
-        // Overlay layers carry their own axis and optional legend; both are
-        // pixel-dimensioned like the parent's and scale by the same rules.
+        // Overlay layers carry their own axis, optional legend and optional
+        // area; all are pixel-dimensioned like the parent's and scale by the
+        // same rules.
         for overlay in &mut self.overlays {
+            // An area of its own scales by the same rounding as the parent's,
+            // so a layer area equal to the parent's stays equal.
+            if let Some(area) = overlay.chart_area.as_mut() {
+                area.0.x = scale_u32(area.0.x);
+                area.0.y = scale_u32(area.0.y);
+                area.0.width = scale_u32(area.0.width);
+                area.0.height = scale_u32(area.0.height);
+            }
             scale_axis_in_place(&mut overlay.y_axis, s);
             if let Some(legend) = overlay.legend.as_mut() {
                 legend.offset_x *= s;

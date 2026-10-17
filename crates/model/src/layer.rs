@@ -76,6 +76,11 @@ impl AnnotationLayer {
 /// One overlay layer of a Cartesian document: a second Y axis drawn on the
 /// right side of the shared data area, with the series that are scaled by it.
 ///
+/// A layer with its own `chart_area` is drawn in that rectangle instead of
+/// on top of the parent: a subplot. Layers whose areas are equal are drawn on
+/// top of each other in that area, exactly as layers without an area are
+/// drawn on top of the parent. The document covers the union of every area.
+///
 /// An overlay holds only what may differ from the parent `Config`: its Y
 /// axis, the ids of the series it owns and an optional legend of its own. The
 /// chart area, both X axes, the chart title, the shared legend, the grid, the
@@ -109,6 +114,19 @@ pub struct OverlayLayer {
     /// means the parent's single merged legend lists every layer's series.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub legend: Option<crate::legend::Legend>,
+    /// The rectangle this layer is drawn in, in the same surface coordinates
+    /// as the parent's `chart_area`. `None` (the default, key absent in JSON)
+    /// draws the layer on top of the parent's area, as before the field
+    /// existed; an area equal to the parent's is the same thing.
+    ///
+    /// A layer with an area of its own is a subplot. The first layer of an
+    /// area (lowest index) draws its `y_axis` on the left together with the
+    /// grid and copies of the parent's two X axes (one X range, one style);
+    /// later layers of the same area draw their axes on the right of it, as
+    /// overlays of the parent do. The parent's title, merged legend,
+    /// colourbar and annotation layer stay in the parent's area.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub chart_area: Option<crate::layout::ChartArea>,
 }
 
 impl Default for OverlayLayer {
@@ -119,6 +137,7 @@ impl Default for OverlayLayer {
             y_axis: crate::default::default_axis_options_y(),
             series: Vec::new(),
             legend: None,
+            chart_area: None,
         }
     }
 }
@@ -176,6 +195,7 @@ mod tests {
         assert_eq!(layer.y_axis, crate::default::default_axis_options_y());
         assert!(layer.series.is_empty());
         assert!(layer.legend.is_none());
+        assert!(layer.chart_area.is_none());
         assert!(!layer.owns_series("a"));
         let layer = OverlayLayer {
             series: vec!["a".into()],
@@ -192,17 +212,28 @@ mod tests {
         assert!(json.get("y_axis").is_some());
         assert!(json.get("series").is_none(), "{json}");
         assert!(json.get("legend").is_none(), "{json}");
+        assert!(json.get("chart_area").is_none(), "{json}");
         let back: OverlayLayer = serde_json::from_value(json).unwrap();
         assert_eq!(back, OverlayLayer::default());
 
         let layer = OverlayLayer {
             series: vec!["pressure".into()],
             legend: Some(crate::default::default_legend()),
+            chart_area: Some(crate::layout::ChartArea(crate::layout::Rect {
+                x: 0,
+                y: 240,
+                width: 640,
+                height: 200,
+            })),
             ..Default::default()
         };
         let json = serde_json::to_value(&layer).unwrap();
         assert_eq!(json["series"], serde_json::json!(["pressure"]));
         assert!(json["legend"].is_object());
+        assert_eq!(
+            json["chart_area"],
+            serde_json::json!({"x": 0, "y": 240, "width": 640, "height": 200})
+        );
         let back: OverlayLayer = serde_json::from_value(json).unwrap();
         assert_eq!(back, layer);
         // A document written with only the axis still parses.

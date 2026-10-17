@@ -29,6 +29,24 @@
 //! - Expansion ignores `active_layer`; the panels always carry `Base`. The
 //!   document's one annotation layer stays on the base panel, anchored in
 //!   the parent's axes; overlay panels carry an empty one.
+//!
+//! Layers with an area of their own (`OverlayLayer::chart_area` set to a
+//! rectangle other than the parent's) are subplots. Layers with equal areas
+//! form one area group drawn on top of each other there; the rules above
+//! apply inside the group with its first layer (the lowest index) in the
+//! parent's place:
+//!
+//! - The first layer's panel draws its `y_axis` as the left axis, the
+//!   parent's grid and the parent's two X axes as they are written (the X
+//!   range and style exist once, on the parent). It draws no title and no
+//!   colourbar, and its top band carries no title margin.
+//! - Each later layer of the group is drawn like an overlay of the parent:
+//!   hidden X axes, a hidden left axis carrying its own range, its `y_axis`
+//!   on the right.
+//! - The group's margins are the X axes' bands, the first layer's Y band on
+//!   the left and the widest of the parent's right band and the later
+//!   layers' bands on the right, so every panel of the group shares one data
+//!   area. A detached group never widens the parent's right band.
 
 use crate::config::{AxisOptions, Config, TickVisibility};
 use crate::default::{
@@ -36,7 +54,7 @@ use crate::default::{
     default_colorbar_options, default_grid_options, default_legend,
 };
 use crate::layer::{AnnotationLayer, LayerRef};
-use crate::layout::{DataArea, LayoutError, Margins, Side};
+use crate::layout::{ChartArea, DataArea, LayoutError, Margins, Rect, Side};
 
 /// One internal panel of an expanded document.
 #[derive(Clone, Debug, PartialEq)]
@@ -62,6 +80,29 @@ impl Expansion {
     /// for the annotation layer, which has no panel of its own.
     pub fn panel(&self, layer: LayerRef) -> Option<&ExpandedPanel> {
         self.panels.iter().find(|panel| panel.layer == layer)
+    }
+}
+
+/// Where an overlay layer is drawn relative to the other layers of its area.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OverlayPlacement {
+    /// On top of the parent's area; its axis is on the right.
+    OnParent,
+    /// The first layer of an area of its own: its axis is on the left and
+    /// its panel draws the grid and the X axes of that area.
+    AreaLead,
+    /// A later layer of an area of its own, drawn on top of the area's first
+    /// layer (`lead`); its axis is on the right.
+    OnArea { lead: usize },
+}
+
+impl OverlayPlacement {
+    /// The side its `y_axis` is drawn on.
+    pub fn y_side(self) -> Side {
+        match self {
+            Self::AreaLead => Side::Left,
+            Self::OnParent | Self::OnArea { .. } => Side::Right,
+        }
     }
 }
 
@@ -111,9 +152,96 @@ impl Config {
         Ok(())
     }
 
+    /// The area overlay `index` is drawn in: its own `chart_area`, or the
+    /// parent's when it has none. Panics when `index` is out of range.
+    pub fn overlay_area(&self, index: usize) -> ChartArea {
+        self.overlays[index]
+            .chart_area
+            .clone()
+            .unwrap_or_else(|| self.chart_area.clone())
+    }
+
+    /// `true` when overlay `index` exists and is drawn in an area other than
+    /// the parent's (a subplot).
+    pub fn overlay_is_detached(&self, index: usize) -> bool {
+        self.overlays
+            .get(index)
+            .and_then(|overlay| overlay.chart_area.as_ref())
+            .is_some_and(|area| *area != self.chart_area)
+    }
+
+    /// Where overlay `index` is drawn, or `None` when it does not exist.
+    pub fn overlay_placement(&self, index: usize) -> Option<OverlayPlacement> {
+        let overlay = self.overlays.get(index)?;
+        if !self.overlay_is_detached(index) {
+            return Some(OverlayPlacement::OnParent);
+        }
+        let lead = self
+            .overlays
+            .iter()
+            .position(|other| other.chart_area == overlay.chart_area)
+            .unwrap_or(index);
+        Some(if lead == index {
+            OverlayPlacement::AreaLead
+        } else {
+            OverlayPlacement::OnArea { lead }
+        })
+    }
+
+    /// The rectangle the whole document covers: the union of the parent's
+    /// `chart_area` and every overlay's own area. Equal to `chart_area` for
+    /// a document without subplots. Export renders this rectangle and a
+    /// display fits it to the surface.
+    pub fn document_area(&self) -> Rect {
+        let mut union = self.chart_area.0;
+        for area in self.overlays.iter().filter_map(|o| o.chart_area.as_ref()) {
+            let x0 = union.x.min(area.x);
+            let y0 = union.y.min(area.y);
+            let x1 = (union.x + union.width).max(area.x + area.width);
+            let y1 = (union.y + union.height).max(area.y + area.height);
+            union = Rect {
+                x: x0,
+                y: y0,
+                width: x1 - x0,
+                height: y1 - y0,
+            };
+        }
+        union
+    }
+
+    /// Move the parent's `chart_area` and every overlay's own area by
+    /// `(dx, dy)` together, so their relative layout is kept. Coordinates
+    /// saturate at zero; a document placed at the origin by
+    /// [`Self::document_area`] never needs to.
+    pub fn translate_areas(&mut self, dx: i64, dy: i64) {
+        let shift = |rect: &mut Rect| {
+            rect.x = (i64::from(rect.x) + dx).clamp(0, i64::from(u32::MAX)) as u32;
+            rect.y = (i64::from(rect.y) + dy).clamp(0, i64::from(u32::MAX)) as u32;
+        };
+        shift(&mut self.chart_area.0);
+        for area in self
+            .overlays
+            .iter_mut()
+            .filter_map(|o| o.chart_area.as_mut())
+        {
+            shift(&mut area.0);
+        }
+    }
+
+    /// The data area overlay `index` is drawn against: the parent's for a
+    /// layer on the parent, else its area group's.
+    pub fn overlay_data_area(&self, index: usize) -> Result<DataArea, LayoutError> {
+        match self.overlay_placement(index) {
+            None => Err(LayoutError::Infeasible),
+            Some(OverlayPlacement::OnParent) => self.data_area(),
+            Some(OverlayPlacement::AreaLead) => self.area_lead_panel(index)?.data_area(),
+            Some(OverlayPlacement::OnArea { lead }) => self.area_lead_panel(lead)?.data_area(),
+        }
+    }
+
     /// Expand the document into its internal panels. See the module
-    /// documentation for the rules. Fails when the layout has no data area or
-    /// when overlays share a series id.
+    /// documentation for the rules. Fails when the layout or an area group
+    /// has no data area or when overlays share a series id.
     pub fn expand(&self) -> Result<Expansion, LayoutError> {
         self.validate_overlays()
             .map_err(|_| LayoutError::Infeasible)?;
@@ -127,7 +255,7 @@ impl Config {
         for index in 0..self.overlays.len() {
             panels.push(ExpandedPanel {
                 layer: LayerRef::Overlay(index),
-                config: self.overlay_panel_with(index, &group, &data_area)?,
+                config: self.overlay_panel_checked(index, &group, &data_area)?,
             });
         }
         Ok(Expansion { panels, data_area })
@@ -141,8 +269,101 @@ impl Config {
             return None;
         }
         let data_area = self.data_area().ok()?;
-        self.overlay_panel_with(index, &self.margins(), &data_area)
+        self.overlay_panel_checked(index, &self.margins(), &data_area)
             .ok()
+    }
+
+    /// The panel of overlay `index` by its placement; `group` and `data_area`
+    /// are the parent's and serve the layers on the parent.
+    fn overlay_panel_checked(
+        &self,
+        index: usize,
+        group: &Margins,
+        data_area: &DataArea,
+    ) -> Result<Config, LayoutError> {
+        match self.overlay_placement(index) {
+            None => Err(LayoutError::Infeasible),
+            Some(OverlayPlacement::OnParent) => self.overlay_panel_with(index, group, data_area),
+            Some(OverlayPlacement::AreaLead) => self.area_lead_panel(index),
+            Some(OverlayPlacement::OnArea { lead }) => {
+                let lead_panel = self.area_lead_panel(lead)?;
+                let area_data = lead_panel.data_area()?;
+                let mut panel = self.area_layer_panel(index, lead);
+                align_margins(&mut panel, &lead_panel.margins(), &area_data)?;
+                Ok(panel)
+            }
+        }
+    }
+
+    /// The right band of the area group led by `lead`: the widest of the
+    /// parent's right band and every later member's band.
+    fn area_right_band(&self, lead: usize) -> f32 {
+        let band = |axis: &AxisOptions| axis.out_margin + axis.major_tick_length;
+        let area = &self.overlays[lead].chart_area;
+        self.overlays
+            .iter()
+            .enumerate()
+            .skip(lead + 1)
+            .filter(|(_, overlay)| overlay.chart_area == *area)
+            .fold(band(&self.right_y), |widest, (_, overlay)| {
+                widest.max(band(&overlay.y_axis))
+            })
+    }
+
+    /// Panel of the first layer of an area group. Its margins are the
+    /// group's by construction, so its `data_area()` is the group's.
+    fn area_lead_panel(&self, index: usize) -> Result<Config, LayoutError> {
+        let overlay = &self.overlays[index];
+        let mut panel = self.area_panel_common(index);
+        // The parent's X axes are drawn as written; the transform reads them.
+        panel.top_x = self.top_x.clone();
+        panel.bottom_x = self.bottom_x.clone();
+        panel.left_y = overlay.y_axis.clone();
+        // A hidden right axis carries only the group's right band.
+        let mut right = hidden_axis(&overlay.y_axis, default_axis_options_y());
+        right.major_tick_length = self.right_y.major_tick_length;
+        right.out_margin = self.area_right_band(index) - right.major_tick_length;
+        panel.right_y = right;
+        panel.grid = self.grid.clone();
+        retain_layer_picks(&mut panel, self, LayerRef::Overlay(index));
+        panel.data_area()?;
+        Ok(panel)
+    }
+
+    /// Panel of a later layer of the area group led by `lead`, before its
+    /// margins are aligned to the group's.
+    fn area_layer_panel(&self, index: usize, lead: usize) -> Config {
+        let overlay = &self.overlays[index];
+        let mut panel = self.area_panel_common(index);
+        panel.top_x = hidden_axis(&self.top_x, default_axis_options_x());
+        panel.bottom_x = hidden_axis(&self.bottom_x, default_axis_options_x());
+        let mut left = hidden_axis(&overlay.y_axis, default_axis_options_y());
+        left.out_margin = self.overlays[lead].y_axis.out_margin;
+        left.major_tick_length = self.overlays[lead].y_axis.major_tick_length;
+        panel.left_y = left;
+        panel.right_y = overlay.y_axis.clone();
+        panel.grid = hidden_grid();
+        retain_layer_picks(&mut panel, self, LayerRef::Overlay(index));
+        panel
+    }
+
+    /// What every panel of an area group shares: the layer's area, no
+    /// overlays, no annotation layer, no title band, the layer's own legend
+    /// and the z mapping without the strip.
+    fn area_panel_common(&self, index: usize) -> Config {
+        let overlay = &self.overlays[index];
+        let mut panel = self.clone();
+        panel.overlays.clear();
+        panel.active_layer = LayerRef::Base;
+        panel.annotations = AnnotationLayer::default();
+        panel.chart_area = self.overlay_area(index);
+        let mut title = default_chart_title_options();
+        title.visible = false;
+        title.top_margin = 0.0;
+        panel.chart_title = title;
+        panel.legend = layer_legend(overlay.legend.as_ref());
+        panel.colorbar = self.colorbar.as_ref().map(hidden_colorbar);
+        panel
     }
 
     fn base_panel(&self, group: &Margins, data_area: &DataArea) -> Result<Config, LayoutError> {
@@ -178,40 +399,53 @@ impl Config {
         left.major_tick_length = self.left_y.major_tick_length;
         panel.left_y = left;
         panel.right_y = overlay.y_axis.clone();
-        let mut grid = default_grid_options();
-        grid.show_major_x = false;
-        grid.show_major_y = false;
-        grid.show_minor_x = false;
-        grid.show_minor_y = false;
-        panel.grid = grid;
+        panel.grid = hidden_grid();
         let mut title = default_chart_title_options();
         title.visible = false;
         title.top_margin = self.chart_title.top_margin;
         panel.chart_title = title;
-        panel.legend = match &overlay.legend {
-            Some(legend) => legend.clone(),
-            None => {
-                let mut legend = default_legend();
-                legend.visible = false;
-                legend
-            }
-        };
+        panel.legend = layer_legend(overlay.legend.as_ref());
         // The colourbar is drawn once, by the base panel; the overlay panel
         // keeps only the z mapping its field series read.
-        panel.colorbar = self.colorbar.as_ref().map(|bar| {
-            let mut hidden = default_colorbar_options();
-            hidden.visible = false;
-            hidden.axis.scale = bar.axis.scale.clone();
-            hidden.axis.min = bar.axis.min;
-            hidden.axis.max = bar.axis.max;
-            hidden.colormap = bar.colormap.clone();
-            hidden.nan_color = bar.nan_color;
-            hidden
-        });
+        panel.colorbar = self.colorbar.as_ref().map(hidden_colorbar);
         retain_layer_picks(&mut panel, self, LayerRef::Overlay(index));
         align_margins(&mut panel, group, data_area)?;
         Ok(panel)
     }
+}
+
+/// A grid with every line off.
+fn hidden_grid() -> crate::config::GridOptions {
+    let mut grid = default_grid_options();
+    grid.show_major_x = false;
+    grid.show_major_y = false;
+    grid.show_minor_x = false;
+    grid.show_minor_y = false;
+    grid
+}
+
+/// A layer's own legend, or a hidden canonical one.
+fn layer_legend(legend: Option<&crate::legend::Legend>) -> crate::legend::Legend {
+    match legend {
+        Some(legend) => legend.clone(),
+        None => {
+            let mut legend = default_legend();
+            legend.visible = false;
+            legend
+        }
+    }
+}
+
+/// A hidden colourbar carrying only the z mapping field series read.
+fn hidden_colorbar(bar: &crate::config::ColorBarOptions) -> crate::config::ColorBarOptions {
+    let mut hidden = default_colorbar_options();
+    hidden.visible = false;
+    hidden.axis.scale = bar.axis.scale.clone();
+    hidden.axis.min = bar.axis.min;
+    hidden.axis.max = bar.axis.max;
+    hidden.colormap = bar.colormap.clone();
+    hidden.nan_color = bar.nan_color;
+    hidden
 }
 
 /// A hidden axis: `template` (canonical defaults) carrying only `axis`'s
@@ -635,5 +869,218 @@ mod tests {
             tested += 1;
         }
         assert_eq!(tested, 7);
+    }
+
+    /// A parent in the top half of a 640x480 document, a subplot in the
+    /// bottom half scaling `flow`, and a second layer on that subplot
+    /// scaling `level`.
+    fn subplot_config() -> Config {
+        let mut cfg = default_config();
+        cfg.chart_area = ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 640,
+            height: 240,
+        });
+        let area = Some(ChartArea(Rect {
+            x: 0,
+            y: 240,
+            width: 640,
+            height: 240,
+        }));
+        let mut lead = OverlayLayer::default();
+        lead.y_axis.min = 0.0;
+        lead.y_axis.max = 10.0;
+        lead.y_axis.out_margin = 70.0;
+        lead.series = vec!["flow".into()];
+        lead.chart_area = area.clone();
+        cfg.overlays.push(lead);
+        let mut twin = OverlayLayer::default();
+        twin.y_axis.min = -1.0;
+        twin.y_axis.max = 1.0;
+        twin.y_axis.out_margin = 90.0;
+        twin.series = vec!["level".into()];
+        twin.chart_area = area;
+        cfg.overlays.push(twin);
+        cfg
+    }
+
+    #[test]
+    fn placement_follows_the_layer_area() {
+        let mut cfg = subplot_config();
+        assert_eq!(cfg.overlay_placement(0), Some(OverlayPlacement::AreaLead));
+        assert_eq!(
+            cfg.overlay_placement(1),
+            Some(OverlayPlacement::OnArea { lead: 0 })
+        );
+        assert_eq!(cfg.overlay_placement(2), None);
+        assert_eq!(OverlayPlacement::AreaLead.y_side(), Side::Left);
+        assert_eq!(OverlayPlacement::OnArea { lead: 0 }.y_side(), Side::Right);
+        assert!(cfg.overlay_is_detached(0) && cfg.overlay_is_detached(1));
+        assert!(!cfg.overlay_is_detached(2));
+        // An area equal to the parent's is the parent's area.
+        cfg.overlays[1].chart_area = Some(cfg.chart_area.clone());
+        assert_eq!(cfg.overlay_placement(1), Some(OverlayPlacement::OnParent));
+        assert_eq!(cfg.overlay_area(1), cfg.chart_area);
+        cfg.overlays[1].chart_area = None;
+        assert_eq!(cfg.overlay_placement(1), Some(OverlayPlacement::OnParent));
+        assert_eq!(OverlayPlacement::OnParent.y_side(), Side::Right);
+    }
+
+    #[test]
+    fn the_document_covers_every_area() {
+        let mut cfg = subplot_config();
+        assert_eq!(
+            cfg.document_area(),
+            Rect {
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 480,
+            }
+        );
+        cfg.overlays[1].chart_area = Some(ChartArea(Rect {
+            x: 700,
+            y: 10,
+            width: 100,
+            height: 50,
+        }));
+        assert_eq!(
+            cfg.document_area(),
+            Rect {
+                x: 0,
+                y: 0,
+                width: 800,
+                height: 480,
+            }
+        );
+        cfg.translate_areas(5, 7);
+        assert_eq!(cfg.chart_area.0.x, 5);
+        assert_eq!(cfg.chart_area.0.y, 7);
+        assert_eq!(cfg.overlay_area(0).0.y, 247);
+        assert_eq!(cfg.overlay_area(1).0.x, 705);
+        cfg.translate_areas(-100, -100);
+        assert_eq!((cfg.chart_area.0.x, cfg.chart_area.0.y), (0, 0));
+        // Without subplots the document is the chart area.
+        let plain = default_config();
+        assert_eq!(plain.document_area(), plain.chart_area.0);
+    }
+
+    // The area's first layer draws its own axis on the left, the parent's X
+    // axes and grid; the later layer is an overlay of it. Both share the
+    // area's data area, and the parent's band is not widened by them.
+    #[test]
+    fn an_area_group_shares_one_data_area_inside_its_area() {
+        let cfg = subplot_config();
+        for scale in [1.0_f32, 2.0, 0.5, 1.37] {
+            let scaled = cfg.scaled(scale);
+            let expansion = scaled.expand().unwrap();
+            assert_eq!(expansion.panels.len(), 3);
+            let lead = &expansion.panels[1].config;
+            let twin = &expansion.panels[2].config;
+            assert_eq!(lead.chart_area, scaled.overlay_area(0));
+            assert_eq!(twin.chart_area, scaled.overlay_area(1));
+            let area = scaled.overlay_data_area(0).unwrap();
+            assert_eq!(lead.data_area().unwrap(), area, "scale {scale}");
+            assert_eq!(twin.data_area().unwrap(), area, "scale {scale}");
+            assert_eq!(scaled.overlay_data_area(1).unwrap(), area);
+            let rect = scaled.overlay_area(0).0;
+            assert!(area.y >= rect.y && area.y + area.height <= rect.y + rect.height);
+            assert_eq!(
+                expansion.panels[0].config.data_area().unwrap(),
+                expansion.data_area
+            );
+        }
+        let expansion = cfg.expand().unwrap();
+        let base = &expansion.panels[0].config;
+        let lead = &expansion.panels[1].config;
+        let twin = &expansion.panels[2].config;
+        // The parent's right band ignores the subplot's wider bands.
+        assert_eq!(cfg.margins().right, {
+            let mut alone = cfg.clone();
+            alone.overlays.clear();
+            alone.margins().right
+        });
+        assert!(base.overlays.is_empty());
+        // Lead: own axis on the left, parent X axes and grid as written.
+        assert_eq!(lead.left_y, cfg.overlays[0].y_axis);
+        assert_eq!(lead.bottom_x, cfg.bottom_x);
+        assert_eq!(lead.top_x, cfg.top_x);
+        assert_eq!(lead.grid, cfg.grid);
+        assert!(!lead.right_y.line_visible);
+        assert!(!lead.chart_title.visible);
+        assert_eq!(lead.chart_title.top_margin, 0.0);
+        assert!(lead.annotations.items.is_empty());
+        // Twin: hidden X axes, own range on a hidden left axis, own right axis.
+        assert!(!twin.bottom_x.line_visible && !twin.top_x.line_visible);
+        assert!(!twin.grid.show_major_x && !twin.grid.show_major_y);
+        assert_eq!(twin.left_y.min, -1.0);
+        assert!(!twin.left_y.line_visible);
+        assert_eq!(twin.right_y, {
+            let mut right = cfg.overlays[1].y_axis.clone();
+            right.out_margin = twin.right_y.out_margin;
+            right
+        });
+        // The group right band is the twin's wider band.
+        assert_eq!(lead.margins().right, 95.0);
+        assert_eq!(twin.margins().right, 95.0);
+        assert_eq!(lead.margins().left, 75.0);
+        assert_eq!(twin.margins().left, 75.0);
+        assert_eq!(cfg.overlay_panel(0).as_ref(), Some(lead));
+        assert_eq!(cfg.overlay_panel(1).as_ref(), Some(twin));
+    }
+
+    // A subplot edit leaves the parent's panel and the other area alone; an
+    // X axis edit reaches every area, since the X axes exist once.
+    #[test]
+    fn an_area_edit_changes_only_that_areas_panels() {
+        let mut cfg = subplot_config();
+        let mut other = OverlayLayer::default();
+        other.series = vec!["other".into()];
+        cfg.overlays.push(other);
+        let before = cfg.expand().unwrap();
+
+        let mut lead_edit = cfg.clone();
+        lead_edit.overlays[0].y_axis.line_color = crate::Color::new(1.0, 0.0, 0.0, 1.0);
+        let after = lead_edit.expand().unwrap();
+        assert_eq!(after.panels[0].config, before.panels[0].config);
+        assert_ne!(after.panels[1].config, before.panels[1].config);
+        assert_eq!(after.panels[2].config, before.panels[2].config);
+        assert_eq!(after.panels[3].config, before.panels[3].config);
+
+        let mut move_area = cfg.clone();
+        move_area.overlays[0].chart_area.as_mut().unwrap().0.y = 260;
+        move_area.overlays[1].chart_area.as_mut().unwrap().0.y = 260;
+        let after = move_area.expand().unwrap();
+        assert_eq!(after.panels[0].config, before.panels[0].config);
+        assert_ne!(after.panels[1].config, before.panels[1].config);
+        assert_ne!(after.panels[2].config, before.panels[2].config);
+        assert_eq!(after.panels[3].config, before.panels[3].config);
+
+        let mut x_edit = cfg.clone();
+        x_edit.bottom_x.max = 3.0;
+        let after = x_edit.expand().unwrap();
+        for index in 0..4 {
+            assert_ne!(after.panels[index].config, before.panels[index].config);
+        }
+
+        // The parent's title band does not reach a subplot.
+        let mut title_edit = cfg.clone();
+        title_edit.chart_title.top_margin = 40.0;
+        let after = title_edit.expand().unwrap();
+        assert_eq!(after.panels[1].config, before.panels[1].config);
+        assert_eq!(after.panels[2].config, before.panels[2].config);
+    }
+
+    #[test]
+    fn an_area_without_room_for_a_data_area_is_rejected() {
+        let mut cfg = subplot_config();
+        assert!(cfg.validate().is_ok());
+        cfg.overlays[0].chart_area.as_mut().unwrap().0.height = 40;
+        cfg.overlays[1].chart_area.as_mut().unwrap().0.height = 40;
+        assert!(cfg.validate().is_err());
+        assert!(cfg.expand().is_err());
+        cfg.overlays[0].chart_area.as_mut().unwrap().0.height = 0;
+        assert_eq!(cfg.validate(), Err(LayoutError::EmptyDataArea));
     }
 }

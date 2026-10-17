@@ -26,7 +26,7 @@ pub struct Config {
     pub picked_data: Option<DataSelectionsConfig>,
     pub colorbar: Option<ColorBarOptions>,   // the colourbar AND the chart's z scale
     pub draw_style: DrawStyle,
-    pub overlays: Vec<OverlayLayer>,         // secondary right Y axes, each scaling the series it lists
+    pub overlays: Vec<OverlayLayer>,         // secondary Y axes and subplots, each scaling the series it lists
     pub active_layer: LayerRef,              // interaction target layer; `Base` = today's behavior
     pub annotations: AnnotationLayer,        // dedicated annotation layer: visibility + items
 }
@@ -193,6 +193,7 @@ overlays, and nonresident streaming rejects a document that has any.
 | `y_axis` | `AxisOptions` | The overlay's Y axis, drawn on the right. `min` / `max` / `scale` / `inverted` map the overlay's series to pixels; `out_margin + major_tick_length` is its band in the shared right margin, which is the widest band of the parent `right_y` and every overlay (`Config::margins`). Defaults to the default left-axis options (labels and line visible). |
 | `series` | `Vec<String>` | Ids of the series this layer scales, from the chart's single series list. An id may belong to at most one overlay (`Config::validate_overlays`); an id with no declaration is ignored; every other series belongs to the base layer. Omitted from JSON when empty. |
 | `legend` | `Option<Legend>` | A legend drawn in this layer's panel. `None` (omitted) keeps the single merged legend on the parent for every layer's series. |
+| `chart_area` | `Option<ChartArea>` | The rectangle this layer is drawn in, in the same surface coordinates as the parent's `chart_area`. `None` (omitted) or an area equal to the parent's draws the layer on top of the parent's area. Any other area makes the layer a subplot; see below. |
 
 The renderer draws the document as one internal panel per layer through
 `Config::expand()`: the base panel is the parent without its overlays; each
@@ -207,6 +208,34 @@ drag or `fit_to_data_area` writes the group band through the parent's
 scales the overlay axes and legends like the parent's. The parent's own
 `right_y` stays as written: hide its line and ticks when an overlay should have
 the right band to itself.
+
+**Subplots.** A layer whose `chart_area` differs from the parent's is drawn in
+that rectangle instead of on top of the parent. Layers with equal areas form
+one area group and are drawn on top of each other there, by the same rules as
+layers on the parent, with the group's first layer (the lowest index) in the
+parent's place (`Config::overlay_placement` answers `OnParent`, `AreaLead` or
+`OnArea { lead }`):
+
+- The first layer draws its `y_axis` on the **left**, the parent's grid and
+  the parent's `top_x` / `bottom_x` exactly as written. The X range and X axis
+  style exist once, on the parent, so every area shows the same X axes and one
+  X edit reaches all of them. It draws no title, colourbar or annotation
+  layer, and its top band has no title margin.
+- Every later layer of the group draws its `y_axis` on the **right**, like an
+  overlay of the parent.
+- The group's data area is its area minus the X axis bands, the first
+  layer's Y band on the left and, on the right, the widest of the parent's
+  `right_y` band and the later layers' bands (`Config::overlay_data_area`). A
+  subplot never widens the parent's right band.
+
+The document covers the union of the parent's area and every layer area
+(`Config::document_area`); the document export renders that rectangle and a
+display fits it to the surface, moving every area with the parent
+(`Config::translate_areas`, `display_config_for_surface`, `place_document`).
+The parent's title, merged legend, colourbar and the document's one annotation
+layer stay in the parent's area. `Config::scaled` scales each layer area like
+the parent's, so equal areas stay equal. `Config::validate` rejects an empty
+layer area and one with no room for its data area.
 
 `active_layer` addresses one layer for interaction (`Config::active_layer()`
 applies the out-of-range fallback, `set_active_layer` stores it) and
@@ -545,7 +574,7 @@ pub struct Config {
     pub picked_data: Option<DataSelectionsConfig>,
     pub colorbar: Option<ColorBarOptions>,   // the colourbar AND the chart's z scale
     pub draw_style: DrawStyle,
-    pub overlays: Vec<OverlayLayer>,         // secondary right Y axes, each scaling the series it lists
+    pub overlays: Vec<OverlayLayer>,         // secondary Y axes and subplots, each scaling the series it lists
     pub active_layer: LayerRef,              // interaction target layer; `Base` = today's behavior
     pub annotations: AnnotationLayer,        // dedicated annotation layer: visibility + items
 }
@@ -687,6 +716,7 @@ pub struct Config {
 | `y_axis` | `AxisOptions` | 오른쪽에 그리는 오버레이 Y 축. `min` / `max` / `scale` / `inverted`가 이 레이어 시리즈의 픽셀 변환을 정한다. `out_margin + major_tick_length`가 공유 오른쪽 여백 안의 띠이며, 오른쪽 여백은 부모 `right_y`와 모든 오버레이 띠 중 가장 넓은 값이다(`Config::margins`). 기본값은 왼쪽 축 기본 옵션(라벨·축선 보임)이다. |
 | `series` | `Vec<String>` | 이 레이어가 스케일하는 시리즈 id. 차트의 단일 시리즈 목록에서 참조한다. 한 id는 최대 한 오버레이에만 속할 수 있고(`Config::validate_overlays`), 선언이 없는 id는 무시하며, 나머지 시리즈는 기본 레이어에 속한다. 비어 있으면 JSON에서 생략한다. |
 | `legend` | `Option<Legend>` | 이 레이어 패널에 그리는 범례. `None`(생략)이면 부모의 합친 범례 하나가 모든 레이어의 시리즈를 나열한다. |
+| `chart_area` | `Option<ChartArea>` | 이 레이어를 그리는 사각형. 부모 `chart_area`와 같은 표면 좌표를 쓴다. `None`(생략)이거나 부모 영역과 같으면 부모 영역 위에 겹쳐 그린다. 다른 영역이면 서브플롯이 된다. 아래를 참고한다. |
 
 렌더러는 `Config::expand()`로 문서를 레이어마다 하나의 내부 패널로 그린다. 기본 패널은
 오버레이를 뺀 부모이고, 오버레이 패널은 변환을 위해 부모의 X 범위를 유지하되 X 축·그리드·
@@ -697,6 +727,27 @@ pub struct Config {
 부모 `right_y.out_margin`으로 그룹 띠를 쓰고 모든 오버레이 띠를 그 안으로 맞춘다.
 `Config::scaled`는 오버레이 축과 범례도 부모와 같은 규칙으로 배율을 적용한다. 부모의
 `right_y`는 적힌 대로 두므로, 오버레이 축이 오른쪽 띠를 독점하게 하려면 그 축선과 눈금을 끈다.
+
+**서브플롯.** `chart_area`가 부모와 다른 레이어는 부모 위가 아니라 그 사각형에 그린다.
+영역이 같은 레이어끼리는 한 영역 그룹이 되어 그 자리에서 겹쳐 그리며, 규칙은 부모 위의
+레이어와 같고 그룹의 첫 레이어(가장 작은 인덱스)가 부모 자리를 맡는다
+(`Config::overlay_placement`가 `OnParent`, `AreaLead`, `OnArea { lead }` 중 하나로 답한다).
+
+- 첫 레이어는 자기 `y_axis`를 **왼쪽**에 그리고, 부모의 그리드와 부모 `top_x` / `bottom_x`를
+  적힌 그대로 그린다. X 범위와 X 축 스타일은 부모에 한 번만 있으므로 모든 영역에 같은 X 축이
+  보이고, X 를 한 번 고치면 모든 영역에 반영된다. 제목·색상 막대·주석 층은 그리지 않으며 위쪽
+  띠에 제목 여백도 두지 않는다.
+- 그룹의 나머지 레이어는 부모의 오버레이처럼 자기 `y_axis`를 **오른쪽**에 그린다.
+- 그룹의 데이터 영역은 영역에서 X 축 띠, 왼쪽의 첫 레이어 Y 띠, 오른쪽의 부모 `right_y` 띠와
+  나머지 레이어 띠 중 가장 넓은 값을 뺀 사각형이다(`Config::overlay_data_area`). 서브플롯은
+  부모의 오른쪽 띠를 넓히지 않는다.
+
+문서는 부모 영역과 모든 레이어 영역의 합집합을 덮는다(`Config::document_area`). 문서 출력은
+이 사각형을 그리고, 화면 표시는 이 사각형을 표면에 맞추면서 모든 영역을 부모와 함께 옮긴다
+(`Config::translate_areas`, `display_config_for_surface`, `place_document`). 부모의 제목,
+합친 범례, 색상 막대, 문서에 하나뿐인 주석 층은 부모 영역에 남는다. `Config::scaled`는 레이어
+영역도 부모 영역과 같은 규칙으로 배율을 적용하므로 같은 영역은 계속 같다. `Config::validate`는
+빈 레이어 영역과 데이터 영역이 들어갈 자리가 없는 레이어 영역을 거부한다.
 
 `active_layer`는 상호작용 대상 레이어 하나를 가리키고(`Config::active_layer()`는 범위 밖
 인덱스를 `Base`로 읽고 `set_active_layer`가 저장한다) `Config::layer_of_series(id)`는 시리즈를

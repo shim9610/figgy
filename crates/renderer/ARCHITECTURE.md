@@ -390,7 +390,11 @@ the one temporary `ChartView` holds a panel per layer, `Config::expand()` turns
 the scaled document into one draw item per panel, and the panels composite in
 layer order into the same offscreen texture. `export_panel_*` keeps only the
 base panel of that expansion; for a document without overlays the two images
-are byte-identical.
+are byte-identical. A layer with an area of its own (a subplot) widens the
+document export to the union of every area (`Config::document_area`); the
+document is placed at the target's origin (`place_document`) and each
+subplot panel is drawn at its own area, while `export_panel_*` keeps the
+parent's area.
 
 ---
 
@@ -611,7 +615,8 @@ export_panel_rgba_async(chart, &[SeriesConfig], scale).await:
         ↓
     RasterImage { width, height, rgba: Vec<u8> }   ← API 반환
     (export_document_rgba_async: 레이어마다 한 패널을 같은 텍스처에 순서대로 합성.
-     export_panel_*는 기본 패널만 그리며, 오버레이가 없으면 두 결과는 바이트 단위로 같다)
+     export_panel_*는 기본 패널만 그리며, 오버레이가 없으면 두 결과는 바이트 단위로 같다.
+     자기 영역을 가진 레이어(서브플롯)가 있으면 문서 출력은 모든 영역의 합집합 크기다)
         ↓
     encode_png(&img) → Vec<u8>                      ← PNG 바이트
         ↓

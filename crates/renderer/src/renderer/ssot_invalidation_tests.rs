@@ -484,6 +484,26 @@ fn overlay_edits() -> Vec<Edit> {
     );
     overlay!(y_axis.title_option.offset_x, 4.0, Prefix, Changed);
     overlay!(y_axis.title_option.offset_y, 4.0, Prefix, Changed);
+    // An area of its own turns the layer into a subplot in the lower half of
+    // the parent's area: its series is drawn against another data area, so
+    // the edit is geometry, and the subplot panel draws its own chrome.
+    cases.push(Edit {
+        name: "overlays[0].chart_area (None -> Some)",
+        apply: |c| {
+            c.overlays[0].chart_area = Some(crate::layout::ChartArea(Rect {
+                x: 0,
+                y: 120,
+                width: 320,
+                height: 120,
+            }))
+        },
+        work: Work::Packed,
+        differs: true,
+        raster: true,
+        annotation: false,
+        pixels: Pixels::Changed,
+        streams: false,
+    });
     cases.push(Edit {
         name: "overlays[0].legend (None -> Some)",
         apply: |c| {
@@ -1121,9 +1141,10 @@ fn config_fields_are_classified() {
         items: _,
     } = crate::AnnotationLayer::default();
     let crate::OverlayLayer {
-        y_axis: _, // every AxisOptions field, as overlay!(y_axis.*)
-        series: _, // overlays[0].series
-        legend: _, // overlays[0].legend (None -> Some)
+        y_axis: _,     // every AxisOptions field, as overlay!(y_axis.*)
+        series: _,     // overlays[0].series
+        legend: _,     // overlays[0].legend (None -> Some)
+        chart_area: _, // overlays[0].chart_area (None -> Some)
     } = overlays.into_iter().next().unwrap_or_default();
     let _ = baseline_with_overlay();
 }

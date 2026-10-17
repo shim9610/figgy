@@ -9,6 +9,53 @@ at the time. The first crates.io publication is recorded below.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
+## Unreleased — subplots
+
+- Subplots through the overlay layers (issue #11, work item 5): `OverlayLayer`
+  gains `chart_area: Option<ChartArea>`. `None` (omitted from JSON) or the
+  parent's own area keeps today's twin-axis overlay; any other rectangle draws
+  the layer there, in the same surface coordinates as the parent. Layers with
+  equal areas overlap in that area, so a subplot can carry its own secondary
+  axis without a second nesting level. Existing documents parse and serialize
+  byte-identically.
+- Placement (`Config::overlay_placement` → `OverlayPlacement::{OnParent,
+  AreaLead, OnArea { lead }}`): an area's first layer draws its `y_axis` on the
+  left together with the parent's grid and the parent's `top_x` / `bottom_x`
+  as written (one X range and one X style for every area); later layers of the
+  area draw their axis on the right. `Config::expand` derives each area
+  group's margins from its own bands (`Config::overlay_data_area`) and never
+  lets a subplot widen the parent's right band. `Config::document_area` is the
+  union of every area, `Config::translate_areas` moves them together,
+  `Config::overlay_area` / `overlay_is_detached` answer per layer, and
+  `Config::scaled` / `Config::validate` cover the new field.
+- Rendering: every subplot panel is drawn at its own area with its own grid,
+  decoration and transform resources and raster cache, so a subplot edit
+  re-rasterizes only that area's panels and the cached frame is byte-identical
+  to a fresh render. Each selection box goes to the topmost panel of the area
+  it sits in; the document's annotation layer stays in the parent's area.
+  `display_config_for_surface` fits the whole document and returns where the
+  parent's area lands (new `place_document`); `GpuPickRequest::display_panel_px`
+  is the displayed document rect, and picking the active subplot layer uses its
+  own area. `export_document_*` renders the union; `export_panel_*` keeps the
+  parent's area. Tick warnings of an area's left axis are tagged
+  `WarningAxis::OverlayY(index)` like the right ones. The stream view-geometry
+  comparison includes each layer's area and data area.
+- Interaction: while a subplot layer is active, `HitMap::for_active_layer`
+  registers its area's data area (`OverlayDataAreaElement`,
+  `overlay_<n>:data_area`), the area's X axis copies and its Y axis on the
+  side it is drawn. X axis copies write the parent's `top_x` / `bottom_x`;
+  the subplot's data area drag moves its area (every layer of it) and its
+  eight handles move the area's edges, carrying sub-pixel pointer deltas. The
+  WASM wrapper rebuilds its hit map when the active overlay's placement
+  changes and fits the document union to the canvas. New native example
+  `subplots`.
+- Rust migration: exhaustive `OverlayLayer` literals need `chart_area` (or
+  `..Default::default()`); `OverlayAxisElement`, `OverlayAxisLabelElement` and
+  `OverlayAxisTitleElement` gain `side: Side`. Released with the next
+  renderer/model minor versions together with the other unreleased entries.
+  See the configuration reference (`OverlayLayer`, "Subplots"), the
+  interaction guide and the WASM guide.
+
 ## Unreleased — overlay layers
 
 - `Config` gains `overlays: Vec<OverlayLayer>` (issue #11, work items 1–4):

@@ -243,8 +243,9 @@ cached view plus the refreshed layer is byte-identical to a fresh render of
 the final state (`layer_raster_generations()` exposes the per-panel counts;
 the renderer test suite asserts both properties). An edit of the shared
 geometry — the group right band, the chart area, a shared axis — lifts every
-panel's margins and refreshes them all. Selection boxes are composited into the
-topmost panel's decoration texture, above every layer. The registry classifies
+panel's margins and refreshes them all. Each selection box is composited into
+the decoration texture of the topmost panel whose rectangle holds the box's
+centre, above every layer drawn there. The registry classifies
 every `overlays` field as a raster edit (`raster_config_equal`); an overlay's
 range, scale, direction, band or series list is also a geometry edit (the
 `view` revision), its colours and legend are not.
@@ -269,8 +270,9 @@ title, colourbar) and its own elements last — `overlay_<n>:axis_right`,
 `overlay_<n>:legend` — so the reverse-order test puts the active layer on
 top. Inactive layers' elements are not registered, so clicks pass through: the
 base Y axes do not answer while an overlay or the annotation layer is active.
-The set depends only on the active layer and the overlay count; rebuild the map
-when either changes. Overlay elements measure against the overlay's panel and
+The set depends only on the active layer, the overlay count and the active
+overlay's placement (`Config::overlay_placement`); rebuild the map when any of
+them changes. Overlay elements measure against the overlay's panel and
 write a drag back into `overlays[n].y_axis` (line offset, label and title
 offsets) or `overlays[n].legend` only. The data area is group geometry: its
 drag and its eight handles move the shared rectangle through the parent's
@@ -309,13 +311,48 @@ decoration, so text boxes and arrows sit above every layer. Annotation edits
 never invalidate a panel's axis raster cache. Overlay panels carry no
 annotation textures.
 
-**Limits of this version.** Overlays own no X axis (no twiny); nesting is one
-level (overlays have no layers of their own); bounded charts cannot be overlay
-layers; a nonresident streaming series listed by an overlay is rejected by
-every registry entry point, and the stream request paths reject a document
-with overlays as a whole. Subplot grids are a separate feature.
+**Subplots.** A layer with an area of its own (`OverlayLayer::chart_area`, see
+[the configuration reference](CONFIG.md#overlaylayer-configoverlays)) is drawn
+in that rectangle; layers with equal areas overlap there. The parent's area is
+drawn at the `panel_rect` a host passes to `create_chart_view` /
+`refresh_axis*`; every subplot panel is drawn at its own area moved by the same
+offset, with its own grid, decoration and transform resources and its own raster
+cache. A subplot edit therefore re-rasterizes only that area's panels, a
+parent edit leaves the subplot textures alone, and an X axis edit reaches
+exactly the panels that draw the X axes (the parent and each area's first
+layer); the cached frame stays byte-identical to a fresh render.
+
+While a subplot layer is active, `HitMap::for_active_layer` registers after
+the shared elements its area's data area (`overlay_<n>:data_area`), that
+area's copies of the two X axes with their label bands and titles
+(`overlay_<n>:axis_top`, `overlay_<n>:axis_bottom`, …), its own Y axis on the
+side it is drawn (`overlay_<n>:axis_left` for an area's first layer,
+`overlay_<n>:axis_right` for a later one) and its legend. An X axis copy writes
+a drag into the parent's `top_x` / `bottom_x`, since the X axes exist once; the
+Y axis writes into `overlays[n].y_axis`. Dragging the subplot's data area moves
+its area — every layer of that area together — and its eight handles move the
+area's edges; areas are whole pixels, so the sub-pixel part of each pointer
+delta is carried to the next one (`OverlayDataAreaElement`). A move that leaves
+the coordinate space or leaves the area without a data area is rejected
+atomically. Picking the active subplot layer uses its panel in its own area.
+
+`display_config_for_surface` fits the whole document (`Config::document_area`,
+the union of every area) to the surface and returns the rect where the parent's
+area lands; `GpuPickRequest::display_panel_px` is the displayed document rect
+(`fit_display_panel` of the document area). The document export renders the
+union; `export_panel_*` keeps the parent's area. The annotation layer stays in
+the parent's area: its overlay is composited above the topmost panel drawn
+there, never into a subplot.
+
+**Limits of this version.** Overlays own no X axis (no twiny): a subplot draws
+the parent's X axes. Nesting is one level (an area's layers have no layers of
+their own); bounded charts cannot be overlay layers; a nonresident streaming
+series listed by an overlay is rejected by every registry entry point, and the
+stream request paths reject a document with overlays as a whole.
 Run `cargo run --locked -p figgy-renderer --example overlay_axes` for a native
-twin-axis export; see [the example source](examples/overlay_axes.rs).
+twin-axis export and `--example subplots` for a subplot export; see
+[the overlay source](examples/overlay_axes.rs) and
+[the subplot source](examples/subplots.rs).
 
 ## Annotation layer
 

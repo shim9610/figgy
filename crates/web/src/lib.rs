@@ -2270,7 +2270,7 @@ mod web {
             alive: Rc::new(Cell::new(true)),
             color_seq: 0,
             hitmap: HitMap::standard_chart(),
-            hitmap_layer: (renderer::LayerRef::Base, 0),
+            hitmap_layer: (renderer::LayerRef::Base, 0, None),
             dragging: false,
             resizing: None,
             cycle: renderer::ColorCycle::Classic,
@@ -2852,7 +2852,11 @@ mod web {
         hitmap: HitMap,
         /// The (active layer, overlay count) the hit map was registered for.
         /// Either change rebuilds it with `HitMap::for_active_layer`.
-        hitmap_layer: (renderer::LayerRef, usize),
+        hitmap_layer: (
+            renderer::LayerRef,
+            usize,
+            Option<renderer::OverlayPlacement>,
+        ),
         dragging: bool,
         resizing: Option<ModelResizeHandle>,
         cycle: renderer::ColorCycle,
@@ -2910,12 +2914,19 @@ mod web {
             Ok(())
         }
 
-        /// The hit map's registration set depends only on the active layer
-        /// and the overlay count. Rebuild it when either changed; the
-        /// registry has already dropped any `HitId` of the previous map.
+        /// The hit map's registration set depends only on the active layer,
+        /// the overlay count and the active overlay's placement (on the
+        /// parent, or first or later layer of an area of its own). Rebuild it
+        /// when any of them changed; the registry has already dropped any
+        /// `HitId` of the previous map.
         fn sync_hitmap(&mut self) {
             let config = self.chart_config();
-            let key = (config.active_layer(), config.overlays.len());
+            let layer = config.active_layer();
+            let placement = match layer {
+                renderer::LayerRef::Overlay(index) => config.overlay_placement(index),
+                renderer::LayerRef::Base | renderer::LayerRef::Annotations => None,
+            };
+            let key = (layer, config.overlays.len(), placement);
             if key != self.hitmap_layer {
                 self.hitmap = HitMap::for_active_layer(config);
                 self.hitmap_layer = key;
@@ -2924,8 +2935,10 @@ mod web {
             }
         }
 
+        /// The display scale and where the whole document lands on the
+        /// surface.
         fn display_scale_and_panel(&self) -> (f32, Rect) {
-            let logical = self.chart_config().chart_area.0;
+            let logical = self.chart_config().document_area();
             renderer::fit_display_panel((logical.width, logical.height), self.surface_size)
         }
 
@@ -2994,7 +3007,7 @@ mod web {
             &mut self,
             surface_size: (u32, u32),
         ) -> Result<Vec<ChartStyle>, JsValue> {
-            let logical = self.chart_config().chart_area.0;
+            let logical = self.chart_config().document_area();
             let (scale, _) =
                 renderer::fit_display_panel((logical.width, logical.height), surface_size);
             let series = self.chart_series().to_vec();

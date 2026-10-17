@@ -95,14 +95,14 @@ pub use renderer::{
     RendererLoadDemo, RendererVisualStamp, Series, SeriesDrawInfo, StreamingOperation,
     StreamingSelectionRequest, StreamingSelectionTicket, WebDerivedSnapshot, WebDerivedStamp,
     WindowedRenderer, clamp_export_scale, display_config_for_surface, dpi_to_scale,
-    draw_style_supports, encode_png, fit_display_panel,
+    draw_style_supports, encode_png, fit_display_panel, place_document,
 };
 pub use resize::{Resizable, ResizeHandle};
 pub use select::{
     AxisElement, AxisLabelElement, AxisTitleElement, ChartTitleElement, ColorBarAxisElement,
     ColorBarElement, ColorBarLabelElement, ColorBarTitleElement, DataAreaElement, HitId, HitMap,
     LegendElement, OverlayAxisElement, OverlayAxisLabelElement, OverlayAxisTitleElement,
-    OverlayLegendElement, Selectable, SelectionBox,
+    OverlayDataAreaElement, OverlayLegendElement, Selectable, SelectionBox,
 };
 pub use streaming_source::{
     AutoStreamRange, AutoStreamSourceVersion, AutoStreamingProgress, AutoStreamingRangeRequest,
@@ -135,7 +135,8 @@ pub use model::decoration::{DecorationId, DecorationLayout, DecorationOffset};
 pub use model::{
     Anchor, AnchorKind, Annotation, AnnotationAxis, AnnotationElement, AnnotationHandle,
     AnnotationKind, AnnotationLayer, AnnotationLineStyle, AnnotationSpace, ArrowStyle, AxisMap,
-    AxisSpace, BoxStyle, ExpandedPanel, Expansion, LayerRef, OverlayLayer, PixelSpace,
+    AxisSpace, BoxStyle, ExpandedPanel, Expansion, LayerRef, OverlayLayer, OverlayPlacement,
+    PixelSpace,
 };
 pub mod decoration;
 

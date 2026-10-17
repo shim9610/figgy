@@ -98,6 +98,9 @@ impl RendererDevice {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GpuPickRequest {
     pub canvas_position_px: [f32; 2],
+    /// Where the whole document ([`Config::document_area`]) is displayed, as
+    /// [`fit_display_panel`] places it. Without subplots this is the
+    /// displayed chart panel.
     pub display_panel_px: Rect,
     pub display_scale: f32,
     pub max_distance_px: f32,
@@ -146,15 +149,45 @@ fn annotation_raster_for_chart(
 }
 
 /// Derive the scaled display config and centered panel for a surface.
+///
+/// The whole document ([`Config::document_area`], the union of the parent's
+/// area and every overlay's own area) is fitted to the surface. The returned
+/// rect is where the parent's `chart_area` lands, the `panel_rect` that
+/// `create_chart_view` and `refresh_axis` take; for a document without
+/// subplots it is the centered panel itself.
 pub fn display_config_for_surface(
     config: &Config,
     surface_size: (u32, u32),
 ) -> (Config, Rect, f32) {
-    let logical = config.chart_area.0;
-    let (scale, panel_rect) = fit_display_panel((logical.width, logical.height), surface_size);
-    let mut display_config = config.scaled(scale);
-    display_config.chart_area = crate::layout::ChartArea(panel_rect);
+    let logical = config.document_area();
+    let (scale, document_rect) = fit_display_panel((logical.width, logical.height), surface_size);
+    let display_config = place_document(config, scale, document_rect);
+    let panel_rect = display_config.chart_area.0;
     (display_config, panel_rect, scale)
+}
+
+/// `config` scaled by `scale` and moved so its document area starts at
+/// `document_rect`'s origin. A document without subplots is placed exactly
+/// as before subplots existed: its `chart_area` becomes `document_rect`.
+pub fn place_document(config: &Config, scale: f32, document_rect: Rect) -> Config {
+    let mut placed = config.scaled(scale);
+    let detached = (0..config.overlays.len()).any(|index| config.overlay_is_detached(index));
+    if !detached {
+        let area = crate::layout::ChartArea(document_rect);
+        for overlay in placed.overlays.iter_mut() {
+            if let Some(own) = overlay.chart_area.as_mut() {
+                *own = area.clone();
+            }
+        }
+        placed.chart_area = area;
+        return placed;
+    }
+    let document = placed.document_area();
+    placed.translate_areas(
+        i64::from(document_rect.x) - i64::from(document.x),
+        i64::from(document_rect.y) - i64::from(document.y),
+    );
+    placed
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -754,14 +787,22 @@ fn raster_config_equal(left: &Config, right: &Config) -> bool {
 }
 
 /// Whether two configs map data to the same pixels on every layer: the
-/// overlay count, each overlay's Y range and the series each one scales.
-/// Decoration-only overlay edits (axis colour, legend) are not geometry.
+/// overlay count, each overlay's Y range, the series each one scales, its
+/// area and the data area it is drawn against. Decoration-only overlay edits
+/// (axis colour, legend) are not geometry.
 fn overlay_geometry_equal(left: &Config, right: &Config) -> bool {
     left.overlays.len() == right.overlays.len()
-        && left.overlays.iter().zip(&right.overlays).all(|(a, b)| {
-            AxisViewState::from_axis(&a.y_axis) == AxisViewState::from_axis(&b.y_axis)
-                && a.series == b.series
-        })
+        && left
+            .overlays
+            .iter()
+            .zip(&right.overlays)
+            .enumerate()
+            .all(|(index, (a, b))| {
+                AxisViewState::from_axis(&a.y_axis) == AxisViewState::from_axis(&b.y_axis)
+                    && a.series == b.series
+                    && a.chart_area == b.chart_area
+                    && left.overlay_data_area(index).ok() == right.overlay_data_area(index).ok()
+            })
 }
 
 /// The annotation raster revision follows the layer's items only. Its
@@ -6430,9 +6471,12 @@ impl Renderer {
             .chart_states
             .get(&id)
             .ok_or(crate::gpu_pick::GpuPickError::UnknownChart(id))?;
-        let (config, _) = active_layer_pick_inputs(&state.config, &state.series)?;
-        let mut display_config = config.scaled(request.display_scale);
-        display_config.chart_area = crate::layout::ChartArea(request.display_panel_px);
+        let displayed = place_document(
+            &state.config,
+            request.display_scale,
+            request.display_panel_px,
+        );
+        let (display_config, _) = active_layer_pick_inputs(&displayed, &state.series)?;
         let chart_rect = display_config.chart_area.0;
         let data_area_px = display_config.data_area().ok().map(|area| {
             let rect = area.0;
@@ -6477,7 +6521,7 @@ impl Renderer {
         id: ChartId,
         request: GpuPickRequest,
     ) -> Result<crate::GpuDataPickTicket> {
-        let (config, series) = {
+        let (config, series, display_config) = {
             let state = self
                 .chart_states
                 .get(&id)
@@ -6487,8 +6531,17 @@ impl Renderer {
             }
             // The typed query answers for the active layer only, with that
             // layer's panel (its Y range) and the series it scales, so its
-            // paint orders agree with the point query's registry.
-            active_layer_pick_inputs(&state.config, &state.series)?
+            // paint orders agree with the point query's registry. The query
+            // geometry is the panel as displayed: the document is scaled and
+            // placed first and expanded after, exactly as it is drawn.
+            let (config, series) = active_layer_pick_inputs(&state.config, &state.series)?;
+            let displayed = place_document(
+                &state.config,
+                request.display_scale,
+                request.display_panel_px,
+            );
+            let (display_config, _) = active_layer_pick_inputs(&displayed, &state.series)?;
+            (config, series, display_config)
         };
 
         // Submit the established point/line query first. It stays point-only,
@@ -6626,8 +6679,6 @@ impl Renderer {
             });
         }
 
-        let mut display_config = config.scaled(request.display_scale);
-        display_config.chart_area = crate::layout::ChartArea(request.display_panel_px);
         let chart_rect = display_config.chart_area.0;
         let data_area_px = display_config.data_area().ok().map(|area| {
             let rect = area.0;
@@ -10264,13 +10315,14 @@ impl Renderer {
     /// call so the axis raster is drawn correctly.
     pub fn create_chart_view(&self, chart: &Chart, panel_rect: Rect) -> Result<ChartView> {
         let panels = expand_for_render(chart.config())?;
+        let places = panel_places(chart.config(), &panels, panel_rect);
         let font_generation = crate::text_render::font_generation();
         let mut view = self.create_panel_view(&panels[0], panel_rect, false, font_generation)?;
-        for panel in &panels[1..] {
+        for (panel, place) in panels[1..].iter().zip(&places[1..]) {
             view.overlay_views.push(self.create_panel_view(
                 panel,
-                panel_rect,
-                true,
+                place.rect,
+                !place.draws_backdrop,
                 font_generation,
             )?);
         }
@@ -10291,14 +10343,14 @@ impl Renderer {
             .map(|rgba| self.create_layer_texture(rgba, w, h))
             .transpose()?;
         view.annotation_map = annotations.map;
-        view.tick_warnings = merged_render_warnings(&panels);
+        view.tick_warnings = merged_render_warnings(chart.config(), &panels);
         view.rebuild_render_warnings();
         Ok(view)
     }
 
     /// One panel's grid, decoration and transform resources from one
     /// internal config. `overlay` panels never draw the Milkyway backdrop:
-    /// the grid slot belongs to the base. No panel carries annotation
+    /// the grid slot belongs to the first panel of their area. No panel carries annotation
     /// textures here; `create_chart_view` gives them to the base view.
     fn create_panel_view(
         &self,
@@ -10524,20 +10576,27 @@ impl Renderer {
         selection: &[crate::select::SelectionBox],
     ) -> Result<()> {
         let panels = expand_for_render(chart.config())?;
+        let places = panel_places(chart.config(), &panels, panel_rect);
         let font_generation = crate::text_render::font_generation();
         // The view follows the document's layer count: a layer added since
         // the last refresh gets its textures here, a removed one drops them.
         view.overlay_views.truncate(panels.len() - 1);
         while view.overlay_views.len() < panels.len() - 1 {
-            let panel = &panels[view.overlay_views.len() + 1];
-            let layer = self.create_panel_view(panel, panel_rect, true, font_generation)?;
+            let index = view.overlay_views.len() + 1;
+            let place = &places[index];
+            let layer = self.create_panel_view(
+                &panels[index],
+                place.rect,
+                !place.draws_backdrop,
+                font_generation,
+            )?;
             view.overlay_views.push(layer);
         }
-        // Selection boxes are composited into the topmost panel so they sit
-        // above every layer's decoration, as they did above the single one.
-        let top = panels.len() - 1;
+        // Each selection box is composited into the topmost panel of the
+        // area it sits in, so it is above every layer's decoration there, as
+        // it was above the single one.
+        let routed = route_selection_boxes(&places, selection);
         for (index, panel) in panels.iter().enumerate() {
-            let boxes = if index == top { selection } else { &[] };
             let layer_view = if index == 0 {
                 &mut *view
             } else {
@@ -10546,14 +10605,14 @@ impl Renderer {
             self.refresh_panel_view(
                 layer_view,
                 panel,
-                panel_rect,
-                boxes,
-                index > 0,
+                places[index].rect,
+                &routed[index],
+                !places[index].draws_backdrop,
                 font_generation,
             )?;
         }
         view.panel_rect = panel_rect;
-        view.tick_warnings = merged_render_warnings(&panels);
+        view.tick_warnings = merged_render_warnings(chart.config(), &panels);
         // The anchor space follows the axes and the data area, which this
         // refresh may have moved, so the annotation layer is redone here as
         // well; its own revision covers item edits between axis refreshes.
@@ -11692,7 +11751,11 @@ impl Renderer {
             validate_line_fill(&self.pool, series.iter(), config)?;
         }
         let scale = clamp_export_scale(scale);
-        let orig = chart.config().chart_area.0;
+        // A document export covers every area; a panel export the parent's.
+        let orig = match scope {
+            ExportScope::Document => chart.config().document_area(),
+            ExportScope::Panel => chart.config().chart_area.0,
+        };
         let w = ((orig.width as f32) * scale).round().max(1.0) as u32;
         let h = ((orig.height as f32) * scale).round().max(1.0) as u32;
         validate_texture_extent(self.caps, "figgy export target dimension", w, h)?;
@@ -11710,26 +11773,30 @@ impl Renderer {
             });
         }
 
-        // 1) Scaled config with chart_area overridden to (0,0,w,h) → temp chart.
-        let mut scaled_config = chart.config().scaled(scale);
-        scaled_config.chart_area = crate::layout::ChartArea(Rect {
+        // 1) Scaled config placed at the origin of a (0,0,w,h) target → temp
+        // chart. Without subplots the chart area is the whole target. A panel
+        // export places the parent's area at the origin.
+        let target = Rect {
             x: 0,
             y: 0,
             width: w,
             height: h,
-        });
+        };
+        let scaled_config = match scope {
+            ExportScope::Document => place_document(chart.config(), scale, target),
+            ExportScope::Panel => {
+                let mut panel = chart.config().scaled(scale);
+                let parent = panel.chart_area.0;
+                panel.translate_areas(-i64::from(parent.x), -i64::from(parent.y));
+                panel.chart_area = crate::layout::ChartArea(target);
+                panel
+            }
+        };
+        let panel_rect = scaled_config.chart_area.0;
         let scaled_chart = Chart::new(scaled_config);
 
         // 2) Temp ChartView with scaled axis textures.
-        let view = self.create_chart_view(
-            &scaled_chart,
-            Rect {
-                x: 0,
-                y: 0,
-                width: w,
-                height: h,
-            },
-        )?;
+        let view = self.create_chart_view(&scaled_chart, panel_rect)?;
 
         // 3) Series styles — line_width also scales (extracted from render_type).
         let scaled_styles: Vec<ChartStyle> = series
@@ -14456,19 +14523,92 @@ fn raster_grid_layer(config: &Config, overlay: bool, w: u32, h: u32) -> Result<V
 }
 
 /// Every panel's tick warnings as one list. An overlay panel reports only
-/// its own right axis, tagged with its layer; its hidden axes are copies of
-/// the base panel's and would repeat the base warnings.
-fn merged_render_warnings(panels: &[Config]) -> Vec<crate::RenderWarning> {
+/// its own Y axis (right, or left for the first layer of an area of its
+/// own), tagged with its layer; its other axes are copies of the base
+/// panel's and would repeat the base warnings.
+fn merged_render_warnings(config: &Config, panels: &[Config]) -> Vec<crate::RenderWarning> {
     let mut merged = axis_render::tick_warnings(&panels[0]);
     for (index, panel) in panels.iter().enumerate().skip(1) {
+        let own = match config.overlay_placement(index - 1).map(|p| p.y_side()) {
+            Some(crate::layout::Side::Left) => crate::WarningAxis::LeftY,
+            _ => crate::WarningAxis::RightY,
+        };
         merged.extend(
             axis_render::tick_warnings(panel)
                 .into_iter()
-                .filter(|warning| warning.axis() == Some(crate::WarningAxis::RightY))
+                .filter(|warning| warning.axis() == Some(own))
                 .map(|warning| warning.with_axis(crate::WarningAxis::OverlayY(index - 1))),
         );
     }
     merged
+}
+
+/// Where one internal panel is drawn on the surface.
+struct PanelPlace {
+    /// The panel's rectangle on the surface: the host's panel rect for the
+    /// parent's area, else the layer's own area moved with the parent.
+    rect: Rect,
+    /// The first panel of an area: it owns the grid slot and the Milkyway
+    /// backdrop there.
+    draws_backdrop: bool,
+}
+
+/// The place of every panel of `config` (as `expand_for_render` returned
+/// them) when the parent's area is drawn at `panel_rect`.
+fn panel_places(config: &Config, panels: &[Config], panel_rect: Rect) -> Vec<PanelPlace> {
+    let parent = config.chart_area.0;
+    let dx = i64::from(panel_rect.x) - i64::from(parent.x);
+    let dy = i64::from(panel_rect.y) - i64::from(parent.y);
+    let shift = |value: u32, by: i64| (i64::from(value) + by).clamp(0, i64::from(u32::MAX)) as u32;
+    let mut places = Vec::with_capacity(panels.len());
+    places.push(PanelPlace {
+        rect: panel_rect,
+        draws_backdrop: true,
+    });
+    for index in 0..panels.len().saturating_sub(1) {
+        let place = match config.overlay_placement(index) {
+            Some(
+                placement @ (crate::OverlayPlacement::AreaLead
+                | crate::OverlayPlacement::OnArea { .. }),
+            ) => {
+                let area = config.overlay_area(index).0;
+                PanelPlace {
+                    rect: Rect {
+                        x: shift(area.x, dx),
+                        y: shift(area.y, dy),
+                        width: area.width,
+                        height: area.height,
+                    },
+                    draws_backdrop: placement == crate::OverlayPlacement::AreaLead,
+                }
+            }
+            Some(crate::OverlayPlacement::OnParent) | None => PanelPlace {
+                rect: panel_rect,
+                draws_backdrop: false,
+            },
+        };
+        places.push(place);
+    }
+    places
+}
+
+/// Each selection box goes to the topmost panel whose rectangle holds the
+/// box's centre; a box outside every panel goes to the topmost panel.
+fn route_selection_boxes(
+    places: &[PanelPlace],
+    selection: &[crate::select::SelectionBox],
+) -> Vec<Vec<crate::select::SelectionBox>> {
+    let mut routed = vec![Vec::new(); places.len()];
+    for selection_box in selection {
+        let cx = selection_box.rect.x + selection_box.rect.width * 0.5;
+        let cy = selection_box.rect.y + selection_box.rect.height * 0.5;
+        let index = places
+            .iter()
+            .rposition(|place| crate::layout::RectF::from_rect(&place.rect).contains(cx, cy))
+            .unwrap_or(places.len() - 1);
+        routed[index].push(selection_box.clone());
+    }
+    routed
 }
 
 /// What an export renders: one panel or the whole layered document.
@@ -14576,16 +14716,25 @@ impl PanelDrawStorage<'_> {
 
 /// The document's annotation layer is rasterized once, on the base view; its
 /// underlay stays under the base panel's data and its overlay moves to the
-/// topmost panel of the group, so it sits above every layer's decoration.
+/// topmost panel drawn in the parent's area, so it sits above every layer's
+/// decoration there. Panels in areas of their own are not its place: the
+/// annotation textures cover the parent's area only.
 fn lift_annotation_overlays(items: &mut [PreparedItem], group_sizes: &[usize]) {
     let mut start = 0;
     for &size in group_sizes {
         if size > 1 && start + size <= items.len() {
-            let overlay = items[start].view.annotation_overlay_bind_group.take();
-            let visible = items[start].view.annotations_visible;
-            let top = &mut items[start + size - 1].view;
-            top.annotation_overlay_bind_group = overlay;
-            top.annotations_visible = visible;
+            let base_rect = items[start].view.panel_rect;
+            let top = (start..start + size)
+                .rev()
+                .find(|&index| items[index].view.panel_rect == base_rect)
+                .unwrap_or(start);
+            if top != start {
+                let overlay = items[start].view.annotation_overlay_bind_group.take();
+                let visible = items[start].view.annotations_visible;
+                let top = &mut items[top].view;
+                top.annotation_overlay_bind_group = overlay;
+                top.annotations_visible = visible;
+            }
         }
         start += size;
     }
@@ -15591,7 +15740,7 @@ impl<'w> WindowedRenderer<'w> {
             .chart_states
             .get(&id)
             .ok_or(crate::gpu_pick::GpuPickError::UnknownChart(id))?;
-        let logical = config.config.chart_area.0;
+        let logical = config.config.document_area();
         let (display_scale, display_panel_px) = fit_display_panel(
             (logical.width, logical.height),
             (self.surface_config.width, self.surface_config.height),
@@ -15619,7 +15768,7 @@ impl<'w> WindowedRenderer<'w> {
             .chart_states
             .get(&id)
             .ok_or(FiggyError::UnknownChart { id })?;
-        let logical = config.config.chart_area.0;
+        let logical = config.config.document_area();
         let (display_scale, display_panel_px) = fit_display_panel(
             (logical.width, logical.height),
             (self.surface_config.width, self.surface_config.height),

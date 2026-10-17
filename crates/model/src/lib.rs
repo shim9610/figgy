@@ -12,7 +12,7 @@ pub mod drag;
 pub use decoration::{DecorationElement, DecorationId, DecorationLayout, DecorationOffset};
 pub mod annotation;
 pub mod expand;
-pub use expand::{ExpandedPanel, Expansion};
+pub use expand::{ExpandedPanel, Expansion, OverlayPlacement};
 pub mod layer;
 pub use annotation::{
     Anchor, AnchorKind, Annotation, AnnotationAxis, AnnotationElement, AnnotationHandle,
@@ -52,7 +52,7 @@ pub use select::{
     AxisElement, AxisLabelElement, AxisTitleElement, ChartTitleElement, ColorBarAxisElement,
     ColorBarElement, ColorBarLabelElement, ColorBarTitleElement, DataAreaElement, HitId, HitMap,
     LegendElement, OverlayAxisElement, OverlayAxisLabelElement, OverlayAxisTitleElement,
-    OverlayLegendElement, Selectable, SelectionBox,
+    OverlayDataAreaElement, OverlayLegendElement, Selectable, SelectionBox,
 };
 pub use text::{MeasureText, TextAlign, TextExtents};
 
