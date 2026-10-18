@@ -30,10 +30,11 @@
   <a href="crates/renderer/examples/radial_gallery.rs"><img src="crates/renderer/assets/gallery-donut.png" alt="Ceramic 3D donut" width="23%" align="top"></a>
 </p>
 
-**레이더 · 움직이는 파형 · 위상 궤적**
+**레이더 · 극좌표 · 움직이는 파형 · 위상 궤적**
 
 <p>
   <a href="crates/renderer/examples/radar_gallery.rs"><img src="crates/renderer/assets/gallery-radar.png" alt="Radar chart comparing two releases over six categories" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/polar_plot.rs"><img src="crates/renderer/assets/gallery-polar.png" alt="Antenna pattern in polar coordinates" width="23%" align="top"></a>
   <a href="crates/renderer/examples/animated_lines.rs"><img src="crates/renderer/assets/gallery-wave.gif" alt="Travelling waves" width="23%" align="top"></a>
   <a href="crates/renderer/examples/animated_lines.rs"><img src="crates/renderer/assets/gallery-orbit.gif" alt="Animated phase portrait" width="23%" align="top"></a>
 </p>
@@ -85,6 +86,7 @@ cargo run --locked -p figgy-renderer --example radial_gallery -- target/radial-g
 cargo run --locked -p figgy-renderer --example categorical_gallery -- target/categorical-gallery
 cargo run --locked -p figgy-renderer --example boxplot_gallery -- target/boxplot-gallery
 cargo run --locked -p figgy-renderer --example radar_gallery -- target/radar-gallery
+cargo run --locked -p figgy-renderer --example polar_plot -- target/polar-plot
 ```
 
 애니메이션, 편집 가능한 창, 각 차트의 입력 형식은

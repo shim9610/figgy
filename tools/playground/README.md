@@ -30,6 +30,7 @@ The tabs at the top switch scenes.
 - **Cartesian**: lines, areas and steps; scatter with error bars; scatter with
   colour and size value maps; histogram;
   heatmap with labelled contours; vector field (quiver); log axes; twin Y axes; subplots;
+  polar coordinates (an angle axis and a radius axis);
   annotations; a one-million-point line.
 - **Bounded**: radial (pie and donut), categorical bars, box plot, radar
   (spider).

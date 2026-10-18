@@ -9,6 +9,38 @@ at the time. The first crates.io publication is recorded below.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
+## Unreleased — polar coordinates
+
+- `Config.polar: Option<PolarOptions>` (#26, part B) draws a Cartesian
+  document in polar coordinates: `bottom_x` is the angle axis, `left_y` the
+  radius axis, and every series, column, picking and export path is the
+  rectangular one. `PolarOptions` carries the zero angle, the direction,
+  the angle unit (`Degrees` / `Radians`), an optional sector, an inner
+  radius fraction, the segment interpolation (`Chord`, or `Arc { pieces }`
+  subdividing each segment in data space so dashes and picking walk the
+  same pieces) and the radial label angle. `None` (key absent) is unchanged.
+- The shared `Transform` block grows from 112 to 144 bytes with the polar
+  constants (`polar_angle`, `polar_extent`); `data_to_ndc` branches to
+  `polar_ndc` and `sample_valid` masks a radius below the axis start or an
+  angle outside the sector (`SHADER_COMMON.md` §1 and §4, every synced
+  shader, `ScatterTransform`, the pick shader and the CPU twin
+  `polar_projection`). The line shaders' `step_piece` helpers take a mode
+  word whose upper bits are the arc pieces; the area fill's baseline
+  projects through the same mapping.
+- The grid draws rings and spokes, the angle axis is the outer ring with
+  its labels around it and the radius axis the ray at the radial label
+  angle; new `LabelFormat::Degrees` and `LabelFormat::Radians`. Axis lines
+  and tick labels register no drag region in polar mode; annotations use
+  ratio anchors. GPU picking passes every sample through the X gate and
+  tests the full projection in the Y gate; lines go to the exact pass.
+- Histograms, fields, contours, error bars, vectors, `overlays`, a
+  logarithmic or inverted angle axis and streamed sources are explicit
+  errors in polar mode; polar and rectangular subplots mix in a document.
+- Rust migration: exhaustive `LabelFormat` matches need `Degrees` and
+  `Radians` arms; `line_strip_vertex_count` keeps its signature. New
+  example `polar_plot.rs`, a playground scene and `CONFIG.md`
+  ("`PolarOptions`").
+
 ## Unreleased — radar charts
 
 - New bounded family `RadarRenderer` / `RadarChart` (#26, first half). A

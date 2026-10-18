@@ -161,6 +161,9 @@ DPR이나 PNG 배율은 저장한 논리 영역을 바꾸지 않는다. 캔버�
 분기하는 코드는 `DataArea`, `DataAreaEdge(Side)`를 처리해야 한다. `DataAreaEdge`는 리사이즈
 내부의 변이 대상이며 별도 히트 영역으로 등록하지 않는다. 이전 JSON은 영역을 자동 배치로 읽는다.
 
+극좌표 차트(`Config.polar`)에서는 축 선이 바깥 고리와 광선이므로 `Axis(Side)`와 `AxisLabel(Side)`는
+히트 영역을 등록하지 않는다(첫 버전에서는 축 드래그 없음). 제목·축 제목·범례·그리기 영역은 그대로다.
+
 이 문서는 renderer crate의 Rust API다. Cartesian용 `FiggyChart`와 별도로 현재 WASM
 래퍼는 원형·범주형 막대·박스플롯·레이더를 위한 `FiggyBoundedChart`를 제공한다. 이 클래스는
 히트맵·ID·선택·드래그·크기 조정·출력을 노출하며, 호스트는 포인터 이벤트를 연결하고

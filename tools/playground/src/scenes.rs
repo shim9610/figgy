@@ -13,6 +13,7 @@ use renderer::data_config::{
 use renderer::format::LabelFormat;
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
+use renderer::polar::{PolarInterpolation, PolarOptions};
 use renderer::text::RichText;
 use renderer::{
     Anchor, Annotation, AnnotationAxis, AnnotationKind, AnnotationLineStyle, ArrowStyle, CellRef,
@@ -36,6 +37,7 @@ pub enum SceneKind {
     TwinAxes,
     Subplots,
     Annotations,
+    Polar,
     BigData,
     Radial,
     Categorical,
@@ -44,7 +46,7 @@ pub enum SceneKind {
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 15] = [
+    pub const ALL: [SceneKind; 16] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -55,6 +57,7 @@ impl SceneKind {
         SceneKind::TwinAxes,
         SceneKind::Subplots,
         SceneKind::Annotations,
+        SceneKind::Polar,
         SceneKind::BigData,
         SceneKind::Radial,
         SceneKind::Categorical,
@@ -74,6 +77,7 @@ impl SceneKind {
             SceneKind::TwinAxes => "Twin Y axes (overlay)",
             SceneKind::Subplots => "Subplots (linked X)",
             SceneKind::Annotations => "Annotations",
+            SceneKind::Polar => "Polar (angle, radius)",
             SceneKind::BigData => "1M-point line",
             SceneKind::Radial => "Radial (pie / donut)",
             SceneKind::Categorical => "Categorical bars",
@@ -104,6 +108,10 @@ impl SceneKind {
             }
             SceneKind::Annotations => {
                 "Active layer = Annotations: drag lines, spans, text, arrows."
+            }
+            SceneKind::Polar => {
+                "Config.polar: bottom_x is the angle in degrees, left_y the radius. A \
+                 filled pattern and a marker rose with arc segments; pick the markers."
             }
             SceneKind::BigData => "One million points, every one drawn. Zoom and pan it.",
             SceneKind::Radial => "Click a slice; drag the title or legend.",
@@ -263,6 +271,7 @@ pub fn build(r: &mut Renderer, kind: SceneKind) -> Result<CartesianScene, FiggyE
         SceneKind::TwinAxes => twin_axes(r),
         SceneKind::Subplots => subplots(r),
         SceneKind::Annotations => annotations(r),
+        SceneKind::Polar => polar(r),
         SceneKind::BigData => big_data(r),
         _ => unreachable!("bounded scenes are built in bounded.rs"),
     }
@@ -668,6 +677,66 @@ fn field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         config: chart.config().clone(),
         series,
     })
+}
+
+fn polar(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    // An antenna-like pattern over the full circle and a three-leaf rose
+    // sampled every five degrees. Both columns are the host's (angle,
+    // radius); the renderer projects them.
+    let degrees: Vec<f64> = (0..=360).map(f64::from).collect();
+    let pattern: Vec<f64> = degrees
+        .iter()
+        .map(|d| {
+            let t = d.to_radians();
+            (0.6 + 2.4 * (2.0 * t).cos().abs()) * (0.7 + 0.3 * t.cos().max(0.0))
+        })
+        .collect();
+    let rose_deg: Vec<f64> = (0..72).map(|i| f64::from(i) * 5.0).collect();
+    let rose: Vec<f64> = rose_deg
+        .iter()
+        .map(|d| 2.0 + (3.0 * d.to_radians()).cos())
+        .collect();
+    upload(r, "polar_deg", degrees)?;
+    upload(r, "polar_pattern", pattern)?;
+    upload(r, "polar_rose_deg", rose_deg)?;
+    upload(r, "polar_rose", rose)?;
+    let blue = Color::from_rgb8(30, 110, 210);
+    let red = Color::from_rgb8(200, 60, 40);
+    let mut filled = line_style(blue, 2.5);
+    filled.fill = Some(LineFill::ToBaseline(0.0));
+    filled.fill_color = Some(Color::from_rgba(0.12, 0.43, 0.82, 0.25));
+    let series = vec![
+        series(
+            "pattern",
+            "polar_deg",
+            "polar_pattern",
+            DataRenderType::Line { line: filled },
+        ),
+        series(
+            "rose",
+            "polar_rose_deg",
+            "polar_rose",
+            DataRenderType::ScatterLine {
+                scatter: scatter_style(red, ScatterShape::CircleFilled, 6.0),
+                line: line_style(red, 1.5),
+            },
+        ),
+    ];
+    let mut config = base_config("Polar: pattern and rose", "Angle", "Radius");
+    config.bottom_x.min = 0.0;
+    config.bottom_x.max = 360.0;
+    config.bottom_x.major_spacing = 30.0;
+    config.bottom_x.label_style.format = LabelFormat::Degrees;
+    config.left_y.min = 0.0;
+    config.left_y.max = 3.0;
+    config.left_y.major_spacing = 0.5;
+    config.polar = Some(PolarOptions {
+        interpolation: PolarInterpolation::Arc { pieces: 6 },
+        radial_label_angle_degrees: 90.0,
+        ..PolarOptions::default()
+    });
+    rebuild_legends(&mut config, &series);
+    Ok(CartesianScene { config, series })
 }
 
 fn vector_field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {

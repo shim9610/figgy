@@ -50,10 +50,11 @@ the images are actual native renderer output. GIFs show exported animation frame
   <a href="crates/renderer/examples/animated_lines.rs"><img src="crates/renderer/assets/gallery-orbit.gif" alt="Animated phase portrait" width="23%" align="top"></a>
 </p>
 
-**Radar**
+**Radar · Polar**
 
 <p>
   <a href="crates/renderer/examples/radar_gallery.rs"><img src="crates/renderer/assets/gallery-radar.png" alt="Radar chart comparing two releases over six categories" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/polar_plot.rs"><img src="crates/renderer/assets/gallery-polar.png" alt="Antenna pattern in polar coordinates" width="23%" align="top"></a>
 </p>
 
 **Draw styles: Precise · Sketch (hand-drawn) · Milkyway · Constellation**
@@ -205,6 +206,7 @@ cargo run --locked -p figgy-renderer --example radial_gallery -- target/radial-g
 cargo run --locked -p figgy-renderer --example categorical_gallery -- target/categorical-gallery
 cargo run --locked -p figgy-renderer --example boxplot_gallery -- target/boxplot-gallery
 cargo run --locked -p figgy-renderer --example radar_gallery -- target/radar-gallery
+cargo run --locked -p figgy-renderer --example polar_plot -- target/polar-plot
 ```
 
 See the [example index](crates/renderer/examples/README.md) for animations,

@@ -64,7 +64,7 @@ pub struct Config {
 | `label_visible` | bool | Number labels themselves (separate from `visible`, e.g. show the axis but hide labels) |
 | `label_font` | String | Font family. Empty string → bundled Liberation Sans. A family that is neither registered nor installed also falls back to it; `text_render::font_family_available(name)` tells hosts whether a name resolves. A character the face cannot draw falls back per character to registered fonts, the bundled Liberation Sans, then (native only) installed system fonts |
 | `label_offset_x / y` | f32 | Fine nudge offset (px) |
-| `format` | `LabelFormat` | `Decimal / Power / Scientific / Timestamp`. `Timestamp` interprets numeric values as Unix epoch time on linear axes and can use calendar-aware ticks |
+| `format` | `LabelFormat` | `Decimal / Power / Scientific / Timestamp / Degrees / Radians`. `Timestamp` interprets numeric values as Unix epoch time on linear axes and can use calendar-aware ticks. `Degrees` is decimal with a degree sign; `Radians` writes multiples of π (`π/2`, `3π/4`, `0.4π`) |
 | `significant_digits` | u8 | Requested numeric precision (1–15 for decimal/scientific labels). Linear decimal labels share a decimal count based on range magnitude, raised only as needed to distinguish the tick interval; logarithmic labels round each value. Does not change tick positions |
 
 Numeric labels that would overlap along an axis are drawn at a coarser label stride;
@@ -108,6 +108,46 @@ scale against that contract.
 | `Sketch` / `{ "mode": "sketch", ... }` | Hand-drawn chart-wide style. Draws line, scatter and errorbar series; bars, fields and contours are skipped (query with `draw_style_supports`) |
 | `Milkyway` / `{ "mode": "milkyway", ... }` | Astrophotograph chart-wide style. Draws line, scatter and errorbar series; bars, fields and contours are skipped (query with `draw_style_supports`). Parameter metadata comes from `draw_style_param_specs("milkyway")` |
 | `Constellation` / `{ "mode": "constellation", ... }` | ScatterLine-only star chart style. Parameter metadata comes from `draw_style_param_specs("constellation")` |
+
+### `PolarOptions` (`Config::polar`)
+
+`polar: None` (default, key absent in JSON) is the rectangular chart. `Some`
+draws the same series in polar coordinates: `bottom_x` is the angle axis and
+`left_y` the radius axis, so their ranges, scales, ticks, label styles and
+titles keep working; `top_x` and `right_y` are not drawn. The data stays the
+host's (angle, radius) columns. The plot is the largest circle inside the data
+area that leaves one band of angle labels inside it (`Config::polar_geometry`).
+
+| Field | Meaning |
+|---|---|
+| `zero_angle_degrees: f64` | Where the angle value 0 points, in screen degrees counter-clockwise from the right: 0 right (default), 90 up |
+| `clockwise: bool` | Whether angle values grow clockwise on screen. Default `false` (counter-clockwise, the mathematical convention) |
+| `angle_unit: AngleUnit` | `Degrees` (default) or `Radians`: how the angle column and `sector` are read |
+| `sector: Option<[f64; 2]>` | The visible angular window in `angle_unit`, at most one turn; samples outside it are not drawn. `None` (default) is the full circle, where an angle outside the axis range lands where `cos` / `sin` put it: nothing is wrapped, sorted or deduplicated |
+| `inner_radius_fraction: f32` | The hole at the centre as a fraction of the outer radius, `0.0..=0.9`; `left_y.min` maps to this ring |
+| `interpolation: PolarInterpolation` | `Chord` (default): a segment between two samples is straight on screen. `Arc { pieces }` (1–64): the segment is `pieces` chords between points interpolated linearly in (angle, radius), so a constant radius follows its ring; dashes and picking walk the same pieces |
+| `radial_label_angle_degrees: f64` | The screen direction of the ray the radius axis line and its tick labels sit on, default 90 (up) |
+
+The grid draws `*_y` fields as rings at the radius ticks and `*_x` fields as
+spokes at the angle ticks. The angle axis is the outer ring with its ticks
+pointing outward and its labels around it; a full-circle axis draws one spoke
+and one label where two ticks coincide (0 and 360). `LabelFormat::Degrees`
+(`90°`) and `LabelFormat::Radians` (`π/2`, `3π/4`, `0.4π`) format the angle
+labels. A radius below `left_y.min` and an angle outside the sector are not
+drawn (a line breaks there); on a logarithmic radius, non-positive samples are
+masked like on a rectangular log axis. A line fill (`LineFill::ToBaseline`)
+fills to the baseline ring, the centre for a baseline at the axis start.
+
+Validation (`Config::validate_polar`, reported as `InvalidConfig { field:
+"polar" }`): finite angles, `inner_radius_fraction` in range, a sector with
+`start < end` of at most one turn, arc pieces in `1..=64`, a linear and
+non-inverted angle axis (use `clockwise`), and no `overlays`. Series that have
+no polar form are rejected with `InvalidSeriesConfig`: histograms, heatmaps,
+contours, error bars and vectors; `Arc` needs a linearly interpolated line.
+Streamed sources are rejected. Annotations anchor by ratio only; data anchors
+report a skip. The axis lines and tick labels register no drag region in
+polar mode. Subplots carry their own `polar`, so polar and rectangular panels
+mix in one document.
 
 ### `LayerRef` / `AnnotationLayer`
 
@@ -726,7 +766,7 @@ pub struct Config {
 | `label_visible` | bool | 숫자 라벨 표시 여부. 축을 켠 상태에서 숫자만 숨길 수 있다. |
 | `label_font` | String | 글꼴 이름. 빈 문자열이면 내장 Liberation Sans를 쓴다. 등록되지도 설치되지도 않은 이름도 이 글꼴로 대체되며, 호스트는 `text_render::font_family_available(name)`으로 이름이 해석되는지 확인할 수 있다. 이 글꼴에 없는 글자는 글자마다 등록 글꼴, 내장 Liberation Sans, 설치된 시스템 글꼴(네이티브 전용) 순으로 찾아 그린다. |
 | `label_offset_x / y` | f32 | 라벨 위치를 미세 조절하는 이동량(px) |
-| `format` | `LabelFormat` | `Decimal / Power / Scientific / Timestamp`. `Timestamp`는 선형축의 숫자 좌표를 Unix 시간으로 표시하며 달력 기준 눈금을 지원한다. |
+| `format` | `LabelFormat` | `Decimal / Power / Scientific / Timestamp / Degrees / Radians`. `Timestamp`는 선형축의 숫자 좌표를 Unix 시간으로 표시하며 달력 기준 눈금을 지원한다. `Degrees`는 소수에 도(°) 기호를 붙이고, `Radians`는 π의 배수(`π/2`, `3π/4`, `0.4π`)로 적는다. |
 | `significant_digits` | u8 | 숫자 표시에 요청하는 정밀도(소수·과학 표기는 1~15). 선형 소수 라벨은 범위의 크기를 기준으로 소수 자릿수를 통일하고 눈금 간격을 구분하는 데 필요한 만큼만 늘린다. 로그 라벨은 값마다 반올림한다. 눈금 위치는 바뀌지 않는다. |
 
 축을 따라 겹치는 숫자 라벨은 일정 간격으로 일부만 표시하며, 눈금과 격자 설정은 바꾸지 않는다. 정밀도를 바꿔도 `out_margin`이나 제목 위치를 자동으로 바꾸지는 않으므로 긴 라벨에는 여백을 직접 늘린다. 색상 막대의 눈금 라벨도 같은 형식 규칙을 사용한다.
@@ -758,6 +798,39 @@ pub struct Config {
 | `Sketch` / `{ "mode": "sketch", ... }` | 차트 전체 손그림 스타일. 선·산점도·오차 막대 시리즈를 그리고 막대·필드·등고선은 그리지 않는다(`draw_style_supports`로 확인) |
 | `Milkyway` / `{ "mode": "milkyway", ... }` | 차트 전체 천체사진 스타일. 선·산점도·오차 막대 시리즈를 그리고 막대·필드·등고선은 그리지 않는다(`draw_style_supports`로 확인). 옵션 메타데이터는 `draw_style_param_specs("milkyway")`에서 제공 |
 | `Constellation` / `{ "mode": "constellation", ... }` | `ScatterLine` 전용 별자리 스타일. 데이터 점 위치의 별과 반투명 연결선을 그린다. 별 크기는 `point_size`를 따른다. 옵션 범위는 `draw_style_param_specs("constellation")`에서 조회한다. |
+
+### `PolarOptions` (`Config::polar`)
+
+`polar: None`(기본값, JSON에서 키 생략)은 직교 차트다. `Some`이면 같은 시리즈를 극좌표로
+그린다. `bottom_x`가 각도 축, `left_y`가 반지름 축이 되어 범위·스케일·눈금·라벨 스타일·제목을
+그대로 쓰고, `top_x`와 `right_y`는 그리지 않는다. 데이터는 호스트의 (각도, 반지름) 컬럼 그대로다.
+플롯은 데이터 영역 안에서 각도 라벨 한 줄이 들어갈 자리를 남긴 가장 큰 원이다
+(`Config::polar_geometry`).
+
+| 필드 | 의미 |
+|---|---|
+| `zero_angle_degrees: f64` | 각도 값 0이 가리키는 화면 방향(오른쪽에서 반시계 방향으로 잰 도). 0은 오른쪽(기본), 90은 위 |
+| `clockwise: bool` | 각도 값이 화면에서 시계 방향으로 커지는지. 기본 `false`(반시계, 수학 관례) |
+| `angle_unit: AngleUnit` | `Degrees`(기본) 또는 `Radians`. 각도 컬럼과 `sector`를 읽는 단위 |
+| `sector: Option<[f64; 2]>` | `angle_unit` 단위의 가시 각도 창. 한 바퀴 이하이며 밖의 표본은 그리지 않는다. `None`(기본)은 전체 원이고, 축 범위 밖 각도는 `cos`/`sin`이 두는 자리에 그린다. 감싸기·정렬·중복 제거는 하지 않는다 |
+| `inner_radius_fraction: f32` | 바깥 반지름에 대한 중앙 구멍 비율, `0.0..=0.9`. `left_y.min`이 이 고리에 놓인다 |
+| `interpolation: PolarInterpolation` | `Chord`(기본): 두 표본 사이 세그먼트는 화면에서 직선. `Arc { pieces }`(1~64): (각도, 반지름)에서 선형 보간한 점들을 잇는 `pieces`개의 현으로, 반지름이 일정하면 고리를 따른다. 대시와 피킹도 같은 조각을 따라간다 |
+| `radial_label_angle_degrees: f64` | 반지름 축 선과 눈금 라벨이 놓이는 광선의 화면 방향(도). 기본 90(위) |
+
+격자는 `*_y` 필드를 반지름 눈금의 고리로, `*_x` 필드를 각도 눈금의 스포크로 그린다. 각도 축은
+바깥 고리이며 눈금은 바깥쪽을 향하고 라벨은 둘레에 놓인다. 전체 원에서는 두 눈금이 겹치는
+자리(0과 360)에 스포크와 라벨을 하나만 그린다. 각도 라벨은 `LabelFormat::Degrees`(`90°`)와
+`LabelFormat::Radians`(`π/2`, `3π/4`, `0.4π`)로 적는다. `left_y.min`보다 작은 반지름과 섹터 밖의
+각도는 그리지 않으며(선은 거기서 끊긴다), 로그 반지름 축의 0 이하 표본은 직교 로그 축처럼
+가린다. 선 채움(`LineFill::ToBaseline`)은 기준선 고리까지 채우며 축 시작값이면 중심까지다.
+
+검증(`Config::validate_polar`, `InvalidConfig { field: "polar" }`로 보고): 유한한 각도,
+범위 안의 `inner_radius_fraction`, `start < end`이고 한 바퀴 이하인 섹터, `1..=64`의 호 조각 수,
+선형이며 뒤집지 않은 각도 축(`clockwise`를 쓴다), 그리고 `overlays` 없음. 극좌표 형태가 없는
+시리즈는 `InvalidSeriesConfig`로 거부한다: 히스토그램, 히트맵, 등고선, 오차 막대, 벡터. `Arc`는
+선형 보간 선이 필요하다. 스트리밍 소스는 거부한다. 주석은 비율 앵커만 쓰고 데이터 앵커는 건너뛴
+것으로 보고한다. 극좌표 모드에서는 축 선과 눈금 라벨의 드래그 영역을 등록하지 않는다. 서브플롯은
+각자 `polar`를 가지므로 한 문서에 극좌표 패널과 직교 패널을 섞을 수 있다.
 
 ### `LayerRef` / `AnnotationLayer`
 
