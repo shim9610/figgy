@@ -199,6 +199,16 @@ pub struct VectorTables<'a> {
     pub params: &'a VectorParamsGpu,
 }
 
+/// One vector series' group 2: the bind group, the grid table buffer it
+/// binds (a grid vector's cell pick and selected-cell outline bind the same
+/// buffer as a field's grid, so the table is uploaded once) and the charge
+/// for all three buffers.
+pub struct VectorDataBindGroup {
+    pub bind_group: wgpu::BindGroup,
+    pub grid: wgpu::Buffer,
+    pub charge: crate::gpu_memory::SharedCharge,
+}
+
 /// Bind the pool, the tables and the params into the layout above. The three
 /// buffers are owned by the returned bind group and charged as one lump
 /// against the field-table row, which the returned charge credits back when
@@ -209,7 +219,7 @@ pub fn create_vector_data_bind_group(
     layout: &wgpu::BindGroupLayout,
     pool_buffer: &wgpu::Buffer,
     tables: VectorTables<'_>,
-) -> (wgpu::BindGroup, crate::gpu_memory::SharedCharge) {
+) -> VectorDataBindGroup {
     use crate::gpu_memory::{ChargeTally, charged_buffer_init};
     let tally = ChargeTally::new();
     let grid_buf = charged_buffer_init(
@@ -266,7 +276,11 @@ pub fn create_vector_data_bind_group(
             },
         ],
     });
-    (bind_group, charge)
+    VectorDataBindGroup {
+        bind_group,
+        grid: grid_buf,
+        charge,
+    }
 }
 
 /// The vector pipeline for one input form. No vertex buffers: the quad is

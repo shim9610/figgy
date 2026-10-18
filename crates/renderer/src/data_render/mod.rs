@@ -3921,6 +3921,39 @@ pub struct FieldParamsGpu {
     pub z_max: [f32; 2],
 }
 
+impl FieldParamsGpu {
+    /// Params for a field group that serves cell geometry only (a grid
+    /// vector's cell pick and selected-cell outline): the grid lattice and
+    /// its flags are real; the z range, levels, stops and colours are unread
+    /// by those passes and are left at neutral values.
+    pub fn cell_geometry(
+        x_base: u32,
+        y_base: u32,
+        x_len: u32,
+        y_len: u32,
+        cols: u32,
+        rows: u32,
+        flags: u32,
+    ) -> Self {
+        Self {
+            x_base,
+            y_base,
+            x_len,
+            y_len,
+            cols,
+            rows,
+            level_count: 0,
+            stop_count: 0,
+            flags,
+            opacity: 1.0,
+            line_width_px: 0.0,
+            level_color_count: 0,
+            z_min: [0.0, 0.0],
+            z_max: [1.0, 0.0],
+        }
+    }
+}
+
 const _: () = assert!(std::mem::size_of::<FieldParamsGpu>() == 64);
 
 /// Bind group layout for the field's own data (group 2).
@@ -4004,6 +4037,136 @@ pub struct FieldTables<'a> {
     /// 32-level block. An empty level declaration still has one zero record.
     pub lookup_metadata: &'a [ContourLookupMetadataGpu],
     pub params: &'a FieldParamsGpu,
+}
+
+/// The group-2 tables a field bind group needs beyond its grid and params
+/// when it serves cell geometry only: a grid vector's cell pick and
+/// selected-cell outline run the field pipelines, which read the grid table
+/// and `FieldParams` and nothing of the levels, stops, level colours or
+/// lookup metadata. Those four bindings must still exist, so one padding set
+/// (an empty level list, one stop, one colour, one zero lookup record) is
+/// built once per renderer and shared by every such group, the way the
+/// neutral value-map group is shared by mapped scatter series.
+pub struct FieldCellTables {
+    levels: wgpu::Buffer,
+    stops: wgpu::Buffer,
+    level_colors: wgpu::Buffer,
+    lookup_metadata: wgpu::Buffer,
+    _charge: crate::gpu_memory::SharedCharge,
+}
+
+pub fn create_field_cell_tables(
+    device: &wgpu::Device,
+    ledger: &std::sync::Arc<crate::gpu_memory::GpuLedger>,
+) -> crate::Result<FieldCellTables> {
+    use crate::gpu_memory::{ChargeTally, charged_buffer_init};
+    let lookup = build_field_lookup_tables(&[[0.0; 4]], &[])?;
+    let tally = ChargeTally::new();
+    let storage = |label: &'static str, contents: &[u8]| {
+        charged_buffer_init(
+            &tally,
+            device,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents,
+                usage: wgpu::BufferUsages::STORAGE,
+            },
+        )
+    };
+    let levels = storage(
+        "figgy field cell levels (padding)",
+        bytemuck::cast_slice(&[0.0f32]),
+    );
+    let stops = storage(
+        "figgy field cell stops (padding)",
+        bytemuck::cast_slice(&lookup.stops),
+    );
+    let level_colors = storage(
+        "figgy field cell level colours (padding)",
+        bytemuck::cast_slice(&[[0.0f32; 4]]),
+    );
+    let lookup_metadata = storage(
+        "figgy field cell lookup metadata (padding)",
+        bytemuck::cast_slice(&lookup.metadata),
+    );
+    let charge = crate::gpu_memory::shared_charge(
+        tally,
+        ledger,
+        crate::gpu_memory::GpuResourceKind::FieldTable,
+    );
+    Ok(FieldCellTables {
+        levels,
+        stops,
+        level_colors,
+        lookup_metadata,
+        _charge: charge,
+    })
+}
+
+/// A field bind group over an existing grid table buffer for cell geometry
+/// only (see [`FieldCellTables`]): the grid and the pool are the caller's,
+/// the padding tables are shared, and the params uniform is the one buffer
+/// this group owns. `params` comes from [`FieldParamsGpu::cell_geometry`].
+pub fn create_field_cell_bind_group(
+    device: &wgpu::Device,
+    ledger: &std::sync::Arc<crate::gpu_memory::GpuLedger>,
+    layout: &wgpu::BindGroupLayout,
+    pool_buffer: &wgpu::Buffer,
+    grid: &wgpu::Buffer,
+    tables: &FieldCellTables,
+    params: &FieldParamsGpu,
+) -> (wgpu::BindGroup, crate::gpu_memory::SharedCharge) {
+    use crate::gpu_memory::{ChargeTally, charged_buffer_init};
+    let tally = ChargeTally::new();
+    let param_buf = charged_buffer_init(
+        &tally,
+        device,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("figgy field cell params"),
+            contents: bytemuck::bytes_of(params),
+            usage: wgpu::BufferUsages::UNIFORM,
+        },
+    );
+    let charge = crate::gpu_memory::shared_charge(
+        tally,
+        ledger,
+        crate::gpu_memory::GpuResourceKind::FieldTable,
+    );
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("figgy field cell bg"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: pool_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: grid.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: tables.levels.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: tables.stops.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: param_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: tables.level_colors.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: tables.lookup_metadata.as_entire_binding(),
+            },
+        ],
+    });
+    (bind_group, charge)
 }
 
 pub(crate) struct FieldLookupTables {

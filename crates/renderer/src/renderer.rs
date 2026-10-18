@@ -3027,6 +3027,8 @@ pub struct Renderer {
     /// Vector data layout (pool + grid table + colourmap stops +
     /// `VectorParams`), group 2 of the assembled vector pipelines.
     vector_bgl: wgpu::BindGroupLayout,
+    /// The padding tables every grid vector's cell-geometry field group shares.
+    field_cell_tables: data_render::FieldCellTables,
 
     // Pipelines (precise + lazily-cached styled variants), all against
     // `surface_format`.
@@ -6278,6 +6280,7 @@ impl Renderer {
         let star_data_bgl = data_render::create_star_data_bind_group_layout(&device);
         let field_bgl = data_render::create_field_data_bind_group_layout(&device);
         let vector_bgl = data_render::vector::create_vector_data_bind_group_layout(&device);
+        let field_cell_tables = data_render::create_field_cell_tables(&device, &gpu_ledger)?;
 
         let sampler = data_render::create_linear_sampler(&device);
         let quad_vb = TrackedBuffer::new(
@@ -6334,6 +6337,7 @@ impl Renderer {
             star_data_bgl,
             field_bgl,
             vector_bgl,
+            field_cell_tables,
             pipelines,
             sampler,
             quad_vb,
@@ -6415,6 +6419,7 @@ impl Renderer {
         let star_data_bgl = data_render::create_star_data_bind_group_layout(&device);
         let field_bgl = data_render::create_field_data_bind_group_layout(&device);
         let vector_bgl = data_render::vector::create_vector_data_bind_group_layout(&device);
+        let field_cell_tables = data_render::create_field_cell_tables(&device, &gpu_ledger)?;
 
         let sampler = data_render::create_linear_sampler(&device);
         let quad_vb = TrackedBuffer::new(
@@ -6471,6 +6476,7 @@ impl Renderer {
             star_data_bgl,
             field_bgl,
             vector_bgl,
+            field_cell_tables,
             pipelines,
             sampler,
             quad_vb,
@@ -11497,6 +11503,7 @@ impl Renderer {
                 style_bgl: &self.style_bgl,
                 field_bgl: &self.field_bgl,
                 vector_bgl: &self.vector_bgl,
+                field_cell_tables: &self.field_cell_tables,
                 transform_bgl: &self.transform_bgl,
                 per_point_style_map_bgl: &self.per_point_style_map_bgl,
                 point_value_map_bgl: &self.point_value_map_bgl,
@@ -13210,6 +13217,7 @@ struct PrepareContext<'a> {
     style_bgl: &'a wgpu::BindGroupLayout,
     field_bgl: &'a wgpu::BindGroupLayout,
     vector_bgl: &'a wgpu::BindGroupLayout,
+    field_cell_tables: &'a data_render::FieldCellTables,
     transform_bgl: &'a wgpu::BindGroupLayout,
     per_point_style_map_bgl: &'a wgpu::BindGroupLayout,
     point_value_map_bgl: &'a wgpu::BindGroupLayout,
@@ -13687,24 +13695,16 @@ impl PrepareContext<'_> {
                     params.flags |= vector_render::VECTOR_FLAG_CENTERS;
                     field_flags |= data_render::FIELD_FLAG_CENTERS;
                 }
-                field_params = Some((
-                    data_render::FieldParamsGpu {
-                        x_base: params.x_base,
-                        y_base: params.y_base,
-                        x_len: params.x_len,
-                        y_len: params.y_len,
-                        cols: params.cols,
-                        rows: params.rows,
-                        level_count: 0,
-                        stop_count: 0,
-                        flags: field_flags,
-                        opacity: 1.0,
-                        line_width_px: 0.0,
-                        level_color_count: 0,
-                        z_min: [0.0, 0.0],
-                        z_max: [1.0, 0.0],
-                    },
-                    u_grid.grid.len(),
+                // The `u` grid's lattice as a field, for the cell pick and the
+                // selected-cell outline; those passes read only the lattice.
+                field_params = Some(data_render::FieldParamsGpu::cell_geometry(
+                    params.x_base,
+                    params.y_base,
+                    params.x_len,
+                    params.y_len,
+                    params.cols,
+                    params.rows,
+                    field_flags,
                 ));
                 vector_render::VectorInput::Grid
             }
@@ -13765,7 +13765,11 @@ impl PrepareContext<'_> {
         );
         let style_bg =
             data_render::create_style_bind_group(&self.device, &self.style_bgl, &style_buf);
-        let (vector_bg, charge) = vector_render::create_vector_data_bind_group(
+        let vector_render::VectorDataBindGroup {
+            bind_group: vector_bg,
+            grid: grid_buffer,
+            charge,
+        } = vector_render::create_vector_data_bind_group(
             &self.device,
             &self.gpu_ledger,
             &self.vector_bgl,
@@ -13776,26 +13780,19 @@ impl PrepareContext<'_> {
                 params: &signature.params,
             },
         );
-        let field = match field_params {
-            Some((field_params, u_entries)) => {
-                let lookup = data_render::build_field_lookup_tables(&[[0.0; 4]], &[])?;
-                Some(data_render::create_field_data_bind_group(
-                    &self.device,
-                    &self.gpu_ledger,
-                    &self.field_bgl,
-                    self.pool.buffer(),
-                    data_render::FieldTables {
-                        grid: &signature.grid[..u_entries],
-                        levels: &[0.0],
-                        stops: &lookup.stops,
-                        level_colors: &[[0.0; 4]],
-                        lookup_metadata: &lookup.metadata,
-                        params: &field_params,
-                    },
-                ))
-            }
-            None => None,
-        };
+        // The grid table starts with the `u` grid's columns, which is all the
+        // field lattice indexes; the same buffer serves both groups.
+        let field = field_params.map(|field_params| {
+            data_render::create_field_cell_bind_group(
+                &self.device,
+                &self.gpu_ledger,
+                &self.field_bgl,
+                self.pool.buffer(),
+                &grid_buffer,
+                self.field_cell_tables,
+                &field_params,
+            )
+        });
 
         evict_if_full(
             &mut self.vector_cache,
