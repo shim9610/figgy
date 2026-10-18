@@ -1078,6 +1078,10 @@ mod draw_style_serde_tests {
                 "boxplot",
                 serde_json::to_value(crate::boxplot::BoxPlotChart::default()).unwrap(),
             ),
+            (
+                "radar",
+                serde_json::to_value(crate::radar::RadarChart::default()).unwrap(),
+            ),
         ] {
             assert!(json.get("active_layer").is_none(), "{name}: {json}");
             assert!(json.get("annotations").is_none(), "{name}: {json}");

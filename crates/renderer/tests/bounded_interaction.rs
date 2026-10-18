@@ -209,6 +209,71 @@ fn boxplot_all_chrome_uses_shared_select_drag_and_preserves_data() {
     }
 }
 #[test]
+fn radar_all_chrome_uses_shared_select_drag_and_preserves_data() {
+    let _guard = LOCK.lock().unwrap();
+    let mut r = RadarRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut c = RadarChart {
+        title: "Editable radar".into(),
+        categories: vec![
+            Category::new("a", "Speed"),
+            Category::new("b", "Safety"),
+            Category::new("c", "Size"),
+        ],
+        series: vec![RadarSeries::new(
+            "s",
+            "Release",
+            vec![6., 8., 4.],
+            Color::from_rgb8(144, 69, 154),
+        )],
+        labels: RadarLabels::Values,
+        ..Default::default()
+    };
+    for shape in [RadarGridShape::Polygon, RadarGridShape::Circle] {
+        c.style.grid_shape = shape;
+        for key in [
+            DecorationId::ChartTitle,
+            DecorationId::Legend,
+            DecorationId::AxisLabel(Side::Left),
+            DecorationId::SpokeLabel {
+                category_id: "b".into(),
+            },
+            DecorationId::DataLabel {
+                category_id: "c".into(),
+                series_id: "s".into(),
+            },
+        ] {
+            c.decorations = Default::default();
+            let f = r.prepare(&c, (800, 560), 2.).unwrap();
+            let before = r.export_rgba(&c, (800, 560), 2.).unwrap();
+            let (dx, dy) = match key {
+                DecorationId::Legend => (7., -5.),
+                _ => (7., 5.),
+            };
+            let old = moved(f.decorations(), &mut c.decorations, &key, dx, dy);
+            c.decorations.selected = Some(key.clone());
+            let g = r.prepare(&c, (800, 560), 2.).unwrap();
+            assert_eq!(
+                g.decorations().bounds(id(g.decorations(), &key)).unwrap(),
+                old.translated(dx, dy)
+            );
+            assert_eq!(g.plot_rect(), f.plot_rect());
+            assert_eq!(g.plot_circle(), f.plot_circle());
+            assert_eq!(
+                g.vertex_position(&RadarTarget::vertex("s", "a")),
+                f.vertex_position(&RadarTarget::vertex("s", "a"))
+            );
+            let after = r.export_rgba(&c, (800, 560), 2.).unwrap();
+            assert_ne!(before.rgba, after.rgba, "{key:?} didn't redraw");
+            assert!(!f.shares_annotations_with(&g));
+            assert!(Arc::ptr_eq(&g, &r.prepare(&c, (800, 560), 2.).unwrap()));
+            if key == DecorationId::Legend {
+                save("radar-legend-selected", &after);
+            }
+            r.end_frame();
+        }
+    }
+}
+#[test]
 fn categorical_chrome_survives_hover_cache_reorder_and_resize() {
     let _guard = LOCK.lock().unwrap();
     let mut r = CategoricalRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
@@ -580,6 +645,32 @@ fn every_bounded_decoration_uses_public_edit_reset_and_snapshot_contracts() {
         },
         keys.clone()
     );
+    check!(
+        RadarRenderer,
+        RadarChart {
+            title: "Editable radar title".into(),
+            categories: vec![
+                Category::new("a", "Speed"),
+                Category::new("b", "Safety"),
+                Category::new("c", "Size")
+            ],
+            series: vec![RadarSeries::new("s", "Release", vec![6., 8., 4.], color)],
+            labels: RadarLabels::Values,
+            ..Default::default()
+        },
+        [
+            DecorationId::ChartTitle,
+            DecorationId::Legend,
+            DecorationId::AxisLabel(Side::Left),
+            DecorationId::SpokeLabel {
+                category_id: "a".into(),
+            },
+            DecorationId::DataLabel {
+                category_id: "a".into(),
+                series_id: "s".into(),
+            },
+        ]
+    );
 }
 
 #[test]
@@ -684,6 +775,23 @@ fn independent_rich_titles_refresh_export_cache_and_keep_public_drag_contract() 
             ..Default::default()
         }
     );
+    check!(
+        RadarRenderer,
+        RadarChart {
+            categories: vec![
+                Category::new("a", "A"),
+                Category::new("b", "B"),
+                Category::new("c", "C")
+            ],
+            series: vec![RadarSeries::new(
+                "s",
+                "Values",
+                vec![1., 2., 3.],
+                Color::BLACK
+            )],
+            ..Default::default()
+        }
+    );
 }
 
 // The layer foundation fields route interaction and reserve the annotation
@@ -705,6 +813,10 @@ fn layer_fields_reuse_cached_frames() {
     }
     fn fresh_boxplot(c: &BoxPlotChart) -> Vec<u8> {
         let mut r = BoxPlotRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+        r.export_rgba(c, (800, 520), 1.).unwrap().rgba
+    }
+    fn fresh_radar(c: &RadarChart) -> Vec<u8> {
+        let mut r = RadarRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
         r.export_rgba(c, (800, 520), 1.).unwrap().rgba
     }
 
@@ -790,7 +902,7 @@ fn layer_fields_reuse_cached_frames() {
     assert!(!Arc::ptr_eq(&f, &h));
     assert!(r.export_rgba(&c, (800, 520), 1.).unwrap().rgba == fresh_categorical(&c));
 
-    let mut r = BoxPlotRenderer::new(device, wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut r = BoxPlotRenderer::new(device.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
     let mut c = BoxPlotChart {
         title: "Layer fields".into(),
         value_title: "Value".into(),
@@ -835,4 +947,46 @@ fn layer_fields_reuse_cached_frames() {
     let h = r.prepare(&c, (800, 520), 1.).unwrap();
     assert!(!Arc::ptr_eq(&f, &h));
     assert!(r.export_rgba(&c, (800, 520), 1.).unwrap().rgba == fresh_boxplot(&c));
+
+    let mut r = RadarRenderer::new(device, wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut c = RadarChart {
+        title: "Layer fields".into(),
+        categories: vec![
+            Category::new("a", "Speed"),
+            Category::new("b", "Safety"),
+            Category::new("c", "Size"),
+        ],
+        series: vec![RadarSeries::new(
+            "s",
+            "Release",
+            vec![6., 8., 4.],
+            Color::from_rgb8(60, 130, 210),
+        )],
+        ..Default::default()
+    };
+    let f = r.prepare(&c, (800, 520), 1.).unwrap();
+    let before = r.export_rgba(&c, (800, 520), 1.).unwrap().rgba;
+    let edits: [(&str, fn(&mut RadarChart)); 2] = [
+        ("annotations.visible", |c| c.annotations.visible = false),
+        ("active_layer", |c| c.active_layer = LayerRef::Annotations),
+    ];
+    for (name, apply) in edits {
+        apply(&mut c);
+        let g = r.prepare(&c, (800, 520), 1.).unwrap();
+        assert!(Arc::ptr_eq(&f, &g), "radar {name}: frame must be reused");
+        assert!(
+            f.shares_annotations_with(&g),
+            "radar {name}: label raster must be reused"
+        );
+        let cached = r.export_rgba(&c, (800, 520), 1.).unwrap().rgba;
+        assert!(cached == before, "radar {name}: pixels changed");
+        assert!(
+            cached == fresh_radar(&c),
+            "radar {name}: cached export differs from a fresh render"
+        );
+    }
+    c.title = "Edited".into();
+    let h = r.prepare(&c, (800, 520), 1.).unwrap();
+    assert!(!Arc::ptr_eq(&f, &h));
+    assert!(r.export_rgba(&c, (800, 520), 1.).unwrap().rgba == fresh_radar(&c));
 }

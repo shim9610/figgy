@@ -1,7 +1,8 @@
-//! Raw WASM host for radial, categorical and box charts. The renderer owns all geometry.
+//! Raw WASM host for radial, categorical, box and radar charts. The renderer owns all geometry.
 use renderer::{
     AnnotationLayer, BoundedAnnotationFrame, DecorationId, DecorationLayout, FrameBackground,
-    LayerHit, LayerRef, RendererDevice, boxplot::*, categorical::*, layout::Rect, radial::*,
+    LayerHit, LayerRef, RendererDevice, boxplot::*, categorical::*, layout::Rect, radar::*,
+    radial::*,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -15,6 +16,7 @@ enum DocumentChart {
     Radial(RadialChart),
     Categorical(CategoricalChart),
     BoxPlot(BoxPlotChart),
+    Radar(RadarChart),
 }
 impl DocumentChart {
     pub fn family(&self) -> &'static str {
@@ -22,6 +24,7 @@ impl DocumentChart {
             Self::Radial(_) => "radial",
             Self::Categorical(_) => "categorical",
             Self::BoxPlot(_) => "boxplot",
+            Self::Radar(_) => "radar",
         }
     }
     pub fn decorations(&self) -> &DecorationLayout {
@@ -29,6 +32,7 @@ impl DocumentChart {
             Self::Radial(c) => &c.decorations,
             Self::Categorical(c) => &c.decorations,
             Self::BoxPlot(c) => &c.decorations,
+            Self::Radar(c) => &c.decorations,
         }
     }
     pub fn decorations_mut(&mut self) -> &mut DecorationLayout {
@@ -36,6 +40,7 @@ impl DocumentChart {
             Self::Radial(c) => &mut c.decorations,
             Self::Categorical(c) => &mut c.decorations,
             Self::BoxPlot(c) => &mut c.decorations,
+            Self::Radar(c) => &mut c.decorations,
         }
     }
     pub fn active_layer(&self) -> LayerRef {
@@ -43,6 +48,7 @@ impl DocumentChart {
             Self::Radial(c) => c.active_layer(),
             Self::Categorical(c) => c.active_layer(),
             Self::BoxPlot(c) => c.active_layer(),
+            Self::Radar(c) => c.active_layer(),
         }
     }
     pub fn set_active_layer(&mut self, layer: LayerRef) -> LayerRef {
@@ -50,6 +56,7 @@ impl DocumentChart {
             Self::Radial(c) => c.set_active_layer(layer),
             Self::Categorical(c) => c.set_active_layer(layer),
             Self::BoxPlot(c) => c.set_active_layer(layer),
+            Self::Radar(c) => c.set_active_layer(layer),
         }
     }
     pub fn annotations(&self) -> &AnnotationLayer {
@@ -57,6 +64,7 @@ impl DocumentChart {
             Self::Radial(c) => &c.annotations,
             Self::Categorical(c) => &c.annotations,
             Self::BoxPlot(c) => &c.annotations,
+            Self::Radar(c) => &c.annotations,
         }
     }
     pub fn annotations_mut(&mut self) -> &mut AnnotationLayer {
@@ -64,6 +72,7 @@ impl DocumentChart {
             Self::Radial(c) => &mut c.annotations,
             Self::Categorical(c) => &mut c.annotations,
             Self::BoxPlot(c) => &mut c.annotations,
+            Self::Radar(c) => &mut c.annotations,
         }
     }
     pub fn background(&self) -> renderer::Color {
@@ -71,6 +80,7 @@ impl DocumentChart {
             Self::Radial(c) => c.background,
             Self::Categorical(c) => c.background,
             Self::BoxPlot(c) => c.background,
+            Self::Radar(c) => c.background,
         }
     }
     /// A visible span needs the frame to leave the background to the host
@@ -102,6 +112,7 @@ impl DocumentChart {
             Self::Radial(c) => c.validate().map_err(js_err),
             Self::Categorical(c) => c.validate().map_err(js_err),
             Self::BoxPlot(c) => c.validate().map_err(js_err),
+            Self::Radar(c) => c.validate().map_err(js_err),
         }
     }
     pub fn selected_json(&self) -> serde_json::Value {
@@ -109,6 +120,7 @@ impl DocumentChart {
             Self::Radial(c) => json!(c.interaction.selected),
             Self::Categorical(c) => json!(c.selected),
             Self::BoxPlot(c) => json!(c.selected),
+            Self::Radar(c) => json!(c.selected),
         }
     }
     pub fn clear_selection(&mut self) {
@@ -117,6 +129,7 @@ impl DocumentChart {
             Self::Radial(c) => c.interaction.selected = None,
             Self::Categorical(c) => c.selected = None,
             Self::BoxPlot(c) => c.selected = None,
+            Self::Radar(c) => c.selected = None,
         }
     }
     pub fn select_at(&mut self, frame: &DocumentFrame, point: [f32; 2], toggle: bool) {
@@ -148,6 +161,14 @@ impl DocumentChart {
                     hit
                 };
             }
+            (Self::Radar(c), DocumentFrame::Radar(f)) => {
+                let hit = f.hit_test(point).map(|p| p.target);
+                c.selected = if toggle && hit == c.selected {
+                    None
+                } else {
+                    hit
+                };
+            }
             _ => unreachable!(),
         }
     }
@@ -169,6 +190,12 @@ impl DocumentChart {
                 changed
             }
             (Self::BoxPlot(c), DocumentFrame::BoxPlot(f)) => {
+                let hit = point.and_then(|p| f.hit_test(p)).map(|p| p.target);
+                let changed = hit != c.hovered;
+                c.hovered = hit;
+                changed
+            }
+            (Self::Radar(c), DocumentFrame::Radar(f)) => {
                 let hit = point.and_then(|p| f.hit_test(p)).map(|p| p.target);
                 let changed = hit != c.hovered;
                 c.hovered = hit;
@@ -243,6 +270,29 @@ impl DocumentChart {
                     .collect();
                 next(items, &mut c.selected, backwards);
             }
+            Self::Radar(c) => {
+                // A selected vertex steps along its series' finite vertices;
+                // otherwise the series polygons are stepped in order.
+                let vertex = c
+                    .selected
+                    .as_ref()
+                    .and_then(|t| t.category_id.as_ref().and_then(|_| c.series(&t.series_id)));
+                let items = match vertex {
+                    Some(s) => c
+                        .categories
+                        .iter()
+                        .zip(&s.values)
+                        .filter(|(_, v)| v.is_finite())
+                        .map(|(cat, _)| RadarTarget::vertex(&s.id, &cat.id))
+                        .collect(),
+                    None => c
+                        .series
+                        .iter()
+                        .map(|s| RadarTarget::series(&s.id))
+                        .collect(),
+                };
+                next(items, &mut c.selected, backwards);
+            }
         }
     }
 }
@@ -251,11 +301,13 @@ enum DocumentRenderer {
     Radial(RadialRenderer),
     Categorical(CategoricalRenderer),
     BoxPlot(BoxPlotRenderer),
+    Radar(RadarRenderer),
 }
 enum DocumentFrame {
     Radial(Arc<RadialFrame>),
     Categorical(Arc<CategoricalFrame>),
     BoxPlot(Arc<BoxPlotFrame>),
+    Radar(Arc<RadarFrame>),
 }
 impl DocumentRenderer {
     pub async fn new_async(
@@ -276,6 +328,11 @@ impl DocumentRenderer {
             ),
             DocumentChart::BoxPlot(_) => Self::BoxPlot(
                 BoxPlotRenderer::new_async(gpu, format)
+                    .await
+                    .map_err(js_err)?,
+            ),
+            DocumentChart::Radar(_) => Self::Radar(
+                RadarRenderer::new_async(gpu, format)
                     .await
                     .map_err(js_err)?,
             ),
@@ -308,6 +365,12 @@ impl DocumentRenderer {
                 let annotations = r.prepare_annotations(c, size, scale).map_err(js_err)?;
                 Ok((DocumentFrame::BoxPlot(frame), annotations))
             }
+            (Self::Radar(r), DocumentChart::Radar(c)) => {
+                r.set_background(background);
+                let frame = r.prepare(c, size, scale).map_err(js_err)?;
+                let annotations = r.prepare_annotations(c, size, scale).map_err(js_err)?;
+                Ok((DocumentFrame::Radar(frame), annotations))
+            }
             _ => Err(js_err("cannot change chart family")),
         }
     }
@@ -327,6 +390,9 @@ impl DocumentRenderer {
             (Self::BoxPlot(r), DocumentChart::BoxPlot(c)) => {
                 r.export_rgba_async(c, size, scale).await.map_err(js_err)
             }
+            (Self::Radar(r), DocumentChart::Radar(c)) => {
+                r.export_rgba_async(c, size, scale).await.map_err(js_err)
+            }
             _ => Err(js_err("cannot change chart family")),
         }
     }
@@ -336,6 +402,7 @@ impl DocumentRenderer {
             Self::Radial(r) => r.gpu_memory_usage().total_bytes(),
             Self::Categorical(r) => r.gpu_memory_usage().total_bytes(),
             Self::BoxPlot(r) => r.gpu_memory_usage().total_bytes(),
+            Self::Radar(r) => r.gpu_memory_usage().total_bytes(),
         }
     }
     pub fn end_frame(&self) {
@@ -343,6 +410,7 @@ impl DocumentRenderer {
             Self::Radial(r) => r.end_frame(),
             Self::Categorical(r) => r.end_frame(),
             Self::BoxPlot(r) => r.end_frame(),
+            Self::Radar(r) => r.end_frame(),
         }
     }
 }
@@ -352,6 +420,7 @@ impl DocumentFrame {
             Self::Radial(f) => f.decorations(),
             Self::Categorical(f) => f.decorations(),
             Self::BoxPlot(f) => f.decorations(),
+            Self::Radar(f) => f.decorations(),
         }
     }
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
@@ -359,6 +428,7 @@ impl DocumentFrame {
             Self::Radial(f) => f.draw(pass),
             Self::Categorical(f) => f.draw(pass),
             Self::BoxPlot(f) => f.draw(pass),
+            Self::Radar(f) => f.draw(pass),
         }
     }
     pub fn has_data(&self, p: [f32; 2]) -> bool {
@@ -366,6 +436,7 @@ impl DocumentFrame {
             Self::Radial(f) => f.hit_test(p).is_some() || f.hit_test_at_rest(p).is_some(),
             Self::Categorical(f) => f.hit_test(p).is_some(),
             Self::BoxPlot(f) => f.hit_test(p).is_some(),
+            Self::Radar(f) => f.hit_test(p).is_some(),
         }
     }
 }
@@ -375,6 +446,7 @@ fn parse_chart(family: &str, value: &str) -> Result<DocumentChart, JsValue> {
         "radial" => DocumentChart::Radial(serde_json::from_str(value).map_err(js_err)?),
         "categorical" => DocumentChart::Categorical(serde_json::from_str(value).map_err(js_err)?),
         "boxplot" => DocumentChart::BoxPlot(serde_json::from_str(value).map_err(js_err)?),
+        "radar" => DocumentChart::Radar(serde_json::from_str(value).map_err(js_err)?),
         _ => return Err(js_err("unknown bounded chart family")),
     })
 }
@@ -448,6 +520,7 @@ impl FiggyBoundedChart {
             DocumentChart::Radial(c) => serde_json::to_string(c).map_err(js_err),
             DocumentChart::Categorical(c) => serde_json::to_string(c).map_err(js_err),
             DocumentChart::BoxPlot(c) => serde_json::to_string(c).map_err(js_err),
+            DocumentChart::Radar(c) => serde_json::to_string(c).map_err(js_err),
         }
     }
     /// Validate and prepare before replacing the SSOT, retaining the old chart on failure.

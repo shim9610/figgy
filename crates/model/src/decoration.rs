@@ -509,6 +509,7 @@ mod tests {
             serde_json::to_value(crate::RadialChart::default()).unwrap(),
             serde_json::to_value(crate::CategoricalChart::default()).unwrap(),
             serde_json::to_value(crate::BoxPlotChart::default()).unwrap(),
+            serde_json::to_value(crate::RadarChart::default()).unwrap(),
         ] {
             value.as_object_mut().unwrap().remove("decorations");
             assert!(value.get("decorations").is_none());
@@ -527,9 +528,16 @@ mod tests {
                         .decorations,
                     DecorationLayout::default()
                 );
-            } else {
+            } else if value.get("direction").is_some() {
                 assert_eq!(
                     serde_json::from_value::<crate::BoxPlotChart>(value)
+                        .unwrap()
+                        .decorations,
+                    DecorationLayout::default()
+                );
+            } else {
+                assert_eq!(
+                    serde_json::from_value::<crate::RadarChart>(value)
                         .unwrap()
                         .decorations,
                     DecorationLayout::default()
@@ -544,7 +552,9 @@ mod tests {
         let mut categorical = crate::CategoricalChart::default();
         categorical.decorations = state.clone();
         let mut boxplot = crate::BoxPlotChart::default();
-        boxplot.decorations = state;
+        boxplot.decorations = state.clone();
+        let mut radar = crate::RadarChart::default();
+        radar.decorations = state;
         assert_eq!(
             serde_json::from_str::<crate::RadialChart>(&serde_json::to_string(&radial).unwrap())
                 .unwrap(),
@@ -561,6 +571,11 @@ mod tests {
             serde_json::from_str::<crate::BoxPlotChart>(&serde_json::to_string(&boxplot).unwrap())
                 .unwrap(),
             boxplot
+        );
+        assert_eq!(
+            serde_json::from_str::<crate::RadarChart>(&serde_json::to_string(&radar).unwrap())
+                .unwrap(),
+            radar
         );
     }
 }

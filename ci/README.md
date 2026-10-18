@@ -116,8 +116,8 @@ The extracted-archive audit reuses the same link rules after packaging.
    `package-audit.json` records exact sizes, SHA-256 values and file inventories.
 4. Extraction outside the checkout, followed by model/renderer unit tests, integration
    tests and doctests with `serde` enabled. This includes native GPU pixel, SSOT edit,
-   cache reuse, streaming, picking and memory regressions, plus radial, categorical
-   and boxplot rendering tests. Bounded interaction regressions select and drag
+   cache reuse, streaming, picking and memory regressions, plus radial, categorical,
+   boxplot and radar rendering tests. Bounded interaction regressions select and drag
    renderer-measured titles, axes, labels and legends, verify changed pixels and
    unchanged data geometry, and check serialization, scale and cache reuse.
 5. Three subprocess checks with no enabled adapters: each must run its intended test
@@ -150,8 +150,8 @@ panic details until the end of a large test binary.
 
 The renderer unit suite measures the real shader and pipeline constructors with
 `Instant`. It covers every shipped WGSL module and entry point, Cartesian pipelines
-at sample counts 1 and 4, streaming/replay, picking/fit, and the radial, categorical
-and boxplot renderers. A missing source or entry fails coverage. Repeating
+at sample counts 1 and 4, streaming/replay, picking/fit, and the radial, categorical,
+boxplot and radar renderers. A missing source or entry fails coverage. Repeating
 `prewarm_all` must create no shaders or pipelines; a single-pipeline builder must
 load only its own shader. No timing instrumentation is included in native release
 builds.

@@ -369,6 +369,9 @@ mod tests {
         check!(crate::boxplot::BoxPlotChart, |c| {
             c.selected = Some(crate::boxplot::BoxPlotTarget::new("a", "s"))
         });
+        check!(crate::radar::RadarChart, |c| {
+            c.selected = Some(crate::radar::RadarTarget::vertex("s", "a"))
+        });
     }
 
     #[test]

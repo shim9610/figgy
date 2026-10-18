@@ -112,7 +112,7 @@ scale against that contract.
 ### `LayerRef` / `AnnotationLayer`
 
 The layer fields shared by every chart family (`Config`, `RadialChart`,
-`CategoricalChart`, `BoxPlotChart`).
+`CategoricalChart`, `BoxPlotChart`, `RadarChart`).
 
 | Field | Meaning |
 |---|---|
@@ -186,8 +186,8 @@ area, scaling the series it lists. `overlays` is empty (key absent in JSON) for
 every document written before the field; a layered document is still one
 `Config`: the chart area, both X axes, the title, the grid, the merged legend,
 the colourbar and `draw_style` exist once, on the parent, and only the fields
-below exist per layer. Bounded charts (radial, categorical, box plot) have no
-overlays, and nonresident streaming rejects a document that has any.
+below exist per layer. Bounded charts (radial, categorical, box plot, radar) have
+no overlays, and nonresident streaming rejects a document that has any.
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -761,8 +761,8 @@ pub struct Config {
 
 ### `LayerRef` / `AnnotationLayer`
 
-모든 차트 종류(`Config`, `RadialChart`, `CategoricalChart`, `BoxPlotChart`)가 공유하는
-레이어 필드다.
+모든 차트 종류(`Config`, `RadialChart`, `CategoricalChart`, `BoxPlotChart`,
+`RadarChart`)가 공유하는 레이어 필드다.
 
 | 필드 | 의미 |
 |---|---|
@@ -824,7 +824,7 @@ pub struct Config {
 그 축으로 스케일한다. 이 필드가 생기기 전 문서는 모두 `overlays`가 비어 있다(JSON에서 키 생략).
 레이어가 있어도 문서는 하나의 `Config`다. 차트 영역, 두 X 축, 제목, 그리드, 합친 범례,
 색상 막대, `draw_style`은 부모에 한 번만 있고 아래 필드만 레이어마다 있다. bounded 차트
-(원형·범주형 막대·박스플롯)에는 오버레이가 없고, 비상주 스트리밍은 오버레이가 있는 문서를 거부한다.
+(원형·범주형 막대·박스플롯·레이더)에는 오버레이가 없고, 비상주 스트리밍은 오버레이가 있는 문서를 거부한다.
 
 | 필드 | 타입 | 의미 |
 |---|---|---|

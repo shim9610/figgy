@@ -40,10 +40,11 @@ pub enum SceneKind {
     Radial,
     Categorical,
     BoxPlot,
+    Radar,
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 14] = [
+    pub const ALL: [SceneKind; 15] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -58,6 +59,7 @@ impl SceneKind {
         SceneKind::Radial,
         SceneKind::Categorical,
         SceneKind::BoxPlot,
+        SceneKind::Radar,
     ];
 
     pub fn label(self) -> &'static str {
@@ -76,6 +78,7 @@ impl SceneKind {
             SceneKind::Radial => "Radial (pie / donut)",
             SceneKind::Categorical => "Categorical bars",
             SceneKind::BoxPlot => "Box plot",
+            SceneKind::Radar => "Radar (spider)",
         }
     }
 
@@ -106,13 +109,14 @@ impl SceneKind {
             SceneKind::Radial => "Click a slice; drag the title or legend.",
             SceneKind::Categorical => "Click a bar; grouped / stacked / percent modes.",
             SceneKind::BoxPlot => "Click a box; notches, means, outliers.",
+            SceneKind::Radar => "Click a polygon or vertex; grid shape, markers, value labels.",
         }
     }
 
     pub fn is_bounded(self) -> bool {
         matches!(
             self,
-            SceneKind::Radial | SceneKind::Categorical | SceneKind::BoxPlot
+            SceneKind::Radial | SceneKind::Categorical | SceneKind::BoxPlot | SceneKind::Radar
         )
     }
 }

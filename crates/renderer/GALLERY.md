@@ -23,6 +23,7 @@ intervals inferred from observations.
 | `gallery-donut.png` | `ceramic.png` from `radial_gallery.rs`: named values, rounded edges and an oblique view | 900 × 620 |
 | `gallery-categorical.png` | `grouped-matte.png` from `categorical_gallery.rs`: two series across four categories | 900 × 620 |
 | `gallery-boxplot.png` | `01-classic-matte.png` from `boxplot_gallery.rs`: supplied summaries and outliers | 960 × 640 |
+| `gallery-radar.png` | `01-spider-web.png` from `radar_gallery.rs`: two series over six categories on a polygon grid | 960 × 640 |
 
 The first four Cartesian chart recipes also run independently as `line`,
 `error_bars`, `histogram` and `heatmap_contours`. `animated_lines` writes wave and
@@ -121,11 +122,13 @@ cargo run --locked -p figgy-renderer --example line -- target/readme-gallery/gal
 cargo run --locked -p figgy-renderer --example radial_gallery -- target/radial-gallery
 cargo run --locked -p figgy-renderer --example categorical_gallery -- target/categorical-gallery
 cargo run --locked -p figgy-renderer --example boxplot_gallery -- target/boxplot-gallery
+cargo run --locked -p figgy-renderer --example radar_gallery -- target/radar-gallery
 ```
 
 Copy the selected outputs under the filenames in the table. The bounded examples
-use `RadialRenderer`, `CategoricalRenderer` and `BoxPlotRenderer`, respectively;
-their small-data models do not use the Cartesian column pool.
+use `RadialRenderer`, `CategoricalRenderer`, `BoxPlotRenderer` and
+`RadarRenderer`, respectively; their small-data models do not use the Cartesian
+column pool.
 
 ## Precise and hand-drawn Sketch previews
 

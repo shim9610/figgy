@@ -86,8 +86,8 @@ For chart changes, verify the affected parts of the existing workflow:
 - Hover/selection behavior and PNG export at the relevant scale.
 - Serialization round trips when changing serializable model fields.
 
-State which items are not applicable and why. Small-data radial, categorical and
-boxplot charts use bounded models; adding them does not require streaming support.
+State which items are not applicable and why. Small-data radial, categorical,
+boxplot and radar charts use bounded models; adding them does not require streaming support.
 Regression tests should exercise the renderer's public APIs. Distinguish renderer
 tests from host event wiring and deployed application checks.
 

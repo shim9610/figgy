@@ -96,3 +96,52 @@ cargo run --locked -p figgy-renderer --example radar_gallery -- target/radar-gal
 cargo run --locked -p figgy-renderer --features egui_demo --example radar_editor
 cargo test --locked -p figgy-renderer --test radar_render
 ```
+
+## 한국어 사용법
+
+레이더(거미줄) 차트는 고정된 범주 집합 위에서 몇 개의 시리즈를 비교한다. `categories[i]`가
+스포크 `i`를 맡고, 각 시리즈의 `values[i]`가 그 스포크의 값이다. 범주는 3~64개, 시리즈는
+1~16개다. 스포크는 `style.start_angle_degrees`(-90, 위쪽)에서 시작해 `style.clockwise`
+방향으로 돈다.
+
+값 축은 모든 스포크가 공유한다. `value_range: None`이면 0(또는 가장 작은 음수)에서 시작해
+보기 좋은 고리 간격으로 데이터 최댓값을 덮는 고리까지 맞춘다. `Some([min, max])`는 범위를
+고정하고, `ring_spacing`은 고리 간격을 정한다. 범위 아래 값은 중심에, 위 값은 바깥 고리에
+놓인다. 스포크별 정규화는 호스트가 미리 계산해 값으로 넣는다. 렌더러는 통계를 계산하지
+않는다. 유한하지 않은 값은 그 스포크에서 외곽선을 끊고 채움과 마커를 생략한다.
+
+`style.grid_shape`는 고리를 스포크를 지나는 다각형(`Polygon`) 또는 원(`Circle`)으로
+그린다. `grid: false`는 고리와 스포크를 숨긴다. 시리즈마다 채움(`RadarSeriesStyle::fill`
+또는 시리즈 색을 `style.fill_opacity`로), `line_width_px`의 외곽선, 꼭짓점 마커(`Circle`,
+`Square`, `None`)를 그린다. 모든 시리즈의 채움을 먼저, 그다음 외곽선, 마지막에 마커를
+그리므로 나중 시리즈의 채움이 앞 시리즈의 외곽선을 가리지 않는다. `labels`는 모든 꼭짓점
+(`Values`) 또는 호버·선택한 시리즈의 꼭짓점(`Emphasized`)에 값을 적으며 `label_decimals`와
+`value_suffix`를 따른다.
+
+`RadarFrame::hit_test`는 차트 논리 픽셀을 받아 `RadarPick { target, part }`를 돌려준다.
+마커를 맞히면 꼭짓점(`RadarTarget { series_id, category_id: Some(..) }`), 외곽선이나 채움을
+맞히면 시리즈(`category_id: None`)다. 마커, 외곽선, 내부 순서로 각각 그린 순서의 역순으로
+판정한다. 대상을 `hovered` / `selected`에 넣으면 해당 시리즈가 `style.emphasis_brightness`만큼
+밝아지고 선택한 꼭짓점의 마커가 커진다. `RadarChart::value(&target)`는 꼭짓점 뒤의 값을 읽는다.
+
+`prepare`는 픽셀에 영향을 주는 모든 필드가 같을 때 프레임을 재사용하고, 호버·선택 편집에는
+라벨 래스터를 재사용한다. `export_rgba_async`는 임의 배율로 그려 straight-alpha RGBA8을
+읽어오며 `renderer::encode_png`로 PNG를 만든다.
+
+## 제목·축·라벨·범례 선택과 이동
+
+데이터 도형의 `hit_test`와 별도로 `frame.decorations()`가 렌더러에서 측정한 히트맵을 제공한다.
+제목, 첫 스포크를 따라 놓인 값 라벨 묶음(`AxisLabel(Side::Left)`), 스포크 끝의 범주 라벨
+(`DecorationId::SpokeLabel { category_id }`), 범례, 데이터 라벨이 대상이다. 기존
+`Selectable`·`Draggable` 계약으로 `chart.decorations`를 갱신하고 `prepare`한다. 그리기 영역을
+조정하면 플롯 전체가 옮겨지고 크기가 바뀌며, 바깥 고리는 범주 라벨이 들어갈 자리를 남긴 가장
+큰 원이다. 좌표 단위, 요소별 이동 규칙, 캐시·저장 복원 및 웹 연결은
+[공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)를 참고한다.
+
+### 주석 층
+
+`chart.annotations`의 텍스트 상자·화살표는 `prepare_annotations`로 프레임 주위에 별도 패스로
+그린다. 앵커는 바깥 고리를 둘러싼 정사각형의 비율이며, 분리된 축이 없으므로 데이터 앵커는
+건너뛴 것으로 보고한다. `BoundedAnnotationFrame`을 `draw_underlay` → `frame.draw` →
+`draw_overlay` 순서로 그리고 히트 맵은 `annotations()`로 얻는다. 자세한 계약은
+[공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer)를 참고한다.

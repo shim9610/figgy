@@ -30,9 +30,10 @@
   <a href="crates/renderer/examples/radial_gallery.rs"><img src="crates/renderer/assets/gallery-donut.png" alt="Ceramic 3D donut" width="23%" align="top"></a>
 </p>
 
-**움직이는 파형 · 위상 궤적**
+**레이더 · 움직이는 파형 · 위상 궤적**
 
 <p>
+  <a href="crates/renderer/examples/radar_gallery.rs"><img src="crates/renderer/assets/gallery-radar.png" alt="Radar chart comparing two releases over six categories" width="23%" align="top"></a>
   <a href="crates/renderer/examples/animated_lines.rs"><img src="crates/renderer/assets/gallery-wave.gif" alt="Travelling waves" width="23%" align="top"></a>
   <a href="crates/renderer/examples/animated_lines.rs"><img src="crates/renderer/assets/gallery-orbit.gif" alt="Animated phase portrait" width="23%" align="top"></a>
 </p>
@@ -83,6 +84,7 @@ cargo run --locked -p figgy-renderer --example heatmap_contours -- target/heatma
 cargo run --locked -p figgy-renderer --example radial_gallery -- target/radial-gallery
 cargo run --locked -p figgy-renderer --example categorical_gallery -- target/categorical-gallery
 cargo run --locked -p figgy-renderer --example boxplot_gallery -- target/boxplot-gallery
+cargo run --locked -p figgy-renderer --example radar_gallery -- target/radar-gallery
 ```
 
 애니메이션, 편집 가능한 창, 각 차트의 입력 형식은
@@ -94,12 +96,12 @@ cargo run --locked -p figgy-renderer --example boxplot_gallery -- target/boxplot
 |---|---|
 | 독립 창에서 그리기 | [winit_simple.rs](crates/renderer/examples/winit_simple.rs) |
 | egui 화면에 넣기 | [egui_embed.rs](crates/renderer/examples/egui_embed.rs) — `egui_demo` 기능 사용 |
-| 원형·막대·박스플롯 편집 | [네이티브 편집 예제](crates/renderer/examples/README.md#interactive-editors) |
+| 원형·막대·박스플롯·레이더 편집 | [네이티브 편집 예제](crates/renderer/examples/README.md#interactive-editors) |
 | 선택·이동·영역 크기 조정 연결 | [상호작용 사용법](crates/renderer/INTERACTION.md) |
 | GPU 메모리보다 큰 데이터 그리기 | [스트리밍과 상주 전환](crates/renderer/ARCHITECTURE.md#원본-데이터-스트리밍과-상주-전환) |
 
 기존 프로그램과 GPU 장치를 공유할 때는 **wgpu 30**을 사용합니다.
-기본 기능에는 특정 GUI 프레임워크가 필요하지 않습니다. 원형·범주형 막대·박스플롯은
+기본 기능에는 특정 GUI 프레임워크가 필요하지 않습니다. 원형·범주형 막대·박스플롯·레이더는
 소량 데이터용 모델을 사용하므로 Cartesian 컬럼이나 스트림 API를 거칠 필요가 없습니다.
 
 ## WebAssembly 예제
@@ -119,7 +121,7 @@ Studio 자체가 라이브러리에 포함되는 것은 아닙니다.
 |---|---|
 | 네이티브 초기화·데이터 연결·화면 통합·출력 | [상세 사용법](crates/renderer/USAGE.md) |
 | 축·글자·범례·시리즈·색상표 | [설정 명세](crates/renderer/CONFIG.md) |
-| 원형·범주형 막대·박스플롯·히스토그램 | [원형](crates/renderer/RADIAL.md) · [막대](crates/renderer/CATEGORICAL.md) · [박스플롯](crates/renderer/BOXPLOT.md) · [히스토그램](crates/renderer/HISTOGRAM.md) |
+| 원형·범주형 막대·박스플롯·레이더·히스토그램 | [원형](crates/renderer/RADIAL.md) · [막대](crates/renderer/CATEGORICAL.md) · [박스플롯](crates/renderer/BOXPLOT.md) · [레이더](crates/renderer/RADAR.md) · [히스토그램](crates/renderer/HISTOGRAM.md) |
 | 소유권·프레임 유효성·API 호환성 | [API 계약](crates/renderer/API.md) |
 | 메모리·캐시·스트리밍·셰이더 구조 | [기술 문서](crates/renderer/ARCHITECTURE.md) |
 | 버전별 변경과 마이그레이션 | [변경 이력](CHANGELOG.md) |

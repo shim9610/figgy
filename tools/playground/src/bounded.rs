@@ -1,9 +1,9 @@
-//! Bounded scenes: radial, categorical bars and box plots.
+//! Bounded scenes: radial, categorical bars, box plots and radar charts.
 //!
 //! Each family has its own small renderer that prepares a frame of an exact
 //! physical size. The host renders that frame (annotation underlay → chart →
 //! annotation overlay) into an offscreen texture and egui shows it as an image.
-//! One generic host covers all three; `Family` adapts the per-family names.
+//! One generic host covers all four; `Family` adapts the per-family names.
 
 use std::sync::Arc;
 
@@ -12,6 +12,7 @@ use renderer::boxplot::*;
 use renderer::categorical::*;
 use renderer::decoration::DecorationMap;
 use renderer::layout::NudgeResult;
+use renderer::radar::*;
 use renderer::radial::*;
 use renderer::text::RichText;
 use renderer::{
@@ -39,7 +40,7 @@ pub trait BoundedScene {
     fn release(&mut self, egui_renderer: &mut egui_wgpu::Renderer);
 }
 
-/// Per-family adapter: the three renderers share a shape but not a trait.
+/// Per-family adapter: the four renderers share a shape but not a trait.
 pub trait Family: 'static {
     type Chart: Clone;
     type Renderer;
@@ -134,6 +135,7 @@ pub fn create(kind: SceneKind, gpu: RendererDevice) -> Result<Box<dyn BoundedSce
             make::<CategoricalFamily>("categorical", gpu, categorical_chart())
         }
         SceneKind::BoxPlot => make::<BoxFamily>("boxplot", gpu, box_chart()),
+        SceneKind::Radar => make::<RadarFamily>("radar", gpu, radar_chart()),
         _ => Err("not a bounded scene".into()),
     }
 }
@@ -1062,6 +1064,174 @@ impl Family for BoxFamily {
         slider(ui, "whisker width", &mut s.whisker_width, 0.5..=6.0);
         slider(ui, "outlier size", &mut s.outlier_size, 1.0..=16.0);
         color(ui, "median colour", &mut s.median_color);
+        ui.separator();
+        for (i, series) in c.series.iter_mut().enumerate() {
+            ui.push_id(i, |ui| color(ui, &series.label.clone(), &mut series.color));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Radar
+// ---------------------------------------------------------------------------
+
+pub struct RadarFamily;
+
+fn radar_chart() -> RadarChart {
+    RadarChart {
+        title: "Build quality".into(),
+        categories: ["Speed", "Safety", "Size", "Docs", "Tests", "Ergonomics"]
+            .into_iter()
+            .map(|s| Category::new(s.to_lowercase(), s))
+            .collect(),
+        series: vec![
+            RadarSeries::new(
+                "v1",
+                "Release 1",
+                vec![6., 8., 4., 5., 7., 6.5],
+                Color::from_rgb8(65, 144, 208),
+            ),
+            RadarSeries::new(
+                "v2",
+                "Release 2",
+                vec![8., 7., 6., 8., 9., 7.],
+                Color::from_rgb8(230, 120, 64),
+            ),
+            RadarSeries::new(
+                "v3",
+                "Release 3",
+                vec![9., 8.5, 8., 9., 9.5, 8.],
+                Color::from_rgb8(42, 168, 120),
+            ),
+        ],
+        value_range: Some([0., 10.]),
+        ring_spacing: Some(2.5),
+        ..Default::default()
+    }
+}
+
+impl Family for RadarFamily {
+    type Chart = RadarChart;
+    type Renderer = RadarRenderer;
+    type Frame = RadarFrame;
+    type Target = RadarTarget;
+    type Error = RadarError;
+
+    fn renderer(gpu: RendererDevice) -> Result<RadarRenderer, RadarError> {
+        RadarRenderer::new(gpu, FORMAT)
+    }
+    fn set_background(r: &mut RadarRenderer, b: FrameBackground) {
+        r.set_background(b);
+    }
+    fn prepare(
+        r: &mut RadarRenderer,
+        c: &RadarChart,
+        size: (u32, u32),
+        scale: f32,
+    ) -> Result<Arc<RadarFrame>, RadarError> {
+        r.prepare(c, size, scale)
+    }
+    fn annotations(
+        r: &mut RadarRenderer,
+        c: &RadarChart,
+        size: (u32, u32),
+        scale: f32,
+    ) -> Result<Arc<BoundedAnnotationFrame>, RadarError> {
+        r.prepare_annotations(c, size, scale)
+    }
+    fn end_frame(r: &RadarRenderer) {
+        r.end_frame();
+    }
+    fn export(
+        r: &mut RadarRenderer,
+        c: &RadarChart,
+        size: (u32, u32),
+        scale: f32,
+    ) -> Result<renderer::RasterImage, RadarError> {
+        r.export_rgba(c, size, scale)
+    }
+    fn frame_size(f: &RadarFrame) -> (u32, u32) {
+        f.size()
+    }
+    fn draw(f: &RadarFrame, pass: &mut wgpu::RenderPass<'_>) {
+        f.draw(pass);
+    }
+    fn hit(f: &RadarFrame, p: [f32; 2]) -> Option<RadarTarget> {
+        f.hit_test(p).map(|pick| pick.target)
+    }
+    fn decorations(f: &RadarFrame) -> &DecorationMap {
+        f.decorations()
+    }
+    fn background(c: &RadarChart) -> Color {
+        c.background
+    }
+    fn layout(c: &mut RadarChart) -> &mut DecorationLayout {
+        &mut c.decorations
+    }
+    fn annotation_layer(c: &mut RadarChart) -> &mut AnnotationLayer {
+        &mut c.annotations
+    }
+    fn active_layer(c: &RadarChart) -> LayerRef {
+        c.active_layer()
+    }
+    fn set_active_layer(c: &mut RadarChart, l: LayerRef) {
+        c.set_active_layer(l);
+    }
+    fn selected(c: &RadarChart) -> Option<RadarTarget> {
+        c.selected.clone()
+    }
+    fn set_selected(c: &mut RadarChart, t: Option<RadarTarget>) {
+        c.selected = t;
+    }
+    fn hover(c: &mut RadarChart, t: Option<RadarTarget>, _dt: f32) -> bool {
+        c.hovered = t;
+        false
+    }
+    fn inspector(ui: &mut egui::Ui, c: &mut RadarChart) {
+        ui.horizontal(|ui| {
+            ui.label("Title");
+            ui.text_edit_singleline(&mut c.title);
+        });
+        choice(
+            ui,
+            "labels",
+            &mut c.labels,
+            &[
+                RadarLabels::None,
+                RadarLabels::Values,
+                RadarLabels::Emphasized,
+            ],
+        );
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut c.grid, "grid");
+            ui.checkbox(&mut c.legend, "legend");
+        });
+        let s = &mut c.style;
+        choice(
+            ui,
+            "grid shape",
+            &mut s.grid_shape,
+            &[RadarGridShape::Polygon, RadarGridShape::Circle],
+        );
+        choice(
+            ui,
+            "marker",
+            &mut s.marker,
+            &[RadarMarker::None, RadarMarker::Circle, RadarMarker::Square],
+        );
+        ui.checkbox(&mut s.clockwise, "clockwise");
+        slider(
+            ui,
+            "start angle°",
+            &mut s.start_angle_degrees,
+            -180.0..=180.0,
+        );
+        slider(ui, "line width", &mut s.line_width_px, 0.0..=12.0);
+        slider(ui, "fill opacity", &mut s.fill_opacity, 0.0..=1.0);
+        slider(ui, "marker size", &mut s.marker_size_px, 1.0..=24.0);
+        slider(ui, "emphasis", &mut s.emphasis_brightness, 0.0..=0.5);
+        color(ui, "spoke colour", &mut s.spoke_color);
+        color(ui, "ring colour", &mut s.ring_color);
         ui.separator();
         for (i, series) in c.series.iter_mut().enumerate() {
             ui.push_id(i, |ui| color(ui, &series.label.clone(), &mut series.color));

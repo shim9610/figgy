@@ -112,5 +112,6 @@ mod tests {
         check!(crate::RadialChart, label_color);
         check!(crate::CategoricalChart, text_color);
         check!(crate::BoxPlotChart, text_color);
+        check!(crate::RadarChart, text_color);
     }
 }

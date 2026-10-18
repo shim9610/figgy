@@ -7,8 +7,8 @@ workspace member, not a renderer feature, and not part of any published package.
 winit owns the window and the event loop. The app owns the wgpu surface, and
 egui (`egui-winit` + `egui-wgpu`, no eframe) draws the controls on top.
 Cartesian charts are painted straight into the surface pass. Radial,
-categorical and box-plot charts are rendered offscreen and shown as an egui
-image.
+categorical, box-plot and radar charts are rendered offscreen and shown as an
+egui image.
 
 ## Run
 
@@ -31,7 +31,8 @@ The tabs at the top switch scenes.
   colour and size value maps; histogram;
   heatmap with labelled contours; vector field (quiver); log axes; twin Y axes; subplots;
   annotations; a one-million-point line.
-- **Bounded**: radial (pie and donut), categorical bars, box plot.
+- **Bounded**: radial (pie and donut), categorical bars, box plot, radar
+  (spider).
 
 ## Pointer
 

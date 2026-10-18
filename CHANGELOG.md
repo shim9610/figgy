@@ -9,6 +9,39 @@ at the time. The first crates.io publication is recorded below.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
+## Unreleased — radar charts
+
+- New bounded family `RadarRenderer` / `RadarChart` (#26, first half). A
+  `RadarChart` holds 3 to 64 `categories` (one spoke each), 1 to 16
+  `RadarSeries` with one value per category, a shared value axis
+  (`value_range`, `ring_spacing`; `None` fits a nice axis from zero over the
+  data), `RadarStyle` (start angle, direction, polygon or circular grid, ring
+  and spoke colours, line width, fill opacity, marker shape and size, emphasis
+  brightness), an optional per-series `RadarSeriesStyle`, data `labels`
+  (`None`, `Values`, `Emphasized`), `hovered` / `selected` `RadarTarget`s and
+  the common `decorations`, `chart_title`, `active_layer` and `annotations`
+  fields. A non-finite value breaks the outline at its spoke and drops the
+  series' fill and marker there. Per-spoke normalization is the host's job.
+- The renderer draws fills, outline segments and vertex markers as signed
+  distances in its own `radar.wgsl` pipeline over a CPU-rasterized grid, with
+  the bounded frame cache, label-raster reuse across hover and selection,
+  `hit_test` returning `RadarPick { target, part }` (`Marker` names a vertex,
+  `Outline` and `Fill` the series), the shared decoration map (new
+  `DecorationId::SpokeLabel { category_id }` for the category labels, the ring
+  labels as `AxisLabel(Left)`), the annotation layer with ratio anchors, PNG
+  export at any scale, and the `FiggyBoundedChart` web host (`"radar"`
+  family; `step_selection` walks series, or a selected vertex's series'
+  vertices). Playground scene, `radar_gallery` and `radar_editor` examples,
+  `RADAR.md`.
+- The legend planning and plain number formatting shared by the bounded
+  families now live in `bounded_axes.rs` (`plan_bounded_legend`,
+  `draw_bounded_legend`, `plain_number`); the box plot and categorical layouts
+  call them.
+- Compared with the issue text, the value axis is `value_range` /
+  `ring_spacing` rather than a full `AxisOptions`, markers are circle or square,
+  and a vertex target carries an optional `category_id` on the series target
+  instead of a separate type. JSON without the family is unchanged.
+
 ## Unreleased — vector fields
 
 - New `DataRenderType::Vector { components, style }` draws an arrow per sample

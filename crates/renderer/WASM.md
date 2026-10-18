@@ -722,9 +722,10 @@ renderer.request_auto_streaming_chart(chart_id, &view, options)?;
 ### Bounded chart host
 
 `FiggyBoundedChart.create(canvas, family, documentJson, width, height)` exposes
-`radial`, `categorical`, and `boxplot` documents to browser hosts. It uses the
-same native renderer, decoration maps, slice/bar/box picking, and drag/resize
-policies. The host owns pointer events, animation scheduling, and synchronization.
+`radial`, `categorical`, `boxplot`, and `radar` documents to browser hosts. It
+uses the same native renderer, decoration maps, slice/bar/box/polygon picking,
+and drag/resize policies. The host owns pointer events, animation scheduling,
+and synchronization.
 Creation asynchronously precompiles the requested family's rendering pipeline
 and prepares its document. It does not submit the first visible frame: call
 `await view.first_frame_ready()` before reporting Ready. That method submits a
@@ -743,6 +744,22 @@ coordinates when the pointer leaves. `step_selection(backwards)` takes one
 boolean, unlike the Cartesian two-axis navigation method. `drag(target, dx,
 dy, handle)` accepts a resize handle such as `"SE"`, or `null` for a move.
 Keep the object alive until all async calls finish; `free()` releases its GPU resources.
+
+A `radar` document is a serialized `RadarChart`: `categories` (`[{id, label}]`,
+3 to 64) and `series` (`[{id, label, values, color}]`, 1 to 16, one value per
+category), with the optional `style`, `labels`, `value_range`, `ring_spacing`,
+`grid` and `legend` fields of the
+[radar model](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md).
+`pick`, `hover`, `selected` and `hovered` use the `RadarTarget` shape
+`{ "series_id": "s" }` for a polygon (an outline or fill hit) and
+`{ "series_id": "s", "category_id": "a" }` for a vertex marker.
+`step_selection` walks the series polygons in order; while a vertex is
+selected it walks that series' finite vertices in category order instead.
+The category labels at the spoke ends are decorations with the id
+`spoke_label_<length>:<category_id>` (the id's byte length, then the id), as
+`hit_decoration` reports them. Like the other bounded families, the canvas
+must be at least 160 by 160 logical pixels, and the radar layout needs 240 by
+240 to place the rings and labels.
 
 Both classes expose the annotation layer with the same method set:
 `annotations()` (drawn items as JSON: `index`, `id`, `element`, `kind`,
@@ -773,7 +790,8 @@ JSON). While `"Annotations"` is active and the layer is shown,
 `hit_decoration` answers drawn items as `"annotation_<n>"` above every
 decoration, and `select_decoration`, `resize_handle` and `drag` accept that id;
 on `"Base"` the items are not part of the route and clicks pass through them.
-`pick` and `hover` keep addressing bars, boxes and slices on every layer. A
+`pick` and `hover` keep addressing bars, boxes, slices and radar polygons on
+every layer. A
 layer change clears `decorations.selected` (an annotation included) and keeps
 the data selection; the frame and its label raster are reused. On `FiggyChart`
 the same route drives `hit_test`, `on_press` / `on_move` and
@@ -797,6 +815,7 @@ Hold the host's async gate during selected-value reads as well as exports.
 ```js
 // document is a validated RadialChart JSON value, e.g. serialized by its model.
 const view = await FiggyBoundedChart.create(canvas, "radial", JSON.stringify(document), 960, 600);
+// "categorical", "boxplot" and "radar" take the matching chart's JSON instead.
 await view.first_frame_ready(); // only now report Ready and enable interactions
 const point = [320, 240]; // logical document coordinates
 const selected = JSON.parse(view.pick(...point, true)); // click toggles selection

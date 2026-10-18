@@ -959,10 +959,14 @@ fn annotation_key(chart: &RadarChart) -> RadarChart {
     }
     c.background = crate::Color::WHITE;
     let legend_colors: Vec<_> = c.series.iter().map(|s| s.color).collect();
+    // The raster holds the rings and spokes; the series primitives are GPU
+    // work and their style never changes the raster.
     c.style = RadarStyle {
         start_angle_degrees: c.style.start_angle_degrees,
         clockwise: c.style.clockwise,
         grid_shape: c.style.grid_shape,
+        spoke_color: c.style.spoke_color,
+        ring_color: c.style.ring_color,
         ..RadarStyle::default()
     };
     for (s, color) in c.series.iter_mut().zip(legend_colors) {

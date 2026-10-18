@@ -2,7 +2,8 @@
 
 A native Rust chart renderer for scientific plots, styled dashboards and small
 data charts. Draw lines, scatter plots, error bars, histograms, heatmaps, contours,
-pies, donuts, categorical bars and boxplots; edit their models and export PNGs.
+pies, donuts, categorical bars, boxplots and radar charts; edit their models and
+export PNGs.
 Embed charts in an existing wgpu application or render without a window.
 The default library has no GUI framework dependency.
 
@@ -75,8 +76,8 @@ The [API workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer
 includes Cartesian refresh and bounded edit/export examples, and explains frame lifetime and coordinate
 units. [Interaction contracts](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)
 cover shared selection, dragging and area handles. Runnable editors are
-`winit_simple`, `radial_editor`, `categorical_editor` and `boxplot_editor`;
-the last three require `--features egui_demo`.
+`winit_simple`, `radial_editor`, `categorical_editor`, `boxplot_editor` and
+`radar_editor`; all but the first require `--features egui_demo`.
 
 Replayable Cartesian streams use an explicit fit request when the initial range
 is unknown or the user requests fit. Do not request fit on every chunk, repaint
