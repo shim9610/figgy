@@ -1,0 +1,569 @@
+//! Small radar (spider) charts: a few series compared over a fixed set of
+//! categories, one spoke per category, drawn as closed polygons over one
+//! shared value axis. Values are the host's; the renderer never normalizes a
+//! spoke to its own range.
+use crate::{Color, categorical::Category};
+use std::collections::HashSet;
+
+pub const MIN_RADAR_CATEGORIES: usize = 3;
+pub const MAX_RADAR_CATEGORIES: usize = 64;
+pub const MAX_RADAR_SERIES: usize = 16;
+
+/// One vertex of one series (`category_id` set) or a whole series polygon
+/// (`category_id` absent): what hover, selection and hit testing address.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RadarTarget {
+    pub series_id: String,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub category_id: Option<String>,
+}
+impl RadarTarget {
+    pub fn series(series: impl Into<String>) -> Self {
+        Self {
+            series_id: series.into(),
+            category_id: None,
+        }
+    }
+    pub fn vertex(series: impl Into<String>, category: impl Into<String>) -> Self {
+        Self {
+            series_id: series.into(),
+            category_id: Some(category.into()),
+        }
+    }
+}
+
+/// The grid behind the series: rings as regular polygons through the spokes
+/// (the classic spider web) or as circles.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum RadarGridShape {
+    #[default]
+    Polygon,
+    Circle,
+}
+
+/// The marker drawn at every vertex of a series.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum RadarMarker {
+    None,
+    #[default]
+    Circle,
+    Square,
+}
+
+/// Data labels at the vertices.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum RadarLabels {
+    #[default]
+    None,
+    /// Every vertex of every series.
+    Values,
+    /// The vertices of the hovered or selected series only.
+    Emphasized,
+}
+
+/// Per-series appearance. `None` fields fall back to the chart style.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
+pub struct RadarSeriesStyle {
+    pub line_width_px: Option<f32>,
+    /// The polygon fill. `None` fills with the series colour at the chart's
+    /// `fill_opacity`; a transparent colour draws the outline only.
+    pub fill: Option<Color>,
+    pub marker: Option<RadarMarker>,
+    pub marker_size_px: Option<f32>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
+pub struct RadarStyle {
+    /// Where the first category's spoke points, in degrees; -90 is up.
+    pub start_angle_degrees: f32,
+    /// Whether the categories follow clockwise on screen.
+    pub clockwise: bool,
+    pub grid_shape: RadarGridShape,
+    pub spoke_color: Color,
+    pub ring_color: Color,
+    pub line_width_px: f32,
+    /// Alpha of a series' fill when its style names no fill colour.
+    pub fill_opacity: f32,
+    pub marker: RadarMarker,
+    pub marker_size_px: f32,
+    /// Added to the colour of the hovered or selected series.
+    pub emphasis_brightness: f32,
+}
+impl Default for RadarStyle {
+    fn default() -> Self {
+        Self {
+            start_angle_degrees: -90.0,
+            clockwise: true,
+            grid_shape: RadarGridShape::Polygon,
+            spoke_color: Color::from_rgb8(200, 206, 214),
+            ring_color: Color::from_rgb8(224, 229, 235),
+            line_width_px: 2.0,
+            fill_opacity: 0.25,
+            marker: RadarMarker::Circle,
+            marker_size_px: 7.0,
+            emphasis_brightness: 0.08,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RadarSeries {
+    pub id: String,
+    pub label: String,
+    /// `values[i]` belongs to `categories[i]`. A non-finite value breaks the
+    /// outline at that spoke and drops the series' fill.
+    pub values: Vec<f64>,
+    pub color: Color,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub style: Option<RadarSeriesStyle>,
+}
+impl RadarSeries {
+    pub fn new(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        values: Vec<f64>,
+        color: Color,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            values,
+            color,
+            style: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
+pub struct RadarChart {
+    /// Editable decoration positions and selection, in logical pixels.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub decorations: crate::DecorationLayout,
+    /// Legacy plain title, used only when `chart_title` is absent.
+    pub title: String,
+    /// Independent rich title. Position remains in `decorations`.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub chart_title: Option<crate::BoundedTitleOptions>,
+    /// The layer that receives pointer interaction. Bounded charts have no
+    /// overlays, so only `Base` and `Annotations` are meaningful here.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "crate::LayerRef::is_base")
+    )]
+    pub active_layer: crate::LayerRef,
+    /// The dedicated annotation layer, shared with every chart family.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "crate::AnnotationLayer::is_default")
+    )]
+    pub annotations: crate::AnnotationLayer,
+    pub categories: Vec<Category>,
+    pub series: Vec<RadarSeries>,
+    pub style: RadarStyle,
+    pub hovered: Option<RadarTarget>,
+    pub selected: Option<RadarTarget>,
+    pub labels: RadarLabels,
+    pub label_decimals: usize,
+    pub value_suffix: String,
+    /// The one value axis every spoke shares, from the centre (`[0]`) to the
+    /// outer ring (`[1]`). `None` fits the supplied values with a nice range
+    /// starting at zero when every value is non-negative. Values below the
+    /// start sit at the centre; values above the end are clipped to the
+    /// outer ring.
+    pub value_range: Option<[f64; 2]>,
+    /// Ring spacing in value units. `None` picks a nice spacing for about
+    /// five rings.
+    pub ring_spacing: Option<f64>,
+    pub grid: bool,
+    pub legend: bool,
+    pub font_family: String,
+    pub font_size: f32,
+    pub text_color: Color,
+    pub background: Color,
+}
+impl Default for RadarChart {
+    fn default() -> Self {
+        Self {
+            decorations: Default::default(),
+            title: String::new(),
+            chart_title: None,
+            active_layer: Default::default(),
+            annotations: Default::default(),
+            categories: vec![],
+            series: vec![],
+            style: RadarStyle::default(),
+            hovered: None,
+            selected: None,
+            labels: RadarLabels::None,
+            label_decimals: 1,
+            value_suffix: String::new(),
+            value_range: None,
+            ring_spacing: None,
+            grid: true,
+            legend: true,
+            font_family: "sans-serif".into(),
+            font_size: 14.0,
+            text_color: Color::from_rgb8(32, 46, 60),
+            background: Color::WHITE,
+        }
+    }
+}
+impl RadarChart {
+    /// The layer that receives pointer interaction. Bounded charts have no
+    /// overlays, so an `Overlay` value reads as `Base`.
+    pub fn active_layer(&self) -> crate::LayerRef {
+        self.active_layer.bounded()
+    }
+    /// Set the interaction target layer and return the stored value
+    /// (`Overlay` is stored as `Base`). A change clears
+    /// `decorations.selected`, which names an element of the previous
+    /// layer's pointer route; the data selection is kept.
+    pub fn set_active_layer(&mut self, layer: crate::LayerRef) -> crate::LayerRef {
+        crate::layer::set_bounded_active_layer(&mut self.active_layer, &mut self.decorations, layer)
+    }
+    pub fn resolved_title(&self) -> crate::BoundedTitleOptions {
+        self.chart_title.clone().unwrap_or_else(|| {
+            crate::BoundedTitleOptions::from_legacy(
+                &self.title,
+                &self.font_family,
+                self.font_size,
+                self.text_color,
+            )
+        })
+    }
+    /// Freeze the legacy title's appearance before independently editing labels.
+    pub fn normalize_title(&mut self) {
+        if self.chart_title.is_none() {
+            self.chart_title = Some(self.resolved_title());
+        }
+    }
+    pub fn series(&self, id: &str) -> Option<&RadarSeries> {
+        self.series.iter().find(|s| s.id == id)
+    }
+    /// The value at `target`'s vertex, or `None` for a series target, an
+    /// unknown id or a category the series has no value for.
+    pub fn value(&self, target: &RadarTarget) -> Option<f64> {
+        let category = target.category_id.as_deref()?;
+        let i = self.categories.iter().position(|c| c.id == category)?;
+        self.series(&target.series_id)?.values.get(i).copied()
+    }
+    /// Whether `target` names something this chart draws.
+    pub fn contains(&self, target: &RadarTarget) -> bool {
+        match target.category_id.as_deref() {
+            None => self.series(&target.series_id).is_some(),
+            Some(_) => self.value(target).is_some(),
+        }
+    }
+    /// The resolved outline width, fill colour, marker and marker size of a
+    /// series: its own style where set, else the chart style.
+    pub fn resolved_style(&self, series: &RadarSeries) -> (f32, Color, RadarMarker, f32) {
+        let own = series.style.as_ref();
+        let fill = own.and_then(|s| s.fill).unwrap_or(Color {
+            a: series.color.a * self.style.fill_opacity,
+            ..series.color
+        });
+        (
+            own.and_then(|s| s.line_width_px)
+                .unwrap_or(self.style.line_width_px),
+            fill,
+            own.and_then(|s| s.marker).unwrap_or(self.style.marker),
+            own.and_then(|s| s.marker_size_px)
+                .unwrap_or(self.style.marker_size_px),
+        )
+    }
+    /// Whether the hovered or selected target emphasizes `series_id`.
+    pub fn is_emphasized(&self, series_id: &str) -> bool {
+        [&self.hovered, &self.selected]
+            .into_iter()
+            .flatten()
+            .any(|t| t.series_id == series_id)
+    }
+    pub fn label_text(&self, value: f64) -> String {
+        format!("{:.*}{}", self.label_decimals, value, self.value_suffix)
+    }
+    pub fn reorder_categories(&mut self, ids: &[&str]) -> Result<(), &'static str> {
+        self.validate()?;
+        if ids.len() != self.categories.len()
+            || ids.iter().collect::<HashSet<_>>().len() != ids.len()
+        {
+            return Err("category order must be a permutation");
+        }
+        let order = ids
+            .iter()
+            .map(|id| {
+                self.categories
+                    .iter()
+                    .position(|c| c.id == *id)
+                    .ok_or("unknown category ID")
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.categories = order.iter().map(|i| self.categories[*i].clone()).collect();
+        for series in &mut self.series {
+            series.values = order.iter().map(|i| series.values[*i]).collect();
+        }
+        Ok(())
+    }
+    pub fn validate(&self) -> Result<(), &'static str> {
+        self.decorations.validate()?;
+        self.annotations.validate()?;
+        self.resolved_title().validate()?;
+        let (n, m) = (self.categories.len(), self.series.len());
+        if !(MIN_RADAR_CATEGORIES..=MAX_RADAR_CATEGORIES).contains(&n)
+            || m == 0
+            || m > MAX_RADAR_SERIES
+        {
+            return Err("radar limits: 3..64 categories and 1..16 series");
+        }
+        let mut ids = HashSet::new();
+        for c in &self.categories {
+            if c.id.is_empty() || !text(&c.id, 80) || !text(&c.label, 80) || !ids.insert(&c.id) {
+                return Err("invalid category ID/label");
+            }
+        }
+        ids.clear();
+        for s in &self.series {
+            if s.id.is_empty()
+                || !text(&s.id, 80)
+                || !text(&s.label, 80)
+                || !ids.insert(&s.id)
+                || s.values.len() != n
+                || !color(s.color)
+            {
+                return Err("invalid series ID/label, color or value count");
+            }
+            if let Some(st) = &s.style {
+                if st.line_width_px.is_some_and(|v| !range(v, 0.0, 12.0))
+                    || st.fill.is_some_and(|c| !color(c))
+                    || st.marker_size_px.is_some_and(|v| !range(v, 1.0, 24.0))
+                {
+                    return Err("invalid radar series style");
+                }
+            }
+        }
+        let st = &self.style;
+        if !st.start_angle_degrees.is_finite()
+            || !range(st.line_width_px, 0.0, 12.0)
+            || !range(st.fill_opacity, 0.0, 1.0)
+            || !range(st.marker_size_px, 1.0, 24.0)
+            || !range(st.emphasis_brightness, 0.0, 0.5)
+            || !color(st.spoke_color)
+            || !color(st.ring_color)
+        {
+            return Err("invalid radar style");
+        }
+        if !range(self.font_size, 8.0, 32.0)
+            || !color(self.text_color)
+            || !color(self.background)
+            || self.label_decimals > 6
+            || !text(&self.font_family, 160)
+            || !text(&self.value_suffix, 24)
+            || !text(&self.title, 160)
+        {
+            return Err("invalid radar layout, font or colors");
+        }
+        if self
+            .value_range
+            .is_some_and(|r| !r[0].is_finite() || !r[1].is_finite() || r[0] >= r[1])
+        {
+            return Err("invalid value range");
+        }
+        if self
+            .ring_spacing
+            .is_some_and(|s| !s.is_finite() || s <= 0.0)
+        {
+            return Err("ring spacing must be finite and positive");
+        }
+        for t in [&self.hovered, &self.selected].into_iter().flatten() {
+            if !self.contains(t) {
+                return Err("unknown interaction target");
+            }
+        }
+        Ok(())
+    }
+}
+fn text(s: &str, max: usize) -> bool {
+    s.chars().count() <= max && !s.chars().any(char::is_control)
+}
+fn range(v: f32, a: f32, b: f32) -> bool {
+    v.is_finite() && (a..=b).contains(&v)
+}
+fn color(c: Color) -> bool {
+    [c.r, c.g, c.b, c.a].into_iter().all(|v| range(v, 0.0, 1.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn chart() -> RadarChart {
+        RadarChart {
+            categories: vec![
+                Category::new("a", "A"),
+                Category::new("b", "B"),
+                Category::new("c", "C"),
+            ],
+            series: vec![RadarSeries::new(
+                "s",
+                "S",
+                vec![1.0, 2.0, 3.0],
+                Color::WHITE,
+            )],
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn limits_and_value_counts_are_validated() {
+        let mut c = chart();
+        assert!(c.validate().is_ok());
+        c.categories.pop();
+        assert!(c.validate().is_err(), "two categories are not a polygon");
+        c = chart();
+        c.series[0].values.pop();
+        assert!(c.validate().is_err(), "one value per category");
+        c = chart();
+        c.categories = (0..65).map(|i| Category::new(i.to_string(), "A")).collect();
+        c.series[0].values = vec![1.0; 65];
+        assert!(c.validate().is_err());
+        c.categories.pop();
+        c.series[0].values.pop();
+        assert!(c.validate().is_ok());
+        c.series = (0..17)
+            .map(|i| RadarSeries::new(i.to_string(), "S", vec![1.0; 64], Color::WHITE))
+            .collect();
+        assert!(c.validate().is_err());
+        c.series.pop();
+        assert!(c.validate().is_ok());
+    }
+    #[test]
+    fn non_finite_values_are_allowed_as_gaps() {
+        let mut c = chart();
+        c.series[0].values[1] = f64::NAN;
+        assert!(c.validate().is_ok());
+        assert!(c.value(&RadarTarget::vertex("s", "b")).unwrap().is_nan());
+    }
+    #[test]
+    fn targets_name_a_series_or_one_of_its_vertices() {
+        let mut c = chart();
+        assert!(c.contains(&RadarTarget::series("s")));
+        assert!(c.contains(&RadarTarget::vertex("s", "b")));
+        assert!(!c.contains(&RadarTarget::vertex("s", "nope")));
+        assert!(!c.contains(&RadarTarget::series("nope")));
+        assert_eq!(c.value(&RadarTarget::vertex("s", "c")), Some(3.0));
+        assert_eq!(c.value(&RadarTarget::series("s")), None);
+        c.selected = Some(RadarTarget::vertex("s", "nope"));
+        assert!(c.validate().is_err());
+        c.selected = Some(RadarTarget::series("s"));
+        assert!(c.validate().is_ok());
+        assert!(c.is_emphasized("s"));
+        assert!(!c.is_emphasized("t"));
+    }
+    #[test]
+    fn resolved_style_falls_back_to_the_chart_style() {
+        let mut c = chart();
+        let (width, fill, marker, size) = c.resolved_style(&c.series[0]);
+        assert_eq!(width, 2.0);
+        assert_eq!(fill.a, 0.25);
+        assert_eq!(marker, RadarMarker::Circle);
+        assert_eq!(size, 7.0);
+        c.series[0].style = Some(RadarSeriesStyle {
+            line_width_px: Some(4.0),
+            fill: Some(Color::new(0.0, 0.0, 0.0, 0.0)),
+            marker: Some(RadarMarker::None),
+            marker_size_px: None,
+        });
+        let (width, fill, marker, size) = c.resolved_style(&c.series[0]);
+        assert_eq!(
+            (width, fill.a, marker, size),
+            (4.0, 0.0, RadarMarker::None, 7.0)
+        );
+        c.series[0].style.as_mut().unwrap().line_width_px = Some(13.0);
+        assert!(c.validate().is_err());
+    }
+    #[test]
+    fn ranges_and_style_are_validated() {
+        let mut c = chart();
+        c.value_range = Some([1.0, 1.0]);
+        assert!(c.validate().is_err());
+        c.value_range = Some([-1.0, 5.0]);
+        assert!(c.validate().is_ok());
+        c.ring_spacing = Some(0.0);
+        assert!(c.validate().is_err());
+        c.ring_spacing = Some(0.5);
+        assert!(c.validate().is_ok());
+        c.style.fill_opacity = 1.5;
+        assert!(c.validate().is_err());
+        c = chart();
+        c.style.start_angle_degrees = f32::NAN;
+        assert!(c.validate().is_err());
+    }
+    #[test]
+    fn reorder_is_atomic_and_moves_values_with_their_categories() {
+        let mut c = chart();
+        let before = c.clone();
+        assert!(c.reorder_categories(&["a", "a", "b"]).is_err());
+        assert_eq!(c, before);
+        c.reorder_categories(&["c", "a", "b"]).unwrap();
+        assert_eq!(c.series[0].values, vec![3.0, 1.0, 2.0]);
+        assert_eq!(c.value(&RadarTarget::vertex("s", "c")), Some(3.0));
+    }
+    #[test]
+    fn labels_format_values_with_decimals_and_suffix() {
+        let mut c = chart();
+        c.label_decimals = 2;
+        c.value_suffix = " pt".into();
+        assert_eq!(c.label_text(2.5), "2.50 pt");
+    }
+    #[cfg(feature = "serde")]
+    #[test]
+    fn complete_ssot_round_trips_and_omits_defaults() {
+        let mut c = chart();
+        c.series[0].style = Some(RadarSeriesStyle {
+            marker: Some(RadarMarker::Square),
+            ..Default::default()
+        });
+        c.style.grid_shape = RadarGridShape::Circle;
+        c.selected = Some(RadarTarget::vertex("s", "b"));
+        c.hovered = Some(RadarTarget::series("s"));
+        c.value_range = Some([0.0, 5.0]);
+        let json = serde_json::to_string(&c).unwrap();
+        let back: RadarChart = serde_json::from_str(&json).unwrap();
+        assert_eq!(c, back);
+        back.validate().unwrap();
+        let minimal: RadarChart = serde_json::from_str(
+            r#"{"categories":[{"id":"a","label":"A"},{"id":"b","label":"B"},{"id":"c","label":"C"}],
+                "series":[{"id":"s","label":"S","values":[1,2,3],"color":{"r":1,"g":1,"b":1,"a":1}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(minimal, chart());
+        let series_target = serde_json::to_string(&RadarTarget::series("s")).unwrap();
+        assert_eq!(series_target, r#"{"series_id":"s"}"#);
+    }
+}

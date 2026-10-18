@@ -67,6 +67,8 @@ pub use categorical::*;
 
 pub mod boxplot;
 pub use boxplot::*;
+pub mod radar;
+pub use radar::*;
 
 pub mod bounded_title;
 pub use bounded_title::BoundedTitleOptions;

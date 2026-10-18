@@ -1135,7 +1135,10 @@ fn draw_grid(canvas: &mut Canvas, config: &Config, da: &DataArea, fp: FontPolicy
 
 #[path = "bounded_axes.rs"]
 mod bounded;
-pub(crate) use bounded::{BoundedAxisDecorations, draw_bounded_decorations};
+pub(crate) use bounded::{
+    BoundedAxisDecorations, BoundedLegend, draw_bounded_decorations, draw_bounded_legend,
+    plain_number, plan_bounded_legend,
+};
 
 fn draw_axis_segment(
     canvas: &mut Canvas,

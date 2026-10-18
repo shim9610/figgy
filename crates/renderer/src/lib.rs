@@ -128,6 +128,9 @@ pub use model::categorical::*;
 pub mod boxplot;
 pub use boxplot::{BoxPlotError, BoxPlotFrame, BoxPlotPart, BoxPlotPick, BoxPlotRenderer};
 pub use model::boxplot::*;
+pub mod radar;
+pub use model::radar::*;
+pub use radar::{RadarError, RadarFrame, RadarPart, RadarPick, RadarRenderer};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "../tests/support/gpu.rs"]

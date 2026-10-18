@@ -26,6 +26,11 @@ pub enum DecorationId {
         category_id: String,
         series_id: String,
     },
+    /// A radar chart's category label at the end of its spoke, which has no
+    /// side to belong to.
+    SpokeLabel {
+        category_id: String,
+    },
     /// An element of an overlay layer, addressed by the layer index and the
     /// element's identity inside that layer. Overlay expansion registers the
     /// active overlay's elements under this wrapper so drag policies reach the
@@ -64,6 +69,9 @@ impl DecorationId {
                 series_id.len(),
                 series_id
             ),
+            Self::SpokeLabel { category_id } => {
+                format!("spoke_label_{}:{}", category_id.len(), category_id)
+            }
             Self::Overlay { layer, inner } => format!("overlay_{layer}:{}", inner.element_id()),
             Self::Annotation(index) => format!("annotation_{index}"),
         }
