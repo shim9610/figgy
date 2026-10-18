@@ -4021,6 +4021,7 @@ impl Renderer {
                 &self.transform_bgl,
                 &self.style_bgl,
                 &self.per_point_style_map_bgl,
+                &self.point_value_map_bgl,
                 &self.data_selection_bgl,
                 &self.field_bgl,
                 self.contour_label_pipelines.as_ref(),

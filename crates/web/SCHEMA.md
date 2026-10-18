@@ -42,6 +42,7 @@
 - **색은 0~1 범위의 RGBA 실수 값**이다. 예: `{ "r": 0.8, "g": 0.1, "b": 0.1, "a": 1.0 }`.
 - **데이터 출처 키**인 `SeriesConfig.source_id`, `PickedPointRef.source_id`, 모든 `PickedDataRef`의 `source_id`는 `None`이면 생략한다.
 - **시리즈의 스타일 매핑 키 6개**도 `None`이면 생략한다. `DataScatterStyleConfig`의 `point_style_table` / `point_style_index_column` / `point_style_overrides`와 `DataErrorBarStyleConfig`의 `error_bar_style_table` / `error_bar_style_index_column` / `error_bar_style_overrides`가 해당한다.
+- **Two continuous value-map keys** of `DataScatterStyleConfig`, `point_color_map` and `point_size_map`, are omitted when `None`. `point_color_map` is `{ "column": "<id>" }`; the colour comes from `Config.colorbar`, which must exist. `point_size_map` is `{ "column": "<id>", "domain_min": 0.0, "domain_max": 10.0, "min_px": 2.0, "max_px": 12.0, "scale": "Area" }`; `scale` is `"Area"` (default, omitted) or `"Radius"`. Both columns must be registered and index-aligned with the series. See [Point colour and size maps](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#point-colour-and-size-maps).
 - **개별 데이터의 스타일 키 7개**도 `None`이면 생략한다. `DataScatterPointStyleConfig`의 `point_color` / `point_shape` / `point_size`와 `DataErrorBarPointStyleConfig`의 `error_bar_color` / `error_bar_width` / `error_bar_cap_size` / `cap_width`가 해당한다. 모두 비어 있으면 `{}`로 직렬화한다. 개별 덮어쓰기 항목의 `style`은 한 단계 풀어서 저장하므로 같은 생략 규칙을 따른다.
 - `SeriesConfig.label`은 위 선택 키들과 달리 항상 존재하며 값으로 `null`을 가질 수 있다.
 - **선 스타일의 선택 키 3개**인 `DataLineStyleConfig.fill` / `fill_color` / `interpolation`은 기본값이면 생략한다. `fill`은 `{ "ToBaseline": 0.0 }` 또는 `{ "ToSeries": "<series_id>" }`이고, `fill_color`는 `Color`, `interpolation`은 `"Linear"`(기본)·`"StepPre"`·`"StepPost"`·`"StepMid"`다. `ToSeries`는 같은 차트에서 같은 `x_column`을 쓰는 다른 시리즈를 가리켜야 하며, 두 시리즈 모두 상주 컬럼이어야 한다. 자세한 의미는 [면 채움과 계단선](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#면-채움과-계단선)을 참고한다.
@@ -286,7 +287,9 @@ For a selected histogram bin, the parsed result has this shape:
 `source_id` is omitted from `identity` when absent. `value` is the stored bin
 height: it may be a count, weight, density or stairs value. Horizontal
 histograms return `"Horizontal"` and use the Y column for bin edges. Point
-results contain `index`, `x`, and `y`; matrix results contain `x_index`,
+results contain `index`, `x`, and `y`, plus `color_value` when the series has a
+`point_color_map` and `size_value` when it has a `point_size_map` (the values the
+point's colour and radius were derived from); matrix results contain `x_index`,
 `y_index`, `x`, `y`, and `value`, with cell centers reported for edge grids.
 All results include the flat tagged `identity` and `series_id`.
 

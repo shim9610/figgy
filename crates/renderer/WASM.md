@@ -788,7 +788,7 @@ between series of the same orientation. Indices clamp to the selected series.
 GPU values (or `"null"` for no supported selection). Histogram fields are
 `identity`, `series_id`, `index`, `bin_start`, `bin_end`, `value`, and
 `orientation`; `identity` uses a flat `kind` tag. Points and matrix cells are
-also supported. These raw methods have no `<figgy-chart>` forwarding methods.
+also supported; a colour- or size-mapped point adds `color_value` / `size_value`. These raw methods have no `<figgy-chart>` forwarding methods.
 See the [selection JSON contract](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md#resident-selection-details).
 Hold the host's async gate during selected-value reads as well as exports.
 

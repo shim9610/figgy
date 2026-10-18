@@ -230,6 +230,12 @@ impl PrepareContext<'_> {
                     _ => None,
                 };
 
+                let (color_value, size_value, value_map_bg) = self.scatter_value_map_columns(
+                    cfg,
+                    precise_pick_style_map.is_some(),
+                    x_h.len_values.min(y_h.len_values),
+                    &mut lookup,
+                )?;
                 let mut ring_style =
                     PrimitiveStyle::from_color_with_width(visual.color, visual.width_px);
                 let uses_mapped_pick = precise_pick_style_map.is_some();
@@ -268,11 +274,14 @@ impl PrepareContext<'_> {
                     style_bg,
                     style_map_bg: precise_pick_style_map
                         .map(|map| columns.mapped_point_bg.unwrap_or(&map.bind_group)),
+                    value_map_bg,
                     quad_vb: &self.quad_vb,
                     pool_buffer: column_buffer,
                     x: x_h,
                     y: y_h,
                     style_index,
+                    color_value,
+                    size_value,
                     instance,
                 });
             }

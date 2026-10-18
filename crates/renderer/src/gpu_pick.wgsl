@@ -19,6 +19,8 @@ const PICK_FLAG_SCATTER: u32 = 1u;
 const PICK_FLAG_LINE: u32 = 2u;
 const PICK_FLAG_STYLE_MAP: u32 = 4u;
 const PICK_FLAG_STYLE_INDEX: u32 = 8u;
+const PICK_FLAG_SIZE_MAP: u32 = 16u;
+const PICK_FLAG_SIZE_AREA: u32 = 32u;
 
 const PICK_STYLE_MASK_RADIUS: u32 = 2u;
 const PICK_STYLE_MASK_SHAPE: u32 = 4u;
@@ -57,6 +59,13 @@ struct PickQueryParams {
     //  3 step-mid; the rest reserved). Mirrors the line shader's
     //  Style.primitive_flags bits 2-3 so a pick lands on the drawn path.
     line: vec4<u32>,
+    // `point_size_map`: (size f32-lane base, size logical length, 0, 0).
+    size_map: vec4<u32>,
+    // (domain_min hi, domain_min lo, domain_max hi, domain_max lo).
+    size_domain: vec4<f32>,
+    // (min_px, max_px, 0, 0), logical pixels; the display scale is applied
+    // with the other radii.
+    size_px: vec4<f32>,
 };
 
 const PICK_STEP_LINEAR: u32 = 0u;
@@ -399,10 +408,37 @@ fn pick_apply_style(radius_in: f32, shape_in: u32, slot: PickScatterStyleSlot) -
     return vec2<f32>(radius, f32(shape));
 }
 
+// Twin of `scatter_columnar.wgsl::value_map_radius` and of
+// `PointSizeMap::radius_px`: the marker radius a size value maps to, or a
+// negative number when the value is not finite and the point is hidden.
+fn pick_size_map_radius(point_index: u32) -> f32 {
+    if point_index >= pick_query_params.size_map.y {
+        return -1.0;
+    }
+    let value = pick_read_pair(pick_query_params.size_map.x, point_index);
+    if !pick_is_finite(value.x) || !pick_is_finite(value.y) || !pick_is_finite(value.x + value.y) {
+        return -1.0;
+    }
+    let domain = pick_query_params.size_domain;
+    let num = (value.x - domain.x) + (value.y - domain.y);
+    let span = (domain.z - domain.x) + (domain.w - domain.y);
+    let t = clamp(num / span, 0.0, 1.0);
+    let lo = pick_query_params.size_px.x;
+    let hi = pick_query_params.size_px.y;
+    if (pick_query_params.style.x & PICK_FLAG_SIZE_AREA) != 0u {
+        return sqrt(lo * lo + (hi * hi - lo * lo) * t);
+    }
+    return lo + (hi - lo) * t;
+}
+
+// Precedence per channel, as in `resolve_mapped_style`: sparse override >
+// size map > style table slot > series base. A hidden point returns a
+// negative radius unless an override sets its radius.
 fn pick_resolve_scatter_radius(point_index: u32) -> f32 {
     var radius = pick_nonnegative(pick_query_params.scatter_line.x);
     var shape = pick_query_params.series.z;
     let flags = pick_query_params.style.x;
+    var hidden = false;
     if (flags & PICK_FLAG_STYLE_MAP) != 0u {
         if (flags & PICK_FLAG_STYLE_INDEX) != 0u && point_index < pick_query_params.style.w {
             let index_word = pick_query_params.data.w + point_index * 2u;
@@ -416,15 +452,31 @@ fn pick_resolve_scatter_radius(point_index: u32) -> f32 {
                 }
             }
         }
+    }
+    if (flags & PICK_FLAG_SIZE_MAP) != 0u {
+        let mapped = pick_size_map_radius(point_index);
+        if mapped < 0.0 {
+            hidden = true;
+        } else {
+            radius = mapped;
+        }
+    }
+    if (flags & PICK_FLAG_STYLE_MAP) != 0u {
         for (var i = 0u; i < pick_query_params.style.z; i = i + 1u) {
             let override_row = pick_style_overrides[i];
             if override_row.point_index == point_index + pick_query_params.stream.x {
                 let slot = PickScatterStyleSlot(override_row.color_premul, override_row.params);
                 let resolved = pick_apply_style(radius, shape, slot);
+                if (u32(slot.params.z) & PICK_STYLE_MASK_RADIUS) != 0u {
+                    hidden = false;
+                }
                 radius = resolved.x;
                 shape = u32(resolved.y);
             }
         }
+    }
+    if hidden {
+        return -1.0;
     }
     return pick_visual_shape_radius(shape, radius) * pick_query_params.scatter_line.z;
 }

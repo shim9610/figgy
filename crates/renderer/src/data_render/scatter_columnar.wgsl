@@ -365,6 +365,12 @@ struct VsMappedIn {
     @location(1) x: vec2<f32>,
     @location(2) y: vec2<f32>,
     @location(3) style_index: f32,
+    // Value columns of the continuous maps (`point_color_map` /
+    // `point_size_map`), per-instance hi/lo pairs read straight from the
+    // column pool. A series without the map binds its X column here as inert
+    // filler; the flags in `point_value_map` say which of them are real.
+    @location(4) color_value: vec2<f32>,
+    @location(5) size_value: vec2<f32>,
 };
 
 struct ScatterStyleSlot {
@@ -394,6 +400,125 @@ struct ScatterStyleMapMeta {
 @group(2) @binding(5) var<storage, read> scatter_style_slots: array<ScatterStyleSlot>;
 @group(2) @binding(6) var<storage, read> scatter_style_overrides: array<ScatterStyleOverride>;
 @group(2) @binding(7) var<uniform> scatter_style_meta: ScatterStyleMapMeta;
+
+// Continuous value maps (group 3, NOT part of the common block). The colour
+// side mirrors the field shader: the colourbar's bounds (already log10 when
+// `VALUE_MAP_LOG_Z` is set), its `nan_color` and its ramp control points, so a
+// colour-mapped point and a heatmap cell with the same z draw the same colour.
+// The size side is `PointSizeMap`: value domain as hi/lo pairs and the pixel
+// range already multiplied by the export scale. CPU twin:
+// `mod.rs::PointValueMapParamsGpu`, 64 B.
+struct PointValueMapParams {
+    z_min: vec2<f32>,
+    z_max: vec2<f32>,
+    size_domain_min: vec2<f32>,
+    size_domain_max: vec2<f32>,
+    // (min_px, max_px)
+    size_px: vec2<f32>,
+    flags: u32,
+    stop_count: u32,
+    nan_color_premul: vec4<f32>,
+};
+
+const VALUE_MAP_COLOR: u32 = 1u;
+const VALUE_MAP_SIZE: u32 = 2u;
+const VALUE_MAP_LOG_Z: u32 = 4u;
+const VALUE_MAP_SIZE_AREA: u32 = 8u;
+
+@group(3) @binding(0) var<uniform> point_value_map: PointValueMapParams;
+@group(3) @binding(1) var<storage, read> point_value_stops: array<vec4<f32>>;
+
+fn value_map_flag(bit: u32) -> bool {
+    return (point_value_map.flags & bit) != 0u;
+}
+
+fn value_pair_finite(v: vec2<f32>) -> bool {
+    return sample_finite(v.x) && sample_finite(v.y) && sample_finite(v.x + v.y);
+}
+
+/// The colour-map value as a ramp position, or a negative number when it
+/// cannot be placed. Twin of `field_columnar.wgsl::z_ramp_t` and of
+/// `ColorBarOptions::normalized_z`: NaN, a non-positive value on a
+/// logarithmic bar and a degenerate range all report the miss.
+fn value_ramp_t(zv: vec2<f32>) -> f32 {
+    if (!value_pair_finite(zv)) {
+        return -1.0;
+    }
+    let raw = zv.x + zv.y;
+    let log_z = value_map_flag(VALUE_MAP_LOG_Z);
+    if (log_z && raw <= 0.0) {
+        return -1.0;
+    }
+    let is_log = select(0.0, 1.0, log_z);
+    let linear_num = (zv.x - point_value_map.z_min.x) + (zv.y - point_value_map.z_min.y);
+    let log_num = (maybe_log(raw, 1.0) - point_value_map.z_min.x) - point_value_map.z_min.y;
+    let span = (point_value_map.z_max.x - point_value_map.z_min.x)
+        + (point_value_map.z_max.y - point_value_map.z_min.y);
+    if (!sample_finite(linear_num) || !sample_finite(log_num)
+        || !sample_finite(span) || span <= 0.0) {
+        return -1.0;
+    }
+    let numerator = mix(linear_num, log_num, is_log);
+    let normalized = numerator / span;
+    if (!sample_finite(numerator) || !sample_finite(normalized)) {
+        return -1.0;
+    }
+    return clamp(normalized, 0.0, 1.0);
+}
+
+/// The colourmap at `t`, straight alpha. Byte-for-byte twin of
+/// `model::colormap::sample` (and of the field shader's `ramp`): `mix` is not
+/// used because `a + (b - a) * t` is what the CPU computes.
+fn value_ramp(t: f32) -> vec4<f32> {
+    let n = point_value_map.stop_count;
+    if (n == 0u) {
+        return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    }
+    if (n == 1u) {
+        return point_value_stops[0];
+    }
+    let tc = select(clamp(t, 0.0, 1.0), 0.0, !sample_finite(t));
+    let scaled = tc * f32(n - 1u);
+    let index = min(u32(floor(scaled)), n - 2u);
+    let frac = scaled - f32(index);
+    if (frac <= 0.0) {
+        return point_value_stops[index];
+    }
+    if (frac >= 1.0) {
+        return point_value_stops[index + 1u];
+    }
+    let a = point_value_stops[index];
+    let b = point_value_stops[index + 1u];
+    return a + (b - a) * frac;
+}
+
+/// Premultiplied colour for a colour-map value; `nan_color` when unplaceable.
+fn value_map_color(zv: vec2<f32>) -> vec4<f32> {
+    let t = value_ramp_t(zv);
+    if (t < 0.0) {
+        return point_value_map.nan_color_premul;
+    }
+    let c = value_ramp(t);
+    return vec4<f32>(c.rgb * c.a, c.a);
+}
+
+/// Marker radius for a size-map value, in pixels. Negative means the value is
+/// not finite and the point is hidden. Twin of `PointSizeMap::radius_px`.
+fn value_map_radius(sv: vec2<f32>) -> f32 {
+    if (!value_pair_finite(sv)) {
+        return -1.0;
+    }
+    let num = (sv.x - point_value_map.size_domain_min.x) + (sv.y - point_value_map.size_domain_min.y);
+    let span = (point_value_map.size_domain_max.x - point_value_map.size_domain_min.x)
+        + (point_value_map.size_domain_max.y - point_value_map.size_domain_min.y);
+    let t = clamp(num / span, 0.0, 1.0);
+    let lo = point_value_map.size_px.x;
+    let hi = point_value_map.size_px.y;
+    if (value_map_flag(VALUE_MAP_SIZE_AREA)) {
+        return sqrt(lo * lo + (hi * hi - lo * lo) * t);
+    }
+    return lo + (hi - lo) * t;
+}
 
 struct ResolvedMappedStyle {
     color_premul: vec4<f32>,
@@ -432,7 +557,15 @@ fn apply_style_slot(base: ResolvedMappedStyle, slot: ScatterStyleSlot) -> Resolv
     return out;
 }
 
-fn resolve_mapped_style(style_index: f32, inst: u32) -> ResolvedMappedStyle {
+// Precedence per channel: sparse override > continuous value map > style
+// table slot > series base. A hidden point (non-finite size value) carries a
+// negative radius; an override that sets the radius makes it visible again.
+fn resolve_mapped_style(
+    style_index: f32,
+    inst: u32,
+    color_value: vec2<f32>,
+    size_value: vec2<f32>,
+) -> ResolvedMappedStyle {
     var out = ResolvedMappedStyle(style.color_premul, style.point_radius_px, style.shape_id);
     let point_index = inst + scatter_style_meta._pad;
 
@@ -441,6 +574,13 @@ fn resolve_mapped_style(style_index: f32, inst: u32) -> ResolvedMappedStyle {
         if (idx < scatter_style_meta.style_count) {
             out = apply_style_slot(out, scatter_style_slots[idx]);
         }
+    }
+
+    if (value_map_flag(VALUE_MAP_COLOR)) {
+        out.color_premul = value_map_color(color_value);
+    }
+    if (value_map_flag(VALUE_MAP_SIZE)) {
+        out.radius_px = value_map_radius(size_value);
     }
 
     for (var i = 0u; i < scatter_style_meta.override_count; i = i + 1u) {
@@ -459,7 +599,12 @@ fn vs_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> VsMappedOut 
         masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
         return masked;
     }
-    let resolved = resolve_mapped_style(in.style_index, inst);
+    let resolved = resolve_mapped_style(in.style_index, inst, in.color_value, in.size_value);
+    if (resolved.radius_px < 0.0) {
+        var hidden: VsMappedOut;
+        hidden.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+        return hidden;
+    }
     let center_ndc = data_to_ndc(in.x, in.y);
     let half_px =
         visual_shape_radius(base_shape_id(resolved.shape_id), resolved.radius_px) + QUAD_MARGIN_PX;
@@ -523,7 +668,12 @@ fn vs_pick_ring_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> Vs
         masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
         return masked;
     }
-    let resolved = resolve_mapped_style(in.style_index, inst);
+    let resolved = resolve_mapped_style(in.style_index, inst, in.color_value, in.size_value);
+    if (resolved.radius_px < 0.0) {
+        var hidden: VsPickRingOut;
+        hidden.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+        return hidden;
+    }
     let center_ndc = data_to_ndc(in.x, in.y);
     // Pick-ring mapped mode uses style.cap_half_px as radius_extra_px. The
     // errorbar shader is not involved in this pipeline, so the slot is local

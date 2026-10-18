@@ -368,7 +368,7 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::paint` branches 
 | `DataRenderType` | enum, 13 variants | One independent draw path per variant. Optional struct merging avoided |
 | `ErrorRef` | `Symmetric { column }` or `Asymmetric { lower, upper }` | Errorbar column reference. Symmetric = ±σ, Asymmetric = lower/upper split |
 | `DataLineStyleConfig` | `line_style, line_color, line_width, fill?, fill_color?, interpolation` | Line appearance. `fill` adds an area under the line (`ToBaseline(y)`) or between this line and another series (`ToSeries(series_id)`); `fill_color` defaults to `line_color` at a quarter of its alpha; `interpolation` is `Linear` (default), `StepPre`, `StepPost` or `StepMid`. See [Area fill and step lines](#area-fill-and-step-lines) |
-| `DataScatterStyleConfig` | `point_color, point_shape, point_size, point_style_table?, point_style_index_column?, point_style_overrides?` | Point appearance. The optional style map applies only to precise scatter; each table/override slot can replace color, shape, size, or any subset |
+| `DataScatterStyleConfig` | `point_color, point_shape, point_size, point_style_table?, point_style_index_column?, point_style_overrides?, point_color_map?, point_size_map?` | Point appearance. The optional style map applies only to precise scatter; each table/override slot can replace color, shape, size, or any subset. `point_color_map` colours each point by a value column through `Config.colorbar`; `point_size_map` sizes each point by a value column over an explicit domain. See [Point colour and size maps](#point-colour-and-size-maps) |
 | `DataErrorBarStyleConfig` | `error_bar_color, _width, _cap_size, cap_width, error_bar_style_table?, error_bar_style_index_column?, error_bar_style_overrides?` | Errorbar appearance. The optional style map applies only to precise errorbars; each table/override slot can replace color, stem width, cap half-size, cap width, or any subset |
 | `DataBarStyleConfig` | `fill_color, border_color, border_width, baseline, gap_px, width_ratio, orientation, bar_style_overrides?` | Histogram appearance. `width_ratio` controls the centred fraction of each bin; sparse overrides replace fill, outline, gap, or width for selected bin indices |
 | `ScatterShape` | enum, 26 variants | Circle / Square / Triangle directions / Diamond / Cross / Plus / Pentagon / Hexagon / Octagon / Star + filled variants |
@@ -393,6 +393,47 @@ For a runnable vertical/horizontal example and atomic direction changes, see
 [Histogram orientation](HISTOGRAM.md).
 
 <a id="area-fill-and-step-lines"></a>
+
+#### Point colour and size maps
+
+A scatter series (every `DataRenderType` that draws markers) can map two ordinary
+value columns onto its points. Both fields are optional and additive: documents
+without them parse and serialize byte-identically, and a series with either one
+draws through the precise mapped scatter path, like a series with a style table.
+
+- `point_color_map: Option<PointColorMap { column }>` colours each point by its
+  value in `column` through `Config.colorbar`, exactly as a heatmap cell is
+  coloured: the colourbar owns the range, scale, ramp and `nan_color`, and the
+  chart keeps one z scale. A colour-mapped series without a colourbar is rejected
+  rather than given an invented range. A non-finite value, or a non-positive value
+  on a logarithmic colourbar, draws in `nan_color`. `Chart::auto_fit_colorbar_union`
+  and the web `auto_fit_colorbar` fit the shared range over matrix columns and
+  colour-map columns alike.
+- `point_size_map: Option<PointSizeMap { column, domain_min, domain_max, min_px, max_px, scale }>`
+  maps `domain_min..domain_max` onto the marker radius `min_px..max_px` (logical
+  pixels, the unit of `point_size`, scaled on export like it). `scale` is `Area`
+  (default: the value is proportional to marker area, which is how bubble sizes
+  are read) or `Radius`. Values outside the domain clamp to the ends; a non-finite
+  value hides the point and removes it from picking. The domain is explicit and
+  never inferred from the column — `PointSizeMap::fit_domain(min, max)` writes it
+  from statistics the host already has, the way `auto_ticks` writes tick spacing —
+  so appending a point never resizes the others. `PointSizeMap::radius_px(value)`
+  is the formula; the shader and the CPU picker compute the same radius.
+- Precedence per channel is sparse override > value map > style table slot >
+  series base. Shape still comes from the table, overrides or base, so a
+  categorical shape column combines with a continuous colour column. An override
+  that sets `point_size` makes a hidden point visible again.
+- The value columns are index-aligned with the series' x/y columns and must cover
+  every point; a shorter column is a prepare error. They are enumerated like every
+  other series column, so removing one invalidates the series, and `pick_point`,
+  the picked ring, `selection_details` (`color_value` / `size_value`) and PNG
+  export all follow the mapped colour and radius. Streamed sources are rejected;
+  the maps require GPU-resident columns. Stylized draw styles (Sketch, Milkyway,
+  Constellation) ignore the maps, as they ignore the style table.
+
+The GPU reads the value columns from the column pool on every draw and derives
+colour and radius in the shader; no per-point colour or radius is stored anywhere.
+`crates/renderer/examples/value_maps.rs` shows both maps.
 
 #### Area fill and step lines
 
@@ -846,7 +887,7 @@ pub struct Config {
 | `DataRenderType` | 13종 열거형 | 종류마다 별도의 렌더링 경로와 필요한 설정을 가진다. |
 | `ErrorRef` | `Symmetric { column }` 또는 `Asymmetric { lower, upper }` | 오차 막대 컬럼 참조. Symmetric은 ±σ, Asymmetric은 아래·위 값을 별도 지정 |
 | `DataLineStyleConfig` | `line_style, line_color, line_width, fill?, fill_color?, interpolation` | 선 모양. `fill`은 선 아래(`ToBaseline(y)`) 또는 다른 시리즈까지(`ToSeries(series_id)`) 면을 채우고, `fill_color`는 생략 시 `line_color`의 알파를 1/4로 줄인 색이며, `interpolation`은 `Linear`(기본)·`StepPre`·`StepPost`·`StepMid`다. [면 채움과 계단선](#면-채움과-계단선) 참고 |
-| `DataScatterStyleConfig` | `point_color, point_shape, point_size, point_style_table?, point_style_index_column?, point_style_overrides?` | 점 모양. 정밀 모드에서 선택적인 스타일 표·개별 설정으로 색·모양·크기의 전체 또는 일부를 바꿀 수 있다. |
+| `DataScatterStyleConfig` | `point_color, point_shape, point_size, point_style_table?, point_style_index_column?, point_style_overrides?, point_color_map?, point_size_map?` | 점 모양. 정밀 모드에서 선택적인 스타일 표·개별 설정으로 색·모양·크기의 전체 또는 일부를 바꿀 수 있다. `point_color_map`은 값 컬럼을 `Config.colorbar`로 색에, `point_size_map`은 값 컬럼을 명시한 범위로 크기에 대응시킨다. [Point colour and size maps](#point-colour-and-size-maps) 참고 |
 | `DataErrorBarStyleConfig` | `error_bar_color, _width, _cap_size, cap_width, error_bar_style_table?, error_bar_style_index_column?, error_bar_style_overrides?` | 오차 막대 모양. 정밀 모드에서 색·몸통 두께·끝선 절반 길이·끝선 두께의 전체 또는 일부를 바꿀 수 있다. |
 | `DataBarStyleConfig` | `fill_color, border_color, border_width, baseline, gap_px, width_ratio, orientation, bar_style_overrides?` | 히스토그램 모양. `width_ratio`는 구간 가운데에 놓인 막대의 너비 비율이다. 개별 설정으로 특정 구간의 채움·외곽선·간격·너비를 바꿀 수 있다. |
 | `ScatterShape` | 열거형 26종 | 원·사각형·방향별 삼각형·마름모·십자·더하기·오각형·육각형·팔각형·별과 내부를 채운 형태 |

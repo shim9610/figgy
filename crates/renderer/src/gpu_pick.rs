@@ -44,6 +44,11 @@ const FLAG_SCATTER: u32 = 1;
 const FLAG_LINE: u32 = 2;
 const FLAG_STYLE_MAP: u32 = 4;
 const FLAG_STYLE_INDEX: u32 = 8;
+/// A `point_size_map` is bound: the exact pass resolves each point's radius
+/// from its size value, and the gate extent includes the map's `max_px`.
+const FLAG_SIZE_MAP: u32 = 16;
+/// The size map scales marker area rather than radius.
+const FLAG_SIZE_AREA: u32 = 32;
 const STYLE_MASK_RADIUS: u32 = 2;
 const STYLE_MASK_SHAPE: u32 = 4;
 
@@ -181,12 +186,27 @@ pub(crate) struct GpuPickScatterStyle<'a> {
     pub(crate) style_meta: ScatterStyleMapMeta,
 }
 
+/// A series' `point_size_map`, as the pick shader needs it: the column the
+/// size values come from and the explicit domain → pixel mapping. Twin of
+/// `PointSizeMap`; the radius is re-derived per point in the exact pass.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct GpuPickSizeMap {
+    pub(crate) column: ColumnId,
+    pub(crate) domain_min: f64,
+    pub(crate) domain_max: f64,
+    pub(crate) min_px: f32,
+    pub(crate) max_px: f32,
+    pub(crate) area: bool,
+}
+
 /// Scatter inputs for one registered series.
 pub(crate) struct GpuPickScatter<'a> {
     pub(crate) base_radius_px: f32,
     pub(crate) base_shape_id: u32,
     /// `Some` only when current precise-mode style mapping is active.
     pub(crate) style_map: Option<GpuPickScatterStyle<'a>>,
+    /// `Some` only in precise mode with a `point_size_map`.
+    pub(crate) size_map: Option<GpuPickSizeMap>,
 }
 
 /// Registration-time metadata for one exact GPU-picked series.
@@ -223,6 +243,8 @@ pub(crate) struct GpuStreamPickColumns {
     pub(crate) x: ColumnHandle,
     pub(crate) y: ColumnHandle,
     pub(crate) style_index: Option<ColumnHandle>,
+    /// The `point_size_map` value column, resident series only.
+    pub(crate) size_value: Option<ColumnHandle>,
 }
 
 pub(crate) fn validate_stream_handle(
@@ -521,6 +543,9 @@ impl GpuStreamPick {
                 original_index_word_base,
             ],
             line: [series.line_step_mode, 0, 0, 0],
+            size_map: [series.size_base, series.size_len, 0, 0],
+            size_domain: series.size_domain,
+            size_px: [series.size_px[0], series.size_px[1], 0.0, 0.0],
         };
         self.engine
             .bundle
@@ -658,6 +683,12 @@ struct PickQueryParamsGpu {
     series: [u32; 4],
     stream: [u32; 4],
     line: [u32; 4],
+    /// `(size lane base, size logical length, 0, 0)`.
+    size_map: [u32; 4],
+    /// `(domain_min hi, domain_min lo, domain_max hi, domain_max lo)`.
+    size_domain: [f32; 4],
+    /// `(min_px, max_px, 0, 0)`, logical pixels.
+    size_px: [f32; 4],
 }
 
 #[repr(C)]
@@ -673,7 +704,7 @@ struct PickCandidateGpu {
     _pad: u32,
 }
 
-const _: () = assert!(std::mem::size_of::<PickQueryParamsGpu>() == 240);
+const _: () = assert!(std::mem::size_of::<PickQueryParamsGpu>() == 288);
 const _: () = assert!(std::mem::size_of::<PickCandidateGpu>() == CANDIDATE_BYTES as usize);
 
 #[derive(Clone)]
@@ -714,6 +745,13 @@ struct PickSeriesGpu {
     x_allocation_epoch: u64,
     y_allocation_epoch: u64,
     style_index_allocation_epoch: Option<u64>,
+    size_column: Option<ColumnId>,
+    size_handle: Option<ColumnHandle>,
+    size_allocation_epoch: Option<u64>,
+    size_base: u32,
+    size_len: u32,
+    size_domain: [f32; 4],
+    size_px: [f32; 2],
     query_params: wgpu::Buffer,
     gate_masks: wgpu::Buffer,
     workgroup_candidates: wgpu::Buffer,
@@ -1201,6 +1239,11 @@ fn gpu_meta_u32(v: f32) -> Option<u32> {
 fn style_max_extent(series_id: &str, scatter: &GpuPickScatter<'_>) -> Result<f32, GpuPickError> {
     let mut maximum_radius = nonnegative(scatter.base_radius_px);
     let mut maximum_scale = shape_scale(scatter.base_shape_id);
+    // A size map clamps to its pixel range, so `max_px` bounds every mapped
+    // radius; an override row may still exceed it and is visited below.
+    if let Some(size_map) = scatter.size_map.as_ref() {
+        maximum_radius = maximum_radius.max(nonnegative(size_map.max_px));
+    }
     let Some(map) = scatter.style_map.as_ref() else {
         return Ok(maximum_radius * maximum_scale);
     };
@@ -1559,6 +1602,15 @@ impl GpuPickEngine {
                     .ok_or_else(|| GpuPickError::MissingColumn(id.clone()))
             })
             .transpose()?;
+        let size_value_handle = descriptor
+            .scatter
+            .as_ref()
+            .and_then(|scatter| scatter.size_map.as_ref())
+            .map(|map| {
+                pool.handle_for(&map.column)
+                    .ok_or_else(|| GpuPickError::MissingColumn(map.column.clone()))
+            })
+            .transpose()?;
         self.prepare_series_buffer(
             pool.buffer(),
             descriptor,
@@ -1566,6 +1618,7 @@ impl GpuPickEngine {
                 x: x_handle,
                 y: y_handle,
                 style_index: style_index_handle,
+                size_value: size_value_handle,
             },
             Some(pool),
         )
@@ -1588,9 +1641,14 @@ impl GpuPickEngine {
         }
         let x_handle = columns.x;
         let y_handle = columns.y;
-        for handle in [Some(x_handle), Some(y_handle), columns.style_index]
-            .into_iter()
-            .flatten()
+        for handle in [
+            Some(x_handle),
+            Some(y_handle),
+            columns.style_index,
+            columns.size_value,
+        ]
+        .into_iter()
+        .flatten()
         {
             validate_stream_handle(buffer, handle)?;
         }
@@ -1620,6 +1678,13 @@ impl GpuPickEngine {
         let mut style_index_allocation_epoch = None;
         let mut style_index_base = 0u32;
         let mut style_index_len = 0u32;
+        let mut size_column = None;
+        let mut size_handle = None;
+        let mut size_allocation_epoch = None;
+        let mut size_base = 0u32;
+        let mut size_len = 0u32;
+        let mut size_domain = [0.0f32; 4];
+        let mut size_px = [0.0f32; 2];
 
         let dummy_slot = [ScatterStyleSlotGpu {
             color_premul: [0.0; 4],
@@ -1663,6 +1728,27 @@ impl GpuPickEngine {
                     style_index_handle = Some(handle);
                     style_index_allocation_epoch = Some(allocation_epoch);
                 }
+            }
+            if let Some(size_map) = scatter.size_map.as_ref() {
+                flags |= FLAG_SIZE_MAP;
+                if size_map.area {
+                    flags |= FLAG_SIZE_AREA;
+                }
+                let handle = columns
+                    .size_value
+                    .ok_or_else(|| GpuPickError::MissingColumn(size_map.column.clone()))?;
+                let allocation_epoch = resident
+                    .and_then(|pool| pool.allocation_epoch(&size_map.column))
+                    .unwrap_or(0);
+                size_base = lane_base(handle, &descriptor.series_id)?;
+                size_len = u32::try_from(handle.len_values).unwrap_or(u32::MAX);
+                size_column = Some(size_map.column.clone());
+                size_handle = Some(handle);
+                size_allocation_epoch = Some(allocation_epoch);
+                let (min_hi, min_lo) = crate::data::split_f64_to_f32_pair(size_map.domain_min);
+                let (max_hi, max_lo) = crate::data::split_f64_to_f32_pair(size_map.domain_max);
+                size_domain = [min_hi, min_lo, max_hi, max_lo];
+                size_px = [nonnegative(size_map.min_px), nonnegative(size_map.max_px)];
             }
         }
 
@@ -1875,6 +1961,13 @@ impl GpuPickEngine {
                 x_allocation_epoch,
                 y_allocation_epoch,
                 style_index_allocation_epoch,
+                size_column,
+                size_handle,
+                size_allocation_epoch,
+                size_base,
+                size_len,
+                size_domain,
+                size_px,
                 query_params,
                 gate_masks,
                 workgroup_candidates,
@@ -1988,13 +2081,34 @@ impl GpuPickEngine {
                 (None, 0, 0)
             };
 
+        let (size_handle, size_base, size_len) = if let Some(id) = series.size_column.as_ref() {
+            let expected = series.size_handle.ok_or(GpuPickError::InvalidGpuResult)?;
+            let expected_epoch = series
+                .size_allocation_epoch
+                .ok_or(GpuPickError::InvalidGpuResult)?;
+            let current = relocated(id, expected, expected_epoch)?;
+            let base = lane_base(current, next_series_id)?;
+            let len =
+                u32::try_from(current.len_values).map_err(|_| GpuPickError::TooManyValues {
+                    series_id: next_series_id.to_owned(),
+                    count: current.len_values,
+                })?;
+            (Some(current), base, len)
+        } else {
+            (None, 0, 0)
+        };
+
         let storage_unchanged = pool.layout_generation() == series.pool_layout_generation
             && same_storage(x_handle, series.x_handle)
             && same_storage(y_handle, series.y_handle)
             && style_index_handle
                 .zip(series.style_index_handle)
                 .is_none_or(|(current, expected)| same_storage(current, expected))
-            && style_index_handle.is_some() == series.style_index_handle.is_some();
+            && style_index_handle.is_some() == series.style_index_handle.is_some()
+            && size_handle
+                .zip(series.size_handle)
+                .is_none_or(|(current, expected)| same_storage(current, expected))
+            && size_handle.is_some() == series.size_handle.is_some();
         if storage_unchanged {
             return Ok(series.clone());
         }
@@ -2030,6 +2144,9 @@ impl GpuPickEngine {
         rebound.pool_layout_generation = pool.layout_generation();
         rebound.style_index_base = style_index_base;
         rebound.style_index_len = style_index_len;
+        rebound.size_handle = size_handle;
+        rebound.size_base = size_base;
+        rebound.size_len = size_len;
         rebound.query_data_bg = query_data_bg;
         Ok(rebound)
     }
@@ -2312,11 +2429,21 @@ impl GpuPickEngine {
                 });
             }
         }
-        if let (Some(id), Some(expected), Some(expected_epoch)) = (
-            series.style_index_column.as_ref(),
-            series.style_index_handle,
-            series.style_index_allocation_epoch,
-        ) {
+        for (id, expected, expected_epoch) in [
+            (
+                series.style_index_column.as_ref(),
+                series.style_index_handle,
+                series.style_index_allocation_epoch,
+            ),
+            (
+                series.size_column.as_ref(),
+                series.size_handle,
+                series.size_allocation_epoch,
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(id, expected, epoch)| Some((id?, expected?, epoch?)))
+        {
             let Some(current) = pool.handle_for(id) else {
                 return Err(GpuPickError::StaleColumn {
                     series_id: slot.identity.series_id.clone(),
@@ -2446,6 +2573,9 @@ impl GpuPickEngine {
                     0,
                 ],
                 line: [series.line_step_mode, 0, 0, 0],
+                size_map: [series.size_base, series.size_len, 0, 0],
+                size_domain: series.size_domain,
+                size_px: [series.size_px[0], series.size_px[1], 0.0, 0.0],
             };
             self.bundle
                 .queue
@@ -2900,6 +3030,7 @@ mod tests {
                 base_radius_px: 2.0,
                 base_shape_id: 0,
                 style_map: None,
+                size_map: None,
             }),
             line_width_px: None,
             line_interpolation: crate::data_config::LineInterpolation::Linear,
@@ -3160,6 +3291,7 @@ mod tests {
                         _pad: 0,
                     },
                 }),
+                size_map: None,
             }),
             line_width_px: Some(2.0),
             line_interpolation: crate::data_config::LineInterpolation::Linear,
@@ -3276,6 +3408,7 @@ mod tests {
                                             x: handle(0),
                                             y: handle(1),
                                             style_index: scatter.then(|| handle(2)),
+                                            size_value: None,
                                         },
                                         order as u32,
                                         start as u32,
@@ -3341,6 +3474,7 @@ mod tests {
                 len_values: count,
             },
             style_index: None,
+            size_value: None,
         };
         let bundle = PickPipelineBundle::new_observed(
             Arc::clone(&device),
@@ -3371,6 +3505,7 @@ mod tests {
                     base_radius_px: 2.0,
                     base_shape_id: 0,
                     style_map: None,
+                    size_map: None,
                 }),
                 line_width_px: line.then_some(0.0),
                 line_interpolation: crate::data_config::LineInterpolation::Linear,
@@ -3776,6 +3911,7 @@ mod tests {
                                 _pad: 0,
                             },
                         }),
+                        size_map: None,
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
@@ -3796,6 +3932,108 @@ mod tests {
         let cpu = cpu_pick(&config, &cpu_series, &cpu_columns, cursor, 0.0);
         let gpu = resolve_pick(&engine, &pool, query_from_config(&config, cursor, 0.0));
         assert_pick_parity(cpu, gpu);
+    }
+
+    /// A `point_size_map` resolves each point's pick radius from its value on
+    /// both pickers: the domain ends map to `min_px` / `max_px`, and a
+    /// non-finite value hides the point from both.
+    #[test]
+    fn size_map_radius_parity_between_cpu_and_gpu_pickers() {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let config = parity_config(200, 100, (0.0, 20.0), (0.0, 10.0));
+        let xs = [2.0, 10.0, 18.0];
+        let ys = [5.0, 5.0, 5.0];
+        let sizes = [0.0, 10.0, f32::NAN];
+        let cpu_columns = CpuColumns::new(&[("size-x", &xs), ("size-y", &ys), ("size-s", &sizes)]);
+
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            64 * 1024,
+        )
+        .unwrap();
+        for (id, values) in [
+            ("size-x", xs.as_slice()),
+            ("size-y", ys.as_slice()),
+            ("size-s", sizes.as_slice()),
+        ] {
+            pool.add_column(
+                id.into(),
+                &f32_column(values.to_vec()),
+                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            )
+            .unwrap();
+        }
+
+        let size_map = crate::data_config::PointSizeMap {
+            column: "size-s".into(),
+            domain_min: 0.0,
+            domain_max: 10.0,
+            min_px: 1.0,
+            max_px: 5.0,
+            scale: crate::data_config::SizeScale::Radius,
+        };
+        let scatter = DataScatterStyleConfig {
+            point_color: Color::BLACK,
+            point_shape: ScatterShape::Circle,
+            point_size: 3.0,
+            point_style_table: None,
+            point_style_index_column: None,
+            point_style_overrides: None,
+            point_color_map: None,
+            point_size_map: Some(size_map.clone()),
+        };
+        let cpu_series = [scatter_series("sized", None, "size-x", "size-y", scatter)];
+        let mut engine = GpuPickEngine::new(device, queue).unwrap();
+        engine
+            .add_series(
+                &pool,
+                GpuPickSeriesDescriptor {
+                    source_id: None,
+                    series_id: "sized".into(),
+                    x_column: "size-x".into(),
+                    y_column: "size-y".into(),
+                    scatter: Some(GpuPickScatter {
+                        base_radius_px: 3.0,
+                        base_shape_id: crate::data_render::shape_id(&ScatterShape::Circle),
+                        style_map: None,
+                        size_map: Some(GpuPickSizeMap {
+                            column: size_map.column.clone(),
+                            domain_min: size_map.domain_min,
+                            domain_max: size_map.domain_max,
+                            min_px: size_map.min_px,
+                            max_px: size_map.max_px,
+                            area: false,
+                        }),
+                    }),
+                    line_width_px: None,
+                    line_interpolation: crate::data_config::LineInterpolation::Linear,
+                },
+            )
+            .unwrap();
+
+        // Point 0 at 20 px with a 1 px radius, point 1 at 100 px with 5 px.
+        for (cursor, expected) in [
+            ([21.5, 50.0], Some((0, 0.5))),
+            ([24.5, 50.0], None),
+            ([106.0, 50.0], Some((1, 1.0))),
+            ([107.5, 50.0], None),
+            // Point 2 is hidden by its NaN size: nothing to hit at its center.
+            ([180.0, 50.0], None),
+        ] {
+            let cpu = cpu_pick(&config, &cpu_series, &cpu_columns, cursor, 1.0);
+            let gpu = resolve_pick(&engine, &pool, query_from_config(&config, cursor, 1.0));
+            assert_pick_parity(cpu.clone(), gpu);
+            match expected {
+                Some((index, distance)) => {
+                    let cpu = cpu.expect("a hit");
+                    assert_eq!(cpu.point_index, index);
+                    assert!((cpu.distance_px - distance).abs() < 1e-3);
+                }
+                None => assert!(cpu.is_none(), "unexpected hit at {cursor:?}: {cpu:?}"),
+            }
+        }
     }
 
     #[test]
@@ -3862,6 +4100,7 @@ mod tests {
                         base_radius_px: 4.0,
                         base_shape_id: crate::data_render::shape_id(&ScatterShape::Circle),
                         style_map: None,
+                        size_map: None,
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
@@ -3890,6 +4129,7 @@ mod tests {
                                 _pad: 0,
                             },
                         }),
+                        size_map: None,
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
@@ -4175,6 +4415,7 @@ mod tests {
                         base_radius_px: 0.0001,
                         base_shape_id: 0,
                         style_map: None,
+                        size_map: None,
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
@@ -4253,6 +4494,7 @@ mod tests {
                         base_radius_px: 0.0001,
                         base_shape_id: 0,
                         style_map: None,
+                        size_map: None,
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
@@ -4355,6 +4597,7 @@ mod tests {
                         base_radius_px: 2.0,
                         base_shape_id: crate::data_render::shape_id(&ScatterShape::Circle),
                         style_map: None,
+                        size_map: None,
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
@@ -4676,6 +4919,7 @@ mod tests {
                         base_radius_px: 20.0,
                         base_shape_id: crate::data_render::shape_id(&ScatterShape::Circle),
                         style_map: None,
+                        size_map: None,
                     }),
                     line_width_px: Some(0.0),
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
@@ -4710,6 +4954,7 @@ mod tests {
                         base_radius_px: 1.0,
                         base_shape_id: crate::data_render::shape_id(&ScatterShape::Circle),
                         style_map: None,
+                        size_map: None,
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
@@ -4767,6 +5012,7 @@ mod tests {
                         base_radius_px: 1.0,
                         base_shape_id: crate::data_render::shape_id(&ScatterShape::Circle),
                         style_map: None,
+                        size_map: None,
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
@@ -5381,6 +5627,7 @@ mod tests {
                                 _pad: 0,
                             },
                         }),
+                        size_map: None,
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
@@ -5557,6 +5804,7 @@ mod tests {
                     _pad: 0,
                 },
             }),
+            size_map: None,
         };
         let extent = style_max_extent("s", &scatter).unwrap();
         assert_eq!(extent, 10.0 * MAX_SHAPE_SCALE);

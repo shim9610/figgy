@@ -44,6 +44,7 @@ use crate::data_config::{
     DataBarBinStyleConfig, DataBarStyleConfig, DataErrorBarPointStyleConfig,
     DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterPointStyleConfig,
     DataScatterStyleConfig, ErrorRef, LineFill, LineInterpolation, ScatterShape, SeriesConfig,
+    SizeScale,
 };
 use crate::data_render::{
     self, AxisLayer, ColumnBarSelectionLayer, ColumnErrorBarDraw, ColumnFieldSelectionLayer,
@@ -446,6 +447,35 @@ struct ContourScratchEntry {
 
 /// Per-series field scratch cache limit, mirroring `ARC_PREFIX_CACHE_LIMIT`.
 const FIELD_SCRATCH_CACHE_LIMIT: usize = 256;
+
+/// Per-series point value-map scratch cache limit, mirroring the field limit.
+const VALUE_MAP_SCRATCH_CACHE_LIMIT: usize = 256;
+
+/// What a cached point value-map bind group (group 3) was built from: the
+/// params uniform, compared by its bytes so a NaN `nan_color` still compares
+/// equal to itself, and the colourbar's colormap (SSOT config, copied). Equality
+/// means the cached bind group is still exactly right, so a prepare that
+/// changes nothing uploads nothing — the same contract as [`FieldSignature`].
+#[derive(Debug)]
+struct ValueMapSignature {
+    params: data_render::PointValueMapParamsGpu,
+    colormap: Option<crate::colormap::ColorMap>,
+}
+
+impl PartialEq for ValueMapSignature {
+    fn eq(&self, other: &Self) -> bool {
+        bytemuck::bytes_of(&self.params) == bytemuck::bytes_of(&other.params)
+            && self.colormap == other.colormap
+    }
+}
+
+/// One scatter series' resolved value-map state: the group-3 bind group of
+/// the mapped scatter and pick-ring pipelines.
+struct ValueMapScratch {
+    signature: ValueMapSignature,
+    bind_group: wgpu::BindGroup,
+    _charge: crate::gpu_memory::SharedCharge,
+}
 
 /// The grid columns a prepared field or contour read, and the allocation epochs
 /// they had.
@@ -1013,11 +1043,24 @@ enum PickStyleMappingSignature {
     Precise(PickPreciseStyleMappingSignature),
 }
 
+/// A `point_size_map` as the pick plan compares it: the column and the
+/// explicit mapping, by bits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PickSizeMapSignature {
+    column: ColumnId,
+    domain_min_bits: u64,
+    domain_max_bits: u64,
+    min_px_bits: u32,
+    max_px_bits: u32,
+    area: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PickScatterSignature {
     base_radius_bits: u32,
     base_shape_id: u32,
     style_mapping: PickStyleMappingSignature,
+    size_map: Option<PickSizeMapSignature>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1040,7 +1083,10 @@ impl PickResourceSignature {
                     &scatter.style_mapping,
                     PickStyleMappingSignature::Precise(mapping)
                         if mapping.style_index_column.as_deref() == Some(id)
-                )
+                ) || scatter
+                    .size_map
+                    .as_ref()
+                    .is_some_and(|size_map| size_map.column == id)
             })
     }
 
@@ -1080,6 +1126,7 @@ struct OwnedGpuPickScatter {
     style_slots: Vec<data_render::ScatterStyleSlotGpu>,
     style_overrides: Vec<data_render::ScatterStyleOverrideGpu>,
     style_meta: Option<data_render::ScatterStyleMapMeta>,
+    size_map: Option<crate::gpu_pick::GpuPickSizeMap>,
 }
 
 impl OwnedGpuPickScatter {
@@ -1095,6 +1142,7 @@ impl OwnedGpuPickScatter {
                     style_overrides: &self.style_overrides,
                     style_meta,
                 }),
+            size_map: self.size_map.clone(),
         }
     }
 }
@@ -1276,6 +1324,24 @@ impl PickChartPlan {
                     } else {
                         PickStyleMappingSignature::Inactive
                     };
+                    let size_map = scatter.point_size_map.as_ref().map(|map| {
+                        crate::gpu_pick::GpuPickSizeMap {
+                            column: map.column.clone(),
+                            domain_min: map.domain_min,
+                            domain_max: map.domain_max,
+                            min_px: map.min_px,
+                            max_px: map.max_px,
+                            area: matches!(map.scale, SizeScale::Area),
+                        }
+                    });
+                    let size_map_signature = size_map.as_ref().map(|map| PickSizeMapSignature {
+                        column: map.column.clone(),
+                        domain_min_bits: map.domain_min.to_bits(),
+                        domain_max_bits: map.domain_max.to_bits(),
+                        min_px_bits: map.min_px.to_bits(),
+                        max_px_bits: map.max_px.to_bits(),
+                        area: map.area,
+                    });
                     (
                         Some(OwnedGpuPickScatter {
                             base_radius_px,
@@ -1284,11 +1350,13 @@ impl PickChartPlan {
                             style_slots,
                             style_overrides,
                             style_meta,
+                            size_map,
                         }),
                         Some(PickScatterSignature {
                             base_radius_bits: base_radius_px.to_bits(),
                             base_shape_id,
                             style_mapping,
+                            size_map: size_map_signature,
                         }),
                     )
                 } else {
@@ -1300,11 +1368,13 @@ impl PickChartPlan {
                             style_slots: Vec::new(),
                             style_overrides: Vec::new(),
                             style_meta: None,
+                            size_map: None,
                         }),
                         Some(PickScatterSignature {
                             base_radius_bits: base_radius_px.to_bits(),
                             base_shape_id,
                             style_mapping: PickStyleMappingSignature::Inactive,
+                            size_map: None,
                         }),
                     )
                 }
@@ -2034,11 +2104,14 @@ struct PreparedScatterLayer {
     transform_bg: wgpu::BindGroup,
     style_bg: wgpu::BindGroup,
     style_map_bg: Option<wgpu::BindGroup>,
+    value_map_bg: Option<wgpu::BindGroup>,
     quad_vb: wgpu::Buffer,
     pool_buffer: wgpu::Buffer,
     x: ColumnHandle,
     y: ColumnHandle,
     style_index: Option<ColumnHandle>,
+    color_value: Option<ColumnHandle>,
+    size_value: Option<ColumnHandle>,
     texture_bg: Option<wgpu::BindGroup>,
 }
 
@@ -2047,11 +2120,14 @@ struct PreparedPickRingLayer {
     transform_bg: wgpu::BindGroup,
     style_bg: wgpu::BindGroup,
     style_map_bg: Option<wgpu::BindGroup>,
+    value_map_bg: Option<wgpu::BindGroup>,
     quad_vb: wgpu::Buffer,
     pool_buffer: wgpu::Buffer,
     x: ColumnHandle,
     y: ColumnHandle,
     style_index: Option<ColumnHandle>,
+    color_value: Option<ColumnHandle>,
+    size_value: Option<ColumnHandle>,
     instance: u32,
 }
 
@@ -2383,11 +2459,14 @@ impl PreparedSeries {
                 transform_bg: layer.transform_bg.clone(),
                 style_bg: layer.style_bg.clone(),
                 style_map_bg: layer.style_map_bg.cloned(),
+                value_map_bg: layer.value_map_bg.cloned(),
                 quad_vb: layer.quad_vb.clone(),
                 pool_buffer: layer.pool_buffer.clone(),
                 x: layer.x,
                 y: layer.y,
                 style_index: layer.style_index,
+                color_value: layer.color_value,
+                size_value: layer.size_value,
                 texture_bg: layer.texture_bg.cloned(),
             }),
             selected_bars: layers
@@ -2426,11 +2505,14 @@ impl PreparedSeries {
                     transform_bg: layer.transform_bg.clone(),
                     style_bg: layer.style_bg,
                     style_map_bg: layer.style_map_bg.cloned(),
+                    value_map_bg: layer.value_map_bg.cloned(),
                     quad_vb: layer.quad_vb.clone(),
                     pool_buffer: layer.pool_buffer.clone(),
                     x: layer.x,
                     y: layer.y,
                     style_index: layer.style_index,
+                    color_value: layer.color_value,
+                    size_value: layer.size_value,
                     instance: layer.instance,
                 })
                 .collect(),
@@ -2532,11 +2614,14 @@ impl PreparedSeries {
                 transform_bg: &layer.transform_bg,
                 style_bg: &layer.style_bg,
                 style_map_bg: layer.style_map_bg.as_ref(),
+                value_map_bg: layer.value_map_bg.as_ref(),
                 quad_vb: &layer.quad_vb,
                 pool_buffer: &layer.pool_buffer,
                 x: layer.x,
                 y: layer.y,
                 style_index: layer.style_index,
+                color_value: layer.color_value,
+                size_value: layer.size_value,
                 texture_bg: layer.texture_bg.as_ref(),
             }),
             selected_bars: self
@@ -2575,11 +2660,14 @@ impl PreparedSeries {
                     transform_bg: &layer.transform_bg,
                     style_bg: layer.style_bg.clone(),
                     style_map_bg: layer.style_map_bg.as_ref(),
+                    value_map_bg: layer.value_map_bg.as_ref(),
                     quad_vb: &layer.quad_vb,
                     pool_buffer: &layer.pool_buffer,
                     x: layer.x,
                     y: layer.y,
                     style_index: layer.style_index,
+                    color_value: layer.color_value,
+                    size_value: layer.size_value,
                     instance: layer.instance,
                 })
                 .collect(),
@@ -2752,6 +2840,13 @@ pub struct Renderer {
     transform_bgl: wgpu::BindGroupLayout,
     style_bgl: wgpu::BindGroupLayout,
     per_point_style_map_bgl: wgpu::BindGroupLayout,
+    /// Group 3 of the mapped scatter pipelines: a scatter series' continuous
+    /// value maps (`point_color_map` / `point_size_map`).
+    point_value_map_bgl: wgpu::BindGroupLayout,
+    /// The value-map group bound for a mapped scatter series that has no value
+    /// map: every flag clear, so the shader reads nothing from it.
+    neutral_point_value_map_bg: wgpu::BindGroup,
+    _neutral_point_value_map_charge: crate::gpu_memory::SharedCharge,
     data_selection_bgl: wgpu::BindGroupLayout,
     /// Constellation star-pass data layout (arc prefix + pool + offsets) —
     /// shared by the stars pipeline and every per-series star bind group.
@@ -2793,6 +2888,10 @@ pub struct Renderer {
     /// its [`FieldSignature`] changes; a live token holds its own refcounted
     /// clone of the bind group, so replacement disturbs nothing it can draw.
     field_cache: HashMap<String, FieldScratch>,
+    /// Per-scatter-series value-map state (group 3), keyed by `series_id`.
+    /// Rebuilt only when its [`ValueMapSignature`] changes; a live token holds
+    /// its own refcounted clone of the bind group, like `field_cache`.
+    value_map_cache: HashMap<String, ValueMapScratch>,
     arc_pipelines: Option<data_render::line_arc::ArcScanPipelines>,
     /// Test-only narrowing of the arc-scan chunk size so the multi-chunk
     /// carry path is exercisable with small `n`. Always `None` in release.
@@ -3849,6 +3948,7 @@ impl TargetPipelines {
         transform_bgl: &wgpu::BindGroupLayout,
         style_bgl: &wgpu::BindGroupLayout,
         per_point_style_map_bgl: &wgpu::BindGroupLayout,
+        point_value_map_bgl: &wgpu::BindGroupLayout,
         data_selection_bgl: &wgpu::BindGroupLayout,
         field_bgl: &wgpu::BindGroupLayout,
         label_pipelines: Option<&crate::gpu_contour::ContourLabelPipelines>,
@@ -4105,6 +4205,7 @@ impl TargetPipelines {
                     transform_bgl,
                     style_bgl,
                     per_point_style_map_bgl,
+                    point_value_map_bgl,
                     surface_format,
                     self.sample_count,
                     "vs_mapped",
@@ -4134,6 +4235,7 @@ impl TargetPipelines {
                     transform_bgl,
                     style_bgl,
                     per_point_style_map_bgl,
+                    point_value_map_bgl,
                     surface_format,
                     self.sample_count,
                     "vs_pick_ring_mapped",
@@ -4169,6 +4271,7 @@ impl TargetPipelines {
         transform_bgl: &wgpu::BindGroupLayout,
         style_bgl: &wgpu::BindGroupLayout,
         per_point_style_map_bgl: &wgpu::BindGroupLayout,
+        point_value_map_bgl: &wgpu::BindGroupLayout,
         data_selection_bgl: &wgpu::BindGroupLayout,
         field_bgl: &wgpu::BindGroupLayout,
         star_data_bgl: &wgpu::BindGroupLayout,
@@ -4246,6 +4349,7 @@ impl TargetPipelines {
                 transform_bgl,
                 style_bgl,
                 per_point_style_map_bgl,
+                point_value_map_bgl,
                 surface_format,
                 self.sample_count,
                 "vs_mapped",
@@ -4277,6 +4381,7 @@ impl TargetPipelines {
                 transform_bgl,
                 style_bgl,
                 per_point_style_map_bgl,
+                point_value_map_bgl,
                 surface_format,
                 self.sample_count,
                 "vs_pick_ring_mapped",
@@ -5044,10 +5149,16 @@ fn visit_error_ref_columns(error: &ErrorRef, visit: &mut impl FnMut(&str)) {
 fn visit_series_columns(series: &SeriesConfig, visit: &mut impl FnMut(&str)) {
     visit(&series.x_column);
     visit(&series.y_column);
-    if let Some(column) = extract_scatter(&series.render_type)
-        .and_then(|scatter| scatter.point_style_index_column.as_deref())
-    {
-        visit(column);
+    if let Some(scatter) = extract_scatter(&series.render_type) {
+        if let Some(column) = scatter.point_style_index_column.as_deref() {
+            visit(column);
+        }
+        if let Some(map) = scatter.point_color_map.as_ref() {
+            visit(&map.column);
+        }
+        if let Some(map) = scatter.point_size_map.as_ref() {
+            visit(&map.column);
+        }
     }
     if let Some(column) = extract_errorbar_style(&series.render_type)
         .and_then(|errorbar| errorbar.error_bar_style_index_column.as_deref())
@@ -5114,10 +5225,29 @@ fn validate_renderer_series(
 
         validate_registered_column(pool, &item.x_column)?;
         validate_registered_column(pool, &item.y_column)?;
-        if let Some(scatter) = extract_scatter(&item.render_type)
-            && let Some(column) = scatter.point_style_index_column.as_deref()
-        {
-            validate_registered_column(pool, column)?;
+        if let Some(scatter) = extract_scatter(&item.render_type) {
+            if let Some(column) = scatter.point_style_index_column.as_deref() {
+                validate_registered_column(pool, column)?;
+            }
+            if let Some(map) = scatter.point_color_map.as_ref() {
+                validate_registered_column(pool, &map.column)?;
+                if config.colorbar.is_none() {
+                    return Err(FiggyError::InvalidSeriesConfig {
+                        series_id: item.series_id.clone(),
+                        reason: "a colour-mapped scatter needs Config.colorbar: it owns the z \
+                                 range and colormap, so without it there is no colour to draw"
+                            .to_string(),
+                    });
+                }
+            }
+            if let Some(map) = scatter.point_size_map.as_ref() {
+                validate_registered_column(pool, &map.column)?;
+                map.validate()
+                    .map_err(|reason| FiggyError::InvalidSeriesConfig {
+                        series_id: item.series_id.clone(),
+                        reason: reason.to_string(),
+                    })?;
+            }
         }
         if let Some(errorbar) = extract_errorbar_style(&item.render_type)
             && let Some(column) = errorbar.error_bar_style_index_column.as_deref()
@@ -5728,6 +5858,15 @@ impl Renderer {
         let style_bgl = data_render::create_style_bind_group_layout(&device);
         let per_point_style_map_bgl =
             data_render::create_per_point_style_map_bind_group_layout(&device);
+        let point_value_map_bgl = data_render::create_point_value_map_bind_group_layout(&device);
+        let (neutral_point_value_map_bg, neutral_point_value_map_charge) =
+            data_render::create_point_value_map_bind_group(
+                &device,
+                &gpu_ledger,
+                &point_value_map_bgl,
+                &data_render::PointValueMapParamsGpu::NEUTRAL,
+                &[],
+            );
         let data_selection_bgl = data_render::create_data_selection_bind_group_layout(&device);
         let star_data_bgl = data_render::create_star_data_bind_group_layout(&device);
         let field_bgl = data_render::create_field_data_bind_group_layout(&device);
@@ -5780,6 +5919,9 @@ impl Renderer {
             transform_bgl,
             style_bgl,
             per_point_style_map_bgl,
+            point_value_map_bgl,
+            neutral_point_value_map_bg,
+            _neutral_point_value_map_charge: neutral_point_value_map_charge,
             data_selection_bgl,
             star_data_bgl,
             field_bgl,
@@ -5788,6 +5930,7 @@ impl Renderer {
             quad_vb,
             arc_cache: HashMap::new(),
             field_cache: HashMap::new(),
+            value_map_cache: HashMap::new(),
             contour_label_pipelines: None,
             contour_cache: HashMap::new(),
             arc_pipelines: None,
@@ -5849,6 +5992,15 @@ impl Renderer {
         let style_bgl = data_render::create_style_bind_group_layout(&device);
         let per_point_style_map_bgl =
             data_render::create_per_point_style_map_bind_group_layout(&device);
+        let point_value_map_bgl = data_render::create_point_value_map_bind_group_layout(&device);
+        let (neutral_point_value_map_bg, neutral_point_value_map_charge) =
+            data_render::create_point_value_map_bind_group(
+                &device,
+                &gpu_ledger,
+                &point_value_map_bgl,
+                &data_render::PointValueMapParamsGpu::NEUTRAL,
+                &[],
+            );
         let data_selection_bgl = data_render::create_data_selection_bind_group_layout(&device);
         let star_data_bgl = data_render::create_star_data_bind_group_layout(&device);
         let field_bgl = data_render::create_field_data_bind_group_layout(&device);
@@ -5901,6 +6053,9 @@ impl Renderer {
             transform_bgl,
             style_bgl,
             per_point_style_map_bgl,
+            point_value_map_bgl,
+            neutral_point_value_map_bg,
+            _neutral_point_value_map_charge: neutral_point_value_map_charge,
             data_selection_bgl,
             star_data_bgl,
             field_bgl,
@@ -5909,6 +6064,7 @@ impl Renderer {
             quad_vb,
             arc_cache: HashMap::new(),
             field_cache: HashMap::new(),
+            value_map_cache: HashMap::new(),
             contour_label_pipelines: None,
             contour_cache: HashMap::new(),
             arc_pipelines: None,
@@ -7801,6 +7957,7 @@ impl Renderer {
                     &self.transform_bgl,
                     &self.style_bgl,
                     &self.per_point_style_map_bgl,
+                    &self.point_value_map_bgl,
                     surface_format,
                     target_sample_count,
                     "vs_mapped",
@@ -7831,6 +7988,7 @@ impl Renderer {
                     &self.transform_bgl,
                     &self.style_bgl,
                     &self.per_point_style_map_bgl,
+                    &self.point_value_map_bgl,
                     surface_format,
                     target_sample_count,
                     "vs_pick_ring_mapped",
@@ -7981,6 +8139,7 @@ impl Renderer {
                 &self.transform_bgl,
                 &self.style_bgl,
                 &self.per_point_style_map_bgl,
+                &self.point_value_map_bgl,
                 &self.data_selection_bgl,
                 &self.field_bgl,
                 &self.star_data_bgl,
@@ -10112,7 +10271,12 @@ impl Renderer {
                     .filter(|row| u32::try_from(row.index).is_ok())
                     .count()
             });
-            if sc.point_style_index_column.is_some() || slots != 0 || overrides != 0 {
+            if sc.point_style_index_column.is_some()
+                || slots != 0
+                || overrides != 0
+                || sc.point_color_map.is_some()
+                || sc.point_size_map.is_some()
+            {
                 add_map(
                     slots,
                     std::mem::size_of::<data_render::ScatterStyleSlotGpu>() as u64,
@@ -10237,7 +10401,10 @@ impl Renderer {
             })
             .collect();
 
-        if !has_index && style_slots.is_empty() && overrides.is_empty() {
+        // A continuous value map resolves in the mapped entries too: it needs
+        // the per-point path even when no table or override exists.
+        let has_value_map = scatter.point_color_map.is_some() || scatter.point_size_map.is_some();
+        if !has_index && style_slots.is_empty() && overrides.is_empty() && !has_value_map {
             return None;
         }
         Some(data_render::create_scatter_style_map(
@@ -10891,12 +11058,15 @@ impl Renderer {
                 field_bgl: &self.field_bgl,
                 transform_bgl: &self.transform_bgl,
                 per_point_style_map_bgl: &self.per_point_style_map_bgl,
+                point_value_map_bgl: &self.point_value_map_bgl,
+                neutral_point_value_map_bg: &self.neutral_point_value_map_bg,
                 data_selection_bgl: &self.data_selection_bgl,
                 star_data_bgl: &self.star_data_bgl,
                 sampler: &self.sampler,
                 quad_vb: &self.quad_vb,
                 pipelines: &mut self.pipelines,
                 field_cache: &mut self.field_cache,
+                value_map_cache: &mut self.value_map_cache,
                 contour_cache: &mut self.contour_cache,
                 arc_cache: &mut self.arc_cache,
                 contour_label_pipelines: &mut self.contour_label_pipelines,
@@ -11388,6 +11558,16 @@ impl Renderer {
         items: &[ChartDrawItem<'_>],
     ) -> Result<Vec<Arc<GridSources>>> {
         self.preparation_parts().1.ensure_field_scratches(items)
+    }
+
+    fn ensure_value_map_scratches(
+        &mut self,
+        items: &[ChartDrawItem<'_>],
+        scale: f32,
+    ) -> Result<()> {
+        self.preparation_parts()
+            .1
+            .ensure_value_map_scratches(items, scale)
     }
 
     /// Build or reuse one field series' group-2 bind group.
@@ -11956,6 +12136,7 @@ impl Renderer {
             &self.transform_bgl,
             &self.style_bgl,
             &self.per_point_style_map_bgl,
+            &self.point_value_map_bgl,
             &self.data_selection_bgl,
             &self.field_bgl,
             self.contour_label_pipelines.as_ref(),
@@ -11974,6 +12155,7 @@ impl Renderer {
         // Export renders immediately rather than handing out a token, so the
         // receipts have nothing to be held for.
         let _ = self.ensure_field_scratches(items)?;
+        self.ensure_value_map_scratches(items, scale)?;
         let (prepared_contours, _) =
             self.ensure_contour_scratches(items, scale, &contour_spacings)?;
         let prepared_arcs = self.prepare_arc_items(items)?;
@@ -12564,12 +12746,15 @@ struct PrepareContext<'a> {
     field_bgl: &'a wgpu::BindGroupLayout,
     transform_bgl: &'a wgpu::BindGroupLayout,
     per_point_style_map_bgl: &'a wgpu::BindGroupLayout,
+    point_value_map_bgl: &'a wgpu::BindGroupLayout,
+    neutral_point_value_map_bg: &'a wgpu::BindGroup,
     data_selection_bgl: &'a wgpu::BindGroupLayout,
     star_data_bgl: &'a wgpu::BindGroupLayout,
     sampler: &'a wgpu::Sampler,
     quad_vb: &'a TrackedBuffer,
     pipelines: &'a mut TargetPipelines,
     field_cache: &'a mut HashMap<String, FieldScratch>,
+    value_map_cache: &'a mut HashMap<String, ValueMapScratch>,
     contour_cache: &'a mut HashMap<String, ContourScratchEntry>,
     arc_cache: &'a mut HashMap<String, Vec<ArcResultEntry>>,
     contour_label_pipelines: &'a mut Option<crate::gpu_contour::ContourLabelPipelines>,
@@ -12638,6 +12823,7 @@ impl PrepareContext<'_> {
             &self.transform_bgl,
             &self.style_bgl,
             &self.per_point_style_map_bgl,
+            self.point_value_map_bgl,
             &self.data_selection_bgl,
             &self.field_bgl,
             self.contour_label_pipelines.as_ref(),
@@ -12654,6 +12840,7 @@ impl PrepareContext<'_> {
             items,
         );
         let mut grid_sources = self.ensure_field_scratches(items)?;
+        self.ensure_value_map_scratches(items, 1.0)?;
         let (prepared_contours, mut contour_sources) =
             self.ensure_contour_scratches(items, 1.0, &contour_spacings)?;
         grid_sources.append(&mut contour_sources);
@@ -12692,6 +12879,131 @@ impl PrepareContext<'_> {
     /// `prepare_arc_items` and for the same reason: `build_series_layers` is
     /// `&self`, so anything that has to be built has to be built here. Returns
     /// the per-field source receipts in `items` order for the token to hold.
+    fn ensure_value_map_scratches(
+        &mut self,
+        items: &[ChartDrawItem<'_>],
+        scale: f32,
+    ) -> Result<()> {
+        for item in items {
+            if !item.chart_config.draw_style.is_precise() {
+                // Stylized draw styles ignore per-point style mappings, value
+                // maps included, exactly as the style table is ignored.
+                continue;
+            }
+            for series in item.series {
+                self.ensure_value_map_scratch(item.chart_config, series.config, scale)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Build or reuse one scatter series' value-map bind group (group 3).
+    ///
+    /// The value-map twin of `ensure_field_scratch`: the colourbar lives in
+    /// the chart `Config`, not in the series, so it has to be read here where
+    /// both are in hand, and `build_series_layers` is `&self`. Everything the
+    /// shader derives per point — the colour from the colourbar ramp, the radius
+    /// from the size domain — is computed on every draw from the value columns;
+    /// this uploads only the parameters and the ramp's control points, and only
+    /// when the signature changed. `scale` is the export DPI multiplier applied
+    /// to the size map's pixel range.
+    fn ensure_value_map_scratch(
+        &mut self,
+        chart_config: &Config,
+        cfg: &SeriesConfig,
+        scale: f32,
+    ) -> Result<()> {
+        let Some(scatter) = extract_scatter(&cfg.render_type) else {
+            return Ok(());
+        };
+        if scatter.point_color_map.is_none() && scatter.point_size_map.is_none() {
+            return Ok(());
+        }
+        let pair = |value: f64| {
+            let (hi, lo) = crate::data::split_f64_to_f32_pair(value);
+            [hi, lo]
+        };
+        let mut params = data_render::PointValueMapParamsGpu::NEUTRAL;
+        let mut colormap = None;
+        if scatter.point_color_map.is_some() {
+            let bar =
+                chart_config
+                    .colorbar
+                    .as_ref()
+                    .ok_or_else(|| FiggyError::InvalidSeriesConfig {
+                        series_id: cfg.series_id.clone(),
+                        reason: "a colour-mapped scatter needs Config.colorbar: it owns the z \
+                                 range and colormap"
+                            .into(),
+                    })?;
+            let log_z = matches!(bar.axis.scale, AxisScale::Logarithmic);
+            // Log bounds are taken here, in f64, as `ensure_field_scratch` does.
+            let bound = |value: f64| pair(if log_z { value.log10() } else { value });
+            params.z_min = bound(bar.axis.min);
+            params.z_max = bound(bar.axis.max);
+            params.flags |= data_render::VALUE_MAP_COLOR;
+            if log_z {
+                params.flags |= data_render::VALUE_MAP_LOG_Z;
+            }
+            params.stop_count = u32::try_from(bar.colormap.stops().len()).unwrap_or(u32::MAX);
+            let nan = bar.nan_color;
+            let alpha = nan.a.clamp(0.0, 1.0);
+            params.nan_color_premul = [nan.r * alpha, nan.g * alpha, nan.b * alpha, alpha];
+            colormap = Some(bar.colormap.clone());
+        }
+        if let Some(map) = scatter.point_size_map.as_ref() {
+            map.validate()
+                .map_err(|reason| FiggyError::InvalidSeriesConfig {
+                    series_id: cfg.series_id.clone(),
+                    reason: reason.into(),
+                })?;
+            params.size_domain_min = pair(map.domain_min);
+            params.size_domain_max = pair(map.domain_max);
+            params.size_px = [map.min_px * scale, map.max_px * scale];
+            params.flags |= data_render::VALUE_MAP_SIZE;
+            if matches!(map.scale, SizeScale::Area) {
+                params.flags |= data_render::VALUE_MAP_SIZE_AREA;
+            }
+        }
+        let signature = ValueMapSignature { params, colormap };
+        if let Some(scratch) = self.value_map_cache.get(cfg.series_id.as_str())
+            && scratch.signature == signature
+        {
+            return Ok(());
+        }
+        let stops: &[Color] = signature
+            .colormap
+            .as_ref()
+            .map_or(&[], |colormap| colormap.stops());
+        let (bind_group, charge) = data_render::create_point_value_map_bind_group(
+            &self.device,
+            &self.gpu_ledger,
+            &self.point_value_map_bgl,
+            &signature.params,
+            stops,
+        );
+        evict_if_full(
+            &mut self.value_map_cache,
+            cfg.series_id.as_str(),
+            VALUE_MAP_SCRATCH_CACHE_LIMIT,
+        );
+        self.value_map_cache
+            .try_reserve(1)
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "point value map scratch cache",
+                reason: error.to_string(),
+            })?;
+        self.value_map_cache.insert(
+            cfg.series_id.clone(),
+            ValueMapScratch {
+                signature,
+                bind_group,
+                _charge: charge,
+            },
+        );
+        Ok(())
+    }
+
     fn ensure_field_scratches(
         &mut self,
         items: &[ChartDrawItem<'_>],
@@ -13634,6 +13946,18 @@ impl PrepareContext<'_> {
                     .into(),
             });
         }
+        // The value maps read index-aligned columns on every draw; streaming
+        // is not extended to them.
+        if let Some(scatter) = extract_scatter(&series.render_type)
+            && (scatter.point_color_map.is_some() || scatter.point_size_map.is_some())
+        {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: "point colour and size maps require GPU-resident columns; streamed \
+                         sources are not supported"
+                    .into(),
+            });
+        }
         Ok(())
     }
 
@@ -13812,6 +14136,67 @@ impl PrepareContext<'_> {
         );
         prepared._column_charge = Some(chunk.work.shared_charge());
         Ok(prepared)
+    }
+
+    /// The value columns and group-3 bind group a mapped scatter draw binds.
+    ///
+    /// `None` everywhere when the series draws through the plain pipeline. With
+    /// a style map but no value map the renderer's neutral group is bound; with
+    /// a value map the columns are looked up and length-checked the way the
+    /// style-index column is, and the bind group is the one
+    /// `ensure_value_map_scratch` resolved.
+    #[allow(clippy::type_complexity)]
+    pub(super) fn scatter_value_map_columns<'a>(
+        &'a self,
+        cfg: &SeriesConfig,
+        mapped: bool,
+        count: usize,
+        lookup: &mut impl FnMut(&str) -> Result<ColumnHandle>,
+    ) -> Result<(
+        Option<ColumnHandle>,
+        Option<ColumnHandle>,
+        Option<&'a wgpu::BindGroup>,
+    )> {
+        if !mapped {
+            return Ok((None, None, None));
+        }
+        let scatter = extract_scatter(&cfg.render_type).expect("a mapped series has points");
+        if scatter.point_color_map.is_none() && scatter.point_size_map.is_none() {
+            return Ok((None, None, Some(self.neutral_point_value_map_bg)));
+        }
+        let mut value_column = |column: &ColumnId, what: &str| -> Result<ColumnHandle> {
+            let handle = lookup(column)?;
+            if handle.len_values < count {
+                return Err(FiggyError::InvalidSeriesConfig {
+                    series_id: cfg.series_id.clone(),
+                    reason: format!(
+                        "{what} column {column:?} has {} values, but scatter uses {count}",
+                        handle.len_values
+                    ),
+                });
+            }
+            Ok(handle)
+        };
+        let color_value = scatter
+            .point_color_map
+            .as_ref()
+            .map(|map| value_column(&map.column, "point colour map"))
+            .transpose()?;
+        let size_value = scatter
+            .point_size_map
+            .as_ref()
+            .map(|map| value_column(&map.column, "point size map"))
+            .transpose()?;
+        let scratch = self
+            .value_map_cache
+            .get(cfg.series_id.as_str())
+            .ok_or_else(|| FiggyError::InvalidSeriesConfig {
+                series_id: cfg.series_id.clone(),
+                reason: "point value maps require GPU-resident columns; streamed sources are \
+                         not supported"
+                    .into(),
+            })?;
+        Ok((color_value, size_value, Some(&scratch.bind_group)))
     }
 
     /// Column locations and their lifetime authority are resolved by the caller;
@@ -14206,6 +14591,12 @@ impl PrepareContext<'_> {
                     }
                     _ => None,
                 };
+                let (color_value, size_value, value_map_bg) = self.scatter_value_map_columns(
+                    cfg,
+                    precise_style_map.is_some(),
+                    x_h.len_values.min(y_h.len_values),
+                    &mut lookup,
+                )?;
                 let scatter_pick = scatter_pick.expect("prepare ensured scatter pipeline");
                 Some(ColumnScatterLayer {
                     pipeline: precise_style_map.map_or(scatter_pick.pipeline, |_| {
@@ -14217,11 +14608,14 @@ impl PrepareContext<'_> {
                     transform_bg: &view.transform_bg,
                     style_bg: &series.style.scatter_bg,
                     style_map_bg: precise_style_map.map(|m| &m.bind_group),
+                    value_map_bg,
                     quad_vb: &self.quad_vb,
                     pool_buffer: column_buffer,
                     x: x_h,
                     y: y_h,
                     style_index,
+                    color_value,
+                    size_value,
                     texture_bg: scatter_pick.texture_bg,
                 })
             } else {
@@ -22029,6 +22423,447 @@ mod tests {
             20,
         );
         assert_ink_on_screen_and_export(&rendered, "mapped pick ring", is_saturated_green, 10);
+    }
+
+    // ── Continuous point value maps (#24) ───────────────────────────────────
+
+    fn is_saturated_purple(p: [u8; 4]) -> bool {
+        p[0] > 90 && p[1] < 60 && p[2] > 90 && p[3] > 100
+    }
+
+    fn two_stop_colorbar(scale: AxisScale, min: f64, max: f64) -> crate::config::ColorBarOptions {
+        let mut bar = crate::default::default_colorbar_options();
+        // Hidden, so the plot keeps the basic chart's geometry; the options
+        // still own the z range and the ramp.
+        bar.visible = false;
+        bar.colormap = crate::colormap::ColorMap::Custom {
+            stops: vec![
+                Color::new(1.0, 0.0, 0.0, 1.0),
+                Color::new(0.0, 0.0, 1.0, 1.0),
+            ],
+        };
+        bar.nan_color = Color::new(0.0, 1.0, 0.0, 1.0);
+        bar.axis.scale = scale;
+        bar.axis.min = min;
+        bar.axis.max = max;
+        bar
+    }
+
+    fn value_mapped_scatter_series(
+        id: &str,
+        color_map: Option<&str>,
+        size_map: Option<(&str, SizeScale)>,
+    ) -> SeriesConfig {
+        let mut scatter = test_scatter_style();
+        scatter.point_color = Color::new(1.0, 0.0, 0.0, 1.0);
+        scatter.point_size = 8.0;
+        scatter.point_color_map = color_map.map(|column| crate::data_config::PointColorMap {
+            column: column.into(),
+        });
+        scatter.point_size_map = size_map.map(|(column, scale)| crate::data_config::PointSizeMap {
+            column: column.into(),
+            domain_min: 0.0,
+            domain_max: 10.0,
+            min_px: 2.0,
+            max_px: 12.0,
+            scale,
+        });
+        SeriesConfig {
+            series_id: id.into(),
+            source_id: None,
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            render_type: DataRenderType::Scatter { scatter },
+        }
+    }
+
+    /// Colour comes from the colourbar ramp at the point's value: the ends
+    /// take the end stops, the middle the interpolated colour, and a
+    /// non-finite value the colourbar's `nan_color`. On screen and on export.
+    #[test]
+    fn color_mapped_scatter_paints_the_colorbar_ramp_and_nan_color() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer
+            .add_column("x", &col_f64(vec![0.5, 1.5, 2.5, 3.5]))
+            .unwrap();
+        renderer
+            .add_column("y", &col_f64(vec![2.5, 2.5, 2.5, 2.5]))
+            .unwrap();
+        renderer
+            .add_column("c", &col_f64(vec![0.0, 10.0, f64::NAN, 5.0]))
+            .unwrap();
+
+        let mut chart = basic_errorbar_chart();
+        chart.config_mut().colorbar = Some(two_stop_colorbar(AxisScale::Linear, 0.0, 10.0));
+        let series = [value_mapped_scatter_series("cmap", Some("c"), None)];
+        let rendered = render_mapped_style_case(&mut renderer, &chart, &series);
+
+        assert!(
+            rendered.styles[0].scatter_map.is_some(),
+            "a colour map must select the mapped scatter path"
+        );
+        assert!(rendered.scatter_mapped);
+        assert_ink_on_screen_and_export(&rendered, "z = min (red stop)", is_saturated_red, 20);
+        assert_ink_on_screen_and_export(&rendered, "z = max (blue stop)", is_saturated_blue, 20);
+        assert_ink_on_screen_and_export(&rendered, "z = NaN (nan_color)", is_saturated_green, 20);
+        assert_ink_on_screen_and_export(&rendered, "z = mid (ramp)", is_saturated_purple, 20);
+    }
+
+    /// A logarithmic colourbar cannot place a non-positive value: it draws in
+    /// `nan_color`, as a heatmap cell would, while 10 on a 1..100 bar is the
+    /// ramp's middle.
+    #[test]
+    fn log_colorbar_maps_nonpositive_values_to_nan_color() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer
+            .add_column("x", &col_f64(vec![0.7, 2.0, 3.3]))
+            .unwrap();
+        renderer
+            .add_column("y", &col_f64(vec![2.5, 2.5, 2.5]))
+            .unwrap();
+        renderer
+            .add_column("c", &col_f64(vec![0.0, -3.0, 10.0]))
+            .unwrap();
+
+        let mut chart = basic_errorbar_chart();
+        chart.config_mut().colorbar = Some(two_stop_colorbar(AxisScale::Logarithmic, 1.0, 100.0));
+        let series = [value_mapped_scatter_series("cmap-log", Some("c"), None)];
+        let rendered = render_mapped_style_case(&mut renderer, &chart, &series);
+
+        assert_ink_on_screen_and_export(&rendered, "non-positive z", is_saturated_green, 40);
+        assert_ink_on_screen_and_export(&rendered, "log mid", is_saturated_purple, 20);
+        assert_eq!(count_rgba_ink(&rendered.screen, is_saturated_red), 0);
+        assert_eq!(count_rgba_ink(&rendered.screen, is_saturated_blue), 0);
+    }
+
+    /// One point at `value` on its own renderer, so each case uploads fresh
+    /// columns under the same ids.
+    fn single_point_ink(value: f64, scale: SizeScale) -> Option<usize> {
+        let mut renderer = state_test_renderer()?;
+        renderer.add_column("x", &col_f64(vec![2.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![2.5])).unwrap();
+        renderer.add_column("s", &col_f64(vec![value])).unwrap();
+        let chart = basic_errorbar_chart();
+        let series = [value_mapped_scatter_series(
+            "smap",
+            None,
+            Some(("s", scale)),
+        )];
+        let rendered = render_mapped_style_case(&mut renderer, &chart, &series);
+        let screen = count_rgba_ink(&rendered.screen, is_saturated_red);
+        let export = count_rgba_ink(&rendered.export, is_saturated_red);
+        // Export multisamples, so the exact counts differ; visibility must not.
+        assert_eq!(
+            screen == 0,
+            export == 0,
+            "screen ({screen} px) and export ({export} px) disagree for value {value}"
+        );
+        Some(screen)
+    }
+
+    /// The radius follows the size map: the domain's ends map to `min_px` and
+    /// `max_px`, area scaling grows faster than radius scaling in the middle,
+    /// a value past the domain clamps, and a non-finite value hides the point.
+    #[test]
+    fn size_mapped_scatter_scales_markers_by_value_and_hides_non_finite_values() {
+        let Some(smallest) = single_point_ink(0.0, SizeScale::Radius) else {
+            return;
+        };
+        let largest = single_point_ink(10.0, SizeScale::Radius).unwrap();
+        let clamped = single_point_ink(1.0e9, SizeScale::Radius).unwrap();
+        let mid_radius = single_point_ink(5.0, SizeScale::Radius).unwrap();
+        let mid_area = single_point_ink(5.0, SizeScale::Area).unwrap();
+        let hidden = single_point_ink(f64::NAN, SizeScale::Radius).unwrap();
+
+        // 2 px vs 12 px radii: a 36x area ratio before antialiasing.
+        assert!(smallest > 0, "min_px marker missing ({smallest} px)");
+        assert!(
+            largest > smallest * 8,
+            "max_px marker ({largest} px) is not much larger than min_px ({smallest} px)"
+        );
+        assert_eq!(
+            clamped, largest,
+            "a value past the domain must clamp to max_px"
+        );
+        // Radius scaling: 7 px. Area scaling: sqrt((4 + 144) / 2) ≈ 8.6 px.
+        assert!(
+            mid_area > mid_radius * 13 / 10,
+            "area scaling ({mid_area} px) must outgrow radius scaling ({mid_radius} px)"
+        );
+        assert_eq!(hidden, 0, "a non-finite size value must hide the point");
+    }
+
+    /// Export scales the mapped pixel range with the DPI multiplier like
+    /// `point_size`: a 2x export draws about four times the area.
+    #[test]
+    fn size_mapped_scatter_scales_with_the_export_multiplier() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.add_column("x", &col_f64(vec![2.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![2.5])).unwrap();
+        renderer.add_column("s", &col_f64(vec![10.0])).unwrap();
+        let chart = basic_errorbar_chart();
+        let series = [value_mapped_scatter_series(
+            "smap",
+            None,
+            Some(("s", SizeScale::Radius)),
+        )];
+        let one = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+        let two = renderer.export_panel_rgba(&chart, &series, 2.0).unwrap();
+        let one_px = count_rgba_ink(&one.rgba, is_saturated_red);
+        let two_px = count_rgba_ink(&two.rgba, is_saturated_red);
+        assert!(one_px > 0);
+        assert!(
+            two_px > one_px * 3 && two_px < one_px * 5,
+            "2x export drew {two_px} px against {one_px} px at 1x"
+        );
+        let scratch = renderer
+            .value_map_cache
+            .get("smap")
+            .expect("value map scratch");
+        assert_eq!(scratch.signature.params.size_px, [4.0, 24.0]);
+    }
+
+    /// Per channel, a sparse override beats the value map: an override colour
+    /// paints over the ramp, and an override size makes a hidden point
+    /// visible again.
+    #[test]
+    fn overrides_take_precedence_over_value_maps() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.add_column("x", &col_f64(vec![1.0, 3.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![2.5, 2.5])).unwrap();
+        renderer
+            .add_column("c", &col_f64(vec![10.0, 10.0]))
+            .unwrap();
+        renderer
+            .add_column("s", &col_f64(vec![f64::NAN, f64::NAN]))
+            .unwrap();
+
+        let mut chart = basic_errorbar_chart();
+        chart.config_mut().colorbar = Some(two_stop_colorbar(AxisScale::Linear, 0.0, 10.0));
+        let mut series =
+            value_mapped_scatter_series("ov", Some("c"), Some(("s", SizeScale::Radius)));
+        let DataRenderType::Scatter { scatter } = &mut series.render_type else {
+            unreachable!()
+        };
+        scatter.point_style_overrides = Some(vec![DataScatterPointStyleOverride {
+            index: 0,
+            style: DataScatterPointStyleConfig {
+                point_color: Some(Color::new(0.0, 1.0, 0.0, 1.0)),
+                point_shape: None,
+                point_size: Some(10.0),
+            },
+        }]);
+        let rendered = render_mapped_style_case(&mut renderer, &chart, &[series]);
+
+        // Point 0: overridden colour and size. Point 1: hidden by its size.
+        assert_ink_on_screen_and_export(&rendered, "override colour", is_saturated_green, 40);
+        assert_eq!(
+            count_rgba_ink(&rendered.screen, is_saturated_blue),
+            0,
+            "the ramp colour must not paint under an override"
+        );
+    }
+
+    /// The picked ring follows the mapped radius and is absent on a point the
+    /// size map hides.
+    #[test]
+    fn picked_ring_follows_the_size_map() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.add_column("x", &col_f64(vec![1.0, 3.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![2.5, 2.5])).unwrap();
+        renderer
+            .add_column("s", &col_f64(vec![10.0, f64::NAN]))
+            .unwrap();
+        let series = [value_mapped_scatter_series(
+            "ring",
+            None,
+            Some(("s", SizeScale::Radius)),
+        )];
+        let picked = |point_index: usize| crate::config::PickedPointsConfig {
+            visible: true,
+            refs: vec![crate::config::PickedPointRef {
+                source_id: None,
+                series_id: "ring".into(),
+                point_index,
+            }],
+            ring_color: Color::new(0.0, 1.0, 0.0, 1.0),
+            ring_width_px: 3.0,
+            radius_extra_px: 4.0,
+        };
+
+        let mut chart = basic_errorbar_chart();
+        chart.config_mut().picked_points = Some(picked(0));
+        let visible = render_mapped_style_case(&mut renderer, &chart, &series);
+        assert!(visible.pick_ring_mapped);
+        assert_ink_on_screen_and_export(
+            &visible,
+            "ring on the mapped point",
+            is_saturated_green,
+            40,
+        );
+
+        chart.config_mut().picked_points = Some(picked(1));
+        let hidden = render_mapped_style_case(&mut renderer, &chart, &series);
+        assert_eq!(
+            count_rgba_ink(&hidden.screen, is_saturated_green),
+            0,
+            "a hidden point draws no ring"
+        );
+    }
+
+    /// Registration rejects a colour map without a colourbar, an invalid size
+    /// domain and an unregistered value column.
+    #[test]
+    fn value_maps_are_validated_at_registration() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.add_column("x", &col_f64(vec![1.0, 3.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![2.5, 2.5])).unwrap();
+        renderer.add_column("c", &col_f64(vec![1.0, 2.0])).unwrap();
+        let config = basic_errorbar_chart().config().clone();
+
+        let no_colorbar = vec![value_mapped_scatter_series("v", Some("c"), None)];
+        assert!(matches!(
+            renderer.register_chart(config.clone(), no_colorbar),
+            Err(FiggyError::InvalidSeriesConfig { reason, .. }) if reason.contains("colorbar")
+        ));
+
+        let mut bad_domain = value_mapped_scatter_series("v", None, Some(("c", SizeScale::Area)));
+        let DataRenderType::Scatter { scatter } = &mut bad_domain.render_type else {
+            unreachable!()
+        };
+        scatter.point_size_map.as_mut().unwrap().domain_max = 0.0;
+        assert!(matches!(
+            renderer.register_chart(config.clone(), vec![bad_domain]),
+            Err(FiggyError::InvalidSeriesConfig { reason, .. })
+                if reason == crate::data_config::PointSizeMap::INVALID_DOMAIN_REASON
+        ));
+
+        let missing = vec![value_mapped_scatter_series(
+            "v",
+            None,
+            Some(("nope", SizeScale::Area)),
+        )];
+        assert!(matches!(
+            renderer.register_chart(config, missing),
+            Err(FiggyError::UnknownColumn { id }) if id == "nope"
+        ));
+    }
+
+    /// A value column shorter than the series is a prepare error, never a
+    /// read past the column.
+    #[test]
+    fn value_map_columns_must_cover_every_point() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer
+            .add_column("x", &col_f64(vec![1.0, 2.0, 3.0]))
+            .unwrap();
+        renderer
+            .add_column("y", &col_f64(vec![2.5, 2.5, 2.5]))
+            .unwrap();
+        renderer.add_column("s", &col_f64(vec![1.0])).unwrap();
+        let chart = basic_errorbar_chart();
+        let series = [value_mapped_scatter_series(
+            "short",
+            None,
+            Some(("s", SizeScale::Area)),
+        )];
+        let style = renderer.create_style_for_series(&series[0]).unwrap();
+        let view = renderer
+            .create_chart_view(&chart, chart.config().chart_area.0)
+            .unwrap();
+        let drawn = [Series {
+            config: &series[0],
+            style: &style,
+        }];
+        let items = [ChartDrawItem {
+            view: &view,
+            chart_config: chart.config(),
+            series: &drawn,
+        }];
+        assert!(matches!(
+            renderer.prepare(&items),
+            Err(FiggyError::InvalidSeriesConfig { reason, .. }) if reason.contains("size map")
+        ));
+    }
+
+    /// Streaming is not extended to the value maps: a streamed series with one
+    /// is rejected with an explicit reason, like a streamed line fill.
+    #[test]
+    fn streamed_series_reject_value_maps() {
+        let config = basic_errorbar_chart().config().clone();
+        let colour = value_mapped_scatter_series("stream", Some("c"), None);
+        let size = value_mapped_scatter_series("stream", None, Some(("s", SizeScale::Area)));
+        for series in [colour, size] {
+            assert!(matches!(
+                PrepareContext::validate_stream_series(&config, &series),
+                Err(FiggyError::InvalidSeriesConfig { reason, .. })
+                    if reason.contains("streamed sources are not supported")
+            ));
+        }
+        let plain = test_scatter_style();
+        let plain = SeriesConfig {
+            series_id: "plain".into(),
+            source_id: None,
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            render_type: DataRenderType::Scatter { scatter: plain },
+        };
+        assert!(PrepareContext::validate_stream_series(&config, &plain).is_ok());
+    }
+
+    /// The group-3 state is rebuilt only when its inputs change: two prepares
+    /// of the same chart share one entry, and editing the colourbar's range
+    /// (SSOT config) replaces it.
+    #[test]
+    fn value_map_scratch_is_reused_until_its_inputs_change() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.add_column("x", &col_f64(vec![1.0, 3.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![2.5, 2.5])).unwrap();
+        renderer.add_column("c", &col_f64(vec![1.0, 2.0])).unwrap();
+        let mut chart = basic_errorbar_chart();
+        chart.config_mut().colorbar = Some(two_stop_colorbar(AxisScale::Linear, 0.0, 10.0));
+        let series = [value_mapped_scatter_series("reuse", Some("c"), None)];
+
+        let first = render_mapped_style_case(&mut renderer, &chart, &series);
+        assert_eq!(renderer.value_map_cache.len(), 1);
+        let before = renderer.value_map_cache["reuse"].signature.params;
+        let second = render_mapped_style_case(&mut renderer, &chart, &series);
+        assert_eq!(renderer.value_map_cache.len(), 1);
+        assert_eq!(renderer.value_map_cache["reuse"].signature.params, before);
+        assert_eq!(
+            first.screen, second.screen,
+            "an unchanged chart repaints identically"
+        );
+
+        chart.config_mut().colorbar.as_mut().unwrap().axis.max = 2.0;
+        let third = render_mapped_style_case(&mut renderer, &chart, &series);
+        let after = renderer.value_map_cache["reuse"].signature.params;
+        assert_ne!(
+            after.z_max, before.z_max,
+            "a colourbar edit rebuilds the params"
+        );
+        assert_ne!(
+            third.screen, first.screen,
+            "the narrower range changes the mapped colours"
+        );
     }
 
     /// `error_bar_style_overrides` without an index column is the errorbar
