@@ -776,6 +776,53 @@ point (non-finite size value) carries a negative radius and is masked unless an
 override sets its radius. Nothing derived per point is uploaded: colour and
 radius are computed on every draw from the bound columns.
 
+### 5.3 Vector fields — group 2 (assembled vector shader)
+
+The vector shader is not one file: `vector.rs::assemble` concatenates
+`vector/project_cartesian2d.wgsl` (the five common blocks above plus the
+projection), `vector/vector_input_common.wgsl`, one of
+`vector/vector_input_points.wgsl` / `vector/vector_input_grid.wgsl`,
+`vector/glyph_arrow.wgsl` and `vector/vector_entry.wgsl`, in that order. Only
+the projection fragment carries common blocks; the consistency test compares
+it as the `vector` target.
+
+Group 2 is the series' data. Binding 0 is the column pool as read-only
+storage (hi/lo pairs, like the field shader's binding 0). Binding 1 is the
+grid table (`GridColumn { base, len }`, the field shader's `GridColumnGpu`):
+one padding entry for the points form, and for the grid form the `u`, `v` and
+colour grids' columns appended in that order, each addressed from its own base
+in `VectorParams`. Binding 2 is the colourbar's ramp control points (straight
+RGBA, at least one entry). Binding 3 is `VectorParams` (128 B; CPU twin
+`vector.rs::VectorParamsGpu`): the x / y / u / v / colour lanes and lengths,
+the grid's `cols` / `rows`, the flags, the arrow count, the stop count, the
+pivot, the scale (`Data`: the factor; `Pixels`: `px_per_unit` times the
+export scale), the pixel sizes (shaft width, head length, head width, minimum
+length and the anti-aliasing width, every one already multiplied by the
+export scale) and the colourbar's bounds as hi/lo pairs, already log10 under
+`VECTOR_FLAG_LOG_Z`, with the premultiplied `nan_color`.
+
+Flags: `GRID` selects the grid input, `COLUMNS_ARE_Y` and `CENTERS` are the
+`u` grid's orientation and layout, `SCALE_PIXELS` the scale mode, `LOG_Z` the
+colourbar's scale and `COLOR_MAP` whether a colour column or grid is bound.
+`vector_sample(i)` returns the anchor as hi/lo pairs, the (u, v) components
+and the colour value: under `Centers` the anchor is the coordinate, under
+`Edges` the data-space midpoint of two consecutive coordinates (the field's
+cell centre). `project_arrow` turns a sample into a tail and a tip in
+chart-area pixels: `Data` adds `scale * (u, v)` to the anchor through
+`pair_add` and projects both ends, so the arrow follows the axis transform;
+`Pixels` takes the direction from the axes' pixel-per-unit Jacobian
+(`axis_px_per_unit`) and the length from `scale * |(u, v)|`. `vector_ramp_t`
+and `vector_ramp` are the twins of `field_columnar.wgsl::z_ramp_t` and
+`colormap::sample`, so a colour-mapped arrow takes the colour a heatmap cell
+of the same value would.
+
+The glyph fragment owns nothing but pixel geometry: `arrow_place` applies the
+pivot and the minimum length and scales the head down to a short arrow,
+`arrow_quad_corner` places the six vertices of the covering quad, and
+`arrow_coverage` evaluates the signed distance to shaft ∪ head per fragment.
+Nothing derived per arrow is uploaded: every draw recomputes the placement
+from the bound columns.
+
 ---
 ## 변경 체크리스트
 
@@ -791,6 +838,7 @@ radius are computed on every draw from the bound columns.
       data_to_ndc(vec2) 해당 시).
 - [ ] `contour_anchor.wgsl`의 공통 블록을 수정했다 (Transform 3블록 + 격자 샘플링 블록).
 - [ ] `contour_label.wgsl`의 공통 블록을 수정했다 (같은 3블록).
+- [ ] `vector/project_cartesian2d.wgsl`의 공통 블록을 수정했다 (scatter와 같은 5블록).
 - [ ] `mod.rs::ScatterTransform` / `PrimitiveStyle`의 필드와 바이트 크기를
       확인했다 (struct 크기가 바뀌었다면 `expected_size` 검증문도 갱신).
 - [ ] `cargo check` 통과.
