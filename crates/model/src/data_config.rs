@@ -246,7 +246,7 @@ impl VectorStyle {
     pub const INVALID_PIXELS_REASON: &'static str = "vector width_px, head_length_px, head_width_px and min_length_px must be finite and non-negative";
     pub const INVALID_SCALE_REASON: &'static str = "vector scale must be finite and non-zero";
 
-    #[allow(dead_code)] // serde only
+    #[cfg(feature = "serde")]
     fn is_zero(value: &f32) -> bool {
         *value == 0.0
     }
