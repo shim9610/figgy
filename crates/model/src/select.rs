@@ -576,6 +576,11 @@ impl Selectable for AxisElement {
     }
 
     fn bounds(&self, cfg: &Config, _measure: &dyn MeasureText) -> Option<RectF> {
+        // A polar chart's axes are a ring and a ray; their drag is not part
+        // of the first version, so they register no hit region.
+        if cfg.polar.is_some() {
+            return None;
+        }
         let axis = axis_of(cfg, &self.side);
         if !axis.line_visible && matches!(axis.tick, TickVisibility::None) {
             return None;
@@ -600,6 +605,9 @@ impl Selectable for AxisLabelElement {
     }
 
     fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
+        if cfg.polar.is_some() {
+            return None;
+        }
         let axis = axis_of(cfg, &self.side);
         let ls = &axis.label_style;
         if !ls.visible || !ls.label_visible {

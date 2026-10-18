@@ -12,6 +12,12 @@ pub enum LabelFormat {
     /// Unix-epoch timestamp labels. Data values stay numeric; this only
     /// changes tick planning and label text on linear axes.
     Timestamp(TimestampLabelFormat),
+    /// Decimal with a degree sign: `90°`, `22.5°`. For an angle axis in
+    /// degrees.
+    Degrees,
+    /// Multiples of π: `π/2`, `π`, `3π/2`, `0.75π`. For an angle axis in
+    /// radians.
+    Radians,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

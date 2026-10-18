@@ -688,6 +688,14 @@ pub struct Config {
         serde(default, skip_serializing_if = "DrawStyle::is_precise")
     )]
     pub draw_style: DrawStyle,
+    /// The polar coordinate system. `None` (default, key absent in JSON) is
+    /// the rectangular chart; `Some` draws `bottom_x` as the angle and
+    /// `left_y` as the radius. See [`crate::polar::PolarOptions`].
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub polar: Option<crate::polar::PolarOptions>,
     /// Overlay layers: secondary Y axes drawn on the right side of the shared
     /// data area, each scaling the series it lists. Empty (key absent in
     /// JSON) is the single-layer chart every document had before the field.
