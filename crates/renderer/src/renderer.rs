@@ -1340,6 +1340,9 @@ impl PickChartPlan {
             let (scatter, scatter_signature) = if let Some((_, style)) =
                 extract_vector(&series.render_type).filter(|_| vector_points)
             {
+                // The anchor is picked as a disc of the glyph radius, which is
+                // what the pick shader's circle shape resolves to unchanged
+                // (`pick_visual_shape_radius` scales by 1 for a circle).
                 let base_radius_px = crate::pick::vector_anchor_radius_px(style);
                 let base_shape_id = data_render::shape_id(&ScatterShape::Circle);
                 (

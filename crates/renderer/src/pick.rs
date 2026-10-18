@@ -235,35 +235,17 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
                 if radius_px <= 0.0 {
                     continue;
                 }
-
-                let x = xs[i];
-                let y = ys[i];
-                if !x.is_finite() || !y.is_finite() {
-                    continue;
-                }
-
-                let Some((px, py)) = project_data_to_canvas_px(config, &transform, x, y) else {
-                    continue;
-                };
-                let dx = px - canvas_x;
-                let dy = py - canvas_y;
-                let center_dist = dx.mul_add(dx, dy * dy).sqrt();
-                let hit_dist = (center_dist - radius_px).max(0.0);
-                let dist_sq = hit_dist * hit_dist;
-                if !dist_sq.is_finite() || dist_sq > max_dist_sq {
-                    continue;
-                }
-
-                maybe_replace_best(
+                pick_anchor(
                     &mut best,
                     series_index,
-                    dist_sq,
-                    PickedPoint {
-                        source_id: cfg.source_id.clone(),
-                        series_id: cfg.series_id.clone(),
-                        point_index: i,
-                        distance_px: hit_dist,
-                    },
+                    cfg,
+                    config,
+                    &transform,
+                    i,
+                    (xs[i], ys[i]),
+                    radius_px,
+                    (canvas_x, canvas_y),
+                    max_dist_sq,
                 );
             }
         }
@@ -288,32 +270,17 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
                 .min(columns.get_f32_column(v).map_or(0, |v| v.len()));
             if radius_px > 0.0 {
                 for i in 0..count {
-                    let x = xs[i];
-                    let y = ys[i];
-                    if !x.is_finite() || !y.is_finite() {
-                        continue;
-                    }
-                    let Some((px, py)) = project_data_to_canvas_px(config, &transform, x, y) else {
-                        continue;
-                    };
-                    let dx = px - canvas_x;
-                    let dy = py - canvas_y;
-                    let center_dist = dx.mul_add(dx, dy * dy).sqrt();
-                    let hit_dist = (center_dist - radius_px).max(0.0);
-                    let dist_sq = hit_dist * hit_dist;
-                    if !dist_sq.is_finite() || dist_sq > max_dist_sq {
-                        continue;
-                    }
-                    maybe_replace_best(
+                    pick_anchor(
                         &mut best,
                         series_index,
-                        dist_sq,
-                        PickedPoint {
-                            source_id: cfg.source_id.clone(),
-                            series_id: cfg.series_id.clone(),
-                            point_index: i,
-                            distance_px: hit_dist,
-                        },
+                        cfg,
+                        config,
+                        &transform,
+                        i,
+                        (xs[i], ys[i]),
+                        radius_px,
+                        (canvas_x, canvas_y),
+                        max_dist_sq,
                     );
                 }
             }
@@ -388,6 +355,51 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
     }
 
     best.map(|(_, _, p)| p)
+}
+
+/// Score one anchor (a marker or a vector's tail) of `cfg` against the cursor
+/// and keep it when it is the best so far: the data point `(x, y)` is
+/// projected to the canvas, the hit distance is measured from the edge of its
+/// `radius_px` disc, and anything past `max_dist_sq` is dropped. A non-finite
+/// or unprojectable anchor is skipped.
+#[allow(clippy::too_many_arguments)]
+fn pick_anchor(
+    best: &mut Option<(usize, f32, PickedPoint)>,
+    series_index: usize,
+    cfg: &SeriesConfig,
+    config: &Config,
+    transform: &data_render::ScatterTransform,
+    index: usize,
+    (x, y): (f32, f32),
+    radius_px: f32,
+    (canvas_x, canvas_y): (f32, f32),
+    max_dist_sq: f32,
+) {
+    if !x.is_finite() || !y.is_finite() {
+        return;
+    }
+    let Some((px, py)) = project_data_to_canvas_px(config, transform, x, y) else {
+        return;
+    };
+    let dx = px - canvas_x;
+    let dy = py - canvas_y;
+    let center_dist = dx.mul_add(dx, dy * dy).sqrt();
+    let hit_dist = (center_dist - radius_px).max(0.0);
+    let dist_sq = hit_dist * hit_dist;
+    if !dist_sq.is_finite() || dist_sq > max_dist_sq {
+        return;
+    }
+    maybe_replace_best(
+        best,
+        series_index,
+        dist_sq,
+        PickedPoint {
+            source_id: cfg.source_id.clone(),
+            series_id: cfg.series_id.clone(),
+            point_index: index,
+            distance_px: hit_dist,
+        },
+    );
 }
 
 fn maybe_replace_best(
