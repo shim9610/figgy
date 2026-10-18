@@ -293,9 +293,14 @@ columns. A line segment is omitted when either endpoint is invalid; arc length
 also skips that segment so dashes and stars do not advance across the gap.
 Vertices collapse to a finite position outside the viewport instead of depending
 on NaN propagation. Bars and errorbar extents keep their own clipping rules.
-In polar mode a sample whose radius is below the axis start or whose angle is
-outside the sector is invalid too (`polar_sample_valid`), so a line breaks
-there instead of folding through the centre.
+In polar mode a sample whose radius is below the axis start is invalid too
+(`polar_sample_valid`), so a line breaks there instead of folding through
+the centre. Primitives that reach past the outer ring, into the hole or
+across a sector edge (a sample outside the sector included) are cut there by
+the fragment stage: every vertex entry of `scatter_columnar.wgsl` and
+`line_columnar.wgsl` writes the `polar_clip_*` varyings and every fragment
+entry starts with `polar_fragment_visible`, since the transform bind group
+is vertex-visible only.
 
 <!-- shader-common: applies-to=scatter,line,arc,vector -->
 ```wgsl
@@ -306,18 +311,17 @@ fn sample_finite(v: f32) -> bool {
     return (bitcast<u32>(v) & 0x7f800000u) != 0x7f800000u;
 }
 
-// Polar: a radius below the axis start and an angle outside the sector are
-// not drawn, like out-of-range samples a rectangular chart clips.
+// Polar: a radius below the axis start has no place on the plot (it would
+// fold onto the inner ring), so the sample is not drawn and a line breaks
+// there. Angles outside the sector and radii past the outer ring keep their
+// projection and are cut by the fragment clip below.
 fn polar_sample_valid(xv: vec2<f32>, yv: vec2<f32>) -> bool {
     if (transform.polar_angle.x < 0.5) {
         return true;
     }
     let ty = axis_pair_to_t(yv, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y, transform.data_to_panel_scale.y, transform.data_to_panel_offset.y);
     let rt = (ty - transform.data_to_panel_offset.y) / transform.data_to_panel_scale.y;
-    let e = transform.polar_extent;
-    let a = xv.x + xv.y;
-    let in_sector = e.y <= e.x || (a >= e.x && a <= e.y);
-    return rt >= 0.0 && in_sector;
+    return rt >= 0.0;
 }
 
 fn sample_valid(xv: vec2<f32>, yv: vec2<f32>) -> bool {
@@ -329,6 +333,51 @@ fn sample_valid(xv: vec2<f32>, yv: vec2<f32>) -> bool {
         && (transform.scale_log.x == 0.0 || x > 0.0)
         && (transform.scale_log.y == 0.0 || y > 0.0)
         && polar_sample_valid(xv, yv);
+}
+
+// Polar clip. The transform is vertex-visible only, so the vertex stage hands
+// the fragment stage the fragment's offset from the centre in pixels
+// (interpolated from the corner's NDC) and the bounds as flat varyings; the
+// fragment discards outside the outer ring, inside the hole and outside the
+// sector, cutting a primitive at the edge the way the data-area scissor cuts
+// a rectangular chart. A rectangular chart passes a zero flag.
+fn polar_clip_offset(ndc: vec2<f32>) -> vec2<f32> {
+    let center = (transform.data_to_panel_offset + transform.data_to_panel_scale * 0.5) * 2.0 - 1.0;
+    return (ndc - center) / transform.pixel_to_ndc;
+}
+
+// (flag, outer radius px, inner radius px, sector flag)
+fn polar_clip_limits() -> vec4<f32> {
+    let p = transform.polar_angle;
+    let e = transform.polar_extent;
+    return vec4<f32>(p.x, e.w, e.w * p.w, select(0.0, 1.0, e.y > e.x));
+}
+
+// (zero angle rad, radians per angle unit signed by the direction, sector
+// start, sector end in angle units)
+fn polar_clip_sector() -> vec4<f32> {
+    let p = transform.polar_angle;
+    let e = transform.polar_extent;
+    return vec4<f32>(p.y, p.z, e.x, e.y);
+}
+
+fn polar_fragment_visible(px: vec2<f32>, limits: vec4<f32>, sector: vec4<f32>) -> bool {
+    if (limits.x < 0.5) {
+        return true;
+    }
+    let r = length(px);
+    if (r > limits.y + 0.5 || r < limits.z - 0.5) {
+        return false;
+    }
+    if (limits.w < 0.5) {
+        return true;
+    }
+    // The data angle of the fragment, brought into the turn that starts at
+    // the sector start.
+    let turn = 6.283185307179586 / abs(sector.y);
+    var a = (atan2(px.y, px.x) - sector.x) / sector.y;
+    a = a - floor((a - sector.z) / turn) * turn;
+    return a <= sector.w + 1e-6 * turn;
 }
 ```
 

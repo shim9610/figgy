@@ -72,7 +72,7 @@ pub struct PolarOptions {
     /// The unit of the angle column and of `sector`.
     pub angle_unit: AngleUnit,
     /// The visible angular window `[start, end]` in `angle_unit`, at most one
-    /// turn; samples outside it are not drawn. `None` draws the full circle,
+    /// turn; drawing is clipped at its edges. `None` draws the full circle,
     /// where an angle outside the axis range lands where `cos` / `sin` put
     /// it: the renderer neither wraps nor sorts samples.
     pub sector: Option<[f64; 2]>,

@@ -116,18 +116,17 @@ fn sample_finite(v: f32) -> bool {
     return (bitcast<u32>(v) & 0x7f800000u) != 0x7f800000u;
 }
 
-// Polar: a radius below the axis start and an angle outside the sector are
-// not drawn, like out-of-range samples a rectangular chart clips.
+// Polar: a radius below the axis start has no place on the plot (it would
+// fold onto the inner ring), so the sample is not drawn and a line breaks
+// there. Angles outside the sector and radii past the outer ring keep their
+// projection and are cut by the fragment clip below.
 fn polar_sample_valid(xv: vec2<f32>, yv: vec2<f32>) -> bool {
     if (transform.polar_angle.x < 0.5) {
         return true;
     }
     let ty = axis_pair_to_t(yv, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y, transform.data_to_panel_scale.y, transform.data_to_panel_offset.y);
     let rt = (ty - transform.data_to_panel_offset.y) / transform.data_to_panel_scale.y;
-    let e = transform.polar_extent;
-    let a = xv.x + xv.y;
-    let in_sector = e.y <= e.x || (a >= e.x && a <= e.y);
-    return rt >= 0.0 && in_sector;
+    return rt >= 0.0;
 }
 
 fn sample_valid(xv: vec2<f32>, yv: vec2<f32>) -> bool {
@@ -140,6 +139,51 @@ fn sample_valid(xv: vec2<f32>, yv: vec2<f32>) -> bool {
         && (transform.scale_log.y == 0.0 || y > 0.0)
         && polar_sample_valid(xv, yv);
 }
+
+// Polar clip. The transform is vertex-visible only, so the vertex stage hands
+// the fragment stage the fragment's offset from the centre in pixels
+// (interpolated from the corner's NDC) and the bounds as flat varyings; the
+// fragment discards outside the outer ring, inside the hole and outside the
+// sector, cutting a primitive at the edge the way the data-area scissor cuts
+// a rectangular chart. A rectangular chart passes a zero flag.
+fn polar_clip_offset(ndc: vec2<f32>) -> vec2<f32> {
+    let center = (transform.data_to_panel_offset + transform.data_to_panel_scale * 0.5) * 2.0 - 1.0;
+    return (ndc - center) / transform.pixel_to_ndc;
+}
+
+// (flag, outer radius px, inner radius px, sector flag)
+fn polar_clip_limits() -> vec4<f32> {
+    let p = transform.polar_angle;
+    let e = transform.polar_extent;
+    return vec4<f32>(p.x, e.w, e.w * p.w, select(0.0, 1.0, e.y > e.x));
+}
+
+// (zero angle rad, radians per angle unit signed by the direction, sector
+// start, sector end in angle units)
+fn polar_clip_sector() -> vec4<f32> {
+    let p = transform.polar_angle;
+    let e = transform.polar_extent;
+    return vec4<f32>(p.y, p.z, e.x, e.y);
+}
+
+fn polar_fragment_visible(px: vec2<f32>, limits: vec4<f32>, sector: vec4<f32>) -> bool {
+    if (limits.x < 0.5) {
+        return true;
+    }
+    let r = length(px);
+    if (r > limits.y + 0.5 || r < limits.z - 0.5) {
+        return false;
+    }
+    if (limits.w < 0.5) {
+        return true;
+    }
+    // The data angle of the fragment, brought into the turn that starts at
+    // the sector start.
+    let turn = 6.283185307179586 / abs(sector.y);
+    var a = (atan2(px.y, px.x) - sector.x) / sector.y;
+    a = a - floor((a - sector.z) / turn) * turn;
+    return a <= sector.w + 1e-6 * turn;
+}
 // ───── END common block ─────
 
 struct VsIn {
@@ -151,6 +195,9 @@ struct VsIn {
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) local_pos: vec2<f32>,
+    @location(1) polar_px: vec2<f32>,
+    @location(2) @interpolate(flat) polar_limits: vec4<f32>,
+    @location(3) @interpolate(flat) polar_sector: vec4<f32>,
 };
 
 // Quad half-extent in pixels = shape-specific axis extent + QUAD_MARGIN_PX.
@@ -237,6 +284,9 @@ fn vs_main(in: VsIn) -> VsOut {
 
     var out: VsOut;
     out.pos = vec4<f32>(world, 0.0, 1.0);
+    out.polar_px = polar_clip_offset(out.pos.xy);
+    out.polar_limits = polar_clip_limits();
+    out.polar_sector = polar_clip_sector();
     out.local_pos = in.quad_pos;
     return out;
 }
@@ -371,6 +421,9 @@ fn shape_distance(base: u32, p: vec2<f32>, r: f32, filled: bool) -> f32 {
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    if (!polar_fragment_visible(in.polar_px, in.polar_limits, in.polar_sector)) {
+        discard;
+    }
     let r = style.point_radius_px;
     let filled = shape_is_filled(style.shape_id);
     let base = base_shape_id(style.shape_id);
@@ -620,6 +673,9 @@ struct VsMappedOut {
     @location(1) color_premul: vec4<f32>,
     @location(2) radius_px: f32,
     @location(3) @interpolate(flat) shape_id: u32,
+    @location(4) polar_px: vec2<f32>,
+    @location(5) @interpolate(flat) polar_limits: vec4<f32>,
+    @location(6) @interpolate(flat) polar_sector: vec4<f32>,
 };
 
 const STYLE_MASK_COLOR: u32 = 1u;
@@ -700,6 +756,9 @@ fn vs_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> VsMappedOut 
 
     var out: VsMappedOut;
     out.pos = vec4<f32>(world, 0.0, 1.0);
+    out.polar_px = polar_clip_offset(out.pos.xy);
+    out.polar_limits = polar_clip_limits();
+    out.polar_sector = polar_clip_sector();
     out.local_pos = in.quad_pos;
     out.color_premul = resolved.color_premul;
     out.radius_px = resolved.radius_px;
@@ -709,6 +768,9 @@ fn vs_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> VsMappedOut 
 
 @fragment
 fn fs_mapped(in: VsMappedOut) -> @location(0) vec4<f32> {
+    if (!polar_fragment_visible(in.polar_px, in.polar_limits, in.polar_sector)) {
+        discard;
+    }
     let filled = shape_is_filled(in.shape_id);
     let base = base_shape_id(in.shape_id);
     let visual_r = visual_shape_radius(base, in.radius_px);
@@ -728,6 +790,9 @@ struct VsPickRingOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) local_pos: vec2<f32>,
     @location(1) radius_px: f32,
+    @location(2) polar_px: vec2<f32>,
+    @location(3) @interpolate(flat) polar_limits: vec4<f32>,
+    @location(4) @interpolate(flat) polar_sector: vec4<f32>,
 };
 
 @vertex
@@ -744,6 +809,9 @@ fn vs_pick_ring(in: VsIn) -> VsPickRingOut {
 
     var out: VsPickRingOut;
     out.pos = vec4<f32>(world, 0.0, 1.0);
+    out.polar_px = polar_clip_offset(out.pos.xy);
+    out.polar_limits = polar_clip_limits();
+    out.polar_sector = polar_clip_sector();
     out.local_pos = in.quad_pos;
     out.radius_px = radius;
     return out;
@@ -772,6 +840,9 @@ fn vs_pick_ring_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> Vs
 
     var out: VsPickRingOut;
     out.pos = vec4<f32>(world, 0.0, 1.0);
+    out.polar_px = polar_clip_offset(out.pos.xy);
+    out.polar_limits = polar_clip_limits();
+    out.polar_sector = polar_clip_sector();
     out.local_pos = in.quad_pos;
     out.radius_px = radius;
     return out;
@@ -779,6 +850,9 @@ fn vs_pick_ring_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> Vs
 
 @fragment
 fn fs_pick_ring(in: VsPickRingOut) -> @location(0) vec4<f32> {
+    if (!polar_fragment_visible(in.polar_px, in.polar_limits, in.polar_sector)) {
+        discard;
+    }
     let radius = max(in.radius_px, 0.0);
     let stroke = max(style.line_width_px, 0.5);
     let half_px = radius + stroke * 0.5 + QUAD_MARGIN_PX;
@@ -818,6 +892,9 @@ struct VsSketchOut {
     @location(1) @interpolate(flat) seed_inst: u32,
     // Contour wobble amplitude in px: min(amplitude·0.5, radius·0.35).
     @location(2) @interpolate(flat) wobble_px: f32,
+    @location(3) polar_px: vec2<f32>,
+    @location(4) @interpolate(flat) polar_limits: vec4<f32>,
+    @location(5) @interpolate(flat) polar_sector: vec4<f32>,
 };
 
 // Same data→NDC placement as vs_main, with the quad grown by the wobble
@@ -842,6 +919,9 @@ fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> VsSketchOut {
 
     var out: VsSketchOut;
     out.pos = vec4<f32>(world, 0.0, 1.0);
+    out.polar_px = polar_clip_offset(out.pos.xy);
+    out.polar_limits = polar_clip_limits();
+    out.polar_sector = polar_clip_sector();
     out.local_pos = in.quad_pos;
     out.seed_inst = (u32(transform.style_params[0].z) ^ style.series_salt) + styled_point_index(inst);
     out.wobble_px = wobble;
@@ -859,6 +939,9 @@ const SKETCH_CONTOUR_WOBBLES: f32 = 6.0;
 // at default amplitude) and reads as part of the hand-drawn look.
 @fragment
 fn fs_sketch(in: VsSketchOut) -> @location(0) vec4<f32> {
+    if (!polar_fragment_visible(in.polar_px, in.polar_limits, in.polar_sector)) {
+        discard;
+    }
     let r = style.point_radius_px;
     let filled = shape_is_filled(style.shape_id);
     let base = base_shape_id(style.shape_id);
@@ -903,6 +986,9 @@ struct VsConstellationStarOut {
     @location(0) uv: vec2<f32>,
     @location(1) tint: vec3<f32>,
     @location(2) brightness: f32,
+    @location(3) polar_px: vec2<f32>,
+    @location(4) @interpolate(flat) polar_limits: vec4<f32>,
+    @location(5) @interpolate(flat) polar_sector: vec4<f32>,
 };
 
 @vertex
@@ -934,6 +1020,9 @@ fn vs_constellation_star(in: VsIn, @builtin(instance_index) inst: u32) -> VsCons
 
     var out: VsConstellationStarOut;
     out.pos = vec4<f32>(world, 0.0, 1.0);
+    out.polar_px = polar_clip_offset(out.pos.xy);
+    out.polar_limits = polar_clip_limits();
+    out.polar_sector = polar_clip_sector();
     out.uv = in.quad_pos * 0.5 + vec2<f32>(0.5, 0.5);
     out.tint = tint;
     out.brightness = brightness;
@@ -942,6 +1031,9 @@ fn vs_constellation_star(in: VsIn, @builtin(instance_index) inst: u32) -> VsCons
 
 @fragment
 fn fs_constellation_star(in: VsConstellationStarOut) -> @location(0) vec4<f32> {
+    if (!polar_fragment_visible(in.polar_px, in.polar_limits, in.polar_sector)) {
+        discard;
+    }
     let s = textureSampleLevel(cons_psf_tex, cons_samp, in.uv, 0.0);
     let col = (vec3<f32>(1.0) * s.r + in.tint * s.g) * in.brightness;
     let a = clamp(max(col.r, max(col.g, col.b)), 0.0, 1.0);
@@ -988,6 +1080,9 @@ struct VsPlanetOut {
     // Atmospheric rim-glow strength (MilkywayOptions.planet_rim) —
     // forwarded by the vertex stage; the transform group is vertex-only.
     @location(2) @interpolate(flat) rim_gain: f32,
+    @location(3) polar_px: vec2<f32>,
+    @location(4) @interpolate(flat) polar_limits: vec4<f32>,
+    @location(5) @interpolate(flat) polar_sector: vec4<f32>,
 };
 
 @vertex
@@ -1004,6 +1099,9 @@ fn vs_planet(in: VsIn, @builtin(instance_index) inst: u32) -> VsPlanetOut {
 
     var out: VsPlanetOut;
     out.pos = vec4<f32>(world, 0.0, 1.0);
+    out.polar_px = polar_clip_offset(out.pos.xy);
+    out.polar_limits = polar_clip_limits();
+    out.polar_sector = polar_clip_sector();
     out.local_pos = in.quad_pos;
     out.seed_inst = (u32(transform.style_params[0].w) ^ style.series_salt) + styled_point_index(inst);
     out.rim_gain = clamp(transform.style_params[1].w, 0.0, 2.0);
@@ -1012,6 +1110,9 @@ fn vs_planet(in: VsIn, @builtin(instance_index) inst: u32) -> VsPlanetOut {
 
 @fragment
 fn fs_planet(in: VsPlanetOut) -> @location(0) vec4<f32> {
+    if (!polar_fragment_visible(in.polar_px, in.polar_limits, in.polar_sector)) {
+        discard;
+    }
     let r_planet = max(style.point_radius_px, 1.0);
     let p = in.local_pos * (r_planet * PLANET_QUAD_EXTENT + QUAD_MARGIN_PX);
     let dist = length(p);

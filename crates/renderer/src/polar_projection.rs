@@ -40,15 +40,25 @@ fn radius_fraction(transform: &ScatterTransform, panel_ty: f32) -> f32 {
     (panel_ty - transform.data_to_panel_offset[1]) / transform.data_to_panel_scale[1]
 }
 
-/// Twin of `polar_sample_valid`: a radius below the axis start or an angle
-/// outside the sector is not drawn, so it is neither picked nor connected.
-pub(crate) fn sample_valid(transform: &ScatterTransform, x: f32, panel_ty: f32) -> bool {
+/// Twin of `polar_sample_valid` and the pick shader's `pick_polar_valid`: a
+/// radius below the axis start is not drawn, so it is neither picked nor
+/// connected. With `sector`, a sample outside the sector is rejected too: a
+/// marker there is clipped away entirely, while a line keeps its pieces,
+/// which the clip cuts at the edge.
+pub(crate) fn sample_valid(
+    transform: &ScatterTransform,
+    x: f32,
+    panel_ty: f32,
+    sector: bool,
+) -> bool {
     if !is_polar(transform) {
         return true;
     }
+    if radius_fraction(transform, panel_ty) < 0.0 {
+        return false;
+    }
     let [start, end, _, _] = transform.polar_extent;
-    let in_sector = end <= start || (x >= start && x <= end);
-    radius_fraction(transform, panel_ty) >= 0.0 && in_sector
+    !sector || end <= start || (x >= start && x <= end)
 }
 
 /// Twin of `polar_ndc`: the NDC position of the sample whose angle column

@@ -123,7 +123,7 @@ area that leaves one band of angle labels inside it (`Config::polar_geometry`).
 | `zero_angle_degrees: f64` | Where the angle value 0 points, in screen degrees counter-clockwise from the right: 0 right (default), 90 up |
 | `clockwise: bool` | Whether angle values grow clockwise on screen. Default `false` (counter-clockwise, the mathematical convention) |
 | `angle_unit: AngleUnit` | `Degrees` (default) or `Radians`: how the angle column and `sector` are read |
-| `sector: Option<[f64; 2]>` | The visible angular window in `angle_unit`, at most one turn; samples outside it are not drawn. `None` (default) is the full circle, where an angle outside the axis range lands where `cos` / `sin` put it: nothing is wrapped, sorted or deduplicated |
+| `sector: Option<[f64; 2]>` | The visible angular window in `angle_unit`, at most one turn; drawing is clipped at its edges. `None` (default) is the full circle, where an angle outside the axis range lands where `cos` / `sin` put it: nothing is wrapped, sorted or deduplicated |
 | `inner_radius_fraction: f32` | The hole at the centre as a fraction of the outer radius, `0.0..=0.9`; `left_y.min` maps to this ring |
 | `interpolation: PolarInterpolation` | `Chord` (default): a segment between two samples is straight on screen. `Arc { pieces }` (1–64): the segment is `pieces` chords between points interpolated linearly in (angle, radius), so a constant radius follows its ring; dashes and picking walk the same pieces |
 | `radial_label_angle_degrees: f64` | The screen direction of the ray the radius axis line and its tick labels sit on, default 90 (up) |
@@ -133,9 +133,15 @@ spokes at the angle ticks. The angle axis is the outer ring with its ticks
 pointing outward and its labels around it; a full-circle axis draws one spoke
 and one label where two ticks coincide (0 and 360). `LabelFormat::Degrees`
 (`90°`) and `LabelFormat::Radians` (`π/2`, `3π/4`, `0.4π`) format the angle
-labels. A radius below `left_y.min` and an angle outside the sector are not
-drawn (a line breaks there); on a logarithmic radius, non-positive samples are
-masked like on a rectangular log axis. A line fill (`LineFill::ToBaseline`)
+labels. A radius below `left_y.min` is not drawn (a line breaks there); on a
+logarithmic radius, non-positive samples are masked like on a rectangular log
+axis. Everything else a series draws is clipped to the plot: past the outer
+ring (a radius above `left_y.max`, as when the radius axis is zoomed in),
+inside the hole and across a sector edge a primitive is cut, the way the
+data-area scissor cuts a rectangular chart, so a segment whose sample lies
+outside the sector is drawn up to the edge. A marker outside the sector is
+neither drawn nor picked; a line's pieces stay pickable where they are
+drawn. A line fill (`LineFill::ToBaseline`)
 fills to the baseline ring, the centre for a baseline at the axis start.
 
 Validation (`Config::validate_polar`, reported as `InvalidConfig { field:
@@ -812,7 +818,7 @@ pub struct Config {
 | `zero_angle_degrees: f64` | 각도 값 0이 가리키는 화면 방향(오른쪽에서 반시계 방향으로 잰 도). 0은 오른쪽(기본), 90은 위 |
 | `clockwise: bool` | 각도 값이 화면에서 시계 방향으로 커지는지. 기본 `false`(반시계, 수학 관례) |
 | `angle_unit: AngleUnit` | `Degrees`(기본) 또는 `Radians`. 각도 컬럼과 `sector`를 읽는 단위 |
-| `sector: Option<[f64; 2]>` | `angle_unit` 단위의 가시 각도 창. 한 바퀴 이하이며 밖의 표본은 그리지 않는다. `None`(기본)은 전체 원이고, 축 범위 밖 각도는 `cos`/`sin`이 두는 자리에 그린다. 감싸기·정렬·중복 제거는 하지 않는다 |
+| `sector: Option<[f64; 2]>` | `angle_unit` 단위의 가시 각도 창. 한 바퀴 이하이며 경계에서 클립된다. `None`(기본)은 전체 원이고, 축 범위 밖 각도는 `cos`/`sin`이 두는 자리에 그린다. 감싸기·정렬·중복 제거는 하지 않는다 |
 | `inner_radius_fraction: f32` | 바깥 반지름에 대한 중앙 구멍 비율, `0.0..=0.9`. `left_y.min`이 이 고리에 놓인다 |
 | `interpolation: PolarInterpolation` | `Chord`(기본): 두 표본 사이 세그먼트는 화면에서 직선. `Arc { pieces }`(1~64): (각도, 반지름)에서 선형 보간한 점들을 잇는 `pieces`개의 현으로, 반지름이 일정하면 고리를 따른다. 대시와 피킹도 같은 조각을 따라간다 |
 | `radial_label_angle_degrees: f64` | 반지름 축 선과 눈금 라벨이 놓이는 광선의 화면 방향(도). 기본 90(위) |
@@ -822,7 +828,10 @@ pub struct Config {
 자리(0과 360)에 스포크와 라벨을 하나만 그린다. 각도 라벨은 `LabelFormat::Degrees`(`90°`)와
 `LabelFormat::Radians`(`π/2`, `3π/4`, `0.4π`)로 적는다. `left_y.min`보다 작은 반지름과 섹터 밖의
 각도는 그리지 않으며(선은 거기서 끊긴다), 로그 반지름 축의 0 이하 표본은 직교 로그 축처럼
-가린다. 선 채움(`LineFill::ToBaseline`)은 기준선 고리까지 채우며 축 시작값이면 중심까지다.
+가린다. 그 밖에 시리즈가 그리는 모든 것은 플롯에 클립된다. 바깥 고리 밖(반지름 축을 확대해
+`left_y.max`를 넘는 반지름), 구멍 안, 섹터 경계 너머의 도형은 직교 차트의 데이터 영역 scissor처럼 그
+자리에서 잘리므로 표본이 섹터 밖에 있는 세그먼트도 경계까지는 그려진다. 섹터 밖 마커는 그리지도
+고르지도 않으며, 선 조각은 그려진 곳에서 고를 수 있다. 선 채움(`LineFill::ToBaseline`)은 기준선 고리까지 채우며 축 시작값이면 중심까지다.
 
 검증(`Config::validate_polar`, `InvalidConfig { field: "polar" }`로 보고): 유한한 각도,
 범위 안의 `inner_radius_fraction`, `start < end`이고 한 바퀴 이하인 섹터, `1..=64`의 호 조각 수,

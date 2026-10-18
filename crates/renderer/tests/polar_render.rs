@@ -170,6 +170,19 @@ fn polar_px(config: &Config, theta: f64, r: f64) -> (f64, f64) {
     )
 }
 
+/// `polar_px` moved `px` pixels toward the centre: a sample on the outer
+/// ring is cut there, so its ink is tested just inside.
+fn inward(config: &Config, theta: f64, r: f64, px: f64) -> (f64, f64) {
+    let geometry = config.polar_geometry().expect("geometry");
+    let (x, y) = polar_px(config, theta, r);
+    let (dx, dy) = (
+        x - f64::from(geometry.center[0]),
+        y - f64::from(geometry.center[1]),
+    );
+    let len = dx.hypot(dy).max(1e-6);
+    (x - dx / len * px, y - dy / len * px)
+}
+
 fn pixel(img: &RasterImage, x: u32, y: u32) -> &[u8] {
     let i = ((y * img.width + x) * 4) as usize;
     &img.rgba[i..i + 4]
@@ -248,7 +261,7 @@ fn markers_land_on_the_ring_at_their_angle_in_both_directions() {
             (270.0, 1.0),
             (45.0, 0.5),
         ] {
-            let p = polar_px(config, theta, r);
+            let p = inward(config, theta, r, 3.0);
             assert!(
                 is_red(at(&img, p)),
                 "{name}: ({theta}, {r}) should draw at {p:?}, got {:?}",
@@ -258,10 +271,10 @@ fn markers_land_on_the_ring_at_their_angle_in_both_directions() {
         // The compass variant puts 0 degrees at the top and 90 on the right.
         let top = (
             f64::from(geometry.center[0]),
-            f64::from(geometry.center[1] - geometry.radius),
+            f64::from(geometry.center[1] - geometry.radius) + 3.0,
         );
         let right = (
-            f64::from(geometry.center[0] + geometry.radius),
+            f64::from(geometry.center[0] + geometry.radius) - 3.0,
             f64::from(geometry.center[1]),
         );
         assert!(is_red(at(&img, top)) && is_red(at(&img, right)), "{name}");
@@ -270,11 +283,10 @@ fn markers_land_on_the_ring_at_their_angle_in_both_directions() {
         let area = config.data_area().unwrap().0;
         let corner = (area.x as f64 + 4.0, area.y as f64 + 4.0);
         assert!(!is_red(at(&img, corner)), "{name}: Cartesian corner");
-        // Five markers and nothing else.
-        // Five markers of radius 8 and nothing else.
+        // Four half markers cut at the ring, one whole one, nothing else.
         let ink = count(&img, is_red);
         assert!(
-            (5 * 120..5 * 260).contains(&ink),
+            (3 * 120..5 * 260).contains(&ink),
             "{name}: {ink} red pixels"
         );
     }
@@ -296,7 +308,7 @@ fn chords_are_straight_and_arcs_follow_the_ring() {
     let a = polar_px(config, 0.0, 1.0);
     let b = polar_px(config, 90.0, 1.0);
     let chord_mid = ((a.0 + b.0) * 0.5, (a.1 + b.1) * 0.5);
-    let ring_mid = polar_px(config, 45.0, 1.0);
+    let ring_mid = inward(config, 45.0, 1.0, 1.0);
     assert!(is_red(at(&img_chord, chord_mid)), "chord midpoint");
     assert!(
         !is_red(at(&img_chord, ring_mid)),
@@ -307,7 +319,7 @@ fn chords_are_straight_and_arcs_follow_the_ring() {
     // Every sixteenth of the way round the arc is on the ring.
     for k in 1..16 {
         let theta = 90.0 * f64::from(k) / 16.0;
-        let p = polar_px(config, theta, 1.0);
+        let p = inward(config, theta, 1.0, 1.0);
         assert!(is_red(at(&img_arc, p)), "arc piece at {theta} degrees");
     }
 }
@@ -358,12 +370,110 @@ fn area_fills_to_the_centre_and_sectors_clip_samples_outside() {
         "outside the sector nothing is filled"
     );
     assert!(
-        !is_red(at(&img, polar_px(config, 180.0, 1.0))),
+        !is_red(at(&img, inward(config, 180.0, 1.0, 1.0))),
         "a sample outside the sector is not drawn"
     );
     assert!(
-        !is_red(at(&img, polar_px(config, 225.0, 1.0))),
+        !is_red(at(&img, inward(config, 225.0, 1.0, 1.0))),
         "nor the segment to it"
+    );
+}
+
+/// Zooming the radius axis in: a sample past `left_y.max` projects past the
+/// outer ring, and the fragment clip cuts it there, like the data-area
+/// scissor cuts a rectangular chart. The hole and the sector edges cut too.
+#[test]
+fn primitives_are_cut_at_the_outer_ring_the_hole_and_the_sector_edges() {
+    let mut ring_renderer = renderer();
+    // A segment from r = 0.4 at 0 degrees to r = 2 at 90 degrees, and a
+    // marker at r = 2: the axis ends at 1.
+    upload(
+        &mut ring_renderer,
+        vec![0.0, 90.0, 180.0],
+        vec![0.4, 2.0, 2.0],
+    );
+    let chart = bare_chart(PolarOptions {
+        interpolation: PolarInterpolation::Arc { pieces: 16 },
+        ..PolarOptions::default()
+    });
+    let series = [line("path", line_style(4.0)), scatter("points", 10.0)];
+    let img = export(&mut ring_renderer, &chart, &series);
+    save("polar-clip-ring", &img);
+    let config = chart.config();
+    let geometry = config.polar_geometry().unwrap();
+    // On the arc from (0, 0.4) to (90, 2) the radius passes 1 at the
+    // angle where the linear interpolation reaches it: t = 0.375, 33.75
+    // degrees. Inside the ring the path draws, outside it does not.
+    assert!(
+        is_red(at(&img, polar_px(config, 20.0, 0.4 + 1.6 * 20.0 / 90.0))),
+        "path inside the ring"
+    );
+    let outside = polar_px(config, 60.0, 0.4 + 1.6 * 60.0 / 90.0);
+    assert!(!is_red(at(&img, outside)), "path cut past the ring");
+    // The marker at (180, 2) sits past the ring inside the data area and
+    // is not drawn; nothing red lies left of the ring.
+    let area = config.data_area().unwrap().0;
+    let left = (area.x as f64 + 3.0, f64::from(geometry.center[1]));
+    assert!(area.x as f32 + 6.0 < geometry.center[0] - geometry.radius);
+    assert!(!is_red(at(&img, left)), "marker past the ring at {left:?}");
+    assert!(
+        !is_red(at(&img, inward(config, 180.0, 1.0, -2.0))),
+        "ring edge"
+    );
+    let whole = count(&img, is_red);
+    let mut unclipped = bare_chart(PolarOptions {
+        interpolation: PolarInterpolation::Arc { pieces: 16 },
+        ..PolarOptions::default()
+    });
+    unclipped.set_y_range(0.0, 2.0);
+    let unclipped = export(&mut ring_renderer, &unclipped, &series);
+    assert!(
+        count(&unclipped, is_red) > whole,
+        "a wider radius range draws more of the path"
+    );
+
+    // A hole: a chord between opposite samples does not cross it.
+    let mut hole_renderer = renderer();
+    upload(&mut hole_renderer, vec![0.0, 180.0], vec![1.0, 1.0]);
+    let hole = bare_chart(PolarOptions {
+        inner_radius_fraction: 0.4,
+        ..PolarOptions::default()
+    });
+    let img = export(&mut hole_renderer, &hole, &[line("path", line_style(4.0))]);
+    let config = hole.config();
+    let centre = (f64::from(geometry.center[0]), f64::from(geometry.center[1]));
+    assert!(!is_red(at(&img, centre)), "chord cut at the hole");
+    assert!(
+        is_red(at(&img, polar_px(config, 0.0, 0.7))),
+        "chord drawn between the hole and the ring"
+    );
+    let in_hole = (
+        f64::from(geometry.center[0] + geometry.radius * 0.2),
+        f64::from(geometry.center[1]),
+    );
+    assert!(!is_red(at(&img, in_hole)), "chord cut inside the hole");
+
+    // A sector: an arc from 45 to 135 degrees is cut at 90.
+    let mut sector_renderer = renderer();
+    upload(&mut sector_renderer, vec![45.0, 135.0], vec![1.0, 1.0]);
+    let sector = bare_chart(PolarOptions {
+        sector: Some([0.0, 90.0]),
+        interpolation: PolarInterpolation::Arc { pieces: 16 },
+        ..PolarOptions::default()
+    });
+    let img = export(
+        &mut sector_renderer,
+        &sector,
+        &[line("path", line_style(4.0))],
+    );
+    let config = sector.config();
+    assert!(
+        is_red(at(&img, inward(config, 60.0, 1.0, 1.0))),
+        "arc inside the sector"
+    );
+    assert!(
+        !is_red(at(&img, inward(config, 120.0, 1.0, 1.0))),
+        "arc cut at the sector edge"
     );
 }
 
@@ -383,7 +493,10 @@ fn inner_radius_log_radius_and_below_range_samples() {
     chart.set_y_range(0.1, 10.0);
     let img = export(&mut renderer, &chart, &[scatter("points", 8.0)]);
     let config = chart.config();
-    assert!(is_red(at(&img, polar_px(config, 0.0, 10.0))), "outer ring");
+    assert!(
+        is_red(at(&img, inward(config, 0.0, 10.0, 3.0))),
+        "outer ring"
+    );
     assert!(
         is_red(at(&img, polar_px(config, 90.0, 1.0))),
         "one decade in"
@@ -504,7 +617,7 @@ fn gpu_and_cpu_picking_agree_on_markers_chords_and_arcs() {
         let a = polar_px(config, 0.0, 1.0);
         let b = polar_px(config, 90.0, 1.0);
         let chord_mid = ((a.0 + b.0) * 0.5, (a.1 + b.1) * 0.5);
-        let ring_mid = polar_px(config, 45.0, 1.0);
+        let ring_mid = inward(config, 45.0, 1.0, 1.0);
         let (on, off) = if on_arc {
             (ring_mid, chord_mid)
         } else {
@@ -676,7 +789,7 @@ fn polar_and_cartesian_subplots_share_a_document_and_cartesian_pixels_are_unchan
     // The polar panel draws its points on its ring, offset by its area.
     let p = polar_px(&subplot, 90.0, 0.5);
     assert!(is_red(at(&document, p)), "polar subplot sample at {p:?}");
-    let p = polar_px(&subplot, 180.0, 1.0);
+    let p = inward(&subplot, 180.0, 1.0, 3.0);
     assert!(is_red(at(&document, p)), "polar subplot sample at {p:?}");
 }
 

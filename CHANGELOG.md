@@ -21,12 +21,16 @@ at the time. The first crates.io publication is recorded below.
   same pieces) and the radial label angle. `None` (key absent) is unchanged.
 - The shared `Transform` block grows from 112 to 144 bytes with the polar
   constants (`polar_angle`, `polar_extent`); `data_to_ndc` branches to
-  `polar_ndc` and `sample_valid` masks a radius below the axis start or an
-  angle outside the sector (`SHADER_COMMON.md` §1 and §4, every synced
+  `polar_ndc` and `sample_valid` masks a radius below the axis start
+  (`SHADER_COMMON.md` §1 and §4, every synced
   shader, `ScatterTransform`, the pick shader and the CPU twin
   `polar_projection`). The line shaders' `step_piece` helpers take a mode
   word whose upper bits are the arc pieces; the area fill's baseline
-  projects through the same mapping.
+  projects through the same mapping. The vertex entries of the scatter and
+  line shaders hand the fragment stage polar clip varyings, so a primitive
+  past the outer ring (a zoomed-in radius axis), inside the hole or across a
+  sector edge is cut there, as the data-area scissor cuts a rectangular
+  chart.
 - The grid draws rings and spokes, the angle axis is the outer ring with
   its labels around it and the radius axis the ray at the radial label
   angle; new `LabelFormat::Degrees` and `LabelFormat::Radians`. Axis lines

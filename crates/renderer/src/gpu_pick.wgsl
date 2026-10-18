@@ -208,19 +208,25 @@ fn pick_project_pair(x: vec2<f32>, y: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(pick_project_axis_pair(x, 0u), pick_project_axis_pair(y, 1u));
 }
 
-// Twin of `polar_sample_valid`: a radius below the axis start or an angle
-// outside the sector is not drawn, so it is not picked.
-fn pick_polar_valid(x: vec2<f32>, y: vec2<f32>) -> bool {
+// Twin of `polar_sample_valid`: a radius below the axis start is not drawn,
+// so it is not picked. A marker outside the sector is clipped away entirely
+// and not picked either (`sector`); a line keeps its pieces, which the clip
+// cuts at the edge, so its endpoints are not rejected by the sector.
+fn pick_polar_valid(x: vec2<f32>, y: vec2<f32>, sector: bool) -> bool {
     if !pick_polar() {
         return true;
     }
     let t = pick_query_params.transform;
     let ty = pick_axis_pair_to_t(y, 1u);
     let rt = (ty - t.data_to_panel_offset.y) / t.data_to_panel_scale.y;
+    if rt < 0.0 {
+        return false;
+    }
+    if !sector || t.polar_extent.y <= t.polar_extent.x {
+        return true;
+    }
     let a = x.x + x.y;
-    let in_sector = t.polar_extent.y <= t.polar_extent.x
-        || (a >= t.polar_extent.x && a <= t.polar_extent.y);
-    return rt >= 0.0 && in_sector;
+    return a >= t.polar_extent.x && a <= t.polar_extent.y;
 }
 
 fn pick_axis_cursor(axis: u32) -> f32 {
@@ -254,7 +260,7 @@ fn pick_scatter_projected_may_hit(projected: f32, axis: u32) -> bool {
 
 fn pick_polar_scatter_may_hit(point_index: u32, y: vec2<f32>) -> bool {
     let x = pick_read_pair(pick_query_params.data.y, point_index);
-    if !pick_pair_is_valid(x) || !pick_polar_valid(x, y) {
+    if !pick_pair_is_valid(x) || !pick_polar_valid(x, y, true) {
         return false;
     }
     let projected = pick_project_pair_polar(x, y);
@@ -612,7 +618,7 @@ fn pick_scatter_candidate(
     y: vec2<f32>,
 ) -> PickCandidate {
     let series_order = pick_query_params.series.y;
-    if !pick_coordinate_is_valid(x, 0u) || !pick_coordinate_is_valid(y, 1u) || !pick_polar_valid(x, y) {
+    if !pick_coordinate_is_valid(x, 0u) || !pick_coordinate_is_valid(y, 1u) || !pick_polar_valid(x, y, true) {
         return pick_invalid_candidate(series_order);
     }
     let radius = pick_resolve_scatter_radius(point_index);
@@ -726,7 +732,7 @@ fn pick_line_candidate(
     if !pick_coordinate_is_valid(ax, 0u) || !pick_coordinate_is_valid(ay, 1u) || !pick_coordinate_is_valid(bx, 0u) || !pick_coordinate_is_valid(by, 1u) {
         return pick_invalid_candidate(series_order);
     }
-    if !pick_polar_valid(ax, ay) || !pick_polar_valid(bx, by) {
+    if !pick_polar_valid(ax, ay, false) || !pick_polar_valid(bx, by, false) {
         return pick_invalid_candidate(series_order);
     }
     // A step mode tests every axis-aligned piece of the segment and keeps the
