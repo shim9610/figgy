@@ -1057,6 +1057,71 @@ mod tests {
         assert_eq!(picked.point_index, 1);
     }
 
+    fn vector_points_series(id: &str, u: &str, v: &str) -> SeriesConfig {
+        SeriesConfig {
+            series_id: id.into(),
+            source_id: None,
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            render_type: DataRenderType::Vector {
+                components: crate::data_config::VectorComponents::Points {
+                    u: u.into(),
+                    v: v.into(),
+                },
+                style: crate::data_config::VectorStyle {
+                    color: Color::BLACK,
+                    width_px: 4.0,
+                    scale: crate::data_config::VectorScale::Pixels { px_per_unit: 1.0 },
+                    pivot: crate::data_config::VectorPivot::Tail,
+                    head_length_px: 10.0,
+                    head_width_px: 10.0,
+                    min_length_px: 0.0,
+                    color_map: None,
+                },
+            },
+        }
+    }
+
+    /// A point vector is picked at its anchor with half the wider of head and
+    /// shaft as its radius, and only as far as its component columns reach.
+    #[test]
+    fn vector_points_pick_at_their_anchors_with_the_glyph_radius() {
+        let config = config();
+        let columns = Columns::new(&[
+            ("x", &[2.0, 8.0]),
+            ("y", &[5.0, 5.0]),
+            ("u", &[1.0, 1.0]),
+            ("v", &[0.0, 0.0]),
+            ("u_short", &[1.0]),
+        ]);
+        let series = [vector_points_series("arrows", "u", "v")];
+
+        // Anchors at (30, 70) and (90, 70); the 10 px head gives a 5 px radius.
+        let inside = pick(&config, &series, &columns, 34.5, 70.0, 0.0).unwrap();
+        assert_eq!((inside.point_index, inside.distance_px), (0, 0.0));
+        assert_eq!(pick(&config, &series, &columns, 36.0, 70.0, 0.0), None);
+        let near = pick(&config, &series, &columns, 37.0, 70.0, 3.0).unwrap();
+        assert_eq!(near.point_index, 0);
+        assert!((near.distance_px - 2.0).abs() < 1e-4);
+        assert_eq!(
+            pick(&config, &series, &columns, 90.0, 70.0, 0.0)
+                .unwrap()
+                .point_index,
+            1
+        );
+
+        // A component column shorter than the anchors hides the surplus.
+        let short = [vector_points_series("arrows", "u_short", "v")];
+        assert_eq!(
+            pick(&config, &short, &columns, 30.0, 70.0, 0.0)
+                .unwrap()
+                .point_index,
+            0
+        );
+        assert_eq!(pick(&config, &short, &columns, 90.0, 70.0, 0.0), None);
+    }
+
     #[test]
     fn outside_valid_data_area_returns_none() {
         let config = config();

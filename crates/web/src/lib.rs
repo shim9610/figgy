@@ -6077,23 +6077,31 @@ mod web {
                 renderer::config::PickedDataRef::MatrixCell {
                     x_index, y_index, ..
                 } => {
+                    use renderer::data_config::{GridLayout, MatrixOrientation};
                     let series = &self.chart_series()[position];
-                    let style = serde_json::to_value(&series.render_type).map_err(js_err)?;
-                    let matrix = &style.as_object().unwrap().values().next().unwrap()["matrix"];
-                    let edges = usize::from(matrix["grid_layout"] == "Edges");
-                    let columns = matrix["columns"]
-                        .as_array()
-                        .ok_or_else(|| js_err("selected matrix no longer exists"))?;
-                    let depth = columns
+                    // A field steps over its matrix; a grid vector over its
+                    // `u` grid, which every other grid of the series matches.
+                    let matrix = match &series.render_type {
+                        DataRenderType::Heatmap { matrix, .. }
+                        | DataRenderType::Contour { matrix, .. }
+                        | DataRenderType::HeatmapContour { matrix, .. } => matrix,
+                        rt => match vector_columns(rt) {
+                            Some(VectorColumns::Grid { u, .. }) => u,
+                            _ => return Err(js_err("selected matrix no longer exists")),
+                        },
+                    };
+                    let edges = usize::from(matches!(matrix.grid_layout, GridLayout::Edges));
+                    let depth = matrix
+                        .columns
                         .iter()
-                        .filter_map(|c| self.columns.get(c.as_str()?))
+                        .filter_map(|c| self.columns.get(c.as_str()))
                         .copied()
                         .min()
                         .unwrap_or(0);
-                    let (nx, ny) = if matrix["orientation"] == "ColumnsAreY" {
-                        (depth, columns.len())
+                    let (nx, ny) = if matches!(matrix.orientation, MatrixOrientation::ColumnsAreY) {
+                        (depth, matrix.columns.len())
                     } else {
-                        (columns.len(), depth)
+                        (matrix.columns.len(), depth)
                     };
                     *x_index = shift(
                         *x_index,

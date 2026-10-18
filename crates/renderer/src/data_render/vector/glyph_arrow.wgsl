@@ -83,9 +83,10 @@ fn arrow_quad_corner(vertex_index: u32, placed: ArrowPlacement, width_px: f32, m
     let half_wid = max(width_px * 0.5, placed.head_width_px * 0.5) + margin_px;
     var cx = -1.0;
     var cy = -1.0;
+    // Two triangles sharing the (-1,-1) → (1,1) diagonal.
     switch (vertex_index) {
-        case 1u, 4u: { cx = 1.0; cy = -1.0; }
-        case 2u: { cx = 1.0; cy = 1.0; }
+        case 1u: { cx = 1.0; cy = -1.0; }
+        case 2u, 4u: { cx = 1.0; cy = 1.0; }
         case 5u: { cx = -1.0; cy = 1.0; }
         default: { cx = -1.0; cy = -1.0; }
     }

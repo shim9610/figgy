@@ -23757,6 +23757,112 @@ mod tests {
         );
     }
 
+    // ── Vector fields (#25) ─────────────────────────────────────────────────
+
+    fn vector_points_series(id: &str) -> SeriesConfig {
+        SeriesConfig {
+            series_id: id.into(),
+            source_id: None,
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            render_type: DataRenderType::Vector {
+                components: crate::data_config::VectorComponents::Points {
+                    u: "u".into(),
+                    v: "v".into(),
+                },
+                style: crate::data_config::VectorStyle {
+                    color: Color::new(1.0, 0.0, 0.0, 1.0),
+                    width_px: 4.0,
+                    scale: crate::data_config::VectorScale::Pixels { px_per_unit: 1.0 },
+                    pivot: crate::data_config::VectorPivot::Tail,
+                    head_length_px: 8.0,
+                    head_width_px: 8.0,
+                    min_length_px: 0.0,
+                    color_map: None,
+                },
+            },
+        }
+    }
+
+    /// Streaming is not extended to vector series: a streamed one is rejected
+    /// with an explicit reason, like a streamed value map.
+    #[test]
+    fn streamed_series_reject_vectors() {
+        let config = basic_errorbar_chart().config().clone();
+        assert!(matches!(
+            PrepareContext::validate_stream_series(&config, &vector_points_series("stream")),
+            Err(FiggyError::InvalidSeriesConfig { reason, .. })
+                if reason.contains("streamed sources are not supported")
+        ));
+    }
+
+    /// The vector scratch (params, grid table, bind groups) is rebuilt only
+    /// when its inputs change: two prepares of the same chart share one
+    /// entry, a style edit replaces its params, and replacing a component
+    /// column replaces its source epochs.
+    #[test]
+    fn vector_scratch_is_reused_until_its_inputs_change() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.add_column("x", &col_f64(vec![1.0, 3.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![2.5, 2.5])).unwrap();
+        renderer
+            .add_column("u", &col_f64(vec![30.0, 30.0]))
+            .unwrap();
+        renderer.add_column("v", &col_f64(vec![0.0, 0.0])).unwrap();
+        let chart = basic_errorbar_chart();
+        let mut series = [vector_points_series("reuse")];
+
+        let first = render_mapped_style_case(&mut renderer, &chart, &series);
+        assert!(
+            count_rgba_ink(&first.screen, is_saturated_red) > 50,
+            "the arrows draw on screen"
+        );
+        assert!(
+            count_rgba_ink(&first.export, is_saturated_red) > 50,
+            "the arrows draw on export"
+        );
+        assert_eq!(renderer.vector_cache.len(), 1);
+        let before = renderer.vector_cache["reuse"].signature.params;
+        let epochs = renderer.vector_cache["reuse"].signature.epochs.clone();
+        let second = render_mapped_style_case(&mut renderer, &chart, &series);
+        assert_eq!(renderer.vector_cache.len(), 1);
+        assert_eq!(renderer.vector_cache["reuse"].signature.params, before);
+        assert_eq!(
+            first.screen, second.screen,
+            "an unchanged chart repaints identically"
+        );
+
+        let DataRenderType::Vector { style, .. } = &mut series[0].render_type else {
+            unreachable!()
+        };
+        style.width_px = 12.0;
+        let third = render_mapped_style_case(&mut renderer, &chart, &series);
+        let after = renderer.vector_cache["reuse"].signature.params;
+        assert_ne!(
+            after.width_px, before.width_px,
+            "a style edit rebuilds the params"
+        );
+        assert!(
+            count_rgba_ink(&third.screen, is_saturated_red)
+                > count_rgba_ink(&first.screen, is_saturated_red),
+            "the wider shaft draws more"
+        );
+
+        renderer.remove_column("u").unwrap();
+        renderer
+            .add_column("u", &col_f64(vec![-30.0, -30.0]))
+            .unwrap();
+        let fourth = render_mapped_style_case(&mut renderer, &chart, &series);
+        assert_ne!(
+            renderer.vector_cache["reuse"].signature.epochs, epochs,
+            "a replaced component column rebuilds the sources"
+        );
+        assert_ne!(fourth.screen, third.screen, "the arrows now point left");
+    }
+
     /// `error_bar_style_overrides` without an index column is the errorbar
     /// counterpart of a single-point edit.
     #[test]
