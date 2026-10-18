@@ -23,8 +23,8 @@ use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{
     Chart, Color, ColorBarOptions, ColorMap, DataRenderType, DataSelectionsConfig, FiggyError,
-    GpuPickRequest, PickedData, PickedDataRef, RasterImage, Renderer, RendererDevice, SeriesConfig,
-    display_config_for_surface,
+    GpuPickRequest, OverlayLayer, PickedData, PickedDataRef, RasterImage, Renderer, RendererDevice,
+    SeriesConfig, Subplot, display_config_for_surface,
 };
 
 const WIDTH: u32 = 480;
@@ -1177,6 +1177,97 @@ fn selected_grid_vector_cell_outlines_its_cell() {
     assert_eq!(leaked, 0, "cell selection leaked onto another cell");
     // The arrows still draw with the selection.
     assert_red(&img, data_to_px(&chart, 0.5, 0.5), 8.0, 0.0, "arrow");
+}
+
+// ── Layers ───────────────────────────────────────────────────────────────────
+
+/// A vector series on an overlay layer scales by the overlay's Y axis: a
+/// data-scaled (0, 4) vector from y = 4 reaches y = 8, the top of an overlay
+/// axis running 0..8, halfway up the data area, where the base axis (0..4)
+/// would have put the anchor itself at the top edge. A document export draws
+/// every layer (a panel export keeps the base panel only).
+#[test]
+fn vector_series_scale_by_their_overlay_axis() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    point_fixture(&mut renderer, &[(2.0, 4.0)], &[(0.0, 4.0)]);
+    let mut chart = bare_chart();
+    let mut overlay = OverlayLayer::default();
+    overlay.y_axis.min = 0.0;
+    overlay.y_axis.max = 8.0;
+    overlay.y_axis.major_spacing = 2.0;
+    overlay.series = vec!["arrows".into()];
+    chart.config_mut().overlays.push(overlay);
+    let series = [points("arrows", data(1.0))];
+    let img = renderer.export_document_rgba(&chart, &series, 1.0).unwrap();
+    assert_eq!((img.width, img.height), (WIDTH, HEIGHT));
+
+    let cfg = chart.config();
+    let da = cfg.data_area().expect("data area");
+    let overlay_y = |y: f64| {
+        let axis = &cfg.overlays[0].y_axis;
+        (da.y + da.height) as f64 - axis_t(axis, y) * da.height as f64
+    };
+    let x = da.x as f64 + axis_t(&cfg.bottom_x, 2.0) * da.width as f64;
+    let tail = (x, overlay_y(4.0));
+    let tip = (x, overlay_y(8.0));
+    assert!(
+        tip.1 < tail.1 && tail.1 > da.y as f64 + 10.0,
+        "the anchor sits mid-panel"
+    );
+    assert_red(
+        &img,
+        (x, (tail.1 + tip.1) * 0.5),
+        0.0,
+        0.0,
+        "overlay-scaled midpoint",
+    );
+    assert_red(&img, tip, 0.0, 4.0, "overlay-scaled head");
+    assert_red(&img, tail, 0.0, -3.0, "shaft above the mid-panel anchor");
+    // On the base axis the anchor would be the top edge and the whole arrow
+    // clipped above it; the shaft starting mid-panel is the overlay's doing.
+    assert_clear(&img, tail, 0.0, 6.0, "below the overlay anchor");
+}
+
+/// A vector series assigned to a subplot draws inside that subplot's data
+/// area, through its axes, and nowhere in the parent.
+#[test]
+fn vector_series_draw_inside_their_subplot() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    point_fixture(&mut renderer, &[(2.0, 2.0)], &[(40.0, 0.0)]);
+    let mut chart = bare_chart();
+    let mut sub = bare_chart();
+    sub.config_mut().chart_area = ChartArea(Rect {
+        x: WIDTH,
+        y: 0,
+        width: WIDTH,
+        height: HEIGHT,
+    });
+    chart.config_mut().subplots.push(Subplot {
+        config: sub.config().clone(),
+        series: vec!["arrows".into()],
+        link_x: None,
+        link_y: None,
+    });
+    let series = [points("arrows", pixels(1.0))];
+    let img = renderer.export_document_rgba(&chart, &series, 1.0).unwrap();
+    assert_eq!((img.width, img.height), (WIDTH * 2, HEIGHT));
+
+    let a = data_to_px(&sub, 2.0, 2.0);
+    assert!(
+        a.0 >= WIDTH as f64,
+        "the subplot's anchor lies in the right half"
+    );
+    assert_red(&img, a, 20.0, 0.0, "shaft inside the subplot");
+    assert_clear(&img, a, 45.0, 0.0, "past the tip inside the subplot");
+    let parent_red = (0..img.height)
+        .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
+        .filter(|(x, y)| is_red(pixel(&img, *x, *y)))
+        .count();
+    assert_eq!(parent_red, 0, "the parent draws no arrow");
 }
 
 // ── Extent ───────────────────────────────────────────────────────────────────
