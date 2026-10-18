@@ -1039,6 +1039,22 @@ struct FitSeriesStamp {
     columns: Vec<FitColumnStamp>,
 }
 
+/// The role slots of a series' fit stamps (`FitColumnStamp::role`): which
+/// declared column a stamp describes, so a token can tell a replaced x column
+/// from a replaced error column. Fixed roles come first; a matrix's
+/// constituent columns take `FIT_ROLE_MATRIX_BASE + index`. A series never
+/// carries both vector components and a matrix under the same role space:
+/// the points form has components, the grid form has matrices.
+const FIT_ROLE_X: u32 = 0;
+const FIT_ROLE_Y: u32 = 1;
+const FIT_ROLE_ERR_X_LOWER: u32 = 2;
+const FIT_ROLE_ERR_X_UPPER: u32 = 3;
+const FIT_ROLE_ERR_Y_LOWER: u32 = 4;
+const FIT_ROLE_ERR_Y_UPPER: u32 = 5;
+const FIT_ROLE_VECTOR_U: u32 = 6;
+const FIT_ROLE_VECTOR_V: u32 = 7;
+const FIT_ROLE_MATRIX_BASE: u32 = 8;
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct FitColumnStamp {
     role: u32,
@@ -5766,13 +5782,39 @@ fn build_fit_token_from_state(
                 resource: "fit role-column stamps",
                 reason: error.to_string(),
             })?;
-        push_fit_column_stamp(pool, streaming_sources, &mut columns, 0, &item.x_column)?;
-        push_fit_column_stamp(pool, streaming_sources, &mut columns, 1, &item.y_column)?;
+        push_fit_column_stamp(
+            pool,
+            streaming_sources,
+            &mut columns,
+            FIT_ROLE_X,
+            &item.x_column,
+        )?;
+        push_fit_column_stamp(
+            pool,
+            streaming_sources,
+            &mut columns,
+            FIT_ROLE_Y,
+            &item.y_column,
+        )?;
         if let Some(error) = extract_err_x(&item.render_type) {
-            push_fit_error_stamps(pool, streaming_sources, &mut columns, error, 2, 3)?;
+            push_fit_error_stamps(
+                pool,
+                streaming_sources,
+                &mut columns,
+                error,
+                FIT_ROLE_ERR_X_LOWER,
+                FIT_ROLE_ERR_X_UPPER,
+            )?;
         }
         if let Some(error) = extract_err_y(&item.render_type) {
-            push_fit_error_stamps(pool, streaming_sources, &mut columns, error, 4, 5)?;
+            push_fit_error_stamps(
+                pool,
+                streaming_sources,
+                &mut columns,
+                error,
+                FIT_ROLE_ERR_Y_LOWER,
+                FIT_ROLE_ERR_Y_UPPER,
+            )?;
         }
         if let Some(matrix) = fit_matrix(&item.render_type) {
             columns.try_reserve(matrix.columns.len()).map_err(|error| {
@@ -5786,19 +5828,19 @@ fn build_fit_token_from_state(
                     pool,
                     streaming_sources,
                     &mut columns,
-                    6u32.saturating_add(u32::try_from(index).unwrap_or(u32::MAX)),
+                    FIT_ROLE_MATRIX_BASE.saturating_add(u32::try_from(index).unwrap_or(u32::MAX)),
                     id,
                 )?;
             }
         }
         // A `Data`-scaled point vector's tips depend on its components, so
-        // they stamp the token too (roles past the matrix range).
+        // they stamp the token too.
         if let Some((crate::data_config::VectorComponents::Points { u, v }, style)) =
             extract_vector(&item.render_type)
             && matches!(style.scale, crate::data_config::VectorScale::Data { .. })
         {
-            push_fit_column_stamp(pool, streaming_sources, &mut columns, u32::MAX - 1, u)?;
-            push_fit_column_stamp(pool, streaming_sources, &mut columns, u32::MAX, v)?;
+            push_fit_column_stamp(pool, streaming_sources, &mut columns, FIT_ROLE_VECTOR_U, u)?;
+            push_fit_column_stamp(pool, streaming_sources, &mut columns, FIT_ROLE_VECTOR_V, v)?;
         }
         series.push(FitSeriesStamp {
             series_id: item.series_id.clone(),
