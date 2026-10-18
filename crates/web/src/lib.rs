@@ -5163,8 +5163,8 @@ mod web {
         }
 
         /// Fit the shared z axis to every column the colourbar maps: matrix
-        /// value columns and scatter `point_color_map` columns. A chart without
-        /// a colourbar is left unchanged.
+        /// value columns, scatter `point_color_map` columns and vector colour
+        /// maps. A chart without a colourbar is left unchanged.
         pub fn auto_fit_colorbar(&mut self, padding: f64) -> Result<(), JsValue> {
             let mut z_extent = FitExtent::EMPTY;
             for cfg in self.chart_series() {
@@ -5192,6 +5192,22 @@ mod web {
                             union(&map.column)?;
                         }
                     }
+                    // A vector's colour map: a column or a grid's columns.
+                    DataRenderType::Vector { .. } => match vector_columns(&cfg.render_type) {
+                        Some(VectorColumns::Points { color, .. }) => {
+                            if let Some(color) = color {
+                                union(color)?;
+                            }
+                        }
+                        Some(VectorColumns::Grid { color, .. }) => {
+                            if let Some(grid) = color {
+                                for id in &grid.columns {
+                                    union(id)?;
+                                }
+                            }
+                        }
+                        None => {}
+                    },
                     DataRenderType::Line { .. } | DataRenderType::Histogram { .. } => {}
                 }
             }

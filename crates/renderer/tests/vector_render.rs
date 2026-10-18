@@ -14,11 +14,13 @@ use std::sync::{Arc, OnceLock};
 use renderer::config::{AxisOptions, AxisScale, PickedPointRef, PickedPointsConfig};
 use renderer::data::Column;
 use renderer::data_config::{
-    FieldFillConfig, FillMode, GridLayout, MatrixOrientation, MatrixRef, Shading, VectorColorMap,
-    VectorComponents, VectorPivot, VectorScale, VectorStyle,
+    ContourConfig, DataLineStyleConfig, FieldFillConfig, FillMode, GridLayout, LineInterpolation,
+    MatrixOrientation, MatrixRef, Shading, VectorColorMap, VectorComponents, VectorPivot,
+    VectorScale, VectorStyle,
 };
 use renderer::gpu_errorbar::GpuSeriesExtent;
 use renderer::layout::{ChartArea, Rect};
+use renderer::line::LineStylePreset;
 use renderer::{
     Chart, Color, ColorBarOptions, ColorMap, DataRenderType, DataSelectionsConfig, FiggyError,
     GpuPickRequest, PickedData, PickedDataRef, RasterImage, Renderer, RendererDevice, SeriesConfig,
@@ -882,19 +884,30 @@ fn grid_extent_is_the_smallest_common_grid_and_reports_truncation() {
 }
 
 /// A vector grid can share its coordinate columns and matrices' shape with a
-/// heatmap: the field paints the cells and the arrows draw over it.
+/// heatmap and its contour: the field paints the cells, the isoline draws
+/// its level, and the arrows draw over both.
 #[test]
-fn grid_arrows_draw_over_a_heatmap_on_the_same_grid() {
+fn grid_arrows_draw_over_a_heatmap_and_contour_on_the_same_grid() {
     let Some(mut renderer) = try_renderer() else {
         return;
     };
     grid_fixture(&mut renderer, &GridLayout::Edges);
-    let z = col_f64(vec![10.0, 10.0]);
+    // z steps from 10 to 0 across x, so the 5 isoline runs vertically
+    // through the middle column of cells.
     renderer
         .add_columns(&[
-            ("z0", &z as &dyn renderer::ColumnSource),
-            ("z1", &z as &dyn renderer::ColumnSource),
-            ("z2", &z as &dyn renderer::ColumnSource),
+            (
+                "z0",
+                &col_f64(vec![10.0, 10.0]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "z1",
+                &col_f64(vec![5.0, 5.0]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "z2",
+                &col_f64(vec![0.0, 0.0]) as &dyn renderer::ColumnSource,
+            ),
         ])
         .unwrap();
     let mut chart = grid_chart();
@@ -905,7 +918,7 @@ fn grid_arrows_draw_over_a_heatmap_on_the_same_grid() {
         label: None,
         x_column: "gx".into(),
         y_column: "gy".into(),
-        render_type: DataRenderType::Heatmap {
+        render_type: DataRenderType::HeatmapContour {
             matrix: matrix(
                 &["z0", "z1", "z2"],
                 &MatrixOrientation::ColumnsAreX,
@@ -915,6 +928,19 @@ fn grid_arrows_draw_over_a_heatmap_on_the_same_grid() {
                 mode: FillMode::Continuous,
                 shading: Shading::Flat,
                 opacity: 1.0,
+            },
+            contour: ContourConfig {
+                levels: vec![5.0],
+                line: DataLineStyleConfig {
+                    line_style: LineStylePreset::Solid,
+                    line_color: BLUE,
+                    line_width: 3.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: LineInterpolation::Linear,
+                },
+                per_level_color: None,
+                labels: None,
             },
         },
     };
@@ -929,10 +955,29 @@ fn grid_arrows_draw_over_a_heatmap_on_the_same_grid() {
         ),
     ];
     let img = export(&mut renderer, &chart, &series);
-    let centre = data_to_px(&chart, 1.5, 0.5);
+    let centre = data_to_px(&chart, 0.5, 0.5);
     assert_red(&img, centre, 8.0, 0.0, "arrow over the field");
     let p = at(&img, centre, 8.0, 20.0);
-    assert!(is_green(p), "field under the arrow: {p:?}");
+    assert!(
+        is_green(p),
+        "the z = 10 cell under the arrow is the green stop: {p:?}"
+    );
+    let blue = img
+        .rgba
+        .chunks_exact(4)
+        .filter(|p| p[2] > 180 && p[0] < 80 && p[1] < 80 && p[3] > 180)
+        .count();
+    assert!(
+        blue > 100,
+        "the isoline draws on the shared grid ({blue} px)"
+    );
+    assert_red(
+        &img,
+        data_to_px(&chart, 2.5, 1.5),
+        8.0,
+        0.0,
+        "arrow over the z = 0 cell",
+    );
 }
 
 // ── Picking and selection ────────────────────────────────────────────────────

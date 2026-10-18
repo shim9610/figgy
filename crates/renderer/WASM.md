@@ -459,6 +459,8 @@ chart.set_series(JSON.stringify(series));  // GPU 스타일 재빌드 포함
 ```
 
 <!-- contour-contract: scope=wasm max-levels=1024 -->
+`set_series(json)` accepts `Vector` series in both forms (`components.Points` with index-aligned `u` / `v` columns, `components.Grid` with two matrices over the coordinate columns); a colour-mapped vector needs `colorbar`, and `selection_details` reports `u`, `v` and `color_value` for a picked arrow or cell. See [SCHEMA.md](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md).
+
 `set_series(json)`에서 `Contour`와 `HeatmapContour`의 `contour.levels`는 `0..=1024`개를 허용한다. 1025개 이상이면 JavaScript 예외를 반환하고 이전 설정·시리즈·GPU 스타일을 유지한다. 다음 프레임도 이전 상태로 그린다. WASM에만 더 작은 상한을 두거나 배열을 잘라서 처리하지 않는다.
 등고선 라벨도 자동·직접 지정 모두 1024개까지 지원한다. `spacing_px`는 라벨을 숨겼거나 앵커를 직접 지정했더라도 유한한 양수여야 한다. 자동 배치에서는 허용 범위로 제한한 프레임·출력 배율과 간격의 곱도 검사한다. 이 곱이 넘치거나 라벨 아틀라스가 어댑터의 텍스처 크기 한도를 넘으면 GPU 상태를 바꾸기 전에 실패해 이전 차트와 자원을 유지한다.
 
