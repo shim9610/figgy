@@ -16369,6 +16369,8 @@ mod tests {
             point_style_table: None,
             point_style_index_column: None,
             point_style_overrides: None,
+            point_color_map: None,
+            point_size_map: None,
         }
     }
 
@@ -18928,6 +18930,8 @@ mod tests {
             point_style_table: None,
             point_style_index_column: None,
             point_style_overrides: None,
+            point_color_map: None,
+            point_size_map: None,
         };
         let matrix = crate::data_config::MatrixRef {
             columns: vec!["z0".into()],
@@ -21402,6 +21406,8 @@ mod tests {
                     point_style_table: None,
                     point_style_index_column: None,
                     point_style_overrides: None,
+                    point_color_map: None,
+                    point_size_map: None,
                 },
                 line: DataLineStyleConfig {
                     line_style: crate::line::LineStylePreset::Solid,
@@ -21485,6 +21491,8 @@ mod tests {
                         point_style_table: None,
                         point_style_index_column: None,
                         point_style_overrides: None,
+                        point_color_map: None,
+                        point_size_map: None,
                     },
                 },
             });
@@ -22150,6 +22158,8 @@ mod tests {
                         ]),
                         point_style_index_column: Some("s_style".into()),
                         point_style_overrides: None,
+                        point_color_map: None,
+                        point_size_map: None,
                     },
                 },
             },
@@ -22244,6 +22254,8 @@ mod tests {
                     }]),
                     point_style_index_column: None,
                     point_style_overrides: None,
+                    point_color_map: None,
+                    point_size_map: None,
                 },
             },
         }];

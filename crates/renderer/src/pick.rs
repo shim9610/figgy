@@ -746,6 +746,8 @@ mod tests {
                     point_style_table: None,
                     point_style_index_column: None,
                     point_style_overrides: None,
+                    point_color_map: None,
+                    point_size_map: None,
                 },
             },
         }
@@ -772,6 +774,8 @@ mod tests {
                     point_style_table: None,
                     point_style_index_column: None,
                     point_style_overrides: None,
+                    point_color_map: None,
+                    point_size_map: None,
                 },
                 err_y: ErrorRef::Symmetric {
                     column: err_y.into(),

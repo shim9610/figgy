@@ -157,6 +157,8 @@ pub fn scatter_style(color: Color, shape: ScatterShape, size: f32) -> DataScatte
         point_style_table: None,
         point_style_index_column: None,
         point_style_overrides: None,
+        point_color_map: None,
+        point_size_map: None,
     }
 }
 

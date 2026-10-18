@@ -3712,6 +3712,8 @@ mod tests {
                     point_size: Some(5.0),
                 },
             }]),
+            point_color_map: None,
+            point_size_map: None,
         };
         let cpu_series = [scatter_series(
             "mapped",
@@ -4312,6 +4314,8 @@ mod tests {
             point_style_table: None,
             point_style_index_column: None,
             point_style_overrides: None,
+            point_color_map: None,
+            point_size_map: None,
         };
         let cpu_series = [scatter_series(
             "log-inverted",
@@ -4605,6 +4609,8 @@ mod tests {
             point_style_table: None,
             point_style_index_column: None,
             point_style_overrides: None,
+            point_color_map: None,
+            point_size_map: None,
         };
         let line = DataLineStyleConfig {
             line_style: LineStylePreset::Solid,
@@ -4634,6 +4640,8 @@ mod tests {
                 point_style_table: None,
                 point_style_index_column: None,
                 point_style_overrides: None,
+                point_color_map: None,
+                point_size_map: None,
             },
         );
 

@@ -54,6 +54,8 @@ fn bounded_source_cache_updates_styled_and_dashed_first_frame_without_source_rea
                             point_style_index_column: None,
                             point_style_table: None,
                             point_style_overrides: None,
+                            point_color_map: None,
+                            point_size_map: None,
                         },
                     };
                 }
@@ -67,6 +69,8 @@ fn bounded_source_cache_updates_styled_and_dashed_first_frame_without_source_rea
                             point_style_index_column: None,
                             point_style_table: None,
                             point_style_overrides: None,
+                            point_color_map: None,
+                            point_size_map: None,
                         },
                     };
                 }

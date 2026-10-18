@@ -482,6 +482,8 @@ mod tests {
                             ..Default::default()
                         },
                     }]),
+                    point_color_map: None,
+                    point_size_map: None,
                 },
             },
         }
