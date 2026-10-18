@@ -882,3 +882,164 @@ fn grid_axes_and_labels_draw_rings_spokes_and_angle_formats_at_both_scales() {
     let sample2 = polar_px(&scaled, 0.0, 0.5);
     assert!(is_red(at(&img2, sample2)), "2x sample at {sample2:?}");
 }
+
+/// The label offsets are read in polar frames: the angle labels move along
+/// their spokes (`label_offset_y`, outward positive), the radius labels
+/// along and across the ray; turning the ray moves its labels with it.
+#[test]
+fn label_offsets_move_labels_along_spokes_and_in_the_ray_frame() {
+    let mut renderer = renderer();
+    upload(&mut renderer, vec![0.0], vec![0.5]);
+    let chart_with = |angle: f64, bottom: [f32; 2], left: [f32; 2], radius_labels: bool| {
+        let mut chart = bare_chart(PolarOptions {
+            radial_label_angle_degrees: angle,
+            ..PolarOptions::default()
+        });
+        chart.set_x_range(0.0, 360.0);
+        let config = chart.config_mut();
+        config.bottom_x.major_spacing = 90.0;
+        config.bottom_x.label_style.visible = !radius_labels;
+        config.bottom_x.label_style.label_visible = !radius_labels;
+        config.bottom_x.label_style.label_offset_x = bottom[0];
+        config.bottom_x.label_style.label_offset_y = bottom[1];
+        config.bottom_x.line_visible = false;
+        config.left_y.major_spacing = 0.5;
+        config.left_y.label_style.visible = radius_labels;
+        config.left_y.label_style.label_visible = radius_labels;
+        config.left_y.label_style.label_offset_x = left[0];
+        config.left_y.label_style.label_offset_y = left[1];
+        config.left_y.line_visible = false;
+        chart
+    };
+    let series: [SeriesConfig; 0] = [];
+    let is_dark = |p: &[u8]| p[3] > 120 && p[0] < 120 && p[1] < 120 && p[2] < 120;
+    let centroid = |img: &RasterImage| {
+        let (mut sx, mut sy, mut n) = (0.0f64, 0.0f64, 0usize);
+        for y in 0..img.height {
+            for x in 0..img.width {
+                if is_dark(pixel(img, x, y)) {
+                    sx += f64::from(x);
+                    sy += f64::from(y);
+                    n += 1;
+                }
+            }
+        }
+        assert!(n > 0, "some label ink");
+        (sx / n as f64, sy / n as f64)
+    };
+    // Angle labels at 0, 90, 180 and 270 degrees: the extreme ink moves
+    // outward on every side by the radial offset, so the span grows by
+    // twice the offset in both directions and `label_offset_x` changes
+    // nothing.
+    let span = |img: &RasterImage| {
+        let (mut x0, mut x1, mut y0, mut y1) = (u32::MAX, 0, u32::MAX, 0);
+        for y in 0..img.height {
+            for x in 0..img.width {
+                if is_dark(pixel(img, x, y)) {
+                    x0 = x0.min(x);
+                    x1 = x1.max(x);
+                    y0 = y0.min(y);
+                    y1 = y1.max(y);
+                }
+            }
+        }
+        (x1 - x0, y1 - y0, x0, y0)
+    };
+    let plain = export(
+        &mut renderer,
+        &chart_with(90.0, [0.0, 0.0], [0.0, 0.0], false),
+        &series,
+    );
+    let outward = export(
+        &mut renderer,
+        &chart_with(90.0, [0.0, 12.0], [0.0, 0.0], false),
+        &series,
+    );
+    let sideways = export(
+        &mut renderer,
+        &chart_with(90.0, [30.0, 0.0], [0.0, 0.0], false),
+        &series,
+    );
+    save("polar-angle-labels-outward", &outward);
+    let (w0, h0, _, _) = span(&plain);
+    let (w1, h1, x1, y1) = span(&outward);
+    assert!(
+        (w1 as i64 - w0 as i64 - 24).abs() <= 2,
+        "width {w0} -> {w1}"
+    );
+    assert!(
+        (h1 as i64 - h0 as i64 - 24).abs() <= 2,
+        "height {h0} -> {h1}"
+    );
+    let (_, _, x0, y0) = span(&plain);
+    assert_eq!((x1 as i64 - x0 as i64, y1 as i64 - y0 as i64), (-12, -12));
+    assert_eq!(
+        plain.rgba, sideways.rgba,
+        "label_offset_x has no polar effect"
+    );
+
+    // Radius labels on a rightward ray: `label_offset_x` moves the ink
+    // right (along), `label_offset_y` up (across, the label side).
+    let base = centroid(&export(
+        &mut renderer,
+        &chart_with(0.0, [0.0, 0.0], [0.0, 0.0], true),
+        &series,
+    ));
+    let along = centroid(&export(
+        &mut renderer,
+        &chart_with(0.0, [0.0, 0.0], [20.0, 0.0], true),
+        &series,
+    ));
+    let across = centroid(&export(
+        &mut renderer,
+        &chart_with(0.0, [0.0, 0.0], [0.0, 15.0], true),
+        &series,
+    ));
+    assert!(
+        (along.0 - base.0 - 20.0).abs() < 1.5 && (along.1 - base.1).abs() < 1.5,
+        "{base:?} {along:?}"
+    );
+    assert!(
+        (across.1 - base.1 + 15.0).abs() < 1.5 && (across.0 - base.0).abs() < 1.5,
+        "{base:?} {across:?}"
+    );
+    // On an upward ray the same fields read up and left.
+    let up = centroid(&export(
+        &mut renderer,
+        &chart_with(90.0, [0.0, 0.0], [0.0, 0.0], true),
+        &series,
+    ));
+    let up_along = centroid(&export(
+        &mut renderer,
+        &chart_with(90.0, [0.0, 0.0], [20.0, 0.0], true),
+        &series,
+    ));
+    let up_across = centroid(&export(
+        &mut renderer,
+        &chart_with(90.0, [0.0, 0.0], [0.0, 15.0], true),
+        &series,
+    ));
+    assert!(
+        (up_along.1 - up.1 + 20.0).abs() < 1.5 && (up_along.0 - up.0).abs() < 1.5,
+        "{up:?} {up_along:?}"
+    );
+    assert!(
+        (up_across.0 - up.0 + 15.0).abs() < 1.5 && (up_across.1 - up.1).abs() < 1.5,
+        "{up:?} {up_across:?}"
+    );
+    // The hit map agrees with the raster: the rightward ray's labels sit
+    // above it and move with their offset.
+    let chart = chart_with(0.0, [0.0, 0.0], [0.0, 15.0], true);
+    let map = renderer::select::HitMap::standard_chart();
+    let measure = renderer::text_render::CpuTextMeasure::for_style(&chart.config().draw_style);
+    // (At the ink's height, on the ray's middle: the ink centroid itself
+    // leans left of the centre because the label at radius 0 is centred
+    // on it, which the representative strip does not model.)
+    let geometry = chart.config().polar_geometry().unwrap();
+    let probe = (geometry.center[0] + geometry.radius * 0.6, across.1 as f32);
+    let hit = map
+        .hit_test(chart.config(), &measure, probe.0, probe.1)
+        .and_then(|id| map.get(id))
+        .map(|el| el.element_id());
+    assert_eq!(hit.as_deref(), Some("tick_labels_left"), "{probe:?}");
+}

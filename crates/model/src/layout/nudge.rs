@@ -213,6 +213,31 @@ impl Config {
     /// elements use representative anchors here; exact glyph bounds are kept
     /// in the `Selectable` path and no text measurer is required by nudge.
     pub fn nudge(&mut self, element: Element, dx: f32, dy: f32) -> NudgeResult {
+        self.nudge_from(element, None, dx, dy)
+    }
+
+    /// [`Self::nudge`] with the pointer position `at` the delta was measured
+    /// from, when the host has one. Only a polar chart's axes and tick labels
+    /// read it: the ray turns by the pointer's angle around the centre and
+    /// the angle labels move along the spoke under the pointer. Without it
+    /// the ray turns as if grabbed on the outer ring and the angle labels
+    /// use the spoke at the zero angle.
+    pub fn nudge_from(
+        &mut self,
+        element: Element,
+        at: Option<[f32; 2]>,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        if self.polar.is_some() {
+            match &element {
+                Element::Axis(side) => return self.nudge_polar_axis(side.clone(), at, dx, dy),
+                Element::AxisLabel(side) => {
+                    return self.nudge_polar_axis_label(side.clone(), at, dx, dy);
+                }
+                _ => {}
+            }
+        }
         // Axis / data-area-edge moves have their own rules (perpendicular
         // only); everything else moves via stored offsets below.
         if let Element::Axis(side) = element {
@@ -363,6 +388,130 @@ impl Config {
     /// along the axis stay aligned with the data; the constraint is only that
     /// the axis line stays inside the chart area (it may cross into the data
     /// area, e.g. a y-axis at x = 0).
+    /// Polar: the radius axis ray turns around the centre. With the pointer,
+    /// the ray follows its angle exactly; without it, a point on the outer
+    /// ring follows the drag's component across the ray. The angle axis is
+    /// the outer ring, the data boundary, and has no move.
+    fn nudge_polar_axis(
+        &mut self,
+        side: Side,
+        at: Option<[f32; 2]>,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        if side != Side::Left {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        }
+        let Some(geometry) = self.polar_geometry() else {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        };
+        let Some(polar) = self.polar.as_mut() else {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        };
+        let turned = at
+            .and_then(|p| {
+                let before = geometry.screen_angle_of(p)?;
+                let after = geometry.screen_angle_of([p[0] + dx, p[1] + dy])?;
+                let mut turn = (after - before).to_degrees();
+                if turn > 180.0 {
+                    turn -= 360.0;
+                } else if turn < -180.0 {
+                    turn += 360.0;
+                }
+                Some(turn)
+            })
+            .or_else(|| {
+                if geometry.radius <= 0.0 {
+                    return None;
+                }
+                let s = polar.ray_side();
+                Some(f64::from((dx * s[0] + dy * s[1]) / geometry.radius).to_degrees())
+            });
+        let Some(turn) = turned else {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        };
+        polar.turn_ray(turn);
+        NudgeResult::Moved
+    }
+
+    /// Polar: the angle tick labels move along their spokes by the drag's
+    /// radial component at the pointer (`label_offset_y`, outward positive);
+    /// the radius tick labels move in the ray frame (`label_offset_x` along,
+    /// `label_offset_y` across). A representative label point must stay in
+    /// the chart area, as for every other element.
+    fn nudge_polar_axis_label(
+        &mut self,
+        side: Side,
+        at: Option<[f32; 2]>,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        let Some(geometry) = self.polar_geometry() else {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        };
+        let Some(polar) = self.polar.as_ref() else {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        };
+        let ca = &self.chart_area;
+        let inside = |p: (f32, f32)| {
+            p.0 >= ca.x as f32
+                && p.0 <= (ca.x + ca.width) as f32
+                && p.1 >= ca.y as f32
+                && p.1 <= (ca.y + ca.height) as f32
+        };
+        match side {
+            Side::Bottom => {
+                let spoke = at
+                    .and_then(|p| geometry.spoke_direction(p))
+                    .unwrap_or_else(|| {
+                        let a = polar.zero_angle_degrees.to_radians();
+                        [a.cos() as f32, -(a.sin() as f32)]
+                    });
+                let delta = dx * spoke[0] + dy * spoke[1];
+                let ls = &self.bottom_x.label_style;
+                let reach = geometry.radius
+                    + self.bottom_x.major_tick_length.max(0.0)
+                    + LABEL_GAP
+                    + LABEL_EXTENT_EST
+                    + ls.label_offset_y
+                    + delta;
+                let point = (
+                    geometry.center[0] + spoke[0] * reach,
+                    geometry.center[1] + spoke[1] * reach,
+                );
+                if !inside(point) {
+                    return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+                }
+                self.bottom_x.label_style.label_offset_y += delta;
+                NudgeResult::Moved
+            }
+            Side::Left => {
+                let dir = polar.ray_direction();
+                let across_dir = polar.ray_side();
+                let along = dx * dir[0] + dy * dir[1];
+                let across = dx * across_dir[0] + dy * across_dir[1];
+                let ls = &self.left_y.label_style;
+                let a = (geometry.inner_radius + geometry.radius) * 0.5 + ls.label_offset_x + along;
+                let c = self.left_y.major_tick_length.max(0.0)
+                    + LABEL_GAP
+                    + LABEL_EXTENT_EST
+                    + ls.label_offset_y
+                    + across;
+                let point = (
+                    geometry.center[0] + dir[0] * a + across_dir[0] * c,
+                    geometry.center[1] + dir[1] * a + across_dir[1] * c,
+                );
+                if !inside(point) {
+                    return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+                }
+                self.left_y.label_style.label_offset_x += along;
+                self.left_y.label_style.label_offset_y += across;
+                NudgeResult::Moved
+            }
+            Side::Top | Side::Right => NudgeResult::Rejected(NudgeReject::OutOfBounds),
+        }
+    }
+
     fn nudge_axis(&mut self, side: Side, dx: f32, dy: f32) -> NudgeResult {
         let d = match side {
             Side::Left | Side::Right => dx,

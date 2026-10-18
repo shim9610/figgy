@@ -31,11 +31,23 @@ use crate::select::{
 pub trait DragConfig {
     type Element;
     fn nudge(&mut self, element: Self::Element, dx: f32, dy: f32) -> NudgeResult;
+    /// [`Self::nudge`] with the pointer position `at` (chart-local logical
+    /// pixels) the delta was measured from. Elements whose rule depends on
+    /// where they were grabbed read it (a polar chart's ray turns around the
+    /// centre, its angle labels move along the spoke under the pointer);
+    /// the default ignores it.
+    fn nudge_at(&mut self, element: Self::Element, at: [f32; 2], dx: f32, dy: f32) -> NudgeResult {
+        let _ = at;
+        self.nudge(element, dx, dy)
+    }
 }
 impl DragConfig for Config {
     type Element = Element;
     fn nudge(&mut self, element: Element, dx: f32, dy: f32) -> NudgeResult {
         Config::nudge(self, element, dx, dy)
+    }
+    fn nudge_at(&mut self, element: Element, at: [f32; 2], dx: f32, dy: f32) -> NudgeResult {
+        Config::nudge_from(self, element, Some(at), dx, dy)
     }
 }
 
@@ -56,6 +68,15 @@ pub trait Draggable<C: DragConfig = Config>: Selectable<C> {
     fn drag_by(&self, cfg: &mut C, dx: f32, dy: f32) -> NudgeResult {
         cfg.nudge(self.nudge_element(), dx, dy)
     }
+
+    /// [`Self::drag_by`] with the pointer position `at` the delta was
+    /// measured from, for hosts that have it. Elements whose move depends on
+    /// where they were grabbed route it through [`DragConfig::nudge_at`];
+    /// the default is [`Self::drag_by`].
+    fn drag_from(&self, cfg: &mut C, at: [f32; 2], dx: f32, dy: f32) -> NudgeResult {
+        let _ = at;
+        self.drag_by(cfg, dx, dy)
+    }
 }
 
 impl Draggable for ChartTitleElement {
@@ -74,11 +95,19 @@ impl Draggable for AxisLabelElement {
     fn nudge_element(&self) -> Element {
         Element::AxisLabel(self.side.clone())
     }
+
+    fn drag_from(&self, cfg: &mut Config, at: [f32; 2], dx: f32, dy: f32) -> NudgeResult {
+        cfg.nudge_at(self.nudge_element(), at, dx, dy)
+    }
 }
 
 impl Draggable for AxisElement {
     fn nudge_element(&self) -> Element {
         Element::Axis(self.side.clone())
+    }
+
+    fn drag_from(&self, cfg: &mut Config, at: [f32; 2], dx: f32, dy: f32) -> NudgeResult {
+        cfg.nudge_at(self.nudge_element(), at, dx, dy)
     }
 }
 
@@ -410,5 +439,123 @@ mod tests {
         let bar = cfg.colorbar.as_ref().unwrap();
         assert_eq!((bar.offset_x, bar.offset_y), strip_offsets_before);
         assert_eq!(cfg.data_area().expect("data area"), area_before);
+    }
+
+    fn polar_cfg() -> Config {
+        let mut cfg = cfg_800x600();
+        cfg.polar = Some(crate::polar::PolarOptions::default());
+        cfg
+    }
+
+    /// The ray follows the pointer's angle around the centre; without a
+    /// pointer it turns as if grabbed on the outer ring. The ring itself
+    /// has no move.
+    #[test]
+    fn polar_ray_drag_turns_it_and_the_ring_is_rejected() {
+        let mut cfg = polar_cfg();
+        let geometry = cfg.polar_geometry().unwrap();
+        let (cx, cy, r) = (geometry.center[0], geometry.center[1], geometry.radius);
+        let ray = AxisElement { side: Side::Left };
+        // Grab the upward ray at half radius and move to 45 degrees.
+        let at = [cx, cy - r * 0.5];
+        let to = [cx + r * 0.5 * 0.7071, cy - r * 0.5 * 0.7071];
+        assert_eq!(
+            ray.drag_from(&mut cfg, at, to[0] - at[0], to[1] - at[1]),
+            NudgeResult::Moved
+        );
+        let angle = cfg.polar.as_ref().unwrap().radial_label_angle_degrees;
+        assert!((angle - 45.0).abs() < 0.5, "{angle}");
+        // Without a pointer, a drag across the ray by r/2 turns by 0.5 rad.
+        let mut cfg = polar_cfg();
+        assert_eq!(ray.drag_by(&mut cfg, -r * 0.5, 0.0), NudgeResult::Moved);
+        let angle = cfg.polar.as_ref().unwrap().radial_label_angle_degrees;
+        assert!(
+            (angle - (90.0 + 0.5f64.to_degrees())).abs() < 0.5,
+            "{angle}"
+        );
+        // A full turn wraps.
+        let mut cfg = polar_cfg();
+        cfg.nudge_from(Element::Axis(Side::Left), Some([cx, cy - r]), 0.0, 2.0 * r);
+        let angle = cfg.polar.as_ref().unwrap().radial_label_angle_degrees;
+        assert!((angle - 270.0).abs() < 0.5, "{angle}");
+        let before = cfg.clone();
+        assert_eq!(
+            AxisElement { side: Side::Bottom }.drag_from(&mut cfg, [cx + r, cy], 5.0, 5.0),
+            NudgeResult::Rejected(NudgeReject::OutOfBounds)
+        );
+        assert_eq!(cfg, before);
+        assert_eq!(cfg.left_y.line_offset, 0.0, "no detach in polar mode");
+    }
+
+    /// Angle labels move along the spoke under the pointer, radius labels
+    /// in the ray frame.
+    #[test]
+    fn polar_label_drags_use_the_spoke_and_the_ray_frame() {
+        let mut cfg = polar_cfg();
+        let geometry = cfg.polar_geometry().unwrap();
+        let (cx, cy, r) = (geometry.center[0], geometry.center[1], geometry.radius);
+        let labels = AxisLabelElement { side: Side::Bottom };
+        // Grab the label at 180 degrees and drag left: outward there.
+        assert_eq!(
+            labels.drag_from(&mut cfg, [cx - r - 12.0, cy], -10.0, 0.0),
+            NudgeResult::Moved
+        );
+        assert!((cfg.bottom_x.label_style.label_offset_y - 10.0).abs() < 1e-5);
+        assert_eq!(cfg.bottom_x.label_style.label_offset_x, 0.0);
+        // Grab the label at 90 degrees and drag down: inward there; the
+        // tangential part is dropped.
+        assert_eq!(
+            labels.drag_from(&mut cfg, [cx, cy - r - 12.0], 30.0, 4.0),
+            NudgeResult::Moved
+        );
+        assert!((cfg.bottom_x.label_style.label_offset_y - 6.0).abs() < 1e-5);
+        // Without a pointer the spoke at the zero angle (right) is used.
+        assert_eq!(labels.drag_by(&mut cfg, 5.0, 0.0), NudgeResult::Moved);
+        assert!((cfg.bottom_x.label_style.label_offset_y - 11.0).abs() < 1e-5);
+        // Far past the chart area the move is rejected.
+        assert_eq!(
+            labels.drag_from(&mut cfg, [cx - r - 12.0, cy], -2000.0, 0.0),
+            NudgeResult::Rejected(NudgeReject::OutOfBounds)
+        );
+
+        // Radius labels: the ray points up, so screen up is `along` and
+        // screen left is `across` (the label side).
+        let radius_labels = AxisLabelElement { side: Side::Left };
+        assert_eq!(
+            radius_labels.drag_from(&mut cfg, [cx - 20.0, cy - r * 0.5], -7.0, -9.0),
+            NudgeResult::Moved
+        );
+        assert!(
+            (cfg.left_y.label_style.label_offset_x - 9.0).abs() < 1e-5,
+            "along"
+        );
+        assert!(
+            (cfg.left_y.label_style.label_offset_y - 7.0).abs() < 1e-5,
+            "across"
+        );
+        // The same screen drag on a rightward ray reads the other way round.
+        let mut cfg = polar_cfg();
+        cfg.polar.as_mut().unwrap().radial_label_angle_degrees = 0.0;
+        assert_eq!(
+            radius_labels.drag_by(&mut cfg, -7.0, -9.0),
+            NudgeResult::Moved
+        );
+        assert!(
+            (cfg.left_y.label_style.label_offset_x + 7.0).abs() < 1e-5,
+            "along"
+        );
+        assert!(
+            (cfg.left_y.label_style.label_offset_y - 9.0).abs() < 1e-5,
+            "across"
+        );
+        // Other elements take the plain path with or without a pointer.
+        let mut cfg = polar_cfg();
+        let title = ChartTitleElement;
+        assert_eq!(
+            title.drag_from(&mut cfg, [10.0, 10.0], 4.0, 3.0),
+            NudgeResult::Moved
+        );
+        assert_eq!(cfg.chart_title.offset_x, 4.0);
+        assert_eq!(cfg.chart_title.offset_y, 3.0);
     }
 }

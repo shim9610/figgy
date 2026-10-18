@@ -63,7 +63,7 @@ pub struct Config {
 | `font_size` | f32 | px |
 | `label_visible` | bool | Number labels themselves (separate from `visible`, e.g. show the axis but hide labels) |
 | `label_font` | String | Font family. Empty string → bundled Liberation Sans. A family that is neither registered nor installed also falls back to it; `text_render::font_family_available(name)` tells hosts whether a name resolves. A character the face cannot draw falls back per character to registered fonts, the bundled Liberation Sans, then (native only) installed system fonts |
-| `label_offset_x / y` | f32 | Fine nudge offset (px) |
+| `label_offset_x / y` | f32 | Fine nudge offset (px). In polar mode the angle axis reads `y` along the spoke and ignores `x`; the radius axis reads `x` along the ray and `y` across it (see `PolarOptions`) |
 | `format` | `LabelFormat` | `Decimal / Power / Scientific / Timestamp / Degrees / Radians`. `Timestamp` interprets numeric values as Unix epoch time on linear axes and can use calendar-aware ticks. `Degrees` is decimal with a degree sign; `Radians` writes multiples of π (`π/2`, `3π/4`, `0.4π`) |
 | `significant_digits` | u8 | Requested numeric precision (1–15 for decimal/scientific labels). Linear decimal labels share a decimal count based on range magnitude, raised only as needed to distinguish the tick interval; logarithmic labels round each value. Does not change tick positions |
 
@@ -126,7 +126,7 @@ area that leaves one band of angle labels inside it (`Config::polar_geometry`).
 | `sector: Option<[f64; 2]>` | The visible angular window in `angle_unit`, at most one turn; drawing is clipped at its edges. `None` (default) is the full circle, where an angle outside the axis range lands where `cos` / `sin` put it: nothing is wrapped, sorted or deduplicated |
 | `inner_radius_fraction: f32` | The hole at the centre as a fraction of the outer radius, `0.0..=0.9`; `left_y.min` maps to this ring |
 | `interpolation: PolarInterpolation` | `Chord` (default): a segment between two samples is straight on screen. `Arc { pieces }` (1–64): the segment is `pieces` chords between points interpolated linearly in (angle, radius), so a constant radius follows its ring; dashes and picking walk the same pieces |
-| `radial_label_angle_degrees: f64` | The screen direction of the ray the radius axis line and its tick labels sit on, default 90 (up) |
+| `radial_label_angle_degrees: f64` | The screen direction of the ray the radius axis line and its tick labels sit on, default 90 (up). Dragging the ray turns it |
 
 The grid draws `*_y` fields as rings at the radius ticks and `*_x` fields as
 spokes at the angle ticks. The angle axis is the outer ring with its ticks
@@ -151,9 +151,27 @@ non-inverted angle axis (use `clockwise`), and no `overlays`. Series that have
 no polar form are rejected with `InvalidSeriesConfig`: histograms, heatmaps,
 contours, error bars and vectors; `Arc` needs a linearly interpolated line.
 Streamed sources are rejected. Annotations anchor by ratio only; data anchors
-report a skip. The axis lines and tick labels register no drag region in
-polar mode. Subplots carry their own `polar`, so polar and rectangular panels
-mix in one document.
+report a skip. Subplots carry their own `polar`, so polar and rectangular
+panels mix in one document.
+
+Dragging follows the polar frames. The radius axis ray (`"axis_left"`) turns
+around the centre: with the pointer position (`Draggable::drag_from`,
+`Config::nudge_from`, what `on_move` sends) it follows the pointer's angle
+exactly, without one (`drag_by`, keyboard nudges) a point on the outer ring
+follows the drag's component across the ray; the result lands in
+`radial_label_angle_degrees`. The angle axis is the outer ring, the data
+boundary, so `"axis_bottom"` has no hit region and no detach (`line_offset`
+is ignored). The angle tick labels (`"tick_labels_bottom"`) move along their
+own spokes: the drag's radial component at the pointer (the spoke at the zero
+angle without one) accumulates in `bottom_x.label_style.label_offset_y`,
+outward when positive, and `label_offset_x` has no effect. The radius tick
+labels (`"tick_labels_left"`) move in the ray frame:
+`left_y.label_style.label_offset_x` is along the ray (outward positive),
+`label_offset_y` across it (toward the label side, counter-clockwise from the
+ray, positive), so they keep their place when the ray turns. The top and
+right axes are not drawn and register nothing, their titles included. Chart
+title, the bottom and left axis titles, legend, data area and annotations
+keep the rectangular rules.
 
 ### `LayerRef` / `AnnotationLayer`
 
@@ -771,7 +789,7 @@ pub struct Config {
 | `font_size` | f32 | px |
 | `label_visible` | bool | 숫자 라벨 표시 여부. 축을 켠 상태에서 숫자만 숨길 수 있다. |
 | `label_font` | String | 글꼴 이름. 빈 문자열이면 내장 Liberation Sans를 쓴다. 등록되지도 설치되지도 않은 이름도 이 글꼴로 대체되며, 호스트는 `text_render::font_family_available(name)`으로 이름이 해석되는지 확인할 수 있다. 이 글꼴에 없는 글자는 글자마다 등록 글꼴, 내장 Liberation Sans, 설치된 시스템 글꼴(네이티브 전용) 순으로 찾아 그린다. |
-| `label_offset_x / y` | f32 | 라벨 위치를 미세 조절하는 이동량(px) |
+| `label_offset_x / y` | f32 | 라벨 위치를 미세 조절하는 이동량(px). 극좌표 모드에서 각도 축은 `y`를 스포크 방향으로 읽고 `x`를 무시하며, 반지름 축은 `x`를 광선 방향, `y`를 수직 방향으로 읽는다(`PolarOptions` 참고) |
 | `format` | `LabelFormat` | `Decimal / Power / Scientific / Timestamp / Degrees / Radians`. `Timestamp`는 선형축의 숫자 좌표를 Unix 시간으로 표시하며 달력 기준 눈금을 지원한다. `Degrees`는 소수에 도(°) 기호를 붙이고, `Radians`는 π의 배수(`π/2`, `3π/4`, `0.4π`)로 적는다. |
 | `significant_digits` | u8 | 숫자 표시에 요청하는 정밀도(소수·과학 표기는 1~15). 선형 소수 라벨은 범위의 크기를 기준으로 소수 자릿수를 통일하고 눈금 간격을 구분하는 데 필요한 만큼만 늘린다. 로그 라벨은 값마다 반올림한다. 눈금 위치는 바뀌지 않는다. |
 
@@ -821,7 +839,7 @@ pub struct Config {
 | `sector: Option<[f64; 2]>` | `angle_unit` 단위의 가시 각도 창. 한 바퀴 이하이며 경계에서 클립된다. `None`(기본)은 전체 원이고, 축 범위 밖 각도는 `cos`/`sin`이 두는 자리에 그린다. 감싸기·정렬·중복 제거는 하지 않는다 |
 | `inner_radius_fraction: f32` | 바깥 반지름에 대한 중앙 구멍 비율, `0.0..=0.9`. `left_y.min`이 이 고리에 놓인다 |
 | `interpolation: PolarInterpolation` | `Chord`(기본): 두 표본 사이 세그먼트는 화면에서 직선. `Arc { pieces }`(1~64): (각도, 반지름)에서 선형 보간한 점들을 잇는 `pieces`개의 현으로, 반지름이 일정하면 고리를 따른다. 대시와 피킹도 같은 조각을 따라간다 |
-| `radial_label_angle_degrees: f64` | 반지름 축 선과 눈금 라벨이 놓이는 광선의 화면 방향(도). 기본 90(위) |
+| `radial_label_angle_degrees: f64` | 반지름 축 선과 눈금 라벨이 놓이는 광선의 화면 방향(도). 기본 90(위). 광선을 드래그하면 바뀐다 |
 
 격자는 `*_y` 필드를 반지름 눈금의 고리로, `*_x` 필드를 각도 눈금의 스포크로 그린다. 각도 축은
 바깥 고리이며 눈금은 바깥쪽을 향하고 라벨은 둘레에 놓인다. 전체 원에서는 두 눈금이 겹치는
@@ -838,8 +856,20 @@ pub struct Config {
 선형이며 뒤집지 않은 각도 축(`clockwise`를 쓴다), 그리고 `overlays` 없음. 극좌표 형태가 없는
 시리즈는 `InvalidSeriesConfig`로 거부한다: 히스토그램, 히트맵, 등고선, 오차 막대, 벡터. `Arc`는
 선형 보간 선이 필요하다. 스트리밍 소스는 거부한다. 주석은 비율 앵커만 쓰고 데이터 앵커는 건너뛴
-것으로 보고한다. 극좌표 모드에서는 축 선과 눈금 라벨의 드래그 영역을 등록하지 않는다. 서브플롯은
-각자 `polar`를 가지므로 한 문서에 극좌표 패널과 직교 패널을 섞을 수 있다.
+것으로 보고한다. 서브플롯은 각자 `polar`를 가지므로 한 문서에 극좌표 패널과 직교 패널을 섞을 수
+있다.
+
+드래그는 극좌표 프레임을 따른다. 반지름 축 광선(`"axis_left"`)은 중심을 축으로 돈다. 포인터 위치가
+있으면(`Draggable::drag_from`, `Config::nudge_from`, `on_move`가 보내는 값) 포인터의 각도를 그대로
+따르고, 없으면(`drag_by`, 키보드 이동) 바깥 고리 위의 점이 드래그의 광선 수직 성분만큼 따라간다.
+결과는 `radial_label_angle_degrees`에 기록된다. 각도 축은 바깥 고리, 곧 데이터 경계이므로
+`"axis_bottom"`은 히트 영역도 분리(`line_offset`)도 없다. 각도 눈금 라벨(`"tick_labels_bottom"`)은
+각자 자기 스포크를 따라 움직인다. 포인터 위치에서의 반경 성분(없으면 0도 스포크)이
+`bottom_x.label_style.label_offset_y`에 누적되며 양수가 바깥쪽이고 `label_offset_x`는 효과가 없다.
+반지름 눈금 라벨(`"tick_labels_left"`)은 광선 프레임에서 움직인다. `left_y.label_style.label_offset_x`는
+광선 방향(바깥이 양수), `label_offset_y`는 수직 방향(라벨이 놓인 쪽, 광선에서 반시계 방향이 양수)이라
+광선이 돌아도 같은 자리를 지킨다. 상단·우측 축은 그리지 않으며 제목을 포함해 아무것도 등록하지
+않는다. 차트 제목, 하단·좌측 축 제목, 범례, 그리기 영역, 주석은 직교 규칙 그대로다.
 
 ### `LayerRef` / `AnnotationLayer`
 

@@ -33,9 +33,17 @@ at the time. The first crates.io publication is recorded below.
   chart.
 - The grid draws rings and spokes, the angle axis is the outer ring with
   its labels around it and the radius axis the ray at the radial label
-  angle; new `LabelFormat::Degrees` and `LabelFormat::Radians`. Axis lines
-  and tick labels register no drag region in polar mode; annotations use
-  ratio anchors. GPU picking passes every sample through the X gate and
+  angle; new `LabelFormat::Degrees` and `LabelFormat::Radians`. Dragging
+  follows the polar frames: the ray turns around the centre
+  (`radial_label_angle_degrees`), the angle labels move along their spokes
+  (`bottom_x` `label_offset_y`, outward positive) and the radius labels in
+  the ray frame (`left_y` `label_offset_x` along, `label_offset_y` across);
+  the ring and the top and right axes register nothing. New
+  `Draggable::drag_from` and `Config::nudge_from` carry the pointer
+  position these rules read (`DragConfig::nudge_at` for state types); the
+  defaults fall back to `drag_by` / `nudge`, and `FiggyChart::on_move`
+  sends the position. `PolarGeometry` gains `inner_radius`. Annotations
+  use ratio anchors. GPU picking passes every sample through the X gate and
   tests the full projection in the Y gate; lines go to the exact pass.
 - Histograms, fields, contours, error bars, vectors, `overlays`, a
   logarithmic or inverted angle axis and streamed sources are explicit

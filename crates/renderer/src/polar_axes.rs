@@ -191,17 +191,21 @@ fn tick_text(axis: &AxisOptions, value: f64, fp: FontPolicy) -> (NumericTickText
 }
 
 /// Draw a label whose box is centred on `center`.
+/// Draw `text` centred on `center` plus `offset`: the label offset fields
+/// are read in polar frames (`PolarOptions::angle_label_offset`,
+/// `PolarOptions::radius_label_offset`), not as screen x / y.
 fn draw_centered(
     canvas: &mut Canvas,
     text: &NumericTickText,
     center: (f32, f32),
+    offset: (f32, f32),
     m: TextMetrics,
     ls: &LabelStyle,
     fp: FontPolicy,
 ) {
     let origin = (
-        center.0 - m.width * 0.5 + ls.label_offset_x,
-        center.1 + (m.ascent - m.descent) * 0.5 + ls.label_offset_y,
+        center.0 - m.width * 0.5 + offset.0,
+        center.1 + (m.ascent - m.descent) * 0.5 + offset.1,
     );
     match text {
         NumericTickText::Plain(text) => draw_plain_text(
@@ -241,7 +245,7 @@ pub(super) fn draw_polar_axes(
         return;
     };
     let (start, sweep) = sweep(polar, &config.bottom_x);
-    let inner = geometry.radius * polar.inner_radius_fraction;
+    let inner = geometry.inner_radius;
 
     // Angle axis.
     let axis = &config.bottom_x;
@@ -316,6 +320,7 @@ pub(super) fn draw_polar_axes(
             };
         }
         let band = outward_tick(axis) + 4.0;
+        let radial = PolarOptions::angle_label_offset(ls);
         let mut drawn = 0usize;
         for (i, value) in majors.iter().enumerate() {
             if !angle_drawn(polar, *value, &majors[..i]) {
@@ -334,7 +339,8 @@ pub(super) fn draw_polar_axes(
                 geometry.center[0] + dx * (geometry.radius + reach),
                 geometry.center[1] + dy * (geometry.radius + reach),
             );
-            draw_centered(canvas, &text, center, m, ls, fp);
+            // Along the spoke, so every label keeps its distance to the ring.
+            draw_centered(canvas, &text, center, (dx * radial, dy * radial), m, ls, fp);
         }
     }
 
@@ -386,6 +392,7 @@ pub(super) fn draw_polar_axes(
     }
     let ls = &axis.label_style;
     if ls.visible && ls.label_visible {
+        let offset = polar.radius_label_offset(ls);
         let labels = visible_numeric_labels(axis, Side::Left, fp, &majors, |value| {
             point(&geometry, ray, ring_radius(polar, &geometry, axis, value))
         });
@@ -408,7 +415,15 @@ pub(super) fn draw_polar_axes(
                 label.position.0 + side.0 * reach - dir.0 * inward,
                 label.position.1 + side.1 * reach - dir.1 * inward,
             );
-            draw_centered(canvas, &label.text, center, m, ls, fp);
+            draw_centered(
+                canvas,
+                &label.text,
+                center,
+                (offset[0], offset[1]),
+                m,
+                ls,
+                fp,
+            );
         }
     }
 }

@@ -5,7 +5,7 @@
 //! `left_y` as the radius. `None` (the default, omitted from JSON) is the
 //! rectangular chart every document had before the field.
 
-use crate::config::{AxisScale, Config};
+use crate::config::{AxisScale, Config, LabelStyle};
 
 /// The most pieces one segment is subdivided into under
 /// [`PolarInterpolation::Arc`].
@@ -83,6 +83,7 @@ pub struct PolarOptions {
     pub interpolation: PolarInterpolation,
     /// The screen direction of the ray the radial tick labels and the radial
     /// axis line sit on, in degrees counter-clockwise from the right.
+    /// Dragging the ray (`Element::Axis(Side::Left)`) turns it.
     pub radial_label_angle_degrees: f64,
 }
 
@@ -108,9 +109,70 @@ pub struct PolarGeometry {
     /// The outer ring: the largest circle inside the data area that leaves
     /// one band of angular tick labels inside the area.
     pub radius: f32,
+    /// The hole: `radius * inner_radius_fraction`.
+    pub inner_radius: f32,
+}
+
+impl PolarGeometry {
+    /// The unit direction from the centre to `at`, or `None` within a pixel
+    /// of the centre.
+    pub fn spoke_direction(&self, at: [f32; 2]) -> Option<[f32; 2]> {
+        let (dx, dy) = (at[0] - self.center[0], at[1] - self.center[1]);
+        let len = dx.hypot(dy);
+        (len >= 1.0).then(|| [dx / len, dy / len])
+    }
+
+    /// The screen angle of `at` around the centre in radians, counter-
+    /// clockwise from the right with y up, or `None` within a pixel of the
+    /// centre.
+    pub fn screen_angle_of(&self, at: [f32; 2]) -> Option<f64> {
+        let d = self.spoke_direction(at)?;
+        Some(f64::from(-d[1]).atan2(f64::from(d[0])))
+    }
 }
 
 impl PolarOptions {
+    /// The screen unit vector of the radius axis ray, from the centre
+    /// outward: `radial_label_angle_degrees` with y down.
+    pub fn ray_direction(&self) -> [f32; 2] {
+        let a = self.radial_label_angle_degrees.to_radians();
+        [a.cos() as f32, -(a.sin() as f32)]
+    }
+
+    /// The unit vector across the ray on the side its tick labels sit:
+    /// counter-clockwise from the ray on screen.
+    pub fn ray_side(&self) -> [f32; 2] {
+        let d = self.ray_direction();
+        [d[1], -d[0]]
+    }
+
+    /// Turn the ray by `degrees` counter-clockwise, keeping the angle in
+    /// `0..360`.
+    pub fn turn_ray(&mut self, degrees: f64) {
+        self.radial_label_angle_degrees =
+            (self.radial_label_angle_degrees + degrees).rem_euclid(360.0);
+    }
+
+    /// The screen offset of the radius tick labels. In polar mode
+    /// `left_y.label_style.label_offset_x` is read along the ray (outward
+    /// when positive) and `label_offset_y` across it (toward the label side
+    /// when positive), so a dragged offset follows the ray when it turns.
+    pub fn radius_label_offset(&self, labels: &LabelStyle) -> [f32; 2] {
+        let d = self.ray_direction();
+        let s = self.ray_side();
+        [
+            d[0] * labels.label_offset_x + s[0] * labels.label_offset_y,
+            d[1] * labels.label_offset_x + s[1] * labels.label_offset_y,
+        ]
+    }
+
+    /// The radial offset of the angle tick labels. In polar mode
+    /// `bottom_x.label_style.label_offset_y` moves every label along its own
+    /// spoke, outward when positive; `label_offset_x` has no effect.
+    pub fn angle_label_offset(labels: &LabelStyle) -> f32 {
+        labels.label_offset_y
+    }
+
     /// The screen angle of an angle-column `value`, in radians,
     /// counter-clockwise from the right with y up.
     pub fn screen_angle(&self, value: f64) -> f64 {
@@ -201,7 +263,11 @@ impl Config {
                 2.0
             };
         let radius = (half - band).max(0.0);
-        Some(PolarGeometry { center, radius })
+        Some(PolarGeometry {
+            center,
+            radius,
+            inner_radius: radius * self.polar.as_ref()?.inner_radius_fraction,
+        })
     }
 
     /// Validate `polar` against the axes it reads; `None` always passes.

@@ -161,8 +161,14 @@ DPR이나 PNG 배율은 저장한 논리 영역을 바꾸지 않는다. 캔버�
 분기하는 코드는 `DataArea`, `DataAreaEdge(Side)`를 처리해야 한다. `DataAreaEdge`는 리사이즈
 내부의 변이 대상이며 별도 히트 영역으로 등록하지 않는다. 이전 JSON은 영역을 자동 배치로 읽는다.
 
-극좌표 차트(`Config.polar`)에서는 축 선이 바깥 고리와 광선이므로 `Axis(Side)`와 `AxisLabel(Side)`는
-히트 영역을 등록하지 않는다(첫 버전에서는 축 드래그 없음). 제목·축 제목·범례·그리기 영역은 그대로다.
+극좌표 차트(`Config.polar`)에서는 축이 바깥 고리와 광선이다. 고리(`Axis(Bottom)`)는 데이터 경계라
+히트 영역이 없고, 광선(`Axis(Left)`)은 드래그하면 중심을 축으로 돌아 `radial_label_angle_degrees`가
+바뀐다. 각도 눈금 라벨은 포인터가 있는 스포크를 따라 안팎으로, 반지름 눈금 라벨은 광선 프레임에서
+움직인다. 포인터 위치가 필요한 규칙이므로 `Draggable::drag_from(cfg, at, dx, dy)`와
+`Config::nudge_from(element, Some(at), dx, dy)`가 추가됐다. 기본 구현은 `drag_by`로 넘어가고 다른
+요소는 영향이 없으며, 웹 래퍼의 `on_move`는 누른 지점에 이동량을 누적한 포인터 위치를 넘긴다.
+상단·우측 축과 그 제목은 등록하지 않는다. 자세한 규칙은 `CONFIG.md`의 `PolarOptions` 절에 있다.
+제목·축 제목·범례·그리기 영역은 그대로다.
 
 이 문서는 renderer crate의 Rust API다. Cartesian용 `FiggyChart`와 별도로 현재 WASM
 래퍼는 원형·범주형 막대·박스플롯·레이더를 위한 `FiggyBoundedChart`를 제공한다. 이 클래스는

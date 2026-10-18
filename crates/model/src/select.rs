@@ -18,10 +18,12 @@ use crate::decoration::DecorationId;
 use crate::drag::{DragConfig, Draggable};
 use crate::layer::LayerRef;
 use crate::layout::{
-    Element, NudgeReject, NudgeResult, RectF, Side, TitleBand, axis_offset, axis_title_placement,
-    axis_visibility_rect, chart_title_placement, colorbar_rect, colorbar_title_placement,
-    label_origin, label_rect, legend_rect, point_on_rect_side, rect_axis_visibility_rect,
+    Element, LABEL_GAP, NudgeReject, NudgeResult, RectF, Side, TitleBand, axis_offset,
+    axis_title_placement, axis_visibility_rect, chart_title_placement, colorbar_rect,
+    colorbar_title_placement, label_origin, label_rect, legend_rect, point_on_rect_side,
+    rect_axis_visibility_rect,
 };
+use crate::polar::PolarOptions;
 use crate::resize::Resizable;
 use crate::text::MeasureText;
 
@@ -405,6 +407,15 @@ impl Draggable for SubplotElement {
         };
         self.edit(cfg, |chart| drag.drag_by(chart, dx, dy))
     }
+
+    fn drag_from(&self, cfg: &mut Config, at: [f32; 2], dx: f32, dy: f32) -> NudgeResult {
+        let Some(drag) = self.inner.as_draggable() else {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        };
+        // A subplot's chart keeps document coordinates, so the pointer
+        // passes through unchanged.
+        self.edit(cfg, |chart| drag.drag_from(chart, at, dx, dy))
+    }
 }
 
 impl Resizable for SubplotElement {
@@ -570,16 +581,137 @@ fn visible_colorbar_rect(cfg: &Config) -> Option<(&crate::config::ColorBarOption
     (rect.width > 0.0 && rect.height > 0.0).then_some((bar, rect))
 }
 
+/// Half the width of the hit strip along a polar ray or across a label strip
+/// edge, in logical pixels.
+const POLAR_RAY_HIT_HALF_WIDTH: f32 = 4.0;
+
+/// The radius axis ray of a polar chart: centre, unit direction, the radii
+/// it spans and the side vector its labels sit on. `None` off polar mode or
+/// when the layout is infeasible.
+struct PolarRay {
+    center: [f32; 2],
+    dir: [f32; 2],
+    side: [f32; 2],
+    inner: f32,
+    outer: f32,
+}
+
+fn polar_ray(cfg: &Config) -> Option<PolarRay> {
+    let polar = cfg.polar.as_ref()?;
+    let geometry = cfg.polar_geometry()?;
+    Some(PolarRay {
+        center: geometry.center,
+        dir: polar.ray_direction(),
+        side: polar.ray_side(),
+        inner: geometry.inner_radius,
+        outer: geometry.radius,
+    })
+}
+
+impl PolarRay {
+    /// `(along, across)` coordinates of a screen point in the ray frame.
+    fn frame(&self, x: f32, y: f32) -> (f32, f32) {
+        let (dx, dy) = (x - self.center[0], y - self.center[1]);
+        (
+            dx * self.dir[0] + dy * self.dir[1],
+            dx * self.side[0] + dy * self.side[1],
+        )
+    }
+
+    /// The axis-aligned box around the ray-frame rectangle
+    /// `along0..along1` by `across0..across1`.
+    fn aabb(&self, along: (f32, f32), across: (f32, f32)) -> RectF {
+        let corners = [
+            (along.0, across.0),
+            (along.1, across.0),
+            (along.0, across.1),
+            (along.1, across.1),
+        ]
+        .map(|(a, c)| {
+            (
+                self.center[0] + self.dir[0] * a + self.side[0] * c,
+                self.center[1] + self.dir[1] * a + self.side[1] * c,
+            )
+        });
+        let x0 = corners.iter().map(|c| c.0).fold(f32::INFINITY, f32::min);
+        let x1 = corners
+            .iter()
+            .map(|c| c.0)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let y0 = corners.iter().map(|c| c.1).fold(f32::INFINITY, f32::min);
+        let y1 = corners
+            .iter()
+            .map(|c| c.1)
+            .fold(f32::NEG_INFINITY, f32::max);
+        RectF {
+            x: x0,
+            y: y0,
+            width: x1 - x0,
+            height: y1 - y0,
+        }
+    }
+}
+
+/// The strip the polar radius tick labels occupy, in the ray frame:
+/// `(along0..along1, across0..across1)`, the representative strip the
+/// straight axes use, shifted by the label offset read in that frame.
+fn polar_radius_label_strip(
+    cfg: &Config,
+    ray: &PolarRay,
+    measure: &dyn MeasureText,
+) -> ((f32, f32), (f32, f32)) {
+    let axis = &cfg.left_y;
+    let m = representative_label_extents(axis, measure);
+    let (_, outward) = crate::layout::axis_visibility_extent(axis);
+    let band = outward + LABEL_GAP;
+    let thickness = ray.side[0].abs() * m.width + ray.side[1].abs() * m.height();
+    let ls = &axis.label_style;
+    (
+        (
+            ray.inner - m.height() * 0.5 + ls.label_offset_x,
+            ray.outer + ls.label_offset_x,
+        ),
+        (
+            band + ls.label_offset_y,
+            band + thickness + ls.label_offset_y,
+        ),
+    )
+}
+
+/// The annulus the polar angle tick labels occupy: `(inner, outer)` radii
+/// from the centre, shifted by the radial label offset.
+fn polar_angle_label_band(cfg: &Config, measure: &dyn MeasureText) -> Option<(f32, f32)> {
+    let geometry = cfg.polar_geometry()?;
+    let axis = &cfg.bottom_x;
+    let m = representative_label_extents(axis, measure);
+    let (_, outward) = crate::layout::axis_visibility_extent(axis);
+    let radial = PolarOptions::angle_label_offset(&axis.label_style);
+    let inner = (geometry.radius + outward + LABEL_GAP + radial).max(0.0);
+    Some((inner, inner + m.width.max(m.height())))
+}
+
 impl Selectable for AxisElement {
     fn element_id(&self) -> String {
         format!("axis_{}", side_str(&self.side))
     }
 
     fn bounds(&self, cfg: &Config, _measure: &dyn MeasureText) -> Option<RectF> {
-        // A polar chart's axes are a ring and a ray; their drag is not part
-        // of the first version, so they register no hit region.
+        // A polar chart draws the angle axis as the outer ring, which is the
+        // data boundary and has no detached position, and the radius axis as
+        // the ray; only the ray is selectable (its drag turns it).
         if cfg.polar.is_some() {
-            return None;
+            if self.side != Side::Left {
+                return None;
+            }
+            let axis = &cfg.left_y;
+            if !axis.line_visible && matches!(axis.tick, TickVisibility::None) {
+                return None;
+            }
+            let ray = polar_ray(cfg)?;
+            return Some(ray.aabb(
+                (ray.inner, ray.outer),
+                (-POLAR_RAY_HIT_HALF_WIDTH, POLAR_RAY_HIT_HALF_WIDTH),
+            ));
         }
         let axis = axis_of(cfg, &self.side);
         if !axis.line_visible && matches!(axis.tick, TickVisibility::None) {
@@ -588,6 +720,23 @@ impl Selectable for AxisElement {
         let da = cfg.data_area().ok()?;
 
         Some(axis_visibility_rect(self.side.clone(), &da, axis))
+    }
+
+    fn contains(&self, cfg: &Config, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
+        if cfg.polar.is_some() {
+            // Distance to the ray segment, not its axis-aligned box.
+            let Some(ray) = polar_ray(cfg) else {
+                return false;
+            };
+            if self.bounds(cfg, measure).is_none() {
+                return false;
+            }
+            let (along, across) = ray.frame(x, y);
+            return (ray.inner - POLAR_RAY_HIT_HALF_WIDTH..=ray.outer + POLAR_RAY_HIT_HALF_WIDTH)
+                .contains(&along)
+                && across.abs() <= POLAR_RAY_HIT_HALF_WIDTH;
+        }
+        self.bounds(cfg, measure).is_some_and(|b| b.contains(x, y))
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -605,13 +754,32 @@ impl Selectable for AxisLabelElement {
     }
 
     fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        if cfg.polar.is_some() {
-            return None;
-        }
         let axis = axis_of(cfg, &self.side);
         let ls = &axis.label_style;
         if !ls.visible || !ls.label_visible {
             return None;
+        }
+        if cfg.polar.is_some() {
+            // The angle labels ring the plot, the radius labels line the
+            // ray; the top and right axes are not drawn.
+            return match self.side {
+                Side::Bottom => {
+                    let geometry = cfg.polar_geometry()?;
+                    let (_, outer) = polar_angle_label_band(cfg, measure)?;
+                    Some(RectF {
+                        x: geometry.center[0] - outer,
+                        y: geometry.center[1] - outer,
+                        width: outer * 2.0,
+                        height: outer * 2.0,
+                    })
+                }
+                Side::Left => {
+                    let ray = polar_ray(cfg)?;
+                    let (along, across) = polar_radius_label_strip(cfg, &ray, measure);
+                    Some(ray.aabb(along, across))
+                }
+                Side::Top | Side::Right => None,
+            };
         }
         let da = cfg.data_area().ok()?;
         // Representative label extents at the label font/size. Digits share
@@ -649,6 +817,33 @@ impl Selectable for AxisLabelElement {
         Some(strip.translated(dx, dy))
     }
 
+    fn contains(&self, cfg: &Config, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
+        if cfg.polar.is_some() && self.bounds(cfg, measure).is_some() {
+            return match self.side {
+                Side::Bottom => {
+                    let Some(geometry) = cfg.polar_geometry() else {
+                        return false;
+                    };
+                    let Some((inner, outer)) = polar_angle_label_band(cfg, measure) else {
+                        return false;
+                    };
+                    let r = (x - geometry.center[0]).hypot(y - geometry.center[1]);
+                    (inner..=outer).contains(&r)
+                }
+                Side::Left => {
+                    let Some(ray) = polar_ray(cfg) else {
+                        return false;
+                    };
+                    let (along, across) = polar_radius_label_strip(cfg, &ray, measure);
+                    let (a, c) = ray.frame(x, y);
+                    (along.0..=along.1).contains(&a) && (across.0..=across.1).contains(&c)
+                }
+                Side::Top | Side::Right => false,
+            };
+        }
+        self.bounds(cfg, measure).is_some_and(|b| b.contains(x, y))
+    }
+
     fn as_draggable(&self) -> Option<&dyn Draggable> {
         Some(self)
     }
@@ -660,6 +855,11 @@ impl Selectable for AxisTitleElement {
     }
 
     fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
+        // A polar chart draws no top or right axis, so their titles have no
+        // hit region either.
+        if cfg.polar.is_some() && matches!(self.side, Side::Top | Side::Right) {
+            return None;
+        }
         let axis = axis_of(cfg, &self.side);
         let to = &axis.title_option;
         if !to.visible || to.text.segments.is_empty() {
@@ -1839,5 +2039,167 @@ mod tests {
         assert!(ColorBarAxisElement.bounds(&cfg, &FixedMeasure).is_none());
         assert!(ColorBarLabelElement.bounds(&cfg, &FixedMeasure).is_none());
         assert!(ColorBarTitleElement.bounds(&cfg, &FixedMeasure).is_none());
+    }
+
+    fn polar_cfg() -> Config {
+        let mut cfg = cfg_800x600();
+        cfg.polar = Some(crate::polar::PolarOptions::default());
+        cfg.bottom_x.label_style.visible = true;
+        cfg.bottom_x.label_style.label_visible = true;
+        cfg.left_y.label_style.visible = true;
+        cfg.left_y.label_style.label_visible = true;
+        cfg.left_y.line_visible = true;
+        cfg.bottom_x.line_visible = true;
+        cfg
+    }
+
+    /// A polar chart registers the ray and both label sets, never the ring,
+    /// the top and right axes or their titles.
+    #[test]
+    fn polar_hit_regions_are_the_ray_the_label_ring_and_the_label_strip() {
+        let cfg = polar_cfg();
+        let m = FixedMeasure;
+        let geometry = cfg.polar_geometry().unwrap();
+        let (cx, cy, r) = (geometry.center[0], geometry.center[1], geometry.radius);
+        let map = HitMap::standard_chart();
+        let id_at = |x: f32, y: f32| {
+            map.hit_test(&cfg, &m, x, y)
+                .and_then(|id| map.get(id))
+                .map(|el| el.element_id())
+        };
+        // The ring is not an element: a point on it at 30 degrees hits
+        // nothing but the data area behind it.
+        let (ax, ay) = (
+            cx + r * 30f32.to_radians().cos(),
+            cy - r * 30f32.to_radians().sin(),
+        );
+        assert_ne!(id_at(ax, ay).as_deref(), Some("axis_bottom"));
+        assert!(
+            AxisElement { side: Side::Bottom }
+                .bounds(&cfg, &m)
+                .is_none()
+        );
+        // The ray (default: up) at half the radius.
+        assert_eq!(id_at(cx, cy - r * 0.5).as_deref(), Some("axis_left"));
+        assert_eq!(id_at(cx + 2.0, cy - r * 0.5).as_deref(), Some("axis_left"));
+        assert_ne!(id_at(cx + 12.0, cy - r * 0.5).as_deref(), Some("axis_left"));
+        // The angle labels: a band just outside the ring, all around it.
+        let (inner, outer) = polar_angle_label_band(&cfg, &m).unwrap();
+        let mid = (inner + outer) * 0.5;
+        for degrees in [0f32, 135.0, 250.0] {
+            let (x, y) = (
+                cx + mid * degrees.to_radians().cos(),
+                cy - mid * degrees.to_radians().sin(),
+            );
+            assert_eq!(
+                id_at(x, y).as_deref(),
+                Some("tick_labels_bottom"),
+                "{degrees}"
+            );
+        }
+        assert_ne!(
+            id_at(cx + (outer + 30.0), cy).as_deref(),
+            Some("tick_labels_bottom")
+        );
+        // The radius labels: the strip on the label side of the ray (its
+        // left seen from the centre, so screen left of an upward ray).
+        let ray = polar_ray(&cfg).unwrap();
+        let (along, across) = polar_radius_label_strip(&cfg, &ray, &m);
+        let a = (along.0 + along.1) * 0.5;
+        let c = (across.0 + across.1) * 0.5;
+        let p = (
+            cx + ray.dir[0] * a + ray.side[0] * c,
+            cy + ray.dir[1] * a + ray.side[1] * c,
+        );
+        assert!(p.0 < cx, "labels sit left of the upward ray: {p:?}");
+        assert_eq!(id_at(p.0, p.1).as_deref(), Some("tick_labels_left"));
+        assert_ne!(
+            id_at(cx + 2.0 * (cx - p.0), p.1).as_deref(),
+            Some("tick_labels_left")
+        );
+        // Nothing for the top and right axes, their labels or titles.
+        for side in [Side::Top, Side::Right] {
+            assert!(
+                AxisElement { side: side.clone() }
+                    .bounds(&cfg, &m)
+                    .is_none()
+            );
+            assert!(
+                AxisLabelElement { side: side.clone() }
+                    .bounds(&cfg, &m)
+                    .is_none()
+            );
+            let mut titled = cfg.clone();
+            let axis = match side {
+                Side::Top => &mut titled.top_x,
+                _ => &mut titled.right_y,
+            };
+            axis.title_option.visible = true;
+            axis.title_option.text.segments = rich_segments_from_text("hidden");
+            assert!(AxisTitleElement { side }.bounds(&titled, &m).is_none());
+        }
+    }
+
+    /// The hit regions follow the ray's angle and the label offsets read in
+    /// the polar frames.
+    #[test]
+    fn polar_hit_regions_follow_the_ray_and_the_label_offsets() {
+        let mut cfg = polar_cfg();
+        cfg.polar.as_mut().unwrap().radial_label_angle_degrees = 0.0;
+        let m = FixedMeasure;
+        let geometry = cfg.polar_geometry().unwrap();
+        let (cx, cy, r) = (geometry.center[0], geometry.center[1], geometry.radius);
+        let map = HitMap::standard_chart();
+        let id_at = |cfg: &Config, x: f32, y: f32| {
+            map.hit_test(cfg, &m, x, y)
+                .and_then(|id| map.get(id))
+                .map(|el| el.element_id())
+        };
+        assert_eq!(id_at(&cfg, cx + r * 0.5, cy).as_deref(), Some("axis_left"));
+        assert_ne!(id_at(&cfg, cx, cy - r * 0.5).as_deref(), Some("axis_left"));
+        // Radius labels: `label_offset_y` is across the ray, toward the
+        // label side (above a rightward ray); the strip moves up with it.
+        let ray = polar_ray(&cfg).unwrap();
+        let (along, across) = polar_radius_label_strip(&cfg, &ray, &m);
+        let a = (along.0 + along.1) * 0.5;
+        let c = (across.0 + across.1) * 0.5;
+        let p = (cx + a, cy - c);
+        assert_eq!(id_at(&cfg, p.0, p.1).as_deref(), Some("tick_labels_left"));
+        let mut shifted = cfg.clone();
+        shifted.left_y.label_style.label_offset_y = 60.0;
+        assert_ne!(
+            id_at(&shifted, p.0, p.1).as_deref(),
+            Some("tick_labels_left")
+        );
+        assert_eq!(
+            id_at(&shifted, p.0, p.1 - 60.0).as_deref(),
+            Some("tick_labels_left")
+        );
+        // Angle labels: `label_offset_y` is radial; the band moves outward.
+        let (inner, outer) = polar_angle_label_band(&cfg, &m).unwrap();
+        let mid = (inner + outer) * 0.5;
+        let mut outward = cfg.clone();
+        outward.bottom_x.label_style.label_offset_y = 40.0;
+        let on_band = (cx - mid * 0.7071, cy + mid * 0.7071);
+        assert_eq!(
+            id_at(&cfg, on_band.0, on_band.1).as_deref(),
+            Some("tick_labels_bottom")
+        );
+        assert_ne!(
+            id_at(&outward, on_band.0, on_band.1).as_deref(),
+            Some("tick_labels_bottom")
+        );
+        let further = (cx - (mid + 40.0) * 0.7071, cy + (mid + 40.0) * 0.7071);
+        assert_eq!(
+            id_at(&outward, further.0, further.1).as_deref(),
+            Some("tick_labels_bottom")
+        );
+        // `label_offset_x` of the angle axis has no effect in polar mode.
+        let mut sideways = cfg.clone();
+        sideways.bottom_x.label_style.label_offset_x = 40.0;
+        assert_eq!(
+            id_at(&sideways, on_band.0, on_band.1).as_deref(),
+            Some("tick_labels_bottom")
+        );
     }
 }
