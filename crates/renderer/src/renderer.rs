@@ -267,6 +267,66 @@ struct ResolvedGrid {
 ///
 /// Padded to one entry when there are none: a storage binding cannot be
 /// zero-sized, and the real count travels in the params uniform.
+/// What every colour-mapped primitive's GPU params take from the chart
+/// colourbar: the z bounds as hi/lo pairs, already log10 under a logarithmic
+/// bar, and the premultiplied `nan_color`.
+///
+/// The log bounds are taken here, in f64: doing it in the shader would lose
+/// the precision the bounds were written with, and `validate_renderer_config`
+/// has already refused a log colourbar whose lower bound is not positive. One
+/// place for the field, the point colour map and the vector colour map, so
+/// their shaders (which share the ramp, SHADER_COMMON.md §5.4) read bounds
+/// computed the same way.
+struct ColorbarGpu {
+    log_z: bool,
+    z_min: [f32; 2],
+    z_max: [f32; 2],
+    nan_color_premul: [f32; 4],
+}
+
+fn colorbar_gpu(bar: &crate::config::ColorBarOptions) -> ColorbarGpu {
+    let log_z = matches!(bar.axis.scale, AxisScale::Logarithmic);
+    let bound = |value: f64| {
+        let transformed = if log_z { value.log10() } else { value };
+        let (hi, lo) = crate::data::split_f64_to_f32_pair(transformed);
+        [hi, lo]
+    };
+    let nan = bar.nan_color;
+    let alpha = nan.a.clamp(0.0, 1.0);
+    ColorbarGpu {
+        log_z,
+        z_min: bound(bar.axis.min),
+        z_max: bound(bar.axis.max),
+        nan_color_premul: [nan.r * alpha, nan.g * alpha, nan.b * alpha, alpha],
+    }
+}
+
+/// The colourbar's ramp control points as straight RGBA for a storage
+/// binding. `stop_count` is the real count; the table keeps one padding entry
+/// when the map has none, because a storage binding cannot be zero-sized.
+struct ColorbarStops {
+    stops: Vec<[f32; 4]>,
+    stop_count: u32,
+}
+
+fn colorbar_stops(
+    label: &'static str,
+    bar: &crate::config::ColorBarOptions,
+) -> Result<ColorbarStops> {
+    let mut stops = crate::gpu_contour::try_collect(
+        label,
+        bar.colormap
+            .stops()
+            .iter()
+            .map(|color| [color.r, color.g, color.b, color.a]),
+    )?;
+    let stop_count = u32::try_from(stops.len()).unwrap_or(u32::MAX);
+    if stops.is_empty() {
+        stops.push([0.0; 4]);
+    }
+    Ok(ColorbarStops { stops, stop_count })
+}
+
 fn contour_levels(rt: &DataRenderType) -> Result<Vec<f32>> {
     let empty: [f64; 0] = [];
     let source = extract_contour(rt).map_or(&empty[..], |contour| &contour.levels);
@@ -13300,19 +13360,15 @@ impl PrepareContext<'_> {
                                  range and colormap"
                             .into(),
                     })?;
-            let log_z = matches!(bar.axis.scale, AxisScale::Logarithmic);
-            // Log bounds are taken here, in f64, as `ensure_field_scratch` does.
-            let bound = |value: f64| pair(if log_z { value.log10() } else { value });
-            params.z_min = bound(bar.axis.min);
-            params.z_max = bound(bar.axis.max);
+            let colorbar = colorbar_gpu(bar);
+            params.z_min = colorbar.z_min;
+            params.z_max = colorbar.z_max;
             params.flags |= data_render::VALUE_MAP_COLOR;
-            if log_z {
+            if colorbar.log_z {
                 params.flags |= data_render::VALUE_MAP_LOG_Z;
             }
             params.stop_count = u32::try_from(bar.colormap.stops().len()).unwrap_or(u32::MAX);
-            let nan = bar.nan_color;
-            let alpha = nan.a.clamp(0.0, 1.0);
-            params.nan_color_premul = [nan.r * alpha, nan.g * alpha, nan.b * alpha, alpha];
+            params.nan_color_premul = colorbar.nan_color_premul;
             colormap = Some(bar.colormap.clone());
         }
         if let Some(map) = scatter.point_size_map.as_ref() {
@@ -13618,32 +13674,20 @@ impl PrepareContext<'_> {
                         .into(),
                 )
             })?;
-            let log_z = matches!(bar.axis.scale, AxisScale::Logarithmic);
-            // Log bounds are taken here, in f64, as `ensure_field_scratch` does.
-            let bound = |value: f64| {
-                let transformed = if log_z { value.log10() } else { value };
-                let (hi, lo) = crate::data::split_f64_to_f32_pair(transformed);
-                [hi, lo]
-            };
-            params.z_min = bound(bar.axis.min);
-            params.z_max = bound(bar.axis.max);
+            let colorbar = colorbar_gpu(bar);
+            params.z_min = colorbar.z_min;
+            params.z_max = colorbar.z_max;
             params.flags |= vector_render::VECTOR_FLAG_COLOR_MAP;
-            if log_z {
+            if colorbar.log_z {
                 params.flags |= vector_render::VECTOR_FLAG_LOG_Z;
             }
-            stops = crate::gpu_contour::try_collect(
-                "vector colourmap stops",
-                bar.colormap
-                    .stops()
-                    .iter()
-                    .map(|color| [color.r, color.g, color.b, color.a]),
-            )?;
-            params.stop_count = u32::try_from(stops.len()).unwrap_or(u32::MAX);
-            let nan = bar.nan_color;
-            let alpha = nan.a.clamp(0.0, 1.0);
-            params.nan_color_premul = [nan.r * alpha, nan.g * alpha, nan.b * alpha, alpha];
+            params.nan_color_premul = colorbar.nan_color_premul;
+            let table = colorbar_stops("vector colourmap stops", bar)?;
+            stops = table.stops;
+            params.stop_count = table.stop_count;
         }
         if stops.is_empty() {
+            // No colour map: one padding entry keeps the binding non-empty.
             stops.push([0.0; 4]);
         }
 
@@ -13915,32 +13959,14 @@ impl PrepareContext<'_> {
         if matches!(fill.mode, crate::data_config::FillMode::Bands) {
             flags |= data_render::FIELD_FLAG_BANDS;
         }
-        let log_z = matches!(bar.axis.scale, crate::config::AxisScale::Logarithmic);
-        if log_z {
+        let colorbar = colorbar_gpu(bar);
+        if colorbar.log_z {
             flags |= data_render::FIELD_FLAG_LOG_Z;
         }
-        // Log bounds are taken here, in f64: doing it in the shader would lose
-        // the precision the bounds were written with. `validate_renderer_config`
-        // has already refused a log colourbar whose lower bound is not positive.
-        let bound = |value: f64| {
-            let transformed = if log_z { value.log10() } else { value };
-            let (hi, lo) = crate::data::split_f64_to_f32_pair(transformed);
-            [hi, lo]
-        };
 
         let levels = contour_levels(rt)?;
         let level_count = u32::try_from(declared_level_count(rt)).unwrap_or(u32::MAX);
-        let stop_source = bar.colormap.stops();
-        let mut stops = crate::gpu_contour::try_collect(
-            "field colourmap stops",
-            stop_source
-                .iter()
-                .map(|color| [color.r, color.g, color.b, color.a]),
-        )?;
-        let stop_count = u32::try_from(stops.len()).unwrap_or(u32::MAX);
-        if stops.is_empty() {
-            stops.push([0.0; 4]);
-        }
+        let ColorbarStops { stops, stop_count } = colorbar_stops("field colourmap stops", bar)?;
 
         let params = data_render::FieldParamsGpu {
             x_base: u32::try_from(resolved.x.offset / 4).unwrap_or(0),
@@ -13956,8 +13982,8 @@ impl PrepareContext<'_> {
             // Contour-only; a fill draws no strokes and reads no level colours.
             line_width_px: 0.0,
             level_color_count: 0,
-            z_min: bound(bar.axis.min),
-            z_max: bound(bar.axis.max),
+            z_min: colorbar.z_min,
+            z_max: colorbar.z_max,
         };
         let nan = bar.nan_color;
         let signature = FieldSignature {
