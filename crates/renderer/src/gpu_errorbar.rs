@@ -97,6 +97,10 @@ pub enum GpuSeriesExtentMode {
     PointsY = 3,
     /// Finite paired points plus active x and y errorbar endpoints.
     PointsXY = 4,
+    /// Finite paired anchors plus the arrow tips `anchor + factor * (u, v)`
+    /// of a `Data`-scaled point vector series. The `u` / `v` columns ride in
+    /// the x-upper / y-upper slots and the factor in the reserved params word.
+    VectorTips = 10,
 }
 
 /// The coordinate lattice whose exact outer bounds a matrix-backed primitive
@@ -149,7 +153,18 @@ impl GpuSeriesFitMode {
                 (matrix, matches!(fill.shading, Shading::Interpolated))
             }
             DataRenderType::Histogram { .. } => return None,
-            DataRenderType::Scatter { .. }
+            // A grid vector's anchors are the grid's sample points: the
+            // coordinates under `Centers`, the cell centres under `Edges`.
+            // Data-mode tips over a grid are not part of the fit.
+            DataRenderType::Vector {
+                components: crate::data_config::VectorComponents::Grid { u, .. },
+                ..
+            } => (u, true),
+            DataRenderType::Vector {
+                components: crate::data_config::VectorComponents::Points { .. },
+                ..
+            }
+            | DataRenderType::Scatter { .. }
             | DataRenderType::Line { .. }
             | DataRenderType::ScatterLine { .. }
             | DataRenderType::ScatterErrorbarX { .. }
@@ -205,7 +220,21 @@ impl GpuSeriesExtentMode {
             | DataRenderType::LineScatterErrorbarY { .. } => Some(Self::PointsY),
             DataRenderType::ScatterErrorbarXY { .. }
             | DataRenderType::LineScatterErrorbarXY { .. } => Some(Self::PointsXY),
-            DataRenderType::Histogram { .. }
+            // Point vectors fit their anchors; in `Data` mode the tips are data
+            // coordinates too and join the extent. `Pixels` tips are screen
+            // lengths, not data, so they are left out like marker radii.
+            DataRenderType::Vector {
+                components: crate::data_config::VectorComponents::Points { .. },
+                style,
+            } => Some(match style.scale {
+                crate::data_config::VectorScale::Data { .. } => Self::VectorTips,
+                crate::data_config::VectorScale::Pixels { .. } => Self::Points,
+            }),
+            DataRenderType::Vector {
+                components: crate::data_config::VectorComponents::Grid { .. },
+                ..
+            }
+            | DataRenderType::Histogram { .. }
             | DataRenderType::Heatmap { .. }
             | DataRenderType::Contour { .. }
             | DataRenderType::HeatmapContour { .. } => None,
@@ -700,6 +729,44 @@ impl GpuErrorbarExtentEngine {
             offsets_1: [y_lower.offset, y_upper.offset, mode as u32, 0],
             lengths_0: [x.len, y.len, x_lower.len, x_upper.len],
             lengths_1: [y_lower.len, y_upper.len, input_len, 0],
+        };
+        self.begin_raw(device, queue, pool_buffer, params)
+            .map(|core| GpuSeriesExtentTicket { core })
+    }
+
+    /// Reduce a `Data`-scaled point vector series: every finite anchor plus
+    /// its tip `anchor + factor * (u, v)`. `columns` is `[x, y, u, v]`; the
+    /// components ride in the x-upper / y-upper slots and the factor in the
+    /// reserved params word.
+    pub(crate) fn begin_vector_tips(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pool_buffer: &wgpu::Buffer,
+        columns: [ColumnHandle; 4],
+        factor: f32,
+    ) -> Result<GpuSeriesExtentTicket, GpuErrorbarError> {
+        let [x, y, u, v] = columns;
+        let x = checked_range(pool_buffer, &x, x.len_values, "x")?;
+        let y = checked_range(pool_buffer, &y, y.len_values, "y")?;
+        let u = checked_range(pool_buffer, &u, u.len_values, "vector u")?;
+        let v = checked_range(pool_buffer, &v, v.len_values, "vector v")?;
+        let input_len = x.len.min(y.len);
+        if input_len == 0 {
+            return Err(GpuErrorbarError::EmptyColumn {
+                role: "paired series",
+            });
+        }
+        let params = ParamsGpu {
+            offsets_0: [x.offset, y.offset, 0, u.offset],
+            offsets_1: [
+                0,
+                v.offset,
+                GpuSeriesExtentMode::VectorTips as u32,
+                factor.to_bits(),
+            ],
+            lengths_0: [x.len, y.len, 0, u.len],
+            lengths_1: [0, v.len, input_len, 0],
         };
         self.begin_raw(device, queue, pool_buffer, params)
             .map(|core| GpuSeriesExtentTicket { core })

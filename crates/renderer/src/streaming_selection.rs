@@ -658,6 +658,7 @@ impl Renderer {
             &self.point_value_map_bgl,
             &self.data_selection_bgl,
             &self.field_bgl,
+            &self.vector_bgl,
             self.contour_label_pipelines.as_ref(),
             self.surface_format,
             &[ChartDrawItem {
@@ -904,6 +905,7 @@ impl Renderer {
                 &self.point_value_map_bgl,
                 &self.data_selection_bgl,
                 &self.field_bgl,
+                &self.vector_bgl,
                 self.contour_label_pipelines.as_ref(),
                 self.surface_format,
                 &[ChartDrawItem {

@@ -27,6 +27,11 @@
 - `line_arc.wgsl`: 경로 길이 계산용. `Transform`, `maybe_log`, vec2 입력의 `data_to_ndc`만 공유하고 `Style`은 사용하지 않는다. 공통 블록 밖의 계단 보간 헬퍼(`step_piece_count` / `step_piece` / `step_piece_len_px`)는 `line_columnar.wgsl`과 바이트 단위로 같아야 하며 `shader_consistency`가 검사한다.
 - `contour_anchor.wgsl`: 라벨 앵커 계산용. 화면 좌표에서 위치를 선택하므로 `line_arc.wgsl`과 같은 세 블록을 사용한다.
 - `contour_label.wgsl`: 라벨 렌더링용. 앵커를 NDC에 배치하며 위 세 블록을 공유한다. 색과 배경은 아틀라스에 포함돼 있어 `Style`은 사용하지 않는다.
+- `vector/project_cartesian2d.wgsl`: the Cartesian 2D projection fragment of
+  the assembled vector shader (`vector.rs`). It carries the same five blocks
+  as `scatter_columnar.wgsl` (`Transform`, `Style`, `maybe_log`,
+  `axis_pair_to_t` / `data_to_ndc` and the sample validity rule); the other
+  vector fragments contain no common block. See §5.3.
 
 기존의 마칭 스퀘어 추적용 `gpu_contour.wgsl`과 버킷 방식의 `gpu_contour_anchor.wgsl`은 제거됐다. 현재는 `field_columnar.wgsl::fs_contour`가 격자에서 등고선을 직접 그리고, `contour_anchor.wgsl`이 뉴턴 투영으로 앵커를 구한다. 따라서 두 셰이더가 격자 샘플링 블록을 공유한다.
 라벨 투영은 `anchor_seed` → `anchor_step` 4회 → `anchor_project`의 최종 샘플·검증 →
@@ -56,7 +61,7 @@
 `Transform`은 데이터 좌표를 NDC로 바꾸는 값, 로그축 여부, 픽셀과 NDC의 비율, 스케치·별자리 등 현재 스타일의 옵션을 전달한다. 크기는 **112바이트**다. `vec2<f32>` 8개와 `array<vec4<f32>, 3>` 하나로 구성되며, 배열은 바이트 오프셋 64에서 시작하고 원소 간 간격은 16바이트다.
 점 반지름과 오차 막대 끝선 길이 같은 픽셀 크기는 `Style`에 저장한다. 셰이더는 `pixel_to_ndc`로 이를 NDC 크기로 환산한다.
 
-<!-- shader-common: applies-to=scatter,line,errorbar,bar,field,arc,anchor,label -->
+<!-- shader-common: applies-to=scatter,line,errorbar,bar,field,arc,anchor,label,vector -->
 ```wgsl
 struct Transform {
     data_min: vec2<f32>,
@@ -116,7 +121,7 @@ are separate and do not consume this field.
 
 `Style`은 알파를 미리 곱한 색과 도형별 옵션을 전달한다. 크기는 **80바이트**, 정렬 단위는 **16바이트**다. 공유하는 셰이더들은 각자 필요한 필드만 읽는다.
 
-<!-- shader-common: applies-to=scatter,line,errorbar,bar,field -->
+<!-- shader-common: applies-to=scatter,line,errorbar,bar,field,vector -->
 ```wgsl
 struct Style {
     color_premul: vec4<f32>,
@@ -209,7 +214,7 @@ group 2의 격자 스토리지와 유니폼은 행렬 렌더링과 등고선 앵
 `is_log` 플래그(0.0 또는 1.0)에 따라 값을 그대로 통과시키거나 log10을
 적용한다. `if` 분기 없이 `mix`로 처리해 워프 단위 분기 비용을 피한다.
 
-<!-- shader-common: applies-to=scatter,line,errorbar,bar,field,arc,anchor,label -->
+<!-- shader-common: applies-to=scatter,line,errorbar,bar,field,arc,anchor,label,vector -->
 ```wgsl
 fn maybe_log(v: f32, is_log: f32) -> f32 {
     let lv = log(max(v, 1e-30)) / log(10.0);
@@ -232,7 +237,7 @@ the arithmetic result. Round-trip bitcasts are not rounding barriers. Log axes u
 recombined display value (`hi + lo`) before comparing against the log-transformed
 axis bounds.
 
-<!-- shader-common: applies-to=scatter,line,errorbar,bar,field,arc,anchor,label -->
+<!-- shader-common: applies-to=scatter,line,errorbar,bar,field,arc,anchor,label,vector -->
 ```wgsl
 fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f32, is_log: f32, panel_scale: f32, panel_offset: f32) -> f32 {
     let raw = v.x + v.y;
@@ -262,7 +267,7 @@ also skips that segment so dashes and stars do not advance across the gap.
 Vertices collapse to a finite position outside the viewport instead of depending
 on NaN propagation. Bars and errorbar extents keep their own clipping rules.
 
-<!-- shader-common: applies-to=scatter,line,arc -->
+<!-- shader-common: applies-to=scatter,line,arc,vector -->
 ```wgsl
 // Mask source samples explicitly: NaN/Inf clipping is not portable in WGSL.
 // Logarithmic coordinate domains exclude nonpositive samples, while bars and

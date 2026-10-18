@@ -4,9 +4,10 @@
 //! `data_to_ndc` definitions are therefore duplicated across
 //! `scatter_columnar.wgsl`, `line_columnar.wgsl`, `errorbar_columnar.wgsl`,
 //! `bar_columnar.wgsl`, `field_columnar.wgsl`, the `line_arc.wgsl` and
-//! `contour_anchor.wgsl` compute shaders, and the `contour_label.wgsl`
-//! render shader. `src/data_render/SHADER_COMMON.md` is the single source of
-//! truth for those duplicates.
+//! `contour_anchor.wgsl` compute shaders, the `contour_label.wgsl`
+//! render shader and the vector shader's projection fragment
+//! `vector/project_cartesian2d.wgsl`. `src/data_render/SHADER_COMMON.md` is
+//! the single source of truth for those duplicates.
 //!
 //! This test parses SHADER_COMMON.md for fenced WGSL blocks that are marked
 //! with a metadata comment of the form
@@ -33,7 +34,7 @@ const SSOT_PATH: &str = "src/data_render/SHADER_COMMON.md";
 const BEGIN_MARKER: &str = "// ───── BEGIN common block";
 const END_MARKER: &str = "// ───── END common block";
 const TARGETS: &[&str] = &[
-    "scatter", "line", "errorbar", "bar", "field", "arc", "anchor", "label",
+    "scatter", "line", "errorbar", "bar", "field", "arc", "anchor", "label", "vector",
 ];
 
 fn workspace_root() -> PathBuf {
@@ -58,10 +59,11 @@ fn shader_path_for(short: &str) -> &'static str {
         "arc" => "src/data_render/line_arc.wgsl",
         "anchor" => "src/contour_anchor.wgsl",
         "label" => "src/contour_label.wgsl",
+        "vector" => "src/data_render/vector/project_cartesian2d.wgsl",
         other => panic!(
             "Unknown shader short-name `{}` in SHADER_COMMON.md metadata. \
              Valid names: scatter | line | errorbar | bar | field | arc | \
-             anchor | label.",
+             anchor | label | vector.",
             other
         ),
     }

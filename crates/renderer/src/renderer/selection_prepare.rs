@@ -72,6 +72,7 @@ impl<'a> SelectionLayers<'a> {
             field: None,
             bar: None,
             contour: None,
+            vector: None,
             errorbar: None,
             line: None,
             line_extra: None,
@@ -169,8 +170,13 @@ impl PrepareContext<'_> {
             .picked_data
             .as_ref()
             .filter(|config| config.visible && !config.refs.is_empty());
+        // A point vector's anchors take the ring like markers; a grid vector's
+        // cells take the field highlight below.
+        let vector_points = extract_vector(rt)
+            .filter(|_| primitives.vector)
+            .and_then(|(components, style)| components.grid().is_none().then_some(style));
         let mut picked = Vec::new();
-        if primitives.line || primitives.scatter {
+        if primitives.line || primitives.scatter || vector_points.is_some() {
             for visual in point_visuals {
                 let Some(instance) = columns
                     .rows
@@ -188,7 +194,9 @@ impl PrepareContext<'_> {
                         use_scatter_style_mapping,
                     )
                 });
-                if !has_line_anchor && !has_scatter_anchor {
+                let has_vector_anchor = vector_points
+                    .is_some_and(|style| crate::pick::vector_anchor_radius_px(style) > 0.0);
+                if !has_line_anchor && !has_scatter_anchor && !has_vector_anchor {
                     continue;
                 }
 
@@ -251,6 +259,7 @@ impl PrepareContext<'_> {
                                 use_scatter_style_mapping,
                             )
                         })
+                        .or_else(|| vector_points.map(crate::pick::vector_anchor_radius_px))
                         .unwrap_or(0.0);
                     ring_style.point_radius_px = (scatter_radius + visual.radius_extra_px).max(0.0);
                 }
@@ -396,6 +405,53 @@ impl PrepareContext<'_> {
                             field_bg: scratch.field_bg.clone(),
                             charge: Arc::clone(&scratch.charge),
                             drawable: scratch.drawable,
+                        });
+                    }
+                    // A grid vector's selected cell: the `u` grid is bound as a
+                    // field, so the field selection pipeline outlines the cell.
+                    PickedDataRef::MatrixCell {
+                        x_index, y_index, ..
+                    } if primitives.vector => {
+                        let (Some(x_index), Some(y_index)) =
+                            (u32::try_from(*x_index).ok(), u32::try_from(*y_index).ok())
+                        else {
+                            continue;
+                        };
+                        let scratch = self
+                            .vector_cache
+                            .get(cfg.series_id.as_str())
+                            .expect("prepare ensured selected vector scratch");
+                        let Some((field_bg, charge)) = scratch.field.as_ref() else {
+                            continue;
+                        };
+                        let mut selection = data_render::DataSelectionGpu::from_color(
+                            selection_cfg.highlight_color,
+                        );
+                        selection.metrics[0] = selection_cfg.outline_width_px;
+                        selection.indices = [
+                            data_render::DATA_SELECTION_KIND_MATRIX_CELL,
+                            0,
+                            x_index,
+                            y_index,
+                        ];
+                        let (selection_bg, selection_charge) =
+                            data_render::create_data_selection_bind_group(
+                                &self.gpu_ledger,
+                                &self.device,
+                                &self.data_selection_bgl,
+                                &selection,
+                            );
+                        selected_fields.push(ColumnFieldSelectionLayer {
+                            pipeline: pipelines
+                                .field_selection
+                                .as_ref()
+                                .expect("prepare ensured field selection pipeline"),
+                            transform_bg: &view.transform_bg,
+                            selection_bg,
+                            selection_charge,
+                            field_bg: field_bg.clone(),
+                            charge: Arc::clone(charge),
+                            drawable: scratch.count != 0,
                         });
                     }
                     PickedDataRef::ContourLevel {

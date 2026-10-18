@@ -268,6 +268,57 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
             }
         }
 
+        // A point vector is picked at its anchors with the head's radius. It
+        // draws only in precise mode, so it is picked only there.
+        if let Some(style) = extract_vector_points(&cfg.render_type)
+            && use_scatter_style_mapping
+        {
+            let radius_px = vector_anchor_radius_px(style);
+            let DataRenderType::Vector {
+                components: crate::data_config::VectorComponents::Points { u, v },
+                ..
+            } = &cfg.render_type
+            else {
+                unreachable!("extract_vector_points matched the points form");
+            };
+            let count = xs
+                .len()
+                .min(ys.len())
+                .min(columns.get_f32_column(u).map_or(0, |u| u.len()))
+                .min(columns.get_f32_column(v).map_or(0, |v| v.len()));
+            if radius_px > 0.0 {
+                for i in 0..count {
+                    let x = xs[i];
+                    let y = ys[i];
+                    if !x.is_finite() || !y.is_finite() {
+                        continue;
+                    }
+                    let Some((px, py)) = project_data_to_canvas_px(config, &transform, x, y) else {
+                        continue;
+                    };
+                    let dx = px - canvas_x;
+                    let dy = py - canvas_y;
+                    let center_dist = dx.mul_add(dx, dy * dy).sqrt();
+                    let hit_dist = (center_dist - radius_px).max(0.0);
+                    let dist_sq = hit_dist * hit_dist;
+                    if !dist_sq.is_finite() || dist_sq > max_dist_sq {
+                        continue;
+                    }
+                    maybe_replace_best(
+                        &mut best,
+                        series_index,
+                        dist_sq,
+                        PickedPoint {
+                            source_id: cfg.source_id.clone(),
+                            series_id: cfg.series_id.clone(),
+                            point_index: i,
+                            distance_px: hit_dist,
+                        },
+                    );
+                }
+            }
+        }
+
         let Some(line) = extract_line(&cfg.render_type) else {
             continue;
         };
@@ -356,6 +407,25 @@ fn maybe_replace_best(
     }
 }
 
+/// The pick radius of a vector series' anchor, in logical pixels: half the
+/// head width, or half the shaft width when the shaft is wider. The GPU
+/// picker and the selection ring use the same number.
+pub(crate) fn vector_anchor_radius_px(style: &crate::data_config::VectorStyle) -> f32 {
+    (style.head_width_px.max(style.width_px) * 0.5).max(0.0)
+}
+
+/// The style of a point vector series: its anchors are picked like markers.
+/// A grid vector's cells are a separate query, like a heatmap's.
+fn extract_vector_points(rt: &DataRenderType) -> Option<&crate::data_config::VectorStyle> {
+    match rt {
+        DataRenderType::Vector {
+            components: crate::data_config::VectorComponents::Points { .. },
+            style,
+        } => Some(style),
+        _ => None,
+    }
+}
+
 fn extract_line(rt: &DataRenderType) -> Option<&DataLineStyleConfig> {
     match rt {
         DataRenderType::Line { line }
@@ -377,7 +447,9 @@ fn extract_line(rt: &DataRenderType) -> Option<&DataLineStyleConfig> {
         | DataRenderType::Histogram { .. }
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. } => None,
+        | DataRenderType::HeatmapContour { .. }
+        // A vector series is picked at its anchors through `extract_vector`.
+        | DataRenderType::Vector { .. } => None,
     }
 }
 
@@ -395,7 +467,8 @@ fn extract_scatter(rt: &DataRenderType) -> Option<&DataScatterStyleConfig> {
         | DataRenderType::Histogram { .. }
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. } => None,
+        | DataRenderType::HeatmapContour { .. }
+        | DataRenderType::Vector { .. } => None,
     }
 }
 

@@ -282,6 +282,20 @@ fn line_scatter_symbol_with_style(
     ]
 }
 
+/// Arrow sample: a rule for the shaft and the right-pointing head glyph, the
+/// two fields summing to exactly [`SYMBOL_FIELD_EM`] like the other marks.
+fn vector_symbol(color: Color) -> Vec<RichSegment> {
+    let glyph_em = 0.6;
+    vec![
+        RichSegment::rule(SYMBOL_FIELD_EM - glyph_em, Some(color)),
+        RichSegment::fielded(
+            scatter_shape_char(&ScatterShape::TriangleRightFilled),
+            glyph_em,
+            Some(color),
+        ),
+    ]
+}
+
 /// Symbol segments for the convenience-builder [`LegendEntryKind`]: each
 /// segment carries `color: Some(color)` so the mark keeps the series color
 /// independent of the document-level text color.
@@ -331,6 +345,9 @@ pub fn series_symbol_segments(cfg: &SeriesConfig) -> Vec<RichSegment> {
             line_symbol(contour.line.line_color, contour.line.line_style, None)
         }
         DataRenderType::Heatmap { .. } => blank_symbol(),
+        // An arrow: a rule for the shaft and the right-pointing head glyph,
+        // in the series colour. A colour map's colours belong to the colourbar.
+        DataRenderType::Vector { style, .. } => vector_symbol(style.color),
         DataRenderType::Scatter { scatter }
         | DataRenderType::ScatterErrorbarX { scatter, .. }
         | DataRenderType::ScatterErrorbarY { scatter, .. }

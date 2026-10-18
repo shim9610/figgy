@@ -130,6 +130,173 @@ pub enum DataRenderType {
         fill: FieldFillConfig,
         contour: ContourConfig,
     },
+    /// A vector field (quiver plot): one arrow per sample, with the direction
+    /// and length given by the host's `u` / `v` components.
+    ///
+    /// The renderer draws the vectors it is given. It does not derive them
+    /// from a scalar field and it does not reduce them to a scalar: colouring
+    /// by magnitude takes a host-supplied value column or grid through
+    /// [`VectorStyle::color_map`].
+    Vector {
+        components: VectorComponents,
+        style: VectorStyle,
+    },
+}
+
+/// Where a vector series' components come from.
+///
+/// The anchors are the series' `x_column` / `y_column` in both forms. The grid
+/// form shares a heatmap's coordinate columns, orientation and layout, so
+/// arrows over a field are one more series naming the same columns.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum VectorComponents {
+    /// `u` and `v` are index-aligned with the anchor columns. The draw count
+    /// is the shortest of the four columns; nothing is length-inferred.
+    Points { u: ColumnId, v: ColumnId },
+    /// `u` and `v` are grids over the coordinate columns, both with the same
+    /// orientation and layout. With `Centers` the arrow sits on the
+    /// coordinate; with `Edges` it sits at the cell centre, where a heatmap
+    /// cell's value sits.
+    Grid { u: MatrixRef, v: MatrixRef },
+}
+
+impl VectorComponents {
+    /// The grid declarations of the grid form.
+    pub fn grid(&self) -> Option<(&MatrixRef, &MatrixRef)> {
+        match self {
+            Self::Grid { u, v } => Some((u, v)),
+            Self::Points { .. } => None,
+        }
+    }
+}
+
+/// How an arrow's length is scaled.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum VectorScale {
+    /// The tip is `origin + factor * vector` in data units. Meaningful when
+    /// both axes share a unit; the arrows zoom with the data.
+    Data { factor: f64 },
+    /// The screen length is `px_per_unit * |vector|` logical pixels along the
+    /// data-space direction projected through the live transform, so arrows
+    /// keep their length under zoom.
+    Pixels { px_per_unit: f64 },
+}
+
+impl Default for VectorScale {
+    fn default() -> Self {
+        Self::Pixels { px_per_unit: 1.0 }
+    }
+}
+
+/// Which point of the arrow sits on the anchor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum VectorPivot {
+    #[default]
+    Tail,
+    Middle,
+    Tip,
+}
+
+/// A value mapped to arrow colour through `Config.colorbar`, in the same form
+/// as the components: a column for [`VectorComponents::Points`], a grid for
+/// [`VectorComponents::Grid`].
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum VectorColorMap {
+    Column(ColumnId),
+    Grid(MatrixRef),
+}
+
+/// Arrow appearance of a vector series. Pixel sizes are logical pixels, like
+/// `point_size`.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct VectorStyle {
+    pub color: Color,
+    /// Shaft thickness.
+    pub width_px: f32,
+    pub scale: VectorScale,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub pivot: VectorPivot,
+    /// Head length along the shaft. An arrow shorter than its head scales the
+    /// head down with it.
+    pub head_length_px: f32,
+    /// Full head width across the shaft.
+    pub head_width_px: f32,
+    /// Arrows shorter than this on screen are not drawn.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "VectorStyle::is_zero")
+    )]
+    pub min_length_px: f32,
+    /// Colour each arrow by a value through `Config.colorbar`; the colourbar
+    /// is the only authority on the range, ramp and `nan_color`, as for a
+    /// heatmap.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub color_map: Option<VectorColorMap>,
+}
+
+impl VectorStyle {
+    pub const INVALID_PIXELS_REASON: &'static str = "vector width_px, head_length_px, head_width_px and min_length_px must be finite and non-negative";
+    pub const INVALID_SCALE_REASON: &'static str = "vector scale must be finite and non-zero";
+
+    #[allow(dead_code)] // serde only
+    fn is_zero(value: &f32) -> bool {
+        *value == 0.0
+    }
+
+    /// Validate invariants owned by the style itself.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let pixels = [
+            self.width_px,
+            self.head_length_px,
+            self.head_width_px,
+            self.min_length_px,
+        ];
+        if pixels.iter().any(|px| !px.is_finite() || *px < 0.0) {
+            return Err(Self::INVALID_PIXELS_REASON);
+        }
+        let scale = match self.scale {
+            VectorScale::Data { factor } => factor,
+            VectorScale::Pixels { px_per_unit } => px_per_unit,
+        };
+        if !scale.is_finite() || scale == 0.0 {
+            return Err(Self::INVALID_SCALE_REASON);
+        }
+        Ok(())
+    }
+
+    /// Set the scale so the longest vector in `u_bounds` × `v_bounds` draws
+    /// `target` long: logical pixels for [`VectorScale::Pixels`], data units
+    /// for [`VectorScale::Data`]. The bounds are the component columns'
+    /// statistics, which the host already has.
+    ///
+    /// A display helper, like `PointSizeMap::fit_domain`: it writes only the
+    /// scale value. A non-finite or zero extent leaves the style unchanged and
+    /// returns `false`.
+    pub fn fit_scale(&mut self, u_bounds: (f64, f64), v_bounds: (f64, f64), target: f64) -> bool {
+        let reach = |(min, max): (f64, f64)| {
+            if !min.is_finite() || !max.is_finite() {
+                return f64::NAN;
+            }
+            min.abs().max(max.abs())
+        };
+        let longest = reach(u_bounds).hypot(reach(v_bounds));
+        if !longest.is_finite() || longest <= 0.0 || !target.is_finite() || target <= 0.0 {
+            return false;
+        }
+        match &mut self.scale {
+            VectorScale::Data { factor } => *factor = target / longest,
+            VectorScale::Pixels { px_per_unit } => *px_per_unit = target / longest,
+        }
+        true
+    }
 }
 
 /// Identifier of another series in the same chart: its `series_id`. Plain
@@ -1001,6 +1168,63 @@ pub enum ScatterShape {
 }
 
 #[cfg(test)]
+mod vector_style_tests {
+    use super::*;
+
+    fn style(scale: VectorScale) -> VectorStyle {
+        VectorStyle {
+            color: Color::BLACK,
+            width_px: 1.5,
+            scale,
+            pivot: VectorPivot::Tail,
+            head_length_px: 8.0,
+            head_width_px: 6.0,
+            min_length_px: 0.0,
+            color_map: None,
+        }
+    }
+
+    #[test]
+    fn validation_rejects_bad_pixels_and_scales() {
+        assert_eq!(style(VectorScale::default()).validate(), Ok(()));
+        let mut bad = style(VectorScale::default());
+        bad.width_px = -1.0;
+        assert_eq!(bad.validate(), Err(VectorStyle::INVALID_PIXELS_REASON));
+        let mut bad = style(VectorScale::default());
+        bad.head_width_px = f32::NAN;
+        assert_eq!(bad.validate(), Err(VectorStyle::INVALID_PIXELS_REASON));
+        let bad = style(VectorScale::Data { factor: 0.0 });
+        assert_eq!(bad.validate(), Err(VectorStyle::INVALID_SCALE_REASON));
+        let bad = style(VectorScale::Pixels {
+            px_per_unit: f64::INFINITY,
+        });
+        assert_eq!(bad.validate(), Err(VectorStyle::INVALID_SCALE_REASON));
+        // A negative data factor flips every arrow; it is a choice, not an error.
+        assert_eq!(style(VectorScale::Data { factor: -2.0 }).validate(), Ok(()));
+    }
+
+    #[test]
+    fn fit_scale_targets_the_longest_vector_in_either_mode() {
+        let mut pixels = style(VectorScale::Pixels { px_per_unit: 1.0 });
+        // The longest possible vector is (|u| = 3, |v| = 4): length 5.
+        assert!(pixels.fit_scale((-3.0, 1.0), (0.0, 4.0), 40.0));
+        assert_eq!(pixels.scale, VectorScale::Pixels { px_per_unit: 8.0 });
+        let mut data = style(VectorScale::Data { factor: 1.0 });
+        assert!(data.fit_scale((-3.0, 1.0), (0.0, 4.0), 0.5));
+        assert_eq!(data.scale, VectorScale::Data { factor: 0.1 });
+    }
+
+    #[test]
+    fn fit_scale_leaves_the_style_alone_for_empty_or_invalid_bounds() {
+        let mut style = style(VectorScale::Pixels { px_per_unit: 3.0 });
+        assert!(!style.fit_scale((0.0, 0.0), (0.0, 0.0), 40.0));
+        assert!(!style.fit_scale((f64::NAN, 1.0), (0.0, 1.0), 40.0));
+        assert!(!style.fit_scale((-1.0, 1.0), (-1.0, 1.0), 0.0));
+        assert_eq!(style.scale, VectorScale::Pixels { px_per_unit: 3.0 });
+    }
+}
+
+#[cfg(test)]
 mod point_size_map_tests {
     use super::*;
 
@@ -1137,8 +1361,9 @@ mod serde_tests {
     use super::{
         DataBarStyleConfig, DataErrorBarPointStyleConfig, DataErrorBarPointStyleOverride,
         DataErrorBarStyleConfig, DataRenderType, DataScatterPointStyleConfig,
-        DataScatterPointStyleOverride, DataScatterStyleConfig, PointColorMap, ScatterShape,
-        SeriesConfig, SizeScale,
+        DataScatterPointStyleOverride, DataScatterStyleConfig, GridLayout, MatrixOrientation,
+        MatrixRef, PointColorMap, ScatterShape, SeriesConfig, SizeScale, VectorColorMap,
+        VectorComponents, VectorPivot, VectorScale, VectorStyle,
     };
     use crate::color::Color;
 
@@ -1385,6 +1610,82 @@ mod serde_tests {
             serde_json::from_value(legacy).expect("parse legacy histogram style");
         assert_eq!(parsed.width_ratio, 1.0);
         assert_eq!(parsed.bar_style_overrides, None);
+    }
+
+    #[test]
+    fn vector_render_types_round_trip_and_default_the_optional_fields() {
+        let style = VectorStyle {
+            color: Color::BLACK,
+            width_px: 1.5,
+            scale: VectorScale::Pixels { px_per_unit: 20.0 },
+            pivot: VectorPivot::Middle,
+            head_length_px: 8.0,
+            head_width_px: 6.0,
+            min_length_px: 2.0,
+            color_map: Some(VectorColorMap::Column("speed".into())),
+        };
+        let points = SeriesConfig {
+            series_id: "flow".into(),
+            source_id: None,
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            render_type: DataRenderType::Vector {
+                components: VectorComponents::Points {
+                    u: "u".into(),
+                    v: "v".into(),
+                },
+                style: style.clone(),
+            },
+        };
+        let json = serde_json::to_string(&points).unwrap();
+        assert!(json.contains("\"Vector\""));
+        assert!(json.contains("\"Points\""));
+        assert!(json.contains("\"Pixels\""));
+        assert!(json.contains("\"Middle\""));
+        assert_eq!(serde_json::from_str::<SeriesConfig>(&json).unwrap(), points);
+
+        let grid = |columns: &[&str]| MatrixRef {
+            columns: columns.iter().map(|c| c.to_string()).collect(),
+            orientation: MatrixOrientation::ColumnsAreX,
+            grid_layout: GridLayout::Centers,
+        };
+        let gridded = SeriesConfig {
+            render_type: DataRenderType::Vector {
+                components: VectorComponents::Grid {
+                    u: grid(&["u0", "u1"]),
+                    v: grid(&["v0", "v1"]),
+                },
+                style: VectorStyle {
+                    scale: VectorScale::Data { factor: 0.5 },
+                    color_map: Some(VectorColorMap::Grid(grid(&["m0", "m1"]))),
+                    ..style
+                },
+            },
+            ..points
+        };
+        let json = serde_json::to_string(&gridded).unwrap();
+        assert!(json.contains("\"Grid\""));
+        assert!(json.contains("\"Data\""));
+        assert_eq!(
+            serde_json::from_str::<SeriesConfig>(&json).unwrap(),
+            gridded
+        );
+
+        // The optional fields default: the pivot is the tail, the minimum
+        // length is zero and omitted, and there is no colour map.
+        let minimal = r#"{"series_id":"q","source_id":null,"label":null,"x_column":"x","y_column":"y","render_type":{"Vector":{"components":{"Points":{"u":"u","v":"v"}},"style":{"color":{"r":0.0,"g":0.0,"b":0.0,"a":1.0},"width_px":1.0,"scale":{"Pixels":{"px_per_unit":1.0}},"head_length_px":6.0,"head_width_px":4.0}}}}"#;
+        let parsed: SeriesConfig = serde_json::from_str(minimal).unwrap();
+        let DataRenderType::Vector { style, .. } = &parsed.render_type else {
+            panic!("expected a vector series");
+        };
+        assert_eq!(style.pivot, VectorPivot::Tail);
+        assert_eq!(style.min_length_px, 0.0);
+        assert_eq!(style.color_map, None);
+        let again = serde_json::to_string(&parsed).unwrap();
+        assert!(!again.contains("min_length_px"));
+        assert!(!again.contains("color_map"));
+        assert!(again.contains("\"pivot\":\"Tail\""));
     }
 
     #[test]

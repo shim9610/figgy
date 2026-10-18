@@ -20,6 +20,9 @@ const MODE_FIELD_EDGES_CELLS: u32 = 6u;
 const MODE_FIELD_EDGES_SAMPLES: u32 = 7u;
 const MODE_FIELD_CENTERS_CELLS: u32 = 8u;
 const MODE_FIELD_CENTERS_SAMPLES: u32 = 9u;
+// Finite paired anchors plus the tips `anchor + factor * (u, v)` of a
+// Data-scaled point vector series: u / v ride in the x-upper / y-upper slots.
+const MODE_VECTOR_TIPS: u32 = 10u;
 
 const F32_SIGN_MASK: u32 = 0x80000000u;
 const F32_ABS_MASK: u32 = 0x7fffffffu;
@@ -90,6 +93,7 @@ fn x_upper_len() -> u32 { return params.lengths_0.w; }
 fn y_lower_len() -> u32 { return params.lengths_1.x; }
 fn y_upper_len() -> u32 { return params.lengths_1.y; }
 fn input_len() -> u32 { return params.lengths_1.z; }
+fn tip_factor() -> f32 { return bitcast<f32>(params.offsets_1.w); }
 fn dispatch_groups() -> u32 { return params.lengths_1.w; }
 
 fn maximum_finite_pair() -> vec2<f32> {
@@ -458,6 +462,9 @@ fn error_domain_len() -> u32 {
     if (y_errors_are_active()) {
         count = min(count, min(y_lower_len(), y_upper_len()));
     }
+    if (mode() == MODE_VECTOR_TIPS) {
+        count = min(count, min(x_upper_len(), y_upper_len()));
+    }
     return count;
 }
 
@@ -504,6 +511,31 @@ fn state_for_series_index(index: u32) -> SeriesState {
                     lower,
                     upper,
                 ),
+            );
+        }
+    }
+
+    if (mode() == MODE_VECTOR_TIPS) {
+        // The tip is a data coordinate, so it joins the extent; a non-finite
+        // component hides the arrow, and only the anchor counts. Same pair
+        // arithmetic as the Data-mode projection (`pair_add`).
+        let u = load_pair(x_upper_offset(), index);
+        let v = load_pair(y_upper_offset(), index);
+        if (pair_is_finite(u) && pair_is_finite(v)) {
+            let factor = tip_factor();
+            state.x = merge_axis_states(
+                state.x,
+                state_for_bound(add_pairs(
+                    load_pair(x_offset(), index),
+                    vec2<f32>(u.x * factor, u.y * factor),
+                )),
+            );
+            state.y = merge_axis_states(
+                state.y,
+                state_for_bound(add_pairs(
+                    load_pair(y_offset(), index),
+                    vec2<f32>(v.x * factor, v.y * factor),
+                )),
             );
         }
     }

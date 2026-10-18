@@ -18,6 +18,7 @@ pub mod line_arc;
 pub(crate) mod stream_field;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod stream_point_style_tests;
+pub mod vector;
 pub use column_pool::{
     AllocError, ColumnHandle, ColumnId, ColumnPool, ColumnSlot, DefragPolicy, FreeRegion,
     GpuAllocCtx, GpuBudget, GrowthPolicy,
@@ -568,6 +569,9 @@ pub(crate) struct ShaderModules {
     pub errorbar: wgpu::ShaderModule,
     pub bar: wgpu::ShaderModule,
     pub field: wgpu::ShaderModule,
+    /// The two assembled vector modules (`vector.rs`): one per input form.
+    pub vector_points: wgpu::ShaderModule,
+    pub vector_grid: wgpu::ShaderModule,
 }
 
 impl ShaderModules {
@@ -579,6 +583,16 @@ impl ShaderModules {
             errorbar: Self::errorbar(device),
             bar: Self::bar(device),
             field: Self::field(device),
+            vector_points: vector::shader_module(device, vector::VectorInput::Points),
+            vector_grid: vector::shader_module(device, vector::VectorInput::Grid),
+        }
+    }
+
+    /// The assembled vector module for one input form.
+    pub(crate) fn vector(&self, input: vector::VectorInput) -> &wgpu::ShaderModule {
+        match input {
+            vector::VectorInput::Points => &self.vector_points,
+            vector::VectorInput::Grid => &self.vector_grid,
         }
     }
     fn fullscreen(device: &wgpu::Device) -> wgpu::ShaderModule {
@@ -4596,6 +4610,9 @@ pub struct SeriesLayers<'a> {
     pub bar: Option<ColumnBarLayer<'a>>,
     /// Contour lines go over the field they describe and under the markers.
     pub contour: Option<ColumnContourLayer<'a>>,
+    /// Arrows go over the field and contours they annotate, under the series'
+    /// own stroked marks.
+    pub vector: Option<vector::ColumnVectorLayer<'a>>,
     pub errorbar: Option<ColumnErrorBarDraw<'a>>,
     pub line: Option<ColumnLineLayer<'a>>,
     /// Constellation star pass over the same polyline as `line` — drawn
@@ -4805,6 +4822,16 @@ pub(crate) fn issue_series_data(pass: &mut wgpu::RenderPass<'_>, series: &Series
             pass.set_vertex_buffer(0, l.snapshot.anchors().slice(..));
             pass.draw_indirect(l.snapshot.indirect(), 0);
         }
+    }
+
+    // Arrows: over the field and contours, under errorbars, lines and markers.
+    // No vertex buffers; `vs_main` reads sample `instance_index` from group 2.
+    if let Some(v) = series.vector.as_ref().filter(|v| v.count > 0) {
+        pass.set_pipeline(v.pipeline);
+        pass.set_bind_group(0, v.transform_bg, &[]);
+        pass.set_bind_group(1, &v.style_bg, &[]);
+        pass.set_bind_group(2, &v.vector_bg, &[]);
+        pass.draw(0..vector::ARROW_VERTICES, 0..v.count);
     }
 
     if let Some(eb) = series.errorbar.as_ref() {

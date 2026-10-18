@@ -1053,6 +1053,7 @@ mod tests {
                                 field: None,
                                 bar: None,
                                 contour: None,
+                                vector: None,
                                 errorbar: None,
                                 line_extra: None,
                                 line: line.then_some(ColumnLineLayer {
