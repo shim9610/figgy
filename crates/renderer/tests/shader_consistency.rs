@@ -4,9 +4,10 @@
 //! `data_to_ndc` definitions are therefore duplicated across
 //! `scatter_columnar.wgsl`, `line_columnar.wgsl`, `errorbar_columnar.wgsl`,
 //! `bar_columnar.wgsl`, `field_columnar.wgsl`, the `line_arc.wgsl` and
-//! `contour_anchor.wgsl` compute shaders, and the `contour_label.wgsl`
-//! render shader. `src/data_render/SHADER_COMMON.md` is the single source of
-//! truth for those duplicates.
+//! `contour_anchor.wgsl` compute shaders, the `contour_label.wgsl`
+//! render shader and the vector shader's projection fragment
+//! `vector/project_cartesian2d.wgsl`. `src/data_render/SHADER_COMMON.md` is
+//! the single source of truth for those duplicates.
 //!
 //! This test parses SHADER_COMMON.md for fenced WGSL blocks that are marked
 //! with a metadata comment of the form
@@ -33,7 +34,7 @@ const SSOT_PATH: &str = "src/data_render/SHADER_COMMON.md";
 const BEGIN_MARKER: &str = "// ───── BEGIN common block";
 const END_MARKER: &str = "// ───── END common block";
 const TARGETS: &[&str] = &[
-    "scatter", "line", "errorbar", "bar", "field", "arc", "anchor", "label",
+    "scatter", "line", "errorbar", "bar", "field", "arc", "anchor", "label", "vector",
 ];
 
 fn workspace_root() -> PathBuf {
@@ -58,10 +59,11 @@ fn shader_path_for(short: &str) -> &'static str {
         "arc" => "src/data_render/line_arc.wgsl",
         "anchor" => "src/contour_anchor.wgsl",
         "label" => "src/contour_label.wgsl",
+        "vector" => "src/data_render/vector/project_cartesian2d.wgsl",
         other => panic!(
             "Unknown shader short-name `{}` in SHADER_COMMON.md metadata. \
              Valid names: scatter | line | errorbar | bar | field | arc | \
-             anchor | label.",
+             anchor | label | vector.",
             other
         ),
     }
@@ -298,6 +300,36 @@ fn field_fit_uses_the_ssot_grid_pair_normalization() {
     );
 }
 
+/// The colour ramp and the size-map radius are function twins (SHADER_COMMON.md
+/// §5.4): one parameterised function set copied into every shader that maps a
+/// value through the colourbar or a size domain, so a fix in one cannot leave
+/// the others behind.
+#[test]
+fn colour_ramp_and_size_map_radius_twins_match_the_ssot() {
+    let ssot = read(SSOT_PATH);
+    let ramp = ["ramp_finite", "ramp_t", "ramp_segment", "ramp_blend"];
+    let radius = ["ramp_finite", "size_map_radius"];
+    for (path, functions) in [
+        ("src/data_render/field_columnar.wgsl", ramp.as_slice()),
+        ("src/data_render/scatter_columnar.wgsl", ramp.as_slice()),
+        ("src/data_render/scatter_columnar.wgsl", radius.as_slice()),
+        (
+            "src/data_render/vector/vector_input_common.wgsl",
+            ramp.as_slice(),
+        ),
+        ("src/gpu_pick.wgsl", radius.as_slice()),
+    ] {
+        let shader = read(path);
+        for function in functions {
+            assert_eq!(
+                wgsl_function(&shader, function),
+                wgsl_function(&ssot, function),
+                "{path} must carry `{function}` byte-for-byte as SHADER_COMMON.md §5.4 defines it"
+            );
+        }
+    }
+}
+
 #[test]
 fn contour_level_search_constants_match_the_model_limit() {
     assert_eq!(renderer::MAX_CONTOUR_LEVELS, 1024);
@@ -433,8 +465,9 @@ fn field_derived_nonfinite_arithmetic_fails_closed() {
         );
     }
 
-    assert!(field.contains("if (!f32_is_finite(raw))"));
-    assert!(field.contains("!f32_is_finite(normalized)"));
+    // The ramp's own checks live in the shared `ramp_t` (SHADER_COMMON.md §5.4).
+    assert!(field.contains("if (!ramp_finite(raw))"));
+    assert!(field.contains("!ramp_finite(normalized)"));
     assert!(field.contains("!vec2_f32_is_finite(low) || !vec2_f32_is_finite(high)"));
     assert!(field.contains("!f32_is_finite(coverage_unclamped)"));
     assert!(field.contains("if (!f32_is_finite(cov) || cov <= 0.0)"));

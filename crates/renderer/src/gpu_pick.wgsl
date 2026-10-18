@@ -408,27 +408,49 @@ fn pick_apply_style(radius_in: f32, shape_in: u32, slot: PickScatterStyleSlot) -
     return vec2<f32>(radius, f32(shape));
 }
 
-// Twin of `scatter_columnar.wgsl::value_map_radius` and of
-// `PointSizeMap::radius_px`: the marker radius a size value maps to, or a
-// negative number when the value is not finite and the point is hidden.
+// ───── shared size-map radius (SHADER_COMMON.md §5.4; `shader_consistency`
+// compares these function bodies with the scatter shader) ─────
+
+/// A finite f32 by its exponent bits. Every ramp input is checked
+/// explicitly: NaN and infinity propagation through arithmetic is not
+/// portable in WGSL.
+fn ramp_finite(v: f32) -> bool {
+    return (bitcast<u32>(v) & 0x7f800000u) != 0x7f800000u;
+}
+
+/// The marker radius for a size-map value `sv` (a hi/lo pair) over the
+/// domain `domain_min..domain_max` (hi/lo pairs) onto `lo..hi` pixels, by
+/// marker area when `area`, else by radius. Negative when the value is not
+/// finite: the point is hidden. Twin of `PointSizeMap::radius_px`.
+fn size_map_radius(sv: vec2<f32>, domain_min: vec2<f32>, domain_max: vec2<f32>, lo: f32, hi: f32, area: bool) -> f32 {
+    if (!ramp_finite(sv.x) || !ramp_finite(sv.y) || !ramp_finite(sv.x + sv.y)) {
+        return -1.0;
+    }
+    let num = (sv.x - domain_min.x) + (sv.y - domain_min.y);
+    let span = (domain_max.x - domain_min.x) + (domain_max.y - domain_min.y);
+    let t = clamp(num / span, 0.0, 1.0);
+    if (area) {
+        return sqrt(lo * lo + (hi * hi - lo * lo) * t);
+    }
+    return lo + (hi - lo) * t;
+}
+
+// The marker radius a size value maps to, or a negative number when the value
+// is not finite and the point is hidden.
 fn pick_size_map_radius(point_index: u32) -> f32 {
     if point_index >= pick_query_params.size_map.y {
         return -1.0;
     }
     let value = pick_read_pair(pick_query_params.size_map.x, point_index);
-    if !pick_is_finite(value.x) || !pick_is_finite(value.y) || !pick_is_finite(value.x + value.y) {
-        return -1.0;
-    }
     let domain = pick_query_params.size_domain;
-    let num = (value.x - domain.x) + (value.y - domain.y);
-    let span = (domain.z - domain.x) + (domain.w - domain.y);
-    let t = clamp(num / span, 0.0, 1.0);
-    let lo = pick_query_params.size_px.x;
-    let hi = pick_query_params.size_px.y;
-    if (pick_query_params.style.x & PICK_FLAG_SIZE_AREA) != 0u {
-        return sqrt(lo * lo + (hi * hi - lo * lo) * t);
-    }
-    return lo + (hi - lo) * t;
+    return size_map_radius(
+        value,
+        domain.xy,
+        domain.zw,
+        pick_query_params.size_px.x,
+        pick_query_params.size_px.y,
+        (pick_query_params.style.x & PICK_FLAG_SIZE_AREA) != 0u,
+    );
 }
 
 // Precedence per channel, as in `resolve_mapped_style`: sparse override >

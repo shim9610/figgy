@@ -50,7 +50,8 @@ pub(super) fn is_stream_heatmap(rt: &DataRenderType) -> bool {
         | DataRenderType::LineScatterErrorbarXY { .. }
         | DataRenderType::Histogram { .. }
         | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. } => false,
+        | DataRenderType::HeatmapContour { .. }
+        | DataRenderType::Vector { .. } => false,
     }
 }
 
@@ -599,6 +600,18 @@ fn stream_draw_phases(
         } else {
             &[]
         }),
+        // Streaming is not extended to vectors; `validate_stream_series`
+        // rejects them before a cursor exists, so this is a backstop.
+        DataRenderType::Vector { .. } if primitives.vector => {
+            Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason:
+                    "vector series require GPU-resident columns; streamed sources are not supported"
+                        .into(),
+            }
+            .into())
+        }
+        DataRenderType::Vector { .. } => Ok(&[]),
         DataRenderType::Contour { .. } | DataRenderType::HeatmapContour { .. }
             if primitives.field || primitives.contour =>
         {
@@ -4024,6 +4037,7 @@ impl Renderer {
                 &self.point_value_map_bgl,
                 &self.data_selection_bgl,
                 &self.field_bgl,
+                &self.vector_bgl,
                 self.contour_label_pipelines.as_ref(),
                 self.surface_format,
                 &[ChartDrawItem {

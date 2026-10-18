@@ -309,6 +309,11 @@ impl ColorCycle {
                 contour.line.line_color = c;
             }
             DataRenderType::Heatmap { .. } => {}
+            // The arrow colour joins the cycle; a colour map, when set, still
+            // draws from the colourbar.
+            DataRenderType::Vector { style, .. } => {
+                style.color = c;
+            }
         }
     }
 

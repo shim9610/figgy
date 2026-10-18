@@ -235,36 +235,54 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
                 if radius_px <= 0.0 {
                     continue;
                 }
-
-                let x = xs[i];
-                let y = ys[i];
-                if !x.is_finite() || !y.is_finite() {
-                    continue;
-                }
-
-                let Some((px, py)) = project_data_to_canvas_px(config, &transform, x, y) else {
-                    continue;
-                };
-                let dx = px - canvas_x;
-                let dy = py - canvas_y;
-                let center_dist = dx.mul_add(dx, dy * dy).sqrt();
-                let hit_dist = (center_dist - radius_px).max(0.0);
-                let dist_sq = hit_dist * hit_dist;
-                if !dist_sq.is_finite() || dist_sq > max_dist_sq {
-                    continue;
-                }
-
-                maybe_replace_best(
+                pick_anchor(
                     &mut best,
                     series_index,
-                    dist_sq,
-                    PickedPoint {
-                        source_id: cfg.source_id.clone(),
-                        series_id: cfg.series_id.clone(),
-                        point_index: i,
-                        distance_px: hit_dist,
-                    },
+                    cfg,
+                    config,
+                    &transform,
+                    i,
+                    (xs[i], ys[i]),
+                    radius_px,
+                    (canvas_x, canvas_y),
+                    max_dist_sq,
                 );
+            }
+        }
+
+        // A point vector is picked at its anchors with the head's radius. It
+        // draws only in precise mode, so it is picked only there.
+        if let Some(style) = extract_vector_points(&cfg.render_type)
+            && use_scatter_style_mapping
+        {
+            let radius_px = vector_anchor_radius_px(style);
+            let DataRenderType::Vector {
+                components: crate::data_config::VectorComponents::Points { u, v },
+                ..
+            } = &cfg.render_type
+            else {
+                unreachable!("extract_vector_points matched the points form");
+            };
+            let count = xs
+                .len()
+                .min(ys.len())
+                .min(columns.get_f32_column(u).map_or(0, |u| u.len()))
+                .min(columns.get_f32_column(v).map_or(0, |v| v.len()));
+            if radius_px > 0.0 {
+                for i in 0..count {
+                    pick_anchor(
+                        &mut best,
+                        series_index,
+                        cfg,
+                        config,
+                        &transform,
+                        i,
+                        (xs[i], ys[i]),
+                        radius_px,
+                        (canvas_x, canvas_y),
+                        max_dist_sq,
+                    );
+                }
             }
         }
 
@@ -339,6 +357,51 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
     best.map(|(_, _, p)| p)
 }
 
+/// Score one anchor (a marker or a vector's tail) of `cfg` against the cursor
+/// and keep it when it is the best so far: the data point `(x, y)` is
+/// projected to the canvas, the hit distance is measured from the edge of its
+/// `radius_px` disc, and anything past `max_dist_sq` is dropped. A non-finite
+/// or unprojectable anchor is skipped.
+#[allow(clippy::too_many_arguments)]
+fn pick_anchor(
+    best: &mut Option<(usize, f32, PickedPoint)>,
+    series_index: usize,
+    cfg: &SeriesConfig,
+    config: &Config,
+    transform: &data_render::ScatterTransform,
+    index: usize,
+    (x, y): (f32, f32),
+    radius_px: f32,
+    (canvas_x, canvas_y): (f32, f32),
+    max_dist_sq: f32,
+) {
+    if !x.is_finite() || !y.is_finite() {
+        return;
+    }
+    let Some((px, py)) = project_data_to_canvas_px(config, transform, x, y) else {
+        return;
+    };
+    let dx = px - canvas_x;
+    let dy = py - canvas_y;
+    let center_dist = dx.mul_add(dx, dy * dy).sqrt();
+    let hit_dist = (center_dist - radius_px).max(0.0);
+    let dist_sq = hit_dist * hit_dist;
+    if !dist_sq.is_finite() || dist_sq > max_dist_sq {
+        return;
+    }
+    maybe_replace_best(
+        best,
+        series_index,
+        dist_sq,
+        PickedPoint {
+            source_id: cfg.source_id.clone(),
+            series_id: cfg.series_id.clone(),
+            point_index: index,
+            distance_px: hit_dist,
+        },
+    );
+}
+
 fn maybe_replace_best(
     best: &mut Option<(usize, f32, PickedPoint)>,
     series_index: usize,
@@ -353,6 +416,25 @@ fn maybe_replace_best(
     };
     if replace {
         *best = Some((series_index, dist_sq, picked));
+    }
+}
+
+/// The pick radius of a vector series' anchor, in logical pixels: half the
+/// head width, or half the shaft width when the shaft is wider. The GPU
+/// picker and the selection ring use the same number.
+pub(crate) fn vector_anchor_radius_px(style: &crate::data_config::VectorStyle) -> f32 {
+    (style.head_width_px.max(style.width_px) * 0.5).max(0.0)
+}
+
+/// The style of a point vector series: its anchors are picked like markers.
+/// A grid vector's cells are a separate query, like a heatmap's.
+fn extract_vector_points(rt: &DataRenderType) -> Option<&crate::data_config::VectorStyle> {
+    match rt {
+        DataRenderType::Vector {
+            components: crate::data_config::VectorComponents::Points { .. },
+            style,
+        } => Some(style),
+        _ => None,
     }
 }
 
@@ -377,7 +459,9 @@ fn extract_line(rt: &DataRenderType) -> Option<&DataLineStyleConfig> {
         | DataRenderType::Histogram { .. }
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. } => None,
+        | DataRenderType::HeatmapContour { .. }
+        // A vector series is picked at its anchors through `extract_vector`.
+        | DataRenderType::Vector { .. } => None,
     }
 }
 
@@ -395,7 +479,8 @@ fn extract_scatter(rt: &DataRenderType) -> Option<&DataScatterStyleConfig> {
         | DataRenderType::Histogram { .. }
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. } => None,
+        | DataRenderType::HeatmapContour { .. }
+        | DataRenderType::Vector { .. } => None,
     }
 }
 
@@ -982,6 +1067,71 @@ mod tests {
 
         assert_eq!(picked.series_id, "mapped");
         assert_eq!(picked.point_index, 1);
+    }
+
+    fn vector_points_series(id: &str, u: &str, v: &str) -> SeriesConfig {
+        SeriesConfig {
+            series_id: id.into(),
+            source_id: None,
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            render_type: DataRenderType::Vector {
+                components: crate::data_config::VectorComponents::Points {
+                    u: u.into(),
+                    v: v.into(),
+                },
+                style: crate::data_config::VectorStyle {
+                    color: Color::BLACK,
+                    width_px: 4.0,
+                    scale: crate::data_config::VectorScale::Pixels { px_per_unit: 1.0 },
+                    pivot: crate::data_config::VectorPivot::Tail,
+                    head_length_px: 10.0,
+                    head_width_px: 10.0,
+                    min_length_px: 0.0,
+                    color_map: None,
+                },
+            },
+        }
+    }
+
+    /// A point vector is picked at its anchor with half the wider of head and
+    /// shaft as its radius, and only as far as its component columns reach.
+    #[test]
+    fn vector_points_pick_at_their_anchors_with_the_glyph_radius() {
+        let config = config();
+        let columns = Columns::new(&[
+            ("x", &[2.0, 8.0]),
+            ("y", &[5.0, 5.0]),
+            ("u", &[1.0, 1.0]),
+            ("v", &[0.0, 0.0]),
+            ("u_short", &[1.0]),
+        ]);
+        let series = [vector_points_series("arrows", "u", "v")];
+
+        // Anchors at (30, 70) and (90, 70); the 10 px head gives a 5 px radius.
+        let inside = pick(&config, &series, &columns, 34.5, 70.0, 0.0).unwrap();
+        assert_eq!((inside.point_index, inside.distance_px), (0, 0.0));
+        assert_eq!(pick(&config, &series, &columns, 36.0, 70.0, 0.0), None);
+        let near = pick(&config, &series, &columns, 37.0, 70.0, 3.0).unwrap();
+        assert_eq!(near.point_index, 0);
+        assert!((near.distance_px - 2.0).abs() < 1e-4);
+        assert_eq!(
+            pick(&config, &series, &columns, 90.0, 70.0, 0.0)
+                .unwrap()
+                .point_index,
+            1
+        );
+
+        // A component column shorter than the anchors hides the surplus.
+        let short = [vector_points_series("arrows", "u_short", "v")];
+        assert_eq!(
+            pick(&config, &short, &columns, 30.0, 70.0, 0.0)
+                .unwrap()
+                .point_index,
+            0
+        );
+        assert_eq!(pick(&config, &short, &columns, 90.0, 70.0, 0.0), None);
     }
 
     #[test]

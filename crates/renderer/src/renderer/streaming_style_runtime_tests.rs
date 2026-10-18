@@ -168,7 +168,8 @@ fn remap_resident(series: &mut SeriesConfig, remove_maps: bool) {
         | DataRenderType::Histogram { .. }
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. } => unreachable!(),
+        | DataRenderType::HeatmapContour { .. }
+        | DataRenderType::Vector { .. } => unreachable!(),
     };
     scatter.point_style_index_column = (!remove_maps).then(|| "rindex".into());
     if remove_maps {
@@ -1416,7 +1417,8 @@ fn styled_stream_suppressed_histogram_and_fields_are_exact_noops() {
                     | DataRenderType::LineScatterErrorbarX { .. }
                     | DataRenderType::LineScatterErrorbarY { .. }
                     | DataRenderType::LineScatterErrorbarXY { .. }
-                    | DataRenderType::Histogram { .. } => {}
+                    | DataRenderType::Histogram { .. }
+                    | DataRenderType::Vector { .. } => {}
                 }
                 let resident_id = r.register_chart(config.clone(), vec![resident]).unwrap();
                 let stream_id = r.register_chart(config.clone(), vec![stream]).unwrap();

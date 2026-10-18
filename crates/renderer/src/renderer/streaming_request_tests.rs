@@ -2518,7 +2518,8 @@ fn ordered_stream_draw_matches_resident_pixels_across_chunk_boundaries() {
                     | DataRenderType::Histogram { .. }
                     | DataRenderType::Heatmap { .. }
                     | DataRenderType::Contour { .. }
-                    | DataRenderType::HeatmapContour { .. } => {}
+                    | DataRenderType::HeatmapContour { .. }
+                    | DataRenderType::Vector { .. } => {}
                 }
             }
             let resident_id = r.register_chart(chart.config().clone(), resident).unwrap();

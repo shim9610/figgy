@@ -267,6 +267,66 @@ struct ResolvedGrid {
 ///
 /// Padded to one entry when there are none: a storage binding cannot be
 /// zero-sized, and the real count travels in the params uniform.
+/// What every colour-mapped primitive's GPU params take from the chart
+/// colourbar: the z bounds as hi/lo pairs, already log10 under a logarithmic
+/// bar, and the premultiplied `nan_color`.
+///
+/// The log bounds are taken here, in f64: doing it in the shader would lose
+/// the precision the bounds were written with, and `validate_renderer_config`
+/// has already refused a log colourbar whose lower bound is not positive. One
+/// place for the field, the point colour map and the vector colour map, so
+/// their shaders (which share the ramp, SHADER_COMMON.md §5.4) read bounds
+/// computed the same way.
+struct ColorbarGpu {
+    log_z: bool,
+    z_min: [f32; 2],
+    z_max: [f32; 2],
+    nan_color_premul: [f32; 4],
+}
+
+fn colorbar_gpu(bar: &crate::config::ColorBarOptions) -> ColorbarGpu {
+    let log_z = matches!(bar.axis.scale, AxisScale::Logarithmic);
+    let bound = |value: f64| {
+        let transformed = if log_z { value.log10() } else { value };
+        let (hi, lo) = crate::data::split_f64_to_f32_pair(transformed);
+        [hi, lo]
+    };
+    let nan = bar.nan_color;
+    let alpha = nan.a.clamp(0.0, 1.0);
+    ColorbarGpu {
+        log_z,
+        z_min: bound(bar.axis.min),
+        z_max: bound(bar.axis.max),
+        nan_color_premul: [nan.r * alpha, nan.g * alpha, nan.b * alpha, alpha],
+    }
+}
+
+/// The colourbar's ramp control points as straight RGBA for a storage
+/// binding. `stop_count` is the real count; the table keeps one padding entry
+/// when the map has none, because a storage binding cannot be zero-sized.
+struct ColorbarStops {
+    stops: Vec<[f32; 4]>,
+    stop_count: u32,
+}
+
+fn colorbar_stops(
+    label: &'static str,
+    bar: &crate::config::ColorBarOptions,
+) -> Result<ColorbarStops> {
+    let mut stops = crate::gpu_contour::try_collect(
+        label,
+        bar.colormap
+            .stops()
+            .iter()
+            .map(|color| [color.r, color.g, color.b, color.a]),
+    )?;
+    let stop_count = u32::try_from(stops.len()).unwrap_or(u32::MAX);
+    if stops.is_empty() {
+        stops.push([0.0; 4]);
+    }
+    Ok(ColorbarStops { stops, stop_count })
+}
+
 fn contour_levels(rt: &DataRenderType) -> Result<Vec<f32>> {
     let empty: [f64; 0] = [];
     let source = extract_contour(rt).map_or(&empty[..], |contour| &contour.levels);
@@ -447,6 +507,36 @@ struct ContourScratchEntry {
 
 /// Per-series field scratch cache limit, mirroring `ARC_PREFIX_CACHE_LIMIT`.
 const FIELD_SCRATCH_CACHE_LIMIT: usize = 256;
+/// Per-series vector scratch cache limit, mirroring `FIELD_SCRATCH_CACHE_LIMIT`.
+const VECTOR_SCRATCH_CACHE_LIMIT: usize = 256;
+
+/// Everything a vector series' group-2 state depends on. Compared before any
+/// upload, so a steady frame builds nothing.
+#[derive(Clone, Debug, PartialEq)]
+struct VectorSignature {
+    pool_layout_generation: u64,
+    params: data_render::vector::VectorParamsGpu,
+    grid: Vec<data_render::GridColumnGpu>,
+    epochs: Vec<u64>,
+    stops: Vec<[f32; 4]>,
+    /// Series colour bits: the group-1 style is built here too.
+    color: [u32; 4],
+}
+
+/// One vector series' resolved GPU state.
+struct VectorScratch {
+    signature: VectorSignature,
+    input: data_render::vector::VectorInput,
+    style_bg: wgpu::BindGroup,
+    vector_bg: wgpu::BindGroup,
+    charge: crate::gpu_memory::SharedCharge,
+    /// Grid form only: the `u` grid as a field's group 2, so the selected
+    /// cell highlight and the cell pick run the field pipelines unchanged.
+    field: Option<(wgpu::BindGroup, crate::gpu_memory::SharedCharge)>,
+    sources: Arc<GridSources>,
+    /// Arrows the draw issues; zero draws nothing.
+    count: u32,
+}
 
 /// Per-series point value-map scratch cache limit, mirroring the field limit.
 const VALUE_MAP_SCRATCH_CACHE_LIMIT: usize = 256;
@@ -743,6 +833,8 @@ fn stream_config_equal(left: &Config, right: &Config, series: &[SeriesConfig]) -
         // border, labels or position. XY-only charts do not consume this map.
         && (!series.iter().any(|s| match &s.render_type {
             DataRenderType::Heatmap { .. } | DataRenderType::HeatmapContour { .. } => true,
+            // A colour-mapped vector draws through the colourbar too.
+            DataRenderType::Vector { style, .. } => style.color_map.is_some(),
             DataRenderType::Scatter { .. }
             | DataRenderType::Line { .. }
             | DataRenderType::ScatterLine { .. }
@@ -947,6 +1039,22 @@ struct FitSeriesStamp {
     columns: Vec<FitColumnStamp>,
 }
 
+/// The role slots of a series' fit stamps (`FitColumnStamp::role`): which
+/// declared column a stamp describes, so a token can tell a replaced x column
+/// from a replaced error column. Fixed roles come first; a matrix's
+/// constituent columns take `FIT_ROLE_MATRIX_BASE + index`. A series never
+/// carries both vector components and a matrix under the same role space:
+/// the points form has components, the grid form has matrices.
+const FIT_ROLE_X: u32 = 0;
+const FIT_ROLE_Y: u32 = 1;
+const FIT_ROLE_ERR_X_LOWER: u32 = 2;
+const FIT_ROLE_ERR_X_UPPER: u32 = 3;
+const FIT_ROLE_ERR_Y_LOWER: u32 = 4;
+const FIT_ROLE_ERR_Y_UPPER: u32 = 5;
+const FIT_ROLE_VECTOR_U: u32 = 6;
+const FIT_ROLE_VECTOR_V: u32 = 7;
+const FIT_ROLE_MATRIX_BASE: u32 = 8;
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct FitColumnStamp {
     role: u32,
@@ -1016,6 +1124,8 @@ struct EffectiveSeriesPrimitives {
     line: bool,
     scatter: bool,
     bar: bool,
+    /// A vector (quiver) series' arrows. Precise mode only, like fields.
+    vector: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1235,11 +1345,40 @@ impl PickChartPlan {
 
         for series in series {
             let primitives = effective_series_primitives(&config.draw_style, &series.render_type);
-            if !primitives.line && !primitives.scatter {
+            // A point vector is picked at its anchors like a marker series.
+            let vector_points = primitives.vector
+                && extract_vector(&series.render_type)
+                    .is_some_and(|(components, _)| components.grid().is_none());
+            if !primitives.line && !primitives.scatter && !vector_points {
                 continue;
             }
 
-            let (scatter, scatter_signature) = if primitives.scatter {
+            let (scatter, scatter_signature) = if let Some((_, style)) =
+                extract_vector(&series.render_type).filter(|_| vector_points)
+            {
+                // The anchor is picked as a disc of the glyph radius, which is
+                // what the pick shader's circle shape resolves to unchanged
+                // (`pick_visual_shape_radius` scales by 1 for a circle).
+                let base_radius_px = crate::pick::vector_anchor_radius_px(style);
+                let base_shape_id = data_render::shape_id(&ScatterShape::Circle);
+                (
+                    Some(OwnedGpuPickScatter {
+                        base_radius_px,
+                        base_shape_id,
+                        style_index_column: None,
+                        style_slots: Vec::new(),
+                        style_overrides: Vec::new(),
+                        style_meta: None,
+                        size_map: None,
+                    }),
+                    Some(PickScatterSignature {
+                        base_radius_bits: base_radius_px.to_bits(),
+                        base_shape_id,
+                        style_mapping: PickStyleMappingSignature::Inactive,
+                        size_map: None,
+                    }),
+                )
+            } else if primitives.scatter {
                 let scatter = extract_scatter(&series.render_type)
                     .expect("effective scatter primitive has scatter configuration");
                 let base_radius_px = scatter.point_size;
@@ -2174,6 +2313,16 @@ struct PreparedFieldLayer {
     drawable: bool,
 }
 
+/// Owned vector layer: refcounted clones of the group-2 state, like the field.
+struct PreparedVectorLayer {
+    pipeline: wgpu::RenderPipeline,
+    transform_bg: wgpu::BindGroup,
+    style_bg: wgpu::BindGroup,
+    vector_bg: wgpu::BindGroup,
+    charge: crate::gpu_memory::SharedCharge,
+    count: u32,
+}
+
 /// Owned contour layer. The group-2 tables, the lump charge and the label state
 /// are refcounted, so the token draws from its own clones even after a later
 /// prepare replaces the scratch they came from.
@@ -2233,6 +2382,7 @@ struct PreparedSeries {
     field: Option<PreparedFieldLayer>,
     bar: Option<PreparedBarLayer>,
     contour: Option<PreparedContourLayer>,
+    vector: Option<PreparedVectorLayer>,
     errorbar: Option<PreparedErrorBarLayer>,
     line: Option<PreparedLineLayer>,
     line_extra: Option<PreparedStarLayer>,
@@ -2409,6 +2559,14 @@ impl PreparedSeries {
                 edges: layer.edges,
                 values: layer.values,
             }),
+            vector: layers.vector.map(|layer| PreparedVectorLayer {
+                pipeline: layer.pipeline.clone(),
+                transform_bg: layer.transform_bg.clone(),
+                style_bg: layer.style_bg,
+                vector_bg: layer.vector_bg,
+                charge: layer.charge,
+                count: layer.count,
+            }),
             contour: layers.contour.map(|layer| PreparedContourLayer {
                 pipeline: layer.pipeline.clone(),
                 transform_bg: layer.transform_bg.clone(),
@@ -2555,6 +2713,17 @@ impl PreparedSeries {
                 edges: layer.edges,
                 values: layer.values,
             }),
+            vector: self
+                .vector
+                .as_ref()
+                .map(|layer| data_render::vector::ColumnVectorLayer {
+                    pipeline: &layer.pipeline,
+                    transform_bg: &layer.transform_bg,
+                    style_bg: layer.style_bg.clone(),
+                    vector_bg: layer.vector_bg.clone(),
+                    charge: Arc::clone(&layer.charge),
+                    count: layer.count,
+                }),
             contour: self
                 .contour
                 .as_ref()
@@ -2855,6 +3024,11 @@ pub struct Renderer {
     /// metadata + `FieldParams`) — shared by the field pipeline and every
     /// per-series field bind group.
     field_bgl: wgpu::BindGroupLayout,
+    /// Vector data layout (pool + grid table + colourmap stops +
+    /// `VectorParams`), group 2 of the assembled vector pipelines.
+    vector_bgl: wgpu::BindGroupLayout,
+    /// The padding tables every grid vector's cell-geometry field group shares.
+    field_cell_tables: data_render::FieldCellTables,
 
     // Pipelines (precise + lazily-cached styled variants), all against
     // `surface_format`.
@@ -2892,6 +3066,9 @@ pub struct Renderer {
     /// Rebuilt only when its [`ValueMapSignature`] changes; a live token holds
     /// its own refcounted clone of the bind group, like `field_cache`.
     value_map_cache: HashMap<String, ValueMapScratch>,
+    /// Per-vector-series group-2 state, keyed by `series_id`. Rebuilt only
+    /// when its [`VectorSignature`] changes, like `field_cache`.
+    vector_cache: HashMap<String, VectorScratch>,
     arc_pipelines: Option<data_render::line_arc::ArcScanPipelines>,
     /// Test-only narrowing of the arc-scan chunk size so the multi-chunk
     /// carry path is exercisable with small `n`. Always `None` in release.
@@ -3370,6 +3547,30 @@ fn begin_series_fit_extent_from_pool(
         return Ok(None);
     };
     match mode {
+        GpuSeriesFitMode::Paired(crate::gpu_errorbar::GpuSeriesExtentMode::VectorTips) => {
+            let Some((crate::data_config::VectorComponents::Points { u, v }, style)) =
+                extract_vector(&series.render_type)
+            else {
+                unreachable!("the tips mode comes from a Data-scaled point vector");
+            };
+            let crate::data_config::VectorScale::Data { factor } = style.scale else {
+                unreachable!("the tips mode comes from a Data-scaled point vector");
+            };
+            engine
+                .begin_vector_tips(
+                    device,
+                    queue,
+                    pool.buffer(),
+                    [
+                        current_extent_handle(pool, "x", &series.x_column)?,
+                        current_extent_handle(pool, "y", &series.y_column)?,
+                        current_extent_handle(pool, "vector u", u)?,
+                        current_extent_handle(pool, "vector v", v)?,
+                    ],
+                    factor as f32,
+                )
+                .map(Some)
+        }
         GpuSeriesFitMode::Paired(mode) => {
             fn ids(errors: Option<&ErrorRef>) -> (Option<&str>, Option<&str>) {
                 match errors {
@@ -3402,7 +3603,7 @@ fn begin_series_fit_extent_from_pool(
             .map(Some)
         }
         GpuSeriesFitMode::Field(mode) => {
-            let matrix = extract_matrix(&series.render_type)
+            let matrix = fit_matrix(&series.render_type)
                 .expect("field fit mode comes from a matrix render type");
             let x = current_extent_handle(pool, "field x", &series.x_column)?;
             let y = current_extent_handle(pool, "field y", &series.y_column)?;
@@ -3684,6 +3885,9 @@ struct TargetPipelines {
     /// The contour label draw. Compiled from `Renderer::contour_label_pipelines`,
     /// which owns the module and the group-1 layout.
     contour_label: Option<wgpu::RenderPipeline>,
+    /// The assembled vector pipelines, one per input form (`vector.rs`).
+    vector_points: Option<wgpu::RenderPipeline>,
+    vector_grid: Option<wgpu::RenderPipeline>,
     sample_count: u32,
     styled: HashMap<StyleKey, StyleSet>,
 }
@@ -3800,6 +4004,8 @@ fn create_target_pipelines_observed(
         data_render::ShaderModules::new(device)
     });
     TargetPipelines {
+        vector_points: None,
+        vector_grid: None,
         axis: observe_value(
             observer,
             "renderer",
@@ -3884,6 +4090,8 @@ async fn create_target_pipelines_observed_async(
     Ok(TargetPipelines {
         shaders,
         axis,
+        vector_points: None,
+        vector_grid: None,
         line: None,
         area: None,
         scatter: None,
@@ -3951,10 +4159,13 @@ impl TargetPipelines {
         point_value_map_bgl: &wgpu::BindGroupLayout,
         data_selection_bgl: &wgpu::BindGroupLayout,
         field_bgl: &wgpu::BindGroupLayout,
+        vector_bgl: &wgpu::BindGroupLayout,
         label_pipelines: Option<&crate::gpu_contour::ContourLabelPipelines>,
         surface_format: wgpu::TextureFormat,
         items: &[ChartDrawItem<'_>],
     ) {
+        let mut need_vector_points = false;
+        let mut need_vector_grid = false;
         let mut need_field = false;
         let mut need_contour = false;
         let mut need_contour_label = false;
@@ -4024,6 +4235,23 @@ impl TargetPipelines {
                     primitives.contour && series_wants_contour_labels(&series.config.render_type);
                 need_scatter |= primitives.scatter;
                 need_bar |= primitives.bar;
+                if primitives.vector
+                    && let Some((components, _)) = extract_vector(&series.config.render_type)
+                {
+                    match components.grid() {
+                        Some(_) => need_vector_grid = true,
+                        None => need_vector_points = true,
+                    }
+                    // A selected grid cell draws through the field selection
+                    // pipeline; a selected point anchor through the ring.
+                }
+                need_field_selection |= primitives.vector
+                    && typed_picks.is_some_and(|config| {
+                        config
+                            .refs
+                            .iter()
+                            .any(|picked| matches!(picked, PickedDataRef::MatrixCell { .. }))
+                    });
                 need_bar_mapped |= primitives.bar && series.style.bar_map.is_some();
                 need_errorbar |= has_errorbar(&series.config.render_type);
                 // `has_index` only means a style-index column is bound.
@@ -4172,6 +4400,29 @@ impl TargetPipelines {
                 ),
             );
         }
+        for (need, input) in [
+            (need_vector_points, data_render::vector::VectorInput::Points),
+            (need_vector_grid, data_render::vector::VectorInput::Grid),
+        ] {
+            let slot = match input {
+                data_render::vector::VectorInput::Points => &mut self.vector_points,
+                data_render::vector::VectorInput::Grid => &mut self.vector_grid,
+            };
+            if need && slot.is_none() {
+                *slot = Some(
+                    data_render::vector::create_vector_pipeline_with_sample_count(
+                        device,
+                        self.shaders.vector(input),
+                        transform_bgl,
+                        style_bgl,
+                        vector_bgl,
+                        surface_format,
+                        self.sample_count,
+                        input,
+                    ),
+                );
+            }
+        }
         if need_field_selection && self.field_selection.is_none() {
             self.field_selection = Some(
                 data_render::create_field_selection_pipeline_with_sample_count(
@@ -4274,6 +4525,7 @@ impl TargetPipelines {
         point_value_map_bgl: &wgpu::BindGroupLayout,
         data_selection_bgl: &wgpu::BindGroupLayout,
         field_bgl: &wgpu::BindGroupLayout,
+        vector_bgl: &wgpu::BindGroupLayout,
         star_data_bgl: &wgpu::BindGroupLayout,
         label_pipelines: Option<&crate::gpu_contour::ContourLabelPipelines>,
         feature: Option<PreparationFeature>,
@@ -4464,6 +4716,34 @@ impl TargetPipelines {
                 field_bgl,
                 surface_format,
                 self.sample_count,
+            )
+        );
+        ensure!(
+            vector_points,
+            "vector points",
+            data_render::vector::create_vector_pipeline_with_sample_count(
+                device,
+                &self.shaders.vector_points,
+                transform_bgl,
+                style_bgl,
+                vector_bgl,
+                surface_format,
+                self.sample_count,
+                data_render::vector::VectorInput::Points,
+            )
+        );
+        ensure!(
+            vector_grid,
+            "vector grid",
+            data_render::vector::create_vector_pipeline_with_sample_count(
+                device,
+                &self.shaders.vector_grid,
+                transform_bgl,
+                style_bgl,
+                vector_bgl,
+                surface_format,
+                self.sample_count,
+                data_render::vector::VectorInput::Grid,
             )
         );
         ensure!(
@@ -5194,6 +5474,30 @@ fn visit_series_columns(series: &SeriesConfig, visit: &mut impl FnMut(&str)) {
                 visit(column);
             }
         }
+        // The components and the colour-map value are referenced columns in
+        // both forms, for the same reasons as a matrix' constituents.
+        DataRenderType::Vector { components, style } => {
+            match components {
+                crate::data_config::VectorComponents::Points { u, v } => {
+                    visit(u);
+                    visit(v);
+                }
+                crate::data_config::VectorComponents::Grid { u, v } => {
+                    for column in u.columns.iter().chain(&v.columns) {
+                        visit(column);
+                    }
+                }
+            }
+            match style.color_map.as_ref() {
+                Some(crate::data_config::VectorColorMap::Column(column)) => visit(column),
+                Some(crate::data_config::VectorColorMap::Grid(matrix)) => {
+                    for column in &matrix.columns {
+                        visit(column);
+                    }
+                }
+                None => {}
+            }
+        }
     }
 }
 
@@ -5280,6 +5584,76 @@ fn validate_renderer_series(
                 validate_registered_column(pool, column)?;
             }
         }
+        if let Some((components, style)) = extract_vector(&item.render_type) {
+            validate_vector_series(pool, config, item, components, style)?;
+        }
+    }
+    Ok(())
+}
+
+/// A vector series' own rules: a valid style, registered component columns,
+/// grids that agree on orientation and layout, a colour map in the same form
+/// as the components, and the colourbar it maps through.
+fn validate_vector_series(
+    pool: &impl ColumnRegistration,
+    config: &Config,
+    item: &SeriesConfig,
+    components: &crate::data_config::VectorComponents,
+    style: &crate::data_config::VectorStyle,
+) -> Result<()> {
+    use crate::data_config::{VectorColorMap, VectorComponents};
+    let invalid = |reason: String| FiggyError::InvalidSeriesConfig {
+        series_id: item.series_id.clone(),
+        reason,
+    };
+    style.validate().map_err(|reason| invalid(reason.into()))?;
+    let grid = match components {
+        VectorComponents::Points { u, v } => {
+            validate_registered_column(pool, u)?;
+            validate_registered_column(pool, v)?;
+            None
+        }
+        VectorComponents::Grid { u, v } => {
+            for column in u.columns.iter().chain(&v.columns) {
+                validate_registered_column(pool, column)?;
+            }
+            if u.orientation != v.orientation || u.grid_layout != v.grid_layout {
+                return Err(invalid(
+                    "vector u and v grids must share orientation and grid layout".into(),
+                ));
+            }
+            Some(u)
+        }
+    };
+    match (style.color_map.as_ref(), grid) {
+        (None, _) => {}
+        (Some(VectorColorMap::Column(column)), None) => {
+            validate_registered_column(pool, column)?;
+        }
+        (Some(VectorColorMap::Grid(matrix)), Some(u)) => {
+            for column in &matrix.columns {
+                validate_registered_column(pool, column)?;
+            }
+            if matrix.orientation != u.orientation || matrix.grid_layout != u.grid_layout {
+                return Err(invalid(
+                    "vector colour grid must share the u grid's orientation and grid layout".into(),
+                ));
+            }
+        }
+        (Some(_), _) => {
+            return Err(invalid(
+                "vector colour map must take the components' form: a column for points, \
+                 a grid for grids"
+                    .into(),
+            ));
+        }
+    }
+    if style.color_map.is_some() && config.colorbar.is_none() {
+        return Err(invalid(
+            "a colour-mapped vector needs Config.colorbar: it owns the z range and colormap, \
+             so without it there is no colour to draw"
+                .into(),
+        ));
     }
     Ok(())
 }
@@ -5410,15 +5784,41 @@ fn build_fit_token_from_state(
                 resource: "fit role-column stamps",
                 reason: error.to_string(),
             })?;
-        push_fit_column_stamp(pool, streaming_sources, &mut columns, 0, &item.x_column)?;
-        push_fit_column_stamp(pool, streaming_sources, &mut columns, 1, &item.y_column)?;
+        push_fit_column_stamp(
+            pool,
+            streaming_sources,
+            &mut columns,
+            FIT_ROLE_X,
+            &item.x_column,
+        )?;
+        push_fit_column_stamp(
+            pool,
+            streaming_sources,
+            &mut columns,
+            FIT_ROLE_Y,
+            &item.y_column,
+        )?;
         if let Some(error) = extract_err_x(&item.render_type) {
-            push_fit_error_stamps(pool, streaming_sources, &mut columns, error, 2, 3)?;
+            push_fit_error_stamps(
+                pool,
+                streaming_sources,
+                &mut columns,
+                error,
+                FIT_ROLE_ERR_X_LOWER,
+                FIT_ROLE_ERR_X_UPPER,
+            )?;
         }
         if let Some(error) = extract_err_y(&item.render_type) {
-            push_fit_error_stamps(pool, streaming_sources, &mut columns, error, 4, 5)?;
+            push_fit_error_stamps(
+                pool,
+                streaming_sources,
+                &mut columns,
+                error,
+                FIT_ROLE_ERR_Y_LOWER,
+                FIT_ROLE_ERR_Y_UPPER,
+            )?;
         }
-        if let Some(matrix) = extract_matrix(&item.render_type) {
+        if let Some(matrix) = fit_matrix(&item.render_type) {
             columns.try_reserve(matrix.columns.len()).map_err(|error| {
                 FiggyError::StateAllocationFailed {
                     resource: "fit matrix-column stamps",
@@ -5430,15 +5830,24 @@ fn build_fit_token_from_state(
                     pool,
                     streaming_sources,
                     &mut columns,
-                    6u32.saturating_add(u32::try_from(index).unwrap_or(u32::MAX)),
+                    FIT_ROLE_MATRIX_BASE.saturating_add(u32::try_from(index).unwrap_or(u32::MAX)),
                     id,
                 )?;
             }
         }
+        // A `Data`-scaled point vector's tips depend on its components, so
+        // they stamp the token too.
+        if let Some((crate::data_config::VectorComponents::Points { u, v }, style)) =
+            extract_vector(&item.render_type)
+            && matches!(style.scale, crate::data_config::VectorScale::Data { .. })
+        {
+            push_fit_column_stamp(pool, streaming_sources, &mut columns, FIT_ROLE_VECTOR_U, u)?;
+            push_fit_column_stamp(pool, streaming_sources, &mut columns, FIT_ROLE_VECTOR_V, v)?;
+        }
         series.push(FitSeriesStamp {
             series_id: item.series_id.clone(),
             mode: crate::gpu_errorbar::GpuSeriesFitMode::from_render_type(&item.render_type),
-            field_orientation: extract_matrix(&item.render_type).map(|matrix| {
+            field_orientation: fit_matrix(&item.render_type).map(|matrix| {
                 match matrix.orientation {
                     crate::data_config::MatrixOrientation::ColumnsAreX => 0,
                     crate::data_config::MatrixOrientation::ColumnsAreY => 1,
@@ -5870,6 +6279,8 @@ impl Renderer {
         let data_selection_bgl = data_render::create_data_selection_bind_group_layout(&device);
         let star_data_bgl = data_render::create_star_data_bind_group_layout(&device);
         let field_bgl = data_render::create_field_data_bind_group_layout(&device);
+        let vector_bgl = data_render::vector::create_vector_data_bind_group_layout(&device);
+        let field_cell_tables = data_render::create_field_cell_tables(&device, &gpu_ledger)?;
 
         let sampler = data_render::create_linear_sampler(&device);
         let quad_vb = TrackedBuffer::new(
@@ -5925,12 +6336,15 @@ impl Renderer {
             data_selection_bgl,
             star_data_bgl,
             field_bgl,
+            vector_bgl,
+            field_cell_tables,
             pipelines,
             sampler,
             quad_vb,
             arc_cache: HashMap::new(),
             field_cache: HashMap::new(),
             value_map_cache: HashMap::new(),
+            vector_cache: HashMap::new(),
             contour_label_pipelines: None,
             contour_cache: HashMap::new(),
             arc_pipelines: None,
@@ -6004,6 +6418,8 @@ impl Renderer {
         let data_selection_bgl = data_render::create_data_selection_bind_group_layout(&device);
         let star_data_bgl = data_render::create_star_data_bind_group_layout(&device);
         let field_bgl = data_render::create_field_data_bind_group_layout(&device);
+        let vector_bgl = data_render::vector::create_vector_data_bind_group_layout(&device);
+        let field_cell_tables = data_render::create_field_cell_tables(&device, &gpu_ledger)?;
 
         let sampler = data_render::create_linear_sampler(&device);
         let quad_vb = TrackedBuffer::new(
@@ -6059,12 +6475,15 @@ impl Renderer {
             data_selection_bgl,
             star_data_bgl,
             field_bgl,
+            vector_bgl,
+            field_cell_tables,
             pipelines,
             sampler,
             quad_vb,
             arc_cache: HashMap::new(),
             field_cache: HashMap::new(),
             value_map_cache: HashMap::new(),
+            vector_cache: HashMap::new(),
             contour_label_pipelines: None,
             contour_cache: HashMap::new(),
             arc_pipelines: None,
@@ -6805,6 +7224,32 @@ impl Renderer {
                 continue;
             }
 
+            if primitives.vector {
+                // A grid vector's cells are picked exactly as a heatmap's: the
+                // `u` grid is bound as a field for the cell lookup.
+                self.ensure_vector_scratch(&config, cfg, request.display_scale)?;
+                let scratch = self
+                    .vector_cache
+                    .get(cfg.series_id.as_str())
+                    .expect("vector scratch was just ensured");
+                if let Some((field_bg, charge)) = scratch.field.as_ref()
+                    && scratch.count != 0
+                {
+                    data_series.push(crate::gpu_data_pick::GpuDataPickSeries {
+                        source_id: cfg.source_id.clone(),
+                        series_id: cfg.series_id.clone(),
+                        paint_order,
+                        geometry: crate::gpu_data_pick::GpuDataPickGeometry::Field {
+                            field_bg: field_bg.clone(),
+                            charge: Arc::clone(charge),
+                            has_fill: true,
+                            has_contour: false,
+                            contour_width_px: 0.0,
+                        },
+                    });
+                }
+                continue;
+            }
             if !(primitives.field || primitives.contour) {
                 continue;
             }
@@ -8142,6 +8587,7 @@ impl Renderer {
                 &self.point_value_map_bgl,
                 &self.data_selection_bgl,
                 &self.field_bgl,
+                &self.vector_bgl,
                 &self.star_data_bgl,
                 self.contour_label_pipelines.as_ref(),
                 None,
@@ -11056,6 +11502,8 @@ impl Renderer {
                 gpu_ledger: &self.gpu_ledger,
                 style_bgl: &self.style_bgl,
                 field_bgl: &self.field_bgl,
+                vector_bgl: &self.vector_bgl,
+                field_cell_tables: &self.field_cell_tables,
                 transform_bgl: &self.transform_bgl,
                 per_point_style_map_bgl: &self.per_point_style_map_bgl,
                 point_value_map_bgl: &self.point_value_map_bgl,
@@ -11067,6 +11515,7 @@ impl Renderer {
                 pipelines: &mut self.pipelines,
                 field_cache: &mut self.field_cache,
                 value_map_cache: &mut self.value_map_cache,
+                vector_cache: &mut self.vector_cache,
                 contour_cache: &mut self.contour_cache,
                 arc_cache: &mut self.arc_cache,
                 contour_label_pipelines: &mut self.contour_label_pipelines,
@@ -11568,6 +12017,27 @@ impl Renderer {
         self.preparation_parts()
             .1
             .ensure_value_map_scratches(items, scale)
+    }
+
+    fn ensure_vector_scratches(
+        &mut self,
+        items: &[ChartDrawItem<'_>],
+        scale: f32,
+    ) -> Result<Vec<Arc<GridSources>>> {
+        self.preparation_parts()
+            .1
+            .ensure_vector_scratches(items, scale)
+    }
+
+    fn ensure_vector_scratch(
+        &mut self,
+        chart_config: &Config,
+        cfg: &SeriesConfig,
+        scale: f32,
+    ) -> Result<Option<Arc<GridSources>>> {
+        self.preparation_parts()
+            .1
+            .ensure_vector_scratch(chart_config, cfg, scale)
     }
 
     /// Build or reuse one field series' group-2 bind group.
@@ -12139,6 +12609,7 @@ impl Renderer {
             &self.point_value_map_bgl,
             &self.data_selection_bgl,
             &self.field_bgl,
+            &self.vector_bgl,
             self.contour_label_pipelines.as_ref(),
             export_format,
             items,
@@ -12156,6 +12627,7 @@ impl Renderer {
         // receipts have nothing to be held for.
         let _ = self.ensure_field_scratches(items)?;
         self.ensure_value_map_scratches(items, scale)?;
+        let _ = self.ensure_vector_scratches(items, scale)?;
         let (prepared_contours, _) =
             self.ensure_contour_scratches(items, scale, &contour_spacings)?;
         let prepared_arcs = self.prepare_arc_items(items)?;
@@ -12744,6 +13216,8 @@ struct PrepareContext<'a> {
     gpu_ledger: &'a Arc<GpuLedger>,
     style_bgl: &'a wgpu::BindGroupLayout,
     field_bgl: &'a wgpu::BindGroupLayout,
+    vector_bgl: &'a wgpu::BindGroupLayout,
+    field_cell_tables: &'a data_render::FieldCellTables,
     transform_bgl: &'a wgpu::BindGroupLayout,
     per_point_style_map_bgl: &'a wgpu::BindGroupLayout,
     point_value_map_bgl: &'a wgpu::BindGroupLayout,
@@ -12755,6 +13229,7 @@ struct PrepareContext<'a> {
     pipelines: &'a mut TargetPipelines,
     field_cache: &'a mut HashMap<String, FieldScratch>,
     value_map_cache: &'a mut HashMap<String, ValueMapScratch>,
+    vector_cache: &'a mut HashMap<String, VectorScratch>,
     contour_cache: &'a mut HashMap<String, ContourScratchEntry>,
     arc_cache: &'a mut HashMap<String, Vec<ArcResultEntry>>,
     contour_label_pipelines: &'a mut Option<crate::gpu_contour::ContourLabelPipelines>,
@@ -12826,6 +13301,7 @@ impl PrepareContext<'_> {
             self.point_value_map_bgl,
             &self.data_selection_bgl,
             &self.field_bgl,
+            self.vector_bgl,
             self.contour_label_pipelines.as_ref(),
             self.surface_format,
             items,
@@ -12841,6 +13317,7 @@ impl PrepareContext<'_> {
         );
         let mut grid_sources = self.ensure_field_scratches(items)?;
         self.ensure_value_map_scratches(items, 1.0)?;
+        grid_sources.append(&mut self.ensure_vector_scratches(items, 1.0)?);
         let (prepared_contours, mut contour_sources) =
             self.ensure_contour_scratches(items, 1.0, &contour_spacings)?;
         grid_sources.append(&mut contour_sources);
@@ -12936,19 +13413,15 @@ impl PrepareContext<'_> {
                                  range and colormap"
                             .into(),
                     })?;
-            let log_z = matches!(bar.axis.scale, AxisScale::Logarithmic);
-            // Log bounds are taken here, in f64, as `ensure_field_scratch` does.
-            let bound = |value: f64| pair(if log_z { value.log10() } else { value });
-            params.z_min = bound(bar.axis.min);
-            params.z_max = bound(bar.axis.max);
+            let colorbar = colorbar_gpu(bar);
+            params.z_min = colorbar.z_min;
+            params.z_max = colorbar.z_max;
             params.flags |= data_render::VALUE_MAP_COLOR;
-            if log_z {
+            if colorbar.log_z {
                 params.flags |= data_render::VALUE_MAP_LOG_Z;
             }
             params.stop_count = u32::try_from(bar.colormap.stops().len()).unwrap_or(u32::MAX);
-            let nan = bar.nan_color;
-            let alpha = nan.a.clamp(0.0, 1.0);
-            params.nan_color_premul = [nan.r * alpha, nan.g * alpha, nan.b * alpha, alpha];
+            params.nan_color_premul = colorbar.nan_color_premul;
             colormap = Some(bar.colormap.clone());
         }
         if let Some(map) = scatter.point_size_map.as_ref() {
@@ -13002,6 +13475,352 @@ impl PrepareContext<'_> {
             },
         );
         Ok(())
+    }
+
+    /// Prepare every vector series' group-2 state, returning the column
+    /// receipts for the token the way `ensure_field_scratches` does.
+    fn ensure_vector_scratches(
+        &mut self,
+        items: &[ChartDrawItem<'_>],
+        scale: f32,
+    ) -> Result<Vec<Arc<GridSources>>> {
+        let mut receipts = Vec::new();
+        for item in items {
+            for series in item.series {
+                let cfg = series.config;
+                if !effective_series_primitives(&item.chart_config.draw_style, &cfg.render_type)
+                    .vector
+                {
+                    continue;
+                }
+                let Some(sources) = self.ensure_vector_scratch(item.chart_config, cfg, scale)?
+                else {
+                    continue;
+                };
+                receipts
+                    .try_reserve(1)
+                    .map_err(|error| FiggyError::StateAllocationFailed {
+                        resource: "vector source receipts",
+                        reason: error.to_string(),
+                    })?;
+                receipts.push(sources);
+            }
+        }
+        Ok(receipts)
+    }
+
+    /// Build or reuse one vector series' group-2 bind group (and, for the grid
+    /// form, the field bind group its cell highlight and cell pick use).
+    ///
+    /// Same contract as `ensure_field_scratch`: the signature is compared
+    /// before anything is created, so a steady frame uploads nothing, and a
+    /// live token holds its own refcounted clones. `scale` is the export DPI
+    /// multiplier applied to every pixel size, like `point_radius_px`.
+    fn ensure_vector_scratch(
+        &mut self,
+        chart_config: &Config,
+        cfg: &SeriesConfig,
+        scale: f32,
+    ) -> Result<Option<Arc<GridSources>>> {
+        use crate::data_config::{VectorColorMap, VectorComponents, VectorPivot, VectorScale};
+        use data_render::vector as vector_render;
+        let Some((components, style)) = extract_vector(&cfg.render_type) else {
+            return Ok(None);
+        };
+        let invalid = |reason: String| FiggyError::InvalidSeriesConfig {
+            series_id: cfg.series_id.clone(),
+            reason,
+        };
+        style.validate().map_err(|reason| invalid(reason.into()))?;
+        let alloc = |resource: &'static str| {
+            move |error: std::collections::TryReserveError| FiggyError::StateAllocationFailed {
+                resource,
+                reason: error.to_string(),
+            }
+        };
+        let handle = |id: &str| {
+            self.pool
+                .handle_for(id)
+                .ok_or_else(|| FiggyError::UnknownColumn { id: id.to_string() })
+        };
+        let epoch = |id: &str| {
+            self.pool
+                .allocation_epoch(id)
+                .ok_or_else(|| FiggyError::UnknownColumn { id: id.to_string() })
+        };
+        let lane = |handle: &ColumnHandle| {
+            u32::try_from(handle.offset / 4)
+                .map_err(|_| invalid("column offset exceeds a 32-bit lane index".into()))
+        };
+        let len32 = |handle: &ColumnHandle| u32::try_from(handle.len_values).unwrap_or(u32::MAX);
+
+        let x = handle(&cfg.x_column)?;
+        let y = handle(&cfg.y_column)?;
+        let mut params = vector_render::VectorParamsGpu {
+            x_base: lane(&x)?,
+            y_base: lane(&y)?,
+            x_len: len32(&x),
+            y_len: len32(&y),
+            u_base: 0,
+            u_len: 0,
+            v_base: 0,
+            v_len: 0,
+            c_base: 0,
+            c_len: 0,
+            cols: 0,
+            rows: 0,
+            flags: 0,
+            count: 0,
+            stop_count: 0,
+            pivot: match style.pivot {
+                VectorPivot::Tail => vector_render::VECTOR_PIVOT_TAIL,
+                VectorPivot::Middle => vector_render::VECTOR_PIVOT_MIDDLE,
+                VectorPivot::Tip => vector_render::VECTOR_PIVOT_TIP,
+            },
+            scale: 0.0,
+            width_px: style.width_px * scale,
+            head_length_px: style.head_length_px * scale,
+            head_width_px: style.head_width_px * scale,
+            min_length_px: style.min_length_px * scale,
+            aa_px: scale,
+            pad0: 0.0,
+            pad1: 0.0,
+            z_min: [0.0; 2],
+            z_max: [0.0; 2],
+            nan_color_premul: [0.0; 4],
+        };
+        match style.scale {
+            VectorScale::Data { factor } => params.scale = factor as f32,
+            VectorScale::Pixels { px_per_unit } => {
+                params.scale = px_per_unit as f32 * scale;
+                params.flags |= vector_render::VECTOR_FLAG_SCALE_PIXELS;
+            }
+        }
+
+        let mut grid = Vec::new();
+        let mut ids = Vec::new();
+        let mut epochs = Vec::new();
+        // Grid form: the `u` grid's field params and its table length, for
+        // the field bind group the selection and the cell pick reuse.
+        let mut field_params = None;
+        let input = match components {
+            VectorComponents::Points { u, v } => {
+                let u_h = handle(u)?;
+                let v_h = handle(v)?;
+                params.u_base = lane(&u_h)?;
+                params.u_len = len32(&u_h);
+                params.v_base = lane(&v_h)?;
+                params.v_len = len32(&v_h);
+                let mut count = x
+                    .len_values
+                    .min(y.len_values)
+                    .min(u_h.len_values)
+                    .min(v_h.len_values);
+                ids.try_reserve_exact(3)
+                    .map_err(alloc("vector source ids"))?;
+                epochs
+                    .try_reserve_exact(3)
+                    .map_err(alloc("vector source epochs"))?;
+                ids.push(u.clone());
+                epochs.push(epoch(u)?);
+                ids.push(v.clone());
+                epochs.push(epoch(v)?);
+                if let Some(VectorColorMap::Column(column)) = style.color_map.as_ref() {
+                    let c_h = handle(column)?;
+                    params.c_base = lane(&c_h)?;
+                    params.c_len = len32(&c_h);
+                    count = count.min(c_h.len_values);
+                    ids.push(column.clone());
+                    epochs.push(epoch(column)?);
+                }
+                params.count = u32::try_from(count).unwrap_or(u32::MAX);
+                // A storage binding cannot be zero-sized: one padding entry.
+                grid.push(data_render::GridColumnGpu { base: 0, len: 0 });
+                vector_render::VectorInput::Points
+            }
+            VectorComponents::Grid { u, v } => {
+                let mut extent: Option<(usize, usize)> = None;
+                let mut append = |matrix: &crate::data_config::MatrixRef,
+                                  grid: &mut Vec<data_render::GridColumnGpu>,
+                                  ids: &mut Vec<ColumnId>,
+                                  epochs: &mut Vec<u64>|
+                 -> Result<(u32, u32, ResolvedGrid)> {
+                    let resolved = self.resolve_grid(cfg, matrix)?;
+                    let base = u32::try_from(grid.len()).unwrap_or(u32::MAX);
+                    let entries = u32::try_from(resolved.grid.len()).unwrap_or(u32::MAX);
+                    grid.try_reserve(resolved.grid.len())
+                        .map_err(alloc("vector grid table"))?;
+                    grid.extend_from_slice(&resolved.grid);
+                    ids.try_reserve(matrix.columns.len())
+                        .map_err(alloc("vector source ids"))?;
+                    ids.extend(matrix.columns.iter().cloned());
+                    epochs
+                        .try_reserve(resolved.epochs.len())
+                        .map_err(alloc("vector source epochs"))?;
+                    epochs.extend_from_slice(&resolved.epochs);
+                    let cells = (resolved.extent.cols, resolved.extent.rows);
+                    extent = Some(match extent {
+                        None => cells,
+                        Some((cols, rows)) => (cols.min(cells.0), rows.min(cells.1)),
+                    });
+                    Ok((base, entries, resolved))
+                };
+                let (u_base, u_len, u_grid) = append(u, &mut grid, &mut ids, &mut epochs)?;
+                params.u_base = u_base;
+                params.u_len = u_len;
+                let (v_base, v_len, _) = append(v, &mut grid, &mut ids, &mut epochs)?;
+                params.v_base = v_base;
+                params.v_len = v_len;
+                if let Some(VectorColorMap::Grid(matrix)) = style.color_map.as_ref() {
+                    let (c_base, c_len, _) = append(matrix, &mut grid, &mut ids, &mut epochs)?;
+                    params.c_base = c_base;
+                    params.c_len = c_len;
+                }
+                let (cols, rows) = extent.unwrap_or((0, 0));
+                params.cols = u32::try_from(cols).unwrap_or(u32::MAX);
+                params.rows = u32::try_from(rows).unwrap_or(u32::MAX);
+                params.count = cols
+                    .checked_mul(rows)
+                    .and_then(|count| u32::try_from(count).ok())
+                    .ok_or_else(|| {
+                        invalid("vector grid cell count exceeds the u32 instance space".into())
+                    })?;
+                params.flags |= vector_render::VECTOR_FLAG_GRID;
+                let mut field_flags = 0u32;
+                if u_grid.columns_are_y {
+                    params.flags |= vector_render::VECTOR_FLAG_COLUMNS_ARE_Y;
+                    field_flags |= data_render::FIELD_FLAG_COLUMNS_ARE_Y;
+                }
+                if u_grid.centers {
+                    params.flags |= vector_render::VECTOR_FLAG_CENTERS;
+                    field_flags |= data_render::FIELD_FLAG_CENTERS;
+                }
+                // The `u` grid's lattice as a field, for the cell pick and the
+                // selected-cell outline; those passes read only the lattice.
+                field_params = Some(data_render::FieldParamsGpu::cell_geometry(
+                    params.x_base,
+                    params.y_base,
+                    params.x_len,
+                    params.y_len,
+                    params.cols,
+                    params.rows,
+                    field_flags,
+                ));
+                vector_render::VectorInput::Grid
+            }
+        };
+
+        let mut stops = Vec::new();
+        if style.color_map.is_some() {
+            let bar = chart_config.colorbar.as_ref().ok_or_else(|| {
+                invalid(
+                    "a colour-mapped vector needs Config.colorbar: it owns the z range and \
+                     colormap"
+                        .into(),
+                )
+            })?;
+            let colorbar = colorbar_gpu(bar);
+            params.z_min = colorbar.z_min;
+            params.z_max = colorbar.z_max;
+            params.flags |= vector_render::VECTOR_FLAG_COLOR_MAP;
+            if colorbar.log_z {
+                params.flags |= vector_render::VECTOR_FLAG_LOG_Z;
+            }
+            params.nan_color_premul = colorbar.nan_color_premul;
+            let table = colorbar_stops("vector colourmap stops", bar)?;
+            stops = table.stops;
+            params.stop_count = table.stop_count;
+        }
+        if stops.is_empty() {
+            // No colour map: one padding entry keeps the binding non-empty.
+            stops.push([0.0; 4]);
+        }
+
+        let signature = VectorSignature {
+            pool_layout_generation: self.pool.layout_generation(),
+            params,
+            grid,
+            epochs,
+            stops,
+            color: [
+                style.color.r.to_bits(),
+                style.color.g.to_bits(),
+                style.color.b.to_bits(),
+                style.color.a.to_bits(),
+            ],
+        };
+        if let Some(scratch) = self.vector_cache.get(cfg.series_id.as_str())
+            && scratch.signature == signature
+        {
+            return Ok(Some(Arc::clone(&scratch.sources)));
+        }
+
+        let sources = Arc::new(GridSources {
+            ids,
+            epochs: signature.epochs.clone(),
+        });
+        let style_buf = data_render::create_style_uniform_buffer(
+            &self.device,
+            &PrimitiveStyle::from_color_with_width(style.color, style.width_px * scale),
+        );
+        let style_bg =
+            data_render::create_style_bind_group(&self.device, &self.style_bgl, &style_buf);
+        let vector_render::VectorDataBindGroup {
+            bind_group: vector_bg,
+            grid: grid_buffer,
+            charge,
+        } = vector_render::create_vector_data_bind_group(
+            &self.device,
+            &self.gpu_ledger,
+            &self.vector_bgl,
+            self.pool.buffer(),
+            vector_render::VectorTables {
+                grid: &signature.grid,
+                stops: &signature.stops,
+                params: &signature.params,
+            },
+        );
+        // The grid table starts with the `u` grid's columns, which is all the
+        // field lattice indexes; the same buffer serves both groups.
+        let field = field_params.map(|field_params| {
+            data_render::create_field_cell_bind_group(
+                &self.device,
+                &self.gpu_ledger,
+                &self.field_bgl,
+                self.pool.buffer(),
+                &grid_buffer,
+                self.field_cell_tables,
+                &field_params,
+            )
+        });
+
+        evict_if_full(
+            &mut self.vector_cache,
+            cfg.series_id.as_str(),
+            VECTOR_SCRATCH_CACHE_LIMIT,
+        );
+        self.vector_cache
+            .try_reserve(1)
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "vector scratch cache",
+                reason: error.to_string(),
+            })?;
+        let receipt = Arc::clone(&sources);
+        let count = signature.params.count;
+        self.vector_cache.insert(
+            cfg.series_id.clone(),
+            VectorScratch {
+                signature,
+                input,
+                style_bg,
+                vector_bg,
+                charge,
+                field,
+                sources,
+                count,
+            },
+        );
+        Ok(Some(receipt))
     }
 
     fn ensure_field_scratches(
@@ -13182,32 +14001,14 @@ impl PrepareContext<'_> {
         if matches!(fill.mode, crate::data_config::FillMode::Bands) {
             flags |= data_render::FIELD_FLAG_BANDS;
         }
-        let log_z = matches!(bar.axis.scale, crate::config::AxisScale::Logarithmic);
-        if log_z {
+        let colorbar = colorbar_gpu(bar);
+        if colorbar.log_z {
             flags |= data_render::FIELD_FLAG_LOG_Z;
         }
-        // Log bounds are taken here, in f64: doing it in the shader would lose
-        // the precision the bounds were written with. `validate_renderer_config`
-        // has already refused a log colourbar whose lower bound is not positive.
-        let bound = |value: f64| {
-            let transformed = if log_z { value.log10() } else { value };
-            let (hi, lo) = crate::data::split_f64_to_f32_pair(transformed);
-            [hi, lo]
-        };
 
         let levels = contour_levels(rt)?;
         let level_count = u32::try_from(declared_level_count(rt)).unwrap_or(u32::MAX);
-        let stop_source = bar.colormap.stops();
-        let mut stops = crate::gpu_contour::try_collect(
-            "field colourmap stops",
-            stop_source
-                .iter()
-                .map(|color| [color.r, color.g, color.b, color.a]),
-        )?;
-        let stop_count = u32::try_from(stops.len()).unwrap_or(u32::MAX);
-        if stops.is_empty() {
-            stops.push([0.0; 4]);
-        }
+        let ColorbarStops { stops, stop_count } = colorbar_stops("field colourmap stops", bar)?;
 
         let params = data_render::FieldParamsGpu {
             x_base: u32::try_from(resolved.x.offset / 4).unwrap_or(0),
@@ -13223,8 +14024,8 @@ impl PrepareContext<'_> {
             // Contour-only; a fill draws no strokes and reads no level colours.
             line_width_px: 0.0,
             level_color_count: 0,
-            z_min: bound(bar.axis.min),
-            z_max: bound(bar.axis.max),
+            z_min: colorbar.z_min,
+            z_max: colorbar.z_max,
         };
         let nan = bar.nan_color;
         let signature = FieldSignature {
@@ -13946,6 +14747,16 @@ impl PrepareContext<'_> {
                     .into(),
             });
         }
+        // Streaming is not extended to vector series: their shader reads the
+        // resident pool as storage.
+        if has_vector(&series.render_type) {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: "vector series require GPU-resident columns; streamed sources are \
+                         not supported"
+                    .into(),
+            });
+        }
         // The value maps read index-aligned columns on every draw; streaming
         // is not extended to them.
         if let Some(scatter) = extract_scatter(&series.render_type)
@@ -14378,6 +15189,30 @@ impl PrepareContext<'_> {
                 None
             };
 
+            // Arrows: the group-2 state was resolved in `ensure_vector_scratches`
+            // and is reused whole while nothing it depends on changes.
+            let vector = if primitives.vector && phase.is_none() {
+                let scratch = self
+                    .vector_cache
+                    .get(cfg.series_id.as_str())
+                    .expect("prepare ensured this vector's scratch");
+                let pipeline = match scratch.input {
+                    data_render::vector::VectorInput::Points => pipelines.vector_points.as_ref(),
+                    data_render::vector::VectorInput::Grid => pipelines.vector_grid.as_ref(),
+                }
+                .expect("prepare ensured vector pipeline");
+                Some(data_render::vector::ColumnVectorLayer {
+                    pipeline,
+                    transform_bg: &view.transform_bg,
+                    style_bg: scratch.style_bg.clone(),
+                    vector_bg: scratch.vector_bg.clone(),
+                    charge: Arc::clone(&scratch.charge),
+                    count: scratch.count,
+                })
+            } else {
+                None
+            };
+
             // Bars: the edge column and the value column are picked from the
             // bar's own orientation — never from the column lengths (design
             // §B.3). `Vertical` reads x as edges, `Horizontal` reads y.
@@ -14758,6 +15593,7 @@ impl PrepareContext<'_> {
                 field,
                 bar,
                 contour,
+                vector,
                 errorbar,
                 line,
                 line_extra,
@@ -15268,6 +16104,7 @@ fn effective_series_primitives(
             line: constellation_supports(render_type),
             scatter: constellation_supports(render_type),
             bar: false,
+            vector: false,
         };
     }
     EffectiveSeriesPrimitives {
@@ -15286,6 +16123,10 @@ fn effective_series_primitives(
         // would mix two visual languages in one panel — so a stylized chart
         // draws no bars at all, the same answer `constellation_supports` gives.
         bar: matches!(draw_style, DrawStyle::Precise) && has_bar(render_type),
+        // Arrows are a precise-mode primitive for the same reason: no stylized
+        // entry draws them, and a precise arrow in a sketch panel would mix
+        // two visual languages. A stylized chart draws no arrows.
+        vector: matches!(draw_style, DrawStyle::Precise) && has_vector(render_type),
     }
 }
 
@@ -15340,7 +16181,8 @@ fn constellation_supports(rt: &DataRenderType) -> bool {
         | DataRenderType::Histogram { .. }
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. } => false,
+        | DataRenderType::HeatmapContour { .. }
+        | DataRenderType::Vector { .. } => false,
     }
 }
 
@@ -15395,7 +16237,8 @@ fn extract_line(rt: &DataRenderType) -> Option<&DataLineStyleConfig> {
         | DataRenderType::Histogram { .. }
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. } => None,
+        | DataRenderType::HeatmapContour { .. }
+        | DataRenderType::Vector { .. } => None,
     }
 }
 
@@ -15416,7 +16259,10 @@ fn extract_scatter(rt: &DataRenderType) -> Option<&DataScatterStyleConfig> {
         | DataRenderType::Histogram { .. }
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. } => None,
+        | DataRenderType::HeatmapContour { .. }
+        // Arrows are not markers: they have their own pipeline, pick radius
+        // and legend mark (`extract_vector`).
+        | DataRenderType::Vector { .. } => None,
     }
 }
 
@@ -15464,7 +16310,8 @@ fn extract_bar(rt: &DataRenderType) -> Option<&crate::data_config::DataBarStyleC
         | DataRenderType::LineScatterErrorbarXY { .. }
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. } => None,
+        | DataRenderType::HeatmapContour { .. }
+        | DataRenderType::Vector { .. } => None,
     }
 }
 
@@ -15493,7 +16340,8 @@ fn extract_field_fill(rt: &DataRenderType) -> Option<&crate::data_config::FieldF
         | DataRenderType::LineScatterErrorbarX { .. }
         | DataRenderType::LineScatterErrorbarY { .. }
         | DataRenderType::LineScatterErrorbarXY { .. }
-        | DataRenderType::Histogram { .. } => None,
+        | DataRenderType::Histogram { .. }
+        | DataRenderType::Vector { .. } => None,
     }
 }
 
@@ -15523,8 +16371,50 @@ pub(crate) fn extract_contour(rt: &DataRenderType) -> Option<&crate::data_config
         | DataRenderType::LineScatterErrorbarX { .. }
         | DataRenderType::LineScatterErrorbarY { .. }
         | DataRenderType::LineScatterErrorbarXY { .. }
-        | DataRenderType::Histogram { .. } => None,
+        | DataRenderType::Histogram { .. }
+        | DataRenderType::Vector { .. } => None,
     }
+}
+
+/// The components and style of a vector series.
+///
+/// The single exhaustive match that decides whether a variant draws arrows;
+/// `has_vector` is derived from it, following `extract_bar` / `extract_scatter`.
+fn extract_vector(
+    rt: &DataRenderType,
+) -> Option<(
+    &crate::data_config::VectorComponents,
+    &crate::data_config::VectorStyle,
+)> {
+    match rt {
+        DataRenderType::Vector { components, style } => Some((components, style)),
+        DataRenderType::Line { .. }
+        | DataRenderType::Scatter { .. }
+        | DataRenderType::ScatterLine { .. }
+        | DataRenderType::ScatterErrorbarX { .. }
+        | DataRenderType::ScatterErrorbarY { .. }
+        | DataRenderType::ScatterErrorbarXY { .. }
+        | DataRenderType::LineScatterErrorbarX { .. }
+        | DataRenderType::LineScatterErrorbarY { .. }
+        | DataRenderType::LineScatterErrorbarXY { .. }
+        | DataRenderType::Histogram { .. }
+        | DataRenderType::Heatmap { .. }
+        | DataRenderType::Contour { .. }
+        | DataRenderType::HeatmapContour { .. } => None,
+    }
+}
+
+fn has_vector(rt: &DataRenderType) -> bool {
+    extract_vector(rt).is_some()
+}
+
+/// The grid whose coordinate lattice a series' auto-fit and fit stamps read:
+/// a field's matrix, or a grid vector's `u` grid (`v` and a colour grid share
+/// its orientation and layout by validation).
+fn fit_matrix(rt: &DataRenderType) -> Option<&crate::data_config::MatrixRef> {
+    extract_matrix(rt).or_else(|| {
+        extract_vector(rt).and_then(|(components, _)| components.grid().map(|(u, _)| u))
+    })
 }
 /// `SeriesDrawInfo` for one series against current logical column lengths.
 ///
@@ -15631,7 +16521,69 @@ fn series_draw_info_from_pool(
                 truncated: extent.truncated,
             }
         }
+        // Point vectors: one arrow per index-aligned row of x, y, u, v and the
+        // colour column. Grid vectors: one arrow per cell of the smallest
+        // common extent of the u, v and colour grids.
+        DataRenderType::Vector { components, style } => {
+            let color_column = match style.color_map.as_ref() {
+                Some(crate::data_config::VectorColorMap::Column(column)) => Some(len(column)),
+                _ => None,
+            };
+            match components {
+                crate::data_config::VectorComponents::Points { u, v } => {
+                    let mut lengths = [x, y, len(u), len(v), 0];
+                    let used = if let Some(color) = color_column {
+                        lengths[4] = color;
+                        5
+                    } else {
+                        4
+                    };
+                    let (count, truncated) = paired(&lengths[..used]);
+                    SeriesDrawInfo {
+                        drawn_count: count,
+                        cols: None,
+                        rows: None,
+                        truncated,
+                    }
+                }
+                crate::data_config::VectorComponents::Grid { u, v } => {
+                    let extent = vector_grid_extent(u, v, style, x as usize, y as usize, |id| {
+                        len(id) as usize
+                    });
+                    SeriesDrawInfo {
+                        drawn_count: (extent.cols as u64).saturating_mul(extent.rows as u64),
+                        cols: Some(extent.cols as u64),
+                        rows: Some(extent.rows as u64),
+                        truncated: extent.truncated,
+                    }
+                }
+            }
+        }
     }
+}
+
+/// The extent a grid vector series draws: the smallest common extent of its
+/// `u`, `v` and colour grids, each resolved like a field's matrix.
+fn vector_grid_extent(
+    u: &crate::data_config::MatrixRef,
+    v: &crate::data_config::MatrixRef,
+    style: &crate::data_config::VectorStyle,
+    x_len: usize,
+    y_len: usize,
+    mut column_len: impl FnMut(&str) -> usize,
+) -> MatrixExtent {
+    let mut extent = matrix_extent(u, x_len, y_len, &mut column_len);
+    let mut narrow = |other: &crate::data_config::MatrixRef| {
+        let e = matrix_extent(other, x_len, y_len, &mut column_len);
+        extent.truncated |= e.truncated || e.cols != extent.cols || e.rows != extent.rows;
+        extent.cols = extent.cols.min(e.cols);
+        extent.rows = extent.rows.min(e.rows);
+    };
+    narrow(v);
+    if let Some(crate::data_config::VectorColorMap::Grid(matrix)) = style.color_map.as_ref() {
+        narrow(matrix);
+    }
+    extent
 }
 
 /// What a matrix declaration resolves to against the pool's current column
@@ -15707,7 +16659,10 @@ fn extract_matrix(rt: &DataRenderType) -> Option<&crate::data_config::MatrixRef>
         | DataRenderType::LineScatterErrorbarX { .. }
         | DataRenderType::LineScatterErrorbarY { .. }
         | DataRenderType::LineScatterErrorbarXY { .. }
-        | DataRenderType::Histogram { .. } => None,
+        | DataRenderType::Histogram { .. }
+        // A vector's grids are not "the matrix": they are components, not z.
+        // `fit_matrix` reaches the `u` grid for the coordinate lattice.
+        | DataRenderType::Vector { .. } => None,
     }
 }
 
@@ -15734,7 +16689,8 @@ fn extract_errorbar_style(rt: &DataRenderType) -> Option<&DataErrorBarStyleConfi
         | DataRenderType::Histogram { .. }
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. } => None,
+        | DataRenderType::HeatmapContour { .. }
+        | DataRenderType::Vector { .. } => None,
     }
 }
 
@@ -15752,7 +16708,8 @@ fn extract_err_y(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::Histogram { .. }
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. } => None,
+        | DataRenderType::HeatmapContour { .. }
+        | DataRenderType::Vector { .. } => None,
     }
 }
 
@@ -15770,7 +16727,8 @@ fn extract_err_x(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::Histogram { .. }
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. } => None,
+        | DataRenderType::HeatmapContour { .. }
+        | DataRenderType::Vector { .. } => None,
     }
 }
 
@@ -18102,6 +19060,7 @@ mod tests {
                 line: false,
                 scatter: true,
                 bar: false,
+                vector: false,
             }
         );
     }
@@ -22864,6 +23823,112 @@ mod tests {
             third.screen, first.screen,
             "the narrower range changes the mapped colours"
         );
+    }
+
+    // ── Vector fields (#25) ─────────────────────────────────────────────────
+
+    fn vector_points_series(id: &str) -> SeriesConfig {
+        SeriesConfig {
+            series_id: id.into(),
+            source_id: None,
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            render_type: DataRenderType::Vector {
+                components: crate::data_config::VectorComponents::Points {
+                    u: "u".into(),
+                    v: "v".into(),
+                },
+                style: crate::data_config::VectorStyle {
+                    color: Color::new(1.0, 0.0, 0.0, 1.0),
+                    width_px: 4.0,
+                    scale: crate::data_config::VectorScale::Pixels { px_per_unit: 1.0 },
+                    pivot: crate::data_config::VectorPivot::Tail,
+                    head_length_px: 8.0,
+                    head_width_px: 8.0,
+                    min_length_px: 0.0,
+                    color_map: None,
+                },
+            },
+        }
+    }
+
+    /// Streaming is not extended to vector series: a streamed one is rejected
+    /// with an explicit reason, like a streamed value map.
+    #[test]
+    fn streamed_series_reject_vectors() {
+        let config = basic_errorbar_chart().config().clone();
+        assert!(matches!(
+            PrepareContext::validate_stream_series(&config, &vector_points_series("stream")),
+            Err(FiggyError::InvalidSeriesConfig { reason, .. })
+                if reason.contains("streamed sources are not supported")
+        ));
+    }
+
+    /// The vector scratch (params, grid table, bind groups) is rebuilt only
+    /// when its inputs change: two prepares of the same chart share one
+    /// entry, a style edit replaces its params, and replacing a component
+    /// column replaces its source epochs.
+    #[test]
+    fn vector_scratch_is_reused_until_its_inputs_change() {
+        let Some(mut renderer) = state_test_renderer() else {
+            return;
+        };
+        renderer.add_column("x", &col_f64(vec![1.0, 3.0])).unwrap();
+        renderer.add_column("y", &col_f64(vec![2.5, 2.5])).unwrap();
+        renderer
+            .add_column("u", &col_f64(vec![30.0, 30.0]))
+            .unwrap();
+        renderer.add_column("v", &col_f64(vec![0.0, 0.0])).unwrap();
+        let chart = basic_errorbar_chart();
+        let mut series = [vector_points_series("reuse")];
+
+        let first = render_mapped_style_case(&mut renderer, &chart, &series);
+        assert!(
+            count_rgba_ink(&first.screen, is_saturated_red) > 50,
+            "the arrows draw on screen"
+        );
+        assert!(
+            count_rgba_ink(&first.export, is_saturated_red) > 50,
+            "the arrows draw on export"
+        );
+        assert_eq!(renderer.vector_cache.len(), 1);
+        let before = renderer.vector_cache["reuse"].signature.params;
+        let epochs = renderer.vector_cache["reuse"].signature.epochs.clone();
+        let second = render_mapped_style_case(&mut renderer, &chart, &series);
+        assert_eq!(renderer.vector_cache.len(), 1);
+        assert_eq!(renderer.vector_cache["reuse"].signature.params, before);
+        assert_eq!(
+            first.screen, second.screen,
+            "an unchanged chart repaints identically"
+        );
+
+        let DataRenderType::Vector { style, .. } = &mut series[0].render_type else {
+            unreachable!()
+        };
+        style.width_px = 12.0;
+        let third = render_mapped_style_case(&mut renderer, &chart, &series);
+        let after = renderer.vector_cache["reuse"].signature.params;
+        assert_ne!(
+            after.width_px, before.width_px,
+            "a style edit rebuilds the params"
+        );
+        assert!(
+            count_rgba_ink(&third.screen, is_saturated_red)
+                > count_rgba_ink(&first.screen, is_saturated_red),
+            "the wider shaft draws more"
+        );
+
+        renderer.remove_column("u").unwrap();
+        renderer
+            .add_column("u", &col_f64(vec![-30.0, -30.0]))
+            .unwrap();
+        let fourth = render_mapped_style_case(&mut renderer, &chart, &series);
+        assert_ne!(
+            renderer.vector_cache["reuse"].signature.epochs, epochs,
+            "a replaced component column rebuilds the sources"
+        );
+        assert_ne!(fourth.screen, third.screen, "the arrows now point left");
     }
 
     /// `error_bar_style_overrides` without an index column is the errorbar

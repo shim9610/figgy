@@ -8,7 +8,8 @@
 use renderer::config::{AxisOptions, AxisScale, Config, DrawStyle, MilkywayOptions, SketchOptions};
 use renderer::data_config::{
     BarOrientation, DataRenderType, LineFill, LineInterpolation, PointColorMap, PointSizeMap,
-    SeriesConfig, Shading, SizeScale,
+    SeriesConfig, Shading, SizeScale, VectorColorMap, VectorComponents, VectorPivot, VectorScale,
+    VectorStyle,
 };
 use renderer::layout::ChartArea;
 use renderer::layout::{NudgeResult, Rect};
@@ -1151,6 +1152,7 @@ fn render_type_name(t: &DataRenderType) -> &'static str {
         DataRenderType::Heatmap { .. } => "heatmap",
         DataRenderType::Contour { .. } => "contour",
         DataRenderType::HeatmapContour { .. } => "heatmap+contour",
+        DataRenderType::Vector { .. } => "vector",
     }
 }
 
@@ -1273,7 +1275,28 @@ fn series_columns(s: &SeriesConfig) -> Vec<String> {
         out.extend(scatter.point_color_map.iter().map(|m| m.column.clone()));
         out.extend(scatter.point_size_map.iter().map(|m| m.column.clone()));
     }
+    if let Some((u, v, color)) = vector_point_columns(&s.render_type) {
+        out.push(u.clone());
+        out.push(v.clone());
+        out.extend(color.cloned());
+    }
     out
+}
+
+/// The component and colour columns of a point vector series.
+fn vector_point_columns(t: &DataRenderType) -> Option<(&String, &String, Option<&String>)> {
+    let DataRenderType::Vector {
+        components: VectorComponents::Points { u, v },
+        style,
+    } = t
+    else {
+        return None;
+    };
+    let color = match style.color_map.as_ref() {
+        Some(VectorColorMap::Column(column)) => Some(column),
+        _ => None,
+    };
+    Some((u, v, color))
 }
 
 /// Read `samples` (column, index) straight from the GPU column pool, the
@@ -1353,6 +1376,12 @@ fn pick_values(r: &Renderer, series: &[SeriesConfig], p: &PickedData) -> Result<
     ];
     samples.extend(color_column.map(|c| (c.clone(), *point_index)));
     samples.extend(size_column.map(|c| (c.clone(), *point_index)));
+    let vector = vector_point_columns(&series.render_type);
+    if let Some((u, v, color)) = vector {
+        samples.push((u.clone(), *point_index));
+        samples.push((v.clone(), *point_index));
+        samples.extend(color.map(|c| (c.clone(), *point_index)));
+    }
     let values = read_samples(r, &samples)?;
     let mut note = format!("x = {:.4}, y = {:.4}", values[0], values[1]);
     let mut next = 2;
@@ -1366,6 +1395,17 @@ fn pick_values(r: &Renderer, series: &[SeriesConfig], p: &PickedData) -> Result<
             note.push_str(&format!(", size value = {v:.4}"));
         } else {
             note.push_str(", size value = NaN (hidden)");
+        }
+        next += 1;
+    }
+    if let Some((_, _, color)) = vector {
+        note.push_str(&format!(
+            ", u = {:.4}, v = {:.4}",
+            values[next],
+            values[next + 1]
+        ));
+        if color.is_some() {
+            note.push_str(&format!(", colour value = {:.4}", values[next + 2]));
         }
     }
     Ok(note)
@@ -1470,6 +1510,72 @@ fn series_controls(
                 &[Shading::Interpolated, Shading::Flat],
             );
             contour_controls(ui, contour, config);
+        }
+        DataRenderType::Vector { components, style } => {
+            vector_controls(ui, components, style, columns);
+        }
+    }
+}
+
+fn vector_controls(
+    ui: &mut egui::Ui,
+    components: &VectorComponents,
+    style: &mut VectorStyle,
+    columns: &[String],
+) {
+    color(ui, "arrow colour", &mut style.color);
+    slider(ui, "shaft width", &mut style.width_px, 0.5..=8.0);
+    slider(ui, "head length", &mut style.head_length_px, 0.0..=24.0);
+    slider(ui, "head width", &mut style.head_width_px, 0.0..=24.0);
+    slider(ui, "min length", &mut style.min_length_px, 0.0..=20.0);
+    choice(
+        ui,
+        "pivot",
+        &mut style.pivot,
+        &[VectorPivot::Tail, VectorPivot::Middle, VectorPivot::Tip],
+    );
+    // Scale: the mode and its factor. Switching modes keeps a usable
+    // magnitude rather than the other mode's number.
+    let mut mode = match style.scale {
+        VectorScale::Pixels { .. } => "Pixels",
+        VectorScale::Data { .. } => "Data",
+    };
+    if choice(ui, "scale", &mut mode, &["Pixels", "Data"]) {
+        style.scale = match mode {
+            "Data" => VectorScale::Data { factor: 0.3 },
+            _ => VectorScale::Pixels { px_per_unit: 20.0 },
+        };
+    }
+    match &mut style.scale {
+        VectorScale::Pixels { px_per_unit } => {
+            let mut value = *px_per_unit as f32;
+            if slider(ui, "px per unit", &mut value, 1.0..=120.0) {
+                *px_per_unit = value as f64;
+            }
+        }
+        VectorScale::Data { factor } => {
+            let mut value = *factor as f32;
+            if slider(ui, "data factor", &mut value, 0.02..=2.0) {
+                *factor = value as f64;
+            }
+        }
+    }
+    match components {
+        VectorComponents::Points { .. } => {
+            let current = match style.color_map.as_ref() {
+                Some(VectorColorMap::Column(column)) => Some(column.as_str()),
+                _ => None,
+            };
+            if let Some(pick) = column_choice(ui, "colour map column", current, columns) {
+                style.color_map = pick.map(VectorColorMap::Column);
+            }
+        }
+        VectorComponents::Grid { .. } => {
+            let mut mapped = matches!(style.color_map, Some(VectorColorMap::Grid(_)));
+            ui.add_enabled(
+                mapped,
+                egui::Checkbox::new(&mut mapped, "colour map grid (set by the scene)"),
+            );
         }
     }
 }

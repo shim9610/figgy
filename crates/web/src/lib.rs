@@ -248,11 +248,12 @@ fn err_refs(
         | DataRenderType::LineScatterErrorbarY { err_y, .. } => (None, Some(err_y)),
         DataRenderType::ScatterErrorbarXY { err_x, err_y, .. }
         | DataRenderType::LineScatterErrorbarXY { err_x, err_y, .. } => (Some(err_x), Some(err_y)),
-        // Bars and fields carry no error columns.
+        // Bars, fields and vectors carry no error columns.
         DataRenderType::Histogram { .. }
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. } => (None, None),
+        | DataRenderType::HeatmapContour { .. }
+        | DataRenderType::Vector { .. } => (None, None),
     }
 }
 
@@ -333,6 +334,35 @@ fn series_extent_request_from(
                 renderer::data_config::MatrixOrientation::ColumnsAreX => 0,
                 renderer::data_config::MatrixOrientation::ColumnsAreY => 1,
             }),
+        ),
+        // A grid vector fits its `u` grid's lattice; a Data-scaled point
+        // vector's tips depend on its u / v columns, which therefore join the
+        // identity in the matrix slot.
+        renderer::DataRenderType::Vector {
+            components: renderer::data_config::VectorComponents::Grid { u, .. },
+            ..
+        } => (
+            u.columns
+                .iter()
+                .map(|id| revisioned_column_from(revisions, id))
+                .collect::<Option<Vec<_>>>()?,
+            Some(match &u.orientation {
+                renderer::data_config::MatrixOrientation::ColumnsAreX => 0,
+                renderer::data_config::MatrixOrientation::ColumnsAreY => 1,
+            }),
+        ),
+        renderer::DataRenderType::Vector {
+            components: renderer::data_config::VectorComponents::Points { u, v },
+            style,
+        } => (
+            match style.scale {
+                renderer::data_config::VectorScale::Data { .. } => [u, v]
+                    .into_iter()
+                    .map(|id| revisioned_column_from(revisions, id))
+                    .collect::<Option<Vec<_>>>()?,
+                renderer::data_config::VectorScale::Pixels { .. } => Vec::new(),
+            },
+            None,
         ),
         renderer::DataRenderType::Scatter { .. }
         | renderer::DataRenderType::Line { .. }
@@ -743,6 +773,7 @@ fn prepare_demo_declarations(
                 // A heatmap's colour is the colourbar's colormap, not a swatch
                 // this demo could reuse.
                 DataRenderType::Heatmap { .. } => cycle.color(index),
+                DataRenderType::Vector { style, .. } => style.color,
             },
             None => cycle.color(next_color_seq),
         };
@@ -2338,8 +2369,49 @@ mod web {
             | DataRenderType::Histogram { .. }
             | DataRenderType::Heatmap { .. }
             | DataRenderType::Contour { .. }
-            | DataRenderType::HeatmapContour { .. } => None,
+            | DataRenderType::HeatmapContour { .. }
+            | DataRenderType::Vector { .. } => None,
         }
+    }
+
+    /// A vector series' component columns, its colour-map column or grid,
+    /// and whether it is the grid form.
+    fn vector_columns(rt: &DataRenderType) -> Option<VectorColumns<'_>> {
+        use renderer::data_config::{VectorColorMap, VectorComponents};
+        let DataRenderType::Vector { components, style } = rt else {
+            return None;
+        };
+        Some(match components {
+            VectorComponents::Points { u, v } => VectorColumns::Points {
+                u,
+                v,
+                color: match style.color_map.as_ref() {
+                    Some(VectorColorMap::Column(column)) => Some(column),
+                    _ => None,
+                },
+            },
+            VectorComponents::Grid { u, v } => VectorColumns::Grid {
+                u,
+                v,
+                color: match style.color_map.as_ref() {
+                    Some(VectorColorMap::Grid(matrix)) => Some(matrix),
+                    _ => None,
+                },
+            },
+        })
+    }
+
+    enum VectorColumns<'a> {
+        Points {
+            u: &'a str,
+            v: &'a str,
+            color: Option<&'a str>,
+        },
+        Grid {
+            u: &'a renderer::data_config::MatrixRef,
+            v: &'a renderer::data_config::MatrixRef,
+            color: Option<&'a renderer::data_config::MatrixRef>,
+        },
     }
 
     /// Every column id a series' render type references (x/y + error refs).
@@ -2443,6 +2515,23 @@ mod web {
                     ids.push(column);
                 }
             }
+            // The components and the colour value are referenced columns in
+            // both forms, like a matrix' constituents.
+            DataRenderType::Vector { .. } => match vector_columns(&cfg.render_type) {
+                Some(VectorColumns::Points { u, v, color }) => {
+                    ids.push(u);
+                    ids.push(v);
+                    ids.extend(color);
+                }
+                Some(VectorColumns::Grid { u, v, color }) => {
+                    for matrix in [Some(u), Some(v), color].into_iter().flatten() {
+                        for column in &matrix.columns {
+                            ids.push(column);
+                        }
+                    }
+                }
+                None => {}
+            },
         }
         ids
     }
@@ -5074,8 +5163,8 @@ mod web {
         }
 
         /// Fit the shared z axis to every column the colourbar maps: matrix
-        /// value columns and scatter `point_color_map` columns. A chart without
-        /// a colourbar is left unchanged.
+        /// value columns, scatter `point_color_map` columns and vector colour
+        /// maps. A chart without a colourbar is left unchanged.
         pub fn auto_fit_colorbar(&mut self, padding: f64) -> Result<(), JsValue> {
             let mut z_extent = FitExtent::EMPTY;
             for cfg in self.chart_series() {
@@ -5103,6 +5192,22 @@ mod web {
                             union(&map.column)?;
                         }
                     }
+                    // A vector's colour map: a column or a grid's columns.
+                    DataRenderType::Vector { .. } => match vector_columns(&cfg.render_type) {
+                        Some(VectorColumns::Points { color, .. }) => {
+                            if let Some(color) = color {
+                                union(color)?;
+                            }
+                        }
+                        Some(VectorColumns::Grid { color, .. }) => {
+                            if let Some(grid) = color {
+                                for id in &grid.columns {
+                                    union(id)?;
+                                }
+                            }
+                        }
+                        None => {}
+                    },
                     DataRenderType::Line { .. } | DataRenderType::Histogram { .. } => {}
                 }
             }
@@ -5766,6 +5871,19 @@ mod web {
                     if let Some(column) = size_column.clone() {
                         samples.push((column, *point_index));
                     }
+                    // A point vector reports its components and, when colour
+                    // mapped, the value its colour came from.
+                    let vector = match vector_columns(&series.render_type) {
+                        Some(VectorColumns::Points { u, v, color }) => {
+                            samples.push((u.to_owned(), *point_index));
+                            samples.push((v.to_owned(), *point_index));
+                            if let Some(color) = color {
+                                samples.push((color.to_owned(), *point_index));
+                            }
+                            Some(color.is_some())
+                        }
+                        _ => None,
+                    };
                     let values = self.read_selection_samples(&samples).await?;
                     result["index"] = serde_json::json!(point_index);
                     result["x"] = serde_json::json!(values[0]);
@@ -5777,6 +5895,14 @@ mod web {
                     }
                     if size_column.is_some() {
                         result["size_value"] = serde_json::json!(values[next]);
+                        next += 1;
+                    }
+                    if let Some(colour_mapped) = vector {
+                        result["u"] = serde_json::json!(values[next]);
+                        result["v"] = serde_json::json!(values[next + 1]);
+                        if colour_mapped {
+                            result["color_value"] = serde_json::json!(values[next + 2]);
+                        }
                     }
                 }
                 PickedDataRef::HistogramBin { bin_index, .. } => {
@@ -5807,25 +5933,44 @@ mod web {
                 PickedDataRef::MatrixCell {
                     x_index, y_index, ..
                 } => {
-                    let style = serde_json::to_value(&series.render_type).map_err(js_err)?;
-                    let matrix = &style.as_object().unwrap().values().next().unwrap()["matrix"];
-                    let across_x = matrix["orientation"] == "ColumnsAreY";
+                    use renderer::data_config::{GridLayout, MatrixOrientation};
+                    // A field's matrix, or a grid vector's `u` grid with its `v`
+                    // grid and colour grid beside it.
+                    let (matrix, vector) = match &series.render_type {
+                        DataRenderType::Heatmap { matrix, .. }
+                        | DataRenderType::Contour { matrix, .. }
+                        | DataRenderType::HeatmapContour { matrix, .. } => (matrix, None),
+                        rt => match vector_columns(rt) {
+                            Some(VectorColumns::Grid { u, v, color }) => (u, Some((v, color))),
+                            _ => return Err(js_err("selected series is not a grid")),
+                        },
+                    };
+                    let across_x = matches!(matrix.orientation, MatrixOrientation::ColumnsAreY);
                     let column_index = if across_x { *y_index } else { *x_index };
                     let sample_index = if across_x { *x_index } else { *y_index };
-                    let column = matrix["columns"][column_index]
-                        .as_str()
-                        .ok_or_else(|| js_err("selected cell no longer exists"))?;
+                    let grid_column = |grid: &renderer::data_config::MatrixRef| {
+                        grid.columns
+                            .get(column_index)
+                            .cloned()
+                            .ok_or_else(|| js_err("selected cell no longer exists"))
+                    };
                     let mut samples = vec![
                         (series.x_column.clone(), *x_index),
                         (series.y_column.clone(), *y_index),
-                        (column.into(), sample_index),
+                        (grid_column(matrix)?, sample_index),
                     ];
-                    let edges = matrix["grid_layout"] == "Edges";
+                    let edges = matches!(matrix.grid_layout, GridLayout::Edges);
                     if edges {
                         samples.extend([
-                            (series.x_column, x_index + 1),
-                            (series.y_column, y_index + 1),
+                            (series.x_column.clone(), x_index + 1),
+                            (series.y_column.clone(), y_index + 1),
                         ]);
+                    }
+                    if let Some((v, color)) = vector {
+                        samples.push((grid_column(v)?, sample_index));
+                        if let Some(color) = color {
+                            samples.push((grid_column(color)?, sample_index));
+                        }
                     }
                     let values = self.read_selection_samples(&samples).await?;
                     result["x_index"] = serde_json::json!(x_index);
@@ -5840,7 +5985,18 @@ mod web {
                     } else {
                         values[1]
                     });
-                    result["value"] = serde_json::json!(values[2]);
+                    let mut next = if edges { 5 } else { 3 };
+                    match vector {
+                        None => result["value"] = serde_json::json!(values[2]),
+                        Some((_, color)) => {
+                            result["u"] = serde_json::json!(values[2]);
+                            result["v"] = serde_json::json!(values[next]);
+                            next += 1;
+                            if color.is_some() {
+                                result["color_value"] = serde_json::json!(values[next]);
+                            }
+                        }
+                    }
                 }
                 _ => return Ok("null".into()),
             }
@@ -5937,23 +6093,31 @@ mod web {
                 renderer::config::PickedDataRef::MatrixCell {
                     x_index, y_index, ..
                 } => {
+                    use renderer::data_config::{GridLayout, MatrixOrientation};
                     let series = &self.chart_series()[position];
-                    let style = serde_json::to_value(&series.render_type).map_err(js_err)?;
-                    let matrix = &style.as_object().unwrap().values().next().unwrap()["matrix"];
-                    let edges = usize::from(matrix["grid_layout"] == "Edges");
-                    let columns = matrix["columns"]
-                        .as_array()
-                        .ok_or_else(|| js_err("selected matrix no longer exists"))?;
-                    let depth = columns
+                    // A field steps over its matrix; a grid vector over its
+                    // `u` grid, which every other grid of the series matches.
+                    let matrix = match &series.render_type {
+                        DataRenderType::Heatmap { matrix, .. }
+                        | DataRenderType::Contour { matrix, .. }
+                        | DataRenderType::HeatmapContour { matrix, .. } => matrix,
+                        rt => match vector_columns(rt) {
+                            Some(VectorColumns::Grid { u, .. }) => u,
+                            _ => return Err(js_err("selected matrix no longer exists")),
+                        },
+                    };
+                    let edges = usize::from(matches!(matrix.grid_layout, GridLayout::Edges));
+                    let depth = matrix
+                        .columns
                         .iter()
-                        .filter_map(|c| self.columns.get(c.as_str()?))
+                        .filter_map(|c| self.columns.get(c.as_str()))
                         .copied()
                         .min()
                         .unwrap_or(0);
-                    let (nx, ny) = if matrix["orientation"] == "ColumnsAreY" {
-                        (depth, columns.len())
+                    let (nx, ny) = if matches!(matrix.orientation, MatrixOrientation::ColumnsAreY) {
+                        (depth, matrix.columns.len())
                     } else {
-                        (columns.len(), depth)
+                        (matrix.columns.len(), depth)
                     };
                     *x_index = shift(
                         *x_index,

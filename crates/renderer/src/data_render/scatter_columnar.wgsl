@@ -432,43 +432,106 @@ fn value_map_flag(bit: u32) -> bool {
     return (point_value_map.flags & bit) != 0u;
 }
 
-fn value_pair_finite(v: vec2<f32>) -> bool {
-    return sample_finite(v.x) && sample_finite(v.y) && sample_finite(v.x + v.y);
+
+// ───── shared colour ramp and size-map radius (SHADER_COMMON.md §5.4;
+// `shader_consistency` compares these function bodies with the field, vector
+// and pick shaders) ─────
+
+/// A finite f32 by its exponent bits. Every ramp input is checked
+/// explicitly: NaN and infinity propagation through arithmetic is not
+/// portable in WGSL.
+fn ramp_finite(v: f32) -> bool {
+    return (bitcast<u32>(v) & 0x7f800000u) != 0x7f800000u;
 }
 
-/// The colour-map value as a ramp position, or a negative number when it
-/// cannot be placed. Twin of `field_columnar.wgsl::z_ramp_t` and of
-/// `ColorBarOptions::normalized_z`: NaN, a non-positive value on a
-/// logarithmic bar and a degenerate range all report the miss.
-fn value_ramp_t(zv: vec2<f32>) -> f32 {
-    if (!value_pair_finite(zv)) {
+/// `zv` (a hi/lo pair) as a ramp position in `[0, 1]`, or a negative number
+/// when it cannot be placed: a non-finite half or sum, a non-positive value
+/// on a logarithmic bar, or a degenerate range. `z_min` / `z_max` are the
+/// colourbar bounds as hi/lo pairs, already log10 when `log_z`.
+///
+/// CPU twin: `ColorBarOptions::normalized_z`. "Unplaceable" and "smallest"
+/// are different facts, so the miss is reported instead of clamping to an
+/// end.
+fn ramp_t(zv: vec2<f32>, z_min: vec2<f32>, z_max: vec2<f32>, log_z: bool) -> f32 {
+    // Both halves are checked before they are added.
+    if (!ramp_finite(zv.x) || !ramp_finite(zv.y)) {
         return -1.0;
     }
     let raw = zv.x + zv.y;
-    let log_z = value_map_flag(VALUE_MAP_LOG_Z);
+    if (!ramp_finite(raw)) {
+        return -1.0;
+    }
     if (log_z && raw <= 0.0) {
         return -1.0;
     }
     let is_log = select(0.0, 1.0, log_z);
-    let linear_num = (zv.x - point_value_map.z_min.x) + (zv.y - point_value_map.z_min.y);
-    let log_num = (maybe_log(raw, 1.0) - point_value_map.z_min.x) - point_value_map.z_min.y;
-    let span = (point_value_map.z_max.x - point_value_map.z_min.x)
-        + (point_value_map.z_max.y - point_value_map.z_min.y);
-    if (!sample_finite(linear_num) || !sample_finite(log_num)
-        || !sample_finite(span) || span <= 0.0) {
+    // Same shape as `axis_pair_to_t`: the linear form keeps the hi/lo split so
+    // a large absolute z still resolves small deltas.
+    let linear_num = (zv.x - z_min.x) + (zv.y - z_min.y);
+    let log_num = (maybe_log(raw, 1.0) - z_min.x) - z_min.y;
+    let span = (z_max.x - z_min.x) + (z_max.y - z_min.y);
+    if (!ramp_finite(linear_num) || !ramp_finite(log_num)
+        || !ramp_finite(span) || span <= 0.0) {
         return -1.0;
     }
     let numerator = mix(linear_num, log_num, is_log);
     let normalized = numerator / span;
-    if (!sample_finite(numerator) || !sample_finite(normalized)) {
+    if (!ramp_finite(numerator) || !ramp_finite(normalized)) {
         return -1.0;
     }
     return clamp(normalized, 0.0, 1.0);
 }
 
-/// The colourmap at `t`, straight alpha. Byte-for-byte twin of
-/// `model::colormap::sample` (and of the field shader's `ramp`): `mix` is not
-/// used because `a + (b - a) * t` is what the CPU computes.
+/// Where `t` falls among `n >= 2` control points: `x` is the lower stop's
+/// index as a float, `y` the blend towards the next. Twin of the index and
+/// fraction `model::colormap::sample` computes, including the `n - 2` index
+/// clamp that lets the last segment own `t = 1`.
+fn ramp_segment(t: f32, n: u32) -> vec2<f32> {
+    let tc = select(clamp(t, 0.0, 1.0), 0.0, !ramp_finite(t));
+    let scaled = tc * f32(n - 1u);
+    let index = min(u32(floor(scaled)), n - 2u);
+    return vec2<f32>(f32(index), scaled - f32(index));
+}
+
+/// The control points `a` (the segment's lower stop) and `b` blended by
+/// `frac`, with the exact-endpoint short circuits `colormap::sample` has.
+/// `mix` is not used: `a + (b - a) * t` is what the CPU computes, and the two
+/// paths have to agree at the ends.
+fn ramp_blend(a: vec4<f32>, b: vec4<f32>, frac: f32) -> vec4<f32> {
+    if (frac <= 0.0) {
+        return a;
+    }
+    if (frac >= 1.0) {
+        return b;
+    }
+    return a + (b - a) * frac;
+}
+
+/// The marker radius for a size-map value `sv` (a hi/lo pair) over the
+/// domain `domain_min..domain_max` (hi/lo pairs) onto `lo..hi` pixels, by
+/// marker area when `area`, else by radius. Negative when the value is not
+/// finite: the point is hidden. Twin of `PointSizeMap::radius_px`.
+fn size_map_radius(sv: vec2<f32>, domain_min: vec2<f32>, domain_max: vec2<f32>, lo: f32, hi: f32, area: bool) -> f32 {
+    if (!ramp_finite(sv.x) || !ramp_finite(sv.y) || !ramp_finite(sv.x + sv.y)) {
+        return -1.0;
+    }
+    let num = (sv.x - domain_min.x) + (sv.y - domain_min.y);
+    let span = (domain_max.x - domain_min.x) + (domain_max.y - domain_min.y);
+    let t = clamp(num / span, 0.0, 1.0);
+    if (area) {
+        return sqrt(lo * lo + (hi * hi - lo * lo) * t);
+    }
+    return lo + (hi - lo) * t;
+}
+
+/// The colour-map value as a ramp position, or a negative number when it
+/// cannot be placed.
+fn value_ramp_t(zv: vec2<f32>) -> f32 {
+    return ramp_t(zv, point_value_map.z_min, point_value_map.z_max, value_map_flag(VALUE_MAP_LOG_Z));
+}
+
+/// The colourbar's ramp at `t`, through the shared `ramp_segment` /
+/// `ramp_blend`; only the stop lookup is this shader's.
 fn value_ramp(t: f32) -> vec4<f32> {
     let n = point_value_map.stop_count;
     if (n == 0u) {
@@ -477,19 +540,9 @@ fn value_ramp(t: f32) -> vec4<f32> {
     if (n == 1u) {
         return point_value_stops[0];
     }
-    let tc = select(clamp(t, 0.0, 1.0), 0.0, !sample_finite(t));
-    let scaled = tc * f32(n - 1u);
-    let index = min(u32(floor(scaled)), n - 2u);
-    let frac = scaled - f32(index);
-    if (frac <= 0.0) {
-        return point_value_stops[index];
-    }
-    if (frac >= 1.0) {
-        return point_value_stops[index + 1u];
-    }
-    let a = point_value_stops[index];
-    let b = point_value_stops[index + 1u];
-    return a + (b - a) * frac;
+    let segment = ramp_segment(t, n);
+    let index = u32(segment.x);
+    return ramp_blend(point_value_stops[index], point_value_stops[index + 1u], segment.y);
 }
 
 /// Premultiplied colour for a colour-map value; `nan_color` when unplaceable.
@@ -502,22 +555,16 @@ fn value_map_color(zv: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(c.rgb * c.a, c.a);
 }
 
-/// Marker radius for a size-map value, in pixels. Negative means the value is
-/// not finite and the point is hidden. Twin of `PointSizeMap::radius_px`.
+/// Marker radius for a size-map value, in pixels; negative hides the point.
 fn value_map_radius(sv: vec2<f32>) -> f32 {
-    if (!value_pair_finite(sv)) {
-        return -1.0;
-    }
-    let num = (sv.x - point_value_map.size_domain_min.x) + (sv.y - point_value_map.size_domain_min.y);
-    let span = (point_value_map.size_domain_max.x - point_value_map.size_domain_min.x)
-        + (point_value_map.size_domain_max.y - point_value_map.size_domain_min.y);
-    let t = clamp(num / span, 0.0, 1.0);
-    let lo = point_value_map.size_px.x;
-    let hi = point_value_map.size_px.y;
-    if (value_map_flag(VALUE_MAP_SIZE_AREA)) {
-        return sqrt(lo * lo + (hi * hi - lo * lo) * t);
-    }
-    return lo + (hi - lo) * t;
+    return size_map_radius(
+        sv,
+        point_value_map.size_domain_min,
+        point_value_map.size_domain_max,
+        point_value_map.size_px.x,
+        point_value_map.size_px.y,
+        value_map_flag(VALUE_MAP_SIZE_AREA),
+    );
 }
 
 struct ResolvedMappedStyle {

@@ -7,7 +7,8 @@ use renderer::data_config::{
     BarOrientation, ContourConfig, ContourLabelConfig, DataBarStyleConfig, DataErrorBarStyleConfig,
     DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorRef, FieldFillConfig,
     FillMode, GridLayout, LineFill, LineInterpolation, MatrixOrientation, MatrixRef, PointColorMap,
-    PointSizeMap, ScatterShape, SeriesConfig, Shading, SizeScale,
+    PointSizeMap, ScatterShape, SeriesConfig, Shading, SizeScale, VectorColorMap, VectorComponents,
+    VectorPivot, VectorScale, VectorStyle,
 };
 use renderer::format::LabelFormat;
 use renderer::layout::{ChartArea, Rect};
@@ -30,6 +31,7 @@ pub enum SceneKind {
     ValueMaps,
     Histogram,
     Field,
+    VectorField,
     LogAxes,
     TwinAxes,
     Subplots,
@@ -41,12 +43,13 @@ pub enum SceneKind {
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 13] = [
+    pub const ALL: [SceneKind; 14] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
         SceneKind::Histogram,
         SceneKind::Field,
+        SceneKind::VectorField,
         SceneKind::LogAxes,
         SceneKind::TwinAxes,
         SceneKind::Subplots,
@@ -64,6 +67,7 @@ impl SceneKind {
             SceneKind::ValueMaps => "Scatter · value maps",
             SceneKind::Histogram => "Histogram",
             SceneKind::Field => "Heatmap · contours",
+            SceneKind::VectorField => "Vector field (quiver)",
             SceneKind::LogAxes => "Log axes",
             SceneKind::TwinAxes => "Twin Y axes (overlay)",
             SceneKind::Subplots => "Subplots (linked X)",
@@ -85,6 +89,11 @@ impl SceneKind {
             }
             SceneKind::Histogram => "Pre-binned edges + counts. Try horizontal orientation.",
             SceneKind::Field => "Interpolated field, labelled isolines and a colourbar.",
+            SceneKind::VectorField => {
+                "Arrows from (u, v) grids over a speed heatmap, coloured through the \
+                 colourbar, plus pixel-scaled probe arrows. Pick an arrow or a cell to \
+                 read u / v."
+            }
             SceneKind::LogAxes => "Logarithmic Y with decade ticks and dotted minor grid.",
             SceneKind::TwinAxes => "Switch the active layer to Overlay 0 to edit the right axis.",
             SceneKind::Subplots => {
@@ -245,6 +254,7 @@ pub fn build(r: &mut Renderer, kind: SceneKind) -> Result<CartesianScene, FiggyE
         SceneKind::ValueMaps => value_maps(r),
         SceneKind::Histogram => histogram(r),
         SceneKind::Field => field(r),
+        SceneKind::VectorField => vector_field(r),
         SceneKind::LogAxes => log_axes(r),
         SceneKind::TwinAxes => twin_axes(r),
         SceneKind::Subplots => subplots(r),
@@ -652,6 +662,158 @@ fn field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     )];
     Ok(CartesianScene {
         config: chart.config().clone(),
+        series,
+    })
+}
+
+fn vector_field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    // A vortex with a mild drift, sampled on a 24 x 16 grid: the u / v
+    // components and the speed are three matrices over the same coordinates.
+    const NX: usize = 24;
+    const NY: usize = 16;
+    let xs = linspace(0.0, 10.0, NX);
+    let ys = linspace(0.0, 6.0, NY);
+    let flow = |x: f64, y: f64| {
+        let (dx, dy) = (x - 5.0, y - 3.0);
+        let r2 = dx * dx + dy * dy;
+        (-dy / (1.0 + 0.3 * r2) + 0.3, dx / (1.0 + 0.3 * r2))
+    };
+    let u_ids: Vec<String> = (0..NX).map(|c| format!("vf_u{c}")).collect();
+    let v_ids: Vec<String> = (0..NX).map(|c| format!("vf_v{c}")).collect();
+    let s_ids: Vec<String> = (0..NX).map(|c| format!("vf_s{c}")).collect();
+    // Twelve probe anchors on a ring, with their own (u, v) columns. Their
+    // bounds size the probe arrows: host statistics, not a renderer read.
+    let probes: Vec<(f64, f64)> = (0..12)
+        .map(|i| {
+            let a = i as f64 / 12.0 * std::f64::consts::TAU;
+            (5.0 + 3.2 * a.cos(), 3.0 + 2.0 * a.sin())
+        })
+        .collect();
+    let probe_uv: Vec<(f64, f64)> = probes.iter().map(|p| flow(p.0, p.1)).collect();
+    let bounds = |pick: fn(&(f64, f64)) -> f64| {
+        probe_uv
+            .iter()
+            .map(pick)
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), v| {
+                (l.min(v), h.max(v))
+            })
+    };
+    if r.handle_for("vf_x").is_err() {
+        let column = |data: Vec<f64>| {
+            let (min, max) = data
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), v| {
+                    (l.min(*v), h.max(*v))
+                });
+            Column { data, min, max }
+        };
+        let mut grids = Vec::new();
+        for x in &xs {
+            let samples: Vec<(f64, f64)> = ys.iter().map(|y| flow(*x, *y)).collect();
+            grids.push(column(samples.iter().map(|s| s.0).collect()));
+            grids.push(column(samples.iter().map(|s| s.1).collect()));
+            grids.push(column(samples.iter().map(|s| s.0.hypot(s.1)).collect()));
+        }
+        let gx = column(xs.clone());
+        let gy = column(ys.clone());
+        let px = column(probes.iter().map(|p| p.0).collect());
+        let py = column(probes.iter().map(|p| p.1).collect());
+        let pu = column(probe_uv.iter().map(|p| p.0).collect());
+        let pv = column(probe_uv.iter().map(|p| p.1).collect());
+        let mut batch: Vec<(&str, &dyn ColumnSource)> = vec![
+            ("vf_x", &gx),
+            ("vf_y", &gy),
+            ("vf_px", &px),
+            ("vf_py", &py),
+            ("vf_pu", &pu),
+            ("vf_pv", &pv),
+        ];
+        for (c, chunk) in grids.chunks(3).enumerate() {
+            batch.push((u_ids[c].as_str(), &chunk[0] as &dyn ColumnSource));
+            batch.push((v_ids[c].as_str(), &chunk[1] as &dyn ColumnSource));
+            batch.push((s_ids[c].as_str(), &chunk[2] as &dyn ColumnSource));
+        }
+        r.add_columns(&batch)?;
+    }
+    let grid = |ids: &[String]| MatrixRef {
+        columns: ids.to_vec(),
+        orientation: MatrixOrientation::ColumnsAreX,
+        grid_layout: GridLayout::Centers,
+    };
+    let speed = series(
+        "speed",
+        "vf_x",
+        "vf_y",
+        DataRenderType::Heatmap {
+            matrix: grid(&s_ids),
+            fill: FieldFillConfig {
+                mode: FillMode::Continuous,
+                shading: Shading::Interpolated,
+                opacity: 0.3,
+            },
+        },
+    );
+    // The gradient grid: data-scaled, so the tips follow the axes when the
+    // view pans or zooms, and coloured by the speed grid.
+    let quiver = series(
+        "quiver",
+        "vf_x",
+        "vf_y",
+        DataRenderType::Vector {
+            components: VectorComponents::Grid {
+                u: grid(&u_ids),
+                v: grid(&v_ids),
+            },
+            style: VectorStyle {
+                color: Color::from_rgb8(20, 20, 20),
+                width_px: 1.6,
+                scale: VectorScale::Data { factor: 0.3 },
+                pivot: VectorPivot::Tail,
+                head_length_px: 7.0,
+                head_width_px: 6.0,
+                min_length_px: 2.0,
+                color_map: Some(VectorColorMap::Grid(grid(&s_ids))),
+            },
+        },
+    );
+    // Probe arrows: pixel-scaled, so they keep their size under zoom.
+    let mut probe_style = VectorStyle {
+        color: Color::from_rgb8(200, 40, 60),
+        width_px: 2.5,
+        scale: VectorScale::Pixels { px_per_unit: 1.0 },
+        pivot: VectorPivot::Middle,
+        head_length_px: 10.0,
+        head_width_px: 9.0,
+        min_length_px: 0.0,
+        color_map: None,
+    };
+    probe_style.fit_scale(bounds(|p| p.0), bounds(|p| p.1), 48.0);
+    let probes = series(
+        "probes",
+        "vf_px",
+        "vf_py",
+        DataRenderType::Vector {
+            components: VectorComponents::Points {
+                u: "vf_pu".into(),
+                v: "vf_pv".into(),
+            },
+            style: probe_style,
+        },
+    );
+    let series = vec![speed, quiver, probes];
+    let mut config = base_config("Vector field: vortex flow", "x", "y");
+    config.grid.show_major_x = false;
+    config.grid.show_major_y = false;
+    let mut bar = default::default_colorbar_options();
+    bar.colormap = ColorMap::Viridis;
+    config.colorbar = Some(bar);
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, 10.0);
+    chart.set_y_range(0.0, 6.0);
+    let speed_refs: Vec<&str> = s_ids.iter().map(String::as_str).collect();
+    chart.auto_fit_colorbar_union(r.pool(), &speed_refs, 0.0)?;
+    Ok(CartesianScene {
+        config: with_legend(chart.config().clone(), &series),
         series,
     })
 }

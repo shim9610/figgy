@@ -365,7 +365,7 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::paint` branches 
 | Type | Fields | Role |
 |---|---|---|
 | `SeriesConfig` | `series_id, source_id?, label, x_column: ColumnId, y_column: ColumnId, render_type` | Full series declaration. `source_id` is optional host provenance for picking; `x_column / y_column` are renderer-registered ids, resident in the pool or backed by a replayable nonresident source. In the web editing flow, `legend.content` is the live label authority; ordinary series edits update recognized legend symbols only and preserve user text. `SeriesConfig.label` becomes authoritative only for an explicit `reset_legend_from_series_labels()` rebuild |
-| `DataRenderType` | enum, 13 variants | One independent draw path per variant. Optional struct merging avoided |
+| `DataRenderType` | enum, 14 variants | One independent draw path per variant. Optional struct merging avoided |
 | `ErrorRef` | `Symmetric { column }` or `Asymmetric { lower, upper }` | Errorbar column reference. Symmetric = ±σ, Asymmetric = lower/upper split |
 | `DataLineStyleConfig` | `line_style, line_color, line_width, fill?, fill_color?, interpolation` | Line appearance. `fill` adds an area under the line (`ToBaseline(y)`) or between this line and another series (`ToSeries(series_id)`); `fill_color` defaults to `line_color` at a quarter of its alpha; `interpolation` is `Linear` (default), `StepPre`, `StepPost` or `StepMid`. See [Area fill and step lines](#area-fill-and-step-lines) |
 | `DataScatterStyleConfig` | `point_color, point_shape, point_size, point_style_table?, point_style_index_column?, point_style_overrides?, point_color_map?, point_size_map?` | Point appearance. The optional style map applies only to precise scatter; each table/override slot can replace color, shape, size, or any subset. `point_color_map` colours each point by a value column through `Config.colorbar`; `point_size_map` sizes each point by a value column over an explicit domain. See [Point colour and size maps](#point-colour-and-size-maps) |
@@ -373,7 +373,7 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::paint` branches 
 | `DataBarStyleConfig` | `fill_color, border_color, border_width, baseline, gap_px, width_ratio, orientation, bar_style_overrides?` | Histogram appearance. `width_ratio` controls the centred fraction of each bin; sparse overrides replace fill, outline, gap, or width for selected bin indices |
 | `ScatterShape` | enum, 26 variants | Circle / Square / Triangle directions / Diamond / Cross / Plus / Pentagon / Hexagon / Octagon / Star + filled variants |
 
-**The 13 `DataRenderType` variants**:
+**The 14 `DataRenderType` variants**:
 
 | Variant | Sub-styles used | Meaning |
 |---|---|---|
@@ -388,6 +388,7 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::paint` branches 
 | `Heatmap { matrix, fill }` | fill | Filled field only |
 | `Contour { matrix, contour }` | contour | Contour lines only |
 | `HeatmapContour { matrix, fill, contour }` | fill + contour | Filled field with lines over it |
+| `Vector { components, style }` | vector | An arrow per sample: `components` is a (u, v) column pair aligned with the x / y anchors (`Points`) or two matrices over the coordinate columns (`Grid`); `style` is the arrow's colour, sizes, pivot, scale and optional colour map. See [Vector fields](#vector-fields) |
 
 For a runnable vertical/horizontal example and atomic direction changes, see
 [Histogram orientation](HISTOGRAM.md).
@@ -434,6 +435,64 @@ draws through the precise mapped scatter path, like a series with a style table.
 The GPU reads the value columns from the column pool on every draw and derives
 colour and radius in the shader; no per-point colour or radius is stored anywhere.
 `crates/renderer/examples/value_maps.rs` shows both maps.
+
+<a id="vector-fields"></a>
+
+#### Vector fields
+
+`DataRenderType::Vector { components, style }` draws one arrow per sample.
+`components` names where the (u, v) components come from; the series'
+`x_column` / `y_column` stay the anchors, as for every other render type:
+
+- `VectorComponents::Points { u, v }`: two value columns index-aligned with the
+  anchors, one arrow per index. The count is the shortest of the four columns.
+- `VectorComponents::Grid { u, v }`: two `MatrixRef`s declared exactly like a
+  heatmap's matrix over the series' coordinate columns, with the same
+  `orientation` and `grid_layout` (a mismatch is rejected). Under `Centers` the
+  arrow sits on the coordinate, under `Edges` on the cell centre (the data-space
+  midpoint of two edges, which on a logarithmic axis is not the screen
+  midpoint). The drawn extent is the smallest the grids agree on, reported as
+  truncated like a short heatmap matrix. A vector grid can share its coordinate
+  columns with a heatmap or contour on the same grid; a sparser quiver over a
+  fine field uses coarser coordinate columns of its own.
+
+`VectorStyle` is the arrow:
+
+- `color`, `width_px` (shaft), `head_length_px`, `head_width_px`: logical
+  pixels, scaled on export like `point_size`. A short arrow scales its head down
+  to its own length rather than growing a head longer than the shaft.
+- `scale`: `VectorScale::Pixels { px_per_unit }` draws `px_per_unit * |(u, v)|`
+  pixels, the direction following the axes' pixel-per-unit ratio (so a (1, 1)
+  vector leans with the aspect of the data area). `VectorScale::Data { factor }`
+  puts the tip at `anchor + factor * (u, v)` in data space, through the axis
+  transform: the arrow follows an inverted or logarithmic axis, and its tips
+  join the auto-fit extent. The scale must be finite and non-zero;
+  `VectorStyle::fit_scale(u_bounds, v_bounds, target_px_or_units)` writes it
+  from statistics the host already has, the way `PointSizeMap::fit_domain`
+  writes a domain, so appending a sample never rescales the others.
+- `pivot`: `Tail` (default, the anchor is the tail), `Middle` or `Tip`.
+- `min_length_px`: an arrow shorter than this (after scaling) is not drawn;
+  a zero vector, a non-finite component or a non-finite anchor draws nothing.
+- `color_map: Option<VectorColorMap>`: `Column(id)` for the points form, `Grid(MatrixRef)`
+  for the grid form (the form must match). The value colours the arrow through
+  `Config.colorbar`, exactly as a heatmap cell or a `point_color_map` marker is
+  coloured; a colour-mapped vector without a colourbar is rejected.
+
+Interaction follows the form. A point vector is picked at its anchor like a
+marker, with half the wider of head and shaft as its radius; the picked ring,
+`step_selection`, `selection_details` (`u`, `v`, `color_value`) and PNG export
+follow. A grid vector is picked and highlighted by cell on its `u` grid, like a
+heatmap cell. Auto fit (`begin_series_fit_extent`, the web extent requests)
+covers the anchors, plus the tips of a data-scaled point vector; a grid's
+data-scaled tips are not part of the fit. Streamed sources are rejected; the
+components require GPU-resident columns. Stylized draw styles (Sketch,
+Milkyway, Constellation) draw no vectors, as they draw no style maps. The
+legend symbol is a rule with an arrowhead in the series colour.
+
+The shader is assembled from fragments (Cartesian projection, input form, arrow
+glyph, entry; `data_render/SHADER_COMMON.md` §5.3) and reads the component
+columns from the column pool on every draw; nothing per arrow is stored.
+`crates/renderer/examples/vector_field.rs` shows both forms.
 
 #### Area fill and step lines
 
@@ -884,7 +943,7 @@ pub struct Config {
 | 타입 | 필드 | 역할 |
 |---|---|---|
 | `SeriesConfig` | `series_id, source_id?, label, x_column: ColumnId, y_column: ColumnId, render_type` | 시리즈 설정. `source_id`는 선택 결과에서 데이터 출처를 구분하는 선택 항목이다. 컬럼 ID는 상주 풀 또는 재공급 가능한 비상주 소스를 가리킨다. 웹 편집 중 표시할 라벨은 `legend.content`를 기준으로 하며 일반 시리즈 편집은 기호만 갱신한다. `SeriesConfig.label`은 `reset_legend_from_series_labels()`로 범례를 다시 만들 때 사용한다. |
-| `DataRenderType` | 13종 열거형 | 종류마다 별도의 렌더링 경로와 필요한 설정을 가진다. |
+| `DataRenderType` | 14종 열거형 | 종류마다 별도의 렌더링 경로와 필요한 설정을 가진다. |
 | `ErrorRef` | `Symmetric { column }` 또는 `Asymmetric { lower, upper }` | 오차 막대 컬럼 참조. Symmetric은 ±σ, Asymmetric은 아래·위 값을 별도 지정 |
 | `DataLineStyleConfig` | `line_style, line_color, line_width, fill?, fill_color?, interpolation` | 선 모양. `fill`은 선 아래(`ToBaseline(y)`) 또는 다른 시리즈까지(`ToSeries(series_id)`) 면을 채우고, `fill_color`는 생략 시 `line_color`의 알파를 1/4로 줄인 색이며, `interpolation`은 `Linear`(기본)·`StepPre`·`StepPost`·`StepMid`다. [면 채움과 계단선](#면-채움과-계단선) 참고 |
 | `DataScatterStyleConfig` | `point_color, point_shape, point_size, point_style_table?, point_style_index_column?, point_style_overrides?, point_color_map?, point_size_map?` | 점 모양. 정밀 모드에서 선택적인 스타일 표·개별 설정으로 색·모양·크기의 전체 또는 일부를 바꿀 수 있다. `point_color_map`은 값 컬럼을 `Config.colorbar`로 색에, `point_size_map`은 값 컬럼을 명시한 범위로 크기에 대응시킨다. [Point colour and size maps](#point-colour-and-size-maps) 참고 |
@@ -892,7 +951,7 @@ pub struct Config {
 | `DataBarStyleConfig` | `fill_color, border_color, border_width, baseline, gap_px, width_ratio, orientation, bar_style_overrides?` | 히스토그램 모양. `width_ratio`는 구간 가운데에 놓인 막대의 너비 비율이다. 개별 설정으로 특정 구간의 채움·외곽선·간격·너비를 바꿀 수 있다. |
 | `ScatterShape` | 열거형 26종 | 원·사각형·방향별 삼각형·마름모·십자·더하기·오각형·육각형·팔각형·별과 내부를 채운 형태 |
 
-**`DataRenderType`의 13가지 종류**
+**`DataRenderType`의 14가지 종류**
 
 | 종류 | 사용하는 스타일 | 의미 |
 |---|---|---|
@@ -907,6 +966,7 @@ pub struct Config {
 | `Heatmap { matrix, fill }` | fill | 면만 |
 | `Contour { matrix, contour }` | contour | 선만 |
 | `HeatmapContour { matrix, fill, contour }` | fill + contour | 면 + 그 위의 선 |
+| `Vector { components, style }` | vector | 표본마다 화살표 하나. `components`는 X·Y 앵커와 정렬된 (u, v) 컬럼 쌍(`Points`) 또는 좌표 컬럼 위의 행렬 두 개(`Grid`)이고, `style`은 색·크기·피벗·스케일·선택적 색상 매핑이다. [Vector fields](#vector-fields) 참고 |
 
 세로·가로 설정과 기존 차트의 방향 변경 예제는 [히스토그램 사용법](HISTOGRAM.md)에 있다.
 

@@ -43,6 +43,7 @@
 - **데이터 출처 키**인 `SeriesConfig.source_id`, `PickedPointRef.source_id`, 모든 `PickedDataRef`의 `source_id`는 `None`이면 생략한다.
 - **시리즈의 스타일 매핑 키 6개**도 `None`이면 생략한다. `DataScatterStyleConfig`의 `point_style_table` / `point_style_index_column` / `point_style_overrides`와 `DataErrorBarStyleConfig`의 `error_bar_style_table` / `error_bar_style_index_column` / `error_bar_style_overrides`가 해당한다.
 - **Two continuous value-map keys** of `DataScatterStyleConfig`, `point_color_map` and `point_size_map`, are omitted when `None`. `point_color_map` is `{ "column": "<id>" }`; the colour comes from `Config.colorbar`, which must exist. `point_size_map` is `{ "column": "<id>", "domain_min": 0.0, "domain_max": 10.0, "min_px": 2.0, "max_px": 12.0, "scale": "Area" }`; `scale` is `"Area"` (default, omitted) or `"Radius"`. Both columns must be registered and index-aligned with the series. See [Point colour and size maps](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#point-colour-and-size-maps).
+- **The vector keys** of `VectorStyle` follow the same rule: `pivot` is omitted when `"Tail"`, `min_length_px` when `0.0`, `color_map` when `None`. `scale` is always present as `{ "Pixels": { "px_per_unit": 1.0 } }` or `{ "Data": { "factor": 0.5 } }`; `color_map` is `{ "Column": "<id>" }` for the points form and `{ "Grid": { "columns": [...], "orientation": "...", "grid_layout": "..." } }` for the grid form, and needs `Config.colorbar`. `components` is `{ "Points": { "u": "<id>", "v": "<id>" } }` or `{ "Grid": { "u": MatrixRef, "v": MatrixRef } }` with both grids sharing orientation and layout. See [Vector fields](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#vector-fields).
 - **개별 데이터의 스타일 키 7개**도 `None`이면 생략한다. `DataScatterPointStyleConfig`의 `point_color` / `point_shape` / `point_size`와 `DataErrorBarPointStyleConfig`의 `error_bar_color` / `error_bar_width` / `error_bar_cap_size` / `cap_width`가 해당한다. 모두 비어 있으면 `{}`로 직렬화한다. 개별 덮어쓰기 항목의 `style`은 한 단계 풀어서 저장하므로 같은 생략 규칙을 따른다.
 - `SeriesConfig.label`은 위 선택 키들과 달리 항상 존재하며 값으로 `null`을 가질 수 있다.
 - **선 스타일의 선택 키 3개**인 `DataLineStyleConfig.fill` / `fill_color` / `interpolation`은 기본값이면 생략한다. `fill`은 `{ "ToBaseline": 0.0 }` 또는 `{ "ToSeries": "<series_id>" }`이고, `fill_color`는 `Color`, `interpolation`은 `"Linear"`(기본)·`"StepPre"`·`"StepPost"`·`"StepMid"`다. `ToSeries`는 같은 차트에서 같은 `x_column`을 쓰는 다른 시리즈를 가리켜야 하며, 두 시리즈 모두 상주 컬럼이어야 한다. 자세한 의미는 [면 채움과 계단선](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#면-채움과-계단선)을 참고한다.
@@ -124,7 +125,7 @@
 | `line_style` (LineStylePreset) | `"Solid"` `"Dash"` `"Dot"` `"DashDot"` `"DashDotDot"` `"ShortDash"` `"ShortDot"` `"ShortDashDot"` `"LongDash"` `"LongDashDot"` `"LongDashDotDot"` |
 | `corner` (LegendCorner) | `"TopLeft"` `"TopRight"` `"BottomLeft"` `"BottomRight"` |
 | `point_shape` (ScatterShape) | `"Circle"` `"Square"` `"Triangle"` `"Diamond"` `"Cross"` `"CircleFilled"` `"SquareFilled"` `"TriangleFilled"` `"DiamondFilled"` `"TriangleDown"` `"TriangleLeft"` `"TriangleRight"` `"Plus"` `"Pentagon"` `"Hexagon"` `"Octagon"` `"Star"` `"TriangleDownFilled"` `"TriangleLeftFilled"` `"TriangleRightFilled"` `"PlusFilled"` `"CrossFilled"` `"PentagonFilled"` `"HexagonFilled"` `"OctagonFilled"` `"StarFilled"` |
-| `render_type` (DataRenderType, 태그) | `"Scatter"` `"Line"` `"ScatterLine"` `"ScatterErrorbarX"` `"ScatterErrorbarY"` `"ScatterErrorbarXY"` `"LineScatterErrorbarX"` `"LineScatterErrorbarY"` `"LineScatterErrorbarXY"` `"Histogram"` `"Heatmap"` `"Contour"` `"HeatmapContour"` |
+| `render_type` (DataRenderType, 태그) | `"Scatter"` `"Line"` `"ScatterLine"` `"ScatterErrorbarX"` `"ScatterErrorbarY"` `"ScatterErrorbarXY"` `"LineScatterErrorbarX"` `"LineScatterErrorbarY"` `"LineScatterErrorbarXY"` `"Histogram"` `"Heatmap"` `"Contour"` `"HeatmapContour"` `"Vector"` |
 | `err_x` / `err_y` (ErrorRef, 태그) | `"Symmetric"` (`{column}`) / `"Asymmetric"` (`{lower, upper}`) |
 | `side` (Side) | `"Top"` `"Bottom"` `"Left"` `"Right"` |
 | `align` (BarAlign, 색상 막대) | `"Start"` `"Center"` `"End"` |
@@ -291,7 +292,10 @@ results contain `index`, `x`, and `y`, plus `color_value` when the series has a
 `point_color_map` and `size_value` when it has a `point_size_map` (the values the
 point's colour and radius were derived from); matrix results contain `x_index`,
 `y_index`, `x`, `y`, and `value`, with cell centers reported for edge grids.
-All results include the flat tagged `identity` and `series_id`.
+A vector series reports `u` and `v` in place of `value` (a point vector as a
+point result, a grid vector as a matrix result over its `u` grid) and
+`color_value` when it has a `color_map`. All results include the flat tagged
+`identity` and `series_id`.
 
 `FiggyChart.step_selection(dx, dy)` is synchronous and returns whether the
 selection changed. For vertical histograms, `dx` moves between bins and `dy`
@@ -698,7 +702,7 @@ async gate held during `selection_details()`.
 
 색상 막대는 다음 규칙을 따른다.
 
-- `Heatmap` / `Contour` / `HeatmapContour`에는 이 설정이 반드시 필요하다. Z축 범위와 색상표를 여기에서 읽으므로 없으면 시리즈를 거부한다.
+- `Heatmap` / `Contour` / `HeatmapContour`와 `color_map`이 있는 `Vector`에는 이 설정이 반드시 필요하다. Z축 범위와 색상표를 여기에서 읽으므로 없으면 시리즈를 거부한다.
 - 차트당 Z축 스케일은 하나이며 여러 히트맵이 같은 스케일을 공유한다.
 - 색상 막대의 영역은 `gap_px + thickness_px + axis.out_margin + axis.major_tick_length`이며 해당 방향의 여백에 추가된다. `fit` / `resize`는 라벨 여백인 `axis.out_margin`만 조절한다. `thickness_px`, `gap_px`, 눈금 길이는 유지한다.
 - 일반 축과 다른 기본값은 `line_visible: false`와 `tick: "Outside"`다. 막대 테두리가 축선 역할을 하고 눈금은 라벨 공간에 놓인다. `tick`은 `None` / `Outside` / `Inside` / `Both`로 눈금 방향을, `inverted`는 화면상의 값 증가 방향을 정한다. 눈금 모양은 축선의 `line_color` / `line_width` / `line_style`을 따른다.
@@ -1040,6 +1044,50 @@ async gate held during `selection_details()`.
 ```
 
 <a id="get_series-전체-형태--최대-변형-예시"></a>
+
+## `Vector` render_type의 전체 형식
+
+A point vector (`Points`) and a grid vector (`Grid`) with every optional key
+written out. `pivot: "Tail"`, `min_length_px: 0.0` and a `None` `color_map`
+are omitted on output.
+
+```json
+{
+  "flow": {
+    "Vector": {
+      "components": { "Points": { "u": "u", "v": "v" } },
+      "style": {
+        "color": { "r": 0.1, "g": 0.15, "b": 0.25, "a": 1.0 },
+        "width_px": 1.8,
+        "scale": { "Pixels": { "px_per_unit": 12.0 } },
+        "pivot": "Middle",
+        "head_length_px": 7.0,
+        "head_width_px": 6.0,
+        "min_length_px": 2.0,
+        "color_map": { "Column": "speed" }
+      }
+    }
+  },
+  "gradient": {
+    "Vector": {
+      "components": {
+        "Grid": {
+          "u": { "columns": ["gu0", "gu1", "gu2"], "orientation": "ColumnsAreX", "grid_layout": "Centers" },
+          "v": { "columns": ["gv0", "gv1", "gv2"], "orientation": "ColumnsAreX", "grid_layout": "Centers" }
+        }
+      },
+      "style": {
+        "color": { "r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0 },
+        "width_px": 1.6,
+        "scale": { "Data": { "factor": 0.35 } },
+        "head_length_px": 6.0,
+        "head_width_px": 5.0,
+        "color_map": { "Grid": { "columns": ["s0", "s1", "s2"], "orientation": "ColumnsAreX", "grid_layout": "Centers" } }
+      }
+    }
+  }
+}
+```
 
 ## `get_series()` 전체 형식 — 모든 오차 방향을 포함한 예
 

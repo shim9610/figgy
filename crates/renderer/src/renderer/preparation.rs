@@ -60,7 +60,11 @@ impl PreparationFeature {
                     | "errorbar_mapped"
             ),
             Self::Bars => field.starts_with("bar"),
-            Self::Fields => field.starts_with("field") || field.starts_with("contour"),
+            Self::Fields => {
+                field.starts_with("field")
+                    || field.starts_with("contour")
+                    || field.starts_with("vector")
+            }
             _ => false,
         }
     }
@@ -94,9 +98,12 @@ impl PreparationFeature {
         for item in series {
             let group = match item.render_type {
                 DataRenderType::Histogram { .. } => Self::Bars,
+                // Vectors prepare with the fields: both read the pool as
+                // storage and share the colourbar.
                 DataRenderType::Heatmap { .. }
                 | DataRenderType::Contour { .. }
-                | DataRenderType::HeatmapContour { .. } => Self::Fields,
+                | DataRenderType::HeatmapContour { .. }
+                | DataRenderType::Vector { .. } => Self::Fields,
                 DataRenderType::Scatter { .. }
                 | DataRenderType::Line { .. }
                 | DataRenderType::ScatterLine { .. }
@@ -133,6 +140,7 @@ pub struct PipelinePreparation {
     selection: wgpu::BindGroupLayout,
     field: wgpu::BindGroupLayout,
     star: wgpu::BindGroupLayout,
+    vector: wgpu::BindGroupLayout,
 }
 /// Opaque actual GPU objects. Installation neither replays data nor changes Config.
 pub struct PreparedPipelines {
@@ -217,6 +225,7 @@ impl PipelinePreparation {
                     &self.value_map,
                     &self.selection,
                     &self.field,
+                    &self.vector,
                     &self.star,
                     contour.as_ref(),
                     Some(self.feature),
@@ -278,6 +287,8 @@ impl Renderer {
                     && p.contour.is_some()
                     && p.contour_labelled.is_some()
                     && p.contour_label.is_some()
+                    && p.vector_points.is_some()
+                    && p.vector_grid.is_some()
                     && self.contour_label_pipelines.is_some()
             }
             PreparationFeature::Picking => matches!(
@@ -309,6 +320,7 @@ impl Renderer {
             selection: self.data_selection_bgl.clone(),
             field: self.field_bgl.clone(),
             star: self.star_data_bgl.clone(),
+            vector: self.vector_bgl.clone(),
         })
     }
     pub fn install_preparation(&mut self, prepared: PreparedPipelines) -> Result<()> {
@@ -374,6 +386,8 @@ impl TargetPipelines {
             contour: None,
             contour_labelled: None,
             contour_label: None,
+            vector_points: None,
+            vector_grid: None,
         }
     }
     fn merge_preparation(&mut self, other: Self) {
@@ -412,6 +426,12 @@ impl TargetPipelines {
         }
         if self.bar_selection.is_none() {
             self.bar_selection = other.bar_selection;
+        }
+        if self.vector_points.is_none() {
+            self.vector_points = other.vector_points;
+        }
+        if self.vector_grid.is_none() {
+            self.vector_grid = other.vector_grid;
         }
         if self.field.is_none() {
             self.field = other.field;

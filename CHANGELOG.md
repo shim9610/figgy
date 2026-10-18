@@ -9,6 +9,43 @@ at the time. The first crates.io publication is recorded below.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
+## Unreleased — vector fields
+
+- New `DataRenderType::Vector { components, style }` draws an arrow per sample
+  (#25). `VectorComponents::Points { u, v }` reads one (u, v) column pair
+  index-aligned with the series' x / y anchors; `VectorComponents::Grid { u, v }`
+  reads two matrices declared like a heatmap's (`MatrixRef`, same orientation
+  and layout) over the series' coordinate columns, anchored on the coordinate
+  under `Centers` and on the cell centre under `Edges`. `VectorStyle` carries
+  the colour, shaft width, head length and width, a `min_length_px` below
+  which an arrow is hidden, a `pivot` (`Tail`, `Middle`, `Tip`), the scale
+  (`VectorScale::Pixels { px_per_unit }`: a fixed pixel factor, the direction
+  following the axes' pixel-per-unit ratio; `VectorScale::Data { factor }`:
+  the tip at `anchor + factor * (u, v)` in data space, so the arrow follows an
+  inverted or logarithmic axis) and an optional `color_map` through
+  `Config.colorbar` (`VectorColorMap::Column` for points, `::Grid` for grids).
+  `VectorStyle::fit_scale` writes the scale from host statistics, like
+  `PointSizeMap::fit_domain`.
+- The shader is assembled in Rust from fragments (Cartesian projection, input
+  form, arrow glyph, entry) so a later projection can reuse the glyph; the
+  assembled modules are part of the compile-time test and
+  `shader_pipeline_contract.json` is regenerated. The arrow is six vertices
+  per instance straight off the GPU column pool, with analytic coverage; no
+  per-arrow value is stored. Common blocks: `SHADER_COMMON.md` §5.3.
+- Point vectors pick, ring, hover and step through the existing point paths
+  with the glyph's radius (half the wider of head and shaft); grid vectors
+  pick and highlight by cell on their `u` grid, like a heatmap cell. Auto fit
+  includes the tips of data-scaled point vectors (`GpuSeriesExtentMode::VectorTips`);
+  pixel-scaled vectors and grid vectors fit their anchors, so a grid's
+  data-scaled tips are not part of the fit. Streamed sources are rejected
+  with an explicit error; stylized draw styles (Sketch, Milkyway,
+  Constellation) draw no vectors, as they draw no style maps. The legend
+  symbol is a rule with an arrowhead. The web `selection_details` reports
+  `u`, `v` and, when colour mapped, `color_value` for both forms.
+- Rust migration: exhaustive `DataRenderType` matches need a `Vector` arm.
+  JSON without the variant is unchanged. New example `vector_field.rs`; guide
+  text in `CONFIG.md` ("Vector fields") and `web/SCHEMA.md`.
+
 ## Unreleased — point colour and size maps
 
 - Scatter series (every marker-drawing `DataRenderType`) gain two optional

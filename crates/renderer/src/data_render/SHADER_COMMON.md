@@ -27,6 +27,11 @@
 - `line_arc.wgsl`: 경로 길이 계산용. `Transform`, `maybe_log`, vec2 입력의 `data_to_ndc`만 공유하고 `Style`은 사용하지 않는다. 공통 블록 밖의 계단 보간 헬퍼(`step_piece_count` / `step_piece` / `step_piece_len_px`)는 `line_columnar.wgsl`과 바이트 단위로 같아야 하며 `shader_consistency`가 검사한다.
 - `contour_anchor.wgsl`: 라벨 앵커 계산용. 화면 좌표에서 위치를 선택하므로 `line_arc.wgsl`과 같은 세 블록을 사용한다.
 - `contour_label.wgsl`: 라벨 렌더링용. 앵커를 NDC에 배치하며 위 세 블록을 공유한다. 색과 배경은 아틀라스에 포함돼 있어 `Style`은 사용하지 않는다.
+- `vector/project_cartesian2d.wgsl`: the Cartesian 2D projection fragment of
+  the assembled vector shader (`vector.rs`). It carries the same five blocks
+  as `scatter_columnar.wgsl` (`Transform`, `Style`, `maybe_log`,
+  `axis_pair_to_t` / `data_to_ndc` and the sample validity rule); the other
+  vector fragments contain no common block. See §5.3.
 
 기존의 마칭 스퀘어 추적용 `gpu_contour.wgsl`과 버킷 방식의 `gpu_contour_anchor.wgsl`은 제거됐다. 현재는 `field_columnar.wgsl::fs_contour`가 격자에서 등고선을 직접 그리고, `contour_anchor.wgsl`이 뉴턴 투영으로 앵커를 구한다. 따라서 두 셰이더가 격자 샘플링 블록을 공유한다.
 라벨 투영은 `anchor_seed` → `anchor_step` 4회 → `anchor_project`의 최종 샘플·검증 →
@@ -56,7 +61,7 @@
 `Transform`은 데이터 좌표를 NDC로 바꾸는 값, 로그축 여부, 픽셀과 NDC의 비율, 스케치·별자리 등 현재 스타일의 옵션을 전달한다. 크기는 **112바이트**다. `vec2<f32>` 8개와 `array<vec4<f32>, 3>` 하나로 구성되며, 배열은 바이트 오프셋 64에서 시작하고 원소 간 간격은 16바이트다.
 점 반지름과 오차 막대 끝선 길이 같은 픽셀 크기는 `Style`에 저장한다. 셰이더는 `pixel_to_ndc`로 이를 NDC 크기로 환산한다.
 
-<!-- shader-common: applies-to=scatter,line,errorbar,bar,field,arc,anchor,label -->
+<!-- shader-common: applies-to=scatter,line,errorbar,bar,field,arc,anchor,label,vector -->
 ```wgsl
 struct Transform {
     data_min: vec2<f32>,
@@ -116,7 +121,7 @@ are separate and do not consume this field.
 
 `Style`은 알파를 미리 곱한 색과 도형별 옵션을 전달한다. 크기는 **80바이트**, 정렬 단위는 **16바이트**다. 공유하는 셰이더들은 각자 필요한 필드만 읽는다.
 
-<!-- shader-common: applies-to=scatter,line,errorbar,bar,field -->
+<!-- shader-common: applies-to=scatter,line,errorbar,bar,field,vector -->
 ```wgsl
 struct Style {
     color_premul: vec4<f32>,
@@ -209,7 +214,7 @@ group 2의 격자 스토리지와 유니폼은 행렬 렌더링과 등고선 앵
 `is_log` 플래그(0.0 또는 1.0)에 따라 값을 그대로 통과시키거나 log10을
 적용한다. `if` 분기 없이 `mix`로 처리해 워프 단위 분기 비용을 피한다.
 
-<!-- shader-common: applies-to=scatter,line,errorbar,bar,field,arc,anchor,label -->
+<!-- shader-common: applies-to=scatter,line,errorbar,bar,field,arc,anchor,label,vector -->
 ```wgsl
 fn maybe_log(v: f32, is_log: f32) -> f32 {
     let lv = log(max(v, 1e-30)) / log(10.0);
@@ -232,7 +237,7 @@ the arithmetic result. Round-trip bitcasts are not rounding barriers. Log axes u
 recombined display value (`hi + lo`) before comparing against the log-transformed
 axis bounds.
 
-<!-- shader-common: applies-to=scatter,line,errorbar,bar,field,arc,anchor,label -->
+<!-- shader-common: applies-to=scatter,line,errorbar,bar,field,arc,anchor,label,vector -->
 ```wgsl
 fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f32, is_log: f32, panel_scale: f32, panel_offset: f32) -> f32 {
     let raw = v.x + v.y;
@@ -262,7 +267,7 @@ also skips that segment so dashes and stars do not advance across the gap.
 Vertices collapse to a finite position outside the viewport instead of depending
 on NaN propagation. Bars and errorbar extents keep their own clipping rules.
 
-<!-- shader-common: applies-to=scatter,line,arc -->
+<!-- shader-common: applies-to=scatter,line,arc,vector -->
 ```wgsl
 // Mask source samples explicitly: NaN/Inf clipping is not portable in WGSL.
 // Logarithmic coordinate domains exclude nonpositive samples, while bars and
@@ -761,15 +766,162 @@ series without value maps binds the renderer's neutral params (every flag
 clear), so the layout is always satisfied.
 
 The value columns arrive as per-instance vertex slots 4 and 5 (hi/lo pairs,
-X bound as filler when a map is absent). `value_ramp_t` mirrors
-`field_columnar.wgsl::z_ramp_t` and `ColorBarOptions::normalized_z`;
-`value_ramp` is the same byte-for-byte twin of `colormap::sample` the field
-shader carries; `value_map_radius` is the twin of `PointSizeMap::radius_px` and
-of `gpu_pick.wgsl::pick_size_map_radius`. Precedence inside
+X bound as filler when a map is absent). `value_ramp_t`, `value_ramp` and
+`value_map_radius` are one-line wrappers over the shared ramp and size-map
+functions of §5.4, which the field and pick shaders carry too. Precedence inside
 `resolve_mapped_style` is override > value map > table slot > base; a hidden
 point (non-finite size value) carries a negative radius and is masked unless an
 override sets its radius. Nothing derived per point is uploaded: colour and
 radius are computed on every draw from the bound columns.
+
+### 5.3 Vector fields — group 2 (assembled vector shader)
+
+The vector shader is not one file: `vector.rs::assemble` concatenates
+`vector/project_cartesian2d.wgsl` (the five common blocks above plus the
+projection), `vector/vector_input_common.wgsl`, one of
+`vector/vector_input_points.wgsl` / `vector/vector_input_grid.wgsl`,
+`vector/glyph_arrow.wgsl` and `vector/vector_entry.wgsl`, in that order. Only
+the projection fragment carries common blocks; the consistency test compares
+it as the `vector` target.
+
+Group 2 is the series' data. Binding 0 is the column pool as read-only
+storage (hi/lo pairs, like the field shader's binding 0). Binding 1 is the
+grid table (`GridColumn { base, len }`, the field shader's `GridColumnGpu`):
+one padding entry for the points form, and for the grid form the `u`, `v` and
+colour grids' columns appended in that order, each addressed from its own base
+in `VectorParams`. Binding 2 is the colourbar's ramp control points (straight
+RGBA, at least one entry). Binding 3 is `VectorParams` (128 B; CPU twin
+`vector.rs::VectorParamsGpu`): the x / y / u / v / colour lanes and lengths,
+the grid's `cols` / `rows`, the flags, the arrow count, the stop count, the
+pivot, the scale (`Data`: the factor; `Pixels`: `px_per_unit` times the
+export scale), the pixel sizes (shaft width, head length, head width, minimum
+length and the anti-aliasing width, every one already multiplied by the
+export scale) and the colourbar's bounds as hi/lo pairs, already log10 under
+`VECTOR_FLAG_LOG_Z`, with the premultiplied `nan_color`.
+
+Flags: `GRID` selects the grid input, `COLUMNS_ARE_Y` and `CENTERS` are the
+`u` grid's orientation and layout, `SCALE_PIXELS` the scale mode, `LOG_Z` the
+colourbar's scale and `COLOR_MAP` whether a colour column or grid is bound.
+`vector_sample(i)` returns the anchor as hi/lo pairs, the (u, v) components
+and the colour value: under `Centers` the anchor is the coordinate, under
+`Edges` the data-space midpoint of two consecutive coordinates (the field's
+cell centre). `project_arrow` turns a sample into a tail and a tip in
+chart-area pixels: `Data` adds `scale * (u, v)` to the anchor through
+`pair_add` and projects both ends, so the arrow follows the axis transform;
+`Pixels` takes the direction from the axes' pixel-per-unit Jacobian
+(`axis_px_per_unit`) and the length from `scale * |(u, v)|`. `vector_ramp_t`
+and `vector_ramp` wrap the shared ramp functions of §5.4, so a colour-mapped
+arrow takes the colour a heatmap cell of the same value would.
+
+The glyph fragment owns nothing but pixel geometry: `arrow_place` applies the
+pivot and the minimum length and scales the head down to a short arrow,
+`arrow_quad_corner` places the six vertices of the covering quad, and
+`arrow_coverage` evaluates the signed distance to shaft ∪ head per fragment.
+Nothing derived per arrow is uploaded: every draw recomputes the placement
+from the bound columns.
+
+### 5.4 Colour ramp and size-map radius — function twins
+
+The colourbar ramp is evaluated in three shaders (`field_columnar.wgsl` for
+cells, `scatter_columnar.wgsl` for `point_color_map`, the vector shader for
+`VectorStyle::color_map`) and the size-map radius in two
+(`scatter_columnar.wgsl` and `gpu_pick.wgsl`). The maths is one function set,
+parameterised on the caller's bounds, so the stop storage binding (which WGSL
+cannot pass as an argument) stays the only per-shader line. The functions
+below are copied byte-for-byte into each shader and `shader_consistency`
+compares every body with this document (`ramp_t` / `ramp_segment` /
+`ramp_blend` in field, scatter and vector; `size_map_radius` in scatter and
+pick; `ramp_finite` everywhere). CPU twins: `ColorBarOptions::normalized_z`,
+`model::colormap::sample` and `PointSizeMap::radius_px`.
+
+```wgsl
+/// A finite f32 by its exponent bits. Every ramp input is checked
+/// explicitly: NaN and infinity propagation through arithmetic is not
+/// portable in WGSL.
+fn ramp_finite(v: f32) -> bool {
+    return (bitcast<u32>(v) & 0x7f800000u) != 0x7f800000u;
+}
+
+/// `zv` (a hi/lo pair) as a ramp position in `[0, 1]`, or a negative number
+/// when it cannot be placed: a non-finite half or sum, a non-positive value
+/// on a logarithmic bar, or a degenerate range. `z_min` / `z_max` are the
+/// colourbar bounds as hi/lo pairs, already log10 when `log_z`.
+///
+/// CPU twin: `ColorBarOptions::normalized_z`. "Unplaceable" and "smallest"
+/// are different facts, so the miss is reported instead of clamping to an
+/// end.
+fn ramp_t(zv: vec2<f32>, z_min: vec2<f32>, z_max: vec2<f32>, log_z: bool) -> f32 {
+    // Both halves are checked before they are added.
+    if (!ramp_finite(zv.x) || !ramp_finite(zv.y)) {
+        return -1.0;
+    }
+    let raw = zv.x + zv.y;
+    if (!ramp_finite(raw)) {
+        return -1.0;
+    }
+    if (log_z && raw <= 0.0) {
+        return -1.0;
+    }
+    let is_log = select(0.0, 1.0, log_z);
+    // Same shape as `axis_pair_to_t`: the linear form keeps the hi/lo split so
+    // a large absolute z still resolves small deltas.
+    let linear_num = (zv.x - z_min.x) + (zv.y - z_min.y);
+    let log_num = (maybe_log(raw, 1.0) - z_min.x) - z_min.y;
+    let span = (z_max.x - z_min.x) + (z_max.y - z_min.y);
+    if (!ramp_finite(linear_num) || !ramp_finite(log_num)
+        || !ramp_finite(span) || span <= 0.0) {
+        return -1.0;
+    }
+    let numerator = mix(linear_num, log_num, is_log);
+    let normalized = numerator / span;
+    if (!ramp_finite(numerator) || !ramp_finite(normalized)) {
+        return -1.0;
+    }
+    return clamp(normalized, 0.0, 1.0);
+}
+
+/// Where `t` falls among `n >= 2` control points: `x` is the lower stop's
+/// index as a float, `y` the blend towards the next. Twin of the index and
+/// fraction `model::colormap::sample` computes, including the `n - 2` index
+/// clamp that lets the last segment own `t = 1`.
+fn ramp_segment(t: f32, n: u32) -> vec2<f32> {
+    let tc = select(clamp(t, 0.0, 1.0), 0.0, !ramp_finite(t));
+    let scaled = tc * f32(n - 1u);
+    let index = min(u32(floor(scaled)), n - 2u);
+    return vec2<f32>(f32(index), scaled - f32(index));
+}
+
+/// The control points `a` (the segment's lower stop) and `b` blended by
+/// `frac`, with the exact-endpoint short circuits `colormap::sample` has.
+/// `mix` is not used: `a + (b - a) * t` is what the CPU computes, and the two
+/// paths have to agree at the ends.
+fn ramp_blend(a: vec4<f32>, b: vec4<f32>, frac: f32) -> vec4<f32> {
+    if (frac <= 0.0) {
+        return a;
+    }
+    if (frac >= 1.0) {
+        return b;
+    }
+    return a + (b - a) * frac;
+}
+
+/// The marker radius for a size-map value `sv` (a hi/lo pair) over the
+/// domain `domain_min..domain_max` (hi/lo pairs) onto `lo..hi` pixels, by
+/// marker area when `area`, else by radius. Negative when the value is not
+/// finite: the point is hidden. Twin of `PointSizeMap::radius_px`.
+fn size_map_radius(sv: vec2<f32>, domain_min: vec2<f32>, domain_max: vec2<f32>, lo: f32, hi: f32, area: bool) -> f32 {
+    if (!ramp_finite(sv.x) || !ramp_finite(sv.y) || !ramp_finite(sv.x + sv.y)) {
+        return -1.0;
+    }
+    let num = (sv.x - domain_min.x) + (sv.y - domain_min.y);
+    let span = (domain_max.x - domain_min.x) + (domain_max.y - domain_min.y);
+    let t = clamp(num / span, 0.0, 1.0);
+    if (area) {
+        return sqrt(lo * lo + (hi * hi - lo * lo) * t);
+    }
+    return lo + (hi - lo) * t;
+}
+```
 
 ---
 ## 변경 체크리스트
@@ -786,6 +938,7 @@ radius are computed on every draw from the bound columns.
       data_to_ndc(vec2) 해당 시).
 - [ ] `contour_anchor.wgsl`의 공통 블록을 수정했다 (Transform 3블록 + 격자 샘플링 블록).
 - [ ] `contour_label.wgsl`의 공통 블록을 수정했다 (같은 3블록).
+- [ ] `vector/project_cartesian2d.wgsl`의 공통 블록을 수정했다 (scatter와 같은 5블록).
 - [ ] `mod.rs::ScatterTransform` / `PrimitiveStyle`의 필드와 바이트 크기를
       확인했다 (struct 크기가 바뀌었다면 `expected_size` 검증문도 갱신).
 - [ ] `cargo check` 통과.
