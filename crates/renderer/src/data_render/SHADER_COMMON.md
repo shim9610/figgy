@@ -766,11 +766,9 @@ series without value maps binds the renderer's neutral params (every flag
 clear), so the layout is always satisfied.
 
 The value columns arrive as per-instance vertex slots 4 and 5 (hi/lo pairs,
-X bound as filler when a map is absent). `value_ramp_t` mirrors
-`field_columnar.wgsl::z_ramp_t` and `ColorBarOptions::normalized_z`;
-`value_ramp` is the same byte-for-byte twin of `colormap::sample` the field
-shader carries; `value_map_radius` is the twin of `PointSizeMap::radius_px` and
-of `gpu_pick.wgsl::pick_size_map_radius`. Precedence inside
+X bound as filler when a map is absent). `value_ramp_t`, `value_ramp` and
+`value_map_radius` are one-line wrappers over the shared ramp and size-map
+functions of §5.4, which the field and pick shaders carry too. Precedence inside
 `resolve_mapped_style` is override > value map > table slot > base; a hidden
 point (non-finite size value) carries a negative radius and is masked unless an
 override sets its radius. Nothing derived per point is uploaded: colour and
@@ -812,9 +810,8 @@ chart-area pixels: `Data` adds `scale * (u, v)` to the anchor through
 `pair_add` and projects both ends, so the arrow follows the axis transform;
 `Pixels` takes the direction from the axes' pixel-per-unit Jacobian
 (`axis_px_per_unit`) and the length from `scale * |(u, v)|`. `vector_ramp_t`
-and `vector_ramp` are the twins of `field_columnar.wgsl::z_ramp_t` and
-`colormap::sample`, so a colour-mapped arrow takes the colour a heatmap cell
-of the same value would.
+and `vector_ramp` wrap the shared ramp functions of §5.4, so a colour-mapped
+arrow takes the colour a heatmap cell of the same value would.
 
 The glyph fragment owns nothing but pixel geometry: `arrow_place` applies the
 pivot and the minimum length and scales the head down to a short arrow,
@@ -822,6 +819,109 @@ pivot and the minimum length and scales the head down to a short arrow,
 `arrow_coverage` evaluates the signed distance to shaft ∪ head per fragment.
 Nothing derived per arrow is uploaded: every draw recomputes the placement
 from the bound columns.
+
+### 5.4 Colour ramp and size-map radius — function twins
+
+The colourbar ramp is evaluated in three shaders (`field_columnar.wgsl` for
+cells, `scatter_columnar.wgsl` for `point_color_map`, the vector shader for
+`VectorStyle::color_map`) and the size-map radius in two
+(`scatter_columnar.wgsl` and `gpu_pick.wgsl`). The maths is one function set,
+parameterised on the caller's bounds, so the stop storage binding (which WGSL
+cannot pass as an argument) stays the only per-shader line. The functions
+below are copied byte-for-byte into each shader and `shader_consistency`
+compares every body with this document (`ramp_t` / `ramp_segment` /
+`ramp_blend` in field, scatter and vector; `size_map_radius` in scatter and
+pick; `ramp_finite` everywhere). CPU twins: `ColorBarOptions::normalized_z`,
+`model::colormap::sample` and `PointSizeMap::radius_px`.
+
+```wgsl
+/// A finite f32 by its exponent bits. Every ramp input is checked
+/// explicitly: NaN and infinity propagation through arithmetic is not
+/// portable in WGSL.
+fn ramp_finite(v: f32) -> bool {
+    return (bitcast<u32>(v) & 0x7f800000u) != 0x7f800000u;
+}
+
+/// `zv` (a hi/lo pair) as a ramp position in `[0, 1]`, or a negative number
+/// when it cannot be placed: a non-finite half or sum, a non-positive value
+/// on a logarithmic bar, or a degenerate range. `z_min` / `z_max` are the
+/// colourbar bounds as hi/lo pairs, already log10 when `log_z`.
+///
+/// CPU twin: `ColorBarOptions::normalized_z`. "Unplaceable" and "smallest"
+/// are different facts, so the miss is reported instead of clamping to an
+/// end.
+fn ramp_t(zv: vec2<f32>, z_min: vec2<f32>, z_max: vec2<f32>, log_z: bool) -> f32 {
+    // Both halves are checked before they are added.
+    if (!ramp_finite(zv.x) || !ramp_finite(zv.y)) {
+        return -1.0;
+    }
+    let raw = zv.x + zv.y;
+    if (!ramp_finite(raw)) {
+        return -1.0;
+    }
+    if (log_z && raw <= 0.0) {
+        return -1.0;
+    }
+    let is_log = select(0.0, 1.0, log_z);
+    // Same shape as `axis_pair_to_t`: the linear form keeps the hi/lo split so
+    // a large absolute z still resolves small deltas.
+    let linear_num = (zv.x - z_min.x) + (zv.y - z_min.y);
+    let log_num = (maybe_log(raw, 1.0) - z_min.x) - z_min.y;
+    let span = (z_max.x - z_min.x) + (z_max.y - z_min.y);
+    if (!ramp_finite(linear_num) || !ramp_finite(log_num)
+        || !ramp_finite(span) || span <= 0.0) {
+        return -1.0;
+    }
+    let numerator = mix(linear_num, log_num, is_log);
+    let normalized = numerator / span;
+    if (!ramp_finite(numerator) || !ramp_finite(normalized)) {
+        return -1.0;
+    }
+    return clamp(normalized, 0.0, 1.0);
+}
+
+/// Where `t` falls among `n >= 2` control points: `x` is the lower stop's
+/// index as a float, `y` the blend towards the next. Twin of the index and
+/// fraction `model::colormap::sample` computes, including the `n - 2` index
+/// clamp that lets the last segment own `t = 1`.
+fn ramp_segment(t: f32, n: u32) -> vec2<f32> {
+    let tc = select(clamp(t, 0.0, 1.0), 0.0, !ramp_finite(t));
+    let scaled = tc * f32(n - 1u);
+    let index = min(u32(floor(scaled)), n - 2u);
+    return vec2<f32>(f32(index), scaled - f32(index));
+}
+
+/// The control points `a` (the segment's lower stop) and `b` blended by
+/// `frac`, with the exact-endpoint short circuits `colormap::sample` has.
+/// `mix` is not used: `a + (b - a) * t` is what the CPU computes, and the two
+/// paths have to agree at the ends.
+fn ramp_blend(a: vec4<f32>, b: vec4<f32>, frac: f32) -> vec4<f32> {
+    if (frac <= 0.0) {
+        return a;
+    }
+    if (frac >= 1.0) {
+        return b;
+    }
+    return a + (b - a) * frac;
+}
+
+/// The marker radius for a size-map value `sv` (a hi/lo pair) over the
+/// domain `domain_min..domain_max` (hi/lo pairs) onto `lo..hi` pixels, by
+/// marker area when `area`, else by radius. Negative when the value is not
+/// finite: the point is hidden. Twin of `PointSizeMap::radius_px`.
+fn size_map_radius(sv: vec2<f32>, domain_min: vec2<f32>, domain_max: vec2<f32>, lo: f32, hi: f32, area: bool) -> f32 {
+    if (!ramp_finite(sv.x) || !ramp_finite(sv.y) || !ramp_finite(sv.x + sv.y)) {
+        return -1.0;
+    }
+    let num = (sv.x - domain_min.x) + (sv.y - domain_min.y);
+    let span = (domain_max.x - domain_min.x) + (domain_max.y - domain_min.y);
+    let t = clamp(num / span, 0.0, 1.0);
+    if (area) {
+        return sqrt(lo * lo + (hi * hi - lo * lo) * t);
+    }
+    return lo + (hi - lo) * t;
+}
+```
 
 ---
 ## 변경 체크리스트

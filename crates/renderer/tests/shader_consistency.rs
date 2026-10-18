@@ -300,6 +300,36 @@ fn field_fit_uses_the_ssot_grid_pair_normalization() {
     );
 }
 
+/// The colour ramp and the size-map radius are function twins (SHADER_COMMON.md
+/// §5.4): one parameterised function set copied into every shader that maps a
+/// value through the colourbar or a size domain, so a fix in one cannot leave
+/// the others behind.
+#[test]
+fn colour_ramp_and_size_map_radius_twins_match_the_ssot() {
+    let ssot = read(SSOT_PATH);
+    let ramp = ["ramp_finite", "ramp_t", "ramp_segment", "ramp_blend"];
+    let radius = ["ramp_finite", "size_map_radius"];
+    for (path, functions) in [
+        ("src/data_render/field_columnar.wgsl", ramp.as_slice()),
+        ("src/data_render/scatter_columnar.wgsl", ramp.as_slice()),
+        ("src/data_render/scatter_columnar.wgsl", radius.as_slice()),
+        (
+            "src/data_render/vector/vector_input_common.wgsl",
+            ramp.as_slice(),
+        ),
+        ("src/gpu_pick.wgsl", radius.as_slice()),
+    ] {
+        let shader = read(path);
+        for function in functions {
+            assert_eq!(
+                wgsl_function(&shader, function),
+                wgsl_function(&ssot, function),
+                "{path} must carry `{function}` byte-for-byte as SHADER_COMMON.md §5.4 defines it"
+            );
+        }
+    }
+}
+
 #[test]
 fn contour_level_search_constants_match_the_model_limit() {
     assert_eq!(renderer::MAX_CONTOUR_LEVELS, 1024);
@@ -435,8 +465,9 @@ fn field_derived_nonfinite_arithmetic_fails_closed() {
         );
     }
 
-    assert!(field.contains("if (!f32_is_finite(raw))"));
-    assert!(field.contains("!f32_is_finite(normalized)"));
+    // The ramp's own checks live in the shared `ramp_t` (SHADER_COMMON.md §5.4).
+    assert!(field.contains("if (!ramp_finite(raw))"));
+    assert!(field.contains("!ramp_finite(normalized)"));
     assert!(field.contains("!vec2_f32_is_finite(low) || !vec2_f32_is_finite(high)"));
     assert!(field.contains("!f32_is_finite(coverage_unclamped)"));
     assert!(field.contains("if (!f32_is_finite(cov) || cov <= 0.0)"));
