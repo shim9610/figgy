@@ -610,6 +610,8 @@ fn bounded_gpu_axis_replay_matches_resident_global_locate() {
             data_to_panel_scale: [if fixture.descending { -1.0 } else { 1.0 }, 1.0],
             data_to_panel_offset: [if fixture.descending { 1.0 } else { 0.0 }, 0.0],
             style_params: [[0.0; 4]; 3],
+            polar_angle: [0.0; 4],
+            polar_extent: [0.0; 4],
         };
         let pairs: Vec<[f32; 2]> = fixture.values.iter().map(|value| [*value, 0.0]).collect();
         let full_pool = buffer_init(

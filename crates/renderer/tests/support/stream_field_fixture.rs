@@ -130,6 +130,8 @@ pub(super) fn fixture_data(case: Fixture) -> SourceFixture {
         data_to_panel_scale: [1.0; 2],
         data_to_panel_offset: [0.0; 2],
         style_params: [[0.0; 4]; 3],
+        polar_angle: [0.0; 4],
+        polar_extent: [0.0; 4],
     };
     if case.log {
         transform.data_min = transform.data_min.map(f32::log10);

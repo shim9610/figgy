@@ -308,9 +308,17 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
 
             // A step mode walks the same axis-aligned pieces the line shader
             // draws; a linear segment is its single piece.
-            let (pieces, piece_count) =
-                crate::line_step::step_pieces([ax, ay], [bx, by], line.interpolation);
-            let mut pieces_px = [([0.0f32; 2], [0.0f32; 2]); 3];
+            let mut pieces = [crate::line_step::StepPiece {
+                a: [ax, ay],
+                b: [bx, by],
+            }; crate::line_step::MAX_LINE_PIECES];
+            let piece_count = crate::line_step::line_pieces(
+                [ax, ay],
+                [bx, by],
+                crate::line_step::mode_word_for(line.interpolation, &transform),
+                &mut pieces,
+            );
+            let mut pieces_px = [([0.0f32; 2], [0.0f32; 2]); crate::line_step::MAX_LINE_PIECES];
             let mut projected = true;
             for (piece, out) in pieces[..piece_count].iter().zip(pieces_px.iter_mut()) {
                 let Some(a) = project_data_to_canvas_px(config, &transform, piece.a[0], piece.a[1])
@@ -685,8 +693,14 @@ fn project_data_to_canvas_px(
     };
     let tx = axis_t(x, 0);
     let ty = axis_t(y, 1);
-    let ndc_x = tx * 2.0 - 1.0;
-    let ndc_y = ty * 2.0 - 1.0;
+    let [ndc_x, ndc_y] = if crate::polar_projection::is_polar(transform) {
+        if !crate::polar_projection::sample_valid(transform, x, ty) {
+            return None;
+        }
+        crate::polar_projection::ndc(transform, x, ty)
+    } else {
+        [tx * 2.0 - 1.0, ty * 2.0 - 1.0]
+    };
     if !ndc_x.is_finite() || !ndc_y.is_finite() {
         return None;
     }

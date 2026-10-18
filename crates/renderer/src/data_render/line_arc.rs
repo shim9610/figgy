@@ -180,7 +180,7 @@ mod tests {
         plan.visit_sizes(|bytes| sizes.push(bytes));
         assert_eq!(sizes.len(), plan.buffer_count());
         assert_eq!(sizes[0], 513 * 4);
-        assert_eq!(&sizes[1..6], &[8, 4, 4, 4, 112]);
+        assert_eq!(&sizes[1..6], &[8, 4, 4, 4, 144]);
         assert_eq!(&sizes[6..12], &[32; 6]);
         assert_eq!(&sizes[12..], &[16, 8, 16]);
 
@@ -1339,6 +1339,8 @@ mod replay_product_tests {
             data_to_panel_scale: [1.0; 2],
             data_to_panel_offset: [0.0; 2],
             style_params: [[0.0; 4]; 3],
+            polar_angle: [0.0; 4],
+            polar_extent: [0.0; 4],
         };
         let transform_buf = init(&device, &transform);
         let transform_bg = pipelines.replay_transform_bind_group(&device, &transform_buf);

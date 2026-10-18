@@ -66,7 +66,15 @@ struct Transform {
     // All styles reserve [2].z for the global point-base u32 BIT PATTERN.
     // Resident draws write zero; streamed point/errorbar draws bitcast it.
     style_params: array<vec4<f32>, 3>,
-};  // 112 B (vec4 array at offset 64, stride 16)
+    // Polar coordinates (Config.polar); all zero in a rectangular chart.
+    // polar_angle:  (flag, zero angle in radians, radians per angle unit
+    //               signed by the direction, inner radius fraction)
+    // polar_extent: (sector start, sector end in angle units, end <= start
+    //               for the full circle; arc pieces per segment, 0 for
+    //               chords; outer radius in pixels)
+    polar_angle: vec4<f32>,
+    polar_extent: vec4<f32>,
+};  // 144 B (vec4 array at offset 64, stride 16; polar vec4s at 112 and 128)
 
 @group(0) @binding(0) var<uniform> transform: Transform;
 
@@ -111,9 +119,27 @@ fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f
     return fma(data_t, panel_scale, panel_offset);
 }
 
+// Polar (Config.polar): the angle column in radians around the centre of the
+// data area, the radius axis fraction between the inner ring and the outer
+// radius. A radius below the axis start sits on the inner ring (data samples
+// there are masked by `sample_valid`; a fill baseline is not). Twin of
+// `polar_projection::project` on the CPU.
+fn polar_ndc(ty: f32, xv: vec2<f32>) -> vec2<f32> {
+    let p = transform.polar_angle;
+    let e = transform.polar_extent;
+    let angle = p.y + p.z * (xv.x + xv.y);
+    let rt = (ty - transform.data_to_panel_offset.y) / transform.data_to_panel_scale.y;
+    let r = mix(p.w, 1.0, max(rt, 0.0));
+    let center = (transform.data_to_panel_offset + transform.data_to_panel_scale * 0.5) * 2.0 - 1.0;
+    return center + vec2<f32>(cos(angle), sin(angle)) * r * e.w * transform.pixel_to_ndc;
+}
+
 fn data_to_ndc(xv: vec2<f32>, yv: vec2<f32>) -> vec2<f32> {
     let tx = axis_pair_to_t(xv, transform.data_min.x, transform.data_max.x, transform.data_min_lo.x, transform.data_max_lo.x, transform.scale_log.x, transform.data_to_panel_scale.x, transform.data_to_panel_offset.x);
     let ty = axis_pair_to_t(yv, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y, transform.data_to_panel_scale.y, transform.data_to_panel_offset.y);
+    if (transform.polar_angle.x > 0.5) {
+        return polar_ndc(ty, xv);
+    }
     return vec2<f32>(tx, ty) * 2.0 - 1.0;
 }
 
@@ -124,6 +150,20 @@ fn sample_finite(v: f32) -> bool {
     return (bitcast<u32>(v) & 0x7f800000u) != 0x7f800000u;
 }
 
+// Polar: a radius below the axis start and an angle outside the sector are
+// not drawn, like out-of-range samples a rectangular chart clips.
+fn polar_sample_valid(xv: vec2<f32>, yv: vec2<f32>) -> bool {
+    if (transform.polar_angle.x < 0.5) {
+        return true;
+    }
+    let ty = axis_pair_to_t(yv, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y, transform.data_to_panel_scale.y, transform.data_to_panel_offset.y);
+    let rt = (ty - transform.data_to_panel_offset.y) / transform.data_to_panel_scale.y;
+    let e = transform.polar_extent;
+    let a = xv.x + xv.y;
+    let in_sector = e.y <= e.x || (a >= e.x && a <= e.y);
+    return rt >= 0.0 && in_sector;
+}
+
 fn sample_valid(xv: vec2<f32>, yv: vec2<f32>) -> bool {
     let x = xv.x + xv.y;
     let y = yv.x + yv.y;
@@ -131,7 +171,8 @@ fn sample_valid(xv: vec2<f32>, yv: vec2<f32>) -> bool {
         && sample_finite(yv.x) && sample_finite(yv.y)
         && sample_finite(x) && sample_finite(y)
         && (transform.scale_log.x == 0.0 || x > 0.0)
-        && (transform.scale_log.y == 0.0 || y > 0.0);
+        && (transform.scale_log.y == 0.0 || y > 0.0)
+        && polar_sample_valid(xv, yv);
 }
 // ───── END common block ─────
 
@@ -180,12 +221,21 @@ const LINE_STEP_LINEAR: u32 = 0u;
 const LINE_STEP_PRE: u32 = 1u;
 const LINE_STEP_POST: u32 = 2u;
 const LINE_STEP_MID: u32 = 3u;
+const LINE_ARC_SHIFT: u32 = 4u;
 
+// The mode word: bits 0-1 the step mode, bits 4 and up the polar arc pieces
+// per segment (0 for chords). An arc overrides the step mode; the renderer
+// rejects the two together.
 fn step_piece_count(mode: u32) -> u32 {
-    if (mode == LINE_STEP_PRE || mode == LINE_STEP_POST) {
+    let arc = mode >> LINE_ARC_SHIFT;
+    if (arc > 0u) {
+        return arc;
+    }
+    let step = mode & LINE_STEP_MASK;
+    if (step == LINE_STEP_PRE || step == LINE_STEP_POST) {
         return 2u;
     }
-    if (mode == LINE_STEP_MID) {
+    if (step == LINE_STEP_MID) {
         return 3u;
     }
     return 1u;
@@ -205,13 +255,26 @@ fn step_piece(xa: vec2<f32>, ya: vec2<f32>, xb: vec2<f32>, yb: vec2<f32>, mode: 
     p.y0 = ya;
     p.x1 = xb;
     p.y1 = yb;
-    if (mode == LINE_STEP_PRE) {
+    let arc = mode >> LINE_ARC_SHIFT;
+    if (arc > 0u) {
+        // Polar arc: piece k of `arc` equal subdivisions of a -> b in data
+        // space, so a constant radius follows its ring once projected.
+        let t0 = f32(k) / f32(arc);
+        let t1 = f32(k + 1u) / f32(arc);
+        p.x0 = mix(xa, xb, t0);
+        p.y0 = mix(ya, yb, t0);
+        p.x1 = mix(xa, xb, t1);
+        p.y1 = mix(ya, yb, t1);
+        return p;
+    }
+    let step = mode & LINE_STEP_MASK;
+    if (step == LINE_STEP_PRE) {
         // Riser at x_a, then the run at y_b.
         if (k == 0u) { p.x1 = xa; } else { p.y0 = yb; }
-    } else if (mode == LINE_STEP_POST) {
+    } else if (step == LINE_STEP_POST) {
         // Run at y_a, then the riser at x_b.
         if (k == 0u) { p.y1 = ya; } else { p.x0 = xb; }
-    } else if (mode == LINE_STEP_MID) {
+    } else if (step == LINE_STEP_MID) {
         // The riser sits at the DATA-space midpoint of the two x values, not
         // the pixel midpoint — the two differ on a logarithmic axis, and the
         // CPU picker places it in data units too.
@@ -241,7 +304,10 @@ fn step_piece_len_px(p: StepPiece) -> f32 {
 const AREA_FILL_TO_SERIES: u32 = 16u;
 
 fn line_step_mode() -> u32 {
-    return (style.primitive_flags >> LINE_STEP_SHIFT) & LINE_STEP_MASK;
+    let step = (style.primitive_flags >> LINE_STEP_SHIFT) & LINE_STEP_MASK;
+    // Polar arc pieces ride the transform (Config.polar), not the style.
+    let arc = u32(max(transform.polar_extent.z, 0.0));
+    return step | (arc << LINE_ARC_SHIFT);
 }
 
 // Summed pixel length of the pieces before piece `k` — where piece `k`
@@ -520,7 +586,9 @@ fn vs_area(in: VsIn, base: VsAreaBase, @builtin(vertex_index) vid: u32) -> AreaO
     let y_base = select(bottom.y0, bottom.y1, at_b);
     var ndc = data_to_ndc(x, y_top);
     if (on_base) {
-        if (to_series) {
+        // A polar baseline is a ring (the centre at the axis start), so the
+        // base corner projects like a sample at the same angle.
+        if (to_series || transform.polar_angle.x > 0.5) {
             ndc = data_to_ndc(x, y_base);
         } else {
             ndc.y = area_baseline_ndc_y(y_base);

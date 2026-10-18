@@ -464,17 +464,27 @@ pub fn draw_decoration_layer(canvas: &mut Canvas, config: &Config) {
     let stroker = DecoStroker::from_style(&config.draw_style);
     let fp = FontPolicy::for_style(&config.draw_style);
 
-    draw_axis(canvas, &config.top_x, Side::Top, &da, &stroker, fp);
-    draw_axis(canvas, &config.bottom_x, Side::Bottom, &da, &stroker, fp);
-    draw_axis(canvas, &config.left_y, Side::Left, &da, &stroker, fp);
-    draw_axis(canvas, &config.right_y, Side::Right, &da, &stroker, fp);
+    if config.polar.is_some() {
+        // The angle axis is the outer ring, the radius axis the labelled
+        // ray; the top and right axes are not drawn.
+        polar::draw_polar_axes(canvas, config, &da, &stroker, fp);
+    } else {
+        draw_axis(canvas, &config.top_x, Side::Top, &da, &stroker, fp);
+        draw_axis(canvas, &config.bottom_x, Side::Bottom, &da, &stroker, fp);
+        draw_axis(canvas, &config.left_y, Side::Left, &da, &stroker, fp);
+        draw_axis(canvas, &config.right_y, Side::Right, &da, &stroker, fp);
+    }
 
     draw_colorbar(canvas, config, &da, &stroker, fp);
 
-    draw_axis_title(canvas, config, &da, Side::Top, fp);
+    if config.polar.is_none() {
+        draw_axis_title(canvas, config, &da, Side::Top, fp);
+    }
     draw_axis_title(canvas, config, &da, Side::Bottom, fp);
     draw_axis_title(canvas, config, &da, Side::Left, fp);
-    draw_axis_title(canvas, config, &da, Side::Right, fp);
+    if config.polar.is_none() {
+        draw_axis_title(canvas, config, &da, Side::Right, fp);
+    }
 
     if config.chart_title.visible {
         draw_chart_title(canvas, config, fp);
@@ -1078,6 +1088,10 @@ fn side_tag(side: &Side) -> &'static str {
 // left_y. Lines are confined to the data_area (just inside the axis lines).
 
 fn draw_grid(canvas: &mut Canvas, config: &Config, da: &DataArea, fp: FontPolicy) {
+    if config.polar.is_some() {
+        polar::draw_polar_grid(canvas, config, da, fp);
+        return;
+    }
     let g = &config.grid;
     let stroker = DecoStroker::from_style(&config.draw_style);
     let x_top = da.y as f32;
@@ -1135,6 +1149,8 @@ fn draw_grid(canvas: &mut Canvas, config: &Config, da: &DataArea, fp: FontPolicy
 
 #[path = "bounded_axes.rs"]
 mod bounded;
+#[path = "polar_axes.rs"]
+mod polar;
 pub(crate) use bounded::{
     BoundedAxisDecorations, BoundedLegend, draw_bounded_decorations, draw_bounded_legend,
     plain_number, plan_bounded_legend,
@@ -1804,6 +1820,8 @@ fn format_tick_value(
                 .to_string(),
             LabelFormat::Scientific => format!("{:.*e}", sig - 1, value),
             LabelFormat::Timestamp(_) => format!("{}", value),
+            LabelFormat::Degrees => format!("{}°", value),
+            LabelFormat::Radians => format_radians(value, sig),
         };
     }
 
@@ -1821,16 +1839,60 @@ fn format_tick_value(
         // One uniform form for the whole axis/level set. `significant_digits`
         // controls requested precision while spacing is the correctness floor:
         // a 0.5 level interval must never format both neighbours as integers.
-        LabelFormat::Decimal | LabelFormat::Power => {
-            if value == 0.0 {
-                return "0".into();
+        LabelFormat::Decimal | LabelFormat::Power | LabelFormat::Degrees => {
+            let text = if value == 0.0 {
+                "0".to_string()
+            } else {
+                let decimals = decimals_from_spacing(major_spacing).max(
+                    decimals_from_significant_digits(sig_digits, range_min, range_max),
+                );
+                format!("{:.*}", decimals, value)
+            };
+            if matches!(format, LabelFormat::Degrees) {
+                format!("{text}°")
+            } else {
+                text
             }
-            let decimals = decimals_from_spacing(major_spacing).max(
-                decimals_from_significant_digits(sig_digits, range_min, range_max),
-            );
-            format!("{:.*}", decimals, value)
         }
+        LabelFormat::Radians => format_radians(value, sig),
     }
+}
+
+/// `value` as a multiple of π: `0`, `π`, `-π`, `π/2`, `3π/2`, `0.4π`. Halves
+/// and quarters use the fraction form; other multiples a decimal factor
+/// rounded to `sig` significant digits.
+fn format_radians(value: f64, sig: usize) -> String {
+    let factor = value / std::f64::consts::PI;
+    if factor == 0.0 {
+        return "0".into();
+    }
+    let quarters = factor * 4.0;
+    if (quarters - quarters.round()).abs() < 1e-9 {
+        let quarters = quarters.round() as i64;
+        let sign = if quarters < 0 { "-" } else { "" };
+        let quarters = quarters.abs();
+        let (numerator, denominator) = if quarters % 4 == 0 {
+            (quarters / 4, 1)
+        } else if quarters % 2 == 0 {
+            (quarters / 2, 2)
+        } else {
+            (quarters, 4)
+        };
+        let numerator = if numerator == 1 {
+            String::new()
+        } else {
+            numerator.to_string()
+        };
+        return if denominator == 1 {
+            format!("{sign}{numerator}π")
+        } else {
+            format!("{sign}{numerator}π/{denominator}")
+        };
+    }
+    let rounded = format!("{:.*e}", sig.saturating_sub(1), factor)
+        .parse::<f64>()
+        .unwrap_or(factor);
+    format!("{rounded}π")
 }
 
 enum NumericTickText {

@@ -45,12 +45,14 @@ pub fn pixel_space_for_config(config: &Config) -> PixelSpace {
         .data_area()
         .map(|area| RectF::from_rect(&area.0))
         .unwrap_or(panel);
-    PixelSpace {
-        panel,
-        plot,
-        x: axis_space(&config.bottom_x),
-        y: axis_space(&config.left_y),
-    }
+    // A polar chart has no separable axes: data anchors are reported as
+    // skips and ratio anchors stay relative to the data area.
+    let (x, y) = if config.polar.is_some() {
+        (AxisSpace::NONE, AxisSpace::NONE)
+    } else {
+        (axis_space(&config.bottom_x), axis_space(&config.left_y))
+    };
+    PixelSpace { panel, plot, x, y }
 }
 
 fn axis_space(axis: &AxisOptions) -> AxisSpace {

@@ -35,6 +35,8 @@ struct PickQueryTransform {
     data_to_panel_scale: vec2<f32>,
     data_to_panel_offset: vec2<f32>,
     style_params: array<vec4<f32>, 3>,
+    polar_angle: vec4<f32>,
+    polar_extent: vec4<f32>,
 };
 
 struct PickQueryParams {
@@ -180,8 +182,45 @@ fn pick_project_axis_pair(v: vec2<f32>, axis: u32) -> f32 {
     return pick_query_params.cursor_chart.w + (1.0 - t) * pick_query_params.chart_limits.y;
 }
 
+fn pick_polar() -> bool {
+    return pick_query_params.transform.polar_angle.x > 0.5;
+}
+
+// Twin of `polar_ndc` in the data shaders, in canvas pixels.
+fn pick_project_pair_polar(x: vec2<f32>, y: vec2<f32>) -> vec2<f32> {
+    let t = pick_query_params.transform;
+    let ty = pick_axis_pair_to_t(y, 1u);
+    let angle = t.polar_angle.y + t.polar_angle.z * (x.x + x.y);
+    let rt = (ty - t.data_to_panel_offset.y) / t.data_to_panel_scale.y;
+    let r = mix(t.polar_angle.w, 1.0, max(rt, 0.0));
+    let center = (t.data_to_panel_offset + t.data_to_panel_scale * 0.5) * 2.0 - 1.0;
+    let ndc = center + vec2<f32>(cos(angle), sin(angle)) * r * t.polar_extent.w * t.pixel_to_ndc;
+    return vec2<f32>(
+        pick_query_params.cursor_chart.z + (ndc.x + 1.0) * 0.5 * pick_query_params.chart_limits.x,
+        pick_query_params.cursor_chart.w + (1.0 - ndc.y) * 0.5 * pick_query_params.chart_limits.y,
+    );
+}
+
 fn pick_project_pair(x: vec2<f32>, y: vec2<f32>) -> vec2<f32> {
+    if pick_polar() {
+        return pick_project_pair_polar(x, y);
+    }
     return vec2<f32>(pick_project_axis_pair(x, 0u), pick_project_axis_pair(y, 1u));
+}
+
+// Twin of `polar_sample_valid`: a radius below the axis start or an angle
+// outside the sector is not drawn, so it is not picked.
+fn pick_polar_valid(x: vec2<f32>, y: vec2<f32>) -> bool {
+    if !pick_polar() {
+        return true;
+    }
+    let t = pick_query_params.transform;
+    let ty = pick_axis_pair_to_t(y, 1u);
+    let rt = (ty - t.data_to_panel_offset.y) / t.data_to_panel_scale.y;
+    let a = x.x + x.y;
+    let in_sector = t.polar_extent.y <= t.polar_extent.x
+        || (a >= t.polar_extent.x && a <= t.polar_extent.y);
+    return rt >= 0.0 && in_sector;
 }
 
 fn pick_axis_cursor(axis: u32) -> f32 {
@@ -195,7 +234,14 @@ fn pick_conservative_gate_threshold(threshold: f32) -> f32 {
     return threshold + max(abs(threshold), 1.0) * PICK_F32_EPSILON * 8.0;
 }
 
+// Polar projections are not separable per axis: the X gate passes every
+// valid sample and the Y gate tests the full projection
+// (`pick_polar_scatter_may_hit`); line segments go straight to the exact
+// pass, whose arc pieces are the drawn path.
 fn pick_scatter_projected_may_hit(projected: f32, axis: u32) -> bool {
+    if pick_polar() {
+        return true;
+    }
     if !pick_is_finite(projected) {
         return false;
     }
@@ -206,7 +252,27 @@ fn pick_scatter_projected_may_hit(projected: f32, axis: u32) -> bool {
     return abs(projected - pick_axis_cursor(axis)) <= threshold;
 }
 
+fn pick_polar_scatter_may_hit(point_index: u32, y: vec2<f32>) -> bool {
+    let x = pick_read_pair(pick_query_params.data.y, point_index);
+    if !pick_pair_is_valid(x) || !pick_polar_valid(x, y) {
+        return false;
+    }
+    let projected = pick_project_pair_polar(x, y);
+    if !pick_is_finite(projected.x) || !pick_is_finite(projected.y) {
+        return false;
+    }
+    let threshold = pick_conservative_gate_threshold(
+        pick_query_params.chart_limits.z
+        + pick_query_params.chart_limits.w * pick_query_params.scatter_line.z,
+    );
+    let delta = abs(projected - pick_query_params.cursor_chart.xy);
+    return delta.x <= threshold && delta.y <= threshold;
+}
+
 fn pick_line_projected_may_hit(a_px: f32, b_px: f32, axis: u32) -> bool {
+    if pick_polar() {
+        return true;
+    }
     if !pick_is_finite(a_px) || !pick_is_finite(b_px) {
         return false;
     }
@@ -314,7 +380,10 @@ fn pick_gate_y(
             y_px = pick_project_axis_pair(y, 1u);
         }
         if (scatter_mask & bit_mask) != 0u {
-            if !y_valid || !pick_scatter_projected_may_hit(y_px, 1u) {
+            if !y_valid
+                || !pick_scatter_projected_may_hit(y_px, 1u)
+                || (pick_polar() && !pick_polar_scatter_may_hit(point_index, y))
+            {
                 scatter_mask = scatter_mask & ~bit_mask;
             }
         }
@@ -543,7 +612,7 @@ fn pick_scatter_candidate(
     y: vec2<f32>,
 ) -> PickCandidate {
     let series_order = pick_query_params.series.y;
-    if !pick_coordinate_is_valid(x, 0u) || !pick_coordinate_is_valid(y, 1u) {
+    if !pick_coordinate_is_valid(x, 0u) || !pick_coordinate_is_valid(y, 1u) || !pick_polar_valid(x, y) {
         return pick_invalid_candidate(series_order);
     }
     let radius = pick_resolve_scatter_radius(point_index);
@@ -584,11 +653,26 @@ struct PickStepPiece {
     y1: vec2<f32>,
 };
 
+// The mode word: bits 0-1 the step mode, bits 4 and up the polar arc
+// pieces per segment (`transform.polar_extent.z`), as `step_piece_count` in
+// line_columnar.wgsl reads it.
+const PICK_ARC_SHIFT: u32 = 4u;
+
+fn pick_line_mode() -> u32 {
+    let arc = u32(max(pick_query_params.transform.polar_extent.z, 0.0));
+    return (pick_query_params.line.x & 3u) | (arc << PICK_ARC_SHIFT);
+}
+
 fn pick_step_piece_count(mode: u32) -> u32 {
-    if mode == PICK_STEP_PRE || mode == PICK_STEP_POST {
+    let arc = mode >> PICK_ARC_SHIFT;
+    if arc > 0u {
+        return arc;
+    }
+    let step = mode & 3u;
+    if step == PICK_STEP_PRE || step == PICK_STEP_POST {
         return 2u;
     }
-    if mode == PICK_STEP_MID {
+    if step == PICK_STEP_MID {
         return 3u;
     }
     return 1u;
@@ -600,11 +684,22 @@ fn pick_step_piece(ax: vec2<f32>, ay: vec2<f32>, bx: vec2<f32>, by: vec2<f32>, m
     p.y0 = ay;
     p.x1 = bx;
     p.y1 = by;
-    if mode == PICK_STEP_PRE {
+    let arc = mode >> PICK_ARC_SHIFT;
+    if arc > 0u {
+        let t0 = f32(k) / f32(arc);
+        let t1 = f32(k + 1u) / f32(arc);
+        p.x0 = mix(ax, bx, t0);
+        p.y0 = mix(ay, by, t0);
+        p.x1 = mix(ax, bx, t1);
+        p.y1 = mix(ay, by, t1);
+        return p;
+    }
+    let step = mode & 3u;
+    if step == PICK_STEP_PRE {
         if k == 0u { p.x1 = ax; } else { p.y0 = by; }
-    } else if mode == PICK_STEP_POST {
+    } else if step == PICK_STEP_POST {
         if k == 0u { p.y1 = ay; } else { p.x0 = bx; }
-    } else if mode == PICK_STEP_MID {
+    } else if step == PICK_STEP_MID {
         let xm = (ax + bx) * 0.5;
         if k == 0u {
             p.x1 = xm;
@@ -631,10 +726,13 @@ fn pick_line_candidate(
     if !pick_coordinate_is_valid(ax, 0u) || !pick_coordinate_is_valid(ay, 1u) || !pick_coordinate_is_valid(bx, 0u) || !pick_coordinate_is_valid(by, 1u) {
         return pick_invalid_candidate(series_order);
     }
+    if !pick_polar_valid(ax, ay) || !pick_polar_valid(bx, by) {
+        return pick_invalid_candidate(series_order);
+    }
     // A step mode tests every axis-aligned piece of the segment and keeps the
     // nearest (lowest piece index on a tie); a linear segment is its single
     // piece and reproduces the straight-segment rule exactly.
-    let mode = pick_query_params.line.x;
+    let mode = pick_line_mode();
     let pieces = pick_step_piece_count(mode);
     let line_half_width =
         pick_query_params.scatter_line.y * pick_query_params.scatter_line.z;

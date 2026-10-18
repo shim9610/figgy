@@ -23,6 +23,7 @@ mod gpu_pick;
 pub mod init;
 pub(crate) mod line_step;
 pub mod pick;
+pub(crate) mod polar_projection;
 pub mod radial;
 pub mod raster;
 mod render_warning;
@@ -129,6 +130,8 @@ pub mod boxplot;
 pub use boxplot::{BoxPlotError, BoxPlotFrame, BoxPlotPart, BoxPlotPick, BoxPlotRenderer};
 pub use model::boxplot::*;
 pub mod radar;
+pub use model::polar;
+pub use model::polar::{AngleUnit, PolarGeometry, PolarInterpolation, PolarOptions};
 pub use model::radar::*;
 pub use radar::{RadarError, RadarFrame, RadarPart, RadarPick, RadarRenderer};
 
