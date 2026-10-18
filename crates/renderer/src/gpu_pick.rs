@@ -4014,10 +4014,13 @@ mod tests {
             .unwrap();
 
         // Point 0 at 20 px with a 1 px radius, point 1 at 100 px with 5 px.
+        // Every hit sits strictly inside the 1 px pick distance: a cursor on
+        // the boundary itself depends on backend rounding, which the exact
+        // pass does not pad.
         for (cursor, expected) in [
             ([21.5, 50.0], Some((0, 0.5))),
             ([24.5, 50.0], None),
-            ([106.0, 50.0], Some((1, 1.0))),
+            ([105.5, 50.0], Some((1, 0.5))),
             ([107.5, 50.0], None),
             // Point 2 is hidden by its NaN size: nothing to hit at its center.
             ([180.0, 50.0], None),
