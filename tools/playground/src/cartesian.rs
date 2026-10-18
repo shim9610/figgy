@@ -7,7 +7,8 @@
 
 use renderer::config::{AxisOptions, AxisScale, Config, DrawStyle, MilkywayOptions, SketchOptions};
 use renderer::data_config::{
-    BarOrientation, DataRenderType, LineFill, LineInterpolation, SeriesConfig, Shading,
+    BarOrientation, DataRenderType, LineFill, LineInterpolation, PointColorMap, PointSizeMap,
+    SeriesConfig, Shading, SizeScale,
 };
 use renderer::layout::ChartArea;
 use renderer::layout::{NudgeResult, Rect};
@@ -66,6 +67,7 @@ const COLORMAPS: &[ColorMap] = &[
     ColorMap::GrayScale,
     ColorMap::RdBu,
 ];
+const SIZE_SCALES: &[SizeScale] = &[SizeScale::Area, SizeScale::Radius];
 const CORNERS: &[LegendCorner] = &[
     LegendCorner::TopLeft,
     LegendCorner::TopRight,
@@ -120,6 +122,10 @@ pub struct CartesianHost {
     drag: Drag,
     mode: PointerMode,
     picks: Vec<PickedData>,
+    /// One line per pick: the picked point's coordinates and, for a colour-
+    /// or size-mapped series, the values its colour and radius came from,
+    /// read back from the GPU column the draw used.
+    pick_notes: Vec<String>,
     cursor_data: Option<(f64, f64)>,
     warnings: Vec<RenderWarning>,
     error: Option<String>,
@@ -151,6 +157,7 @@ impl CartesianHost {
             drag: Drag::None,
             mode: PointerMode::Edit,
             picks: Vec::new(),
+            pick_notes: Vec::new(),
             cursor_data: None,
             warnings: Vec::new(),
             error: None,
@@ -534,9 +541,18 @@ impl CartesianHost {
     fn select_pick(&mut self, r: &mut Renderer, picked: Option<PickedData>, add: bool) {
         if !add {
             self.picks.clear();
+            self.pick_notes.clear();
         }
         if let Some(p) = picked {
+            let note = match pick_values(r, &self.series(r), &p) {
+                Ok(note) => note,
+                Err(e) => {
+                    self.error = Some(format!("pick values: {e}"));
+                    String::new()
+                }
+            };
             self.picks.push(p);
+            self.pick_notes.push(note);
         }
         self.apply_picks(r);
     }
@@ -725,6 +741,7 @@ impl CartesianHost {
                     config = self.initial.clone();
                     series = self.initial_series.clone();
                     self.picks.clear();
+                    self.pick_notes.clear();
                 }
                 if ui.button("Deselect").clicked() {
                     self.selected = None;
@@ -854,6 +871,16 @@ impl CartesianHost {
         });
 
         section(ui, "Series", false, |ui| {
+            // Columns a value map may name: everything the scene's series
+            // reference now or referenced when the scene started.
+            let mut columns: Vec<String> = Vec::new();
+            for s in series.iter().chain(&self.initial_series) {
+                for c in series_columns(s) {
+                    if !columns.contains(&c) {
+                        columns.push(c);
+                    }
+                }
+            }
             for (i, s) in series.iter_mut().enumerate() {
                 ui.push_id(i, |ui| {
                     egui::CollapsingHeader::new(format!(
@@ -862,18 +889,22 @@ impl CartesianHost {
                         render_type_name(&s.render_type)
                     ))
                     .default_open(i == 0)
-                    .show(ui, |ui| series_controls(ui, s, &mut config));
+                    .show(ui, |ui| series_controls(ui, s, &mut config, &columns, r));
                 });
             }
         });
 
         section(ui, "Picking", true, |ui| {
             ui.label("Click a point, bar, cell or isoline (Shift adds). “Pick data” mode never selects chrome.");
-            for p in &self.picks {
+            for (p, note) in self.picks.iter().zip(&self.pick_notes) {
                 ui.label(egui::RichText::new(describe_pick(p)).monospace());
+                if !note.is_empty() {
+                    ui.label(egui::RichText::new(note).monospace().small());
+                }
             }
             if !self.picks.is_empty() && ui.button("Clear picks").clicked() {
                 self.picks.clear();
+                self.pick_notes.clear();
                 config.picked_data = None;
             }
         });
@@ -1137,10 +1168,207 @@ fn line_controls(ui: &mut egui::Ui, line: &mut renderer::DataLineStyleConfig) {
     }
 }
 
-fn scatter_controls(ui: &mut egui::Ui, s: &mut renderer::DataScatterStyleConfig) {
+/// A combo box over "none" and the chart's columns. `Some` when the user
+/// picked an entry.
+fn column_choice(
+    ui: &mut egui::Ui,
+    label: &str,
+    current: Option<&str>,
+    columns: &[String],
+) -> Option<Option<String>> {
+    let mut picked = None;
+    ui.horizontal(|ui| {
+        ui.label(label);
+        egui::ComboBox::from_id_salt(label)
+            .selected_text(current.unwrap_or("none"))
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(current.is_none(), "none").clicked() {
+                    picked = Some(None);
+                }
+                for c in columns {
+                    if ui
+                        .selectable_label(current == Some(c.as_str()), c)
+                        .clicked()
+                    {
+                        picked = Some(Some(c.clone()));
+                    }
+                }
+            });
+    });
+    picked
+}
+
+fn scatter_controls(
+    ui: &mut egui::Ui,
+    s: &mut renderer::DataScatterStyleConfig,
+    columns: &[String],
+    r: &Renderer,
+) {
     color(ui, "marker colour", &mut s.point_color);
     slider(ui, "marker size", &mut s.point_size, 1.0..=24.0);
     choice(ui, "shape", &mut s.point_shape, SHAPES);
+
+    // Value maps: the colour map needs the chart's colourbar (the registry
+    // rejects it otherwise); the size map carries its own domain.
+    let current = s.point_color_map.as_ref().map(|m| m.column.as_str());
+    if let Some(pick) = column_choice(ui, "colour map column", current, columns) {
+        s.point_color_map = pick.map(|column| PointColorMap { column });
+    }
+    let current = s.point_size_map.as_ref().map(|m| m.column.as_str());
+    if let Some(pick) = column_choice(ui, "size map column", current, columns) {
+        s.point_size_map = pick.map(|column| match s.point_size_map.take() {
+            Some(mut map) => {
+                map.column = column;
+                map
+            }
+            None => PointSizeMap {
+                column,
+                domain_min: 0.0,
+                domain_max: 1.0,
+                min_px: 2.0,
+                max_px: 16.0,
+                scale: SizeScale::Area,
+            },
+        });
+    }
+    if let Some(map) = s.point_size_map.as_mut() {
+        ui.horizontal(|ui| {
+            ui.label("domain");
+            ui.add(egui::DragValue::new(&mut map.domain_min).speed(0.05));
+            ui.add(egui::DragValue::new(&mut map.domain_max).speed(0.05));
+            if ui
+                .button("fit")
+                .on_hover_text("Domain from the column's resident statistics")
+                .clicked()
+                && let Ok(ext) = Chart::slot_extent(r.pool(), &map.column)
+            {
+                map.fit_domain(ext.min, ext.max);
+            }
+        });
+        slider(ui, "min px", &mut map.min_px, 0.0..=12.0);
+        slider(ui, "max px", &mut map.max_px, 1.0..=40.0);
+        choice(ui, "size scale", &mut map.scale, SIZE_SCALES);
+    }
+}
+
+/// The scatter style of a render type that draws markers.
+fn scatter_of(t: &DataRenderType) -> Option<&renderer::DataScatterStyleConfig> {
+    match t {
+        DataRenderType::Scatter { scatter }
+        | DataRenderType::ScatterLine { scatter, .. }
+        | DataRenderType::ScatterErrorbarX { scatter, .. }
+        | DataRenderType::ScatterErrorbarY { scatter, .. }
+        | DataRenderType::ScatterErrorbarXY { scatter, .. }
+        | DataRenderType::LineScatterErrorbarX { scatter, .. }
+        | DataRenderType::LineScatterErrorbarY { scatter, .. }
+        | DataRenderType::LineScatterErrorbarXY { scatter, .. } => Some(scatter),
+        _ => None,
+    }
+}
+
+/// The columns a series names: x, y and any value-map columns.
+fn series_columns(s: &SeriesConfig) -> Vec<String> {
+    let mut out = vec![s.x_column.clone(), s.y_column.clone()];
+    if let Some(scatter) = scatter_of(&s.render_type) {
+        out.extend(scatter.point_color_map.iter().map(|m| m.column.clone()));
+        out.extend(scatter.point_size_map.iter().map(|m| m.column.clone()));
+    }
+    out
+}
+
+/// Read `samples` (column, index) straight from the GPU column pool, the
+/// same values the draw used. The CPU keeps no copy of column data.
+fn read_samples(r: &Renderer, samples: &[(String, usize)]) -> Result<Vec<f64>, String> {
+    let mut offsets = Vec::with_capacity(samples.len());
+    for (column, index) in samples {
+        let handle = r
+            .pool()
+            .handle_for(column)
+            .ok_or_else(|| format!("column {column} is not resident"))?;
+        if *index >= handle.len_values {
+            return Err(format!("index {index} is outside {column}"));
+        }
+        offsets.push(handle.offset + *index as u64 * 8);
+    }
+    let buffer = r.device().create_buffer(&wgpu::BufferDescriptor {
+        label: Some("playground picked values"),
+        size: (offsets.len().max(1) * 8) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = r.device().create_command_encoder(&Default::default());
+    for (i, offset) in offsets.iter().enumerate() {
+        encoder.copy_buffer_to_buffer(r.pool().buffer(), *offset, &buffer, i as u64 * 8, 8);
+    }
+    r.queue().submit([encoder.finish()]);
+    let slice = buffer.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |result| {
+        let _ = tx.send(result);
+    });
+    r.device()
+        .poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        })
+        .map_err(|e| e.to_string())?;
+    rx.recv()
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    let mapped = slice.get_mapped_range().map_err(|e| e.to_string())?;
+    let values = mapped
+        .chunks_exact(8)
+        .take(offsets.len())
+        .map(|pair| {
+            f64::from(f32::from_le_bytes(pair[..4].try_into().unwrap()))
+                + f64::from(f32::from_le_bytes(pair[4..].try_into().unwrap()))
+        })
+        .collect();
+    drop(mapped);
+    buffer.unmap();
+    Ok(values)
+}
+
+/// The picked point's coordinates and, when its series maps colour or size,
+/// the values those came from.
+fn pick_values(r: &Renderer, series: &[SeriesConfig], p: &PickedData) -> Result<String, String> {
+    let PickedData::Point {
+        series_id,
+        point_index,
+        ..
+    } = p
+    else {
+        return Ok(String::new());
+    };
+    let series = series
+        .iter()
+        .find(|s| &s.series_id == series_id)
+        .ok_or_else(|| format!("series {series_id} no longer exists"))?;
+    let scatter = scatter_of(&series.render_type);
+    let color_column = scatter.and_then(|s| s.point_color_map.as_ref().map(|m| &m.column));
+    let size_column = scatter.and_then(|s| s.point_size_map.as_ref().map(|m| &m.column));
+    let mut samples = vec![
+        (series.x_column.clone(), *point_index),
+        (series.y_column.clone(), *point_index),
+    ];
+    samples.extend(color_column.map(|c| (c.clone(), *point_index)));
+    samples.extend(size_column.map(|c| (c.clone(), *point_index)));
+    let values = read_samples(r, &samples)?;
+    let mut note = format!("x = {:.4}, y = {:.4}", values[0], values[1]);
+    let mut next = 2;
+    if color_column.is_some() {
+        note.push_str(&format!(", colour value = {:.4}", values[next]));
+        next += 1;
+    }
+    if size_column.is_some() {
+        let v = values[next];
+        if v.is_finite() {
+            note.push_str(&format!(", size value = {v:.4}"));
+        } else {
+            note.push_str(", size value = NaN (hidden)");
+        }
+    }
+    Ok(note)
 }
 
 fn error_controls(ui: &mut egui::Ui, e: &mut renderer::DataErrorBarStyleConfig) {
@@ -1149,12 +1377,18 @@ fn error_controls(ui: &mut egui::Ui, e: &mut renderer::DataErrorBarStyleConfig) 
     slider(ui, "cap size", &mut e.error_bar_cap_size, 0.0..=20.0);
 }
 
-fn series_controls(ui: &mut egui::Ui, s: &mut SeriesConfig, config: &mut Config) {
+fn series_controls(
+    ui: &mut egui::Ui,
+    s: &mut SeriesConfig,
+    config: &mut Config,
+    columns: &[String],
+    r: &Renderer,
+) {
     match &mut s.render_type {
         DataRenderType::Line { line } => line_controls(ui, line),
-        DataRenderType::Scatter { scatter } => scatter_controls(ui, scatter),
+        DataRenderType::Scatter { scatter } => scatter_controls(ui, scatter, columns, r),
         DataRenderType::ScatterLine { scatter, line } => {
-            scatter_controls(ui, scatter);
+            scatter_controls(ui, scatter, columns, r);
             line_controls(ui, line);
         }
         DataRenderType::ScatterErrorbarX {
@@ -1166,7 +1400,7 @@ fn series_controls(ui: &mut egui::Ui, s: &mut SeriesConfig, config: &mut Config)
         | DataRenderType::ScatterErrorbarXY {
             scatter, err_style, ..
         } => {
-            scatter_controls(ui, scatter);
+            scatter_controls(ui, scatter, columns, r);
             error_controls(ui, err_style);
         }
         DataRenderType::LineScatterErrorbarX {
@@ -1187,7 +1421,7 @@ fn series_controls(ui: &mut egui::Ui, s: &mut SeriesConfig, config: &mut Config)
             err_style,
             ..
         } => {
-            scatter_controls(ui, scatter);
+            scatter_controls(ui, scatter, columns, r);
             line_controls(ui, line);
             error_controls(ui, err_style);
         }

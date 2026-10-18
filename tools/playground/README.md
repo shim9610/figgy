@@ -27,7 +27,8 @@ A rejected config fails the run.
 
 The tabs at the top switch scenes.
 
-- **Cartesian**: lines, areas and steps; scatter with error bars; histogram;
+- **Cartesian**: lines, areas and steps; scatter with error bars; scatter with
+  colour and size value maps; histogram;
   heatmap with labelled contours; log axes; twin Y axes; subplots;
   annotations; a one-million-point line.
 - **Bounded**: radial (pie and donut), categorical bars, box plot.
@@ -56,7 +57,10 @@ or a subplot.
     (`LineFill::ToSeries`) move together, because both ends of a band must be
     in the same chart.
 - **Series**: per render type (line, marker, error bar, histogram, field and
-  contour). Contour labels can toggle the background box, font size, digits
-  and level 0.
+  contour). Markers can take a colour map column (through the colourbar) and a
+  size map column with its domain, pixel range and area/radius scale. Contour
+  labels can toggle the background box, font size, digits and level 0.
+- **Picking**: each pick lists the point's coordinates and, for a mapped
+  series, the colour and size values read back from the GPU column.
 - **Picking, Annotations, Export (PNG), Diagnostics**: GPU memory and render
   warnings.

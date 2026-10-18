@@ -747,6 +747,30 @@ fn grad_px(dz: vec2<f32>) -> vec2<f32> {
 
 CPU 구조체는 `mod.rs::ContourLookupMetadataGpu`(8바이트)이며 `create_field_data_bind_group_layout`의 프래그먼트 전용 binding 6에 연결된다. 버퍼는 `FieldTables`에서 다른 group 2 표와 함께 만들고 바인드 그룹이 보관한다. 할당량은 같은 `ChargeTally`의 `FieldTable` 항목에 실제 바이트 수로 합산한다.
 
+### 5.2 Point value maps — group 3 (mapped scatter entries)
+
+Outside the common block, `scatter_columnar.wgsl`'s mapped entries (`vs_mapped`,
+`vs_pick_ring_mapped`) bind a third group for a series' continuous value maps
+(`point_color_map` / `point_size_map`). Binding 0 is `PointValueMapParams`
+(64 B; CPU twin `mod.rs::PointValueMapParamsGpu`): the colourbar's bounds as
+hi/lo pairs, already log10 when `VALUE_MAP_LOG_Z` is set, the size domain as
+hi/lo pairs, `(min_px, max_px)` already multiplied by the export scale, the
+flags, the stop count and the premultiplied `nan_color`. Binding 1 is the
+colourbar's ramp control points, straight RGBA, at least one entry. A mapped
+series without value maps binds the renderer's neutral params (every flag
+clear), so the layout is always satisfied.
+
+The value columns arrive as per-instance vertex slots 4 and 5 (hi/lo pairs,
+X bound as filler when a map is absent). `value_ramp_t` mirrors
+`field_columnar.wgsl::z_ramp_t` and `ColorBarOptions::normalized_z`;
+`value_ramp` is the same byte-for-byte twin of `colormap::sample` the field
+shader carries; `value_map_radius` is the twin of `PointSizeMap::radius_px` and
+of `gpu_pick.wgsl::pick_size_map_radius`. Precedence inside
+`resolve_mapped_style` is override > value map > table slot > base; a hidden
+point (non-finite size value) carries a negative radius and is masked unless an
+override sets its radius. Nothing derived per point is uploaded: colour and
+radius are computed on every draw from the bound columns.
+
 ---
 ## 변경 체크리스트
 

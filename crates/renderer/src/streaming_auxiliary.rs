@@ -358,6 +358,7 @@ impl Renderer {
                         x: handle(&series.x_column)?,
                         y: handle(&series.y_column)?,
                         style_index: None,
+                        size_value: None,
                     };
                     let mut encoder = self.device.create_command_encoder(&Default::default());
                     let charge = pick.encode_indexed_chunk(
@@ -843,6 +844,7 @@ impl Renderer {
                         x: handles(&cfg.x_column)?,
                         y: handles(&cfg.y_column)?,
                         style_index,
+                        size_value: None,
                     },
                     series_index as u32,
                     offset as u32,
@@ -1151,6 +1153,7 @@ impl Renderer {
             &self.transform_bgl,
             &self.style_bgl,
             &self.per_point_style_map_bgl,
+            &self.point_value_map_bgl,
             &self.data_selection_bgl,
             &self.field_bgl,
             self.contour_label_pipelines.as_ref(),

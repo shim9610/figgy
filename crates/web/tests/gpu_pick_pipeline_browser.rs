@@ -202,6 +202,8 @@ async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_e
         point_style_table: None,
         point_style_index_column: None,
         point_style_overrides: None,
+        point_color_map: None,
+        point_size_map: None,
     };
     let series = vec![
         SeriesConfig {

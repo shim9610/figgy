@@ -841,6 +841,8 @@ mod tests {
             point_style_table: None,
             point_style_index_column: None,
             point_style_overrides: None,
+            point_color_map: None,
+            point_size_map: None,
         }
     }
 
@@ -2320,6 +2322,26 @@ mod web {
         serde_json::to_string(renderer::config::DrawStyle::mode_tags()).map_err(js_err)
     }
 
+    /// The point style of a series that draws markers, whichever variant
+    /// carries it.
+    fn scatter_style(rt: &DataRenderType) -> Option<&renderer::DataScatterStyleConfig> {
+        match rt {
+            DataRenderType::Scatter { scatter }
+            | DataRenderType::ScatterLine { scatter, .. }
+            | DataRenderType::ScatterErrorbarX { scatter, .. }
+            | DataRenderType::ScatterErrorbarY { scatter, .. }
+            | DataRenderType::ScatterErrorbarXY { scatter, .. }
+            | DataRenderType::LineScatterErrorbarX { scatter, .. }
+            | DataRenderType::LineScatterErrorbarY { scatter, .. }
+            | DataRenderType::LineScatterErrorbarXY { scatter, .. } => Some(scatter),
+            DataRenderType::Line { .. }
+            | DataRenderType::Histogram { .. }
+            | DataRenderType::Heatmap { .. }
+            | DataRenderType::Contour { .. }
+            | DataRenderType::HeatmapContour { .. } => None,
+        }
+    }
+
     /// Every column id a series' render type references (x/y + error refs).
     fn referenced_columns(cfg: &SeriesConfig) -> Vec<&str> {
         fn push_ref<'a>(ids: &mut Vec<&'a str>, r: &'a ErrorRef) {
@@ -2338,6 +2360,12 @@ mod web {
         ) {
             if let Some(column) = &scatter.point_style_index_column {
                 ids.push(column);
+            }
+            if let Some(map) = &scatter.point_color_map {
+                ids.push(&map.column);
+            }
+            if let Some(map) = &scatter.point_size_map {
+                ids.push(&map.column);
             }
         }
 
@@ -5045,19 +5073,37 @@ mod web {
             Ok(())
         }
 
-        /// Fit the shared z axis to every matrix value column in the chart.
-        /// A chart without a colourbar is left unchanged.
+        /// Fit the shared z axis to every column the colourbar maps: matrix
+        /// value columns and scatter `point_color_map` columns. A chart without
+        /// a colourbar is left unchanged.
         pub fn auto_fit_colorbar(&mut self, padding: f64) -> Result<(), JsValue> {
             let mut z_extent = FitExtent::EMPTY;
             for cfg in self.chart_series() {
-                let matrix = match &cfg.render_type {
+                let mut union = |id: &str| -> Result<(), JsValue> {
+                    z_extent.union(&Chart::slot_extent(self.renderer.pool(), id).map_err(js_err)?);
+                    Ok(())
+                };
+                match &cfg.render_type {
                     DataRenderType::Heatmap { matrix, .. }
                     | DataRenderType::Contour { matrix, .. }
-                    | DataRenderType::HeatmapContour { matrix, .. } => matrix,
-                    _ => continue,
-                };
-                for id in &matrix.columns {
-                    z_extent.union(&Chart::slot_extent(self.renderer.pool(), id).map_err(js_err)?);
+                    | DataRenderType::HeatmapContour { matrix, .. } => {
+                        for id in &matrix.columns {
+                            union(id)?;
+                        }
+                    }
+                    DataRenderType::Scatter { scatter }
+                    | DataRenderType::ScatterLine { scatter, .. }
+                    | DataRenderType::ScatterErrorbarX { scatter, .. }
+                    | DataRenderType::ScatterErrorbarY { scatter, .. }
+                    | DataRenderType::ScatterErrorbarXY { scatter, .. }
+                    | DataRenderType::LineScatterErrorbarX { scatter, .. }
+                    | DataRenderType::LineScatterErrorbarY { scatter, .. }
+                    | DataRenderType::LineScatterErrorbarXY { scatter, .. } => {
+                        if let Some(map) = &scatter.point_color_map {
+                            union(&map.column)?;
+                        }
+                    }
+                    DataRenderType::Line { .. } | DataRenderType::Histogram { .. } => {}
                 }
             }
             let mut chart = Chart::new(self.chart_config().clone());
@@ -5700,15 +5746,38 @@ mod web {
                 serde_json::json!({"identity": reference, "series_id": series.series_id});
             match &reference {
                 PickedDataRef::Point { point_index, .. } => {
-                    let values = self
-                        .read_selection_samples(&[
-                            (series.x_column, *point_index),
-                            (series.y_column, *point_index),
-                        ])
-                        .await?;
+                    // A colour- or size-mapped point also reports the value its
+                    // colour or radius was derived from, read back from the
+                    // same GPU column the draw used.
+                    let scatter = scatter_style(&series.render_type);
+                    let color_column = scatter
+                        .and_then(|scatter| scatter.point_color_map.as_ref())
+                        .map(|map| map.column.clone());
+                    let size_column = scatter
+                        .and_then(|scatter| scatter.point_size_map.as_ref())
+                        .map(|map| map.column.clone());
+                    let mut samples = vec![
+                        (series.x_column, *point_index),
+                        (series.y_column, *point_index),
+                    ];
+                    if let Some(column) = color_column.clone() {
+                        samples.push((column, *point_index));
+                    }
+                    if let Some(column) = size_column.clone() {
+                        samples.push((column, *point_index));
+                    }
+                    let values = self.read_selection_samples(&samples).await?;
                     result["index"] = serde_json::json!(point_index);
                     result["x"] = serde_json::json!(values[0]);
                     result["y"] = serde_json::json!(values[1]);
+                    let mut next = 2;
+                    if color_column.is_some() {
+                        result["color_value"] = serde_json::json!(values[next]);
+                        next += 1;
+                    }
+                    if size_column.is_some() {
+                        result["size_value"] = serde_json::json!(values[next]);
+                    }
                 }
                 PickedDataRef::HistogramBin { bin_index, .. } => {
                     let renderer::DataRenderType::Histogram { bar } = &series.render_type else {

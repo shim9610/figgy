@@ -151,6 +151,8 @@ fn scatter_series(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
                 point_style_table: None,
                 point_style_index_column: None,
                 point_style_overrides: None,
+                point_color_map: None,
+                point_size_map: None,
             },
         },
     }
@@ -178,6 +180,8 @@ fn errorbar_series(id: &str, x: &str, y: &str, err: &str, color: Color) -> Serie
                 point_style_table: None,
                 point_style_index_column: None,
                 point_style_overrides: None,
+                point_color_map: None,
+                point_size_map: None,
             },
             err_y: ErrorRef::Symmetric { column: err.into() },
             err_style: DataErrorBarStyleConfig {

@@ -6,8 +6,8 @@ use renderer::data::Column;
 use renderer::data_config::{
     BarOrientation, ContourConfig, ContourLabelConfig, DataBarStyleConfig, DataErrorBarStyleConfig,
     DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorRef, FieldFillConfig,
-    FillMode, GridLayout, LineFill, LineInterpolation, MatrixOrientation, MatrixRef, ScatterShape,
-    SeriesConfig, Shading,
+    FillMode, GridLayout, LineFill, LineInterpolation, MatrixOrientation, MatrixRef, PointColorMap,
+    PointSizeMap, ScatterShape, SeriesConfig, Shading, SizeScale,
 };
 use renderer::format::LabelFormat;
 use renderer::layout::{ChartArea, Rect};
@@ -15,7 +15,8 @@ use renderer::line::LineStylePreset;
 use renderer::text::RichText;
 use renderer::{
     Anchor, Annotation, AnnotationAxis, AnnotationKind, AnnotationLineStyle, ArrowStyle, CellRef,
-    Chart, Color, ColumnSource, FiggyError, LayerRef, OverlayLayer, Renderer, Subplot, default,
+    Chart, Color, ColorMap, ColumnSource, FiggyError, LayerRef, OverlayLayer, Renderer, Subplot,
+    default,
 };
 
 /// Logical size of every Cartesian document; the window fits it uniformly.
@@ -26,6 +27,7 @@ pub const DOC_H: u32 = 720;
 pub enum SceneKind {
     Lines,
     Scatter,
+    ValueMaps,
     Histogram,
     Field,
     LogAxes,
@@ -39,9 +41,10 @@ pub enum SceneKind {
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 12] = [
+    pub const ALL: [SceneKind; 13] = [
         SceneKind::Lines,
         SceneKind::Scatter,
+        SceneKind::ValueMaps,
         SceneKind::Histogram,
         SceneKind::Field,
         SceneKind::LogAxes,
@@ -58,6 +61,7 @@ impl SceneKind {
         match self {
             SceneKind::Lines => "Lines · areas · steps",
             SceneKind::Scatter => "Scatter · error bars",
+            SceneKind::ValueMaps => "Scatter · value maps",
             SceneKind::Histogram => "Histogram",
             SceneKind::Field => "Heatmap · contours",
             SceneKind::LogAxes => "Log axes",
@@ -75,6 +79,10 @@ impl SceneKind {
         match self {
             SceneKind::Lines => "Area fill to baseline, a band between two series, step modes.",
             SceneKind::Scatter => "Marker shapes, XY error bars, a line through the points.",
+            SceneKind::ValueMaps => {
+                "Colour by a value column through the colourbar; size by another (bubbles). \
+                 Pick a point to read both values. NaN sizes hide the point."
+            }
             SceneKind::Histogram => "Pre-binned edges + counts. Try horizontal orientation.",
             SceneKind::Field => "Interpolated field, labelled isolines and a colourbar.",
             SceneKind::LogAxes => "Logarithmic Y with decade ticks and dotted minor grid.",
@@ -157,6 +165,8 @@ pub fn scatter_style(color: Color, shape: ScatterShape, size: f32) -> DataScatte
         point_style_table: None,
         point_style_index_column: None,
         point_style_overrides: None,
+        point_color_map: None,
+        point_size_map: None,
     }
 }
 
@@ -232,6 +242,7 @@ pub fn build(r: &mut Renderer, kind: SceneKind) -> Result<CartesianScene, FiggyE
     match kind {
         SceneKind::Lines => lines(r),
         SceneKind::Scatter => scatter(r),
+        SceneKind::ValueMaps => value_maps(r),
         SceneKind::Histogram => histogram(r),
         SceneKind::Field => field(r),
         SceneKind::LogAxes => log_axes(r),
@@ -417,6 +428,101 @@ fn scatter(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     let mut chart = Chart::new(base_config("Scatter and error bars", "dose", "response"));
     chart.auto_fit_x_union(r.pool(), &["sc_x", "sc_cx"], 0.05)?;
     chart.auto_fit_y_union(r.pool(), &["sc_y", "sc_cy"], 0.1)?;
+    Ok(CartesianScene {
+        config: with_legend(chart.config().clone(), &series),
+        series,
+    })
+}
+
+/// Two clouds on one colourbar. The left cloud is coloured by `depth` at a
+/// fixed size; the right cloud is coloured by `depth` and sized by
+/// `amplitude` (a bubble chart). The size domain comes from the amplitude
+/// statistics this scene already has, never from the renderer.
+fn value_maps(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    let n = 320;
+    let depth = |x: f64, y: f64| 10.0 * y + 4.0 * (x - 5.0).abs();
+    let cloud = |seed: u64, cx: f64| -> (Vec<f64>, Vec<f64>) {
+        let x: Vec<f64> = (0..n).map(|i| cx + 1.8 * noise(seed, i)).collect();
+        let y: Vec<f64> = (0..n).map(|i| 5.0 + 4.2 * noise(seed + 1, i)).collect();
+        (x, y)
+    };
+    let (x1, y1) = cloud(31, 2.6);
+    let (x2, y2) = cloud(41, 7.4);
+    let depth1: Vec<f64> = x1.iter().zip(&y1).map(|(x, y)| depth(*x, *y)).collect();
+    let depth2: Vec<f64> = x2.iter().zip(&y2).map(|(x, y)| depth(*x, *y)).collect();
+    // Every 40th amplitude is NaN: a non-finite size hides the point and
+    // removes it from picking.
+    let amplitude: Vec<f64> = (0..n)
+        .map(|i| {
+            if i % 40 == 20 {
+                f64::NAN
+            } else {
+                1.0 + 9.0 * noise(43, i).abs()
+            }
+        })
+        .collect();
+    let (amp_min, amp_max) = amplitude
+        .iter()
+        .filter(|v| v.is_finite())
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+            (lo.min(*v), hi.max(*v))
+        });
+    upload(r, "vm_x1", x1)?;
+    upload(r, "vm_y1", y1)?;
+    upload(r, "vm_depth1", depth1)?;
+    upload(r, "vm_x2", x2)?;
+    upload(r, "vm_y2", y2)?;
+    upload(r, "vm_depth2", depth2)?;
+    upload(r, "vm_amp", amplitude)?;
+
+    let mut coloured = scatter_style(
+        Color::from_rgb8(31, 119, 180),
+        ScatterShape::CircleFilled,
+        7.0,
+    );
+    coloured.point_color_map = Some(PointColorMap {
+        column: "vm_depth1".into(),
+    });
+    let mut bubbles = scatter_style(
+        Color::from_rgba(0.13, 0.41, 0.78, 0.6),
+        ScatterShape::CircleFilled,
+        6.0,
+    );
+    bubbles.point_color_map = Some(PointColorMap {
+        column: "vm_depth2".into(),
+    });
+    let mut size_map = PointSizeMap {
+        column: "vm_amp".into(),
+        domain_min: 0.0,
+        domain_max: 1.0,
+        min_px: 2.0,
+        max_px: 16.0,
+        scale: SizeScale::Area,
+    };
+    size_map.fit_domain(amp_min, amp_max);
+    bubbles.point_size_map = Some(size_map);
+    let series = vec![
+        series(
+            "depth",
+            "vm_x1",
+            "vm_y1",
+            DataRenderType::Scatter { scatter: coloured },
+        ),
+        series(
+            "bubbles",
+            "vm_x2",
+            "vm_y2",
+            DataRenderType::Scatter { scatter: bubbles },
+        ),
+    ];
+    let mut config = base_config("Scatter: colour and size value maps", "x", "y");
+    let mut bar = default::default_colorbar_options();
+    bar.colormap = ColorMap::Viridis;
+    config.colorbar = Some(bar);
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, 10.0);
+    chart.set_y_range(0.0, 10.0);
+    chart.auto_fit_colorbar_union(r.pool(), &["vm_depth1", "vm_depth2"], 0.0)?;
     Ok(CartesianScene {
         config: with_legend(chart.config().clone(), &series),
         series,

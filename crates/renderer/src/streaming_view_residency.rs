@@ -310,6 +310,8 @@ impl ViewPackedCandidate {
                     scatter.point_style_index_column.is_none()
                         && scatter.point_style_table.is_none()
                         && scatter.point_style_overrides.is_none()
+                        && scatter.point_color_map.is_none()
+                        && scatter.point_size_map.is_none()
                 });
                 let line_ok = super::extract_line(other)
                     .is_none_or(|line| matches!(line.line_style, LineStylePreset::Solid));

@@ -114,6 +114,8 @@ fn scatter(color: Color) -> DataScatterStyleConfig {
                 },
             },
         ]),
+        point_color_map: None,
+        point_size_map: None,
     }
 }
 

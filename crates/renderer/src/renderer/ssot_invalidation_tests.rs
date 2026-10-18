@@ -1536,6 +1536,8 @@ fn ssot_selection_edits_replace_only_the_overlay() {
                         point_style_index_column: None,
                         point_style_table: None,
                         point_style_overrides: None,
+                        point_color_map: None,
+                        point_size_map: None,
                     },
                 };
                 r.set_chart_series(id, vec![series]).unwrap();

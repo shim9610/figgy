@@ -216,9 +216,22 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
             } else {
                 None
             };
+            let size_values = if use_scatter_style_mapping {
+                scatter
+                    .point_size_map
+                    .as_ref()
+                    .and_then(|map| columns.get_f32_column(&map.column))
+            } else {
+                None
+            };
             for i in 0..xs.len().min(ys.len()) {
-                let radius_px =
-                    scatter_visual_radius_px(scatter, style_index, i, use_scatter_style_mapping);
+                let radius_px = scatter_visual_radius_px(
+                    scatter,
+                    style_index,
+                    size_values,
+                    i,
+                    use_scatter_style_mapping,
+                );
                 if radius_px <= 0.0 {
                     continue;
                 }
@@ -386,14 +399,22 @@ fn extract_scatter(rt: &DataRenderType) -> Option<&DataScatterStyleConfig> {
     }
 }
 
+/// The drawn radius of one point, in logical pixels; zero for a hidden point.
+///
+/// Precedence per channel is the shader's: sparse override > size map >
+/// style table slot > series base. A size map resolves the radius from the
+/// point's value column (`size_values`, the same column the GPU draws from);
+/// a non-finite value hides the point unless an override sets its radius.
 fn scatter_visual_radius_px(
     scatter: &DataScatterStyleConfig,
     style_index: Option<&[f32]>,
+    size_values: Option<&[f32]>,
     point_index: usize,
     use_style_mapping: bool,
 ) -> f32 {
     let mut radius = scatter.point_size;
     let mut shape = &scatter.point_shape;
+    let mut hidden = false;
 
     if use_style_mapping {
         if let (Some(indices), Some(table)) = (style_index, scatter.point_style_table.as_deref())
@@ -412,11 +433,22 @@ fn scatter_visual_radius_px(
             }
         }
 
+        if let Some(map) = scatter.point_size_map.as_ref() {
+            match size_values
+                .and_then(|values| values.get(point_index))
+                .and_then(|value| map.radius_px(f64::from(*value)))
+            {
+                Some(mapped) => radius = mapped,
+                None => hidden = true,
+            }
+        }
+
         if let Some(overrides) = scatter.point_style_overrides.as_deref() {
             for ov in overrides {
                 if ov.index == point_index {
                     if let Some(size) = ov.style.point_size {
                         radius = size;
+                        hidden = false;
                     }
                     if let Some(ov_shape) = ov.style.point_shape.as_ref() {
                         shape = ov_shape;
@@ -426,6 +458,9 @@ fn scatter_visual_radius_px(
         }
     }
 
+    if hidden {
+        return 0.0;
+    }
     shape_visual_radius_px(shape, radius.max(0.0))
 }
 
@@ -746,6 +781,8 @@ mod tests {
                     point_style_table: None,
                     point_style_index_column: None,
                     point_style_overrides: None,
+                    point_color_map: None,
+                    point_size_map: None,
                 },
             },
         }
@@ -772,6 +809,8 @@ mod tests {
                     point_style_table: None,
                     point_style_index_column: None,
                     point_style_overrides: None,
+                    point_color_map: None,
+                    point_size_map: None,
                 },
                 err_y: ErrorRef::Symmetric {
                     column: err_y.into(),

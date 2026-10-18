@@ -11,6 +11,7 @@ fn single_pipeline_builders_compile_only_the_requested_shader() {
         let transform = data_render::create_scatter_transform_bind_group_layout(&device);
         let style = data_render::create_style_bind_group_layout(&device);
         let mapping = data_render::create_per_point_style_map_bind_group_layout(&device);
+        let value_map = data_render::create_point_value_map_bind_group_layout(&device);
         let field = data_render::create_field_data_bind_group_layout(&device);
         let format = wgpu::TextureFormat::Rgba8Unorm;
         let _pipeline = match which {
@@ -18,7 +19,7 @@ fn single_pipeline_builders_compile_only_the_requested_shader() {
             1 => data_render::create_line_columnar_pipeline(&device, &transform, &style, format),
             2 => data_render::create_scatter_columnar_pipeline(&device, &transform, &style, format),
             3 => data_render::create_scatter_columnar_mapped_pipeline(
-                &device, &transform, &style, &mapping, format, 1,
+                &device, &transform, &style, &mapping, &value_map, format, 1,
             ),
             4 => {
                 data_render::create_errorbar_columnar_pipeline(&device, &transform, &style, format)

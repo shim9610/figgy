@@ -82,6 +82,8 @@ fn streaming_accepts_mapped_errorbars_but_rejects_contour() {
             point_style_table: None,
             point_style_index_column: None,
             point_style_overrides: None,
+            point_color_map: None,
+            point_size_map: None,
         },
         err_x: ErrorRef::Symmetric { column: "e".into() },
         err_style: DataErrorBarStyleConfig {
@@ -206,6 +208,8 @@ fn streamed_mapped_scatter_and_errorbar_keep_global_override_ids() {
                     },
                 },
             ]),
+            point_color_map: None,
+            point_size_map: None,
         };
         let err_style = DataErrorBarStyleConfig {
             error_bar_color: Color::new(0.1, 0.1, 0.1, 0.7),
@@ -397,6 +401,8 @@ fn mapped_style_upload_reserves_meta_budget_and_preserves_retry_ticket() {
             point_style_table: Some(vec![DataScatterPointStyleConfig::default()]),
             point_style_index_column: Some("idx".into()),
             point_style_overrides: None,
+            point_color_map: None,
+            point_size_map: None,
         },
     };
     let config = crate::default::default_config();
@@ -475,6 +481,8 @@ fn short_mapped_style_index_fails_before_stream_draw_job() {
             point_style_table: Some(vec![DataScatterPointStyleConfig::default()]),
             point_style_index_column: Some("idx".into()),
             point_style_overrides: None,
+            point_color_map: None,
+            point_size_map: None,
         },
     };
     let config = crate::default::default_config();
@@ -512,6 +520,8 @@ fn mapped_base_style_storage_is_preflighted_and_charged_once() {
                 index: 3,
                 style: DataScatterPointStyleConfig::default(),
             }]),
+            point_color_map: None,
+            point_size_map: None,
         },
     };
     let config = crate::default::default_config();
@@ -608,6 +618,8 @@ fn six_distinct_errorbar_columns_obey_request_column_limit_before_job_start() {
             point_style_table: None,
             point_style_index_column: None,
             point_style_overrides: None,
+            point_color_map: None,
+            point_size_map: None,
         },
         line: DataLineStyleConfig {
             line_style: LineStylePreset::Solid,
@@ -1672,6 +1684,8 @@ fn packed_view_combined_errorbar_redraw_matches_exact_stream_pixels() {
                 point_style_table: None,
                 point_style_index_column: None,
                 point_style_overrides: None,
+                point_color_map: None,
+                point_size_map: None,
             },
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
@@ -2104,6 +2118,8 @@ fn mixed_prepared_frame_preserves_resident_chart_and_exact_stream_output() {
                     point_style_table: None,
                     point_style_index_column: None,
                     point_style_overrides: None,
+                    point_color_map: None,
+                    point_size_map: None,
                 },
             };
             let a_stream = r
@@ -2409,6 +2425,8 @@ fn ordered_stream_draw_matches_resident_pixels_across_chunk_boundaries() {
                     point_style_table: None,
                     point_style_index_column: None,
                     point_style_overrides: None,
+                    point_color_map: None,
+                    point_size_map: None,
                 };
                 let err_style = DataErrorBarStyleConfig {
                     error_bar_color: Color::new(0.1, 0.1, 0.1, 0.6),
@@ -6195,6 +6213,8 @@ fn initial_fit_rescales_earlier_points_with_logarithmic_and_inverted_axes() {
                 point_style_table: None,
                 point_style_index_column: None,
                 point_style_overrides: None,
+                point_color_map: None,
+                point_size_map: None,
             },
         };
         r.set_chart_series(chart, vec![series]).unwrap();
@@ -6352,6 +6372,8 @@ fn packed_view_resize_reuses_rows_and_matches_fresh_stream() {
                     point_style_table: None,
                     point_style_index_column: None,
                     point_style_overrides: None,
+                    point_color_map: None,
+                    point_size_map: None,
                 },
             };
             r.set_chart_series(id, series).unwrap();
@@ -6602,6 +6624,8 @@ fn progressive_replay_styled_fit_finishes_exactly_and_cancel_retires_snapshots()
                 point_style_table: None,
                 point_style_index_column: None,
                 point_style_overrides: None,
+                point_color_map: None,
+                point_size_map: None,
             };
             if matches!(style, DrawStyle::Constellation(_)) {
                 let line = super::extract_line(&series.render_type).unwrap().clone();

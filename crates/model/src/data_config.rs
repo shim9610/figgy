@@ -296,6 +296,118 @@ pub struct DataScatterStyleConfig {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub point_style_overrides: Option<Vec<DataScatterPointStyleOverride>>,
+    /// Color each point by a value column through `Config.colorbar`.
+    ///
+    /// The colorbar is the only authority on the range, scale, ramp and
+    /// `nan_color`, exactly as for heatmaps; a series with this map and no
+    /// colorbar is rejected rather than given an invented range. The color is
+    /// derived from the value on every draw and never stored.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub point_color_map: Option<PointColorMap>,
+    /// Size each point by a value column (a bubble chart).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub point_size_map: Option<PointSizeMap>,
+}
+
+/// A value column mapped to point color through the chart's colorbar.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct PointColorMap {
+    /// Index-aligned with the series' x/y columns; never length-inferred.
+    pub column: ColumnId,
+}
+
+/// How a size value becomes a marker radius.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum SizeScale {
+    /// The value is proportional to marker area (the radius grows with its
+    /// square root), which is how bubble sizes are read.
+    #[default]
+    Area,
+    /// The value is proportional to the radius.
+    Radius,
+}
+
+/// A value column mapped to the marker radius.
+///
+/// `domain_min..domain_max` maps onto `min_px..max_px` (logical pixels, the
+/// unit of `point_size`); values outside the domain clamp to the ends. The
+/// domain is explicit: the renderer never infers it from the column, so
+/// appending a point never resizes the others. [`Self::fit_domain`] fills it
+/// from statistics the host already has.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct PointSizeMap {
+    /// Index-aligned with the series' x/y columns; never length-inferred.
+    pub column: ColumnId,
+    pub domain_min: f64,
+    pub domain_max: f64,
+    pub min_px: f32,
+    pub max_px: f32,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub scale: SizeScale,
+}
+
+impl PointSizeMap {
+    pub const INVALID_DOMAIN_REASON: &'static str =
+        "point size map domain must be finite with domain_min < domain_max";
+    pub const INVALID_PIXELS_REASON: &'static str =
+        "point size map min_px and max_px must be finite, non-negative and min_px <= max_px";
+
+    /// Validate invariants owned by the map itself.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if !self.domain_min.is_finite()
+            || !self.domain_max.is_finite()
+            || self.domain_min >= self.domain_max
+        {
+            return Err(Self::INVALID_DOMAIN_REASON);
+        }
+        if !self.min_px.is_finite()
+            || !self.max_px.is_finite()
+            || self.min_px < 0.0
+            || self.min_px > self.max_px
+        {
+            return Err(Self::INVALID_PIXELS_REASON);
+        }
+        Ok(())
+    }
+
+    /// Set the domain to `min..max`, typically a column's statistics.
+    ///
+    /// A display helper, like `AxisOptions::auto_ticks`: it only writes the
+    /// two bounds. A non-finite or empty range leaves the map unchanged and
+    /// returns `false`.
+    pub fn fit_domain(&mut self, min: f64, max: f64) -> bool {
+        if !min.is_finite() || !max.is_finite() || min >= max {
+            return false;
+        }
+        self.domain_min = min;
+        self.domain_max = max;
+        true
+    }
+
+    /// The marker radius in logical pixels for `value`, or `None` when the
+    /// value is not finite (the point is hidden). The shader and CPU picking
+    /// both follow this formula.
+    pub fn radius_px(&self, value: f64) -> Option<f32> {
+        if !value.is_finite() {
+            return None;
+        }
+        let span = self.domain_max - self.domain_min;
+        let t = ((value - self.domain_min) / span).clamp(0.0, 1.0) as f32;
+        let (lo, hi) = (self.min_px, self.max_px);
+        Some(match self.scale {
+            SizeScale::Radius => lo + (hi - lo) * t,
+            SizeScale::Area => (lo * lo + (hi * hi - lo * lo) * t).sqrt(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -889,6 +1001,75 @@ pub enum ScatterShape {
 }
 
 #[cfg(test)]
+mod point_size_map_tests {
+    use super::*;
+
+    fn map(scale: SizeScale) -> PointSizeMap {
+        PointSizeMap {
+            column: "s".into(),
+            domain_min: 0.0,
+            domain_max: 4.0,
+            min_px: 2.0,
+            max_px: 10.0,
+            scale,
+        }
+    }
+
+    #[test]
+    fn radius_scaling_clamps_to_the_pixel_range() {
+        let radius = map(SizeScale::Radius);
+        assert_eq!(radius.radius_px(0.0), Some(2.0));
+        assert_eq!(radius.radius_px(2.0), Some(6.0));
+        assert_eq!(radius.radius_px(4.0), Some(10.0));
+        assert_eq!(radius.radius_px(-5.0), Some(2.0));
+        assert_eq!(radius.radius_px(99.0), Some(10.0));
+        assert_eq!(radius.radius_px(f64::NAN), None);
+        assert_eq!(radius.radius_px(f64::INFINITY), None);
+    }
+
+    #[test]
+    fn area_scaling_is_linear_in_area() {
+        let area = map(SizeScale::Area);
+        let lo = 2.0f32 * 2.0;
+        let hi = 10.0f32 * 10.0;
+        let mid = area.radius_px(2.0).unwrap();
+        assert!((mid * mid - (lo + hi) / 2.0).abs() < 1e-4);
+        assert_eq!(area.radius_px(0.0), Some(2.0));
+        assert_eq!(area.radius_px(4.0), Some(10.0));
+    }
+
+    #[test]
+    fn validation_rejects_bad_domains_and_pixel_ranges() {
+        assert_eq!(map(SizeScale::Area).validate(), Ok(()));
+        let mut bad = map(SizeScale::Area);
+        bad.domain_max = bad.domain_min;
+        assert_eq!(bad.validate(), Err(PointSizeMap::INVALID_DOMAIN_REASON));
+        let mut bad = map(SizeScale::Area);
+        bad.domain_min = f64::NAN;
+        assert_eq!(bad.validate(), Err(PointSizeMap::INVALID_DOMAIN_REASON));
+        let mut bad = map(SizeScale::Area);
+        bad.min_px = 11.0;
+        assert_eq!(bad.validate(), Err(PointSizeMap::INVALID_PIXELS_REASON));
+        let mut bad = map(SizeScale::Area);
+        bad.min_px = -1.0;
+        assert_eq!(bad.validate(), Err(PointSizeMap::INVALID_PIXELS_REASON));
+        let mut bad = map(SizeScale::Area);
+        bad.max_px = f32::INFINITY;
+        assert_eq!(bad.validate(), Err(PointSizeMap::INVALID_PIXELS_REASON));
+    }
+
+    #[test]
+    fn fit_domain_writes_only_valid_ranges() {
+        let mut m = map(SizeScale::Area);
+        assert!(m.fit_domain(-3.0, 7.0));
+        assert_eq!((m.domain_min, m.domain_max), (-3.0, 7.0));
+        assert!(!m.fit_domain(5.0, 5.0));
+        assert!(!m.fit_domain(f64::NAN, 1.0));
+        assert_eq!((m.domain_min, m.domain_max), (-3.0, 7.0));
+    }
+}
+
+#[cfg(test)]
 mod matrix_tests {
     use super::*;
 
@@ -956,7 +1137,8 @@ mod serde_tests {
     use super::{
         DataBarStyleConfig, DataErrorBarPointStyleConfig, DataErrorBarPointStyleOverride,
         DataErrorBarStyleConfig, DataRenderType, DataScatterPointStyleConfig,
-        DataScatterPointStyleOverride, DataScatterStyleConfig, ScatterShape, SeriesConfig,
+        DataScatterPointStyleOverride, DataScatterStyleConfig, PointColorMap, ScatterShape,
+        SeriesConfig, SizeScale,
     };
     use crate::color::Color;
 
@@ -989,6 +1171,8 @@ mod serde_tests {
         assert_eq!(scatter.point_style_table, None);
         assert_eq!(scatter.point_style_index_column, None);
         assert_eq!(scatter.point_style_overrides, None);
+        assert_eq!(scatter.point_color_map, None);
+        assert_eq!(scatter.point_size_map, None);
 
         let json = serde_json::to_value(cfg).expect("serialize");
         assert!(json.get("source_id").is_none());
@@ -996,6 +1180,38 @@ mod serde_tests {
         assert!(scatter.get("point_style_table").is_none());
         assert!(scatter.get("point_style_index_column").is_none());
         assert!(scatter.get("point_style_overrides").is_none());
+        assert!(scatter.get("point_color_map").is_none());
+        assert!(scatter.get("point_size_map").is_none());
+        assert_eq!(json, base_series_json());
+    }
+
+    #[test]
+    fn value_maps_round_trip_and_default_the_size_scale() {
+        let mut json = base_series_json();
+        let scatter = &mut json["render_type"]["Scatter"]["scatter"];
+        scatter["point_color_map"] = serde_json::json!({ "column": "c" });
+        scatter["point_size_map"] = serde_json::json!({
+            "column": "s",
+            "domain_min": 0.0,
+            "domain_max": 10.0,
+            "min_px": 2.0,
+            "max_px": 12.0
+        });
+        let cfg: SeriesConfig = serde_json::from_value(json).expect("maps parse");
+        let DataRenderType::Scatter { scatter } = &cfg.render_type else {
+            panic!("expected scatter");
+        };
+        assert_eq!(
+            scatter.point_color_map,
+            Some(PointColorMap { column: "c".into() })
+        );
+        let size = scatter.point_size_map.as_ref().expect("size map");
+        assert_eq!(size.scale, SizeScale::Area);
+
+        let back: SeriesConfig =
+            serde_json::from_value(serde_json::to_value(&cfg).expect("serialize"))
+                .expect("round trip");
+        assert_eq!(back, cfg);
     }
 
     #[test]
@@ -1025,6 +1241,8 @@ mod serde_tests {
                     point_size: Some(9.0),
                 },
             }]),
+            point_color_map: None,
+            point_size_map: None,
         };
 
         let json = serde_json::to_value(&scatter).expect("serialize scatter style");

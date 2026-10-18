@@ -375,6 +375,8 @@ fn panel_recipe(i: usize) -> (DrawStyle, &'static str, DataRenderType) {
         point_style_table: None,
         point_style_index_column: None,
         point_style_overrides: None,
+        point_color_map: None,
+        point_size_map: None,
     };
     match i {
         0 => (

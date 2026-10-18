@@ -9,6 +9,36 @@ at the time. The first crates.io publication is recorded below.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
+## Unreleased — point colour and size maps
+
+- Scatter series (every marker-drawing `DataRenderType`) gain two optional
+  value maps (#24). `DataScatterStyleConfig.point_color_map` colours each
+  point by a value column through `Config.colorbar`, the same range, ramp and
+  `nan_color` a heatmap uses, so the chart keeps one z scale; a colour-mapped
+  series without a colourbar is rejected. `point_size_map` sizes each point by
+  a value column over an explicit `domain_min..domain_max` onto
+  `min_px..max_px`, by marker area (default) or radius; values outside the
+  domain clamp, a non-finite value hides the point, and the domain is never
+  inferred from the column (`PointSizeMap::fit_domain` writes it from host
+  statistics). Precedence per channel is override > value map > style table >
+  base.
+- The shader reads the value columns from the GPU column pool on every draw
+  and derives colour and radius in place; nothing per point is stored. The
+  mapped scatter and pick-ring pipelines gain a group-3 bind group with the
+  colourbar's parameters and ramp (`PointValueMapParams`, cached per series
+  and rebuilt only when the colourbar or the size map changes) and two
+  value-column vertex slots. `shader_pipeline_contract.json` is regenerated.
+- `pick_point` (CPU and GPU), the picked ring, PNG export at any scale and
+  `selection_details` (new `color_value` / `size_value` fields) follow the
+  mapped radius and colour. `Chart::auto_fit_colorbar_union` callers and the
+  web `auto_fit_colorbar` also fit colour-map columns. Streamed sources are
+  rejected with an explicit error; stylized draw styles ignore the maps like
+  the style table.
+- Rust migration: exhaustive `DataScatterStyleConfig` literals need
+  `point_color_map: None` and `point_size_map: None`. JSON without the keys is
+  unchanged. New example `value_maps.rs`; guide text in `CONFIG.md`
+  ("Point colour and size maps") and `web/SCHEMA.md`.
+
 ## Unreleased — contour label fixes
 
 - Automatic contour labels are placed only where their level is actually

@@ -123,6 +123,8 @@ fn fixture_with_display(
                         ..Default::default()
                     },
                 }]),
+                point_color_map: None,
+                point_size_map: None,
             },
         },
     };
