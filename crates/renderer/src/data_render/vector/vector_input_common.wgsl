@@ -188,7 +188,7 @@ fn vector_color(sample: VectorSample) -> vec4<f32> {
         return style.color_premul;
     }
     let t = vector_ramp_t(sample.value);
-    if (t < 0.0) {
+    if (!sample.value_valid || t < 0.0) {
         return vector_params.nan_color_premul;
     }
     let c = vector_ramp(t);

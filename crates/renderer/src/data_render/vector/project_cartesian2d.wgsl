@@ -195,11 +195,14 @@ fn polar_fragment_visible(px: vec2<f32>, limits: vec4<f32>, sector: vec4<f32>) -
 
 /// One arrow sample as the input layer produces it: the anchor as the pool's
 /// `(hi, lo)` pairs, the vector, and the colour-map value. 2D inputs set z = 0.
+/// `value_valid` is false where the colour column has no value for the
+/// sample, which then takes `nan_color`.
 struct VectorSample {
     origin_hi: vec3<f32>,
     origin_lo: vec3<f32>,
     vector: vec3<f32>,
     value: vec2<f32>,
+    value_valid: bool,
     valid: bool,
 };
 

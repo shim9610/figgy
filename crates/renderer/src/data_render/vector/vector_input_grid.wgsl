@@ -53,14 +53,25 @@ fn vector_anchor_pair(base: u32, len: u32, k: u32) -> vec2<f32> {
     return vector_midpoint_pair(vector_pool_pair(base, k), vector_pool_pair(base, next));
 }
 
-/// Value `row` of constituent column `col` of the table starting at `base`.
-fn vector_grid_value(base: u32, col: u32, row: u32) -> vec2<f32> {
+/// Value `row` of constituent column `col` of the table starting at `base`,
+/// as a pool pair plus explicit bounds validity (the field shader's
+/// `grid_value` rule). The pair stays zero past the column's length.
+struct VectorGridValue {
+    pair: vec2<f32>,
+    valid: bool,
+};
+
+fn vector_grid_value(base: u32, col: u32, row: u32) -> VectorGridValue {
+    var out: VectorGridValue;
+    out.pair = vec2<f32>(0.0, 0.0);
+    out.valid = false;
     let column = vector_grid[base + col];
     if (row >= column.len) {
-        let nan = bitcast<f32>(0x7fc00000u);
-        return vec2<f32>(nan, nan);
+        return out;
     }
-    return vector_pool_pair(column.base, row);
+    out.pair = vector_pool_pair(column.base, row);
+    out.valid = true;
+    return out;
 }
 
 fn vector_sample(i: u32) -> VectorSample {
@@ -69,6 +80,7 @@ fn vector_sample(i: u32) -> VectorSample {
     sample.origin_lo = vec3<f32>(0.0, 0.0, 0.0);
     sample.vector = vec3<f32>(0.0, 0.0, 0.0);
     sample.value = vec2<f32>(0.0, 0.0);
+    sample.value_valid = false;
     sample.valid = false;
     let rows = vector_params.rows;
     if (rows == 0u || i >= vector_params.count) {
@@ -79,9 +91,11 @@ fn vector_sample(i: u32) -> VectorSample {
     if (col >= vector_params.cols) {
         return sample;
     }
-    let u = vector_grid_value(vector_params.u_base, col, row);
-    let v = vector_grid_value(vector_params.v_base, col, row);
-    if (!vector_pair_finite(u) || !vector_pair_finite(v)) {
+    let u_value = vector_grid_value(vector_params.u_base, col, row);
+    let v_value = vector_grid_value(vector_params.v_base, col, row);
+    let u = u_value.pair;
+    let v = v_value.pair;
+    if (!u_value.valid || !v_value.valid || !vector_pair_finite(u) || !vector_pair_finite(v)) {
         return sample;
     }
     var x: vec2<f32>;
@@ -97,7 +111,9 @@ fn vector_sample(i: u32) -> VectorSample {
     sample.origin_lo = vec3<f32>(x.y, y.y, 0.0);
     sample.vector = vec3<f32>(u.x + u.y, v.x + v.y, 0.0);
     if (vector_flag(VECTOR_FLAG_COLOR_MAP)) {
-        sample.value = vector_grid_value(vector_params.c_base, col, row);
+        let c = vector_grid_value(vector_params.c_base, col, row);
+        sample.value = c.pair;
+        sample.value_valid = c.valid;
     }
     sample.valid = true;
     return sample;
