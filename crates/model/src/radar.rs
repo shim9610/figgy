@@ -96,7 +96,7 @@ pub struct RadarSeriesStyle {
     pub fill: Option<Color>,
     /// The marker at every vertex.
     pub marker: Option<RadarMarker>,
-    /// Marker size in logical pixels.
+    /// Marker diameter (circle) or side length (square) in logical pixels.
     pub marker_size_px: Option<f32>,
 }
 
@@ -125,7 +125,8 @@ pub struct RadarStyle {
     pub fill_opacity: f32,
     /// Default marker at every vertex.
     pub marker: RadarMarker,
-    /// Default marker size in logical pixels.
+    /// Default marker diameter (circle) or side length (square) in logical
+    /// pixels.
     pub marker_size_px: f32,
     /// Added to the colour of the hovered or selected series.
     pub emphasis_brightness: f32,
@@ -187,7 +188,8 @@ impl RadarSeries {
 }
 
 /// A radar chart: the whole small-data model one `RadarRenderer::prepare`
-/// draws. Validate with [`Self::validate`] before preparing.
+/// draws. `prepare` validates it first and returns `RadarError::Invalid` with
+/// the reason; [`Self::validate`] runs the same check without preparing.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "serde",
@@ -225,13 +227,16 @@ pub struct RadarChart {
     pub series: Vec<RadarSeries>,
     /// Chart-wide appearance and series defaults.
     pub style: RadarStyle,
-    /// The hovered vertex or series, brightened by `emphasis_brightness`.
+    /// The hovered vertex or series. Its series is brightened by
+    /// `emphasis_brightness`, and a hovered vertex grows its marker like a
+    /// selected one.
     pub hovered: Option<RadarTarget>,
     /// The selected vertex or series; a selected vertex grows its marker.
     pub selected: Option<RadarTarget>,
     /// Which vertices carry data labels.
     pub labels: RadarLabels,
-    /// Decimals of the data labels and the value axis labels.
+    /// Decimals of the data labels, at most 6. The value axis labels ignore
+    /// it and show each ring value with trailing zeros trimmed.
     pub label_decimals: usize,
     /// Appended to every data label, such as a unit.
     pub value_suffix: String,
@@ -242,7 +247,8 @@ pub struct RadarChart {
     /// outer ring.
     pub value_range: Option<[f64; 2]>,
     /// Ring spacing in value units. `None` picks a nice spacing for about
-    /// five rings.
+    /// five rings; a spacing that gives more than 100 rings is refused by
+    /// `RadarRenderer::prepare`.
     pub ring_spacing: Option<f64>,
     /// Whether rings and spokes are drawn.
     pub grid: bool,
@@ -294,8 +300,6 @@ impl RadarChart {
     /// (`Overlay` is stored as `Base`). A change clears
     /// `decorations.selected`, which names an element of the previous
     /// layer's pointer route; the data selection is kept.
-    /// Switch the layer that receives pointer interaction, clearing the
-    /// decoration selection; returns the previous layer.
     pub fn set_active_layer(&mut self, layer: crate::LayerRef) -> crate::LayerRef {
         crate::layer::set_bounded_active_layer(&mut self.active_layer, &mut self.decorations, layer)
     }
@@ -311,7 +315,10 @@ impl RadarChart {
             )
         })
     }
-    /// Freeze the legacy title's appearance before independently editing labels.
+    /// Copy the legacy `title` into `chart_title` in the current chart font
+    /// and colour, so later edits to `font_family`, `font_size` or
+    /// `text_color` no longer change the title. Does nothing when
+    /// `chart_title` is already set.
     pub fn normalize_title(&mut self) {
         if self.chart_title.is_none() {
             self.chart_title = Some(self.resolved_title());

@@ -581,13 +581,12 @@ fn visible_colorbar_rect(cfg: &Config) -> Option<(&crate::config::ColorBarOption
     (rect.width > 0.0 && rect.height > 0.0).then_some((bar, rect))
 }
 
-/// Half the width of the hit strip along a polar ray or across a label strip
-/// edge, in logical pixels.
+/// Half the width of the hit strip along a polar ray, in logical pixels.
 const POLAR_RAY_HIT_HALF_WIDTH: f32 = 4.0;
 
 /// The radius axis ray of a polar chart: centre, unit direction, the radii
-/// it spans and the side vector its labels sit on. `None` off polar mode or
-/// when the layout is infeasible.
+/// it spans and the side vector its labels sit on. `polar_ray` returns
+/// `None` off polar mode or when the layout is infeasible.
 struct PolarRay {
     center: [f32; 2],
     dir: [f32; 2],

@@ -2,9 +2,12 @@
 
 Run these commands from the workspace root with the pinned Rust toolchain.
 Headless examples need a working GPU adapter, but no window or browser.
-They use normal device selection; a software driver is an environment choice
-for machines without a GPU. Each headless example takes an output path as its
-first argument and writes PNG files there.
+They use the default adapter selection and do not force a software driver. On a
+machine without a GPU, install a software Vulkan driver such as Mesa lavapipe and
+select it as described in
+[the gallery notes](../GALLERY.md#generate-pngs-and-animation-frames). Each
+headless example takes an output path as its first argument and writes PNG files
+there.
 
 - [Gallery images](#gallery-images): every image in the README, with the
   function that draws it.
@@ -48,7 +51,7 @@ file name. To refresh an image, run the example's command from
 | <img src="https://raw.githubusercontent.com/shim9610/figgy/master/crates/renderer/assets/gallery-forecast.png" width="160" alt="Forecast bands"> | `gallery-forecast.png` | [area_step.rs](area_step.rs), `forecast` | `LineFill::ToSeries` bands; NaN samples break each line |
 | <img src="https://raw.githubusercontent.com/shim9610/figgy/master/crates/renderer/assets/gallery-thermostat.png" width="160" alt="Step schedule"> | `gallery-thermostat.png` | [area_step.rs](area_step.rs), `thermostat` | A `StepPost` line filled to a baseline |
 | <img src="https://raw.githubusercontent.com/shim9610/figgy/master/crates/renderer/assets/gallery-twin-axes.png" width="160" alt="Twin Y axes"> | `gallery-twin-axes.png` | [overlay_axes.rs](overlay_axes.rs), `twin_axes` | An overlay layer with its own right Y axis, exported as a document |
-| <img src="https://raw.githubusercontent.com/shim9610/figgy/master/crates/renderer/assets/gallery-subplots.png" width="160" alt="Small multiples"> | `gallery-subplots.png` | [subplots.rs](subplots.rs), `small_multiples` | Four subplots linked to the parent's X axis, each with its own Y range |
+| <img src="https://raw.githubusercontent.com/shim9610/figgy/master/crates/renderer/assets/gallery-subplots.png" width="160" alt="Small multiples"> | `gallery-subplots.png` | [subplots.rs](subplots.rs), `small_multiples` | A 2 × 2 grid: the parent and three subplots linked to its X axis, each with its own Y range |
 
 ### Bounded charts
 
@@ -109,10 +112,6 @@ in [gallery_concepts.rs](gallery_concepts.rs) holds its data and styling.
 | [milkyway_line_preview.rs](milkyway_line_preview.rs) | One PNG at the given path | `cargo run --locked -p figgy-renderer --example milkyway_line_preview -- target/milkyway-preview.png` |
 | [constellation_preview.rs](constellation_preview.rs) | One PNG at the given path | `cargo run --locked -p figgy-renderer --example constellation_preview -- target/constellation-preview.png` |
 
-Box plots consume statistics supplied by the caller; they do not infer quartiles
-from raw observations. Radial, categorical, boxplot and radar models are bounded
-inputs, separate from the Cartesian column and replayable streaming contracts.
-
 [support/gallery.rs](support/gallery.rs) holds device setup, a plain chart
 frame and PNG checks. [support/styled.rs](support/styled.rs) holds the shared
 chrome, colourbar and export of the 1200 × 800 designed scenes. Each chart's
@@ -170,6 +169,7 @@ images are not in the README.
   그리는 예제와 함수를 가리킨다. `main`에서 사례 목록을 만드는 예제는 사례 이름으로 적었고,
   사례 이름이 곧 출력 파일 이름이다.
 - **실행**: 명령은 저장소 루트 기준이다. 첫 인자가 출력 경로이며, 창 없이 GPU 어댑터만 있으면 된다.
+  GPU가 없는 장비에서는 Mesa lavapipe 같은 소프트웨어 Vulkan 드라이버를 설치해 쓴다.
 - **README에 없는 출력**: `steps.png`(계단 보간 세 가지 비교), `gradient.png`(데이터 단위
   격자 화살표와 격자 색 지도), `mixed-axes.png`(서브플롯 안의 보조 Y축)처럼 기능 확인용
   출력도 같은 예제가 함께 만든다.
