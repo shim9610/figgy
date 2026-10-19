@@ -1834,7 +1834,7 @@ pub fn create_bar_style_map(
     BarStyleMap { bind_group }
 }
 
-/// Bind group layout for the constellation star pass's per-series data
+/// Bind group layout for the Milkyway star pass's per-series data
 /// (group 3 of the stars pipeline): the arc-length prefix and the column
 /// pool as read-only storage plus a small offsets uniform. Read-only storage
 /// in the vertex stage is core WebGPU; the GL-downlevel adapters that lack

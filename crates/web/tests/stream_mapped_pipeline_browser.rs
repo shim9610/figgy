@@ -105,6 +105,8 @@ async fn dawn_accepts_mapped_scatter_and_errorbar_entries() {
                     index: 2,
                     style: DataScatterPointStyleConfig::default(),
                 }]),
+                point_color_map: None,
+                point_size_map: None,
             },
             err_x: ErrorRef::Symmetric { column: "e".into() },
             err_style: DataErrorBarStyleConfig {

@@ -152,7 +152,7 @@ fn annotation_raster_for_chart(
 /// Derive the scaled display config and centered panel for a surface.
 ///
 /// The whole document ([`Config::document_area`], the union of the parent's
-/// area and every overlay's own area) is fitted to the surface. The returned
+/// area and every subplot's area) is fitted to the surface. The returned
 /// rect is where the parent's `chart_area` lands, the `panel_rect` that
 /// `create_chart_view` and `refresh_axis` take; for a document without
 /// subplots it is the centered panel itself.
@@ -218,7 +218,7 @@ impl RendererDeviceCaps {
 
 /// The largest pool the renderer can actually bind, given the device.
 ///
-/// The arc-scan compute and the constellation star pass bind the entire pool
+/// The arc-scan compute and the Milkyway star pass bind the entire pool
 /// buffer as one storage binding, so the pool is capped by BOTH
 /// `max_storage_buffer_binding_size` and `max_buffer_size`. `try_new` clamps
 /// the caller's requested capacity to this instead of letting an oversized
@@ -3022,7 +3022,7 @@ pub struct Renderer {
     neutral_point_value_map_bg: wgpu::BindGroup,
     _neutral_point_value_map_charge: crate::gpu_memory::SharedCharge,
     data_selection_bgl: wgpu::BindGroupLayout,
-    /// Constellation star-pass data layout (arc prefix + pool + offsets) —
+    /// Milkyway star-pass data layout (arc prefix + pool + offsets) —
     /// shared by the stars pipeline and every per-series star bind group.
     star_data_bgl: wgpu::BindGroupLayout,
     /// Field data layout (pool + grid table + levels + colourmap stops + lookup
@@ -17607,10 +17607,9 @@ impl<'w> WindowedRenderer<'w> {
 
     /// Draw one frame.
     ///
-    /// Acquires the current swap-chain texture, runs the mutable prepare
-    /// phase (`prepare(items)`) before any pass opens, then builds an
-    /// encoder + render pass, records via `paint_prepared`, and submits and
-    /// presents. The caller is only responsible for processing per-panel
+    /// Runs the mutable prepare phase (`prepare(items)`), then acquires the
+    /// current swap-chain texture, builds an encoder + render pass, records
+    /// via `paint_prepared`, and submits and presents. The caller is only responsible for processing per-panel
     /// dirty flags (`chart.consume_*_dirty()` → `refresh_axis`).
     pub fn draw(&mut self, clear: crate::color::Color, items: &[ChartDrawItem<'_>]) -> Result<()> {
         let prepared = self.inner.prepare(items)?;
@@ -17630,7 +17629,8 @@ impl<'w> WindowedRenderer<'w> {
 
     /// Draw one frame using a prepared data token owned by the host.
     ///
-    /// This still records the surface composition pass (`grid -> data -> decoration`),
+    /// This still records the surface composition pass (grid, annotation
+    /// underlay, data, decorations, annotation overlay),
     /// but it does not rerun `prepare`: no transform uniform write, styled
     /// pipeline ensure, or arc-prefix compute unless the host prepared a new
     /// token first.

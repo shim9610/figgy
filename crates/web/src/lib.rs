@@ -5092,12 +5092,21 @@ mod web {
             serde_json::to_string(&layer).map_err(js_err)
         }
 
-        /// Fit BOTH axes to the union of every registered series, leaving a
-        /// uniform `padding` fraction of the data span as margin on each
-        /// side (`0.0` = no padding, `0.05` = 5% top/bottom/left/right).
-        /// This is the whole fit policy — no rounding of the range ends;
-        /// ticks land on nice values inside the range by themselves. Hosts
-        /// should call this instead of re-deriving ranges.
+        /// Fit the axes of the active layer to the union of that layer's
+        /// series, leaving a uniform `padding` fraction of the data span as
+        /// margin on each side (`0.0` = no padding, `0.05` = 5%
+        /// top/bottom/left/right). This is the whole fit policy — no rounding
+        /// of the range ends; ticks land on nice values inside the range by
+        /// themselves. Hosts should call this instead of re-deriving ranges.
+        ///
+        /// The active layer (`set_active_layer`) decides which axes move and
+        /// which series they fit (`Config::layer_of_series`): `Base` and
+        /// `Annotations` fit `bottom_x` and `left_y` to the base series only,
+        /// so a series an overlay or a subplot draws never widens them;
+        /// `Overlay(n)` fits that overlay's Y axis; `Subplot(i)` fits the
+        /// subplot's X and Y axes (a linked axis moves its link group);
+        /// `SubplotOverlay(i, n)` fits that subplot overlay's Y axis. To fit
+        /// every layer, set each layer active in turn and call this again.
         ///
         /// Each series contributes its exact original GPU primitive domain:
         /// valid adjacent segments for line-only mode, paired finite points
@@ -5123,15 +5132,28 @@ mod web {
                     .await
                     .map_err(js_err)?;
             }
+            // The annotation layer draws on the base axes.
+            let layer = match self.renderer.active_layer(self.chart_id).map_err(js_err)? {
+                renderer::LayerRef::Annotations => renderer::LayerRef::Base,
+                layer => layer,
+            };
             let token = self
                 .renderer
                 .begin_fit_commit(self.chart_id)
                 .map_err(js_err)?;
+            let mut series = series;
             let prepared =
                 self.prepare_series_extent_cache(&series, &self.column_revisions, true)?;
+            // The cache keeps every series' extent job; only the active
+            // layer's series take part in this fit.
+            let config = self.chart_config();
+            series.retain(|cfg| config.layer_of_series(&cfg.series_id) == layer);
             let mut jobs = Vec::new();
-            jobs.try_reserve(prepared.extents.len()).map_err(js_err)?;
-            jobs.extend(prepared.extents.values().cloned());
+            jobs.try_reserve(series.len()).map_err(js_err)?;
+            jobs.extend(series.iter().filter_map(|cfg| {
+                let request = crate::series_extent_request_from(&self.column_revisions, cfg)?;
+                prepared.extents.get(&request.key).cloned()
+            }));
             self.publish_series_extent_cache(prepared);
 
             let mut x_ext = FitExtent::EMPTY;
@@ -5175,9 +5197,45 @@ mod web {
             if !self.alive.get() {
                 return Err(js_err("chart was dropped while auto_fit_all was pending"));
             }
-            self.renderer
-                .commit_auto_fit_all_if_current(&token, &x_ext, &y_ext, padding)
-                .map_err(js_err)?;
+            if layer == renderer::LayerRef::Base {
+                self.renderer
+                    .commit_auto_fit_all_if_current(&token, &x_ext, &y_ext, padding)
+                    .map_err(js_err)?;
+            } else {
+                // The same staleness rule as the base commit: a range, scale,
+                // geometry or column change during the wait rejects the fit.
+                if self
+                    .renderer
+                    .begin_fit_commit(self.chart_id)
+                    .map_err(js_err)?
+                    != token
+                {
+                    return Err(js_err(
+                        "axis range/scale, ordered fit geometry, or source column content changed",
+                    ));
+                }
+                let mut chart = Chart::new(self.chart_config().clone());
+                match layer {
+                    renderer::LayerRef::Overlay(index) => {
+                        chart.auto_fit_overlay_y_extent(index, &y_ext, padding);
+                    }
+                    renderer::LayerRef::Subplot(index) => {
+                        chart.auto_fit_subplot_x_extent(index, &x_ext, padding);
+                        chart.auto_fit_subplot_y_extent(index, &y_ext, padding);
+                    }
+                    renderer::LayerRef::SubplotOverlay(index, overlay) => {
+                        let mut config = chart.config().clone();
+                        if let Some(subplot) = config.subplots.get_mut(index) {
+                            let mut inner = Chart::new(subplot.config.clone());
+                            inner.auto_fit_overlay_y_extent(overlay, &y_ext, padding);
+                            subplot.config = inner.config().clone();
+                        }
+                        chart = Chart::new(config);
+                    }
+                    renderer::LayerRef::Base | renderer::LayerRef::Annotations => {}
+                }
+                self.replace_chart_config(chart.config().clone())?;
+            }
             self.request_host_redraw();
             Ok(())
         }
@@ -6047,6 +6105,8 @@ mod web {
                     source_id,
                     point_index,
                 } => {
+                    // Point-bearing series: lines, markers and point vectors,
+                    // whose anchors pick and highlight like markers.
                     let points =
                         self.chart_series()
                             .iter()
@@ -6054,14 +6114,24 @@ mod web {
                                 let style = serde_json::to_value(&s.render_type).unwrap();
                                 style.as_object().unwrap().values().next().is_some_and(|v| {
                                     v["line"].is_object() || v["scatter"].is_object()
-                                })
+                                }) || matches!(
+                                    vector_columns(&s.render_type),
+                                    Some(VectorColumns::Points { .. })
+                                )
                             })
                             .collect::<Vec<_>>();
                     let Some(index) = points.iter().position(|s| s.series_id == *series_id) else {
                         return Ok(false);
                     };
                     let series = points[shift(index, dy, points.len())];
-                    let count = self.columns[&series.x_column].min(self.columns[&series.y_column]);
+                    let mut count =
+                        self.columns[&series.x_column].min(self.columns[&series.y_column]);
+                    // A point vector draws only where all four columns have a value.
+                    if let Some(VectorColumns::Points { u, v, .. }) =
+                        vector_columns(&series.render_type)
+                    {
+                        count = count.min(self.columns[u]).min(self.columns[v]);
+                    }
                     *series_id = series.series_id.clone();
                     *source_id = series.source_id.clone();
                     *point_index = shift(*point_index, dx, count);
