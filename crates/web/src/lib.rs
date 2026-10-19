@@ -5196,14 +5196,19 @@ mod web {
         /// of the range ends; ticks land on nice values inside the range by
         /// themselves. Hosts should call this instead of re-deriving ranges.
         ///
-        /// The active layer (`set_active_layer`) decides which axes move and
-        /// which series they fit (`Config::layer_of_series`): `Base` and
-        /// `Annotations` fit `bottom_x` and `left_y` to the base series only,
-        /// so a series an overlay or a subplot draws never widens them;
-        /// `Overlay(n)` fits that overlay's Y axis; `Subplot(i)` fits the
-        /// subplot's X and Y axes (a linked axis moves its link group);
-        /// `SubplotOverlay(i, n)` fits that subplot overlay's Y axis. To fit
-        /// every layer, set each layer active in turn and call this again.
+        /// The active layer (`set_active_layer`) decides which axes move:
+        /// `Base` and `Annotations` fit the parent's `bottom_x` and `left_y`,
+        /// `Subplot(i)` fits subplot `i`'s, and `Overlay(n)` /
+        /// `SubplotOverlay(i, n)` fit that overlay's Y axis only. An axis fits
+        /// every series drawn against it (`Config::layer_of_series`). A linked
+        /// axis (`link_x`, `link_y`) is one axis shared by its link group: it
+        /// fits the series of every chart in the group and the range moves
+        /// the whole group, whichever member is active. X and Y links are
+        /// followed separately. An overlay shares its chart's X axis and has
+        /// its own Y axis, so its series count towards that X axis and not
+        /// towards `left_y`. An axis that is not linked fits its own chart's
+        /// series only; to fit every layer, set each layer active in turn and
+        /// call this again.
         ///
         /// Each series contributes its exact original GPU primitive domain:
         /// valid adjacent segments for line-only mode, paired finite points

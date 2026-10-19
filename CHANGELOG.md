@@ -528,19 +528,23 @@ example advances to 0.15.0 with the renderer dependency and is not published
 - `FiggyBoundedChart` accepts the `"radar"` family in `create` /
   `set_document` (see Radar charts).
 - Behaviour change: `FiggyChart::auto_fit_all(padding)` and
-  `<figgy-chart>.auto_fit_all(padding)` fit only the active layer, from the
-  series of that layer (`Config::layer_of_series`), instead of every
-  registered series. On `Base`, and on the annotation layer, which draws on
-  the base axes, they fit `bottom_x` and `left_y` from the base layer's
-  series only: series listed by an overlay or a subplot do not widen the
-  base axes. On `Overlay(n)` they fit that overlay's Y axis, on `Subplot(i)`
-  subplot `i`'s X and Y axes (a linked axis moves its link group, as
-  `auto_fit_subplot` does) and on `SubplotOverlay(i, n)` that subplot
-  overlay's Y axis, each from that layer's series. A document without
-  overlays or subplots fits as before. To fit every layer, a host calls
-  `set_active_layer` and then `auto_fit_all` for each layer, or calls
+  `<figgy-chart>.auto_fit_all(padding)` fit only the axes of the active
+  layer, instead of the parent's axes from every registered series. On
+  `Base`, and on the annotation layer, which draws on the base axes, they
+  fit the parent's `bottom_x` and `left_y`; on `Subplot(i)` subplot `i`'s;
+  on `Overlay(n)` and `SubplotOverlay(i, n)` that overlay's Y axis only.
+  Each axis fits the series drawn against it (`Config::layer_of_series`).
+  A linked axis (`link_x`, `link_y`) fits the series of every chart in its
+  link group and moves the whole group, whichever member is active; X and
+  Y links are followed separately. Overlay series count towards their
+  chart's X axis, which they share, and not towards `left_y`. A series of
+  an unlinked subplot no longer widens the parent's axes. A document
+  without overlays or subplots fits as before. To fit every layer, a host
+  calls `set_active_layer` and then `auto_fit_all` for each layer, or calls
   `auto_fit_overlay_y` / `auto_fit_subplot` with explicit columns.
   Streaming is unchanged: streamed documents have no overlays or subplots.
+- A base `auto_fit_all` now also moves the subplots whose axes link to the
+  parent (`commit_auto_fit_all_if_current` resyncs the links).
 - `FiggyChart::step_selection` steps a selected point vector
   (`DataRenderType::Vector` with `VectorComponents::Points`) along its
   series' points, as it steps scatter points.
