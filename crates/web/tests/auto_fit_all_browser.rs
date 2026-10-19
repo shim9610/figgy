@@ -254,3 +254,69 @@ async fn auto_fit_all_fits_only_the_active_layer() {
     assert_eq!(range(&subplot["overlays"][0]["y_axis"]), (0.0, 400.0));
     chart.frame().expect("frame after the layer fits");
 }
+
+#[wasm_bindgen_test(async)]
+async fn auto_fit_all_fits_a_linked_axis_to_its_whole_link_group() {
+    let mut chart = FiggyChart::create(canvas())
+        .await
+        .expect("FiggyChart.create");
+    for (id, values) in [
+        ("x", [0.0, 1.0, 2.0, 3.0, 4.0]),
+        ("small", [0.0, 1.0, 2.0, 3.0, 4.0]),
+        ("large", [0.0, 100.0, 200.0, 300.0, 400.0]),
+        ("far", [10.0, 11.0, 12.0, 13.0, 14.0]),
+    ] {
+        chart
+            .register_column_f32(id, &values)
+            .expect("register column");
+    }
+    chart
+        .add_line_series("base", "x", "small", 1.0, "")
+        .expect("base series");
+    chart
+        .add_line_series("cell", "far", "large", 1.0, "")
+        .expect("subplot series");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&chart.get_config().expect("get_config")).expect("config json");
+    let cell = config.clone();
+    // The subplot's X axis follows the parent's; its Y axis is its own.
+    config["subplots"] =
+        serde_json::json!([{ "config": cell, "series": ["cell"], "link_x": "Parent" }]);
+    chart
+        .set_config(&config.to_string())
+        .expect("add a linked subplot");
+    chart
+        .ensure_extent_engine()
+        .await
+        .expect("ensure_extent_engine");
+    let fitted = |chart: &FiggyChart| -> serde_json::Value {
+        serde_json::from_str(&chart.get_config().expect("get_config")).expect("config json")
+    };
+
+    for layer in [
+        serde_json::json!("Base"),
+        serde_json::json!({ "Subplot": 0 }),
+    ] {
+        chart
+            .set_active_layer(&layer.to_string())
+            .expect("activate the layer");
+        chart.auto_fit_all(0.0).await.expect("fit the layer");
+        let config = fitted(&chart);
+        // Whichever member is active, the shared X axis spans both charts'
+        // series and both charts carry it.
+        assert_eq!(range(&config["bottom_x"]), (0.0, 14.0), "{layer}");
+        assert_eq!(
+            range(&config["subplots"][0]["config"]["bottom_x"]),
+            (0.0, 14.0),
+            "{layer}"
+        );
+    }
+    // The unlinked Y axes were each fitted from their own chart's series.
+    let config = fitted(&chart);
+    assert_eq!(range(&config["left_y"]), (0.0, 4.0));
+    assert_eq!(
+        range(&config["subplots"][0]["config"]["left_y"]),
+        (0.0, 400.0)
+    );
+    chart.frame().expect("frame after the linked fits");
+}
