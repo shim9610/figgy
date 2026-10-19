@@ -645,8 +645,9 @@ fn vs_area(in: VsIn, base: VsAreaBase, @builtin(vertex_index) vid: u32) -> AreaO
     let y_base = select(bottom.y0, bottom.y1, at_b);
     var ndc = data_to_ndc(x, y_top);
     if (on_base) {
-        // A polar baseline is a ring (the centre at the axis start), so the
-        // base corner projects like a sample at the same angle.
+        // A polar baseline is a ring (the inner ring at or below the axis
+        // start, which is the centre when `inner_radius_fraction` is 0), so
+        // the base corner projects like a sample at the same angle.
         if (to_series || transform.polar_angle.x > 0.5) {
             ndc = data_to_ndc(x, y_base);
         } else {

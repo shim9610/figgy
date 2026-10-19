@@ -1,7 +1,10 @@
 //! Polar plots: ordinary line and scatter series drawn in (angle, radius)
-//! through `Config.polar`. The columns stay the host's (θ, r); the renderer
-//! projects them, and the angle and radius axes keep their ticks, labels and
-//! grid as rings and spokes.
+//! through `Config.polar`. Each series' `x_column` holds the angle in
+//! `polar.angle_unit` and its `y_column` the radius; the renderer projects
+//! them, and the angle and radius axes keep their ticks, labels and grid as
+//! spokes and rings. `set_y_range` sets the radius axis. `set_x_range` only
+//! chooses which angle ticks, spokes and labels are drawn: 360° (or 2π) is
+//! always one full turn, and `sector` limits the drawn part of the circle.
 //! cargo run --locked -p figgy-renderer --example polar_plot -- target/polar-plot
 #[allow(dead_code)]
 #[path = "support/gallery.rs"]

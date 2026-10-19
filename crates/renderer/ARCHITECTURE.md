@@ -12,9 +12,10 @@ adds every renderer's `gpu_memory_usage()`. See [RADIAL.md](RADIAL.md),
 For runnable examples, start with the [README](https://github.com/shim9610/figgy/blob/master/README.md).
 
 Overlay layers, subplots, the annotation layer, polar charts, radar charts,
-vector series, point colour and size maps, and line fills and step lines are on
-the repository's master branch and are not in the published figgy-renderer
-0.17.0. Until the next release, depend on the repository:
+vector series, point colour and size maps, line fills and step lines, and
+independent titles on the bounded charts (`chart_title`) are on the
+repository's master branch and are not in the published figgy-renderer 0.17.0
+and figgy-model 0.11.0. Until the next release, depend on the repository:
 
 ```toml
 renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
@@ -51,8 +52,8 @@ JavaScript API for every renderer. [Browser example scope](https://github.com/sh
 
 The diagram omits the annotation underlay and overlay textures, overlay layers
 and subplots. Its area 6 is out of date: arc prefixes serve dashed, sketch and
-Milkyway lines (Constellation uses none), and each series keeps up to eight
-immutable arc results rather than a copy-on-write scratch.
+Milkyway lines (the Constellation style adds none), and each series keeps up to
+eight immutable arc results rather than a copy-on-write scratch.
 
 The renderer-owned chart registry is the persistent single source of truth
 (SSoT) for chart state that the browser wrapper uses.
@@ -280,7 +281,8 @@ The example facade enforces that gate; wasm-bindgen itself checks borrows and
 does not serialize or queue calls. Competing application calls to the facade
 are rejected while busy, rather than queued. Raw kernel users must prevent
 same-object access until an async mutable borrow settles, including on failure;
-see [WASM call ownership](WASM.md#raw-kernel-call-ownership).
+see the Korean-language [raw kernel call ownership](WASM.md#raw-kernel-call-ownership)
+rules.
 
 Web mutation API contracts:
 
@@ -454,7 +456,7 @@ area, while `export_panel_*` keeps the parent's area.
 
 아래 구조 설명은 직교 좌표 `Renderer`의 네이티브 렌더링, 데이터 소유권, GPU 메모리와 프레임 갱신 판단에 해당한다. 원형·범주형 막대·박스플롯·레이더 차트는 별도 렌더러(`RadialRenderer`, `CategoricalRenderer`, `BoxPlotRenderer`, `RadarRenderer`)가 그린다. 각 렌더러는 변경할 수 없는 준비 프레임을 반환하고 자체 GPU 집계(`gpu_memory_usage()`)와 예산(`set_memory_budget(bytes)`)을 관리하며, 컬럼 풀·자동 범위 맞춤 작업·스트리밍을 사용하지 않는다. 전체 GPU 메모리를 보고하는 호스트는 모든 렌더러의 `gpu_memory_usage()`를 더한다. 자세한 내용은 [RADIAL.md](RADIAL.md), [CATEGORICAL.md](CATEGORICAL.md), [BOXPLOT.md](BOXPLOT.md), [RADAR.md](RADAR.md)를 참고한다. 실행 가능한 예제는 [README](https://github.com/shim9610/figgy/blob/master/README.ko.md)에서 시작한다.
 
-오버레이 레이어, 서브플롯, 주석 레이어, 극좌표 차트, 레이더 차트, 벡터 시리즈, 점 색상·크기 매핑, 선 채우기와 계단 보간은 저장소 master 브랜치에 있으며 crates.io에 배포된 figgy-renderer 0.17.0에는 아직 없다. 다음 릴리스 전에는 저장소를 의존성으로 지정한다.
+오버레이 레이어, 서브플롯, 주석 레이어, 극좌표 차트, 레이더 차트, 벡터 시리즈, 점 색상·크기 매핑, 선 채우기와 계단 보간, 원형·막대·박스플롯 차트의 독립 제목(`chart_title`)은 저장소 master 브랜치에 있으며 crates.io에 배포된 figgy-renderer 0.17.0과 figgy-model 0.11.0에는 아직 없다. 다음 릴리스 전에는 저장소를 의존성으로 지정한다.
 
 ```toml
 renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
@@ -465,7 +467,7 @@ renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figg
 주요 기능은 다음과 같다. 선택 기능은 해당 API나 옵션을 사용할 때만 동작한다.
 
 - **상주 GPU 컬럼 풀**: 여러 컬럼이 하나의 GPU 버퍼를 공유하며, 충분한 크기의 첫 빈 공간에 할당한다. 컬럼을 제거하면 두 버퍼를 번갈아 쓰는 재배치를 예약하고, 호스트가 `process_pending_maintenance()`나 `defragment()`를 호출할 때 실행한다. `DefragPolicy::OnAllocFailure`를 지정하면 공간이 부족한 업로드도 한 번 재배치한 뒤 다시 시도한다. 기본 정책은 `Manual`이다. `HiLoColumnSource`로 올린 값은 두 f32의 hi/lo 쌍으로 저장하므로 큰 타임스탬프에서도 작은 값 차이를 보존한다. 업로드할 때 최소·최대·최소 양수 값을 저장해 자동 범위 맞춤에 사용한다. 점선의 누적 경로 길이처럼 점마다 필요한 값은 GPU 스캔 연산(`line_arc.wgsl`)으로 계산한다.
-- **비상주 렌더링**: 컬럼의 ID·길이·인코딩·리비전만 등록하고 전체 데이터를 GPU 풀에 보관하지 않는다. 렌더러가 제한된 크기로 원본 구간을 요청해 빠짐없이 그린다. 화면이나 출력 조건이 바뀌면 호스트가 같은 원본을 다시 공급한다. 등고선, 은하수 모드의 선, 극좌표 차트, 선 채우기와 계단 보간, 벡터 시리즈, 점 색상·크기 매핑, 오버레이 레이어나 서브플롯이 있는 문서는 스트리밍 원본을 명시적인 오류로 거부한다. 실행 가능 조건, 지원 스타일, 취소와 완료 결과 조회는 [WASM.md](WASM.md)를 참고한다.
+- **비상주 렌더링**: 컬럼의 ID·길이·인코딩·리비전만 등록하고 전체 데이터를 GPU 풀에 보관하지 않는다. 렌더러가 제한된 크기로 원본 구간을 요청해 빠짐없이 그린다. 화면이나 출력 조건이 바뀌면 호스트가 같은 원본을 다시 공급한다. 등고선, 은하수 모드의 선, 극좌표 차트, 선 채우기와 계단 보간, 벡터 시리즈, 점 색상·크기 매핑, 오버레이 레이어나 서브플롯이 있는 문서는 스트리밍 원본을 명시적인 오류로 거부한다. 실행 가능 조건, 지원 스타일, 취소와 완료 결과 조회는 [WASM 가이드](WASM.md#exact-streaming)를 참고한다.
 - **레이어 합성**: 격자, 주석 아래층, 데이터, 축·라벨·범례, 주석 위층 순서로 그려 격자가 데이터를 가리지 않게 한다. 축 이미지는 기본적으로 `Grid`와 `Decoration` 레이어로 나눈다. 기존 단일 패스 방식은 `AxisLayerKind::All`로 사용할 수 있다.
 - **원본 데이터 보존**: 렌더러와 웹 래퍼는 모델의 설정을 따르며 원본 좌표, 데이터 출처, 축과 데이터의 대응 관계를 임의로 바꾸지 않는다. 화면 밖 자르기, 로그축에서 0 이하 값 제외, NaN 제외, 안티앨리어싱은 표시 과정에만 적용한다.
 - **창 없이 PNG 출력**: 배율 0.25~8.0(약 24~768 DPI)으로 GPU에서 그린 뒤 RGBA 또는 PNG 바이트를 반환한다. 범위를 벗어난 배율은 `clamp_export_scale`이 범위 안으로 제한하며, 배율을 적용한 렌더 타깃은 장치의 텍스처 크기 한도 안에 들어와야 한다. 비동기 API를 기본으로 제공하며 네이티브에서는 동기 래퍼도 쓸 수 있다.
@@ -486,6 +488,7 @@ renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figg
 
 ![렌더러 라이브러리 구조: 컬럼 기반·전용 차트 경로와 화면·이미지 출력](https://raw.githubusercontent.com/shim9610/figgy/807327081b97d20964cc96ce543dfb93a27499be/crates/renderer/assets/architecture-state-flow-kr.png)
 
+그림에는 주석 아래층·위층 텍스처, 오버레이 레이어, 서브플롯이 빠져 있다. 6번 영역의 설명도 현재 구현과 다르다. 누적 경로 길이는 점선과 스케치·은하수 선에 쓰이며 별자리 스타일은 따로 만들지 않는다. 시리즈마다 쓰기 시 복사(copy-on-write) 임시 버퍼 대신 불변 결과를 최대 8개 보관한다.
 
 ### 렌더링 계약
 
@@ -563,7 +566,7 @@ GPU 피킹은 차트 ID를 받는 API로 제공한다. `enable_gpu_picking()`을
 
 웹에서도 같은 소유권 경계를 따른다. `<figgy-chart>`는 내부 캔버스, `ready` Promise, rAF 루프, ResizeObserver·DPR 처리, 포인터 변환, 비동기 호출 직렬화, ID 등록·해제를 담당한다. 이 과정을 직접 제어해야 할 때만 저수준 WASM 클래스인 `FiggyChart`를 사용한다.
 
-웹의 초기화와 객체 수명 관리 규칙은 다음과 같다. 첫 프레임 준비는 실제 `GPUQueue.onSubmittedWorkDone()` Promise가 완료될 때까지 기다린다. 큐 요청이 거부되거나 장치가 소멸하면 생성·준비 오류로 전달하며 첫 프레임 성공 이벤트를 보내지 않는다.
+웹의 초기화와 객체 수명 관리 규칙은 다음과 같다([네이티브·브라우저 생성자와 사전 준비 비교](API.md#construction-and-prewarming)도 참고한다). 첫 프레임 준비는 실제 `GPUQueue.onSubmittedWorkDone()` Promise가 완료될 때까지 기다린다. 큐 요청이 거부되거나 장치가 소멸하면 생성·준비 오류로 전달하며 첫 프레임 성공 이벤트를 보내지 않는다.
 
 | API·상태 | 동작 규칙 |
 |---|---|
@@ -571,6 +574,8 @@ GPU 피킹은 차트 ID를 받는 API로 제공한다. `enable_gpu_picking()`을
 | `<figgy-chart>` 시작 | `web.create / first frame / finished`와 `figgy-ready`를 알린 뒤 백그라운드 피킹 준비를 시작한다. 실패하면 `operation: "prewarm_gpu_picking"`, `recoverable: true`인 `figgy-error`를 보낸다. 이미 완료된 `ready`와 렌더링 루프는 유지한다. |
 | 비동기 호출 직렬화 | 연결 세대와 커널을 확인하는 작업 토큰으로 생성, 전체 사전 준비, 피킹 준비, 출력, 첫 프레임 대기, 범위 엔진 준비, 상주 자동 범위 맞춤과 피킹을 직렬화한다. 작업 중에는 rAF·포인터·대리 호출이 WASM에 접근하지 않으며 마지막 크기 변경과 포인터 해제만 보관했다가 종료 후 적용한다. 스트리밍 `auto_fit_all()`은 이 토큰 없이 렌더러에 범위 계산을 요청하고 스트림 완료를 기다린다. 스트리밍 실행기가 커널 호출을 계속하고 최신 차트 상태 요청을 반영한다. 범위 계산 자체는 busy를 켜지 않지만 별도 작업이 실행 중이면 busy일 수 있다. |
 | 연결 해제·재연결 | 연결 해제 시 이전 세대를 무효화하고 rAF와 관찰자를 정리한다. 작업 중인 커널은 작업 종료 후 해제한다. 이전 세대의 완료 처리는 새 토큰·커널에 영향을 주거나 새 세대의 크기 변경·포인터 해제·객체 해제를 수행하지 않는다. |
+
+이 직렬화는 예제 래퍼가 수행한다. wasm-bindgen은 대여 상태만 검사하며 호출을 직렬화하거나 대기열에 넣지 않는다. 래퍼가 작업 중일 때 애플리케이션의 경쟁 호출은 대기하지 않고 거부된다. 저수준 커널을 직접 쓰는 호스트는 비동기 가변 대여가 끝날 때까지(실패한 경우 포함) 같은 객체에 접근하지 않아야 한다. 자세한 내용은 [저수준 커널 호출 소유권](WASM.md#raw-kernel-call-ownership)을 참고한다.
 
 웹 상태 변경 API는 다음과 같다.
 
@@ -607,7 +612,7 @@ pool 컬럼 (x, y) ──┐                       Transform uniform (144 B writ
    누적 경로 길이 버퍼 ──► 라인 파이프라인 정점 슬롯 4/5 (dash 위상)
 ```
 
-컴퓨트 명령은 호스트의 렌더 패스보다 먼저 GPU 큐에 제출한다. 따라서 통합 환경에서도 큐의 실행 순서에 따라 계산 결과가 준비된 뒤 그리게 된다.
+컴퓨트 명령은 호스트의 렌더 패스보다 먼저 GPU 큐에 제출한다. 따라서 지원하는 모든 통합 환경(winit·egui·웹)에서 API를 바꾸지 않아도 큐의 실행 순서에 따라 계산 결과가 준비된 뒤 그리게 된다.
 계산 키에는 풀 배치 세대, X·Y 오프셋과 할당 세대, 길이, 좌표 변환의 앞 64바이트(축 범위·로그 플래그·픽셀과 패널 매핑), 선의 계단·극좌표 호 모드 값, 선택적인 별 배치 간격이 포함된다. 시리즈마다 최근 결과 8개를 보관하며, 없는 키는 새 버퍼에서 계산한다. 기존 결과는 덮어쓰지 않는다.
 현재 누적 경로 길이 스캔은 `u32::MAX = 4,294,967,295`로 주소를 표현할 수 있는 범위에서 동작한다. 시리즈 길이나 풀 원소 오프셋이 `u32` 범위를 넘으면 점선용 누적 경로 계산을 생략한다. 새 시리즈 ID를 추가할 때 이미 256개 ID가 캐시에 있으면 무제한 증가를 막기 위해 경로 길이 캐시 전체를 비운다.
 

@@ -5,10 +5,10 @@
 Rust 렌더러의 WASM/WebGPU 지원과 `crates/web`의 예제 래퍼를 구분한다.
 아래 `FiggyChart`, `<figgy-chart>`와 JavaScript 호출 방법은 브라우저 통합 예제의 계약이다.
 Rust 라이브러리가 모든 차트를 JavaScript API로 제공한다는 뜻은 아니다.
-`FiggyChart`와 `<figgy-chart>`는 직교 좌표 차트용이다. 원형·범주형 막대·박스플롯·레이더 차트는 같은 패키지의 저수준 클래스 `FiggyBoundedChart`로 제공하며, `<figgy-chart>`는 이 클래스를 감싸지 않는다([Bounded chart host](#bounded-chart-host) 참고).
+`FiggyChart`와 `<figgy-chart>`는 직교 좌표 차트용이며, `Config.polar`를 켠 극좌표 차트도 그린다. 극좌표에서는 `x_column` 값을 `angle_unit` 단위의 각도로 보고 `zero_angle_degrees`에서부터 재므로, `bottom_x`의 `min` / `max`는 각도 매핑을 바꾸지 않고 그릴 각도 눈금·스포크·라벨만 정한다([극좌표 안내](POLAR.md) 참고). 원형·범주형 막대·박스플롯·레이더 차트는 같은 패키지의 저수준 클래스 `FiggyBoundedChart`로 제공하며, `<figgy-chart>`는 이 클래스를 감싸지 않는다([Bounded chart host](#bounded-chart-host) 참고).
 간단한 빌드·실행 방법은 [예제 안내](https://github.com/shim9610/figgy/blob/master/crates/web/README.md)를 참고한다.
 
-이 문서는 저장소 `master` 브랜치를 기준으로 한다. 브라우저 패키지 `figgy`(소스 버전 0.14.0)는 crates.io에 배포하지 않으므로 이 저장소에서 빌드한다. 레이더 차트, 오버레이 레이어, 서브플롯, 주석 레이어, 벡터 시리즈, 점 색상·크기 매핑은 저장소 master 브랜치에 있으며 crates.io에 배포된 `figgy-renderer 0.17.0` / `figgy-model 0.11.0`에는 아직 없다. 다음 릴리스 전에 Rust 호스트에서 이 기능을 쓰려면 저장소를 의존성으로 지정한다.
+이 문서는 저장소 `master` 브랜치를 기준으로 한다. 브라우저 패키지 `figgy`(소스 버전 0.14.0)는 crates.io에 배포하지 않으므로 이 저장소에서 빌드한다. 극좌표·레이더 차트, 벡터 시리즈, 점 색상·크기 매핑, 면 채움과 계단선, 오버레이 레이어, 서브플롯, 주석 레이어, bounded 차트의 독립 제목은 저장소 master 브랜치에 있으며 crates.io에 배포된 `figgy-renderer 0.17.0` / `figgy-model 0.11.0`에는 아직 없다. 다음 릴리스 전에 Rust 호스트에서 이 기능을 쓰려면 저장소를 의존성으로 지정한다.
 
 ```toml
 renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
@@ -467,7 +467,7 @@ chart.set_series(JSON.stringify(series));  // GPU 스타일 재빌드 포함
 
 - **메인 스레드 사용**: 축·장식의 CPU 렌더링은 메인 스레드에서 실행한다. 이 래스터는 축·라벨·장식이나 캔버스 크기가 바뀐 프레임에서만 다시 실행하며, 비용은 캔버스 크기·글자 수·환경에 따라 달라진다. `FiggyChart.create`와 `FiggyBoundedChart.create`는 `HtmlCanvasElement`만 받으므로 이 패키지는 Web Worker에서 실행할 수 없다. Worker에서 그리려면 `OffscreenCanvas`를 `wgpu::SurfaceTarget`으로 넘기는 래퍼를 Rust로 직접 작성한다. SharedArrayBuffer를 쓰는 WASM 스레드를 사용하려면 서버의 COOP/COEP 헤더로 교차 출처 격리를 설정해야 한다.
 - **WebGPU 지원**: HTTPS나 루프백 주소에서 `navigator.gpu` 존재 여부와 어댑터·장치 요청 성공을 확인한다. 지원 여부는 브라우저 버전뿐 아니라 OS·GPU·드라이버·브라우저 정책에 따라 다르다. 이 렌더러는 컴퓨트·스토리지 버퍼와 WebGPU 초기화를 사용하므로 wgpu의 `webgl` 기능만 켜서 WebGL2로 대체할 수 없다. 일반 환경에서는 브라우저의 기본 GPU 선택을 따른다. 실제 GPU가 없는 Linux 검증 환경에서만 별도 실행 설정으로 SwiftShader Vulkan을 사용할 수 있다.
-- **폰트**: 내장 Liberation Sans에는 한중일 문자가 없다. 한글을 표시하려면 `register_font(Uint8Array)`로 TTF/OTF 파일을 등록한다. 반환된 글꼴 이름을 `font`에 지정하면 그 폰트로 그린다. 지정하지 않아도 선택한 폰트에 없는 한글은 글자마다 등록 폰트에서 찾아 그린다. fontdb는 WOFF2를 읽지 못한다. 스케치 모드는 내장 Comic Neue(OFL)를 사용한다. 이 폰트에 없는 한중일·그리스 문자 등은 글자마다 `font`의 폰트로 그리고, 그 폰트에도 없으면 등록 폰트와 Liberation Sans에서 찾는다. 따라서 등록한 한글 폰트는 스케치 모드에서도 사용할 수 있다.
+- **폰트**: 내장 Liberation Sans에는 한중일 문자가 없다. 한글을 표시하려면 `register_font(Uint8Array)`로 TTF/OTF/TTC 파일을 등록한다. 반환된 글꼴 이름을 `font`에 지정하면 그 폰트로 그린다. 지정하지 않아도 선택한 폰트에 없는 한글은 글자마다 등록 폰트에서 찾아 그린다. fontdb는 WOFF2를 읽지 못한다. 스케치 모드는 내장 Comic Neue(OFL)를 사용한다. 이 폰트에 없는 한중일·그리스 문자 등은 글자마다 `font`의 폰트로 그리고, 그 폰트에도 없으면 등록 폰트와 Liberation Sans에서 찾는다. 따라서 등록한 한글 폰트는 스케치 모드에서도 사용할 수 있다.
 - **동기 대기 금지**: WASM에서 `pollster::block_on`을 사용하면 교착 상태가 발생할 수 있다. 구현은 비동기로 작성하고 동기 래퍼는 `#[cfg(not(target_arch = "wasm32"))]`로 네이티브에서만 빌드한다.
 
 ## 5. 빌드 산출물(`crates/web` → `pkg/`)
@@ -520,14 +520,14 @@ cd crates/web && python3 -m http.server 8137   # wasm은 file://로 열 수 없�
 | 포인터 입력 | 웹 래퍼가 포인터 이벤트를 처리한다. 직접 전달할 때는 `on_press(x, y)`, `on_move(dx, dy)`, `on_release()`, `has_selection()`을 사용한다. 이 경로는 활성 레이어를 따른다. `"Annotations"`가 활성이면 선택된 주석의 핸들이 먼저 답하고, 그다음 위치의 주석 항목을 선택해(요소 선택은 지움) `on_move`로 끌며, 주석이 없는 곳을 누르면 아래 공유 요소로 넘어가고 주석 선택을 지운다. `has_selection()`은 요소나 주석이 선택돼 있으면 `true`다. |
 | 선택 표시 | `set_picked_points(json)`은 `PickedPointsConfig` 또는 `null` JSON 문자열로 `Config.picked_points`만 교체한다. `set_picked_data(json)`는 점·막대·셀·등고선 선택을 같은 방식으로 바꾼다. `null`은 표시를 지운다. |
 | 배경 | `set_clear_color(r, g, b, a)`는 선형 RGBA를 성분별 0~1로 제한하고 다시 그리기를 요청한다. 화면 상태만 바꾸므로 Config JSON이나 축 이미지는 갱신하지 않는다. |
-| 출력 | `export_png(scale)`은 PNG의 `Uint8Array`를 비동기로 반환한다. 문서 출력이므로 오버레이 레이어도 함께 합성한다. |
+| 출력 | `export_png(scale)`은 PNG의 `Uint8Array`를 비동기로 반환한다. 문서 출력이므로 오버레이 레이어와 서브플롯도 함께 그린다. |
 | 제목 | `set_title`, `set_x_title`, `set_y_title`, `set_colorbar_title`. 색상 막대 제목에 빈 문자열을 주면 숨긴다. `set_title`은 헬퍼이므로 제목이 제목 영역보다 높으면 `chart_title.top_margin`을 함께 늘린다. 영역에 들어가는 제목은 여백을 바꾸지 않는다. |
 
 점별 스타일은 `set_series(json)` / `get_series()`로 설정하며 전용 WASM 메서드는 없다. 정밀 모드의 산점도는 `point_style_table` / `point_style_index_column` / `point_style_overrides`를, 오차 막대는 `error_bar_style_table` / `error_bar_style_index_column` / `error_bar_style_overrides`를 사용한다. 값 컬럼에 따른 점 색상·크기는 산점도의 `point_color_map` / `point_size_map`으로 지정하며, 색상 매핑에는 `colorbar`가 있어야 한다. 스케치·은하수·별자리 스타일은 이 매핑을 모두 무시한다.
 
 <a id="figgy-chart-kernel"></a>
 
-`element.kernel`로 저수준 WASM `FiggyChart`에 직접 접근할 수 있다. 이 getter는 작업 중이면 `"figgy chart is busy"`, 준비 전이면 준비되지 않았다는 오류를 던진다. 받은 객체로 하는 호출은 웹 래퍼의 작업 중 접근 제한과 수명 관리를 거치지 않는다. 주석 레이어 메서드, `decoration_bounds`, `step_selection`, `selection_details`, `auto_fit_subplot`은 `<figgy-chart>`에 전달 메서드가 없으므로 이 경로로 호출한다. 비동기 `selection_details()`가 끝날 때까지 같은 요소의 다른 호출을 막는다. 연결이 끊기거나 `free()`를 호출하면 커널이 해제되므로 받은 객체를 보관하지 말고 호출할 때마다 `element.kernel`로 다시 얻는다.
+`element.kernel`로 저수준 WASM `FiggyChart`에 직접 접근할 수 있다. 이 getter는 작업 중이면 `"figgy chart is busy"`, 준비 전이면 준비되지 않았다는 오류를 던진다. 받은 객체로 하는 호출은 웹 래퍼의 작업 중 접근 제한과 수명 관리를 거치지 않는다. [주석 레이어 메서드](#annotation-layer), `decoration_bounds`, `step_selection`, `selection_details`, `auto_fit_subplot`은 `<figgy-chart>`에 전달 메서드가 없으므로 이 경로로 호출한다. 비동기 `selection_details()`가 끝날 때까지 같은 요소의 다른 호출을 막는다. 연결이 끊기거나 `free()`를 호출하면 커널이 해제되므로 받은 객체를 보관하지 말고 호출할 때마다 `element.kernel`로 다시 얻는다.
 
 <a id="exact-streaming"></a>
 

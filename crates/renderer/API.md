@@ -16,10 +16,10 @@ until the next release.
 
 ## Package names and features
 
-The Cargo packages are `figgy-renderer` and `figgy-model`. Their Rust library
-names remain `renderer` and `model`. Existing `use renderer::...` imports and
-type identities are preserved. A dependency previously named `renderer` needs
-`package = "figgy-renderer"` when upgrading to a source revision with the rename.
+The Cargo packages are `figgy-renderer` and `figgy-model`, and their Rust
+library names are `renderer` and `model`: code imports `renderer::...` and
+`model::...`, and the dependency names its package with the `package` key, as
+in the line above.
 
 The renderer re-exports model types. Enable its `serde` feature to serialize
 those types; consumers do not need to name `figgy-model` merely to enable serde.
@@ -68,11 +68,15 @@ interaction targets too.
 
 A polar plot is not a renderer of its own: `Config.polar = Some(PolarOptions)`
 makes `Renderer` draw the same columns and `SeriesConfig` in (angle, radius),
-with `bottom_x` as the angle axis and `left_y` as the radius axis. Preparation,
-picking, export and subplots use the same calls as a rectangular chart.
-Decorations follow polar rules: the outer ring registers no hit region, and the
-radius ray turns around the centre when dragged. Annotations place only ratio
-anchors; a data anchor is reported as `RenderWarning::AnnotationSkipped`.
+with `bottom_x` as the angle axis and `left_y` as the radius axis. One turn
+always spans 360° (or 2π) from `zero_angle_degrees`: the angle mapping ignores
+`bottom_x.min` / `max`, which only choose the angle ticks, spokes and labels
+drawn. Preparation, picking, export and subplots use the same calls as a
+rectangular chart. Decorations follow polar rules: the outer ring registers no
+hit region, and the radius ray turns around the centre when dragged.
+Annotations draw only ratio-anchored text and arrows; reference lines, spans
+and data-anchored items are skipped and reported as
+`RenderWarning::AnnotationSkipped`.
 Scatter, line and scatter-line series are drawn, including fills and steps.
 Histograms, fields, contours, error bars, vectors, overlay layers, a
 logarithmic or inverted angle axis, an arc interpolation on a step line and
@@ -119,7 +123,7 @@ field setters:
 | Operation | Config changes |
 | --- | --- |
 | `config_mut()` / `with_axis_range_change(...)` / `with_decoration_change(...)` | Only the fields the caller writes. `config_mut` and `with_axis_range_change` also set the chart's `data_dirty()` and `raster_dirty()` flags; `with_decoration_change` sets only `raster_dirty()`. |
-| `set_x_range(...)` / `set_y_range(...)` | Set both axes in the pair and choose major spacing, minor count, label format and precision from the bottom/left axis's scale. Linear axes retain an existing timestamp format. |
+| `set_x_range(...)` / `set_y_range(...)` | Set both axes in the pair and choose major spacing, minor count, label format and precision from the bottom/left axis's scale. On a linear axis an existing timestamp format is kept and any other format, including a polar `Degrees` or `Radians` format, becomes `Decimal`. On a polar chart `set_x_range` only chooses the angle ticks, spokes and labels drawn. |
 | `auto_fit_x*` / `auto_fit_y*` / `auto_fit_colorbar*` | Derive a range from data or supplied extents with padding, then apply the associated tick and label adjustments. |
 | `with_title(...)` | Replace the title text and grow its band when the measured text is taller than the current band. The band never shrinks. |
 | `with_x_title(...)` / `with_y_title(...)` | Replace the bottom/left axis title text; these helpers do not fit margins. |

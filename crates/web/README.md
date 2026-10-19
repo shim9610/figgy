@@ -7,20 +7,22 @@ a canvas, forwards pointer events, schedules frames and adapts async calls.
 The library packages are `figgy-renderer` and `figgy-model`. This example is the
 Cargo package `figgy` 0.14.0, named for its generated JS/WASM filenames, and has
 `publish = false`. It builds against the renderer and model sources in this
-checkout through path dependencies. Radar charts, overlay layers, subplots, the
-annotation layer, vector series and point color and size maps, which this
-wrapper exposes, are on the repository's master branch and are not in the
-published figgy-renderer 0.17.0. Until the next release, an application that
-reuses this wrapper depends on the repository:
+checkout through path dependencies. Polar and radar charts, vector series,
+point color and size maps, area fills and step lines, overlay layers, subplots,
+the annotation layer and independent bounded chart titles, which this wrapper
+exposes, are on the repository's master branch and are not in the published
+figgy-renderer 0.17.0 and figgy-model 0.11.0. Until the next release, an
+application that reuses this wrapper depends on the repository:
 
 ```toml
 renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy", features = ["serde"] }
 ```
 
-The generated module exports `FiggyChart` for Cartesian charts and
+The generated module exports `FiggyChart` for Cartesian charts, including polar
+plots (`Config.polar`; see the [polar guide](../renderer/POLAR.md)), and
 `FiggyBoundedChart` for radial (including donuts), categorical, boxplot and
-radar charts. The `<figgy-chart>` custom element wraps `FiggyChart` only. Hosts using
-`FiggyBoundedChart` own their canvas events and scheduling; see the
+radar charts. The `<figgy-chart>` custom element wraps `FiggyChart` only. Hosts
+using `FiggyBoundedChart` own their canvas events and scheduling; see the
 [bounded host API](../renderer/WASM.md#bounded-chart-host).
 
 ## Build and run
@@ -48,7 +50,7 @@ not checked into the source snapshot.
 | [timestamp-demo.html](timestamp-demo.html) | Timestamp data and axis formatting |
 | [figgy-chart.js](figgy-chart.js) | Example host lifecycle, events and Promise adaptation |
 | [src/lib.rs](src/lib.rs) | wasm-bindgen bridge to the renderer |
-| [WASM guide](../renderer/WASM.md) (in Korean; the raw kernel and bounded host sections are in English) | Build, lifecycle, streaming, async export and wrapper methods |
+| [WASM guide](../renderer/WASM.md) (in Korean; section 8, the bounded chart host with the annotation layer and Cartesian selection helpers, is in English) | Build, lifecycle, streaming, async export and wrapper methods |
 | [JSON reference](SCHEMA.md) | The example wrapper's representation of the shared model |
 
 ## Readiness and selected values

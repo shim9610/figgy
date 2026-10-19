@@ -12282,8 +12282,10 @@ impl Renderer {
     /// the host may drop its [`PreparedFrame`] before submitting the command
     /// buffer, and the late submission must still see the recorded generation.
     ///
-    /// `star_pitch`: `Some` adds the constellation star pass to the scratch
+    /// `star_pitch`: `Some` adds the arc-driven star pass to the scratch
     /// (indirect args + VS bind group) and runs its kernel after the scan.
+    /// Prepare passes `Some` only for Milkyway lines; `DrawStyle::Constellation`
+    /// has no arc-prefix star pass.
     #[cfg(test)]
     fn ensure_arc_prefix(
         &mut self,
@@ -15730,8 +15732,10 @@ impl PrepareContext<'_> {
     /// the host may drop its [`PreparedFrame`] before submitting the command
     /// buffer, and the late submission must still see the recorded generation.
     ///
-    /// `star_pitch`: `Some` adds the constellation star pass to the scratch
+    /// `star_pitch`: `Some` adds the arc-driven star pass to the scratch
     /// (indirect args + VS bind group) and runs its kernel after the scan.
+    /// Prepare passes `Some` only for Milkyway lines; `DrawStyle::Constellation`
+    /// has no arc-prefix star pass.
     fn ensure_arc_prefix(
         &mut self,
         series_id: &str,
@@ -16236,7 +16240,7 @@ fn series_has_line_fill(draw_style: &DrawStyle, render_type: &DataRenderType) ->
 ///
 /// `false` exactly when the style has no entry point for one of those
 /// primitives: Sketch and Milkyway draw line, scatter and errorbar series but
-/// not bars, fields or contours; Constellation draws marker lines
+/// not bars, fields, contours or vectors; Constellation draws marker lines
 /// (`ScatterLine`) only. Prepare then skips that series without an error, so a
 /// host that validates with this predicate can reject the combination
 /// instead of drawing an empty plot. It compares the per-style primitive

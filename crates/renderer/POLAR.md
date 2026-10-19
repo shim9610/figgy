@@ -12,11 +12,14 @@ renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figg
 A polar plot is an ordinary Cartesian chart whose `Config.polar` is `Some`:
 the same scatter and line series (fills included), the same column pool,
 picking and export, drawn in (angle, radius). `bottom_x` is the angle axis
-and `left_y` the radius axis, so ranges, scales, ticks, label styles and
-titles keep working; the grid becomes rings and spokes, the angle axis the
-outer ring and the radius axis a labelled ray. `polar: None` (the default,
-omitted in JSON) is the rectangular chart, so existing documents are
-unchanged.
+and `left_y` the radius axis. The radius axis keeps its range, scale, ticks,
+label style and title. The angle axis keeps its ticks, label style and title,
+but its `min` / `max` only choose which angle ticks, spokes and labels are
+drawn: the angle column maps onto the circle from `zero_angle_degrees`
+whatever the axis range. The grid becomes rings and spokes, the angle axis
+the outer ring and the radius axis a labelled ray. `polar: None` (the
+default, omitted in JSON) is the rectangular chart, so existing documents
+are unchanged.
 
 Antenna and microphone patterns, phase and direction data, orbits and
 periodic signals over a cycle are the use cases. For a few series over a
@@ -53,8 +56,8 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
     config.polar = Some(PolarOptions::default()); // 0° on the right, counter-clockwise
     let mut chart = Chart::new(config).with_title("Antenna pattern");
     // The range helpers also reset tick spacing and label format: call them first.
-    chart.set_x_range(0.0, 360.0); // the angle axis
-    chart.set_y_range(0.0, 1.0); // the radius axis
+    chart.set_x_range(0.0, 360.0); // which angle ticks and spokes draw
+    chart.set_y_range(0.0, 1.0); // the radius range
     let axes = chart.config_mut();
     axes.bottom_x.major_spacing = 30.0; // spokes every 30°
     axes.bottom_x.label_style.format = LabelFormat::Degrees; // "30°"
@@ -126,9 +129,10 @@ What is and is not drawn:
   above `left_y.max` (a zoomed-in radius axis) is cut at the outer ring, like
   the data-area scissor cuts a rectangular chart. Nothing is drawn inside
   the hole.
-- Dashes walk the drawn path, including the pieces of an `Arc` segment; a
-  line fill fills to the baseline ring (`LineFill::ToBaseline`), the centre
-  for a baseline at the axis start.
+- Dashes walk the drawn path, including the pieces of an `Arc` segment. A
+  line fill (`LineFill::ToBaseline`) fills to the ring of its baseline; a
+  baseline at or below `left_y.min` fills to the inner ring, which is the
+  centre only when `inner_radius_fraction` is 0.
 
 ## Axes, grid and labels
 
@@ -218,8 +222,10 @@ renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figg
 
 극좌표 플롯은 `Config.polar`가 `Some`인 보통의 직교 차트다. 직교 차트의 산점도·선 시리즈(면
 채움 포함)와 컬럼 풀, 피킹, 내보내기를 그대로 쓰면서 데이터를 (각도, 반지름)으로 그린다.
-`bottom_x`가 각도 축, `left_y`가 반지름 축이라 범위·스케일·눈금·라벨 스타일·제목이 그대로
-동작하고, 격자는 고리와 스포크, 각도 축은 바깥 고리, 반지름 축은 라벨이 붙은 광선이 된다.
+`bottom_x`가 각도 축, `left_y`가 반지름 축이다. 반지름 축은 범위·스케일·눈금·라벨 스타일·제목을
+그대로 쓴다. 각도 축도 눈금·라벨 스타일·제목은 그대로 쓰지만 `min` / `max`는 어떤 각도 눈금·스포크·라벨을
+그릴지만 정한다. 각도 컬럼은 축 범위와 관계없이 `zero_angle_degrees`에서 시작하는 원 위에 놓인다.
+격자는 고리와 스포크, 각도 축은 바깥 고리, 반지름 축은 라벨이 붙은 반직선이 된다.
 `polar: None`(기본, JSON에서 생략)은 직교 차트이므로 기존 문서는 바뀌지 않는다. 고정된 범주
 위에서 시리즈 몇 개를 닫힌 다각형으로 비교하려면 [레이더 차트](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md)를 쓴다.
 
@@ -246,20 +252,21 @@ renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figg
 | `sector` | `Some([start, end])`이면 그 각도 창만 보이며 경계에서 클립된다. 한 바퀴 이하. `None`은 전체 원 |
 | `inner_radius_fraction` | 중심 구멍. 바깥 반지름의 `0.0..=0.9`이며 `left_y.min`이 그 고리에 놓인다 |
 | `interpolation` | `Chord`(기본): 표본 사이를 직선으로 잇는다. `Arc { pieces }`(`pieces`는 1~64, 벗어나면 `InvalidConfig`): 각 구간을 (각도, 반지름) 공간에서 `pieces`개의 현으로 나눠 그리므로 반지름이 일정한 구간은 고리를 따르고 표본이 드물어도 나선을 그릴 수 있다. `Arc`는 `LineInterpolation::Linear` 선에만 쓸 수 있고, 계단선(`StepPre`, `StepPost`, `StepMid`)은 `InvalidSeriesConfig`로 거부한다. `Chord`는 계단선도 받는다 |
-| `radial_label_angle_degrees` | 반지름 축 선과 라벨이 놓이는 광선. 기본 90(위). 광선을 드래그하면 바뀐다 |
+| `radial_label_angle_degrees` | 반지름 축 선과 라벨이 놓이는 반직선. 기본 90(위). 반직선을 드래그하면 바뀐다 |
 
 모든 옵션에 기본값이 있어 JSON에서 `{ "polar": {} }`만으로 극좌표가 켜진다. 전체 필드와 검증,
 클립 규칙은 [설정 명세](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#polaroptions-configpolar-1)에
 있다. 전체 원에서는 축 범위 밖 각도가 `cos`/`sin`이 두는 자리에 그려지고(감싸기·정렬·중복 제거
 없음), 섹터에서는 경계에서 잘린다. `left_y.min`보다 작은 반지름은 그리지 않고 선이 끊기며, `left_y.max`보다 큰 반지름은
 바깥 고리에서 잘린다. 구멍 안에는 아무것도 그리지 않는다. 대시는 호 조각을 포함해 그려진 경로를
-따라가고, 면 채움은 기준선 고리까지 채운다.
+따라간다. 면 채움(`LineFill::ToBaseline`)은 기준선의 고리까지 채우며, 기준선이 `left_y.min` 이하이면
+안쪽 고리까지 채운다. 안쪽 고리는 `inner_radius_fraction`이 0일 때만 중심이다.
 
 ### 축·격자·라벨
 
 `grid.show_major_y` / `show_minor_y`는 반지름 눈금의 고리를, `show_major_x` / `show_minor_x`는
 각도 눈금의 스포크를 그린다. `bottom_x`는 바깥 고리와 바깥쪽 눈금, 둘레의 라벨을, `left_y`는
-`radial_label_angle_degrees` 방향의 광선과 그 옆의 눈금·라벨을 그린다. 눈금 값은 직교 축과
+`radial_label_angle_degrees` 방향의 반직선과 그 옆의 눈금·라벨을 그린다. 눈금 값은 직교 축과
 같은 계산이라 `major_spacing`, `minor_count`, `significant_digits`, `format`이 그대로 적용된다.
 `LabelFormat::Degrees`는 눈금 값에 도 기호를 붙이고(`90°`), `LabelFormat::Radians`는 π의 배수로
 쓴다(`π/2`, `3π/4`, `0.4π`). 둘 다 단위를 변환하지 않으므로 같은 단위의 `angle_unit`과 함께 쓴다.
@@ -277,16 +284,16 @@ renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figg
 제목·범례·그리기 영역은 직교 규칙 그대로 움직이고 크기를 바꾼다. 축은 극좌표 프레임을 따른다.
 
 - 바깥 고리(`"axis_bottom"`)는 데이터 경계라 히트 영역이 없고 `line_offset`은 의미가 없다.
-- 반지름 축 광선(`"axis_left"`)은 드래그하면 중심을 축으로 돈다. 포인터 위치가 있으면
+- 반지름 축 반직선(`"axis_left"`)은 드래그하면 중심을 축으로 돈다. 포인터 위치가 있으면
   (`Draggable::drag_from`, 웹 래퍼의 `on_move`) 포인터 각도를 그대로 따르고, 없으면(`drag_by`,
-  키보드 이동) 바깥 고리 위의 점이 드래그 중 광선에 수직인 성분을 따라간다. 결과는
+  키보드 이동) 바깥 고리 위의 점이 드래그 중 반직선에 수직인 성분을 따라간다. 결과는
   `radial_label_angle_degrees`에 기록된다.
 - 각도 눈금 라벨(`"tick_labels_bottom"`)은 각자 자기 스포크를 따라 함께 안팎으로 움직인다.
   극좌표 모드에서 `bottom_x.label_style.label_offset_y`가 반경 오프셋(양수가 바깥)이고
   `label_offset_x`는 효과가 없다.
-- 반지름 눈금 라벨(`"tick_labels_left"`)은 광선 프레임에서 움직인다.
-  `left_y.label_style.label_offset_x`가 광선 방향(바깥이 양수), `label_offset_y`가 수직 방향이라
-  광선이 돌아도 같은 자리를 지킨다. 글자는 수평을 유지한다.
+- 반지름 눈금 라벨(`"tick_labels_left"`)은 반직선을 기준으로 움직인다.
+  `left_y.label_style.label_offset_x`가 반직선 방향(바깥이 양수), `label_offset_y`가 수직 방향이라
+  반직선이 돌아도 같은 자리를 지킨다. 글자는 수평을 유지한다.
 
 극좌표 차트에는 비율 앵커를 쓴 `Text`와 `Arrow` 주석만 그린다. 비율은 데이터 영역 사각형에 대한
 값이며 `(0, 0)`이 왼쪽 위 모서리다. 극좌표에는 분리된 값 축이 없으므로 데이터 앵커를 쓴 주석과

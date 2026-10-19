@@ -129,9 +129,10 @@ both kinds.
 
 Use **Rust 1.99 or later** and a working GPU driver. The repository pins Rust 1.99.0.
 Polar plots, radar charts, vector fields, point colour and size maps, area fills
-and step lines, overlay axes, subplots and the annotation layer are on the
-repository's master branch and are not in the published figgy-renderer 0.17.0.
-Until the next release, depend on the repository:
+and step lines, overlay axes, subplots, the annotation layer and independent
+titles on pies, donuts, bars and box plots (`chart_title`) are on the
+repository's master branch and are not in the published figgy-renderer 0.17.0
+and figgy-model 0.11.0. Until the next release, depend on the repository:
 
 ```toml
 [dependencies]
@@ -255,16 +256,20 @@ For your own data, replace the `x`/`y` vectors or implement
 
 A polar plot is a Cartesian chart with `Config.polar` set. `x_column` holds the
 angle (in degrees by default) and `y_column` the radius; the angle axis becomes
-the outer ring and the radius axis a labelled ray. To turn the quick start into
-a polar plot, upload angle and radius columns in place of the sine and set up
-the chart like this:
+the outer ring and the radius axis a labelled ray. `set_y_range` sets the radius
+axis. `set_x_range` only chooses which angle ticks, spokes and labels are drawn:
+one turn is always 360° (or 2π) from `zero_angle_degrees`, so a range such as
+0..180 does not stretch onto the full circle; the `sector` field of
+`PolarOptions` shows part of it. To turn the quick start into a polar plot,
+upload angle and radius columns in place of the sine and set up the chart like
+this:
 
 ```rust,ignore
 use renderer::{format::LabelFormat, polar::PolarOptions};
 
 config.polar = Some(PolarOptions::default()); // 0° right, counter-clockwise
 let mut chart = Chart::new(config);
-chart.set_x_range(0.0, 360.0); // angle axis
+chart.set_x_range(0.0, 360.0); // which angle ticks and spokes are drawn
 chart.set_y_range(0.0, 1.0); // radius axis
 // The range helpers choose tick spacing and label format, so set these after them.
 chart.config_mut().bottom_x.major_spacing = 30.0; // spokes every 30°

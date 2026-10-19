@@ -216,10 +216,10 @@ Cartesian용 `FiggyChart`와 별도로 WASM 래퍼는 원형·범주형 막대·
 
 ## 극좌표 차트의 축 드래그
 
-극좌표 차트(`Config.polar`)에서는 바깥 고리가 각도 축, 광선이 반지름 축이다. 고리(`Axis(Bottom)`)는
-데이터 경계라 히트 영역이 없고, 광선(`Axis(Left)`)은 드래그하면 중심을 축으로 돌아
+극좌표 차트(`Config.polar`)에서는 바깥 고리가 각도 축, 반직선이 반지름 축이다. 고리(`Axis(Bottom)`)는
+데이터 경계라 히트 영역이 없고, 반직선(`Axis(Left)`)은 드래그하면 중심을 축으로 돌아
 `radial_label_angle_degrees`가 바뀐다. 각도 눈금 라벨은 포인터가 있는 스포크를 따라 안팎으로,
-반지름 눈금 라벨은 광선 프레임에서 움직인다. 이 규칙에는 포인터 위치가 필요하므로
+반지름 눈금 라벨은 반직선 프레임에서 움직인다. 이 규칙에는 포인터 위치가 필요하므로
 `Draggable::drag_from(cfg, at, dx, dy)`와 `Config::nudge_from(element, Some(at), dx, dy)`에
 이동량을 잰 기준 포인터 위치 `at`(차트 내부 논리 픽셀)을 함께 넘긴다. `drag_from`의 기본 구현은
 `at`을 무시하고 `drag_by`를 호출하므로, 극좌표 축과 눈금 라벨이 아닌 요소는 `drag_by`와 똑같이

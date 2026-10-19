@@ -177,6 +177,39 @@ those fields in a clone when a presentation should omit interaction emphasis.
 RGBA8/BGRA8, linear/sRGB targets are supported. Render passes must use the format
 chosen at renderer creation and sample count 1.
 
+## Decorations and the annotation layer
+
+`frame.decorations()` also hit-tests the title, axes, tick labels, axis titles,
+legend and data area, separately from the data `hit_test`. The host applies the
+shared `Selectable`, `Draggable` and `Resizable` contracts to
+`chart.decorations` and prepares again. Coordinate units, per-element drag
+rules, caching, serialization and the web wiring are in the
+[interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md).
+
+The annotation layer and the `chart_title` and `active_layer` fields of
+`BoxPlotChart` are on the repository's master branch and are not in the
+published figgy-renderer 0.17.0. Until the next release, depend on the
+repository:
+
+```toml
+renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
+```
+
+Reference lines, spans, text boxes and arrows in `chart.annotations` draw in
+separate passes around the box frame. `AnnotationAxis::X` is the screen's
+horizontal axis and `Y` its vertical axis. With `Vertical` boxes, `X` is the
+category index (the first category is centred at 0) and `Y` the value axis;
+`Horizontal` swaps them, and the category index then runs top-down. Value
+coordinates follow the drawn range (`value_range` or the automatic range).
+Spans draw under the data, so a chart with spans is prepared after
+`set_background(FrameBackground::HostClear)` and the host clears with
+`chart.background`; `export_rgba` handles this itself. Draw the
+`BoundedAnnotationFrame` from `prepare_annotations(chart, size, scale)` with
+`draw_underlay`, then `frame.draw`, then `draw_overlay`; its hit map is
+`annotations()`. Annotation edits and `decorations.selected = Annotation(i)`
+reuse the box frame and its text atlas. See the
+[annotation layer contract](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer).
+
 ## Examples and tests
 
 ```bash
@@ -229,8 +262,8 @@ editing, color changes, resets, direction, grid, legend and category reordering.
 
 ### 주석 층
 
-이 기능은 저장소 master 브랜치에 있으며 crates.io에 배포된 figgy-renderer 0.17.0에는 아직 없다.
-다음 릴리스 전에는 저장소를 의존성으로 지정한다.
+주석 층과 `BoxPlotChart`의 `chart_title`·`active_layer` 필드는 저장소 master 브랜치에 있으며
+crates.io에 배포된 figgy-renderer 0.17.0에는 아직 없다. 다음 릴리스 전에는 저장소를 의존성으로 지정한다.
 
 ```toml
 renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
@@ -238,9 +271,10 @@ renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figg
 
 `chart.annotations`의 기준선·구간·텍스트 상자·화살표는 박스 프레임 주위에 별도 패스로 그린다.
 `AnnotationAxis::X`는 화면 가로, `Y`는 화면 세로다. `Vertical`이면 `X`가 범주 인덱스(첫 범주 중심이 0),
-`Y`가 값 축이고 `Horizontal`이면 반대다. 값 축의 좌표는 그려진 축 범위(`value_range` 또는 자동 범위)를
-따른다. 구간은 데이터 아래(underlay)에 그리므로 구간이 있을 때는
-`set_background(FrameBackground::HostClear)`로 프레임을 준비하고 호스트가 `chart.background`로
-지운다. `export_rgba`는 이를 스스로 처리한다. `prepare_annotations(chart, size, scale)`의
+`Y`가 값 축이고 `Horizontal`이면 반대이며, 이때 범주 인덱스는 위에서 아래로 증가한다. 값 축의 좌표는
+그려진 축 범위(`value_range` 또는 자동 범위)를 따른다. 구간은 데이터 아래(underlay)에 그리므로
+구간이 있을 때는 `set_background(FrameBackground::HostClear)`로 프레임을 준비하고 호스트가
+`chart.background`로 지운다. `export_rgba`는 이를 스스로 처리한다. `prepare_annotations(chart, size, scale)`의
 `BoundedAnnotationFrame`을 `draw_underlay` → `frame.draw` → `draw_overlay` 순서로 그리고 히트 맵은
-`annotations()`로 얻는다. 자세한 계약은 [공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer)를 참고한다.
+`annotations()`로 얻는다. 주석 편집과 `decorations.selected = Annotation(i)` 선택은 박스 프레임과
+글자 아틀라스를 다시 만들지 않는다. 자세한 계약은 [공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer)를 참고한다.

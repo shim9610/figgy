@@ -110,8 +110,8 @@
 | 오차 막대 | X·Y·오차 컬럼 | [error_bars.rs](crates/renderer/examples/error_bars.rs) |
 | 히스토그램 | 구간 경계와 개수 | [히스토그램](crates/renderer/HISTOGRAM.md#한국어-사용법) |
 | 히트맵·등고선 | 축 좌표와 행렬 컬럼 | [heatmap_contours.rs](crates/renderer/examples/heatmap_contours.rs) |
-| 벡터장(화살표) | 기준점과 (u, v) 컬럼, 또는 격자 위 행렬 두 개 | [벡터장(영문)](crates/renderer/CONFIG.md#vector-fields) · [vector_field.rs](crates/renderer/examples/vector_field.rs) |
-| 색·크기 매핑(버블) | 점마다 값 하나가 든 컬럼(색·크기에 각각 하나)과 색상 막대 또는 크기 범위 | [점 색·크기 매핑(영문)](crates/renderer/CONFIG.md#point-colour-and-size-maps) · [value_maps.rs](crates/renderer/examples/value_maps.rs) |
+| 벡터장(화살표) | 기준점과 (u, v) 컬럼, 또는 격자 위 행렬 두 개 | [벡터장](crates/renderer/CONFIG.md#벡터장) · [vector_field.rs](crates/renderer/examples/vector_field.rs) |
+| 색·크기 매핑(버블) | 점마다 값 하나가 든 컬럼(색·크기에 각각 하나)과 색상 막대 또는 크기 범위 | [점 색·크기 매핑](crates/renderer/CONFIG.md#점-색과-크기-매핑) · [value_maps.rs](crates/renderer/examples/value_maps.rs) |
 | 보조 Y축·서브플롯·주석 | 오른쪽 보조 Y축, 한 문서 안의 차트 격자, 기준선·구간·텍스트·화살표 | [오버레이](crates/renderer/INTERACTION.md#overlay-layers) · [서브플롯](crates/renderer/INTERACTION.md#subplots) · [주석](crates/renderer/INTERACTION.md#annotation-layer) |
 | 극좌표 플롯 | (각도, 반지름) 컬럼과 `Config.polar` | [극좌표](crates/renderer/POLAR.md#한국어-사용법) |
 | 파이·도넛 | `RadialChart` 값 | [원형](crates/renderer/RADIAL.md) |
@@ -120,18 +120,20 @@
 | 레이더 차트 | `RadarChart` 범주와 시리즈별 범주당 값 하나 | [레이더](crates/renderer/RADAR.md#한국어-사용법) |
 
 컬럼 기반 차트는 렌더러·GPU 컬럼 풀·피킹·내보내기 경로를 공유하며, 오버레이와 서브플롯은 이
-차트에서 씁니다. GPU 메모리보다 큰 데이터를 나눠 그리는 스트리밍은 선·산점도·오차 막대·히스토그램·히트맵을
-지원합니다. 극좌표·면 채움·계단선·벡터장·점 색·크기 매핑·등고선 시리즈나 오버레이·서브플롯이 있는
+차트에서 씁니다. 단, 극좌표 차트에는 보조 Y축(오버레이)을 둘 수 없습니다. GPU 메모리보다 큰
+데이터를 나눠 그리는 스트리밍은 선·산점도·오차 막대·히스토그램·히트맵을 지원합니다. 극좌표·면 채움·계단선·벡터장·점 색·크기 매핑·등고선 시리즈나 오버레이·서브플롯이 있는
 문서에 스트리밍 소스를 쓰면 오류를 반환합니다. 파이·도넛·범주형 막대·박스플롯·레이더는 각자 소량 데이터
-모델과 전용 렌더러를 쓰며 컬럼이나 스트리밍 API를 거치지 않습니다.
+모델과 전용 렌더러를 쓰며 컬럼이나 스트리밍 API를 거치지 않습니다. 주석 레이어는 두 종류의 차트에서
+모두 쓸 수 있습니다.
 
 ## 빠른 시작
 
 **Rust 1.99 이상**과 정상 동작하는 GPU 드라이버가 필요합니다. 저장소의 툴체인은 1.99.0으로
 고정했습니다.
 
-극좌표·레이더·벡터장·점 색·크기 매핑·면 채움과 계단선·오버레이 레이어·서브플롯·주석 레이어는
-저장소 master 브랜치에 있으며 crates.io에 배포된 figgy-renderer 0.17.0에는 아직 없습니다.
+극좌표·레이더·벡터장·점 색·크기 매핑·면 채움과 계단선·오버레이 레이어·서브플롯·주석 레이어와
+파이·도넛·막대·박스플롯의 독립 제목(`chart_title`)은 저장소 master 브랜치에 있으며 crates.io에
+배포된 figgy-renderer 0.17.0과 figgy-model 0.11.0에는 아직 없습니다.
 이 README의 예제도 master 기준입니다. 다음 릴리스 전에는 애플리케이션의 `Cargo.toml`에
 저장소를 의존성으로 지정합니다.
 
@@ -165,13 +167,15 @@ pollster = "1"
 
 극좌표 플롯은 위 선 그래프의 `chart`에 `polar`를 켠 것입니다. 컬럼에는 (각도, 반지름) 값을
 그대로 넣습니다. 각도 축(`bottom_x`)은 바깥 원이 되고, 반지름 축(`left_y`)은 라벨이 붙은 반직선이
-됩니다. `set_x_range`·`set_y_range`는 눈금 간격과 라벨 형식을 다시 정하므로 `config_mut`로 눈금을
-바꾸기 전에 호출합니다.
+됩니다. `set_y_range`는 반지름 축 범위를 정하고, `set_x_range`는 그릴 각도 눈금·스포크·라벨만
+정합니다. 원은 항상 `zero_angle_degrees`에서 시작하는 한 바퀴(360° 또는 2π)이므로 0~180 범위를
+줘도 전체 원으로 늘어나지 않으며, 원의 일부만 보이려면 `PolarOptions`의 `sector`를 씁니다.
+두 범위 함수는 눈금 간격과 라벨 형식도 다시 정하므로 `config_mut`로 눈금을 바꾸기 전에 호출합니다.
 
 ```rust,ignore
 use renderer::{format::LabelFormat, polar::PolarOptions};
 
-chart.set_x_range(0.0, 360.0); // 각도 축
+chart.set_x_range(0.0, 360.0); // 그릴 각도 눈금과 스포크
 chart.set_y_range(0.0, 1.0); // 반지름 축
 let config = chart.config_mut();
 config.polar = Some(PolarOptions::default()); // 0°는 오른쪽, 반시계 방향

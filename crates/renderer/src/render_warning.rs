@@ -131,8 +131,9 @@ pub enum SpacingRejection {
 pub enum AnnotationSkip {
     /// A value or anchor coordinate is NaN or infinite.
     NonFinite,
-    /// A data anchor or axis value on a chart whose axis carries no values
-    /// (a radial chart), so only ratio anchors can be placed.
+    /// A data anchor, reference line or span on a chart whose axes carry no
+    /// values (a pie, donut, radar or polar chart), so only ratio anchors can
+    /// be placed.
     NoValueAxis,
     /// The value or anchor has no position on its axis: outside the axis
     /// range for a reference line, a span entirely outside it, a text box or

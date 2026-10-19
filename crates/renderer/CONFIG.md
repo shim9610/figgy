@@ -108,7 +108,7 @@ scale against that contract.
 |---|---|---|
 | `text` | `RichText` | greek / sub/super / bold/italic styled segments; `align` (`Left` default / `Center` / `Right`) places the lines of multi-line text |
 | `visible` | bool | |
-| `offset_x / y` | f32 | nudge |
+| `offset_x / y` | f32 | Fine position offset (px). It does not change the margins; a title drag accumulates here. The left and right axis titles read it in the rotated title's own frame |
 | `top_margin` | f32 | (chart_title only) chart-title band height; the title is centred in it. The title helpers (`Chart::with_title`, the web `set_title`) grow it through `layout::fit_chart_title_margin` when the title is taller than the band; a value injected directly is kept as given |
 
 ### `GridOptions`
@@ -131,9 +131,14 @@ scale against that contract.
 
 `polar: None` (default, key absent in JSON) is the rectangular chart. `Some`
 draws the same series in polar coordinates: `bottom_x` is the angle axis and
-`left_y` the radius axis, so their ranges, ticks, label styles and titles
-keep working (the radius may be logarithmic; the angle axis must stay linear
-and non-inverted); `top_x` and `right_y` are not drawn. The data stays the
+`left_y` the radius axis, so their ticks, label styles and titles keep
+working (the radius may be logarithmic; the angle axis must stay linear and
+non-inverted); `top_x` and `right_y` are not drawn. `left_y.min` / `max` map
+the radius between the inner and the outer ring. `bottom_x.min` / `max`
+(what `Chart::set_x_range` writes) only choose which angle ticks, spokes and
+labels are drawn: the angle mapping ignores them, so one turn of the angle
+column is always the full circle from `zero_angle_degrees`, and `sector`
+shows part of it. The data stays the
 host's (angle, radius) columns. The plot is the largest circle inside the data
 area that leaves one band of angle labels inside it (`Config::polar_geometry`).
 [POLAR.md](POLAR.md) walks through a first polar chart, and
@@ -162,8 +167,9 @@ inside the hole and across a sector edge a primitive is cut, the way the
 data-area scissor cuts a rectangular chart, so a segment whose sample lies
 outside the sector is drawn up to the edge. A marker outside the sector is
 neither drawn nor picked; a line's pieces stay pickable where they are
-drawn. A line fill (`LineFill::ToBaseline`)
-fills to the baseline ring, the centre for a baseline at the axis start.
+drawn. A line fill (`LineFill::ToBaseline`) fills to the ring of its
+baseline; a baseline at or below `left_y.min` fills to the inner ring, which
+is the centre only when `inner_radius_fraction` is 0.
 
 Validation (`Config::validate_polar`, reported as `InvalidConfig { field:
 "polar" }`): finite angles, `inner_radius_fraction` in range, a sector with
@@ -399,15 +405,15 @@ clears it and `{}` selects the default empty gold overlay (`visible: true`,
 ### `ColorBarOptions`
 | Field | Type | Meaning |
 |---|---|---|
-| `visible` | bool | `false` draws nothing **and reserves no band** — the space returns to the data area. Field series still render |
+| `visible` | bool | `false` draws nothing **and reserves no band** — the space returns to the data area. The z range and colormap still apply, so field series and colour-mapped markers and vectors still render |
 | `side` | `Side` | `Left`/`Right` = vertical bar, `Top`/`Bottom` = horizontal. This alone decides the orientation |
 | `thickness_px` | f32 | The strip's short dimension |
-| `gap_px` | f32 | Space between the data area and the strip |
+| `gap_px` | f32 | Space between the strip and that side's axis band, which lies between the gap and the data area |
 | `length_frac` | f32 | Strip length as a fraction of the data area's length along that side; must be in `(0, 1]` |
 | `align` | `BarAlign` | `Start` / `Center` / `End` along that side — the discrete half of the anchor |
 | `offset_x`, `offset_y` | f32 | Free offset from that anchor, in screen pixels. **Margin-noncontributing**, the same contract as `Legend::offset_{x,y}` and the title / label offsets, so nudging the bar moves it without reflowing the data area. This is where a drag accumulates |
 | `colormap` | `ColorMap` | `Viridis` / `Magma` / `Turbo` / `GrayScale` / `RdBu` / `Custom { stops }` |
-| `nan_color` | `Color` | Colour for z the ramp cannot place: NaN, and non-positive z on a log colourbar. Fully transparent by default |
+| `nan_color` | `Color` | Colour for z the ramp cannot place: a non-finite z (NaN or an infinity), and non-positive z on a log colourbar. Fully transparent by default |
 | `border_color`, `border_width` | `Color`, f32 | Strip border |
 | `axis` | `AxisOptions` | **The z axis — the single source of the z range** |
 
@@ -419,9 +425,10 @@ and log handling are the same code rather than a parallel implementation.
 
 Consequences:
 
-- A `Heatmap` / `Contour` / `HeatmapContour` series **requires** this to be
-  `Some`. Without it there is no z range and no colormap anywhere, so there is
-  no value to draw — the renderer rejects the series rather than inventing one.
+- A `Heatmap` / `Contour` / `HeatmapContour` series, and a series with a
+  `point_color_map` or a vector `color_map`, **requires** this to be `Some`.
+  Without it there is no z range and no colormap anywhere, so there is no
+  value to draw — the renderer rejects the series rather than inventing one.
 - There is therefore **one z scale per chart**; several heatmaps share it.
 - The band is `gap_px + thickness_px + axis.out_margin + axis.major_tick_length`
   on its own side. `fit_to_data_area` / `resize_chart_area_scaled` may reclaim
@@ -454,8 +461,9 @@ Consequences:
   aligned, moved, or resized strip therefore keeps its title and hit geometry
   attached.
 - `ColorBarOptions::normalized_z(z) -> Option<f32>` is the one z→colour
-  normalization (`color_for_z` applies it): clamped to `[0, 1]`, `None` for NaN,
-  for non-positive z on a logarithmic bar, and for a degenerate range — those
+  normalization (`color_for_z` applies it): clamped to `[0, 1]`, `None` for a
+  non-finite z (NaN or an infinity), for non-positive z on a logarithmic bar,
+  and for a degenerate range — those
   draw as `nan_color` rather than clamping to an endpoint, because "missing" and
   "smallest" are different facts. `axis.inverted` is not applied: it moves where
   a value is drawn, not which colour it has.
@@ -867,7 +875,7 @@ pub struct Config {
 | `font_size` | f32 | px |
 | `label_visible` | bool | 눈금 라벨 표시 여부. `visible`과 둘 다 `true`여야 라벨을 그리며, 어느 쪽을 꺼도 축선과 눈금은 그대로 그리고 `out_margin`도 바뀌지 않는다. |
 | `label_font` | String | 글꼴 이름. 빈 문자열이면 내장 Liberation Sans를 쓴다. 등록되지도 설치되지도 않은 이름도 이 글꼴로 대체되며, 호스트는 `text_render::font_family_available(name)`으로 이름이 해석되는지 확인할 수 있다. 이 글꼴에 없는 글자는 글자마다 등록 글꼴, 내장 Liberation Sans, 설치된 시스템 글꼴(네이티브 전용) 순으로 찾아 그린다. |
-| `label_offset_x / y` | f32 | 라벨 위치를 미세 조절하는 이동량(px). 극좌표 모드에서 각도 축은 `y`를 스포크 방향으로 읽고 `x`를 무시하며, 반지름 축은 `x`를 광선 방향, `y`를 수직 방향으로 읽는다(`PolarOptions` 참고) |
+| `label_offset_x / y` | f32 | 라벨 위치를 미세 조절하는 이동량(px). 극좌표 모드에서 각도 축은 `y`를 스포크 방향으로 읽고 `x`를 무시하며, 반지름 축은 `x`를 반직선 방향, `y`를 수직 방향으로 읽는다(`PolarOptions` 참고) |
 | `format` | `LabelFormat` | `Decimal / Power / Scientific / Timestamp / Degrees / Radians`. `Timestamp`는 선형축의 숫자 좌표를 Unix 시간으로 표시하며 달력 기준 눈금을 지원한다. `Degrees`는 소수에 도(°) 기호를 붙이고, `Radians`는 π의 배수(`π/2`, `3π/4`, `0.4π`)로 적는다. |
 | `significant_digits` | u8 | 숫자 표시에 요청하는 정밀도(소수·과학 표기는 1~15). 선형 소수 라벨은 범위의 크기를 기준으로 소수 자릿수를 통일하고 눈금 간격을 구분하는 데 필요한 만큼만 늘린다. 로그 라벨은 값마다 반올림한다. 눈금 위치는 바뀌지 않는다. |
 
@@ -904,8 +912,12 @@ pub struct Config {
 ### `PolarOptions` (`Config::polar`)
 
 `polar: None`(기본값, JSON에서 키 생략)은 직교 차트다. `Some`이면 같은 시리즈를 극좌표로
-그린다. `bottom_x`가 각도 축, `left_y`가 반지름 축이 되어 범위·스케일·눈금·라벨 스타일·제목을
-그대로 쓰고, `top_x`와 `right_y`는 그리지 않는다. 데이터는 호스트의 (각도, 반지름) 컬럼 그대로다.
+그린다. `bottom_x`가 각도 축, `left_y`가 반지름 축이 되어 눈금·라벨 스타일·제목을 그대로 쓰고
+(반지름 축은 로그 스케일이 가능하며 각도 축은 선형이고 뒤집지 않아야 한다), `top_x`와 `right_y`는
+그리지 않는다. `left_y.min` / `max`는 반지름을 안쪽 고리와 바깥 고리 사이에 대응시킨다.
+`bottom_x.min` / `max`(`Chart::set_x_range`가 쓰는 값)는 어떤 각도 눈금·스포크·라벨을 그릴지만 정하고
+각도 변환에는 쓰이지 않는다. 따라서 각도 컬럼의 한 바퀴는 언제나 `zero_angle_degrees`에서 시작하는
+전체 원이며, 원의 일부만 보이려면 `sector`를 쓴다. 데이터는 호스트의 (각도, 반지름) 컬럼 그대로다.
 플롯은 데이터 영역 안에서 각도 라벨 한 줄이 들어갈 자리를 남긴 가장 큰 원이다
 (`Config::polar_geometry`).
 
@@ -917,7 +929,7 @@ pub struct Config {
 | `sector: Option<[f64; 2]>` | `angle_unit` 단위의 가시 각도 창. 한 바퀴 이하이며 경계에서 클립된다. `None`(기본)은 전체 원이고, 축 범위 밖 각도는 `cos`/`sin`이 두는 자리에 그린다. 감싸기·정렬·중복 제거는 하지 않는다 |
 | `inner_radius_fraction: f32` | 바깥 반지름에 대한 중앙 구멍 비율, `0.0..=0.9`. `left_y.min`이 이 고리에 놓인다 |
 | `interpolation: PolarInterpolation` | `Chord`(기본): 두 표본 사이 세그먼트는 화면에서 직선. `Arc { pieces }`(1~64): (각도, 반지름)에서 선형 보간한 점들을 잇는 `pieces`개의 현으로, 반지름이 일정하면 고리를 따른다. 대시와 피킹도 같은 조각을 따라간다 |
-| `radial_label_angle_degrees: f64` | 반지름 축 선과 눈금 라벨이 놓이는 광선의 화면 방향(도). 기본 90(위). 광선을 드래그하면 바뀐다 |
+| `radial_label_angle_degrees: f64` | 반지름 축 선과 눈금 라벨이 놓이는 반직선의 화면 방향(도). 기본 90(위). 반직선을 드래그하면 바뀐다 |
 
 격자는 `*_y` 필드를 반지름 눈금의 고리로, `*_x` 필드를 각도 눈금의 스포크로 그린다. 각도 축은
 바깥 고리이며 눈금은 바깥쪽을 향하고 라벨은 둘레에 놓인다. 전체 원에서는 두 눈금이 겹치는
@@ -933,20 +945,20 @@ pub struct Config {
 범위 안의 `inner_radius_fraction`, `start < end`이고 한 바퀴 이하인 섹터, `1..=64`의 호 조각 수,
 선형이며 뒤집지 않은 각도 축(`clockwise`를 쓴다), 그리고 `overlays` 없음. 극좌표 형태가 없는
 시리즈는 `InvalidSeriesConfig`로 거부한다: 히스토그램, 히트맵, 등고선, 오차 막대, 벡터. `Arc`는
-선형 보간 선이 필요하다. 스트리밍 소스는 거부한다. 주석은 비율 앵커만 쓰고 데이터 앵커는 건너뛴
-것으로 보고한다. 서브플롯은 각자 `polar`를 가지므로 한 문서에 극좌표 패널과 직교 패널을 섞을 수
-있다.
+선형 보간 선이 필요하다. 스트리밍 소스는 거부한다. 주석은 비율 앵커로만 놓으며, 기준선
+(`ReferenceLine`)·구간(`Span`)·데이터 앵커는 건너뛴 것으로 보고한다(`NoValueAxis`). 서브플롯은
+각자 `polar`를 가지므로 한 문서에 극좌표 패널과 직교 패널을 섞을 수 있다.
 
-드래그는 극좌표 프레임을 따른다. 반지름 축 광선(`"axis_left"`)은 중심을 축으로 돈다. 포인터 위치가
+드래그는 극좌표 프레임을 따른다. 반지름 축 반직선(`"axis_left"`)은 중심을 축으로 돈다. 포인터 위치가
 있으면(`Draggable::drag_from`, `Config::nudge_from`, `on_move`가 보내는 값) 포인터의 각도를 그대로
-따르고, 없으면(`drag_by`, 키보드 이동) 바깥 고리 위의 점이 드래그의 광선 수직 성분만큼 따라간다.
+따르고, 없으면(`drag_by`, 키보드 이동) 바깥 고리 위의 점이 드래그의 반직선 수직 성분만큼 따라간다.
 결과는 `radial_label_angle_degrees`에 기록된다. 각도 축은 바깥 고리, 곧 데이터 경계이므로
 `"axis_bottom"`은 히트 영역도 분리(`line_offset`)도 없다. 각도 눈금 라벨(`"tick_labels_bottom"`)은
 각자 자기 스포크를 따라 움직인다. 포인터 위치에서의 반경 성분(없으면 0도 스포크)이
 `bottom_x.label_style.label_offset_y`에 누적되며 양수가 바깥쪽이고 `label_offset_x`는 효과가 없다.
-반지름 눈금 라벨(`"tick_labels_left"`)은 광선 프레임에서 움직인다. `left_y.label_style.label_offset_x`는
-광선 방향(바깥이 양수), `label_offset_y`는 수직 방향(라벨이 놓인 쪽, 광선에서 반시계 방향이 양수)이라
-광선이 돌아도 같은 자리를 지킨다. 상단·우측 축은 그리지 않으며 제목을 포함해 아무것도 등록하지
+반지름 눈금 라벨(`"tick_labels_left"`)은 반직선을 기준으로 움직인다. `left_y.label_style.label_offset_x`는
+반직선 방향(바깥이 양수), `label_offset_y`는 수직 방향(라벨이 놓인 쪽, 반직선에서 반시계 방향이 양수)이라
+반직선이 돌아도 같은 자리를 지킨다. 상단·우측 축은 그리지 않으며 제목을 포함해 아무것도 등록하지
 않는다. 차트 제목, 하단·좌측 축 제목, 범례, 데이터 영역, 주석은 직교 차트의 규칙을 그대로 따른다.
 
 ### `LayerRef` / `AnnotationLayer`
@@ -1114,7 +1126,7 @@ pub struct Config {
 | `align` | `BarAlign` | 변을 따라 시작·가운데·끝에 배치하는 `Start` / `Center` / `End` |
 | `offset_x`, `offset_y` | f32 | 기준 위치에서의 이동량(px). 드래그 결과가 누적된다. 여백 계산에는 반영하지 않으므로 막대를 움직여도 데이터 영역은 바뀌지 않는다. |
 | `colormap` | `ColorMap` | `Viridis` / `Magma` / `Turbo` / `GrayScale` / `RdBu` / `Custom { stops }` |
-| `nan_color` | `Color` | 색으로 변환할 수 없는 Z값(NaN, 로그 스케일의 0 이하 값)에 사용할 색. 기본값은 완전 투명이다. |
+| `nan_color` | `Color` | 색으로 변환할 수 없는 Z값(NaN이나 무한대 같은 유한하지 않은 값, 로그 스케일의 0 이하 값)에 사용할 색. 기본값은 완전 투명이다. |
 | `border_color`, `border_width` | `Color`, f32 | 색상 막대 테두리 |
 | `axis` | `AxisOptions` | Z축 범위와 눈금·라벨 설정 |
 
@@ -1130,14 +1142,14 @@ pub struct Config {
 - 색상 막대는 별도 GPU 파이프라인 없이 CPU 장식 레이어에서 그린다. 일반 축과 같은 코드로 로그 눈금과 10ⁿ 라벨을 만든다. `axis.tick`은 눈금의 안쪽·바깥쪽 표시를, `axis.inverted`는 화면상의 값 증가 방향을 정한다. 눈금 모양은 축선의 `line_color` / `line_width` / `line_style`을 따른다.
 - 색상 막대도 선택·드래그·크기 조절을 지원한다. 히트테스트 ID는 `"colorbar"`이며, 데이터 영역과 마찬가지로 파란 선택 상자와 조절점 8개를 표시한다. 드래그는 `offset_{x,y}`에 누적한다. 크기 조절은 막대 방향에 따라 `thickness_px` 또는 `length_frac`을 바꾼다. 세로 막대에서는 좌우 조절점이 `thickness_px`를, 위아래 조절점이 `length_frac`을 바꾸며 가로 막대에서는 반대다.
 - 세부 요소인 `"colorbar_axis"`, `"colorbar_tick_labels"`, `"colorbar_title"`도 각각 선택할 수 있다. 드래그하면 축선·라벨·제목의 오프셋이 바뀐다. 모두 실제 색상 막대 사각형을 기준으로 계산하므로 길이·정렬·위치·크기가 바뀌어도 제목과 선택 영역이 막대를 따라간다.
-- `ColorBarOptions::normalized_z(z) -> Option<f32>`가 Z값을 색상 위치로 변환하고, `color_for_z`가 그 결과를 적용한다. 유효한 결과는 `[0,1]`로 제한한다. NaN, 로그 스케일의 0 이하 값, 너비가 없는 범위는 `None`을 반환해 `nan_color`로 표시한다. `axis.inverted`는 화면상의 위치만 바꾸며 값에 대응하는 색은 바꾸지 않는다.
+- `ColorBarOptions::normalized_z(z) -> Option<f32>`가 Z값을 색상 위치로 변환하고, `color_for_z`가 그 결과를 적용한다. 유효한 결과는 `[0,1]`로 제한한다. 유한하지 않은 값(NaN, 무한대), 로그 스케일의 0 이하 값, 너비가 없는 범위는 `None`을 반환해 `nan_color`로 표시한다. `axis.inverted`는 화면상의 위치만 바꾸며 값에 대응하는 색은 바꾸지 않는다.
 
 <a id="data_config--series-선언형-스키마-활성-api"></a>
 <a id="data_config--시리즈-선언-형식"></a>
 
 ### `data_config` 시리즈 선언 형식
 
-차트의 시리즈는 `data_config::SeriesConfig`로 선언한다. `Renderer::paint`는 `render_type`에 따라 선·점·오차 막대 등의 레이어를 만들고 각 스타일 설정에서 색·두께·모양을 읽는다.
+차트의 시리즈는 `data_config::SeriesConfig`로 선언한다. `Renderer::prepare`(`Renderer::paint`가 호출한다)는 `render_type`에 따라 그 종류가 그리는 레이어(선, 점, 오차 막대, 막대, 필드, 등고선, 벡터)를 만들고 각 스타일 설정에서 색·두께·모양을 읽는다.
 
 | 타입 | 필드 | 역할 |
 |---|---|---|
@@ -1149,6 +1161,10 @@ pub struct Config {
 | `DataErrorBarStyleConfig` | `error_bar_color, _width, _cap_size, cap_width, error_bar_style_table?, error_bar_style_index_column?, error_bar_style_overrides?` | 오차 막대 모양. 정밀 모드에서는 선택적인 스타일 표·개별 설정으로 색·몸통 두께·끝선 절반 길이·끝선 두께의 전체 또는 일부를 바꿀 수 있다. |
 | `DataBarStyleConfig` | `fill_color, border_color, border_width, baseline, gap_px, width_ratio, orientation, bar_style_overrides?` | 히스토그램 모양. `width_ratio`는 구간 가운데에 놓인 막대의 너비 비율이다. 개별 설정으로 특정 구간의 채움·외곽선·간격·너비를 바꿀 수 있다. |
 | `ScatterShape` | 열거형 26종 | 원·사각형·방향별 삼각형·마름모·십자·더하기·오각형·육각형·팔각형·별과 내부를 채운 형태 |
+| `MatrixRef` | `columns, orientation, grid_layout` | `Heatmap` / `Contour` / `HeatmapContour` 시리즈와 격자 벡터의 격자. 등록된 컬럼 ID를 격자 순서대로 나열한다. `orientation`은 `ColumnsAreX`(각 컬럼이 한 x 위치의 y 값들) 또는 `ColumnsAreY`이고, `grid_layout`은 `Edges`(좌표 컬럼이 셀 경계 n + 1개) 또는 `Centers`(셀 중심 n개)다. [행렬 필드와 등고선](#행렬-필드와-등고선) 참고 |
+| `FieldFillConfig` | `mode, shading, opacity` | 히트맵 채움. `mode`는 `Continuous` 또는 `Bands`(등고선 레벨 사이 구간마다 한 색), `shading`은 `Flat`(셀마다 한 색) 또는 `Interpolated`(셀 꼭짓점 사이 이중선형 보간)이며, `opacity`는 색상표의 알파에 곱한다 |
+| `ContourConfig` | `levels, line, per_level_color?, labels?` | 등고선. `levels`는 데이터 단위의 명시적 목록(최대 1024개)이다. `contour.set_nice_levels(&colorbar.axis, n)`은 색상 막대 범위 안쪽(양 끝 제외)에 약 `n`개의 깔끔한 레벨을 쓰고(`ContourConfig::nice_levels`는 쓰지 않고 돌려주기만 한다), `contour.set_colormap_colors(&colorbar)`는 색상표에서 `per_level_color`를 채운다 |
+| `ContourLabelConfig` | `visible, font_size, color, format, significant_digits, spacing_px, anchors, bg_color?, bg_padding_px` | 선 위의 레벨 라벨. `spacing_px`는 유한한 양수여야 하며, `anchors`가 비어 있으면 자동으로 배치한다 |
 
 **`DataRenderType`의 14가지 종류**
 
@@ -1213,7 +1229,7 @@ GPU는 그릴 때마다 컬럼 풀에서 값 컬럼을 읽어 셰이더에서 �
 - `fill_color: Option<Color>`는 채움색이다. 생략하면 `line_color`의 알파에 `DataLineStyleConfig::DEFAULT_FILL_ALPHA`(0.25)를 곱한 색을 쓰며, `effective_fill_color()`가 실제로 칠하는 색을 돌려준다.
 - `interpolation: LineInterpolation`은 표본 사이를 직선(`Linear`) 또는 축에 평행한 계단 조각으로 잇는다. `StepPre`는 `x[i]`에서 `y[i + 1]`로 먼저 오른 뒤 `x[i + 1]`까지 수평으로, `StepPost`는 `y[i]`로 `x[i + 1]`까지 간 뒤 그 자리에서 오르고, `StepMid`는 두 x 값의 **데이터 좌표 중점**에서(픽셀 중점이 아니다. 로그축에서는 둘이 다르다) 오른다. 점선 위상, 그 바탕인 호 길이 스캔, CPU·GPU 피킹이 모두 계단 경로를 따르므로 점선 계단선은 모서리마다 패턴이 이어지고, 수직선 위를 클릭하면 경로상 위치에 따라 두 원본 인덱스 중 가까운 쪽을 돌려준다.
 
-패널 안의 그리기 순서는 "모든 시리즈의 채움 → 모든 시리즈의 본체 → 모든 선택 강조"이며, 각 단계는 설정에 선언한 시리즈 순서를 그대로 따르고 자동으로 정렬하지 않는다. 따라서 다른 시리즈의 채움이 이 시리즈의 선을 덮는 일은 구조상 없고, 채움끼리는 선언 순서대로 겹친다. 채움은 선의 속성이지 별도 히트 대상이 아니다. `pick_point` / `pick_data`와 선택 표시는 선의 표본을 기준으로 동작하며 시리즈를 선택하면 채움도 함께 선택된다. 채움이 있는 시리즈의 범례 기호는 같은 고정 너비 영역 안에서 선 아래에 채움색 띠를 그린다.
+패널 안의 그리기 순서는 "모든 시리즈의 채움 → 모든 시리즈의 본체 → 모든 선택 강조"이며, 각 단계는 설정에 선언한 시리즈 순서를 그대로 따르고 자동으로 정렬하지 않는다. 따라서 다른 시리즈의 채움이 이 시리즈의 선을 덮는 일은 구조상 없고, 채움끼리는 선언 순서대로 겹친다. 채움은 선의 속성이지 별도 히트 대상이 아니다. `Renderer::pick_chart` / `pick_chart_data`(웹 `pick_point` / `pick_data`)와 선택 표시는 선의 표본을 기준으로 동작하며 시리즈를 선택하면 채움도 함께 선택된다. 채움이 있는 시리즈의 범례 기호는 같은 고정 너비 영역 안에서 선 아래에 채움색 띠를 그린다.
 
 제약:
 
@@ -1223,11 +1239,21 @@ GPU는 그릴 때마다 컬럼 풀에서 값 컬럼을 읽어 셰이더에서 �
 - 로그 y축에서 0 이하 기준선은 위치가 없다. 면 전체를 지우는 대신 축 최솟값으로 고정한다. 로그축의 0 이하 값을 생략하는 규칙의 명시적 예외다.
 - 채움은 그리기 스타일이 그 선을 그릴 때만 그린다(별자리 스타일은 `ScatterLine` 시리즈만 그린다). 채움은 항상 정밀 기하로 그리며, 스케치·밀키웨이·별자리 선은 그 위에 각자의 획을 올린다.
 
+[examples/area_step.rs](examples/area_step.rs)는 시리즈 사이를 채운 예측 구간, 기준선까지 채운 계단선, 세 가지 계단 방식을 그린다.
+
+<a id="히스토그램-막대"></a>
+
+#### 히스토그램 막대
+
 히스토그램 막대는 구간 가운데에 배치하며, `width_ratio`로 구간 대비 너비를 `0..=1` 범위에서 정한다. 여기에 `gap_px`만큼의 픽셀 간격을 추가로 뺀다. 너비가 1픽셀보다 큰 막대는 최소 1픽셀이 남도록 간격을 제한한다.
 
 구간 자체가 화면에서 1픽셀보다 좁으면 GPU가 픽셀 열별로 겹치는 구간 중 최댓값을 골라 0까지 채운다. 가로 히스토그램은 픽셀 행을 기준으로 계산하며 표시 범위를 벗어난 부분은 자른다. 이렇게 최댓값으로 고른 구간의 외곽선 두께와 불투명도가 모두 양수이면 그 영역 전체를 외곽선 색으로, 그렇지 않으면 채움색으로 칠한다. 최댓값이 같으면 앞선 구간을 고른다. 이 경로에서는 `gap_px`나 양수인 `width_ratio`로 틈을 만들지 않는다. 원본 컬럼은 유지하고 `width_ratio = 0`인 구간은 제외한다.
 
 `border_width = 0`이면 외곽선을 숨기며, 양수이면 지정한 두께와 `border_color`를 적용한다. `bar_style_overrides`에는 `index`로 특정 구간을 골라 `fill_color`, `border_color`, `border_width`, `gap_px`, `width_ratio` 중 바꿀 값만 넣는다. 기준선과 방향은 시리즈 전체에 적용된다. 그리기, 데이터 피킹, 선택 테두리는 모두 같은 최종 막대 경계를 사용한다.
+
+<a id="행렬-필드와-등고선"></a>
+
+#### 행렬 필드와 등고선
 
 행렬 기반 세 종류는 등록된 컬럼 ID 묶음인 `MatrixRef { columns, orientation, grid_layout }`로 격자를 지정한다. 별도의 행렬 컨테이너를 만들지 않는다. 상주 경로에서는 풀의 컬럼을 읽고, 지원되는 비상주 히트맵 경로에서는 같은 ID의 원본 구간을 나누어 공급받는다.
 `grid_layout`은 좌표가 셀 경계(`Edges`, n+1개)인지 중심(`Centers`, n개)인지 명시하며 배열 길이로 추측하지 않는다. 선언과 데이터의 크기가 다르면 공통으로 사용할 수 있는 범위까지만 그리고 잘림 여부를 알린다.
@@ -1248,9 +1274,13 @@ GPU는 그릴 때마다 컬럼 풀에서 값 컬럼을 읽어 셰이더에서 �
 
 라벨 글자색은 선 색이나 `per_level_color`와 별도로 `ContourLabelConfig.color`에서 정한다. 소수 표시는 아래쪽 X축이 아니라 등고선 레벨 간격을 기준으로 하며, 간격을 구할 수 없으면 색상 막대의 간격을 사용한다. `significant_digits`를 적용하되 인접 레벨이 같은 문자열로 표시되지 않도록 조절한다. 등고선 셰이더는 라벨을 그릴 때와 같은 앵커 버퍼를 읽어 라벨 사각형 안의 선을 그리지 않는다. `bg_color`가 없어도 `bg_padding_px`만큼 선을 더 비운다. `bg_color` 상자는 어떤 각도로 회전해도 가장자리가 부드럽다. 라벨 사각형이 상자 바깥의 투명한 아틀라스 여백까지 이어져, 상자 가장자리가 사각형 경계로 잘리지 않고 글자처럼 텍스처 필터링을 거친다.
 
+<a id="그리기-정보-범위-맞춤과-시리즈-스타일"></a>
+
+#### 그리기 정보, 범위 맞춤과 시리즈 스타일
+
 `Renderer::series_draw_info(chart, series_id) -> Result<SeriesDrawInfo>`는 실제로 그린 데이터의 수를 알려 준다. 차트가 없으면 `UnknownChart`, 해당 id의 시리즈가 없으면 `InvalidSeriesConfig` 오류를 돌려준다. `drawn_count`, 행렬의 `cols` / `rows`, 잘림 여부인 `truncated`를 확인할 수 있다. 컬럼 길이가 다르면 공통 범위까지만 그리고 그 결과를 보고한다. 예를 들어 경계가 11개이고 빈도 값이 9개이면 막대 9개를 그린다. 선·산점도에서 X와 Y의 길이 중 작은 쪽까지만 그리는 경우도 이 API로 확인할 수 있다.
 
-히스토그램과 행렬 기반 세 종류는 점 전용 피킹 API를 사용하지 않는다. 히스토그램의 자동 범위 맞춤은 업로드한 경계·값 메타데이터를 이용한다. 행렬은 GPU 범위 계산 엔진의 별도 모드를 사용한다. CPU는 잘림을 반영한 셀 수만 전달하고, GPU는 그리기와 같은 좌표 풀에서 `Edges` / `Centers` 및 셀·표본 격자 규칙을 적용한다. 등고선과 보간 채움은 표본의 양 끝에, 셀 단위 채움은 셀 경계에 맞춘다. `Edges`에서 표본 위치는 인접 경계의 중점이다. 선택은 `pick_data`의 막대·행렬 전용 셰이더가 담당한다.
+히스토그램과 행렬 기반 세 종류는 점 피커(`Renderer::pick_chart`, 웹 `pick_point`)를 거치지 않는다. 점 피커는 선·산점도·점 벡터 시리즈를 다룬다. 히스토그램의 자동 범위 맞춤은 업로드한 경계·값 메타데이터를 이용한다. 행렬은 GPU 범위 계산 엔진의 별도 모드를 사용한다. CPU는 잘림을 반영한 셀 수만 전달하고, GPU는 그리기와 같은 좌표 풀에서 `Edges` / `Centers` 및 셀·표본 격자 규칙을 적용한다. 등고선과 보간 채움은 표본의 양 끝에, 셀 단위 채움은 셀 경계에 맞춘다. `Edges`에서 표본 위치는 인접 경계의 중점이다. 점 시리즈의 범위 계산은 같은 인덱스의 `(x[i], y[i])` 쌍을 다룬다. 히스토그램(`edges`가 하나 더 길다)과 격자(두 좌표 축이 서로 독립이다)는 그런 쌍이 아니므로 위의 별도 규칙을 쓴다. 선택은 `Renderer::pick_chart_data`(웹 `pick_data`)가 막대·행렬 전용 셰이더로 처리한다.
 
 **`Renderer::create_style_for_series(cfg)`**는 시리즈 설정에서 색·두께·모양을 읽어 화면용 `ChartStyle`을 만든다. 반환형은 `Result`다. 유니폼 4개와 선택적인 스타일 매핑 버퍼를 만들기 전에 남은 GPU 예산을 검사한다. 준비된 프레임이 바인딩을 보관하는 동안에도 메모리 집계는 유지된다. 출력용 `create_style_for_series_scaled(cfg, scale)`도 같은 검사를 거치며 픽셀 크기에만 배율을 적용한다.
 
@@ -1264,7 +1294,15 @@ GPU는 그릴 때마다 컬럼 풀에서 값 컬럼을 읽어 셰이더에서 �
 - `top_x` / `right_y`: 축선·눈금만 켜고 라벨·제목은 숨긴다. `out_margin = 8`로 좁은 여백을 둔다.
 - `chart_title`: 표시를 켜고 `top_margin = 32`로 설정한다. 텍스트는 비어 있다.
 - `grid`: 옅은 회색 주 격자선만 켠다.
-- `legend`: 숨긴다.
+- `legend`: 숨긴다(오른쪽 위 모서리, 내부 여백 8px).
+- 축 범위: 0..1 자리표시 값이며 `major_spacing = 0.2`, `minor_count = 4`, 안쪽 눈금이다.
+  `Chart::set_x_range` / `set_y_range` 또는 `auto_fit_*`로 바꾼다.
+- `chart_area`: (0, 0)에 놓인 1000 × 800. 호스트 viewport에 맞게 크기를 바꾼다.
+- `colorbar`: `None`. 필드 시리즈, 점 색 매핑, 벡터 색 매핑에는 색상 막대가 필요하다.
+  `renderer::default::default_colorbar_options()`는 오른쪽에 놓인 Viridis 막대(두께 18px, 간격 24px,
+  `length_frac = 0.75`, 가운데 정렬)와 0..1 자리표시 Z 범위를 돌려준다.
+- `draw_style`은 `Precise`이고 `polar`, `picked_points`, `picked_data`는 `None`이다. 오버레이,
+  서브플롯, 주석은 없다.
 
 빈 텍스트는 `Chart::with_title / with_x_title / with_y_title / with_legend_entry`로 채울 수 있다.
 

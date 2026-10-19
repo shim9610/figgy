@@ -108,6 +108,18 @@ macOS / Metal은 아직 불안정한 실험 단계로 둔다. 이 도구는 현�
 계산 함수를 추출해 같은 셰이더를 일반 경로와 정밀 Metal 바이너리 경로로 비교한다.
 버퍼와 명령 제출은 기존 wgpu를 그대로 쓴다. 기본 렌더러에는 적용하지 않는다.
 
+저장소 루트에서 `python3 ci/metal_precision.py`로 실행하며, macOS에서는 Xcode의 Apple Metal
+컴파일러가 필요하다. GitHub Actions의 `Experimental Metal shader precision` 워크플로는 Actions 탭에서
+수동으로 시작할 때(`workflow_dispatch`)만 실행된다. Linux의 `--generate-only`와 `--vulkan-control`
+검사로는 Metal 통과를 확인할 수 없다.
+
+위의 2026-10-10 측정 표는 renderer 0.14.0 이전의 좌표 함수로 얻은 결과다. 당시 기본 WGSL과
+`-ffast-math` 바이너리는 큰 epoch 값에서 768개 점 중 512개가 허용 오차를 넘었고, `-fno-fast-math`
+바이너리는 모두 통과했다. 0.14.0부터 `gpu_pick.wgsl`의 좌표 함수는 `fma`로 반올림 경계를 명시하며,
+이 방식에서는 수정하지 않은 wgpu의 기본 WGSL도 768개 점을 모두 통과했다
+([실행 38109490393](https://github.com/shim9610/figgy/actions/runs/38109490393)). 생성기는 현재 함수를
+추출하므로 지금 실행하면 위 표가 아니라 `fma` 방식의 결과가 나온다.
+
 작은 좌표 계산 실험이 통과하면 실제 피킹 전체, 그리기·필드 계산, 이미지 출력 순으로
 검증 범위를 넓힌다. 이 실험은 기존 CI 검사를 건너뛰거나 대신하지 않는다. 실험의
 성공과 macOS 전체 지원 완료는 구분하며, 실행한 장치와 수치 결과를 함께 기록한다.

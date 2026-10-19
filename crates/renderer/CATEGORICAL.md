@@ -2,7 +2,14 @@
 
 `CategoricalChart`는 범주·시리즈·값을 직접 보관하는 소규모 모델이며, 화면·선택·내보내기가
 모두 이 모델을 단일 원본(SSOT)으로 삼는다. 숫자 컬럼용 `ColumnSource`와 별도 계약이며 스트리밍을
-사용하지 않는다. 범주형 막대 API는 crates.io의 `figgy-renderer` 0.16.1부터 들어 있다.
+사용하지 않는다. 범주형 막대 API는 crates.io의 `figgy-renderer` 0.16.1부터 들어 있고,
+`CategoricalRenderer::new_async`는 0.17.0부터 쓸 수 있다. [주석 층](#주석-층)과 차트의
+`chart_title`·`active_layer` 필드는 저장소 master 브랜치에 있으며 crates.io에 배포된
+figgy-renderer 0.17.0에는 아직 없다. 다음 릴리스 전에는 저장소를 의존성으로 지정한다.
+
+```toml
+renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
+```
 
 ```rust,no_run
 use renderer::{CategoricalChart, Category, BarSeries, Color, CategoryBarMode};
@@ -141,7 +148,7 @@ renderer.end_frame();
 `None`으로 해제하며 렌더러가 포인터를 읽거나 애니메이션 타이머를 돌리지 않는다.
 `bar_rect(target)`은 보이는 막대의 **물리 픽셀** 경계이며, 둥근 모서리 바깥까지 포함한다.
 
-WASM 생성에는 0.17.0부터 제공하는 `CategoricalRenderer::new_async(gpu, format).await`를 사용해
+WASM 생성에는 `CategoricalRenderer::new_async(gpu, format).await`를 사용해
 브라우저 파이프라인 컴파일을 기다린다. 출력에는 `export_rgba_async(...).await`를 쓴다. 동기판은 네이티브 전용이다. 결과는
 straight-alpha RGBA8이며 PNG는 기존 `encode_png`로 인코딩한다. 내보내기에는 현재 강조 상태가
 포함된다. 강조 없는 결과가 필요하면 내보낼 복사본의 `hovered`와 `selected`를 비운다.
@@ -218,17 +225,11 @@ CI는 Linux/Vulkan(lavapipe), Windows/DX12(WARP), macOS/Metal(실험적 지원)�
 
 ### 주석 층
 
-주석 층은 저장소 master 브랜치에 있으며 crates.io에 배포된 `figgy-renderer` 0.17.0에는 아직 없다.
-다음 릴리스 전에는 저장소를 의존성으로 지정한다.
-
-```toml
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
-```
-
 `chart.annotations`의 기준선·구간·텍스트 상자·화살표는 막대 프레임 주위에 별도 패스로 그린다.
 `AnnotationAxis::X`는 화면 가로, `Y`는 화면 세로다. `Vertical`이면 `X`가 범주 인덱스(첫 범주 중심이 0,
-`-0.5..0.5`가 첫 슬롯), `Y`가 값 축이고 `Horizontal`이면 반대다. 구간은 데이터 아래(underlay)에
-그리므로 구간이 있을 때는 `set_background(FrameBackground::HostClear)`로 프레임을 준비하고 호스트가
+`-0.5..0.5`가 첫 슬롯), `Y`가 값 축이고 `Horizontal`이면 반대이며, 이때 범주 인덱스는 위에서 아래로
+증가한다. 값 축의 좌표는 그려진 자동 범위의 값 단위이며 `PercentStacked`에서는 퍼센트다.
+구간은 데이터 아래(underlay)에 그리므로 구간이 있을 때는 `set_background(FrameBackground::HostClear)`로 프레임을 준비하고 호스트가
 `chart.background`로 지운다. `export_rgba`는 이를 스스로 처리한다.
 `prepare_annotations(chart, size, scale)`의 `BoundedAnnotationFrame`을 `draw_underlay` →
 `frame.draw` → `draw_overlay` 순서로 그리고 히트 맵은 `annotations()`로 얻는다. 주석 편집과

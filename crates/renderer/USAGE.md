@@ -43,8 +43,9 @@ wgpu     = "30"
 
 This installs `figgy-renderer` 0.17.0 from crates.io. Area fills and step lines,
 point colour and size maps, vector fields, overlay layers, subplots, the
-annotation layer, radar charts and polar plots are on the repository's master
-branch and are not in the published figgy-renderer 0.17.0. The code in this
+annotation layer, radar charts, polar plots and the independent `chart_title` of
+radial, categorical and box plot charts are on the repository's master branch
+and are not in the published figgy-renderer 0.17.0. The code in this
 guide is written against master. Until the next release, depend on the
 repository:
 
@@ -501,14 +502,16 @@ Titles, labels and legends use the [shared interaction API](INTERACTION.md).
 
 A polar plot is a Cartesian chart with `config.polar = Some(PolarOptions { .. })`:
 the same line, scatter and area series, column pool, picking and export, drawn
-in (angle, radius). `bottom_x` is the angle axis and `left_y` the radius axis;
-the grid becomes rings and spokes, the angle axis the outer ring and the radius
-axis a labelled ray that drags around the centre. Angles are degrees or radians,
-the circle can be a sector with a hole, and segments are chords or arcs. Series
-without a polar form (histograms, heatmaps, contours, error bars, vectors),
-overlay layers, step lines under `PolarInterpolation::Arc` and streamed sources
-are rejected with an explicit error. See the
-[polar guide](POLAR.md) or run
+in (angle, radius). `bottom_x` is the angle axis and `left_y` the radius axis.
+`set_y_range` sets the radius range; `set_x_range` only chooses which angle
+ticks, spokes and labels are drawn, because one turn always spans 360° (or 2π)
+from `zero_angle_degrees`. The grid becomes rings and spokes, the angle axis the
+outer ring and the radius axis a labelled ray that drags around the centre.
+Angles are degrees or radians, the circle can be a sector with a hole, and
+segments are chords or arcs. Series without a polar form (histograms, heatmaps,
+contours, error bars, vectors), overlay layers, step lines under
+`PolarInterpolation::Arc` and streamed sources are rejected with an explicit
+error. See the [polar guide](POLAR.md) or run
 `cargo run -p figgy-renderer --example polar_plot -- target/polar-plot`.
 
 ### Categorical bars
@@ -602,9 +605,10 @@ wgpu     = "30"
 ```
 
 이 설정은 crates.io에서 `figgy-renderer` 0.17.0을 받는다. 면 채움과 계단선, 점 색·크기
-매핑, 벡터장, 오버레이 레이어, 서브플롯, 주석 층, 레이더 차트, 극좌표 플롯은 저장소 master
-브랜치에 있으며 crates.io에 배포된 figgy-renderer 0.17.0에는 아직 없다. 이 문서의 코드는
-master 기준이다. 다음 릴리스 전에는 저장소를 의존성으로 지정한다.
+매핑, 벡터장, 오버레이 레이어, 서브플롯, 주석 층, 레이더 차트, 극좌표 플롯, 원형·범주형·박스플롯
+차트의 독립 제목(`chart_title`)은 저장소 master 브랜치에 있으며 crates.io에 배포된
+figgy-renderer 0.17.0에는 아직 없다. 이 문서의 코드는 master 기준이다. 다음 릴리스 전에는 저장소를
+의존성으로 지정한다.
 
 ```toml
 renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
@@ -859,7 +863,7 @@ cargo run -p figgy-renderer --example egui_embed --features egui_demo
 ```bash
 npx wasm-pack@0.15.0 build crates/web --release --target web --locked
 cd crates/web
-python -m http.server 8142 --bind 127.0.0.1
+python3 -m http.server 8142 --bind 127.0.0.1
 # http://127.0.0.1:8142/timestamp-demo.html 열기
 ```
 
@@ -918,7 +922,7 @@ impl egui_wgpu::CallbackTrait for FiggyCallback {
 
 토큰으로 기록한 명령 버퍼는 그 토큰의 `ChartView`를 다시 바꾸기 전에 제출해야 한다. `refresh_axis`, `update_transform`, 같은 뷰로 실행하는 다음 `prepare`가 여기에 해당한다. 렌더러는 기록하기 전에 콘텐츠 리비전으로 오래된 입력을 거부하지만, 호스트에 넘어간 명령 버퍼는 검사하거나 순서를 정할 수 없다.
 
-winit 루프나 WASM 래퍼처럼 프레임 동안 렌더러를 단독으로 사용하는 호스트는 두 단계를 연속 실행하는 `Renderer::paint(&mut self, …)`를 사용하면 된다. 전체 예제는 [egui_embed.rs](examples/egui_embed.rs)를 참고한다.
+winit 루프나 WASM 래퍼처럼 프레임 동안 렌더러를 단독으로 사용하는 호스트는 두 단계를 연속 실행하는 `Renderer::paint(&mut self, …)`를 사용하면 된다. 전체 예제는 [egui_embed.rs](examples/egui_embed.rs)를 참고한다. 이 예제는 `end_gpu_frame`을 호출하지 않는다. `queue.submit` 뒤에 한 번 호출하는 호스트는 [tools/playground/src/main.rs](https://github.com/shim9610/figgy/blob/master/tools/playground/src/main.rs)에서 볼 수 있다.
 
 ### iced 통합 상태
 
@@ -933,10 +937,10 @@ winit 루프나 WASM 래퍼처럼 프레임 동안 렌더러를 단독으로 사
   `interpolation`은 `StepPre`·`StepPost`·`StepMid` 계단 조각을 그린다. 대시와 피킹도 그 경로를
   따른다. [설정](CONFIG.md#면-채움과-계단선)과 `area_step` 예제.
 - **점 색·크기 매핑**: 산점도의 점을 값 컬럼으로 색상 막대를 거쳐 색칠하거나, 명시한 범위로
-  크기를 정한다(버블 차트). [설정](CONFIG.md#point-colour-and-size-maps)과 `value_maps` 예제.
+  크기를 정한다(버블 차트). [설정](CONFIG.md#점-색과-크기-매핑)과 `value_maps` 예제.
 - **벡터장**: `DataRenderType::Vector`는 흩어진 기준점의 (u, v) 컬럼 또는 격자 위 행렬 두 개에서
   표본마다 화살표 하나를 픽셀 또는 데이터 스케일로 그리고, 색상 막대로 색칠할 수 있다.
-  [설정](CONFIG.md#vector-fields)과 `vector_field` 예제.
+  [설정](CONFIG.md#벡터장)과 `vector_field` 예제.
 - **보조 Y축·서브플롯·주석**: 오버레이 레이어는 두 번째 Y축에 시리즈를 그리고, 서브플롯은 차트
   여러 개를 연결 축·쌍둥이 축과 함께 격자로 배치하며, 주석 층은 기준선·구간·텍스트·화살표를
   더한다. 극좌표·레이더·원형 차트에는 값 축이 없으므로 비율 좌표로 둔 텍스트와 화살표만 그리고,
@@ -974,8 +978,9 @@ cargo run --locked -p figgy-renderer --example subplots -- target/subplots
 
 극좌표 플롯은 `config.polar = Some(PolarOptions { .. })`를 켠 직교 차트다. 직교 차트와 같은
 선·산점도·면 시리즈, 컬럼 풀, 피킹, 내보내기를 그대로 쓰고 좌표만 (각도, 반지름)으로 바꿔 그린다.
-`bottom_x`가 각도 축, `left_y`가 반지름 축이다. 격자는 고리와 스포크로, 각도 축은 바깥 고리로
-그린다. 반지름 축은 중심에서 뻗은 광선에 눈금 라벨을 붙여 그리며, 드래그하면 중심을 기준으로
+`bottom_x`가 각도 축, `left_y`가 반지름 축이다. `set_y_range`는 반지름 범위를 정한다. 원은 항상
+`zero_angle_degrees`에서 시작하는 한 바퀴(360° 또는 2π)이므로 `set_x_range`는 그릴 각도
+눈금·스포크·라벨만 정한다. 격자는 고리와 스포크로, 각도 축은 바깥 고리로 그린다. 반지름 축은 중심에서 뻗은 반직선에 눈금 라벨을 붙여 그리며, 드래그하면 중심을 기준으로
 돌아간다. 각도 단위는 도 또는 라디안, 원은 구멍이 있는 섹터일 수 있고, 세그먼트는 현 또는 호다.
 극좌표 형태가 없는 시리즈(히스토그램·히트맵·등고선·오차 막대·벡터), 오버레이 레이어,
 `PolarInterpolation::Arc`에서의 계단선, 스트리밍 소스는 명시적 오류로 거부한다.

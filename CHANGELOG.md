@@ -51,7 +51,10 @@ renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figg
   sector, an inner radius fraction, the segment interpolation (`Chord`, or
   `Arc { pieces }` subdividing each segment in data space so dashes and
   picking walk the same pieces) and the radial label angle. `None` (key
-  absent) is unchanged.
+  absent) is unchanged. The angle is the x value in the angle unit,
+  measured from the zero angle, so the circle is always one full turn:
+  the `bottom_x` range (`set_x_range`) chooses only which angle ticks,
+  spokes and labels are drawn, and `sector` shows part of the circle.
 - The shared `Transform` block grows from 112 to 144 bytes with the polar
   constants (`polar_angle`, `polar_extent`); `data_to_ndc` branches to
   `polar_ndc` and `sample_valid` masks a radius below the axis start
@@ -87,7 +90,9 @@ renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figg
   rectangular subplots mix in a document.
 - Rust migration: exhaustive `Config` literals need `polar: None` (or
   `..Default::default()`); exhaustive `LabelFormat` matches need `Degrees`
-  and `Radians` arms; `line_strip_vertex_count` keeps its signature. New
+  and `Radians` arms; `line_strip_vertex_count` keeps its signature. In the
+  low-level `data_render` module, `ScatterTransform` literals need
+  `polar_angle` and `polar_extent` (all zero for a rectangular chart). New
   example `polar_plot.rs`, a playground scene and `CONFIG.md`
   ("`PolarOptions`").
 
@@ -159,9 +164,11 @@ renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figg
   `selection_details` reports `u`, `v` and, when colour mapped,
   `color_value` for both forms.
 - Rust migration: exhaustive `DataRenderType` matches need a `Vector` arm,
-  and exhaustive `GpuSeriesExtentMode` matches need `VectorTips`. JSON
-  without the variant is unchanged. New example `vector_field.rs`; guide
-  text in `CONFIG.md` ("Vector fields") and `web/SCHEMA.md`.
+  and exhaustive `GpuSeriesExtentMode` matches need `VectorTips`; in the
+  low-level `data_render` module, `SeriesLayers` literals need `vector`
+  (`None` without a vector series). JSON without the variant is unchanged.
+  New example `vector_field.rs`; guide text in `CONFIG.md` ("Vector
+  fields") and `web/SCHEMA.md`.
 
 ## Unreleased — point colour and size maps
 
@@ -191,9 +198,14 @@ renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figg
   rejected with an explicit error; stylized draw styles ignore the maps like
   the style table.
 - Rust migration: exhaustive `DataScatterStyleConfig` literals need
-  `point_color_map: None` and `point_size_map: None`. JSON without the keys is
-  unchanged. New example `value_maps.rs`; guide text in `CONFIG.md`
-  ("Point colour and size maps") and `web/SCHEMA.md`.
+  `point_color_map: None` and `point_size_map: None`. In the low-level
+  `data_render` module, `create_scatter_columnar_mapped_pipeline` takes a
+  `value_map_bgl` bind group layout after `style_map_bgl`, and
+  `ColumnScatterLayer` and `ColumnPickRingLayer` literals need
+  `value_map_bg`, `color_value` and `size_value` (`None` without value
+  maps). JSON without the keys is unchanged. New example `value_maps.rs`;
+  guide text in `CONFIG.md` ("Point colour and size maps") and
+  `web/SCHEMA.md`.
 
 ## Unreleased — contour label fixes
 
@@ -462,8 +474,11 @@ renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figg
   implements `Default`.
 - Rust migration: exhaustive `DataLineStyleConfig` literals need `fill`,
   `fill_color` and `interpolation` (or `..Default::default()`); exhaustive
-  `RichSegment` literals need `rule_band`. See the configuration reference
-  ("Area fill and step lines") and the interaction guide.
+  `RichSegment` literals need `rule_band`. In the low-level `data_render`
+  module, `line_arc::ArcScratch::build` takes a trailing `step_mode: u32`
+  and `SeriesLayers` literals need `area` (`None` without a fill). See the
+  configuration reference ("Area fill and step lines") and the interaction
+  guide.
 
 ## Unreleased — layer and annotation foundation
 

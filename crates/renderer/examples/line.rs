@@ -19,7 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut renderer = Renderer::try_new(
         RendererDevice::new(Arc::new(device), Arc::new(queue)),
         wgpu::TextureFormat::Rgba8Unorm,
-        4 * 1024 * 1024,
+        4 * 1024 * 1024, // initial GPU column pool size in bytes
     )?;
 
     let x: Vec<f64> = (0..=100).map(|i| i as f64 / 10.0).collect();

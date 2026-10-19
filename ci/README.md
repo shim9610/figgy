@@ -6,7 +6,9 @@ The full three-OS matrix runs only for **public, non-draft pull requests** when
 opened, updated, reopened or marked ready for review. Branch pushes without a PR,
 master/merge pushes and tag pushes do not start it. A push to an open PR triggers
 one PR run; a newer run cancels the older run for that PR. Draft PRs wait until
-they are ready. Failed jobs can be rerun from that PR's Actions run.
+they are ready. Failed jobs can be rerun from that PR's Actions run. A master
+commit has no run of its own: its results are in the last run of the pull
+request that merged it.
 
 CI sets `RUSTFLAGS` and `RUSTDOCFLAGS` to `-D warnings` in all three jobs, so a
 compiler or rustdoc warning in the libraries, examples, tests or extracted registry
@@ -36,7 +38,8 @@ device or failed render **fails the job**; there is no successful CPU-only fallb
 for the Metal job and no skipped GPU initialization.
 
 macOS / Metal support is currently **experimental, not stable**. Its full matrix
-job remains required; see the exact revision's result and [fix history](STATUS.md).
+job remains required; see the PR run that tested the revision and the
+[fix history](STATUS.md).
 The separate, opt-in
 [Metal precision experiment](metal-precision-probe/README.md) compares default WGSL
 with fast and precise precompiled Metal shaders without patching wgpu. Success in
@@ -136,7 +139,8 @@ rustdoc builds do not check what docs.rs hosts.
 Logs and generated diagnostic PNGs are uploaded as `verification-<runner>-<backend>`
 artifacts, including on failure, and retained for seven days. The logs identify which
 checks actually completed. The configured matrix alone is not evidence of a pass;
-consult the commit's Actions run and the [recorded backend results](STATUS.md).
+consult the Actions run of the PR that tested the commit and the
+[recorded backend results](STATUS.md).
 Independent test binaries, doctests and missing-adapter checks continue after a test
 failure, while the final job still fails. This prevents one failing suite from hiding
 the rest of the backend results.
@@ -263,7 +267,8 @@ macOS / Metal은 아직 불안정한 실험 단계다. 정밀 Metal 셰이더 �
 
 실제로 그린 픽셀, 설정 변경 후 화면, 캐시 재사용, 스트리밍과 메모리를 검사한다.
 장치를 만들 수 없거나 렌더링에 실패하면 CI도 실패한다. 운영체제별 로그와 진단 이미지는
-Actions 실행의 아티팩트에서 확인할 수 있다. 이 검사는 실제 GPU 제조사별 드라이버 검증이나
+PR의 Actions 실행 아티팩트에서 확인할 수 있다. master 커밋은 따로 실행하지 않으므로 그 커밋을
+병합한 PR의 마지막 실행 결과를 본다. 이 검사는 실제 GPU 제조사별 드라이버 검증이나
 브라우저 실행 검사를 대신하지 않는다. [실행 결과와 확인된 문제](STATUS.md)도 함께 확인한다.
 한 테스트가 실패해도 다른 테스트 바이너리와 문서 테스트는 계속 실행하며, 최종 CI 결과는
 실패로 남는다.
