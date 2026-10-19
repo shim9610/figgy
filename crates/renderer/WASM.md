@@ -551,9 +551,9 @@ cd crates/web && python -m http.server 8137   # wasm은 file:// 불가
 
 아래 API는 figgy 0.10.0부터 제공한다. `render_chart()`가 작업 실행을 관리하므로 앱에서 `auto_stream_chart_step()`이나 `frame()`을 반복 호출할 필요가 없다. 네이티브 Rust에서 빌린 `ColumnSource`를 사용하는 방식과 청크 실행 API는 그대로 유지한다.
 
-![figgy의 상주 및 비상주 화면 렌더링 구조](https://raw.githubusercontent.com/shim9610/figgy/53d6a40dcd4d438692aa6a7fac811cf2d75705e6/crates/renderer/assets/streaming-architecture-en.png)
+![figgy의 상주 및 비상주 화면 렌더링 구조](https://raw.githubusercontent.com/shim9610/figgy/807327081b97d20964cc96ce543dfb93a27499be/crates/renderer/assets/streaming-architecture-kr.png)
 
-그림은 공통 렌더러의 상주 경로, 스트리밍 누적 이미지, 선택적인 GPU 패킹 캐시, 원본을 다시 읽는 출력을 보여 준다. 브라우저에서는 다음과 같이 역할을 나눈다.
+그림은 컬럼 기반 렌더러의 상주 데이터 재사용, 청크 스트리밍과 CPU 래스터 갱신을 화면 갱신 루프 안에서 구분한다. 선택적인 GPU 캐시와 출력 시 원본 재공급은 아래 본문에서 설명한다. 브라우저에서는 다음과 같이 역할을 나눈다.
 
 | 계층 | 관리하는 상태와 역할 |
 |---|---|
