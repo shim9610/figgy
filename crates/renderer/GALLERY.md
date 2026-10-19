@@ -24,7 +24,9 @@ intervals inferred from observations.
 | `gallery-categorical.png` | `grouped-matte.png` from `categorical_gallery.rs`: two series across four categories | 900 × 620 |
 | `gallery-boxplot.png` | `01-classic-matte.png` from `boxplot_gallery.rs`: supplied summaries and outliers | 960 × 640 |
 | `gallery-radar.png` | `01-spider-web.png` from `radar_gallery.rs`: two series over six categories on a polygon grid | 960 × 640 |
+| `gallery-radar-circle.png` | `02-circle-values.png` from `radar_gallery.rs`: the same series on a circular grid with a value label at every vertex | 960 × 640 |
 | `gallery-polar.png` | `01-antenna-pattern.png` from `polar_plot.rs`: a filled line in polar coordinates with degree labels | 960 × 640 |
+| `gallery-polar-compass.png` | `02-compass-rose.png` from `polar_plot.rs`: a scatter-line clockwise from the top with arc segments, the radius labels on the 45° ray | 960 × 640 |
 
 The first four Cartesian chart recipes also run independently as `line`,
 `error_bars`, `histogram` and `heatmap_contours`. `animated_lines` writes wave and

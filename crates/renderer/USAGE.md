@@ -433,6 +433,19 @@ category and series; per-spoke normalization is not computed. See the
 `cargo run -p figgy-renderer --example radar_editor --features egui_demo`.
 Titles, labels and legends use the [shared interaction API](INTERACTION.md).
 
+### Polar plots
+
+A polar plot is a Cartesian chart with `config.polar = Some(PolarOptions { .. })`:
+the same line, scatter and area series, column pool, picking and export, drawn
+in (angle, radius). `bottom_x` is the angle axis and `left_y` the radius axis;
+the grid becomes rings and spokes, the angle axis the outer ring and the radius
+axis a labelled ray that drags around the centre. Angles are degrees or radians,
+the circle can be a sector with a hole, and segments are chords or arcs. Series
+without a polar form (histograms, heatmaps, contours, error bars, vectors) and
+streamed sources are rejected with an explicit error. See the
+[polar guide](POLAR.md) or run
+`cargo run -p figgy-renderer --example polar_plot -- target/polar-plot`.
+
 ### Categorical bars
 
 `CategoricalRenderer` draws grouped, stacked and 100% stacked bars in either direction.
@@ -783,6 +796,15 @@ winit 루프나 WASM 래퍼처럼 프레임 동안 렌더러를 단독으로 사
 다각형(거미줄) 또는 원으로 그린다. 범주·시리즈마다 값 하나를 호스트가 넣으며 스포크별 정규화는
 계산하지 않는다. [사용법](RADAR.md)과 `radar_editor` 예제를 참고한다. 제목·라벨·범례 편집은
 [공통 선택·이동 API](INTERACTION.md)를 사용한다.
+
+### 극좌표 플롯 — 직교 설정의 좌표계
+
+극좌표 플롯은 `config.polar = Some(PolarOptions { .. })`를 켠 직교 차트다. 같은 선·산점도·면
+시리즈, 컬럼 풀, 피킹과 내보내기를 (각도, 반지름)으로 그린다. `bottom_x`가 각도 축, `left_y`가
+반지름 축이며 격자는 고리와 스포크, 각도 축은 바깥 고리, 반지름 축은 중심을 축으로 드래그해 돌릴
+수 있는 광선이 된다. 각도 단위는 도 또는 라디안, 원은 구멍이 있는 섹터일 수 있고, 세그먼트는 현
+또는 호다. 극좌표 형태가 없는 시리즈(히스토그램·히트맵·등고선·오차 막대·벡터)와 스트리밍 소스는
+명시적 오류로 거부한다. [사용법](POLAR.md)과 `polar_plot` 예제를 참고한다.
 
 ### 범주형 막대 — 소량 데이터 API
 

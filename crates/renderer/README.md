@@ -2,8 +2,8 @@
 
 A native Rust chart renderer for scientific plots, styled dashboards and small
 data charts. Draw lines, scatter plots, error bars, histograms, heatmaps, contours,
-pies, donuts, categorical bars, boxplots and radar charts; edit their models and
-export PNGs.
+vector fields and polar plots, plus pies, donuts, categorical bars, boxplots and
+radar charts; edit their models and export PNGs.
 Embed charts in an existing wgpu application or render without a window.
 The default library has no GUI framework dependency.
 

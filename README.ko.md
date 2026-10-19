@@ -30,16 +30,42 @@
   <a href="crates/renderer/examples/radial_gallery.rs"><img src="crates/renderer/assets/gallery-donut.png" alt="Ceramic 3D donut" width="23%" align="top"></a>
 </p>
 
-**레이더 · 극좌표 · 움직이는 파형 · 위상 궤적**
+**레이더 · 값 라벨 레이더 · 극좌표 · 나침반**
 
 <p>
-  <a href="crates/renderer/examples/radar_gallery.rs"><img src="crates/renderer/assets/gallery-radar.png" alt="Radar chart comparing two releases over six categories" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/polar_plot.rs"><img src="crates/renderer/assets/gallery-polar.png" alt="Antenna pattern in polar coordinates" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/radar_gallery.rs"><img src="crates/renderer/assets/gallery-radar.png" alt="Radar chart comparing two releases over six categories on a spider-web grid" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/radar_gallery.rs"><img src="crates/renderer/assets/gallery-radar-circle.png" alt="Radar chart on a circular grid with a value label at every vertex" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/polar_plot.rs"><img src="crates/renderer/assets/gallery-polar.png" alt="Antenna pattern filled to the centre in polar coordinates" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/polar_plot.rs"><img src="crates/renderer/assets/gallery-polar-compass.png" alt="Compass rose: a polar scatter-line, clockwise from the top, with arc segments" width="23%" align="top"></a>
+</p>
+
+**움직이는 파형 · 위상 궤적**
+
+<p>
   <a href="crates/renderer/examples/animated_lines.rs"><img src="crates/renderer/assets/gallery-wave.gif" alt="Travelling waves" width="23%" align="top"></a>
   <a href="crates/renderer/examples/animated_lines.rs"><img src="crates/renderer/assets/gallery-orbit.gif" alt="Animated phase portrait" width="23%" align="top"></a>
 </p>
 
 [다른 스타일과 이미지 생성 방법](crates/renderer/GALLERY.md).
+
+## 차트 종류
+
+| 차트 | 입력 | 문서 |
+|---|---|---|
+| 선·산점도·면·계단 시리즈 | `ColumnSource`로 올린 `f64` 컬럼 | [사용법](crates/renderer/USAGE.md) · [시리즈 선언](crates/renderer/CONFIG.md#data_config--시리즈-선언-형식) |
+| 오차 막대 | X·Y·오차 컬럼 | [error_bars.rs](crates/renderer/examples/error_bars.rs) |
+| 히스토그램 | 구간 경계와 개수 | [히스토그램](crates/renderer/HISTOGRAM.md) |
+| 히트맵·등고선 | 축 좌표와 행렬 컬럼 | [heatmap_contours.rs](crates/renderer/examples/heatmap_contours.rs) |
+| 벡터장 | 기준점과 (u, v) 성분, 또는 행렬 두 개 | [vector_field.rs](crates/renderer/examples/vector_field.rs) |
+| 색·크기 매핑 | 점마다 값 컬럼 하나 | [value_maps.rs](crates/renderer/examples/value_maps.rs) |
+| **극좌표 플롯** | (각도, 반지름) 컬럼과 `Config.polar` | [극좌표](crates/renderer/POLAR.md) |
+| 파이·도넛 | `RadialChart` 값 | [원형](crates/renderer/RADIAL.md) |
+| 범주형 막대 | `CategoricalChart` 범주와 시리즈 | [막대](crates/renderer/CATEGORICAL.md) |
+| 박스플롯 | `BoxPlotChart` 요약 통계 | [박스플롯](crates/renderer/BOXPLOT.md) |
+| **레이더 차트** | `RadarChart` 범주와 시리즈별 범주당 값 하나 | [레이더](crates/renderer/RADAR.md) |
+
+컬럼 기반 차트는 렌더러·GPU 컬럼 풀·피킹·내보내기 경로를 공유하며 오버레이·서브플롯·스트리밍도
+여기에 속합니다. 마지막 네 가지는 소량 데이터 모델과 전용 렌더러를 가진 바운디드 차트입니다.
 
 ## 빠른 시작
 
@@ -73,6 +99,45 @@ pollster = "1"
 실제 데이터를 쓰려면 예제의 벡터를 바꾸거나
 [`ColumnSource`](crates/renderer/USAGE.md#columnsource--데이터-어댑터-트레이트)를 구현하면 됩니다.
 
+### 극좌표와 레이더를 몇 줄로
+
+극좌표 플롯은 위 차트에 `polar`를 켠 것입니다. 컬럼은 호스트의 (각도, 반지름) 그대로이고
+축은 바깥 고리와 라벨이 붙은 광선이 됩니다.
+
+```rust,ignore
+use renderer::{format::LabelFormat, polar::PolarOptions};
+
+config.polar = Some(PolarOptions::default()); // 0°는 오른쪽, 반시계 방향
+config.bottom_x.major_spacing = 30.0; // 30°마다 스포크
+config.bottom_x.label_style.format = LabelFormat::Degrees;
+chart.set_x_range(0.0, 360.0); // 각도 축
+chart.set_y_range(0.0, 1.0); // 반지름 축
+```
+
+레이더 차트는 전용 렌더러가 그리는 소량 데이터 모델입니다.
+
+```rust,ignore
+use renderer::radar::{RadarChart, RadarRenderer, RadarSeries};
+use renderer::{Category, Color};
+
+let mut chart = RadarChart::default();
+chart.categories = ["속도", "안전", "크기", "문서", "테스트"]
+    .iter()
+    .enumerate()
+    .map(|(i, c)| Category::new(format!("c{i}"), *c))
+    .collect();
+chart.series = vec![
+    RadarSeries::new("v1", "Release 1", vec![6.0, 8.0, 4.0, 5.0, 7.0], Color::from_rgb8(60, 110, 200)),
+    RadarSeries::new("v2", "Release 2", vec![8.0, 7.0, 6.0, 8.0, 9.0], Color::from_rgb8(220, 90, 70)),
+];
+let mut radar = RadarRenderer::new(device, wgpu::TextureFormat::Rgba8Unorm)?;
+let frame = radar.prepare(&chart, (720, 520), 1.0)?; // frame.draw(&mut pass)
+```
+
+전체 프로그램은 [polar_plot.rs](crates/renderer/examples/polar_plot.rs)와
+[radar_gallery.rs](crates/renderer/examples/radar_gallery.rs), 문서는
+[극좌표](crates/renderer/POLAR.md)와 [레이더](crates/renderer/RADAR.md)입니다.
+
 ## 예제 실행
 
 저장소 루트에서 실행합니다.
@@ -99,6 +164,7 @@ cargo run --locked -p figgy-renderer --example polar_plot -- target/polar-plot
 | 독립 창에서 그리기 | [winit_simple.rs](crates/renderer/examples/winit_simple.rs) |
 | egui 화면에 넣기 | [egui_embed.rs](crates/renderer/examples/egui_embed.rs) — `egui_demo` 기능 사용 |
 | 원형·막대·박스플롯·레이더 편집 | [네이티브 편집 예제](crates/renderer/examples/README.md#interactive-editors) |
+| 극좌표로 선·산점도 그리기 | [극좌표 사용법](crates/renderer/POLAR.md) |
 | 선택·이동·영역 크기 조정 연결 | [상호작용 사용법](crates/renderer/INTERACTION.md) |
 | GPU 메모리보다 큰 데이터 그리기 | [스트리밍과 상주 전환](crates/renderer/ARCHITECTURE.md#원본-데이터-스트리밍과-상주-전환) |
 
@@ -123,7 +189,7 @@ Studio 자체가 라이브러리에 포함되는 것은 아닙니다.
 |---|---|
 | 네이티브 초기화·데이터 연결·화면 통합·출력 | [상세 사용법](crates/renderer/USAGE.md) |
 | 축·글자·범례·시리즈·색상표 | [설정 명세](crates/renderer/CONFIG.md) |
-| 원형·범주형 막대·박스플롯·레이더·히스토그램 | [원형](crates/renderer/RADIAL.md) · [막대](crates/renderer/CATEGORICAL.md) · [박스플롯](crates/renderer/BOXPLOT.md) · [레이더](crates/renderer/RADAR.md) · [히스토그램](crates/renderer/HISTOGRAM.md) |
+| 원형·범주형 막대·박스플롯·레이더·극좌표·히스토그램 | [원형](crates/renderer/RADIAL.md) · [막대](crates/renderer/CATEGORICAL.md) · [박스플롯](crates/renderer/BOXPLOT.md) · [레이더](crates/renderer/RADAR.md) · [극좌표](crates/renderer/POLAR.md) · [히스토그램](crates/renderer/HISTOGRAM.md) |
 | 소유권·프레임 유효성·API 호환성 | [API 계약](crates/renderer/API.md) |
 | 메모리·캐시·스트리밍·셰이더 구조 | [기술 문서](crates/renderer/ARCHITECTURE.md) |
 | 버전별 변경과 마이그레이션 | [변경 이력](CHANGELOG.md) |

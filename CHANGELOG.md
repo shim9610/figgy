@@ -11,6 +11,12 @@ at the time. The first crates.io publication is recorded below.
 
 ## Unreleased — polar coordinates
 
+- Documentation: a [polar guide](crates/renderer/POLAR.md) (input and first
+  render, coordinate options, axes, picking, dragging, subplots, export;
+  English and Korean), a "Chart types" table and short polar and radar
+  snippets in the READMEs, `USAGE.md` sections, and two more gallery images
+  (`gallery-radar-circle.png`, `gallery-polar-compass.png`).
+
 - `Config.polar: Option<PolarOptions>` (#26, part B) draws a Cartesian
   document in polar coordinates: `bottom_x` is the angle axis, `left_y` the
   radius axis, and every series, column, picking and export path is the

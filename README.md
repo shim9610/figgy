@@ -50,11 +50,13 @@ the images are actual native renderer output. GIFs show exported animation frame
   <a href="crates/renderer/examples/animated_lines.rs"><img src="crates/renderer/assets/gallery-orbit.gif" alt="Animated phase portrait" width="23%" align="top"></a>
 </p>
 
-**Radar · Polar**
+**Radar · Radar with value labels · Polar · Compass rose**
 
 <p>
-  <a href="crates/renderer/examples/radar_gallery.rs"><img src="crates/renderer/assets/gallery-radar.png" alt="Radar chart comparing two releases over six categories" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/polar_plot.rs"><img src="crates/renderer/assets/gallery-polar.png" alt="Antenna pattern in polar coordinates" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/radar_gallery.rs"><img src="crates/renderer/assets/gallery-radar.png" alt="Radar chart comparing two releases over six categories on a spider-web grid" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/radar_gallery.rs"><img src="crates/renderer/assets/gallery-radar-circle.png" alt="Radar chart on a circular grid with a value label at every vertex" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/polar_plot.rs"><img src="crates/renderer/assets/gallery-polar.png" alt="Antenna pattern filled to the centre in polar coordinates" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/polar_plot.rs"><img src="crates/renderer/assets/gallery-polar-compass.png" alt="Compass rose: a polar scatter-line, clockwise from the top, with arc segments" width="23%" align="top"></a>
 </p>
 
 **Draw styles: Precise · Sketch (hand-drawn) · Milkyway · Constellation**
@@ -72,6 +74,26 @@ Milkyway uses line-only series; Constellation places stars at the source samples
 palettes, axes, materials and labels change the same chart APIs.
 
 [More styles and reproduction commands](crates/renderer/GALLERY.md).
+
+## Chart types
+
+| Chart | Input | Guide |
+|---|---|---|
+| Lines, scatter, area and step series | `f64` columns through `ColumnSource` | [Usage](crates/renderer/USAGE.md) · [Series schema](crates/renderer/CONFIG.md#data_config--declarative-series-schema-the-active-api) |
+| Error bars | X, Y and error columns | [error_bars.rs](crates/renderer/examples/error_bars.rs) |
+| Histograms | Bin edges and counts | [Histograms](crates/renderer/HISTOGRAM.md) |
+| Heatmaps and contours | Axis coordinates and a matrix column | [heatmap_contours.rs](crates/renderer/examples/heatmap_contours.rs) |
+| Vector fields | Anchors and (u, v) components, or two matrices | [vector_field.rs](crates/renderer/examples/vector_field.rs) |
+| Colour and size maps | A value column per point | [value_maps.rs](crates/renderer/examples/value_maps.rs) |
+| **Polar plots** | (angle, radius) columns and `Config.polar` | [Polar](crates/renderer/POLAR.md) |
+| Pies and donuts | `RadialChart` values | [Radial](crates/renderer/RADIAL.md) |
+| Categorical bars | `CategoricalChart` categories and series | [Bars](crates/renderer/CATEGORICAL.md) |
+| Box plots | `BoxPlotChart` summaries | [Boxes](crates/renderer/BOXPLOT.md) |
+| **Radar charts** | `RadarChart` categories and one value per category per series | [Radar](crates/renderer/RADAR.md) |
+
+The column-backed charts share one renderer, GPU column pool, picking and
+export path; overlays, subplots and streaming belong to them. The last four
+are bounded families with small data models and their own renderers.
 
 ## Quick start
 
@@ -192,6 +214,44 @@ The renderer returns pixels or PNG bytes; the application chooses where to save 
 For your own data, replace the `x`/`y` vectors or implement
 [`ColumnSource`](crates/renderer/USAGE.md#columnsource--the-data-adapter-trait).
 
+### Polar plots and radar charts in a few lines
+
+A polar plot is the chart above with `polar` set: the columns stay the host's
+(angle, radius) and the axes become the outer ring and a labelled ray.
+
+```rust,ignore
+use renderer::{format::LabelFormat, polar::PolarOptions};
+
+config.polar = Some(PolarOptions::default()); // 0° right, counter-clockwise
+config.bottom_x.major_spacing = 30.0; // spokes every 30°
+config.bottom_x.label_style.format = LabelFormat::Degrees;
+chart.set_x_range(0.0, 360.0); // angle axis
+chart.set_y_range(0.0, 1.0); // radius axis
+```
+
+A radar chart is a small bounded model drawn by its own renderer:
+
+```rust,ignore
+use renderer::radar::{RadarChart, RadarRenderer, RadarSeries};
+use renderer::{Category, Color};
+
+let mut chart = RadarChart::default();
+chart.categories = ["Speed", "Safety", "Size", "Docs", "Tests"]
+    .iter()
+    .map(|c| Category::new(c.to_lowercase(), *c))
+    .collect();
+chart.series = vec![
+    RadarSeries::new("v1", "Release 1", vec![6.0, 8.0, 4.0, 5.0, 7.0], Color::from_rgb8(60, 110, 200)),
+    RadarSeries::new("v2", "Release 2", vec![8.0, 7.0, 6.0, 8.0, 9.0], Color::from_rgb8(220, 90, 70)),
+];
+let mut radar = RadarRenderer::new(device, wgpu::TextureFormat::Rgba8Unorm)?;
+let frame = radar.prepare(&chart, (720, 520), 1.0)?; // frame.draw(&mut pass)
+```
+
+The complete programs are [polar_plot.rs](crates/renderer/examples/polar_plot.rs)
+and [radar_gallery.rs](crates/renderer/examples/radar_gallery.rs); the guides are
+[Polar](crates/renderer/POLAR.md) and [Radar](crates/renderer/RADAR.md).
+
 ## Run the examples
 
 From a checkout of this repository:
@@ -219,6 +279,7 @@ interactive editors and the data contract used by each chart.
 | Draw in a native window | [winit_simple.rs](crates/renderer/examples/winit_simple.rs) |
 | Embed in egui | [egui_embed.rs](crates/renderer/examples/egui_embed.rs) — enable `egui_demo` |
 | Edit pies, donuts, bars, box plots or radar charts | [Native editors](crates/renderer/examples/README.md#interactive-editors) |
+| Draw lines and scatter in polar coordinates | [Polar guide](crates/renderer/POLAR.md) |
 | Connect picking, dragging and plot-area resizing | [Interaction guide](crates/renderer/INTERACTION.md) |
 | Render data that does not fit in GPU memory | [Streaming and residency](crates/renderer/ARCHITECTURE.md#exact-streaming-and-residency) |
 
@@ -244,7 +305,7 @@ separate application, not a component bundled with the renderer.
 |---|---|
 | Native setup, data adapters, embedding and export | [Usage](crates/renderer/USAGE.md) |
 | Axes, labels, legends, series and color maps | [Configuration reference](crates/renderer/CONFIG.md) |
-| Pies/donuts · categorical bars · box plots · radar · histograms | [Radial](crates/renderer/RADIAL.md) · [Bars](crates/renderer/CATEGORICAL.md) · [Boxes](crates/renderer/BOXPLOT.md) · [Radar](crates/renderer/RADAR.md) · [Histograms](crates/renderer/HISTOGRAM.md) |
+| Pies/donuts · categorical bars · box plots · radar · polar · histograms | [Radial](crates/renderer/RADIAL.md) · [Bars](crates/renderer/CATEGORICAL.md) · [Boxes](crates/renderer/BOXPLOT.md) · [Radar](crates/renderer/RADAR.md) · [Polar](crates/renderer/POLAR.md) · [Histograms](crates/renderer/HISTOGRAM.md) |
 | Ownership, prepared frames and API compatibility | [API contracts](crates/renderer/API.md) |
 | Memory flow, caching, streaming and shader details | [Architecture](crates/renderer/ARCHITECTURE.md) |
 | Source versions and migration notes | [Changelog](CHANGELOG.md) |
