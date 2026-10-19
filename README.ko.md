@@ -39,22 +39,22 @@
   <a href="crates/renderer/examples/polar_plot.rs"><img src="crates/renderer/assets/gallery-polar-compass.png" alt="Compass rose: a polar scatter-line, clockwise from the top, with arc segments" width="23%" align="top"></a>
 </p>
 
-**벡터장 · 히트맵 위 기울기 화살표 · 색 매핑 점 · 버블 차트**
+**바람장 · 해류 · 색 매핑 점 · 버블 차트**
 
 <p>
-  <a href="crates/renderer/examples/vector_field.rs"><img src="crates/renderer/assets/gallery-vector-points.png" alt="Arrows of a vortex flow at scattered anchors" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/vector_field.rs"><img src="crates/renderer/assets/gallery-vector-grid.png" alt="Gradient arrows on a grid over a heatmap, coloured by speed through the colourbar" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/value_maps.rs"><img src="crates/renderer/assets/gallery-colormap.png" alt="Scatter points coloured by a third column through the colourbar" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/value_maps.rs"><img src="crates/renderer/assets/gallery-bubble.png" alt="Bubble chart whose marker area follows a value column" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/gallery_showcase.rs"><img src="crates/renderer/assets/showcase-wind.png" alt="A sea breeze: wind speed as a smooth field with direction arrows on a grid" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/gallery_showcase.rs"><img src="crates/renderer/assets/showcase-currents.png" alt="Surface currents at scattered drifters, arrow length and colour by speed" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/gallery_showcase.rs"><img src="crates/renderer/assets/showcase-colormap.png" alt="Particles along two spiral arms coloured by age through the colourbar" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/gallery_showcase.rs"><img src="crates/renderer/assets/showcase-bubbles.png" alt="Bubble chart of income and life expectancy for three regions, area by population" width="23%" align="top"></a>
 </p>
 
-**면과 띠 · 계단선 · 보조 Y축 · 서브플롯**
+**예측 구간 · 계단 스케줄 · 쌍둥이 축 · 소형 다중 차트**
 
 <p>
-  <a href="crates/renderer/examples/area_step.rs"><img src="crates/renderer/assets/gallery-area-band.png" alt="Area under a line and a confidence band between two lines" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/area_step.rs"><img src="crates/renderer/assets/gallery-steps.png" alt="The three step interpolation modes with a filled step area" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/overlay_axes.rs"><img src="crates/renderer/assets/gallery-overlay-axes.png" alt="Temperature and pressure on one chart with a second Y axis on the right" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/subplots.rs"><img src="crates/renderer/assets/gallery-subplots.png" alt="A 2 by 2 grid of subplots with linked and twin axes" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/gallery_showcase.rs"><img src="crates/renderer/assets/showcase-forecast.png" alt="A demand forecast: the history solid, the forecast dashed inside 80 and 95 percent bands" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/gallery_showcase.rs"><img src="crates/renderer/assets/showcase-thermostat.png" alt="A thermostat schedule as a filled step line under the measured room temperature" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/gallery_showcase.rs"><img src="crates/renderer/assets/showcase-twin-axes.png" alt="A battery discharge: voltage on the left axis, current on a right overlay axis" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/gallery_showcase.rs"><img src="crates/renderer/assets/showcase-small-multiples.png" alt="Four sensors as a 2 by 2 grid of subplots sharing the hour axis" width="23%" align="top"></a>
 </p>
 
 **움직이는 파형 · 위상 궤적**
@@ -186,6 +186,8 @@ let frame = radar.prepare(&chart, (720, 520), 1.0)?; // frame.draw(&mut pass)
 
 ```bash
 cargo run --locked -p figgy-renderer --example line
+cargo run --locked -p figgy-renderer --example gallery_concepts -- target/concepts
+cargo run --locked -p figgy-renderer --example gallery_showcase -- target/showcase
 cargo run --locked -p figgy-renderer --example error_bars -- target/error-bars
 cargo run --locked -p figgy-renderer --example histogram -- target/histogram
 cargo run --locked -p figgy-renderer --example heatmap_contours -- target/heatmap-contours

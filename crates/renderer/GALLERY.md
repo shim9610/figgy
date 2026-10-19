@@ -27,20 +27,31 @@ intervals inferred from observations.
 | `gallery-radar-circle.png` | `02-circle-values.png` from `radar_gallery.rs`: the same series on a circular grid with a value label at every vertex | 960 × 640 |
 | `gallery-polar.png` | `01-antenna-pattern.png` from `polar_plot.rs`: a filled line in polar coordinates with degree labels | 960 × 640 |
 | `gallery-polar-compass.png` | `02-compass-rose.png` from `polar_plot.rs`: a scatter-line clockwise from the top with arc segments, the radius labels on the 45° ray | 960 × 640 |
-| `gallery-vector-points.png` | `points.png` from `vector_field.rs`: a vortex flow sampled at 150 scattered anchors, arrows pivoted at their middle, the longest 36 px | 960 × 600 |
-| `gallery-vector-grid.png` | `grid.png` from `vector_field.rs`: the gradient of a two-peak potential on a 14 × 14 grid over the 41 × 41 heatmap, coloured by speed through the colourbar | 960 × 640 |
-| `gallery-colormap.png` | `color_map.png` from `value_maps.rs`: a spiral of points coloured by a depth column through a Viridis colourbar | 960 × 600 |
-| `gallery-bubble.png` | `size_map.png` from `value_maps.rs`: the same spiral with marker area following an amplitude column over an explicit domain | 960 × 600 |
-| `gallery-area-band.png` | `area_band.png` from `area_step.rs`: an area under a line and a band between two lines sharing one x column | 960 × 600 |
-| `gallery-steps.png` | `steps.png` from `area_step.rs`: `StepPre`, `StepPost` and `StepMid` over the same samples, the last one filled | 960 × 600 |
-| `gallery-overlay-axes.png` | `overlay_axes.rs`: temperature on the base layer and pressure on an overlay layer with its own right Y axis | 960 × 600 |
-| `gallery-subplots.png` | `subplots.rs`: a 2 × 2 grid with its own axes per panel, one linked X axis and one twin Y axis | 960 × 840 |
 
 The first four Cartesian chart recipes also run independently as `line`,
 `error_bars`, `histogram` and `heatmap_contours`. `animated_lines` writes wave and
 orbit frames. The shared support file contains setup and export checks, not the
 chart definitions. README galleries use four columns, preserve each image's aspect ratio, align
 images at the top of each row and link directly to the generating code.
+
+## Feature showcase
+
+[`gallery_showcase.rs`](examples/gallery_showcase.rs) renders eight designed
+scenes, one per Cartesian feature whose own example shows it plainly, with the
+same restrained chrome as the visual concepts: no axis lines or ticks, a
+horizontal grid, a quiet legend. All data is synthetic. Each PNG is
+1200 × 800 and goes into `assets/` after inspection.
+
+| Output | Feature | Scene |
+|---|---|---|
+| `showcase-wind.png` | Grid vector field over a heatmap | A sea breeze: speed as a smooth field on a custom ramp, direction as white arrows on a coarser grid of the same coordinates |
+| `showcase-currents.png` | Point vector field with a colour map | Surface currents at jittered drifter positions; arrow length and colour follow the speed column through the colourbar |
+| `showcase-colormap.png` | Point colour map | 1400 particles along two spiral arms, coloured by an age column |
+| `showcase-bubbles.png` | Point size map | Three regions of cities; marker area follows population over one shared domain, translucent fills |
+| `showcase-forecast.png` | Area between series | History solid, forecast dashed, 80% and 95% bands filled between their edge series; samples outside each part are NaN |
+| `showcase-thermostat.png` | Step interpolation with a fill | A setpoint schedule as a `StepPost` line filled to 14 °C, the room temperature over it |
+| `showcase-twin-axes.png` | Overlay layer | Voltage on the left axis with a light fill, current on an overlay layer's right axis, exported as a document |
+| `showcase-small-multiples.png` | Subplots | Four sensors in a 2 × 2 grid sharing the hour axis, each with its own range, colour and fill |
 
 ## Visual concepts
 
@@ -135,11 +146,7 @@ cargo run --locked -p figgy-renderer --example categorical_gallery -- target/cat
 cargo run --locked -p figgy-renderer --example boxplot_gallery -- target/boxplot-gallery
 cargo run --locked -p figgy-renderer --example radar_gallery -- target/radar-gallery
 cargo run --locked -p figgy-renderer --example polar_plot -- target/polar-plot
-cargo run --locked -p figgy-renderer --example vector_field -- target/vector-field
-cargo run --locked -p figgy-renderer --example value_maps -- target/value-maps
-cargo run --locked -p figgy-renderer --example area_step -- target/area-step
-cargo run --locked -p figgy-renderer --example overlay_axes -- target/overlay-axes.png
-cargo run --locked -p figgy-renderer --example subplots -- target/subplots.png
+cargo run --locked -p figgy-renderer --example gallery_showcase -- target/showcase
 ```
 
 Copy the selected outputs under the filenames in the table. The bounded examples
