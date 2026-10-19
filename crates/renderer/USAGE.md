@@ -441,11 +441,11 @@ Beyond lines, scatter, error bars, histograms, heatmaps and contours:
   `overlay_axes` and `subplots`.
 
 ```bash
-cargo run -p figgy-renderer --example area_step -- target/area-step
-cargo run -p figgy-renderer --example value_maps -- target/value-maps
-cargo run -p figgy-renderer --example vector_field -- target/vector-field
-cargo run -p figgy-renderer --example overlay_axes -- target/overlay-axes.png
-cargo run -p figgy-renderer --example subplots -- target/subplots.png
+cargo run --locked -p figgy-renderer --example area_step -- target/area-step
+cargo run --locked -p figgy-renderer --example value_maps -- target/value-maps
+cargo run --locked -p figgy-renderer --example vector_field -- target/vector-field
+cargo run --locked -p figgy-renderer --example overlay_axes -- target/overlay-axes
+cargo run --locked -p figgy-renderer --example subplots -- target/subplots
 ```
 
 ### Box plots

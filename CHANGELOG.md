@@ -18,10 +18,16 @@ at the time. The first crates.io publication is recorded below.
   series, maps and layers: area fills and steps, point colour and size
   maps, vector fields, overlays, subplots and annotations), and ten more
   gallery images: radar on a circular grid, the polar compass rose, and
-  eight designed scenes from the new `gallery_showcase` example (a wind
-  field over a heatmap, surface currents, colour-mapped points, bubbles,
-  forecast bands, a step schedule, twin axes and small multiples). The
-  Korean README gains the concept and draw-style rows.
+  eight designed scenes drawn by the feature examples `vector_field`,
+  `value_maps`, `area_step`, `overlay_axes` and `subplots` (a wind field
+  over a heatmap, surface currents, colour-mapped points, bubbles, forecast
+  bands, a step schedule, twin axes and small multiples). The Korean README
+  gains the concept and draw-style rows. The
+  [example index](crates/renderer/examples/README.md) shows every gallery
+  image with the function that draws it and the command that regenerates
+  it. `overlay_axes` and `subplots` now take an output directory instead of
+  a file path. The `precise_scatter_probe` example is removed; the
+  `sketch_render` GPU test checks the same plain scatter output.
 
 - `Config.polar: Option<PolarOptions>` (#26, part B) draws a Cartesian
   document in polar coordinates: `bottom_x` is the angle axis, `left_y` the

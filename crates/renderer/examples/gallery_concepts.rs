@@ -1,83 +1,34 @@
-//! Six visual recipes using existing public APIs, not new chart presets.
+//! Six visual recipes built from the public chart APIs, not presets. All data
+//! is synthetic; each PNG is 1200 x 800 without post-processing.
+//! - `observability` writes `concept-observability.png`: a dark service dashboard.
+//! - `editorial` writes `concept-editorial.png`: a warm sketch-style figure.
+//! - `revenue` writes `concept-revenue.png`: rounded horizontal stacked bars.
+//! - `radial_concepts` writes `concept-pop-art.png` (a toon pie) and
+//!   `concept-portfolio.png` (a pearl donut) from one slice model.
+//! - `terrain` writes `concept-terrain.png`: a custom colour ramp under isolines.
+//!
 //! cargo run --locked -p figgy-renderer --example gallery_concepts -- target/concepts
-//! All data is synthetic. PNGs are rendered at 1200 x 800 without post-processing.
 
 #[allow(dead_code)]
 #[path = "support/gallery.rs"]
 mod gallery;
+#[allow(dead_code)]
+#[path = "support/styled.rs"]
+mod styled;
 use gallery::{Result, column, line, scatter, series};
 use renderer::{
-    Chart, Color, ColorMap, RasterImage, Renderer, RendererDevice,
+    Color, ColorMap, Renderer, RendererDevice,
     categorical::*,
-    config::{DrawStyle, LegendCorner, LegendEntryKind, SketchOptions, TickVisibility},
+    config::{DrawStyle, LegendEntryKind, SketchOptions},
     data_config::{
         ContourConfig, DataRenderType, FieldFillConfig, FillMode, GridLayout, MatrixOrientation,
         MatrixRef, Shading,
     },
     data_render::{create_instance, request_adapter, request_device},
-    encode_png,
     radial::*,
 };
 use std::{path::Path, sync::Arc};
-
-const SIZE: (u32, u32) = (1200, 800);
-fn rgb(r: u8, g: u8, b: u8) -> Color {
-    Color::from_rgb8(r, g, b)
-}
-
-// Clear color is part of each recipe, including the area behind axes and labels.
-fn save(image: &RasterImage, background: Color, path: &Path) -> Result {
-    assert_eq!((image.width, image.height), SIZE);
-    assert!(image.rgba.chunks_exact(4).all(|p| p[3] == 255));
-    let bg = [background.r, background.g, background.b].map(|c| (c * 255.).round() as u8);
-    let colored = image
-        .rgba
-        .chunks_exact(4)
-        .filter(|p| {
-            let distance: u16 = (0..3).map(|i| p[i].abs_diff(bg[i]) as u16).sum();
-            distance > 80 && p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2]) > 40
-        })
-        .count();
-    assert!(colored > 2000, "missing chart colors: {colored}");
-    std::fs::write(path, encode_png(image)?)?;
-    println!(
-        "{}: {}x{}, {colored} colored foreground pixels",
-        path.display(),
-        SIZE.0,
-        SIZE.1
-    );
-    Ok(())
-}
-
-fn cartesian(title: &str, x: &str, y: &str, bg: Color, ink: Color, grid: Color) -> Chart {
-    let mut chart = gallery::chart(title, x, y, SIZE);
-    let c = chart.config_mut();
-    c.chart_title.text.font_size = 34.;
-    c.chart_title.text.color = ink;
-    c.chart_title.top_margin = 85.;
-    c.left_y.out_margin = 110.;
-    c.right_y.out_margin = 65.;
-    c.bottom_x.out_margin = 95.;
-    c.top_x.out_margin = 45.;
-    c.grid.major_y_color = grid;
-    c.grid.show_major_x = false;
-    for a in [&mut c.left_y, &mut c.right_y, &mut c.bottom_x, &mut c.top_x] {
-        a.line_visible = false;
-        a.tick = TickVisibility::None;
-        a.label_style.color = ink;
-        a.label_style.font_size = 21.;
-        a.title_option.text.color = ink;
-        a.title_option.text.font_size = 23.;
-    }
-    c.legend.visible = true;
-    c.legend.corner = LegendCorner::TopLeft;
-    c.legend.bg_color = bg;
-    c.legend.border_color = bg;
-    c.legend.content.color = ink;
-    c.legend.content.font_size = 22.;
-    c.legend.padding = 15.;
-    chart
-}
+use styled::{SIZE, cartesian, rgb, save};
 
 // 1. A dashboard card: restrained chrome and two high-contrast service metrics.
 fn observability(r: &mut Renderer, out: &Path) -> Result {

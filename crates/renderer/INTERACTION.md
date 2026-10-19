@@ -395,8 +395,10 @@ a subplot active the route reaches the subplot's own elements.
 subplots), are Cartesian only, keep no annotation layer of their own, and a
 nonresident streaming series drawn by a subplot is rejected like one on an
 overlay; the stream request paths reject a document with subplots as a whole.
-Run `cargo run --locked -p figgy-renderer --example subplots` for a native
-2×2 export; see [the example source](examples/subplots.rs).
+Run `cargo run --locked -p figgy-renderer --example subplots` for two native
+2×2 exports: four subplots linked to the parent's X axis, and `mixed-axes.png`
+with one linked axis, a different X column and a twin Y axis inside a subplot.
+See [the example source](examples/subplots.rs).
 
 ## Annotation layer
 

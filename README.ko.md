@@ -9,7 +9,9 @@
 
 ## 갤러리
 
-**이미지를 누르면 해당 차트를 만드는 Rust 코드가 열립니다.** 데이터는 모두 예제용이며,
+**이미지를 누르면 그 이미지를 그리는 예제 파일이 열립니다.**
+[예제 목록](crates/renderer/examples/README.md#gallery-images)에 이미지마다 그리는 함수와
+다시 만드는 명령이 있습니다. 데이터는 모두 예제용이며,
 이미지는 네이티브 렌더러의 실제 출력입니다. GIF는 프레임별 출력 이미지를 이어 붙였습니다.
 
 **선 그래프 · 오차 막대 · 세로 · 가로 히스토그램**
@@ -42,19 +44,19 @@
 **바람장 · 해류 · 색 매핑 점 · 버블 차트**
 
 <p>
-  <a href="crates/renderer/examples/gallery_showcase.rs"><img src="crates/renderer/assets/showcase-wind.png" alt="A sea breeze: wind speed as a smooth field with direction arrows on a grid" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/gallery_showcase.rs"><img src="crates/renderer/assets/showcase-currents.png" alt="Surface currents at scattered drifters, arrow length and colour by speed" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/gallery_showcase.rs"><img src="crates/renderer/assets/showcase-colormap.png" alt="Particles along two spiral arms coloured by age through the colourbar" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/gallery_showcase.rs"><img src="crates/renderer/assets/showcase-bubbles.png" alt="Bubble chart of income and life expectancy for three regions, area by population" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/vector_field.rs"><img src="crates/renderer/assets/gallery-wind.png" alt="A sea breeze: wind speed as a smooth field with direction arrows on a grid" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/vector_field.rs"><img src="crates/renderer/assets/gallery-currents.png" alt="Surface currents at scattered drifters, arrow length and colour by speed" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/value_maps.rs"><img src="crates/renderer/assets/gallery-colormap.png" alt="Particles along two spiral arms coloured by age through the colourbar" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/value_maps.rs"><img src="crates/renderer/assets/gallery-bubbles.png" alt="Bubble chart of income and life expectancy for three regions, area by population" width="23%" align="top"></a>
 </p>
 
 **예측 구간 · 계단 스케줄 · 쌍둥이 축 · 소형 다중 차트**
 
 <p>
-  <a href="crates/renderer/examples/gallery_showcase.rs"><img src="crates/renderer/assets/showcase-forecast.png" alt="A demand forecast: the history solid, the forecast dashed inside 80 and 95 percent bands" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/gallery_showcase.rs"><img src="crates/renderer/assets/showcase-thermostat.png" alt="A thermostat schedule as a filled step line under the measured room temperature" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/gallery_showcase.rs"><img src="crates/renderer/assets/showcase-twin-axes.png" alt="A battery discharge: voltage on the left axis, current on a right overlay axis" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/gallery_showcase.rs"><img src="crates/renderer/assets/showcase-small-multiples.png" alt="Four sensors as a 2 by 2 grid of subplots sharing the hour axis" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/area_step.rs"><img src="crates/renderer/assets/gallery-forecast.png" alt="A demand forecast: the history solid, the forecast dashed inside 80 and 95 percent bands" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/area_step.rs"><img src="crates/renderer/assets/gallery-thermostat.png" alt="A thermostat schedule as a filled step line under the measured room temperature" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/overlay_axes.rs"><img src="crates/renderer/assets/gallery-twin-axes.png" alt="A battery discharge: voltage on the left axis, current on a right overlay axis" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/subplots.rs"><img src="crates/renderer/assets/gallery-subplots.png" alt="Four sensors as a 2 by 2 grid of subplots sharing the hour axis" width="23%" align="top"></a>
 </p>
 
 **움직이는 파형 · 위상 궤적**
@@ -187,7 +189,11 @@ let frame = radar.prepare(&chart, (720, 520), 1.0)?; // frame.draw(&mut pass)
 ```bash
 cargo run --locked -p figgy-renderer --example line
 cargo run --locked -p figgy-renderer --example gallery_concepts -- target/concepts
-cargo run --locked -p figgy-renderer --example gallery_showcase -- target/showcase
+cargo run --locked -p figgy-renderer --example vector_field -- target/vector-field
+cargo run --locked -p figgy-renderer --example value_maps -- target/value-maps
+cargo run --locked -p figgy-renderer --example area_step -- target/area-step
+cargo run --locked -p figgy-renderer --example overlay_axes -- target/overlay-axes
+cargo run --locked -p figgy-renderer --example subplots -- target/subplots
 cargo run --locked -p figgy-renderer --example error_bars -- target/error-bars
 cargo run --locked -p figgy-renderer --example histogram -- target/histogram
 cargo run --locked -p figgy-renderer --example heatmap_contours -- target/heatmap-contours

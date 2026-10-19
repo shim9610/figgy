@@ -1,6 +1,8 @@
 # Native chart gallery
 
-Each README image links to its [runnable Rust example](examples/README.md).
+Each README image links to the example file that draws it. The
+[example index](examples/README.md#gallery-images) names the function for every
+image.
 [`readme_gallery.rs`](examples/readme_gallery.rs) runs the Cartesian examples
 with one shared device. They use the native `Renderer` with an offscreen RGBA target, upload columns through
 the resident pool, and exports through `export_panel_rgba_with_clear_async` and
@@ -34,24 +36,29 @@ orbit frames. The shared support file contains setup and export checks, not the
 chart definitions. README galleries use four columns, preserve each image's aspect ratio, align
 images at the top of each row and link directly to the generating code.
 
-## Feature showcase
+## Feature scenes
 
-[`gallery_showcase.rs`](examples/gallery_showcase.rs) renders eight designed
-scenes, one per Cartesian feature whose own example shows it plainly, with the
-same restrained chrome as the visual concepts: no axis lines or ticks, a
-horizontal grid, a quiet legend. All data is synthetic. Each PNG is
-1200 × 800 and goes into `assets/` after inspection.
+Each Cartesian feature example draws a designed 1200 × 800 scene for the README
+with the same restrained chrome as the visual concepts: no axis lines or ticks,
+a horizontal grid, a quiet legend. [support/styled.rs](examples/support/styled.rs)
+holds that chrome; the data and series stay in each example. All data is
+synthetic.
 
-| Output | Feature | Scene |
+| Output | Example and function | Scene |
 |---|---|---|
-| `showcase-wind.png` | Grid vector field over a heatmap | A sea breeze: speed as a smooth field on a custom ramp, direction as white arrows on a coarser grid of the same coordinates |
-| `showcase-currents.png` | Point vector field with a colour map | Surface currents at jittered drifter positions; arrow length and colour follow the speed column through the colourbar |
-| `showcase-colormap.png` | Point colour map | 1400 particles along two spiral arms, coloured by an age column |
-| `showcase-bubbles.png` | Point size map | Three regions of cities; marker area follows population over one shared domain, translucent fills |
-| `showcase-forecast.png` | Area between series | History solid, forecast dashed, 80% and 95% bands filled between their edge series; samples outside each part are NaN |
-| `showcase-thermostat.png` | Step interpolation with a fill | A setpoint schedule as a `StepPost` line filled to 14 °C, the room temperature over it |
-| `showcase-twin-axes.png` | Overlay layer | Voltage on the left axis with a light fill, current on an overlay layer's right axis, exported as a document |
-| `showcase-small-multiples.png` | Subplots | Four sensors in a 2 × 2 grid sharing the hour axis, each with its own range, colour and fill |
+| `gallery-wind.png` | [vector_field.rs](examples/vector_field.rs), `wind` | A sea breeze: speed as a smooth field on a custom ramp, direction as white arrows on a coarser grid of the same coordinates |
+| `gallery-currents.png` | [vector_field.rs](examples/vector_field.rs), `currents` | Surface currents at jittered drifter positions; arrow length and colour follow the speed column through the colourbar |
+| `gallery-colormap.png` | [value_maps.rs](examples/value_maps.rs), `colormap_scatter` | 1400 particles along two spiral arms, coloured by an age column |
+| `gallery-bubbles.png` | [value_maps.rs](examples/value_maps.rs), `bubbles` | Three regions of cities; marker area follows population over one shared domain, translucent fills |
+| `gallery-forecast.png` | [area_step.rs](examples/area_step.rs), `forecast` | History solid, forecast dashed, 80% and 95% bands filled between their edge series; samples outside each part are NaN |
+| `gallery-thermostat.png` | [area_step.rs](examples/area_step.rs), `thermostat` | A setpoint schedule as a `StepPost` line filled to 14 °C, the room temperature over it |
+| `gallery-twin-axes.png` | [overlay_axes.rs](examples/overlay_axes.rs), `twin_axes` | Voltage on the left axis with a light fill, current on an overlay layer's right axis, exported as a document |
+| `gallery-subplots.png` | [subplots.rs](examples/subplots.rs), `small_multiples` | Four sensors in a 2 × 2 grid sharing the hour axis, each with its own range, colour and fill |
+
+The same examples also write plain feature checks that are not in the README:
+`steps.png` compares the three step modes, `gradient.png` draws grid arrows in
+data units coloured by a third matrix, and `mixed-axes.png` puts a twin Y axis
+inside a subplot.
 
 ## Visual concepts
 
@@ -146,7 +153,11 @@ cargo run --locked -p figgy-renderer --example categorical_gallery -- target/cat
 cargo run --locked -p figgy-renderer --example boxplot_gallery -- target/boxplot-gallery
 cargo run --locked -p figgy-renderer --example radar_gallery -- target/radar-gallery
 cargo run --locked -p figgy-renderer --example polar_plot -- target/polar-plot
-cargo run --locked -p figgy-renderer --example gallery_showcase -- target/showcase
+cargo run --locked -p figgy-renderer --example vector_field -- target/vector-field
+cargo run --locked -p figgy-renderer --example value_maps -- target/value-maps
+cargo run --locked -p figgy-renderer --example area_step -- target/area-step
+cargo run --locked -p figgy-renderer --example overlay_axes -- target/overlay-axes
+cargo run --locked -p figgy-renderer --example subplots -- target/subplots
 ```
 
 Copy the selected outputs under the filenames in the table. The bounded examples

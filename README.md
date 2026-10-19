@@ -11,8 +11,10 @@ export PNGs, or embed interactive charts in your own application.
 
 ## Gallery
 
-**Click an image to open the Rust code that produces it.** All data is synthetic;
-the images are actual native renderer output. GIFs show exported animation frames.
+**Each image links to the example file that draws it.** The
+[example index](crates/renderer/examples/README.md#gallery-images) names the
+function and the command for every image. All data is synthetic; the images are
+actual native renderer output. GIFs show exported animation frames.
 
 **Dashboards · Sketch · Pop art**
 
@@ -62,19 +64,19 @@ the images are actual native renderer output. GIFs show exported animation frame
 **Wind field · Surface currents · Colour-mapped points · Bubble chart**
 
 <p>
-  <a href="crates/renderer/examples/gallery_showcase.rs"><img src="crates/renderer/assets/showcase-wind.png" alt="A sea breeze: wind speed as a smooth field with direction arrows on a grid" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/gallery_showcase.rs"><img src="crates/renderer/assets/showcase-currents.png" alt="Surface currents at scattered drifters, arrow length and colour by speed" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/gallery_showcase.rs"><img src="crates/renderer/assets/showcase-colormap.png" alt="Particles along two spiral arms coloured by age through the colourbar" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/gallery_showcase.rs"><img src="crates/renderer/assets/showcase-bubbles.png" alt="Bubble chart of income and life expectancy for three regions, area by population" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/vector_field.rs"><img src="crates/renderer/assets/gallery-wind.png" alt="A sea breeze: wind speed as a smooth field with direction arrows on a grid" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/vector_field.rs"><img src="crates/renderer/assets/gallery-currents.png" alt="Surface currents at scattered drifters, arrow length and colour by speed" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/value_maps.rs"><img src="crates/renderer/assets/gallery-colormap.png" alt="Particles along two spiral arms coloured by age through the colourbar" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/value_maps.rs"><img src="crates/renderer/assets/gallery-bubbles.png" alt="Bubble chart of income and life expectancy for three regions, area by population" width="23%" align="top"></a>
 </p>
 
 **Forecast bands · Step schedule · Twin axes · Small multiples**
 
 <p>
-  <a href="crates/renderer/examples/gallery_showcase.rs"><img src="crates/renderer/assets/showcase-forecast.png" alt="A demand forecast: the history solid, the forecast dashed inside 80 and 95 percent bands" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/gallery_showcase.rs"><img src="crates/renderer/assets/showcase-thermostat.png" alt="A thermostat schedule as a filled step line under the measured room temperature" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/gallery_showcase.rs"><img src="crates/renderer/assets/showcase-twin-axes.png" alt="A battery discharge: voltage on the left axis, current on a right overlay axis" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/gallery_showcase.rs"><img src="crates/renderer/assets/showcase-small-multiples.png" alt="Four sensors as a 2 by 2 grid of subplots sharing the hour axis" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/area_step.rs"><img src="crates/renderer/assets/gallery-forecast.png" alt="A demand forecast: the history solid, the forecast dashed inside 80 and 95 percent bands" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/area_step.rs"><img src="crates/renderer/assets/gallery-thermostat.png" alt="A thermostat schedule as a filled step line under the measured room temperature" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/overlay_axes.rs"><img src="crates/renderer/assets/gallery-twin-axes.png" alt="A battery discharge: voltage on the left axis, current on a right overlay axis" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/subplots.rs"><img src="crates/renderer/assets/gallery-subplots.png" alt="Four sensors as a 2 by 2 grid of subplots sharing the hour axis" width="23%" align="top"></a>
 </p>
 
 **Draw styles: Precise · Sketch (hand-drawn) · Milkyway · Constellation**
@@ -279,7 +281,11 @@ From a checkout of this repository:
 ```bash
 cargo run --locked -p figgy-renderer --example line
 cargo run --locked -p figgy-renderer --example gallery_concepts -- target/concepts
-cargo run --locked -p figgy-renderer --example gallery_showcase -- target/showcase
+cargo run --locked -p figgy-renderer --example vector_field -- target/vector-field
+cargo run --locked -p figgy-renderer --example value_maps -- target/value-maps
+cargo run --locked -p figgy-renderer --example area_step -- target/area-step
+cargo run --locked -p figgy-renderer --example overlay_axes -- target/overlay-axes
+cargo run --locked -p figgy-renderer --example subplots -- target/subplots
 cargo run --locked -p figgy-renderer --example error_bars -- target/error-bars
 cargo run --locked -p figgy-renderer --example histogram -- target/histogram
 cargo run --locked -p figgy-renderer --example heatmap_contours -- target/heatmap-contours
