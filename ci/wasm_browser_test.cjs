@@ -35,7 +35,7 @@ const assert = require('node:assert/strict');
         runner.once('error', error => { clearTimeout(timer); reject(error); });
         runner.once('exit', code => { clearTimeout(timer); reject(Error(`Test runner exited ${code}: ${runnerOutput}`)); });
       });
-      browser = await chromium.launch({headless: true, executablePath: process.env.BROWSER_EXECUTABLE_PATH || undefined, args: ['--enable-unsafe-webgpu']});
+      browser = await chromium.launch({headless: true, executablePath: process.env.BROWSER_EXECUTABLE_PATH || undefined, args: ['--enable-unsafe-webgpu', ...(process.env.BROWSER_ARGS || '').split(/\s+/).filter(Boolean)]});
       const page = await browser.newPage();
       const errors = [];
       page.on('pageerror', error => errors.push(error.message));

@@ -103,8 +103,11 @@ being pushed. See [hook installation](../CONTRIBUTING.md#build-and-test).
 The extracted-archive audit reuses the same link rules after packaging.
 
 1. Native workspace checks with default and all optional features, including examples.
-2. Compilation for `wasm32-unknown-unknown` and strict Rust API documentation links
-   on native and WASM targets. The WASM check catches links to native-only methods.
+2. Compilation for `wasm32-unknown-unknown`, including every browser test target
+   (`cargo check --workspace --target wasm32-unknown-unknown --test '*_browser'`), and strict Rust API documentation links on
+   native and WASM targets. The WASM check catches links to native-only methods.
+   CI compiles the browser tests but does not run them; running them needs a
+   WebGPU browser (see below).
 3. Creation and Cargo verification of both `.crate` archives, without registry upload.
    Archive contents must include source resources, font/license notices, guides,
    examples and test fixtures. Gallery assets and unsupported integrations are
@@ -211,6 +214,15 @@ export WASM_BINDGEN_TEST_RUNNER=/path/to/wasm-bindgen-test-runner
 node ci/wasm_browser_test.cjs /tmp/figgy-wasm-build.jsonl
 ```
 
+On a machine without a GPU, headless Chromium has a SwiftShader WebGPU adapter but
+cannot create a WebGPU canvas swap chain with its default flags: chart creation then
+fails with "A valid external Instance reference no longer exists". Pass the Vulkan
+SwiftShader flags through `BROWSER_ARGS`:
+
+```sh
+export BROWSER_ARGS='--enable-features=Vulkan --use-angle=vulkan --enable-unsafe-swiftshader'
+```
+
 The test runs real window initialization and full prewarm, checks that a second
 prewarm creates nothing, renders automatic contour labels, and decodes the exported
 PNG to check its pixels. Change `--test` to run another renderer browser test the
@@ -258,7 +270,7 @@ CI는 공개 저장소에서 초안이 아닌 PR을 열거나 갱신하거나 �
 로컬에서는 저장소 루트에서 `python3 ci/verify.py static`과 `python3 ci/verify.py packages`를
 실행한다.
 
-세 운영체제에서 네이티브 빌드와 WASM 컴파일, API 문서 링크 검사, 압축을 푼 패키지의
+세 운영체제에서 네이티브 빌드와 WASM 컴파일(브라우저 테스트 대상 포함, 실행은 하지 않음), API 문서 링크 검사, 압축을 푼 패키지의
 단위·통합·문서 테스트를 실행한다. Linux는 GPU가 없을 때 lavapipe를 쓰고,
 Windows는 WARP, macOS는 러너에 노출된 Metal 장치를 쓴다. 유료 GPU 러너는 사용하지 않는다.
 macOS / Metal은 아직 불안정한 실험 단계다. 정밀 Metal 셰이더 실험과 기존 전체 검사는

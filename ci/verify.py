@@ -50,6 +50,10 @@ def static():
     run(["cargo", "check", "--locked", "--workspace", "--all-targets"])
     run(["cargo", "check", "--locked", "--workspace", "--all-targets", "--all-features"])
     run(["cargo", "check", "--locked", "--workspace", "--target", "wasm32-unknown-unknown"])
+    # Compile the browser tests too; running them needs a WebGPU browser.
+    # Every WASM test target is named `*_browser`; the other tests are native.
+    run(["cargo", "check", "--locked", "--workspace", "--target", "wasm32-unknown-unknown",
+         "--test", "*_browser"])
     env = os.environ.copy()
     env["RUSTDOCFLAGS"] = env.get("RUSTDOCFLAGS", "") + " -D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links"
     run(["cargo", "doc", "--locked", "--no-deps", "--all-features",
