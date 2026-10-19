@@ -4,18 +4,15 @@ This crate is an example application adapter for the Rust chart renderer. It
 demonstrates wasm-bindgen exports and a `<figgy-chart>` custom element that owns
 a canvas, forwards pointer events, schedules frames and adapts async calls.
 
-The library packages are `figgy-renderer` and `figgy-model`. This example is the
-Cargo package `figgy` 0.14.0, named for its generated JS/WASM filenames, and has
-`publish = false`. It builds against the renderer and model sources in this
-checkout through path dependencies. Polar and radar charts, vector series,
-point color and size maps, area fills and step lines, overlay layers, subplots,
-the annotation layer and independent bounded chart titles, which this wrapper
-exposes, are on the repository's master branch and are not in the published
-figgy-renderer 0.17.0 and figgy-model 0.11.0. Until the next release, an
-application that reuses this wrapper depends on the repository:
+The library packages are `figgy-renderer` 0.18.0 and `figgy-model` 0.12.0. This
+example is the Cargo package `figgy` 0.15.0, named for its generated JS/WASM
+filenames, and has `publish = false`. It builds against the renderer and model
+sources in this checkout through path dependencies. An application that reuses
+this wrapper in its own crate depends on the published renderer with the
+`serde` feature, which the wrapper's JSON methods need:
 
 ```toml
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy", features = ["serde"] }
+renderer = { package = "figgy-renderer", version = "0.18.0", features = ["serde"] }
 ```
 
 The generated module exports `FiggyChart` for Cartesian charts, including polar
@@ -70,8 +67,10 @@ index and coordinates, plus `color_value` / `size_value` when the series has a
 point color or size map; matrix cells report their indices, coordinates and
 cell value; vector series report their `u` and `v` components in place of a
 value. Only the selected GPU samples are read back.
-`chart.step_selection(dx, dy)` moves the selection through resident data. These
-two methods are raw `FiggyChart` exports, not custom-element forwarders. See the
+`chart.step_selection(dx, dy)` moves the selection through resident data:
+points (point-vector arrows included), histogram bins and matrix cells
+(grid-vector cells included). These two methods are raw `FiggyChart` exports,
+not custom-element forwarders. See the
 [selection contract](SCHEMA.md#resident-selection-details).
 
 Serialize asynchronous operations and keep rendering, pointer edits, resize

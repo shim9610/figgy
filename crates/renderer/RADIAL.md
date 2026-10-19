@@ -6,14 +6,8 @@
 브라우저에서는 `crates/web` 예제 래퍼의 `FiggyBoundedChart`가 이 렌더러로 원형 차트를 그리고
 히트맵·선택·드래그·PNG 출력을 노출한다([WASM 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/WASM.md#bounded-chart-host)).
 
-원형 차트 API는 crates.io의 `figgy-renderer` 0.16.1부터 들어 있고, `RadialRenderer::new_async`는
-0.17.0부터 쓸 수 있다. [주석 층](#주석-층)과 차트의 `chart_title`·`active_layer` 필드는 저장소
-master 브랜치에 있으며 crates.io에 배포된 figgy-renderer 0.17.0에는 아직 없다. 다음 릴리스 전에는
-저장소를 의존성으로 지정한다.
-
-```toml
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
-```
+원형 차트 API는 crates.io의 `figgy-renderer` 0.16.1부터 들어 있다. `RadialRenderer::new_async`는
+0.17.0부터, [주석 층](#주석-층)과 차트의 `chart_title`·`active_layer` 필드는 0.18.0부터 쓸 수 있다.
 
 ## API 구성
 

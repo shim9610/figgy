@@ -2,14 +2,9 @@
 
 `CategoricalChart`는 범주·시리즈·값을 직접 보관하는 소규모 모델이며, 화면·선택·내보내기가
 모두 이 모델을 단일 원본(SSOT)으로 삼는다. 숫자 컬럼용 `ColumnSource`와 별도 계약이며 스트리밍을
-사용하지 않는다. 범주형 막대 API는 crates.io의 `figgy-renderer` 0.16.1부터 들어 있고,
-`CategoricalRenderer::new_async`는 0.17.0부터 쓸 수 있다. [주석 층](#주석-층)과 차트의
-`chart_title`·`active_layer` 필드는 저장소 master 브랜치에 있으며 crates.io에 배포된
-figgy-renderer 0.17.0에는 아직 없다. 다음 릴리스 전에는 저장소를 의존성으로 지정한다.
-
-```toml
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
-```
+사용하지 않는다. 범주형 막대 API는 crates.io의 `figgy-renderer` 0.16.1부터 들어 있다.
+`CategoricalRenderer::new_async`는 0.17.0부터, [주석 층](#주석-층)과 차트의
+`chart_title`·`active_layer` 필드는 0.18.0부터 쓸 수 있다.
 
 ```rust,no_run
 use renderer::{CategoricalChart, Category, BarSeries, Color, CategoryBarMode};

@@ -11,8 +11,8 @@ The repository pins **Rust 1.99.0** in
 rustfmt and clippy. With rustup installed, commands in this checkout select
 that toolchain automatically. The package manifests declare Rust 1.99 as the
 support floor; earlier toolchains have not been validated. Use the committed
-`Cargo.lock` with `--locked` when building this checkout; downstream Git
-consumers resolve dependencies with their own lockfile.
+`Cargo.lock` with `--locked` when building this checkout; downstream crates
+resolve dependencies with their own lockfile.
 
 ```bash
 cargo check --locked --workspace --all-targets --all-features
@@ -37,21 +37,13 @@ render targets and compatibility policy.
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", version = "0.17.0" }
+renderer = { package = "figgy-renderer", version = "0.18.0" }
 wgpu     = "30"
 ```
 
-This installs `figgy-renderer` 0.17.0 from crates.io. Area fills and step lines,
-point colour and size maps, vector fields, overlay layers, subplots, the
-annotation layer, radar charts, polar plots and the independent `chart_title` of
-radial, categorical and box plot charts are on the repository's master branch
-and are not in the published figgy-renderer 0.17.0. The code in this
-guide is written against master. Until the next release, depend on the
-repository:
-
-```toml
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
-```
+This installs `figgy-renderer` 0.18.0 from crates.io. A crate that uses the
+model types without the renderer depends on
+`model = { package = "figgy-model", version = "0.12.0" }`.
 
 For a local checkout, replace `version` with a `path` relative to the consuming
 application's `Cargo.toml`. A standalone program that calls `pollster::block_on`
@@ -580,7 +572,7 @@ higher pixel density (or a lower one below 1.0).
 ### 툴체인과 빌드
 
 [`rust-toolchain.toml`](https://github.com/shim9610/figgy/blob/master/rust-toolchain.toml)에 개발 환경을 **Rust 1.99.0**으로 고정하고 wasm32 빌드 대상, rustfmt, clippy를 지정했다. rustup이 설치돼 있으면 저장소 안에서 명령을 실행할 때 자동으로 적용된다. 패키지 manifest에도 지원 하한을 Rust 1.99로 명시했다. 그보다 낮은 버전은 검증하지 않았다.
-이 저장소를 빌드할 때는 `--locked`를 사용해 커밋된 `Cargo.lock`을 따른다. figgy를 Git 의존성으로 사용하는 프로젝트는 해당 프로젝트의 잠금 파일로 의존성을 결정한다.
+이 저장소를 빌드할 때는 `--locked`를 사용해 커밋된 `Cargo.lock`을 따른다. figgy를 의존성으로 사용하는 프로젝트는 해당 프로젝트의 잠금 파일로 의존성을 결정한다.
 
 ```bash
 cargo check --locked --workspace --all-targets --all-features
@@ -600,19 +592,12 @@ WASM 래퍼는 별도 소비 예제로 유지하고 Rust registry 게시에서�
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", version = "0.17.0" }
+renderer = { package = "figgy-renderer", version = "0.18.0" }
 wgpu     = "30"
 ```
 
-이 설정은 crates.io에서 `figgy-renderer` 0.17.0을 받는다. 면 채움과 계단선, 점 색·크기
-매핑, 벡터장, 오버레이 레이어, 서브플롯, 주석 층, 레이더 차트, 극좌표 플롯, 원형·범주형·박스플롯
-차트의 독립 제목(`chart_title`)은 저장소 master 브랜치에 있으며 crates.io에 배포된
-figgy-renderer 0.17.0에는 아직 없다. 이 문서의 코드는 master 기준이다. 다음 릴리스 전에는 저장소를
-의존성으로 지정한다.
-
-```toml
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
-```
+이 설정은 crates.io에서 `figgy-renderer` 0.18.0을 받는다. 렌더러 없이 모델 타입만 쓰는
+크레이트는 `model = { package = "figgy-model", version = "0.12.0" }`을 의존성으로 지정한다.
 
 로컬 체크아웃을 쓰려면 `version` 대신 `path = "../figgy/crates/renderer"`처럼 애플리케이션의
 `Cargo.toml` 기준 경로를 지정한다. [examples/line.rs](examples/line.rs)처럼

@@ -186,15 +186,6 @@ shared `Selectable`, `Draggable` and `Resizable` contracts to
 rules, caching, serialization and the web wiring are in the
 [interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md).
 
-The annotation layer and the `chart_title` and `active_layer` fields of
-`BoxPlotChart` are on the repository's master branch and are not in the
-published figgy-renderer 0.17.0. Until the next release, depend on the
-repository:
-
-```toml
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
-```
-
 Reference lines, spans, text boxes and arrows in `chart.annotations` draw in
 separate passes around the box frame. `AnnotationAxis::X` is the screen's
 horizontal axis and `Y` its vertical axis. With `Vertical` boxes, `X` is the
@@ -261,13 +252,6 @@ editing, color changes, resets, direction, grid, legend and category reordering.
 
 
 ### 주석 층
-
-주석 층과 `BoxPlotChart`의 `chart_title`·`active_layer` 필드는 저장소 master 브랜치에 있으며
-crates.io에 배포된 figgy-renderer 0.17.0에는 아직 없다. 다음 릴리스 전에는 저장소를 의존성으로 지정한다.
-
-```toml
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
-```
 
 `chart.annotations`의 기준선·구간·텍스트 상자·화살표는 박스 프레임 주위에 별도 패스로 그린다.
 `AnnotationAxis::X`는 화면 가로, `Y`는 화면 세로다. `Vertical`이면 `X`가 범주 인덱스(첫 범주 중심이 0),

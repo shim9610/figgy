@@ -20,10 +20,16 @@ is no guaranteed response deadline.
 
 ## Supported code
 
-Security fixes target the current default branch and the latest crates.io release
-of `figgy-renderer` and `figgy-model`. Older releases and pinned Git revisions do
-not have separate maintenance branches. Reports affecting older versions are still
-welcome; please state whether the issue also reproduces on the current code.
+| Code | Supported |
+| --- | --- |
+| Latest crates.io release: `figgy-renderer` 0.18.0 and `figgy-model` 0.12.0 | Yes |
+| Default branch (`master`), including the `figgy` 0.15.0 WebAssembly example in `crates/web`, which is not published to crates.io | Yes |
+| Older releases and pinned Git revisions | No |
+
+Security fixes target the supported code above. Older releases and pinned Git
+revisions do not have separate maintenance branches. Reports affecting older
+versions are still welcome; please state whether the issue also reproduces on the
+current code.
 
 This repository contains the `figgy-model` and `figgy-renderer` Rust libraries and
 their examples, including the WebAssembly integration example. It does not

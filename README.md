@@ -128,24 +128,20 @@ both kinds.
 ## Quick start
 
 Use **Rust 1.99 or later** and a working GPU driver. The repository pins Rust 1.99.0.
-Polar plots, radar charts, vector fields, point colour and size maps, area fills
-and step lines, overlay axes, subplots, the annotation layer and independent
-titles on pies, donuts, bars and box plots (`chart_title`) are on the
-repository's master branch and are not in the published figgy-renderer 0.17.0
-and figgy-model 0.11.0. Until the next release, depend on the repository:
+Add these dependencies to your application's `Cargo.toml`:
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
+renderer = { package = "figgy-renderer", version = "0.18.0" }
 wgpu = "30"
 pollster = "1"
 ```
 
-With a local checkout, use `path = "../figgy/crates/renderer"` (relative to your
-application) instead of `git`. With the published
-[figgy-renderer 0.17.0](https://crates.io/crates/figgy-renderer)
-(`version = "0.17.0"`), the program below compiles without its `fill`,
-`fill_color` and `interpolation` lines.
+The `version` line installs [figgy-renderer](https://crates.io/crates/figgy-renderer)
+0.18.0, with figgy-model 0.12.0, from crates.io. With a local checkout, use
+`path = "../figgy/crates/renderer"` (relative to your application) instead of
+`version`. Code written for 0.17.0 needs the changes in the
+[migration notes](CHANGELOG.md#migrating-from-0170).
 
 Copy this into `src/main.rs`, then run `cargo run`. It writes `line.png` without
 opening a window. `renderer` is the Rust import name of the `figgy-renderer` package.

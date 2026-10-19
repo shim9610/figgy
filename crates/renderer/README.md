@@ -21,34 +21,23 @@ Add these dependencies to your application's `Cargo.toml`:
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", version = "0.17.0" }
+renderer = { package = "figgy-renderer", version = "0.18.0" }
 wgpu = "30"
 pollster = "1"
 ```
 
 The Cargo package is **`figgy-renderer`**; the Rust import is **`renderer`**.
-The `version` line installs figgy-renderer 0.17.0, with figgy-model 0.11.0, from
+The `version` line installs figgy-renderer 0.18.0, with figgy-model 0.12.0, from
 [crates.io](https://crates.io/crates/figgy-renderer). For a local checkout,
-replace `version` with `path = "../figgy/crates/renderer"`.
-
-Polar plots, radar charts, vector fields, point colour and size maps, area
-fills, step lines, overlay axes, subplots, the annotation layer and the
-`chart_title` option of pie, bar and box plot charts are on the repository's
-master branch and are not in the published figgy-renderer 0.17.0. Until the
-next release, depend on the repository:
-
-```toml
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
-```
+replace `version` with `path = "../figgy/crates/renderer"`. Code written for
+0.17.0 needs the changes in the
+[migration notes](https://github.com/shim9610/figgy/blob/master/CHANGELOG.md#migrating-from-0170).
 
 Copy the complete [line example](https://github.com/shim9610/figgy/blob/master/crates/renderer/examples/line.rs)
 into `src/main.rs` and run `cargo run`. It creates a device, uploads two columns,
 draws axes and a sine wave, and writes a 960 × 600 `line.png` without opening a window.
-This copy sets the line fields `fill`, `fill_color` and `interpolation`, which
-0.17.0 does not have, so it needs the repository dependency; the
-[0.17.0 copy](https://github.com/shim9610/figgy/blob/figgy-renderer-v0.17.0/crates/renderer/examples/line.rs)
-builds against the published release. The crate root page of the API
-documentation shows the example after this README. From a source checkout, run
+The crate root page of the API documentation shows the example after this
+README. From a source checkout, run
 `cargo run --locked -p figgy-renderer --example line -- line.png`.
 
 The application needs its own `wgpu` and `pollster` dependencies for this example.

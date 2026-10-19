@@ -3,18 +3,6 @@
 This reference describes the Rust model shared by native and WASM consumers.
 The optional JSON representation is described in [SCHEMA.md](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md).
 
-Polar coordinates (`Config::polar`, `LabelFormat::Degrees` / `Radians`), radar
-charts (`RadarChart`), vector fields (`DataRenderType::Vector`), point colour
-and size maps, area fills and step lines (`fill`, `fill_color`,
-`interpolation`) and the `Config` fields `overlays`, `subplots`,
-`active_layer` and `annotations` are on the repository's master branch and are
-not in the published figgy-renderer 0.17.0 / figgy-model 0.11.0. Until the
-next release, depend on the repository:
-
-```toml
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
-```
-
 `Config` and the chart's series list are the single source of truth (SSOT)
 for what is drawn. For precise control, edit only the desired fields in the
 current `Config`.
@@ -814,12 +802,6 @@ Empty text is filled in via the `Chart::with_title / with_x_title / with_y_title
 ## Config 구조체의 필드
 
 네이티브와 WASM은 같은 Rust 모델을 사용한다. JSON 형식은 [SCHEMA.md](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md)에 있다.
-
-극좌표(`Config::polar`, `LabelFormat::Degrees` / `Radians`), 레이더 차트(`RadarChart`), 벡터장(`DataRenderType::Vector`), 점 색·크기 매핑, 면 채움과 계단선(`fill`, `fill_color`, `interpolation`), `Config`의 `overlays`, `subplots`, `active_layer`, `annotations` 필드는 저장소 master 브랜치에 있으며 crates.io에 배포된 figgy-renderer 0.17.0 / figgy-model 0.11.0에는 아직 없다. 다음 릴리스 전에는 저장소를 의존성으로 지정한다.
-
-```toml
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
-```
 
 무엇을 그릴지는 `Config`와 차트의 시리즈 목록이 정한다(SSOT). 세밀하게 조정하려면 현재 `Config`에서 원하는 필드만 직접 고친다. `min` / `max`만 바꾸면 설정한 눈금 간격과 라벨 형식은 그대로 남는다. 편의 헬퍼는 눈금이나 배치도 함께 정한다. 예를 들어 `Chart::set_x_range`는 두 X축의 눈금을 함께 조정하고, `Chart::with_title`은 제목 영역을 넓힐 수 있다. 작업별 표, 범위만 바꾸는 예제와 편집 뒤에 필요한 갱신 단계는 [설정 직접 편집과 편의 헬퍼(영문)](API.md#direct-ssot-edits-and-convenience-helpers)에 있다.
 

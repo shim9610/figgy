@@ -1,25 +1,20 @@
 # Rust API contracts
 
-Polar plots (`Config.polar`), radar charts (`RadarRenderer`), vector fields
-(`DataRenderType::Vector`), point color and size maps, area fills and step
-lines, overlay layers, subplots, the annotation layer and independent bounded
-chart titles are on the repository's master branch and are not in the
-published figgy-renderer 0.17.0. Until the next release, depend on the
-repository:
-
-```toml
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
-```
-
-docs.rs builds from the published crate, so it has no pages for these APIs
-until the next release.
-
 ## Package names and features
 
 The Cargo packages are `figgy-renderer` and `figgy-model`, and their Rust
 library names are `renderer` and `model`: code imports `renderer::...` and
-`model::...`, and the dependency names its package with the `package` key, as
-in the line above.
+`model::...`, and the dependency names its package with the `package` key:
+
+```toml
+[dependencies]
+renderer = { package = "figgy-renderer", version = "0.18.0" }
+```
+
+A crate that uses the model types without the renderer depends on
+`model = { package = "figgy-model", version = "0.12.0" }`. To build against a
+local checkout, replace `version` with a `path` to `crates/renderer` or
+`crates/model`.
 
 The renderer re-exports model types. Enable its `serde` feature to serialize
 those types; consumers do not need to name `figgy-model` merely to enable serde.
@@ -419,10 +414,9 @@ updates must preserve the supported contract. Public low-level modules such as
 wgpu major changes public wgpu types such as the `RendererDevice` handles, so it
 ships in a new 0.x minor.
 
-figgy-renderer 0.17.0 and figgy-model 0.11.0 are the latest crates.io releases;
-the first crates.io release was 0.16.1 / 0.10.0. Published registry artifacts
-are immutable. `master` still carries the version numbers 0.17.0 / 0.11.0 but is
-ahead of those crates.
+figgy-renderer 0.18.0 / figgy-model 0.12.0 follow the crates.io releases
+0.16.1 / 0.10.0 (the first, 2026-10-13) and 0.17.0 / 0.11.0 (2026-10-16).
+Published registry artifacts are immutable.
 
 Version 0.16.0 / model 0.10.0 added plot-area decoration state and targets:
 fully specified `DecorationLayout` literals need `data_area: None`, and exhaustive
@@ -432,34 +426,12 @@ for migration details. Version 0.17.0 / model 0.11.0 added `RichText.align`;
 JSON without it parses as `Left`, but fully specified `RichText` literals need
 `align: TextAlign::Left`.
 
-The changes on `master` since 0.17.0 / model 0.11.0 ship together in the next
-0.x minor. JSON written by 0.17.0 still parses, but Rust code needs these
-updates:
-
-- Fully specified literals need the new fields: `Config` gains `polar`,
-  `overlays`, `subplots`, `active_layer` and `annotations`; `RadialChart`,
-  `CategoricalChart` and `BoxPlotChart` gain `chart_title`, `active_layer` and
-  `annotations`; `DataLineStyleConfig` gains `fill`, `fill_color` and
-  `interpolation`; `DataScatterStyleConfig` gains `point_color_map` and
-  `point_size_map`; `RichSegment` gains `rule_band`; `ChartViewState` gains
-  `overlay_y` and `subplots`.
-- Exhaustive matches need `DataRenderType::Vector`, `LabelFormat::Degrees` and
-  `LabelFormat::Radians`, the `DecorationId` variants `SpokeLabel`, `Overlay`
-  and `Annotation`, and `GpuSeriesExtentMode::VectorTips`.
-- `RenderWarning::axis()` returns `Option<WarningAxis>`.
-- In the low-level `data_render` module, `draw_chart_panel_columnar` takes the
-  two optional annotation layers, `create_scatter_columnar_mapped_pipeline`
-  takes a value-map bind group layout, `line_arc::ArcScratch::build` takes a
-  step mode, `ScatterTransform` gains `polar_angle` and `polar_extent`,
-  `SeriesLayers` gains `area` and `vector`, and `ColumnScatterLayer` and
-  `ColumnPickRingLayer` gain `color_value`, `size_value` and `value_map_bg`.
-- `Draggable::drag_from` and `DragConfig::nudge_at` are default trait methods
-  that existing implementations inherit.
-
-The Rust migration notes in the Unreleased sections of the
-[CHANGELOG](https://github.com/shim9610/figgy/blob/master/CHANGELOG.md) give the
-value to write for each new `Config`, chart, style, `RichSegment` and
-`ChartViewState` field.
+Version 0.18.0 / model 0.12.0 is also an incompatible minor. JSON written by
+0.17.0 still parses, but fully specified literals need new fields, exhaustive
+matches need new enum variants, `RenderWarning::axis()` returns an `Option`,
+and some low-level `data_render` signatures change.
+[Migrating from 0.17.0](https://github.com/shim9610/figgy/blob/master/CHANGELOG.md#migrating-from-0170)
+lists every change and the value to write for each new field.
 
 The optional serde representation is not an application file-format version.
 Serialized fields added since the first crates.io release (0.16.1 / 0.10.0) are

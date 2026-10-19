@@ -10,13 +10,13 @@ adapters; physical Intel/AMD/NVIDIA/Apple driver coverage remains outstanding.
 
 Since 2026-10-12, CI runs only for pull requests ([when CI runs](README.md#when-ci-runs));
 pushes to master do not start it. The results for renderer 0.16.1 / model 0.10.0
-(published 2026-10-13), renderer 0.17.0 / model 0.11.0 (published 2026-10-16) and
-the master features not yet released (polar coordinates, radar charts, vector
-fields, point color and size maps, area fills and step lines, overlay layers,
-subplots, the annotation layer, independent bounded titles and the contour label
-fixes) are in the
+(published 2026-10-13) and renderer 0.17.0 / model 0.11.0 (published 2026-10-16)
+are in the
 [package runs](https://github.com/shim9610/figgy/actions/workflows/ci.yml?query=event%3Apull_request)
-of the pull requests that introduced them.
+of the pull requests that introduced their changes.
+
+Results for the renderer 0.18.0 / model 0.12.0 / figgy 0.15.0 release candidate
+on master are recorded here after its CI run.
 
 ## Renderer 0.16.0 bounded area editing (2026-10-11)
 

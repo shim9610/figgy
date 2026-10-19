@@ -1,14 +1,5 @@
 # Polar plots
 
-Polar plots (`Config.polar`, `renderer::polar`) and the line fields the
-example below uses (`fill`, `fill_color`, `interpolation`) are on the
-repository's master branch and are not in the published figgy-renderer
-0.17.0. Until the next release, depend on the repository:
-
-```toml
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
-```
-
 A polar plot is an ordinary Cartesian chart whose `Config.polar` is `Some`:
 the same scatter and line series (fills included), the same column pool,
 picking and export, drawn in (angle, radius). `bottom_x` is the angle axis
@@ -211,14 +202,6 @@ draws an antenna-like pattern and a three-leaf rose interactively
 (`cargo run --manifest-path tools/playground/Cargo.toml`).
 
 ## 한국어 사용법
-
-극좌표 플롯(`Config.polar`, `renderer::polar`)은 저장소 master 브랜치에 있으며 crates.io에 배포된
-figgy-renderer 0.17.0에는 아직 없다. 위 영어 예제가 쓰는 선 필드(`fill`, `fill_color`,
-`interpolation`)도 마찬가지다. 다음 릴리스 전에는 저장소를 의존성으로 지정한다.
-
-```toml
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
-```
 
 극좌표 플롯은 `Config.polar`가 `Some`인 보통의 직교 차트다. 직교 차트의 산점도·선 시리즈(면
 채움 포함)와 컬럼 풀, 피킹, 내보내기를 그대로 쓰면서 데이터를 (각도, 반지름)으로 그린다.

@@ -18,22 +18,14 @@ The Cargo package is **`figgy-model`**; its Rust import is **`model`**.
 
 ```toml
 [dependencies]
-model = { package = "figgy-model", version = "0.11.0" }
+model = { package = "figgy-model", version = "0.12.0" }
 ```
 
-The `version` line installs figgy-model 0.11.0 from
+The `version` line installs figgy-model 0.12.0 from
 [crates.io](https://crates.io/crates/figgy-model). For a local checkout, replace
-`version` with `path = "../figgy/crates/model"`.
-
-Polar options, the radar model, vector fields, point colour and size maps, area
-fills, step lines, overlay layers, subplots, the annotation layer and the
-`chart_title` option of the pie, bar and boxplot models are on the repository's
-master branch and are not in the published figgy-model 0.11.0. Until the next
-release, depend on the repository:
-
-```toml
-model = { package = "figgy-model", git = "https://github.com/shim9610/figgy" }
-```
+`version` with `path = "../figgy/crates/model"`. Code written for 0.11.0, the
+release that shipped with figgy-renderer 0.17.0, needs the changes in the
+[migration notes](https://github.com/shim9610/figgy/blob/master/CHANGELOG.md#migrating-from-0170).
 
 Add `features = ["serde"]` only when serialization is needed. No feature is
 required for creating, editing or validating models.

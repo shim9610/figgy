@@ -10,11 +10,13 @@ Rust 라이브러리가 모든 차트를 JavaScript API로 제공한다는 뜻�
 
 The [streaming contract](#streaming-contract) and the [bounded chart host](#bounded-chart-host) sections of this guide are in English.
 
-이 문서는 저장소 `master` 브랜치를 기준으로 한다. 브라우저 패키지 `figgy`(소스 버전 0.14.0)는 crates.io에 배포하지 않으므로 이 저장소에서 빌드한다. 극좌표·레이더 차트, 벡터 시리즈, 점 색상·크기 매핑, 면 채움과 계단선, 오버레이 레이어, 서브플롯, 주석 레이어, bounded 차트의 독립 제목은 저장소 master 브랜치에 있으며 crates.io에 배포된 `figgy-renderer 0.17.0` / `figgy-model 0.11.0`에는 아직 없다. 다음 릴리스 전에 Rust 호스트에서 이 기능을 쓰려면 저장소를 의존성으로 지정한다.
+이 문서는 브라우저 패키지 `figgy` 0.15.0과 `figgy-renderer` 0.18.0 / `figgy-model` 0.12.0을 기준으로 한다. `figgy`는 crates.io에 배포하지 않으므로 이 저장소에서 빌드한다. Rust 호스트는 crates.io의 렌더러를 의존성으로 지정한다. 웹 래퍼처럼 설정을 JSON으로 주고받으려면 `serde` 기능을 켠다.
 
 ```toml
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
+renderer = { package = "figgy-renderer", version = "0.18.0", features = ["serde"] }
 ```
+
+렌더러 없이 모델 타입만 쓰는 크레이트는 `model = { package = "figgy-model", version = "0.12.0" }`을 지정한다. 로컬 체크아웃을 쓰려면 `version` 대신 `path`로 `crates/renderer`를 가리킨다. 0.17.0용으로 작성한 Rust 코드는 [마이그레이션 안내](https://github.com/shim9610/figgy/blob/master/CHANGELOG.md#migrating-from-0170)에 따라 고친다.
 
 `model`과 `renderer`는 모두 `wasm32-unknown-unknown`으로 빌드할 수 있다. 이 문서는 네이티브와 웹의 차이, 브라우저 초기화, 데이터 입력, 이벤트 처리와 이미지 출력을 설명한다.
 
@@ -300,7 +302,9 @@ kernel.on_move(x - lastX, y - lastY);   // Rust Result<(), JsValue>
 kernel.on_release();                    // infallible state clear
 ```
 
-웹 래퍼는 이벤트마다 캔버스의 CSS 크기와 실제 픽셀 크기의 비율로 포인터 좌표를 계산한다. `FiggyChart`는 저장된 `chart_area`의 가로세로 비율을 유지해 현재 surface에 맞추고 남는 공간에 여백을 둔다. 드래그·크기 조절의 이동량은 내부에서 문서 좌표로 환산한다. 브라우저 창 크기를 바꾸는 것은 미리보기 배율만 바꾸며 출력 문서나 폰트 크기는 바꾸지 않는다.
+웹 래퍼는 이벤트마다 캔버스의 CSS 크기와 실제 픽셀 크기의 비율로 포인터 좌표를 계산한다. `FiggyChart`는 문서 영역 `Config::document_area()`의 가로세로 비율을 유지해 현재 surface에 맞추고 남는 공간에 여백을 둔다. 문서 영역은 `chart_area`와 모든 서브플롯 `chart_area`의 합집합이며, 서브플롯이 없으면 `chart_area`와 같다. 히트 테스트와 주석 조작은 캔버스 픽셀에서 이 배치대로 판정하고, 요소 드래그의 시작점과 드래그·크기 조절의 이동량은 같은 배치와 배율을 거꾸로 적용해 문서 좌표로 환산한다. 브라우저 창 크기를 바꾸는 것은 미리보기 배율만 바꾸며 출력 문서나 폰트 크기는 바꾸지 않는다.
+
+`on_press`의 반환값은 이번 누름이 무언가를 잡았는지를 나타낸다. 요소, 선택된 요소의 크기 조절점, 주석 항목이나 그 핸들을 누르면 `true`, 빈 곳을 누르면 `false`다. 현재 선택 상태는 `has_selection()`으로 확인한다. 이 메서드는 요소나 주석이 선택돼 있으면 `true`다. 주석 층이 포인터를 받지 않을 때(`"Annotations"`가 아닌 레이어이거나 주석 층이 숨겨졌을 때) 빈 곳을 누르면 요소 선택은 지워지지만 `select_annotation`으로 고른 주석은 그대로 남으므로, `on_press`가 `false`를 돌려준 뒤에도 `has_selection()`은 `true`일 수 있다. `<figgy-chart>`가 보내는 `figgy-select`의 `selected`는 `on_press`의 결과이고, `figgy-release`의 `selected`는 `has_selection()`의 결과다.
 
 <a id="35-이벤트-출력--customevent로-프레임워크-중립"></a>
 
@@ -417,7 +421,7 @@ chart.set_config(JSON.stringify(rangeConfig));
 // 다음 프레임부터 새 범위로 그린다. 호스트 루프에서 프레임을 요청한다.
 ```
 
-범위와 그에 맞는 눈금·라벨 설정을 함께 계산하려면 `auto_fit_x`, `auto_fit_y`, `auto_fit_all`, `auto_fit_colorbar`를 사용한다. `set_title`은 필요하면 제목 영역도 넓힌다. 기존 여백을 그대로 두려면 `chart_title.text`를 직접 편집한다. `set_x_title`과 `set_y_title`은 축 제목 텍스트만 바꾼다. 네이티브에서 같은 작업은 [direct SSOT edits and convenience helpers](API.md#direct-ssot-edits-and-convenience-helpers)를 참고한다.
+범위와 그에 맞는 눈금·라벨 설정을 함께 계산하려면 `auto_fit_x`, `auto_fit_y`, `auto_fit_all`, `auto_fit_colorbar`를 사용한다. `auto_fit_all`은 활성 레이어의 축만 맞춘다(5절 `<figgy-chart>` 공개 API 표의 「범위 맞춤」 참고). `set_title`은 필요하면 제목 영역도 넓힌다. 기존 여백을 그대로 두려면 `chart_title.text`를 직접 편집한다. `set_x_title`과 `set_y_title`은 축 제목 텍스트만 바꾼다. 네이티브에서 같은 작업은 [direct SSOT edits and convenience helpers](API.md#direct-ssot-edits-and-convenience-helpers)를 참고한다.
 
 직접 넣은 설정도 일반 검증과 렌더링 안전 한도를 거친다. 눈금 설정을 그대로 두면 데이터 좌표에서의 의미는 유지되지만, 화면상 눈금 위치나 표시되는 라벨 수는 바뀔 수 있다. `set_config`는 교체되는 설정에 묶인 대기 중인 자동 맞춤 작업도 취소한다. 다시 맞춰야 할 때만 새로 요청한다.
 
@@ -510,16 +514,16 @@ cd crates/web && python3 -m http.server 8137   # wasm은 file://로 열 수 없�
 | 시리즈 | `add_line_series(id, x, y, width, label)`은 추가 또는 교체, `remove_series(id)`는 제거다. |
 | 범례 | `set_series_label(id, label)`로 텍스트를 바꾼다. 줄바꿈과 유니코드 첨자를 지원하며 빈 문자열이면 해당 행을 지운다. `set_series` / `apply_color_cycle`은 인식 가능한 자동 기호만 갱신하고 사용자 텍스트는 보존한다. 전체 재생성은 `reset_legend_from_series_labels()`를 호출한다. 직접 편집할 때는 `legend.content`의 줄바꿈·탭·고정 너비 기호·구간별 색을 사용한다. 기호의 `field_em`은 2.0em이며 선은 `rule:true`, 점선 패턴은 `rule_dash`로 지정한다. `content.font` / `font_size`와 구간별 설정은 그리기 시 적용한다. |
 | 위치 판정 | `hit_test(x, y)`는 요소 ID 또는 `null`을 반환한다. 데이터 영역·축·눈금 라벨·제목·색상 막대와 그 세부 요소를 구분한다. 선택 상태 자체는 바꾸지 않는다. 위치는 렌더러의 레이아웃에서 계산하므로 호스트가 별도로 상자를 관리할 필요가 없다. 등록 요소는 활성 레이어를 따른다. 오버레이가 활성이면 `overlay_<n>:axis_right`, `overlay_<n>:tick_labels_right`, `overlay_<n>:axis_title_right`, `overlay_<n>:legend`가 답하고 기본 Y 축은 답하지 않는다. `"Annotations"`가 활성이고 주석 층이 보이면 그려진 주석 항목이 공유 요소 위에서 `annotation_<n>`으로 답하고, 다른 레이어에서는 클릭이 주석을 통과한다. 저수준 `FiggyChart.decoration_bounds(id)`(`<figgy-chart>`에서는 `element.kernel`로 호출)는 `annotation_<n>`도 받아 그 항목의 선택 상자를 돌려준다. 서브플롯(`{ "Subplot": i }`)이나 그 오버레이(`{ "SubplotOverlay": [i, j] }`)가 활성이면 그 서브플롯 차트의 요소가 `subplot_<i>:` 접두사를 붙인 id(`subplot_0:data_area`, `subplot_0:axis_left`, `subplot_0:overlay_0:axis_right` 등)로 답하고 부모 요소는 답하지 않는다. 드래그·리사이즈는 그 서브플롯의 `config`에 기록된다. |
-| 레이어 | `set_active_layer(json)`은 `"Base"`, `{ "Overlay": n }`, `"Annotations"`, `{ "Subplot": i }`, `{ "SubplotOverlay": [i, j] }` JSON으로 상호작용 대상 레이어를 정하고 히트 맵을 그 레이어로 다시 만든다. 레이어가 바뀌면 요소 선택과 주석 선택을 지운다(데이터 선택은 유지). 범위 밖 오버레이 인덱스는 `"Base"`로 저장하며 저장된 값을 JSON으로 돌려준다. `active_layer()`는 현재 값을 JSON으로 돌려준다. `auto_fit_overlay_y(layer, col, pad)`는 `auto_fit_y`와 같은 규칙으로 오버레이 Y 축을 맞춘다. 저수준 `FiggyChart.auto_fit_subplot(i, "x" | "y", [cols], pad)`(`<figgy-chart>`에서는 `element.kernel`로 호출)는 서브플롯 축을 맞추며, 링크된 축이면 링크 묶음 전체가 움직인다. 범위 밖 서브플롯 인덱스나 `"x"` / `"y"`가 아닌 축 이름은 오류다. 오버레이와 서브플롯 자체(`overlays`, `subplots` 배열)는 `get_config` / `set_config`로 편집한다. 링크된 축을 바꾸면 같은 호출 안에서 묶음 전체가 움직인다. 그려지는 픽셀은 활성 레이어에 의존하지 않는다. |
+| 레이어 | `set_active_layer(json)`은 `"Base"`, `{ "Overlay": n }`, `"Annotations"`, `{ "Subplot": i }`, `{ "SubplotOverlay": [i, j] }` JSON으로 상호작용 대상 레이어를 정하고 히트 맵을 그 레이어로 다시 만든다. 레이어가 바뀌면 요소 선택과 주석 선택을 지운다(데이터 선택은 유지). 범위 밖 오버레이·서브플롯 인덱스와 서브플롯 인덱스가 범위 밖인 `SubplotOverlay`는 `"Base"`로, 서브플롯은 있지만 그 오버레이가 없는 `SubplotOverlay`는 해당 `{ "Subplot": i }`로 저장한다. `<figgy-chart>`의 `set_active_layer`는 저장된 레이어를, `active_layer()`는 현재 레이어를 파싱한 값(`"Base"`, `{ Overlay: 0 }` 등)으로 돌려준다. 저수준 `FiggyChart`의 두 메서드는 같은 값을 JSON 문자열로 돌려준다. 활성 레이어는 `auto_fit_all`이 맞출 축도 정한다(「범위 맞춤」 참고). `auto_fit_overlay_y(layer, col, pad)`는 `auto_fit_y`와 같은 규칙으로 오버레이 `layer`의 Y 축을 맞추며, 범위 밖 인덱스는 오류다. 저수준 `FiggyChart.auto_fit_subplot(i, "x" | "y", [cols], pad)`(`<figgy-chart>`에서는 `element.kernel`로 호출)는 서브플롯 축을 맞추며, 링크된 축이면 링크 묶음 전체가 움직인다. 범위 밖 서브플롯 인덱스나 `"x"` / `"y"`가 아닌 축 이름은 오류다. 오버레이와 서브플롯 자체(`overlays`, `subplots` 배열)는 `get_config` / `set_config`로 편집한다. 링크된 축을 바꾸면 같은 호출 안에서 묶음 전체가 움직인다. 그려지는 픽셀은 활성 레이어에 의존하지 않는다. |
 | 데이터 피킹 | `pick_point(x, y, max_distance_px)`는 `Promise<{ source_id: string \| null, series_id, point_index, distance_px } \| null>`을 반환한다. 점은 스타일을 반영한 기호 크기, 선은 선분과의 거리로 판정하고 가까운 끝점을 고른다. 오차 막대 몸통·끝선은 대상이 아니다. 좌표는 반환된 인덱스로 원본 컬럼에서 조회한다. |
 | 전체 사전 준비 | `prewarm_all_with_progress(callback)`은 상주 렌더링·스타일·경로 길이·범위·피킹·등고선용 캐시를 생성하고 `{ scope, stage, phase }`를 알린다. `prewarm_all()`은 콜백 없이 같은 작업을 한다. 둘 다 연결 세대를 확인하는 작업 직렬화 장치를 사용한다. `warm_up()`은 첫 프레임 대기용 호환 메서드다. |
 | 피킹 준비 | `prewarm_gpu_picking()`으로 미리 준비하거나 재시도할 수 있다. 저수준 API와 래퍼 모두 렌더러의 같은 파이프라인과 차트 캐시를 사용한다. |
-| 범위 맞춤 | `auto_fit_all(pad)`는 모든 시리즈의 원본 도형을 포함하는 X·Y 범위를 구하고 비율 여백을 더한다(0은 여백 없음, 0.05는 5%). 상주 선·점·오차 막대·행렬은 GPU로 범위를 계산하며 히스토그램은 경계·빈도 메타데이터와 기준선을 사용한다. 상주 경로는 GPU 결과를 읽어 설정에 반영할 때까지 다른 커널 호출을 막는다. 래퍼의 스트리밍 경로는 일반 busy 토큰 없이 축 반영과 렌더링 완료를 기다린다. 저수준 스트리밍 호출은 요청만 등록하므로 호스트가 작업을 계속 실행해야 한다. 범위 끝은 반올림하지 않는다. 눈금은 범위 안에서 읽기 좋은 값으로 배치한다. `auto_fit_colorbar(pad)`는 색상 막대가 매핑하는 모든 컬럼(행렬 값, 산점도 `point_color_map`, 벡터 색상 매핑)의 통계로 색상 막대를 맞춘다. 색상 막대가 없는 차트는 바꾸지 않는다. `auto_fit_x/y(col, pad)`는 단일 컬럼 통계를 사용하며 오차 막대를 반영하지 않는다. `load_demo()`는 데모를 불러온다. |
+| 범위 맞춤 | `auto_fit_all(pad)`는 활성 레이어의 축만, 그 레이어에 속한 시리즈(`Config::layer_of_series`)로 맞춘다. `"Base"`와 `"Annotations"`(주석은 기본 축에 그린다)에서는 기본 레이어의 시리즈만으로 `bottom_x`·`left_y`를 맞추며, 오버레이나 서브플롯에 적은 시리즈는 기본 축을 넓히지 않는다. `{ "Overlay": n }`에서는 그 오버레이의 Y 축을, `{ "Subplot": i }`에서는 서브플롯 `i`의 X·Y 축을, `{ "SubplotOverlay": [i, n] }`에서는 그 서브플롯 오버레이의 Y 축을 맞춘다. 서브플롯의 링크된 축을 맞추면 `auto_fit_subplot`처럼 링크 묶음 전체가 움직인다. 모든 레이어를 맞추려면 레이어마다 `set_active_layer`로 바꾼 뒤 `auto_fit_all`을 호출하거나, 컬럼을 지정해 `auto_fit_overlay_y` / `auto_fit_subplot`을 호출한다. 범위는 대상 시리즈의 원본 도형을 모두 포함하며 비율 여백을 더한다(0은 여백 없음, 0.05는 5%). 상주 선·점·오차 막대·행렬·벡터는 GPU로 범위를 계산하며 히스토그램은 경계·빈도 메타데이터와 기준선을 사용한다. 상주 경로는 GPU 결과를 읽어 설정에 반영할 때까지 다른 커널 호출을 막는다. 스트리밍 문서에는 오버레이와 서브플롯이 없으므로 스트리밍 경로는 모든 시리즈로 기본 축을 맞춘다. 래퍼의 스트리밍 경로는 일반 busy 토큰 없이 축 반영과 렌더링 완료를 기다린다. 저수준 스트리밍 호출은 요청만 등록하므로 호스트가 작업을 계속 실행해야 한다. 범위 끝은 반올림하지 않는다. 눈금은 범위 안에서 읽기 좋은 값으로 배치한다. `auto_fit_colorbar(pad)`는 색상 막대가 매핑하는 모든 컬럼(행렬 값, 산점도 `point_color_map`, 점 벡터의 색상 컬럼과 격자 벡터 색상 격자의 모든 컬럼)의 통계로 색상 막대를 맞춘다. 색상 막대가 없는 차트는 바꾸지 않는다. `auto_fit_x/y(col, pad)`는 단일 컬럼 통계를 사용하며 오차 막대를 반영하지 않는다. `load_demo()`는 데모를 불러온다. |
 | 행렬·막대 정보 | `set_contour_nice_levels(series_id, target_count, use_colormap_colors)`는 색상 막대 눈금 규칙으로 등고선 값을 만들고 시리즈 설정에 기록한 뒤 레벨 수를 반환한다. `series_draw_info(series_id)`는 `{ drawn_count, cols, rows, truncated }`를 반환한다. 저수준 WASM은 JSON 문자열, 래퍼는 객체를 반환한다. |
 | 피킹 기준 | 최종 장식 픽셀 대신 원본 점·선분을 기준으로 한다. 산점도는 지정한 기호 반지름을, 선은 인접 원본 점 사이의 직선을 사용한다. 점선의 공백, 사각 끝 모양, 스케치의 흔들림은 판정 경로에 영향을 주지 않는다. |
 | 설정 읽기·쓰기 | `get_config()` / `set_config(json)`, `get_series()` / `set_series(json)`. `set_colorbar_axis(json)`은 색상 막대의 전체 `AxisOptions`를 교체한다. |
 | 프리셋 | `apply_axis_preset(AxisPreset)`, `apply_color_cycle(ColorCycle)`, `color_cycle_css(cycle)`. |
-| 포인터 입력 | 웹 래퍼가 포인터 이벤트를 처리한다. 직접 전달할 때는 `on_press(x, y)`, `on_move(dx, dy)`, `on_release()`, `has_selection()`을 사용한다. 이 경로는 활성 레이어를 따른다. `"Annotations"`가 활성이면 선택된 주석의 핸들이 먼저 답하고, 그다음 위치의 주석 항목을 선택해(요소 선택은 지움) `on_move`로 끌며, 주석이 없는 곳을 누르면 아래 공유 요소로 넘어가고 주석 선택을 지운다. `has_selection()`은 요소나 주석이 선택돼 있으면 `true`다. |
+| 포인터 입력 | 웹 래퍼가 포인터 이벤트를 처리한다. 직접 전달할 때는 `on_press(x, y)`, `on_move(dx, dy)`, `on_release()`, `has_selection()`을 사용한다. 이 경로는 활성 레이어를 따른다. `"Annotations"`가 활성이면 선택된 주석의 핸들이 먼저 답하고, 그다음 위치의 주석 항목을 선택해(요소 선택은 지움) `on_move`로 끌며, 주석이 없는 곳을 누르면 아래 공유 요소로 넘어가고 주석 선택을 지운다. `has_selection()`은 요소나 주석이 선택돼 있으면 `true`다. `on_press`의 반환값과 `has_selection()`의 차이는 [3.4절](#34-이벤트-입력--포인터를-모델-정책으로-그대로-전달)을 참고한다. |
 | 선택 표시 | `set_picked_points(json)`은 `PickedPointsConfig` 또는 `null` JSON 문자열로 `Config.picked_points`만 교체한다. `set_picked_data(json)`는 점·막대·셀·등고선 선택을 같은 방식으로 바꾼다. `null`은 표시를 지운다. |
 | 배경 | `set_clear_color(r, g, b, a)`는 선형 RGBA를 성분별 0~1로 제한하고 다시 그리기를 요청한다. 화면 상태만 바꾸므로 Config JSON이나 축 이미지는 갱신하지 않는다. |
 | 출력 | `export_png(scale)`은 PNG의 `Uint8Array`를 비동기로 반환한다. 문서 출력이므로 오버레이 레이어와 서브플롯도 함께 그린다. |
@@ -965,7 +969,9 @@ compass name, e.g. `"W"`), `drag_annotation(index, dx, dy, handle | null)`
 (returns `false` for a rejected move), `add_annotation(json)` (returns the new
 index), `set_annotation(index, json)`, `remove_annotation(index)`,
 `set_annotations_visible(bool)`, `pointer_to_anchor(x, y, "Data" | "Ratio")`
-(the `Anchor` JSON at a point, or `null`) and `annotation_warnings()`
+(the `Anchor` at a point as a JSON string, or the JSON string `"null"` when
+the point has no such position, for example a `Data` anchor on a chart without
+value axes; `JSON.parse` turns it into `null`) and `annotation_warnings()`
 (`[{index, reason}]` for items the raster skipped). Item JSON is the
 `Annotation` shape of the config document (see the
 [JSON schema](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md)).
@@ -973,7 +979,21 @@ Coordinates are the same as the class's other hit methods: document logical
 pixels on `FiggyBoundedChart`, physical canvas pixels on `FiggyChart`. On
 `FiggyBoundedChart` the selection is `decorations.selected`; on `FiggyChart`
 it is host state like the decoration selection, and selecting an annotation
-clears the decoration selection and vice versa. A bounded chart whose shown
+clears the decoration selection and vice versa.
+
+On `FiggyChart` the methods that read drawn items (`annotations`,
+`hit_annotation`, `annotation_handle`, `drag_annotation`,
+`pointer_to_anchor`, `annotation_warnings` and
+`decoration_bounds("annotation_<n>")`) use the annotation map of the last
+drawn frame. After `add_annotation`, `set_annotation`, `remove_annotation` or
+a drag they report the new state once the next `frame()` has drawn it: until
+then a new item is not listed, `hit_annotation` does not find it and
+`drag_annotation` on its index throws. `<figgy-chart>` draws on its
+animation-frame loop, so read them after the next animation frame.
+`FiggyBoundedChart` prepares the frame and its annotation map inside each
+editing call, so its methods report the new state as soon as the call returns.
+
+A bounded chart whose shown
 annotation layer has a visible `Span` is drawn with the frame's `HostClear`
 background and the chart background as the clear colour, so the span shows
 below the chart's marks; charts without one draw an opaque frame over a white
@@ -1000,14 +1020,19 @@ annotation methods keep working on every layer.
 `FiggyChart.decoration_bounds(id)` returns measured bounds
 and resize handles in physical canvas pixels. `step_selection(dx, dy)` navigates
 resident point, histogram or matrix selections using source indices, without
-copying arrays. Histogram bin navigation follows the category direction:
-`dx` for vertical bars and `dy` for horizontal bars; the other delta switches
-between series of the same orientation. Indices clamp to the selected series.
+copying arrays. For a point, `dx` moves the source index and `dy` switches
+between the series that draw points or lines; a selected point-vector arrow
+steps along its series' points like a scatter point. Histogram bin navigation
+follows the category direction: `dx` for vertical bars and `dy` for horizontal
+bars; the other delta switches between series of the same orientation. A
+matrix cell, a grid-vector cell included, steps by `dx` along X and `dy` along
+Y. Indices clamp to the selected series.
 `await chart.selection_details()` returns a JSON string with selected resident
 GPU values (or `"null"` for no supported selection). Histogram fields are
 `identity`, `series_id`, `index`, `bin_start`, `bin_end`, `value`, and
 `orientation`; `identity` uses a flat `kind` tag. Points and matrix cells are
-also supported; a colour- or size-mapped point adds `color_value` / `size_value`.
+also supported; a colour- or size-mapped point adds `color_value` / `size_value`,
+and a vector selection adds `u` / `v` (plus `color_value` with a colour map).
 `<figgy-chart>` has no forwarding methods for these or for the annotation
 methods; call them through [`element.kernel`](#figgy-chart-kernel).
 See the [selection JSON contract](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md#resident-selection-details).

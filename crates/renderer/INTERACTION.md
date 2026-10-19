@@ -30,21 +30,6 @@ recomputes hit regions or label positions.
   rejects it when the canvas, fonts or labels no longer leave room.
   `decorations.reset(&DecorationId::DataArea)` restores automatic layout.
 
-레이더 차트, 극좌표 축 드래그, 독립 제목(`chart_title`, `text.align`), 레이어와 주석 레이어,
-오버레이 축, 서브플롯, 영역 채우기와 계단 선은 저장소 master 브랜치에 있으며 crates.io에 배포된
-figgy-renderer 0.17.0에는 아직 없다. 다음 릴리스 전에는 저장소를 의존성으로 지정한다.
-
-Radar charts, polar axis drags, independent bounded titles (`chart_title`,
-`text.align`), layers and the annotation layer, overlay axes, subplots, and
-area fill and step lines are on the repository's master branch and are not in
-the published figgy-renderer 0.17.0. Until the next release, depend on the
-repository:
-
-```toml
-[dependencies]
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
-```
-
 ## 데이터 선택과 장식 요소 선택
 
 - `frame.hit_test([x, y])`는 원형 조각·막대·박스·레이더 꼭짓점과 다각형 같은 데이터를 고른다.
@@ -363,6 +348,15 @@ overlay did not cannot be produced. Auto-fit for an overlay axis uses the same
 cached column statistics: `Chart::auto_fit_overlay_y_extent` /
 `auto_fit_overlay_y_union` / `set_overlay_y_range` natively,
 `auto_fit_overlay_y(layer, column, padding)` in the WASM wrapper.
+The WASM `auto_fit_all(padding)` (also on `<figgy-chart>`) fits the active
+layer only, from the series that layer scales (`Config::layer_of_series`).
+With `Base` or `Annotations` active (the annotation layer draws on the base
+axes) it fits `bottom_x` and `left_y` from the base layer's series, so series
+listed by an overlay or a subplot do not widen the base axes; with
+`Overlay(n)` active it fits that overlay's Y axis from its series (see
+"Subplots" for the subplot layers). To fit every layer, a host sets each layer
+active in turn (`set_active_layer`, then `auto_fit_all`) or calls
+`auto_fit_overlay_y` / `auto_fit_subplot` with explicit columns.
 
 **Export.** `export_document_rgba_async` / `export_document_png_bytes_async`
 (and their `_with_clear` and blocking native variants) render the whole group
@@ -431,7 +425,14 @@ document's subplot and subplot-overlay counts. One `set_chart_view_state`,
 `set_chart_config` or `set_chart_state` call carries an edit of any linked
 axis to the root of its group and moves every member in the same call
 (`Config::sync_subplot_links`), so no frame can show one linked chart moved and
-another not.
+another not. Auto-fit writes the root of a linked axis, so a fit moves the
+whole link group: `Chart::auto_fit_subplot_{x,y}_{extent,union}` natively,
+`auto_fit_subplot(index, axis, columns, padding)` in the WASM wrapper. The
+WASM `auto_fit_all(padding)` fits the active layer only, from that layer's
+series (`Config::layer_of_series`): with `Subplot(i)` active, subplot `i`'s X
+and Y axes, a linked axis moving its link group as `auto_fit_subplot` does
+(series scaled by the subplot's own overlays belong to those overlay layers);
+with `SubplotOverlay(i, n)` active, that overlay's Y axis.
 
 **Display, export and annotations.** `display_config_for_surface` fits the
 whole document (`Config::document_area`, the union of every chart area) to the

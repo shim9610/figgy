@@ -1,13 +1,5 @@
 # Radar charts
 
-Radar charts (`renderer::radar`: `RadarChart`, `RadarRenderer`) are on the
-repository's master branch and are not in the published figgy-renderer
-0.17.0. Until the next release, depend on the repository:
-
-```toml
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
-```
-
 `RadarRenderer` draws radar (spider) charts: a few series compared over a
 fixed set of categories, one spoke per category, each series a closed polygon
 over one shared value axis. Like `RadialRenderer`, `CategoricalRenderer` and
@@ -160,14 +152,6 @@ cargo test --locked -p figgy-renderer --test radar_render
 ```
 
 ## 한국어 사용법
-
-레이더 차트(`renderer::radar`의 `RadarChart`, `RadarRenderer`)는 저장소 master 브랜치에 있으며
-crates.io에 배포된 figgy-renderer 0.17.0에는 아직 없다. 다음 릴리스 전에는 저장소를 의존성으로
-지정한다.
-
-```toml
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
-```
 
 레이더(거미줄) 차트는 시리즈 몇 개를 정해진 범주별로 비교한다. `categories[i]`가 스포크 `i`를
 맡고 각 시리즈의 `values[i]`가 그 스포크의 값이므로, 시리즈마다 범주 수만큼 값이 있어야 한다.

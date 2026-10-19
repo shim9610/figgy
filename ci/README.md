@@ -131,10 +131,9 @@ native renderer tests; WASM compilation is not a browser execution test.
 
 The docs.rs metadata enables `serde` without GUI demo dependencies. Renderer API
 pages are built for native Linux and WASM; the model needs only the native default
-target. These builds do not initialize a graphics adapter. docs.rs builds the
-published crates, so its pages show the latest crates.io release, not master; an
-API that exists only on master has no docs.rs page until the next release. Local
-rustdoc builds do not check what docs.rs hosts.
+target. These builds do not initialize a graphics adapter. docs.rs builds its
+pages from each published crate version after publication, not from master.
+Local rustdoc builds do not check what docs.rs hosts.
 
 Logs and generated diagnostic PNGs are uploaded as `verification-<runner>-<backend>`
 artifacts, including on failure, and retained for seven days. The logs identify which

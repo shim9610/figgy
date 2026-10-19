@@ -10,17 +10,6 @@ the resident pool, and export through `export_panel_rgba_with_clear_async` and
 `encode_png`. No browser or window is needed. Axes, text, grid and legends follow
 the same CPU-raster/GPU-compositing path as other figgy charts.
 
-Radar charts, polar coordinates, vector fields, point colour and size maps, area
-fills, step lines, overlay layers and subplots are on the repository's master
-branch and are not in the published figgy-renderer 0.17.0. The shared `line` and
-`scatter` helpers in [support/gallery.rs](examples/support/gallery.rs) set the
-new line-fill, interpolation and point-map fields, so recipes that use them do
-not compile against 0.17.0. Until the next release, depend on the repository:
-
-```toml
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
-```
-
 All data is synthetic. These images demonstrate plotting features, not measured
 scientific results. The error bars are deliberately chosen widths, not confidence
 intervals inferred from observations.
@@ -252,7 +241,6 @@ After inspection, copy the output to `assets/style-growth-response-constellation
 
 이 갤러리는 네이티브 렌더러가 출력한 PNG로 만들었다. `readme_gallery.rs`는 GPU 풀에 데이터를 올리고, 데이터와 축·눈금·텍스트를 합성해 PNG로 저장한다. 창이나 브라우저를 열지 않고 실행할 수 있다.
 
-- **배포 버전**: 레이더 차트, 극좌표, 벡터장, 점 색·크기 매핑, 영역 채우기, 계단선, 오버레이 레이어, 서브플롯은 저장소 master 브랜치에 있으며 crates.io에 배포된 figgy-renderer 0.17.0에는 아직 없다. 다음 릴리스 전에는 저장소를 의존성으로 지정한다.
 - **정지 이미지 4종**: 응답 곡선과 오차 막대, 구간 40개의 세로·가로 히스토그램, 81×81 행렬의 보간 히트맵과 라벨이 있는 등고선이다. 모두 예제용으로 생성한 데이터이며 오차 막대의 폭도 설명을 위한 값이다.
 - **애니메이션 2종**: 이동하는 파형과 2:3 위상 궤적이다. 프레임마다 컬럼 값을 갱신하고 PNG를 다시 출력한다. 축 범위는 고정하며 처음과 같은 위상이 되는 마지막 프레임은 제외한다.
 - **생성 순서**: 저장소 루트에서 `cargo run --locked -p figgy-renderer --example readme_gallery -- target/readme-gallery`를 실행하면 정지 PNG 4개와 애니메이션 프레임 96개를 만든다. 이어서 FFmpeg 명령으로 GIF 2개를 생성한다. 이전 프레임이 섞이지 않도록 빈 출력 디렉터리를 사용한다.

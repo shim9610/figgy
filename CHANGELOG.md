@@ -8,40 +8,29 @@ does not imply a standalone JavaScript product or a deployment of the separate
 Publication statements in older source-release entries describe those releases
 at the time. The first crates.io publication is recorded below.
 
-The sections headed "Unreleased" are on the repository's `master` branch and
-are not in the published figgy-renderer 0.17.0 and figgy-model 0.11.0, so
-docs.rs has no pages for their APIs yet. `master`'s manifests still carry
-those version numbers. The sections ship together in the next renderer and
-model minor releases. Until then, depend on the repository:
-
-```toml
-[dependencies]
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
-```
-
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
-## Unreleased — documentation and examples
+<a id="release-0180"></a>
 
-- Documentation: a [polar guide](crates/renderer/POLAR.md) (input and first
-  render, coordinate options, axes, picking, dragging, subplots, export;
-  English and Korean), a "Chart types" table and short polar and radar
-  snippets in the READMEs, `USAGE.md` sections (polar, and the Cartesian
-  series, maps and layers: area fills and steps, point colour and size
-  maps, vector fields, overlays, subplots and annotations), and twelve new
-  gallery images: the polar antenna pattern and compass rose, radar on a
-  polygon and on a circular grid, and eight designed scenes drawn by the
-  feature examples `vector_field`, `value_maps`, `area_step`,
-  `overlay_axes` and `subplots` (a wind field over a heatmap, surface
-  currents, colour-mapped points, bubbles, forecast bands, a step
-  schedule, twin axes and small multiples). The Korean README gains the
-  concept and draw-style rows. The
-  [example index](crates/renderer/examples/README.md) shows every gallery
-  image with the function that draws it and the command that regenerates
-  it. The `precise_scatter_probe` example is removed; the `sketch_render`
-  GPU test checks the same plain scatter output.
+## Release — renderer 0.18.0 / model 0.12.0 / figgy 0.15.0
 
-## Unreleased — polar coordinates
+Not yet published; the date is added at publication.
+
+Renderer 0.18.0 and model 0.12.0 are new 0.x minor versions. Cartesian charts
+gain polar coordinates, vector fields, point colour and size maps, area fills
+and step lines, secondary Y axes on overlay layers, and subplots. A radar
+family joins the radial, categorical and box plot families, every chart
+family gains an annotation layer, and the radial, categorical and box plot
+charts gain independently styled titles. Automatic contour labels sit only on
+crossed levels, and rotated label backgrounds are antialiased. New public
+fields and enum variants break exhaustive struct literals and matches, and
+some low-level `data_render` signatures change: see
+[Migrating from 0.17.0](#migrating-from-0170). Documents written by model
+0.11.0 and 0.10.0 parse and re-serialize byte for byte. The WASM integration
+example advances to 0.15.0 with the renderer dependency and is not published
+(`publish = false`).
+
+### Polar coordinates
 
 - `Config.polar: Option<PolarOptions>` (#26) draws a Cartesian document in
   polar coordinates: `bottom_x` is the angle axis, `left_y` the radius axis,
@@ -88,15 +77,10 @@ renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figg
   logarithmic or inverted angle axis, a step line under `Arc` interpolation
   and streamed sources are explicit errors in polar mode; polar and
   rectangular subplots mix in a document.
-- Rust migration: exhaustive `Config` literals need `polar: None` (or
-  `..Default::default()`); exhaustive `LabelFormat` matches need `Degrees`
-  and `Radians` arms; `line_strip_vertex_count` keeps its signature. In the
-  low-level `data_render` module, `ScatterTransform` literals need
-  `polar_angle` and `polar_extent` (all zero for a rectangular chart). New
-  example `polar_plot.rs`, a playground scene and `CONFIG.md`
+- New example `polar_plot.rs`, a playground scene and `CONFIG.md`
   ("`PolarOptions`").
 
-## Unreleased — radar charts
+### Radar charts
 
 - New bounded family `RadarRenderer` / `RadarChart` (#26). A
   `RadarChart` holds 3 to 64 `categories` (one spoke each), 1 to 16
@@ -126,9 +110,8 @@ renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figg
   `AxisOptions`; markers are `None`, `Circle` or `Square`; a `RadarTarget`
   names a vertex through its optional `category_id` and the whole series
   without it. JSON without the family is unchanged.
-- Rust migration: exhaustive `DecorationId` matches need a `SpokeLabel` arm.
 
-## Unreleased — vector fields
+### Vector fields
 
 - New `DataRenderType::Vector { components, style }` draws an arrow per sample
   (#25). `VectorComponents::Points { u, v }` reads one (u, v) column pair
@@ -162,15 +145,19 @@ renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figg
   Constellation) skip vector series, and `draw_style_supports` returns
   `false` for them. The legend symbol is a rule with an arrowhead. The web
   `selection_details` reports `u`, `v` and, when colour mapped,
-  `color_value` for both forms.
-- Rust migration: exhaustive `DataRenderType` matches need a `Vector` arm,
-  and exhaustive `GpuSeriesExtentMode` matches need `VectorTips`; in the
-  low-level `data_render` module, `SeriesLayers` literals need `vector`
-  (`None` without a vector series). JSON without the variant is unchanged.
-  New example `vector_field.rs`; guide text in `CONFIG.md` ("Vector
-  fields") and `web/SCHEMA.md`.
+  `color_value` for both forms. The web `auto_fit_colorbar` also fits
+  vector colour maps: a point vector's colour column and every column of a
+  grid vector's colour grid.
+- JSON without the variant is unchanged. New example `vector_field.rs`;
+  guide text in `CONFIG.md` ("Vector fields") and `web/SCHEMA.md`. New in
+  the low-level `data_render` module: the `vector` module
+  (`ColumnVectorLayer`, drawn through `SeriesLayers::vector`), and
+  `FieldCellTables`, `create_field_cell_tables`,
+  `create_field_cell_bind_group` and `FieldParamsGpu::cell_geometry`, which
+  bind a grid vector's cell geometry for its cell pick and selected-cell
+  outline.
 
-## Unreleased — point colour and size maps
+### Point colour and size maps
 
 - Scatter series (every marker-drawing `DataRenderType`) gain two optional
   value maps (#24). `DataScatterStyleConfig.point_color_map` colours each
@@ -186,9 +173,12 @@ renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figg
 - The shader reads the value columns from the GPU column pool on every draw
   and derives colour and radius in place; nothing per point is stored. The
   mapped scatter and pick-ring pipelines gain a group-3 bind group with the
-  colourbar's parameters and ramp (`PointValueMapParams`, cached per series
-  and rebuilt only when the colourbar or the size map changes) and two
-  value-column vertex slots.
+  colourbar's parameters and ramp and two value-column vertex slots. The
+  group holds `data_render::PointValueMapParamsGpu`, built by
+  `create_point_value_map_bind_group_layout` and
+  `create_point_value_map_bind_group` (`PointValueMapParamsGpu::NEUTRAL` for
+  a series without maps); it is cached per series and rebuilt only when the
+  colourbar or the size map changes.
 - `pick_point` (CPU and GPU), the picked ring, PNG export at every export
   scale (0.25 to 8) and `selection_details` (new `color_value` /
   `size_value` fields) follow the mapped radius and colour.
@@ -197,235 +187,10 @@ renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figg
   `auto_fit_colorbar` includes them automatically. Streamed sources are
   rejected with an explicit error; stylized draw styles ignore the maps like
   the style table.
-- Rust migration: exhaustive `DataScatterStyleConfig` literals need
-  `point_color_map: None` and `point_size_map: None`. In the low-level
-  `data_render` module, `create_scatter_columnar_mapped_pipeline` takes a
-  `value_map_bgl` bind group layout after `style_map_bgl`, and
-  `ColumnScatterLayer` and `ColumnPickRingLayer` literals need
-  `value_map_bg`, `color_value` and `size_value` (`None` without value
-  maps). JSON without the keys is unchanged. New example `value_maps.rs`;
-  guide text in `CONFIG.md` ("Point colour and size maps") and
-  `web/SCHEMA.md`.
+- JSON without the keys is unchanged. New example `value_maps.rs`; guide
+  text in `CONFIG.md` ("Point colour and size maps") and `web/SCHEMA.md`.
 
-## Unreleased — contour label fixes
-
-- Automatic contour labels are placed only where their level is actually
-  crossed (#19). The anchor pass used to accept any projected seed whose value
-  was within its tolerance of the level, so in a near-flat region a shallow
-  extremum just short of a level (for example a minimum of +0.0004 against
-  level 0) received a label with no isoline anywhere near it. A seed is now
-  kept only if the level lies within the corner range of the cell it lands
-  in, the same condition under which the stroke draws a line there. Labels on
-  real isolines are unchanged.
-- Rotated contour label backgrounds (`bg_color`) are antialiased (#20). The
-  label quad ended exactly at the edge of its baked background box, so the box
-  edge was the rasterized quad edge and stair-stepped at any non-axis-aligned
-  angle while the glyphs inside stayed smooth. The quad now extends two pixels
-  past its content into the atlas cell's transparent gutter, continuing the
-  same content-to-texel map, so the texture filter fades the box edge over one
-  texel. Interior sampling, the label size, the contour line gap and labels
-  without a background are unchanged; axis-aligned box edges gain the same
-  one-texel antialiasing.
-- No API, model or serialization change.
-
-## Unreleased — subplots
-
-- Subplots (#11): `Config` gains `subplots: Vec<Subplot>`, more charts
-  drawn in the same document. A `Subplot { config, series,
-  link_x, link_y }` is a complete Cartesian chart with its own `chart_area`
-  (in the parent's surface coordinates), all four axes, title, grid, legend,
-  colourbar, style and secondary Y axes (`config.overlays`); the document's own
-  `Config` stays the first chart, so a 2×2 grid is the parent plus three
-  subplots. Nothing is shared unless linked: `link_x` / `link_y` (`CellRef::
-  Parent` or an earlier `CellRef::Subplot(j)`) make `bottom_x` / `left_y`
-  follow the target's range, scale, direction and tick spacing while the
-  axis style stays the subplot's own. The field is `serde(default)` and
-  omitted when empty, so existing documents parse and serialize
-  byte-identically.
-- One value per link group: `Config::subplot_config(i)` resolves a subplot
-  with its links applied, `Config::sync_subplot_links(previous)` carries an
-  edit of any linked axis to the root of its group and stores every member
-  equal to it, and `Config::subplot_link_root` names the root. The registry
-  runs it inside `register_chart`, `set_chart_config`, `set_chart_state` and
-  `set_chart_view_state`, so a linked edit moves every member in one
-  `&mut self` call. `ChartViewState::subplots` carries one view state per
-  subplot. `Chart::set_subplot_x_range` / `set_subplot_y_range` and
-  `auto_fit_subplot_{x,y}_{extent,union}` write the root of a linked axis.
-  `Config::validate_subplots` rejects nested subplots, an annotation layer on
-  a subplot, a link to a later subplot and a series id drawn twice.
-- Rendering: `Config::expand` appends each subplot's panels after the
-  parent's (`Config::panel_layers` gives the order), each in its own area with
-  its own data area, raster cache and transform, so an edit of one chart
-  re-rasterizes that chart's panels only and the cached frame is
-  byte-identical to a fresh render. Each selection box goes to the topmost
-  panel of the chart it sits in. The document covers the union of every chart
-  area (`Config::document_area`, `Config::translate_areas`):
-  `display_config_for_surface` fits it and returns where the parent lands (new
-  `place_document`), `GpuPickRequest::display_panel_px` is the displayed
-  document rect, `export_document_*` renders the union and `export_panel_*`
-  keeps the parent's area. The annotation layer stays in the parent's area and
-  its pointer route answers there only while `Annotations` is active. Subplot
-  warnings are tagged `WarningAxis::Subplot { index, axis: SubplotAxis }`.
-  Streaming rejects a document with subplots and a streamed series drawn by a
-  subplot, as it does for overlays.
-- Interaction: `LayerRef` gains `Subplot(i)` and `SubplotOverlay(i, j)`, with
-  the same out-of-range recovery as `Overlay`. While one is active
-  `HitMap::for_active_layer` registers exactly that subplot's own set,
-  wrapped as `SubplotElement`s (`subplot_<i>:…` ids); drags and resizes use
-  the single-chart policies on the subplot's chart and land in
-  `subplots[i].config`. The WASM wrapper accepts the new layers, rebuilds its
-  hit map when the active subplot's overlay count changes and adds
-  `auto_fit_subplot(index, "x" | "y", columns, padding)`. New native example
-  `subplots`, which writes `gallery-subplots.png` (four sensors in a 2×2
-  grid whose three subplots link their X axis to the parent) and
-  `mixed-axes.png` (one linked X axis, a chart with a different X column and
-  a twin Y axis from an overlay inside a subplot).
-- Rust migration: exhaustive `Config` literals need `subplots` (or
-  `..Default::default()`) and `ChartViewState` literals need `subplots`;
-  `WarningAxis` (`non_exhaustive`) gains `Subplot`. See the configuration
-  reference (`Subplot`), the interaction guide (subplots) and the WASM guide.
-
-## Unreleased — overlay layers
-
-- `Config` gains `overlays: Vec<OverlayLayer>` (#11):
-  secondary Y axes drawn on the right side of the shared data area, each
-  scaling the series it lists. `OverlayLayer { y_axis, series, legend }` holds
-  only what may differ per layer; the chart area, both X axes, the title, the
-  grid, the merged legend, the colourbar and `draw_style` exist once on the
-  parent. The field is `serde(default)` and omitted when empty, so existing
-  documents parse and serialize byte-identically. `Config::expand()` is the
-  one expansion path into internal single-layer panels that share the group
-  data area (`Expansion { panels, data_area }`); `Config::margins()` now
-  reports the group right band, `fit_to_data_area` / the data-area drag write
-  it through the parent axis, and `Config::scaled` scales overlay axes and
-  legends. `Config::layer_of_series`, `validate_overlays`,
-  `active_layer()` (out-of-range fallback) and `set_active_layer` complete the
-  model API.
-- Interaction target layer: `Renderer::set_active_layer` / `active_layer`
-  (also on `WindowedRenderer` and the WASM wrapper as JSON) store the layer,
-  clear the element selection on a change and recover an out-of-range index to
-  `Base` through every registry entry point. `HitMap::for_active_layer(cfg)`
-  registers the shared elements first and the active overlay's
-  `OverlayAxisElement` / `OverlayAxisLabelElement` / `OverlayAxisTitleElement` /
-  `OverlayLegendElement` last (`overlay_<n>:…` ids); their drags write back
-  into `overlays[n]` only. GPU picking addresses the active layer's panel and
-  series. The WASM wrapper rebuilds its hit map when the layer or overlay
-  count changes and adds `auto_fit_overlay_y`.
-- Rendering: `ChartView` holds one panel per layer (`overlay_count`,
-  `layer_raster_generations`), `create_chart_view` / `refresh_axis*` keep the
-  panel set in step with the document and re-rasterize only the panels whose
-  internal config changed, so a layer edit leaves the other layers' textures
-  intact and the cached view draws byte-identically to a fresh render.
-  `prepare`, `prepare_registered` and export expand a layered item into one
-  draw item per panel; picked highlights keep item order. Render warnings are
-  merged with `WarningAxis::OverlayY(index)`. `ChartViewState::overlay_y`
-  carries one Y range per overlay so one linked range edit moves every layer
-  atomically. `Series` is now `Copy`.
-- Export: `export_document_rgba_async` / `export_document_png_bytes_async`
-  (with `_with_clear` and blocking native variants) render the whole document;
-  `export_panel_*` stay and render the base panel. The WASM `export_png`
-  exports the document. New native example `overlay_axes`.
-- Limits: overlays own no X axis, have no overlays of their own, exclude
-  bounded charts, and a nonresident streaming series listed by an overlay is
-  rejected (`InvalidSeriesConfig`); the stream request paths reject a
-  document with overlays (`InvalidConfig { field: "overlays" }`).
-- Rust migration: exhaustive `Config` literals need `overlays` (or
-  `..Default::default()`) and `ChartViewState` literals need `overlay_y`;
-  `WarningAxis` (`non_exhaustive`) gains `OverlayY`. See the interaction
-  guide, the configuration reference and the WASM guide.
-
-## Unreleased — annotation layer
-
-- Add the dedicated annotation layer to every chart family (#12).
-  `AnnotationLayer` gains `items: Vec<Annotation>`; an `Annotation` is an
-  `id`, a `visible` flag and one of `ReferenceLine { axis, value, style, label }`,
-  `Span { axis, from, to, fill }`, `Text { anchor, text, box_style }` or
-  `Arrow { from, to, style, text }`, with `Anchor::Data` (axis coordinates that
-  follow zoom and range changes) or `Anchor::Ratio` (plot-area fractions, fixed
-  on screen). `AnnotationAxis::X` / `Y` are screen axes in every family:
-  `bottom_x` / `left_y` on Cartesian charts, the category index axis and the
-  value axis on bar and box charts, no value axes on radial and radar charts
-  or on a Cartesian chart in polar mode, where reference lines, spans and
-  data anchors are skipped with `NoValueAxis`. Non-finite values and
-  unplaceable anchors are not errors: the raster skips the item and reports
-  `RenderWarning::AnnotationSkipped { index, reason }`
-  (`AnnotationSkip::{NonFinite, NoValueAxis, OutOfRange, EmptyText}`);
-  `RenderWarning::axis()` now returns `Option<WarningAxis>`. Malformed styles
-  are rejected by `AnnotationLayer::validate`, part of config validation.
-  Annotations never change the data-area margins and are not nudged by the
-  label placer. The JSON shape is additive: an empty `items` is omitted.
-- One shared CPU raster pass draws the layer into two panel textures composited
-  with the existing fullscreen textured pipeline: the underlay (spans) below
-  the data and the overlay above every decoration. Cartesian panels draw
-  grid → underlay → data → picked highlight → decoration → overlay, on the
-  resident path, in stream displays and in `export_panel_*` (at the export
-  scale). `ChartView` carries the textures, `ChartView::annotation_map()` and
-  `ChartView::layer_stamps()`; `annotations.items` has its own `annotation`
-  revision (`ChartRenderStamp::needs_annotation_raster_since`), answered by
-  `Renderer::refresh_annotations(view, chart, panel_rect, selected)`, which
-  rewrites the two annotation textures and the annotation hit map only.
-  `refresh_axis*` redoes them with the axis raster; `annotations.visible`
-  bumps no raster revision and only skips the composites. Bounded renderers
-  return the layer as `prepare_annotations(chart, size, scale)` →
-  `Arc<BoundedAnnotationFrame>` (`draw_underlay`, `draw_overlay`,
-  `annotations()`, `render_warnings()`, `shares_rasters_with`), cached beside
-  the frame so an annotation edit or an annotation selection reuses the chart
-  frame and its label raster. The new `FrameBackground` option
-  (`set_background`, default `Opaque`) lets a frame leave its background to
-  the host clear so an underlay shows below bars and boxes; frames are cached
-  per mode and `export_rgba` picks the mode itself. `Frame::annotation_space()`
-  / `pixel_space_for_config` expose each family's anchor space (`PixelSpace`,
-  the `AnnotationSpace` trait).
-- Every annotation has the standard interaction: `AnnotationLayer` implements
-  `DragConfig` and `AnnotationElement` the `Selectable` / `Draggable` /
-  `Resizable` contracts, exposed as an `AnnotationMap` (the `DecorationMap`
-  shape). Items drag as a whole; a span's edges, a reference line's value and
-  an arrow's endpoints have their own selection-box handles under the compass
-  names; out-of-range moves are rejected atomically and anchors keep their
-  kind (`Anchor::converted` switches kinds in place). Bounded charts select an
-  annotation through `decorations.selected = Annotation(index)` without
-  rebuilding the frame; Cartesian hosts pass the index to
-  `refresh_annotations`.
-- Pointer route by the active layer (#12): while
-  `active_layer == LayerRef::Annotations` and the layer is shown, the drawn
-  items sit on top of the chart's own hit map; on every other layer they are
-  not part of the route and clicks pass through them.
-  `ChartView::hit_test_active_layer(config, hit_map, point)` tests the view's
-  annotation map above `HitMap::for_active_layer` (whose `Annotations` set is
-  the shared elements, for single-layer charts and layered documents alike),
-  `BoundedAnnotationFrame::hit_test_active_layer(active, decorations, point)`
-  tests the items above every decoration of a bounded frame, and
-  `AnnotationMap::route` / `receives_pointer` state the shared rule; both
-  return `LayerHit::{Annotation { index, id }, Element(id)}`. `RadialChart`,
-  `CategoricalChart` and `BoxPlotChart` gain `active_layer()` /
-  `set_active_layer` (an `Overlay`, `Subplot` or `SubplotOverlay` reads and
-  is stored as `Base`; a change clears `decorations.selected` and keeps the
-  data selection), and `LayerRef::bounded()`. A layer switch reuses the
-  data, grid and decoration textures and the bounded frames; routed
-  selection and drags refresh the annotation layer only, and the cached view
-  then draws byte-identically to a fresh render.
-- The WASM wrappers `FiggyChart` and `FiggyBoundedChart` expose
-  `annotations`, `hit_annotation`, `select_annotation`, `selected_annotation`,
-  `annotation_handle`, `drag_annotation`, `add_annotation`, `set_annotation`,
-  `remove_annotation`, `set_annotations_visible`, `pointer_to_anchor` and
-  `annotation_warnings`; a bounded chart with a visible span is drawn with the
-  host-clear frame and the chart background as the clear colour.
-  Their pointer methods follow the route: `FiggyChart.hit_test`, `on_press` /
-  `on_move` (handles of the selected item first, then a press selects and
-  drags an item) and `decoration_bounds` answer `"annotation_<n>"`, and a
-  layer change clears the annotation selection; `has_selection` also counts
-  it. `FiggyBoundedChart` gains `set_active_layer` / `active_layer`, and its
-  `hit_decoration`, `select_decoration`, `resize_handle` and `drag` take the
-  same ids. The index-based annotation methods keep working on every layer.
-- Guides: configuration reference, interaction guide (annotation layer),
-  architecture (revision table), bounded family guides, WASM guide and JSON
-  schema.
-- Rust migration: `RenderWarning` (`non_exhaustive`) gains
-  `AnnotationSkipped`, and `RenderWarning::axis()` returns
-  `Option<WarningAxis>`. `draw_chart_panel_columnar` takes the two optional
-  annotation layers.
-
-## Unreleased — area fill and step lines
+### Area fills and step lines
 
 - Cartesian line series can fill the area under the line or between two
   lines, and connect their samples with steps. `DataLineStyleConfig` gains
@@ -472,62 +237,461 @@ renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figg
   point size map and polar fields); the pick registry signature includes it,
   so a step edit rebuilds only that series' pick slot. `DataLineStyleConfig`
   implements `Default`.
-- Rust migration: exhaustive `DataLineStyleConfig` literals need `fill`,
-  `fill_color` and `interpolation` (or `..Default::default()`); exhaustive
-  `RichSegment` literals need `rule_band`. In the low-level `data_render`
-  module, `line_arc::ArcScratch::build` takes a trailing `step_mode: u32`
-  and `SeriesLayers` literals need `area` (`None` without a fill). See the
+- New in the low-level `data_render` module: `ColumnAreaLayer` (the fill
+  layer in `SeriesLayers::area`), `line_strip_vertex_count(per_piece,
+  interpolation)` and `LINE_PRECISE_VERTICES_PER_INSTANCE`. See the
   configuration reference ("Area fill and step lines") and the interaction
   guide.
 
-## Unreleased — layer and annotation foundation
+### Overlay layers
 
-- Add the SSOT shape shared by overlay layers (secondary Y axes), subplots
-  and the dedicated annotation layer. `Config`, `RadialChart`,
-  `CategoricalChart` and `BoxPlotChart` gain `active_layer: LayerRef`
-  (`Base` default, `Overlay(index)`, `Annotations`) and
-  `annotations: AnnotationLayer { visible }`. Both are `serde(default)` and
-  omitted from JSON at their defaults, so existing documents parse and
-  serialize byte-identically. `DecorationId` gains `Overlay { layer, inner }`
-  (`overlay_<n>:<inner id>`) and `Annotation(index)` (`annotation_<n>`);
-  `HitMap::for_active_layer` registers the active overlay's `Overlay` ids and
-  the annotation map registers the `Annotation` ids (see the overlay layers
-  and annotation layer entries). The chart's own frame does not depend on
-  either field: annotation items draw into separate textures, and the
-  bounded frame and label raster caches exclude both fields from their keys,
-  so editing them reuses the cached frame. See the interaction guide and
-  configuration reference.
-- The registry's revisions now follow a single exhaustive classification of
-  `Config` fields instead of refreshing the axis raster on every config
-  replacement. `set_chart_config` and `set_chart_state` leave every revision
-  unchanged for an identical config, bump `desired` and `config` for any
-  change, bump `raster` only for chrome fields (`raster_config_equal`: chart
-  area, axes, title, grid, legend, colourbar, draw style, plus any series
-  change), `view` for data geometry (`stream_config_equal`) and `selection`
-  for `picked_*`. The SSOT invalidation matrix asserts those revisions and the
-  pixel oracle for every `Config` field, now including `chart_area.x` / `y`,
-  `label_font`, `significant_digits`, the Milkyway and Constellation styles
-  and every colourbar field, behind an exhaustive destructuring guard so a new
-  field cannot land unclassified. Hosts that relied on an identical
-  `set_chart_config` call to force a raster refresh should edit the chart or
-  refresh the view directly.
-- Rust migration: exhaustive chart struct literals need `active_layer` and
-  `annotations` (or `..Default::default()`); exhaustive matches on
-  `DecorationId` need the two new arms.
+- Layer addressing, shared by overlay layers, subplots and the annotation
+  layer: `Config`, `RadialChart`, `CategoricalChart` and `BoxPlotChart` gain
+  `active_layer: LayerRef`, the layer that receives pointer input: `Base`
+  (default), `Overlay(i)`, `Annotations`, `Subplot(i)` or
+  `SubplotOverlay(i, j)` (see Subplots). The field is `serde(default)` and
+  omitted from JSON at `Base`, so existing documents parse and serialize
+  byte-identically. `DecorationId` gains `Overlay { layer, inner }`
+  (`overlay_<n>:<inner id>`), which `HitMap::for_active_layer` registers for
+  the active overlay.
+- `Config` gains `overlays: Vec<OverlayLayer>` (#11):
+  secondary Y axes drawn on the right side of the shared data area, each
+  scaling the series it lists. `OverlayLayer { y_axis, series, legend }` holds
+  only what may differ per layer; the chart area, both X axes, the title, the
+  grid, the merged legend, the colourbar and `draw_style` exist once on the
+  parent. The field is `serde(default)` and omitted when empty, so existing
+  documents parse and serialize byte-identically. `Config::expand()` is the
+  one expansion path into internal single-layer panels that share the group
+  data area (`Expansion { panels, data_area }`); `Config::margins()` now
+  reports the group right band, `fit_to_data_area` / the data-area drag write
+  it through the parent axis, and `Config::scaled` scales overlay axes and
+  legends. `Config::layer_of_series`, `validate_overlays`,
+  `active_layer()` (out-of-range fallback) and `set_active_layer` complete the
+  model API.
+- Interaction target layer: `Renderer::set_active_layer` / `active_layer`
+  (also on `WindowedRenderer`) store the layer, clear the element selection
+  on a change and recover an out-of-range index to `Base` through every
+  registry entry point. `HitMap::for_active_layer(cfg)` registers the shared
+  elements first and the active overlay's `OverlayAxisElement` /
+  `OverlayAxisLabelElement` / `OverlayAxisTitleElement` /
+  `OverlayLegendElement` last (`overlay_<n>:…` ids); their drags write back
+  into `overlays[n]` only. GPU picking addresses the active layer's panel and
+  series.
+- Rendering: `ChartView` holds one panel per layer (`overlay_count`,
+  `layer_raster_generations`), `create_chart_view` / `refresh_axis*` keep the
+  panel set in step with the document and re-rasterize only the panels whose
+  internal config changed, so a layer edit leaves the other layers' textures
+  intact and the cached view draws byte-identically to a fresh render.
+  `prepare`, `prepare_registered` and export expand a layered item into one
+  draw item per panel; picked highlights keep item order. Render warnings are
+  merged with `WarningAxis::OverlayY(index)`. `ChartViewState::overlay_y`
+  carries one Y range per overlay so one linked range edit moves every layer
+  atomically. `Series` is now `Copy`.
+- Export: `export_document_rgba_async` / `export_document_png_bytes_async`
+  (with `_with_clear` and blocking native variants) render the whole document;
+  `export_panel_*` stay and render the base panel. New native example
+  `overlay_axes`.
+- Fitting: `Chart::set_overlay_y_range(layer, min, max)` and
+  `Chart::auto_fit_overlay_y_extent` / `auto_fit_overlay_y_union` write
+  `overlays[layer].y_axis`.
+- Limits: overlays own no X axis, have no overlays of their own, exclude
+  bounded charts, and a nonresident streaming series listed by an overlay is
+  rejected (`InvalidSeriesConfig`); the stream request paths reject a
+  document with overlays (`InvalidConfig { field: "overlays" }`).
+- Revisions: the registry's revisions follow a single exhaustive
+  classification of `Config` fields instead of refreshing the axis raster on
+  every config replacement. `set_chart_config` and `set_chart_state` leave
+  every revision unchanged for an identical config, bump `desired` and
+  `config` for any change, bump `raster` only for chrome fields
+  (`raster_config_equal`: chart area, axes, title, grid, legend, colourbar,
+  draw style, plus any series change), `view` for data geometry
+  (`stream_config_equal`) and `selection` for `picked_*`. The SSOT
+  invalidation matrix asserts those revisions and the pixel oracle for every
+  `Config` field, now including `chart_area.x` / `y`, `label_font`,
+  `significant_digits`, the Milkyway and Constellation styles and every
+  colourbar field, behind an exhaustive destructuring guard so a new field
+  cannot land unclassified.
+- See the interaction guide, the configuration reference and the WASM guide.
 
-## Unreleased — independent bounded titles
+### Subplots
+
+- Subplots (#11): `Config` gains `subplots: Vec<Subplot>`, more charts
+  drawn in the same document. A `Subplot { config, series,
+  link_x, link_y }` is a complete Cartesian chart with its own `chart_area`
+  (in the parent's surface coordinates), all four axes, title, grid, legend,
+  colourbar, style and secondary Y axes (`config.overlays`); the document's own
+  `Config` stays the first chart, so a 2×2 grid is the parent plus three
+  subplots. Nothing is shared unless linked: `link_x` / `link_y` (`CellRef::
+  Parent` or an earlier `CellRef::Subplot(j)`) make `bottom_x` / `left_y`
+  follow the target's range, scale, direction and tick spacing while the
+  axis style stays the subplot's own. The field is `serde(default)` and
+  omitted when empty, so existing documents parse and serialize
+  byte-identically.
+- One value per link group: `Config::subplot_config(i)` resolves a subplot
+  with its links applied, `Config::sync_subplot_links(previous)` carries an
+  edit of any linked axis to the root of its group and stores every member
+  equal to it, and `Config::subplot_link_root` names the root. The registry
+  runs it inside `register_chart`, `set_chart_config`, `set_chart_state` and
+  `set_chart_view_state`, so a linked edit moves every member in one
+  `&mut self` call. `ChartViewState::subplots` carries one view state per
+  subplot. `Chart::set_subplot_x_range` / `set_subplot_y_range` and
+  `auto_fit_subplot_{x,y}_{extent,union}` write the root of a linked axis.
+  `Config::validate_subplots` rejects nested subplots, an annotation layer on
+  a subplot, a link to a later subplot and a series id drawn twice.
+- Rendering: `Config::expand` appends each subplot's panels after the
+  parent's (`Config::panel_layers` gives the order), each in its own area with
+  its own data area, raster cache and transform, so an edit of one chart
+  re-rasterizes that chart's panels only and the cached frame is
+  byte-identical to a fresh render. Each selection box goes to the topmost
+  panel of the chart it sits in. The document covers the union of every chart
+  area (`Config::document_area`, `Config::translate_areas`):
+  `display_config_for_surface` fits it and returns where the parent lands (new
+  `place_document`), `GpuPickRequest::display_panel_px` is the displayed
+  document rect, `export_document_*` renders the union and `export_panel_*`
+  keeps the parent's area. The annotation layer stays in the parent's area and
+  its pointer route answers there only while `Annotations` is active. Subplot
+  warnings are tagged `WarningAxis::Subplot { index, axis: SubplotAxis }`.
+  Streaming rejects a document with subplots and a streamed series drawn by a
+  subplot, as it does for overlays.
+- Interaction: `LayerRef::Subplot(i)` addresses a subplot and
+  `LayerRef::SubplotOverlay(i, j)` one of its overlays. An out-of-range
+  `Subplot(i)` reads as `Base`; `SubplotOverlay(i, j)` reads as `Subplot(i)`
+  when `j` is past that subplot's overlays and as `Base` when `i` is out of
+  range. While one is active `HitMap::for_active_layer` registers exactly
+  that subplot's own set, wrapped as `SubplotElement`s (`subplot_<i>:…` ids);
+  drags and resizes use the single-chart policies on the subplot's chart and
+  land in `subplots[i].config`. New native example `subplots`, which writes
+  `gallery-subplots.png` (four sensors in a 2×2 grid whose three subplots
+  link their X axis to the parent) and `mixed-axes.png` (one linked X axis, a
+  chart with a different X column and a twin Y axis from an overlay inside a
+  subplot).
+- See the configuration reference (`Subplot`), the interaction guide
+  (subplots) and the WASM guide.
+
+### Annotation layer
+
+- Every chart family has a dedicated annotation layer (#12). `Config`,
+  `RadialChart`, `CategoricalChart` and `BoxPlotChart` gain
+  `annotations: AnnotationLayer { visible, items }`, and `RadarChart` has the
+  same field. `items: Vec<Annotation>` holds the annotations in draw order;
+  an `Annotation` is an `id`, a `visible` flag and one of
+  `ReferenceLine { axis, value, style, label }`,
+  `Span { axis, from, to, fill }`, `Text { anchor, text, box_style }` or
+  `Arrow { from, to, style, text }`, with `Anchor::Data` (axis coordinates that
+  follow zoom and range changes) or `Anchor::Ratio` (plot-area fractions, fixed
+  on screen). `AnnotationAxis::X` / `Y` are screen axes in every family:
+  `bottom_x` / `left_y` on Cartesian charts, the category index axis and the
+  value axis on bar and box charts, no value axes on radial and radar charts
+  or on a Cartesian chart in polar mode, where reference lines, spans and
+  data anchors are skipped with `NoValueAxis`. Non-finite values and
+  unplaceable anchors are not errors: the raster skips the item and reports
+  `RenderWarning::AnnotationSkipped { index, reason }`
+  (`AnnotationSkip::{NonFinite, NoValueAxis, OutOfRange, EmptyText}`).
+  Malformed styles are rejected by `AnnotationLayer::validate`, part of
+  config validation. Annotations never change the data-area margins and are
+  not nudged by the label placer. The JSON shape is additive: `annotations`
+  is `serde(default)` and omitted at its default (visible, no items), and an
+  empty `items` is omitted, so existing documents parse and serialize
+  byte-identically.
+- `DecorationId` gains `Annotation(index)` (`annotation_<n>`), which the
+  annotation map registers. The chart's own frame depends on neither
+  `annotations` nor `active_layer`: annotation items draw into separate
+  textures, and the bounded frame and label raster caches exclude both
+  fields from their keys, so editing them reuses the cached frame.
+- One shared CPU raster pass draws the layer into two panel textures composited
+  with the existing fullscreen textured pipeline: the underlay (spans) below
+  the data and the overlay above every decoration. Cartesian panels draw
+  grid → underlay → data → picked highlight → decoration → overlay, on the
+  resident path, in stream displays and in `export_panel_*` (at the export
+  scale). `ChartView` carries the textures, `ChartView::annotation_map()` and
+  `ChartView::layer_stamps()`; `annotations.items` has its own `annotation`
+  revision (`ChartRenderStamp::needs_annotation_raster_since`), answered by
+  `Renderer::refresh_annotations(view, chart, panel_rect, selected)`, which
+  rewrites the two annotation textures and the annotation hit map only.
+  `refresh_axis*` redoes them with the axis raster; `annotations.visible`
+  bumps no raster revision and only skips the composites. Bounded renderers
+  return the layer as `prepare_annotations(chart, size, scale)` →
+  `Arc<BoundedAnnotationFrame>` (`draw_underlay`, `draw_overlay`,
+  `annotations()`, `render_warnings()`, `shares_rasters_with`), cached beside
+  the frame so an annotation edit or an annotation selection reuses the chart
+  frame and its label raster. The new `FrameBackground` option
+  (`set_background`, default `Opaque`) lets a frame leave its background to
+  the host clear so an underlay shows below bars and boxes; frames are cached
+  per mode and `export_rgba` picks the mode itself. `Frame::annotation_space()`
+  / `pixel_space_for_config` expose each family's anchor space (`PixelSpace`,
+  the `AnnotationSpace` trait). New `raster::Canvas::fill_polygon` fills a
+  closed polygon (non-zero winding).
+- Every annotation has the standard interaction: `AnnotationLayer` implements
+  `DragConfig` and `AnnotationElement` the `Selectable` / `Draggable` /
+  `Resizable` contracts, exposed as an `AnnotationMap` (the `DecorationMap`
+  shape). Items drag as a whole; a span's edges, a reference line's value and
+  an arrow's endpoints have their own selection-box handles under the compass
+  names; out-of-range moves are rejected atomically and anchors keep their
+  kind (`Anchor::converted` switches kinds in place). Bounded charts select an
+  annotation through `decorations.selected = Annotation(index)` without
+  rebuilding the frame; Cartesian hosts pass the index to
+  `refresh_annotations`.
+- Pointer route by the active layer (#12): while
+  `active_layer == LayerRef::Annotations` and the layer is shown, the drawn
+  items sit on top of the chart's own hit map; on every other layer they are
+  not part of the route and clicks pass through them.
+  `ChartView::hit_test_active_layer(config, hit_map, point)` tests the view's
+  annotation map above `HitMap::for_active_layer` (whose `Annotations` set is
+  the shared elements, for single-layer charts and layered documents alike),
+  `BoundedAnnotationFrame::hit_test_active_layer(active, decorations, point)`
+  tests the items above every decoration of a bounded frame, and
+  `AnnotationMap::route` / `receives_pointer` state the shared rule; both
+  return `LayerHit::{Annotation { index, id }, Element(id)}`. `RadialChart`,
+  `CategoricalChart` and `BoxPlotChart` gain `active_layer()` /
+  `set_active_layer` (an `Overlay`, `Subplot` or `SubplotOverlay` reads and
+  is stored as `Base`; a change clears `decorations.selected` and keeps the
+  data selection), and `LayerRef::bounded()`. A layer switch reuses the
+  data, grid and decoration textures and the bounded frames; routed
+  selection and drags refresh the annotation layer only, and the cached view
+  then draws byte-identically to a fresh render.
+- Guides: configuration reference, interaction guide (annotation layer),
+  architecture (revision table), bounded family guides, WASM guide and JSON
+  schema.
+
+### Independent bounded titles
 
 - `RadialChart`, `CategoricalChart` and `BoxPlotChart` gain optional
   `chart_title: Option<BoundedTitleOptions>` with independent visibility and
   `RichText` (font, size, color, segment styles and `TextAlign`). Legacy JSON
-  without the field still uses the plain `title` and shared label style.
-  Editors call `normalize_title()` once before editing labels to preserve
-  the original title appearance. Title hit bounds, dragging and export use
-  the same renderer metrics at every output scale. Label collision handling
-  is unchanged.
-- Rust migration: exhaustive chart struct literals need `chart_title: None`;
-  literals using `..Default::default()` remain valid. See the interaction
-  guide and the `bounded_titles` example.
+  without the field still uses the plain `title` and shared label style;
+  `resolved_title()` returns the title as drawn, from `chart_title` or from
+  the legacy fields. Editors call `normalize_title()` once before editing
+  labels to preserve the original title appearance. Title hit bounds,
+  dragging and export use the same renderer metrics at every output scale.
+  Label collision handling is unchanged.
+- `validate()` of the three charts also checks the resolved title
+  (`BoundedTitleOptions::validate`) and the annotation layer; see
+  [Migrating from 0.17.0](#migrating-from-0170).
+- See the interaction guide and the `bounded_titles` example.
+
+### Contour label fixes
+
+- Automatic contour labels are placed only where their level is actually
+  crossed (#19). The anchor pass used to accept any projected seed whose value
+  was within its tolerance of the level, so in a near-flat region a shallow
+  extremum just short of a level (for example a minimum of +0.0004 against
+  level 0) received a label with no isoline anywhere near it. A seed is now
+  kept only if the level lies within the corner range of the cell it lands
+  in, the same condition under which the stroke draws a line there. Labels on
+  real isolines are unchanged.
+- Rotated contour label backgrounds (`bg_color`) are antialiased (#20). The
+  label quad ended exactly at the edge of its baked background box, so the box
+  edge was the rasterized quad edge and stair-stepped at any non-axis-aligned
+  angle while the glyphs inside stayed smooth. The quad now extends two pixels
+  past its content into the atlas cell's transparent gutter, continuing the
+  same content-to-texel map, so the texture filter fades the box edge over one
+  texel. Interior sampling, the label size, the contour line gap and labels
+  without a background are unchanged; axis-aligned box edges gain the same
+  one-texel antialiasing.
+- No API, model or serialization change.
+
+### Web example
+
+- No method of the WASM integration example `figgy` 0.15.0 is removed or
+  renamed, and no signature changes. New configuration and series keys in
+  `get_config` / `set_config` / `get_series` / `set_series` and in the
+  bounded document JSON are additive and omitted at their defaults.
+- Layers: `FiggyChart` adds `active_layer` / `set_active_layer` (the layer
+  as JSON), accepts the subplot layers and rebuilds its hit map when the
+  layer, the overlay count or the active subplot's overlay count changes.
+  `auto_fit_overlay_y(layer, column, padding)` fits an overlay's Y axis and
+  `auto_fit_subplot(index, "x" | "y", columns, padding)` a subplot axis (a
+  linked axis moves its link group). `hit_test`, `decoration_bounds`,
+  `on_press`, `on_move` and `has_selection` follow the active layer and the
+  annotation route (`overlay_<n>:…`, `subplot_<i>:…` and `annotation_<n>`
+  ids); on the base layer they answer as before. `export_png` exports the
+  whole document, and the canvas fit and pointer mapping fit
+  `Config::document_area`; without overlays or subplots the output is
+  unchanged.
+- `<figgy-chart>` forwards `auto_fit_overlay_y(layer, column, padding)`,
+  `set_active_layer(json)` and `active_layer()`; its two layer methods return
+  the parsed layer value (`"Base"`, `{ Overlay: 0 }`) instead of the
+  kernel's JSON string.
+- Annotations: `FiggyChart` and `FiggyBoundedChart` expose `annotations`,
+  `hit_annotation`, `select_annotation`, `selected_annotation`,
+  `annotation_handle`, `drag_annotation`, `add_annotation`, `set_annotation`,
+  `remove_annotation`, `set_annotations_visible`, `pointer_to_anchor` and
+  `annotation_warnings`; a bounded chart with a visible span is drawn with the
+  host-clear frame and the chart background as the clear colour.
+  Their pointer methods follow the route: `FiggyChart.hit_test`, `on_press` /
+  `on_move` (handles of the selected item first, then a press selects and
+  drags an item) and `decoration_bounds` answer `"annotation_<n>"`, and a
+  layer change clears the annotation selection; `has_selection` also counts
+  it. `FiggyBoundedChart` gains `set_active_layer` / `active_layer`, and its
+  `hit_decoration`, `select_decoration`, `resize_handle` and `drag` take the
+  same ids. The index-based annotation methods keep working on every layer.
+- `FiggyBoundedChart` accepts the `"radar"` family in `create` /
+  `set_document` (see Radar charts).
+- Behaviour change: `FiggyChart::auto_fit_all(padding)` and
+  `<figgy-chart>.auto_fit_all(padding)` fit only the active layer, from the
+  series of that layer (`Config::layer_of_series`), instead of every
+  registered series. On `Base`, and on the annotation layer, which draws on
+  the base axes, they fit `bottom_x` and `left_y` from the base layer's
+  series only: series listed by an overlay or a subplot do not widen the
+  base axes. On `Overlay(n)` they fit that overlay's Y axis, on `Subplot(i)`
+  subplot `i`'s X and Y axes (a linked axis moves its link group, as
+  `auto_fit_subplot` does) and on `SubplotOverlay(i, n)` that subplot
+  overlay's Y axis, each from that layer's series. A document without
+  overlays or subplots fits as before. To fit every layer, a host calls
+  `set_active_layer` and then `auto_fit_all` for each layer, or calls
+  `auto_fit_overlay_y` / `auto_fit_subplot` with explicit columns.
+  Streaming is unchanged: streamed documents have no overlays or subplots.
+- `FiggyChart::step_selection` steps a selected point vector
+  (`DataRenderType::Vector` with `VectorComponents::Points`) along its
+  series' points, as it steps scatter points.
+
+### Documentation and examples
+
+- Documentation: a [polar guide](crates/renderer/POLAR.md) (input and first
+  render, coordinate options, axes, picking, dragging, subplots, export;
+  English and Korean), a "Chart types" table and short polar and radar
+  snippets in the READMEs, `USAGE.md` sections (polar, and the Cartesian
+  series, maps and layers: area fills and steps, point colour and size
+  maps, vector fields, overlays, subplots and annotations), and twelve new
+  gallery images: the polar antenna pattern and compass rose, radar on a
+  polygon and on a circular grid, and eight designed scenes drawn by the
+  feature examples `vector_field`, `value_maps`, `area_step`,
+  `overlay_axes` and `subplots` (a wind field over a heatmap, surface
+  currents, colour-mapped points, bubbles, forecast bands, a step
+  schedule, twin axes and small multiples). The Korean README gains the
+  concept and draw-style rows. The
+  [example index](crates/renderer/examples/README.md) shows every gallery
+  image with the function that draws it and the command that regenerates
+  it. The `precise_scatter_probe` example is removed; the `sketch_render`
+  GPU test checks the same plain scatter output.
+- The browser guide gains an English
+  [streaming contract](crates/renderer/WASM.md#streaming-contract) beside
+  its Korean section 6: supplying sources and running jobs, fitting the
+  first stream, view changes, selection and export, GPU caches and memory
+  limits, and the support scope. The English links in `ARCHITECTURE.md` and
+  the web README lead there.
+- Released-document fixtures:
+  [`released_documents.rs`](crates/renderer/tests/released_documents.rs)
+  parses thirty documents written by the published model 0.11.0 and 0.10.0
+  with the current types and requires the same bytes back. They cover the
+  default `Config`, a `Config` with every series kind of those releases and
+  a colourbar, an edited `Config`, every draw style, series lists covering
+  every `DataRenderType` variant of those releases, and the radial,
+  categorical and box plot charts at their defaults and edited
+  ([fixture notes](crates/renderer/tests/fixtures/released/README.md)).
+- `tools/playground` is a standalone interactive bench (winit and egui; not
+  a workspace member and not published) with scenes for every chart family
+  and for area fills and steps, value maps, vector fields, twin Y axes,
+  subplots, annotations, polar and radar.
+
+<a id="migrating-from-0170"></a>
+
+### Migrating from 0.17.0
+
+JSON written by renderer 0.17.0 / model 0.11.0 parses and re-serializes byte
+for byte: every new key is optional and omitted at its default. The changes
+below affect Rust code, and one of them is a stricter validation of bounded
+charts. The renderer re-exports the model, so the model notes apply to
+renderer users too.
+
+Model types (figgy-model 0.12.0):
+
+- Exhaustive `Config` literals need `polar: None`, `overlays: Vec::new()`,
+  `subplots: Vec::new()`, `active_layer: LayerRef::Base` and
+  `annotations: AnnotationLayer::default()`, or end with
+  `..default::default_config()` (`model::default::default_config()`,
+  re-exported as `renderer::default::default_config()`). `Config` does not
+  implement `Default`, so `..Default::default()` does not compile.
+- Exhaustive `RadialChart`, `CategoricalChart` and `BoxPlotChart` literals
+  need `chart_title: None`; literals using `..Default::default()` remain
+  valid.
+- Exhaustive `RadialChart`, `CategoricalChart` and `BoxPlotChart` literals
+  need `active_layer: LayerRef::Base` and
+  `annotations: AnnotationLayer::default()`; literals using
+  `..Default::default()` remain valid.
+- Exhaustive `DataLineStyleConfig` literals need `fill: None`,
+  `fill_color: None` and `interpolation: LineInterpolation::Linear`, or end
+  with `..Default::default()` (`DataLineStyleConfig` now implements
+  `Default`).
+- Exhaustive `DataScatterStyleConfig` literals need `point_color_map: None`
+  and `point_size_map: None`.
+- Exhaustive `RichSegment` literals need `rule_band: None`. `RichSegment`
+  does not implement `Default`; `..RichSegment::plain(c)` also works.
+- Exhaustive `LabelFormat` matches need `Degrees` and `Radians` arms.
+- Exhaustive `DataRenderType` matches need a `Vector { .. }` arm.
+- Exhaustive `DecorationId` matches need `SpokeLabel { .. }`,
+  `Overlay { .. }` and `Annotation(_)` arms.
+- Validation: `RadialChart`, `CategoricalChart` and `BoxPlotChart`
+  `validate()` also checks `annotations` and the resolved title
+  (`BoundedTitleOptions::validate`). Some documents passed 0.11.0 validation
+  and are now rejected: a radial or categorical `font_family` longer than
+  160 characters or containing a control character, and a radial `title`
+  containing a control character. Shorten the font name and remove the
+  control character. JSON parsing is unchanged.
+
+Renderer (figgy-renderer 0.18.0):
+
+- `ChartViewState` literals need `overlay_y: Vec::new()` for a chart without
+  overlays, otherwise one `AxisViewState` per entry of `Config::overlays`, as
+  `Renderer::chart_view_state` returns them. `ChartViewState` does not
+  implement `Default`, and `set_chart_view_state` rejects a count mismatch
+  with `InvalidConfig { field: "overlays" }`.
+- `ChartViewState` literals need `subplots: Vec::new()` for a chart without
+  subplots, otherwise one `ChartViewState` per entry of `Config::subplots`.
+  Each of those has empty `subplots` and one `overlay_y` entry per overlay
+  of that subplot. `set_chart_view_state` rejects a mismatch with
+  `InvalidConfig { field: "subplots" }`.
+- `RenderWarning` (`non_exhaustive`) gains `AnnotationSkipped`, and
+  `RenderWarning::axis()` returns `Option<WarningAxis>`, which is `None`
+  only for `AnnotationSkipped`. Write `if let Some(axis) = warning.axis()`,
+  or `.filter_map(RenderWarning::axis)` in place of
+  `.map(RenderWarning::axis)`.
+- `WarningAxis` (`non_exhaustive`) gains the data-carrying variants
+  `OverlayY(usize)` and `Subplot { index, axis: SubplotAxis }`, so numeric
+  casts such as `axis as isize` no longer compile. Match on the variants
+  (with a `_` arm), or use the `Display` field path.
+- `Series` now implements `Clone` and `Copy`. A closure that uses a `Series`
+  by value without `move` now borrows it instead of moving it, so a closure
+  that outlives the function, such as one it returns, needs `move`.
+- Exhaustive `GpuSeriesExtentMode` matches need a `VectorTips` arm; existing
+  discriminants are unchanged.
+- `set_chart_config` and `set_chart_state` leave every revision unchanged
+  for an identical config. Hosts that relied on such a call to force a
+  raster refresh should edit the chart or refresh the view directly
+  (`refresh_axis`).
+
+Low-level `data_render` module (figgy-renderer 0.18.0):
+
+- `ScatterTransform` literals need `polar_angle: [0.0; 4]` and
+  `polar_extent: [0.0; 4]` for a rectangular chart;
+  `scatter_transform_from_config` fills them for a polar one.
+- `SeriesLayers` literals need `area: None` for a series without a fill.
+- `SeriesLayers` literals need `vector: None` for a series that is not a
+  vector field.
+- `ColumnScatterLayer` and `ColumnPickRingLayer` literals need
+  `value_map_bg`, `color_value` and `size_value`. Without value maps write
+  `color_value: None, size_value: None`. `value_map_bg: None` is valid only
+  together with `style_map_bg: None` (the plain pipeline). A layer drawn by
+  the mapped pipeline must bind group 3, and `None` panics at draw time. For
+  a series without value maps, pass the neutral group:
+  `let (neutral, charge) = create_point_value_map_bind_group(device, &ledger, &value_map_bgl, &PointValueMapParamsGpu::NEUTRAL, &[]);`,
+  then `value_map_bg: Some(&neutral)`. Here `ledger` is the
+  `Arc<gpu_memory::GpuLedger>` the function takes and `value_map_bgl` is the
+  layout given to `create_scatter_columnar_mapped_pipeline`. Keep `charge`
+  alive as long as `neutral`.
+- `draw_chart_panel_columnar` takes `annotation_underlay: Option<AxisLayer>`
+  after `grid` and `annotation_overlay: Option<AxisLayer>` after
+  `decoration`. Pass `None` for both to draw as before:
+  `draw_chart_panel_columnar(pass, target_size, panel_rect, data_area, grid, None, &series, decoration, None)`.
+- `create_scatter_columnar_mapped_pipeline` takes `value_map_bgl` after
+  `style_map_bgl`; pass `&create_point_value_map_bind_group_layout(device)`.
+  The pipeline now also reads group 3 and vertex slots 4 and 5.
+  `draw_chart_panel_columnar` binds them from the layer's `value_map_bg`,
+  `color_value` and `size_value` (see the `ColumnScatterLayer` note).
+- `line_arc::ArcScratch::build` takes a trailing `step_mode: u32`. Pass `0`
+  for a linear line, the previous behaviour. The word holds the step mode in
+  bits 0-1 (`1` step-pre, `2` step-post, `3` step-mid) and the polar arc
+  pieces from bit 4.
 
 ## crates.io release — renderer 0.17.0 / model 0.11.0 / figgy 0.14.0 (2026-10-16)
 

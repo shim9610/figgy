@@ -131,21 +131,19 @@
 **Rust 1.99 이상**과 정상 동작하는 GPU 드라이버가 필요합니다. 저장소의 툴체인은 1.99.0으로
 고정했습니다.
 
-극좌표·레이더·벡터장·점 색·크기 매핑·면 채움과 계단선·오버레이 레이어·서브플롯·주석 레이어와
-파이·도넛·막대·박스플롯의 독립 제목(`chart_title`)은 저장소 master 브랜치에 있으며 crates.io에
-배포된 figgy-renderer 0.17.0과 figgy-model 0.11.0에는 아직 없습니다.
-이 README의 예제도 master 기준입니다. 다음 릴리스 전에는 애플리케이션의 `Cargo.toml`에
-저장소를 의존성으로 지정합니다.
+애플리케이션의 `Cargo.toml`에 다음 의존성을 추가합니다.
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
+renderer = { package = "figgy-renderer", version = "0.18.0" }
 wgpu = "30"
 pollster = "1"
 ```
 
-로컬에 받은 저장소를 쓰려면 renderer의 `git` 대신 애플리케이션 기준 경로인
-`path = "../figgy/crates/renderer"`를 지정합니다.
+`version` 줄은 [crates.io](https://crates.io/crates/figgy-renderer)에서 figgy-renderer 0.18.0과
+figgy-model 0.12.0을 설치합니다. 로컬에 받은 저장소를 쓰려면 renderer의 `version` 대신
+애플리케이션 기준 경로인 `path = "../figgy/crates/renderer"`를 지정합니다.
+0.17.0용 코드에서 바꿔야 할 부분은 [마이그레이션 안내](CHANGELOG.md#migrating-from-0170)에 있습니다.
 
 [최소 선 그래프 예제](crates/renderer/examples/line.rs)를 `src/main.rs`에 복사하고
 `cargo run`을 실행하면 창을 열지 않고 `line.png`를 만듭니다.

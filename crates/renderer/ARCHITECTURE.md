@@ -11,16 +11,6 @@ adds every renderer's `gpu_memory_usage()`. See [RADIAL.md](RADIAL.md),
 [RADAR.md](RADAR.md).
 For runnable examples, start with the [README](https://github.com/shim9610/figgy/blob/master/README.md).
 
-Overlay layers, subplots, the annotation layer, polar charts, radar charts,
-vector series, point colour and size maps, line fills and step lines, and
-independent titles on the bounded charts (`chart_title`) are on the
-repository's master branch and are not in the published figgy-renderer 0.17.0
-and figgy-model 0.11.0. Until the next release, depend on the repository:
-
-```toml
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
-```
-
 | Component | Role |
 |---|---|
 | `figgy-model` | Chart settings, data contracts and interaction policies; optional serde |
@@ -455,12 +445,6 @@ area, while `export_panel_*` keeps the parent's area.
 ---
 
 아래 구조 설명은 직교 좌표 `Renderer`의 네이티브 렌더링, 데이터 소유권, GPU 메모리와 프레임 갱신 판단에 해당한다. 원형·범주형 막대·박스플롯·레이더 차트는 별도 렌더러(`RadialRenderer`, `CategoricalRenderer`, `BoxPlotRenderer`, `RadarRenderer`)가 그린다. 각 렌더러는 변경할 수 없는 준비 프레임을 반환하고 자체 GPU 집계(`gpu_memory_usage()`)와 예산(`set_memory_budget(bytes)`)을 관리하며, 컬럼 풀·자동 범위 맞춤 작업·스트리밍을 사용하지 않는다. 전체 GPU 메모리를 보고하는 호스트는 모든 렌더러의 `gpu_memory_usage()`를 더한다. 자세한 내용은 [RADIAL.md](RADIAL.md), [CATEGORICAL.md](CATEGORICAL.md), [BOXPLOT.md](BOXPLOT.md), [RADAR.md](RADAR.md)를 참고한다. 실행 가능한 예제는 [README](https://github.com/shim9610/figgy/blob/master/README.ko.md)에서 시작한다.
-
-오버레이 레이어, 서브플롯, 주석 레이어, 극좌표 차트, 레이더 차트, 벡터 시리즈, 점 색상·크기 매핑, 선 채우기와 계단 보간, 원형·막대·박스플롯 차트의 독립 제목(`chart_title`)은 저장소 master 브랜치에 있으며 crates.io에 배포된 figgy-renderer 0.17.0과 figgy-model 0.11.0에는 아직 없다. 다음 릴리스 전에는 저장소를 의존성으로 지정한다.
-
-```toml
-renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
-```
 
 아래의 브라우저 수명 주기 설명은 `crates/web` 예제 어댑터의 동작이며, 모든 렌더러를 JavaScript API로 제공한다는 뜻은 아니다([브라우저 예제 범위](https://github.com/shim9610/figgy/blob/master/crates/web/README.md)).
 
