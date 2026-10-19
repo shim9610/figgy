@@ -1,9 +1,9 @@
 # Experimental precompiled Metal shaders
 
-macOS / Metal support is **experimental and not yet stable**. This opt-in probe
-investigates supplying precise `.metallib` shaders while retaining unmodified
-wgpu 30.0.1 for devices, buffers, submission and readback. It is an independent,
-unpublished Cargo tool, not a renderer feature or a second production backend.
+This opt-in probe investigates supplying precise `.metallib` shaders while
+retaining unmodified wgpu 30.0.1 for devices, buffers, submission and readback. It
+is an independent, unpublished Cargo tool, not a renderer feature or a second
+production backend.
 
 ## Scope and assertions
 
@@ -28,12 +28,13 @@ normalized positions. The chosen binary fractions are exactly representable; the
 The precise path must pass all fixtures. Baseline outcomes are recorded without
 assuming that every Metal device must reproduce the original bug. A missing
 compiler/adapter/feature, failed shader creation, map failure or bad precise result
-fails the experiment. Existing renderer failures remain visible in the normal CI.
+fails the experiment. The probe does not replace, skip or relax any check in the
+normal CI matrix.
 
-This does **not** test full picking/gates/reduction, line endpoint tie rules,
-field interpolation, draw shaders, blending, streaming or PNG output. Those are
-subsequent integration stages. Precise compilation does not turn f32 into f64 or
-guarantee identical pixels across GPU vendors.
+This does **not** test logarithmic axes, full picking/gates/reduction, line
+endpoint tie rules, field interpolation, draw shaders, blending, streaming or PNG
+output. Precise compilation does not turn f32 into f64 or guarantee identical pixels
+across GPU vendors.
 
 ## Run
 
@@ -45,10 +46,10 @@ python3 ci/metal_precision.py
 ```
 
 The public repository has a separate `Experimental Metal shader precision`
-workflow on standard `macos-15`. It can be dispatched manually and runs on
-`experiments/metal-precision-*` pushes. Private repositories do not run that job.
-The workflow installs Apple's Metal toolchain component if the selected Xcode
-does not already provide it. No registry publication is performed.
+workflow on standard `macos-15`. It runs only when started manually from the
+Actions tab (`workflow_dispatch`); pushes do not start it. Private repositories do
+not run that job. The workflow installs Apple's Metal toolchain component if the
+selected Xcode does not already provide it. No registry publication is performed.
 
 Linux development checks are separate and cannot establish a Metal pass:
 
@@ -62,7 +63,14 @@ entry point, compiled binaries, exact compiler arguments, shader hashes and
 per-fixture numeric results. The workflow log records compiler and adapter details.
 The independent Cargo lockfile pins the experiment's dependencies.
 
-## First measured result — 2026-10-10
+## First measured result (2026-10-10, before renderer 0.14.0)
+
+This run used the coordinate helpers from before renderer 0.14.0. Since 0.14.0 the
+production `gpu_pick.wgsl` helpers use explicit `fma` rounding boundaries; with
+them, default WGSL on unmodified wgpu passed all 768 points in
+[run 38109490393](https://github.com/shim9610/figgy/actions/runs/38109490393).
+The generator extracts the current helpers, so a new run measures the `fma`
+formulation and does not reproduce the table below.
 
 [Run 38055501914](https://github.com/shim9610/figgy/actions/runs/38055501914),
 experiment commit `bee79ef78f969c50b0ed0dd70c05a062d6d42c52`:
@@ -79,8 +87,6 @@ All failures in this fixture set were at the positive/negative large epochs.
 The ordinary zero-epoch cases passed on every path. The precise binary preserved
 the fractional coordinates without a Cargo patch. A Linux Vulkan control on
 llvmpipe/Mesa 25.0.7 also produced zero error for all 768 points using default WGSL.
-These are measured results for this harness and adapter, not certification of the
-full renderer, line picking, logarithmic axes or physical Apple GPUs.
 
 ## Promotion conditions
 
@@ -89,7 +95,8 @@ the actual picker, including gate/reduction and tie cases, followed by the match
 draw/field transforms so rendered and picked coordinates agree. Keep WGSL as the
 source, generate binaries reproducibly, and validate resource layouts on each
 wgpu/Naga update. Test supported macOS versions and physical Apple GPUs in addition
-to the virtual CI adapter before changing the support status or making this default.
+to the virtual CI adapter before changing the [support status](../STATUS.md) or
+making this default.
 
 No production feature name, public API or package version is committed by this
 experiment. Support for an externally supplied device will need an explicit
@@ -102,5 +109,5 @@ macOS / Metal은 아직 불안정한 실험 단계로 둔다. 이 도구는 현�
 버퍼와 명령 제출은 기존 wgpu를 그대로 쓴다. 기본 렌더러에는 적용하지 않는다.
 
 작은 좌표 계산 실험이 통과하면 실제 피킹 전체, 그리기·필드 계산, 이미지 출력 순으로
-검증 범위를 넓힌다. 기존 CI 실패는 숨기지 않는다. 이 실험의 성공과 macOS 전체 지원
-완료는 구분하며, 실행한 장치와 수치 결과를 함께 기록한다.
+검증 범위를 넓힌다. 이 실험은 기존 CI 검사를 건너뛰거나 대신하지 않는다. 실험의
+성공과 macOS 전체 지원 완료는 구분하며, 실행한 장치와 수치 결과를 함께 기록한다.
