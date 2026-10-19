@@ -8115,6 +8115,8 @@ impl Renderer {
             .get_mut(&token.chart_id)
             .ok_or(FiggyError::UnknownChart { id: token.chart_id })?;
         crate::chart::apply_auto_fit_all(&mut state.config, x_extent, y_extent, padding);
+        // Subplots linked to the parent's axes follow the fitted range.
+        state.config.sync_subplot_links(None);
         state.revisions.desired = desired;
         state.revisions.config = config;
         state.revisions.view = view;
