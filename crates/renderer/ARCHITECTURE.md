@@ -31,7 +31,7 @@ The browser lifecycle descriptions below describe that example adapter, not a
 JavaScript API for every renderer. [Browser example scope](https://github.com/shim9610/figgy/blob/master/crates/web/README.md).
 
 - **Resident GPU columnar pool**: columns admitted to the resident path share a single GPU buffer with first-fit allocation. A removal schedules a ping-pong defragmentation that runs when the host calls `process_pending_maintenance()` (or `defragment()`); under `DefragPolicy::OnAllocFailure` an upload that hits `OutOfSpace` also defragments once and retries. The default policy is `Manual`. Logical values are stored as f32 hi/lo pairs when uploaded through `HiLoColumnSource`, preserving timestamp-sized offsets on the GPU. Upload caches scalar stats (min / max / smallest-positive) for auto-fit; per-point geometry such as the dashed-line arc-length prefix is computed on the GPU by a compute scan (`line_arc.wgsl`).
-- **Nonresident rendering**: replayable columns are registered by logical ID, length, encoding, and revision without keeping their complete data in the GPU pool. The renderer requests bounded original ranges and accumulates the exact drawing; the host retains the source for replay after a view or output change. Contours, Milkyway lines, polar charts, line fills and step lines, vector series, point colour and size maps, and documents with overlay layers or subplots reject streamed sources with an explicit error. Admission, supported styles, cancellation, and completed-revision queries are described in the Korean-language [WASM guide](WASM.md#exact-streaming).
+- **Nonresident rendering**: replayable columns are registered by logical ID, length, encoding, and revision without keeping their complete data in the GPU pool. The renderer requests bounded original ranges and accumulates the exact drawing; the host retains the source for replay after a view or output change. Contours, Milkyway lines, polar charts, line fills and step lines, vector series, point colour and size maps, and documents with overlay layers or subplots reject streamed sources with an explicit error. Admission, supported styles, cancellation, and completed-revision queries are described in the [web streaming contract](WASM.md#exact-streaming-en).
 - **Layered compositing**: grid → annotation underlay → data → axis/label/legend → annotation overlay, so grid never covers the data. Axis raster can be produced as `Grid` and `Decoration` layers; `AxisLayerKind::All` remains a legacy single-pass helper.
 - **Data fidelity contract**: renderer/web consume the model contract without silently changing original coordinates, provenance, or axis↔data correspondence. Explicit clipping, log-domain skips, NaN skips, and antialiasing limits are rendering contracts rather than data rewrites.
 - **Headless PNG export**: GPU offscreen raster at `scale` 0.25–8.0 (about 24–768 DPI; `clamp_export_scale` clamps other values, and the scaled target must fit the device texture limit) → RGBA / PNG bytes in memory (async-first; blocking wrappers on native).
@@ -145,10 +145,10 @@ preview remains until the final swap. Preview widths and sharpness may change
 temporarily. Completion commits the fitted range and tick
 settings. Ordinary redraws then preserve zoomed or restored ranges. Request auto-fit again to show
 all current data; restore saved axis ranges to return to a historical view.
-See the Korean-language [initial fitting and call order](WASM.md#streaming-fit)
+See the [initial fitting and call order](WASM.md#streaming-fit-en)
 for the facade, raw WASM, and native automatic-streaming APIs.
 
-See the Korean-language [web streaming contract](WASM.md#exact-streaming)
+See the [web streaming contract](WASM.md#exact-streaming-en)
 for the current API, support limits, and lifecycle details. Exact original-data
 processing does not imply byte-identical antialiasing across GPU backends or
 render-pass boundaries.

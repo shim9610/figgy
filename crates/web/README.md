@@ -50,7 +50,7 @@ not checked into the source snapshot.
 | [timestamp-demo.html](timestamp-demo.html) | Timestamp data and axis formatting |
 | [figgy-chart.js](figgy-chart.js) | Example host lifecycle, events and Promise adaptation |
 | [src/lib.rs](src/lib.rs) | wasm-bindgen bridge to the renderer |
-| [WASM guide](../renderer/WASM.md) (in Korean; section 8, the bounded chart host with the annotation layer and Cartesian selection helpers, is in English) | Build, lifecycle, streaming, async export and wrapper methods |
+| [WASM guide](../renderer/WASM.md) (in Korean; the [streaming contract](../renderer/WASM.md#streaming-contract) and section 8, the bounded chart host with the annotation layer and Cartesian selection helpers, are in English) | Build, lifecycle, streaming, async export and wrapper methods |
 | [JSON reference](SCHEMA.md) | The example wrapper's representation of the shared model |
 
 ## Readiness and selected values

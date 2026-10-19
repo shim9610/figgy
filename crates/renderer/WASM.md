@@ -8,6 +8,8 @@ Rust 라이브러리가 모든 차트를 JavaScript API로 제공한다는 뜻�
 `FiggyChart`와 `<figgy-chart>`는 직교 좌표 차트용이며, `Config.polar`를 켠 극좌표 차트도 그린다. 극좌표에서는 `x_column` 값을 `angle_unit` 단위의 각도로 보고 `zero_angle_degrees`에서부터 재므로, `bottom_x`의 `min` / `max`는 각도 매핑을 바꾸지 않고 그릴 각도 눈금·스포크·라벨만 정한다([극좌표 안내](POLAR.md) 참고). 원형·범주형 막대·박스플롯·레이더 차트는 같은 패키지의 저수준 클래스 `FiggyBoundedChart`로 제공하며, `<figgy-chart>`는 이 클래스를 감싸지 않는다([Bounded chart host](#bounded-chart-host) 참고).
 간단한 빌드·실행 방법은 [예제 안내](https://github.com/shim9610/figgy/blob/master/crates/web/README.md)를 참고한다.
 
+The [streaming contract](#streaming-contract) and the [bounded chart host](#bounded-chart-host) sections of this guide are in English.
+
 이 문서는 저장소 `master` 브랜치를 기준으로 한다. 브라우저 패키지 `figgy`(소스 버전 0.14.0)는 crates.io에 배포하지 않으므로 이 저장소에서 빌드한다. 극좌표·레이더 차트, 벡터 시리즈, 점 색상·크기 매핑, 면 채움과 계단선, 오버레이 레이어, 서브플롯, 주석 레이어, bounded 차트의 독립 제목은 저장소 master 브랜치에 있으며 crates.io에 배포된 `figgy-renderer 0.17.0` / `figgy-model 0.11.0`에는 아직 없다. 다음 릴리스 전에 Rust 호스트에서 이 기능을 쓰려면 저장소를 의존성으로 지정한다.
 
 ```toml
@@ -582,7 +584,7 @@ const job = chart.render_chart({
 // 새 차트이고 표시 범위를 모를 때만 요청한다. 두 호출 사이에 await를 넣지 않는다.
 const fitted = chart.auto_fit_all(0.05);
 const [result] = await Promise.all([job.done, fitted]);
-if (result.status !== "complete" && result.status !== "resident") {
+if (result.status !== "complete") {
   throw new Error(`stream ${result.status}`);
 }
 const png = await chart.export_png(2);
@@ -595,7 +597,7 @@ const png = await chart.export_png(2);
 - 작업이 끝나도 원본 참조나 `readRange`를 유지한다. 크기·DPR 변경과 이미지 출력에 같은 리비전의 원본이 필요하기 때문이다. 같은 리비전의 값을 수정하거나 버퍼를 분리(detach)하지 않는다. 수정하면 새 리비전으로 등록한다. `job.cancel()`이나 컴포넌트 해제 시 해당 작업이 보관하던 참조를 놓는다.
 - 설정·시리즈·소스 리비전·처리 위치는 렌더러가 관리한다. 웹 래퍼는 구간 요청과 완료 알림을 연결하며 GPU 계산을 중복 구현하지 않는다.
 - `maxFrameTimeMs`는 실제 동기 제출 시간에 맞춰 청크 크기를 조절하기 위한 목표값이다. 브라우저 스케줄링·데이터 공급자·GPU 명령의 실행 시간을 강제로 제한하지는 않는다. 작업은 MessageChannel과 GPU 완료 알림으로 진행하고 화면 표시는 rAF에 맞춘다.
-- `job.done`은 `{ status, submittedPrimitives, totalPrimitives }`로 이행된다. `status`는 `"complete"`, `"resident"`, `"cancelled"`, `"superseded"` 중 하나이며, 실패하면 Promise가 거부된다. `job.cancel()`은 제출한 GPU 작업의 자원 회수까지 기다린다. 실행 중인 GPU 명령을 강제로 중단하지는 않는다. 이전 작업의 데이터 응답이 늦게 와도 새 작업에 반영하지 않는다.
+- `job.done`은 `{ status, submittedPrimitives, totalPrimitives }`로 이행된다. `status`는 `"complete"`, `"cancelled"`, `"superseded"` 중 하나이며, 실패하면 Promise가 거부된다. 완료된 패킹 캐시는 `job.done`이 아니라 `stream_status().view_residency.state`의 `"resident"`로 확인한다. `job.cancel()`은 제출한 GPU 작업의 자원 회수까지 기다린다. 실행 중인 GPU 명령을 강제로 중단하지는 않는다. 이전 작업의 데이터 응답이 늦게 와도 새 작업에 반영하지 않는다.
 - 일반 점·선의 원본 구간 업로드는 GPU 작업 버퍼와 제한된 수의 staging 슬롯을 재사용한다. 슬롯 수는 `configure_streaming`의 두 번째 인자(`maxInFlightChunks`)를 넘지 않으며, GPU 복사와 다시 매핑하는 작업이 끝나지 않았으면 `backpressure`로 기다린다. 호스트는 GPU 완료를 기다리고 브라우저 이벤트 루프에 실행 기회를 줘야 한다. 초기 fit으로 다시 그릴 때도 슬롯을 유지한다. 선택 표시·격자·경로 길이 계산·export의 별도 업로드 자원에는 같은 재사용 방식을 일괄 적용하지 않는다.
 - 취소·교체 등으로 마지막 공유 소유자가 자원을 놓으면 회수 대기 상태로 옮긴다. 기존 명령의 제출 경계를 지난 뒤 GPU 완료를 확인하고 추적 중인 버퍼·텍스처에 `destroy()`를 호출한다. 사용 중인 버퍼를 청크마다 파괴하는 동작이 아니며, JavaScript GC가 실행될 때까지 반환을 미루지 않기 위한 처리다.
 - `stream_status()`는 상태만 조회한다. 완료 후에도 누적 도형 수·리비전·작업 ID를 유지한다. 같은 입력을 다시 요청하면 원본을 다시 읽거나 그리지 않는다.
@@ -624,7 +626,7 @@ const png = await chart.export_png(2);
 | 전체 데이터를 다시 보고 싶을 때 | `auto_fit_all(padding)` 재호출 | 현재 연결된 전체 시리즈에 맞춤 |
 | 과거에 저장한 범위로 정확히 돌아가기 | 저장해 둔 축 범위를 설정에 복원 | 당시 범위 복원 |
 
-진행 중인 자동 맞춤 요청은 요청 당시의 설정과 시리즈에 속한다. `set_config()`·`set_series()`로 설정을 복원하거나 작업을 취소하면 이전 요청을 해제한다. 같은 WASM 객체로 다른 차트를 표시해도 이전 차트의 맞춤 요청을 이어받지 않는다. 다시 맞춰야 한다면 설정과 시리즈를 모두 적용한 뒤 명시적으로 요청한다.
+진행 중인 자동 맞춤 요청은 요청 당시의 설정과 시리즈에 속한다. `set_config()`·`set_series()`로 설정이나 시리즈를 복원하거나 작업을 취소하면 이전 요청을 해제한다. 같은 WASM 객체로 다른 차트를 표시해도 이전 차트의 맞춤 요청을 이어받지 않는다. 다시 맞춰야 한다면 설정과 시리즈를 모두 적용한 뒤 명시적으로 요청한다.
 
 창 크기나 DPR이 바뀌면 실제 캔버스 픽셀 크기와 `resize(width, height)`를 함께 갱신한다. 저수준 스트리밍 호스트는 `request_auto_streaming_chart()`를 다시 호출해 새 크기의 표시 타깃을 요청하고 완료까지 진행한다. 이때 `auto_fit_all()`은 호출하지 않는다. 저장된 축 범위와 문서 크기는 유지하고, 글자·테두리·최종 데이터를 새 해상도로 그린다. 작은 캔버스를 CSS로 늘린 상태를 최종 화면으로 사용하지 않는다.
 
@@ -632,7 +634,7 @@ const png = await chart.export_png(2);
 
 현재 `Config`의 축 `min`·`max`는 숫자다. 기본값만 보고 새 차트인지, 사용자가 그 범위를 선택했는지 구분할 수 없으므로 생성·불러오기 흐름에서 자동 맞춤 여부를 정한다. 이 구분을 위해 `null`이나 생략한 범위를 전달하지 않는다.
 
-**웹 래퍼(`<figgy-chart>`)**에서는 위 예제처럼 `render_chart()`로 원본 공급자를 연결한 직후, 같은 동기 호출 구간에서 `auto_fit_all()`을 호출한다. `await job.done` 뒤에 요청하면 첫 렌더링이 기존 범위로 진행된다. 반대로 `readRange` 공급자를 연결하기 전에 맞춤을 요청하면 재공급할 원본을 찾지 못할 수 있다. 두 Promise를 함께 기다리고, 취소·대체된 작업의 결과를 현재 차트에 반영하지 않는다.
+**웹 래퍼(`<figgy-chart>`)**에서는 위 예제처럼 `render_chart()`로 원본 공급자를 연결한 직후, 같은 동기 호출 구간에서 `auto_fit_all()`을 호출한다. `await job.done` 뒤에 요청하면 첫 렌더링이 기존 범위로 진행된다. 반대로 `readRange` 공급자를 연결하기 전에 맞춤을 요청하면 다시 공급할 원본이 없으므로 `auto_fit_all()`이 반환한 Promise가 거부된다. 두 Promise를 함께 기다리고, 취소·대체된 작업의 결과를 현재 차트에 반영하지 않는다.
 
 확대·이동이 끝난 뒤 전체 데이터를 다시 보려면 원본 공급자를 유지한 상태에서 다음과 같이 호출한다. 이 호출은 범위 반영과 렌더링 완료까지 기다린다.
 
@@ -662,7 +664,7 @@ renderer.request_auto_streaming_chart(chart_id, &view, options)?;
 - 첫 스트림과 자동 맞춤 버튼의 호출 순서는 [범위 맞춤 사용법](#streaming-fit)을 따른다. 일반 재그리기는 자동 맞춤을 켜지 않는다.
 - 선택만 바뀌면 데이터 스트림을 다시 시작하지 않는다. 선택한 원본 구간만 요청하고 새 GPU 자원이 준비될 때까지 이전 표시를 유지한 뒤 한 번에 교체한다. 공급이 실패해도 이전 표시를 유지하고 `figgy-error`로 알린다. 취소되거나 다른 선택으로 대체된 요청의 지연 응답은 무시한다. 출력은 시작 당시의 선택을 사용하므로 이후 화면 선택과 섞이지 않는다.
 - 완료된 패킹 캐시가 있으면 `pick_point` / `pick_data`가 GPU의 점·선에서 원본 행 인덱스를 반환한다. 원본을 다시 읽지 않는다. `next_view_point_index(sourceId, seriesId, current, forward)`는 캐시에 남아 있는 행 중 다음·이전 원본 인덱스를 동기적으로 반환하며, 대상이 없으면 `null`이다. 이 조회로 GPU 피킹이나 공급자 요청을 다시 실행하지 않는다.
-- 패킹 캐시가 없거나 아직 준비 중인 비상주 스트림의 피킹은 즉시 `null`을 반환한다. 저수준 WASM의 `begin_stream_pick_*` / `finish_stream_pick_*`는 호환성을 위해 함수 형식만 남겨 두며 즉시 오류를 반환한다. 상주 차트의 피킹은 계속 지원한다. 이미 아는 인덱스의 선택 표시는 필요한 원본 구간만 읽어 처리한다.
+- 패킹 캐시가 없거나 아직 준비 중인 비상주 스트림의 피킹은 즉시 `null`을 반환한다. 저수준 WASM의 `begin_stream_pick_*` / `finish_stream_pick_*`는 호환성을 위해 함수 형식만 남겨 두며, 반환하는 Promise는 즉시 거부된다. 상주 차트의 피킹은 계속 지원한다. 이미 아는 인덱스의 선택 표시는 필요한 원본 구간만 읽어 처리한다.
 - `export_png`는 문서 크기와 출력 배율에 맞춰 원본을 다시 그린다. 화면 텍스처를 늘리지 않으며 화면 작업의 처리 위치나 누적 이미지는 바꾸지 않는다.
 
 ### GPU 캐시와 메모리 한도
@@ -689,6 +691,167 @@ renderer.request_auto_streaming_chart(chart_id, &view, options)?;
 브라우저 회귀 검증 페이지는 `crates/web/tests/streaming-contract-probe.html`이다. 430만 점, Worker 구간 공급, 상주 차트 동시 표시, 크기 변경·취소·범위 맞춤, 패킹 캐시 없는 스트림 피킹의 즉시 종료와 원본 무조회, 1배·2배 출력을 검사한다.
 
 저수준 `pick_point`는 JSON 문자열 또는 `undefined`로, 웹 래퍼의 `pick_point`는 객체 또는 `null`로 이행하며, 오류는 Promise 거부로 전달한다. 제출된 요청은 결과 읽기 자원과 당시의 `Arc` 기반 `source_id` / `series_id` 매핑을 보관한다. 대기 중 차트·풀이 바뀌거나 렌더러가 해제돼도 해당 요청의 대상은 바뀌지 않는다.
+
+<a id="streaming-contract"></a>
+
+<a id="exact-streaming-en"></a>
+
+## Streaming contract (English)
+
+The API below has been available since figgy 0.10.0. `render_chart()` runs the job, so the application does not call `auto_stream_chart_step()` or `frame()` repeatedly. Native Rust hosts can still use borrowed `ColumnSource` inputs and the chunk execution API.
+
+![figgy resident and nonresident display rendering architecture](https://raw.githubusercontent.com/shim9610/figgy/53d6a40dcd4d438692aa6a7fac811cf2d75705e6/crates/renderer/assets/streaming-architecture-en.png)
+
+The figure shows the shared renderer's resident path, the streaming accumulation image, the optional packed GPU cache and the export that rereads the original data. In the browser the roles are divided as follows.
+
+| Layer | State it owns and its role |
+|---|---|
+| Host source store | Keeps the TypedArray or `readRange` provider of the same revision until redraws and queries are finished. It also handles file parsing and Worker I/O. |
+| Web wrapper | Requests and forwards the needed ranges, and manages rAF, GPU completion waits, cancellation signals, progress notifications and Promises. It does not copy the whole data set or track the processing position or statistics a second time. |
+| Renderer | Owns the configuration, series, source revisions, processing position and chunk statistics. It does not move connected columns into the resident pool automatically; it decides whether the original rows the current view needs can be kept in the packed cache. |
+| GPU rendering | Explicitly registered resident columns are read from `ColumnPool`. Streaming uploads bounded chunks and accumulates them in an offscreen render target. For supported charts, when the budget allows, only the current view's original rows stay in a chart-local packed cache. No LOD or decimation reduces the data. |
+
+Point and line picking on a completed packed cache looks up GPU rows; other nonresident streams have no immediate picking. A PNG at a given scale rereads the original data and draws it at that resolution. Keep the source provider after on-screen rendering finishes, because size and DPR changes and image export use it. Do not change the data of a revision; register changed data as a new revision. Even when every original primitive is processed, antialiased pixel values can differ between GPU backends and render passes.
+
+```js
+await chart.ready;
+// The values are an example policy. Choose them from actual usage and admission results.
+chart.configure_streaming(
+  1,              // maxActiveCharts
+  2,              // maxInFlightChunks (number of upload slots)
+  8,              // maxColumnsPerChunk
+  2 * 1024 ** 2,  // maxChunkInputBytes
+  16 * 1024 ** 2, // maxInFlightGpuBytes
+);
+const columns = [
+  { id: "x", revision: 1, length: rowCount, encoding: "f64" },
+  { id: "y", revision: 1, length: rowCount, encoding: "f32" },
+];
+chart.register_streaming_column_sources(
+  columns.map(c => c.id), columns.map(c => c.revision),
+  columns.map(c => c.length), columns.map(c => c.encoding),
+);
+chart.add_line_series("signal", "x", "y", 1.5, "Signal");
+const job = chart.render_chart({
+  columns,
+  // Range read from the source store: the array length must equal length.
+  readRange: ({ id, revision, offset, length, encoding }) =>
+    sourceStore.readRange({ id, revision, offset, length, encoding }),
+  maxPrimitivesPerChunk: 262144,
+  maxFrameTimeMs: 8,
+  stallTimeoutMs: 30000,
+  onProgress: progress => updateProgress(progress),
+});
+// Request only for a new chart whose display range is unknown. Do not put an await between the two calls.
+const fitted = chart.auto_fit_all(0.05);
+const [result] = await Promise.all([job.done, fitted]);
+if (result.status !== "complete") {
+  throw new Error(`stream ${result.status}`);
+}
+const png = await chart.export_png(2);
+// To discard the display: await job.cancel();
+```
+
+### Supplying sources and running jobs
+
+- `columns` can list as many columns as needed. When the whole array is in memory, pass `{ id, revision, values: typedArray }` and omit `readRange`. The web wrapper keeps only the array reference and writes only the needed ranges into the write-only WASM staging. Ranges produced in a Worker can be passed as transferable buffers. The host owns file parsing, source storage and Worker I/O.
+- Keep the source references or `readRange` after the job finishes: size and DPR changes and image export need the source of the same revision. Do not modify the values of a revision or detach its buffers; register changed data as a new revision. `job.cancel()` or disposing of the component releases the references the job held.
+- The renderer owns the configuration, series, source revisions and processing position. The web wrapper connects range requests with completion notifications and does not reimplement GPU computation.
+- `maxFrameTimeMs` is a target for sizing chunks from the measured synchronous submission time. It does not enforce a time limit on browser scheduling, the data provider or GPU command execution. Work advances through MessageChannel tasks and GPU completion notifications; on-screen updates follow rAF.
+- `job.done` fulfils with `{ status, submittedPrimitives, totalPrimitives }`. `status` is `"complete"`, `"cancelled"` or `"superseded"`; on failure the Promise rejects. A completed packed cache is reported as `"resident"` in `stream_status().view_residency.state`, not by `job.done`. `job.cancel()` waits until the resources of the submitted GPU work are reclaimed. It does not force running GPU commands to stop. A late data response for an earlier job is never applied to a newer one.
+- Original-range uploads for ordinary points and lines reuse the GPU work buffer and a bounded number of staging slots. The slot count never exceeds the second argument of `configure_streaming` (`maxInFlightChunks`); while GPU copies and remapping are unfinished, the next upload waits and the step reports `backpressure`. The host must wait for GPU completion and give the browser event loop a chance to run. The slots are also kept when the initial fit redraws. The separate upload resources for selection highlights, grids, path-length computation and export do not all use the same reuse scheme.
+- When cancellation, replacement or a similar change makes the last shared owner release a resource, the resource moves to the retirement queue. After the submission boundary of earlier commands, GPU completion is confirmed and `destroy()` is called on the tracked buffers and textures. This does not destroy buffers in use on every chunk; the explicit `destroy()` keeps the return of GPU memory from waiting for JavaScript garbage collection.
+- `stream_status()` only reads state. After completion it keeps the accumulated primitive count, revision and job ID. Requesting the same input again neither rereads nor redraws the source.
+
+<a id="streaming-fit-en"></a>
+
+### Fitting the first stream and later interaction
+
+**Streaming does not enable auto-fit by itself.** When the display range of a new chart is unknown, the host requests one fit before the first chunk. The renderer computes the accumulated range while reading the original ranges forward. When a new chunk widens the range, the data image drawn so far is rescaled on the GPU and the new chunk is drawn after it. Axes and ticks are drawn separately for the new range, so old ticks are not stretched with the image or left behind as ghosts.
+
+Numeric tick labels are placed at an even interval chosen from the measured text size and the on-screen axis length in the current axis range. Widening the canvas or zooming in brings back numbers that were omitted. The font size and the configured major tick and grid spacing are kept, and the same rule applies to exponent notation, inverted axes and colour bars. The gaps between labels grow with the PNG scale.
+
+The intermediate display of the initial fit is a preview. Rescaling can briefly change point size, line width and sharpness. Once the full range is known, the source is reread **once** and drawn exactly. During this second pass, screen regions reached by new chunks are updated first and the remaining regions keep the first-pass preview. The display is never cleared and never paused until the end. Each pixel takes one of the two images instead of drawing one over the other, so translucent overlaps and AA are never composited twice. Text, axes and selection highlights are drawn separately, once.
+
+Only changed pixels are replaced. Neighbouring pixels are not replaced, so the unprocessed continuation of a line is not erased. Where unprocessed primitives overlap the same pixel, the intermediate appearance can briefly differ. On completion only the exact accumulation is used; the final display and the PNG are not made by enlarging the rescaled image. Partial updates need two temporary textures proportional to the screen size and MSAA, plus a small region buffer. When the overall GPU budget has no room for them, the preview stays until completion and is then replaced. Memory does not keep growing with the source size or the number of chunks.
+
+Ordinary points and lines read the full range twice: in the first forward pass and in the final exact rendering. Reads of neighbouring values at chunk boundaries and reads for style-specific GPU computation come on top of these two passes. The read cursor is not reset to 0 each time the range changes. The packed view cache is built during the final exact rendering.
+
+`submitted_primitives` keeps the progress of the initial forward pass and does not rewind during the final exact rendering. Reaching `total_primitives` alone does not mean completion. Wait for `complete`, where the final display and configuration are committed, or for the web wrapper's `job.done`. The committed configuration includes the axis range together with the tick spacing and number format that fit it.
+
+| Situation | How to call | Result |
+|---|---|---|
+| New chart with an unknown range | Request auto-fit before the first chunk | Keeps fitting to the range of the chunks processed so far, and commits the final range on completion |
+| Opening a saved chart or starting from a manual range | Restore the configuration and request rendering only | Keeps the saved or specified range |
+| Redrawing after zooming in or out or panning | Change the range and request rendering only | Keeps the range the user chose |
+| Showing all data again | Call `auto_fit_all(padding)` again | Fits all currently connected series |
+| Returning exactly to a range saved earlier | Restore the saved axis range into the configuration | Restores that range |
+
+A pending auto-fit request belongs to the configuration and series current when it was made. Restoring the configuration or the series with `set_config()` or `set_series()`, or cancelling the job, releases the earlier request. Showing another chart with the same WASM object does not inherit the previous chart's fit request. To fit again, apply both the configuration and the series, then request the fit explicitly.
+
+When the window size or DPR changes, update the actual canvas pixel size and call `resize(width, height)` together. A raw streaming host calls `request_auto_streaming_chart()` again to request a display target of the new size and runs it to completion. Do not call `auto_fit_all()` at this point. The saved axis range and document size are kept, and text, borders and the final data are drawn at the new resolution. A small canvas stretched with CSS is never used as the final display.
+
+Auto-fit computes the range from the current data. With the same data and padding it returns to the range fitted first; if the data changed, it fits the new data. `padding` is a finite number of at least 0: `0` means no padding and `0.05` means 5% padding. The renderer computes the range and reuses the statistics.
+
+Axis `min` and `max` in the current `Config` are numbers. The default values cannot tell a new chart from a range the user chose, so the create or load flow decides whether to auto-fit. Do not pass a `null` or omitted range to express this.
+
+In the **web wrapper (`<figgy-chart>`)**, call `auto_fit_all()` right after connecting the source provider with `render_chart()`, in the same synchronous section, as in the example above. Requesting it after `await job.done` makes the first rendering run with the existing range. Requesting the fit before a `readRange` provider is connected leaves no source to replay, so the Promise returned by `auto_fit_all()` rejects. Await both Promises together, and do not apply the results of cancelled or superseded jobs to the current chart.
+
+To show all data again after zooming or panning, keep the source provider and call the following. The call waits until the range is applied and rendering completes.
+
+```js
+await chart.auto_fit_all(0.05);
+const fittedConfig = JSON.parse(chart.get_config());
+// Property panels and save features use fittedConfig, as committed by the renderer.
+```
+
+**Raw WASM (`FiggyChart`)** uses a different call order. After registering the columns and series, register the request with `await chart.auto_fit_all(padding)` and call `request_auto_streaming_chart(maxPrimitivesPerChunk)`. The host then keeps running `auto_stream_chart_step(...)` and `frame()`. On this path the streaming `auto_fit_all()` waits only until the request is registered, so the configuration read right after it returns must not be saved as the final fit. Wait for GPU completion, run to `complete`, and then read `get_config()`. `all_submitted` means that submission is complete, which is not the same as the final display being applied.
+
+For **native Rust automatic streaming**, the host makes the following requests on a registered chart, in this order. `renderer`, `chart_id`, `view` and `options` are existing objects the host prepared.
+
+```rust
+renderer.request_stream_auto_fit(chart_id, 0.05)?;
+renderer.request_auto_streaming_chart(chart_id, &view, options)?;
+```
+
+The host's existing run loop then supplies the requested source through `auto_stream_chart_step` and shows intermediate results with `prepare_registered` and drawing. It also processes GPU completion, runs to `Complete`, and then reads the committed range with `chart_config(chart_id)`. `request_stream_auto_fit` is a request for automatic streaming; it does not change the range of the explicit chunk execution API or of resident rendering. Do not repeat this request when the user later changes the range and redraws.
+
+After the first fit, the source of the same revision must remain available: redrawing after the range widens, a new auto-fit request and PNG export need it. Do not compute per-chunk minima and maxima separately in JavaScript, and do not overwrite the renderer's committed range every frame.
+
+### View changes, selection and export
+
+- When the data or the display range changes, the next job step replaces the work with the latest state. When only decorations such as the title change, the data processing position and the accumulation image are kept. On size or DPR changes the source is redrawn at the new pixel resolution.
+- `await auto_fit_all()` waits until the axis range computed from statistics is applied and rendering completes. It does not take the `busy` token of ordinary async calls, so streaming keeps running. Statistics are collected during the first range upload and reused per revision by the renderer.
+- For the call order of the first stream and of an auto-fit button, see [fitting the first stream](#streaming-fit-en). Ordinary redraws do not enable auto-fit.
+- A selection-only change does not restart the data stream. Only the selected original ranges are requested; the previous highlight stays until the new GPU resources are ready and is then replaced at once. If supplying the ranges fails, the previous highlight stays and a `figgy-error` event reports the failure. Late responses to cancelled or superseded requests are ignored. Export uses the selection current when it started, so later on-screen selections do not mix into it.
+- With a completed packed cache, `pick_point` / `pick_data` return original row indices from the points and lines on the GPU, without rereading the source. `next_view_point_index(sourceId, seriesId, current, forward)` synchronously returns the next or previous original index among the rows in the cache, or `null` when there is none. This lookup runs no GPU picking and no provider request.
+- On nonresident streams without a packed cache, or while it is still being prepared, picking returns `null` immediately. The raw WASM `begin_stream_pick_*` / `finish_stream_pick_*` keep only their signatures for compatibility, and the Promises they return reject immediately. Picking on resident charts remains supported. Highlighting an index that is already known reads only the needed original ranges.
+- `export_png` redraws the source at the document size and the export scale. It does not stretch the screen texture and does not change the processing position or the accumulation image of the on-screen job.
+
+### GPU caches and memory limits
+
+- `inspect_column_admission(metadata)` reports the encoded size, the limits and the refusal reason for registering whole columns explicitly. It does not reserve space or guarantee the allocation of every derived resource, and it is not the criterion for running automatic streaming.
+- `configure_auto_residency(memoryBudgetBytes, workingSetLimitBytes)` sets the total GPU budget and the per-chart GPU cache limit in bytes. It returns an error when the budget is smaller than the renderer's current usage. For supported precise-mode point, solid-line and error-bar charts, only the original rows the current view needs stay on the GPU during streaming. Completed packed pages move to the GPU; the CPU keeps only the current chunk and the page being written. The original rows of lines that join off-screen points but cross the view, and of error bars that reach the view, are included. A residency limit of 0 disables the packed cache. Connected columns are never put into `ColumnPool` automatically.
+- When the display range narrows or the window size, aspect ratio or DPR changes, the view is redrawn from the packed original rows alone if the cache covers the area the new view needs. The cache covers line width, point size, error-bar caps and the AA footprint, plus an 8-pixel margin at the edges; this extra data counts toward the same packing limit. Coverage is checked as actual containment in data coordinates rather than by matching screen sizes, and when the cache does not reach a newly needed edge, the original ranges are requested again. Unsupported primitives, an exceeded packing limit, a short GPU budget and allocation failures keep the streaming path that draws every original primitive. Check the status with `state`, `needed_bytes`, `refusal_reason` and `picking_available` of `stream_status().view_residency`. `needed_bytes` is the minimum number of bytes needed so far while the cache is being prepared, and the actual packed size after completion. `job.cancel()` releases the job and its display resources.
+- Dashed lines, histograms, heatmaps, sketch, constellation and supported Milkyway streams use a separate GPU cache that preserves source order and adjacency. It is built only when the total hi/lo encoded size of all referenced columns fits the per-chart residency limit and the device's single-buffer limit, and the total GPU budget has room for it. Chunks are copied into it on the GPU as they are uploaded, and no CPU copy of the source remains. After a size, DPR, axis-range, grid or heatmap colour-map change, the view is recomputed from the cached source, so it is never a blurred enlargement of an earlier image and keeps no trace of the previous settings. Ranges outside the cache, a new data revision and an exceeded budget use ordinary streaming. A large column is never cut so that part of it fits this cache. Keep the source provider for export and cache misses.
+- The source-range cache reduces the cost of supplying data again. `view_residency` reports the packed view and whether immediate picking is available, so a chart with only this cache still shows `streamed`. Lowering the residency limit to 0 also releases the source-range cache. On a cache hit, native `auto_stream_chart_request_ranges()` can advance the GPU work of one chunk and return `Backpressure`. Keep calling it until completion as before, and supply source data only on `Ready`. For a read-only query, use `stream_status()`, which advances no work.
+- The default web column pool is 16 MiB. `set_pool_auto_growth(true)` turns on growth when upload space runs out. The default is `false`, and growth never exceeds the device's storage-binding limit or the total GPU budget. Allocation errors are told apart by the JS `Error.code` values `pool_space`, `budget_exceeded`, `device_limit` and `allocation_failed`. Where available, `requestedBytes`, `limitBytes`, `largestFreeBytes` and `totalFreeBytes` are also provided, as numbers within the range of integers JavaScript represents exactly and as decimal strings beyond it.
+- `gpu_memory_status()` returns the live, retired and total requested allocations (`live/retired/total`); the pool capacity, occupancy, largest free region, backup and bytes pending release; the usage per resource; and each column's `resident` / `streamed` state. It does not measure the actual remaining VRAM. The precomputed textures of the Milkyway and constellation styles are excluded from the general totals; their size is considered separately only when checking whether a streaming export can run.
+- `await release_unused_gpu_memory()`, when no stream is active, moves the remaining columns into a smaller pool on the GPU and waits for the work on the previous buffer to complete. At least 16 MiB is kept. The compaction also needs a temporary buffer, so budget, device-limit and allocation errors can occur. On failure the existing columns and bindings are kept.
+- As an example of a host policy, the total budget can be `4_000_000_000` bytes with a per-view packing limit of `500_000_000` bytes. When the current view's cache exceeds the limit, streaming stays in use. When space or budget runs short while registering columns, remove unneeded columns, wait for cleanup to complete, and retry once. If it still fails, or a device-limit or actual allocation error occurs, switch to streaming. These numbers are an example, not renderer defaults.
+
+The stream accumulation of precise styles stores data only. The grid is composited underneath at display time, so changing its visibility, colour, width or line style keeps the job ID and the data processing position. Streams without a resident cache also update the grid without replaying the source. Other styles that depend on the background redraw the data when the grid changes. With a source-range GPU cache, the host is not asked for the same chunks again. The separate compositing of precise styles does not resample a texture or apply AA again. UNORM colour compositing and MSAA rounding mean, however, that the colour channels are not guaranteed to be bit-identical to the resident path, which draws directly onto the background. Regression scenes limit the channel difference to at most 2 in 8-bit values, and scenes where translucent points, bar fills and outlines overlap are checked against at most 3.
+
+`crates/web/tests/view-cache-resize-grid-probe.html` checks that window size and aspect-ratio changes request no source ranges, that the result matches pixel for pixel a display streamed from the start at the new size, and that grid changes apply without restarting the job.
+
+### Support scope
+
+- Nonresident heatmaps support drawing, selection highlights and export, but not immediate picking. Highlighting a known cell reads only the neighbouring axis values needed to compute its bounds. Auto-fit uses the existing GPU lattice computation and stores the result per revision.
+- `streaming_capabilities()` returns whether the current configuration and series are supported, with the reason. `operations_require_completed_revision` tells whether queries and export need a completed job. Unsupported combinations are never ignored or switched to another style. Streaming does not support contours or Milkyway lines and their star chains. Polar charts, area fills and step lines, vector series, point colour and size maps, and overlay layers and subplots also need resident columns, so connecting a streamed source to them returns an error. Dashed lines in the precise, sketch and constellation styles keep the operation order of the existing path-length scan, so the dash pattern does not restart when chunks change.
+
+The browser regression page is `crates/web/tests/streaming-contract-probe.html`. It checks 4.3 million points, Worker range supply, a resident chart shown at the same time, resizing, cancellation and range fitting, 1x and 2x export, and that picking on a stream without a packed cache returns at once and reads no source ranges.
+
+Raw `pick_point` fulfils with a JSON string or `undefined`, and the web wrapper's `pick_point` with an object or `null`; errors arrive as Promise rejections. A submitted request holds its readback resources and the `Arc`-based `source_id` / `series_id` mapping current at submission. If the chart or the pool changes, or the renderer is released, while the request is pending, its target does not change.
 
 <a id="등록해제-모델--메모리는-내부-자동-관리"></a>
 
