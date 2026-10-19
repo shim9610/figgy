@@ -137,6 +137,9 @@ pub enum DataRenderType {
     /// from a scalar field and it does not reduce them to a scalar: colouring
     /// by magnitude takes a host-supplied value column or grid through
     /// [`VectorStyle::color_map`].
+    ///
+    /// The columns must be GPU resident; a streamed source is rejected with
+    /// an error. Polar charts (`Config.polar`) reject vector series.
     Vector {
         components: VectorComponents,
         style: VectorStyle,
@@ -152,7 +155,8 @@ pub enum DataRenderType {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum VectorComponents {
     /// `u` and `v` are index-aligned with the anchor columns. The draw count
-    /// is the shortest of the four columns; nothing is length-inferred.
+    /// is the shortest of the four columns, or of five with a
+    /// [`VectorColorMap::Column`]; nothing is length-inferred.
     Points {
         /// The x component column.
         u: ColumnId,
@@ -257,8 +261,8 @@ pub struct VectorStyle {
     )]
     pub min_length_px: f32,
     /// Colour each arrow by a value through `Config.colorbar`; the colourbar
-    /// is the only authority on the range, ramp and `nan_color`, as for a
-    /// heatmap.
+    /// is the only authority on the range, scale, ramp and `nan_color`, as for
+    /// a heatmap. A series with a colour map and no colourbar is rejected.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
@@ -298,14 +302,17 @@ impl VectorStyle {
         Ok(())
     }
 
-    /// Set the scale so the longest vector in `u_bounds` × `v_bounds` draws
-    /// `target` long: logical pixels for [`VectorScale::Pixels`], data units
-    /// for [`VectorScale::Data`]. The bounds are the component columns'
-    /// statistics, which the host already has.
+    /// Set the scale so the longest vector the bounds allow,
+    /// `(max |u|, max |v|)` over `u_bounds` × `v_bounds`, draws `target` long:
+    /// logical pixels for [`VectorScale::Pixels`], data units for
+    /// [`VectorScale::Data`]. No arrow is longer than `target`; the longest
+    /// drawn arrow is shorter when the largest `|u|` and `|v|` come from
+    /// different samples. The bounds are the component columns' statistics,
+    /// which the host already has.
     ///
     /// A display helper, like `PointSizeMap::fit_domain`: it writes only the
-    /// scale value. A non-finite or zero extent leaves the style unchanged and
-    /// returns `false`.
+    /// scale value. A non-finite or zero extent, or a `target` that is not
+    /// finite and positive, leaves the style unchanged and returns `false`.
     pub fn fit_scale(&mut self, u_bounds: (f64, f64), v_bounds: (f64, f64), target: f64) -> bool {
         let reach = |(min, max): (f64, f64)| {
             if !min.is_finite() || !max.is_finite() {
@@ -498,14 +505,15 @@ pub struct DataScatterStyleConfig {
     ///
     /// The colorbar is the only authority on the range, scale, ramp and
     /// `nan_color`, exactly as for heatmaps; a series with this map and no
-    /// colorbar is rejected rather than given an invented range. The color is
-    /// derived from the value on every draw and never stored.
+    /// colorbar is rejected rather than given an invented range. The value
+    /// column must be GPU resident; a streamed source is rejected.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub point_color_map: Option<PointColorMap>,
-    /// Size each point by a value column (a bubble chart).
+    /// Size each point by a value column (a bubble chart). The value column
+    /// must be GPU resident; a streamed source is rejected.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")

@@ -2,8 +2,8 @@
 
 Chart settings and data definitions for figgy: Cartesian axes and series
 (including polar coordinates, vector fields, point colour and size maps, area
-fills and step lines), interaction policies, and the bounded radial,
-categorical, boxplot and radar models.
+fills and step lines), overlay axes, subplots, annotations, interaction
+policies, and the bounded radial, categorical, boxplot and radar models.
 This crate has no GPU or windowing dependency. The optional `serde` feature adds
 serialization and deserialization.
 
@@ -15,16 +15,26 @@ versions have not been validated.
 ## Install
 
 The Cargo package is **`figgy-model`**; its Rust import is **`model`**.
-This source targets **0.11.0**. Use the dependency below once this version is on
-[crates.io](https://crates.io/crates/figgy-model), or the local path below for a
-checkout before publication:
 
 ```toml
 [dependencies]
 model = { package = "figgy-model", version = "0.11.0" }
 ```
 
-For a local checkout, replace `version` with `path = "../figgy/crates/model"`.
+The `version` line installs figgy-model 0.11.0 from
+[crates.io](https://crates.io/crates/figgy-model). For a local checkout, replace
+`version` with `path = "../figgy/crates/model"`.
+
+Polar options, the radar model, vector fields, point colour and size maps, area
+fills, step lines, overlay layers, subplots, the annotation layer and the
+`chart_title` option of the pie, bar and boxplot models are on the repository's
+master branch and are not in the published figgy-model 0.11.0. Until the next
+release, depend on the repository:
+
+```toml
+model = { package = "figgy-model", git = "https://github.com/shim9610/figgy" }
+```
+
 Add `features = ["serde"]` only when serialization is needed. No feature is
 required for creating, editing or validating models.
 
@@ -62,9 +72,13 @@ assert_eq!(chart.slices.iter().map(|slice| slice.value).sum::<f64>(), 100.0);
 | A Cartesian chart drawn in (angle, radius) | `polar::PolarOptions` on `Config.polar`, `polar::PolarGeometry` |
 | Arrows, point colour and size maps, area fills and step lines | `data_config::DataRenderType::Vector`, `PointColorMap`, `PointSizeMap`, `LineFill`, `LineInterpolation` |
 | Selection, dragging and area handles | `Selectable`, `Draggable`, `Resizable`, `DecorationLayout` |
+| Secondary Y axes, subplots and the layer that receives pointer input | `OverlayLayer` on `Config.overlays`, `Subplot` on `Config.subplots`, `LayerRef` on `active_layer` |
+| Reference lines, spans, text boxes and arrows | `AnnotationLayer` on `annotations`, `Annotation`, `AnnotationKind`, `Anchor` |
+| Rich titles on pie, bar, boxplot and radar charts | `BoundedTitleOptions` on `chart_title` |
 
-Bounded charts have explicit validation and small-data limits. They do not require
-stream sources, and boxplots do not calculate statistics from raw samples. The
+Bounded charts (pie/donut, bar, boxplot and radar) carry their values in the
+model, not in columns, and take no stream sources. Their `validate` methods
+enforce fixed size limits, such as 64 slices or categories and 16 series. The
 renderer owns GPU resources, frame caches and its `ColumnSource` upload adapter;
 those are not part of this model crate. See the
 [renderer interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)
@@ -76,9 +90,9 @@ Serialization represents model state, not a versioned application file format.
 Validate externally supplied state before rendering. File storage, migrations and
 the meaning of supplied statistical summaries belong to the consuming application.
 
-docs.rs includes the optional `serde` implementations. Build the same feature set
-locally with `cargo doc --locked -p figgy-model --features serde --no-deps --open`.
-Documentation and model tests need no GPU or windowing libraries.
+docs.rs documents the published release, including the optional `serde`
+implementations. Build the same feature set for this source with
+`cargo doc --locked -p figgy-model --features serde --no-deps --open`.
 
 Code is licensed under MIT OR Apache-2.0.
 
