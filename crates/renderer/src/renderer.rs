@@ -5607,10 +5607,10 @@ fn validate_polar_config(config: &Config) -> Result<()> {
         })
 }
 
-/// What a polar chart draws in its first version: scatter markers and lines
-/// (with fills) only. Histograms, fields, contours, error bars and vectors
-/// have no polar form yet and are rejected rather than drawn on the wrong
-/// axes; an arc interpolation needs a linearly interpolated line.
+/// The series a polar chart draws: scatter markers and lines (with fills).
+/// Histograms, fields, contours, error bars and vectors have no polar form
+/// and are rejected rather than drawn on the wrong axes; an arc
+/// interpolation needs a linearly interpolated line.
 fn validate_polar_series(config: &Config, item: &SeriesConfig) -> Result<()> {
     let Some(polar) = &config.polar else {
         return Ok(());
