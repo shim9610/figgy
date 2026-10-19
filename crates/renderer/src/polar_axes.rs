@@ -190,7 +190,6 @@ fn tick_text(axis: &AxisOptions, value: f64, fp: FontPolicy) -> (NumericTickText
     }
 }
 
-/// Draw a label whose box is centred on `center`.
 /// Draw `text` centred on `center` plus `offset`: the label offset fields
 /// are read in polar frames (`PolarOptions::angle_label_offset`,
 /// `PolarOptions::radius_label_offset`), not as screen x / y.
