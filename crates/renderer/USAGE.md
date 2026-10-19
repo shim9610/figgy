@@ -414,6 +414,40 @@ documents the intended `prepare` / `paint_prepared` ownership pattern, but its
 build target is disabled while iced 0.14 remains on wgpu 27. wgpu device,
 queue, and render-pass types cannot be shared across major versions.
 
+### Cartesian series, maps and layers
+
+Every column-backed series is declared in `SeriesConfig::render_type`
+([series schema](CONFIG.md#data_config--declarative-series-schema-the-active-api)).
+Beyond lines, scatter, error bars, histograms, heatmaps and contours:
+
+- **Area fills and step lines**: a line's `fill` paints to a baseline or to
+  another series sharing its x column, and `interpolation` draws `StepPre`,
+  `StepPost` or `StepMid` pieces that dashes and picking follow.
+  [Reference](CONFIG.md#area-fill-and-step-lines) and `area_step`.
+- **Point colour and size maps**: a scatter series colours its points by a
+  value column through the chart's colourbar, or sizes them over an explicit
+  domain (a bubble chart). Colour and radius are derived in the shader on
+  every draw; nothing per point is stored.
+  [Reference](CONFIG.md#point-colour-and-size-maps) and `value_maps`.
+- **Vector fields**: `DataRenderType::Vector` draws one arrow per sample from
+  (u, v) columns at scattered anchors or from two matrices on a grid, in
+  pixel or data scale, optionally coloured through the colourbar.
+  [Reference](CONFIG.md#vector-fields) and `vector_field`.
+- **Overlay axes, subplots and annotations**: an overlay layer draws series
+  against a second Y axis; subplots arrange whole charts in a grid with
+  linked or twin axes; the annotation layer adds reference lines, spans,
+  text and arrows around any family's frame. [Overlays](INTERACTION.md#overlay-layers),
+  [Subplots](INTERACTION.md#subplots), [Annotations](INTERACTION.md#annotation-layer);
+  `overlay_axes` and `subplots`.
+
+```bash
+cargo run -p figgy-renderer --example area_step -- target/area-step
+cargo run -p figgy-renderer --example value_maps -- target/value-maps
+cargo run -p figgy-renderer --example vector_field -- target/vector-field
+cargo run -p figgy-renderer --example overlay_axes -- target/overlay-axes.png
+cargo run -p figgy-renderer --example subplots -- target/subplots.png
+```
+
 ### Box plots
 
 `BoxPlotRenderer` draws precomputed quartiles, medians, whiskers, means and outliers
@@ -781,6 +815,25 @@ winit 루프나 WASM 래퍼처럼 프레임 동안 렌더러를 단독으로 사
 [보관 중인 iced 통합 예제](https://github.com/shim9610/figgy/blob/master/crates/renderer/unsupported/iced_embed_wgpu27.rs)에서 `prepare` / `paint_prepared`의 소유권 패턴을 확인할 수 있다. 다만 iced 0.14는 wgpu 27을 사용하므로 현재 빌드 대상에서는 제외한다. 서로 다른 wgpu 주 버전의 장치·큐·렌더 패스 타입은 공유할 수 없다.
 
 <a id="png-export-메모리-only--저장은-caller"></a>
+
+### 직교 시리즈·매핑·레이어
+
+컬럼 기반 시리즈는 모두 `SeriesConfig::render_type`으로 선언한다([시리즈 선언](CONFIG.md#data_config--시리즈-선언-형식)).
+선·산점도·오차 막대·히스토그램·히트맵·등고선 외에 다음을 지원한다.
+
+- **면 채움과 계단선**: 선의 `fill`은 기준선 또는 같은 x 컬럼을 쓰는 다른 시리즈까지 칠하고,
+  `interpolation`은 `StepPre`·`StepPost`·`StepMid` 계단 조각을 그린다. 대시와 피킹도 그 경로를
+  따른다. [설정](CONFIG.md#면-채움과-계단선)과 `area_step` 예제.
+- **점 색·크기 매핑**: 산점도의 점을 값 컬럼으로 색상 막대를 거쳐 색칠하거나, 명시한 범위로
+  크기를 정한다(버블 차트). 색과 반지름은 그릴 때마다 셰이더에서 계산하며 점마다 저장하지 않는다.
+  [설정](CONFIG.md#point-colour-and-size-maps)과 `value_maps` 예제.
+- **벡터장**: `DataRenderType::Vector`는 흩어진 기준점의 (u, v) 컬럼 또는 격자 위 행렬 두 개에서
+  표본마다 화살표 하나를 픽셀 또는 데이터 스케일로 그리고, 색상 막대로 색칠할 수 있다.
+  [설정](CONFIG.md#vector-fields)과 `vector_field` 예제.
+- **보조 Y축·서브플롯·주석**: 오버레이 레이어는 두 번째 Y축에 시리즈를 그리고, 서브플롯은 차트
+  여러 개를 연결 축·쌍둥이 축과 함께 격자로 배치하며, 주석 층은 어떤 차트든 기준선·구간·텍스트·
+  화살표를 더한다. [오버레이](INTERACTION.md#overlay-layers), [서브플롯](INTERACTION.md#subplots),
+  [주석](INTERACTION.md#annotation-layer)과 `overlay_axes`·`subplots` 예제.
 
 ### 박스플롯 — 소량 데이터 API
 

@@ -27,6 +27,14 @@ intervals inferred from observations.
 | `gallery-radar-circle.png` | `02-circle-values.png` from `radar_gallery.rs`: the same series on a circular grid with a value label at every vertex | 960 × 640 |
 | `gallery-polar.png` | `01-antenna-pattern.png` from `polar_plot.rs`: a filled line in polar coordinates with degree labels | 960 × 640 |
 | `gallery-polar-compass.png` | `02-compass-rose.png` from `polar_plot.rs`: a scatter-line clockwise from the top with arc segments, the radius labels on the 45° ray | 960 × 640 |
+| `gallery-vector-points.png` | `points.png` from `vector_field.rs`: a vortex flow sampled at 150 scattered anchors, arrows pivoted at their middle, the longest 36 px | 960 × 600 |
+| `gallery-vector-grid.png` | `grid.png` from `vector_field.rs`: the gradient of a two-peak potential on a 14 × 14 grid over the 41 × 41 heatmap, coloured by speed through the colourbar | 960 × 640 |
+| `gallery-colormap.png` | `color_map.png` from `value_maps.rs`: a spiral of points coloured by a depth column through a Viridis colourbar | 960 × 600 |
+| `gallery-bubble.png` | `size_map.png` from `value_maps.rs`: the same spiral with marker area following an amplitude column over an explicit domain | 960 × 600 |
+| `gallery-area-band.png` | `area_band.png` from `area_step.rs`: an area under a line and a band between two lines sharing one x column | 960 × 600 |
+| `gallery-steps.png` | `steps.png` from `area_step.rs`: `StepPre`, `StepPost` and `StepMid` over the same samples, the last one filled | 960 × 600 |
+| `gallery-overlay-axes.png` | `overlay_axes.rs`: temperature on the base layer and pressure on an overlay layer with its own right Y axis | 960 × 600 |
+| `gallery-subplots.png` | `subplots.rs`: a 2 × 2 grid with its own axes per panel, one linked X axis and one twin Y axis | 960 × 840 |
 
 The first four Cartesian chart recipes also run independently as `line`,
 `error_bars`, `histogram` and `heatmap_contours`. `animated_lines` writes wave and
@@ -127,6 +135,11 @@ cargo run --locked -p figgy-renderer --example categorical_gallery -- target/cat
 cargo run --locked -p figgy-renderer --example boxplot_gallery -- target/boxplot-gallery
 cargo run --locked -p figgy-renderer --example radar_gallery -- target/radar-gallery
 cargo run --locked -p figgy-renderer --example polar_plot -- target/polar-plot
+cargo run --locked -p figgy-renderer --example vector_field -- target/vector-field
+cargo run --locked -p figgy-renderer --example value_maps -- target/value-maps
+cargo run --locked -p figgy-renderer --example area_step -- target/area-step
+cargo run --locked -p figgy-renderer --example overlay_axes -- target/overlay-axes.png
+cargo run --locked -p figgy-renderer --example subplots -- target/subplots.png
 ```
 
 Copy the selected outputs under the filenames in the table. The bounded examples

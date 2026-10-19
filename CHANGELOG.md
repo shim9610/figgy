@@ -14,8 +14,13 @@ at the time. The first crates.io publication is recorded below.
 - Documentation: a [polar guide](crates/renderer/POLAR.md) (input and first
   render, coordinate options, axes, picking, dragging, subplots, export;
   English and Korean), a "Chart types" table and short polar and radar
-  snippets in the READMEs, `USAGE.md` sections, and two more gallery images
-  (`gallery-radar-circle.png`, `gallery-polar-compass.png`).
+  snippets in the READMEs, `USAGE.md` sections (polar, and the Cartesian
+  series, maps and layers: area fills and steps, point colour and size
+  maps, vector fields, overlays, subplots and annotations), and ten more
+  gallery images: radar on a circular grid, the polar compass rose, point
+  and grid vector fields, a colour map and a bubble chart, an area band,
+  step lines, overlay axes and subplots. The Korean README gains the
+  concept and draw-style rows.
 
 - `Config.polar: Option<PolarOptions>` (#26, part B) draws a Cartesian
   document in polar coordinates: `bottom_x` is the angle axis, `left_y` the

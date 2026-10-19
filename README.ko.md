@@ -39,6 +39,24 @@
   <a href="crates/renderer/examples/polar_plot.rs"><img src="crates/renderer/assets/gallery-polar-compass.png" alt="Compass rose: a polar scatter-line, clockwise from the top, with arc segments" width="23%" align="top"></a>
 </p>
 
+**벡터장 · 히트맵 위 기울기 화살표 · 색 매핑 점 · 버블 차트**
+
+<p>
+  <a href="crates/renderer/examples/vector_field.rs"><img src="crates/renderer/assets/gallery-vector-points.png" alt="Arrows of a vortex flow at scattered anchors" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/vector_field.rs"><img src="crates/renderer/assets/gallery-vector-grid.png" alt="Gradient arrows on a grid over a heatmap, coloured by speed through the colourbar" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/value_maps.rs"><img src="crates/renderer/assets/gallery-colormap.png" alt="Scatter points coloured by a third column through the colourbar" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/value_maps.rs"><img src="crates/renderer/assets/gallery-bubble.png" alt="Bubble chart whose marker area follows a value column" width="23%" align="top"></a>
+</p>
+
+**면과 띠 · 계단선 · 보조 Y축 · 서브플롯**
+
+<p>
+  <a href="crates/renderer/examples/area_step.rs"><img src="crates/renderer/assets/gallery-area-band.png" alt="Area under a line and a confidence band between two lines" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/area_step.rs"><img src="crates/renderer/assets/gallery-steps.png" alt="The three step interpolation modes with a filled step area" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/overlay_axes.rs"><img src="crates/renderer/assets/gallery-overlay-axes.png" alt="Temperature and pressure on one chart with a second Y axis on the right" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/subplots.rs"><img src="crates/renderer/assets/gallery-subplots.png" alt="A 2 by 2 grid of subplots with linked and twin axes" width="23%" align="top"></a>
+</p>
+
 **움직이는 파형 · 위상 궤적**
 
 <p>
@@ -46,18 +64,42 @@
   <a href="crates/renderer/examples/animated_lines.rs"><img src="crates/renderer/assets/gallery-orbit.gif" alt="Animated phase portrait" width="23%" align="top"></a>
 </p>
 
+**대시보드 · 스케치 · 팝아트 · 펄**
+
+<p>
+  <a href="crates/renderer/examples/gallery_concepts.rs"><img src="crates/renderer/assets/concept-observability.png" alt="Dark service dashboard with mint and lavender traffic curves" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/gallery_concepts.rs"><img src="crates/renderer/assets/concept-revenue.png" alt="Light revenue dashboard with horizontal rounded stacks" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/gallery_concepts.rs"><img src="crates/renderer/assets/concept-pop-art.png" alt="Bright toon-shaded pie with dark outlines and shallow extrusion" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/gallery_concepts.rs"><img src="crates/renderer/assets/concept-portfolio.png" alt="Oblique pearl-material donut on a dark background" width="23%" align="top"></a>
+</p>
+
+**그리기 스타일: 정밀 · 손그림 스케치 · 은하수 · 별자리**
+
+<p>
+  <a href="crates/renderer/examples/precise_sketch_preview.rs"><img src="crates/renderer/assets/style-growth-response-precise.png" alt="Precise growth curves with clean lines and markers" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/precise_sketch_preview.rs"><img src="crates/renderer/assets/style-growth-response-sketch.png" alt="Sketch growth curves with hand-drawn lines, axes and lettering" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/milkyway_line_preview.rs"><img src="crates/renderer/assets/style-growth-response-milkyway.png" alt="Milkyway line-only growth curves with stars and nebula" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/constellation_preview.rs"><img src="crates/renderer/assets/style-growth-response-constellation.png" alt="Constellation growth curves with stars at the source samples" width="23%" align="top"></a>
+</p>
+
+은하수 스타일은 선 시리즈만 그리고, 별자리 스타일은 원본 표본 위치에 별을 놓습니다.
+[편집 가능한 시각 레시피 여섯 가지](crates/renderer/GALLERY.md#visual-concepts)는 같은 차트 API에서
+팔레트·축·재질·라벨을 어떻게 바꾸는지 보여 줍니다.
+
 [다른 스타일과 이미지 생성 방법](crates/renderer/GALLERY.md).
 
 ## 차트 종류
 
 | 차트 | 입력 | 문서 |
 |---|---|---|
-| 선·산점도·면·계단 시리즈 | `ColumnSource`로 올린 `f64` 컬럼 | [사용법](crates/renderer/USAGE.md) · [시리즈 선언](crates/renderer/CONFIG.md#data_config--시리즈-선언-형식) |
+| 선·산점도 | `ColumnSource`로 올린 `f64` 컬럼 | [사용법](crates/renderer/USAGE.md) · [시리즈 선언](crates/renderer/CONFIG.md#data_config--시리즈-선언-형식) |
+| 면 채움·계단선 | 선의 `fill`(기준선 또는 다른 시리즈까지)과 `interpolation` | [면 채움과 계단선](crates/renderer/CONFIG.md#면-채움과-계단선) · [area_step.rs](crates/renderer/examples/area_step.rs) |
 | 오차 막대 | X·Y·오차 컬럼 | [error_bars.rs](crates/renderer/examples/error_bars.rs) |
 | 히스토그램 | 구간 경계와 개수 | [히스토그램](crates/renderer/HISTOGRAM.md) |
 | 히트맵·등고선 | 축 좌표와 행렬 컬럼 | [heatmap_contours.rs](crates/renderer/examples/heatmap_contours.rs) |
-| 벡터장 | 기준점과 (u, v) 성분, 또는 행렬 두 개 | [vector_field.rs](crates/renderer/examples/vector_field.rs) |
-| 색·크기 매핑 | 점마다 값 컬럼 하나 | [value_maps.rs](crates/renderer/examples/value_maps.rs) |
+| 벡터장(화살표) | 기준점과 (u, v) 컬럼, 또는 격자 위 행렬 두 개 | [Vector fields](crates/renderer/CONFIG.md#vector-fields) · [vector_field.rs](crates/renderer/examples/vector_field.rs) |
+| 색·크기 매핑(버블) | 점마다 값 컬럼 하나. 색상 막대 또는 크기 범위를 거친다 | [Point colour and size maps](crates/renderer/CONFIG.md#point-colour-and-size-maps) · [value_maps.rs](crates/renderer/examples/value_maps.rs) |
+| 보조 Y축·서브플롯·주석 | 두 번째 Y축, 패널 격자, 기준선과 텍스트 | [오버레이](crates/renderer/INTERACTION.md#overlay-layers) · [서브플롯](crates/renderer/INTERACTION.md#subplots) · [주석](crates/renderer/INTERACTION.md#annotation-layer) |
 | **극좌표 플롯** | (각도, 반지름) 컬럼과 `Config.polar` | [극좌표](crates/renderer/POLAR.md) |
 | 파이·도넛 | `RadialChart` 값 | [원형](crates/renderer/RADIAL.md) |
 | 범주형 막대 | `CategoricalChart` 범주와 시리즈 | [막대](crates/renderer/CATEGORICAL.md) |

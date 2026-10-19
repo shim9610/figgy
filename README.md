@@ -59,6 +59,24 @@ the images are actual native renderer output. GIFs show exported animation frame
   <a href="crates/renderer/examples/polar_plot.rs"><img src="crates/renderer/assets/gallery-polar-compass.png" alt="Compass rose: a polar scatter-line, clockwise from the top, with arc segments" width="23%" align="top"></a>
 </p>
 
+**Vector field · Gradient quiver over a heatmap · Colour-mapped points · Bubble chart**
+
+<p>
+  <a href="crates/renderer/examples/vector_field.rs"><img src="crates/renderer/assets/gallery-vector-points.png" alt="Arrows of a vortex flow at scattered anchors" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/vector_field.rs"><img src="crates/renderer/assets/gallery-vector-grid.png" alt="Gradient arrows on a grid over a heatmap, coloured by speed through the colourbar" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/value_maps.rs"><img src="crates/renderer/assets/gallery-colormap.png" alt="Scatter points coloured by a third column through the colourbar" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/value_maps.rs"><img src="crates/renderer/assets/gallery-bubble.png" alt="Bubble chart whose marker area follows a value column" width="23%" align="top"></a>
+</p>
+
+**Area and band · Step lines · Overlay axis · Subplots**
+
+<p>
+  <a href="crates/renderer/examples/area_step.rs"><img src="crates/renderer/assets/gallery-area-band.png" alt="Area under a line and a confidence band between two lines" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/area_step.rs"><img src="crates/renderer/assets/gallery-steps.png" alt="The three step interpolation modes with a filled step area" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/overlay_axes.rs"><img src="crates/renderer/assets/gallery-overlay-axes.png" alt="Temperature and pressure on one chart with a second Y axis on the right" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/subplots.rs"><img src="crates/renderer/assets/gallery-subplots.png" alt="A 2 by 2 grid of subplots with linked and twin axes" width="23%" align="top"></a>
+</p>
+
 **Draw styles: Precise · Sketch (hand-drawn) · Milkyway · Constellation**
 
 <p>
@@ -79,12 +97,14 @@ palettes, axes, materials and labels change the same chart APIs.
 
 | Chart | Input | Guide |
 |---|---|---|
-| Lines, scatter, area and step series | `f64` columns through `ColumnSource` | [Usage](crates/renderer/USAGE.md) · [Series schema](crates/renderer/CONFIG.md#data_config--declarative-series-schema-the-active-api) |
+| Lines and scatter | `f64` columns through `ColumnSource` | [Usage](crates/renderer/USAGE.md) · [Series schema](crates/renderer/CONFIG.md#data_config--declarative-series-schema-the-active-api) |
+| Area fills and step lines | A line's `fill` (to a baseline or another series) and `interpolation` | [Area fill and step lines](crates/renderer/CONFIG.md#area-fill-and-step-lines) · [area_step.rs](crates/renderer/examples/area_step.rs) |
 | Error bars | X, Y and error columns | [error_bars.rs](crates/renderer/examples/error_bars.rs) |
 | Histograms | Bin edges and counts | [Histograms](crates/renderer/HISTOGRAM.md) |
 | Heatmaps and contours | Axis coordinates and a matrix column | [heatmap_contours.rs](crates/renderer/examples/heatmap_contours.rs) |
-| Vector fields | Anchors and (u, v) components, or two matrices | [vector_field.rs](crates/renderer/examples/vector_field.rs) |
-| Colour and size maps | A value column per point | [value_maps.rs](crates/renderer/examples/value_maps.rs) |
+| Vector fields (quiver) | Anchors and (u, v) columns, or two matrices on a grid | [Vector fields](crates/renderer/CONFIG.md#vector-fields) · [vector_field.rs](crates/renderer/examples/vector_field.rs) |
+| Colour and size maps (bubbles) | A value column per point, through the colourbar or a size domain | [Point colour and size maps](crates/renderer/CONFIG.md#point-colour-and-size-maps) · [value_maps.rs](crates/renderer/examples/value_maps.rs) |
+| Overlay axes, subplots, annotations | A second Y axis, a grid of panels, reference lines and text | [Overlays](crates/renderer/INTERACTION.md#overlay-layers) · [Subplots](crates/renderer/INTERACTION.md#subplots) · [Annotations](crates/renderer/INTERACTION.md#annotation-layer) |
 | **Polar plots** | (angle, radius) columns and `Config.polar` | [Polar](crates/renderer/POLAR.md) |
 | Pies and donuts | `RadialChart` values | [Radial](crates/renderer/RADIAL.md) |
 | Categorical bars | `CategoricalChart` categories and series | [Bars](crates/renderer/CATEGORICAL.md) |
