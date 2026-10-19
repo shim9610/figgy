@@ -2,9 +2,9 @@
 #![cfg(target_arch = "wasm32")]
 use renderer::{
     BarSeries, BoxPlotChart, BoxPlotRenderer, BoxPlotSeries, BoxSummary, CategoricalChart,
-    CategoricalRenderer, Category, Color, DecorationId, DecorationLayout, RadialChart, RadialKind,
-    RadialRenderer, RadialSlice, RadialTarget, RendererDevice, decoration::DecorationMap,
-    layout::NudgeResult,
+    CategoricalRenderer, Category, Color, DecorationId, DecorationLayout, RadarChart,
+    RadarRenderer, RadarSeries, RadialChart, RadialKind, RadialRenderer, RadialSlice, RadialTarget,
+    RendererDevice, decoration::DecorationMap, layout::NudgeResult,
 };
 use std::sync::Arc;
 use wasm_bindgen_test::*;
@@ -91,7 +91,7 @@ async fn all_bounded_decorations_select_drag_rerender_and_export_on_webgpu() {
         r.export_rgba_async(&c, (800, 520), 1.).await.unwrap().rgba
     );
     r.end_frame();
-    let mut r = BoxPlotRenderer::new_async(gpu, wgpu::TextureFormat::Rgba8Unorm)
+    let mut r = BoxPlotRenderer::new_async(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)
         .await
         .unwrap();
     let mut c = BoxPlotChart {
@@ -111,6 +111,38 @@ async fn all_bounded_decorations_select_drag_rerender_and_export_on_webgpu() {
         frame.decorations(),
         &mut c.decorations,
         DecorationId::ChartTitle,
+    );
+    assert_ne!(
+        before.rgba,
+        r.export_rgba_async(&c, (800, 520), 2.).await.unwrap().rgba
+    );
+    r.end_frame();
+    let mut r = RadarRenderer::new_async(gpu, wgpu::TextureFormat::Rgba8Unorm)
+        .await
+        .unwrap();
+    let mut c = RadarChart {
+        title: "Spokes".into(),
+        categories: vec![
+            Category::new("a", "Control"),
+            Category::new("b", "Treated"),
+            Category::new("c", "Placebo"),
+        ],
+        series: vec![RadarSeries::new(
+            "s",
+            "Distribution",
+            vec![35., 52., 70.],
+            Color::from_rgb8(110, 90, 170),
+        )],
+        ..Default::default()
+    };
+    let frame = r.prepare(&c, (800, 520), 2.).unwrap();
+    let before = r.export_rgba_async(&c, (800, 520), 2.).await.unwrap();
+    edit(
+        frame.decorations(),
+        &mut c.decorations,
+        DecorationId::SpokeLabel {
+            category_id: "a".into(),
+        },
     );
     assert_ne!(
         before.rgba,

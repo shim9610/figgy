@@ -303,6 +303,7 @@ pub fn default_config() -> Config {
         colorbar: None,
         // Precise mode. Stylized modes are opt-in (`DrawStyle::Sketch(..)`).
         draw_style: DrawStyle::Precise,
+        polar: None,
         overlays: Vec::new(),
         subplots: Vec::new(),
         active_layer: LayerRef::Base,

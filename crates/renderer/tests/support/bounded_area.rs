@@ -307,4 +307,25 @@ pub async fn check(gpu: RendererDevice) {
             ..Default::default()
         }
     );
+    check_chart!(
+        RadarRenderer,
+        RadarChart {
+            title: "Resize data area".into(),
+            categories: vec![
+                Category::new("a", "Speed"),
+                Category::new("b", "Safety"),
+                Category::new("c", "Size")
+            ],
+            series: vec![{
+                // A solid fill so the interior counts as data pixels.
+                let mut s = RadarSeries::new("s", "Release", vec![6., 8., 4.], red);
+                s.style = Some(RadarSeriesStyle {
+                    fill: Some(red),
+                    ..Default::default()
+                });
+                s
+            }],
+            ..Default::default()
+        }
+    );
 }

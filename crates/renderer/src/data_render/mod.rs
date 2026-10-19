@@ -927,10 +927,10 @@ pub fn create_unit_centered_quad_vertex_buffer(device: &wgpu::Device) -> wgpu::B
 
 /// Shared transform uniform for scatter / line / errorbar shaders.
 ///
-/// 112 bytes (eight `vec2<f32>` fields plus one `array<vec4<f32>, 3>` at
-/// offset 64, stride 16, WGSL uniform layout). Pixel sizes (point radius,
-/// cap half-length) live in [`PrimitiveStyle`]; shaders convert them to NDC
-/// via `pixel_to_ndc`.
+/// 144 bytes (eight `vec2<f32>` fields, one `array<vec4<f32>, 3>` at
+/// offset 64, stride 16, and two polar `vec4<f32>` at 112 and 128, WGSL
+/// uniform layout). Pixel sizes (point radius, cap half-length) live in
+/// [`PrimitiveStyle`]; shaders convert them to NDC via `pixel_to_ndc`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ScatterTransform {
@@ -962,11 +962,21 @@ pub struct ScatterTransform {
     /// Streamed point/errorbar entries recover it with `bitcast<u32>`, not
     /// numeric conversion, preserving global identities above 2^24.
     pub style_params: [[f32; 4]; 3], // offset 64 → 112 byte
+    /// `Config.polar`, all zero in a rectangular chart: `(flag, zero angle
+    /// in radians, radians per angle unit signed by the direction, inner
+    /// radius fraction)`. With the flag set, `data_to_ndc` maps the x column
+    /// to an angle around the data area's centre and the y axis fraction to
+    /// a radius between the inner ring and `polar_extent[3]`.
+    pub polar_angle: [f32; 4], // offset 112
+    /// `(sector start, sector end in angle units; end <= start is the full
+    /// circle, arc pieces per line segment or 0 for chords, outer radius in
+    /// pixels)`.
+    pub polar_extent: [f32; 4], // offset 128 → 144 byte
 }
 
 // WGSL mirror size guards. Field order and size must remain byte-identical to
 // every shader common block before either CPU structure changes.
-const _: () = assert!(std::mem::size_of::<ScatterTransform>() == 112);
+const _: () = assert!(std::mem::size_of::<ScatterTransform>() == 144);
 
 /// Admission headroom for one immutable streamed point/errorbar transform.
 pub(crate) const STREAM_POINT_TRANSFORM_BYTES: u64 = std::mem::size_of::<ScatterTransform>() as u64;
@@ -1944,6 +1954,7 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
     let (max_x_hi, max_x_lo) = crate::data::split_f64_to_f32_pair(data_max_x);
     let (min_y_hi, min_y_lo) = crate::data::split_f64_to_f32_pair(data_min_y);
     let (max_y_hi, max_y_lo) = crate::data::split_f64_to_f32_pair(data_max_y);
+    let (polar_angle, polar_extent) = crate::polar_projection::transform_constants(config);
     ScatterTransform {
         data_min: [min_x_hi, min_y_hi],
         data_max: [max_x_hi, max_y_hi],
@@ -1954,6 +1965,8 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
         data_to_panel_scale,
         data_to_panel_offset,
         style_params,
+        polar_angle,
+        polar_extent,
     }
 }
 
@@ -2015,15 +2028,17 @@ pub const LINE_PRECISE_VERTICES_PER_INSTANCE: u32 = 4;
 /// `SKETCH_SUBDIV` in `line_columnar.wgsl`.
 pub const LINE_SKETCH_VERTICES_PER_INSTANCE: u32 = 18;
 
-/// Strip vertices one line instance draws under `interpolation`: every step
-/// piece is one strip of `per_piece` vertices and consecutive pieces are
-/// joined by two duplicated vertices. Twin of `strip_slot` in
-/// `line_columnar.wgsl`.
+/// Strip vertices one line instance draws under `interpolation` in a
+/// rectangular chart: every step piece is one strip of `per_piece` vertices
+/// and consecutive pieces are joined by two duplicated vertices. Twin of
+/// `strip_slot` in `line_columnar.wgsl`. A polar chart's arc pieces go
+/// through the crate-private `line_step::strip_vertex_count` with its mode
+/// word.
 pub fn line_strip_vertex_count(
     per_piece: u32,
     interpolation: crate::data_config::LineInterpolation,
 ) -> u32 {
-    crate::line_step::strip_vertex_count(per_piece, interpolation)
+    crate::line_step::strip_vertex_count(per_piece, crate::line_step::mode_word(interpolation, 0))
 }
 
 /// The area-fill pipeline: `vs_area` / `fs_area` of the line shader, one

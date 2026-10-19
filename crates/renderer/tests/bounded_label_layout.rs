@@ -150,6 +150,68 @@ fn crowded_box_labels_prepare_pick_drag_export_and_reset() {
 }
 
 #[test]
+fn crowded_radar_labels_prepare_pick_drag_export_and_reset() {
+    let mut renderer = RadarRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut chart = RadarChart {
+        categories: ["a", "b", "c", "d", "e"]
+            .into_iter()
+            .map(|s| Category::new(s, s.to_uppercase()))
+            .collect(),
+        series: (0..3)
+            .map(|i| {
+                RadarSeries::new(
+                    i.to_string(),
+                    i.to_string(),
+                    vec![7., 7.2, 6.8, 7.1, 6.9],
+                    Color::from_rgb8(30, 110, 210),
+                )
+            })
+            .collect(),
+        labels: RadarLabels::Values,
+        value_range: Some([0., 10.]),
+        legend: false,
+        ..Default::default()
+    };
+    for shape in [RadarGridShape::Polygon, RadarGridShape::Circle] {
+        chart.style.grid_shape = shape;
+        for scale in [1., 2.] {
+            chart.decorations = Default::default();
+            let frame = renderer
+                .prepare(&chart, (440, 320), scale)
+                .expect("label spacing cannot reject the first frame");
+            assert_eq!(labels(frame.decorations()).len(), 15);
+            assert_separated(frame.decorations());
+            let image = renderer.export_rgba(&chart, (440, 320), scale).unwrap();
+            assert_pixels(&image);
+            save(&format!("radar-{shape:?}-{scale}"), &image);
+            assert!(Arc::ptr_eq(
+                &frame,
+                &renderer.prepare(&chart, (440, 320), scale).unwrap()
+            ));
+            let key = editable(frame.decorations(), &mut chart.decorations);
+            let moved = renderer.prepare(&chart, (440, 320), scale).unwrap();
+            assert_moved(frame.decorations(), moved.decorations(), &key);
+            assert_ne!(
+                image.rgba,
+                renderer
+                    .export_rgba(&chart, (440, 320), scale)
+                    .unwrap()
+                    .rgba
+            );
+            chart.decorations.reset(&key);
+            assert_eq!(
+                image.rgba,
+                renderer
+                    .export_rgba(&chart, (440, 320), scale)
+                    .unwrap()
+                    .rgba
+            );
+            renderer.end_frame();
+        }
+    }
+}
+
+#[test]
 fn crowded_bar_labels_prepare_pick_drag_export_and_reset() {
     let mut renderer = CategoricalRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
     let mut chart = CategoricalChart {

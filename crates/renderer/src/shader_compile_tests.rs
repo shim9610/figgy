@@ -111,7 +111,8 @@ fn all_shader_compilation_times_and_entry_coverage() {
     crate::radial::RadialRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
     crate::categorical::CategoricalRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)
         .unwrap();
-    crate::boxplot::BoxPlotRenderer::new(gpu, wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    crate::boxplot::BoxPlotRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    crate::radar::RadarRenderer::new(gpu, wgpu::TextureFormat::Rgba8Unorm).unwrap();
     let capture = session.finish();
     if let Some(path) = std::env::var_os("FIGGY_SHADER_COMPILE_REPORT") {
         std::fs::write(path, serde_json::to_vec_pretty(&capture.json()).unwrap()).unwrap();

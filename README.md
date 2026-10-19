@@ -50,6 +50,13 @@ the images are actual native renderer output. GIFs show exported animation frame
   <a href="crates/renderer/examples/animated_lines.rs"><img src="crates/renderer/assets/gallery-orbit.gif" alt="Animated phase portrait" width="23%" align="top"></a>
 </p>
 
+**Radar · Polar**
+
+<p>
+  <a href="crates/renderer/examples/radar_gallery.rs"><img src="crates/renderer/assets/gallery-radar.png" alt="Radar chart comparing two releases over six categories" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/polar_plot.rs"><img src="crates/renderer/assets/gallery-polar.png" alt="Antenna pattern in polar coordinates" width="23%" align="top"></a>
+</p>
+
 **Draw styles: Precise · Sketch (hand-drawn) · Milkyway · Constellation**
 
 <p>
@@ -198,6 +205,8 @@ cargo run --locked -p figgy-renderer --example heatmap_contours -- target/heatma
 cargo run --locked -p figgy-renderer --example radial_gallery -- target/radial-gallery
 cargo run --locked -p figgy-renderer --example categorical_gallery -- target/categorical-gallery
 cargo run --locked -p figgy-renderer --example boxplot_gallery -- target/boxplot-gallery
+cargo run --locked -p figgy-renderer --example radar_gallery -- target/radar-gallery
+cargo run --locked -p figgy-renderer --example polar_plot -- target/polar-plot
 ```
 
 See the [example index](crates/renderer/examples/README.md) for animations,
@@ -209,13 +218,13 @@ interactive editors and the data contract used by each chart.
 |---|---|
 | Draw in a native window | [winit_simple.rs](crates/renderer/examples/winit_simple.rs) |
 | Embed in egui | [egui_embed.rs](crates/renderer/examples/egui_embed.rs) — enable `egui_demo` |
-| Edit pies, donuts, bars or box plots | [Native editors](crates/renderer/examples/README.md#interactive-editors) |
+| Edit pies, donuts, bars, box plots or radar charts | [Native editors](crates/renderer/examples/README.md#interactive-editors) |
 | Connect picking, dragging and plot-area resizing | [Interaction guide](crates/renderer/INTERACTION.md) |
 | Render data that does not fit in GPU memory | [Streaming and residency](crates/renderer/ARCHITECTURE.md#exact-streaming-and-residency) |
 
 The Rust renderer can share a device with a **wgpu 30** host. No GUI framework is
-required by default. Pie/donut, categorical bars and box plots use separate bounded
-data models; they do not require the Cartesian column/streaming API.
+required by default. Pie/donut, categorical bars, box plots and radar charts use
+separate bounded data models; they do not require the Cartesian column/streaming API.
 
 ## WebAssembly example
 
@@ -235,7 +244,7 @@ separate application, not a component bundled with the renderer.
 |---|---|
 | Native setup, data adapters, embedding and export | [Usage](crates/renderer/USAGE.md) |
 | Axes, labels, legends, series and color maps | [Configuration reference](crates/renderer/CONFIG.md) |
-| Pies/donuts · categorical bars · box plots · histograms | [Radial](crates/renderer/RADIAL.md) · [Bars](crates/renderer/CATEGORICAL.md) · [Boxes](crates/renderer/BOXPLOT.md) · [Histograms](crates/renderer/HISTOGRAM.md) |
+| Pies/donuts · categorical bars · box plots · radar · histograms | [Radial](crates/renderer/RADIAL.md) · [Bars](crates/renderer/CATEGORICAL.md) · [Boxes](crates/renderer/BOXPLOT.md) · [Radar](crates/renderer/RADAR.md) · [Histograms](crates/renderer/HISTOGRAM.md) |
 | Ownership, prepared frames and API compatibility | [API contracts](crates/renderer/API.md) |
 | Memory flow, caching, streaming and shader details | [Architecture](crates/renderer/ARCHITECTURE.md) |
 | Source versions and migration notes | [Changelog](CHANGELOG.md) |

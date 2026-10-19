@@ -300,25 +300,35 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
             }
             // Both endpoints must be placeable before any piece is tested —
             // the same gate the GPU picker applies to the segment.
-            if project_data_to_canvas_px(config, &transform, ax, ay).is_none()
-                || project_data_to_canvas_px(config, &transform, bx, by).is_none()
+            if project_data_to_canvas_px(config, &transform, ax, ay, false).is_none()
+                || project_data_to_canvas_px(config, &transform, bx, by, false).is_none()
             {
                 continue;
             }
 
             // A step mode walks the same axis-aligned pieces the line shader
             // draws; a linear segment is its single piece.
-            let (pieces, piece_count) =
-                crate::line_step::step_pieces([ax, ay], [bx, by], line.interpolation);
-            let mut pieces_px = [([0.0f32; 2], [0.0f32; 2]); 3];
+            let mut pieces = [crate::line_step::StepPiece {
+                a: [ax, ay],
+                b: [bx, by],
+            }; crate::line_step::MAX_LINE_PIECES];
+            let piece_count = crate::line_step::line_pieces(
+                [ax, ay],
+                [bx, by],
+                crate::line_step::mode_word_for(line.interpolation, &transform),
+                &mut pieces,
+            );
+            let mut pieces_px = [([0.0f32; 2], [0.0f32; 2]); crate::line_step::MAX_LINE_PIECES];
             let mut projected = true;
             for (piece, out) in pieces[..piece_count].iter().zip(pieces_px.iter_mut()) {
-                let Some(a) = project_data_to_canvas_px(config, &transform, piece.a[0], piece.a[1])
+                let Some(a) =
+                    project_data_to_canvas_px(config, &transform, piece.a[0], piece.a[1], false)
                 else {
                     projected = false;
                     break;
                 };
-                let Some(b) = project_data_to_canvas_px(config, &transform, piece.b[0], piece.b[1])
+                let Some(b) =
+                    project_data_to_canvas_px(config, &transform, piece.b[0], piece.b[1], false)
                 else {
                     projected = false;
                     break;
@@ -378,7 +388,7 @@ fn pick_anchor(
     if !x.is_finite() || !y.is_finite() {
         return;
     }
-    let Some((px, py)) = project_data_to_canvas_px(config, transform, x, y) else {
+    let Some((px, py)) = project_data_to_canvas_px(config, transform, x, y, true) else {
         return;
     };
     let dx = px - canvas_x;
@@ -662,11 +672,14 @@ fn line_segment_pick(
     Some((dist_sq, snapped_index))
 }
 
+/// `sector`: reject a polar sample outside the sector (a marker); a line's
+/// endpoints pass, since the clip cuts the drawn pieces at the edge.
 fn project_data_to_canvas_px(
     config: &Config,
     transform: &data_render::ScatterTransform,
     x: f32,
     y: f32,
+    sector: bool,
 ) -> Option<(f32, f32)> {
     if (transform.scale_log[0] != 0.0 && x <= 0.0) || (transform.scale_log[1] != 0.0 && y <= 0.0) {
         return None;
@@ -685,8 +698,14 @@ fn project_data_to_canvas_px(
     };
     let tx = axis_t(x, 0);
     let ty = axis_t(y, 1);
-    let ndc_x = tx * 2.0 - 1.0;
-    let ndc_y = ty * 2.0 - 1.0;
+    let [ndc_x, ndc_y] = if crate::polar_projection::is_polar(transform) {
+        if !crate::polar_projection::sample_valid(transform, x, ty, sector) {
+            return None;
+        }
+        crate::polar_projection::ndc(transform, x, ty)
+    } else {
+        [tx * 2.0 - 1.0, ty * 2.0 - 1.0]
+    };
     if !ndc_x.is_finite() || !ndc_y.is_finite() {
         return None;
     }

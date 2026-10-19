@@ -37,6 +37,8 @@ mod tests {
             data_to_panel_scale: [0.91, -0.88],
             data_to_panel_offset: [0.03, 0.94],
             style_params: params,
+            polar_angle: [0.0; 4],
+            polar_extent: [0.0; 4],
         }
     }
 

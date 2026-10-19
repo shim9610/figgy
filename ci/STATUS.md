@@ -10,8 +10,8 @@ adapters; physical Intel/AMD/NVIDIA/Apple driver coverage remains outstanding.
 
 Renderer 0.16.0 / model 0.10.0 / figgy 0.13.0 add bounded plot-area selection,
 dragging and all eight resize handles through the common traits. A shared
-native/WebGPU regression exercises radial, categorical and boxplot frames at
-1x/2x: immutable prior frames, cache invalidation/reuse, axis lengths, visible
+native/WebGPU regression exercises radial, categorical, boxplot and radar frames
+at 1x/2x: immutable prior frames, cache invalidation/reuse, axis lengths, visible
 handles, data-pixel picking, PNG decoding, serialization and automatic-layout
 reset. Model tests cover all eight handle directions and atomic corner rejection.
 Default radial gallery pixels are compared with the preceding surface patch.

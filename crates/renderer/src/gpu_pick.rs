@@ -704,7 +704,7 @@ struct PickCandidateGpu {
     _pad: u32,
 }
 
-const _: () = assert!(std::mem::size_of::<PickQueryParamsGpu>() == 288);
+const _: () = assert!(std::mem::size_of::<PickQueryParamsGpu>() == 320);
 const _: () = assert!(std::mem::size_of::<PickCandidateGpu>() == CANDIDATE_BYTES as usize);
 
 #[derive(Clone)]
@@ -3049,6 +3049,8 @@ mod tests {
                 data_to_panel_scale: [1.0; 2],
                 data_to_panel_offset: [0.0; 2],
                 style_params: [[0.0; 4]; 3],
+                polar_angle: [0.0; 4],
+                polar_extent: [0.0; 4],
             },
             chart_rect_px: [0.0, 0.0, 100.0, 100.0],
             data_area_px: Some([0.0, 0.0, 100.0, 100.0]),
@@ -4448,6 +4450,8 @@ mod tests {
                     data_to_panel_scale: [1.0; 2],
                     data_to_panel_offset: [0.0; 2],
                     style_params: [[0.0; 4]; 3],
+                    polar_angle: [0.0; 4],
+                    polar_extent: [0.0; 4],
                 },
                 chart_rect_px: [0.0, 0.0, 100.0, 100.0],
                 data_area_px: Some([0.0, 0.0, 100.0, 100.0]),
@@ -4517,6 +4521,8 @@ mod tests {
                 data_to_panel_scale: [1.0; 2],
                 data_to_panel_offset: [0.0; 2],
                 style_params: [[0.0; 4]; 3],
+                polar_angle: [0.0; 4],
+                polar_extent: [0.0; 4],
             },
             chart_rect_px: [0.0, 0.0, 100.0, 100.0],
             data_area_px: Some([0.0, 0.0, 100.0, 100.0]),

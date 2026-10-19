@@ -9,6 +9,83 @@ at the time. The first crates.io publication is recorded below.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
+## Unreleased — polar coordinates
+
+- `Config.polar: Option<PolarOptions>` (#26, part B) draws a Cartesian
+  document in polar coordinates: `bottom_x` is the angle axis, `left_y` the
+  radius axis, and every series, column, picking and export path is the
+  rectangular one. `PolarOptions` carries the zero angle, the direction,
+  the angle unit (`Degrees` / `Radians`), an optional sector, an inner
+  radius fraction, the segment interpolation (`Chord`, or `Arc { pieces }`
+  subdividing each segment in data space so dashes and picking walk the
+  same pieces) and the radial label angle. `None` (key absent) is unchanged.
+- The shared `Transform` block grows from 112 to 144 bytes with the polar
+  constants (`polar_angle`, `polar_extent`); `data_to_ndc` branches to
+  `polar_ndc` and `sample_valid` masks a radius below the axis start
+  (`SHADER_COMMON.md` §1 and §4, every synced
+  shader, `ScatterTransform`, the pick shader and the CPU twin
+  `polar_projection`). The line shaders' `step_piece` helpers take a mode
+  word whose upper bits are the arc pieces; the area fill's baseline
+  projects through the same mapping. The vertex entries of the scatter and
+  line shaders hand the fragment stage polar clip varyings, so a primitive
+  past the outer ring (a zoomed-in radius axis), inside the hole or across a
+  sector edge is cut there, as the data-area scissor cuts a rectangular
+  chart.
+- The grid draws rings and spokes, the angle axis is the outer ring with
+  its labels around it and the radius axis the ray at the radial label
+  angle; new `LabelFormat::Degrees` and `LabelFormat::Radians`. Dragging
+  follows the polar frames: the ray turns around the centre
+  (`radial_label_angle_degrees`), the angle labels move along their spokes
+  (`bottom_x` `label_offset_y`, outward positive) and the radius labels in
+  the ray frame (`left_y` `label_offset_x` along, `label_offset_y` across);
+  the ring and the top and right axes register nothing. New
+  `Draggable::drag_from` and `Config::nudge_from` carry the pointer
+  position these rules read (`DragConfig::nudge_at` for state types); the
+  defaults fall back to `drag_by` / `nudge`, and `FiggyChart::on_move`
+  sends the position. `PolarGeometry` gains `inner_radius`. Annotations
+  use ratio anchors. GPU picking passes every sample through the X gate and
+  tests the full projection in the Y gate; lines go to the exact pass.
+- Histograms, fields, contours, error bars, vectors, `overlays`, a
+  logarithmic or inverted angle axis and streamed sources are explicit
+  errors in polar mode; polar and rectangular subplots mix in a document.
+- Rust migration: exhaustive `LabelFormat` matches need `Degrees` and
+  `Radians` arms; `line_strip_vertex_count` keeps its signature. New
+  example `polar_plot.rs`, a playground scene and `CONFIG.md`
+  ("`PolarOptions`").
+
+## Unreleased — radar charts
+
+- New bounded family `RadarRenderer` / `RadarChart` (#26, first half). A
+  `RadarChart` holds 3 to 64 `categories` (one spoke each), 1 to 16
+  `RadarSeries` with one value per category, a shared value axis
+  (`value_range`, `ring_spacing`; `None` fits a nice axis from zero over the
+  data), `RadarStyle` (start angle, direction, polygon or circular grid, ring
+  and spoke colours, line width, fill opacity, marker shape and size, emphasis
+  brightness), an optional per-series `RadarSeriesStyle`, data `labels`
+  (`None`, `Values`, `Emphasized`), `hovered` / `selected` `RadarTarget`s and
+  the common `decorations`, `chart_title`, `active_layer` and `annotations`
+  fields. A non-finite value breaks the outline at its spoke and drops the
+  series' fill and marker there. Per-spoke normalization is the host's job.
+- The renderer draws fills, outline segments and vertex markers as signed
+  distances in its own `radar.wgsl` pipeline over a CPU-rasterized grid, with
+  the bounded frame cache, label-raster reuse across hover and selection,
+  `hit_test` returning `RadarPick { target, part }` (`Marker` names a vertex,
+  `Outline` and `Fill` the series), the shared decoration map (new
+  `DecorationId::SpokeLabel { category_id }` for the category labels, the ring
+  labels as `AxisLabel(Left)`), the annotation layer with ratio anchors, PNG
+  export at any scale, and the `FiggyBoundedChart` web host (`"radar"`
+  family; `step_selection` walks series, or a selected vertex's series'
+  vertices). Playground scene, `radar_gallery` and `radar_editor` examples,
+  `RADAR.md`.
+- The legend planning and plain number formatting shared by the bounded
+  families now live in `bounded_axes.rs` (`plan_bounded_legend`,
+  `draw_bounded_legend`, `plain_number`); the box plot and categorical layouts
+  call them.
+- Compared with the issue text, the value axis is `value_range` /
+  `ring_spacing` rather than a full `AxisOptions`, markers are circle or square,
+  and a vertex target carries an optional `category_id` on the series target
+  instead of a separate type. JSON without the family is unchanged.
+
 ## Unreleased — vector fields
 
 - New `DataRenderType::Vector { components, style }` draws an arrow per sample

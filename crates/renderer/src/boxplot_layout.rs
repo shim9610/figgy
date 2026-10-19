@@ -18,19 +18,6 @@ pub(super) struct Layout {
 fn measure(c: &BoxPlotChart, s: &str, size: f32) -> f32 {
     measure_plain_text(s, &c.font_family, size, false, false, FontPolicy::Standard).width
 }
-fn number(v: f64) -> String {
-    if v == 0.0 {
-        return "0".into();
-    }
-    if v.abs() >= 1e6 || v.abs() < 0.001 {
-        format!("{v:.2e}")
-    } else {
-        format!("{v:.6}")
-            .trim_end_matches('0')
-            .trim_end_matches('.')
-            .to_owned()
-    }
-}
 pub(super) fn layout(
     c: &BoxPlotChart,
     size: (u32, u32),
@@ -104,7 +91,7 @@ pub(super) fn layout(
         if !value.is_finite() {
             return Err(invalid("boxplot axis tick overflow"));
         }
-        let label = number(value);
+        let label = crate::axis_render::plain_number(value);
         if ticks.last().is_some_and(|t: &(f32, String)| t.1 == label) {
             return Err(invalid("value ticks need a wider range to remain distinct"));
         }
@@ -119,28 +106,21 @@ pub(super) fn layout(
         .iter()
         .map(|x| measure(c, &x.label, fs))
         .fold(0.0, f32::max);
-    let mut legend = Vec::new();
-    let mut row_width = 0.0;
-    let mut row = 0usize;
-    if c.legend {
-        for series in &c.series {
-            let width = measure(c, &series.label, fs) + 34.0;
-            if width > w - 40.0 {
-                return Err(invalid("legend label does not fit"));
-            }
-            if row_width + width > w - 40.0 && row_width > 0.0 {
-                row += 1;
-                row_width = 0.0;
-            }
-            legend.push((row, row_width, width, series));
-            row_width += width;
-        }
-    }
-    let legend_height = if legend.is_empty() {
-        0.0
-    } else {
-        (row + 1) as f32 * (fs + 12.0) + 12.0
-    };
+    let (rows, legend_height) = crate::axis_render::plan_bounded_legend(
+        c.series
+            .iter()
+            .filter(|_| c.legend)
+            .map(|series| series.label.as_str()),
+        w,
+        &c.font_family,
+        fs,
+    )
+    .map_err(invalid)?;
+    let legend: Vec<_> = rows
+        .iter()
+        .zip(&c.series)
+        .map(|((row, x, width), series)| (*row, *x, *width, series))
+        .collect();
     let left = if horizontal {
         category_width
             + 24.0

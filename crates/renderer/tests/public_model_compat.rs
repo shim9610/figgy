@@ -46,4 +46,22 @@ fn renderer_serde_feature_covers_reexported_chart_models() {
     let restored: renderer::BoxPlotChart =
         serde_json::from_str(&serde_json::to_string(&boxplot).unwrap()).unwrap();
     assert_eq!(boxplot, restored);
+
+    let radar = renderer::RadarChart {
+        categories: vec![
+            renderer::Category::new("a", "A"),
+            renderer::Category::new("b", "B"),
+            renderer::Category::new("c", "C"),
+        ],
+        series: vec![renderer::RadarSeries::new(
+            "s",
+            "S",
+            vec![1., 2., 3.],
+            renderer::Color::BLACK,
+        )],
+        ..Default::default()
+    };
+    let restored: renderer::RadarChart =
+        serde_json::from_str(&serde_json::to_string(&radar).unwrap()).unwrap();
+    assert_eq!(radar, restored);
 }

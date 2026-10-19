@@ -246,6 +246,19 @@ fn edits() -> Vec<Edit> {
         pixels: Pixels::Changed,
         streams: false,
     });
+    // The polar coordinate system moves every sample and redraws the grid
+    // as rings and spokes; the stream pass rejects polar charts, so there is
+    // no stream first frame to compare.
+    cases.push(Edit {
+        name: "polar (None -> Some)",
+        apply: |c| c.polar = Some(crate::polar::PolarOptions::default()),
+        work: Work::Replay,
+        differs: true,
+        raster: true,
+        annotation: false,
+        pixels: Pixels::Changed,
+        streams: false,
+    });
     cases.push(Edit {
         name: "draw_style (Constellation)",
         apply: |c| c.draw_style = DrawStyle::Constellation(Default::default()),
@@ -1158,6 +1171,7 @@ fn config_fields_are_classified() {
         picked_data: _,   // selection revision, same classification as picked_points
         colorbar,         // colorbar_edits(): band fields Packed, the rest Prefix
         draw_style: _,    // Sketch / Milkyway / Constellation: Replay
+        polar: _,         // the coordinate system: geometry (Packed/Replay) and raster
         overlays,         // overlay_edits(): range/series/band Packed, the rest Prefix
         subplots,         // subplot_edits(): geometry/series/links Packed, chrome Prefix
         active_layer: _,  // layer only: no raster, no pixels

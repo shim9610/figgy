@@ -40,12 +40,13 @@ remain enabled; see the source repository's backend results for tested revisions
 | `RadialRenderer` | `RadialChart`, bounded slice values | `prepare` |
 | `CategoricalRenderer` | `CategoricalChart`, bounded category/series values | `prepare` |
 | `BoxPlotRenderer` | `BoxPlotChart`, supplied summary statistics | `prepare` |
+| `RadarRenderer` | `RadarChart`, bounded per-category values per series | `prepare` |
 
 The bounded chart APIs are deliberately separate from `ColumnSource` and streaming.
 They do not calculate raw-sample statistics. Chart-specific limits, missing values,
 style inheritance and picking identities are documented in their modules.
-Categorical/boxplot targets use category/series IDs; radial targets use group/index
-positions, so a host that reorders slices must update interaction targets too.
+Categorical/boxplot targets use category/series IDs, radar targets a series ID with
+an optional category ID for a vertex; radial targets use group/index positions, so a host that reorders slices must update interaction targets too.
 
 `ColumnSource` supplies scalar GPU pairs; `HiLoColumnSource` preserves sub-f32
 deltas for large coordinates. Native upload avoids an intermediate CPU conversion
@@ -272,7 +273,7 @@ and resident drawing do not consume that request. Inspect `StreamingStatus` and
 `auto_fit_pending`; submitted input alone is not the final-image completion signal.
 
 Cartesian operations return `FiggyError`; bounded renderers use `RadialError`,
-`CategoricalError` and `BoxPlotError`. Handle validation/layout/budget errors before
+`CategoricalError`, `BoxPlotError` and `RadarError`. Handle validation/layout/budget errors before
 replacing the last valid display. Device loss and external allocation failure still
 need host recovery; a configured memory budget is not a driver success guarantee.
 
@@ -297,8 +298,8 @@ still involve driver compilation work during construction.
 
 Full prewarm does not prepare future chart data, views, series styles, label
 atlases or result buffers, and is not a guarantee of allocation-free or
-compilation-free first drawing. Separate radial/categorical/boxplot renderers
-and nonresident matrix/tile streaming pipelines are outside this prewarm scope.
+compilation-free first drawing. Separate radial/categorical/boxplot/radar
+renderers and nonresident matrix/tile streaming pipelines are outside this prewarm scope.
 Browser warmup uses explicit production-compatible descriptors rather than
 auto-layout guesses; temporary JS warmup and installed wgpu caches remain distinct.
 
@@ -416,8 +417,8 @@ can start for all groups after Basic is installed. Before calling a render path,
 the host must ensure the current declarations' required groups are ready; before
 picking, also ensure Picking. This opt-in API does not change legacy lazy creation.
 The groups cover Cartesian resident pipelines, matching `prewarm_all`; nonresident
-matrix/tile streaming and separate radial/categorical/boxplot renderers are not
-part of this inventory. GPU-driver contention can still delay frames; detached
+matrix/tile streaming and separate radial/categorical/boxplot/radar renderers
+are not part of this inventory. GPU-driver contention can still delay frames; detached
 ownership is not a frame-time guarantee.
 
 
@@ -432,7 +433,7 @@ it does not add a pick radius or turn finite segments into infinite lines.
 
 ## Bounded chart decoration interaction
 
-Radial, categorical and boxplot frames expose `decorations()`, a renderer-measured hit map using the existing `HitMap` / `Selectable` / `Draggable` contracts. See [interaction workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md) for selection, logical-pixel dragging, SSOT persistence and host integration.
+Radial, categorical, boxplot and radar frames expose `decorations()`, a renderer-measured hit map using the existing `HitMap` / `Selectable` / `Draggable` contracts. See [interaction workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md) for selection, logical-pixel dragging, SSOT persistence and host integration.
 
 ## Annotation layer
 

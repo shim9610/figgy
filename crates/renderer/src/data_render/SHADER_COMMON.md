@@ -58,7 +58,7 @@
 
 ## 1. `Transform` uniform — group 0, binding 0
 
-`Transform`은 데이터 좌표를 NDC로 바꾸는 값, 로그축 여부, 픽셀과 NDC의 비율, 스케치·별자리 등 현재 스타일의 옵션을 전달한다. 크기는 **112바이트**다. `vec2<f32>` 8개와 `array<vec4<f32>, 3>` 하나로 구성되며, 배열은 바이트 오프셋 64에서 시작하고 원소 간 간격은 16바이트다.
+`Transform`은 데이터 좌표를 NDC로 바꾸는 값, 로그축 여부, 픽셀과 NDC의 비율, 스케치·별자리 등 현재 스타일의 옵션을 전달한다. 크기는 **144바이트**다. `vec2<f32>` 8개, `array<vec4<f32>, 3>` 하나(바이트 오프셋 64, 원소 간 간격 16바이트), 그리고 극좌표용 `vec4<f32>` 2개(오프셋 112·128)로 구성된다.
 점 반지름과 오차 막대 끝선 길이 같은 픽셀 크기는 `Style`에 저장한다. 셰이더는 `pixel_to_ndc`로 이를 NDC 크기로 환산한다.
 
 <!-- shader-common: applies-to=scatter,line,errorbar,bar,field,arc,anchor,label,vector -->
@@ -85,7 +85,15 @@ struct Transform {
     // All styles reserve [2].z for the global point-base u32 BIT PATTERN.
     // Resident draws write zero; streamed point/errorbar draws bitcast it.
     style_params: array<vec4<f32>, 3>,
-};  // 112 B (vec4 array at offset 64, stride 16)
+    // Polar coordinates (Config.polar); all zero in a rectangular chart.
+    // polar_angle:  (flag, zero angle in radians, radians per angle unit
+    //               signed by the direction, inner radius fraction)
+    // polar_extent: (sector start, sector end in angle units, end <= start
+    //               for the full circle; arc pieces per segment, 0 for
+    //               chords; outer radius in pixels)
+    polar_angle: vec4<f32>,
+    polar_extent: vec4<f32>,
+};  // 144 B (vec4 array at offset 64, stride 16; polar vec4s at 112 and 128)
 
 @group(0) @binding(0) var<uniform> transform: Transform;
 
@@ -100,6 +108,7 @@ fn styled_point_index(local_index: u32) -> u32 {
 | `scale_log` | 축별 로그 변환 여부. 0.0은 선형, 1.0은 log10 |
 | `pixel_to_ndc` | `(2/chart_w, 2/chart_h)`. 픽셀 크기를 NDC 크기로 바꾸는 비율이며 선 두께·점 반지름·오차 막대 끝선 길이에 사용한다. |
 | `data_to_panel_scale`, `data_to_panel_offset` | 축 범위로 정규화한 좌표를 패널 좌표로 바꾸는 데이터 영역의 아핀 변환. 축 범위와 배치 여백을 분리한다. |
+| `polar_angle`, `polar_extent` | `Config.polar`의 극좌표 상수. 직교 차트에서는 모두 0이다. `polar_angle` = (플래그, 0도 방향(라디안), 각도 단위당 라디안에 방향 부호(+1/−1)를 곱한 값, 안쪽 반지름 비율), `polar_extent` = (섹터 시작, 섹터 끝(각도 단위; 끝 ≤ 시작이면 전체 원), 세그먼트당 호 조각 수(현이면 0), 바깥 반지름 px). `line_columnar.wgsl`의 `line_step_mode`와 `gpu_pick.wgsl`의 선 판정은 호 조각 수를 이 값에서 읽어 `step_piece_count`의 모드 워드(비트 0–1 계단 모드, 비트 4 이상 호 조각 수)에 합친다. 플래그가 1이면 `data_to_ndc`가 `polar_ndc`로 분기해 각도 컬럼을 데이터 영역 중심 둘레의 각도로, 반지름 축의 정규화 좌표를 안쪽 고리와 바깥 반지름 사이로 사상한다. CPU 쌍둥이는 `polar_projection::project`다. |
 | `style_params` | Generic style parameter slots. Interpretation belongs to the active styled entry. sketch: `[0]`=(amplitude_px, wavelength_px, seed(f32), 0), rest 0. milkyway: `[0]`=(star_density, ribbon_width_px, ribbon_intensity, seed(f32)), `[1]`=(star_scale, spread_px, faint_bias, planet_rim), `[2]`=(structure_scale, star_brightness, 0, 0). constellation: `[0]`=(star_opacity, line_opacity, 0, 0), rest 0. Seeds are stored as f32 and recovered as `u32(...)`; exact up to 2^24. CPU packing lives in renderer.rs (`StyleVariant::pack_params`, `[f32; 12]`). Precise entries do not read these slots. |
 
 **대응하는 CPU 구조체:** `src/data_render/mod.rs::ScatterTransform`
@@ -248,9 +257,27 @@ fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f
     return fma(data_t, panel_scale, panel_offset);
 }
 
+// Polar (Config.polar): the angle column in radians around the centre of the
+// data area, the radius axis fraction between the inner ring and the outer
+// radius. A radius below the axis start sits on the inner ring (data samples
+// there are masked by `sample_valid`; a fill baseline is not). Twin of
+// `polar_projection::project` on the CPU.
+fn polar_ndc(ty: f32, xv: vec2<f32>) -> vec2<f32> {
+    let p = transform.polar_angle;
+    let e = transform.polar_extent;
+    let angle = p.y + p.z * (xv.x + xv.y);
+    let rt = (ty - transform.data_to_panel_offset.y) / transform.data_to_panel_scale.y;
+    let r = mix(p.w, 1.0, max(rt, 0.0));
+    let center = (transform.data_to_panel_offset + transform.data_to_panel_scale * 0.5) * 2.0 - 1.0;
+    return center + vec2<f32>(cos(angle), sin(angle)) * r * e.w * transform.pixel_to_ndc;
+}
+
 fn data_to_ndc(xv: vec2<f32>, yv: vec2<f32>) -> vec2<f32> {
     let tx = axis_pair_to_t(xv, transform.data_min.x, transform.data_max.x, transform.data_min_lo.x, transform.data_max_lo.x, transform.scale_log.x, transform.data_to_panel_scale.x, transform.data_to_panel_offset.x);
     let ty = axis_pair_to_t(yv, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y, transform.data_to_panel_scale.y, transform.data_to_panel_offset.y);
+    if (transform.polar_angle.x > 0.5) {
+        return polar_ndc(ty, xv);
+    }
     return vec2<f32>(tx, ty) * 2.0 - 1.0;
 }
 ```
@@ -266,6 +293,14 @@ columns. A line segment is omitted when either endpoint is invalid; arc length
 also skips that segment so dashes and stars do not advance across the gap.
 Vertices collapse to a finite position outside the viewport instead of depending
 on NaN propagation. Bars and errorbar extents keep their own clipping rules.
+In polar mode a sample whose radius is below the axis start is invalid too
+(`polar_sample_valid`), so a line breaks there instead of folding through
+the centre. Primitives that reach past the outer ring, into the hole or
+across a sector edge (a sample outside the sector included) are cut there by
+the fragment stage: every vertex entry of `scatter_columnar.wgsl` and
+`line_columnar.wgsl` writes the `polar_clip_*` varyings and every fragment
+entry starts with `polar_fragment_visible`, since the transform bind group
+is vertex-visible only.
 
 <!-- shader-common: applies-to=scatter,line,arc,vector -->
 ```wgsl
@@ -276,6 +311,19 @@ fn sample_finite(v: f32) -> bool {
     return (bitcast<u32>(v) & 0x7f800000u) != 0x7f800000u;
 }
 
+// Polar: a radius below the axis start has no place on the plot (it would
+// fold onto the inner ring), so the sample is not drawn and a line breaks
+// there. Angles outside the sector and radii past the outer ring keep their
+// projection and are cut by the fragment clip below.
+fn polar_sample_valid(xv: vec2<f32>, yv: vec2<f32>) -> bool {
+    if (transform.polar_angle.x < 0.5) {
+        return true;
+    }
+    let ty = axis_pair_to_t(yv, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y, transform.data_to_panel_scale.y, transform.data_to_panel_offset.y);
+    let rt = (ty - transform.data_to_panel_offset.y) / transform.data_to_panel_scale.y;
+    return rt >= 0.0;
+}
+
 fn sample_valid(xv: vec2<f32>, yv: vec2<f32>) -> bool {
     let x = xv.x + xv.y;
     let y = yv.x + yv.y;
@@ -283,7 +331,53 @@ fn sample_valid(xv: vec2<f32>, yv: vec2<f32>) -> bool {
         && sample_finite(yv.x) && sample_finite(yv.y)
         && sample_finite(x) && sample_finite(y)
         && (transform.scale_log.x == 0.0 || x > 0.0)
-        && (transform.scale_log.y == 0.0 || y > 0.0);
+        && (transform.scale_log.y == 0.0 || y > 0.0)
+        && polar_sample_valid(xv, yv);
+}
+
+// Polar clip. The transform is vertex-visible only, so the vertex stage hands
+// the fragment stage the fragment's offset from the centre in pixels
+// (interpolated from the corner's NDC) and the bounds as flat varyings; the
+// fragment discards outside the outer ring, inside the hole and outside the
+// sector, cutting a primitive at the edge the way the data-area scissor cuts
+// a rectangular chart. A rectangular chart passes a zero flag.
+fn polar_clip_offset(ndc: vec2<f32>) -> vec2<f32> {
+    let center = (transform.data_to_panel_offset + transform.data_to_panel_scale * 0.5) * 2.0 - 1.0;
+    return (ndc - center) / transform.pixel_to_ndc;
+}
+
+// (flag, outer radius px, inner radius px, sector flag)
+fn polar_clip_limits() -> vec4<f32> {
+    let p = transform.polar_angle;
+    let e = transform.polar_extent;
+    return vec4<f32>(p.x, e.w, e.w * p.w, select(0.0, 1.0, e.y > e.x));
+}
+
+// (zero angle rad, radians per angle unit signed by the direction, sector
+// start, sector end in angle units)
+fn polar_clip_sector() -> vec4<f32> {
+    let p = transform.polar_angle;
+    let e = transform.polar_extent;
+    return vec4<f32>(p.y, p.z, e.x, e.y);
+}
+
+fn polar_fragment_visible(px: vec2<f32>, limits: vec4<f32>, sector: vec4<f32>) -> bool {
+    if (limits.x < 0.5) {
+        return true;
+    }
+    let r = length(px);
+    if (r > limits.y + 0.5 || r < limits.z - 0.5) {
+        return false;
+    }
+    if (limits.w < 0.5) {
+        return true;
+    }
+    // The data angle of the fragment, brought into the turn that starts at
+    // the sector start.
+    let turn = 6.283185307179586 / abs(sector.y);
+    var a = (atan2(px.y, px.x) - sector.x) / sector.y;
+    a = a - floor((a - sector.z) / turn) * turn;
+    return a <= sector.w + 1e-6 * turn;
 }
 ```
 

@@ -423,6 +423,16 @@ or run `cargo run -p figgy-renderer --example boxplot_editor --features egui_dem
 Titles, axes, labels and legends use the [shared interaction API](INTERACTION.md).
 Studio integration and deployment are separate.
 
+### Radar charts
+
+`RadarRenderer` compares a few series over a fixed set of categories: one spoke
+per category, one shared value axis, closed polygons with fills, outlines and
+vertex markers on a polygon or circular grid. The host supplies one value per
+category and series; per-spoke normalization is not computed. See the
+[radar guide](RADAR.md) or run
+`cargo run -p figgy-renderer --example radar_editor --features egui_demo`.
+Titles, labels and legends use the [shared interaction API](INTERACTION.md).
+
 ### Categorical bars
 
 `CategoricalRenderer` draws grouped, stacked and 100% stacked bars in either direction.
@@ -765,6 +775,14 @@ winit 루프나 WASM 래퍼처럼 프레임 동안 렌더러를 단독으로 사
 가로·세로 및 그룹 배치, 무광·금속 질감, 개별 색·스타일과 선택을 지원한다.
 노치는 입력받은 중앙값 신뢰구간으로 그린다. [사용법](BOXPLOT.md)과
 `boxplot_editor` 예제를 참고한다. 제목·축·라벨·범례 편집은 [공통 선택·이동 API](INTERACTION.md)를 사용한다. 웹 Studio 연결과 배포는 별도다.
+
+### 레이더 — 소량 데이터 API
+
+`RadarRenderer`는 고정된 범주 집합 위에서 몇 개의 시리즈를 비교한다. 범주마다 스포크 하나,
+값 축은 하나를 공유하며, 각 시리즈는 채움·외곽선·꼭짓점 마커가 있는 닫힌 다각형이다. 고리는
+다각형(거미줄) 또는 원으로 그린다. 범주·시리즈마다 값 하나를 호스트가 넣으며 스포크별 정규화는
+계산하지 않는다. [사용법](RADAR.md)과 `radar_editor` 예제를 참고한다. 제목·라벨·범례 편집은
+[공통 선택·이동 API](INTERACTION.md)를 사용한다.
 
 ### 범주형 막대 — 소량 데이터 API
 

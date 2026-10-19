@@ -313,6 +313,37 @@ fn annotated_boxplot() -> BoxPlotChart {
     }
 }
 
+fn annotated_radar() -> RadarChart {
+    RadarChart {
+        title: "Annotated radar".into(),
+        categories: vec![
+            Category::new("a", "Speed"),
+            Category::new("b", "Safety"),
+            Category::new("c", "Size"),
+            Category::new("d", "Docs"),
+        ],
+        series: vec![RadarSeries::new(
+            "s",
+            "Release",
+            vec![6., 8., 4., 7.],
+            Color::from_rgb8(100, 145, 185),
+        )],
+        annotations: AnnotationLayer {
+            visible: true,
+            items: vec![
+                boxed_text(Anchor::Ratio { x: 0.05, y: 0.05 }),
+                Annotation::new(AnnotationKind::Arrow {
+                    from: Anchor::Ratio { x: 0.1, y: 0.9 },
+                    to: Anchor::Ratio { x: 0.4, y: 0.6 },
+                    style: Default::default(),
+                    text: Some(text("centre")),
+                }),
+            ],
+        },
+        ..Default::default()
+    }
+}
+
 fn annotated_radial() -> RadialChart {
     RadialChart {
         title: "Annotated donut".into(),
@@ -351,6 +382,14 @@ family_contract!(
     BoxPlotChart,
     annotated_boxplot(),
     |c| c.annotations.items[0] = span(AnnotationAxis::X, 40., 55.)
+);
+
+family_contract!(
+    radar_annotation_layer_contract,
+    RadarRenderer,
+    RadarChart,
+    annotated_radar(),
+    |c| c.annotations.items[0] = boxed_text(Anchor::Ratio { x: 0.7, y: 0.8 })
 );
 
 family_contract!(
@@ -563,6 +602,15 @@ family_routing!(
     BoxPlotChart,
     annotated_boxplot(),
     |c| c.selected = Some(BoxPlotTarget::new("a", "s")),
+    |c| c.selected.is_some()
+);
+
+family_routing!(
+    radar_active_layer_routing,
+    RadarRenderer,
+    RadarChart,
+    annotated_radar(),
+    |c| c.selected = Some(RadarTarget::vertex("s", "a")),
     |c| c.selected.is_some()
 );
 

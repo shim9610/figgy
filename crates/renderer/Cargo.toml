@@ -109,3 +109,8 @@ wasm-bindgen-test = "0.3"
 name = "boxplot_editor"
 path = "examples/boxplot_editor.rs"
 required-features = ["egui_demo"]
+
+[[example]]
+name = "radar_editor"
+path = "examples/radar_editor.rs"
+required-features = ["egui_demo"]

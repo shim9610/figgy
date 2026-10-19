@@ -483,6 +483,8 @@ fn setup_fixture(
         data_to_panel_scale: [1.0; 2],
         data_to_panel_offset: [0.0; 2],
         style_params: [[0.0; 4]; 3],
+        polar_angle: [0.0; 4],
+        polar_extent: [0.0; 4],
     };
     let mut style = renderer::data_render::PrimitiveStyle::zeroed();
     style.color_premul = [0.08, 0.13, 0.19, 0.45];

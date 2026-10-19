@@ -10,8 +10,8 @@ The source versions are `figgy 0.14.0`, `figgy-renderer 0.17.0`, and
 `figgy-model 0.11.0`; the example package is built from source, not published to crates.io.
 
 The generated module exports `FiggyChart` for Cartesian charts and
-`FiggyBoundedChart` for radial (including donuts), categorical and boxplot
-charts. The `<figgy-chart>` custom element wraps `FiggyChart` only. Hosts using
+`FiggyBoundedChart` for radial (including donuts), categorical, boxplot and
+radar charts. The `<figgy-chart>` custom element wraps `FiggyChart` only. Hosts using
 `FiggyBoundedChart` own their canvas events and scheduling; see the
 [bounded host API](../renderer/WASM.md#bounded-chart-host).
 

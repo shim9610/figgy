@@ -978,6 +978,8 @@ mod tests {
                     data_to_panel_scale: [if reversed { -1. } else { 1. }, 1.],
                     data_to_panel_offset: [if reversed { 1. } else { 0. }, 0.],
                     style_params: [[0.; 4]; 3],
+                    polar_angle: [0.; 4],
+                    polar_extent: [0.; 4],
                 };
                 let tb = create_scatter_transform_uniform_buffer(&device, &transform);
                 let tbg = create_scatter_transform_bind_group(&device, &tbgl, &tb);

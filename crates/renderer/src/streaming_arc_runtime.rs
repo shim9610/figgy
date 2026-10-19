@@ -97,7 +97,7 @@ impl Renderer {
             4,
             4,
             4,
-            112,
+            std::mem::size_of::<data_render::ScatterTransform>() as u64,
         ];
         let bytes = sizes.iter().sum::<u64>();
         let limits = self.device.limits();

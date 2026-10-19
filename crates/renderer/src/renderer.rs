@@ -829,6 +829,8 @@ fn stream_config_equal(left: &Config, right: &Config, series: &[SeriesConfig]) -
         && overlay_geometry_equal(left, right)
         && subplot_geometry_equal(left, right, series)
         && left.draw_style == right.draw_style
+        // The coordinate system maps every sample to its pixel.
+        && left.polar == right.polar
         // Z mapping changes the accumulated field pixels, unlike the bar's
         // border, labels or position. XY-only charts do not consume this map.
         && (!series.iter().any(|s| match &s.render_type {
@@ -895,6 +897,7 @@ fn raster_config_equal(left: &Config, right: &Config) -> bool {
         picked_data: _,
         colorbar,
         draw_style,
+        polar,
         overlays,
         subplots,
         active_layer: _,
@@ -910,6 +913,8 @@ fn raster_config_equal(left: &Config, right: &Config) -> bool {
         && legend == &right.legend
         && colorbar == &right.colorbar
         && draw_style == &right.draw_style
+        // The grid, axes and labels are rings and spokes or a rectangle.
+        && polar == &right.polar
         // Every overlay field is chrome of its own panel (its axis, its
         // legend) or decides which panel draws a series.
         && overlays == &right.overlays
@@ -5575,6 +5580,7 @@ fn validate_renderer_series(
         validate_contour_level_count(&item.series_id, &item.render_type)?;
         validate_contour_label_config(&item.series_id, &item.render_type)?;
         validate_line_fill(pool, series.iter(), item)?;
+        validate_polar_series(config, item)?;
         if let Some(matrix) = extract_matrix(&item.render_type) {
             // A grid column that is not registered would read whatever else
             // happens to be at that offset. Count mismatches between the
@@ -5587,6 +5593,66 @@ fn validate_renderer_series(
         if let Some((components, style)) = extract_vector(&item.render_type) {
             validate_vector_series(pool, config, item, components, style)?;
         }
+    }
+    Ok(())
+}
+
+/// The polar coordinate system of the chart against its own axes.
+fn validate_polar_config(config: &Config) -> Result<()> {
+    config
+        .validate_polar()
+        .map_err(|reason| FiggyError::InvalidConfig {
+            field: "polar",
+            reason,
+        })
+}
+
+/// What a polar chart draws in its first version: scatter markers and lines
+/// (with fills) only. Histograms, fields, contours, error bars and vectors
+/// have no polar form yet and are rejected rather than drawn on the wrong
+/// axes; an arc interpolation needs a linearly interpolated line.
+fn validate_polar_series(config: &Config, item: &SeriesConfig) -> Result<()> {
+    let Some(polar) = &config.polar else {
+        return Ok(());
+    };
+    let invalid = |reason: &str| FiggyError::InvalidSeriesConfig {
+        series_id: item.series_id.clone(),
+        reason: reason.to_owned(),
+    };
+    match &item.render_type {
+        DataRenderType::Scatter { .. }
+        | DataRenderType::Line { .. }
+        | DataRenderType::ScatterLine { .. } => {}
+        DataRenderType::Histogram { .. } => {
+            return Err(invalid("histogram series are not drawn on polar axes"));
+        }
+        DataRenderType::Heatmap { .. }
+        | DataRenderType::HeatmapContour { .. }
+        | DataRenderType::Contour { .. } => {
+            return Err(invalid(
+                "field and contour series are not drawn on polar axes",
+            ));
+        }
+        DataRenderType::ScatterErrorbarX { .. }
+        | DataRenderType::ScatterErrorbarY { .. }
+        | DataRenderType::ScatterErrorbarXY { .. }
+        | DataRenderType::LineScatterErrorbarX { .. }
+        | DataRenderType::LineScatterErrorbarY { .. }
+        | DataRenderType::LineScatterErrorbarXY { .. } => {
+            return Err(invalid("error bars are not drawn on polar axes"));
+        }
+        DataRenderType::Vector { .. } => {
+            return Err(invalid("vector series are not drawn on polar axes"));
+        }
+    }
+    if let (Some(line), crate::polar::PolarInterpolation::Arc { .. }) =
+        (extract_line(&item.render_type), polar.interpolation)
+        && !line.interpolation.is_linear()
+    {
+        return Err(invalid(
+            "a polar arc interpolation needs a linearly interpolated line; a step \
+             interpolation draws chords",
+        ));
     }
     Ok(())
 }
@@ -11603,6 +11669,7 @@ impl Renderer {
             for series in &state.series {
                 self.require_resident_series(series)?;
                 validate_contour_level_count(&series.series_id, &series.render_type)?;
+                validate_polar_series(&state.config, series)?;
                 preflight_contour_label_spacing(
                     &series.series_id,
                     &series.render_type,
@@ -12445,6 +12512,7 @@ impl Renderer {
         for config in series {
             validate_contour_level_count(config.series_id.as_str(), &config.render_type)?;
             validate_line_fill(&self.pool, series.iter(), config)?;
+            validate_polar_series(chart.config(), config)?;
         }
         let scale = clamp_export_scale(scale);
         // A document export covers every area; a panel export the parent's.
@@ -14732,6 +14800,15 @@ impl PrepareContext<'_> {
         {
             return Err(unsupported());
         }
+        // Streaming is not extended to polar charts.
+        if config.polar.is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: "polar charts require GPU-resident columns; streamed sources are \
+                         not supported"
+                    .into(),
+            });
+        }
         // A fill between two series needs index-aligned chunks of two streams,
         // which nonresident streaming cannot guarantee, and a stepped line's
         // arc prefix is not part of the streamed canonical scan. Both are
@@ -15295,10 +15372,14 @@ impl PrepareContext<'_> {
                     x: x_h,
                     y: y_h,
                     arc,
-                    // One strip per step piece, joined per `strip_slot`.
-                    verts_per_instance: data_render::line_strip_vertex_count(
+                    // One strip per step piece (or polar arc piece), joined
+                    // per `strip_slot`.
+                    verts_per_instance: crate::line_step::strip_vertex_count(
                         line_pick.verts,
-                        interpolation,
+                        crate::line_step::mode_word(
+                            interpolation,
+                            crate::line_step::arc_pieces(chart_config.polar.as_ref()),
+                        ),
                     ),
                     texture_bg: line_pick.texture_bg,
                 })
@@ -15362,9 +15443,12 @@ impl PrepareContext<'_> {
                     x: x_h,
                     y: y_h,
                     base,
-                    verts_per_instance: data_render::line_strip_vertex_count(
+                    verts_per_instance: crate::line_step::strip_vertex_count(
                         data_render::LINE_PRECISE_VERTICES_PER_INSTANCE,
-                        interpolation,
+                        crate::line_step::mode_word(
+                            interpolation,
+                            crate::line_step::arc_pieces(chart_config.polar.as_ref()),
+                        ),
                     ),
                 })
             } else {
@@ -15657,7 +15741,9 @@ impl PrepareContext<'_> {
         star_pitch: Option<f32>,
         interpolation: LineInterpolation,
     ) -> Option<PreparedArc> {
-        let step_mode = crate::line_step::step_mode(interpolation);
+        // The mode word: the step mode and, on a polar chart, the arc pieces
+        // the transform carries.
+        let step_mode = crate::line_step::mode_word_for(interpolation, t);
         if self.arc_pipelines.is_none() {
             *self.arc_pipelines = Some(data_render::line_arc::create_arc_scan_pipelines(
                 &self.device,
@@ -15780,6 +15866,12 @@ fn panel_index(config: &Config, count: usize, layer: crate::LayerRef) -> usize {
 /// data-area requirement), so every existing single-layer chart is
 /// unchanged; a layered document goes through `Config::expand`.
 fn expand_for_render(config: &Config) -> Result<Vec<Config>> {
+    validate_polar_config(config)?;
+    for index in 0..config.subplots.len() {
+        if let Some(subplot) = config.subplot_config(index) {
+            validate_polar_config(&subplot)?;
+        }
+    }
     if !is_layered(config) {
         let mut panel = config.clone();
         panel.active_layer = crate::LayerRef::Base;
@@ -23863,6 +23955,40 @@ mod tests {
             Err(FiggyError::InvalidSeriesConfig { reason, .. })
                 if reason.contains("streamed sources are not supported")
         ));
+    }
+
+    /// Streaming is not extended to polar charts: a streamed series on one
+    /// is rejected with an explicit reason.
+    #[test]
+    fn streamed_series_reject_polar_charts() {
+        let mut config = basic_errorbar_chart().config().clone();
+        config.polar = Some(crate::polar::PolarOptions::default());
+        let series = SeriesConfig {
+            series_id: "stream".into(),
+            source_id: None,
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            render_type: DataRenderType::Scatter {
+                scatter: DataScatterStyleConfig {
+                    point_color: Color::BLACK,
+                    point_shape: crate::data_config::ScatterShape::CircleFilled,
+                    point_size: 4.0,
+                    point_style_table: None,
+                    point_style_index_column: None,
+                    point_style_overrides: None,
+                    point_color_map: None,
+                    point_size_map: None,
+                },
+            },
+        };
+        assert!(matches!(
+            PrepareContext::validate_stream_series(&config, &series),
+            Err(FiggyError::InvalidSeriesConfig { reason, .. })
+                if reason.contains("polar") && reason.contains("streamed sources are not supported")
+        ));
+        config.polar = None;
+        assert!(PrepareContext::validate_stream_series(&config, &series).is_ok());
     }
 
     /// The vector scratch (params, grid table, bind groups) is rebuilt only

@@ -875,6 +875,8 @@ mod stream_tests {
             data_to_panel_scale: [1.0; 2],
             data_to_panel_offset: [0.0; 2],
             style_params: [[0.0; 4]; 3],
+            polar_angle: [0.0; 4],
+            polar_extent: [0.0; 4],
         };
         let transform_uniform = create_scatter_transform_uniform_buffer(device, &transform);
         let transform_bg =

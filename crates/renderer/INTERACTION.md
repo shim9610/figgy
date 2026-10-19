@@ -1,12 +1,12 @@
 # 새 차트의 선택·이동·크기 조정
 
-원형·범주형 막대·박스플롯은 데이터 모델이 서로 다르지만, 영역·제목·축·라벨·범례는
+원형·범주형 막대·박스플롯·레이더는 데이터 모델이 서로 다르지만, 영역·제목·축·라벨·범례는
 기존 `HitMap → Selectable → Draggable / Resizable` 계약을 사용한다. 포인터 이벤트 전달과
 드래그 중 프레임 요청은 호스트가 담당한다. 클릭 영역이나 라벨 위치를 호스트에서 다시 계산하지 않는다.
 
 ## 데이터 선택과 장식 요소 선택
 
-- `frame.hit_test([x, y])`는 기존대로 조각·막대·박스의 **데이터**를 고른다.
+- `frame.hit_test([x, y])`는 기존대로 조각·막대·박스·레이더 다각형의 **데이터**를 고른다.
 - `frame.decorations().hit_test([x, y])`는 제목·축·라벨·범례를 고른다.
 - 선택한 영역의 리사이즈 핸들을 먼저 검사한다. 핸들은 영역 경계 밖으로도 걸쳐 있다.
 - 그다음 제목·라벨·축 같은 앞쪽 요소, 데이터, `DataArea` 순서로 판정한다. 영역이 데이터
@@ -27,9 +27,11 @@
 | 축 제목 | `AxisTitle(Side)` | 회전된 제목도 포인터의 화면 방향으로 이동 |
 | 범례 | `Legend` | 기호와 모든 행을 함께 이동 |
 | 원형 조각 라벨 | `RadialLabel(RadialTarget)` | 이름·수치 줄을 함께 이동. 외부 라벨 연결선 끝도 갱신 |
-| 막대·박스 값 라벨 | `DataLabel { category_id, series_id }` | 해당 데이터 라벨만 이동. 재정렬해도 같은 ID에 적용 |
+| 막대·박스·레이더 값 라벨 | `DataLabel { category_id, series_id }` | 해당 데이터 라벨만 이동. 재정렬해도 같은 ID에 적용 |
+| 레이더 스포크 라벨 | `SpokeLabel { category_id }` | 바깥 고리 끝의 범주 이름 하나만 이동. 재정렬해도 같은 ID에 적용 |
 
-원형에는 축과 범례를 그리지 않으므로 이들의 히트 영역도 없다. 숨긴 제목·라벨·범례는
+원형에는 축과 범례를 그리지 않으므로 이들의 히트 영역도 없다. 레이더는 첫 스포크를 따라
+놓는 값 라벨 묶음을 `AxisLabel(Left)`로 등록하고 축 선·축 제목은 없다. 숨긴 제목·라벨·범례는
 히트맵에 등록되지 않는다. 축 라벨은 기존 Cartesian 계약처럼 묶음 선택이며, 범주 이름 하나마다
 독립적으로 이동하는 계약은 아니다. 영역 조정은 데이터 값이나 축 범위를 바꾸지 않는다.
 데이터 값 자체를 드래그로 바꾸는 기능과도 별개다.
@@ -116,7 +118,8 @@ if map.resize_by(&mut trial.decorations, id, ResizeHandle::SE, -80., -60.)
 범례에 필요한 공간을 측정해 자동 배치한다. 지정한 영역은 이 자동 영역 안에 있어야 하며
 최소 크기는 80×60이다. 처음에는 가용 영역을 사용하므로 크기를 줄인 뒤 남은 공간 안에서
 옮길 수 있다. 더 넓은 영역이 필요하면 캔버스를 키우거나 제목·라벨 공간을 줄인다.
-원형 차트는 이 영역 안에 원과 라벨을 배치하며 분할 원도 함께 이동한다. 막대·박스플롯은
+원형 차트는 이 영역 안에 원과 라벨을 배치하며 분할 원도 함께 이동한다. 레이더는 영역 안에서
+범주 라벨이 들어갈 자리를 남긴 가장 큰 원을 바깥 고리로 쓴다. 막대·박스플롯은
 영역을 데이터 좌표의 투영 범위로 쓰며, 축·눈금·그리드·데이터 라벨을 함께 다시 계산한다.
 차트 제목과 범례는 각각 기존 캔버스 기준 배치를 유지한다.
 
@@ -158,19 +161,29 @@ DPR이나 PNG 배율은 저장한 논리 영역을 바꾸지 않는다. 캔버�
 분기하는 코드는 `DataArea`, `DataAreaEdge(Side)`를 처리해야 한다. `DataAreaEdge`는 리사이즈
 내부의 변이 대상이며 별도 히트 영역으로 등록하지 않는다. 이전 JSON은 영역을 자동 배치로 읽는다.
 
+극좌표 차트(`Config.polar`)에서는 축이 바깥 고리와 광선이다. 고리(`Axis(Bottom)`)는 데이터 경계라
+히트 영역이 없고, 광선(`Axis(Left)`)은 드래그하면 중심을 축으로 돌아 `radial_label_angle_degrees`가
+바뀐다. 각도 눈금 라벨은 포인터가 있는 스포크를 따라 안팎으로, 반지름 눈금 라벨은 광선 프레임에서
+움직인다. 포인터 위치가 필요한 규칙이므로 `Draggable::drag_from(cfg, at, dx, dy)`와
+`Config::nudge_from(element, Some(at), dx, dy)`가 추가됐다. 기본 구현은 `drag_by`로 넘어가고 다른
+요소는 영향이 없으며, 웹 래퍼의 `on_move`는 누른 지점에 이동량을 누적한 포인터 위치를 넘긴다.
+상단·우측 축과 그 제목은 등록하지 않는다. 자세한 규칙은 `CONFIG.md`의 `PolarOptions` 절에 있다.
+제목·축 제목·범례·그리기 영역은 그대로다.
+
 이 문서는 renderer crate의 Rust API다. Cartesian용 `FiggyChart`와 별도로 현재 WASM
-래퍼는 원형·범주형 막대·박스플롯을 위한 `FiggyBoundedChart`를 제공한다. 이 클래스는
+래퍼는 원형·범주형 막대·박스플롯·레이더를 위한 `FiggyBoundedChart`를 제공한다. 이 클래스는
 히트맵·ID·선택·드래그·크기 조정·출력을 노출하며, 호스트는 포인터 이벤트를 연결하고
 SSOT 변경 후 새 프레임을 그린다. 초기 표시는 `first_frame_ready()`를 기다린다.
 [WASM API](WASM.md)를 참고한다. 이 소스 변경만으로 figgyplot.com 배포본이 갱신되는 것은 아니다.
 
-작동하는 네이티브 연결 예제는 `radial_editor`, `categorical_editor`, `boxplot_editor`다.
+작동하는 네이티브 연결 예제는 `radial_editor`, `categorical_editor`, `boxplot_editor`,
+`radar_editor`다.
 제목·범례·라벨을 클릭해 선택하고 드래그하며, `Reset position`으로 되돌릴 수 있다.
 
 ## Independent bounded chart titles
 
-`RadialChart`, `CategoricalChart` and `BoxPlotChart` accept an optional
-`chart_title: BoundedTitleOptions { visible, text: RichText }`. When present it
+`RadialChart`, `CategoricalChart`, `BoxPlotChart` and `RadarChart` accept an
+optional `chart_title: BoundedTitleOptions { visible, text: RichText }`. When present it
 is authoritative. The legacy plain `title` is a fallback only. Call
 `normalize_title()` once when loading an old document into an editor: it copies
 its title, family, color and former `font_size * 1.5` size into the independent
@@ -200,8 +213,8 @@ is not present in the published 0.17.0 archive.
 
 ## Layer and annotation foundation
 
-Every chart family (`Config`, `RadialChart`, `CategoricalChart`, `BoxPlotChart`)
-carries `active_layer: LayerRef` and `annotations: AnnotationLayer`. Both are
+Every chart family (`Config`, `RadialChart`, `CategoricalChart`, `BoxPlotChart`,
+`RadarChart`) carries `active_layer: LayerRef` and `annotations: AnnotationLayer`. Both are
 `serde(default)` and omitted from JSON at their defaults, so existing documents
 parse and serialize unchanged. `LayerRef::Base` is the single layer every chart
 has today; `Overlay(index)` and `Annotations` address the overlay layers (#11)
@@ -500,9 +513,9 @@ part, which a hidden layer (`visible = false`) never does.
 Changing the layer clears the element selection, as on overlay layers: the
 registry drops its `HitId`, the WASM wrapper drops the annotation selection
 when the layer changes away from or into `Annotations`, and the bounded
-`set_active_layer` (`RadialChart`, `CategoricalChart`, `BoxPlotChart`, with an
-`Overlay` stored as `Base`) clears `decorations.selected`. The data selection
-(`picked_*`, the bounded charts' selected bar, box or slice) is kept. A layer
+`set_active_layer` (`RadialChart`, `CategoricalChart`, `BoxPlotChart`, `RadarChart`,
+with an `Overlay` stored as `Base`) clears `decorations.selected`. The data selection
+(`picked_*`, the bounded charts' selected bar, box, slice or radar target) is kept. A layer
 switch changes no raster revision of its own: the data, grid and decoration
 textures and the bounded frame and label raster are reused, and only a cleared
 selection redraws its selection chrome. Selecting or dragging an item through

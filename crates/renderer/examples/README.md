@@ -16,6 +16,7 @@ for machines without a GPU.
 | [area_step.rs](area_step.rs) | Shared x column → area under a line, a band between two lines and the three step modes | `cargo run --locked -p figgy-renderer --example area_step -- target/area-step` |
 | [value_maps.rs](value_maps.rs) | X/Y plus two value columns → points coloured through the colourbar, and a bubble chart whose marker area follows a column | `cargo run --locked -p figgy-renderer --example value_maps -- target/value-maps` |
 | [vector_field.rs](vector_field.rs) | Anchors plus (u, v) columns → arrows over a stream function, and two matrices over a heatmap's grid → a colour-mapped quiver | `cargo run --locked -p figgy-renderer --example vector_field -- target/vector-field` |
+| [polar_plot.rs](polar_plot.rs) | (angle, radius) columns with `Config.polar` → an antenna pattern filled to the centre, a compass rose with arc segments, a dashed spiral and a half-circle sector in radians | `cargo run --locked -p figgy-renderer --example polar_plot -- target/polar-plot` |
 | [error_bars.rs](error_bars.rs) | X/Y/error columns → lines, markers and symmetric error bars | `cargo run --locked -p figgy-renderer --example error_bars -- target/error-bars` |
 | [histogram.rs](histogram.rs) | N+1 bin edges and N counts → vertical and horizontal histograms | `cargo run --locked -p figgy-renderer --example histogram -- target/histogram` |
 | [heatmap_contours.rs](heatmap_contours.rs) | Coordinate axes and matrix columns → heatmap, labeled contours and colorbar | `cargo run --locked -p figgy-renderer --example heatmap_contours -- target/heatmap-contours` |
@@ -23,13 +24,14 @@ for machines without a GPU.
 | [radial_gallery.rs](radial_gallery.rs) | Named values and colors → pie/donut, materials, rounded edges and lift | `cargo run --locked -p figgy-renderer --example radial_gallery -- target/radial-gallery` |
 | [categorical_gallery.rs](categorical_gallery.rs) | Categories and optional values per series → grouped/stacked/percent bars | `cargo run --locked -p figgy-renderer --example categorical_gallery -- target/categorical-gallery` |
 | [boxplot_gallery.rs](boxplot_gallery.rs) | Supplied five-number summaries, optional outliers/mean/CI → boxes | `cargo run --locked -p figgy-renderer --example boxplot_gallery -- target/boxplot-gallery` |
+| [radar_gallery.rs](radar_gallery.rs) | Categories and one value per category per series → spider-web or circular grids, markers, value labels and selection emphasis | `cargo run --locked -p figgy-renderer --example radar_gallery -- target/radar-gallery` |
 | [milkyway_line_preview.rs](milkyway_line_preview.rs) | Two line series → stars and nebula along the curves | `cargo run --locked -p figgy-renderer --example milkyway_line_preview -- target/milkyway.png` |
 | [constellation_preview.rs](constellation_preview.rs) | Two sparse `ScatterLine` series → stars at the source samples | `cargo run --locked -p figgy-renderer --example constellation_preview -- target/constellation.png` |
 | [precise_sketch_preview.rs](precise_sketch_preview.rs) | The same sparse growth curves → Precise and hand-drawn Sketch comparisons | `cargo run --locked -p figgy-renderer --example precise_sketch_preview -- target/precise-sketch` |
 
 Box plots consume statistics supplied by the caller; they do not infer quartiles
-from raw observations. Radial, categorical and boxplot models are bounded inputs,
-separate from the Cartesian column and replayable streaming contracts.
+from raw observations. Radial, categorical, boxplot and radar models are bounded
+inputs, separate from the Cartesian column and replayable streaming contracts.
 Animation examples write PNG frames; see [GIF encoding](../GALLERY.md#encode-the-gifs).
 
 [support/gallery.rs](support/gallery.rs) shares only device setup, presentation
@@ -47,6 +49,7 @@ cargo run --locked -p figgy-renderer --features egui_demo --example egui_embed
 cargo run --locked -p figgy-renderer --features egui_demo --example radial_editor
 cargo run --locked -p figgy-renderer --features egui_demo --example categorical_editor
 cargo run --locked -p figgy-renderer --features egui_demo --example boxplot_editor
+cargo run --locked -p figgy-renderer --features egui_demo --example radar_editor
 ```
 
 The bounded editors show decoration selection/dragging and `Edit plot area` with
@@ -61,7 +64,7 @@ It demonstrates a host bridge and does not expose every native chart API.
 ## 한국어 안내
 
 표의 링크에는 데이터와 차트 설정이 들어 있고, 실행 명령은 저장소 루트 기준이다.
-선·오차 막대·히스토그램·행렬 예제는 컬럼을 등록한다. 원형·범주형 막대·박스플롯은
+선·오차 막대·히스토그램·행렬 예제는 컬럼을 등록한다. 원형·범주형 막대·박스플롯·레이더는
 각 차트의 소량 데이터 모델을 직접 만든다. 박스플롯의 사분위수 등 통계값은 호출자가 제공한다.
 
 정지 예제는 PNG를 만들고, 애니메이션 예제는 프레임별 PNG를 만든다.

@@ -2305,6 +2305,7 @@ mod web {
             hitmap: HitMap::standard_chart(),
             hitmap_layer: (renderer::LayerRef::Base, 0, None),
             dragging: false,
+            drag_pointer: [0.0; 2],
             resizing: None,
             cycle: renderer::ColorCycle::Classic,
             clear_color: Color::WHITE,
@@ -2972,6 +2973,10 @@ mod web {
         /// Either change rebuilds it with `HitMap::for_active_layer`.
         hitmap_layer: (renderer::LayerRef, usize, Option<usize>),
         dragging: bool,
+        /// The pointer in document coordinates while a chart element drags:
+        /// the press point advanced by every move. Polar axes and tick
+        /// labels move relative to it.
+        drag_pointer: [f32; 2],
         resizing: Option<ModelResizeHandle>,
         cycle: renderer::ColorCycle,
         clear_color: Color,
@@ -3081,6 +3086,21 @@ mod web {
                 (dx / scale, dy / scale)
             } else {
                 (dx, dy)
+            }
+        }
+
+        /// A display point in document coordinates: the inverse of
+        /// `display_config_for_surface`'s scale and placement.
+        fn display_point_to_document(&self, x: f32, y: f32) -> [f32; 2] {
+            let (scale, panel) = self.display_scale_and_panel();
+            let logical = self.chart_config().document_area();
+            if scale > 0.0 {
+                [
+                    logical.x as f32 + (x - panel.x as f32) / scale,
+                    logical.y as f32 + (y - panel.y as f32) / scale,
+                ]
+            } else {
+                [x, y]
             }
         }
 
@@ -6359,6 +6379,7 @@ mod web {
             }
             self.resizing = None;
             self.dragging = dragging;
+            self.drag_pointer = self.display_point_to_document(x, y);
             Ok(new_sel.is_some())
         }
 
@@ -6391,9 +6412,12 @@ mod web {
             }
             if self.dragging
                 && let Some(drag) = self.hitmap.get(id).and_then(|el| el.as_draggable())
-                && drag.drag_by(&mut config, dx, dy) == NudgeResult::Moved
             {
-                self.replace_chart_config(config)?;
+                let at = self.drag_pointer;
+                self.drag_pointer = [at[0] + dx, at[1] + dy];
+                if drag.drag_from(&mut config, at, dx, dy) == NudgeResult::Moved {
+                    self.replace_chart_config(config)?;
+                }
             }
             Ok(())
         }
