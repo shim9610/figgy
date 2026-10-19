@@ -40,11 +40,6 @@ JavaScript API for every renderer. [Browser example scope](https://github.com/sh
 
 ![Renderer library overview: column-based and chart-specific paths, screen display and image export](https://raw.githubusercontent.com/shim9610/figgy/807327081b97d20964cc96ce543dfb93a27499be/crates/renderer/assets/architecture-state-flow-en.png)
 
-The diagram omits the annotation underlay and overlay textures, overlay layers
-and subplots. Its area 6 is out of date: arc prefixes serve dashed, sketch and
-Milkyway lines (the Constellation style adds none), and each series keeps up to
-eight immutable arc results rather than a copy-on-write scratch.
-
 The renderer-owned chart registry is the persistent single source of truth
 (SSoT) for chart state that the browser wrapper uses.
 Low-level native hosts may still supply `ChartDrawItem` directly. In both paths,
@@ -62,11 +57,11 @@ The table summarizes contracts by topic, rather than numbered areas in the image
 | Topic | Data flow and ownership contract |
 |---|---|
 | **Workspace responsibilities** | `model` defines chart declarations, layout and interaction policy without GPU resources. `renderer` implements the chart registry, GPU data processing and CPU raster integration. `web` adapts those APIs to canvas, input and browser scheduling. A low-level native host can also supply its own `ChartDrawItem` instead of using the registry. |
-| **Column upload and maintenance** | Borrow `ColumnSource` only during native upload; write f32 pairs and smallest-positive statistics directly into mapped staging, then copy staging into the GPU pool. The pool keeps column slots and scalar metadata, not CPU point arrays. First-fit allocation and coalescing manage free regions. A reservation restores the free list on failure; upsert prepares fallible dependent state before publication. Allocation epochs identify content replacement, while layout generation identifies relocation such as defragmentation. |
+| **Column upload and maintenance** | Borrow `ColumnSource` only during native upload; write f32 pairs directly into mapped staging and collect the smallest-positive statistic in the same pass, then copy staging into the GPU pool. The pool keeps column slots and scalar metadata, not CPU point arrays. First-fit allocation and coalescing manage free regions. A reservation restores the free list on failure; upsert prepares fallible dependent state before publication. Allocation epochs identify content replacement, while layout generation identifies relocation such as defragmentation. |
 | **Persistent and panel state** | `Renderer` holds registered Config/series, the pool, pipelines and shared device/queue. The host retains the returned `ChartView` and `ChartStyle`; views hold raster textures and transform resources, and styles retain GPU bindings. `WindowedRenderer` additionally retains surface/instance/adapter. CPU axis, text and grid rasterization can allocate image buffers; the column-upload contract does not prohibit those allocations. |
 | **Frame invalidation** | A persistent host compares renderer-issued desired/raster revisions with its last successfully presented stamp. Raster or viewport changes require a raster refresh; host-only redraw state can require drawing without changing chart state. The browser's clean rAF skips surface acquisition and drawing, while required maintenance/completion processing can continue. Failed presentation must not advance the last-presented stamp. |
 | **Prepare and record** | `prepare(&mut self)` resolves draw inputs and captures GPU handles, shared charges and validation stamps in `PreparedFrame`. `paint_prepared(&self)` validates that token before recording. It rejects changed views, captured columns, layouts, target pipelines or registered chart revisions. Once commands are recorded, the host must submit them before conflicting mutations; a token cannot inspect an external command buffer's later submission order. |
-| **GPU-derived data** | Arc-prefix scans, picking and exact primitive extents use GPU columns. Arc scan uses bounded chunks plus a carry chain, rather than a fixed whole-series 16.7M-point ceiling. Picking and fitting return compact results instead of a CPU copy of all points. Immutable derived GPU results can be shared by cache entries and prepared tokens; cache eviction alone need not release the last owner. |
+| **GPU-derived data** | Arc-prefix scans, picking and exact primitive extents use GPU columns. Arc scan splits long series into bounded chunks linked by a carry chain, so dispatch limits do not cap series length. Picking and fitting return compact results instead of a CPU copy of all points. Immutable derived GPU results can be shared by cache entries and prepared tokens; cache eviction alone need not release the last owner. |
 | **Screen and export** | Compose grid → annotation underlay → data → decoration → annotation overlay. Export prepares a scaled chart/view/style and offscreen target, then reads back padded row chunks and converts premultiplied RGBA to straight alpha. Row chunking bounds the readback buffer; the target, final RGBA image and PNG output still need their own memory. Resident export uses GPU columns, while streamed export replays original ranges. |
 | **Fidelity and caches** | Resident redraw reads original GPU columns without a data image cache. Nonresident streaming retains an accumulation surface and may admit a chart-local cache of exact source rows for supported views. Neither path introduces LOD, sampling or decimation. Clipping, invalid/log-domain samples and antialiasing remain rendering rules; different backends need not produce byte-identical pixels. |
 | **Accounting and retirement** | A GPU resource's shared charge survives as long as a Figgy owner retains it. After the last owner drops, retired bytes remain counted until an appropriate submission boundary and queue completion. `end_gpu_frame()` follows submission/discard of earlier commands; native hosts must service completions. The ledger describes tracked requested bytes, with the style-texture exceptions described below, rather than physical VRAM usage. |
@@ -412,7 +407,8 @@ export_panel_rgba_async(chart, &[SeriesConfig], scale).await:
     temp ChartStyles ← create_style_for_series_scaled(cfg, scale) per cfg
         ↓
     offscreen wgpu::Texture (fixed Rgba8Unorm, COPY_SRC, transparent clear)
-    paint(items) — same compositing order (grid → annotation underlay → data → decoration → annotation overlay)
+    paint(items) — same compositing order (grid → annotation underlay → data
+                   → decoration → annotation overlay)
         ↓
     copy_texture_to_buffer in ROW CHUNKS (256-byte aligned padding; chunk
     height adapts to the device's max buffer size, so readback never needs a
@@ -472,8 +468,6 @@ area, while `export_panel_*` keeps the parent's area.
 
 ![렌더러 라이브러리 구조: 컬럼 기반·전용 차트 경로와 화면·이미지 출력](https://raw.githubusercontent.com/shim9610/figgy/807327081b97d20964cc96ce543dfb93a27499be/crates/renderer/assets/architecture-state-flow-kr.png)
 
-그림에는 주석 아래층·위층 텍스처, 오버레이 레이어, 서브플롯이 빠져 있다. 6번 영역의 설명도 현재 구현과 다르다. 누적 경로 길이는 점선과 스케치·은하수 선에 쓰이며 별자리 스타일은 따로 만들지 않는다. 시리즈마다 쓰기 시 복사(copy-on-write) 임시 버퍼 대신 불변 결과를 최대 8개 보관한다.
-
 ### 렌더링 계약
 
 전체 구조도는 컬럼 기반 `Renderer`와 도넛·범주형·박스플롯·레이더의 전용 렌더러 경로를 구분한다. 전용 차트의 불변 프레임은 일반 `PreparedFrame`이나 컬럼풀·스트리밍 계약을 공유하지 않는다. 화면 표시와 이미지 출력은 별도 경로이며, 이미지는 요청한 크기로 다시 렌더링한다. 아래 표는 그림의 번호 대신 주제별 계약을 요약한다.
@@ -481,11 +475,11 @@ area, while `export_panel_*` keeps the parent's area.
 | 주제 | 데이터 흐름과 소유권 |
 |---|---|
 | **크레이트별 역할** | `model`은 차트 설정·레이아웃·상호작용 정책을 정의하고 GPU 자원을 갖지 않는다. `renderer`는 등록된 차트, GPU 연산, CPU 래스터 렌더링을 관리한다. `web`은 이를 캔버스·입력·브라우저 실행 흐름에 연결한다. 저수준 네이티브 호스트는 차트를 등록하는 대신 `ChartDrawItem`을 직접 전달할 수도 있다. |
-| **컬럼 업로드와 정리** | 네이티브에서는 업로드하는 동안만 `ColumnSource`를 빌려 f32 쌍을 매핑된 스테이징 버퍼에 쓰고 최소 양수 값을 계산한다. GPU가 데이터를 풀로 복사한 뒤에는 슬롯과 스칼라 메타데이터만 남기며 CPU 점 배열은 보관하지 않는다. 충분한 첫 빈 공간에 할당하고 인접 빈 공간은 합친다. 실패하면 예약을 취소해 빈 공간 목록을 복구한다. 교체는 관련 상태를 모두 준비한 뒤 확정한다. allocation epoch는 내용 교체를, layout generation은 재배치로 인한 위치 변경을 구분한다. |
-| **차트 상태와 패널 자원** | `Renderer`는 등록된 설정·시리즈, 풀, 파이프라인과 공유 장치·큐를 보관한다. 호스트가 보관하는 `ChartView`는 래스터 텍스처와 좌표 변환 자원을, `ChartStyle`은 GPU 바인딩을 갖는다. `WindowedRenderer`는 surface·instance·adapter도 유지한다. 축·텍스트·격자의 CPU 렌더링에는 이미지 버퍼가 필요할 수 있다. 컬럼 업로드의 중간 버퍼를 없앴다고 이 이미지 할당까지 없어지는 것은 아니다. |
+| **컬럼 업로드와 정리** | 네이티브에서는 업로드하는 동안만 `ColumnSource`를 빌려 f32 쌍을 매핑된 스테이징 버퍼에 쓰고 최소 양수 값을 계산한다. GPU가 데이터를 풀로 복사한 뒤에는 슬롯과 스칼라 메타데이터만 남기며 CPU 점 배열은 보관하지 않는다. 충분한 첫 빈 공간에 할당하고 인접 빈 공간은 합친다. 실패하면 예약을 취소해 빈 공간 목록을 복구한다. 교체는 관련 상태를 모두 준비한 뒤 확정한다. 컬럼 할당 세대(allocation epoch)는 내용 교체를, 풀 배치 세대(layout generation)는 재배치로 인한 위치 변경을 구분한다. |
+| **차트 상태와 패널 자원** | `Renderer`는 등록된 설정·시리즈, 풀, 파이프라인과 공유 장치·큐를 보관한다. 호스트가 보관하는 `ChartView`는 래스터 텍스처와 좌표 변환 자원을, `ChartStyle`은 GPU 바인딩을 갖는다. `WindowedRenderer`는 surface·instance·adapter도 유지한다. 축·텍스트·격자의 CPU 렌더링에는 이미지 버퍼가 필요할 수 있다. 컬럼 업로드 규칙은 이 이미지 버퍼 할당까지 제한하지 않는다. |
 | **프레임 갱신 판단** | 렌더러가 발급한 desired/raster 리비전과 마지막 표시 성공 기록을 비교한다. 래스터 설정이나 표시 영역이 바뀌면 축 이미지를 갱신한다. 배경색 같은 호스트 상태는 차트 설정을 바꾸지 않고 다시 그릴 수 있다. 웹에서는 변경이 없는 프레임의 surface 획득과 그리기를 생략하되 필요한 정리·완료 처리는 계속한다. 표시가 실패하면 마지막 성공 기록을 갱신하지 않는다. |
 | **준비와 명령 기록** | `prepare(&mut self)`가 입력을 확정하고 GPU 핸들·공유 할당 정보·검증용 상태를 `PreparedFrame`에 담는다. `paint_prepared(&self)`는 기록 전에 이를 검증한다. 뷰, 참조 컬럼, 풀 배치, 출력 파이프라인 또는 등록 차트 리비전이 바뀌면 거부한다. 호스트는 이 변경 전에 기존 명령을 제출해야 한다. 토큰은 외부 명령 버퍼의 제출 순서까지 검사하지 않는다. |
-| **GPU 파생 데이터** | 누적 경로 길이, 피킹, 실제 도형의 범위는 GPU 컬럼에서 계산한다. 경로 길이 스캔은 청크별 계산 결과를 이어받으므로 시리즈 전체에 1670만 점의 고정 상한을 두지 않는다. 피킹과 범위 계산은 전체 점을 CPU로 복사하지 않고 작은 결과만 반환한다. 캐시와 프레임 토큰이 같은 계산 결과를 공유할 수 있으므로 캐시에서 지워도 자원이 바로 해제되지는 않을 수 있다. |
+| **GPU 파생 데이터** | 누적 경로 길이, 피킹, 실제 도형의 범위는 GPU 컬럼에서 계산한다. 경로 길이 스캔은 긴 시리즈를 제한된 크기의 청크로 나누고 누계를 다음 청크로 넘기므로 디스패치 한도가 시리즈 길이를 제한하지 않는다. 피킹과 범위 계산은 전체 점을 CPU로 복사하지 않고 작은 결과만 반환한다. 캐시와 프레임 토큰이 같은 계산 결과를 공유할 수 있으므로 캐시에서 지워도 자원이 바로 해제되지는 않을 수 있다. |
 | **화면 표시와 이미지 출력** | 격자·주석 아래층·데이터·장식·주석 위층 순서로 합성한다. 출력할 때는 배율을 적용한 차트·뷰·스타일과 화면 밖 렌더 타깃을 준비한다. 정렬용 여백이 있는 행을 청크 단위로 읽어 오고, 알파가 미리 곱해진 RGBA를 일반 RGBA로 바꾼다. 청크 처리는 읽기 버퍼의 크기를 제한하지만 렌더 타깃·최종 RGBA·PNG의 메모리까지 없애지는 않는다. 상주 출력은 GPU 컬럼을, 스트리밍 출력은 다시 공급받은 원본 구간을 사용한다. |
 | **원본 보존과 캐시** | 상주 경로는 데이터 이미지 캐시 없이 GPU 컬럼에서 다시 그린다. 비상주 경로는 누적 이미지를 유지하고, 지원되는 차트에서는 현재 화면에 필요한 원본 행만 모은 GPU 패킹 캐시를 사용할 수 있다. 두 경로 모두 LOD·샘플링·데시메이션으로 데이터를 줄이지 않는다. 화면 밖 자르기, 잘못된 값·로그 범위 밖 값 제외, 안티앨리어싱은 표시 규칙이며 GPU 백엔드 간 픽셀값 일치를 보장하지 않는다. |
 | **메모리 집계와 회수** | figgy에서 자원을 참조하는 동안 공유 할당 정보도 유지한다. 마지막 참조가 해제돼도 회수 대기 바이트는 제출 경계를 알리고 GPU 큐의 작업이 끝날 때까지 집계한다. 호스트는 기존 명령을 제출하거나 폐기한 뒤 `end_gpu_frame()`을 호출해야 하며, 네이티브에서는 완료 콜백도 처리해야 한다. 아래에 설명한 스타일 텍스처 등은 집계에서 제외되며 보고값은 실제 VRAM 측정값이 아니다. |
@@ -528,7 +522,7 @@ GPU 피킹은 차트 ID를 받는 API로 제공한다. `enable_gpu_picking()`을
 
 ![Renderer의 프레임 준비, 참조 상태 검증, 오래된 프레임의 재준비와 명령 제출 순서](https://raw.githubusercontent.com/shim9610/figgy/807327081b97d20964cc96ce543dfb93a27499be/crates/renderer/assets/prepared-frame-kr.png)
 
-`Renderer::prepare`와 출력 준비 과정의 상태 변경은 모두 `&mut self`에서 수행한다. `Renderer::paint_prepared`는 `&self`로 토큰의 명령을 기록하므로 공유 참조만 제공하는 paint 콜백에서도 별도 잠금이 필요하지 않다. `Renderer`는 `Send + Sync`다. GPU 자원 회수는 mutex 없이 원자적 큐로 핸들과 해당 바이트 수를 함께 전달한다. 제출 경계에서 모은 자원은 GPU 완료 후 파괴하고 집계에서 차감한다.
+`Renderer::prepare`와 출력 준비 과정의 상태 변경은 모두 `&mut self`에서 수행한다. `Renderer::paint_prepared`는 `&self`로 토큰의 명령을 기록하므로 공유 참조만 제공하는 paint 콜백에서도 별도 잠금이 필요하지 않다. `Renderer`는 `Send + Sync`다. GPU 자원 회수는 원자적 큐로 핸들과 해당 바이트 수를 함께 전달한다. 제출 경계에서는 정해진 개수까지만 꺼내며, 모은 자원은 GPU 완료 후 파괴하고 집계에서 차감한다. 큐 연산은 경합 시 스핀하거나 스레드를 양보할 수 있으므로 대기 없는(wait-free) 진행을 보장하지 않는다.
 
 토큰은 확정된 파이프라인·바인드 그룹·버퍼·패널 배치와 함께 컬럼 할당 세대, 풀 배치 세대, 출력 파이프라인 세대, 각 `ChartView`의 내용 리비전을 보관한다. 하나라도 바뀌면 기록 전에 `FiggyError::StalePreparedFrame`을 반환하므로 다음 프레임에서 다시 준비해야 한다.
 
@@ -542,7 +536,9 @@ GPU 피킹은 차트 ID를 받는 API로 제공한다. `enable_gpu_picking()`을
 
 ![공유 GPU 자원의 참조, 마지막 참조 해제 후 회수 대기와 GPU 완료 후 집계 해제](https://raw.githubusercontent.com/shim9610/figgy/807327081b97d20964cc96ce543dfb93a27499be/crates/renderer/assets/gpu-resource-lifetime-kr.png)
 
-`gpu_memory_usage()`는 figgy가 추적하는 GPU 자원의 요청 할당량을 바이트로 반환한다. 실제 VRAM 사용량을 측정한 값은 아니다. 은하수·별자리 스타일이 필요할 때 생성하는 PSF·아틀라스·띠 텍스처는 일반 집계에서 제외된다. 다만 스트리밍 출력의 실행 가능 여부를 검사할 때는 알려진 텍스처 크기를 별도로 고려한다.
+`gpu_memory_usage()`는 figgy가 추적하는 GPU 자원의 요청 할당량을 바이트로 반환한다. 실제 VRAM 사용량을 측정한 값은 아니다. 은하수·별자리 스타일이 필요할 때 생성하는 PSF·흑체 색상표(LUT)·행성 아틀라스·고리 띠 텍스처는 일반 집계에서 제외된다. 다만 스트리밍 출력의 실행 가능 여부를 검사할 때는 알려진 텍스처 크기를 별도로 고려한다. 이 예외 자원을 집계된 자원으로 간주하면 안 된다.
+
+`set_memory_budget`은 이를 따르는 할당·실행 가능 검사 경로가 쓰는 정책이며, 모든 장치 할당의 절대 상한이 아니다. 생성자가 만든 초기 풀에는 소급해 적용하지 않고 기존 자원을 내보내지도 않는다. 실행 가능 판정은 자원을 예약하지 않는다. 반환값, 제외 항목, 장치를 공유하는 호스트의 책임은 [예산 계약](API.md#gpu-memory-accounting-and-budget-scope)을 참고한다.
 
 사용 중인 자원(`live`)과 회수 대기 자원(`retired`)은 모두 합계에 포함한다. Rust 핸들을 해제해도 제출된 GPU 작업은 계속 실행될 수 있으며, `end_gpu_frame()` 호출만으로 장치 메모리가 반환되지는 않는다. 네이티브 호스트는 새 프레임을 그리지 않을 때도 완료 콜백을 처리해야 한다. CPU 할당, 최종 RGBA·PNG 버퍼, 드라이버 내부 메모리는 이 집계에 포함하지 않는다. 네이티브 업로드 규칙은 브라우저의 JS·WASM 경계에서 생기는 복사에는 적용되지 않는다.
 
@@ -676,8 +672,9 @@ export_panel_rgba_async(chart, &[SeriesConfig], scale).await:
     임시 ChartView (확대한 축 텍스처)
     임시 ChartStyle ← cfg마다 create_style_for_series_scaled(cfg, scale)
         ↓
-    offscreen wgpu::Texture (고정 Rgba8Unorm, COPY_SRC, transparent clear)
-    paint(items) — 동일 합성 순서 (grid → annotation underlay → data → decoration → annotation overlay)
+    화면 밖 wgpu::Texture (고정 Rgba8Unorm, COPY_SRC, 투명 배경으로 초기화)
+    paint(items) — 화면과 같은 합성 순서 (grid → 주석 underlay → data
+                   → decoration → 주석 overlay)
         ↓
     copy_texture_to_buffer를 행 단위 청크로 실행 (256바이트 정렬 패딩. 청크
     높이는 장치의 최대 버퍼 크기에 맞춰 조절하므로 읽기 버퍼가 이미지 전체

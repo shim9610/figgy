@@ -704,9 +704,9 @@ renderer.request_auto_streaming_chart(chart_id, &view, options)?;
 
 The API below has been available since figgy 0.10.0. `render_chart()` runs the job, so the application does not call `auto_stream_chart_step()` or `frame()` repeatedly. Native Rust hosts can still use borrowed `ColumnSource` inputs and the chunk execution API.
 
-![figgy resident and nonresident display rendering architecture](https://raw.githubusercontent.com/shim9610/figgy/53d6a40dcd4d438692aa6a7fac811cf2d75705e6/crates/renderer/assets/streaming-architecture-en.png)
+![figgy resident and nonresident display rendering architecture](https://raw.githubusercontent.com/shim9610/figgy/807327081b97d20964cc96ce543dfb93a27499be/crates/renderer/assets/streaming-architecture-en.png)
 
-The figure shows the shared renderer's resident path, the streaming accumulation image, the optional packed GPU cache and the export that rereads the original data. In the browser the roles are divided as follows.
+Inside the screen update loop, the figure separates resident data reuse, chunked streaming and CPU raster updates for the column-based renderer. The optional GPU cache and the source replay for export are described below. In the browser the roles are divided as follows.
 
 | Layer | State it owns and its role |
 |---|---|
