@@ -10,6 +10,7 @@ fn vector_sample(i: u32) -> VectorSample {
     sample.origin_lo = vec3<f32>(0.0, 0.0, 0.0);
     sample.vector = vec3<f32>(0.0, 0.0, 0.0);
     sample.value = vec2<f32>(0.0, 0.0);
+    sample.value_valid = false;
     sample.valid = false;
     if (i >= vector_params.count) {
         return sample;
@@ -26,6 +27,7 @@ fn vector_sample(i: u32) -> VectorSample {
     sample.vector = vec3<f32>(u.x + u.y, v.x + v.y, 0.0);
     if (vector_flag(VECTOR_FLAG_COLOR_MAP)) {
         sample.value = vector_pool_pair(vector_params.c_base, i);
+        sample.value_valid = true;
     }
     sample.valid = true;
     return sample;

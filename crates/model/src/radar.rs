@@ -5,8 +5,11 @@
 use crate::{Color, categorical::Category};
 use std::collections::HashSet;
 
+/// The fewest categories (spokes) a radar chart draws.
 pub const MIN_RADAR_CATEGORIES: usize = 3;
+/// The most categories (spokes) a radar chart draws.
 pub const MAX_RADAR_CATEGORIES: usize = 64;
+/// The most series a radar chart draws.
 pub const MAX_RADAR_SERIES: usize = 16;
 
 /// One vertex of one series (`category_id` set) or a whole series polygon
@@ -14,7 +17,9 @@ pub const MAX_RADAR_SERIES: usize = 16;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RadarTarget {
+    /// The series the target belongs to.
     pub series_id: String,
+    /// The category of the vertex; `None` addresses the whole series.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
@@ -22,12 +27,14 @@ pub struct RadarTarget {
     pub category_id: Option<String>,
 }
 impl RadarTarget {
+    /// A whole-series target.
     pub fn series(series: impl Into<String>) -> Self {
         Self {
             series_id: series.into(),
             category_id: None,
         }
     }
+    /// The vertex of `series` on `category`'s spoke.
     pub fn vertex(series: impl Into<String>, category: impl Into<String>) -> Self {
         Self {
             series_id: series.into(),
@@ -41,8 +48,10 @@ impl RadarTarget {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RadarGridShape {
+    /// Rings as regular polygons through the spokes (the default).
     #[default]
     Polygon,
+    /// Rings as circles.
     Circle,
 }
 
@@ -50,9 +59,12 @@ pub enum RadarGridShape {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RadarMarker {
+    /// No marker.
     None,
+    /// A filled circle (the default).
     #[default]
     Circle,
+    /// A filled square.
     Square,
 }
 
@@ -60,6 +72,7 @@ pub enum RadarMarker {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RadarLabels {
+    /// No data labels (the default).
     #[default]
     None,
     /// Every vertex of every series.
@@ -76,14 +89,19 @@ pub enum RadarLabels {
     serde(default)
 )]
 pub struct RadarSeriesStyle {
+    /// Outline width in logical pixels.
     pub line_width_px: Option<f32>,
     /// The polygon fill. `None` fills with the series colour at the chart's
     /// `fill_opacity`; a transparent colour draws the outline only.
     pub fill: Option<Color>,
+    /// The marker at every vertex.
     pub marker: Option<RadarMarker>,
+    /// Marker diameter (circle) or side length (square) in logical pixels.
     pub marker_size_px: Option<f32>,
 }
 
+/// The chart-wide appearance: spoke layout, grid, and the series defaults a
+/// `RadarSeriesStyle` can override.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "serde",
@@ -95,13 +113,20 @@ pub struct RadarStyle {
     pub start_angle_degrees: f32,
     /// Whether the categories follow clockwise on screen.
     pub clockwise: bool,
+    /// Polygon or circular rings.
     pub grid_shape: RadarGridShape,
+    /// Colour of the spokes.
     pub spoke_color: Color,
+    /// Colour of the rings.
     pub ring_color: Color,
+    /// Default outline width of a series, in logical pixels.
     pub line_width_px: f32,
     /// Alpha of a series' fill when its style names no fill colour.
     pub fill_opacity: f32,
+    /// Default marker at every vertex.
     pub marker: RadarMarker,
+    /// Default marker diameter (circle) or side length (square) in logical
+    /// pixels.
     pub marker_size_px: f32,
     /// Added to the colour of the hovered or selected series.
     pub emphasis_brightness: f32,
@@ -123,15 +148,21 @@ impl Default for RadarStyle {
     }
 }
 
+/// One series: a closed polygon with one value per category.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RadarSeries {
+    /// Stable identity used by targets and the web wrapper.
     pub id: String,
+    /// Legend text.
     pub label: String,
     /// `values[i]` belongs to `categories[i]`. A non-finite value breaks the
     /// outline at that spoke and drops the series' fill.
     pub values: Vec<f64>,
+    /// The outline and marker colour; the fill uses it at `fill_opacity`
+    /// unless the series style names a fill.
     pub color: Color,
+    /// Per-series overrides of the chart style.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
@@ -139,6 +170,7 @@ pub struct RadarSeries {
     pub style: Option<RadarSeriesStyle>,
 }
 impl RadarSeries {
+    /// A series in the chart style, with no overrides.
     pub fn new(
         id: impl Into<String>,
         label: impl Into<String>,
@@ -155,6 +187,9 @@ impl RadarSeries {
     }
 }
 
+/// A radar chart: the whole small-data model one `RadarRenderer::prepare`
+/// draws. `prepare` validates it first and returns `RadarError::Invalid` with
+/// the reason; [`Self::validate`] runs the same check without preparing.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "serde",
@@ -186,13 +221,24 @@ pub struct RadarChart {
         serde(default, skip_serializing_if = "crate::AnnotationLayer::is_default")
     )]
     pub annotations: crate::AnnotationLayer,
+    /// One spoke per category, in drawing order from `start_angle_degrees`.
     pub categories: Vec<Category>,
+    /// The series, drawn in order; every fill before any outline.
     pub series: Vec<RadarSeries>,
+    /// Chart-wide appearance and series defaults.
     pub style: RadarStyle,
+    /// The hovered vertex or series. Its series is brightened by
+    /// `emphasis_brightness`, and a hovered vertex grows its marker like a
+    /// selected one.
     pub hovered: Option<RadarTarget>,
+    /// The selected vertex or series; a selected vertex grows its marker.
     pub selected: Option<RadarTarget>,
+    /// Which vertices carry data labels.
     pub labels: RadarLabels,
+    /// Decimals of the data labels, at most 6. The value axis labels ignore
+    /// it and show each ring value with trailing zeros trimmed.
     pub label_decimals: usize,
+    /// Appended to every data label, such as a unit.
     pub value_suffix: String,
     /// The one value axis every spoke shares, from the centre (`[0]`) to the
     /// outer ring (`[1]`). `None` fits the supplied values with a nice range
@@ -201,13 +247,20 @@ pub struct RadarChart {
     /// outer ring.
     pub value_range: Option<[f64; 2]>,
     /// Ring spacing in value units. `None` picks a nice spacing for about
-    /// five rings.
+    /// five rings; a spacing that gives more than 100 rings is refused by
+    /// `RadarRenderer::prepare`.
     pub ring_spacing: Option<f64>,
+    /// Whether rings and spokes are drawn.
     pub grid: bool,
+    /// Whether the legend is drawn.
     pub legend: bool,
+    /// Font family of every text; empty for the bundled default.
     pub font_family: String,
+    /// Base font size of labels, in logical pixels.
     pub font_size: f32,
+    /// Colour of every text.
     pub text_color: Color,
+    /// The frame's clear colour.
     pub background: Color,
 }
 impl Default for RadarChart {
@@ -239,17 +292,20 @@ impl Default for RadarChart {
 }
 impl RadarChart {
     /// The layer that receives pointer interaction. Bounded charts have no
-    /// overlays, so an `Overlay` value reads as `Base`.
+    /// overlays or subplots, so an `Overlay`, `Subplot` or `SubplotOverlay`
+    /// value reads as `Base`.
     pub fn active_layer(&self) -> crate::LayerRef {
         self.active_layer.bounded()
     }
     /// Set the interaction target layer and return the stored value
-    /// (`Overlay` is stored as `Base`). A change clears
-    /// `decorations.selected`, which names an element of the previous
-    /// layer's pointer route; the data selection is kept.
+    /// (`Overlay`, `Subplot` and `SubplotOverlay` are stored as `Base`). A
+    /// change clears `decorations.selected`, which names an element of the
+    /// previous layer's pointer route; the data selection is kept.
     pub fn set_active_layer(&mut self, layer: crate::LayerRef) -> crate::LayerRef {
         crate::layer::set_bounded_active_layer(&mut self.active_layer, &mut self.decorations, layer)
     }
+    /// The title to draw: `chart_title`, or the legacy `title` in the chart
+    /// font and colour.
     pub fn resolved_title(&self) -> crate::BoundedTitleOptions {
         self.chart_title.clone().unwrap_or_else(|| {
             crate::BoundedTitleOptions::from_legacy(
@@ -260,12 +316,16 @@ impl RadarChart {
             )
         })
     }
-    /// Freeze the legacy title's appearance before independently editing labels.
+    /// Copy the legacy `title` into `chart_title` in the current chart font
+    /// and colour, so later edits to `font_family`, `font_size` or
+    /// `text_color` no longer change the title. Does nothing when
+    /// `chart_title` is already set.
     pub fn normalize_title(&mut self) {
         if self.chart_title.is_none() {
             self.chart_title = Some(self.resolved_title());
         }
     }
+    /// The series with `id`.
     pub fn series(&self, id: &str) -> Option<&RadarSeries> {
         self.series.iter().find(|s| s.id == id)
     }
@@ -307,9 +367,12 @@ impl RadarChart {
             .flatten()
             .any(|t| t.series_id == series_id)
     }
+    /// A data label: `value` at `label_decimals` with `value_suffix`.
     pub fn label_text(&self, value: f64) -> String {
         format!("{:.*}{}", self.label_decimals, value, self.value_suffix)
     }
+    /// Reorder the spokes to `ids`, a permutation of the category ids,
+    /// moving every series' values with them.
     pub fn reorder_categories(&mut self, ids: &[&str]) -> Result<(), &'static str> {
         self.validate()?;
         if ids.len() != self.categories.len()
@@ -332,6 +395,9 @@ impl RadarChart {
         }
         Ok(())
     }
+    /// Check the limits and invariants the renderer relies on: category and
+    /// series counts, unique ids, one value per category, finite style
+    /// numbers, a valid value axis and targets that exist.
     pub fn validate(&self) -> Result<(), &'static str> {
         self.decorations.validate()?;
         self.annotations.validate()?;

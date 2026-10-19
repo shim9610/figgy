@@ -2,11 +2,19 @@
 
 ## Package names and features
 
-The Cargo packages are `figgy-renderer` and `figgy-model`. Their Rust library
-names remain `renderer` and `model`. Existing `use renderer::...` imports and
-type identities are preserved. A dependency previously named `renderer` needs
-`package = "figgy-renderer"` when upgrading to a source revision with the rename.
-An old source revision continues to require its old package name.
+The Cargo packages are `figgy-renderer` and `figgy-model`, and their Rust
+library names are `renderer` and `model`: code imports `renderer::...` and
+`model::...`, and the dependency names its package with the `package` key:
+
+```toml
+[dependencies]
+renderer = { package = "figgy-renderer", version = "0.18.0" }
+```
+
+A crate that uses the model types without the renderer depends on
+`model = { package = "figgy-model", version = "0.12.0" }`. To build against a
+local checkout, replace `version` with a `path` to `crates/renderer` or
+`crates/model`.
 
 The renderer re-exports model types. Enable its `serde` feature to serialize
 those types; consumers do not need to name `figgy-model` merely to enable serde.
@@ -14,23 +22,24 @@ those types; consumers do not need to name `figgy-model` merely to enable serde.
 require a windowing or GUI framework. The `figgy` WASM wrapper is a separate
 consumer and has `publish = false` for the Rust registry.
 
-Rust 1.99 is the declared support floor, not a claim that earlier toolchains
-cannot compile the code. The tested development toolchain and the support floor
-are recorded separately. Direct host device/queue/render-pass sharing requires
-wgpu 30; a host on another wgpu major must adapt or upgrade its integration.
+Rust 1.99 is the declared support floor (`rust-version`), not a claim that
+earlier toolchains cannot compile the code. CI tests with the toolchain pinned
+in the source repository's `rust-toolchain.toml` (1.99.0). Direct host
+device/queue/render-pass sharing requires wgpu 30; a host on another wgpu major
+must adapt or upgrade its integration.
 
-For a complete headless Cartesian program, run the shipped `line` example.
-The source repository's [example index](https://github.com/shim9610/figgy/blob/master/crates/renderer/examples/README.md)
+For a complete headless Cartesian program, run the shipped `line` example
+(`cargo run --locked -p figgy-renderer --example line -- line.png` in a source
+checkout). The source repository's [example index](https://github.com/shim9610/figgy/blob/master/crates/renderer/examples/README.md)
 maps each chart to its input, output and command. Gallery images are repository
 assets; they are not runtime resources required by the crate.
 
-macOS / Metal support is **experimental and not yet stable**. Since version 0.14.0, the renderer uses
-explicit FMA rounding boundaries for hi/lo coordinates and a shared CPU/GPU rule
-for midpoint picking uncertainty. Physical Apple GPU coverage remains outstanding.
-A separate precompiled Metal shader experiment does not change the default renderer
-or establish a precision guarantee; no dependency patch or precompiled shader is required.
-The experimental path is not a public Cargo feature. Existing regression checks
-remain enabled; see the source repository's backend results for tested revisions.
+macOS / Metal support is **experimental and not yet stable**: physical Apple GPU
+coverage is outstanding. The source repository's opt-in precompiled Metal shader
+probe is not a Cargo feature, does not change the default renderer and is not a
+precision guarantee; applications need no dependency patch or precompiled shader.
+Tested revisions and results are in the
+[backend status](https://github.com/shim9610/figgy/blob/master/ci/STATUS.md).
 
 ## Entry points and input contracts
 
@@ -42,22 +51,56 @@ remain enabled; see the source repository's backend results for tested revisions
 | `BoxPlotRenderer` | `BoxPlotChart`, supplied summary statistics | `prepare` |
 | `RadarRenderer` | `RadarChart`, bounded per-category values per series | `prepare` |
 
-The bounded chart APIs are deliberately separate from `ColumnSource` and streaming.
-They do not calculate raw-sample statistics. Chart-specific limits, missing values,
-style inheritance and picking identities are documented in their modules.
-Categorical/boxplot targets use category/series IDs, radar targets a series ID with
-an optional category ID for a vertex; radial targets use group/index positions, so a host that reorders slices must update interaction targets too.
+Bounded charts (radial, categorical, boxplot and radar) carry every value in
+the chart model, up to fixed per-module limits such as 64 radial slices, or 64
+categories and 16 series for bars. Their APIs are separate from `ColumnSource`
+and streaming, and they do not calculate raw-sample statistics. Chart-specific
+limits, missing values, style inheritance and picking identities are documented
+in their modules. Categorical/boxplot targets use category/series IDs, radar
+targets a series ID with an optional category ID for a vertex; radial targets
+use group/index positions, so a host that reorders slices must update
+interaction targets too.
 
-`ColumnSource` supplies scalar GPU pairs; `HiLoColumnSource` preserves sub-f32
-deltas for large coordinates. Native upload avoids an intermediate CPU conversion
-vector but still copies staging data to GPU storage. It is not a promise of zero
-driver copies. Use the hi/lo path explicitly when precision requires it.
+A polar plot is not a renderer of its own: `Config.polar = Some(PolarOptions)`
+makes `Renderer` draw the same columns and `SeriesConfig` in (angle, radius),
+with `bottom_x` as the angle axis and `left_y` as the radius axis. One turn
+always spans 360° (or 2π) from `zero_angle_degrees`: the angle mapping ignores
+`bottom_x.min` / `max`, which only choose the angle ticks, spokes and labels
+drawn. Preparation, picking, export and subplots use the same calls as a
+rectangular chart. Decorations follow polar rules: the outer ring registers no
+hit region, and the radius ray turns around the centre when dragged.
+Annotations draw only ratio-anchored text and arrows; reference lines, spans
+and data-anchored items are skipped and reported as
+`RenderWarning::AnnotationSkipped`.
+Scatter, line and scatter-line series are drawn, including fills and steps.
+Histograms, fields, contours, error bars, vectors, overlay layers, a
+logarithmic or inverted angle axis, an arc interpolation on a step line and
+streamed sources are rejected with explicit errors. See the
+[polar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/POLAR.md).
 
-Replayable streams must return the same encoded values for the same source
-revision. Bounded renderer memory does not make a one-shot source replayable.
-Initial fit previews can be approximate; completion denotes the final render,
-not merely that all input primitives have been submitted. The host owns and
-retains the replayable source for the operations it enables.
+`ColumnSource` uploads each value as one `f32`, stored as an `(f32, 0)` pair;
+`HiLoColumnSource` uploads `(hi, lo)` `f32` pairs that preserve sub-f32 deltas
+for large coordinates such as Unix timestamps. Upload with `Renderer::add_column`,
+`add_columns` or `upsert_column`, and with `add_hilo_column` or
+`upsert_hilo_column` for hi/lo sources. Native upload avoids an intermediate CPU
+conversion vector but still copies staging data to GPU storage. It is not a
+promise of zero driver copies. Use the hi/lo path explicitly when precision
+requires it.
+
+Streamed columns (`StreamColumn`) declare `StreamReplay::Sequential` or
+`RandomAccess`. `Unavailable` is rejected: the renderer keeps a bounded working
+set, so exact redraws, zooms and queries read the source again. Every replay
+must return the same encoded values for the same source revision. The host owns
+and retains the replayable source for the operations it enables.
+
+Automatic streaming renders the registered range unless explicitly asked to fit.
+Use `request_stream_auto_fit(chart_id, padding)` for the next automatic execution
+when the initial range is unknown, or when the user requests a fresh fit. Do not
+call it for every chunk, repaint, tab switch or aspect-ratio change. Manual streaming
+and resident drawing do not consume that request. Initial fit previews can be
+approximate. In `StreamingStatus`, `status` reaches `StreamingState::Complete`
+with the final render, while `AllSubmitted` only means that every input primitive
+has been submitted; `auto_fit_pending` stays true until a requested fit is final.
 
 ## Direct SSOT edits and convenience helpers
 
@@ -74,17 +117,15 @@ field setters:
 
 | Operation | Config changes |
 | --- | --- |
-| `config_mut()` / `with_axis_range_change(...)` / `with_decoration_change(...)` | Only the fields the caller writes; these accessors also mark the relevant derived resources dirty. |
-| `set_x_range(...)` / `set_y_range(...)` | Set both axes in the pair and choose major spacing, minor count, label format and precision from the bottom/left axis's scale. Linear axes retain an existing timestamp format. |
+| `config_mut()` / `with_axis_range_change(...)` / `with_decoration_change(...)` | Only the fields the caller writes. `config_mut` and `with_axis_range_change` also set the chart's `data_dirty()` and `raster_dirty()` flags; `with_decoration_change` sets only `raster_dirty()`. |
+| `set_x_range(...)` / `set_y_range(...)` | Set both axes in the pair and choose major spacing, minor count, label format and precision from the bottom/left axis's scale. On a linear axis an existing timestamp format is kept and any other format, including a polar `Degrees` or `Radians` format, becomes `Decimal`. On a polar chart `set_x_range` only chooses the angle ticks, spokes and labels drawn. |
 | `auto_fit_x*` / `auto_fit_y*` / `auto_fit_colorbar*` | Derive a range from data or supplied extents with padding, then apply the associated tick and label adjustments. |
 | `with_title(...)` | Replace the title text and grow its band when the measured text is taller than the current band. The band never shrinks. |
 | `with_x_title(...)` / `with_y_title(...)` | Replace the bottom/left axis title text; these helpers do not fit margins. |
 
 Fit padding is an explicit caller argument: `0.05` adds 5% on each side of a
 linear range, while `0.0` adds no padding. The renderer does not impose a global
-5% default; a binding or UI may choose its own convenience default. Opposite
-axis options remain independent in raw `Config`; host-side linked editing is a
-convenience policy, not renderer-owned link metadata.
+5% default; a binding or UI may choose its own convenience default.
 
 To change only the X range while keeping the current tick settings:
 
@@ -117,10 +158,9 @@ Numeric tick labels may use a coarser display stride to avoid overlaps, without
 changing tick/grid positions or the config. Number format and requested precision
 are controlled by `label_style.format` and `label_style.significant_digits`,
 including colorbar labels; unusually long labels still need explicit margin space.
-Calendar-based timestamp ticks follow their own layout policy. Direct injection
-also remains subject to config validation. After any edit, refresh the derived
-view as described below. Neither editing the SSOT nor using a helper redraws a
-caller-owned `ChartView` by itself.
+Calendar-based timestamp ticks follow their own layout policy. The renderer
+still validates a directly edited config when it registers, refreshes, prepares
+or exports the chart. After any edit, refresh the derived view as described below.
 
 ## Native edit, pick and export workflow
 
@@ -132,13 +172,17 @@ caller-owned `ChartView` by itself.
    `paint_prepared`, or the panel export helpers. Renderer-managed chart
    IDs instead use `register_chart`, `set_chart_config`/`set_chart_series` and
    `prepare_registered`; editing an unrelated local `Config` does not edit that ID.
-   For bounded charts, edit the `RadialChart`, `CategoricalChart` or `BoxPlotChart`
-   passed to `prepare`. Normal edits do not require `clear_cache`.
+   For bounded charts, edit the `RadialChart`, `CategoricalChart`, `BoxPlotChart`
+   or `RadarChart` passed to `prepare`. Normal edits do not require `clear_cache`.
 3. Hit-test the frame currently displayed. Bounded data uses `frame.hit_test`;
-   titles/axes/labels/legends/plot areas use `frame.decorations()`. Both take
-   chart-local logical pixels. Cartesian `GpuPickRequest` instead carries a
-   physical canvas position, physical display panel and display scale. Do not
-   reuse one coordinate convention for both APIs.
+   bounded titles/axes/labels/legends/plot areas use `frame.decorations()`. Both
+   take chart-local logical pixels. Cartesian decorations use
+   `HitMap::for_active_layer(&config)`, or `ChartView::hit_test_active_layer` to
+   include annotations, in the pixels of the config the view was refreshed with.
+   Cartesian data picks address a registered chart ID: `Renderer::pick_chart` /
+   `pick_chart_data` take a `GpuPickRequest` with a physical canvas position,
+   the physical display panel, the display scale and `max_distance_px`. Do not
+   mix these coordinate conventions.
 4. Store the target in the model and edit its values/styles or decoration layout.
    For Cartesian charts, refresh the view's changed axes/decorations and rebuild
    affected caller-owned styles as described below, then prepare, draw and submit.
@@ -147,9 +191,11 @@ caller-owned `ChartView` by itself.
    For a resize that may fail layout validation, prepare a trial model before
    replacing the displayed model. The host requests frames and advances animations.
 5. Export the same model state to RGBA/PNG. Selection and hover emphasis are model
-   state; clearing them or exporting another copy changes the output. Hide only
-   decoration handles by clearing `decorations.selected` in an export clone while
-   preserving data selection, offsets and `data_area`. The caller stores PNG bytes.
+   state; clearing them or exporting another copy changes the output. For bounded
+   charts, hide only decoration handles by clearing `decorations.selected` in an
+   export clone while preserving data selection, offsets and `data_area`.
+   Cartesian exports never draw decoration selection boxes. The caller stores
+   PNG bytes.
 6. Release obsolete frame references. Custom render-pass hosts call
    `end_gpu_frame` / `end_frame` after submitting or discarding their commands.
    Cartesian window drawing and panel export handle their own submission boundary;
@@ -167,6 +213,7 @@ either object automatically in the caller-owned `prepare` path.
 | Axis range, ticks, grid, title, legend, decoration layout or panel size | Call `refresh_axis` with the current chart and panel rectangle. Use `refresh_axis_with_selection` when displaying selection boxes. |
 | Series appearance, mapped styles or series identity | Recreate the affected `ChartStyle` with `create_style_for_series`, or its scaled variant at the display scale. Refresh decorations too if labels or legend appearance changed. |
 | Column values | Finish the upload/upsert before preparing. Refresh axes/decorations if the edit also changes their config. |
+| Annotation items or annotation selection only | Call `refresh_annotations(view, chart, panel_rect, selected)`; it leaves the axis and decoration textures alone. A `refresh_axis*` call redoes the annotation layer too. Toggling `annotations.visible` only skips the composite and needs no raster refresh. |
 | Renderer-owned chart ID | Commit edits with `set_chart_config` / `set_chart_series`, refresh the caller-owned view from that registered config, then call `prepare_registered`. This path maintains the series-style cache itself. |
 
 `prepare` updates transforms and derived GPU data; it does **not** rerasterize
@@ -176,9 +223,9 @@ Use the chart's dirty state or `ChartRenderStamp::needs_raster_since` to decide
 when to refresh; unchanged frames can reuse the existing view and styles.
 
 In that refresh branch, call `refresh_axis` and then read
-`view.render_warnings()`. It lists the tick settings the new raster could not
-draw as written, as `RenderWarning`s: for example a `major_spacing` drawn at
-automatic spacing or a clamped `minor_count` (limits in the
+`view.render_warnings()`. It lists, as `RenderWarning`s, the annotations the new
+raster skipped and the tick settings it could not draw as written: for example a
+`major_spacing` drawn at automatic spacing or a clamped `minor_count` (limits in the
 [configuration reference](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md)).
 `create_chart_view` and every successful refresh re-derive the list from the
 chart they rasterized, so it changes on dirty-driven raster refreshes and never
@@ -225,19 +272,22 @@ Panel export helpers build their own scaled view and styles from the supplied
 configs. A correct PNG does not establish that a separately displayed view has
 been refreshed. Apply the same model edits to both paths. A `Config` with
 `overlays` is exported as a whole by the `export_document_*` helpers (every
-layer composited in order); the `export_panel_*` helpers render its base panel
-only, and the two are byte-identical for a document without overlays. A
-document with `subplots` (more charts, each with its own axes) exports the
-union of every chart area (`Config::document_area`), and a display fits that
-union with `display_config_for_surface`. See the
-[overlay layer contract](INTERACTION.md#overlay-layers) and
-[subplots](INTERACTION.md#subplots).
+layer composited in order). A document with `subplots` (more charts, each with
+its own axes) exports the union of every chart area (`Config::document_area`),
+and a display fits that union with `display_config_for_surface`. The
+`export_panel_*` helpers render only the parent chart's own base layer in its
+`chart_area`; the two are byte-identical for a document without overlays or
+subplots. See the
+[overlay layer contract](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#overlay-layers) and
+[subplots](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#subplots).
 
 ### Bounded chart example
 
 This bounded example accepts the host GPU pair, selects from a displayed frame,
 changes a slice color and exports the resulting model. It is compiled as a doctest;
-the interactive editors demonstrate render-pass submission and pointer events.
+the `radial_editor`, `categorical_editor`, `boxplot_editor` and `radar_editor`
+examples (`--features egui_demo`) demonstrate render-pass submission and pointer
+events.
 
 ```rust,no_run
 use renderer::{Color, RadialChart, RadialRenderer, RadialSlice, RendererDevice};
@@ -265,17 +315,11 @@ async fn edit_and_export(
 }
 ```
 
-Automatic streaming renders the registered range unless explicitly asked to fit.
-Use `request_stream_auto_fit(chart_id, padding)` for the next automatic execution
-when the initial range is unknown, or when the user requests a fresh fit. Do not
-call it for every chunk, repaint, tab switch or aspect-ratio change. Manual streaming
-and resident drawing do not consume that request. Inspect `StreamingStatus` and
-`auto_fit_pending`; submitted input alone is not the final-image completion signal.
+## Errors
 
 Cartesian operations return `FiggyError`; bounded renderers use `RadialError`,
 `CategoricalError`, `BoxPlotError` and `RadarError`. Handle validation/layout/budget errors before
-replacing the last valid display. Device loss and external allocation failure still
-need host recovery; a configured memory budget is not a driver success guarantee.
+replacing the last valid display.
 
 ## Construction and prewarming
 
@@ -284,7 +328,7 @@ Construction and full Cartesian prewarming are separate operations:
 | Entry point | Work performed |
 | --- | --- |
 | `Renderer::try_new` / `try_new_observed` | Validate device capabilities and create the initial column pool, shared layouts/sampler, shader modules, unit quad and axis pipeline. Optional resident data/style, arc/fit/contour-label and picking pipelines remain lazy. |
-| Native `for_window` / `for_window_async` (including observed variants) | Create and retain instance/adapter/device/queue, configure a surface and optional MSAA target, then initialize the same base renderer resources. |
+| Native `for_window` / `for_window_async` / `for_window_async_observed` | Create and retain instance/adapter/device/queue, configure a surface and optional MSAA target, then initialize the same base renderer resources. |
 | Browser `for_window_async` / `for_window_async_observed` | In addition to window setup, await temporary JavaScript warmup pipelines for the Cartesian render entries. Those temporary pipelines are discarded; they do not populate the renderer's retained optional caches. |
 | `for_window_minimal_async_observed` | Limit that browser render warmup to `PreparationFeature::Basic` entries. On native targets it has the same base initialization as the ordinary async constructor. It does not install a completed Basic preparation group. |
 | `prewarm_all` / `prewarm_all_observed` | Compile and retain the resident Cartesian graphics/style pipelines, contour-label compute, arc scans, fit reduction and GPU picking machinery for the current renderer/target generation. |
@@ -300,8 +344,6 @@ Full prewarm does not prepare future chart data, views, series styles, label
 atlases or result buffers, and is not a guarantee of allocation-free or
 compilation-free first drawing. Separate radial/categorical/boxplot/radar
 renderers and nonresident matrix/tile streaming pipelines are outside this prewarm scope.
-Browser warmup uses explicit production-compatible descriptors rather than
-auto-layout guesses; temporary JS warmup and installed wgpu caches remain distinct.
 
 ## Ownership and frame validity
 
@@ -312,15 +354,10 @@ also retain the instance, adapter and surface needed for their own lifetime.
 
 Cartesian `PreparedFrame` validity depends on captured renderer resources and
 revisions. If painting returns `StalePreparedFrame`, rebuild the inputs and
-prepare again. A small-chart `Arc<...Frame>` owns an immutable GPU snapshot:
+prepare again. A bounded chart frame (`Arc<RadialFrame>`, `Arc<CategoricalFrame>`,
+`Arc<BoxPlotFrame>` or `Arc<RadarFrame>`) owns an immutable GPU snapshot:
 keeping it alive keeps its resources alive even after the current model changes.
-Call `prepare` again after an edit; an old frame does not update itself.
-
-After submitting or discarding recorded commands, custom native hosts call
-`Renderer::end_gpu_frame` or the small renderer's `end_frame`. Poll the device as
-required by the host loop so completion callbacks can retire resources. Do not
-retain every historical frame in a live-edit loop. Window helpers manage their
-documented submission boundaries.
+Do not retain every historical frame in a live-edit loop.
 
 ## GPU memory accounting and budget scope
 
@@ -337,8 +374,8 @@ created before a budget is set. Lowering the budget does not shrink or evict
 resources: the setter applies the policy and returns `Some(current_total)` if
 the tracked total already exceeds it, otherwise `None` (also when disabling it).
 
-The regular ledger excludes lazy Milkyway/Constellation style textures (PSF,
-planet atlas, blackbody LUT and ring strip); streaming export admission separately
+The regular ledger excludes the lazy `DrawStyle::Milkyway` / `DrawStyle::Constellation`
+textures (PSF, planet atlas, blackbody LUT and ring strip); streaming export admission separately
 checks their known payload size. CPU allocations, final RGBA/PNG bytes, host-owned
 GPU targets, other renderers' resources and shader/pipeline/driver internals are
 also outside this report. Counts describe requested tracked bytes, not measured
@@ -350,17 +387,17 @@ guarantee driver allocation success; handle allocation failure and device loss.
 
 ## Render targets, coordinates and output
 
-Small-chart frames require a target with the prepared physical size, the renderer's
+Bounded chart frames require a target with the prepared physical size, the renderer's
 format and sample count 1. `draw` sets viewport/scissor to that target. For a host
 UI subregion or a multisampled host pass, draw to a matching offscreen texture and
 composite it. Supported formats are RGBA8/BGRA8, linear or sRGB.
 
-Small-chart `prepare` takes logical size and scale; picking takes logical
+Bounded chart `prepare` takes logical size and scale; picking takes logical
 coordinates. Frame sizes and data geometry rectangles are physical pixels;
 `frame.decorations()` exposes its hit bounds and selection boxes in logical pixels.
 Prepare at the actual output scale to rasterize labels at that resolution.
 Each module documents its accepted size/scale bounds; the Cartesian export scale
-contract differs from the small-chart contract.
+contract differs from the bounded chart contract.
 
 RGBA export returns pixels; PNG encoding returns bytes. The caller decides where
 to send or store them. Native blocking helpers and async variants are both
@@ -368,28 +405,40 @@ available. No project file persistence or application event loop is required.
 
 ## Compatibility policy
 
-Changing package identity requires a Cargo dependency declaration update; it does
-not rename Rust items. Bounded chart modules are already part of the public source
-release. Version 0.16.0 / model 0.10.0 added plot-area decoration state and targets:
-fully specified `DecorationLayout` literals need `data_area: None`, and exhaustive
-`DecorationId` matches need `DataArea` and `DataAreaEdge`. See the interaction guide
-for migration details. Version 0.17.0 / model 0.11.0 added `RichText.align`;
-JSON without it parses as `Left`, but fully specified `RichText` literals need
-`align: TextAlign::Left`. `AxisOptions` has no new required field in this release.
-Packaging work does not change those contracts. Public
-low-level modules remain available; they must not be removed silently during packaging.
-
 The public Rust surface includes struct literals and exhaustive enums. Removing
 or changing fields, adding required fields or enum variants, changing trait
 requirements, and adding `non_exhaustive` to existing types can break consumers.
 Incompatible changes require a new 0.x minor version and migration notes; patch
-updates must preserve the supported contract. A new wgpu major needs the same
-review. This source release is figgy-renderer 0.17.0 and figgy-model 0.11.0; the first
-crates.io release was 0.16.1 / 0.10.0. Later source commits do not replace published,
-immutable registry artifacts.
+updates must preserve the supported contract. Public low-level modules such as
+`data_render`, `axis_render` and `raster` follow the same policy. Moving to a new
+wgpu major changes public wgpu types such as the `RendererDevice` handles, so it
+ships in a new 0.x minor.
+
+figgy-renderer 0.18.0 / figgy-model 0.12.0 follow the crates.io releases
+0.16.1 / 0.10.0 (the first, 2026-10-13) and 0.17.0 / 0.11.0 (2026-10-16).
+Published registry artifacts are immutable.
+
+Version 0.16.0 / model 0.10.0 added plot-area decoration state and targets:
+fully specified `DecorationLayout` literals need `data_area: None`, and exhaustive
+`DecorationId` matches need `DataArea` and `DataAreaEdge`. See the
+[interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#트레잇-상태-타입-마이그레이션-웹-연결)
+for migration details. Version 0.17.0 / model 0.11.0 added `RichText.align`;
+JSON without it parses as `Left`, but fully specified `RichText` literals need
+`align: TextAlign::Left`.
+
+Version 0.18.0 / model 0.12.0 is also an incompatible minor. JSON written by
+0.17.0 still parses, but fully specified literals need new fields, exhaustive
+matches need new enum variants, `RenderWarning::axis()` returns an `Option`,
+and some low-level `data_render` signatures change.
+[Migrating from 0.17.0](https://github.com/shim9610/figgy/blob/master/CHANGELOG.md#migrating-from-0170)
+lists every change and the value to write for each new field.
 
 The optional serde representation is not an application file-format version.
-Same-version round-trip tests do not promise arbitrary cross-version migrations.
+Serialized fields added since the first crates.io release (0.16.1 / 0.10.0) are
+optional or defaulted and omitted at their defaults, so a document written by one
+of those releases parses and re-serializes unchanged on a later one. Arbitrary
+cross-version migrations are not promised: an older release ignores fields it
+does not know and rejects enum variants it does not know.
 
 ## Detached Cartesian pipeline preparation
 
@@ -397,8 +446,7 @@ Same-version round-trip tests do not promise arbitrary cross-version migrations.
 warmup as described above. A host using detached preparation to gate first use
 must compile and install `PreparationFeature::Basic` (which also includes arc
 scans and fit reduction), plus the groups needed by its charts. Construction
-alone does not mark Basic ready. Ordinary `prepare` still supports lazy creation;
-`prewarm_all` explicitly prepares all resident Cartesian groups.
+alone does not mark Basic ready.
 
 `begin_preparation(feature)` returns an owned `PipelinePreparation`, or `None`
 when that group is already ready. Its consuming `compile(observer).await` owns
@@ -415,12 +463,11 @@ ignore results after their renderer has been disposed.
 provide the host's feature inventory and gating contract. Background compilation
 can start for all groups after Basic is installed. Before calling a render path,
 the host must ensure the current declarations' required groups are ready; before
-picking, also ensure Picking. This opt-in API does not change legacy lazy creation.
-The groups cover Cartesian resident pipelines, matching `prewarm_all`; nonresident
-matrix/tile streaming and separate radial/categorical/boxplot/radar renderers
-are not part of this inventory. GPU-driver contention can still delay frames; detached
+picking, also ensure Picking. The groups cover the same Cartesian resident
+pipelines as `prewarm_all`. GPU-driver contention can still delay frames; detached
 ownership is not a frame-time guarantee.
 
+## Line picking
 
 Line picking treats a midpoint difference within the projected coordinates' f32
 rounding uncertainty as a tie and chooses the earlier endpoint, on both CPU and
@@ -433,7 +480,11 @@ it does not add a pick radius or turn finite segments into infinite lines.
 
 ## Bounded chart decoration interaction
 
-Radial, categorical, boxplot and radar frames expose `decorations()`, a renderer-measured hit map using the existing `HitMap` / `Selectable` / `Draggable` contracts. See [interaction workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md) for selection, logical-pixel dragging, SSOT persistence and host integration.
+Radial, categorical, boxplot and radar frames expose `decorations()`, a renderer-measured hit map using the shared `HitMap` / `Selectable` / `Draggable` / `Resizable` contracts. See [interaction workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md) for selection, logical-pixel dragging, SSOT persistence and host integration.
+
+## Pointer position in drags
+
+Hosts that know the pointer position pass it through `Draggable::drag_from(cfg, at, dx, dy)`; the default forwards to `drag_by`, and only a polar chart's axes and tick labels read the position (the ray turns around the centre, the angle labels move along the spoke under the pointer). `Config::nudge_from(element, Some(at), dx, dy)` is the model-level entry; `nudge` is `nudge_from` without a position.
 
 ## Annotation layer
 
@@ -447,6 +498,7 @@ renderers return the layer as `prepare_annotations(chart, size, scale)` →
 `Arc<BoundedAnnotationFrame>`, drawn as `draw_underlay`, the frame, `draw_overlay`
 (an underlay needs `set_background(FrameBackground::HostClear)` and a clear with
 the chart background; `export_rgba` handles that itself). Items the raster could
-not place are `RenderWarning::AnnotationSkipped` on `render_warnings()`. See the
+not place are `RenderWarning::AnnotationSkipped` on `ChartView::render_warnings()`
+(Cartesian) or `BoundedAnnotationFrame::render_warnings()` (bounded). See the
 [annotation section of the interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer)
 and the [configuration reference](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#layerref--annotationlayer).

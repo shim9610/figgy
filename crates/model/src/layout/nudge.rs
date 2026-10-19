@@ -381,13 +381,6 @@ impl Config {
         }
     }
 
-    /// Detached-axis drag rule: the axis line (with its ticks and labels)
-    /// moves only **perpendicular to itself** — y-axes horizontally, x-axes
-    /// vertically — via `line_offset`. The parallel component is discarded.
-    /// The data area / grid / data transform are untouched, so tick positions
-    /// along the axis stay aligned with the data; the constraint is only that
-    /// the axis line stays inside the chart area (it may cross into the data
-    /// area, e.g. a y-axis at x = 0).
     /// Polar: the radius axis ray turns around the centre. With the pointer,
     /// the ray follows its angle exactly; without it, a point on the outer
     /// ring follows the drag's component across the ray. The angle axis is
@@ -512,6 +505,13 @@ impl Config {
         }
     }
 
+    /// Detached-axis drag rule: the axis line (with its ticks and labels)
+    /// moves only **perpendicular to itself** — y-axes horizontally, x-axes
+    /// vertically — via `line_offset`. The parallel component is discarded.
+    /// The data area / grid / data transform are untouched, so tick positions
+    /// along the axis stay aligned with the data; the constraint is only that
+    /// the axis line stays inside the chart area (it may cross into the data
+    /// area, e.g. a y-axis at x = 0).
     fn nudge_axis(&mut self, side: Side, dx: f32, dy: f32) -> NudgeResult {
         let d = match side {
             Side::Left | Side::Right => dx,

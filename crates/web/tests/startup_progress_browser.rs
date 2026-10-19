@@ -8,7 +8,7 @@ use web_sys::HtmlCanvasElement;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
-const STARTUP_STAGES: [(&str, &str); 39] = [
+const STARTUP_STAGES: [(&str, &str); 40] = [
     ("window", "instance"),
     ("window", "surface"),
     ("window", "adapter"),
@@ -20,6 +20,7 @@ const STARTUP_STAGES: [(&str, &str); 39] = [
     ("renderer", "shader modules"),
     ("renderer.prewarm.async", "fullscreen textured"),
     ("renderer.prewarm.async", "precise line"),
+    ("renderer.prewarm.async", "line area fill"),
     ("renderer.prewarm.async", "hand-drawn line"),
     ("renderer.prewarm.async", "milkyway ribbon"),
     ("renderer.prewarm.async", "milkyway stars"),

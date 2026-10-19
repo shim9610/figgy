@@ -4,7 +4,9 @@ use figgy::FiggyChart;
 use renderer::{
     Color, DataRenderType, SeriesConfig,
     config::{DataSelectionsConfig, PickedDataRef},
-    data_config::{BarOrientation, DataBarStyleConfig},
+    data_config::{
+        BarOrientation, DataBarStyleConfig, VectorComponents, VectorPivot, VectorScale, VectorStyle,
+    },
 };
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
@@ -146,4 +148,67 @@ async fn histogram_selection_reads_live_gpu_bins_and_steps_in_both_orientations(
         .update_register_column_f64("short-heights", &[6.25])
         .unwrap();
     assert_eq!(details(&chart).await["value"], 6.25);
+}
+
+#[wasm_bindgen_test(async)]
+async fn point_vector_selection_steps_along_its_anchors() {
+    let mut chart = FiggyChart::create(canvas()).await.unwrap();
+    // The u column is one value shorter, so the series draws three arrows.
+    chart
+        .register_column_f32("vx", &[0.0, 1.0, 2.0, 3.0])
+        .unwrap();
+    chart
+        .register_column_f32("vy", &[0.0, 1.0, 2.0, 3.0])
+        .unwrap();
+    chart.register_column_f32("vu", &[1.0, 1.0, 1.0]).unwrap();
+    chart
+        .register_column_f32("vv", &[0.0, 0.5, 1.0, 1.5])
+        .unwrap();
+    let series = vec![SeriesConfig {
+        series_id: "arrows".into(),
+        source_id: Some("source-arrows".into()),
+        label: None,
+        x_column: "vx".into(),
+        y_column: "vy".into(),
+        render_type: DataRenderType::Vector {
+            components: VectorComponents::Points {
+                u: "vu".into(),
+                v: "vv".into(),
+            },
+            style: VectorStyle {
+                color: Color::BLACK,
+                width_px: 2.0,
+                scale: VectorScale::Data { factor: 1.0 },
+                pivot: VectorPivot::Tail,
+                head_length_px: 8.0,
+                head_width_px: 8.0,
+                min_length_px: 0.0,
+                color_map: None,
+            },
+        },
+    }];
+    chart
+        .set_series(&serde_json::to_string(&series).unwrap())
+        .unwrap();
+    select(
+        &mut chart,
+        PickedDataRef::Point {
+            source_id: Some("source-arrows".into()),
+            series_id: "arrows".into(),
+            point_index: 0,
+        },
+    );
+    let point_index = |chart: &FiggyChart| -> serde_json::Value {
+        let config: serde_json::Value = serde_json::from_str(&chart.get_config().unwrap()).unwrap();
+        config["picked_data"]["refs"][0]["point_index"].clone()
+    };
+    assert!(chart.step_selection(1, 0).unwrap());
+    assert_eq!(point_index(&chart), 1);
+    assert!(chart.step_selection(1, 0).unwrap());
+    assert_eq!(point_index(&chart), 2);
+    // The last arrow is the last index every column has.
+    assert!(!chart.step_selection(1, 0).unwrap());
+    assert_eq!(point_index(&chart), 2);
+    assert!(chart.step_selection(-1, 0).unwrap());
+    assert_eq!(point_index(&chart), 1);
 }

@@ -539,23 +539,27 @@ pub enum BarAlign {
 /// handling are the same code, not a parallel implementation that drifts.
 ///
 /// `axis.min` / `axis.max` are the authority on the z range. A helper may fill
-/// them in from matrix statistics, the way [`AxisOptions::auto_ticks`] fills in
+/// them in from column statistics (matrix z values, or the value columns of
+/// point and vector colour maps), the way [`AxisOptions::auto_ticks`] fills in
 /// spacing, but nothing else stores a z range.
 ///
 /// Consequences worth stating, because they are decisions and not accidents:
 ///
-/// - A `Heatmap` / `Contour` / `HeatmapContour` series requires this to be
-///   `Some`. Without it there is no z range and no colormap anywhere, so there
-///   is no value to draw — the renderer rejects the series rather than
-///   inventing one.
-/// - To hide the bar, set `visible: false`. The options stay, the field still
-///   renders, and the band is given back to the data area.
-/// - There is therefore **one z scale per chart**. Several heatmaps in one
-///   chart share it; two colourbars with different scales is out of scope.
+/// - A `Heatmap` / `Contour` / `HeatmapContour` series, a series whose
+///   scatter style sets `point_color_map` and a vector series whose style
+///   sets `color_map` require this to be `Some`. Without it there is no z
+///   range and no colormap anywhere, so there is no value or colour to draw —
+///   the renderer rejects the series rather than inventing one.
+/// - To hide the bar, set `visible: false`. The options stay, those series
+///   still render, and the band is given back to the data area.
+/// - There is therefore **one z scale per chart**. Every heatmap, contour and
+///   colour-mapped scatter or vector series in one chart shares it; two
+///   colourbars with different scales is out of scope.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ColorBarOptions {
-    /// False draws nothing and reserves no band. Field series still render.
+    /// False draws nothing and reserves no band. Field and colour-mapped
+    /// series still render.
     pub visible: bool,
     /// Which margin the bar occupies. `Left` / `Right` give a vertical bar,
     /// `Top` / `Bottom` a horizontal one, and this alone decides which.
@@ -567,7 +571,8 @@ pub struct ColorBarOptions {
     /// The strip's short dimension: width for a vertical bar, height for a
     /// horizontal one.
     pub thickness_px: f32,
-    /// Space between the data area and the strip.
+    /// Space between the strip and the band of the chart axis on the same
+    /// side (that axis' ticks and labels next to the data area).
     pub gap_px: f32,
     /// Strip length as a fraction of the data area's length along its side.
     pub length_frac: f32,
@@ -577,15 +582,15 @@ pub struct ColorBarOptions {
     /// **margin-noncontributing**, so nudging the bar moves it without
     /// reflowing the data area under the pointer.
     ///
-    /// This is where a drag accumulates. Without it the bar had no continuous
-    /// position at all, which is what kept it out of the selection / drag /
-    /// resize machinery every other piece of chrome already uses.
+    /// This is where a drag accumulates: it is the continuous position the
+    /// selection / drag / resize machinery moves, as for every other piece of
+    /// chrome.
     pub offset_x: f32,
     pub offset_y: f32,
     pub colormap: ColorMap,
-    /// Colour for z values the ramp cannot place: NaN, and non-positive z on a
-    /// logarithmic colourbar. Fully transparent by default — "missing" reads as
-    /// absent rather than as some particular value.
+    /// Colour for z values the ramp cannot place: NaN, infinities, and
+    /// non-positive z on a logarithmic colourbar. Fully transparent by default
+    /// — "missing" reads as absent rather than as some particular value.
     pub nan_color: Color,
     pub border_color: Color,
     pub border_width: f32,
@@ -598,16 +603,18 @@ impl ColorBarOptions {
     /// place it — draw those with [`Self::nan_color`].
     ///
     /// This is **the** z→colour normalization. The CPU colourbar strip and the
-    /// GPU field sampler both go through this formula, so a cell and the tick
-    /// beside it cannot disagree about what a value looks like:
+    /// GPU field, colour-mapped scatter and vector shaders all go through this
+    /// formula, so a cell or marker and the tick beside it cannot disagree
+    /// about what a value looks like:
     ///
     /// ```text
     /// linear: t = (z - min) / (max - min)
     /// log:    t = (log10 z - log10 min) / (log10 max - log10 min)
     /// ```
     ///
-    /// clamped to `[0, 1]`. `None` for NaN, for a non-positive `z` on a
-    /// logarithmic bar (no logarithm to take), and for a degenerate range.
+    /// clamped to `[0, 1]`. `None` for a non-finite `z` (NaN or an infinity),
+    /// for a non-positive `z` on a logarithmic bar (no logarithm to take), and
+    /// for a non-finite or degenerate range.
     ///
     /// Two things it deliberately does **not** do:
     ///
@@ -689,8 +696,10 @@ pub struct Config {
     )]
     pub draw_style: DrawStyle,
     /// The polar coordinate system. `None` (default, key absent in JSON) is
-    /// the rectangular chart; `Some` draws `bottom_x` as the angle and
-    /// `left_y` as the radius. See [`crate::polar::PolarOptions`].
+    /// the rectangular chart; `Some` draws `bottom_x` as the angle axis and
+    /// `left_y` as the radius axis. The `bottom_x` range only chooses which
+    /// angle ticks, spokes and labels are drawn: the angle mapping does not
+    /// depend on it. See [`crate::polar::PolarOptions`].
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
@@ -716,9 +725,11 @@ pub struct Config {
     )]
     pub subplots: Vec<Subplot>,
     /// The layer that receives pointer interaction. `Base` (default, key
-    /// absent in JSON) is today's single-layer behavior. Drawn pixels do not
-    /// depend on this field; only hit-map registration and selection chrome do.
-    /// An `Overlay` index past the end of `overlays` reads as `Base`
+    /// absent in JSON) is the chart's own series, axes and decorations. Drawn
+    /// pixels do not depend on this field; only hit-map registration and
+    /// selection chrome do. An `Overlay` or `Subplot` index past the end of its
+    /// list reads as `Base`; a `SubplotOverlay` reads as `Base` when its
+    /// subplot is missing and as that subplot when only its overlay is
     /// ([`Config::active_layer`]).
     #[cfg_attr(
         feature = "serde",
@@ -1042,10 +1053,11 @@ mod draw_style_serde_tests {
         serde_json::to_value(default_config()).expect("serialize Config")
     }
 
-    // The layer foundation is additive schema in the same way: both keys are
-    // absent at their defaults (so every document written before them is
-    // byte-identical), parse to the defaults when missing, and round-trip
-    // when set. The same two fields exist on every bounded chart struct.
+    // The layer fields are additive schema in the same way: `active_layer`,
+    // `annotations` and `overlays` are absent at their defaults (so every
+    // document written before them is byte-identical), parse to the defaults
+    // when missing, and round-trip when set. `active_layer` and `annotations`
+    // also exist on every bounded chart struct.
     #[test]
     fn layer_fields_default_and_are_omitted_from_json() {
         use crate::{AnnotationLayer, LayerRef};

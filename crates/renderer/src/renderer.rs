@@ -152,7 +152,7 @@ fn annotation_raster_for_chart(
 /// Derive the scaled display config and centered panel for a surface.
 ///
 /// The whole document ([`Config::document_area`], the union of the parent's
-/// area and every overlay's own area) is fitted to the surface. The returned
+/// area and every subplot's area) is fitted to the surface. The returned
 /// rect is where the parent's `chart_area` lands, the `panel_rect` that
 /// `create_chart_view` and `refresh_axis` take; for a document without
 /// subplots it is the centered panel itself.
@@ -218,7 +218,7 @@ impl RendererDeviceCaps {
 
 /// The largest pool the renderer can actually bind, given the device.
 ///
-/// The arc-scan compute and the constellation star pass bind the entire pool
+/// The arc-scan compute and the Milkyway star pass bind the entire pool
 /// buffer as one storage binding, so the pool is capped by BOTH
 /// `max_storage_buffer_binding_size` and `max_buffer_size`. `try_new` clamps
 /// the caller's requested capacity to this instead of letting an oversized
@@ -3022,7 +3022,7 @@ pub struct Renderer {
     neutral_point_value_map_bg: wgpu::BindGroup,
     _neutral_point_value_map_charge: crate::gpu_memory::SharedCharge,
     data_selection_bgl: wgpu::BindGroupLayout,
-    /// Constellation star-pass data layout (arc prefix + pool + offsets) —
+    /// Milkyway star-pass data layout (arc prefix + pool + offsets) —
     /// shared by the stars pipeline and every per-series star bind group.
     star_data_bgl: wgpu::BindGroupLayout,
     /// Field data layout (pool + grid table + levels + colourmap stops + lookup
@@ -5607,10 +5607,10 @@ fn validate_polar_config(config: &Config) -> Result<()> {
         })
 }
 
-/// What a polar chart draws in its first version: scatter markers and lines
-/// (with fills) only. Histograms, fields, contours, error bars and vectors
-/// have no polar form yet and are rejected rather than drawn on the wrong
-/// axes; an arc interpolation needs a linearly interpolated line.
+/// The series a polar chart draws: scatter markers and lines (with fills).
+/// Histograms, fields, contours, error bars and vectors have no polar form
+/// and are rejected rather than drawn on the wrong axes; an arc
+/// interpolation needs a linearly interpolated line.
 fn validate_polar_series(config: &Config, item: &SeriesConfig) -> Result<()> {
     let Some(polar) = &config.polar else {
         return Ok(());
@@ -8115,6 +8115,8 @@ impl Renderer {
             .get_mut(&token.chart_id)
             .ok_or(FiggyError::UnknownChart { id: token.chart_id })?;
         crate::chart::apply_auto_fit_all(&mut state.config, x_extent, y_extent, padding);
+        // Subplots linked to the parent's axes follow the fitted range.
+        state.config.sync_subplot_links(None);
         state.revisions.desired = desired;
         state.revisions.config = config;
         state.revisions.view = view;
@@ -12282,8 +12284,10 @@ impl Renderer {
     /// the host may drop its [`PreparedFrame`] before submitting the command
     /// buffer, and the late submission must still see the recorded generation.
     ///
-    /// `star_pitch`: `Some` adds the constellation star pass to the scratch
+    /// `star_pitch`: `Some` adds the arc-driven star pass to the scratch
     /// (indirect args + VS bind group) and runs its kernel after the scan.
+    /// Prepare passes `Some` only for Milkyway lines; `DrawStyle::Constellation`
+    /// has no arc-prefix star pass.
     #[cfg(test)]
     fn ensure_arc_prefix(
         &mut self,
@@ -15730,8 +15734,10 @@ impl PrepareContext<'_> {
     /// the host may drop its [`PreparedFrame`] before submitting the command
     /// buffer, and the late submission must still see the recorded generation.
     ///
-    /// `star_pitch`: `Some` adds the constellation star pass to the scratch
+    /// `star_pitch`: `Some` adds the arc-driven star pass to the scratch
     /// (indirect args + VS bind group) and runs its kernel after the scan.
+    /// Prepare passes `Some` only for Milkyway lines; `DrawStyle::Constellation`
+    /// has no arc-prefix star pass.
     fn ensure_arc_prefix(
         &mut self,
         series_id: &str,
@@ -16236,7 +16242,7 @@ fn series_has_line_fill(draw_style: &DrawStyle, render_type: &DataRenderType) ->
 ///
 /// `false` exactly when the style has no entry point for one of those
 /// primitives: Sketch and Milkyway draw line, scatter and errorbar series but
-/// not bars, fields or contours; Constellation draws marker lines
+/// not bars, fields, contours or vectors; Constellation draws marker lines
 /// (`ScatterLine`) only. Prepare then skips that series without an error, so a
 /// host that validates with this predicate can reject the combination
 /// instead of drawing an empty plot. It compares the per-style primitive
@@ -17603,10 +17609,9 @@ impl<'w> WindowedRenderer<'w> {
 
     /// Draw one frame.
     ///
-    /// Acquires the current swap-chain texture, runs the mutable prepare
-    /// phase (`prepare(items)`) before any pass opens, then builds an
-    /// encoder + render pass, records via `paint_prepared`, and submits and
-    /// presents. The caller is only responsible for processing per-panel
+    /// Runs the mutable prepare phase (`prepare(items)`), then acquires the
+    /// current swap-chain texture, builds an encoder + render pass, records
+    /// via `paint_prepared`, and submits and presents. The caller is only responsible for processing per-panel
     /// dirty flags (`chart.consume_*_dirty()` → `refresh_axis`).
     pub fn draw(&mut self, clear: crate::color::Color, items: &[ChartDrawItem<'_>]) -> Result<()> {
         let prepared = self.inner.prepare(items)?;
@@ -17626,7 +17631,8 @@ impl<'w> WindowedRenderer<'w> {
 
     /// Draw one frame using a prepared data token owned by the host.
     ///
-    /// This still records the surface composition pass (`grid -> data -> decoration`),
+    /// This still records the surface composition pass (grid, annotation
+    /// underlay, data, decorations, annotation overlay),
     /// but it does not rerun `prepare`: no transform uniform write, styled
     /// pipeline ensure, or arc-prefix compute unless the host prepared a new
     /// token first.

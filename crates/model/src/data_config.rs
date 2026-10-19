@@ -137,6 +137,9 @@ pub enum DataRenderType {
     /// from a scalar field and it does not reduce them to a scalar: colouring
     /// by magnitude takes a host-supplied value column or grid through
     /// [`VectorStyle::color_map`].
+    ///
+    /// The columns must be GPU resident; a streamed source is rejected with
+    /// an error. Polar charts (`Config.polar`) reject vector series.
     Vector {
         components: VectorComponents,
         style: VectorStyle,
@@ -152,13 +155,24 @@ pub enum DataRenderType {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum VectorComponents {
     /// `u` and `v` are index-aligned with the anchor columns. The draw count
-    /// is the shortest of the four columns; nothing is length-inferred.
-    Points { u: ColumnId, v: ColumnId },
+    /// is the shortest of the four columns, or of five with a
+    /// [`VectorColorMap::Column`]; nothing is length-inferred.
+    Points {
+        /// The x component column.
+        u: ColumnId,
+        /// The y component column.
+        v: ColumnId,
+    },
     /// `u` and `v` are grids over the coordinate columns, both with the same
     /// orientation and layout. With `Centers` the arrow sits on the
     /// coordinate; with `Edges` it sits at the cell centre, where a heatmap
     /// cell's value sits.
-    Grid { u: MatrixRef, v: MatrixRef },
+    Grid {
+        /// The x component grid.
+        u: MatrixRef,
+        /// The y component grid.
+        v: MatrixRef,
+    },
 }
 
 impl VectorComponents {
@@ -177,11 +191,17 @@ impl VectorComponents {
 pub enum VectorScale {
     /// The tip is `origin + factor * vector` in data units. Meaningful when
     /// both axes share a unit; the arrows zoom with the data.
-    Data { factor: f64 },
+    Data {
+        /// Data units of tip offset per unit of vector magnitude.
+        factor: f64,
+    },
     /// The screen length is `px_per_unit * |vector|` logical pixels along the
     /// data-space direction projected through the live transform, so arrows
     /// keep their length under zoom.
-    Pixels { px_per_unit: f64 },
+    Pixels {
+        /// Logical pixels of arrow length per unit of vector magnitude.
+        px_per_unit: f64,
+    },
 }
 
 impl Default for VectorScale {
@@ -194,9 +214,12 @@ impl Default for VectorScale {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum VectorPivot {
+    /// The tail sits on the anchor (the default).
     #[default]
     Tail,
+    /// The arrow is centred on the anchor.
     Middle,
+    /// The tip sits on the anchor.
     Tip,
 }
 
@@ -206,7 +229,9 @@ pub enum VectorPivot {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum VectorColorMap {
+    /// A value column index-aligned with the anchors.
     Column(ColumnId),
+    /// A value grid over the coordinate columns.
     Grid(MatrixRef),
 }
 
@@ -215,10 +240,13 @@ pub enum VectorColorMap {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct VectorStyle {
+    /// The arrow colour when `color_map` is `None`.
     pub color: Color,
     /// Shaft thickness.
     pub width_px: f32,
+    /// How the vector's magnitude becomes a length on screen.
     pub scale: VectorScale,
+    /// Which point of the arrow sits on the anchor.
     #[cfg_attr(feature = "serde", serde(default))]
     pub pivot: VectorPivot,
     /// Head length along the shaft. An arrow shorter than its head scales the
@@ -233,8 +261,8 @@ pub struct VectorStyle {
     )]
     pub min_length_px: f32,
     /// Colour each arrow by a value through `Config.colorbar`; the colourbar
-    /// is the only authority on the range, ramp and `nan_color`, as for a
-    /// heatmap.
+    /// is the only authority on the range, scale, ramp and `nan_color`, as for
+    /// a heatmap. A series with a colour map and no colourbar is rejected.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
@@ -243,7 +271,9 @@ pub struct VectorStyle {
 }
 
 impl VectorStyle {
+    /// The validation reason for a non-finite or negative pixel size.
     pub const INVALID_PIXELS_REASON: &'static str = "vector width_px, head_length_px, head_width_px and min_length_px must be finite and non-negative";
+    /// The validation reason for a non-finite or zero scale.
     pub const INVALID_SCALE_REASON: &'static str = "vector scale must be finite and non-zero";
 
     #[cfg(feature = "serde")]
@@ -272,14 +302,17 @@ impl VectorStyle {
         Ok(())
     }
 
-    /// Set the scale so the longest vector in `u_bounds` × `v_bounds` draws
-    /// `target` long: logical pixels for [`VectorScale::Pixels`], data units
-    /// for [`VectorScale::Data`]. The bounds are the component columns'
-    /// statistics, which the host already has.
+    /// Set the scale so the longest vector the bounds allow,
+    /// `(max |u|, max |v|)` over `u_bounds` × `v_bounds`, draws `target` long:
+    /// logical pixels for [`VectorScale::Pixels`], data units for
+    /// [`VectorScale::Data`]. No arrow is longer than `target`; the longest
+    /// drawn arrow is shorter when the largest `|u|` and `|v|` come from
+    /// different samples. The bounds are the component columns' statistics,
+    /// which the host already has.
     ///
     /// A display helper, like `PointSizeMap::fit_domain`: it writes only the
-    /// scale value. A non-finite or zero extent leaves the style unchanged and
-    /// returns `false`.
+    /// scale value. A non-finite or zero extent, or a `target` that is not
+    /// finite and positive, leaves the style unchanged and returns `false`.
     pub fn fit_scale(&mut self, u_bounds: (f64, f64), v_bounds: (f64, f64), target: f64) -> bool {
         let reach = |(min, max): (f64, f64)| {
             if !min.is_finite() || !max.is_finite() {
@@ -452,29 +485,35 @@ pub struct DataScatterStyleConfig {
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
+    /// Per-slot colour, shape and size overrides, selected per point by
+    /// `point_style_index_column`.
     pub point_style_table: Option<Vec<DataScatterPointStyleConfig>>,
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
+    /// A column of slot indices into `point_style_table`, index-aligned
+    /// with the series' x/y columns.
     pub point_style_index_column: Option<ColumnId>,
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
+    /// Sparse per-index overrides that win over the table and the maps.
     pub point_style_overrides: Option<Vec<DataScatterPointStyleOverride>>,
     /// Color each point by a value column through `Config.colorbar`.
     ///
     /// The colorbar is the only authority on the range, scale, ramp and
     /// `nan_color`, exactly as for heatmaps; a series with this map and no
-    /// colorbar is rejected rather than given an invented range. The color is
-    /// derived from the value on every draw and never stored.
+    /// colorbar is rejected rather than given an invented range. The value
+    /// column must be GPU resident; a streamed source is rejected.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub point_color_map: Option<PointColorMap>,
-    /// Size each point by a value column (a bubble chart).
+    /// Size each point by a value column (a bubble chart). The value column
+    /// must be GPU resident; a streamed source is rejected.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
@@ -514,17 +553,24 @@ pub enum SizeScale {
 pub struct PointSizeMap {
     /// Index-aligned with the series' x/y columns; never length-inferred.
     pub column: ColumnId,
+    /// The value mapped to `min_px`; smaller values clamp to it.
     pub domain_min: f64,
+    /// The value mapped to `max_px`; larger values clamp to it.
     pub domain_max: f64,
+    /// The marker radius at `domain_min`, in logical pixels.
     pub min_px: f32,
+    /// The marker radius at `domain_max`, in logical pixels.
     pub max_px: f32,
+    /// Whether the value is proportional to marker area or radius.
     #[cfg_attr(feature = "serde", serde(default))]
     pub scale: SizeScale,
 }
 
 impl PointSizeMap {
+    /// The validation reason for a non-finite or empty domain.
     pub const INVALID_DOMAIN_REASON: &'static str =
         "point size map domain must be finite with domain_min < domain_max";
+    /// The validation reason for a non-finite, negative or inverted pixel range.
     pub const INVALID_PIXELS_REASON: &'static str =
         "point size map min_px and max_px must be finite, non-negative and min_px <= max_px";
 

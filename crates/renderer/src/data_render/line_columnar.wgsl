@@ -123,7 +123,7 @@ fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f
 // data area, the radius axis fraction between the inner ring and the outer
 // radius. A radius below the axis start sits on the inner ring (data samples
 // there are masked by `sample_valid`; a fill baseline is not). Twin of
-// `polar_projection::project` on the CPU.
+// `polar_projection::ndc` on the CPU.
 fn polar_ndc(ty: f32, xv: vec2<f32>) -> vec2<f32> {
     let p = transform.polar_angle;
     let e = transform.polar_extent;
@@ -645,8 +645,9 @@ fn vs_area(in: VsIn, base: VsAreaBase, @builtin(vertex_index) vid: u32) -> AreaO
     let y_base = select(bottom.y0, bottom.y1, at_b);
     var ndc = data_to_ndc(x, y_top);
     if (on_base) {
-        // A polar baseline is a ring (the centre at the axis start), so the
-        // base corner projects like a sample at the same angle.
+        // A polar baseline is a ring (the inner ring at or below the axis
+        // start, which is the centre when `inner_radius_fraction` is 0), so
+        // the base corner projects like a sample at the same angle.
         if (to_series || transform.polar_angle.x > 0.5) {
             ndc = data_to_ndc(x, y_base);
         } else {

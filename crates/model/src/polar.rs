@@ -1,9 +1,12 @@
 //! Polar coordinates for the Cartesian chart: `Config.polar`.
 //!
-//! With `polar: Some(..)` the document keeps its four axes and every series,
-//! column and interaction contract, and draws `bottom_x` as the angle and
-//! `left_y` as the radius. `None` (the default, omitted from JSON) is the
-//! rectangular chart every document had before the field.
+//! With `polar: Some(..)` the chart draws `bottom_x` as the angle (the outer
+//! ring) and `left_y` as the radius (the labelled ray); `top_x` and
+//! `right_y` stay in the document but are not drawn. Scatter, line and
+//! scatter-line series, with their fills, keep their columns, picking and
+//! export. Histogram, field, contour, error-bar and vector series, overlay
+//! layers and streamed sources are rejected with an error. `None` (the
+//! default, omitted from JSON) draws the rectangular chart.
 
 use crate::config::{AxisScale, Config, LabelStyle};
 
@@ -15,8 +18,10 @@ pub const MAX_POLAR_ARC_PIECES: u32 = 64;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AngleUnit {
+    /// Degrees, 360 per turn (the default).
     #[default]
     Degrees,
+    /// Radians, 2π per turn.
     Radians,
 }
 
@@ -41,7 +46,10 @@ pub enum PolarInterpolation {
     /// (angle, radius): a segment at constant radius follows the ring. Each
     /// piece is one strip of the line, so dashes and picking walk the same
     /// path. 1 to [`MAX_POLAR_ARC_PIECES`].
-    Arc { pieces: u32 },
+    Arc {
+        /// Chords per segment.
+        pieces: u32,
+    },
 }
 
 impl PolarInterpolation {
@@ -53,6 +61,7 @@ impl PolarInterpolation {
         }
     }
 
+    /// Whether segments are straight chords (the default).
     pub fn is_chord(&self) -> bool {
         matches!(self, Self::Chord)
     }
@@ -242,8 +251,10 @@ impl PolarOptions {
 
 impl Config {
     /// The polar circle of this chart, when the chart is polar and has a
-    /// data area. Same arithmetic on every consumer: the GPU transform, the
-    /// grid raster, the CPU picker and the annotation space.
+    /// data area. The GPU transform, the polar grid and axis raster, the CPU
+    /// picker and the decoration hit regions and drags all read this circle.
+    /// The annotation layer does not: its ratio anchors stay relative to the
+    /// data area and its data anchors are skipped.
     pub fn polar_geometry(&self) -> Option<PolarGeometry> {
         self.polar.as_ref()?;
         let area = self.data_area().ok()?.0;

@@ -6,10 +6,10 @@ is independent of `ColumnSource` and automatic streaming. Multiple series are
 placed side by side in each category. Stacking is not a box-plot operation.
 
 The native and WASM renderer APIs are available. A browser host must wire its own
-events and UI to them; the separate [WASM wrapper](WASM.md) exposes
-`FiggyBoundedChart` for this purpose. When using the Rust renderer in WASM,
-await `BoxPlotRenderer::new_async(gpu, format)` before preparing frames. This
-library guide does not establish deployed Studio status.
+events and UI to them; the separate
+[WASM wrapper](https://github.com/shim9610/figgy/blob/master/crates/renderer/WASM.md#bounded-chart-host)
+exposes `FiggyBoundedChart` for this purpose. When using the Rust renderer in WASM,
+await `BoxPlotRenderer::new_async(gpu, format)` before preparing frames.
 
 ## Input and first render
 
@@ -59,6 +59,9 @@ missing entries, at most 128 outliers per box and 4096 total. Invalid input is
 rejected before replacing the previous cached frame.
 
 ## SSOT editing and picking
+
+`BoxPlotChart` is the single source of truth (SSOT). The host edits its fields and
+calls `prepare` again; model edits need no manual cache invalidation.
 
 ```rust,no_run
 # use renderer::{Color, boxplot::*};
@@ -128,34 +131,44 @@ There is no perspective displacement of quartiles or whiskers.
 Auto range includes **all supplied statistics**, even hidden means/outliers/CI,
 so toggling their visibility does not silently rescale the chart. It adds padding
 and linear nice ticks. Fixed ranges clip all data components and picking to the
-plot. No logarithmic scale is exposed in this initial API. Unrepresentable ranges
+plot. The value axis is linear; there is no logarithmic scale. Unrepresentable ranges
 or indistinguishable tick strings return a layout error rather than misleading
 labels. All-missing charts get a finite default range.
 
-Minimum logical canvas: 240×200; scale: 0.5–4. Text is rasterized at the actual
+Minimum logical canvas: 240×200; scale: 0.5–4. Axis and label text use a
+two-layer atlas, so the physical width and twice the physical height (logical
+size × scale) must fit the device's maximum 2D texture size; a larger output
+returns `BoxPlotError::Invalid`. Text is rasterized at the actual
 output resolution. Four geometric subpixel samples smooth the data silhouettes.
 Once the chart is prepared, use `frame.decorations().hit_test([x, y])` to select
-a value label and `drag_by(&mut chart.decorations, hit, dx, dy)` to position it.
+a value label and `frame.decorations().drag_by(&mut chart.decorations, hit, dx, dy)`
+to position it.
 Movement uses logical pixels and accepts fractional deltas for fine adjustments.
 Each value label has its own category/series identity; axis tick labels move as a
 group. Prepare a new frame after moving a label and use its updated hit map.
-Export preserves those offsets. See the [interaction guide](INTERACTION.md).
+Export preserves those offsets. See the
+[interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#manual-label-placement).
 
 ## Ownership, caching, export
 
 Frames are immutable `Arc<BoxPlotFrame>` snapshots, holding their GPU resources.
 A new model/size/scale/font generation produces a new frame; identical calls
 return the same Arc. Surface styles, individual color, hover/selection and
-background changes reuse the annotation atlas. Geometry/text/layout edits and
-legend colors rebuild it. `shares_annotations_with` exposes this for diagnostics.
-Changing a box color changes the box, not the series legend swatch.
+background changes reuse the frame's axis and label text atlas. Geometry/text/layout
+edits and legend colors rebuild it. `shares_annotations_with` reports whether two
+frames share this text atlas, for diagnostics; it does not concern the annotation
+layer (`chart.annotations`). Changing a box color changes the box, not the series
+legend swatch.
 
-The default separate GPU budget is 256 MiB. `set_memory_budget`,
-`gpu_memory_usage`, `clear_cache`, and `end_frame` follow the small-chart APIs.
-After submitting or discarding all recorded frames, call `end_frame` to schedule
-retired resource destruction at queue completion. External snapshots keep their
-resources alive. Native hosts must poll the device; browser callbacks complete
-through the event loop. The host owns target textures and their budget separately.
+The default separate GPU budget is 256 MiB. `set_memory_budget` changes the
+admission limit without evicting existing frames; a call that would allocate past
+it returns `BoxPlotError::Budget`. `gpu_memory_usage` counts live resources plus
+resources awaiting submission completion. `clear_cache` drops the renderer's
+internal frame, text-atlas and annotation-layer references. After submitting or
+discarding all recorded frames, call `end_frame` to schedule retired resource
+destruction at queue completion. External snapshots keep their resources alive.
+Native hosts must poll the device; browser callbacks complete through the event
+loop. The host owns target textures and their budget separately.
 
 `export_rgba_async(&chart, size, scale).await` works on native and WebGPU. Native
 also has `export_rgba`. The result is straight-alpha RGBA; `encode_png` produces
@@ -163,6 +176,30 @@ PNG bytes. Export uses the current SSOT, including hover and selection: clear
 those fields in a clone when a presentation should omit interaction emphasis.
 RGBA8/BGRA8, linear/sRGB targets are supported. Render passes must use the format
 chosen at renderer creation and sample count 1.
+
+## Decorations and the annotation layer
+
+`frame.decorations()` also hit-tests the title, axes, tick labels, axis titles,
+legend and data area, separately from the data `hit_test`. The host applies the
+shared `Selectable`, `Draggable` and `Resizable` contracts to
+`chart.decorations` and prepares again. Coordinate units, per-element drag
+rules, caching, serialization and the web wiring are in the
+[interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md).
+
+Reference lines, spans, text boxes and arrows in `chart.annotations` draw in
+separate passes around the box frame. `AnnotationAxis::X` is the screen's
+horizontal axis and `Y` its vertical axis. With `Vertical` boxes, `X` is the
+category index (the first category is centred at 0) and `Y` the value axis;
+`Horizontal` swaps them, and the category index then runs top-down. Value
+coordinates follow the drawn range (`value_range` or the automatic range).
+Spans draw under the data, so a chart with spans is prepared after
+`set_background(FrameBackground::HostClear)` and the host clears with
+`chart.background`; `export_rgba` handles this itself. Draw the
+`BoundedAnnotationFrame` from `prepare_annotations(chart, size, scale)` with
+`draw_underlay`, then `frame.draw`, then `draw_overlay`; its hit map is
+`annotations()`. Annotation edits and `decorations.selected = Annotation(i)`
+reuse the box frame and its text atlas. See the
+[annotation layer contract](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer).
 
 ## Examples and tests
 
@@ -176,7 +213,8 @@ NO_HEADLESS=1 CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runne
 ```
 
 The browser runner must match the locked wasm-bindgen version; open its URL in
-a WebGPU browser. Tests exercise the renderer directly, not a web Studio wrapper.
+a WebGPU browser. The browser test calls the renderer crate directly, without the
+WASM wrapper.
 The native gallery produces five actual GPU PNGs: matte, satin, horizontal,
 grouped notch, and mean/selection. All statistics are synthetic. The editor
 supports component picking, summary tooltips, whole-chart and individual style
@@ -202,9 +240,9 @@ editing, color changes, resets, direction, grid, legend and category reordering.
 평균·이상치·신뢰구간까지 포함하므로 표시 옵션을 켜고 끄는 것만으로 축이 바뀌지 않는다.
 직접 범위를 지정하면 영역 밖의 도형과 선택 판정을 함께 자른다.
 
-네이티브 예제와 WASM으로 컴파일할 수 있는 Rust 렌더러 API를 제공한다. 웹 Studio
-연결과 배포는 별도로 관리한다. 입력 상한은 64범주·16시리즈·총 512항목, 이상치 4096개이며
-상자 하나에는 이상치를 최대 128개 받는다. 대용량 스트리밍은 이 계약에 포함하지 않는다.
+네이티브 예제와 WASM으로 컴파일할 수 있는 Rust 렌더러 API를 제공한다.
+입력 상한은 64범주·16시리즈·총 512항목, 이상치 4096개이며 상자 하나에는 이상치를 최대 128개
+받는다. 대용량 스트리밍은 이 계약에 포함하지 않는다.
 
 ## 제목·축·라벨·범례 선택과 이동
 
@@ -217,9 +255,10 @@ editing, color changes, resets, direction, grid, legend and category reordering.
 
 `chart.annotations`의 기준선·구간·텍스트 상자·화살표는 박스 프레임 주위에 별도 패스로 그린다.
 `AnnotationAxis::X`는 화면 가로, `Y`는 화면 세로다. `Vertical`이면 `X`가 범주 인덱스(첫 범주 중심이 0),
-`Y`가 값 축이고 `Horizontal`이면 반대다. 값 축의 좌표는 그려진 축 범위(`value_range` 또는 자동 범위)를
-따른다. 구간은 데이터 아래(underlay)에 그리므로 구간이 있을 때는
-`set_background(FrameBackground::HostClear)`로 프레임을 준비하고 호스트가 `chart.background`로
-지운다. `export_rgba`는 이를 스스로 처리한다. `prepare_annotations(chart, size, scale)`의
+`Y`가 값 축이고 `Horizontal`이면 반대이며, 이때 범주 인덱스는 위에서 아래로 증가한다. 값 축의 좌표는
+그려진 축 범위(`value_range` 또는 자동 범위)를 따른다. 구간은 데이터 아래(underlay)에 그리므로
+구간이 있을 때는 `set_background(FrameBackground::HostClear)`로 프레임을 준비하고 호스트가
+`chart.background`로 지운다. `export_rgba`는 이를 스스로 처리한다. `prepare_annotations(chart, size, scale)`의
 `BoundedAnnotationFrame`을 `draw_underlay` → `frame.draw` → `draw_overlay` 순서로 그리고 히트 맵은
-`annotations()`로 얻는다. 자세한 계약은 [공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer)를 참고한다.
+`annotations()`로 얻는다. 주석 편집과 `decorations.selected = Annotation(i)` 선택은 박스 프레임과
+글자 아틀라스를 다시 만들지 않는다. 자세한 계약은 [공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer)를 참고한다.

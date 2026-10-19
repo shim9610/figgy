@@ -2,8 +2,8 @@
 
 A native Rust chart renderer for scientific plots, styled dashboards and small
 data charts. Draw lines, scatter plots, error bars, histograms, heatmaps, contours,
-pies, donuts, categorical bars, boxplots and radar charts; edit their models and
-export PNGs.
+vector fields and polar plots, plus pies, donuts, categorical bars, boxplots and
+radar charts; edit their models and export PNGs.
 Embed charts in an existing wgpu application or render without a window.
 The default library has no GUI framework dependency.
 
@@ -16,27 +16,29 @@ The default library has no GUI framework dependency.
 
 ## Install and run
 
-Use Rust **1.99 or later** and a working graphics adapter/driver. This source
-targets **0.17.0**, with model **0.11.0**. The dependency below installs this
-release from [crates.io](https://crates.io/crates/figgy-renderer) once available;
-use the local path below for a checkout before publication.
+Use Rust **1.99 or later** and a working graphics adapter/driver.
 Add these dependencies to your application's `Cargo.toml`:
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", version = "0.17.0" }
+renderer = { package = "figgy-renderer", version = "0.18.0" }
 wgpu = "30"
 pollster = "1"
 ```
 
 The Cargo package is **`figgy-renderer`**; the Rust import is **`renderer`**.
-For a local checkout, replace `version` with `path = "../figgy/crates/renderer"`.
+The `version` line installs figgy-renderer 0.18.0, with figgy-model 0.12.0, from
+[crates.io](https://crates.io/crates/figgy-renderer). For a local checkout,
+replace `version` with `path = "../figgy/crates/renderer"`. Code written for
+0.17.0 needs the changes in the
+[migration notes](https://github.com/shim9610/figgy/blob/master/CHANGELOG.md#migrating-from-0170).
 
 Copy the complete [line example](https://github.com/shim9610/figgy/blob/master/crates/renderer/examples/line.rs)
 into `src/main.rs` and run `cargo run`. It creates a device, uploads two columns,
 draws axes and a sine wave, and writes a 960 × 600 `line.png` without opening a window.
-It is also included below on the generated API landing page. From a source
-checkout, run `cargo run --locked -p figgy-renderer --example line -- line.png`.
+The crate root page of the API documentation shows the example after this
+README. From a source checkout, run
+`cargo run --locked -p figgy-renderer --example line -- line.png`.
 
 The application needs its own `wgpu` and `pollster` dependencies for this example.
 Hosts with an async executor can await export directly instead of using pollster.
@@ -51,11 +53,18 @@ Hosts that already own a matching wgpu 30 device/queue can share them through
 | Pies and donuts, including 3D/material styles | `RadialRenderer` | `RadialChart` with bounded slice values; [radial guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADIAL.md) |
 | Individual, grouped and stacked bars | `CategoricalRenderer` | `CategoricalChart` with category/series IDs; [bar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/CATEGORICAL.md) |
 | Grouped/notched boxes and outliers | `BoxPlotRenderer` | `BoxPlotChart` with supplied statistics; [boxplot guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/BOXPLOT.md) |
+| Radar (spider) charts | `RadarRenderer` | `RadarChart` with one value per category and series; [radar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md) |
+| Polar plots: lines, scatter and areas in (angle, radius) | `Renderer` with `Config.polar` | The same columns as rectangular charts with scatter, line and scatter-line `SeriesConfig`; histograms, heatmaps, contours, error bars, vectors, overlay layers and streamed sources are rejected; [polar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/POLAR.md) |
 
 The renderer re-exports model types: most applications do not need a separate
-`figgy-model` dependency. Bounded charts do not use column sources or streaming
-and do not compute statistics from raw samples. All four renderers can share a
-`RendererDevice`; each maintains its own resource budget. Budgets apply to checked
+`figgy-model` dependency. Pies, donuts, bars, box plots and radar charts are
+bounded charts: each draws one validated model with at most 64 slices or
+categories, takes no column sources or streamed data, and computes no
+statistics from raw samples. All five renderers can share a
+`RendererDevice`; each maintains its own resource budget. Vector fields, point
+colour and size maps, area fills, step lines, overlay axes and subplots are
+`Renderer` features declared in `SeriesConfig` and `Config`; see the
+[configuration reference](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md). Budgets apply to checked
 allocation paths, not total device VRAM; see the
 [accounting scope](https://github.com/shim9610/figgy/blob/master/crates/renderer/API.md#gpu-memory-accounting-and-budget-scope).
 
@@ -68,20 +77,27 @@ renderers update their derived resources in `prepare`.
 Export that same model to preserve selection, moved
 labels and the drawing area. Data picking and decoration hit maps are separate;
 use the renderer's measured bounds when selecting titles, labels, axes or handles.
-Reference lines, shaded spans, text boxes and arrows live in the chart's
-annotation layer, drawn by one pass around every family's frame with its own
-hit map and cache; see the [interaction guide](INTERACTION.md#annotation-layer).
+Reference lines, shaded spans, text boxes and arrows live in each chart's
+`annotations` layer, which has its own hit map and cache: spans are drawn below
+the data and the other items above every decoration; see the
+[interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer).
 
 The [API workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer/API.md#native-edit-pick-and-export-workflow)
 includes Cartesian refresh and bounded edit/export examples, and explains frame lifetime and coordinate
-units. [Interaction contracts](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)
-cover shared selection, dragging and area handles. Runnable editors are
+units. The [interaction contracts](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)
+cover shared selection, dragging and area handles (in Korean) and titles,
+layers, subplots and annotations (in English). Runnable editors are
 `winit_simple`, `radial_editor`, `categorical_editor`, `boxplot_editor` and
 `radar_editor`; all but the first require `--features egui_demo`.
 
-Replayable Cartesian streams use an explicit fit request when the initial range
-is unknown or the user requests fit. Do not request fit on every chunk, repaint
-or tab switch. Wait for final completion before treating the image as exact.
+Automatic Cartesian streaming fits the axes only on request: call
+`Renderer::request_stream_auto_fit(chart_id, padding)` when the initial range is
+unknown or the user asks for a fit, not on every chunk, repaint or tab switch.
+Treat the image as exact only when `Renderer::stream_status` reports
+`StreamingState::Complete`; `AllSubmitted` means every chunk was submitted, not
+that the final image is drawn. A registered stream source must be replayable:
+it returns the same encoded values for the same source revision; see the
+[input contracts](https://github.com/shim9610/figgy/blob/master/crates/renderer/API.md#entry-points-and-input-contracts).
 
 ## Features and platform support
 
@@ -113,7 +129,7 @@ full native integration examples.
 
 Code is licensed under MIT OR Apache-2.0. Bundled fonts retain their respective
 OFL notices in `fonts/`. The package includes source, shaders, fonts, guides,
-runnable examples and test fixtures. Gallery PNG/GIF assets and the unsupported
+runnable examples, tests and test fixtures. Gallery PNG/GIF assets and the unsupported
 iced integration source stay in the Git repository and are not installed with
 the crate. Architecture illustrations link to a fixed public source revision.
 
@@ -121,8 +137,8 @@ Native package tests run with `cargo test --features serde`. They include GPU
 pixel, cache and memory regressions and require a working adapter and device;
 initialization errors fail the tests. Software Vulkan can be used on machines
 without a GPU. No window is required. Large stress/probe tests marked `#[ignore]`
-are opt-in. Tests and their fixtures are included in the package.
+are opt-in.
 
-The public repository runs these checks on standard Linux/Vulkan, Windows/DX12
-and macOS/Metal runners. See the [CI guide](https://github.com/shim9610/figgy/blob/master/ci/README.md)
-for commands, artifacts and the limits of software/virtual GPU coverage.
+CI runs these tests on the platforms listed above; see the
+[CI guide](https://github.com/shim9610/figgy/blob/master/ci/README.md) for the
+commands and artifacts.

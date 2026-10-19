@@ -297,6 +297,8 @@ impl StreamSurface {
     }
 }
 
-#[cfg(test)]
+// Native only: the tests use the shared native device, and the web crate
+// compiles this file into its stream surface browser test.
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "streaming_replay_tests.rs"]
 mod tests;

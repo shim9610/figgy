@@ -2,23 +2,48 @@
 
 `figgy-renderer` and `figgy-model` are the Rust library packages. `figgy` in this
 history is the separate browser integration example in `crates/web`; its version
-does not imply a standalone JavaScript product or a Studio deployment.
+does not imply a standalone JavaScript product or a deployment of the separate
+[figgyplot.com Studio](https://figgyplot.com/) application.
 
 Publication statements in older source-release entries describe those releases
 at the time. The first crates.io publication is recorded below.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
-## Unreleased — polar coordinates
+<a id="release-0180"></a>
 
-- `Config.polar: Option<PolarOptions>` (#26, part B) draws a Cartesian
-  document in polar coordinates: `bottom_x` is the angle axis, `left_y` the
-  radius axis, and every series, column, picking and export path is the
-  rectangular one. `PolarOptions` carries the zero angle, the direction,
-  the angle unit (`Degrees` / `Radians`), an optional sector, an inner
-  radius fraction, the segment interpolation (`Chord`, or `Arc { pieces }`
-  subdividing each segment in data space so dashes and picking walk the
-  same pieces) and the radial label angle. `None` (key absent) is unchanged.
+## Release — renderer 0.18.0 / model 0.12.0 / figgy 0.15.0
+
+Not yet published; the date is added at publication.
+
+Renderer 0.18.0 and model 0.12.0 are new 0.x minor versions. Cartesian charts
+gain polar coordinates, vector fields, point colour and size maps, area fills
+and step lines, secondary Y axes on overlay layers, and subplots. A radar
+family joins the radial, categorical and box plot families, every chart
+family gains an annotation layer, and the radial, categorical and box plot
+charts gain independently styled titles. Automatic contour labels sit only on
+crossed levels, and rotated label backgrounds are antialiased. New public
+fields and enum variants break exhaustive struct literals and matches, and
+some low-level `data_render` signatures change: see
+[Migrating from 0.17.0](#migrating-from-0170). Documents written by model
+0.11.0 and 0.10.0 parse and re-serialize byte for byte. The WASM integration
+example advances to 0.15.0 with the renderer dependency and is not published
+(`publish = false`).
+
+### Polar coordinates
+
+- `Config.polar: Option<PolarOptions>` (#26) draws a Cartesian document in
+  polar coordinates: `bottom_x` is the angle axis, `left_y` the radius axis,
+  and scatter and line series (with fills and steps), columns, picking and
+  export reuse the rectangular paths. `PolarOptions` carries the zero
+  angle, the direction, the angle unit (`Degrees` / `Radians`), an optional
+  sector, an inner radius fraction, the segment interpolation (`Chord`, or
+  `Arc { pieces }` subdividing each segment in data space so dashes and
+  picking walk the same pieces) and the radial label angle. `None` (key
+  absent) is unchanged. The angle is the x value in the angle unit,
+  measured from the zero angle, so the circle is always one full turn:
+  the `bottom_x` range (`set_x_range`) chooses only which angle ticks,
+  spokes and labels are drawn, and `sector` shows part of the circle.
 - The shared `Transform` block grows from 112 to 144 bytes with the polar
   constants (`polar_angle`, `polar_extent`); `data_to_ndc` branches to
   `polar_ndc` and `sample_valid` masks a radius below the axis start
@@ -42,27 +67,30 @@ at the time. The first crates.io publication is recorded below.
   `Draggable::drag_from` and `Config::nudge_from` carry the pointer
   position these rules read (`DragConfig::nudge_at` for state types); the
   defaults fall back to `drag_by` / `nudge`, and `FiggyChart::on_move`
-  sends the position. `PolarGeometry` gains `inner_radius`. Annotations
-  use ratio anchors. GPU picking passes every sample through the X gate and
-  tests the full projection in the Y gate; lines go to the exact pass.
+  sends the position. `Config::polar_geometry` returns the shared polar
+  circle (`PolarGeometry`: centre, outer radius and hole radius in pixels).
+  Annotations draw only ratio-anchored text and arrows; data anchors,
+  reference lines and spans are skipped with `AnnotationSkip::NoValueAxis`.
+  CPU and GPU picking project each sample through the same polar mapping as
+  the draw.
 - Histograms, fields, contours, error bars, vectors, `overlays`, a
-  logarithmic or inverted angle axis and streamed sources are explicit
-  errors in polar mode; polar and rectangular subplots mix in a document.
-- Rust migration: exhaustive `LabelFormat` matches need `Degrees` and
-  `Radians` arms; `line_strip_vertex_count` keeps its signature. New
-  example `polar_plot.rs`, a playground scene and `CONFIG.md`
+  logarithmic or inverted angle axis, a step line under `Arc` interpolation
+  and streamed sources are explicit errors in polar mode; polar and
+  rectangular subplots mix in a document.
+- New example `polar_plot.rs`, a playground scene and `CONFIG.md`
   ("`PolarOptions`").
 
-## Unreleased — radar charts
+### Radar charts
 
-- New bounded family `RadarRenderer` / `RadarChart` (#26, first half). A
+- New bounded family `RadarRenderer` / `RadarChart` (#26). A
   `RadarChart` holds 3 to 64 `categories` (one spoke each), 1 to 16
   `RadarSeries` with one value per category, a shared value axis
-  (`value_range`, `ring_spacing`; `None` fits a nice axis from zero over the
-  data), `RadarStyle` (start angle, direction, polygon or circular grid, ring
-  and spoke colours, line width, fill opacity, marker shape and size, emphasis
-  brightness), an optional per-series `RadarSeriesStyle`, data `labels`
-  (`None`, `Values`, `Emphasized`), `hovered` / `selected` `RadarTarget`s and
+  (`value_range`, `ring_spacing`; `None` fits a nice axis over the data,
+  starting at zero unless a value is negative), `RadarStyle` (start angle,
+  direction, polygon or circular grid, ring and spoke colours, line width,
+  fill opacity, marker shape and size, emphasis brightness), an optional
+  per-series `RadarSeriesStyle`, data `labels` (`None`, `Values`,
+  `Emphasized`), `hovered` / `selected` `RadarTarget`s and
   the common `decorations`, `chart_title`, `active_layer` and `annotations`
   fields. A non-finite value breaks the outline at its spoke and drops the
   series' fill and marker there. Per-spoke normalization is the host's job.
@@ -73,20 +101,17 @@ at the time. The first crates.io publication is recorded below.
   `Outline` and `Fill` the series), the shared decoration map (new
   `DecorationId::SpokeLabel { category_id }` for the category labels, the ring
   labels as `AxisLabel(Left)`), the annotation layer with ratio anchors, PNG
-  export at any scale, and the `FiggyBoundedChart` web host (`"radar"`
-  family; `step_selection` walks series, or a selected vertex's series'
-  vertices). Playground scene, `radar_gallery` and `radar_editor` examples,
+  export at scales from 0.5 to 4 (on a canvas of at least 240 × 240 logical
+  pixels), and the `FiggyBoundedChart` web host (`"radar"` family;
+  `step_selection` walks series, or a selected vertex's series' vertices).
+  Playground scene, `radar_gallery` and `radar_editor` examples,
   `RADAR.md`.
-- The legend planning and plain number formatting shared by the bounded
-  families now live in `bounded_axes.rs` (`plan_bounded_legend`,
-  `draw_bounded_legend`, `plain_number`); the box plot and categorical layouts
-  call them.
-- Compared with the issue text, the value axis is `value_range` /
-  `ring_spacing` rather than a full `AxisOptions`, markers are circle or square,
-  and a vertex target carries an optional `category_id` on the series target
-  instead of a separate type. JSON without the family is unchanged.
+- The value axis is `value_range` / `ring_spacing`, not a full
+  `AxisOptions`; markers are `None`, `Circle` or `Square`; a `RadarTarget`
+  names a vertex through its optional `category_id` and the whole series
+  without it. JSON without the family is unchanged.
 
-## Unreleased — vector fields
+### Vector fields
 
 - New `DataRenderType::Vector { components, style }` draws an arrow per sample
   (#25). `VectorComponents::Points { u, v }` reads one (u, v) column pair
@@ -103,12 +128,13 @@ at the time. The first crates.io publication is recorded below.
   `Config.colorbar` (`VectorColorMap::Column` for points, `::Grid` for grids).
   `VectorStyle::fit_scale` writes the scale from host statistics, like
   `PointSizeMap::fit_domain`.
-- The shader is assembled in Rust from fragments (Cartesian projection, input
-  form, arrow glyph, entry) so a later projection can reuse the glyph; the
-  assembled modules are part of the compile-time test and
-  `shader_pipeline_contract.json` is regenerated. The arrow is six vertices
-  per instance straight off the GPU column pool, with analytic coverage; no
-  per-arrow value is stored. Common blocks: `SHADER_COMMON.md` §5.3.
+- The shader is assembled in Rust from WGSL fragments with fixed interfaces
+  (Cartesian projection, input form, arrow glyph, entry); the glyph works on
+  an already projected tail and tip and does not depend on the projection.
+  The shader compilation test compiles every assembled module. The arrow is
+  six vertices per instance straight off the GPU column pool, with analytic
+  coverage; no per-arrow value is stored. Common blocks:
+  `SHADER_COMMON.md` §5.3.
 - Point vectors pick, ring, hover and step through the existing point paths
   with the glyph's radius (half the wider of head and shaft); grid vectors
   pick and highlight by cell on their `u` grid, like a heatmap cell. Auto fit
@@ -116,14 +142,22 @@ at the time. The first crates.io publication is recorded below.
   pixel-scaled vectors and grid vectors fit their anchors, so a grid's
   data-scaled tips are not part of the fit. Streamed sources are rejected
   with an explicit error; stylized draw styles (Sketch, Milkyway,
-  Constellation) draw no vectors, as they draw no style maps. The legend
-  symbol is a rule with an arrowhead. The web `selection_details` reports
-  `u`, `v` and, when colour mapped, `color_value` for both forms.
-- Rust migration: exhaustive `DataRenderType` matches need a `Vector` arm.
-  JSON without the variant is unchanged. New example `vector_field.rs`; guide
-  text in `CONFIG.md` ("Vector fields") and `web/SCHEMA.md`.
+  Constellation) skip vector series, and `draw_style_supports` returns
+  `false` for them. The legend symbol is a rule with an arrowhead. The web
+  `selection_details` reports `u`, `v` and, when colour mapped,
+  `color_value` for both forms. The web `auto_fit_colorbar` also fits
+  vector colour maps: a point vector's colour column and every column of a
+  grid vector's colour grid.
+- JSON without the variant is unchanged. New example `vector_field.rs`;
+  guide text in `CONFIG.md` ("Vector fields") and `web/SCHEMA.md`. New in
+  the low-level `data_render` module: the `vector` module
+  (`ColumnVectorLayer`, drawn through `SeriesLayers::vector`), and
+  `FieldCellTables`, `create_field_cell_tables`,
+  `create_field_cell_bind_group` and `FieldParamsGpu::cell_geometry`, which
+  bind a grid vector's cell geometry for its cell pick and selected-cell
+  outline.
 
-## Unreleased — point colour and size maps
+### Point colour and size maps
 
 - Scatter series (every marker-drawing `DataRenderType`) gain two optional
   value maps (#24). `DataScatterStyleConfig.point_color_map` colours each
@@ -139,45 +173,150 @@ at the time. The first crates.io publication is recorded below.
 - The shader reads the value columns from the GPU column pool on every draw
   and derives colour and radius in place; nothing per point is stored. The
   mapped scatter and pick-ring pipelines gain a group-3 bind group with the
-  colourbar's parameters and ramp (`PointValueMapParams`, cached per series
-  and rebuilt only when the colourbar or the size map changes) and two
-  value-column vertex slots. `shader_pipeline_contract.json` is regenerated.
-- `pick_point` (CPU and GPU), the picked ring, PNG export at any scale and
-  `selection_details` (new `color_value` / `size_value` fields) follow the
-  mapped radius and colour. `Chart::auto_fit_colorbar_union` callers and the
-  web `auto_fit_colorbar` also fit colour-map columns. Streamed sources are
+  colourbar's parameters and ramp and two value-column vertex slots. The
+  group holds `data_render::PointValueMapParamsGpu`, built by
+  `create_point_value_map_bind_group_layout` and
+  `create_point_value_map_bind_group` (`PointValueMapParamsGpu::NEUTRAL` for
+  a series without maps); it is cached per series and rebuilt only when the
+  colourbar or the size map changes.
+- `pick_point` (CPU and GPU), the picked ring, PNG export at every export
+  scale (0.25 to 8) and `selection_details` (new `color_value` /
+  `size_value` fields) follow the mapped radius and colour.
+  `Chart::auto_fit_colorbar_union` fits the column ids it is given, so a
+  Rust host adds the colour-map columns to that list; the web
+  `auto_fit_colorbar` includes them automatically. Streamed sources are
   rejected with an explicit error; stylized draw styles ignore the maps like
   the style table.
-- Rust migration: exhaustive `DataScatterStyleConfig` literals need
-  `point_color_map: None` and `point_size_map: None`. JSON without the keys is
-  unchanged. New example `value_maps.rs`; guide text in `CONFIG.md`
-  ("Point colour and size maps") and `web/SCHEMA.md`.
+- JSON without the keys is unchanged. New example `value_maps.rs`; guide
+  text in `CONFIG.md` ("Point colour and size maps") and `web/SCHEMA.md`.
 
-## Unreleased — contour label fixes
+### Area fills and step lines
 
-- Automatic contour labels are placed only where their level is actually
-  crossed (#19). The anchor pass used to accept any projected seed whose value
-  was within its tolerance of the level, so in a near-flat region a shallow
-  extremum just short of a level (for example a minimum of +0.0004 against
-  level 0) received a label with no isoline anywhere near it. A seed is now
-  kept only if the level lies within the corner range of the cell it lands
-  in, the same condition under which the stroke draws a line there. Labels on
-  real isolines are unchanged.
-- Rotated contour label backgrounds (`bg_color`) are antialiased (#20). The
-  label quad ended exactly at the edge of its baked background box, so the box
-  edge was the rasterized quad edge and stair-stepped at any non-axis-aligned
-  angle while the glyphs inside stayed smooth. The quad now extends two pixels
-  past its content into the atlas cell's transparent gutter, continuing the
-  same content-to-texel map, so the texture filter fades the box edge over one
-  texel. Interior sampling, the label size, the contour line gap and labels
-  without a background are unchanged; axis-aligned box edges gain the same
-  one-texel antialiasing.
-- No API, model or serialization change.
+- Cartesian line series can fill the area under the line or between two
+  lines, and connect their samples with steps. `DataLineStyleConfig` gains
+  `fill: Option<LineFill>` (`ToBaseline(f64)`, default `0.0`, or
+  `ToSeries(SeriesRef)` for an index-aligned fill between this line and
+  another series that shares the same x column), `fill_color: Option<Color>`
+  (`None` derives the line colour at `DEFAULT_FILL_ALPHA` = 0.25 alpha; see
+  `effective_fill_color`) and `interpolation: LineInterpolation`
+  (`Linear` default, `StepPre`, `StepPost`, `StepMid` with the riser at the
+  data-space midpoint). All three are `serde(default)` and omitted from JSON
+  at their defaults, so existing documents parse and serialize
+  byte-identically.
+- The data pass gains a fill loop: every series' fill is drawn before every
+  series' body and every picked highlight, each loop in SSOT series order
+  with no automatic sorting, so another series' fill can never cover this
+  series' line and fills composite in declaration order. The fill is a
+  property of the line, not a hit target. The line shader gains the
+  `vs_area` / `fs_area` entries on their own pipeline ("figgy line area
+  pipeline"); the `Style` uniform keeps its 80 bytes, with the step mode in
+  `primitive_flags` bits 2-3 and the fill-to-series bit 4 (SHADER_COMMON.md
+  §2.2). Step pieces are drawn by the same line pipelines with a larger
+  per-instance strip; the arc-length scan (`line_arc.wgsl`, `ArcParams.mode`)
+  and the CPU and GPU pickers walk the same pieces, so dashes keep their
+  phase through corners and a pick on a riser resolves to the nearer source
+  index by position along the path. The streaming arc replay's parameter
+  uniforms grow to 32 bytes.
+- Constraints: fills assume x-monotonic series (a doubled-back series
+  blends its overlapping trapezoids twice); fill between two series requires
+  the same x column and rejects a different column, an unknown series or a
+  self reference with `InvalidSeriesConfig`; both fills and step modes
+  require GPU-resident columns and are rejected on streamed sources by
+  `inspect_streaming_capability` and the streaming prepare path; a gap in the
+  line breaks the fill where it breaks the line; a nonpositive baseline on a
+  logarithmic y axis is clamped to the axis minimum instead of masking the
+  area (an explicit exception to the nonpositive-sample rule).
+- The legend mark of a filled series shows a band of the fill colour under
+  its rule inside the fixed-width symbol field: `RichSegment` gains
+  `rule_band: Option<Color>` (`serde(default)`, omitted when `None`) and
+  `series_symbol_segments` emits it. Editing `fill`, `fill_color` or
+  `interpolation` moves the data revision like any other `render_type`
+  change, leaves the view and selection revisions alone, reuses column
+  allocations and refreshes the first frame to a fresh renderer's output.
+  The GPU picker's query uniform gains the step mode (320 bytes with the
+  point size map and polar fields); the pick registry signature includes it,
+  so a step edit rebuilds only that series' pick slot. `DataLineStyleConfig`
+  implements `Default`.
+- New in the low-level `data_render` module: `ColumnAreaLayer` (the fill
+  layer in `SeriesLayers::area`), `line_strip_vertex_count(per_piece,
+  interpolation)` and `LINE_PRECISE_VERTICES_PER_INSTANCE`. See the
+  configuration reference ("Area fill and step lines") and the interaction
+  guide.
 
-## Unreleased — subplots
+### Overlay layers
 
-- Subplots (issue #11, work item 5): `Config` gains `subplots: Vec<Subplot>`,
-  more charts drawn in the same document. A `Subplot { config, series,
+- Layer addressing, shared by overlay layers, subplots and the annotation
+  layer: `Config`, `RadialChart`, `CategoricalChart` and `BoxPlotChart` gain
+  `active_layer: LayerRef`, the layer that receives pointer input: `Base`
+  (default), `Overlay(i)`, `Annotations`, `Subplot(i)` or
+  `SubplotOverlay(i, j)` (see Subplots). The field is `serde(default)` and
+  omitted from JSON at `Base`, so existing documents parse and serialize
+  byte-identically. `DecorationId` gains `Overlay { layer, inner }`
+  (`overlay_<n>:<inner id>`), which `HitMap::for_active_layer` registers for
+  the active overlay.
+- `Config` gains `overlays: Vec<OverlayLayer>` (#11):
+  secondary Y axes drawn on the right side of the shared data area, each
+  scaling the series it lists. `OverlayLayer { y_axis, series, legend }` holds
+  only what may differ per layer; the chart area, both X axes, the title, the
+  grid, the merged legend, the colourbar and `draw_style` exist once on the
+  parent. The field is `serde(default)` and omitted when empty, so existing
+  documents parse and serialize byte-identically. `Config::expand()` is the
+  one expansion path into internal single-layer panels that share the group
+  data area (`Expansion { panels, data_area }`); `Config::margins()` now
+  reports the group right band, `fit_to_data_area` / the data-area drag write
+  it through the parent axis, and `Config::scaled` scales overlay axes and
+  legends. `Config::layer_of_series`, `validate_overlays`,
+  `active_layer()` (out-of-range fallback) and `set_active_layer` complete the
+  model API.
+- Interaction target layer: `Renderer::set_active_layer` / `active_layer`
+  (also on `WindowedRenderer`) store the layer, clear the element selection
+  on a change and recover an out-of-range index to `Base` through every
+  registry entry point. `HitMap::for_active_layer(cfg)` registers the shared
+  elements first and the active overlay's `OverlayAxisElement` /
+  `OverlayAxisLabelElement` / `OverlayAxisTitleElement` /
+  `OverlayLegendElement` last (`overlay_<n>:…` ids); their drags write back
+  into `overlays[n]` only. GPU picking addresses the active layer's panel and
+  series.
+- Rendering: `ChartView` holds one panel per layer (`overlay_count`,
+  `layer_raster_generations`), `create_chart_view` / `refresh_axis*` keep the
+  panel set in step with the document and re-rasterize only the panels whose
+  internal config changed, so a layer edit leaves the other layers' textures
+  intact and the cached view draws byte-identically to a fresh render.
+  `prepare`, `prepare_registered` and export expand a layered item into one
+  draw item per panel; picked highlights keep item order. Render warnings are
+  merged with `WarningAxis::OverlayY(index)`. `ChartViewState::overlay_y`
+  carries one Y range per overlay so one linked range edit moves every layer
+  atomically. `Series` is now `Copy`.
+- Export: `export_document_rgba_async` / `export_document_png_bytes_async`
+  (with `_with_clear` and blocking native variants) render the whole document;
+  `export_panel_*` stay and render the base panel. New native example
+  `overlay_axes`.
+- Fitting: `Chart::set_overlay_y_range(layer, min, max)` and
+  `Chart::auto_fit_overlay_y_extent` / `auto_fit_overlay_y_union` write
+  `overlays[layer].y_axis`.
+- Limits: overlays own no X axis, have no overlays of their own, exclude
+  bounded charts, and a nonresident streaming series listed by an overlay is
+  rejected (`InvalidSeriesConfig`); the stream request paths reject a
+  document with overlays (`InvalidConfig { field: "overlays" }`).
+- Revisions: the registry's revisions follow a single exhaustive
+  classification of `Config` fields instead of refreshing the axis raster on
+  every config replacement. `set_chart_config` and `set_chart_state` leave
+  every revision unchanged for an identical config, bump `desired` and
+  `config` for any change, bump `raster` only for chrome fields
+  (`raster_config_equal`: chart area, axes, title, grid, legend, colourbar,
+  draw style, plus any series change), `view` for data geometry
+  (`stream_config_equal`) and `selection` for `picked_*`. The SSOT
+  invalidation matrix asserts those revisions and the pixel oracle for every
+  `Config` field, now including `chart_area.x` / `y`, `label_font`,
+  `significant_digits`, the Milkyway and Constellation styles and every
+  colourbar field, behind an exhaustive destructuring guard so a new field
+  cannot land unclassified.
+- See the interaction guide, the configuration reference and the WASM guide.
+
+### Subplots
+
+- Subplots (#11): `Config` gains `subplots: Vec<Subplot>`, more charts
+  drawn in the same document. A `Subplot { config, series,
   link_x, link_y }` is a complete Cartesian chart with its own `chart_area`
   (in the parent's surface coordinates), all four axes, title, grid, legend,
   colourbar, style and secondary Y axes (`config.overlays`); the document's own
@@ -214,90 +353,51 @@ at the time. The first crates.io publication is recorded below.
   warnings are tagged `WarningAxis::Subplot { index, axis: SubplotAxis }`.
   Streaming rejects a document with subplots and a streamed series drawn by a
   subplot, as it does for overlays.
-- Interaction: `LayerRef` gains `Subplot(i)` and `SubplotOverlay(i, j)`, with
-  the same out-of-range recovery as `Overlay`. While one is active
-  `HitMap::for_active_layer` registers exactly that subplot's own set,
-  wrapped as `SubplotElement`s (`subplot_<i>:…` ids); drags and resizes use
-  the single-chart policies on the subplot's chart and land in
-  `subplots[i].config`. The WASM wrapper accepts the new layers, rebuilds its
-  hit map when the active subplot's overlay count changes and adds
-  `auto_fit_subplot(index, "x" | "y", columns, padding)`. New native example
-  `subplots` (a 2×2 grid with one linked X axis and one twin Y axis).
-- Rust migration: exhaustive `Config` literals need `subplots` (or
-  `..Default::default()`), `ChartViewState` literals need `subplots`, and
-  exhaustive matches on `LayerRef` need the two new variants (`WarningAxis` is
-  `non_exhaustive`). Released with the next renderer/model minor versions
-  together with the other unreleased entries. See the configuration reference
-  (`Subplot`), the interaction guide (subplots) and the WASM guide.
+- Interaction: `LayerRef::Subplot(i)` addresses a subplot and
+  `LayerRef::SubplotOverlay(i, j)` one of its overlays. An out-of-range
+  `Subplot(i)` reads as `Base`; `SubplotOverlay(i, j)` reads as `Subplot(i)`
+  when `j` is past that subplot's overlays and as `Base` when `i` is out of
+  range. While one is active `HitMap::for_active_layer` registers exactly
+  that subplot's own set, wrapped as `SubplotElement`s (`subplot_<i>:…` ids);
+  drags and resizes use the single-chart policies on the subplot's chart and
+  land in `subplots[i].config`. New native example `subplots`, which writes
+  `gallery-subplots.png` (four sensors in a 2×2 grid whose three subplots
+  link their X axis to the parent) and `mixed-axes.png` (one linked X axis, a
+  chart with a different X column and a twin Y axis from an overlay inside a
+  subplot).
+- See the configuration reference (`Subplot`), the interaction guide
+  (subplots) and the WASM guide.
 
-## Unreleased — overlay layers
+### Annotation layer
 
-- `Config` gains `overlays: Vec<OverlayLayer>` (issue #11, work items 1–4):
-  secondary Y axes drawn on the right side of the shared data area, each
-  scaling the series it lists. `OverlayLayer { y_axis, series, legend }` holds
-  only what may differ per layer; the chart area, both X axes, the title, the
-  grid, the merged legend, the colourbar and `draw_style` exist once on the
-  parent. The field is `serde(default)` and omitted when empty, so existing
-  documents parse and serialize byte-identically. `Config::expand()` is the
-  one expansion path into internal single-layer panels that share the group
-  data area (`Expansion { panels, data_area }`); `Config::margins()` now
-  reports the group right band, `fit_to_data_area` / the data-area drag write
-  it through the parent axis, and `Config::scaled` scales overlay axes and
-  legends. `Config::layer_of_series`, `validate_overlays`,
-  `active_layer()` (out-of-range fallback) and `set_active_layer` complete the
-  model API.
-- Interaction target layer: `Renderer::set_active_layer` / `active_layer`
-  (also on `WindowedRenderer` and the WASM wrapper as JSON) store the layer,
-  clear the element selection on a change and recover an out-of-range index to
-  `Base` through every registry entry point. `HitMap::for_active_layer(cfg)`
-  registers the shared elements first and the active overlay's
-  `OverlayAxisElement` / `OverlayAxisLabelElement` / `OverlayAxisTitleElement` /
-  `OverlayLegendElement` last (`overlay_<n>:…` ids); their drags write back
-  into `overlays[n]` only. GPU picking addresses the active layer's panel and
-  series. The WASM wrapper rebuilds its hit map when the layer or overlay
-  count changes and adds `auto_fit_overlay_y`.
-- Rendering: `ChartView` holds one panel per layer (`overlay_count`,
-  `layer_raster_generations`), `create_chart_view` / `refresh_axis*` keep the
-  panel set in step with the document and re-rasterize only the panels whose
-  internal config changed, so a layer edit leaves the other layers' textures
-  intact and the cached view draws byte-identically to a fresh render.
-  `prepare`, `prepare_registered` and export expand a layered item into one
-  draw item per panel; picked highlights keep item order. Render warnings are
-  merged with `WarningAxis::OverlayY(index)`. `ChartViewState::overlay_y`
-  carries one Y range per overlay so one linked range edit moves every layer
-  atomically. `Series` is now `Copy`.
-- Export: `export_document_rgba_async` / `export_document_png_bytes_async`
-  (with `_with_clear` and blocking native variants) render the whole document;
-  `export_panel_*` stay and render the base panel. The WASM `export_png`
-  exports the document. New native example `overlay_axes`.
-- Limits by design: overlays own no X axis, nest one level, exclude bounded
-  charts, and a nonresident streaming series listed by an overlay is rejected
-  (`InvalidSeriesConfig`); the stream request paths reject a document with
-  overlays (`InvalidConfig { field: "overlays" }`).
-- Rust migration: exhaustive `Config` literals need `overlays` (or
-  `..Default::default()`), `ChartViewState` literals need `overlay_y`, and
-  exhaustive matches on `WarningAxis` need `OverlayY`. Released with the next
-  renderer/model minor versions together with the other unreleased entries.
-  See the interaction guide, the configuration reference and the WASM guide.
-
-## Unreleased — annotation layer
-
-- Add the dedicated annotation layer to every chart family (#12, steps 1–4).
-  `AnnotationLayer` gains `items: Vec<Annotation>`; an `Annotation` is an
-  `id`, a `visible` flag and one of `ReferenceLine { axis, value, style, label }`,
+- Every chart family has a dedicated annotation layer (#12). `Config`,
+  `RadialChart`, `CategoricalChart` and `BoxPlotChart` gain
+  `annotations: AnnotationLayer { visible, items }`, and `RadarChart` has the
+  same field. `items: Vec<Annotation>` holds the annotations in draw order;
+  an `Annotation` is an `id`, a `visible` flag and one of
+  `ReferenceLine { axis, value, style, label }`,
   `Span { axis, from, to, fill }`, `Text { anchor, text, box_style }` or
   `Arrow { from, to, style, text }`, with `Anchor::Data` (axis coordinates that
   follow zoom and range changes) or `Anchor::Ratio` (plot-area fractions, fixed
   on screen). `AnnotationAxis::X` / `Y` are screen axes in every family:
   `bottom_x` / `left_y` on Cartesian charts, the category index axis and the
-  value axis on bar and box charts, no value axes on radial charts. Non-finite
-  values and unplaceable anchors are not errors: the raster skips the item and
-  reports `RenderWarning::AnnotationSkipped { index, reason }`
-  (`AnnotationSkip::{NonFinite, NoValueAxis, OutOfRange, EmptyText}`);
-  `RenderWarning::axis()` now returns `Option<WarningAxis>`. Malformed styles
-  are rejected by `AnnotationLayer::validate`, part of config validation.
-  Annotations never change the data-area margins and are not nudged by the
-  label placer. The JSON shape is additive: an empty `items` is omitted.
+  value axis on bar and box charts, no value axes on radial and radar charts
+  or on a Cartesian chart in polar mode, where reference lines, spans and
+  data anchors are skipped with `NoValueAxis`. Non-finite values and
+  unplaceable anchors are not errors: the raster skips the item and reports
+  `RenderWarning::AnnotationSkipped { index, reason }`
+  (`AnnotationSkip::{NonFinite, NoValueAxis, OutOfRange, EmptyText}`).
+  Malformed styles are rejected by `AnnotationLayer::validate`, part of
+  config validation. Annotations never change the data-area margins and are
+  not nudged by the label placer. The JSON shape is additive: `annotations`
+  is `serde(default)` and omitted at its default (visible, no items), and an
+  empty `items` is omitted, so existing documents parse and serialize
+  byte-identically.
+- `DecorationId` gains `Annotation(index)` (`annotation_<n>`), which the
+  annotation map registers. The chart's own frame depends on neither
+  `annotations` nor `active_layer`: annotation items draw into separate
+  textures, and the bounded frame and label raster caches exclude both
+  fields from their keys, so editing them reuses the cached frame.
 - One shared CPU raster pass draws the layer into two panel textures composited
   with the existing fullscreen textured pipeline: the underlay (spans) below
   the data and the overlay above every decoration. Cartesian panels draw
@@ -319,7 +419,8 @@ at the time. The first crates.io publication is recorded below.
   the host clear so an underlay shows below bars and boxes; frames are cached
   per mode and `export_rgba` picks the mode itself. `Frame::annotation_space()`
   / `pixel_space_for_config` expose each family's anchor space (`PixelSpace`,
-  the `AnnotationSpace` trait).
+  the `AnnotationSpace` trait). New `raster::Canvas::fill_polygon` fills a
+  closed polygon (non-zero winding).
 - Every annotation has the standard interaction: `AnnotationLayer` implements
   `DragConfig` and `AnnotationElement` the `Selectable` / `Draggable` /
   `Resizable` contracts, exposed as an `AnnotationMap` (the `DecorationMap`
@@ -330,7 +431,7 @@ at the time. The first crates.io publication is recorded below.
   annotation through `decorations.selected = Annotation(index)` without
   rebuilding the frame; Cartesian hosts pass the index to
   `refresh_annotations`.
-- Pointer route by the active layer (#12, step 4): while
+- Pointer route by the active layer (#12): while
   `active_layer == LayerRef::Annotations` and the layer is shown, the drawn
   items sit on top of the chart's own hit map; on every other layer they are
   not part of the route and clicks pass through them.
@@ -342,13 +443,77 @@ at the time. The first crates.io publication is recorded below.
   `AnnotationMap::route` / `receives_pointer` state the shared rule; both
   return `LayerHit::{Annotation { index, id }, Element(id)}`. `RadialChart`,
   `CategoricalChart` and `BoxPlotChart` gain `active_layer()` /
-  `set_active_layer` (an `Overlay` reads and is stored as `Base`; a change
-  clears `decorations.selected` and keeps the data selection), and
-  `LayerRef::bounded()`. A layer switch reuses the data, grid and decoration
-  textures and the bounded frames; routed selection and drags refresh the
-  annotation layer only.
-- The WASM wrappers `FiggyChart` and `FiggyBoundedChart` expose
-  `annotations`, `hit_annotation`, `select_annotation`, `selected_annotation`,
+  `set_active_layer` (an `Overlay`, `Subplot` or `SubplotOverlay` reads and
+  is stored as `Base`; a change clears `decorations.selected` and keeps the
+  data selection), and `LayerRef::bounded()`. A layer switch reuses the
+  data, grid and decoration textures and the bounded frames; routed
+  selection and drags refresh the annotation layer only, and the cached view
+  then draws byte-identically to a fresh render.
+- Guides: configuration reference, interaction guide (annotation layer),
+  architecture (revision table), bounded family guides, WASM guide and JSON
+  schema.
+
+### Independent bounded titles
+
+- `RadialChart`, `CategoricalChart` and `BoxPlotChart` gain optional
+  `chart_title: Option<BoundedTitleOptions>` with independent visibility and
+  `RichText` (font, size, color, segment styles and `TextAlign`). Legacy JSON
+  without the field still uses the plain `title` and shared label style;
+  `resolved_title()` returns the title as drawn, from `chart_title` or from
+  the legacy fields. Editors call `normalize_title()` once before editing
+  labels to preserve the original title appearance. Title hit bounds,
+  dragging and export use the same renderer metrics at every output scale.
+  Label collision handling is unchanged.
+- `validate()` of the three charts also checks the resolved title
+  (`BoundedTitleOptions::validate`) and the annotation layer; see
+  [Migrating from 0.17.0](#migrating-from-0170).
+- See the interaction guide and the `bounded_titles` example.
+
+### Contour label fixes
+
+- Automatic contour labels are placed only where their level is actually
+  crossed (#19). The anchor pass used to accept any projected seed whose value
+  was within its tolerance of the level, so in a near-flat region a shallow
+  extremum just short of a level (for example a minimum of +0.0004 against
+  level 0) received a label with no isoline anywhere near it. A seed is now
+  kept only if the level lies within the corner range of the cell it lands
+  in, the same condition under which the stroke draws a line there. Labels on
+  real isolines are unchanged.
+- Rotated contour label backgrounds (`bg_color`) are antialiased (#20). The
+  label quad ended exactly at the edge of its baked background box, so the box
+  edge was the rasterized quad edge and stair-stepped at any non-axis-aligned
+  angle while the glyphs inside stayed smooth. The quad now extends two pixels
+  past its content into the atlas cell's transparent gutter, continuing the
+  same content-to-texel map, so the texture filter fades the box edge over one
+  texel. Interior sampling, the label size, the contour line gap and labels
+  without a background are unchanged; axis-aligned box edges gain the same
+  one-texel antialiasing.
+- No API, model or serialization change.
+
+### Web example
+
+- No method of the WASM integration example `figgy` 0.15.0 is removed or
+  renamed, and no signature changes. New configuration and series keys in
+  `get_config` / `set_config` / `get_series` / `set_series` and in the
+  bounded document JSON are additive and omitted at their defaults.
+- Layers: `FiggyChart` adds `active_layer` / `set_active_layer` (the layer
+  as JSON), accepts the subplot layers and rebuilds its hit map when the
+  layer, the overlay count or the active subplot's overlay count changes.
+  `auto_fit_overlay_y(layer, column, padding)` fits an overlay's Y axis and
+  `auto_fit_subplot(index, "x" | "y", columns, padding)` a subplot axis (a
+  linked axis moves its link group). `hit_test`, `decoration_bounds`,
+  `on_press`, `on_move` and `has_selection` follow the active layer and the
+  annotation route (`overlay_<n>:…`, `subplot_<i>:…` and `annotation_<n>`
+  ids); on the base layer they answer as before. `export_png` exports the
+  whole document, and the canvas fit and pointer mapping fit
+  `Config::document_area`; without overlays or subplots the output is
+  unchanged.
+- `<figgy-chart>` forwards `auto_fit_overlay_y(layer, column, padding)`,
+  `set_active_layer(json)` and `active_layer()`; its two layer methods return
+  the parsed layer value (`"Base"`, `{ Overlay: 0 }`) instead of the
+  kernel's JSON string.
+- Annotations: `FiggyChart` and `FiggyBoundedChart` expose `annotations`,
+  `hit_annotation`, `select_annotation`, `selected_annotation`,
   `annotation_handle`, `drag_annotation`, `add_annotation`, `set_annotation`,
   `remove_annotation`, `set_annotations_visible`, `pointer_to_anchor` and
   `annotation_warnings`; a bounded chart with a visible span is drawn with the
@@ -360,142 +525,184 @@ at the time. The first crates.io publication is recorded below.
   it. `FiggyBoundedChart` gains `set_active_layer` / `active_layer`, and its
   `hit_decoration`, `select_decoration`, `resize_handle` and `drag` take the
   same ids. The index-based annotation methods keep working on every layer.
-- Tests: the SSOT invalidation matrix classifies `annotations.items` (annotation
-  revision only) and `annotations.visible` (draw only) on resident and streamed
-  charts; the Cartesian layer tests prove that an annotation refresh rewrites
-  neither the grid nor the decoration texture and that the cached view paints
-  the bytes of a fresh renderer, that spans sit below the data and text boxes
-  above the legend, that drags round-trip, and that 1× / 2× exports share
-  metrics with the hit map; the bounded tests prove the same frame reuse,
-  export parity, selection, drags and radial data-anchor warnings for all
-  three families. The routing tests register per-layer sets for single-layer
-  and layered Cartesian documents, put the items above the legend only while
-  `Annotations` is active (1× and 2×), pass hidden layers through, keep every
-  grid, decoration and bounded frame cache across a layer switch, paint the
-  bytes of a fresh renderer after routed selection and handle drags, and keep
-  anchor kinds through JSON for all three bounded families. Guides:
-  configuration reference, interaction guide
-  (annotation layer), architecture (revision table), bounded family guides,
-  WASM guide and JSON schema.
-- Rust migration: exhaustive `AnnotationLayer` literals need `items`;
-  exhaustive matches on `RenderWarning` need `AnnotationSkipped`, and
-  `RenderWarning::axis()` is an `Option`. `draw_chart_panel_columnar` takes
-  the two optional annotation layers. Released with the next renderer/model
-  minor versions together with the other Unreleased entries below.
+- `FiggyBoundedChart` accepts the `"radar"` family in `create` /
+  `set_document` (see Radar charts).
+- Behaviour change: `FiggyChart::auto_fit_all(padding)` and
+  `<figgy-chart>.auto_fit_all(padding)` fit only the axes of the active
+  layer, instead of the parent's axes from every registered series. On
+  `Base`, and on the annotation layer, which draws on the base axes, they
+  fit the parent's `bottom_x` and `left_y`; on `Subplot(i)` subplot `i`'s;
+  on `Overlay(n)` and `SubplotOverlay(i, n)` that overlay's Y axis only.
+  Each axis fits the series drawn against it (`Config::layer_of_series`).
+  A linked axis (`link_x`, `link_y`) fits the series of every chart in its
+  link group and moves the whole group, whichever member is active; X and
+  Y links are followed separately. Overlay series count towards their
+  chart's X axis, which they share, and not towards `left_y`. A series of
+  an unlinked subplot no longer widens the parent's axes. A document
+  without overlays or subplots fits as before. To fit every layer, a host
+  calls `set_active_layer` and then `auto_fit_all` for each layer, or calls
+  `auto_fit_overlay_y` / `auto_fit_subplot` with explicit columns.
+  Streaming is unchanged: streamed documents have no overlays or subplots.
+- A base `auto_fit_all` now also moves the subplots whose axes link to the
+  parent (`commit_auto_fit_all_if_current` resyncs the links).
+- `FiggyChart::step_selection` steps a selected point vector
+  (`DataRenderType::Vector` with `VectorComponents::Points`) along its
+  series' points, as it steps scatter points.
 
-## Unreleased — area fill and step lines
+### Documentation and examples
 
-- Cartesian line series can fill the area under the line or between two
-  lines, and connect their samples with steps. `DataLineStyleConfig` gains
-  `fill: Option<LineFill>` (`ToBaseline(f64)`, default `0.0`, or
-  `ToSeries(SeriesRef)` for an index-aligned fill between this line and
-  another series that shares the same x column), `fill_color: Option<Color>`
-  (`None` derives the line colour at `DEFAULT_FILL_ALPHA` = 0.25 alpha; see
-  `effective_fill_color`) and `interpolation: LineInterpolation`
-  (`Linear` default, `StepPre`, `StepPost`, `StepMid` with the riser at the
-  data-space midpoint). All three are `serde(default)` and omitted from JSON
-  at their defaults, so existing documents parse and serialize
-  byte-identically.
-- The data pass gains a fill loop: every series' fill is drawn before every
-  series' body and every picked highlight, each loop in SSOT series order
-  with no automatic sorting, so another series' fill can never cover this
-  series' line and fills composite in declaration order. The fill is a
-  property of the line, not a hit target. The line shader gains the
-  `vs_area` / `fs_area` entries on their own pipeline ("figgy line area
-  pipeline"); the `Style` uniform keeps its 80 bytes, with the step mode in
-  `primitive_flags` bits 2-3 and the fill-to-series bit 4 (SHADER_COMMON.md
-  §2.2). Step pieces are drawn by the same line pipelines with a larger
-  per-instance strip; the arc-length scan (`line_arc.wgsl`, `ArcParams.mode`)
-  and the CPU and GPU pickers walk the same pieces, so dashes keep their
-  phase through corners and a pick on a riser resolves to the nearer source
-  index by position along the path. The streaming arc replay's parameter
-  uniforms grow to 32 bytes.
-- Constraints, documented and tested rather than masked: fills assume
-  x-monotonic series (a doubled-back series blends its overlapping
-  trapezoids twice); fill between two series requires the same x column and
-  rejects a different column, an unknown series or a self reference with
-  `InvalidSeriesConfig`; both fills and step modes require GPU-resident
-  columns and are rejected on streamed sources by
-  `inspect_streaming_capability` and the streaming prepare path; a gap in the
-  line breaks the fill where it breaks the line; a nonpositive baseline on a
-  logarithmic y axis is clamped to the axis minimum instead of masking the
-  area (an explicit exception to the nonpositive-sample rule).
-- The legend mark of a filled series shows a band of the fill colour under
-  its rule inside the fixed-width symbol field: `RichSegment` gains
-  `rule_band: Option<Color>` (`serde(default)`, omitted when `None`) and
-  `series_symbol_segments` emits it. Editing `fill`, `fill_color` or
-  `interpolation` moves the data revision like any other `render_type`
-  change, leaves the view and selection revisions alone, reuses column
-  allocations and refreshes the first frame to a fresh renderer's output.
-  The GPU picker's query uniform gains the step mode (240 bytes); the pick
-  registry signature includes it, so a step edit rebuilds only that series'
-  pick slot. `DataLineStyleConfig` implements `Default`.
-- Rust migration: exhaustive `DataLineStyleConfig` literals need `fill`,
-  `fill_color` and `interpolation` (or `..Default::default()`); exhaustive
-  `RichSegment` literals need `rule_band`. This public field addition is
-  released with the next renderer/model minor versions together with the
-  other Unreleased entries below. See the configuration reference
-  ("Area fill and step lines") and the interaction guide.
+- Documentation: a [polar guide](crates/renderer/POLAR.md) (input and first
+  render, coordinate options, axes, picking, dragging, subplots, export;
+  English and Korean), a "Chart types" table and short polar and radar
+  snippets in the READMEs, `USAGE.md` sections (polar, and the Cartesian
+  series, maps and layers: area fills and steps, point colour and size
+  maps, vector fields, overlays, subplots and annotations), and twelve new
+  gallery images: the polar antenna pattern and compass rose, radar on a
+  polygon and on a circular grid, and eight designed scenes drawn by the
+  feature examples `vector_field`, `value_maps`, `area_step`,
+  `overlay_axes` and `subplots` (a wind field over a heatmap, surface
+  currents, colour-mapped points, bubbles, forecast bands, a step
+  schedule, twin axes and small multiples). The Korean README gains the
+  concept and draw-style rows. The
+  [example index](crates/renderer/examples/README.md) shows every gallery
+  image with the function that draws it and the command that regenerates
+  it. The `precise_scatter_probe` example is removed; the `sketch_render`
+  GPU test checks the same plain scatter output.
+- The browser guide gains an English
+  [streaming contract](crates/renderer/WASM.md#streaming-contract) beside
+  its Korean section 6: supplying sources and running jobs, fitting the
+  first stream, view changes, selection and export, GPU caches and memory
+  limits, and the support scope. The English links in `ARCHITECTURE.md` and
+  the web README lead there.
+- Released-document fixtures:
+  [`released_documents.rs`](crates/renderer/tests/released_documents.rs)
+  parses thirty documents written by the published model 0.11.0 and 0.10.0
+  with the current types and requires the same bytes back. They cover the
+  default `Config`, a `Config` with every series kind of those releases and
+  a colourbar, an edited `Config`, every draw style, series lists covering
+  every `DataRenderType` variant of those releases, and the radial,
+  categorical and box plot charts at their defaults and edited
+  ([fixture notes](crates/renderer/tests/fixtures/released/README.md)).
+- `tools/playground` is a standalone interactive bench (winit and egui; not
+  a workspace member and not published) with scenes for every chart family
+  and for area fills and steps, value maps, vector fields, twin Y axes,
+  subplots, annotations, polar and radar.
 
-## Unreleased — layer and annotation foundation
+<a id="migrating-from-0170"></a>
 
-- Add the SSOT shape shared by the planned overlay layers (secondary Y axes,
-  subplots) and the dedicated annotation layer, without any behavior change.
-  `Config`, `RadialChart`, `CategoricalChart` and `BoxPlotChart` gain
-  `active_layer: LayerRef` (`Base` default, `Overlay(index)`, `Annotations`)
-  and `annotations: AnnotationLayer { visible }`. Both are `serde(default)` and
-  omitted from JSON at their defaults, so existing documents parse and
-  serialize byte-identically. `DecorationId` gains `Overlay { layer, inner }`
-  (`overlay_<n>:<inner id>`) and `Annotation(index)` (`annotation_<n>`); no hit
-  map registers them yet. Drawn pixels do not depend on either field, and the
-  bounded frame and label raster caches exclude both from their keys, so
-  editing them reuses the cached frame. See the interaction guide and
-  configuration reference.
-- The registry's revisions now follow a single exhaustive classification of
-  `Config` fields instead of refreshing the axis raster on every config
-  replacement. `set_chart_config` and `set_chart_state` leave every revision
-  unchanged for an identical config, bump `desired` and `config` for any
-  change, bump `raster` only for chrome fields (`raster_config_equal`: chart
-  area, axes, title, grid, legend, colourbar, draw style, plus any series
-  change), `view` for data geometry (`stream_config_equal`) and `selection`
-  for `picked_*`. The SSOT invalidation matrix asserts those revisions and the
-  pixel oracle for every `Config` field, now including `chart_area.x` / `y`,
-  `label_font`, `significant_digits`, the Milkyway and Constellation styles
-  and every colourbar field, behind an exhaustive destructuring guard so a new
-  field cannot land unclassified. Hosts that relied on an identical
-  `set_chart_config` call to force a raster refresh should edit the chart or
-  refresh the view directly.
-- Rust migration: exhaustive chart struct literals need `active_layer` and
-  `annotations` (or `..Default::default()`); exhaustive matches on
-  `DecorationId` need the two new arms. This public field addition is released
-  with the next renderer/model minor versions together with the bounded title
-  change below.
+### Migrating from 0.17.0
 
-## Unreleased — independent bounded titles
+JSON written by renderer 0.17.0 / model 0.11.0 parses and re-serializes byte
+for byte: every new key is optional and omitted at its default. The changes
+below affect Rust code, and one of them is a stricter validation of bounded
+charts. The renderer re-exports the model, so the model notes apply to
+renderer users too.
 
-- Restore the bounded rich-title patches previously used by the Studio Git
-  consumer (`83a5c83`, `40de171`) on the published 0.17.0 code line.
-  `RadialChart`, `CategoricalChart` and `BoxPlotChart` gain optional
-  `chart_title: Option<BoundedTitleOptions>` with independent visibility and
-  `RichText` (font, size, color, segment styles and `TextAlign`). Legacy JSON
-  without the field still uses the plain `title` and shared label style.
-  Editors call `normalize_title()` once before editing labels to preserve
-  the original title appearance. Title hit bounds, dragging and export use
-  the same renderer metrics at every output scale.
-- Rust migration: exhaustive chart struct literals need `chart_title: None`;
-  literals using `..Default::default()` remain valid. This public field addition
-  requires coordinated release versions; this PR does not publish or relabel
-  renderer 0.17.0/model 0.11.0. See the interaction guide and `bounded_titles`
-  example. The existing label collision handling is retained.
+Model types (figgy-model 0.12.0):
 
-## Upcoming release — renderer 0.17.0 / model 0.11.0 / figgy 0.14.0
+- Exhaustive `Config` literals need `polar: None`, `overlays: Vec::new()`,
+  `subplots: Vec::new()`, `active_layer: LayerRef::Base` and
+  `annotations: AnnotationLayer::default()`, or end with
+  `..default::default_config()` (`model::default::default_config()`,
+  re-exported as `renderer::default::default_config()`). `Config` does not
+  implement `Default`, so `..Default::default()` does not compile.
+- Exhaustive `RadialChart`, `CategoricalChart` and `BoxPlotChart` literals
+  need `chart_title: None`; literals using `..Default::default()` remain
+  valid.
+- Exhaustive `RadialChart`, `CategoricalChart` and `BoxPlotChart` literals
+  need `active_layer: LayerRef::Base` and
+  `annotations: AnnotationLayer::default()`; literals using
+  `..Default::default()` remain valid.
+- Exhaustive `DataLineStyleConfig` literals need `fill: None`,
+  `fill_color: None` and `interpolation: LineInterpolation::Linear`, or end
+  with `..Default::default()` (`DataLineStyleConfig` now implements
+  `Default`).
+- Exhaustive `DataScatterStyleConfig` literals need `point_color_map: None`
+  and `point_size_map: None`.
+- Exhaustive `RichSegment` literals need `rule_band: None`. `RichSegment`
+  does not implement `Default`; `..RichSegment::plain(c)` also works.
+- Exhaustive `LabelFormat` matches need `Degrees` and `Radians` arms.
+- Exhaustive `DataRenderType` matches need a `Vector { .. }` arm.
+- Exhaustive `DecorationId` matches need `SpokeLabel { .. }`,
+  `Overlay { .. }` and `Annotation(_)` arms.
+- Validation: `RadialChart`, `CategoricalChart` and `BoxPlotChart`
+  `validate()` also checks `annotations` and the resolved title
+  (`BoundedTitleOptions::validate`). Some documents passed 0.11.0 validation
+  and are now rejected: a radial or categorical `font_family` longer than
+  160 characters or containing a control character, and a radial `title`
+  containing a control character. Shorten the font name and remove the
+  control character. JSON parsing is unchanged.
 
-New 0.x minor versions: `RichText.align` is a new public field, so fully
-specified `RichText` literals need the migration noted below. JSON without
-`align` still parses. The WASM integration example
-advances to 0.14.0 with the renderer dependency. This entry does not itself
-publish a registry crate. As verified on 2026-10-16, crates.io still contains
-renderer 0.16.1 and model 0.10.0; this entry describes the release being prepared.
+Renderer (figgy-renderer 0.18.0):
+
+- `ChartViewState` literals need `overlay_y: Vec::new()` for a chart without
+  overlays, otherwise one `AxisViewState` per entry of `Config::overlays`, as
+  `Renderer::chart_view_state` returns them. `ChartViewState` does not
+  implement `Default`, and `set_chart_view_state` rejects a count mismatch
+  with `InvalidConfig { field: "overlays" }`.
+- `ChartViewState` literals need `subplots: Vec::new()` for a chart without
+  subplots, otherwise one `ChartViewState` per entry of `Config::subplots`.
+  Each of those has empty `subplots` and one `overlay_y` entry per overlay
+  of that subplot. `set_chart_view_state` rejects a mismatch with
+  `InvalidConfig { field: "subplots" }`.
+- `RenderWarning` (`non_exhaustive`) gains `AnnotationSkipped`, and
+  `RenderWarning::axis()` returns `Option<WarningAxis>`, which is `None`
+  only for `AnnotationSkipped`. Write `if let Some(axis) = warning.axis()`,
+  or `.filter_map(RenderWarning::axis)` in place of
+  `.map(RenderWarning::axis)`.
+- `WarningAxis` (`non_exhaustive`) gains the data-carrying variants
+  `OverlayY(usize)` and `Subplot { index, axis: SubplotAxis }`, so numeric
+  casts such as `axis as isize` no longer compile. Match on the variants
+  (with a `_` arm), or use the `Display` field path.
+- `Series` now implements `Clone` and `Copy`. A closure that uses a `Series`
+  by value without `move` now borrows it instead of moving it, so a closure
+  that outlives the function, such as one it returns, needs `move`.
+- Exhaustive `GpuSeriesExtentMode` matches need a `VectorTips` arm; existing
+  discriminants are unchanged.
+- `set_chart_config` and `set_chart_state` leave every revision unchanged
+  for an identical config. Hosts that relied on such a call to force a
+  raster refresh should edit the chart or refresh the view directly
+  (`refresh_axis`).
+
+Low-level `data_render` module (figgy-renderer 0.18.0):
+
+- `ScatterTransform` literals need `polar_angle: [0.0; 4]` and
+  `polar_extent: [0.0; 4]` for a rectangular chart;
+  `scatter_transform_from_config` fills them for a polar one.
+- `SeriesLayers` literals need `area: None` for a series without a fill.
+- `SeriesLayers` literals need `vector: None` for a series that is not a
+  vector field.
+- `ColumnScatterLayer` and `ColumnPickRingLayer` literals need
+  `value_map_bg`, `color_value` and `size_value`. Without value maps write
+  `color_value: None, size_value: None`. `value_map_bg: None` is valid only
+  together with `style_map_bg: None` (the plain pipeline). A layer drawn by
+  the mapped pipeline must bind group 3, and `None` panics at draw time. For
+  a series without value maps, pass the neutral group:
+  `let (neutral, charge) = create_point_value_map_bind_group(device, &ledger, &value_map_bgl, &PointValueMapParamsGpu::NEUTRAL, &[]);`,
+  then `value_map_bg: Some(&neutral)`. Here `ledger` is the
+  `Arc<gpu_memory::GpuLedger>` the function takes and `value_map_bgl` is the
+  layout given to `create_scatter_columnar_mapped_pipeline`. Keep `charge`
+  alive as long as `neutral`.
+- `draw_chart_panel_columnar` takes `annotation_underlay: Option<AxisLayer>`
+  after `grid` and `annotation_overlay: Option<AxisLayer>` after
+  `decoration`. Pass `None` for both to draw as before:
+  `draw_chart_panel_columnar(pass, target_size, panel_rect, data_area, grid, None, &series, decoration, None)`.
+- `create_scatter_columnar_mapped_pipeline` takes `value_map_bgl` after
+  `style_map_bgl`; pass `&create_point_value_map_bind_group_layout(device)`.
+  The pipeline now also reads group 3 and vertex slots 4 and 5.
+  `draw_chart_panel_columnar` binds them from the layer's `value_map_bg`,
+  `color_value` and `size_value` (see the `ColumnScatterLayer` note).
+- `line_arc::ArcScratch::build` takes a trailing `step_mode: u32`. Pass `0`
+  for a linear line, the previous behaviour. The word holds the step mode in
+  bits 0-1 (`1` step-pre, `2` step-post, `3` step-mid) and the polar arc
+  pieces from bit 4.
+
+## crates.io release — renderer 0.17.0 / model 0.11.0 / figgy 0.14.0 (2026-10-16)
+
+Renderer 0.17.0 and model 0.11.0 are new 0.x minor versions on crates.io:
+`RichText.align` is a new public field, so fully specified `RichText` literals
+need the migration noted below. The WASM integration example advances to 0.14.0 with the renderer dependency
+and is not published (`publish = false`).
 
 - The raw WASM host adds `FiggyBoundedChart` for radial, categorical and boxplot
   documents, using the existing renderer's geometry, decoration drag/resize,
@@ -598,7 +805,7 @@ renderer 0.16.1 and model 0.10.0; this entry describes the release being prepare
 - The workspace is formatted with rustfmt, and `ci/verify.py static` (run by CI)
   now starts with `cargo fmt --all --check`.
 
-## Source patch — renderer 0.16.1 / model 0.10.0 / figgy 0.13.1
+## Patch — renderer 0.16.1 / model 0.10.0 / figgy 0.13.1 (2026-10-13)
 
 - GPU resource retirement now transfers handles and their byte credits together
   through an atomic queue. Destruction and credit return still follow submission
@@ -614,14 +821,14 @@ renderer 0.16.1 and model 0.10.0; this entry describes the release being prepare
   defines tracked-memory budget scope, and includes the required Cartesian
   axis/style refresh steps. The WASM example documents host-managed async access.
 - The model remains 0.10.0. The WASM integration example advances to 0.13.1
-  with the renderer dependency; this does not publish a registry crate or Studio.
+  with the renderer dependency.
 
 ## First crates.io release — 2026-10-13
 
 The first published registry versions are **figgy-renderer 0.16.1** and
-**figgy-model 0.10.0**. Rust imports remain `renderer` and `model`; the renderer
-re-exports the model types. The patch below preserves public API signatures and
-the model schema.
+**figgy-model 0.10.0**: the patch above and the packaging changes below. Rust
+imports remain `renderer` and `model`; the renderer re-exports the model types.
+The packaging changes preserve public API signatures and the model schema.
 
 - The API landing pages start with installation and complete examples. The native
   PNG quick start includes the shipped `line` source directly and is compiled as
@@ -647,12 +854,10 @@ The browser wrapper is an example with `publish = false`, not a registry product
 
 The published 0.16.1 renderer and 0.10.0 model archives still contain the earlier
 unpublished/Git installation guidance. Their versioned docs.rs pages and crates.io
-READMEs are generated from those archives; merging these source documentation
-corrections or requesting a docs.rs rebuild cannot replace them. Corrected registry
-READMEs and API documentation require a subsequent release of each affected crate.
-A documentation-only patch release is sufficient; no public API, model schema or
-rendering change is needed. The old version URLs will retain the original text.
-This source correction does not publish or increment either package.
+READMEs are generated from those archives, so source documentation corrections
+and docs.rs rebuilds do not change them, and the old version URLs keep the
+original text. Renderer 0.17.0 and model 0.11.0 (2026-10-16) carry the corrected
+READMEs and API documentation.
 
 ## Source release — renderer 0.16.0 / model 0.10.0 / figgy 0.13.0
 
@@ -738,7 +943,6 @@ Physical Apple GPU coverage remains outstanding; consult the exact revision's CI
 An opt-in [precompiled Metal shader experiment](ci/metal-precision-probe/README.md)
 compares compiler behavior; the default renderer requires no precompiled shader or wgpu patch.
 See [API contracts and migration](crates/renderer/API.md) for ownership and compatibility.
-Online Studio deployment is separate from this source release.
 
 ### Previous patch — renderer 0.12.6 / figgy 0.10.6
 
@@ -773,8 +977,7 @@ including the first frame of a chart created with explicit axis ranges. Replacin
 chart configuration, series or view, or cancelling a stream, clears its pending
 fit request so a restored chart cannot inherit an earlier fit. Public API
 signatures and the Config JSON schema are unchanged; model remains 0.7.2.
-Update the Git revision and rebuild the browser package. Studio deployment is
-separate from this source release.
+Update the Git revision and rebuild the browser package.
 
 ### Previous patch — renderer 0.12.2 / figgy 0.10.2
 
@@ -787,8 +990,7 @@ are committed with the final range, and progress no longer rewinds during fittin
 Wait for `complete` / `job.done`, not just the submitted count reaching the total.
 
 Public API signatures and the Config JSON schema are unchanged; model remains
-0.7.2. Update the Git revision and rebuild the browser package. Online Studio
-deployment is separate from this source release.
+0.7.2. Update the Git revision and rebuild the browser package.
 
 ### Previous patch — renderer 0.12.1 / figgy 0.10.1
 
@@ -799,7 +1001,6 @@ fitting preserve the user's range. Public API signatures and the Config JSON
 schema are unchanged; model remains 0.7.2. See the
 [initial-fit guide](crates/renderer/WASM.md#streaming-fit) for call order.
 Update your Git revision and rebuild the browser package to use this fix.
-Publishing this source does not deploy the online Studio.
 
 ### Previous feature release — renderer 0.12.0 / figgy 0.10.0
 
@@ -811,8 +1012,7 @@ the current view in a chart-local GPU cache; it never promotes the connected
 whole-column closure automatically. Wider views and scaled export replay the
 source, while a narrower view can redraw from that cache.
 There is no LOD or downsampling. Supported styles and exclusions are listed in
-[WASM.md](crates/renderer/WASM.md). This source release does **not** mean the
-online Studio has adopted the new API. Build the browser package from this
+[WASM.md](crates/renderer/WASM.md). Build the browser package from this
 revision; the crates are distributed through this repository, not crates.io.
 The model is version **0.7.2**, including the fix for subnormal logarithmic
 contour levels. Renderer 0.12.0 and figgy 0.10.0 use wgpu 30 and Rust 1.99.0.
@@ -825,8 +1025,9 @@ fill colour; otherwise the bin's fill colour is used. Original columns and
 web API signatures are unchanged. The Rust `ColumnBarLayer` has a new
 `envelope` field, so downstream struct literals require an update (`None`
 for manually built layers without an envelope).
-The browser demo includes bin-count and stroke controls. Run
-`npx serve crates/web -l 8142`, then open `http://localhost:8142/`.
+The browser demo includes bin-count and stroke controls. Build the package as
+in [Build and run](crates/web/README.md#build-and-run), then run
+`npx serve crates/web -l 8142` and open `http://localhost:8142/`.
 
 Renderer 0.10.0 / figgy 0.9.0 introduced:
 
@@ -847,8 +1048,8 @@ Rust 렌더러의 버전 및 Studio 배포와는 구분한다.
 아래 과거 소스 릴리스의 미배포 설명은 당시 상태다. 최초 crates.io 배포는
 2026-10-13의 renderer 0.16.1 / model 0.10.0이며, 현재 설치법은 각 패키지의
 README를 따른다. 이미 배포한 버전의 docs.rs·crates.io README는 소스 문서 수정이나
-docs.rs 재빌드로 바뀌지 않는다. 수정된 공개 문서는 각 패키지의 후속 배포에 반영되며,
-문서만 고치는 패치 릴리스로 충분하다. 기존 버전 URL은 원문을 유지한다.
+docs.rs 재빌드로 바뀌지 않으며, 기존 버전 URL은 원문을 유지한다. 수정된 설치 안내와
+API 문서는 2026-10-16에 배포한 renderer 0.17.0 / model 0.11.0부터 반영됐다.
 
 ## 소스 릴리스 — renderer 0.16.0 / model 0.10.0 / figgy 0.13.0
 
@@ -872,9 +1073,10 @@ docs.rs 재빌드로 바뀌지 않는다. 수정된 공개 문서는 각 패키�
 원형·범주형 막대·박스플롯의 제목·축·눈금·범주 라벨·범례·값 라벨을 기존 선택·드래그 계약으로
 편집할 수 있다. [사용 흐름과 호환성](crates/renderer/INTERACTION.md).
 새 차트의 모든 필드를 명시하는 Rust 구조체 리터럴에는 `decorations: Default::default()`를
-추가한다. 이전 JSON은 기본값으로 읽는다. 기존 `FiggyChart` JavaScript 클래스의 새 차트
-연결은 별도 작업이다. 네이티브 편집기에서 선택·드래그를 확인할 수 있으며, 원형 편집기는
-명시적인 3D 프리셋으로 시작한다. 기존 차트의 평면 기본값은 유지한다.
+추가한다. 이전 JSON은 기본값으로 읽는다. 기존 `FiggyChart` JavaScript 클래스는
+원형·범주형 막대·박스플롯 차트를 아직 지원하지 않는다. 네이티브 편집기에서
+선택·드래그를 확인할 수 있으며, 원형 편집기는 명시적인 3D 프리셋으로 시작한다.
+기존 차트의 평면 기본값은 유지한다.
 [검증 범위](ci/STATUS.md#renderer-0150-bounded-chart-interaction-2026-10-11)와
 해당 리비전의 Actions 실행에서 세 OS 결과를 확인할 수 있다.
 
@@ -883,14 +1085,15 @@ docs.rs 재빌드로 바뀌지 않는다. 수정된 공개 문서는 각 패키�
 Windows DX12에서는 범위 계산·피킹·호장 스캔의 공유 배열을 각 실행 단위가 나눠서
 초기화한다. 초기값과 동기화 보장을 유지하면서 WARP의 첫 실행 컴파일 지연을 피한다.
 다른 백엔드와 공개 API, 차트 출력 계약은 그대로다.
-[우회 방식과 회귀 검사](ci/shader-compilation.md#windows-dx12-workgroup-initialization)에 근거를 정리했다.
+[우회 방식과 회귀 검사](ci/shader-compilation.md#windows-dx12-workgroup-initialization)를 참고한다.
 
 ### 이전 기능 릴리스 — renderer 0.14.0 / figgy 0.11.2
 
-선택 기능의 파이프라인을 별도 작업으로 준비하면서 차트를 계속 편집하고 그릴 수 있다.
+직교 차트의 기능별 파이프라인을 렌더러와 분리된 준비 작업에서 컴파일하는 동안에도 차트를
+계속 편집하고 그릴 수 있다.
 준비 결과를 설치할 때는 같은 렌더러와 출력 대상인지 확인한 뒤 GPU 캐시만 합친다.
 기존 생성자와 전체 예열 API도 그대로 사용할 수 있다.
-[파이프라인 준비 API](crates/renderer/API.md#detached-cartesian-pipeline-preparation)에 사용 계약을 정리했다.
+사용 계약은 [파이프라인 준비 API](crates/renderer/API.md#detached-cartesian-pipeline-preparation)를 참고한다.
 모델과 Config 스키마는 바뀌지 않았다.
 
 ### 이전 패치 — renderer 0.13.1 / figgy 0.11.1
@@ -906,7 +1109,7 @@ Windows DX12에서는 범위 계산·피킹·호장 스캔의 공유 배열을 �
 [파이·도넛](crates/renderer/RADIAL.md), [범주형 막대](crates/renderer/CATEGORICAL.md),
 [박스플롯](crates/renderer/BOXPLOT.md) 렌더러를 추가했다. 개별 항목 편집, 셰이더 질감,
 선택과 PNG 출력을 지원하며, 대용량 스트리밍과는 별도의 소량 데이터 계약을 사용한다.
-가로 히스토그램, 스트림 원본 구간의 제한된 캐시, 초기 fit 마지막 단계의 순차 화면 갱신도
+가로 히스토그램, 스트림 원본 구간의 제한된 캐시, 초기 범위 맞춤 마지막 단계의 순차 화면 갱신도
 렌더러 회귀 테스트로 검사한다.
 
 **Cargo 패키지명은 `figgy-renderer`·`figgy-model`로 바뀐다.** Rust 코드의 `renderer`·`model`
@@ -916,18 +1119,17 @@ wgpu 30이다. 아직 crates.io에 게시하지 않았으며, WASM 래퍼 `figgy
 대상에서 제외했다. 새 소량 데이터 렌더러는 Rust API로 제공하며, 기존 `FiggyChart` JS 래퍼에는
 노출하지 않는다.
 
-[CI 안내](ci/README.md)에 세 OS의 빌드·렌더링·픽셀·독립 패키지 검사와 재실행 방법을 정리했다.
+세 OS의 빌드·렌더링·픽셀·독립 패키지 검사와 재실행 방법은 [CI 안내](ci/README.md)를 참고한다.
 [실행 결과와 백엔드 수정 내역](ci/STATUS.md)에서 검증 범위를 확인할 수 있다.
 **macOS / Metal 지원은 아직 불안정한 실험 단계다.** 0.14.0에서는 좌표 계산의 반올림과
 선분 중점 피킹 문제를 공통 WGSL에서 수정했다. 실제 Apple GPU 검증은 아직 남아 있으므로
 사용할 리비전의 CI 결과를 확인해야 한다. [정밀 Metal 셰이더 실험](ci/metal-precision-probe/README.md)은
 컴파일러 동작을 비교하는 별도 검사다. 기본 렌더러에는 미리 컴파일한 셰이더나 wgpu 패치가 필요 없다.
 [API 계약](crates/renderer/API.md)에서 소유권과 마이그레이션 방법을 확인할 수 있다.
-온라인 스튜디오 배포는 이번 소스 공개와 별개다.
 
 ### 이전 패치 — renderer 0.12.6 / figgy 0.10.6
 
-스트리밍 히트맵의 색상표·Z 범위·Z 스케일·결측값 색을 바꾸면 데이터 화면도 갱신한다. 위쪽·오른쪽 축만 바꿀 때는 데이터를 다시 읽지 않으며, 명시적으로 오토핏을 호출하면 모든 축을 정상 복원한다. 네이티브 회귀 테스트는 이미 그린 차트의 SSOT 설정을 하나씩 바꿔 첫 갱신 화면을 새 차트와 비교하고, 원본 요청·작업 ID·GPU 자원 재사용도 검사한다. 공개 API 형식과 Config JSON 스키마는 그대로다.
+스트리밍 히트맵의 색상표·Z 범위·Z 스케일·결측값 색을 바꾸면 데이터 화면도 갱신한다. 위쪽·오른쪽 축만 바꿀 때는 데이터를 다시 읽지 않으며, 자동 맞춤을 명시적으로 호출하면 이전처럼 모든 축을 복원한다. 네이티브 회귀 테스트는 이미 그린 차트의 SSOT 설정을 하나씩 바꿔 첫 갱신 화면을 새 차트와 비교하고, 원본 요청·작업 ID·GPU 자원 재사용도 검사한다. 공개 API 형식과 Config JSON 스키마는 그대로다.
 
 ### 이전 패치 — renderer 0.12.5 / figgy 0.10.5
 
@@ -941,7 +1143,7 @@ wgpu 30이다. 아직 crates.io에 게시하지 않았으며, WASM 래퍼 `figgy
 
 정밀 스타일의 실선에서 화면 밖의 먼 점으로 이어지는 선이 사라지는 문제를 고쳤다. 자동 맞춤 없이 범위를 지정한 새 차트의 첫 화면에서도 연결선을 표시한다. 설정·시리즈·표시 범위를 교체하거나 스트림을 취소하면 이전 자동 맞춤 요청을 해제해, 복원한 차트에 이전 요청이 남지 않도록 했다.
 
-공개 API 형식과 Config JSON 스키마는 그대로이며 model은 0.7.2를 유지한다. Git 리비전을 갱신하고 브라우저 패키지를 다시 빌드해야 적용된다. 온라인 스튜디오 배포는 소스 릴리스와 별개다.
+공개 API 형식과 Config JSON 스키마는 그대로이며 model은 0.7.2를 유지한다. Git 리비전을 갱신하고 브라우저 패키지를 다시 빌드해야 적용된다.
 
 ### 이전 패치 — renderer 0.12.2 / figgy 0.10.2
 
@@ -949,13 +1151,13 @@ wgpu 30이다. 아직 crates.io에 게시하지 않았으며, WASM 래퍼 `figgy
 
 숫자 눈금과 색상 막대 라벨은 글씨 크기를 유지하면서 화면 공간에 맞춰 표시 간격을 조절한다. 맞춤이 끝나면 축 범위와 눈금 설정을 함께 반영한다. 진행량은 되감기지 않으며, 제출량이 전체량에 도달했더라도 `complete` 또는 `job.done`까지 기다려야 한다.
 
-공개 API 형식과 Config JSON 스키마는 그대로이며 model은 0.7.2를 유지한다. 사용하려면 Git 리비전을 갱신하고 브라우저 패키지를 다시 빌드해야 한다. 온라인 스튜디오 배포는 소스 릴리스와 별개다.
+공개 API 형식과 Config JSON 스키마는 그대로이며 model은 0.7.2를 유지한다. 사용하려면 Git 리비전을 갱신하고 브라우저 패키지를 다시 빌드해야 한다.
 
 ### 이전 패치 — renderer 0.12.1 / figgy 0.10.1
 
 첫 스트림의 자동 맞춤을 수정한 패치 버전이다. 중간 결과의 데이터와 축이 같은 범위를 사용하며, 내부 맞춤 과정에서 작업이 반복 교체되거나 최종 범위 반영 뒤 불필요하게 다시 시작되는 문제를 고쳤다. 맞춤이 끝난 뒤 일반 재그리기는 사용자가 정한 범위를 유지한다.
 
-공개 API 형식과 Config JSON 스키마는 그대로이며 model은 0.7.2를 유지한다. 호출 순서는 [범위 맞춤 사용법](crates/renderer/WASM.md#streaming-fit)을 참고한다. 수정 사항을 적용하려면 Git 리비전을 갱신하고 브라우저 패키지를 다시 빌드해야 한다. 소스 공개와 온라인 스튜디오 배포는 별개다.
+공개 API 형식과 Config JSON 스키마는 그대로이며 model은 0.7.2를 유지한다. 호출 순서는 [범위 맞춤 사용법](crates/renderer/WASM.md#streaming-fit)을 참고한다. 수정 사항을 적용하려면 Git 리비전을 갱신하고 브라우저 패키지를 다시 빌드해야 한다.
 
 ### 이전 기능 릴리스 — renderer 0.12.0 / figgy 0.10.0
 
@@ -963,7 +1165,7 @@ wgpu 30이다. 아직 crates.io에 게시하지 않았으며, WASM 래퍼 `figgy
 
 지원되는 정밀 모드의 점·실선·오차 막대 차트에서는 현재 화면에 필요한 원본 행만 차트별 GPU 캐시에 보관할 수 있다. 서로 연결된 컬럼 전체를 자동으로 상주 풀에 옮기지는 않는다. 완료된 결과는 재사용하며, 표시 범위를 넓히거나 출력 배율을 바꾸면 같은 원본을 다시 읽어 그린다. LOD나 다운샘플링으로 데이터를 줄이지 않는다.
 
-지원 범위와 제한 사항은 [WASM.md](crates/renderer/WASM.md)에 정리했다. 브라우저 패키지는 사용할 소스 커밋에서 빌드하며, 크레이트는 crates.io에 배포하지 않는다.
+지원 범위와 제한 사항은 [WASM.md](crates/renderer/WASM.md)를 참고한다. 브라우저 패키지는 사용할 소스 커밋에서 빌드하며, 크레이트는 crates.io에 배포하지 않는다.
 
 모델은 로그 등고선의 매우 작은 값 처리 수정을 포함한 **0.7.2**다. 렌더러와 웹 패키지는 wgpu 30, 개발 툴체인은 Rust 1.99.0을 사용한다.
 
@@ -971,7 +1173,7 @@ wgpu 30이다. 아직 crates.io에 게시하지 않았으며, WASM 래퍼 `figgy
 
 화면에서 폭이 1픽셀보다 좁은 히스토그램 구간은 GPU가 픽셀 열별 최댓값을 골라 0까지 채운다. 외곽선 두께와 불투명도가 모두 양수이면 외곽선 색으로, 그렇지 않으면 채움색으로 영역 전체를 그린다.
 원본 컬럼과 웹 API 형식은 그대로다. Rust의 `ColumnBarLayer`에는 `envelope` 필드가 추가됐으므로 구조체를 직접 생성하는 코드는 이 필드를 지정해야 한다. 수동으로 만든 레이어에 해당 자원이 없으면 `None`을 사용한다.
-데모에는 구간 수 조절 슬라이더와 외곽선 표시 옵션이 있다. `npx serve crates/web -l 8142`를 실행한 뒤 `http://localhost:8142/`에서 확인할 수 있다.
+데모에는 구간 수 조절 슬라이더와 외곽선 표시 옵션이 있다. [빌드와 실행](crates/web/README.md#build-and-run) 절에 따라 브라우저 패키지를 빌드한 뒤 `npx serve crates/web -l 8142`를 실행하고 `http://localhost:8142/`에서 확인할 수 있다.
 
 renderer 0.10.0 / figgy 0.9.0 릴리스에 포함된 기능은 다음과 같다.
 

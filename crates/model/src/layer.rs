@@ -1,11 +1,14 @@
-//! Layer addressing and the annotation layer container.
+//! Layer addressing, the annotation layer container, overlay layers and
+//! subplots.
 //!
-//! This module is the shared foundation for overlay layers (secondary axes and
-//! subplots) and for the dedicated annotation layer. It defines the public
-//! SSOT types: the layer address, the annotation container and the overlay
-//! layer. Expansion into internal panels lives in [`crate::expand`], hit-map
-//! routing in [`crate::select::HitMap::for_active_layer`]; the annotation
-//! items arrive with their own feature. Every chart family carries the same
+//! This module defines the public SSOT types that overlay layers (secondary
+//! Y axes), subplots and the dedicated annotation layer share: the layer
+//! address ([`LayerRef`]), the annotation container ([`AnnotationLayer`]),
+//! the overlay layer ([`OverlayLayer`]) and the subplot ([`Subplot`], whose
+//! axis links name a chart by [`CellRef`]). Expansion into internal panels
+//! lives in [`crate::expand`], hit-map routing in
+//! [`crate::select::HitMap::for_active_layer`], and the annotation item kinds
+//! in [`crate::annotation`]. Every chart family carries the same
 //! `active_layer` / `annotations` pair so one selection API covers all of them.
 
 /// Which layer of a chart document receives pointer interaction.
@@ -13,8 +16,8 @@
 /// This is document state, one level above element selection
 /// (`DecorationLayout::selected`, `picked_points`, `picked_data`): it decides
 /// which layer's elements are registered in the hit map, not which element is
-/// selected. `Base` is the single layer every chart has today, so a document
-/// without the field behaves exactly as before.
+/// selected. `Base` is the default and exists on every chart, so a document
+/// without the field routes the pointer to the chart's own elements.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LayerRef {
@@ -121,7 +124,7 @@ impl AnnotationLayer {
 ///
 /// Series are referenced by `series_id` from the chart's single series list,
 /// so the series declarations, their styles, column references and picking
-/// stay where they are today. A series id listed by no overlay belongs to the
+/// stay in that list. A series id listed by no overlay belongs to the
 /// base layer; an id listed by two overlays is a configuration error.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(

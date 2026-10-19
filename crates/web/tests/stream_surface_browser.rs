@@ -7,7 +7,13 @@ use renderer::gpu_memory;
 use wasm_bindgen_test::*;
 
 // Exercise the product module without adding a public renderer API for tests.
+// It reaches `crate::gpu_memory` through the import above and
+// `crate::gpu_compile` through this copy of the renderer's compile boundary.
+#[path = "../../renderer/src/gpu_compile.rs"]
+#[allow(dead_code, unused_imports)]
+mod gpu_compile;
 #[path = "../../renderer/src/streaming_surface.rs"]
+#[allow(dead_code)]
 mod streaming_surface;
 use streaming_surface::{StreamSurface, StreamSurfaceSpec, StreamTransfer};
 

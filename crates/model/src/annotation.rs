@@ -28,9 +28,10 @@ use crate::text::{MeasureText, RichText};
 pub const MAX_ANNOTATIONS: usize = 1024;
 
 /// A document axis. `X` is horizontal on screen and `Y` vertical in every
-/// chart family: Cartesian charts map them to `bottom_x` / `left_y`, bounded
-/// bar and box charts to the category index axis and the value axis
-/// according to their direction, and radial charts have neither.
+/// chart family: rectangular Cartesian charts map them to `bottom_x` /
+/// `left_y`, bounded bar and box charts to the category index axis and the
+/// value axis according to their direction, and pie, donut, radar and polar
+/// charts have neither.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AnnotationAxis {
@@ -411,7 +412,9 @@ pub enum AxisMap {
     /// The category axis of a bar or box chart: category `i` is centred at
     /// coordinate `i`, so `-0.5..0.5` is the first category's slot.
     Index { count: usize },
-    /// No value axis (radial charts): only ratio anchors can be placed.
+    /// No value axis (pie, donut, radar and polar charts): data anchors,
+    /// reference lines and spans have no position, so only ratio anchors can
+    /// be placed.
     None,
 }
 

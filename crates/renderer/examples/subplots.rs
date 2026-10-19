@@ -1,52 +1,180 @@
-//! Subplots: a 2x2 grid of charts with their own axes in one document.
-//! The upper-right chart links its X axis to the upper-left one; every other
-//! axis is independent, and the lower-right chart has a twin Y axis of its
-//! own. Exported as one PNG.
-//! cargo run --locked -p figgy-renderer --example subplots -- target/subplots.png
+//! Subplots: a document of several charts, each with its own axes, laid out
+//! by their chart areas.
+//! - `small_multiples` writes `gallery-subplots.png`: four sensors in a 2 x 2
+//!   grid; the three subplots link their X axis to the parent chart
+//!   (`CellRef::Parent`) and keep their own Y ranges, exported as one
+//!   document.
+//! - `mixed_axes` writes `mixed-axes.png`: a 2 x 2 grid where only the
+//!   upper-right chart links its X axis, the lower-left one plots humidity
+//!   against temperature, and the lower-right one has its own X range and a
+//!   twin Y axis from an overlay layer inside the subplot.
+//!
+//! cargo run --locked -p figgy-renderer --example subplots -- target/subplots
+#[allow(dead_code)]
+#[path = "support/gallery.rs"]
+mod gallery;
+#[allow(dead_code)]
+#[path = "support/styled.rs"]
+mod styled;
+use gallery::{Result, column, line, series};
 use renderer::{
-    CellRef, Chart, Color, Config, HitMap, LayerRef, OverlayLayer, Renderer, RendererDevice,
-    SeriesConfig, Subplot,
-    data::Column,
-    data_config::{DataLineStyleConfig, DataRenderType},
-    data_render::{create_instance, request_adapter, request_device},
-    default, encode_png,
+    CellRef, Chart, Color, Config, HitMap, LayerRef, OverlayLayer, Renderer, Subplot,
+    data_config::{DataRenderType, LineFill},
     layout::{ChartArea, Rect},
-    line::LineStylePreset,
     text::RichText,
 };
-use std::sync::Arc;
+use std::path::Path;
+use styled::{chrome, rgb, save};
 
-fn line(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
-    SeriesConfig {
-        series_id: id.into(),
-        source_id: None,
-        label: None,
-        x_column: x.into(),
-        y_column: y.into(),
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
-                line_style: LineStylePreset::Solid,
-                line_color: color,
-                line_width: 2.5,
-                fill: None,
-                fill_color: None,
-                interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+// Small multiples: four sensors in a 2 x 2 grid of subplots sharing the hour
+// axis, each with its own range and colour.
+fn small_multiples(r: &mut Renderer, out: &Path) -> Result {
+    let bg = rgb(247, 248, 253);
+    let ink = rgb(52, 57, 85);
+    let grid = rgb(228, 231, 240);
+    let hour: Vec<f64> = (0..=240).map(|i| f64::from(i) / 10.).collect();
+    r.add_column("h", &column(hour.clone()))?;
+    let cell = |x: u32, y: u32, title: &str, y_title: &str| -> Config {
+        let mut config = renderer::default::default_config();
+        config.chart_area = ChartArea(Rect {
+            x,
+            y,
+            width: 600,
+            height: 400,
+        });
+        chrome(&mut config, bg, ink, grid);
+        config.chart_title.text.font_size = 26.;
+        config.chart_title.top_margin = 60.;
+        config.left_y.out_margin = 95.;
+        config.right_y.out_margin = 40.;
+        config.bottom_x.out_margin = 70.;
+        config.top_x.out_margin = 20.;
+        config.legend.visible = false;
+        config.bottom_x.major_spacing = 6.;
+        for a in [&mut config.left_y, &mut config.bottom_x] {
+            a.label_style.font_size = 18.;
+            a.title_option.text.font_size = 19.;
+        }
+        Chart::new(config)
+            .with_title(title)
+            .with_x_title("Hour")
+            .with_y_title(y_title)
+            .config()
+            .clone()
+    };
+    // id, title, unit, colour, mean, daily swing, phase, noise, axis start
+    let sensors = [
+        (
+            "temperature",
+            "Temperature",
+            "°C",
+            rgb(232, 104, 84),
+            18.,
+            7.,
+            -1.2,
+            2.,
+            8.,
+        ),
+        (
+            "humidity",
+            "Humidity",
+            "%",
+            rgb(37, 150, 160),
+            55.,
+            20.,
+            1.9,
+            10.,
+            30.,
+        ),
+        (
+            "co2",
+            "CO₂",
+            "ppm",
+            rgb(112, 92, 212),
+            620.,
+            260.,
+            0.4,
+            60.,
+            300.,
+        ),
+        (
+            "light",
+            "Daylight",
+            "lux",
+            rgb(228, 170, 50),
+            400.,
+            380.,
+            -1.4,
+            60.,
+            0.,
+        ),
+    ];
+    let mut specs = Vec::new();
+    for (id, _, _, color, base, swing, phase, noise, floor) in sensors {
+        let data: Vec<f64> = hour
+            .iter()
+            .map(|h| {
+                let daily = (h / 24. * std::f64::consts::TAU + phase).sin();
+                (base
+                    + swing * daily
+                    + noise * 0.12 * (h * 2.3).sin()
+                    + noise * 0.07 * (h * 5.1).cos())
+                .max(0.)
+            })
+            .collect();
+        r.add_column(id, &column(data))?;
+        let mut style = line(color, 3.);
+        style.fill = Some(LineFill::ToBaseline(floor));
+        style.fill_color = Some(Color::from_rgba(color.r, color.g, color.b, 0.1));
+        specs.push(series(id, "h", id, DataRenderType::Line { line: style }));
     }
+    let mut config = cell(0, 0, sensors[0].1, sensors[0].2);
+    config.subplots = [(1usize, 600u32, 0u32), (2, 0, 400), (3, 600, 400)]
+        .into_iter()
+        .map(|(k, x, y)| {
+            let mut subplot = Subplot {
+                config: cell(x, y, sensors[k].1, sensors[k].2),
+                series: vec![sensors[k].0.to_string()],
+                link_x: Some(CellRef::Parent),
+                link_y: None,
+            };
+            subplot.config.legend.visible = false;
+            subplot
+        })
+        .collect();
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0., 24.);
+    chart.set_y_range(8., 28.);
+    chart.set_subplot_y_range(0, 30., 80.);
+    chart.set_subplot_y_range(1, 300., 950.);
+    chart.set_subplot_y_range(2, 0., 850.);
+    chart.with_axis_range_change(|config| {
+        config.left_y.major_spacing = 5.;
+        config.subplots[0].config.left_y.major_spacing = 10.;
+        config.subplots[1].config.left_y.major_spacing = 150.;
+        config.subplots[2].config.left_y.major_spacing = 200.;
+    });
+    // Subplot 0 follows the parent's X range; every Y range is its own.
+    let document = chart.config();
+    let linked = document.subplot_config(0).ok_or("subplot 0 is missing")?;
+    assert_eq!(linked.bottom_x.max, document.bottom_x.max);
+    // Pointer interaction addresses one chart at a time; a subplot answers
+    // with its own elements under `subplot_<n>:` ids.
+    let mut interactive = document.clone();
+    interactive.set_active_layer(LayerRef::Subplot(2));
+    assert!(
+        HitMap::for_active_layer(&interactive)
+            .find("subplot_2:data_area")
+            .is_some()
+    );
+    let image =
+        pollster::block_on(r.export_document_rgba_with_clear_async(&chart, &specs, 1., bg))?;
+    save(&image, bg, &out.join("gallery-subplots.png"))
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let instance = create_instance();
-    let adapter = request_adapter(&instance)?;
-    eprintln!("Adapter: {:?}", adapter.get_info());
-    let (device, queue) = request_device(&adapter)?;
-    let mut renderer = Renderer::try_new(
-        RendererDevice::new(Arc::new(device), Arc::new(queue)),
-        wgpu::TextureFormat::Rgba8Unorm,
-        4 * 1024 * 1024,
-    )?;
-
+// Mixed axes: one linked X axis, one chart with a different X column, one with
+// its own X range and a twin Y axis of its own.
+fn mixed_axes(r: &mut Renderer, out: &Path) -> Result {
     // One day of hourly readings in three units.
     let hour: Vec<f64> = (0..=24).map(f64::from).collect();
     let wave = |phase: f64| {
@@ -57,26 +185,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let temperature: Vec<f64> = wave(-1.2).iter().map(|v| 18.0 + 8.0 * v).collect();
     let pressure: Vec<f64> = wave(0.0).iter().map(|v| 1008.0 + 6.0 * v).collect();
     let humidity: Vec<f64> = wave(2.0).iter().map(|v| 60.0 + 25.0 * v).collect();
-    let extent = |values: &[f64]| {
-        values
-            .iter()
-            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
-                (lo.min(*v), hi.max(*v))
-            })
-    };
     for (id, data) in [
         ("hour", hour.clone()),
-        ("temperature", temperature),
+        ("air_temperature", temperature),
         ("pressure", pressure),
-        ("humidity", humidity),
+        ("air_humidity", humidity),
     ] {
-        let (min, max) = extent(&data);
-        renderer.add_column(id, &Column { data, min, max })?;
+        r.add_column(id, &column(data))?;
     }
 
     // One 480x420 cell: a chart with its own axes, titled.
     let cell = |x: u32, y: u32, title: &str, x_title: &str, y_title: &str| -> Config {
-        let mut config = default::default_config();
+        let mut config = renderer::default::default_config();
         config.chart_area = ChartArea(Rect {
             x,
             y,
@@ -125,13 +245,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut chart = Chart::new(config);
     chart.set_x_range(0.0, 24.0);
-    chart.auto_fit_y(renderer.pool(), "temperature", 0.1)?;
+    chart.auto_fit_y(r.pool(), "air_temperature", 0.1)?;
     // Subplot 0's X follows the parent; its Y is its own.
-    chart.auto_fit_subplot_y_union(renderer.pool(), 0, &["pressure"], 0.1)?;
-    chart.auto_fit_subplot_x_union(renderer.pool(), 1, &["temperature"], 0.05)?;
-    chart.auto_fit_subplot_y_union(renderer.pool(), 1, &["humidity"], 0.1)?;
+    chart.auto_fit_subplot_y_union(r.pool(), 0, &["pressure"], 0.1)?;
+    chart.auto_fit_subplot_x_union(r.pool(), 1, &["air_temperature"], 0.05)?;
+    chart.auto_fit_subplot_y_union(r.pool(), 1, &["air_humidity"], 0.1)?;
     chart.set_subplot_x_range(2, 6.0, 18.0);
-    chart.auto_fit_subplot_y_union(renderer.pool(), 2, &["pressure"], 0.1)?;
+    chart.auto_fit_subplot_y_union(r.pool(), 2, &["pressure"], 0.1)?;
     chart.with_axis_range_change(|config| {
         let overlay = &mut config.subplots[2].config.overlays[0].y_axis;
         overlay.min = 30.0;
@@ -139,17 +259,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         overlay.major_spacing = 10.0;
     });
 
-    let series = [
-        line(
+    let plain = |id: &str, x: &str, y: &str, color: Color| {
+        series(
+            id,
+            x,
+            y,
+            DataRenderType::Line {
+                line: line(color, 2.5),
+            },
+        )
+    };
+    let specs = [
+        plain(
             "temperature",
             "hour",
-            "temperature",
+            "air_temperature",
             Color::from_rgb8(34, 104, 198),
         ),
-        line("pressure", "hour", "pressure", pressure_color),
-        line("humidity_t", "temperature", "humidity", humidity_color),
-        line("daytime", "hour", "pressure", pressure_color),
-        line("daytime_humidity", "hour", "humidity", humidity_color),
+        plain("pressure", "hour", "pressure", pressure_color),
+        plain(
+            "humidity_t",
+            "air_temperature",
+            "air_humidity",
+            humidity_color,
+        ),
+        plain("daytime", "hour", "pressure", pressure_color),
+        plain("daytime_humidity", "hour", "air_humidity", humidity_color),
     ];
 
     // Every cell is a chart of its own with its own data area.
@@ -158,35 +293,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(document.document_area().height, 840);
     let linked = document.subplot_config(0).ok_or("subplot 0 is missing")?;
     assert_eq!(linked.bottom_x.max, document.bottom_x.max);
-    // Pointer interaction addresses one chart at a time; a subplot answers
-    // with its own elements under `subplot_<n>:` ids.
+    // The twin axis inside subplot 2 answers under its own id while that
+    // overlay is the active layer.
     let mut interactive = document.clone();
-    interactive.set_active_layer(LayerRef::Subplot(2));
-    let map = HitMap::for_active_layer(&interactive);
-    assert!(map.find("subplot_2:data_area").is_some());
     interactive.set_active_layer(LayerRef::SubplotOverlay(2, 0));
-    let map = HitMap::for_active_layer(&interactive);
-    assert!(map.find("subplot_2:overlay_0:axis_right").is_some());
-
-    let image = pollster::block_on(renderer.export_document_rgba_with_clear_async(
+    assert!(
+        HitMap::for_active_layer(&interactive)
+            .find("subplot_2:overlay_0:axis_right")
+            .is_some()
+    );
+    let image = pollster::block_on(r.export_document_rgba_with_clear_async(
         &chart,
-        &series,
+        &specs,
         1.0,
         Color::WHITE,
     ))?;
-    let output = std::env::args_os()
-        .nth(1)
-        .unwrap_or_else(|| "subplots.png".into());
-    if let Some(parent) = std::path::Path::new(&output).parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(&output, encode_png(&image)?)?;
-    renderer.wait_idle();
-    println!(
-        "{}: {}x{}",
-        std::path::Path::new(&output).display(),
-        image.width,
-        image.height
-    );
+    let path = out.join("mixed-axes.png");
+    std::fs::write(&path, renderer::encode_png(&image)?)?;
+    println!("{}: {}x{}", path.display(), image.width, image.height);
     Ok(())
+}
+
+fn main() -> Result {
+    let out = gallery::output_directory("target/subplots")?;
+    gallery::with_renderer(|r| {
+        small_multiples(r, &out)?;
+        mixed_axes(r, &out)
+    })
 }

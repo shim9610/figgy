@@ -280,6 +280,42 @@ fn histogram_fit_columns<'a>(
     }
 }
 
+/// Whether series `series_id` takes part in the X and in the Y fit of
+/// `auto_fit_all` with `fit` active (`Annotations` already mapped to `Base`).
+///
+/// `Base` and `Subplot(i)` fit that chart's `bottom_x` and `left_y`. Its X
+/// axis fits every series drawn against it: the series of every chart in its
+/// X link group, overlays included, since an overlay shares its chart's X
+/// axis. Its Y axis fits the base-layer series of every chart in its Y link
+/// group. `Overlay(n)` and `SubplotOverlay(i, n)` fit only that overlay's Y
+/// axis, from that overlay's series.
+#[cfg(any(target_arch = "wasm32", test))]
+fn auto_fit_roles(
+    config: &renderer::Config,
+    fit: renderer::LayerRef,
+    series_id: &str,
+) -> (bool, bool) {
+    use renderer::{CellRef, LayerRef};
+
+    let cell = |layer: LayerRef| match layer {
+        LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => CellRef::Subplot(index),
+        _ => CellRef::Parent,
+    };
+    let root = |cell: CellRef, x: bool| match cell {
+        CellRef::Parent => CellRef::Parent,
+        CellRef::Subplot(index) => config.subplot_link_root(index, x),
+    };
+    let own = config.layer_of_series(series_id);
+    match fit {
+        LayerRef::Base | LayerRef::Subplot(_) => (
+            root(cell(own), true) == root(cell(fit), true),
+            matches!(own, LayerRef::Base | LayerRef::Subplot(_))
+                && root(cell(own), false) == root(cell(fit), false),
+        ),
+        _ => (false, own == fit),
+    }
+}
+
 #[cfg(any(target_arch = "wasm32", test))]
 fn revisioned_column_from(
     revisions: &std::collections::HashMap<String, u64>,
@@ -1485,6 +1521,67 @@ mod tests {
                 .is_empty(),
             "non-paired render types are fitted from upload metadata"
         );
+    }
+
+    #[test]
+    fn auto_fit_roles_follow_layers_and_link_groups() {
+        use renderer::{CellRef, LayerRef, OverlayLayer, Subplot};
+
+        // Parent: base `p`, overlay `po`. Subplot 0: own axes, base `s0`,
+        // overlay `s0o`. Subplot 1: X linked to the parent, Y to subplot 0,
+        // base `s1`. Subplot 2: X linked to subplot 1 (so to the parent).
+        let mut config = renderer::default::default_config();
+        let mut overlay = OverlayLayer::default();
+        overlay.series = vec!["po".into()];
+        config.overlays.push(overlay);
+        let mut first = renderer::default::default_config();
+        let mut first_overlay = OverlayLayer::default();
+        first_overlay.series = vec!["s0o".into()];
+        first.overlays.push(first_overlay);
+        config.subplots = vec![
+            Subplot {
+                config: first,
+                series: vec!["s0".into(), "s0o".into()],
+                ..Subplot::default()
+            },
+            Subplot {
+                series: vec!["s1".into()],
+                link_x: Some(CellRef::Parent),
+                link_y: Some(CellRef::Subplot(0)),
+                ..Subplot::default()
+            },
+            Subplot {
+                series: vec!["s2".into()],
+                link_x: Some(CellRef::Subplot(1)),
+                ..Subplot::default()
+            },
+        ];
+        let roles = |fit, id| crate::auto_fit_roles(&config, fit, id);
+
+        // Base: X from every chart linked to the parent's X, overlay series
+        // included; Y from the parent's base series only.
+        assert_eq!(roles(LayerRef::Base, "p"), (true, true));
+        assert_eq!(roles(LayerRef::Base, "po"), (true, false));
+        assert_eq!(roles(LayerRef::Base, "s0"), (false, false));
+        assert_eq!(roles(LayerRef::Base, "s0o"), (false, false));
+        assert_eq!(roles(LayerRef::Base, "s1"), (true, false));
+        assert_eq!(roles(LayerRef::Base, "s2"), (true, false));
+        // Subplot 1 fits the same X group as the parent, and the Y group it
+        // shares with subplot 0.
+        assert_eq!(roles(LayerRef::Subplot(1), "p"), (true, false));
+        assert_eq!(roles(LayerRef::Subplot(1), "s0"), (false, true));
+        assert_eq!(roles(LayerRef::Subplot(1), "s0o"), (false, false));
+        assert_eq!(roles(LayerRef::Subplot(1), "s1"), (true, true));
+        assert_eq!(roles(LayerRef::Subplot(1), "s2"), (true, false));
+        // Subplot 0 owns its X axis; its overlay shares that X axis.
+        assert_eq!(roles(LayerRef::Subplot(0), "s0o"), (true, false));
+        assert_eq!(roles(LayerRef::Subplot(0), "s1"), (false, true));
+        assert_eq!(roles(LayerRef::Subplot(0), "p"), (false, false));
+        // Overlay layers fit only their own Y axis.
+        assert_eq!(roles(LayerRef::Overlay(0), "po"), (false, true));
+        assert_eq!(roles(LayerRef::Overlay(0), "p"), (false, false));
+        assert_eq!(roles(LayerRef::SubplotOverlay(0, 0), "s0o"), (false, true));
+        assert_eq!(roles(LayerRef::SubplotOverlay(0, 0), "s0"), (false, false));
     }
 
     #[test]
@@ -5092,12 +5189,26 @@ mod web {
             serde_json::to_string(&layer).map_err(js_err)
         }
 
-        /// Fit BOTH axes to the union of every registered series, leaving a
-        /// uniform `padding` fraction of the data span as margin on each
-        /// side (`0.0` = no padding, `0.05` = 5% top/bottom/left/right).
-        /// This is the whole fit policy — no rounding of the range ends;
-        /// ticks land on nice values inside the range by themselves. Hosts
-        /// should call this instead of re-deriving ranges.
+        /// Fit the axes of the active layer to the union of that layer's
+        /// series, leaving a uniform `padding` fraction of the data span as
+        /// margin on each side (`0.0` = no padding, `0.05` = 5%
+        /// top/bottom/left/right). This is the whole fit policy — no rounding
+        /// of the range ends; ticks land on nice values inside the range by
+        /// themselves. Hosts should call this instead of re-deriving ranges.
+        ///
+        /// The active layer (`set_active_layer`) decides which axes move:
+        /// `Base` and `Annotations` fit the parent's `bottom_x` and `left_y`,
+        /// `Subplot(i)` fits subplot `i`'s, and `Overlay(n)` /
+        /// `SubplotOverlay(i, n)` fit that overlay's Y axis only. An axis fits
+        /// every series drawn against it (`Config::layer_of_series`). A linked
+        /// axis (`link_x`, `link_y`) is one axis shared by its link group: it
+        /// fits the series of every chart in the group and the range moves
+        /// the whole group, whichever member is active. X and Y links are
+        /// followed separately. An overlay shares its chart's X axis and has
+        /// its own Y axis, so its series count towards that X axis and not
+        /// towards `left_y`. An axis that is not linked fits its own chart's
+        /// series only; to fit every layer, set each layer active in turn and
+        /// call this again.
         ///
         /// Each series contributes its exact original GPU primitive domain:
         /// valid adjacent segments for line-only mode, paired finite points
@@ -5123,24 +5234,43 @@ mod web {
                     .await
                     .map_err(js_err)?;
             }
+            // The annotation layer draws on the base axes.
+            let layer = match self.renderer.active_layer(self.chart_id).map_err(js_err)? {
+                renderer::LayerRef::Annotations => renderer::LayerRef::Base,
+                layer => layer,
+            };
             let token = self
                 .renderer
                 .begin_fit_commit(self.chart_id)
                 .map_err(js_err)?;
             let prepared =
                 self.prepare_series_extent_cache(&series, &self.column_revisions, true)?;
+            // The cache keeps every series' extent job; only the series drawn
+            // against the fitted axes take part in this fit.
+            let config = self.chart_config();
             let mut jobs = Vec::new();
-            jobs.try_reserve(prepared.extents.len()).map_err(js_err)?;
-            jobs.extend(prepared.extents.values().cloned());
+            jobs.try_reserve(series.len()).map_err(js_err)?;
+            jobs.extend(series.iter().filter_map(|cfg| {
+                let (x, y) = crate::auto_fit_roles(config, layer, &cfg.series_id);
+                if !(x || y) {
+                    return None;
+                }
+                let request = crate::series_extent_request_from(&self.column_revisions, cfg)?;
+                Some((prepared.extents.get(&request.key).cloned()?, x, y))
+            }));
             self.publish_series_extent_cache(prepared);
 
             let mut x_ext = FitExtent::EMPTY;
             let mut y_ext = FitExtent::EMPTY;
-            for job in jobs {
+            for (job, x, y) in jobs {
                 let extent = job.wait().await.map_err(js_err)?;
                 if let Some(extent) = extent {
-                    x_ext.union(&extent.x);
-                    y_ext.union(&extent.y);
+                    if x {
+                        x_ext.union(&extent.x);
+                    }
+                    if y {
+                        y_ext.union(&extent.y);
+                    }
                 }
             }
             let scalar_extent = |value: f64| FitExtent {
@@ -5149,8 +5279,9 @@ mod web {
                 min_positive: (value > 0.0).then_some(value),
             };
             for cfg in &series {
+                let (x, y) = crate::auto_fit_roles(self.chart_config(), layer, &cfg.series_id);
                 match &cfg.render_type {
-                    DataRenderType::Histogram { bar } => {
+                    DataRenderType::Histogram { bar } if x || y => {
                         let (edge_column, count_column) =
                             crate::histogram_fit_columns(cfg, &bar.orientation);
                         let edge = Chart::slot_extent(self.renderer.pool(), edge_column)
@@ -5158,15 +5289,19 @@ mod web {
                         let mut count = Chart::slot_extent(self.renderer.pool(), count_column)
                             .map_err(js_err)?;
                         count.union(&scalar_extent(bar.baseline));
-                        if matches!(
+                        let (x_part, y_part) = if matches!(
                             &bar.orientation,
                             renderer::data_config::BarOrientation::Vertical
                         ) {
-                            x_ext.union(&edge);
-                            y_ext.union(&count);
+                            (edge, count)
                         } else {
-                            x_ext.union(&count);
-                            y_ext.union(&edge);
+                            (count, edge)
+                        };
+                        if x {
+                            x_ext.union(&x_part);
+                        }
+                        if y {
+                            y_ext.union(&y_part);
                         }
                     }
                     _ => {}
@@ -5175,9 +5310,45 @@ mod web {
             if !self.alive.get() {
                 return Err(js_err("chart was dropped while auto_fit_all was pending"));
             }
-            self.renderer
-                .commit_auto_fit_all_if_current(&token, &x_ext, &y_ext, padding)
-                .map_err(js_err)?;
+            if layer == renderer::LayerRef::Base {
+                self.renderer
+                    .commit_auto_fit_all_if_current(&token, &x_ext, &y_ext, padding)
+                    .map_err(js_err)?;
+            } else {
+                // The same staleness rule as the base commit: a range, scale,
+                // geometry or column change during the wait rejects the fit.
+                if self
+                    .renderer
+                    .begin_fit_commit(self.chart_id)
+                    .map_err(js_err)?
+                    != token
+                {
+                    return Err(js_err(
+                        "axis range/scale, ordered fit geometry, or source column content changed",
+                    ));
+                }
+                let mut chart = Chart::new(self.chart_config().clone());
+                match layer {
+                    renderer::LayerRef::Overlay(index) => {
+                        chart.auto_fit_overlay_y_extent(index, &y_ext, padding);
+                    }
+                    renderer::LayerRef::Subplot(index) => {
+                        chart.auto_fit_subplot_x_extent(index, &x_ext, padding);
+                        chart.auto_fit_subplot_y_extent(index, &y_ext, padding);
+                    }
+                    renderer::LayerRef::SubplotOverlay(index, overlay) => {
+                        let mut config = chart.config().clone();
+                        if let Some(subplot) = config.subplots.get_mut(index) {
+                            let mut inner = Chart::new(subplot.config.clone());
+                            inner.auto_fit_overlay_y_extent(overlay, &y_ext, padding);
+                            subplot.config = inner.config().clone();
+                        }
+                        chart = Chart::new(config);
+                    }
+                    renderer::LayerRef::Base | renderer::LayerRef::Annotations => {}
+                }
+                self.replace_chart_config(chart.config().clone())?;
+            }
             self.request_host_redraw();
             Ok(())
         }
@@ -6047,6 +6218,8 @@ mod web {
                     source_id,
                     point_index,
                 } => {
+                    // Point-bearing series: lines, markers and point vectors,
+                    // whose anchors pick and highlight like markers.
                     let points =
                         self.chart_series()
                             .iter()
@@ -6054,14 +6227,24 @@ mod web {
                                 let style = serde_json::to_value(&s.render_type).unwrap();
                                 style.as_object().unwrap().values().next().is_some_and(|v| {
                                     v["line"].is_object() || v["scatter"].is_object()
-                                })
+                                }) || matches!(
+                                    vector_columns(&s.render_type),
+                                    Some(VectorColumns::Points { .. })
+                                )
                             })
                             .collect::<Vec<_>>();
                     let Some(index) = points.iter().position(|s| s.series_id == *series_id) else {
                         return Ok(false);
                     };
                     let series = points[shift(index, dy, points.len())];
-                    let count = self.columns[&series.x_column].min(self.columns[&series.y_column]);
+                    let mut count =
+                        self.columns[&series.x_column].min(self.columns[&series.y_column]);
+                    // A point vector draws only where all four columns have a value.
+                    if let Some(VectorColumns::Points { u, v, .. }) =
+                        vector_columns(&series.render_type)
+                    {
+                        count = count.min(self.columns[u]).min(self.columns[v]);
+                    }
                     *series_id = series.series_id.clone();
                     *source_id = series.source_id.clone();
                     *point_index = shift(*point_index, dx, count);

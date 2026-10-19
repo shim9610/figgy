@@ -280,14 +280,15 @@ fn style(s: &CategoryBarStyle) -> bool {
 }
 impl CategoricalChart {
     /// The layer that receives pointer interaction. Bounded charts have no
-    /// overlays, so an `Overlay` value reads as `Base`.
+    /// overlays or subplots, so an `Overlay`, `Subplot` or `SubplotOverlay`
+    /// value reads as `Base`.
     pub fn active_layer(&self) -> crate::LayerRef {
         self.active_layer.bounded()
     }
     /// Set the interaction target layer and return the stored value
-    /// (`Overlay` is stored as `Base`). A change clears
-    /// `decorations.selected`, which names an element of the previous
-    /// layer's pointer route; the data selection is kept.
+    /// (`Overlay`, `Subplot` and `SubplotOverlay` are stored as `Base`). A
+    /// change clears `decorations.selected`, which names an element of the
+    /// previous layer's pointer route; the data selection is kept.
     pub fn set_active_layer(&mut self, layer: crate::LayerRef) -> crate::LayerRef {
         crate::layer::set_bounded_active_layer(&mut self.active_layer, &mut self.decorations, layer)
     }
@@ -301,7 +302,10 @@ impl CategoricalChart {
             )
         })
     }
-    /// Freeze the legacy title's appearance before independently editing labels.
+    /// Copy the legacy `title` into `chart_title` in the current chart font
+    /// and colour, so later edits to `font_family`, `font_size` or
+    /// `text_color` no longer change the title. Does nothing when
+    /// `chart_title` is already set.
     pub fn normalize_title(&mut self) {
         if self.chart_title.is_none() {
             self.chart_title = Some(self.resolved_title());

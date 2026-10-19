@@ -1,4 +1,5 @@
-//! Export every Cartesian gallery example with one shared GPU device.
+//! Export the error bar, histogram, contour and animation gallery examples
+//! with one shared GPU device.
 //! cargo run --locked -p figgy-renderer --example readme_gallery -- target/readme-gallery
 //! Optional second argument: frame count (2–240, default 48).
 //! Open the individual example files for their data and chart settings.

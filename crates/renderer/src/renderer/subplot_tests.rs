@@ -606,3 +606,28 @@ fn subplot_warnings_layers_and_streaming_rules() {
         })
     ));
 }
+
+#[test]
+fn a_base_auto_fit_moves_the_subplots_linked_to_the_parent() {
+    let mut r = renderer();
+    let id = r.register_chart(document(), series()).unwrap();
+    let token = r.begin_fit_commit(id).unwrap();
+    let x = crate::chart::FitExtent {
+        min: 2.0,
+        max: 4.0,
+        min_positive: Some(2.0),
+    };
+    let y = crate::chart::FitExtent {
+        min: -3.0,
+        max: 3.0,
+        min_positive: Some(3.0),
+    };
+    r.commit_auto_fit_all_if_current(&token, &x, &y, 0.0)
+        .unwrap();
+    let config = r.chart_config(id).unwrap();
+    assert_eq!((config.bottom_x.min, config.bottom_x.max), (2.0, 4.0));
+    // Subplot 1 links X to the parent; subplot 0 keeps its own X axis.
+    let linked = &config.subplots[1].config.bottom_x;
+    assert_eq!((linked.min, linked.max), (2.0, 4.0));
+    assert_eq!(config.subplots[0].config.bottom_x.min, -0.5);
+}

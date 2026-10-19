@@ -1,7 +1,7 @@
 //! The CPU twin of the polar mapping in the shaders' common `data_to_ndc`
 //! block (`polar_ndc`, `polar_sample_valid` in `SHADER_COMMON.md`): the
 //! transform constants a polar `Config` writes, and the projection the CPU
-//! picker and the axis raster use so they agree with the GPU.
+//! picker uses so it agrees with the GPU.
 
 use crate::config::Config;
 use crate::data_render::ScatterTransform;

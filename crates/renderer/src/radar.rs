@@ -1,8 +1,4 @@
 #![doc = include_str!("../RADAR.md")]
-//! Resident radar (spider) charts: a few series over a fixed set of
-//! categories, drawn as closed polygons over one shared value axis. No
-//! Cartesian columns, auto-fit jobs, or stream replay are involved.
-//! `prepare` returns an immutable frame; repeated identical snapshots reuse it.
 use crate::gpu_memory::{
     GpuLedger, GpuMemoryUsage, GpuResourceKind, TrackedBuffer, TrackedTexture,
 };
@@ -13,10 +9,19 @@ use wgpu::util::DeviceExt;
 #[path = "radar_layout.rs"]
 mod layout;
 
+/// Why a radar chart could not be prepared or exported.
 #[derive(Debug)]
 pub enum RadarError {
+    /// `RadarChart::validate` failed with this reason.
     Invalid(&'static str),
-    Budget { needed: u64, limit: u64 },
+    /// The frame's GPU resources would exceed the renderer's budget.
+    Budget {
+        /// Bytes the frame needs.
+        needed: u64,
+        /// The budget's limit in bytes.
+        limit: u64,
+    },
+    /// A GPU error, such as a failed readback.
     Gpu(String),
 }
 impl std::fmt::Display for RadarError {
@@ -73,9 +78,13 @@ pub enum RadarPart {
     /// A vertex marker; the target names the vertex.
     Marker,
 }
+/// What `RadarFrame::hit_test` found: the vertex or series and the part
+/// the pointer landed on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RadarPick {
+    /// The vertex (`category_id` set) or series under the pointer.
     pub target: RadarTarget,
+    /// The drawn part that was hit.
     pub part: RadarPart,
 }
 
@@ -232,8 +241,8 @@ impl RadarFrame {
         pass.draw(0..6, 0..self.geometry.len() as u32 + 2);
     }
 }
-/// Shares the host device/queue. Owns one pipeline and at most one cached frame.
-/// Kept separate from the large numeric-data/Cartesian renderer deliberately.
+/// Shares the host device/queue. Owns one pipeline and caches at most one
+/// frame per background mode.
 pub struct RadarRenderer {
     gpu: RendererDevice,
     format: wgpu::TextureFormat,
@@ -389,6 +398,7 @@ impl RadarRenderer {
     pub fn set_background(&mut self, background: crate::annotation::FrameBackground) {
         self.background = background;
     }
+    /// How the next frame's background is cleared; see [`Self::set_background`].
     pub fn background(&self) -> crate::annotation::FrameBackground {
         self.background
     }
@@ -457,7 +467,9 @@ impl RadarRenderer {
     }
     /// `size` is logical pixels. `scale` (0.5..4) increases actual geometry AND
     /// glyph resolution without changing the layout. Invalid edits do not evict
-    /// the last valid snapshot. All chart/model fields participate in reuse.
+    /// the last valid snapshot. Every chart field except `active_layer`,
+    /// `annotations` and a selected annotation (drawn by `prepare_annotations`)
+    /// is part of the reuse key.
     /// Logical dimensions must be at least 240 by 240; physical output must fit the
     /// device texture limit. Model edits need no manual cache invalidation.
     pub fn prepare(

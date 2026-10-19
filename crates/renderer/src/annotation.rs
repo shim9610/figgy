@@ -37,16 +37,18 @@ use model::{AnnotationLayer, DecorationId, LayerRef, layout::NudgeResult};
 
 /// The anchor space of a Cartesian chart: the chart area is the panel, the
 /// data area the plot, and `bottom_x` / `left_y` the two value axes (the
-/// axes the data transform draws against). Logarithmic ranges are guarded
-/// the same way the data transform guards them.
+/// axes the data transform draws against; a polar chart has none).
+/// Logarithmic ranges are guarded the same way the data transform guards
+/// them.
 pub fn pixel_space_for_config(config: &Config) -> PixelSpace {
     let panel = RectF::from_rect(&config.chart_area.0);
     let plot = config
         .data_area()
         .map(|area| RectF::from_rect(&area.0))
         .unwrap_or(panel);
-    // A polar chart has no separable axes: data anchors are reported as
-    // skips and ratio anchors stay relative to the data area.
+    // A polar chart has no separable axes: data anchors, reference lines and
+    // spans are reported as `NoValueAxis` skips, and ratio anchors stay
+    // relative to the data area.
     let (x, y) = if config.polar.is_some() {
         (AxisSpace::NONE, AxisSpace::NONE)
     } else {
@@ -74,7 +76,8 @@ fn axis_space(axis: &AxisOptions) -> AxisSpace {
 
 /// Renderer-measured annotation hit map for one frame. Coordinates and drag
 /// deltas are logical pixels in the frame's own space: chart-local for
-/// bounded charts, the chart area's frame for Cartesian charts.
+/// bounded charts; for Cartesian charts, the config pixel space of the
+/// chart's [`HitMap`], where `chart_area` sits at its own `x` / `y`.
 pub struct AnnotationMap {
     state: AnnotationLayer,
     space: PixelSpace,

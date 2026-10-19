@@ -1,5 +1,18 @@
-//! Native radar chart outputs covering the grid shapes, markers, labels and
-//! selection emphasis.
+//! Radar charts over six categories: grid shapes, markers, labels and
+//! selection emphasis. Writes five 960 × 640 PNGs into the directory given as
+//! the first argument (default `target/radar-gallery`), and fails when an
+//! image has fewer than 1000 coloured pixels.
+//! - `01-spider-web.png`: two series on the default polygon grid.
+//! - `02-circle-values.png`: a circular grid with a value label at every vertex.
+//! - `03-fixed-axis.png`: a fixed 0 to 10 axis with a ring every 2.5 and
+//!   square markers.
+//! - `04-four-series.png`: four series counter-clockwise from the right,
+//!   including an unfilled baseline without markers.
+//! - `05-selection.png`: a selected vertex and a hovered series; data labels
+//!   are drawn only on the hovered and selected series
+//!   (`RadarLabels::Emphasized`).
+//!
+//! cargo run --locked -p figgy-renderer --example radar_gallery -- target/radar-gallery
 use renderer::{Category, Color, RendererDevice, data_render, encode_png, radar::*};
 use std::{path::PathBuf, sync::Arc};
 fn main() -> Result<(), Box<dyn std::error::Error>> {

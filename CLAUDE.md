@@ -38,6 +38,31 @@ break one of them, stop and ask instead of working around it.
    projection and entry fragments), so a later 3D projection can reuse the
    glyph (#25).
 
+## Before calling a change done
+
+Check the diff against the design rules item by item and report the result in
+the PR's "Chart behavior" section. A missing item is a defect to fix, not a
+follow-up.
+
+- **Interactions (rule 6).** For every new chart, feature or drawn element,
+  confirm each interaction is implemented and tested, or state why it does not
+  apply: hover, click selection, `step_selection`, the picked highlight,
+  decoration drag (title, legend, axes, tick labels, axis titles), plot-area
+  drag and resize, the annotation layer, PNG export at 1x and 2x,
+  serialization round trips, SSOT invalidation, overlay layers and subplots,
+  and the WASM wrappers. An element a rectangular chart lets the user select
+  or drag must be selectable or draggable in the new chart too.
+- **Locks (rule 4).** The diff adds no `Mutex`, `RwLock` or other lock-based
+  synchronization.
+- **Allocations (rule 3).** Every new `Vec`, `vec!` or `collect` outside tests
+  is one the plan names; list them in the PR.
+- **Copies (rules 1, 2 and 5).** No per-point data is stored or copied on the
+  CPU, nothing is computed from the data beyond display parameters, and new
+  per-point input enters through `ColumnSource`.
+- **Streaming and new paths (rules 7 and 8).** Streamed sources are rejected
+  with an explicit error, and every new path, binding, cache or module has the
+  maintainer's approval in the issue.
+
 ## Working rules
 
 - Everything committed is in English: code, comments, docs, commit messages,

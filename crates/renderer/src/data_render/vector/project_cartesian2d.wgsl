@@ -94,7 +94,7 @@ fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f
 // data area, the radius axis fraction between the inner ring and the outer
 // radius. A radius below the axis start sits on the inner ring (data samples
 // there are masked by `sample_valid`; a fill baseline is not). Twin of
-// `polar_projection::project` on the CPU.
+// `polar_projection::ndc` on the CPU.
 fn polar_ndc(ty: f32, xv: vec2<f32>) -> vec2<f32> {
     let p = transform.polar_angle;
     let e = transform.polar_extent;
@@ -195,11 +195,14 @@ fn polar_fragment_visible(px: vec2<f32>, limits: vec4<f32>, sector: vec4<f32>) -
 
 /// One arrow sample as the input layer produces it: the anchor as the pool's
 /// `(hi, lo)` pairs, the vector, and the colour-map value. 2D inputs set z = 0.
+/// `value_valid` is false where the colour column has no value for the
+/// sample, which then takes `nan_color`.
 struct VectorSample {
     origin_hi: vec3<f32>,
     origin_lo: vec3<f32>,
     vector: vec3<f32>,
     value: vec2<f32>,
+    value_valid: bool,
     valid: bool,
 };
 
