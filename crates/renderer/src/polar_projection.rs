@@ -1,4 +1,3 @@
-#![doc = include_str!("../POLAR.md")]
 //! The CPU twin of the polar mapping in the shaders' common `data_to_ndc`
 //! block (`polar_ndc`, `polar_sample_valid` in `SHADER_COMMON.md`): the
 //! transform constants a polar `Config` writes, and the projection the CPU

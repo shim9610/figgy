@@ -1,8 +1,9 @@
 # figgy-model
 
-Chart settings and data definitions for figgy: Cartesian axes and series,
-interaction policies, and the bounded radial, categorical, boxplot and radar
-models.
+Chart settings and data definitions for figgy: Cartesian axes and series
+(including polar coordinates, vector fields, point colour and size maps, area
+fills and step lines), interaction policies, and the bounded radial,
+categorical, boxplot and radar models.
 This crate has no GPU or windowing dependency. The optional `serde` feature adds
 serialization and deserialization.
 
@@ -58,6 +59,8 @@ assert_eq!(chart.slices.iter().map(|slice| slice.value).sum::<f64>(), 100.0);
 | Category/series bars | `CategoricalChart`, `BarSeries` |
 | Supplied statistical summaries | `BoxPlotChart`, `BoxPlotSeries` |
 | One value per category and series on shared spokes | `RadarChart`, `RadarSeries` |
+| A Cartesian chart drawn in (angle, radius) | `polar::PolarOptions` on `Config.polar`, `polar::PolarGeometry` |
+| Arrows, point colour and size maps, area fills and step lines | `data_config::DataRenderType::Vector`, `PointColorMap`, `PointSizeMap`, `LineFill`, `LineInterpolation` |
 | Selection, dragging and area handles | `Selectable`, `Draggable`, `Resizable`, `DecorationLayout` |
 
 Bounded charts have explicit validation and small-data limits. They do not require

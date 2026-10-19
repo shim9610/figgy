@@ -130,7 +130,12 @@ pub mod boxplot;
 pub use boxplot::{BoxPlotError, BoxPlotFrame, BoxPlotPart, BoxPlotPick, BoxPlotRenderer};
 pub use model::boxplot::*;
 pub mod radar;
-pub use model::polar;
+/// Polar coordinates for the Cartesian chart: the model's `polar` module
+/// re-exported under the renderer, with the polar guide as its documentation.
+pub mod polar {
+    #![doc = include_str!("../POLAR.md")]
+    pub use model::polar::*;
+}
 pub use model::polar::{AngleUnit, PolarGeometry, PolarInterpolation, PolarOptions};
 pub use model::radar::*;
 pub use radar::{RadarError, RadarFrame, RadarPart, RadarPick, RadarRenderer};

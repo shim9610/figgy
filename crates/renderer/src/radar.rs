@@ -13,10 +13,19 @@ use wgpu::util::DeviceExt;
 #[path = "radar_layout.rs"]
 mod layout;
 
+/// Why a radar chart could not be prepared or exported.
 #[derive(Debug)]
 pub enum RadarError {
+    /// `RadarChart::validate` failed with this reason.
     Invalid(&'static str),
-    Budget { needed: u64, limit: u64 },
+    /// The frame's GPU resources would exceed the renderer's budget.
+    Budget {
+        /// Bytes the frame needs.
+        needed: u64,
+        /// The budget's limit in bytes.
+        limit: u64,
+    },
+    /// A GPU error, such as a failed readback.
     Gpu(String),
 }
 impl std::fmt::Display for RadarError {
@@ -73,9 +82,13 @@ pub enum RadarPart {
     /// A vertex marker; the target names the vertex.
     Marker,
 }
+/// What `RadarFrame::hit_test` found: the vertex or series and the part
+/// the pointer landed on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RadarPick {
+    /// The vertex (`category_id` set) or series under the pointer.
     pub target: RadarTarget,
+    /// The drawn part that was hit.
     pub part: RadarPart,
 }
 
@@ -389,6 +402,7 @@ impl RadarRenderer {
     pub fn set_background(&mut self, background: crate::annotation::FrameBackground) {
         self.background = background;
     }
+    /// How the next frame's background is cleared; see [`Self::set_background`].
     pub fn background(&self) -> crate::annotation::FrameBackground {
         self.background
     }

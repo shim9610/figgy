@@ -36,6 +36,7 @@ impl VectorInput {
     /// Every assembled combination, so coverage can enumerate them.
     pub const ALL: [VectorInput; 2] = [VectorInput::Points, VectorInput::Grid];
 
+    /// The shader module label, as the compile contract records it.
     pub fn label(self) -> &'static str {
         match self {
             VectorInput::Points => "figgy vector points shader",
@@ -94,15 +95,25 @@ pub(crate) fn shader_module(device: &wgpu::Device, input: VectorInput) -> wgpu::
 /// Vertices per arrow: one oriented quad (`glyph_arrow.wgsl::ARROW_VERTICES`).
 pub const ARROW_VERTICES: u32 = 6;
 
+/// `VectorParamsGpu::flags`: the components are grids, not point columns.
 pub const VECTOR_FLAG_GRID: u32 = 1;
+/// `VectorParamsGpu::flags`: grid columns run along Y (`MatrixOrientation`).
 pub const VECTOR_FLAG_COLUMNS_ARE_Y: u32 = 2;
+/// `VectorParamsGpu::flags`: grid coordinates are cell centres, not edges.
 pub const VECTOR_FLAG_CENTERS: u32 = 4;
+/// `VectorParamsGpu::flags`: `scale` is pixels per unit, not a data factor.
 pub const VECTOR_FLAG_SCALE_PIXELS: u32 = 8;
+/// `VectorParamsGpu::flags`: the colourbar is logarithmic; `z_min` / `z_max`
+/// are log-transformed.
 pub const VECTOR_FLAG_LOG_Z: u32 = 16;
+/// `VectorParamsGpu::flags`: arrows are coloured through the colourbar.
 pub const VECTOR_FLAG_COLOR_MAP: u32 = 32;
 
+/// `VectorParamsGpu::pivot`: the tail sits on the anchor.
 pub const VECTOR_PIVOT_TAIL: u32 = 0;
+/// `VectorParamsGpu::pivot`: the arrow is centred on the anchor.
 pub const VECTOR_PIVOT_MIDDLE: u32 = 1;
+/// `VectorParamsGpu::pivot`: the tip sits on the anchor.
 pub const VECTOR_PIVOT_TIP: u32 = 2;
 
 /// Everything the vector shader needs beyond `Transform` and `Style`.
@@ -117,35 +128,59 @@ pub const VECTOR_PIVOT_TIP: u32 = 2;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct VectorParamsGpu {
+    /// Pool lane of the x anchor column.
     pub x_base: u32,
+    /// Pool lane of the y anchor column.
     pub y_base: u32,
+    /// Logical length of the x anchor column.
     pub x_len: u32,
+    /// Logical length of the y anchor column.
     pub y_len: u32,
+    /// Pool lane of the u column, or the u grid's first table entry.
     pub u_base: u32,
+    /// Logical length of the u column (points form).
     pub u_len: u32,
+    /// Pool lane of the v column, or the v grid's first table entry.
     pub v_base: u32,
+    /// Logical length of the v column (points form).
     pub v_len: u32,
+    /// Pool lane of the colour column, or the colour grid's first entry.
     pub c_base: u32,
+    /// Logical length of the colour column (points form).
     pub c_len: u32,
+    /// Grid columns in constituent-column order (grid form).
     pub cols: u32,
+    /// Grid rows in constituent-column order (grid form).
     pub rows: u32,
+    /// The `VECTOR_FLAG_*` bits.
     pub flags: u32,
+    /// Arrows to draw.
     pub count: u32,
+    /// Colour stops in the group-2 stop table.
     pub stop_count: u32,
+    /// One of the `VECTOR_PIVOT_*` values.
     pub pivot: u32,
     /// `factor` or `px_per_unit`, by [`VECTOR_FLAG_SCALE_PIXELS`].
     pub scale: f32,
     /// Pixel sizes, already multiplied by the render scale.
     pub width_px: f32,
+    /// Head length along the shaft, in render pixels.
     pub head_length_px: f32,
+    /// Full head width, in render pixels.
     pub head_width_px: f32,
+    /// Arrows shorter than this are not drawn, in render pixels.
     pub min_length_px: f32,
     /// Anti-aliasing width: one logical pixel times the render scale.
     pub aa_px: f32,
+    /// Alignment padding.
     pub pad0: f32,
+    /// Alignment padding.
     pub pad1: f32,
+    /// The colourbar's minimum as a `(hi, lo)` pair.
     pub z_min: [f32; 2],
+    /// The colourbar's maximum as a `(hi, lo)` pair.
     pub z_max: [f32; 2],
+    /// Premultiplied colour for values the ramp cannot place.
     pub nan_color_premul: [f32; 4],
 }
 
@@ -194,8 +229,11 @@ pub fn create_vector_data_bind_group_layout(device: &wgpu::Device) -> wgpu::Bind
 /// non-empty (a zero-sized storage binding is invalid); the real counts live
 /// in `params`.
 pub struct VectorTables<'a> {
+    /// The grid table: one entry per constituent column of each grid.
     pub grid: &'a [GridColumnGpu],
+    /// The colourbar's colour stops, premultiplied.
     pub stops: &'a [[f32; 4]],
+    /// The series' parameters.
     pub params: &'a VectorParamsGpu,
 }
 
@@ -204,8 +242,11 @@ pub struct VectorTables<'a> {
 /// buffer as a field's grid, so the table is uploaded once) and the charge
 /// for all three buffers.
 pub struct VectorDataBindGroup {
+    /// Group 2 of the vector pipeline.
     pub bind_group: wgpu::BindGroup,
+    /// The grid table buffer the bind group binds.
     pub grid: wgpu::Buffer,
+    /// The charge for the three group-2 buffers.
     pub charge: crate::gpu_memory::SharedCharge,
 }
 
@@ -370,10 +411,13 @@ pub(crate) fn create_vector_pipeline_with_sample_count(
 /// One vector series' draw: `draw(0..ARROW_VERTICES, 0..count)` with group 2
 /// bound to the series' pool slices, tables and params.
 pub struct ColumnVectorLayer<'a> {
+    /// The assembled pipeline for the series' input form.
     pub pipeline: &'a wgpu::RenderPipeline,
+    /// The chart's transform bind group (group 0).
     pub transform_bg: &'a wgpu::BindGroup,
     /// Owned: built where the series is resolved, like the field's.
     pub style_bg: wgpu::BindGroup,
+    /// The series' group 2: pool slices, tables and params.
     pub vector_bg: wgpu::BindGroup,
     /// Keeps the group-2 buffers' lump charge alive while anything can draw.
     pub charge: crate::gpu_memory::SharedCharge,

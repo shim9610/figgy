@@ -51,11 +51,16 @@ Hosts that already own a matching wgpu 30 device/queue can share them through
 | Pies and donuts, including 3D/material styles | `RadialRenderer` | `RadialChart` with bounded slice values; [radial guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADIAL.md) |
 | Individual, grouped and stacked bars | `CategoricalRenderer` | `CategoricalChart` with category/series IDs; [bar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/CATEGORICAL.md) |
 | Grouped/notched boxes and outliers | `BoxPlotRenderer` | `BoxPlotChart` with supplied statistics; [boxplot guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/BOXPLOT.md) |
+| Radar (spider) charts | `RadarRenderer` | `RadarChart` with one value per category and series; [radar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md) |
+| Polar plots: lines, scatter and areas in (angle, radius) | `Renderer` with `Config.polar` | The same columns and `SeriesConfig` as rectangular charts; [polar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/POLAR.md) |
 
 The renderer re-exports model types: most applications do not need a separate
 `figgy-model` dependency. Bounded charts do not use column sources or streaming
-and do not compute statistics from raw samples. All four renderers can share a
-`RendererDevice`; each maintains its own resource budget. Budgets apply to checked
+and do not compute statistics from raw samples. All five renderers can share a
+`RendererDevice`; each maintains its own resource budget. Vector fields, point
+colour and size maps, area fills, step lines, overlay axes and subplots are
+`Renderer` features declared in `SeriesConfig` and `Config`; see the
+[configuration reference](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md). Budgets apply to checked
 allocation paths, not total device VRAM; see the
 [accounting scope](https://github.com/shim9610/figgy/blob/master/crates/renderer/API.md#gpu-memory-accounting-and-budget-scope).
 

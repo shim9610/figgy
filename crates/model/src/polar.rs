@@ -9,14 +9,17 @@ use crate::config::{AxisScale, Config, LabelStyle};
 
 /// The most pieces one segment is subdivided into under
 /// [`PolarInterpolation::Arc`].
+/// The most chords one `PolarInterpolation::Arc` segment is drawn as.
 pub const MAX_POLAR_ARC_PIECES: u32 = 64;
 
 /// How the angle column is read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AngleUnit {
+    /// Degrees, 360 per turn (the default).
     #[default]
     Degrees,
+    /// Radians, 2π per turn.
     Radians,
 }
 
@@ -41,7 +44,10 @@ pub enum PolarInterpolation {
     /// (angle, radius): a segment at constant radius follows the ring. Each
     /// piece is one strip of the line, so dashes and picking walk the same
     /// path. 1 to [`MAX_POLAR_ARC_PIECES`].
-    Arc { pieces: u32 },
+    Arc {
+        /// Chords per segment.
+        pieces: u32,
+    },
 }
 
 impl PolarInterpolation {
@@ -53,6 +59,7 @@ impl PolarInterpolation {
         }
     }
 
+    /// Whether segments are straight chords (the default).
     pub fn is_chord(&self) -> bool {
         matches!(self, Self::Chord)
     }

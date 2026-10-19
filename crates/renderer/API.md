@@ -42,6 +42,14 @@ remain enabled; see the source repository's backend results for tested revisions
 | `BoxPlotRenderer` | `BoxPlotChart`, supplied summary statistics | `prepare` |
 | `RadarRenderer` | `RadarChart`, bounded per-category values per series | `prepare` |
 
+A polar plot is not a renderer of its own: `Config.polar = Some(PolarOptions)`
+makes `Renderer` draw the same columns and `SeriesConfig` in (angle, radius),
+with `bottom_x` as the angle axis and `left_y` as the radius axis. Every
+Cartesian contract below (preparation, picking, export, decorations, subplots)
+holds unchanged; series without a polar form (histograms, fields, contours,
+error bars, vectors), overlay layers and streamed sources are rejected with
+explicit errors. See the [polar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/POLAR.md).
+
 The bounded chart APIs are deliberately separate from `ColumnSource` and streaming.
 They do not calculate raw-sample statistics. Chart-specific limits, missing values,
 style inheritance and picking identities are documented in their modules.
@@ -376,6 +384,15 @@ fully specified `DecorationLayout` literals need `data_area: None`, and exhausti
 for migration details. Version 0.17.0 / model 0.11.0 added `RichText.align`;
 JSON without it parses as `Left`, but fully specified `RichText` literals need
 `align: TextAlign::Left`. `AxisOptions` has no new required field in this release.
+Unreleased on `master` since 0.17.0 / model 0.11.0, all additive: `Config.polar`
+(`Option`, omitted from JSON when `None`); the enum variants
+`DecorationId::SpokeLabel`, `LabelFormat::Degrees` and `LabelFormat::Radians`,
+which exhaustive matches must add; `PolarGeometry::inner_radius` and two
+fields of `ScatterTransform` for fully specified literals; the default trait
+methods `Draggable::drag_from` and `DragConfig::nudge_at`, which existing
+implementations inherit; `DataRenderType::Vector` and the scatter style's
+`point_color_map` / `point_size_map`, all optional. Each lands with its
+CHANGELOG entry and is part of the next 0.x minor.
 Packaging work does not change those contracts. Public
 low-level modules remain available; they must not be removed silently during packaging.
 
@@ -434,6 +451,8 @@ it does not add a pick radius or turn finite segments into infinite lines.
 ## Bounded chart decoration interaction
 
 Radial, categorical, boxplot and radar frames expose `decorations()`, a renderer-measured hit map using the existing `HitMap` / `Selectable` / `Draggable` contracts. See [interaction workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md) for selection, logical-pixel dragging, SSOT persistence and host integration.
+
+Hosts that know the pointer position pass it through `Draggable::drag_from(cfg, at, dx, dy)`; the default forwards to `drag_by`, and only a polar chart's axes and tick labels read the position (the ray turns around the centre, the angle labels move along the spoke under the pointer). `Config::nudge_from(element, Some(at), dx, dy)` is the model-level entry; `nudge` is `nudge_from` without a position.
 
 ## Annotation layer
 
