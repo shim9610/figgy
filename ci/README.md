@@ -10,6 +10,15 @@ they are ready. Failed jobs can be rerun from that PR's Actions run. A master
 commit has no run of its own: its results are in the last run of the pull
 request that merged it.
 
+A pull request that changes only standalone Markdown skips the package checks.
+`ci/change_scope.py` compares the PR's merge commit with its base. If every
+changed path is a `.md` file outside `crates/`, for example the root README,
+CHANGELOG or this guide, the three jobs still start and pass but skip every step
+after the scope check. Markdown under `crates/` always runs the checks: it is
+packaged, its links are checked, `include_str!` compiles it as doctests, and
+`tests/shader_consistency.rs` parses `SHADER_COMMON.md`. Any other file in the
+change, an image included, runs the full matrix too. CodeQL is unaffected.
+
 CI sets `RUSTFLAGS` and `RUSTDOCFLAGS` to `-D warnings` in all three jobs, so a
 compiler or rustdoc warning in the libraries, examples, tests or extracted registry
 packages fails the job. Test-only input adapters and inspection helpers compile

@@ -42,8 +42,8 @@ def run(args, *, cwd=ROOT, env=None, capture=False):
 
 
 def static():
-    # Catch package-relative documentation mistakes before any compilation.
-    run([sys.executable, "-B", "-m", "unittest", "discover", "-s", "ci", "-p", "test_package_docs.py"])
+    # CI script and package-relative documentation checks run before any compilation.
+    run([sys.executable, "-B", "-m", "unittest", "discover", "-s", "ci", "-p", "test_*.py"])
     check_checkout(ROOT)
     # Formatting is also checked before any build.
     run(["cargo", "fmt", "--all", "--check"])
