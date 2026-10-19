@@ -4,7 +4,8 @@
 //!   on a coarse grid over a heatmap of the speed on a fine grid.
 //! - `currents` writes `gallery-currents.png`: the points form, (u, v)
 //!   columns at scattered anchors, coloured by a speed column through the
-//!   colourbar, the longest arrow scaled to 44 px with `fit_scale`.
+//!   colourbar, every arrow at most 44 px long (`fit_scale` over the u and v
+//!   extents).
 //! - `gradient` writes `gradient.png`: the grid form in data units
 //!   (`VectorScale::Data`) with arrows drawn from their tails, coloured by a
 //!   third matrix through the colourbar (`VectorColorMap::Grid`). The host

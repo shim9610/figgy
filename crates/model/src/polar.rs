@@ -1,15 +1,17 @@
 //! Polar coordinates for the Cartesian chart: `Config.polar`.
 //!
-//! With `polar: Some(..)` the document keeps its four axes and every series,
-//! column and interaction contract, and draws `bottom_x` as the angle and
-//! `left_y` as the radius. `None` (the default, omitted from JSON) is the
-//! rectangular chart every document had before the field.
+//! With `polar: Some(..)` the chart draws `bottom_x` as the angle (the outer
+//! ring) and `left_y` as the radius (the labelled ray); `top_x` and
+//! `right_y` stay in the document but are not drawn. Scatter, line and
+//! scatter-line series, with their fills, keep their columns, picking and
+//! export. Histogram, field, contour, error-bar and vector series, overlay
+//! layers and streamed sources are rejected with an error. `None` (the
+//! default, omitted from JSON) draws the rectangular chart.
 
 use crate::config::{AxisScale, Config, LabelStyle};
 
 /// The most pieces one segment is subdivided into under
 /// [`PolarInterpolation::Arc`].
-/// The most chords one `PolarInterpolation::Arc` segment is drawn as.
 pub const MAX_POLAR_ARC_PIECES: u32 = 64;
 
 /// How the angle column is read.
@@ -249,8 +251,10 @@ impl PolarOptions {
 
 impl Config {
     /// The polar circle of this chart, when the chart is polar and has a
-    /// data area. Same arithmetic on every consumer: the GPU transform, the
-    /// grid raster, the CPU picker and the annotation space.
+    /// data area. The GPU transform, the polar grid and axis raster, the CPU
+    /// picker and the decoration hit regions and drags all read this circle.
+    /// The annotation layer does not: its ratio anchors stay relative to the
+    /// data area and its data anchors are skipped.
     pub fn polar_geometry(&self) -> Option<PolarGeometry> {
         self.polar.as_ref()?;
         let area = self.data_area().ok()?.0;

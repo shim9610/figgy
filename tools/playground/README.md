@@ -18,10 +18,18 @@ From the repository root:
 cargo run --manifest-path tools/playground/Cargo.toml
 ```
 
-`-- --selftest` runs headless instead. It applies a sequence of overlay and
-subplot edits through the renderer registry, and exports each step and every
-Cartesian scene to `target/playground/selftest/` under the working directory.
-A rejected config fails the run.
+With `--selftest` the playground opens no window, but it still needs a GPU
+adapter:
+
+```sh
+cargo run --manifest-path tools/playground/Cargo.toml -- --selftest
+```
+
+It registers the lines scene as a chart, applies a sequence of overlay and
+subplot edits with `Renderer::set_chart_config`, and writes a PNG of each step,
+and of every Cartesian scene at 1x and 2x, to `target/playground/selftest/`
+under the working directory. A rejected config or a failed export stops the run
+with exit status 1.
 
 ## Scenes
 
@@ -41,11 +49,12 @@ The tabs at the top switch scenes.
   or annotation, then drag it. A selected data area has eight resize handles.
   A click on a point, bar, cell or isoline picks it (Shift adds); the data
   area wins only once it is already selected.
-- **Wheel**: zoom around the cursor (Shift: X only, Ctrl: Y only).
+- **Wheel**: zoom around the cursor (Shift: X only, Ctrl or Cmd on macOS: Y
+  only).
 - **Right or middle drag**: pan.
 
-Pan and zoom act on the active layer's chart: the parent, an overlay's Y axis,
-or a subplot.
+Wheel zoom and pan work in Cartesian scenes only. They act on the active
+layer's chart: the parent, an overlay's Y axis, or a subplot.
 
 ## Panel
 
@@ -58,11 +67,18 @@ or a subplot.
   - Move each series between layers. Series joined by a band fill
     (`LineFill::ToSeries`) move together, because both ends of a band must be
     in the same chart.
-- **Series**: per render type (line, marker, error bar, histogram, field and
-  contour). Markers can take a colour map column (through the colourbar) and a
-  size map column with its domain, pixel range and area/radius scale. Contour
-  labels can toggle the background box, font size, digits and level 0.
+- **Series**: per render type (line, marker, error bar, histogram, field,
+  contour and vector). Lines set colour, width, dash, linear or step
+  interpolation and a baseline fill. Vectors set arrow colour and size, pivot,
+  scale mode and factor, and a colour map column for point vectors. Markers can
+  take a colour map column (through the colourbar) and a size map column with
+  its domain, pixel range and area/radius scale. Contour labels can toggle the
+  background box, font size, digits and level 0.
 - **Picking**: each pick lists the point's coordinates and, for a mapped
   series, the colour and size values read back from the GPU column.
-- **Picking, Annotations, Export (PNG), Diagnostics**: GPU memory and render
-  warnings.
+- **Annotations**: show or hide the layer, add vertical and horizontal
+  reference lines, spans, text boxes and arrows, and edit or delete the
+  selected item.
+- **Export**: write the document PNG at a scale from 1x to 4x to
+  `target/playground/<scene>.png` under the working directory.
+- **Diagnostics**: GPU memory usage and render warnings.

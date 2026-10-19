@@ -7,9 +7,10 @@ change so the data and interaction contracts can be discussed before implementat
 ## Report an issue
 
 Use the [issue forms](https://github.com/shim9610/figgy/issues/new/choose). A useful
-renderer report includes a minimal Rust example, synthetic input, the package
-version or commit, OS, GPU/driver and backend, plus the first error or a before/after
-image. State whether the issue occurs during initial preparation, an edit,
+renderer report includes a minimal Rust example, synthetic input, the crates.io
+version or, for a Git checkout, the commit hash (master can be ahead of the
+published release while carrying the same version number), OS, GPU/driver and
+backend, plus the first error or a before/after image. State whether the issue occurs during initial preparation, an edit,
 streaming, selection, resizing or PNG export. A screenshot is helpful but does not
 replace a reproducer.
 
@@ -53,17 +54,23 @@ adapter and driver; software adapters are valid test environments when identifie
 as such. Run the regression relevant to your change, for example:
 
 ```sh
-cargo test --locked -p figgy-renderer --test bounded_interaction -- --test-threads=1
+cargo test --locked -p figgy-renderer --features serde --test bounded_interaction -- --test-threads=1
 ```
 
+`--features serde` adds the serialization round trips that CI also runs.
+
 Format with `cargo fmt --all` before committing; CI rejects unformatted code.
-For the same formatting, build/documentation and extracted-package checks used
-in CI:
+The formatting, build/documentation and extracted-package checks used in CI run
+with:
 
 ```sh
 python3 ci/verify.py static
 python3 ci/verify.py packages
 ```
+
+CI also sets `RUSTFLAGS=-D warnings` and `RUSTDOCFLAGS=-D warnings`, so compiler
+and rustdoc warnings fail the package checks. Set both variables to reproduce
+that locally.
 
 Use `python` where that is the Python 3 executable. Read the
 [CI guide](ci/README.md) for platform prerequisites, backend selection, Windows
@@ -72,33 +79,48 @@ do not update unrelated dependencies to fix a local setup problem.
 
 ## Prepare a pull request
 
-Work on a branch or fork and open a PR against `master`. Keep the change focused,
+Work on a branch or fork, open a PR against `master` and fill in each section of
+the [pull request template](.github/PULL_REQUEST_TEMPLATE.md). Keep the change focused,
 explain the user-visible behavior, and report which checks ran and any gaps.
 New documentation and example explanations should be in English; retain existing
 Korean documentation. Public API or behavior changes need corresponding guide,
 example and changelog updates. The maintainer coordinates release version bumps.
 
-For chart changes, verify the affected parts of the existing workflow:
+A new chart or feature implements and tests every existing interaction below.
+For other chart changes, verify the items the change affects:
 
-- Initial rendering and subsequent model edits, including required cache updates
+- Initial rendering and subsequent model edits, including cache invalidation
   and reuse when the data or geometry has not changed.
-- Picking, selection, dragging of editable elements and plot-area resize handles.
-- Hover/selection behavior and PNG export at the relevant scale.
+- Hover, click selection, selection stepping (`step_selection`) and the picked
+  highlight.
+- Dragging the chart title, legend, colorbar, axes, tick labels and axis titles,
+  plus plot-area drag and resize handles.
+- The annotation layer, and overlay layers and subplots where the chart family
+  supports them.
+- PNG export at 1x and 2x.
 - Serialization round trips when changing serializable model fields.
+- The WASM wrappers in `crates/web`.
 
-State which items are not applicable and why. Small-data radial, categorical,
-boxplot and radar charts use bounded models; adding them does not require streaming support.
+State which items are not applicable and why. An element that a rectangular chart
+lets the user select or drag is selectable or draggable in a new chart as well.
+
+Radial, categorical, boxplot and radar charts use bounded small-data models and do
+not need streaming support. Existing streaming support is not extended: a new chart
+or feature rejects streamed sources with an explicit error, as polar charts, vector
+series, line fills and step lines do with `FiggyError::InvalidSeriesConfig`.
+
 Regression tests should exercise the renderer's public APIs. Distinguish renderer
 tests from host event wiring and deployed application checks.
 
-Run the relevant shader consistency test if you change shared WGSL definitions;
-the common declarations are documented in
-[SHADER_COMMON.md](crates/renderer/src/data_render/SHADER_COMMON.md).
+To change a shared WGSL definition, edit its block in
+[SHADER_COMMON.md](crates/renderer/src/data_render/SHADER_COMMON.md) first, then
+every synced shader and its CPU struct, and run
+`cargo test --locked -p figgy-renderer --test shader_consistency`.
 
 Public, non-draft PRs run the three-OS package/rendering matrix and CodeQL. There
 are no push or scheduled triggers for those workflows. Draft PRs wait until
-marked ready for review. Compiler and rustdoc warnings fail the package checks.
-CI adapters are software or virtualized; macOS/Metal remains experimental.
+marked ready for review. CI adapters are software or virtualized; macOS/Metal
+remains experimental.
 
 ## License
 

@@ -1,7 +1,7 @@
 //! Vector field (quiver) series: a layered shader assembled in Rust.
 //!
-//! The arrow drawing is split into WGSL fragments with fixed interfaces so a
-//! later 3D projection can reuse the glyph without copying it:
+//! The arrow drawing is split into WGSL fragments with fixed interfaces, so
+//! the glyph does not depend on the projection:
 //!
 //! - `project_cartesian2d.wgsl`: the common `Transform` / `Style` blocks and
 //!   `project_arrow`, which maps a `VectorSample` to a tail and a tip in
@@ -162,7 +162,7 @@ pub struct VectorParamsGpu {
     pub pivot: u32,
     /// `factor` or `px_per_unit`, by [`VECTOR_FLAG_SCALE_PIXELS`].
     pub scale: f32,
-    /// Pixel sizes, already multiplied by the render scale.
+    /// Shaft width in render pixels (logical pixels times the render scale).
     pub width_px: f32,
     /// Head length along the shaft, in render pixels.
     pub head_length_px: f32,
@@ -409,7 +409,8 @@ pub(crate) fn create_vector_pipeline_with_sample_count(
 }
 
 /// One vector series' draw: `draw(0..ARROW_VERTICES, 0..count)` with group 2
-/// bound to the series' pool slices, tables and params.
+/// bound to the whole column pool, the series' tables and its params (which
+/// carry the lane bases).
 pub struct ColumnVectorLayer<'a> {
     /// The assembled pipeline for the series' input form.
     pub pipeline: &'a wgpu::RenderPipeline,
@@ -417,7 +418,8 @@ pub struct ColumnVectorLayer<'a> {
     pub transform_bg: &'a wgpu::BindGroup,
     /// Owned: built where the series is resolved, like the field's.
     pub style_bg: wgpu::BindGroup,
-    /// The series' group 2: pool slices, tables and params.
+    /// The series' group 2: the whole column pool, the series' tables and its
+    /// params.
     pub vector_bg: wgpu::BindGroup,
     /// Keeps the group-2 buffers' lump charge alive while anything can draw.
     pub charge: crate::gpu_memory::SharedCharge,

@@ -1,6 +1,5 @@
-//! Point value maps: a third column colours the points through the chart's
-//! colourbar, a fourth sizes them. Colour and radius are derived in the
-//! shader on every draw.
+//! Point value maps: a value column colours the points through the chart's
+//! colourbar or sizes their markers.
 //! - `colormap_scatter` writes `gallery-colormap.png`: 1400 particles along two
 //!   spiral arms coloured by an age column (`point_color_map`).
 //! - `bubbles` writes `gallery-bubbles.png`: three regions of cities whose

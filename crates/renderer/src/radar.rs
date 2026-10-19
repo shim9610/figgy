@@ -1,8 +1,4 @@
 #![doc = include_str!("../RADAR.md")]
-//! Resident radar (spider) charts: a few series over a fixed set of
-//! categories, drawn as closed polygons over one shared value axis. No
-//! Cartesian columns, auto-fit jobs, or stream replay are involved.
-//! `prepare` returns an immutable frame; repeated identical snapshots reuse it.
 use crate::gpu_memory::{
     GpuLedger, GpuMemoryUsage, GpuResourceKind, TrackedBuffer, TrackedTexture,
 };
@@ -245,8 +241,8 @@ impl RadarFrame {
         pass.draw(0..6, 0..self.geometry.len() as u32 + 2);
     }
 }
-/// Shares the host device/queue. Owns one pipeline and at most one cached frame.
-/// Kept separate from the large numeric-data/Cartesian renderer deliberately.
+/// Shares the host device/queue. Owns one pipeline and caches at most one
+/// frame per background mode.
 pub struct RadarRenderer {
     gpu: RendererDevice,
     format: wgpu::TextureFormat,
@@ -471,7 +467,9 @@ impl RadarRenderer {
     }
     /// `size` is logical pixels. `scale` (0.5..4) increases actual geometry AND
     /// glyph resolution without changing the layout. Invalid edits do not evict
-    /// the last valid snapshot. All chart/model fields participate in reuse.
+    /// the last valid snapshot. Every chart field except `active_layer`,
+    /// `annotations` and a selected annotation (drawn by `prepare_annotations`)
+    /// is part of the reuse key.
     /// Logical dimensions must be at least 240 by 240; physical output must fit the
     /// device texture limit. Model edits need no manual cache invalidation.
     pub fn prepare(

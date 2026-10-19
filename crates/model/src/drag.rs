@@ -1,22 +1,35 @@
 //! Drag policy — `Draggable`, position adjustment for selected elements.
 //!
 //! `Draggable` extends [`Selectable`]: only objects
-//! the user can select can be dragged. Implementations provide a single
-//! mapping — which nudge-path [`Element`] they move — and nothing else. The
-//! default [`Draggable::drag_by`] routes every position change through
-//! [`Config::nudge`], so a drag can never bypass that path: the same
-//! feasibility check (`NudgeReject::OutOfBounds` keeps elements inside the
-//! chart area) and the same rotated-frame offset mapping apply whether the
-//! move came from a drag, a keyboard nudge, or programmatic adjustment.
+//! the user can select can be dragged. Implementations name the nudge-path
+//! [`Element`] they move. The default [`Draggable::drag_by`] routes every
+//! position change through [`Config::nudge`], so a drag can never bypass that
+//! path: the same feasibility check (`NudgeReject::OutOfBounds` keeps
+//! elements inside the chart area) and the same rotated-frame offset mapping
+//! apply whether the move came from a drag, a keyboard nudge, or
+//! programmatic adjustment. [`AxisElement`] and [`AxisLabelElement`] also
+//! override [`Draggable::drag_from`] to pass the pointer position on to
+//! [`Config::nudge_from`], because their polar moves depend on where they
+//! were grabbed. Overlay-layer and subplot elements override `drag_by` to
+//! nudge their own panel's `Config` and write the result back.
 //!
-//! Axes are draggable too, with their own rule inside the same path:
-//! [`Element::Axis`] *detaches* the axis — it moves only perpendicular to its
-//! direction (y-axes horizontally, x-axes vertically) via `line_offset`,
-//! while the data area, grid, and data transform stay put. Tick positions
-//! along the axis therefore stay aligned with the data. The data area itself
-//! is draggable as a whole ([`Element::DataArea`]): it translates without
-//! resizing by shifting opposite margins in tandem, and it is also resizable
-//! via its handles ([`crate::resize::Resizable`]).
+//! Axes are draggable too, with their own rule inside the same path. In a
+//! Cartesian chart [`Element::Axis`] *detaches* the axis: it moves only
+//! perpendicular to its direction (y-axes horizontally, x-axes vertically)
+//! via `line_offset`, while the data area, grid, and data transform stay put.
+//! Tick positions along the axis therefore stay aligned with the data. The
+//! data area itself is draggable as a whole ([`Element::DataArea`]): it
+//! translates without resizing by shifting opposite margins in tandem, and it
+//! is also resizable via its handles ([`crate::resize::Resizable`]).
+//!
+//! In a polar chart ([`Config::polar`]) the axes follow the polar frame
+//! instead. Dragging the radius axis (`Element::Axis(Side::Left)`) turns its
+//! ray around the centre (`radial_label_angle_degrees`); the angle axis, the
+//! outer ring, has no move and the drag is rejected. The angle tick labels
+//! move along their spokes and the radius tick labels in the ray frame. With
+//! the grab point from [`Draggable::drag_from`] these moves follow the
+//! pointer; without it the ray turns as if grabbed on the outer ring and the
+//! angle labels move along the spoke at the zero angle.
 
 use crate::config::Config;
 use crate::layout::{Element, NudgeResult};
@@ -26,8 +39,11 @@ use crate::select::{
     Selectable,
 };
 
-/// State that owns position changes. Existing Cartesian callers use `Config`;
-/// bounded chart decorations use their own SSOT without duplicating hit/drag policy.
+/// State that owns position changes: [`Config`] for Cartesian and polar
+/// charts, [`DecorationLayout`](crate::decoration::DecorationLayout) for
+/// bounded chart decorations and [`AnnotationLayer`](crate::layer::AnnotationLayer)
+/// for annotations. All three share the hit-test and drag policy of this
+/// module.
 pub trait DragConfig {
     type Element;
     fn nudge(&mut self, element: Self::Element, dx: f32, dy: f32) -> NudgeResult;
@@ -53,18 +69,23 @@ impl DragConfig for Config {
 
 /// A selectable object whose position can be adjusted by drag & drop.
 pub trait Draggable<C: DragConfig = Config>: Selectable<C> {
-    /// The nudge-path element this drag target moves. This mapping is the
-    /// only thing an implementation defines; movement itself happens in
-    /// [`Self::drag_by`].
+    /// The nudge-path element this drag target moves. Movement itself
+    /// happens in [`Self::drag_by`] and [`Self::drag_from`]; an element whose
+    /// move depends on the grab point overrides `drag_from` to route it
+    /// through [`DragConfig::nudge_at`].
     fn nudge_element(&self) -> C::Element;
 
     /// Default drag pipeline: apply the pointer delta through
-    /// [`Config::nudge`]. Returns [`NudgeResult::Rejected`] (and leaves `cfg`
-    /// untouched) when the move would leave the chart area.
+    /// [`DragConfig::nudge`] ([`Config::nudge`] for chart elements). Returns
+    /// [`NudgeResult::Rejected`] (and leaves `cfg` untouched) when the move
+    /// would leave the chart area.
     ///
-    /// Call this per pointer-move with the frame delta; the accumulated
-    /// offset lands in the element's `offset_x` / `offset_y` config fields,
-    /// so a drop needs no extra commit step.
+    /// Call this per pointer-move with the frame delta; the move accumulates
+    /// in the config fields the element is drawn from (its `offset_x` /
+    /// `offset_y`, an axis' `line_offset`, the tick labels'
+    /// `label_offset_x` / `label_offset_y`, the data-area margins or a polar
+    /// chart's `radial_label_angle_degrees`), so a drop needs no extra commit
+    /// step.
     fn drag_by(&self, cfg: &mut C, dx: f32, dy: f32) -> NudgeResult {
         cfg.nudge(self.nudge_element(), dx, dy)
     }
