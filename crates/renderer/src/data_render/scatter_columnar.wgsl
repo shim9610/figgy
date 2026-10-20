@@ -805,6 +805,75 @@ fn fs_mapped(in: VsMappedOut) -> @location(0) vec4<f32> {
     return in.color_premul * alpha;
 }
 
+// The picked ring's marker mode (`Style.primitive_flags` of the ring entry):
+// the draw style whose marker it surrounds, numbered like the pick shader's
+// `PICK_MARKER_*` (`gpu_pick.rs::GpuPickDrawStyle`).
+const RING_MARKER_PRECISE: u32 = 0u;
+const RING_MARKER_SKETCH: u32 = 1u;
+const RING_MARKER_PLANET: u32 = 2u;
+const RING_MARKER_STAR: u32 = 3u;
+
+/// The farthest a precise marker of `shape_id` and radius `r` covers from its
+/// centre: the circumradius of its contour (`shape_distance` at the visual
+/// radius, sized like `visual_shape_radius`), plus the stroke half-width for
+/// an outline or an open plus or cross. `marker_edge <= 0` lies within it.
+fn marker_extent_px(shape_id: u32, r: f32) -> f32 {
+    let filled = shape_is_filled(shape_id);
+    let base = base_shape_id(shape_id);
+    let rv = visual_shape_radius(base, max(r, 0.0));
+    var extent = rv;
+    switch base {
+        case 1u: { extent = rv * sqrt(2.0); } // square corner
+        case 4u: { // cross: the diagonal strokes, or the rotated filled plus
+            if (filled) {
+                let arm = max(rv * 0.32, STROKE_HALF_PX);
+                extent = sqrt(rv * rv + arm * arm);
+            } else {
+                extent = rv * sqrt(2.0);
+            }
+        }
+        case 8u: { // plus: the arm ends, or the filled arms' corners
+            if (filled) {
+                let arm = max(rv * 0.32, STROKE_HALF_PX);
+                extent = sqrt(rv * rv + arm * arm);
+            }
+        }
+        default: {} // circle, triangles, diamond, polygons, star: vertices on rv
+    }
+    return extent + select(STROKE_HALF_PX, 0.0, filled);
+}
+
+/// How far the marker the chart's draw style paints at instance `inst`
+/// reaches from its centre, on the envelope the picker picks (SHADER_COMMON.md
+/// §5.7): the precise contour, grown by the sketch wobble; a Milkyway
+/// planet's disc, rim glow and ring band; a Constellation star's sprite disc.
+fn ring_marker_extent_px(shape_id: u32, r: f32, inst: u32) -> f32 {
+    let mode = style.primitive_flags & 3u;
+    if (mode == RING_MARKER_STAR) {
+        let star = constellation_star_radius(r, styled_point_index(inst), style.series_salt);
+        return star * 4.0 + QUAD_MARGIN_PX;
+    }
+    if (mode == RING_MARKER_PLANET) {
+        // In the planet's own frame (`fs_planet` scales the quad to
+        // `r_planet`): the ring band's major axis, or the rim glow's reach
+        // above `PLANET_ALPHA_FLOOR`, inside the quad's corner.
+        let r_planet = max(r, 1.0);
+        let rim_gain = clamp(transform.style_params[1].w, 0.0, 2.0);
+        var reach = r_planet * RING_OUTER;
+        if (rim_gain > PLANET_ALPHA_FLOOR) {
+            reach = max(reach, r_planet + max(r_planet * 0.10, 1.0) * log(rim_gain / PLANET_ALPHA_FLOOR));
+        }
+        let quad = r * PLANET_QUAD_EXTENT + QUAD_MARGIN_PX;
+        let screen = reach * quad / (r_planet * PLANET_QUAD_EXTENT + QUAD_MARGIN_PX);
+        return min(screen, quad * sqrt(2.0));
+    }
+    let extent = marker_extent_px(shape_id, r);
+    if (mode == RING_MARKER_SKETCH) {
+        return extent + sketch_marker_wobble_px(transform.style_params[0].x, r);
+    }
+    return extent;
+}
+
 struct VsPickRingOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) local_pos: vec2<f32>,
@@ -814,15 +883,19 @@ struct VsPickRingOut {
     @location(4) @interpolate(flat) polar_sector: vec4<f32>,
 };
 
+// The picked ring: a circle `radius_extra_px` (`Style.cap_half_px`) outside
+// the marker the chart draws at that point (`ring_marker_extent_px` of the
+// marker radius `Style.point_radius_px` and shape `Style.shape_id`, both at
+// the render scale).
 @vertex
-fn vs_pick_ring(in: VsIn) -> VsPickRingOut {
+fn vs_pick_ring(in: VsIn, @builtin(instance_index) inst: u32) -> VsPickRingOut {
     if (!sample_valid(in.x, in.y)) {
         var masked: VsPickRingOut;
         masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
         return masked;
     }
     let center_ndc = data_to_ndc(in.x, in.y);
-    let radius = max(style.point_radius_px, 0.0);
+    let radius = max(ring_marker_extent_px(style.shape_id, style.point_radius_px, inst) + style.cap_half_px, 0.0);
     let half_px = radius + max(style.line_width_px, 0.0) * 0.5 + QUAD_MARGIN_PX;
     let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
 
@@ -850,10 +923,10 @@ fn vs_pick_ring_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> Vs
         return hidden;
     }
     let center_ndc = data_to_ndc(in.x, in.y);
-    // Pick-ring mapped mode uses style.cap_half_px as radius_extra_px. The
+    // The ring entries use style.cap_half_px as radius_extra_px. The
     // errorbar shader is not involved in this pipeline, so the slot is local
     // to this decoration entry.
-    let radius = max(resolved.radius_px + style.cap_half_px, 0.0);
+    let radius = max(ring_marker_extent_px(resolved.shape_id, resolved.radius_px, inst) + style.cap_half_px, 0.0);
     let half_px = radius + max(style.line_width_px, 0.0) * 0.5 + QUAD_MARGIN_PX;
     let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
 

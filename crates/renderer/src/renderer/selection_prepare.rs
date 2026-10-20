@@ -187,13 +187,10 @@ impl PrepareContext<'_> {
 
                 let scatter_cfg = extract_scatter(rt);
                 let has_line_anchor = extract_line(rt).is_some();
-                let has_scatter_anchor = scatter_cfg.is_some_and(|scatter| {
-                    scatter_pick_anchor_may_be_visible(
-                        scatter,
-                        visual.point_index,
-                        use_scatter_style_mapping,
-                    )
-                });
+                // A zero-size marker still draws its dot and picks, so it
+                // takes the ring too; a size-mapped point the map hides
+                // (negative radius) is dropped by the mapped ring entry.
+                let has_scatter_anchor = scatter_cfg.is_some();
                 let has_vector_anchor = vector_points
                     .is_some_and(|style| crate::pick::vector_anchor_radius_px(style) > 0.0);
                 if !has_line_anchor && !has_scatter_anchor && !has_vector_anchor {
@@ -244,26 +241,37 @@ impl PrepareContext<'_> {
                     x_h.len_values.min(y_h.len_values),
                     &mut lookup,
                 )?;
+                // The ring sits `radius_extra_px` outside the marker drawn at
+                // the point: the shader measures that marker from its radius
+                // and shape at the render scale (`ring_marker_extent_px`),
+                // under the chart's draw style. A mapped ring resolves both
+                // per point like the mapped marker. A line-only anchor has no
+                // marker; a point vector's anchor is the glyph's half width.
                 let mut ring_style =
                     PrimitiveStyle::from_color_with_width(visual.color, visual.width_px);
                 let uses_mapped_pick = precise_pick_style_map.is_some();
-                if uses_mapped_pick {
-                    ring_style.point_radius_px = series.style.scatter_radius_px;
-                    ring_style.cap_half_px = visual.radius_extra_px;
+                ring_style.cap_half_px = visual.radius_extra_px;
+                ring_style.series_salt = crate::sketch::fnv1a(&cfg.series_id);
+                ring_style.primitive_flags =
+                    crate::gpu_pick::GpuPickDrawStyle::of(&chart_config.draw_style).marker_mode();
+                if let Some(scatter) = scatter_cfg {
+                    ring_style.point_radius_px = if uses_mapped_pick {
+                        series.style.scatter_radius_px
+                    } else {
+                        scatter_config_radius_px(
+                            scatter,
+                            visual.point_index,
+                            use_scatter_style_mapping,
+                        ) * series.style.display_scale
+                    };
+                    ring_style.shape_id = data_render::shape_id(&scatter.point_shape);
                 } else {
-                    let scatter_radius = scatter_cfg
-                        .map(|scatter| {
-                            scatter_config_radius_px(
-                                scatter,
-                                visual.point_index,
-                                use_scatter_style_mapping,
-                            )
-                        })
-                        .or_else(|| vector_points.map(crate::pick::vector_anchor_radius_px))
-                        .unwrap_or(0.0);
-                    ring_style.point_radius_px = (scatter_radius + visual.radius_extra_px).max(0.0);
+                    ring_style.point_radius_px = vector_points.map_or(0.0, |style| {
+                        crate::pick::vector_anchor_radius_px(style) * series.style.display_scale
+                    });
+                    ring_style.shape_id = data_render::shape_id(&ScatterShape::CircleFilled);
+                    ring_style.primitive_flags = 0;
                 }
-                ring_style.shape_id = data_render::shape_id(&ScatterShape::Circle);
                 let ring_buf = data_render::create_style_uniform_buffer(&self.device, &ring_style);
                 let style_bg =
                     data_render::create_style_bind_group(&self.device, &self.style_bgl, &ring_buf);

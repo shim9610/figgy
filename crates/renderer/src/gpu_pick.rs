@@ -282,6 +282,12 @@ impl GpuPickDrawStyle {
         line: PICK_LINE_PRECISE,
     };
 
+    /// The marker mode, as the scatter shader's picked ring reads it
+    /// (`RING_MARKER_*`, numbered like `PICK_MARKER_*`).
+    pub(crate) fn marker_mode(self) -> u32 {
+        self.marker
+    }
+
     pub(crate) fn of(style: &crate::config::DrawStyle) -> Self {
         use crate::config::DrawStyle;
         match style {

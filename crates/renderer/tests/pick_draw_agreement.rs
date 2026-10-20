@@ -1296,3 +1296,226 @@ fn grid_vectors_pick_the_arrow_they_draw() {
         }
     }
 }
+
+/// The pixels of `with` that differ from `without` by at least `threshold`,
+/// as distances from `center` (export pixels): `(nearest, farthest)`, or
+/// `None` when none do.
+fn ink_radii(
+    with: &RasterImage,
+    without: &RasterImage,
+    center: (f64, f64),
+    threshold: u8,
+) -> Option<(f64, f64)> {
+    let mut radii: Option<(f64, f64)> = None;
+    for y in 0..with.height {
+        for x in 0..with.width {
+            if difference(with, without, x, y) < threshold {
+                continue;
+            }
+            let r = (f64::from(x) + 0.5 - center.0).hypot(f64::from(y) + 0.5 - center.1);
+            radii = Some(radii.map_or((r, r), |(lo, hi)| (lo.min(r), hi.max(r))));
+        }
+    }
+    radii
+}
+
+/// A point vector series named "marker" on the x / y columns, 40 px along +x,
+/// for the ring test.
+fn arrows_ringed() -> SeriesConfig {
+    use renderer::data_config::{VectorComponents, VectorPivot, VectorScale, VectorStyle};
+    SeriesConfig {
+        series_id: "marker".into(),
+        source_id: None,
+        label: None,
+        x_column: "x".into(),
+        y_column: "y".into(),
+        render_type: DataRenderType::Vector {
+            components: VectorComponents::Points {
+                u: "ring_u".into(),
+                v: "ring_v".into(),
+            },
+            style: VectorStyle {
+                color: RED,
+                width_px: 3.0,
+                scale: VectorScale::Pixels { px_per_unit: 1.0 },
+                pivot: VectorPivot::Tail,
+                head_length_px: 9.0,
+                head_width_px: 8.0,
+                min_length_px: 0.0,
+                color_map: None,
+            },
+        },
+    }
+}
+
+/// G2: the selected-point ring is drawn `radius_extra_px` outside the marker
+/// the chart draws — every shape, at 1x and 2x, under every draw style, and
+/// around a point vector's anchor. Measured on half coverage (ink 128, the
+/// edge both the coverage and the picker use), the ring's inner edge lies
+/// the extra radius less the ring's half width past the marker's farthest
+/// edge, within the pixel grid's discretization. A Milkyway planet and a
+/// Constellation star ring their pick envelope (§5.7), which reaches past
+/// their faint painted edge, so there only the clearance from every painted
+/// pixel holds; a sketch marker's wobble may stay inside its amplitude, so
+/// there too.
+#[test]
+fn picked_ring_clears_the_drawn_marker_by_radius_extra() {
+    use renderer::config::{
+        ConstellationOptions, DrawStyle, MilkywayOptions, PickedPointRef, PickedPointsConfig,
+        SketchOptions,
+    };
+    let mut renderer = renderer();
+    upload_xy(&mut renderer, vec![5.0], vec![5.0]);
+    renderer
+        .add_columns(&[
+            ("ring_u", &col(vec![40.0]) as &dyn renderer::ColumnSource),
+            ("ring_v", &col(vec![0.0]) as &dyn renderer::ColumnSource),
+        ])
+        .expect("upload");
+    const EXTRA: f32 = 4.0;
+    const WIDTH_PX: f32 = 2.0;
+    let ring = |chart: &mut Chart| {
+        chart.config_mut().picked_points = Some(PickedPointsConfig {
+            visible: true,
+            refs: vec![PickedPointRef {
+                source_id: None,
+                series_id: "marker".into(),
+                point_index: 0,
+            }],
+            ring_color: BLUE,
+            ring_width_px: WIDTH_PX,
+            radius_extra_px: EXTRA,
+        });
+    };
+    // `geometry`: the marker's coverage edge is its painted edge (else its
+    // farthest painted pixel counts); `tight`: the gap has an upper bound.
+    let check = |renderer: &mut Renderer,
+                 chart: &Chart,
+                 series: &[SeriesConfig],
+                 scale: f32,
+                 (geometry, tight): (bool, bool),
+                 what: &str| {
+        let mut ringed = Chart::new(chart.config().clone());
+        ring(&mut ringed);
+        let marker = renderer.export_panel_rgba(chart, series, scale).unwrap();
+        let empty = renderer.export_panel_rgba(chart, &[], scale).unwrap();
+        let with_ring = renderer.export_panel_rgba(&ringed, series, scale).unwrap();
+        let center = data_to_px(chart, 5.0, 5.0, scale);
+        const HALF: u8 = 128;
+        let marker_far = ink_radii(
+            &marker,
+            &empty,
+            center,
+            if geometry { HALF } else { PAINTED },
+        )
+        .map_or(0.0, |(_, far)| far);
+        let (ring_near, _) = ink_radii(&with_ring, &marker, center, HALF).expect("ring ink");
+        let s = f64::from(scale);
+        let gap = ring_near - marker_far;
+        let want = f64::from(EXTRA - WIDTH_PX * 0.5) * s;
+        assert!(
+            gap >= want - if geometry { 1.5 } else { 2.5 },
+            "{what} at {scale}x: ring {ring_near:.2} only {gap:.2} px past the marker {marker_far:.2} (want {want})"
+        );
+        if tight {
+            assert!(
+                gap <= want + 1.5,
+                "{what} at {scale}x: ring {ring_near:.2} {gap:.2} px past the marker {marker_far:.2} (want {want})"
+            );
+        }
+    };
+    for scale in [1.0, 2.0] {
+        let chart = bare_chart();
+        for shape in ALL_SHAPES {
+            let series = [scatter("marker", shape.clone(), 6.0, RED)];
+            check(
+                &mut renderer,
+                &chart,
+                &series,
+                scale,
+                (true, true),
+                &format!("{shape:?}"),
+            );
+        }
+        let zero = [scatter("marker", ScatterShape::Circle, 0.0, RED)];
+        check(
+            &mut renderer,
+            &chart,
+            &zero,
+            scale,
+            (true, true),
+            "zero-size circle",
+        );
+
+        // A point vector's anchor rings at the glyph's half width (the head's
+        // 4 px here) at the render scale: the inner edge at 4 + extra - half
+        // the ring width.
+        let mut ringed = Chart::new(chart.config().clone());
+        ring(&mut ringed);
+        let vector = [arrows_ringed()];
+        let plain = renderer.export_panel_rgba(&chart, &vector, scale).unwrap();
+        let with_ring = renderer.export_panel_rgba(&ringed, &vector, scale).unwrap();
+        let center = data_to_px(&chart, 5.0, 5.0, scale);
+        let (ring_near, ring_far) =
+            ink_radii(&with_ring, &plain, center, 128).expect("vector ring ink");
+        let s = f64::from(scale);
+        let want = f64::from(4.0 + EXTRA - WIDTH_PX * 0.5) * s;
+        assert!(
+            (ring_near - want).abs() <= 1.5 && ring_far <= want + f64::from(WIDTH_PX) * s + 1.5,
+            "point vector ring at {scale}x: {ring_near:.2}..{ring_far:.2}, want inner {want}"
+        );
+        // A sketch marker's coverage is its geometry (its seam haze is
+        // not), but the wobble may stay inside its amplitude; a planet's
+        // and a star's envelope reach past their painted edge.
+        for (style, geometry) in [
+            (
+                DrawStyle::Sketch(SketchOptions {
+                    amplitude_px: 3.0,
+                    wavelength_px: 15.0,
+                    seed: 3,
+                }),
+                true,
+            ),
+            (DrawStyle::Milkyway(MilkywayOptions::default()), false),
+            (
+                DrawStyle::Constellation(ConstellationOptions::default()),
+                false,
+            ),
+        ] {
+            let chart = styled_chart(style.clone());
+            for shape in [ScatterShape::Square, ScatterShape::StarFilled] {
+                // Constellation draws scatter-line series only; one point
+                // draws no line.
+                let marker = scatter("marker", shape.clone(), 6.0, RED);
+                let DataRenderType::Scatter {
+                    scatter: marker_style,
+                } = marker.render_type.clone()
+                else {
+                    unreachable!()
+                };
+                let series = [SeriesConfig {
+                    render_type: DataRenderType::ScatterLine {
+                        scatter: marker_style,
+                        line: renderer::DataLineStyleConfig {
+                            line_style: renderer::line::LineStylePreset::Solid,
+                            line_color: RED,
+                            line_width: 1.0,
+                            fill: None,
+                            fill_color: None,
+                            interpolation: renderer::data_config::LineInterpolation::Linear,
+                        },
+                    },
+                    ..marker
+                }];
+                check(
+                    &mut renderer,
+                    &chart,
+                    &series,
+                    scale,
+                    (geometry, false),
+                    &format!("{style:?} {shape:?}"),
+                );
+            }
+        }
+    }
+}

@@ -1272,6 +1272,17 @@ fn marker_edge(d: f32, filled: bool) -> f32 {
 }
 ```
 
+The picked ring (`vs_pick_ring`, `vs_pick_ring_mapped`) is drawn around the
+same marker: its centreline lies `radius_extra_px` (`Style.cap_half_px`)
+past `marker_extent_px`, the farthest point where `marker_edge <= 0` (the
+contour's circumradius at the visual radius, plus `STROKE_HALF_PX` for an
+outline), taken at the drawn radius and shape (the mapped entry resolves
+both per point; a size map's hidden point draws no ring). Under a stylized
+draw style `ring_marker_extent_px` uses the §5.7 envelope the picker picks:
+the sketch wobble added, a Milkyway planet's ring band or rim glow, a
+Constellation star's sprite disc. These are scatter-shader functions only;
+`pick_draw_agreement` measures the ring against the exported marker.
+
 ### 5.6 Line stroke — function twins
 
 A line is drawn by `line_columnar.wgsl` (`vs_main` / `vs_sketch` with

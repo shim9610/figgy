@@ -5434,15 +5434,6 @@ fn scatter_config_radius_px(
     radius.max(0.0)
 }
 
-fn scatter_pick_anchor_may_be_visible(
-    scatter: &DataScatterStyleConfig,
-    point_index: usize,
-    use_style_mapping: bool,
-) -> bool {
-    (use_style_mapping && scatter.point_style_index_column.is_some())
-        || scatter_config_radius_px(scatter, point_index, use_style_mapping) > 0.0
-}
-
 fn require_resident_sources(
     sources: &HashMap<ColumnId, RegisteredStreamColumn>,
     series: &SeriesConfig,
@@ -23639,8 +23630,10 @@ mod tests {
         r.export_panel_rgba(&chart, &series, 1.0).unwrap();
     }
 
+    /// A zero-size marker draws a dot and picks (`pick_draw_agreement`), so a
+    /// picked one takes the ring like any other marker.
     #[test]
-    fn picked_overlay_skips_zero_size_scatter_errorbar_anchor() {
+    fn picked_overlay_rings_a_zero_size_scatter_errorbar_anchor() {
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
@@ -23691,9 +23684,9 @@ mod tests {
             .filter(|p| p[0] < 80 && p[1] > 160 && p[2] < 80 && p[3] > 80)
             .count();
 
-        assert_eq!(
-            green_ring_ink, 0,
-            "hidden scatter marker over errorbar must not draw picked overlay"
+        assert!(
+            green_ring_ink > 20,
+            "a picked zero-size marker over an errorbar takes the ring: {green_ring_ink}"
         );
     }
 
