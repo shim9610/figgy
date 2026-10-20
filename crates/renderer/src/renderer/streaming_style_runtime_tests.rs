@@ -1538,3 +1538,245 @@ fn streamed_line_capability_matches_connected_arc_and_heatmap_paths() {
         PrepareContext::validate_stream_series(&crate::default::default_config(), &series).is_ok()
     );
 }
+
+/// TEMPORARY Metal diagnostic for the one-pixel Constellation stream/resident
+/// difference seen on PR 34. Prints which variants differ and never fails.
+fn constellation_pair(
+    star_opacity: f32,
+    line_opacity: f32,
+    keep: &[usize],
+    tweak: fn(&mut Config),
+    chunk: u64,
+) -> (Vec<u8>, Vec<u8>) {
+    const N: usize = 19;
+    let fixture: Vec<(&str, crate::Column<f32>)> = ["x", "y", "index"]
+        .into_iter()
+        .map(|id| {
+            let data = (0..N)
+                .map(|i| match id {
+                    "x" => 0.08 + (i % 9) as f32 * 0.1,
+                    "y" if i == 11 => f32::NAN,
+                    "y" => 0.11 + ((i * 7) % 13) as f32 * 0.055,
+                    _ => 0.0,
+                })
+                .collect();
+            (
+                id,
+                crate::Column {
+                    data,
+                    min: 0.0,
+                    max: 1.0,
+                },
+            )
+        })
+        .collect();
+    let (device, queue) = data_render::shared_device().expect("diagnostic GPU");
+    let mut r = Renderer::try_new_with_sample_count(
+        RendererDevice::new(device, queue),
+        wgpu::TextureFormat::Rgba8Unorm,
+        8192,
+        1,
+    )
+    .unwrap();
+    r.configure_streaming_runtime(limits(2)).unwrap();
+    r.register_streamed_columns(
+        fixture
+            .iter()
+            .map(|(id, _)| {
+                let mut column = source(id, 1);
+                column.len = N as u64;
+                column
+            })
+            .collect(),
+    )
+    .unwrap();
+    for (id, column) in &fixture {
+        r.add_column(&format!("r{id}"), column).unwrap();
+    }
+    let mut config = test_config(DrawStyle::Constellation(ConstellationOptions {
+        star_opacity,
+        line_opacity,
+    }));
+    tweak(&mut config);
+    let view = r
+        .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
+        .unwrap();
+    let declarations: Vec<_> = ["front", "back"]
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| keep.contains(i))
+        .map(|(i, id)| {
+            let color = if i == 0 {
+                Color::new(0.9, 0.2, 0.1, 0.65)
+            } else {
+                Color::new(0.1, 0.4, 0.9, 0.55)
+            };
+            let mut series = declaration(id, "x", "y");
+            series.render_type = DataRenderType::ScatterLine {
+                scatter: scatter(color),
+                line: DataLineStyleConfig {
+                    line_color: color,
+                    line_width: 2.5,
+                    line_style: LineStylePreset::Solid,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
+                },
+            };
+            series
+        })
+        .collect();
+    let mut resident = declarations.clone();
+    for series in &mut resident {
+        remap_resident(series, false);
+    }
+    let resident_id = r.register_chart(config.clone(), resident).unwrap();
+    let stream_id = r.register_chart(config, declarations).unwrap();
+    let expected = draw_registered(&mut r, resident_id, &view, 1);
+    let range_sources: Vec<_> = fixture
+        .iter()
+        .map(|(_, column)| RangeOnly {
+            values: &column.data,
+            calls: Cell::new(0),
+            largest: Cell::new(0),
+            last_start: Cell::new(0),
+        })
+        .collect();
+    let bindings: Vec<_> = fixture
+        .iter()
+        .zip(&range_sources)
+        .map(|((id, _), source)| crate::StreamSourceBinding {
+            id,
+            revision: 1,
+            source: crate::StreamColumnSource::Scalar(source),
+        })
+        .collect();
+    r.begin_streaming_chart(
+        stream_id,
+        &view,
+        crate::StreamingChartOptions {
+            size: (320, 240),
+            clear_color: Color::WHITE,
+            max_primitives_per_chunk: chunk,
+        },
+    )
+    .unwrap();
+    for _ in 0..256 {
+        match r.stream_chart_step(stream_id, &view, &bindings).unwrap() {
+            crate::StreamingProgress::Backpressure { .. } => wait_stream_slots(&mut r, 0),
+            crate::StreamingProgress::AllSubmitted { .. } => break,
+            crate::StreamingProgress::Submitted { .. } => {}
+        }
+    }
+    wait_stream_slots(&mut r, 0);
+    let actual = draw_registered(&mut r, stream_id, &view, 1);
+    r.cancel_streaming_chart(stream_id).unwrap();
+    wait_stream_slots(&mut r, 0);
+    (expected, actual)
+}
+
+#[test]
+fn temporary_metal_constellation_diagnostic() {
+    let _font = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let none: fn(&mut Config) = |_| {};
+    let cases: [(&str, f32, f32, &[usize], fn(&mut Config), u64); 9] = [
+        ("as-is", 0.79, 0.37, &[0, 1], none, 1),
+        ("as-is chunk 7", 0.79, 0.37, &[0, 1], none, 7),
+        (
+            "old right margin",
+            0.79,
+            0.37,
+            &[0, 1],
+            |c| c.right_y.out_margin = 8.0,
+            1,
+        ),
+        ("front only", 0.79, 0.37, &[0], none, 1),
+        ("back only", 0.79, 0.37, &[1], none, 1),
+        ("lines only", 0.0, 0.37, &[0, 1], none, 1),
+        ("stars only", 0.79, 0.0, &[0, 1], none, 1),
+        (
+            "no grid",
+            0.79,
+            0.37,
+            &[0, 1],
+            |c| {
+                c.grid.show_major_x = false;
+                c.grid.show_major_y = false;
+                c.grid.show_minor_x = false;
+                c.grid.show_minor_y = false;
+            },
+            1,
+        ),
+        (
+            "x shifted",
+            0.79,
+            0.37,
+            &[0, 1],
+            |c| {
+                let mut chart = Chart::new(c.clone());
+                chart.set_x_range(0.003, 1.003);
+                *c = chart.config().clone();
+            },
+            1,
+        ),
+    ];
+    let probe = std::env::var_os("FIGGY_PROBE_DIR").map(std::path::PathBuf::from);
+    for (name, star, line, keep, tweak, chunk) in cases {
+        let (resident, streamed) = constellation_pair(star, line, keep, tweak, chunk);
+        let differing: Vec<usize> = resident
+            .chunks_exact(4)
+            .zip(streamed.chunks_exact(4))
+            .enumerate()
+            .filter(|(_, (a, b))| a != b)
+            .map(|(i, _)| i)
+            .collect();
+        let max = resident
+            .iter()
+            .zip(&streamed)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap_or(0);
+        let at = (105 * 320 + 175) * 4;
+        let shown: Vec<String> = differing
+            .iter()
+            .take(6)
+            .map(|&i| {
+                format!(
+                    "({},{}) r{:?} s{:?}",
+                    i % 320,
+                    i / 320,
+                    &resident[i * 4..i * 4 + 4],
+                    &streamed[i * 4..i * 4 + 4]
+                )
+            })
+            .collect();
+        println!(
+            "DIAG constellation [{name}]: {} differing pixels, max delta {max}; at (175,105) r{:?} s{:?}; {}",
+            differing.len(),
+            &resident[at..at + 4],
+            &streamed[at..at + 4],
+            shown.join(" ")
+        );
+        if let (Some(dir), false) = (&probe, differing.is_empty()) {
+            let file: String = name
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                .collect();
+            for (suffix, rgba) in [("resident", &resident), ("streamed", &streamed)] {
+                let png = encode_png(&RasterImage {
+                    width: 320,
+                    height: 240,
+                    rgba: rgba.clone(),
+                })
+                .unwrap();
+                std::fs::write(
+                    dir.join(format!("diag-constellation-{file}-{suffix}.png")),
+                    png,
+                )
+                .unwrap();
+            }
+        }
+    }
+}
