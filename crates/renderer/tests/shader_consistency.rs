@@ -391,6 +391,47 @@ fn marker_shape_twins_match_the_ssot() {
     }
 }
 
+/// The line stroke is a function twin (SHADER_COMMON.md §5.6): the line
+/// shader extrudes with it and the pick shader inverts the same extrusion,
+/// so a stroke, its caps and its dashes pick exactly where they are drawn.
+#[test]
+fn line_stroke_twins_match_the_ssot() {
+    let ssot = read(SSOT_PATH);
+    let all = [
+        "line_stroke_distance",
+        "dash_pattern_on",
+        "sketch_hash01",
+        "sketch_noise",
+        "sketch_line_offset",
+    ];
+    let noise = ["sketch_hash01", "sketch_noise"];
+    for (path, functions) in [
+        ("src/data_render/line_columnar.wgsl", all.as_slice()),
+        ("src/gpu_pick.wgsl", all.as_slice()),
+        ("src/data_render/scatter_columnar.wgsl", noise.as_slice()),
+        ("src/data_render/errorbar_columnar.wgsl", noise.as_slice()),
+    ] {
+        let shader = read(path);
+        for function in functions {
+            assert_eq!(
+                wgsl_function(&shader, function),
+                wgsl_function(&ssot, function),
+                "{path} must carry `{function}` byte-for-byte as SHADER_COMMON.md §5.6 defines it"
+            );
+        }
+    }
+    for path in ["src/data_render/line_columnar.wgsl", "src/gpu_pick.wgsl"] {
+        let shader = read(path);
+        for constant in ["LINE_AA_EXTENT_PX", "SKETCH_SUBDIV"] {
+            assert_eq!(
+                wgsl_const(&shader, constant),
+                wgsl_const(&ssot, constant),
+                "{path} must carry `{constant}` as SHADER_COMMON.md §5.6 defines it"
+            );
+        }
+    }
+}
+
 /// The pick shader applies the draw shaders' polar fragment clip at the
 /// cursor with the common block's own `polar_fragment_visible`.
 #[test]

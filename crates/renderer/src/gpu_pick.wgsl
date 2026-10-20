@@ -59,7 +59,8 @@ struct PickQueryParams {
     //  optional original-row map word base; zero disables the map).
     stream: vec4<u32>,
     // (step interpolation mode: 0 linear, 1 step-pre, 2 step-post,
-    //  3 step-mid; the rest reserved). Mirrors the line shader's
+    //  3 step-mid; 1 when `pick_arc` holds this series' cumulative arc
+    //  prefix; the rest reserved). The step mode mirrors the line shader's
     //  Style.primitive_flags bits 2-3 so a pick lands on the drawn path.
     line: vec4<u32>,
     // `point_size_map`: (size f32-lane base, size logical length, 0, 0).
@@ -69,6 +70,16 @@ struct PickQueryParams {
     // (min_px, max_px, 0, 0), logical pixels; the display scale is applied
     // with the other radii.
     size_px: vec4<f32>,
+    // Line geometry in canvas pixels, the display scale applied: (stroke
+    // half-width `max(width, 1) / 2`, milkyway half extent, per-axis gate
+    // reach of the drawn stroke past its centreline, 0).
+    line_px: vec4<f32>,
+    // The line's dash pattern in canvas pixels: up to eight sequential
+    // [on, off, ...] lengths, `styled.w` of them used (the line `Style.dash`).
+    line_dash: array<vec4<f32>, 2>,
+    // (marker draw mode, line draw mode, series salt of the styled hashes,
+    //  dash count).
+    styled: vec4<u32>,
 };
 
 const PICK_STEP_LINEAR: u32 = 0u;
@@ -118,6 +129,11 @@ struct PickCandidate {
 @group(1) @binding(1) var<storage, read> pick_style_slots: array<PickScatterStyleSlot>;
 @group(1) @binding(2) var<storage, read> pick_style_overrides: array<PickScatterStyleOverride>;
 @group(1) @binding(3) var<storage, read_write> pick_series_output: PickCandidate;
+
+// The exact pass only: the line's cumulative arc length per point, the
+// buffer the line shader's dash phase and sketch wobble were drawn with
+// (`line_arc.wgsl`), or a one-value placeholder when `line.y` is zero.
+@group(2) @binding(0) var<storage, read> pick_arc: array<f32>;
 
 var<workgroup> pick_shared_candidates: array<PickCandidate, PICK_WORKGROUP_SIZE>;
 
@@ -360,8 +376,7 @@ fn pick_line_projected_may_hit(a_px: f32, b_px: f32, axis: u32) -> bool {
         return false;
     }
     let threshold = pick_conservative_gate_threshold(
-        pick_query_params.chart_limits.z
-        + pick_query_params.scatter_line.y * pick_query_params.scatter_line.z,
+        pick_query_params.chart_limits.z + pick_query_params.line_px.z,
     );
     let cursor = pick_axis_cursor(axis);
     return cursor >= min(a_px, b_px) - threshold
@@ -988,6 +1003,227 @@ fn pick_step_piece(ax: vec2<f32>, ay: vec2<f32>, bx: vec2<f32>, by: vec2<f32>, m
     return p;
 }
 
+// ───── shared line stroke (SHADER_COMMON.md §5.6; `shader_consistency`
+// compares these function bodies and constants with the line shader) ─────
+
+// Solid strokes grow their quad by this anti-aliasing fringe on every side;
+// dashed strokes keep the bare stroke so the measured dash lengths hold.
+const LINE_AA_EXTENT_PX: f32 = 0.5;
+// Subdivision count S per segment instance: the sketch pipeline draws
+// 2*(S+1) strip vertices per instance. The CPU-side draw count lives in
+// mod.rs (`LINE_SKETCH_VERTICES_PER_INSTANCE`) — keep the two in sync.
+const SKETCH_SUBDIV: u32 = 8u;
+
+/// Signed pixel distance from a stroke fragment to the edge of its piece's
+/// square-capped rectangle. `along` runs from the piece start along its
+/// direction, `side` across it; the rectangle is
+/// `[-half_w, len + half_w] x [-half_w, half_w]`. The stroke covers a pixel
+/// where this is below its anti-aliasing width.
+fn line_stroke_distance(along: f32, side: f32, len: f32, half_w: f32) -> f32 {
+    let p = vec2<f32>(along - len * 0.5, side);
+    let half_rect = vec2<f32>(len * 0.5 + half_w, half_w);
+    let q = abs(p) - half_rect;
+    let outside = max(q, vec2<f32>(0.0, 0.0));
+    return length(outside) + min(max(q.x, q.y), 0.0);
+}
+
+/// Whether the dash pattern is "on" at arc position `dist_px`. `dash` packs
+/// up to eight sequential `[on, off, ...]` pixel lengths (`dash[0].xyzw`
+/// first) and `count` says how many are used; zero is a solid line, and so is
+/// a pattern whose spans are all zero or negative.
+fn dash_pattern_on(dist_px: f32, dash: array<vec4<f32>, 2>, count: u32) -> bool {
+    if count == 0u {
+        return true;
+    }
+    // A local copy, so the spans can be indexed at run time on every
+    // backend. Clamp to the 8-scalar capacity so a bad CPU-side count cannot
+    // index past the array.
+    var spans = dash;
+    let n = min(count, 8u);
+    var period = 0.0;
+    for (var i = 0u; i < n; i = i + 1u) {
+        period = period + max(spans[i / 4u][i % 4u], 0.0);
+    }
+    if period <= 0.0 {
+        return true;
+    }
+    // The square-cap extension can push dist_px slightly negative at the
+    // polyline start — wrap into [0, period) with the sign-safe form.
+    let phase = ((dist_px % period) + period) % period;
+    var acc = 0.0;
+    for (var i = 0u; i < n; i = i + 1u) {
+        let end = acc + max(spans[i / 4u][i % 4u], 0.0);
+        acc = end;
+        if phase <= end || i == n - 1u {
+            // Even spans are "on", odd spans are "off". Dash membership is
+            // intentionally binary so the requested pattern length stays
+            // stable; antialiasing is applied to the stroke outline itself.
+            return (i & 1u) == 0u;
+        }
+    }
+    // phase == period can occur from float rounding; that point is the
+    // start of the next repetition, which always opens with an "on" span.
+    return true;
+}
+
+// Deliberately duplicated per data shader (scatter/line/errorbar/pick) and
+// NOT in the SHADER_COMMON.md common block: line_arc.wgsl shares that block
+// but has no use for noise.
+fn sketch_hash01(i: u32, seed: u32) -> f32 {
+    var h = (i * 0x9E3779B9u) ^ (seed * 0x85EBCA6Bu);
+    h = (h ^ (h >> 16u)) * 0x45D9F3Bu;
+    h = h ^ (h >> 16u);
+    return f32(h) / 4294967296.0;
+}
+
+// [-1, 1], C1-continuous. Negative t is fine: the lattice index wraps in u32
+// (floor(-0.3) → -1 → 0xFFFFFFFF, and +1u wraps back to 0), so continuity at
+// integer boundaries is preserved.
+fn sketch_noise(t: f32, seed: u32) -> f32 {
+    let i = u32(i32(floor(t)));
+    let f = fract(t);
+    let u = f * f * (3.0 - 2.0 * f);
+    return mix(sketch_hash01(i, seed), sketch_hash01(i + 1u, seed), u) * 2.0 - 1.0;
+}
+
+/// The sketch line's perpendicular displacement at arc position `arc_px`:
+/// `amplitude_px · noise(arc / wavelength)`. A wavelength <= 0 disables the
+/// wobble — mirrors the CPU stroker's guard (sketch.rs) so GPU and deco
+/// layers degrade identically.
+fn sketch_line_offset(arc_px: f32, amplitude_px: f32, wavelength_px: f32, seed: u32) -> f32 {
+    let wobble = max(amplitude_px, 0.0) * sketch_noise(arc_px / max(wavelength_px, 1e-6), seed);
+    return select(0.0, wobble, wavelength_px > 0.0);
+}
+
+// ───── end shared line stroke ─────
+
+// What a line series' pipeline draws under the chart's draw style
+// (`PickQueryParams.styled.y`). Constellation lines are the precise quads.
+const PICK_LINE_PRECISE: u32 = 0u;
+// `vs_sketch`: a subdivided strip displaced by `sketch_line_offset`.
+const PICK_LINE_SKETCH: u32 = 1u;
+// Milkyway: the ribbon strip and the star field scattered along it.
+const PICK_LINE_RIBBON: u32 = 2u;
+
+// Canvas pixels (y down) into the draw shaders' pixel frame (y up).
+fn pick_flip(v: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(v.x, -v.y);
+}
+
+// The arc distances from `dist_px`, which lies in an "off" span of the dash
+// pattern, back to the end of the previous "on" span (x) and forward to the
+// start of the next one (y). The span walk is `dash_pattern_on`'s.
+fn pick_dash_gap(dist_px: f32) -> vec2<f32> {
+    var spans = pick_query_params.line_dash;
+    let n = min(pick_query_params.styled.w, 8u);
+    var period = 0.0;
+    for (var i = 0u; i < n; i = i + 1u) {
+        period = period + max(spans[i / 4u][i % 4u], 0.0);
+    }
+    let phase = ((dist_px % period) + period) % period;
+    var acc = 0.0;
+    for (var i = 0u; i < n; i = i + 1u) {
+        let start = acc;
+        let end = acc + max(spans[i / 4u][i % 4u], 0.0);
+        acc = end;
+        if phase <= end || i == n - 1u {
+            return vec2<f32>(phase - start, end - phase);
+        }
+    }
+    return vec2<f32>(0.0, 0.0);
+}
+
+// The hit distance of one drawn piece of a stroke: the line shader's own
+// extrusion (square caps, `max(width, 1)`, the sketch displacement, the dash
+// phase) inverted at the cursor. `a_up` / `b_up` are the piece's ends in the
+// draw's y-up pixel frame and `arc_start` / `arc_end` the arc positions the
+// vertex stage gives them (`has_arc` is false when the arc prefix is not
+// bound: a streamed series). Zero exactly where `line_stroke_distance` is
+// non-positive and the dash is on, which is where the fragment's coverage is
+// at least one half.
+fn pick_stroke_piece_distance(a_up: vec2<f32>, b_up: vec2<f32>, arc_start: f32, arc_end: f32, has_arc: bool) -> f32 {
+    let delta = b_up - a_up;
+    let len = length(delta);
+    // The vertex stage collapses a zero-length piece to a point.
+    if !(len > 1e-6) {
+        return PICK_F32_MAX;
+    }
+    let dir = delta / len;
+    let normal = vec2<f32>(-dir.y, dir.x);
+    let rel = pick_flip(pick_query_params.cursor_chart.xy) - a_up;
+    let along = dot(rel, dir);
+    var side = dot(rel, normal);
+    let mode = pick_query_params.styled.y;
+    if mode == PICK_LINE_RIBBON {
+        // The ribbon strip spans one full ribbon width either side with
+        // square caps of the same size; the stars scatter within the
+        // envelope the CPU folds into the same half extent.
+        return max(line_stroke_distance(along, side, len, pick_query_params.line_px.y), 0.0);
+    }
+    let half_w = pick_query_params.line_px.x;
+    let dash_count = pick_query_params.styled.w;
+    let geom_half_w = half_w + select(LINE_AA_EXTENT_PX, 0.0, dash_count > 0u);
+    // The arc position at the cursor (the interpolated `dist_px`) and its
+    // rate per pixel along the piece.
+    var dist_px = 0.0;
+    var dist_slope = 1.0;
+    if mode == PICK_LINE_SKETCH {
+        if has_arc {
+            // The strip's knots k = 0..S sit at `t_k * len` along the piece,
+            // the outer two pushed out by the square cap, each displaced
+            // along the normal by the wobble at its arc position.
+            let s = f32(SKETCH_SUBDIV);
+            let k = u32(clamp(floor(along / len * s), 0.0, s - 1.0));
+            let t0 = f32(k) / s;
+            let t1 = f32(k + 1u) / s;
+            let a0 = select(t0 * len, -geom_half_w, k == 0u);
+            let a1 = select(t1 * len, len + geom_half_w, k + 1u == SKETCH_SUBDIV);
+            let w = clamp((along - a0) / (a1 - a0), 0.0, 1.0);
+            let style_params = pick_query_params.transform.style_params[0];
+            let seed = u32(style_params.z) ^ pick_query_params.styled.z;
+            let arc0 = mix(arc_start, arc_end, t0);
+            let arc1 = mix(arc_start, arc_end, t1);
+            let d0 = sketch_line_offset(arc0, style_params.x, style_params.y, seed);
+            let d1 = sketch_line_offset(arc1, style_params.x, style_params.y, seed);
+            side = side - mix(d0, d1, w);
+            let dist0 = arc0 + select(0.0, -half_w, k == 0u);
+            let dist1 = arc1 + select(0.0, half_w, k + 1u == SKETCH_SUBDIV);
+            dist_px = mix(dist0, dist1, w);
+            dist_slope = (dist1 - dist0) / (a1 - a0);
+        } else {
+            // Without the arc prefix the wobble is unknown: the envelope of
+            // every displacement it can take.
+            side = max(abs(side) - max(pick_query_params.transform.style_params[0].x, 0.0), 0.0);
+        }
+    } else {
+        // `vs_main` puts `arc_start - half_w` on the A-side corners and
+        // `arc_end + half_w` on the B-side ones.
+        let span = len + 2.0 * geom_half_w;
+        dist_slope = (arc_end - arc_start + 2.0 * half_w) / span;
+        dist_px = (arc_start - half_w) + (along + geom_half_w) * dist_slope;
+    }
+    let stroke = max(line_stroke_distance(along, side, len, half_w), 0.0);
+    if dash_count == 0u || !has_arc || dash_pattern_on(dist_px, pick_query_params.line_dash, dash_count) {
+        return stroke;
+    }
+    // In a gap: the nearest dash of this piece on either side, along the
+    // stroke, clipped to the stroke's rectangle.
+    let gap = pick_dash_gap(dist_px) / max(abs(dist_slope), 1e-6);
+    let across = max(abs(side) - half_w, 0.0);
+    var best = PICK_F32_MAX;
+    let before = along - gap.x;
+    if before >= -half_w {
+        let dx = along - min(before, len + half_w);
+        best = min(best, sqrt(dx * dx + across * across));
+    }
+    let after = along + gap.y;
+    if after <= len + half_w {
+        let dx = max(after, -half_w) - along;
+        best = min(best, sqrt(dx * dx + across * across));
+    }
+    return max(best, PICK_F32_EPSILON);
+}
+
 fn pick_line_candidate(
     segment_index: u32,
     ax: vec2<f32>,
@@ -1007,13 +1243,20 @@ fn pick_line_candidate(
     // piece and reproduces the straight-segment rule exactly.
     let mode = pick_line_mode();
     let pieces = pick_step_piece_count(mode);
-    let line_half_width =
-        pick_query_params.scatter_line.y * pick_query_params.scatter_line.z;
     let maximum_sq = pick_query_params.chart_limits.z * pick_query_params.chart_limits.z;
+    // The cumulative arc prefix the line was drawn with, when bound: the
+    // dash phase and the sketch wobble walk it.
+    let has_arc = pick_query_params.line.y != 0u;
+    var arc_a = 0.0;
+    var arc_b = 0.0;
+    if has_arc {
+        arc_a = pick_arc[segment_index];
+        arc_b = pick_arc[segment_index + 1u];
+    }
     var coordinate_scale = 1.0;
     var total_length = 0.0;
     var prefix_length = 0.0;
-    var best_distance_sq = PICK_F32_MAX;
+    var best_distance = PICK_F32_MAX;
     var best_found = false;
     var best_t = 0.0;
     var best_prefix = 0.0;
@@ -1031,54 +1274,37 @@ fn pick_line_candidate(
         if !pick_is_finite(length_sq) {
             return pick_invalid_candidate(series_order);
         }
-        // A zero-length piece (a riser between equal values, or a degenerate
-        // linear segment) has no stroke to hit.
-        if length_sq <= PICK_F32_EPSILON {
-            continue;
-        }
         let length = sqrt(length_sq);
-        let cursor_delta = pick_query_params.cursor_chart.xy - a_px;
-        let t = clamp((cursor_delta.x * segment.x + cursor_delta.y * segment.y) / length_sq, 0.0, 1.0);
-        // For interior hits use perpendicular distance directly. Reconstructing
-        // a + segment * t can turn reciprocal rounding into a false nonzero
-        // distance even for a cursor exactly on a horizontal/vertical segment.
-        // Endpoint regions still measure distance to the finite segment ends.
-        var center_distance: f32;
-        if t <= 0.0 {
-            center_distance = sqrt(fma(cursor_delta.x, cursor_delta.x, cursor_delta.y * cursor_delta.y));
-        } else if t >= 1.0 {
-            let delta = pick_query_params.cursor_chart.xy - b_px;
-            center_distance = sqrt(fma(delta.x, delta.x, delta.y * delta.y));
-        } else {
-            let cross = fma(cursor_delta.x, segment.y, -cursor_delta.y * segment.x);
-            center_distance = abs(cross) / length;
-        }
-        if !pick_is_finite(center_distance) {
-            return pick_invalid_candidate(series_order);
-        }
-        let hit_distance = max(center_distance - line_half_width, 0.0);
-        let distance_sq = hit_distance * hit_distance;
-        if pick_is_finite(distance_sq) && distance_sq < best_distance_sq {
-            best_distance_sq = distance_sq;
-            best_found = true;
-            best_t = t;
-            best_prefix = prefix_length;
-            best_length = length;
-        }
+        // The draw's arc positions for this piece: it starts at the
+        // segment's arc plus the pieces before it and the last piece ends at
+        // the scanned prefix of B.
+        let piece_prefix = prefix_length;
+        let arc_start = arc_a + piece_prefix;
+        let arc_end = select(arc_start + length, arc_b, k + 1u == pieces);
         prefix_length = prefix_length + length;
         total_length = total_length + length;
+        // A zero-length piece (a riser between equal values, or a degenerate
+        // linear segment) has no stroke to hit.
+        if !(length > 1e-6) {
+            continue;
+        }
+        let distance = pick_stroke_piece_distance(pick_flip(a_px), pick_flip(b_px), arc_start, arc_end, has_arc);
+        if pick_is_finite(distance) && distance < best_distance {
+            let cursor_delta = pick_query_params.cursor_chart.xy - a_px;
+            best_distance = distance;
+            best_found = true;
+            best_t = clamp((cursor_delta.x * segment.x + cursor_delta.y * segment.y) / length_sq, 0.0, 1.0);
+            best_prefix = piece_prefix;
+            best_length = length;
+        }
     }
     if !best_found {
         return pick_invalid_candidate(series_order);
     }
     // The polar fragment clip cuts the stroke like it cuts a marker.
-    let clip = pick_polar_clip_distance();
-    var distance_sq = best_distance_sq;
-    if clip > 0.0 {
-        let distance = max(sqrt(best_distance_sq), clip);
-        distance_sq = distance * distance;
-    }
-    if distance_sq > maximum_sq {
+    let distance = max(best_distance, pick_polar_clip_distance());
+    let distance_sq = distance * distance;
+    if !pick_is_finite(distance_sq) || distance_sq > maximum_sq {
         return pick_invalid_candidate(series_order);
     }
     // Where along the whole stepped path the hit lies, 0 at A and 1 at B. A
@@ -1100,7 +1326,7 @@ fn pick_line_candidate(
         1u,
         pick_source_row(segment_index),
         distance_sq,
-        sqrt(distance_sq),
+        distance,
         0u,
     );
 }

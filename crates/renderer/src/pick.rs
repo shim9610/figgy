@@ -298,7 +298,15 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
         let Some(line) = extract_line(&cfg.render_type) else {
             continue;
         };
-        let half_width = (line.line_width.max(0.0) * 0.5).max(0.0);
+        let stroke = LineStroke {
+            // The line shader's `max(line_width_px, 1) / 2`.
+            half_width: line.line_width.max(1.0) * 0.5,
+            dash: line.line_style.pattern(),
+        };
+        // The cumulative arc length at the segment's first point, as the
+        // GPU's `line_arc.wgsl` scan sums it: the pixel length of every
+        // drawable segment so far, a gap contributing nothing.
+        let mut arc = 0.0f32;
         for i in 0..xs.len().min(ys.len()).saturating_sub(1) {
             let ax = xs[i];
             let ay = ys[i];
@@ -345,15 +353,24 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
             if !projected {
                 continue;
             }
-            let Some((dist_sq, point_index)) = line_segment_pick(
+            let segment_px: f32 = pieces_px[..piece_count]
+                .iter()
+                .map(|(a, b)| (b[0] - a[0]).hypot(b[1] - a[1]))
+                .sum();
+            let arc_a = arc;
+            if segment_px.is_finite() && segment_px < 1e30 {
+                arc += segment_px;
+            }
+            let Some((dist, point_index)) = line_segment_pick(
                 [canvas_x, canvas_y],
                 &pieces_px[..piece_count],
-                half_width,
+                stroke,
+                (arc_a, arc),
                 i,
             ) else {
                 continue;
             };
-            let dist = dist_sq.sqrt().max(clip_distance);
+            let dist = dist.max(clip_distance);
             let dist_sq = dist * dist;
             if !dist_sq.is_finite() || dist_sq > max_dist_sq {
                 continue;
@@ -798,9 +815,108 @@ pub(crate) fn marker_hit_distance(
     marker_edge(marker_shape_distance(base, p, visual_r, filled), filled).max(0.0)
 }
 
-/// Distance² from `cursor` to the stroke of one segment drawn as `pieces`
+/// How a line series' stroke is drawn, for the CPU twin of the line
+/// shader's extrusion: the drawn half-width (`max(width, 1) / 2`) and the
+/// dash pattern in pixels (empty for a solid line).
+#[derive(Clone, Copy)]
+struct LineStroke {
+    half_width: f32,
+    dash: &'static [f32],
+}
+
+/// Twin of `line_stroke_distance`: signed distance from `(along, side)` to
+/// the square-capped rectangle `[-half_w, len + half_w] x [-half_w, half_w]`.
+fn line_stroke_distance(along: f32, side: f32, len: f32, half_w: f32) -> f32 {
+    let q = [
+        (along - len * 0.5).abs() - (len * 0.5 + half_w),
+        side.abs() - half_w,
+    ];
+    q[0].max(0.0).hypot(q[1].max(0.0)) + q[0].max(q[1]).min(0.0)
+}
+
+/// Twin of `dash_pattern_on` and the pick shader's `pick_dash_gap`: whether
+/// the dash is on at arc position `dist_px` and, when it is off, the arc
+/// distances back to the previous dash and forward to the next.
+fn dash_at(dist_px: f32, dash: &[f32]) -> Result<(), (f32, f32)> {
+    let spans = &dash[..dash.len().min(8)];
+    if spans.is_empty() {
+        return Ok(());
+    }
+    let period: f32 = spans.iter().map(|span| span.max(0.0)).sum();
+    if period <= 0.0 {
+        return Ok(());
+    }
+    let phase = ((dist_px % period) + period) % period;
+    let mut acc = 0.0f32;
+    for (index, span) in spans.iter().enumerate() {
+        let start = acc;
+        let end = acc + span.max(0.0);
+        acc = end;
+        if phase <= end || index == spans.len() - 1 {
+            return if index % 2 == 0 {
+                Ok(())
+            } else {
+                Err((phase - start, end - phase))
+            };
+        }
+    }
+    Ok(())
+}
+
+/// Twin of the pick shader's `pick_stroke_piece_distance` for a precise
+/// stroke: the hit distance of one drawn piece `a → b` (canvas pixels) whose
+/// ends sit at arc positions `arc_start` / `arc_end`. `None` for a piece the
+/// vertex stage collapses.
+fn stroke_piece_distance(
+    cursor: [f32; 2],
+    (a, b): ([f32; 2], [f32; 2]),
+    stroke: LineStroke,
+    arc_start: f32,
+    arc_end: f32,
+) -> Option<f32> {
+    // The draw's pixel frame is y up.
+    let (a, b, cursor) = ([a[0], -a[1]], [b[0], -b[1]], [cursor[0], -cursor[1]]);
+    let delta = [b[0] - a[0], b[1] - a[1]];
+    let len = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
+    if !(len > 1e-6) {
+        return None;
+    }
+    let dir = [delta[0] / len, delta[1] / len];
+    let normal = [-dir[1], dir[0]];
+    let rel = [cursor[0] - a[0], cursor[1] - a[1]];
+    let along = rel[0] * dir[0] + rel[1] * dir[1];
+    let side = rel[0] * normal[0] + rel[1] * normal[1];
+    let half_w = stroke.half_width;
+    let stroke_distance = line_stroke_distance(along, side, len, half_w).max(0.0);
+    if stroke.dash.is_empty() {
+        return Some(stroke_distance);
+    }
+    // `vs_main` puts `arc_start - half_w` on the A-side corners and
+    // `arc_end + half_w` on the B-side ones; a dashed quad has no
+    // anti-aliasing extent.
+    let slope = (arc_end - arc_start + 2.0 * half_w) / (len + 2.0 * half_w);
+    let dist_px = (arc_start - half_w) + (along + half_w) * slope;
+    let Err((back, forward)) = dash_at(dist_px, stroke.dash) else {
+        return Some(stroke_distance);
+    };
+    let scale = slope.abs().max(1e-6);
+    let across = (side.abs() - half_w).max(0.0);
+    let mut best = f32::MAX;
+    let before = along - back / scale;
+    if before >= -half_w {
+        best = best.min((along - before.min(len + half_w)).hypot(across));
+    }
+    let after = along + forward / scale;
+    if after <= len + half_w {
+        best = best.min((after.max(-half_w) - along).hypot(across));
+    }
+    Some(best.max(f32::EPSILON))
+}
+
+/// Distance from `cursor` to the stroke of one segment drawn as `pieces`
 /// (projected canvas pixels, in draw order), and the source index the hit
-/// snaps to.
+/// snaps to. `arc` is the cumulative arc length at the segment's two
+/// samples, which places the dash pattern.
 ///
 /// Every piece is tested and the nearest wins (the earlier piece on a tie).
 /// The snapped index follows the position of the hit along the whole stepped
@@ -812,15 +928,16 @@ pub(crate) fn marker_hit_distance(
 fn line_segment_pick(
     cursor: [f32; 2],
     pieces: &[([f32; 2], [f32; 2])],
-    half_width: f32,
+    stroke: LineStroke,
+    arc: (f32, f32),
     point_index: usize,
 ) -> Option<(f32, usize)> {
     let [x, y] = cursor;
     let mut coordinate_scale = 1.0f32;
     let mut total_len = 0.0f32;
     let mut prefix_len = 0.0f32;
-    let mut best: Option<(f32, f32, f32, f32)> = None; // (dist_sq, t, prefix, len)
-    for &([ax, ay], [bx, by]) in pieces {
+    let mut best: Option<(f32, f32, f32, f32)> = None; // (dist, t, prefix, len)
+    for (index, &([ax, ay], [bx, by])) in pieces.iter().enumerate() {
         coordinate_scale = coordinate_scale
             .max(ax.abs())
             .max(ay.abs())
@@ -832,39 +949,29 @@ fn line_segment_pick(
         if !len_sq.is_finite() {
             return None;
         }
-        // A zero-length piece (a riser between equal values, or a degenerate
-        // linear segment) has no stroke to hit.
-        if len_sq <= f32::EPSILON {
-            continue;
-        }
         let len = len_sq.sqrt();
-        let t = (((x - ax) * sx + (y - ay) * sy) / len_sq).clamp(0.0, 1.0);
-        // Match GPU picking without reconstructing a rounded closest point.
-        // Interior distance comes from the perpendicular; outside the segment
-        // it comes from the nearest endpoint, preserving the finite-segment test.
-        let center_dist = if t <= 0.0 {
-            let dx = x - ax;
-            let dy = y - ay;
-            dx.mul_add(dx, dy * dy).sqrt()
-        } else if t >= 1.0 {
-            let dx = x - bx;
-            let dy = y - by;
-            dx.mul_add(dx, dy * dy).sqrt()
+        let piece_prefix = prefix_len;
+        let arc_start = arc.0 + piece_prefix;
+        let arc_end = if index + 1 == pieces.len() {
+            arc.1
         } else {
-            (x - ax).mul_add(sy, -(y - ay) * sx).abs() / len
+            arc_start + len
         };
-        if !center_dist.is_finite() {
-            return None;
-        }
-        let hit_dist = (center_dist - half_width.max(0.0)).max(0.0);
-        let dist_sq = hit_dist * hit_dist;
-        if dist_sq.is_finite() && best.is_none_or(|(best_sq, ..)| dist_sq < best_sq) {
-            best = Some((dist_sq, t, prefix_len, len));
-        }
         prefix_len += len;
         total_len += len;
+        // A zero-length piece (a riser between equal values, or a degenerate
+        // linear segment) has no stroke to hit.
+        let Some(dist) =
+            stroke_piece_distance(cursor, ([ax, ay], [bx, by]), stroke, arc_start, arc_end)
+        else {
+            continue;
+        };
+        if dist.is_finite() && best.is_none_or(|(best_dist, ..)| dist < best_dist) {
+            let t = (((x - ax) * sx + (y - ay) * sy) / len_sq).clamp(0.0, 1.0);
+            best = Some((dist, t, piece_prefix, len));
+        }
     }
-    let (dist_sq, t, prefix, len) = best?;
+    let (dist, t, prefix, len) = best?;
     // Position along the whole stepped path. A linear segment keeps `t`
     // itself: `(t · len) / len` is not bit-exact.
     let position = if pieces.len() > 1 {
@@ -879,7 +986,7 @@ fn line_segment_pick(
     } else {
         point_index + 1
     };
-    Some((dist_sq, snapped_index))
+    Some((dist, snapped_index))
 }
 
 /// A sample outside a polar sector keeps its projection: the fragment clip
@@ -951,29 +1058,86 @@ mod tests {
     use crate::layout::{ChartArea, Rect};
     use crate::line::LineStylePreset;
 
+    fn solid(half_width: f32) -> LineStroke {
+        LineStroke {
+            half_width,
+            dash: &[],
+        }
+    }
+
     #[test]
     fn segment_distance_preserves_centerlines_and_finite_endpoints() {
-        for (a, b, cursor, expected_sq, expected_index) in [
+        for (a, b, cursor, expected, expected_index) in [
             ([10.0, 50.0], [90.0, 50.0], [50.0, 50.0], 0.0, 0),
             ([10.0, 50.0], [90.0, 50.0], [70.0, 50.0], 0.0, 1),
-            ([10.0, 50.0], [90.0, 50.0], [5.0, 50.0], 25.0, 0),
-            ([10.0, 50.0], [90.0, 50.0], [95.0, 50.0], 25.0, 1),
-            ([10.0, 50.0], [90.0, 50.0], [50.0, 53.0], 9.0, 0),
+            ([10.0, 50.0], [90.0, 50.0], [5.0, 50.0], 5.0, 0),
+            ([10.0, 50.0], [90.0, 50.0], [95.0, 50.0], 5.0, 1),
+            ([10.0, 50.0], [90.0, 50.0], [50.0, 53.0], 3.0, 0),
             ([50.0, 10.0], [50.0, 90.0], [50.0, 30.0], 0.0, 0),
-            ([0.0, 0.0], [30.0, 40.0], [11.0, 23.0], 25.0, 0),
+            ([0.0, 0.0], [30.0, 40.0], [11.0, 23.0], 5.0, 0),
         ] {
-            let (distance_sq, index) = line_segment_pick(cursor, &[(a, b)], 0.0, 0).unwrap();
-            assert!((distance_sq - expected_sq).abs() < 0.0001);
+            let (distance, index) =
+                line_segment_pick(cursor, &[(a, b)], solid(0.0), (0.0, 0.0), 0).unwrap();
+            assert!(
+                (distance - expected).abs() < 0.0001,
+                "{distance} vs {expected}"
+            );
             assert_eq!(index, expected_index);
         }
         assert_eq!(
-            line_segment_pick([50.0, 53.0], &[([10.0, 50.0], [90.0, 50.0])], 1.0, 0),
-            Some((4.0, 0))
+            line_segment_pick(
+                [50.0, 53.0],
+                &[([10.0, 50.0], [90.0, 50.0])],
+                solid(1.0),
+                (0.0, 0.0),
+                0
+            ),
+            Some((2.0, 0))
         );
         assert_eq!(
-            line_segment_pick([1.0, 1.0], &[([0.0, 0.0], [0.0, 0.0])], 0.0, 0),
+            line_segment_pick(
+                [1.0, 1.0],
+                &[([0.0, 0.0], [0.0, 0.0])],
+                solid(0.0),
+                (0.0, 0.0),
+                0
+            ),
             None
         );
+    }
+
+    /// The stroke has square caps: the cap's corners are drawn and pick at
+    /// distance zero, where a round cap would not reach.
+    #[test]
+    fn segment_caps_are_square_like_the_drawn_stroke() {
+        let segment = [([10.0, 50.0], [90.0, 50.0])];
+        let corner = line_segment_pick([8.5, 51.5], &segment, solid(2.0), (0.0, 0.0), 0);
+        assert_eq!(corner, Some((0.0, 0)));
+        let (beyond, _) =
+            line_segment_pick([7.0, 53.0], &segment, solid(2.0), (0.0, 0.0), 0).unwrap();
+        assert!((beyond - 2.0f32.sqrt()).abs() < 1e-5, "{beyond}");
+    }
+
+    /// A dashed stroke picks on its dashes; in a gap the distance runs along
+    /// the stroke to the nearer dash.
+    #[test]
+    fn dashed_segment_picks_its_dashes_and_not_its_gaps() {
+        let dashed = LineStroke {
+            half_width: 1.0,
+            dash: &[8.0, 4.0],
+        };
+        let segment = [([0.0, 50.0], [100.0, 50.0])];
+        // The arc position runs with the stroke from 0 at the first sample.
+        let on = line_segment_pick([5.0, 50.0], &segment, dashed, (0.0, 100.0), 0);
+        assert_eq!(on, Some((0.0, 0)));
+        let (gap, _) = line_segment_pick([10.0, 50.0], &segment, dashed, (0.0, 100.0), 0).unwrap();
+        assert!((gap - 2.0).abs() < 1e-4, "{gap}");
+        let (gap, _) = line_segment_pick([11.0, 50.0], &segment, dashed, (0.0, 100.0), 0).unwrap();
+        assert!((gap - 1.0).abs() < 1e-4, "{gap}");
+        // The same cursor with the segment starting 4 px further along the
+        // pattern lands on the next dash.
+        let shifted = line_segment_pick([10.0, 50.0], &segment, dashed, (4.0, 104.0), 0);
+        assert_eq!(shifted, Some((0.0, 0)));
     }
 
     // A stepped segment is picked along its pieces: the nearest piece wins,
@@ -983,32 +1147,26 @@ mod tests {
     fn stepped_segment_distance_walks_every_piece_and_snaps_by_path_position() {
         // step-post from (10, 10) to (90, 50): run at y = 10, riser at x = 90.
         let post = [([10.0, 10.0], [90.0, 10.0]), ([90.0, 10.0], [90.0, 50.0])];
+        let pick = |cursor: [f32; 2], pieces: &[([f32; 2], [f32; 2])], index| {
+            line_segment_pick(cursor, pieces, solid(0.0), (0.0, 0.0), index)
+        };
         // On the run, a quarter along the path: index 0.
-        assert_eq!(
-            line_segment_pick([30.0, 10.0], &post, 0.0, 4),
-            Some((0.0, 4))
-        );
+        assert_eq!(pick([30.0, 10.0], &post, 4), Some((0.0, 4)));
         // On the riser: past the midpoint of the 120 px path, index 1.
-        assert_eq!(
-            line_segment_pick([90.0, 40.0], &post, 0.0, 4),
-            Some((0.0, 5))
-        );
+        assert_eq!(pick([90.0, 40.0], &post, 4), Some((0.0, 5)));
         // Far from the run but near the riser: the riser's distance wins.
-        let (dist_sq, index) = line_segment_pick([95.0, 45.0], &post, 0.0, 4).unwrap();
-        assert!((dist_sq - 25.0).abs() < 1e-4);
+        let (dist, index) = pick([95.0, 45.0], &post, 4).unwrap();
+        assert!((dist - 5.0).abs() < 1e-4);
         assert_eq!(index, 5);
         // The straight chord between the endpoints is NOT part of the path.
-        let (dist_sq, _) = line_segment_pick([50.0, 30.0], &post, 0.0, 4).unwrap();
-        assert!((dist_sq - 400.0).abs() < 1e-3);
+        let (dist, _) = pick([50.0, 30.0], &post, 4).unwrap();
+        assert!((dist - 20.0).abs() < 1e-3);
         // A riser between equal values has zero length and is skipped.
         let flat = [([10.0, 10.0], [90.0, 10.0]), ([90.0, 10.0], [90.0, 10.0])];
-        assert_eq!(
-            line_segment_pick([90.0, 10.0], &flat, 0.0, 0),
-            Some((0.0, 1))
-        );
+        assert_eq!(pick([90.0, 10.0], &flat, 0), Some((0.0, 1)));
         // Every piece degenerate: nothing to hit.
         let point = [([5.0, 5.0], [5.0, 5.0]), ([5.0, 5.0], [5.0, 5.0])];
-        assert_eq!(line_segment_pick([5.0, 5.0], &point, 0.0, 0), None);
+        assert_eq!(pick([5.0, 5.0], &point, 0), None);
     }
 
     struct Columns(HashMap<ColumnId, Vec<f32>>);

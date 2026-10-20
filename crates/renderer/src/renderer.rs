@@ -1186,6 +1186,8 @@ struct PickResourceSignature {
     line_width_bits: Option<u32>,
     /// The line's step mode: a stepped path is picked along its pieces.
     line_step_mode: u32,
+    /// The line's dash preset: a dashed path is picked on its dashes.
+    line_style: LineStylePreset,
     scatter: Option<PickScatterSignature>,
 }
 
@@ -1267,6 +1269,7 @@ struct OwnedGpuPickSeriesDescriptor {
     scatter: Option<OwnedGpuPickScatter>,
     line_width_px: Option<f32>,
     line_interpolation: LineInterpolation,
+    line_style: LineStylePreset,
 }
 
 impl OwnedGpuPickSeriesDescriptor {
@@ -1279,6 +1282,7 @@ impl OwnedGpuPickSeriesDescriptor {
             scatter: self.scatter.as_ref().map(OwnedGpuPickScatter::descriptor),
             line_width_px: self.line_width_px,
             line_interpolation: self.line_interpolation,
+            line_style: self.line_style,
         }
     }
 }
@@ -1532,12 +1536,14 @@ impl PickChartPlan {
             let line_width_px = line.map(|line| line.line_width);
             let line_interpolation =
                 line.map_or(LineInterpolation::Linear, |line| line.interpolation);
+            let line_style = line.map_or(LineStylePreset::Solid, |line| line.line_style);
             let resource = PickResourceSignature {
                 x_column: series.x_column.clone(),
                 y_column: series.y_column.clone(),
                 primitives,
                 line_width_bits: line_width_px.map(f32::to_bits),
                 line_step_mode: crate::line_step::step_mode(line_interpolation),
+                line_style,
                 scatter: scatter_signature,
             };
             descriptors.push(OwnedGpuPickSeriesDescriptor {
@@ -1549,6 +1555,7 @@ impl PickChartPlan {
                 scatter,
                 line_width_px,
                 line_interpolation,
+                line_style,
             });
         }
 
@@ -5298,6 +5305,26 @@ fn create_msaa_target(
     }))
 }
 
+/// Whether the line `series` draws under `draw_style` walks its arc prefix:
+/// a dashed stroke takes its dash phase from it and a sketch stroke its
+/// wobble. A Milkyway ribbon is never dashed and its stars are picked by
+/// their envelope, so it needs none.
+fn line_pick_walks_arc(draw_style: &DrawStyle, series: &SeriesConfig) -> bool {
+    if !effective_series_primitives(draw_style, &series.render_type).line {
+        return false;
+    }
+    let Some(line) = extract_line(&series.render_type) else {
+        return false;
+    };
+    match draw_style {
+        DrawStyle::Milkyway(_) => false,
+        DrawStyle::Sketch(_) => true,
+        DrawStyle::Precise | DrawStyle::Constellation(_) => {
+            !matches!(line.line_style, LineStylePreset::Solid)
+        }
+    }
+}
+
 fn scatter_config_radius_px(
     scatter: &DataScatterStyleConfig,
     point_index: usize,
@@ -7293,7 +7320,46 @@ impl Renderer {
             request.display_scale,
             request.display_panel_px,
         );
-        let (display_config, _) = active_layer_pick_inputs(&displayed, &state.series)?;
+        let (display_config, layer_series) = active_layer_pick_inputs(&displayed, &state.series)?;
+        let transform = data_render::scatter_transform_from_config(&display_config);
+        // The arc prefix each registered line was drawn with at this
+        // transform, by registry position: its dash phase and sketch wobble
+        // walk it. The draw's own cache key, so a pick after a frame reuses
+        // the frame's scan and a pick before one runs the same scan.
+        let slots = self
+            .picker
+            .active
+            .as_ref()
+            .expect("successful chart preparation publishes an active picker registry")
+            .engine
+            .series_identities();
+        let mut arcs: Vec<Option<Arc<wgpu::Buffer>>> = Vec::new();
+        arcs.try_reserve_exact(slots.len()).map_err(|_| {
+            crate::gpu_pick::GpuPickError::AllocationFailed {
+                resource: "renderer pick arc prefixes",
+            }
+        })?;
+        for series_id in slots.series_ids() {
+            let series = layer_series
+                .iter()
+                .find(|series| series.series_id == series_id);
+            let arc = series
+                .filter(|series| line_pick_walks_arc(&display_config.draw_style, series))
+                .and_then(|series| {
+                    let interpolation = extract_line(&series.render_type)
+                        .map_or(LineInterpolation::Linear, |line| line.interpolation);
+                    self.preparation_parts().1.ensure_arc_prefix(
+                        &series.series_id,
+                        &series.x_column,
+                        &series.y_column,
+                        &transform,
+                        None,
+                        interpolation,
+                    )
+                })
+                .map(|arc| arc.prefix.0);
+            arcs.push(arc);
+        }
         let chart_rect = display_config.chart_area.0;
         let data_area_px = display_config.data_area().ok().map(|area| {
             let rect = area.0;
@@ -7305,7 +7371,7 @@ impl Renderer {
             ]
         });
         let query = crate::gpu_pick::GpuPickQuery {
-            transform: data_render::scatter_transform_from_config(&display_config),
+            transform,
             chart_rect_px: [
                 chart_rect.x as f32,
                 chart_rect.y as f32,
@@ -7315,6 +7381,7 @@ impl Renderer {
             data_area_px,
             canvas_position_px: request.canvas_position_px,
             max_distance_px: request.max_distance_px,
+            draw_style: crate::gpu_pick::GpuPickDrawStyle::of(&display_config.draw_style),
         };
         let active = self
             .picker
@@ -7324,7 +7391,7 @@ impl Renderer {
         debug_assert_eq!(active.chart_id, id);
         active
             .engine
-            .pick_with_display_scale(&self.pool, query, request.display_scale)
+            .pick_with_arcs(&self.pool, query, request.display_scale, &arcs)
     }
 
     /// Submit one typed data pick across points/lines, histogram bins, heatmap

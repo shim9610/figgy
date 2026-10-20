@@ -54,6 +54,15 @@ const FLAG_SIZE_MAP: u32 = 16;
 const FLAG_SIZE_AREA: u32 = 32;
 const STYLE_MASK_RADIUS: u32 = 2;
 const STYLE_MASK_SHAPE: u32 = 4;
+/// The pick shader's marker draw modes (`PICK_MARKER_*`).
+const PICK_MARKER_PRECISE: u32 = 0;
+const PICK_MARKER_SKETCH: u32 = 1;
+const PICK_MARKER_PLANET: u32 = 2;
+const PICK_MARKER_STAR: u32 = 3;
+/// The pick shader's line draw modes (`PICK_LINE_*`).
+const PICK_LINE_PRECISE: u32 = 0;
+const PICK_LINE_SKETCH: u32 = 1;
+const PICK_LINE_RIBBON: u32 = 2;
 
 #[derive(Clone, Debug)]
 pub enum GpuPickError {
@@ -224,6 +233,44 @@ pub(crate) struct GpuPickSeriesDescriptor<'a> {
     /// How the line connects its samples. A step mode makes the picker walk
     /// the same axis-aligned pieces the line shader draws.
     pub(crate) line_interpolation: crate::data_config::LineInterpolation,
+    /// The line's dash preset: the picker walks the same dash phase the line
+    /// shader draws, so a dash gap does not pick.
+    pub(crate) line_style: crate::line::LineStylePreset,
+}
+
+/// What the chart's draw style draws for markers and lines, as the pick
+/// shader's `styled` modes: the precise shapes and quads, the sketch wobble,
+/// Milkyway planets and ribbons, or Constellation stars over precise lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GpuPickDrawStyle {
+    marker: u32,
+    line: u32,
+}
+
+impl GpuPickDrawStyle {
+    pub(crate) const PRECISE: Self = Self {
+        marker: PICK_MARKER_PRECISE,
+        line: PICK_LINE_PRECISE,
+    };
+
+    pub(crate) fn of(style: &crate::config::DrawStyle) -> Self {
+        use crate::config::DrawStyle;
+        match style {
+            DrawStyle::Precise => Self::PRECISE,
+            DrawStyle::Sketch(_) => Self {
+                marker: PICK_MARKER_SKETCH,
+                line: PICK_LINE_SKETCH,
+            },
+            DrawStyle::Milkyway(_) => Self {
+                marker: PICK_MARKER_PLANET,
+                line: PICK_LINE_RIBBON,
+            },
+            DrawStyle::Constellation(_) => Self {
+                marker: PICK_MARKER_STAR,
+                line: PICK_LINE_PRECISE,
+            },
+        }
+    }
 }
 
 /// Query state which integration can derive directly from `Config`.
@@ -238,6 +285,8 @@ pub(crate) struct GpuPickQuery {
     pub(crate) data_area_px: Option<[f32; 4]>,
     pub(crate) canvas_position_px: [f32; 2],
     pub(crate) max_distance_px: f32,
+    /// The draw style the chart is drawn with.
+    pub(crate) draw_style: GpuPickDrawStyle,
 }
 
 /// Handles address only the currently uploaded bounded pair buffer.
@@ -508,8 +557,11 @@ impl GpuStreamPick {
             .engine
             .prepare_series_buffer(buffer, descriptor, columns, None)?;
         let series = &slot.gpu;
+        // Streaming is not extended: a streamed line is picked without its
+        // arc prefix, so its dash gaps pick like its dashes.
         let params = query_params(
             series,
+            &slot.identity.series_id,
             &self.query,
             self.display_scale,
             series_order,
@@ -525,6 +577,7 @@ impl GpuStreamPick {
                 owned_segments,
                 original_index_word_base,
             ],
+            false,
         );
         self.engine
             .bundle
@@ -546,6 +599,7 @@ impl GpuStreamPick {
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &series.query_data_bg, &[]);
             pass.set_bind_group(1, &series.query_work_bg, &[]);
+            pass.set_bind_group(2, &bundle.arc_placeholder, &[]);
             pass.dispatch_workgroups(series.dispatch_x, series.dispatch_y, 1);
         }
         {
@@ -650,20 +704,65 @@ impl GpuPickSeriesId {
     }
 }
 
+/// `CONSTELLATION_POINT_STAR_GAIN` times the largest per-point size jitter
+/// of `constellation_star_radius` (`0.86 + 0.30`).
+const CONSTELLATION_STAR_MAX_SCALE: f32 = 1.16;
+/// `PLANET_QUAD_EXTENT`: a planet's quad half-extent per unit radius.
+const PLANET_QUAD_EXTENT: f32 = 2.5;
+
 /// The pick shader's per-query uniform for one registered series. `data` is
 /// `(point count, x lane base, y lane base, style-index lane base)` and
 /// `stream` the `(global offset, owned scatter count, owned segment count,
-/// row-map base)` of the chunk; a resident series owns every point.
+/// row-map base)` of the chunk; a resident series owns every point. `arc`
+/// says whether the exact pass binds this series' arc prefix.
+#[allow(clippy::too_many_arguments)]
 fn query_params(
     series: &PickSeriesGpu,
+    series_id: &str,
     query: &GpuPickQuery,
     display_scale: f32,
     series_order: u32,
     data: [u32; 4],
     stream: [u32; 4],
+    arc: bool,
 ) -> PickQueryParamsGpu {
     let [cursor_x, cursor_y] = query.canvas_position_px;
     let [chart_x, chart_y, chart_width, chart_height] = query.chart_rect_px;
+    let style = query.draw_style;
+    let params = query.transform.style_params;
+    // Nothing a marker draws lies outside its quad: the visual radius plus
+    // the quad margin on either axis, grown by the styled entry's own quad.
+    let base_radius = series.base_radius_px * display_scale;
+    let marker_reach = match style.marker {
+        PICK_MARKER_SKETCH => {
+            series.max_extent_px * display_scale
+                + MARKER_QUAD_MARGIN_PX
+                + params[0][0].max(0.0) * 0.5
+        }
+        PICK_MARKER_PLANET => base_radius.max(1.0) * PLANET_QUAD_EXTENT + MARKER_QUAD_MARGIN_PX,
+        PICK_MARKER_STAR => {
+            (base_radius * CONSTELLATION_STAR_MAX_SCALE).max(0.5) * 4.0 + MARKER_QUAD_MARGIN_PX
+        }
+        _ => series.max_extent_px * display_scale + MARKER_QUAD_MARGIN_PX,
+    };
+    // The line shader's `max(line_width_px, 1) / 2`.
+    let half_width = (2.0 * series.line_half_width_px * display_scale).max(1.0) * 0.5;
+    let ribbon = milkyway_line_half_extent(&params);
+    let line_extent = match style.line {
+        PICK_LINE_SKETCH => half_width + crate::pick::MARKER_STROKE_HALF_PX + params[0][0].max(0.0),
+        PICK_LINE_RIBBON => ribbon,
+        _ => half_width + crate::pick::MARKER_STROKE_HALF_PX,
+    };
+    let mut line_dash = [[0.0f32; 4]; 2];
+    for (index, length) in series.line_dash.iter().enumerate() {
+        line_dash[index / 4][index % 4] = length * display_scale;
+    }
+    // A milkyway ribbon is never dashed.
+    let dash_count = if style.line == PICK_LINE_RIBBON {
+        0
+    } else {
+        series.line_dash_len
+    };
     PickQueryParamsGpu {
         transform: query.transform,
         cursor_chart: [cursor_x, cursor_y, chart_x, chart_y],
@@ -671,9 +770,7 @@ fn query_params(
             chart_width,
             chart_height,
             query.max_distance_px,
-            // Nothing a marker draws lies outside its quad: the visual
-            // radius plus the quad margin on either axis.
-            series.max_extent_px * display_scale + MARKER_QUAD_MARGIN_PX,
+            marker_reach,
         ],
         scatter_line: [
             series.base_radius_px,
@@ -695,11 +792,48 @@ fn query_params(
             series.dispatch_x,
         ],
         stream,
-        line: [series.line_step_mode, 0, 0, 0],
+        line: [series.line_step_mode, u32::from(arc), 0, 0],
         size_map: [series.size_base, series.size_len, 0, 0],
         size_domain: series.size_domain,
         size_px: [series.size_px[0], series.size_px[1], 0.0, 0.0],
+        // A square cap's corner reaches √2 times the half extent past the
+        // centreline on either axis.
+        line_px: [
+            half_width,
+            ribbon,
+            line_extent * std::f32::consts::SQRT_2,
+            0.0,
+        ],
+        line_dash,
+        styled: [
+            style.marker,
+            style.line,
+            crate::sketch::fnv1a(series_id),
+            dash_count,
+        ],
     }
+}
+
+/// The half extent of what a Milkyway line draws around its centreline, in
+/// canvas pixels, from the packed style parameters (`pack_milkyway_params`):
+/// the ribbon strip reaches one full ribbon width either side
+/// (`vs_ribbon`'s `max(ribbon_width_px, 1)`), and a star of the arc-driven
+/// star pass (`vs_stars`) lies within its perpendicular scatter
+/// (`1.7 * spread_px`), a binary companion's separation (`4 *
+/// structure_scale`) and its quad (`4 * star_scale * 4.3` at full
+/// brightness) of the path. The star positions are hashed per slot, so this
+/// envelope, not each star, is what picks.
+fn milkyway_line_half_extent(params: &[[f32; 4]; 3]) -> f32 {
+    let ribbon = params[0][1].max(1.0);
+    let star_scale = params[1][0].max(0.0);
+    let spread = params[1][1].max(0.0);
+    let structure = params[2][0].max(1e-3);
+    let stars = if params[0][0] > 0.0 {
+        spread * 1.7 + 4.0 * structure + star_scale * (0.9 + 3.4) * 4.0
+    } else {
+        0.0
+    };
+    ribbon.max(stars)
 }
 
 #[repr(C)]
@@ -720,6 +854,13 @@ struct PickQueryParamsGpu {
     size_domain: [f32; 4],
     /// `(min_px, max_px, 0, 0)`, logical pixels.
     size_px: [f32; 4],
+    /// `(stroke half-width, milkyway half extent, line gate reach, 0)`,
+    /// canvas pixels.
+    line_px: [f32; 4],
+    /// The dash pattern in canvas pixels.
+    line_dash: [[f32; 4]; 2],
+    /// `(marker mode, line mode, series salt, dash count)`.
+    styled: [u32; 4],
 }
 
 #[repr(C)]
@@ -735,7 +876,7 @@ struct PickCandidateGpu {
     _pad: u32,
 }
 
-const _: () = assert!(std::mem::size_of::<PickQueryParamsGpu>() == 320);
+const _: () = assert!(std::mem::size_of::<PickQueryParamsGpu>() == 384);
 const _: () = assert!(std::mem::size_of::<PickCandidateGpu>() == CANDIDATE_BYTES as usize);
 
 #[derive(Clone)]
@@ -758,6 +899,11 @@ pub(crate) struct PickPipelineBundle {
     gate_y: wgpu::ComputePipeline,
     exact: wgpu::ComputePipeline,
     reduce: wgpu::ComputePipeline,
+    /// The exact pass's group 2: one series' arc prefix (`pick_arc`).
+    arc_bgl: wgpu::BindGroupLayout,
+    /// Group 2 for a series picked without an arc prefix: one zero.
+    arc_placeholder: wgpu::BindGroup,
+    _arc_placeholder_charge: SharedCharge,
 }
 
 #[derive(Clone)]
@@ -800,6 +946,9 @@ struct PickSeriesGpu {
     base_shape_id: u32,
     line_half_width_px: f32,
     line_step_mode: u32,
+    /// The dash pattern in logical pixels and how many of its lengths count.
+    line_dash: [f32; 8],
+    line_dash_len: u32,
     max_extent_px: f32,
     style_count: u32,
     override_count: u32,
@@ -957,6 +1106,23 @@ fn create_pipeline_bundle_observed(
             immediate_size: 0,
         },
     );
+    let arc_bgl = crate::gpu_compile::bind_group_layout(
+        &device,
+        &wgpu::BindGroupLayoutDescriptor {
+            label: Some("figgy GPU pick arc prefix bgl"),
+            entries: &[storage_entry(0, true)],
+        },
+    );
+    let exact_layout = crate::gpu_compile::pipeline_layout(
+        &device,
+        &wgpu::PipelineLayoutDescriptor {
+            label: Some("figgy GPU pick exact layout"),
+            bind_group_layouts: &[Some(&query_data_bgl), Some(&query_work_bgl), Some(&arc_bgl)],
+            immediate_size: 0,
+        },
+    );
+    let (arc_placeholder, arc_placeholder_charge) =
+        create_arc_placeholder(&device, &ledger, &arc_bgl);
     let reduce_layout = crate::gpu_compile::pipeline_layout(
         &device,
         &wgpu::PipelineLayoutDescriptor {
@@ -1005,7 +1171,7 @@ fn create_pipeline_bundle_observed(
         }),
         exact: observe_value(observer, INIT_SCOPE, "pick_exact_candidates", || {
             pipeline(
-                &query_layout,
+                &exact_layout,
                 "pick_exact_candidates",
                 "figgy GPU pick exact candidate pipeline",
             )
@@ -1020,9 +1186,58 @@ fn create_pipeline_bundle_observed(
         query_data_bgl,
         query_work_bgl,
         reduce_bgl,
+        arc_bgl,
+        arc_placeholder,
+        _arc_placeholder_charge: arc_placeholder_charge,
         device,
         queue,
     })
+}
+
+/// The exact pass's group 2 for a series without an arc prefix: a one-value
+/// storage buffer the shader never reads (`line.y` is zero).
+fn create_arc_placeholder(
+    device: &wgpu::Device,
+    ledger: &Arc<GpuLedger>,
+    arc_bgl: &wgpu::BindGroupLayout,
+) -> (wgpu::BindGroup, SharedCharge) {
+    let tally = ChargeTally::new();
+    // gpu-alloc: PickScratch
+    let buffer = charged_buffer_init(
+        &tally,
+        device,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("figgy GPU pick arc placeholder"),
+            contents: bytemuck::bytes_of(&0.0f32),
+            usage: wgpu::BufferUsages::STORAGE,
+        },
+    );
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("figgy GPU pick arc placeholder bg"),
+        layout: arc_bgl,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: buffer.as_entire_binding(),
+        }],
+    });
+    (
+        bind_group,
+        shared_charge(tally, ledger, GpuResourceKind::PickScratch),
+    )
+}
+
+impl PickPipelineBundle {
+    /// The exact pass's group 2 holding one series' arc prefix.
+    fn arc_bind_group(&self, buffer: &wgpu::Buffer) -> wgpu::BindGroup {
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("figgy GPU pick arc prefix bg"),
+            layout: &self.arc_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        })
+    }
 }
 
 #[cfg_attr(target_arch = "wasm32", allow(clippy::arc_with_non_send_sync))]
@@ -1096,6 +1311,23 @@ async fn create_pipeline_bundle_observed_async(
             immediate_size: 0,
         },
     );
+    let arc_bgl = crate::gpu_compile::bind_group_layout(
+        &device,
+        &wgpu::BindGroupLayoutDescriptor {
+            label: Some("figgy GPU pick arc prefix bgl"),
+            entries: &[storage_entry(0, true)],
+        },
+    );
+    let exact_layout = crate::gpu_compile::pipeline_layout(
+        &device,
+        &wgpu::PipelineLayoutDescriptor {
+            label: Some("figgy GPU pick exact layout"),
+            bind_group_layouts: &[Some(&query_data_bgl), Some(&query_work_bgl), Some(&arc_bgl)],
+            immediate_size: 0,
+        },
+    );
+    let (arc_placeholder, arc_placeholder_charge) =
+        create_arc_placeholder(&device, &ledger, &arc_bgl);
     let reduce_layout = crate::gpu_compile::pipeline_layout(
         &device,
         &wgpu::PipelineLayoutDescriptor {
@@ -1145,7 +1377,7 @@ async fn create_pipeline_bundle_observed_async(
     .await;
     let exact = observe_value_async(observer, INIT_SCOPE, "pick_exact_candidates", || {
         pipeline(
-            &query_layout,
+            &exact_layout,
             "pick_exact_candidates",
             "figgy GPU pick exact candidate pipeline",
         )
@@ -1168,6 +1400,9 @@ async fn create_pipeline_bundle_observed_async(
         query_data_bgl,
         query_work_bgl,
         reduce_bgl,
+        arc_bgl,
+        arc_placeholder,
+        _arc_placeholder_charge: arc_placeholder_charge,
         device,
         queue,
         ledger,
@@ -1766,6 +2001,12 @@ impl GpuPickEngine {
             max_extent_px = max_extent_px.max(line_half_width_px);
         }
         let line_step_mode = crate::line_step::step_mode(descriptor.line_interpolation);
+        let mut line_dash = [0.0f32; 8];
+        let pattern = descriptor.line_style.pattern();
+        for (slot, length) in line_dash.iter_mut().zip(pattern) {
+            *slot = *length;
+        }
+        let line_dash_len = pattern.len().min(line_dash.len()) as u32;
         if flags & (FLAG_SCATTER | FLAG_LINE) == 0 {
             return Err(GpuPickError::NoPickPrimitive(descriptor.series_id));
         }
@@ -1990,6 +2231,8 @@ impl GpuPickEngine {
                 base_shape_id,
                 line_half_width_px,
                 line_step_mode,
+                line_dash,
+                line_dash_len,
                 max_extent_px,
                 style_count,
                 override_count,
@@ -2478,11 +2721,32 @@ impl GpuPickEngine {
     /// applied once by the query shader to scatter radii, line half-widths,
     /// and the matching conservative gate widths. Cursor coordinates,
     /// `max_distance_px`, and returned distances remain physical canvas pixels.
+    /// The registered series, in the order a pick addresses them.
+    pub(crate) fn series_identities(&self) -> GpuPickSeriesIdentities {
+        GpuPickSeriesIdentities(Arc::clone(&self.registry.identities))
+    }
+
+    #[cfg(test)]
     pub(crate) fn pick_with_display_scale(
         &self,
         pool: &ColumnPool,
         query: GpuPickQuery,
         display_scale: f32,
+    ) -> Result<GpuPickTicket, GpuPickError> {
+        self.pick_with_arcs(pool, query, display_scale, &[])
+    }
+
+    /// [`Self::pick_with_display_scale`] with each registered series' arc
+    /// prefix, by registry position: the per-point cumulative arc length the
+    /// line shader drew the series with (`line_arc.wgsl`) for the query's
+    /// transform, which places its dash phase and sketch wobble. A missing
+    /// entry, or a buffer too short for the series, picks without it.
+    pub(crate) fn pick_with_arcs(
+        &self,
+        pool: &ColumnPool,
+        query: GpuPickQuery,
+        display_scale: f32,
+        arcs: &[Option<Arc<wgpu::Buffer>>],
     ) -> Result<GpuPickTicket, GpuPickError> {
         let [cursor_x, cursor_y] = query.canvas_position_px;
         if !display_scale.is_finite()
@@ -2540,6 +2804,7 @@ impl GpuPickEngine {
             let series = &slot.gpu;
             let params = query_params(
                 series,
+                &slot.identity.series_id,
                 &query,
                 display_scale,
                 series_order as u32,
@@ -2555,6 +2820,7 @@ impl GpuPickEngine {
                     series.point_count.saturating_sub(1),
                     0,
                 ],
+                series_arc(arcs, series_order, series.point_count).is_some(),
             );
             self.bundle
                 .queue
@@ -2622,10 +2888,14 @@ impl GpuPickEngine {
                 timestamp_writes: None,
             });
             pass.set_pipeline(&self.bundle.exact);
-            for slot in &self.registry.slots {
+            for (series_order, slot) in self.registry.slots.iter().enumerate() {
                 let series = &slot.gpu;
                 pass.set_bind_group(0, &series.query_data_bg, &[]);
                 pass.set_bind_group(1, &series.query_work_bg, &[]);
+                // The pass keeps the bind group alive until it is submitted.
+                let arc = series_arc(arcs, series_order, series.point_count)
+                    .map(|buffer| self.bundle.arc_bind_group(buffer));
+                pass.set_bind_group(2, arc.as_ref().unwrap_or(&self.bundle.arc_placeholder), &[]);
                 pass.dispatch_workgroups(series.dispatch_x, series.dispatch_y, 1);
             }
         }
@@ -2684,6 +2954,31 @@ impl GpuPickEngine {
                 _scratch_charge: None,
             },
         })
+    }
+}
+
+/// The arc prefix of the series at registry position `index`, when one was
+/// supplied and holds a value for each of its `point_count` points.
+fn series_arc(
+    arcs: &[Option<Arc<wgpu::Buffer>>],
+    index: usize,
+    point_count: u32,
+) -> Option<&wgpu::Buffer> {
+    arcs.get(index)
+        .and_then(Option::as_deref)
+        .filter(|buffer| buffer.size() >= u64::from(point_count) * 4)
+}
+
+/// The identities of a registry's series in registry order.
+pub(crate) struct GpuPickSeriesIdentities(Arc<[PickIdentity]>);
+
+impl GpuPickSeriesIdentities {
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub(crate) fn series_ids(&self) -> impl Iterator<Item = &str> {
+        self.0.iter().map(|identity| identity.series_id.as_str())
     }
 }
 
@@ -2897,6 +3192,7 @@ mod tests {
             data_area_px,
             canvas_position_px,
             max_distance_px,
+            draw_style: GpuPickDrawStyle::PRECISE,
         }
     }
 
@@ -3019,6 +3315,7 @@ mod tests {
             }),
             line_width_px: None,
             line_interpolation: crate::data_config::LineInterpolation::Linear,
+            line_style: crate::line::LineStylePreset::Solid,
         }
     }
 
@@ -3041,6 +3338,7 @@ mod tests {
             data_area_px: Some([0.0, 0.0, 100.0, 100.0]),
             canvas_position_px,
             max_distance_px: 0.0,
+            draw_style: GpuPickDrawStyle::PRECISE,
         }
     }
 
@@ -3282,6 +3580,7 @@ mod tests {
             }),
             line_width_px: Some(2.0),
             line_interpolation: crate::data_config::LineInterpolation::Linear,
+            line_style: crate::line::LineStylePreset::Solid,
         };
         for logarithmic in [false, true] {
             let origin = if logarithmic {
@@ -3472,6 +3771,8 @@ mod tests {
         .unwrap();
         // Exact centerline hits must survive reciprocal rounding; near misses
         // and points beyond either endpoint must not become infinite-line hits.
+        // A zero-width line is drawn one pixel wide, so a quarter pixel off
+        // the centreline is on the stroke and three quarters is not.
         // The right halo is available to the last segment, never to scatter.
         for (line, cursor, expected_local_index) in [
             (false, [90.0, 50.0], None),
@@ -3479,7 +3780,8 @@ mod tests {
             (true, [50.0, 50.0], Some(count - 2)),
             (true, [30.0, 50.0], Some(count - 2)),
             (true, [70.0, 50.0], Some(count - 1)),
-            (true, [50.0, 50.001], None),
+            (true, [50.0, 50.25], Some(count - 2)),
+            (true, [50.0, 50.75], None),
             (true, [5.0, 50.0], None),
             (true, [95.0, 50.0], None),
         ] {
@@ -3496,6 +3798,7 @@ mod tests {
                 }),
                 line_width_px: line.then_some(0.0),
                 line_interpolation: crate::data_config::LineInterpolation::Linear,
+                line_style: crate::line::LineStylePreset::Solid,
             };
             let query = test_query(cursor);
             let mut stream = bundle
@@ -3902,6 +4205,7 @@ mod tests {
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
                 },
             )
             .unwrap();
@@ -4009,6 +4313,7 @@ mod tests {
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
                 },
             )
             .unwrap();
@@ -4107,6 +4412,7 @@ mod tests {
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
                 },
             )
             .unwrap();
@@ -4136,6 +4442,7 @@ mod tests {
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
                 },
             )
             .unwrap();
@@ -4150,6 +4457,7 @@ mod tests {
                     scatter: None,
                     line_width_px: Some(6.0),
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
                 },
             )
             .unwrap();
@@ -4324,6 +4632,7 @@ mod tests {
                     scatter: None,
                     line_width_px: Some(0.0),
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
                 },
             )
             .unwrap();
@@ -4392,6 +4701,7 @@ mod tests {
                     scatter: None,
                     line_width_px: Some(0.0),
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
                 },
             )
             .unwrap();
@@ -4454,6 +4764,7 @@ mod tests {
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
                 },
             )
             .unwrap();
@@ -4487,6 +4798,7 @@ mod tests {
                 data_area_px: Some([0.0, 0.0, 100.0, 100.0]),
                 canvas_position_px: cursor,
                 max_distance_px: 0.0,
+                draw_style: GpuPickDrawStyle::PRECISE,
             },
         )
         .unwrap();
@@ -4535,6 +4847,7 @@ mod tests {
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
                 },
             )
             .unwrap();
@@ -4558,6 +4871,7 @@ mod tests {
             data_area_px: Some([0.0, 0.0, 100.0, 100.0]),
             canvas_position_px: [cursor_x, 50.0],
             max_distance_px: 0.0,
+            draw_style: GpuPickDrawStyle::PRECISE,
         };
         let left = engine.pick(&pool, query(25.0)).unwrap();
         let right = engine.pick(&pool, query(75.0)).unwrap();
@@ -4640,6 +4954,7 @@ mod tests {
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
                 },
             )
             .unwrap();
@@ -4768,6 +5083,7 @@ mod tests {
                             scatter: None,
                             line_width_px: Some(3.0),
                             line_interpolation: mode,
+                            line_style: crate::line::LineStylePreset::Solid,
                         },
                     )
                     .unwrap();
@@ -4962,6 +5278,7 @@ mod tests {
                     }),
                     line_width_px: Some(0.0),
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
                 },
             )
             .unwrap();
@@ -4998,6 +5315,7 @@ mod tests {
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
                 },
             )
             .unwrap();
@@ -5056,6 +5374,7 @@ mod tests {
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
                 },
             )
             .unwrap();
@@ -5671,6 +5990,7 @@ mod tests {
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
                 },
             )
             .unwrap();

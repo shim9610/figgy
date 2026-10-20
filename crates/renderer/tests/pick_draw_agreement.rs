@@ -31,6 +31,10 @@ const PAINTED: u8 = 6;
 /// A pixel picked at distance zero must be at least this far from the
 /// series-free export: zero distance means at least half coverage.
 const HALF_COVERED: u8 = 96;
+/// The least ink a zero-distance pick finds at the edge of a quad without
+/// an anti-aliasing margin: half the shader's coverage, halved again by the
+/// multisampled edge, at a corner.
+const MSAA_EDGE_INK: u8 = 30;
 /// How far a painted fringe pixel may be from the picked geometry: one
 /// anti-aliasing width, `fwidth` of a unit-gradient distance at most √2.
 const FRINGE_PX: f32 = 1.5;
@@ -242,6 +246,34 @@ pub fn assert_pick_matches_paint(
     window: Option<(u32, u32, u32, u32)>,
     what: &str,
 ) -> usize {
+    assert_pick_matches_paint_with(
+        renderer,
+        chart,
+        series,
+        subject,
+        scale,
+        window,
+        what,
+        HALF_COVERED,
+    )
+}
+
+/// [`assert_pick_matches_paint`] with the least ink a zero-distance pick
+/// must find. A dashed stroke's quad has no anti-aliasing margin, so the
+/// export's multisampling covers only part of a pixel whose centre is just
+/// inside the stroke's edge: the shader's coverage there is at least one
+/// half, the resolved ink a quarter of that at a corner.
+#[allow(clippy::too_many_arguments)]
+pub fn assert_pick_matches_paint_with(
+    renderer: &mut Renderer,
+    chart: &Chart,
+    series: &[SeriesConfig],
+    subject: &str,
+    scale: f32,
+    window: Option<(u32, u32, u32, u32)>,
+    what: &str,
+    zero_ink: u8,
+) -> usize {
     let with = renderer.export_panel_rgba(chart, series, scale).unwrap();
     let without_series: Vec<SeriesConfig> = series
         .iter()
@@ -269,7 +301,7 @@ pub fn assert_pick_matches_paint(
             }
             if let Some(hit) = hit
                 && hit.distance_px == 0.0
-                && ink < HALF_COVERED
+                && ink < zero_ink
             {
                 failures.push(format!(
                     "({x}, {y}) picked at distance 0 (index {}) but ink is only {ink}",
@@ -495,6 +527,105 @@ fn polar_clip_cuts_markers_for_picking_as_it_cuts_them_for_drawing() {
                 what,
             );
             assert!(painted > 50, "{what}: {painted}");
+        }
+    }
+}
+
+pub fn line(
+    id: &str,
+    width: f32,
+    style: renderer::line::LineStylePreset,
+    interpolation: renderer::data_config::LineInterpolation,
+) -> SeriesConfig {
+    SeriesConfig {
+        series_id: id.into(),
+        source_id: None,
+        label: None,
+        x_column: "x".into(),
+        y_column: "y".into(),
+        render_type: DataRenderType::Line {
+            line: renderer::DataLineStyleConfig {
+                line_style: style,
+                line_color: RED,
+                line_width: width,
+                fill: None,
+                fill_color: None,
+                interpolation,
+            },
+        },
+    }
+}
+
+/// G4: a solid line picks exactly its drawn stroke — at least one pixel
+/// wide however thin it is declared, with square caps at both ends and at
+/// every step corner — on a diagonal polyline and a stepped one, at 1x and
+/// 2x.
+#[test]
+fn solid_lines_pick_where_their_stroke_is_drawn() {
+    use renderer::data_config::LineInterpolation;
+    use renderer::line::LineStylePreset;
+    let mut renderer = renderer();
+    upload_xy(
+        &mut renderer,
+        vec![4.0, 4.9, 5.4, 6.1],
+        vec![4.2, 5.6, 4.6, 5.9],
+    );
+    let chart = bare_chart();
+    for width in [0.3, 1.0, 4.5] {
+        for interpolation in [LineInterpolation::Linear, LineInterpolation::StepMid] {
+            for scale in [1.0, 2.0] {
+                let series = [line("path", width, LineStylePreset::Solid, interpolation)];
+                let painted = assert_pick_matches_paint(
+                    &mut renderer,
+                    &chart,
+                    &series,
+                    "path",
+                    scale,
+                    None,
+                    &format!("width {width} {interpolation:?}"),
+                );
+                assert!(painted > 30, "{painted}");
+            }
+        }
+    }
+}
+
+/// G4: a dashed line picks its dashes and not its gaps: the picker walks the
+/// arc prefix the line was drawn with, so the dash phase is the drawn one.
+#[test]
+fn dashed_lines_pick_their_dashes_and_not_their_gaps() {
+    use renderer::data_config::LineInterpolation;
+    use renderer::line::LineStylePreset;
+    let mut renderer = renderer();
+    upload_xy(
+        &mut renderer,
+        vec![3.5, 5.0, 5.8, 6.5],
+        vec![4.0, 5.5, 4.4, 6.0],
+    );
+    let chart = bare_chart();
+    for style in [
+        LineStylePreset::Dash,
+        LineStylePreset::Dot,
+        LineStylePreset::DashDotDot,
+    ] {
+        for interpolation in [LineInterpolation::Linear, LineInterpolation::StepPost] {
+            for scale in [1.0, 2.0] {
+                let series = [line("dashes", 2.0, style, interpolation)];
+                let painted = assert_pick_matches_paint_with(
+                    &mut renderer,
+                    &chart,
+                    &series,
+                    "dashes",
+                    scale,
+                    None,
+                    &format!("{style:?} {interpolation:?}"),
+                    MSAA_EDGE_INK,
+                );
+                assert!(
+                    painted > 12,
+                    "{style:?} {interpolation:?} at {scale}x: {painted}"
+                );
+            }
         }
     }
 }

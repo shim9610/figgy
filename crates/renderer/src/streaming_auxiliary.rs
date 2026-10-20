@@ -250,6 +250,7 @@ impl Renderer {
             data_area_px,
             canvas_position_px: position,
             max_distance_px: distance,
+            draw_style: crate::gpu_pick::GpuPickDrawStyle::of(&snapshot.config.draw_style),
         };
         // Give each packed page a distinct pick identity. The GPU reports a
         // page-local index; only this one small candidate is read back, then
@@ -538,6 +539,7 @@ impl Renderer {
                 data_area_px,
                 canvas_position_px: position,
                 max_distance_px: distance,
+                draw_style: crate::gpu_pick::GpuPickDrawStyle::of(&snapshot.config.draw_style),
             },
             scale,
             identities(),
