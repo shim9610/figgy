@@ -542,8 +542,9 @@ fn export_scales_annotations_and_reports_unplaceable_items() {
             .annotation_map()
             .bounds(scaled_view.annotation_map().find(index).unwrap())
             .unwrap();
-        // Geometry doubles; the reference line's grab strip is a pointer
-        // affordance of fixed thickness, so only its centre and length do.
+        // Geometry doubles. The selection padding around drawn shapes and
+        // the reference line's grab strip are pointer affordances of fixed
+        // thickness, so only the geometry inside them does.
         let centre = |r: RectF| [r.x + r.width * 0.5, r.y + r.height * 0.5];
         let (ca, cb) = (centre(a), centre(b));
         assert!(
@@ -551,6 +552,10 @@ fn export_scales_annotations_and_reports_unplaceable_items() {
             "item {index}: {b:?} is not {a:?} doubled"
         );
         if index != 1 {
+            let (a, b) = (
+                a.expanded(-crate::select::SELECTION_PADDING),
+                b.expanded(-crate::select::SELECTION_PADDING),
+            );
             assert!(
                 (b.width - a.width * 2.0).abs() <= 2.0 && (b.height - a.height * 2.0).abs() <= 2.0,
                 "item {index}: {b:?} is not {a:?} doubled"
@@ -824,9 +829,11 @@ fn layer_switches_and_routed_drags_keep_the_other_caches_and_paint_fresh_bytes()
         ) {
             (AnnotationKind::Text { anchor, .. }, AnnotationKind::Arrow { from, to, .. }) => {
                 assert_eq!(anchor.kind(), AnchorKind::Ratio);
+                // The bounds pad the drawn box; its corner is the anchor.
+                let drawn = text_box.expanded(-crate::select::SELECTION_PADDING);
                 let moved = space.anchor_to_px(anchor).unwrap();
-                assert!((moved[0] - text_box.x - 9.0).abs() < 1e-2);
-                assert!((moved[1] - text_box.y - 7.0).abs() < 1e-2);
+                assert!((moved[0] - drawn.x - 9.0).abs() < 1e-2);
+                assert!((moved[1] - drawn.y - 7.0).abs() < 1e-2);
                 assert_eq!(*from, Anchor::Data { x: 1.2, y: 0.2 });
                 assert_eq!(to.kind(), AnchorKind::Data);
                 let tip = space.anchor_to_px(to).unwrap();

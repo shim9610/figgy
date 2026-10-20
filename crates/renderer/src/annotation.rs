@@ -1143,8 +1143,10 @@ mod tests {
             );
             let drawn: Vec<usize> = raster.map.entries().map(|(_, e)| e.index).collect();
             assert_eq!(drawn, [0, 1, 4]);
-            // Later items win where they overlap: the arrow's box covers the
-            // middle of the plot, so probe the line and the span beside it.
+            // Later items win where they overlap. The arrow runs from
+            // (54, 91) to (166, 19) and hits only on its drawn shaft and
+            // head, so it wins where it crosses the line at (110, 55) and
+            // nowhere else on the line.
             let hit = raster.map.hit_test([175., 55.]).expect("line is hit");
             assert_eq!(raster.map.element(hit).unwrap().index, 1);
             assert_eq!(
@@ -1154,13 +1156,15 @@ mod tests {
                     .map(|id| raster.map.element(id).unwrap().index),
                 Some(0)
             );
-            assert_eq!(
+            let index_at = |p: [f32; 2]| {
                 raster
                     .map
-                    .hit_test([80., 55.])
-                    .map(|id| raster.map.element(id).unwrap().index),
-                Some(4)
-            );
+                    .hit_test(p)
+                    .map(|id| raster.map.element(id).unwrap().index)
+            };
+            assert_eq!(index_at([110., 55.]), Some(4));
+            assert_eq!(index_at([80., 55.]), Some(1));
+            assert_eq!(index_at([80., 64.]), Some(0));
             assert_eq!(raster.map.hit_test([5., 5.]), None);
             let selection = raster.map.selection_box(hit).unwrap();
             assert_eq!(selection.handles.len(), 2);
