@@ -516,6 +516,24 @@ example advances to 0.15.0 with the renderer dependency and is not published
   so legend hit bounds do not change. The web wrapper refreshes
   auto-managed legend symbols when `set_config` changes the colour map.
 
+### Resident data cache
+
+- A resident Precise panel keeps its series bodies in a panel-sized texture
+  and draws them again only when the data layer changes: the transform, the
+  data area, the draw style, `polar` and `colorbar`, the series configurations
+  and style scales, the font generation, the allocation epochs of the columns
+  that panel reads, or the pool layout or pipeline generation. A repaint with
+  nothing changed, and every edit or selection of titles, legend, axes, grid,
+  annotations or points, blits the cached bodies instead of drawing every
+  point again. Picked and selected highlights draw live above them, and each
+  panel of a layered document has its own entry, so editing one layer, or
+  replacing a column only another layer reads, draws only that layer. Clipped
+  and styled panels draw directly as before. The composite can differ from a
+  direct draw by UNORM rounding at partly covered pixels; random edit
+  sequences are checked bit for bit against a render of the final state from
+  nothing. No API or serialization change; `paint_prepared` reports a token
+  whose cached bodies were drawn again after it as stale.
+
 ### Default layout
 
 - `default_config()` sets `right_y.out_margin` to 32 (was 8). The last
