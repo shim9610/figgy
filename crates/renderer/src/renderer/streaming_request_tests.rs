@@ -18,6 +18,9 @@ mod subplots;
 #[path = "annotation_layer_tests.rs"]
 mod annotation_layer;
 
+#[path = "resident_display_tests.rs"]
+mod resident_display;
+
 fn limits(slots: usize) -> StreamLimits {
     StreamLimits {
         max_jobs: 4,

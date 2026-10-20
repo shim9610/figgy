@@ -308,6 +308,8 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
         },
     )];
     let mut bar = renderer::default::default_colorbar_options();
+    // The gallery image was rendered with this gap.
+    bar.gap_px = 24.0;
     bar.colormap = ColorMap::Custom {
         stops: vec![
             bg,

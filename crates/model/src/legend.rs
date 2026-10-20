@@ -21,6 +21,7 @@
 //! custom layouts edit `content.segments` directly.
 
 use crate::color::Color;
+use crate::colormap::ColorMap;
 use crate::data_config::{DataRenderType, ScatterShape, SeriesConfig};
 use crate::line::LineStylePreset;
 use crate::text::{RichSegment, RichText, rich_segments_from_text};
@@ -141,7 +142,7 @@ mod legend_update_tests {
     #[test]
     fn dashed_series_symbol_carries_rule_dash() {
         let red = Color::new(1.0, 0.0, 0.0, 1.0);
-        let segs = series_symbol_segments(&line_cfg(red, LineStylePreset::Dash));
+        let segs = series_symbol_segments(&line_cfg(red, LineStylePreset::Dash), None);
         assert_eq!(segs.len(), 1);
         assert!(segs[0].rule);
         assert_eq!(segs[0].color, Some(red));
@@ -159,12 +160,12 @@ mod legend_update_tests {
         let mut content = empty_content();
         append_legend_entry(
             &mut content,
-            series_symbol_segments(&line_cfg(red, LineStylePreset::Solid)),
+            series_symbol_segments(&line_cfg(red, LineStylePreset::Solid), None),
             "line 1\nline 2",
         );
         append_legend_entry(
             &mut content,
-            series_symbol_segments(&line_cfg(blue, LineStylePreset::Solid)),
+            series_symbol_segments(&line_cfg(blue, LineStylePreset::Solid), None),
             "beta",
         );
 
@@ -173,7 +174,7 @@ mod legend_update_tests {
             line_cfg(red, LineStylePreset::Dot),
         ];
         assert_eq!(
-            update_legend_symbols_preserving_text(&mut content, &series),
+            update_legend_symbols_preserving_text(&mut content, &series, None),
             2
         );
         let text: String = content.segments.iter().map(|s| s.text).collect();
@@ -190,19 +191,19 @@ mod legend_update_tests {
         let mut content = empty_content();
         append_legend_entry(
             &mut content,
-            series_symbol_segments(&line_cfg(Color::BLACK, LineStylePreset::Solid)),
+            series_symbol_segments(&line_cfg(Color::BLACK, LineStylePreset::Solid), None),
             "alpha",
         );
         append_legend_entry(
             &mut content,
-            series_symbol_segments(&line_cfg(Color::BLACK, LineStylePreset::Solid)),
+            series_symbol_segments(&line_cfg(Color::BLACK, LineStylePreset::Solid), None),
             "beta",
         );
 
         set_legend_entry_label(
             &mut content,
             1,
-            series_symbol_segments(&line_cfg(Color::BLACK, LineStylePreset::Solid)),
+            series_symbol_segments(&line_cfg(Color::BLACK, LineStylePreset::Solid), None),
             rich_segments_from_text("gamma"),
         );
         let text: String = content.segments.iter().map(|s| s.text).collect();
@@ -224,7 +225,8 @@ mod legend_update_tests {
         assert_eq!(
             update_legend_symbols_preserving_text(
                 &mut content,
-                &[line_cfg(Color::BLACK, LineStylePreset::Solid)]
+                &[line_cfg(Color::BLACK, LineStylePreset::Solid)],
+                None,
             ),
             0
         );
@@ -309,8 +311,8 @@ pub fn symbol_segments(kind: &LegendEntryKind, color: Color) -> Vec<RichSegment>
 
 /// Blank mark of exactly [`SYMBOL_FIELD_EM`] — a label-only legend row.
 ///
-/// Used for a heatmap, whose colour is the colourbar's to report and not a
-/// single swatch's. It is a spacer rather than an empty vec because every series
+/// Used for a heatmap when no colour map is known: its colours are a ramp,
+/// not a single swatch. It is a spacer rather than an empty vec because every series
 /// must still produce exactly one entry: legend entry `i` **is** series `i`
 /// (`update_legend_symbols_preserving_text` zips the two positionally, and the
 /// web layer passes series indices to `set_legend_entry_label`), so a skipped
@@ -320,15 +322,33 @@ fn blank_symbol() -> Vec<RichSegment> {
     vec![RichSegment::fielded(' ', SYMBOL_FIELD_EM, None)]
 }
 
+/// Steps of a colour map swatch across the symbol field.
+const COLORMAP_SWATCH_STEPS: usize = 6;
+
+/// Colour map swatch: the map's ramp, low to high, as equal flat bands
+/// filling [`SYMBOL_FIELD_EM`], each band a rule over a fill band of its
+/// colour. The colours are the colourbar's, not dimmed by a fill opacity, so
+/// the row reads as "this series is drawn with that map".
+fn colormap_symbol(map: &ColorMap) -> Vec<RichSegment> {
+    let width = SYMBOL_FIELD_EM / COLORMAP_SWATCH_STEPS as f32;
+    (0..COLORMAP_SWATCH_STEPS)
+        .map(|step| {
+            let color = map.sample((step as f32 + 0.5) / COLORMAP_SWATCH_STEPS as f32);
+            RichSegment::rule(width, Some(color)).with_rule_band(Some(color))
+        })
+        .collect()
+}
+
 /// Symbol segments matching a series declaration: line / scatter / combined,
 /// shape and color taken from the render type's sub-styles.
 ///
 /// A line with a fill carries a band of the fill colour under its rule
 /// ([`DataLineStyleConfig::effective_fill_color`]), inside the same fixed
-/// symbol field.
+/// symbol field. A heatmap shows a swatch of `colormap`, the colour map that
+/// draws it (its chart's colourbar map); without one the mark is blank.
 ///
 /// [`DataLineStyleConfig::effective_fill_color`]: crate::data_config::DataLineStyleConfig::effective_fill_color
-pub fn series_symbol_segments(cfg: &SeriesConfig) -> Vec<RichSegment> {
+pub fn series_symbol_segments(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -> Vec<RichSegment> {
     match &cfg.render_type {
         DataRenderType::Line { line } => {
             line_symbol(line.line_color, line.line_style, line_fill_band(line))
@@ -344,7 +364,7 @@ pub fn series_symbol_segments(cfg: &SeriesConfig) -> Vec<RichSegment> {
         | DataRenderType::HeatmapContour { contour, .. } => {
             line_symbol(contour.line.line_color, contour.line.line_style, None)
         }
-        DataRenderType::Heatmap { .. } => blank_symbol(),
+        DataRenderType::Heatmap { .. } => colormap.map_or_else(blank_symbol, colormap_symbol),
         // An arrow: a rule for the shaft and the right-pointing head glyph,
         // in the series colour. A colour map's colours belong to the colourbar.
         DataRenderType::Vector { style, .. } => vector_symbol(style.color),
@@ -491,17 +511,19 @@ pub fn legend_entry_count(content: &RichText) -> usize {
 
 /// Replace recognized entry symbols in order and keep every user text segment
 /// untouched. Custom layouts that do not expose the auto symbol+tab shape are
-/// left unchanged.
+/// left unchanged. `colormap` is the chart's colourbar map, which a heatmap
+/// mark shows ([`series_symbol_segments`]).
 pub fn update_legend_symbols_preserving_text(
     content: &mut RichText,
     series: &[SeriesConfig],
+    colormap: Option<&ColorMap>,
 ) -> usize {
     let spans = legend_entry_spans(content);
     let mut replaced = 0;
     for (span, cfg) in spans.into_iter().zip(series.iter()).rev() {
         content
             .segments
-            .splice(span.symbol, series_symbol_segments(cfg));
+            .splice(span.symbol, series_symbol_segments(cfg, colormap));
         replaced += 1;
     }
     replaced
@@ -601,7 +623,7 @@ mod tests {
     #[test]
     fn series_symbol_takes_series_color_as_override() {
         let red = Color::new(1.0, 0.0, 0.0, 1.0);
-        let segs = series_symbol_segments(&line_cfg(red));
+        let segs = series_symbol_segments(&line_cfg(red), None);
         assert_eq!(segs.len(), 1); // "—"
         assert_eq!(segs[0].text, '—');
         assert_eq!(segs[0].color, Some(red));
@@ -621,7 +643,7 @@ mod tests {
             unreachable!()
         };
         line.fill = Some(LineFill::ToBaseline(0.0));
-        let segs = series_symbol_segments(&filled);
+        let segs = series_symbol_segments(&filled, None);
         assert_eq!(segs.len(), 1);
         assert!(segs[0].rule);
         assert_eq!(segs[0].color, Some(red));
@@ -635,7 +657,10 @@ mod tests {
             )),
             "the default band is the line colour at the default fill alpha"
         );
-        assert_eq!(series_symbol_segments(&line_cfg(red))[0].rule_band, None);
+        assert_eq!(
+            series_symbol_segments(&line_cfg(red), None)[0].rule_band,
+            None
+        );
 
         // An explicit fill colour wins, and a line + marker mark bands both
         // half rules while the glyph between them stays plain.
@@ -660,7 +685,7 @@ mod tests {
             },
             ..line_cfg(red)
         };
-        let segs = series_symbol_segments(&combined);
+        let segs = series_symbol_segments(&combined, None);
         assert_eq!(segs.len(), 3);
         assert_eq!(segs[0].rule_band, Some(blue));
         assert_eq!(segs[1].rule_band, None);
@@ -843,7 +868,7 @@ mod tests {
     // primitives are actually drawn with.
     #[test]
     fn field_series_symbols_come_from_the_primitive_that_is_drawn() {
-        let swatch = series_symbol_segments(&field_series(bar(Color::from_rgb8(1, 2, 3))));
+        let swatch = series_symbol_segments(&field_series(bar(Color::from_rgb8(1, 2, 3))), None);
         assert_eq!(swatch.len(), 1);
         assert_eq!(swatch[0].color, Some(Color::from_rgb8(1, 2, 3)));
         assert_eq!(
@@ -863,7 +888,7 @@ mod tests {
                 contour: contour(level_color),
             },
         ] {
-            let mark = series_symbol_segments(&field_series(render_type));
+            let mark = series_symbol_segments(&field_series(render_type), None);
             assert_eq!(mark.len(), 1, "a contour mark is one rule");
             assert_eq!(mark[0].color, Some(level_color));
             // Dashed, because the contour line is — the mark reports the style
@@ -873,7 +898,58 @@ mod tests {
         }
     }
 
-    // A heatmap has no swatch of its own: its colours are the colourbar's. The
+    // With its chart's colour map, a heatmap's mark is that map's ramp: equal
+    // bands across the symbol field, low to high, in the colourbar's colours
+    // whatever the fill opacity. The bands form one symbol, so the entry is
+    // still one entry.
+    #[test]
+    fn a_heatmap_with_a_colormap_shows_a_swatch_of_it() {
+        let heatmap = field_series(DataRenderType::Heatmap {
+            matrix: matrix(),
+            fill: crate::data_config::FieldFillConfig {
+                opacity: 0.5,
+                ..fill()
+            },
+        });
+        let map = ColorMap::Viridis;
+        let mark = series_symbol_segments(&heatmap, Some(&map));
+        assert_eq!(mark.len(), COLORMAP_SWATCH_STEPS);
+        let width: f32 = mark.iter().map(|seg| seg.field_em.unwrap()).sum();
+        assert!((width - SYMBOL_FIELD_EM).abs() < 1e-5, "{width}");
+        let low = map.sample(0.5 / COLORMAP_SWATCH_STEPS as f32);
+        let high = map.sample(1.0 - 0.5 / COLORMAP_SWATCH_STEPS as f32);
+        for (seg, expected) in [(mark.first(), low), (mark.last(), high)] {
+            let seg = seg.unwrap();
+            assert!(seg.rule);
+            assert_eq!(seg.color, seg.rule_band);
+            assert_eq!(seg.color, Some(expected));
+        }
+
+        let series = [line_cfg(Color::from_rgb8(10, 0, 0)), heatmap];
+        let mut content = RichText {
+            segments: Vec::new(),
+            color: Color::BLACK,
+            font_size: 12.0,
+            font: String::new(),
+            align: TextAlign::Left,
+        };
+        for cfg in &series {
+            append_legend_entry(
+                &mut content,
+                series_symbol_segments(cfg, Some(&map)),
+                "label",
+            );
+        }
+        assert_eq!(legend_entry_count(&content), series.len());
+        let before = content.clone();
+        assert_eq!(
+            update_legend_symbols_preserving_text(&mut content, &series, Some(&map)),
+            series.len()
+        );
+        assert_eq!(content, before);
+    }
+
+    // Without a colour map a heatmap has no swatch to show. The
     // mark is blank — but it is still exactly one full-width segment, because
     // legend entry `i` is series `i` and the symbol column is tab-aligned across
     // rows. An empty vec would re-point every later row at the wrong series.
@@ -883,7 +959,7 @@ mod tests {
             matrix: matrix(),
             fill: fill(),
         });
-        let mark = series_symbol_segments(&heatmap);
+        let mark = series_symbol_segments(&heatmap, None);
         assert_eq!(mark.len(), 1);
         assert_eq!(mark[0].field_em, Some(SYMBOL_FIELD_EM));
         assert_eq!(mark[0].text, ' ');
@@ -902,11 +978,11 @@ mod tests {
             align: TextAlign::Left,
         };
         for cfg in &series {
-            append_legend_entry(&mut content, series_symbol_segments(cfg), "label");
+            append_legend_entry(&mut content, series_symbol_segments(cfg, None), "label");
         }
         assert_eq!(legend_entry_count(&content), series.len());
         assert_eq!(
-            update_legend_symbols_preserving_text(&mut content, &series),
+            update_legend_symbols_preserving_text(&mut content, &series, None),
             series.len(),
             "every series must own exactly one entry, or later symbols shift"
         );

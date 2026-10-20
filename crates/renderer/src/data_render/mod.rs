@@ -5168,6 +5168,52 @@ pub fn draw_chart_panel_columnar(
     decoration: AxisLayer<'_>,
     annotation_overlay: Option<AxisLayer<'_>>,
 ) {
+    draw_chart_panel_with_bodies(
+        pass,
+        target_size,
+        panel_rect,
+        data_area,
+        grid,
+        annotation_underlay,
+        series_list,
+        None,
+        decoration,
+        annotation_overlay,
+    );
+}
+
+/// Every series' fill, then every body, each loop in SSOT series order: the
+/// part of a panel a resident composite caches. The fill loop comes first by
+/// construction so another series' fill can never cover this series' line.
+pub(crate) fn issue_series_bodies(
+    pass: &mut wgpu::RenderPass<'_>,
+    series_list: &[SeriesLayers<'_>],
+) {
+    for s in series_list {
+        issue_series_fill(pass, s);
+    }
+    for s in series_list {
+        issue_series_data(pass, s);
+    }
+}
+
+/// [`draw_chart_panel_columnar`], with the fills and bodies taken from
+/// `cached_bodies` when given: a panel-sized texture of exactly what
+/// [`issue_series_bodies`] draws. The picked highlights always come from
+/// `series_list`, so a selection never needs the bodies drawn again.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_chart_panel_with_bodies(
+    pass: &mut wgpu::RenderPass<'_>,
+    target_size: (u32, u32),
+    panel_rect: Rect,
+    data_area: Rect,
+    grid: AxisLayer<'_>,
+    annotation_underlay: Option<AxisLayer<'_>>,
+    series_list: &[SeriesLayers<'_>],
+    cached_bodies: Option<AxisLayer<'_>>,
+    decoration: AxisLayer<'_>,
+    annotation_overlay: Option<AxisLayer<'_>>,
+) {
     let Some(panel_clamped) = clamp_rect_to_target(panel_rect, target_size) else {
         return;
     };
@@ -5212,11 +5258,28 @@ pub fn draw_chart_panel_columnar(
         data_clamped.width,
         data_clamped.height,
     );
-    for s in series_list {
-        issue_series_fill(pass, s);
-    }
-    for s in series_list {
-        issue_series_data(pass, s);
+    match cached_bodies {
+        Some(layer) => {
+            // The composite was clipped to the data area when it was drawn;
+            // clipping its blit again would apply the data scissor twice at
+            // the edge samples, which a direct draw applies once.
+            pass.set_scissor_rect(
+                panel_clamped.x,
+                panel_clamped.y,
+                panel_clamped.width,
+                panel_clamped.height,
+            );
+            pass.set_pipeline(layer.pipeline);
+            pass.set_bind_group(0, layer.bind_group, &[]);
+            pass.draw(0..3, 0..1);
+            pass.set_scissor_rect(
+                data_clamped.x,
+                data_clamped.y,
+                data_clamped.width,
+                data_clamped.height,
+            );
+        }
+        None => issue_series_bodies(pass, series_list),
     }
     for s in series_list {
         issue_series_picked(pass, s);

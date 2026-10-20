@@ -24,6 +24,7 @@ use renderer::{
 };
 
 use crate::HostCtx;
+use crate::big_data::{self, BigData, FrameTime};
 use crate::scenes::{self, SceneKind};
 use crate::widgets::{self, choice, color, rich_text, section, slider};
 
@@ -132,6 +133,8 @@ pub struct CartesianHost {
     error: Option<String>,
     color_cycle: usize,
     export_scale: f32,
+    /// Size, mode and timings of the large-data scene; `None` elsewhere.
+    big: Option<BigData>,
 }
 
 impl CartesianHost {
@@ -164,6 +167,7 @@ impl CartesianHost {
             error: None,
             color_cycle: 0,
             export_scale: 2.0,
+            big: (kind == SceneKind::BigData).then(BigData::new),
         })
     }
 
@@ -173,6 +177,36 @@ impl CartesianHost {
         if let Err(e) = r.remove_chart(self.id) {
             eprintln!("[scene] remove chart: {e}");
         }
+        if self.big.is_some() {
+            big_data::release(r);
+        }
+    }
+
+    /// Whether the host should wait for the GPU after each frame and report
+    /// its time through [`Self::frame_timed`].
+    pub fn wants_frame_timing(&self) -> bool {
+        self.big.as_ref().is_some_and(BigData::wants_timing)
+    }
+
+    /// Record one frame's time. Returns whether another frame is needed now
+    /// (a benchmark is running).
+    pub fn frame_timed(
+        &mut self,
+        r: &mut Renderer,
+        prepare: std::time::Duration,
+        total: std::time::Duration,
+    ) -> bool {
+        let Some(big) = self.big.as_mut() else {
+            return false;
+        };
+        if let Some((min, max)) = big.frame_done(FrameTime { prepare, total }) {
+            let mut chart = Chart::new(self.config(r));
+            chart.set_x_range(min, max);
+            self.commit(r, chart.config().clone());
+        }
+        self.big
+            .as_ref()
+            .is_some_and(|b| b.benchmarking().is_some())
     }
 
     fn config(&self, r: &Renderer) -> Config {
@@ -239,6 +273,11 @@ impl CartesianHost {
 
     /// Refresh derived resources and prepare this frame's draw token.
     pub fn prepare(&mut self, r: &mut Renderer) -> Option<PreparedFrame> {
+        if let Some((min, max)) = self.big.as_ref().and_then(BigData::bench_range) {
+            let mut chart = Chart::new(self.config(r));
+            chart.set_x_range(min, max);
+            self.commit(r, chart.config().clone());
+        }
         let d = self.display(r)?;
         let series = self.series(r);
         if self.styles_scale != Some(d.scale) {
@@ -714,6 +753,10 @@ impl CartesianHost {
         let before = config.clone();
         let mut series = self.series(r);
         let series_before = series.clone();
+        let big_action = self
+            .big
+            .as_mut()
+            .and_then(|big| big_data_controls(ui, big, r, host));
 
         section(ui, "Interaction", true, |ui| {
             ui.horizontal(|ui| {
@@ -1049,7 +1092,187 @@ impl CartesianHost {
         } else if config != before {
             self.commit(r, config);
         }
+        if let Some(action) = big_action {
+            self.big_data_action(r, action);
+            ui.ctx().request_repaint();
+        }
     }
+
+    fn big_data_action(&mut self, r: &mut Renderer, action: big_data::Action) {
+        let Some(big) = self.big.as_mut() else {
+            return;
+        };
+        match action {
+            big_data::Action::Upload => {
+                self.styles_scale = None;
+                self.selected = None;
+                self.picks.clear();
+                self.pick_notes.clear();
+                let current = self.config(r);
+                let Some(big) = self.big.as_mut() else {
+                    return;
+                };
+                let (config, series) = big.upload(r, current);
+                if let Err(e) = r.set_chart_series(self.id, series) {
+                    self.error = Some(format!("series rejected: {e}"));
+                } else {
+                    self.commit(r, config);
+                }
+            }
+            big_data::Action::Mode(mode) => {
+                big.mode = mode;
+                self.commit_series(r, big_data::series(mode));
+            }
+            big_data::Action::Bench => {
+                let config = self.config(r);
+                if let Some(big) = self.big.as_mut() {
+                    big.start_bench(&config);
+                }
+            }
+        }
+    }
+}
+
+/// The large-data panel: size, mode, memory and timings. Actions are returned
+/// and applied after the panel's other edits commit.
+fn big_data_controls(
+    ui: &mut egui::Ui,
+    big: &mut BigData,
+    r: &Renderer,
+    host: &HostCtx<'_>,
+) -> Option<big_data::Action> {
+    const MIB: f64 = 1024.0 * 1024.0;
+    let mut action = None;
+    section(ui, "Large data (resident)", true, |ui| {
+        ui.add(
+            egui::Slider::new(
+                &mut big.pending,
+                big_data::MIN_POINTS..=big_data::MAX_POINTS,
+            )
+            .logarithmic(true)
+            .text("points"),
+        );
+        // Two hi/lo columns, 8 bytes per value each.
+        let bytes = big.pending as f64 * 16.0;
+        ui.label(format!(
+            "{:.0} MiB in the GPU pool (X and Y, hi/lo pairs)",
+            bytes / MIB
+        ));
+        // The pool is one buffer bound whole as storage, so the smaller of the
+        // two device limits caps it; the other scenes' columns share it.
+        let limits = host.device.limits();
+        let ceiling = limits
+            .max_buffer_size
+            .min(limits.max_storage_buffer_binding_size);
+        let others = r.pool().used_bytes().saturating_sub(big.points as u64 * 16);
+        let max_points = ceiling.saturating_sub(others) / 16;
+        if big.pending as u64 > max_points {
+            ui.colored_label(
+                egui::Color32::from_rgb(170, 110, 0),
+                format!(
+                    "Over this device's pool ceiling ({:.0} MiB): about {} points fit",
+                    ceiling as f64 / MIB,
+                    big_data::group_digits(max_points as usize)
+                ),
+            );
+        }
+        let busy = big.benchmarking().is_some();
+        if ui
+            .add_enabled(
+                !busy,
+                egui::Button::new(format!(
+                    "Upload {} points",
+                    big_data::group_digits(big.pending)
+                )),
+            )
+            .clicked()
+        {
+            action = Some(big_data::Action::Upload);
+        }
+        let upload = big
+            .upload_time
+            .map_or(String::new(), |t| format!(" in {:.2} s", t.as_secs_f64()));
+        ui.label(format!(
+            "Uploaded: {} points{upload}",
+            big_data::group_digits(big.points)
+        ));
+        if let Some(e) = &big.upload_error {
+            ui.colored_label(egui::Color32::RED, e);
+        }
+        ui.horizontal(|ui| {
+            for mode in big_data::Mode::ALL {
+                if ui
+                    .add_enabled(
+                        !busy,
+                        egui::RadioButton::new(big.mode == mode, mode.label()),
+                    )
+                    .clicked()
+                    && big.mode != mode
+                {
+                    action = Some(big_data::Action::Mode(mode));
+                }
+            }
+        });
+        ui.label(
+            egui::RichText::new(format!(
+                "Pool {:.0} / {:.0} MiB · device buffer limit {:.0} MiB, storage binding {:.0} MiB",
+                r.pool().used_bytes() as f64 / MIB,
+                r.pool().capacity() as f64 / MIB,
+                limits.max_buffer_size as f64 / MIB,
+                limits.max_storage_buffer_binding_size as f64 / MIB,
+            ))
+            .small(),
+        );
+        ui.separator();
+        ui.checkbox(&mut big.time_frames, "Time every frame (waits for the GPU)");
+        if let Some(t) = big.last {
+            let total = t.total.as_secs_f64() * 1000.0;
+            ui.label(
+                egui::RichText::new(format!(
+                    "Last frame {total:.2} ms ({}) · prepare {:.2} ms",
+                    big_data::fps(total),
+                    t.prepare.as_secs_f64() * 1000.0
+                ))
+                .monospace(),
+            );
+        }
+        match big.benchmarking() {
+            Some(frame) => {
+                ui.label(format!(
+                    "Panning… frame {frame} / {}",
+                    big_data::BENCH_FRAMES
+                ));
+            }
+            None => {
+                if ui
+                    .button(format!("Pan benchmark ({} frames)", big_data::BENCH_FRAMES))
+                    .on_hover_text(
+                        "Moves the X range every frame, as a drag does, and waits for the \
+                         GPU after each frame",
+                    )
+                    .clicked()
+                {
+                    action = Some(big_data::Action::Bench);
+                }
+            }
+        }
+        if let Some(rep) = big.report {
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} points, {}:\nmean {:.2} ms ({}) · median {:.2}\np95 {:.2} · max {:.2} ms",
+                    big_data::group_digits(rep.points),
+                    rep.mode.label(),
+                    rep.mean,
+                    big_data::fps(rep.mean),
+                    rep.median,
+                    rep.p95,
+                    rep.max,
+                ))
+                .monospace(),
+            );
+        }
+    });
+    action
 }
 
 fn to_space(axis: &AxisOptions, v: f64) -> f64 {
@@ -1340,7 +1563,9 @@ fn read_samples(r: &Renderer, samples: &[(String, usize)]) -> Result<Vec<f64>, S
         .map_err(|e| e.to_string())?;
     let mapped = slice.get_mapped_range().map_err(|e| e.to_string())?;
     let values = mapped
-        .chunks_exact(8)
+        .as_chunks::<8>()
+        .0
+        .iter()
         .take(offsets.len())
         .map(|pair| {
             f64::from(f32::from_le_bytes(pair[..4].try_into().unwrap()))
@@ -1674,6 +1899,10 @@ fn layer_columns<'a>(
     )
 }
 
+/// Padding ratio of both fit buttons, so "fit" and "fit group" differ only in
+/// which series take part.
+const PADDING: f64 = 0.05;
+
 /// Fit the axes a layer owns to the series it draws. No-op for an empty layer.
 fn fit_layer(config: &mut Config, series: &[SeriesConfig], r: &Renderer, layer: LayerRef) {
     let (xs, ys) = layer_columns(config, series, layer);
@@ -1683,17 +1912,17 @@ fn fit_layer(config: &mut Config, series: &[SeriesConfig], r: &Renderer, layer: 
     let pool = r.pool();
     let mut chart = Chart::new(config.clone());
     let result = match layer {
-        LayerRef::Overlay(i) => chart.auto_fit_overlay_y_union(pool, i, &ys, 0.1),
+        LayerRef::Overlay(i) => chart.auto_fit_overlay_y_union(pool, i, &ys, PADDING),
         LayerRef::Subplot(j) => chart
-            .auto_fit_subplot_x_union(pool, j, &xs, 0.05)
-            .and_then(|_| chart.auto_fit_subplot_y_union(pool, j, &ys, 0.1)),
+            .auto_fit_subplot_x_union(pool, j, &xs, PADDING)
+            .and_then(|_| chart.auto_fit_subplot_y_union(pool, j, &ys, PADDING)),
         LayerRef::SubplotOverlay(j, k) => {
             // No document-level helper: fit the subplot's own chart, copy the axis back.
             let Some(sub) = config.subplots.get(j) else {
                 return;
             };
             let mut inner = Chart::new(sub.config.clone());
-            let fitted = inner.auto_fit_overlay_y_union(pool, k, &ys, 0.1);
+            let fitted = inner.auto_fit_overlay_y_union(pool, k, &ys, PADDING);
             if fitted.is_ok() {
                 let axis = inner.config().overlays[k].y_axis.clone();
                 chart.with_axis_range_change(|c| c.subplots[j].config.overlays[k].y_axis = axis);
@@ -1701,10 +1930,22 @@ fn fit_layer(config: &mut Config, series: &[SeriesConfig], r: &Renderer, layer: 
             fitted
         }
         _ => chart
-            .auto_fit_x_union(pool, &xs, 0.05)
-            .and_then(|_| chart.auto_fit_y_union(pool, &ys, 0.1)),
+            .auto_fit_x_union(pool, &xs, PADDING)
+            .and_then(|_| chart.auto_fit_y_union(pool, &ys, PADDING)),
     };
     if result.is_ok() {
+        *config = chart.config().clone();
+    }
+}
+
+/// Fit a layer's axes to every series of its link groups, so a linked axis
+/// keeps the data of every chart that shares it.
+fn fit_link_group(config: &mut Config, series: &[SeriesConfig], r: &Renderer, layer: LayerRef) {
+    let mut chart = Chart::new(config.clone());
+    if chart
+        .auto_fit_layer_union(r.pool(), layer, series, PADDING)
+        .is_ok()
+    {
         *config = chart.config().clone();
     }
 }
@@ -1911,8 +2152,19 @@ fn layers_controls(
             let sub = &mut config.subplots[j];
             ui.horizontal(|ui| {
                 ui.label(format!("Subplot {j}: {} series", sub.series.len()));
-                if ui.small_button("fit").clicked() {
-                    fit_subplot = Some(j);
+                if ui
+                    .small_button("fit")
+                    .on_hover_text("This chart's series only")
+                    .clicked()
+                {
+                    fit_subplot = Some((j, false));
+                }
+                if ui
+                    .small_button("fit group")
+                    .on_hover_text("Every series of its link groups (Chart::auto_fit_layer_union)")
+                    .clicked()
+                {
+                    fit_subplot = Some((j, true));
                 }
                 if ui.small_button("+ overlay").clicked() {
                     let k = sub.config.overlays.len();
@@ -1948,8 +2200,10 @@ fn layers_controls(
             }
         });
     }
-    if let Some(j) = fit_subplot {
-        fit_layer(config, series, r, LayerRef::Subplot(j));
+    match fit_subplot {
+        Some((j, false)) => fit_layer(config, series, r, LayerRef::Subplot(j)),
+        Some((j, true)) => fit_link_group(config, series, r, LayerRef::Subplot(j)),
+        None => {}
     }
     if let Some(j) = remove_subplot {
         config.subplots.remove(j);

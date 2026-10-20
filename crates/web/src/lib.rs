@@ -280,42 +280,6 @@ fn histogram_fit_columns<'a>(
     }
 }
 
-/// Whether series `series_id` takes part in the X and in the Y fit of
-/// `auto_fit_all` with `fit` active (`Annotations` already mapped to `Base`).
-///
-/// `Base` and `Subplot(i)` fit that chart's `bottom_x` and `left_y`. Its X
-/// axis fits every series drawn against it: the series of every chart in its
-/// X link group, overlays included, since an overlay shares its chart's X
-/// axis. Its Y axis fits the base-layer series of every chart in its Y link
-/// group. `Overlay(n)` and `SubplotOverlay(i, n)` fit only that overlay's Y
-/// axis, from that overlay's series.
-#[cfg(any(target_arch = "wasm32", test))]
-fn auto_fit_roles(
-    config: &renderer::Config,
-    fit: renderer::LayerRef,
-    series_id: &str,
-) -> (bool, bool) {
-    use renderer::{CellRef, LayerRef};
-
-    let cell = |layer: LayerRef| match layer {
-        LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => CellRef::Subplot(index),
-        _ => CellRef::Parent,
-    };
-    let root = |cell: CellRef, x: bool| match cell {
-        CellRef::Parent => CellRef::Parent,
-        CellRef::Subplot(index) => config.subplot_link_root(index, x),
-    };
-    let own = config.layer_of_series(series_id);
-    match fit {
-        LayerRef::Base | LayerRef::Subplot(_) => (
-            root(cell(own), true) == root(cell(fit), true),
-            matches!(own, LayerRef::Base | LayerRef::Subplot(_))
-                && root(cell(own), false) == root(cell(fit), false),
-        ),
-        _ => (false, own == fit),
-    }
-}
-
 #[cfg(any(target_arch = "wasm32", test))]
 fn revisioned_column_from(
     revisions: &std::collections::HashMap<String, u64>,
@@ -848,7 +812,10 @@ fn prepare_demo_declarations(
             renderer::config::set_legend_entry_label(
                 &mut config.legend.content,
                 index,
-                renderer::config::series_symbol_segments(&item),
+                renderer::config::series_symbol_segments(
+                    &item,
+                    config.colorbar.as_ref().map(|bar| &bar.colormap),
+                ),
                 rich_label.segments,
             );
         } else {
@@ -856,7 +823,10 @@ fn prepare_demo_declarations(
             labels.push(Some(label.to_string()));
             renderer::config::append_legend_entry_rich(
                 &mut config.legend.content,
-                renderer::config::series_symbol_segments(&item),
+                renderer::config::series_symbol_segments(
+                    &item,
+                    config.colorbar.as_ref().map(|bar| &bar.colormap),
+                ),
                 rich_label.segments,
             );
         }
@@ -1521,67 +1491,6 @@ mod tests {
                 .is_empty(),
             "non-paired render types are fitted from upload metadata"
         );
-    }
-
-    #[test]
-    fn auto_fit_roles_follow_layers_and_link_groups() {
-        use renderer::{CellRef, LayerRef, OverlayLayer, Subplot};
-
-        // Parent: base `p`, overlay `po`. Subplot 0: own axes, base `s0`,
-        // overlay `s0o`. Subplot 1: X linked to the parent, Y to subplot 0,
-        // base `s1`. Subplot 2: X linked to subplot 1 (so to the parent).
-        let mut config = renderer::default::default_config();
-        let mut overlay = OverlayLayer::default();
-        overlay.series = vec!["po".into()];
-        config.overlays.push(overlay);
-        let mut first = renderer::default::default_config();
-        let mut first_overlay = OverlayLayer::default();
-        first_overlay.series = vec!["s0o".into()];
-        first.overlays.push(first_overlay);
-        config.subplots = vec![
-            Subplot {
-                config: first,
-                series: vec!["s0".into(), "s0o".into()],
-                ..Subplot::default()
-            },
-            Subplot {
-                series: vec!["s1".into()],
-                link_x: Some(CellRef::Parent),
-                link_y: Some(CellRef::Subplot(0)),
-                ..Subplot::default()
-            },
-            Subplot {
-                series: vec!["s2".into()],
-                link_x: Some(CellRef::Subplot(1)),
-                ..Subplot::default()
-            },
-        ];
-        let roles = |fit, id| crate::auto_fit_roles(&config, fit, id);
-
-        // Base: X from every chart linked to the parent's X, overlay series
-        // included; Y from the parent's base series only.
-        assert_eq!(roles(LayerRef::Base, "p"), (true, true));
-        assert_eq!(roles(LayerRef::Base, "po"), (true, false));
-        assert_eq!(roles(LayerRef::Base, "s0"), (false, false));
-        assert_eq!(roles(LayerRef::Base, "s0o"), (false, false));
-        assert_eq!(roles(LayerRef::Base, "s1"), (true, false));
-        assert_eq!(roles(LayerRef::Base, "s2"), (true, false));
-        // Subplot 1 fits the same X group as the parent, and the Y group it
-        // shares with subplot 0.
-        assert_eq!(roles(LayerRef::Subplot(1), "p"), (true, false));
-        assert_eq!(roles(LayerRef::Subplot(1), "s0"), (false, true));
-        assert_eq!(roles(LayerRef::Subplot(1), "s0o"), (false, false));
-        assert_eq!(roles(LayerRef::Subplot(1), "s1"), (true, true));
-        assert_eq!(roles(LayerRef::Subplot(1), "s2"), (true, false));
-        // Subplot 0 owns its X axis; its overlay shares that X axis.
-        assert_eq!(roles(LayerRef::Subplot(0), "s0o"), (true, false));
-        assert_eq!(roles(LayerRef::Subplot(0), "s1"), (false, true));
-        assert_eq!(roles(LayerRef::Subplot(0), "p"), (false, false));
-        // Overlay layers fit only their own Y axis.
-        assert_eq!(roles(LayerRef::Overlay(0), "po"), (false, true));
-        assert_eq!(roles(LayerRef::Overlay(0), "p"), (false, false));
-        assert_eq!(roles(LayerRef::SubplotOverlay(0, 0), "s0o"), (false, true));
-        assert_eq!(roles(LayerRef::SubplotOverlay(0, 0), "s0"), (false, false));
     }
 
     #[test]
@@ -3239,7 +3148,10 @@ mod web {
             for (cfg, label) in entries {
                 renderer::config::append_legend_entry_rich(
                     &mut config.legend.content,
-                    renderer::config::series_symbol_segments(&cfg),
+                    renderer::config::series_symbol_segments(
+                        &cfg,
+                        config.colorbar.as_ref().map(|bar| &bar.colormap),
+                    ),
                     label.segments,
                 );
             }
@@ -4883,6 +4795,7 @@ mod web {
                 renderer::config::update_legend_symbols_preserving_text(
                     &mut next_config.legend.content,
                     &next_series,
+                    next_config.colorbar.as_ref().map(|bar| &bar.colormap),
                 );
             }
 
@@ -5003,12 +4916,18 @@ mod web {
                     Some(index) => renderer::config::set_legend_entry_label(
                         &mut next_config.legend.content,
                         index,
-                        renderer::config::series_symbol_segments(&cfg),
+                        renderer::config::series_symbol_segments(
+                            &cfg,
+                            next_config.colorbar.as_ref().map(|bar| &bar.colormap),
+                        ),
                         label.segments,
                     ),
                     None => renderer::config::append_legend_entry_rich(
                         &mut next_config.legend.content,
-                        renderer::config::series_symbol_segments(&cfg),
+                        renderer::config::series_symbol_segments(
+                            &cfg,
+                            next_config.colorbar.as_ref().map(|bar| &bar.colormap),
+                        ),
                         label.segments,
                     ),
                 }
@@ -5017,6 +4936,7 @@ mod web {
                 renderer::config::update_legend_symbols_preserving_text(
                     &mut next_config.legend.content,
                     &proposed,
+                    next_config.colorbar.as_ref().map(|bar| &bar.colormap),
                 );
             }
 
@@ -5056,7 +4976,10 @@ mod web {
                 renderer::config::set_legend_entry_label(
                     &mut config.legend.content,
                     i,
-                    renderer::config::series_symbol_segments(&series[i]),
+                    renderer::config::series_symbol_segments(
+                        &series[i],
+                        config.colorbar.as_ref().map(|bar| &bar.colormap),
+                    ),
                     label.segments,
                 );
                 config.legend.visible = true;
@@ -5087,6 +5010,7 @@ mod web {
                 renderer::config::update_legend_symbols_preserving_text(
                     &mut config.legend.content,
                     &series,
+                    config.colorbar.as_ref().map(|bar| &bar.colormap),
                 );
             }
             self.replace_chart_state(config, series)?;
@@ -5251,7 +5175,7 @@ mod web {
             let mut jobs = Vec::new();
             jobs.try_reserve(series.len()).map_err(js_err)?;
             jobs.extend(series.iter().filter_map(|cfg| {
-                let (x, y) = crate::auto_fit_roles(config, layer, &cfg.series_id);
+                let (x, y) = config.series_fit_roles(layer, &cfg.series_id);
                 if !(x || y) {
                     return None;
                 }
@@ -5279,7 +5203,7 @@ mod web {
                 min_positive: (value > 0.0).then_some(value),
             };
             for cfg in &series {
-                let (x, y) = crate::auto_fit_roles(self.chart_config(), layer, &cfg.series_id);
+                let (x, y) = self.chart_config().series_fit_roles(layer, &cfg.series_id);
                 match &cfg.render_type {
                     DataRenderType::Histogram { bar } if x || y => {
                         let (edge_column, count_column) =
@@ -5328,25 +5252,7 @@ mod web {
                     ));
                 }
                 let mut chart = Chart::new(self.chart_config().clone());
-                match layer {
-                    renderer::LayerRef::Overlay(index) => {
-                        chart.auto_fit_overlay_y_extent(index, &y_ext, padding);
-                    }
-                    renderer::LayerRef::Subplot(index) => {
-                        chart.auto_fit_subplot_x_extent(index, &x_ext, padding);
-                        chart.auto_fit_subplot_y_extent(index, &y_ext, padding);
-                    }
-                    renderer::LayerRef::SubplotOverlay(index, overlay) => {
-                        let mut config = chart.config().clone();
-                        if let Some(subplot) = config.subplots.get_mut(index) {
-                            let mut inner = Chart::new(subplot.config.clone());
-                            inner.auto_fit_overlay_y_extent(overlay, &y_ext, padding);
-                            subplot.config = inner.config().clone();
-                        }
-                        chart = Chart::new(config);
-                    }
-                    renderer::LayerRef::Base | renderer::LayerRef::Annotations => {}
-                }
+                chart.auto_fit_layer_extent(layer, &x_ext, &y_ext, padding);
                 self.replace_chart_config(chart.config().clone())?;
             }
             self.request_host_redraw();
@@ -5543,6 +5449,7 @@ mod web {
             renderer::config::update_legend_symbols_preserving_text(
                 &mut config.legend.content,
                 &series,
+                config.colorbar.as_ref().map(|bar| &bar.colormap),
             );
             self.replace_chart_state(config, series)?;
             self.cycle = cycle;
@@ -5575,10 +5482,21 @@ mod web {
         /// This call does not auto-fit ranges or fit the title band.
         /// JS: `chart.set_config(JSON.stringify(cfg));`
         pub fn set_config(&mut self, json: &str) -> Result<(), JsValue> {
-            let new_cfg: renderer::Config = serde_json::from_str(json).map_err(js_err)?;
+            let mut new_cfg: renderer::Config = serde_json::from_str(json).map_err(js_err)?;
             let old_config = self.chart_config();
             let legend_content_changed = old_config.legend.content != new_cfg.legend.content;
+            let colormap_changed = old_config.colorbar.as_ref().map(|bar| &bar.colormap)
+                != new_cfg.colorbar.as_ref().map(|bar| &bar.colormap);
             let series = self.chart_series().to_vec();
+            // A heatmap's legend mark shows the colour map: an auto-managed
+            // legend follows a new map, a host-written one stays as written.
+            if colormap_changed && !legend_content_changed && self.legend_auto_managed {
+                renderer::config::update_legend_symbols_preserving_text(
+                    &mut new_cfg.legend.content,
+                    &series,
+                    new_cfg.colorbar.as_ref().map(|bar| &bar.colormap),
+                );
+            }
             let (_, _, scale) = renderer::display_config_for_surface(&new_cfg, self.surface_size);
             let mut new_styles = Vec::new();
             new_styles.try_reserve(series.len()).map_err(js_err)?;
@@ -5651,6 +5569,7 @@ mod web {
                 renderer::config::update_legend_symbols_preserving_text(
                     &mut config.legend.content,
                     &new_series,
+                    config.colorbar.as_ref().map(|bar| &bar.colormap),
                 );
                 if existing > new_series.len() {
                     for index in (new_series.len()..existing).rev() {
@@ -5666,7 +5585,10 @@ mod web {
                     if let Some(label) = label {
                         renderer::config::append_legend_entry_rich(
                             &mut config.legend.content,
-                            renderer::config::series_symbol_segments(&new_series[index]),
+                            renderer::config::series_symbol_segments(
+                                &new_series[index],
+                                config.colorbar.as_ref().map(|bar| &bar.colormap),
+                            ),
                             label.segments,
                         );
                     }

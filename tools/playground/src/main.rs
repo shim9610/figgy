@@ -5,8 +5,8 @@
 //! `egui-winit` + `egui-wgpu`, no eframe) draws the control panel over it.
 //!
 //! - Cartesian scenes (lines/areas/steps, scatter + error bars, histogram,
-//!   heatmap + contours, log axes, twin Y axes, subplots, annotations, a large
-//!   data set) are registered charts of one `Renderer`. The renderer paints
+//!   heatmap + contours, log axes, twin Y axes, subplots, annotations, up to
+//!   100 million resident points) are registered charts of one `Renderer`. The renderer paints
 //!   them straight into the surface pass; egui draws on top.
 //! - Bounded scenes (radial, categorical bars, box plots) render into an
 //!   offscreen texture that egui shows as an image.
@@ -22,12 +22,14 @@
 //! Run:
 //! `cargo run --manifest-path tools/playground/Cargo.toml` (from the repo root)
 
+mod big_data;
 mod bounded;
 mod cartesian;
 mod scenes;
 mod widgets;
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -62,7 +64,13 @@ impl Gpu {
         let surface = data_render::create_surface_for_window(&instance, window)?;
         let adapter = data_render::request_adapter_for_surface(&instance, &surface)?;
         eprintln!("[gpu] adapter: {:?}", adapter.get_info());
-        let (device, queue) = data_render::request_device(&adapter)?;
+        let (device, queue) = request_device(&adapter)?;
+        let limits = device.limits();
+        eprintln!(
+            "[gpu] max buffer {} MiB, max storage binding {} MiB",
+            limits.max_buffer_size >> 20,
+            limits.max_storage_buffer_binding_size >> 20
+        );
         let device = Arc::new(device);
         let queue = Arc::new(queue);
         let config = data_render::try_configure_surface(
@@ -94,6 +102,29 @@ impl Gpu {
     }
 }
 
+/// A device with the adapter's own buffer limits. The WebGPU baseline caps one
+/// buffer at 256 MiB and a storage binding at 128 MiB; the column pool is one
+/// buffer, so 100 million resident points (1.6 GB of hi/lo pairs) need what
+/// the GPU actually allows. Every other limit stays at the baseline.
+fn request_device(
+    adapter: &wgpu::Adapter,
+) -> Result<(wgpu::Device, wgpu::Queue), wgpu::RequestDeviceError> {
+    let supported = adapter.limits();
+    let descriptor = wgpu::DeviceDescriptor {
+        label: Some("figgy playground device"),
+        required_features: wgpu::Features::empty(),
+        required_limits: wgpu::Limits {
+            max_buffer_size: supported.max_buffer_size,
+            max_storage_buffer_binding_size: supported.max_storage_buffer_binding_size,
+            ..wgpu::Limits::default()
+        },
+        experimental_features: wgpu::ExperimentalFeatures::disabled(),
+        memory_hints: wgpu::MemoryHints::Performance,
+        trace: wgpu::Trace::Off,
+    };
+    pollster::block_on(adapter.request_device(&descriptor))
+}
+
 /// What the scene code needs from the host while egui runs.
 pub struct HostCtx<'a> {
     pub device: &'a Arc<wgpu::Device>,
@@ -122,6 +153,9 @@ impl Playground {
     fn new(gpu: &Gpu) -> Result<Self, Box<dyn std::error::Error>> {
         let mut cartesian =
             Renderer::try_new(gpu.renderer_device(), gpu.config.format, POOL_CAPACITY)?;
+        // The large-data scene uploads up to 1.6 GB; the pool grows to fit, up
+        // to the device's buffer limit.
+        cartesian.set_pool_growth_policy(data_render::GrowthPolicy::OnAllocFailure);
         if let Err(e) = cartesian.enable_gpu_picking() {
             eprintln!("[pick] GPU picking unavailable: {e}");
         }
@@ -285,10 +319,13 @@ impl App {
         }
 
         // ---- figgy prepare: the Cartesian chart goes straight to the surface ----
+        let frame_start = Instant::now();
         let prepared = match &mut playground.active {
             Active::Cartesian(c) => c.prepare(&mut playground.cartesian),
             Active::Bounded(_) => None,
         };
+        let prepare_time = frame_start.elapsed();
+        let timed = matches!(&playground.active, Active::Cartesian(c) if c.wants_frame_timing());
 
         // egui asserts that every texture delta is consumed: upload the new
         // ones now, free the old ones once this frame is submitted (or skipped).
@@ -361,6 +398,25 @@ impl App {
         }
         buffers.push(encoder.finish());
         gpu.queue.submit(buffers);
+        if timed {
+            // Wait for the GPU so the time covers the whole frame, not just
+            // its recording.
+            if let Err(e) = gpu.device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            }) {
+                eprintln!("[timing] poll: {e}");
+            }
+            if let Active::Cartesian(c) = &mut playground.active
+                && c.frame_timed(
+                    &mut playground.cartesian,
+                    prepare_time,
+                    frame_start.elapsed(),
+                )
+            {
+                window.request_redraw();
+            }
+        }
         window.pre_present_notify();
         gpu.queue.present(frame);
         drop(prepared);

@@ -12,8 +12,10 @@
 //! (CPU axis raster) are set automatically based on the kind of `Config`
 //! change, and cleared by the caller via `consume_*_dirty()`.
 
+use crate::LayerRef;
 use crate::color::Color;
 use crate::config::{AxisOptions, AxisScale, Config, LegendEntryKind};
+use crate::data_config::{BarOrientation, DataRenderType, SeriesConfig};
 use crate::data_render::ColumnPool;
 use crate::error::{FiggyError, Result};
 use crate::format::LabelFormat;
@@ -864,6 +866,91 @@ impl Chart {
             ext.union(&Self::slot_extent(pool, id)?);
         }
         self.auto_fit_y_extent(&ext, padding_ratio);
+        Ok(())
+    }
+
+    /// Fit `layer`'s axes to prepared extents with proportional padding.
+    ///
+    /// `Base` (and `Annotations`, which draws on the base axes) and
+    /// `Subplot(i)` fit that chart's X and Y axes. An overlay layer fits only
+    /// its own Y axis and ignores `x`. A linked axis moves its whole link
+    /// group, and subplots linked to a fitted parent axis follow it. Choose
+    /// the series whose extents to union with [`Config::series_fit_roles`];
+    /// [`Self::auto_fit_layer_union`] does both from cached column
+    /// statistics.
+    pub fn auto_fit_layer_extent(
+        &mut self,
+        layer: LayerRef,
+        x: &FitExtent,
+        y: &FitExtent,
+        padding_ratio: f64,
+    ) {
+        match layer {
+            LayerRef::Base | LayerRef::Annotations => self.with_axis_range_change(|c| {
+                apply_auto_fit_all(c, x, y, padding_ratio);
+                c.sync_subplot_links(None);
+            }),
+            LayerRef::Overlay(index) => self.auto_fit_overlay_y_extent(index, y, padding_ratio),
+            LayerRef::Subplot(index) => {
+                self.auto_fit_subplot_x_extent(index, x, padding_ratio);
+                self.auto_fit_subplot_y_extent(index, y, padding_ratio);
+            }
+            LayerRef::SubplotOverlay(index, overlay) => {
+                let Some(subplot) = self.config.subplots.get(index) else {
+                    return;
+                };
+                let mut inner = Chart::new(subplot.config.clone());
+                inner.auto_fit_overlay_y_extent(overlay, y, padding_ratio);
+                let Some(fitted) = inner.config.overlays.get(overlay) else {
+                    return;
+                };
+                let axis = fitted.y_axis.clone();
+                self.with_axis_range_change(|c| {
+                    c.subplots[index].config.overlays[overlay].y_axis = axis;
+                });
+            }
+        }
+    }
+
+    /// Fit `layer`'s axes to the cached column statistics of every series
+    /// that takes part ([`Config::series_fit_roles`]): a linked axis fits the
+    /// series of its whole link group, not only those of the chart `layer`
+    /// names. Each series contributes its X and Y columns; a histogram's
+    /// baseline joins its count axis. Error bars, cell half-widths and arrow
+    /// tips are not in the column statistics: for those, measure the series
+    /// with `Renderer::begin_series_fit_extent` and fit with
+    /// [`Self::auto_fit_layer_extent`].
+    pub fn auto_fit_layer_union(
+        &mut self,
+        pool: &ColumnPool,
+        layer: LayerRef,
+        series: &[SeriesConfig],
+        padding_ratio: f64,
+    ) -> Result<()> {
+        let mut x = FitExtent::EMPTY;
+        let mut y = FitExtent::EMPTY;
+        for cfg in series {
+            let (fit_x, fit_y) = self.config.series_fit_roles(layer, &cfg.series_id);
+            if fit_x {
+                x.union(&Self::slot_extent(pool, &cfg.x_column)?);
+            }
+            if fit_y {
+                y.union(&Self::slot_extent(pool, &cfg.y_column)?);
+            }
+            if let DataRenderType::Histogram { bar } = &cfg.render_type {
+                let baseline = FitExtent {
+                    min: bar.baseline,
+                    max: bar.baseline,
+                    min_positive: (bar.baseline > 0.0).then_some(bar.baseline),
+                };
+                match bar.orientation {
+                    BarOrientation::Vertical if fit_y => y.union(&baseline),
+                    BarOrientation::Horizontal if fit_x => x.union(&baseline),
+                    _ => {}
+                }
+            }
+        }
+        self.auto_fit_layer_extent(layer, &x, &y, padding_ratio);
         Ok(())
     }
 }

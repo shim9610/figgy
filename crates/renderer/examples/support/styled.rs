@@ -95,6 +95,8 @@ pub fn cartesian(title: &str, x: &str, y: &str, bg: Color, ink: Color, grid: Col
 
 pub fn colorbar(config: &mut Config, ramp: ColorMap, min: f64, max: f64, spacing: f64, ink: Color) {
     let mut bar = renderer::default::default_colorbar_options();
+    // The gallery images were rendered with this gap.
+    bar.gap_px = 24.0;
     bar.side = Side::Right;
     bar.colormap = ramp;
     bar.axis.scale = AxisScale::Linear;

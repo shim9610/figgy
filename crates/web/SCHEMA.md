@@ -560,7 +560,7 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
       "offset_x": 0.0,
       "offset_y": 0.0
     },
-    "out_margin": 8.0,
+    "out_margin": 32.0,
     "line_offset": 0.0,
     "line_visible": true,
     "line_color": {
@@ -675,7 +675,7 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 | `visible` | bool | `true` | `false`이면 색상 막대를 그리지 않고 여백도 두지 않는다. 색상 막대의 범위와 색상표를 쓰는 시리즈는 계속 그린다. |
 | `side` | Side | `"Right"` | `Left`/`Right` = 수직 바, `Top`/`Bottom` = 수평 바. 이것만으로 방향이 결정된다 |
 | `thickness_px` | f32 | `18.0` | 색상 막대 두께 |
-| `gap_px` | f32 | `24.0` | 데이터 영역과 색상 막대 사이의 간격(px) |
+| `gap_px` | f32 | `8.0` | 데이터 영역과 색상 막대 사이의 간격(px) |
 | `length_frac` | f32 | `0.75` | 데이터 영역에서 막대를 놓은 변의 길이에 대한 막대 길이 비율. `(0, 1]` |
 | `align` | BarAlign | `"Center"` | 변을 따라 시작·가운데·끝 중 어디에 놓을지 지정 |
 | `offset_x`, `offset_y` | f32 | `0.0` | 기준 위치에서의 이동량(px). 드래그 결과를 누적한다. 여백 계산에 반영하지 않으므로 데이터 영역은 그대로다. |
@@ -701,7 +701,7 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
   "visible": true,
   "side": "Right",
   "thickness_px": 18.0,
-  "gap_px": 24.0,
+  "gap_px": 8.0,
   "length_frac": 0.75,
   "align": "Center",
   "offset_x": 0.0,

@@ -2478,6 +2478,152 @@ struct PreparedItem {
     axis_pipeline: wgpu::RenderPipeline,
     series: Vec<PreparedSeries>,
     stream_display: Option<streaming_runtime::StreamDisplayPacket>,
+    /// The panel's cached resident composite, when the panel qualifies; see
+    /// [`ResidentDisplay`].
+    resident_display: Option<ResidentDisplayPacket>,
+    /// [`column_fingerprint`] of the columns this panel's series read through
+    /// the pool lookup (grid columns come from the scratch receipts).
+    column_fingerprint: u64,
+}
+
+/// An order-independent fingerprint of `(column id, allocation epoch)` pairs:
+/// it changes when any of the columns is replaced, removed and added again,
+/// or relocated into a new allocation, and stays when an unrelated column
+/// changes. A sum of per-pair hashes, so it needs no sorted copy.
+fn column_fingerprint<'a>(pairs: impl Iterator<Item = (&'a str, u64)>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    pairs.fold(0u64, |sum, (id, epoch)| {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        id.hash(&mut hasher);
+        epoch.hash(&mut hasher);
+        sum.wrapping_add(hasher.finish())
+    })
+}
+
+/// One panel's cached series bodies: every fill and every line, marker,
+/// bar, field, contour and vector body of the panel's series, drawn once into
+/// a transparent panel-sized texture. `prepare` draws it again only when its
+/// [`ResidentDisplayKey`] changes; `paint_prepared` blits it between the grid
+/// and the live picked highlights, so a repaint costs one textured quad
+/// instead of every point again.
+///
+/// The cache holds the data layer only. Grid, decoration, annotation layers
+/// and the picked and selected highlights keep their own textures or draw
+/// live, and the key reads nothing they depend on, so editing or selecting
+/// any of them never draws the bodies again. Each panel of a layered document
+/// has its own entry, so editing one layer leaves every other layer's bodies.
+///
+/// Only Precise panels qualify: their pipelines blend premultiplied over,
+/// which composites the same through a transparent texture (up to UNORM
+/// rounding at partly covered pixels, as for the stream display). Styled blend
+/// equations (additive, max) depend on what is under them, so those panels
+/// keep drawing directly.
+struct ResidentDisplay {
+    /// The panel view's content-revision cell. Its address names the panel;
+    /// once the view and every token holding it are gone, the entry retires.
+    view: std::sync::Weak<std::sync::atomic::AtomicU64>,
+    key: ResidentDisplayKey,
+    serial: u64,
+    format: wgpu::TextureFormat,
+    sample_count: u32,
+    /// Resolved, panel-sized composite the blit samples.
+    texture: TrackedTexture,
+    /// Multisampled target resolved into `texture`; `None` at 1x.
+    msaa: Option<TrackedTexture>,
+    bind_group: wgpu::BindGroup,
+}
+
+/// Everything the series bodies are drawn from, and nothing else: the
+/// data-to-pixel transform, the parts of the chart configuration the body
+/// pipelines read, each series' configuration and style scale, the font
+/// generation (contour labels), the allocation epochs of exactly the columns
+/// the panel reads, and the pool layout and pipeline generations. A column
+/// another panel reads never draws this one again.
+/// Titles, legend, axes, grid, annotations and selections are not in it.
+struct ResidentDisplayKey {
+    size: (u32, u32),
+    /// The data area relative to the panel.
+    data_area: Rect,
+    transform: data_render::ScatterTransform,
+    draw_style: crate::config::DrawStyle,
+    polar: Option<crate::polar::PolarOptions>,
+    colorbar: Option<crate::config::ColorBarOptions>,
+    /// Each series' configuration and the display scale its style was built
+    /// at: a style is a pure function of the two, so a host or the registry
+    /// rebuilding every style after one series edit draws only the panels
+    /// whose series changed.
+    series: Vec<(SeriesConfig, u32)>,
+    font_generation: u64,
+    columns: u64,
+    pool_layout_generation: u64,
+    target_pipeline_generation: u64,
+}
+
+/// The current frame's inputs to compare against a [`ResidentDisplayKey`]
+/// without copying them.
+struct ResidentDisplayProbe<'a> {
+    size: (u32, u32),
+    data_area: Rect,
+    transform: data_render::ScatterTransform,
+    chart_config: &'a Config,
+    series: &'a [Series<'a>],
+    font_generation: u64,
+    columns: u64,
+    pool_layout_generation: u64,
+    target_pipeline_generation: u64,
+}
+
+impl ResidentDisplayKey {
+    fn matches(&self, probe: &ResidentDisplayProbe<'_>) -> bool {
+        self.size == probe.size
+            && self.data_area == probe.data_area
+            && bytemuck::bytes_of(&self.transform) == bytemuck::bytes_of(&probe.transform)
+            && self.font_generation == probe.font_generation
+            && self.columns == probe.columns
+            && self.pool_layout_generation == probe.pool_layout_generation
+            && self.target_pipeline_generation == probe.target_pipeline_generation
+            && self.draw_style == probe.chart_config.draw_style
+            && self.polar == probe.chart_config.polar
+            && self.colorbar == probe.chart_config.colorbar
+            && self.series.len() == probe.series.len()
+            && self
+                .series
+                .iter()
+                .zip(probe.series)
+                .all(|((config, scale), now)| {
+                    config == now.config && *scale == now.style.display_scale.to_bits()
+                })
+    }
+
+    fn from_probe(probe: &ResidentDisplayProbe<'_>) -> Self {
+        Self {
+            size: probe.size,
+            data_area: probe.data_area,
+            transform: probe.transform,
+            draw_style: probe.chart_config.draw_style,
+            polar: probe.chart_config.polar.clone(),
+            colorbar: probe.chart_config.colorbar.clone(),
+            series: probe
+                .series
+                .iter()
+                .map(|series| (series.config.clone(), series.style.display_scale.to_bits()))
+                .collect(),
+            font_generation: probe.font_generation,
+            columns: probe.columns,
+            pool_layout_generation: probe.pool_layout_generation,
+            target_pipeline_generation: probe.target_pipeline_generation,
+        }
+    }
+}
+
+/// A token's hold on one [`ResidentDisplay`]: the bind group to blit and the
+/// serial it was drawn at, so a later re-draw makes an older token stale.
+struct ResidentDisplayPacket {
+    /// Address of the view's content-revision cell, the entry's identity.
+    view: usize,
+    serial: u64,
+    bind_group: wgpu::BindGroup,
+    _charge: crate::gpu_memory::SharedCharge,
 }
 
 /// Token returned by [`Renderer::prepare`] and consumed (by reference,
@@ -3053,6 +3199,11 @@ pub struct Renderer {
     /// the `&self` draw phase reads the token's owned snapshot, never this
     /// cache.
     arc_cache: HashMap<String, Vec<ArcResultEntry>>,
+    /// One cached composite per qualifying resident panel; see
+    /// [`ResidentDisplay`].
+    resident_displays: Vec<ResidentDisplay>,
+    /// Serial of the last composite drawn into any [`ResidentDisplay`].
+    resident_display_serial: u64,
     /// Anchor compute pipelines plus the label draw's module and layouts.
     /// Compiled on the first frame that asks for a contour label; a chart with
     /// none never pays for the shader.
@@ -6408,6 +6559,8 @@ impl Renderer {
             sampler,
             quad_vb,
             arc_cache: HashMap::new(),
+            resident_displays: Vec::new(),
+            resident_display_serial: 0,
             field_cache: HashMap::new(),
             value_map_cache: HashMap::new(),
             vector_cache: HashMap::new(),
@@ -6547,6 +6700,8 @@ impl Renderer {
             sampler,
             quad_vb,
             arc_cache: HashMap::new(),
+            resident_displays: Vec::new(),
+            resident_display_serial: 0,
             field_cache: HashMap::new(),
             value_map_cache: HashMap::new(),
             vector_cache: HashMap::new(),
@@ -6999,6 +7154,10 @@ impl Renderer {
     /// the frame. Calling it from `prepare` would be too early because a host
     /// may still hold an unsubmitted command buffer. Idempotent.
     pub fn end_gpu_frame(&mut self) {
+        // Cached bodies whose view and tokens are gone retire with this
+        // frame's batch instead of waiting for the next prepare.
+        self.resident_displays
+            .retain(|display| display.view.strong_count() > 0);
         let batch = self.gpu_ledger.take_retirement();
         let (pool_retired, pool_bytes) = self.pool.take_retirement();
         if pool_bytes == 0 && batch.is_empty() {
@@ -11586,6 +11745,10 @@ impl Renderer {
                 vector_cache: &mut self.vector_cache,
                 contour_cache: &mut self.contour_cache,
                 arc_cache: &mut self.arc_cache,
+                texture_bgl: &self.texture_bgl,
+                target_sample_count: self.target_sample_count,
+                resident_displays: &mut self.resident_displays,
+                resident_display_serial: &mut self.resident_display_serial,
                 contour_label_pipelines: &mut self.contour_label_pipelines,
                 arc_pipelines: &mut self.arc_pipelines,
                 surface_format: self.surface_format,
@@ -11866,6 +12029,8 @@ impl Renderer {
                     axis_pipeline: self.pipelines.axis.clone(),
                     series: Vec::new(),
                     stream_display: Some(display),
+                    resident_display: None,
+                    column_fingerprint: 0,
                 });
             } else {
                 for _ in 0..count {
@@ -11904,6 +12069,22 @@ impl Renderer {
     ) -> Result<()> {
         self.validate_prepared(prepared)?;
         self.paint_prepared_items(pass, target_size, &prepared.items)
+    }
+
+    /// Serial of the cached series bodies of `view`'s panel, `None` while it
+    /// has none: the count of draws a test can read per panel.
+    #[cfg(test)]
+    pub(crate) fn resident_display_serial(&self, view: &ChartView) -> Option<u64> {
+        let id = Arc::as_ptr(&view.content_revision) as usize;
+        self.resident_displays
+            .iter()
+            .find(|display| display.view.as_ptr() as usize == id)
+            .map(|display| display.serial)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resident_display_count(&self) -> usize {
+        self.resident_displays.len()
     }
 
     /// Stamp checks guarding `paint_prepared` — see [`PreparedFrame`] field
@@ -11950,6 +12131,15 @@ impl Renderer {
             if current != item.view.expected_content_revision {
                 return Err(stale(format!(
                     "panel {idx} view changed between prepare and paint_prepared"
+                )));
+            }
+            if let Some(display) = &item.resident_display
+                && !self.resident_displays.iter().any(|held| {
+                    held.view.as_ptr() as usize == display.view && held.serial == display.serial
+                })
+            {
+                return Err(stale(format!(
+                    "panel {idx} cached composite was drawn again after prepare"
                 )));
             }
             if let Some(display) = &item.stream_display
@@ -12248,7 +12438,20 @@ impl Renderer {
             // untouched.
             // Bundle every series's primitives for the panel into one call.
 
-            data_render::draw_chart_panel_columnar(
+            // Cached bodies cover the whole panel; a panel the target clips
+            // draws them directly, as before.
+            let cached = item
+                .resident_display
+                .as_ref()
+                .filter(|_| {
+                    panel_rect.x.checked_add(panel_rect.width) <= Some(target_size.0)
+                        && panel_rect.y.checked_add(panel_rect.height) <= Some(target_size.1)
+                })
+                .map(|display| AxisLayer {
+                    pipeline: &item.axis_pipeline,
+                    bind_group: &display.bind_group,
+                });
+            data_render::draw_chart_panel_with_bodies(
                 pass,
                 target_size,
                 panel_rect,
@@ -12259,6 +12462,7 @@ impl Renderer {
                 },
                 annotation_underlay,
                 &series_list,
+                cached,
                 AxisLayer {
                     pipeline: &item.axis_pipeline,
                     bind_group: &item.view.decoration_bind_group,
@@ -13304,6 +13508,10 @@ struct PrepareContext<'a> {
     vector_cache: &'a mut HashMap<String, VectorScratch>,
     contour_cache: &'a mut HashMap<String, ContourScratchEntry>,
     arc_cache: &'a mut HashMap<String, Vec<ArcResultEntry>>,
+    texture_bgl: &'a wgpu::BindGroupLayout,
+    target_sample_count: u32,
+    resident_displays: &'a mut Vec<ResidentDisplay>,
+    resident_display_serial: &'a mut u64,
     contour_label_pipelines: &'a mut Option<crate::gpu_contour::ContourLabelPipelines>,
     arc_pipelines: &'a mut Option<data_render::line_arc::ArcScanPipelines>,
     surface_format: wgpu::TextureFormat,
@@ -13394,24 +13602,263 @@ impl PrepareContext<'_> {
             self.ensure_contour_scratches(items, 1.0, &contour_spacings)?;
         grid_sources.append(&mut contour_sources);
         let prepared_arcs = self.prepare_arc_items(items)?;
-        let (mut items, column_sources) = self.resolve_prepared_items(
+        let (mut prepared, column_sources) = self.resolve_prepared_items(
             items,
             &prepared_arcs,
             &prepared_contours,
             &self.pipelines,
         )?;
         if layered {
-            lift_annotation_overlays(&mut items, &group_sizes);
+            lift_annotation_overlays(&mut prepared, &group_sizes);
         }
+        self.attach_resident_displays(items, &mut prepared);
         Ok(PreparedFrame {
             renderer_identity: self.renderer_identity,
-            items,
+            items: prepared,
             column_sources,
             pool_layout_generation: self.pool.layout_generation(),
             target_pipeline_generation: self.target_pipeline_generation,
             grid_sources,
             registered_charts: Vec::new(),
         })
+    }
+
+    /// Give every qualifying resident panel its cached composite, drawing it
+    /// again only where its [`ResidentDisplayKey`] changed. `inputs` and
+    /// `prepared` are the same panels in the same order. All composites drawn
+    /// here go out in one submission, ordered before the host's pass.
+    fn attach_resident_displays(
+        &mut self,
+        inputs: &[ChartDrawItem<'_>],
+        prepared: &mut [PreparedItem],
+    ) {
+        self.resident_displays
+            .retain(|display| display.view.strong_count() > 0);
+        let max = self.caps.max_texture_dimension_2d;
+        let mut encoder: Option<wgpu::CommandEncoder> = None;
+        for (input, item) in inputs.iter().zip(prepared.iter_mut()) {
+            if item.stream_display.is_some()
+                || item.series.is_empty()
+                || !input.chart_config.draw_style.is_precise()
+            {
+                continue;
+            }
+            let panel = item.view.panel_rect;
+            let (w, h) = (panel.width, panel.height);
+            let (Some(data_x), Some(data_y)) = (
+                item.data_area.x.checked_sub(panel.x),
+                item.data_area.y.checked_sub(panel.y),
+            ) else {
+                continue;
+            };
+            if w == 0 || h == 0 || w > max || h > max || data_x >= w || data_y >= h {
+                continue;
+            }
+            let data_area = Rect {
+                x: data_x,
+                y: data_y,
+                width: item.data_area.width,
+                height: item.data_area.height,
+            };
+            let probe = ResidentDisplayProbe {
+                size: (w, h),
+                data_area,
+                transform: data_render::scatter_transform_from_config(input.chart_config),
+                chart_config: input.chart_config,
+                series: input.series,
+                font_generation: crate::text_render::font_generation(),
+                columns: self.panel_columns(item.column_fingerprint, input.series),
+                pool_layout_generation: self.pool.layout_generation(),
+                target_pipeline_generation: self.target_pipeline_generation,
+            };
+            let view_id = Arc::as_ptr(&item.view.content_revision) as usize;
+            let slot = self
+                .resident_displays
+                .iter()
+                .position(|display| display.view.as_ptr() as usize == view_id);
+            let current = slot.filter(|&i| self.resident_displays[i].key.matches(&probe));
+            let index = match current {
+                Some(i) => i,
+                None => {
+                    let Some(serial) = self.resident_display_serial.checked_add(1) else {
+                        continue;
+                    };
+                    *self.resident_display_serial = serial;
+                    let key = ResidentDisplayKey::from_probe(&probe);
+                    let reusable = slot.filter(|&i| {
+                        let display = &self.resident_displays[i];
+                        display.texture.width() == w
+                            && display.texture.height() == h
+                            && display.format == self.surface_format
+                            && display.sample_count == self.target_sample_count
+                    });
+                    let i = match reusable {
+                        Some(i) => {
+                            let display = &mut self.resident_displays[i];
+                            display.key = key;
+                            display.serial = serial;
+                            i
+                        }
+                        None => {
+                            let display = self.create_resident_display(
+                                Arc::downgrade(&item.view.content_revision),
+                                key,
+                                serial,
+                                w,
+                                h,
+                            );
+                            match slot {
+                                Some(i) => {
+                                    self.resident_displays[i] = display;
+                                    i
+                                }
+                                None => {
+                                    self.resident_displays.push(display);
+                                    self.resident_displays.len() - 1
+                                }
+                            }
+                        }
+                    };
+                    let display = &self.resident_displays[i];
+                    let target = display.texture.create_view(&Default::default());
+                    let msaa = display
+                        .msaa
+                        .as_ref()
+                        .map(|texture| texture.create_view(&Default::default()));
+                    let encoder = encoder.get_or_insert_with(|| {
+                        self.device
+                            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                                label: Some("resident panel composite"),
+                            })
+                    });
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("resident panel composite"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: msaa.as_ref().unwrap_or(&target),
+                            depth_slice: None,
+                            resolve_target: msaa.as_ref().map(|_| &target),
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                store: if msaa.is_some() {
+                                    wgpu::StoreOp::Discard
+                                } else {
+                                    wgpu::StoreOp::Store
+                                },
+                            },
+                        })],
+                        ..Default::default()
+                    });
+                    let series_list: Vec<_> =
+                        item.series.iter().map(PreparedSeries::layers).collect();
+                    pass.set_viewport(0.0, 0.0, w as f32, h as f32, 0.0, 1.0);
+                    pass.set_scissor_rect(
+                        data_area.x,
+                        data_area.y,
+                        data_area.width.min(w - data_area.x),
+                        data_area.height.min(h - data_area.y),
+                    );
+                    data_render::issue_series_bodies(&mut pass, &series_list);
+                    i
+                }
+            };
+            let display = &self.resident_displays[index];
+            item.resident_display = Some(ResidentDisplayPacket {
+                view: view_id,
+                serial: display.serial,
+                bind_group: display.bind_group.clone(),
+                _charge: display.texture.shared_charge(),
+            });
+        }
+        if let Some(encoder) = encoder {
+            self.queue.submit([encoder.finish()]);
+        }
+    }
+
+    /// `looked_up` plus the grid columns of the panel's field, contour and
+    /// vector series, from the receipts their scratches were built against.
+    fn panel_columns(&self, looked_up: u64, series: &[Series<'_>]) -> u64 {
+        let receipt = |sources: &GridSources| {
+            column_fingerprint(
+                sources
+                    .ids
+                    .iter()
+                    .zip(&sources.epochs)
+                    .map(|(id, epoch)| (id.as_str(), *epoch)),
+            )
+        };
+        series.iter().fold(looked_up, |sum, series| {
+            let id = series.config.series_id.as_str();
+            [
+                self.field_cache.get(id).map(|scratch| &*scratch.sources),
+                self.vector_cache.get(id).map(|scratch| &*scratch.sources),
+                self.contour_cache.get(id).map(|entry| &*entry.sources),
+            ]
+            .into_iter()
+            .flatten()
+            .fold(sum, |sum, sources| sum.wrapping_add(receipt(sources)))
+        })
+    }
+
+    /// A panel-sized composite target in the surface format and sample
+    /// count, bound for the blit like a raster layer.
+    fn create_resident_display(
+        &self,
+        view: std::sync::Weak<std::sync::atomic::AtomicU64>,
+        key: ResidentDisplayKey,
+        serial: u64,
+        w: u32,
+        h: u32,
+    ) -> ResidentDisplay {
+        let target = |sample_count: u32, usage: wgpu::TextureUsages| {
+            TrackedTexture::new(
+                self.gpu_ledger,
+                if sample_count > 1 {
+                    GpuResourceKind::MsaaTarget
+                } else {
+                    GpuResourceKind::PanelTexture
+                },
+                self.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("resident panel composite"),
+                    size: wgpu::Extent3d {
+                        width: w,
+                        height: h,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: self.surface_format,
+                    usage,
+                    view_formats: &[],
+                }),
+            )
+        };
+        let texture = target(
+            1,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        );
+        let msaa = (self.target_sample_count > 1).then(|| {
+            target(
+                self.target_sample_count,
+                wgpu::TextureUsages::RENDER_ATTACHMENT,
+            )
+        });
+        let bind_group = data_render::create_texture_bind_group(
+            self.device,
+            self.texture_bgl,
+            &texture.create_view(&Default::default()),
+            self.sampler,
+        );
+        ResidentDisplay {
+            view,
+            key,
+            serial,
+            format: self.surface_format,
+            sample_count: self.target_sample_count,
+            texture,
+            msaa,
+            bind_group,
+        }
     }
 
     /// Per-item body of the prepare phase (also reused by export). For each
@@ -14711,6 +15158,8 @@ impl PrepareContext<'_> {
                 styled,
             )?;
 
+            let column_fingerprint =
+                column_fingerprint(sources.iter().map(|(id, epoch)| (id.as_str(), *epoch)));
             for (id, allocation_epoch) in sources {
                 column_sources.entry(id).or_insert(allocation_epoch);
             }
@@ -14740,6 +15189,8 @@ impl PrepareContext<'_> {
                     })
                     .collect(),
                 stream_display: None,
+                resident_display: None,
+                column_fingerprint,
             });
         }
         Ok((prepared, column_sources))
@@ -17746,6 +18197,21 @@ impl<'w> WindowedRenderer<'w> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Wait until every retired GPU charge of `renderer` has completed. A
+    /// completion callback can run on another test's polling thread on the
+    /// shared device, so one `poll(Wait)` does not guarantee it has run yet.
+    fn settle_gpu_retirement(renderer: &mut Renderer) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while renderer.gpu_memory_usage().retired_bytes() != 0 {
+            renderer.service_gpu_completions().unwrap();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "retirement callback timeout"
+            );
+            std::thread::yield_now();
+        }
+    }
     use crate::data::Column;
     use crate::data_config::{DataErrorBarPointStyleOverride, DataScatterPointStyleOverride};
 
@@ -25721,6 +26187,7 @@ mod tests {
                 timeout: Some(std::time::Duration::from_secs(30)),
             })
             .expect("retired GPU work completes");
+        settle_gpu_retirement(&mut renderer);
         assert_eq!(
             renderer
                 .gpu_memory_usage()
@@ -25931,19 +26398,21 @@ mod tests {
             "cache removal must retire the replacement charge too"
         );
         renderer.end_gpu_frame();
-        renderer
-            .device
-            .poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: Some(std::time::Duration::from_secs(30)),
-            })
-            .expect("retired GPU work completes");
-        assert_eq!(
-            renderer
-                .gpu_memory_usage()
-                .bytes_of(GpuResourceKind::ContourScratch),
-            0
-        );
+        // The completion callback can run on another test's polling thread
+        // on the shared device, so wait for it rather than for one poll.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while renderer
+            .gpu_memory_usage()
+            .bytes_of(GpuResourceKind::ContourScratch)
+            != 0
+        {
+            renderer.service_gpu_completions().unwrap();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "retirement callback timeout"
+            );
+            std::thread::yield_now();
+        }
     }
 
     #[test]
@@ -26924,6 +27393,7 @@ mod tests {
                 timeout: Some(std::time::Duration::from_secs(30)),
             })
             .expect("retired GPU work completes");
+        settle_gpu_retirement(&mut r);
         assert_eq!(
             r.gpu_memory_usage()
                 .retired_bytes_of(GpuResourceKind::ArcScan),
@@ -27745,6 +28215,7 @@ mod tests {
                 timeout: Some(std::time::Duration::from_secs(30)),
             })
             .expect("retired GPU work completes");
+        settle_gpu_retirement(&mut renderer);
         let after = renderer.gpu_memory_usage();
 
         assert_eq!(
@@ -27831,6 +28302,7 @@ mod tests {
                 timeout: Some(std::time::Duration::from_secs(30)),
             })
             .expect("retired GPU work completes");
+        settle_gpu_retirement(&mut renderer);
         assert_eq!(
             renderer
                 .gpu_memory_usage()
@@ -27994,6 +28466,7 @@ mod tests {
                 timeout: Some(std::time::Duration::from_secs(30)),
             })
             .expect("retired GPU work completes");
+        settle_gpu_retirement(&mut renderer);
         assert_eq!(
             renderer
                 .gpu_memory_usage()
@@ -28047,6 +28520,7 @@ mod tests {
                 timeout: Some(std::time::Duration::from_secs(30)),
             })
             .expect("retired GPU work completes");
+        settle_gpu_retirement(&mut renderer);
         assert_eq!(
             renderer
                 .gpu_memory_usage()
@@ -28463,6 +28937,7 @@ mod tests {
                 timeout: Some(std::time::Duration::from_secs(30)),
             })
             .expect("retired GPU work completes");
+        settle_gpu_retirement(&mut renderer);
 
         let before = renderer.gpu_memory_usage();
         assert_eq!(before.pool_bytes(), pool_bytes_held(&renderer));
@@ -28506,6 +28981,7 @@ mod tests {
                 timeout: Some(std::time::Duration::from_secs(30)),
             })
             .expect("retired GPU work completes");
+        settle_gpu_retirement(&mut renderer);
         let after = renderer.gpu_memory_usage();
         assert_eq!(after.retired_bytes(), 0);
         assert_eq!(after.pool_bytes(), pool_bytes_held(&renderer));
@@ -28529,6 +29005,7 @@ mod tests {
                 timeout: Some(std::time::Duration::from_secs(30)),
             })
             .expect("retired GPU work completes");
+        settle_gpu_retirement(&mut renderer);
 
         // No ceiling: the context carries no budget at all, so there is no
         // out-of-pool total to compute and none to misread. `GpuBudget` fusing
@@ -28580,6 +29057,7 @@ mod tests {
                 timeout: Some(std::time::Duration::from_secs(30)),
             })
             .expect("retired GPU work completes");
+        settle_gpu_retirement(&mut renderer);
         let total = renderer.gpu_memory_usage().total_bytes();
 
         // A ceiling with room says nothing.

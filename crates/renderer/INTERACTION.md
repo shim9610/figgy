@@ -209,7 +209,9 @@ Cartesian용 `FiggyChart`와 별도로 WASM 래퍼는 원형·범주형 막대·
 이동량을 잰 기준 포인터 위치 `at`(차트 내부 논리 픽셀)을 함께 넘긴다. `drag_from`의 기본 구현은
 `at`을 무시하고 `drag_by`를 호출하므로, 극좌표 축과 눈금 라벨이 아닌 요소는 `drag_by`와 똑같이
 움직인다. 웹 래퍼의 `on_move`는 누른 지점에 이동량을 누적한 포인터 위치를 넘긴다. 상단·우측 축은
-그리지 않으므로 축 선·눈금 라벨·제목 모두 히트 영역이 없다. 차트 제목, 하단·좌측 축 제목, 범례,
+그리지 않으므로 축 선·눈금 라벨·제목 모두 히트 영역이 없다. 각도나 반지름 눈금 라벨을 선택하면
+원 전체를 감싸는 상자 하나 대신 라벨마다 그려진 자리에 선택 상자를 그린다
+(`SelectionBox::outline`이 `SelectionOutline::TickLabels(side)`). 차트 제목, 하단·좌측 축 제목, 범례,
 그리기 영역은 일반 차트와 같이 움직인다.
 자세한 규칙은 `CONFIG.md`의 `PolarOptions` 절에 있다.
 
@@ -441,7 +443,10 @@ fitting either subplot gives both the Y range of their combined series, and
 each keeps an X range fitted to its own series. A chart's overlays share its X
 axis and count towards it, but not towards its `left_y`. An axis that is not
 linked fits its own chart's series only. A base fit also moves the subplots
-linked to the parent's axes.
+linked to the parent's axes. Natively, `Chart::auto_fit_layer_union(pool,
+layer, series, padding)` applies the same rule (`Config::series_fit_roles`)
+from column statistics, and `Chart::auto_fit_layer_extent` from exact
+extents.
 
 **Display, export and annotations.** `display_config_for_surface` fits the
 whole document (`Config::document_area`, the union of every chart area) to the

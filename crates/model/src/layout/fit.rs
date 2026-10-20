@@ -577,7 +577,7 @@ mod tests {
             let bar0 = cfg.colorbar.clone().expect("colourbar");
             let out0 = cfg.right_y.out_margin;
             let da = cfg.data_area().expect("data area");
-            // 4 px, not more: `right_y.out_margin` starts at 8 (that side's
+            // 4 px, not more: `right_y.out_margin` is small (that side's
             // labels and title are off), and these two strategies may only
             // spend the axis margin.
             let target = DataArea(Rect {

@@ -170,6 +170,7 @@ fn selection_box_at(x: f32, y: f32) -> SelectionBox {
         color: crate::select::SELECTION_COLOR,
         stroke_width: crate::select::SELECTION_STROKE_WIDTH,
         handles: Vec::new(),
+        outline: crate::select::SelectionOutline::Rect,
     }
 }
 
@@ -630,4 +631,72 @@ fn a_base_auto_fit_moves_the_subplots_linked_to_the_parent() {
     let linked = &config.subplots[1].config.bottom_x;
     assert_eq!((linked.min, linked.max), (2.0, 4.0));
     assert_eq!(config.subplots[0].config.bottom_x.min, -0.5);
+}
+
+// A linked axis is one axis shared by its link group: fitting it from one
+// chart's series alone would hand every other member a range that cuts its
+// data. `auto_fit_layer_union` fits the whole group, overlays aside on Y.
+#[test]
+fn a_layer_fit_covers_its_whole_link_group() {
+    let mut r = renderer();
+    r.add_column("xw", &column(vec![2.0, 3.0, 4.0, 5.0, 6.0]))
+        .unwrap();
+    // Subplot 1 (X linked to the parent, Y to subplot 0) draws `s3` far right
+    // of the parent's X data.
+    let mut config = document();
+    config.subplots[1].series = vec!["s3".into()];
+    let mut all = series();
+    all.push(declaration("s3", "xw", "a"));
+    let pool = r.pool();
+    let padding = 0.0;
+
+    // The subplot's own series alone: the parent's X data falls off the left.
+    let mut alone = Chart::new(config.clone());
+    alone
+        .auto_fit_subplot_x_union(pool, 1, &["xw"], padding)
+        .unwrap();
+    assert!(alone.config().bottom_x.min > 0.9);
+
+    let mut group = Chart::new(config.clone());
+    group
+        .auto_fit_layer_union(pool, LayerRef::Subplot(1), &all, padding)
+        .unwrap();
+    let c = group.config();
+    // X: the parent's `x` and the subplot's `xw`; the parent follows the link.
+    assert!(
+        c.bottom_x.min < 0.11 && c.bottom_x.max >= 6.0,
+        "{:?}",
+        c.bottom_x
+    );
+    let linked = &c.subplots[1].config.bottom_x;
+    assert_eq!((linked.min, linked.max), (c.bottom_x.min, c.bottom_x.max));
+    // Y: subplot 0's `b` (its Y link root) and the subplot's own `a`, not
+    // subplot 0's overlay series `c`.
+    let y = &c.subplots[1].config.left_y;
+    assert!(y.min < 0.21 && y.max >= 50.0 && y.min > -1.0, "{y:?}");
+    assert_eq!(c.subplots[0].config.left_y.max, y.max);
+    // Subplot 0 keeps its own X axis.
+    assert_eq!(c.subplots[0].config.bottom_x.min, -0.5);
+
+    // The base layer fits the same X group, and its Y from `s0` alone.
+    let mut base = Chart::new(config.clone());
+    base.auto_fit_layer_union(pool, LayerRef::Base, &all, padding)
+        .unwrap();
+    let c = base.config();
+    assert!(c.bottom_x.min < 0.11 && c.bottom_x.max >= 6.0);
+    assert_eq!(c.subplots[1].config.bottom_x.max, c.bottom_x.max);
+    assert!(c.left_y.min < 0.21 && c.left_y.max > 0.79 && c.left_y.max < 10.0);
+
+    // An overlay layer fits only its own Y axis, from its own series.
+    let mut overlay = Chart::new(config);
+    overlay
+        .auto_fit_layer_union(pool, LayerRef::SubplotOverlay(0, 0), &all, padding)
+        .unwrap();
+    let c = overlay.config();
+    let axis = &c.subplots[0].config.overlays[0].y_axis;
+    assert!(
+        axis.min <= -1.0 && axis.max >= 1.0 && axis.max < 10.0,
+        "{axis:?}"
+    );
+    assert_eq!(c.bottom_x, document().bottom_x);
 }

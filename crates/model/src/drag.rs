@@ -335,7 +335,7 @@ mod tests {
     fn data_area_drag_clamps_per_axis() {
         let mut cfg = cfg_800x600();
         let da_before = cfg.data_area().unwrap();
-        let right_margin = cfg.right_y.out_margin; // default 8 — +50 px overflows
+        let right_margin = cfg.right_y.out_margin; // +50 px past the right margin overflows
 
         let r = DataAreaElement.drag_by(&mut cfg, right_margin + 50.0, 3.0);
         assert_eq!(r, NudgeResult::Moved);

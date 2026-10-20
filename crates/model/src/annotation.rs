@@ -1005,6 +1005,7 @@ impl Selectable<AnnotationLayer> for AnnotationElement {
                 .into_iter()
                 .map(|(_, _, center)| handle_square(center))
                 .collect(),
+            outline: crate::select::SelectionOutline::Rect,
         })
     }
 

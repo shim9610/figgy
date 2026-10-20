@@ -76,6 +76,8 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
     c.set_x_range(-3.0, 3.0);
     c.set_y_range(-3.0, 3.0);
     let mut bar = default::default_colorbar_options();
+    // The gallery image was rendered with this gap.
+    bar.gap_px = 24.0;
     bar.colormap = ColorMap::Viridis;
     bar.axis.min = 0.0;
     bar.axis.max = 1.2;

@@ -1057,7 +1057,7 @@ fn legend_symbol_shows_a_band_for_a_filled_series() {
         legend.content.segments.clear();
         renderer::config::append_legend_entry(
             &mut legend.content,
-            renderer::legend::series_symbol_segments(&series[0]),
+            renderer::legend::series_symbol_segments(&series[0], None),
             "filled",
         );
         r.export_panel_rgba(chart, &series, 1.0).unwrap()

@@ -354,6 +354,8 @@ fn gradient(r: &mut Renderer, out: &Path) -> Result {
     chart.set_x_range(-3.0, 3.0);
     chart.set_y_range(-3.0, 3.0);
     let mut bar = renderer::default::default_colorbar_options();
+    // The gallery image was rendered with this gap.
+    bar.gap_px = 24.0;
     bar.side = Side::Right;
     bar.colormap = ColorMap::Viridis;
     bar.axis.scale = AxisScale::Linear;

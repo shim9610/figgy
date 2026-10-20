@@ -15,7 +15,7 @@ use crate::layout::{
 };
 use crate::line::LineStylePreset;
 use crate::render_warning::{RenderWarning, SpacingRejection, WarningAxis};
-use crate::select::SelectionBox;
+use crate::select::{SELECTION_PADDING, SelectionBox, SelectionOutline};
 use crate::sketch::DecoStroker;
 use crate::text::{RichSegment, RichText, TextAlign};
 use crate::text_render::{
@@ -103,10 +103,34 @@ pub fn try_raster_chart_layer_to_rgba_with_selection(
                 ..b.clone()
             })
             .collect();
-        draw_selection_boxes(&mut canvas, &local);
+        let fp = FontPolicy::for_style(&raster_cfg.draw_style);
+        draw_chart_selection_boxes(&mut canvas, &local, &raster_cfg, fp);
     }
 
     Ok(canvas.into_rgba())
+}
+
+/// [`draw_selection_boxes`] in one chart's raster: a selection of polar tick
+/// labels ([`SelectionOutline::TickLabels`]) boxes each label where `config`
+/// draws it, instead of one box around the whole ring.
+fn draw_chart_selection_boxes(
+    canvas: &mut Canvas,
+    boxes: &[SelectionBox],
+    config: &Config,
+    fp: FontPolicy,
+) {
+    for b in boxes {
+        match &b.outline {
+            SelectionOutline::TickLabels(side) if config.polar.is_some() => {
+                let outline = Paint::stroke(&b.color, b.stroke_width);
+                polar::polar_tick_label_rects(config, side.clone(), fp, |label| {
+                    let r = label.expanded(SELECTION_PADDING);
+                    canvas.draw_rect(r.x, r.y, r.width, r.height, &outline);
+                });
+            }
+            _ => draw_selection_boxes(canvas, std::slice::from_ref(b)),
+        }
+    }
 }
 
 /// `config` in the CPU raster's frame: the raster buffer covers exactly the
@@ -3487,6 +3511,7 @@ mod tests {
                 width: 8.0,
                 height: 8.0,
             }],
+            outline: SelectionOutline::Rect,
         };
 
         let layer = AxisLayerKind::Decoration;
@@ -4123,5 +4148,88 @@ mod tests {
             ColorBarElement.bounds(&cfg, &CpuTextMeasure::for_style(&cfg.draw_style)),
             Some(moved)
         );
+    }
+
+    /// A polar tick-label selection boxes every label where it is drawn and
+    /// leaves the ring alone, instead of one box around the whole chart.
+    #[test]
+    fn a_polar_tick_label_selection_boxes_each_label() {
+        use crate::layout::RectF;
+
+        let mut cfg = default_config();
+        cfg.polar = Some(crate::polar::PolarOptions::default());
+        let mut chart = crate::Chart::new(cfg);
+        chart.set_x_range(0.0, 360.0);
+        chart.set_y_range(0.0, 3.0);
+        let cfg = chart.config().clone();
+        let fp = FontPolicy::for_style(&cfg.draw_style);
+        let width = cfg.chart_area.0.width as usize;
+
+        for side in [Side::Bottom, Side::Left] {
+            let mut labels = Vec::new();
+            polar::polar_tick_label_rects(&cfg, side.clone(), fp, |r| labels.push(r));
+            assert!(labels.len() >= 4, "{side:?}: {} labels", labels.len());
+
+            // The whole-ring box a plain outline would draw.
+            let (x0, y0, x1, y1) = labels.iter().fold(
+                (f32::MAX, f32::MAX, f32::MIN, f32::MIN),
+                |(x0, y0, x1, y1), r| {
+                    (
+                        x0.min(r.x),
+                        y0.min(r.y),
+                        x1.max(r.x + r.width),
+                        y1.max(r.y + r.height),
+                    )
+                },
+            );
+            let ring = RectF {
+                x: x0,
+                y: y0,
+                width: x1 - x0,
+                height: y1 - y0,
+            }
+            .expanded(SELECTION_PADDING);
+            let sel = SelectionBox {
+                rect: ring,
+                color: Color::BLACK,
+                stroke_width: 2.0,
+                handles: Vec::new(),
+                outline: SelectionOutline::TickLabels(side.clone()),
+            };
+            let layer = AxisLayerKind::Decoration;
+            let base = try_raster_chart_layer_to_rgba(&cfg, layer).unwrap();
+            let with = try_raster_chart_layer_to_rgba_with_selection(&cfg, layer, &[sel]).unwrap();
+            let touched = |x: f32, y: f32| {
+                let i = (y.round() as usize * width + x.round() as usize) * 4;
+                base[i..i + 4] != with[i..i + 4]
+            };
+
+            for label in &labels {
+                let r = label.expanded(SELECTION_PADDING);
+                assert!(
+                    r.width * r.height < ring.width * ring.height * 0.25,
+                    "{side:?}: a label box is not the ring: {r:?} in {ring:?}"
+                );
+                assert!(
+                    touched(r.x + r.width * 0.5, r.y),
+                    "{side:?}: the top edge of {r:?} is outlined"
+                );
+            }
+            // No ring-sized box: its corners stay as the base raster drew them.
+            for (x, y) in [
+                (ring.x, ring.y),
+                (ring.x + ring.width, ring.y + ring.height),
+            ] {
+                let off = labels
+                    .iter()
+                    .all(|l| !l.expanded(SELECTION_PADDING + 2.0).contains(x, y));
+                if off {
+                    assert!(
+                        !touched(x, y),
+                        "{side:?}: ring corner ({x}, {y}) is outlined"
+                    );
+                }
+            }
+        }
     }
 }

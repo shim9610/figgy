@@ -63,7 +63,12 @@ example advances to 0.15.0 with the renderer dependency and is not published
   (`radial_label_angle_degrees`), the angle labels move along their spokes
   (`bottom_x` `label_offset_y`, outward positive) and the radius labels in
   the ray frame (`left_y` `label_offset_x` along, `label_offset_y` across);
-  the ring and the top and right axes register nothing. New
+  the ring and the top and right axes register nothing. A selection of the
+  angle or radius tick labels outlines each label where it is drawn, not one
+  box around the whole circle: `SelectionBox` gains `outline`
+  (`SelectionOutline::Rect`, or `TickLabels(side)`, which
+  `AxisLabelElement` reports in polar mode), and the renderer boxes every
+  label of that side from the same layout the axes draw. New
   `Draggable::drag_from` and `Config::nudge_from` carry the pointer
   position these rules read (`DragConfig::nudge_at` for state types); the
   defaults fall back to `drag_by` / `nudge`, and `FiggyChart::on_move`
@@ -365,6 +370,17 @@ example advances to 0.15.0 with the renderer dependency and is not published
   link their X axis to the parent) and `mixed-axes.png` (one linked X axis, a
   chart with a different X column and a twin Y axis from an overlay inside a
   subplot).
+- Fitting a whole link group: `Chart::auto_fit_layer_union(pool, layer,
+  series, padding)` fits the axes `layer` owns to every series drawn against
+  them, so a linked axis covers the data of every chart in its group, and
+  `Chart::auto_fit_layer_extent(layer, x, y, padding)` does the same from
+  exact extents. `Config::series_fit_roles(layer, series_id)` names whether a
+  series counts towards that layer's X and Y fit (X: every chart of the X
+  link group, overlays included; Y: the base series of the Y link group; an
+  overlay layer: its own series only). The WASM `auto_fit_all` now uses
+  both instead of its private copy of the rule, so its results are
+  unchanged. The playground's subplot rows offer "fit" (that chart's series)
+  and "fit group" (the link group).
 - See the configuration reference (`Subplot`), the interaction guide
   (subplots) and the WASM guide.
 
@@ -490,6 +506,50 @@ example advances to 0.15.0 with the renderer dependency and is not published
   one-texel antialiasing.
 - No API, model or serialization change.
 
+### Heatmap legend swatch
+
+- A heatmap's legend entry shows a swatch of the chart's colour map (six
+  bands sampled from `colorbar.colormap`) instead of an empty symbol field.
+  `series_symbol_segments` and `update_legend_symbols_preserving_text` take
+  the colour map as a trailing `Option<&ColorMap>`; a heatmap without one
+  keeps the empty field. The swatch sits inside the fixed-width symbol field,
+  so legend hit bounds do not change. The web wrapper refreshes
+  auto-managed legend symbols when `set_config` changes the colour map.
+
+### Resident data cache
+
+- A resident Precise panel keeps its series bodies in a panel-sized texture
+  and draws them again only when the data layer changes: the transform, the
+  data area, the draw style, `polar` and `colorbar`, the series configurations
+  and style scales, the font generation, the allocation epochs of the columns
+  that panel reads, or the pool layout or pipeline generation. A repaint with
+  nothing changed, and every edit or selection of titles, legend, axes, grid,
+  annotations or points, blits the cached bodies instead of drawing every
+  point again. Picked and selected highlights draw live above them, and each
+  panel of a layered document has its own entry, so editing one layer, or
+  replacing a column only another layer reads, draws only that layer. Clipped
+  and styled panels draw directly as before. The composite can differ from a
+  direct draw by UNORM rounding at partly covered pixels; random edit
+  sequences are checked bit for bit against a render of the final state from
+  nothing. No API or serialization change; `paint_prepared` reports a token
+  whose cached bodies were drawn again after it as stale.
+
+### Default layout
+
+- `default_config()` sets `right_y.out_margin` to 32 (was 8). The last
+  bottom tick label is centred on the data area's right edge, so half of it
+  lies in the right margin; at the default 18 px font even `10.0` needs about
+  17 px, and the old 13 px band (margin plus tick) cut it at the chart edge, on
+  screen and in exports. The new band holds a seven-character label.
+- `default_colorbar_options()` sets `gap_px` to 8 (was 24). The axis band on
+  the bar's side already separates it from the data area, so the wider right
+  band would otherwise push a right colourbar 61 px away; it now sits 45 px
+  from the data area (37 px before), and top, left and bottom bars sit 16 px
+  closer.
+- Documents keep their stored values: both fields are always serialized, so
+  only configs built from the defaults change. To keep the old geometry, set
+  `right_y.out_margin = 8.0` and `gap_px = 24.0`.
+
 ### Web example
 
 - No method of the WASM integration example `figgy` 0.15.0 is removed or
@@ -590,13 +650,24 @@ example advances to 0.15.0 with the renderer dependency and is not published
 
 <a id="migrating-from-0170"></a>
 
+### Known limitations
+
+- macOS / Metal remains experimental. On the Apple Paravirtual adapter, a
+  Constellation line drawn by the stream path can differ from its resident
+  draw by one 8-bit code value where the line overlaps itself. The stream
+  against resident style tests accept that on Metal only (at most one code
+  value on at most 32 pixels) until it is investigated on Metal hardware; see
+  `ci/STATUS.md`. Other backends compare exactly.
+
 ### Migrating from 0.17.0
 
 JSON written by renderer 0.17.0 / model 0.11.0 parses and re-serializes byte
 for byte: every new key is optional and omitted at its default. The changes
 below affect Rust code, and one of them is a stricter validation of bounded
 charts. The renderer re-exports the model, so the model notes apply to
-renderer users too.
+renderer users too. Configs built from `default_config()` get a wider right
+margin and a narrower colourbar gap; see [Default layout](#default-layout) for
+the values that keep the old geometry.
 
 Model types (figgy-model 0.12.0):
 
@@ -619,6 +690,13 @@ Model types (figgy-model 0.12.0):
   `Default`).
 - Exhaustive `DataScatterStyleConfig` literals need `point_color_map: None`
   and `point_size_map: None`.
+- Exhaustive `SelectionBox` literals need `outline: SelectionOutline::Rect`
+  (the box drawn as before).
+- `series_symbol_segments(cfg)` and
+  `update_legend_symbols_preserving_text(content, series)` take a trailing
+  `colormap: Option<&ColorMap>`. Pass the chart's
+  `config.colorbar.as_ref().map(|bar| &bar.colormap)`, or `None` for the
+  previous output.
 - Exhaustive `RichSegment` literals need `rule_band: None`. `RichSegment`
   does not implement `Default`; `..RichSegment::plain(c)` also works.
 - Exhaustive `LabelFormat` matches need `Degrees` and `Radians` arms.

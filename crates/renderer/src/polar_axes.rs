@@ -296,52 +296,17 @@ pub(super) fn draw_polar_axes(
         }
     }
     let ls = &axis.label_style;
-    if ls.visible && ls.label_visible {
-        // Keep every k-th label when the labels would overlap around the
-        // ring: the same 1/2/5 stride rule the straight axes use.
-        let gap = ls.font_size * 0.5;
-        let circumference = (geometry.radius as f64 * sweep.abs()) as f32;
-        let mut total = 0.0f32;
-        let mut count = 0usize;
-        for (i, value) in majors.iter().enumerate() {
-            if angle_drawn(polar, *value, &majors[..i]) {
-                total += tick_text(axis, *value, fp).1.width + gap;
-                count += 1;
-            }
-        }
-        let mut stride = 1usize;
-        while count > 0 && total / stride as f32 > circumference.max(1.0) {
-            let decade = 10usize.pow(stride.ilog10());
-            stride = match stride / decade {
-                1 => 2 * decade,
-                2 => 5 * decade,
-                _ => 10 * decade,
-            };
-        }
-        let band = outward_tick(axis) + 4.0;
-        let radial = PolarOptions::angle_label_offset(ls);
-        let mut drawn = 0usize;
-        for (i, value) in majors.iter().enumerate() {
-            if !angle_drawn(polar, *value, &majors[..i]) {
-                continue;
-            }
-            drawn += 1;
-            if (drawn - 1) % stride != 0 {
-                continue;
-            }
-            let (text, m) = tick_text(axis, *value, fp);
-            let angle = polar.screen_angle(*value);
-            let (dx, dy) = (angle.cos() as f32, -(angle.sin() as f32));
-            // The label box sits just outside the ring along the spoke.
-            let reach = band + dx.abs() * m.width * 0.5 + dy.abs() * m.height() * 0.5;
-            let center = (
-                geometry.center[0] + dx * (geometry.radius + reach),
-                geometry.center[1] + dy * (geometry.radius + reach),
-            );
-            // Along the spoke, so every label keeps its distance to the ring.
-            draw_centered(canvas, &text, center, (dx * radial, dy * radial), m, ls, fp);
-        }
-    }
+    each_angle_label(
+        polar,
+        &geometry,
+        axis,
+        &majors,
+        sweep,
+        fp,
+        |text, center, m| {
+            draw_centered(canvas, text, center, (0.0, 0.0), m, ls, fp);
+        },
+    );
 
     // Radius axis along the radial label ray.
     let axis = &config.left_y;
@@ -390,40 +355,156 @@ pub(super) fn draw_polar_axes(
         }
     }
     let ls = &axis.label_style;
-    if ls.visible && ls.label_visible {
-        let offset = polar.radius_label_offset(ls);
-        let labels = visible_numeric_labels(axis, Side::Left, fp, &majors, |value| {
-            point(&geometry, ray, ring_radius(polar, &geometry, axis, value))
-        });
-        let band = outward_tick(axis) + 4.0;
-        for label in &labels {
-            let (dx, dy) = (
-                label.position.0 - geometry.center[0],
-                label.position.1 - geometry.center[1],
-            );
-            let radius = dx.hypot(dy);
-            if radius < inner - 0.5 || radius > geometry.radius + 0.5 {
-                continue;
-            }
-            let m = extents(&label.text, ls, fp);
-            let reach = band + side.0.abs() * m.width * 0.5 + side.1.abs() * m.height() * 0.5;
-            // Beside the tick and half a line inward, so the outermost label
-            // stays clear of the angle label on the same spoke.
-            let inward = m.height() * 0.5;
-            let center = (
-                label.position.0 + side.0 * reach - dir.0 * inward,
-                label.position.1 + side.1 * reach - dir.1 * inward,
-            );
-            draw_centered(
-                canvas,
-                &label.text,
-                center,
-                (offset[0], offset[1]),
-                m,
-                ls,
-                fp,
-            );
+    each_radius_label(polar, &geometry, axis, &majors, fp, |text, center, m| {
+        draw_centered(canvas, text, center, (0.0, 0.0), m, ls, fp);
+    });
+}
+
+/// The angle axis' tick labels as [`draw_polar_axes`] draws them: `place`
+/// gets each kept label's text, its centre on screen and its extents.
+fn each_angle_label(
+    polar: &PolarOptions,
+    geometry: &PolarGeometry,
+    axis: &AxisOptions,
+    majors: &[f64],
+    sweep: f64,
+    fp: FontPolicy,
+    mut place: impl FnMut(&NumericTickText, (f32, f32), TextMetrics),
+) {
+    let ls = &axis.label_style;
+    if !(ls.visible && ls.label_visible) {
+        return;
+    }
+    // Keep every k-th label when the labels would overlap around the
+    // ring: the same 1/2/5 stride rule the straight axes use.
+    let gap = ls.font_size * 0.5;
+    let circumference = (geometry.radius as f64 * sweep.abs()) as f32;
+    let mut total = 0.0f32;
+    let mut count = 0usize;
+    for (i, value) in majors.iter().enumerate() {
+        if angle_drawn(polar, *value, &majors[..i]) {
+            total += tick_text(axis, *value, fp).1.width + gap;
+            count += 1;
         }
+    }
+    let mut stride = 1usize;
+    while count > 0 && total / stride as f32 > circumference.max(1.0) {
+        let decade = 10usize.pow(stride.ilog10());
+        stride = match stride / decade {
+            1 => 2 * decade,
+            2 => 5 * decade,
+            _ => 10 * decade,
+        };
+    }
+    let band = outward_tick(axis) + 4.0;
+    let radial = PolarOptions::angle_label_offset(ls);
+    let mut drawn = 0usize;
+    for (i, value) in majors.iter().enumerate() {
+        if !angle_drawn(polar, *value, &majors[..i]) {
+            continue;
+        }
+        drawn += 1;
+        if (drawn - 1) % stride != 0 {
+            continue;
+        }
+        let (text, m) = tick_text(axis, *value, fp);
+        let angle = polar.screen_angle(*value);
+        let (dx, dy) = (angle.cos() as f32, -(angle.sin() as f32));
+        // The label box sits just outside the ring along the spoke.
+        let reach = band + dx.abs() * m.width * 0.5 + dy.abs() * m.height() * 0.5;
+        let center = (
+            geometry.center[0] + dx * (geometry.radius + reach),
+            geometry.center[1] + dy * (geometry.radius + reach),
+        );
+        // Along the spoke, so every label keeps its distance to the ring.
+        place(&text, (center.0 + dx * radial, center.1 + dy * radial), m);
+    }
+}
+
+/// The radius axis' tick labels as [`draw_polar_axes`] draws them, beside
+/// the ray: `place` gets each label's text, centre and extents.
+fn each_radius_label(
+    polar: &PolarOptions,
+    geometry: &PolarGeometry,
+    axis: &AxisOptions,
+    majors: &[f64],
+    fp: FontPolicy,
+    mut place: impl FnMut(&NumericTickText, (f32, f32), TextMetrics),
+) {
+    let inner = geometry.inner_radius;
+    let ray = polar.radial_label_angle_degrees.to_radians();
+    let dir = (ray.cos() as f32, -(ray.sin() as f32));
+    let side = (dir.1, -dir.0);
+    let ls = &axis.label_style;
+    if !(ls.visible && ls.label_visible) {
+        return;
+    }
+    let offset = polar.radius_label_offset(ls);
+    let labels = visible_numeric_labels(axis, Side::Left, fp, majors, |value| {
+        point(geometry, ray, ring_radius(polar, geometry, axis, value))
+    });
+    let band = outward_tick(axis) + 4.0;
+    for label in &labels {
+        let (dx, dy) = (
+            label.position.0 - geometry.center[0],
+            label.position.1 - geometry.center[1],
+        );
+        let radius = dx.hypot(dy);
+        if radius < inner - 0.5 || radius > geometry.radius + 0.5 {
+            continue;
+        }
+        let m = extents(&label.text, ls, fp);
+        let reach = band + side.0.abs() * m.width * 0.5 + side.1.abs() * m.height() * 0.5;
+        // Beside the tick and half a line inward, so the outermost label
+        // stays clear of the angle label on the same spoke.
+        let inward = m.height() * 0.5;
+        let center = (
+            label.position.0 + side.0 * reach - dir.0 * inward,
+            label.position.1 + side.1 * reach - dir.1 * inward,
+        );
+        place(&label.text, (center.0 + offset[0], center.1 + offset[1]), m);
+    }
+}
+
+/// The box of each tick label on `side` of a polar chart, laid out exactly
+/// as [`draw_polar_axes`] draws it: the angle labels for `Bottom`, the radius
+/// labels for `Left`. A selection of those labels outlines these boxes;
+/// nothing is reported off polar mode or for another side.
+pub(super) fn polar_tick_label_rects(
+    config: &Config,
+    side: Side,
+    fp: FontPolicy,
+    mut each: impl FnMut(RectF),
+) {
+    let (Some(polar), Some(geometry)) = (&config.polar, config.polar_geometry()) else {
+        return;
+    };
+    let Ok(da) = config.data_area() else {
+        return;
+    };
+    let rect = |center: (f32, f32), m: TextMetrics| RectF {
+        x: center.0 - m.width * 0.5,
+        y: center.1 - m.height() * 0.5,
+        width: m.width,
+        height: m.height(),
+    };
+    match side {
+        Side::Bottom => {
+            let axis = &config.bottom_x;
+            let majors = major_tick_values_for_axis(axis, Side::Bottom, &da, fp);
+            let (_, sweep) = sweep(polar, axis);
+            each_angle_label(polar, &geometry, axis, &majors, sweep, fp, |_, c, m| {
+                each(rect(c, m))
+            });
+        }
+        Side::Left => {
+            let axis = &config.left_y;
+            let majors = major_tick_values_for_axis(axis, Side::Left, &da, fp);
+            each_radius_label(polar, &geometry, axis, &majors, fp, |_, c, m| {
+                each(rect(c, m))
+            });
+        }
+        Side::Top | Side::Right => {}
     }
 }
 

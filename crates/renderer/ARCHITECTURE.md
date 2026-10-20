@@ -365,8 +365,24 @@ redraw_pending = false;
 
 The last-presented stamp and host flags advance only after a successful draw, so
 a failed visual frame is retried. A clean web rAF skips the entire GPU surface
-path. A resident redraw records data primitives again from the pool; that path
-has no data-layer image cache. Nonresident rendering instead
+path. A resident Precise panel keeps its series bodies (fills, lines, markers,
+bars, fields, contours, vectors) in a panel-sized cached texture, and `prepare`
+draws them again only when their inputs change: the data-to-pixel transform,
+the data area, the draw style, `polar` and `colorbar`, the series
+configurations and the scale their styles were built at, the font generation,
+the allocation epochs of exactly the columns the panel reads, or the pool layout
+or pipeline generation. Replacing a column another panel reads draws nothing
+here. The grid, decoration and annotation layers
+keep their own textures, and the picked and selected highlights draw live above
+the cached bodies, so editing or selecting titles, legend, axes, grid,
+annotations or points never draws the bodies again. Each panel of a layered
+document has its own entry, so editing one layer draws only that layer's
+bodies. A panel the target clips, and a styled panel (whose blend equations
+depend on what is under them), draw their bodies directly. The composite is
+premultiplied UNORM, so it can differ from a direct draw by UNORM rounding at
+partly covered pixels; [`src/renderer/resident_display_tests.rs`](src/renderer/resident_display_tests.rs)
+pins the invalidation rules and that bound, and checks random edit sequences
+bit for bit against a renderer that draws the final state from nothing. Nonresident rendering instead
 keeps a bounded GPU accumulation surface for partial display and reuses an
 unchanged completed revision.
 
@@ -643,7 +659,7 @@ view_dirty = false;
 redraw_pending = false;
 ```
 
-마지막 표시 기록과 호스트 플래그는 그리기가 성공한 뒤에만 갱신한다. 실패하면 다음 프레임에서 다시 시도한다. 변경이 없는 웹 rAF에서는 GPU 화면 출력 경로 전체를 생략한다. 상주 경로는 다시 그릴 때 GPU 풀의 원본 도형에서 명령을 만들며 데이터 이미지 캐시를 두지 않는다. 비상주 경로는 부분 표시를 위한 GPU 누적 이미지를 유지하고, 입력이 바뀌지 않은 완료 결과를 재사용한다.
+마지막 표시 기록과 호스트 플래그는 그리기가 성공한 뒤에만 갱신한다. 실패하면 다음 프레임에서 다시 시도한다. 변경이 없는 웹 rAF에서는 GPU 화면 출력 경로 전체를 생략한다. 상주 경로의 Precise 패널은 시리즈 본체(채움, 선, 마커, 막대, 행렬, 등고선, 벡터)를 패널 크기의 캐시 텍스처에 보관한다. `prepare`는 본체의 입력이 바뀔 때만 다시 그린다. 입력은 데이터-픽셀 변환, 데이터 영역, 그리기 스타일, `polar`·`colorbar`, 시리즈 설정과 스타일을 만든 배율, 폰트 세대, 그 패널이 읽는 컬럼의 할당 epoch, 풀 배치·파이프라인 세대다. 다른 패널이 읽는 컬럼을 교체해도 이 패널은 다시 그리지 않는다. 그리드·장식·주석 레이어는 각자의 텍스처를 쓰고 픽·선택 강조는 캐시된 본체 위에 매번 그리므로, 제목·범례·축·그리드·주석·점을 편집하거나 선택해도 본체를 다시 그리지 않는다. 레이어가 있는 문서는 패널마다 캐시가 따로 있어 한 레이어를 편집하면 그 레이어의 본체만 다시 그린다. 출력 대상에 잘리는 패널과 스타일 패널(아래 내용에 따라 블렌드 결과가 달라진다)은 본체를 직접 그린다. 합성 텍스처는 premultiplied UNORM이라 일부만 덮인 픽셀에서 직접 그린 결과와 UNORM 반올림만큼 다를 수 있다. 무효화 규칙과 이 오차 범위는 [`src/renderer/resident_display_tests.rs`](src/renderer/resident_display_tests.rs)가 검사하며, 무작위 편집 시퀀스의 결과를 최종 상태를 처음부터 그린 렌더러와 비트 단위로 비교한다. 비상주 경로는 부분 표시를 위한 GPU 누적 이미지를 유지하고, 입력이 바뀌지 않은 완료 결과를 재사용한다.
 
 `Chart::{data_dirty,raster_dirty}`는 `Chart`를 직접 소유하는 저수준 호스트와의 호환성을 위해 남겨 둔 플래그다. `prepare`는 이 값을 읽거나 초기화하지 않고, 호출될 때 좌표 변환을 기록한다. 외부에서 `Chart`를 관리한다면 호스트가 `raster_dirty`를 확인·해제하고 `refresh_axis`를 호출해야 한다.
 

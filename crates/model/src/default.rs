@@ -188,7 +188,9 @@ pub fn default_colorbar_options() -> ColorBarOptions {
         visible: true,
         side: Side::Right,
         thickness_px: 18.0,
-        gap_px: 24.0,
+        // The axis band on the bar's side already separates it from the data
+        // area; the right one holds the last bottom tick label.
+        gap_px: 8.0,
         length_frac: 0.75,
         align: BarAlign::Center,
         offset_x: 0.0,
@@ -285,7 +287,10 @@ pub fn default_config() -> Config {
     let mut right_y = default_axis_options_y();
     right_y.label_style.label_visible = false;
     right_y.title_option.visible = false;
-    right_y.out_margin = 8.0;
+    // The last bottom tick label is centred on the data area's right edge, so
+    // half of it lands in this margin: 32 holds a seven-character label at
+    // the default font size.
+    right_y.out_margin = 32.0;
 
     Config {
         chart_area: default_chart_area(),
