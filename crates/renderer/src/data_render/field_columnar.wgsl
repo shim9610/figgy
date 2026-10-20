@@ -1346,10 +1346,12 @@ fn pick_field_data() {
     let flags = data_pick_query.data.x;
     let t = data_pick_query.cursor_ndc_t.zw;
     // Contours paint over their fill. A contour within the configured pick
-    // tolerance therefore wins before the containing heatmap cell.
+    // tolerance therefore wins before the containing heatmap cell. A label
+    // gap (`fs_contour_labelled`'s test; group 3 holds the series' label
+    // placement, or none) paints no contour, so it picks none.
     if ((flags & DATA_PICK_FLAG_CONTOUR) != 0u) {
         let contour = field_pick_contour(t);
-        if (contour.valid != 0u) {
+        if (contour.valid != 0u && !contour_label_gap_contains(t)) {
             data_pick_output = contour;
             return;
         }
@@ -1435,6 +1437,22 @@ fn selected_contour_coverage(t: vec2<f32>) -> f32 {
 /// lattice and implicit-contour functions as the normal field draw.
 @fragment
 fn fs_data_selection(in: FieldOut) -> @location(0) vec4<f32> {
+    return data_selection_color(in);
+}
+
+/// `fs_data_selection` for a labelled contour: the selected level's highlight
+/// leaves the label gaps `fs_contour_labelled` leaves, with the same test.
+@fragment
+fn fs_data_selection_labelled(in: FieldOut) -> @location(0) vec4<f32> {
+    let color = data_selection_color(in);
+    if (color.a > 0.0 && data_selection.indices.x == DATA_PICK_KIND_CONTOUR_LEVEL
+        && contour_label_gap_contains(in.axis_t)) {
+        return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    }
+    return color;
+}
+
+fn data_selection_color(in: FieldOut) -> vec4<f32> {
     let kind = data_selection.indices.x;
     if (kind == DATA_PICK_KIND_MATRIX_CELL) {
         return selection_color(selected_cell_coverage(in.axis_t));

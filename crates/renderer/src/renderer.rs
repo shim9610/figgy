@@ -4141,6 +4141,9 @@ struct TargetPipelines {
     bar_selection: Option<wgpu::RenderPipeline>,
     field: Option<wgpu::RenderPipeline>,
     field_selection: Option<wgpu::RenderPipeline>,
+    /// The selected contour level's highlight for a labelled contour, with
+    /// group 3 bound to its label gaps (`fs_data_selection_labelled`).
+    field_selection_labelled: Option<wgpu::RenderPipeline>,
     /// The field quad through `fs_contour` — the isolines. Same module and same
     /// layouts as `field`, one entry point apart.
     contour: Option<wgpu::RenderPipeline>,
@@ -4299,6 +4302,7 @@ fn create_target_pipelines_observed(
         bar_selection: None,
         field: None,
         field_selection: None,
+        field_selection_labelled: None,
         contour: None,
         contour_labelled: None,
         contour_label: None,
@@ -4371,6 +4375,7 @@ async fn create_target_pipelines_observed_async(
         bar_selection: None,
         field: None,
         field_selection: None,
+        field_selection_labelled: None,
         contour: None,
         contour_labelled: None,
         contour_label: None,
@@ -4696,6 +4701,23 @@ impl TargetPipelines {
                     transform_bgl,
                     data_selection_bgl,
                     field_bgl,
+                    surface_format,
+                    self.sample_count,
+                ),
+            );
+        }
+        if need_field_selection
+            && self.field_selection_labelled.is_none()
+            && let Some(labels) = label_pipelines
+        {
+            self.field_selection_labelled = Some(
+                data_render::create_field_selection_labelled_pipeline_with_sample_count(
+                    device,
+                    &self.shaders.field,
+                    transform_bgl,
+                    data_selection_bgl,
+                    field_bgl,
+                    labels.label_gap_bgl(),
                     surface_format,
                     self.sample_count,
                 ),
@@ -5051,6 +5073,22 @@ impl TargetPipelines {
                 transform_bgl,
                 data_selection_bgl,
                 field_bgl,
+                surface_format,
+                self.sample_count,
+            )
+        );
+        ensure!(
+            field_selection_labelled,
+            "selected labelled field data",
+            data_render::create_field_selection_labelled_pipeline_with_sample_count(
+                device,
+                &self.shaders.field,
+                transform_bgl,
+                data_selection_bgl,
+                field_bgl,
+                label_pipelines
+                    .expect("field preparation owns labels")
+                    .label_gap_bgl(),
                 surface_format,
                 self.sample_count,
             )
@@ -7688,6 +7726,21 @@ impl Renderer {
             let contour_width_px = extract_contour(&cfg.render_type)
                 .map_or(0.0, |contour| contour.line.line_width.max(0.0))
                 * request.display_scale;
+            // The label placement the contour draws its gaps from at this
+            // display transform: the draw's own snapshot (reused after a frame
+            // at the same transform, dispatched once otherwise).
+            let label = if has_contour && series_wants_contour_labels(&cfg.render_type) {
+                if has_fill {
+                    self.ensure_contour_scratch(cfg, &config, request.display_scale)?;
+                }
+                self.preparation_parts().1.contour_pick_label(
+                    cfg,
+                    &display_config,
+                    request.display_scale,
+                )?
+            } else {
+                None
+            };
             data_series.push(crate::gpu_data_pick::GpuDataPickSeries {
                 source_id: cfg.source_id.clone(),
                 series_id: cfg.series_id.clone(),
@@ -7699,6 +7752,7 @@ impl Renderer {
                     has_contour,
                     contour_width_px,
                     nan_color_premul,
+                    label,
                 },
             });
         }
@@ -14870,56 +14924,17 @@ impl PrepareContext<'_> {
                     ));
                 }
 
+                let label = self.contour_label_snapshot(
+                    cfg.series_id.as_str(),
+                    &mut encoder,
+                    &transform,
+                    (ca, da),
+                    *effective_spacing_px,
+                );
                 let entry = self
                     .contour_cache
-                    .get_mut(cfg.series_id.as_str())
+                    .get(cfg.series_id.as_str())
                     .expect("contour scratch was just ensured");
-                let label = match entry.label.as_mut() {
-                    None => None,
-                    Some(label) if !label.is_automatic() => label.explicit_snapshot(),
-                    Some(label) => {
-                        let effective_spacing_px = effective_spacing_px
-                            .expect("automatic contour spacing was preflighted");
-                        let params = &entry.signature.params;
-                        let plan = crate::gpu_contour::ContourLabelState::anchor_plan(
-                            da.width as f32,
-                            da.height as f32,
-                            effective_spacing_px,
-                            params.level_count,
-                        );
-                        Some(
-                            label.dispatch_automatic(
-                                &self.device,
-                                &self.queue,
-                                &self.gpu_ledger,
-                                encoder.as_mut().expect("automatic label encoder"),
-                                self.contour_label_pipelines
-                                    .as_ref()
-                                    .expect("contour label pipelines ensured"),
-                                &transform,
-                                crate::gpu_contour::AnchorParamsGpu {
-                                    lattice_x: plan.lattice_x,
-                                    lattice_y: plan.lattice_y,
-                                    level_count: plan.levels,
-                                    kept_capacity: crate::gpu_contour::MAX_CONTOUR_LABELS_TOTAL,
-                                    area_x: ca.x as f32,
-                                    area_y: ca.y as f32,
-                                    area_w: ca.width as f32,
-                                    area_h: ca.height as f32,
-                                    clip_x: da.x as f32,
-                                    clip_y: da.y as f32,
-                                    clip_w: da.width as f32,
-                                    clip_h: da.height as f32,
-                                    spacing_px: effective_spacing_px,
-                                    label_h_px: label.cell_h_px(),
-                                    label_vertices: crate::gpu_contour::LABEL_VERTICES,
-                                    _pad0: 0,
-                                },
-                                &entry.field_bg,
-                            ),
-                        )
-                    }
-                };
                 per_series.push(PreparedContourSeries {
                     scratch: Some(PreparedContourScratch {
                         style_bg: entry.style_bg.clone(),
@@ -14936,6 +14951,110 @@ impl PrepareContext<'_> {
             prepared.push(PreparedContourItem { series: per_series });
         }
         Ok((prepared, receipts))
+    }
+
+    /// The label snapshot a contour series draws with at `transform`: the
+    /// explicit placement, or the automatic one for this exact transform and
+    /// anchor plan (dispatched into `encoder` on a miss, reused on a hit).
+    /// `None` without labels. Shared by the draw and the contour pick, which
+    /// leaves the same label gaps unpicked.
+    fn contour_label_snapshot(
+        &mut self,
+        series_id: &str,
+        encoder: &mut Option<wgpu::CommandEncoder>,
+        transform: &data_render::ScatterTransform,
+        (ca, da): (Rect, Rect),
+        effective_spacing_px: Option<f32>,
+    ) -> Option<crate::gpu_contour::ContourLabelSnapshot> {
+        let entry = self.contour_cache.get_mut(series_id)?;
+        let label = entry.label.as_mut()?;
+        if !label.is_automatic() {
+            return label.explicit_snapshot();
+        }
+        let effective_spacing_px =
+            effective_spacing_px.expect("automatic contour spacing was preflighted");
+        let params = &entry.signature.params;
+        let plan = crate::gpu_contour::ContourLabelState::anchor_plan(
+            da.width as f32,
+            da.height as f32,
+            effective_spacing_px,
+            params.level_count,
+        );
+        let encoder = encoder.get_or_insert_with(|| {
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("figgy contour label encoder"),
+                })
+        });
+        Some(
+            label.dispatch_automatic(
+                &self.device,
+                &self.queue,
+                &self.gpu_ledger,
+                encoder,
+                self.contour_label_pipelines
+                    .as_ref()
+                    .expect("contour label pipelines ensured"),
+                transform,
+                crate::gpu_contour::AnchorParamsGpu {
+                    lattice_x: plan.lattice_x,
+                    lattice_y: plan.lattice_y,
+                    level_count: plan.levels,
+                    kept_capacity: crate::gpu_contour::MAX_CONTOUR_LABELS_TOTAL,
+                    area_x: ca.x as f32,
+                    area_y: ca.y as f32,
+                    area_w: ca.width as f32,
+                    area_h: ca.height as f32,
+                    clip_x: da.x as f32,
+                    clip_y: da.y as f32,
+                    clip_w: da.width as f32,
+                    clip_h: da.height as f32,
+                    spacing_px: effective_spacing_px,
+                    label_h_px: label.cell_h_px(),
+                    label_vertices: crate::gpu_contour::LABEL_VERTICES,
+                    _pad0: 0,
+                },
+                &entry.field_bg,
+            ),
+        )
+    }
+
+    /// The label snapshot a contour pick of `cfg` sees: the one the draw at
+    /// `chart_config` (the pick's display configuration) and `scale` paints
+    /// its label gaps from, through [`Self::contour_label_snapshot`]. Any
+    /// anchor dispatch is submitted before the pick that reads it.
+    fn contour_pick_label(
+        &mut self,
+        cfg: &SeriesConfig,
+        chart_config: &Config,
+        scale: f32,
+    ) -> Result<Option<crate::gpu_contour::ContourLabelSnapshot>> {
+        if !series_wants_contour_labels(&cfg.render_type) {
+            return Ok(None);
+        }
+        let spacing =
+            preflight_contour_label_spacing(cfg.series_id.as_str(), &cfg.render_type, true, scale)?;
+        if self.contour_label_pipelines.is_none() {
+            *self.contour_label_pipelines = Some(crate::gpu_contour::ContourLabelPipelines::new(
+                &self.device,
+                &self.field_bgl,
+            ));
+        }
+        let transform = data_render::scatter_transform_from_config(chart_config);
+        let ca = chart_config.chart_area.0;
+        let da = chart_config.data_area().map(|area| area.0).unwrap_or(ca);
+        let mut encoder = None;
+        let label = self.contour_label_snapshot(
+            cfg.series_id.as_str(),
+            &mut encoder,
+            &transform,
+            (ca, da),
+            spacing,
+        );
+        if let Some(encoder) = encoder {
+            self.queue.submit(std::iter::once(encoder.finish()));
+        }
+        Ok(label)
     }
 
     /// Build or reuse one contour series' GPU state.

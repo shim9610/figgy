@@ -214,6 +214,96 @@ pub struct ContourLabelPipelines {
     label_gap_bgl: wgpu::BindGroupLayout,
 }
 
+/// The contour label-gap group (group 3 of `fs_contour_labelled`): the
+/// selected anchors, the draw args holding their count, and the atlas cell
+/// geometry. Visible to the fragment stage that leaves the gaps unpainted and
+/// to the typed data pick and the selected-level highlight, which leave the
+/// same gaps unpicked and unhighlighted. wgpu deduplicates identical layouts,
+/// so every caller's copy accepts the same bind groups.
+pub(crate) fn create_label_gap_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    let visibility = wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE;
+    let entry = |binding: u32, ty: wgpu::BufferBindingType| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility,
+        ty: wgpu::BindingType::Buffer {
+            ty,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    };
+    let storage = wgpu::BufferBindingType::Storage { read_only: true };
+    crate::gpu_compile::bind_group_layout(
+        device,
+        &wgpu::BindGroupLayoutDescriptor {
+            label: Some("figgy contour label gap bgl"),
+            entries: &[
+                entry(0, storage),                          // selected anchors
+                entry(1, storage),                          // draw args / count
+                entry(3, wgpu::BufferBindingType::Uniform), // atlas cell geometry
+            ],
+        },
+    )
+}
+
+/// A label-gap group with no labels (a zero count): bound where a contour
+/// has no labels, so its gap test never hits.
+pub(crate) fn create_empty_label_gap_bind_group(
+    device: &wgpu::Device,
+    ledger: &Arc<GpuLedger>,
+    layout: &wgpu::BindGroupLayout,
+) -> (wgpu::BindGroup, SharedCharge) {
+    let tally = ChargeTally::new();
+    let zeros = |label: &'static str, size: usize, usage: wgpu::BufferUsages| {
+        charged_buffer_init(
+            &tally,
+            device,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents: &[0u8; 64][..size],
+                usage,
+            },
+        )
+    };
+    let anchors = zeros(
+        "figgy empty contour label gap anchors",
+        std::mem::size_of::<LabelAnchorGpu>(),
+        wgpu::BufferUsages::STORAGE,
+    );
+    let args = zeros(
+        "figgy empty contour label gap count",
+        16,
+        wgpu::BufferUsages::STORAGE,
+    );
+    let params = zeros(
+        "figgy empty contour label gap params",
+        32,
+        wgpu::BufferUsages::UNIFORM,
+    );
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("figgy empty contour label gap bg"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: anchors.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: args.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: params.as_entire_binding(),
+            },
+        ],
+    });
+    (
+        bind_group,
+        crate::gpu_memory::shared_charge(tally, ledger, GpuResourceKind::ContourScratch),
+    )
+}
+
 impl ContourLabelPipelines {
     /// `field_bgl` is the field's group-2 layout, bound unchanged at index 2 of
     /// the anchor pipelines: the projection reads z through the same
@@ -329,17 +419,7 @@ impl ContourLabelPipelines {
                 ],
             },
         );
-        let label_gap_bgl = crate::gpu_compile::bind_group_layout(
-            &device,
-            &wgpu::BindGroupLayoutDescriptor {
-                label: Some("figgy contour label gap bgl"),
-                entries: &[
-                    storage(0, true, wgpu::ShaderStages::FRAGMENT), // selected anchors
-                    storage(1, true, wgpu::ShaderStages::FRAGMENT), // draw args / count
-                    uniform(3, wgpu::ShaderStages::FRAGMENT),       // atlas cell geometry
-                ],
-            },
-        );
+        let label_gap_bgl = create_label_gap_bind_group_layout(&device);
         Self {
             projection_steps: split_projection.then(|| {
                 (

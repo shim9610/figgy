@@ -499,11 +499,21 @@ impl PrepareContext<'_> {
                                 &self.data_selection_bgl,
                                 &selection,
                             );
-                        selected_fields.push(ColumnFieldSelectionLayer {
-                            pipeline: pipelines
+                        // A labelled contour's highlight leaves its label
+                        // gaps; the draw binds the label group with it.
+                        let pipeline = if scratch.label.is_some() {
+                            pipelines
+                                .field_selection_labelled
+                                .as_ref()
+                                .expect("prepare ensured labelled contour selection pipeline")
+                        } else {
+                            pipelines
                                 .field_selection
                                 .as_ref()
-                                .expect("prepare ensured contour selection pipeline"),
+                                .expect("prepare ensured contour selection pipeline")
+                        };
+                        selected_fields.push(ColumnFieldSelectionLayer {
+                            pipeline,
                             transform_bg: &view.transform_bg,
                             selection_bg,
                             selection_charge,

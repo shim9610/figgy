@@ -4462,6 +4462,33 @@ pub(crate) fn create_field_selection_pipeline_with_sample_count(
     )
 }
 
+/// The selected-field highlight for a labelled contour: group 3 is the
+/// series' label-gap group, which `fs_data_selection_labelled` reads.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_field_selection_labelled_pipeline_with_sample_count(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    transform_bgl: &wgpu::BindGroupLayout,
+    selection_bgl: &wgpu::BindGroupLayout,
+    field_bgl: &wgpu::BindGroupLayout,
+    label_gap_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    create_field_columnar_pipeline_with_optional_extra_layout(
+        device,
+        shader,
+        transform_bgl,
+        selection_bgl,
+        field_bgl,
+        Some(label_gap_bgl),
+        target_format,
+        sample_count,
+        "fs_data_selection_labelled",
+        "figgy selected labelled field data pipeline",
+    )
+}
+
 /// The field quad against one fragment entry point.
 ///
 /// `fs_main` fills; `fs_contour` draws the isolines as the level set of the same
@@ -5127,6 +5154,11 @@ pub(crate) fn issue_series_picked(pass: &mut wgpu::RenderPass<'_>, series: &Seri
         pass.set_bind_group(0, selection.transform_bg, &[]);
         pass.set_bind_group(1, &selection.selection_bg, &[]);
         pass.set_bind_group(2, &selection.field_bg, &[]);
+        // A labelled contour's highlight pipeline reads the label gaps the
+        // contour draw leaves; the plain one ignores the extra group.
+        if let Some(label) = series.contour.as_ref().and_then(|c| c.label.as_ref()) {
+            pass.set_bind_group(3, label.snapshot.label_gap_bind_group(), &[]);
+        }
         pass.draw(0..FIELD_VERTICES, 0..1);
     }
 

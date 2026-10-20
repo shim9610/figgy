@@ -59,6 +59,13 @@ struct DataPickCandidateGpu {
 const _: () = assert!(std::mem::size_of::<DataPickQueryGpu>() == 80);
 const _: () = assert!(std::mem::size_of::<DataPickCandidateGpu>() == 32);
 
+/// What a typed pick's field and vector-grid series keep alive until the
+/// pick resolves: the group-2 charge and a contour's label placement.
+struct FieldPickHold {
+    _charge: SharedCharge,
+    _label: Option<crate::gpu_contour::ContourLabelSnapshot>,
+}
+
 #[derive(Clone)]
 struct DataPickIdentity {
     source_id: Option<String>,
@@ -86,6 +93,9 @@ pub(crate) enum GpuDataPickGeometry {
         /// The fill's premultiplied `nan_color` (the fill's group-1 style),
         /// so the cell pick sees the colour the fill paints.
         nan_color_premul: [f32; 4],
+        /// A labelled contour's label placement at the pick's transform: its
+        /// gaps paint no contour, so they pick none.
+        label: Option<crate::gpu_contour::ContourLabelSnapshot>,
     },
     /// A grid vector's arrows, picked as the cells they are drawn for: the
     /// series' vector group 2 (pool, grid table, stops, params at the pick's
@@ -489,7 +499,10 @@ impl GpuStreamDataPick {
                     identities: self.identities,
                     byte_len: DATA_PICK_CANDIDATE_BYTES,
                     gpu_reduced: true,
-                    _field_charges: vec![self.charge],
+                    _field_charges: vec![FieldPickHold {
+                        _charge: self.charge,
+                        _label: None,
+                    }],
                     _scratch_charge: ChargeTally::new()
                         .into_charge(&self.bundle.ledger, GpuResourceKind::PickScratch),
                     _readback_charge: tally
@@ -546,6 +559,9 @@ pub(crate) struct DataPickPipelineBundle {
     field: wgpu::ComputePipeline,
     vector_cell: wgpu::ComputePipeline,
     empty_bar_style_map: wgpu::BindGroup,
+    /// Group 3 of the field pick for a contour without labels.
+    empty_label_gap: wgpu::BindGroup,
+    _empty_label_gap_charge: SharedCharge,
     stream_reduce_bgl: wgpu::BindGroupLayout,
     stream_reduce_data: wgpu::ComputePipeline,
     stream_reduce_point: wgpu::ComputePipeline,
@@ -589,14 +605,23 @@ impl DataPickPipelineBundle {
                 immediate_size: 0,
             },
         );
+        // Group 3: the contour's label gaps (`contour_label_gap_contains`).
+        let label_gap_bgl = crate::gpu_contour::create_label_gap_bind_group_layout(&device);
         let field_layout = crate::gpu_compile::pipeline_layout(
             &device,
             &wgpu::PipelineLayoutDescriptor {
                 label: Some("figgy field data pick layout"),
-                bind_group_layouts: &[Some(transform_bgl), Some(&query_bgl), Some(field_bgl)],
+                bind_group_layouts: &[
+                    Some(transform_bgl),
+                    Some(&query_bgl),
+                    Some(field_bgl),
+                    Some(&label_gap_bgl),
+                ],
                 immediate_size: 0,
             },
         );
+        let (empty_label_gap, empty_label_gap_charge) =
+            crate::gpu_contour::create_empty_label_gap_bind_group(&device, &ledger, &label_gap_bgl);
         let vector_layout = crate::gpu_compile::pipeline_layout(
             &device,
             &wgpu::PipelineLayoutDescriptor {
@@ -702,6 +727,8 @@ impl DataPickPipelineBundle {
             field,
             vector_cell,
             empty_bar_style_map,
+            empty_label_gap,
+            _empty_label_gap_charge: empty_label_gap_charge,
             stream_reduce_bgl,
             stream_reduce_data,
             stream_reduce_point,
@@ -897,7 +924,7 @@ impl DataPickPipelineBundle {
 
         enum PreparedKind {
             Histogram(wgpu::BindGroup),
-            Field(wgpu::BindGroup),
+            Field(wgpu::BindGroup, wgpu::BindGroup),
             VectorGrid(wgpu::BindGroup),
         }
         struct PreparedSeries {
@@ -949,6 +976,7 @@ impl DataPickPipelineBundle {
                     has_contour,
                     contour_width_px,
                     nan_color_premul,
+                    label,
                 } => {
                     let mut flags = 0;
                     if has_fill {
@@ -957,7 +985,14 @@ impl DataPickPipelineBundle {
                     if has_contour {
                         flags |= DATA_PICK_FLAG_CONTOUR;
                     }
-                    field_charges.push(charge);
+                    let label_gap = label.as_ref().map_or_else(
+                        || self.empty_label_gap.clone(),
+                        |label| label.label_gap_bind_group().clone(),
+                    );
+                    field_charges.push(FieldPickHold {
+                        _charge: charge,
+                        _label: label,
+                    });
                     (
                         DataPickQueryGpu {
                             cursor_ndc_t: cursor,
@@ -966,11 +1001,14 @@ impl DataPickPipelineBundle {
                             bases: [0; 4],
                             baseline: nan_color_premul,
                         },
-                        PreparedKind::Field(field_bg),
+                        PreparedKind::Field(field_bg, label_gap),
                     )
                 }
                 GpuDataPickGeometry::VectorGrid { vector_bg, charge } => {
-                    field_charges.push(charge);
+                    field_charges.push(FieldPickHold {
+                        _charge: charge,
+                        _label: None,
+                    });
                     (
                         DataPickQueryGpu {
                             cursor_ndc_t: cursor,
@@ -1045,9 +1083,10 @@ impl DataPickPipelineBundle {
                         pass.set_pipeline(&self.histogram);
                         pass.set_bind_group(2, style_map, &[]);
                     }
-                    PreparedKind::Field(field_bg) => {
+                    PreparedKind::Field(field_bg, label_gap) => {
                         pass.set_pipeline(&self.field);
                         pass.set_bind_group(2, field_bg, &[]);
+                        pass.set_bind_group(3, label_gap, &[]);
                     }
                     PreparedKind::VectorGrid(vector_bg) => {
                         pass.set_pipeline(&self.vector_cell);
@@ -1109,7 +1148,7 @@ enum DataPickTicketState {
         identities: Arc<[DataPickIdentity]>,
         byte_len: u64,
         gpu_reduced: bool,
-        _field_charges: Vec<SharedCharge>,
+        _field_charges: Vec<FieldPickHold>,
         _scratch_charge: GpuByteCharge,
         _readback_charge: GpuByteCharge,
     },

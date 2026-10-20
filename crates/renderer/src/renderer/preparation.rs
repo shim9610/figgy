@@ -288,6 +288,7 @@ impl Renderer {
             PreparationFeature::Fields => {
                 p.field.is_some()
                     && p.field_selection.is_some()
+                    && p.field_selection_labelled.is_some()
                     && p.contour.is_some()
                     && p.contour_labelled.is_some()
                     && p.contour_label.is_some()
@@ -387,6 +388,7 @@ impl TargetPipelines {
             bar_selection: None,
             field: None,
             field_selection: None,
+            field_selection_labelled: None,
             contour: None,
             contour_labelled: None,
             contour_label: None,
@@ -442,6 +444,9 @@ impl TargetPipelines {
         }
         if self.field_selection.is_none() {
             self.field_selection = other.field_selection;
+        }
+        if self.field_selection_labelled.is_none() {
+            self.field_selection_labelled = other.field_selection_labelled;
         }
         if self.contour.is_none() {
             self.contour = other.contour;

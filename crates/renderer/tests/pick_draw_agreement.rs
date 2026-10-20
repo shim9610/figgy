@@ -1778,3 +1778,184 @@ fn heatmap_cells_pick_exactly_the_pixels_they_paint() {
         }
     }
 }
+
+/// G9: a labelled contour leaves a gap under each label, and the gap is not
+/// picked and not highlighted: the pick and the selected-level highlight run
+/// the draw's own gap test on the draw's own label placement. Elsewhere the
+/// stroke picks its level. At 1x and 2x.
+#[test]
+fn contour_label_gaps_pick_and_highlight_nothing() {
+    use renderer::data_config::{
+        ContourConfig, ContourLabelConfig, DataLineStyleConfig, GridLayout, MatrixOrientation,
+        MatrixRef,
+    };
+    let mut renderer = renderer();
+    // z = x + y on a 3 x 3 grid over the chart: straight diagonal isolines.
+    renderer
+        .add_columns(&[
+            (
+                "cgx",
+                &col(vec![0.0, 5.0, 10.0]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "cgy",
+                &col(vec![0.0, 5.0, 10.0]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "c0",
+                &col(vec![0.0, 5.0, 10.0]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "c1",
+                &col(vec![5.0, 10.0, 15.0]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "c2",
+                &col(vec![10.0, 15.0, 20.0]) as &dyn renderer::ColumnSource,
+            ),
+        ])
+        .expect("upload");
+    let contour = |labels: bool| SeriesConfig {
+        series_id: "iso".into(),
+        source_id: None,
+        label: None,
+        x_column: "cgx".into(),
+        y_column: "cgy".into(),
+        render_type: DataRenderType::Contour {
+            matrix: MatrixRef {
+                columns: vec!["c0".into(), "c1".into(), "c2".into()],
+                orientation: MatrixOrientation::ColumnsAreX,
+                grid_layout: GridLayout::Centers,
+            },
+            contour: ContourConfig {
+                levels: vec![6.0, 10.0, 14.0],
+                line: DataLineStyleConfig {
+                    line_style: renderer::line::LineStylePreset::Solid,
+                    line_color: RED,
+                    line_width: 3.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: renderer::data_config::LineInterpolation::Linear,
+                },
+                per_level_color: None,
+                labels: labels.then(|| ContourLabelConfig {
+                    visible: true,
+                    font_size: 13.0,
+                    color: BLUE,
+                    format: renderer::format::LabelFormat::Decimal,
+                    significant_digits: 2,
+                    spacing_px: 70.0,
+                    anchors: Vec::new(),
+                    bg_color: None,
+                    bg_padding_px: 3.0,
+                }),
+            },
+        },
+    };
+    let mut chart = bare_chart();
+    let mut bar = renderer::default::default_colorbar_options();
+    bar.visible = false;
+    bar.axis.min = 0.0;
+    bar.axis.max = 20.0;
+    bar.axis.major_spacing = 5.0;
+    chart.config_mut().colorbar = Some(bar);
+    // Red stroke ink (the labels are blue).
+    let red = |img: &RasterImage, x: u32, y: u32| {
+        let [r, g, b, a] = pixel(img, x, y);
+        let alpha = u32::from(a);
+        let premul = |c: u8| u32::from(c) * alpha / 255;
+        (premul(r), premul(g).max(premul(b)))
+    };
+    for scale in [1.0, 2.0] {
+        let labelled = [contour(true)];
+        let with = renderer
+            .export_panel_rgba(&chart, &labelled, scale)
+            .unwrap();
+        let plain = renderer
+            .export_panel_rgba(&chart, &[contour(false)], scale)
+            .unwrap();
+        let probe = Probe::register(&mut renderer, &chart, &labelled, scale);
+        let mut gap = 0usize;
+        let mut stroke = 0usize;
+        let mut failures = Vec::new();
+        let mut gap_pixels = Vec::new();
+        for y in 0..with.height {
+            for x in 0..with.width {
+                let (labelled_red, labelled_other) = red(&with, x, y);
+                let (plain_red, _) = red(&plain, x, y);
+                let in_gap = plain_red >= 200 && labelled_red < 6 && labelled_other < 6;
+                let on_stroke = labelled_red >= 200;
+                if !(in_gap || on_stroke) {
+                    continue;
+                }
+                let hit = probe.pick_data(&mut renderer, x, y, 0.0);
+                let level = matches!(hit, Some(renderer::PickedData::ContourLevel { .. }));
+                if in_gap {
+                    gap += 1;
+                    gap_pixels.push((x, y));
+                    if level {
+                        failures.push(format!("({x}, {y}) in a label gap picks {hit:?}"));
+                    }
+                } else if !level {
+                    stroke += 1;
+                    failures.push(format!("({x}, {y}) on the stroke picks {hit:?}"));
+                } else {
+                    stroke += 1;
+                }
+            }
+        }
+        renderer.remove_chart(probe.id).unwrap();
+        assert!(
+            failures.is_empty(),
+            "at {scale}x: {} disagreements, first {:?}",
+            failures.len(),
+            &failures[..failures.len().min(12)]
+        );
+        assert!(
+            gap > 10 && stroke > 100,
+            "at {scale}x: {gap} gap / {stroke} stroke"
+        );
+
+        // The selected level's highlight skips the same gaps.
+        let mut selected = Chart::new(chart.config().clone());
+        selected.config_mut().picked_data = Some(renderer::DataSelectionsConfig {
+            visible: true,
+            refs: vec![renderer::PickedDataRef::ContourLevel {
+                source_id: None,
+                series_id: "iso".into(),
+                level_index: 1,
+                x_index: 0,
+                y_index: 0,
+            }],
+            highlight_color: Color {
+                r: 0.0,
+                g: 1.0,
+                b: 0.0,
+                a: 1.0,
+            },
+            outline_width_px: 2.0,
+            point_radius_extra_px: 3.0,
+            contour_width_extra_px: 2.0,
+        });
+        let highlighted = renderer
+            .export_panel_rgba(&selected, &labelled, scale)
+            .unwrap();
+        let green = |img: &RasterImage, x: u32, y: u32| {
+            let [r, g, b, _] = pixel(img, x, y);
+            g >= 200 && r < 80 && b < 80
+        };
+        let in_gap = gap_pixels
+            .iter()
+            .filter(|&&(x, y)| green(&highlighted, x, y))
+            .count();
+        let total = (0..highlighted.height)
+            .flat_map(|y| (0..highlighted.width).map(move |x| (x, y)))
+            .filter(|&(x, y)| green(&highlighted, x, y))
+            .count();
+        assert!(total > 50, "at {scale}x: {total} highlight pixels");
+        assert_eq!(
+            in_gap, 0,
+            "at {scale}x: the highlight paints {in_gap} gap pixels"
+        );
+    }
+}
