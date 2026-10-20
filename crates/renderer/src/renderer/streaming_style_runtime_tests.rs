@@ -1688,21 +1688,23 @@ fn temporary_metal_constellation_diagnostic() {
     // primitive kind of a single series (nothing overlaps another layer)
     // means the two paths compute a primitive differently; differences only
     // where layers overlap mean composition rounding.
-    let cases: [(&str, f32, f32, &[usize]); 5] = [
-        ("front line only", 0.0, 0.37, &[0]),
-        ("front stars only", 0.79, 0.0, &[0]),
-        ("front line+stars", 0.79, 0.37, &[0]),
-        ("both lines only", 0.0, 0.37, &[0, 1]),
-        ("both series", 0.79, 0.37, &[0, 1]),
+    // The whole line in one chunk (one render pass) against one segment per
+    // chunk (a pass per segment): if only the split version differs, the
+    // intermediate store between passes is the cause.
+    let cases: [(&str, f32, f32, &[usize], u64); 4] = [
+        ("front line only, chunk 1", 0.0, 0.37, &[0], 1),
+        ("front line only, chunk 1000", 0.0, 0.37, &[0], 1000),
+        ("both series, chunk 1", 0.79, 0.37, &[0, 1], 1),
+        ("both series, chunk 1000", 0.79, 0.37, &[0, 1], 1000),
     ];
-    for (name, star, line, keep) in cases {
+    for (name, star, line, keep, chunk) in cases {
         let mut shifts_with_diff = 0;
         let mut pixels = 0;
         let mut max = 0u8;
         let mut first = String::new();
         for step in 0..60 {
             let offset = step as f64 * 0.000_7;
-            let (resident, streamed) = constellation_pair(star, line, keep, offset, 1);
+            let (resident, streamed) = constellation_pair(star, line, keep, offset, chunk);
             let differing: Vec<usize> = resident
                 .chunks_exact(4)
                 .zip(streamed.chunks_exact(4))
