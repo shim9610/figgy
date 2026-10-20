@@ -100,10 +100,11 @@ fn label_ink(cfg: &Config, labels: &Labels) -> RectF {
     let mut without = cfg.clone();
     labels.hide(&mut without);
     let hidden = try_raster_chart_to_rgba(&without).unwrap();
+    let (width, height) = (cfg.chart_area.0.width, cfg.chart_area.0.height);
     let mut found: Option<(u32, u32, u32, u32)> = None;
-    for y in 0..HEIGHT {
-        for x in 0..WIDTH {
-            let i = ((y * WIDTH + x) * 4) as usize;
+    for y in 0..height {
+        for x in 0..width {
+            let i = ((y * width + x) * 4) as usize;
             if shown[i..i + 4] != hidden[i..i + 4] {
                 let (x0, y0, x1, y1) = found.unwrap_or((x, y, x, y));
                 found = Some((x0.min(x), y0.min(y), x1.max(x), y1.max(y)));
@@ -261,11 +262,11 @@ fn a_drag_along_the_axis_moves_the_hit_region() {
 
 /// Clip `r` to the canvas: a label drawn past the chart edge inks only the
 /// part on the canvas.
-fn on_canvas(r: RectF) -> RectF {
+fn on_canvas(r: RectF, cfg: &Config) -> RectF {
     let x0 = r.x.max(0.0);
     let y0 = r.y.max(0.0);
-    let x1 = (r.x + r.width).min(WIDTH as f32);
-    let y1 = (r.y + r.height).min(HEIGHT as f32);
+    let x1 = (r.x + r.width).min(cfg.chart_area.0.width as f32);
+    let y1 = (r.y + r.height).min(cfg.chart_area.0.height as f32);
     RectF {
         x: x0,
         y: y0,
@@ -294,18 +295,22 @@ fn wide_label_config(colorbar: bool) -> Config {
     cfg
 }
 
-// The bounds are the drawn labels, not an estimate: every edge lies within a
-// pixel of the ink (whole-pixel ink against sub-pixel glyph extents), so the
+// The bounds are the drawn labels, not an estimate: every edge lies within
+// 1.5 px of the ink (whole-pixel ink and its anti-aliased fringe against
+// sub-pixel glyph extents), so the
 // end labels are inside the box and no empty strip is selectable beside them.
+// The 2x config is the display config of a 2x export or a HiDPI surface.
 #[test]
 fn tick_label_bounds_are_the_drawn_labels() {
     for (labels, colorbar) in cases() {
         for (name, cfg) in [
             ("default", bare_config(colorbar)),
             ("wide labels", wide_label_config(colorbar)),
+            ("2x", bare_config(colorbar).scaled(2.0)),
+            ("wide labels at 2x", wide_label_config(colorbar).scaled(2.0)),
         ] {
             let ink = label_ink(&cfg, &labels);
-            let b = on_canvas(bounds(&cfg, &labels));
+            let b = on_canvas(bounds(&cfg, &labels), &cfg);
             let edges = [
                 (b.x, ink.x),
                 (b.y, ink.y),
@@ -314,7 +319,7 @@ fn tick_label_bounds_are_the_drawn_labels() {
             ];
             for (bound, inked) in edges {
                 assert!(
-                    (bound - inked).abs() <= 1.0,
+                    (bound - inked).abs() <= 1.5,
                     "{labels:?} ({name}): bounds {b:?} against ink {ink:?}"
                 );
             }
