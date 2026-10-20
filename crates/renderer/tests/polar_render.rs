@@ -1032,11 +1032,32 @@ fn label_offsets_move_labels_along_spokes_and_in_the_ray_frame() {
     let chart = chart_with(0.0, [0.0, 0.0], [0.0, 15.0], true);
     let map = renderer::select::HitMap::standard_chart();
     let measure = renderer::text_render::CpuTextMeasure::for_style(&chart.config().draw_style);
-    // (At the ink's height, on the ray's middle: the ink centroid itself
-    // leans left of the centre because the label at radius 0 is centred
-    // on it, which the representative strip does not model.)
+    // Probe the centre of the outermost label the renderer draws: it sits
+    // above the ray, at the ink's height, and the hit map answers there.
     let geometry = chart.config().polar_geometry().unwrap();
-    let probe = (geometry.center[0] + geometry.radius * 0.6, across.1 as f32);
+    let mut outer: Option<renderer::layout::RectF> = None;
+    assert!(renderer::MeasureText::drawn_parts(
+        &measure,
+        chart.config(),
+        &renderer::layout::Element::AxisLabel(renderer::layout::Side::Left),
+        &mut |part| {
+            if let renderer::layout::DrawnPart::Text(r) = part
+                && outer.is_none_or(|o| r.x > o.x)
+            {
+                outer = Some(r);
+            }
+        },
+    ));
+    let label = outer.expect("the ray draws labels");
+    let probe = (label.x + label.width * 0.5, label.y + label.height * 0.5);
+    assert!(
+        probe.1 < geometry.center[1],
+        "{probe:?} is not above the ray"
+    );
+    assert!(
+        (probe.1 - across.1 as f32).abs() < 12.0,
+        "{probe:?} {across:?}"
+    );
     let hit = map
         .hit_test(chart.config(), &measure, probe.0, probe.1)
         .and_then(|id| map.get(id))
