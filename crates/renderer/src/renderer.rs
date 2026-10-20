@@ -24032,9 +24032,11 @@ mod tests {
                 timeout: Some(std::time::Duration::from_secs(30)),
             })
             .expect("offscreen GPU work completes before readback");
+        // On the shared test device the callback can run on another test's
+        // polling thread, after this poll returns.
         mapped_rx
-            .try_recv()
-            .expect("offscreen mapping callback ran during GPU completion")
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("offscreen mapping callback runs after GPU completion")
             .expect("offscreen readback mapping succeeds");
         let mapped = slice
             .get_mapped_range()
