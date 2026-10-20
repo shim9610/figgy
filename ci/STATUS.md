@@ -6,6 +6,34 @@ All regression checks remain enabled in the normal package matrix. The separate
 investigation, not a default renderer option. Standard CI uses software/virtual
 adapters; physical Intel/AMD/NVIDIA/Apple driver coverage remains outstanding.
 
+## Renderer 0.18.0: Metal stream/resident line difference (PR #34)
+
+Metal stays experimental for this release. On the Apple Paravirtual adapter, a
+Constellation line drawn by the stream path differs from the same line drawn
+resident by one 8-bit code value at a few pixels. Linux/Vulkan (lavapipe) and
+Windows/DX12 match bit for bit. The
+[PR #34 diagnostics](https://github.com/shim9610/figgy/pull/34) found:
+
+- The streamed result is the same for chunk sizes 1, 2 and 7, and the
+  difference is never more than one code value.
+- Across 60 sub-pixel offsets, point stars alone never differ, while a single
+  line alone differs at 8 offsets (10 pixels). The test line doubles back on
+  itself, so its own segments overlap; the differing pixels sit where segments
+  overlap or join. Grid and backdrop do not matter.
+- The pixel that failed `styled_stream_runtime_matches_resident_pixels_and_ignores_point_maps`
+  appeared when the 0.18.0 default right margin moved the data area by 24 px.
+  The difference itself predates that change; the earlier investigation below
+  already recorded a separate resident/streamed composition difference on Metal.
+
+The likely cause is how intermediate results are stored when one line is split
+across render passes (one pass per stream chunk, against one pass for the
+resident draw). This is not confirmed: a run that put the whole line in one
+chunk was cancelled before it reported. Until it is investigated on Metal
+hardware, the stream-against-resident comparisons in
+`streaming_style_runtime_tests.rs` accept, on Metal only, at most one code value
+per channel on at most 32 pixels. Every other backend, and every other
+comparison in those tests, stays exact.
+
 ## Renderer 0.16.1, 0.17.0 and master
 
 Since 2026-10-12, CI runs only for pull requests ([when CI runs](README.md#when-ci-runs));
@@ -225,6 +253,14 @@ shared-lock failure cascade. The Actions package job additionally tests the actu
 `.crate` contents outside the source checkout.
 
 ## 한국어 요약
+
+0.18.0에서도 Metal은 시험 단계다. Apple Paravirtual 어댑터에서 Constellation 선을
+스트리밍으로 그린 결과와 상주로 그린 결과가 일부 픽셀에서 8비트 한 단계 다르다.
+Linux/Vulkan과 Windows/DX12는 비트 단위로 같다. 점 별만 그리면 차이가 없고, 선 하나만
+그려도 자기 구간이 겹치는 자리에서 차이가 난다. 렌더 패스를 나눠 그릴 때 중간값을 저장하는
+방식이 원인으로 보이지만 확정하지 못했다. Metal 장비에서 조사하기 전까지
+`streaming_style_runtime_tests.rs`의 스트리밍·상주 비교는 Metal에서만 채널당 한 단계,
+최대 32픽셀까지 허용한다. 다른 백엔드와 다른 비교는 그대로 정확히 일치해야 한다.
 
 0.16.0은 원형·범주형 막대·박스플롯 차트의 그리기 영역 선택·이동·크기 조정 검사를,
 0.15.1은 원형 차트 표면과 PNG 내보내기 검사를, 0.15.0은 제목·축·라벨·범례의 선택과

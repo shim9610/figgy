@@ -650,6 +650,15 @@ example advances to 0.15.0 with the renderer dependency and is not published
 
 <a id="migrating-from-0170"></a>
 
+### Known limitations
+
+- macOS / Metal remains experimental. On the Apple Paravirtual adapter, a
+  Constellation line drawn by the stream path can differ from its resident
+  draw by one 8-bit code value where the line overlaps itself. The stream
+  against resident style tests accept that on Metal only (at most one code
+  value on at most 32 pixels) until it is investigated on Metal hardware; see
+  `ci/STATUS.md`. Other backends compare exactly.
+
 ### Migrating from 0.17.0
 
 JSON written by renderer 0.17.0 / model 0.11.0 parses and re-serializes byte
