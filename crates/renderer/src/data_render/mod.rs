@@ -5494,6 +5494,26 @@ mod tests {
         }
     }
 
+    /// The constellation star picks on the disc its quad inscribes
+    /// (SHADER_COMMON.md §5.7): the sprite is zero from 0.98 of the half
+    /// width out, so even a bilinear tap a texel further stays inside it.
+    #[test]
+    fn psf_sprite_is_zero_outside_the_inscribed_disc() {
+        let size = 128u32;
+        let psf = bake_psf_rgba(size);
+        let half = (size as f32 - 1.0) * 0.5;
+        for y in 0..size {
+            for x in 0..size {
+                let dx = (x as f32 - half) / half;
+                let dy = (y as f32 - half) / half;
+                if (dx * dx + dy * dy).sqrt() >= 0.98 {
+                    let i = ((y * size + x) * 4) as usize;
+                    assert_eq!((psf[i], psf[i + 1]), (0, 0), "texel ({x}, {y})");
+                }
+            }
+        }
+    }
+
     #[test]
     fn psf_sprite_fades_to_zero_at_square_edges() {
         let psf = bake_psf_rgba(128);

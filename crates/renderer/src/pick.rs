@@ -195,6 +195,7 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
     }
 
     let transform = data_render::scatter_transform_from_config(config);
+    let drawn = DrawnStyle::of(config, &transform);
     // The polar fragment clip at the cursor: every primitive is cut by it.
     let clip_distance =
         crate::polar_projection::clip_distance(&transform, config, [canvas_x, canvas_y]);
@@ -210,6 +211,8 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
             continue;
         };
 
+        // The styled entries' per-series hash salt (`Style.series_salt`).
+        let salt = crate::sketch::fnv1a(&cfg.series_id);
         if let Some(scatter) = extract_scatter(&cfg.render_type) {
             let style_index = if use_scatter_style_mapping {
                 scatter
@@ -246,8 +249,14 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
                     i,
                     (xs[i], ys[i]),
                     &|center| {
-                        marker_hit_distance(shape_id, radius_px, center, [canvas_x, canvas_y])
-                            .max(clip_distance)
+                        styled_marker_distance(
+                            drawn,
+                            (shape_id, radius_px),
+                            center,
+                            [canvas_x, canvas_y],
+                            (i as u32, salt),
+                        )
+                        .max(clip_distance)
                     },
                     max_dist_sq,
                 );
@@ -301,7 +310,14 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
         let stroke = LineStroke {
             // The line shader's `max(line_width_px, 1) / 2`.
             half_width: line.line_width.max(1.0) * 0.5,
-            dash: line.line_style.pattern(),
+            // A Milkyway ribbon is never dashed.
+            dash: if drawn.kind == DrawnKind::Milkyway {
+                &[]
+            } else {
+                line.line_style.pattern()
+            },
+            style: drawn,
+            salt,
         };
         // The cumulative arc length at the segment's first point, as the
         // GPU's `line_arc.wgsl` scan sums it: the pixel length of every
@@ -799,29 +815,186 @@ pub(crate) fn marker_edge(d: f32, filled: bool) -> f32 {
     }
 }
 
-/// The hit distance of a marker of `shape_id` and reference radius
-/// `radius_px` centred at `center` (canvas pixels, y down) for `cursor`: the
-/// GPU picker's `pick_marker_distance`.
-pub(crate) fn marker_hit_distance(
-    shape_id: u32,
-    radius_px: f32,
+// ───── CPU twin of the styled markers and strokes (SHADER_COMMON.md §5.6,
+// §5.7) ─────
+
+/// What the chart's draw style draws, for the CPU twin of the pick shader's
+/// `styled` modes, with the packed style parameters the draw reads
+/// (`StyleVariant::pack_params`).
+#[derive(Clone, Copy)]
+struct DrawnStyle {
+    kind: DrawnKind,
+    params: [[f32; 4]; 3],
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DrawnKind {
+    Precise,
+    Sketch,
+    Milkyway,
+    Constellation,
+}
+
+impl DrawnStyle {
+    fn of(config: &Config, transform: &data_render::ScatterTransform) -> Self {
+        use crate::config::DrawStyle;
+        let kind = match &config.draw_style {
+            DrawStyle::Precise => DrawnKind::Precise,
+            DrawStyle::Sketch(_) => DrawnKind::Sketch,
+            DrawStyle::Milkyway(_) => DrawnKind::Milkyway,
+            DrawStyle::Constellation(_) => DrawnKind::Constellation,
+        };
+        Self {
+            kind,
+            params: transform.style_params,
+        }
+    }
+}
+
+/// `SKETCH_TAU` / `SKETCH_CONTOUR_WOBBLES`.
+const SKETCH_TAU: f32 = 6.283_185_5;
+const SKETCH_CONTOUR_WOBBLES: f32 = 6.0;
+/// `SKETCH_SUBDIV` / `LINE_AA_EXTENT_PX`.
+const SKETCH_SUBDIV: u32 = 8;
+const LINE_AA_EXTENT_PX: f32 = 0.5;
+/// The planet constants of §5.7.
+const RING_INNER: f32 = 1.45;
+const RING_OUTER: f32 = 2.3;
+const RING_INCL: f32 = 0.32;
+const PLANET_QUAD_EXTENT: f32 = 2.5;
+const PLANET_ALPHA_FLOOR: f32 = 0.003;
+
+/// Twin of `sketch_hash01`.
+fn sketch_hash01(i: u32, seed: u32) -> f32 {
+    let mut h = i.wrapping_mul(0x9E37_79B9) ^ seed.wrapping_mul(0x85EB_CA6B);
+    h = (h ^ (h >> 16)).wrapping_mul(0x045D_9F3B);
+    h ^= h >> 16;
+    h as f32 / 4_294_967_296.0
+}
+
+/// Twin of `sketch_noise`.
+fn sketch_noise(t: f32, seed: u32) -> f32 {
+    let floor = t.floor();
+    let i = (floor as i32) as u32;
+    let f = t - floor;
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = sketch_hash01(i, seed);
+    let b = sketch_hash01(i.wrapping_add(1), seed);
+    (a * (1.0 - u) + b * u) * 2.0 - 1.0
+}
+
+/// Twin of `sketch_line_offset`.
+fn sketch_line_offset(arc_px: f32, amplitude_px: f32, wavelength_px: f32, seed: u32) -> f32 {
+    if wavelength_px > 0.0 {
+        amplitude_px.max(0.0) * sketch_noise(arc_px / wavelength_px.max(1e-6), seed)
+    } else {
+        0.0
+    }
+}
+
+/// Twin of `cons_ring_angle`.
+fn cons_ring_angle(shape_id: u32) -> f32 {
+    match shape_id {
+        0 => 0.0,
+        1 => 0.52,
+        2 => 1.05,
+        3 => -0.52,
+        4 => -1.05,
+        5 => 0.26,
+        6 => 0.79,
+        7 => -0.26,
+        8 => -0.79,
+        other => -1.2 + (other % 11) as f32 * 0.24,
+    }
+}
+
+/// The hit distance of a marker drawn at `center` (canvas pixels, y down)
+/// for `cursor` under `style`: the GPU picker's `pick_marker_distance`.
+/// `index` is the point index the styled entries hash and `salt` the
+/// series' `fnv1a(series_id)`.
+fn styled_marker_distance(
+    style: DrawnStyle,
+    (shape_id, radius_px): (u32, f32),
     center: [f32; 2],
     cursor: [f32; 2],
+    (index, salt): (u32, u32),
 ) -> f32 {
     let p = [cursor[0] - center[0], -(cursor[1] - center[1])];
-    let filled = marker_shape_is_filled(shape_id);
-    let base = marker_base_shape_id(shape_id);
-    let visual_r = marker_visual_shape_radius(base, radius_px);
-    marker_edge(marker_shape_distance(base, p, visual_r, filled), filled).max(0.0)
+    let params = style.params;
+    match style.kind {
+        DrawnKind::Milkyway => {
+            let r = radius_px;
+            let r_planet = r.max(1.0);
+            let quad = r * PLANET_QUAD_EXTENT + MARKER_QUAD_MARGIN_PX;
+            let outside_quad = p[0].abs().max(p[1].abs()) - quad;
+            let scale = (r_planet * PLANET_QUAD_EXTENT + MARKER_QUAD_MARGIN_PX) / quad;
+            let p = [p[0] * scale, p[1] * scale];
+            let dist = length2(p);
+            let rim_gain = params[1][3].clamp(0.0, 2.0);
+            let falloff = (r_planet * 0.10).max(1.0);
+            let rim = rim_gain * (-(dist - r_planet).max(0.0) / falloff).exp();
+            let mut d = dist - r_planet;
+            if rim > PLANET_ALPHA_FLOOR {
+                d = d.min(0.0);
+            } else if rim_gain > PLANET_ALPHA_FLOOR {
+                d = d.min(dist - r_planet - falloff * (rim_gain / PLANET_ALPHA_FLOOR).ln());
+            }
+            let seed_inst = ((params[0][3] as u32) ^ salt).wrapping_add(index);
+            let phi = cons_ring_angle(shape_id) + (sketch_hash01(seed_inst, 0x717A) - 0.5) * 0.12;
+            let (c, s) = (phi.cos(), phi.sin());
+            let q = [p[0] * c + p[1] * s, -p[0] * s + p[1] * c];
+            let rho = length2([q[0], q[1] / RING_INCL]) / r_planet;
+            d = d.min((RING_INNER - rho).max(rho - RING_OUTER) * r_planet * RING_INCL);
+            d.max(outside_quad).max(0.0)
+        }
+        DrawnKind::Constellation => {
+            if !(params[0][0] > 0.0) {
+                return f32::MAX;
+            }
+            let jitter = 0.86 + 0.30 * sketch_hash01(index, salt ^ 0x51A7);
+            let star = (radius_px * jitter).max(0.5);
+            (length2(p) - (star * 4.0 + MARKER_QUAD_MARGIN_PX)).max(0.0)
+        }
+        DrawnKind::Precise | DrawnKind::Sketch => {
+            let filled = marker_shape_is_filled(shape_id);
+            let base = marker_base_shape_id(shape_id);
+            let visual_r = marker_visual_shape_radius(base, radius_px);
+            let mut d = marker_shape_distance(base, p, visual_r, filled);
+            if style.kind == DrawnKind::Sketch {
+                let wobble = (params[0][0].max(0.0) * 0.5).min(radius_px * 0.35);
+                let seed = ((params[0][2] as u32) ^ salt).wrapping_add(index);
+                let theta = p[1].atan2(p[0]);
+                d += wobble * sketch_noise(theta / SKETCH_TAU * SKETCH_CONTOUR_WOBBLES, seed);
+            }
+            marker_edge(d, filled).max(0.0)
+        }
+    }
+}
+
+/// Twin of `gpu_pick.rs::milkyway_line_half_extent`.
+fn milkyway_line_half_extent(params: &[[f32; 4]; 3]) -> f32 {
+    let ribbon = params[0][1].max(1.0);
+    let star_scale = params[1][0].max(0.0);
+    let spread = params[1][1].max(0.0);
+    let structure = params[2][0].max(1e-3);
+    let stars = if params[0][0] > 0.0 {
+        spread * 1.7 + 4.0 * structure + star_scale * (0.9 + 3.4) * 4.0
+    } else {
+        0.0
+    };
+    ribbon.max(stars)
 }
 
 /// How a line series' stroke is drawn, for the CPU twin of the line
-/// shader's extrusion: the drawn half-width (`max(width, 1) / 2`) and the
-/// dash pattern in pixels (empty for a solid line).
+/// shader's extrusion: the drawn half-width (`max(width, 1) / 2`), the dash
+/// pattern in pixels (empty for a solid line), the draw style and the
+/// series' hash salt.
 #[derive(Clone, Copy)]
 struct LineStroke {
     half_width: f32,
     dash: &'static [f32],
+    style: DrawnStyle,
+    salt: u32,
 }
 
 /// Twin of `line_stroke_distance`: signed distance from `(along, side)` to
@@ -863,10 +1036,10 @@ fn dash_at(dist_px: f32, dash: &[f32]) -> Result<(), (f32, f32)> {
     Ok(())
 }
 
-/// Twin of the pick shader's `pick_stroke_piece_distance` for a precise
-/// stroke: the hit distance of one drawn piece `a → b` (canvas pixels) whose
-/// ends sit at arc positions `arc_start` / `arc_end`. `None` for a piece the
-/// vertex stage collapses.
+/// Twin of the pick shader's `pick_stroke_piece_distance`: the hit distance
+/// of one drawn piece `a → b` (canvas pixels) whose ends sit at arc
+/// positions `arc_start` / `arc_end`. `None` for a piece the vertex stage
+/// collapses or a stroke drawn at zero opacity.
 fn stroke_piece_distance(
     cursor: [f32; 2],
     (a, b): ([f32; 2], [f32; 2]),
@@ -885,17 +1058,54 @@ fn stroke_piece_distance(
     let normal = [-dir[1], dir[0]];
     let rel = [cursor[0] - a[0], cursor[1] - a[1]];
     let along = rel[0] * dir[0] + rel[1] * dir[1];
-    let side = rel[0] * normal[0] + rel[1] * normal[1];
-    let half_w = stroke.half_width;
-    let stroke_distance = line_stroke_distance(along, side, len, half_w).max(0.0);
-    if stroke.dash.is_empty() {
-        return Some(stroke_distance);
+    let mut side = rel[0] * normal[0] + rel[1] * normal[1];
+    let params = stroke.style.params;
+    match stroke.style.kind {
+        DrawnKind::Milkyway => {
+            let half = milkyway_line_half_extent(&params);
+            return Some(line_stroke_distance(along, side, len, half).max(0.0));
+        }
+        DrawnKind::Constellation if !(params[0][1] > 0.0) => return None,
+        _ => {}
     }
-    // `vs_main` puts `arc_start - half_w` on the A-side corners and
-    // `arc_end + half_w` on the B-side ones; a dashed quad has no
-    // anti-aliasing extent.
-    let slope = (arc_end - arc_start + 2.0 * half_w) / (len + 2.0 * half_w);
-    let dist_px = (arc_start - half_w) + (along + half_w) * slope;
+    let half_w = stroke.half_width;
+    let geom_half_w = half_w
+        + if stroke.dash.is_empty() {
+            LINE_AA_EXTENT_PX
+        } else {
+            0.0
+        };
+    let (dist_px, slope) = if stroke.style.kind == DrawnKind::Sketch {
+        // The strip's knots sit at `t_k * len` along the piece, the outer two
+        // pushed out by the square cap, each displaced along the normal by
+        // the wobble at its arc position.
+        let s = SKETCH_SUBDIV as f32;
+        let k = (along / len * s).floor().clamp(0.0, s - 1.0) as u32;
+        let t0 = k as f32 / s;
+        let t1 = (k + 1) as f32 / s;
+        let a0 = if k == 0 { -geom_half_w } else { t0 * len };
+        let a1 = if k + 1 == SKETCH_SUBDIV {
+            len + geom_half_w
+        } else {
+            t1 * len
+        };
+        let w = ((along - a0) / (a1 - a0)).clamp(0.0, 1.0);
+        let seed = (params[0][2] as u32) ^ stroke.salt;
+        let arc0 = arc_start + (arc_end - arc_start) * t0;
+        let arc1 = arc_start + (arc_end - arc_start) * t1;
+        let d0 = sketch_line_offset(arc0, params[0][0], params[0][1], seed);
+        let d1 = sketch_line_offset(arc1, params[0][0], params[0][1], seed);
+        side -= d0 + (d1 - d0) * w;
+        let dist0 = arc0 + if k == 0 { -half_w } else { 0.0 };
+        let dist1 = arc1 + if k + 1 == SKETCH_SUBDIV { half_w } else { 0.0 };
+        (dist0 + (dist1 - dist0) * w, (dist1 - dist0) / (a1 - a0))
+    } else {
+        // `vs_main` puts `arc_start - half_w` on the A-side corners and
+        // `arc_end + half_w` on the B-side ones.
+        let slope = (arc_end - arc_start + 2.0 * half_w) / (len + 2.0 * geom_half_w);
+        ((arc_start - half_w) + (along + geom_half_w) * slope, slope)
+    };
+    let stroke_distance = line_stroke_distance(along, side, len, half_w).max(0.0);
     let Err((back, forward)) = dash_at(dist_px, stroke.dash) else {
         return Some(stroke_distance);
     };
@@ -1058,10 +1268,17 @@ mod tests {
     use crate::layout::{ChartArea, Rect};
     use crate::line::LineStylePreset;
 
+    const PRECISE: DrawnStyle = DrawnStyle {
+        kind: DrawnKind::Precise,
+        params: [[0.0; 4]; 3],
+    };
+
     fn solid(half_width: f32) -> LineStroke {
         LineStroke {
             half_width,
             dash: &[],
+            style: PRECISE,
+            salt: 0,
         }
     }
 
@@ -1125,6 +1342,8 @@ mod tests {
         let dashed = LineStroke {
             half_width: 1.0,
             dash: &[8.0, 4.0],
+            style: PRECISE,
+            salt: 0,
         };
         let segment = [([0.0, 50.0], [100.0, 50.0])];
         // The arc position runs with the stroke from 0 at the first sample.

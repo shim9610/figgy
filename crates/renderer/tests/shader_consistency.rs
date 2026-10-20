@@ -432,6 +432,50 @@ fn line_stroke_twins_match_the_ssot() {
     }
 }
 
+/// The styled markers are function twins (SHADER_COMMON.md §5.7): the
+/// sketch wobble, the planet's ring and rim and the constellation star's
+/// radius are evaluated by the pick shader with the scatter shader's own
+/// functions.
+#[test]
+fn styled_marker_twins_match_the_ssot() {
+    let ssot = read(SSOT_PATH);
+    for path in ["src/data_render/scatter_columnar.wgsl", "src/gpu_pick.wgsl"] {
+        let shader = read(path);
+        for function in [
+            "sketch_marker_wobble_px",
+            "sketch_marker_distance",
+            "constellation_star_radius",
+            "cons_ring_angle",
+            "planet_ring_phi",
+            "planet_ring_frame",
+            "planet_ring_rho",
+            "planet_rim_glow",
+        ] {
+            assert_eq!(
+                wgsl_function(&shader, function),
+                wgsl_function(&ssot, function),
+                "{path} must carry `{function}` byte-for-byte as SHADER_COMMON.md §5.7 defines it"
+            );
+        }
+        for constant in [
+            "SKETCH_TAU",
+            "SKETCH_CONTOUR_WOBBLES",
+            "CONSTELLATION_POINT_STAR_GAIN",
+            "RING_INNER",
+            "RING_OUTER",
+            "RING_INCL",
+            "PLANET_QUAD_EXTENT",
+            "PLANET_ALPHA_FLOOR",
+        ] {
+            assert_eq!(
+                wgsl_const(&shader, constant),
+                wgsl_const(&ssot, constant),
+                "{path} must carry `{constant}` as SHADER_COMMON.md §5.7 defines it"
+            );
+        }
+    }
+}
+
 /// The pick shader applies the draw shaders' polar fragment clip at the
 /// cursor with the common block's own `polar_fragment_visible`.
 #[test]

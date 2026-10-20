@@ -841,20 +841,183 @@ fn pick_resolve_scatter_marker(point_index: u32) -> PickMarker {
     return PickMarker(radius * pick_query_params.scatter_line.z, shape, hidden);
 }
 
+// What a marker series' pipeline draws under the chart's draw style
+// (`PickQueryParams.styled.x`).
+const PICK_MARKER_PRECISE: u32 = 0u;
+// `vs_sketch` / `fs_sketch`: the shape with a hashed contour wobble.
+const PICK_MARKER_SKETCH: u32 = 1u;
+// Milkyway `vs_planet` / `fs_planet`: a disc with a rim glow and a ring.
+const PICK_MARKER_PLANET: u32 = 2u;
+// Constellation `vs_constellation_star` / `fs_constellation_star`.
+const PICK_MARKER_STAR: u32 = 3u;
+
+// The global point index the styled entries hash (`styled_point_index`).
+fn pick_styled_index(point_index: u32) -> u32 {
+    return point_index + pick_query_params.stream.x;
+}
+
+// ───── shared styled markers (SHADER_COMMON.md §5.7; `shader_consistency`
+// compares these function bodies and constants with the scatter shader) ─────
+
+const SKETCH_TAU: f32 = 6.28318530718;
+// Six noise periods around the contour keep marker wobble visually local.
+const SKETCH_CONTOUR_WOBBLES: f32 = 6.0;
+const CONSTELLATION_POINT_STAR_GAIN: f32 = 1.0;
+// Ring radii relative to the planet radius, and the apparent inclination of
+// the ring plane (minor/major axis ratio of the projected ellipse).
+const RING_INNER: f32 = 1.45;
+const RING_OUTER: f32 = 2.3;
+const RING_INCL: f32 = 0.32;
+// Quad half-extent multiplier — room for the ring + rim glow + AA.
+const PLANET_QUAD_EXTENT: f32 = 2.5;
+// A planet fragment whose composed alpha is at or below this is discarded.
+const PLANET_ALPHA_FLOOR: f32 = 0.003;
+
+/// A sketch marker's contour wobble amplitude in pixels: half the style's
+/// amplitude, at most 0.35 of the marker radius.
+fn sketch_marker_wobble_px(amplitude_px: f32, radius_px: f32) -> f32 {
+    return min(max(amplitude_px, 0.0) * 0.5, radius_px * 0.35);
+}
+
+/// A sketch marker's signed contour distance: the precise `shape_distance`
+/// perturbed with angle-parameterized noise, d' = d + k·noise(θ/τ·C), seeded
+/// per marker so every point gets its own hand-drawn outline. The noise
+/// lattice has a seam at θ = ±π; its magnitude is ≤ wobble_px (≤ 0.75 px at
+/// default amplitude) and reads as part of the hand-drawn look.
+fn sketch_marker_distance(base: u32, p: vec2<f32>, r: f32, filled: bool, wobble_px: f32, seed: u32) -> f32 {
+    let theta = atan2(p.y, p.x); // [-π, π]
+    return shape_distance(base, p, r, filled)
+        + wobble_px * sketch_noise(theta / SKETCH_TAU * SKETCH_CONTOUR_WOBBLES, seed);
+}
+
+/// A constellation marker star's core radius in pixels: the marker radius
+/// with a per-point size jitter hashed from the point index, at least half a
+/// pixel. The star's quad (and its PSF sprite) spans four times this plus
+/// `QUAD_MARGIN_PX`.
+fn constellation_star_radius(radius_px: f32, index: u32, seed: u32) -> f32 {
+    let size_jitter = 0.86 + 0.30 * sketch_hash01(index, seed ^ 0x51A7u);
+    return max(radius_px * CONSTELLATION_POINT_STAR_GAIN * size_jitter, 0.5);
+}
+
+// ScatterShape code → ring position angle. The first legacy shapes get hand-
+// picked angles; newer marker codes share a deterministic fallback.
+fn cons_ring_angle(shape_id: u32) -> f32 {
+    switch shape_id {
+        case 0u: { return 0.0; }          // Circle
+        case 1u: { return 0.52; }         // Square        (+30°)
+        case 2u: { return 1.05; }         // Triangle      (+60°)
+        case 3u: { return -0.52; }        // Diamond       (−30°)
+        case 4u: { return -1.05; }        // Cross         (−60°)
+        case 5u: { return 0.26; }         // CircleFilled  (+15°)
+        case 6u: { return 0.79; }         // SquareFilled  (+45°)
+        case 7u: { return -0.26; }        // TriangleFilled(−15°)
+        case 8u: { return -0.79; }        // DiamondFilled (−45°)
+        default: {
+            return -1.2 + f32(shape_id % 11u) * 0.24;
+        }
+    }
+}
+
+/// A planet's ring position angle: the series shape's tilt plus a small
+/// per-point jitter (real systems aren't aligned).
+fn planet_ring_phi(shape_id: u32, seed_inst: u32) -> f32 {
+    let h_jit = sketch_hash01(seed_inst, 0x717Au);
+    return cons_ring_angle(shape_id) + (h_jit - 0.5) * 0.12;
+}
+
+/// `p` rotated into the ring frame of position angle `phi`.
+fn planet_ring_frame(p: vec2<f32>, phi: f32) -> vec2<f32> {
+    let cphi = cos(phi);
+    let sphi = sin(phi);
+    return vec2<f32>(p.x * cphi + p.y * sphi, -p.x * sphi + p.y * cphi);
+}
+
+/// The ring-plane radius of ring-frame point `q`, in planet radii: the ring
+/// band is drawn where it lies between `RING_INNER` and `RING_OUTER`.
+fn planet_ring_rho(q: vec2<f32>, r_planet: f32) -> f32 {
+    return length(vec2<f32>(q.x, q.y / RING_INCL)) / r_planet;
+}
+
+/// The atmospheric rim glow's alpha at distance `dist` from the planet's
+/// centre: a soft exponential falloff outside the disc.
+fn planet_rim_glow(dist: f32, r_planet: f32, rim_gain: f32) -> f32 {
+    let rim_d = max(dist - r_planet, 0.0);
+    return rim_gain * exp(-rim_d / max(r_planet * 0.10, 1.0));
+}
+
+// ───── end shared styled markers ─────
+
+// A Milkyway planet's hit distance at `p_screen` (pixels from its centre, y
+// up): `fs_planet`'s disc, the rim glow where it stays above
+// `PLANET_ALPHA_FLOOR`, and the ring band between `RING_INNER` and
+// `RING_OUTER`, all cut by the quad `vs_planet` emits. The band is the
+// envelope of the baked ring texture, whose density is not a shader
+// constant. `vs_planet` sizes the quad from the radius while `fs_planet`
+// reconstructs positions from `max(radius, 1)`, so the fragment frame is
+// scaled by their ratio.
+fn pick_planet_distance(marker: PickMarker, p_screen: vec2<f32>, point_index: u32) -> f32 {
+    let style_params = pick_query_params.transform.style_params;
+    let r = marker.radius;
+    let r_planet = max(r, 1.0);
+    let quad = r * PLANET_QUAD_EXTENT + QUAD_MARGIN_PX;
+    let outside_quad = max(abs(p_screen.x), abs(p_screen.y)) - quad;
+    let p = p_screen * ((r_planet * PLANET_QUAD_EXTENT + QUAD_MARGIN_PX) / quad);
+    let dist = length(p);
+    let rim_gain = clamp(style_params[1].w, 0.0, 2.0);
+    var d = dist - r_planet;
+    if planet_rim_glow(dist, r_planet, rim_gain) > PLANET_ALPHA_FLOOR {
+        d = min(d, 0.0);
+    } else if rim_gain > PLANET_ALPHA_FLOOR {
+        let reach = max(r_planet * 0.10, 1.0) * log(rim_gain / PLANET_ALPHA_FLOOR);
+        d = min(d, dist - r_planet - reach);
+    }
+    let seed_inst = (u32(style_params[0].w) ^ pick_query_params.styled.z) + pick_styled_index(point_index);
+    let q = planet_ring_frame(p, planet_ring_phi(pick_query_params.series.z, seed_inst));
+    let rho = planet_ring_rho(q, r_planet);
+    // A band distance in ring-plane radii is at least that many minor-axis
+    // pixels away.
+    d = min(d, max(RING_INNER - rho, rho - RING_OUTER) * r_planet * RING_INCL);
+    return max(max(d, outside_quad), 0.0);
+}
+
 // The hit distance of a marker drawn at `center_px` for the cursor: the
 // scatter shader's own coverage rule (`shape_distance` and `marker_edge`,
-// SHADER_COMMON.md §5.5), evaluated where the fragment at the cursor would
-// evaluate it. The marker's local frame is y-up like NDC while canvas
-// pixels run down, hence the flip. Zero exactly where the fragment's
-// coverage is at least one half; the anti-aliasing fringe beyond it is a
-// sub-pixel positive distance.
-fn pick_marker_distance(marker: PickMarker, center_px: vec2<f32>) -> f32 {
+// SHADER_COMMON.md §5.5, with the sketch wobble of §5.7), evaluated where
+// the fragment at the cursor would evaluate it. The marker's local frame is
+// y-up like NDC while canvas pixels run down, hence the flip. Zero exactly
+// where the fragment's coverage is at least one half; the anti-aliasing
+// fringe beyond it is a sub-pixel positive distance. A Milkyway planet and
+// a Constellation star pick on their drawn extent instead.
+fn pick_marker_distance(marker: PickMarker, center_px: vec2<f32>, point_index: u32) -> f32 {
     let delta = pick_query_params.cursor_chart.xy - center_px;
     let p = vec2<f32>(delta.x, -delta.y);
+    let mode = pick_query_params.styled.x;
+    let style_params = pick_query_params.transform.style_params;
+    if mode == PICK_MARKER_PLANET {
+        return pick_planet_distance(marker, p, point_index);
+    }
+    if mode == PICK_MARKER_STAR {
+        // A zero star opacity draws nothing. Otherwise the PSF sprite fades
+        // to zero inside the disc its quad inscribes; the star's brightness
+        // and tint are hashed per point and sampled from baked textures, so
+        // that disc is the drawn envelope.
+        if !(style_params[0].x > 0.0) {
+            return PICK_F32_MAX;
+        }
+        let star = constellation_star_radius(marker.radius, pick_styled_index(point_index), pick_query_params.styled.z);
+        return max(length(p) - (star * 4.0 + QUAD_MARGIN_PX), 0.0);
+    }
     let filled = shape_is_filled(marker.shape);
     let base = base_shape_id(marker.shape);
     let visual_r = visual_shape_radius(base, marker.radius);
-    let d = shape_distance(base, p, visual_r, filled);
+    var d: f32;
+    if mode == PICK_MARKER_SKETCH {
+        let wobble = sketch_marker_wobble_px(style_params[0].x, marker.radius);
+        let seed = (u32(style_params[0].z) ^ pick_query_params.styled.z) + pick_styled_index(point_index);
+        d = sketch_marker_distance(base, p, visual_r, filled, wobble, seed);
+    } else {
+        d = shape_distance(base, p, visual_r, filled);
+    }
     return max(marker_edge(d, filled), 0.0);
 }
 
@@ -913,7 +1076,7 @@ fn pick_scatter_candidate(
     if !pick_is_finite(point_px.x) || !pick_is_finite(point_px.y) {
         return pick_invalid_candidate(series_order);
     }
-    let hit_distance = max(pick_marker_distance(marker, point_px), pick_polar_clip_distance());
+    let hit_distance = max(pick_marker_distance(marker, point_px, point_index), pick_polar_clip_distance());
     let distance_sq = hit_distance * hit_distance;
     let maximum_sq = pick_query_params.chart_limits.z * pick_query_params.chart_limits.z;
     if !pick_is_finite(distance_sq) || distance_sq > maximum_sq {
@@ -1154,6 +1317,11 @@ fn pick_stroke_piece_distance(a_up: vec2<f32>, b_up: vec2<f32>, arc_start: f32, 
     let along = dot(rel, dir);
     var side = dot(rel, normal);
     let mode = pick_query_params.styled.y;
+    // A Constellation line drawn at zero opacity paints nothing (its
+    // markers are stars, so the marker mode says which style this is).
+    if pick_query_params.styled.x == PICK_MARKER_STAR && !(pick_query_params.transform.style_params[0].y > 0.0) {
+        return PICK_F32_MAX;
+    }
     if mode == PICK_LINE_RIBBON {
         // The ribbon strip spans one full ribbon width either side with
         // square caps of the same size; the stars scatter within the
