@@ -10,29 +10,74 @@ at the time. The first crates.io publication is recorded below.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
-## Unreleased — tick-label selection hotfix
+## Unreleased — interaction geometry hotfix
 
-- Tick-label selection and hit testing follow the drawn labels. For axis and
-  colourbar tick labels, `bounds` is now the union of the labels the raster
-  draws, and the hit region is the selection box around them, so a click
-  inside the box always selects the labels and a click beside it does not.
-  Before, both came from a representative strip: a sample-width band across
-  the axis and the data area (or the bar) along it. End labels hung outside
-  it, wide labels left it, and an empty band beside narrow labels was
-  selectable. Polar angle and radius labels hit on each drawn label, where
-  their outline is drawn, instead of on an estimated ring and strip.
-- A drag along the axis moves the selection box and the hit region with the
-  labels again. Since 17d5d9b (2026-08-17) the strip dropped `label_offset_x`
-  on top and bottom labels and `label_offset_y` on left and right labels.
-  Overlay and subplot axis labels share the fix.
-- The axis raster draws its tick labels and reports their rectangles from one
-  walk and one placement function, so the two cannot disagree.
-- `MeasureText` gains a provided method, `tick_label_rects`, through which
-  the renderer's `CpuTextMeasure` lays out the drawn labels. Its default
-  returns `false`, so other implementations compile unchanged and keep the
-  representative strip. No serialized field changes. Other places where
-  interaction geometry is re-derived instead of read from the draw are
-  tracked in [#37](https://github.com/shim9610/figgy/issues/37).
+Selection boxes, hit tests and picks now come from the same functions that
+draw the element, instead of a separate estimate
+([#37](https://github.com/shim9610/figgy/issues/37)). No public API is
+removed or changed in signature; the additions are listed at the end. No
+serialized field changes.
+
+- **Tick labels.** For axis and colourbar tick labels, `bounds` is the union
+  of the labels the raster draws, and the hit region is the selection box
+  around them. Before, both came from a representative strip: a sample-width
+  band across the axis, and the data area (or the bar) along it. End labels
+  hung outside it, wide labels left it, and an empty band beside narrow
+  labels was selectable. Polar angle and radius labels hit on each drawn
+  label, where their outline is drawn.
+- **Tick-label drag.** Dragging labels along their axis moves the selection
+  box and the hit region with them again. Since 17d5d9b (2026-08-17) the
+  strip dropped `label_offset_x` on top and bottom labels and
+  `label_offset_y` on left and right labels. Overlay and subplot axis labels
+  share the fix.
+- **Axis lines and ticks.** A Cartesian or colourbar axis is selected inside
+  the box around its drawn line and ticks. The polar radius ray hits on its
+  line and every tick, instead of a fixed 4 px strip that cut longer ticks
+  off.
+- **Axis titles in layered documents.** Axis titles are placed on the
+  expanded base panel the renderer draws, whose right margin follows the
+  widest band of the group.
+- **Legend and colourbar borders.** The legend box and the colourbar strip
+  hit their whole border, including its outer half.
+- **Annotations.** An item's bounds, hit test and selection box come from
+  `annotation_shapes`, the shape list the raster paints:
+  - strokes are grabbed across their width, and at least 3 px either side;
+  - an arrow hits on its shaft and head only;
+  - the labels of reference lines and arrows are part of the item.
+- **Bars and box plots.** Picks follow the shader's coverage: the four
+  subpixel samples, and the half-open ownership of shared stack edges. Every
+  painted pixel picks its bar or box.
+- **Output scale.** `Config::scaled` keeps the fixed tick-label gap and
+  legend inset proportional by moving labels and legend through their
+  offsets. Before, at 2x the bottom labels sat 2 logical px closer to the
+  axis than at 1x. Only scaled display and export copies carry the
+  correction.
+- **WASM.**
+  - The bounded wrapper prepares edits, adoption and new documents at the
+    surface scale, so hits match the canvas between frames.
+  - `decoration_bounds` returns the per-label boxes of polar tick labels as
+    `labels`.
+- **Tests.** Each element above has a test that compares its drawn pixels
+  with its hit region and selection box. `scale_consistency.rs` checks
+  bounds, label sets and box-filtered images at 1x, 2x and 3x.
+
+Additions:
+
+- the provided `MeasureText::drawn_parts` method; its default returns
+  `false`, so other implementations compile unchanged and keep the
+  representative strip;
+- `layout::DrawnPart`;
+- `annotation::AnnotationShape`, `annotation::annotation_shapes` and
+  `AnnotationElement::shapes`;
+- `layout::LEGEND_BORDER_WIDTH`.
+
+Left for [#38](https://github.com/shim9610/figgy/issues/38), because each
+needs a public type to change:
+
+- per-part hit regions of multi-part bounded decorations;
+- masking a lifted radial label to its slice;
+- drag containment measured on drawn bounds;
+- annotation label gaps proportional to the Cartesian display scale.
 
 <a id="release-0180"></a>
 
