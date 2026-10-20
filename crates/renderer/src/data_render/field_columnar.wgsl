@@ -832,8 +832,34 @@ fn field_pixel_center_t(t: vec2<f32>, size: vec2<f32>) -> vec2<f32> {
 
 @fragment
 fn fs_main(in: FieldOut) -> @location(0) vec4<f32> {
-    let t = field_fragment_center_t(in.axis_t);
-    let clear = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    let s = field_cell_sample(field_fragment_center_t(in.axis_t));
+    if (!s.hit) {
+        return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    }
+    return field_fill_color(s.z00, s.z10, s.z01, s.z11, s.fc, s.fr, style.color_premul);
+}
+
+/// The grid samples the fill shades at axis `t`: the located cell's value
+/// and, for interpolated shading, its three neighbours with the in-cell
+/// fractions. `hit` is false outside the grid.
+struct FieldCellSample {
+    hit: bool,
+    z00: GridValue,
+    z10: GridValue,
+    z01: GridValue,
+    z11: GridValue,
+    fc: f32,
+    fr: f32,
+};
+
+/// The fill fragment's cell lookup at pixel-centre axis `t`
+/// (`field_fragment_center_t`); the cell pick calls it at the cursor's pixel
+/// centre, so a cell picks exactly where it paints.
+fn field_cell_sample(t: vec2<f32>) -> FieldCellSample {
+    var out: FieldCellSample;
+    out.hit = false;
+    out.fc = 0.0;
+    out.fr = 0.0;
     let columns_are_y = field_flag(FIELD_COLUMNS_ARE_Y);
     // The constituent index runs along x unless the declaration says otherwise;
     // the within-column index runs along the other axis. Never inferred from
@@ -843,27 +869,38 @@ fn fs_main(in: FieldOut) -> @location(0) vec4<f32> {
     let x = locate(field.x_base, field.x_len, quad_count(along_cells, LATTICE_QUADS), 0u, t.x, LATTICE_QUADS);
     let y = locate(field.y_base, field.y_len, quad_count(across_cells, LATTICE_QUADS), 1u, t.y, LATTICE_QUADS);
     if (!x.hit || !y.hit) {
-        return clear;
+        return out;
     }
     let c = select(x.index, y.index, columns_are_y);
     let r = select(y.index, x.index, columns_are_y);
-    let fc = select(x.frac, y.frac, columns_are_y);
-    let fr = select(y.frac, x.frac, columns_are_y);
-    let z00 = grid_value(c, r);
-    var z10: GridValue;
-    var z01: GridValue;
-    var z11: GridValue;
+    out.fc = select(x.frac, y.frac, columns_are_y);
+    out.fr = select(y.frac, x.frac, columns_are_y);
+    out.z00 = grid_value(c, r);
     if (field_flag(FIELD_INTERPOLATED)) {
-        z10 = grid_value(c + 1u, r);
-        z01 = grid_value(c, r + 1u);
-        z11 = grid_value(c + 1u, r + 1u);
+        out.z10 = grid_value(c + 1u, r);
+        out.z01 = grid_value(c, r + 1u);
+        out.z11 = grid_value(c + 1u, r + 1u);
     }
-    return field_fill_color(z00, z10, z01, z11, fc, fr);
+    out.hit = true;
+    return out;
 }
 
-// Resident storage and bounded replay share all final field colour arithmetic.
-fn field_fill_color(z00: GridValue, z10: GridValue, z01: GridValue,
-    z11: GridValue, fc: f32, fr: f32) -> vec4<f32> {
+/// The value the fill shades from its samples: the cell's value, or the
+/// bilinear blend of the four, with `placeable` false where it paints
+/// `nan_color` instead (a bounds miss, a non-finite value or blend).
+struct FieldFillValue {
+    placeable: bool,
+    z: vec2<f32>,
+    /// `z_ramp_t(z)`; negative is unplaceable.
+    t: f32,
+};
+
+fn field_fill_value(z00: GridValue, z10: GridValue, z01: GridValue,
+    z11: GridValue, fc: f32, fr: f32) -> FieldFillValue {
+    var out: FieldFillValue;
+    out.placeable = false;
+    out.z = vec2<f32>(0.0, 0.0);
+    out.t = -1.0;
     var z: vec2<f32>;
     if (field_flag(FIELD_INTERPOLATED)) {
         // Bilinear over the four surrounding sample points. Done on the axis
@@ -872,39 +909,65 @@ fn field_fill_color(z00: GridValue, z10: GridValue, z01: GridValue,
         // Bounds misses and actual non-finite data are both unplaceable, but
         // they remain distinct until this consumer applies the paint policy.
         if (!z00.valid || !z10.valid || !z01.valid || !z11.valid) {
-            return style.color_premul;
+            return out;
         }
         if (!vec2_f32_is_finite(z00.pair) || !vec2_f32_is_finite(z10.pair)
             || !vec2_f32_is_finite(z01.pair) || !vec2_f32_is_finite(z11.pair)) {
-            return style.color_premul;
+            return out;
         }
         let low = z00.pair + (z10.pair - z00.pair) * fc;
         let high = z01.pair + (z11.pair - z01.pair) * fc;
         if (!vec2_f32_is_finite(low) || !vec2_f32_is_finite(high)) {
-            return style.color_premul;
+            return out;
         }
         z = low + (high - low) * fr;
         if (!vec2_f32_is_finite(z)) {
-            return style.color_premul;
+            return out;
         }
     } else {
         let sample = z00;
         if (!sample.valid) {
-            return style.color_premul;
+            return out;
         }
         z = sample.pair;
     }
+    out.z = z;
+    out.t = z_ramp_t(z);
+    // Unplaceable on the colourbar: `nan_color` as well.
+    out.placeable = out.t >= 0.0;
+    return out;
+}
 
-    let t = z_ramp_t(z);
-    if (t < 0.0) {
-        // Unplaceable: `nan_color`, already premultiplied by the caller. Not
-        // multiplied by `opacity` — that multiplies the *ramp*'s alpha.
-        return style.color_premul;
+// Resident storage and bounded replay share all final field colour arithmetic.
+// `nan_color` is the premultiplied colour of an unplaceable sample.
+fn field_fill_color(z00: GridValue, z10: GridValue, z01: GridValue,
+    z11: GridValue, fc: f32, fr: f32, nan_color: vec4<f32>) -> vec4<f32> {
+    let v = field_fill_value(z00, z10, z01, z11, fc, fr);
+    if (!v.placeable) {
+        // `nan_color`, already premultiplied by the caller. Not multiplied by
+        // `opacity` — that multiplies the *ramp*'s alpha.
+        return nan_color;
     }
-    let position = select(t, band_t(z.x + z.y), field_flag(FIELD_BANDS));
+    let position = select(v.t, band_t(v.z.x + v.z.y), field_flag(FIELD_BANDS));
     let color = ramp(position);
     let alpha = color.a * field.opacity;
     return vec4<f32>(color.rgb * alpha, alpha);
+}
+
+/// Whether the fill paints anything where it shades `v`: `nan_color`'s alpha
+/// for an unplaceable value, else the ramp's alpha times the opacity. The
+/// band position needs the contour lookup table, which the pick cannot bind
+/// (it would put the anchor pass over the storage-binding limit), so a band
+/// fill answers with the opacity alone: a transparent ramp stop under
+/// `FillMode::Bands` still picks.
+fn field_fill_paints(v: FieldFillValue, nan_color: vec4<f32>) -> bool {
+    if (!v.placeable) {
+        return nan_color.a > 0.0;
+    }
+    if (field_flag(FIELD_BANDS)) {
+        return field.opacity > 0.0;
+    }
+    return ramp(v.t).a * field.opacity > 0.0;
 }
 
 /// Screen-space differential terms shared by contour painting and contour
@@ -1132,6 +1195,8 @@ fn fs_contour_labelled(in: FieldOut) -> @location(0) vec4<f32> {
 
 const DATA_PICK_FLAG_FILL: u32 = 1u;
 const DATA_PICK_FLAG_CONTOUR: u32 = 2u;
+// Resident fills: pick the pixel-centre cell, and only where it paints.
+const DATA_PICK_FLAG_PAINTED: u32 = 4u;
 const DATA_PICK_KIND_MATRIX_CELL: u32 = 2u;
 const DATA_PICK_KIND_CONTOUR_LEVEL: u32 = 3u;
 
@@ -1165,7 +1230,26 @@ fn field_pick_invalid() -> DataPickCandidate {
     return DataPickCandidate(0u, data_pick_query.data.y, 0u, 0u, 0u, 0u, 0.0, 0u);
 }
 
-fn field_pick_cell(t: vec2<f32>) -> DataPickCandidate {
+/// The cell painted at the cursor's pixel: the fill fragment evaluates the
+/// pixel centre (`field_fragment_center_t`, `field_cell_sample`), so the pick
+/// does too, and a pixel the fill leaves clear (a transparent ramp stop, a
+/// zero opacity, a transparent `nan_color`; see `field_fill_paints`) picks
+/// nothing.
+/// `data_pick_query.baseline` carries the fill's premultiplied `nan_color`.
+/// Streamed fields keep their own pick (rule 8) and do not set
+/// `DATA_PICK_FLAG_PAINTED`: their cursor stays raw and ungated.
+fn field_pick_cell(cursor_t: vec2<f32>) -> DataPickCandidate {
+    var t = cursor_t;
+    if ((data_pick_query.data.x & DATA_PICK_FLAG_PAINTED) != 0u) {
+        t = field_fragment_center_t(cursor_t);
+        let s = field_cell_sample(t);
+        if (!s.hit || !field_fill_paints(
+            field_fill_value(s.z00, s.z10, s.z01, s.z11, s.fc, s.fr),
+            data_pick_query.baseline,
+        )) {
+            return field_pick_invalid();
+        }
+    }
     let columns_are_y = field_flag(FIELD_COLUMNS_ARE_Y);
     let along_cells = select(field.cols, field.rows, columns_are_y);
     let across_cells = select(field.rows, field.cols, columns_are_y);
@@ -1564,5 +1648,5 @@ fn cs_stream_field_z(@builtin(global_invocation_id) id: vec3<u32>) {
         GridValue(s.z[0], (s.valid_mask & 1u) != 0u),
         GridValue(s.z[1], (s.valid_mask & 2u) != 0u),
         GridValue(s.z[2], (s.valid_mask & 4u) != 0u),
-        GridValue(s.z[3], (s.valid_mask & 8u) != 0u), fc, fr);
+        GridValue(s.z[3], (s.valid_mask & 8u) != 0u), fc, fr, style.color_premul);
 }

@@ -26,6 +26,9 @@ const INIT_SCOPE: &str = "renderer.gpu_data_pick";
 const DATA_PICK_CANDIDATE_BYTES: u64 = 32;
 const DATA_PICK_FLAG_FILL: u32 = 1;
 const DATA_PICK_FLAG_CONTOUR: u32 = 2;
+/// Resident fills pick the cell painted at the cursor's pixel centre, and
+/// only where its colour is not clear (`field_pick_cell`).
+const DATA_PICK_FLAG_PAINTED: u32 = 4;
 const DATA_PICK_KIND_HISTOGRAM_BIN: u32 = 1;
 const DATA_PICK_KIND_MATRIX_CELL: u32 = 2;
 const DATA_PICK_KIND_CONTOUR_LEVEL: u32 = 3;
@@ -80,6 +83,9 @@ pub(crate) enum GpuDataPickGeometry {
         has_fill: bool,
         has_contour: bool,
         contour_width_px: f32,
+        /// The fill's premultiplied `nan_color` (the fill's group-1 style),
+        /// so the cell pick sees the colour the fill paints.
+        nan_color_premul: [f32; 4],
     },
     /// A grid vector's arrows, picked as the cells they are drawn for: the
     /// series' vector group 2 (pool, grid table, stops, params at the pick's
@@ -942,10 +948,11 @@ impl DataPickPipelineBundle {
                     has_fill,
                     has_contour,
                     contour_width_px,
+                    nan_color_premul,
                 } => {
                     let mut flags = 0;
                     if has_fill {
-                        flags |= DATA_PICK_FLAG_FILL;
+                        flags |= DATA_PICK_FLAG_FILL | DATA_PICK_FLAG_PAINTED;
                     }
                     if has_contour {
                         flags |= DATA_PICK_FLAG_CONTOUR;
@@ -957,7 +964,7 @@ impl DataPickPipelineBundle {
                             limits: [query.max_distance_px, 0.0, contour_width_px, 0.0],
                             data: [flags, item.paint_order, 0, 0],
                             bases: [0; 4],
-                            baseline: [0.0; 4],
+                            baseline: nan_color_premul,
                         },
                         PreparedKind::Field(field_bg),
                     )

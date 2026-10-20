@@ -264,6 +264,23 @@ impl Probe {
         pollster::block_on(renderer.pick_chart(self.id, request).unwrap().resolve()).unwrap()
     }
 
+    /// The typed data pick at canvas position `(x, y)`.
+    pub fn pick_data_at(
+        &self,
+        renderer: &mut Renderer,
+        (x, y): (f32, f32),
+        max: f32,
+    ) -> Option<renderer::PickedData> {
+        let request = self.request(x, y, max);
+        pollster::block_on(
+            renderer
+                .pick_chart_data(self.id, request)
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap()
+    }
+
     /// The typed data pick at the centre of export pixel `(x, y)`.
     pub fn pick_data(
         &self,
@@ -1609,6 +1626,154 @@ fn histogram_bins_pick_what_the_bars_and_the_envelope_paint() {
                 &failures[..failures.len().min(12)]
             );
             assert!(painted > 400, "{what}: {painted}");
+            renderer.remove_chart(probe.id).unwrap();
+        }
+    }
+}
+
+/// G8 / G14: a heatmap cell picks exactly the pixels it paints. The fill
+/// shades each pixel at its centre, so the pick locates the cell at the
+/// cursor's pixel centre, and a pixel whose painted colour is clear (a
+/// transparent ramp end, a transparent `nan_color`) picks nothing. Flat and
+/// interpolated shading, at 1x and 2x.
+#[test]
+fn heatmap_cells_pick_exactly_the_pixels_they_paint() {
+    use renderer::data_config::{
+        FieldFillConfig, FillMode, GridLayout, MatrixOrientation, MatrixRef, Shading,
+    };
+    let mut renderer = renderer();
+    // x edges 1.3..7.9, y edges 1.7..8.2: cell boundaries fall inside pixels.
+    renderer
+        .add_columns(&[
+            (
+                "hx",
+                &col(vec![1.3, 3.55, 5.1, 7.9]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "hy",
+                &col(vec![1.7, 4.45, 6.0, 8.2]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "cx",
+                &col(vec![2.3, 4.55, 7.1]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "cy",
+                &col(vec![2.7, 5.45, 7.2]) as &dyn renderer::ColumnSource,
+            ),
+            // z_min (transparent ramp end), NaN (transparent nan_color) and
+            // opaque values.
+            (
+                "h0",
+                &col(vec![0.0, 5.0, 10.0]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "h1",
+                &col(vec![7.0, 4.0, 3.0]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "h2",
+                &col(vec![10.0, 0.0, f64::NAN]) as &dyn renderer::ColumnSource,
+            ),
+        ])
+        .expect("upload");
+    let mut chart = bare_chart();
+    let mut bar = renderer::default::default_colorbar_options();
+    bar.colormap = renderer::ColorMap::Custom {
+        stops: vec![
+            Color {
+                r: 0.0,
+                g: 0.0,
+                b: 1.0,
+                a: 0.0,
+            },
+            RED,
+        ],
+    };
+    bar.nan_color = Color {
+        r: 0.0,
+        g: 1.0,
+        b: 0.0,
+        a: 0.0,
+    };
+    bar.axis.min = 0.0;
+    bar.axis.max = 10.0;
+    bar.axis.major_spacing = 2.0;
+    bar.visible = false;
+    chart.config_mut().colorbar = Some(bar);
+    for shading in [Shading::Flat, Shading::Interpolated] {
+        let series = [SeriesConfig {
+            series_id: "field".into(),
+            source_id: None,
+            label: None,
+            x_column: match shading {
+                Shading::Flat => "hx".into(),
+                _ => "cx".into(),
+            },
+            y_column: match shading {
+                Shading::Flat => "hy".into(),
+                _ => "cy".into(),
+            },
+            render_type: DataRenderType::Heatmap {
+                matrix: MatrixRef {
+                    columns: vec!["h0".into(), "h1".into(), "h2".into()],
+                    orientation: MatrixOrientation::ColumnsAreX,
+                    grid_layout: match shading {
+                        Shading::Flat => GridLayout::Edges,
+                        _ => GridLayout::Centers,
+                    },
+                },
+                fill: FieldFillConfig {
+                    mode: FillMode::Continuous,
+                    shading: shading.clone(),
+                    opacity: 1.0,
+                },
+            },
+        }];
+        for scale in [1.0, 2.0] {
+            let what = format!("{shading:?} at {scale}x");
+            let with = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
+            let without = renderer.export_panel_rgba(&chart, &[], scale).unwrap();
+            let (x0, y0, x1, y1) = ink_window(&with, &without, 2);
+            let probe = Probe::register(&mut renderer, &chart, &series, scale);
+            let mut painted = 0usize;
+            let mut clear_inside = 0usize;
+            let mut failures = Vec::new();
+            for py in (y0..y1).step_by(2) {
+                for px in (x0..x1).step_by(2) {
+                    let ink = difference(&with, &without, px, py);
+                    // Off the pixel centre, inside the pixel: the pick must
+                    // still answer the cell painted at the centre.
+                    let request = (px as f32 + 0.9, py as f32 + 0.1);
+                    let hit = probe.pick_data_at(&mut renderer, request, 0.0);
+                    let cell = match &hit {
+                        Some(renderer::PickedData::MatrixCell { .. }) => true,
+                        None => false,
+                        Some(other) => panic!("{what}: ({px}, {py}) picked {other:?}"),
+                    };
+                    if ink >= PAINTED {
+                        painted += 1;
+                    } else {
+                        clear_inside += 1;
+                    }
+                    // A painted pixel picks; a pixel left exactly as it was
+                    // does not. (A ramp near its transparent end paints a
+                    // few levels of ink, and those pick too.)
+                    if (ink >= PAINTED && !cell) || (ink == 0 && cell) {
+                        failures.push(format!("({px}, {py}) ink {ink} picked {hit:?}"));
+                    }
+                }
+            }
+            assert!(
+                failures.is_empty(),
+                "{what}: {} disagreements, first {:?}",
+                failures.len(),
+                &failures[..failures.len().min(12)]
+            );
+            assert!(
+                painted > 200 && clear_inside > 50,
+                "{what}: {painted} / {clear_inside}"
+            );
             renderer.remove_chart(probe.id).unwrap();
         }
     }

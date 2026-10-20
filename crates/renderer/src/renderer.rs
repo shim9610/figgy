@@ -7629,12 +7629,17 @@ impl Renderer {
             }
             let has_fill = primitives.field;
             let has_contour = primitives.contour;
+            let mut nan_color_premul = [0.0; 4];
             let (field_bg, charge, drawable) = if has_fill {
                 self.ensure_field_scratch(&config, cfg)?;
                 let scratch = self
                     .field_cache
                     .get(cfg.series_id.as_str())
                     .expect("field scratch was just ensured");
+                // The fill's `nan_color`, premultiplied as its style uniform
+                // holds it (`PrimitiveStyle::from_color`).
+                let [r, g, b, a] = scratch.signature.nan_color.map(f32::from_bits);
+                nan_color_premul = PrimitiveStyle::from_color(Color { r, g, b, a }).color_premul;
                 (
                     scratch.field_bg.clone(),
                     Arc::clone(&scratch.charge),
@@ -7668,6 +7673,7 @@ impl Renderer {
                     has_fill,
                     has_contour,
                     contour_width_px,
+                    nan_color_premul,
                 },
             });
         }

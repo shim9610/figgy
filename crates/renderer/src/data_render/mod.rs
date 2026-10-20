@@ -4000,7 +4000,9 @@ pub fn create_field_data_bind_group_layout(device: &wgpu::Device) -> wgpu::BindG
     // binding counts against `max_storage_buffers_per_shader_stage` (8) in every
     // stage it is visible to, and the anchor pipeline binds four of its own — so
     // marking the ramp tables compute-visible for symmetry would put the layout
-    // one over the limit on a conformant device.
+    // one over the limit on a conformant device. The colour stops alone are
+    // compute-visible: the cell pick evaluates the colour the fill paints
+    // (`field_paint`), which brings the anchor pass to exactly eight.
     crate::gpu_compile::bind_group_layout(
         &device,
         &wgpu::BindGroupLayoutDescriptor {
@@ -4009,7 +4011,7 @@ pub fn create_field_data_bind_group_layout(device: &wgpu::Device) -> wgpu::BindG
                 storage(0, shared), // column pool (coordinate + grid bases in the uniform)
                 storage(1, shared), // per-constituent-column (base, len)
                 storage(2, shared), // contour levels, in data units
-                storage(3, render), // colourmap control points
+                storage(3, shared), // colourmap control points
                 wgpu::BindGroupLayoutEntry {
                     binding: 4,
                     visibility: shared,
