@@ -490,6 +490,22 @@ example advances to 0.15.0 with the renderer dependency and is not published
   one-texel antialiasing.
 - No API, model or serialization change.
 
+### Default layout
+
+- `default_config()` sets `right_y.out_margin` to 32 (was 8). The last
+  bottom tick label is centred on the data area's right edge, so half of it
+  lies in the right margin; at the default 18 px font even `10.0` needs about
+  17 px, and the old 13 px band (margin plus tick) cut it at the chart edge, on
+  screen and in exports. The new band holds a seven-character label.
+- `default_colorbar_options()` sets `gap_px` to 8 (was 24). The axis band on
+  the bar's side already separates it from the data area, so the wider right
+  band would otherwise push a right colourbar 61 px away; it now sits 45 px
+  from the data area (37 px before), and top, left and bottom bars sit 16 px
+  closer.
+- Documents keep their stored values: both fields are always serialized, so
+  only configs built from the defaults change. To keep the old geometry, set
+  `right_y.out_margin = 8.0` and `gap_px = 24.0`.
+
 ### Web example
 
 - No method of the WASM integration example `figgy` 0.15.0 is removed or
@@ -596,7 +612,9 @@ JSON written by renderer 0.17.0 / model 0.11.0 parses and re-serializes byte
 for byte: every new key is optional and omitted at its default. The changes
 below affect Rust code, and one of them is a stricter validation of bounded
 charts. The renderer re-exports the model, so the model notes apply to
-renderer users too.
+renderer users too. Configs built from `default_config()` get a wider right
+margin and a narrower colourbar gap; see [Default layout](#default-layout) for
+the values that keep the old geometry.
 
 Model types (figgy-model 0.12.0):
 

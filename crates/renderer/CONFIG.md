@@ -776,7 +776,7 @@ Multiplies every pixel-based dim by `scale`. `min/max/major_spacing`, scale enum
 
 ### Default builder — `renderer::default::default_config()`
 - bottom_x / left_y: axis line + ticks + labels + title enabled, text starts as empty segments.
-- top_x / right_y: axis line + ticks enabled, labels + title disabled, `out_margin = 8` (narrow gap).
+- top_x / right_y: axis line + ticks enabled, labels + title disabled. `top_x.out_margin = 8` (narrow gap); `right_y.out_margin = 32`, room for the half of the last bottom tick label that lies past the data area.
 - chart_title: visible, `top_margin = 32`, text empty.
 - grid: major only, light gray.
 - legend: disabled (top-right corner, 8 px padding).
@@ -1273,7 +1273,7 @@ GPU는 그릴 때마다 컬럼 풀에서 값 컬럼을 읽어 셰이더에서 �
 
 ### 기본값 빌더(`renderer::default::default_config()`)
 - `bottom_x` / `left_y`: 축선·눈금·라벨·제목을 켠다. 제목 텍스트는 비어 있다.
-- `top_x` / `right_y`: 축선·눈금만 켜고 라벨·제목은 숨긴다. `out_margin = 8`로 좁은 여백을 둔다.
+- `top_x` / `right_y`: 축선·눈금만 켜고 라벨·제목은 숨긴다. `top_x.out_margin = 8`로 좁은 여백을 두고, `right_y.out_margin = 32`로 아래 축 마지막 눈금 라벨이 데이터 영역 밖으로 나오는 절반이 들어갈 자리를 둔다.
 - `chart_title`: 표시를 켜고 `top_margin = 32`로 설정한다. 텍스트는 비어 있다.
 - `grid`: 옅은 회색 주 격자선만 켠다.
 - `legend`: 숨긴다(오른쪽 위 모서리, 내부 여백 8px).
