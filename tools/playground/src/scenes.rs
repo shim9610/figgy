@@ -78,7 +78,7 @@ impl SceneKind {
             SceneKind::Subplots => "Subplots (linked X)",
             SceneKind::Annotations => "Annotations",
             SceneKind::Polar => "Polar (angle, radius)",
-            SceneKind::BigData => "1M-point line",
+            SceneKind::BigData => "Large data (resident)",
             SceneKind::Radial => "Radial (pie / donut)",
             SceneKind::Categorical => "Categorical bars",
             SceneKind::BoxPlot => "Box plot",
@@ -113,7 +113,10 @@ impl SceneKind {
                 "Config.polar: bottom_x is the angle in degrees, left_y the radius. A \
                  filled pattern and a marker rose with arc segments; pick the markers."
             }
-            SceneKind::BigData => "One million points, every one drawn. Zoom and pan it.",
+            SceneKind::BigData => {
+                "Up to 100 million resident points as a line, markers or both, every one \
+                 drawn. Set the size, upload, then zoom, pan, pick or run the benchmark."
+            }
             SceneKind::Radial => "Click a slice; drag the title or legend.",
             SceneKind::Categorical => "Click a bar; grouped / stacked / percent modes.",
             SceneKind::BoxPlot => "Click a box; notches, means, outliers.",
@@ -151,7 +154,7 @@ fn upload(r: &mut Renderer, id: &str, data: Vec<f64>) -> Result<(), FiggyError> 
 }
 
 /// Deterministic pseudo-random numbers in [-1, 1] (no rand dependency).
-fn noise(seed: u64, i: usize) -> f64 {
+pub fn noise(seed: u64, i: usize) -> f64 {
     let mut x = seed ^ (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
     x ^= x >> 33;
     x = x.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
@@ -191,7 +194,7 @@ pub fn scatter_style(color: Color, shape: ScatterShape, size: f32) -> DataScatte
     }
 }
 
-fn series(id: &str, x: &str, y: &str, render_type: DataRenderType) -> SeriesConfig {
+pub fn series(id: &str, x: &str, y: &str, render_type: DataRenderType) -> SeriesConfig {
     SeriesConfig {
         series_id: id.into(),
         source_id: None,
@@ -202,7 +205,7 @@ fn series(id: &str, x: &str, y: &str, render_type: DataRenderType) -> SeriesConf
     }
 }
 
-fn base_config(title: &str, x_title: &str, y_title: &str) -> Config {
+pub fn base_config(title: &str, x_title: &str, y_title: &str) -> Config {
     let mut config = default::default_config();
     config.chart_area = ChartArea(Rect {
         x: 0,
@@ -254,7 +257,7 @@ pub fn rebuild_legends(config: &mut Config, series: &[SeriesConfig]) {
     }
 }
 
-fn with_legend(mut config: Config, series: &[SeriesConfig]) -> Config {
+pub fn with_legend(mut config: Config, series: &[SeriesConfig]) -> Config {
     config.legend.visible = true;
     rebuild_legends(&mut config, series);
     config
@@ -277,7 +280,7 @@ pub fn build(r: &mut Renderer, kind: SceneKind) -> Result<CartesianScene, FiggyE
         SceneKind::Subplots => subplots(r),
         SceneKind::Annotations => annotations(r),
         SceneKind::Polar => polar(r),
-        SceneKind::BigData => big_data(r),
+        SceneKind::BigData => crate::big_data::build(r),
         _ => unreachable!("bounded scenes are built in bounded.rs"),
     }
 }
@@ -1166,41 +1169,6 @@ fn annotations(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     )];
     Ok(CartesianScene {
         config: with_legend(config, &series),
-        series,
-    })
-}
-
-fn big_data(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
-    const N: usize = 1_000_000;
-    if r.handle_for("big_x").is_err() {
-        let x: Vec<f64> = (0..N).map(|i| i as f64).collect();
-        let mut acc = 0.0;
-        let y: Vec<f64> = (0..N)
-            .map(|i| {
-                acc += noise(99, i);
-                acc + 40.0 * (i as f64 / 20_000.0).sin()
-            })
-            .collect();
-        upload(r, "big_x", x)?;
-        upload(r, "big_y", y)?;
-    }
-    let mut chart = Chart::new(base_config(
-        "Random walk, 1 000 000 points",
-        "sample",
-        "value",
-    ));
-    chart.auto_fit_x(r.pool(), "big_x", 0.0)?;
-    chart.auto_fit_y(r.pool(), "big_y", 0.05)?;
-    let series = vec![series(
-        "walk",
-        "big_x",
-        "big_y",
-        DataRenderType::Line {
-            line: line_style(Color::from_rgb8(31, 119, 180), 1.0),
-        },
-    )];
-    Ok(CartesianScene {
-        config: with_legend(chart.config().clone(), &series),
         series,
     })
 }
