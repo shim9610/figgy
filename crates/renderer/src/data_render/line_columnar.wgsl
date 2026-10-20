@@ -351,7 +351,7 @@ fn sketch_line_offset(arc_px: f32, amplitude_px: f32, wavelength_px: f32, seed: 
 // Piece corners live in DATA space so every consumer projects the same
 // points: the line, area, sketch, ribbon and star entries here, the
 // arc-length scan (line_arc.wgsl, `params.mode`) and the GPU picker
-// (gpu_pick.wgsl, in its own pick_* ABI). `step_piece_count`, `step_piece`
+// (gpu_pick/line.wgsl, in its own pick_* ABI). `step_piece_count`, `step_piece`
 // and `step_piece_len_px` must stay byte-identical between line_columnar.wgsl
 // and line_arc.wgsl (shader_consistency checks); the CPU twin is
 // `line_step::step_pieces` in the renderer crate.

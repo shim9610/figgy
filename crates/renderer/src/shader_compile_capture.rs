@@ -164,7 +164,9 @@ impl Capture {
     ) -> Value {
         assert!(
             options.zero_initialize_workgroup_memory
-                || (options.constants == [(super::workgroup_init::EXPLICIT_ZERO, 1.0)]
+                || (options
+                    .constants
+                    .contains(&(super::workgroup_init::EXPLICIT_ZERO, 1.0))
                     && matches!(
                         entry,
                         Some(

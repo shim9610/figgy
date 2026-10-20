@@ -54,6 +54,297 @@ const FLAG_SIZE_MAP: u32 = 16;
 const FLAG_SIZE_AREA: u32 = 32;
 /// The scatter primitive is a point vector's arrows (`PICK_FLAG_VECTOR`).
 const FLAG_VECTOR: u32 = 64;
+/// The exact pass's `PICK_VARIANT` bits (`gpu_pick/core.wgsl`): which
+/// optional paths one `pick_exact_candidates` pipeline carries.
+pub(crate) mod exact_variant {
+    pub(crate) const STYLED_MARKER: u32 = 2;
+    pub(crate) const DASH: u32 = 16;
+    pub(crate) const STYLED_LINE: u32 = 32;
+    pub(crate) const POLAR: u32 = 64;
+    /// Every path: the shader's default, and what a streamed pick uses.
+    pub(crate) const ALL: u32 = STYLED_MARKER | DASH | STYLED_LINE | POLAR;
+    /// The override's name in `gpu_pick/core.wgsl`.
+    pub(crate) const CONSTANT: &str = "PICK_VARIANT";
+}
+
+/// The assembled point-picker shaders (rule 9's pattern, as in
+/// `data_render::vector`): the gate module and one exact module per
+/// primitive class, each the concatenation of its fragments under
+/// `src/gpu_pick/` in the order [`PickShader::fragments`] lists. A pick
+/// compiles only the exact module (and variant) its series need.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PickShader {
+    /// The gate and reduction entries.
+    Gate,
+    /// Exact: a marker series.
+    Marker,
+    /// Exact: a series with markers and a line.
+    MarkerLine,
+    /// Exact: a line series.
+    Line,
+    /// Exact: a point vector series.
+    Vector,
+}
+
+macro_rules! pick_fragment {
+    ($name:literal) => {
+        include_str!(concat!("gpu_pick/", $name))
+    };
+}
+
+macro_rules! pick_module {
+    ($($name:literal),+ $(,)?) => {
+        concat!($(pick_fragment!($name), "\n"),+)
+    };
+}
+
+impl PickShader {
+    #[cfg(test)]
+    pub(crate) const EXACT: [PickShader; 4] = [
+        PickShader::Marker,
+        PickShader::MarkerLine,
+        PickShader::Line,
+        PickShader::Vector,
+    ];
+
+    /// The fragment files, in assembly order.
+    #[cfg(test)]
+    pub(crate) fn fragments(self) -> &'static [&'static str] {
+        match self {
+            PickShader::Gate => &["core.wgsl", "gate_entries.wgsl"],
+            PickShader::Marker => &[
+                "core.wgsl",
+                "noise.wgsl",
+                "marker.wgsl",
+                "no_line.wgsl",
+                "exact_entry.wgsl",
+            ],
+            PickShader::MarkerLine => &[
+                "core.wgsl",
+                "noise.wgsl",
+                "marker.wgsl",
+                "line.wgsl",
+                "exact_entry.wgsl",
+            ],
+            PickShader::Line => &[
+                "core.wgsl",
+                "noise.wgsl",
+                "no_scatter.wgsl",
+                "line.wgsl",
+                "exact_entry.wgsl",
+            ],
+            PickShader::Vector => &[
+                "core.wgsl",
+                "vector.wgsl",
+                "no_line.wgsl",
+                "exact_entry.wgsl",
+            ],
+        }
+    }
+
+    /// The assembled source: [`Self::fragments`] concatenated, each followed
+    /// by one newline.
+    pub(crate) const fn source(self) -> &'static str {
+        match self {
+            PickShader::Gate => pick_module!("core.wgsl", "gate_entries.wgsl"),
+            PickShader::Marker => pick_module!(
+                "core.wgsl",
+                "noise.wgsl",
+                "marker.wgsl",
+                "no_line.wgsl",
+                "exact_entry.wgsl",
+            ),
+            PickShader::MarkerLine => pick_module!(
+                "core.wgsl",
+                "noise.wgsl",
+                "marker.wgsl",
+                "line.wgsl",
+                "exact_entry.wgsl",
+            ),
+            PickShader::Line => pick_module!(
+                "core.wgsl",
+                "noise.wgsl",
+                "no_scatter.wgsl",
+                "line.wgsl",
+                "exact_entry.wgsl",
+            ),
+            PickShader::Vector => pick_module!(
+                "core.wgsl",
+                "vector.wgsl",
+                "no_line.wgsl",
+                "exact_entry.wgsl",
+            ),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            PickShader::Gate => "figgy GPU pick gate shader",
+            PickShader::Marker => "figgy GPU pick exact marker shader",
+            PickShader::MarkerLine => "figgy GPU pick exact marker-line shader",
+            PickShader::Line => "figgy GPU pick exact line shader",
+            PickShader::Vector => "figgy GPU pick exact vector shader",
+        }
+    }
+
+    fn exact_index(self) -> usize {
+        match self {
+            PickShader::Gate => unreachable!("the gate module has no exact entry"),
+            PickShader::Marker => 0,
+            PickShader::MarkerLine => 1,
+            PickShader::Line => 2,
+            PickShader::Vector => 3,
+        }
+    }
+}
+
+/// One exact pipeline: the module, the `PICK_VARIANT` bits and the
+/// `PICK_SHAPE` the driver specialises it for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PickExactKey {
+    pub(crate) shader: PickShader,
+    pub(crate) bits: u32,
+    /// A marker shape id, or [`PickExactKey::ANY_SHAPE`].
+    pub(crate) shape: u32,
+}
+
+impl PickExactKey {
+    /// `PICK_SHAPE_ANY`: the shape is read per point.
+    pub(crate) const ANY_SHAPE: u32 = u32::MAX;
+
+    /// What a streamed pick scans every chunk with: the marker-and-line
+    /// module with every path and any shape (streaming is not specialised).
+    pub(crate) const STREAMED: Self = Self {
+        shader: PickShader::MarkerLine,
+        bits: exact_variant::ALL,
+        shape: Self::ANY_SHAPE,
+    };
+}
+
+/// The exact pipelines created so far. Each is created on first use (the
+/// first pick of a series that needs it) and kept for the renderer's
+/// lifetime; owned by the renderer's picker and passed to each pick, so no
+/// lock guards it. `pipelines` grows by one entry per distinct key a chart
+/// has needed (a handful: module x draw-style paths x marker shape).
+#[derive(Default)]
+pub(crate) struct PickExactPipelines {
+    modules: [Option<wgpu::ShaderModule>; 4],
+    pipelines: Vec<(PickExactKey, wgpu::ComputePipeline)>,
+}
+
+impl PickExactPipelines {
+    /// The exact pipeline for `key`, created if it is not yet.
+    pub(crate) fn ensure(
+        &mut self,
+        bundle: &PickPipelineBundle,
+        key: PickExactKey,
+    ) -> Result<&wgpu::ComputePipeline, GpuPickError> {
+        let index = match self.pipelines.iter().position(|(k, _)| *k == key) {
+            Some(index) => index,
+            None => {
+                self.pipelines
+                    .try_reserve(1)
+                    .map_err(|_| GpuPickError::AllocationFailed {
+                        resource: "exact pick pipelines",
+                    })?;
+                let device = &bundle.device;
+                let shader = key.shader;
+                let module = self.modules[shader.exact_index()].get_or_insert_with(|| {
+                    crate::gpu_compile::shader_module(
+                        device,
+                        wgpu::ShaderModuleDescriptor {
+                            label: Some(shader.label()),
+                            source: wgpu::ShaderSource::Wgsl(shader.source().into()),
+                        },
+                    )
+                });
+                let base = crate::gpu_compile::workgroup_options(device);
+                let mut constants = [(exact_variant::CONSTANT, f64::from(key.bits)); 3];
+                let mut count = 1;
+                // Only the marker modules declare the shape override.
+                if key.shape != PickExactKey::ANY_SHAPE
+                    && matches!(shader, PickShader::Marker | PickShader::MarkerLine)
+                {
+                    constants[count] = ("PICK_SHAPE", f64::from(key.shape));
+                    count += 1;
+                }
+                if let Some(&zero) = base.constants.first() {
+                    constants[count] = zero;
+                    count += 1;
+                }
+                let pipeline = crate::gpu_compile::compute_pipeline(
+                    device,
+                    &wgpu::ComputePipelineDescriptor {
+                        label: Some("figgy GPU pick exact candidate pipeline"),
+                        layout: Some(&bundle.exact_layout),
+                        module,
+                        entry_point: Some("pick_exact_candidates"),
+                        compilation_options: wgpu::PipelineCompilationOptions {
+                            constants: &constants[..count],
+                            zero_initialize_workgroup_memory: base.zero_initialize_workgroup_memory,
+                        },
+                        cache: None,
+                    },
+                );
+                self.pipelines.push((key, pipeline));
+                self.pipelines.len() - 1
+            }
+        };
+        Ok(&self.pipelines[index].1)
+    }
+
+    fn get(&self, key: PickExactKey) -> Option<&wgpu::ComputePipeline> {
+        self.pipelines
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, pipeline)| pipeline)
+    }
+}
+
+/// The exact module and variant that pick `series` as the query draws it:
+/// its primitive class, the styled marker and line paths when the draw
+/// style uses them, the dash walk for a dashed line and the polar paths on
+/// polar axes.
+fn series_exact_variant(series: &PickSeriesGpu, query: &GpuPickQuery) -> PickExactKey {
+    let scatter = series.flags & FLAG_SCATTER != 0;
+    let line = series.flags & FLAG_LINE != 0;
+    let shader = if series.flags & FLAG_VECTOR != 0 {
+        PickShader::Vector
+    } else {
+        match (scatter, line) {
+            (true, true) => PickShader::MarkerLine,
+            (false, true) => PickShader::Line,
+            _ => PickShader::Marker,
+        }
+    };
+    let mut bits = 0;
+    if scatter && shader != PickShader::Vector && query.draw_style.marker != PICK_MARKER_PRECISE {
+        bits |= exact_variant::STYLED_MARKER;
+    }
+    if line {
+        if series.line_dash_len > 0 {
+            bits |= exact_variant::DASH;
+        }
+        if query.draw_style.line != PICK_LINE_PRECISE {
+            bits |= exact_variant::STYLED_LINE;
+        }
+    }
+    if query.transform.polar_angle[0] > 0.5 {
+        bits |= exact_variant::POLAR;
+    }
+    // Without a style map every point has the series' shape.
+    let shape = if scatter && series.flags & FLAG_STYLE_MAP == 0 {
+        series.base_shape_id
+    } else {
+        PickExactKey::ANY_SHAPE
+    };
+    PickExactKey {
+        shader,
+        bits,
+        shape,
+    }
+}
+
 /// `PICK_VECTOR_SCALE_PIXELS` in `PickQueryParams.vector.w`.
 const VECTOR_SCALE_PIXELS: u32 = 256;
 const STYLE_MASK_RADIUS: u32 = 2;
@@ -357,6 +648,9 @@ pub(crate) fn validate_stream_handle(
 /// upload ring; every encoded chunk is reduced before that slot is reusable.
 pub(crate) struct GpuStreamPick {
     engine: GpuPickEngine,
+    /// The exact pipeline every chunk scans with: the marker-and-line module
+    /// with every path (`exact_variant::ALL`); streaming is not specialised.
+    exact: wgpu::ComputePipeline,
     query: GpuPickQuery,
     display_scale: f32,
     identities: Arc<[PickIdentity]>,
@@ -370,6 +664,7 @@ impl PickPipelineBundle {
         query: GpuPickQuery,
         display_scale: f32,
         identities: Vec<(Option<String>, String)>,
+        exact: wgpu::ComputePipeline,
     ) -> Result<GpuStreamPick, GpuPickError> {
         let reduce = GpuPickEngine::create_reduce_resources(
             &self.device,
@@ -396,6 +691,7 @@ impl PickPipelineBundle {
             });
         Ok(GpuStreamPick {
             engine: GpuPickEngine::from_bundle_and_reduce(Arc::clone(self), reduce),
+            exact,
             query,
             display_scale,
             identities: identities
@@ -624,7 +920,7 @@ impl GpuStreamPick {
         for (pipeline, enabled) in [
             (&bundle.gate_x, !series.direct_scan),
             (&bundle.gate_y, !series.direct_scan),
-            (&bundle.exact, true),
+            (&self.exact, true),
         ] {
             if !enabled {
                 continue;
@@ -974,7 +1270,8 @@ pub(crate) struct PickPipelineBundle {
     reduce_bgl: wgpu::BindGroupLayout,
     gate_x: wgpu::ComputePipeline,
     gate_y: wgpu::ComputePipeline,
-    exact: wgpu::ComputePipeline,
+    /// The layout every exact pipeline uses ([`PickExactPipelines`]).
+    exact_layout: wgpu::PipelineLayout,
     reduce: wgpu::ComputePipeline,
     /// The exact pass's group 2: one series' arc prefix (`pick_arc`).
     arc_bgl: wgpu::BindGroupLayout,
@@ -1144,11 +1441,13 @@ fn create_pipeline_bundle_observed(
     observer: &mut dyn FnMut(InitEvent),
 ) -> Arc<PickPipelineBundle> {
     started(observer, INIT_SCOPE, "setup");
+    // The gate module only: the exact modules compile on first use
+    // (`PickExactPipelines`), the variant a series needs.
     let shader = crate::gpu_compile::shader_module(
         &device,
         wgpu::ShaderModuleDescriptor {
-            label: Some("figgy exact GPU pick shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("gpu_pick.wgsl").into()),
+            label: Some(PickShader::Gate.label()),
+            source: wgpu::ShaderSource::Wgsl(PickShader::Gate.source().into()),
         },
     );
 
@@ -1225,10 +1524,7 @@ fn create_pipeline_bundle_observed(
                 layout: Some(layout),
                 module: &shader,
                 entry_point: Some(entry),
-                compilation_options: if matches!(
-                    entry,
-                    "pick_exact_candidates" | "pick_reduce_candidates"
-                ) {
+                compilation_options: if entry == "pick_reduce_candidates" {
                     crate::gpu_compile::workgroup_options(&device)
                 } else {
                     wgpu::PipelineCompilationOptions::default()
@@ -1254,13 +1550,7 @@ fn create_pipeline_bundle_observed(
                 "figgy GPU pick Y gate pipeline",
             )
         }),
-        exact: observe_value(observer, INIT_SCOPE, "pick_exact_candidates", || {
-            pipeline(
-                &exact_layout,
-                "pick_exact_candidates",
-                "figgy GPU pick exact candidate pipeline",
-            )
-        }),
+        exact_layout,
         reduce: observe_value(observer, INIT_SCOPE, "pick_reduce_candidates", || {
             pipeline(
                 &reduce_layout,
@@ -1337,11 +1627,10 @@ async fn create_pipeline_bundle_observed_async(
     crate::init::prewarm_compute_entries_js(
         &device,
         "gpu.pick.async",
-        include_str!("gpu_pick.wgsl"),
+        PickShader::Gate.source(),
         &[
             ("pick_gate_x", "pick_gate_x"),
             ("pick_gate_y", "pick_gate_y"),
-            ("pick_exact_candidates", "pick_exact_candidates"),
             ("pick_reduce_candidates", "pick_reduce_candidates"),
         ],
         observer,
@@ -1349,11 +1638,13 @@ async fn create_pipeline_bundle_observed_async(
     .await
     .map_err(GpuPickError::AsyncCompileFailed)?;
     started(observer, INIT_SCOPE, "setup");
+    // The gate module only: the exact modules compile on first use
+    // (`PickExactPipelines`), the variant a series needs.
     let shader = crate::gpu_compile::shader_module(
         &device,
         wgpu::ShaderModuleDescriptor {
-            label: Some("figgy exact GPU pick shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("gpu_pick.wgsl").into()),
+            label: Some(PickShader::Gate.label()),
+            source: wgpu::ShaderSource::Wgsl(PickShader::Gate.source().into()),
         },
     );
 
@@ -1431,10 +1722,7 @@ async fn create_pipeline_bundle_observed_async(
                 layout: Some(layout),
                 module: &shader,
                 entry_point: Some(entry),
-                compilation_options: if matches!(
-                    entry,
-                    "pick_exact_candidates" | "pick_reduce_candidates"
-                ) {
+                compilation_options: if entry == "pick_reduce_candidates" {
                     crate::gpu_compile::workgroup_options(&device)
                 } else {
                     wgpu::PipelineCompilationOptions::default()
@@ -1460,14 +1748,6 @@ async fn create_pipeline_bundle_observed_async(
         )
     })
     .await;
-    let exact = observe_value_async(observer, INIT_SCOPE, "pick_exact_candidates", || {
-        pipeline(
-            &exact_layout,
-            "pick_exact_candidates",
-            "figgy GPU pick exact candidate pipeline",
-        )
-    })
-    .await;
     let reduce = observe_value_async(observer, INIT_SCOPE, "pick_reduce_candidates", || {
         pipeline(
             &reduce_layout,
@@ -1480,7 +1760,7 @@ async fn create_pipeline_bundle_observed_async(
     Ok(Arc::new(PickPipelineBundle {
         gate_x,
         gate_y,
-        exact,
+        exact_layout,
         reduce,
         query_data_bgl,
         query_work_bgl,
@@ -2933,7 +3213,29 @@ impl GpuPickEngine {
         query: GpuPickQuery,
         display_scale: f32,
     ) -> Result<GpuPickTicket, GpuPickError> {
-        self.pick_with_arcs(pool, query, display_scale, &[])
+        let mut exact = PickExactPipelines::default();
+        for key in self.exact_variants(&query) {
+            exact.ensure(&self.bundle, key)?;
+        }
+        self.pick_with_arcs(pool, query, display_scale, &[], &exact)
+    }
+
+    /// The exact module and variant each registered series needs under
+    /// `query`, in registry order: create them
+    /// ([`PickExactPipelines::ensure`]) before [`Self::pick_with_arcs`].
+    pub(crate) fn exact_variants<'a>(
+        &'a self,
+        query: &'a GpuPickQuery,
+    ) -> impl Iterator<Item = PickExactKey> + 'a {
+        self.registry
+            .slots
+            .iter()
+            .map(move |slot| series_exact_variant(&slot.gpu, query))
+    }
+
+    /// The bundle the exact pipelines are created against.
+    pub(crate) fn bundle(&self) -> &PickPipelineBundle {
+        &self.bundle
     }
 
     /// [`Self::pick_with_display_scale`] with each registered series' arc
@@ -2941,12 +3243,14 @@ impl GpuPickEngine {
     /// line shader drew the series with (`line_arc.wgsl`) for the query's
     /// transform, which places its dash phase and sketch wobble. A missing
     /// entry, or a buffer too short for the series, picks without it.
+    /// `exact` must hold every variant [`Self::exact_variants`] names.
     pub(crate) fn pick_with_arcs(
         &self,
         pool: &ColumnPool,
         query: GpuPickQuery,
         display_scale: f32,
         arcs: &[Option<Arc<wgpu::Buffer>>],
+        exact: &PickExactPipelines,
     ) -> Result<GpuPickTicket, GpuPickError> {
         let [cursor_x, cursor_y] = query.canvas_position_px;
         if !display_scale.is_finite()
@@ -3087,9 +3391,10 @@ impl GpuPickEngine {
                 label: Some("figgy exact GPU pick candidate scan"),
                 timestamp_writes: None,
             });
-            pass.set_pipeline(&self.bundle.exact);
             for (series_order, slot) in self.registry.slots.iter().enumerate() {
                 let series = &slot.gpu;
+                let key = series_exact_variant(series, &query);
+                pass.set_pipeline(exact.get(key).ok_or(GpuPickError::InvalidGpuResult)?);
                 pass.set_bind_group(0, &series.query_data_bg, &[]);
                 pass.set_bind_group(1, &series.query_work_bg, &[]);
                 // The pass keeps the bind group alive until it is submitted.
@@ -3727,7 +4032,6 @@ mod tests {
                 "setup",
                 "pick_gate_x",
                 "pick_gate_y",
-                "pick_exact_candidates",
                 "pick_reduce_candidates",
             ]
         );
@@ -3739,7 +4043,6 @@ mod tests {
         assert!(Arc::ptr_eq(&first.bundle, &second.bundle));
         assert_eq!(first.bundle.gate_x, second.bundle.gate_x);
         assert_eq!(first.bundle.gate_y, second.bundle.gate_y);
-        assert_eq!(first.bundle.exact, second.bundle.exact);
         assert_eq!(first.bundle.reduce, second.bundle.reduce);
     }
 
@@ -3845,9 +4148,13 @@ mod tests {
                         let identities = (0..2)
                             .map(|order| (Some("stream-source".into()), format!("stream-{order}")))
                             .collect();
+                        let exact = PickExactPipelines::default()
+                            .ensure(&resident.bundle, PickExactKey::STREAMED)
+                            .unwrap()
+                            .clone();
                         let mut stream = resident
                             .bundle
-                            .begin_stream(query, 1.0, identities)
+                            .begin_stream(query, 1.0, identities, exact)
                             .unwrap();
                         let mut charges = vec![stream.charge()];
                         // Reverse both series and chunk submission order: ties
@@ -4006,8 +4313,12 @@ mod tests {
                 vector: None,
             };
             let query = test_query(cursor);
+            let exact = PickExactPipelines::default()
+                .ensure(&bundle, PickExactKey::STREAMED)
+                .unwrap()
+                .clone();
             let mut stream = bundle
-                .begin_stream(query, 1.0, vec![(None, "gated-stream".into())])
+                .begin_stream(query, 1.0, vec![(None, "gated-stream".into())], exact)
                 .unwrap();
             assert_eq!(
                 stream.charge().charged_bytes(),
@@ -6487,5 +6798,155 @@ mod tests {
             Err(GpuPickError::StaleColumn { column_id, .. })
                 if column_id == "epoch-pick-x"
         ));
+    }
+
+    /// Every assembled pick module is its fragments concatenated in the
+    /// declared order, each fragment verbatim, and every fragment file under
+    /// `src/gpu_pick/` is in some module; the twinned blocks live in the
+    /// fragments `shader_consistency` compares.
+    #[test]
+    fn assembled_pick_shaders_are_their_fragments_concatenated() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/gpu_pick");
+        let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap();
+        let mut used = std::collections::HashSet::new();
+        for shader in std::iter::once(PickShader::Gate).chain(PickShader::EXACT) {
+            let mut expected = String::new();
+            for name in shader.fragments() {
+                expected.push_str(&read(name));
+                expected.push('\n');
+                used.insert(*name);
+            }
+            assert_eq!(shader.source(), expected, "{shader:?}");
+            assert_eq!(shader.fragments()[0], "core.wgsl", "{shader:?}");
+            let last = *shader.fragments().last().unwrap();
+            if shader == PickShader::Gate {
+                assert_eq!(last, "gate_entries.wgsl");
+            } else {
+                assert_eq!(last, "exact_entry.wgsl", "{shader:?}");
+                if let Err(error) = wgpu::naga::front::wgsl::parse_str(shader.source()) {
+                    panic!("{shader:?}: {}", error.emit_to_string(shader.source()));
+                }
+            }
+        }
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let name = entry.unwrap().file_name().into_string().unwrap();
+            assert!(used.contains(name.as_str()), "{name} is in no pick module");
+        }
+    }
+
+    /// Compile cost of the point picker per module, entry point and exact
+    /// variant: the wall time of `create_shader_module` and of
+    /// `create_compute_pipeline(layout: None)` per entry, three rounds, each
+    /// on a fresh device. `FIGGY_PICK_TIMING_SOURCE` times one other
+    /// single-module `gpu_pick.wgsl` (an older revision) instead. Run with
+    /// `--ignored --nocapture`.
+    #[test]
+    #[ignore = "timing report"]
+    fn pick_shader_compile_timings() {
+        use super::exact_variant as v;
+        use std::time::Instant;
+        let override_source = std::env::var("FIGGY_PICK_TIMING_SOURCE")
+            .ok()
+            .map(|path| std::fs::read_to_string(path).expect("timing source"));
+        // (module label, source, [(entry, variant label, PICK_VARIANT)]).
+        type Entries = Vec<(&'static str, &'static str, Option<u32>)>;
+        let mut modules: Vec<(&str, String, Entries)> = Vec::new();
+        let gate_entries: Entries = vec![
+            ("pick_gate_x", "-", None),
+            ("pick_gate_y", "-", None),
+            ("pick_reduce_candidates", "-", None),
+        ];
+        if let Some(source) = override_source {
+            let mut entries = gate_entries;
+            entries.push(("pick_exact_candidates", "default", None));
+            modules.push(("single module", source, entries));
+        } else {
+            let exact = |variants: &[(&'static str, u32)]| -> Entries {
+                variants
+                    .iter()
+                    .map(|(label, bits)| ("pick_exact_candidates", *label, Some(*bits)))
+                    .collect()
+            };
+            modules.push(("gate", PickShader::Gate.source().to_string(), gate_entries));
+            modules.push((
+                "marker",
+                PickShader::Marker.source().to_string(),
+                exact(&[
+                    ("precise", 0),
+                    ("precise circle", 0x1000 | 5),
+                    ("precise star", 0x1000 | 25),
+                    ("polar", v::POLAR),
+                    ("styled", v::STYLED_MARKER),
+                    ("all", v::ALL),
+                ]),
+            ));
+            modules.push((
+                "marker+line",
+                PickShader::MarkerLine.source().to_string(),
+                exact(&[
+                    ("precise", 0),
+                    ("precise circle", 0x1000 | 5),
+                    ("dashed", v::DASH),
+                    ("styled", v::STYLED_MARKER | v::STYLED_LINE),
+                    ("all (streamed)", v::ALL),
+                ]),
+            ));
+            modules.push((
+                "line",
+                PickShader::Line.source().to_string(),
+                exact(&[
+                    ("precise", 0),
+                    ("dashed", v::DASH),
+                    ("styled", v::STYLED_LINE),
+                    ("all", v::ALL),
+                ]),
+            ));
+            modules.push((
+                "vector",
+                PickShader::Vector.source().to_string(),
+                exact(&[("precise", 0)]),
+            ));
+        }
+        for round in 0..3 {
+            let (device, _queue) = crate::test_gpu::device();
+            for (name, source, entries) in &modules {
+                let started = Instant::now();
+                let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some(name),
+                    source: wgpu::ShaderSource::Wgsl(source.clone().into()),
+                });
+                println!(
+                    "PICK_TIMING round {round} [{name}] create_shader_module {:.1} ms",
+                    started.elapsed().as_secs_f64() * 1e3
+                );
+                for (entry, label, variant) in entries {
+                    // 0x1000 | id: the precise variant with `PICK_SHAPE = id`.
+                    let constants = variant.map(|bits| {
+                        if bits & 0x1000 != 0 {
+                            vec![(v::CONSTANT, 0.0), ("PICK_SHAPE", f64::from(bits & 0xfff))]
+                        } else {
+                            vec![(v::CONSTANT, f64::from(bits))]
+                        }
+                    });
+                    let started = Instant::now();
+                    let _pipeline =
+                        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                            label: Some(entry),
+                            layout: None,
+                            module: &module,
+                            entry_point: Some(entry),
+                            compilation_options: wgpu::PipelineCompilationOptions {
+                                constants: constants.as_deref().unwrap_or(&[]),
+                                zero_initialize_workgroup_memory: true,
+                            },
+                            cache: None,
+                        });
+                    println!(
+                        "PICK_TIMING round {round} [{name}] {entry} [{label}] {:.1} ms",
+                        started.elapsed().as_secs_f64() * 1e3
+                    );
+                }
+            }
+        }
     }
 }

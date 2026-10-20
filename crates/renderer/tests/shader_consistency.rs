@@ -41,7 +41,34 @@ fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// The point picker's fragments (`src/gpu_pick/*.wgsl`), concatenated in
+/// file-name order: every twin a pick module carries lives in one of them.
+const PICK_FRAGMENTS: &str = "src/gpu_pick/*.wgsl";
+
 fn read(path_rel: &str) -> String {
+    if let Some(dir) = path_rel.strip_suffix("/*.wgsl") {
+        let mut names: Vec<_> = fs::read_dir(workspace_root().join(dir))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|e| e == "wgsl"))
+            .collect();
+        names.sort();
+        return names
+            .iter()
+            .map(|path| {
+                read(
+                    path.strip_prefix(workspace_root())
+                        .unwrap()
+                        .to_str()
+                        .unwrap(),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
+    }
     let p = workspace_root().join(path_rel);
     let raw = fs::read_to_string(&p).unwrap_or_else(|e| panic!("Failed to read {:?}: {}", p, e));
     // Normalize line endings so CRLF (Windows) vs LF doesn't trip substring
@@ -317,7 +344,7 @@ fn colour_ramp_and_size_map_radius_twins_match_the_ssot() {
             "src/data_render/vector/vector_input_common.wgsl",
             ramp.as_slice(),
         ),
-        ("src/gpu_pick.wgsl", radius.as_slice()),
+        (PICK_FRAGMENTS, radius.as_slice()),
     ] {
         let shader = read(path);
         for function in functions {
@@ -372,7 +399,7 @@ fn marker_shape_twins_match_the_ssot() {
         "MARKER_HALF_PI",
         "STAR_INNER_RATIO",
     ];
-    for path in ["src/data_render/scatter_columnar.wgsl", "src/gpu_pick.wgsl"] {
+    for path in ["src/data_render/scatter_columnar.wgsl", PICK_FRAGMENTS] {
         let shader = read(path);
         for function in functions {
             assert_eq!(
@@ -407,7 +434,7 @@ fn line_stroke_twins_match_the_ssot() {
     let noise = ["sketch_hash01", "sketch_noise"];
     for (path, functions) in [
         ("src/data_render/line_columnar.wgsl", all.as_slice()),
-        ("src/gpu_pick.wgsl", all.as_slice()),
+        (PICK_FRAGMENTS, all.as_slice()),
         ("src/data_render/scatter_columnar.wgsl", noise.as_slice()),
         ("src/data_render/errorbar_columnar.wgsl", noise.as_slice()),
     ] {
@@ -420,7 +447,7 @@ fn line_stroke_twins_match_the_ssot() {
             );
         }
     }
-    for path in ["src/data_render/line_columnar.wgsl", "src/gpu_pick.wgsl"] {
+    for path in ["src/data_render/line_columnar.wgsl", PICK_FRAGMENTS] {
         let shader = read(path);
         for constant in ["LINE_AA_EXTENT_PX", "SKETCH_SUBDIV"] {
             assert_eq!(
@@ -439,7 +466,7 @@ fn line_stroke_twins_match_the_ssot() {
 #[test]
 fn styled_marker_twins_match_the_ssot() {
     let ssot = read(SSOT_PATH);
-    for path in ["src/data_render/scatter_columnar.wgsl", "src/gpu_pick.wgsl"] {
+    for path in ["src/data_render/scatter_columnar.wgsl", PICK_FRAGMENTS] {
         let shader = read(path);
         for function in [
             "sketch_marker_wobble_px",
@@ -495,7 +522,7 @@ fn wgsl_struct(source: &str, name: &str) -> String {
 #[test]
 fn arrow_glyph_twins_match_the_ssot() {
     let ssot = read(SSOT_PATH);
-    let pick = read("src/gpu_pick.wgsl");
+    let pick = read(PICK_FRAGMENTS);
     let glyph = read("src/data_render/vector/glyph_arrow.wgsl");
     let projection = read("src/data_render/vector/project_cartesian2d.wgsl");
     let copies = [
@@ -505,7 +532,7 @@ fn arrow_glyph_twins_match_the_ssot() {
             &projection,
             false,
         ),
-        ("src/gpu_pick.wgsl", &pick, true),
+        (PICK_FRAGMENTS, &pick, true),
     ];
     for (path, shader, has_glyph) in copies {
         if has_glyph {
@@ -559,11 +586,11 @@ fn arrow_glyph_twins_match_the_ssot() {
 #[test]
 fn pick_polar_clip_is_the_draw_fragment_clip() {
     let ssot = read(SSOT_PATH);
-    let pick = read("src/gpu_pick.wgsl");
+    let pick = read(PICK_FRAGMENTS);
     assert_eq!(
         wgsl_function(&pick, "polar_fragment_visible"),
         wgsl_function(&ssot, "polar_fragment_visible"),
-        "gpu_pick.wgsl must carry the common block's `polar_fragment_visible` byte-for-byte"
+        "the pick fragments must carry the common block's `polar_fragment_visible` byte-for-byte"
     );
 }
 
@@ -781,7 +808,7 @@ fn step_interpolation_helpers_match_between_the_line_and_arc_shaders() {
     }
     // The picker's copy keeps the data-space midpoint rule under its own
     // names; the rest of its agreement is the CPU/GPU pick parity test.
-    let pick = read("src/gpu_pick.wgsl");
+    let pick = read(PICK_FRAGMENTS);
     assert!(pick.contains("fn pick_step_piece("));
     assert!(pick.contains("let xm = (ax + bx) * 0.5;"));
     assert!(line.contains("let xm = (xa + xb) * 0.5;"));

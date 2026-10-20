@@ -1310,7 +1310,7 @@ fn stroke_piece_distance(
 /// riser resolves to the nearer of the two source indices, never to a corner
 /// that is not a sample. A linear segment is its single piece and keeps the
 /// straight-segment rule bit for bit. Twin of `pick_line_candidate` in
-/// `gpu_pick.wgsl`.
+/// `gpu_pick/line.wgsl`.
 fn line_segment_pick(
     cursor: [f32; 2],
     pieces: &[([f32; 2], [f32; 2])],

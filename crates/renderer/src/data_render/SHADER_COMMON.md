@@ -8,7 +8,7 @@
 
 1. 이 문서의 해당 코드 블록을 먼저 수정한다.
 2. 아래 동기화 대상 셰이더에서 같은 블록을 모두 수정한다.
-3. 대응하는 CPU 구조체인 `mod.rs::ScatterTransform` / `PrimitiveStyle`의 크기와 필드 순서도 확인한다. `Transform`을 바꿨다면 공통 블록 밖의 사본인 `gpu_pick.wgsl`의 `PickQueryTransform`도 고친다(1절).
+3. 대응하는 CPU 구조체인 `mod.rs::ScatterTransform` / `PrimitiveStyle`의 크기와 필드 순서도 확인한다. `Transform`을 바꿨다면 공통 블록 밖의 사본인 `gpu_pick/core.wgsl`의 `PickQueryTransform`도 고친다(1절).
 4. `cargo test -p figgy-renderer --test shader_consistency`로 공통 블록과 함수 쌍둥이를 검사한 뒤 `cargo check && cargo test`로 전체 빌드와 테스트를 실행한다.
 
 한 파일만 바꾸면 컴파일은 성공해도 GPU가 메모리를 잘못 해석할 수 있다. 일부 시리즈의 색·위치·축만 어긋나는 오류를 피하려면 공통 정의를 함께 갱신해야 한다.
@@ -106,13 +106,13 @@ fn styled_point_index(local_index: u32) -> u32 {
 | `scale_log` | 축별 로그 변환 여부. 0.0은 선형, 1.0은 log10 |
 | `pixel_to_ndc` | `(2/chart_w, 2/chart_h)`. `chart_w`·`chart_h`는 데이터 영역이 아닌 `Config.chart_area`의 픽셀 너비·높이다. 픽셀 크기를 NDC 크기로 바꾸는 비율이며 선 두께·점 반지름·오차 막대 끝선 길이에 사용한다. |
 | `data_to_panel_scale`, `data_to_panel_offset` | 축 범위로 정규화한 좌표를 패널 좌표로 바꾸는 데이터 영역의 아핀 변환. 축 범위와 배치 여백을 분리한다. |
-| `polar_angle`, `polar_extent` | `Config.polar`의 극좌표 상수. 직교 차트에서는 모두 0이다. `polar_angle` = (플래그, 0도 방향(라디안), 각도 단위당 라디안에 방향 부호(+1/−1)를 곱한 값, 안쪽 반지름 비율), `polar_extent` = (섹터 시작, 섹터 끝(각도 단위; 끝 ≤ 시작이면 전체 원), 세그먼트당 호 조각 수(현이면 0), 바깥 반지름 px). `line_columnar.wgsl`의 `line_step_mode`와 `gpu_pick.wgsl`의 선 판정은 호 조각 수를 이 값에서 읽어 `step_piece_count`의 모드 워드(비트 0–1 계단 모드, 비트 4 이상 호 조각 수)에 합친다. 플래그가 1이면 `data_to_ndc`가 `polar_ndc`로 분기해 각도 컬럼을 데이터 영역 중심 둘레의 각도로, 반지름 축의 정규화 좌표를 안쪽 고리와 바깥 반지름 사이로 사상한다. 극좌표는 `Scatter`·`Line`·`ScatterLine` 시리즈(면 채움 포함)에만 허용된다. 히스토그램·행렬·등고선·오차 막대·벡터 시리즈는 `renderer.rs::validate_polar_series`가 거부하므로 해당 셰이더에서는 이 분기가 실행되지 않는다. CPU 쌍둥이는 투영이 `polar_projection::ndc`, 표본 유효성이 `polar_projection::sample_valid`다. |
+| `polar_angle`, `polar_extent` | `Config.polar`의 극좌표 상수. 직교 차트에서는 모두 0이다. `polar_angle` = (플래그, 0도 방향(라디안), 각도 단위당 라디안에 방향 부호(+1/−1)를 곱한 값, 안쪽 반지름 비율), `polar_extent` = (섹터 시작, 섹터 끝(각도 단위; 끝 ≤ 시작이면 전체 원), 세그먼트당 호 조각 수(현이면 0), 바깥 반지름 px). `line_columnar.wgsl`의 `line_step_mode`와 `gpu_pick/*.wgsl`의 선 판정은 호 조각 수를 이 값에서 읽어 `step_piece_count`의 모드 워드(비트 0–1 계단 모드, 비트 4 이상 호 조각 수)에 합친다. 플래그가 1이면 `data_to_ndc`가 `polar_ndc`로 분기해 각도 컬럼을 데이터 영역 중심 둘레의 각도로, 반지름 축의 정규화 좌표를 안쪽 고리와 바깥 반지름 사이로 사상한다. 극좌표는 `Scatter`·`Line`·`ScatterLine` 시리즈(면 채움 포함)에만 허용된다. 히스토그램·행렬·등고선·오차 막대·벡터 시리즈는 `renderer.rs::validate_polar_series`가 거부하므로 해당 셰이더에서는 이 분기가 실행되지 않는다. CPU 쌍둥이는 투영이 `polar_projection::ndc`, 표본 유효성이 `polar_projection::sample_valid`다. |
 | `style_params` | Three generic style parameter slots. The active style's shader entries interpret them; the precise entries never read them. The slot layout is in the block comment above (sketch `[0]`, milkyway `[0]`–`[2]`, constellation `[0]`; every other lane is 0). Seeds are stored as f32 and recovered as `u32(...)`, exact up to 2^24. `[2].z` is reserved for the streamed point base under every style (see below). CPU packing: `StyleVariant::pack_params` in `renderer.rs` (`[f32; 12]`). |
 
 **대응하는 CPU 구조체:** `src/data_render/mod.rs::ScatterTransform`
 (`#[repr(C)]`, `bytemuck::Pod`). 필드 순서와 크기가 정확히 일치해야 한다.
 
-`gpu_pick.wgsl`의 `PickQueryTransform`은 같은 배치를 공통 블록 밖에서 따로 선언한다. 픽 셰이더는 변환을 매개변수 유니폼 `PickQueryParams`의 첫 필드로 받고, CPU 쪽 `gpu_pick.rs::PickQueryParamsGpu`도 `ScatterTransform`을 그대로 담는다. `shader_consistency`는 이 사본을 검사하지 않고 `gpu_pick.rs`의 크기 단언(320바이트)은 크기 변화만 잡으므로, `Transform`을 바꿀 때 이 사본도 함께 고쳐야 한다.
+`gpu_pick/core.wgsl`의 `PickQueryTransform`은 같은 배치를 공통 블록 밖에서 따로 선언한다. 픽 셰이더는 변환을 매개변수 유니폼 `PickQueryParams`의 첫 필드로 받고, CPU 쪽 `gpu_pick.rs::PickQueryParamsGpu`도 `ScatterTransform`을 그대로 담는다. `shader_consistency`는 이 사본을 검사하지 않고 `gpu_pick.rs`의 크기 단언(320바이트)은 크기 변화만 잡으므로, `Transform`을 바꿀 때 이 사본도 함께 고쳐야 한다.
 
 `style_params[2].z` is reserved independently of the active style: it carries
 the exact **u32 bit pattern** of a streamed point/errorbar chunk's global base,
@@ -942,7 +942,7 @@ point vector is a point pick (§5.8).
 The colourbar ramp is evaluated in three shaders (`field_columnar.wgsl` for
 cells, `scatter_columnar.wgsl` for `point_color_map`, the vector shader for
 `VectorStyle::color_map`) and the size-map radius in two
-(`scatter_columnar.wgsl` and `gpu_pick.wgsl`). The maths is one function set,
+(`scatter_columnar.wgsl` and `gpu_pick/*.wgsl`). The maths is one function set,
 parameterised on the caller's bounds, so the stop storage binding (which WGSL
 cannot pass as an argument) stays the only per-shader line. The functions
 below are copied byte-for-byte into each shader and `shader_consistency`
@@ -1043,7 +1043,7 @@ fn size_map_radius(sv: vec2<f32>, domain_min: vec2<f32>, domain_max: vec2<f32>, 
 ### 5.5 Marker shape — function twins
 
 A marker is drawn by the scatter shader (`fs_main`, `fs_mapped`,
-`fs_sketch`) and picked by `gpu_pick.wgsl`, and both must answer the same
+`fs_sketch`) and picked by `gpu_pick/*.wgsl`, and both must answer the same
 question: does this pixel belong to the marker? The shape is one function
 set: `shape_distance` and its helpers give the signed pixel distance from the
 marker's local position `p` (y up, like NDC) to the contour of the base
@@ -1063,7 +1063,7 @@ QUAD_MARGIN_PX` from its centre on either axis (the quad `vs_main` emits),
 which is the reach the picker's axis gates allow around each centre.
 
 The functions and constants below are copied byte-for-byte into
-`scatter_columnar.wgsl` and `gpu_pick.wgsl`; `shader_consistency` compares
+`scatter_columnar.wgsl` and `gpu_pick/*.wgsl`; `shader_consistency` compares
 every body and constant with this document. CPU twin: the `marker_*`
 functions of `pick.rs` (`styled_marker_distance`).
 
@@ -1286,7 +1286,7 @@ Constellation star's sprite disc. These are scatter-shader functions only;
 ### 5.6 Line stroke — function twins
 
 A line is drawn by `line_columnar.wgsl` (`vs_main` / `vs_sketch` with
-`fs_main` or `fs_constellation_line`) and picked by `gpu_pick.wgsl`, and both
+`fs_main` or `fs_constellation_line`) and picked by `gpu_pick/*.wgsl`, and both
 answer the same question per pixel. Every step piece of a segment is
 extruded into a rectangle with square caps, `max(line_width_px, 1) / 2` wide
 either side: `line_stroke_distance` is its signed distance in the piece's
@@ -1313,7 +1313,7 @@ as one rectangle of the larger half extent (`gpu_pick.rs::
 milkyway_line_half_extent`), since the star positions are hashed per slot.
 
 The functions and constants below are copied byte-for-byte into
-`line_columnar.wgsl` and `gpu_pick.wgsl` (the sketch noise also into
+`line_columnar.wgsl` and `gpu_pick/*.wgsl` (the sketch noise also into
 `scatter_columnar.wgsl` and `errorbar_columnar.wgsl`); `shader_consistency`
 compares every body and constant with this document. CPU twin:
 `pick.rs::line_segment_pick` (precise strokes and dashes) with its arc sum.
@@ -1434,7 +1434,7 @@ the picker follows the entry the chart's style draws with
   opacity draws nothing and picks nothing.
 
 The functions and constants below are copied byte-for-byte into
-`scatter_columnar.wgsl` and `gpu_pick.wgsl`; `shader_consistency` compares
+`scatter_columnar.wgsl` and `gpu_pick/*.wgsl`; `shader_consistency` compares
 every body and constant with this document. CPU twin:
 `pick.rs::styled_marker_distance`.
 
@@ -1547,7 +1547,7 @@ few ulps whose round end the draw painted and the pick did not.
 
 The items below are copied byte-for-byte into `vector/glyph_arrow.wgsl` (the
 constants, structs and `arrow_*` functions), `vector/project_cartesian2d.wgsl`
-(`pair_add`, `axis_px_per_unit_at`) and `gpu_pick.wgsl`; `shader_consistency`
+(`pair_add`, `axis_px_per_unit_at`) and `gpu_pick/*.wgsl`; `shader_consistency`
 compares every body, struct and constant with this document. CPU twin:
 `pick.rs::vector_arrow_distance` with `arrow_place` / `arrow_distance`.
 
@@ -1713,26 +1713,26 @@ fn axis_px_per_unit_at(range: f32, panel_scale: f32, is_log: f32, pixel_to_ndc: 
       확인했다 (struct 크기가 바뀌었다면 `mod.rs`의
       `size_of::<ScatterTransform>() == 144` / `size_of::<PrimitiveStyle>() == 80`
       컴파일 타임 단언도 갱신).
-- [ ] `Transform`을 바꿨다면 `gpu_pick.wgsl`의 `PickQueryTransform`도 같은
+- [ ] `Transform`을 바꿨다면 `gpu_pick/core.wgsl`의 `PickQueryTransform`도 같은
       배치로 고쳤다 (크기가 바뀌었다면 `gpu_pick.rs`의
       `size_of::<PickQueryParamsGpu>() == 320` 단언도 갱신).
 - [ ] 격자 샘플링 블록을 바꿨다면 `mod.rs::FieldParamsGpu` / `GridColumnGpu`를
       확인했다. 쌍 연산 함수를 바꿨다면 `gpu_errorbar.wgsl`의 같은 함수와
       `vector/vector_input_grid.wgsl`의 `vector_*` 사본도 고쳤다.
 - [ ] 5.4절 함수를 바꿨다면 `field_columnar.wgsl`, `scatter_columnar.wgsl`,
-      `vector/vector_input_common.wgsl`, `gpu_pick.wgsl`의 사본을 고쳤다.
+      `vector/vector_input_common.wgsl`, `gpu_pick/*.wgsl`의 사본을 고쳤다.
 - [ ] 5.5절 마커 모양 함수를 바꿨다면 `scatter_columnar.wgsl`과
-      `gpu_pick.wgsl`의 사본, `pick.rs`의 `marker_*` CPU 쌍둥이를 고쳤다.
-- [ ] 5.6절 선 획 함수를 바꿨다면 `line_columnar.wgsl`과 `gpu_pick.wgsl`의
+      `gpu_pick/*.wgsl`의 사본, `pick.rs`의 `marker_*` CPU 쌍둥이를 고쳤다.
+- [ ] 5.6절 선 획 함수를 바꿨다면 `line_columnar.wgsl`과 `gpu_pick/*.wgsl`의
       사본, `pick.rs::line_segment_pick` CPU 쌍둥이를 고쳤다.
 - [ ] 5.7절 양식 마커 함수를 바꿨다면 `scatter_columnar.wgsl`과
-      `gpu_pick.wgsl`의 사본, `pick.rs::styled_marker_distance` CPU 쌍둥이를
+      `gpu_pick/*.wgsl`의 사본, `pick.rs::styled_marker_distance` CPU 쌍둥이를
       고쳤다.
 - [ ] 5.8절 화살표 글리프 함수를 바꿨다면 `vector/glyph_arrow.wgsl`,
-      `vector/project_cartesian2d.wgsl`, `gpu_pick.wgsl`의 사본,
+      `vector/project_cartesian2d.wgsl`, `gpu_pick/*.wgsl`의 사본,
       `pick.rs::vector_arrow_distance` CPU 쌍둥이를 고쳤다.
 - [ ] 계단 보간 헬퍼를 바꿨다면 `line_columnar.wgsl`과 `line_arc.wgsl`을 함께
-      고쳤고, `gpu_pick.wgsl`의 `pick_step_piece_count` / `pick_step_piece`가
+      고쳤고, `gpu_pick/*.wgsl`의 `pick_step_piece_count` / `pick_step_piece`가
       같은 규칙을 따르는지 확인했다.
 - [ ] `cargo test -p figgy-renderer --test shader_consistency` 통과.
 - [ ] `cargo check` 통과.

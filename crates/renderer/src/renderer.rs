@@ -1819,6 +1819,9 @@ impl PreparedChartMutation<'_> {
 struct RendererPicker {
     pipeline_state: PickerPipelineState,
     active: Option<ActivePickRegistry>,
+    /// The exact pipelines created so far, by module and variant: compiled on
+    /// the first pick that needs each (`PickExactPipelines`).
+    exact: crate::gpu_pick::PickExactPipelines,
     #[cfg(test)]
     injected_activation_failure: Option<crate::gpu_pick::GpuPickError>,
 }
@@ -1828,6 +1831,7 @@ impl RendererPicker {
         Self {
             pipeline_state: PickerPipelineState::Disabled,
             active: None,
+            exact: crate::gpu_pick::PickExactPipelines::default(),
             #[cfg(test)]
             injected_activation_failure: None,
         }
@@ -1959,6 +1963,18 @@ impl RendererPicker {
             PickerPipelineState::Ready { point, .. } => Ok(Arc::clone(point)),
             PickerPipelineState::Failed(error) => Err(error.clone()),
         }
+    }
+
+    /// The exact pipeline a streamed pick scans every chunk with: the
+    /// marker-and-line module with every path, created on first use.
+    fn stream_exact(
+        &mut self,
+    ) -> std::result::Result<wgpu::ComputePipeline, crate::gpu_pick::GpuPickError> {
+        let bundle = self.ready_bundle()?;
+        Ok(self
+            .exact
+            .ensure(&bundle, crate::gpu_pick::PickExactKey::STREAMED)?
+            .clone())
     }
 
     fn ready_data_bundle(
@@ -7469,15 +7485,24 @@ impl Renderer {
             max_distance_px: request.max_distance_px,
             draw_style: crate::gpu_pick::GpuPickDrawStyle::of(&display_config.draw_style),
         };
-        let active = self
-            .picker
+        let picker = &mut self.picker;
+        let active = picker
             .active
             .as_ref()
             .expect("successful chart preparation publishes an active picker registry");
         debug_assert_eq!(active.chart_id, id);
-        active
-            .engine
-            .pick_with_arcs(&self.pool, query, request.display_scale, &arcs)
+        // The exact pipelines these series need, compiled on the first pick
+        // that needs each.
+        for key in active.engine.exact_variants(&query) {
+            picker.exact.ensure(active.engine.bundle(), key)?;
+        }
+        active.engine.pick_with_arcs(
+            &self.pool,
+            query,
+            request.display_scale,
+            &arcs,
+            &picker.exact,
+        )
     }
 
     /// Submit one typed data pick across points/lines, histogram bins, heatmap
@@ -19248,7 +19273,10 @@ mod tests {
     }
 
     #[test]
-    fn renderer_gpu_picker_activation_creates_seven_pipelines_once() {
+    /// Enabling picking creates the gate and reduction pipelines and the
+    /// typed data pipelines once; the exact point pipelines wait for the first
+    /// pick that needs each (`PickExactPipelines`).
+    fn renderer_gpu_picker_activation_creates_six_pipelines_once() {
         let Some(mut renderer) = state_test_renderer() else {
             return;
         };
@@ -19301,7 +19329,7 @@ mod tests {
                     && event.stage == "setup"
             })
             .count();
-        assert_eq!(pipeline_starts, 4);
+        assert_eq!(pipeline_starts, 3);
         assert_eq!(setup_starts, 1);
         assert_eq!(data_pipeline_starts, 3);
         assert_eq!(data_setup_starts, 1);
